@@ -516,7 +516,9 @@ seconds:
   the list.
 
 Pairing with an already-running game starts in View. Turn **Edit** on
-when you're ready to send your placement edits. If a co-op session or
+when you're ready to send tag and placement edits. Open **Pending** to see
+when each edit takes effect, resolve a conflict, or reload the play copy
+for structural edits. If a co-op session or
 another restriction prevents writes, the pill says "Edits stay here"
 and the frame and **Live** pill turn amber. Hover the pill for the
 reason. If the connection drops, open the pill and use **Pair again**.

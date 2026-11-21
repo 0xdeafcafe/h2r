@@ -103,7 +103,8 @@ Scene, viewport, inspector, Log and status bar.*
 - **The bar** (under the menu, `ui/bar.rs`), visible in every tool. Left:
   the tools as tabs, Map, Variants, Playlists, UI and HUD. Middle: the
   document name; a `*` marks unsaved edits. Right: the game link. Its
-  pill shows the pairing and whether placement edits can reach the game.
+  pill shows the pairing and whether tag and placement edits can reach
+  the game.
   The controls beside it provide Play or Stop, Pause or Resume, Step and
   the Edit switch as they become available. The link's width is measured
   first, and the document name is clipped to what the tabs and the link
@@ -741,7 +742,7 @@ the `link` in `pair.status`.
 | `Halo 2 is running <map>` | Click to pair. |
 | Connecting… | Click for **Cancel**. |
 | `Viewing <map> · <phase>` | The editor reads the running game in View mode. |
-| `Editing <map> live` | The Edit switch is on and placement edits can reach the game. The viewport frame and the inspector's Live pill are green. |
+| `Editing <map> live` | The Edit switch is on and tag and placement edits can reach the game. The viewport frame and the inspector's Live pill are green. |
 | Edits stay here | The Edit switch is on and the game is blocking writes. Hover for the reason. The frame and Live pill are amber. |
 | `Game runs <map>` | The game is on another map. Click for `Open <map>`. |
 | Game lost | Hover for the reason or click for **Pair again**. |
@@ -759,20 +760,14 @@ status, and a second connection for the binary live mirror.
   Player labels show the name and team, and an aim line follows the
   unit's targeting vector. The viewport interpolates streamed transforms
   between game ticks ([live-mirror.md](live-mirror.md)).
-- **Edits sent live.** In Edit mode, every 200 ms the editor compares the placements
-  with what the game is taken to hold (`sync::Baseline`) and sends each
-  changed field of a placement with `edit.set` on the game's `scnr`,
-  through a raw block path (`+<block>/<stride>[i].+<field>:bytes[n]`,
-  the field's exact bytes; `hot-tags` gained raw blocks for this,
-  [hot-iteration.md](../graphics/hot-iteration.md)). Undo sends the old
-  bytes back. The game reads a placement when it makes the object, so an
-  edit shows when the object is made again: a respawn (multiplayer weapon
-  and vehicle spawns, player starting locations at the next spawn), a
-  checkpoint revert, or Play again. Objects already in the world don't
-  move. Adding or removing entries can't be sent (the game's block is
-  laid out where the map put it): the panel says the block needs Play
-  again. The panel always says why edits are not being sent: not paired,
-  another map in the game, the scenario not found, or the session.
+- **Edits sent live.** The editor compares changed tag and placement fields
+  with the bytes it expects in the loaded map. Edit sends these fields in
+  one conditional `edit.batch`. Undo and redo use the same path. A conflict
+  leaves the entire batch unapplied. In **Pending**, choose **Take the game's value**
+  to put the game's value in the document or **Overwrite** to send the
+  document's value. The field badge shows when the game reads it.
+  Placements take effect when the object is next created. Block growth
+  and other structural changes appear under **Reload**.
 - **Go to player** puts the camera's focus on player one, looking the way
   they face. **Teleport player here** moves them to the ground under the
   camera's focus; **T** over the viewport moves them to the point under
@@ -789,8 +784,8 @@ status, and a second connection for the binary live mirror.
 
 Tests (`play::tests`, against the agent crate's server and executor with
 an invented game behind them, no game data): pairing and streamed
-objects, Go to player, a moved placement as one `edit.set` with its path
-and bytes, the warning when the game's copy differed, undo, an added
+objects, Go to player, tag and placement edits in one `edit.batch`,
+both choices when the game's copy differed, undo, an added
 entry as a reload, teleport and the spawn, no writes in co-op or with
 another map loaded, pause/step/resume and control given back, a lost game,
 nothing listening, and the play copy of the map (an edit in it, the map
@@ -1317,7 +1312,7 @@ studio crate only draws them and turns input into actions.
     camera input, picking, placing, snapping and the gizmo.
   - `play.rs` and `play/`: Play and pair (above): the `h2 play` command
     and socket discovery (`launch`), the agent link thread (`link`), the
-    placement diff sent as `edit.set` (`sync`). `ui/bar.rs` draws the
+    tag and placement diffs sent as `edit.batch` (`tag_sync`, `sync`). `ui/bar.rs` draws the
     link and transport. `ui/play.rs` draws the Game panel and the live
     viewport frame.
   - `theme.rs`: colours, spacing, fonts (Inter 15 pt with a Lucide icon

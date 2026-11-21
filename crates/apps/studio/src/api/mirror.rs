@@ -20,6 +20,20 @@ impl Provider for Mirror {
                 "null",
             ),
             def(
+                m::MIRROR_PENDING,
+                "Document edits waiting for the game and its existing journal",
+                "{}",
+                r#"{"pending":"[edit]","journal":"[change]","leaving":"boolean"}"#,
+                "null",
+            ),
+            def(
+                m::MIRROR_APPLY,
+                "Send, resolve a conflict, adopt or revert the game journal, respawn or reload",
+                r#"{"what":"string","at?":"integer","peers?":"integer"}"#,
+                r#"{"queued":"string"}"#,
+                r#"{"what":"send"}"#,
+            ),
+            def(
                 m::MIRROR_OBJECTS,
                 "Objects at the shown tick, or an exact retained game tick. Handles, kinds and parent-relative positions use sim.objects conventions",
                 r#"{"at_tick?":"integer","kind?":"tag group","near?":{"point":"[x,y,z]","radius":"number"},"limit?":"integer"}"#,
@@ -32,10 +46,62 @@ impl Provider for Mirror {
     fn call(&mut self, app: &mut App, method: &str, params: &Value) -> Option<Reply> {
         match method {
             m::MIRROR_STATUS => Some(Ok(status(app))),
+            m::MIRROR_PENDING => Some(Ok(
+                json!({"pending":app.pairing.pending,"journal":app.pairing.journal,"leaving":app.pairing.leaving}),
+            )),
+            m::MIRROR_APPLY => Some(apply(app, &P(params))),
             m::MIRROR_OBJECTS => Some(objects(app, &P(params))),
             _ => None,
         }
     }
+}
+
+fn apply(app: &mut App, p: &P) -> Reply {
+    use crate::play::{Apply, pair::Request};
+    let s = app
+        .pairing
+        .published
+        .as_ref()
+        .ok_or_else(|| err(code::REFUSED, "pairing needs the editor window"))?;
+    if s["state"] != "connected" {
+        return Err(err(code::REFUSED, "not paired"));
+    }
+    let what = p.str("what")?;
+    let number = |key| {
+        p.opt_u64(key)?
+            .and_then(|v| u32::try_from(v).ok())
+            .ok_or_else(|| {
+                err(
+                    code::INVALID_PARAMS,
+                    format!("{key} must be a 32-bit integer"),
+                )
+            })
+    };
+    if matches!(what, "respawn" | "reload")
+        && let Some(why) = s["edits_blocked"].as_str()
+    {
+        return Err(err(code::REFUSED, why));
+    }
+    let action = match what {
+        "send" => {
+            if let Some(why) = s["edit_refusal"].as_str() {
+                return Err(err(code::REFUSED, why));
+            }
+            Apply::Send
+        }
+        "confirm" => Apply::Confirm(number("peers")?),
+        "respawn" => Apply::Respawn,
+        "reload" => Apply::Reload,
+        "adopt" => Apply::Adopt,
+        "revert" => Apply::Revert,
+        "keep" => Apply::Keep,
+        "restore" => Apply::Restore,
+        "take" => Apply::Take(number("at")?),
+        "overwrite" => Apply::Overwrite(number("at")?),
+        _ => return Err(err(code::INVALID_PARAMS, "unknown mirror.apply action")),
+    };
+    app.pairing.requests.push(Request::Apply(action));
+    Ok(json!({"queued":what}))
 }
 
 fn status(app: &App) -> Value {

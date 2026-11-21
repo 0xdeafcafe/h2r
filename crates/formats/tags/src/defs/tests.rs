@@ -31,6 +31,27 @@ fn defs() -> Defs {
     d
 }
 
+#[test]
+fn live_apply_classes_require_known_names_and_preserve_the_evidence() {
+    for which in ["frame", "use", "creation"] {
+        let mut defs = Defs::default();
+        let text = format!(
+            "group test 0x8\n  0x0 f32 rate applies={which} -- invented reader\n  0x4 u32 count\n"
+        );
+        defs.parse_into("invented", &text).unwrap();
+        let group = defs.group(FourCC(*b"test")).unwrap();
+        let field = group.field("rate").unwrap();
+        assert_eq!(field.applies, Some(which));
+        assert_eq!(field.meaning, "invented reader");
+        assert_eq!(group.field("count").unwrap().applies, None);
+    }
+    assert!(
+        Defs::default()
+            .parse_into("invented", "group test 0x4\n  0x0 f32 rate applies=soon")
+            .is_err()
+    );
+}
+
 fn key(g: &[u8; 4], p: &str) -> TagKey {
     TagKey::new(FourCC(*g), p)
 }

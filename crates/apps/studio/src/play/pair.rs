@@ -180,6 +180,7 @@ pub fn notice(games: &[&Found], open: Option<&str>) -> Option<Notice> {
 pub enum Request {
     Pair(Endpoint),
     Unpair,
+    Apply(super::Apply),
     Play,
     Stop,
     Edit(bool),
@@ -219,6 +220,9 @@ pub struct Bridge {
     pub published: Option<Value>,
     /// The same game-link state the bar and Game panel read.
     pub link: Option<LinkView>,
+    pub pending: Vec<Value>,
+    pub journal: Vec<Value>,
+    pub leaving: bool,
     /// One socket and its exact tick samples for the current pairing.
     pub mirror: Option<live_mirror::Stream>,
     /// The sample shown this editor frame, shared by the viewport and API.
@@ -239,6 +243,9 @@ impl Default for Bridge {
             requests: Vec::new(),
             published: None,
             link: None,
+            pending: Vec::new(),
+            journal: Vec::new(),
+            leaving: false,
             mirror: None,
             shown: None,
             latest: false,
@@ -251,6 +258,9 @@ impl Default for Bridge {
 
 impl Bridge {
     pub(super) fn clear_mirror(&mut self) {
+        self.pending.clear();
+        self.journal.clear();
+        self.leaving = false;
         self.mirror = None;
         self.shown = None;
         self.counters = None;

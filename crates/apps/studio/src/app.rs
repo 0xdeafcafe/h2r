@@ -1160,7 +1160,7 @@ impl App {
         self.run_map_tag(action);
     }
 
-    fn run_map_tag(&mut self, action: TagAction) {
+    pub(crate) fn run_map_tag(&mut self, action: TagAction) {
         let r = match action {
             TagAction::Select(id) => {
                 if self.tags.tag(id).is_some() {

@@ -1,6 +1,6 @@
 # Live mirror: the running game in the editor, and edits back into it
 
-Status: M1 is implemented. M2 through M11 are design. The real-game parity and cost checks are pending.
+Status: M1 and M7 are implemented. M2 through M6 and M8 through M11 are design. The real-game parity and cost checks are pending.
 Code: `crates/extensions/agent-proto/src/live` (wire format), `crates/extensions/agent/src/live` (capture and stream), `crates/tools/live-mirror` (editor store), `crates/apps/studio/src/play` and `crates/tools/scenario-edit` (pairing and viewport).
 Switch: none. With no subscriber the tick observer skips capture and no stream worker runs.
 
@@ -24,8 +24,8 @@ tag editor, and Halo 1 tags are in [click-to-edit.md](click-to-edit.md).
 | Pairing, auto-pair, game link pill | Built | `studio::play` (`play.rs`, `play/pair.rs`), `pair.*` ([agent-api.md](agent-api.md)) |
 | Live objects and players | Built: a binary stream on a second connection, interpolated bind-pose models and player overlays | `agent_proto::live`, `live_mirror::Store`, `studio::play` |
 | Pause, step, resume, go to player, teleport | Built | `play.rs`; `session.claim`, `pause`, `step`, `sim.state.set` |
-| Placement field edits sent live | Built: a diff against `sync::Baseline` every 200 ms, each field as one `edit.set` raw path on the game's `scnr`; shows when the object is next made | `play/sync.rs` |
-| Tag field writes in the game | Built: `edit.get`, `edit.set`, a journal and `edit.revert`; no editor UI sends them | `crates/extensions/hot-tags`, [hot-iteration.md](../graphics/hot-iteration.md) |
+| Placement field edits sent live | Built: a diff against `sync::Baseline` every 200 ms, one conditional `edit.batch` with the tag document’s fields and raw placement paths on the game’s `scnr`; shows when the object is next made | `play/sync.rs` |
+| Tag field writes in the game | Built: View/Edit, field classes, the Pending tab, `edit.map`, conditional `edit.batch`, journal adoption and `edit.revert` | `crates/extensions/hot-tags`, [hot-iteration.md](../graphics/hot-iteration.md) |
 | No writes in co-op or as a client | Built | `agent_proto::sim::SessionKind::writes` |
 | Typed object reads | Built: transform, velocity, sphere, vitality, node matrices, unit player, team, seat, weapons and aim | `crates/rewrites/sim-state` (`ObjectView`, `UnitView`), over `crates/hooking/guest-layout` |
 | The tick's events | Built: `deleted`, `damage`, `kill`, while `impl.sim.native.objects` is on | `sim_state::events`, `sim.events` |
@@ -398,8 +398,8 @@ by `session.methods`, documented in
 | `live.key` | read | `{stream}` | `{at, seq}`: the next frame is a key frame, taken now when paused |
 | `live.status` | read | none | `{map: {name, checksum, epoch}, streams: [{stream, layers, every, frames, bytes, dropped, skipped, queue}], capture_us: {p50, p99, budget}, shed: [name]}` |
 | `live.close` | read | `{stream}` | `{closed}`; closing the stream's connection does the same |
-| `edit.map` | read | none | `{at, name, file, checksum, scenario, epoch, session}` |
-| `edit.batch` | act | `{writes: [{tag, group?, path, value, was?}], label?}` | `{id, applied, changes}`: all written at one tick boundary as one journal entry, or none, with `MISMATCH` and `data.fields` (`path`, `was`, `holds`) |
+| `edit.map` | read | `{known_epoch?}` | `{at, name, file, checksum, scenario, epoch, session, loaded?}` |
+| `edit.batch` | act | `{writes, label?, epoch?, confirm_peers?}`. A write is `{tag, group?, path, value, was?}` or `{at, value, was?}` with hex bytes | `{id, applied, changes}`: all written at one tick boundary as one journal entry, or none, with `MISMATCH` and `data.fields` (`path`, `was`, `holds`) |
 | `world.object.set` | act | `{id, pos?, forward?, up?, velocity?}` | `{at, object}` after the next tick; through the engine's own move, so the object is re-clustered |
 | `world.object.delete` | act | `{id}` | `{at, deleted}`; through `OBJECT_DELETE` |
 | `world.object.respawn` | act | `{id}` or `{placement: {block, index}}` | `{at, old, object, linked}`: the object deleted and made again from the game's scenario bytes; `linked` says whether the new object is tied to the placement |

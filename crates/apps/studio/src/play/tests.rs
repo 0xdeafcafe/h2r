@@ -1,6 +1,6 @@
 //! Play and pair against the agent crate's real server and executor, with
 //! an invented game behind it: a status, one player and a vehicle, and the
-//! host methods the editor uses (`edit.tags`, `edit.set`, `sim.session`,
+//! host methods the editor uses (`edit.map`, `edit.batch`,
 //! `sim.state.set`) recording what they are sent. No game, no game data.
 #![cfg(unix)]
 
@@ -86,7 +86,15 @@ impl Reader for World {
 }
 
 /// The invented game: what the host methods were sent.
+#[derive(Default)]
+struct FakeEdits {
+    checksum: u32,
+    external_live: bool,
+    bytes: std::collections::HashMap<String, String>,
+    journal: Vec<Value>,
+}
 struct Game {
+    edits: Arc<Mutex<FakeEdits>>,
     path: std::path::PathBuf,
     agent: Agent,
     _server: Server,
@@ -108,28 +116,59 @@ impl Game {
                 v
             }
         };
-        let r = rec("edit.tags");
-        agent.add_method("edit.tags", Access::Read, move |v| {
-            r(v);
-            Ok(json!({"scenario": SCNR, "names": true, "total": 1, "tags": []}))
-        });
-        let r = rec("edit.set");
-        agent.add_method("edit.set", Access::Act, move |v| {
-            let v = r(v);
-            // As hot-tags answers: the bytes that were there.
-            let n = v["value"].as_str().map_or(0, str::len);
-            Ok(json!({"id": 1, "path": v["path"], "old": "f".repeat(n), "new": v["value"]}))
-        });
-        let view = serde_json::to_value(
-            agent_proto::sim::SessionView {
+        let edits = Arc::new(Mutex::new(FakeEdits::default()));
+        let loaded = map.to_owned();
+        let state = edits.clone();
+        agent.add_method("edit.map", Access::Read, move |_| {
+            let state = state.lock().unwrap();
+            let mut session = agent_proto::sim::SessionView {
                 kind,
                 ..Default::default()
             }
-            .settle(),
-        )
-        .unwrap();
-        agent.add_method(agent_proto::sim::method::SESSION, Access::Read, move |_| {
-            Ok(view.clone())
+            .settle();
+            if state.external_live {
+                session.writes = false;
+                session.why = Some("external Live session".into());
+            }
+            Ok(
+                json!({"name":loaded,"file":"invented.map","checksum":state.checksum,"epoch":1,
+                "scenario":SCNR,"session":session}),
+            )
+        });
+        let state = edits.clone();
+        agent.add_method("edit.changes", Access::Read, move |_| {
+            Ok(json!({"changes":state.lock().unwrap().journal}))
+        });
+        let r = rec("edit.revert");
+        let state = edits.clone();
+        agent.add_method("edit.revert", Access::Act, move |v| {
+            kind.writes()
+                .map_err(|e| RpcError::new(code::INVALID_REQUEST, e))?;
+            r(v);
+            *state.lock().unwrap() = FakeEdits::default();
+            Ok(json!({"dropped":[]}))
+        });
+        let r = rec("edit.batch");
+        let state = edits.clone();
+        agent.add_method("edit.batch",Access::Act,move |v| {
+            kind.writes().map_err(|e| RpcError::new(code::INVALID_REQUEST,e))?;
+            let v = r(v);
+            let writes = v["writes"].as_array().unwrap();
+            let mut state = state.lock().unwrap();
+            let key = |w: &Value| w.get("at").unwrap_or(&w["path"]).to_string();
+            for w in writes {
+                if let Some(holds) = state.bytes.get(&key(w)) && w["was"].as_str() != Some(holds.as_str()) && w["value"].as_str() != Some(holds.as_str()) {
+                    return Err(RpcError {code:code::MISMATCH,message:"game changed the field".into(),
+                        data:Some(json!({"fields":[{"at":w["at"],"path":w["path"],"was":w["was"],"holds_bytes":holds}]}))});
+                }
+            }
+            for w in writes {
+                state.bytes.insert(key(w),w["value"].as_str().unwrap().into());
+                if let Some(at) = w["at"].as_u64() {
+                    state.journal.push(json!({"addr":format!("{at:#010x}"),"holds":w["value"],"path":"fixture field","stale":false}));
+                }
+            }
+            Ok(json!({"id":1,"applied":writes.len(),"changes":writes}))
         });
         let r = rec("sim.state.set");
         agent.add_method(agent_proto::sim::method::STATE_SET, Access::Act, move |v| {
@@ -155,6 +194,7 @@ impl Game {
             }
         });
         Game {
+            edits,
             path,
             agent,
             _server: server,
@@ -219,11 +259,12 @@ fn paired(tag: &str, map: &str, kind: SessionKind) -> (Temp, Game, App, Play) {
     let mut play = Play::new();
     play.pair(&mut app, Endpoint::Unix(game.path.clone()));
     until(&mut play, &mut app, "the paired stream", |p, a| {
-        p.is_paired() && p.session.is_some() && p.scenario_tag.is_some() && a.pairing.player().is_some()
+        p.is_paired()
+            && p.edits.journal_ready
+            && p.session.is_some()
+            && p.scenario_tag.is_some()
+            && a.pairing.player().is_some()
     });
-    // These tests exercise the game with live placement edits requested.
-    play.request(Request::Edit(true));
-    play.update(&mut app);
     (t, game, app, play)
 }
 
@@ -242,12 +283,15 @@ fn move_flag(app: &mut App, to: [f32; 3]) {
 fn pairing_shows_the_game_and_its_objects() {
     let (_t, _game, mut app, mut play) = paired("show", "example", SessionKind::MpHost);
     assert_eq!(play.map(), Some("example"));
-    assert_eq!(play.link_view(&app).text, "Editing example live");
+    assert!(matches!(
+        play.link_view(&app).state,
+        LinkState::Viewing { .. }
+    ));
     let sample = app.pairing.shown.as_ref().unwrap();
     let ids: Vec<u32> = sample.objects.iter().map(|o| o.id).collect();
     assert_eq!(ids, [UNIT, VEHICLE]);
     assert_eq!(app.pairing.player().unwrap().0.name, "Tester");
-    assert_eq!(play.edits_blocked(&app), None);
+    assert_eq!(play.edits_blocked(&app).as_deref(), Some("View mode"));
     // Go to player: the camera's focus is on them, looking their way (+y).
     play.go_to_player(&mut app);
     let cam = *app.session.camera();
@@ -316,13 +360,14 @@ fn a_moved_game_object_reaches_mirror_objects_within_two_frames() {
 #[test]
 fn a_moved_placement_is_written_to_the_games_scenario() {
     let (_t, game, mut app, mut play) = paired("edit", "example", SessionKind::Local);
+    play.apply_edits(&mut app, Apply::Send).unwrap();
     move_flag(&mut app, [5.0, 6.0, 7.0]);
     until(&mut play, &mut app, "the edit", |_, _| {
-        !game.calls("edit.set").is_empty()
+        !game.calls("edit.batch").is_empty()
     });
-    let sets = game.calls("edit.set");
+    let sets = game.calls("edit.batch");
     assert_eq!(sets.len(), 1, "{sets:?}");
-    let s = &sets[0];
+    let s = &sets[0]["writes"][0];
     assert_eq!(s["tag"], SCNR);
     assert_eq!(s["group"], "scnr");
     let b = scenario_edit::layout::block(BlockKind::NetgameFlags);
@@ -339,18 +384,19 @@ fn a_moved_placement_is_written_to_the_games_scenario() {
         .flat_map(|v| v.to_le_bytes())
         .collect();
     assert_eq!(s["value"], sync::hex(&want));
-    // The invented game's copy differed (all ff): the editor says so once.
-    until(&mut play, &mut app, "the answer", |p, _| p.sent.is_empty());
-    assert!(app.log().iter().any(
-        |l| matches!(&l.status, editor_core::Status::Error(m) if m.contains("another version"))
-    ),);
+    until(&mut play, &mut app, "the answer", |p, _| {
+        p.edits.sent.is_none()
+    });
     // Nothing more goes until something changes; undo sends the old bytes.
     play.update(&mut app);
     app.dispatch(Action::Undo);
     until(&mut play, &mut app, "the undo", |_, _| {
-        game.calls("edit.set").len() == 2
+        game.calls("edit.batch").len() == 2
     });
-    assert_ne!(game.calls("edit.set")[1]["value"], s["value"]);
+    assert_ne!(
+        game.calls("edit.batch")[1]["writes"][0]["value"],
+        s["value"]
+    );
     // An added entry is a reload, not a write.
     app.session.set_allow_growth(true);
     let kind = scenario_edit::layout::BLOCKS
@@ -362,7 +408,7 @@ fn a_moved_placement_is_written_to_the_games_scenario() {
     until(&mut play, &mut app, "the reload note", |p, _| {
         p.reload == [kind]
     });
-    assert_eq!(game.calls("edit.set").len(), 2);
+    assert_eq!(game.calls("edit.batch").len(), 2);
 }
 
 #[test]
@@ -401,7 +447,7 @@ fn a_coop_session_gets_no_writes() {
         play.update(&mut app);
         thread::sleep(Duration::from_millis(5));
     }
-    assert!(game.calls("edit.set").is_empty());
+    assert!(game.calls("edit.batch").is_empty());
     assert!(game.calls("sim.state.set").is_empty());
     assert!(
         play.pending_spawn.is_none(),
@@ -419,7 +465,7 @@ fn another_map_in_the_game_blocks_edits() {
         play.update(&mut app);
         thread::sleep(Duration::from_millis(5));
     }
-    assert!(game.calls("edit.set").is_empty());
+    assert!(game.calls("edit.batch").is_empty());
 }
 
 #[test]
@@ -502,6 +548,179 @@ fn play_writes_the_edited_map_for_the_override() {
     }
 }
 
+#[test]
+fn client_live_and_different_checksums_stay_in_view() {
+    for (label, kind) in [
+        ("client", SessionKind::MpClient),
+        ("live", SessionKind::Local),
+        ("checksum", SessionKind::Local),
+    ] {
+        let (_t, game, mut app, mut play) = paired(label, "example", kind);
+        {
+            let mut state = game.edits.lock().unwrap();
+            state.external_live = label == "live";
+            state.checksum = u32::from(label == "checksum");
+        }
+        until(
+            &mut play,
+            &mut app,
+            "session or checksum refusal",
+            |p, a| matches!(p.link_view(a).state,LinkState::Blocked {ref why} if why.to_lowercase().contains(label)),
+        );
+        move_flag(&mut app, [1., 2., 3.]);
+        assert!(play.apply_edits(&mut app, Apply::Send).is_err());
+        play.push_edits(&mut app);
+        assert!(play.edits.sent.is_none());
+        assert!(game.calls("edit.batch").is_empty());
+    }
+}
+
+fn tag_pair(name: &str) -> (Temp, Game, App, Play) {
+    let t = Temp::new(name);
+    let game = Game::start(name, "example", SessionKind::Local);
+    let (mut app, _, _) = crate::app::tag_tests::app(&t.0);
+    app.pairing.auto_pair = false;
+    let mut play = Play::new();
+    play.pair(&mut app, Endpoint::Unix(game.path.clone()));
+    until(&mut play, &mut app, "game identity and journal", |p, _| {
+        p.edits.journal_ready
+    });
+    (t, game, app, play)
+}
+
+fn speed(app: &mut App) {
+    let action = crate::app::tag_api::set_field(
+        &app.tags,
+        crate::app::tag_tests::weap_id(),
+        "speed",
+        &json!(4.5),
+    )
+    .unwrap();
+    app.dispatch(Action::Tag(action));
+}
+
+#[test]
+fn tag_and_placement_share_a_batch_and_undo_sends_the_old_field() {
+    use crate::app::tag_tests::WEAP;
+    let (_t, game, mut app, mut play) = tag_pair("tag-undo");
+    speed(&mut app);
+    move_flag(&mut app, [3., 4., 5.]);
+    play.push_edits(&mut app);
+    assert!(game.calls("edit.batch").is_empty());
+    assert_eq!(app.pairing.pending.len(), 2);
+    play.apply_edits(&mut app, Apply::Send).unwrap();
+    until(&mut play, &mut app, "one atomic batch", |p, a| {
+        p.edits.sent.is_none() && a.pairing.pending.is_empty()
+    });
+    let calls = game.calls("edit.batch");
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0]["writes"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        calls[0]["writes"][0],
+        json!({"at":WEAP,"was":sync::hex(&2.5f32.to_le_bytes()),"value":sync::hex(&4.5f32.to_le_bytes())})
+    );
+    app.dispatch(Action::Undo);
+    until(&mut play, &mut app, "tag undo", |_, _| {
+        game.calls("edit.batch").len() == 2
+    });
+    let undo = &game.calls("edit.batch")[1]["writes"][0];
+    assert_eq!(undo["value"], calls[0]["writes"][0]["was"]);
+    assert_eq!(undo["was"], calls[0]["writes"][0]["value"]);
+}
+
+#[test]
+fn conflicts_take_or_overwrite_only_after_a_choice() {
+    use crate::app::tag_tests::WEAP;
+    for take in [true, false] {
+        let (_t, game, mut app, mut play) = tag_pair(if take {
+            "take-field"
+        } else {
+            "overwrite-field"
+        });
+        let holds = sync::hex(&9f32.to_le_bytes());
+        game.edits
+            .lock()
+            .unwrap()
+            .bytes
+            .insert(WEAP.to_string(), holds.clone());
+        speed(&mut app);
+        play.apply_edits(&mut app, Apply::Send).unwrap();
+        until(&mut play, &mut app, "both conflict choices", |_, a| {
+            a.pairing.pending.iter().any(|r| r["conflict"] == true)
+        });
+        assert_eq!(game.edits.lock().unwrap().bytes[&WEAP.to_string()], holds);
+        play.apply_edits(
+            &mut app,
+            if take {
+                Apply::Take(WEAP)
+            } else {
+                Apply::Overwrite(WEAP)
+            },
+        )
+        .unwrap();
+        until(&mut play, &mut app, "document matches the game", |p, a| {
+            a.pairing.pending.is_empty() && p.edits.sent.is_none()
+        });
+        let expected = sync::hex(&(if take { 9f32 } else { 4.5f32 }).to_le_bytes());
+        assert_eq!(sync::hex(&app.tags.read(WEAP, 4).unwrap()), expected);
+        assert_eq!(
+            game.edits.lock().unwrap().bytes[&WEAP.to_string()],
+            expected
+        );
+        assert_eq!(game.calls("edit.batch").len(), if take { 1 } else { 2 });
+    }
+}
+
+#[test]
+fn a_grown_tag_block_stays_under_reload() {
+    use crate::app::tag_tests::{WEAP, weap_id};
+    let (_t, game, mut app, mut play) = tag_pair("grow-tag");
+    play.apply_edits(&mut app, Apply::Send).unwrap();
+    app.session.set_allow_growth(true);
+    app.tags.allow_growth = true;
+    let field = app.tags.layout(weap_id()).unwrap().field_at(8).unwrap();
+    let tags::registry::Kind::Block(layout) = &field.kind else {
+        panic!()
+    };
+    app.dispatch(Action::Tag(crate::app::TagAction::Block {
+        tag: weap_id(),
+        pair: WEAP + 8,
+        layout: layout.clone(),
+        op: crate::app::BlockOp::Add,
+    }));
+    play.push_edits(&mut app);
+    assert!(app.pairing.pending.iter().any(|r| r["class"] == "Reload"));
+    assert!(play.edits.sent.is_none());
+    assert!(game.calls("edit.batch").is_empty());
+}
+
+#[test]
+fn rejoining_lists_the_kept_journal_and_restore_waits_for_revert() {
+    let (_t, game, mut app, mut play) = tag_pair("rejoin-tags");
+    speed(&mut app);
+    play.apply_edits(&mut app, Apply::Send).unwrap();
+    until(&mut play, &mut app, "tag reached game", |p, _| {
+        !game.calls("edit.batch").is_empty() && p.edits.sent.is_none()
+    });
+    play.request(Request::Unpair);
+    play.update(&mut app);
+    assert!(app.pairing.leaving);
+    play.apply_edits(&mut app, Apply::Keep).unwrap();
+    play.pair(&mut app, Endpoint::Unix(game.path.clone()));
+    until(&mut play, &mut app, "journal", |_, a| {
+        !a.pairing.journal.is_empty()
+    });
+    assert!(play.apply_edits(&mut app, Apply::Send).is_err());
+    play.apply_edits(&mut app, Apply::Adopt).unwrap();
+    play.push_edits(&mut app);
+    assert!(app.pairing.pending.is_empty());
+    play.apply_edits(&mut app, Apply::Restore).unwrap();
+    until(&mut play, &mut app, "restored and unpaired", |p, _| {
+        p.conn == Conn::Off
+    });
+    assert_eq!(game.calls("edit.revert").len(), 1);
+}
+
 // ---- finding games ----
 
 /// A finder that looks only at these sockets (the real one reads the
@@ -531,7 +750,9 @@ fn a_running_game_is_offered_with_its_map_and_pairs_on_request() {
     assert_eq!(play.conn, Conn::Off);
     assert_eq!(play.auto_target(false), None);
     play.request(Request::Pair(Endpoint::Unix(game.path.clone())));
-    until(&mut play, &mut app, "the pairing", |p, _| p.is_paired() && p.map().is_some());
+    until(&mut play, &mut app, "the pairing", |p, _| {
+        p.is_paired() && p.edits.journal_ready
+    });
     assert!(play.notice(&app).is_none(), "paired: nothing to offer");
     assert_eq!(play.map_match(&app), MapMatch::Same);
     assert!(matches!(
@@ -554,7 +775,7 @@ fn a_game_on_another_map_is_offered_and_says_so() {
     assert!(n.text.contains("zanzibar") && n.text.contains("example"), "{}", n.text);
     play.request(Request::Pair(Endpoint::Unix(game.path.clone())));
     until(&mut play, &mut app, "the pairing", |p, _| {
-        p.is_paired() && p.map().is_some()
+        p.is_paired() && p.edits.journal_ready
     });
     assert_eq!(
         play.link_view(&app).state,
@@ -577,7 +798,7 @@ fn the_one_running_game_is_paired_on_its_own_once() {
     let mut play = Play::new();
     play.finder = finder_for(&[&game]);
     until(&mut play, &mut app, "the automatic pairing", |p, _| {
-        p.is_paired() && p.map().is_some()
+        p.is_paired() && p.edits.journal_ready
     });
     assert!(!play.live_edits, "auto-pair starts in View mode");
     // After Unpair it stays unpaired, however often it looks.
@@ -650,9 +871,13 @@ fn the_agent_api_lists_pairs_and_unpairs() {
     assert_eq!((s["state"].as_str(), s["open_map"].as_str()), (Some("off"), Some("example")));
     assert_eq!(s["link"]["state"], "no_game");
     let socket = game.path.display().to_string();
-    let r = api.call(&mut app, "pair.connect", json!({"socket": socket})).unwrap();
+    let r = api
+        .call(&mut app, "pair.connect", json!({"socket": socket}))
+        .unwrap();
     assert_eq!(r["requested"], socket);
-    until(&mut play, &mut app, "the pairing", |p, _| p.is_paired() && p.map().is_some());
+    until(&mut play, &mut app, "the pairing", |p, _| {
+        p.is_paired() && p.edits.journal_ready
+    });
     let s = api.call(&mut app, "pair.status", Value::Null).unwrap();
     assert_eq!(s["state"], "connected");
     assert_eq!(s["map"], "example");
@@ -688,8 +913,11 @@ fn the_agent_api_lists_pairs_and_unpairs() {
         .unwrap();
     until(&mut play, &mut app, "the API resume", |p, _| !p.paused);
 
-    api.call(&mut app, "pair.disconnect", Value::Null).unwrap();
-    until(&mut play, &mut app, "the unpairing", |p, _| p.conn == Conn::Off);
+    api.call(&mut app, "pair.disconnect", json!({"leave":"keep"}))
+        .unwrap();
+    until(&mut play, &mut app, "the unpairing", |p, _| {
+        p.conn == Conn::Off
+    });
     let s = api.call(&mut app, "pair.status", Value::Null).unwrap();
     assert_eq!(s["state"], "off");
 }
@@ -725,7 +953,7 @@ fn the_link_view_names_every_state() {
     play.pair(&mut app, Endpoint::Unix(game.path.clone()));
     check(&play, &app, "connecting", LinkTone::Notice);
     until(&mut play, &mut app, "the paired game", |p, _| {
-        p.is_paired() && p.map().is_some()
+        p.is_paired() && p.edits.journal_ready
     });
     assert!(check(&play, &app, "viewing", LinkTone::View).can_pause);
     assert!(!play.live_edits);

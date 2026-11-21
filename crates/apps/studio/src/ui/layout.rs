@@ -30,6 +30,7 @@ pub(super) struct Keys {
     pub inspector: WindowKey,
     pub log: WindowKey,
     pub game: WindowKey,
+    pub pending_edits: WindowKey,
     pub bytes: WindowKey,
     pub variants: ToolWindows,
     pub playlists: ToolWindows,
@@ -51,6 +52,7 @@ impl Keys {
             inspector: key("inspector", icon::SLIDERS, "Inspector"),
             log: key("log", icon::LOG, "Log"),
             game: key("game", icon::ZAP, "Game"),
+            pending_edits: key("pending_edits", icon::SLIDERS, "Pending"),
             bytes: key("tag-bytes", icon::INFO, "Data and bytes"),
             variants: ToolWindows::new(
                 ("variants-list", "Variants"),
@@ -84,7 +86,7 @@ impl Keys {
         DockLayout::split(
             DockSplit::Down,
             0.22,
-            DockLayout::tabs([&self.game, &self.log, &self.bytes]),
+            DockLayout::tabs([&self.game, &self.log, &self.pending_edits, &self.bytes]),
             DockLayout::split(
                 DockSplit::Left,
                 0.22,
@@ -133,7 +135,7 @@ impl Keys {
         );
         seed(&self.viewport, tools.map(|t| &t.center));
         seed(&self.inspector, tools.map(|t| &t.inspector));
-        seed(&self.log, [&self.game, &self.bytes]);
+        seed(&self.log, [&self.game, &self.pending_edits, &self.bytes]);
     }
 }
 

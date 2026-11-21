@@ -136,6 +136,12 @@ pub fn draw(ui: &Ui, fonts: &theme::Fonts, app: &mut App, state: &mut InspectorS
         );
     }
 
+    theme::link_badge(
+        ui,
+        crate::play::LinkTone::View,
+        crate::play::tag_sync::CREATION,
+    );
+    ui.set_item_tooltip("Placement fields apply when the object is next created.");
     let fields = app.session.shared_fields();
     let mut edits: Vec<(&'static str, FieldEdit)> = Vec::new();
     let mut done = false;

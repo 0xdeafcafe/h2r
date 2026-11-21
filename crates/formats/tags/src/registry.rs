@@ -67,6 +67,7 @@ pub struct Field {
     pub kind: Kind,
     /// The definition's note: what it means and the evidence.
     pub meaning: String,
+    pub applies: Option<&'static str>,
 }
 
 /// A field's type, as an editor shows it.
@@ -485,6 +486,7 @@ fn merge(
                 named,
                 kind,
                 meaning: f.meaning.clone(),
+                applies: f.applies,
             });
         }
     }
@@ -522,6 +524,7 @@ fn merge(
                 named: false,
                 kind,
                 meaning: String::new(),
+                applies: None,
             },
         );
     }
@@ -579,6 +582,7 @@ fn fill(out: &mut Vec<Field>, mut lo: u32, hi: u32) {
             named: false,
             kind,
             meaning: String::new(),
+            applies: None,
         });
         lo += len;
     }

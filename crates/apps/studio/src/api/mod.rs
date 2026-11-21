@@ -46,6 +46,7 @@ mod view;
 mod tests;
 
 pub use params::P;
+pub(crate) use params::block_name;
 pub use seams::Provider;
 
 /// One method: what it does, its params and result, and an example call.

@@ -62,8 +62,8 @@ const METHODS: &[MethodDef] = &[
     ),
     def(
         m::PAIR_DISCONNECT,
-        "Unpair (the game keeps running; control is released). Needs the window",
-        "{}",
+        "Unpair. Choose keep or restore, or open the leave prompt",
+        r#"{"leave?":"keep|restore"}"#,
         r#"{"requested":"boolean"}"#,
         "null",
     ),
@@ -90,9 +90,9 @@ const METHODS: &[MethodDef] = &[
     ),
     def(
         m::PAIR_EDIT,
-        "Set the Edit switch for the paired game. Needs the window",
+        "Set the Edit switch for the paired game. REFUSED includes the current reason",
         r#"{"enabled":"boolean"}"#,
-        r#"{"requested":"boolean"}"#,
+        r#"{"requested":"boolean","mode":"edit|view"}"#,
         r#"{"enabled":true}"#,
     ),
     def(
@@ -165,7 +165,13 @@ fn call(app: &mut App, method: &str, p: &P) -> Reply {
         }
         m::PAIR_DISCONNECT => {
             need_window(app)?;
-            app.pairing.requests.push(Request::Unpair);
+            let request = match p.opt_str("leave")? {
+                None => Request::Unpair,
+                Some("keep") => Request::Apply(crate::play::Apply::Keep),
+                Some("restore") => Request::Apply(crate::play::Apply::Restore),
+                _ => return Err(err(code::INVALID_PARAMS, "leave must be keep or restore")),
+            };
+            app.pairing.requests.push(request);
             Ok(json!({ "requested": true }))
         }
         m::PAIR_AUTO => {
@@ -178,7 +184,15 @@ fn call(app: &mut App, method: &str, p: &P) -> Reply {
         }
         m::PAIR_PLAY => enqueue(app, Request::Play),
         m::PAIR_STOP => enqueue(app, Request::Stop),
-        m::PAIR_EDIT => enqueue(app, Request::Edit(p.bool("enabled")?)),
+        m::PAIR_EDIT => {
+            let enabled = p.bool("enabled")?;
+            if enabled && let Some(why) = need_window(app)?["edit_refusal"].as_str() {
+                return Err(err(code::REFUSED, why));
+            }
+            let mut result = enqueue(app, Request::Edit(enabled))?;
+            result["mode"] = json!(if enabled { "edit" } else { "view" });
+            Ok(result)
+        }
         m::PAIR_CONTROL => {
             let req = match (p.str("action")?, p.get("ticks")) {
                 ("pause", None) => Request::Pause,

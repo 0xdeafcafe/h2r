@@ -152,8 +152,8 @@ before anything runs (`INVALID_PARAMS`). Indices are 0-based throughout
 | `variant` | `list`, `get`, `set {setting, value}`, `rename`, `copy`, `export`, `import`, `delete` |
 | `playlist` | `list` (with `unused` per playlist and the `templates`), `get {playlist}`, `set {playlist, title, description, template, clear}` (`template`: make the slot a playlist of that kind, or give a playlist another kind; `clear: true`: make it unused; [live-matchmaking.md §6.10](../live/live-matchmaking.md)), `entry {playlist, op, entry, to, weight}`, `entry_variant` |
 | `ui` | `screens`, `pick {screen, state \| retail}`, `press {input}`, `widgets`, `render {out}` |
-| `pair` | `list`, `status`, `connect {socket?}`, `disconnect`, `auto {enabled?}`, `play`, `stop`, `control {action, ticks?}`, `edit {enabled}` |
-| `mirror` | `status`, `objects {kind?, near?, limit?, at_tick?}` |
+| `pair` | `list`, `status`, `connect {socket?}`, `disconnect {leave?}`, `auto {enabled?}`, `play`, `stop`, `control {action, ticks?}`, `edit {enabled}` |
+| `mirror` | `status`, `objects {kind?, near?, limit?, at_tick?}`, `pending`, `apply {what, at?, peers?}` |
 | `view` | `camera {yaw, pitch, distance, target, focus, all, fly_speed}`, `snapshot {out, size, camera}`, `stats` |
 | `hud` | `list {map \| package}`, `read {hud, state}`, `set {hud, widget, field, value, merge}`, `move {hud, widget, x, y, mode, merge}`, `render {hud, state, out}`, `check {hud, state}`, `save_as {path}` |
 | `model` (planned) | `list`, `read`, `render`, `colors`, `emblem` |
@@ -279,6 +279,24 @@ Notes on some:
   game, an open map or a pause returns `REFUSED` when that requirement
   is missing. The pill's **Open** action uses the normal map selection
   path (`doc.open {map}` for a map in the source).
+- **Live tag editing.** Pairing starts in View. Play starts the editor's own
+  copy in Edit. `pair.edit` returns the requested `mode` or `REFUSED` with
+  the reason. The editor checks the loaded file checksum, epoch and session
+  from the game's `edit.map`. In Edit, tag fields and placement fields travel
+  together in one `edit.batch`, each with its expected `was` value. Tags use
+  the `at` form with hex bytes. The optional `known_epoch` on `edit.map`
+  refreshes the loaded datum table used to check reference targets. Undo and redo use the same check.
+  `mirror.pending` returns `pending` rows with `doc,tag,path,class,why`,
+  the game’s existing `journal` from `edit.changes`, and `leaving`.
+  `mirror.apply {what:"send"}` enters Edit. On MISMATCH, `take` and
+  `overwrite` require the row’s numeric `at`. On rejoin, `adopt` takes
+  the game's current bytes as the baseline and preserves the document.
+  `revert` restores the journal using `edit.revert`. A System Link host
+  confirms the peer count using `confirm` with `peers`. `reload` writes
+  a play copy, and `respawn` uses the game’s optional object method.
+  `pair.disconnect {leave:"keep"|"restore"}` makes the leave choice over the
+  API. Omitting `leave` opens the prompt in the window. Both `edit.set` and
+  `edit.revert` enforce the same game-side session check as `edit.batch`.
 - **Live mirror.** The paired window reads the game's `objects` and
   `players` stream. `mirror.status` reports the stream state, layers,
   frame rate, presentation delay, dropped and skipped counts, and the

@@ -100,7 +100,7 @@ fn link_width(ui: &Ui, view: &LinkView) -> f32 {
     let mut width = theme::pill_width(ui, link_icon(view.tone), &view.text)
         + (theme::BAR_BUTTON + theme::BAR_SPACING)
             * buttons.into_iter().filter(|&on| on).count() as f32;
-    if view.state.can_edit() {
+    if view.can_pause {
         width += theme::edit_switch_width(ui) + theme::BAR_SPACING;
     }
     width
@@ -139,8 +139,8 @@ fn link(ui: &Ui, app: &mut App, play: &mut PlayUi, view: &LinkView) {
             play.step();
         }
     }
-    if view.state.can_edit() {
+    if view.can_pause {
         same_line();
-        play.edit_switch(ui);
+        play.edit_switch(ui, view);
     }
 }

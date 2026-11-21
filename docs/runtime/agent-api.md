@@ -42,8 +42,8 @@ connection to hold `session.claim`.
 | `render.parity` | act | [FrameScene checks](#framescene-checks-compare-capture-scene-parity-hashes) |
 | `render.overrides`, `render.programs` | read | [`edit` and hot `render`](#edit-and-hot-render-live-tag-and-shader-changes) |
 | `render.reload`, `render.dump`, `render.param`, `render.toggle` | act | [`edit` and hot `render`](#edit-and-hot-render-live-tag-and-shader-changes) |
-| `edit.tags`, `edit.get`, `edit.changes` | read | [`edit` and hot `render`](#edit-and-hot-render-live-tag-and-shader-changes) |
-| `edit.set`, `edit.revert` | act | [`edit` and hot `render`](#edit-and-hot-render-live-tag-and-shader-changes) |
+| `edit.map`, `edit.tags`, `edit.get`, `edit.changes` | read | [`edit` and hot `render`](#edit-and-hot-render-live-tag-and-shader-changes) |
+| `edit.set`, `edit.batch`, `edit.revert` | act | [`edit` and hot `render`](#edit-and-hot-render-live-tag-and-shader-changes) |
 | `load.timeline` | read | [Load timeline](#load-timeline) |
 | `features.list` | read | [`session`](#session-what-is-running-and-its-clock) |
 | `live.join.open`, `live.join.status` | act, read | [Live session links](#live-session-links) |
@@ -1607,17 +1607,34 @@ is `$H2_RENDER_OVERRIDES`, else `render-overrides` in the cache directory.
 
 | Method | Access | Params | Does |
 |---|---|---|---|
+| `edit.map` | read | `{known_epoch?}` | `{at,name,file,checksum,scenario,epoch,session}` for the loaded map. File and checksum can be null. Session includes `writes` and a refusal reason when blocked. |
 | `edit.tags` | read | `{group?, name?, limit?}` | the loaded map's tags: `tag`, `group`, `name`, `address`, `size`, `defined` |
 | `edit.get` | read | `{tag, group?, path?}` | a field by path (`postprocess[0].colors[1].color`), or an element's fields; `tag` is a datum or a name |
-| `edit.set` | act | `{tag, group?, path, value}` | writes the field now, journalled; returns the change |
-| `edit.changes` | read | none | the journal: `live` changes and `stale` ones (made on another map) |
-| `edit.revert` | act | `{id?}` | puts back one change, or all |
+| `edit.batch` | act | `{writes,label?,epoch?,confirm_peers?}` | `{id,applied,changes}` at one boundary. Each batch has one journal entry with its ID, optional label and changed `fields`. |
+| `edit.set` | act | `{tag, group?, path, value, epoch?, confirm_peers?}` | writes the field now, journalled; returns the change |
+| `edit.changes` | read | none | the current epoch’s journal, including original `was_bytes`, `new_bytes` and current `holds` as hex |
+| `edit.revert` | act | `{id?,epoch?,confirm_peers?}` | restores a change or batch, or the whole journal in reverse order. Reports entries left alone when the game changed them. |
 | `render.overrides` | read | none | the override directory, what is loaded and how each fared |
 | `render.reload` | act | `{dir?}` | reads the directory again (`dir` moves it) |
 | `render.programs` | read | `{vertex?, limit?}` | the translated programs, by id |
 | `render.dump` | act | `{program?, to?}` | writes translated WGSL, the start of an override |
 | `render.param` | act | none, `{name}`, `{name, value}` | lists, reads, sets (`value: null` resets) a parameter |
 | `render.toggle` | act | none, `{name, on}` | lists, sets (`on: null` resets) a toggle |
+
+All three edit writes check the session at the game boundary. Co-op, clients,
+external Live, film playback and unknown sessions refuse writes. A System Link
+host with remote peers requires `confirm_peers` equal to the current total peer
+count. A client can pass `known_epoch:null` to `edit.map` to include the loaded
+tag datums in `loaded`, then send its cached epoch to receive the table only
+after a cut. An optional `epoch` pins the write to the map reported by `edit.map`.
+
+Each batch write takes either `{tag,group?,path,value,was?}` with typed values,
+or `{at,value,was?}` with hex bytes. An address is a u32 or a `0x` string.
+The entire address range must fit one loaded tag. Overlapping writes are
+refused. If the game already holds the requested value the write succeeds.
+If it holds neither value, error 8 (`MISMATCH`) returns `data.fields` with
+`at`, `tag`, `path`, `was`, `holds` and `holds_bytes`. The entire batch and
+journal stay untouched.
 
 ```sh
 h2 agent edit tags weap

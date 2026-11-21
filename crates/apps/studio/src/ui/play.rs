@@ -198,7 +198,8 @@ impl PlayUi {
         ui.set_item_tooltip("Pairs in View mode when exactly one game is running, once per game.");
     }
 
-    pub fn edit_switch(&mut self, ui: &Ui) {
+    pub fn edit_switch(&mut self, ui: &Ui, view: &LinkView) {
+        let _disabled = ui.begin_disabled_with_cond(!view.state.can_edit());
         let on = self.play.live_edits;
         if theme::edit_switch(ui, on) {
             self.play.request(Request::Edit(!on));
@@ -206,7 +207,7 @@ impl PlayUi {
         ui.set_item_tooltip(if on {
             "Return to View mode"
         } else {
-            "Send placement edits to the paired game"
+            "Send tag and placement edits to the paired game"
         });
     }
 
@@ -229,8 +230,8 @@ impl PlayUi {
     }
 
     fn session(&mut self, ui: &Ui, app: &mut App, view: &LinkView) {
-        if view.state.can_edit() {
-            self.edit_switch(ui);
+        if view.can_pause {
+            self.edit_switch(ui, view);
         }
         let p = &self.play;
         if view.can_pause {
@@ -396,5 +397,105 @@ pub fn link_icon(tone: LinkTone) -> &'static str {
         LinkTone::Live => icon::ZAP,
         LinkTone::Warn | LinkTone::Error => icon::ALERT,
         LinkTone::Idle | LinkTone::Notice => icon::INFO,
+    }
+}
+
+impl PlayUi {
+    pub fn pending_window(&mut self, ui: &Ui, app: &mut App, key: &WindowKey) {
+        use crate::play::Apply;
+        let p = &mut self.play;
+        let mut action = None;
+        ui.window(key).build(|| {
+            if !app.pairing.journal.is_empty() {
+                ui.separator_with_text("Already in the game");
+                for c in &app.pairing.journal {
+                    ui.text(format!("{}  {}  {}", c["tag"], c["path"], c["holds"]));
+                }
+                if ui.button("Adopt game baseline") {
+                    action = Some(Apply::Adopt);
+                }
+                ui.same_line();
+                if ui.button("Revert game journal") {
+                    action = Some(Apply::Revert);
+                }
+            }
+            if let Some(peers) = app
+                .pairing
+                .published
+                .as_ref()
+                .and_then(|v| v["edit_peers"].as_u64())
+            {
+                if ui.button(format!(
+                    "Confirm edits visible only on this host ({} other machines)",
+                    peers - 1
+                )) {
+                    action = Some(Apply::Confirm(peers as u32));
+                }
+            }
+            let mut rows: Vec<_> = app.pairing.pending.iter().collect();
+            rows.sort_by(|a, b| a["class"].as_str().cmp(&b["class"].as_str()));
+            let mut class = "";
+            for r in rows {
+                let next = r["class"].as_str().unwrap_or("Pending");
+                if class != next {
+                    ui.separator_with_text(next);
+                    class = next;
+                }
+                ui.text_wrapped(format!(
+                    "{} · {}",
+                    r["path"].as_str().unwrap_or("?"),
+                    r["why"].as_str().unwrap_or("")
+                ));
+                if r["conflict"] == true
+                    && let Some(at) = r["at"].as_u64()
+                {
+                    let _id = ui.push_id(at as usize);
+                    if ui.button("Take the game's value") {
+                        action = Some(Apply::Take(at as u32));
+                    }
+                    ui.same_line();
+                    if ui.button("Overwrite") {
+                        action = Some(Apply::Overwrite(at as u32));
+                    }
+                }
+            }
+            if app.pairing.pending.is_empty() {
+                ui.text_disabled("No pending edits");
+            } else {
+                if let Some(why) = p.edits_blocked(app) {
+                    ui.text_wrapped(why);
+                }
+                if ui.button("Send") {
+                    action = Some(Apply::Send);
+                }
+                if app.pairing.pending.iter().any(|r| r["class"] == "Reload") {
+                    ui.same_line();
+                    if ui.button("Reload map") {
+                        action = Some(Apply::Reload);
+                    }
+                }
+            }
+            if p.can_respawn() && ui.button("Respawn now") {
+                action = Some(Apply::Respawn);
+            }
+        });
+        const LEAVE: &str = "Unpair from the game?";
+        if app.pairing.leaving && !ui.is_popup_open(LEAVE) {
+            ui.open_popup(LEAVE);
+        }
+        if let Some(_modal) = ui.begin_modal_popup_config(LEAVE).begin() {
+            if ui.button("Keep the game as it is") {
+                action = Some(Apply::Keep);
+            }
+            if ui.button("Put it back as it loaded") {
+                action = Some(Apply::Restore);
+            }
+            if action.is_some() || !app.pairing.leaving {
+                ui.close_current_popup();
+            }
+        }
+        if let Some(action) = action {
+            p.request(Request::Apply(action));
+        }
     }
 }

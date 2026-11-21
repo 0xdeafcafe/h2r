@@ -141,6 +141,8 @@ pub mod method {
     pub const PAIR_CONTROL: &str = "pair.control";
 
     pub const MIRROR_STATUS: &str = "mirror.status";
+    pub const MIRROR_PENDING: &str = "mirror.pending";
+    pub const MIRROR_APPLY: &str = "mirror.apply";
     pub const MIRROR_OBJECTS: &str = "mirror.objects";
 
     pub const VIEW_CAMERA: &str = "view.camera";

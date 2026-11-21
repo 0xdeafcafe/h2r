@@ -1,14 +1,13 @@
-//! Which scenario edits can go to a running game, and as which `edit.set`
+//! Which scenario edits can go to a running game, and as which `edit.batch`
 //! writes.
 //!
 //! The game holds the loaded map's scenario (`scnr`) in guest memory, and
-//! `edit.set` writes a field there (docs/graphics/hot-iteration.md). The
+//! `edit.batch` writes a field there (docs/graphics/hot-iteration.md). The
 //! scenario has no tag definition, so a placement's field is reached with
 //! raw paths from `scenario_edit::layout`: `+<block>/<stride>[<i>].+<field>:
 //! bytes[n]`, the field's exact bytes as hex.
 //!
-//! [`Baseline`] is what the game is taken to hold (the editor's state when
-//! it was launched or paired, then every write sent since). [`diff`] lists
+//! [`Baseline`] is what the game is taken to hold (the loaded file plus every acknowledged write). [`diff`] lists
 //! the fields that changed since, per element. A block whose length
 //! changed (an entry added or removed) can't follow: the game's block is
 //! laid out where the map put it, so that needs a reload.
@@ -24,7 +23,7 @@ pub struct Baseline {
     blocks: BTreeMap<BlockKind, Vec<Vec<u8>>>,
 }
 
-/// One field write: what `edit.set` gets, and what it is for the log.
+/// One field write: what `edit.batch` gets, and what it is for the log.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Write {
     pub block: BlockKind,
@@ -49,6 +48,15 @@ pub struct Diff {
 }
 
 impl Baseline {
+    pub fn source(s: &Scenario) -> Self {
+        Self {
+            blocks: BLOCKS
+                .iter()
+                .map(|b| (b.kind, s.block(b.kind).source_entries().to_vec()))
+                .collect(),
+        }
+    }
+
     /// Everything the scenario's placement blocks hold now.
     pub fn of(s: &Scenario) -> Baseline {
         let blocks = BLOCKS
@@ -90,7 +98,7 @@ impl Baseline {
     }
 }
 
-/// The raw `edit.set` path of a field of element `index` of a block.
+/// The raw `edit.batch` path of a field of element `index` of a block.
 pub fn path(kind: BlockKind, index: usize, f: &FieldDef) -> String {
     let b = layout::block(kind);
     format!(

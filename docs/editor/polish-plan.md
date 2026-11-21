@@ -34,13 +34,6 @@ during the read, so nothing here comes from the socket API.
 | R6 | Save is always "Save as". Cmd+S opens a file dialog every time for a map, and a package opened from the Maps list is saved through a different menu item with a form. | `ui.rs:189`, `ui.rs:316` to `ui.rs:335` |
 | R9 | No search across the app. Maps, tags and placements each have their own filter box, and commands are only in menus. | `ui.rs:784`, `ui/tags.rs:132` |
 
-### The game link
-
-| # | Problem | Where |
-|---|---|---|
-| R16 | Only placement fields are sent. A tag edit made in the Tags tool or the inspector stays in the document; the game has `edit.set` for it and the editor never calls it for a tag other than the scenario. | `play.rs:731` (`push_edits`), `play/sync.rs` |
-| R17 | The game's `edit.set` and `edit.revert` do not check the session. `sim.state.set` refuses in co-op and as a client (`crates/extensions/agent/src/sim/mod.rs:408`); the edit methods have no such check, so the editor's own check (`play.rs:726`) is the only one. | `crates/extensions/agent/src/hot.rs:121` |
-
 ### Tags and the scenario
 
 | # | Problem | Where |
@@ -262,8 +255,7 @@ before sending it; the class is shown as a badge on the field.
 **What blocks all of it.** Not paired; View mode; another map or
 another checksum in the game; a session that refuses writes
 (`SessionKind::writes`); the timeline scrubbed into the past. The
-`Blocked` pill names which. The game enforces the session rule itself
-(R17): `edit.set`, `edit.batch` and `edit.revert` call the same check
+`Blocked` pill names which. The game enforces the session rule at the write boundary: `edit.set`, `edit.batch` and `edit.revert` call the same check
 `sim.state.set` does.
 
 **Undo.** The document is the truth. Undo and redo change the document;
@@ -542,9 +534,6 @@ The tests use invented data.
 
 ## Evidence
 
-- **Code**: `edit.set` is registered with no session check
-  (`crates/extensions/agent/src/hot.rs`); `sim.state.set` has one
-  (`crates/extensions/agent/src/sim/mod.rs`).
 - **Code**: `TagDoc::patches` gives `(address, bytes)` pairs in the
   map's own addresses (`crates/apps/studio/src/app/tag_doc.rs`); the
   game's tag index gives each tag's address and size from the same

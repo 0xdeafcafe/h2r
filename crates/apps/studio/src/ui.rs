@@ -133,6 +133,7 @@ impl Studio {
         self.play.window(ui, app, &self.keys.game);
         self.previous_tool = Some(app.tool);
         self.previous_map = app.loaded_map().or_else(|| app.loaded_halo1()).map(str::to_owned);
+        self.play.pending_window(ui, app, &self.keys.pending_edits);
         self.log_window(ui, app);
         if bar::is_map(app.tool) {
             ui.window(&self.keys.bytes).build(|| {

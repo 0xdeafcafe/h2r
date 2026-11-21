@@ -21,13 +21,18 @@ const CALL_TIMEOUT: Duration = Duration::from_secs(10);
 /// What a call was for, so its answer finds its way back.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Purpose {
-    /// `edit.tags {group: scnr}`: the loaded scenario's datum.
-    Scenario,
-    /// `sim.session`: whether host writes are allowed.
-    SessionKind,
+    /// The loaded file, map epoch and session write permissions.
+    Map,
+    Capabilities,
+    Journal(u64),
+    Revert {
+        leave: bool,
+        epoch: u64,
+    },
+
     /// Stream counters on the JSON control connection.
     LiveStatus,
-    /// An `edit.set` of a placement field (the diff's index).
+    /// One in-flight conditional document batch.
     Edit(u64),
     Teleport,
     Control(&'static str),
@@ -54,7 +59,7 @@ pub enum Event {
     Answer {
         purpose: Purpose,
         method: String,
-        result: Result<Value, String>,
+        result: Result<Value, agent_proto::RpcError>,
     },
 }
 
@@ -174,7 +179,13 @@ fn run(
                 let _ = events.send(Event::Answer {
                     purpose: call.purpose,
                     method: call.method,
-                    result: result.map_err(|e| e.to_string()),
+                    result: result.map_err(|e| match e {
+                        CallError::Rpc(e) => e,
+                        e => agent_proto::RpcError::new(
+                            agent_proto::code::UNAVAILABLE,
+                            e.to_string(),
+                        ),
+                    }),
                 });
                 if broke {
                     let _ = events.send(Event::Lost("the game closed the connection".into()));

@@ -260,8 +260,10 @@ fn every_method_in_methods_has_a_test() {
             (None, Err(e)) if d.name == m::VIEW_SNAPSHOT && e.code == code::NO_GPU => {}
             // The first frame has no paired or editor-launched game.
             (None, Err(e))
-                if matches!(d.name, m::PAIR_STOP | m::PAIR_EDIT | m::PAIR_CONTROL)
-                    && e.code == code::REFUSED => {}
+                if matches!(
+                    d.name,
+                    m::PAIR_STOP | m::PAIR_EDIT | m::PAIR_CONTROL | m::MIRROR_APPLY
+                ) && e.code == code::REFUSED => {}
             (None, Err(e)) => panic!("{} {params}: {e}", d.name),
             (None, Ok(v)) => assert!(!v.is_null() || d.name == m::METHODS, "{}", d.name),
         }
