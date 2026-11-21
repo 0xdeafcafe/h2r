@@ -90,6 +90,7 @@ dependencies = [
 name = "agent-proto"
 version = "0.1.0"
 dependencies = [
+ "mem-watch",
  "serde",
  "serde_json",
 ]
