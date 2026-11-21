@@ -1,7 +1,5 @@
 import { A, useSearchParams } from "@solidjs/router";
 import { For, Show, batch, createEffect, createMemo, createResource, createSignal, on, onCleanup, onMount } from "solid-js";
-import { wsUrl } from "../api/server";
-import type { PlayerKilled } from "../api/types";
 import { GameView } from "../stats/Game";
 import { Panel } from "../stats/Layout";
 import { usDateTime } from "../stats/fmt";
@@ -9,11 +7,12 @@ import { identity } from "../state/identity";
 import { mapTitle } from "../state/gameart";
 import { frameHub, live } from "../state/live";
 import { applyGameSnapshot, initialState } from "../state/reducer";
-import { StreamClient } from "../state/stream";
 import {
   TRAINING_BATCH_COMMAND, comparisonRows, determinismLabel, resultLabel, runsByBatch, scoreLabel, speedLabel, trainingHref, tuningLabel,
   type SimCombat, type SimDetail, type SimFilter, type SimPlayer, type SimRun,
 } from "./simRuns";
+import { BatchWatch, streamSimRun } from "./SimWatch";
+import { DEFAULT_WATCH_SPEED } from "./batchWatch";
 
 const REFRESH_MS = 5000;
 
@@ -121,6 +120,9 @@ function RunList(props: { batch: () => string | undefined }) {
         <Show when={runs.latest?.data} fallback={<Show when={runs.loading}><p>Loading sim runs…</p></Show>}>
           {(page) => (
             <>
+              <Show when={page().items.length > 0 && activeBatch()} keyed>
+                {(id) => <BatchWatch batch={id} runs={page().items} position={page().position} onEnded={() => void refetch()} />}
+              </Show>
               <Show when={hasRuns()} fallback={<TrainingEmpty />}>
                 <TrainingRuns runs={page().items} selected={selection().map((run) => run.game_id)} onSelect={pick} />
               </Show>
@@ -259,28 +261,7 @@ function RunDetail(props: { id: string }) {
     },
     (id) => {
       if (!id) return;
-      const api = live.api();
-      const stream = new StreamClient({
-        url: (from) => wsUrl(api.streamUrl(from, true, id)),
-        auth: api.readToken,
-        connect: (url) => {
-          const socket = new WebSocket(url);
-          socket.binaryType = "arraybuffer";
-          return socket as unknown as import("../state/stream").SocketLike;
-        },
-      }, {
-        onEvent: (event) => {
-          if (event.type === "GameEnded") void refetch();
-          if (event.type === "PlayerKilled") {
-            const kill = event.data as PlayerKilled;
-            frameHub.get(id).addDeath(kill.victim, kill.tick, performance.now(), kill.pos);
-          }
-        },
-        onFrame: (frame) => { if (frame.game_id === id) frameHub.push(frame, performance.now()); },
-        onCaughtUp: () => {},
-      });
-      stream.start(detail()?.game.position ?? null);
-      onCleanup(() => stream.stop());
+      onCleanup(streamSimRun(id, detail()?.game.position ?? null, () => void refetch()));
     },
   ));
   onCleanup(() => frameHub.drop(props.id));
@@ -295,7 +276,7 @@ function RunDetail(props: { id: string }) {
             <RunReport detail={found()} />
             <Show when={!(found().run.status === "running" && found().run.sim.deferred)}
               fallback={<p class="adm-note">The replay will be available after this match finishes.</p>}>
-              <Show when={game()}>{(g) => <div class="s-game"><GameView game={g()} embedded focus={() => Object.values(g().players).find(p => p.bot)?.index ?? null} /></div>}</Show>
+              <Show when={game()}>{(g) => <div class="s-game"><GameView game={g()} embedded speed={DEFAULT_WATCH_SPEED} focus={() => Object.values(g().players).find(p => p.bot)?.index ?? null} /></div>}</Show>
             </Show>
             <BotStats detail={found()} />
           </>

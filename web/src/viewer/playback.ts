@@ -5,7 +5,8 @@ export class ViewerPlayback {
   clock: ReplayClock | null = null;
   followingLive: boolean;
 
-  constructor(live: boolean, public range?: TickRange) {
+  /** `speed` is how fast a recording opened with no earlier clock plays. */
+  constructor(live: boolean, public range?: TickRange, readonly speed = 1) {
     this.followingLive = live;
   }
 
@@ -67,7 +68,7 @@ export class ViewerPlayback {
       tick = resumeTick ?? timeline.tickFromLatestRun(previous.tickAt(now));
       playing = previous.playing;
       clock.setSpeed(previous.speed, now);
-    }
+    } else clock.setSpeed(this.speed, now);
     clock.seek(clock.loop?.from_tick ?? tick, now);
     if (playing && (this.range ? !!clock.loop : timeline.clamp(tick) < timeline.endTick)) clock.play(now);
     this.clock = clock;

@@ -307,7 +307,9 @@ to `/dash/server`. The Halo Admin sections are:
   the command shown on the empty page. With runs on the server, the map,
   tuning and batch filters use values from the uploaded runs across all
   pages. Open a run for its results, speed, bot stats and live or replay
-  viewer, or select two runs to compare them. See
+  viewer, or select two runs to compare them. Filtered to one batch, the
+  tab shows a grid of map tiles above the results, one per run, playing
+  finished runs fast-forwarded in sync and running ones live. See
   [Watching in Uplink](../runtime/sim.md#watching-in-uplink).
 
 The playlist editor (`web/src/admin/HopperBuilder.tsx`) groups maps by

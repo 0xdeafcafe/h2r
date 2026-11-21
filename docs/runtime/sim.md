@@ -641,8 +641,33 @@ Use the same disc, image and nav meshes you use for local runs.
 Sign into that server as an admin in h2 Uplink. Open **Halo Admin →
 Clanker Training** and select a running match to watch it. The viewer follows
 the live edge on the simulation's clock and shows its usual **Live** control
-for returning to it after a seek. The training page shows measured simulation
-speed. Use `--pace realtime` for normal game speed.
+for returning to it after a seek. The live clock runs at the stream's
+measured pace (`streamPace` in `web/src/state/frames.ts`): a sim streaming
+at 3× plays smoothly at 3× near its live edge. A finished run's replay opens
+at 8× and its speed menu goes from 0.25× to 16×. The training page shows
+measured simulation speed. Use `--pace realtime` for normal game speed.
+
+Pick a batch (the **Batch** filter, or a batch heading in the list) to
+watch the whole batch at once. Above the results table, a grid has one map
+tile per run (`web/src/admin/SimWatch.tsx`). The tiles are ordered by map,
+then seed, then tuning arms, so the arms played on one map and seed sit
+side by side. Each tile shows the map, seed, arms by team, game clock and
+score, and opens the run's page when clicked.
+
+- **Finished runs** replay on one shared clock, in sync from each run's
+  first frame. **Speed** picks 1×, 4×, 8× or 16× (8× to start). **Pause**,
+  **Play** and **Restart** apply to all tiles. A run that ends early holds
+  its last frame, and the clock stops when the longest run ends. Each tile
+  downloads its full recording once it nears the screen, at most three at
+  a time, and plays it in the browser, so speed needs no server support.
+- **Running runs** stream live at the sim's own pace. Up to six on-screen
+  tiles stream at once. The others show the latest score from the list,
+  which refreshes every five seconds.
+- **Deferred runs** say *Replay after match* until their recording is
+  uploaded.
+
+The maps are the stats site's small map renderers on the shared animation
+frame loop. A tile off screen draws nothing.
 
 Each batch streams at most two matches at once. Other running matches appear
 in the list with replay available after the match. They buffer packed
