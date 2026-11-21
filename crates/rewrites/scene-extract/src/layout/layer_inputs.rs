@@ -120,6 +120,48 @@ pub fn read(mem: &dyn GuestRead) -> LayerInputs {
     out
 }
 
+/// Where [`without_game`]'s light definition sits: an address no guest
+/// word uses, holding a definition with no flags.
+const NO_LIGHT_DEFINITION: u32 = 0xffff_0000;
+
+/// The run state [`read`] reads, for a host with no game (the editor):
+/// the render time `time`, no fog (`FOG_PLANE` -1) and no dynamic light
+/// (weight 0, vectors 5 and 6 zero, integers 0 and 1 zero, a definition
+/// with no flags), and the selectors' constant 1.0. Nothing else reads:
+/// the material and fade blocks, the view vectors and selector and the
+/// default record are the running game's, so the inputs computed from
+/// them are not given and the plan refuses an item whose pass reads one,
+/// with that cause.
+struct NoGame(std::collections::HashMap<u32, u32>);
+
+impl GuestRead for NoGame {
+    fn read_u32(&self, addr: u32) -> Option<u32> {
+        self.0.get(&addr).copied()
+    }
+}
+
+/// The layer inputs a host with no game gives: [`read`] over the run state
+/// [`NoGame`] holds, so the selectors are the game's own.
+pub fn without_game(time: f64) -> LayerInputs {
+    let bits = time.to_bits();
+    let mut words = std::collections::HashMap::new();
+    words.insert(RENDER_TIME, bits as u32);
+    words.insert(RENDER_TIME + 4, (bits >> 32) as u32);
+    words.insert(ONE, 1f32.to_bits());
+    words.insert(FOG_PLANE, u32::MAX);
+    words.insert(LIGHT_WEIGHT, 0);
+    for k in 0..3 {
+        words.insert(VECTOR_5 + 4 * k, 0);
+        words.insert(VECTOR_6 + 4 * k, 0);
+    }
+    words.insert(LIGHT_INTEGER, 0);
+    words.insert(LIGHT_DEFINITION, NO_LIGHT_DEFINITION);
+    for o in [0, 0x80, 0x88] {
+        words.insert(NO_LIGHT_DEFINITION + o, 0);
+    }
+    read(&NoGame(words))
+}
+
 fn f(mem: &dyn GuestRead, at: u32) -> Option<f32> {
     mem.read_f32(at)
 }
@@ -239,6 +281,33 @@ mod tests {
     use super::*;
     use crate::layout::object_lighting::{DEFAULT_COLOUR, DEFAULT_VECTOR};
     use crate::testing::Mem;
+
+    /// With no game: the time given, no fog and no light at the game's
+    /// selectors, and none of the inputs only a running game holds.
+    #[test]
+    fn without_a_game_only_time_fog_and_light_are_given() {
+        let inputs = without_game(12.5);
+        assert_eq!(inputs.time, Some(12.5));
+        assert_eq!(inputs.defaults, None);
+        // No fog: scalar 39 is 0; vector 41 would be the default record's.
+        assert_eq!(inputs.scalar(39), Some(0.0));
+        assert_eq!(inputs.vector(41), None);
+        // No light: its weight, vectors and integers zero, its definition
+        // without the flag integer 7 tests.
+        assert_eq!((inputs.scalar(16), inputs.scalar(17)), (Some(0.0), Some(0.0)));
+        assert_eq!((inputs.vector(5), inputs.vector(6)), (Some([0.0; 3]), Some([0.0; 3])));
+        assert_eq!((0..4).map(|n| inputs.int(n)).collect::<Vec<_>>(), vec![Some(0); 4]);
+        assert_eq!(inputs.int(7), Some(1));
+        // The selectors' constants.
+        assert_eq!((inputs.scalar(0), inputs.scalar(12)), (Some(0.0), Some(1.0)));
+        // The material and fade blocks, the view vectors and selector.
+        for n in [3, 4, 10, 18, 28, 40] {
+            assert_eq!(inputs.scalar(n), None, "scalar {n}");
+        }
+        for n in [0, 18, 33, 36] {
+            assert_eq!(inputs.vector(n), None, "vector {n}");
+        }
+    }
 
     /// A render context with every word the selectors read: the material
     /// block's words name their offset (`1000 + offset`), the fade

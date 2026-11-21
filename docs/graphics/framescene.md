@@ -925,7 +925,11 @@ to the guest's draws (**Code**):
     block, each with a mask of the ones that read. The defaults the
     lighting inputs fall back on. Every object item of a layer draw
     carries its owner's lighting (`LayerItem::lighting`), the scene's as
-    the first person's.
+    the first person's. A host with no game (the editor) takes
+    `layer_inputs::without_game(time)`: the same selectors over a run
+    state of its own, the render time it gives, no fog and no dynamic
+    light; the inputs read from the material and fade blocks, the view
+    vectors and the defaults are not given there.
   - **The lightmap cycle.** `0x00022850`, at each view's begin
     (`0x00012a50`), steps the probe coefficients `0x004b8940` and the
     phase `0x005093f0`; their one reader, `0x00022cf0`, is the object
