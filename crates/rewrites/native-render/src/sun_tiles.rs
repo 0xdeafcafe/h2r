@@ -362,13 +362,13 @@ mod tests {
         let mut planner = SunTilePlanner::new(ATLAS_EDGE);
         // 32 casters at 2048 are eight atlases' worth.
         let casters: Vec<SunCaster> = (0..32).map(|i| caster(i, 4000.0)).collect();
-        let plan = planner.plan(&casters);
-        assert_eq!(plan.work.sun_tiles, 32);
-        assert_eq!(plan.work.refused, 0);
-        assert!(plan.work.atlas_halved >= 1);
-        for (i, a) in plan.tiles.iter().enumerate() {
+        let planned = planner.plan(&casters);
+        assert_eq!(planned.work.sun_tiles, 32);
+        assert_eq!(planned.work.refused, 0);
+        assert!(planned.work.atlas_halved >= 1);
+        for (i, a) in planned.tiles.iter().enumerate() {
             assert!(a.rect[0] + a.rect[2] <= ATLAS_EDGE && a.rect[1] + a.rect[3] <= ATLAS_EDGE);
-            for b in &plan.tiles[i + 1..] {
+            for b in &planned.tiles[i + 1..] {
                 let apart = a.rect[0] + a.rect[2] <= b.rect[0]
                     || b.rect[0] + b.rect[2] <= a.rect[0]
                     || a.rect[1] + a.rect[3] <= b.rect[1]
@@ -410,9 +410,9 @@ mod tests {
         flat.towards_light = [0.0; 3];
         let mut nan = caster(3, 50.0);
         nan.radius = f32::NAN;
-        let plan = planner.plan(&[dark, flat, nan, caster(4, 50.0)]);
-        assert_eq!(plan.work.refused, 3);
-        assert_eq!(plan.work.sun_tiles, 1);
+        let planned = planner.plan(&[dark, flat, nan, caster(4, 50.0)]);
+        assert_eq!(planned.work.refused, 3);
+        assert_eq!(planned.work.sun_tiles, 1);
     }
 
     #[test]

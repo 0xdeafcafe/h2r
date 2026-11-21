@@ -269,18 +269,18 @@ fn receiver<'a>(g: &Geometry, mesh: &'a SunMesh) -> SunReceiver<'a> {
 #[test]
 fn a_box_on_a_plane_casts_a_hard_shadow() {
     let Some(ctx) = test_gpu() else { return };
-    let ground = Geometry::ground();
+    let floor = Geometry::ground();
     let mut boxed = Geometry::default();
     boxed.cuboid([-1.0, -1.0, 0.0], [1.0, 1.0, 2.0]);
-    let (ground_mesh, box_mesh) = (ground.mesh(&ctx), boxed.mesh(&ctx));
+    let (ground_mesh, box_mesh) = (floor.mesh(&ctx), boxed.mesh(&ctx));
     let mut shadows = SunShadows::new(&ctx.device, ATLAS);
-    let caster = boxed.caster(1, SUN_45, 1);
+    let box_caster = boxed.caster(1, SUN_45, 1);
     let (pixels, work) = render(
         &ctx,
         &mut shadows,
-        &[caster],
+        &[box_caster],
         &[(1, &box_mesh)],
-        &[receiver(&ground, &ground_mesh), receiver(&boxed, &box_mesh)],
+        &[receiver(&floor, &ground_mesh), receiver(&boxed, &box_mesh)],
         GREY,
     );
     assert_eq!(work.sun_tiles, 1);
@@ -319,14 +319,14 @@ fn an_l_shaped_caster_shadows_itself() {
     let mut l = Geometry::default();
     l.cuboid([-2.0, -1.0, 0.0], [2.0, 1.0, 0.5]);
     l.cuboid([1.0, -1.0, 0.5], [2.0, 1.0, 3.0]);
-    let mesh = l.mesh(&ctx);
+    let l_mesh = l.mesh(&ctx);
     let mut shadows = SunShadows::new(&ctx.device, ATLAS);
     let (pixels, work) = render(
         &ctx,
         &mut shadows,
         &[l.caster(1, SUN_45, 1)],
-        &[(1, &mesh)],
-        &[receiver(&l, &mesh)],
+        &[(1, &l_mesh)],
+        &[receiver(&l, &l_mesh)],
         GREY,
     );
     assert_eq!(work.receiver_draws, 1, "the caster receives its own tile");
@@ -416,8 +416,8 @@ fn nonpositive_normal_terms_keep_rgb_and_mixed_terms_interpolate() {
 #[test]
 fn a_still_casters_tile_is_not_redrawn_and_a_moved_one_is() {
     let Some(ctx) = test_gpu() else { return };
-    let ground = Geometry::ground();
-    let ground_mesh = ground.mesh(&ctx);
+    let floor = Geometry::ground();
+    let ground_mesh = floor.mesh(&ctx);
     let mut still = Geometry::default();
     still.cuboid([-2.5, 1.0, 0.0], [-1.5, 2.0, 1.0]);
     let still_mesh = still.mesh(&ctx);
@@ -441,7 +441,7 @@ fn a_still_casters_tile_is_not_redrawn_and_a_moved_one_is() {
     let shade = |pixels: &[u8], (i, j): (u32, u32)| px(pixels, i, j)[0];
 
     let scene_before = [
-        receiver(&ground, &ground_mesh),
+        receiver(&floor, &ground_mesh),
         receiver(&still, &still_mesh),
         receiver(&before, &before_mesh),
     ];
@@ -477,7 +477,7 @@ fn a_still_casters_tile_is_not_redrawn_and_a_moved_one_is() {
     assert_eq!(second, first, "kept tiles draw the same picture");
 
     let scene_after = [
-        receiver(&ground, &ground_mesh),
+        receiver(&floor, &ground_mesh),
         receiver(&still, &still_mesh),
         receiver(&after, &after_mesh),
     ];
