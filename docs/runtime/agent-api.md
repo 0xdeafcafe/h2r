@@ -2103,12 +2103,13 @@ directly on its own `--socket` (`H2_AGENT`, else the cache's `theater.sock`).
 | `theater.state` | `{"id":"film-id"}` on the library agent | Prepare progress for that ID |
 | `theater.pause` | `{}` | holds playback and reports state. During a seek it arranges a hold at the destination |
 | `theater.speed` | `{"speed":0.5}` | sets host pacing from 0.25 to 4 times realtime |
-| `theater.seek` | `{"tick":900}`, optionally `"clip_marks":[300,null]`, `"source":"boot"` or `"source":"keyframe"` | restarts the player and fast-forwards to the target, carrying camera and timeline state. Forcing a keyframe requires a compatible frame at or before the target |
+| `theater.seek` | `{"tick":900}`, optionally `"clip_marks":[300,null]`, `"source":"boot"` or `"source":"keyframe"` | restores a frame or starts a fresh child, then fast-forwards to the target, carrying camera and timeline state. Forcing a keyframe requires a compatible frame at or before the target |
 | `theater.seek` | `{"cancel":true}` | returns to the tick the active seek left and holds there. An optional `tick` is ignored. If no seek is active, returns the current state |
 | `theater.step` | `{"ticks":1}` | accepts a positive number of ticks while paused and outside a seek. Returns the current state, runs the requested ticks, and holds at the new tick. Read state again to get the completed tick |
 | `theater.camera` | `{"mode":"orbit","player":"<name>","look":[0.2,-0.1],"zoom":-1}` or `{"mode":"first_person","seat":3}` | selects the view and returns transport state; an absolute film seat is 0 to 15 |
 | `theater.keyframes` | `{}` | seek inventory `{film, sidecar, ring, capture_points, ring_bytes, ring_cap, sidecar_bytes}`; lists contain tick numbers |
 | `theater.measurements` | `{}` | timings, keyframe attempts and page counts from the instrumented recorder or playback child |
+| `theater.verify` | `{"from":1,"to":900,"ring":true}`, all optional | replays in an isolated, unpaced player. Ring verification first records reference hashes in a linear pass, compares every successful marked capture, and returns `{ticks, digests_checked, arena_hashes_checked, ram_hashes_checked, first_divergence}` |
 
 Prepare accepts a local library ID or `live:<game-id>` for a host film
 downloaded into the library. It replays the entire film from boot in an
@@ -2121,6 +2122,14 @@ after the worker resolves the library entry. The library agent keeps
 each job's final status for its lifetime and a new request can retry it.
 For a command-line Prepare with `--socket PATH`, use `theater.state {}`
 on that socket to read its transport tick directly.
+
+Verification counts checks within the inclusive tick bounds. The verifier starts
+at boot and reports the first divergence even when it prevents reaching the
+requested range. With `ring: true`, a linear reference pass saves the whole-RAM
+hash at each successful capture point in range. A second pass checks that hash
+before and after capturing, restores the ring entry, and checks the restored RAM.
+The active player's transport remains usable. A clean run returns
+`first_divergence: null`. A mismatch returns its tick and reason.
 
 The rendered player starts at the clip's first tick and loops at its end.
 Its overlay uses the player's agent socket for transport and `cheat.set
@@ -2161,6 +2170,10 @@ compatible embedded keyframe, `"sidecar"` for a local cache frame, or
 `"boot"` for replay from startup, with `warm: false`.
 `restore_ms` times loading the snapshot into the machine and checking
 its restored state. It is null before restore and on the boot route.
+Warm restores report `warm: true` and use `source: "ring"` when they
+load a session entry. A blocked restore or a changed guest disk hands the
+target to a fresh child. A RAM or replay mismatch also disables warm
+restores for the rest of the viewing session.
 The keyframe inventory lists embedded and sidecar frames, the sidecar
 size, and all recorded D3D barrier ticks, including failed captures.
 

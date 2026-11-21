@@ -79,6 +79,7 @@ fn cold_seek_pairs_the_disk_with_ram_and_retries_a_bad_ram_hash_from_boot() {
         Session::open(
             None,
             Some(Replay {
+                verification: None,
                 path: path.clone(),
                 cache: Some(ReplayCache {
                     films_dir: dir.clone(),

@@ -1445,10 +1445,12 @@ fn run_configured(
     } else {
         0
     };
-    // `film_slices` ends as the last slice run, so the loop starts from a copy.
-    let first_slice = film_slices;
     let measure_recording = !replaying && std::env::var("H2_THEATER_MEASURE").as_deref() == Ok("1");
-    for slice in first_slice..opts.max_slices {
+    let first_slice = film_slices;
+    let mut next_slice = film_slices;
+    while next_slice < opts.max_slices {
+        let slice = next_slice;
+        next_slice += 1;
         if let Some(f) = &film {
             f.observe_pause(&loaded.runtime.memory());
             if measure_recording {
@@ -1462,14 +1464,42 @@ fn run_configured(
                     host.machine(m, plan, rebuilders, shelf, d3d_diag::presents())
                 };
                 if replaying {
-                    f.replay_capture_point(slice, lobby_boundary, machine)?;
+                    match f.replay_capture_point(slice, lobby_boundary, machine) {
+                        Ok(Some((tick, barrier))) => {
+                            let mut machine = snap_host.machine(
+                                &mut m, &plan, &rebuilders, shelf, d3d_diag::presents(),
+                            );
+                            f.capture_ring(tick, slice, audio_idle, barrier, &mut machine, agent.as_ref());
+                        }
+                        Ok(None) => {}
+                        Err(error) => f.barrier_failed(error)?,
+                    }
                 } else if f.capture_point_due() {
                     f.try_capture_point(slice, lobby_boundary(), &mut machine());
                 }
             }
-            if !f.before_slice(slice, &mut m, agent.as_ref(), &loaded.runtime)? {
-                host_stop = true;
-                break;
+            match f.before_slice(slice, &mut m, agent.as_ref(), &loaded.runtime)? {
+                theater::SliceAction::Run => {}
+                theater::SliceAction::Seek(target) => {
+                    if let Some(shelf) = &shelf {
+                        let mut machine = snap_host.machine(
+                            &mut m, &plan, &rebuilders, shelf, d3d_diag::presents(),
+                        );
+                        if let Some((restored, idle)) = f.try_warm_seek(target, &mut machine, agent.as_ref()) {
+                            next_slice = restored;
+                            film_slices = restored;
+                            audio_idle = idle;
+                            continue;
+                        }
+                    }
+                    // Teardown hands the exact target and viewer state to the parent.
+                    host_stop = true;
+                    break;
+                }
+                theater::SliceAction::Stop => {
+                    host_stop = true;
+                    break;
+                }
             }
             film_slices = slice + 1;
         }

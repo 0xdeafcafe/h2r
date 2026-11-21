@@ -7,7 +7,7 @@ use serde::de::DeserializeOwned;
 #[serde(deny_unknown_fields)]
 struct Empty {}
 
-fn params<T: DeserializeOwned>(v: Value) -> Result<T, RpcError> {
+pub(super) fn params<T: DeserializeOwned>(v: Value) -> Result<T, RpcError> {
     serde_json::from_value(if v.is_null() {
         serde_json::json!({})
     } else {
@@ -16,6 +16,7 @@ fn params<T: DeserializeOwned>(v: Value) -> Result<T, RpcError> {
     .map_err(|e| RpcError::new(code::INVALID_PARAMS, e.to_string()))
 }
 impl State {
+
     fn camera_request(&mut self, request: api::Camera) -> Result<(), RpcError> {
         use api::CameraMode::*;
         let Mode::Replay(_, replay) = &self.mode else {
@@ -106,14 +107,17 @@ impl Session {
             return;
         }
         let unpaced = matches!(&self.lock().mode, Mode::Replay(_, replay) if replay.unpaced);
-        for name in api::METHODS.into_iter().filter(|&name| name != api::MEASUREMENTS) {
+        if !unpaced {
+            self.add_verify_method(a);
+        }
+        for name in api::METHODS.into_iter().filter(|&name| !matches!(name, api::MEASUREMENTS | api::VERIFY)) {
             if unpaced && name != api::STATE {
                 continue;
             }
             let session = self.clone();
             a.add_method(
                 name,
-                if name == api::STATE || name == api::KEYFRAMES {
+                if matches!(name, api::STATE | api::KEYFRAMES) {
                     Access::Read
                 } else {
                     Access::Act
@@ -132,12 +136,12 @@ impl Session {
                             if p.id.is_some_and(|id| id != s.header.meta.id) {
                                 return Err(RpcError::new(code::GONE, "film is not loaded"));
                             }
-                            s.set_paused(false);
+                            s.set_transport_pause(false);
                         }
                         api::PAUSE | api::STATE => {
                             let _: Empty = params(p)?;
                             if name == api::PAUSE {
-                                s.set_paused(true);
+                                s.set_transport_pause(true);
                             }
                         }
                         api::SPEED => {
@@ -159,6 +163,7 @@ impl Session {
                         api::CAMERA => {
                             let p = params::<api::Camera>(p)?;
                             s.camera_request(p)?;
+                            s.request_camera_redraw();
                         }
                         api::KEYFRAMES => {
                             let _: Empty = params(p)?;
@@ -171,10 +176,10 @@ impl Session {
                                 sidecar: s.engine.as_ref()
                                     .map(|engine| engine.track.sidecar_ticks())
                                     .unwrap_or_default(),
-                                ring: Vec::new(),
+                                ring: s.ring_status.ticks.clone(),
                                 capture_points: s.capture_points.clone(),
-                                ring_bytes: 0,
-                                ring_cap: 0,
+                                ring_bytes: s.ring_status.bytes as u64,
+                                ring_cap: s.ring_status.cap as u64,
                                 sidecar_bytes: s.engine.as_ref()
                                     .map_or(0, |engine| engine.track.sidecar_bytes()),
                             }));
@@ -187,17 +192,17 @@ impl Session {
                     let seat = replay.camera.requested_seat();
                     Ok(serde_json::json!(api::State {
                         id: s.header.meta.id.clone(),
-                        tick: s.tick,
+                        tick: s.visible_tick(),
                         length_ticks: s.length(),
-                        paused: s.paused,
+                        paused: s.visible_pause(),
                         speed: s.speed,
-                        speed_reached: s.speed_reached(),
-                        seeking: s.jump_in_progress(),
+                        speed_reached: if s.visible_pause() { Some(0.0) } else { s.speed_reached() },
+                        seeking: s.camera_redraw.is_none() && s.jump_in_progress(),
                         camera_seat: seat,
                         camera: s.presentation.camera.mode,
                         camera_player: s.presentation.camera.player.clone(),
                         kills: s.presentation.kills.iter().copied().collect(),
-                        seek: s.seek_info(),
+                        seek: if s.camera_redraw.is_none() { s.seek_info() } else { None },
                     }))
                 },
             );
@@ -348,13 +353,26 @@ pub fn library_methods(
             Ok(serde_json::json!(jobs.start(request.id, launch.clone())?))
         }
     });
-    for name in api::METHODS.into_iter().filter(|&name| name != api::MEASUREMENTS) {
+    let active = player.clone();
+    a.add_connection_read(api::VERIFY, move |p| {
+        let unavailable = |e| RpcError::new(code::UNAVAILABLE, e);
+        let socket = active.lock().unwrap_or_else(|e| e.into_inner())
+            .as_ref().map(|player| player.socket.clone())
+            .ok_or_else(|| unavailable("no film loaded".to_owned()))?;
+        let mut client = agent_proto::Client::connect(&socket)
+            .map_err(|e| unavailable(format!("film player unavailable: {e}")))?;
+        client.call(api::VERIFY, p).map_err(|e| match e {
+            agent_proto::CallError::Rpc(e) => e,
+            other => unavailable(other.to_string()),
+        })
+    });
+    for name in api::METHODS.into_iter().filter(|&name| !matches!(name, api::MEASUREMENTS | api::VERIFY)) {
         let player = player.clone();
         let launch = launch.clone();
         let jobs = jobs.clone();
         a.add_method(
             name,
-            if name == api::STATE || name == api::KEYFRAMES {
+            if matches!(name, api::STATE | api::KEYFRAMES) {
                 Access::Read
             } else {
                 Access::Act

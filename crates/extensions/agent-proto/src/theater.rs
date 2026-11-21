@@ -11,7 +11,8 @@ pub const CAMERA: &str = "theater.camera";
 pub const KEYFRAMES: &str = "theater.keyframes";
 pub const MEASUREMENTS: &str = "theater.measurements";
 pub const STEP: &str = "theater.step";
-pub const METHODS: [&str; 9] = [
+pub const VERIFY: &str = "theater.verify";
+pub const METHODS: [&str; 10] = [
     PLAY,
     STATE,
     PAUSE,
@@ -21,6 +22,7 @@ pub const METHODS: [&str; 9] = [
     KEYFRAMES,
     MEASUREMENTS,
     STEP,
+    VERIFY,
 ];
 
 /// Host wall-clock timings and write-watch counts for an instrumented run.
@@ -207,8 +209,7 @@ pub struct State {
     pub seek: Option<SeekInfo>,
 }
 
-/// The recorded states the player can seek from, and the film's capture
-/// points. The session ring list is empty until warm restore is available.
+/// Keyframe ticks by storage location and the local cache budgets in bytes.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct Keyframes {
     /// Ticks of the film's own machine keyframes, in order.
@@ -220,6 +221,41 @@ pub struct Keyframes {
     pub ring_bytes: u64,
     pub ring_cap: u64,
     pub sidecar_bytes: u64,
+}
+
+/// Tick bounds are inclusive. A missing bound covers that end of the film.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Verify {
+    pub from: Option<u64>,
+    pub to: Option<u64>,
+    pub ring: bool,
+}
+
+impl Verify {
+    pub fn bounds(self, length: u64) -> Result<[u64; 2], &'static str> {
+        let from = self.from.unwrap_or(0);
+        let to = self.to.unwrap_or(length);
+        if from > to || to > length {
+            return Err("verification range is outside the film");
+        }
+        Ok([from, to])
+    }
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Divergence {
+    pub tick: u64,
+    pub kind: String,
+}
+
+#[derive(Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VerificationReport {
+    pub ticks: u64,
+    pub digests_checked: u64,
+    pub arena_hashes_checked: u64,
+    pub ram_hashes_checked: u64,
+    pub first_divergence: Option<Divergence>,
 }
 
 #[cfg(test)]
@@ -293,5 +329,34 @@ mod tests {
             }
             assert_eq!(from_value::<PrepareState>(wire).unwrap(), state);
         }
+    }
+}
+
+#[cfg(test)]
+mod verify_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn verification_request_and_report_round_trip() {
+        for (wire, expected) in [
+            (json!({}), [0, 60]),
+            (json!({"from": 30, "to": 30, "ring": true}), [30, 30]),
+            (json!({"from": 10}), [10, 60]),
+        ] {
+            let request: Verify = serde_json::from_value(wire).unwrap();
+            assert_eq!(request.bounds(60), Ok(expected));
+            assert_eq!(serde_json::from_value::<Verify>(serde_json::to_value(request).unwrap()).unwrap(), request);
+        }
+        for wire in [json!({"from": 2, "to": 1}), json!({"to": 61})] {
+            assert!(serde_json::from_value::<Verify>(wire).unwrap().bounds(60).is_err());
+        }
+        assert!(serde_json::from_value::<Verify>(json!({"ring": 1})).is_err());
+        assert!(serde_json::from_value::<Verify>(json!({"target": 2})).is_err());
+        let report = VerificationReport {
+            first_divergence: Some(Divergence { tick: 4, kind: "RAM differs".into() }),
+            ..Default::default()
+        };
+        assert_eq!(serde_json::from_slice::<VerificationReport>(&serde_json::to_vec(&report).unwrap()).unwrap(), report);
     }
 }

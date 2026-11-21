@@ -12,11 +12,11 @@ pub(super) struct EngineReplay {
     pub(super) disk: Option<Arc<Mutex<film::manifest::DiskTracker>>>,
     capture_points: CapturePoints,
     pub(super) map_vfs: Option<Arc<Mutex<vfs::Vfs>>>,
-    pending: Option<Tick>,
+    pub(super) pending: Option<Tick>,
     pub(super) keyframe: Option<Keyframe>,
-    saw_actions: bool,
-    last_pause: Option<bool>,
-    pause_edges: Vec<bool>,
+    pub(super) saw_actions: bool,
+    pub(super) last_pause: Option<bool>,
+    pub(super) pause_edges: Vec<bool>,
 }
 
 impl EngineReplay {
@@ -39,14 +39,18 @@ impl EngineReplay {
         })
     }
 
-    /// The route a jump to `target` takes in a fresh player.
+    pub(super) fn file_candidate(&self, target: u64) -> Option<film::blam::KeyframeInfo> {
+        self.track.keyframes().into_iter().rev().find(|key| key.tick <= target)
+    }
+
     pub(super) fn seek_source(&self, target: u64) -> agent_proto::theater::SeekSource {
         use agent_proto::theater::SeekSource;
-        self.track.keyframes().into_iter().rev().find(|key| key.tick <= target)
-            .map_or(SeekSource::Boot, |key| match key.source {
-                film::blam::KeyframeSource::Embedded => SeekSource::Keyframe,
-                film::blam::KeyframeSource::Sidecar => SeekSource::Sidecar,
-            })
+        use film::blam::KeyframeSource;
+        match self.file_candidate(target).map(|key| key.source) {
+            Some(KeyframeSource::Embedded) => SeekSource::Keyframe,
+            Some(KeyframeSource::Sidecar) => SeekSource::Sidecar,
+            None => SeekSource::Boot,
+        }
     }
 
     /// Peek at the upcoming tick. A menu/cinematic tick can reach the
@@ -84,7 +88,7 @@ impl EngineReplay {
         guest: &runtime::Guest,
         tick: u64,
         gameplay: Option<u64>,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         metadata::verify_start(guest, tick, &self.track.descriptor, self.map_vfs.as_ref())?;
         let applied = self.saw_actions;
         let observed = std::mem::take(&mut self.pause_edges);
@@ -110,19 +114,22 @@ impl EngineReplay {
             );
         }
         metadata::verify_events(guest, &frame.events)?;
+        let checked_digest = frame.post_hash.is_some();
         self.pending = None;
         self.saw_actions = false;
-        Ok(())
+        Ok(checked_digest)
     }
 }
 
 impl Session {
     pub(super) fn check_replay_tick(s: &mut State, guest: &runtime::Guest, post_hash: Option<u64>) {
         let tick = s.tick;
-        if let Some(engine) = &mut s.engine
-            && let Err(e) = engine.completed(guest, tick, post_hash)
-        {
-            s.fail(e.to_string());
+        if let Some(engine) = &mut s.engine {
+            match engine.completed(guest, tick, post_hash) {
+                Ok(true) => { if let Some(v) = &mut s.verify { v.digest(tick); } }
+                Ok(false) => {}
+                Err(e) => s.fail(e.to_string()),
+            }
         }
     }
 
@@ -131,18 +138,18 @@ impl Session {
         slices: u64,
         lobby_boundary: impl FnOnce() -> u64,
         machine: impl FnOnce() -> BootMachine<'a>,
-    ) -> Result<()> {
+    ) -> Result<Option<(u64, snapshot::SnapshotWriter)>> {
         let (tick, expected) = {
             let mut state = self.lock();
             if state.restart.is_some() {
-                return Ok(());
+                return Ok(None);
             }
             let tick = state.tick;
             let Mode::Replay(tape, _) = &mut state.mode else {
-                return Ok(());
+                return Ok(None);
             };
             let Some(expected) = tape.d3d_barrier(slices, tick)? else {
-                return Ok(());
+                return Ok(None);
             };
             (tick, expected)
         };
@@ -156,28 +163,29 @@ impl Session {
                 saved.is_ok() == expected,
                 "first divergence at tick {tick}: D3D capture at slice {slices} expected success={expected}, observed {saved:?}"
             );
-            let (capture, mark_offset, calls) = {
+            if expected {
+                self.verify_capture_hash(slices, tick, || (machine.hash)())?;
+            }
+            let ring_enabled = self.lock().ring_status.cap > 0;
+            let ring = expected && (ring_enabled || self.verify_ring_at(tick));
+            let sidecar = (|| {
                 let s = self.lock();
-                let Mode::Replay(tape, _) = &s.mode else {
-                    return Ok(());
-                };
-                let Some(point) = tape.sidecar_capture_point() else {
-                    return Ok(());
-                };
-                let Some(engine) = &s.engine else {
-                    return Ok(());
-                };
-                let Some(capture) = engine.capture_points.snapshot(
+                let Mode::Replay(tape, _) = &s.mode else { return None };
+                let point = tape.sidecar_capture_point()?;
+                let engine = s.engine.as_ref()?;
+                let capture = engine.capture_points.snapshot(
                     point.ordinal,
                     tick,
                     engine.track.descriptor.match_start_tick,
                     engine.sidecar.as_ref(),
                     engine.disk.as_ref(),
-                ) else {
-                    return Ok(());
-                };
-                (capture, point.offset, s.calls)
+                )?;
+                Some((capture, point.offset, s.calls))
+            })();
+            let Some((capture, mark_offset, calls)) = sidecar else {
+                return Ok(ring.then_some((tick, out)));
             };
+            let ring_snapshot = ring.then(|| (tick, out.clone()));
             let capture = capture.save(
                 self,
                 &mut machine,
@@ -198,7 +206,7 @@ impl Session {
                     capture,
                 );
             }
-            Ok(())
+            Ok(ring_snapshot)
         })
     }
 
@@ -213,7 +221,6 @@ impl Session {
         machine: &mut BootMachine<'_>,
         agent: Option<&crate::agent_glue::AgentGlue>,
     ) -> Result<u64> {
-        let start = std::time::Instant::now();
         let result = self.load_keyframe(frame, machine, agent);
         if let Err(error) = &result
             && let Some(engine) = &mut self.lock().engine
@@ -290,6 +297,9 @@ impl Session {
         let engine = s.engine.as_mut().context("missing film input track")?;
         // The first slice samples the saved latch itself. Pending pause
         // edges never straddle a keyframe.
+        engine.pending = None;
+        engine.saw_actions = false;
+        engine.pause_edges.clear();
         engine.last_pause = None;
         if engine
             .track

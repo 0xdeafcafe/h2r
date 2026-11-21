@@ -114,6 +114,7 @@ impl Fixture {
         Session::open(
             None,
             Some(Replay {
+                verification: None,
                 path: self.path.clone(),
                 cache: None,
                 render_every: 0,

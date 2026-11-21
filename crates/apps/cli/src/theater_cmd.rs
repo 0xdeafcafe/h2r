@@ -1,5 +1,5 @@
-//! Each seek starts a new process so the game, HLE allocators and feature
-//! statics all restart. The parent owns the restored disk and the seek reply.
+//! Launch an isolated film player and reconstruct its guest disk on cold seeks.
+mod verify;
 use anyhow::{Context, Result, bail, ensure};
 use std::{
     fs,
@@ -9,6 +9,7 @@ use std::{
 
 const USAGE: &str = "h2 theater play FILM [--seek TICK] [--render-every N] [--speed 0.25..4] [--disc ISO] [--out IMAGE_DIR] [--data INITIAL_DATA] [--movies DIR] [--socket PATH]\n\
                     h2 theater prepare FILM [--disc ISO] [--out IMAGE_DIR] [--data INITIAL_DATA] [--movies DIR] [--socket PATH]";
+#[derive(Clone)]
 struct Options {
     film: PathBuf,
     prepare: bool,
@@ -122,6 +123,8 @@ pub fn run(args: Vec<String>) -> Result<()> {
     if let Some(work) = std::env::var_os("H2_THEATER_WORK") {
         return child(opts, Path::new(&work));
     }
+    let viewer_data = opts.data.clone().unwrap_or_else(content::store::default_data_root);
+    let ring_mib = boot::setting_defs::theater_ring_mib(Some(&viewer_data));
     let mut reader = film::Reader::open(&opts.film)?;
     let header = reader.header.clone();
     ensure!(
@@ -153,6 +156,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
             .args(&args)
             .env("H2_AGENT", &opts.socket)
             .env("H2_THEATER_WORK", &temp.0)
+            .env(boot::setting_defs::THEATER_RING_MIB_ENV, ring_mib.to_string())
             .env("H2_HOST_LOBBY", if header.lobby { "1" } else { "0" })
             .env(
                 "H2_HOST_LOBBY_MACHINE_START",
@@ -269,6 +273,7 @@ fn child(opts: Options, work: &Path) -> Result<()> {
     };
     film.read::<film::manifest::Manifest>(&entry)?
         .restore_keyframe(&data, opts.data.as_deref(), &delta)?;
+    let verification = Some(verify::mode(&opts, work)?);
     let boot = boot::RunOpts {
         disc: opts.disc,
         data_root: data,
@@ -293,6 +298,7 @@ fn child(opts: Options, work: &Path) -> Result<()> {
     #[cfg(feature = "desktop")]
     let starting_seek = (launch.target > 0).then_some(launch.target);
     let replay = boot::theater::Replay {
+        verification,
         path: opts.film.clone(),
         cache: Some(boot::theater::ReplayCache {
             films_dir,
@@ -423,9 +429,24 @@ fn child(opts: Options, work: &Path) -> Result<()> {
                     )),
                 )
             } else {
-                let present = window
-                    .frame_sink()
-                    .into_guest_crop_present_hook(publish_every, boot::setting_defs::GUEST_FRAME, move || camera.present_crop());
+                camera.attach_guest_view(window.gfx_context().device.limits().max_texture_dimension_2d);
+                let crop = camera.clone();
+                let publish = camera.clone();
+                let scale = camera.clone();
+                let raster: boot::run_opts::NativeSize =
+                    std::sync::Arc::new(move || scale.guest_raster(raster()));
+                let present = window.frame_sink().into_filtered_guest_present_hook(
+                    publish_every,
+                    boot::setting_defs::GUEST_FRAME,
+                    move || crop.present_crop(),
+                    move |due, full_size| publish.publish_guest_present(due, full_size),
+                    move |sink, result| {
+                        camera.sample_guest_present(|| {
+                            let seq = result.map_err(|e| anyhow::anyhow!("{e}"))?;
+                            sink.read_published_rgba(seq).map_err(anyhow::Error::msg)
+                        });
+                    },
+                );
                 (
                     Some(d3d::GfxBackend::new(window.gfx_context())),
                     Some(boot::run_opts::DisplayView {

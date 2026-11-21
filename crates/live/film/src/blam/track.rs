@@ -738,6 +738,24 @@ impl<R: Read + Seek> TrackReader<R> {
         Ok(embedded.map(Selection::Embedded))
     }
 
+    /// Read a frame at this boundary without moving the tick decoder.
+    pub fn read_keyframe_at(&mut self, tick: u64) -> Result<Option<Keyframe>> {
+        match self.selection(tick)? {
+            Some(Selection::Embedded(index)) if self.directory.keyframes[index].tick == tick => {
+                let key = &self.directory.keyframes[index];
+                read_keyframe(&mut self.reader, key).map(Some)
+            }
+            Some(Selection::Sidecar(index)) => {
+                let sidecar = self.sidecar.as_mut().unwrap();
+                if sidecar.tick(index) == tick {
+                    return sidecar.keyframe(index).map(Some);
+                }
+                Ok(None)
+            }
+            _ => Ok(None),
+        }
+    }
+
     /// The launcher prepares guest storage before booting the machine. Disk
     /// changes are relative to DATA, so this lookup never reads the RAM anchor.
     pub fn disk_delta_at(&mut self, target: u64) -> Result<Vec<u8>> {
@@ -873,6 +891,24 @@ impl<R: Read + Seek> TrackReader<R> {
         } else {
             ticks::decode(&raw, block.tick, usize::from(block.count))
         }
+    }
+
+    /// Resume the input decoder after an arbitrary in-memory capture. A time
+    /// chunk has its own delta baseline, so only its prefix can need decoding.
+    pub fn resume_after_tick(&mut self, tick: u64) -> Result<()> {
+        ensure!(tick <= self.length_ticks(), "seek past film end");
+        self.pending.clear();
+        self.keyframe_offset = None;
+        self.sidecar_cursor = None;
+        self.next_block = self.directory.blocks.partition_point(|block| {
+            block.tick + (u64::from(block.count) - 1) <= tick
+        });
+        if let Some(first) = self.directory.blocks.get(self.next_block).map(|block| block.tick) {
+            for _ in first..=tick {
+                self.step()?.context("missing tick in film time chunk")?;
+            }
+        }
+        Ok(())
     }
 
     /// Return one complete set of inputs, events and its expected post-tick hash.
