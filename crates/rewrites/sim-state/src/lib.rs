@@ -9,6 +9,9 @@
 //! Offsets come from `guest_layout`; this crate adds typed ids and kinds,
 //! not offsets.
 
+mod actors;
+pub use actors::{ActorControl, ActorView, visit_actors};
+
 use guest_layout::object::{NODE_MATRIX_SIZE, header};
 use guest_layout::{Datum, Fault, Mem, Off, Unit};
 use sim_objects::view::{Children as ChildLinks, Slots};

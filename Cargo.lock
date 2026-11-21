@@ -2258,6 +2258,7 @@ dependencies = [
 name = "game"
 version = "0.1.0"
 dependencies = [
+ "actor-net",
  "agent",
  "agent-proto",
  "anyhow",
@@ -2277,6 +2278,7 @@ dependencies = [
  "font",
  "frame-scene",
  "gfx",
+ "guest-layout",
  "h1-contract",
  "h1-runtime",
  "hooks",
@@ -2308,6 +2310,7 @@ dependencies = [
  "shaders",
  "sim-bench",
  "sim-bridge",
+ "sim-state",
  "snapshot",
  "tags",
  "timeline",

@@ -114,6 +114,10 @@ pub(crate) fn register_core_film(
         telemetry::TelemetryConfig::default()
     });
     let telemetry = register_telemetry(features, &config, film.as_ref())?;
+    // The transport supplies its per-peer scheduler and match reset here.
+    features
+        .add(&crate::actor_net::Capture::new(|_, _, _| {}, || {}))
+        .map_err(|e| anyhow::anyhow!("actor channel host capture: {e}"))?;
     if let Some(vfs) = i.vfs.clone() {
         features
             .add(&map_slots::MapSlots { vfs })
