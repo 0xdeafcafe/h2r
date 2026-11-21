@@ -3,9 +3,10 @@
 //! loaded with `native_render::load::load_world`, its base maps and
 //! lightmap pages decoded by the renderer's own decodes, uploaded with
 //! `GpuWorld::new` and drawn with the editor's camera into the viewport's
-//! colour and depth targets. The look is the renderer's `world.wgsl`: base
-//! map times lightmap. The Lighting menu's modes swap the images the
-//! world is uploaded with ([`Lighting`]).
+//! colour and depth targets. The look is base map times lightmap, drawn
+//! as a translated pass (`native_render::base_look`; the renderer's
+//! `world.wgsl` when that does not compile). The Lighting menu's modes
+//! swap the images the world is uploaded with ([`Lighting`]).
 //!
 //! Step 2 (slice P15) adds the world layers 1, 5, 7, 8 and 20 with their
 //! own translated passes ([`NativeLayers`]): loaded as the game loads
@@ -15,12 +16,14 @@
 use crate::geometry::{Camera, Marker};
 use assets::ResourceFiles;
 use map::{Map, TagId};
+use native_render::base_look;
 use native_render::camera::RenderCamera;
 use native_render::cull::CullStats;
 use native_render::gpu::{DepthRule, GpuWorld, Image, PassViewport};
 use native_render::instances::ObjectInput;
 use native_render::layers_load::{self, LayersView, StaticLayer};
 use native_render::load;
+use native_render::look::{HostStage, Stage};
 use native_render::model::{Model, NodeMatrix};
 use native_render::model_gpu::GpuModels;
 use native_render::program::{CAMERA_GIVEN, ViewInputs};
@@ -109,18 +112,19 @@ fn scaled(image: &Image, num: u16, den: u16) -> Image {
     }
 }
 
-/// The depth rule the editor's world pass writes: view depth over the far
-/// plane, unfloored (the viewport's depth is `Depth32Float`). The overlay
-/// pass that draws after the world writes the same depth
-/// ([`depth_of`]), so its depth test agrees with the picture.
+/// The depth rule the editor's world writes: view depth over the far
+/// plane floored to D24's step, the W-buffer's, which the translated base
+/// look stores (`base_look`, `xps_w_depth`) and the `world.wgsl` pass,
+/// the models and the overlays write too ([`depth_of`]), so a surface
+/// drawn over the level at the level's depth passes its depth test.
 pub const DEPTH_RULE: DepthRule = DepthRule {
     full_scale: native_render::camera::D24_SCALE,
-    floor: false,
+    floor: true,
 };
 
 /// The depth [`DEPTH_RULE`] stores for world point `p` seen by `camera`.
 pub fn depth_of(camera: &RenderCamera, p: [f32; 3]) -> f32 {
-    (camera.depth_of(p) / camera.far).clamp(0.0, 1.0)
+    native_render::camera::w_depth(camera.depth_of(p), camera.far, DEPTH_RULE.full_scale)
 }
 
 /// The editor's camera as the renderer's, for a `size` (width, height)
@@ -180,6 +184,38 @@ pub struct NativeLoad {
     /// The world layers, when the BSP was read from a map
     /// ([`NativeLoad::read`]).
     layers: Option<Arc<NativeLayers>>,
+    /// The base look's translated passes ([`base_passes_of`]), or why
+    /// `world.wgsl` draws it instead.
+    base_passes: Result<Arc<BasePasses>, String>,
+    /// Why the GPU did not bind the base look's passes, when a
+    /// [`NativeWorld`] found that it could not (the check above passed).
+    base_unbound: Arc<std::sync::OnceLock<String>>,
+}
+
+/// The base look's programs by material key ([`base_look::base_programs`]).
+type BasePasses = HashMap<u16, Vec<native_render::fog_gpu::FogProgram>>;
+
+/// `world`'s base look as translated passes, or why it cannot be: a
+/// program that does not compile, or a placement with no model rows (the
+/// rigid program reads them; `FogSet::new` leaves such a part out). The
+/// world holds only draws with a base map, and a lit draw's page falls
+/// back to white, so every other part binds.
+fn base_passes_of(world: &World) -> Result<Arc<BasePasses>, String> {
+    let programs = base_look::base_programs(
+        world
+            .draws
+            .iter()
+            .map(|d| (d.material, d.lightmap.is_some())),
+    )
+    .map_err(|why| format!("the base look does not compile: {why}"))?;
+    for d in &world.draws {
+        if let Owner::Instance(i) = d.owner
+            && world.rows(i).is_none()
+        {
+            return Err(format!("placement {i} has no model rows"));
+        }
+    }
+    Ok(Arc::new(programs))
 }
 
 impl NativeLoad {
@@ -249,6 +285,7 @@ impl NativeLoad {
             untextured: all - world.draws.len(),
             failed_sections: 0,
         };
+        let base_passes = base_passes_of(&world);
         Self {
             bsp,
             world,
@@ -257,6 +294,18 @@ impl NativeLoad {
             stats,
             lightmap_error: None,
             layers: None,
+            base_passes,
+            base_unbound: Default::default(),
+        }
+    }
+
+    /// Why `world.wgsl` draws this BSP's base look in place of its
+    /// translated pass, when it does; the world layers are off then (their
+    /// depths would not agree with it).
+    pub fn base_fallback(&self) -> Option<&str> {
+        match &self.base_passes {
+            Err(why) => Some(why),
+            Ok(_) => self.base_unbound.get().map(String::as_str),
         }
     }
 
@@ -453,8 +502,94 @@ pub struct NativeWorld {
     gpu: GpuWorld,
     lighting: Lighting,
     pool: gfx::ring::UploadPool,
+    /// The base look as a translated pass ([`base_look`]): what it draws.
+    /// `None` when it could not be ([`NativeLoad::base_fallback`]):
+    /// `world.wgsl` draws the base look then, and no layer is drawn over it
+    /// (their depths would not agree).
+    base: Option<DrawnLayer>,
     /// The uploaded layers (the Game mode only): what each draws.
     layers: Vec<DrawnLayer>,
+}
+
+/// The key the base look's set is held under in the `GpuWorld` (the
+/// game's layer 3, which the base look stands in for).
+const BASE_LAYER: u8 = 3;
+
+/// `load`'s base look in `lighting` as a translated pass
+/// ([`NativeLoad::base_passes`]): each draw's base map (the mode's),
+/// times its lightmap page (the mode's, white where the mode has none)
+/// or white when unlit. The cause when the passes did not compile or a
+/// part does not bind.
+fn base_set(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    load: &NativeLoad,
+    lighting: Lighting,
+) -> Result<(native_render::fog_gpu::FogSet, DrawnLayer), String> {
+    let programs = load.base_passes.as_ref().map_err(Clone::clone)?;
+    let w = &load.world;
+    let key = |d: &native_render::world::WorldDraw| {
+        if d.lightmap.is_some() {
+            d.material
+        } else {
+            base_look::unlit(d.material)
+        }
+    };
+    let parts: Vec<layers_load::Part> = w
+        .draws
+        .iter()
+        .map(|d| {
+            (
+                (d.owner, d.part),
+                (d.first_index, d.index_count, d.lightmap, key(d)),
+            )
+        })
+        .collect();
+    let white = Image::solid([255; 4]);
+    let set = native_render::fog_gpu::FogSet::new(
+        device,
+        queue,
+        w,
+        parts.clone(),
+        (**programs).clone(),
+        &mut |s| match s {
+            Stage::Host(HostStage::White) => Some(white.clone()),
+            Stage::Host(HostStage::BaseMap(m)) => load.base.get(&m).map(|i| lighting.base(i)),
+            _ => None,
+        },
+        &mut |k| {
+            Some(
+                load.pages
+                    .get(&k)
+                    .and_then(|i| lighting.page(i))
+                    .unwrap_or_else(|| white.clone()),
+            )
+        },
+    );
+    let selected: Vec<(Owner, u8)> = parts
+        .iter()
+        .map(|&(k, _)| k)
+        .filter(|&(owner, part)| set.draws_part(owner, part))
+        .collect();
+    if selected.len() != parts.len() {
+        return Err(format!(
+            "the base look binds {} of {} parts",
+            selected.len(),
+            parts.len()
+        ));
+    }
+    let fogs = parts
+        .iter()
+        .map(|&(_, (_, _, _, m))| (m, (shaders::psh::fog::Fog::OFF, [0.0; 4])))
+        .collect();
+    Ok((
+        set,
+        DrawnLayer {
+            layer: BASE_LAYER,
+            selected,
+            fogs,
+        },
+    ))
 }
 
 /// One uploaded layer: the parts its set draws and the fog they draw
@@ -479,10 +614,27 @@ impl NativeWorld {
             &mut |m| load.base.get(&m).map(|i| lighting.base(i)),
             &mut |k| load.pages.get(&k).and_then(|i| lighting.page(i)),
         );
+        let base = match base_set(device, queue, load, lighting) {
+            Ok((set, drawn)) => {
+                gpu.set_layer(BASE_LAYER, set);
+                Some(drawn)
+            }
+            Err(why) => {
+                // Named in `view.stats` ([`NativeLoad::base_fallback`]).
+                if load.base_passes.is_ok() {
+                    let _ = load.base_unbound.set(why);
+                }
+                None
+            }
+        };
         // The layers are the game's look: the other modes draw the base
-        // look alone.
+        // look alone. They draw only over the translated base look, whose
+        // depth is theirs.
         let mut layers = Vec::new();
-        if let Some(l) = load.layers().filter(|_| lighting == Lighting::Game) {
+        if let Some(l) = load
+            .layers()
+            .filter(|_| lighting == Lighting::Game && base.is_some())
+        {
             for (&layer, plan) in &l.plans {
                 let Some(set) = layers_load::upload_static(
                     &l.view,
@@ -508,6 +660,7 @@ impl NativeWorld {
             gpu,
             lighting,
             pool: Default::default(),
+            base,
             layers,
         }
     }
@@ -580,7 +733,7 @@ impl NativeWorld {
                 arena: &arena,
             };
             let inputs = ViewInputs::from_camera(&view, (size[0], size[1]));
-            for l in &self.layers {
+            for l in self.base.iter().chain(&self.layers) {
                 self.gpu
                     .prepare_layer(l.layer, &mut uploads, &inputs, &l.fogs);
             }
@@ -596,21 +749,35 @@ impl NativeWorld {
             depth_format,
             size,
         );
-        self.gpu.encode(
-            device,
-            &mut encoder,
-            color,
-            color_format,
-            depth,
-            depth_format,
-            PassViewport {
-                x: 0.0,
-                y: 0.0,
-                width: size[0] as f32,
-                height: size[1] as f32,
-            },
-            (size[0], size[1]),
-        );
+        if let Some(b) = &self.base {
+            self.gpu.encode_layer(
+                BASE_LAYER,
+                device,
+                &mut encoder,
+                color,
+                color_format,
+                depth,
+                depth_format,
+                (size[0], size[1]),
+                &b.selected,
+            );
+        } else {
+            self.gpu.encode(
+                device,
+                &mut encoder,
+                color,
+                color_format,
+                depth,
+                depth_format,
+                PassViewport {
+                    x: 0.0,
+                    y: 0.0,
+                    width: size[0] as f32,
+                    height: size[1] as f32,
+                },
+                (size[0], size[1]),
+            );
+        }
         self.encode_layers(
             &LAYERS_AFTER,
             device,

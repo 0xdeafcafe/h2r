@@ -173,14 +173,16 @@ struct U {
 };
 @group(0) @binding(0) var<uniform> u: U;
 // The depth the native world pass writes (native_view::DEPTH_RULE): view
-// depth over the far plane, so this pass's depth test agrees with the
-// level's. 1 / position.w is the perspective-correct view depth; lens.z is
-// 1 / far, and lens.w 1 to write it (the sky's own pass keeps the
-// rasterised depth).
+// depth over the far plane floored to D24's step (the W-buffer's, as the
+// translated base look stores it), so this pass's depth test agrees with
+// the level's. 1 / position.w is the perspective-correct view depth;
+// lens.z is 1 / far, and lens.w 1 to write it (the sky's own pass keeps
+// the rasterised depth).
+const D24: f32 = 16777215.0;
 struct O { @location(0) c: vec4<f32>, @builtin(frag_depth) d: f32 };
 fn depth_out(clip: vec4<f32>) -> f32 {
     if (u.lens.w < 0.5) { return clip.z; }
-    return clamp((1.0 / clip.w) * u.lens.z, 0.0, 1.0);
+    return clamp(floor((1.0 / clip.w) * (D24 * u.lens.z)) / D24, 0.0, 1.0);
 }
 struct V { @builtin(position) clip: vec4<f32>, @location(0) n: vec3<f32>, @location(1) c: vec3<f32> };
 @vertex fn vs(@location(0) p: vec3<f32>, @location(1) n: vec3<f32>, @location(2) c: vec3<f32>, @location(3) center: vec3<f32>) -> V {
@@ -223,14 +225,16 @@ struct P {
 };
 @group(0) @binding(0) var<uniform> u: U;
 // The depth the native world pass writes (native_view::DEPTH_RULE): view
-// depth over the far plane, so this pass's depth test agrees with the
-// level's. 1 / position.w is the perspective-correct view depth; lens.z is
-// 1 / far, and lens.w 1 to write it (the sky's own pass keeps the
-// rasterised depth).
+// depth over the far plane floored to D24's step (the W-buffer's, as the
+// translated base look stores it), so this pass's depth test agrees with
+// the level's. 1 / position.w is the perspective-correct view depth;
+// lens.z is 1 / far, and lens.w 1 to write it (the sky's own pass keeps
+// the rasterised depth).
+const D24: f32 = 16777215.0;
 struct O { @location(0) c: vec4<f32>, @builtin(frag_depth) d: f32 };
 fn depth_out(clip: vec4<f32>) -> f32 {
     if (u.lens.w < 0.5) { return clip.z; }
-    return clamp((1.0 / clip.w) * u.lens.z, 0.0, 1.0);
+    return clamp(floor((1.0 / clip.w) * (D24 * u.lens.z)) / D24, 0.0, 1.0);
 }
 @group(1) @binding(0) var tex: texture_2d<f32>;
 @group(1) @binding(1) var samp: sampler;
@@ -1973,5 +1977,20 @@ impl Viewport {
     /// The current target size in pixels.
     pub fn size(&self) -> Option<[u32; 2]> {
         self.target.as_ref().map(|t| t.size)
+    }
+}
+
+#[cfg(test)]
+mod depth_tests {
+    /// The overlay shaders floor their depth to the step the world's
+    /// depth rule floors to (`native_view::DEPTH_RULE`).
+    #[test]
+    fn the_overlay_shaders_floor_depth_as_the_world_does() {
+        assert!(crate::native_view::DEPTH_RULE.floor);
+        let d24 = format!("const D24: f32 = {:.1};", crate::native_view::DEPTH_RULE.full_scale);
+        for shader in [super::SHADER, super::SCENE_SHADER] {
+            assert!(shader.contains(&d24), "{d24}");
+            assert!(shader.contains("floor((1.0 / clip.w) * (D24 * u.lens.z)) / D24"));
+        }
     }
 }

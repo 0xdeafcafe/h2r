@@ -772,6 +772,14 @@ fn view_lighting_sets_the_mode_and_stats_report_it() {
     assert_eq!(stats["native"]["lighting"], "lightmap");
     assert!(stats["native"]["bsps"].as_array().is_some());
     assert!(stats["native"]["errors"].as_array().is_some());
+    // Each BSP's base look: translated, or the named fallback with its
+    // layers off.
+    for b in stats["native"]["bsps"].as_array().unwrap() {
+        let look = &b["base_look"];
+        let translated = look["translated"].as_bool().expect("base_look.translated");
+        assert_eq!(look["layers_off"], json!(!translated), "{look}");
+        assert_eq!(look["fallback"].is_string(), !translated, "{look}");
+    }
     // The placed objects: null with no art built, else the counts.
     let objects = &stats["native"]["objects"];
     assert!(stats["native"].get("objects").is_some());

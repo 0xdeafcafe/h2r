@@ -38,6 +38,8 @@ pub mod decorators;
 #[cfg(feature = "gpu")]
 pub mod decorators_gpu;
 #[cfg(feature = "gpu")]
+pub mod base_look;
+#[cfg(feature = "gpu")]
 pub mod decorators_load;
 pub mod effect_geometry;
 pub mod effect_immediate;

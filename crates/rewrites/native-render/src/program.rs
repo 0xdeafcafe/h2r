@@ -175,8 +175,8 @@ fn compile_with_textures(look: &PassLook, microcode: &[u8],
         microcode,
         pixel_shader: &look.pixel_shader,
         dims,
-        // Only a stage's own bitmap is stored biased here.
-        biased: look.textures.map(|s| matches!(s, Stage::Bitmap { .. })),
+        // Only a stage's own image is stored biased here.
+        biased: look.textures.map(Stage::takes_image),
         stage_states: &look.stage_states,
         vertex_constants: &look.vertex_constants,
         vertex_defaults: &look.vertex_defaults,
@@ -1082,7 +1082,7 @@ impl Gpu {
     ) -> Option<Self> {
         let mut stage_views: [Option<wgpu::TextureView>; 4] = Default::default();
         for (n, &stage) in program.stages.iter().enumerate() {
-            if matches!(stage, Stage::Bitmap { .. }) && program.dims[n].is_some() {
+            if stage.takes_image() && program.dims[n].is_some() {
                 stage_views[n] = Some(image(stage, program.signed[n])?);
             }
         }

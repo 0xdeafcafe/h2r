@@ -111,7 +111,8 @@ fn the_render_camera_matches_the_editors() {
     assert_eq!(tiny.viewport, [0, 0, i16::MAX, 1]);
 }
 
-/// The depth the world pass writes is view depth over the far plane.
+/// The depth the world pass writes is view depth over the far plane,
+/// floored to D24's step.
 #[test]
 fn the_depth_rule_is_view_depth_over_far() {
     let cam = render_camera(&Camera::default(), [64, 64]);
@@ -124,7 +125,15 @@ fn the_depth_rule_is_view_depth_over_far() {
     };
     assert!((depth_of(&cam, ahead(cam.far * 0.25)) - 0.25).abs() < 1e-4);
     assert_eq!(depth_of(&cam, ahead(cam.far * 2.0)), 1.0);
-    assert!(!DEPTH_RULE.floor);
+    assert!(DEPTH_RULE.floor);
+    // Floored to D24's step, as the world's W-buffer depth is: at most
+    // one step under the unfloored depth.
+    let p = ahead(cam.far * 0.3);
+    let (d, exact) = (depth_of(&cam, p), cam.depth_of(p) / cam.far);
+    assert!(
+        (-1e-7..=1.5 / DEPTH_RULE.full_scale).contains(&(exact - d)),
+        "{d:e} {exact:e}"
+    );
 }
 
 /// A draw with no base map, and a lit draw with no page, are left out;
@@ -375,6 +384,25 @@ fn the_invented_bsps_layers_name_what_does_not_draw() {
     assert!(bare.layers().is_none());
 }
 
+/// A BSP's base look is its translated pass, or `world.wgsl` with the
+/// reason named: here a placement with no model rows for the rigid
+/// program to read.
+#[test]
+fn a_base_look_that_cannot_be_translated_is_named() {
+    let base = HashMap::from([(0u16, Image::solid([200; 4]))]);
+    let load = NativeLoad::new(TagId(7), world(&[(0, false)]), base.clone(), HashMap::new());
+    assert_eq!(load.base_fallback(), None);
+    let mut b = WorldBuilder::new();
+    b.add_section(
+        Owner::Instance(4),
+        &quad(0, 0.0, false),
+        &Placement::IDENTITY,
+        None,
+    );
+    let load = NativeLoad::new(TagId(7), b.finish(), base, HashMap::new());
+    assert_eq!(load.base_fallback(), Some("placement 4 has no model rows"));
+}
+
 /// Layer 1 is refused whole and named; the other layers keep their plan.
 #[test]
 fn layer_1_is_refused_until_it_is_checked_against_the_game() {
@@ -410,6 +438,189 @@ fn the_layers_draw_in_the_games_order() {
     let mut all: Vec<u8> = LAYERS_BEFORE.iter().chain(&LAYERS_AFTER).copied().collect();
     all.sort_unstable();
     assert_eq!(all, native_render::layer_pass::LAYERS);
+}
+
+/// The invented layered BSP ([`crate::fixture::fixture_with_layered_bsp`])
+/// opened as a map, and its raw resources.
+fn layered() -> (Map<std::io::Cursor<Vec<u8>>>, ResourceFiles) {
+    let bytes = crate::fixture::fixture_with_layered_bsp();
+    let mut files = ResourceFiles::new();
+    files.set_bytes(map::ResourceFile::Local, bytes.clone().into());
+    (
+        Map::from_reader(std::io::Cursor::new(bytes)).unwrap(),
+        files,
+    )
+}
+
+/// The layered floor's material resolves, its layer-5 pass compiles
+/// with the camera's view constants, and the game-free plan draws it on
+/// the floor's one part; no other layer has a pass of it.
+#[test]
+fn the_layered_floor_plans_its_pass() {
+    use crate::fixture::LAYERED_LAYER;
+    let (mut map, mut files) = layered();
+    let load = NativeLoad::read(&mut map, &mut files, 0).unwrap();
+    assert_eq!(load.stats().draws, 1, "the base look is the textured map's");
+    let layers = load.layers().expect("read from the map");
+    assert!(layers.unresolved().is_empty(), "{layers:?}");
+    for (&layer, plan) in layers.plans() {
+        if layer == LAYERED_LAYER {
+            assert_eq!(plan.compiled, 1, "{layers:?}");
+            assert!(plan.refused.is_empty(), "{layers:?}");
+            assert_eq!(plan.drawn.iter().copied().collect::<Vec<_>>(), [0]);
+            assert_eq!(plan.parts.len(), 1, "{layers:?}");
+        } else {
+            assert_eq!(plan.compiled, 0, "layer {layer}: {layers:?}");
+            assert!(plan.drawn.is_empty(), "layer {layer}");
+        }
+    }
+}
+
+/// Draw `load` in `lighting` into a 64 by 64 viewport target cleared to
+/// black: every pixel's colour and depth, row by row.
+fn frame(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    load: &NativeLoad,
+    lighting: Lighting,
+    camera: &Camera,
+) -> (Vec<[u8; 4]>, Vec<f32>) {
+    let size = wgpu::Extent3d {
+        width: 64,
+        height: 64,
+        depth_or_array_layers: 1,
+    };
+    let usage = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC;
+    let target = |format| {
+        device.create_texture(&wgpu::TextureDescriptor {
+            label: None,
+            size,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage,
+            view_formats: &[],
+        })
+    };
+    let color = target(crate::render::COLOR_FORMAT);
+    let depth = target(crate::render::DEPTH_FORMAT);
+    let mut world = NativeWorld::new(device, queue, load, lighting);
+    world.render(
+        device,
+        queue,
+        &color.create_view(&Default::default()),
+        crate::render::COLOR_FORMAT,
+        &depth.create_view(&Default::default()),
+        crate::render::DEPTH_FORMAT,
+        [64, 64],
+        camera,
+        Clear::all([0.0; 3]),
+    );
+    let read = |texture: &wgpu::Texture, aspect| {
+        let row = 256u32;
+        let buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: u64::from(row * 64),
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut enc = device.create_command_encoder(&Default::default());
+        enc.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buf,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(row),
+                    rows_per_image: Some(64),
+                },
+            },
+            size,
+        );
+        queue.submit([enc.finish()]);
+        buf.slice(..).map_async(wgpu::MapMode::Read, |_| {});
+        device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        let data = buf.slice(..).get_mapped_range().unwrap();
+        data.as_chunks::<4>().0.to_vec()
+    };
+    let pixels = read(&color, wgpu::TextureAspect::All);
+    let depths = read(&depth, wgpu::TextureAspect::DepthOnly)
+        .into_iter()
+        .map(f32::from_le_bytes)
+        .collect();
+    (pixels, depths)
+}
+
+/// The layered floor's layer-5 pass draws over the base look on the GPU:
+/// in Game every pixel of the floor the base look draws (Flat: the base
+/// map, no layers) is the pass's colour, so the pass passed its
+/// less-or-equal depth test against the base look's depth there, and
+/// the depth it wrote is the base look's, bit for bit: the base look and
+/// the pass share one position (`base_look::world_position`) and the
+/// translated depth, so the layer does not flicker against it. The floor
+/// is seen at a slant, so its depth varies across the view. Off the
+/// floor nothing draws. Skipped without a wgpu adapter.
+#[test]
+fn the_layered_floor_draws_its_pass_over_the_base_look() {
+    let Some((device, queue)) = device() else {
+        return;
+    };
+    let (mut map, mut files) = layered();
+    let load = NativeLoad::read(&mut map, &mut files, 0).unwrap();
+    let half = crate::fixture::TEX_FLOOR / 2.0;
+    let camera = Camera {
+        target: [half, half, 0.0],
+        yaw: 0.3,
+        pitch: 0.9,
+        distance: 6.0,
+        ..Camera::default()
+    };
+    let (flat, flat_depth) = frame(&device, &queue, &load, Lighting::Flat, &camera);
+    let (game, game_depth) = frame(&device, &queue, &load, Lighting::Game, &camera);
+    let floor: Vec<usize> = (0..flat.len())
+        .filter(|&i| flat[i][..3] != [0, 0, 0])
+        .collect();
+    assert!(
+        floor.len() > 200,
+        "the floor fills the view: {}",
+        floor.len()
+    );
+    let green = |p: [u8; 4]| p[1] > 250 && p[0] < 5 && p[2] < 5;
+    let lost: Vec<usize> = floor.iter().copied().filter(|&i| !green(game[i])).collect();
+    assert!(
+        lost.is_empty(),
+        "the pass lost the depth test on {} of {} floor pixels, e.g. pixel {} {:?}, base look depth {:e} ({:#010x})",
+        lost.len(),
+        floor.len(),
+        lost[0],
+        game[lost[0]],
+        flat_depth[lost[0]],
+        flat_depth[lost[0]].to_bits(),
+    );
+    let differ: Vec<usize> = floor
+        .iter()
+        .copied()
+        .filter(|&i| game_depth[i].to_bits() != flat_depth[i].to_bits())
+        .collect();
+    assert!(
+        differ.is_empty(),
+        "the pass's depth differs from the base look's on {} floor pixels, e.g. pixel {}: {:e} ({:#010x}) over {:e} ({:#010x})",
+        differ.len(),
+        differ[0],
+        game_depth[differ[0]],
+        game_depth[differ[0]].to_bits(),
+        flat_depth[differ[0]],
+        flat_depth[differ[0]].to_bits(),
+    );
+    for i in (0..flat.len()).filter(|i| !floor.contains(i)) {
+        assert_eq!(game[i][..3], [0, 0, 0], "off the floor, pixel {i}");
+    }
 }
 
 /// The invented map draws through `GpuWorld` into the viewport's

@@ -621,7 +621,13 @@ build), and keeps the last four maps' scenes so reopening one is instant.
   (`scenario_edit::native_view`), one world per BSP; the toolbar's
   **Lighting** menu picks Game (base map times lightmap), Flat (no
   lightmap), Lightmap only (the lightmap on white) or Collision (Flat at a
-  third, for the collision layers). The placed objects draw through the
+  third, for the collision layers). The level's base look is a
+  translated pass (`native_render::base_look`), so its depth is the one a
+  material's pass computes for the same vertex. When it cannot be (a
+  program that does not encode or compile, or a part that does not
+  bind) the BSP draws with the renderer's `world.wgsl`, its world layers
+  are off, and `view.stats` names the cause (`base_look`,
+  `NativeLoad::base_fallback`). The placed objects draw through the
   native renderer too (`native_view::NativeObjects`, `GpuModels`), each
   in its rest pose with its base maps in the same mode, and a selected
   one mixed towards the selection orange as the scene's models are
@@ -632,7 +638,9 @@ build), and keeps the last four maps' scenes so reopening one is instant.
   model the native loader refuses (`native_render::model_load`) draws
   the scene's model, and `view.stats` names it. Live objects, markers and
   overlays draw over the level with its depth (view depth over the far
-  plane). A map whose BSPs the native loader does not read (a Halo 1
+  plane, floored to D24's step as the game's W-buffer stores it;
+  `native_view::DEPTH_RULE`), so a mark on a surface passes the depth
+  test against it. A map whose BSPs the native loader does not read (a Halo 1
   reference) draws its textured scene instead.
 - **World layers.** In the Game mode each BSP also draws the world
   layers 1, 5, 7, 8 and 20 with the materials' own translated passes
