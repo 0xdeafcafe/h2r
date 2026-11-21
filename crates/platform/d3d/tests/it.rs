@@ -25,6 +25,8 @@ mod first_frame;
 mod fog_xbe;
 #[path = "fragments.rs"]
 mod fragments;
+#[path = "guest_draw_pass.rs"]
+mod guest_draw_pass;
 #[path = "glyph_text.rs"]
 mod glyph_text;
 #[path = "interp.rs"]
@@ -47,6 +49,9 @@ mod recheck_fixes;
 mod registration;
 #[path = "render_scale.rs"]
 mod render_scale;
+#[cfg(feature = "gpu")]
+#[path = "scene_camera.rs"]
+mod scene_camera;
 #[path = "scene_sink.rs"]
 mod scene_sink;
 #[path = "scene_stage.rs"]

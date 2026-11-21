@@ -74,6 +74,10 @@
 //! it, so the guest sees retail's bytes. With E3 lighting the view is
 //! awake at render scale 1 too (frame buffers at 1x, shadow maps at 2x).
 
+pub mod private_scene;
+mod scene_inputs;
+mod scene_targets;
+pub use scene_targets::ScaledScenePass;
 mod single;
 
 use std::sync::{Arc, Mutex};
@@ -222,6 +226,16 @@ pub trait ScaleView<R: Backend>: Backend {
         flags: u32,
         gamma: Option<&[u8; 768]>,
     ) -> Result<(), String>;
+    /// Show an in-between frame from the reference store. A GPU view uses
+    /// its replay hook, preserving the guest swap number for captures.
+    fn replay_reference(
+        &mut self,
+        reference: &mut R,
+        surface: R::Surface,
+        gamma: Option<&[u8; 768]>,
+    ) -> Result<(), String> {
+        self.present_reference(reference, surface, 0, gamma)
+    }
 }
 
 /// A [`ScaledBackend`] surface: the reference's, and the view's when the
@@ -374,6 +388,11 @@ pub struct ScaledBackend<R: Backend, V: ScaleView<R>> {
     reference: R,
     view: V,
     single_copy: bool,
+    /// The sealed game frame currently owns the shared images, including at 1x.
+    scene_active: bool,
+    /// At 1x E3 these original handles last left a native frame with
+    /// coherent reference, view and exported attachment contents.
+    scene_coherent: Vec<R::Surface>,
     scale: RenderScale,
     /// The frame size: the first colour surface's (the back buffer).
     frame: Option<(u32, u32)>,
@@ -500,6 +519,8 @@ impl<R: Backend, V: ScaleView<R>> ScaledBackend<R, V> {
         }
         Ok(Self {
             single_copy,
+            scene_active: false,
+            scene_coherent: Vec::new(),
             reference,
             view,
             scale,
@@ -613,6 +634,7 @@ impl<R: Backend, V: ScaleView<R>> ScaledBackend<R, V> {
 
     /// Takes the wanted scale and lighting at a frame boundary.
     fn retarget(&mut self, scale: RenderScale, lighting: Lighting) {
+        if scale != self.scale || lighting != self.lighting { self.scene_coherent.clear(); }
         let was_awake = self.awake();
         let was_single = self.single();
         let retry_wait = self.failed_target.is_some_and(|failed| failed.waiting(scale, lighting, Instant::now()));
@@ -1033,6 +1055,7 @@ impl<R: Backend, V: ScaleView<R>> ScaledBackend<R, V> {
 
     /// The reference, mutably.
     pub fn reference_mut(&mut self) -> &mut R {
+        self.scene_coherent.clear();
         &mut self.reference
     }
 
@@ -1043,6 +1066,7 @@ impl<R: Backend, V: ScaleView<R>> ScaledBackend<R, V> {
 
     /// The view, mutably.
     pub fn view_mut(&mut self) -> &mut V {
+        self.scene_coherent.clear();
         &mut self.view
     }
 
@@ -1096,6 +1120,7 @@ impl<R: Backend, V: ScaleView<R>> ScaledBackend<R, V> {
     /// Before the reference changes guest-size surface `s`: the view's
     /// recorded draws that sample it must reach the GPU first.
     fn before_shared_write(&mut self, s: &ScaledSurface<R::Surface, V::Surface>) {
+        self.scene_coherent.clear();
         if self.live(s.view).is_none() && self.view_pending {
             self.view_pending = false;
             if let Err(e) = self.view.submit_recorded() {
@@ -1241,6 +1266,12 @@ type Tex<R, V> = ScaledTexture<<R as Backend>::Texture, <V as Backend>::Texture>
 impl<R: Backend, V: ScaleView<R>> Backend for ScaledBackend<R, V> {
     type Surface = Surf<R, V>;
     type Texture = Tex<R, V>;
+
+    fn frozen_images(&self, texture: &Self::Texture) -> Option<crate::scene_sink::FrozenImages> {
+        let reference = self.reference.frozen_images(&texture.reference)?.reference;
+        let display = texture.view.as_ref().and_then(|t| self.view.frozen_images(t)?.display);
+        Some(crate::scene_sink::FrozenImages { reference, display })
+    }
 
     fn create_surface(
         &mut self,
@@ -1486,6 +1517,7 @@ impl<R: Backend, V: ScaleView<R>> Backend for ScaledBackend<R, V> {
         flags: u32,
         gamma: Option<&[u8; 768]>,
     ) -> Result<(), String> {
+        self.scene_coherent.clear();
         if self.single() {
             self.view.present_with_gamma(self.image(surface), flags, gamma)?;
             self.stats.view_frames += 1;
@@ -1540,6 +1572,7 @@ impl<R: Backend, V: ScaleView<R>> Backend for ScaledBackend<R, V> {
         dst: Self::Surface,
         h: [[f32; 3]; 3],
     ) -> Result<bool, String> {
+        self.scene_coherent.clear();
         if self.single() {
             return self.view.warp_surface(self.image(src), self.image(dst), h);
         }
@@ -1550,6 +1583,21 @@ impl<R: Backend, V: ScaleView<R>> Backend for ScaledBackend<R, V> {
             (Some(s), Some(d)) if !self.frame_failed => self.view.warp_surface(s, d, h),
             _ => Ok(warped),
         }
+    }
+
+    fn measure_present_raster(&mut self, surface: Option<Self::Surface>) -> crate::backend::RasterMeasurement {
+        // The same display view handles a scaled target, a sleeping view's
+        // reference, and the native graph's borrowed presentation target.
+        self.view.measure_present_raster(None);
+        crate::backend::RasterMeasurement { configured: self.scale.uniform_integer(), guest: surface.map(|s| s.size) }
+    }
+
+    fn last_present_unshown(&self) -> bool {
+        self.view.last_present_unshown()
+    }
+
+    fn take_presented_extent(&mut self) -> Option<(u32, u32)> {
+        self.view.take_presented_extent()
     }
 
     fn surface_extent(&self, surface: Self::Surface) -> Option<(u32, u32)> {
@@ -1629,7 +1677,7 @@ impl<R: Backend, V: ScaleView<R>> Backend for ScaledBackend<R, V> {
             Some(v) if !self.frame_failed => self.view.present_replay(v, gamma),
             _ => self
                 .view
-                .present_reference(&self.reference, surface.reference, 0, gamma),
+                .replay_reference(&mut self.reference, surface.reference, gamma),
         }
     }
 
@@ -1989,6 +2037,7 @@ impl<R: Backend, V: ScaleView<R>> Backend for ScaledBackend<R, V> {
     }
 
     fn commit_external(&mut self, recording: crate::ExternalRecording) {
+        self.scene_coherent.clear();
         if recording.copy == crate::TargetCopy::Display {
             self.stats.display_draws += recording.ranges as u64;
         } else {
@@ -2001,6 +2050,11 @@ impl<R: Backend, V: ScaleView<R>> Backend for ScaledBackend<R, V> {
                 self.view_pending = true;
             }
         }
+    }
+
+    #[cfg(feature = "gpu")]
+    fn upload_scene_assets(&mut self, upload: crate::backend::AssetUpload) {
+        self.view.upload_scene_assets(upload);
     }
 
     fn upload_device(&self) -> Option<(wgpu::Device, wgpu::Queue)> {
@@ -2021,6 +2075,7 @@ impl<R: Backend, V: ScaleView<R>> Backend for ScaledBackend<R, V> {
         request: crate::backend::ExternalPassRequest,
         pass: Box<dyn crate::backend::ExternalPass>,
     ) -> Result<bool, String> {
+        self.scene_coherent.clear();
         if self.single() {
             let levels = sampled.into_iter().map(|s| s.map(|s| self.image(s))).collect();
             let pass = SharedPass(Arc::new(Mutex::new(pass)), crate::TargetCopy::Display);
@@ -2441,6 +2496,16 @@ impl ScaleView<GfxBackend> for GfxBackend {
     ) -> Result<(), String> {
         self.present_from(Some(reference), surface, flags, gamma)
     }
+
+    fn replay_reference(
+        &mut self,
+        reference: &mut GfxBackend,
+        surface: gfx::surface::SurfaceId,
+        gamma: Option<&[u8; 768]>,
+    ) -> Result<(), String> {
+        reference.flush()?;
+        self.show_replay(Some(reference), surface, gamma)
+    }
 }
 
 /// The retail-or-E3 A/B capture ([`LightingAb`]): a second view over a
@@ -2515,6 +2580,17 @@ impl ScaleView<ScaledBackend<GfxBackend, GfxBackend>> for GfxBackend {
         gamma: Option<&[u8; 768]>,
     ) -> Result<(), String> {
         self.present_from(Some(reference.reference()), surface.reference, flags, gamma)
+    }
+
+    fn replay_reference(
+        &mut self,
+        reference: &mut ScaledBackend<GfxBackend, GfxBackend>,
+        surface: Surf<GfxBackend, GfxBackend>,
+        gamma: Option<&[u8; 768]>,
+    ) -> Result<(), String> {
+        let reference = reference.reference_mut();
+        reference.flush()?;
+        self.show_replay(Some(reference), surface.reference, gamma)
     }
 }
 

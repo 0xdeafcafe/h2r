@@ -1475,6 +1475,10 @@ where
     type Surface = B::Surface;
     type Texture = Arc<B::Texture>;
 
+    fn frozen_images(&self, texture: &Self::Texture) -> Option<crate::scene_sink::FrozenImages> {
+        self.inner.frozen_images(texture)
+    }
+
     fn reset_present_metadata(&mut self) -> Result<(), String> {
         for frame in [&mut self.prev, &mut self.cur].into_iter().flatten() {
             frame.mark_image = None;
@@ -1627,6 +1631,25 @@ where
 
     fn frame_stats(&mut self) {
         self.inner.frame_stats()
+    }
+
+    fn queue_frame_probe_read(
+        &mut self, surface: Self::Surface, width: u32, height: u32,
+        done: Box<dyn FnOnce(Result<Vec<u8>, String>) + Send>,
+    ) {
+        self.inner.queue_frame_probe_read(surface, width, height, done)
+    }
+
+    fn measure_present_raster(&mut self, surface: Option<Self::Surface>) -> crate::backend::RasterMeasurement {
+        self.inner.measure_present_raster(surface)
+    }
+
+    fn last_present_unshown(&self) -> bool {
+        self.inner.last_present_unshown()
+    }
+
+    fn take_presented_extent(&mut self) -> Option<(u32, u32)> {
+        self.inner.take_presented_extent()
     }
 
     fn stamp_present(&mut self, at: std::time::Instant) {
@@ -1849,6 +1872,11 @@ where
     fn commit_external(&mut self, recording: crate::ExternalRecording) {
         self.unpinned = true;
         self.inner.commit_external(recording);
+    }
+
+    #[cfg(feature = "gpu")]
+    fn upload_scene_assets(&mut self, upload: crate::backend::AssetUpload) {
+        self.inner.upload_scene_assets(upload);
     }
 
     fn upload_device(&self) -> Option<(wgpu::Device, wgpu::Queue)> {

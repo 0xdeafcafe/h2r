@@ -118,7 +118,7 @@ fn triangle<B: Backend>(d: &mut Device<B>, m: &mut SparseMemory, color: u32) {
 
 /// A quad over `r` sampling all of the 32x32 linear texture (texel
 /// coordinates).
-fn textured_quad<B: Backend>(d: &mut Device<B>, m: &mut SparseMemory, r: (f32, f32, f32, f32)) {
+pub(super) fn textured_quad<B: Backend>(d: &mut Device<B>, m: &mut SparseMemory, r: (f32, f32, f32, f32)) {
     let mut vb = Vec::new();
     for (u, v) in [(0.0f32, 0.0f32), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0)] {
         for f in [r.0 + (r.2 - r.0) * u, r.1 + (r.3 - r.1) * v, 0.5, 1.0] {

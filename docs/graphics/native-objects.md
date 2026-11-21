@@ -69,9 +69,11 @@ including `0x0001bbf0` and
 `0x00016b90`, for committed runs.
 
 The activation hook starts a utility-priority worker for the mounted
-map. The worker walks the object definitions, decodes each distinct
-render model once, creates its GPU resources and submits its texture
-uploads. It publishes the completed definition index and resident models
+map. The worker reads every object palette in the mounted scenario,
+including entries with no placement, and walks those definitions first,
+followed by the remaining object tags. It decodes each distinct render
+model once, creates its GPU resources and submits its texture uploads.
+It publishes the completed definition index and resident models
 together. The first swap after publication makes them eligible for
 native draws. Later spawns share those models. D3D draws each run until
 its models, bindings and target pipelines are ready. Map activation and
@@ -80,12 +82,28 @@ committed holds its models until recording ends. The last reference sends
 their GPU resources to the shared map retirement worker for destruction.
 First-person models use the same worker.
 
+The palette status (`scene_palette_*` in `render.scene`) distinguishes
+pending definitions, explicit null model references, failures, partial
+native coverage and resident definitions. A resident definition has a
+published model and a layer-3 material program for every drawn part and
+declared implementation across the model's sections. Material LODs with
+different base passes and parts outside the native object renderer's
+coverage keep the definition partial. Extraction checks the model's
+published upload as well as the selected part's native coverage. A
+failed GPU lookup for a covered part is a residency fallback
+(`native_objects_walk_unresident`).
+
 #### Frame stats
 
 The `native_objects_walk_native` and `native_objects_walk_fallback`
 columns count objects per view. Fallback reason columns have the same
-prefix and end in `unsupported`, `order`, `model`, `inputs`, `state`
-or `reservation`. `walk_unreadable` counts views whose sorted list or
+prefix and end in `unsupported`, `order`, `model`, `inputs`, `state`,
+`reservation` or `unresident`. `walk_unresident` counts the objects
+returned to the guest in a run whose requested model agrees with the
+loader's part coverage but has no uploaded geometry and materials.
+`walk_model` includes unresolved definitions, mismatched models and
+loader lock contention. These planning refusals keep the guest draws.
+`walk_unreadable` counts views whose sorted list or
 ownership could not be established. These views may have an unknown
 object count. `walk_part_aux_state`, `walk_part_subparts` and
 `walk_part_topology` count the parts (not objects) behind
@@ -619,10 +637,11 @@ vertex and no matrix work on the CPU.
   render-thread safe with the world and objects on (see "Pipelined
   render").
 - **Boot glue** (`crates/extensions/game/src/native_objects_glue.rs`).
-  The map worker owns the definition scan and GPU upload. A validated
-  model contributes its supported parts to draw admission. Materials
-  whose base map cannot decode keep their D3D draws. The worker logs
-  readiness after submitting the uploads and publishing its result as
+  The map worker owns the definition scan and GPU upload, palette
+  definitions first. A validated model contributes its supported parts to
+  draw admission. Materials whose base map cannot decode keep their D3D
+  draws. The worker logs readiness after submitting the uploads and
+  publishing its result as
   `native-objects: <map>: N definitions ready, M left to D3D`.
 - **Diagnostics.** Every layer-3 call of the observer ends in one counted
   `Stop`: first person (`[esp]` is `0x00040136`, left to D3D), wrong caller

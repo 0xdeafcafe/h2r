@@ -93,12 +93,22 @@ pub struct GameCtx<'a> {
     pub at: At,
     host: &'a mut BTreeMap<String, (Access, HostMethod)>,
     /// Set by [`GameCtx::defer`]: the answer comes at a later boundary.
-    later: Option<(Later, u64, Duration, bool)>,
+    later: Option<DeferredAnswer>,
 }
 
 /// A deferred answer ([`GameCtx::defer`]): polled at each boundary after
 /// the one that asked, `None` until it is ready.
 pub type Later = Box<dyn FnMut(&mut GameCtx<'_>) -> Option<Result<Value, RpcError>> + Send>;
+
+struct DeferredAnswer {
+    poll: Later,
+    ticks: u64,
+    wall: Duration,
+    // A decision made by guest code waits for the next tick. A render
+    // thread can finish an already sealed scene, and a Theater transport
+    // action can complete, while the guest tick is held.
+    paused_safe: bool,
+}
 
 /// The longest a deferred answer may wait, in game ticks, and in wall time
 /// whatever the ticks (a game that stopped ticking).
@@ -155,18 +165,29 @@ impl GameCtx<'_> {
     /// File preparation runs in wall time. A fast host may advance hundreds of
     /// ticks while copying one map, so only the normal wall deadline applies.
     pub(crate) fn defer_file(&mut self, poll: Later) {
-        self.later = Some((poll, u64::MAX, DEFER_WALL, false));
+        self.later = Some(DeferredAnswer { poll, ticks: u64::MAX, wall: DEFER_WALL, paused_safe: false });
     }
 
     /// A deferred operation with its own, shorter wall-clock deadline.
     pub fn defer_for(&mut self, ticks: u64, wall: Duration, poll: Later) {
-        self.later = Some((poll, ticks.clamp(1, DEFER_TICKS_MAX), wall.min(DEFER_WALL), false));
+        self.later = Some(DeferredAnswer {
+            poll, ticks: ticks.clamp(1, DEFER_TICKS_MAX), wall: wall.min(DEFER_WALL), paused_safe: false,
+        });
+    }
+
+    /// Poll work on another thread at each boundary, including a held
+    /// tick. The poll cannot read or write guest state.
+    pub(crate) fn defer_host(
+        &mut self,
+        mut poll: impl FnMut() -> Option<Result<Value, RpcError>> + Send + 'static,
+    ) {
+        self.defer_at_boundary(Box::new(move |_| poll()));
     }
 
     /// A host-side action can complete on a Theater transport poll while the
     /// guest tick is still held. Its poll must not depend on guest execution.
     pub fn defer_at_boundary(&mut self, poll: Later) {
-        self.later = Some((poll, DEFER_TICKS_MAX, DEFER_WALL, true));
+        self.later = Some(DeferredAnswer { poll, ticks: DEFER_TICKS_MAX, wall: DEFER_WALL, paused_safe: true });
     }
 }
 
@@ -1338,15 +1359,15 @@ impl State {
             {
                 t.record_lobby(b, m, &p)
             }
-            if let (Ok(_), Some((poll, ticks, wall, paused_safe))) = (&out, ctx.later.take()) {
+            if let (Ok(_), Some(later)) = (&out, ctx.later.take()) {
                 self.deferred.push(Deferred {
                     conn,
                     id: req.id,
-                    poll,
+                    poll: later.poll,
                     from_ticks: self.ticks,
-                    tick_limit: ticks,
-                    paused_safe,
-                    deadline: Instant::now() + wall,
+                    tick_limit: later.ticks,
+                    paused_safe: later.paused_safe,
+                    deadline: Instant::now() + later.wall,
                 });
                 return None;
             }

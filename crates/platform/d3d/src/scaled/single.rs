@@ -4,7 +4,7 @@ use super::*;
 
 impl<R: Backend, V: ScaleView<R>> ScaledBackend<R, V> {
     pub(super) fn single(&self) -> bool {
-        self.single_copy && (self.scale != RenderScale::ONE
+        self.single_copy && (self.scale != RenderScale::ONE || self.scene_active
             || (self.anamorphic_guest_frame() && self.lighting == Lighting::Retail))
     }
 
@@ -13,6 +13,11 @@ impl<R: Backend, V: ScaleView<R>> ScaledBackend<R, V> {
     }
 
     pub(super) fn image(&self, s: Surf<R, V>) -> V::Surface {
+        if self.scene_active {
+            // L3's carried draws share the baseline shadow-map policy in
+            // both modes. At 1x a guest image aliases the reference store.
+            return if self.scale == RenderScale::ONE { self.guest(s) } else { self.live(s.view).unwrap_or_else(|| self.guest(s)) };
+        }
         self.live(s.view).or_else(|| {
             if self.lighting == Lighting::Retail { return None; }
             self.shadow_at(&s.reference).and_then(|i| {
@@ -41,7 +46,7 @@ impl<R: Backend, V: ScaleView<R>> ScaledBackend<R, V> {
     // Make an E3 shadow's scaled attachment current before its first draw
     // or clear. The unscaled level remains the source until this succeeds.
     fn shadow_attachment(&mut self, depth: Surf<R, V>) -> Result<Option<(V::Surface, V::Surface)>, String> {
-        if self.lighting == Lighting::Retail { return Ok(None); }
+        if self.scene_active || self.lighting == Lighting::Retail { return Ok(None); }
         let Some(i) = self.shadow_at(&depth.reference) else { return Ok(None) };
         let guest = self.guest(depth);
         let Some(v) = self.shadow_view(i) else { return Ok(None) };

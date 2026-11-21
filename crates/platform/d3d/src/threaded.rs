@@ -62,13 +62,19 @@
 //! [`Backend::draw_owned`] move to the render thread without a copy, and
 //! their stream buffers come back for the device to refill.
 
+mod capacity;
+pub mod owner;
+mod probe;
+
+use crate::scene_sink::ReplaySample;
+
 /// Synchronous light reservations submitted to an actual worker thread.
 pub static LIGHT_WORKER_WAITS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
 use gfx::texture::{DecodedTexture, TextureDesc};
@@ -99,6 +105,15 @@ type Job<B> = Box<dyn FnOnce(&mut Worker<B>) + Send>;
 /// One queued backend command.
 enum Cmd<B: Backend> {
     Job(Job<B>),
+    /// Work independent of this frame's retained draws: allocate a fresh
+    /// resource or retrieve a visibility ticket from an earlier present.
+    Independent(Job<B>),
+    FrameStats(timeline::phase::WorkerFrame),
+    ProbeRead(Box<probe::Read>),
+    /// Resolves a shader resource at this exact point in the command list.
+    /// The original callback includes the backend's depth-alias fallback.
+    Sample(Box<SampleCmd<B>>),
+    ReleaseTexture(u64),
     /// The hot path, without a boxed closure. The draw is freed on the
     /// render thread; its stream buffers go back to the guest's side
     /// ([`Shared::spent`]), and so does its emptied box
@@ -106,10 +121,20 @@ enum Cmd<B: Backend> {
     /// allocation per draw.
     Draw(DrawBox),
     ExternalRun(Vec<ExternalRecording>),
+    /// Only emitted on the frame-owner path.
+    Render(owner::RenderOp),
+    OwnerPresent(Box<owner::Present<B>>),
 }
 
 /// A queued draw's box: `Some` while queued, emptied by the render thread.
 type DrawBox = Box<Option<DrawCmd>>;
+
+struct SampleCmd<B: Backend> {
+    surface: u32,
+    proxy: u64,
+    how: ReplaySample,
+    original: Job<B>,
+}
 
 struct DrawCmd {
     color: u32,
@@ -117,7 +142,32 @@ struct DrawCmd {
     textures: [Option<u64>; 4],
     /// The outcome already answered.
     expect: DrawOutcome,
-    draw: ResolvedDraw,
+    draw: QueuedDraw,
+}
+
+enum QueuedDraw {
+    Owned(ResolvedDraw),
+    Shared(Arc<ResolvedDraw>),
+}
+
+impl QueuedDraw {
+    fn into_owned(self) -> Option<ResolvedDraw> {
+        match self {
+            Self::Owned(draw) => Some(draw),
+            Self::Shared(draw) => Arc::into_inner(draw),
+        }
+    }
+}
+
+impl std::ops::Deref for QueuedDraw {
+    type Target = ResolvedDraw;
+
+    fn deref(&self) -> &ResolvedDraw {
+        match self {
+            Self::Owned(draw) => draw,
+            Self::Shared(draw) => draw.as_ref(),
+        }
+    }
 }
 
 /// The pending batch, shared with the texture proxies so that their drops
@@ -176,8 +226,15 @@ impl<B: Backend> Queue<B> {
 /// What lives on the render thread.
 pub struct Worker<B: Backend> {
     inner: B,
+    residency: crate::scene_stage::residency::Frame,
+    transaction: Option<owner::Transaction<B>>,
     surfaces: HashMap<u32, B::Surface>,
     textures: HashMap<u64, B::Texture>,
+    /// Source of a live immutable scene texture, indexed by its device proxy.
+    scene_uploads: HashMap<u64, std::sync::Weak<DecodedTexture>>,
+    /// Previous in-place colour samples keep a view into this original
+    /// surface. Immutable snapshots never enter this table.
+    live_sources: HashMap<u64, u32>,
     /// Pixel-count tickets not yet landed: proxy to the inner backend's,
     /// in report order.
     tickets: BTreeMap<u64, u64>,
@@ -201,6 +258,7 @@ pub struct Worker<B: Backend> {
 
 #[derive(Default)]
 struct Shared {
+    window: std::sync::OnceLock<Arc<crate::scene_sink::window::PresentWindow>>,
     /// Emptied draw boxes for the guest's side to fill (at most
     /// [`SPARE_DRAWS`]).
     spent_boxes: Mutex<Vec<DrawBox>>,
@@ -212,9 +270,7 @@ struct Shared {
     /// to refill, and their bytes.
     spent: Mutex<(Vec<Vec<StreamBytes>>, usize)>,
     misses: AtomicU64,
-    /// Presents the render thread has finished.
-    presented: Mutex<u64>,
-    presented_cv: Condvar,
+    display_capacity: capacity::DisplayCapacity,
     /// Wall time the render thread spent in the inner backend (ns).
     busy_ns: AtomicU64,
     /// Pixel counts already back from the GPU, by proxy ticket: the render
@@ -223,8 +279,9 @@ struct Shared {
     /// without waiting for the queue.
     landed: Mutex<HashMap<u64, u64>>,
     /// A [`Backend::try_pixel_count`] miss has queued a batch the render
-    /// thread has not run yet (one at a time).
-    land_kick: std::sync::atomic::AtomicBool,
+    /// thread has not run yet. An older report can land while the current
+    /// frame is retained. A current report has to submit that frame's draws.
+    land_kick: [std::sync::atomic::AtomicBool; 2],
     /// The inner backend's [`Backend::runs_scene_stages`], as the render
     /// thread last saw it (after each batch).
     scene_stages: std::sync::atomic::AtomicBool,
@@ -295,9 +352,26 @@ impl<B: Backend> Worker<B> {
             .copied()
             .ok_or_else(|| format!("render thread: surface {id} is not live"))
     }
+    fn measure_present_raster(&mut self, id: u32) -> crate::backend::RasterMeasurement {
+        if self.shared.window.get().is_some() {
+            let surface = self.surface(id).ok();
+            self.inner.measure_present_raster(surface)
+        } else {
+            Default::default()
+        }
+    }
+
     fn depth(&self, id: Option<u32>) -> Result<Option<B::Surface>, String> {
         id.map(|d| self.surface(d)).transpose()
     }
+    fn issue_report(&mut self, proxy: u64) -> Result<(), String> {
+        match self.inner.report_pixel_count()? {
+            Some(ticket) => { self.tickets.insert(proxy, ticket); }
+            None => self.shared.miss("report_pixel_count returned None".into()),
+        }
+        Ok(())
+    }
+
     /// Moves the pixel counts the GPU has written into
     /// [`Shared::landed`]. Same values as a read: only the wait goes.
     /// Reports finish in order, so it stops at the first not back.
@@ -337,26 +411,80 @@ impl<B: Backend> Worker<B> {
     }
 
     fn exec(&mut self, cmd: Cmd<B>) {
+        if let Cmd::Independent(job) = cmd {
+            job(self);
+            return;
+        }
+        if let Cmd::OwnerPresent(present) = cmd {
+            let metadata = present.metadata.clone();
+            crate::present_camera::with(metadata, || self.owner_present(*present));
+            return;
+        }
+        if let Some(pending) = self.transaction.as_mut() {
+            if pending.hold(&cmd) {
+                pending.commands.push(cmd);
+                return;
+            }
+            // A read, query, resource lifetime change or external command
+            // needs the original GPU state in queue order.
+            let commands = pending.barrier();
+            if !pending.refused && !commands.is_empty() {
+                // Only probe reads preceded this barrier. Preserve the
+                // bytes before it runs, and let the eventual presenter
+                // decide whether the diagnostic receives those bytes.
+                let mut saved = commands;
+                for cmd in &mut saved {
+                    if let Cmd::ProbeRead(read) = cmd {
+                        read.preserve(self);
+                    }
+                }
+                self.transaction.as_mut().expect("owner installed").commands = saved;
+            } else {
+                for saved in commands {
+                    self.exec_original(saved);
+                }
+            }
+        }
+        self.exec_original(cmd);
+    }
+
+    fn release_texture(&mut self, proxy: u64) {
+        self.textures.remove(&proxy);
+        self.scene_uploads.remove(&proxy);
+        self.live_sources.remove(&proxy);
+    }
+
+    fn exec_original(&mut self, cmd: Cmd<B>) {
         match cmd {
-            Cmd::Job(job) => job(self),
+            Cmd::Render(op) => self.run(|worker| op.issue(worker)),
+            Cmd::OwnerPresent(_) => unreachable!("a present terminates the owner transaction"),
+            Cmd::Sample(sample) => (sample.original)(self),
+            Cmd::Job(job) | Cmd::Independent(job) => job(self),
+            Cmd::FrameStats(frame) => frame.finish(),
+            Cmd::ProbeRead(read) => read.deliver(self),
+            Cmd::ReleaseTexture(proxy) => self.release_texture(proxy),
             Cmd::ExternalRun(run) => {
                 for recording in run { self.inner.commit_external(recording); }
             }
-            Cmd::Draw(mut slot) => {
-                let d = slot.take().expect("a queued draw");
-                self.spent_boxes.push(slot);
-                if let Err(e) = self.draw(&d) {
+            Cmd::Draw(slot) => {
+                if let Err(e) = self.draw(slot.as_ref().as_ref().expect("a queued draw")) {
                     self.shared.latch(e);
                 }
-                let DrawCmd { draw, .. } = d;
-                let mut streams = draw.streams;
-                // Vertex cache snapshots are released here; only copies
-                // go back to be refilled.
-                streams.retain(|s| s.data.cache_id().is_none());
-                self.spent.push(streams);
-                self.spent_constants.push(draw.shader.constants);
+                self.recycle_draw(slot);
             }
         }
+    }
+
+    fn recycle_draw(&mut self, mut slot: DrawBox) {
+        let DrawCmd { draw, .. } = slot.take().expect("a queued draw");
+        self.spent_boxes.push(slot);
+        let Some(draw) = draw.into_owned() else { return };
+        let mut streams = draw.streams;
+        // Vertex cache snapshots are released here; only copies go back
+        // to be refilled on the next frame.
+        streams.retain(|s| s.data.cache_id().is_none());
+        self.spent.push(streams);
+        self.spent_constants.push(draw.shader.constants);
     }
 
     fn draw(&mut self, d: &DrawCmd) -> Result<(), String> {
@@ -372,6 +500,7 @@ impl<B: Backend> Worker<B> {
             }
         }
         let r = self.inner.draw(c, depth, &d.draw, tex)?;
+        self.residency.guest_draw(&r);
         if r != d.expect {
             self.shared.miss(format!(
                 "{}: answered {:?}, the backend gave {r:?}",
@@ -422,9 +551,7 @@ impl<B: Backend + 'static> Drop for ProxyTexture<B> {
     fn drop(&mut self) {
         let id = self.id;
         // After the render thread exits there is nothing left to free.
-        let _ = self.queue.push(Cmd::Job(Box::new(move |w: &mut Worker<B>| {
-            w.textures.remove(&id);
-        })));
+        let _ = self.queue.push(Cmd::ReleaseTexture(id));
     }
 }
 
@@ -447,6 +574,7 @@ struct PinnedExternalRun {
 /// [`Backend`] that queues `B`'s work to a render thread.
 pub struct ThreadedBackend<B: Backend + 'static> {
     queue: Arc<Queue<B>>,
+    frame_owner: Option<owner::FrameOwner<B>>,
     /// Stream buffers taken from [`Shared::spent`], handed back one draw's
     /// worth per draw.
     spare: Vec<Vec<StreamBytes>>,
@@ -467,6 +595,8 @@ pub struct ThreadedBackend<B: Backend + 'static> {
     next_surface: u32,
     next_texture: u64,
     next_ticket: u64,
+    /// First visibility ticket that can depend on this present's commands.
+    first_frame_ticket: u64,
     presents: u64,
     synchronous_presents: bool,
     waits: Waits,
@@ -480,6 +610,12 @@ pub struct ThreadedBackend<B: Backend + 'static> {
 }
 
 impl<B: Backend + 'static> ThreadedBackend<B> {
+    /// Installs the counter window shared with this device's guest sink.
+    pub fn with_present_window(self, window: Option<Arc<crate::scene_sink::window::PresentWindow>>) -> Self {
+        if let Some(window) = window { let _ = self.shared.window.set(window); }
+        self
+    }
+
     /// Offline capture must finish every swap before the replay clock advances.
     pub fn with_synchronous_presents(mut self, enabled: bool) -> Self {
         self.synchronous_presents = enabled;
@@ -504,14 +640,19 @@ impl<B: Backend + 'static> ThreadedBackend<B> {
         let join = std::thread::Builder::new()
             .name("d3d-render".into())
             .spawn(move || {
+                let _worker_lifetime = capacity::WorkerLifetime(Arc::clone(&s));
                 if let Some(hook) = RENDER_THREAD_START.get() {
                     hook();
                 }
                 timeline::native::mark_render_thread();
                 let mut w = Worker {
                     inner,
+                    residency: Default::default(),
+                    transaction: None,
                     surfaces: HashMap::new(),
                     textures: HashMap::new(),
+                    scene_uploads: HashMap::new(),
+                    live_sources: HashMap::new(),
                     tickets: BTreeMap::new(),
                     depth_words: None,
                     shared: s,
@@ -581,15 +722,13 @@ impl<B: Backend + 'static> ThreadedBackend<B> {
                     // idle work answer `None` and the loop blocks again.
                     wake = Some(std::time::Instant::now());
                 }
-                // Wake a guest waiting on a frame that will never finish.
-                *w.shared.presented.lock().unwrap() = u64::MAX;
-                w.shared.presented_cv.notify_all();
             })?;
         Ok(Self {
             queue: Arc::new(Queue {
                 pending: Mutex::new(PendingBatch { commands: Vec::with_capacity(BATCH), order: 0 }),
                 tx,
             }),
+            frame_owner: None,
             spare: Vec::new(),
             spare_boxes: Vec::new(),
             join: Some(join),
@@ -606,6 +745,7 @@ impl<B: Backend + 'static> ThreadedBackend<B> {
             next_surface: 1,
             next_texture: 1,
             next_ticket: 1,
+            first_frame_ticket: 1,
             presents: 0,
             synchronous_presents: false,
             waits: Waits::default(),
@@ -682,6 +822,22 @@ impl<B: Backend + 'static> ThreadedBackend<B> {
         self.push(Cmd::Job(Box::new(move |w: &mut Worker<B>| w.run(f))));
     }
 
+    fn post_create(&self, f: impl FnOnce(&mut Worker<B>) -> Result<(), String> + Send + 'static) {
+        let create: Job<B> = Box::new(move |w| w.run(f));
+        self.push(if self.frame_owner.is_some() { Cmd::Independent(create) } else { Cmd::Job(create) });
+    }
+
+    fn post_sample(
+        &self, surface: u32, proxy: u64, how: Option<ReplaySample>,
+        issue: impl FnOnce(&mut Worker<B>) -> Result<(), String> + Send + 'static,
+    ) {
+        let original: Job<B> = Box::new(move |w| w.run(issue));
+        self.push(match how {
+            Some(how) => Cmd::Sample(Box::new(SampleCmd { surface, proxy, how, original })),
+            None => Cmd::Job(original),
+        });
+    }
+
     fn push(&self, cmd: Cmd<B>) {
         if self.queue.push(cmd).is_err() {
             self.shared.latch("render thread: gone".into());
@@ -706,6 +862,31 @@ impl<B: Backend + 'static> ThreadedBackend<B> {
     }
 
     /// `cmd` in a draw box the render thread has emptied, or a new one.
+    fn queue_draw(
+        &mut self,
+        color: u32,
+        depth: Option<u32>,
+        draw: QueuedDraw,
+        textures: [Option<&ProxyTexture<B>>; 4],
+    ) -> (Result<DrawOutcome, String>, Vec<StreamBytes>) {
+        if let Err(e) = self.check() {
+            return (Err(e), draw.into_owned().map(|d| d.streams).unwrap_or_default());
+        }
+        // A skipped draw still goes to the render thread: the inner
+        // backend submits a pass for another target before it skips.
+        let judged = self.judge_draw(&draw, textures);
+        let ids = textures.map(|t| t.map(|t| t.id));
+        let slot = self.draw_box(DrawCmd {
+            color,
+            depth,
+            textures: ids,
+            expect: judged.clone(),
+            draw,
+        });
+        self.push(Cmd::Draw(slot));
+        (Ok(judged), self.spare_streams())
+    }
+
     fn draw_box(&mut self, cmd: DrawCmd) -> DrawBox {
         if self.spare_boxes.is_empty() {
             std::mem::swap(
@@ -735,9 +916,23 @@ impl<B: Backend + 'static> ThreadedBackend<B> {
         }
     }
 
+    /// Classify before enqueueing: tickets older than the last Swap's fence
+    /// depend only on backend submissions preceding this frame.
+    fn previous_report(&self, ticket: u64) -> bool {
+        self.frame_owner.is_some() && ticket < self.first_frame_ticket
+    }
+
     /// Runs `f` after everything queued, and waits for its answer.
     fn call<R: Send + 'static>(
         &mut self,
+        f: impl FnOnce(&mut Worker<B>) -> Result<R, String> + Send + 'static,
+    ) -> Result<R, String> {
+        self.call_job(Cmd::Job, f)
+    }
+
+    fn call_job<R: Send + 'static>(
+        &mut self,
+        command: fn(Job<B>) -> Cmd<B>,
         f: impl FnOnce(&mut Worker<B>) -> Result<R, String> + Send + 'static,
     ) -> Result<R, String> {
         self.check()?;
@@ -746,7 +941,7 @@ impl<B: Backend + 'static> ThreadedBackend<B> {
         let (rtx, rrx) = mpsc::sync_channel(1);
         let gone = |_| "render thread: gone".to_string();
         self.queue
-            .push(Cmd::Job(Box::new(move |w: &mut Worker<B>| {
+            .push(command(Box::new(move |w: &mut Worker<B>| {
                 let _ = rtx.send(f(w));
             })))
             .map_err(gone)?;
@@ -827,6 +1022,10 @@ impl<B: Backend + 'static> Drop for ThreadedBackend<B> {
         if let Some(j) = self.join.take() {
             let _ = j.join();
         }
+        if let Some(owner) = self.frame_owner.take() {
+            owner::uninstall();
+            owner.events.stopped();
+        }
     }
 }
 
@@ -848,6 +1047,23 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
     type Surface = u32;
     type Texture = ProxyTexture<B>;
 
+    fn retain_scene_sample(&self, texture: &Self::Texture) -> Option<crate::scene_sink::FrozenSample> {
+        if !Arc::ptr_eq(&self.queue, &texture.queue) { return None; }
+        let id = texture.id;
+        let (sample, send) = crate::scene_sink::FrozenSample::pending(id);
+        // The producing present precedes this job and any guest release
+        // follows it. For an in-place view the result identifies its GPU
+        // image; the seal reads the corresponding attachment at the draw.
+        self.push(Cmd::Independent(Box::new(move |worker| {
+            let images = worker.textures.get(&id).and_then(|t| worker.inner.frozen_images(t));
+            let _ = send.send(images);
+        })));
+        // The sim may pause at the sealed-frame boundary before its next
+        // Swap. Dispatch the job now without waiting for the worker.
+        self.flush();
+        Some(sample)
+    }
+
     fn drain(&mut self) -> Result<(), String> {
         self.finish()
     }
@@ -862,7 +1078,7 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
         self.check()?;
         let id = self.new_surface();
         self.surface_formats.insert(id, (format, depth));
-        self.post(move |w| {
+        self.post_create(move |w| {
             let s = w.inner.create_surface(format, width, height, depth)?;
             w.surfaces.insert(id, s);
             Ok(())
@@ -879,7 +1095,7 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
         self.check()?;
         let id = self.new_surface();
         self.surface_formats.insert(id, (format, false));
-        self.post(move |w| {
+        self.post_create(move |w| {
             let s = w.inner.create_texture_target(format, width, height)?;
             w.surfaces.insert(id, s);
             Ok(())
@@ -893,6 +1109,7 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
         self.post(move |w| {
             let s = w.surface(surface)?;
             w.surfaces.remove(&surface);
+            w.live_sources.retain(|_, source| *source != surface);
             w.inner.destroy_surface(s)
         });
         Ok(())
@@ -904,12 +1121,26 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
         let t = self.new_texture(view);
         let id = t.id;
         let texture = texture.clone();
-        self.post(move |w| {
+        self.post_create(move |w| {
             let h = w.inner.upload_texture(&texture)?;
             w.textures.insert(id, h);
             Ok(())
         });
         Ok(t)
+    }
+
+    fn upload_shared(&mut self, texture: Arc<DecodedTexture>) -> Result<ProxyTexture<B>, String> {
+        self.check()?;
+        let view = self.judge.as_ref().is_none_or(|j| j.upload_view(&texture));
+        let handle = self.new_texture(view);
+        let id = handle.id;
+        self.post_create(move |w| {
+            let gpu_texture = w.inner.upload_texture(&texture)?;
+            w.scene_uploads.insert(id, Arc::downgrade(&texture));
+            w.textures.insert(id, gpu_texture);
+            Ok(())
+        });
+        Ok(handle)
     }
 
     fn bc_supported(&self) -> bool {
@@ -918,6 +1149,10 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
 
     fn clear(&mut self, color: u32, depth: Option<u32>, clear: Clear) -> Result<(), String> {
         self.check()?;
+        if self.frame_owner.is_some() {
+            self.push(Cmd::Render(owner::RenderOp::Clear { color, depth, clear: Box::new(clear) }));
+            return Ok(());
+        }
         self.post(move |w| {
             let (c, d) = (w.surface(color)?, w.depth(depth)?);
             w.inner.clear(c, d, clear)
@@ -945,30 +1180,22 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
         draw: ResolvedDraw,
         textures: [Option<&ProxyTexture<B>>; 4],
     ) -> (Result<DrawOutcome, String>, Vec<StreamBytes>) {
-        if let Err(e) = self.check() {
-            return (Err(e), draw.streams);
-        }
-        // A skipped draw still goes to the render thread: the inner
-        // backend submits a pass for another target before it skips.
-        let judged = self.judge_draw(&draw, textures);
-        let ids = textures.map(|t| t.map(|t| t.id));
-        let slot = self.draw_box(DrawCmd {
-            color,
-            depth,
-            textures: ids,
-            expect: judged.clone(),
-            draw,
-        });
-        self.push(Cmd::Draw(slot));
-        (Ok(judged), self.spare_streams())
+        self.queue_draw(color, depth, QueuedDraw::Owned(draw), textures)
+    }
+
+    fn draw_shared(
+        &mut self,
+        color: u32,
+        depth: Option<u32>,
+        draw: Arc<ResolvedDraw>,
+        textures: [Option<&ProxyTexture<B>>; 4],
+    ) -> (Result<DrawOutcome, String>, Vec<StreamBytes>) {
+        self.queue_draw(color, depth, QueuedDraw::Shared(draw), textures)
     }
 
     fn frame_stats(&mut self) {
         if let Some(frame) = timeline::phase::forward_frame() {
-            self.post(move |_| {
-                frame.finish();
-                Ok(())
-            });
+            self.push(Cmd::FrameStats(frame));
         }
     }
 
@@ -989,38 +1216,51 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
         self.check()?;
         let gamma = gamma.map(|g| Box::new(*g));
         self.presents += 1;
+        self.first_frame_ticket = self.next_ticket;
         let n = self.presents;
         // The arrival, read on the guest's thread (the render thread may
         // reach this present a frame later).
         let at = std::time::Instant::now();
         let metadata = crate::present_camera::current();
-        self.post(move |w| {
-            let s = w.surface(surface)?;
-            w.inner.stamp_present(at);
-            let r = crate::present_camera::with(metadata, || {
-                w.inner.present_with_gamma(s, flags, gamma.as_deref())
+        let owned = self.frame_owner.is_some();
+        if owned {
+            // At most two sealed transactions wait to be taken. Refused
+            // transactions occupy their slot through the original Swap.
+            self.wait_for_display_capacity(n)?;
+        }
+        if let Some(owner) = self.frame_owner.as_mut() {
+            let events = Arc::clone(&owner.events);
+            let generation = events.generation();
+            let candidate = (owner.select)(n, generation);
+            self.push(Cmd::OwnerPresent(Box::new(owner::Present {
+                n, surface, at, flags, gamma, candidate, generation, events, metadata,
+            })));
+        } else {
+            self.post(move |w| {
+                let raster = w.measure_present_raster(surface);
+                w.inner.stamp_present(at);
+                let r = w.surface(surface).and_then(|s| crate::present_camera::with(metadata, || {
+                    w.inner.present_with_gamma(s, flags, gamma.as_deref())
+                }));
+                let complete = r.is_ok() && !w.inner.last_present_unshown() && !w.shared.failed.load(Ordering::Relaxed);
+                let residency = w.residency.present(complete);
+                if let Some(window) = w.shared.window.get() {
+                    use crate::scene_sink::window::DisplayResult;
+                    let outcome = if complete { DisplayResult::Ordinary } else { DisplayResult::Failed };
+                    let extent = w.inner.take_presented_extent().filter(|_| complete);
+                    window.complete_at_scale(n, outcome, residency, crate::scene_stage::take_local_drops(), raster.finish(extent));
+                }
+                w.shared.display_capacity.release(n);
+                r?;
+                w.land_pixel_counts()
             });
-            *w.shared.presented.lock().unwrap() = n;
-            w.shared.presented_cv.notify_all();
-            r?;
-            w.land_pixel_counts()
-        });
+        }
         self.flush();
         if self.synchronous_presents {
             return self.call(|_| Ok(()));
         }
-        // Frame-in-flight limit: wall time only, never logical time.
-        let t = std::time::Instant::now();
-        let mut done = self.shared.presented.lock().unwrap();
-        if n.saturating_sub(*done) > MAX_FRAMES_IN_FLIGHT {
-            let _phase = timeline::phase::enter(timeline::phase::Phase::RenderWait);
-            self.waits.throttles += 1;
-            while n.saturating_sub(*done) > MAX_FRAMES_IN_FLIGHT {
-                done = self.shared.presented_cv.wait(done).unwrap();
-            }
-            self.waits.throttle_wait += t.elapsed();
-            THROTTLES.fetch_add(1, Ordering::Relaxed);
-            THROTTLE_NS.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        if !owned {
+            self.wait_for_display_capacity(n)?;
         }
         Ok(())
     }
@@ -1033,6 +1273,10 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
     ) -> Result<DrawOutcome, String> {
         self.check()?;
         let clear = clear.clone();
+        if self.frame_owner.is_some() {
+            self.push(Cmd::Render(owner::RenderOp::ClearRects { color, depth, clear: Box::new(clear) }));
+            return Ok(DrawOutcome::Drawn);
+        }
         let shared = Arc::clone(&self.shared);
         self.post(move |w| {
             let (c, d) = (w.surface(color)?, w.depth(depth)?);
@@ -1043,6 +1287,17 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
             Ok(())
         });
         Ok(DrawOutcome::Drawn)
+    }
+
+    fn queue_frame_probe_read(
+        &mut self, surface: u32, width: u32, height: u32,
+        done: Box<dyn FnOnce(Result<Vec<u8>, String>) + Send>,
+    ) {
+        if let Err(error) = self.check() {
+            done(Err(error));
+            return;
+        }
+        self.push(Cmd::ProbeRead(Box::new(probe::Read::new(surface, width, height, done))));
     }
 
     fn render_extents(
@@ -1097,6 +1352,10 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
 
     fn copy_surface(&mut self, src: u32, dst: u32) -> Result<bool, String> {
         self.check()?;
+        if self.frame_owner.is_some() {
+            self.push(Cmd::Render(owner::RenderOp::Copy { src, dst }));
+            return Ok(true);
+        }
         let shared = Arc::clone(&self.shared);
         self.post(move |w| {
             let (s, d) = (w.surface(src)?, w.surface(dst)?);
@@ -1117,6 +1376,10 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
         self.check()?;
         let desc = desc.clone();
         let bytes = bytes.to_vec();
+        if self.frame_owner.is_some() {
+            self.push(Cmd::Render(owner::RenderOp::Upload { surface, data: Box::new((desc, bytes)) }));
+            return Ok(true);
+        }
         let shared = Arc::clone(&self.shared);
         self.post(move |w| {
             let s = w.surface(surface)?;
@@ -1137,7 +1400,8 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
         let t = self.new_texture(self.surface_view(surface));
         let id = t.id;
         let shared = Arc::clone(&self.shared);
-        self.post(move |w| {
+        let sample = self.frame_owner.as_ref().map(|_| ReplaySample::Snapshot { opaque });
+        self.post_sample(surface, id, sample, move |w| {
             let s = w.surface(surface)?;
             match w.inner.snapshot_surface(s, opaque)? {
                 Some(h) => {
@@ -1152,25 +1416,24 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
 
     fn clear_pixel_count(&mut self) -> Result<(), String> {
         self.check()?;
-        self.post(|w| w.inner.clear_pixel_count());
+        if self.frame_owner.is_some() {
+            self.push(Cmd::Render(owner::RenderOp::BeginQuery));
+        } else {
+            self.post(|w| w.inner.clear_pixel_count());
+        }
         Ok(())
     }
 
     fn report_pixel_count(&mut self) -> Result<Option<u64>, String> {
         self.check()?;
-        let ticket = self.next_ticket;
+        let proxy = self.next_ticket;
         self.next_ticket += 1;
-        let shared = Arc::clone(&self.shared);
-        self.post(move |w| {
-            match w.inner.report_pixel_count()? {
-                Some(t) => {
-                    w.tickets.insert(ticket, t);
-                }
-                None => shared.miss("report_pixel_count returned None".into()),
-            }
-            Ok(())
-        });
-        Ok(Some(ticket))
+        if self.frame_owner.is_some() {
+            self.push(Cmd::Render(owner::RenderOp::EndQuery { proxy }));
+        } else {
+            self.post(move |w| w.issue_report(proxy));
+        }
+        Ok(Some(proxy))
     }
 
     fn read_pixel_count(&mut self, ticket: u64) -> Result<u64, String> {
@@ -1182,7 +1445,8 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
             self.waits.landed_counts += 1;
             return Ok(c);
         }
-        self.call(move |w| {
+        let command: fn(Job<B>) -> Cmd<B> = if self.previous_report(ticket) { Cmd::Independent } else { Cmd::Job };
+        self.call_job(command, move |w| {
             // It may have landed after the check above.
             if let Some(c) = w.shared.landed.lock().unwrap().remove(&ticket) {
                 return Ok(c);
@@ -1207,12 +1471,14 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
         }
         PENDING_COUNTS.fetch_add(1, Ordering::Relaxed);
         self.waits.pending_counts += 1;
-        if !self.shared.land_kick.swap(true, Ordering::AcqRel) {
-            // The guest is waiting on it: submit a report still open.
-            self.post(|w| {
-                w.shared.land_kick.store(false, Ordering::Release);
-                w.land_pixel_counts()
+        let previous = self.previous_report(ticket);
+        let index = usize::from(previous);
+        if !self.shared.land_kick[index].swap(true, Ordering::AcqRel) {
+            let kick: Job<B> = Box::new(move |w| {
+                w.shared.land_kick[index].store(false, Ordering::Release);
+                w.run(Worker::land_pixel_counts);
             });
+            self.push(if previous { Cmd::Independent(kick) } else { Cmd::Job(kick) });
         }
         self.flush();
         Ok(None)
@@ -1220,13 +1486,13 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
 
     fn drop_pixel_count(&mut self, ticket: u64) {
         self.shared.landed.lock().unwrap().remove(&ticket);
-        self.post(move |w| {
+        let drop_ticket: Job<B> = Box::new(move |w| {
             w.shared.landed.lock().unwrap().remove(&ticket);
             if let Some(t) = w.tickets.remove(&ticket) {
                 w.inner.drop_pixel_count(t);
             }
-            Ok(())
         });
+        self.push(if self.previous_report(ticket) { Cmd::Independent(drop_ticket) } else { Cmd::Job(drop_ticket) });
     }
 
     fn can_sample_surfaces(&self) -> bool {
@@ -1374,6 +1640,7 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
             let result = w.inner.draw(color, depth, &draw, textures);
             (candidate.finished)(Some(&result));
             let outcome = result?;
+            w.residency.guest_draw(&outcome);
             if outcome != DrawOutcome::Drawn {
                 w.shared.miss(format!("{}: answered Drawn, the backend gave {outcome:?}", draw.entry));
             }
@@ -1401,22 +1668,7 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
         crate::scene_stage::queued(kind);
         // A stage changes what a pinned run's attachments hold.
         self.pinned_external_run = None;
-        self.post(move |w| {
-            let crate::SceneStage { surfaces, request, plan, pass } = stage;
-            let ranges = plan.ranges;
-            let Some(surfaces) = surfaces.try_map(|s| w.surfaces.get(s).copied()) else {
-                crate::scene_stage::dropped(kind, ranges, "a target is not live on the render thread");
-                return Ok(());
-            };
-            if !w.inner.runs_scene_stages() {
-                crate::scene_stage::dropped(kind, ranges, "the backend stopped taking scene stages");
-                return Ok(());
-            }
-            if !w.inner.run_scene_stage(crate::SceneStage { surfaces, request, plan, pass })? {
-                crate::scene_stage::dropped(kind, ranges, "the render thread could not record it");
-            }
-            Ok(())
-        });
+        self.push(Cmd::Render(owner::RenderOp::Stage(Box::new(stage))));
         true
     }
 
@@ -1438,6 +1690,16 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
             w.inner.commit_external(recording);
             Ok(())
         });
+    }
+
+    #[cfg(feature = "gpu")]
+    fn upload_scene_assets(&mut self, upload: crate::backend::AssetUpload) {
+        self.post_create(move |w| {
+            w.inner.upload_scene_assets(upload);
+            Ok(())
+        });
+        // Asset prefetch can start before the first guest frame fills a batch.
+        self.flush();
     }
 
     fn upload_device(&self) -> Option<(wgpu::Device, wgpu::Queue)> {
@@ -1485,7 +1747,8 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
         let t = self.new_texture(true);
         let id = t.id;
         let shared = Arc::clone(&self.shared);
-        self.post(move |w| {
+        let sample = self.frame_owner.as_ref().map(|_| ReplaySample::Depth);
+        self.post_sample(surface, id, sample, move |w| {
             let s = w.surface(surface)?;
             match w.inner.depth_level_texture(s)? {
                 Some(h) => {
@@ -1541,7 +1804,8 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
         let id = t.id;
         let desc = desc.clone();
         let shared = Arc::clone(&self.shared);
-        self.post(move |w| {
+        let sample = self.frame_owner.as_ref().map(|_| ReplaySample::Alias { format, width, height, pitch, generation, offset, desc: desc.clone(), options });
+        self.post_sample(depth, id, sample, move |w| {
             // A backend that makes the texture itself (`GfxBackend` decodes
             // the words on the GPU) does, with no read-back here.
             if w.inner.defers_depth_aliases() || w.inner.handles_surface_aliases() {
@@ -1596,11 +1860,16 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
         let t = self.new_texture(self.surface_view(surface));
         let id = t.id;
         let shared = Arc::clone(&self.shared);
-        self.post(move |w| {
+        let track_source = self.frame_owner.is_some();
+        let sample = track_source.then_some(ReplaySample::InPlace);
+        self.post_sample(surface, id, sample, move |w| {
             let s = w.surface(surface)?;
             match w.inner.surface_texture(s)? {
                 Some(h) => {
                     w.textures.insert(id, h);
+                    if track_source {
+                        w.live_sources.insert(id, surface);
+                    }
                 }
                 None => shared.miss("surface_texture returned None".into()),
             }

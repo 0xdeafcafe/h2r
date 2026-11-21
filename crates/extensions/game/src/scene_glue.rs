@@ -47,28 +47,105 @@ fn entries() -> Option<SceneEntries> {
     })
 }
 
-fn source(dump: bool) -> Result<SceneReply, String> {
-    // The sink's counters only while it records: zero readbacks from a
-    // sink that is off would read as a pass.
-    let sink = render_bridge::carried_slots::slot().is_some();
-    let counters: BTreeMap<String, u64> = render_bridge::scene_step::counters()
+fn counters(sink: bool) -> BTreeMap<String, u64> {
+    let mut counts: BTreeMap<String, u64> = render_bridge::scene_step::counters()
         .into_iter()
         .map(|(k, v)| (k.to_owned(), v))
         .chain(d3d::scene_stage::counters())
         .chain(render_bridge::native_layers::counters())
         .chain(sink.then(d3d::scene_sink::counters).into_iter().flatten())
         .collect();
+    #[cfg(feature = "gpu")]
+    if sink { counts.extend(crate::native_objects_glue::palette_counters()); }
+    if sink && let Some(residency) = d3d::scene_stage::residency::counters() {
+        counts.extend(residency.map(|(name, n)| (name.to_owned(), n)));
+    }
+    if sink && let Some(window) = present_window() { counts.extend(window.counters()); }
+    if let Some(queue) = crate::frame_owner::private_mailbox_stats() {
+        counts.insert("scene_private_published".into(), queue.published);
+        counts.insert("scene_private_taken".into(), queue.taken);
+        counts.insert("scene_private_replaced".into(), queue.dropped);
+        counts.insert("scene_private_waiting".into(), queue.waiting as u64);
+    }
+    if let Some(owner) = d3d::threaded::owner::stats() {
+        counts.insert("scene_owned_presented".into(), owner.presented);
+        counts.insert("scene_owned_declined".into(), owner.declined);
+        counts.insert("scene_owned_flare_queries".into(), owner.flare_queries);
+        counts.insert("scene_owned_candidates".into(), owner.candidates);
+        counts.insert("scene_owned_barriers".into(), owner.barriers);
+        counts.insert("scene_owned_mismatches".into(), owner.mismatches);
+        counts.insert("scene_owned_target_refusals".into(), owner.target_refusals);
+    }
+    counts
+}
+
+type Window = d3d::scene_sink::window::PresentWindow;
+static WINDOW: std::sync::Mutex<std::sync::Weak<Window>> = std::sync::Mutex::new(std::sync::Weak::new());
+
+pub(crate) fn set_present_window(window: Option<&std::sync::Arc<Window>>) {
+    *WINDOW.lock().unwrap_or_else(|e| e.into_inner()) = window.map(std::sync::Arc::downgrade).unwrap_or_default();
+}
+
+fn present_window() -> Option<std::sync::Arc<Window>> {
+    WINDOW.lock().unwrap_or_else(|e| e.into_inner()).upgrade()
+}
+
+pub(crate) fn next_game() {
+    if let Some(window) = present_window() { window.next_game(); }
+}
+
+static ACTIVATION: std::sync::OnceLock<agent_proto::SceneCensusActivation> = std::sync::OnceLock::new();
+
+/// Called by level boot at the same boundary as its first-level-loaded mark.
+/// Taking the baseline here preserves the earliest frames after activation
+/// even if an agent attaches much later.
+pub(crate) fn level_activated(map: &str, present: u64) {
+    if render_bridge::carried_slots::slot().is_some() {
+        ACTIVATION.get_or_init(|| {
+            if let Some(window) = present_window() { window.activate(); }
+            let mut c = counters(true);
+            let frame = c["scene_carried_frames"];
+            c.retain(|k, _| {
+                k.starts_with("scene_dropped_") || k.starts_with("scene_readback")
+                    || k.starts_with("scene_owned_") || k.starts_with("scene_residency_") || k == "scene_unresident" || k == "scene_carried_game_frames"
+            });
+            agent_proto::SceneCensusActivation { map: map.into(), present, frame, counters: c }
+        });
+    }
+}
+
+fn source(dump: bool) -> Result<SceneReply, String> {
+    // An inactive sink must not report zero measured readbacks.
+    let sink = render_bridge::carried_slots::slot().is_some();
+    let counters = counters(sink);
     let summary = if sink { d3d::scene_sink::last() } else { None };
+    let census = if sink { d3d::scene_sink::census().map(carried_census) } else { None };
+    let checkpoint = if sink {
+        present_window().and_then(|w| w.checkpoint()).map(|p| agent_proto::SceneCensusCheckpoint {
+            present: d3d::scene_sink::window::CORPUS_PRESENT,
+            sealed: p.sealed,
+            inventory: p.inventory.map(|c| carried_census((*c).clone())),
+            counters: p.counters,
+        })
+    } else {
+        None
+    };
     let Some(scene) = render_bridge::scene_step::last() else {
         return Ok(SceneReply {
             counters,
             entries: entries(),
             carried: summary.as_ref().map(carried),
+            carried_census: census,
+            carried_checkpoint: checkpoint,
+            carried_activation: ACTIVATION.get().cloned(),
             ..SceneReply::default()
         });
     };
     let mut reply = reply(&scene, counters, summary.as_ref());
     reply.entries = entries();
+    reply.carried_census = census;
+    reply.carried_checkpoint = checkpoint;
+    reply.carried_activation = ACTIVATION.get().cloned();
     if dump {
         reply.dump = Some(write_dump(&scene)?);
     }
@@ -115,6 +192,23 @@ fn carried(s: &CarriedSummary) -> SceneCarried {
     }
 }
 
+fn carried_census(census: d3d::scene_sink::Census) -> agent_proto::SceneCarriedCensus {
+    let uses = |u: d3d::scene_sink::Uses| agent_proto::SceneUses {
+        count: u.count, first_frame: u.first_frame, last_frame: u.last_frame,
+    };
+    agent_proto::SceneCarriedCensus {
+        frames: census.frames,
+        game_frames: census.game_frames,
+        targets: census.targets.into_iter().map(|(t, u)| agent_proto::SceneTargetUse {
+            width: t.width, height: t.height, format: t.format, depth: t.depth,
+            slot: t.slot.name().into(), operation: t.operation.into(), uses: uses(u),
+        }).collect(),
+        reads: census.reads.into_iter().map(|((slot, kind), u)| agent_proto::SceneReadUse {
+            slot: slot.name().into(), kind: kind.into(), uses: uses(u),
+        }).collect(),
+    }
+}
+
 /// A game view's carried ops by slot, from the sink's frame: those of the
 /// guest view of its index.
 fn view_carried(summary: Option<&CarriedSummary>, view: &frame_scene::View) -> BTreeMap<String, u32> {
@@ -124,12 +218,21 @@ fn view_carried(summary: Option<&CarriedSummary>, view: &frame_scene::View) -> B
 
 /// The summary of `scene`, with the sink's last frame when it records.
 fn reply(scene: &FrameScene, counters: BTreeMap<String, u64>, summary: Option<&CarriedSummary>) -> SceneReply {
+    let hash = format!("{:016x}", frame_scene::summary_hash(scene));
+    let private_frame = agent::render::private_graph::last_stats().filter(|p| {
+        p.map_epoch == scene.id.map_epoch && p.frame == scene.id.frame && p.tick == scene.id.tick && p.scene_hash == hash
+    });
+    let display_frame = agent::render::private_graph::display_stats().filter(|p| {
+        p.map_epoch == scene.id.map_epoch && p.frame == scene.id.frame && p.tick == scene.id.tick
+    });
     SceneReply {
+        display_frame,
+        private_frame,
         sealed: true,
         map_epoch: scene.id.map_epoch as u32,
         frame: scene.id.frame,
         tick: scene.id.tick,
-        hash: format!("{:016x}", frame_scene::summary_hash(scene)),
+        hash,
         cut: scene.cut.names().into_iter().map(str::to_owned).collect(),
         views: scene
             .views
@@ -157,7 +260,13 @@ fn reply(scene: &FrameScene, counters: BTreeMap<String, u64>, summary: Option<&C
                     remainder: c.remainder,
                     part_flags: c.flagged.iter().map(|&(name, n)| (name.to_owned(), n)).collect(),
                     carried: view_carried(summary, v),
-                    camera_use: BTreeMap::new(),
+                    camera_use: if v.key.kind == ViewKind::Game {
+                        crate::frame_owner::camera_counts(scene.id, v.key.view).map_or_else(BTreeMap::new, |counts| {
+                            ["screen", "view", "unknown"].into_iter().map(str::to_owned).zip(counts).collect()
+                        })
+                    } else {
+                        BTreeMap::new()
+                    },
                     decorators: d.draws,
                     decorator_instances: d.instances,
                     decorator_remainder: d.remainder,
@@ -178,6 +287,9 @@ fn reply(scene: &FrameScene, counters: BTreeMap<String, u64>, summary: Option<&C
         counters,
         entries: None,
         carried: summary.map(carried),
+        carried_census: None,
+        carried_checkpoint: None,
+        carried_activation: None,
         dump: None,
     }
 }

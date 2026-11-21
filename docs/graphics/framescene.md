@@ -10,11 +10,12 @@ census and the structure's layer draws from the plan are built, and its
 section says what the replacements wait on. Of slice 5 the extraction of
 the fog, the water and the post passes and the fog's and water's
 recording on the render thread are built; its section says what the
-replacements wait on. Of slice 6 the census half is built: the scene
-sink files the guest's D3D work by slot and counts side targets and
-readbacks (`frame-scene.sink`); its section says what is not. The rest
-is the plan. Lanes write code and tests; the coordinator builds, runs and
-measures.
+replacements wait on. Slice 6 provides the carried census, private draws
+of sealed scenes and an opt-in display owner for eligible game views.
+Paced display still queues guest-visible writes in order. Default ownership
+depends on the scheduling, corpus, parity and timing gates
+in [slice 6](#slice-6-the-renderer-owns-game-view-frames). Slices 7 to 10
+are planned.
 
 Evidence labels as in [feature-engine.md](../engine/feature-engine.md):
 **Code** (read in this repository or in the disassembly), **S**
@@ -25,7 +26,7 @@ game data.
 
 - `impl.render.native` is the one render switch and is on by default.
   `=off` is the D3D path, kept as the reference.
-- Every native stage is a tenant of the D3D frame. The guest runs its
+- On the default path, native stages contribute to the D3D frame. The guest runs its
   render front end on the game thread. At a hook, a stage reads guest
   memory, prepares draws on the game thread and hands the D3D device
   packets that join its open pass (`gfx::RecordedDraw`, after the
@@ -355,22 +356,45 @@ which sim mode cannot today.
 | **window** | composites the newest published frame, as now (`app::frame`) | |
 | **loaders** | tags to GPU resources at map load and on demand; pipeline compile workers (`gfx`) | |
 
-**Hand-off.** A mailbox of sealed scenes with two modes:
+**Hand-off.** The private renderer uses the two mailbox modes below.
+They also define the hand-off required for display cutover.
 
 - *Paced* (play): the sim publishes and goes on. The render thread
   keeps the last two scenes it took. If the sim published more than one
-  since, the older ones are dropped and counted (`scene_dropped`).
+  since, the mailbox keeps the newest pending scene. The private
+  mailbox counts replacements in `scene_private_replaced`. The planned
+  display counter is `scene_dropped`.
 - *Locked* (headless capture, `--unpaced`, lab runs with
   `H2_BOOT_STOP_AT_PRESENT`): publish blocks while two scenes wait.
-  Every scene is drawn once, so present-indexed captures and "fps" keep
-  today's meaning, and today's two-frames-in-flight bound stays.
+  The receiver takes every scene in order. The display must draw each
+  one once so present-indexed captures and lab frame rates retain
+  their meaning. A private draw runs when a capture or parity request
+  selects the scene.
 
-**Residency.** Loaders publish a resident set (an atomic bitset per
-model and material). Extraction reads it. Before slice 6 an instance
-whose model is not resident is left to the guest's own draw, as now.
-From slice 6 it is not drawn that frame and is counted
-(`scene_unresident`); loaders prefetch every model the scenario's
-palettes name at map load so that the count is zero after loading.
+The opt-in display worker can still block the sim when two transactions
+wait. A skipped scene can have guest-visible writes to a side surface,
+a sampled texture, or a flare ticket. Its successor must preserve these
+results before the display worker can drop it.
+
+**Residency.** At map activation the object loader reads the scenario's
+object palettes. It prioritizes those definitions in its tag scan and
+queues each distinct render model for GPU upload once. Each model's
+upload publishes its geometry and its immutable material implementation
+masks together. The object planner checks the published state before
+accepting a draw. The BSP loader uses the same target-independent worker
+command for its geometry, material programs and stage textures.
+
+`render.scene` samples palette readiness on each game-view entry and
+joins it to the completed original present. A ready palette covers all
+its renderable definitions, every drawable model part and the layer-3
+material implementations they require. A partial model, an invalid
+reference or a pending upload prevents a successful readiness gate.
+Full cutover requires an unavailable instance to be omitted for that
+frame and counted. On the guarded display path, a declined object plan
+still leaves the guest's packet available to the frame owner. The
+worker's `scene_unresident` counts actual missing instances
+in relinquished work. Palette readiness independently measures the
+native cache even when a carried packet can draw the object.
 
 **Before slice 6** the D3D backend is still in the frame, so its command
 queue is the order. A typed stage is one command in that queue
@@ -1145,9 +1169,13 @@ corpus and reports every guest readback and every side target still
 bound in a game view. The slice starts when section 8.3's table covers
 the list.
 
-**Built: the carried census** (`frame-scene.sink`, an option with the
-native renderer on; **Code**). The D3D backend still draws every frame;
-the sink records what the renderer will own.
+The original-renderer census and the owned-renderer arm use the existing
+[diagnostic options](../runtime/switches.md). The original arm records
+the guest's remaining reads and target uses while the D3D display
+worker presents. Existing typed stages stay enabled in this census.
+The owner arm records which game frames the native graph actually
+presents. The pixel and simulation comparisons in §9 use the full
+D3D reference with all native stages disabled.
 
 - **The types** (`frame_scene::carried`). `Slot` and `SlotAt` (the slot
   and the guest view index); `SlotTracker` moves the slot on the frame
@@ -1184,10 +1212,12 @@ the sink records what the renderer will own.
   into a presented surface); its depth is the depth bound with that
   colour; anything else is a side target, numbered per frame. A present
   ends the frame: its summary is published (`d3d::scene_sink::last`)
-  and its totals counted (`d3d::scene_sink::counters`). Typed stages'
-  packets and passes are not carried, nor is a queued native draw
-  (`Backend::queue_external_draw`) whether the render thread records it
-  or draws its D3D packet.
+  and its totals counted (`d3d::scene_sink::counters`). When retaining
+  draws, the sink also records repeatable typed stages at the point where
+  they acquired their attachments. One-shot replacements decline admission
+  before guest draws are released. A queued native draw
+  (`Backend::queue_external_draw`) is not carried, whether the render
+  thread records it or draws its D3D packet.
 - **Coverage.** `render.scene` reports, with the option, `carried`
   (the last frame's ops by slot, its side targets with the ops that
   named them by slot, and its readbacks in and outside a game view),
@@ -1195,7 +1225,8 @@ the sink records what the renderer will own.
   `scene_carried_frames`, `scene_carried_draws`, `scene_carried_ops`,
   `scene_side_target_frames`, `scene_readback` and
   `scene_readback_<kind>`. Over the census corpus these are the list
-  section 8.3's table must cover.
+  section 8.3's table must cover. The sink sees a pixel-count request
+  before the display worker decides which renderer supplies its result.
 - **Tests** (synthetic). `frame_scene::carried`:
   `a_game_view_runs_its_slots_in_order_and_the_overlay_follows`,
   `inside_a_view_the_slot_only_moves_forward_and_outside_it_does_not_move`,
@@ -1210,37 +1241,89 @@ the sink records what the renderer will own.
   `boot::scene_glue`:
   `the_sinks_frame_is_reported_by_slot_and_per_game_view`; `agent_proto`'s
   `a_scenes_carried_part_prints_only_when_the_sink_recorded`.
-- **Not built.** Everything below that draws: the sink in place of the
-  backend stack in a game view, the carried ops held in the scene
-  (`FrameScene::carried`, which waits on `ResolvedDraw` moving to
-  `gfx`), `CameraUse` and its classification, `native-render`'s pass
-  graph and `GuestDrawPass`, the native flare query, the mailbox, Swap
-  without the GPU wait, and `render.frame` over the pass graph. The
-  census corpus run that this half exists for is the coordinator's.
-
-- **Code.** `d3d::SceneSink`, one `Backend` implementation that fills
-  `Carried` (draw, clear, bind, copy, upload) and classifies
-  `CameraUse`. In a game view the device runs over it in place of
-  `ThreadedBackend<InterpBackend<ScaledBackend<GfxBackend>>>`. The
-  frame step sets the current slot. `native-render` gets the pass
-  graph: its own colour and depth at the display scale, the stages in
-  order, the carried slots between them, the present to the window's
-  sink. Carried draws are recorded by a `GuestDrawPass` that `d3d`
-  registers with the renderer (the draw-recording core of
-  `gfx_backend.rs` and the view mapping of `scaled.rs`, kept; their
-  surface management, not). The native flare query. The mailbox, both
-  modes. Swap no longer waits on the GPU. `render.frame` reports the
-  pass graph.
-- **Tests.** `SceneSink` against the recording backend on the existing
-  D3D draw rigs: the same draws in the same order, by slot. Pass
-  graph: the stages and slots in the declared order with one pass
-  where attachments do not change. Mailbox: paced drops and counts,
-  locked blocks at two. A scene with a carried copy from `SceneColour`
-  samples what was drawn before it.
+- **Frame identity and inputs.** `game::frame_owner` pairs the
+  immutable `FrameScene` with `d3d::scene_sink::ReplayFrame` at the
+  same frame-step sequence and Swap. The replay owns the ordered draw
+  inputs, attachment descriptors, sampled versions and uploads.
+  `CameraUse::View` requires the program's actual position rows to
+  match the sealed view's camera bit for bit. Rewinds and map changes
+  invalidate retained capture inputs.
+- **Private draw.** `native_render::frame_graph` records the ordered
+  typed stages and carried draws through `d3d::gfx_backend::GuestDrawPass`.
+  The worker shares the display device and uses separate render targets.
+  An intervening copy or sample sees the pixels already drawn. Consecutive
+  slots with the same attachments can share a pass. A private draw reports
+  an error if it cannot reproduce the requested pixels.
+- **Display ownership.** At Swap, `game::frame_cutover` supplies the
+  scene to `d3d::threaded::owner`. The worker checks the original
+  commands, resource bindings and device-local target eligibility before
+  choosing a renderer. The game-view entry marks its Swap even when the
+  view only clears or copies attachments, draws its overlay or reuses the
+  previous colour buffer. These frames can reach Swap before the first
+  layer that supplies a camera.
+  The graph draws once into the live surfaces,
+  exports sampled textures under their original handles, and installs
+  flare query results under the tickets already held by the guest. An
+  early guest access that needs buffered work runs those commands in
+  order. Menus and declined game frames continue on the same device.
+  On the first draw using an earlier frame's immutable snapshot, the
+  worker pins the GPU textures behind its original proxy. A sealed draw
+  can sample those images after the guest releases the proxy. Reference
+  and display versions retain their own resolutions. For a colour texture
+  that still views a live attachment, the worker checks its original
+  proxy and physical allocation. Each draw then samples its own copy of
+  that attachment, including writes from earlier in the same scene.
+  Releasing or recycling the source surface invalidates that binding.
+  Where a private draw needs incoming pixels from earlier draws, the
+  worker copies the required attachments before the first write. The
+  copies retain the source GPU format, raster dimensions and all depth
+  and stencil bits. Private draws restore them to matching attachments
+  on the same device before recording the sealed commands.
+- **Scheduling and probes.** For private drawing, `frame_scene::mailbox`
+  keeps the newest pending scene in paced mode and blocks at two waiting
+  scenes in locked mode. The display worker accepts two waiting transactions
+  in either mode. An adopted frame releases one slot before recording. A
+  declined frame releases its slot after its original Swap. Both execute
+  in order because later guest commands can reuse their surfaces, sampled
+  textures and flare tickets. The window takes the newest finished picture
+  from its triple buffer. Capture requests can pin a scene across two draws and
+  wake the renderer during pause. A display pass snapshot comes from the
+  renderer that presented that Swap, at the requested pass boundary.
+  Display callbacks carry the installing device and the timeline at Swap.
+  A queued draw can finish on that device's attachments after a map or
+  renderer change. Only the current timeline can publish its frame report,
+  change a capture request or supply a pass snapshot.
+  A private draw has its own `render.frame` recorder.
+  `render.stats` reports completed graph work. `render.parity` compares
+  the guest present with a separate private draw of its inputs.
+- **Gate coverage.** `render.scene` includes the cumulative original
+  target/read census and an activation baseline. On the owner arm,
+  `scene_owned_presented`, `scene_owned_declined` and
+  `scene_owned_flare_queries` identify what actually ran. Worker
+  residency counters distinguish observed missing instances from frames
+  whose residency is unknown. A successful carried draw can supply a
+  model regardless of its native cache residency.
+- **Tests** (synthetic). The scene sink and camera rigs exercise D3D
+  draw ordering, resource lifetimes and view classification.
+  `native-render/tests/world_layers_gpu/frame_graph.rs` checks typed and
+  carried draws on shared attachments, a copy followed by a later sample,
+  and same-tick private retail/E3 equality. The mailbox tests cover
+  replacement and two-scene backpressure. The threaded worker tests cover
+  original-command fallback, visibility tickets, retained snapshots and
+  a following menu frame. The parity RPC test changes a private clear
+  to exercise the differing-pixel result.
+- **Cutover status.** Display adoption is opt-in. Eligibility, post-load
+  residency, pixel and hash parity and the delay through Swap require
+  measurement on the corpus. An unsupported frame runs the original path
+  and appears in the decline count. The default path and the guest
+  resource lifetime machinery are retained through this gate.
 - **Gate.** Pixels on the gate corpus against `native=off` (which
   still selects the old stack) and by `render.parity`. Hashes.
-  `scene_readback`, `scene_dropped_*` and `scene_unresident` zero over
-  the census corpus after loading. One recording per draw at 4x
+  Every post-load game-view Swap requires zero reads of guest surfaces,
+  depth or mirrors, zero dropped stages and zero unresident instances.
+  The raw `scene_readback` includes flare requests. Each must have a
+  matching native result on that same Swap, leaving zero reads that
+  require the original renderer. One recording per draw at 4x
   (`command_buffers`, `passes`). The sim thread's frame time no longer
   includes `gpu-wait` or `render-wait`. Native at least 15% ahead of
   D3D at 4x on the gate corpus (**Estimate**; the number is set from
@@ -1335,13 +1418,16 @@ Performance numbers come from the quiet laptop through `h2 lab`
 ([lab.md](../runtime/lab.md)). Local runs are for parity and smoke
 checks. Run each pair back to back, three times, and report medians.
 
-**A/B on the laptop** (every slice; `B` is the slice's branch):
+**A/B on the laptop.** Set `B` to the slice branch. The slice 6 owner arm
+uses the threaded, single-copy defaults of a fresh GPU run.
 
 ```sh
 for arm in off on; do
+  features="impl.render.native=$arm"
+  if [ "$arm" = on ]; then features="$features,frame-scene.sink"; fi
   h2 lab run --name "Native renderer $arm" --host laptop --branch "$B" --level 03a_oldmombasa --difficulty heroic \
     --frames 5000 --stats-from 3000 --build-env H2_OPT=2 --fresh-data \
-    --env H2_RENDER_SCALE=4 --env H2_FEATURES=impl.render.native=$arm \
+    --env H2_RENDER_SCALE=4 --env "H2_FEATURES=$features" \
     --wait --to "$RUSH_KEEP/lab/$B-$arm"
 done
 h2 lab runs --host laptop
@@ -1354,11 +1440,12 @@ p99 frame time, and the phases `cpu`, `render`, `decode`, `encode`,
 `submit`, `gpu-wait`, `render-wait`, `d3d`.
 
 **Counters on a serve** (the coordinator's `ab.sh`; `H` is the built
-`h2`, `IMG` its image directory, `F` empty or `impl.render.native=off`):
+`h2`, `IMG` its image directory, and `F` either
+`impl.render.native=on,frame-scene.sink` or `impl.render.native=off`):
 
 ```sh
 env H2_OPT=2 H2_BOOT_GFX=$TMPDIR/ab-gfx H2_BOOT_GFX_EVERY=never \
-    H2_LEVEL=03a_oldmombasa H2_RENDER_SCALE=4 ${F:+H2_FEATURES=$F} \
+    H2_LEVEL=03a_oldmombasa H2_RENDER_SCALE=4 H2_RENDER_THREAD=1 H2_SINGLE_COPY=1 H2_FEATURES="$F" \
     $H serve disc/halo2.iso --no-movies --socket $S --out $IMG &
 $H agent wait '{"phase":"gameplay"}' 600000 --socket $S --timeout 620
 $H agent capture 600 --socket $S --timeout 300 > capture.json
@@ -1366,6 +1453,10 @@ $H agent render.stats --socket $S > render-stats.json
 $H agent profile.counters --socket $S > counters.json
 $H agent render.scene --socket $S > scene.json          # from slice 1
 ```
+
+For the slice 6 owner arm, check `render.scene.counters` after gameplay
+starts. The completed window must contain game-view presents, each
+reported in `scene_window_owned`, with zero `scene_window_ordinary`.
 
 For the entry census (slice 4) add `frame-scene.census` to
 `H2_FEATURES` and read `.entries` of `render.scene`: per entry, its
@@ -1387,7 +1478,10 @@ from slice 2 `native_<stage>_{extract_ns,render_prepare_ns,scene_stages,scene_dr
 
 ```sh
 for arm in off on; do
-  env H2_OPT=2 H2_LEVEL=03a_oldmombasa H2_FEATURES=impl.render.native=$arm \
+  features="impl.render.native=$arm"
+  if [ "$arm" = on ]; then features="$features,frame-scene.sink"; fi
+  env H2_OPT=2 H2_LEVEL=03a_oldmombasa H2_FEATURES="$features" \
+      H2_RENDER_SCALE="${SCALE:?set SCALE to 1 or 4}" H2_RENDER_THREAD=1 H2_SINGLE_COPY=1 \
       H2_BOOT_GFX=$R/$arm H2_BOOT_GFX_EVERY=500 H2_BOOT_STOP_AT_PRESENT=5000 \
       H2_FRAME_STATS=1 H2_FRAME_STATS_FROM=3000 H2_FRAME_STATS_CSV=$R/$arm.csv \
       H2_LOCKSTEP=$R/$arm.lock \

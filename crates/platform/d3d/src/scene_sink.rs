@@ -1,27 +1,34 @@
-//! `SceneSink` (docs/graphics/framescene.md, slice 6): a [`Backend`] over
-//! the device's backend that fills a frame's carried part
-//! ([`frame_scene::Carried`]) with the guest's D3D work, by the slot the
-//! frame step declares current, and passes every call on unchanged.
+//! The frame step supplies the slot and guest view for each device command.
+//! In census mode the sink forwards the calls and keeps their summary for
+//! `render.scene`. With [`SceneSink::with_replay`] the sink also captures
+//! owned inputs and target operations for the frame owner's pass graph.
 //!
-//! This is slice 6's census half (`frame-scene.sink`): the backend
-//! underneath still draws everything, so the image is the D3D path's. What
-//! the sink adds is the frame as the renderer will own it: each draw,
-//! clear, copy, upload and sampled target at its slot and view, the
-//! targets named as the scene's colour and depth or as side targets, and
-//! the readbacks the guest made, which a scene drawn once at the display
-//! scale cannot answer (section 8.3). [`counters`] and [`last`] are what
-//! `render.scene` reports. Drawing the carried ops from the scene, in the
-//! native renderer's pass graph, is the rest of the slice.
-//!
-//! The slot comes from a [`SlotSource`] the frame step registers; while it
-//! answers `None` (the option not placed, or the native renderer off) the
-//! sink records nothing. The scene's colour is the surfaces the guest
-//! presents, and with a copy swap the surface copied into one; its depth is
-//! the depth bound with that colour. Until a surface has been presented a
-//! draw into it names a side target, so a run's first frames do.
+//! The replay stream names distinct physical targets, including both halves
+//! of a copy swap. At present its final attachment becomes `SceneColour`.
+//! The census groups the swap chain separately for statistics. Its slot
+//! source answers `None` while the frame step is disabled.
 
-use std::sync::Mutex;
+#[cfg(feature = "gpu")]
+mod camera;
+mod census;
+pub mod window;
+mod contents;
+#[cfg(feature = "gpu")]
+pub use contents::TargetSnapshots;
+#[cfg(feature = "gpu")]
+mod frozen;
+#[cfg(feature = "gpu")]
+pub use frozen::{FrozenImages, FrozenSample};
+mod replay;
+mod seeds;
+pub use seeds::TargetSeed;
+
+pub use census::{Census, TargetUse, Uses, census};
+pub use replay::{ReplayFrame, ReplayOp, ReplaySample, ReplayTexture, SinkTexture};
+use replay::{Origin, Recorder};
+
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 use frame_scene::{AuxTarget, Carried, CarriedSummary, GuestOp, Readback, SlotAt, TargetRef, TargetSample};
 use gfx::texture::{DecodedTexture, TextureDesc};
@@ -34,6 +41,10 @@ use crate::backend::{
     DisplaySurfacePixels, GuestLayoutKind, QueuedExternalDraw, RectClear, RenderExtents, ResolvedDraw,
     SceneStage, SharedReplacement, StreamBytes, TargetCopy,
 };
+
+/// Guest proxy and GPU backend tickets for the reports in a submitted frame,
+/// paired in the order that the guest requested them.
+pub type FlareTickets = Vec<(u64, u64)>;
 
 /// Where the frame step is, or `None` while the sink records nothing.
 pub type SlotSource = fn() -> Option<SlotAt>;
@@ -48,6 +59,7 @@ pub fn never() -> Option<SlotAt> {
 const SCENE_COLOURS: usize = 4;
 
 static FRAMES: AtomicU64 = AtomicU64::new(0);
+static GAME_FRAMES: AtomicU64 = AtomicU64::new(0);
 static DRAWS: AtomicU64 = AtomicU64::new(0);
 static OPS: AtomicU64 = AtomicU64::new(0);
 static READBACK: [AtomicU64; Readback::COUNT] = [const { AtomicU64::new(0) }; Readback::COUNT];
@@ -57,12 +69,13 @@ static LAST: Mutex<Option<CarriedSummary>> = Mutex::new(None);
 /// The sink's totals since the start (`render.scene`'s counters):
 /// `scene_carried_frames` (frames recorded), `scene_carried_draws` and
 /// `scene_carried_ops` (of every slot), `scene_readback` and
-/// `scene_readback_<kind>` (readbacks in a game view; section 8.3 needs
-/// zero) and `scene_side_target_frames` (frames that named a side target
-/// in a game view).
+/// `scene_readback_<kind>` (raw game-view requests, including flare reports)
+/// and `scene_side_target_frames` (frames that named a side target in a
+/// game view). The completed window matches reports to their native tickets.
 pub fn counters() -> Vec<(String, u64)> {
     let mut out = vec![
         ("scene_carried_frames".to_owned(), FRAMES.load(Ordering::Relaxed)),
+        ("scene_carried_game_frames".to_owned(), GAME_FRAMES.load(Ordering::Relaxed)),
         ("scene_carried_draws".to_owned(), DRAWS.load(Ordering::Relaxed)),
         ("scene_carried_ops".to_owned(), OPS.load(Ordering::Relaxed)),
         ("scene_side_target_frames".to_owned(), SIDE_FRAMES.load(Ordering::Relaxed)),
@@ -92,7 +105,14 @@ pub type KeptDraw = Option<Box<ResolvedDraw>>;
 pub struct SceneSink<B: Backend> {
     inner: B,
     source: SlotSource,
+    collect_census: bool,
+    present_window: Option<Arc<window::PresentWindow>>,
+    take_game_view: fn() -> bool,
     keep: bool,
+    replay: Option<Recorder<B::Surface>>,
+    presents: u64,
+    guest_reference: Box<dyn Fn() -> bool + Send>,
+    present_error: Option<Box<dyn FnMut(u64) + Send>>,
     frame: Carried<KeptDraw>,
     last: Carried<KeptDraw>,
     /// The last bind emitted this frame, and where.
@@ -111,7 +131,14 @@ impl<B: Backend> SceneSink<B> {
         Self {
             inner,
             source,
+            collect_census: true,
+            present_window: None,
+            take_game_view: || false,
             keep: false,
+            replay: None,
+            presents: 0,
+            guest_reference: Box::new(|| false),
+            present_error: None,
             frame: Carried::default(),
             last: Carried::default(),
             bound: None,
@@ -122,10 +149,104 @@ impl<B: Backend> SceneSink<B> {
         }
     }
 
+    /// Enable the full cross-frame census of transient targets and reads.
+    /// A rendering worker can retain its ordinary counters without making
+    /// a second pass over every draw to collect the census.
+    pub fn with_census(mut self, enabled: bool) -> Self {
+        self.collect_census = enabled;
+        self
+    }
+
+    /// Joins the original guest Swap to its display worker's result.
+    pub fn with_present_window(mut self, window: Option<Arc<window::PresentWindow>>, game_view: fn() -> bool) -> Self {
+        self.present_window = window;
+        self.take_game_view = game_view;
+        self
+    }
+
     /// Keeps each draw in the carried part (tests; a census keeps none).
     pub fn keeping_draws(mut self) -> Self {
         self.keep = true;
         self
+    }
+
+    /// Retain complete guest draws and their inputs for native replay. The
+    /// receiver gets ownership at the guest present. Only repeatable typed
+    /// stages can replace guest draws while recording.
+    pub fn with_replay(mut self, on_present: impl FnMut(ReplayFrame) + Send + 'static) -> Self {
+        self.replay = Some(Recorder::new(on_present));
+        self
+    }
+
+    /// A parity request needs a frame that reaches the reference backend
+    /// entirely as guest draws. The device asks before each guest skip.
+    pub fn with_guest_reference_request(mut self, requested: impl Fn() -> bool + Send + 'static) -> Self {
+        self.guest_reference = Box::new(requested);
+        self
+    }
+
+    /// Cancel the pending scene/reference join if this guest swap fails.
+    pub fn on_present_error(mut self, cancel: impl FnMut(u64) + Send + 'static) -> Self {
+        self.present_error = Some(Box::new(cancel));
+        self
+    }
+
+    fn replaying(&self) -> bool {
+        self.replay.is_some() && self.at().is_some()
+    }
+
+    fn replay_op(&mut self, at: SlotAt, op: ReplayOp) {
+        if let Some(replay) = &mut self.replay {
+            replay.frame.ops.push((at, op));
+        }
+    }
+
+    /// Replay target identity remains physical until present identifies
+    /// the final surface. The census' swap-chain alias heuristic is only
+    /// for describing counts; a copy swap still has two distinct targets.
+    fn replay_target(&mut self, surface: B::Surface) -> TargetRef {
+        self.replay.as_mut().expect("recording replay").target(surface, &self.surfaces)
+    }
+
+    fn replay_attachments(&mut self, colour: B::Surface, depth: Option<B::Surface>) -> (TargetRef, TargetRef) {
+        (self.replay_target(colour), depth.map_or(TargetRef::None, |d| self.replay_target(d)))
+    }
+
+    fn replay_stage(&mut self, stage: &SceneStage<B::Surface>) -> Option<(SlotAt, ReplayOp)> {
+        let at = self.write_slot()?;
+        self.replay.as_ref()?;
+        if !stage.pass.lock().is_ok_and(|pass| pass.replays_scene()) {
+            self.refuse_replay("nonrepeatable_scene_stage");
+            return None;
+        }
+        let surfaces = stage.surfaces.try_map(|s| Some(self.replay_target(*s)))?;
+        Some((at, ReplayOp::Stage(SceneStage {
+            surfaces,
+            request: stage.request,
+            plan: stage.plan.clone(),
+            pass: Arc::clone(&stage.pass),
+        })))
+    }
+
+    /// A write that bypasses recording invalidates mutable attachment history.
+    fn untracked_write(&mut self) {
+        if let Some(replay) = &mut self.replay {
+            replay.untracked_write();
+        }
+    }
+
+    fn write_slot(&mut self) -> Option<SlotAt> {
+        let at = self.at();
+        if at.is_none() {
+            self.untracked_write();
+        }
+        at
+    }
+
+    fn refuse_replay(&mut self, cause: &'static str) {
+        if self.write_slot().is_some() && let Some(replay) = &mut self.replay {
+            replay.frame.refuse(cause);
+        }
     }
 
     pub fn inner(&self) -> &B {
@@ -133,6 +254,9 @@ impl<B: Backend> SceneSink<B> {
     }
 
     pub fn inner_mut(&mut self) -> &mut B {
+        // The caller can destroy and recreate a surface behind the sink.
+        if let Some(replay) = &mut self.replay { replay.forget_view_identities(); }
+        self.untracked_write();
         &mut self.inner
     }
 
@@ -146,6 +270,7 @@ impl<B: Backend> SceneSink<B> {
     }
 
     fn made(&mut self, surface: B::Surface, target: AuxTarget) {
+        if let Some(replay) = &mut self.replay { replay.destroy(surface); }
         self.surfaces.retain(|(s, _)| *s != surface);
         self.surfaces.push((surface, target));
     }
@@ -190,14 +315,68 @@ impl<B: Backend> SceneSink<B> {
     }
 
     fn record_draw(&mut self, colour: B::Surface, depth: Option<B::Surface>, draw: &ResolvedDraw) {
-        let Some(at) = self.at() else { return };
+        let Some(at) = self.write_slot() else { return };
         self.bind(at, colour, depth);
         let kept = self.keep.then(|| Box::new(draw.clone()));
         self.frame.push(at, GuestOp::Draw(kept));
     }
 
-    fn record_clear(&mut self, colour: B::Surface, depth: Option<B::Surface>, rects: bool) {
+    fn replay_draw(&mut self, colour: B::Surface, depth: Option<B::Surface>, draw: Arc<ResolvedDraw>, textures: [Option<&SinkTexture<B::Texture>>; 4]) {
         let Some(at) = self.at() else { return };
+        let (c, d) = self.replay_attachments(colour, depth);
+        let replay = self.replay.as_mut().expect("recording replay");
+        replay.bind(at, c, d);
+        let inputs = textures.map(|t| {
+            let texture = t?;
+            match &texture.origin {
+                Some(Origin::Upload(data)) => Some(ReplayTexture::Upload(data.clone())),
+                Some(Origin::Placeholder(desc)) => Some(ReplayTexture::Placeholder(desc.clone())),
+                Some(Origin::Sample { seq, id: Some(id), .. }) if *seq == replay.seq => {
+                    Some(ReplayTexture::Sample(*id))
+                }
+                Some(Origin::Sample { seq, immutable: true, .. }) if *seq != replay.seq => {
+                    #[cfg(feature = "gpu")]
+                    if let Some(Origin::Sample { frozen, .. }) = &texture.origin
+                        && let Some(sample) = frozen.get_or_init(|| self.inner.retain_scene_sample(&texture.inner))
+                    {
+                        return Some(ReplayTexture::Frozen(sample.clone()));
+                    }
+                    replay.frame.refuse("unavailable_frozen_sample");
+                    None
+                }
+                Some(Origin::Sample { seq, immutable: false, view, .. }) if *seq != replay.seq => {
+                    let Some(surface) = view.as_ref().and_then(|id| replay.view_surface(id)) else {
+                        replay.frame.refuse("released_in_place_source");
+                        return None;
+                    };
+                    #[cfg(feature = "gpu")]
+                    if let Some(Origin::Sample { frozen, .. }) = &texture.origin
+                        && let Some(binding) = frozen.get_or_init(|| self.inner.retain_scene_sample(&texture.inner))
+                    {
+                        let target = replay.target(surface, &self.surfaces);
+                        return Some(ReplayTexture::Live { target, binding: binding.clone() });
+                    }
+                    #[cfg(not(feature = "gpu"))]
+                    let _ = surface;
+                    replay.frame.refuse("unavailable_in_place_binding");
+                    None
+                }
+                _ => {
+                    replay.frame.refuse("uncaptured_texture");
+                    None
+                }
+            }
+        });
+        let camera = if draw.layout.pretransformed {
+            frame_scene::carried::CameraUse::Screen
+        } else {
+            frame_scene::carried::CameraUse::Unknown
+        };
+        replay.frame.ops.push((at, ReplayOp::Draw { draw, textures: inputs, camera }));
+    }
+
+    fn record_clear(&mut self, colour: B::Surface, depth: Option<B::Surface>, rects: bool) {
+        let Some(at) = self.write_slot() else { return };
         let (c, d) = self.attachments(colour, depth);
         self.frame.push(at, GuestOp::Clear { colour: c, depth: d, rects });
     }
@@ -208,22 +387,71 @@ impl<B: Backend> SceneSink<B> {
         self.frame.push(at, GuestOp::Sample { of, how });
     }
 
+    fn sample_texture(&mut self, inner: B::Texture, surface: B::Surface, how: TargetSample, kind: impl FnOnce() -> ReplaySample) -> SinkTexture<B::Texture> {
+        self.record_sample(surface, how);
+        let at = self.at();
+        let origin = self.replay.as_mut().map(|replay| {
+            let how = kind();
+            let view = (matches!(how, ReplaySample::InPlace)
+                && self.surfaces.iter().any(|(s, desc)| *s == surface && !desc.depth))
+                .then(|| replay.view_identity(surface));
+            if let Some(at) = at {
+                let of = replay.target(surface, &self.surfaces);
+                replay.sample(at, of, how, view)
+            } else {
+                Origin::sample(replay.seq, None, &how, view)
+            }
+        });
+        SinkTexture { inner, origin }
+    }
+
     fn record_readback(&mut self, kind: Readback) {
         if let Some(at) = self.at() {
             self.frame.readback(at, kind);
         }
     }
 
-    fn presented(&mut self, surface: B::Surface) {
+    fn presented(&mut self, surface: B::Surface, flags: u32, gamma: Option<&[u8; 768]>) {
+        self.presents += 1;
+        let entered_game_view = (self.take_game_view)();
+        if self.replay.is_some() && (entered_game_view || self.at().is_some() || !self.frame.ops.is_empty()) {
+            let shown = self.replay_target(surface);
+            let replay = self.replay.as_mut().expect("recording replay");
+            replay.frame.present = self.presents;
+            replay.frame.entered_game_view = entered_game_view;
+            replay.frame.flags = flags;
+            replay.frame.gamma = gamma.copied().map(Box::new);
+            replay.finish(shown);
+        }
         self.scene_colour.retain(|s| *s != surface);
         self.scene_colour.push(surface);
         if self.scene_colour.len() > SCENE_COLOURS {
             self.scene_colour.remove(0);
         }
-        if self.at().is_none() && self.frame.ops.is_empty() && self.frame.readbacks.is_empty() {
+        if !entered_game_view && self.at().is_none() && self.frame.ops.is_empty() && self.frame.readbacks.is_empty() {
+            if let Some(window) = &self.present_window {
+                window.submit(self.presents, window::Input {
+                    drops: crate::scene_stage::take_local_drops(), ..Default::default()
+                });
+            }
             return;
         }
         let summary = self.frame.summary();
+        if let Some(window) = &self.present_window {
+            window.submit(self.presents, window::Input {
+                game_view: entered_game_view || !summary.views.is_empty() || summary.readback_total() != 0,
+                reads: summary.readbacks,
+                drops: crate::scene_stage::take_local_drops(),
+            });
+        }
+        if self.collect_census {
+            census::record(&self.frame, self.presents, self.present_window.as_deref());
+        } else {
+            census::skip();
+        }
+        if entered_game_view || !summary.views.is_empty() {
+            GAME_FRAMES.fetch_add(1, Ordering::Relaxed);
+        }
         FRAMES.fetch_add(1, Ordering::Relaxed);
         DRAWS.fetch_add(summary.draws(), Ordering::Relaxed);
         OPS.fetch_add(summary.slots.iter().map(|c| u64::from(c.total())).sum(), Ordering::Relaxed);
@@ -246,7 +474,17 @@ impl<B: Backend> SceneSink<B> {
 // (`forwards_every_backend_method` below).
 impl<B: Backend> Backend for SceneSink<B> {
     type Surface = B::Surface;
-    type Texture = B::Texture;
+    type Texture = SinkTexture<B::Texture>;
+
+    #[cfg(feature = "gpu")]
+    fn frozen_images(&self, texture: &Self::Texture) -> Option<FrozenImages> {
+        self.inner.frozen_images(&texture.inner)
+    }
+
+    #[cfg(feature = "gpu")]
+    fn retain_scene_sample(&self, texture: &Self::Texture) -> Option<FrozenSample> {
+        self.inner.retain_scene_sample(&texture.inner)
+    }
 
     fn create_surface(&mut self, format: D3DFormat, width: u32, height: u32, depth: bool) -> Result<Self::Surface, String> {
         let s = self.inner.create_surface(format, width, height, depth)?;
@@ -254,6 +492,9 @@ impl<B: Backend> Backend for SceneSink<B> {
         Ok(s)
     }
     fn destroy_surface(&mut self, surface: Self::Surface) -> Result<(), String> {
+        if let Some(replay) = &mut self.replay {
+            replay.destroy(surface);
+        }
         self.surfaces.retain(|(s, _)| *s != surface);
         self.scene_colour.retain(|s| *s != surface);
         if self.scene_depth == Some(surface) {
@@ -262,32 +503,67 @@ impl<B: Backend> Backend for SceneSink<B> {
         self.inner.destroy_surface(surface)
     }
     fn upload_texture(&mut self, texture: &DecodedTexture) -> Result<Self::Texture, String> {
-        self.inner.upload_texture(texture)
+        if self.replay.is_some() {
+            return self.upload_shared(Arc::new(texture.clone()));
+        }
+        Ok(SinkTexture { inner: self.inner.upload_texture(texture)?, origin: None })
+    }
+    fn upload_shared(&mut self, texture: Arc<DecodedTexture>) -> Result<Self::Texture, String> {
+        let origin = self.replay.as_ref().map(|_| Origin::Upload(Arc::clone(&texture)));
+        let inner = self.inner.upload_shared(texture)?;
+        Ok(SinkTexture { inner, origin })
     }
     fn uses_texture_placeholders(&self) -> bool {
         self.inner.uses_texture_placeholders()
     }
     fn texture_placeholder(&mut self, desc: &TextureDesc) -> Result<Self::Texture, String> {
-        self.inner.texture_placeholder(desc)
+        let inner = self.inner.texture_placeholder(desc)?;
+        let origin = self.replay.as_ref().map(|_| Origin::Placeholder(desc.clone()));
+        Ok(SinkTexture { inner, origin })
     }
     fn bc_supported(&self) -> bool {
         self.inner.bc_supported()
     }
     fn clear(&mut self, color: Self::Surface, depth: Option<Self::Surface>, clear: Clear) -> Result<(), String> {
+        self.inner.clear(color, depth, clear)?;
         self.record_clear(color, depth, false);
-        self.inner.clear(color, depth, clear)
+        if let Some(at) = self.at() && self.replay.is_some() {
+            let (colour, depth) = self.replay_attachments(color, depth);
+            self.replay_op(at, ReplayOp::Clear { colour, depth, clear });
+        }
+        Ok(())
     }
     fn draw(
         &mut self, color: Self::Surface, depth: Option<Self::Surface>, draw: &ResolvedDraw, textures: [Option<&Self::Texture>; 4],
     ) -> Result<DrawOutcome, String> {
+        if self.replaying() {
+            return self.draw_shared(color, depth, Arc::new(draw.clone()), textures).0;
+        }
         self.record_draw(color, depth, draw);
-        self.inner.draw(color, depth, draw, textures)
+        self.inner.draw(color, depth, draw, textures.map(|t| t.map(|t| &t.inner)))
     }
     fn draw_owned(
         &mut self, color: Self::Surface, depth: Option<Self::Surface>, draw: ResolvedDraw, textures: [Option<&Self::Texture>; 4],
     ) -> (Result<DrawOutcome, String>, Vec<StreamBytes>) {
+        if self.replaying() {
+            return self.draw_shared(color, depth, Arc::new(draw), textures);
+        }
         self.record_draw(color, depth, &draw);
-        self.inner.draw_owned(color, depth, draw, textures)
+        self.inner.draw_owned(color, depth, draw, textures.map(|t| t.map(|t| &t.inner)))
+    }
+    fn draw_shared(
+        &mut self, color: Self::Surface, depth: Option<Self::Surface>, draw: Arc<ResolvedDraw>, textures: [Option<&Self::Texture>; 4],
+    ) -> (Result<DrawOutcome, String>, Vec<StreamBytes>) {
+        self.record_draw(color, depth, &draw);
+        let inputs = textures.map(|t| t.map(|t| &t.inner));
+        if !self.replaying() {
+            return self.inner.draw_shared(color, depth, draw, inputs);
+        }
+        let result = self.inner.draw_shared(color, depth, Arc::clone(&draw), inputs);
+        if matches!(result.0, Ok(DrawOutcome::Drawn)) {
+            self.replay_draw(color, depth, draw, textures);
+        }
+        result
     }
     fn frame_stats(&mut self) {
         self.inner.frame_stats()
@@ -299,7 +575,26 @@ impl<B: Backend> Backend for SceneSink<B> {
         self.inner.present_replay(surface, gamma)
     }
     fn warp_surface(&mut self, src: Self::Surface, dst: Self::Surface, h: [[f32; 3]; 3]) -> Result<bool, String> {
-        self.inner.warp_surface(src, dst, h)
+        let warped = self.inner.warp_surface(src, dst, h)?;
+        if warped { self.refuse_replay("warp_surface"); }
+        Ok(warped)
+    }
+    fn queue_frame_probe_read(
+        &mut self, surface: Self::Surface, width: u32, height: u32,
+        done: Box<dyn FnOnce(Result<Vec<u8>, String>) + Send>,
+    ) {
+        self.inner.queue_frame_probe_read(surface, width, height, done)
+    }
+
+    fn measure_present_raster(&mut self, surface: Option<Self::Surface>) -> crate::backend::RasterMeasurement {
+        self.inner.measure_present_raster(surface)
+    }
+    fn last_present_unshown(&self) -> bool {
+        self.inner.last_present_unshown()
+    }
+
+    fn take_presented_extent(&mut self) -> Option<(u32, u32)> {
+        self.inner.take_presented_extent()
     }
     fn surface_extent(&self, surface: Self::Surface) -> Option<(u32, u32)> {
         self.inner.surface_extent(surface)
@@ -332,16 +627,25 @@ impl<B: Backend> Backend for SceneSink<B> {
         self.inner.drain()
     }
     fn present(&mut self, surface: Self::Surface, flags: u32) -> Result<(), String> {
-        self.presented(surface);
-        self.inner.present(surface, flags)
+        self.presented(surface, flags, None);
+        let result = self.inner.present(surface, flags);
+        if result.is_err() && let Some(cancel) = self.present_error.as_mut() { cancel(self.presents); }
+        result
     }
     fn present_with_gamma(&mut self, surface: Self::Surface, flags: u32, gamma: Option<&[u8; 768]>) -> Result<(), String> {
-        self.presented(surface);
-        self.inner.present_with_gamma(surface, flags, gamma)
+        self.presented(surface, flags, gamma);
+        let result = self.inner.present_with_gamma(surface, flags, gamma);
+        if result.is_err() && let Some(cancel) = self.present_error.as_mut() { cancel(self.presents); }
+        result
     }
     fn clear_rects(&mut self, color: Self::Surface, depth: Option<Self::Surface>, clear: &RectClear) -> Result<DrawOutcome, String> {
+        let outcome = self.inner.clear_rects(color, depth, clear)?;
         self.record_clear(color, depth, true);
-        self.inner.clear_rects(color, depth, clear)
+        if outcome == DrawOutcome::Drawn && let Some(at) = self.at() && self.replay.is_some() {
+            let (colour, depth) = self.replay_attachments(color, depth);
+            self.replay_op(at, ReplayOp::ClearRects { colour, depth, clear: clear.clone() });
+        }
+        Ok(outcome)
     }
     fn read_surface(
         &mut self, surface: Self::Surface, format: D3DFormat, width: u32, height: u32, layout: GuestLayoutKind,
@@ -364,64 +668,97 @@ impl<B: Backend> Backend for SceneSink<B> {
             }
         }
         let copied = self.inner.copy_surface(src, dst)?;
-        if copied && let Some(at) = self.at() {
+        if copied && let Some(at) = self.write_slot() {
             let (from, to) = (self.target(src), self.target(dst));
             self.frame.push(at, GuestOp::Copy { from, to });
+            if self.replay.is_some() {
+                let (from, to) = (self.replay_target(src), self.replay_target(dst));
+                self.replay_op(at, ReplayOp::Copy { from, to });
+            }
         }
         Ok(copied)
     }
     fn write_surface(&mut self, surface: Self::Surface, desc: &TextureDesc, bytes: &[u8]) -> Result<bool, String> {
         let written = self.inner.write_surface(surface, desc, bytes)?;
-        if written && let Some(at) = self.at() {
+        if written && let Some(at) = self.write_slot() {
             let to = self.target(surface);
             self.frame.push(at, GuestOp::Upload { to });
+            if self.replay.is_some() {
+                let to = self.replay_target(surface);
+                self.replay_op(at, ReplayOp::Upload { to, desc: desc.clone(), bytes: Arc::from(bytes) });
+            }
         }
         Ok(written)
     }
     fn snapshot_surface(&mut self, surface: Self::Surface, opaque: bool) -> Result<Option<Self::Texture>, String> {
         let r = self.inner.snapshot_surface(surface, opaque)?;
-        if r.is_some() {
-            self.record_sample(surface, TargetSample::Snapshot);
-        }
-        Ok(r)
+        Ok(r.map(|inner| self.sample_texture(inner, surface, TargetSample::Snapshot, || ReplaySample::Snapshot { opaque })))
     }
     fn clear_pixel_count(&mut self) -> Result<(), String> {
-        self.inner.clear_pixel_count()
+        self.inner.clear_pixel_count()?;
+        if let Some(at) = self.at() {
+            self.replay_op(at, ReplayOp::BeginFlareQuery);
+        }
+        Ok(())
     }
     #[cfg(feature = "gpu")]
     fn external_attachments(
         &mut self, surfaces: ExternalSurfaces<Self::Surface>, textures: [Option<&Self::Texture>; 4], copy: TargetCopy,
     ) -> Result<ExternalCopies, String> {
-        self.inner.external_attachments(surfaces, textures, copy)
+        if self.replaying() { return Ok(ExternalCopies::Missing(copy)); }
+        self.inner.external_attachments(surfaces, textures.map(|t| t.map(|t| &t.inner)), copy)
     }
     fn prepare_external(
         &mut self, surfaces: ExternalSurfaces<Self::Surface>, request: ExternalPassRequest, textures: [Option<&Self::Texture>; 4],
         plan: &ExternalPlan, copy: TargetCopy, pass: SharedReplacement,
     ) -> Result<Option<Vec<ExternalRecording>>, String> {
-        self.inner.prepare_external(surfaces, request, textures, plan, copy, pass)
+        if self.replaying() { return Ok(None); }
+        self.inner.prepare_external(surfaces, request, textures.map(|t| t.map(|t| &t.inner)), plan, copy, pass)
     }
-    // Typed stages' packets and passes, not guest work: not carried.
+    // A one-shot replacement cannot draw again into a private target.
+    // Declining before commit leaves its original packet in this slot.
     fn queue_external_draw(&mut self, candidate: QueuedExternalDraw<Self::Surface>, textures: [Option<&Self::Texture>; 4]) -> bool {
-        self.inner.queue_external_draw(candidate, textures)
+        if self.replaying() { return false; }
+        self.untracked_write();
+        self.inner.queue_external_draw(candidate, textures.map(|t| t.map(|t| &t.inner)))
     }
     fn reusable_external_attachments(&self) -> bool {
         self.inner.reusable_external_attachments()
+    }
+    fn accepts_scene_pass(&self, pass: &dyn ExternalPass) -> bool {
+        self.inner.accepts_scene_pass(pass) && (!self.replaying() || (!(self.guest_reference)() && pass.replays_scene()))
     }
     fn runs_scene_stages(&self) -> bool {
         self.inner.runs_scene_stages()
     }
     fn run_scene_stage(&mut self, stage: SceneStage<Self::Surface>) -> Result<bool, String> {
-        self.inner.run_scene_stage(stage)
+        let retained = self.replay_stage(&stage);
+        let taken = self.inner.run_scene_stage(stage)?;
+        if taken && let Some((at, op)) = retained {
+            self.replay_op(at, op);
+        }
+        Ok(taken)
     }
     fn queues_scene_stages(&self) -> bool {
         self.inner.queues_scene_stages()
     }
     fn queue_scene_stage(&mut self, stage: SceneStage<Self::Surface>) -> bool {
-        self.inner.queue_scene_stage(stage)
+        let retained = self.replay_stage(&stage);
+        let queued = self.inner.queue_scene_stage(stage);
+        if queued && let Some((at, op)) = retained {
+            self.replay_op(at, op);
+        }
+        queued
     }
     fn commit_external(&mut self, recording: ExternalRecording) {
+        self.refuse_replay("unrecorded_external_pass");
         self.inner.commit_external(recording)
     }
+    #[cfg(feature = "gpu")]
+    fn upload_scene_assets(&mut self, upload: crate::backend::AssetUpload) {
+        self.inner.upload_scene_assets(upload);
+    }
+
     #[cfg(feature = "gpu")]
     fn upload_device(&self) -> Option<(wgpu::Device, wgpu::Queue)> {
         self.inner.upload_device()
@@ -434,11 +771,17 @@ impl<B: Backend> Backend for SceneSink<B> {
         &mut self, color: Self::Surface, depth: Self::Surface, sampled: Vec<Option<Self::Surface>>, request: ExternalPassRequest,
         pass: Box<dyn ExternalPass>,
     ) -> Result<bool, String> {
+        if self.replaying() { return Ok(false); }
+        self.untracked_write();
         self.inner.external_pass(color, depth, sampled, request, pass)
     }
     fn report_pixel_count(&mut self) -> Result<Option<u64>, String> {
         self.record_readback(Readback::PixelCount);
-        self.inner.report_pixel_count()
+        let ticket = self.inner.report_pixel_count()?;
+        if let Some(proxy) = ticket && let Some(at) = self.at() {
+            self.replay_op(at, ReplayOp::EndFlareQuery(proxy));
+        }
+        Ok(ticket)
     }
     fn read_pixel_count(&mut self, ticket: u64) -> Result<u64, String> {
         self.inner.read_pixel_count(ticket)
@@ -462,20 +805,14 @@ impl<B: Backend> Backend for SceneSink<B> {
     }
     fn surface_texture(&mut self, surface: Self::Surface) -> Result<Option<Self::Texture>, String> {
         let r = self.inner.surface_texture(surface)?;
-        if r.is_some() {
-            self.record_sample(surface, TargetSample::InPlace);
-        }
-        Ok(r)
+        Ok(r.map(|inner| self.sample_texture(inner, surface, TargetSample::InPlace, || ReplaySample::InPlace)))
     }
     fn can_sample_depth_surfaces(&self) -> bool {
         self.inner.can_sample_depth_surfaces()
     }
     fn depth_level_texture(&mut self, surface: Self::Surface) -> Result<Option<Self::Texture>, String> {
         let r = self.inner.depth_level_texture(surface)?;
-        if r.is_some() {
-            self.record_sample(surface, TargetSample::Depth);
-        }
-        Ok(r)
+        Ok(r.map(|inner| self.sample_texture(inner, surface, TargetSample::Depth, || ReplaySample::Depth)))
     }
     fn judge(&self) -> Option<Box<dyn DrawJudge>> {
         self.inner.judge()
@@ -492,10 +829,7 @@ impl<B: Backend> Backend for SceneSink<B> {
         desc: &TextureDesc, options: gfx::texture::DecodeOptions,
     ) -> Result<Option<Self::Texture>, String> {
         let r = self.inner.depth_alias_texture(depth, format, width, height, pitch, generation, offset, desc, options)?;
-        if r.is_some() {
-            self.record_sample(depth, TargetSample::Depth);
-        }
-        Ok(r)
+        Ok(r.map(|inner| self.sample_texture(inner, depth, TargetSample::Depth, || ReplaySample::Alias { format, width, height, pitch, generation, offset, desc: desc.clone(), options })))
     }
     fn can_mirror(&self) -> bool {
         self.inner.can_mirror()
@@ -514,7 +848,9 @@ impl<B: Backend> Backend for SceneSink<B> {
     fn mirror_load(
         &mut self, surface: Self::Surface, format: D3DFormat, width: u32, height: u32, layout: GuestLayoutKind, offset: u32,
     ) -> Result<(), String> {
-        self.inner.mirror_load(surface, format, width, height, layout, offset)
+        self.inner.mirror_load(surface, format, width, height, layout, offset)?;
+        self.refuse_replay("mirror_load");
+        Ok(())
     }
     fn mirror_read(&mut self, offset: u32, len: u32) -> Result<Vec<u8>, String> {
         self.record_readback(Readback::Mirror);

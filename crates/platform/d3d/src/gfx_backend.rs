@@ -65,7 +65,13 @@
 //! translation) counts nothing. Clearing and reporting the counter submit
 //! the pending pass first, so they stay in order with the counted draws.
 
+mod frozen_target;
+pub use frozen_target::FrozenTarget;
+
+pub(crate) mod guest_draw_pass;
 mod native_runs;
+
+pub use guest_draw_pass::GuestDrawPass;
 
 use std::collections::HashMap;
 
@@ -91,6 +97,10 @@ use crate::shader::{ShaderProvider, VertexProcessing};
 pub type PresentHook =
     Box<dyn FnMut(&GfxContext, &SurfaceStore, SurfaceId, u32, Option<&[u8; 768]>) + Send>;
 
+/// Observes the dispatched guest present, including a sleeping scaled view
+/// showing a surface from its reference store.
+type GuestPresentObserver = Box<dyn FnMut(u64, &GfxContext, &SurfaceStore, SurfaceId, crate::Lighting) + Send>;
+
 /// Inspects a completed batch in encoder order while its upload ranges
 /// and texture bindings still name this batch's data.
 type RecordedPassObserver = Box<dyn FnMut(&GfxContext, &mut wgpu::CommandEncoder, &wgpu::Texture, &gfx::RenderTarget<'_>, Clear, &[RecordedDraw]) + Send>;
@@ -106,6 +116,10 @@ pub struct HostTexture {
 }
 
 impl HostTexture {
+    pub(crate) fn same_sample(&self, other: &Self) -> bool {
+        self.texture == other.texture && self.view == other.view
+    }
+
     /// Another handle to the same texture and view (for a backend on the
     /// same device, `crate::scaled`).
     pub fn shared(&self) -> HostTexture {
@@ -151,8 +165,17 @@ pub struct GfxBackend {
     /// The draw path.
     pub renderer: Renderer,
     shaders: Option<Box<dyn ShaderProvider>>,
+    lighting: crate::Lighting,
     presented: Option<SurfaceId>,
+    /// Last scene-owned display target, retained through the next display swap.
+    scene_presented: Option<SurfaceId>,
+    scene_uploads: guest_draw_pass::TextureCache,
     present_hook: Option<PresentHook>,
+    guest_present_observer: Option<GuestPresentObserver>,
+    unshown_observer: Option<Box<dyn FnMut(u64) + Send>>,
+    last_present_unshown: bool,
+    measure_raster: bool,
+    displayed_extent: Option<(u32, u32)>,
     recorded_pass_observer: Option<RecordedPassObserver>,
     submission_uploads: Option<Box<dyn FnMut() + Send>>,
     submitted_frame_observer: Option<Box<dyn FnMut() + Send>>,
@@ -301,8 +324,19 @@ impl GfxBackend {
     /// on (`ShaderProvider::set_hard_shadows`). Only a render-scale view
     /// sets it (`crate::scaled`); the backend the guest reads stays retail.
     pub fn set_hard_shadows(&mut self, on: bool) {
+        self.lighting = if on { crate::Lighting::E3 } else { crate::Lighting::Retail };
+        self.set_scene_receiver(on);
+    }
+
+    pub(crate) fn scene_lighting(&self) -> crate::Lighting {
+        self.lighting
+    }
+
+    /// Select the carried draw's shadow lookup without relabelling the
+    /// lighting mode of the Swap that observers will receive.
+    pub(crate) fn set_scene_receiver(&mut self, hard: bool) {
         if let Some(s) = self.shaders.as_mut() {
-            s.set_hard_shadows(on);
+            s.set_hard_shadows(hard);
         }
     }
 
@@ -325,8 +359,16 @@ impl GfxBackend {
             store,
             renderer,
             shaders: Some(Box::new(Nv2aShaders::new())),
+            lighting: crate::Lighting::Retail,
             presented: None,
+            scene_presented: None,
+            scene_uploads: Default::default(),
             present_hook: None,
+            guest_present_observer: None,
+            unshown_observer: None,
+            last_present_unshown: false,
+            measure_raster: false,
+            displayed_extent: None,
             recorded_pass_observer: None,
             submission_uploads: None,
             submitted_frame_observer: None,
@@ -459,7 +501,8 @@ impl GfxBackend {
     }
 
     /// Replaces the shader translator for textured and programmable draws.
-    pub fn with_shaders(mut self, shaders: Box<dyn ShaderProvider>) -> Self {
+    pub fn with_shaders(mut self, mut shaders: Box<dyn ShaderProvider>) -> Self {
+        shaders.set_hard_shadows(self.lighting == crate::Lighting::E3);
         self.shaders = Some(shaders);
         self
     }
@@ -485,6 +528,40 @@ impl GfxBackend {
     ) -> Self {
         self.present_hook = Some(Box::new(hook));
         self
+    }
+
+    /// A host-only replay may use a surface from the sleeping view's 1x
+    /// reference. It still goes to the replay hook and has no guest ordinal.
+    pub(crate) fn show_replay(
+        &mut self,
+        from: Option<&GfxBackend>,
+        surface: SurfaceId,
+        gamma: Option<&[u8; 768]>,
+    ) -> Result<(), String> {
+        self.flush()?;
+        let (ctx, store) = match from {
+            Some(reference) => (&reference.ctx, &reference.store),
+            None => (&self.ctx, &self.store),
+        };
+        if let Some(hook) = self.replay_hook.as_mut().or(self.present_hook.as_mut()) {
+            hook(ctx, store, surface, 0, gamma);
+        }
+        Ok(())
+    }
+
+    /// Observe the guest swaps on this backend. A host-only interpolated
+    /// present does not consume a number or notify this observer. The lighting
+    /// mode is the view policy in effect for this swap, before retargeting.
+    pub fn observe_guest_present(
+        &mut self,
+        observer: impl FnMut(u64, &GfxContext, &SurfaceStore, SurfaceId, crate::Lighting) + Send + 'static,
+    ) {
+        self.guest_present_observer = Some(Box::new(observer));
+    }
+
+    /// A scaled display exhausted its last fallback without an image.
+    pub fn observe_unshown_guest_present(&mut self, observer: impl FnMut(u64) + Send + 'static) {
+        self.unshown_observer = Some(Box::new(observer));
     }
 
     /// Observe complete packets before their original pass records. Used by
@@ -633,6 +710,14 @@ impl GfxBackend {
     fn retain_uploads(&mut self, uploads: gfx::ring::SubmissionUploads) {
         if !self.submitted_uploads.iter().any(|b| b.same_submission(&uploads)) {
             self.submitted_uploads.push(uploads);
+        }
+    }
+
+    fn submit_full_external_batch(&mut self) {
+        let passes = self.external_prefix.len() + self.open.as_ref().map_or(0, |(_, passes)| *passes)
+            + self.pending.as_ref().map_or(0, |p| p.encoded);
+        if passes >= MAX_ENCODED_PASSES && self.encode_before_external() {
+            self.submit_open();
         }
     }
 
@@ -1048,9 +1133,39 @@ impl GfxBackend {
         flags: u32,
         gamma: Option<&[u8; 768]>,
     ) -> Result<(), String> {
+        let result = self.submit_present(from, surface, flags, gamma, true, self.lighting);
+        if result.is_err() && from.is_some() {
+            // Showing the reference is the scaled backend's final attempt for
+            // this guest swap. Even an unshown frame consumes its ordinal.
+            self.last_present_unshown = true;
+            self.displayed_extent = None;
+            if let Some(observer) = &mut self.unshown_observer {
+                observer(self.frame);
+            }
+            self.frame += 1;
+            self.frame_draw = 0;
+        }
+        result
+    }
+
+    pub(crate) fn submit_present(
+        &mut self,
+        from: Option<&GfxBackend>,
+        surface: SurfaceId,
+        flags: u32,
+        gamma: Option<&[u8; 768]>,
+        honour_finish: bool,
+        lighting: crate::Lighting,
+    ) -> Result<(), String> {
         let _p = timeline::phase::enter(timeline::phase::Phase::Encode);
         let _t = timeline::span(timeline::Cat::Gfx, timeline::Track::Host, "present");
         self.flush()?;
+        // Start the already-submitted query reads before exposing this swap.
+        // If one fails, a scaled display can still fall back to the reference
+        // without handing the window or parity observer a second image.
+        for report in self.reports.values().filter(|r| r.is_submitted()) {
+            report.try_read(&self.ctx)?;
+        }
         if let Some(observer) = &mut self.submitted_frame_observer {
             observer();
         }
@@ -1064,28 +1179,36 @@ impl GfxBackend {
         if from.is_none() {
             self.presented = Some(surface);
         }
-        if let Some(hook) = self.present_hook.as_mut() {
-            match from {
+        let (ctx, store) = match from {
+            Some(reference) => (&reference.ctx, &reference.store),
+            None => (&self.ctx, &self.store),
+        };
+        self.last_present_unshown = false;
+        if self.measure_raster {
+            self.displayed_extent = store.get(surface).ok().map(|s| (s.desc().width, s.desc().height));
+        }
+        if let Some(observer) = &mut self.guest_present_observer {
+            observer(self.frame - 1, ctx, store, surface, lighting);
+        }
+        if let Some(hook) = &mut self.present_hook {
+            if from.is_some() {
                 // Another backend's surface (a view showing its reference's
                 // image, `crate::scaled`), on the same device.
-                Some(other) => {
-                    let mut metadata = crate::present_camera::current();
-                    use crate::present_camera::Present;
-                    match &mut metadata {
-                        Some(Present::Guest { reference, .. } | Present::Synthetic { reference, .. }) => {
-                            *reference = true;
-                        }
-                        None => {}
+                let mut metadata = crate::present_camera::current();
+                use crate::present_camera::Present;
+                match &mut metadata {
+                    Some(Present::Guest { reference, .. } | Present::Synthetic { reference, .. }) => {
+                        *reference = true;
                     }
-                    crate::present_camera::with(metadata, || {
-                        hook(&other.ctx, &other.store, surface, flags, gamma)
-                    });
+                    None => {}
                 }
-                None => hook(&self.ctx, &self.store, surface, flags, gamma),
+                crate::present_camera::with(metadata, || hook(ctx, store, surface, flags, gamma));
+            } else {
+                hook(ctx, store, surface, flags, gamma);
             }
         }
         let frame_end = self.last_submit.clone();
-        if flags & 4 != 0 {
+        if honour_finish && flags & 4 != 0 {
             // D3DSWAP_FINISH: wait for the GPU (for the previous frame's
             // work, unless `SwapFinish::Full`).
             let wait = match self.swap_finish {
@@ -1107,12 +1230,6 @@ impl GfxBackend {
             }
         }
         self.prev_frame_end = frame_end;
-        // Reports from this frame and before are read later (Halo reads a
-        // visibility test two frames after it ends): start their reads now,
-        // so the read finds the count mapped instead of waiting.
-        for r in self.reports.values().filter(|r| r.is_submitted()) {
-            r.try_read(&self.ctx)?;
-        }
         Ok(())
     }
 
@@ -1214,6 +1331,10 @@ fn word_layout(layout: GuestLayoutKind, offset: u32) -> Result<gfx::guest_words:
 impl Backend for GfxBackend {
     type Surface = SurfaceId;
     type Texture = HostTexture;
+
+    fn frozen_images(&self, texture: &HostTexture) -> Option<crate::scene_sink::FrozenImages> {
+        Some(crate::scene_sink::FrozenImages::single(&self.ctx.device, texture))
+    }
 
     fn create_surface(
         &mut self,
@@ -1703,11 +1824,12 @@ impl Backend for GfxBackend {
         self.retain_uploads(recording.uploads);
         // The pass limit can submit this recording immediately.
         self.external_on_submit.extend(recording.on_submit);
-        let passes = self.external_prefix.len() + self.open.as_ref().map_or(0, |(_, passes)| *passes)
-            + self.pending.as_ref().map_or(0, |p| p.encoded);
-        if passes >= MAX_ENCODED_PASSES && self.encode_before_external() {
-            self.submit_open();
-        }
+        self.submit_full_external_batch();
+    }
+
+    #[cfg(feature = "gpu")]
+    fn upload_scene_assets(&mut self, upload: crate::backend::AssetUpload) {
+        upload(&self.ctx.device, &self.ctx.queue);
     }
 
     fn upload_device(&self) -> Option<(wgpu::Device, wgpu::Queue)> {
@@ -2089,6 +2211,24 @@ impl Backend for GfxBackend {
         Ok(true)
     }
 
+    fn measure_present_raster(&mut self, surface: Option<SurfaceId>) -> crate::backend::RasterMeasurement {
+        self.measure_raster = true;
+        self.displayed_extent = None;
+        crate::backend::RasterMeasurement {
+            configured: Some(1),
+            guest: surface.and_then(|s| self.surface_extent(s)),
+        }
+    }
+
+    fn last_present_unshown(&self) -> bool {
+        self.last_present_unshown
+    }
+
+    fn take_presented_extent(&mut self) -> Option<(u32, u32)> {
+        self.measure_raster = false;
+        self.displayed_extent.take()
+    }
+
     fn surface_extent(&self, surface: SurfaceId) -> Option<(u32, u32)> {
         let d = *self.store.get(surface).ok()?.desc();
         Some((d.width, d.height))
@@ -2153,11 +2293,7 @@ impl Backend for GfxBackend {
         // A host-only frame (crate::interp): submitted and shown through
         // the hook; the frame count, shader upkeep, `presented` and the
         // swap wait belong to the guest's presents.
-        self.flush()?;
-        if let Some(hook) = self.replay_hook.as_mut().or(self.present_hook.as_mut()) {
-            hook(&self.ctx, &self.store, surface, 0, gamma);
-        }
-        Ok(())
+        self.show_replay(None, surface, gamma)
     }
 
     fn clear_pixel_count(&mut self) -> Result<(), String> {
@@ -2342,6 +2478,48 @@ fn split<'a>(draw: Draw<'a>, pieces: &[Option<ScissorRect>]) -> Vec<Draw<'a>> {
 mod tests {
     use super::merge_split;
     use wgpu::ColorWrites as W;
+
+    #[test]
+    fn an_unshown_scaled_swap_still_consumes_its_guest_ordinal() {
+        use super::{Backend, GfxBackend, GfxContext};
+        use std::sync::{Arc, Mutex};
+
+        let Ok(ctx) = GfxContext::headless() else { return };
+        let mut reference = GfxBackend::new(GfxContext {
+            instance: ctx.instance.clone(),
+            adapter: ctx.adapter.clone(),
+            device: ctx.device.clone(),
+            queue: ctx.queue.clone(),
+            caps: ctx.caps,
+        });
+        let mut display = GfxBackend::new(ctx);
+        let back = reference.create_surface(gfx::D3DFormat::LinA8R8G8B8, 8, 8, false).unwrap();
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let ordinals = Arc::clone(&observed);
+        let missed = Arc::new(Mutex::new(Vec::new()));
+        let failures = Arc::clone(&missed);
+        display.observe_unshown_guest_present(move |n| failures.lock().unwrap().push(n));
+        display.observe_guest_present(move |n, _, _, _, _| ordinals.lock().unwrap().push(n));
+
+        // A failed view may still show the reference under the same number.
+        display.measure_present_raster(None);
+        display.external_ordering_error = Some("failed scaled view".into());
+        assert!(display.present_from(None, back, 0, None).is_err());
+        display.present_from(Some(&reference), back, 0, None).unwrap();
+        assert_eq!(display.take_presented_extent(), Some((8, 8)));
+        // A lost fallback consumes the number, without showing an image.
+        display.measure_present_raster(None);
+        display.external_ordering_error = Some("failed reference view".into());
+        assert!(display.present_from(Some(&reference), back, 0, None).is_err());
+        assert_eq!(display.take_presented_extent(), None);
+        assert!(display.last_present_unshown());
+        display.measure_present_raster(None);
+        display.present_from(Some(&reference), back, 0, None).unwrap();
+        assert_eq!(display.take_presented_extent(), Some((8, 8)));
+        assert!(!display.last_present_unshown());
+        assert_eq!(*observed.lock().unwrap(), [1, 3]);
+        assert_eq!(*missed.lock().unwrap(), [2]);
+    }
 
     #[test]
     fn merged_draws_split_only_after_a_partly_masked_draw() {

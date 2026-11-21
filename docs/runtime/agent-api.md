@@ -834,9 +834,15 @@ arms the recorder; the next present starts the frame and the one after
 ends it, then it disarms. `render.frame {}` reads the state and the last
 frame (`frame.seq` is the arming's number). `h2 agent frame` does both and
 waits up to 10 s; a paused or loading game presents nothing. Unarmed, the
-cost is one relaxed load per draw, clear and present in the draw wrapper
-(`boot::d3d_diag`), which sits in front of the backend, so the frame is
-the guest's as the D3D layer handed it over.
+draw diagnostics use one relaxed load per draw or clear in the D3D
+wrapper. On a device with a native frame owner, the recorder waits for
+the worker's presentation decision. An original presentation supplies
+the D3D report. A native presentation supplies the executed graph's
+attachment runs, slots, typed stages, snapshots and `display_frame`
+counters. The worker keeps a requested original pass read at its position
+among the guest commands. If the native graph takes the frame, its own
+pass observer supplies the snapshot. Arming a snapshot preserves the
+worker's choice of renderer.
 
 - **The frame.** `totals` (passes, draws by outcome, vertices, clears,
   copies, reads, distinct targets); `passes`: runs of work on one colour
@@ -868,9 +874,37 @@ the guest's as the D3D layer handed it over.
   (`constants -38..-35,58`), implies `draws`, and `max N` sets `max_draws`.
 - **Snapshots.** `snap` (at most 4 pass numbers): when such a pass ends,
   its colour target is read back as BGRA and written as a PNG under the
-  cache directory's `frames/` (`frame-<seq>-pass-<n>.png`); `snaps` gives
-  each file or error. A pass with no draw has no known size and says so.
-  This is a GPU round trip, only when asked.
+  cache directory's `frames/`. Original passes use
+  `frame-<pid>-<seq>-pass-<n>.png`. A retry after a failed Swap or
+  renderer replacement adds `-retry-<attempt>` after the sequence. Native passes use a `display-` or
+  `private-` prefix. Read the path or error in `snaps`. An original pass
+  with no known colour size reports that it cannot be read. A completed
+  report retains its files. Replacing a pending capture releases its
+  provisional snapshots. A snapshot incurs a GPU round trip.
+
+A private capture has its own recorder. When the private scene renderer
+is installed, arm the recorder before requesting a lighting capture,
+then read its result:
+
+```sh
+h2 agent render.frame '{"source":"private","arm":true,"draws":true,"snap":[0]}'
+h2 agent render.capture '{"lighting":"retail"}'
+h2 agent render.frame '{"source":"private"}'
+```
+
+The next completed private draw supplies the report. Each row covers
+draws and clears on the same attachments, with their view/slot pairs
+in `slots` and typed stage names in `stages`. A copy ends a row even
+when the following draw uses the same attachments. The `draws` list and
+vertex totals describe carried guest draws, and `snaps` reads the chosen
+passes before the following graph operations. `private_frame` identifies
+the source scene, present and lighting mode. Its `passes` counts logical
+attachment runs. The backend's `render_passes`, `backend_draws` and
+`submits` include work caused by requested snapshots. The private
+recorder measures wall time from graph entry to final readback.
+Omitting `source` or specifying `"display"` reads or arms the display
+recorder independently. A request for `"private"` returns `UNAVAILABLE`
+when the host has no private scene renderer.
 
 ### `render.frame_layout`
 
@@ -932,6 +966,31 @@ appear with no change here; `pipeline` is the pipelined render's totals
 snapshot coverage, and times in ms including `overlap_ms` for the worker's
 execution before the game-thread join); `counters` is the frame-stats
 window's line. Each is `null` where that piece is not running.
+
+`display_frame` gives the identity, lighting and backend counter deltas
+when the worker's latest presentation used the native graph. An
+original presentation clears it. The frame recorder can stay unarmed
+for these counters. `render.scene` includes them when the map epoch,
+frame and tick match its sealed scene.
+
+`private_frame` reports the counts and identity of the most recent
+completed private target draw. It is absent before the first capture and
+after a renderer reset. `render.scene` includes the same field when its
+sealed scene matches the private capture's map epoch, frame, tick and
+summary hash.
+
+A completed native E3 draw includes an `e3` object in its
+`display_frame` or `private_frame`. The armed `render.frame` record
+includes it for the corresponding draw. Its `passes` array contains
+`e3.tiles`, `e3.sun`, `e3.marks` and `e3.lights`. Each row has
+`name`, submitted `draws` and `gpu_ns` (null for an empty or unmeasured
+stage). Snapshot indices refer to the attachment runs in the frame
+record. The six per-frame counters are `lights_lit`, `lights_shadowed`,
+`lights_over_cap`, `sun_tiles`, `sun_tiles_redrawn` and `atlas_halved`.
+They count the E3 renderer's selections and atlas work. Slice L3 replays
+the guest's own lights in both modes, so its E3 counters and pass draw
+counts are zero. The guest's light selections are in `render.scene.views`.
+Retail graph draws omit `e3`.
 
 `interp` exists when in-between frames run: in `h2 play`, or in an `h2
 serve` that renders on the GPU off-screen (`H2_BOOT_GFX`) with an
@@ -1025,6 +1084,8 @@ h2 agent render.capture '{}'
 h2 agent render.spawn_view '{"reset": true}'
 h2 agent render.capture '{"tick": 9000}'
 h2 agent render.capture '{"pass": 3}'          # the next tick's frame, pass 3
+h2 agent render.capture '{"lighting":"retail"}' # latest sealed scene, private draw
+h2 agent render.capture '{"lighting":"e3","tick":42}' # use the first reply's tick
 h2 agent render.scene '{"dump": true}'
 h2 agent sim.hashes '{"from_tick": 3000}'
 h2 agent render.parity '{"arm": true}'
@@ -1034,8 +1095,8 @@ h2 agent render.parity '{"arm": true}'
 |---|---|---|---|
 | `render.compare` | read | `{a, b, diff?}`: two PNG paths, and where to write a difference image | `{size: [w, h], differing, max_channel, mean, first: [x, y] \| null, within_bar, diff?}` |
 | `render.spawn_view` | act | `{index, yaw_offset?}` or `{reset: true}` | `{index, count, position: [x,y,z], yaw}` or `{reset: true}` |
-| `render.capture` | read | `{tick?, pass?, game_id?}` | `{path, tick, present, pass?, scene_hash, source?}` |
-| `render.scene` | read | `{dump?}` | `{sealed, map_epoch, frame, tick, hash, cut, views, counters, entries?, carried?, dump?}` |
+| `render.capture` | read | `{tick?, pass?, lighting?, game_id?}` | `{path, tick, present, pass?, lighting?, scene_hash, source?}` |
+| `render.scene` | read | `{dump?}` | `{sealed, map_epoch, frame, tick, hash, cut, views, counters, entries?, carried?, carried_census?, carried_activation?, carried_checkpoint?, dump?, display_frame?, private_frame?}` |
 | `render.parity` | act | `{arm: true}` | `render.compare`'s fields plus `tick` |
 | `sim.hashes` | read | `{from_tick?, max?}` | `{rows: [{tick, gameplay, arena?}], dropped, resets, truncated?}` |
 
@@ -1067,7 +1128,24 @@ h2 agent render.parity '{"arm": true}'
   gives `UNAVAILABLE`, and a session that draws no world frames times out.
   `crates/extensions/game/src/agent_spawn_view.rs` shares Theater's
   playerless world view in `spectator_view.rs`.
-- **`render.capture`.** The frame of game tick `tick` (as `at.tick`
+- **`render.capture`.** With `lighting: "retail" | "e3"`, the native
+  renderer draws a sealed scene into a private target. The default is
+  the latest sealed scene. An explicit `tick` selects that exact scene
+  tick, up to 240 ticks ahead of the latest seal. The draw uses the
+  resolution shown for that particular present, including a frame the
+  backend showed from its 1x reference. The answer includes the tick,
+  present, summary hash, lighting and a fresh PNG path. The most recent
+  successful private capture retains its scene for another request with
+  the same tick. A failed original Swap gives `UNAVAILABLE` with
+  `reference present failed` for that scene. Other retained ticks stay
+  available. Pass both paths to `render.compare` to compare the modes
+  while play continues.
+  A renderer reset releases the retained scene. A missing private
+  renderer or an unreplayable scene gives `UNAVAILABLE`. Combining
+  `lighting` with `pass` gives `INVALID_PARAMS`. The override applies
+  only to the private draw.
+
+  Without `lighting`, the frame is taken for game tick `tick` (as `at.tick`
   counts it; default the next one, at most 240 ahead). On the D3D path
   the frame of a tick is the present that follows it: the first guest
   present after the tick has ended. `tick` in the answer is the last tick
@@ -1099,8 +1177,11 @@ h2 agent render.parity '{"arm": true}'
   `camera` gives the world-space `position`, `forward` and `up` the renderer
   uses. `digest` is the SHA-256 of the exact PNG the display writer saves.
   The Live CLI adds the capture permit when it submits the image.
-- **`render.scene`.** The last sealed `FrameScene`, from the source the
-  frame step registers (`agent::render::set_scene_source`, in boot's
+  `game_id` cannot be combined with `pass` or `lighting`.
+- **`render.scene`.** Map activation or snapshot load clears the last
+  scene and any private capture pin immediately. `sealed` stays false
+  until a frame on the new timeline seals. The last sealed `FrameScene`
+  comes from the source the frame step registers (`agent::render::set_scene_source`, in boot's
   `scene_glue` over `render_bridge::scene_step`): whether
   one has been sealed, its map epoch, frame, tick, summary hash and cut
   reasons; per view (`key` is `kind:player:view`, `game:0:0`, the first
@@ -1131,7 +1212,12 @@ h2 agent render.parity '{"arm": true}'
   absent when its draw did not run in the view; `carried`, its ops by
   slot from the scene sink's last frame (empty without
   `frame-scene.sink`, and for a first-person view), and `camera_use`
-  (empty: the sink does not classify draws by `CameraUse`); `counters`
+  counts the retained guest draws for that scene and game view,
+  including its overlay. `screen` is pretransformed or passes screen
+  positions through, `view` has the view's verified projection block
+  and viewport, and `unknown` covers the other draws. The map is
+  empty for other view kinds or without a retained matching scene.
+  The top-level `counters` include
   (`scenes_sealed`, `scenes_unsealed`, `scene_views`, `scene_no_camera`,
   `scene_refused_writes`, `scene_layers`, `scene_layer_items`,
   `scene_layer_remainder`, `scene_layers_unread` (layer draws whose list
@@ -1167,12 +1253,13 @@ h2 agent render.parity '{"arm": true}'
   in `H2_FEATURES`, `layer_plan_asked`, `layer_plan_drawn`,
   `layer_plan_items` and the plan's outcomes by layer,
   `layer_plan_<layer>_taken` and `layer_plan_<layer>_refused_<cause>`
-  (`render_bridge::native_layers`; framescene.md, slice 4); later slices add
-  `scene_unresident`, `scene_held_draws`). With `frame-scene.sink` in
-  `H2_FEATURES` (framescene.md, slice 6), the device's scene sink files
+  (`render_bridge::native_layers`; framescene.md, slice 4); a later slice adds
+  `scene_held_draws`). With the [scene sink](../graphics/framescene.md#slice-6-the-renderer-owns-game-view-frames)
+  enabled, the device files
   each guest D3D op by the frame's slot (`opaque`, `after_opaque`,
   `after_lights`, `transparents`, `after_post`, `overlay`, `outside`)
-  while the D3D backend still draws it; `carried` is its last frame:
+  for both the original renderer and the frame owner. `carried` describes
+  the last recorded frame:
   `slots`, each slot's `{draws, binds, clears, copies, uploads,
   samples}` (slots with none left out), `side_targets`, each surface
   other than the scene's presented colour and its depth that a game
@@ -1183,8 +1270,107 @@ h2 agent render.parity '{"arm": true}'
   `scene_carried_frames`, `scene_carried_draws`, `scene_carried_ops`,
   `scene_side_target_frames` (frames that named a side target in a
   game view), `scene_readback` and `scene_readback_<kind>` (in a game
-  view, since the start). Without the option `carried` and those
-  counters are absent. With
+  view, since the start). `carried_census` keeps transient uses across
+  all recorded frames. `frames` counts sink presents from one and
+  `game_frames` counts those with guest D3D ops in a game view.
+  `targets` groups game-view side surfaces by `width`, `height`,
+  `format`, `depth`, `slot` and `operation`. Operations distinguish
+  attachment binds and clears, the source and destination of a copy,
+  uploads, snapshots, in-place samples and depth samples. `reads`
+  groups guest readbacks by `slot` and `kind`, including the overlay
+  and outside slots. Each row gives its `count`, `first_frame` and
+  `last_frame`. Compare counts at two boundaries to isolate a window.
+  On a direct level boot, `carried_activation` records the loaded map, its
+  activation present, sink frame and a snapshot of process counters. A row
+  whose `last_frame` exceeds `carried_activation.frame` occurred after loading.
+  `carried_checkpoint` freezes the census corpus at original Swap 3000.
+  It contains `present`, `sealed`, optional `inventory` and optional
+  `counters`. It appears once the device has submitted the boundary.
+  `sealed` records whether the active map already had a sealed scene.
+  The original census supplies an `inventory` with the same schema as
+  `carried_census` for original Swaps 1 through 3000 inclusive.
+  A device or ordinal gap leaves that inventory absent. When the display
+  worker completes Swap 3000, `counters` preserves its `scene_window_*`
+  readings for the interval after level activation through that Swap.
+  Missing or late activation, a second game start within the interval,
+  or a missing original or worker ordinal leaves the checkpoint without
+  counters. Later game activity does not modify the frozen values.
+  A threaded GPU sink also reports `scene_window_*` counters from one device.
+  `start` is its original Swap at activation and `through` is the last
+  completed Swap. The interval excludes `start` and includes `through`.
+  `owner_enabled` is 1 when this device selects a native frame owner.
+  `gaps` counts missing or out-of-order joins. `games` counts completed
+  frames that entered a game view or issued a game-view operation.
+  `owned` and `ordinary` count those game frames by actual display path.
+  `failed` counts failed presentations across the interval. `stage_drops`
+  includes guest-side and worker-side stage drops. For game frames,
+  `unresident` counts omitted instances and `unknown_residency` counts
+  frames without a complete observation. `palette_views` counts game-view
+  entries sampled for native map-palette residency. `palette_pending_frames`
+  counts game frames where a view entered with a known incomplete palette.
+  `palette_unknown_frames` counts game frames where a view lacked a valid
+  palette observation or game work had no recorded view entry. Each frame
+  retains observations from every split view. The current map's
+  `scene_palette_definitions` counts distinct scenario object palette
+  definitions. Each is in one of `scene_palette_pending`,
+  `scene_palette_no_model` (an explicit null model reference),
+  `scene_palette_failed`, `scene_palette_partial` or
+  `scene_palette_resident`. Resident means every drawable model part
+  has its uploaded geometry and its layer-3 material implementations.
+  These gauges appear after a valid palette manifest is available.
+  `read_surface`, `read_depth`,
+  `read_mirror` and `read_pixel_count` count guest requests in game views.
+  `flare_queries` counts original game-view reports installed by the
+  owner. `unmatched_flare_frames` counts owned frames where that number
+  differed from the original requests on the same Swap. Each read of
+  these counters covers a single completed interval, even when the
+  worker is drawing a later frame. The guest continues running.
+  `configured_scale_<bucket>` counts the raster setting used on each
+  completed original Swap. `physical_scale_<bucket>` counts the scale
+  of its presented image relative to that original surface's guest
+  extent. `game_physical_scale_<bucket>` counts that same observation
+  for game-view originals. Buckets use `1x`, `4x` or the other observed
+  integer factor. `unknown` counts missing observations. Empty buckets
+  are omitted. These histograms also appear in the frozen checkpoint.
+  The per-frame `aux` number appears only under `carried.side_targets`.
+  The cumulative census is available on the census-only path. Rendering
+  workers omit this extra scan. Both paths count
+  `scene_carried_game_frames`, the guest presents with a D3D op inside
+  a game view. With an installed frame owner, `scene_owned_presented`
+  counts successful native presentations and `scene_owned_declined`
+  counts presentations that take the ordinary backend path, including
+  frames outside game views. `scene_owned_flare_queries` counts
+  game-view pixel reports whose native result the owner installed.
+  `scene_owned_candidates` counts sealed game frames paired with their
+  guest presents and checked by the display worker. For each rejected
+  candidate the worker records the first cause. `scene_owned_barriers`
+  counts frames whose original commands had to run before Swap, for example
+  for a guest read. `scene_owned_mismatches` counts disagreement between
+  the seal and the queued commands or Swap parameters.
+  `scene_owned_target_refusals` counts missing physical attachments and
+  frames the physical backend cannot reproduce at the active scale or mode.
+  The private renderer reports its own publication queue in
+  `scene_private_published`, `scene_private_taken`, `scene_private_replaced`
+  and `scene_private_waiting`. In paced mode a newer seal can replace an
+  unread private scene. In locked mode at most two scenes wait and each
+  reaches the reader. These counts describe capture availability.
+  With the sink and a render worker, `scene_residency_frames` counts
+  presents where the worker observed a draw, a committed scene stage,
+  an owned frame or a failure. `scene_unresident` counts distinct
+  object handles per present whose dropped work lacked the planned
+  GPU model, geometry buffer or material program.
+  `scene_residency_unknown_frames` counts frames with an unclassified
+  drop, a skipped guest packet or a worker failure. The counters appear
+  after the first observation. A post-load zero requires a positive
+  frame delta and zero growth in both omission counters. Private
+  captures have no effect. Legacy refusals can keep their guest draws.
+  Check native ownership across the same game views to measure native
+  coverage.
+  The raw `scene_readback_pixel_count` includes these requests.
+  Compare raw and native counts at the same recording boundaries
+  to identify requests that still need the reference.
+  Both carried records are absent until the sink records a frame.
+  Without the option the sink counters are also absent. With
   `frame-scene.census` in `H2_FEATURES`, `entries` is the entry census
   (`render_bridge::entry_census`; framescene.md, slice 4), totals since
   the start: `by_entry`, keyed by guest entry (`layer.<site>.<layer>`
@@ -1205,19 +1391,28 @@ h2 agent render.parity '{"arm": true}'
   under the cache directory (`scenes/scene-<frame>-<tick>.json`) and
   `dump` names the file. With no source
   registered: `UNAVAILABLE`, "no scene has been built".
-- **`render.parity`.** A temporary diagnostic, deleted with the D3D
-  backend. `{"arm": true}` makes the next frame step draw the tick twice,
-  the guest's whole front end into the D3D backend's targets and the
-  native path into private ones, and compare them as `render.compare`
-  does; the answer comes at the first tick boundary after the frame step
-  took the arming, with `tick`, the last tick that ended before that
-  frame step. Unarmed, the frame step's check is one relaxed load
-  (`agent::render::parity_armed`, `take_parity_arm`). The two-path draw
-  needs a stage that replaces a whole guest entry (framescene.md
-  slice 4); with no source registered
-  (`agent::render::set_parity_source`), the answer is `UNAVAILABLE`
-  saying so, and nothing is armed. `{"arm": false}` is
-  `INVALID_PARAMS`.
+- **`render.parity`.** `{"arm": true}` requests one game frame from the
+  sealed scene's private renderer and the D3D display. The sink retains
+  the original guest draws while armed. A frame that already admitted
+  a typed stage before arming gives way to the next complete guest
+  frame. The reference readback uses the ordinary display surface,
+  before gamma, at its display scale. The reference requires Retail display
+  lighting. An E3 display returns `UNAVAILABLE` because its scaled shadow
+  maps use a different filter from the sealed renderer's baseline. The
+  worker draws that present's sealed inputs on fresh targets at the
+  observed scale. Smaller auxiliary levels retain their guest dimensions.
+  The reply carries the sealed scene's `tick` and the pixel comparison
+  returned by `render.compare`. The comparison covers the carried
+  guest commands. Pixel parity of a typed substitution needs a separate
+  reference run exercising that stage.
+  The request completes at a tick boundary after both render paths
+  finish. A new arming interrupts one still waiting. Unavailable
+  inputs or a missing reference or private renderer give `UNAVAILABLE`.
+  When the scaled display also fails to show its final 1× fallback,
+  the matching capture and parity request report the failed Swap. A
+  later Swap can still supply its own image.
+  A request that receives no game frame within the deferred request
+  limit times out. `{"arm": false}` gives `INVALID_PARAMS`.
 - **`sim.hashes`.** The running game's post-tick digests in the rows sim
   mode writes to its report as `state_hashes_v1` (sim.md §6): `tick`,
   `gameplay` (16 hex digits) and, under `impl.sim.arena-hash`, `arena`

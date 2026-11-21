@@ -15,9 +15,12 @@ leave the guest exactly as if the hook had not run. Evidence labels as in
 [feature-engine.md](../engine/feature-engine.md): **Code**, **Test**, **S**.
 Addresses and offsets are research points; no game data is in the repo.
 
-The forward design, a renderer that owns the frame and removes the guest
-front-end from the path, is [framescene.md](framescene.md). This page
-describes what exists.
+This page describes the default stage-by-stage renderer. On the opted-in
+GPU path, the scene sink retains repeatable typed stages and resolved guest
+draws at their original slots. The display worker can present a complete
+game view from that seal, and the capture worker can draw the same inputs
+into private targets. The ownership rules and the gate for changing the
+default are in [FrameScene slice 6](framescene.md#slice-6-the-renderer-owns-game-view-frames).
 
 ## How a frame flows
 

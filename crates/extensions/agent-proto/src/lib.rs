@@ -22,6 +22,7 @@ pub mod editor;
 mod endpoint;
 pub mod expect;
 pub mod forge;
+pub mod frame_graph;
 pub mod havok;
 pub mod superbounce;
 pub mod host_lobby;
@@ -49,11 +50,12 @@ pub use endpoint::Endpoint;
 pub use load::{LoadParams, LoadRecord, LoadSegment, Loads};
 pub use pad::{AtTick, Now, PAD_BUTTONS, PadParams, PadStep};
 pub use render::{
-    CaptureCamera, CaptureReply, CaptureSource, CompareParams, CompareReply, DepthRecord, DrawLayout, DrawRecord,
-    FrameCaptureParams, FrameParams, FrameRecord, FrameReply, FrameTotals, LayoutTexture, OpRecord,
-    ParityParams, ParityReply, PassRecord, RenderStats, SceneCarried, SceneEntries, SceneEntryRecord,
-    SceneLateRecord, SceneOpCounts, SceneParams, ScenePostRecord, SceneReply, SceneSideTarget,
-    SceneViewRecord, SnapRecord, SpawnViewParams,
+    CaptureCamera, CaptureLighting, CaptureReply, CaptureSource, CompareParams, CompareReply, DepthRecord,
+    DrawLayout, DrawRecord, FrameCaptureParams, FrameParams, FrameRecord, FrameReply, FrameTotals,
+    LayoutTexture, OpRecord, ParityParams, ParityReply, PassRecord, RenderStats, SceneCarried,
+    SceneEntries, SceneEntryRecord, SceneLateRecord, SceneOpCounts, SceneParams, ScenePostRecord,
+    SceneReply, SceneCarriedCensus, SceneCensusActivation, SceneCensusCheckpoint, SceneReadUse,
+    SceneSideTarget, SceneTargetUse, SceneUses, SceneViewRecord, SnapRecord, SpawnViewParams,
 };
 
 use serde::{Deserialize, Serialize};
