@@ -251,8 +251,7 @@ impl SceneCache {
                 placement_mask(app),
             ));
             if self.inputs != inputs
-                || self.objects != sample.objects
-                || self.players != sample.players
+                || !crate::play::display::same_records(sample, &self.objects, &self.players)
             {
                 self.scene = std::sync::Arc::new(Scene::shown(app));
                 changed = true;
@@ -694,6 +693,43 @@ mod tests {
             scene.glyphs,
             vec![([0.0; 3], geometry::MARKER_RADIUS * 2.0, false)]
         );
+    }
+
+    #[test]
+    fn scene_cache_reuses_nan_payloads_and_invalidates_changed_bits() {
+        use crate::app::Action;
+        use crate::play::testing::Temp;
+        let temp = Temp::new("scene-cache-nan");
+        let mut app = App::new();
+        app.set_data_root(temp.0.join("data"));
+        app.dispatch(Action::OpenSource(temp.map("example")));
+        app.layers.set(LayerId::Live, true);
+        app.pairing.stream_map = serde_json::json!({
+            "epoch": 1, "name": "example", "checksum": app.session.source_checksum()
+        });
+        app.pairing.shown = Some(Sample {
+            epoch: 1,
+            tick: 1,
+            stale: false,
+            objects: vec![Object {
+                id: 1,
+                body: f32::from_bits(0x7fc0_1234),
+                ..Default::default()
+            }],
+            players: vec![LivePlayer {
+                unit: Some(1),
+                aim: [f32::from_bits(0x7fc0_4321); 3],
+                ..Default::default()
+            }],
+        });
+        let mut cache = SceneCache::default();
+        let (original, changed) = cache.shown(&app);
+        assert!(changed);
+        let (again, changed) = cache.shown(&app);
+        assert!(!changed);
+        assert!(std::sync::Arc::ptr_eq(&original, &again));
+        app.pairing.shown.as_mut().unwrap().players[0].aim[0] = f32::from_bits(0x7fc0_4322);
+        assert!(cache.shown(&app).1);
     }
 
     #[test]

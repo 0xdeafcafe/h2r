@@ -14,6 +14,7 @@
 
 pub mod auto;
 pub(crate) mod display;
+pub(crate) mod display;
 pub mod issues;
 pub mod launch;
 pub mod link;
