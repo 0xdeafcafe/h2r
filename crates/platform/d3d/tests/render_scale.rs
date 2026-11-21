@@ -1806,22 +1806,30 @@ fn tile_frame() -> d3d::scene_sink::ReplayFrame {
     }
 }
 
-/// Signed distance from host point `p` to the caster's outline, in host
-/// pixels at render scale `scale`: positive in its shadow.
+/// Signed distance from host pixel `p` to the caster's shadow outline, in
+/// host pixels at render scale `scale`: positive in its shadow. Both draws
+/// sample where `gfx::raster::window_shift` puts them, not at pixel
+/// centres. At 1x host pixel `P` samples guest coordinate `P` (D3D puts
+/// pixel centres on integers); above, `(P + 1/4) / s`. The receiver reads
+/// map point `guest / 2`. The caster, drawn into a tile at `f` texels per
+/// map texel (`f > 1`), covers tile texel `j` when guest point
+/// `(j + 1/4) / f` is inside it, so its shadow is the caster moved by
+/// `1/4` of a tile texel, `1 / (4 f)` map texels.
 fn caster_distance(p: (f32, f32), scale: u32) -> f32 {
-    // A map texel covers 2x2 guest pixels.
-    let k = 2.0 * scale as f32;
-    let tri = CASTER.map(|(x, y)| (x * k, y * k));
+    let s = scale as f32;
+    let guest = |v: f32| if scale == 1 { v } else { (v + 0.25) / s };
+    let f = d3d::scaled::shadow_scale(scale, d3d::Lighting::E3) as f32;
+    let q = (guest(p.0) / 2.0 - 0.25 / f, guest(p.1) / 2.0 - 0.25 / f);
     let segment = |a: (f32, f32), b: (f32, f32)| {
         let (dx, dy) = (b.0 - a.0, b.1 - a.1);
-        let t = (((p.0 - a.0) * dx + (p.1 - a.1) * dy) / (dx * dx + dy * dy)).clamp(0.0, 1.0);
-        ((p.0 - a.0 - t * dx).powi(2) + (p.1 - a.1 - t * dy).powi(2)).sqrt()
+        let t = (((q.0 - a.0) * dx + (q.1 - a.1) * dy) / (dx * dx + dy * dy)).clamp(0.0, 1.0);
+        ((q.0 - a.0 - t * dx).powi(2) + (q.1 - a.1 - t * dy).powi(2)).sqrt()
     };
-    let d = segment(tri[0], tri[1])
-        .min(segment(tri[1], tri[2]))
-        .min(segment(tri[2], tri[0]));
-    let s = scale as f32;
-    if in_shadow(p.0 / s, p.1 / s) { d } else { -d }
+    let [a, b, c] = CASTER;
+    // Map texels to host pixels: a map texel covers 2x2 guest pixels.
+    let d = 2.0 * s * segment(a, b).min(segment(b, c)).min(segment(c, a));
+    // `in_shadow` takes guest frame coordinates, twice map ones.
+    if in_shadow(2.0 * q.0, 2.0 * q.1) { d } else { -d }
 }
 
 /// The L1 edge, in host pixels where a tile texel is `texel` of them:
@@ -1833,7 +1841,7 @@ fn assert_sharp_edge(size: [u32; 2], rgba: &[u8], scale: u32, texel: f32, what: 
     for y in 0..size[1] {
         for x in 0..size[0] {
             let lit = rgba[((y * size[0] + x) * 4) as usize];
-            let d = caster_distance((x as f32 + 0.5, y as f32 + 0.5), scale);
+            let d = caster_distance((x as f32, y as f32), scale);
             if d.abs() >= texel {
                 assert_eq!(lit < 0x80, d > 0.0, "{what}: ({x}, {y}) {d:.2} px from the outline lit {lit}");
             }
@@ -1887,7 +1895,7 @@ fn e3_tiles_give_a_replayed_shadow_the_sharp_edge() {
     for y in 0..H {
         for x in 0..W {
             let i = ((y * W + x) * 4) as usize;
-            let d = caster_distance((x as f32 + 0.5, y as f32 + 0.5), 1);
+            let d = caster_distance((x as f32, y as f32), 1);
             // Retail's 2x2 filter reaches a map texel and a half past the edge.
             if d.abs() > 5.0 {
                 assert_eq!(e3[i..i + 4], retail[i..i + 4], "({x}, {y}) away from the edge");

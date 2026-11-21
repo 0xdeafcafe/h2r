@@ -471,17 +471,19 @@ mod tests {
             bind(PARTNER, LEVEL),
             clear_depth(),
             draw(None),
+            // The receiver draws into the frame, not into the tile.
+            bind(TargetRef::SceneColour, TargetRef::SceneDepth),
             sample(4),
             draw(Some(4)),
         ];
         let f = frame(ops);
         assert!(!is_shadow_level(&f, TargetRef::SceneDepth));
         let mut tiles = ShadowTiles::plan(&f, 3);
-        for (_, op) in &f.ops[..4] {
+        for (_, op) in &f.ops[..5] {
             tiles.note(op);
         }
         tiles.fell_back(4);
-        assert!(!tiles.note(&f.ops[4].1));
+        assert!(!tiles.note(&f.ops[5].1));
         assert_eq!(
             tiles.work(),
             TileWork {
