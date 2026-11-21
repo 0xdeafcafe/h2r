@@ -229,6 +229,9 @@ pub struct Worker<B: Backend> {
     textures: HashMap<u64, B::Texture>,
     /// Source of a live immutable scene texture, indexed by its device proxy.
     scene_uploads: HashMap<u64, std::sync::Weak<DecodedTexture>>,
+    /// Previous in-place colour samples keep a view into this original
+    /// surface. Immutable snapshots never enter this table.
+    live_sources: HashMap<u64, u32>,
     /// Pixel-count tickets not yet landed: proxy to the inner backend's,
     /// in report order.
     tickets: BTreeMap<u64, u64>,
@@ -422,6 +425,7 @@ impl<B: Backend> Worker<B> {
     fn release_texture(&mut self, proxy: u64) {
         self.textures.remove(&proxy);
         self.scene_uploads.remove(&proxy);
+        self.live_sources.remove(&proxy);
     }
 
     fn exec_original(&mut self, cmd: Cmd<B>) {
@@ -612,6 +616,7 @@ impl<B: Backend + 'static> ThreadedBackend<B> {
                     surfaces: HashMap::new(),
                     textures: HashMap::new(),
                     scene_uploads: HashMap::new(),
+                    live_sources: HashMap::new(),
                     tickets: BTreeMap::new(),
                     depth_words: None,
                     shared: s,
@@ -1008,9 +1013,9 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
         if !Arc::ptr_eq(&self.queue, &texture.queue) { return None; }
         let id = texture.id;
         let (sample, send) = crate::scene_sink::FrozenSample::pending(id);
-        // Only earlier-frame immutable results come here. Their producing
-        // present (including adoption) precedes this job and any guest
-        // release of this still-live proxy follows it.
+        // The producing present precedes this job and any guest release
+        // follows it. For an in-place view the result identifies its GPU
+        // image; the seal reads the corresponding attachment at the draw.
         self.push(Cmd::Independent(Box::new(move |worker| {
             let images = worker.textures.get(&id).and_then(|t| worker.inner.frozen_images(t));
             let _ = send.send(images);
@@ -1066,6 +1071,7 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
         self.post(move |w| {
             let s = w.surface(surface)?;
             w.surfaces.remove(&surface);
+            w.live_sources.retain(|_, source| *source != surface);
             w.inner.destroy_surface(s)
         });
         Ok(())
@@ -1765,12 +1771,16 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
         let t = self.new_texture(self.surface_view(surface));
         let id = t.id;
         let shared = Arc::clone(&self.shared);
-        let sample = self.frame_owner.as_ref().map(|_| ReplaySample::InPlace);
+        let track_source = self.frame_owner.is_some();
+        let sample = track_source.then_some(ReplaySample::InPlace);
         self.post_sample(surface, id, sample, move |w| {
             let s = w.surface(surface)?;
             match w.inner.surface_texture(s)? {
                 Some(h) => {
                     w.textures.insert(id, h);
+                    if track_source {
+                        w.live_sources.insert(id, surface);
+                    }
                 }
                 None => shared.miss("surface_texture returned None".into()),
             }

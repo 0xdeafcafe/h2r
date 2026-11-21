@@ -4,7 +4,7 @@
 //! A resource operation or read that needs earlier draws flushes the retained
 //! commands and the legacy renderer completes that frame.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
@@ -241,6 +241,7 @@ fn target_map<B: Backend>(
     frame: &ReplayFrame,
     commands: &[Cmd<B>],
     uploads: &HashMap<u64, std::sync::Weak<gfx::texture::DecodedTexture>>,
+    live_sources: &HashMap<u64, u32>,
     surface: u32,
 ) -> Option<Proxies> {
     if !frame.refusals.is_empty() || !frame.has_game_view() {
@@ -260,20 +261,22 @@ fn target_map<B: Backend>(
     {
         return None;
     }
-    let mut original = commands.iter().filter(|cmd| match cmd {
-        Cmd::FrameStats(_) | Cmd::ReleaseTexture(_) => false,
-        // The judge's skipped draw writes no attachment or visibility
-        // samples. Later sampling, queries and present close the earlier
-        // pass at the actual point its contents become observable.
-        Cmd::Draw(slot) => !slot.as_ref().as_ref().is_some_and(|d| matches!(d.expect, DrawOutcome::Skipped(_))),
-        _ => true,
-    });
+    // The worker checks all speculative draw outcomes. A skipped draw
+    // omitted by the scene sink must still execute and verify its result.
+    let mut original = commands.iter().filter(|cmd| !matches!(cmd, Cmd::FrameStats(_)));
+    let mut released = HashSet::new();
     for (_, op) in &frame.ops {
         if let ReplayOp::Bind { colour, depth } = op {
             bound = Some((*colour, *depth));
             continue;
         }
-        match (op, original.next()?) {
+        let command = loop {
+            match original.next()? {
+                Cmd::ReleaseTexture(proxy) => { released.insert(*proxy); }
+                cmd => break cmd,
+            }
+        };
+        match (op, command) {
             (ReplayOp::Sample { of, id, how }, Cmd::Sample(sample)) if how == &sample.how => {
                 bind(&mut targets, *of, Some(sample.surface))?;
                 if samples.insert(*id, sample.proxy).is_some() { return None; }
@@ -288,10 +291,18 @@ fn target_map<B: Backend>(
                 if packet.expect != DrawOutcome::Drawn || !std::ptr::eq(&*packet.draw, draw.as_ref()) {
                     return None;
                 }
+                if packet.textures.iter().flatten().any(|proxy| released.contains(proxy)) {
+                    return None;
+                }
                 if !textures.iter().zip(&packet.textures).all(|(binding, &proxy)| match (binding, proxy) {
                     (None, None) => true,
                     (Some(ReplayTexture::Sample(id)), Some(proxy)) => samples.get(id) == Some(&proxy),
                     (Some(ReplayTexture::Frozen(sample)), Some(proxy)) => sample.proxy == Some(proxy),
+                    (Some(ReplayTexture::Live { target, binding }), Some(proxy)) => {
+                        binding.proxy == Some(proxy) && live_sources.get(&proxy).is_some_and(|&source| {
+                            bind(&mut targets, *target, Some(source)).is_some()
+                        })
+                    }
                     (Some(ReplayTexture::Upload(asset)), Some(proxy)) => uploads
                         .get(&proxy).is_some_and(|source| source.as_ptr() == Arc::as_ptr(asset)),
                     _ => false,
@@ -323,7 +334,7 @@ fn target_map<B: Backend>(
             _ => return None,
         }
     }
-    original.next().is_none().then_some(Proxies { targets, samples })
+    original.all(|cmd| matches!(cmd, Cmd::ReleaseTexture(_))).then_some(Proxies { targets, samples })
 }
 
 impl<B: Backend> Worker<B> {
@@ -372,7 +383,7 @@ impl<B: Backend> Worker<B> {
                 return None;
             }
             let matching_swap = frame.present == n && frame.flags == flags && frame.gamma == gamma;
-            let Some(proxies) = matching_swap.then(|| target_map(frame, &transaction.commands, &self.scene_uploads, surface)).flatten() else {
+            let Some(proxies) = matching_swap.then(|| target_map(frame, &transaction.commands, &self.scene_uploads, &self.live_sources, surface)).flatten() else {
                 if native { MISMATCHES.fetch_add(1, Ordering::Relaxed); }
                 return None;
             };
@@ -417,13 +428,11 @@ impl<B: Backend> Worker<B> {
             for cmd in transaction.commands {
                 match cmd {
                     Cmd::ReleaseTexture(proxy) => self.release_texture(proxy),
-                    Cmd::FrameStats(frame) => frame.finish(),
-                    Cmd::Draw(slot) => {
-                        if let Some(draw) = slot.as_ref().as_ref() && matches!(draw.expect, DrawOutcome::Skipped(_)) {
-                            self.residency.unclassified();
-                        }
-                        self.recycle_draw(slot);
+                    Cmd::Sample(sample) if result.is_ok() && matches!(sample.how, crate::scene_sink::ReplaySample::InPlace) => {
+                        self.live_sources.insert(sample.proxy, sample.surface);
                     }
+                    Cmd::FrameStats(frame) => frame.finish(),
+                    Cmd::Draw(slot) => self.recycle_draw(slot),
                     _ => {}
                 }
             }

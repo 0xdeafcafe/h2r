@@ -3,6 +3,7 @@
 //! frames can observe exactly which target a command wrote.
 
 mod pacing;
+mod live_views;
 
 use super::*;
 use crate::backend::{GuestLayoutKind, ResolvedDraw};
@@ -39,12 +40,15 @@ impl Backend for Pixels {
     }
     fn draw(
         &mut self,
-        _: u32,
+        color: u32,
         _: Option<u32>,
         _: &ResolvedDraw,
-        _: [Option<&u32>; 4],
+        textures: [Option<&u32>; 4],
     ) -> Result<DrawOutcome, String> {
-        unreachable!()
+        if let Some(&source) = textures[0] {
+            self.surfaces[color as usize] = self.surfaces[source as usize];
+        }
+        Ok(DrawOutcome::Drawn)
     }
     fn clear(&mut self, colour: u32, _: Option<u32>, clear: Clear) -> Result<(), String> {
         self.clears += 1;
@@ -55,6 +59,8 @@ impl Backend for Pixels {
         self.surfaces[dst as usize] = self.surfaces[src as usize];
         Ok(true)
     }
+    fn can_sample_surfaces(&self) -> bool { true }
+    fn surface_texture(&mut self, surface: u32) -> Result<Option<u32>, String> { Ok(Some(surface)) }
     fn snapshot_surface(&mut self, surface: u32, _: bool) -> Result<Option<u32>, String> {
         Ok(Some(u32::from(self.surfaces[surface as usize])))
     }
@@ -268,7 +274,7 @@ fn two_logical_names_cannot_alias_one_physical_target_during_admission() {
         ..Default::default()
     };
     let same = [Cmd::<Pixels>::Render(RenderOp::Copy { src: 1, dst: 1 })];
-    assert!(target_map(&replay, &same, &HashMap::new(), 1).is_none());
+    assert!(target_map(&replay, &same, &HashMap::new(), &HashMap::new(), 1).is_none());
 }
 
 
