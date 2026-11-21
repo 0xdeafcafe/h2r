@@ -104,6 +104,7 @@ the final result through that directory.
 | `h2 lab run --mem-limit SIZE` | Cap on the game child's footprint, 12 GiB by default. [Memory limits and reports](lab.md#memory-limits-and-reports) |
 | `h2 lab host [install] --obj-cache-limit SIZE` | Size budget for the lab's shared object cache after each build attempt, 8 GiB by default. The host prunes the least recently used entries first. Zero retains no entries. |
 | `h2 lab host [install] --target-limit SIZE` | Size budget for the shared Cargo target directory, 32 GiB by default. The host clears an oversized target after the build. Zero retains no Cargo outputs. |
+| `h2 lab sim --arm NAME=VALUE`, `--repeat N`, `--parallel N` | one arm of a sim benchmark and the `H2_FEATURES` its runs get, runs per arm, matches at once in a batch (default 1) ([Sim benchmarks](lab.md#sim-benchmarks)) |
 | `H2_LAB_HOST`, `H2_LAB_SOCKET` | default driving target and local lab socket ([lab.md](lab.md)) |
 | `h2 lab host [install] --max-jobs 1` | active job cap; only 1 is accepted, since the host runs one job at a time ([lab.md](lab.md#host-files-and-flags)) |
 | `h2 lab host watch [--root DIR]`, `h2 lab logs <id\|current> [--follow]` | watch job and service logs on the host or through the paired lab connection ([Watching jobs](lab.md#watching-jobs)) |
