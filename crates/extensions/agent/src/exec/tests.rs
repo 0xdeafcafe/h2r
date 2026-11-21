@@ -1501,3 +1501,29 @@ fn live_game_closes_menu_subscriber_and_refuses_a_new_stream() {
     agent.on_tick(&mut game);
     assert_eq!(next(&replies)["result"]["streams"], json!([]));
 }
+
+#[test]
+fn a_connection_read_leaves_the_game_and_other_clients_running() {
+    let a = Agent::new();
+    let (caller, reply) = client(&a);
+    let (viewer, status) = client(&a);
+    let (begin, started) = sync_channel(1);
+    let (finish, done) = sync_channel(1);
+    let done = Mutex::new(done);
+    a.add_connection_read("fixture.verify", move |_| {
+        begin.send(()).unwrap();
+        done.lock().unwrap().recv_timeout(Duration::from_secs(5)).unwrap();
+        Ok(json!({"checked": 30}))
+    });
+    let worker = a.clone();
+    let req = thread::spawn(move || ask(&worker, caller, 1, "fixture.verify", json!({})));
+    started.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert!(a.connection_read_pending());
+    ask(&a, viewer, 2, method::STATUS, Value::Null);
+    a.between_slices(&mut Fake::default(), 8);
+    assert_eq!(next(&status)["result"]["at"]["present"], 8);
+    finish.send(()).unwrap();
+    req.join().unwrap();
+    assert_eq!(next(&reply)["result"]["checked"], 30);
+    assert!(!a.connection_read_pending());
+}

@@ -5,7 +5,7 @@ mod unified;
 
 pub use live_proto::film::stream;
 pub use live_proto::film::{Mode, PlayerSummary, Summary};
-pub use track::{TrackReader, TrackWriter, summary};
+pub use track::{KeyframeInfo, KeyframeSource, TrackReader, TrackWriter, summary};
 pub use unified::RecordData;
 
 use anyhow::{Result, ensure};

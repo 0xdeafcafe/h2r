@@ -7,12 +7,13 @@ use film::blam::{Keyframe, Tick, TrackReader};
 
 pub(super) struct EngineReplay {
     pub(super) track: TrackReader<File>,
+    pub(super) native_keys: bool,
     pub(super) map_vfs: Option<Arc<Mutex<vfs::Vfs>>>,
-    pending: Option<Tick>,
+    pub(super) pending: Option<Tick>,
     keyframe: Option<Keyframe>,
-    saw_actions: bool,
-    last_pause: Option<bool>,
-    pause_edges: Vec<bool>,
+    pub(super) saw_actions: bool,
+    pub(super) last_pause: Option<bool>,
+    pub(super) pause_edges: Vec<bool>,
 }
 
 impl EngineReplay {
@@ -24,6 +25,7 @@ impl EngineReplay {
         };
         Ok(Self {
             track,
+            native_keys: image == film::image::ImageMatch::Native,
             map_vfs: None,
             pending: None,
             keyframe,
@@ -31,6 +33,23 @@ impl EngineReplay {
             last_pause: Some(false),
             pause_edges: Vec::new(),
         })
+    }
+
+    pub(super) fn file_candidate(&self, target: u64) -> Option<film::blam::KeyframeInfo> {
+        use film::blam::KeyframeSource;
+        self.track.keyframes().into_iter().rev().find(|key| {
+            key.tick <= target && (self.native_keys || key.source == KeyframeSource::Sidecar)
+        })
+    }
+
+    pub(super) fn seek_source(&self, target: u64) -> agent_proto::theater::SeekSource {
+        use agent_proto::theater::SeekSource;
+        use film::blam::KeyframeSource;
+        match self.file_candidate(target).map(|key| key.source) {
+            Some(KeyframeSource::Embedded) => SeekSource::Keyframe,
+            Some(KeyframeSource::Sidecar) => SeekSource::Sidecar,
+            None => SeekSource::Boot,
+        }
     }
 
     /// Peek at the upcoming tick. A menu/cinematic tick can reach the
@@ -68,7 +87,7 @@ impl EngineReplay {
         guest: &runtime::Guest,
         tick: u64,
         gameplay: Option<u64>,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         metadata::verify_start(guest, tick, &self.track.descriptor, self.map_vfs.as_ref())?;
         let applied = self.saw_actions;
         let observed = std::mem::take(&mut self.pause_edges);
@@ -94,19 +113,22 @@ impl EngineReplay {
             );
         }
         metadata::verify_events(guest, &frame.events)?;
+        let checked_digest = frame.post_hash.is_some();
         self.pending = None;
         self.saw_actions = false;
-        Ok(())
+        Ok(checked_digest)
     }
 }
 
 impl Session {
     pub(super) fn check_replay_tick(s: &mut State, guest: &runtime::Guest, post_hash: Option<u64>) {
         let tick = s.tick;
-        if let Some(engine) = &mut s.engine
-            && let Err(e) = engine.completed(guest, tick, post_hash)
-        {
-            s.fail(e.to_string());
+        if let Some(engine) = &mut s.engine {
+            match engine.completed(guest, tick, post_hash) {
+                Ok(true) => { if let Some(v) = &mut s.verify { v.digest(tick); } }
+                Ok(false) => {}
+                Err(e) => s.fail(e.to_string()),
+            }
         }
     }
 
@@ -115,22 +137,21 @@ impl Session {
         slices: u64,
         host: &crate::snapshot_glue::Host<'_>,
         shelf: &crate::snapshot_glue::Shelf,
-    ) -> Result<()> {
+    ) -> Result<Option<(u64, snapshot::SnapshotWriter)>> {
         let (tick, expected) = {
             let mut state = self.lock();
             let tick = state.tick;
             let Mode::Replay(tape, _) = &mut state.mode else {
-                return Ok(());
+                return Ok(None);
             };
             let Some(expected) = tape.d3d_barrier(slices, tick)? else {
-                return Ok(());
+                return Ok(None);
             };
             (tick, expected)
         };
         let device = host.d3d.context("film D3D capture requires a device")?;
-        // Capture only the D3D section and discard it. Its device operations
-        // (including the ones performed by an interrupted save) still take
-        // place, just as they did in the recording. Do not copy guest RAM.
+        // The recorder observed this one device save, including its RAM writebacks.
+        // Pass the same section on to the ring when this is a capture point.
         let mut scratch = snapshot::SnapshotWriter::new(snapshot::Header {
             build: shelf.build().clone(),
             name: String::new(),
@@ -143,7 +164,11 @@ impl Session {
             saved.is_ok() == expected,
             "first divergence at tick {tick}: D3D capture at slice {slices} expected success={expected}, observed {saved:?}"
         );
-        Ok(())
+        if expected {
+            self.verify_capture_hash(slices, tick, || lockstep::hash_guest(&host.rt.memory()))?;
+        }
+        let enabled = self.lock().ring_status.cap > 0;
+        Ok((expected && (enabled || self.verify_ring_at(tick))).then_some((tick, scratch)))
     }
 
     pub fn take_keyframe(&self) -> Option<Keyframe> {
@@ -157,6 +182,7 @@ impl Session {
         machine: &mut BootMachine<'_>,
         agent: Option<&crate::agent_glue::AgentGlue>,
     ) -> Result<u64> {
+        let started = std::time::Instant::now();
         let snap = snapshot::Snapshot::open(&frame.snapshot, machine.shelf.build())?;
         ensure!(
             snap.header.tick == frame.tick,
@@ -213,6 +239,9 @@ impl Session {
         let engine = s.engine.as_mut().context("missing film input track")?;
         // The first slice samples the saved latch itself. Pending pause
         // edges never straddle a keyframe.
+        engine.pending = None;
+        engine.saw_actions = false;
+        engine.pause_edges.clear();
         engine.last_pause = None;
         if engine
             .track
@@ -238,6 +267,9 @@ impl Session {
         let pause = replay.paused_at_target;
         s.tick = frame.tick;
         s.calls = frame.calls;
+        if let Some(seek) = &mut s.seek {
+            seek.restore_ms = Some(started.elapsed().as_millis() as u64);
+        }
         if reached_target {
             s.seeking = None;
             s.paused = pause;

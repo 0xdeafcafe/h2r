@@ -177,6 +177,26 @@ fn seek_flushes_partial_blocks_and_resumes_after_restored_tick() {
 }
 
 #[test]
+fn ring_cursor_resumes_inside_a_tick_block_without_a_file_keyframe() {
+    for version in [2, 3] {
+        let bytes = encoded_as(version);
+        let reader = || TrackReader::new(Reader::new(Cursor::new(&bytes)).unwrap()).unwrap();
+        let mut linear = reader();
+        let mut expected = Vec::new();
+        while let Some(tick) = linear.step().unwrap() {
+            expected.push(tick);
+        }
+        let mut track = reader();
+        for tick in [0, 83, 6, 192, 300, 12, 299, 83] {
+            track.resume_after_tick(tick).unwrap();
+            assert_eq!(track.keyframe_offset(), None);
+            assert_eq!(track.step().unwrap().as_ref(), expected.get(tick as usize));
+        }
+        assert!(track.resume_after_tick(301).is_err());
+    }
+}
+
+#[test]
 fn menu_skips_corrupt_input_and_playback_reports_it() {
     let mut data = encoded();
     let r = Reader::new(Cursor::new(data.as_slice())).unwrap();

@@ -3,7 +3,11 @@ use agent::Access;
 use agent_proto::{RpcError, code, theater as api};
 use serde::de::DeserializeOwned;
 
-fn params<T: DeserializeOwned>(v: Value) -> Result<T, RpcError> {
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Empty {}
+
+pub(super) fn params<T: DeserializeOwned>(v: Value) -> Result<T, RpcError> {
     serde_json::from_value(if v.is_null() {
         serde_json::json!({})
     } else {
@@ -12,6 +16,17 @@ fn params<T: DeserializeOwned>(v: Value) -> Result<T, RpcError> {
     .map_err(|e| RpcError::new(code::INVALID_PARAMS, e.to_string()))
 }
 impl State {
+    pub(super) fn seek_info(&self) -> Option<api::SeekInfo> {
+        self.seek.as_ref().map(|seek| api::SeekInfo {
+            target: seek.target,
+            from_tick: seek.from_tick,
+            source: seek.source,
+            warm: seek.warm,
+            remaining_ticks: seek.target.saturating_sub(self.tick),
+            restore_ms: seek.restore_ms,
+        })
+    }
+
     fn camera_request(&mut self, request: api::Camera) -> Result<(), RpcError> {
         use api::CameraMode::*;
         let Mode::Replay(_, replay) = &self.mode else {
@@ -92,11 +107,12 @@ impl Session {
         if !self.replaying() {
             return;
         }
-        for name in api::METHODS {
+        self.add_verify_method(a);
+        for name in api::METHODS.into_iter().filter(|name| *name != api::VERIFY) {
             let session = self.clone();
             a.add_method(
                 name,
-                if name == api::STATE {
+                if matches!(name, api::STATE | api::KEYFRAMES) {
                     Access::Read
                 } else {
                     Access::Act
@@ -115,17 +131,12 @@ impl Session {
                             if p.id.is_some_and(|id| id != s.header.meta.id) {
                                 return Err(RpcError::new(code::GONE, "film is not loaded"));
                             }
-                            s.paused = false;
+                            s.set_transport_pause(false);
                         }
                         api::PAUSE | api::STATE => {
-                            if !(p.is_null() || p.as_object().is_some_and(|o| o.is_empty())) {
-                                return Err(RpcError::new(
-                                    code::INVALID_PARAMS,
-                                    "expected empty parameters",
-                                ));
-                            }
+                            let _: Empty = params(p)?;
                             if name == api::PAUSE {
-                                s.paused = true;
+                                s.set_transport_pause(true);
                             }
                         }
                         api::SPEED => {
@@ -161,11 +172,39 @@ impl Session {
                                 }
                                 s.presentation.clip_marks = marks;
                             }
+                            let from_tick = s.visible_tick();
+                            let paused = s.visible_pause();
+                            s.cancel_camera_redraw();
+                            s.paused = paused;
+                            s.presentation.seek_from_tick = Some(from_tick);
+                            s.seek = Some(SeekProgress {
+                                target: p.tick,
+                                from_tick,
+                                source: s.engine.as_ref()
+                                    .map_or(api::SeekSource::Boot, |e| e.seek_source(p.tick)),
+                                warm: false,
+                                restore_ms: None,
+                            });
                             s.restart = Some(p.tick);
+                        }
+                        api::KEYFRAMES => {
+                            let _: Empty = params(p)?;
+                            let Mode::Replay(tape, _) = &s.mode else { unreachable!() };
+                            return Ok(serde_json::json!(api::Keyframes {
+                                film: s.engine.as_ref()
+                                    .map(|e| e.track.keyframe_ticks()).unwrap_or_default(),
+                                sidecar: Vec::new(),
+                                ring: s.ring_status.ticks.clone(),
+                                capture_points: tape.capture_points(),
+                                ring_bytes: s.ring_status.bytes as u64,
+                                ring_cap: s.ring_status.cap as u64,
+                                sidecar_bytes: 0,
+                            }));
                         }
                         api::CAMERA => {
                             let p = params::<api::Camera>(p)?;
                             s.camera_request(p)?;
+                            s.request_camera_redraw();
                         }
                         _ => unreachable!(),
                     }
@@ -175,11 +214,12 @@ impl Session {
                     let seat = replay.camera.requested_seat();
                     Ok(serde_json::json!(api::State {
                         id: s.header.meta.id.clone(),
-                        tick: s.tick,
+                        tick: s.visible_tick(),
                         length_ticks: s.header.meta.length_ticks,
-                        paused: s.paused,
+                        paused: s.visible_pause(),
                         speed: s.speed,
-                        seeking: s.seeking.is_some() || s.restart.is_some(),
+                        seeking: s.camera_redraw.is_none() && (s.seeking.is_some() || s.restart.is_some()),
+                        seek: if s.camera_redraw.is_none() { s.seek_info() } else { None },
                         camera_seat: seat,
                         camera: s.presentation.camera.mode,
                         camera_player: s.presentation.camera.player.clone(),
@@ -240,13 +280,26 @@ pub fn library_methods(
     }
     let player = Arc::new(Mutex::new(None::<PlayerProcess>));
     let image_stamps = Arc::new(image_stamps);
-    for name in api::METHODS {
+    let active = player.clone();
+    a.add_connection_read(api::VERIFY, move |p| {
+        let unavailable = |e| RpcError::new(code::UNAVAILABLE, e);
+        let socket = active.lock().unwrap_or_else(|e| e.into_inner())
+            .as_ref().map(|player| player.socket.clone())
+            .ok_or_else(|| unavailable("no film loaded".to_owned()))?;
+        let mut client = agent_proto::Client::connect(&socket)
+            .map_err(|e| unavailable(format!("film player unavailable: {e}")))?;
+        client.call(api::VERIFY, p).map_err(|e| match e {
+            agent_proto::CallError::Rpc(e) => e,
+            other => unavailable(other.to_string()),
+        })
+    });
+    for name in api::METHODS.into_iter().filter(|name| *name != api::VERIFY) {
         let player = player.clone();
         let image_stamps = image_stamps.clone();
         let (dir, disc, out, data) = (dir.clone(), disc.clone(), out.clone(), data.clone());
         a.add_method(
             name,
-            if name == api::STATE {
+            if matches!(name, api::STATE | api::KEYFRAMES) {
                 Access::Read
             } else {
                 Access::Act

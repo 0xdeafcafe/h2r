@@ -1,11 +1,13 @@
 mod pad_inputs;
+mod camera_redraw;
+mod replay_cursor;
 
 use super::*;
 use agent_proto::theater as api;
 use runtime::guest::Permissions;
 use serde_json::json;
 
-fn arena() -> runtime::Guest {
+pub(super) fn arena() -> runtime::Guest {
     let mut g = runtime::Guest::new();
     let lockstep::SimRegion::Indirect { pointer, len } = lockstep::SimRegion::HALO2 else {
         unreachable!()
@@ -36,6 +38,7 @@ fn theater_replays_checkpoints_reports_first_divergence_and_registers_controls()
         Session::open(
             None,
             Some(Replay {
+                verification: None,
                 path: file.clone(),
                 render_every,
                 speed: 1.,
@@ -94,6 +97,27 @@ fn theater_replays_checkpoints_reports_first_divergence_and_registers_controls()
                 .contains(&json!(method))
         );
     }
+    // Exercise the public wire response while holding a synthetic rewind.
+    let rewound = replay();
+    rewound.add_methods(&a);
+    {
+        let mut state = rewound.lock();
+        state.ring_status = RingStatus { ticks: vec![5, 10], bytes: 12_288, cap: 16_384 };
+        state.seek = Some(SeekProgress { target: 20, from_tick: 40, source: api::SeekSource::Ring,
+            warm: true, restore_ms: Some(7) });
+        state.tick = 10;
+    }
+    let inventory = &call(api::KEYFRAMES, json!({}))["result"];
+    assert_eq!(inventory["ring"], json!([5, 10]));
+    assert_eq!(inventory["ring_bytes"], 12_288);
+    assert_eq!(inventory["ring_cap"], 16_384);
+    assert!(call(api::KEYFRAMES, json!({"unknown": 1}))["error"].is_object());
+    let seek = &call(api::STATE, json!({}))["result"]["seek"];
+    assert_eq!(seek, &json!({
+        "from_tick": 40, "target": 20, "warm": true, "source": "ring",
+        "remaining_ticks": 10, "restore_ms": 7,
+    }));
+    player.add_methods(&a);
     assert_eq!(call(api::PAUSE, json!({}))["result"]["paused"], true);
     assert_eq!(call(api::PLAY, json!({}))["result"]["paused"], false);
     assert_eq!(
@@ -219,6 +243,7 @@ fn sealed_film_reinstalls_the_recorders_telemetry_and_impact_hook_chains() {
             Session::open(
                 None,
                 Some(Replay {
+                    verification: None,
                     path: path.clone(),
                     render_every: 0,
                     speed: 1.,
@@ -254,7 +279,7 @@ fn sealed_film_reinstalls_the_recorders_telemetry_and_impact_hook_chains() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
-fn host_facts() -> Facts {
+pub(super) fn host_facts() -> Facts {
     Facts {
         stamp: "fixture".into(),
         title_id: 2,
@@ -268,7 +293,7 @@ fn host_facts() -> Facts {
     }
 }
 
-fn options(data: &std::path::Path) -> crate::RunOpts {
+pub(super) fn options(data: &std::path::Path) -> crate::RunOpts {
     crate::RunOpts {
         disc: PathBuf::new(),
         data_root: data.to_owned(),
@@ -427,6 +452,7 @@ fn seek_restores_machine_and_replays_only_the_remaining_ticks() {
     record.finish(40, true).unwrap();
 
     let replay = Session::open(None, Some(Replay {
+        verification: None,
         path: file,
         render_every: 0,
         speed: 1.,
@@ -437,13 +463,36 @@ fn seek_restores_machine_and_replays_only_the_remaining_ticks() {
         camera: Default::default(),
                 window_closed: None,
     }), host_facts(), b"xbe", &opts).unwrap().unwrap();
+    let seek = replay.lock().seek_info().unwrap();
+    assert_eq!(seek.source, api::SeekSource::Keyframe);
+    assert!(!seek.warm);
+    assert_eq!(seek.restore_ms, None);
+    assert_eq!(seek.remaining_ticks, 31);
     let keyframe = replay.take_keyframe().unwrap();
     assert_eq!(keyframe.tick, 30);
     let start = replay.restore_keyframe(keyframe, &mut machine, None).unwrap();
     assert_eq!(start, 35);
+    let seek = replay.lock().seek_info().unwrap();
+    assert_eq!(seek.remaining_ticks, 1);
+    assert!(seek.restore_ms.is_some());
     assert_eq!(replay.lock().tick, 30);
     replay.checkpoint(&guest);
     assert!(replay.lock().paused);
+    replay.finish(40, true).unwrap();
+    assert!(replay.lock().complete);
+
+    // The file keyframe also rewinds a tape which already reached its end.
+    let tracker = film::manifest::Manifest::capture(&dir).unwrap().disk_tracker(&dir);
+    let warm = warm::Warm::new(96 << 20, tracker);
+    replay.lock().ring_status = RingStatus::from_warm(Some(&warm));
+    *replay.warm.lock().unwrap() = Some(warm);
+    replay.lock().restart = Some(31);
+    assert_eq!(replay.try_warm_seek(31, &mut machine, None), Some((35, 0)));
+    let seek = replay.lock().seek_info().unwrap();
+    assert!(seek.warm);
+    assert_eq!(seek.source, api::SeekSource::Keyframe);
+    assert_eq!(seek.remaining_ticks, 1);
+    replay.checkpoint(&guest);
     replay.finish(40, true).unwrap();
     assert!(replay.lock().complete);
     std::fs::remove_dir_all(dir).unwrap();
@@ -615,3 +664,58 @@ fn malformed_viewer_observations_leave_a_seekable_film_and_count_at_seal() {
 }
 
 mod medal_recording;
+
+#[test]
+fn verification_reports_only_requested_ticks_and_returns_the_first_mismatch() {
+    let dir = std::env::temp_dir().join(format!("film-verify-{}", live_proto::sign::random_id()));
+    std::fs::create_dir(&dir).unwrap();
+    let film = dir.join("fixture.h2film");
+    let report = dir.join("report.json");
+    let opts = options(&dir);
+    let g = arena();
+    let rec = Session::open(Some(film.clone()), None, host_facts(), b"xbe", &opts)
+        .unwrap().unwrap();
+    for _ in 0..60 { rec.checkpoint(&g); }
+    rec.finish(90, true).unwrap();
+    let open = || {
+        Session::open(None, Some(Replay {
+            verification: Some(VerificationMode::Worker {
+                baseline: None,
+                request: api::Verify { from: Some(30), to: Some(60), ring: true },
+                report: report.clone(),
+            }),
+            path: film.clone(),
+            render_every: 0,
+            speed: 1.,
+            seek_tick: 0,
+            paused_at_target: false,
+            presentation: Default::default(),
+            restart: dir.join("restart.json"),
+            camera: Default::default(),
+            window_closed: None,
+        }), host_facts(), b"xbe", &opts).unwrap().unwrap()
+    };
+    let result = || serde_json::from_reader::<_, api::VerificationReport>(
+        File::open(&report).unwrap()
+    ).unwrap();
+    let player = open();
+    for _ in 0..60 { player.checkpoint(&g); }
+    player.finish(90, true).unwrap();
+    let clean = result();
+    assert_eq!((clean.ticks, clean.arena_hashes_checked), (31, 2));
+    assert!(clean.first_divergence.is_none());
+
+    let player = open();
+    assert!(!player.verify_ring_at(29));
+    assert!(player.verify_ring_at(30));
+    for _ in 0..30 { player.checkpoint(&g); }
+    player.verified_ring_restore(30, Err(anyhow::anyhow!("fixture RAM mismatch")));
+    player.verified_ring_restore(30, Err(anyhow::anyhow!("later error")));
+    assert!(player.finish(40, false).is_err());
+    let mismatch = result();
+    assert_eq!((mismatch.ticks, mismatch.arena_hashes_checked), (1, 1));
+    let first = mismatch.first_divergence.unwrap();
+    assert_eq!(first.tick, 30);
+    assert!(first.kind.contains("fixture RAM mismatch"));
+    std::fs::remove_dir_all(dir).unwrap();
+}

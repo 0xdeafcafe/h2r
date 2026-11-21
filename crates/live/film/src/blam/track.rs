@@ -471,6 +471,18 @@ pub fn summary<R: Read + Seek>(reader: &mut Reader<R>) -> Result<Summary> {
     Ok(summary)
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KeyframeSource {
+    Embedded,
+    Sidecar,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct KeyframeInfo {
+    pub tick: u64,
+    pub source: KeyframeSource,
+}
+
 pub struct TrackReader<R: Read + Seek> {
     reader: Reader<R>,
     pub descriptor: MatchHeader,
@@ -607,6 +619,11 @@ impl<R: Read + Seek> TrackReader<R> {
         self.keyframe_offset
     }
 
+    /// Every stored machine keyframe's tick, in order (`theater.keyframes`).
+    pub fn keyframe_ticks(&self) -> Vec<u64> {
+        self.directory.keyframes.iter().map(|key| key.tick).collect()
+    }
+
     fn keyframe_index(&self, target: u64) -> Result<Option<usize>> {
         ensure!(target <= self.length_ticks(), "seek past film end");
         let end = self
@@ -614,6 +631,22 @@ impl<R: Read + Seek> TrackReader<R> {
             .keyframes
             .partition_point(|k| k.tick <= target);
         Ok(end.checked_sub(1))
+    }
+
+    /// File seek candidates sorted by tick. Payloads stay on disk.
+    pub fn keyframes(&self) -> Vec<KeyframeInfo> {
+        self.directory.keyframes.iter().map(|key| KeyframeInfo {
+            tick: key.tick, source: KeyframeSource::Embedded,
+        }).collect()
+    }
+
+    /// Compare the RAM hash at a recorded boundary without changing the
+    /// running tick decoder or inflating the keyframe's RAM anchor.
+    pub fn read_keyframe_at(&mut self, tick: u64) -> Result<Option<Keyframe>> {
+        let Ok(index) = self.directory.keyframes.binary_search_by_key(&tick, |key| key.tick) else {
+            return Ok(None);
+        };
+        read_keyframe(&mut self.reader, &self.directory.keyframes[index]).map(Some)
     }
 
     /// The launcher prepares guest storage before booting the machine. Disk
@@ -655,6 +688,23 @@ impl<R: Read + Seek> TrackReader<R> {
         self.pending.clear();
         self.keyframe_offset = Some(key.offset);
         Ok(Some(frame))
+    }
+
+    /// Resume the input decoder after an arbitrary in-memory capture. A time
+    /// chunk has its own delta baseline, so only its prefix can need decoding.
+    pub fn resume_after_tick(&mut self, tick: u64) -> Result<()> {
+        ensure!(tick <= self.length_ticks(), "seek past film end");
+        self.pending.clear();
+        self.keyframe_offset = None;
+        self.next_block = self.directory.blocks.partition_point(|block| {
+            block.tick + (u64::from(block.count) - 1) <= tick
+        });
+        if let Some(first) = self.directory.blocks.get(self.next_block).map(|block| block.tick) {
+            for _ in first..=tick {
+                self.step()?.context("missing tick in film time chunk")?;
+            }
+        }
+        Ok(())
     }
 
     /// Return one complete set of inputs, events and its expected post-tick hash.

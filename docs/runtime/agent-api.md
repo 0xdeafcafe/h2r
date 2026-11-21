@@ -2021,10 +2021,20 @@ directly on its own `--socket` (`H2_AGENT`, else the cache's `theater.sock`).
 |---|---|---|
 | `theater.play` | `{"id":"film-id","range":[300,900]}` to open, `{}` to resume; omit `range` for the whole film | `{id, starting:true}` on launch, otherwise transport state |
 | `theater.state` | `{}` | transport state, or `{id:null}` with no player |
+| `theater.keyframes` | `{}` | tick lists `film`, `sidecar`, `ring` and `capture_points`, plus `ring_bytes`, `ring_cap` and `sidecar_bytes` |
 | `theater.pause` | `{}` | holds guest execution and reports state |
 | `theater.speed` | `{"speed":0.5}` | sets host pacing from 0.25 to 4 times realtime |
-| `theater.seek` | `{"tick":900}`, optionally `"clip_marks":[300,null]` | restarts the player and fast-forwards to the target, carrying camera and timeline state; direct socket clients reconnect after the restart |
+| `theater.seek` | `{"tick":900}`, optionally `"clip_marks":[300,null]` | restores the selected keyframe and fast-forwards to the target with the current camera and timeline state. Direct socket clients reconnect after a cold restart. |
 | `theater.camera` | `{"mode":"orbit","player":"<name>","look":[0.2,-0.1],"zoom":-1}` or `{"mode":"first_person","seat":3}` | selects the view and returns transport state; an absolute film seat is 0 to 15 |
+| `theater.verify` | `{"from":1,"to":900,"ring":true}`, all optional | replays in an isolated, unpaced player. Ring verification first records reference hashes in a linear pass, compares every successful marked capture, and returns `{ticks, digests_checked, arena_hashes_checked, ram_hashes_checked, first_divergence}` |
+
+Verification counts checks within the inclusive tick bounds. The verifier starts
+at boot and reports the first divergence even when it prevents reaching the
+requested range. With `ring: true`, a linear reference pass saves the whole-RAM
+hash at each successful capture point in range. A second pass checks that hash
+before and after capturing, restores the ring entry, and checks the restored RAM.
+The active player's transport remains usable. A clean run returns
+`first_divergence: null`. A mismatch returns its tick and reason.
 
 The rendered player starts at the clip's first tick and loops at its end.
 Its overlay uses the player's agent socket for transport and `cheat.set
@@ -2046,6 +2056,13 @@ player's name or seat to select a drawn viewport. Headless playback
 Transport state carries `id`, `tick`, `length_ticks`, `paused`, `speed`,
 `seeking`, `camera`, optional `camera_player` and `camera_seat`, and
 discovered kill marker ticks in `kills`, alongside the usual `at` stamp.
+The `seek` object reports the last jump’s `from_tick`, `target`, `source`,
+`warm`, `remaining_ticks` and `restore_ms`. It is null before the first
+jump. The restore time stays null for a boot-sourced seek and until a
+keyframe has finished loading. A ring restore sets `source` to `ring`
+and `warm` to true. A blocked restore or a disk change sends the same
+target to a fresh child. A RAM or replay mismatch also disables warm
+restore for the rest of this viewing session.
 Tick zero is boot. A paused seek holds at its target until play. The HLE
 compares the recorded call index and game-thread hash samples during
 fast-forward ([theater.md](../game/theater.md)).

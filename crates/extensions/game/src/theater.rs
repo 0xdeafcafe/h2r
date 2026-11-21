@@ -20,8 +20,16 @@ mod startup;
 pub use startup::Startup;
 pub use startup::configure_replay_child;
 mod replay;
+mod replay_cursor;
+mod ring;
+mod warm;
+mod warm_transport;
+pub use warm_transport::SliceAction;
+use warm_transport::{Boundary, RingStatus};
 mod local_pads;
 mod video_menu;
+mod verify;
+pub use verify::VerificationMode;
 use anyhow::{Context, Result, bail, ensure};
 use legacy_camera::ReplayCamera;
 pub use controls::library_methods;
@@ -42,6 +50,7 @@ use std::{
 
 #[derive(Clone)]
 pub struct Replay {
+    pub verification: Option<VerificationMode>,
     pub path: PathBuf,
     pub render_every: u32,
     pub speed: f64,
@@ -58,6 +67,12 @@ pub struct Replay {
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct Presentation {
     camera: ReplayCamera,
+    /// A failed warm check follows the viewer through cold restarts.
+    #[serde(default)]
+    warm_disabled: bool,
+    /// Tick the viewer left on the last requested seek, including a jump to boot.
+    #[serde(default)]
+    seek_from_tick: Option<u64>,
     #[serde(default)]
     camera_seat: Option<u8>,
     kills: BTreeSet<u64>,
@@ -97,7 +112,18 @@ enum Mode {
     Record(Recording),
     Replay(Playback, Replay),
 }
+/// The jump this process is serving, reported in `theater.state`. It stays
+/// after the target is reached so the route and restore cost remain visible
+/// until the process exits or serves another jump.
+struct SeekProgress {
+    target: u64,
+    from_tick: u64,
+    source: agent_proto::theater::SeekSource,
+    warm: bool,
+    restore_ms: Option<u64>,
+}
 struct State {
+    verify: Option<verify::Verification>,
     mode: Mode,
     engine: Option<replay::EngineReplay>,
     header: Header,
@@ -106,8 +132,13 @@ struct State {
     paused: bool,
     speed: f64,
     seeking: Option<u64>,
+    seek: Option<SeekProgress>,
     presentation: Presentation,
     restart: Option<u64>,
+    ring_status: RingStatus,
+    camera_redraw: Option<camera::PausedRedraw>,
+    /// Keep checking through the target tick, including its arena hash.
+    warm_check: Option<(u64, bool)>,
     failure: Option<String>,
     complete: bool,
 }
@@ -145,6 +176,7 @@ pub struct Session {
     version: u32,
     replaying: bool,
     state: Mutex<State>,
+    warm: Mutex<Option<warm::Warm<Boundary>>>,
     video_menu: std::sync::OnceLock<Arc<settings::Store>>,
     #[cfg(feature = "gpu")]
     view: std::sync::OnceLock<Mutex<host_view::MountedView>>,
@@ -176,7 +208,7 @@ impl Session {
             .map_err(anyhow::Error::msg)?
             .spec();
         let mut image = film::image::ImageMatch::Native;
-        let (mode, header, speed, seeking, paused) = if let Some(r) = replay {
+        let (mut mode, header, speed, seeking, paused) = if let Some(r) = replay {
             ensure!(record.is_none(), "cannot record and replay the same boot");
             ensure!((0.25..=4.).contains(&r.speed), "speed must be 0.25 to 4");
             let tape = Playback::load(Reader::open(&r.path)?)?;
@@ -305,6 +337,20 @@ impl Session {
             Mode::Replay(_, r) if header.version >= 2 => Some(replay::EngineReplay::open(r, image)?),
             _ => None,
         };
+        let seek = match &mode {
+            Mode::Replay(_, r) if r.seek_tick != 0 || r.presentation.seek_from_tick.is_some() => {
+                Some(SeekProgress {
+                    target: r.seek_tick,
+                    from_tick: r.presentation.seek_from_tick.unwrap_or(0),
+                    source: engine.as_ref().map_or(agent_proto::theater::SeekSource::Boot, |e| {
+                        e.seek_source(r.seek_tick)
+                    }),
+                    warm: false,
+                    restore_ms: None,
+                })
+            }
+            _ => None,
+        };
         let bot_tape = bot_tape::BotTape::new(&mode, header.version);
         let mut presentation = match &mode {
             Mode::Replay(_, opts) => opts.presentation.clone(),
@@ -319,7 +365,10 @@ impl Session {
             }
             opts.camera.restore(&presentation);
         }
+        let warm = warm_transport::open(&mut mode, &opts.data_root, &presentation, header.version)?;
+        let ring_status = RingStatus::from_warm(warm.as_ref());
         Ok(Some(Arc::new(Self {
+            warm: Mutex::new(warm),
             version: header.version,
             video_menu: Default::default(),
             replaying: matches!(&mode, Mode::Replay(_, _)),
@@ -329,16 +378,21 @@ impl Session {
             #[cfg(feature = "gpu")]
             view: Default::default(),
             state: Mutex::new(State {
+                verify: verify::Verification::open(&mode, header.meta.length_ticks)?,
                 mode,
                 engine,
                 header,
                 speed,
                 seeking,
+                seek,
                 paused,
                 presentation,
                 tick: 0,
                 calls: 0,
                 restart: None,
+                ring_status,
+                camera_redraw: None,
+                warm_check: None,
                 failure: None,
                 complete: false,
             }),
@@ -366,6 +420,7 @@ impl Session {
         }
         s.tick += 1;
         let tick = s.tick;
+        if let Some(v) = &mut s.verify { v.tick(tick); }
         if s.seeking == Some(tick) {
             s.seeking = None;
             s.paused = matches!(&s.mode, Mode::Replay(_,r) if r.paused_at_target);
@@ -382,6 +437,7 @@ impl Session {
             }
         }
         if !tick.is_multiple_of(30) {
+            s.finish_warm_tick(tick);
             return;
         }
         let actual = Check {
@@ -413,6 +469,12 @@ impl Session {
                 }
             }
         }
+        if actual.sim.is_some() && s.failure.is_none()
+            && let Some(v) = &mut s.verify
+        {
+            v.arena(tick);
+        }
+        s.finish_warm_tick(tick);
     }
 
     /// Poll before executing another slice. The logical clock remains still
@@ -423,7 +485,7 @@ impl Session {
         m: &mut kernel::Machine,
         agent: Option<&crate::agent_glue::AgentGlue>,
         rt: &runtime::Runtime,
-    ) -> Result<bool> {
+    ) -> Result<SliceAction> {
         self.bot_boundary()?;
         loop {
             #[cfg(feature = "gpu")]
@@ -431,31 +493,29 @@ impl Session {
             {
                 let mut s = self.lock();
                 s.check_end(slices)?;
+                let redraw_running = s.redraw_boundary();
+                if s.verify_range_ended() { s.complete = true; }
                 let Mode::Replay(_, r) = &s.mode else {
-                    return Ok(true);
+                    return Ok(SliceAction::Run);
                 };
                 if let Some(e) = &s.failure {
+                    s.save_verify_result()?;
                     bail!("{e}")
                 }
                 if r.window_closed.as_ref().is_some_and(|closed| closed()) {
-                    return Ok(false);
+                    return Ok(SliceAction::Stop);
                 }
                 if let Some(target) = s.restart {
-                    let mut presentation = s.presentation.clone();
-                    if s.header.version >= 2 { r.camera.save(&mut presentation); }
-                    std::fs::write(
-                        &r.restart,
-                        serde_json::to_vec(&(target, s.speed, s.paused, &presentation))?,
-                    )?;
-                    return Ok(false);
+                    return Ok(SliceAction::Seek(target));
                 }
                 if s.complete {
-                    return Ok(false);
-                }
-                if !s.paused {
-                    let pace = s
-                        .seeking
-                        .is_none()
+                    // Keep the viewer's socket and transport alive at natural
+                    // EOF until an outstanding verification reply is queued.
+                    if agent.is_none_or(|a| !a.agent.connection_read_pending()) {
+                        return Ok(SliceAction::Stop);
+                    }
+                } else if !s.paused || redraw_running {
+                    let pace = (s.seeking.is_none() && s.verify.is_none())
                         .then(|| (kernel::clock::Clock::FREQUENCY as f64 * s.speed) as u64);
                     if m.pacer.as_ref().map(|p| p.ticks_per_second) != pace {
                         m.pacer = pace.map(|rate| {
@@ -464,7 +524,7 @@ impl Session {
                             p
                         });
                     }
-                    return Ok(true);
+                    return Ok(SliceAction::Run);
                 }
             }
             let a = agent.context("paused film needs the agent API")?;
@@ -506,6 +566,17 @@ impl Session {
         if let Mode::Replay(_, replay) = &s.mode {
             let window_closed = replay.window_closed.as_ref().is_some_and(|closed| closed());
             s.check_end(slices)?;
+            if teardown {
+                s.cancel_camera_redraw();
+                if let Some(target) = s.restart && !window_closed {
+                    drop(s);
+                    return self.write_cold_restart(target);
+                }
+            }
+            if teardown && s.complete && s.failure.is_none() {
+                s.verify_end_of_reference();
+            }
+            if s.failure.is_some() || (teardown && s.complete) { s.save_verify_result()?; }
             if let Some(e) = &s.failure {
                 bail!("{e}")
             }
@@ -614,12 +685,13 @@ impl State {
             && let Some((end, tick, calls)) = tape.end
             && slices >= end
         {
-            ensure!(
-                self.tick == tick && self.calls == calls && tape.exhausted(),
-                "first divergence at tick {}: end of film expected tick {tick}, {calls} calls; got {}",
-                self.tick,
-                self.calls
-            );
+            if self.tick != tick || self.calls != calls || !tape.exhausted() {
+                let why = format!("end of film expected tick {tick}, {calls} calls; got {}", self.calls);
+                self.fail(why);
+                self.save_verify_result()?;
+                if let Some(error) = &self.failure { bail!("{error}"); }
+                return Ok(());
+            }
             self.complete = true;
         }
         Ok(())
@@ -629,9 +701,12 @@ impl State {
     }
 
     fn fail_at(&mut self, tick: u64, why: String) {
-        if self.failure.is_some() {
+        // A failed warm load is already awaiting process replacement. No
+        // later tap from this slice can supersede the original cold target.
+        if self.failure.is_some() || (self.presentation.warm_disabled && self.restart.is_some()) {
             return;
         }
+        if let Some(v) = &mut self.verify { v.failed(tick, &why); }
         let reason = match &mut self.mode {
             Mode::Record(rec) => {
                 rec.frame = Default::default();
@@ -640,7 +715,11 @@ impl State {
             Mode::Replay(_, _) => format!("first divergence at tick {tick}: {why}"),
         };
         eprintln!("theater: {reason}");
-        self.failure = Some(reason);
+        if self.verify.is_none() && let Some((target, paused)) = self.warm_check.take() {
+            self.retry_cold(target, paused);
+        } else {
+            self.failure = Some(reason);
+        }
     }
     fn roster(&mut self, g: &runtime::Guest) {
         self.header.meta.length_ticks = self.tick;
@@ -778,7 +857,8 @@ impl hooks::Feature for Observer {
                 #[cfg(feature = "gpu")]
                 session.draw_host_view(o.runtime);
                 {
-                    let s = session.lock();
+                    let mut s = session.lock();
+                    s.finish_camera_return();
                     let Mode::Replay(_, r) = &s.mode else { break };
                     if s.failure.is_some()
                         || s.complete
@@ -788,7 +868,7 @@ impl hooks::Feature for Observer {
                         o.runtime.request_preempt(runtime::preempt::REQUEST);
                         break;
                     }
-                    if !s.paused {
+                    if !s.paused || s.running_camera_redraw() {
                         break;
                     }
                 }

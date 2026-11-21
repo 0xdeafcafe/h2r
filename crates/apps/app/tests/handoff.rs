@@ -273,7 +273,16 @@ fn present_hook_copies_the_back_buffer() {
         wgpu::Extent3d { width: 4, height: 4, depth_or_array_layers: 1 },
     );
     let (sink, local_view) = frame::channel(&ctx);
-    let mut crop = sink.into_cropped_present_hook(2, || Some([320, 240, 320, 240]));
+    let (send, sampled) = std::sync::mpsc::channel();
+    let mut crop = sink.into_filtered_guest_present_hook(
+        2,
+        (640, 480),
+        || Some([320, 240, 320, 240]),
+        |due, size| due && size == Some((640, 480)),
+        move |sink, result| {
+            send.send(sink.read_published_rgba(result.unwrap()).unwrap()).unwrap();
+        },
+    );
     crop(&ctx, &store, xrgb, 0, None);
     let seat = local_view.latest().unwrap();
     assert_eq!(seat.size, (320, 240));
@@ -281,8 +290,10 @@ fn present_hook_copies_the_back_buffer() {
     assert_eq!(&pixels[..4], &[0, 255, 0, 255]);
     let centre = (120 * 320 + 160) * 4;
     assert_eq!(&pixels[centre..centre + 4], &[255; 4]);
+    assert_eq!(sampled.try_recv().unwrap(), (seat.size, pixels));
     crop(&ctx, &store, xrgb, 0, None);
     assert_eq!(local_view.stats().published, 1);
+    assert!(sampled.try_recv().is_err());
 }
 
 fn composite(

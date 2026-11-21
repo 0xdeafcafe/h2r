@@ -242,9 +242,13 @@ experiment 1 must be resolved before attributing one here to render RNG.
 h2 theater play "$film_run/match.h2film" --disc "$H2_DISC" --out "$H2_IMAGE" --socket "$film_run/play.sock" --render-every 1 --speed 1
 ```
 
-During either run the agent exposes `theater.state`, `play`, `pause`,
-`speed`, `seek` and `camera`. Seek restarts the child at a compatible keyframe, or at boot when one is
-unavailable, and removes host pacing until the target. It compares hashes throughout. The
+During either run, `theater.keyframes` lists the available restore points and
+`theater.state` reports the seek source and remaining ticks. With the ring
+enabled, the player can load a watched entry or a compatible file keyframe
+into the running machine. A blocked machine or a changed guest disk sends
+the jump to a fresh child. A failed warm hash check retries the same jump
+cold and disables warm restores until the viewer leaves the film.
+Fast-forward compares the recorded hashes and runs without host pacing. The
 coordinator should also seek backwards across a received packet while
 paused and resume. [Transport parameters](../runtime/agent-api.md#theater-transport)
 
@@ -330,8 +334,11 @@ The timeline marks kills as the replay encounters them. Seeking carries
 those markers and any in/out marks across the restart. Completed clip
 ranges appear in Clips and loop when watched. Screenshots are saved under
 `<data>/films/screenshots`. Pad and keyboard controls stay with the
-playback window while the overlay is hidden. Paused camera changes apply
-to the next rendered frame.
+playback window while the overlay is hidden. A playerless observer redraws
+the paused view from the held simulation state. With the session ring enabled
+and a return point available, a guest-drawn view runs to its next present,
+keeps that picture on screen, then restores the pause tick from the ring.
+Until a return point is available, the camera change takes effect on playback.
 
 The library uses the retail settings list beneath a tab strip and preview.
 The film page uses the pregame lobby's action skin, text and row spacing.

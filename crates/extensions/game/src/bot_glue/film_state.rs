@@ -7,6 +7,8 @@ use serde::{Deserialize, Serialize};
 struct State {
     books: Books,
     cursor: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    next_roster: Option<usize>,
     frame: u64,
 }
 
@@ -18,9 +20,11 @@ pub(super) fn install(b: &mut Builder, frame: &Arc<AtomicU64>, session: &Arc<Ses
             if !crate::theater::in_keyframe() {
                 return Vec::new();
             }
+            let (cursor, next_roster) = rec.bot_snapshot_cursor();
             serde_json::to_vec(&State {
                 books: Books::capture(),
-                cursor: rec.bot_cursor(),
+                cursor,
+                next_roster,
                 frame: save.load(Ordering::Relaxed),
             })
             .expect("fixed film bot state is serialisable")
@@ -35,7 +39,7 @@ pub(super) fn install(b: &mut Builder, frame: &Arc<AtomicU64>, session: &Arc<Ses
             }
             let state: State = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
             state.books.load()?;
-            play.resume_bot_cursor(state.cursor)?;
+            play.resume_bot_row(state.cursor, state.next_roster)?;
             load.store(state.frame, Ordering::Relaxed);
             Ok(())
         },

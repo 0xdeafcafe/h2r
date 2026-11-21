@@ -85,14 +85,20 @@ pub fn save_guest(
     base: Option<&Base<'_>>,
 ) -> Result<PageStats, Error> {
     let (ram, stats) = pages::encode(guest.physical_ram(), base)?;
+    save_layout(out, guest)?;
+    out.section(RAM, RAM_VERSION, Codec::Stored, ram)?;
+    Ok(stats)
+}
+
+/// Mapping and allocator state for a snapshot whose RAM has separate storage.
+pub fn save_layout(out: &mut SnapshotWriter, guest: &Guest) -> Result<(), Error> {
     out.section(
         LAYOUT,
         LAYOUT_VERSION,
         Codec::Zstd,
         encode_layout(&guest.layout()),
-    )?
-    .section(RAM, RAM_VERSION, Codec::Stored, ram)?;
-    Ok(stats)
+    )?;
+    Ok(())
 }
 
 /// Read the guest layout for either a decoded or a file-backed RAM restore.

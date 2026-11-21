@@ -6,6 +6,7 @@
 //! thread passes in, so every answer is read on the game's own thread.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::SyncSender;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 
@@ -68,6 +69,9 @@ impl Access {
 /// result or error out. It runs on the game's thread with the agent's
 /// state locked, so it must be quick and must not call the [`Agent`].
 pub type HostMethod = Box<dyn FnMut(Value) -> Result<Value, RpcError> + Send>;
+
+/// A long-running host read with no guest access, answered on its connection thread.
+type ConnectionRead = Arc<dyn Fn(Value) -> Result<Value, RpcError> + Send + Sync>;
 
 /// A method that reads (or writes) the game at the boundary it is answered
 /// at ([`Agent::add_game_method`]): the `sim.*` methods. Like `world.*`,
@@ -177,6 +181,7 @@ pub struct Agent {
 struct Shared {
     state: Mutex<State>,
     wake: Condvar,
+    connection_reads_running: AtomicUsize,
 }
 
 #[derive(Default)]
@@ -215,6 +220,7 @@ struct State {
     holding: bool,
     /// Methods the host answers, by name.
     host: BTreeMap<String, (Access, HostMethod)>,
+    connection_reads: BTreeMap<String, ConnectionRead>,
     /// Methods answered with the game at hand, by name.
     game_methods: BTreeMap<String, (Access, GameMethod)>,
     /// The tick observer isn't installed (switched off, or the plan left
@@ -398,6 +404,32 @@ impl Agent {
                     );
                 }
             }
+            Ok(r) if s.connection_reads.contains_key(&r.method) => {
+                let read = s.connection_reads[&r.method].clone();
+                let running = &self.shared.connection_reads_running;
+                running.fetch_add(1, Ordering::SeqCst);
+                struct InFlight<'a>(&'a AtomicUsize);
+                impl Drop for InFlight<'_> {
+                    fn drop(&mut self) { self.0.fetch_sub(1, Ordering::SeqCst); }
+                }
+                let _job = InFlight(running);
+                drop(s);
+                let result = read(r.params);
+                if let Some(id) = r.id {
+                    let mut s = self.lock();
+                    let reply = match result {
+                        Ok(mut value) => {
+                            if let Value::Object(obj) = &mut value {
+                                obj.entry("at").or_insert_with(|| to_value(s.at()));
+                            }
+                            Response::ok(id, value)
+                        }
+                        Err(e) => Response::err(id, e),
+                    };
+                    s.send(conn, reply);
+                }
+                return;
+            }
             Ok(r) => s.pending.push_back((conn, r)),
             Err(resp) => s.send(conn, resp),
         }
@@ -427,6 +459,22 @@ impl Agent {
         self.lock()
             .host
             .insert(name.to_owned(), (access, Box::new(f)));
+    }
+
+    /// Independent host reads still waiting to return a response.
+    pub fn connection_read_pending(&self) -> bool {
+        self.shared.connection_reads_running.load(Ordering::SeqCst) > 0
+    }
+
+    /// Register an independent host read, such as a second player's replay
+    /// verification. Its connection waits for the reply while the game runs.
+    pub fn add_connection_read(
+        &self,
+        name: &str,
+        f: impl Fn(Value) -> Result<Value, RpcError> + Send + Sync + 'static,
+    ) {
+        assert!(!method::ALL.contains(&name));
+        self.lock().connection_reads.insert(name.to_owned(), Arc::new(f));
     }
 
     /// Answers `name` with `f`, given the game at the boundary
@@ -1168,6 +1216,7 @@ impl State {
                     )
                     .chain(agent_proto::live::METHODS.iter().map(|m| (*m).to_owned()))
                     .chain(self.host.keys().cloned())
+                    .chain(self.connection_reads.keys().cloned())
                     .chain(self.game_methods.keys().cloned())
                     .collect::<Vec<String>>(),
             )),

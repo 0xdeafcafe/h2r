@@ -1,5 +1,8 @@
 //! A local film already renders each player's director, weapon and HUD. Select
 //! the completed viewport at presentation, after the engine's final draw.
+mod redraw;
+pub(super) use redraw::PausedRedraw;
+
 use std::sync::{Arc, Mutex};
 
 use super::{Mode, Session};
@@ -10,6 +13,9 @@ struct Views {
     requested: Option<u8>,
     rig: super::ReplayCamera,
     revision: u64,
+    guest_view_limit: u32,
+    raster_job: Option<redraw::RasterJob>,
+    publish: redraw::Publish,
     last_seat: Option<u8>,
     drawing: [Option<[u32; 4]>; 16],
     available: u16,

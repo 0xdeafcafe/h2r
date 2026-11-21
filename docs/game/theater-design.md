@@ -1,8 +1,8 @@
 # Theater: the full in-game player
 
-Status: Design. The parts under "What it builds on" are built; everything else on this page is not.
+Status: Design. “What it builds on” describes the existing player. The session ring and warm restore are opt-in pending measurements on recorded films.
 Code: `crates/extensions/game/src/theater.rs` (`Session`), `crates/extensions/game/src/theater/actions.rs` (the per-tick inputs), `crates/live/film/src/tape.rs` (the HLE tape), `crates/apps/cli/src/theater_cmd.rs` (the player process), `crates/live/film` (the container). Tests: `crates/extensions/game/src/theater/tests.rs`, `crates/live/film/src/tests.rs`.
-Switch: none.
+Switch: [Theater ring](../runtime/switches.md).
 
 This is the design for a Halo 3-style Theater inside the game: play a
 film, pause, rewind, jump to any point, change speed, fly a camera, follow
@@ -262,13 +262,16 @@ The ring holds machine keyframes for the stretch of film just watched.
   (the pages written since the last capture, and the pages whose
   reference differs between the last capture and the target), then load
   the sections in the order `boot::snapshot_glue` uses for `state.load`,
-  then reset the film cursors (`Playback::resume_keyframe`).
+  then reset the film cursors. A ring entry uses `Playback::resume_cursor`
+  so a restore inside a call batch resumes at the next unread call.
 - **The ring is not in the film** and is dropped when the player leaves.
 
 The ring also gives the paused camera its picture where the guest draws
-the frame: moving the camera while paused restores the entry made at the
-pause, runs the guest to the next present with the new view, and holds
-again. A host film's view is drawn from simulation state by
+the frame: when an entry covers the pause, the player runs from the held
+tick through the next present with the new view. It keeps that frame on
+screen while it restores the entry and replays to the pause. Every camera
+change starts from the same tick, including pauses between capture points.
+A host film's view is drawn from simulation state by
 `host_view.rs` and needs no restore.
 
 ### Warm restore and its fallback
@@ -655,7 +658,7 @@ is the only one whose merge waits on a measurement.
 
 ## Evidence
 
-- **Code**: a seek restarts the child. `crates/apps/cli/src/theater_cmd.rs`
+- **Code**: a cold seek restarts the child. `crates/apps/cli/src/theater_cmd.rs`
   loops on `restart.json`; `boot::run_theater` restores the keyframe
   before the first slice (`crates/apps/boot/src/lib.rs`, `take_keyframe`).
 - **Code**: the recorder captures between slices when `keyframe_due`,
@@ -668,8 +671,9 @@ is the only one whose merge waits on a measurement.
   machine.
 - **Test**: an in-process load into a running synthetic machine, twice,
   with matching per-slice digests (`crates/runtime/kernel/tests/snapshot.rs`).
-- **Code**: `state.load` already loads into a running game through
-  `boot::snapshot_glue`; the film player does not use that path.
+- **Code**: `theater/warm.rs` uses the snapshot machine's ordinary part load
+  order. The ring supplies the RAM pages and the saved guest layout.
+  `theater/warm/tests.rs` covers the repeated restore and both cold routes.
 - **S**: a barrier mark without a published keyframe is accepted by
   every reader. `Playback::d3d_barrier` documents the case; slice 3's test
   verifies it.
