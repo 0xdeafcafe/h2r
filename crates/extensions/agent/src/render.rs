@@ -73,6 +73,8 @@ pub struct DrawInfo {
 /// clear: read back the pass that just ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SnapAsk {
+    /// A retry of the same arming after its original display disappeared.
+    attempt: u64,
     /// The arming's number, for the file name.
     pub seq: u64,
     pub pass: usize,
@@ -85,6 +87,7 @@ pub struct FrameProbe {
 }
 
 struct ProbeState {
+    attempt: u64,
     next_seq: u64,
     stage: Stage,
     last: Option<FrameRecord>,
@@ -107,6 +110,7 @@ enum Stage {
 
 #[derive(Clone)]
 struct Arming {
+    attempt: u64,
     seq: u64,
     at_present: u64,
     draws: bool,
@@ -141,6 +145,7 @@ impl FrameProbe {
         FrameProbe {
             armed: AtomicBool::new(false),
             state: Mutex::new(ProbeState {
+                attempt: 0,
                 next_seq: 1,
                 stage: Stage::Idle,
                 last: None,
@@ -188,7 +193,9 @@ impl FrameProbe {
         let seq = s.next_seq;
         s.next_seq += 1;
         let at_present = s.presents;
+        s.attempt = 0;
         let old = std::mem::replace(&mut s.stage, Stage::Waiting(Arming {
+            attempt: 0,
             seq,
             at_present,
             draws: p.draws,
@@ -349,7 +356,7 @@ impl FrameProbe {
     /// A callback can arrive after a second arming. Only the request which
     /// paid for this readback may consume it.
     pub fn snapped_for(&self, ask: SnapAsk, result: Result<String, String>) {
-        self.note_snap(Some(ask.seq), ask.pass, result, None);
+        self.note_snap(Some(ask), ask.pass, result, None);
     }
 
     /// Write the original pass for this arming. A stale request skips the
@@ -362,7 +369,7 @@ impl FrameProbe {
     fn write_snapshot_in(&self, ask: SnapAsk, dir: &Path, read: impl FnOnce() -> Result<crate::compare::Rgba, String>) {
         let wanted = {
             let s = self.lock();
-            match &s.stage {
+            s.attempt == ask.attempt && match &s.stage {
                 Stage::Recording(r) => r.arming.seq == ask.seq,
                 Stage::Routing { original, .. } => original.seq == ask.seq,
                 Stage::Idle => s.last.as_ref().is_some_and(|f| f.seq == ask.seq && f.display_frame.is_none()),
@@ -371,20 +378,22 @@ impl FrameProbe {
         };
         if !wanted { return; }
         let written = read().and_then(|image| {
-            let name = format!("frame-{}-{}-pass-{}.png", std::process::id(), ask.seq, ask.pass);
+            let retry = retry_suffix(ask.attempt);
+            let name = format!("frame-{}-{}{retry}-pass-{}.png", std::process::id(), ask.seq, ask.pass);
             let file = private_capture::Written::new(dir.join(name));
             crate::compare::write_png(file.path(), &image).map_err(|e| e.to_string())?;
             Ok(file)
         });
         match written {
-            Ok(file) => self.note_snap(Some(ask.seq), ask.pass, Ok(file.path().display().to_string()), Some(file)),
+            Ok(file) => self.note_snap(Some(ask), ask.pass, Ok(file.path().display().to_string()), Some(file)),
             Err(error) => self.snapped_for(ask, Err(error)),
         }
     }
 
-    fn note_snap(&self, seq: Option<u64>, pass: usize, result: Result<String, String>, file: Option<private_capture::Written>) {
+    fn note_snap(&self, ask: Option<SnapAsk>, pass: usize, result: Result<String, String>, file: Option<private_capture::Written>) {
         let mut s = self.lock();
-        let belongs = |actual| seq.is_none_or(|wanted| wanted == actual);
+        let attempt = s.attempt;
+        let belongs = |actual| ask.is_none_or(|wanted| wanted.seq == actual && wanted.attempt == attempt);
         let snap = match result {
             Ok(file) => SnapRecord {
                 pass,
@@ -498,7 +507,20 @@ impl Recording {
         self.arming
             .snap
             .contains(&pass)
-            .then_some(SnapAsk { seq, pass })
+            .then_some(SnapAsk { seq, pass, attempt: self.arming.attempt })
+    }
+}
+
+fn retry_suffix(attempt: u64) -> String {
+    if attempt == 0 { String::new() } else { format!("-retry-{attempt}") }
+}
+
+impl ProbeState {
+    fn retry_original(&mut self) -> Option<Stage> {
+        let mut next = self.stage.arming()?.clone();
+        self.attempt = self.attempt.wrapping_add(1);
+        next.attempt = self.attempt;
+        Some(std::mem::replace(&mut self.stage, Stage::Waiting(next)))
     }
 }
 
@@ -1193,7 +1215,7 @@ mod tests {
             let seq = p.arm(&params).unwrap().seq.unwrap();
             p.present(start);
             p.clear("colour", None);
-            (SnapAsk { seq, pass: 0 }, dir.join(format!("frame-{}-{seq}-pass-0.png", std::process::id())))
+            (SnapAsk { seq, pass: 0, attempt: 0 }, dir.join(format!("frame-{}-{seq}-pass-0.png", std::process::id())))
         };
         let image = || Ok(crate::compare::Rgba::filled(2, 1, [40, 12, 9, 255]));
 
@@ -1295,12 +1317,12 @@ mod tests {
         assert_eq!(p.draw(draw("a", "drawn", 3)), None);
         assert_eq!(
             p.draw(draw("b", "drawn", 3)),
-            Some(SnapAsk { seq: 1, pass: 0 })
+            Some(SnapAsk { seq: 1, pass: 0, attempt: 0 })
         );
         p.snapped(0, Ok("/tmp/p0.png".into()));
         // The last pass ends at the present: the frame is done, the probe
         // stays armed until the snapshot is in.
-        assert_eq!(p.present(2), Some(SnapAsk { seq: 1, pass: 1 }));
+        assert_eq!(p.present(2), Some(SnapAsk { seq: 1, pass: 1, attempt: 0 }));
         assert!(p.armed());
         p.snapped(1, Err("readback failed".into()));
         assert!(!p.armed());

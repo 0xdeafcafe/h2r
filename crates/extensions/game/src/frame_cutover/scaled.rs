@@ -5,19 +5,22 @@
 use d3d::threaded::owner::{Candidate, FrameOwner, Submission};
 use d3d::{GfxBackend, ScaledBackend};
 use std::sync::Arc;
+use super::DisplayDevice;
 
 type Scaled = ScaledBackend<GfxBackend, GfxBackend>;
 
-pub fn scaled_owner() -> FrameOwner<Scaled> {
+pub(crate) fn scaled_owner(device: DisplayDevice) -> FrameOwner<Scaled> {
     FrameOwner {
-        select: Box::new(move |present| {
-            let (scene, replay) = super::pair_for_present(present)?;
-            if super::needs_reference(present) {
+        events: Arc::new(device.clone()),
+        select: Box::new(move |present, generation| {
+            let (scene, replay, reference) = device.pair(generation, present)?;
+            if reference {
                 return Some(Submission::Reference {
                     frame: replay,
                     freeze: native_render::frame_graph::freeze_scaled_inputs,
                 });
             }
+            let device = device.clone();
             let to_check = Arc::clone(&replay);
             Some(Submission::Native(Candidate {
                 frame: Arc::clone(&replay),
@@ -28,21 +31,18 @@ pub fn scaled_owner() -> FrameOwner<Scaled> {
                 draw: Box::new(move |backend, targets| {
                     let mode = backend.lighting();
                     let mut probe =
-                        crate::render_probe::OwnedFrame::begin(&scene, &replay, present, mode);
+                        device.current(generation, || crate::render_probe::OwnedFrame::begin(&scene, &replay, present, mode));
                     let (report, outputs) = native_render::frame_graph::draw_scaled_display_on(
                         backend,
                         &scene,
                         &replay,
-                        probe.observer(),
+                        probe.as_mut().and_then(|p| p.observer()),
                         targets,
                     )?;
-                    probe.presented(&report);
+                    if let Some(probe) = probe { probe.presented(&report); }
                     Ok(outputs)
                 }),
             }))
         }),
-        declined: crate::render_probe::owner_declined,
-        failed: super::failed,
-        stopped: crate::render_probe::owner_stopped,
     }
 }

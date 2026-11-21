@@ -1276,6 +1276,10 @@ D3D reference with all native stages disabled.
   from its triple buffer. Capture requests can pin a scene across two draws and
   wake the renderer during pause. A display pass snapshot comes from the
   renderer that presented that Swap, at the requested pass boundary.
+  Display callbacks carry the installing device and the timeline at Swap.
+  A queued draw can finish on that device's attachments after a map or
+  renderer change. Only the current timeline can publish its frame report,
+  change a capture request or supply a pass snapshot.
   A private draw has its own `render.frame` recorder.
   `render.stats` reports completed graph work. `render.parity` compares
   the guest present with a separate private draw of its inputs.

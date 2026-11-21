@@ -140,6 +140,7 @@ impl PassObserver for PrivateFrame<'_> {
 /// Observe the chosen native display graph only when the matching frame
 /// was armed. Unarmed frames publish just the backend counter deltas.
 pub struct OwnedFrame<'a> {
+    epoch: agent::render::private_graph::DisplayEpoch,
     recorder: Option<PrivateFrame<'a>>,
     scene: &'a FrameScene,
     present: u64,
@@ -152,13 +153,15 @@ impl<'a> OwnedFrame<'a> {
         present: u64,
         lighting: Lighting,
     ) -> Self {
-        let recorder = GraphRecording::begin_display(present, || stats(scene, present, lighting))
+        let epoch = agent::render::private_graph::DisplayEpoch::current();
+        let recorder = GraphRecording::begin_display(epoch, present, || stats(scene, present, lighting))
             .map(|graph| PrivateFrame {
                 replay,
                 next_op: 0,
                 graph,
             });
         Self {
+            epoch,
             recorder,
             scene,
             present,
@@ -174,7 +177,7 @@ impl<'a> OwnedFrame<'a> {
             recording.between(recording.replay.ops.len());
             recording.finish_graph(frame_scene::summary_hash(self.scene), report);
         }
-        agent::render::private_graph::display_presented(DisplayStats {
+        self.epoch.presented(DisplayStats {
             map_epoch: report.id.map_epoch,
             frame: report.id.frame,
             tick: report.id.tick,

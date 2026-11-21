@@ -263,6 +263,10 @@ fn complete_with(
     }
 }
 
+// Tests using the process-wide display recorder share its installation.
+#[cfg(test)]
+pub(crate) static RPC_RENDERER: Mutex<()> = Mutex::new(());
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -292,9 +296,6 @@ mod tests {
             assert_eq!((result.differing, result.max_channel), (2, 3));
         }
     }
-
-    // RPC tests install a renderer in the process-wide agent registry.
-    static RPC_RENDERER: Mutex<()> = Mutex::new(());
 
     struct Installed;
     impl Installed {
@@ -490,6 +491,12 @@ mod tests {
             }
         };
         let _serial = RPC_RENDERER.lock().unwrap_or_else(|e| e.into_inner());
+        let (mut retired, retired_generation) = {
+            let old = crate::frame_owner::Service::new(GfxBackend::new(ctx.clone()), Mode::Locked).unwrap();
+            let owner = crate::frame_cutover::scaled_owner(old.display_device());
+            let generation = owner.events.generation();
+            (owner, generation)
+        };
         let private = GfxBackend::new(crate::d3d_glue::share_context(&ctx));
         let service = crate::frame_owner::Service::new(private, Mode::Locked).unwrap();
         let mut display = GfxBackend::new(ctx);
@@ -497,7 +504,7 @@ mod tests {
 
         // Bound parity frames use the original renderer. The owner must
         // still receive their sealed pair to snapshot inherited pixels.
-        let owner = crate::frame_cutover::owner(Box::new(|| panic!("expected a reference Swap")));
+        let owner = crate::frame_cutover::owner(service.display_device(), Box::new(|| panic!("expected a reference Swap")));
         let display = ThreadedBackend::new(display).unwrap().with_frame_owner(owner);
         let mut sink = SceneSink::new(display, || Some(SlotAt { slot: Slot::Opaque, view: 0 }))
             .with_replay(crate::frame_cutover::record(&service))
@@ -536,7 +543,23 @@ mod tests {
         assert!(sink.copy_surface(src, dst).unwrap());
         sink.present(dst, 0).unwrap();
         sink.inner_mut().finish().unwrap();
-        let (_, replay) = crate::frame_owner::pair_for_present(1).expect("sealed game view");
+        let device = service.display_device();
+        let (_, replay, _) = device.pair(d3d::threaded::owner::OwnerEvents::generation(&device), 1).expect("sealed game view");
+        // The old device can still have a queued original Swap and its
+        // ordinal matches the new device. Neither its selection nor its
+        // late callbacks can consume this request or erase display stats.
+        assert!((retired.select)(1, retired_generation).is_none());
+        let replacement = agent_proto::frame_graph::DisplayStats {
+            map_epoch: 9, frame: 1, tick: 17, present: 1,
+            lighting: agent_proto::CaptureLighting::Retail, e3: None,
+            render_passes: 1, backend_draws: 0, submits: 1,
+        };
+        agent::render::private_graph::DisplayEpoch::current().presented(replacement.clone());
+        retired.events.declined(retired_generation, 1);
+        retired.events.failed(retired_generation, 1);
+        retired.events.stopped();
+        assert_eq!(agent::render::private_graph::display_stats(), Some(replacement));
+
         assert_eq!(replay.frozen_target_seeds().unwrap().len(), 1);
         // Drive the existing agent request while the private GPU worker
         // finishes. Each pump is a host tick, independent of the scene.

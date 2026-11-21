@@ -1011,7 +1011,7 @@ impl<B: Backend + 'static> Drop for ThreadedBackend<B> {
         }
         if let Some(owner) = self.frame_owner.take() {
             owner::uninstall();
-            (owner.stopped)();
+            owner.events.stopped();
         }
     }
 }
@@ -1211,10 +1211,10 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
             self.wait_for_display_capacity(n)?;
         }
         if let Some(owner) = self.frame_owner.as_mut() {
-            let candidate = (owner.select)(n);
-            let declined = owner.declined;
-            let failed = owner.failed;
-            self.push(Cmd::OwnerPresent(Box::new(owner::Present { n, surface, at, flags, gamma, candidate, declined, failed })));
+            let events = Arc::clone(&owner.events);
+            let generation = events.generation();
+            let candidate = (owner.select)(n, generation);
+            self.push(Cmd::OwnerPresent(Box::new(owner::Present { n, surface, at, flags, gamma, candidate, generation, events })));
         } else {
             self.post(move |w| {
                 let raster = w.measure_present_raster(surface);

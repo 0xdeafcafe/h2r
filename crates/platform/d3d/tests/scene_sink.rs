@@ -260,7 +260,7 @@ fn the_worker_adopts_only_the_actual_immutable_draw_packet_including_unused_nan_
     let pending = Arc::new(Mutex::new(None::<ReplayFrame>));
     let input = Arc::clone(&pending);
     let owner = FrameOwner {
-        select: Box::new(move |present| {
+        select: Box::new(move |present, _| {
             let mut replay = input.lock().unwrap().take()?;
             if present == 2 {
                 for (_, op) in &mut replay.ops {
@@ -291,9 +291,7 @@ fn the_worker_adopts_only_the_actual_immutable_draw_packet_including_unused_nan_
                 }),
             }))
         }),
-        declined: |_| {},
-        failed: |_| {},
-        stopped: || {},
+        events: std::sync::Arc::new(()),
     };
     let device = ThreadedBackend::new(RecordingBackend::new()).unwrap().with_frame_owner(owner);
     let mut sink = SceneSink::new(device, || Some(SlotAt { slot: Slot::Opaque, view: 0 }))

@@ -110,8 +110,8 @@ pub struct SceneSink<B: Backend> {
     keep: bool,
     replay: Option<Recorder<B::Surface>>,
     presents: u64,
-    guest_reference: fn() -> bool,
-    present_error: Option<fn(u64)>,
+    guest_reference: Box<dyn Fn() -> bool + Send>,
+    present_error: Option<Box<dyn FnMut(u64) + Send>>,
     frame: Carried<KeptDraw>,
     last: Carried<KeptDraw>,
     /// The last bind emitted this frame, and where.
@@ -136,7 +136,7 @@ impl<B: Backend> SceneSink<B> {
             keep: false,
             replay: None,
             presents: 0,
-            guest_reference: || false,
+            guest_reference: Box::new(|| false),
             present_error: None,
             frame: Carried::default(),
             last: Carried::default(),
@@ -179,14 +179,14 @@ impl<B: Backend> SceneSink<B> {
 
     /// A parity request needs a frame that reaches the reference backend
     /// entirely as guest draws. The device asks before each guest skip.
-    pub fn with_guest_reference_request(mut self, requested: fn() -> bool) -> Self {
-        self.guest_reference = requested;
+    pub fn with_guest_reference_request(mut self, requested: impl Fn() -> bool + Send + 'static) -> Self {
+        self.guest_reference = Box::new(requested);
         self
     }
 
     /// Cancel the pending scene/reference join if this guest swap fails.
-    pub fn on_present_error(mut self, cancel: fn(u64)) -> Self {
-        self.present_error = Some(cancel);
+    pub fn on_present_error(mut self, cancel: impl FnMut(u64) + Send + 'static) -> Self {
+        self.present_error = Some(Box::new(cancel));
         self
     }
 
@@ -610,13 +610,13 @@ impl<B: Backend> Backend for SceneSink<B> {
     fn present(&mut self, surface: Self::Surface, flags: u32) -> Result<(), String> {
         self.presented(surface, flags, None);
         let result = self.inner.present(surface, flags);
-        if result.is_err() && let Some(cancel) = self.present_error { cancel(self.presents); }
+        if result.is_err() && let Some(cancel) = self.present_error.as_mut() { cancel(self.presents); }
         result
     }
     fn present_with_gamma(&mut self, surface: Self::Surface, flags: u32, gamma: Option<&[u8; 768]>) -> Result<(), String> {
         self.presented(surface, flags, gamma);
         let result = self.inner.present_with_gamma(surface, flags, gamma);
-        if result.is_err() && let Some(cancel) = self.present_error { cancel(self.presents); }
+        if result.is_err() && let Some(cancel) = self.present_error.as_mut() { cancel(self.presents); }
         result
     }
     fn clear_rects(&mut self, color: Self::Surface, depth: Option<Self::Surface>, clear: &RectClear) -> Result<DrawOutcome, String> {

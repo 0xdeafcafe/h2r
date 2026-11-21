@@ -200,7 +200,7 @@ fn scene_asset_upload_runs_once_on_the_display_worker_without_a_frame_or_attachm
     let Ok(ctx) = gfx::GfxContext::headless() else { return };
     let worker = ThreadedBackend::new(d3d::GfxBackend::new(ctx)).unwrap()
         .with_frame_owner(d3d::threaded::owner::FrameOwner {
-            select: Box::new(|_| None), declined: |_| {}, failed: |_| {}, stopped: || {},
+            select: Box::new(|_, _| None), events: std::sync::Arc::new(()),
         });
     let mut sink = d3d::SceneSink::new(worker, || None).with_replay(|_| panic!("unexpected present"));
     let (send, recv) = std::sync::mpsc::channel();

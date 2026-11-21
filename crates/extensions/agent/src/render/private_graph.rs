@@ -40,8 +40,22 @@ pub fn display_stats() -> Option<DisplayStats> {
         .clone()
 }
 
-pub fn display_presented(stats: DisplayStats) {
-    STATE.lock().unwrap_or_else(|e| e.into_inner()).display = Some(stats);
+/// A graph may finish recording on its own GPU after a map or renderer
+/// reset. Only its original epoch can publish the displayed counters.
+#[derive(Clone, Copy)]
+pub struct DisplayEpoch(u64);
+
+impl DisplayEpoch {
+    pub fn current() -> Self {
+        Self(STATE.lock().unwrap_or_else(|e| e.into_inner()).epoch)
+    }
+
+    pub fn presented(self, stats: DisplayStats) {
+        let mut state = STATE.lock().unwrap_or_else(|e| e.into_inner());
+        if state.epoch == self.0 {
+            state.display = Some(stats);
+        }
+    }
 }
 
 /// Release the original report when these were the commands the worker presented.
@@ -70,16 +84,10 @@ pub fn display_declined(swap: u64) {
 /// recorder sees the next complete one.
 pub fn discard_display(swap: u64) {
     let mut p = super::PROBE.lock();
-    if matches!(&p.stage, Stage::Routing { swap: pending, .. } if *pending == swap)
-        && let Stage::Routing {
-            arming,
-            original_files,
-            ..
-        } = std::mem::replace(&mut p.stage, Stage::Idle)
-    {
-        p.stage = Stage::Waiting(arming);
+    if matches!(&p.stage, Stage::Routing { swap: pending, .. } if *pending == swap) {
+        let retired = p.retry_original();
         drop(p);
-        drop(original_files);
+        drop(retired);
     }
 }
 
@@ -87,22 +95,24 @@ pub fn display_stopped() {
     let mut state = STATE.lock().unwrap_or_else(|e| e.into_inner());
     state.display = None;
     let mut p = super::PROBE.lock();
-    if matches!(p.stage, Stage::Routing { .. })
-        && let Stage::Routing {
-            arming,
-            original_files,
-            ..
-        } = std::mem::replace(&mut p.stage, Stage::Idle)
-    {
-        p.stage = Stage::Waiting(arming);
-        drop(p);
-        drop(state);
-        drop(original_files);
-    }
+    let retired = match p.stage {
+        Stage::Routing { .. } | Stage::Recording(_) => p.retry_original(),
+        Stage::Idle => {
+            // A queued original pass read can also land after its report.
+            p.attempt = p.attempt.wrapping_add(1);
+            super::PROBE.armed.store(false, Ordering::Relaxed);
+            None
+        }
+        _ => None,
+    };
+    drop(p);
+    drop(state);
+    drop(retired);
 }
 
 /// Forget pending requests, reports and in-flight results from the old renderer.
 pub(super) fn reset() {
+    display_stopped();
     let mut state = STATE.lock().unwrap_or_else(|e| e.into_inner());
     state.epoch = state.epoch.wrapping_add(1);
     state.last = None;
@@ -117,6 +127,7 @@ pub(super) fn reset() {
 /// A single graph execution. Its report is published after successful
 /// completion. A rejected private draw releases its arming for a retry.
 pub struct GraphRecording {
+    attempt: u64,
     epoch: u64,
     source: Source,
     stats: FrameGraphStats,
@@ -139,11 +150,14 @@ impl GraphRecording {
         Self::new(state.epoch, Source::Private, stats, arming, from_present)
     }
 
-    pub fn begin_display(swap: u64, stats: impl FnOnce() -> FrameGraphStats) -> Option<Self> {
+    pub fn begin_display(epoch: DisplayEpoch, swap: u64, stats: impl FnOnce() -> FrameGraphStats) -> Option<Self> {
         if !super::PROBE.armed() {
             return None;
         }
         let state = STATE.lock().unwrap_or_else(|e| e.into_inner());
+        if epoch.0 != state.epoch {
+            return None;
+        }
         let p = super::PROBE.lock();
         let Stage::Routing {
             swap: pending,
@@ -175,6 +189,7 @@ impl GraphRecording {
         arming: Option<super::Arming>,
         from_present: u64,
     ) -> Self {
+        let attempt = arming.as_ref().map_or(0, |a| a.attempt);
         let recording = arming.map(|arming| Recording {
             rec: FrameRecord {
                 seq: arming.seq,
@@ -189,6 +204,7 @@ impl GraphRecording {
             files: Vec::new(),
         });
         Self {
+            attempt,
             epoch,
             source,
             stats,
@@ -272,12 +288,12 @@ impl GraphRecording {
 
     fn owns(&self, stage: &Stage, seq: u64) -> bool {
         match stage {
-            Stage::Graph(active) => self.source == Source::Private && active.seq == seq,
+            Stage::Graph(active) => self.source == Source::Private && active.seq == seq && active.attempt == self.attempt,
             Stage::Routing {
                 arming, original, ..
             } => {
                 self.source == Source::Display
-                    && arming.seq == seq
+                    && arming.seq == seq && arming.attempt == self.attempt
                     && original.present == self.stats.present
             }
             _ => false,
@@ -285,7 +301,8 @@ impl GraphRecording {
     }
 
     fn active(&self, seq: u64) -> bool {
-        self.owns(&self.probe().lock().stage, seq)
+        let state = STATE.lock().unwrap_or_else(|e| e.into_inner());
+        state.epoch == self.epoch && self.owns(&self.probe().lock().stage, seq)
     }
 
     /// Read the colour at the pass boundary only for the current request.
@@ -345,8 +362,9 @@ impl GraphRecording {
                 break;
             }
             let result = result.and_then(|rgba| {
+                let retry = super::retry_suffix(r.arming.attempt);
                 let name = format!(
-                    "{prefix}-{}-{}-frame-{}-pass-{pass}.png",
+                    "{prefix}-{}-{}{retry}-frame-{}-pass-{pass}.png",
                     std::process::id(),
                     r.arming.seq,
                     self.stats.present
@@ -384,7 +402,7 @@ impl GraphRecording {
     /// The guards outlive both locks, including on the discard paths.
     fn publish(&self, report: Option<Recording>) {
         let mut state = STATE.lock().unwrap_or_else(|e| e.into_inner());
-        if self.source == Source::Private && state.epoch != self.epoch {
+        if state.epoch != self.epoch {
             return;
         }
         let probe = self.probe();
@@ -615,6 +633,7 @@ mod tests {
 
     #[test]
     fn the_display_recorder_waits_for_the_worker_to_choose_the_commands_actually_presented() {
+        let _guard = PRIVATE_TEST.lock().unwrap_or_else(|e| e.into_inner());
         let p = &super::super::PROBE;
         let arm = FrameParams {
             arm: true,
@@ -630,7 +649,7 @@ mod tests {
         // The worker can still be completing an earlier frame.
         display_declined(1);
         assert!(p.reply().armed);
-        let mut graph = GraphRecording::begin_display(2, stats).unwrap();
+        let mut graph = GraphRecording::begin_display(DisplayEpoch::current(), 2, stats).unwrap();
         graph.pass(|| "native".into(), || None);
         graph.clear();
         graph.complete(1234, 1, 0, 1, None);
@@ -675,13 +694,28 @@ mod tests {
         p.arm(&snap).unwrap();
         p.present_routed(108, Some(7));
         p.clear("original", None);
-        p.present_routed(109, Some(8));
-        let mut retired = GraphRecording::begin_display(8, stats).unwrap();
-        display_stopped();
+        let old_snap = p.present_routed(109, Some(8)).unwrap();
+        let original_epoch = DisplayEpoch::current();
+        let mut retired = GraphRecording::begin_display(original_epoch, 8, stats).unwrap();
+        reset();
+        let replacement = DisplayStats {
+            map_epoch: 11, frame: 4, tick: 8, present: 8, lighting: CaptureLighting::Retail,
+            e3: None, render_passes: 0, backend_draws: 0, submits: 0,
+        };
+        DisplayEpoch::current().presented(replacement.clone());
+        original_epoch.presented(DisplayStats { tick: 7, ..replacement.clone() });
+        assert_eq!(display_stats(), Some(replacement));
+        assert!(GraphRecording::begin_display(original_epoch, 8, stats).is_none());
         retired.snapshot(0, || panic!("retired display graph read the GPU"));
         retired.complete(123, 1, 0, 1, None);
         assert!(p.reply().armed);
         assert!(p.reply().frame.is_none());
+        p.present_routed(110, Some(7));
+        p.clear("replacement", None);
+        let new_snap = p.present_routed(111, Some(8)).unwrap();
+        assert_eq!(old_snap.seq, new_snap.seq);
+        assert_ne!(old_snap, new_snap);
+        p.write_snapshot(old_snap, || panic!("retired original read the replacement pass"));
         p.arm(&arm).unwrap();
         p.present(110);
         p.clear("next", None);

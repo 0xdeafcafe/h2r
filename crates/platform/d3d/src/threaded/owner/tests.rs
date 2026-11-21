@@ -134,7 +134,7 @@ fn device(eligible: bool) -> (ThreadedBackend<Pixels>, Arc<AtomicUsize>, u32) {
     let mut gpu = ThreadedBackend::new(Pixels::default())
         .unwrap()
         .with_frame_owner(FrameOwner {
-            select: Box::new(move |n| {
+            select: Box::new(move |n, _| {
                 let byte = u8::try_from(n).unwrap();
                 let count = Arc::clone(&count);
                 Some(Submission::Native(Candidate {
@@ -150,9 +150,7 @@ fn device(eligible: bool) -> (ThreadedBackend<Pixels>, Arc<AtomicUsize>, u32) {
                     }),
                 }))
             }),
-            declined: |_| {},
-            failed: |_| {},
-            stopped: || {},
+            events: std::sync::Arc::new(()),
         });
     let target = gpu
         .create_surface(D3DFormat::A8R8G8B8, 1, 1, false)
@@ -181,7 +179,7 @@ fn census_counts_a_terminally_unshown_swap_and_then_an_ordinary_one() {
             .with_present_window(Some(Arc::clone(&window)));
         if owner {
             worker = worker.with_frame_owner(FrameOwner {
-                select: Box::new(|_| None), declined: |_| {}, failed: |_| {}, stopped: || {},
+                select: Box::new(|_, _| None), events: std::sync::Arc::new(()),
             });
         }
         let mut sink = crate::SceneSink::new(worker, || None)
@@ -208,8 +206,12 @@ fn an_empty_game_view_and_its_overlay_keep_their_swap_without_adopting_a_menu() 
     let sealed = Arc::clone(&slot);
     let accepted = Arc::new(Mutex::new(Vec::new()));
     let log = Arc::clone(&accepted);
+    struct RequireDisplay;
+    impl OwnerEvents for RequireDisplay {
+        fn failed(&self, _: u64, _: u64) { panic!("display failed"); }
+    }
     let worker = ThreadedBackend::new(Pixels::default()).unwrap().with_frame_owner(FrameOwner {
-        select: Box::new(move |n| {
+        select: Box::new(move |n, _| {
             let frame = slot.lock().unwrap().take()?;
             assert_eq!(frame.present, n);
             let replay = Arc::clone(&frame);
@@ -230,9 +232,7 @@ fn an_empty_game_view_and_its_overlay_keep_their_swap_without_adopting_a_menu() 
                 }),
             }))
         }),
-        declined: |_| {},
-        failed: |_| panic!("display failed"),
-        stopped: || {},
+        events: Arc::new(RequireDisplay),
     });
     let overlay = || Some(SlotAt { slot: Slot::Overlay, view: 0 });
     let mut sink = crate::SceneSink::new(worker, overlay)
@@ -350,7 +350,7 @@ fn a_snapshot_keeps_its_value_and_guest_handle_across_native_or_legacy_present()
             let owned = Arc::new(AtomicUsize::new(0));
             let count = owned.clone();
             let mut gpu = ThreadedBackend::new(Pixels::default()).unwrap().with_frame_owner(FrameOwner {
-                select: Box::new(move |n| {
+                select: Box::new(move |n, _| {
                     let mut replay = frame(n, 11);
                     let name = TargetRef::SceneColour;
                     let at = replay.ops[0].0;
@@ -379,9 +379,7 @@ fn a_snapshot_keeps_its_value_and_guest_handle_across_native_or_legacy_present()
                         }),
                     }))
                 }),
-                declined: |_| {},
-                failed: |_| {},
-                stopped: || {},
+                events: std::sync::Arc::new(()),
             });
             let target = gpu.create_surface(D3DFormat::A8R8G8B8, 1, 1, false).unwrap();
             gpu.clear(target, None, clear(11)).unwrap();
@@ -412,7 +410,7 @@ fn previous_present_flare_reports_can_land_while_the_next_frame_is_retained() {
     let owned = Arc::new(AtomicUsize::new(0));
     let count = Arc::clone(&owned);
     let mut gpu = ThreadedBackend::new(inner).unwrap().with_frame_owner(FrameOwner {
-        select: Box::new(move |n| {
+        select: Box::new(move |n, _| {
             let count = Arc::clone(&count);
             Some(Submission::Native(Candidate {
                 frame: Arc::new(frame(n, 13)),
@@ -427,7 +425,7 @@ fn previous_present_flare_reports_can_land_while_the_next_frame_is_retained() {
                 }),
             }))
         }),
-        declined: |_| {}, failed: |_| {}, stopped: || {},
+        events: std::sync::Arc::new(()),
     });
     let color = gpu.create_surface(D3DFormat::A8R8G8B8, 1, 1, false).unwrap();
     let read = gpu.report_pixel_count().unwrap().unwrap();

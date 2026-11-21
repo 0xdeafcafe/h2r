@@ -669,7 +669,8 @@ worker's choice of renderer.
 - **Snapshots.** `snap` (at most 4 pass numbers): when such a pass ends,
   its colour target is read back as BGRA and written as a PNG under the
   cache directory's `frames/`. Original passes use
-  `frame-<pid>-<seq>-pass-<n>.png`. Native passes use a `display-` or
+  `frame-<pid>-<seq>-pass-<n>.png`. A retry after a failed Swap or
+  renderer replacement adds `-retry-<attempt>` after the sequence. Native passes use a `display-` or
   `private-` prefix. Read the path or error in `snaps`. An original pass
   with no known colour size reports that it cannot be read. A completed
   report retains its files. Replacing a pending capture releases its

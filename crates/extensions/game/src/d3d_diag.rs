@@ -1620,6 +1620,7 @@ mod tests {
         use std::sync::atomic::{AtomicU64, Ordering};
 
         let _one = PRESENTING.lock().unwrap_or_else(|e| e.into_inner());
+        let _serial = crate::frame_parity::RPC_RENDERER.lock().unwrap_or_else(|e| e.into_inner());
         let probe = &agent::render::PROBE;
         for native in [true, false] {
             let slot = Arc::new(Mutex::new(None::<Arc<ReplayFrame>>));
@@ -1628,8 +1629,14 @@ mod tests {
             let owner_swap = Arc::clone(&adopted);
             let mut recording = RecordingBackend::new();
             recording.readback_fill = 0x6d;
+            struct ProbeEvents;
+            impl d3d::threaded::owner::OwnerEvents for ProbeEvents {
+                fn declined(&self, _: u64, n: u64) { agent::render::private_graph::display_declined(n); }
+                fn failed(&self, _: u64, _: u64) { panic!("synthetic Swap failed"); }
+                fn stopped(&self) { agent::render::private_graph::display_stopped(); }
+            }
             let worker = ThreadedBackend::new(recording).unwrap().with_frame_owner(FrameOwner {
-                select: Box::new(move |n| {
+                select: Box::new(move |n, _| {
                     let frame = slot.lock().unwrap().take()?;
                     let selected = Arc::clone(&owner_swap);
                     Some(Submission::Native(Candidate {
@@ -1643,9 +1650,7 @@ mod tests {
                         }),
                     }))
                 }),
-                declined: agent::render::private_graph::display_declined,
-                failed: |_| panic!("synthetic Swap failed"),
-                stopped: agent::render::private_graph::display_stopped,
+                events: Arc::new(ProbeEvents),
             });
             let (diag, _) = DiagBackend::new(worker);
             let mut sink = SceneSink::new(diag.with_owner_probe(true), || Some(SlotAt { slot: Slot::Opaque, view: 0 }))

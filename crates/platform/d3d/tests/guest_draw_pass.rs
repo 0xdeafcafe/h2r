@@ -304,7 +304,7 @@ fn an_earlier_snapshot_survives_guest_release_and_replays_after_either_present_p
         let select = Arc::clone(&latest);
         let original = ThreadedBackend::new(GfxBackend::new(ctx.clone())).unwrap()
             .with_frame_owner(FrameOwner {
-                select: Box::new(move |n| {
+                select: Box::new(move |n, _| {
                     if n == 1 && !adopt_first { return None; }
                     let frame = select.lock().unwrap().clone()?;
                     let draw = Arc::clone(&frame);
@@ -322,9 +322,7 @@ fn an_earlier_snapshot_survives_guest_release_and_replays_after_either_present_p
                         }),
                     }))
                 }),
-                declined: |_| {},
-                failed: |_| {},
-                stopped: || {},
+                events: std::sync::Arc::new(()),
             });
         let keep = Arc::clone(&latest);
         let mut sink = SceneSink::new(original, || Some(SlotAt { slot: Slot::Opaque, view: 0 }))

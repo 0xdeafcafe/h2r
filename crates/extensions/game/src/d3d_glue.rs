@@ -930,10 +930,9 @@ pub fn install_game_view(
     settings: Option<&settings::Store>,
 ) -> anyhow::Result<Installed> {
     let scenes = if let Some(private) = private {
-        Some(SceneOutput {
-            service: private.install(&mut backend)?,
-            owner: crate::frame_cutover::owner(current_lighting(settings, d3d::Lighting::Retail)),
-        })
+        let service = private.install(&mut backend)?;
+        let owner = crate::frame_cutover::owner(service.display_device(), current_lighting(settings, d3d::Lighting::Retail));
+        Some(SceneOutput { service, owner })
     } else {
         None
     };
@@ -952,10 +951,9 @@ pub fn install_scaled_view(
 ) -> anyhow::Result<Installed> {
     let stats = backend.shared_stats();
     let scenes = if let Some(private) = private {
-        Some(SceneOutput {
-            service: private.install(backend.view_mut())?,
-            owner: crate::frame_cutover::scaled_owner(),
-        })
+        let service = private.install(backend.view_mut())?;
+        let owner = crate::frame_cutover::scaled_owner(service.display_device());
+        Some(SceneOutput { service, owner })
     } else {
         None
     };
@@ -1634,9 +1632,10 @@ fn install_device<B: d3d::backend::Backend + Send + 'static>(
             SceneWorker::Private(service) => (backend.with_replay(service.recorder()), service),
             SceneWorker::Display(service) => (backend.with_replay(crate::frame_cutover::record(&service)), service),
         };
+        let device = service.display_device();
         let backend = backend
-            .with_guest_reference_request(crate::frame_parity::armed)
-            .on_present_error(crate::frame_owner::present_failed)
+            .with_guest_reference_request(move || device.reference_armed())
+            .on_present_error(service.unshown_observer())
             .with_census(false);
         (backend, Some(service))
     } else {

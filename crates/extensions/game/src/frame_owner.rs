@@ -335,6 +335,7 @@ impl RenderJob {
 }
 
 struct Shared {
+    callbacks: std::sync::RwLock<()>,
     scenes: Arc<Mutex<Scenes>>,
     frames: Publisher<Entry>,
     jobs: mpsc::SyncSender<RenderJob>,
@@ -426,11 +427,8 @@ fn sealed(sequence: u64, scene: Arc<FrameScene>) {
 
 fn reset() {
     if let Some(shared) = active() {
-        shared
-            .scenes
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .reset();
+        let mut scenes = shared.scenes.lock().unwrap_or_else(|e| e.into_inner());
+        scenes.reset();
         set_private_capture_source(Some(capture));
         crate::frame_parity::reset("scene timeline reset");
     }
@@ -490,31 +488,62 @@ fn capture(tick: Option<u64>) -> Result<Option<Arc<dyn PrivateCaptureScene>>, Rp
     }))
 }
 
-/// Pin the seal associated with this exact guest swap for a transaction
-/// on the display renderer. A miss leaves the queued commands in order.
-pub fn pair_for_present(present: u64) -> Option<(Arc<FrameScene>, Arc<ReplayFrame>)> {
-    // A reference submission needs the same pair as an adopted frame so
-    // the worker can freeze its incoming pixels before the original draw.
-    let shared = active()?;
-    let scenes = shared.scenes.lock().unwrap_or_else(|e| e.into_inner());
-    let frame = scenes.published.as_ref()?.inputs.as_ref().ok()?;
-    if frame.replay.present != present {
-        return None;
+/// Identifies the installing device after runtime hooks outlive the service.
+#[derive(Clone)]
+pub(crate) struct DisplayDevice(Weak<Shared>);
+
+impl DisplayDevice {
+    fn with_shared<T>(&self, f: impl FnOnce(&Shared) -> T) -> Option<T> {
+        let shared = self.0.upgrade()?;
+        let _live = shared.callbacks.read().unwrap_or_else(|e| e.into_inner());
+        (!shared.stopping.load(Ordering::Acquire)).then(|| f(&shared))
     }
-    Some((Arc::clone(&frame.scene), Arc::clone(&frame.replay)))
+
+    fn with_scenes<T>(&self, f: impl FnOnce(&mut Scenes) -> T) -> Option<T> {
+        self.with_shared(|shared| {
+            let mut scenes = shared.scenes.lock().unwrap_or_else(|e| e.into_inner());
+            f(&mut scenes)
+        })
+    }
+
+    pub(crate) fn current<T>(&self, generation: u64, f: impl FnOnce() -> T) -> Option<T> {
+        self.with_scenes(|s| (s.generation == generation).then(f)).flatten()
+    }
+
+    pub(crate) fn pair(&self, generation: u64, present: u64) -> Option<(Arc<FrameScene>, Arc<ReplayFrame>, bool)> {
+        self.with_scenes(|scenes| {
+            let entry = scenes.published.as_ref()?;
+            let frame = entry.inputs.as_ref().ok()?;
+            if entry.generation != generation || scenes.generation != generation || frame.replay.present != present {
+                return None;
+            }
+            let reference = crate::frame_parity::wanted(present) || crate::frame_parity::armed();
+            Some((Arc::clone(&frame.scene), Arc::clone(&frame.replay), reference))
+        }).flatten()
+    }
+
+    pub(crate) fn reference_armed(&self) -> bool {
+        self.with_shared(|_| crate::frame_parity::armed()).unwrap_or(false)
+    }
 }
 
-/// No image may be returned for a Swap that the reference failed to
-/// submit, even if its present number was already reserved in the sink.
-pub fn present_failed(present: u64) {
-    if let Some(shared) = active() {
-        fail_display(&shared, present);
+impl d3d::threaded::owner::OwnerEvents for DisplayDevice {
+    fn generation(&self) -> u64 { self.with_scenes(|s| s.generation).unwrap_or(0) }
+    fn declined(&self, generation: u64, present: u64) {
+        let _ = self.current(generation, || crate::render_probe::owner_declined(present));
     }
-}
-
-fn fail_display(shared: &Shared, present: u64) {
-    shared.scenes.lock().unwrap_or_else(|e| e.into_inner()).unshown(present);
-    crate::frame_parity::reference_error(present);
+    fn failed(&self, generation: u64, present: u64) {
+        let _ = self.with_scenes(|scenes| {
+            if scenes.generation == generation {
+                scenes.unshown(present);
+                agent::render::private_graph::discard_display(present);
+                crate::frame_parity::reference_error(present);
+            }
+        });
+    }
+    fn stopped(&self) {
+        let _ = self.with_shared(|_| crate::render_probe::owner_stopped());
+    }
 }
 
 /// Publication of scenes to the private renderer is independent of the display queue.
@@ -605,6 +634,7 @@ impl Service {
             })?;
         let worker = join.thread().clone();
         let shared = Arc::new(Shared {
+            callbacks: Default::default(),
             scenes,
             frames: tx,
             jobs,
@@ -636,28 +666,29 @@ impl Service {
     + Send
     + 'static
     + use<> {
-        let weak = Arc::downgrade(&self.shared);
+        let device = self.display_device();
         let observe = crate::frame_parity::reference_observer();
         move |present, ctx, store, id, lighting| {
-            let Some(shared) = weak.upgrade() else { return };
-            if shared.stopping.load(Ordering::Acquire) {
-                return;
-            }
-            let parity = {
-                let mut scenes = shared.scenes.lock().unwrap_or_else(|e| e.into_inner());
-                if let Some(display) = scenes.displays.get(&present).and_then(Weak::upgrade) {
-                    match store.get(id) {
-                        Ok(surface) => {
-                            let desc = surface.desc();
-                            let _ = display.extent.set([desc.width, desc.height]);
+            let take_reference = device.with_shared(|shared| {
+                let parity = {
+                    let mut scenes = shared.scenes.lock().unwrap_or_else(|e| e.into_inner());
+                    if let Some(display) = scenes.displays.get(&present).and_then(Weak::upgrade) {
+                        match store.get(id) {
+                            Ok(surface) => {
+                                let desc = surface.desc();
+                                let _ = display.extent.set([desc.width, desc.height]);
+                            }
+                            Err(_) => display.failed.store(true, Ordering::Release),
                         }
-                        Err(_) => display.failed.store(true, Ordering::Release),
                     }
-                }
-                scenes.ready_parity()
-            };
-            shared.submit_parity(parity);
-            if crate::frame_parity::wanted(present) {
+                    scenes.ready_parity()
+                };
+                shared.submit_parity(parity);
+                crate::frame_parity::wanted(present)
+            }).unwrap_or(false);
+            // Read pixels outside the lifetime guard. The observer verifies
+            // its own installation and request sequence before delivery.
+            if take_reference {
                 observe(present, ctx, store, id, lighting);
             }
         }
@@ -666,52 +697,62 @@ impl Service {
     /// Retire pending diagnostics even when the legacy scaled backend treats
     /// a final display error as recoverable and returns success to the guest.
     pub fn unshown_observer(&self) -> impl FnMut(u64) + Send + 'static + use<> {
-        let weak = Arc::downgrade(&self.shared);
+        let device = self.display_device();
         move |present| {
-            let active = ACTIVE.lock().unwrap_or_else(|e| e.into_inner());
-            if weak.ptr_eq(&active) && let Some(shared) = weak.upgrade()
-                && !shared.stopping.load(Ordering::Acquire)
-            {
-                fail_display(&shared, present);
-            }
+            let _ = device.with_scenes(|scenes| {
+                scenes.unshown(present);
+                crate::frame_parity::reference_error(present);
+            });
         }
     }
 
+    pub(crate) fn display_device(&self) -> DisplayDevice {
+        DisplayDevice(Arc::downgrade(&self.shared))
+    }
+
     pub fn recorder(&self) -> impl FnMut(ReplayFrame) + Send + 'static + use<> {
-        let weak = Arc::downgrade(&self.shared);
+        self.scene_recorder(false)
+    }
+
+    pub(crate) fn scene_recorder(&self, seal_at_swap: bool) -> impl FnMut(ReplayFrame) + Send + 'static + use<> {
+        let device = self.display_device();
         move |replay| {
-            let Some(shared) = weak.upgrade() else { return };
-            let id = scene_step::open_identity();
-            let mut scenes = shared.scenes.lock().unwrap_or_else(|e| e.into_inner());
-            if let Some(id) = id {
-                if id.1.map_epoch != render_bridge::native_map_work::generation() {
-                    return;
-                }
-                if replay.has_game_view() && crate::frame_parity::armed() {
-                    if !replay.refusals.is_empty() {
-                        crate::frame_parity::refuse(replay.refusals.join(", "));
-                    } else if replay.guest_reference_complete() {
-                        crate::frame_parity::bind(replay.present, id.1.tick);
+            let _ = device.with_shared(|shared| {
+                let seal = seal_at_swap && replay.has_game_view();
+                let id = scene_step::open_identity();
+                let mut scenes = shared.scenes.lock().unwrap_or_else(|e| e.into_inner());
+                if let Some(id) = id {
+                    if id.1.map_epoch != render_bridge::native_map_work::generation() {
+                        return;
                     }
+                    if replay.has_game_view() && crate::frame_parity::armed() {
+                        if !replay.refusals.is_empty() {
+                            crate::frame_parity::refuse(replay.refusals.join(", "));
+                        } else if replay.guest_reference_complete() {
+                            crate::frame_parity::bind(replay.present, id.1.tick);
+                        }
+                    }
+                    if let Some((previous, Ok(frame))) = &scenes.pending.item
+                        && *previous == id
+                        && crate::frame_parity::wanted(frame.replay.present)
+                    {
+                        crate::frame_parity::native(
+                            frame.replay.present,
+                            Err("multiple presents in the sealed scene".to_owned()),
+                        );
+                    }
+                    let frame = Collected {
+                        replay,
+                        display: Arc::new(DisplaySize::default()),
+                    };
+                    scenes.track(&frame);
+                    scenes.pending.put(id, frame);
+                } else {
+                    scenes.pending.item = None;
                 }
-                if let Some((previous, Ok(frame))) = &scenes.pending.item
-                    && *previous == id
-                    && crate::frame_parity::wanted(frame.replay.present)
-                {
-                    crate::frame_parity::native(
-                        frame.replay.present,
-                        Err("multiple presents in the sealed scene".to_owned()),
-                    );
-                }
-                let frame = Collected {
-                    replay,
-                    display: Arc::new(DisplaySize::default()),
-                };
-                scenes.track(&frame);
-                scenes.pending.put(id, frame);
-            } else {
-                scenes.pending.item = None;
-            }
+                drop(scenes);
+                if seal { scene_step::seal(); }
+            });
         }
     }
 }
@@ -719,10 +760,14 @@ impl Service {
 impl Drop for Service {
     fn drop(&mut self) {
         self.shared.stopping.store(true, Ordering::Release);
+        self.shared.worker.unpark();
+        // A callback already admitted to the old device must finish before
+        // the process-wide scene/parity sources can be installed again.
+        drop(self.shared.callbacks.write().unwrap_or_else(|e| e.into_inner()));
+        crate::render_probe::owner_stopped();
         scene_step::set_seal_observer(None);
         set_private_capture_source(None);
         crate::frame_parity::uninstall();
-        self.shared.worker.unpark();
         if let Some(join) = self.join.take() {
             let _ = join.join();
         }

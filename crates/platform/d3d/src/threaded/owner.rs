@@ -65,15 +65,21 @@ pub enum Submission<B: Backend> {
     },
 }
 
+/// The frame owner that installed the worker receives its completions.
+/// A present retains its original timeline even across queued map changes.
+pub trait OwnerEvents: Send + Sync {
+    fn generation(&self) -> u64 { 0 }
+    fn declined(&self, _generation: u64, _present: u64) {}
+    fn failed(&self, _generation: u64, _present: u64) {}
+    fn stopped(&self) {}
+}
+
+impl OwnerEvents for () {}
+
 pub struct FrameOwner<B: Backend> {
-    /// Called on the guest thread at Swap, after the scene sink sealed it.
-    pub select: Box<dyn FnMut(u64) -> Option<Submission<B>> + Send>,
-    /// Called on the worker when this present used the original commands.
-    pub declined: fn(u64),
-    /// Called if neither renderer successfully presented this frame.
-    pub failed: fn(u64),
-    /// Called after the last worker has joined.
-    pub stopped: fn(),
+    /// Guest Swap ordinal and the owner's generation at submission.
+    pub select: Box<dyn FnMut(u64, u64) -> Option<Submission<B>> + Send>,
+    pub events: Arc<dyn OwnerEvents>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -119,8 +125,8 @@ pub(super) struct Present<B: Backend> {
     pub flags: u32,
     pub gamma: Option<Box<[u8; 768]>>,
     pub candidate: Option<Submission<B>>,
-    pub declined: fn(u64),
-    pub failed: fn(u64),
+    pub generation: u64,
+    pub events: Arc<dyn OwnerEvents>,
 }
 
 pub(super) enum RenderOp {
@@ -365,7 +371,7 @@ impl<B: Backend> Worker<B> {
     }
 
     pub(super) fn owner_present(&mut self, present: Present<B>) {
-        let Present { n, surface, at, flags, gamma, candidate, declined, failed } = present;
+        let Present { n, surface, at, flags, gamma, candidate, generation, events } = present;
         let transaction = self.transaction.replace(Transaction::new()).expect("owner installed");
         let accepted = candidate.and_then(|submission| {
             if self.shared.failed.load(Ordering::Acquire) {
@@ -445,7 +451,7 @@ impl<B: Backend> Worker<B> {
                 // Encoding may have modified the borrowed targets. The
                 // ordinary error latch stops the guest before its next draw.
                 Err(err) => {
-                    failed(n);
+                    events.failed(generation, n);
                     self.shared.latch(format!("frame owner: present {n}: {err}"));
                 }
             }
@@ -454,14 +460,14 @@ impl<B: Backend> Worker<B> {
                 self.exec_original(cmd);
             }
             match self.surface(surface).and_then(|surface| self.inner.present_with_gamma(surface, flags, gamma.as_deref())) {
-                Ok(()) if self.inner.last_present_unshown() || self.shared.failed.load(Ordering::Acquire) => failed(n),
+                Ok(()) if self.inner.last_present_unshown() || self.shared.failed.load(Ordering::Acquire) => events.failed(generation, n),
                 Ok(()) => {
                     outcome = DisplayResult::Ordinary;
                     DECLINED.fetch_add(1, Ordering::Relaxed);
-                    declined(n);
+                    events.declined(generation, n);
                 }
                 Err(err) => {
-                    failed(n);
+                    events.failed(generation, n);
                     self.shared.latch(err);
                 }
             }

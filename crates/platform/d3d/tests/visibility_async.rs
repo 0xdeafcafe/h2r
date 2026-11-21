@@ -502,7 +502,7 @@ fn canonical_flare_tickets_and_mid_frame_reads_keep_their_original_proxy() {
     let accepted = Arc::new(AtomicUsize::new(0));
     let displayed = Arc::clone(&accepted);
     let owner = FrameOwner {
-        select: Box::new(move |_| {
+        select: Box::new(move |_, _| {
             let frame = Arc::new(selected.lock().unwrap().take()?);
             let played = Arc::clone(&frame);
             let displayed = Arc::clone(&displayed);
@@ -527,9 +527,7 @@ fn canonical_flare_tickets_and_mid_frame_reads_keep_their_original_proxy() {
                 }),
             }))
         }),
-        declined: |_| {},
-        failed: |_| {},
-        stopped: || {},
+        events: std::sync::Arc::new(()),
     };
     let threaded = ThreadedBackend::new(RecordingBackend::new()).unwrap().with_frame_owner(owner);
     let mut sink = SceneSink::new(threaded, || Some(SlotAt { slot: Slot::Transparents, view: 1 }))
