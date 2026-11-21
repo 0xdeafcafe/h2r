@@ -1579,6 +1579,13 @@ where
         self.inner.frame_stats()
     }
 
+    fn queue_frame_probe_read(
+        &mut self, surface: Self::Surface, width: u32, height: u32,
+        done: Box<dyn FnOnce(Result<Vec<u8>, String>) + Send>,
+    ) {
+        self.inner.queue_frame_probe_read(surface, width, height, done)
+    }
+
     fn measure_present_raster(&mut self, surface: Option<Self::Surface>) -> crate::backend::RasterMeasurement {
         self.inner.measure_present_raster(surface)
     }

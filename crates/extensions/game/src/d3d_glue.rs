@@ -1380,6 +1380,13 @@ impl d3d::backend::Backend for Headless {
         let r = self.0.warp_surface(src, dst, h);
         self.forget(r)
     }
+    fn queue_frame_probe_read(
+        &mut self, surface: Self::Surface, width: u32, height: u32,
+        done: Box<dyn FnOnce(Result<Vec<u8>, String>) + Send>,
+    ) {
+        self.0.queue_frame_probe_read(surface, width, height, done)
+    }
+
     fn measure_present_raster(&mut self, surface: Option<Self::Surface>) -> d3d::backend::RasterMeasurement {
         self.0.measure_present_raster(surface)
     }

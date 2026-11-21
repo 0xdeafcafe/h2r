@@ -454,30 +454,41 @@ impl<B: Backend> DiagBackend<B> {
     /// Reads the current pass's colour target back into a PNG under the
     /// cache directory's `frames/`, and tells the probe.
     fn probe_snap(&mut self, ask: agent::render::SnapAsk) {
-        let result = match self.probe_target {
-            None => Err("the pass's size is unknown (no draw in it)".to_owned()),
-            Some((surface, w, h)) => {
-                let layout = GuestLayoutKind::Linear { pitch: w * 4 };
-                self.inner
-                    .read_surface(surface, D3DFormat::LinA8R8G8B8, w, h, layout)
-                    .and_then(|bgra| {
-                        let rgba: Vec<u8> = bgra
-                            .chunks_exact(4)
-                            .flat_map(|p| [p[2], p[1], p[0], 0xff])
-                            .collect();
-                        let dir = agent_proto::cache_dir().join("frames");
-                        let path = dir.join(format!("frame-{}-pass-{}.png", ask.seq, ask.pass));
-                        std::fs::create_dir_all(&dir)
-                            .map_err(|e| e.to_string())
-                            .and_then(|()| {
-                                crate::d3d_glue::write_png(&path, &rgba, w, h)
-                                    .map_err(|e| e.to_string())
-                            })
-                            .map(|()| path.display().to_string())
-                    })
-            }
+        let probe = self.probe;
+        let Some((surface, width, height)) = self.probe_target else {
+            probe.snapped_for(ask, Err("the pass's size is unknown (no draw in it)".into()));
+            return;
         };
-        self.probe.snapped_for(ask, result);
+        let Some(pitch) = width.checked_mul(4) else {
+            probe.snapped_for(ask, Err("frame probe row pitch overflow".into()));
+            return;
+        };
+        let Some(size) = pitch.checked_mul(height) else {
+            probe.snapped_for(ask, Err("frame probe image size overflow".into()));
+            return;
+        };
+        let rgba = move |mut pixels: Vec<u8>| {
+            if pixels.len() != size as usize {
+                return Err(format!("frame probe read {} bytes, expected {size}", pixels.len()));
+            }
+            for pixel in pixels.chunks_exact_mut(4) {
+                pixel.swap(0, 2);
+                pixel[3] = 255;
+            }
+            Ok(agent::compare::Rgba { width, height, pixels })
+        };
+        if self.owner_probe {
+            // Only the renderer that draws the pass should read it back.
+            // The worker executes this at the pass boundary on fallback.
+            self.inner.queue_frame_probe_read(surface, width, height, Box::new(move |result| {
+                probe.write_snapshot(ask, || result.and_then(rgba));
+            }));
+        } else {
+            probe.write_snapshot(ask, || {
+                self.inner.read_surface(surface, D3DFormat::LinA8R8G8B8, width, height,
+                    GuestLayoutKind::Linear { pitch }).and_then(rgba)
+            });
+        }
     }
 }
 
@@ -1081,6 +1092,13 @@ impl<B: Backend> Backend for DiagBackend<B> {
     ) -> Result<bool, String> {
         self.inner.warp_surface(src, dst, h)
     }
+    fn queue_frame_probe_read(
+        &mut self, surface: Self::Surface, width: u32, height: u32,
+        done: Box<dyn FnOnce(Result<Vec<u8>, String>) + Send>,
+    ) {
+        self.inner.queue_frame_probe_read(surface, width, height, done)
+    }
+
     fn measure_present_raster(&mut self, surface: Option<Self::Surface>) -> d3d::backend::RasterMeasurement {
         self.inner.measure_present_raster(surface)
     }
@@ -1584,6 +1602,89 @@ mod tests {
         assert_eq!(f.passes[0].depth.as_deref(), Some("9"));
         assert_eq!(f.ops[0].detail, "to 3");
         assert!(!PROBE.armed());
+    }
+
+    /// The outer sink records the same draw packets the worker sees. A pass
+    /// snapshot between them, or at Swap, must leave that pairing intact.
+    #[cfg(feature = "gpu")]
+    #[test]
+    fn pass_snapshots_follow_the_display_worker_without_changing_its_choice() {
+        use d3d::scene_sink::ReplayFrame;
+        use d3d::threaded::owner::{Candidate, FrameOwner, Outputs, Submission};
+        use d3d::{RecordingBackend, SceneSink, ThreadedBackend};
+        use frame_scene::{Slot, SlotAt, TargetRef};
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        let _one = PRESENTING.lock().unwrap_or_else(|e| e.into_inner());
+        let probe = &agent::render::PROBE;
+        for native in [true, false] {
+            let slot = Arc::new(Mutex::new(None::<Arc<ReplayFrame>>));
+            let sealed = Arc::clone(&slot);
+            let adopted = Arc::new(AtomicU64::new(0));
+            let owner_swap = Arc::clone(&adopted);
+            let mut recording = RecordingBackend::new();
+            recording.readback_fill = 0x6d;
+            let worker = ThreadedBackend::new(recording).unwrap().with_frame_owner(FrameOwner {
+                select: Box::new(move |n| {
+                    let frame = slot.lock().unwrap().take()?;
+                    let selected = Arc::clone(&owner_swap);
+                    Some(Submission::Native(Candidate {
+                        frame,
+                        before_original: None,
+                        eligible: Box::new(move |_, _| native),
+                        draw: Box::new(move |gpu: &mut RecordingBackend, targets| {
+                            gpu.present(targets[&TargetRef::SceneColour], 0)?;
+                            selected.store(n, Ordering::Relaxed);
+                            Ok(Outputs::default())
+                        }),
+                    }))
+                }),
+                declined: agent::render::private_graph::display_declined,
+                failed: |_| panic!("synthetic Swap failed"),
+                stopped: agent::render::private_graph::display_stopped,
+            });
+            let (diag, _) = DiagBackend::new(worker);
+            let mut sink = SceneSink::new(diag.with_owner_probe(true), || Some(SlotAt { slot: Slot::Opaque, view: 0 }))
+                .with_census(false)
+                .with_replay(move |frame| *sealed.lock().unwrap() = Some(Arc::new(frame)));
+            let back = sink.create_surface(D3DFormat::LinA8R8G8B8, 2, 1, false).unwrap();
+            let side = sink.create_surface(D3DFormat::LinA8R8G8B8, 1, 1, false).unwrap();
+
+            probe.arm(&agent_proto::FrameParams { arm: true, snap: vec![0, 1], ..Default::default() }).unwrap();
+            sink.present(back, 0).unwrap();
+            let mut draw = depth_draw();
+            draw.target.width = 2;
+            draw.target.height = 1;
+            draw.target.depth_format = None;
+            sink.draw(back, None, &draw, [None; 4]).unwrap();
+            draw.target.width = 1;
+            sink.draw(side, None, &draw, [None; 4]).unwrap();
+            sink.present(back, 0).unwrap();
+
+            let trace = sink.inner_mut().inner.with_inner(|gpu| {
+                gpu.calls.iter().filter_map(|call| match call {
+                    d3d::Recorded::Draw { .. } => Some("draw"),
+                    d3d::Recorded::ReadSurface { .. } => Some("read"),
+                    d3d::Recorded::Present { .. } => Some("swap"),
+                    _ => None,
+                }).collect::<Vec<_>>()
+            }).unwrap();
+            if native {
+                assert_eq!(adopted.load(Ordering::Relaxed), 2);
+                assert_eq!(trace, ["swap", "swap"]);
+            } else {
+                assert_eq!(adopted.load(Ordering::Relaxed), 0);
+                assert_eq!(trace, ["swap", "draw", "read", "draw", "read", "swap"]);
+                let report = probe.reply().frame.unwrap();
+                assert_eq!(report.snaps.len(), 2);
+                for (snap, width) in report.snaps.into_iter().zip([2, 1]) {
+                    let file = std::path::PathBuf::from(snap.file.expect("original pass PNG"));
+                    let image = agent::compare::read_png(&file).unwrap();
+                    std::fs::remove_file(file).unwrap();
+                    assert_eq!(image, agent::compare::Rgba::filled(width, 1, [0x6d, 0x6d, 0x6d, 255]));
+                }
+            }
+        }
     }
 
     /// A W-buffered draw of a vertex program to a D24S8 target, depth
