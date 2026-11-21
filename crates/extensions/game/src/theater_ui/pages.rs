@@ -270,6 +270,7 @@ fn films_model(state: &super::State, entries: &[Entry]) -> Vec<RowSpec> {
         let room = text_fit::ROW - text_fit::width(label) - text_fit::width(": ");
         RowSpec::info(label, &text_fit::line(option.current(&state.selector), room))
             .press(Press::Open(crate::ui_kit::picker::NAME.into()))
+            .describe(option.description())
     }));
     if let Some(error) = state.library_error() {
         let mut retry = RowSpec::action("Retry library")
@@ -543,7 +544,11 @@ pub(super) fn spec(theater: &Theater, list: bool) -> ScreenSpec {
     s.prompts = if list {
         library_prompts("Select")
     } else {
-        prompts("Select", roster_pages)
+        let mut legend = prompts("Select", roster_pages);
+        if s.rows.iter().all(|row| row.press == Press::Nothing) {
+            legend.retain(|p| !p.glyphs.contains(&Glyph::A));
+        }
+        legend
     };
     s.inputs = vec![
         Input::A,
@@ -557,6 +562,10 @@ pub(super) fn spec(theater: &Theater, list: bool) -> ScreenSpec {
     s.description = Some((if list { LIST_STATUS } else { FILM_STATUS }).into());
     if list {
         s.scrolls = true;
+        s.content.row_help = true;
+        if entries.is_empty() {
+            s.content.empty_text = Some(format!("theater.panel.{}", TAB_TEXTS + 1));
+        }
         let panel = library_panel();
         s.texts = panel
             .texts
@@ -690,6 +699,10 @@ impl ScreenRows {
 }
 
 impl Rows for ScreenRows {
+    fn content_spec(&self) -> Option<crate::ui_kit::spec::ScreenSpec> {
+        Some(self.with_spec(Clone::clone))
+    }
+
     fn title(&self) -> u32 {
         TEXTS.id(if self.list { FILMS_TITLE } else { DETAIL_TITLE })
     }

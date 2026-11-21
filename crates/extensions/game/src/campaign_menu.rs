@@ -221,6 +221,10 @@ pub fn served(text: &str) -> Vec<u8> {
 }
 
 impl Rows for PickerRows {
+    fn content_spec(&self) -> Option<crate::ui_kit::spec::ScreenSpec> {
+        Some(crate::ui_kit::spec::Describe::spec(self))
+    }
+
     fn title(&self) -> u32 {
         TITLE_ID
     }

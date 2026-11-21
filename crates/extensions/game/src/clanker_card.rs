@@ -55,6 +55,8 @@ struct Card {
     name: String,
     difficulty: String,
     style: String,
+    has_difficulty: bool,
+    has_style: bool,
     profile: String,
     loading: bool,
 }
@@ -69,6 +71,8 @@ impl Card {
         Self {
             difficulty: skill.map_or_else(|| "Unavailable".into(), |k| format!("{k:?}")),
             style: style.map_or("Unavailable", strongest_trait).into(),
+            has_difficulty: skill.is_some(),
+            has_style: style.is_some(),
             profile: if name.trim().is_empty() {
                 "Profile unavailable".into()
             } else {
@@ -256,12 +260,14 @@ fn account_name_source(m: &dyn GuestMemory, caller: u32, src: u32) -> u32 {
 // own card, so a late server reply cannot change the next selection.
 type Current = Arc<Mutex<Option<Arc<Mutex<Card>>>>>;
 
+fn card_value<T>(current: &Current, get: impl FnOnce(&Card) -> T) -> Option<T> {
+    let current = current.lock().unwrap_or_else(|e| e.into_inner());
+    let card = current.as_ref()?.lock().unwrap_or_else(|e| e.into_inner());
+    Some(get(&card))
+}
+
 fn field(current: &Current, get: fn(&Card) -> &str) -> String {
-    let guard = current.lock().unwrap_or_else(|e| e.into_inner());
-    guard
-        .as_ref()
-        .map(|c| get(&c.lock().unwrap_or_else(|e| e.into_inner())).to_owned())
-        .unwrap_or_default()
+    card_value(current, |card| get(card).to_owned()).unwrap_or_default()
 }
 
 #[derive(Default)]
@@ -435,7 +441,7 @@ impl hooks::Feature for Options {
     }
 }
 
-const EMBLEM_RECT: [i16; 4] = [30, 120, -50, 200];
+pub(crate) const EMBLEM_RECT: [i16; 4] = [30, 120, -50, 200];
 
 // Skin 6 is the Live players list in both interfaces. Its first table's
 // skin (player_skin_ymenu) contains the retail medium emblem shader.
@@ -535,11 +541,15 @@ fn card_screen(current: &Current) -> KitScreen {
     )
     .dialog(DialogBase::Large, Opener::XBOX_LIVE_MENU)
     .row(Row::info("Gamertag", move || field(&name, |v| &v.name)))
-    .row(Row::info("Difficulty", move || {
-        field(&difficulty, |v| v.skill_detail(&v.difficulty))
+    .row(Row::info_from_source("Difficulty", move || {
+        card_value(&difficulty, |v| {
+            (v.skill_detail(&v.difficulty).to_owned(), v.has_difficulty && !v.loading)
+        }).unwrap_or_default()
     }))
-    .row(Row::info("Style", move || {
-        field(&style, |v| v.skill_detail(&v.style))
+    .row(Row::info_from_source("Style", move || {
+        card_value(&style, |v| {
+            (v.skill_detail(&v.style).to_owned(), v.has_style && !v.loading)
+        }).unwrap_or_default()
     }))
     .row(Row::action("Back", || Then::Close))
     .live_help(PROFILE_LINE, move || field(&summary, |v| &v.profile))

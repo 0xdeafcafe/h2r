@@ -591,6 +591,9 @@ fn preview(args: Vec<String>) -> Result<()> {
             }
         }
         let view = from.view(spec, state)?;
+        for finding in boot::ui_kit::content::check_with_source(spec, &view, from.source()) {
+            println!("{state}: content: {finding}");
+        }
         let r = boot::ui_kit::layout::check(
             &view,
             from.source(),

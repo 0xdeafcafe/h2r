@@ -1132,7 +1132,7 @@ mutations respect `session.claim`, and a concurrent mutation is `BUSY`.
 - **`ui.screen`** (`h2 agent ui`): the menu screen player one's input goes
   to, read each UI update, including during a campaign pause
   (`game::ui_watch`): `{screen, window, slot, class?, live_menu_row, mode,
-  dialog, age_ms, layout_findings}`, or `UNAVAILABLE` before the first read. `class` names
+  dialog, age_ms, layout_findings, content_findings}`, or `UNAVAILABLE` before the first read. `class` names
   a Rust list screen whose numeric ID identifies its retail skin.
   In a paused game, Player Settings reports screen 196 or 200. Its Video
   Settings and Voice children report classes `video` and `voice` on
@@ -1159,8 +1159,15 @@ mutations respect `session.claim`, and a concurrent mutation is `BUSY`.
   `rect` ([top, left, bottom, right] in UI units), `text` when readable,
   and an `issue` with a `kind` (`unsafe`, `outside_panel` or
   `outside_container`). It samples the input screen and the active dialog.
-  The [UI builder](../game/ui-builder.md#the-checks) also measures glyphs
-  offline to check whether the text fits inside its rectangle.
+  `content_findings` reports broken strings, dead controls and missing
+  content. Every entry has `screen` and `issue: {kind, id, detail}`.
+  Findings from instantiated widgets include `widget` and `text`.
+  Findings from a registered Rust page model include
+  `source: "page_model"` and `screen_instance`. Model findings use the
+  currently focused row and the installed fonts when available. The
+  read does not activate controls. The
+  [UI builder](../game/ui-builder.md#content-findings) checks each named
+  state and exercises offline focus and input routes.
 - **`ui.stack`** (`h2 agent ui.stack`, no parameters): a tick-boundary
   read of the occupied channels, their active, pending and outgoing
   screen instances, and the game-shell channel's saved screen IDs

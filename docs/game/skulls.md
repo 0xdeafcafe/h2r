@@ -173,26 +173,24 @@ Skulls row on the difficulty list: the list is retail's four rows.
 The page (`boot::skulls_screen`, feature `skulls-page` for the hook and
 `skulls-screen` for the screen's class), titled "Game Options":
 
-- **Rows**: "Start Level" first (focused when the page opens), then a
-  Halo 1 level's options ("Assets: < Halo 1 >", "HUD: < Halo 1 >",
-  docs/halo1/multiplayer.md "Halo 1 options"), then every skull, gold
-  first ("Gold and silver" below), then our six ("Our skulls"), each one
-  label with its state as a value to step: "Mythic: < On >", "Mythic: <
-  Off >", and "Mythic: Locked". The list skin has one text per row, so the
-  state is in the label. (The multiplayer screen keeps "Mythic: On" and A
-  as its toggle.)
-- **Buttons**, as the game's own lists: **A** selects the focused row. On
-  Start Level it starts the level on the difficulty chosen, with the
-  options and the skulls marked On; on an option or a skull it changes it.
-  **Left or right** (d-pad or left stick) changes an option or a collected
-  skull too (the store is written at once; either direction flips a
-  two-value row). A locked skull does nothing and says why on stderr.
-  **B** goes back to the difficulty list (the generic back handler, as on
-  every screen of ours); choosing a difficulty there opens the page again.
-  X and Start do nothing (`ListClass::action_buttons(&[])`). A pressed over and over still
-  goes from the level list through the difficulty and the page into the
-  game, since Start Level is the first row.
-- **Footer**: "◀  ▶ CHANGE  Ⓐ SELECT  Ⓑ BACK" in the font's button glyphs, the two arrows two spaces apart (side by side the font draws them as one diamond, and one narrow space left them touching).
+- **Rows**: "Start Level" first, focused when the page opens. On Halo 1
+  levels, "Assets: Halo 1" and "HUD: Halo 1" follow it
+  ([Halo 1 options](../halo1/multiplayer.md)). The skull list
+  follows, gold first ("Gold and silver" below), then our six ("Our
+  skulls"). The skin has one text per row, so the state appears in the
+  label as "Mythic: On", "Mythic: Off" or "Mythic: Locked". The multiplayer
+  screen uses the same labels and A toggles a collected skull.
+- **Buttons**: A on Start Level starts the level on the chosen difficulty
+  with the selected options and skulls. A on Assets or HUD opens the
+  shared value picker. A on a collected skull toggles it. Left or right
+  changes a Halo 1 option or toggles a collected skull directly, and the
+  store saves the choice. A locked skull shows its collection requirement.
+  B goes back to the difficulty list. The class reserves the start action
+  for A on Start Level (`ListClass::action_buttons(&[])`).
+- **Footer**: Start Level offers A Start and B Back. Assets, HUD and the
+  collected skulls offer Left and Right Change, A Select and B Back. A
+  locked skull offers B Back. `skulls_menu::SkullsScreen::focused_footer`
+  supplies the matching legend as focus moves.
 - **Right column**: the skull picture, gold or silver for the focused
   skull's tier and dimmed (to 60%) while it is locked, and under it the
   description: for a skull its tier, what it does, where it is found and

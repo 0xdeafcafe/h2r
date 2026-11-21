@@ -247,6 +247,26 @@ impl Live for Preview {
         format!("{effect:?}")
     }
 
+    fn audit_press(&mut self, input: Input) -> Option<bool> {
+        if let Some((page, focus)) = &mut self.picker {
+            return Some(page.step(focus, input) != ListEffect::None);
+        }
+        let list = matches!(self.show, Kind::Films);
+        if matches!(self.show, Kind::Playback)
+            || list && input == Input::A && self.focus.0 == BROWSE_ROWS
+                && self.theater.state().library_error().is_some()
+        {
+            // Retry can start a library refresh worker. Playback has its
+            // own transport checks, outside the menu list model.
+            return None;
+        }
+        // The sample has no clip storage or network location, and uses
+        // the same list dispatch as the running menu.
+        let effect = pages::preview_page(&self.theater, list).step(&mut self.focus, input);
+        self.focus.0 = self.focus.0.min(self.spec().rows.len().saturating_sub(1));
+        Some(effect != ListEffect::None)
+    }
+
     fn spec(&self) -> ScreenSpec {
         if let Some((page, focus)) = &self.picker {
             let mut dialog = page.spec(focus);

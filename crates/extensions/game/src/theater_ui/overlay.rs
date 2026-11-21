@@ -264,10 +264,10 @@ impl Track {
 
     pub(super) fn view(&self, notice: Option<&str>) -> OverlayView {
         let player_line = |i, p: &Player| {
-            let name: String = p.name.chars().take(17).collect();
-            let score = p.score.map_or_else(|| "--".into(), |s| s.to_string());
+            let name = crate::ui_kit::text_fit::line(&p.name, 170);
+            let text = p.score.map_or_else(|| name.clone(), |score| format!("{name} / {score}"));
             line(
-                format!("{name:<17} {score:>4}"),
+                text,
                 if self.selected_player == i {
                     Tone::Selected
                 } else {
@@ -310,7 +310,7 @@ impl Track {
         let mut bottom = vec![
             line(
                 format!(
-                    "{transport}   {} / {}   {}x",
+                    "{transport} | {} / {} | {}x",
                     super::selector::clock(self.tick, self.tick_rate),
                     super::selector::clock(self.length, self.tick_rate),
                     SPEEDS[self.speed]
@@ -318,11 +318,11 @@ impl Track {
                 Tone::Title,
             ),
             line(self.timeline(43), Tone::Normal),
-            line("A/Space Play/Pause   LT/RT or [ ] Speed", Tone::Hint),
-            line("Left/Right 5s (hold 30s)   LB/RB Player", Tone::Hint),
-            line("Y/C Camera   Sticks/Mouse + WASD Move", Tone::Hint),
-            line("Start/J HUD   D-pad Up/F12 Capture", Tone::Hint),
-            line("X Mark clip   Back/H Hide   B/Esc Leave", Tone::Hint),
+            line("A/Space Play/Pause | LT/RT or [ ] Speed", Tone::Hint),
+            line("Left/Right 5s (hold 30s) | LB/RB Player", Tone::Hint),
+            line("Y/C Camera | Sticks/Mouse + WASD Move", Tone::Hint),
+            line("Start/J HUD | D-pad Up/F12 Capture", Tone::Hint),
+            line("X Mark clip | Back/H Hide | B/Esc Leave", Tone::Hint),
         ];
         if let Some(start) = self.marks.0 {
             let end = self.marks.1.map_or_else(
@@ -331,7 +331,7 @@ impl Track {
             );
             bottom.push(line(
                 format!(
-                    "Clip  {} - {end}",
+                    "Clip {} - {end}",
                     super::selector::clock(start, self.tick_rate)
                 ),
                 Tone::Normal,

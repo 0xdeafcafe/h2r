@@ -62,6 +62,40 @@ pub struct Fonts {
 }
 
 impl Fonts {
+    /// Loads the installed fonts for diagnostics without decoding menu art.
+    pub(crate) fn open(iso: &Path) -> Result<Self> {
+        let mut disc = xiso::Xiso::open(BufReader::new(
+            File::open(iso).with_context(|| iso.display().to_string())?,
+        ))?;
+        let entries = disc.entries()?;
+        Self::read(|name| {
+            let entry = entries.iter().find(|entry| entry.path.eq_ignore_ascii_case(name))
+                .ok_or_else(|| anyhow!("{name} is not on the disc"))?;
+            Ok(disc.read(entry)?)
+        })
+    }
+
+    fn read(mut read: impl FnMut(&str) -> Result<Vec<u8>>) -> Result<Self> {
+        let table =
+            String::from_utf8_lossy(&read("/maps/fonts/font_table.txt")?).into_owned();
+        let table: Vec<String> = table
+            .split(['\r', '\n'])
+            .filter(|l| !l.trim().is_empty())
+            .map(|l| l.trim().to_string())
+            .collect();
+        let mut files = HashMap::new();
+        for name in &table {
+            if !files.contains_key(name) {
+                // As the game opens it: with the bot mark and the Mods
+                // list's marks added (`bot_mark::GearRewrite`).
+                let raw = read(&format!("/maps/fonts/{name}"))?;
+                let font = crate::bot_mark::GearRewrite::patch(&raw).unwrap_or(raw);
+                files.insert(name.clone(), font);
+            }
+        }
+        Ok(Self { table, files })
+    }
+
     /// The file for engine font `index`.
     pub fn file(&self, index: i16) -> Option<(&str, &[u8])> {
         let name = self.table.get(usize::try_from(index).ok()?)?;
@@ -157,23 +191,7 @@ impl Disc {
                 .cloned()
                 .ok_or_else(|| anyhow!("{p} is not on the disc"))
         };
-        let table =
-            String::from_utf8_lossy(&x.read(&find("/maps/fonts/font_table.txt")?)?).into_owned();
-        let table: Vec<String> = table
-            .split(['\r', '\n'])
-            .filter(|l| !l.trim().is_empty())
-            .map(|l| l.trim().to_string())
-            .collect();
-        let mut files = HashMap::new();
-        for name in &table {
-            if !files.contains_key(name) {
-                // As the game opens it: with the bot mark and the Mods
-                // list's marks added (`bot_mark::GearRewrite`).
-                let raw = x.read(&find(&format!("/maps/fonts/{name}"))?)?;
-                let font = crate::bot_mark::GearRewrite::patch(&raw).unwrap_or(raw);
-                files.insert(name.clone(), font);
-            }
-        }
+        let fonts = Fonts::read(|path| Ok(x.read(&find(path)?)?))?;
         let region = |name: &str| -> Result<assets::Region> {
             let e = find(&format!("/maps/{name}.map"))?;
             Ok(assets::Region {
@@ -229,7 +247,7 @@ impl Disc {
             background,
             shared: *shared,
             skins,
-            fonts: Fonts { table, files },
+            fonts,
             map: RefCell::new(m),
             files: RefCell::new(res),
             images: RefCell::new(HashMap::new()),
@@ -936,6 +954,9 @@ impl Metrics for Fonts {
     fn line_height(&self, font: i16) -> i32 {
         Fonts::line_height(self, font)
     }
+    fn has_glyph(&self, font: i16, ch: char) -> bool {
+        self.has(font, ch)
+    }
 }
 
 impl Metrics for Disc {
@@ -945,6 +966,9 @@ impl Metrics for Disc {
     fn line_height(&self, font: i16) -> i32 {
         self.fonts.line_height(font)
     }
+    fn has_glyph(&self, font: i16, ch: char) -> bool {
+        self.fonts.has(font, ch)
+    }
 }
 
 /// What a [`View`] is drawn from: the disc ([`Disc`]) or nothing
@@ -952,6 +976,10 @@ impl Metrics for Disc {
 pub trait Source: Metrics {
     /// The image art names; `None` draws a placeholder box.
     fn art(&self, a: &Art) -> Option<Image>;
+    /// Whether the source can resolve an image, or None when it has no art.
+    fn art_available(&self, _art: &Art) -> Option<bool> {
+        None
+    }
     fn backing(&self, c: &mut Canvas, b: Backing);
     #[allow(clippy::too_many_arguments)]
     fn text(
@@ -985,6 +1013,9 @@ fn justify_flag(j: Justify) -> u8 {
 impl Source for Disc {
     fn art(&self, a: &Art) -> Option<Image> {
         Disc::art(self, a)
+    }
+    fn art_available(&self, art: &Art) -> Option<bool> {
+        Some(self.art(art).is_some())
     }
     fn list_of(&self, screen_id: i16, pane: u16) -> Option<Option<ListAt>> {
         let s = self.screen(screen_id)?;
@@ -1525,6 +1556,15 @@ impl From<'_> {
     /// `s` in state `state` as a view: a dialog's
     /// ([`crate::ui_kit::dialog::dialog_view`]) or a list's ([`view_of`]).
     pub fn view(&self, s: &ScreenSpec, state: &str) -> Result<View> {
+        self.view_with_metrics(s, state, self.source())
+    }
+
+    pub(crate) fn view_with_metrics(
+        &self,
+        s: &ScreenSpec,
+        state: &str,
+        metrics: &dyn Metrics,
+    ) -> Result<View> {
         let mut view = if let Some(d) = &s.dialog {
             let mut geometry = match self {
                 From::Disc(disc) => disc.dialog_geometry_for(d.base)?,
@@ -1537,13 +1577,13 @@ impl From<'_> {
                     skin: geometry.rows.skin,
                 };
             }
-            dialog_view(s, d, &geometry, self.source(), state)
+            dialog_view(s, d, &geometry, metrics, state)
         } else {
-            view_of(s, &self.geometry(s.list)?, self.source(), state)
+            view_of(s, &self.geometry(s.list)?, metrics, state)
         };
         if let Some(parent) = &s.underlay {
             view.backing = Backing::None;
-            view.underlay = Some(Box::new(self.view(parent, state)?));
+            view.underlay = Some(Box::new(self.view_with_metrics(parent, state, metrics)?));
         }
         Ok(view)
     }

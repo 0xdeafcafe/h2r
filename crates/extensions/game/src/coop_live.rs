@@ -369,8 +369,8 @@ const LINE_SLOT: u32 = 96;
 const FOOTER_SLOTS: [u32; 3] = [97, 98, 99];
 
 /// A co-op screen's button legend, for its footer (as the game's own
-/// screens give theirs, docs/game/ui-screens.md): A on a row, Start (or X)
-/// for the screen's action, B back.
+/// screens give theirs, docs/game/ui-screens.md): Start (or X) for the
+/// host or guest action, and B back. List rows use the native A action.
 pub fn prompts(screen: &str) -> Vec<crate::ui_kit::input::Prompt> {
     use crate::ui_kit::input::{Glyph, Prompt};
     let action = match screen {
@@ -378,7 +378,7 @@ pub fn prompts(screen: &str) -> Vec<crate::ui_kit::input::Prompt> {
         JOIN => Some("Ready"),
         _ => None,
     };
-    let mut p = vec![Prompt::new(&[Glyph::A], "Select")];
+    let mut p = Vec::new();
     if let Some(a) = action {
         p.push(Prompt::new(&[Glyph::Start], a));
     }
@@ -1169,6 +1169,10 @@ impl Lobby {
     pub fn ping(&self) -> Option<u16> {
         self.lock().ping
     }
+    pub(crate) fn friend_row_has_action(&self, row: i16) -> bool {
+        self.friend(row).is_some_and(|friend| friend.online)
+    }
+
     /// The ping as the screens show it.
     pub fn ping_text(&self) -> String {
         match self.ping() {
@@ -1259,6 +1263,10 @@ impl HostRows {
 }
 
 impl Rows for HostRows {
+    fn content_spec(&self) -> Option<crate::ui_kit::spec::ScreenSpec> {
+        Some(crate::ui_kit::spec::Describe::spec(self))
+    }
+
     fn describe(&self, count: usize) -> Option<String> {
         Some(describe(self, &self.0.texts, count))
     }
@@ -1290,8 +1298,6 @@ impl Rows for HostRows {
             ROW_LEVEL => Chosen::Stepped(l.step_level()),
             ROW_DIFFICULTY => Chosen::Stepped(l.step_difficulty()),
             ROW_INVITE => Chosen::Open(FRIENDS),
-            ROW_STATUS => Chosen::Stepped(format!("coop-live: {}", l.status())),
-            ROW_PING => Chosen::Stepped(format!("coop-live: ping {}", l.ping_text())),
             ROW_START => match l.checks().blocker() {
                 None => Chosen::Act,
                 Some(b) => Chosen::Stepped(format!("coop-live: not ready: {b}")),
@@ -1330,6 +1336,10 @@ impl FriendRows {
 }
 
 impl Rows for FriendRows {
+    fn content_spec(&self) -> Option<crate::ui_kit::spec::ScreenSpec> {
+        Some(crate::ui_kit::spec::Describe::spec(self))
+    }
+
     fn describe(&self, count: usize) -> Option<String> {
         Some(describe(self, &self.0.texts, count))
     }
@@ -1361,7 +1371,11 @@ impl Rows for FriendRows {
         ]
     }
     fn press(&self, row: i16) -> Chosen {
-        Chosen::Stepped(self.0.invite(row))
+        if self.0.friend_row_has_action(row) {
+            Chosen::Stepped(self.0.invite(row))
+        } else {
+            Chosen::Nothing
+        }
     }
     fn write_texts(&self, m: &mut dyn GuestMemory) -> Result<(), MemFault> {
         self.0.texts.write(m)
@@ -1405,6 +1419,10 @@ impl JoinRows {
 }
 
 impl Rows for JoinRows {
+    fn content_spec(&self) -> Option<crate::ui_kit::spec::ScreenSpec> {
+        Some(crate::ui_kit::spec::Describe::spec(self))
+    }
+
     fn describe(&self, count: usize) -> Option<String> {
         Some(describe(self, &self.0.texts, count))
     }
@@ -1435,7 +1453,6 @@ impl Rows for JoinRows {
     fn press(&self, row: i16) -> Chosen {
         match row {
             JOIN_READY => Chosen::Act,
-            4 => Chosen::Stepped(format!("coop-live: guest: {}", self.0.handshake())),
             _ => Chosen::Nothing,
         }
     }

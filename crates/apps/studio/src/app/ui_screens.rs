@@ -246,6 +246,10 @@ impl UiScreens {
             }
         }
         let report = layout::check(&view, src, &rules);
+        findings.extend(boot::ui_kit::content::check_with_source(&spec, &view, src).into_iter().map(|f| Finding {
+            text: format!("content: {f}"),
+            ids: vec![f.id],
+        }));
         findings.extend(report.issues.iter().map(|i| Finding {
             text: i.to_string(),
             ids: i.ids().into_iter().map(String::from).collect(),

@@ -22,8 +22,8 @@
 //!
 //! Each row is one setting of the store with two choices, Halo 1's and
 //! Halo 2's ([`OptionRow`]); a new option is one more [`OptionRow`] in the
-//! lists. Left or right (or A) steps it, the store saves it like any other
-//! setting, and the setting's change callback ([`install_switches`]) moves
+//! lists. A opens the value picker on either page. Left or right changes
+//! the choice directly. The store saves it, and ([`install_switches`]) moves
 //! the run's switch at once:
 //!
 //! | Setting | Switch | Takes effect |
@@ -69,7 +69,7 @@ pub const PROMPT: &str = "\u{e10a}  \u{e10b} CHANGE  \u{e100} SELECT  \u{e101} B
 /// One option: a setting of two choices, Halo 1's then Halo 2's.
 pub struct OptionRow {
     pub def: &'static Def,
-    /// The row's name, before its value ("Sandbox: < Halo 1 >").
+    /// The row's name, before its value ("Sandbox: Halo 1").
     pub label: &'static str,
     /// What each choice means, Halo 1's then Halo 2's, read after "Halo 1:" and
     /// "Halo 2:"; short, for the five lines of the description pane.
@@ -200,9 +200,9 @@ pub fn choice(halo1: bool) -> &'static str {
     if halo1 { "Halo 1" } else { "Halo 2" }
 }
 
-/// `row`'s label showing a choice: "Sandbox: < Halo 1 >".
+/// `row`'s label showing a choice: "Assets: Halo 1".
 pub fn label(row: &OptionRow, halo1: bool) -> String {
-    format!("{}: < {} >", row.label, choice(halo1))
+    format!("{}: {}", row.label, choice(halo1))
 }
 
 /// `row`'s description: both choices, said plainly.
@@ -326,6 +326,10 @@ pub struct OptionsScreen {
 }
 
 impl Rows for OptionsScreen {
+    fn content_spec(&self) -> Option<crate::ui_kit::spec::ScreenSpec> {
+        Some(crate::ui_kit::spec::Describe::spec(self))
+    }
+
     fn title(&self) -> u32 {
         TITLE_ID
     }
@@ -406,6 +410,7 @@ impl crate::ui_kit::spec::Describe for OptionsScreen {
         )));
         s.style = base.style();
         s.description = base.help().map(Into::into);
+        s.content.row_help = true;
         s.footer = true;
         s.prompts = vec![
             Prompt::new(&[Glyph::DpadLeft, Glyph::DpadRight], "Change"),
@@ -430,7 +435,7 @@ impl crate::ui_kit::spec::Describe for OptionsScreen {
             ids.push(help_id(r));
             let mut spec =
                 RowSpec::value(r.label, &[choice(true), choice(false)], usize::from(!halo1))
-                    .press(Press::Step)
+                    .press(Press::Open(crate::ui_kit::picker::NAME.into()))
                     .describe(r.help)
                     .ids(&ids);
             if base.picture().is_some() {
@@ -480,8 +485,8 @@ mod tests {
         for r in ALL {
             assert!(is_halo1(&s, r), "{}", r.label);
         }
-        assert_eq!(label(&SANDBOX, true), "Sandbox: < Halo 1 >");
-        assert_eq!(label(&HUD, false), "HUD: < Halo 2 >");
+        assert_eq!(label(&SANDBOX, true), "Sandbox: Halo 1");
+        assert_eq!(label(&HUD, false), "HUD: Halo 2");
     }
 
     #[test]

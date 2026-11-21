@@ -134,6 +134,10 @@ pub trait Rows: Send + Sync {
     fn title(&self) -> u32;
     /// The rows when the screen opens.
     fn count(&self) -> usize;
+    /// Authored content for the agent's menu audit, read outside guest memory.
+    fn content_spec(&self) -> Option<crate::ui_kit::spec::ScreenSpec> {
+        None
+    }
     /// Reserve room for a list that starts with one waiting row and grows
     /// in place when its contents arrive. Existing row handles stay valid.
     fn growing_capacity(&self) -> Option<usize> {
@@ -2560,6 +2564,7 @@ impl hooks::Feature for ListClass {
                 });
             }
         }
+        crate::ui_kit::content::register_rows(e.screen_vtable, Arc::clone(&rows));
         LOADERS
             .lock()
             .unwrap_or_else(|e| e.into_inner())

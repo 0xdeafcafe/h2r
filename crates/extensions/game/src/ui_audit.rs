@@ -14,6 +14,7 @@ const ITEM: u32 = 2;
 const BUTTON: u32 = 3;
 const TABS: u32 = 5;
 const TEXT: u32 = 6;
+const SHADER_BITMAP: u32 = 9;
 const RECENT_PLAYERS: u32 = 0x0045_b4a0; // 0x2b3968
 const SHORT_TEXT: u32 = 0x0045_88b0;
 const LONG_TEXT: u32 = 0x0045_8930;
@@ -207,6 +208,14 @@ struct Widget {
 }
 
 impl Widget {
+    fn shows_emblem(&self, m: &dyn GuestMemory) -> bool {
+        self.enabled && ((self.kind == SHADER_BITMAP
+            && rect(m, self.at).is_some_and(|r| {
+                [r.top, r.left, r.bottom, r.right] == crate::clanker_card::EMBLEM_RECT
+            }))
+            || self.children.iter().any(|child| child.shows_emblem(m)))
+    }
+
     // A damaged hierarchy must not monopolize a tick or recurse forever.
     fn read(
         m: &dyn GuestMemory,
@@ -254,19 +263,83 @@ fn rect(m: &dyn GuestMemory, widget: u32) -> Option<tags::ui::Rect> {
     (r.width() > 0 && r.height() > 0).then_some(r)
 }
 
-/// Bounds for the active UI tree, sampled at the end of its update.
-pub(crate) fn layout_findings(m: &dyn GuestMemory, screen: u32, id: Option<u32>) -> Vec<Value> {
-    use crate::ui_kit::layout::{SAFE, bounds_issues};
+/// Live findings for one active screen. Resolve declared content after
+/// dropping the guest guard: row models can read settings or Live state.
+#[derive(Clone, Default)]
+pub(crate) struct ObservedFindings {
+    pub layout: Vec<Value>,
+    pub content: Vec<Value>,
+    authored: [Option<Authored>; 2],
+}
+
+#[derive(Clone, Copy)]
+struct Authored {
+    id: Option<u32>,
+    screen: u32,
+    vtable: u32,
+    focus: Option<usize>,
+}
+
+impl ObservedFindings {
+    pub fn resolve_authored(&mut self, metrics: &dyn crate::ui_kit::view::Metrics) {
+        use crate::ui_kit::{content, preview::From};
+
+        for authored in self.authored.into_iter().flatten() {
+            let Some(spec) = content::runtime_spec(authored.vtable, authored.focus) else {
+                continue;
+            };
+            let Ok(view) = From::Synthetic.view_with_metrics(&spec, "live", metrics) else {
+                continue;
+            };
+            self.content.extend(content::check(&spec, &view, metrics).into_iter().map(|issue| {
+                json!({
+                    "issue": issue,
+                    "screen": authored.id,
+                    "screen_instance": authored.screen,
+                    "source": "page_model",
+                })
+            }));
+        }
+    }
+
+    pub fn append(&mut self, mut other: Self) {
+        self.layout.append(&mut other.layout);
+        self.content.append(&mut other.content);
+        self.authored[1] = other.authored[0];
+    }
+}
+
+/// Bounds and resolved text from the active UI tree, sampled at the end
+/// of the update. The caller resolves host-authored metadata separately.
+pub(crate) fn observe(
+    m: &dyn GuestMemory,
+    screen: u32,
+    id: Option<u32>,
+    channel: Option<u32>,
+) -> ObservedFindings {
+    use crate::ui_kit::{
+        content::{Finding, case_findings, check_text},
+        layout::{SAFE, bounds_issues},
+    };
 
     struct Check<'a> {
         m: &'a dyn GuestMemory,
         screen: u32,
         id: Option<u32>,
         panel: Option<tags::ui::Rect>,
-        out: Vec<Value>,
+        out: ObservedFindings,
     }
 
     impl Check<'_> {
+        fn content(&mut self, node: &Widget, issue: Finding, text: Option<&str>) {
+            self.out.content.push(json!({
+                "issue": issue,
+                "screen": self.id,
+                "widget": node.at,
+                "text": text,
+            }));
+        }
+
         fn visit(&mut self, node: &Widget, parent: Option<&Widget>) {
             if !node.enabled {
                 return;
@@ -274,8 +347,46 @@ pub(crate) fn layout_findings(m: &dyn GuestMemory, screen: u32, id: Option<u32>)
             if node.kind == ITEM && self.m.u32(node.at + 0x70).ok() == Some(u32::MAX) {
                 return; // An unbound slot in the reusable widget pool.
             }
+            let widget_id = || format!("widget.{:x}", node.at);
+            let text = matches!(node.kind, TEXT | BUTTON)
+                .then(|| read_text(self.m, node))
+                .flatten();
+            if matches!(node.kind, TEXT | BUTTON) {
+                // Empty secondary cells and blank pane text are valid.
+                // A button and the first text of a bound row require a label.
+                let required = node.kind == BUTTON
+                    || parent.is_some_and(|p| {
+                        p.kind == ITEM
+                            && p.children.iter().find(|w| w.kind == TEXT).map(|w| w.at) == Some(node.at)
+                    });
+                if let Some(text) = text.as_deref() {
+                    for issue in check_text(&widget_id(), text, required) {
+                        self.content(node, issue, Some(text));
+                    }
+                } else if required {
+                    self.content(
+                        node,
+                        Finding::new("unreadable_text", widget_id(), "Required label could not be read"),
+                        None,
+                    );
+                }
+            }
+            if node.kind == LIST {
+                let labels = node.children.iter()
+                    .filter(|item| item.enabled
+                        && item.kind == ITEM
+                        && self.m.u32(item.at + 0x70).ok().is_some_and(|h| h != u32::MAX))
+                    .filter_map(|item| {
+                        let label = item.children.iter().find(|w| w.enabled && w.kind == TEXT)?;
+                        read_text(self.m, label).map(|text| (format!("widget.{:x}", label.at), text))
+                    });
+                for issue in case_findings(labels) {
+                    self.content(node, issue, None);
+                }
+            }
             if matches!(node.kind, TEXT | BUTTON | ITEM)
                 && let Some(r) = rect(self.m, node.at)
+                && !text.as_deref().is_some_and(|s| s.trim().is_empty())
             {
                 let lobby = (self.id == Some(crate::lobby_options::SCREEN))
                     .then(|| crate::lobby_options::container(self.m, self.screen, node.at))
@@ -290,20 +401,12 @@ pub(crate) fn layout_findings(m: &dyn GuestMemory, screen: u32, id: Option<u32>)
                     Some((name, rect(self.m, p.at)?))
                 });
                 for issue in bounds_issues(
-                    || format!("widget.{:x}", node.at),
+                    widget_id,
                     r,
                     SAFE,
                     lobby.into_iter().chain(panel).chain(parent_box),
                 ) {
-                    let text = if matches!(node.kind, TEXT | BUTTON) {
-                        label(self.m, node)["text"].clone()
-                    } else {
-                        Value::Null
-                    };
-                    if text.as_str().is_some_and(|s| s.trim().is_empty()) {
-                        continue;
-                    }
-                    self.out.push(json!({
+                    self.out.layout.push(json!({
                         "issue": issue,
                         "screen": self.id,
                         "widget": node.at,
@@ -321,34 +424,57 @@ pub(crate) fn layout_findings(m: &dyn GuestMemory, screen: u32, id: Option<u32>)
     }
 
     let Some(tree) = Widget::read(m, screen, &mut HashSet::new(), 0, true) else {
-        return Vec::new();
+        return ObservedFindings::default();
     };
+    let vtable = m.u32(screen).ok();
+    let dialog = vtable.and_then(dialog_tag::by_vtable);
     let mut check = Check {
         m,
         screen,
         id,
-        panel: m.u32(screen)
-            .ok()
-            .and_then(dialog_tag::by_vtable)
-            .map(|d| d.base.content_area()),
-        out: Vec::new(),
+        panel: dialog.map(|d| d.base.content_area()),
+        out: ObservedFindings {
+            authored: [
+                vtable.map(|vtable| Authored {
+                    id,
+                    screen,
+                    vtable,
+                    focus: channel.and_then(|ch| focus(m, ch, screen)?.row.map(|r| r as usize)),
+                }),
+                None,
+            ],
+            ..ObservedFindings::default()
+        },
     };
     check.visit(&tree, None);
+    if tree.enabled
+        && dialog.is_some_and(|d| d.name == crate::clanker_card::SCREEN)
+        && !tree.shows_emblem(m)
+    {
+        check.content(
+            &tree,
+            Finding::new("missing_content", "emblem", "Clanker card has no emblem image"),
+            None,
+        );
+    }
     check.out
 }
 
 // 0x253b1a resolves the id into a temporary then calls the text
 // interface's setter. 0x22f50d and 0x22f545 copy it to interface +0x44.
-fn label(m: &dyn GuestMemory, widget: &Widget) -> Value {
+fn read_text(m: &dyn GuestMemory, widget: &Widget) -> Option<String> {
     let offset = if widget.kind == BUTTON { 0x70 } else { 0x74 };
-    let text = widget.at.checked_add(offset).and_then(|interface| {
-        let cap = match m.u32(interface).ok()? {
-            SHORT_TEXT => 32,
-            LONG_TEXT => 256,
-            _ => return None,
-        };
-        m.utf16(interface.checked_add(0x44)?, cap - 1).ok()
-    });
+    let interface = widget.at.checked_add(offset)?;
+    let cap = match m.u32(interface).ok()? {
+        SHORT_TEXT => 32,
+        LONG_TEXT => 256,
+        _ => return None,
+    };
+    m.utf16(interface.checked_add(0x44)?, cap - 1).ok()
+}
+
+fn label(m: &dyn GuestMemory, widget: &Widget) -> Value {
+    let text = read_text(m, widget);
     let status = match &text {
         None => "unreadable",
         Some(s) if s.trim().is_empty() => "empty",
@@ -769,7 +895,7 @@ mod tests {
         place(&mut m, LIST_AT, [100, -200, -160, 200]);
         place(&mut m, ITEM_AT, [-145, -180, -170, 180]);
         place(&mut m, LABEL_AT, [-146, -172, -164, 278]);
-        let findings = layout_findings(&m, SCREEN, Some(80));
+        let findings = observe(&m, SCREEN, Some(80), None).layout;
         assert_eq!(findings.len(), 3);
         assert_eq!(findings[0]["issue"]["container"], "list");
         assert_eq!(findings[0]["widget"], ITEM_AT);
@@ -777,7 +903,56 @@ mod tests {
         assert_eq!(findings[1]["widget"], LABEL_AT);
         assert_eq!(findings[2]["issue"]["container"], "row");
         m.put_u8(ITEM_AT + 0x6e, 0);
-        assert!(layout_findings(&m, SCREEN, Some(80)).is_empty());
+        assert!(observe(&m, SCREEN, Some(80), None).layout.is_empty());
+    }
+
+    #[test]
+    fn live_content_reports_bad_strings_in_the_active_tree() {
+        let mut m = FakeGuest::new();
+        widget(&mut m, SCREEN, 0, 0);
+        widget(&mut m, LIST_AT, LIST, SCREEN);
+        widget(&mut m, ITEM_AT, ITEM, LIST_AT);
+        widget(&mut m, LABEL_AT, TEXT, ITEM_AT);
+        let interface = LABEL_AT + 0x74;
+        m.put_u32(interface, LONG_TEXT);
+        let set = |m: &mut FakeGuest, text: &str| {
+            for (i, unit) in text.encode_utf16().chain([0]).enumerate() {
+                m.put_u16(interface + 0x44 + i as u32 * 2, unit);
+            }
+        };
+        set(&mut m, "Invite {player}");
+        let issues = observe(&m, SCREEN, Some(80), None).content;
+        assert_eq!(issues.len(), 1, "{issues:?}");
+        assert_eq!(issues[0]["issue"]["kind"], "placeholder");
+        assert_eq!(issues[0]["widget"], LABEL_AT);
+        set(&mut m, "");
+        let issues = observe(&m, SCREEN, Some(80), None).content;
+        assert_eq!(issues[0]["issue"]["kind"], "empty_text");
+        set(&mut m, "Invite a Friend");
+        assert!(observe(&m, SCREEN, Some(80), None).content.is_empty());
+        set(&mut m, "TODO");
+        m.put_u8(ITEM_AT + 0x6e, 0);
+        assert!(observe(&m, SCREEN, Some(80), None).content.is_empty());
+    }
+
+    #[test]
+    fn the_card_emblem_must_be_a_visible_shader_widget() {
+        let mut m = FakeGuest::new();
+        widget(&mut m, SCREEN, 0, 0);
+        let shows_emblem = |m: &FakeGuest| {
+            Widget::read(m, SCREEN, &mut HashSet::new(), 0, true)
+                .unwrap()
+                .shows_emblem(m)
+        };
+        assert!(!shows_emblem(&m));
+
+        widget(&mut m, ITEM_AT, SHADER_BITMAP, SCREEN);
+        for (i, edge) in crate::clanker_card::EMBLEM_RECT.into_iter().enumerate() {
+            m.put_u16(ITEM_AT + 0x20 + i as u32 * 2, edge as u16);
+        }
+        assert!(shows_emblem(&m));
+        m.put_u8(ITEM_AT + 0x6d, 0);
+        assert!(!shows_emblem(&m));
     }
 
     fn channel(m: &mut FakeGuest, window: u32, slot: u32, screen: u32, leaf: u32) {

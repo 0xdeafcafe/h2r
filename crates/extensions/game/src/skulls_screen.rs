@@ -113,9 +113,9 @@ fn difficulty_name(row: i16) -> &'static str {
 pub const GUARD: Duration = crate::ui_kit::input::OPENER_GUARD;
 
 /// The page's class: the level select's layout, the picture and the
-/// description; A on Start Level goes on, left, right and A on the other
-/// rows change them, X and Start are not the action's, and the destructor
-/// tells the flow.
+/// description. A starts the level, opens a Halo 1 option's picker or
+/// toggles a collected skull. The destructor tells the start flow when
+/// the page closes.
 pub fn class(
     screen: Arc<SkullsScreen>,
     block: TextBlock,

@@ -224,13 +224,34 @@ metrics to catch text that exceeds its text box. The tests:
 - every screen in every state passes against the disc with nothing
   skipped (the disc test).
 
-No finding is left on purpose.
+### Content findings
+
+`ui_kit::content::check` checks the authored spec and visible widgets.
+CLI previews and the editor display these findings alongside the layout
+findings. `ui.screen` reports them separately in `content_findings`.
+
+| Finding | What it checks |
+|---|---|
+| broken strings | Required empty text, unresolved keys and format tokens, raw hexadecimal IDs, editing markers, invalid encoding, repeated or trailing spaces, angle selectors and inconsistent row-label casing |
+| font and fit | Characters missing from the selected font when its metrics are available, and visible text wider or taller than its box |
+| dead controls | Action rows without a confirm action, prompts without a supported input, and offline focus routes or input probes that cannot reach or operate a control |
+| missing content | Empty lists without a message, pickers without choices, absent descriptions for rows that share a help slot, missing icon or emblem widgets or unresolved required preview images, and sentinel values without an explicitly unavailable source |
+
+Use `ScreenSpec::content` to declare empty-state and required icon
+widgets, shared description slots, or a value awaiting its source.
+The content tests visit every registered page and named state, traverse
+focus in both directions, and probe advertised buttons on fresh offline
+models. Worker-backed or external actions use the authored action
+contract. The live watcher examines the current widget tree and registered
+Rust list models without sending input. It can inspect resolved text from
+stock screens that have no authored model and uses installed font
+metrics for authored text when available.
 
 What the checks hold the screens to:
 
 - **Unfocused rows stay readable.** Unfocused rows draw at about 40% alpha (`view::UNFOCUSED_ALPHA`, observed from a game screenshot, not traced); contrast on the real bars is 2.9 to 3.1.
 - **The skulls page keeps none of the Controls art.** It copies the level select's own bracket (`ul_02`) at run time (`ListClass::frame`); the frame provenance check names a bracket borrowed from the wrong list. Its view draws the skull picture (`ScreenSpec::art`), untinted.
-- **Legends sit in the footer**, not in the description block: the account menu's, and the co-op screens' (`A SELECT`, `START START GAME` or `READY`, `B BACK`, set in game from the co-op text table by `coop_live::prompts`).
+- **Legends sit in the footer.** The account and co-op screens use a footer separate from their description. Co-op offers Start and Back when applicable and leaves confirm off informational rows. The campaign options footer follows the focused Start, picker, toggle or locked row.
 
 **The full-height Game Options list.** The Game Options page lays out
 13 rows
@@ -638,8 +659,8 @@ its description:
 A on a value sets it through the row's own setter (the settings store:
 saved, its change callbacks run) and closes; B closes and changes
 nothing; X, Start, left and right do nothing there. Left and right on
-the row itself still step. A row with one value, or more than
-`picker::MAX_CHOICES` (61, its string-id family), keeps stepping on A.
+the row itself still step. A kit value row can open a picker with one
+option. Pickers with many options reuse text slots as the list scrolls.
 The legend is `(A) SELECT (B) CANCEL`; the pages' own legends include
 `(A) SELECT`.
 
@@ -648,10 +669,10 @@ over the library with A, including a filter whose only entry is All.
 Long lists reuse text slots as new rows scroll into view. The preview
 composites the dialog over the library with its tab, rows and focus intact.
 
-Not on the picker: the Video and Voice screens (`ui::Model` rows,
-`Model::press`), the skulls (toggles, not settings) and the variant
-editor's More Options page (`variant_page`, its own rows). They step
-on A.
+The Video and Voice screens use `ui::Model::press`. The skulls are
+direct toggles. More Options (`variant_page`) and the Halo 1 Assets and
+HUD rows open the kit picker on A. Back dismisses a picker without
+changing the held value.
 
 `h2 ui preview kit.picker` and `kit.picker.game` draw it (the kit's
 Count, nine values, 4 held, over Game Setup).

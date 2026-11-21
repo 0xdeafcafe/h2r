@@ -348,6 +348,10 @@ const fn name_family(ingame: bool) -> &'static str {
 }
 
 impl Rows for Picker {
+    fn content_spec(&self) -> Option<crate::ui_kit::spec::ScreenSpec> {
+        Some(self.spec())
+    }
+
     /// The title's slot, the same for every pick: [`Picker::refresh`]
     /// fills it as the screen opens.
     fn title(&self) -> u32 {
@@ -420,6 +424,7 @@ impl Describe for Picker {
         s.prompts = prompts();
         s.inputs = vec![Input::Up, Input::Down, Input::A, Input::B];
         s.footer = true;
+        s.content.picker = true;
         if let Some(p) = &p {
             s.rows = p
                 .values

@@ -149,7 +149,10 @@ fn empty_library_explains_the_next_action_on_every_control() {
             assert_eq!(spec.rows.len(), BROWSE_ROWS);
             assert_eq!(spec.focus, i);
             assert!(spec.texts.iter().any(|t| t.text == help));
-            assert!(spec.description_text().is_none());
+            assert_eq!(
+                spec.description_text().as_deref(),
+                Some(super::super::selector::OptionRow::ALL[i].description()),
+            );
             sample.press(Input::Down);
         }
     }

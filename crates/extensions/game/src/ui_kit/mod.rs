@@ -22,6 +22,7 @@
 
 pub mod animation;
 pub mod choice;
+pub mod content;
 pub mod dialog;
 pub mod dialog_tag;
 pub mod ids;

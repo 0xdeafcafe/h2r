@@ -17,16 +17,6 @@ use crate::ui_kit::input::{Glyph, Input, Prompt};
 use crate::ui_kit::page::{AccountPage, Driven, ListPage, Live, described};
 use crate::ui_kit::spec::{Describe, ListPlace, Press, RowSpec, ScreenSpec, ValueStyle};
 
-/// The campaign page's legend: left/right change, A selects (Start Level
-/// goes on), B backs out.
-pub fn skulls_prompts() -> Vec<Prompt> {
-    vec![
-        Prompt::new(&[Glyph::DpadLeft, Glyph::DpadRight], "Change"),
-        Prompt::new(&[Glyph::A], "Select"),
-        Prompt::new(&[Glyph::B], "Back"),
-    ]
-}
-
 /// The skulls pages' own art: the level select's bracket for the list
 /// ([`skulls_menu::FRAME`]) and the skull picture ([`skulls_menu::PICTURE`],
 /// drawn untinted here).
@@ -76,8 +66,10 @@ impl Describe for SkullsScreen {
         s.description = Some(skulls_menu::DESCRIPTION_TEXT.into());
         s.scrolls = true;
         s.art = skulls_art();
+        s.content.row_help = true;
+        s.content.required_icons.push("art.1".into());
         if campaign {
-            s.prompts = skulls_prompts();
+            s.prompts = self.campaign_prompts(0);
             s.footer = true;
             s.ids.push(skulls_menu::FOOTER_ID);
             s.inputs = vec![
@@ -102,12 +94,12 @@ impl Describe for SkullsScreen {
             for (n, o) in self.options().iter().enumerate() {
                 let row = 1 + n as i16;
                 let halo1 = crate::h1_options::is_halo1(&self.store(), o);
-                s.rows.push(
-                    RowSpec::value(o.label, &["Halo 1", "Halo 2"], usize::from(!halo1))
-                        .press(Press::Step)
-                        .describe(&crate::h1_options::description(o))
-                        .ids(&ids(row)),
-                );
+                let mut spec = RowSpec::value(o.label, &["Halo 1", "Halo 2"], usize::from(!halo1))
+                    .press(Press::Open(crate::ui_kit::picker::NAME.into()))
+                    .describe(&crate::h1_options::description(o))
+                    .ids(&ids(row));
+                spec.prompts = Some(self.campaign_prompts(row));
+                s.rows.push(spec);
             }
             let mut order: Vec<(i16, usize)> = (0..TOTAL)
                 .filter_map(|i| Some((self.row_of_skull(i)?, i)))
@@ -115,16 +107,15 @@ impl Describe for SkullsScreen {
             order.sort();
             for (row, i) in order {
                 let label = SKULLS[i].label;
-                let r = match self.state(i) {
-                    State::On => RowSpec::value(label, &["On", "Off"], 0),
-                    State::Off => RowSpec::value(label, &["On", "Off"], 1),
+                let mut spec = match self.state(i) {
+                    State::On => RowSpec::value(label, &["On", "Off"], 0).press(Press::Step),
+                    State::Off => RowSpec::value(label, &["On", "Off"], 1).press(Press::Step),
                     State::Locked => RowSpec::info(label, skulls_menu::LOCKED),
-                };
-                s.rows.push(
-                    r.press(Press::Step)
-                        .describe(&skulls_menu::description(i))
-                        .ids(&ids(row)),
-                );
+                }
+                .describe(&skulls_menu::description(i))
+                .ids(&ids(row));
+                spec.prompts = Some(self.campaign_prompts(row));
+                s.rows.push(spec);
             }
         } else {
             s.inputs = vec![Input::Up, Input::Down, Input::A, Input::B];
@@ -199,6 +190,7 @@ impl Describe for HostRows {
             let press = match r {
                 ROW_INVITE => Press::Open(coop_live::FRIENDS.into()),
                 ROW_START => Press::Act,
+                coop_live::ROW_STATUS | coop_live::ROW_PING => Press::Nothing,
                 _ => Press::Step,
             };
             Some((l, v, press))
@@ -207,6 +199,9 @@ impl Describe for HostRows {
         // Six rows in five shown: Start scrolls into view (seen in game,
         // 2026-11-16), and is meant to.
         s.scrolls = true;
+        if self.0.ping().is_none() {
+            s.content.unavailable_values.push(format!("row.{}.value", coop_live::ROW_PING));
+        }
         s
     }
 }
@@ -215,10 +210,14 @@ impl Describe for FriendRows {
     fn spec(&self) -> ScreenSpec {
         let rows = (0..self.count() as i16).filter_map(|r| {
             let (l, v) = self.row_texts(r)?;
-            Some((l, v, Press::Step))
+            let press = if self.0.friend_row_has_action(r) { Press::Step } else { Press::Nothing };
+            Some((l, v, press))
         });
         let mut s = coop_spec(coop_live::FRIENDS, coop_title(self, &self.0), rows);
         s.scrolls = true;
+        if self.0.friend(0).is_none() {
+            s.content.empty_text = Some("row.0.label".into());
+        }
         s
     }
 }
@@ -229,7 +228,6 @@ impl Describe for JoinRows {
             let (l, v) = self.row_texts(r)?;
             let press = match r {
                 coop_live::JOIN_READY => Press::Act,
-                4 => Press::Step,
                 _ => Press::Nothing,
             };
             Some((l, v, press))
@@ -237,6 +235,9 @@ impl Describe for JoinRows {
         let mut s = coop_spec(coop_live::JOIN, coop_title(self, &self.0), rows);
         // Ready, the sixth row, scrolls into view as the host's Start does.
         s.scrolls = true;
+        if self.0.guest().is_none() {
+            s.content.unavailable_values.extend((0..4).map(|i| format!("row.{i}.value")));
+        }
         s
     }
 }
@@ -260,8 +261,11 @@ pub fn account_spec(a: &crate::account_screen::AccountScreen, now: i64) -> Scree
             // rows 1 and 2 (the first layout check's first finding).
             s.footer = true;
         }
-        _ => {
+        Step::ShowRecovery { .. } | Step::Done | Step::Error { .. } => {
             s.rows = vec![RowSpec::action(a.title()).describe(&a.text(now).replace("\r\n", "\n"))];
+        }
+        _ => {
+            s.rows = vec![RowSpec::info(a.title(), "").describe(&a.text(now).replace("\r\n", "\n"))];
         }
     }
     s
@@ -567,11 +571,11 @@ mod tests {
     /// description the page serves is the described one.
     #[test]
     fn the_skulls_legend_and_descriptions_are_the_served_ones() {
+        let s = sample("skulls").unwrap();
         assert_eq!(
-            crate::ui_kit::input::footer_legend(&skulls_prompts()),
+            crate::ui_kit::input::footer_legend(&s.prompts),
             skulls_menu::PROMPT
         );
-        let s = sample("skulls").unwrap();
         for (row, r) in s.rows.iter().enumerate() {
             let focused = ScreenSpec {
                 focus: row,
@@ -889,7 +893,7 @@ mod tests {
         assert_eq!(j["rows"][0]["kind"], "info");
         let k = serde_json::to_value(sample("skulls").unwrap()).unwrap();
         assert_eq!(k["style"], "inline");
-        assert_eq!(k["prompts"][0]["glyphs"][0], "DpadLeft");
+        assert_eq!(k["prompts"][0]["glyphs"][0], "A");
     }
 
     /// Findings left on purpose, each with its reason.

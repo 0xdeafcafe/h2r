@@ -588,7 +588,7 @@ pub(crate) fn register_late_for_profile(
     }
     // H2_UI_WATCH=1: the screen player one's input goes to, a line on each
     // change and `ui.screen` (`h2 coop test --drive`; ui_watch.rs).
-    ui_watch::install(features)?;
+    ui_watch::install(features, i.disc)?;
     // H2_COOP_PROBE=1: the retail synchronous campaign path over System Link
     // (docs/live/live-coop.md section 9). Added last, so it can see every
     // override placed outside the plan and refuse instead of failing it.

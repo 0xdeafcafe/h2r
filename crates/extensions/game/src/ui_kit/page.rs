@@ -36,6 +36,8 @@ pub trait Page {
     /// What a step asks of the glue.
     type Effect: Clone + Debug + PartialEq;
     fn step(&self, state: &mut Self::State, event: Self::Event) -> Self::Effect;
+    /// Whether an effect reports a handled controller input.
+    fn handled(effect: &Self::Effect) -> bool;
     /// The screen in `state`, as the preview and the checks take it.
     fn spec(&self, state: &Self::State) -> ScreenSpec;
     /// The named states a preview sheet draws, the first the one it opens
@@ -164,6 +166,10 @@ impl Page for ListPage {
         }
     }
 
+    fn handled(effect: &ListEffect) -> bool {
+        *effect != ListEffect::None
+    }
+
     fn spec(&self, focus: &Focus) -> ScreenSpec {
         ScreenSpec {
             focus: focus.0,
@@ -282,6 +288,10 @@ impl Page for StackPage {
         e
     }
 
+    fn handled(effect: &ListEffect) -> bool {
+        *effect != ListEffect::None
+    }
+
     fn spec(&self, s: &Stack) -> ScreenSpec {
         // The rows' own state as the presses left it.
         let replayed = self.after(&s.presses);
@@ -350,6 +360,10 @@ impl Page for AccountPage {
         }
     }
 
+    fn handled(effect: &account_screen::Effect) -> bool {
+        *effect != account_screen::Effect::None
+    }
+
     fn spec(&self, s: &AccountScreen) -> ScreenSpec {
         crate::ui_kit::screens::account_spec(s, 0)
     }
@@ -380,6 +394,9 @@ impl Page for AccountPage {
 pub trait Live {
     /// Steps the pad's `input`: the effect, as text.
     fn press(&mut self, input: Input) -> String;
+    /// Probes an input on this disposable offline model. Checks use the
+    /// typed effect its route returned. A worker or I/O action returns None.
+    fn audit_press(&mut self, input: Input) -> Option<bool>;
     fn spec(&self) -> ScreenSpec;
     fn summary(&self) -> String;
     /// The named states.
@@ -412,6 +429,9 @@ impl<P: Page> Driven<P> {
 impl<P: Page> Live for Driven<P> {
     fn press(&mut self, input: Input) -> String {
         format!("{:?}", self.page.step(&mut self.state, input.into()))
+    }
+    fn audit_press(&mut self, input: Input) -> Option<bool> {
+        Some(P::handled(&self.page.step(&mut self.state, input.into())))
     }
     fn spec(&self) -> ScreenSpec {
         self.page.spec(&self.state)

@@ -167,6 +167,7 @@ pub fn list_spec(repo: &Repo) -> ScreenSpec {
     s.list = ListPlace::from(Some(crate::skulls_menu::LIST_LAYOUT));
     s.style = ValueStyle::Inline;
     s.description = Some(crate::skulls_menu::DESCRIPTION_TEXT.into());
+    s.content.row_help = true;
     s.scrolls = true;
     s.art = vec![
         art(crate::skulls_menu::FRAME, crate::skulls_menu::FRAME_SIZE),
@@ -177,6 +178,9 @@ pub fn list_spec(repo: &Repo) -> ScreenSpec {
     s.inputs = vec![Input::Up, Input::Down, Input::A, Input::B, Input::X];
     s.ids = vec![Slots::id(LIST_TITLE), Slots::id(LIST_FOOTER)];
     let tops = repo.tops();
+    if tops.is_empty() {
+        s.content.empty_text = Some("description".into());
+    }
     for row in 0..repo.list_count() as i16 {
         let line = repo.list_line(row).unwrap_or_default();
         let press = match tops.get(row as usize) {
@@ -200,6 +204,7 @@ pub fn pack_spec(repo: &Repo) -> ScreenSpec {
     s.list = ListPlace::from(Some(crate::skulls_menu::LIST_LAYOUT));
     s.style = ValueStyle::Inline;
     s.description = Some(crate::skulls_menu::DESCRIPTION_TEXT.into());
+    s.content.row_help = true;
     s.scrolls = true;
     s.art = vec![
         art(crate::skulls_menu::FRAME, crate::skulls_menu::FRAME_SIZE),
@@ -209,7 +214,11 @@ pub fn pack_spec(repo: &Repo) -> ScreenSpec {
     s.footer = true;
     s.inputs = vec![Input::Up, Input::Down, Input::A, Input::B, Input::X];
     s.ids = vec![Slots::id(PACK_TITLE), Slots::id(PACK_FOOTER)];
-    for row in 0..repo.pack_count() as i16 {
+    let rows = repo.pack_count();
+    if rows == 1 {
+        s.content.empty_text = Some("description".into());
+    }
+    for row in 0..rows as i16 {
         let line = repo.pack_line(row).unwrap_or_default();
         let press = if row == 0 {
             Press::Act
@@ -232,6 +241,7 @@ pub fn detail_spec(repo: &Repo) -> ScreenSpec {
     s.list = ListPlace::from(Some(page_layout::LIST));
     s.style = ValueStyle::Inline;
     s.description = Some(page_layout::STATUS.into());
+    s.content.row_help = true;
     s.panel = page_layout::ART
         .iter()
         .zip(page_layout::ART_SIZES)
