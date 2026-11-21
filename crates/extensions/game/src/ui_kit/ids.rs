@@ -73,6 +73,7 @@ pub const FAMILIES: &[Family] = &[
     Family::new("join link", 0x20ff_c180, 4),
     Family::new("lab takeover", 0x20ff_c184, 5),
     Family::new("browser filters", 0x20ff_c1c0, 0x40),
+    Family::new("hud kit", 0x20ff_c200, 0x10),
     Family::new("co-op texts", 0x20ff_d000, 128),
     Family::new("mod texts", 0x20ff_d100, 0x100),
     Family::new("theater", 0x20ff_d200, 0x100),

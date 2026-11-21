@@ -302,14 +302,10 @@ Both panels sit on the same bottom margin; the live panel grows upwards.
   with `..`.
 - On by default. `--no-watermark` or `H2_WATERMARK=0` turns it off; F3
   toggles it while playing (F3 then never reaches the guest).
-- The superbounce game type's HUD is not part of the watermark: it is
-  `AppConfig::superbounce_hud` (`app::superbounce_hud::Source`, fed by
-  `h2 play` from `game::superbounce_mode::hud_state`), drawn each present
-  by `superbounce_hud::Renderer` whether or not the watermark is on. Its
-  image is drawn on the CPU by `app::hud_shapes` (anti-aliased polygons,
-  strokes, rings, arcs, glows and scaled `font8x8` letters) only when what
-  it shows changes ([superbounce.md](../game/superbounce.md#the-superbounce-game-type)).
-  F4 moves its tutorial cards on while one shows.
+- The superbounce game type's HUD is not the window's: the game's own
+  HUD draws it, through the HUD kit
+  ([hud-kit.md](../game/hud-kit.md),
+  [superbounce.md](../game/superbounce.md#the-superbounce-game-type)).
 - In code: `app::Watermark` (shared on/off, note, map callback) on
   `AppConfig::watermark`; `app::watermark` has the formatting, layout and
   rasteriser, and `WatermarkRenderer` the pass. The banner and the
@@ -628,15 +624,6 @@ it. A one-second window read 0.0 for a game presenting 1.4 times a second.
   shadow, the middle dot glyph, and (GPU) the watermark drawn twice over a
   gradient frame changes only the bottom rows, and stays inside a
   pillarboxed image.
-- `hud_shapes.rs`: a filled triangle's inside, outside and half-covered
-  hypotenuse, a one-pixel anti-aliased edge, blending, rings, arcs,
-  strokes, glows and scaled letters.
-- `superbounce_hud.rs`: the panel's place and whole-number scale at 720p,
-  1080p and 4K and inside a pillarbox, the gauge fill, word wrap, the
-  tutorial's steps from events, timeouts and the dismiss key, the seen
-  callback firing once, frames rounding to what is printed and animating
-  at most 15 times a second, the image's glass and clear corners, and the
-  preview's backdrop.
 - `keymap.rs`: every mapped key is accepted by `input::bindings`, names match
   the W3C spelling, Cmd is not forwarded, default bindings through the map,
   mouse routing (a Cmd-click neither recaptures nor forwards).

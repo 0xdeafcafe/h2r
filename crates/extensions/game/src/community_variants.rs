@@ -721,6 +721,7 @@ fn register_strings(
         if let Some(t) = status
             .or_else(|| text(cpu.edi))
             .or_else(|| crate::variant_options::text(cpu.edi))
+            .or_else(|| crate::hud_kit::text(cpu.edi))
         {
             let mut mem = ctx.runtime().memory();
             let buf = mem.u32(cpu.esp + 4)?;

@@ -896,15 +896,15 @@ pub static THEATER_RING_MIB: Def = Def {
     menu: None,
 };
 
-/// Whether the superbounce HUD's tutorial cards have been seen
-/// (docs/game/superbounce.md, "The superbounce game type"). The window
-/// sets it when the last card closes; `false` shows the cards again the
-/// next time the mode turns on, and `H2_SUPERBOUNCE_TUTORIAL=1` shows them
-/// whatever it says.
+/// Whether the superbounce HUD's tutorial steps have been seen
+/// (docs/game/superbounce.md, "The superbounce game type").
+/// `superbounce_hud` sets it when the last step closes; `false` shows the
+/// steps again the next time a game starts, and
+/// `H2_SUPERBOUNCE_TUTORIAL=1` shows them whatever it says.
 pub static SUPERBOUNCE_TUTORIAL_SEEN: Def = Def {
     key: "superbounce.tutorial_seen",
     label: "Superbounce Tutorial Seen",
-    help: "The superbounce HUD's four tutorial cards have been shown to the end. \
+    help: "The superbounce HUD's four tutorial steps have been shown to the end. \
            Set it to false to see them again.",
     kind: Kind::Bool,
     default: Value::Bool(false),
@@ -918,7 +918,7 @@ pub static SUPERBOUNCE_TUTORIAL_SEEN: Def = Def {
     menu: None,
 };
 
-/// `H2_SUPERBOUNCE_TUTORIAL=1` shows the superbounce tutorial cards even
+/// `H2_SUPERBOUNCE_TUTORIAL=1` shows the superbounce tutorial steps even
 /// when [`SUPERBOUNCE_TUTORIAL_SEEN`] is set.
 pub const SUPERBOUNCE_TUTORIAL_ENV: &str = "H2_SUPERBOUNCE_TUTORIAL";
 
