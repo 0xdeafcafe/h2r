@@ -5,6 +5,22 @@
 /// Slayer (engine index 2): kill, suicide and betrayal scoring.
 pub const SLAYER: &str = include_str!("slayer.rules");
 
+/// A built-in script: its name, the retail engine index it rides and its
+/// source.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Builtin {
+    pub name: &'static str,
+    pub engine: u8,
+    pub source: &'static str,
+}
+
+/// Every built-in script, by engine index.
+pub const ALL: &[Builtin] = &[Builtin {
+    name: "Slayer",
+    engine: 2,
+    source: SLAYER,
+}];
+
 /// The built-in script source for a retail engine index, for the engines
 /// whose script exists.
 pub fn builtin(engine_index: u8) -> Option<&'static str> {
@@ -31,6 +47,10 @@ mod tests {
         }
         assert!(builtin(2).is_some());
         assert!(builtin(1).is_none());
+        for b in ALL {
+            assert_eq!(builtin(b.engine), Some(b.source));
+            assert_eq!(crate::lang::compile(b.source).unwrap().header.name, b.name);
+        }
     }
 
     #[test]

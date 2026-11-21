@@ -34,6 +34,7 @@ pub mod rank;
 pub mod recovery;
 pub mod replication;
 pub mod reports;
+pub mod rules;
 #[doc(hidden)]
 pub mod samples;
 pub mod screenshots;
