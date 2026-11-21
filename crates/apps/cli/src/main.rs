@@ -25,6 +25,7 @@ mod agent_raw;
 mod agent_run;
 mod agent_sim;
 mod rules_cmd;
+mod rules_lsp;
 mod sim_cmd;
 mod sim_store_cmd;
 mod film_cmd;
@@ -240,9 +241,10 @@ const USAGE: &str = "usage: h2 <command> [disc]
                           ending in a JSON report (docs/runtime/sim.md)
   sim batch <batch.toml>  many matches in parallel, A/B tuning compared;
                           sim compare <dir> prints the comparison again
-  rules check|build|run|caps|builtin
-                          the scripted game types' compiler, verifier and
-                          scenario runner (docs/game/rules-engine.md)
+  rules check|build|run|caps|builtin|lsp
+                          the scripted game types' compiler, verifier,
+                          scenario runner and language server
+                          (docs/game/rules-engine.md)
   lockstep <a> <b>        compare two H2_LOCKSTEP traces; exit 1 if they differ
                           (docs/game/high-framerate.md)
   film stat FILE          report keyframes, capture points and tape usage

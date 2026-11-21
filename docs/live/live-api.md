@@ -1831,6 +1831,8 @@ homes (`crates/live/live-server/src/rule_scripts.rs`, wire types in
 |---|---|---|
 | `POST /v1/rules/check` | none; rate-limited per client address | `{ok, hash, name, version, errors: [{line, col, message}], report}` |
 | `POST /v1/rules/run` | as check | a trace, or `{ok: false, errors}` when the script does not build |
+| `POST /v1/rules/ide` | none; rate-limited per client address, in a bucket of its own | one editor operation's answer, in LSP's field names (below) |
+| `GET /v1/rules/ide/legend` | none | `{legend: [...]}`, the semantic token types by index |
 | `GET /v1/rules/builtin` | a read | `{items: [{name, engine, source, hash}]}` from `rules::builtin::ALL` |
 | `POST /v1/rules` | an account's token, `lxm: content.write` | 201 `{ok, saved: true, script}`; 200 `{saved: false, script}` when the hash is saved already |
 | `GET /v1/rules/{hash}` | a read | `{hash, name, version, author, gamertag, saved_at, position, source}` |
@@ -1865,6 +1867,33 @@ homes (`crates/live/live-server/src/rule_scripts.rs`, wire types in
   lives, vars}], error}`. A run stops at a script error, after the tick
   that calls `end_round`, or past 4,000,000 ops (`cut` says so), and keeps
   at most 2,000 ticks.
+- An editor request is `{source, op, line, character}`: `line` (0-based)
+  and `character` (UTF-16 units) are the place, required by `complete`,
+  `hover`, `signature`, `definition` and `references`. Each op answers
+  from `rules::ide` (`ide_answer` in `rule_scripts.rs`;
+  [rules-engine.md, "Tooling"](../game/rules-engine.md#security-and-usability)).
+  A position is `{line, character}` and a range `{start, end}`. An
+  unknown op, a missing place or an unknown field is 400; the source cap
+  and the rate (20, refilled at 2 a second, in a bucket apart from check
+  and run) are the workbench's.
+  - `complete`: `[{label, kind, detail, documentation: {kind: "markdown",
+    value}, insertText, insertTextFormat}]`, with LSP's
+    `CompletionItemKind` numbers and `insertTextFormat` 1 (plain) or 2
+    (snippet).
+  - `hover`: `{contents: {kind: "markdown", value}, range}`, or `null`.
+  - `signature`: `{signatures: [{label, documentation, parameters:
+    [{label}]}], activeSignature, activeParameter}`, or `null` outside a
+    call.
+  - `definition` and `references`: `[{range}]`; references list the
+    declaration first.
+  - `tokens`: `{legend, data: [{line, start, length, type, typeName}]}`,
+    absolute and in source order; `type` is the index in `legend`.
+  - `symbols`: LSP's `DocumentSymbol`s, `[{name, detail, kind, range,
+    selectionRange, children}]`.
+  - `format`: `{text}`, or `{error, line, col}` for source that does not
+    parse (`error` is `line:col: message`).
+  - `diagnostics`: `[{range, severity, message, code, source}]`, `code`
+    one of `syntax`, `compile`, `verify`, `unused` and `unhostable`.
 - A save writes a server-signed `RulesSaved` event (`{hash, name, version,
   author, source}`) on `rules-<hash>`, expecting an empty stream, so a hash
   is saved once and its first saver is its author. Only scripts that
