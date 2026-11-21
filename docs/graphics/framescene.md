@@ -1426,7 +1426,8 @@ draws), vertex-shader and combiner translation, the vertex cache,
 vblank and the logical frame wait, fences and `KickOff` answered at
 once. It stays as long as anything is carried, and the UI can stay
 carried indefinitely: it is cheap and it is still drawn once, by the
-native renderer.
+native renderer. [retire-d3d.md](retire-d3d.md) is the plan that
+types the carried remainder and deletes the crate.
 
 After step 1 there is no D3D reference in the tree. The reference for
 later render work is the last commit before it, tagged

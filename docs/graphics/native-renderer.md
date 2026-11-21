@@ -412,11 +412,13 @@ through the common adapter.
 - Split screen: one native pass per view with the view's camera.
 - Which 03a templates have a layer-1 texaccum pass that layer 3 samples in
   screen space; those need the texaccum target bound to the native pass.
-- All-stage runtime counts of the residual callers.
+- All-stage runtime counts of the residual callers
+  ([retire-d3d.md](retire-d3d.md), "Measurement plan").
 
 ## Related
 
 [framescene.md](framescene.md) (the forward design),
+[retire-d3d.md](retire-d3d.md) (retiring the D3D path),
 [render-loop.md](render-loop.md) (the retail front-end and where its time
 goes), [high-resolution.md](high-resolution.md),
 [notes/native-ab.md](notes/native-ab.md), [switches.md](../runtime/switches.md).
