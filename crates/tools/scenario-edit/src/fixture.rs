@@ -599,6 +599,10 @@ pub const TEX_BLOCK_FILE: usize = 0x3200;
 pub const TEX_BASE_FILE: usize = 0x3600;
 pub const TEX_PAGE_FILE: usize = 0x3700;
 pub const TEX_LOD_SIZE: usize = 0x80;
+/// The textured map's tenth tag (`id(9)`): an item collection no
+/// placement names and with no entries, so a test can set an item
+/// reference to a tag that was not read when the map opened.
+pub const TEX_SPARE_ITEM: usize = 0x1280;
 /// The floor quad: `TEX_FLOOR` units square in the `z = 0` plane from the
 /// origin.
 pub const TEX_FLOOR: f32 = 4.0;
@@ -732,11 +736,11 @@ pub fn fixture_with_textured_bsp() -> Vec<u8> {
     let mut b = fixture();
     let mut names = NAMES.to_vec();
     names.extend(
-        b"levels\\test\\floor\0levels\\test\\floor_lightmap\0levels\\test\\shaders\\floor\0levels\\test\\bitmaps\\floor\0levels\\test\\bitmaps\\floor_lightmap\0",
+        b"levels\\test\\floor\0levels\\test\\floor_lightmap\0levels\\test\\shaders\\floor\0levels\\test\\bitmaps\\floor\0levels\\test\\bitmaps\\floor_lightmap\0objects\\test\\spare_kit\0",
     );
     tag_names(&mut b, &names);
     let mut classes = CLASSES.to_vec();
-    classes.extend([*b"sbsp", *b"ltmp", *b"shad", *b"bitm", *b"bitm"]);
+    classes.extend([*b"sbsp", *b"ltmp", *b"shad", *b"bitm", *b"bitm", *b"itmc"]);
     let mut payloads = PAYLOADS.to_vec();
     payloads.extend([
         (TEX_SBSP, TEX_SBSP_SIZE),
@@ -744,6 +748,7 @@ pub fn fixture_with_textured_bsp() -> Vec<u8> {
         (TEX_SHAD, 0x100),
         (TEX_BASE, 0x100),
         (TEX_PAGE, 0x100),
+        (TEX_SPARE_ITEM, 0x10),
     ]);
     tag_index(&mut b, &classes, &payloads);
     let file = |at: usize| META_FILE + at;

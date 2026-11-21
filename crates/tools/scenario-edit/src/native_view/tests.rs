@@ -746,8 +746,9 @@ fn the_selection_highlight_matches_the_scenes_tint() {
 
 /// An item reference set after the map opened to a tag nothing placed at
 /// open has its native model read at once, as gap 4 reads its collision:
-/// the session hands out a new set holding it (here a tag with no render
-/// model, so it is refused and named), and undoing keeps what was read.
+/// the session hands out a new set holding it (here the fixture's spare
+/// item collection, which has no entry and so no render model: it is
+/// refused and named), and undoing keeps what was read.
 #[test]
 fn an_item_reference_set_after_open_has_its_model_read() {
     use crate::fixture::id;
@@ -763,7 +764,8 @@ fn an_item_reference_set_after_open_has_its_model_read() {
         "{:?}",
         ed.native_errors()
     );
-    let late = id(4);
+    // The spare item collection: nothing places it at open.
+    let late = id(9);
     let before = ed.native_models().unwrap().clone();
     assert!(
         !before.has_read(TagId::NULL),
