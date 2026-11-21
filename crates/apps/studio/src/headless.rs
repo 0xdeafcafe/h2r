@@ -42,7 +42,7 @@ impl Headless {
     /// A studio of `size` points at `scale` pixels per point. Errors when
     /// the machine has no wgpu adapter.
     pub fn new(size: [f32; 2], scale: f32) -> Result<Self> {
-        let instance = wgpu::Instance::default();
+        let instance = gfx::instance();
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::HighPerformance,
             ..Default::default()

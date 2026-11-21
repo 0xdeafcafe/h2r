@@ -39,28 +39,14 @@ pub mod host_surface {
     #[cfg(windows)]
     pub const NAME: &str = "SwapChainPanel";
 
-    /// The backends the shell's instance may use: Metal on Apple
-    /// platforms; on Windows, DX12 only. wgpu's GL backend imports
-    /// `opengl32.dll`, which an Xbox app container lacks: it is
-    /// delay-loaded (platform/xbox/build.sh) and must never be called.
-    pub fn backends() -> wgpu::Backends {
-        if cfg!(windows) { wgpu::Backends::DX12 } else { wgpu::Backends::all() }
-    }
-
-    /// The instance a host's surface is made on, with [`backends`].
-    pub fn instance() -> wgpu::Instance {
-        let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
-        desc.backends = backends();
-        // The swap chain kind and whether acquire waits on DXGI's frame
-        // latency object, once (the Xbox's frame pacing, docs/runtime/xbox.md).
-        #[cfg(windows)]
-        eprintln!(
-            "app: dx12 presentation {:?}, frame latency waitable object {:?}",
-            desc.backend_options.dx12.presentation_system,
-            desc.backend_options.dx12.latency_waitable_object
-        );
-        wgpu::Instance::new(desc)
-    }
+    /// The GPU host the shell's instance is made for
+    /// ([`gfx::GpuHost`]): the tvOS and iOS apps are Apple hosts.
+    #[cfg(target_vendor = "apple")]
+    pub const GPU: gfx::GpuHost = gfx::GpuHost::Apple;
+    /// The GPU host the shell's instance is made for
+    /// ([`gfx::GpuHost`]): the UWP app, DX12 alone.
+    #[cfg(windows)]
+    pub const GPU: gfx::GpuHost = gfx::GpuHost::WindowsApp;
 
     /// The wgpu target for the host's `layer`.
     #[cfg(target_vendor = "apple")]
@@ -107,7 +93,7 @@ impl Embedded {
         if layer.is_null() {
             anyhow::bail!("no {}", host_surface::NAME);
         }
-        let instance = host_surface::instance();
+        let instance = gfx::instance_for(host_surface::GPU);
         // SAFETY: the caller guarantees the layer and its lifetime.
         let surface = unsafe { instance.create_surface_unsafe(host_surface::target(layer)) }?;
         let ctx = pollster::block_on(GfxContext::new(instance, Some(&surface)))?;
@@ -297,14 +283,10 @@ mod tests {
     }
 
     #[test]
-    fn windows_hosts_use_dx12_alone() {
-        // No GL on Windows: opengl32.dll is not in the Xbox app container.
-        let b = host_surface::backends();
-        if cfg!(windows) {
-            assert_eq!(b, wgpu::Backends::DX12);
-        } else {
-            assert_eq!(b, wgpu::Backends::all());
-        }
+    fn each_embedded_host_has_its_gpu_host() {
+        // The backends per host are gfx's table (gfx::context's tests).
+        let want = if cfg!(windows) { gfx::GpuHost::WindowsApp } else { gfx::GpuHost::Apple };
+        assert_eq!(host_surface::GPU, want);
     }
 
     #[test]

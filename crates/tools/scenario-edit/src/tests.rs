@@ -616,7 +616,7 @@ fn camera_rays_projection_picking_and_planes() {
 }
 
 fn viewport_device() -> Option<(wgpu::Device, wgpu::Queue)> {
-    let instance = wgpu::Instance::default();
+    let instance = gfx::instance();
     let Ok(adapter) =
         pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
     else {
@@ -2167,7 +2167,7 @@ fn center_pixel(
 #[test]
 fn a_clamped_sky_texture_is_not_repeated() {
     use crate::scene::{Image, Scene, SceneSky};
-    let instance = wgpu::Instance::default();
+    let instance = gfx::instance();
     let Ok(adapter) =
         pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
     else {
@@ -2216,7 +2216,7 @@ fn a_clamped_sky_texture_is_not_repeated() {
 #[test]
 fn a_detail_map_multiplies_the_base_map_at_its_scale() {
     use crate::scene::{Image, Layer, Look, MAX_DETAILS, Scene, SceneSky};
-    let instance = wgpu::Instance::default();
+    let instance = gfx::instance();
     let Ok(adapter) =
         pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
     else {
@@ -2276,7 +2276,7 @@ fn a_detail_map_multiplies_the_base_map_at_its_scale() {
 #[test]
 fn the_sky_model_is_drawn_behind_the_level_wherever_the_eye_is() {
     use crate::scene::{Image, Scene, SceneSky};
-    let instance = wgpu::Instance::default();
+    let instance = gfx::instance();
     let Ok(adapter) =
         pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
     else {
@@ -2359,7 +2359,7 @@ fn the_sky_model_is_drawn_behind_the_level_wherever_the_eye_is() {
 #[test]
 fn added_sky_layers_add_over_the_dome_and_black_adds_nothing() {
     use crate::scene::{Blend, Image, Look, Scene, SceneSky};
-    let instance = wgpu::Instance::default();
+    let instance = gfx::instance();
     let Ok(adapter) =
         pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
     else {

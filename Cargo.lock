@@ -5909,6 +5909,7 @@ dependencies = [
  "assets",
  "bytemuck",
  "content",
+ "gfx",
  "h1-assets",
  "map",
  "native-render",
@@ -6155,6 +6156,7 @@ name = "shaders"
 version = "0.1.0"
 dependencies = [
  "bytemuck",
+ "gfx",
  "naga",
  "pollster",
  "serde",
@@ -6695,6 +6697,7 @@ dependencies = [
  "dear-imgui-winit",
  "dear-imguizmo",
  "editor-core",
+ "gfx",
  "guest-layout",
  "h1convert",
  "h1map",
