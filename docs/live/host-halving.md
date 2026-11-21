@@ -96,6 +96,10 @@ The light profile offers animation, collision and object rewrites together throu
 and group selections take precedence. The profile switch defaults off pending
 a clean A/A, hash parity on both maps, and a Waterworks median saving of
 at least 1.5 ms per tick. The existing subsystem ladders still apply.
+[sim-10x.md](../perf/sim-10x.md#why-the-native-subsystems-save-nothing-as-wired)
+reads the bodies and expects far less from them as wired: the object
+bodies keep the lifted code's work and pay a runner round trip per
+callout.
 
 **Sound and effects.** These are the rewrite plan's phases 4 and 6, not
 new skip switches. A host has no listener that matters, but which voices

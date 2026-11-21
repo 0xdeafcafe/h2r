@@ -22,10 +22,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
-use super::proto::{self, BuildSpec, INPUT_FILE, Manifest, Request, RunReq};
+use super::proto::{self, BuildSpec, INPUT_FILE, Manifest, Request, RunReq, SimArm, SimReq};
 use super::forensics::Summary;
 use super::transfer::{Artifacts, Transfers};
-use super::{build_cache, discovery, lan, service, takeover, transfer, watch};
+use super::{build_cache, discovery, lan, service, simbench, takeover, transfer, watch};
 
 /// Where the host keeps everything, and what it runs.
 #[derive(Clone, Debug)]
@@ -675,6 +675,7 @@ fn handle(sh: &Arc<Shared>, r: Request, requester: &str) -> Result<Value> {
         | Request::Sync { .. }
         | Request::Update => unreachable!(),
         Request::Run(run) => start(sh, Job::Run(run), requester),
+        Request::Sim(sim) => start(sh, Job::Sim(sim), requester),
         Request::Build(b) => start(sh, Job::Build(b), requester),
         Request::Wait { id, timeout } => wait(sh, &id, timeout.map(Duration::from_secs_f64)),
         Request::Stop { id } => stop(sh, &id),
@@ -752,6 +753,8 @@ struct Pending {
 
 enum Job {
     Run(RunReq),
+    /// `h2 lab sim`: headless matches on the image, no game window.
+    Sim(SimReq),
     Build(BuildSpec),
 }
 
@@ -759,6 +762,7 @@ impl Job {
     fn spec(&self) -> &BuildSpec {
         match self {
             Job::Run(r) => &r.build,
+            Job::Sim(s) => &s.build,
             Job::Build(b) => b,
         }
     }
@@ -831,6 +835,13 @@ fn start(sh: &Arc<Shared>, job: Job, requester: &str) -> Result<Value> {
     fs::create_dir_all(cfg.dir("runs").join(&id))?;
     let (kind, name, request) = match &job {
         Job::Run(r) => ("run", Some(r.name.clone()), serde_json::to_value(r)?),
+        Job::Sim(s) => {
+            // The uploaded files are in the run's `sim/*/in/`, not in every
+            // metadata write and listing.
+            let mut request = serde_json::to_value(s)?;
+            request["files"] = json!(s.files.keys().collect::<Vec<_>>());
+            ("sim", Some(s.name.clone()), request)
+        }
         Job::Build(b) => ("build", None, serde_json::to_value(b)?),
     };
     let m = Meta {
@@ -1043,9 +1054,16 @@ fn execute(
         Err(e) => ("failed", Some(format!("{e:#}"))),
     };
     let run_dir = sh.cfg.dir("runs").join(id);
-    let summary = File::open(run_dir.join("run.log"))
-        .and_then(|log| summarize(BufReader::new(log)))
-        .unwrap_or_default();
+    let summary = if matches!(job, Job::Sim(_)) {
+        // The benchmark's table and hash verdict, not frame stats.
+        fs::read_to_string(run_dir.join(simbench::SUMMARY_TEXT))
+            .map(|t| t.lines().map(str::to_owned).collect())
+            .unwrap_or_default()
+    } else {
+        File::open(run_dir.join("run.log"))
+            .and_then(|log| summarize(BufReader::new(log)))
+            .unwrap_or_default()
+    };
     let (status, skip_reason) = match outcome {
         Ok(JobOutcome::Finished(status)) => (status, None),
         Ok(JobOutcome::Skipped(reason)) => (None, Some(reason.to_owned())),
@@ -1095,6 +1113,8 @@ fn takeover_request(
     let build_seconds = if builds_image { BUILD_SECONDS } else { 0 };
     let (operation, estimate_seconds) = match job {
         Job::Build(_) => (Operation::Build, build_seconds),
+        // A sim has no frame limit to estimate from.
+        Job::Sim(_) => (Operation::Run, 0),
         Job::Run(run) => {
             let frames = run
                 .env
@@ -1166,7 +1186,7 @@ fn run_job(
             takeover_request(job, commit, requester, builds_image, cfg.takeover.timeout_seconds),
         )
     };
-    if (builds_image || matches!(job, Job::Run(_))) && let Some(skipped) = consent(builds_image)? {
+    if (builds_image || !matches!(job, Job::Build(_))) && let Some(skipped) = consent(builds_image)? {
         return Ok(skipped);
     }
     let image = match (commit, planned) {
@@ -1184,12 +1204,19 @@ fn run_job(
             env: BTreeMap::new(),
         },
     };
-    let Job::Run(run) = job else { return Ok(JobOutcome::Finished(None)) };
+    if matches!(job, Job::Build(_)) {
+        return Ok(JobOutcome::Finished(None));
+    }
     // A player can open the game during a long build. Ask before starting
     // the run too if there was an uncached build in between.
     if builds_image && let Some(skipped) = consent(false)? {
         return Ok(skipped);
     }
+    let run = match job {
+        Job::Run(run) => run,
+        Job::Sim(sim) => return run_sim(sh, id, sim, &image, started),
+        Job::Build(_) => unreachable!("builds returned above"),
+    };
     let mut log = File::create(run_dir.join("run.log"))?;
     writeln!(log, "lab job {id} · {}", run.name)?;
     let cmd = play_command(cfg, id, run, &image, commit)?;
@@ -1236,6 +1263,147 @@ fn run_job(
         }
     }
     Ok(JobOutcome::Finished(Some(st)))
+}
+
+/// A sim benchmark: `h2 sim run` (or `batch`) of the uploaded file once per
+/// arm and repeat, one after another in the order [`simbench::schedule`]
+/// gives, each in `runs/<id>/sim/<arm>-r<N>/`. Per-run data directories go
+/// as each step ends; the reports, logs and the summary stay
+/// (docs/runtime/lab.md, "Sim benchmarks").
+fn run_sim(
+    sh: &Arc<Shared>,
+    id: &str,
+    sim: &SimReq,
+    image: &Image,
+    started: Instant,
+) -> Result<JobOutcome> {
+    let cfg = &sh.cfg;
+    let run_dir = cfg.dir("runs").join(id);
+    let mut log = File::create(run_dir.join("run.log"))?;
+    writeln!(log, "lab job {id} · {}", sim.name)?;
+    simbench::check_entry(sim)?;
+    let plan = simbench::schedule(sim.arms.len(), sim.repeat);
+    sh.update(id, |m| {
+        m.state = "running".into();
+        m.run_elapsed_s = Some(started.elapsed().as_secs_f64());
+        m.h2 = Some(image.h2.display().to_string());
+    });
+    let mut steps = Vec::new();
+    let mut stopped = None;
+    for (n, &(arm, repeat)) in plan.iter().enumerate() {
+        let name = simbench::step_name(&sim.arms[arm].name, repeat);
+        let dir = run_dir.join("sim").join(&name);
+        writeln!(log, "lab: sim run {}/{}: {name}", n + 1, plan.len())?;
+        let t = Instant::now();
+        let ran = sim_command(cfg, id, sim, &sim.arms[arm], image, &dir).and_then(|cmd| {
+            let step_log = File::create(dir.join("sim.log"))?;
+            sh.step(id, cmd, &step_log)
+        });
+        // The 1.3 GB data directories go whether or not the run finished.
+        simbench::remove_run_data(&dir);
+        let mut error = match ran {
+            Err(e) if e.is::<Stopped>() => {
+                stopped = Some(e);
+                break;
+            }
+            Err(e) => Some(format!("{e:#}")),
+            Ok(st) if !st.success() => Some(match (st.code(), st.signal()) {
+                (Some(c), _) => format!("exit {c}"),
+                (_, Some(s)) => format!("signal {s}"),
+                _ => "failed".into(),
+            }),
+            Ok(_) => None,
+        };
+        let (reports, bad) = simbench::collect_reports(&dir);
+        if error.is_none() && !bad.is_empty() {
+            error = Some(format!("unreadable report: {}", bad.join("; ")));
+        } else if error.is_none() && reports.is_empty() {
+            error = Some("no report.json".into());
+        }
+        writeln!(
+            log,
+            "lab: sim run {name}: {} in {:.1} s ({} report(s))",
+            error.as_deref().map_or("ok".to_owned(), |e| format!("failed, {e}")),
+            t.elapsed().as_secs_f64(),
+            reports.len()
+        )?;
+        steps.push(simbench::StepResult {
+            arm,
+            repeat,
+            ok: error.is_none(),
+            error,
+            reports,
+        });
+    }
+    let summary = simbench::summarize(sim, &steps);
+    let text = summary.render();
+    fs::write(run_dir.join(simbench::SUMMARY_TEXT), &text)?;
+    fs::write(
+        run_dir.join(simbench::SUMMARY_JSON),
+        serde_json::to_vec_pretty(&summary)?,
+    )?;
+    write!(log, "{text}")?;
+    if let Some(e) = stopped {
+        return Err(e);
+    }
+    let failed = steps.iter().filter(|s| !s.ok).count();
+    if failed > 0 {
+        let note = format!(
+            "{failed} of {} sim runs failed (runs/{id}/sim/<arm>-r<N>/sim.log)",
+            steps.len()
+        );
+        sh.update(id, |m| m.notes.push(note));
+    }
+    Ok(JobOutcome::Finished(Some(status_for_outcome(if failed == 0 {
+        "Returned"
+    } else {
+        "Failed"
+    }))))
+}
+
+/// `h2 sim run <file> --report <dir>/report.json` (or `h2 sim batch <file>`)
+/// on the lab's image and data, with the arm's `H2_FEATURES`, cleaned of the
+/// host's own `H2_*` variables like a game run. Writes the step's input
+/// files first; the sim never builds, so the image must be the one the job
+/// built (`H2_OPT` and the rest of the build environment come with it).
+fn sim_command(
+    cfg: &HostConfig,
+    id: &str,
+    sim: &SimReq,
+    arm: &SimArm,
+    image: &Image,
+    dir: &Path,
+) -> Result<Command> {
+    let inputs = dir.join("in");
+    simbench::write_inputs(&inputs, &sim.files)?;
+    let mut cmd = Command::new(&image.h2);
+    cmd.arg("sim")
+        .arg(if sim.batch { "batch" } else { "run" })
+        .arg(inputs.join(&sim.file))
+        .arg("--disc")
+        .arg(&cfg.disc);
+    if let Some(out) = &image.out {
+        cmd.arg("--out").arg(out);
+    }
+    cmd.arg("--data").arg(&cfg.data);
+    if sim.batch {
+        // One at a time unless asked: these are benchmarks.
+        cmd.arg("--parallel").arg(sim.parallel.unwrap_or(1).to_string());
+    } else {
+        cmd.arg("--report").arg(dir.join("report.json"));
+    }
+    for (k, _) in std::env::vars_os() {
+        if k.to_str().is_some_and(|k| k.starts_with("H2_")) {
+            cmd.env_remove(k);
+        }
+    }
+    cmd.envs(&image.env).envs(&sim.env);
+    if let Some(f) = &arm.features {
+        cmd.env("H2_FEATURES", f);
+    }
+    cmd.env("H2_LAB_JOB_ID", id).env("H2_LAB_JOB_NAME", &sim.name);
+    cmd.current_dir(dir);
+    Ok(cmd)
 }
 
 /// How long a game may outlive its guest thread's exit before the lab stops
