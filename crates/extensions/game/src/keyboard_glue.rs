@@ -278,14 +278,27 @@ pub fn install_with_tape(
     pump: u32,
     tape: Option<Arc<dyn Tap>>,
 ) -> anyhow::Result<bool> {
-    let Some(original) = rt.resolve_original(pump) else {
-        keyboard.set_text_target(None);
-        eprintln!("keyboard: no original UI frame entry at {pump:#x}; hook skipped");
-        return Ok(false);
+    // The feature plan may already hook the pump (live-join-link, the UI
+    // watcher). Wrap its override rather than displace it, so the plan's
+    // chain, and the original body after it, still run inside ours.
+    let wrapped = rt.edit_dispatch(|d| {
+        d.override_handler(pump)
+            .map(|h| (h, d.override_name(pump).unwrap_or("?").to_owned()))
+    });
+    let original = match wrapped {
+        Some((handler, name)) => {
+            eprintln!("keyboard: UI pump wraps {name}");
+            handler
+        }
+        None => match rt.resolve_original(pump) {
+            Some(original) => original,
+            None => {
+                keyboard.set_text_target(None);
+                eprintln!("keyboard: no original UI frame entry at {pump:#x}; hook skipped");
+                return Ok(false);
+            }
+        },
     };
-    if let Some(name) = rt.edit_dispatch(|d| d.override_name(pump).map(str::to_owned)) {
-        anyhow::bail!("keyboard: UI pump already overridden by {name}");
-    }
     let shadow = {
         let mut m = rt.memory();
         let mut base = 0xa2f2_0000u32;

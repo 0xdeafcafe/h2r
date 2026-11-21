@@ -962,12 +962,6 @@ fn run_configured(
         )
     });
     #[cfg(feature = "desktop-runtime")]
-    if let Some(keyboard) = pad.as_ref() {
-        keyboard_glue::install_with_tape(&loaded.runtime, keyboard.clone(), keyboard_glue::PUMP,
-            film.as_ref().and_then(|session| session.keyboard_tape()))
-            .context("installing host keyboard entry")?;
-    }
-    #[cfg(feature = "desktop-runtime")]
     let script = xapi_glue::InputScript::from_env();
     // H2_LOCKSTEP / H2_INPUT_RECORD / H2_INPUT_REPLAY (lockstep_glue.rs).
     // H2_AGENT=<socket>: the agent API (agent_glue.rs, docs/runtime/agent-api.md);
@@ -1225,6 +1219,14 @@ fn run_configured(
     let installed = plan
         .install(&loaded.runtime)
         .context("installing the feature plan")?;
+    // After the plan: the keyboard bridge wraps whatever the plan put on
+    // the UI pump (keyboard_glue::install_with_tape).
+    #[cfg(feature = "desktop-runtime")]
+    if let Some(keyboard) = pad.as_ref() {
+        keyboard_glue::install_with_tape(&loaded.runtime, keyboard.clone(), keyboard_glue::PUMP,
+            film.as_ref().and_then(|session| session.keyboard_tape()))
+            .context("installing host keyboard entry")?;
+    }
     if let Some(session) = &film {
         session.check_simulation_hooks(&plan, &installed)?;
     }
