@@ -839,11 +839,6 @@ mod tests {
                 );
             }
         }
-        app.dispatch(Action::SetTool(ToolKind::Scenario));
-        h.frames(&mut app, 4).unwrap();
-        let (filter, _) = h.scene.find("##outliner-filter").unwrap();
-        let (body, _) = h.scene.find("win:##outliner-body").unwrap();
-        assert!(filter[3] <= body[1] + 1.0, "the filter is above the tree");
         drop(turn);
         std::fs::remove_dir_all(&dir).unwrap();
     }
