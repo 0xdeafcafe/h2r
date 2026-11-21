@@ -1,6 +1,6 @@
 # Rich editors: shaders, colours, curves, scripts, sounds and recordings
 
-Status: Design. Nothing here is built; each section names the format code it stands on and the gaps in it.
+Status: Design, except "Data that changes length", which is built; each section names the format code it stands on and the gaps in it.
 Code: `crates/apps/studio/src/fields.rs` (the panel the rich views join), `crates/apps/studio/src/app/tag_doc.rs` (`TagDoc`, the only write path), `crates/formats/tags/src/shader.rs`, `crates/formats/tags/src/effects/function.rs`, `crates/formats/hs/src/source.rs`, `crates/tools/h1campaign/src/recordings.rs`, `crates/formats/tags/src/sound.rs`. Tests: none yet; each slice names its own.
 Switch: none.
 
@@ -40,7 +40,7 @@ A view reads and writes through three things only:
 - `TagDoc::read` and `TagDoc::write(TagWrite)` for fixed-length bytes,
   `TagAction::Seal` to end a drag as one undo step;
 - `TagDoc::block_op` for list changes, under `TagDoc::block_refusal`;
-- `TagDoc::resize_data` (new, slice X2) for a data reference whose length
+- `TagDoc::resize_data` (`TagAction::ResizeData`) for a data reference whose length
   changes.
 
 The Scripts and Recordings views edit the scenario tag, which
@@ -56,23 +56,27 @@ partial picture as if it were whole.
 
 ### Data that changes length
 
-The document writes data references in place at the same length and
-refuses any other length ([editor.md](editor.md), "The document").
-Function types, script strings and recording streams need other lengths.
-`TagDoc::resize_data` follows the rule grown blocks already use:
+`TagDoc::resize_data` (`crates/apps/studio/src/app/tag_doc.rs`) gives the
+data reference at a named `Kind::Data` field a payload of any length,
+as one undo step. It follows the rule grown blocks already use, treating
+the reference as a block of one-byte elements:
 
-- A shorter payload is written in place and the size field patched; the
-  tail stays as dead bytes.
+- A payload no longer than the source's, or than the room an earlier
+  growth made, is written in place and the size field patched; the tail
+  stays as dead bytes.
 - A longer payload gets a provisional address past the end of the
   metadata. On save it is appended through `MapEditor::append_metadata`
   and its `(size, address)` pair patched, carried in the save's change
-  list beside `scenario_edit::TagGrown`. The old bytes stay dead.
-- It is allowed only while **Edit > Allow growing full blocks** is on,
-  and is refused when the metadata does not end the file or the cache
-  size limit is reached, with the same sentences as block growth
+  list as a `scenario_edit::TagGrown` (`root` the pair, `count` the
+  length). The old bytes stay dead.
+- It is allowed only while **Edit > Allow growing full blocks** is on
+  (`DATA_GROWTH_REFUSAL`). That the metadata ends the file and the cache
+  size limit hold is checked by the save, as for block growth
   ([scenario-editor.md](scenario-editor.md) §6).
-- A data reference in a BSP region, in a tag with no data in the map, or
-  in a browsed map is refused with the tag's existing reason.
+- A data reference in a BSP region (`DATA_BSP_REFUSAL`), in a tag with
+  no data in the map, in a browsed map, or inside a grown block's
+  elements (`DATA_NESTED_GROWTH`) is refused. `TagDoc::data_refusal`
+  gives the reason without writing.
 
 With a game connected, a resized data reference has the `reload` effect.
 

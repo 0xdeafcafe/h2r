@@ -1314,6 +1314,16 @@ impl App {
                 text,
                 label,
             } => self.tags.set_string(tag, address, &text, &label),
+            TagAction::ResizeData {
+                tag,
+                element,
+                layout,
+                field,
+                bytes,
+                label,
+            } => self
+                .tags
+                .resize_data(tag, element, &layout, field, &bytes, &label),
             TagAction::Seal => {
                 self.tags.seal();
                 Ok(())
@@ -1696,6 +1706,8 @@ impl App {
 
 #[cfg(test)]
 pub(crate) mod tag_tests;
+#[cfg(test)]
+mod tag_data_tests;
 #[cfg(test)]
 pub(crate) mod map_cards_tests;
 #[cfg(test)]

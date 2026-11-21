@@ -20,6 +20,13 @@
 //! elements stay as dead bytes; its elements' own child blocks keep
 //! pointing where they did.
 //!
+//! A data reference changes length the same way ([`TagDoc::resize_data`]):
+//! a shorter payload is written in place with its size patched (the tail
+//! stays as dead bytes); a longer one is copied past the end of the
+//! metadata, grown like a block of one-byte elements, and saved with
+//! `MapEditor::append_metadata`. See docs/editor/rich-editors.md, "Data
+//! that changes length".
+//!
 //! [`App`]: crate::App
 use std::collections::{BTreeMap, HashMap};
 use std::io::{Read, Seek};
@@ -44,6 +51,17 @@ pub const GROWTH_REFUSAL: &str = "the block is full: it has as many elements as 
      Growing it appends a copy to the map's metadata, and the engine's headroom for more tag \
      memory is not established (docs/editor/scenario-editor.md §6): turn on Edit > Allow \
      growing full blocks to do it";
+/// Why a data reference may not grow past the length it had in the source.
+pub const DATA_GROWTH_REFUSAL: &str = "the data is longer than it was in the source. Growing it \
+     appends a copy to the map's metadata, and the engine's headroom for more tag memory is not \
+     established (docs/editor/scenario-editor.md §6): turn on Edit > Allow growing full blocks \
+     to do it";
+/// Why a data reference in a BSP region does not change length.
+pub const DATA_BSP_REFUSAL: &str =
+    "a data reference in a structure BSP region cannot change length";
+/// Why a data reference inside a grown block's elements does not grow.
+pub const DATA_NESTED_GROWTH: &str = "the data lies in elements that were grown and not yet \
+     saved: save, reopen the map, then grow it";
 /// Why a BSP block may not grow past its original allocation.
 pub const BSP_GROWTH_REFUSAL: &str =
     "the block is full: blocks in a structure BSP region cannot grow past their source capacity";
@@ -138,6 +156,17 @@ pub enum TagAction {
         tag: TagId,
         address: u32,
         text: String,
+        label: String,
+    },
+    /// Give the data reference at field `field` of the element at
+    /// `element` (laid out as `layout`) the payload `bytes`, which may
+    /// have another length (see [`TagDoc::resize_data`]).
+    ResizeData {
+        tag: TagId,
+        element: u32,
+        layout: Arc<Layout>,
+        field: u32,
+        bytes: Vec<u8>,
         label: String,
     },
     /// End the current merge run.
@@ -244,7 +273,8 @@ pub struct TagDoc {
     shape_rev: u64,
     /// Each tag's raw pointers by map, as counted for `shape_rev`
     /// (`shared_refs::TagDoc::homes`).
-    pub(super) homes_cache: std::cell::RefCell<(u64, HashMap<TagId, Option<super::shared_refs::Homes>>)>,
+    pub(super) homes_cache:
+        std::cell::RefCell<(u64, HashMap<TagId, Option<super::shared_refs::Homes>>)>,
 }
 
 impl Default for TagDoc {
@@ -857,6 +887,126 @@ impl TagDoc {
         }
     }
 
+    /// Why the data reference at `pair` may not be given `len` bytes, if it
+    /// may not.
+    pub fn data_refusal(&self, tag: TagId, pair: u32, len: u32) -> Option<&'static str> {
+        if let Some(why) = self.refusal(tag) {
+            return Some(why);
+        }
+        if self.tag(tag).is_some_and(|t| t.bsp.is_some()) {
+            return Some(DATA_BSP_REFUSAL);
+        }
+        let Some((n, a)) = self.pair(tag, pair) else {
+            return Some("the data reference is outside the tag's address space");
+        };
+        if n > 0 && self.read_source(tag, a, n).is_none() {
+            return Some("the data is outside the tag's address space");
+        }
+        if len > self.capacity(tag, pair) {
+            if !self.allow_growth {
+                return Some(DATA_GROWTH_REFUSAL);
+            }
+            if self.is_grown_room(pair) {
+                return Some(DATA_NESTED_GROWTH);
+            }
+        }
+        None
+    }
+
+    /// Give the data reference at `field` of the element at `element`
+    /// (laid out as `layout`) the payload `bytes`, as one undo step.
+    ///
+    /// A payload no longer than the source's (or than the room an earlier
+    /// growth made) is written in place and the size patched; the tail
+    /// stays as dead bytes. A longer one is copied to new room past the
+    /// metadata's end and the pair pointed there; the save appends it
+    /// ([`Self::grown`]). Growth is refused while [`Self::allow_growth`]
+    /// is off. That the metadata ends the file, and the cache's size
+    /// limit, are checked by the save (`MapEditor::append_metadata`).
+    pub fn resize_data(
+        &mut self,
+        tag: TagId,
+        element: u32,
+        layout: &Layout,
+        field: u32,
+        bytes: &[u8],
+        label: &str,
+    ) -> Result<(), String> {
+        let f = layout
+            .field_at(field)
+            .filter(|f| f.offset == field && matches!(f.kind, Kind::Data))
+            .ok_or("no data reference at that field")?;
+        let name = f.name.clone();
+        let pair = element.checked_add(field).ok_or("address overflow")?;
+        let len = u32::try_from(bytes.len()).map_err(|_| "the data is too long")?;
+        if let Some(why) = self.data_refusal(tag, pair, len) {
+            return Err(why.into());
+        }
+        let (n, a) = self.pair(tag, pair).ok_or("no data here")?;
+        if n == len && (len == 0 || self.read(tag, a, len).as_deref() == Some(bytes)) {
+            return Ok(());
+        }
+        let mut step = Step {
+            label: format!(
+                "resize {}",
+                if label.is_empty() {
+                    name.as_str()
+                } else {
+                    label
+                }
+            ),
+            ..Step::default()
+        };
+        let mut writes: Vec<(u32, Vec<u8>)> = Vec::new();
+        if len <= self.capacity(tag, pair) {
+            if len > 0 {
+                writes.push((a, bytes.to_vec()));
+            }
+            writes.push((pair, len.to_le_bytes().to_vec()));
+        } else {
+            let cap = len
+                .checked_next_multiple_of(16)
+                .ok_or("the data is too long")?;
+            let l = self.loaded.as_mut().ok_or("no map is open")?;
+            let at = (l.ext_base as u64 + l.ext.len() as u64).next_multiple_of(16);
+            let end = at + u64::from(cap);
+            let at = u32::try_from(at)
+                .ok()
+                .filter(|_| end <= u64::from(u32::MAX))
+                .ok_or("no address room left to grow into")?;
+            l.ext.resize((end - u64::from(l.ext_base)) as usize, 0);
+            l.allocs.insert(at, cap);
+            l.grown.insert(pair, 1);
+            step.label.push_str(" (grown)");
+            let mut pair_bytes = len.to_le_bytes().to_vec();
+            pair_bytes.extend(at.to_le_bytes());
+            writes.push((at, bytes.to_vec()));
+            writes.push((pair, pair_bytes));
+        }
+        for (to, after) in writes {
+            let region = self.check(tag, to, after.len() as u32)?;
+            let before = self
+                .read_in(region, to, after.len() as u32)
+                .expect("checked");
+            step.writes.push(((region, to), before, after));
+        }
+        for (to, _, after) in &step.writes {
+            self.put(*to, after);
+        }
+        step.reload.push((
+            step.label.clone(),
+            step.writes
+                .iter()
+                .map(|((_, a), _, b)| (*a, b.len() as u32))
+                .collect(),
+        ));
+        self.undo.push(step);
+        self.redo.clear();
+        self.sealed = true;
+        self.shape_rev += 1;
+        Ok(())
+    }
+
     fn has_children(&self, tag: TagId, pair: u32, layout: &Layout, i: u32) -> bool {
         let Some((_, a)) = self.pair(tag, pair) else {
             return true;
@@ -1034,7 +1184,8 @@ impl TagDoc {
         patches
     }
 
-    /// The blocks grown past their source room, with every element as it
+    /// The blocks and data references grown past their source room, with
+    /// every element (for data, every byte, and `count` the length) as it
     /// stands, for the save to append and repoint.
     pub fn grown(&self) -> Vec<scenario_edit::TagGrown> {
         let Some(l) = self.loaded.as_ref() else {
