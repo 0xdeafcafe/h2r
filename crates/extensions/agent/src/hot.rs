@@ -162,7 +162,9 @@ pub fn add_edit_methods(
         let (_, checksum) = ctx.reader.live_metadata();
         with(&g, |g| {
             ed.at_epoch(g, ctx.epoch, ctx.map_epoch).map_err(edit_error)?;
-            if cached_file.as_ref().is_none_or(|(epoch, _)| *epoch != ctx.epoch) {
+            // A served map's file can be named after its first edit.map, so
+            // keep asking until one is known for this epoch.
+            if cached_file.as_ref().is_none_or(|(epoch, file): &(u64, Option<String>)| *epoch != ctx.epoch || file.is_none()) {
                 cached_file = Some((ctx.epoch, file(g)));
             }
             let idx = hot_tags::index::index(g).map_err(|e| RpcError::new(code::UNAVAILABLE, e))?;
