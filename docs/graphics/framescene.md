@@ -1149,8 +1149,11 @@ the list.
 
 The original-renderer census and the owned-renderer arm use the existing
 [diagnostic options](../runtime/switches.md). The original arm records
-the guest's reads and target uses while D3D renders. The owner arm
-records which game frames the native graph actually presents.
+the guest's remaining reads and target uses while the D3D display
+worker presents. Existing typed stages stay enabled in this census.
+The owner arm records which game frames the native graph actually
+presents. The pixel and simulation comparisons in §9 use the full
+D3D reference with all native stages disabled.
 
 - **The types** (`frame_scene::carried`). `Slot` and `SlotAt` (the slot
   and the guest view index); `SlotTracker` moves the slot on the frame
