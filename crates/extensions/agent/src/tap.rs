@@ -43,6 +43,9 @@ struct Delivered {
     number: u32,
     pad: [u8; Gamepad::SIZE],
     seen: bool,
+    /// The last read was a route's or a step's, so the next live one is a
+    /// change the game must see.
+    agent: bool,
 }
 
 /// Recording or replaying through the tap.
@@ -480,7 +483,7 @@ impl Input {
         let live = u32::from_le_bytes(packet[..4].try_into().unwrap());
         let mut number = live.wrapping_add(d.offset);
         let now: [u8; Gamepad::SIZE] = packet[4..].try_into().unwrap();
-        let touched = stepped || d.offset != 0;
+        let touched = stepped || d.offset != 0 || d.agent;
         if touched && d.seen && now != d.pad && number == d.number {
             d.offset = d.offset.wrapping_add(1);
             number = number.wrapping_add(1);
@@ -491,6 +494,7 @@ impl Input {
         d.number = number;
         d.pad = now;
         d.seen = true;
+        d.agent = stepped;
     }
 }
 

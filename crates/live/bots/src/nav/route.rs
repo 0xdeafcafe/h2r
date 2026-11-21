@@ -182,9 +182,9 @@ fn floor_point(nav: &NavMesh, at: V3, radius: f32) -> Option<V3> {
 }
 
 fn run_up(map: &MapData, from: V3, dir: [f32; 2]) -> Option<V3> {
-    let back = |distance| add(from, [-distance * dir[0], -distance * dir[1], 0.0]);
+    let back = |distance: f32| add(from, [-distance * dir[0], -distance * dir[1], 0.0]);
     [0.6, 0.45, 0.3].into_iter().find_map(|distance| {
-        let floor = |at| {
+        let floor = |at: V3| {
             // Preserve XY so a snap across an edge can't produce a run-up.
             let (_, point) = map.nav.nearest(at, 0.0, 0.25, 0.25)?;
             standing_clear(&map.walls, point).then_some(point)
