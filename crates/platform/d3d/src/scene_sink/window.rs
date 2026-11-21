@@ -61,6 +61,22 @@ struct Measured {
     palette_views: u64,
     palette_pending_frames: u64,
     palette_unknown_frames: u64,
+    scales: BTreeMap<Option<u32>, ScaleCounts>,
+}
+
+/// Raster scale of the original Swap that actually completed. Physical scale
+/// is relative to that presented surface's guest extent.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PresentScale {
+    pub configured: Option<u32>,
+    pub physical: Option<u32>,
+}
+
+#[derive(Clone, Default)]
+struct ScaleCounts {
+    configured: u64,
+    physical: u64,
+    game_physical: u64,
 }
 
 /// Observations at the actual entries of all views in one original Swap.
@@ -165,10 +181,15 @@ impl PresentWindow {
 
     pub(crate) fn complete(&self, present: u64, result: DisplayResult,
         residency: Option<(u64, bool)>, worker_drops: u64) {
+        self.complete_at_scale(present, result, residency, worker_drops, PresentScale::default());
+    }
+
+    pub(crate) fn complete_at_scale(&self, present: u64, result: DisplayResult,
+        residency: Option<(u64, bool)>, worker_drops: u64, scale: PresentScale) {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         if state.completed < CORPUS_PRESENT && present != state.completed + 1 { state.ordinal_gap = true; }
         state.completed = state.completed.max(present);
-        state.join(present, result, residency, worker_drops);
+        state.join(present, result, residency, worker_drops, scale);
         if present == CORPUS_PRESENT && !state.ordinal_gap && !state.map_changed && state.measured_at_boundary.is_none() {
             state.measured_at_boundary = state.measured.as_ref()
                 .filter(|m| m.start < present && m.through == present && m.gaps == 0)
@@ -185,7 +206,8 @@ impl PresentWindow {
 }
 
 impl State {
-    fn join(&mut self, present: u64, result: DisplayResult, residency: Option<(u64, bool)>, worker_drops: u64) {
+    fn join(&mut self, present: u64, result: DisplayResult,
+        residency: Option<(u64, bool)>, worker_drops: u64, scale: PresentScale) {
         let State { pending, measured, .. } = self;
         let Some(m) = measured.as_mut() else { return };
         if present <= m.start { return; }
@@ -200,7 +222,12 @@ impl State {
         m.through = present;
         m.drops += input.drops + worker_drops;
         m.failed += u64::from(matches!(result, DisplayResult::Failed));
-        if !input.game_view && views.count == 0 { return; }
+        let game_view = input.game_view || views.count > 0;
+        m.scales.entry(scale.configured.filter(|s| *s > 0)).or_default().configured += 1;
+        let shown = m.scales.entry(scale.physical.filter(|s| *s > 0)).or_default();
+        shown.physical += 1;
+        shown.game_physical += u64::from(game_view);
+        if !game_view { return; }
         m.games += 1;
         m.palette_views += views.count;
         m.palette_pending_frames += u64::from(views.pending);
@@ -233,6 +260,13 @@ impl Measured {
             ("palette_pending_frames", self.palette_pending_frames),
             ("palette_unknown_frames", self.palette_unknown_frames),
         ].into_iter().map(|(name, n)| (format!("scene_window_{name}"), n)).collect();
+        for (scale, counts) in &self.scales {
+            let bucket = scale.map_or_else(|| "unknown".into(), |n| format!("{n}x"));
+            for (name, count) in [("configured_scale", counts.configured), ("physical_scale", counts.physical),
+                                  ("game_physical_scale", counts.game_physical)] {
+                if count != 0 { out.insert(format!("scene_window_{name}_{bucket}"), count); }
+            }
+        }
         for (kind, n) in Readback::ALL.into_iter().zip(self.reads) {
             out.insert(format!("scene_window_read_{}", kind.name()), n);
         }
@@ -296,6 +330,31 @@ mod tests {
         assert_eq!((counters["scene_window_start"], counters["scene_window_through"]), (CORPUS_PRESENT - 1, CORPUS_PRESENT));
         assert_eq!((counters["scene_window_games"], counters["scene_window_failed"]), (1, 0));
         assert_eq!(w.counters()["scene_window_failed"], 1);
+    }
+
+    #[test]
+    fn the_corpus_counts_configured_and_shown_scale_per_original_and_game_view() {
+        let w = PresentWindow::default();
+        for n in 1..=CORPUS_PRESENT + 1 {
+            if n == CORPUS_PRESENT - 3 { w.activate(); }
+            let (configured, physical, game) = match n {
+                n if n == CORPUS_PRESENT - 3 => (Some(4), Some(1), false), // small non-game original
+                n if n == CORPUS_PRESENT - 2 => (Some(4), Some(1), true), // small game original
+                n if n == CORPUS_PRESENT - 1 => (Some(4), None, true),
+                CORPUS_PRESENT => (Some(4), Some(4), true),
+                _ => (Some(1), Some(1), false),
+            };
+            w.submit(n, Input { game_view: game, ..Default::default() });
+            w.complete_at_scale(n, DisplayResult::Ordinary, Some((0, false)), 0, PresentScale { configured, physical });
+        }
+        let frozen = w.checkpoint().unwrap().counters.unwrap();
+        assert_eq!(frozen["scene_window_configured_scale_4x"], 4);
+        assert!(!frozen.contains_key("scene_window_configured_scale_1x"));
+        assert_eq!(frozen["scene_window_physical_scale_1x"], 2);
+        assert_eq!(frozen["scene_window_game_physical_scale_1x"], 1);
+        assert_eq!(frozen["scene_window_game_physical_scale_4x"], 1);
+        assert_eq!(frozen["scene_window_game_physical_scale_unknown"], 1);
+        assert_eq!(w.counters()["scene_window_configured_scale_1x"], 1);
     }
 
     #[test]

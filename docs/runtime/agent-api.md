@@ -1026,6 +1026,13 @@ h2 agent render.parity '{"arm": true}'
   differed from the original requests on the same Swap. Each read of
   these counters covers a single completed interval, even when the
   worker is drawing a later frame. The guest continues running.
+  `configured_scale_<bucket>` counts the raster setting used on each
+  completed original Swap. `physical_scale_<bucket>` counts the scale
+  of its presented image relative to that original surface's guest
+  extent. `game_physical_scale_<bucket>` counts that same observation
+  for game-view originals. Buckets use `1x`, `4x` or the other observed
+  integer factor. `unknown` counts missing observations. Empty buckets
+  are omitted. These histograms also appear in the frozen checkpoint.
   The per-frame `aux` number appears only under `carried.side_targets`.
   The cumulative census is available on the census-only path. Rendering
   workers omit this extra scan. Both paths count
