@@ -22,7 +22,7 @@ impl SimNative {
 }
 
 pub(crate) type Body = fn(&mut CpuAbi, &mut Guest) -> sim::Result;
-pub(crate) const ENTRIES: &[(&points::Point, &'static str, Body)] = &[
+pub(crate) const ENTRIES: &[(&points::Point, &str, Body)] = &[
     (
         &points::OBJECT_TRANSFORM_COMPOSE,
         "sim.native_transform_compose",
@@ -277,7 +277,7 @@ fn install_collision(b: &mut Builder) {
                 if addr == point.base && sim::supported(cpu) {
                     let mut mem = ctx.memory();
                     if let Some(transfer) =
-                        body(cpu, &mut *mem, &engine::sim_collision::WORLD)?
+                        body(cpu, &mut mem, &engine::sim_collision::WORLD)?
                     {
                         return Ok(transfer);
                     }

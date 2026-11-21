@@ -6,11 +6,9 @@
 //! thread. Synthetic device over the recording backend; no GPU.
 #![cfg(feature = "gpu")]
 
-mod common;
-
 use std::sync::{Arc, Mutex};
 
-use common::*;
+use crate::common::*;
 use d3d::{
     Device, ExternalPass, ExternalPlan, InterpBackend, Recorded, RecordingBackend, SparseMemory, ThreadedBackend,
     UploadPolicy,

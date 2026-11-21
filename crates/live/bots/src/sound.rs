@@ -34,13 +34,6 @@ pub fn clear_shots() {
     SHOTS.lock().unwrap_or_else(|e| e.into_inner()).clear();
 }
 
-#[cfg(test)]
-pub(crate) fn recent(tick: u32) -> Vec<ShotSound> {
-    let mut out = Vec::new();
-    recent_into(tick, &mut out);
-    out
-}
-
 pub(crate) fn recent_into(tick: u32, out: &mut Vec<ShotSound>) {
     out.clear();
     let shots = SHOTS.lock().unwrap_or_else(|e| e.into_inner());

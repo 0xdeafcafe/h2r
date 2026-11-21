@@ -1,7 +1,7 @@
 //! Our "Video" screen: a "Video" row on Halo 2's top-level Settings list
 //! (after Player Profiles and Game Variants) that opens a Controls screen
-//! holding the display rows (Field of View, Frame Rate, Resolution and
-//! Lighting) instead of the retail six. See docs/game/settings-menu.md "Video
+//! holding the display rows (Field of View, Frame Rate, Resolution,
+//! Lighting and LOD Distance) instead of the retail six. See docs/game/settings-menu.md "Video
 //! screen" for the trace.
 //!
 //! **The row.** The Settings list (screen id 19, list handler `0x2b1cca` at
@@ -35,8 +35,8 @@ use settings::Store;
 
 use crate::layout_glue::Gm;
 use crate::setting_defs::{
-    AIM_ASSIST, FOV, PAD_SPEAKER, STEAM_LEFT_PAD, STEAM_SENSITIVITY, STEAM_SPEAKER, TOUCH_ACCEL,
-    TOUCH_AUTO_FIRE, TOUCH_CROUCH, TOUCH_GYRO, TOUCH_LOOK,
+    AIM_ASSIST, FOV, LOD_DISTANCE, PAD_SPEAKER, STEAM_LEFT_PAD, STEAM_SENSITIVITY, STEAM_SPEAKER,
+    TOUCH_ACCEL, TOUCH_AUTO_FIRE, TOUCH_CROUCH, TOUCH_GYRO, TOUCH_LOOK,
 };
 use crate::speaker_row;
 use crate::ui::{self, List, Model, Row, Screen};
@@ -129,7 +129,9 @@ pub const SETTINGS_THIRD_ITEM: u32 = 0x220;
 pub fn model(store: Arc<Store>, on: Switches) -> Result<Model, String> {
     let mut video = Screen::new(SCREEN).title("Video");
     if on.video_screen {
-        video = video.rows_from_settings(&store.defs());
+        video = video
+            .rows_from_settings(&store.defs())
+            .with_picker(LOD_DISTANCE.key);
     }
     if !on.fov_row {
         video = video.without(FOV.key);
@@ -314,6 +316,7 @@ mod tests {
                 RowKind::Setting(FPS.key),
                 RowKind::Setting(RENDER_SCALE.key),
                 RowKind::Setting(LIGHTING.key),
+                RowKind::Setting(LOD_DISTANCE.key),
             ]
         );
         let store = || Arc::new(Store::defaults(ALL));
@@ -325,7 +328,7 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(no_fov.rows(LIST).len(), 3);
+        assert_eq!(no_fov.rows(LIST).len(), 4);
         assert_eq!(m.count(List::Settings, SETTINGS_ROWS), 3);
         assert_eq!(m.count(List::Controls, 6), 10, "the speaker's and Steam's");
         // No Video screen: no Video row on Settings either.
@@ -511,7 +514,8 @@ mod tests {
         assert_eq!(drawn(&m, LIST, 1), s("Frame Rate", "30"));
         assert_eq!(drawn(&m, LIST, 2), s("Resolution", "640x480"));
         assert_eq!(drawn(&m, LIST, 3), s("Lighting", "Retail"));
-        assert_eq!(drawn(&m, LIST, 4), None);
+        assert_eq!(drawn(&m, LIST, 4), s("LOD Distance", "1x"));
+        assert_eq!(drawn(&m, LIST, 5), None);
         assert_eq!(drawn(&m, LIST, -1), None);
     }
 
@@ -637,6 +641,27 @@ mod tests {
         let next = Store::load(ALL, Some(&path), &|_| None, &[]).0;
         assert_eq!(next.get(RENDER_SCALE.key), Some(Value::Int(2)));
         assert_eq!(next.get(LIGHTING.key), Some(Value::Int(1)));
+    }
+
+    #[test]
+    fn lod_distance_opens_a_picker_and_only_a_selection_changes_it() {
+        use crate::ui_kit::picker;
+        let m = all();
+        let row = m.index_of(LIST, &RowKind::Setting(LOD_DISTANCE.key)).unwrap();
+        let lod = m.store().handle::<u32>(LOD_DISTANCE.key);
+        assert_eq!(press(&m, LIST, row), Chosen::Open(picker::NAME));
+        let pick = picker::current().unwrap();
+        assert_eq!(pick.values, ["Retail", "0.5x", "1x", "1.5x", "2x", "3x", "4x"]);
+        assert_eq!(pick.values[pick.current], "1x");
+        assert_eq!(lod.get(), 2, "opening leaves the current value alone");
+        (pick.set)(3);
+        assert_eq!(lod.get(), 3);
+        assert_eq!(drawn(&m, LIST, row), s("LOD Distance", "1.5x"));
+        assert_eq!(press(&m, LIST, row), Chosen::Open(picker::NAME));
+        assert_eq!(picker::current().unwrap().current, 3);
+        m.store().force(LOD_DISTANCE.key, Value::Int(8), "locked").unwrap();
+        assert!(matches!(press(&m, LIST, row), Chosen::Stepped(_)));
+        assert_eq!(drawn(&m, LIST, row), s("LOD Distance", "4x"));
     }
 
     #[test]

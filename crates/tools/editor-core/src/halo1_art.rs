@@ -187,7 +187,7 @@ pub fn picture(map: &H1Map, bitmap: &Bitmap, index: usize) -> Option<H1Picture> 
 /// (`h1_assets::bitmaps::atlas::to_halo2_light`). Drawn as stored, Halo 1's full
 /// light doubled.
 pub fn to_halo2_light(rgba: &mut [u8]) {
-    for px in rgba.chunks_exact_mut(4) {
+    for px in rgba.as_chunks_mut::<4>().0 {
         for c in &mut px[..3] {
             *c = (u16::from(*c)).div_ceil(2) as u8;
         }

@@ -337,6 +337,16 @@ impl Matchmaker {
         }
     }
 
+    fn ad_hoc_playlist(&self, hopper: u32) -> Option<&DedicatedPlaylist> {
+        let index = hopper as usize;
+        let lineup = self.lineup.as_ref()?;
+        let rules = lineup.rules.get(index).copied().flatten()?;
+        let playlist = self.config.playlist(hopper)?;
+        (rules.size <= MAX_DEDICATED_SOLO_PLAYERS
+            && (!lineup.map_pack_only[index] || map_pack_map(&playlist.map)))
+            .then_some(playlist)
+    }
+
     fn submit(
         &mut self,
         ticket: Ticket,
@@ -389,17 +399,16 @@ impl Matchmaker {
                 bucket.remove(xuid);
             }
         }
-        let provider = provider.filter(|_| {
-            rules.size <= MAX_DEDICATED_SOLO_PLAYERS
-                && self.config.playlist(ticket.hopper).is_some_and(|playlist| {
-                    !pack_only || map_pack_map(&playlist.map)
-                })
-        });
-        let regions = (provider.is_some() && !ticket.dedicated).then_some(&self.config.regions);
+        let playlist = self.ad_hoc_playlist(ticket.hopper);
+        let provider = provider.filter(|_| playlist.is_some());
+        let needs_pack = playlist.is_some_and(|p| map_pack_map(&p.map));
+        let regions = (provider.is_some() && !ticket.dedicated && (!needs_pack || ticket.has_map_pack))
+            .then_some(&self.config.regions);
         let level = live.model.read().ranks.standing(xuid, &ticket.hopper.to_string()).level;
         let bucket = self.buckets.entry(ticket.hopper).or_default();
         bucket.submit(&ticket, xuid, endpoint, level, clock, regions)?;
         let mut request = None;
+        let probe_rooms = matches!(provider, Some(ProviderKind::Local | ProviderKind::Cloudflare));
         if let Some((lease, host_request)) =
             bucket.assign(ticket.hopper, rules, clock, &self.config, provider)?
         {
@@ -412,16 +421,45 @@ impl Matchmaker {
                 return Ok(Submission::Reply(reply, request));
             }
         }
-        let reply = Queue::Probing {
-            candidates: bucket.waiting.values()
-                .filter(|w| w.candidate.xuid != xuid && (!ticket.dedicated || !w.dedicated))
-                .map(|w| &w.candidate)
-                .chain(regions.into_iter().flat_map(RegionTable::candidates))
-                .take(MAX_CANDIDATES)
-                .cloned()
-                .collect(),
-        };
+        let candidates: Vec<_> = bucket.waiting.values()
+            .filter(|w| w.candidate.xuid != xuid && (!ticket.dedicated || !w.dedicated))
+            .map(|w| &w.candidate)
+            .chain(regions.into_iter().flat_map(RegionTable::candidates))
+            .take(MAX_CANDIDATES)
+            .cloned()
+            .collect();
+        let region_echoes = regions.filter(|_| probe_rooms)
+            .into_iter()
+            .flat_map(RegionTable::echoes)
+            .take((MAX_CANDIDATES - candidates.len()).min(live_proto::matchmaking::MAX_REGION_ECHOES))
+            .cloned()
+            .collect();
+        let reply = Queue::Probing { candidates, region_echoes };
         Ok(Submission::Reply(reply, request))
+    }
+}
+
+impl Matchmaker {
+    /// Count independent searchers by their current best region, including
+    /// the default location (None) when there are no configured probes.
+    pub(crate) fn search_demand(&self, clock: i64) -> BTreeMap<Option<String>, usize> {
+        let mut demand = BTreeMap::new();
+        for (&hopper, bucket) in &self.buckets {
+            let Some(playlist) = self.ad_hoc_playlist(hopper) else {
+                continue;
+            };
+            let needs_pack = map_pack_map(&playlist.map);
+            for player in bucket.waiting.values() {
+                if !player.dedicated && player.seen + TICKET_SECONDS > clock
+                    && (!needs_pack || player.has_map_pack)
+                {
+                    let region = self.config.regions.pick(&[player.entrant()])
+                        .map(|choice| choice.region.to_owned());
+                    *demand.entry(region).or_default() += 1;
+                }
+            }
+        }
+        demand
     }
 }
 
@@ -544,8 +582,17 @@ impl Bucket {
         };
         let mut placement = Placement::PeerOrRegistered;
         let mut until = clock + ASSIGNMENT_SECONDS;
-        let request = ad_hoc.map(|(provider, playlist)| {
+        let request = ad_hoc.and_then(|(provider, playlist)| {
             let choice = config.regions.pick(&group);
+            if !rules.ranked && choice.as_ref().is_some_and(|region| {
+                let votes = assignment.members.iter().filter(|&member| {
+                    region.rtt_ms.get(member).zip(assignment.rtt_ms.get(member))
+                        .is_some_and(|(&dedicated, &peer)| dedicated > 120 && peer < dedicated)
+                }).count();
+                votes > assignment.members.len() / 2
+            }) {
+                return None;
+            }
             let region = choice.as_ref().map(|c| c.region.to_owned());
             let dedicated = Assignment {
                 // The ad-hoc host authenticates with its lease, without an XUID.
@@ -558,7 +605,7 @@ impl Bucket {
                 fallback: std::mem::replace(&mut assignment, dedicated),
             };
             until = clock + BOOT_SECONDS;
-            host_request(&assignment, playlist, provider, region)
+            Some(host_request(&assignment, playlist, provider, region))
         });
         self.remove(host);
         for &member in &assignment.members {
@@ -705,8 +752,12 @@ pub(crate) async fn queue(State(live): State<Arc<Live>>, req: Request) -> Result
     let endpoint = SocketAddrV4::new(addr, ticket.port);
     let clock = now();
     let provider = live.host_provider_kind();
+    let running = if matches!(provider, Some(ProviderKind::Local | ProviderKind::Fly)) {
+        Some(live.regional_udp_probes())
+    } else { None };
     let submission = {
         let mut matcher = live.matchmaking.lock().unwrap();
+        if let Some(running) = running { matcher.refresh_udp_probes(running)?; }
         if let Some(report) = map_pack_report {
             matcher.report_map_pack(xuid, report, clock);
         }
@@ -732,6 +783,13 @@ pub(crate) async fn queue(State(live): State<Arc<Live>>, req: Request) -> Result
             return Err(forbidden("the assignment requires the Multiplayer Map Pack"));
         }
     };
+    // The first ticket gets its QoS candidates while the pack starts. On
+    // the Worker the hub attaches this work to the request with waitUntil.
+    #[cfg(not(target_arch = "wasm32"))]
+    if request.is_none() {
+        let live = live.clone();
+        crate::rt::spawn(async move { live.refresh_host_pools().await });
+    }
     if let Some(request) = request {
         // LiveHub schedules its next sweep after this response. Wait for the
         // host request to be recorded with the matcher lock released.
@@ -753,7 +811,7 @@ pub(crate) async fn queue(State(live): State<Arc<Live>>, req: Request) -> Result
             matcher.expire(clock);
             result = match matcher.leases.get(&assignment_id) {
                 Some(lease) => lease.queue(xuid, &live.model),
-                None => Queue::Probing { candidates: Vec::new() },
+                None => Queue::Probing { candidates: Vec::new(), region_echoes: Vec::new() },
             };
         }
     }

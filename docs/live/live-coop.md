@@ -587,11 +587,9 @@ Which existing settings must match between peers depends on the path,
 and `Def::scope` already says it:
 
 - **Lockstep below the game (3b) needs every `View` and `Sim` value
-  equal**: the `exact` fingerprint. Of today's five, `graphics.fov` is
-  `View` and must match; `graphics.fps`, `graphics.render_scale`,
-  `pad_speaker.enabled` and `pad.mute_button` are `Host` and stay per
-  machine. There is no `Sim` setting yet. Future ones the design names
-  (button layouts, Forge and game variants) would be.
+  equal**: the `exact` fingerprint. Field of view, render scale and LOD
+  distance affect guest render state and carry `View` scope. Frame rate,
+  controller speaker and mute button carry `Host` scope and stay per machine.
 - **The retail path (3a) needs only `Sim` values equal**: the `sim`
   fingerprint. Each peer renders its own view, so `graphics.fov` and
   every other `View` setting stays personal.
@@ -1521,9 +1519,15 @@ without checking them; it drops the result unless the title's own Live
 logon is done (`0x000901c1`, `0x0006cd50() == 1`). On the main menu,
 before Xbox Live, that fails and the friend view looks again the next
 frame: the 023244 run's sixty `find session` lines a second, all `0 of 0`.
-The `0 of 0` slots stop nothing (the title passes 0 to
-XOnlineMatchSessionCreate for its co-op lobby); repeated find lines are
-now said once per 30 s.
+The title passes zero slot counts to `XOnlineMatchSessionCreate` for its
+co-op lobby. Its join uses the host's QoS reply for admission. For a web
+[join link](live-custom-games.md#join-in-halo-2), the host's lobby pinger
+in `crates/extensions/game/src/coop_live.rs` publishes the observed player
+count and available seats on the current Live advertisement. A new console
+needs both a free peer and a free player slot, within `coop.max_players`.
+Explicit title slot counts, including reserved seats, take precedence.
+A host with no observed capacity offers no link. Repeated identical find
+lines are logged once per 30 seconds.
 
 The 023123 run's lobby was advertised twice (81113027... at +24.2,
 deleted at +24.25, then 8201114c... at +34.2): both the XNetUnregisterKey

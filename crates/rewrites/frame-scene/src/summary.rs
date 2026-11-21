@@ -4,7 +4,8 @@
 //! key, camera, clusters, world state, remainder, auxiliary depth,
 //! instances (key, definition, model, nodes, sphere, lighting, defaults),
 //! parts (slot, key, layer, flags, subparts, rows), lights (handle,
-//! definition, flags, additional casters, steps, gathered groups), object
+//! definition, flags, candidate inputs and constants, guest selection,
+//! additional casters, steps, gathered groups), object
 //! shadows (identity, groups), layer draws (layer, flags, remainder,
 //! material inputs, items with their owner, model, rows and lighting) and
 //! decorator draws (`crate::decorator::summary_words`), and the late passes
@@ -15,6 +16,7 @@
 //! bits. Not the map epoch, the present number or the stamp: they count
 //! this process, not the frame.
 
+use crate::light::{Light, LightConstants, LightVolume};
 use crate::light_group::{LightGroup, LightPose};
 use crate::object::{Defaults, Lighting};
 use crate::scene::FrameScene;
@@ -128,6 +130,7 @@ pub fn summary_hash(scene: &FrameScene) -> u64 {
             h.word(l.flags);
             h.word(l.definition_flags);
             h.word(u32::from(l.additional_casters));
+            light_inputs(&mut h, l);
             let steps = scene.steps_of(l);
             h.word(steps.len() as u32);
             for s in steps {
@@ -180,6 +183,76 @@ pub fn summary_hash(scene: &FrameScene) -> u64 {
         crate::late::summary_words(scene, v, &mut |w| h.word(w));
     }
     h.0
+}
+
+fn light_inputs(h: &mut Fnv, light: &Light) {
+    h.word(u32::from(light.guest_selected));
+    optional(h, light.guest_weight, |h, v| h.float(v));
+    let Some(c) = &light.candidate else {
+        h.word(0);
+        return;
+    };
+    h.word(1);
+    for v in [&c.position, &c.forward, &c.up, &c.colour_a, &c.colour_b, &c.bounds.0] {
+        h.floats(v);
+    }
+    h.float(c.intensity);
+    h.float(c.bounds.1);
+    h.float(c.weight);
+    optional(h, c.priority, |h, v| h.float(v));
+    h.word(u32::from(c.definition_kind));
+    optional(h, c.view_eligible, |h, v| h.word(u32::from(v)));
+    optional(h, c.volume.as_ref(), |h, volume| {
+        h.word(u32::from(volume.kind()));
+        match volume {
+            LightVolume::Sphere { origin, radius } => {
+                h.floats(origin);
+                h.float(*radius);
+            }
+            LightVolume::Projected { origin, axis, near, far, far_extent, .. } => {
+                h.floats(origin);
+                h.floats(axis);
+                h.floats(&[*near, *far]);
+                h.floats(far_extent);
+            }
+        }
+    });
+    optional(h, c.owner, |h, v| h.word(v.0));
+    optional(h, c.gel_bitmap, Fnv::word);
+    optional(h, c.gel_shader, Fnv::word);
+    optional(h, c.constants.as_ref(), |h, variants| {
+        light_constants(h, &variants.unshadowed);
+        light_constants(h, &variants.shadowed);
+        optional(h, variants.projection.as_ref(), |h, projection| {
+            for &word in projection.rows.iter().flatten() {
+                h.word(word);
+            }
+            h.word(u32::from(projection.mode));
+            for size in projection.size {
+                h.word(size as u32);
+            }
+        });
+    });
+}
+
+fn optional<T>(h: &mut Fnv, value: Option<T>, hash: impl FnOnce(&mut Fnv, T)) {
+    h.word(u32::from(value.is_some()));
+    if let Some(value) = value {
+        hash(h, value);
+    }
+}
+
+fn light_constants(h: &mut Fnv, c: &LightConstants) {
+    for &word in c.frame.iter().chain(&c.colour_a).chain(&c.colour_b) {
+        h.word(word);
+    }
+    for word in [
+        c.flags, c.mode, c.definition_flags, u32::from(c.definition_8a),
+        u32::from(c.definition_80), c.falloff_0, u32::from(c.animated_gel),
+    ] {
+        h.word(word);
+    }
+    optional(h, c.gel, Fnv::word);
 }
 
 fn light_groups(h: &mut Fnv, scene: &FrameScene, groups: &[LightGroup]) {
@@ -355,7 +428,7 @@ mod tests {
             let mut s = (*scene(1, 0.0)).clone();
             s.light_steps.push(LightStep { layer: 12, stencil, target: LightTarget::View, draws: true });
             s.lights.push(SceneLight {
-                handle: 4, definition: 5, flags: 0, definition_flags: 0, additional_casters: false, steps: 0..1,
+                handle: 4, definition: 5, flags: 0, definition_flags: 0, additional_casters: false, steps: 0..1, guest_selected: true, ..Default::default()
             });
             s.views[0].lights = 0..1;
             summary_hash(&s)
@@ -401,7 +474,7 @@ mod tests {
         let base = || {
             let mut s = (*scene(1, 0.0)).clone();
             s.lights.push(SceneLight {
-                handle: 4, definition: 5, flags: 4, definition_flags: 0, additional_casters: false, steps: 0..0,
+                handle: 4, definition: 5, flags: 4, definition_flags: 0, additional_casters: false, steps: 0..0, ..Default::default()
             });
             s.views[0].lights = 0..1;
             s.light_entries.push(entry.clone());

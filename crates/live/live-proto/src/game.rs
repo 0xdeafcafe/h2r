@@ -322,8 +322,12 @@ pub struct PlayerKilled {
     pub victim: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub killer: Option<u32>,
+    /// Stable damage-source key when the killing blow identifies one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub weapon: Option<String>,
+    /// Whether the killing blow was a headshot, when its report identifies that.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub headshot: Option<bool>,
     pub kind: String,
     /// The victim's position.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -366,12 +370,12 @@ pub fn kill_kind(killer: Option<u32>, victim: u32, betrayal: bool) -> &'static s
 /// another player is settled again by `betrayal` ([`is_betrayal`]), since
 /// hosts before the fix recorded free-for-all kills as betrayals; `suicide`
 /// and `world` stay as recorded.
-pub fn settled_kill_kind<'a>(
-    recorded: &'a str,
+pub fn settled_kill_kind(
+    recorded: &str,
     killer: Option<u32>,
     victim: u32,
     betrayal: bool,
-) -> &'a str {
+) -> &str {
     match recorded {
         "kill" | "betrayal" if killer.is_some_and(|k| k != victim) => {
             if betrayal {
@@ -1963,6 +1967,24 @@ mod tests {
                 bot: None,
             },
         ]
+    }
+
+    #[test]
+    fn kill_damage_fields_round_trip_and_are_optional_on_old_records() {
+        let old = json!({"tick": 9, "victim": 1, "killer": 0, "kind": "kill"});
+        let kill: PlayerKilled = serde_json::from_value(old.clone()).unwrap();
+        assert_eq!((kill.weapon.as_deref(), kill.headshot), (None, None));
+        assert_eq!(serde_json::to_value(kill).unwrap(), old);
+
+        for headshot in [true, false] {
+            let mut data = old.clone();
+            data["weapon"] = json!("battle_rifle");
+            data["headshot"] = json!(headshot);
+            let kill: PlayerKilled = serde_json::from_value(data.clone()).unwrap();
+            assert_eq!(kill.weapon.as_deref(), Some("battle_rifle"));
+            assert_eq!(kill.headshot, Some(headshot));
+            assert_eq!(serde_json::to_value(kill).unwrap(), data);
+        }
     }
 
     #[test]

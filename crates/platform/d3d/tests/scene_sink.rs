@@ -4,11 +4,9 @@
 //! the scene's colour, and passes every draw on to the backend under it.
 //! Synthetic device over the recording backend; no GPU.
 
-mod common;
-
 use std::sync::atomic::{AtomicU16, Ordering};
 
-use common::*;
+use crate::common::*;
 use d3d::{Device, RecordingBackend, ResolvedDraw, SceneSink, SparseMemory, UploadPolicy};
 use frame_scene::{GuestOp, Slot, SlotAt, TargetRef};
 

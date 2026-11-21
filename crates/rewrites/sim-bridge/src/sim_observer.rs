@@ -67,7 +67,7 @@ fn trim_tail(mem: &mut dyn GuestMemory, sp: u32, mode: u32) -> Option<()> {
     // In prediction mode 1 these three cases jump directly to the common
     // success path. Keep every other type and everything preceding it.
     let skipped = tail
-        .chunks_exact(ENTRY_BYTES)
+        .as_chunks::<ENTRY_BYTES>().0.iter()
         .rev()
         .take_while(|entry| matches!(u16::from_le_bytes([entry[0], entry[1]]), 0 | 7 | 8))
         .count() as u32;

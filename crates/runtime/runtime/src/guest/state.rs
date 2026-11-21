@@ -17,6 +17,10 @@
 use super::{Guest, Mapping, Permissions, RAM_SIZE};
 use std::{path::Path, sync::atomic::Ordering};
 
+/// A page census: pages that differ, pages compared, and the differing
+/// runs as (first page, length in pages).
+pub type PageCensus = (u64, u64, Vec<(u32, u32)>);
+
 /// A [`super::PhysicalReservation`] as plain data.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReservationRecord {
@@ -183,13 +187,13 @@ impl Guest {
     /// Compare RAM with an image by physical page. Each run gives its first
     /// page and length in pages. A write that restores the original bytes
     /// leaves no difference for this census to count.
-    pub fn census_against(&self, base: &Path) -> std::io::Result<(u64, u64, Vec<(u32, u32)>)> {
+    pub fn census_against(&self, base: &Path) -> std::io::Result<PageCensus> {
         self.census_from(&std::fs::File::open(base)?)
     }
 
     /// Compare physical pages with the inode this guest mapped. A later
     /// save may replace the sidecar while the game still uses the old one.
-    pub fn cow_census(&mut self) -> std::io::Result<Option<(u64, u64, Vec<(u32, u32)>)>> {
+    pub fn cow_census(&mut self) -> std::io::Result<Option<PageCensus>> {
         use std::io::Seek;
         let Some(mut image) = self.ram.cow_base.as_ref() else {
             return Ok(None);
@@ -202,7 +206,7 @@ impl Guest {
     fn census_from(
         &self,
         mut image: &std::fs::File,
-    ) -> std::io::Result<(u64, u64, Vec<(u32, u32)>)> {
+    ) -> std::io::Result<PageCensus> {
         use std::io::Read;
         let bytes = image.metadata()?.len();
         if bytes != RAM_SIZE as u64 {

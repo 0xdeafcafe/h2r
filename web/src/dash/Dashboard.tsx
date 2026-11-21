@@ -37,7 +37,8 @@ import { MuteButton, MutedList } from "./Mutes";
 import { adminState } from "../admin/state";
 import { DECK_ENTRY } from "../deck/back";
 import type { BladeControls } from "./Blades";
-import { fetchServerFacts, serverPods } from "../admin/server";
+import { fetchServerFacts, serverPods, writeInviteGrant } from "../admin/server";
+import { InviteGrantControl, InviteSomeone, MY_INVITES } from "./InviteGrant";
 import "../styles/dash-server.css";
 import MapCanvas, { type MapFrame } from "../components/MapCanvas";
 import Emblem from "../components/Emblem";
@@ -346,6 +347,9 @@ export default function Dashboard() {
         ];
       case "server": {
         const sub = serverSub();
+        if (sub === "my-invites") {
+          return [{ label: "profile", glyph: "career", act: () => go("/dash/signup", "back") }];
+        }
         if (sub !== "connect") {
           const view = sub === "invites" || sub === "accounts" || sub === "import" || sub === "reports" || sub === "bans" ? sub : "overview";
           return serverPods(view, serverInfo.admin()).map((p): Sat => ({
@@ -397,6 +401,7 @@ export default function Dashboard() {
     else if (screen() === "recovery" || screen() === "recover") go(s === "signup" ? "/dash/signup" : "/", "back");
     else if (screen() === "player" && s !== "signup") go(`/dash/${s}`, "back");
     else if (s === "server" && params.tag === "import" && !identity.me()) go("/dash/signin", "back");
+    else if (s === "server" && params.tag === "my-invites") go("/dash/signup", "back");
     else if (s === "server" && params.tag) go("/dash/server", "back");
     else if (s === "settings" && params.tag === "notifications") go("/dash/settings", "back");
     else if (s === "session") go("/dash/live", "back");
@@ -467,7 +472,7 @@ export default function Dashboard() {
   function onKey(e: KeyboardEvent) {
     if (e.metaKey || e.ctrlKey || e.altKey) return;
     // Let a tab-focused link or prompt perform its own activation.
-    if (e.key === "Enter" && (e.target as HTMLElement).closest?.("a[href], .dx-prompt, .dx-notice-dismiss")) return;
+    if (e.key === "Enter" && (e.target as HTMLElement).closest?.("a[href], .dx-prompt, .dx-notice-dismiss, [data-dash-native]")) return;
     const typing = (e.target as HTMLElement).closest?.("input, textarea, select");
     // A field in a column of rows (data-nav) still lets up and down move on.
     const rowField = typing && (e.target as HTMLElement).dataset?.nav && (e.key === "ArrowUp" || e.key === "ArrowDown");
@@ -678,7 +683,7 @@ export default function Dashboard() {
                 </BigPod>
               </div>
               <Show when={section() === "live"} fallback={
-                <Show when={selAccount()}>{(a) => <PlayerPlate account={a()} />}</Show>
+                <Show when={selAccount()?.xuid} keyed>{(xuid) => <PlayerPlate account={live.state.accounts[xuid]!} manageInvites={section() === "players"} />}</Show>
               }>
                 <Show when={selGame()}>{(g) => <GamePlate game={g()} />}</Show>
               </Show>
@@ -701,7 +706,8 @@ export default function Dashboard() {
               <div class="dx-screen dx-pods dx-pages">
                 <div class="dx-centre"><BigPod wire><Emblem seed={a.xuid} size={220} class="dx-emblem" /></BigPod></div>
                 <Sats sats={sats()} sel={sat()} onSel={setSat} />
-                <PlayerPlate account={a} main mine={identity.me()?.xuid === a.xuid} />
+                <PlayerPlate account={a} main mine={identity.me()?.xuid === a.xuid} manageInvites
+                  invite={() => go(MY_INVITES, "deeper")} />
                 <Prompts onA={select} onB={back} />
               </div>
             )}
@@ -759,11 +765,13 @@ export default function Dashboard() {
             </div>
           </Match>
 
-          <Match when={screen() === "server" && serverSub() === "invites"}>
+          <Match when={screen() === "server" && (serverSub() === "invites" || serverSub() === "my-invites")}>
             <div class="dx-screen dx-pods dx-pods--form dx-pages dx-server dx-invites-screen">
               <div class="dx-centre"><BigPod wire><Glyph name="key" /></BigPod></div>
               <Sats sats={sats()} sel={sat()} onSel={setSat} />
-              <InvitesPlate info={serverInfo} bind={bindPlate("invites")} />
+              <Show when={serverSub()} keyed>
+                {(sub) => <InvitesPlate info={serverInfo} own={sub === "my-invites"} bind={bindPlate(sub)} />}
+              </Show>
               <Prompts onA={() => act("select")} onB={back} onX={blades()?.alt() ? () => act("alt") : undefined} xLabel={blades()?.alt() ?? undefined} />
             </div>
           </Match>
@@ -938,7 +946,7 @@ function GamePlate(props: { game: GameState }) {
 
 const PRESENCE_WORD = { playing: "in a game", online: "online", away: "away", offline: "offline" } as const;
 
-function PlayerPlate(props: { account: AccountState; main?: boolean; mine?: boolean }) {
+function PlayerPlate(props: { account: AccountState; main?: boolean; mine?: boolean; manageInvites?: boolean; invite?: () => void }) {
   // Games, wins and K/D are multiplayer's; campaign is a line of its own.
   const rec = createMemo(() => serviceRecord(live.state, props.account.xuid));
   const camp = createMemo(() => campaignRecord(live.state, props.account.xuid, now()));
@@ -952,7 +960,17 @@ function PlayerPlate(props: { account: AccountState; main?: boolean; mine?: bool
         <dt>rank</dt><dd>{rec().rank}</dd>
         <Show when={props.mine}><dt>key</dt><dd>kept in this browser</dd></Show>
       </dl>
-      <Show when={props.mine && props.main}><BanNotice /><MutedList /></Show>
+      <Show when={props.mine && props.main}>
+        <InviteSomeone grant={adminState.myInviteGrant()} go={() => props.invite?.()} />
+        <BanNotice /><MutedList />
+      </Show>
+      <Show when={props.manageInvites && !props.account.bot}>
+        <InviteGrantControl admin={adminState.isMeAdmin() === true} grant={props.account.invite_grant ?? null} write={async (grant) => {
+          const me = identity.me(), wk = live.wellKnown();
+          if (!me || !wk) throw new Error("connect to this server first");
+          await writeInviteGrant(live.server().api, wk.id, me, props.account.gamertag, grant);
+        }} />
+      </Show>
       <Show when={!props.mine && props.main && identity.me()}>
         <MuteButton target={{ xuid: props.account.xuid, gamertag: props.account.gamertag }} />
       </Show>

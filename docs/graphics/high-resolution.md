@@ -10,7 +10,7 @@ Switch: `H2_RENDER_SCALE` (1), `H2_SINGLE_COPY` (on), `H2_SMOOTH_TEXT` (off),
 listed in [switches.md](../runtime/switches.md).
 
 Above 1x the renderer draws each guest draw once, into surfaces at the
-render scale, and the guest never learns the resolution. The setting is
+render scale. The guest D3D device reports its original dimensions. The setting is
 `[graphics] render_scale`, the Resolution row on the Video screen
 ([settings-menu.md](../game/settings-menu.md), "Video screen");
 `H2_RENDER_SCALE` (1 to 6) locks the scale when set
@@ -21,9 +21,13 @@ view").
 
 ## Summary
 
-- **The guest never learns the resolution.** The device (`d3d::Device`) keeps
+- **Guest device coordinates.** The device (`d3d::Device`) keeps
   every size, viewport, scissor, header and return value in guest pixels.
-  Scaling lives below the `d3d::Backend` trait.
+  Raster scaling lives below the `d3d::Backend` trait. Model and structure
+  detail use projected pixels at the active render height. Both encoders in
+  exact mode draw the selected geometry. Choose **Retail** for LOD Distance
+  to keep the 480-line detail choices. See
+  [Projected size and level of detail](occlusion-culling.md#projected-size-and-level-of-detail).
 - **One draw per target.** At scale above 1 the display encoder owns the draw
   stream, including draws to guest-size intermediates. Guest reads sample the
   scaled image at guest pixel positions.
@@ -37,6 +41,19 @@ view").
 - **Shadow maps** scale only with E3 lighting: the view keeps a scaled copy
   of each depth level and samples it with one tap ([e3-lighting-setting.md](e3-lighting-setting.md)).
 - **MSAA and forced anisotropy** are not built; both would be view-only.
+
+Render scale and LOD Distance have `View` scope. Theater restores both
+settings from the film's private startup record and strips the viewer's
+environment overrides. The local playback window uses a 1x render target,
+so it can display a different level of detail from a higher-resolution
+recording even with the same LOD Distance.
+[Film startup settings](../game/film-format.md#private-machine-state-section).
+
+At the default LOD Distance, performance numbers above 1x include the cost
+of retaining more detailed models and structure geometry. To compare raster
+cost at different resolutions with the original detail choices, select
+**Retail** at every resolution. Record both settings with the timings.
+[Lab benchmarks](../runtime/lab.md#--serve-and-bench).
 
 ## Single-copy readbacks
 
@@ -163,7 +180,6 @@ logged once. A draw that writes depth into a guest-size target with the
 scaled depth buffer bound is drawn again into the view's depth through a
 scaled colour surface of the depth's size (`proxy_depth_draws`). Guest bytes
 written into a scaled depth surface reach the view through `fill_from`.
-Stipple is indexed by host pixel in the view.
 
 This differs from the render thread, where a disagreement stops the run,
 because there the disagreeing backend is the one the guest observes.
@@ -250,9 +266,13 @@ Three details:
   pixel are smaller by the scale, so the slope term shrinks. That is the
   correct behaviour for a bias per sample step, but decals tuned at 480p need
   a test.
-- **Stipple.** The pattern is indexed by pixel position ([d3d.md](d3d.md),
-  `SetStipple`). The view must index it by guest pixel (`floor(position /
-  scale)`), or the pattern becomes finer than retail.
+- **Stipple.** The translated fragment shader indexes the mask by guest
+  framebuffer pixel (`floor(position / scale)`). `GfxBackend` passes the
+  bound target's scale through `PixelUniforms::stipple_scale`, using 1 for
+  guest-size targets. The origin is the framebuffer's top left even when
+  the viewport or scissor is offset. Each guest pixel's mask bit covers
+  its whole block of host pixels. See `SetStipple` in [d3d.md](d3d.md)
+  for the row and bit order.
 
 ### Subpixel snapping and cracks
 
@@ -613,8 +633,8 @@ adapter exists.
   to 6 are rejected; frame-sized targets, small targets with the scaled depth
   buffer, depth-level fills, the depth buffer as a texture and colour over
   depth memory match the reference downsampled; the scale and the lighting
-  change at a frame boundary; the E3 shadow-map tests; the `single_copy_*`
-  tests.
+  change at a frame boundary; the stipple mask stays aligned in exact
+  and single-copy mode; the E3 shadow-map and `single_copy_*` tests.
 - `crates/platform/d3d/tests/seams_gpu.rs`: clear-colour pixels inside a mesh with
   T-junctions and a one-ulp seam, at 2x to 6x ("Subpixel snapping and
   cracks").
@@ -623,8 +643,7 @@ adapter exists.
 - `crates/platform/d3d/tests/gpu_depth_alias.rs`, `external_pass.rs`: depth aliases and
   external passes through `ScaledBackend`.
 
-Not covered by a test: a capture replayer for whole frames; stipple by guest
-pixel; the per-axis scale.
+Tests do not cover whole-frame capture replay or per-axis render scaling.
 
 ## Prior art
 

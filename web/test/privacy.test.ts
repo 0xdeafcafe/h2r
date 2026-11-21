@@ -35,14 +35,16 @@ describe("reads as the signed-in reader", () => {
     } finally { f.restore(); }
   });
 
-  test("a read with a token is marked auth=1, so a CDN never mixes it with the anonymous copy", async () => {
+  test("a read with a token carries it only in the Authorization header, never an auth mark in the URL", async () => {
     const f = recordFetch(() => ({ items: [], next: null, position: 1 }));
     try {
       await api(target, async () => "tok").games("live");
       await api(target, async () => "tok").snapshot();
       await api(target).games("live");
       await api(target).snapshot();
-      expect(f.seen.map((s) => new URL(s.url).searchParams.get("auth"))).toEqual(["1", "1", null, null]);
+      // The server's `Vary: Authorization` keeps a CDN from mixing a signed-in
+      // read with the anonymous copy; no `auth` query mark is needed.
+      expect(f.seen.map((s) => new URL(s.url).searchParams.get("auth"))).toEqual([null, null, null, null]);
       expect(f.seen.map((s) => s.auth)).toEqual(["Bearer tok", "Bearer tok", null, null]);
     } finally { f.restore(); }
   });

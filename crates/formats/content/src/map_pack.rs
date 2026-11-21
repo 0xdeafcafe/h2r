@@ -64,7 +64,7 @@ mod tests {
         assert_eq!(title("Triplicate"), Some("Terminal"));
         assert_eq!(title("lockout"), None);
         assert!(is_offer(0x4D53_0064, 0x4D53_0064_0000_0101));
-        assert!(is_offer(0x4D53_0064, 0x4D53_0064_0000_03ff));
+        assert!(is_offer(0x4D53_0064, 0x4D53_0064_0000_03FF));
         assert!(!is_offer(0x4D53_0064, 0x4D53_0064_0000_0400));
         assert!(!is_offer(0x4D53_0064, 0x4D53_0065_0000_0101));
     }

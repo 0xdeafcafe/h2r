@@ -451,8 +451,8 @@ Settings carry the class (`settings::Scope`):
 
 | Class | Meaning | Examples |
 |---|---|---|
-| `Host` | never on the guest thread, never writes guest memory | render scale, vsync, bindings |
-| `View` | on the guest thread or writes guest memory, presentation only | UI screens, strings, FOV, the tick hash |
+| `Host` | never on the guest thread, never writes guest memory | frame rate, vsync, bindings |
+| `View` | on the guest thread or writes guest memory, presentation only | UI screens, strings, FOV, render scale, LOD distance, the tick hash |
 | `Sim` | changes what the simulation computes or is given | game variants, the game-start path, button layouts |
 
 - Observers do not write guest memory by convention (`Obs`).

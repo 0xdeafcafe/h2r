@@ -6,9 +6,7 @@
 //! memory, through the synchronous backend and through the render thread
 //! (whose spent buffers return to the device later and in batches).
 
-mod common;
-
-use common::*;
+use crate::common::*;
 use d3d::backend::{Recorded, ResolvedDraw};
 use d3d::{
     Backend, Device, GuestMemory, RecordingBackend, SparseMemory, ThreadedBackend, UploadPolicy,

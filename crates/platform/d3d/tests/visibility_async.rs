@@ -362,13 +362,13 @@ fn incomplete_writes_nothing_and_kicks_a_fence_once() {
     assert_eq!(words, [0xAAAA_AAAA; 3], "incomplete writes nothing");
     assert_eq!(
         m.read_u32(DEV + f::GPU_TIME).unwrap(),
-        time + 1,
+        time + 2,
         "the fence kick"
     );
-    assert_eq!(d.gpu_completed(), time + 1);
+    assert_eq!(d.gpu_completed(), time + 2);
     // The GPU time has moved: no second fence.
     assert_eq!(get(&mut d, &mut m, 5).0, D3DERR_TESTINCOMPLETE);
-    assert_eq!(m.read_u32(DEV + f::GPU_TIME).unwrap(), time + 1);
+    assert_eq!(m.read_u32(DEV + f::GPU_TIME).unwrap(), time + 2);
     for _ in 0..VISIBILITY_PENDING_SWAPS {
         d.swap(&mut m, 0).unwrap();
         assert_eq!(get(&mut d, &mut m, 5).0, D3DERR_TESTINCOMPLETE);

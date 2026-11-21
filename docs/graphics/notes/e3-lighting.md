@@ -439,3 +439,41 @@ depth-fail volumes, and why it is not followed, is in
 [pstencil.md](../pstencil.md) ("The technique: why shadow maps"). Volumes for
 closed object casters stay the fallback if phase 4's pictures show a case a
 map cannot meet.
+
+## 2026-11-20: L1 sharp shadow edge
+
+Commit: `Add the Sharp shadow comparison` (resolve with
+`git log -1 --format=%H -- crates/formats/shaders/tests/golden/shadow_sharp.wgsl`).
+
+Reproduce with `cargo test -p shaders --test shadow` on a GPU adapter.
+The golden test covers all three forms. The GPU test sweeps subpixel
+positions along a synthetic caster at map-to-screen ratios 1:1, 1:2 and
+1:4. It checks a ramp at most 1.5 display pixels wide and a half-coverage
+centre within one map texel of the outline. The code-only slice records
+acceptance bounds. GPU results are pending coordinator verification.
+
+## 2026-11-20: L2 light candidates
+
+Commit: `Extract the full light candidate set into FrameScene` (resolve
+with `git log -1 --format=%H -- crates/rewrites/scene-extract/src/lights.rs`).
+
+Run `cargo test -p scene-extract lights::tests` for the synthetic guest.
+It has 20 visible candidates and five recorded guest selections, with
+a mixture of spheres and no-shadow cones. The fixture compares sealed
+scene hashes in separate processes with each lighting setting.
+
+For the in-game check, use the same image, snapshot and recorded inputs
+on the lab laptop with `H2_LIGHTING=retail` and `H2_LIGHTING=e3`.
+Keep the native renderer enabled. Take `h2 agent render.scene` at
+matching ticks and compare `tick`, `hash` and the per-view counts
+`lights_candidates`, `lights` and `lights_with_constants`. Compare
+`h2 agent sim.hashes '{"from_tick": T, "max": N}'` over the same completed
+tick interval in both runs, substituting the first tick and row count
+for `T` and `N`.
+
+For extraction time, take `render.scene` before and after the same
+gameplay interval in each mode. Divide the increase in
+`counters.scene_light_extract_ns` by the increase in
+`counters.scene_light_extract_views` for mean nanoseconds per view.
+Record `scene_light_extract_unread` alongside it. Game hash and timing
+results are pending coordinator verification.

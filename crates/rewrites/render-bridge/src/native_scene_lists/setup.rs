@@ -41,6 +41,7 @@ struct Scene {
     vis: u32,
     kind: u32,
     retry: bool,
+    lod_scale: f32,
 }
 
 #[derive(Clone, Copy)]
@@ -183,11 +184,11 @@ fn section_flags(m: &dyn GuestMemory, vis: u32, tags: u32, flags: u16) -> Result
     Ok(section)
 }
 
-pub(super) fn build(m: &dyn GuestMemory, cpu: &CpuAbi) -> (SceneList, Result<Output>) {
-    (SceneList::ObjectSetup, setup(m, cpu))
+pub(super) fn build(m: &dyn GuestMemory, cpu: &CpuAbi, scale: f32) -> (SceneList, Result<Output>) {
+    (SceneList::ObjectSetup, setup(m, cpu, scale))
 }
 
-fn setup(m: &dyn GuestMemory, cpu: &CpuAbi) -> Result<Output> {
+fn setup(m: &dyn GuestMemory, cpu: &CpuAbi, lod_scale: f32) -> Result<Output> {
     fp_supported(cpu)?;
     if cpu.x87.control != 0x027f || cpu.x87.tag != 0xffff {
         return Err(Refusal::Unsupported);
@@ -242,6 +243,7 @@ fn setup(m: &dyn GuestMemory, cpu: &CpuAbi) -> Result<Output> {
     let explicit_retry = stack(m, cpu, 8)? as u8 != 0;
     let scene = Scene {
         tags,
+        lod_scale,
         objects,
         frame: m.u32(FRAME)?,
         vis,
@@ -469,7 +471,7 @@ impl Walk {
                     group_depth: record_state.group_depth,
                     sphere: (record_state.centre, record_state.radius),
                 };
-                let writes = record.plan(m)?;
+                let writes = record.plan(m, self.scene.lod_scale)?;
                 m.apply(writes)?;
             }
         }
@@ -671,7 +673,7 @@ mod setup_tests {
     #[test]
     fn setup_emits_parent_then_child_and_publishes_palette_and_cache() {
         let (mut mem, cpu) = fixture();
-        let out = setup(&mem, &cpu).unwrap();
+        let out = setup(&mem, &cpu, 1.0).unwrap();
         assert_eq!(out.al, Some(0));
         assert_eq!(mem.u32(RECORD_COUNT).unwrap(), 0);
         publish(&mut mem, out);
@@ -696,6 +698,35 @@ mod setup_tests {
     }
 
     #[test]
+    fn object_and_child_choose_sections_at_output_resolution() {
+        let run = |scale, pose_mask| {
+            let (mut mem, cpu) = fixture();
+            mem.put_u32(ROOT + 4, 1 << 24)
+                .put_u32(CHILD + 4, 1 << 24)
+                .put_u32(HLMT + 0xc4, pose_mask)
+                .put_u8(FORCE_FULL_LOD, 1)
+                .put_f32(0x0044_ae90, 1.0) // override's local LOD multiplier
+                .put_f32(0x0044_ae88, 0.1) // hysteresis
+                .put_f32(0x0045_dc78, 1.0)
+                .put_u32(0x004b_a01c, 5)
+                .put_f32(records::PIXEL_QUANTIZE, 0.5);
+            for (i, threshold) in [55.0, 35.0, 20.0, 15.0, 5.0, 0.0].into_iter().enumerate() {
+                mem.put_f32(HLMT + 0x34 + 4 * i as u32, threshold);
+            }
+            let output = setup(&mem, &cpu, scale).unwrap();
+            publish(&mut mem, output);
+            assert_eq!(mem.u32(RECORD_COUNT).unwrap(), 2);
+            let lods = [0, 1].map(|i| mem.u8(CACHE_ENTRIES + 0x100 * i + 0xbc).unwrap());
+            let bytes = [0, 1].map(|i| mem.u8(0x004c_0b84 + i).unwrap());
+            (lods, bytes)
+        };
+        assert_eq!(run(1.0, 0), ([4; 2], [5; 2]));
+        assert_eq!(run(4.0, 0), ([1; 2], [20; 2]));
+        assert_eq!(run(4.0 * 1.5, 0), ([0; 2], [30; 2]));
+        assert_eq!(run(4.0, 1), ([4; 2], [20; 2]));
+    }
+
+    #[test]
     fn setup_retries_the_prior_lod_when_the_requested_section_is_unavailable() {
         let (mut mem, cpu) = fixture();
         let resource = SECTIONS + 0x5c + 0x38;
@@ -703,7 +734,7 @@ mod setup_tests {
             .put_u32(resource + 8, 0)
             .put_u8(CACHE_ENTRIES + 0xbc, 4)
             .put_u8(CACHE_ENTRIES + 0xc0, 1);
-        let out = setup(&mem, &cpu).unwrap();
+        let out = setup(&mem, &cpu, 1.0).unwrap();
         publish(&mut mem, out);
         assert_eq!(mem.u32(RECORD_COUNT).unwrap(), 2);
         assert_eq!((mem.u32(RENDER_RECORDS + 0xc).unwrap() >> 9) & 0x1ff, 0);
@@ -719,7 +750,7 @@ mod setup_tests {
         mem.put_u8(child_resource + 0x1e, 0)
             .put_u32(child_resource + 8, 16)
             .put_u32(child_resource + 0x20, NONE);
-        assert!(matches!(setup(&mem, &cpu), Err(Refusal::Residency)));
+        assert!(matches!(setup(&mem, &cpu, 1.0), Err(Refusal::Residency)));
         assert_eq!(mem.u32(RECORD_COUNT).unwrap(), 0);
         assert_eq!(mem.u32(NODE_BLOCKS - 4).unwrap(), 0);
         assert_eq!(mem.u32(CACHE_ENTRIES + 0xc).unwrap(), 0);
@@ -741,7 +772,7 @@ mod setup_tests {
             .put_u32(LIGHT_VIS + VIEW_KIND, 1)
             .put_u32(CURRENT_VIS, LIGHT_VIS);
         cpu.esi = LIGHT_VIS;
-        let out = setup(&mem, &cpu).unwrap();
+        let out = setup(&mem, &cpu, 1.0).unwrap();
         assert_eq!(out.al, Some(1));
         publish(&mut mem, out);
         assert_eq!(mem.u32(RECORD_COUNT).unwrap(), 1);
@@ -750,7 +781,7 @@ mod setup_tests {
         assert_eq!((mem.u32(RENDER_RECORDS + 0xc).unwrap() >> 9) & 0x1ff, 0);
 
         mem.put_u32(STACK + 8, 1);
-        let retry = setup(&mem, &cpu).unwrap();
+        let retry = setup(&mem, &cpu, 1.0).unwrap();
         assert_eq!(retry.al, Some(0));
         publish(&mut mem, retry);
         assert_eq!(mem.u32(RECORD_COUNT).unwrap(), 3);
@@ -770,7 +801,7 @@ mod setup_tests {
             .put_u32(LIGHT_VIS + 0x14, LIST)
             .put_u32(LIGHT_VIS + VIEW_KIND, 1);
         cpu.esi = LIGHT_VIS;
-        let out = setup(&mem, &cpu).unwrap();
+        let out = setup(&mem, &cpu, 1.0).unwrap();
         assert_eq!(out.al, Some(1));
         assert_eq!((out.ecx, out.edx), (Some(FLAGS), Some(FLAGS)));
         assert_eq!(mem.u16(FLAGS).unwrap(), 0x84a0);
@@ -778,6 +809,6 @@ mod setup_tests {
         assert_eq!(mem.u16(FLAGS).unwrap(), 0x84a1);
 
         mem.put_u32(STACK + 8, 1);
-        assert_eq!(setup(&mem, &cpu).unwrap().al, Some(0));
+        assert_eq!(setup(&mem, &cpu, 1.0).unwrap().al, Some(0));
     }
 }

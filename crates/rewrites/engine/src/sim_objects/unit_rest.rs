@@ -347,7 +347,7 @@ pub(super) fn camo(cx: &mut Cx<'_>, pc: u32) -> Result<Next> {
                             let ax = u32::from(g.u16(at(c.esi, 0x138))?);
                             c.eax = word16(c.eax, ax);
                             let team = ax as u16 as i16;
-                            if ax == 0xffff || team < 0 || team >= 0x10 {
+                            if ax == 0xffff || !(0..0x10).contains(&team) {
                                 0xc6880
                             } else {
                                 c.edx = sx16(ax as u16);

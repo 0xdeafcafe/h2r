@@ -253,7 +253,7 @@ fn compose_is_identical_with_and_without_lanes() {
         let out = [OUT, A, B, B - 4, B + 4, A + 4, A + 8][n % 7];
         m.word(STACK, 0xdead_0000);
         m.word(STACK + 4, out);
-        same(c, &m, |c, m| pose::compose(c, m), &format!("compose {n}"));
+        same(c, &m, pose::compose, &format!("compose {n}"));
     }
 }
 
@@ -272,7 +272,7 @@ fn pose_matrix_is_identical_with_and_without_lanes() {
         m.word(STACK, 0xdead_0000);
         m.word(STACK + 4, [OUT, A, A + 8, A + 4][n % 4]);
         m.word(STACK + 8, A);
-        same(c, &m, |c, m| pose::pose_matrix(c, m), &format!("pose {n}"));
+        same(c, &m, pose::pose_matrix, &format!("pose {n}"));
     }
 }
 
@@ -295,12 +295,7 @@ fn rotation_codec_is_identical_with_and_without_lanes() {
         m.word(pose::ROTATION_WEIGHT, rng.float());
         m.word(pose::ROTATION_OUT, [OUT, first, first + 16][n % 3]);
         m.word(STACK, 0xdead_0000);
-        same(
-            c,
-            &m,
-            |c, m| pose::rotation_codec(c, m),
-            &format!("codec {n}"),
-        );
+        same(c, &m, pose::rotation_codec, &format!("codec {n}"));
     }
 }
 
@@ -351,11 +346,6 @@ fn mopp_ray_is_identical_with_and_without_lanes() {
         for (i, &b) in program.iter().enumerate() {
             m.bytes.insert(code + i as u32, b);
         }
-        same(
-            c,
-            &m,
-            |c, m| mopp_query::ray_query(c, m),
-            &format!("ray {n}"),
-        );
+        same(c, &m, mopp_query::ray_query, &format!("ray {n}"));
     }
 }

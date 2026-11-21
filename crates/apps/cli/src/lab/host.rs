@@ -3,10 +3,10 @@
 //! its log and metadata. See docs/runtime/lab.md.
 
 use std::collections::{BTreeMap, HashMap};
-use std::fs::{self, File};
-use std::io::Read;
-use std::io::{BufRead, BufReader, Write};
-use std::os::unix::fs::PermissionsExt;
+use std::fs::{self, File, OpenOptions, TryLockError};
+use std::io::{self, BufRead, BufReader, Read, Write};
+use std::net::{SocketAddr, TcpListener};
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
@@ -20,6 +20,8 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 use super::proto::{self, BuildSpec, INPUT_FILE, Manifest, Request, RunReq};
+use super::transfer::Transfers;
+use super::{discovery, lan, service, transfer};
 
 /// Where the host keeps everything, and what it runs.
 #[derive(Clone, Debug)]
@@ -36,6 +38,9 @@ pub struct HostConfig {
     /// The data root runs share (default: `<root>/data`).
     pub data: PathBuf,
     pub cargo: PathBuf,
+    pub lan: Option<lan::Listen>,
+    pub managed: bool,
+    pub explicit_h2: bool,
     /// SIGTERM to SIGKILL on stop.
     pub grace: Duration,
 }
@@ -95,8 +100,12 @@ struct Inner {
 
 struct Shared {
     cfg: HostConfig,
+    listen_addr: Option<SocketAddr>,
+    service_name: Option<String>,
     inner: Mutex<Inner>,
     cv: Condvar,
+    transfers: Transfers,
+    checkout: Mutex<()>,
 }
 
 /// A job ended because it was asked to stop.
@@ -115,24 +124,33 @@ fn now() -> u64 {
         .map_or(0, |d| d.as_secs())
 }
 
-/// Serves the lab socket until the process ends.
+/// Serves the private socket and, when configured, the paired LAN listener.
 pub fn serve(cfg: HostConfig) -> Result<()> {
     for d in ["runs", "recordings", "pgo", "images", "src", "scratch", "a"] {
         fs::create_dir_all(cfg.dir(d))
             .with_context(|| format!("creating {}", cfg.dir(d).display()))?;
     }
     fs::create_dir_all(&cfg.data)?;
+    let lan = cfg.lan.as_ref().map(open_lan).transpose()?;
+    let authority = lan
+        .as_ref()
+        .map(|_| lan::Server::new(&cfg.root))
+        .transpose()?;
+    let listen_addr = lan.as_ref().map(|(addr, _, _)| *addr);
+    let service_name = lan.as_ref().and_then(|(_, name, _)| name.clone());
     let listener = bind(&cfg.socket)?;
-    // A stable path to this h2 for `ssh HOST <root>/h2 lab pipe`.
-    let link = cfg.root.join("h2");
-    if let Ok(exe) = std::env::current_exe() {
-        let _ = fs::remove_file(&link);
-        let _ = std::os::unix::fs::symlink(exe, &link);
-    }
+    let _advertisement = match (&service_name, listen_addr) {
+        (Some(name), Some(addr)) => Some(discovery::advertise(name, addr.port())?),
+        _ => None,
+    };
     let shared = Arc::new(Shared {
         cfg,
+        listen_addr,
+        service_name,
         inner: Mutex::new(Inner::default()),
         cv: Condvar::new(),
+        transfers: Transfers::default(),
+        checkout: Mutex::new(()),
     });
     recover(&shared);
     eprintln!(
@@ -142,14 +160,128 @@ pub fn serve(cfg: HostConfig) -> Result<()> {
         shared.cfg.repo.display(),
         shared.cfg.disc.display()
     );
+    if let (Some((addr, name, listener)), Some(authority)) = (lan, authority) {
+        eprintln!("lab: paired LAN listener on {addr} (Bonjour name {name:?})");
+        let sh = Arc::clone(&shared);
+        std::thread::spawn(move || serve_lan(sh, listener, authority));
+    }
+    if shared.cfg.managed {
+        let sh = Arc::clone(&shared);
+        std::thread::spawn(move || refresh_when_idle(&sh));
+    }
     for conn in listener.incoming() {
         let Ok(conn) = conn else { continue };
         let sh = Arc::clone(&shared);
         std::thread::spawn(move || {
-            let _ = connection(&sh, conn);
+            let timeout = Some(Duration::from_secs(120));
+            if conn.set_read_timeout(timeout).is_ok() && conn.set_write_timeout(timeout).is_ok() {
+                let _ = connection(&sh, conn, |_| Ok(true));
+            }
         });
     }
     Ok(())
+}
+
+fn open_lan(listen: &lan::Listen) -> Result<(SocketAddr, Option<String>, TcpListener)> {
+    let listener = TcpListener::bind(listen.addr)
+        .with_context(|| format!("binding LAN address {}", listen.addr))?;
+    let addr = listener.local_addr()?;
+    let name = match &listen.name {
+        Some(name) => Some(name.clone()),
+        None if cfg!(target_os = "macos") && !addr.ip().is_loopback() => {
+            Some(discovery::default_name()?)
+        }
+        None => None,
+    };
+    ensure!(
+        name.is_none() || !addr.ip().is_loopback(),
+        "Bonjour advertisement requires a non-loopback --listen address"
+    );
+    ensure!(
+        !name
+            .as_deref()
+            .is_some_and(|name| name.eq_ignore_ascii_case("local")),
+        "local is reserved for the Unix-socket target; choose another Bonjour name"
+    );
+    Ok((addr, name, listener))
+}
+
+fn serve_lan(sh: Arc<Shared>, listener: TcpListener, authority: lan::Server) {
+    const MIN_DELAY: Duration = Duration::from_millis(50);
+    const MAX_DELAY: Duration = Duration::from_secs(2);
+    let authority = Arc::new(authority);
+    let mut retry_delay = MIN_DELAY;
+    loop {
+        let (conn, peer) = match listener.accept() {
+            Ok(connected) => connected,
+            Err(err) if err.kind() == io::ErrorKind::Interrupted => continue,
+            Err(err) => {
+                if retry_delay == MIN_DELAY {
+                    eprintln!("lab: accepting LAN connections: {err}");
+                }
+                std::thread::sleep(retry_delay);
+                retry_delay = (retry_delay * 2).min(MAX_DELAY);
+                continue;
+            }
+        };
+        retry_delay = MIN_DELAY;
+        let Some(reservation) = authority.reserve_handshake(peer.ip()) else {
+            continue;
+        };
+        let authority = Arc::clone(&authority);
+        let sh = Arc::clone(&sh);
+        std::thread::spawn(move || {
+            let authenticated = authority.authenticate(conn);
+            drop(reservation);
+            if let Ok(Some(conn)) = authenticated {
+                let _ = connection(&sh, conn, |conn: &lan::Authenticated| conn.is_authorized());
+            }
+        });
+    }
+}
+
+fn try_activity_lock(root: &Path) -> Result<Option<File>> {
+    fs::create_dir_all(root)?;
+    let lock = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(root.join("activity.lock"))?;
+    match lock.try_lock() {
+        Ok(()) => Ok(Some(lock)),
+        Err(TryLockError::WouldBlock) => Ok(None),
+        Err(TryLockError::Error(err)) => Err(err.into()),
+    }
+}
+
+/// Holds job admission closed across a local or remote service restart.
+pub(super) fn activity_lock(root: &Path) -> Result<File> {
+    try_activity_lock(root)?.context("busy: a lab job or host maintenance is active")
+}
+
+fn refresh_when_idle(sh: &Shared) {
+    let cfg = &sh.cfg;
+    let mut updates = service::AutoUpdate::default();
+    loop {
+        std::thread::sleep(Duration::from_secs(15));
+        let result = (|| -> Result<()> {
+            let Some(_lock) = try_activity_lock(&cfg.root)? else {
+                return Ok(());
+            };
+            if updates.adopt_newer(cfg)? {
+                sh.transfers.drain();
+                // KeepAlive starts the stable copy. Hold the lock until we exit.
+                std::process::exit(0);
+            }
+            Ok(())
+        })();
+        if let Err(err) = result {
+            eprintln!("lab: checking for a newer host: {err:#}");
+        }
+    }
 }
 
 /// Binds `path` with mode 0600, replacing a stale socket but never a live
@@ -181,24 +313,192 @@ fn recover(sh: &Shared) {
     }
 }
 
-fn connection(sh: &Arc<Shared>, conn: UnixStream) -> Result<()> {
-    let mut w = conn.try_clone()?;
-    for line in BufReader::new(conn).lines() {
-        let line = line?;
-        if line.trim().is_empty() {
-            continue;
+fn reply(w: &mut impl Write, result: Result<Value>) -> Result<()> {
+    let value = match result {
+        Ok(mut v) => {
+            v["ok"] = Value::Bool(true);
+            v
         }
-        let reply = match proto::parse(&line).and_then(|r| handle(sh, r)) {
-            Ok(mut v) => {
-                v["ok"] = Value::Bool(true);
-                v
-            }
-            Err(e) => json!({ "ok": false, "error": format!("{e:#}") }),
-        };
-        writeln!(w, "{reply}")?;
-        w.flush()?;
-    }
+        Err(e) => json!({ "ok": false, "error": format!("{e:#}") }),
+    };
+    writeln!(w, "{value}")?;
+    w.flush()?;
     Ok(())
+}
+
+pub(super) fn local_status(path: &Path) -> Result<Value> {
+    let mut socket = UnixStream::connect(path)?;
+    let timeout = Some(Duration::from_secs(2));
+    socket.set_read_timeout(timeout)?;
+    socket.set_write_timeout(timeout)?;
+    writeln!(socket, r#"{{"cmd":"status"}}"#)?;
+    let mut line = String::new();
+    BufReader::new(socket).read_line(&mut line)?;
+    let value: Value = serde_json::from_str(&line)?;
+    ensure!(value["ok"] == true, "lab host status failed");
+    Ok(value)
+}
+
+fn connection<S: Read + Write>(
+    sh: &Arc<Shared>,
+    conn: S,
+    authorized: impl Fn(&S) -> Result<bool>,
+) -> Result<()> {
+    let mut conn = BufReader::new(conn);
+    let mut line = String::new();
+    loop {
+        // Put carries its bytes in the JSON line. Admit the transfer before
+        // reading the rest of that line, without counting idle connections.
+        if conn.fill_buf()?.is_empty() {
+            return Ok(());
+        }
+        let transfer = match sh.transfers.begin() {
+            Ok(transfer) => transfer,
+            Err(error) => return reply(conn.get_mut(), Err(error)),
+        };
+        line.clear();
+        (&mut conn)
+            .take(proto::REQUEST_MAX + 1)
+            .read_line(&mut line)?;
+        ensure!(
+            line.len() as u64 <= proto::REQUEST_MAX,
+            "lab request too large"
+        );
+        ensure!(line.ends_with('\n'), "unterminated lab request");
+        ensure!(authorized(conn.get_ref())?, "the lab pairing was revoked");
+        let r = match proto::parse(&line) {
+            Ok(req) => req,
+            Err(e) => {
+                reply(conn.get_mut(), Err(e))?;
+                continue;
+            }
+        };
+        match r {
+            Request::Fetch { id } => {
+                fetch(sh, &mut conn, &id)?;
+                return Ok(());
+            }
+            Request::Sync {
+                branch,
+                commit,
+                bytes,
+            } => {
+                sync(sh, &mut conn, &branch, &commit, bytes, &authorized)?;
+                return Ok(());
+            }
+            Request::Put { .. } => reply(conn.get_mut(), handle(sh, r))?,
+            Request::Update => {
+                drop(transfer);
+                let staged = (|| {
+                    ensure!(
+                        sh.cfg.managed,
+                        "install the lab LaunchAgent before updating it"
+                    );
+                    let lock = activity_lock(&sh.cfg.root)?;
+                    let _checkout = sh.checkout.lock().unwrap();
+                    service::stage_update(&sh.cfg)?;
+                    Ok(lock)
+                })();
+                match staged {
+                    Ok(_lock) => {
+                        sh.transfers.drain();
+                        let _ = reply(conn.get_mut(), Ok(json!({ "restarting": true })));
+                        if let Err(e) = service::restart() {
+                            eprintln!("lab: kickstart failed, exiting for KeepAlive: {e:#}");
+                        }
+                        std::process::exit(0);
+                    }
+                    Err(e) => reply(conn.get_mut(), Err(e))?,
+                }
+            }
+            _ => {
+                drop(transfer);
+                reply(conn.get_mut(), handle(sh, r))?;
+            }
+        }
+    }
+}
+
+fn fetch(sh: &Shared, conn: &mut BufReader<impl Read + Write>, id: &str) -> Result<()> {
+    let runs = sh.cfg.dir("runs");
+    let child = (|| {
+        ensure!(runs.join(id).join("meta.json").is_file(), "no job {id}");
+        Command::new("tar")
+            .arg("-C")
+            .arg(&runs)
+            .args(["-cf", "-", id])
+            .stdout(Stdio::piped())
+            .spawn()
+            .context("starting host tar")
+    })();
+    let mut child = match child {
+        Ok(child) => child,
+        Err(e) => return reply(conn.get_mut(), Err(e)),
+    };
+    let sent = reply(conn.get_mut(), Ok(json!({})))
+        .and_then(|()| transfer::send_archive(child.stdout.take().unwrap(), conn.get_mut()));
+    if let Err(e) = sent {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(e);
+    }
+    let result = child
+        .wait()
+        .map_err(anyhow::Error::from)
+        .and_then(|status| {
+            ensure!(status.success(), "host tar exited with {status}");
+            Ok(json!({}))
+        });
+    reply(conn.get_mut(), result)
+}
+
+fn sync<S: Read + Write>(
+    sh: &Shared,
+    conn: &mut BufReader<S>,
+    branch: &str,
+    commit: &str,
+    bytes: u64,
+    authorized: &impl Fn(&S) -> Result<bool>,
+) -> Result<()> {
+    let prepared = (|| {
+        let refs = transfer::branch_refs(branch)?;
+        let bundle = if bytes == 0 {
+            None
+        } else {
+            Some(transfer::TempFile::new(&sh.cfg.dir("scratch"))?)
+        };
+        Ok((refs, bundle))
+    })();
+    let ((source, dest), mut bundle) = match prepared {
+        Ok(prepared) => prepared,
+        Err(e) => return reply(conn.get_mut(), Err(e)),
+    };
+    reply(conn.get_mut(), Ok(json!({})))?;
+    let result = (|| {
+        if let Some(bundle) = &mut bundle {
+            let actual = io::copy(&mut (&mut *conn).take(bytes), &mut bundle.file)?;
+            ensure!(actual == bytes, "truncated git bundle");
+        }
+        // Jobs use immutable commits in detached worktrees. Serialize only
+        // mutations to the checkout, and leave the upload outside this lock.
+        let _checkout = sh.checkout.lock().unwrap();
+        ensure!(authorized(conn.get_ref())?, "the lab pairing was revoked");
+        let repo = &sh.cfg.repo;
+        transfer::ensure_unchecked(repo, &dest)?;
+        if let Some(bundle) = &bundle {
+            transfer::import_bundle(repo, &bundle.path, &source, commit)?;
+        }
+        let out = transfer::git(repo)
+            .args(["update-ref", &dest, commit])
+            .output()?;
+        ensure!(
+            out.status.success(),
+            "updating {dest}: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+        Ok(json!({ "commit": commit }))
+    })();
+    reply(conn.get_mut(), result)
 }
 
 fn handle(sh: &Arc<Shared>, r: Request) -> Result<Value> {
@@ -209,6 +509,11 @@ fn handle(sh: &Arc<Shared>, r: Request) -> Result<Value> {
             let active = inner.active.as_ref().and_then(|a| inner.jobs.get(&a.id));
             Ok(json!({
                 "version": proto::VERSION,
+                "build_version": env!("CARGO_PKG_VERSION"),
+                "build_commit": app::BuildInfo::baked().sha,
+                "pid": std::process::id(),
+                "listen": sh.listen_addr,
+                "name": sh.service_name,
                 "root": cfg.root,
                 "repo": cfg.repo,
                 "disc": cfg.disc,
@@ -216,6 +521,20 @@ fn handle(sh: &Arc<Shared>, r: Request) -> Result<Value> {
                 "active": active,
             }))
         }
+        Request::SyncBases { branch, commit } => {
+            let (_, dest) = transfer::branch_refs(&branch)?;
+            let known = transfer::resolve_commit(&cfg.repo, &commit)?.is_some();
+            let mut bases = Vec::new();
+            for rev in [dest.as_str(), "HEAD"] {
+                if let Some(base) = transfer::resolve_commit(&cfg.repo, rev)? {
+                    if !bases.contains(&base) {
+                        bases.push(base);
+                    }
+                }
+            }
+            Ok(json!({ "known": known, "bases": bases }))
+        }
+        Request::Fetch { .. } | Request::Sync { .. } | Request::Update => unreachable!(),
         Request::Run(run) => start(sh, Job::Run(run)),
         Request::Build(b) => start(sh, Job::Build(b)),
         Request::Wait { id, timeout } => wait(sh, &id, timeout.map(Duration::from_secs_f64)),
@@ -343,6 +662,7 @@ fn start(sh: &Arc<Shared>, job: Job) -> Result<Value> {
             a.id
         );
     }
+    let lock = activity_lock(&cfg.root)?;
     let id = next_id(cfg, &inner);
     fs::create_dir_all(cfg.dir("runs").join(&id))?;
     let (kind, request) = match &job {
@@ -370,7 +690,7 @@ fn start(sh: &Arc<Shared>, job: Job) -> Result<Value> {
     drop(inner);
     let sh2 = Arc::clone(sh);
     let id2 = id.clone();
-    std::thread::spawn(move || execute(&sh2, &id2, job, commit));
+    std::thread::spawn(move || execute(&sh2, &id2, job, commit, lock));
     Ok(json!({ "id": id, "job": m }))
 }
 
@@ -394,7 +714,7 @@ fn resolve_rev(repo: &Path, rev: &str) -> Result<String> {
         .context("running git")?;
     ensure!(
         o.status.success(),
-        "{rev} is not a commit in {} (h2 lab sync pushes branches as lab/<name>)",
+        "{rev} is not a commit in {} (h2 lab sync imports branches as lab/<name>)",
         repo.display()
     );
     Ok(String::from_utf8_lossy(&o.stdout).trim().to_string())
@@ -472,7 +792,7 @@ struct Image {
     env: BTreeMap<String, String>,
 }
 
-fn execute(sh: &Arc<Shared>, id: &str, job: Job, commit: Option<String>) {
+fn execute(sh: &Arc<Shared>, id: &str, job: Job, commit: Option<String>, lock: File) {
     let t = Instant::now();
     let r = run_job(sh, id, &job, commit.as_deref());
     let (state, error) = match &r {
@@ -502,18 +822,20 @@ fn execute(sh: &Arc<Shared>, id: &str, job: Job, commit: Option<String>) {
     };
     let _ = fs::remove_dir_all(sh.cfg.dir("scratch").join(id));
     let _ = fs::remove_file(agent_socket_path(&sh.cfg, id));
-    sh.update(id, |m| {
+    let mut inner = sh.inner.lock().unwrap();
+    if let Some(m) = inner.jobs.get_mut(id) {
         m.state = state.into();
         m.error = error;
         m.duration_s = Some(t.elapsed().as_secs_f64());
         m.exit_code = status.and_then(|s| s.code());
         m.signal = status.and_then(|s| s.signal());
         m.summary = summary;
-    });
-    let mut inner = sh.inner.lock().unwrap();
+        let _ = write_meta(&sh.cfg, m);
+    }
     if inner.active.as_ref().is_some_and(|a| a.id == id) {
         inner.active = None;
     }
+    drop(lock);
     drop(inner);
     sh.cv.notify_all();
 }
@@ -776,6 +1098,7 @@ const AGENT_OUT_MAX: u64 = 64 << 20;
 /// `h2 lab record` with no host running: the same `h2 play` as a host run
 /// with the host's own image, in this terminal, kept in `runs/<id>`.
 pub fn run_direct(cfg: &HostConfig, run: &RunReq) -> Result<std::process::ExitStatus> {
+    let _lock = activity_lock(&cfg.root)?;
     for d in ["runs", "recordings"] {
         fs::create_dir_all(cfg.dir(d))?;
     }

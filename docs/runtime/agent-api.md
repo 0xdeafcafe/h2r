@@ -35,6 +35,7 @@ connection to hold `session.claim`.
 | `profile.sample.start`, `profile.sample.stop` | act | [`profile`](#profile-where-a-frame-goes) |
 | `profile.sample.status` | read | [`profile`](#profile-where-a-frame-goes) |
 | `render.frame`, `render.stats` | read | [`render`](#render-the-frame-and-the-pipeline) |
+| `render.capture_clip`, `render.capture_clip.status` | act, read | [Headless display clips](#rendercapture_clip) |
 | `render.coop_look` | read | [`render`](#render-the-frame-and-the-pipeline) |
 | `render.compare`, `render.capture`, `render.scene`, `sim.hashes` | read | [FrameScene checks](#framescene-checks-compare-capture-scene-parity-hashes) |
 | `render.spawn_view` | act | [FrameScene checks](#framescene-checks-compare-capture-scene-parity-hashes) |
@@ -45,10 +46,11 @@ connection to hold `session.claim`.
 | `edit.set`, `edit.revert` | act | [`edit` and hot `render`](#edit-and-hot-render-live-tag-and-shader-changes) |
 | `load.timeline` | read | [Load timeline](#load-timeline) |
 | `features.list` | read | [`session`](#session-what-is-running-and-its-clock) |
+| `live.join.open`, `live.join.status` | act, read | [Live session links](#live-session-links) |
 | `host.metrics`, `host.audit`, `host.perf` | read | [`host`](#host-the-process-and-its-lobby) |
 | `host.lobby.open`, `close`, `start` | act | [`host.lobby`](#hostlobby) |
 | `host.lobby.state` | read | [`host.lobby`](#hostlobby) |
-| `ui.screen`, `ui.campaign`, `ui.audit`, `ui.stack`, `ui.lobby.players` | read | [`ui`](#ui-what-the-menus-show) |
+| `ui.screen`, `ui.campaign`, `ui.audit`, `ui.stack`, `ui.lobby.players`, `ui.attract` | read | [`ui`](#ui-what-the-menus-show) |
 | `ui.press` | act | [Menu inspection and navigation](#menu-inspection-and-navigation) |
 | `audio.voices`, `audio.listeners`, `audio.loops` | read | [`audio`](#audio-voice-routing) |
 | `hs.threads`, `hs.globals`, `hs.player_actions` | read | [HaloScript state](#haloscript-state) |
@@ -679,9 +681,9 @@ window's line. Each is `null` where that piece is not running.
 
 `interp` exists when in-between frames run: in `h2 play`, or in an `h2
 serve` that renders on the GPU off-screen (`H2_BOOT_GFX`) with an
-interpolation switch on. The in-between frames are paced on the wall
-clock at the frame rate and made and classified for real, so the hold
-reasons are the game's ([high-framerate.md](../game/high-framerate.md),
+interpolation switch on. Outside a [display clip](#rendercapture_clip),
+the in-between frames follow the wall clock. The hold reasons describe
+the in-game render ([high-framerate.md](../game/high-framerate.md),
 "Headless"). `interp.holds` lists the draws a held frame was held for,
 each with its guest draw and pass number (as `render.frame` numbers
 them), vertex program, transform and where it lands
@@ -696,6 +698,30 @@ H2_OPT=2 H2_BOOT_GFX=$TMPDIR/h2-gfx H2_BOOT_GFX_EVERY=never \
   H2_FPS=60 H2_FEATURES=impl.render.reproject \
   h2 serve disc/halo2.iso --out <the image you built>
 ```
+
+### `render.capture_clip`
+
+`render.capture_clip {"tick":9000,"ticks":180,"fps":120}` arms a clip on
+the game thread. `tick` is 1 to 240 ticks ahead, `ticks` is 1 to 300, and
+`fps` is 30, 60 or 120. The reply contains `id`, `path`, `frames` and
+`written`. The GPU hooks write `frame-00000.png` onward under `path`, a
+clip folder under the headless graphics output directory.
+
+`render.capture_clip.status {"id":1}` returns the same fields for the
+latest clip. When `written` equals `frames`, all PNG files are closed.
+A lost guest tick or missing display slot fails the request. Read
+`render.stats` for the replay's hold reasons.
+
+Clip capture needs headless GPU rendering. The [graphics size switch](switches.md)
+sets the clip's output dimensions. Above 30 fps, enable interpolated
+replay on the render thread and select a display rate at least as high
+as the clip's. The render thread emits the guest present and one or
+three intermediate presents for each 30 Hz tick pair, at even blend
+fractions. PNG readback and encoding may slow capture. The saved frame
+sequence retains the requested rate.
+
+The state is in `crates/extensions/agent/src/render/clip.rs`. The GPU
+writer is in `crates/extensions/game/src/d3d_glue/clip_png.rs`.
 
 ### `render.coop_look`
 
@@ -817,7 +843,10 @@ h2 agent render.parity '{"arm": true}'
   one has been sealed, its map epoch, frame, tick, summary hash and cut
   reasons; per view (`key` is `kind:player:view`, `game:0:0`, the first
   person's `first_person:0:0`) whether it
-  cut, its clusters, instances, parts, rows, lights, shadow maps (its
+  cut, its clusters, instances, parts, rows, guest-selected lights
+  (`lights`), all light candidates including those selections
+  (`lights_candidates`), candidates with both constant sets and any
+  required projection (`lights_with_constants`), shadow maps (its
   lights that cast their shadow), its lights by each layer their passes
   draw (`light_layers`, `"10"` to `"14"`), the items of its typed layer
   draws by layer (`layer_items`) and those the guest still draws
@@ -848,7 +877,11 @@ h2 agent render.parity '{"arm": true}'
   `scene_decorator_remainder`, and the decorator stage's
   `scene_decorator_views`, `scene_decorator_views_native`,
   `scene_decorator_items_skipped`, `scene_decorator_draws_unready` and
-  `scene_decorator_views_declined` (native-decorators.md), `scene_light_groups`, `scene_light_groups_whole` (the
+  `scene_decorator_views_declined` (native-decorators.md),
+  `scene_light_extract_views`, `scene_light_extract_ns` and
+  `scene_light_extract_unread` (candidate extraction attempts, their
+  elapsed nanoseconds and attempts that return no candidates because
+  the input could not be read), `scene_light_groups`, `scene_light_groups_whole` (the
   gathered light and shadow layers in the scene, and those with every
   sorted entry in it), `scene_light_layers_alone` (light layers drawn
   from the scene with no handler run), `scene_light_objects_alone`
@@ -968,6 +1001,30 @@ h2 agent wait '{"phase":"gameplay","map_ticks":30}' && h2 agent loads 1
 - Seeks and cache hits are not counted (the kernel's file I/O counts bytes
   and the host time of each file call: `read_bytes` and `file_io_us`).
 
+## Live session links
+
+`live.join.open {"url":"..."}` submits a website link to the same inbox as
+the macOS app and `h2 play --join`. It returns `{"id":1}` on acceptance.
+Malformed links return `INVALID_PARAMS`. Reopening the same pending link
+returns its existing ID. A different link during a join returns `BUSY`.
+The player confirms an agent-delivered join, including at the main menu.
+Offline, dedicated host, simulation and film runs return `UNAVAILABLE`, as
+does a player run with join links disabled.
+
+`live.join.status` takes no parameters. Its `join` field is null until the
+first request. It then contains `id`, `server`, `session` and `phase`.
+`queued` means the game has yet to claim the request. `signing_in` waits
+for the account picker, `resolving` checks admission, `confirm` includes
+the host's gamertag when known, and `joining` waits for the title to connect.
+The last outcome stays available as `joined`, `cancelled` or `failed`
+with a human-readable `reason` on failure. Use `ui.press` to operate the
+in-game confirmation. [Live session links](../live/live-custom-games.md#join-in-halo-2)
+
+```sh
+h2 agent live.join.open '{"url":"h2recomp://join?server=https%3A%2F%2Flive.forbes.red&session=8000000000000001"}'
+h2 agent live.join.status
+```
+
 ## `host`: the process and its lobby
 
 ### `host.perf`
@@ -989,9 +1046,15 @@ answers `UNAVAILABLE` ([`crates/extensions/game/src/host_metrics.rs`](../../crat
 | `game_cpu_ms_per_tick` | CPU time on the game thread per tick interval, including work between ticks |
 | `process_cpu_ms_per_tick` | CPU time on all process threads per tick interval |
 | `wall_ms_per_tick` | Elapsed wall time per tick interval, including pacing sleeps and any pause or load crossed by the window |
+| `wall_ms_per_tick_p99` | On a light host, nearest-rank p99 of individual multiplayer tick intervals ending in the last 30 s. The first tick on entering gameplay starts the clock. An empty window gives `null`. |
+| `late_ticks` | Number of intervals in that same window longer than 36 ms. Both interval fields are `null` outside the light profile. |
 | `cpu_percent` | Whole-process CPU over the wall interval; 100 is one fully used core |
+| `cpu_seconds` | User and system CPU seconds consumed by this game process through the request |
 | `rss_bytes` | Resident bytes at the end of the interval on macOS and Linux, including resident shared pages |
-| `age_ms` | Time since the sample ended |
+| `pss_bytes`, `peak_pss_bytes` | Current and highest sampled Linux proportional resident bytes. Each `host.metrics` request samples the process. |
+| `private_bytes`, `shared_bytes` | Private and shared resident mappings in Linux smaps, each including clean and dirty pages |
+| `private_dirty_bytes`, `shared_clean_bytes` | Linux smaps Private_Dirty and Shared_Clean in bytes, for comparing copy-on-write and file sharing |
+| `age_ms` | Time since the 30-tick CPU sample ended |
 | `host_light` | Whether the process uses the light host profile |
 
 A platform counter that is unavailable is `null`. Compare active
@@ -1005,8 +1068,9 @@ Set `H2_HOST_AUDIT=/path/to/audit.json` before boot to register this
 method (`crates/extensions/game/src/host_audit.rs`). `h2 agent hostaudit` takes no
 parameters. It writes a snapshot to the configured path and returns the
 path, ticks, observed and registered function counts, tag range count and
-inclusive CPU timing. An orderly exit writes the final snapshot; call the
-method before terminating a dedicated process externally. The collector
+inclusive CPU timing. Each snapshot also flushes any enabled map read
+recording for the private store build. An orderly exit writes the final
+snapshot. Call the method before terminating a dedicated process externally. The collector
 changes dispatch and memory-watch costs, so use `host.metrics` for sizing.
 Report fields and corpus: [sim.md](sim.md#host-audit-corpus).
 
@@ -1131,6 +1195,14 @@ mutations respect `session.claim`, and a concurrent mutation is `BUSY`.
   Halo 1 Options and Skulls summaries. After changing the settings,
   close the dialog and read the panel again.
 
+- **`host.peer_rtts`** (`h2 agent host.peer_rtts '{}'`) reads the active simulation
+  membership's reliable-channel RTT at a game boundary. The result contains
+  `players` with the same slot, peer, name, bars and nullable RTT as
+  `ui.lobby.players`. Local players, phantoms and unsampled routes have
+  null RTT. The method returns `UNAVAILABLE` without a simulation membership.
+  Compare a remote client's `rtt_ms` to its matchmaking assignment's regional
+  probe sample during the match.
+
 - **`ui.lobby.players`** (`h2 agent ui.lobby.players`, no parameters):
   reads the pregame player list on a game boundary without UI watch
   (`crates/extensions/game/src/lobby_quality.rs`). Each entry has its
@@ -1222,6 +1294,22 @@ findings, skipped actions, Clanker cards and navigation errors. Findings
 or a failed traversal produce a nonzero exit. Save the report outside the
 repository because resolved text can contain profile names and disc strings.
 [CLI implementation](../../crates/apps/cli/src/agent_ui_crawl.rs)
+
+### `ui.attract`
+
+`h2 agent ui.attract` takes no parameters. Boot registers it when the Bink
+HLE selects playback outside a film recording or replay. It reads the menu's UI clock, idle time, music gate and
+movie flags at a game boundary (`timer`). The `state` says whether the
+menu is idle, fading, playing the attract movie or keeping its music.
+`asset` reports preparation or unavailability and `blocked_reason` gives
+the reason for keeping the music during the current idle cycle.
+
+`last_attempt` gives the UI time, idle time and present at the deadline.
+Its `outcome` says whether the wrapper started playback, the guard skipped
+it as unavailable, or the wrapper failed after preparation.
+`returned_ui_ms` is filled when the wrapper closes the attract movie after
+input or the final frame. [Attract timer](../audio/bink-hle.md#attract-timer)
+describes the sequence.
 
 ## `audio`: voice routing
 
@@ -1838,9 +1926,17 @@ an ordinary run.
 
 | Method | Access | What |
 |---|---|---|
-| `match.status` | read | `match` (the file), `map`, `game_type`, `bots`, `phase` (`waiting` until the match's game starts, `binding` until every distributed seat has a player and unit, `playing`, `over`), `bound_seats` (logical seat to player index for a distributed match), `ticks` (game ticks counted since the start), `max_ticks`, `game_seconds`, `wall_s` (since the boot), `match_s` (since the first tick), `speedup` (game over match wall time), `frames` (`skipped` world frames, `rendered_world` by `render_every`, `other` menu and loading frames, `stub_faults`), `end` (`game_over`, `tick_limit`, `wall_limit`, `stopped`; `null` while it plays) |
+| `match.status` | read | `match` (the file), `map`, `game_type`, `bots`, `phase` (`waiting` until the match's game starts, `binding` until every distributed seat has a player and unit, `playing`, `over`), `lobby` (startup progress, below), `bound_seats` (logical seat to player index for a distributed match), `ticks` (game ticks counted since the start), `max_ticks`, `game_seconds`, `wall_s` (since the boot), `match_s` (since the first tick), `speedup` (game over match wall time), `frames` (`skipped` world frames, `rendered_world` by `render_every`, `other` menu and loading frames, `stub_faults`), `end` (`game_over`, `tick_limit`, `wall_limit`, `stopped`; `null` while it plays) |
 | `match.report` | read | the report as it would be written now (`h2-sim-report/1`, sim.md section 6): players, kills so far, a note while the match has not ended (its `result.end` is then `aborted`) |
 | `match.stop` | act | end the match: `end` becomes `stopped` (unless it had ended), the boot loop stops at the next slice and the report is written. `{stopping, end, already_over}` |
+
+`match.status.lobby.step` advances through `Create`, `SquadCreated`,
+`SessionStarted`, `Start` and `Loading`. Its `wait` field gives the current
+setup blocker or `null`. The numeric `session_type` (retail lifecycle)
+and `squad_state` come from the same setup tick. A missing reading is
+`null`. An allocated idle squad reads 0, and a hosted pregame squad reads
+5 with session type 1 or 2. These fields retain the last setup observation
+during play. Use `phase` and `bound_seats` for gameplay progress.
 
 ```sh
 h2 sim run docs/runtime/sim-examples/aim-net-2v2.toml --socket /tmp/sim.sock &

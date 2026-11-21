@@ -4,7 +4,12 @@ edition.workspace = true
 version.workspace = true
 license.workspace = true
 
+[features]
+guest-file-reads = ["dep:vfs"]
+
 [dependencies]
+# The kernel can supply a range pinned and certified immutable by the VFS.
+vfs = { workspace = true, optional = true }
 thiserror.workspace = true
 xbe.workspace = true
 x87.workspace = true

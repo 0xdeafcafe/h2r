@@ -484,8 +484,10 @@ pub fn list_page(name: &str) -> Option<ListPage> {
         }
         "variant-more-options" => {
             let p = Arc::new(crate::variant_page::Page::new());
-            let mut e = variants::ext::Ext::default();
-            e.gravity = 50;
+            let e = variants::ext::Ext {
+                gravity: 50,
+                ..Default::default()
+            };
             p.read(e.encode());
             let class = crate::variant_page::class(
                 Arc::clone(&p),

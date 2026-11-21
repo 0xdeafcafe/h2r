@@ -147,7 +147,10 @@ paced or not (`crates/runtime/kernel/src/pacer.rs`). So a paced and an unpaced r
 of the same match are the same match. `sim::clock` holds the parsing and
 the arithmetic (tested); boot sets `Machine::pacer` from it. Pass
 `--pace realtime` to `h2 sim run` or `h2 sim batch` to override the match
-file for this invocation.
+file for this invocation. A real-time light host can group its wall waits
+on the pack slot’s 30 Hz phase. Socket readiness releases the grouped wait
+at the ordinary deadline. The guest still observes each intervening vblank,
+audio completion and thread deadline. [Switches](switches.md)
 
 The report's speed-up is game time over wall time from the match's first
 tick to its end (`sim::clock::SpeedMeter`), and also over the whole
@@ -222,12 +225,16 @@ regular phantom uplink and remote gather.
 **Code**: `sim_glue/hosted.rs` and
 `host_lobby/retail.rs`. One step per game tick at the start of the tick:
 
-1. **Open.** `PROFILE_SIGN_IN` (`0x18fb34`) is refused for the run, so no
-   port is ever signed in. The host creates the System Link squad
-   (`0x199df9(0,0)`, custom mode `0x199a03(2)`), sets the map
-   (`0x19a6f2`) and the variant (`0x19a728`) with the player limit at the
-   bot count, and waits until the squad shows them
-   (`sim: System Link host Create -> Start`).
+1. **Create and configure.** All four local profiles stay signed out.
+   With the menu and network session objects initialized, the host invokes
+   the Available Games browser's Create row. `0x199df9(0,0)` creates a
+   class-1 System Link squad via `0x59890(1,0,0)`. The host selects custom
+   mode with `0x199a03(2)` and records the new squad (`SquadCreated`).
+   The menu cannot retire this squad just because there is no controller
+   to enter the pregame screen. The host waits for retail's pregame
+   lifecycle (type 1 or 2), local host state 5 and stage 1
+   (`SessionStarted`). It applies the requested map, variant and bot-count
+   player limit. Their readback and distributed protocol 2 enable `Start`.
 2. **Gate.** The squad must be live (state 5), hosted here, distributed,
    on the match's map, with one player per seat and one peer per machine:
    this host's own peer plus one per phantom (`start_gate`).
@@ -245,23 +252,22 @@ regular phantom uplink and remote gather.
    `+0x4980` becomes 2 and the machines load the map
    (`sim: System Link host Start -> Loading`).
 
-Every wait says why, once per change:
-`sim: System Link host waits at Start: <reason>`, for example
-`peer 0 has map status 2 (...)` or
-`retail start state 7, blocked by the teams or co-op check (...)`.
+Each change in wait reason emits `sim: System Link host waits at <step>: <reason>`.
+A wait at `Start` can report `3 of 4 players` or a peer's map status.
+If the squad retires or is replaced during setup, the host releases ownership
+and returns to `Create`. If another network squad is still active, creation
+reports that a network squad already exists.
 The co-op hooks (`SESSION_GAME_LIMITS` "peer limit 2",
 `SESSION_GAME_START` "one peer for the campaign check",
 `LOBBY_START_STATE` "co-op over 2 to N consoles") act on campaign
 sessions only and leave this lobby as retail has it (tested).
 
-What `h2 sim run` logs on an all-phantom match (for example four
-phantoms, Slayer, Lockout): `Create -> Start`, the phantoms' joins,
-possibly `waits at Start: peer N has map status 2` while the map loads,
-then `Start -> Loading`, `sim: match started at tick N` and
-`bots: phantoms: the game's start waits for real consoles only`.
-`match.status` reaches `playing` with every logical seat in `bound_seats`,
-and the report lists just those players. A run that stalls names the check
-in its last `waits at Start` line.
+For four phantoms on Lockout the expected host transitions are
+`Create -> SquadCreated`, `SquadCreated -> SessionStarted`,
+`SessionStarted -> Start` and `Start -> Loading`. Phantom joins and
+map-readiness waits can interleave with these lines. Map activation logs
+`sim: match started at tick N`. The agent's `match.status.lobby` gives
+the last setup step, wait reason, session type and squad state.
 
 `match.status` enters `binding` on map activation. Combat sampling
 starts once the distributed server has a player and a spawned unit for
@@ -434,6 +440,8 @@ The `wall` block carries the process's memory: `peak_rss_mib`
 fleet pays for), and, when the run loaded a shared copy-on-write guest
 RAM base (§6.2), `guest_written_pages` of `guest_pages`: the census of
 what the match wrote over the base, so batches record memory per run.
+`mapped_read_bytes` and `copied_read_bytes` count completed bytes transferred
+into guest RAM by NtReadFile since boot. Copied bytes include partial pages.
 The per-process memory of a Waterworks 2v2 sim run is in
 [notes/sim.md](notes/sim.md).
 
@@ -458,15 +466,29 @@ h2 sim store build all --disc disc/halo2.iso --out store --reads reads.txt
 H2_SIM_STORE=store h2 sim run match.toml   # or h2 serve --system-link --host-light
 ```
 
-The store file (`<map>.h2store`) is a 24-byte header, a sorted range
-index and the packed bytes of the ranges — nothing else. The serving
-side (`vfs::SimStoreBackend`, layered under `H2_MAP_DIR` and
-`H2_SERVER_MAP_DIR`) keeps only the index in memory, maps the file
-read-only and copies straight into the guest's own read buffer, so
-every process on one host shares the store's page-cache pages and
-nothing private is retained. `stat` keeps the map's logical length; a
-store-served map has no `host_file` (like a streamed overlay); an
-unreadable store file makes the map's reads fail, never fall back.
+The store file (`<map>.h2store`) contains a 24-byte header, a sorted
+range index and the recorded bytes. Version 1 of the index pads bulk
+ranges to the same offset within a 4 KiB page as their logical map
+offset. The reader also accepts packed version 0 indexes.
+`vfs::SimStoreBackend` maps the file read-only. The configured editor
+and server map layers take precedence. The guest sees the original
+logical file length, and an unreadable store fails its reads.
+
+On a light host, a read from an immutable disc map, verified server map
+or contiguous store range can supply whole pages directly to guest RAM.
+On macOS, boot selects a dedicated paged RAM mapping when this read path
+is enabled. Ordinary play and the light profile's copy control use the
+usual heap backing. Flat RAM keeps its separate aliasable mapping.
+The kernel attempts one mapping for the full NtReadFile request, before
+dividing a copied read into 64 KiB chunks. At least 16 whole host pages
+must fit. The physical destination and file offset must have the same
+remainder modulo the host page size. Partial edge pages are copied,
+and guest writes to a mapped page are private to that process. Flat
+RAM aliases, access traps, HLE write capture, mutable files and composed
+map streams take the ordinary copy path. The host reports the first
+refusal for each reason on stderr. See [the switch registry](switches.md)
+for the copy control.
+
 Two games on different maps still share `shared.map`'s store, the
 common tag data both read, and the dylib's code pages.
 
@@ -479,8 +501,7 @@ leaves no pages behind either.
 
 ### 6.2 Sharing guest RAM with machine snapshots
 
-Halo copies a map's tag data into guest RAM at load, so each process
-holds its own dirty copy. `state.save` with `"cow": true` writes, beside
+The snapshot shares guest RAM at a saved machine state. `state.save` with `"cow": true` writes, beside
 the snapshot, a sparse raw RAM image (`<name>.ram`: zero pages are
 holes); `state.load` with `"cow": true` maps that file private
 copy-on-write in place of decoding RAM in — pages the match never
@@ -726,7 +747,7 @@ Host methods while `H2_SIM` is on (`boot::sim_glue::Sim::add_methods`,
 
 | Method | Access | What |
 |---|---|---|
-| `match.status` | read | the match file, phase (`waiting`, `playing`, `over`), ticks, game seconds, wall seconds and speed-up so far, the end reason once over |
+| `match.status` | read | the match file, phase (`waiting`, `binding`, `playing`, `over`), lobby setup step and session state, ticks, game seconds, wall seconds and speed-up so far, the end reason once over |
 | `match.report` | read | the report as it would be written now (players, kills so far) |
 | `match.stop` | act | end the match at the next slice boundary, with `"end": "stopped"` |
 

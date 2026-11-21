@@ -88,7 +88,8 @@ impl Live {
         }
         let provider = self.hosts.provider_for(&lease)?;
         lease.created_ms = now;
-        if !self.hosts.costs.can_start(&lease) {
+        let pack_linger = launch && lease.provider == ProviderKind::Cloudflare;
+        if !self.hosts.costs.can_start(&lease, pack_linger) {
             provider.log_budget_refusal(&format!(
                 "live: monthly dedicated host budget refused assignment {} (spent ${:.4}, cap ${:.2})",
                 lease.assignment_id,
@@ -145,13 +146,14 @@ impl Live {
             HostRequested {
                 lease: lease.clone(),
                 provider_ref,
+                pack_linger,
             },
         )
         .await?;
         let accepted = self.matchmaking.lock().unwrap().host_requested(&lease);
         if !accepted {
             let row = self.require_host(&lease.id)?;
-            self.record_host_end(self.hosts.version(), &row, EndReason::Stopped, 0, now_ms())
+            self.record_host_end(self.hosts.version(), &row, EndReason::Stopped, 0, now_ms(), None)
                 .await?;
             return Err(conflict("the matchmaking assignment has expired"));
         }
@@ -283,7 +285,7 @@ impl Live {
                     .deadline()
                     .filter(|(due, _)| *due <= now)
                     .map_or(EndReason::Crashed, |(_, reason)| reason);
-                self.record_host_end(version, &row, reason, 0, now).await?;
+                self.record_host_end(version, &row, reason, 0, now, None).await?;
             }
             return Err(unavailable(
                 "dedicated host provider failed to start the match",
@@ -304,7 +306,7 @@ impl Live {
                 .map_err(|_| unavailable("late host could not be stopped"))?;
             self.hosts.registry.write().unwrap().launching.remove(id);
             if let Some((_, reason)) = row.deadline() {
-                self.record_host_end(version, &row, reason, 0, now).await?;
+                self.record_host_end(version, &row, reason, 0, now, None).await?;
             }
             return Err(conflict("dedicated host launch is no longer needed"));
         }
@@ -396,12 +398,27 @@ impl Live {
         players: u8,
         reason: Option<EndReason>,
     ) -> ApiResult<HostView> {
+        self.host_report_with_usage(bearer, lease_id, state, players, reason, None).await
+    }
+
+    pub(crate) async fn host_report_with_usage(
+        &self,
+        bearer: Option<&str>,
+        lease_id: &str,
+        state: HostState,
+        players: u8,
+        reason: Option<EndReason>,
+        pack_usage: Option<live_proto::hosts::PackUsage>,
+    ) -> ApiResult<HostView> {
         self.check_host_bearer(bearer, crate::host_identity::HOST_REPORT, lease_id)?;
         let _write = self.hosts.writes.lock().await;
         let version = self.hosts.version();
         let row = self.require_host(lease_id)?;
         if players > row.lease.max_players {
             return Err(invalid("player count exceeds the lease capacity"));
+        }
+        if pack_usage.is_some() && state != HostState::Ended {
+            return Err(invalid("only an ended report has packed match usage"));
         }
         match state {
             HostState::Playing => {
@@ -435,8 +452,12 @@ impl Live {
                 }
                 // The supervisor still has to receive this response and tear
                 // down the game. A replayable sweep cleans up a lingering process.
-                self.record_host_end(version, &row, reason, players, now_ms())
-                    .await?;
+                let at = now_ms();
+                let pack_usage = pack_usage.filter(|usage| {
+                    self.hosts.costs.lease(lease_id)
+                        .is_some_and(|lease| lease.accepts_pack_usage(usage, at))
+                });
+                self.record_host_end(version, &row, reason, players, at, pack_usage).await?;
             }
             _ => return Err(invalid("host may report only playing or ended")),
         }
@@ -583,7 +604,8 @@ impl Live {
             // The start task owns any reference that arrives after this event.
             // Its existing late-start path disposes of that resource.
             HostState::Requested => {
-                self.record_host_end(version, &row, EndReason::Stopped, row.players, at).await
+                self.record_host_end(version, &row, EndReason::Stopped, row.players, at, None)
+                    .await
             }
             HostState::Booting | HostState::Joinable => {
                 if let Err(error) = self
@@ -594,8 +616,10 @@ impl Live {
                     eprintln!("live: deferring stop of rejected host {lease_id}: {error}");
                     let row = self.require_host(lease_id)?;
                     if row.active() {
-                        self.record_host_end(self.hosts.version(), &row, EndReason::Stopped, row.players, at)
-                            .await?;
+                        self.record_host_end(
+                            self.hosts.version(), &row, EndReason::Stopped, row.players, at, None,
+                        )
+                        .await?;
                     }
                 }
                 Ok(())
@@ -628,6 +652,7 @@ impl Live {
         reason: EndReason,
         players: u8,
         at: i64,
+        pack_usage: Option<live_proto::hosts::PackUsage>,
     ) -> ApiResult<()> {
         self.host_event(
             version,
@@ -639,17 +664,21 @@ impl Live {
                     .started_ms
                     .map_or(0, |start| at.saturating_sub(start).max(0) as u64),
                 players_peak: row.players_peak.max(players),
+                pack_usage,
             },
         )
         .await
     }
 
-    async fn record_host_stop(&self, version: u64, lease_id: &str) -> ApiResult<()> {
+    async fn record_host_stop(
+        &self, version: u64, lease_id: &str, pack_release: Option<live_proto::hosts::PackRelease>,
+    ) -> ApiResult<()> {
         self.host_event(
             version,
             HOST_STOPPED,
             HostStopped {
                 lease_id: lease_id.into(),
+                pack_release,
             },
         )
         .await
@@ -668,16 +697,16 @@ impl Live {
         }
         if let Some(id) = &row.provider_ref {
             let provider = self.hosts.provider_for(&row.lease)?;
-            provider
-                .stop(&row.lease.id, id)
+            let release = provider
+                .stop_and_settle(&row.lease.id, id)
                 .await
                 .map_err(|_| unavailable("dedicated host stop failed"))?;
             if self.hosts.costs.stop_confirmed(&row.lease.id) == Some(false) {
-                self.record_host_stop(version, &row.lease.id).await?;
+                self.record_host_stop(version, &row.lease.id, release).await?;
                 version = self.hosts.version();
             }
         }
-        self.record_host_end(version, row, reason, players, at)
+        self.record_host_end(version, row, reason, players, at, None)
             .await
     }
 
@@ -718,7 +747,7 @@ impl Live {
             self.stop_host_locked(version, &row, reason, row.players, at)
                 .await?;
         } else if observed_dead && row.provider_ref == before.provider_ref {
-            self.record_host_end(version, &row, EndReason::Crashed, row.players, at)
+            self.record_host_end(version, &row, EndReason::Crashed, row.players, at, None)
                 .await?;
         }
         Ok(())
@@ -759,6 +788,7 @@ impl Live {
 
     pub async fn sweep_hosts(&self) {
         self.sweep_hosts_at(now_ms()).await;
+        self.refresh_host_pools().await;
     }
 
     pub(super) async fn sweep_hosts_at(&self, at: i64) {
@@ -844,14 +874,15 @@ impl Live {
                 Some(false) => {
                     // Stop also fences a delayed start for this known room.
                     // An alive check cannot tell whether a start is in flight.
-                    self.hosts
+                    let release = self.hosts
                         .provider_for(&row.lease)?
-                        .stop(&row.lease.id, id)
+                        .stop_and_settle(&row.lease.id, id)
                         .await
                         .map_err(|_| unavailable("ended host cleanup failed"))?;
                     let _write = self.hosts.writes.lock().await;
-                    self.record_host_stop(self.hosts.version(), &row.lease.id)
-                        .await?;
+                    if self.hosts.costs.stop_confirmed(&row.lease.id) == Some(false) {
+                        self.record_host_stop(self.hosts.version(), &row.lease.id, release).await?;
+                    }
                 }
                 Some(true) => {}
                 None => {

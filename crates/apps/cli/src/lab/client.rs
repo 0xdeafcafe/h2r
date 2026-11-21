@@ -1,115 +1,60 @@
 //! The lab's client commands (`h2 lab status|run|...`), and `h2 lab record`.
 
-use std::io::{BufRead, BufReader, Read, Write};
-use std::path::PathBuf;
-use std::process::{Child, Command, Stdio};
+use std::io::{self, BufRead, BufReader, Read, Seek, Write};
+use std::net::SocketAddr;
+use std::os::unix::net::UnixStream;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use anyhow::{Context, Result, bail, ensure};
 use serde_json::{Value, json};
 
-use super::proto::{self, BuildSpec, RunReq, sh_quote};
-use super::{USAGE, default_socket};
+use super::proto::{self, BuildSpec, RunReq};
+use super::{USAGE, default_socket, discovery, lan, transfer};
 
-/// Where the host is.
-enum Target {
-    /// The socket on this machine.
+enum Remote {
     Local(PathBuf),
-    Ssh {
-        host: String,
-        /// `--socket` for the remote pipe, when not its default.
-        socket: Option<String>,
-        remote_h2: String,
-    },
-}
-
-/// The remote h2 when neither --remote-h2 nor $H2_LAB_REMOTE_H2 says: the
-/// link `h2 lab host` keeps in its default root, relative to the remote
-/// home (where ssh starts).
-const REMOTE_H2: &str = "Library/Caches/h2recomp/lab/h2";
-
-struct Remote {
-    target: Target,
-    /// The ssh command: $H2_LAB_SSH, else ssh in batch mode.
-    ssh: Vec<String>,
-    ssh_overridden: bool,
+    Lan { name: String, addr: SocketAddr },
 }
 
 impl Remote {
-    /// A command line run on the host's machine: through ssh, or `sh -c`.
-    fn shell(&self, line: &str) -> Command {
-        match &self.target {
-            Target::Local(_) => {
-                let mut c = Command::new("sh");
-                c.arg("-c").arg(line);
-                c
-            }
-            Target::Ssh { host, .. } => {
-                let mut c = Command::new(&self.ssh[0]);
-                c.args(&self.ssh[1..]).arg(host).arg(line);
-                c
-            }
-        }
-    }
-
     fn connect(&self) -> Result<Conn> {
-        match &self.target {
-            Target::Local(p) => {
-                let s = std::os::unix::net::UnixStream::connect(p).with_context(|| {
-                    format!("connecting to {}: is `h2 lab host` running?", p.display())
+        match self {
+            Self::Local(path) => {
+                let socket = UnixStream::connect(path).with_context(|| {
+                    format!(
+                        "connecting to {}: is `h2 lab host` running?",
+                        path.display()
+                    )
                 })?;
-                Ok(Conn {
-                    r: BufReader::new(Box::new(s.try_clone()?)),
-                    w: Some(Box::new(s)),
-                    child: None,
-                })
+                Ok(Conn::new(socket))
             }
-            Target::Ssh {
-                socket, remote_h2, ..
-            } => {
-                let mut line = format!("{} lab pipe", sh_quote(remote_h2));
-                if let Some(s) = socket {
-                    line += &format!(" --socket {}", sh_quote(s));
-                }
-                let mut child = self
-                    .shell(&line)
-                    .stdin(Stdio::piped())
-                    .stdout(Stdio::piped())
-                    .spawn()
-                    .with_context(|| format!("starting {}", self.ssh[0]))?;
-                let r = child.stdout.take().unwrap();
-                let w = child.stdin.take().unwrap();
-                Ok(Conn {
-                    r: BufReader::new(Box::new(r)),
-                    w: Some(Box::new(w)),
-                    child: Some(child),
-                })
-            }
-        }
-    }
-
-    /// Where `git push` sends to: the checkout's path, or `HOST:path`.
-    fn git_url(&self, repo: &str) -> String {
-        match &self.target {
-            Target::Local(_) => repo.to_string(),
-            Target::Ssh { host, .. } => format!("{host}:{repo}"),
+            Self::Lan { name, addr } => Ok(Conn::new(lan::connect(name, *addr)?)),
         }
     }
 }
 
-struct Conn {
-    r: BufReader<Box<dyn Read + Send>>,
-    w: Option<Box<dyn Write + Send>>,
-    child: Option<Child>,
-}
+trait Wire: Read + Write {}
+impl<T: Read + Write> Wire for T {}
+
+struct Conn(BufReader<Box<dyn Wire>>);
 
 impl Conn {
-    fn call(&mut self, req: Value) -> Result<Value> {
-        let w = self.w.as_mut().unwrap();
+    fn new(socket: impl Wire + 'static) -> Self {
+        Self(BufReader::new(Box::new(socket)))
+    }
+
+    fn request(&mut self, req: Value) -> Result<()> {
+        let w = self.0.get_mut();
         writeln!(w, "{req}")?;
         w.flush()?;
+        Ok(())
+    }
+
+    fn reply(&mut self) -> Result<Value> {
         let mut line = String::new();
-        if self.r.read_line(&mut line)? == 0 {
-            bail!("the lab host closed the connection (is `h2 lab host` running there?)");
+        if self.0.read_line(&mut line)? == 0 {
+            bail!("the lab host closed the connection");
         }
         let v: Value =
             serde_json::from_str(&line).with_context(|| format!("bad answer {line:?}"))?;
@@ -118,14 +63,10 @@ impl Conn {
         }
         Ok(v)
     }
-}
 
-impl Drop for Conn {
-    fn drop(&mut self) {
-        self.w = None;
-        if let Some(mut c) = self.child.take() {
-            let _ = c.wait();
-        }
+    fn call(&mut self, req: Value) -> Result<Value> {
+        self.request(req)?;
+        self.reply()
     }
 }
 
@@ -133,9 +74,6 @@ impl Drop for Conn {
 fn remote(args: Vec<String>) -> Result<(Remote, Vec<String>)> {
     let mut host = std::env::var("H2_LAB_HOST").ok().filter(|h| !h.is_empty());
     let mut socket = None;
-    let mut remote_h2 = std::env::var("H2_LAB_REMOTE_H2")
-        .ok()
-        .filter(|h| !h.is_empty());
     let mut rest = Vec::new();
     let mut it = args.into_iter();
     while let Some(a) = it.next() {
@@ -144,41 +82,20 @@ fn remote(args: Vec<String>) -> Result<(Remote, Vec<String>)> {
                 rest.push(a);
                 rest.extend(it.by_ref());
             }
-            "--host" => host = Some(it.next().context("--host needs [user@]HOST or local")?),
+            "--host" => host = Some(it.next().context("--host needs a name, address or local")?),
             "--socket" => socket = Some(it.next().context("--socket needs a path")?),
-            "--remote-h2" => remote_h2 = Some(it.next().context("--remote-h2 needs a path")?),
             _ => rest.push(a),
         }
     }
-    let host = host.context("which host? --host [user@]HOST (or local), or set H2_LAB_HOST")?;
-    ensure!(!host.starts_with('-'), "--host {host:?} is not a host name");
-    let (ssh, ssh_overridden) = match std::env::var("H2_LAB_SSH")
-        .ok()
-        .filter(|s| !s.trim().is_empty())
-    {
-        Some(s) => (s.split_whitespace().map(String::from).collect(), true),
-        None => (
-            ["ssh", "-o", "BatchMode=yes"].map(String::from).to_vec(),
-            false,
-        ),
-    };
+    let host = host.context("which host? specify --host NAME|IP|local or set H2_LAB_HOST")?;
     let target = if host == "local" {
-        Target::Local(socket.map_or_else(default_socket, PathBuf::from))
+        Remote::Local(socket.map_or_else(default_socket, PathBuf::from))
     } else {
-        Target::Ssh {
-            host,
-            socket,
-            remote_h2: remote_h2.unwrap_or_else(|| REMOTE_H2.into()),
-        }
+        ensure!(socket.is_none(), "--socket requires --host local");
+        let addr = discovery::resolve(&host)?;
+        Remote::Lan { name: host, addr }
     };
-    Ok((
-        Remote {
-            target,
-            ssh,
-            ssh_overridden,
-        },
-        rest,
-    ))
+    Ok((target, rest))
 }
 
 pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
@@ -187,6 +104,10 @@ pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
         "status" => {
             no_more(&args)?;
             print(&r.connect()?.call(json!({"cmd": "status"}))?)
+        }
+        "update" => {
+            no_more(&args)?;
+            print(&r.connect()?.call(json!({"cmd": "update"}))?)
         }
         "run" => run_cmd(&r, args),
         "agent" => agent_cmd(&r, args),
@@ -220,11 +141,7 @@ pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
                 }
             }
             let id = id.context("usage: h2 lab fetch <id> [--to DIR]")?;
-            let root = status(&r)?["root"]
-                .as_str()
-                .context("status names no root")?
-                .to_string();
-            let dest = fetch(&r, &root, &id, to)?;
+            let dest = fetch(&r, &id, to)?;
             println!("{}", dest.display());
             Ok(())
         }
@@ -245,11 +162,7 @@ pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
             if branches.is_empty() {
                 branches.push(current_branch()?);
             }
-            let repo = status(&r)?["repo"]
-                .as_str()
-                .context("status names no checkout")?
-                .to_string();
-            for (b, sha) in sync(&r, &repo, &branches)? {
+            for (b, sha) in sync(&r, &branches)? {
                 println!("lab/{b} {sha}");
             }
             Ok(())
@@ -270,10 +183,6 @@ fn print(v: &Value) -> Result<()> {
     }
     println!("{}", serde_json::to_string_pretty(&v)?);
     Ok(())
-}
-
-fn status(r: &Remote) -> Result<Value> {
-    r.connect()?.call(json!({"cmd": "status"}))
 }
 
 fn id_and_timeout(args: &[String]) -> Result<(String, Option<f64>)> {
@@ -340,7 +249,7 @@ impl Source {
     }
 
     /// The rev for the request: none for --current; --rev as given (it must
-    /// be on the host already); else the branch, pushed first and named by
+    /// be on the host already); else the branch, synced first and named by
     /// its commit, or `lab/<branch>` as last synced with --no-sync.
     fn resolve(&self, r: &Remote) -> Result<Option<String>> {
         ensure!(
@@ -364,12 +273,8 @@ impl Source {
         if self.no_sync {
             return Ok(Some(format!("lab/{branch}")));
         }
-        let repo = status(r)?["repo"]
-            .as_str()
-            .context("status names no checkout")?
-            .to_string();
-        let pushed = sync(r, &repo, std::slice::from_ref(&branch))?;
-        Ok(Some(pushed[0].1.clone()))
+        let synced = sync(r, std::slice::from_ref(&branch))?;
+        Ok(Some(synced[0].1.clone()))
     }
 }
 
@@ -427,13 +332,13 @@ fn run_cmd(r: &Remote, args: Vec<String>) -> Result<()> {
     wait_and_fetch(r, &mut c, &id, to)
 }
 
-/// Validates `req`, resolves and pushes its build, and starts it. Returns
+/// Validates `req`, resolves and syncs its build, and starts it. Returns
 /// the connection and the host's answer (with the job's `id`).
 fn launch(r: &Remote, mut req: RunReq, src: &Source) -> Result<(Conn, Value)> {
     if req.perf && !req.build.features.iter().any(|f| f == "perf") && !src.current {
         req.build.features.push("perf".into());
     }
-    // Refuse what the host would before pushing anything.
+    // Refuse what the host would before syncing anything.
     proto::validate_run(&RunReq {
         build: BuildSpec {
             rev: Some("x".into()),
@@ -493,49 +398,36 @@ fn build_cmd(r: &Remote, args: Vec<String>) -> Result<()> {
 /// it went.
 fn wait_and_fetch(r: &Remote, c: &mut Conn, id: &str, to: Option<PathBuf>) -> Result<()> {
     let v = c.call(json!({"cmd": "wait", "id": id}))?;
-    let root = c.call(json!({"cmd": "status"}))?["root"]
-        .as_str()
-        .context("status names no root")?
-        .to_string();
-    let dest = fetch(r, &root, id, to)?;
+    let dest = fetch(r, id, to)?;
     print(&v)?;
     println!("{}", dest.display());
     finished_ok(&v)
 }
 
-/// Copies the host's `runs/<id>` into `to` (default `$RUSH_KEEP/lab`, else
-/// `./lab`) as `<to>/<id>`, through tar over the same ssh.
-fn fetch(r: &Remote, root: &str, id: &str, to: Option<PathBuf>) -> Result<PathBuf> {
-    proto::check_name("id", id)?;
+/// Copies the host's `runs/<id>` into `to` as `<to>/<id>`.
+fn fetch(r: &Remote, id: &str, to: Option<PathBuf>) -> Result<PathBuf> {
     let to = to.unwrap_or_else(
         || match std::env::var_os("RUSH_KEEP").filter(|v| !v.is_empty()) {
             Some(k) => PathBuf::from(k).join("lab"),
             None => PathBuf::from("lab"),
         },
     );
+    let mut archive = transfer::TempFile::new(&std::env::temp_dir())?;
+    let mut conn = r.connect()?;
+    conn.call(json!({"cmd": "fetch", "id": id}))?;
+    transfer::receive_archive(&mut conn.0, &mut archive.file)?;
+    conn.reply()?;
     std::fs::create_dir_all(&to).with_context(|| format!("creating {}", to.display()))?;
-    let runs = format!("{}/runs", root.trim_end_matches('/'));
-    let mut src = r
-        .shell(&format!(
-            "tar -C {} -cf - {}",
-            sh_quote(&runs),
-            sh_quote(id)
-        ))
-        .stdout(Stdio::piped())
-        .spawn()
-        .context("starting the remote tar")?;
-    let st = Command::new("tar")
+    let status = Command::new("tar")
         .arg("-C")
         .arg(&to)
         .arg("-xf")
-        .arg("-")
-        .stdin(src.stdout.take().unwrap())
+        .arg(&archive.path)
         .status()
-        .context("running tar")?;
-    let sst = src.wait()?;
+        .context("extracting lab archive")?;
     ensure!(
-        sst.success() && st.success(),
-        "fetching runs/{id} failed (remote tar {sst}, local tar {st})"
+        status.success(),
+        "extracting runs/{id} failed with {status}"
     );
     Ok(to.join(id))
 }
@@ -659,38 +551,54 @@ fn current_branch() -> Result<String> {
     Ok(b)
 }
 
-/// Pushes each local branch to the host's checkout as `lab/<branch>` (forced:
-/// they are the lab's copies), over the lab's ssh. Returns each branch's
-/// commit. Uncommitted changes here are not in it; says so.
-fn sync(r: &Remote, repo: &str, branches: &[String]) -> Result<Vec<(String, String)>> {
-    let dirty = Command::new("git")
+/// Sends committed branch contents as git bundles and updates the host's
+/// lab refs. Known commits only need a ref update.
+fn sync(r: &Remote, branches: &[String]) -> Result<Vec<(String, String)>> {
+    let repo = Path::new(".");
+    let dirty = transfer::git(repo)
         .args(["status", "--porcelain", "--untracked-files=no"])
         .output()?;
     if !dirty.stdout.is_empty() {
         eprintln!("lab: this checkout has uncommitted changes; the host builds commits only");
     }
-    let mut out = Vec::new();
-    let mut push = Command::new("git");
-    push.args(["push", "--force", "--quiet"])
-        .arg(r.git_url(repo));
-    for b in branches {
-        proto::check_rev(b)?;
-        let o = Command::new("git")
-            .args(["rev-parse", "--verify", "--quiet"])
-            .arg(format!("refs/heads/{b}"))
-            .output()?;
-        ensure!(o.status.success(), "no local branch {b}");
-        let sha = String::from_utf8_lossy(&o.stdout).trim().to_string();
-        push.arg(format!("refs/heads/{b}:refs/heads/lab/{b}"));
-        out.push((b.clone(), sha));
+    let mut synced = Vec::new();
+    for branch in branches {
+        let (source, _) = transfer::branch_refs(branch)?;
+        let commit = transfer::resolve_commit(repo, &source)?
+            .with_context(|| format!("no local branch {branch}"))?;
+        let info = r
+            .connect()?
+            .call(json!({"cmd": "sync_bases", "branch": branch, "commit": commit}))?;
+        let mut bundle = if info["known"] == true {
+            None
+        } else {
+            let bases: Vec<String> = serde_json::from_value(info["bases"].clone())?;
+            Some(transfer::make_bundle(&source, &bases)?)
+        };
+        let bytes = match &bundle {
+            Some(bundle) => bundle.file.metadata()?.len(),
+            None => 0,
+        };
+        ensure!(
+            bytes <= proto::BUNDLE_MAX,
+            "git bundle is too large for lab sync"
+        );
+        let mut conn = r.connect()?;
+        conn.call(json!({"cmd": "sync", "branch": branch, "commit": commit, "bytes": bytes}))?;
+        if let Some(bundle) = &mut bundle {
+            bundle.file.rewind()?;
+            let w = conn.0.get_mut();
+            io::copy(&mut bundle.file, &mut *w)?;
+            w.flush()?;
+        }
+        let result = conn.reply()?;
+        ensure!(
+            result["commit"].as_str() == Some(commit.as_str()),
+            "unexpected commit from server"
+        );
+        synced.push((branch.clone(), commit));
     }
-    if r.ssh_overridden {
-        push.env("GIT_SSH_COMMAND", r.ssh.join(" "))
-            .env("GIT_SSH_VARIANT", "simple");
-    }
-    let st = push.status().context("running git push")?;
-    ensure!(st.success(), "git push to the lab host failed");
-    Ok(out)
+    Ok(synced)
 }
 
 /// `h2 lab record`: the user plays; their input goes to
@@ -731,12 +639,8 @@ pub fn record(args: Vec<String>) -> Result<()> {
     req.record = Some(name.clone());
     proto::validate_run(&req)?;
     let socket = socket.unwrap_or_else(default_socket);
-    if let Ok(s) = std::os::unix::net::UnixStream::connect(&socket) {
-        let mut c = Conn {
-            r: BufReader::new(Box::new(s.try_clone()?)),
-            w: Some(Box::new(s)),
-            child: None,
-        };
+    if let Ok(socket) = UnixStream::connect(&socket) {
+        let mut c = Conn::new(socket);
         let mut body = serde_json::to_value(&req)?;
         body["cmd"] = "run".into();
         let v = c.call(body)?;
@@ -907,11 +811,7 @@ fn bench_cmd(r: &Remote, args: Vec<String>) -> Result<()> {
             );
         }
     };
-    let root = status(r)?["root"]
-        .as_str()
-        .context("status names no root")?
-        .to_string();
-    let dest = fetch(r, &root, &id, to)?;
+    let dest = fetch(r, &id, to)?;
     for (name, text) in [
         ("capture.json", &m.capture),
         ("render-stats.json", &m.render),

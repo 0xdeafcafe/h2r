@@ -1068,10 +1068,12 @@ ExtendRound and Report start with the session id, which is also the
 Live session's id. Ids are written as the game's 8 bytes in order, 16
 lowercase hex digits.
 
-1. **Game record.** `NewGame.session_id`, matchmaking games only. The
-   boot's playlist locator answers `Hle::matchmade`: the playlist and
-   the session, both from this console's own advertisement, else from
-   the joined session as last read. Telemetry puts both on the game.
+1. **Game record.** For matchmaking, the boot's playlist locator reads
+   `Hle::matchmade` and supplies the playlist and session from this console's
+   own advertisement or the joined session. Telemetry sends both on the game
+   start request. The server stores `NewGame.session_id` on its private lobby
+   link, which ranking reads when the game ends. Custom hosts also send their
+   advertisement for web joins.
 2. **HLE to server.** Register, ExtendRound and Report post through the
    Live worker, never waiting, once for every account signed in on the
    console:
@@ -1294,17 +1296,37 @@ For regional placement, set `LIVE_HOST_REGIONS` to a JSON object
 mapping provider region codes to IPv4 QoS base endpoints. For example,
 `{"lhr":"192.0.2.10:31000","ams":"192.0.2.20:31000","iad":null}`.
 Each endpoint answers the same UDP echo as a peer at base port plus
-two. Use `null` for a region without a probe. Set
-`LIVE_HOST_DEFAULT_REGION` to a key in that list. If both region
-settings are omitted, Live leaves placement to the provider.
+two. Use `null` for a region without a configured UDP target. Set
+`LIVE_HOST_DEFAULT_REGION` to a key in that list. With both settings
+omitted, the provider chooses the location.
 
-The queue includes configured regional probes in its existing
-`probing` response when there is room within the candidate limit. Live
-uses measurements from the current probe generation. Among regions
-measured successfully by every cohort member, it chooses the lowest
-worst-member RTT. Ties prefer the configured default and then region
-code order. If no region has measurements from every member, Live
-uses the configured default. Regional probes occupy no player seats.
+The queue includes regional probes in its `probing` response within the
+32-target limit. It accepts only samples for the current generation.
+For a dedicated Map Pack map, only pack owners receive regional probes
+and contribute to host pool warming. On native Live, a running
+provider-managed match in the region advertises its UDP QoS endpoint.
+A searcher can also probe the configured UDP endpoint. With local and
+Cloudflare providers, the queue advertises up
+to nine `region_echoes` on the client's own Live origin. The client
+upgrades `/v1/hosts/regions/{region}/echo` using its account's
+`sessions.relay` credential and measures a single echo after the
+handshake. The account needs a current dedicated search ticket. On the
+Worker the region's small-class pool forwards to an active pack's
+echo-only tunnel endpoint when available and otherwise answers the echo
+in its own room, without starting a container. On local Live the server
+answers the WebSocket. A successful live UDP sample takes precedence
+over configured UDP and WebSocket samples for that member.
+
+Among regions measured by every cohort member, Live takes the lowest
+worst-member RTT. A region with a recent free small-class slot wins if
+its worst RTT is within 10 ms of the best. Equal scores prefer the
+configured default and then region code order. If no region has samples
+from every member, Live uses the configured default. In an unranked hopper, each member whose
+chosen-region RTT exceeds 120 ms and whose route to the reserved peer
+is faster counts towards a veto. A strict majority of the entire cohort
+starts the match on the peer. Missing samples abstain, and a tie keeps
+the dedicated host. Ranked hoppers keep the dedicated placement regardless
+of these votes. Regional probes occupy no player seats.
 
 Live reserves a cohort with an eligible peer fallback and requests
 the dedicated host as soon as the cohort forms. The forming request

@@ -5,8 +5,7 @@
 //!
 //! `H2_XBE=/abs/path/default.xbe cargo test -p d3d --test it xbe_tables:: -- --ignored`
 
-mod common;
-
+use crate::common;
 use d3d::GuestLayout;
 use d3d::pushbuf::{SIMPLE_ENCODE_SLOTS, SimpleEncode};
 use d3d::runtime_glue::GuestAdapter;

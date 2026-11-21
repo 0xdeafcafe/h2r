@@ -42,8 +42,7 @@
 //!   ([`ScaleStats::color_resyncs`], [`ScaleStats::depth_resyncs`]). That
 //!   target is then at 1x until it is drawn again, but it has no holes.
 //!
-//! Each kind of repair is logged once. Stipple is still indexed by host
-//! pixel.
+//! Each kind of repair is logged once.
 //!
 //! A view failure never reaches the guest: it is counted and that frame is
 //! shown from the reference's image.

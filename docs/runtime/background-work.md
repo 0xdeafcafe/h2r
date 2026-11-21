@@ -22,8 +22,9 @@ starts lowers itself.
   Linux, where a nice value is the thread's own. Elsewhere it does
   nothing. A failure is ignored and the thread runs at the default.
 - A QoS class set on one thread does not reliably carry to the threads it
-  spawns, so a job's workers each lower themselves (`bots::vis::build_with`
-  calls `lower_current` at the top of each scoped worker).
+  spawns, so each worker lowers itself. The nav build uses
+  `bots::nav::ordered_build_chunks` for collision and tactical probes.
+  The visibility build uses `bots::vis::fill` for row batches.
 - `background::workers()` is how many threads one background job may
   split across: `H2_BACKGROUND_THREADS` when it is a positive number (at
   most the cores), else a quarter of the cores, at least one
@@ -33,7 +34,7 @@ starts lowers itself.
 
 | Thread | Code | Work |
 |---|---|---|
-| `bots-nav` and its grid workers | `crates/extensions/game/src/bots_nav_auto.rs`, `bots::vis::Threads::background` | nav meshes and visibility grids ([bots.md](../game/bots.md) section 10) |
+| `bots-nav` and its build workers | `crates/extensions/game/src/bots_nav_auto.rs`, `bots::vis::Threads::background` | nav meshes and visibility grids ([bots.md](../game/bots.md) section 10) |
 | `bots-map-data` | `crates/extensions/game/src/bot_glue.rs` (`load_map_data`) | reading the loaded map's `.bots` and `.vis` |
 | `pad-speaker-index` | `crates/extensions/game/src/pad_speaker.rs` | the controller speaker's sound index |
 | `film-map-hash` | `crates/extensions/game/src/theater/metadata.rs` | the film's map digest |
@@ -52,7 +53,8 @@ a moment (a lowered holder would stall the game):
 - `vfs-metadata` (`crates/runtime/vfs/src/host.rs`): idle, and it takes
   the lock the game's writes take.
 - `fallback-analysis` (`crates/runtime/recomp/src/fallback.rs`): the
-  runner waits for it on an unresolved entry.
+  runner waits for it on an unresolved entry. A light host invokes
+  analysis on demand in the runner.
 - `gfx compile` (`crates/platform/gfx/src/compile.rs`) and `nv2a prewarm`
   (`crates/platform/d3d/src/nv2a.rs`): the render thread waits for a
   pipeline or program it needs.
@@ -71,8 +73,9 @@ a moment (a lowered holder would stall the game):
   `h2-theater-archive`, `h2-live-mod`, `h2-live-setup`) and the
   `test map build` the agent API waits on.
 
-Command-line tools that run in the foreground (`h2 build`, `h2 bots nav`,
-the live art and geometry exporters) keep their full thread counts.
+Command-line tools that run in the foreground use their own thread
+budgets at default priority. `h2 bots nav` uses half the cores, up to
+eight, for its parallel build phases.
 
 ## Evidence
 

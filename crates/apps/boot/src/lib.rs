@@ -180,6 +180,7 @@ fn run_configured(
         host.host_light || (sim_mode.is_some() && switches.feature("host-light", true));
     #[cfg(not(feature = "desktop-runtime"))]
     anyhow::ensure!(host_light, "the host binary requires the light host profile");
+    let coalesce_host_ticks = host_light && switches.feature("host-light.tick-pacing", false);
     let replaying = replay.is_some();
     let render_every = replay.as_ref().map_or(0, |r| r.render_every);
     if host_audit::module_from_env().is_some() {
@@ -209,6 +210,7 @@ fn run_configured(
             "light host and sim require the guest D3D, Bink, DirectSound and XAPI shims"
         );
     }
+    bots::vis::set_light_index_budget(host_light);
     let bots = opts.xapi && (!host_light || sim_mode.is_some() || host.host_bots);
     d3d_diag::keep_present_history(!host_light);
     let x = xbe::Xbe::parse(xbe_bytes)?;
@@ -245,6 +247,7 @@ fn run_configured(
     // exactly what the game assumes. The write-combined window is a boot
     // stopgap: --no-stopgaps leaves it out.
     let mut options = runtime::loader::LoadOptions::halo2();
+    options.map_guest_reads = host_light && switches.implementation("sim.mapped-reads", true);
     if opts.stopgaps {
         for r in &mut options.physical_reservations {
             r.aliases.push(d3d_glue::WC_BASE | r.physical.start);
@@ -270,7 +273,7 @@ fn run_configured(
     // Interpreting past unsupported instructions is a stopgap too.
     fallback::set_recovery(opts.stopgaps);
     if opts.stopgaps {
-        fallback::start_analysis(&loaded.runtime);
+        fallback::configure_analysis(&loaded.runtime, !host_light);
     }
     eprintln!(
         "registered {} entries, {} resumes in {:.1}s",
@@ -358,13 +361,14 @@ fn run_configured(
         audit.is_none() || !switches.feature("render-census", false),
         "host audit and render-census both use the guest access trap"
     );
-    let mut features = hooks::Registry::new(switches);
+    let mut features = hooks::Registry::new(registration::profile_switches(switches, host_light));
     // Our text on the cannot-connect dialog when Live is off or its server
     // is unreachable (docs/live/live.md, "Client HLE: Live not set up").
     live_notice::install(&loaded.runtime, live).context("installing the Live notice")?;
     std::fs::create_dir_all(&opts.data_root)?;
     let mut cfg = vfs::Config::new(&opts.data_root, x.certificate.title_id);
     cfg.mmap_disc = host_light;
+    cfg.map_guest_reads = options.map_guest_reads;
     if host_light {
         cfg.server_maps = std::env::var_os("H2_SERVER_MAP_DIR")
             .filter(|path| !path.is_empty())
@@ -605,6 +609,7 @@ fn run_configured(
             bots,
         },
         film.clone(),
+        replaying || host_light || sim_mode.is_some(),
     )?;
     let (skulls_on, skulls_mp_on, skulls_custom_on, health_on) = (
         core.skulls_on,
@@ -656,6 +661,8 @@ fn run_configured(
     // hopper's title and finds the arbitration round by the session. A
     // clanker hopper's game is a Clankermatch (docs/game/bots.md §8.2).
     if let (Some(t), Some(hle)) = (&_telemetry, &_live) {
+        let lobby = Arc::clone(hle);
+        t.set_hosted_session_locator(Box::new(move || lobby.hosted_session()));
         let hle = Arc::clone(hle);
         t.set_playlist_locator(Box::new(move || {
             hle.matchmade().map(|(id, session)| telemetry::Playlist {
@@ -734,17 +741,23 @@ fn run_configured(
                     b.set_lighting(setting_defs::lighting_of(lighting.get()));
                     b.follow_lighting(move || setting_defs::lighting_of(lighting.get()));
                 }
+                let scale_stats = b.shared_stats();
                 let report = Some(d3d_glue::scale_report(&mut b));
-                if host.render_thread {
-                    d3d_glue::install_threaded_for_profile(&loaded.runtime, b, report, interp, render_hooks)?
+                let installed = if host.render_thread {
+                    d3d_glue::install_threaded_for_profile(&loaded.runtime, b, report, interp, render_hooks)
                 } else {
-                    d3d_glue::install_for_profile(&loaded.runtime, b, report, render_hooks)?
-                }
+                    d3d_glue::install_for_profile(&loaded.runtime, b, report, render_hooks)
+                }?;
+                installed.with_gpu_view(Some(scale_stats))
             }
-            None if host.render_thread => {
-                d3d_glue::install_threaded_for_profile(&loaded.runtime, b, None, interp, render_hooks)?
+            None => {
+                let installed = if host.render_thread {
+                    d3d_glue::install_threaded_for_profile(&loaded.runtime, b, None, interp, render_hooks)
+                } else {
+                    d3d_glue::install_for_profile(&loaded.runtime, b, None, render_hooks)
+                }?;
+                installed.with_gpu_view(None)
             }
-            None => d3d_glue::install_for_profile(&loaded.runtime, b, None, render_hooks)?,
         }),
         (true, None) if host_light => Some(d3d_glue::install_light_for_profile(&loaded.runtime, render_hooks)?),
         (true, None) => Some(d3d_glue::install_headless_for_profile(
@@ -894,6 +907,8 @@ fn run_configured(
     let late = registration::register_late_for_profile(
         &mut features,
         registration::LateInputs {
+            #[cfg(feature = "gpu")]
+            view: d3d_calls.as_ref().and_then(|d| d.view.as_ref()),
             rt: &loaded.runtime,
             lockstep: lockstep_config,
             agent: agent_source,
@@ -1048,6 +1063,51 @@ fn run_configured(
             film_stamps(),
         );
     }
+    let bink = if opts.bink {
+        // A lockstep run compares schedules and movie pacing follows the
+        // wall clock, so it skips them; so, by default, do level boots and
+        // headless runs.
+        let why_off = if host_light {
+            Some("light host".into())
+        } else {
+            movies_glue::why_off(&opts.movies, lockstep_on, level_name.as_deref(), headless)
+        };
+        // Film recording and playback use the recorded movie policy and hook plan.
+        let allow_attract = why_off.is_none() && film.is_none();
+        let attract_file = if allow_attract && opts.movies != movies_glue::Movies::Off {
+            k.vfs().and_then(|vfs| {
+                vfs.lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .host_file(movies_glue::ATTRACT_VFS_PATH)
+            })
+        } else {
+            None
+        };
+        let (mode, hle, attract) = movies_glue::install(
+            &loaded.runtime,
+            &opts.movies,
+            &opts.disc,
+            attract_file,
+            allow_attract,
+            why_off.as_deref(),
+            #[cfg(feature = "local-io")]
+            ds.as_ref()
+                .filter(|_| !clock_only_audio)
+                .map(dsound_glue::Audio::mixer),
+            #[cfg(not(feature = "local-io"))]
+            None,
+        );
+        if allow_attract && mode == bink_hle::Mode::Playback {
+            attract.install(&mut features, agent.as_ref().map(|a| &a.agent))?;
+        }
+        if let Some(session) = &film {
+            session.record_movies(opts, mode);
+        }
+        Some(hle)
+    } else {
+        eprintln!("movies: off (--no-bink: the original player runs)");
+        None
+    };
     // Part of a machine snapshot's build key (snapshot_glue.rs).
     let switch_spec = features.switches().spec();
     let plan = features.build(&hooks::Base).map_err(|conflicts| {
@@ -1108,35 +1168,6 @@ fn run_configured(
         eprintln!("lockstep: hashing presents only: {why}");
         h.set_tick_note(why.to_owned());
     }
-    let bink = if opts.bink {
-        // A lockstep run compares schedules and movie pacing follows the
-        // wall clock, so it skips them; so, by default, do level boots and
-        // headless runs.
-        let why_off = if host_light {
-            Some("light host".into())
-        } else {
-            movies_glue::why_off(&opts.movies, lockstep_on, level_name.as_deref(), headless)
-        };
-        let (mode, hle) = movies_glue::install(
-            &loaded.runtime,
-            &opts.movies,
-            &opts.disc,
-            why_off.as_deref(),
-            #[cfg(feature = "local-io")]
-            ds.as_ref()
-                .filter(|_| !clock_only_audio)
-                .map(dsound_glue::Audio::mixer),
-            #[cfg(not(feature = "local-io"))]
-            None,
-        );
-        if let Some(session) = &film {
-            session.record_movies(opts, mode);
-        }
-        Some(hle)
-    } else {
-        eprintln!("movies: off (--no-bink: the original player runs)");
-        None
-    };
     let tr = if host_light {
         None
     } else {
@@ -1164,6 +1195,20 @@ fn run_configured(
     } else {
         None
     };
+    if coalesce_host_ticks
+        && let Some(pacer) = m.pacer.as_mut()
+        && pacer.ticks_per_second == kernel::clock::Clock::FREQUENCY
+    {
+        let phase = std::env::var_os("H2_HOST_TICK_PHASE_NS")
+            .map(|value| value.to_string_lossy().parse::<u64>())
+            .transpose()
+            .context("H2_HOST_TICK_PHASE_NS must be an unsigned integer")?
+            .unwrap_or(0);
+        let live = _live.clone();
+        pacer.coalesce_host_ticks(phase, move |timeout| {
+            live.as_ref().is_some_and(|hle| hle.wait_for_network_input(timeout))
+        });
+    }
     eprintln!("entry {:#010x}, running", loaded.cpu.eip);
     let t = Instant::now();
     // One slice at a time so XAPI's input pump runs between slices
@@ -1183,7 +1228,7 @@ fn run_configured(
     // what holds state outside guest RAM, for `state.*` and the probe.
     let snap_host = snapshot_glue::Host {
         rt: &loaded.runtime,
-        d3d: d3d_calls.as_ref().map(|i| &*i.snapshot),
+        d3d: d3d_calls.as_ref().map(|i| i.snapshot.as_ref()),
         audio: ds.as_ref(),
         xapi: xa.as_ref(),
         bink: bink.as_deref(),
@@ -1417,7 +1462,9 @@ fn run_configured(
             );
             (w, t)
         });
-        s.note_cow(cow);
+        let reads = k.vfs().map(|vfs| vfs.lock().unwrap_or_else(|e| e.into_inner()).guest_read_bytes())
+            .unwrap_or_default();
+        s.note_memory(cow, reads);
     }
     let sim_upload_result = match &sim_mode {
         Some(_) if replaying => Ok(()),

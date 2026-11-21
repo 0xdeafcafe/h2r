@@ -2,9 +2,7 @@
 //! more per finding (r1..r6), plus the documentation correction. The
 //! reproductions are the reviewer's, adapted.
 
-mod common;
-
-use common::*;
+use crate::common::{self, *};
 use d3d::abi::Regs;
 use d3d::pushbuf::{PushError, method};
 use d3d::{D3dError, GfxBackend, GuestMemory, RecordingBackend, SparseMemory, UploadPolicy};

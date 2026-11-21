@@ -380,12 +380,6 @@ struct FogMaterial {
     /// The passes in draw order, a placement's draws with the pass's
     /// rigid program when it compiled one.
     passes: Vec<(Gpu, PassState, Option<Rigid>)>,
-    /// The fog words the passes set themselves (they share one, the
-    /// layer's; a material whose passes disagree is not drawn — the
-    /// load's `fog_passes` is all or nothing and takes one `FogWords`
-    /// per pass, so the glue resolves them per material and refuses a
-    /// disagreement).
-    words: FogWords,
     /// Per lightmap page the material's parts use: one texture group per
     /// pass.
     groups: HashMap<Option<LightmapKey>, Vec<wgpu::BindGroup>>,
@@ -450,7 +444,7 @@ impl FogSet {
                 });
                 gpus.push((g, p.state, rigid));
             }
-            materials.insert(material, FogMaterial { passes: gpus, words, groups: HashMap::new() });
+            materials.insert(material, FogMaterial { passes: gpus, groups: HashMap::new() });
         }
         // A placement part draws only when its material compiled a rigid
         // program for every pass; anything else stays on the D3D path (a
@@ -554,6 +548,8 @@ impl FogSet {
     /// are made ([`FogSet::pipelines`]). Refused when a pass, group or
     /// fog state is missing, as `draw` records nothing then.
     #[allow(clippy::too_many_arguments)]
+    // wgpu compares and hashes pipelines by their stable handle identity.
+    #[allow(clippy::mutable_key_type)]
     pub(crate) fn draws(
         &self,
         cache: &mut HashMap<wgpu::RenderPipeline, std::sync::Arc<gfx::compile::PendingPipeline>>,

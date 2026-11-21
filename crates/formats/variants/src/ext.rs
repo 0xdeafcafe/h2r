@@ -346,8 +346,10 @@ mod tests {
 
     #[test]
     fn out_of_range_values_are_ignored_even_with_a_good_crc() {
-        let mut e = Ext::default();
-        e.gravity = 5;
+        let e = Ext {
+            gravity: 5,
+            ..Ext::default()
+        };
         assert_eq!(e.out_of_range(), Some("gravity"));
         assert_eq!(
             Ext::decode(&e.encode()),

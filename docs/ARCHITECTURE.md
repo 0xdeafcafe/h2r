@@ -108,7 +108,7 @@ the moves that put every crate in its domain's directory are in
 | `vfs` | runtime | Xbox object-manager storage, independent of guest memory ([storage.md](runtime/storage.md)) † | [storage.md](runtime/storage.md) | done |
 | `assets` | platform | Glue from decoded game tags (bitmaps first) to gfx texture decoding | [bitmaps.md](formats/bitmaps.md) | done |
 | `audio` | platform | DirectSound-level audio model, Xbox ADPCM decoder and software mixer for h2recomp | [audio.md](audio/audio.md) | done |
-| `bink-hle` | platform | High-level replacement for the statically linked Bink player ([bink-hle.md](audio/bink-hle.md)) † | [bink-hle.md](audio/bink-hle.md) | done, on by default: plays the movies `h2 movies` installed (sound through the game's mixer), skips them otherwise (`--no-movies`; `h2 run --no-bink` turns it off) |
+| `bink-hle` | platform | High-level replacement for the statically linked Bink player ([bink-hle.md](audio/bink-hle.md)) † | [bink-hle.md](audio/bink-hle.md) | Plays installed movies with audio through the game mixer or skips them at the movie wrapper. A windowed menu boot using the default movie directory can prepare the attract clip from disc with local ffmpeg. Film sessions use installed assets. |
 | `d3d` | platform | Guest-facing Direct3D 8 (Xbox, XDK 5849 LTCG) replacement for Halo 2, on top of gfx | [d3d.md](graphics/d3d.md) | in progress: the menu and the first level render |
 | `dsound` | platform | Guest-facing DirectSound replacement for h2recomp: guest memory in, crates/platform/audio out | [dsound.md](audio/dsound.md) | done |
 | `gfx` | platform | Direct3D 8 (Xbox flavour) replacement on wgpu: texture decoding, state model, presenter | [graphics.md](graphics/graphics.md) | done, foundation only |
@@ -156,6 +156,7 @@ the moves that put every crate in its domain's directory are in
 | `h1objects` | tools | *(no description)* † |  |  |
 | `hopper-edit` | tools | The playlist (multiplayer_hopper.dat) editor's UI-free logic: the working copy, validation, presets, the variant picker's sources, undo and file handling | [editor.md](editor/editor.md) | in progress |
 | `hud-edit` | tools | The HUD editor's UI-free logic: a map's nhdt HUDs and their widgets, the engine's placement, a preview canvas, layout checks, edits with undo and the patched-map save (docs/editor/hud-editor.md) | [hud-editor.md](editor/hud-editor.md) |  |
+| `mesh-edit` | tools | The modeling kernel of h2-editor: a radial-edge mesh in index arenas, selection, MeshOp operations as values, import and stable export (docs/editor/modeling.md) | [modeling.md](editor/modeling.md) | in progress |
 | `perf` | tools | Performance tooling: guest-aware sampling profiler, timeline capture, benchmark harness | [profiling.md](perf/profiling.md) | done |
 | `scenario-edit` | tools | Sapien-style scenario placement editor: typed scnr placement blocks, undoable edits written as patched .map files, a UI-free session and an offscreen wgpu viewport | [scenario-editor.md](editor/scenario-editor.md) | in progress |
 | `viewer` (bin `viewer`, bin `bsp`, bin `bsp_cracks`, bin `shadowlab`) | tools | Render-model (mode) viewer: decodes model geometry from a disc map and draws it with gfx | [structure-bsp.md](formats/structure-bsp.md) | done |

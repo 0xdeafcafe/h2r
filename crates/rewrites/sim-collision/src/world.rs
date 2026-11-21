@@ -183,13 +183,12 @@ impl CollisionWorld {
                 inner.decode_failures += 1;
                 // A fault may be a page not mapped yet; only data the
                 // decoder rejects is remembered.
-                if current && why != Bail::Fault {
-                    if let Some(Slot::Built(old)) =
+                if current && why != Bail::Fault
+                    && let Some(Slot::Built(old)) =
                         inner.bsps.insert(addr, Slot::Failed { header, why })
                     {
                         inner.bytes -= old.footprint() as u64;
                     }
-                }
                 Err(why)
             }
         }

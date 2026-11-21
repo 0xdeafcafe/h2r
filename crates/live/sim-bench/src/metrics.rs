@@ -334,6 +334,12 @@ pub struct Wall {
     /// is charged for, clean pages included. `None` elsewhere.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub footprint_mib: Option<u64>,
+    /// NtReadFile bytes supplied as private file mappings since boot.
+    #[serde(default)]
+    pub mapped_read_bytes: u64,
+    /// NtReadFile bytes copied into guest RAM, including partial page edges.
+    #[serde(default)]
+    pub copied_read_bytes: u64,
     /// Guest RAM pages the match wrote over a shared copy-on-write base
     /// (`state.load` with `"cow": true`): the pages that stopped being
     /// shared. `None` without a base.
@@ -349,6 +355,8 @@ pub struct Wall {
 /// has one (macOS); the guest census when a shared base was loaded.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct MemoryUsage {
+    pub mapped_read_bytes: u64,
+    pub copied_read_bytes: u64,
     pub peak_rss_mib: u64,
     pub footprint_mib: Option<u64>,
     pub guest_written_pages: Option<u64>,
@@ -937,6 +945,8 @@ impl Tally {
                 speedup: speed.speedup(),
                 process_speedup: speed.process_speedup(),
                 ms_per_tick: speed.ms_per_tick(),
+                mapped_read_bytes: memory.mapped_read_bytes,
+                copied_read_bytes: memory.copied_read_bytes,
                 peak_rss_mib: memory.peak_rss_mib,
                 footprint_mib: memory.footprint_mib,
                 guest_written_pages: memory.guest_written_pages,
@@ -1421,6 +1431,8 @@ mod tests {
             match_: serde_json::json!({"map": "lockout"}),
             speed,
             memory: MemoryUsage {
+                mapped_read_bytes: 65536,
+                copied_read_bytes: 13,
                 peak_rss_mib: 981,
                 footprint_mib: Some(143),
                 ..MemoryUsage::default()
@@ -1430,6 +1442,8 @@ mod tests {
         // The meter's ticks are the tally's.
         assert_eq!(r.ticks, 1);
         assert_eq!(r.wall.process_s, 1.5);
+        assert_eq!(r.wall.mapped_read_bytes, 65536);
+        assert_eq!(r.wall.copied_read_bytes, 13);
         assert_eq!(r.wall.peak_rss_mib, 981);
         assert_eq!(r.wall.footprint_mib, Some(143));
         let v = serde_json::to_value(&r).unwrap();

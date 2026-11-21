@@ -6,9 +6,7 @@
 //! end checks the addresses against the retail image in `$H2_XBE` by
 //! decoding its instructions.
 
-mod common;
-
-use common::*;
+use crate::common::{self, *};
 use d3d::abi::Regs;
 use d3d::device::PushCallback;
 use d3d::layout::device_field as f;
@@ -88,16 +86,18 @@ fn create_device_points_the_completion_word_into_scratch() {
     );
     assert_eq!(m.read_u32(word).unwrap(), 0);
     assert_eq!(m.read_u32(DEV + f::GPU_TIME).unwrap(), 0);
-    // SetFence: the fence is both the GPU time and, since the device runs
-    // the queue synchronously, the completed time.
-    let fence = common::call(&mut d, &mut m, 0x3fa680, Regs::default(), &[0])
-        .unwrap()
-        .eax
-        .unwrap();
-    assert_eq!(fence, 1);
-    assert_eq!(m.read_u32(DEV + f::GPU_TIME).unwrap(), 1);
-    assert_eq!(m.read_u32(word).unwrap(), 1);
-    assert_eq!(d.gpu_completed(), 1);
+    // The guest receives the old time. Completion follows the advanced
+    // time because the device drains the queue synchronously.
+    for (stamp, time) in [(0, 2), (2, 4), (4, 6)] {
+        let fence = common::call(&mut d, &mut m, 0x3fa680, Regs::default(), &[0])
+            .unwrap()
+            .eax
+            .unwrap();
+        assert_eq!(fence, stamp);
+        assert_eq!(m.read_u32(DEV + f::GPU_TIME).unwrap(), time);
+        assert_eq!(m.read_u32(word).unwrap(), time);
+        assert_eq!(d.gpu_completed(), time);
+    }
 }
 
 #[test]
@@ -107,9 +107,9 @@ fn busy_check_runs_the_fence_test_against_the_completed_time() {
     for _ in 0..3 {
         common::call(&mut d, &mut m, 0x3fa680, Regs::default(), &[0]).unwrap();
     }
-    assert_eq!(d.gpu_completed(), 3);
+    assert_eq!(d.gpu_completed(), 6);
     // Last used at a fence that has passed (or never): idle, Lock cleared.
-    for lock in [0, 1, 3] {
+    for lock in [0, 2, 6] {
         m.write_u32(TEX_HEADER + 8, lock).unwrap();
         assert_eq!(busy(&mut d, &mut m, TEX_HEADER), 0, "Lock {lock}");
         assert_eq!(m.read_u32(TEX_HEADER + 8).unwrap(), 0);
@@ -118,12 +118,12 @@ fn busy_check_runs_the_fence_test_against_the_completed_time() {
     // completed fence is busy, and Lock stays. The device never stamps one
     // (its fences complete as they are issued), so the guest's GPU time is
     // moved ahead here to stand for work still queued on a real GPU.
-    m.write_u32(DEV + f::GPU_TIME, 5).unwrap();
-    m.write_u32(TEX_HEADER + 8, 4).unwrap();
+    m.write_u32(DEV + f::GPU_TIME, 10).unwrap();
+    m.write_u32(TEX_HEADER + 8, 8).unwrap();
     assert_eq!(busy(&mut d, &mut m, TEX_HEADER), 1);
-    assert_eq!(m.read_u32(TEX_HEADER + 8).unwrap(), 4);
+    assert_eq!(m.read_u32(TEX_HEADER + 8).unwrap(), 8);
     // At the completed time exactly: passed.
-    m.write_u32(TEX_HEADER + 8, 3).unwrap();
+    m.write_u32(TEX_HEADER + 8, 6).unwrap();
     assert_eq!(busy(&mut d, &mut m, TEX_HEADER), 0);
     // A lock far ahead wraps: GPU_TIME - Lock is huge, so not busy (the
     // unsigned compare at 0x3fb77f).

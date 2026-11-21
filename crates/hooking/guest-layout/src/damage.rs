@@ -50,3 +50,87 @@ pub const fn reporting_type(code: u8) -> u8 {
 pub const fn modifier(code: u8) -> u8 {
     code >> 6
 }
+
+/// Damage which depleted the victim. The credited killer can differ from
+/// the owner when recent damage contributed to the death.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct KillingDamage {
+    pub code: u8,
+    pub owner_player: Datum,
+}
+
+/// At PLAYER_KILLED entry, recover the depleting report from the active
+/// DAMAGE_REPORT call (docs/live/live-gamestate.md section 7). For a
+/// direct call outside the attribution routine, use the supplied argument.
+pub fn killing_damage(
+    memory: &dyn crate::GuestMemory,
+    esp: u32,
+    direct: Option<KillingDamage>,
+) -> Option<KillingDamage> {
+    use crate::points::kill_credit::{RETURN_TO_ATTRIBUTION, RETURN_TO_DAMAGE_REPORT};
+
+    if memory.u32(esp).ok()? != RETURN_TO_ATTRIBUTION {
+        return direct;
+    }
+    // Four kill arguments + return PC, four saved registers and 0x50
+    // bytes of locals separate us from attribution's return PC.
+    let caller = memory.u32(esp.checked_add(0x74)?).ok()?;
+    if caller != RETURN_TO_DAMAGE_REPORT {
+        static UNEXPECTED_CALLER: std::sync::Once = std::sync::Once::new();
+        UNEXPECTED_CALLER.call_once(|| {
+            eprintln!("PLAYER_KILLED: unknown attribution caller {caller:#010x}, omitting damage source");
+        });
+        return None;
+    }
+    // The attribution prologue saved the damage reporter's EDI here.
+    // Its incoming damage argument doubles as an assist-loop counter.
+    let addr = memory.u32(esp.checked_add(0x1c)?).ok()?;
+    if addr == 0 {
+        return None;
+    }
+    addr.checked_add(DamageReport::OWNER_PLAYER.offset + 3)?;
+    let report = DamageReport::at(addr);
+    if report.flags(memory).ok()? & DEPLETING == 0 {
+        return None;
+    }
+    Some(KillingDamage {
+        code: report.code(memory).ok()?,
+        owner_player: report.owner_player(memory).ok()?,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::points::kill_credit::{RETURN_TO_ATTRIBUTION, RETURN_TO_DAMAGE_REPORT};
+    use crate::{FlatMemory, GuestMemory};
+
+    #[test]
+    fn kill_reads_the_depleting_report_even_when_recent_damage_earned_credit() {
+        let esp = 0x8100;
+        let report = 0x8300;
+        let mut mem = FlatMemory::new(esp, 0x300);
+        let rifle = Some(KillingDamage { code: 0x40 | 10, owner_player: Datum(0x18000) });
+        mem.set_u32(esp, RETURN_TO_ATTRIBUTION).unwrap();
+        mem.set_u32(esp + 0x74, RETURN_TO_DAMAGE_REPORT).unwrap();
+        mem.set_u32(esp + 0x1c, report).unwrap();
+        mem.set_u32(report + DamageReport::FLAGS.offset, DEPLETING).unwrap();
+        mem.set_u8(report + DamageReport::CODE.offset, 1).unwrap();
+        mem.set_u32(report + DamageReport::OWNER_PLAYER.offset, u32::MAX).unwrap();
+        assert_eq!(
+            killing_damage(&mem, esp, rifle),
+            Some(KillingDamage { code: 1, owner_player: Datum::NONE }),
+        );
+        mem.set_u32(report + DamageReport::FLAGS.offset, 0).unwrap();
+        assert_eq!(killing_damage(&mem, esp, rifle), None);
+        mem.set_u32(esp + 0x1c, u32::MAX).unwrap();
+        assert_eq!(killing_damage(&mem, esp, rifle), None);
+        mem.set_u32(esp + 0x74, 0x1111).unwrap();
+        mem.set_u32(esp + 0x1c, report).unwrap();
+        mem.set_u32(report + DamageReport::FLAGS.offset, DEPLETING).unwrap();
+        assert_eq!(killing_damage(&mem, esp, rifle), None);
+        mem.set_u32(esp, 0x2222).unwrap();
+        assert_eq!(killing_damage(&mem, esp, rifle), rifle);
+        assert_eq!(killing_damage(&mem, esp, None), None);
+    }
+}

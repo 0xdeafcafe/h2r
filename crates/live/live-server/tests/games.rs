@@ -18,7 +18,7 @@ use serde_json::{Value, json};
 fn kill(tick: u64, victim: u32, killer: u32) -> (&'static str, Value) {
     (
         "PlayerKilled",
-        json!({"tick": tick, "victim": victim, "killer": killer, "weapon": "battle_rifle", "kind": "kill", "pos": [1.5, -2.0, 3.25]}),
+        json!({"tick": tick, "victim": victim, "killer": killer, "weapon": "battle_rifle", "headshot": true, "kind": "kill", "pos": [1.5, -2.0, 3.25]}),
     )
 }
 
@@ -162,7 +162,10 @@ async fn a_game_from_start_to_end() {
                 json!({"player": {"index": 2, "name": "Late", "team": 0}}),
             ),
             kill(300, 1, 0),
-            kill(330, 2, 1),
+            (
+                "PlayerKilled",
+                json!({"tick": 330, "victim": 2, "killer": 1, "kind": "kill"}),
+            ),
             score(330, 1, 1),
         ],
     );
@@ -181,6 +184,8 @@ async fn a_game_from_start_to_end() {
     assert_eq!(items.len(), 5);
     assert_eq!(items[4]["position"], last);
     assert_eq!(items[2]["jws_index"], 1);
+    assert_eq!(items[2]["data"]["weapon"], "battle_rifle");
+    assert_eq!(items[2]["data"]["headshot"], true);
     assert_eq!(items[2]["jws"].as_str(), Some(jws.as_str()));
     assert!(items[0].get("jws_index").is_none());
     for w in items.windows(2) {
@@ -227,6 +232,10 @@ async fn a_game_from_start_to_end() {
     assert_eq!(g["players"].as_array().unwrap().len(), 3);
     let kills = g["kills"].as_array().unwrap();
     assert_eq!(kills.len(), 2);
+    assert_eq!(kills[0]["weapon"], "battle_rifle");
+    assert_eq!(kills[0]["headshot"], true);
+    assert!(kills[1].get("weapon").is_none());
+    assert!(kills[1].get("headshot").is_none());
     assert_eq!(kills[0]["pos"], json!([1.5, -2.0, 3.25]));
     assert!(kills[0]["position"].as_u64().is_some() && kills[0]["at"].is_string());
     assert!(g["ended_at"].is_string());
@@ -921,6 +930,8 @@ async fn postgres_games() {
         (Some("live"), json!([1.5, -2.0, 3.25]))
     );
     assert_eq!(g["scoreboard"][0]["score"], 1);
+    assert_eq!(g["kills"][0]["weapon"], "battle_rifle");
+    assert_eq!(g["kills"][0]["headshot"], true);
     assert_eq!(
         h.get(&format!("/v1/maps/{map}/outline")).await.json(),
         outline

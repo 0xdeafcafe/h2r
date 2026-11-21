@@ -5,11 +5,12 @@ fn measured(ms: f64, mib: u64) -> MatchLoad {
     MatchLoad {
         ms_per_tick: Some(ms),
         rss_mib: Some(mib),
+        ..MatchLoad::default()
     }
 }
 
 fn small() -> Limits {
-    Limits::new(3, 1.0, 3072)
+    class_limits(&crate::hosts::HostClass::Small, None)
 }
 
 // -- Admission ----------------------------------------------------------------
@@ -18,7 +19,7 @@ fn small() -> Limits {
 fn budget_is_seventy_percent_of_a_tick_per_vcpu() {
     assert!((small().tick_budget_ms() - 23.333).abs() < 0.01);
     assert!((Limits::new(3, 2.0, 6144).tick_budget_ms() - 46.667).abs() < 0.01);
-    assert_eq!(small().memory_budget_mib(), 3072 - 256);
+    assert_eq!(small().memory_budget_mib(), 1536 - 256);
 }
 
 #[test]
@@ -28,22 +29,23 @@ fn empty_pack_admits_its_first_match() {
 }
 
 #[test]
-fn measured_light_matches_pack_three_to_a_vcpu() {
-    // 6 + 6 + 10 (assumed for the new match) = 22 ms <= 23.3 ms.
-    let running = [measured(6.0, 340), measured(6.0, 340)];
-    assert_eq!(admit(&small(), &running, Some(800)), Ok(()));
+fn a_measured_five_ms_map_leaves_room_for_a_fourth_match() {
+    // Three measured matches plus one new one cost 20 ms of the 23.3 ms budget.
+    let running = [measured(5.0, 170); 3];
+    let estimate = Limits { new_ms_per_tick: 5.0, new_rss_mib: 170, ..small() };
+    assert_eq!(admit(&estimate, &running, Some(800)), Ok(()));
 }
 
 #[test]
 fn refuses_when_summed_tick_cost_passes_the_budget() {
-    // 9 + 9 + 10 = 28 ms > 23.3 ms.
-    let running = [measured(9.0, 340), measured(9.0, 340)];
+    // 10 + 10 + 10 = 30 ms > 23.3 ms.
+    let running = [measured(10.0, 170); 2];
     match admit(&small(), &running, Some(800)) {
         Err(Refusal::Cpu {
             projected_ms,
             budget_ms,
         }) => {
-            assert!((projected_ms - 28.0).abs() < 1e-9);
+            assert!((projected_ms - 30.0).abs() < 1e-9);
             assert!((budget_ms - 23.333).abs() < 0.01);
         }
         other => panic!("{other:?}"),
@@ -51,40 +53,52 @@ fn refuses_when_summed_tick_cost_passes_the_budget() {
 }
 
 #[test]
+fn wall_p99_refuses_a_late_pack_before_cpu_and_memory() {
+    let mut load = measured(1.0, 170);
+    load.wall_ms_per_tick_p99 = Some(36.0);
+    assert_eq!(admit(&small(), &[load], None), Ok(()));
+    load.ms_per_tick = Some(100.0);
+    load.wall_ms_per_tick_p99 = Some(36.1);
+    assert_eq!(admit(&small(), &[load], Some(1536)), Err(Refusal::Late {
+        wall_ms_per_tick_p99: 36.1,
+    }));
+}
+
+#[test]
 fn unmeasured_matches_count_at_the_default_cost() {
-    // Two just-started matches: 10 + 10 + 10 = 30 ms > 23.3 ms on one vCPU.
-    let running = [MatchLoad::default(), MatchLoad::default()];
+    assert_eq!((small().new_ms_per_tick, small().new_rss_mib), (10.0, 340));
+    // Two vCPUs can admit a fourth cold match. One vCPU cannot.
+    let running = [MatchLoad::default(); 3];
     assert!(matches!(admit(&small(), &running, None), Err(Refusal::Cpu { .. })));
-    // Two vCPUs take three unmeasured matches.
-    let large = Limits::new(3, 2.0, 6144);
+    let large = class_limits(&crate::hosts::HostClass::Large, None);
     assert_eq!(admit(&large, &running, None), Ok(()));
 }
 
 #[test]
 fn refuses_past_the_match_cap_even_with_cpu_to_spare() {
-    let running = [measured(1.0, 100); 3];
+    let running = [measured(1.0, 100); 5];
     assert_eq!(
         admit(&small(), &running, Some(300)),
-        Err(Refusal::Full { running: 3, max: 3 })
+        Err(Refusal::Full { running: 5, max: 5 })
     );
 }
 
 #[test]
 fn refuses_when_memory_would_pass_the_container_limit() {
     let running = [measured(5.0, 340)];
-    // 2600 measured + 340 assumed > 3072 - 256.
+    // 1200 measured + 340 assumed > 1536 - 256.
     assert_eq!(
-        admit(&small(), &running, Some(2600)),
+        admit(&small(), &running, Some(1200)),
         Err(Refusal::Memory {
-            projected_mib: 2940,
-            budget_mib: 2816
+            projected_mib: 1540,
+            budget_mib: 1280
         })
     );
     // Without a container figure, the matches' own RSS is summed.
     let tight = Limits::new(3, 4.0, 1024);
     assert!(matches!(
-        admit(&tight, &[measured(1.0, 500)], None),
-        Err(Refusal::Memory { projected_mib: 840, budget_mib: 768 })
+        admit(&tight, &[measured(1.0, 650)], None),
+        Err(Refusal::Memory { projected_mib: 990, budget_mib: 768 })
     ));
     assert_eq!(admit(&tight, &[measured(1.0, 400)], None), Ok(()));
 }
@@ -338,4 +352,68 @@ fn add_match_omits_an_absent_region() {
     let back: PackStatus =
         serde_json::from_str(&serde_json::to_string(&status).unwrap()).unwrap();
     assert_eq!(back, status);
+}
+
+#[test]
+fn search_warms_one_pack_and_silence_retires_it() {
+    let mut pool = Pool::default();
+    let demand = WarmDemand { searchers: 1, leases: 0, available: 4 };
+    let start = pool.warm_plan(demand, 5, 0).start.unwrap();
+    pool.warmed(&start, 1000, Some(1000));
+    assert_eq!(pool.free_slots(5), 5);
+    assert!(pool.warm_plan(demand, 5, 2_000).start.is_none());
+    let refresh = pool.warm_plan(demand, 5, 21_000);
+    assert_eq!(refresh.refresh.as_slice(), std::slice::from_ref(&start));
+    pool.warmed(&start, 21_000, None);
+    let silence = pool.warm_plan(WarmDemand::default(), 5, 30_000);
+    assert!(silence.refresh.is_empty() && silence.start.is_none());
+    assert!(pool.expire(80_999).is_empty());
+    assert_eq!(pool.expire(81_000), [start]);
+    assert!(pool.is_empty());
+}
+
+#[test]
+fn demand_uses_recent_arrivals_and_the_observed_median_start() {
+    let mut pool = Pool::default();
+    let demand = WarmDemand { searchers: 1, leases: 99, available: 2 };
+    for t in 0..100 {
+        pool.admitted_at("pack-0", &format!("lease-{t}"), 1_000_000, t);
+    }
+    // 100 arrivals in five minutes, median 3s: ceil(100 × 3 × 2 / 300) = 2.
+    for elapsed in [500, 3000, 20_000] {
+        pool.warmed("pack-0", 100, Some(elapsed));
+    }
+    assert!(pool.warm_plan(demand, 101, 100).start.is_some(), "one free, want two");
+    assert!(pool.warm_plan(WarmDemand { available: 1, ..demand }, 101, 100).start.is_none());
+    assert!(pool.warm_plan(demand, 101, 300_000).start.is_none(), "history has expired");
+}
+
+#[test]
+fn occupied_capacity_is_used_before_an_idle_hold() {
+    let mut pool = Pool::default();
+    pool.admitted_at("pack-0", "lease", 1_000_000, 0);
+    let empty = pool.place("another", 1);
+    pool.warmed(empty.pack(), 0, None);
+    let demand = WarmDemand { searchers: 1, leases: 1, available: 1 };
+    let plan = pool.warm_plan(demand, 3, 55_000);
+    assert!(plan.start.is_none() && plan.refresh.is_empty());
+    pool.release_at("lease", 55_000);
+    assert_eq!(pool.next_deadline(), Some(60_000));
+    assert_eq!(pool.expire(60_000), [empty.pack()]);
+    assert_eq!(pool.place("later", 3), Placement::Existing("pack-0".into()));
+}
+
+#[test]
+fn only_the_release_that_empties_the_pack_owns_its_linger() {
+    use crate::hosts::PackRelease;
+    for order in [["a", "b"], ["b", "a"]] {
+        let mut pool = Pool::default();
+        let pack = pool.place("a", 2).pack().to_owned();
+        pool.admitted_at(&pack, "a", 120_000, 0);
+        pool.admitted_at(&pack, "b", 120_000, 0);
+        assert_eq!(pool.release_at(order[0], 100), PackRelease::NoLinger);
+        assert_eq!(pool.release_at(order[1], 101), PackRelease::Linger { released_ms: 101 });
+        assert_eq!(pool.release_at(order[1], 102), PackRelease::NoLinger);
+        assert_eq!(pool.next_deadline(), Some(101 + LINGER_MS));
+    }
 }

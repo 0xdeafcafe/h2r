@@ -3,7 +3,20 @@
 //! physical footprint on macOS, where the two differ by the clean mapped
 //! pages (the shared dylib's code, the disc image's resident pages).
 
+use live_proto::host_pack::memory::ResidentMemory;
 use sim_bench::metrics::MemoryUsage;
+
+/// The Linux split is read only on demand because smaps walks the mappings.
+pub(super) fn resident_split() -> Option<ResidentMemory> {
+    #[cfg(target_os = "linux")]
+    {
+        ResidentMemory::from_rollup(&std::fs::read_to_string("/proc/self/smaps_rollup").ok()?)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        None
+    }
+}
 
 /// The process's memory now. `ru_maxrss` is a high-water mark, so this is
 /// safe to sample wherever a report is built.

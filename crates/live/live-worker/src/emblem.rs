@@ -40,9 +40,13 @@ pub async fn image(req: &HttpRequest, base: Option<&str>, ctx: &Context) -> Resp
         _ => {}
     }
     let head = *req.method() == Method::HEAD;
+    // A request that bears a token never reads from or fills the shared
+    // cache, so a cache key holds no auth (docs/live/live-api.md, Caching).
+    let shared = !req.headers().contains_key(header::AUTHORIZATION);
     let cache = Cache::default();
     let key = req.uri().to_string();
-    if let Ok(Some(cached)) = cache.get(&key, false).await
+    if shared
+        && let Ok(Some(cached)) = cache.get(&key, false).await
         && let Ok(cached) = worker::HttpResponse::try_from(cached)
     {
         return cached.map(|body| if head { Body::empty() } else { Body::new(body) });
@@ -66,7 +70,9 @@ pub async fn image(req: &HttpRequest, base: Option<&str>, ctx: &Context) -> Resp
     let Ok(png) = emblem::compose_png(&bg, &fg, layers.colours()) else {
         return missing();
     };
-    if let Ok(mut cached) = worker::Response::from_bytes(png.clone()) {
+    if shared
+        && let Ok(mut cached) = worker::Response::from_bytes(png.clone())
+    {
         let _ = cached.headers_mut().set("Content-Type", "image/png");
         let _ = cached
             .headers_mut()

@@ -34,8 +34,8 @@ RUN set -eux; \
 
 FROM scratch
 COPY --from=rootfs /rootfs/ /
-EXPOSE 31000-31020/udp
-EXPOSE 31099-31102/tcp
+EXPOSE 31000-31069/udp
+EXPOSE 31099-31109/tcp
 USER 1000:1000
 WORKDIR /var/cache/h2
 ENTRYPOINT ["/opt/h2/entrypoint.sh"]

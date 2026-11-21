@@ -8,6 +8,8 @@ pub const UPDATED: &str = "SessionUpdated";
 pub const DELETED: &str = "SessionDeleted";
 pub const EXPIRED: &str = "SessionExpired";
 pub const JOINED: &str = "PlayerJoined";
+/// Display name of a leased session whose host is a machine.
+pub const DEDICATED_JOIN_HOST: &str = "Dedicated Server";
 pub const LEFT: &str = "PlayerLeft";
 pub fn stream(id: &str) -> String {
     format!("session-{id}")
@@ -390,6 +392,63 @@ impl Session {
                 .advertisement
                 .visibility
                 .shows_to(self.host_xuid, viewer, friends)
+    }
+    /// Whether a link can join this session without a game invitation.
+    /// Use the authenticated viewer's friendship with the host; a copied
+    /// URL carries neither friendship nor an invitation.
+    pub fn check_join_link(
+        &self,
+        viewer: Option<Xuid>,
+        friends: impl Fn(Xuid, Xuid) -> bool,
+    ) -> Result<(), String> {
+        let ad = &self.advertisement;
+        if self.state != "open" {
+            return Err("This game is no longer available.".into());
+        }
+        if !matches!(ad.flags.as_str(), "custom" | "coop") || self.matchmaking.is_some() {
+            return Err("Join this game through matchmaking.".into());
+        }
+        let host = if self.host_xuid == Xuid(0) && self.host_gamertag.is_empty()
+            && self.host.strip_prefix("host:").is_some_and(|lease| {
+                lease.starts_with("hl-") && crate::game::valid_id(lease)
+            })
+        {
+            DEDICATED_JOIN_HOST
+        } else if self.host_xuid != Xuid(0) && crate::Gamertag::new(&self.host_gamertag).is_ok() {
+            &self.host_gamertag
+        } else {
+            return Err("This game has an invalid host.".into());
+        };
+        if self.xnkid != self.session_id || ad.validate().is_err() {
+            return Err("This game has an invalid session advertisement.".into());
+        }
+        if viewer == Some(self.host_xuid) {
+            return Err("You are hosting this game.".into());
+        }
+        if ad.visibility == Visibility::Invite || !self.endpoint.listable() {
+            return Err(format!("{host}'s game is invite-only."));
+        }
+        if !ad.visibility.shows_to(self.host_xuid, viewer, friends) {
+            return Err(format!("Only {host}'s friends can join this game."));
+        }
+        if viewer.is_some_and(|xuid| self.players.contains_key(&xuid)) {
+            return Err("You are already in this game.".into());
+        }
+        let slots = ad.slots;
+        let capacity =
+            slots.public_open + slots.public_filled + slots.private_open + slots.private_filled;
+        if capacity == 0 {
+            return Err(format!("{host}'s game is not advertising any seats."));
+        }
+        if slots.public_open + slots.private_open == 0 || self.players.len() >= capacity as usize {
+            return Err(format!("{host}'s game is full."));
+        }
+        if slots.public_open == 0 {
+            return Err(format!(
+                "The remaining seats in {host}'s game require an invitation."
+            ));
+        }
+        Ok(())
     }
     pub fn update(&mut self, u: &Update) -> Result<bool, String> {
         let mut next = self.advertisement.clone();
@@ -878,6 +937,68 @@ mod tests {
         assert!(!i.listed_for(Some(Xuid(2)), friends));
         assert!(i.listed_for(Some(Xuid(1)), friends));
     }
+    #[test]
+    fn join_links_need_visible_unreserved_room_even_with_the_exact_id() {
+        let friends = |a, b| (a, b) == (Xuid(1), Xuid(2));
+        let viewer = Some(Xuid(2));
+        let mut s = session("observed", "203.0.113.5", Visibility::Public);
+        assert!(s.check_join_link(None, friends).is_ok());
+        assert!(s.check_join_link(Some(s.host_xuid), friends).is_err());
+        s.advertisement.visibility = Visibility::Friends;
+        assert!(s.check_join_link(viewer, friends).is_ok());
+        assert!(s.check_join_link(None, friends).is_err());
+        assert_eq!(
+            s.check_join_link(Some(Xuid(3)), friends),
+            Err("Only Host's friends can join this game.".into())
+        );
+        s.advertisement.visibility = Visibility::Invite;
+        assert_eq!(
+            s.check_join_link(viewer, friends),
+            Err("Host's game is invite-only.".into())
+        );
+        s.advertisement.visibility = Visibility::Public;
+        s.endpoint.source = "declared".into();
+        assert!(
+            s.check_join_link(viewer, friends).is_err(),
+            "unlisted address"
+        );
+        s.endpoint.source = "observed".into();
+        s.advertisement.slots.public_open = 0;
+        assert_eq!(
+            s.check_join_link(viewer, friends),
+            Err("Host's game is full.".into())
+        );
+        s.advertisement.slots.private_open = 1;
+        assert!(
+            s.check_join_link(viewer, friends)
+                .unwrap_err()
+                .contains("invitation")
+        );
+        s.advertisement.slots.public_open = 1;
+        s.players = [Xuid(1), Xuid(4), Xuid(5)]
+            .into_iter()
+            .map(|x| (x, String::new()))
+            .collect();
+        assert_eq!(
+            s.check_join_link(viewer, friends),
+            Err("Host's game is full.".into())
+        );
+        s.players.clear();
+        s.state = "closed".into();
+        assert!(s.check_join_link(viewer, friends).is_err());
+    }
+    #[test]
+    fn a_public_custom_lease_can_be_joined_without_a_player_host() {
+        let mut row = session("observed", "198.51.100.1", Visibility::Public);
+        row.host_xuid = Xuid(0);
+        row.host_gamertag.clear();
+        assert!(row.check_join_link(None, |_, _| false).is_err());
+        row.host = format!("host:{}", crate::hosts::HostLease::new_id());
+        assert!(row.check_join_link(Some(Xuid(5)), |_, _| false).is_ok());
+        row.advertisement.visibility = Visibility::Invite;
+        assert_eq!(row.check_join_link(None, |_, _| false).unwrap_err(), "Dedicated Server's game is invite-only.");
+    }
+
     #[test]
     fn declared_internet_addresses_are_never_listed() {
         let none = |_: Xuid, _: Xuid| false;

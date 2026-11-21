@@ -343,6 +343,32 @@ pub fn add_host_methods(agent: &agent::Agent) {
     agent.add_game_method(agent_proto::sim::method::BOT_STATS, Access::Read, |v, _| {
         crate::sim_bots::stats(v, bots::phantom::global())
     });
+    agent.add_method(method::LIVE_JOIN_OPEN, Access::Act, |params| {
+        use live_hle::join_link::{self, Source, SubmitError};
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Open {
+            url: String,
+        }
+        let open: Open = serde_json::from_value(params)
+            .map_err(|e| RpcError::new(code::INVALID_PARAMS, e.to_string()))?;
+        let link = open.url.parse::<live_proto::JoinLink>()
+            .map_err(|e| RpcError::new(code::INVALID_PARAMS, e.to_string()))?;
+        let id = join_link::submit(link, Source::External).map_err(|e| {
+            let code = match e {
+                SubmitError::Busy => code::BUSY,
+                SubmitError::Unavailable => code::UNAVAILABLE,
+            };
+            RpcError::new(code, e.to_string())
+        })?;
+        Ok(json!({ "id": id }))
+    });
+    agent.add_method(method::LIVE_JOIN_STATUS, Access::Read, |params| {
+        if !params.is_null() && !params.as_object().is_some_and(|fields| fields.is_empty()) {
+            return Err(RpcError::new(code::INVALID_PARAMS, "Expected no parameters."));
+        }
+        Ok(json!({ "join": live_hle::join_link::status() }))
+    });
     if crate::sampling::available() {
         agent.add_method(method::SAMPLE_START, Access::Act, |v| {
             crate::sampling::start(v).map_err(rpc(code::UNAVAILABLE))
@@ -359,6 +385,8 @@ pub fn add_host_methods(agent: &agent::Agent) {
     // render.parity (their sources register on agent::render::HOSTED).
     #[cfg(feature = "desktop-runtime")]
     agent::render::add_frame_methods(agent, &agent::render::CAPTURE, &agent::render::HOSTED);
+    #[cfg(feature = "gpu")]
+    agent::render::clip::add_methods(agent);
     agent.add_method(method::PROFILE_FALLBACKS, Access::Read, |v| {
         let top = match v.get("top") {
             None => 20,
@@ -422,6 +450,12 @@ pub fn add_host_methods(agent: &agent::Agent) {
         ctx.read_guest(crate::lobby_options::inspect)?
             .map(|lines| json!({"lines": lines}))
             .ok_or_else(|| RpcError::new(code::UNAVAILABLE, "no active custom game options panel"))
+    });
+    agent.add_game_method(method::HOST_PEER_RTTS, Access::Read, |params, ctx| {
+        if !params.is_null() && !params.as_object().is_some_and(|p| p.is_empty()) {
+            return Err(RpcError::new(code::INVALID_PARAMS, "host.peer_rtts takes no parameters"));
+        }
+        ctx.read_guest(crate::lobby_quality::match_peer_rtts)?
     });
     agent.add_game_method(method::UI_LOBBY_PLAYERS, Access::Read, |params, ctx| {
         if !params.is_null() && !params.as_object().is_some_and(|p| p.is_empty()) {

@@ -113,7 +113,9 @@ const USAGE: &str = "usage: h2 live <command> [options]
                           print an invite code for an --invite-only server:
                           25 characters, or TEXT (4 to 32, any case); signed
                           with the server key in --data, or with --as by an
-                          admin account
+                          permitted account
+  invite grant <gamertag> [--open-cap N] [--server URL] [--data DIR]
+  invite ungrant <gamertag> [--server URL] [--data DIR]
   invite list [--as GAMERTAG] [--server URL] [--data DIR]
   invite revoke <jti> --as GAMERTAG [--server URL]
   frames migrate --dry-run|--apply|--verify [--checkpoint FILE] [--delay-ms N]
@@ -212,6 +214,8 @@ pub fn run(args: Vec<String>) -> Result<()> {
         ("assets", Some("check")) => assets_check(rest.shift()),
         ("assets", Some("publish")) => assets_publish(rest.shift()),
         ("motd", Some("set")) => motd_set(rest.shift()),
+        ("invite", Some("grant")) => crate::live_admin::invite_grant(rest.shift(), true),
+        ("invite", Some("ungrant")) => crate::live_admin::invite_grant(rest.shift(), false),
         ("invite", Some("create")) => crate::live_recovery::invite_create(rest.shift()),
         ("invite", Some("list")) => crate::live_recovery::invite_list(rest.shift()),
         ("invite", Some("revoke")) => crate::live_recovery::invite_revoke(rest.shift()),

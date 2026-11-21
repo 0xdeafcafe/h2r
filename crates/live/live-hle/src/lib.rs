@@ -12,6 +12,8 @@ mod feedback;
 mod film_service;
 pub mod films;
 mod invites;
+pub mod join_resolver;
+pub mod join_link;
 pub mod maps;
 pub mod mods;
 mod messages;
@@ -940,6 +942,12 @@ impl Hle {
             .unwrap_or_else(|e| e.into_inner())
             .set_auto(crate::auto::Auto::from_values(invite, accept_from));
     }
+    /// Publish the active host squad's actual capacity for lobbies whose
+    /// title advertisement omits the slot counts.
+    pub fn sync_squad_slots(&self, slots: SessionSlots) {
+        self.lock().sync_squad_slots(slots);
+    }
+
     /// The signed-in player on controller `controller`, 0 for none.
     pub fn user(&self, controller: usize) -> u64 {
         if self.offline_film && self.film_service_taped() {
@@ -1027,6 +1035,12 @@ impl Hle {
             .unwrap_or_else(|e| e.into_inner())
             .local_team_action(actor, action)
     }
+    /// Interrupt a host tick wait on inbound XNet traffic. Leaves all
+    /// reads, guest timeouts and readiness reporting to the game.
+    pub fn wait_for_network_input(&self, timeout: std::time::Duration) -> bool {
+        self.network.wait_for_input(timeout)
+    }
+
     pub fn network_config(&self) -> &NetworkConfig {
         &self.network.config
     }

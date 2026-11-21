@@ -996,7 +996,7 @@ struct Resolve<'a> {
 /// element. The result is not sorted again.
 fn sort_elements(block: &Block, stride: u32, r: &Resolve) -> Result<Block> {
     let len = block.bytes.len();
-    if stride < 4 || len % stride as usize != 0 {
+    if stride < 4 || !len.is_multiple_of(stride as usize) {
         return Err(Error::Invalid("sorted block: length not a multiple of its stride"));
     }
     let stride = stride as usize;

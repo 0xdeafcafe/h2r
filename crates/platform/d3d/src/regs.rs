@@ -83,9 +83,9 @@ pub struct RegisterValues {
 
 impl RegisterValues {
     /// The values for a device whose push buffer has been executed up to
-    /// `drained` (a guest address), whose last fence `time` was issued with
-    /// the push buffer at `fence_at`, and whose device `+0x40` holds
-    /// `counter`.
+    /// `drained` (a guest address), with completion time `time`, the last
+    /// fence's push-buffer address `fence_at`, and `counter` from device
+    /// `+0x40`.
     ///
     /// `DMA_PUT`/`GET` are in D3D's own encoding of a push-buffer position,
     /// `address & 0x0FFFFFFF` (what `0x3fad07` writes to the channel's put

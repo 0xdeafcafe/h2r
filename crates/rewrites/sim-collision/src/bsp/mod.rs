@@ -315,13 +315,13 @@ impl Bsp {
         let (n_edges, n_vertices) = (n(block::EDGES), n(block::VERTICES));
 
         let planes: Vec<[u32; 4]> = raw[block::PLANES]
-            .chunks_exact(16)
+            .as_chunks::<16>().0.iter()
             .map(|p| std::array::from_fn(|k| word(p, 4 * k)))
             .collect();
         let axis = planes.iter().map(dominant_axis).collect::<Vec<_>>();
 
         let nodes = raw[block::NODES]
-            .chunks_exact(8)
+            .as_chunks::<8>().0.iter()
             .map(|b| {
                 let plane_index = half(b, 0);
                 let p = plane_index as i16;
@@ -355,7 +355,7 @@ impl Bsp {
             .collect();
 
         let leaves = raw[block::LEAVES]
-            .chunks_exact(4)
+            .as_chunks::<4>().0.iter()
             .map(|b| Leaf {
                 flags: b[0],
                 ref_count: b[1],
@@ -365,7 +365,7 @@ impl Bsp {
 
         let zero_ok = ordinary1(consts.zero);
         let refs = raw[block::REFS]
-            .chunks_exact(4)
+            .as_chunks::<4>().0.iter()
             .map(|b| {
                 let plane = half(b, 0);
                 let index = usize::from(plane & 0x7fff);
@@ -387,7 +387,7 @@ impl Bsp {
             .collect();
 
         let nodes_2d = raw[block::NODES_2D]
-            .chunks_exact(16)
+            .as_chunks::<16>().0.iter()
             .map(|b| Node2d {
                 a: word(b, 0),
                 b: word(b, 4),
@@ -404,7 +404,7 @@ impl Bsp {
         };
         let mut ring = Vec::new();
         let surfaces = raw[block::SURFACES]
-            .chunks_exact(8)
+            .as_chunks::<8>().0.iter()
             .enumerate()
             .map(|(s, b)| {
                 let first = half(b, 2);

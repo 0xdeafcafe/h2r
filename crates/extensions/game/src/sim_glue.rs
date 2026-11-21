@@ -135,11 +135,13 @@ struct State {
     /// A copy-on-write guest RAM base census at the match's end
     /// (`state.load` with `"cow": true`): pages written over the base.
     cow: Option<(u64, u64)>,
+    file_reads: vfs::GuestReadBytes,
 }
 
 struct Inner {
     path: PathBuf,
     hosted_map: std::sync::OnceLock<level_boot::Request>,
+    lobby: Arc<Mutex<hosted::LobbyState>>,
     matched: Match,
     report_path: Option<PathBuf>,
     frame: SimFrame,
@@ -388,6 +390,7 @@ impl Sim {
         Sim(Arc::new(Inner {
             path,
             hosted_map: Default::default(),
+            lobby: Default::default(),
             matched,
             report_path,
             frame,
@@ -405,6 +408,7 @@ impl Sim {
                 fired: Vec::new(),
                 notes: Vec::new(),
                 cow: None,
+                file_reads: vfs::GuestReadBytes::default(),
             }),
             stop: AtomicBool::new(false),
             created: Instant::now(),
@@ -575,9 +579,10 @@ impl Sim {
 
     /// The guest RAM census at the match's end, for the report's `wall`
     /// block: `(written, total)` pages over a shared copy-on-write base.
-    pub fn note_cow(&self, written: Option<(u64, u64)>) {
+    pub fn note_memory(&self, written: Option<(u64, u64)>, reads: vfs::GuestReadBytes) {
         let mut s = self.0.lock();
         s.cow = written;
+        s.file_reads = reads;
     }
 
     /// The report at the end of the run, written to `H2_SIM_REPORT` when
@@ -645,6 +650,11 @@ impl Sim {
     /// What `match.status` answers.
     pub fn status(&self) -> Value {
         let inner = &self.0;
+        let lobby = inner
+            .lobby
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .status();
         let s = inner.lock();
         let sp = speed(inner, &s);
         let f = inner.frame.stats();
@@ -654,6 +664,7 @@ impl Sim {
             "game_type": inner.matched.game_type.name(),
             "bots": inner.matched.bots.len(),
             "phase": s.phase.name(),
+            "lobby": lobby,
             "bound_seats": s.bindings,
             "ticks": s.tally.ticks(),
             "max_ticks": inner.matched.config.max_ticks,
@@ -756,6 +767,8 @@ fn build_report(inner: &Inner, s: &State) -> Report {
         "missing"
     };
     let mut memory = crate::host_mem::usage();
+    memory.mapped_read_bytes = s.file_reads.mapped;
+    memory.copied_read_bytes = s.file_reads.copied;
     memory.guest_written_pages = s.cow.map(|(w, _)| w);
     memory.guest_pages = s.cow.map(|(_, t)| t);
     let mut report = s.tally.report(Finish {
@@ -896,9 +909,9 @@ impl hooks::Feature for SimMetrics {
     }
 
     fn build(&self, b: &mut hooks::Builder) -> std::result::Result<(), hooks::BuildError> {
-        let lobby = hosted::install(b, Arc::clone(&self.sim))?;
+        hosted::install(b, Arc::clone(&self.sim))?;
         let policy = match self.film_playback {
-            Some(playback) => film_state::policy(&self.sim, lobby, playback),
+            Some(playback) => film_state::policy(&self.sim, playback),
             None => hooks::SnapshotPolicy::Stateless,
         };
         b.snapshot(policy);

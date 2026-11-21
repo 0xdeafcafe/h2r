@@ -2,9 +2,7 @@
 //! A material setter or guest draw may reuse an index or bitmap header
 //! after a section has already been prepared.
 
-mod common;
-
-use common::*;
+use crate::common::*;
 use d3d::backend::{Recorded, ResolvedDraw};
 use d3d::{GuestMemory, RecordingBackend, UploadPolicy};
 use gfx::vertex::PrimitiveType::TriangleStrip;

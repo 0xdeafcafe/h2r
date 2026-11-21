@@ -1,9 +1,10 @@
 //! The frame step's scene (docs/graphics/framescene.md, slice 1): a
 //! `FrameScene` begun at `render_views`, a view opened at each base-layer
 //! layer 3 with its camera, visible clusters and world state, its objects
-//! extracted at the object walk, its lights at each light passes' entry
-//! (`native_lights`), the items of its world layers 1, 5, 7, 8 and 20 at
-//! each one's draw, its model decorators at its layer 3
+//! extracted at the object walk, its guest-selected lights at each pass
+//! entry (`native_lights`), and all candidates at the end of the light
+//! pass. The items of world layers 1, 5, 7, 8 and 20 come from each
+//! layer's draw, the model decorators from layer 3
 //! (`scene_extract::decorators`), a first-person view with the items
 //! of its layers at the first-person draw `0x0003fdf0`, and the view's late
 //! passes (slice 5: the fog at layer 16 and the water at layer 6 from their
@@ -80,6 +81,9 @@ static LAYER_UNREAD: AtomicU64 = AtomicU64::new(0);
 static DECORATOR_DRAWS: AtomicU64 = AtomicU64::new(0);
 static DECORATOR_INSTANCES: AtomicU64 = AtomicU64::new(0);
 static DECORATOR_REMAINDER: AtomicU64 = AtomicU64::new(0);
+static LIGHT_EXTRACT_VIEWS: AtomicU64 = AtomicU64::new(0);
+static LIGHT_EXTRACT_NS: AtomicU64 = AtomicU64::new(0);
+static LIGHT_EXTRACT_UNREAD: AtomicU64 = AtomicU64::new(0);
 static LIGHT_GROUPS: AtomicU64 = AtomicU64::new(0);
 static LIGHT_GROUPS_WHOLE: AtomicU64 = AtomicU64::new(0);
 static LIGHT_ENTRIES: AtomicU64 = AtomicU64::new(0);
@@ -265,6 +269,33 @@ pub fn light(mem: &dyn GuestMemory, light: SceneLight, steps: &[LightStep]) {
         if !step.light_open {
             REFUSED.fetch_add(1, Ordering::Relaxed);
         }
+    });
+}
+
+/// The main view's light pass is over. Fill the candidate data alongside
+/// the original draw steps, which already hold their final group indices.
+fn light_candidates(mem: &dyn GuestMemory, fpu: engine::light_constants::Fpu) {
+    with_step(|step| {
+        let Some((scene, view)) = step.builder.open() else { return };
+        if view.key.kind != ViewKind::Game {
+            return;
+        }
+        step.light_open = false;
+        let start = Instant::now();
+        let drawn: Vec<u32> = scene.lights_of(view).iter()
+            .filter(|l| l.guest_selected).map(|l| l.handle).collect();
+        let eligible = |record, definition, flags| {
+            crate::native_scene_lists::light_candidate_eligible(mem, record, definition, flags)
+        };
+        if let Some(candidates) = scene_extract::lights::candidates(mem, fpu, &drawn, eligible) {
+            if step.builder.add_light_candidates(candidates).is_err() {
+                REFUSED.fetch_add(1, Ordering::Relaxed);
+            }
+        } else {
+            LIGHT_EXTRACT_UNREAD.fetch_add(1, Ordering::Relaxed);
+        }
+        LIGHT_EXTRACT_VIEWS.fetch_add(1, Ordering::Relaxed);
+        LIGHT_EXTRACT_NS.fetch_add(start.elapsed().as_nanos() as u64, Ordering::Relaxed);
     });
 }
 
@@ -540,6 +571,9 @@ pub fn counters() -> Vec<(&'static str, u64)> {
         ("scene_decorator_draws", DECORATOR_DRAWS.load(Ordering::Relaxed)),
         ("scene_decorator_instances", DECORATOR_INSTANCES.load(Ordering::Relaxed)),
         ("scene_decorator_remainder", DECORATOR_REMAINDER.load(Ordering::Relaxed)),
+        ("scene_light_extract_views", LIGHT_EXTRACT_VIEWS.load(Ordering::Relaxed)),
+        ("scene_light_extract_ns", LIGHT_EXTRACT_NS.load(Ordering::Relaxed)),
+        ("scene_light_extract_unread", LIGHT_EXTRACT_UNREAD.load(Ordering::Relaxed)),
         ("scene_light_groups", LIGHT_GROUPS.load(Ordering::Relaxed)),
         ("scene_light_groups_whole", LIGHT_GROUPS_WHOLE.load(Ordering::Relaxed)),
         ("scene_light_entries", LIGHT_ENTRIES.load(Ordering::Relaxed)),
@@ -619,6 +653,15 @@ impl Feature for FrameSceneStep {
                 at_layer(&*g, ret);
             })
             .after_feature(crate::render_timing::ID)
+            .context_only();
+        b.raw()
+            .observe_after(&points::RENDER_DYNAMIC_LIGHTS, "frame_scene_light_candidates", |o| {
+                let g = o.guest();
+                light_candidates(&*g, engine::light_constants::Fpu {
+                    mxcsr: o.cpu.mxcsr,
+                    x87_control: o.cpu.x87.control,
+                });
+            })
             .context_only();
         // The view's post passes: `render_screen_effects`' two stack
         // bytes (`late`, `colour`). Its callees' calls are put in the

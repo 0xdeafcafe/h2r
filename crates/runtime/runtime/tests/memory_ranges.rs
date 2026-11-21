@@ -678,6 +678,7 @@ fn loader_reserves_before_placing_image_stack_and_data() {
             aliases: vec![0x8000_0000],
             owner: "clash",
         }],
+        ..LoadOptions::default()
     };
     assert!(matches!(
         load_xbe_with(&synthetic_xbe(), &clash),
@@ -692,6 +693,7 @@ fn loader_reserves_before_placing_image_stack_and_data() {
             aliases: vec![],
             owner: "backwards",
         }],
+        ..LoadOptions::default()
     };
     assert!(matches!(
         load_xbe_with(&synthetic_xbe(), &backwards),

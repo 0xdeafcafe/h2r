@@ -114,7 +114,8 @@ pub trait Backend: Send {
         Ok(())
     }
     /// Quick format: leave an empty volume. Only [`crate::Vfs::format_device`]
-    /// calls this, and only while no file object is open on the volume.
+    /// calls this, and only while no file object is open on the volume. A
+    /// failed format leaves the volume unchanged.
     fn format(&mut self) -> Result<()> {
         Err(Error::MediaWriteProtected)
     }

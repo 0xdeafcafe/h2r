@@ -8,7 +8,7 @@ use crate::{
 use live_proto::{
     Xuid,
     hosts::{HostEndpoint, HostLease, HostState, ProviderKind, Transport},
-    matchmaking::{Assignment, Candidate, Connectivity, Nat, Queue, Sample, Ticket},
+    matchmaking::{Assignment, Candidate, Connectivity, Nat, Queue, RegionProbe, Sample, Ticket},
     optimatch::Query,
     session,
 };
@@ -63,7 +63,7 @@ pub(crate) enum Step {
 }
 
 pub(crate) enum QueueAction {
-    Probe(Vec<Candidate>),
+    Probe(Vec<Candidate>, Vec<RegionProbe>),
     Wait,
     WaitForHost(Assignment),
     Host(Assignment),
@@ -75,8 +75,8 @@ pub(crate) enum QueueAction {
 
 pub(crate) fn queue_action(queue: Queue, hopper: u32, me: Xuid) -> Option<QueueAction> {
     match queue {
-        Queue::Probing { candidates } if valid_probe_targets(&candidates, me) => {
-            Some(QueueAction::Probe(candidates))
+        Queue::Probing { candidates, region_echoes } if valid_probe_targets(&candidates, &region_echoes, me) => {
+            Some(QueueAction::Probe(candidates, region_echoes))
         }
         Queue::Host { assignment } | Queue::Waiting { assignment }
             if assignment.host_lease.is_some()
@@ -450,10 +450,13 @@ pub(crate) fn solo_hopper(query: Query, users: &[u64; 4]) -> Option<u32> {
         .then_some(hopper)
 }
 
-pub(crate) fn valid_probe_targets(candidates: &[Candidate], me: Xuid) -> bool {
+fn valid_probe_targets(candidates: &[Candidate], echoes: &[RegionProbe], me: Xuid) -> bool {
     use std::collections::BTreeSet;
     let mut seen = BTreeSet::new();
-    candidates.len() <= live_proto::matchmaking::MAX_CANDIDATES
+    echoes.len() <= live_proto::matchmaking::MAX_REGION_ECHOES
+        && candidates.len() + echoes.len() <= live_proto::matchmaking::MAX_CANDIDATES
+        && echoes.iter().all(|v| v.xuid != me && seen.insert(v.xuid)
+            && session::valid_id(&v.generation) && live_proto::matchmaking::valid_probe_region(&v.region))
         && candidates.iter().all(|v| {
             v.xuid != me
                 && seen.insert(v.xuid)
@@ -475,6 +478,17 @@ mod tests {
     const HOPPER: u32 = 3;
     const ME: Xuid = Xuid(10);
     const HOST: Xuid = Xuid(20);
+
+    #[test]
+    fn regional_probes_are_same_origin_labels_with_unique_targets() {
+        let mut probe = RegionProbe { xuid: HOST, region: "weur".into(), generation: ASSIGNMENT.into() };
+        assert!(valid_probe_targets(&[], &[probe.clone()], ME));
+        assert!(!valid_probe_targets(&[], &[probe.clone(), probe.clone()], ME));
+        for invalid in ["/other", "../escape", "x?next=z", "a%2fb", "example.com"] {
+            probe.region = invalid.into();
+            assert!(!valid_probe_targets(&[], &[probe.clone()], ME));
+        }
+    }
 
     fn assignment() -> Assignment {
         Assignment {

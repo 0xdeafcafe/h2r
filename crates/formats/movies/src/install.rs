@@ -3,7 +3,7 @@ use crate::{
     Freshness, MANIFEST_NAME, Manifest, MovieEntry, OutputStamp, Sha256, hex, locate_entry,
 };
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Read, Seek, Write};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -103,6 +103,69 @@ pub fn install<R: Read + Seek>(
     options: &InstallOptions,
 ) -> io::Result<InstallReport> {
     let entries = discover(disc)?;
+    install_movies(
+        &entries,
+        options,
+        |entry| (entry.path.as_str(), u64::from(entry.size)),
+        |entry, mut out| copy_exact(disc, entry, &mut out),
+    )
+}
+
+/// Install a single movie from a byte range in an ISO or an extracted file.
+/// `disc_path` is the exact source path (such as `/bink/attract_60.bik`) used
+/// to identify it in the manifest. Each copy is bounded by the extent.
+pub fn install_region(
+    path: &Path,
+    offset: u64,
+    length: u64,
+    disc_path: &str,
+    options: &InstallOptions,
+) -> io::Result<InstallReport> {
+    let name = disc_path.strip_prefix('/').unwrap_or(disc_path);
+    if !name.to_ascii_lowercase().ends_with(".bik")
+        || name.contains(['\\', ':', '\0'])
+        || name.split('/').any(|part| matches!(part, "" | "." | ".."))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "expected a slash-separated .bik path on disc",
+        ));
+    }
+    let end = offset
+        .checked_add(length)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "movie byte range overflows"))?;
+    let mut file = File::open(path)?;
+    if end > file.metadata()?.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            "truncated movie region",
+        ));
+    }
+    let source = format!("/{name}");
+    install_movies(
+        &[source],
+        options,
+        |source| (source.as_str(), length),
+        |_, out| {
+            file.seek(SeekFrom::Start(offset))?;
+            let copied = io::copy(&mut (&mut file).take(length), out)?;
+            if copied != length {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "truncated movie region",
+                ));
+            }
+            Ok(())
+        },
+    )
+}
+
+fn install_movies<E>(
+    entries: &[E],
+    options: &InstallOptions,
+    describe: impl Fn(&E) -> (&str, u64),
+    mut copy: impl FnMut(&E, &mut dyn Write) -> io::Result<()>,
+) -> io::Result<InstallReport> {
     let fallbacks = FFMPEG_FALLBACK_DIRS.map(Path::new);
     let found = find_ffmpeg(
         options.ffmpeg.as_deref(),
@@ -119,7 +182,8 @@ pub fn install<R: Read + Seek>(
         Err(status) => {
             // Without a usable ffmpeg an already complete install is still
             // complete. The check is read-only: nothing is created or locked.
-            let reused = installed_without_ffmpeg(disc, &entries, &options.data_dir)?;
+            let reused =
+                installed_without_ffmpeg(entries, &options.data_dir, &describe, &mut copy)?;
             return Ok(match reused {
                 Some(reused) => InstallReport {
                     status: InstallStatus::Complete,
@@ -154,11 +218,12 @@ pub fn install<R: Read + Seek>(
         reused: vec![],
     };
     for entry in entries {
+        let (source_name, source_size) = describe(entry);
         let mut digest = DigestWriter::default();
-        copy_exact(disc, &entry, &mut digest)?;
+        copy(entry, &mut digest)?;
         let source_hash = hex(&digest.sha.finish());
-        if let Some(old) = manifest.find(&entry.path)
-            && old.freshness(entry.size as u64, &source_hash) == Freshness::Fresh
+        if let Some(old) = find_source(&manifest, source_name)
+            && old.freshness(source_size, &source_hash) == Freshness::Fresh
             && old.settings == ffmpeg.settings()
             && manifest.output_sha256.contains_key(&old.output_name)
             && locate_entry(&dir, old).is_some()
@@ -170,7 +235,7 @@ pub fn install<R: Read + Seek>(
                 manifest.output_stamp.insert(name, stamp);
                 commit_manifest(&dir, &manifest)?;
             }
-            report.reused.push(entry.path);
+            report.reused.push(source_name.to_owned());
             continue;
         }
         // Seekable input matters: Bink has indexed frames. Spooling also lets
@@ -179,7 +244,7 @@ pub fn install<R: Read + Seek>(
         let input = scratch.0.join("source");
         let mut source = File::create(&input)?;
         let mut copied = DigestWriter::default();
-        copy_exact(disc, &entry, &mut Tee(&mut source, &mut copied))?;
+        copy(entry, &mut Tee(&mut source, &mut copied))?;
         drop(source);
         if hex(&copied.sha.finish()) != source_hash {
             return Err(io::Error::other("disc source changed while copying"));
@@ -201,16 +266,13 @@ pub fn install<R: Read + Seek>(
         fs::copy(&output, &staged_output)?;
         File::open(&staged_output)?.sync_all()?;
         fs::rename(&staged_output, dir.join(&output_name))?;
-        if let Some(old) = manifest.find(&entry.path)
-            && old.output_name != output_name
-        {
-            let old = old.output_name.clone();
-            manifest.output_sha256.remove(&old);
-            manifest.output_stamp.remove(&old);
-        }
+        let legacy = manifest.output_sha256.is_empty();
+        let replaced_output = find_source(&manifest, source_name)
+            .map(|old| old.output_name.clone())
+            .filter(|old| old != &output_name);
         manifest.upsert(MovieEntry {
-            source_name: entry.path.clone(),
-            source_size: entry.size as u64,
+            source_name: source_name.to_owned(),
+            source_size,
             source_sha256: source_hash,
             output_name: output_name.clone(),
             output_size,
@@ -218,13 +280,24 @@ pub fn install<R: Read + Seek>(
             ffmpeg_version: ffmpeg.version.clone(),
             settings: ffmpeg.settings(),
         });
+        if let Some(old) = replaced_output
+            && !manifest.movies.iter().any(|m| m.output_name == old)
+        {
+            manifest.output_sha256.remove(&old);
+            manifest.output_stamp.remove(&old);
+        }
         manifest.output_stamp.insert(
             output_name.clone(),
             OutputStamp::of(&dir.join(&output_name))?,
         );
         manifest.output_sha256.insert(output_name, output_hash);
+        // The first output hash enables verification for the entire manifest.
+        // Keep already installed legacy movies playable during a partial install.
+        if legacy {
+            verify_legacy_outputs(&dir, &mut manifest);
+        }
         commit_manifest(&dir, &manifest)?;
-        report.converted.push(entry.path);
+        report.converted.push(source_name.to_owned());
     }
     // Replaced or abandoned conversions: drop any movie the manifest no
     // longer references. Only after success, so a failed run keeps its files.
@@ -268,12 +341,39 @@ fn sweep(dir: &Path, matches: impl Fn(&str) -> bool, directories: bool) {
     }
 }
 
-/// `Some(reused paths)` when every movie on the disc has a fresh, verified
+fn find_source<'a>(manifest: &'a Manifest, name: &str) -> Option<&'a MovieEntry> {
+    manifest
+        .movies
+        .iter()
+        .find(|entry| entry.source_name.eq_ignore_ascii_case(name))
+}
+
+fn verify_legacy_outputs(dir: &Path, manifest: &mut Manifest) {
+    for entry in &manifest.movies {
+        if manifest.output_sha256.contains_key(&entry.output_name) {
+            continue;
+        }
+        if let Some(path) = locate_entry(dir, entry)
+            && let Ok(stamp) = OutputStamp::of(&path)
+            && let Ok(hash) = hash_file(&path)
+        {
+            manifest
+                .output_sha256
+                .insert(entry.output_name.clone(), hash);
+            manifest
+                .output_stamp
+                .insert(entry.output_name.clone(), stamp);
+        }
+    }
+}
+
+/// `Some(reused paths)` when every requested movie has a fresh, verified
 /// conversion already installed; reads only, and never creates `data_dir`.
-fn installed_without_ffmpeg<R: Read + Seek>(
-    disc: &mut Xiso<R>,
-    entries: &[Entry],
+fn installed_without_ffmpeg<E>(
+    entries: &[E],
     data_dir: &Path,
+    describe: impl Fn(&E) -> (&str, u64),
+    mut copy: impl FnMut(&E, &mut dyn Write) -> io::Result<()>,
 ) -> io::Result<Option<Vec<String>>> {
     let Ok(dir) = prepare_dir(data_dir, false) else {
         return Ok(None);
@@ -283,16 +383,17 @@ fn installed_without_ffmpeg<R: Read + Seek>(
     };
     let mut reused = vec![];
     for entry in entries {
+        let (source_name, source_size) = describe(entry);
         let mut digest = DigestWriter::default();
-        copy_exact(disc, entry, &mut digest)?;
+        copy(entry, &mut digest)?;
         let hash = hex(&digest.sha.finish());
-        match manifest.find(&entry.path) {
+        match find_source(&manifest, source_name) {
             Some(old)
-                if old.freshness(entry.size as u64, &hash) == Freshness::Fresh
+                if old.freshness(source_size, &hash) == Freshness::Fresh
                     && manifest.output_sha256.contains_key(&old.output_name)
                     && manifest.output_matches(&dir, old)? =>
             {
-                reused.push(entry.path.clone());
+                reused.push(source_name.to_owned());
             }
             _ => return Ok(None),
         }
@@ -657,5 +758,112 @@ mod tests {
             Ffmpeg::probe(Path::new("/nonexistent-h2-ffmpeg")).unwrap(),
             Err(InstallStatus::FfmpegAbsent)
         ));
+    }
+
+    #[test]
+    fn invalid_movie_regions_are_rejected_before_installation() {
+        let scratch = Scratch::new(&std::env::temp_dir()).unwrap();
+        let source = scratch.0.join("disc.img");
+        fs::write(&source, b"synthetic movie data").unwrap();
+        let options = InstallOptions::new(scratch.0.join("movies"));
+        assert_eq!(
+            install_region(&source, 0, 5, "/bink/../intro.bik", &options)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::InvalidInput
+        );
+        assert_eq!(
+            install_region(&source, u64::MAX, 1, "/bink/intro.bik", &options)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::InvalidInput
+        );
+        assert_eq!(
+            install_region(&source, 5, 100, "/bink/intro.bik", &options)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::UnexpectedEof
+        );
+        assert!(!options.data_dir.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn installs_and_resumes_only_the_named_region() {
+        use std::os::unix::fs::PermissionsExt;
+
+        const TARGET: &str = "/bink/attract_60.bik";
+        const LEGACY: &str = "/bink/intro_60.bik";
+        const MOVIE: &[u8] = b"synthetic encoding";
+
+        let scratch = Scratch::new(&std::env::temp_dir()).unwrap();
+        let source = scratch.0.join("disc.img");
+        let mut data = b"prefix".to_vec();
+        data.extend_from_slice(MOVIE);
+        data.extend_from_slice(b"suffix");
+        fs::write(&source, &data).unwrap();
+
+        let mut options = InstallOptions::new(scratch.0.join("movies"));
+        fs::create_dir(&options.data_dir).unwrap();
+        fs::write(options.data_dir.join("old.mov"), b"old").unwrap();
+        let mut manifest = Manifest::default();
+        for source_name in [LEGACY, TARGET] {
+            manifest.upsert(MovieEntry {
+                source_name: source_name.to_owned(),
+                source_sha256: "legacy".to_owned(),
+                source_size: 3,
+                output_name: "old.mov".to_owned(),
+                output_size: 3,
+                duration_secs: 1.0,
+                ffmpeg_version: "legacy ffmpeg".to_owned(),
+                settings: "legacy".to_owned(),
+            });
+        }
+        fs::write(options.data_dir.join(MANIFEST_NAME), manifest.to_json()).unwrap();
+
+        // A synthetic encoder copies its seekable input to the output,
+        // making any extra bytes from the enclosing file visible here.
+        let ffmpeg = scratch.0.join("ffmpeg");
+        fs::write(&ffmpeg, r#"#!/bin/sh
+case "$1:$2" in
+-version:) printf 'ffmpeg version synthetic\n' ;;
+-hide_banner:-decoders) printf ' V..... binkvideo\n A..... binkaudio_dct\n A..... binkaudio_rdft\n' ;;
+-hide_banner:-encoders) printf ' V..... libx264\n A..... aac\n' ;;
+-nostdin:-hide_banner)
+    [ "$5" = -i ] || exit 2
+    for output in "$@"; do :; done
+    /bin/cat "$6" > "$output" || exit 3
+    printf 'out_time_us=1000000\n'
+    ;;
+*) exit 1 ;;
+esac
+"#).unwrap();
+        fs::set_permissions(&ffmpeg, fs::Permissions::from_mode(0o700)).unwrap();
+        options.ffmpeg = Some(ffmpeg);
+        let offset = b"prefix".len() as u64;
+        let length = MOVIE.len() as u64;
+        let report = install_region(&source, offset, length, TARGET, &options).unwrap();
+        assert_eq!(report.status, InstallStatus::Complete);
+        assert_eq!(report.converted, [TARGET]);
+        assert!(report.reused.is_empty());
+
+        let installed = Manifest::load(&options.data_dir).unwrap().unwrap();
+        let entry = installed.find(TARGET).unwrap();
+        let mut digest = Sha256::default();
+        digest.update(MOVIE);
+        assert_eq!(entry.source_sha256, hex(&digest.finish()));
+        assert_eq!(entry.source_size, length);
+        let new_output = crate::locate(&options.data_dir, TARGET).unwrap();
+        assert_eq!(fs::read(new_output).unwrap().as_slice(), MOVIE);
+        assert_eq!(installed.find(LEGACY), manifest.find(LEGACY));
+        assert!(crate::locate(&options.data_dir, LEGACY).is_some());
+        assert_eq!(fs::read(&source).unwrap(), data);
+
+        let no_ffmpeg = scratch.0.join("missing-ffmpeg");
+        options.ffmpeg = Some(no_ffmpeg);
+        let report = install_region(&source, offset, length, TARGET, &options).unwrap();
+        assert_eq!(report.status, InstallStatus::Complete);
+        assert_eq!(report.reused, [TARGET]);
+        assert!(report.converted.is_empty());
     }
 }

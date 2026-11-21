@@ -120,6 +120,23 @@ pub struct PixelOptions {
     /// lookup, byte for byte, and is left out of persisted keys.
     #[serde(default, skip_serializing_if = "no_hard_shadow")]
     pub hard_shadow: [u8; 4],
+    /// Stages (bit `i` for stage `i`) using the Sharp shadow filter
+    /// ([`super::shadow`]). Sharp takes precedence over Hard for a stage.
+    /// With explicit LOD the same filter uses a zero-width screen footprint.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub sharp_shadow: u8,
+}
+
+impl PixelOptions {
+    pub(super) fn shadow_filter(&self, stage: usize) -> super::shadow::Filter {
+        if self.sharp_shadow & (1 << stage) != 0 {
+            super::shadow::Filter::Sharp { derivatives: !self.explicit_lod }
+        } else if self.hard_shadow[stage] != 0 {
+            super::shadow::Filter::Hard(self.hard_shadow[stage])
+        } else {
+            super::shadow::Filter::Retail
+        }
+    }
 }
 
 /// The fragment entry a W-buffered program ([`PixelOptions::w_buffer`])
@@ -653,7 +670,7 @@ fn translate_program(def: &PixelShaderDef, options: &PixelOptions, default_final
                     i,
                     &options.shadow[i].unwrap(),
                     mode == TexMode::Project3d,
-                    options.hard_shadow[i],
+                    options.shadow_filter(i),
                 )
             }
             TexMode::Project2d | TexMode::Project3d | TexMode::Cubemap => {
@@ -958,7 +975,8 @@ fn fs_main(v: XboxVaryings, @builtin(front_facing) front: bool) -> @location(0) 
     }
     if options.stipple {
         s.push_str(
-            r#"    let xy = vec2u(v.position.xy) & vec2u(31u);
+            r#"    // depth_range.zw holds the target's host pixels per guest pixel.
+    let xy = vec2u(v.position.xy / xps.depth_range.zw) & vec2u(31u);
     let y = 31u - xy.y;
     let row = xps.stipple[y / 4u][y % 4u];
     if ((row & (1u << (xy.x ^ 7u))) == 0u) { discard; }

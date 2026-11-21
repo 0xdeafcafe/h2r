@@ -468,7 +468,7 @@ impl Output {
             return Ok(0);
         }
         #[cfg(feature = "playback")]
-        let mut samples = (!self.clock_only).then(|| {
+        let mut samples = (!self.clock_only).then_some({
             ([0.0f32; 2 * QUANTUM as usize], [0.0f32; 2 * QUANTUM as usize])
         });
         while g.done + QUANTUM <= due {

@@ -49,6 +49,31 @@ pub struct Candidate {
     pub generation: String,
 }
 
+/// An authenticated WebSocket echo on the signed-in Live origin.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RegionProbe {
+    pub region: String,
+    pub xuid: Xuid,
+    pub generation: String,
+}
+
+pub fn valid_probe_region(region: &str) -> bool {
+    (1..=24).contains(&region.len())
+        && region.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+}
+
+// Bounds parallel upgrades per poll, separately from the ticket's total targets.
+pub const MAX_REGION_ECHOES: usize = 9;
+pub const REGION_ECHO: &str = "h2-region-qos";
+/// Internal tunnel route. The matching subprotocol proves the image serves
+/// only the echo here before Live passes its socket to a searcher.
+pub const PACK_ECHO_PATH: &str = "/internal/region-echo";
+
+pub fn echo_region(path: &str) -> Option<&str> {
+    let region = path.strip_prefix("/v1/hosts/regions/")?.strip_suffix("/echo")?;
+    valid_probe_region(region).then_some(region)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Sample {
@@ -82,7 +107,11 @@ pub struct Assignment {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum Queue {
-    Probing { candidates: Vec<Candidate> },
+    Probing {
+        candidates: Vec<Candidate>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        region_echoes: Vec<RegionProbe>,
+    },
     Host { assignment: Assignment },
     Waiting { assignment: Assignment },
     Join {
@@ -142,6 +171,16 @@ mod tests {
             serde_json::from_value::<Assignment>(wire).unwrap(),
             with_lease
         );
+    }
+
+    #[test]
+    fn regional_echo_path_contains_one_validated_label() {
+        assert_eq!(echo_region("/v1/hosts/regions/weur/echo"), Some("weur"));
+        for code in ["", "../lhr", "x%2fy", "?q", "a:b", "x/y", "a_1"] {
+            assert!(echo_region(&format!("/v1/hosts/regions/{code}/echo")).is_none());
+        }
+        let legacy: Queue = serde_json::from_value(json!({"state":"probing","candidates":[]})).unwrap();
+        assert!(matches!(legacy, Queue::Probing { region_echoes, .. } if region_echoes.is_empty()));
     }
 
     #[test]

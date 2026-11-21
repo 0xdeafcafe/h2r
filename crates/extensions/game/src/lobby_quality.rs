@@ -117,7 +117,7 @@ fn peer_rtt(m: &dyn GuestMemory, session: u32, peer: u32) -> Option<u32> {
 /// The active pregame membership, in slot order. A matchmaking search
 /// starts with the party and displays the target session once it exists.
 pub(crate) fn inspect(m: &dyn GuestMemory) -> Result<Value, RpcError> {
-    let mut rows = Vec::new();
+    let rows = Vec::<Value>::new();
     if !m.u8(lobby::NETWORKING).is_ok_and(|on| on != 0)
         || !m.u8(lobby::LOBBY_ON).is_ok_and(|on| on != 0)
     {
@@ -135,28 +135,42 @@ pub(crate) fn inspect(m: &dyn GuestMemory) -> Result<Value, RpcError> {
             let addr = m.u32(lobby::SESSION).ok()?;
             Membership::read(m, addr)
         });
-    if let Some(s) = membership {
-        let unavailable = || RpcError::new(code::UNAVAILABLE, "lobby membership is unreadable");
-        let mask = m.u32(s.addr + PLAYER_MASK).map_err(|_| unavailable())?;
-        for slot in (0..session::MAX).filter(|slot| mask & (1 << slot) != 0) {
-            let at = s.addr + PLAYERS + slot * PLAYER_SIZE;
-            let peer = m.u32(at + P_PEER).map_err(|_| unavailable())?;
-            let mut raw = [0; CONFIG_NAME_UNITS * 2];
-            m.read(at + P_EFFECTIVE, &mut raw).map_err(|_| unavailable())?;
-            let units: Vec<u16> = raw
-                .chunks_exact(2)
-                .map(|b| u16::from_le_bytes([b[0], b[1]]))
-                .take_while(|&u| u != 0)
-                .collect();
-            let name = String::from_utf16_lossy(&units);
-            let quality = s.quality(m, peer).ok_or_else(unavailable)?;
-            rows.push(json!({
-                "slot": slot, "peer": peer, "name": name,
-                "bars": quality.bars, "rtt_ms": quality.rtt_ms
-            }));
-        }
+    if let Some(s) = membership { return membership_rows(m, &s); }
+    Ok(json!({ "players": rows }))
+}
+
+fn membership_rows(m: &dyn GuestMemory, s: &Membership) -> Result<Value, RpcError> {
+    let mut rows = Vec::new();
+    let unavailable = || RpcError::new(code::UNAVAILABLE, "lobby membership is unreadable");
+    let mask = m.u32(s.addr + PLAYER_MASK).map_err(|_| unavailable())?;
+    for slot in (0..session::MAX).filter(|slot| mask & (1 << slot) != 0) {
+        let at = s.addr + PLAYERS + slot * PLAYER_SIZE;
+        let peer = m.u32(at + P_PEER).map_err(|_| unavailable())?;
+        let mut raw = [0; CONFIG_NAME_UNITS * 2];
+        m.read(at + P_EFFECTIVE, &mut raw).map_err(|_| unavailable())?;
+        let units: Vec<u16> = raw
+            .chunks_exact(2)
+            .map(|b| u16::from_le_bytes([b[0], b[1]]))
+            .take_while(|&u| u != 0)
+            .collect();
+        let name = String::from_utf16_lossy(&units);
+        let quality = s.quality(m, peer).ok_or_else(unavailable)?;
+        rows.push(json!({
+            "slot": slot, "peer": peer, "name": name,
+            "bars": quality.bars, "rtt_ms": quality.rtt_ms
+        }));
     }
     Ok(json!({ "players": rows }))
+}
+
+/// Per-player reliable RTT from the active simulation membership. No peer
+/// addresses are exposed; an unsampled route stays null.
+pub(crate) fn match_peer_rtts(m: &dyn GuestMemory) -> Result<Value, RpcError> {
+    let session = m.u32(MACHINES).ok().filter(|&p| p != 0)
+        .and_then(|p| p.checked_add(0xc))
+        .and_then(|p| m.u32(p).ok()).and_then(|p| Membership::read(m, p))
+        .ok_or_else(|| RpcError::new(code::UNAVAILABLE, "no active simulation membership"))?;
+    membership_rows(m, &session)
 }
 
 fn scoreboard_bars(m: &dyn GuestMemory, stats: u32) -> Option<u8> {
@@ -314,6 +328,8 @@ mod tests {
             {"slot": 2, "peer": 0, "name": "Remote", "bars": 4, "rtt_ms": 350},
             {"slot": 4, "peer": 3, "name": "Waiting", "bars": 1, "rtt_ms": null}
         ] }));
+        m.put_u32(MACHINES, 0x0068_0000).put_u32(0x0068_000c, S);
+        assert_eq!(match_peer_rtts(&m).unwrap(), inspect(&m).unwrap());
         m.put_u32(queue + 0x960, 0);
         assert_eq!(peer_rtt(&m, S, 0), Some(0));
         m.put_u32(queue + 0x95c, 0);

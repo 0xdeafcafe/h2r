@@ -20,6 +20,9 @@
 //! }
 //! ```
 
+/// Vertical pixels per projection unit in the current retail view.
+pub const PIXEL_SCALE: u32 = 0x004b_9ed0;
+
 /// Where one argument or the result lives at the function's entry or exit.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Loc {
@@ -129,6 +132,13 @@ pub const TRANSPARENT_ORDER_BEGIN: Point = Point::new(
 pub const TRANSPARENT_ORDER_READY: Point = Point::new(
     "TRANSPARENT_ORDER_READY", 0x0001_e3bc, Sig::Site, "docs/graphics/native-renderer.md",
 );
+
+/// Return sites on the retail depleting damage report's kill-credit path.
+/// Used to identify that caller's stack layout at PLAYER_KILLED entry.
+pub mod kill_credit {
+    pub const RETURN_TO_ATTRIBUTION: u32 = 0x001e_a465;
+    pub const RETURN_TO_DAMAGE_REPORT: u32 = 0x000d_9acf;
+}
 
 /// Return addresses for the retail lobby leave and party leader queries.
 pub mod party_leave {
@@ -495,6 +505,12 @@ points! { ALL;
     CAMERA_OBSERVER @ 0x0016_f280: [opaque], Optional; "docs/engine/engine-map.md";
     CAMERA_FIRST_PERSON @ 0x0023_c110: [opaque], Optional; "docs/engine/engine-map.md";
     UI_UPDATE @ 0x0014_79c3: [opaque], Optional; "docs/engine/engine-map.md";
+    /// Updates the menu music gate and returns true when the attract movie is due.
+    UI_ATTRACT_TIMER @ 0x0022_3976: [fn() -> al ret 0]; "docs/audio/bink-hle.md";
+    /// Starts the attract movie through the retail Bink wrapper.
+    UI_ATTRACT_START @ 0x0022_3a21: [fn() ret 0]; "docs/audio/bink-hle.md";
+    /// Closes the finished or dismissed movie and resets the idle clock.
+    UI_MOVIE_RETURN @ 0x0015_65a0: [fn() ret 0]; "docs/audio/bink-hle.md";
     UI_RENDER_LAYERS @ 0x0014_7af1: [fn(user: eax, fallback_user: stack 0, bounds: stack 1) ret 8], Optional; "docs/engine/engine-map.md";
     UI_HUD_DRAW @ 0x0019_17eb: [fn() ret 0], Optional; "docs/graphics/native-renderer.md";
     UI_FADE_DRAW @ 0x0004_0890: [fn() ret 0], Optional; "docs/graphics/native-renderer.md";
@@ -506,7 +522,8 @@ points! { ALL;
     GAME_END @ 0x0013_89c0: [opaque]; "docs/live/live-gamestate.md";
     /// A player was killed: `(attacker player, victim player, flag, packed
     /// damage)` on the stack. The flag is not a betrayal flag (it is set in
-    /// free-for-all too). Who pops them is not read.
+    /// free-for-all too). The low byte of the fourth argument is the
+    /// credited damage reporting type and modifier.
     PLAYER_KILLED @ 0x0015_ce70: [opaque]; "docs/live/live-gamestate.md";
     /// One weapon barrel fires: stdcall `(weapon object datum, barrel
     /// index)`. One call is one shot (likely).
@@ -607,6 +624,8 @@ points! { ALL;
     RENDER_FRAME_TAIL @ 0x0001_3b90: [opaque]; "docs/graphics/native-renderer.md";
     /// `render_scene_passes`: the scene pass sequence of one view.
     RENDER_SCENE_PASSES @ 0x0002_bcd0: [opaque]; "docs/graphics/e3-lighting.md";
+    /// Resets the record counters immediately before the two structure walks.
+    RESET_SCENE_RECORDS @ 0x0002_cb30: [fn() ret 0]; "docs/graphics/occlusion-culling.md";
     /// Main view's visible structure cluster and placement record walks.
     WORLD_CLUSTER_RECORDS @ 0x0013_3390: [fn(visibility: ebx) ret 0]; "docs/graphics/native-renderer.md";
     /// One visible row entering the gather. A cold neighbour can require
@@ -738,8 +757,11 @@ points! { ALL;
     LIGHT_GEOMETRY_FLAGS @ 0x0003_1660: [fn(light: eax, definition: ecx, vis: esi, owner: stack 0, root: stack 1, point: stack 2, shadow: stack 3) ret 16]; "docs/graphics/native-renderer.md";
     /// Append the optional owner or owning unit as a dynamic light caster.
     LIGHT_EXTRA_CASTER @ 0x0003_1c20: [fn(shadow: al, owner: ecx, vis: stack 0) ret 4]; "docs/graphics/native-renderer.md";
+    /// Select a model detail tier. The projected radius is in the low float
+    /// of XMM4. The return value and fraction drive the per-view hysteresis.
+    MODEL_LOD @ 0x0004_c450: [fn(distances: ecx, fraction: ebx, object: stack 0) -> al ret 4]; "docs/graphics/occlusion-culling.md";
     /// Write one BSP or model render record, with its associated cache state.
-    SCENE_RECORD_WRITER @ 0x0002_cbf0: [opaque]; "docs/graphics/native-renderer.md";
+    SCENE_RECORD_WRITER @ 0x0002_cbf0: [fn(section: eax, selector: ecx, node_count: edx, pixels: stack 9) -> eax ret 84]; "docs/graphics/native-renderer.md";
     /// The object render records for a visibility struct: EAX the struct
     /// (`0x00547f88` the main view's), stack 0 an argument passed on,
     /// `ret 4`. Reorders the struct's object list (`0x00134240`), then
@@ -1025,6 +1047,12 @@ points! { ALL;
     /// once its session is made (`0x23101b`), the lobby's "Switch To: Co-Op
     /// Game" with 0 (`0x2bba30`).
     LOBBY_MODE_SET @ 0x0019_9a03: [fn(mode: stack 0) ret 4]; "docs/live/live-coop.md";
+    /// Available Games' Create row (local and Live flags both zero for System Link).
+    BROWSER_CREATE_SQUAD @ 0x0019_9df9: [fn(local: stack 0, live: stack 1) -> al ret 8]; "docs/live/dedicated-host.md";
+    /// Per-frame reconciliation of the local UI screen and network life cycle.
+    UI_SYNC_NETWORK_SCREEN @ 0x0019_9b08: [fn() ret 0]; "docs/live/dedicated-host.md";
+    /// The menu leaves the squad and target, immediately or gracefully.
+    UI_LEAVE_SESSIONS @ 0x0019_9e2e: [fn(immediate: stack 0) ret 4]; "docs/live/dedicated-host.md";
     /// Lobby: why the game cannot start yet (stdcall, an optional float
     /// out); 9 ready, 7 the teams or co-op check (`0x19a4be`: co-op needs
     /// exactly two players, both on this console), 8 and 10 the load and
@@ -1088,6 +1116,9 @@ points! { ALL;
     /// them every player's unit (`0x14df40`, `0x14deb0`) and "some player
     /// dead" (`players_globals+5`); AL 1 when safe.
     SAVE_SAFE @ 0x0022_6190: [fn() -> al ret 0]; "docs/live/live-coop.md";
+    /// The Live join lifecycle. Its update promotes the target squad or records
+    /// the title's reason for declining the join.
+    LIVE_JOIN_UPDATE @ 0x0006_fd10: [fn(context: ecx) -> al ret 0], Optional; "docs/live/live-custom-games.md";
     /// The host's answer to a join request (session in EAX, request in
     /// EDI): 0 accepts, 3 refuses unless the session state (`S+0x741c`)
     /// is 5 (the lobby), 2 for an invite-only session, 4 when full.

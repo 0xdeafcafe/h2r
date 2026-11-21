@@ -134,8 +134,10 @@ fn drive(g: &emit::host::Generated, slice: Option<u64>) -> Run {
 fn reference(f: &IrFunction, headers: &BTreeSet<u32>, slice: Option<u64>) -> (Vec<(u32, u64)>, u64) {
     let insns: HashMap<u32, &ir::IrInsn> = f.insns().map(|i| (i.pc, i)).collect();
     let (cpu0, mut mem) = state();
-    let mut cpu = interp::Cpu::default();
-    cpu.gpr = cpu0.gpr;
+    let mut cpu = interp::Cpu {
+        gpr: cpu0.gpr,
+        ..Default::default()
+    };
     let mut left = slice.unwrap_or(0);
     let (mut total, mut stops) = (0u64, Vec::new());
     let mut start = f.entry;

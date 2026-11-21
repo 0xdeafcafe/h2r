@@ -28,6 +28,11 @@ use crate::host_identity::{Publisher, TELEMETRY_INGEST}; // dh-identity
 use crate::model::{Game, nonce_key};
 use crate::store::{NewEvent, Query};
 
+/// Private join and arbitration metadata. Each link immediately precedes its
+/// public game start in the same store append.
+pub(crate) const SESSION_LINKS: &str = "lobby-links";
+pub(crate) const SESSION_LINKED: &str = "GameSessionLinked";
+
 /// Live frames go to readers at most this often per game.
 const FRAME_INTERVAL: Duration = Duration::from_millis(1000 / 15);
 /// `GET /v1/games/{id}/frames` page size.
@@ -528,6 +533,31 @@ impl Live {
         Ok(g)
     }
 
+    /// Sign the public start and its optional private lobby link separately.
+    /// Project the link first so the game appears with its full session context.
+    pub(crate) fn game_start_events(
+        &self,
+        mut started: GameStarted,
+        at: time::OffsetDateTime,
+    ) -> Vec<NewEvent> {
+        let mut events = Vec::new();
+        if let Some(session_id) = started.game.session_id.take() {
+            events.push(self.server_event_at(
+                SESSION_LINKS.into(),
+                SESSION_LINKED,
+                json!({ "game_id": started.game_id, "session_id": session_id }),
+                at,
+            ));
+        }
+        events.push(self.server_event_at(
+            game::stream(&started.game_id),
+            game::GAME_STARTED,
+            json!(started),
+            at,
+        ));
+        events
+    }
+
     /// `POST /v1/games`: the server writes `GameStarted` with a fresh id
     /// and `host` = the token's author.
     pub async fn start_game(
@@ -594,13 +624,9 @@ impl Live {
             game: new,
         };
         let stream = game::stream(&game_id);
-        let event = self.server_event(
-            stream.clone(),
-            game::GAME_STARTED,
-            serde_json::to_value(&started).expect("serializes"),
-        );
-        let recorded = self.store.append(vec![event], &[(stream, 0)]).await?;
-        let position = recorded[0].position;
+        let events = self.game_start_events(started, time::OffsetDateTime::now_utc());
+        let recorded = self.store.append(events, &[(stream, 0)]).await?;
+        let position = recorded.last().expect("game start appended").position;
         self.wait_applied(position).await?;
         Ok(GameCreated { game_id, position })
     }

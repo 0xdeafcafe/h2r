@@ -128,17 +128,6 @@ fn three(mem: &dyn GuestRead, at: u32) -> Option<[f32; 3]> {
     Some([f(mem, at)?, f(mem, at + 4)?, f(mem, at + 8)?])
 }
 
-/// `comiss`'s clamp: below `lo` is `lo`, above `hi` is `hi`, NaN stays.
-fn clamp(v: f32, lo: f32, hi: f32) -> f32 {
-    if lo > v {
-        lo
-    } else if v > hi {
-        hi
-    } else {
-        v
-    }
-}
-
 /// `1 / (far - near)` when the fog is on and its range is not empty.
 #[allow(clippy::neg_cmp_op_on_partial_ord)] // NaN is no range, as `comiss`
 fn fog_reciprocal(mem: &dyn GuestRead) -> Option<Option<f32>> {

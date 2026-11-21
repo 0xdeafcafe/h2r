@@ -307,6 +307,22 @@ fn fionread_reports_next_datagram_and_peek_does_not_consume_it() {
     assert_eq!(b.call("recv", &[sb, DATA, 16, 0]), ERROR);
 }
 #[test]
+fn a_host_pace_wait_leaves_the_ready_packet_for_the_guest() {
+    let (mut sender, mut receiver) = pair();
+    let from = sender.socket(17);
+    let to = receiver.socket(17);
+    sender.bind(from, 1000);
+    receiver.bind(to, 1000);
+    assert!(!receiver.hle.wait_for_network_input(Duration::ZERO));
+    assert_eq!(sender.sendto(from, receiver.config.address, b"tick"), 4);
+    assert!(receiver.hle.wait_for_network_input(Duration::from_secs(1)));
+    assert_eq!(receiver.readable(to), 1);
+    assert_eq!(receiver.recvfrom(to, 16), 4);
+    assert_eq!(receiver.get(DATA, 4), b"tick");
+    assert!(!receiver.hle.wait_for_network_input(Duration::ZERO));
+}
+
+#[test]
 fn select_filters_sets_and_fd_is_set_uses_xbox_count_and_handle_array() {
     let (mut a, mut b) = pair();
     let sa = a.socket(17);

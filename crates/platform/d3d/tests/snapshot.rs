@@ -5,9 +5,7 @@
 //! memory and draws the same frames. The recorded draw streams, the
 //! presented surfaces and guest memory match.
 
-mod common;
-
-use common::*;
+use crate::common::*;
 use d3d::backend::Recorded;
 use d3d::device::SnapshotError;
 use d3d::{Device, GuestMemory, RecordingBackend, SparseMemory, UploadPolicy};

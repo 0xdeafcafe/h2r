@@ -504,7 +504,7 @@ fn x87_supported(op: X87Op) -> bool {
     }
 }
 
-fn refusal_in(list: &[Stmt], pc: u32) -> Option<String> {
+fn refusal_in(list: &[Stmt]) -> Option<String> {
     for s in list {
         let what = match s {
             Stmt::Unsupported { mnemonic, .. } => Some(format!("unsupported {mnemonic}")),
@@ -520,8 +520,8 @@ fn refusal_in(list: &[Stmt], pc: u32) -> Option<String> {
                 Intrinsic::X87(x) if !x87_supported(*x) => Some(format!("x87 {x:?}")),
                 _ => None,
             },
-            Stmt::If { then, otherwise, .. } => refusal_in(then, pc).or_else(|| refusal_in(otherwise, pc)),
-            Stmt::Repeat { body, .. } => refusal_in(body, pc),
+            Stmt::If { then, otherwise, .. } => refusal_in(then).or_else(|| refusal_in(otherwise)),
+            Stmt::Repeat { body, .. } => refusal_in(body),
             _ => None,
         };
         if what.is_some() {
@@ -532,7 +532,7 @@ fn refusal_in(list: &[Stmt], pc: u32) -> Option<String> {
 }
 
 fn static_refusal(f: &IrFunction) -> Option<Refusal> {
-    f.insns().find_map(|i| refusal_in(&i.stmts, i.pc).map(|what| Refusal::Unsupported { pc: i.pc, what }))
+    f.insns().find_map(|i| refusal_in(&i.stmts).map(|what| Refusal::Unsupported { pc: i.pc, what }))
 }
 
 fn any_stmt(list: &[Stmt], p: &impl Fn(&Stmt) -> bool) -> bool {

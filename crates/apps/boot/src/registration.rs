@@ -30,6 +30,23 @@ use crate::{
     skulls_mp, snapshot_probe, telemetry, touch_glue, ui, ui_back, ui_watch, variant_ext, variant_page, xapi_glue,
 };
 
+/// The three subsystems measured together on a light host. Resolve each
+/// default through the ordinary implementation hierarchy so a group or leaf
+/// override wins, and a new subsystem only joins after its own parity gate.
+pub(crate) fn profile_switches(mut switches: hooks::Switches, light: bool) -> hooks::Switches {
+    if light && switches.feature("host-light-native", false) {
+        for subsystem in [
+            sim_bridge::sim_native::ANIM,
+            sim_bridge::sim_native::COLLISION,
+            sim_bridge::sim_objects::OBJECTS,
+        ] {
+            let enabled = switches.implementation(subsystem, true);
+            switches = switches.with(&format!("impl.{subsystem}"), enabled);
+        }
+    }
+    switches
+}
+
 /// The light profile requires a headless backend and the clock-only DirectSound shim.
 pub(crate) fn register_viewer_skips(
     features: &mut hooks::Registry,
@@ -82,13 +99,14 @@ pub struct Core {
 
 /// Registers everything from the telemetry hooks to the touch glue.
 pub fn register_core(features: &mut hooks::Registry, i: CoreInputs<'_>) -> anyhow::Result<Core> {
-    register_core_film(features, i, None)
+    register_core_film(features, i, None, false)
 }
 
 pub(crate) fn register_core_film(
     features: &mut hooks::Registry,
     i: CoreInputs<'_>,
     film: Option<Arc<crate::theater::Session>>,
+    non_player: bool,
 ) -> anyhow::Result<Core> {
     let rt: &Runtime = i.rt;
     let config = i.telemetry.unwrap_or_else(|error| {
@@ -169,6 +187,8 @@ pub(crate) fn register_core_film(
     // screen opened from the logon's polling (docs/live/live.md, "In-game
     // sign-in").
     signin_screen::install(rt, features, i.live.as_ref()).context("installing the sign-in prompt")?;
+    crate::join_link::install(features, i.live.clone(), non_player || film.is_some())
+        .context("installing Live join links")?;
     // A campaign level in place of the main menu (`h2 play --level`,
     // H2_LEVEL) and the level-loaded mark H2_PERF_FROM=level waits on
     // (docs/runtime/level-boot.md).
@@ -300,6 +320,9 @@ pub enum AgentSource {
 /// What [`register_late`] needs: the registrations after the host's d3d,
 /// audio and input are in.
 pub struct LateInputs<'a> {
+    /// The effective resolution source of the backend drawing this run.
+    #[cfg(feature = "gpu")]
+    pub view: Option<&'a crate::d3d_glue::DrawingView>,
     pub rt: &'a Arc<Runtime>,
     pub lockstep: lockstep_glue::Config,
     pub agent: AgentSource,
@@ -355,7 +378,7 @@ pub(crate) fn register_late_for_profile(
     );
     let lockstep_on = i.lockstep.enabled();
     let input_replay = i.lockstep.replay.is_some();
-    let xa = i.xa.map(|x| &**x);
+    let xa = i.xa.map(AsRef::as_ref);
     // H2_LOCKSTEP / H2_INPUT_RECORD / H2_INPUT_REPLAY (lockstep_glue.rs).
     let harness = if lockstep_on {
         let h = lockstep_glue::Lockstep::install(features, i.lockstep, lockstep::TickHook::HALO2, xa)?;
@@ -419,6 +442,15 @@ pub(crate) fn register_late_for_profile(
     features.add(&i.pipeline).map_err(|e| anyhow::anyhow!("pipeline render: {e}"))?;
     #[cfg(feature = "gpu")]
     if render_hooks == film::RenderHooks::Gpu {
+        use render_bridge::native_scene_lists::NativeSceneLists;
+
+        let view_scale = if let Some(view) = i.view {
+            let lod = crate::lod_distance::LodDistance::new(i.settings.as_deref(), view.scale_stats.clone())?;
+            features.add(&lod).map_err(|e| anyhow::anyhow!("LOD distance: {e}"))?;
+            lod.view_scale()
+        } else {
+            None
+        };
         features
             .add(&render_bridge::native_map_work::NativeMapWork)
             .map_err(|e| anyhow::anyhow!("native map lifecycle: {e}"))?;
@@ -486,9 +518,11 @@ pub(crate) fn register_late_for_profile(
         features
             .add(&render_bridge::native_world_layers::NativeWorldLayers)
             .map_err(|e| anyhow::anyhow!("native world layers: {e}"))?;
-        features
-            .add(&render_bridge::native_scene_lists::NativeSceneLists)
-            .map_err(|e| anyhow::anyhow!("native scene lists: {e}"))?;
+        if let Some(scale) = view_scale {
+            features.add(&NativeSceneLists::with_lod_scale(scale))
+        } else {
+            features.add(&NativeSceneLists)
+        }.map_err(|e| anyhow::anyhow!("native scene lists: {e}"))?;
         // Mark the sorted geometry entries so their resolved indexed draws
         // can use a cached vertex binding in the game's order (off by default).
         features

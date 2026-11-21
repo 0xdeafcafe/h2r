@@ -1600,7 +1600,7 @@ mod tests {
             // At Nyquist the alternating sum of an impulse response is its HF
             // gain. Divide by the DC sum to measure coloration independent of level.
             let (early, tail) = out.split_at(2 * 240);
-            let left = early.chunks_exact(2).map(|frame| f64::from(frame[0]));
+            let left = early.as_chunks::<2>().0.iter().map(|frame| f64::from(frame[0]));
             let dc: f64 = left.clone().sum();
             let hf: f64 = left
                 .enumerate()

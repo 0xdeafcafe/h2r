@@ -44,7 +44,7 @@ fn sample(tick: u64) -> Tick {
     action[4] = 0x80;
     action[91] = if tick < 140 { 2 } else { 3 };
     let mut inputs = Vec::new();
-    if tick < 4 || tick > 10 {
+    if !(4..=10).contains(&tick) {
         inputs.push(SeatInput {
             seat: 0,
             pad: Some(pad),

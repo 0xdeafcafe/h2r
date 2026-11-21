@@ -22,6 +22,25 @@ use crate::app::{ApiError, invalid};
 const MAX_FRAME: usize = tunnel::HEADER_LEN + tunnel::MAX_PAYLOAD;
 const IO_TIMEOUT: Duration = Duration::from_secs(3);
 
+/// One application-level echo (ping control frames can terminate at a proxy).
+pub(super) async fn region_echo(
+    State(live): Shared,
+    Path(region): Path<String>,
+    headers: HeaderMap,
+    ws: Result<WebSocketUpgrade, WebSocketUpgradeRejection>,
+) -> ApiResult<Response> {
+    use live_proto::matchmaking::REGION_ECHO;
+    let ws = ws.map_err(|_| invalid("the regional echo is a WebSocket"))?;
+    live.admit_region_echo(bearer(&headers), &region)?;
+    Ok(ws.max_message_size(32).max_frame_size(32).on_upgrade(|mut socket| async move {
+        if let Ok(Some(Ok(Message::Text(text)))) = timeout(IO_TIMEOUT, socket.recv()).await
+            && text.as_str() == REGION_ECHO
+        {
+            let _ = timeout(IO_TIMEOUT, socket.send(Message::Text(text))).await;
+        }
+    }))
+}
+
 pub(super) async fn upgrade(
     State(live): Shared,
     Path(id): Path<String>,

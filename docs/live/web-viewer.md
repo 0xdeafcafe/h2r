@@ -235,7 +235,7 @@ optional; a frame without them draws as before.
   grenade action still animates the throw. Reduced motion hides the trails.
   Recordings without projectile samples still show the throw animation,
   muzzle flashes and fast shot effects. Host-film objects use their own
-  playback path.
+  playback path. [Recorded Lockout grenade trajectories](notes/grenade-trajectories.md)
 - *Vehicles.* All of them are drawn; one nobody is in is darker (3D) or a
   faint grey outline (2D) and has no label. Once the frames carry
   vehicles the level's own copies (`vehi` placements and multiplayer

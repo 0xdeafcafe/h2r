@@ -12,13 +12,13 @@
 //! rebuilt.
 //!
 //! The store file is a small fixed header, a sorted range index, and the
-//! packed bytes of those ranges, nothing else. The serving side keeps only
+//! bytes of those ranges with page-congruent padding before bulk ranges. The serving side keeps only
 //! the index in memory and serves the packed data from a read-only mapping.
 
 use std::{
     collections::{BTreeMap, HashMap},
     fs::File,
-    io::{BufRead, BufReader, Write},
+    io::{BufRead, BufReader, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     sync::{Mutex, OnceLock},
 };
@@ -129,7 +129,7 @@ pub mod record {
         let mut merged: BTreeMap<String, Vec<(u64, u64)>> = all.iter()
             .map(|(path, spans)| (path.clone(), spans.iter().map(|(&s, &e)| (s, e)).collect()))
             .collect();
-        match File::open(&file) {
+        match File::open(file) {
             Ok(existing) => match parse_reads(BufReader::new(existing)) {
                 Ok(previous) => {
                     for (path, spans) in previous {
@@ -151,7 +151,7 @@ pub mod record {
                 )
             }
         }
-        let write = File::create(&file).and_then(|f| {
+        let write = File::create(file).and_then(|f| {
             let mut out = BufWriter::new(f);
             writeln!(out, "{}", READS_FORMAT)?;
             for (path, spans) in &merged {
@@ -252,6 +252,15 @@ pub const HEADER: usize = 24;
 /// its bytes start in the store.
 pub const ROW: usize = 24;
 
+// The upper word of the count was reserved; old readers reject nonzero
+// versions. Version zero has no padding. Version one pads only ranges
+// large enough for a 16-page read, at most 4095 bytes per range.
+const PADDED: u64 = 1 << 32;
+fn data_offset(next: u64, logical: u64, len: u64) -> Option<u64> {
+    let padding = if len >= 16 * 4096 { logical.wrapping_sub(next) % 4096 } else { 0 };
+    next.checked_add(padding)
+}
+
 /// The index of one store: the map's logical length and the sorted,
 /// non-overlapping byte ranges the store holds.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -283,9 +292,11 @@ impl StoreIndex {
         }
         let logical_len = field(8)?;
         let count = field(16)?;
-        if count >> 32 != 0 {
+        let padded = count >> 32 == 1;
+        if count >> 32 > 1 {
             return Err("the store file's format is newer than this build".into());
         }
+        let count = u64::from(count as u32);
         if count > 1 << 20 {
             return Err("the store file claims more ranges than any map has".into());
         }
@@ -310,10 +321,15 @@ impl StoreIndex {
             if range.logical < logical_end {
                 return Err(format!("range {i} overlaps or precedes its neighbour"));
             }
-            if range.data != data_end {
+            let expected = if padded {
+                data_offset(data_end, range.logical, range.len)
+            } else {
+                Some(data_end)
+            };
+            if expected != Some(range.data) {
                 return Err(format!("range {i}'s data is not packed in order"));
             }
-            data_end = data_end.checked_add(range.len)
+            data_end = range.data.checked_add(range.len)
                 .ok_or_else(|| format!("range {i} overflows the store"))?;
             logical_end = range.logical.checked_add(range.len)
                 .ok_or_else(|| format!("range {i} overflows the map"))?;
@@ -331,20 +347,18 @@ impl StoreIndex {
     fn write(&self, out: &mut impl Write) -> std::io::Result<()> {
         out.write_all(&MAGIC)?;
         out.write_all(&self.logical_len.to_le_bytes())?;
-        out.write_all(&(self.ranges.len() as u64).to_le_bytes())?;
-        let mut data = (HEADER + self.ranges.len() * ROW) as u64;
+        out.write_all(&(PADDED | self.ranges.len() as u64).to_le_bytes())?;
         for range in &self.ranges {
             out.write_all(&range.logical.to_le_bytes())?;
             out.write_all(&range.len.to_le_bytes())?;
-            out.write_all(&data.to_le_bytes())?;
-            data += range.len;
+            out.write_all(&range.data.to_le_bytes())?;
         }
         Ok(())
     }
 
     /// The range holding `at`: the last that starts at or before it, when
     /// it reaches past it.
-    fn containing(&self, at: u64) -> Option<&Range> {
+    pub(crate) fn containing(&self, at: u64) -> Option<&Range> {
         let i = self.ranges.partition_point(|r| r.logical <= at);
         self.ranges
             .get(i.wrapping_sub(1))
@@ -521,6 +535,7 @@ pub fn build(
     };
     let mut data = (HEADER + ranges.len() * ROW) as u64;
     for &(start, end) in &ranges {
+        data = data_offset(data, start, end - start).ok_or_else(|| BuildError::Io("store offset overflow".into()))?;
         index.ranges.push(Range {
             logical: start,
             len: end - start,
@@ -537,6 +552,7 @@ pub fn build(
             index.write(&mut writer)?;
             let mut buffer = vec![0u8; buffer_len];
             for range in &index.ranges {
+                writer.seek(SeekFrom::Start(range.data))?;
                 let mut at = range.logical;
                 while at < range.logical + range.len {
                     let n = (range.logical + range.len - at).min(buffer_len as u64) as usize;
@@ -907,6 +923,26 @@ mod tests {
         );
         assert_eq!(reads["\\Device\\CdRom0\\maps\\b.map"], vec![(0, 100)]);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn store_index_accepts_legacy_packed_and_page_congruent_bulk_ranges() {
+        let logical = 73;
+        let len = 16 * 4096;
+        let packed = (HEADER + ROW) as u64;
+        let aligned = data_offset(packed, logical, len).unwrap();
+        assert_eq!(aligned % 4096, logical % 4096);
+        let index = StoreIndex {
+            logical_len: logical + len,
+            ranges: vec![Range { logical, len, data: aligned }],
+        };
+        let mut bytes = Vec::new();
+        index.write(&mut bytes).unwrap();
+        assert_eq!(StoreIndex::parse(&bytes).unwrap(), index);
+        bytes[16..24].copy_from_slice(&1u64.to_le_bytes());
+        assert!(StoreIndex::parse(&bytes).is_err(), "legacy indexes must be packed");
+        bytes[HEADER + 16..HEADER + 24].copy_from_slice(&packed.to_le_bytes());
+        assert_eq!(StoreIndex::parse(&bytes).unwrap().ranges[0].data, packed);
     }
 
     #[test]

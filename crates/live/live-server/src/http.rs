@@ -299,6 +299,10 @@ fn api_router(live: Arc<Live>, facts: crate::status::SiteFacts) -> Router {
         .route("/.well-known/h2live.json", get(well_known))
         .route("/v1/accounts", get(list_accounts).post(create_account))
         .route(
+            "/v1/accounts/{gamertag}/invite-grant",
+            post(crate::invites::grant_invites).delete(crate::invites::revoke_grant),
+        )
+        .route(
             "/v1/accounts/{gamertag}/recover",
             post(crate::recovery::post_recover),
         )
@@ -350,6 +354,7 @@ fn api_router(live: Arc<Live>, facts: crate::status::SiteFacts) -> Router {
             "/v1/invites/{jti}/revoke",
             post(crate::invites::revoke_invite),
         )
+        .route("/v1/invites/mine", get(crate::invites::get_my_invites))
         .route("/v1/server", get(crate::status::get_server))
         .route("/v1/stats/summary", get(crate::stats::get_summary))
         .route("/v1/page-meta", get(page_meta))
@@ -421,6 +426,7 @@ fn api_router(live: Arc<Live>, facts: crate::status::SiteFacts) -> Router {
         .route("/v1/games/bots/{xuid}", get(crate::bots::player_card))
         .route("/v1/games/bots", post(crate::bots::post_roster))
         .route("/v1/games/{id}", get(game))
+        .route("/v1/games/{id}/join", get(game_join))
         .route("/v1/games/{id}/frames", get(game_frames))
         .route("/v1/games/{id}/archive/{index}/{number}", get(crate::replay_archive::segment))
         .route("/v1/games/{id}/chunks", get(game_chunks))
@@ -1137,7 +1143,7 @@ async fn ping(State(live): Shared, headers: HeaderMap) -> ApiResult<Response> {
 }
 
 /// `POST /v1/invites`: with a signed `InviteCreated` event as the body, an
-/// admin account's invite ([`crate::invites::create`]); with no body, the
+/// permitted account's invite ([`crate::invites::create`]); with no body, the
 /// operator's (`?days=`).
 async fn create_invite(
     State(live): Shared,
@@ -1247,6 +1253,34 @@ async fn game(
     let viewer = live.read_viewer(bearer(&headers))?;
     live.check_game_shows(game_id(&id)?, viewer)?;
     Ok(json(StatusCode::OK, &live.game(game_id(&id)?)?))
+}
+
+/// A tiny, uncached lookup. A report and its lobby have independent visibility.
+async fn game_join(
+    State(live): Shared,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> ApiResult<Response> {
+    let (viewer, account) = live.read_viewer_account(bearer(&headers))?;
+    let state = live.model.read();
+    let game = state.games.get(game_id(&id)?)
+        .filter(|g| g.shows_to(viewer, |a, b| state.is_friends(a, b)))
+        .ok_or_else(|| not_found("no such game"))?;
+    let session = if game.ended.is_some() || game.started.game.sim.is_some() {
+        None
+    } else if let Some(coop) = &game.coop {
+        state.sessions.get(&coop.session_id)
+    } else {
+        game.started.game.session_id.as_ref()
+            .and_then(|id| state.sessions.get(id))
+            .filter(|s| s.host == game.started.host)
+    };
+    let id = session
+        .filter(|s| s.check_join_link(account, |a, b| state.is_friends(a, b)).is_ok())
+        .map(|s| &s.session_id);
+    let mut response = json(StatusCode::OK, &serde_json::json!({ "session_id": id }));
+    response.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("private, no-store"));
+    Ok(response)
 }
 
 async fn game_frames(

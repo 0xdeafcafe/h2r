@@ -435,6 +435,6 @@ function boundsOf(tl: ReplayTimeline): MapFrame["seen"] {
 export function eventsFromState(g: GameState, from = -Infinity, to = Infinity): WireEvent[] {
   return g.kills.filter((k) => k.tick >= from && k.tick <= to).map((k) => ({
     position: k.position, stream: "game-" + g.game_id, version: 0, type: "PlayerKilled", at: k.at,
-    data: { tick: k.tick, victim: k.victim, killer: k.killer, weapon: k.weapon, kind: k.kind },
+    data: { tick: k.tick, victim: k.victim, killer: k.killer, weapon: k.weapon, headshot: k.headshot, kind: k.kind },
   }));
 }

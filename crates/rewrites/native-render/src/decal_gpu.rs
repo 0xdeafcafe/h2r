@@ -480,7 +480,7 @@ fn draw_uniforms(
             },
             if integer_depth { 1.0 } else { 0.0 },
         ];
-        pu.depth_range = [clip.range[0], clip.range[1], 0.0, 0.0];
+        pu.depth_range = clip.range;
     }
     (vu, pu)
 }
@@ -1120,8 +1120,10 @@ mod tests {
     use super::*;
 
     fn state(mode: Mode) -> RenderState {
-        let mut rs = RenderState::default();
-        rs.color_write = gfx::state::ColorWriteMask::from_xbox(0x0001_0101);
+        let mut rs = RenderState {
+            color_write: gfx::state::ColorWriteMask::from_xbox(0x0001_0101),
+            ..RenderState::default()
+        };
         match mode {
             Mode::Opaque => {
                 rs.depth_mode = DepthBufferMode::Disabled;

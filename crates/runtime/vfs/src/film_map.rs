@@ -32,16 +32,33 @@ enum Bytes {
 
 /// An opened file region, sparse store, or composed logical map stream.
 pub struct FilmMapSource {
+    /// Logical extent when the operator mounts this region as immutable.
+    immutable_len: Option<u64>,
     bytes: Bytes,
     pub(crate) override_name: Option<String>,
     /// Header bytes rewritten by a registered package alias.
     pub(crate) alias: Option<[u8; 32]>,
 }
 
+/// A contiguous guest read from an immutable mounted input. Only the VFS
+/// may construct it, after resolving overlays, logical EOF and store holes.
+pub struct ImmutableRead<'a> {
+    file: &'a File,
+    offset: u64,
+    len: usize,
+}
+
+impl ImmutableRead<'_> {
+    pub fn file(&self) -> &File { self.file }
+    pub fn offset(&self) -> u64 { self.offset }
+    pub fn byte_len(&self) -> usize { self.len }
+}
+
 impl FilmMapSource {
     fn new(bytes: Bytes) -> Self {
         Self {
             bytes,
+            immutable_len: None,
             override_name: None,
             alias: None,
         }
@@ -49,6 +66,34 @@ impl FilmMapSource {
     pub(crate) fn region(file: File, offset: u64) -> Self {
         Self::new(Bytes::Region(file, offset))
     }
+    pub(crate) fn immutable_region(file: File, offset: u64, len: u64) -> Self {
+        let mut source = Self::region(file, offset);
+        source.immutable_len = Some(len);
+        source
+    }
+
+    /// Resolve the complete logical read through the same pinned source as
+    /// the backend. A hole or split store range is left to its ordinary read.
+    pub(crate) fn immutable_read(&self, at: u64, len: usize) -> Option<ImmutableRead<'_>> {
+        if self.alias.is_some() {
+            return None;
+        }
+        let (file, offset, available) = match &self.bytes {
+            Bytes::Region(file, start) => (file, start.checked_add(at)?, self.immutable_len?.saturating_sub(at)),
+            Bytes::Store(store) => {
+                let r = store.index.containing(at)?;
+                let len = (len as u64).min(store.logical_len().saturating_sub(at));
+                if len > r.len - (at - r.logical) {
+                    return None;
+                }
+                (&store.file, r.data + (at - r.logical), len)
+            }
+            _ => return None,
+        };
+        let len = available.min(len as u64) as usize;
+        (len > 0).then_some(ImmutableRead { file, offset, len })
+    }
+
     pub(crate) fn store(store: Arc<Store>) -> Self {
         Self::new(Bytes::Store(store))
     }

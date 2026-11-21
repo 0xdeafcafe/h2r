@@ -134,7 +134,7 @@ fn timing_scatter_is_centered_and_scales_with_skill() {
     for skill in Skill::ALL {
         let sigma = Tuning::default().input_limits(skill).button_sigma_ms;
         let mut rng = Rng::new(6);
-        let mut counts = [0; 3];
+        let mut counts = [0_i32; 3];
         for _ in 0..samples {
             counts[(tick_slip(&mut rng, sigma) + 1) as usize] += 1;
         }
@@ -144,7 +144,7 @@ fn timing_scatter_is_centered_and_scales_with_skill() {
             (slips - mean_abs_gaussian / TICK_MS).abs() < 0.01,
             "{skill:?}: {counts:?}"
         );
-        assert!((counts[0] as i32 - counts[2] as i32).abs() < samples / 100);
+        assert!((counts[0] - counts[2]).abs() < samples / 100);
         assert!(slips < last);
         last = slips;
     }

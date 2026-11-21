@@ -5,6 +5,7 @@
 mod geometry;
 mod lights;
 mod objects;
+mod object_lod;
 mod records;
 mod setup;
 mod transparents;
@@ -32,9 +33,52 @@ fn enabled(switches: &Switches) -> bool {
     hooks::switches::native_render_on(switches)
 }
 
+/// Guest word holding the multiplier sampled when this view starts building records.
+#[derive(Clone, Copy)]
+pub struct ViewLodScale(u32);
+
+impl ViewLodScale {
+    pub const fn new(guest_word: u32) -> Self {
+        Self(guest_word)
+    }
+
+    /// Older snapshots and views before their first record reset use retail pixels.
+    pub fn read(self, m: &dyn GuestMemory) -> f32 {
+        match m.f32(self.0) {
+            Ok(value) if value.is_finite() && value > 0.0 => value,
+            _ => 1.0,
+        }
+    }
+}
+
+impl NativeSceneLists {
+    /// Install LOD adjustment at the guest functions invoked by the fallback
+    /// paths. These hooks also apply when native scene lists are disabled.
+    pub fn install_guest_lod(b: &mut Builder, scale: ViewLodScale) {
+        object_lod::install(b, scale);
+    }
+
+    /// Configure the replacement object setup and record writer for this view.
+    pub fn with_lod_scale(scale: ViewLodScale) -> impl Feature {
+        ScaledSceneLists(Some(scale))
+    }
+}
+
+struct ScaledSceneLists(Option<ViewLodScale>);
+
 impl Feature for NativeSceneLists {
     fn manifest(&self) -> Manifest {
         Manifest::new(ID, "Rust scene list builders").doc("docs/graphics/native-renderer.md")
+    }
+
+    fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
+        ScaledSceneLists(None).build(b)
+    }
+}
+
+impl Feature for ScaledSceneLists {
+    fn manifest(&self) -> Manifest {
+        NativeSceneLists.manifest()
     }
 
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
@@ -57,10 +101,11 @@ impl Feature for NativeSceneLists {
             Seam::Function(&points::SCENE_GEOMETRY_GATHER, 4),
             geometry::gather,
         );
+        let scale = self.0;
         install(
             b,
             Seam::Function(&points::OBJECT_RENDER_SETUP, 20),
-            setup::build,
+            move |m, cpu| setup::build(m, cpu, scale.map_or(1.0, |scale| scale.read(m))),
         );
         install(
             b,
@@ -70,7 +115,7 @@ impl Feature for NativeSceneLists {
                 &points::SCENE_RECORD_WRITER,
                 SceneList::ObjectRecord,
             ),
-            records::build,
+            move |m, cpu| records::build(m, cpu, scale.map_or(1.0, |scale| scale.read(m))),
         );
         install(
             b,
@@ -117,6 +162,16 @@ impl Feature for NativeSceneLists {
         );
         Ok(())
     }
+}
+
+/// The existing pre-trim checks, for FrameScene's read-only extraction.
+pub(crate) fn light_candidate_eligible(
+    m: &dyn GuestMemory,
+    record: u32,
+    definition: u32,
+    flags: u32,
+) -> Option<bool> {
+    lights::candidate_eligible(m, record, definition, flags).ok()
 }
 
 pub(crate) fn instruction_entries() -> [u32; 5] {
@@ -300,9 +355,11 @@ enum Seam {
 }
 
 /// The stage can depend on the view kind, which is read by the builder.
-type Build = fn(&dyn GuestMemory, &CpuAbi) -> (SceneList, Result<Output>);
-
-fn install(b: &mut Builder, seam: Seam, build: Build) {
+fn install(
+    b: &mut Builder,
+    seam: Seam,
+    build: impl Fn(&dyn GuestMemory, &CpuAbi) -> (SceneList, Result<Output>) + Send + Sync + 'static,
+) {
     let point = match seam {
         Seam::Function(point, _) | Seam::Sites(point, _, _) | Seam::CallSite(point, _, _, _) => {
             point
@@ -385,6 +442,26 @@ fn install(b: &mut Builder, seam: Seam, build: Build) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lod_scale_comes_from_the_supplied_view() {
+        use engine::memory::FlatMemory;
+        let address = 0x10000;
+        let scale = ViewLodScale::new(address);
+        let mut live = FlatMemory::new(address, 4);
+        assert_eq!(scale.read(&live), 1.0);
+        live.set_f32(address, 6.0).unwrap();
+        let render_snapshot = live.clone();
+        live.set_f32(address, 0.5).unwrap();
+        assert_eq!(scale.read(&live), 0.5);
+        assert_eq!(scale.read(&render_snapshot), 6.0);
+
+        for invalid in [-1.0, f32::NAN, f32::INFINITY] {
+            live.set_f32(address, invalid).unwrap();
+            assert_eq!(scale.read(&live), 1.0);
+        }
+        assert_eq!(scale.read(&FlatMemory::new(address + 4, 4)), 1.0);
+    }
 
     #[test]
     fn native_scene_lists_follow_the_master_switch() {

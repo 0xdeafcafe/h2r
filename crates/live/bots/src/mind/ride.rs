@@ -581,7 +581,7 @@ impl Mind {
         let mem = &self.vehicles;
         let speed = |id| mem.speed(id);
         let shunned = |id| mem.shunned(id, tick);
-        let contested = known.or_else(|| match goal {
+        let contested = known.or(match goal {
             Some(Goal::Hold(at, _) | Goal::Hunt(_, at)) => Some(at),
             _ => None,
         });

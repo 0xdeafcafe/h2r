@@ -327,7 +327,8 @@ fn scene_light(light: &Light, inputs: &light_passes::Inputs) -> frame_scene::Sce
         flags: inputs.flags,
         definition_flags: inputs.definition_flags,
         additional_casters: inputs.additional_casters,
-        steps: 0..0,
+        guest_weight: Some(light.weight),
+        ..Default::default()
     }
 }
 

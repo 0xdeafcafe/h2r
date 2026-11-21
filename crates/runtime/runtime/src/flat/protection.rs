@@ -295,7 +295,7 @@ impl Mirror {
             let mut bits = eligible & watch.awaiting_writes(w);
             let rearmed = bits;
             while bits != 0 {
-                let bit = bits & bits.wrapping_neg();
+                let bit = bits.isolate_lowest_one();
                 let p = w * 64 + bits.trailing_zeros() as usize;
                 bits &= !bit;
                 let at = self.state.page_address(p);

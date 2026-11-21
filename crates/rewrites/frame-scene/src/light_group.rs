@@ -235,7 +235,7 @@ mod tests {
     use crate::scene::{InstanceKey, SceneId, Stamp, ViewKey, ViewKind};
 
     fn light(handle: u32) -> SceneLight {
-        SceneLight { handle, definition: 0xe300_0000, flags: 4, definition_flags: 0, additional_casters: true, steps: 0..0 }
+        SceneLight { handle, definition: 0xe300_0000, flags: 4, definition_flags: 0, additional_casters: true, steps: 0..0, ..Default::default() }
     }
 
     fn entry(slot: u16, owner: LayerOwner, pose: LightPose) -> LightEntry {

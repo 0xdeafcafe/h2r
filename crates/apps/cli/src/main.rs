@@ -156,6 +156,8 @@ mod object;
 mod play_cloud;
 #[cfg(feature = "desktop")]
 mod play_cmd;
+#[cfg(all(feature = "desktop", target_os = "macos"))]
+mod mac_app;
 #[cfg(feature = "desktop")]
 mod play_live;
 #[cfg(feature = "desktop")]
@@ -207,7 +209,7 @@ const USAGE: &str = "usage: h2 <command> [disc]
   studio <call>           call h2-editor's agent API (the open window, or
                           `h2-editor --serve`): maps, tags, placements,
                           variants, playlists, UI screens (docs/editor/agent-api.md)
-  lab <command>           run levels on another Mac over SSH: replays, frame
+  lab <command>           run levels on another Mac over the LAN: replays, frame
                           stats, profiles (`h2 lab --help`, docs/runtime/lab.md)
   play --follow <disc>    play, rebuilding each new commit of master in the
                           background; F5 restarts into it (docs/runtime/app.md)
@@ -246,6 +248,7 @@ const USAGE: &str = "usage: h2 <command> [disc]
                           --keep, --timeout; docs/game/bots.md, Testing)
   bots verdict <bots.log> print a bots test's verdict again
   lighting <map>          lighting/atmosphere summary; --bsp N; --page N --out DIR
+  lighting split <map>    compare retail and reconstructed lamp-on/off lightmap pages
   lighting --all          validate disc lighting and print the per-BSP lighting census
                           (optional <map> for one map)
   sound <map> <tag>       export a snd! tag to WAV; --all <map> validates every sound
@@ -368,7 +371,14 @@ fn main() -> Result<()> {
     #[cfg(feature = "desktop")]
     boot::live_glue::set_build(app::BuildInfo::baked().sha);
     let mut args = std::env::args().skip(1);
-    let Some(cmd) = args.next() else {
+    let command = args.next();
+    #[cfg(all(feature = "desktop", target_os = "macos"))]
+    if command.as_deref().is_none_or(|s| s.starts_with("-psn_"))
+        && let Some(resources) = mac_app::resources(&std::env::current_exe()?)
+    {
+        return mac_app::play(&resources);
+    }
+    let Some(cmd) = command else {
         bail!("{USAGE}")
     };
     match cmd.as_str() {

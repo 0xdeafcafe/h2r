@@ -670,7 +670,7 @@ impl LitObjects {
 pub fn with_aux_depth(vertex: &mut VertexUniforms, pixel: &mut PixelUniforms, aux: &AuxDepth) {
     vertex.constants[..4].copy_from_slice(&aux.rows);
     vertex.w_clip = Some(aux.clip);
-    pixel.depth_range = [aux.clip[0], aux.clip[1], 0.0, 0.0];
+    pixel.depth_range = aux.clip;
 }
 
 /// The depth and stencil a lit part's pipeline draws with on a
@@ -1195,7 +1195,14 @@ mod tests {
         let mut vertex = |_: map::TagId, _: u16, _: u8| Ok::<_, String>((rigid_program(), vec![0u16, 7, 2]));
         let mut image = |_: usize, _: map::TagId, _: u32| -> Option<Image> { None };
         let grey = Image { width: 1, height: 1, rgba: vec![128, 128, 128, 255], mips: Vec::new(), blocks: None };
-        let without = lit_model(&[section.clone()], &materials, &formats(), &EngineStages::default(), &mut vertex, &mut image);
+        let without = lit_model(
+            std::slice::from_ref(&section),
+            &materials,
+            &formats(),
+            &EngineStages::default(),
+            &mut vertex,
+            &mut image,
+        );
         assert!(without.taken.is_empty());
         assert!(without.refused[0].1.contains("samples the lightmap"), "{:?}", without.refused);
         let engine = EngineStages { normalization: false, lightmap: Some(grey.clone()), texaccum: false };
@@ -1240,7 +1247,14 @@ mod tests {
         materials.insert(0, LitMaterial { material: material(vec![imp]), shader: ShaderValues::default() });
         let mut vertex = |_: map::TagId, _: u16, _: u8| Ok::<_, String>((rigid_program(), vec![0u16, 3, 2]));
         let mut image = |_: usize, _: map::TagId, _: u32| -> Option<Image> { None };
-        let without = lit_model(&[section.clone()], &materials, &formats(), &EngineStages::default(), &mut vertex, &mut image);
+        let without = lit_model(
+            std::slice::from_ref(&section),
+            &materials,
+            &formats(),
+            &EngineStages::default(),
+            &mut vertex,
+            &mut image,
+        );
         assert!(without.taken.is_empty());
         assert!(without.refused[0].1.contains("texture accumulation"), "{:?}", without.refused);
         let engine = EngineStages { texaccum: true, ..EngineStages::default() };
@@ -1251,7 +1265,7 @@ mod tests {
         assert_eq!(pass.texaccum, [false, false, true, false]);
         assert_eq!(with.input.programs[0].images[2], None, "no image: the pass's level is bound per encode");
         // Its coordinates are texels of the level.
-        let mut pixel = pass.program.pixel.clone();
+        let mut pixel = pass.program.pixel;
         texaccum_scale(&mut pixel, pass.texaccum, (640, 480));
         assert_eq!(pixel.tex_scale[2], [1.0 / 640.0, 1.0 / 480.0, 1.0, 1.0]);
         assert_eq!(pixel.tex_scale[0], pass.program.pixel.tex_scale[0]);
@@ -1530,7 +1544,7 @@ mod tests {
         assert_eq!(vertex.constants[..4], aux.rows);
         assert_eq!(vertex.constants[4..], before_v.constants[4..], "the view's other constants");
         assert_eq!((vertex.w_clip, vertex.w_clamp), (Some([1.0, 900.0]), true));
-        assert_eq!(pixel.depth_range, [1.0, 900.0, 0.0, 0.0]);
+        assert_eq!(pixel.depth_range, [1.0, 900.0]);
         assert_eq!(pixel.depth, before_p.depth, "the W-buffer's scale is the view's");
     }
 
@@ -1538,9 +1552,16 @@ mod tests {
     fn chosen_subparts_draw_their_ranges_joined_where_adjacent() {
         let sub = SubpartRanges { first: 4, ranges: vec![10..13, 13..19, 19..19, 19..22, 22..28] };
         let chosen = |visible| Subparts { first: 4, count: 5, visible };
-        assert_eq!(sub.drawn(chosen(0b1_1111)).unwrap(), [10..28], "all, as one run");
+        assert_eq!(
+            sub.drawn(chosen(0b1_1111)).unwrap().as_slice(),
+            std::slice::from_ref(&(10..28)),
+            "all, as one run"
+        );
         assert_eq!(sub.drawn(chosen(0b1_1001)).unwrap(), [10..13, 19..28], "the empty one joins its neighbours");
-        assert_eq!(sub.drawn(chosen(0b0_0010)).unwrap(), [13..19]);
+        assert_eq!(
+            sub.drawn(chosen(0b0_0010)).unwrap().as_slice(),
+            std::slice::from_ref(&(13..19))
+        );
         assert!(sub.drawn(chosen(0)).unwrap().is_empty(), "none chosen: nothing drawn");
         assert!(sub.drawn(Subparts { first: 5, ..chosen(1) }).is_err(), "another part's subparts");
         assert!(sub.drawn(Subparts { count: 4, ..chosen(1) }).is_err());
@@ -1559,9 +1580,11 @@ mod tests {
         let inputs = |subparts| PartInputs { lighting: f.lighting.as_ref(), defaults: f.defaults, subparts };
         let plan = |part: usize, subparts: Option<Subparts>| plan_indexed_part(&parts, Some(part), &pass_of, inputs(subparts), &key(4, part as u8, 0), &rows, &entry(), true);
         let whole = plan(1, None).unwrap();
-        assert_eq!((whole.indices.clone(), whole.ranges.clone()), (3..6, vec![3..6]));
+        assert_eq!(whole.indices, 3..6);
+        assert_eq!(whole.ranges.as_slice(), std::slice::from_ref(&whole.indices));
         let chosen = plan(1, Some(Subparts { first: 2, count: 2, visible: 0b10 })).unwrap();
-        assert_eq!((chosen.indices.clone(), chosen.ranges.clone()), (3..6, vec![9..12]));
+        assert_eq!(chosen.indices, 3..6);
+        assert_eq!(chosen.ranges.as_slice(), std::slice::from_ref(&(9..12)));
         let refused = plan(0, Some(Subparts { first: 0, count: 1, visible: 1 })).unwrap_err();
         assert!(refused.contains("subparts"), "{refused}");
     }
