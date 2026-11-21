@@ -456,6 +456,10 @@ pub struct Report {
     /// Runner dispatch and preemption census when enabled for this match.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dispatch_per_tick: Option<BTreeMap<String, f64>>,
+    /// The superbounce practice's tally, in a match with `superbounce`
+    /// on ([`crate::bounce`]; docs/runtime/sim.md, "Bounce practice").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bounce: Option<crate::bounce::BounceReport>,
     #[serde(default)]
     pub notes: Vec<String>,
 }
@@ -562,6 +566,9 @@ pub struct Tally {
     /// `(attacker, victim)` → the first and the latest tick of the fight's
     /// hits, for the time to kill.
     fights: BTreeMap<(u8, u8), (u32, u32)>,
+    /// The superbounce practice's tally ([`Tally::track_bounces`]).
+    bounce: crate::bounce::BounceTally,
+    bounce_on: bool,
 }
 
 impl Tally {
@@ -572,9 +579,31 @@ impl Tally {
     /// The game started (or restarted): everything so far is dropped.
     pub fn start(&mut self, tick: u32) {
         let resets = self.resets;
+        let bounce_on = self.bounce_on;
         *self = Tally::default();
         self.resets = resets;
+        self.bounce_on = bounce_on;
         self.started = Some(tick);
+    }
+
+    /// The report gets the superbounce practice's block
+    /// ([`crate::bounce`]), from here on and after every [`Tally::start`].
+    pub fn track_bounces(&mut self) {
+        self.bounce_on = true;
+    }
+
+    /// A superbounce practice event of `player` at game tick `tick`.
+    pub fn bounce_event(&mut self, player: u8, tick: u32, e: crate::bounce::Event) {
+        if self.bounce_on {
+            self.bounce.event(player, tick, e);
+        }
+    }
+
+    /// `player`'s height after game tick `tick`, for the launches.
+    pub fn bounce_height(&mut self, player: u8, tick: u32, z: f32) {
+        if self.bounce_on {
+            self.bounce.height(player, tick, z);
+        }
     }
 
     pub fn started(&self) -> bool {
@@ -956,6 +985,20 @@ impl Tally {
             kills: self.kills.clone(),
             nav: nav.into(),
             dispatch_per_tick: None,
+            bounce: self.bounce_on.then(|| {
+                let who: Vec<crate::bounce::Who> = bots
+                    .iter()
+                    .filter_map(|b| {
+                        Some(crate::bounce::Who {
+                            index: b.player?,
+                            seat: Some(b.seat),
+                            name: b.name.clone(),
+                            arm: b.arm.clone(),
+                        })
+                    })
+                    .collect();
+                self.bounce.report(self.started, &who)
+            }),
             notes,
         }
     }

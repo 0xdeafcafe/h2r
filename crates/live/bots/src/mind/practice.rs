@@ -66,6 +66,36 @@ pub struct PracticeView {
     pub spots: Vec<SpotTally>,
 }
 
+/// What the practice did, as it happened, for a host that tallies it (the
+/// sim's bounce report, docs/runtime/sim.md, "Bounce practice"): drained
+/// with [`Mind::take_practice_events`]. At most [`EVENTS`] wait; older
+/// ones are dropped.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum PracticeEvent {
+    /// A route to the site began.
+    Started { site: Vec3, tick: u32 },
+    /// The route's word reached -3: `read` from the game (else assumed
+    /// after the crouch and stand-up); `own`: the route primed it at a
+    /// crouch spot (else it started primed).
+    Primed {
+        site: Vec3,
+        tick: u32,
+        read: bool,
+        own: bool,
+    },
+    /// The try is over, as the practice tallies it: bounced, or why not
+    /// (the route's error, or the landing's result).
+    Tried {
+        site: Vec3,
+        tick: u32,
+        bounced: bool,
+        why: Option<&'static str>,
+    },
+}
+
+/// Practice events kept for the host at most.
+pub const EVENTS: usize = 64;
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Phase {
     /// Standing, looking round, until the tick; the yaw it looks about.
@@ -86,6 +116,10 @@ pub struct Practice {
     waiting: bool,
     /// Where the bots' claims are kept: [`CLAIMS`], or a test's own.
     board: &'static Board,
+    /// Not yet taken by the host ([`Mind::take_practice_events`]).
+    events: Vec<PracticeEvent>,
+    /// The route under way has reported its prime.
+    primed_seen: bool,
 }
 
 impl Practice {
@@ -99,7 +133,16 @@ impl Practice {
             tally: Vec::new(),
             waiting: false,
             board: &CLAIMS,
+            events: Vec::new(),
+            primed_seen: false,
         }
+    }
+
+    fn event(&mut self, e: PracticeEvent) {
+        if self.events.len() >= EVENTS {
+            self.events.remove(0);
+        }
+        self.events.push(e);
     }
 
     pub fn on(&self) -> bool {
@@ -236,6 +279,27 @@ impl Mind {
         self.practice.on.then(|| self.practice.view())
     }
 
+    /// What the practice did since the last call, oldest first.
+    pub fn take_practice_events(&mut self) -> Vec<PracticeEvent> {
+        std::mem::take(&mut self.practice.events)
+    }
+
+    /// Reports the route's prime once, when its word first reads -3.
+    fn practice_watch_prime(&mut self, site: Site, tick: u32) {
+        if self.practice.primed_seen {
+            return;
+        }
+        if let Some((read, own)) = self.route_primed() {
+            self.practice.primed_seen = true;
+            self.practice.event(PracticeEvent::Primed {
+                site: site.bounce.stand,
+                tick,
+                read,
+                own,
+            });
+        }
+    }
+
     /// The site to practise at next, from `at`.
     fn pick_practice(&mut self, at: Vec3, tick: u32) -> Option<Site> {
         let owner = self.practice.owner;
@@ -297,6 +361,13 @@ impl Mind {
             })
         };
         self.practice.record(site.bounce.stand, bounced, why);
+        let tick = self.tick.unwrap_or(0);
+        self.practice.event(PracticeEvent::Tried {
+            site: site.bounce.stand,
+            tick,
+            bounced,
+            why,
+        });
         self.practice.last = Some(site.bounce.stand);
         if !bounced {
             // Something else next time; back to it after a while.
@@ -328,6 +399,9 @@ impl Mind {
                 );
             }
             if let Some(pad) = self.order_pad(p, me, map, seen) {
+                if let Some(Phase::Route(s)) = self.practice.phase {
+                    self.practice_watch_prime(s, tick);
+                }
                 return Some(pad);
             }
         }
@@ -360,7 +434,13 @@ impl Mind {
                             site: Some(site),
                         });
                         self.practice.phase = Some(Phase::Route(site));
+                        self.practice.primed_seen = false;
+                        self.practice.event(PracticeEvent::Started {
+                            site: site.bounce.stand,
+                            tick,
+                        });
                         if let Some(pad) = self.order_pad(p, me, map, seen) {
+                            self.practice_watch_prime(site, tick);
                             return Some(pad);
                         }
                         // No route to it (or no map): tally and wait.

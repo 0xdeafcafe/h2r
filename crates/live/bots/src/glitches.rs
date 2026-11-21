@@ -595,6 +595,9 @@ pub struct BounceRun {
     max_tries: u32,
     phase: Phase,
     rng: u64,
+    /// The numbers it plays by, taken when it starts
+    /// ([`crate::tuning::bounce`]).
+    tune: crate::tuning::BounceTuning,
 }
 
 impl BounceRun {
@@ -609,6 +612,7 @@ impl BounceRun {
                 still: None,
             },
             rng: seed | 1,
+            tune: crate::tuning::bounce().sane(),
         }
     }
 
@@ -634,18 +638,19 @@ impl BounceRun {
     pub fn step(&mut self, at: Vec3, tick: u32) -> BounceOut {
         let mut out = BounceOut::default();
         let floor = self.spot.stand[2];
+        let t = self.tune;
         match self.phase {
             Phase::Settle { since, still } => {
                 let d = [self.target[0] - at[0], self.target[1] - at[1]];
                 let far = d[0].hypot(d[1]);
-                let late = tick.wrapping_sub(since) > SETTLE_TICKS;
-                if far > SETTLE && !late {
-                    let pace = (far * 4.0).clamp(0.12, 0.6) / far;
+                let late = tick.wrapping_sub(since) > t.settle_ticks;
+                if far > t.settle && !late {
+                    let pace = (far * t.settle_gain).clamp(t.settle_min, t.settle_max) / far;
                     out.walk = Some([d[0] * pace, d[1] * pace]);
                     self.phase = Phase::Settle { since, still: None };
                 } else {
                     let still = still.unwrap_or(tick);
-                    if tick.wrapping_sub(still) >= STILL_TICKS || late {
+                    if tick.wrapping_sub(still) >= t.still_ticks || late {
                         self.phase = Phase::Jump(tick);
                         out.jump = true;
                     } else {
@@ -657,7 +662,7 @@ impl BounceRun {
                 }
             }
             Phase::Jump(from) => {
-                if tick.wrapping_sub(from) < 3 {
+                if tick.wrapping_sub(from) < t.jump_ticks {
                     out.jump = true;
                 } else {
                     self.phase = Phase::Air {
@@ -680,7 +685,7 @@ impl BounceRun {
                 } else {
                     low
                 };
-                out.walk = Some([self.spot.drift[0] * DRIFT, self.spot.drift[1] * DRIFT]);
+                out.walk = Some([self.spot.drift[0] * t.drift, self.spot.drift[1] * t.drift]);
                 if low.is_some_and(|l| at[2] > l + LAUNCH_RISE) {
                     // Sank into the seam and was thrown up.
                     self.phase = Phase::Done(true);

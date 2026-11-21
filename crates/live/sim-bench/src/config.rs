@@ -258,10 +258,202 @@ pub struct BotParams {
     /// Accepted for older tuning files. Player sight is sampled every tick.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub player_los_ticks: Option<u32>,
+    /// The bounce route's numbers (`[bounce]`); last, as a TOML table
+    /// follows the plain values.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bounce: Option<BounceParams>,
 }
 
 /// The aim models a tuning can name (`bots::tuning::AimModel`).
 pub const AIM_MODELS: [&str; 2] = ["code", "net"];
+
+/// A number a bounce tuning field holds: read from and written as `f64`
+/// by the sweep ([`crate::sweep`]).
+pub trait BounceNumber: Copy {
+    fn to_f64(self) -> f64;
+    fn from_f64(v: f64) -> Self;
+}
+
+impl BounceNumber for f32 {
+    fn to_f64(self) -> f64 {
+        f64::from(self)
+    }
+    fn from_f64(v: f64) -> Self {
+        v as f32
+    }
+}
+
+impl BounceNumber for u32 {
+    fn to_f64(self) -> f64 {
+        f64::from(self)
+    }
+    fn from_f64(v: f64) -> Self {
+        v.round().clamp(0.0, f64::from(u32::MAX)) as u32
+    }
+}
+
+/// One bounce tuning field as the schema has it: its name, the built-in
+/// value and the range a file may set.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BounceField {
+    pub name: &'static str,
+    pub default: f64,
+    pub min: f64,
+    pub max: f64,
+    /// Ticks or tries: a whole number.
+    pub whole: bool,
+}
+
+macro_rules! bounce_params {
+    (@whole u32) => { true };
+    (@whole f32) => { false };
+    ($( $(#[$m:meta])* $name:ident : $ty:ident = $default:expr, $lo:expr, $hi:expr ;)*) => {
+        /// The bounce route's numbers (`bots::tuning::BounceTuning`;
+        /// docs/game/bots.md, "Tuning the bounce"), each optional: one left
+        /// out keeps the built-in value. `[bounce]` in a tuning file.
+        #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+        #[serde(deny_unknown_fields)]
+        pub struct BounceParams {
+            $(
+                $(#[$m])*
+                #[serde(default, skip_serializing_if = "Option::is_none")]
+                pub $name: Option<$ty>,
+            )*
+        }
+
+        /// Every bounce tuning field: name, built-in value, range. The
+        /// defaults are `bots::tuning::BOUNCE_DEFAULT`'s (a test in the
+        /// game's `sim_glue` holds them equal).
+        pub const BOUNCE_FIELDS: &[BounceField] = &[
+            $(
+                BounceField {
+                    name: stringify!($name),
+                    default: $default as f64,
+                    min: $lo as f64,
+                    max: $hi as f64,
+                    whole: bounce_params!(@whole $ty),
+                },
+            )*
+        ];
+
+        impl BounceParams {
+            /// `self` with every field `over` sets replaced by `over`'s.
+            pub fn overlay(&self, over: &BounceParams) -> BounceParams {
+                BounceParams {
+                    $( $name: over.$name.or(self.$name), )*
+                }
+            }
+
+            /// The field `name`'s value, if set.
+            pub fn get(&self, name: &str) -> Option<f64> {
+                match name {
+                    $( stringify!($name) => self.$name.map(BounceNumber::to_f64), )*
+                    _ => None,
+                }
+            }
+
+            /// Sets the field `name` (rounded for a whole-number field).
+            pub fn set(&mut self, name: &str, v: f64) -> Result<(), String> {
+                match name {
+                    $( stringify!($name) => {
+                        self.$name = Some(<$ty as BounceNumber>::from_f64(v));
+                        Ok(())
+                    } )*
+                    _ => Err(format!("bounce.{name}: no such field ({})", bounce_names())),
+                }
+            }
+
+            /// Whether it sets nothing.
+            pub fn is_empty(&self) -> bool {
+                $( self.$name.is_none() && )* true
+            }
+        }
+    };
+}
+
+bounce_params! {
+    /// The walk to a standing site ends this far behind it (world units).
+    approach: f32 = 0.8, 0.0, 3.0;
+    /// The stick on the walk to the approach point.
+    approach_speed: f32 = 1.0, 0.1, 1.0;
+    /// Within this of the site it stands (world units).
+    settle: f32 = 0.05, 0.0, 0.5;
+    /// Settling gives up after this long and jumps (ticks).
+    settle_ticks: u32 = 90, 0, 600;
+    /// The settling stick: gain a unit, held between min and max.
+    settle_gain: f32 = 4.0, 0.0, 20.0;
+    settle_min: f32 = 0.12, 0.0, 1.0;
+    settle_max: f32 = 0.6, 0.0, 1.0;
+    /// Still this long before the jump (ticks).
+    still_ticks: u32 = 4, 0, 60;
+    /// A held this long for the jump (ticks).
+    jump_ticks: u32 = 3, 1, 15;
+    /// The stick toward the drift in the air: the aim onto the crease.
+    drift: f32 = 0.15, 0.0, 1.0;
+    /// Jumps at a site before giving it up.
+    bounce_tries: u32 = 8, 1, 30;
+    /// The prime: crouch first standing still, crouch under the lip,
+    /// pushing in after letting go (ticks); the stick in, how far past the
+    /// stand, how far out a try starts (world units), the second and third
+    /// tries' turn (degrees), the stick out.
+    crouch_first: u32 = 6, 0, 60;
+    crouch_ticks: u32 = 12, 1, 60;
+    release_ticks: u32 = 6, 0, 60;
+    in_speed: f32 = 0.6, 0.0, 1.0;
+    push_in: f32 = 0.06, 0.0, 0.5;
+    start_out: f32 = 0.35, 0.0, 2.0;
+    approach_turn_deg: f32 = 25.0, 0.0, 90.0;
+    out_speed: f32 = 1.0, 0.0, 1.0;
+    /// The drop: lined up within (world units) or after (ticks), the stick
+    /// off the floor, the air steering a unit off, drops before giving up.
+    line_up: f32 = 0.15, 0.0, 1.0;
+    line_up_ticks: u32 = 45, 0, 300;
+    run_off_speed: f32 = 0.5, 0.0, 1.0;
+    air_gain: f32 = 2.5, 0.0, 20.0;
+    drop_tries: u32 = 3, 1, 30;
+    /// The stick toward the goal riding a launch.
+    fly_speed: f32 = 1.0, 0.0, 1.0;
+}
+
+/// The bounce tuning fields' names, for messages.
+pub fn bounce_names() -> String {
+    BOUNCE_FIELDS
+        .iter()
+        .map(|f| f.name)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// The schema of the bounce field `name`.
+pub fn bounce_field(name: &str) -> Option<&'static BounceField> {
+    BOUNCE_FIELDS.iter().find(|f| f.name == name)
+}
+
+impl BounceParams {
+    /// What is wrong with it, if anything: a value out of its field's
+    /// range, or a settling stick whose least is over its most.
+    pub fn problems(&self, at: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        for f in BOUNCE_FIELDS {
+            if let Some(v) = self.get(f.name)
+                && !(v.is_finite() && (f.min..=f.max).contains(&v))
+            {
+                out.push(format!(
+                    "{at}: bounce.{} = {v}: {} to {}",
+                    f.name, f.min, f.max
+                ));
+            }
+        }
+        if let (Some(lo), Some(hi)) = (self.settle_min, self.settle_max)
+            && lo > hi
+        {
+            out.push(format!(
+                "{at}: bounce.settle_min = {lo} is over settle_max = {hi}"
+            ));
+        }
+        out
+    }
+}
 
 impl BotParams {
     /// `self` with every field `over` sets replaced by `over`'s.
@@ -300,6 +492,10 @@ impl BotParams {
                 &over.vehicle_lookahead_ticks,
             ),
             player_los_ticks: pick(&self.player_los_ticks, &over.player_los_ticks),
+            bounce: match (&self.bounce, &over.bounce) {
+                (Some(a), Some(b)) => Some(a.overlay(b)),
+                (a, b) => pick(a, b),
+            },
         }
     }
 
@@ -398,6 +594,9 @@ impl BotParams {
         if self.burst_on == Some(0) {
             out.push(format!("{at}: burst_on: at least 1 tick"));
         }
+        if let Some(b) = &self.bounce {
+            out.extend(b.problems(at));
+        }
         out
     }
 
@@ -484,6 +683,13 @@ pub struct MatchConfig {
     /// `unpaced`, `realtime` or `x<factor>`.
     #[serde(default = "default_pace")]
     pub pace: String,
+    /// The superbounce practice: the superbounce mode on for the match,
+    /// so every bot practises bounces instead of fighting
+    /// (docs/runtime/sim.md, "Bounce practice"), and the report carries
+    /// the bounce tally. (Before the tables: TOML
+    /// writes plain values first.)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub superbounce: Option<bool>,
     /// More variant settings, by id (`"83" = 1`).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub settings: BTreeMap<String, i32>,
@@ -517,6 +723,8 @@ pub struct Match {
     /// score limit and team play first, then `settings`.
     pub variant: Vec<(u32, i32)>,
     pub team_play: bool,
+    /// The bots practise superbounces ([`MatchConfig::superbounce`]).
+    pub superbounce: bool,
 }
 
 impl Match {
@@ -565,7 +773,7 @@ fn is_json(path: &Path) -> bool {
         .is_some_and(|e| e.eq_ignore_ascii_case("json"))
 }
 
-fn parse_file<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T, String> {
+pub(crate) fn parse_file<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T, String> {
     let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
     parse_text(&text, is_json(path)).map_err(|e| format!("{}: {e}", path.display()))
 }
@@ -691,6 +899,7 @@ pub fn resolve(
     if !problems.is_empty() {
         return Err(problems.join("\n"));
     }
+    let superbounce = config.superbounce.unwrap_or(false);
     Ok(Match {
         config,
         game_type,
@@ -698,6 +907,7 @@ pub fn resolve(
         bots,
         variant,
         team_play,
+        superbounce,
     })
 }
 

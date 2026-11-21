@@ -1,0 +1,12 @@
+# The superbounce practice over maps and seeds (docs/runtime/sim.md,
+# "Bounce practice"): `h2 sim batch` this file. One arm, every bot on it:
+# compare.txt's "bounce practice" table pools each map. Four maps by
+# three seeds: twelve runs.
+out = "results/bounce-practice"
+match = "superbounce-practice.toml"
+maps = ["zanzibar", "ascension", "lockout", "midship"]
+seeds = [1, 2, 3]
+
+[a]
+name = "base"
+params = "tuning/bounce-base.toml"

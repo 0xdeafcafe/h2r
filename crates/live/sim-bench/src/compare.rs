@@ -12,12 +12,15 @@ use serde::{Deserialize, Serialize};
 
 use crate::metrics::{Report, Winner};
 
-/// The metrics compared, in table order. The last six are there when the
-/// reports have them: the time to kill (seconds) and the aim motion (the
-/// mean error in radians, the flick overshoot ratio, the settle time in
-/// seconds, the stick travel a tick and its reversals a second;
-/// docs/runtime/sim.md §6).
-pub const METRICS: [&str; 15] = [
+/// The metrics compared, in table order. From `ttk_s` on they are there
+/// when the reports have them: the time to kill (seconds), the aim motion
+/// (the mean error in radians, the flick overshoot ratio, the settle time
+/// in seconds, the stick travel a tick and its reversals a second;
+/// docs/runtime/sim.md §6), and the superbounce practice's (a bot's tries,
+/// its bounce rate, primes, chain bounces, mean and best launch height in
+/// world units, Bounced deaths, and seconds to its first bounce;
+/// docs/runtime/sim.md, "Bounce practice").
+pub const METRICS: [&str; 23] = [
     "kills",
     "deaths",
     "kd",
@@ -33,7 +36,51 @@ pub const METRICS: [&str; 15] = [
     "settle_s",
     "jitter",
     "reversals",
+    "attempts",
+    "bounce_rate",
+    "primes",
+    "chain_bounces",
+    "launch_mean",
+    "launch_best",
+    "bounced_deaths",
+    "first_bounce_s",
 ];
+
+/// The superbounce practice's metrics of one arm in one run: per bot
+/// means of the counts, the pooled rate and launches.
+fn bounce_values(r: &Report, arm: &str, v: &mut BTreeMap<String, f64>) {
+    let Some(b) = &r.bounce else { return };
+    let lines: Vec<&crate::bounce::PlayerBounce> = b
+        .players
+        .iter()
+        .filter(|p| p.arm.as_deref() == Some(arm))
+        .collect();
+    if lines.is_empty() {
+        return;
+    }
+    let n = lines.len() as f64;
+    let pooled = crate::bounce::pool(lines.iter().map(|p| &p.stats));
+    v.insert("attempts".into(), pooled.attempts as f64 / n);
+    v.insert("bounce_rate".into(), pooled.bounce_rate);
+    v.insert("primes".into(), pooled.primes as f64 / n);
+    v.insert("chain_bounces".into(), pooled.chain_bounces as f64 / n);
+    v.insert("bounced_deaths".into(), pooled.bounced_deaths as f64 / n);
+    if let Some(l) = pooled.launch {
+        v.insert("launch_mean".into(), l.mean);
+        v.insert("launch_best".into(), l.best);
+    }
+    let firsts: Vec<f64> = lines
+        .iter()
+        .filter_map(|p| p.first_bounce_ticks)
+        .map(|t| t as f64 / 30.0)
+        .collect();
+    if !firsts.is_empty() {
+        v.insert(
+            "first_bounce_s".into(),
+            firsts.iter().sum::<f64>() / firsts.len() as f64,
+        );
+    }
+}
 
 /// One arm's numbers in one run.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -139,6 +186,7 @@ pub fn samples(run: &str, r: &Report) -> Vec<ArmSample> {
                 };
                 v.insert("win".into(), w);
             }
+            bounce_values(r, &arm, &mut v);
             ArmSample {
                 run: run.into(),
                 arm,
@@ -246,6 +294,122 @@ pub struct Comparison {
     /// are of more than one skill (a batch's `skills`).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub by_skill: BTreeMap<String, SkillComparison>,
+    /// The superbounce practice pooled over the runs, per arm, when the
+    /// reports have it (docs/runtime/sim.md, "Bounce practice").
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub bounce: BTreeMap<String, BounceArm>,
+}
+
+/// One arm's superbounce practice over a batch: every bot's counts added
+/// up, over all its runs and per map.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct BounceArm {
+    /// Runs with a bounce block for the arm.
+    pub runs: usize,
+    pub totals: crate::bounce::Stats,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub by_map: BTreeMap<String, crate::bounce::Stats>,
+}
+
+/// Every arm's [`BounceArm`] over `reports`.
+pub fn bounce_arms(reports: &[(String, Report)]) -> BTreeMap<String, BounceArm> {
+    let mut per: BTreeMap<
+        String,
+        (
+            usize,
+            Vec<crate::bounce::Stats>,
+            BTreeMap<String, Vec<crate::bounce::Stats>>,
+        ),
+    > = BTreeMap::new();
+    for (_, r) in reports {
+        let Some(b) = &r.bounce else { continue };
+        let map = r.match_["map"].as_str().unwrap_or("?").to_string();
+        let mut arms: BTreeMap<String, Vec<&crate::bounce::Stats>> = BTreeMap::new();
+        for p in &b.players {
+            arms.entry(p.arm.clone().unwrap_or_else(|| "-".into()))
+                .or_default()
+                .push(&p.stats);
+        }
+        for (arm, lines) in arms {
+            let pooled = crate::bounce::pool(lines);
+            let e = per.entry(arm).or_default();
+            e.0 += 1;
+            e.1.push(pooled.clone());
+            e.2.entry(map.clone()).or_default().push(pooled);
+        }
+    }
+    per.into_iter()
+        .map(|(arm, (runs, all, by_map))| {
+            (
+                arm,
+                BounceArm {
+                    runs,
+                    totals: crate::bounce::pool(&all),
+                    by_map: by_map
+                        .into_iter()
+                        .map(|(m, v)| (m, crate::bounce::pool(&v)))
+                        .collect(),
+                },
+            )
+        })
+        .collect()
+}
+
+/// The practice's table: an arm and a map a row, then the arm over every
+/// map.
+fn bounce_rows(out: &mut String, bounce: &BTreeMap<String, BounceArm>) {
+    if bounce.is_empty() {
+        return;
+    }
+    let _ = writeln!(
+        out,
+        "\nbounce practice (every bot, every run)\n{:<12}{:<14}{:>7}{:>9}{:>7}{:>8}{:>8}{:>13}{:>9}  {}",
+        "arm",
+        "map",
+        "tries",
+        "bounced",
+        "rate",
+        "primes",
+        "chains",
+        "launch",
+        "bounced",
+        "why not (top 3)"
+    );
+    let line = |out: &mut String, arm: &str, map: &str, s: &crate::bounce::Stats| {
+        let launch = s.launch.map_or_else(
+            || "-".to_string(),
+            |l| format!("{:.2}/{:.2}", l.mean, l.best),
+        );
+        let mut why: Vec<(&String, &u64)> = s.why.iter().collect();
+        why.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
+        let why = why
+            .iter()
+            .take(3)
+            .map(|(k, v)| format!("{k} {v}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let _ = writeln!(
+            out,
+            "{:<12}{:<14}{:>7}{:>9}{:>7.3}{:>8}{:>8}{:>13}{:>9}  {}",
+            arm,
+            map,
+            s.attempts,
+            s.bounced_tries,
+            s.bounce_rate,
+            s.primes,
+            s.chain_bounces,
+            launch,
+            s.bounced_deaths,
+            why
+        );
+    };
+    for (arm, b) in bounce {
+        for (map, s) in &b.by_map {
+            line(out, arm, map, s);
+        }
+        line(out, arm, "(all)", &b.totals);
+    }
+    out.push_str("rate: tries with a chain bounce over tries; launch: mean/best height, touchdown to top (world units)\n");
 }
 
 /// One skill's runs of a comparison.
@@ -342,6 +506,7 @@ pub fn compare(arms: &[String], reports: &[(String, Report)], missing: Vec<Strin
         samples,
         missing,
         by_skill,
+        bounce: bounce_arms(reports),
     }
 }
 
@@ -416,6 +581,7 @@ impl Comparison {
         if self.arms.len() >= 2 {
             out.push_str("± is the sd per arm, and the 95% interval (Welch) for the difference; * leaves out 0\n");
         }
+        bounce_rows(&mut out, &self.bounce);
         out
     }
 }
@@ -468,6 +634,7 @@ mod tests {
             kills: vec![],
             nav: "loaded".into(),
             dispatch_per_tick: None,
+            bounce: None,
             notes: vec![],
         }
     }
@@ -670,5 +837,65 @@ mod tests {
         assert!(t.contains("kills"));
         let back: Comparison = serde_json::from_str(&serde_json::to_string(&c).unwrap()).unwrap();
         assert_eq!(back.diff, c.diff);
+    }
+
+    #[test]
+    fn the_bounce_practice_is_compared_per_arm_and_pooled_per_map() {
+        use crate::bounce::{BounceReport, Launch, PlayerBounce, Stats};
+        let line = |index: u8, arm: &str, attempts: u64, bounced: u64, h: f64| PlayerBounce {
+            index,
+            name: format!("b{index}"),
+            arm: Some(arm.into()),
+            first_bounce_ticks: (bounced > 0).then_some(300),
+            stats: Stats {
+                attempts,
+                bounced_tries: bounced,
+                chain_bounces: bounced,
+                bounce_rate: bounced as f64 / attempts as f64,
+                launch: (bounced > 0).then_some(Launch {
+                    n: bounced,
+                    best: h,
+                    mean: h,
+                }),
+                why: [("missed".to_string(), attempts - bounced)].into(),
+                ..Stats::default()
+            },
+            ..PlayerBounce::default()
+        };
+        let run = |map: &str, k: u64| {
+            let mut r = report(
+                vec![bot(0, "a", 0, 0, 0, 0, 0), bot(1, "b", 1, 0, 0, 0, 0)],
+                None,
+            );
+            r.match_ = serde_json::json!({ "map": map });
+            r.bounce = Some(BounceReport {
+                format: crate::bounce::FORMAT.into(),
+                players: vec![line(0, "a", 10, 1 + k % 2, 2.0), line(1, "b", 10, 5, 3.0)],
+                ..BounceReport::default()
+            });
+            r
+        };
+        let reports: Vec<(String, Report)> = [("zanzibar", 0), ("zanzibar", 1), ("ascension", 2)]
+            .iter()
+            .map(|(m, k)| (format!("{m}-s{k}"), run(m, *k)))
+            .collect();
+        let c = compare(&["a".into(), "b".into()], &reports, vec![]);
+        assert_eq!(c.stats["b"]["bounce_rate"].mean, 0.5);
+        assert!(c.diff["bounce_rate"].diff > 0.3);
+        assert_eq!(c.stats["a"]["first_bounce_s"].mean, 10.0);
+        assert_eq!(c.stats["b"]["launch_best"].mean, 3.0);
+        let a = &c.bounce["a"];
+        assert_eq!(a.runs, 3);
+        assert_eq!((a.totals.attempts, a.totals.bounced_tries), (30, 4));
+        assert_eq!(a.by_map["zanzibar"].attempts, 20);
+        assert_eq!(a.by_map["ascension"].bounced_tries, 1);
+        let t = c.table();
+        assert!(t.contains("bounce practice"), "{t}");
+        assert!(
+            t.contains("zanzibar") && t.contains("(all)") && t.contains("missed"),
+            "{t}"
+        );
+        let back: Comparison = serde_json::from_str(&serde_json::to_string(&c).unwrap()).unwrap();
+        assert_eq!(back.bounce, c.bounce);
     }
 }

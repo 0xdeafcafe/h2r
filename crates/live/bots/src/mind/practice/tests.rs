@@ -224,3 +224,50 @@ fn the_tally_counts_tries_bounces_and_why_by_site() {
     assert_eq!(v.spots[0].why.get("too_slow"), Some(&2));
     assert_eq!(v.spots[1].why.get("prime_failed"), Some(&1));
 }
+
+#[test]
+fn the_practice_reports_each_route_it_starts_and_how_each_try_ended() {
+    let m = map();
+    let mut mind = Mind::new(Skill::Normal, 35);
+    mind.known = known();
+    mind.set_practice(true);
+    let mut t = 0;
+    while mind.practice_view().unwrap().state != "route" && t < 200 {
+        mind.step(&scene(bot(1.0), t), Some(&m));
+        t += 1;
+    }
+    let started = mind.take_practice_events();
+    assert!(
+        matches!(started.as_slice(), [PracticeEvent::Started { site, .. }] if *site == [10.0, 0.0, 0.0]),
+        "{started:?}"
+    );
+    assert!(mind.take_practice_events().is_empty(), "taken once");
+    // A failed route is a try with its reason.
+    mind.cancel_order("timeout");
+    mind.step(&scene(bot(1.0), t), Some(&m));
+    let ended = mind.take_practice_events();
+    assert!(
+        ended.iter().any(|e| matches!(
+            e,
+            PracticeEvent::Tried {
+                bounced: false,
+                why: Some("timeout"),
+                ..
+            }
+        )),
+        "{ended:?}"
+    );
+    // At most EVENTS wait for the host; the oldest go first.
+    let mut p = Practice::new(2);
+    for i in 0..EVENTS + 5 {
+        p.event(PracticeEvent::Started {
+            site: [0.0; 3],
+            tick: i as u32,
+        });
+    }
+    assert_eq!(p.events.len(), EVENTS);
+    assert!(matches!(
+        p.events[0],
+        PracticeEvent::Started { tick: 5, .. }
+    ));
+}

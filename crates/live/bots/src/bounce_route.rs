@@ -786,6 +786,9 @@ pub struct OrderRun {
     /// How near the goal a [`Step::Nav`] ends ([`GOAL`] unless
     /// [`OrderRun::arrive_within`] says).
     goal: f32,
+    /// The numbers it plays by, taken when it starts
+    /// ([`crate::tuning::bounce`]).
+    tune: crate::tuning::BounceTuning,
 }
 
 fn norm(d: [f32; 2]) -> ([f32; 2], f32) {
@@ -816,6 +819,7 @@ impl OrderRun {
             log: Vec::new(),
             show_off: false,
             goal: GOAL,
+            tune: crate::tuning::bounce().sane(),
         }
     }
 
@@ -965,9 +969,15 @@ impl OrderRun {
             if matches!(self.state, State::Fresh) {
                 self.note(tick, "start", at);
             }
+            // The walk onto a bounce or a drop is the approach.
+            let approach = matches!(
+                self.plan.steps.get(self.at + 1),
+                Some(Step::Bounce(_) | Step::Drop { .. })
+            );
+            let speed = if approach { self.tune.approach_speed } else { 1.0 };
             let out = match step {
-                Step::Walk { to, crouch } => self.walk(map, at, tick, to, crouch, ARRIVED),
-                Step::Nav { to } => self.walk(map, at, tick, to, false, self.goal),
+                Step::Walk { to, crouch } => self.walk(map, at, tick, to, crouch, ARRIVED, speed),
+                Step::Nav { to } => self.walk(map, at, tick, to, false, self.goal, 1.0),
                 Step::Prime(c) => self.prime(c, at, tick, pair),
                 Step::Bounce(site) => self.bounce(site, at, tick),
                 Step::Drop { from, site } => self.drop(from, site, at, tick),
@@ -1001,6 +1011,7 @@ impl OrderRun {
         to: Vec3,
         crouch: bool,
         tolerance: f32,
+        speed: f32,
     ) -> Result<Option<RouteMotion>, &'static str> {
         if matches!(self.state, State::Fresh) {
             self.state = State::Walk(RouteWalk::new(map, at, to, crouch, tick)?);
@@ -1008,7 +1019,7 @@ impl OrderRun {
         let State::Walk(w) = &mut self.state else {
             return Err("state");
         };
-        w.step(map, at, tick, tolerance, 1.0)
+        w.step(map, at, tick, tolerance, speed)
     }
 
     fn prime(
@@ -1059,7 +1070,7 @@ impl OrderRun {
             let seed = self.seed ^ u64::from(tick);
             let mut b = site.bounce;
             b.stand = site.target();
-            self.state = State::Bounce(BounceRun::new(b, BOUNCE_TRIES, tick, seed));
+            self.state = State::Bounce(BounceRun::new(b, self.tune.bounce_tries, tick, seed));
         }
         let State::Bounce(run) = &mut self.state else {
             return Err("state");
@@ -1106,6 +1117,7 @@ impl OrderRun {
         let State::Drop(d) = &mut self.state else {
             return Err("state");
         };
+        let t = self.tune;
         let target = site.target();
         let (to_target, gap) = norm([target[0] - at[0], target[1] - at[1]]);
         let face = Some(to_target[1].atan2(to_target[0]));
@@ -1119,9 +1131,9 @@ impl OrderRun {
         match *d {
             Dropping::Line(since) => {
                 let (to_from, off) = norm([from[0] - at[0], from[1] - at[1]]);
-                if off <= LINE_UP || tick.wrapping_sub(since) > LINE_UP_TICKS {
+                if off <= t.line_up || tick.wrapping_sub(since) > t.line_up_ticks {
                     *d = Dropping::Run(tick);
-                    return Ok(Some(motion(to_target, RUN_OFF_SPEED)));
+                    return Ok(Some(motion(to_target, t.run_off_speed)));
                 }
                 Ok(Some(motion(to_from, (off * 4.0).clamp(0.15, 0.6))))
             }
@@ -1131,7 +1143,7 @@ impl OrderRun {
                 } else if tick.wrapping_sub(since) > RUN_OFF_TICKS {
                     return Err("no_drop");
                 }
-                Ok(Some(motion(to_target, RUN_OFF_SPEED)))
+                Ok(Some(motion(to_target, t.run_off_speed)))
             }
             Dropping::Air { since, low } => {
                 let low = Some(low.map_or(at[2], |l: f32| l.min(at[2])));
@@ -1146,14 +1158,14 @@ impl OrderRun {
                     .is_some_and(|t| t.tick >= since && !t.bounced());
                 if landed || tick.wrapping_sub(since) > DROP_AIR_TICKS {
                     self.drops += 1;
-                    return if self.drops < DROP_TRIES {
+                    return if self.drops < t.drop_tries {
                         Err("drop_again")
                     } else {
                         Err("no_bounce")
                     };
                 }
                 // Steer the landing onto the target: harder the further off.
-                Ok(Some(motion(to_target, (gap * AIR_GAIN).min(1.0))))
+                Ok(Some(motion(to_target, (gap * t.air_gain).min(1.0))))
             }
         }
     }
@@ -1195,7 +1207,7 @@ impl OrderRun {
         let (dir, _) = norm([to[0] - at[0], to[1] - at[1]]);
         Ok(Some(RouteMotion {
             dir,
-            speed: 1.0,
+            speed: self.tune.fly_speed,
             yaw: Some(dir[1].atan2(dir[0])),
             jump: false,
             crouch: false,

@@ -809,6 +809,38 @@ static MEDALS: Mutex<Medals> = Mutex::new(Medals::empty());
 /// `superbounce.medal_test`.
 static LOCAL: Mutex<Option<(u8, u8)>> = Mutex::new(None);
 
+/// Whether the awards are kept for sim mode's bounce practice
+/// (docs/runtime/sim.md, "Bounce practice"). Off but in sim mode.
+static COLLECT: AtomicBool = AtomicBool::new(false);
+/// The awards kept since the sim last took them, oldest first.
+static COLLECTED: Mutex<Vec<chain::Award>> = Mutex::new(Vec::new());
+/// Awards kept for the sim at most between takes; the oldest go first.
+pub const COLLECT_MAX: usize = 4096;
+
+/// Keeps every award (a bounce of a chain, or a Bounced) for
+/// [`take_awards`], or stops and drops what was kept.
+pub fn collect_awards(on: bool) {
+    COLLECT.store(on, Ordering::Relaxed);
+    if !on {
+        lock(&COLLECTED).clear();
+    }
+}
+
+/// The awards made since the last take, oldest first.
+pub fn take_awards() -> Vec<chain::Award> {
+    std::mem::take(&mut *lock(&COLLECTED))
+}
+
+fn keep_awards(awards: &[chain::Award]) {
+    if awards.is_empty() || !COLLECT.load(Ordering::Relaxed) {
+        return;
+    }
+    let mut kept = lock(&COLLECTED);
+    kept.extend(awards.iter().cloned());
+    let over = kept.len().saturating_sub(COLLECT_MAX);
+    kept.drain(..over);
+}
+
 fn reset() {
     ACTIVE.store(false, Ordering::Relaxed);
     bots::set_practice(false);
@@ -960,6 +992,7 @@ fn on_tick(o: &hooks::Obs) {
         let awards = m.step(tick, &players, &spots);
         (awards, m.view())
     };
+    keep_awards(&awards);
     // The bots' and the verifier's bounces kept as ghost runs, and the
     // ghost the player asks for (docs/game/superbounce.md, "Ghost runs").
     {
@@ -1369,5 +1402,31 @@ mod tests {
     fn standing_fits_is_absent_while_the_mode_is_off() {
         ACTIVE.store(false, Ordering::Relaxed);
         assert_eq!(standing_fits_at([0.0; 3]), None);
+    }
+
+    #[test]
+    fn the_sim_takes_the_awards_only_while_it_collects() {
+        let award = |seq, chain| chain::Award {
+            seq,
+            slot: 2,
+            user: None,
+            tick: 100 + seq as u32,
+            chain,
+            medals: chain::bounce_medals(chain).to_vec(),
+        };
+        collect_awards(false);
+        keep_awards(&[award(1, 1)]);
+        assert!(take_awards().is_empty(), "off keeps nothing");
+        collect_awards(true);
+        keep_awards(&[award(2, 1), award(3, 2)]);
+        let taken = take_awards();
+        assert_eq!(taken.iter().map(|a| a.seq).collect::<Vec<_>>(), vec![2, 3]);
+        assert!(take_awards().is_empty(), "a take empties the queue");
+        let many: Vec<_> = (0..COLLECT_MAX as u64 + 5).map(|i| award(i, 1)).collect();
+        keep_awards(&many);
+        let taken = take_awards();
+        assert_eq!(taken.len(), COLLECT_MAX);
+        assert_eq!(taken[0].seq, 5, "the oldest go first");
+        collect_awards(false);
     }
 }

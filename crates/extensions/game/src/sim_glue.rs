@@ -247,7 +247,96 @@ pub fn tuning(p: &BotParams) -> bots::tuning::Tuning {
             vehicle_plan_ticks: rate(p.vehicle_plan_ticks, work.vehicle_plan_ticks),
             vehicle_lookahead_ticks: rate(p.vehicle_lookahead_ticks, work.vehicle_lookahead_ticks),
         },
+        bounce: p.bounce.as_ref().map(bounce_tuning),
     }
+}
+
+/// A tuning file's `[bounce]` over the built-in route
+/// (`bots::tuning::BOUNCE_DEFAULT`; docs/game/bots.md, "Tuning the
+/// bounce"): a field left out plays the built-in value.
+pub fn bounce_tuning(p: &sim_bench::config::BounceParams) -> bots::tuning::BounceTuning {
+    let d = bots::tuning::BOUNCE_DEFAULT;
+    macro_rules! over {
+        ($($f:ident),* $(,)?) => {
+            bots::tuning::BounceTuning { $( $f: p.$f.unwrap_or(d.$f), )* }
+        };
+    }
+    over!(
+        approach,
+        approach_speed,
+        settle,
+        settle_ticks,
+        settle_gain,
+        settle_min,
+        settle_max,
+        still_ticks,
+        jump_ticks,
+        drift,
+        bounce_tries,
+        crouch_first,
+        crouch_ticks,
+        release_ticks,
+        in_speed,
+        push_in,
+        start_out,
+        approach_turn_deg,
+        out_speed,
+        line_up,
+        line_up_ticks,
+        run_off_speed,
+        air_gain,
+        drop_tries,
+        fly_speed,
+    )
+}
+
+/// A bot's practice event as the sim's bounce tally takes it, with its
+/// game tick.
+pub fn practice_event(e: &bots::mind::PracticeEvent) -> (u32, sim_bench::bounce::Event) {
+    use bots::mind::PracticeEvent as P;
+    use sim_bench::bounce::Event;
+    match e {
+        P::Started { site, tick } => (*tick, Event::Started { site: *site }),
+        P::Primed {
+            site,
+            tick,
+            read,
+            own,
+        } => (
+            *tick,
+            Event::Primed {
+                site: *site,
+                read: *read,
+                own: *own,
+            },
+        ),
+        P::Tried {
+            site,
+            tick,
+            bounced,
+            why,
+        } => (
+            *tick,
+            Event::Tried {
+                site: *site,
+                bounced: *bounced,
+                why: why.map(str::to_string),
+            },
+        ),
+    }
+}
+
+/// A medal award as the sim's bounce tally takes it: the player (the
+/// award's slot), its game tick and the event. A Bounced award ends a
+/// chain; every other is a bounce `chain` into its chain.
+pub fn award_event(a: &crate::superbounce_chain::Award) -> (u8, u32, sim_bench::bounce::Event) {
+    use hud_kit_core::huds::superbounce::Medal;
+    let e = if a.medals.contains(&Medal::Bounced) {
+        sim_bench::bounce::Event::Bounced { chain: a.chain }
+    } else {
+        sim_bench::bounce::Event::Chain { chain: a.chain }
+    };
+    (a.slot, a.tick, e)
 }
 
 /// What the brain is doing, as the report names it.
@@ -307,6 +396,19 @@ pub fn shooters(s: &telemetry::Snapshot, fired: &[u32]) -> Vec<u8> {
         }
     }
     out
+}
+
+/// Each player's height this tick, for the bounce tally's launches:
+/// `(player index, z)` of every player with a unit.
+pub fn heights(s: &telemetry::Snapshot) -> Vec<(u8, f32)> {
+    s.players
+        .iter()
+        .enumerate()
+        .filter_map(|(i, p)| {
+            let o = s.objects.get(i).and_then(Option::as_ref)?;
+            Some(((p.player.index & 0xff) as u8, o.pos[2]))
+        })
+        .collect()
 }
 
 /// Match each seat's phantom machine ID to the unit the game spawned for
@@ -450,6 +552,15 @@ impl Sim {
     /// host console runs the game playerless.
     pub fn add_bots(&self) -> Result<()> {
         bots::phantom::global().set_playerless_host(true);
+        if self.0.matched.superbounce {
+            // Bounce practice (docs/runtime/sim.md, "Bounce practice"): the
+            // mode on in this game whatever the variant, the bots' route
+            // reads its pair word, and the tally counts the bounces.
+            crate::superbounce_mode::set_override(Some(true));
+            crate::superbounce_mode::collect_awards(true);
+            crate::sim_bots::install_pair_reader();
+            self.0.lock().tally.track_bounces();
+        }
         for b in &self.0.matched.bots {
             let brain = bots::Brain::new(skill(b.skill), b.seed)
                 .with_name_profile(&b.name)
@@ -884,11 +995,20 @@ impl Metered {
                     stick: pad.right_stick,
                 }),
             };
+            let events = if self.sim.matched.superbounce {
+                self.brain.mind.take_practice_events()
+            } else {
+                Vec::new()
+            };
             let mut s = self.sim.lock();
             if s.phase == Phase::Playing
                 && let Some(&player) = s.bindings.get(&self.seat)
             {
                 s.tally.brain_for_player(player, b);
+                for e in &events {
+                    let (tick, e) = practice_event(e);
+                    s.tally.bounce_event(player, tick, e);
+                }
             }
         }
     }
@@ -1037,6 +1157,15 @@ impl hooks::Feature for SimMetrics {
                     }
                     for p in shooters(&snap, &fired) {
                         s.tally.shot(p);
+                    }
+                    if me.matched.superbounce {
+                        for (index, z) in heights(&snap) {
+                            s.tally.bounce_height(index, tick, z);
+                        }
+                        for a in crate::superbounce_mode::take_awards() {
+                            let (player, at, e) = award_event(&a);
+                            s.tally.bounce_event(player, at, e);
+                        }
                     }
                 }
                 Err(e) => {
@@ -1230,6 +1359,99 @@ mod tests {
         assert_eq!(sample.weapon_accuracy.len(), MAX_LIVE_ACCURACY_ROWS);
         assert!(sample.weapon_accuracy.iter().all(|r| r.shots > 1));
         assert!(sample.valid());
+    }
+
+    #[test]
+    fn the_bounce_fields_default_to_the_built_in_route() {
+        use sim_bench::config::{BOUNCE_FIELDS, BounceParams};
+        let d = bots::tuning::BOUNCE_DEFAULT;
+        assert_eq!(bounce_tuning(&BounceParams::default()), d);
+        let mut every = BounceParams::default();
+        for f in BOUNCE_FIELDS {
+            every.set(f.name, f.default).unwrap();
+        }
+        assert_eq!(bounce_tuning(&every), d, "sim_bench's defaults are the bots crate's");
+        // Each field reaches the route.
+        for f in BOUNCE_FIELDS {
+            let mut one = BounceParams::default();
+            let v = if f.max != f.default { f.max } else { f.min };
+            one.set(f.name, v).unwrap();
+            assert_ne!(bounce_tuning(&one), d, "bounce.{} is not carried", f.name);
+        }
+        let p = BotParams {
+            bounce: Some(BounceParams {
+                drift: Some(0.3),
+                ..BounceParams::default()
+            }),
+            ..BotParams::default()
+        };
+        let t = tuning(&p).bounce.unwrap();
+        assert_eq!(t.drift, 0.3);
+        assert_eq!(t.approach, d.approach);
+        assert_eq!(tuning(&BotParams::default()).bounce, None);
+    }
+
+    #[test]
+    fn practice_events_and_awards_reach_the_bounce_tally() {
+        use bots::mind::PracticeEvent as P;
+        use hud_kit_core::huds::superbounce::Medal;
+        use sim_bench::bounce::Event;
+        let site = [1.0, 2.0, 3.0];
+        assert_eq!(
+            practice_event(&P::Started { site, tick: 5 }),
+            (5, Event::Started { site })
+        );
+        assert_eq!(
+            practice_event(&P::Primed {
+                site,
+                tick: 6,
+                read: true,
+                own: false
+            }),
+            (
+                6,
+                Event::Primed {
+                    site,
+                    read: true,
+                    own: false
+                }
+            )
+        );
+        assert_eq!(
+            practice_event(&P::Tried {
+                site,
+                tick: 7,
+                bounced: false,
+                why: Some("too_slow")
+            }),
+            (
+                7,
+                Event::Tried {
+                    site,
+                    bounced: false,
+                    why: Some("too_slow".into())
+                }
+            )
+        );
+        let award = |chain, medals: Vec<Medal>| crate::superbounce_chain::Award {
+            seq: 1,
+            slot: 3,
+            user: None,
+            tick: 40,
+            chain,
+            medals,
+        };
+        assert_eq!(
+            award_event(&award(
+                2,
+                crate::superbounce_chain::bounce_medals(2).to_vec()
+            )),
+            (3, 40, Event::Chain { chain: 2 })
+        );
+        assert_eq!(
+            award_event(&award(4, vec![Medal::Bounced])),
+            (3, 40, Event::Bounced { chain: 4 })
+        );
     }
 
     #[test]

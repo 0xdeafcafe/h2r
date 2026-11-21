@@ -1,0 +1,17 @@
+# A sweep of the bounce tuning (docs/runtime/sim.md, "Sweeping the bounce
+# tuning"): `h2 sim sweep` this file. Every candidate plays the whole
+# batch (four maps by three seeds); they are ranked by bounce rate, then
+# mean launch height. c000 is the built-in route, the control.
+out = "results/bounce-sweep"
+batch = "superbounce-batch.toml"
+method = "coordinate"   # or "grid", or "random" with samples = N
+rounds = 2
+min_attempts = 20
+
+[axes]
+approach = [0.6, 0.8, 1.0]
+still_ticks = [2, 4, 8]
+drift = [0.05, 0.15, 0.3]
+crouch_ticks = [10, 12, 16]
+release_ticks = [4, 6, 10]
+air_gain = [1.5, 2.5, 4.0]

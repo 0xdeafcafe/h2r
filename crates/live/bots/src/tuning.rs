@@ -116,6 +116,162 @@ impl Default for WorkRates {
     }
 }
 
+/// The numbers the bounce route plays by (docs/game/bots.md, "Tuning the
+/// bounce"): the approach, the prime's timing, the jump, the drop and the
+/// steering in the air. [`Default`] is the built-in route, each field the
+/// constant it replaces, so a brain with no bounce tuning plays exactly as
+/// before (`bounce_defaults_are_the_constants`). The sim's bot parameters
+/// set it (`[bounce]` in a tuning file, docs/runtime/sim.md), so `h2 sim
+/// sweep` can search it without a rebuild.
+///
+/// **The built-in route is this `Default`.** A tuning the sims show is
+/// better becomes the default by editing the numbers in [`BOUNCE_DEFAULT`]
+/// (and nothing else).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BounceTuning {
+    /// The approach line: the walk to a standing site ends this far
+    /// behind it, against its drift (`glitches::spots::APPROACH`).
+    pub approach: f32,
+    /// The stick on the walk to the approach point (0..1; 1 is the plain
+    /// route walk).
+    pub approach_speed: f32,
+    /// Within this of the site (XY) the bot stops settling and stands
+    /// (`glitches::SETTLE`).
+    pub settle: f32,
+    /// Gives up settling after this long and jumps from where it is
+    /// (`glitches::SETTLE_TICKS`).
+    pub settle_ticks: u32,
+    /// The settling walk's stick: `settle_gain` a unit of distance, held
+    /// between `settle_min` and `settle_max` (0.12 to 0.6).
+    pub settle_gain: f32,
+    pub settle_min: f32,
+    pub settle_max: f32,
+    /// Stands still this long before the jump (`glitches::STILL_TICKS`).
+    pub still_ticks: u32,
+    /// A is held this many ticks for the jump.
+    pub jump_ticks: u32,
+    /// The stick toward the site's drift while in the air after a standing
+    /// jump: the aim onto the crease (`glitches::DRIFT`).
+    pub drift: f32,
+    /// Standing jumps at a site before it is given up
+    /// (`bounce_route::BOUNCE_TRIES`).
+    pub bounce_tries: u32,
+    /// The prime: crouch held standing still before the walk in
+    /// (`prime::CROUCH_FIRST`), crouch held under the lip
+    /// (`prime::CROUCH_TICKS`), still pushing in after letting go
+    /// (`prime::RELEASE_TICKS`), the stick crouch-walking in
+    /// (`prime::IN_SPEED`), how far past the stand it aims
+    /// (`prime::PUSH_IN`), how far out a try starts (`prime::START_OUT`),
+    /// how far (degrees) the second and third tries turn
+    /// (`prime::APPROACH_TURNS`), and the stick walking out (1: full).
+    pub crouch_first: u32,
+    pub crouch_ticks: u32,
+    pub release_ticks: u32,
+    pub in_speed: f32,
+    pub push_in: f32,
+    pub start_out: f32,
+    pub approach_turn_deg: f32,
+    pub out_speed: f32,
+    /// The drop: lined up within `line_up` (`bounce_route::LINE_UP`) or
+    /// after `line_up_ticks` (`LINE_UP_TICKS`), the stick off the floor
+    /// (`RUN_OFF_SPEED`), the air steering's stick a unit off the target
+    /// (`AIR_GAIN`), and drops before giving up (`DROP_TRIES`).
+    pub line_up: f32,
+    pub line_up_ticks: u32,
+    pub run_off_speed: f32,
+    pub air_gain: f32,
+    pub drop_tries: u32,
+    /// The stick toward the goal while riding a launch (1: full).
+    pub fly_speed: f32,
+}
+
+/// The built-in bounce route: the one place to change its numbers.
+pub const BOUNCE_DEFAULT: BounceTuning = BounceTuning {
+    approach: 0.8,
+    approach_speed: 1.0,
+    settle: 0.05,
+    settle_ticks: 90,
+    settle_gain: 4.0,
+    settle_min: 0.12,
+    settle_max: 0.6,
+    still_ticks: 4,
+    jump_ticks: 3,
+    drift: 0.15,
+    bounce_tries: 8,
+    crouch_first: 6,
+    crouch_ticks: 12,
+    release_ticks: 6,
+    in_speed: 0.6,
+    push_in: 0.06,
+    start_out: 0.35,
+    approach_turn_deg: 25.0,
+    out_speed: 1.0,
+    line_up: 0.15,
+    line_up_ticks: 45,
+    run_off_speed: 0.5,
+    air_gain: 2.5,
+    drop_tries: 3,
+    fly_speed: 1.0,
+};
+
+impl Default for BounceTuning {
+    fn default() -> Self {
+        BOUNCE_DEFAULT
+    }
+}
+
+impl BounceTuning {
+    /// The same numbers held to what the route can play: sticks to 0..1
+    /// (the approach walk's to 0.1..1), distances and gains non-negative,
+    /// tries and the jump at least 1, the turn 0 to 90 degrees.
+    pub fn sane(self) -> BounceTuning {
+        let unit = |v: f32, d: f32| if v.is_finite() { v.clamp(0.0, 1.0) } else { d };
+        let pos = |v: f32, d: f32| if v.is_finite() { v.max(0.0) } else { d };
+        let d = BOUNCE_DEFAULT;
+        let settle_min = unit(self.settle_min, d.settle_min);
+        BounceTuning {
+            approach: pos(self.approach, d.approach),
+            // A stick of 0 would stand at the start of the walk for good.
+            approach_speed: unit(self.approach_speed, d.approach_speed).max(0.1),
+            settle: pos(self.settle, d.settle),
+            settle_ticks: self.settle_ticks,
+            settle_gain: pos(self.settle_gain, d.settle_gain),
+            settle_min,
+            settle_max: unit(self.settle_max, d.settle_max).max(settle_min),
+            still_ticks: self.still_ticks,
+            jump_ticks: self.jump_ticks.max(1),
+            drift: unit(self.drift, d.drift),
+            bounce_tries: self.bounce_tries.max(1),
+            crouch_first: self.crouch_first,
+            crouch_ticks: self.crouch_ticks.max(1),
+            release_ticks: self.release_ticks,
+            in_speed: unit(self.in_speed, d.in_speed),
+            push_in: pos(self.push_in, d.push_in),
+            start_out: pos(self.start_out, d.start_out),
+            approach_turn_deg: if self.approach_turn_deg.is_finite() {
+                self.approach_turn_deg.clamp(0.0, 90.0)
+            } else {
+                d.approach_turn_deg
+            },
+            out_speed: unit(self.out_speed, d.out_speed),
+            line_up: pos(self.line_up, d.line_up),
+            line_up_ticks: self.line_up_ticks,
+            run_off_speed: unit(self.run_off_speed, d.run_off_speed),
+            air_gain: pos(self.air_gain, d.air_gain),
+            drop_tries: self.drop_tries.max(1),
+            fly_speed: unit(self.fly_speed, d.fly_speed),
+        }
+    }
+}
+
+/// The bounce tuning of the brain thinking on this thread: its tuning's,
+/// else [`BOUNCE_DEFAULT`]. The route's runs take it when they start
+/// (`glitches::BounceRun::new`, `glitches::prime::PrimeRun`,
+/// `bounce_route::OrderRun::new`), so a run plays one tuning throughout.
+pub fn bounce() -> BounceTuning {
+    current().and_then(|t| t.bounce).unwrap_or(BOUNCE_DEFAULT)
+}
+
 /// What a bot is tuned by. `None` keeps the built-in value.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Tuning {
@@ -153,6 +309,9 @@ pub struct Tuning {
     pub phantom_jitter_ms: Option<f32>,
     pub aim_model: Option<AimModel>,
     pub work: WorkRates,
+    /// The bounce route's numbers ([`BounceTuning`]); `None` plays the
+    /// built-in ones.
+    pub bounce: Option<BounceTuning>,
 }
 
 impl Tuning {
@@ -374,6 +533,66 @@ mod tests {
             ..Tuning::default()
         };
         assert_eq!(with(Some(code), aim_model), AimModel::Code);
+    }
+
+    #[test]
+    fn bounce_defaults_are_the_constants() {
+        use crate::bounce_route as r;
+        use crate::glitches as g;
+        use crate::glitches::prime as p;
+        let d = BounceTuning::default();
+        assert_eq!(d, BOUNCE_DEFAULT);
+        assert_eq!(d.approach, g::spots::APPROACH);
+        assert_eq!(d.settle, g::SETTLE);
+        assert_eq!(d.settle_ticks, g::SETTLE_TICKS);
+        assert_eq!(d.still_ticks, g::STILL_TICKS);
+        assert_eq!(d.drift, g::DRIFT);
+        assert_eq!(d.bounce_tries, r::BOUNCE_TRIES);
+        assert_eq!(d.crouch_first, p::CROUCH_FIRST);
+        assert_eq!(d.crouch_ticks, p::CROUCH_TICKS);
+        assert_eq!(d.release_ticks, p::RELEASE_TICKS);
+        assert_eq!(d.in_speed, p::IN_SPEED);
+        assert_eq!(d.push_in, p::PUSH_IN);
+        assert_eq!(d.start_out, p::START_OUT);
+        assert_eq!(
+            p::APPROACH_TURNS,
+            [0.0, d.approach_turn_deg, -d.approach_turn_deg]
+        );
+        assert_eq!(d.line_up, r::LINE_UP);
+        assert_eq!(d.line_up_ticks, r::LINE_UP_TICKS);
+        assert_eq!(d.run_off_speed, r::RUN_OFF_SPEED);
+        assert_eq!(d.air_gain, r::AIR_GAIN);
+        assert_eq!(d.drop_tries, r::DROP_TRIES);
+        // The default is already sane, and no tuning reads as the default.
+        assert_eq!(d.sane(), d);
+        assert_eq!(bounce(), d);
+        let t = Tuning {
+            bounce: Some(BounceTuning { drift: 0.3, ..d }),
+            ..Tuning::default()
+        };
+        assert!(!t.is_empty());
+        assert_eq!(with(Some(t), bounce).drift, 0.3);
+        assert_eq!(bounce(), d);
+    }
+
+    #[test]
+    fn bounce_tuning_is_held_to_what_the_route_can_play() {
+        let wild = BounceTuning {
+            approach_speed: 3.0,
+            settle_min: 0.7,
+            settle_max: 0.2,
+            drift: f32::NAN,
+            bounce_tries: 0,
+            jump_ticks: 0,
+            approach_turn_deg: 400.0,
+            ..BounceTuning::default()
+        }
+        .sane();
+        assert_eq!(wild.approach_speed, 1.0);
+        assert_eq!((wild.settle_min, wild.settle_max), (0.7, 0.7));
+        assert_eq!(wild.drift, BOUNCE_DEFAULT.drift);
+        assert_eq!((wild.bounce_tries, wild.jump_ticks), (1, 1));
+        assert_eq!(wild.approach_turn_deg, 90.0);
     }
 
     #[test]

@@ -758,3 +758,117 @@ fn bot_work_rates_overlay_per_field_and_validate_tick_limits() {
     let bad: BotParams = toml::from_str("foot_plan_ticks = 0\nvehicle_plan_ticks = 31").unwrap();
     assert_eq!(bad.problems("bot").len(), 2);
 }
+
+#[test]
+fn a_match_turns_the_bounce_practice_on_and_a_tuning_carries_the_bounce() {
+    let text = r#"
+map = "ascension"
+game_type = "slayer"
+time_limit_s = 900
+score_limit = 50
+team_play = false
+seed = 1
+max_ticks = 18000
+superbounce = true
+
+[[bot]]
+name = "Bouncer"
+[bot.tuning]
+aggression = 0.2
+[bot.tuning.bounce]
+drift = 0.3
+still_ticks = 6
+"#;
+    let m = parse_match(text, false).unwrap();
+    assert_eq!(m.superbounce, Some(true));
+    let t = m.bots[0].tuning.as_ref().unwrap();
+    let b = t.bounce.as_ref().unwrap();
+    assert_eq!(
+        (b.drift, b.still_ticks, b.approach),
+        (Some(0.3), Some(6), None)
+    );
+    assert!(t.problems("bot").is_empty());
+    // Written back, it reads the same (the flag before the tables).
+    let again = parse_match(&toml::to_string(&m).unwrap(), false).unwrap();
+    assert_eq!(again, m);
+    assert_eq!(parse_match(MATCH, false).unwrap().superbounce, None);
+
+    // The arm's bounce over the bot's own, field by field.
+    let own = BotParams {
+        bounce: Some(BounceParams {
+            drift: Some(0.1),
+            approach: Some(1.0),
+            ..BounceParams::default()
+        }),
+        ..BotParams::default()
+    };
+    let arm = BotParams {
+        bounce: Some(BounceParams {
+            drift: Some(0.25),
+            ..BounceParams::default()
+        }),
+        ..BotParams::default()
+    };
+    let both = own.overlay(&arm).bounce.unwrap();
+    assert_eq!((both.drift, both.approach), (Some(0.25), Some(1.0)));
+    assert_eq!(own.overlay(&BotParams::default()).bounce, own.bounce);
+
+    // Out of range, and a settling stick upside down.
+    let bad = BotParams {
+        bounce: Some(BounceParams {
+            drift: Some(2.0),
+            settle_min: Some(0.5),
+            settle_max: Some(0.2),
+            ..BounceParams::default()
+        }),
+        ..BotParams::default()
+    };
+    let p = bad.problems("arm a");
+    assert!(p.iter().any(|s| s.contains("bounce.drift = 2")), "{p:?}");
+    assert!(p.iter().any(|s| s.contains("settle_min")), "{p:?}");
+    let mut b = BounceParams::default();
+    assert!(b.set("nope", 1.0).unwrap_err().contains("no such field"));
+    b.set("still_ticks", 7.6).unwrap();
+    assert_eq!(b.get("still_ticks"), Some(8.0), "a whole field is rounded");
+    assert!(
+        parse_match(&text.replace("still_ticks = 6", "stil_ticks = 6"), false).is_err(),
+        "a misspelt bounce field is refused"
+    );
+    for f in BOUNCE_FIELDS {
+        assert!(f.min <= f.default && f.default <= f.max, "{}", f.name);
+        assert!(!f.whole || f.default.fract() == 0.0, "{}", f.name);
+    }
+}
+
+/// The bounce practice examples in docs/runtime/sim-examples stay valid.
+#[test]
+fn the_bounce_practice_examples_load() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../docs/runtime/sim-examples");
+    let m = load_match(&dir.join("superbounce-practice.toml")).unwrap();
+    assert!(m.superbounce);
+    assert_eq!(m.bots.len(), 4);
+    assert_eq!(m.config.max_ticks, Some(18000));
+    assert_eq!(m.config.render_every, 0);
+    let base = m.bots[0].params.bounce.as_ref().unwrap();
+    for f in BOUNCE_FIELDS {
+        if let Some(v) = base.get(f.name) {
+            assert_eq!(
+                v as f32, f.default as f32,
+                "bounce-base.toml's {} is the built-in value",
+                f.name
+            );
+        }
+    }
+    let b = load_batch(&dir.join("superbounce-batch.toml")).unwrap();
+    assert_eq!(b.runs.len(), 12);
+    assert!(b.runs.iter().all(|r| r.config.superbounce == Some(true)));
+    let maps: std::collections::BTreeSet<&str> = b.runs.iter().map(|r| r.map.as_str()).collect();
+    assert_eq!(
+        maps.into_iter().collect::<Vec<_>>(),
+        ["ascension", "lockout", "midship", "zanzibar"]
+    );
+    let s = crate::sweep::load_sweep(&dir.join("superbounce-sweep.toml")).unwrap();
+    assert_eq!(s.method, crate::sweep::Method::Coordinate);
+    assert_eq!(s.batch, dir.join("superbounce-batch.toml"));
+    assert_eq!(s.axes.len(), 6);
+}

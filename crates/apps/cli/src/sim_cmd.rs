@@ -6,6 +6,10 @@
 //!   hosts, a few at a time, then the A/B comparison (`compare.json`,
 //!   `compare.txt`).
 //! - `compare <dir>`: the comparison of a batch's results again.
+//! - `sweep <sweep>`: a batch per candidate bounce tuning, ranked
+//!   (`sweep.json`, `sweep.csv`, `sweep.md`).
+//! - `harvest <dir>`: the proven spots and ghost runs a superbounce
+//!   batch's runs kept, merged into the shared bots directory.
 //! - `diff <a.json> <b.json>`: the first differing state of two reports.
 
 use std::fs::{File, OpenOptions, TryLockError};
@@ -32,6 +36,8 @@ const USAGE: &str = "usage:
   h2 sim batch <batch.toml> --provider cloud [--live URL] [--token T] [--as GAMERTAG]
                           [--max-parallel N] [--budget-usd X] [--dry-run]
   h2 sim compare <results dir>
+  h2 sim sweep <sweep.toml> [--dry-run] [batch flags: --parallel N --disc ISO --out DIR ...]
+  h2 sim harvest <results dir> [--data DIR] [--dry-run]
   h2 sim diff <report a.json> <report b.json>
   h2 sim audit-merge OUTPUT INPUT [INPUT ...]
   h2 sim audit-coverage OUTPUT AUDIT [AUDIT ...]
@@ -57,7 +63,17 @@ arms play every seat. skills = [...] adds a run per skill with every bot
 at it, and a table per skill.
 --provider local is the default. --max-parallel also works for local batches.
 --provider cloud runs unpaced on dedicated hosts through Live.
---dry-run lists the runs.";
+--dry-run lists the runs.
+A run whose match has superbounce = true plays on its own copy of each map's
+verified and ghosts files, kept in <out>/runs/<id>/harvest/{start,end}
+(docs/runtime/sim.md, \"Bounce practice\").
+
+`sweep` plays the sweep file's batch once per candidate bounce tuning, each in
+<out>/candidates/<id>/, and ranks them by bounce rate, then launch height
+(docs/runtime/sim.md, \"Sweeping the bounce tuning\"). Flags after the file
+go to each `h2 sim batch`.
+`harvest` merges what each run of a results directory proved and the ghost
+runs it kept into --data's bots/ (--dry-run: what it would add).";
 
 pub fn run(args: Vec<String>) -> Result<()> {
     let mut it = args.into_iter();
@@ -66,6 +82,8 @@ pub fn run(args: Vec<String>) -> Result<()> {
         Some("host-run") => run_host_child(it.collect()),
         Some("store") => crate::sim_store_cmd::run(it.collect()),
         Some("batch") => batch(it.collect()),
+        Some("sweep") => sweep(it.collect()),
+        Some("harvest") => harvest(it.collect()),
         Some("compare") => {
             let dir = it.next().context(USAGE)?;
             let c = compare_dir(Path::new(&dir))?;
@@ -506,6 +524,80 @@ impl RunDir {
     fn data(&self) -> PathBuf {
         self.dir.join("data")
     }
+    /// A superbounce run's verified and ghosts files as it began.
+    fn harvest_start(&self) -> PathBuf {
+        self.dir.join("harvest").join("start")
+    }
+    /// ... and as it ended.
+    fn harvest_end(&self) -> PathBuf {
+        self.dir.join("harvest").join("end")
+    }
+}
+
+/// A superbounce run's data: like [`make_data`]'s, but its `bots/` is a
+/// directory of its own, each shared file linked but the maps' verified
+/// and ghosts files, which are copied in and to `harvest/start`. The run
+/// proves spots and keeps ghost runs on its copy only: no run sees
+/// another's, and the runs of a sweep start alike.
+fn make_bounce_data(run: &RunDir, shared: &Path) -> Result<()> {
+    let own = run.data().join("bots");
+    let start = run.harvest_start();
+    let _ = std::fs::remove_dir_all(run.dir.join("harvest"));
+    // Afresh: what a kept run left (links and copies only; a link is
+    // removed, not followed).
+    if own
+        .symlink_metadata()
+        .is_ok_and(|m| m.file_type().is_symlink())
+    {
+        std::fs::remove_file(&own)?;
+    } else {
+        let _ = std::fs::remove_dir_all(&own);
+    }
+    std::fs::create_dir_all(&own)?;
+    std::fs::create_dir_all(&start)?;
+    let from = shared.join("bots");
+    let entries = match std::fs::read_dir(&from) {
+        Ok(d) => d,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e).with_context(|| format!("reading {}", from.display())),
+    };
+    for entry in entries {
+        let entry = entry?;
+        let name = entry.file_name();
+        let target = own.join(&name);
+        let owned = name.to_str().is_some_and(bots::harvest::run_owned);
+        if owned && entry.file_type()?.is_file() {
+            std::fs::copy(entry.path(), &target)
+                .with_context(|| format!("copying {}", entry.path().display()))?;
+            std::fs::copy(entry.path(), start.join(&name))?;
+        } else {
+            #[cfg(unix)]
+            std::os::unix::fs::symlink(entry.path(), &target)
+                .with_context(|| format!("linking {}", target.display()))?;
+        }
+    }
+    Ok(())
+}
+
+/// Keeps a superbounce run's verified and ghosts files in
+/// `harvest/end`, before its data goes.
+fn keep_bounce_files(run: &RunDir) -> Result<usize> {
+    let end = run.harvest_end();
+    std::fs::create_dir_all(&end)?;
+    let own = run.data().join("bots");
+    let mut kept = 0;
+    let Ok(entries) = std::fs::read_dir(&own) else {
+        return Ok(0);
+    };
+    for entry in entries {
+        let entry = entry?;
+        let name = entry.file_name();
+        if name.to_str().is_some_and(bots::harvest::run_owned) && entry.file_type()?.is_file() {
+            std::fs::copy(entry.path(), end.join(&name))?;
+            kept += 1;
+        }
+    }
+    Ok(kept)
 }
 
 /// A run's own data directory, its `bots/` linked to the shared one.
@@ -752,7 +844,13 @@ fn batch(args: Vec<String>) -> Result<()> {
                     let n = next.fetch_add(1, Ordering::Relaxed);
                     let Some(r) = b.runs.get(n) else { break };
                     let rd = RunDir::new(&b.out, &r.id);
-                    let result = make_data(&rd, &shared)
+                    let bounce = r.config.superbounce == Some(true);
+                    let data = if bounce {
+                        make_bounce_data(&rd, &shared)
+                    } else {
+                        make_data(&rd, &shared)
+                    };
+                    let result = data
                         .and_then(|()| stage_map_pack(&rd, &shared, &r.map))
                         .and_then(|()| {
                             let status = spawn(&common, &rd, batch, audit)?.wait()?;
@@ -768,6 +866,9 @@ fn batch(args: Vec<String>) -> Result<()> {
                             format!("failed: {e:#}")
                         }
                     };
+                    if bounce && let Err(e) = keep_bounce_files(&rd) {
+                        eprintln!("{}: keeping the bounce files: {e:#}", r.id);
+                    }
                     if !keep {
                         let _ = std::fs::remove_dir_all(rd.data());
                     }
@@ -815,6 +916,213 @@ fn batch(args: Vec<String>) -> Result<()> {
         println!("audit: {} runs, {} missing reports", merged.runs, missing.len());
     }
     finish_batch(&b, failed.load(Ordering::Relaxed), t)
+}
+
+/// `h2 sim sweep`: the sweep file's batch once per candidate, then the
+/// ranking (docs/runtime/sim.md, "Sweeping the bounce tuning").
+fn sweep(args: Vec<String>) -> Result<()> {
+    use sim_bench::sweep::{self as sw, Method};
+    let mut file = None;
+    let mut dry = false;
+    let mut pass = Vec::new();
+    for a in args {
+        match a.as_str() {
+            "--dry-run" => dry = true,
+            "-h" | "--help" => bail!("{USAGE}"),
+            _ if file.is_none() && !a.starts_with('-') => file = Some(PathBuf::from(a)),
+            _ => pass.push(a),
+        }
+    }
+    let file = std::path::absolute(file.context(USAGE)?)?;
+    let s = sw::load_sweep(&file).map_err(|e| anyhow::anyhow!("{}:\n{e}", file.display()))?;
+    let checked = sim_bench::config::load_batch(&s.batch)
+        .map_err(|e| anyhow::anyhow!("{}:\n{e}", s.batch.display()))?;
+    anyhow::ensure!(
+        !checked.runs.is_empty()
+            && checked
+                .runs
+                .iter()
+                .all(|r| r.config.superbounce == Some(true)),
+        "{}: a sweep's batch plays the bounce practice: its match needs superbounce = true",
+        s.batch.display()
+    );
+    let orig = sw::read_batch_config(&s.batch).map_err(anyhow::Error::msg)?;
+    let orig_dir = s.batch.parent().unwrap_or(Path::new(".")).to_path_buf();
+    std::fs::create_dir_all(&s.out)?;
+    println!(
+        "sweep {} ({}), {} runs a candidate, into {}",
+        file.display(),
+        s.method.name(),
+        checked.runs.len(),
+        s.out.display()
+    );
+    let mut scored: Vec<sw::Scored> = Vec::new();
+    let mut missing: Vec<String> = Vec::new();
+    let mut played: Vec<sw::Candidate> = Vec::new();
+    let play = |c: &sw::Candidate,
+                scored: &mut Vec<sw::Scored>,
+                missing: &mut Vec<String>|
+     -> Result<()> {
+        let dir = s.out.join("candidates").join(&c.id);
+        std::fs::create_dir_all(&dir)?;
+        let batch_file = dir.join("batch.toml");
+        std::fs::write(&batch_file, toml::to_string(&sw::candidate_batch(&orig, &orig_dir, c))?)?;
+        let key = if c.key.is_empty() { "built-in" } else { &c.key };
+        println!("\n{} {key}", c.id);
+        if dry {
+            return Ok(());
+        }
+        let status = Command::new(std::env::current_exe()?)
+            .args([
+                "sim".to_string(),
+                "batch".into(),
+                batch_file.display().to_string(),
+            ])
+            .args(&pass)
+            .stdin(Stdio::null())
+            .status()
+            .context("starting h2 sim batch")?;
+        if !status.success() {
+            eprintln!(
+                "{}: the batch exited {status}; scoring the runs it finished",
+                c.id
+            );
+        }
+        match compare_dir(&dir).ok().and_then(|cmp| sw::score(c, &cmp)) {
+            Some(sc) => scored.push(sc),
+            None => missing.push(c.id.clone()),
+        }
+        Ok(())
+    };
+    match s.method {
+        Method::Grid | Method::Random => {
+            let cands = if s.method == Method::Grid {
+                s.grid()
+            } else {
+                s.random()
+            };
+            for c in &cands {
+                play(c, &mut scored, &mut missing)?;
+            }
+        }
+        Method::Coordinate => {
+            let base = s.base_candidate();
+            play(&base, &mut scored, &mut missing)?;
+            played.push(base);
+            let mut best = s.base.clone();
+            for round in 0..s.rounds() {
+                for axis in 0..s.axes.len() {
+                    let cands = sw::fresh(s.step(&best, axis, 0), &played, played.len());
+                    for c in &cands {
+                        play(c, &mut scored, &mut missing)?;
+                        played.push(c.clone());
+                    }
+                    if let Some(lead) = sw::leader(&scored, s.min_attempts) {
+                        best = lead.bounce;
+                    }
+                }
+                if dry {
+                    println!("\n(--dry-run: later steps start from the best, unknown yet)");
+                    break;
+                }
+                println!("\nround {} done: best so far {}", round + 1, sw::key(&best));
+            }
+        }
+    }
+    if dry {
+        return Ok(());
+    }
+    let result = sw::SweepResult::new(s.method, s.min_attempts, scored, missing);
+    std::fs::write(
+        s.out.join("sweep.json"),
+        serde_json::to_string_pretty(&result)?,
+    )?;
+    std::fs::write(s.out.join("sweep.csv"), sw::csv(&result))?;
+    let md = sw::markdown(&result, 20);
+    std::fs::write(s.out.join("sweep.md"), &md)?;
+    print!("\n{md}");
+    println!("\n{}", s.out.join("sweep.json").display());
+    Ok(())
+}
+
+/// `h2 sim harvest`: every run's `harvest/` of a results directory
+/// merged into the shared bots directory.
+fn harvest(args: Vec<String>) -> Result<()> {
+    let mut dir = None;
+    let mut data = None;
+    let mut dry = false;
+    let mut it = args.into_iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--dry-run" => dry = true,
+            "--data" => data = Some(PathBuf::from(it.next().context("--data needs a value")?)),
+            "-h" | "--help" => bail!("{USAGE}"),
+            _ if dir.is_none() && !a.starts_with('-') => dir = Some(PathBuf::from(a)),
+            _ => bail!("unexpected {a}\n\n{USAGE}"),
+        }
+    }
+    let dir = dir.context(USAGE)?;
+    let into = bots::cache::dir(&data.unwrap_or_else(content::store::default_data_root));
+    let runs = harvest_runs(&dir)?;
+    anyhow::ensure!(
+        !runs.is_empty(),
+        "{}: no run kept bounce files (runs/*/harvest/end)",
+        dir.display()
+    );
+    let mut total = (0, 0, 0);
+    for run in &runs {
+        let rd = RunDir { dir: run.clone() };
+        let got = bots::harvest::harvest_run(&rd.harvest_start(), &rd.harvest_end(), &into, !dry)
+            .map_err(anyhow::Error::msg)?;
+        for h in got {
+            println!(
+                "  {:<40} {:<12} {} verified ({} proven), {} ghost runs",
+                run.display(),
+                h.map,
+                h.verified,
+                h.proven,
+                h.ghosts
+            );
+            total.0 += h.verified;
+            total.1 += h.proven;
+            total.2 += h.ghosts;
+        }
+    }
+    println!(
+        "{} {} verified ({} proven) and {} ghost runs into {}",
+        if dry { "would merge" } else { "merged" },
+        total.0,
+        total.1,
+        total.2,
+        into.display()
+    );
+    Ok(())
+}
+
+/// The run directories under `dir` that kept bounce files: a batch's
+/// `runs/*`, or a sweep's `candidates/*/runs/*`, in name order.
+fn harvest_runs(dir: &Path) -> Result<Vec<PathBuf>> {
+    let mut out = Vec::new();
+    let mut batches = vec![dir.to_path_buf()];
+    if let Ok(c) = std::fs::read_dir(dir.join("candidates")) {
+        batches.extend(
+            c.filter_map(|e| e.ok())
+                .map(|e| e.path())
+                .filter(|p| p.is_dir()),
+        );
+    }
+    for b in batches {
+        let Ok(runs) = std::fs::read_dir(b.join("runs")) else {
+            continue;
+        };
+        out.extend(
+            runs.filter_map(|e| e.ok())
+                .map(|e| e.path())
+                .filter(|p| p.join("harvest").join("end").is_dir()),
+        );
+    }
+    out.sort();
+    Ok(out)
 }
 
 fn prepare_output(
@@ -1071,6 +1379,47 @@ mod tests {
         );
         // Again: no error for the link already there.
         make_data(&rd, &shared).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_bounce_run_plays_on_its_own_proofs_and_keeps_them() {
+        let dir = scratch("bounce-data");
+        let shared = dir.join("shared");
+        let bots_dir = shared.join("bots");
+        std::fs::create_dir_all(&bots_dir).unwrap();
+        std::fs::write(bots_dir.join("ascension.0.bots"), "nav").unwrap();
+        std::fs::write(bots_dir.join("ascension.spots"), "spots").unwrap();
+        std::fs::write(bots_dir.join("ascension.verified"), "shared proofs").unwrap();
+        let rd = RunDir::new(&dir, "ascension-s1");
+        make_bounce_data(&rd, &shared).unwrap();
+        let own = rd.data().join("bots");
+        assert!(!own.symlink_metadata().unwrap().file_type().is_symlink());
+        #[cfg(unix)]
+        assert_eq!(
+            std::fs::read_link(own.join("ascension.0.bots")).unwrap(),
+            bots_dir.join("ascension.0.bots"),
+            "the nav mesh is shared"
+        );
+        let copied = own.join("ascension.verified");
+        assert!(!copied.symlink_metadata().unwrap().file_type().is_symlink());
+        assert_eq!(std::fs::read_to_string(rd.harvest_start().join("ascension.verified")).unwrap(), "shared proofs");
+        // The run proves a spot and keeps a ghost: the shared files stay.
+        std::fs::write(&copied, "run proofs").unwrap();
+        std::fs::write(own.join("ascension.ghosts"), "ghosts").unwrap();
+        assert_eq!(keep_bounce_files(&rd).unwrap(), 2);
+        assert_eq!(std::fs::read_to_string(bots_dir.join("ascension.verified")).unwrap(), "shared proofs");
+        assert!(!bots_dir.join("ascension.ghosts").exists());
+        assert_eq!(std::fs::read_to_string(rd.harvest_end().join("ascension.verified")).unwrap(), "run proofs");
+        assert_eq!(harvest_runs(&dir).unwrap(), vec![rd.dir.clone()]);
+        // A sweep's candidates' runs are found too.
+        let c = RunDir::new(&dir.join("candidates").join("c001"), "lockout-s2");
+        std::fs::create_dir_all(c.harvest_end()).unwrap();
+        assert_eq!(harvest_runs(&dir).unwrap().len(), 2);
+        // Again: the run starts from the shared files once more.
+        make_bounce_data(&rd, &shared).unwrap();
+        assert!(!rd.harvest_end().exists());
+        assert_eq!(std::fs::read_to_string(&copied).unwrap(), "shared proofs");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

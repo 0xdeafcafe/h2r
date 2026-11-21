@@ -1788,6 +1788,59 @@ spots and verified files, proving the spot as it goes
 ([superbounce.md](superbounce.md#ghost-runs)). Nothing in the bots crate
 records it: the game reads the bots' units each tick.
 
+The practice also queues an event for each route it starts, the first
+time the route's word reads −3, and each try it tallies
+(`mind::PracticeEvent`: `Started`, `Primed` with `read` and `own`,
+`Tried` with `bounced` and why not; at most 64 between takes, the oldest
+dropped). `Mind::take_practice_events` drains them; sim mode counts them
+into its report ([sim.md, "Bounce practice"](../runtime/sim.md#bounce-practice)).
+
+#### Tuning the bounce
+
+The bounce route's numbers are one struct, `bots::tuning::BounceTuning`,
+and its built-in values one constant, `bots::tuning::BOUNCE_DEFAULT`
+(`crates/live/bots/src/tuning.rs`): change a default there and every
+bot plays it. A brain's `Tuning::bounce` (`Some`: a tuning file's
+`[bounce]`, every field left out at the built-in value) replaces it for
+that brain; `tuning::bounce()` gives the thinking brain's, held to what
+the route can play (`BounceTuning::sane`: sticks 0 to 1, at least one
+try and one jump tick, the turn at most 90°). A route reads it once,
+when it starts.
+
+| Field | Default | What it moves |
+|---|---:|---|
+| `approach` | 0.8 | the walk to a standing site ends this far behind it (units; `Bounce::from`) |
+| `approach_speed` | 1.0 | the stick on that walk (`OrderRun`) |
+| `settle` | 0.05 | within this of the site it stands (units) |
+| `settle_ticks` | 90 | settling gives up after this long and jumps |
+| `settle_gain`, `settle_min`, `settle_max` | 4.0, 0.12, 0.6 | the settling stick: gain a unit off, held between min and max |
+| `still_ticks` | 4 | still this long before the jump |
+| `jump_ticks` | 3 | A held this long for the jump |
+| `drift` | 0.15 | the stick toward the drift in the air: the aim onto the crease |
+| `bounce_tries` | 8 | jumps at a site before giving it up |
+| `crouch_first` | 6 | the prime: crouch first, standing still (ticks) |
+| `crouch_ticks` | 12 | crouch held under the lip (walking and in place) |
+| `release_ticks` | 6 | pushing in after letting go |
+| `in_speed` | 0.6 | the stick in |
+| `push_in` | 0.06 | how far past the stand it pushes (units) |
+| `start_out` | 0.35 | how far out a try starts (units) |
+| `approach_turn_deg` | 25 | the second and third tries' turn |
+| `out_speed` | 1.0 | the stick back out |
+| `line_up` | 0.15 | the drop: lined up within this (units) ... |
+| `line_up_ticks` | 45 | ... or after this long |
+| `run_off_speed` | 0.5 | the stick off the floor |
+| `air_gain` | 2.5 | the air steering a unit off |
+| `drop_tries` | 3 | drops before giving up |
+| `fly_speed` | 1.0 | the stick toward the goal riding a launch |
+
+A tuning file's `[bounce]` (`sim::config::BounceParams`, the same names,
+each held to a range) sets them for a sim's bots; `h2 sim sweep` tries
+values over maps and seeds and ranks them by bounce rate, then launch
+height ([sim.md, "Sweeping the bounce tuning"](../runtime/sim.md#sweeping-the-bounce-tuning)).
+A test in the game's `sim_glue` holds the file schema's defaults equal to
+`BOUNCE_DEFAULT`, and one in `glitches` that the default tuning plays as
+no tuning does.
+
 #### Driving a player
 
 The same planner and route runner drive a seat with no brain of its own:

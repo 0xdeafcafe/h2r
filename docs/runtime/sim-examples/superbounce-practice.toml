@@ -1,0 +1,37 @@
+# The superbounce practice (docs/runtime/sim.md, "Bounce practice"):
+# `h2 sim run` this file. Four bots practise bounces on Ascension, which
+# has the measured spot, for ten minutes of game time, unpaced and
+# unrendered. `superbounce = true` turns the superbounce mode on, so no
+# bot fights: each one primes at a crouch spot and tries a site, again
+# and again, and the report gets the `bounce` block.
+map = "ascension"
+game_type = "slayer"
+time_limit_s = 900    # longer than max_ticks: the tick limit ends it
+score_limit = 50      # nobody scores: practising bots never fight
+team_play = false
+seed = 1
+max_ticks = 18000     # 10 minutes at 30 ticks a second
+max_wall_s = 1800
+render_every = 0
+pace = "unpaced"
+superbounce = true
+
+[[bot]]
+name = "Bouncer 1"
+skill = "legendary"
+params = "tuning/bounce-base.toml"
+
+[[bot]]
+name = "Bouncer 2"
+skill = "legendary"
+params = "tuning/bounce-base.toml"
+
+[[bot]]
+name = "Bouncer 3"
+skill = "legendary"
+params = "tuning/bounce-base.toml"
+
+[[bot]]
+name = "Bouncer 4"
+skill = "legendary"
+params = "tuning/bounce-base.toml"

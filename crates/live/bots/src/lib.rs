@@ -20,6 +20,7 @@ pub mod glitches;
 pub mod goto;
 pub mod grenades;
 pub mod guest;
+pub mod harvest;
 mod human_input;
 mod incoming;
 pub mod lobby;

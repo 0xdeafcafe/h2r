@@ -52,11 +52,14 @@ pub static SPOTS: &[Bounce] = &[Bounce {
 pub const APPROACH: f32 = 0.8;
 
 impl Bounce {
-    /// Where the walk to the spot ends: [`APPROACH`] behind it.
+    /// Where the walk to the spot ends: [`APPROACH`] behind it, or the
+    /// thinking brain's bounce tuning's `approach`
+    /// ([`crate::tuning::bounce`]).
     pub fn from(&self) -> Vec3 {
+        let back = crate::tuning::bounce().approach;
         [
-            self.stand[0] - self.drift[0] * APPROACH,
-            self.stand[1] - self.drift[1] * APPROACH,
+            self.stand[0] - self.drift[0] * back,
+            self.stand[1] - self.drift[1] * back,
             self.stand[2],
         ]
     }

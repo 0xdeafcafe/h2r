@@ -125,6 +125,23 @@ impl Mind {
         self.order.as_ref().is_some_and(|o| o.run.primed())
     }
 
+    /// The route under way's priming once its word is at -3: whether that
+    /// was read from the game (else assumed), and whether the route primed
+    /// it itself (it has a prime step) rather than starting primed. `None`
+    /// before, after and with no route.
+    pub(super) fn route_primed(&self) -> Option<(bool, bool)> {
+        let o = self.order.as_ref()?;
+        o.run.primed().then(|| {
+            let own = o
+                .run
+                .plan
+                .steps
+                .iter()
+                .any(|s| matches!(s, bounce_route::Step::Prime(_)));
+            (o.run.status().read, own)
+        })
+    }
+
     /// The route, asked, under way or last over.
     pub fn order_view(&self) -> OrderView {
         let none = OrderView {
