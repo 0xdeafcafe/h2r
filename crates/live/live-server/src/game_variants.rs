@@ -732,7 +732,8 @@ fn disposition(name: &str) -> HeaderValue {
     .unwrap_or_else(|_| HeaderValue::from_static("attachment; filename=\"variant.h2variant\""))
 }
 
-/// The `.h2variant` file: the canonical bytes its id hashes.
+/// The `.h2variant` file: the canonical bytes its id hashes. Not kept by
+/// shared caches (`caching::policy`), so a delete takes it down at once.
 async fn get_file(
     State(live): Shared,
     headers: HeaderMap,
@@ -746,7 +747,6 @@ async fn get_file(
     let h = resp.headers_mut();
     h.insert(header::CONTENT_TYPE, HeaderValue::from_static("application/json"));
     h.insert(header::CONTENT_DISPOSITION, disposition(&name));
-    h.insert(header::CACHE_CONTROL, HeaderValue::from_static("public, max-age=300"));
     Ok(resp)
 }
 
