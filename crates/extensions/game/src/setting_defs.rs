@@ -844,6 +844,82 @@ pub fn halo1_sandbox(store: &Store) -> &'static str {
     }
 }
 
+const GIB: u64 = 1 << 30;
+const THEATER_CACHE_DEFAULT_GIB: i64 = (film::sidecar::DEFAULT_CAP_BYTES / GIB) as i64;
+
+pub static THEATER_CACHE_CAP: Def = Def {
+    key: "theater.cache_cap_gib",
+    label: "Theater Cache Cap",
+    help: "Disk space for Theater keyframe sidecars, in GiB. Set to 0 to disable the cache.",
+    kind: Kind::Int {
+        valid: 0..=(u64::MAX / GIB) as i64,
+        steps: &[0, 1, 2, 4, 8, 16],
+        unit: Unit::Plain,
+    },
+    default: Value::Int(THEATER_CACHE_DEFAULT_GIB),
+    env: None,
+    flag: None,
+    aliases: &[],
+    parse_env: None,
+    apply: Apply::Restart,
+    scope: Scope::Host,
+    tier: Tier::User,
+    menu: None,
+};
+
+/// The effective on-disk keyframe cache limit for this viewer, in bytes.
+pub fn theater_cache_cap_bytes(store: Option<&Store>) -> u64 {
+    let gib = store
+        .and_then(|store| store.get(THEATER_CACHE_CAP.key))
+        .and_then(Value::as_int)
+        .unwrap_or(THEATER_CACHE_DEFAULT_GIB);
+    gib as u64 * GIB
+}
+
+pub const THEATER_RING_MIB_ENV: &str = "H2_THEATER_RING_MIB";
+
+pub static THEATER_RING_MIB: Def = Def {
+    key: "theater.ring_mib",
+    label: "Theater Rewind Memory (MiB)",
+    help: "Memory available for recently watched keyframes. Zero disables the ring.",
+    kind: Kind::Int {
+        valid: 0..=((isize::MAX >> 20) as i64),
+        steps: &[0, 64, 128, 256, 512, 1024],
+        unit: Unit::Plain,
+    },
+    default: Value::Int(256),
+    env: Some(THEATER_RING_MIB_ENV),
+    flag: None,
+    aliases: &[],
+    parse_env: None,
+    apply: Apply::Restart,
+    scope: Scope::Host,
+    tier: Tier::User,
+    menu: None,
+};
+
+/// Resolve the viewer's memory budget before the child mounts the film's private disk.
+pub fn theater_ring_mib(data: Option<&Path>) -> usize {
+    let path = data.map(settings::path_in);
+    let (store, problems) = Store::load(
+        &[&THEATER_RING_MIB],
+        path.as_deref(),
+        &|key| std::env::var(key).ok(),
+        &[],
+    );
+    for problem in problems {
+        eprintln!("theater: {problem}");
+    }
+    store.handle::<i64>(THEATER_RING_MIB.key).get() as usize
+}
+
+/// The launcher passes the resolved MiB value in the child's environment.
+pub fn theater_ring_cap(data: Option<&Path>) -> Option<usize> {
+    (std::env::var("H2_THEATER_RING").as_deref() == Ok("1"))
+        .then(|| theater_ring_mib(data) << 20)
+        .filter(|bytes| *bytes != 0)
+}
+
 /// Every setting, in the order `h2 settings list` shows them.
 pub static ALL: &[&Def] = &[
     &FOV,
@@ -859,10 +935,12 @@ pub static ALL: &[&Def] = &[
     &STEAM_SPEAKER,
     &STEAM_SENSITIVITY,
     &STEAM_LEFT_PAD,
+    &THEATER_CACHE_CAP,
     &LIVE_VISIBILITY,
     &COOP_MAX_PLAYERS,
     &COOP_JOIN_IN_PROGRESS,
     &COOP_LOOK_PREDICTION,
+    &THEATER_RING_MIB,
     &AIM_ASSIST,
     &TOUCH_LOOK,
     &TOUCH_CROUCH,
@@ -993,6 +1071,36 @@ mod tests {
             assert!(d.key.contains('.'), "{}", d.key);
             assert_eq!(d.check(d.default), Ok(d.default), "{}", d.key);
         }
+    }
+
+    #[test]
+    fn theater_cache_cap_uses_the_viewers_saved_gib() {
+        let data = tmp("theater-cache");
+        assert_eq!(theater_cache_cap_bytes(None), 4 << 30);
+        for (toml, bytes) in [
+            ("", 4 << 30),
+            ("[theater]\ncache_cap_gib = 8", 8 << 30),
+            ("[theater]\ncache_cap_gib = 0", 0),
+        ] {
+            std::fs::write(settings::path_in(&data), toml).unwrap();
+            let (store, problems) = with_env(&data, &[]);
+            assert!(problems.is_empty(), "{problems:?}");
+            assert_eq!(theater_cache_cap_bytes(Some(&store)), bytes);
+        }
+        std::fs::remove_dir_all(data).unwrap();
+    }
+
+    #[test]
+    fn theater_ring_budget_defaults_to_256_mib_and_uses_the_viewers_override() {
+        let data = tmp("theater-ring");
+        let mib = |store: Store| store.handle::<i64>(THEATER_RING_MIB.key).get();
+        assert_eq!(mib(with_env(&data, &[]).0), 256);
+        std::fs::write(settings::path_in(&data), "[theater]\nring_mib = 128\n").unwrap();
+        assert_eq!(mib(with_env(&data, &[]).0), 128);
+        assert_eq!(mib(with_env(&data, &[(THEATER_RING_MIB_ENV, "0")]).0), 0);
+        let (store, problems) = with_env(&data, &[(THEATER_RING_MIB_ENV, "-1")]);
+        assert_eq!(mib(store), 128);
+        assert!(problems.iter().any(|p| p.key == Some(THEATER_RING_MIB.key)));
     }
 
     #[test]

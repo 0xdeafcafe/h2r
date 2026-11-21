@@ -6,7 +6,7 @@ use engine::memory::{GuestMemory, MemFault};
 use runtime::guest::Permissions;
 
 use super::selector::{OptionRow, map_title};
-use super::{DETAIL, Entry, FILMS, Load, Tab, Theater, adapter::FilmSummary};
+use super::{DETAIL, Entry, FILMS, Load, PrepareStatus, Tab, Theater, adapter::FilmSummary};
 use crate::list_class::{
     ListClass, ListLayout, LiveText, Panel, PanelText, PictureSpec, Rows, TextBlock,
 };
@@ -31,7 +31,8 @@ pub(super) const FILM_ROWS: usize = 40;
 pub(super) const BROWSE_ROWS: usize = OptionRow::ALL.len();
 const MAX_ROWS: usize = FILM_ROWS + BROWSE_ROWS + 1; // Also allow a retry row.
 const DETAIL_ROWS: u32 = ROWS + MAX_ROWS as u32;
-const TAB_PANEL: u32 = DETAIL_ROWS + 3;
+const DETAIL_ACTIONS: i16 = 4;
+const TAB_PANEL: u32 = DETAIL_ROWS + DETAIL_ACTIONS as u32;
 const TAB_TEXTS: usize = 2 * Tab::ALL.len();
 const PANEL: u32 = TAB_PANEL + TAB_TEXTS as u32 + 2;
 const _: () = assert!(PANEL + crate::list_class::MAX_PANEL_TEXTS as u32 <= TEXTS.len);
@@ -48,7 +49,7 @@ const LIST_PICTURE: PictureSpec = PictureSpec {
 };
 const FILM_LAYOUT: ListLayout = ListLayout {
     anchor: [lobby::LIST.anchor[0], -77],
-    visible: 3,
+    visible: DETAIL_ACTIONS,
     ..lobby::LIST
 };
 const FILM_PICTURE: PictureSpec = PictureSpec {
@@ -70,23 +71,26 @@ const LIST_STATUS: TextBlock = TextBlock {
     ..lobby::BODY
 };
 const FILM_STATUS: TextBlock = TextBlock {
-    rect: [-125, -258, -179, -36],
+    rect: [-148, -258, -187, -36],
     ..lobby::STATUS
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Action {
     Watch,
+    Prepare,
     Save,
     Delete,
+    Prepare,
 }
 
 impl Action {
     fn for_entry(entry: &Entry) -> impl Iterator<Item = Self> {
-        [Self::Watch, Self::Save, Self::Delete]
+        [Self::Watch, Self::Prepare, Self::Save, Self::Delete]
             .into_iter()
             .filter(move |action| match action {
                 Self::Watch => entry.film.watch_unavailable().is_none(),
+                Self::Prepare => entry.can_prepare(),
                 Self::Save => entry.clip.is_none(),
                 Self::Delete => entry.clip.is_some() || entry.film.archive_id().is_none(),
             })
@@ -94,6 +98,13 @@ impl Action {
 
     pub(super) fn at(entry: &Entry, row: usize) -> Option<Self> {
         Self::for_entry(entry).nth(row)
+    }
+
+    fn blocked(self, state: &super::State, entry: &Entry) -> bool {
+        state.working
+            || (matches!(self, Self::Prepare | Self::Delete)
+                && entry.clip.is_none()
+                && state.prepare.as_ref().is_some_and(|p| p.status.active()))
     }
 }
 
@@ -119,7 +130,7 @@ impl Theater {
 
     pub fn step_detail(&self, row: i16) -> bool {
         let mut state = self.state();
-        let Some(entry) = state.selected.clone().filter(|_| !state.working) else {
+        let Some(entry) = state.selected.clone() else {
             return false;
         };
         let Some(action) = usize::try_from(row)
@@ -128,6 +139,9 @@ impl Theater {
         else {
             return false;
         };
+        if action.blocked(&state, &entry) {
+            return false;
+        }
         if action != Action::Delete {
             state.confirm_delete = false;
         }
@@ -143,6 +157,18 @@ impl Theater {
                 state.changed();
                 drop(state);
                 if let Err(error) = self.session().play(&entry) {
+                    let mut state = self.state();
+                    state.status = error;
+                    state.changed();
+                }
+                return false;
+            }
+            Action::Prepare => {
+                state.changed();
+                drop(state);
+                if entry.film.archive_id().is_some() {
+                    self.archive_action(Action::Prepare, entry);
+                } else if let Err(error) = self.start_prepare(&entry.film.id) {
                     let mut state = self.state();
                     state.status = error;
                     state.changed();
@@ -271,6 +297,7 @@ fn films_model(state: &super::State, entries: &[Entry]) -> Vec<RowSpec> {
         let room = text_fit::ROW - text_fit::width(label) - text_fit::width(": ");
         RowSpec::info(label, &text_fit::line(option.current(&state.selector), room))
             .press(Press::Open(crate::ui_kit::picker::NAME.into()))
+            .describe(option.description())
     }));
     if let Some(error) = state.library_error() {
         let mut retry = RowSpec::action("Retry library")
@@ -302,19 +329,38 @@ fn detail_model(state: &super::State) -> Vec<RowSpec> {
     Action::for_entry(entry)
         .map(|action| {
             let label = match action {
-                Action::Watch => "Watch",
-                Action::Save if film.saved => "Unsave",
-                Action::Save => "Save",
-                Action::Delete if state.confirm_delete => "Confirm delete",
-                Action::Delete => "Delete",
+                Action::Watch => "Watch".into(),
+                Action::Prepare => prepare_label(state),
+                Action::Save if film.saved => "Unsave".into(),
+                Action::Save => "Save".into(),
+                Action::Delete if state.confirm_delete => "Confirm delete".into(),
+                Action::Delete => "Delete".into(),
             };
-            if state.working {
-                RowSpec::info(label, "")
+            if action.blocked(state, entry) {
+                RowSpec::info(&label, "")
             } else {
-                RowSpec::action(label)
+                RowSpec::action(&label)
             }
         })
         .collect()
+}
+
+fn prepare_label(state: &super::State) -> String {
+    if let Some(progress) = &state.prepare {
+        match &progress.status {
+            PrepareStatus::Idle => {}
+            PrepareStatus::Starting => return "Preparing...".into(),
+            PrepareStatus::Running => {
+                let percent = (100 * u128::from(progress.tick))
+                    .checked_div(u128::from(progress.length_ticks))
+                    .unwrap_or(0);
+                return format!("Preparing... {}%", percent.min(99));
+            }
+            PrepareStatus::Complete => return "Prepare again".into(),
+            PrepareStatus::Failed { .. } => return "Retry Prepare".into(),
+        }
+    }
+    "Prepare".into()
 }
 
 fn prompts(action: &str, roster_pages: bool) -> Vec<Prompt> {
@@ -363,7 +409,7 @@ fn detail_cell(row: usize, left: i16, right: i16, numeric: bool, data: bool) -> 
 }
 
 fn film_panel() -> Panel {
-    let mut texts = (0..HEADER_LINES)
+    let mut texts = (0..=HEADER_LINES)
         .map(|row| detail_cell(row, TABLE_LEFT, lobby::TABLE_RIGHT, false, row != 0))
         .collect::<Vec<_>>();
     for row in 0..=ROSTER {
@@ -427,6 +473,10 @@ fn header_values(entry: &Entry, player: Option<&str>) -> Vec<String> {
         values.push(format!("Result: {result}"));
     }
     values.resize(HEADER_LINES, String::new());
+    values.push(match film.compatibility {
+        agent_proto::theater::CompatibilityState::Playable => "Playable",
+        agent_proto::theater::CompatibilityState::Unavailable => "Unavailable",
+    }.into());
 
     values
 }
@@ -544,7 +594,11 @@ pub(super) fn spec(theater: &Theater, list: bool) -> ScreenSpec {
     s.prompts = if list {
         library_prompts("Select")
     } else {
-        prompts("Select", roster_pages)
+        let mut legend = prompts("Select", roster_pages);
+        if s.rows.iter().all(|row| row.press == Press::Nothing) {
+            legend.retain(|p| !p.glyphs.contains(&Glyph::A));
+        }
+        legend
     };
     s.inputs = vec![
         Input::A,
@@ -558,6 +612,10 @@ pub(super) fn spec(theater: &Theater, list: bool) -> ScreenSpec {
     s.description = Some((if list { LIST_STATUS } else { FILM_STATUS }).into());
     if list {
         s.scrolls = true;
+        s.content.row_help = true;
+        if entries.is_empty() {
+            s.content.empty_text = Some(format!("theater.panel.{}", TAB_TEXTS + 1));
+        }
         let panel = library_panel();
         s.texts = panel
             .texts
@@ -599,19 +657,31 @@ pub(super) fn spec(theater: &Theater, list: bool) -> ScreenSpec {
                 pane_text(i, t, text_fit::line(&value, i32::from(right - left)))
             })
             .collect();
-        s.help = if state.status.is_empty() {
-            state
-                .selected
-                .as_ref()
-                .and_then(|e| e.film.watch_unavailable())
-                .map(str::to_owned)
+        let message = if !state.status.is_empty() {
+            Some(state.status.as_str())
         } else {
-            Some(text_fit::paragraph(
-                &state.status,
+            state
+                .prepare
+                .as_ref()
+                .and_then(|p| match &p.status {
+                    PrepareStatus::Complete => Some("Prepared for this build."),
+                    PrepareStatus::Failed { error } => Some(error.as_str()),
+                    _ => None,
+                })
+                .or_else(|| {
+                    state
+                        .selected
+                        .as_ref()
+                        .and_then(|e| e.film.watch_unavailable())
+                })
+        };
+        s.help = message.map(|message| {
+            text_fit::paragraph(
+                message,
                 i32::from(FILM_STATUS.rect[3] - FILM_STATUS.rect[1]),
                 2,
-            ))
-        };
+            )
+        });
     }
     s
 }
@@ -691,6 +761,10 @@ impl ScreenRows {
 }
 
 impl Rows for ScreenRows {
+    fn content_spec(&self) -> Option<crate::ui_kit::spec::ScreenSpec> {
+        Some(self.with_spec(Clone::clone))
+    }
+
     fn title(&self) -> u32 {
         TEXTS.id(if self.list { FILMS_TITLE } else { DETAIL_TITLE })
     }

@@ -3,20 +3,24 @@
 pub mod adapter;
 mod overlay;
 mod pages;
+mod playback_page;
 pub mod preview;
 mod selector;
+pub mod stats;
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
+use agent_proto::theater::{PrepareState, PrepareStatus};
 use adapter::{Clip, FilmMeta, Library, OpenLibrary};
-pub use overlay::{Control, Key, OverlayView};
+pub use overlay::{Control, Key};
 use selector::Selector;
 
 pub const FILMS: &str = "theater.films";
 pub const DETAIL: &str = "theater.film";
 pub const OVERLAY: &str = "theater.playback";
+pub const PAUSE_MENU: &str = "theater.pause-menu";
 
 /// The main menu's retail list constructor, item text and press.
 pub(crate) mod menu {
@@ -120,6 +124,14 @@ struct Entry {
     archive_clip: Option<(String, String)>,
 }
 
+impl Entry {
+    fn can_prepare(&self) -> bool {
+        self.clip.is_none()
+            && self.film.version != Some(1)
+            && self.film.watch_unavailable().is_none()
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 enum Load {
     #[default]
@@ -139,6 +151,7 @@ struct State {
     archive_clips: Vec<Entry>,
     working: bool,
     status: String,
+    prepare: Option<PrepareState>,
     clips: Vec<Clip>,
     clips_error: Option<String>,
     local_error: Option<String>,
@@ -223,6 +236,7 @@ impl State {
         self.roster_page = 0;
         self.confirm_delete = false;
         self.status.clear();
+        self.prepare = None;
         self.changed();
     }
 
@@ -237,7 +251,7 @@ impl State {
 struct Location {
     open: OpenLibrary,
     dir: PathBuf,
-    stamps: Vec<String>,
+    installation: crate::theater::Installation,
     live: live_hle::LiveConfig,
     signed_in: Option<Arc<live_hle::Hle>>,
 }
@@ -254,6 +268,7 @@ struct Shared {
     playback: Mutex<overlay::Session>,
     archive_done: Mutex<Vec<(u64, pages::Action, Entry, Result<Option<Clip>, String>)>>,
     playback_dir: Option<PathBuf>,
+    playback_recording: Option<PathBuf>,
 }
 
 impl Theater {
@@ -265,6 +280,7 @@ impl Theater {
         starting_seek: Option<u64>,
         socket: PathBuf,
         dir: PathBuf,
+        recording: PathBuf,
     ) -> std::io::Result<Self> {
         let clip = range.map(|[from_tick, to_tick]| Clip {
             film: film.id.clone(),
@@ -284,6 +300,7 @@ impl Theater {
                 starting_seek,
             )),
             playback_dir: Some(dir),
+            playback_recording: Some(recording),
             ..Shared::default()
         })))
     }
@@ -296,7 +313,7 @@ impl Theater {
         &self,
         registry: &mut hooks::Registry,
         dir: &Path,
-        stamps: Vec<String>,
+        installation: crate::theater::Installation,
         live: &live_hle::LiveConfig,
         signed_in: Option<Arc<live_hle::Hle>>,
         open: OpenLibrary,
@@ -304,7 +321,7 @@ impl Theater {
         *self.0.location.lock().unwrap_or_else(|e| e.into_inner()) = Some(Location {
             open,
             dir: dir.to_owned(),
-            stamps,
+            installation,
             live: live.clone(),
             signed_in,
         });
@@ -330,6 +347,7 @@ impl Theater {
             state.selected = None;
             state.working = false;
             state.status.clear();
+            state.prepare = None;
             state.selector = Selector::default();
             state.recent_archives.clear();
             state.archive_clips.clear();
@@ -364,7 +382,7 @@ impl Theater {
             .clone();
         let Some(location) = location else { return };
         let local = (location.open)(&location.dir).and_then(|library| {
-            let films = library.list(&location.stamps)?;
+            let films = library.list(&location.installation)?;
             Ok((library, films))
         });
         let (opened, films, local_error) = match local {
@@ -428,6 +446,7 @@ impl Theater {
         for (rows, pinned) in [(recent, false), (saved, true)] {
             for row in rows {
                 if let Ok(mut film) = FilmMeta::try_from(row) {
+                    film.check_cached(&location.dir, &location.installation);
                     if !pinned {
                         recent_ids.insert(film.id.clone());
                     }
@@ -437,13 +456,16 @@ impl Theater {
             }
         }
         for row in clips {
-            let Ok(film) = FilmMeta::try_from(row.film) else {
+            let Ok(mut film) = FilmMeta::try_from(row.film) else {
                 continue;
             };
             if row.clip.from_tick >= row.clip.to_tick || !live_proto::game::valid_id(&row.clip.id) {
                 continue;
             }
-            let film = films.entry(film.id.clone()).or_insert(film);
+            let film = films.entry(film.id.clone()).or_insert_with(|| {
+                film.check_cached(&location.dir, &location.installation);
+                film
+            });
             archive_clips.push(Entry {
                 film: film.clone(),
                 clip: Some(Clip {
@@ -541,7 +563,7 @@ impl Theater {
         state.changed();
     }
 
-    fn archive_action(&self, action: pages::Action, entry: Entry) {
+    fn archive_action(&self, action: pages::Action, mut entry: Entry) {
         let Some(location) = self
             .0
             .location
@@ -558,7 +580,7 @@ impl Theater {
             }
             state.working = true;
             state.status = match action {
-                pages::Action::Watch => "Downloading host film...",
+                pages::Action::Watch | pages::Action::Prepare => "Downloading host film...",
                 _ => "Updating account films...",
             }
             .into();
@@ -569,20 +591,31 @@ impl Theater {
         let work = std::thread::Builder::new()
             .name("h2-theater-archive".into())
             .spawn(move || {
+                let mut entry = entry;
                 let result = (|| {
+                    let game = entry.film.archive_id().ok_or("Missing Live film ID")?.to_owned();
+                    if action == pages::Action::Prepare {
+                        let path = adapter::archive_path(&location.dir, &game)?;
+                        if adapter::archive_entry(&path, &game).is_ok() {
+                            entry.film.check_cached(&location.dir, &location.installation);
+                            return Ok(None);
+                        }
+                    }
                     let archive = live_hle::films::Archive::connect(&location.live, account)?
                         .ok_or("Live archives are unavailable")?;
-                    let game = entry.film.archive_id().ok_or("Missing Live film ID")?;
                     match action {
-                        pages::Action::Watch => adapter::download_film(
+                        pages::Action::Watch | pages::Action::Prepare => adapter::download_film(
                             &archive,
                             &location.dir,
-                            game,
+                            &game,
                             entry.archive_clip.as_ref().and(entry.clip.as_ref()),
                             entry.film.live_start_tick,
-                        ),
+                        )
+                        .inspect(|_| {
+                            entry.film.check_cached(&location.dir, &location.installation);
+                        }),
                         pages::Action::Save => {
-                            archive.set_saved(game, !entry.film.saved).map(|()| None)
+                            archive.set_saved(&game, !entry.film.saved).map(|()| None)
                         }
                         pages::Action::Delete => {
                             let (id, _) = entry.archive_clip.as_ref().ok_or("Missing clip ID")?;
@@ -614,8 +647,11 @@ impl Theater {
         result: Result<Option<Clip>, String>,
     ) {
         let result = result.and_then(|playback_clip| {
-            if action != pages::Action::Watch {
+            if !matches!(action, pages::Action::Watch | pages::Action::Prepare) {
                 return Ok(());
+            }
+            if let Some(reason) = entry.film.watch_unavailable() {
+                return Err(reason.to_owned());
             }
             let state = self.state();
             let still_selected = state.open_generation == generation
@@ -624,7 +660,12 @@ impl Theater {
                     .as_ref()
                     .is_some_and(|e| e.film.id == entry.film.id && e.clip == entry.clip);
             drop(state);
-            if still_selected {
+            if still_selected && action == pages::Action::Prepare {
+                if !entry.can_prepare() {
+                    return Err("This film has no engine replay track".into());
+                }
+                self.start_prepare(&entry.film.id)
+            } else if still_selected {
                 let mut playback = entry.clone();
                 if playback_clip.is_some() {
                     playback.clip = playback_clip;
@@ -643,10 +684,34 @@ impl Theater {
             .selected
             .as_ref()
             .is_some_and(|e| e.film.id == entry.film.id && e.clip == entry.clip);
+        if matches!(action, pages::Action::Watch | pages::Action::Prepare) && entry.film.version.is_some() {
+            let update = |film: &mut FilmMeta| {
+                film.version = entry.film.version;
+                film.compatibility = entry.film.compatibility;
+                film.compatibility_reason
+                    .clone_from(&entry.film.compatibility_reason);
+            };
+            if let Load::Ready(films) = &mut state.load
+                && let Some(film) = films.iter_mut().find(|film| film.id == entry.film.id)
+            {
+                update(film);
+            }
+            for clip in state
+                .archive_clips
+                .iter_mut()
+                .filter(|clip| clip.film.id == entry.film.id)
+            {
+                update(&mut clip.film);
+            }
+            if let Some(current) = state.selected.as_mut().filter(|_| selected) {
+                update(&mut current.film);
+            }
+        }
         let message = match result {
             Err(error) => error,
             Ok(()) => match action {
                 pages::Action::Watch => "Opening film...".into(),
+                pages::Action::Prepare => String::new(),
                 pages::Action::Save => {
                     let saved = !entry.film.saved;
                     if let Load::Ready(films) = &mut state.load
@@ -691,12 +756,35 @@ impl Theater {
         self.session().connect(agent);
     }
 
+    fn start_prepare(&self, id: &str) -> Result<(), String> {
+        self.session().prepare(id)?;
+        let mut state = self.state();
+        if let Some(entry) = state
+            .selected
+            .as_ref()
+            .filter(|e| e.film.id == id && e.can_prepare())
+        {
+            state.prepare = Some(PrepareState {
+                id: id.to_owned(),
+                tick: 0,
+                length_ticks: entry.film.length_ticks,
+                status: PrepareStatus::Starting,
+            });
+            state.changed();
+        }
+        Ok(())
+    }
+
     fn session(&self) -> MutexGuard<'_, overlay::Session> {
         self.0.playback.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    pub fn overlay(&self) -> Option<OverlayView> {
+    pub fn playback_page(&self) -> Option<crate::ui_kit::spec::ScreenSpec> {
         self.session().view()
+    }
+
+    pub fn playback_timeline(&self) -> Option<[u32; 4]> {
+        self.session().timeline()
     }
 
     pub fn key(&self, key: Key, down: bool, repeat: bool) -> bool {
@@ -713,6 +801,59 @@ impl Theater {
 
     pub fn scrub(&self, fraction: f32) -> bool {
         self.session().scrub(fraction)
+    }
+
+    fn save_playback(&self) {
+        let Some(recording) = &self.0.playback_recording else { return };
+        let Some(dir) = &self.0.playback_dir else { return };
+        let notice = match adapter::save_playback(recording, dir) {
+            Ok(()) => "Film added to Saved".into(),
+            Err(error) => format!("Couldn't save film: {error}"),
+        };
+        self.session().notice = Some(notice);
+    }
+
+    pub fn add_playback_methods(&self, agent: &agent::Agent) {
+        use agent_proto::{RpcError, code, method};
+        use serde::Deserialize;
+        use serde_json::json;
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Press {
+            input: String,
+        }
+
+        fn screen(page: Option<crate::ui_kit::spec::ScreenSpec>) -> serde_json::Value {
+            let top = page.as_ref().map(|s| s.underlay.as_deref().unwrap_or(s));
+            let dialog = page.as_ref().filter(|spec| spec.dialog.is_some())
+                .map(|spec| json!({"name": spec.name, "focus": spec.focus}));
+            json!({
+                "screen": top.map(|s| &s.name),
+                "focus": top.map(|s| s.focus),
+                "dialog": dialog,
+                "native": false,
+                "age_ms": 0,
+                "page": page,
+            })
+        }
+
+        let this = self.clone();
+        agent.add_method(method::UI_SCREEN, agent::Access::Read, move |p| {
+            if !(p.is_null() || p.as_object().is_some_and(|p| p.is_empty())) {
+                return Err(RpcError::new(code::INVALID_PARAMS, "expected no parameters"));
+            }
+            Ok(screen(this.playback_page()))
+        });
+        let this = self.clone();
+        agent.add_method(method::UI_INPUT, agent::Access::Act, move |p| {
+            let press: Press = serde_json::from_value(p)
+                .map_err(|e| RpcError::new(code::INVALID_PARAMS, e.to_string()))?;
+            let input = crate::ui_kit::input::Input::named(&press.input)
+                .ok_or_else(|| RpcError::new(code::INVALID_PARAMS, "unknown playback input"))?;
+            let mut session = this.session();
+            session.press(input);
+            Ok(screen(session.view()))
+        });
     }
 
     pub fn playing(&self) -> bool {
@@ -759,11 +900,50 @@ impl Theater {
         for (generation, action, entry, result) in done {
             self.finish_archive_action(generation, action, entry, result);
         }
-        let (clip, open_error) = {
+        let prepare_id = self
+            .state()
+            .selected
+            .as_ref()
+            .filter(|entry| entry.can_prepare())
+            .map(|entry| entry.film.id.clone());
+        let (clip, open_error, prepare_answers, save) = {
             let mut session = self.session();
             session.pump();
-            (session.completed_clip.take(), session.open_error.take())
+            if let Some(id) = &prepare_id {
+                session.poll_prepare(id);
+            }
+            (
+                session.completed_clip.take(),
+                session.open_error.take(),
+                std::mem::take(&mut session.prepare_answers),
+                std::mem::take(&mut session.save_requested),
+            )
         };
+        for (id, answer) in prepare_answers {
+            let mut state = self.state();
+            if !state
+                .selected
+                .as_ref()
+                .is_some_and(|entry| entry.film.id == id && entry.can_prepare())
+            {
+                continue;
+            }
+            match answer {
+                Ok(progress) if state.prepare.as_ref() != Some(&progress) => {
+                    state.prepare = Some(progress);
+                    state.changed();
+                }
+                Err(error) => {
+                    state.prepare = None;
+                    state.status = error;
+                    state.changed();
+                }
+                _ => {}
+            }
+        }
+        if save {
+            self.save_playback();
+        }
         if let Some(error) = open_error {
             let mut state = self.state();
             state.status = error;

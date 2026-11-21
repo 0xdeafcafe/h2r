@@ -1,8 +1,8 @@
 # Theater: the full in-game player
 
-Status: Design. The parts under "What it builds on" are built; everything else on this page is not.
+Status: Design. “What it builds on” describes the existing player. The session ring and warm restore are opt-in pending measurements on recorded films.
 Code: `crates/extensions/game/src/theater.rs` (`Session`), `crates/extensions/game/src/theater/actions.rs` (the per-tick inputs), `crates/live/film/src/tape.rs` (the HLE tape), `crates/apps/cli/src/theater_cmd.rs` (the player process), `crates/live/film` (the container). Tests: `crates/extensions/game/src/theater/tests.rs`, `crates/live/film/src/tests.rs`.
-Switch: none.
+Switch: [Theater ring](../runtime/switches.md).
 
 This is the design for a Halo 3-style Theater inside the game: play a
 film, pause, rewind, jump to any point, change speed, fly a camera, follow
@@ -106,34 +106,26 @@ The same container also holds the film: the inputs (tag 1) and digests
 | The `.h2film` container: time chunks, the private machine section, per-tick gameplay digests, arena hashes every 30 ticks | Built | [film-format.md](film-format.md), `crates/live/film` |
 | Per-tick inputs: the 92-byte retail action of every seat, read at the simulation-update boundary after pads, remote arrivals and phantom actions are resolved, and written back there in playback | Built | `capture` and `apply` in `crates/extensions/game/src/theater/actions.rs`; `SIM_UPDATE_APPLY` in `crates/hooking/guest-layout/src/points.rs` |
 | The HLE tape: every host answer the guest received, on one call index | Built | `crates/live/film/src/tape.rs` (`Call`, `Playback::call`); `impl Tap for Session` in `theater.rs` |
-| Machine keyframes written into the film every 30 s of guest time | Built; the design moves them out of the film | `KEYFRAME_SECONDS`, `try_keyframe` in `crates/extensions/game/src/theater/record.rs` |
+| Capture points every 150 ticks and local sidecar snapshots every sixth point | Recorder and player use the snapshot build key and recorded device boundaries | `crates/extensions/game/src/theater/record.rs`, `crates/live/film/src/sidecar.rs` |
 | Machine snapshots: guest RAM, kernel, D3D, audio, XAPI, feature sections, a RAM hash | Built, tested on synthetic machines | [snapshots.md](../runtime/snapshots.md) |
-| The player: an isolated child process per film; a seek ends the child and starts another | Built | `crates/apps/cli/src/theater_cmd.rs` (`run`, the restart loop) |
+| The player: an isolated child process per film with an opt-in warm rewind ring | Built | `crates/apps/cli/src/theater_cmd.rs` (`run`, the restart loop) |
 | A film without a usable keyframe plays from boot | Built | `EngineReplay::open` in `crates/extensions/game/src/theater/replay.rs` (`ImageMatch::FromBoot`) |
-| Transport over the agent API: `theater.play`, `state`, `pause`, `speed`, `seek`, `step`, `keyframes`, `camera` | Built | `crates/extensions/agent-proto/src/theater.rs` |
-| Cameras: a view replaced in the guest's renderer with a private random seed; a separate GPU view for a playerless host film | Built | `crates/extensions/game/src/theater/legacy_camera.rs` (`Seeds`), `host_view.rs` |
+| Transport over the agent API: `theater.play`, `state`, `pause`, `speed`, `seek`, `step`, `keyframes`, `camera`, `hud` | Built | `crates/extensions/agent-proto/src/theater.rs` |
+| Cameras: a view replaced in the guest's renderer with a private random seed; a separate GPU view for a playerless host film | Built | `crates/extensions/game/src/theater/camera.rs` (`Seeds`), `host_view.rs` |
 | The film selector and film page in the game's own menus | Built | [theater.md](theater.md#in-game-theater) |
 | Compatibility: XBE digest, guest image contract, `h2-sim/1`, the hook digest | Built | `crates/extensions/game/src/theater/compatibility.rs` (`hook_digest`), [film-format.md](film-format.md#determinism-and-verification) |
 | Live: host film upload, film lists, pins, clips as tick ranges, public range reads for the web viewer | Built | [live-api.md](../live/live-api.md#theater) |
 | Engine-level playback (a film played without its machine section) and arena keyframes | Not built | "Before and after the sim rewrite"; [sim-rewrite.md](../engine/sim-rewrite.md) section 7 (`sim_state::Keyframe`) |
 
-Five gaps follow from that table, and the design is their answers:
+Three gaps remain:
 
-1. **A film is mostly keyframes, and carries the stats.** At the
-   planning rate a film gains 5.75 MiB of guest RAM a minute, which is
-   game data and cannot leave the machine, beside a few kilobytes of
-   input. The poses and events in the same file are read by the web and
-   never by the engine.
-2. **A seek costs a process start.** Every jump boots the image again
-   (`theater_cmd.rs`: "Each seek starts a new process so the game, HLE
-   allocators and feature statics all restart").
-3. **The replay depends on more than inputs.** Playback answers every HLE
+1. **The film and the stats share a container.** The web reads the poses
+   and events. The engine reads the inputs and digests. Captured machine
+   keyframes live in a local cache.
+2. **The replay depends on more than inputs.** Playback answers every HLE
    call from the tape, so a film carries received packets, account
    observations and pad reads encoded as JSON.
-4. **A film stops being playable when the build changes.** The hook digest
-   changes with every hook added or moved. This is accepted: a film plays
-   until the next breaking change and is then refused.
-5. **Only a leased dedicated host can upload a film**, and only a
+3. **Only a leased dedicated host can upload a film**, and only a
    participant can download the exact recording.
 
 ## The film
@@ -224,20 +216,21 @@ A machine snapshot is not invisible to the guest's devices: capturing the
 D3D section drains the push buffer, writes dirty render targets back and
 reads visibility counts. The recorder marks every attempt as a
 `d3d_barrier` with its scheduler slice, and linear playback performs the
-same device work at the same slice (`Session::replay_device_barrier`,
+same device work at the same slice (`Session::replay_capture_point`,
 `film::tape::Playback::d3d_barrier`). A keyframe taken anywhere else would
 make the playback differ from the recording.
 
-So the player captures only at slices the film marks. The recorder makes
-a capture point every **150 ticks** (5 s): when the machine reports no
-blocker it performs the D3D section's device work and writes the mark.
-Nothing is published into the film. A recorder that keeps a sidecar
-(below) saves the whole machine at every sixth point, which is the 30 s
-keyframe cadence. A dedicated host saves none.
+The player captures only at slices the film marks. Every **150 ticks**
+(5 s), the recorder looks for an unblocked boundary during the first
+30 ticks of the interval. It runs the D3D section's device work and
+writes a mark with the outcome after flushing the call batch. Every sixth
+mark is eligible for a whole-machine snapshot if that device capture
+succeeds. The 30 s cadence assumes every interval has an unblocked
+boundary. A dedicated host records the marks and omits the sidecar.
 
 Captures take place between two slices, at a boundary the recording
 already has. The recorder never asks for an early slice end
-(`crates/apps/boot/src/lib.rs`, the loop that calls `try_keyframe`), and
+(`crates/apps/boot/src/lib.rs`, the loop that calls `try_capture_point`), and
 neither does the player, because an early end moves every later slice
 ([snapshots.md](../runtime/snapshots.md#running-the-probe)).
 
@@ -262,13 +255,16 @@ The ring holds machine keyframes for the stretch of film just watched.
   (the pages written since the last capture, and the pages whose
   reference differs between the last capture and the target), then load
   the sections in the order `boot::snapshot_glue` uses for `state.load`,
-  then reset the film cursors (`Playback::resume_keyframe`).
+  then reset the film cursors. A ring entry uses `Playback::resume_cursor`
+  so a restore inside a call batch resumes at the next unread call.
 - **The ring is not in the film** and is dropped when the player leaves.
 
 The ring also gives the paused camera its picture where the guest draws
-the frame: moving the camera while paused restores the entry made at the
-pause, runs the guest to the next present with the new view, and holds
-again. A host film's view is drawn from simulation state by
+the frame: when an entry covers the pause, the player runs from the held
+tick through the next present with the new view. It keeps that frame on
+screen while it restores the entry and replays to the pause. Every camera
+change starts from the same tick, including pauses between capture points.
+A host film's view is drawn from simulation state by
 `host_view.rs` and needs no restore.
 
 ### Warm restore and its fallback
@@ -303,16 +299,18 @@ its own `TIDX`-shaped directory. `film::blam::TrackReader::seek` reads
 film and sidecar keyframes as one ordered list.
 
 - **The recorder writes one** for a film it records for local play: the
-  keyframes `try_keyframe` takes go to the sidecar, so the machine that
+  keyframes `try_capture_point` takes go to the sidecar, so the machine that
   played a game can jump in its film at once.
 - **The player writes one** as it plays or replays: a keyframe at every
   sixth capture point it passes that the sidecar lacks. A film from
   another machine becomes seekable as far as it has been watched.
   **Prepare** on the film page replays it to the end in the background
-  and reports progress.
+  without a window or realtime pacing. The film page gets progress and
+  the verified result from `theater.state {id}`.
 - A sidecar is rebuilt from the film whenever it is missing. It holds
   game data, is never uploaded, and is removed with the film or when the
-  cache passes its cap, least recently watched first.
+  cache passes its cap, least recently watched first. The user setting
+  `theater.cache_cap_gib` defaults to 4 GiB.
 - A sidecar loads only into the build that wrote it. Another build
   ignores it and writes its own.
 
@@ -324,8 +322,13 @@ reported in `theater.state`.
 
 | Film | Picture | Free, follow, orbit | First person | HUD |
 |---|---|---|---|---|
-| Local (the recorder rendered) | the guest's renderer | the rig replaces the renderer's view argument; the shared random state is swapped for a private seed around the replaced draw (`legacy_camera.rs`, `Seeds`) | a local seat's recorded viewport; any other player gets follow | the recorded HUD, hidden by `hide_hud` |
+| Local (the recorder rendered) | the guest's renderer | the rig replaces the renderer's view argument and can set its lens; a private seed is used for modified draws (`camera.rs`, `Seeds`) | a local seat's recorded viewport; any other player gets follow | the recorded HUD, hidden by `theater.hud {game: false}` |
 | Playerless host (the recorder drew nothing) | the independent view (`host_view.rs`): BSP, lightmaps, posed opaque models | the same rig | the unit's eye; no weapon model | none |
+
+The render hooks reserve private pages at the high end of the hook arena.
+The film's simulation dispatch addresses and hook digest stay the same.
+A cold restore checks the recording's RAM hash before recreating those
+pages for the player.
 
 A host film's picture gains effects, sky, transparents and a HUD when the
 renderer owns the frame and can draw from a presentation snapshot
@@ -337,15 +340,20 @@ second renderer for it.
 - **Screenshot.** The shell saves the published game frame before
   Theater's plates are drawn (`crates/apps/app/src/theater_overlay.rs`,
   `screenshot`). A scale above 1 renders one frame at a higher internal
-  resolution through the paused-camera path.
+  resolution. The independent observer redraws from its current scene.
+  Guest-drawn views use the paused-camera redraw and return to the held
+  tick before saving the picture.
 - **Clip export.** `theater.clip.export` starts a second, windowless
   player on the same film, seeks to the in mark, and plays to the out
   mark unpaced with a frame sink that receives every presented frame and
   the mixer's tapped audio. Frames go to a PNG sequence, or to the user's
   own ffmpeg as raw video for an MP4, the way `h2 movies` finds and runs
   it (`crates/apps/cli/src/movies_cmd.rs`). The export carries the rig, so
-  the clip shows the camera the player chose. The watching session keeps
-  running.
+  the clip shows the camera the player chose. The 30 Hz film clock sets
+  the frame count at either export rate. Missing presents hold the last
+  picture, and a 60 fps export uses two distinct pictures on ticks that
+  presented twice. The watching session keeps running, including across
+  seeks.
 - A clip on Live stays a tick range ([film-format.md](film-format.md)); a
   video file is a local export.
 
@@ -353,9 +361,9 @@ second renderer for it.
 
 The bar and the pause menu are pages of the UI builder
 ([ui-builder.md](ui-builder.md)), drawn in the retail skin by the same
-kit as the film selector, with the `theater.playback` sample as the
-offline preview. The host captures their input before it reaches the
-replayed simulation.
+kit as the film selector. The `theater.playback` and
+`theater.pause-menu` samples use the live page models. The host
+captures page input before it reaches the replayed simulation.
 
 - **Bar** (bottom of the screen, hidden with Back or H): play state,
   speed asked and reached, time and length, a timeline with kill
@@ -371,9 +379,12 @@ replayed simulation.
   cancels it and returns to the tick the jump left.
 ### Film compatibility
 
-The film page shows one of two states, computed from the film's header
-and the installed images before any download
-(`boot::theater::image_match`, `Session::check_simulation_hooks`):
+The film page shows one of two compatibility states. The library uses
+`boot::theater::image_match` to compare the local or cached film header
+with the installed images. For an uncached account film, the library
+checks the downloaded header before starting a player.
+`Session::check_simulation_hooks` verifies the effective hook digest
+before entering the guest.
 
 | State | Condition | Playback |
 |---|---|---|
@@ -453,8 +464,8 @@ opens `h2recomp://theater/<film>?clip=<clip>&t=<tick>&seat=<n>&camera=<mode>&ser
 | Guest RAM | 64 MiB: 16,384 pages of 4,096 bytes | **Code**: `RAM_SIZE`, `PAGE_SIZE` in `crates/runtime/runtime/src/guest.rs` |
 | Game-state arena | `0x3fe000` bytes: 4,186,112 bytes, 1,022 pages, 6.2% of RAM | **Code**: `crates/platform/xapi/tests/checkpoints.rs`; [sim-rewrite.md](../engine/sim-rewrite.md) |
 | Tick rate | 30 Hz; 33.3 ms of film per tick | [high-framerate.md](high-framerate.md) |
-| Sidecar keyframe cadence | 900 ticks (30 s) | **Code**: `KEYFRAME_SECONDS` |
-| Capture point cadence | 150 ticks (5 s) | **Design** |
+| Sidecar keyframe cadence | Every sixth capture point, usually 900 ticks (30 s) | **Code**: `POINTS_PER_KEYFRAME` |
+| Capture point cadence | 150 ticks (5 s) | **Code**: `CAPTURE_TICKS` |
 | Sidecar keyframe bytes | planning: 16 MiB anchor + 7 × 1 MiB deltas per 4 minutes = 5.75 MiB a minute; 57.5 MiB for a 10-minute match plus one lobby anchor | **Estimate** from [film-format.md](film-format.md#keyframe-ram-budget); not measured |
 | Film bytes | about 2,700 to 7,700 per player-minute and 3,650 a match-minute of digests; a 16-player 10-minute host film is about 0.5 MB | **Estimate**: [input-film.md](input-film.md#size-step-by-step) |
 | Ring entries | 12 (one minute at the capture cadence) | **Design** |
@@ -542,11 +553,11 @@ Existing methods keep their parameters.
 | `theater.step` | `{ticks: 1}` | runs that many ticks and holds |
 | `theater.keyframes` | `{}` | `{film: [tick], sidecar: [tick], ring: [tick], capture_points: [tick], ring_bytes, ring_cap, sidecar_bytes}` |
 | `theater.verify` | `{from?, to?, ring?: true}` | replays the range unrendered in a second player and returns `{ticks, digests_checked, arena_hashes_checked, ram_hashes_checked, first_divergence}`; `ring` takes and restores a ring entry at every capture point on the way |
-| `theater.prepare` | `{id}` | starts the pass that writes the sidecar and a missing stats file; `theater.state` of that id reports its progress |
+| `theater.prepare` | `{id}` | starts the pass that writes the sidecar, plus a missing stats file once the two streams are separate. Returns `{id, status, tick, length_ticks, error?}`, also available from `theater.state {id}` on the library agent. |
 | `theater.hud` | `{game?: bool, bar?: bool}` | transport state |
 | `theater.screenshot` | `{scale?: 1..4, path?}` | `{path, width, height, tick}` |
 | `theater.clip.mark` | `{in?: tick, out?: tick, clear?: true}` | the marks |
-| `theater.clip.export` | `{from, to, fps: 30 \| 60, format: "png" \| "mp4", path?}` | `{job}`; `theater.clip.status {job}` gives `{frames_done, frames_total, path, error}` |
+| `theater.clip.export` | `{from, to, fps: 30 \| 60, format: "png" \| "mp4", path?}` | `{job}`; `theater.clip.status {job}` gives `{frames_done, frames_total, path, error, finished}` |
 | `theater.compat` | `{id}` | `{state, reasons: [text], film: {xbe, contract, hooks, abi}, installed: [{stamp, state}]}` |
 | `theater.share` | `{id, visibility, clip?}` | `{film, url}` after the upload |
 | `theater.open` | `{url}` | the film page's `ui.screen`, or a refusal naming the field |
@@ -579,9 +590,11 @@ described in [film-format.md](film-format.md) when built:
   film's machine part. A reader that knows barriers needs no change.
 - The sidecar file: the eight bytes `H2KEYS1!`, the film id, the film's
   header digest, the build key, then `KEYF` envelopes and a closing
-  directory. Each keyframe's cursors include the film chunk and the
-  decoder's seat rows, so playback resumes the tick stream there. A
-  recorder's sidecar gets the digest when the film is sealed.
+  directory. Each sidecar keyframe has a `film::tape::SidecarCursor`
+  identifying its capture mark. The player resumes at the successor tick
+  in the indexed input block. The column decoder in slice 13 extends this
+  cursor with its film chunk and seat rows. A recorder's sidecar gets the
+  digest when the film is sealed.
 - The machine part's call tape is one binary stream in call order: a
   ULEB operation code from a table in the header, the thread, the
   arguments and the result as ULEBs, and each output as a length and
@@ -602,7 +615,7 @@ an order: 12, 13 and 14 start with 0 to 3.
 |---|---|---|---|
 | 0 | **Measure the existing player.** `theater.keyframes`, the `seek` block and `restore_ms` in `theater.state`; `h2 film stat FILE` printing each `KEYF`'s tick, stored bytes and anchor, the barrier marks, and for each tape stream its calls, inflated bytes, stored bytes and chunks. Then three films are recorded and played (a leased host match, a local multiplayer game, a campaign level) and a dated note records keyframes published and skipped with the blockers, anchor and delta bytes, capture time, pages written per 5 s and 30 s, child start to first slice, boot to match start, cold restore time, unrendered ticks a second, and the tape table per stream with the operations an offline game makes. | now | Tests on synthetic films for the new fields and `film stat`. The note `docs/game/notes/theater-seek.md` exists and the numbers on this page cite it or are corrected by it. |
 | 1 | **Jumps that show their work, on the cold path.** Seek progress and cancel; taps within 250 ms merged into one jump; `speed_reached`; `theater.step`; the timeline's target and fill. | now | `theater::tests`: a cancelled seek returns to the tick it left; five taps make one restart; a step of 1 advances one tick and holds. Agent-proto round trips. A boot-sourced seek on a synthetic film reports falling `remaining_ticks`. |
-| 2 | **Sidecar keyframes and Prepare.** The sidecar writer and reader, the merged keyframe list, the cache cap; the writer is one type used by the player and by the recorder. | now | A synthetic film without `KEYF`: play to the end, then a seek reports `source: "sidecar"` and its digests equal the straight run's. A sidecar of another build key is ignored. A damaged or missing sidecar is written again from the film. The cap evicts the least recently watched film's sidecar. |
+| 2 | **Sidecar keyframes and Prepare.** The sidecar writer and reader, the merged keyframe list, the cache cap and the film page's background Prepare pass. The writer is one type used by the player and by the recorder. | now | A synthetic film without `KEYF`: play to the end, then a seek reports `source: "sidecar"` and its digests equal the straight run's. The film page and agent report progress and the verified result. A sidecar of another build key is ignored. A damaged or missing sidecar is written again from the film. The cap evicts the least recently watched film's sidecar. |
 | 3 | **Capture points every 150 ticks** in the recorder, with no keyframe in the film. | now | `film` tests: a 30 s local recording holds six barrier marks and no `KEYF`, and its sidecar holds one keyframe; a host recording holds the marks and writes no sidecar; a film with barriers only at keyframes still plays. `theater::tests`: linear replay performs each barrier at its slice. |
 | 4 | **Warm restore and the ring.** The page pool, ring policy, in-process restore, the warm rules and the cold fallback, the paused-camera redraw. | code now; merges after slice 0 shows keyframes are taken in real films | Over a synthetic machine in the manner of `crates/runtime/kernel/tests/snapshot.rs`: run, capture at k, run to m, restore k in the same machine, run to m, and every slice digest matches; twice in a row. Pool: unchanged pages are shared, the cap evicts oldest first and is never passed. A forced RAM mismatch restarts cold and turns warm restores off. A disk delta between source and target restarts cold. `theater.verify {ring: true}` over each slice 0 film returns no divergence. |
 | 5 | **One camera rig.** The rig and `camera_pose` in state for rendered and playerless films, field of view, follow and orbit on rendered films, the game HUD and bar toggles as `theater.hud`. | now | `theater::tests`: the rig survives a seek; a camera change leaves the digests of a synthetic replay unchanged; `first-person` on a seat without a viewport falls to follow and says so in state. In a run: `theater.verify` with a free camera moving on a rendered film returns no divergence. |
@@ -655,21 +668,22 @@ is the only one whose merge waits on a measurement.
 
 ## Evidence
 
-- **Code**: a seek restarts the child. `crates/apps/cli/src/theater_cmd.rs`
+- **Code**: a cold seek restarts the child. `crates/apps/cli/src/theater_cmd.rs`
   loops on `restart.json`; `boot::run_theater` restores the keyframe
   before the first slice (`crates/apps/boot/src/lib.rs`, `take_keyframe`).
-- **Code**: the recorder captures between slices when `keyframe_due`,
-  with no early slice end, and retries each tick while blocked
-  (`record.rs`, `try_keyframe`).
+- **Code**: the recorder captures between slices when `capture_point_due`,
+  with no early slice end, and retries on later ticks within the first
+  second of the interval (`record.rs`, `try_capture_point`).
 - **Code**: barriers are replayed at their slice and their outcome is
-  checked (`replay.rs`, `replay_device_barrier`).
-- **Test**: `seek_restores_machine_and_replays_only_the_remaining_ticks`
-  (`theater/tests.rs`) covers the cold keyframe path on a synthetic
-  machine.
+  checked (`replay.rs`, `replay_capture_point`).
+- **Test**: `theater/tests/capture_points.rs` covers local and host
+  capture points, playback rebuilding the sidecar, and cold seeks using
+  a sidecar or an embedded keyframe on synthetic machines.
 - **Test**: an in-process load into a running synthetic machine, twice,
   with matching per-slice digests (`crates/runtime/kernel/tests/snapshot.rs`).
-- **Code**: `state.load` already loads into a running game through
-  `boot::snapshot_glue`; the film player does not use that path.
+- **Code**: `theater/warm.rs` uses the snapshot machine's ordinary part load
+  order. The ring supplies the RAM pages and the saved guest layout.
+  `theater/warm/tests.rs` covers the repeated restore and both cold routes.
 - **S**: a barrier mark without a published keyframe is accepted by
   every reader. `Playback::d3d_barrier` documents the case; slice 3's test
   verifies it.

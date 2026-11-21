@@ -3,8 +3,8 @@
 //! profile has collected any, before the level starts.
 //!
 //! **The flow** is `crate::skulls_screen`'s: a press on a difficulty opens
-//! this page instead of starting, and A, X or Start on the page runs the
-//! difficulty's own press, which starts the level.
+//! this page. A on Start Level runs the difficulty's own press and starts
+//! the level.
 //!
 //! **The screen** is our own list class (`crate::list_class`, as the Video
 //! screen is), feature `skulls-screen`, showing a [`SkullsScreen`]: every
@@ -12,10 +12,10 @@
 //! Off or Locked in one label; a description text widget of ours with the
 //! focused skull's effect and where it is found. Left or right on a
 //! collected skull flips it in the store at once ([`skulls::toggle`]), and
-//! its row reads "< On >" or "< Off >" as a value to step; the next
-//! campaign start turns on exactly the On ones ([`skulls::selection`]). A
-//! goes on to the level. B returns to the difficulty list. (The
-//! multiplayer instance keeps A as its toggle.)
+//! the next campaign start turns on exactly the On ones ([`skulls::selection`]).
+//! A also toggles a collected skull and opens a picker on a Halo 1
+//! option. B returns to the difficulty list. The multiplayer screen
+//! uses A to toggle a skull.
 //!
 //! **The layout** is the campaign level select's
 //! (`ui\screens\game_shell\load_level\load_level`, screen 11): its list
@@ -76,16 +76,9 @@ const DESCRIPTIONS: Range<u32> = SKULLS_ID_BASE + 0x80..SKULLS_ID_BASE + 0xc0;
 /// The HUD message when one of our skulls is picked up
 /// (`crate::skulls_custom`), by skull index.
 const FOUND: Range<u32> = SKULLS_ID_BASE + 0xc0..SKULLS_ID_BASE + 0x100;
-/// Each row's label, one per skull and state: the list skin has one text
-/// per row, so the state goes in the label ("Mythic: On"). A base of its
-/// own (another top byte; `is_ours` reads the middle bytes), three ids per
-/// skull, then the campaign page's stepped forms ([`ARROW_LABELS`]). The
-/// top byte is clear of the campaign picker's (`campaign_menu::ID_BASE`,
-/// `ID_BASE + 0x0200_0000`).
+/// Each row's label, one per skull and state. The list skin has one
+/// text per row, so the state appears in the label ("Mythic: On").
 const ROW_LABEL_BASE: u32 = crate::ui_kit::ids::family("skull row labels").base;
-/// The campaign page's On and Off labels, two per skull: "Mythic: < On >",
-/// a value left and right step.
-const ARROW_LABELS: u32 = ROW_LABEL_BASE + 0x80;
 pub const TITLE: &str = "Skulls";
 /// The campaign page's title: the level's options and its skulls.
 pub const PAGE_TITLE: &str = "Game Options";
@@ -94,24 +87,50 @@ pub const PAGE_TITLE_ID: u32 = SKULLS_ID_BASE + 0x14;
 pub const START: &str = "Start Level";
 pub const START_ID: u32 = SKULLS_ID_BASE + 0x15;
 pub const START_DESCRIPTION: &str =
-    "Start the level with the options and skulls below. Change one with the D-pad or A.";
+    "Start the level with the options and skulls below.";
 pub const START_DESCRIPTION_ID: u32 = SKULLS_ID_BASE + 0x16;
 pub const MP_TITLE: &str = "Multiplayer Skulls";
 pub const LOCKED: &str = "Locked";
-/// The campaign page's buttons, in the footer band where the game's own
-/// screens put theirs (`list_class::FOOTER`; "(A) SELECT  (B) BACK" is
-/// retail's `a_select_b_back`): the font's button glyphs (U+E10A and
-/// U+E10B the d-pad's left and right, U+E100 A, U+E101 B; each icon set
-/// draws its own), the words in capitals as retail's. Left or right
-/// changes the focused row; A selects it, as on the game's own lists: on
-/// the Start Level row (the first) it starts the level
-/// (`skulls_screen::action`), on any other row it changes it. X and Start
-/// do nothing here (X going on to the level read as a mystery). Under the
-/// descriptions the legend ran 10 of the 21 past the description's five
-/// lines (`ui_kit` preview, 2026-11-17).
-pub const PROMPT: &str = "\u{e10a}  \u{e10b} CHANGE  \u{e100} SELECT  \u{e101} BACK";
-/// The footer legend's id.
+
+/// The footer starts with the commands for Start Level.
+pub const PROMPT: &str = "\u{e100} START  \u{e101} BACK";
 pub const FOOTER_ID: u32 = SKULLS_ID_BASE + 0x13;
+const CHOICE_PROMPT: &str = "\u{e10a}  \u{e10b} CHANGE  \u{e100} SELECT  \u{e101} BACK";
+const CHOICE_FOOTER_ID: u32 = SKULLS_ID_BASE + 0x17;
+const LOCKED_PROMPT: &str = "\u{e101} BACK";
+const LOCKED_FOOTER_ID: u32 = SKULLS_ID_BASE + 0x18;
+
+#[derive(Clone, Copy)]
+enum CampaignFooter {
+    Start,
+    Choice,
+    Locked,
+}
+
+impl CampaignFooter {
+    fn id(self) -> u32 {
+        match self {
+            Self::Start => FOOTER_ID,
+            Self::Choice => CHOICE_FOOTER_ID,
+            Self::Locked => LOCKED_FOOTER_ID,
+        }
+    }
+
+    fn prompts(self) -> Vec<crate::ui_kit::input::Prompt> {
+        use crate::ui_kit::input::{Glyph, Prompt};
+
+        let mut prompts = match self {
+            Self::Start => vec![Prompt::new(&[Glyph::A], "Start")],
+            Self::Choice => vec![
+                Prompt::new(&[Glyph::DpadLeft, Glyph::DpadRight], "Change"),
+                Prompt::new(&[Glyph::A], "Select"),
+            ],
+            Self::Locked => Vec::new(),
+        };
+        prompts.push(Prompt::new(&[Glyph::B], "Back"));
+        prompts
+    }
+}
 
 /// The reference layout: the campaign level select
 /// (`ui\screens\game_shell\load_level\load_level`, screen 11, mainmenu.map,
@@ -261,32 +280,13 @@ pub fn row_label_id(i: usize, state: State) -> u32 {
     ROW_LABEL_BASE + 3 * i as u32 + state_index(state)
 }
 
-/// The campaign page's label id of skull `i`'s row in `state`: On and Off
-/// as a stepped value ("Mythic: < On >"), Locked as on every screen.
-pub fn arrow_label_id(i: usize, state: State) -> u32 {
-    match state {
-        State::Locked => row_label_id(i, state),
-        State::On | State::Off => ARROW_LABELS + 2 * i as u32 + state_index(state),
-    }
-}
-
 static ROW_LABELS: LazyLock<Vec<(u32, String)>> = LazyLock::new(|| {
-    let word = |st: State| STATE_WORDS[state_index(st) as usize];
     (0..TOTAL)
         .flat_map(|i| {
-            let plain = [State::On, State::Off, State::Locked].map(|st| {
-                (
-                    row_label_id(i, st),
-                    format!("{}: {}", SKULLS[i].label, word(st)),
-                )
-            });
-            let stepped = [State::On, State::Off].map(|st| {
-                (
-                    arrow_label_id(i, st),
-                    format!("{}: < {} >", SKULLS[i].label, word(st)),
-                )
-            });
-            plain.into_iter().chain(stepped)
+            [State::On, State::Off, State::Locked].map(|st| {
+                let word = STATE_WORDS[state_index(st) as usize];
+                (row_label_id(i, st), format!("{}: {word}", SKULLS[i].label))
+            })
         })
         .collect()
 });
@@ -387,6 +387,8 @@ pub fn strings() -> Vec<(u32, &'static str)> {
     v.push((LOCKED_ID, LOCKED));
     v.push((MP_TITLE_ID, MP_TITLE));
     v.push((FOOTER_ID, PROMPT));
+    v.push((CHOICE_FOOTER_ID, CHOICE_PROMPT));
+    v.push((LOCKED_FOOTER_ID, LOCKED_PROMPT));
     v.extend(ROW_LABELS.iter().map(|(i, t)| (*i, t.as_str())));
     v.extend(
         DESCRIPTION_TEXTS
@@ -560,10 +562,8 @@ impl SkullsScreen {
             .and_then(|p| skulls::state(&self.store, &p, i))
             .unwrap_or(State::Locked)
     }
-    /// Left or right on campaign row `row`: either flips a collected skull
-    /// (two values, so both directions step to the other, as a value row
-    /// with arrows on both sides wraps). What to log, `None` for no such
-    /// row or the multiplayer screen (whose A toggles).
+    /// Left or right changes a Halo 1 setting or flips a collected skull.
+    /// The multiplayer screen handles its toggles with A.
     pub fn step_line(&self, row: i16, right: bool) -> Option<String> {
         if self.mode() == Mode::Multiplayer {
             return None;
@@ -574,9 +574,8 @@ impl SkullsScreen {
             if right { "right" } else { "left" }
         ))
     }
-    /// A toggle of row `row` (A on the multiplayer screen, left, right or
-    /// A on the campaign page): what to log, `None` for no such row or the
-    /// Start row.
+    /// A direct change to row `row`, used by the campaign shortcuts and
+    /// the skull toggles. The Start row has no settings value.
     pub fn press_line(&self, row: i16) -> Option<String> {
         if self.mode() == Mode::Multiplayer {
             let r = usize::try_from(row)
@@ -597,9 +596,31 @@ impl SkullsScreen {
         };
         press(&self.store, &profile, i)
     }
+
+    fn campaign_footer(&self, row: i16) -> CampaignFooter {
+        match self.page_row(row) {
+            Some(PageRow::Start) => CampaignFooter::Start,
+            Some(PageRow::Skull(i)) if self.state(i) == State::Locked => CampaignFooter::Locked,
+            Some(_) => CampaignFooter::Choice,
+            None => CampaignFooter::Locked,
+        }
+    }
+
+    pub(crate) fn campaign_prompts(&self, row: i16) -> Vec<crate::ui_kit::input::Prompt> {
+        self.campaign_footer(row).prompts()
+    }
 }
 
 impl Rows for SkullsScreen {
+    fn content_spec(&self) -> Option<crate::ui_kit::spec::ScreenSpec> {
+        Some(crate::ui_kit::spec::Describe::spec(self))
+    }
+
+    fn focused_footer(&self, row: Option<i16>) -> Option<u32> {
+        (self.mode() == Mode::Campaign)
+            .then(|| self.campaign_footer(row.unwrap_or(0)).id())
+    }
+
     fn count(&self) -> usize {
         match self.mode() {
             Mode::Campaign => 1 + self.options().len() + TOTAL,
@@ -631,18 +652,21 @@ impl Rows for SkullsScreen {
                 LABEL_SLOT,
                 crate::h1_options::label_id(o, crate::h1_options::is_halo1(&self.store, o)),
             )],
-            Some(PageRow::Skull(i)) => vec![(LABEL_SLOT, arrow_label_id(i, self.state(i)))],
+            Some(PageRow::Skull(i)) => vec![(LABEL_SLOT, row_label_id(i, self.state(i)))],
             None => Vec::new(),
         }
     }
-    /// A on the campaign page's Start row goes on to the level (the
-    /// class's action); on an option or a skull it changes it, as left
-    /// and right do. On the multiplayer screen it toggles.
+    /// In campaign, A starts the level, opens an option's picker or
+    /// toggles a skull. In multiplayer, A toggles a skull.
     fn press(&self, row: i16) -> Chosen {
         match self.mode() {
             Mode::Campaign => match self.page_row(row) {
                 Some(PageRow::Start) => Chosen::Act,
-                Some(_) => self
+                Some(PageRow::Option(o)) => {
+                    crate::ui_kit::picker::offer(crate::h1_options::pick(&self.store, o))
+                        .map_or(Chosen::Nothing, Chosen::Open)
+                }
+                Some(PageRow::Skull(_)) => self
                     .press_line(row)
                     .map_or(Chosen::Nothing, Chosen::Stepped),
                 None => Chosen::Nothing,
@@ -684,8 +708,7 @@ impl Rows for SkullsScreen {
 const _: () = assert!(TOTAL as u32 <= LABELS.end - LABELS.start);
 const _: () = assert!(TOTAL as u32 <= DESCRIPTIONS.end - DESCRIPTIONS.start);
 const _: () = assert!(TOTAL as u32 <= FOUND.end - FOUND.start);
-const _: () = assert!(3 * TOTAL as u32 <= ARROW_LABELS - ROW_LABEL_BASE);
-const _: () = assert!(ARROW_LABELS - ROW_LABEL_BASE + 2 * TOTAL as u32 <= 0x100);
+const _: () = assert!(3 * TOTAL as u32 <= 0x100);
 const _: () =
     assert!(crate::skulls_mp::MP.len() as u32 <= MP_DESCRIPTIONS.end - MP_DESCRIPTIONS.start);
 
@@ -746,14 +769,6 @@ mod tests {
                 assert_eq!(t[0].0, LABEL_SLOT);
                 let label = text(t[0].1);
                 let (name, state) = label.rsplit_once(": ").expect("Name: State");
-                // The campaign page's On and Off read as a stepped value.
-                let state = match s.mode() {
-                    Mode::Campaign if state != LOCKED => state
-                        .strip_prefix("< ")
-                        .and_then(|v| v.strip_suffix(" >"))
-                        .expect("< On > or < Off >"),
-                    _ => state,
-                };
                 (name.to_string(), state.to_string())
             })
             .collect()
@@ -994,10 +1009,10 @@ mod tests {
         let all = strings();
         // Labels and descriptions for all, a found message for each of
         // ours, the titles (Skulls, Game Options, the multiplayer one),
-        // Locked, the footer legend and Start Level with its description.
+        // Locked, the campaign footers and Start Level with its description.
         assert_eq!(
             all.len(),
-            2 * TOTAL + 7 + 5 * TOTAL + crate::skulls_mp::MP.len() + crate::skulls_custom::OURS
+            2 * TOTAL + 9 + 3 * TOTAL + crate::skulls_mp::MP.len() + crate::skulls_custom::OURS
         );
         let mut ids: Vec<u32> = all.iter().map(|(i, _)| *i).collect();
         assert!(ids.iter().all(|i| is_ours(*i)));
@@ -1179,28 +1194,50 @@ mod tests {
         );
     }
 
-    /// Each row's label carries its state, and fits the list skin's 190
-    /// units: the longest renders about 180 wide in conduit-12.
-    /// The campaign page's On and Off are a value to step ("< On >"),
-    /// Locked is not; the longest, "Grunt Birthday Party: < Off >", is a
-    /// character more than its Locked label, and its brackets and spaces are
-    /// narrower than "Locked"'s letters.
+    /// Each row's label carries its state in the one-text list skin.
     #[test]
     fn row_labels_carry_the_state() {
         assert_eq!(text(row_label_id(12, State::On)), "Mythic: On");
         assert_eq!(text(row_label_id(12, State::Off)), "Mythic: Off");
         assert_eq!(text(row_label_id(12, State::Locked)), "Mythic: Locked");
-        assert_eq!(text(arrow_label_id(12, State::On)), "Mythic: < On >");
-        assert_eq!(text(arrow_label_id(12, State::Off)), "Mythic: < Off >");
-        assert_eq!(
-            arrow_label_id(12, State::Locked),
-            row_label_id(12, State::Locked)
-        );
-        let longest = |f: fn(usize, State) -> u32, st| {
-            (0..TOTAL).map(|i| text(f(i, st)).len()).max().unwrap()
-        };
-        assert!(longest(row_label_id, State::Locked) <= 28);
-        assert!(longest(arrow_label_id, State::Off) <= 29);
+        for i in 0..TOTAL {
+            assert!(text(row_label_id(i, State::Locked)).len() <= 28);
+        }
+    }
+
+    #[test]
+    fn campaign_options_open_the_picker_and_footers_follow_focus() {
+        use crate::h1_options::{self, ASSETS, CAMPAIGN, HUD};
+        use crate::ui_kit::{input::footer_legend, picker};
+
+        let defs: Vec<&'static settings::Def> = SKULLS
+            .iter()
+            .chain([ASSETS.def, HUD.def])
+            .collect();
+        let store = Arc::new(Store::defaults(&defs));
+        let screen = SkullsScreen::new(Arc::clone(&store));
+        screen.open_with("Chief".into(), CAMPAIGN);
+        let locked = screen.row_of_skull(12).unwrap();
+        assert_eq!(text(screen.focused_footer(Some(0)).unwrap()), PROMPT);
+        assert_eq!(text(screen.focused_footer(Some(1)).unwrap()), CHOICE_PROMPT);
+        assert_eq!(text(screen.focused_footer(Some(locked)).unwrap()), LOCKED_PROMPT);
+        for row in [0, 1, locked] {
+            assert_eq!(
+                text(screen.focused_footer(Some(row)).unwrap()),
+                footer_legend(&screen.campaign_prompts(row))
+            );
+        }
+
+        let halo1 = h1_options::is_halo1(&store, &ASSETS);
+        assert_eq!(screen.press(1), Chosen::Open(picker::NAME));
+        let pick = picker::current().expect("campaign asset picker");
+        assert_eq!(pick.title, "ASSETS");
+        assert_eq!(pick.values, ["Halo 1", "Halo 2"]);
+        assert_eq!(pick.current, usize::from(!halo1));
+        assert_eq!(h1_options::is_halo1(&store, &ASSETS), halo1);
+        (pick.set)(usize::from(halo1));
+        assert_eq!(h1_options::is_halo1(&store, &ASSETS), !halo1);
+        assert_eq!(screen.focused_footer(Some(1)), Some(CHOICE_FOOTER_ID));
     }
 
     /// The campaign page: left and right flip a collected skull (either
@@ -1215,7 +1252,7 @@ mod tests {
         skulls::record_pickup(&st, &names(&["Chief"]), 12);
         let mythic = s.row_of_skull(12).unwrap();
         let label = |row: i16| text(s.texts(row)[0].1);
-        assert_eq!(label(mythic), "Mythic: < On >");
+        assert_eq!(label(mythic), "Mythic: On");
         assert_eq!(
             s.sideways(mythic, true).as_deref(),
             Some(&*format!(
@@ -1223,7 +1260,7 @@ mod tests {
             ))
         );
         assert_eq!(s.state(12), State::Off);
-        assert_eq!(label(mythic), "Mythic: < Off >");
+        assert_eq!(label(mythic), "Mythic: Off");
         assert!(
             s.sideways(mythic, true)
                 .unwrap()

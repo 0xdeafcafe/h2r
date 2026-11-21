@@ -162,6 +162,21 @@ impl Live for Preview {
         format!("{effect:?}")
     }
 
+    fn audit_press(&mut self, input: Input) -> Option<bool> {
+        let (screen, focus) = self.stack.last_mut()?;
+        let page = screen.page(Arc::clone(&self.repo));
+        // Open rows only select an in-memory entry. Retry and download
+        // can spawn workers even with the synthetic catalog source.
+        if input == Input::X
+            || input == Input::A
+                && !page.spec(focus).rows.get(focus.0)
+                    .is_some_and(|row| matches!(row.press, crate::ui_kit::spec::Press::Open(_)))
+        {
+            return None;
+        }
+        Some(page.step(focus, input) != ListEffect::None)
+    }
+
     fn spec(&self) -> ScreenSpec {
         let (screen, focus) = self.stack.last().copied().unwrap_or((self.root, Focus(0)));
         screen.page(Arc::clone(&self.repo)).spec(&focus)

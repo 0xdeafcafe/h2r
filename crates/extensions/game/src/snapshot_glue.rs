@@ -89,32 +89,30 @@ pub fn save_parts(
     header: Header,
     hash: &dyn Fn() -> lockstep::RamHash,
 ) -> Result<Vec<u8>, String> {
-    save_parts_observing(parts, header, hash, None, |_, _| {})
+    save_parts_into(parts, SnapshotWriter::new(header), hash, None, &SAVE_ORDER)
 }
 
-/// Reports each attempted section immediately, including a section which
-/// stopped the save. D3D's capture has guest-visible effects even if a
-/// later part prevents the recorder from publishing a complete keyframe.
-pub fn save_parts_observing(
+fn save_parts_into(
     parts: &mut [Box<dyn Part + '_>],
-    header: Header,
+    mut out: SnapshotWriter,
     hash: &dyn Fn() -> lockstep::RamHash,
     ram_base: Option<&snapshot::Base<'_>>,
-    mut attempted: impl FnMut(&str, bool),
+    order: &[&str],
 ) -> Result<Vec<u8>, String> {
     check_names(parts)?;
-    let mut out = SnapshotWriter::new(header);
-    for name in SAVE_ORDER {
+    for &name in order {
         if let Some(p) = parts.iter_mut().find(|p| p.name() == name) {
             let result = match ram_base {
                 Some(base) if name == "guest" => p.save_with_ram_base(&mut out, base),
                 _ => p.save(&mut out),
             };
-            attempted(name, result.is_ok());
             result.map_err(|e| format!("{name}: {e}"))?;
         }
     }
-    let h = hash();
+    finish_with_hash(out, &hash())
+}
+
+fn finish_with_hash(mut out: SnapshotWriter, h: &lockstep::RamHash) -> Result<Vec<u8>, String> {
     let mut w = Writer::new();
     w.u64(h.total).list(&h.chunks, |w, c| {
         w.u64(*c);
@@ -142,16 +140,24 @@ pub fn load_parts_with_base(
     cow: Option<&Path>,
     ram_base: Option<&snapshot::Base<'_>>,
 ) -> Result<Vec<String>, String> {
+    load_parts_with_guest(parts, snapshot, |part| match (ram_base, cow) {
+        (Some(base), _) => part.load_with_ram_base(snapshot, base),
+        (None, Some(ram)) => part.load_cow(snapshot, ram),
+        (None, None) => part.load(snapshot),
+    })
+}
+
+fn load_parts_with_guest(
+    parts: &mut [Box<dyn Part + '_>],
+    snapshot: &Snapshot<'_>,
+    mut guest: impl FnMut(&mut dyn Part) -> Result<(), String>,
+) -> Result<Vec<String>, String> {
     check_names(parts)?;
     let mut applied = Vec::new();
     for name in LOAD_ORDER {
         if let Some(p) = parts.iter_mut().find(|p| p.name() == name) {
             let loaded = if name == "guest" {
-                match (ram_base, cow) {
-                    (Some(base), _) => p.load_with_ram_base(snapshot, base),
-                    (None, Some(ram)) => p.load_cow(snapshot, ram),
-                    (None, None) => p.load(snapshot),
-                }
+                guest(p.as_mut())
             } else {
                 p.load(snapshot)
             };
@@ -470,6 +476,74 @@ pub struct BootMachine<'a> {
 }
 
 impl BootMachine<'_> {
+    pub(crate) fn film_snapshot_writer(&self, tick: u64) -> SnapshotWriter {
+        SnapshotWriter::new(Header {
+            build: self.shelf.build().clone(),
+            name: format!("film-{tick}"),
+            tick,
+            presents: self.presents,
+            notes: vec![],
+        })
+    }
+
+    /// The recorded device operation at a film capture point. The caller
+    /// can drop the writer or continue into a full snapshot after success.
+    pub(crate) fn capture_film_device(
+        &mut self,
+        out: &mut SnapshotWriter,
+    ) -> Option<Result<(), String>> {
+        self.parts
+            .iter_mut()
+            .find(|part| part.name() == "d3d")
+            .map(|part| part.save(out))
+    }
+
+    pub(crate) fn save_after_film_device(
+        &mut self,
+        out: SnapshotWriter,
+        ram_base: Option<&snapshot::Base<'_>>,
+    ) -> Result<Vec<u8>, String> {
+        // D3D already ran and wrote back to guest RAM at the capture point.
+        save_parts_into(&mut self.parts, out, &*self.hash, ram_base, &SAVE_ORDER[1..])
+    }
+
+    /// Complete an in-memory film keyframe around the device section that
+    /// replay already saved at the recorded barrier. RAM belongs to the pool.
+    pub(crate) fn save_ring_sections(&mut self, mut out: SnapshotWriter) -> Result<Vec<u8>, String> {
+        let rt = self.rt.ok_or("ring capture needs a running guest")?;
+        check_names(&self.parts)?;
+        for name in SAVE_ORDER {
+            if name == "d3d" {
+                continue;
+            }
+            if let Some(p) = self.parts.iter_mut().find(|p| p.name() == name) {
+                if name == "guest" {
+                    snapshot::guest::save_layout(&mut out, &rt.memory()).map_err(err)?;
+                    snapshot::guest::save_tsc(&mut out, rt).map_err(err)?;
+                } else {
+                    p.save(&mut out).map_err(|e| format!("{name}: {e}"))?;
+                }
+            }
+        }
+        finish_with_hash(out, &(self.hash)())
+    }
+
+    /// The same load order as state.load. At the guest part, apply the pool's
+    /// page changes and saved layout, then restore the logical TSC.
+    pub(crate) fn load_ring_sections(
+        &mut self,
+        snap: &Snapshot<'_>,
+        mut restore_ram: impl FnMut(&mut runtime::Guest, &runtime::guest::GuestLayout) -> Result<(), String>,
+    ) -> Result<(), String> {
+        let rt = self.rt.ok_or("ring restore needs a running guest")?;
+        let layout = snapshot::guest::load_layout(snap).map_err(err)?;
+        load_parts_with_guest(&mut self.parts, snap, |_| {
+            restore_ram(&mut rt.memory(), &layout)?;
+            snapshot::guest::load_tsc(snap, rt).map_err(err)
+        })?;
+        Ok(())
+    }
+
     fn notes(at: &At) -> Vec<(String, String)> {
         let mut notes = vec![("agent_ticks".to_owned(), at.ticks.to_string())];
         let phase = serde_json::to_value(at.phase)

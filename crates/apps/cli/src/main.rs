@@ -196,6 +196,7 @@ const USAGE: &str = "usage: h2 <command>
   theater play FILM --render-every 0
                           replay a host film headlessly
   film stat FILE          report keyframes, capture points and tape usage
+  theater prepare FILM    verify a film headlessly and build its seek cache
   sim <run|batch|compare> run or compare bot matches
   agent <call>            call a running game's agent API";
 
@@ -208,6 +209,7 @@ const USAGE: &str = "usage: h2 <command> [disc]
   server-map strip|verify ORIGINAL.map SERVER.map
   serve <disc>            run headless with the agent API; --system-link [--host-light]
                           (docs/runtime/agent-api.md)
+  theater prepare FILM    verify a film headlessly and build its seek cache
   agent <call>            call a running game's agent API: status, count, query,
                           object, counters, wait, pause/step in a `-` script
   studio <call>           call h2-editor's agent API (the open window, or

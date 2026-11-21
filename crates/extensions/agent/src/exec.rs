@@ -6,6 +6,7 @@
 //! thread passes in, so every answer is read on the game's own thread.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::SyncSender;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 
@@ -69,6 +70,9 @@ impl Access {
 /// state locked, so it must be quick and must not call the [`Agent`].
 pub type HostMethod = Box<dyn FnMut(Value) -> Result<Value, RpcError> + Send>;
 
+/// A long-running host read with no guest access, answered on its connection thread.
+type ConnectionRead = Arc<dyn Fn(Value) -> Result<Value, RpcError> + Send + Sync>;
+
 /// A method that reads (or writes) the game at the boundary it is answered
 /// at ([`Agent::add_game_method`]): the `sim.*` methods. Like `world.*`,
 /// it waits for a tick while the game ticks.
@@ -86,7 +90,7 @@ pub struct GameCtx<'a> {
     pub at: At,
     host: &'a mut BTreeMap<String, (Access, HostMethod)>,
     /// Set by [`GameCtx::defer`]: the answer comes at a later boundary.
-    later: Option<(Later, u64, Duration)>,
+    later: Option<(Later, u64, Duration, bool)>,
 }
 
 /// A deferred answer ([`GameCtx::defer`]): polled at each boundary after
@@ -142,7 +146,13 @@ impl GameCtx<'_> {
 
     /// A deferred operation with its own, shorter wall-clock deadline.
     pub fn defer_for(&mut self, ticks: u64, wall: Duration, poll: Later) {
-        self.later = Some((poll, ticks.clamp(1, DEFER_TICKS_MAX), wall.min(DEFER_WALL)));
+        self.later = Some((poll, ticks.clamp(1, DEFER_TICKS_MAX), wall.min(DEFER_WALL), false));
+    }
+
+    /// A host-side action can complete on a Theater transport poll while the
+    /// guest tick is still held. Its poll must not depend on guest execution.
+    pub fn defer_at_boundary(&mut self, poll: Later) {
+        self.later = Some((poll, DEFER_TICKS_MAX, DEFER_WALL, true));
     }
 }
 
@@ -153,6 +163,7 @@ struct Deferred {
     poll: Later,
     from_ticks: u64,
     tick_limit: u64,
+    paused_safe: bool,
     deadline: Instant,
 }
 
@@ -179,6 +190,7 @@ pub struct Agent {
 struct Shared {
     state: Mutex<State>,
     wake: Condvar,
+    connection_reads_running: AtomicUsize,
 }
 
 #[derive(Default)]
@@ -217,6 +229,7 @@ struct State {
     holding: bool,
     /// Methods the host answers, by name.
     host: BTreeMap<String, (Access, HostMethod)>,
+    connection_reads: BTreeMap<String, ConnectionRead>,
     /// Methods answered with the game at hand, by name.
     game_methods: BTreeMap<String, (Access, GameMethod)>,
     /// The tick observer isn't installed (switched off, or the plan left
@@ -400,6 +413,32 @@ impl Agent {
                     );
                 }
             }
+            Ok(r) if s.connection_reads.contains_key(&r.method) => {
+                let read = s.connection_reads[&r.method].clone();
+                let running = &self.shared.connection_reads_running;
+                running.fetch_add(1, Ordering::SeqCst);
+                struct InFlight<'a>(&'a AtomicUsize);
+                impl Drop for InFlight<'_> {
+                    fn drop(&mut self) { self.0.fetch_sub(1, Ordering::SeqCst); }
+                }
+                let _job = InFlight(running);
+                drop(s);
+                let result = read(r.params);
+                if let Some(id) = r.id {
+                    let mut s = self.lock();
+                    let reply = match result {
+                        Ok(mut value) => {
+                            if let Value::Object(obj) = &mut value {
+                                obj.entry("at").or_insert_with(|| to_value(s.at()));
+                            }
+                            Response::ok(id, value)
+                        }
+                        Err(e) => Response::err(id, e),
+                    };
+                    s.send(conn, reply);
+                }
+                return;
+            }
             Ok(r) => s.pending.push_back((conn, r)),
             Err(resp) => s.send(conn, resp),
         }
@@ -429,6 +468,22 @@ impl Agent {
         self.lock()
             .host
             .insert(name.to_owned(), (access, Box::new(f)));
+    }
+
+    /// Independent host reads still waiting to return a response.
+    pub fn connection_read_pending(&self) -> bool {
+        self.shared.connection_reads_running.load(Ordering::SeqCst) > 0
+    }
+
+    /// Register an independent host read, such as a second player's replay
+    /// verification. Its connection waits for the reply while the game runs.
+    pub fn add_connection_read(
+        &self,
+        name: &str,
+        f: impl Fn(Value) -> Result<Value, RpcError> + Send + Sync + 'static,
+    ) {
+        assert!(!method::ALL.contains(&name));
+        self.lock().connection_reads.insert(name.to_owned(), Arc::new(f));
     }
 
     /// Answers `name` with `f`, given the game at the boundary
@@ -957,13 +1012,21 @@ impl State {
     /// Polls the deferred answers: answers what is ready, times out what
     /// waited too long.
     fn settle_deferred(&mut self, reader: &mut dyn Reader) {
+        self.settle_deferred_at(reader, false);
+    }
+
+    fn settle_deferred_at(&mut self, reader: &mut dyn Reader, theater_paused: bool) {
         if self.deferred.is_empty() {
             return;
         }
         let now = Instant::now();
         let at = self.at();
         for mut d in std::mem::take(&mut self.deferred) {
-            let fresh = self.ticks == d.from_ticks;
+            if theater_paused && !d.paused_safe {
+                self.deferred.push(d);
+                continue;
+            }
+            let fresh = self.ticks == d.from_ticks && !d.paused_safe;
             let out = if fresh {
                 None
             } else {
@@ -1132,13 +1195,14 @@ impl State {
             {
                 t.record_lobby(b, m, &p)
             }
-            if let (Ok(_), Some((poll, ticks, wall))) = (&out, ctx.later.take()) {
+            if let (Ok(_), Some((poll, ticks, wall, paused_safe))) = (&out, ctx.later.take()) {
                 self.deferred.push(Deferred {
                     conn,
                     id: req.id,
                     poll,
                     from_ticks: self.ticks,
                     tick_limit: ticks,
+                    paused_safe,
                     deadline: Instant::now() + wall,
                 });
                 return None;
@@ -1174,6 +1238,7 @@ impl State {
                     )
                     .chain(agent_proto::live::METHODS.iter().map(|m| (*m).to_owned()))
                     .chain(self.host.keys().cloned())
+                    .chain(self.connection_reads.keys().cloned())
                     .chain(self.game_methods.keys().cloned())
                     .collect::<Vec<String>>(),
             )),

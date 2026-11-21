@@ -216,6 +216,36 @@ pub struct FrameSink {
 }
 
 impl FrameSink {
+    /// A private frame channel with no swapchain, input or audio device.
+    pub fn headless() -> Result<Self, gfx::GfxError> {
+        let ctx = GfxContext::headless()?;
+        Ok(channel(&ctx).0)
+    }
+
+    /// Read the latest game picture without taking or advancing the window's
+    /// front slot. Keep the slot locked until the GPU copy is submitted and read.
+    pub fn read_published_rgba(&self) -> Option<((u32, u32), Vec<u8>)> {
+        let state = self.shared.lock();
+        let slot = state.slots.iter().flatten()
+            .find(|slot| slot.seq != 0 && slot.seq == state.next_seq - 1)?;
+        let pixels = gfx::readback::read_texture(
+            &self.ctx, &slot.texture, wgpu::TextureAspect::All, 4, slot.size,
+        );
+        Some((slot.size, pixels))
+    }
+
+    /// Publish a guest viewport with the same gamma and crop as the window.
+    pub fn submit_guest_surface(
+        &mut self,
+        store: &SurfaceStore,
+        id: SurfaceId,
+        gamma: Option<&[u8; 768]>,
+        crop: Option<[u32; 4]>,
+        guest_size: (u32, u32),
+    ) -> Result<u64, FrameError> {
+        self.submit_surface_region(store, id, gamma, crop, Some(guest_size))
+    }
+
     fn new(shared: Arc<Shared>, ctx: GfxContext) -> Self {
         Self {
             shared,
@@ -338,7 +368,7 @@ impl FrameSink {
         crop: impl FnMut() -> Option<[u32; 4]> + Send + 'static,
     ) -> impl FnMut(&GfxContext, &SurfaceStore, SurfaceId, u32, Option<&[u8; 768]>) + Send + 'static
     {
-        self.crop_present_hook(every, None, crop)
+        self.crop_present_hook(every, None, crop, |due, _| due, |_, _| {})
     }
 
     /// Present a viewport expressed in guest pixels from a display-resolution surface.
@@ -349,7 +379,21 @@ impl FrameSink {
         crop: impl FnMut() -> Option<[u32; 4]> + Send + 'static,
     ) -> impl FnMut(&GfxContext, &SurfaceStore, SurfaceId, u32, Option<&[u8; 768]>) + Send + 'static
     {
-        self.crop_present_hook(every, Some(guest_size), crop)
+        self.crop_present_hook(every, Some(guest_size), crop, |due, _| due, |_, _| {})
+    }
+
+    /// Let the viewer publish a single preview between regularly paced frames.
+    /// Crops are sampled even on skipped frames, as they refer to this swap.
+    pub fn into_filtered_guest_present_hook(
+        self,
+        every: u32,
+        guest_size: (u32, u32),
+        crop: impl FnMut() -> Option<[u32; 4]> + Send + 'static,
+        publish: impl FnMut(bool, Option<(u32, u32)>) -> bool + Send + 'static,
+        submitted: impl FnMut(&FrameSink, Result<u64, &FrameError>) + Send + 'static,
+    ) -> impl FnMut(&GfxContext, &SurfaceStore, SurfaceId, u32, Option<&[u8; 768]>) + Send + 'static
+    {
+        self.crop_present_hook(every, Some(guest_size), crop, publish, submitted)
     }
 
     fn crop_present_hook(
@@ -357,6 +401,8 @@ impl FrameSink {
         every: u32,
         logical_size: Option<(u32, u32)>,
         mut crop: impl FnMut() -> Option<[u32; 4]> + Send + 'static,
+        mut publish: impl FnMut(bool, Option<(u32, u32)>) -> bool + Send + 'static,
+        mut submitted: impl FnMut(&FrameSink, Result<u64, &FrameError>) + Send + 'static,
     ) -> impl FnMut(&GfxContext, &SurfaceStore, SurfaceId, u32, Option<&[u8; 768]>) + Send + 'static
     {
         let mut frames = 0u64;
@@ -364,20 +410,37 @@ impl FrameSink {
             let rect = crop();
             let frame = frames;
             frames = frames.wrapping_add(1);
-            if every == 0 || !frame.is_multiple_of(u64::from(every)) {
+            let due = every != 0 && frame.is_multiple_of(u64::from(every));
+            let size = store.get(id).ok().map(|s| (s.desc().width, s.desc().height));
+            if !publish(due, size) {
                 return;
             }
             debug_assert!(
                 ctx.device == self.ctx.device,
                 "GfxBackend is not on the shell's device"
             );
-            if let Err(e) = self.submit_surface_region(store, id, gamma, rect, logical_size) {
+            let result = self.submit_surface_region(store, id, gamma, rect, logical_size);
+            submitted(&self, result.as_ref().copied());
+            if let Err(e) = result {
                 self.hook_errors += 1;
                 if self.hook_errors <= 10 {
                     eprintln!("app: present hook: {e}");
                 }
             }
         }
+    }
+
+    /// Read the exact published, cropped and gamma-corrected slot in its
+    /// submission callback. Reading the window's front could pick an older frame.
+    pub fn read_published_rgba(&self, sequence: u64) -> Result<((u32, u32), Vec<u8>), String> {
+        let st = self.shared.lock();
+        let slot = st.slots.iter().flatten().find(|slot| slot.seq == sequence)
+            .ok_or("viewer frame was replaced")?;
+        // Keep the slot from cycling to another producer during the copy.
+        let rgba = gfx::readback::try_read_texture(
+            &self.ctx, &slot.texture, wgpu::TextureAspect::All, 4, slot.size,
+        )?;
+        Ok((slot.size, rgba))
     }
 
     fn submit_encoded(

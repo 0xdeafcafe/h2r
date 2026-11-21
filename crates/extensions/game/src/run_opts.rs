@@ -49,6 +49,9 @@ pub struct RunReport {
 pub struct Host {
     /// Record this boot to a new film file. Falls back to H2_FILM_OUT.
     pub film_out: Option<PathBuf>,
+    /// Local media controls and the offline clip sink belong to separate players.
+    pub film_media: Option<crate::theater::Media>,
+    pub film_capture: Option<Arc<crate::theater::ClipCapture>>,
     /// Dedicated System Link profile, with no screen or speakers.
     pub host_light: bool,
     /// Opt in to bot support on a light host.
@@ -118,6 +121,8 @@ pub struct Host {
     pub debug_menu: Option<debug_menu::Shared>,
     /// Desktop Theater controller and the film library opener supplied by the host.
     pub theater: Option<(crate::theater_ui::Theater, crate::theater_ui::adapter::OpenLibrary)>,
+    /// The isolated player's host-rendered pages and input model.
+    pub theater_playback: Option<crate::theater_ui::Theater>,
     /// Open the agent socket in the agents directory when `H2_AGENT` is
     /// unset, so editors and agents find the game
     /// ([`crate::agent_glue::discoverable_socket`]; `H2_AGENT=off` keeps

@@ -40,7 +40,10 @@ impl Film {
         Session::open(
             None,
             Some(Replay {
+                verification: None,
                 path: self.dir.join("synthetic.h2film"),
+                cache: None,
+                unpaced: false,
                 render_every: 0,
                 speed: 1.,
                 seek_tick: target,

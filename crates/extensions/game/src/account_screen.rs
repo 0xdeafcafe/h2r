@@ -347,7 +347,7 @@ impl AccountScreen {
             Step::Menu { focus } => MENU
                 .iter()
                 .enumerate()
-                .map(|(i, r)| format!("{}{r}", if i == *focus { "> " } else { "  " }))
+                .map(|(i, r)| format!("{}{r}", if i == *focus { "[x] " } else { "[ ] " }))
                 .collect(),
             Step::Enter { .. } => vec!["Type on the keyboard.".into()],
             Step::Working { flow: Flow::Create } => {
@@ -365,7 +365,7 @@ impl AccountScreen {
             ],
             Step::Error { error, .. } => {
                 let mut l = wrap(&error.to_string(), LINE_CHARS);
-                l.push("A: try again   B: back".into());
+                l.push("A: Try again / B: Back".into());
                 l
             }
             Step::Closed => Vec::new(),
@@ -642,7 +642,7 @@ mod tests {
         fits(&s.text(0));
         assert_eq!(
             s.text(0),
-            "> Create a Live account\r\n  Recover my account\r\n  Cancel"
+            "[x] Create a Live account\r\n[ ] Recover my account\r\n[ ] Cancel"
         );
         for error in [
             SetupError::GamertagTaken,

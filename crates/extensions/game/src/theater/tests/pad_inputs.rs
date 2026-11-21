@@ -81,7 +81,10 @@ fn replay_reads_the_actual_xinput_packet_from_the_recorded_controller_port() {
     let replay = Session::open(
         None,
         Some(Replay {
+            verification: None,
             path: file,
+            cache: None,
+            unpaced: false,
             render_every: 0,
             speed: 1.,
             seek_tick: 0,

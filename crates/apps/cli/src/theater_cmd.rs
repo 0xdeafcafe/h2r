@@ -1,5 +1,5 @@
-//! Each seek starts a new process so the game, HLE allocators and feature
-//! statics all restart. The parent owns the restored disk and the seek reply.
+//! Launch an isolated film player and reconstruct its guest disk on cold seeks.
+mod verify;
 use anyhow::{Context, Result, bail, ensure};
 use std::{
     fs,
@@ -7,9 +7,15 @@ use std::{
     process::Command,
 };
 
-const USAGE: &str = "h2 theater play FILM [--seek TICK] [--render-every N] [--speed 0.25..4] [--disc ISO] [--out IMAGE_DIR] [--data INITIAL_DATA] [--movies DIR] [--socket PATH]";
+#[cfg(feature = "desktop")]
+mod export;
+
+const USAGE: &str = "h2 theater play FILM [--seek TICK] [--render-every N] [--speed 0.25..4] [--disc ISO] [--out IMAGE_DIR] [--data INITIAL_DATA] [--movies DIR] [--socket PATH]\n\
+                    h2 theater prepare FILM [--disc ISO] [--out IMAGE_DIR] [--data INITIAL_DATA] [--movies DIR] [--socket PATH]";
+#[derive(Clone)]
 struct Options {
     film: PathBuf,
+    prepare: bool,
     every: u32,
     speed: f64,
     disc: PathBuf,
@@ -22,9 +28,13 @@ struct Options {
 }
 impl Options {
     fn parse(mut args: impl Iterator<Item = String>) -> Result<Self> {
-        ensure!(args.next().as_deref() == Some("play"), "{USAGE}");
+        let prepare = match args.next().as_deref() {
+            Some("play") => false,
+            Some("prepare") => true,
+            _ => bail!("{USAGE}"),
+        };
         let film = PathBuf::from(args.next().context(USAGE)?);
-        let mut every = u32::from(cfg!(feature = "desktop"));
+        let mut every = u32::from(!prepare && cfg!(feature = "desktop"));
         let mut data = None;
         let mut movies = None;
         let mut seek = None;
@@ -35,15 +45,21 @@ impl Options {
             .unwrap_or_else(|| std::env::temp_dir().join("h2boot"));
         let mut socket = std::env::var_os("H2_AGENT")
             .map(PathBuf::from)
-            .unwrap_or_else(|| agent_proto::cache_dir().join("theater.sock"));
+            .unwrap_or_else(|| {
+                if prepare {
+                    std::env::temp_dir().join(format!("h2t-{}.sock", live_proto::sign::random_id()))
+                } else {
+                    agent_proto::cache_dir().join("theater.sock")
+                }
+            });
         while let Some(flag) = args.next() {
             let value = args
                 .next()
                 .with_context(|| format!("{flag} needs a value"))?;
             match flag.as_str() {
-                "--render-every" => every = value.parse()?,
-                "--speed" => speed = value.parse()?,
-                "--seek" => seek = Some(value.parse().context("invalid seek tick")?),
+                "--render-every" if !prepare => every = value.parse()?,
+                "--speed" if !prepare => speed = value.parse()?,
+                "--seek" if !prepare => seek = Some(value.parse().context("invalid seek tick")?),
                 "--data" => data = Some(PathBuf::from(value)),
                 "--movies" => movies = Some(PathBuf::from(value)),
                 "--disc" => disc = Some(value.into()),
@@ -55,6 +71,7 @@ impl Options {
         ensure!((0.25..=4.).contains(&speed), "speed must be 0.25 to 4");
         Ok(Self {
             film,
+            prepare,
             every,
             speed,
             disc: disc.context("set H2_DISC or pass --disc")?,
@@ -63,10 +80,14 @@ impl Options {
             data,
             movies,
             seek,
-            range: std::env::var("H2_THEATER_RANGE")
-                .ok()
-                .map(|value| parse_range(&value))
-                .transpose()?,
+            range: if prepare {
+                None
+            } else {
+                std::env::var("H2_THEATER_RANGE")
+                    .ok()
+                    .map(|value| parse_range(&value))
+                    .transpose()?
+            },
         })
     }
 }
@@ -102,11 +123,21 @@ impl Drop for Temp {
 
 pub fn run(args: Vec<String>) -> Result<()> {
     let opts = Options::parse(args.clone().into_iter())?;
+    #[cfg(feature = "desktop")]
+    if let Some(job) = std::env::var_os("H2_THEATER_EXPORT_JOB") {
+        return export::run(opts, Path::new(&job));
+    }
     if let Some(work) = std::env::var_os("H2_THEATER_WORK") {
         return child(opts, Path::new(&work));
     }
+    let viewer_data = opts.data.clone().unwrap_or_else(content::store::default_data_root);
+    let ring_mib = boot::setting_defs::theater_ring_mib(Some(&viewer_data));
     let mut reader = film::Reader::open(&opts.film)?;
     let header = reader.header.clone();
+    ensure!(
+        !opts.prepare || header.version >= 2,
+        "this film does not have an engine replay track"
+    );
     let target = opts
         .seek
         .unwrap_or_else(|| opts.range.map_or(0, |[start, _]| start));
@@ -122,6 +153,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
         paused: false,
         presentation: Default::default(),
     };
+    let mut retries = 0;
     loop {
         let temp = Temp::new()?;
         let restart = temp.0.join("restart.json");
@@ -131,6 +163,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
             .args(&args)
             .env("H2_AGENT", &opts.socket)
             .env("H2_THEATER_WORK", &temp.0)
+            .env(boot::setting_defs::THEATER_RING_MIB_ENV, ring_mib.to_string())
             .env("H2_HOST_LOBBY", if header.lobby { "1" } else { "0" })
             .env(
                 "H2_HOST_LOBBY_MACHINE_START",
@@ -156,6 +189,10 @@ pub fn run(args: Vec<String>) -> Result<()> {
         boot::theater::configure_replay_child(&mut reader, &mut cmd)?;
         let status = cmd.status().context("starting film playback")?;
         ensure!(status.success(), "film playback exited with {status}");
+        if retry_seek(&temp.0, &mut launch, &mut retries)? {
+            continue;
+        }
+        retries = 0;
         if !restart.try_exists()? {
             return Ok(());
         }
@@ -163,7 +200,35 @@ pub fn run(args: Vec<String>) -> Result<()> {
     }
 }
 
+fn retry_seek(work: &Path, launch: &mut boot::theater::Restart, retries: &mut u8) -> Result<bool> {
+    let retry = work.join("retry-build.json");
+    if !retry.try_exists()? {
+        return Ok(false);
+    }
+    ensure!(*retries < 2, "could not prepare a consistent disk for this seek");
+    launch.presentation.snapshot_build = Some(serde_json::from_reader(fs::File::open(retry)?)?);
+    *retries += 1;
+    Ok(true)
+}
+
 fn child(opts: Options, work: &Path) -> Result<()> {
+    child_with_start(
+        opts,
+        work,
+        serde_json::from_reader(fs::File::open(work.join("launch.json"))?)?,
+        #[cfg(feature = "desktop")]
+        None,
+    )
+}
+
+fn child_with_start(
+    opts: Options,
+    work: &Path,
+    launch: boot::theater::Restart,
+    #[cfg(feature = "desktop")] capture: Option<std::sync::Arc<boot::theater::ClipCapture>>,
+) -> Result<()> {
+    #[cfg(feature = "desktop")]
+    let media_options = opts.clone();
     let child_started = std::time::Instant::now();
     let mut film = film::Reader::open(&opts.film)?;
     let xbe = boot::read_xbe(&opts.disc)?;
@@ -188,7 +253,7 @@ fn child(opts: Options, work: &Path) -> Result<()> {
             Err(e) => diagnostics.push(format!("{}: {e}", path.display())),
         }
     }
-    let (image, _stamp, compatibility) = images
+    let (image, _, compatibility) = images
         .into_iter()
         .min_by_key(|(_, _, mode)| *mode != film::image::ImageMatch::Native)
         .with_context(|| {
@@ -200,7 +265,7 @@ fn child(opts: Options, work: &Path) -> Result<()> {
             }
         })?;
     if compatibility == film::image::ImageMatch::FromBoot {
-        eprintln!("theater: compatible guest image; verifying from boot with recorded hashes");
+        eprintln!("theater: compatible guest image; using this build's local cache");
     }
     ensure!(
         film.header.version >= 2 || film.header.meta.source == film::Source::Host,
@@ -208,19 +273,36 @@ fn child(opts: Options, work: &Path) -> Result<()> {
     );
     let entry = film.machine_section().unique(film::DATA)?.clone();
     let data = work.join("data");
-    let launch: boot::theater::Restart =
-        serde_json::from_reader(fs::File::open(work.join("launch.json"))?)?;
+    let viewer_data = opts.data.clone().unwrap_or_else(content::store::default_data_root);
+    let films_dir = std::env::var_os("H2_FILM_DIR").map(PathBuf::from)
+        .unwrap_or_else(|| viewer_data.join("films"));
+    let (settings, problems) = boot::setting_defs::load(&viewer_data, &[]);
+    for problem in problems {
+        eprintln!("theater: {problem}");
+    }
+    let cap_bytes = boot::setting_defs::theater_cache_cap_bytes(Some(&settings));
     let delta = if launch.target > 0
         && film.header.version >= 2
-        && compatibility == film::image::ImageMatch::Native
         && launch.source != Some(agent_proto::theater::SeekRoute::Boot)
     {
-        film::blam::TrackReader::open(&opts.film)?.disk_delta_at(launch.target)?
+        let mut track = film::blam::TrackReader::open(&opts.film)?;
+        if compatibility == film::image::ImageMatch::FromBoot {
+            track.disable_embedded_keyframes();
+        }
+        if cap_bytes > 0
+            && let Some((stamp, switches)) = &launch.presentation.snapshot_build
+            && stamp == &_stamp
+            && let Err(e) = track.attach_sidecar(&films_dir, stamp, switches)
+        {
+            eprintln!("theater: could not open sidecar for disk restore: {e:#}");
+        }
+        track.disk_delta_at(launch.target)?
     } else {
         Vec::new()
     };
     film.read::<film::manifest::Manifest>(&entry)?
         .restore_keyframe(&data, opts.data.as_deref(), &delta)?;
+    let verification = Some(verify::mode(&opts, work)?);
     let boot = boot::RunOpts {
         disc: opts.disc,
         data_root: data,
@@ -239,13 +321,22 @@ fn child(opts: Options, work: &Path) -> Result<()> {
     };
     #[cfg(feature = "desktop")]
     let film_parent = opts.film.parent().unwrap_or(Path::new(".")).to_owned();
+    #[cfg(feature = "desktop")]
+    let theater_disc = boot.disc.clone();
     let camera = boot::theater::FilmCamera::default();
     #[cfg(feature = "desktop")]
     let clip_marks = launch.presentation.clip_marks;
     #[cfg(feature = "desktop")]
     let starting_seek = (launch.target > 0).then_some(launch.target);
     let replay = boot::theater::Replay {
+        verification,
         path: opts.film.clone(),
+        cache: Some(boot::theater::ReplayCache {
+            films_dir,
+            cap_bytes,
+            disk_digest: film::xbe_digest(&delta),
+        }),
+        unpaced: opts.prepare,
         render_every: opts.every,
         speed: launch.speed,
         seek_tick: launch.target,
@@ -257,11 +348,18 @@ fn child(opts: Options, work: &Path) -> Result<()> {
         camera: camera.clone(),
         window_closed: None,
     };
+    let retry = work.join("retry-build.json");
     let run = move |host, window_closed| -> Result<()> {
         let mut replay = replay;
         replay.window_closed = window_closed;
         let r = boot::run_theater(&xbe, &image, &boot, host, replay, child_started);
         vfs::flush_pending_metadata();
+        if let Err(e) = &r
+            && let Some(build) = e.downcast_ref::<boot::theater::RetrySeek>()
+        {
+            serde_json::to_writer(fs::File::create_new(retry)?, &build.0)?;
+            return Ok(());
+        }
         r.map(|_| ())
     };
     let host_bots = film.header.host_bots;
@@ -272,6 +370,11 @@ fn child(opts: Options, work: &Path) -> Result<()> {
     } else {
         None
     };
+    #[cfg(feature = "desktop")]
+    if let Some(capture) = capture {
+        let observer = film.header.version >= 2 && local_gpu != Some(true);
+        return run(export::host(capture, camera, observer, host_bots)?, None);
+    }
     if opts.every == 0 {
         let host = boot::Host { host_light: true, host_bots, ..Default::default() };
         if local_gpu == Some(true) {
@@ -314,7 +417,10 @@ fn child(opts: Options, work: &Path) -> Result<()> {
         // When the recorded guest used a headless device, the independent
         // observer can present the match without changing that device's answers.
         let observer = film.header.version >= 2 && local_gpu != Some(true);
-        let mut meta = film_entry(film::LibraryEntry::read(&opts.film)?, &_stamp);
+        let mut meta = film_entry(film::LibraryEntry::read(&opts.film)?);
+        if let Err(error) = boot::theater_ui::stats::read_playback(&opts.film, &mut meta) {
+            eprintln!("theater: reading stats for {}: {error:#}", meta.id);
+        }
         let title = meta.map.clone();
         if let Ok(id) = std::env::var("H2_THEATER_FILM_ID") {
             meta.id = id;
@@ -326,9 +432,9 @@ fn child(opts: Options, work: &Path) -> Result<()> {
             starting_seek,
             opts.socket,
             dir.clone(),
+            opts.film,
         )?;
-        let (overlay, controller) = overlay(theater, dir.join("screenshots"));
-        let data = opts.data.unwrap_or_else(content::store::default_data_root);
+        let (overlay, controller) = overlay(theater.clone(), dir.join("screenshots"), Some(&theater_disc));
         let config = app::AppConfig {
             title: format!("Theater — {}", title),
             audio: false,
@@ -344,12 +450,14 @@ fn child(opts: Options, work: &Path) -> Result<()> {
             if let Some(input) = window.take_input() {
                 controller.attach_input(input);
             }
-            let (store, problems) = boot::setting_defs::load(&data, &[]);
-            for p in problems {
-                eprintln!("theater: {p}");
-            }
             let native: boot::run_opts::NativeSize = std::sync::Arc::new(window.native_size());
-            let raster = boot::d3d_glue::output_size(Some(&store), native.clone())?;
+            let raster = boot::d3d_glue::output_size(Some(&settings), native.clone())?;
+            let film_media = export::media(
+                media_options,
+                dir,
+                window.frame_sink(),
+                raster.clone(),
+            );
             let (gfx, gfx_view, film_view) = if observer {
                 let mut sink = window.frame_sink();
                 (
@@ -367,9 +475,24 @@ fn child(opts: Options, work: &Path) -> Result<()> {
                     )),
                 )
             } else {
-                let present = window
-                    .frame_sink()
-                    .into_guest_crop_present_hook(publish_every, boot::setting_defs::GUEST_FRAME, move || camera.present_crop());
+                camera.attach_guest_view(window.gfx_context().device.limits().max_texture_dimension_2d);
+                let crop = camera.clone();
+                let publish = camera.clone();
+                let scale = camera.clone();
+                let raster: boot::run_opts::NativeSize =
+                    std::sync::Arc::new(move || scale.guest_raster(raster()));
+                let present = window.frame_sink().into_filtered_guest_present_hook(
+                    publish_every,
+                    boot::setting_defs::GUEST_FRAME,
+                    move || crop.present_crop(),
+                    move |due, full_size| publish.publish_guest_present(due, full_size),
+                    move |sink, result| {
+                        camera.sample_guest_present(|| {
+                            let seq = result.map_err(|e| anyhow::anyhow!("{e}"))?;
+                            sink.read_published_rgba(seq).map_err(anyhow::Error::msg)
+                        });
+                    },
+                );
                 (
                     Some(d3d::GfxBackend::new(window.gfx_context())),
                     Some(boot::run_opts::DisplayView {
@@ -387,6 +510,8 @@ fn child(opts: Options, work: &Path) -> Result<()> {
                     gfx,
                     gfx_view,
                     film_view,
+                    film_media: Some(film_media),
+                    theater_playback: Some(theater),
                     between_slices: Some(Box::new(move |_| !window.should_stop())),
                     host_light: true,
                     host_bots,
@@ -437,6 +562,19 @@ mod tests {
         assert_eq!((o.every, o.speed), (0, 0.25));
         for v in ["NaN", "inf", "0", "4.01"] {
             assert!(options(v).is_err());
+        }
+    }
+
+    #[test]
+    fn prepare_takes_the_whole_film_and_runs_without_a_window() {
+        let args = ["prepare", "synthetic.h2film", "--disc", "synthetic.iso"];
+        let options = Options::parse(args.map(String::from).into_iter()).unwrap();
+        assert!(options.prepare);
+        assert_eq!(options.every, 0);
+        assert_eq!(options.seek, None);
+        assert_eq!(options.range, None);
+        for flag in ["--seek", "--speed", "--render-every"] {
+            assert!(Options::parse(args.into_iter().chain([flag, "1"]).map(String::from)).is_err());
         }
     }
 }

@@ -418,9 +418,10 @@ guests"):
   "More Options", opened from a row added to the variant editor's page list
   with the list hooks the pregame dialog's "Halo 1 Options" row uses
   ([multiplayer.md](../halo1/multiplayer.md) "Halo 1 options",
-  [ui-screens.md](ui-screens.md)). Its rows are `Row::value`s whose get and
-  set read and write the block in the record being edited
-  (`boot::variant_page`; "The variant editor's page list" below).
+  [ui-screens.md](ui-screens.md)). A opens the shared value picker for
+  gravity, the team count and the damage, shield and health scales.
+  Unlimited Grenades is a toggle. The page reads and writes the record
+  being edited (`boot::variant_page` under "The variant editor's page list").
 - **Studio** (`crates/apps/studio/src/ui/variants.rs`): a "More options
   (h2recomp)" section under the pages edits the block through
   `VariantEditor::set_ext` (undoable; a drag on one option is one step).
@@ -434,7 +435,7 @@ guests"):
   to at least four of each grenade type (`skulls_custom::variant_grenades`,
   the Unlimited Grenades skull's `top_grenades` on the unit's two counts at
   `+0x23e`). The host's counts are the game's and replicate, so a guest
-  writes nothing. Row 1 of "More Options" ("Unlimited Grenades: < Off >",
+  writes nothing. Row 1 of "More Options" ("Unlimited Grenades: Off",
   left, right and A toggle) and a Studio checkbox.
 - **Damage, shield and health** (traced statically).
   `0xd7b80` applies one damage instance; it calls the shield step
@@ -458,8 +459,8 @@ guests"):
   else reads `+0x1c` after the steps (`0xd82e0`, called between them, and
   the damage report) sees the scaled amount; not traced further.
 - **Team count**: a retail field (setting 93, `+0xb4`)
-  with no retail row. Row 2 of "More Options" ("Team Count: < Map
-  Default >", then 2 to 8; 1 is storable but not offered and shows as 2)
+  with no retail row. Row 2 of "More Options" ("Team Count: Map
+  Default", then 2 to 8; 1 is storable but not offered and shows as 2)
   writes the edited record's `+0xb4` (`0x54e554`) rather than the block;
   Studio has a "Team count" box (`record::TEAM_COUNT`, `TEAM_COUNTS`).
   Every build plays it: it is the game's own field. Whether the game's
@@ -512,15 +513,18 @@ Skulls row and ours (8 rows with both), `more_row` is word 7 (6 without
 Skulls), `skip_pane` keeps the last pane for it. The row's `before` hooks
 on `0x2b7581` and `0x2b75e8` draw "More Options" and open our page with
 `skulls_mp::open_request` on the editor's own window and slot. The page
-(`variant-more-options`, a list class laid out as the skulls page, left,
-right and A step) reads the block at `0x54e5ac` when it opens and at each
-row text, and after a change writes the new block back before the row is
-drawn again (`Rows::live_text`), so the game's editor saves it with the
-record. Gravity (row 0) steps 10, 25, 50, 75, Normal, 125, 150, 200, 300 and
-400%; a value Studio set between steps shows as the nearest. Back to
-Normal writes all zeros (a retail record). Strings: the "variant page"
-family. Rows 1 to 5 are Unlimited Grenades, Team Count and the damage, shield
-and health scales (`variant_page::GRENADES_ROW`, `TEAMS_ROW`, `Scale`).
+(`variant-more-options`, laid out as the skulls page) reads the block at
+`0x54e5ac` when it opens and at each row text. A opens the shared picker
+with the current choice focused. Confirming a choice stages the edit.
+Left and right remain shortcuts, and A on Unlimited Grenades toggles it
+directly. `Rows::live_text` writes pending changes before the row redraws,
+so the editor saves them with the record. Gravity (row 0) offers 10, 25,
+50, 75, Normal, 125, 150, 200, 300 and 400%. A value Studio sets between
+steps shows as the nearest. Selecting Normal writes all zeros when the
+other options are at their defaults. Rows 1 to 5 are Unlimited Grenades,
+Team Count and the damage, shield and health scales
+(`variant_page::GRENADES_ROW`, `TEAMS_ROW`, `Scale`). The "variant page"
+string family supplies the labels and descriptions.
 
 ### The code
 

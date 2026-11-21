@@ -351,6 +351,8 @@ fn hosted(
     boot::Host {
         film_out: None,
         film_view: None,
+        film_media: None,
+        film_capture: None,
         host_light: false,
         host_bots: false,
         gfx: Some(gfx),
@@ -363,6 +365,7 @@ fn hosted(
         pad_speaker,
         debug_menu: None,
         theater: None,
+        theater_playback: None,
         perf_overlay: None,
         discoverable_agent: false,
         embedded_live: false,
@@ -789,6 +792,7 @@ pub(crate) fn run_with_theater(
         let (overlay, _) = theater::overlay(
             controller.clone(),
             opts.data_root.join("films/screenshots"),
+            None,
         );
         config.theater = Some(overlay);
     }

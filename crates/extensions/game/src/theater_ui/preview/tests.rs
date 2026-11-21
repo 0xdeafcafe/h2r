@@ -74,7 +74,7 @@ fn sparse_summary_keeps_the_known_roster_and_unmatched_scores() {
     let roster: Vec<_> = details
         .texts
         .iter()
-        .skip(5)
+        .skip(6)
         .filter(|t| !t.text.is_empty())
         .map(|t| t.text.as_str())
         .collect();
@@ -162,7 +162,10 @@ fn empty_library_explains_the_next_action_on_every_control() {
             assert_eq!(spec.rows.len(), BROWSE_ROWS);
             assert_eq!(spec.focus, i);
             assert!(spec.texts.iter().any(|t| t.text == help));
-            assert!(spec.description_text().is_none());
+            assert_eq!(
+                spec.description_text().as_deref(),
+                Some(super::super::selector::OptionRow::ALL[i].description()),
+            );
             sample.press(Input::Down);
         }
     }
@@ -208,14 +211,24 @@ fn theater_tab_walkthrough_restores_the_parent_focus() {
 fn theater_unplayable_film_can_be_saved_but_cannot_watch() {
     let mut view = live(DETAIL).unwrap();
     assert!(view.go("unplayable"));
+    let spec = view.spec();
+    assert!(spec.texts.iter().any(|text| text.text == "Unavailable"));
     assert_eq!(
-        view.spec().help.as_deref(),
-        Some("Needs a different build.")
+        spec.help.unwrap().split_whitespace().collect::<Vec<_>>().join(" "),
+        "Film predates a breaking simulation change."
     );
     assert_eq!(view.spec().rows[0].label, "Save");
     view.press(Input::A);
     assert_eq!(view.spec().name, DETAIL);
     assert_eq!(view.spec().rows[0].label, "Unsave");
+}
+
+#[test]
+fn theater_playable_film_shows_its_state_and_watch_action() {
+    let view = live(DETAIL).unwrap();
+    let spec = view.spec();
+    assert!(spec.texts.iter().any(|text| text.text == "Playable"));
+    assert_eq!(spec.rows[0].label, "Watch");
 }
 
 #[test]
@@ -228,7 +241,7 @@ fn summary_without_players_has_one_roster_message_and_one_action() {
     let roster: Vec<_> = spec
         .texts
         .iter()
-        .skip(5)
+        .skip(6)
         .filter(|t| !t.text.is_empty())
         .map(|t| t.text.as_str())
         .collect();
@@ -292,7 +305,7 @@ fn names_only_roster_pages_without_empty_stat_columns() {
     let roster = |spec: ScreenSpec| {
         spec.texts
             .into_iter()
-            .skip(5)
+            .skip(6)
             .map(|t| t.text)
             .filter(|s| !s.is_empty())
             .collect::<Vec<_>>()
@@ -324,11 +337,75 @@ fn theater_delete_is_confirmed_and_restores_the_library() {
     let mut view = live(DETAIL).unwrap();
     view.press(Input::Down);
     view.press(Input::Down);
+    view.press(Input::Down);
     view.press(Input::A);
-    assert_eq!(view.spec().rows[2].label, "Confirm delete");
+    assert_eq!(view.spec().rows[3].label, "Confirm delete");
     view.press(Input::A);
     assert_eq!(view.spec().rows.len(), BROWSE_ROWS + 1);
     assert_eq!(view.spec().name, FILMS);
+}
+
+#[test]
+fn prepare_progress_uses_the_film_page_and_keeps_watch_available() {
+    use crate::ui_kit::spec::Press;
+
+    let mut view = live(DETAIL).unwrap();
+    assert_eq!(view.spec().rows[1].label, "Prepare");
+    assert!(view.go("preparing"));
+    let working = view.spec();
+    assert_eq!(working.rows[1].label, "Preparing... 40%");
+    assert_ne!(working.rows[1].press, Press::Act);
+    assert_ne!(working.rows[3].press, Press::Act);
+    assert_eq!(working.rows[0].press, Press::Act);
+
+    assert!(view.go("prepared"));
+    assert_eq!(view.spec().rows[1].label, "Prepare again");
+    assert_eq!(view.spec().help.as_deref(), Some("Prepared for this build."));
+
+    assert!(view.go("prepare-failed"));
+    assert_eq!(view.spec().rows[1].label, "Retry Prepare");
+    assert_eq!(view.spec().help.as_deref(), Some("Film diverged at tick 1201."));
+}
+
+#[test]
+fn choosing_prepare_starts_and_reads_the_selected_job_through_the_agent() {
+    use agent::{Access, Agent, GameStatus, Reader};
+    use agent_proto::{Object, theater as api};
+    use serde_json::json;
+
+    struct Empty;
+    impl Reader for Empty {
+        fn status(&mut self) -> GameStatus {
+            GameStatus::default()
+        }
+
+        fn objects(&mut self) -> Result<Vec<Object>, String> {
+            Ok(Vec::new())
+        }
+    }
+
+    let mut view = Preview::new(Kind::Detail);
+    let agent = Agent::new();
+    agent.add_method(api::PREPARE, Access::Act, |params| {
+        assert_eq!(params, json!({"id": "game-1"}));
+        Ok(json!({"id": "game-1", "status": "running", "tick": 7, "length_ticks": 10}))
+    });
+    agent.add_method(api::STATE, Access::Read, |params| {
+        assert_eq!(params, json!({"id": "game-1"}));
+        Ok(json!({"id": "game-1", "status": "complete", "tick": 10, "length_ticks": 10}))
+    });
+    view.theater.connect(&agent);
+    view.press(Input::Down);
+    view.press(Input::A);
+    assert_eq!(view.spec().rows[1].label, "Preparing...");
+
+    agent.between_slices(&mut Empty, 0);
+    view.theater.pump();
+    assert_eq!(view.spec().rows[1].label, "Preparing... 70%");
+
+    agent.between_slices(&mut Empty, 0);
+    view.theater.pump();
+    assert_eq!(view.spec().rows[1].label, "Prepare again");
 }
 
 #[test]

@@ -1223,7 +1223,7 @@ or the game's UI state without UI watch. All are read-only except
 - **`ui.screen`** (`h2 agent ui`): the menu screen player one's input goes
   to, read each UI update, including during a campaign pause
   (`game::ui_watch`): `{screen, window, slot, class?, live_menu_row, mode,
-  dialog, age_ms, layout_findings}`, or `UNAVAILABLE` before the first read. `class` names
+  dialog, age_ms, layout_findings, content_findings}`, or `UNAVAILABLE` before the first read. `class` names
   a Rust list screen whose numeric ID identifies its retail skin.
   In a paused game, Player Settings reports screen 196 or 200. Its Video
   Settings and Voice children report classes `video` and `voice` on
@@ -1250,8 +1250,15 @@ or the game's UI state without UI watch. All are read-only except
   `rect` ([top, left, bottom, right] in UI units), `text` when readable,
   and an `issue` with a `kind` (`unsafe`, `outside_panel` or
   `outside_container`). It samples the input screen and the active dialog.
-  The [UI builder](../game/ui-builder.md#the-checks) also measures glyphs
-  offline to check whether the text fits inside its rectangle.
+  `content_findings` reports broken strings, dead controls and missing
+  content. Every entry has `screen` and `issue: {kind, id, detail}`.
+  Findings from instantiated widgets include `widget` and `text`.
+  Findings from a registered Rust page model include
+  `source: "page_model"` and `screen_instance`. Model findings use the
+  currently focused row and the installed fonts when available. The
+  read does not activate controls. The
+  [UI builder](../game/ui-builder.md#content-findings) checks each named
+  state and exercises offline focus and input routes.
 - **`ui.stack`** (`h2 agent ui.stack`, no parameters): a tick-boundary
   read of the occupied channels, their active, pending and outgoing
   screen instances, and the game-shell channel's saved screen IDs
@@ -2136,36 +2143,101 @@ directly on its own `--socket` (`H2_AGENT`, else the cache's `theater.sock`).
 | Method | Parameters | Result |
 |---|---|---|
 | `theater.play` | `{"id":"film-id","range":[300,900]}` to open, `{}` to resume; omit `range` for the whole film | `{id, starting:true}` on launch, otherwise transport state |
-| `theater.state` | `{}` | transport state, or `{id:null}` with no player |
+| `theater.prepare` | `{"id":"film-id"}` on the library agent | starts a background Prepare replay and returns its progress. A duplicate request for an active job returns that job's progress. |
+| `theater.state` | `{}` | transport state, or `{id:null,active:false}` with no player |
+| `theater.state` | `{"id":"film-id"}` on the library agent | Prepare progress for that ID |
 | `theater.pause` | `{}` | holds playback and reports state. During a seek it arranges a hold at the destination |
+| `theater.compat` | `{"id":"film-id"}` | `{state, reasons, film: {xbe, contract, hooks, abi}, installed: [{stamp, state}]}` |
 | `theater.speed` | `{"speed":0.5}` | sets host pacing from 0.25 to 4 times realtime |
-| `theater.seek` | `{"tick":900}`, optionally `"clip_marks":[300,null]`, `"source":"boot"` or `"source":"keyframe"` | restarts the player and fast-forwards to the target, carrying camera and timeline state. Forcing a keyframe requires a compatible frame at or before the target |
+| `theater.seek` | `{"tick":900}`, optionally `"clip_marks":[300,null]`, `"source":"boot"` or `"source":"keyframe"` | restores a frame or starts a fresh child, then fast-forwards to the target, carrying camera and timeline state. Forcing a keyframe requires a compatible frame at or before the target |
 | `theater.seek` | `{"cancel":true}` | returns to the tick the active seek left and holds there. An optional `tick` is ignored. If no seek is active, returns the current state |
 | `theater.step` | `{"ticks":1}` | accepts a positive number of ticks while paused and outside a seek. Returns the current state, runs the requested ticks, and holds at the new tick. Read state again to get the completed tick |
-| `theater.camera` | `{"mode":"orbit","player":"<name>","look":[0.2,-0.1],"zoom":-1}` or `{"mode":"first_person","seat":3}` | selects the view and returns transport state; an absolute film seat is 0 to 15 |
+| `theater.camera` | `{"mode":"orbit","seat":3,"look":[0.2,-0.1],"zoom":-1,"fov":85}` | selects the view and returns transport state. An absolute film seat is 0 to 15 |
+| `theater.hud` | `{"game":false,"bar":true}` | changes game HUD and Theater bar visibility and returns transport state. Omitted fields keep their values |
 | `theater.keyframes` | `{}` | seek inventory `{film, sidecar, ring, capture_points, ring_bytes, ring_cap, sidecar_bytes}`; lists contain tick numbers |
 | `theater.measurements` | `{}` | timings, keyframe attempts and page counts from the instrumented recorder or playback child |
+| `theater.verify` | `{"from":1,"to":900,"ring":true}`, all optional | replays in an isolated, unpaced player. Ring verification first records reference hashes in a linear pass, compares every successful marked capture, and returns `{ticks, digests_checked, arena_hashes_checked, ram_hashes_checked, first_divergence}` |
+| `theater.screenshot` | `{"scale":2,"path":"/path/view.png"}`. Both fields are optional | `{path, width, height, tick}` for a clean PNG |
+| `theater.clip.mark` | `{"in":300}`, `{"out":900}`, or `{"clear":true}` | `{in, out}` with null for each unset mark |
+| `theater.clip.export` | `{"from":300,"to":900,"fps":60,"format":"mp4"}`. Optional `path`. Use 30 or 60 fps and `png` or `mp4` | `{job}` once the offline player starts |
+| `theater.clip.status` | `{"job":"<job>"}` | `{frames_done, frames_total, path, error, finished}` |
+
+Prepare accepts a local library ID or `live:<game-id>` for a host film
+downloaded into the library. It replays the entire film from boot in an
+isolated process without a window or realtime pacing. Prepare progress is
+`{id,status,tick,length_ticks}`. The status is `idle` before a job starts,
+`starting` while it boots, `running` while it replays, `complete` after
+verified replay and sidecar finalization, or `failed` with an `error`
+message. The ticks count from boot. The film length becomes available
+after the worker resolves the library entry. The library agent keeps
+each job's final status for its lifetime and a new request can retry it.
+For a command-line Prepare with `--socket PATH`, use `theater.state {}`
+on that socket to read its transport tick directly.
+
+Verification counts checks within the inclusive tick bounds. The verifier starts
+at boot and reports the first divergence even when it prevents reaching the
+requested range. With `ring: true`, a linear reference pass saves the whole-RAM
+hash at each successful capture point in range. A second pass checks that hash
+before and after capturing, restores the ring entry, and checks the restored RAM.
+The active player's transport remains usable. A clean run returns
+`first_divergence: null`. A mismatch returns its tick and reason.
+
+Screenshots use scale 1 by default and save the latest published game picture.
+Scales 2 through 4 render the view at a larger internal raster. The independent
+observer can redraw from its current state. Guest-drawn views need a paused
+tick and a warm return point for the ring's redraw. When the redraw is
+unavailable, the method reports why. The default output is a new PNG in the
+film library's `screenshots` directory.
+
+An export job copies the current camera rig into a windowless replay. The
+range is half-open, in ticks from boot. The tick at `to` is excluded. Output
+uses a 640×480 canvas and contains exactly `(to - from) * fps / 30` frames.
+At 60 fps, a tick with one presented frame uses it twice. The timeline holds
+the previous picture through skipped draws. MP4 includes the available
+48 kHz stereo game mix. Host recordings with clock-only audio export with
+silence.
+
+The default destination is under the film library's `exports` directory.
+A PNG export creates a directory of numbered frames starting at
+`frame-000000.png`. MP4 uses the user's `ffmpeg` on `PATH`. When ffmpeg is
+missing, the job reports the same reason as `h2 movies` (exit 3) and PNG
+export remains available. Use a fresh destination path for either format.
+`finished` becomes true after the output is published or the job fails.
+`error` is null for a successful job. The job ID remains valid across seeks.
+These files stay on the user's machine.
+
+`theater.compat` is a read method on the library agent. It accepts a local
+film ID or `live:<game-id>` for a cached host film. States are `playable` and
+`unavailable`. Reasons are strings, and `contract` and `hooks` are null
+when the recording supplies no digest. The preflight checks the XBE,
+simulation ABI, guest image contract, and required external start files.
+The replay verifies installed hooks before entering the guest.
 
 The rendered player starts at the clip's first tick and loops at its end.
-Its overlay uses the player's agent socket for transport and `cheat.set
-{"name":"hide_hud","value":true}` for the HUD. A paused player accepts HUD
-and camera changes and applies them to the next rendered frame.
+Its overlay uses the player's agent socket for transport, camera and HUD
+controls. HUD and camera changes apply to the next rendered frame.
 
-Rendered host playback starts in `free`; its other modes are `orbit`,
-`follow`, `first-person` and `default`. In a playerless version 2 or 3
-host film, `default` uses the first available player's eye position.
-`orbit`, `follow` and `first-person` accept a player name or an absolute
-film seat; with neither, they use the first spawned player. `look` adjusts
-yaw and pitch in radians for `free` and `orbit`. In `free`, `movement`
-adjusts strafe, forward and rise in world units. In `orbit`, `zoom` changes
-the radius in world units. Local playback starts in `default` and shows
-the whole retail frame; version 3 also accepts `first-person` with a local
-player's name or seat to select a drawn viewport. Headless playback
-(`--render-every 0`) accepts only `default`.
+Both picture paths use the same rig. Rendered local playback starts in
+`default` with the whole retail frame. Host playback starts in `free`;
+`default` on a playerless film uses the first available player's eye.
+Use `orbit`, `follow` or `first-person` with a player name or film seat
+to select a subject. On rendered films, first person selects the recorded
+viewport. If the subject has no viewport, state reports `camera: "follow"`
+and `camera_fallback: "no-recorded-viewport"` until one is drawn.
+On playerless films, first person uses the unit's eye.
+
+`look` adjusts yaw and pitch in radians in free and orbit modes. In free
+mode, `movement` adjusts strafe, forward and rise in world units. In orbit
+mode, `zoom` adjusts the radius in world units. `fov` sets the horizontal
+field of view at 4:3 in degrees (20 to 140). Omitting it keeps the current
+lens. Headless playback (`--render-every 0`) accepts only `default`.
+Playerless playback has no game HUD.
 
 Transport state carries `id`, `tick`, `length_ticks`, `paused`, `speed`, `speed_reached`,
-`seeking`, `camera`, optional `camera_player` and `camera_seat`, and
-discovered kill marker ticks in `kills`, alongside the usual `at` stamp.
+`seeking`, `compatibility`, effective `camera`, optional `camera_player` and `camera_seat`,
+`hud`, `bar` and `camera_pose`. The pose has `position`, `yaw`, `pitch`,
+`fov` and `radius` once there is a view. State also carries discovered kill
+marker ticks in `kills` and the usual `at` stamp.
 Tick zero is boot. `speed` is the requested multiplier. `speed_reached`
 is completed ticks per wall second divided by the film's tick rate and
 capped at the requested speed. It is null before a half-second sample
@@ -2174,20 +2246,31 @@ its target until play. The HLE
 compares the recorded call index and game-thread hash samples during
 fast-forward ([theater.md](../game/theater.md)).
 
+The desktop playback socket also exposes these host page methods. They
+work while the guest is paused.
+
+| Method | Parameters | Result |
+|---|---|---|
+| `ui.screen` | `{}` | `screen` names `theater.playback` or `theater.pause-menu`, with its `focus` and the UI-builder `page`. `dialog` names the open picker and its focus, or is null. `native` is false for these host-drawn pages |
+| `ui.input` | `{"input":"start"}` | Applies one named page input and returns the updated screen. Inputs are `a`, `b`, `x`, `y`, `start`, `back`, `up`, `down`, `left` and `right` |
+
 The `seek` object records `target`, `from_tick`, `source`, `warm`,
 `remaining_ticks` and `restore_ms`. `seeking` is true while a restart
 is pending or the child is catching up. A replacement target keeps the
 original departure tick. Direct socket clients reconnect after the
 restart and can then read progress or cancel. The seek object remains
 available at the target with zero ticks left. Linear playback starts
-with `seek: null`. The
-cold player reports `source: "keyframe"` for a compatible embedded
-keyframe or `"boot"` for replay from startup, with `warm: false`.
+with `seek: null`. The cold player reports `source: "keyframe"` for a
+compatible embedded keyframe, `"sidecar"` for a local cache frame, or
+`"boot"` for replay from startup, with `warm: false`.
 `restore_ms` times loading the snapshot into the machine and checking
 its restored state. It is null before restore and on the boot route.
-The keyframe inventory lists embedded frames and all recorded D3D
-barrier ticks, including failed captures. The cold player returns empty
-ring and sidecar lists and zero for their byte fields.
+Warm restores report `warm: true` and use `source: "ring"` when they
+load a session entry. A blocked restore or a changed guest disk hands the
+target to a fresh child. A RAM or replay mismatch also disables warm
+restores for the rest of the viewing session.
+The keyframe inventory lists embedded and sidecar frames, the sidecar
+size, and all recorded D3D barrier ticks, including failed captures.
 
 `theater.measurements` is a read on the recorder's or playback child's
 own socket when the run uses the Theater measurement switch
@@ -2202,8 +2285,9 @@ own socket when the run uses the Theater measurement switch
   slice after boot or restore to the seek target. Both are null until
   a forward replay reaches its target.
 - `captures` with `{tick, slices, elapsed_ms, published, reason}`. The
-  recorder times the attempt through the write and gives the blocker
-  or error when it skips a frame. `page_windows` with
+  recorder times the capture point through writing the barrier and any
+  sidecar frame scheduled there. The reason field reports blockers and
+  capture errors. `page_windows` with
   `{seconds, from_tick, to_tick, pages}` counts distinct physical guest
   pages written in each 5 s and 30 s window of match ticks.
   `captures_omitted` and `page_windows_omitted` count entries older

@@ -326,6 +326,13 @@ fn run_configured(
     let film_path = host.film_out.take().or_else(|| {
         std::env::var_os("H2_FILM_OUT").filter(|p| !p.is_empty()).map(PathBuf::from)
     });
+    let film_dir = || {
+        std::env::var_os("H2_FILM_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| opts.data_root.join("films"))
+    };
+    let viewer_cache = replay.as_ref().and_then(|r| r.cache.as_ref())
+        .map(|c| (c.films_dir.clone(), c.cap_bytes));
     let film = if replaying || film_path.is_some() {
         let stamp = running_stamp();
         let clock = k.clock();
@@ -609,22 +616,21 @@ fn run_configured(
     let level_name = level.as_ref().map(|l| l.name.clone());
     // Every feature the plan gets up to the touch glue is registered in
     // `registration` (and its tests build the plan from the same code).
-    let film_dir = || {
-        std::env::var_os("H2_FILM_DIR")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| opts.data_root.join("films"))
-    };
     let film_out = {
         let parent = dylib.parent().unwrap_or(Path::new("."));
         if tier == tier::Tier::Fast { parent.parent().unwrap_or(parent) } else { parent }
     };
-    let film_stamps = || theater::playback_images(xbe_bytes, film_out)
-        .into_iter().map(|(_, stamp)| stamp).collect::<Vec<_>>();
+    let film_installation = || theater::Installation::new(
+        xbe_bytes,
+        theater::playback_images(xbe_bytes, film_out)
+            .into_iter().map(|(_, stamp)| stamp).collect(),
+        opts.data_root.clone(),
+    );
     let theater = if let Some((theater, open)) = host.theater.take() {
         theater.install(
             &mut features,
             &film_dir(),
-            film_stamps(),
+            film_installation(),
             live,
             _live.clone(),
             open,
@@ -686,6 +692,12 @@ fn run_configured(
     #[cfg(not(feature = "gpu"))]
     let observer_window = false;
     if let Some(f) = &film {
+        if let Some(capture) = &host.film_capture {
+            f.attach_capture(capture.clone())?;
+        }
+        if let Some(media) = host.film_media.take() {
+            f.attach_media(media, &loaded.runtime)?;
+        }
         #[cfg(feature = "gpu")]
         if let Some(view) = host.film_view.take() {
             f.attach_host_view(view, k.vfs().context("Theater observer requires a mounted map")?)?;
@@ -824,7 +836,9 @@ fn run_configured(
                     stats.lock().unwrap_or_else(|e| e.into_inner()).presentation
                 }));
                 let report = Some(d3d_glue::scale_report(&mut b));
-                let installed = if host.render_thread {
+                let installed = if host.render_thread && host.film_capture.is_some() {
+                    d3d_glue::install_export_threaded(&loaded.runtime, b, report, interp, render_hooks)
+                } else if host.render_thread {
                     d3d_glue::install_threaded_for_profile(&loaded.runtime, b, report, interp, render_hooks)
                 } else {
                     d3d_glue::install_for_profile(&loaded.runtime, b, report, render_hooks)
@@ -832,7 +846,9 @@ fn run_configured(
                 installed.with_gpu_view(Some(scale_stats))
             }
             None => {
-                let installed = if host.render_thread {
+                let installed = if host.render_thread && host.film_capture.is_some() {
+                    d3d_glue::install_export_threaded(&loaded.runtime, b, None, interp, render_hooks)
+                } else if host.render_thread {
                     d3d_glue::install_threaded_for_profile(&loaded.runtime, b, None, interp, render_hooks)
                 } else {
                     d3d_glue::install_for_profile(&loaded.runtime, b, None, render_hooks)
@@ -907,7 +923,7 @@ fn run_configured(
         .then(|| dsound_glue::install_clock_only(&loaded.runtime, &k, xbe_bytes))
         .transpose()?;
     #[cfg(feature = "local-io")]
-    let ds = if opts.dsound && clock_only_audio {
+    let mut ds = if opts.dsound && clock_only_audio {
         Some(dsound_glue::install_clock_only(&loaded.runtime, &k, xbe_bytes)?)
     } else {
         match (opts.dsound, host.audio_sink.take()) {
@@ -922,6 +938,11 @@ fn run_configured(
             (true, None) => Some(dsound_glue::install(&loaded.runtime, &k, xbe_bytes)?),
         }
     };
+    #[cfg(feature = "local-io")]
+    if let (Some(audio), Some(capture)) = (&mut ds, &host.film_capture) {
+        let capture = capture.clone();
+        audio.output.tap_samples(move |pcm| capture.audio(pcm));
+    }
     if let Some(audio) = &ds {
         let mixer = audio.mixer();
         let mut mixer = mixer.lock().unwrap_or_else(|e| e.into_inner());
@@ -1191,6 +1212,9 @@ fn run_configured(
             film.add_methods(&a.agent);
         }
     }
+    if let (Some(theater), Some(a)) = (&host.theater_playback, &agent) {
+        theater.add_playback_methods(&a.agent);
+    }
     if !replaying && let Some(a) = &agent {
         theater::library_methods(
             &a.agent,
@@ -1198,7 +1222,7 @@ fn run_configured(
             opts.disc.clone(),
             film_out.to_owned(),
             opts.data_root.clone(),
-            film_stamps(),
+            film_installation(),
         );
     }
     let bink = if opts.bink {
@@ -1246,6 +1270,9 @@ fn run_configured(
         eprintln!("movies: off (--no-bink: the original player runs)");
         None
     };
+    if let Some(camera) = film.as_ref().and_then(|film| film.camera_render_hooks()) {
+        features.add(&camera).map_err(anyhow::Error::msg)?;
+    }
     // Part of a machine snapshot's build key (snapshot_glue.rs).
     let switch_spec = features.switches().spec();
     let plan = features.build(&hooks::Base).map_err(|conflicts| {
@@ -1386,8 +1413,20 @@ fn run_configured(
     }
     let shelf = if agent.is_some() || film.is_some() {
         let key = snapshot_glue::build_key(running_stamp(), &switch_spec, &plan, &snap_host.names());
-        // A film embeds snapshots. Its build key is needed even when the
-        // user has no standalone snapshot directory.
+        if let Some(session) = &film {
+            let (dir, cap) = viewer_cache.unwrap_or_else(|| {
+                let cap = match host.settings.as_deref() {
+                    Some(settings) => setting_defs::theater_cache_cap_bytes(Some(settings)),
+                    None => {
+                        let (settings, _) = setting_defs::load(&opts.data_root, &[]);
+                        setting_defs::theater_cache_cap_bytes(Some(&settings))
+                    }
+                };
+                (film_dir(), cap)
+            });
+            session.mount_sidecar(&dir, cap, &key, &opts.data_root)?;
+        }
+        // Film keyframes also need a build key without a standalone snapshot directory.
         let shelf = snapshot_glue::Shelf::from_env(key.clone()).or_else(|| {
             film.as_ref().map(|_| snapshot_glue::Shelf::new(&opts.data_root, key))
         });
@@ -1448,35 +1487,68 @@ fn run_configured(
     {
         let shelf = shelf.as_ref().context("film keyframe requires a snapshot build key")?;
         let mut machine = snap_host.machine(&mut m, &plan, &rebuilders, shelf, d3d_diag::presents());
-        f.restore_keyframe(frame, &mut machine, agent.as_ref())?
+        let slices = f.restore_keyframe(frame, &mut machine, agent.as_ref())?;
+        plan.restore_presentation_pages(&loaded.runtime, &installed)?;
+        slices
     } else {
         0
     };
-    // `film_slices` ends as the last slice run, so the loop starts from a copy.
-    let first_slice = film_slices;
     let measure_recording = !replaying && std::env::var("H2_THEATER_MEASURE").as_deref() == Ok("1");
-    for slice in first_slice..opts.max_slices {
+    let first_slice = film_slices;
+    let mut next_slice = film_slices;
+    while next_slice < opts.max_slices {
+        let slice = next_slice;
+        next_slice += 1;
         if let Some(f) = &film {
             f.observe_pause(&loaded.runtime.memory());
-            if replaying {
-                if let Some(shelf) = &shelf {
-                    f.replay_device_barrier(slice, &snap_host, shelf)?;
-                }
-            } else {
-                if measure_recording {
-                    f.measure_recording_pages(&loaded.runtime)?;
-                }
-                if let Some(shelf) = &shelf && f.keyframe_due() {
-                    let lobby = agent.as_ref().map_or(0, |a| a.agent.film_lobby_boundary());
-                    let mut machine = snap_host.machine(
-                        &mut m, &plan, &rebuilders, shelf, d3d_diag::presents(),
-                    );
-                    f.try_keyframe(slice, lobby, &mut machine);
+            if measure_recording {
+                f.measure_recording_pages(&loaded.runtime)?;
+            }
+            if let Some(shelf) = &shelf {
+                let lobby_boundary = || agent.as_ref().map_or(0, |a| a.agent.film_lobby_boundary());
+                let parts = (&mut m, &snap_host, &plan, &rebuilders);
+                let machine = move || {
+                    let (m, host, plan, rebuilders) = parts;
+                    host.machine(m, plan, rebuilders, shelf, d3d_diag::presents())
+                };
+                if replaying {
+                    match f.replay_capture_point(slice, lobby_boundary, machine) {
+                        Ok(Some((tick, barrier))) => {
+                            let mut machine = snap_host.machine(
+                                &mut m, &plan, &rebuilders, shelf, d3d_diag::presents(),
+                            );
+                            f.capture_ring(tick, slice, audio_idle, barrier, &mut machine, agent.as_ref());
+                        }
+                        Ok(None) => {}
+                        Err(error) => f.barrier_failed(error)?,
+                    }
+                } else if f.capture_point_due() {
+                    f.try_capture_point(slice, lobby_boundary(), &mut machine());
                 }
             }
-            if !f.before_slice(slice, &mut m, agent.as_ref(), &loaded.runtime)? {
-                host_stop = true;
-                break;
+            match f.before_slice(slice, &mut m, agent.as_ref(), &loaded.runtime)? {
+                theater::SliceAction::Run => {}
+                theater::SliceAction::Seek(target) => {
+                    if let Some(shelf) = &shelf {
+                        let mut machine = snap_host.machine(
+                            &mut m, &plan, &rebuilders, shelf, d3d_diag::presents(),
+                        );
+                        if let Some((restored, idle)) = f.try_warm_seek(target, &mut machine, agent.as_ref()) {
+                            plan.restore_presentation_pages(&loaded.runtime, &installed)?;
+                            next_slice = restored;
+                            film_slices = restored;
+                            audio_idle = idle;
+                            continue;
+                        }
+                    }
+                    // Teardown hands the exact target and viewer state to the parent.
+                    host_stop = true;
+                    break;
+                }
+                theater::SliceAction::Stop => {
+                    host_stop = true;
+                    break;
+                }
             }
             film_slices = slice + 1;
         }

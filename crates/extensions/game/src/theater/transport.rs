@@ -5,7 +5,7 @@ use agent_proto::{RpcError, code, theater as api};
 use serde::{Deserialize, Serialize};
 use std::time::{Duration, Instant};
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Restart {
     pub target: u64,
     pub from_tick: Option<u64>,
@@ -37,6 +37,9 @@ impl State {
         }
         self.step_until = None;
         self.paused = paused;
+        if let Some((_, hold)) = &mut self.warm_check {
+            *hold = paused;
+        }
     }
 
     pub(super) fn set_speed(&mut self, speed: f64) {
@@ -76,7 +79,7 @@ impl State {
             .seek
             .as_ref()
             .filter(|_| continuing)
-            .map_or(self.tick, |s| s.from_tick);
+            .map_or_else(|| self.visible_tick(), |s| s.from_tick);
         if request.cancel == Some(true) {
             if request.source.is_some() || request.clip_marks.is_some() {
                 return Err(invalid("cancel only accepts an optional tick"));
@@ -101,9 +104,21 @@ impl State {
         }
         let source = match request.source {
             Some(api::SeekRoute::Boot) => api::SeekSource::Boot,
-            _ => self.seek_source(target),
+            route => {
+                let file = self.seek_source(target);
+                if route.is_none()
+                    && !self.presentation.warm_disabled
+                    && let Some(ring) = self.ring_status.ticks.iter().copied().rfind(|&tick| tick <= target)
+                    && self.engine.as_ref().and_then(|engine| engine.file_candidate(target))
+                        .is_none_or(|key| key.tick <= ring)
+                {
+                    api::SeekSource::Ring
+                } else {
+                    file
+                }
+            }
         };
-        if request.source == Some(api::SeekRoute::Keyframe) && source != api::SeekSource::Keyframe {
+        if request.source == Some(api::SeekRoute::Keyframe) && source == api::SeekSource::Boot {
             return Err(RpcError::new(
                 code::UNAVAILABLE,
                 "no compatible keyframe at or before target",
@@ -120,17 +135,20 @@ impl State {
             }
             self.presentation.clip_marks = [start, end];
         }
+        let paused = self.visible_pause();
+        self.cancel_camera_redraw();
+        self.set_paused(paused);
         self.queue_jump(target, from, request.source, source);
         Ok(())
     }
 
-    fn seek_source(&self, tick: u64) -> api::SeekSource {
+    pub(super) fn seek_source(&self, tick: u64) -> api::SeekSource {
         self.engine
             .as_ref()
             .map_or(api::SeekSource::Boot, |engine| engine.seek_source(tick))
     }
 
-    fn queue_jump(
+    pub(super) fn queue_jump(
         &mut self,
         target: u64,
         from_tick: u64,
@@ -171,9 +189,7 @@ impl State {
         };
         let seek = self.seek.as_ref().expect("restart has a seek request");
         let mut presentation = self.presentation.clone();
-        if self.header.version >= 2 {
-            replay.camera.save(&mut presentation);
-        }
+        replay.camera.save(&mut presentation);
         let request = Restart {
             target,
             from_tick: Some(seek.from_tick),
