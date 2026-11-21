@@ -63,18 +63,8 @@ export function PackMetadataForm(props: { pack: ModPack; changed: () => void }) 
   </form>;
 }
 
-export function ScreenshotForm(props: { path: string; changed: () => void }) {
-  const { submit, busy, message } = saveForm(props.changed);
-  return <details class="s-pack-tools"><summary>Upload a screenshot</summary>
-    <form class="s-pack-form" onSubmit={(e) => void submit(e, (data) => {
-      const file = data.get("shot");
-      if (!(file instanceof File) || !file.size || file.size > 5 * 1024 * 1024) throw new Error("Choose an image up to 5 MiB.");
-      return [`${props.path}/screenshots/upload/${data.get("slot")}`, { method: "PUT", body: file }];
-    })}>
-      <label>Image (PNG, JPEG or WebP, up to 5 MiB) <input name="shot" type="file" required accept="image/png,image/jpeg,image/webp" /></label>
-      <label>Image slot <select name="slot"><option value="0">Cover</option><option value="1">Screenshot 2</option><option value="2">Screenshot 3</option></select></label>
-      <button type="submit" class="s-btn" disabled={busy()}>Save image</button>
-      <Show when={message()}>{(msg) => <p role="status">{msg()}</p>}</Show>
-    </form>
+export function ScreenshotCaptureHelp(props: { id: string }) {
+  return <details class="s-pack-tools"><summary>Add in-game screenshots</summary>
+    <p class="s-pack-form">Run <code>h2 live mods capture {props.id}</code> while signed in as the uploader. Screenshots may wait for review before appearing here.</p>
   </details>;
 }

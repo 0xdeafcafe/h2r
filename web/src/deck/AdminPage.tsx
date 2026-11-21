@@ -123,6 +123,9 @@ export function AdminCards(props: {
           )}
         </Summary>
       </AdminCard>
+      <AdminCard id="screenshots" title="Screenshot review" href={`${LIVE_ADMIN}/screenshots`}>
+        <p class="dk-note">Review pending and reported screenshots.</p>
+      </AdminCard>
       <AdminCard id="style" title="Style" href={`${LIVE_ADMIN}/style`}>
         <p class="dk-note">Preview the dashboard’s panels, charts, and tables with sample data.</p>
       </AdminCard>

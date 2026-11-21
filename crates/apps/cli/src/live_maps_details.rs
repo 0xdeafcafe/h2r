@@ -184,6 +184,7 @@ fn read_shots(dir: Option<&Path>, sub: &str, rows: &[ImageRow]) -> Result<Vec<Sh
             }
             Ok(Shot {
                 listed: MapImage {
+                    reportable: false,
                     sha256: Sha256::of(&bytes),
                     caption: r.caption.clone(),
                     source_url: r.source_url.clone(),

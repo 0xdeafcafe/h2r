@@ -331,13 +331,8 @@ pub fn install_headless_for_profile(
                     if display {
                         clip.lock().unwrap().guest(swaps, ctx, store, id);
                     }
-                    if display && let Some(path) = agent::render::CAPTURE.wanted(swaps) {
-                        let r = path
-                            .parent()
-                            .map_or(Ok(()), std::fs::create_dir_all)
-                            .map_err(anyhow::Error::from)
-                            .and_then(|()| save_png(ctx, store, id, &path, false))
-                            .map(drop)
+                    if display && let Some(write) = agent::render::CAPTURE.wanted(swaps) {
+                        let r = save_agent_capture(ctx, store, id, &write)
                             .map_err(|e| e.to_string());
                         agent::render::CAPTURE.written(swaps, r);
                     }
@@ -982,6 +977,29 @@ pub fn render_thread_from(value: Option<&str>) -> bool {
 }
 
 #[cfg(feature = "gpu")]
+fn save_agent_capture(
+    ctx: &gfx::GfxContext,
+    store: &gfx::surface::SurfaceStore,
+    id: gfx::surface::SurfaceId,
+    write: &agent::render::CaptureWrite,
+) -> anyhow::Result<Option<content::Sha256>> {
+    if let Some(dir) = write.path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    if !write.digest {
+        save_png(ctx, store, id, &write.path, false)?;
+        return Ok(None);
+    }
+
+    let (pixels, width, height) = read_rgba(ctx, store, id)?;
+    let mut png = Vec::new();
+    encode_png(&mut png, &pixels, width, height)?;
+    let digest = content::Sha256::of(&png);
+    std::fs::write(&write.path, png)?;
+    Ok(Some(digest))
+}
+
+#[cfg(feature = "gpu")]
 fn save_png(
     ctx: &gfx::GfxContext,
     store: &gfx::surface::SurfaceStore,
@@ -1027,7 +1045,11 @@ fn opaque_rgba(px: &mut [u8], order: gfx::surface::HostPixelOrder) {
 
 pub fn write_png(path: &std::path::Path, px: &[u8], w: u32, h: u32) -> anyhow::Result<()> {
     let f = std::io::BufWriter::new(std::fs::File::create(path)?);
-    let mut enc = png::Encoder::new(f, w, h);
+    encode_png(f, px, w, h)
+}
+
+fn encode_png(out: impl std::io::Write, px: &[u8], w: u32, h: u32) -> anyhow::Result<()> {
+    let mut enc = png::Encoder::new(out, w, h);
     enc.set_color(png::ColorType::Rgba);
     enc.set_depth(png::BitDepth::Eight);
     let mut writer = enc.write_header()?;

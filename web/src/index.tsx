@@ -106,6 +106,7 @@ render(
       <Route path={`${LIVE_ADMIN}/usage`} component={Usage} />
       <Route path={`${LIVE_ADMIN}/hosts`} component={lazy(() => import("./deck/HostsPage"))} />
       <Route path={`${LIVE_ADMIN}/events`} component={EventLog} />
+      <Route path={`${LIVE_ADMIN}/screenshots`} component={lazy(() => import("./deck/ScreenshotsPage"))} />
       <Route path={LIVE_ADMIN} component={LiveAdmin} />
       <Route path={["/", "/dash/:section", "/dash/:section/:tag"]} component={Dashboard} />
       <Route path={STATS_ROOT} component={StatsLayout}>

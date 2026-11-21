@@ -25,6 +25,7 @@ without the crate's `native` feature, so the routes are not forked.
 | Game ingest (`/v1/ingest`) | `LiveHub` | Frames feed the read model and the stream. A per-game object is the fallback if one hub's CPU is not enough. |
 | Co-op relay (`/v1/sessions/{id}/relay`) | `CoopRelay`, one object per session id | Its traffic stays off the hub's thread, and the object can sit near the players (location hint). |
 | Content, cloud saves, published art | R2 bucket `BLOBS` (published art in a public bucket) | `BlobStore` over R2 (`crates/live/live-worker/src/r2.rs`). |
+| Screenshot classification | Workers AI binding `SCREENSHOT_AI` | A shared server classifier adapter sends only the normalized WebP to Clef Flash and reads its NSFW score. Without a valid result, the image stays pending. |
 | Title files | R2, under `title/<sha256>` (`live_server::titleblobs`) | A Durable Object's SQLite row holds at most 2 MB, but a title file may be up to 2 MiB (`MAX_TITLE_FILE`). Ones already in the log's `blobs` table are still read from there. |
 | Server key | Worker secret `H2_LIVE_SERVER_KEY` | `ServerIdentity::from_secret`. The id is the variable `H2_LIVE_ID` ([Settings](#settings)). |
 | Web app | Workers static assets (`web/dist`) | Served by Cloudflare ahead of the Worker; it is immutable and cached at the edge. |
@@ -171,6 +172,8 @@ checks, in order:
 - with `WAKE=S`, a hibernation wake with a socket open;
 - game ingest to JSON and packed readers, then game close, alarm-driven archive publication and reads of both stored segments;
 - R2: a multipart content upload, a cloud save and a 2 MiB title file;
+- the same screenshot HTTP contract as native Live, from proof rejection
+  and private preview through approval, reporting and removal;
 - warm timings;
 - with `--seed N`, 2N more events so a restart has a log to replay.
 
@@ -324,9 +327,10 @@ the game socket's logic, driven by axum's task on a machine and by the hub
 (`crates/live/live-worker/src/ingest.rs`). The hub handles each ingest socket's
 messages one at a time, behind an async lock, since a message's work awaits
 the store. The shared session checks the 16 KiB message cap before parsing
-the auth message or decoding any frames. The attachment keeps the author
-and token expiry. After a wake, the sender's next keyframe restarts the
-packed decoder.
+auth or decoding frames, and accepts up to 16 frame records per message
+in batched mode. The attachment keeps the author, token expiry and
+ingest mode. After a wake, the sender's next keyframe restarts the packed
+decoder. [Ingest wire format](live-api.md#streams-websocket)
 
 ## Timers and hibernation
 
@@ -378,6 +382,10 @@ A body over 8 MiB (`doretry::KEEP_BODY_BYTES`), or one without a
 `Content-Length`, is sent once without a copy, so a 95 MiB content upload
 never sits twice in a 128 MB isolate; a reset under it is the 503 above,
 and the client sends it again.
+
+`POST /v1/presence/ping/batch` goes to the hub's shared HTTP router.
+The edge returns 503 on a transient hub failure so the client can issue
+new per-account tokens for its next attempt.
 
 Anything else thrown surfaces as before. The single-use token guard (`jti`)
 is in the hub's memory and is lost on a reset, so a repeat with the same

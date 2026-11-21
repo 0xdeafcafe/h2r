@@ -76,6 +76,7 @@ pub mod relay;
 pub mod reports;
 mod replay_archive;
 pub mod rt;
+pub mod screenshot_classifier;
 mod sessions;
 mod sim_runs;
 pub mod sql;
@@ -270,6 +271,7 @@ pub async fn serve(config: Config) -> Result<()> {
     let live = Live::start(store.clone(), identity, config.policy).await?;
     live.set_blobs(blobs.clone());
     live.set_data_dir(&config.data_dir);
+    screenshot_classifier::configure_native(&live);
     let publish = match (&config.site.game_art, &blobs.public) {
         (Some(art), Some(public)) if art.share && !private => {
             let published = art::PublishedArt::new(public.clone());
@@ -471,6 +473,7 @@ pub fn start_embedded_with(
         };
         let live = Live::start(store, identity, policy).await?;
         live.set_data_dir(data_dir);
+        screenshot_classifier::configure_native(&live);
         if kind != "memory" {
             match title_headers::reseal_legacy(&live).await {
                 Ok(names) => {

@@ -108,6 +108,7 @@ The host keeps its files under `--root`, by default
 | `auth/` | TLS identity and pairing state |
 | `runs/<id>/` | one job: `meta.json`, `build.log`, `run.log`, `frames.csv`, `profile/` |
 | `a/<id>.sock` | the run's game's agent API socket, removed when the run ends |
+| `takeover-declined-until` | the player's consent cool-down, kept across lab host restarts |
 | `recordings/<name>/` | `manifest.json` and `input.bin` |
 | `pgo/<name>` | PGO profiles uploaded with `h2 lab put --pgo` |
 | `src/<commit>/` | a detached git worktree of each commit built |
@@ -204,17 +205,48 @@ network, no names with `/` or a leading `.`. The host also drops every
 same regardless of the host's environment. A paired driver can send
 source code for the host to build and run as the logged-in user.
 
-One job runs at a time; another `run` or `build` is refused with the busy
-job's id. `h2 lab wait <id> [--timeout S]` exits 0 when the job finished
-well, 1 when it failed or was stopped, 3 when it is still going.
-`h2 lab stop <id>` sends SIGTERM to the job's process group, then SIGKILL
-5 s later.
+One job runs at a time. Another `run` or `build` is refused with the busy
+job's ID. `h2 lab wait <id> [--timeout S]` exits 0 when the job completes
+or is skipped, 1 when it fails or is stopped, and 3 when it is still
+going. `h2 lab stop <id>` stops a pending request or sends SIGTERM to
+the job's process group, then SIGKILL 5 s later.
 
 `h2 lab runs` lists jobs with their state, exit, duration, commit, level
 and the frame stats report from the log: the last `frame stats:` line,
 the three worst frames and the `outcome:` line. `h2 lab fetch <id>` copies
 `runs/<id>` here as `<DIR>/<id>` (`--to DIR`; default `$RUSH_KEEP/lab`,
 else `./lab`) using an archive streamed over the lab connection.
+
+## Player consent before a job
+
+Before the lab starts a run or an uncached build, it checks the playing
+Mac for a game window. It asks the game's [agent API](agent-api.md) on
+the per-process sockets under `~/Library/Caches/h2recomp/agents/` and
+on its own run sockets. It also checks the local process list for
+recognizable game launches, including the bundled macOS app.
+A headless serve leaves the Mac available for lab jobs. An open game
+window whose agent cannot show the prompt leaves the job skipped.
+Service updates use the separate maintenance path.
+
+The game shows the requesting lab driver, the run or build, the commit or
+installed image, and an estimated duration if one is available.
+The dialog opens over the current screen and pauses local campaign play.
+Networked games keep running while the dialog is up.
+**Allow** lets the lab wait for the player to finish, save if needed,
+and quit. The lab waits up to 60 seconds for the game window to close
+after approval. Saving and quitting use the game's normal controls.
+
+**Not now**, Back, and an unanswered prompt all decline the request.
+The job finishes with `job.state` set to `"skipped"` and
+`job.skip_reason` set to `"declined by the player"`. Gate callers such
+as boot-check report it as skipped. Other conditions that leave the
+lab without consent also skip the job and carry a specific reason.
+
+The host defaults to a 60-second answer timeout and a 30-minute
+cool-down. During the cool-down, an open game window skips later jobs
+without another prompt. With no window, jobs run as usual. Set the two
+durations on `h2 lab host` or `h2 lab host install` using the flags in
+[Switches](switches.md#tools).
 
 ## Driving a run: the agent API
 

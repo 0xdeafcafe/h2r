@@ -30,6 +30,8 @@ mod r2;
 #[cfg(target_arch = "wasm32")]
 mod relay;
 pub mod relayroom;
+#[cfg(any(target_arch = "wasm32", test))]
+mod screenshot_ai;
 pub mod sockets;
 
 /// The Worker's bindings (wrangler.toml). Its variables and secrets are in
@@ -37,6 +39,8 @@ pub mod sockets;
 pub mod bindings {
     /// R2: content, cloud saves (private).
     pub const BLOBS: &str = "BLOBS";
+    /// Workers AI: NSFW classification for screenshots.
+    pub const SCREENSHOT_AI: &str = "SCREENSHOT_AI";
     /// The Durable Object namespace of [`HUB_CLASS`].
     pub const HUB: &str = "LIVE_HUB";
     pub const HUB_CLASS: &str = "LiveHub";
