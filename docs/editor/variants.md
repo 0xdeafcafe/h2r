@@ -199,11 +199,51 @@ clears record bit 0 of `+0`, runs the clean-up, sets the new name (at most
 
 ## Portable files
 
-`.h2variant` (`portable`) is our sharing format: JSON with a format tag,
-version, the name and game type for people, and the 0x130 record as hex
-(the source of truth, so unknown bytes travel too). Importing checks the
-length and lists what the clean-up would reject; the game never sees this
+`.h2variant` (`portable`) is our sharing format: JSON with the format
+tag `h2recomp-game-variant`, a version, and the 0x130 record as hex (the
+source of truth, so unknown bytes travel too). The game never sees this
 file, so it carries no signature.
+
+- **Version 2** is a whole game variant (`portable::Bundle`): `name`,
+  `description` (at most 150 characters), `author` (`{xuid, gamertag}`,
+  written by Live on publish), `game_type` (for people), `engine`,
+  `record_hex` and, when the record's block names a rules script (mode
+  2), `script: {name, hash, ir_b64, source?}`: the IR blob (at most 64
+  KiB) and its source (at most 256 KiB). The record carries the 8-byte
+  hash prefix that names the script; the file carries the script itself
+  ([rules-engine.md](../game/rules-engine.md#carrying-a-script)).
+  `Bundle::canonical` is compact JSON in field order, and `Bundle::id` is
+  its SHA-256: the same variant has the same id everywhere.
+- **Reading** (`portable::read`) checks a version-2 file's integrity:
+  the record decodes, `engine` and `name` match it, and a script is
+  present exactly when the record names one, its IR hashes to `hash`,
+  `hash` starts with the record's prefix, `rules::verify::load` takes it
+  and its carrier is the record's engine. `Bundle::check`, which Live
+  runs before publishing, adds the name rules (1 to 31 characters, no
+  leading or trailing space, no control character, no `|`, none of
+  U+E405..U+E407, nothing past U+FFFF; game-options.md section 4), a
+  record the clean-up keeps and our rules allow (`record::refused`), and
+  an extension block that is ours or absent.
+- **Version 1** (name, game type and `record`) still reads, as a bundle
+  with no description and no script; `portable::export` still writes it,
+  for the editors, which have no script blob at hand. `import` reads
+  either and lists what the clean-up would reject.
+- **Porting.** `portable::port(record, name, description, script)` makes
+  a version-2 file of any record: `PortScript::Builtin` attaches the
+  record's engine's built-in script (`rules::builtin::builtin`) with its
+  default options and sets mode 2 and the prefix, `Keep` leaves it
+  unscripted (it plays the retail rules; a record that names a script is
+  refused), and `Ir` or `Source` attach a given script. The same inputs
+  give the same id. `portable::port_input` takes a raw record, a
+  saved-variant file (record and signature), a hopper record slot
+  (`0x37c` bytes, the record at `+0x24c`) or a `.h2variant` of either
+  version. `h2 variants port <input>... [--script builtin|keep|FILE]
+  [-o DIR]` (`crates/apps/cli/src/variants_cmd.rs`) writes one file per
+  input, named by the variant (`portable::file_name`), and prints each
+  id; `--all-builtins [disc]` ports every retail built-in, read from the
+  disc's `goof` tag (`Schema::build`), and refuses without a disc. The
+  community variants are built by the game at boot and are not ported by
+  the tool.
 
 ## The editor
 

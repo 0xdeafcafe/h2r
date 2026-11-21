@@ -1833,6 +1833,10 @@ homes (`crates/live/live-server/src/rule_scripts.rs`, wire types in
   tick budget and the 64 KiB IR cap. `hash` is the IR's SHA-256, present
   whenever it compiled. An error with line and column 0 is about the whole
   script: a verifier refusal, the budget or the IR size.
+- A check that is `ok` also lists the script's `options` (`[{name,
+  label, description, kind, lo, hi, default, values?}]`, omitted when it
+  declares none), for the game variant form ([Game
+  variants](#game-variants)).
 - `report` holds `worst_tick_ops` and `budget`, `fits`, `costliest`,
   `handlers: [{event, worst_ops}]`, `slots: [{scope, used, limit}]` (global,
   player, team, object), `ir_bytes` and `ir_limit`, `capabilities: [{name,
@@ -1859,6 +1863,72 @@ homes (`crates/live/live-server/src/rule_scripts.rs`, wire types in
   is saved once and its first saver is its author. Only scripts that
   verify are saved; an account saves at most 200. Nobody posts the event
   by hand.
+
+## Game variants
+
+Game variants players publish: what a player's page lists under Game
+Types. A game variant is a whole version-2 `.h2variant` file
+([variants.md, "Portable files"](../editor/variants.md#portable-files)):
+name, description, author, the 0x130-byte record and, when the record
+names a rules script, the script's IR and source. Both homes serve these
+routes (`crates/live/live-server/src/game_variants.rs`, wire types in
+`crates/live/live-proto/src/game_variants.rs`).
+
+| endpoint | authentication | result |
+|---|---|---|
+| `POST /v1/variants` | an account's token, `lxm: content.write` | 201 `Variant`; 200 when that file is published already |
+| `POST /v1/variants/from-script` | as above | 201 `Variant`, built from a script |
+| `POST /v1/variants/bundle` | none; rate-limited as `/v1/rules/check` | `{id, file_name, bundle}`: the file, unpublished |
+| `GET /v1/variants/{id}` | a read | `Variant` |
+| `GET /v1/variants?author=` | a read; a `read` bearer names the caller | `{items: [Variant]}`, newest first |
+| `GET /v1/variants/{id}/h2variant` | a read | the file (`application/json`, an attachment named after the variant) |
+| `DELETE /v1/variants/{id}` | `content.write`, its author or an admin | `{ok: true, id}` |
+
+- `Variant` is `{id, name, description, author: {xuid, gamertag}, engine,
+  game_type, record_hex, script_hash, script_name, visibility, created,
+  bundle_url, settings: [{label, value}]}`. `engine` is the record's
+  retail engine index and `game_type` our label of it; `script_hash` and
+  `script_name` are null for an unscripted variant; `created` is RFC 3339;
+  `bundle_url` is the file's path; `settings` is the record's settings in
+  words (each setting of its game type we have a name for, then the
+  extension options in one row).
+- `POST /v1/variants` takes `{bundle, visibility}`: the file as an object
+  or a string of it, version 1 or 2, and `public` or `unlisted` (default
+  public). It also takes `{name, description, record_hex, script_hash?,
+  visibility}`: `record_hex` is the record as 608 lowercase hex digits;
+  if its block names a rules script (mode 2), `script_hash` (64 hex) is
+  required, must start with the block's 8-byte prefix and must be a saved
+  script ([Rules scripts](#rules-scripts)) or a built-in, and the server
+  attaches that script's IR and source, keeping the record's option bits.
+- The server writes the author into the file and runs `Bundle::check`:
+  the record decodes and the game would keep it, the name and description
+  keep the name rules (1 to 31 characters, at most 150 for a
+  description), and a named script hashes to its hash, starts with the
+  prefix, verifies and rides the record's engine. A refusal is 400 with
+  the reason. The file's id is the SHA-256 of its canonical bytes, author
+  included, so the same file published again answers 200 with the same
+  variant, and the file from `/bundle` (which has no author) gets another
+  id once published.
+- `from-script` and `bundle` take `{script_hash | source, name,
+  description, visibility, options}`. The record is the stock record of
+  the script's carrier engine (`hopper::variant::VariantRecord::stock`),
+  named, with mode 2, the IR's prefix and `options` packed into the 32
+  option bits in declaration order. `options` maps an option's name to a
+  number, a bool or an enum value's name; one left out takes its default;
+  an unknown name or a value out of range is 400. A `script_hash` is a
+  saved script or a built-in; a `source` must verify. `POST
+  /v1/rules/check` lists a script's options for this form (`options:
+  [{name, label, description, kind, lo, hi, default, values?}]`, `kind`
+  `int`, `bool` or `enum`).
+- Lists show public variants, and unlisted ones only to their author (a
+  `read` bearer). Any variant, unlisted too, is readable by id.
+- A publish writes a server-signed `VariantPublished` event (`{id,
+  author, visibility, bundle}`, the file as canonical JSON) on
+  `variant-<id>`; a delete writes `VariantDeleted` (`{id, by}`) on the
+  same stream, and the variant is gone from every route until it is
+  published again. Each append expects the stream's next version. An
+  account keeps at most 200 variants (409 past it). Nobody posts these
+  events by hand.
 
 ## Cloud saves
 

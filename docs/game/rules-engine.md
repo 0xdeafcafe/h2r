@@ -118,7 +118,7 @@ uses them all:
 The block's CRC covers these bytes, and the table is the one layout for
 Firefight ([firefight.md](firefight.md#live)) and scripts. A carrier
 that copies the record keeps the reference with no new field: saved
-variants, `.h2variant` files (`variants::portable`), cloud saves, the
+variants, `.h2variant` files of either version (`variants::portable`), cloud saves, the
 `0x130`-byte variant in a `0x37c`-byte hopper slot
 (`crates/live/live-proto/src/hopper`) and the web hopper builder
 (`web/src/admin/HopperBuilder.tsx`).
@@ -148,6 +148,17 @@ from the script, which stays on Live under its hash.
 A script's own options are limited to the 32 bits; the compiler refuses
 more. Retail's settings (score and time limits, lives, the per-engine
 type area) stay where they are and a script reads them by name.
+
+**A game variant file carries the script whole.** A version-2
+`.h2variant` ([variants.md](../editor/variants.md#portable-files)) is a
+whole game variant: its record carries the prefix that names the script,
+and the file carries the script that prefix names, as its IR blob
+(base64) and, when it was made from source, the source. Reading one
+checks that the IR hashes to the file's hash, that the hash starts with
+the record's prefix, that `rules::verify::load` takes the IR and that
+its carrier is the record's engine; a record with mode 2 and no script
+is refused. So a variant file plays with no server, and Live keeps game
+variants as these files ([live-api.md](../live/live-api.md#game-variants)).
 
 **To other machines: the Live session.** The wire codec drops the spare
 bytes (`0x7cc50`/`0x7d520`, **E**, game-options.md "How a variant reaches
@@ -954,6 +965,19 @@ editor exists. The browser runs no compiler: Live's
 - **Save.** A signed-in account saves a script that checks clean; Live
   keeps its source under the IR hash and compiles it again to serve the
   blob.
+- **Game variants.** **Make a game variant** turns the current script
+  into a game variant: a name, a description, a visibility and a value
+  for each option the script declares (the check report lists them),
+  over the stock record of the script's carrier engine
+  (`hopper::variant::VariantRecord::stock`). The record's block gets mode
+  2, the IR's hash prefix and the options packed in declaration order
+  (`game_variants::pack_options`). **Download** asks Live's
+  `POST /v1/variants/bundle` for the `.h2variant` file and works signed
+  out; **Publish** posts it to the account's game variants
+  ([live-api.md](../live/live-api.md#game-variants)). The **My Game
+  Types** tab lists them beside My Scripts, and a player's page lists
+  their public ones; each has a page (`statsPath("/variants/:id")`) with
+  its settings, its script (opened read-only here) and the file.
 - **Drafts.** The page keeps the source and the scenario in
   `localStorage`, and starts from a blank starter, a built-in
   (`builtin::ALL`) or one of the player's saved scripts.
@@ -1018,7 +1042,16 @@ keep their records, byte for byte: each has no mode and runs its
 engine's built-in script once the port has passed parity ("A record with
 no mode"). Its settings are already option values in the record. Rules
 that were honour rules ([community-gametypes.md](community-gametypes.md),
-Zombies' team switch) become script variants of their own.
+Zombies' team switch) become script variants of their own. To travel as
+a game variant file, a record is ported with `variants::portable::port`
+(`h2 variants port`, [variants.md](../editor/variants.md#portable-files)):
+`PortScript::Builtin` attaches its engine's built-in script with the
+script's default option values (the built-ins read the retail settings
+from the record by name, so nothing else is packed) and sets mode 2 with
+the script's prefix; `PortScript::Keep` leaves it with no mode. The
+retail built-ins port from the disc (`--all-builtins`); the community
+variants are built by the game at boot (`community_variants.rs` is in
+the game crate) and are not ported by the tool.
 
 **Until a port passes.** A no-mode record on an engine whose port has
 not passed parity plays the lifted engine, on every kind of session.
