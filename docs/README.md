@@ -255,6 +255,7 @@ Reading and converting Halo 1 data:
 - [click-to-edit.md](editor/click-to-edit.md): design for one Map tool in place of Scenario and Tags: click a placement or live object to edit its tag chain, navigation, "where is this used", unique copies, and Halo 1 tags (converted maps with source overrides, and Halo 1 maps in their own format)
 - [modeling.md](editor/modeling.md): design for mesh, BSP and texture editing: the mesh kernel and its ops, the round trip for structure and model geometry, collision, lightmaps and `bitm`, the tools, the agent API methods and the slices
 - [modeling-targets.md](editor/modeling-targets.md): design for the Halo 2 round trip of each modeling target: read path, edit model, write classes, what is recomputed, limits and risks for `sbsp` render geometry and collision, portals, lightmaps, `mode`, `coll` and `phmo`
+- [polish-plan.md](editor/polish-plan.md): design for the editor's polish: what is wrong with file and line, one layout with the game link always on screen, the scenario tag tree, tag edits reaching the running game (what is safe, what needs a reload, undo), layers and overlays for trigger and kill volumes and collision-only geometry, editing those, the viewport on the native renderer, and slices P1 to P17 with P1 ready to hand off
 
 ## Working on the repository (`dev/`)
 
