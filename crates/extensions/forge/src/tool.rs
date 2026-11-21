@@ -1,5 +1,6 @@
-//! One local player's Objects tool. Only confirming a preview produces an edit.
-use crate::{Frame, Session, camera::Camera};
+//! One local player's Objects and Links tools. Only confirming a preview or
+//! a link's second end produces an edit.
+use crate::{BlockKind, Frame, Linkable, Session, camera::Camera};
 use forge_doc::OpId;
 
 /// Full stick deflection, in radians per second for look or object rotation.
@@ -18,6 +19,8 @@ pub enum Action {
     Redo,
     Up,
     Down,
+    /// Switch to the Links tool, or start or cancel a link there.
+    Link,
 }
 
 impl Action {
@@ -35,6 +38,7 @@ impl Action {
             "redo" => Self::Redo,
             "up" => Self::Up,
             "down" => Self::Down,
+            "link" => Self::Link,
             _ => return None,
         })
     }
@@ -58,6 +62,8 @@ pub enum Command {
     Place { item: usize, frame: Frame },
     Move { id: OpId, frame: Frame },
     Delete { id: OpId },
+    Link { from: Linkable, to: Linkable },
+    Unlink { link: OpId },
     Undo,
     Redo,
     Palette,
@@ -77,6 +83,12 @@ pub struct Tool {
     pub held: Option<OpId>,
     pub placing: Option<usize>,
     pub ghost: Option<Frame>,
+    /// The Links tool is selected instead of the Objects tool.
+    pub links: bool,
+    /// What the Links tool aims at.
+    pub aimed_link: Option<Linkable>,
+    /// The first end of a link being made.
+    pub link_from: Option<Linkable>,
     /// Degrees between turn snaps.
     rotation_step: f32,
     rotation: [f32; 3],
@@ -96,6 +108,9 @@ impl Default for Tool {
             held: None,
             placing: None,
             ghost: None,
+            links: false,
+            aimed_link: None,
+            link_from: None,
             rotation_step: 15.0,
             rotation: [0.; 3],
             initial_rotation: [0.; 3],
@@ -128,6 +143,7 @@ impl Tool {
     }
 
     fn cancel(&mut self) {
+        self.link_from = None;
         self.held = None;
         self.placing = None;
         self.ghost = None;
@@ -141,6 +157,7 @@ impl Tool {
     pub fn clear_selection(&mut self) {
         self.cancel();
         self.aimed = None;
+        self.aimed_link = None;
     }
 
     pub fn applied(&mut self, command: &Command) {
@@ -149,6 +166,8 @@ impl Tool {
             Command::Place { .. }
                 | Command::Move { .. }
                 | Command::Delete { .. }
+                | Command::Link { .. }
+                | Command::Unlink { .. }
                 | Command::Undo
                 | Command::Redo
         ) {
@@ -193,6 +212,14 @@ impl Tool {
         if !self.monitor {
             return Ok(None);
         }
+        if self.links {
+            return Ok(self.update_links(session, input));
+        }
+        if input.action == Some(A::Link) {
+            self.clear_selection();
+            self.links = true;
+            return Ok(None);
+        }
         let previewing = self.placing.is_some() || self.held.is_some();
         let mut hit = None;
         if let Some(camera) = &mut self.camera {
@@ -211,16 +238,8 @@ impl Tool {
                 .objects()
                 .iter()
                 .filter_map(|obj| {
-                    let d: [f32; 3] =
-                        std::array::from_fn(|i| obj.frame.position[i] - camera.position[i]);
-                    let along: f32 = (0..3).map(|i| d[i] * forward[i]).sum();
-                    if !(0.1..=max_distance).contains(&along) {
-                        return None;
-                    }
-                    let side: f32 = (0..3).map(|i| (d[i] - along * forward[i]).powi(2)).sum();
-                    // The aim target is at least a quarter world unit wide, then grows with
-                    // distance so it subtends the same small angle as the central reticle.
-                    (side <= (0.25 + along * 0.012).powi(2)).then_some((obj.id, along))
+                    aim(camera, forward, max_distance, obj.frame.position)
+                        .map(|along| (obj.id, along))
                 })
                 .min_by(|a, b| a.1.total_cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
             self.aimed = hit.map(|(id, _)| id);
@@ -277,4 +296,84 @@ impl Tool {
             _ => None,
         })
     }
+
+    /// The Links tool: aim at a teleporter flag or a placed machine, A to
+    /// start a link and A again on the other end to make it.
+    fn update_links(&mut self, session: &Session, input: Input) -> Option<Command> {
+        use Action as A;
+        use Command as C;
+        if let Some(camera) = &mut self.camera {
+            camera.fly(input.movement, input.look, input.seconds.clamp(0., 0.1));
+            let forward = camera.forward();
+            let camera = *camera;
+            let teleporters = session.teleporters();
+            let flags = teleporters
+                .iter()
+                .map(|t| (Linkable::Teleporter(t.index), t.position));
+            let machines = session
+                .objects()
+                .iter()
+                .filter(|o| o.item.block == BlockKind::Machines)
+                .map(|o| (Linkable::Object(o.id), o.frame.position));
+            self.aimed_link = flags
+                .chain(machines)
+                .filter_map(|(thing, at)| aim(&camera, forward, 80., at).map(|d| (thing, d)))
+                .min_by(|a, b| a.1.total_cmp(&b.1).then_with(|| a.0.cmp(&b.0)))
+                .map(|(thing, _)| thing);
+        }
+        let aimed = self.aimed_link.filter(|&t| Some(t) != self.link_from);
+        match input.action {
+            Some(A::Link) if self.link_from.is_some() => {
+                self.link_from = None;
+                None
+            }
+            Some(A::Link) if aimed.is_some() => {
+                self.link_from = aimed;
+                None
+            }
+            Some(A::Link) | Some(A::Palette) => {
+                let palette = input.action == Some(A::Palette);
+                self.clear_selection();
+                self.links = false;
+                palette.then_some(C::Palette)
+            }
+            Some(A::Accept) => match (self.link_from, aimed) {
+                (Some(from), Some(to)) => Some(C::Link { from, to }),
+                (None, Some(thing)) => {
+                    self.link_from = Some(thing);
+                    None
+                }
+                _ => None,
+            },
+            Some(A::Back) if self.link_from.is_some() => {
+                self.link_from = None;
+                None
+            }
+            Some(A::Back) => Some(C::Menu),
+            Some(A::Delete) if self.link_from.is_none() => {
+                let link = session.links_of(self.aimed_link?).last()?.id;
+                Some(C::Unlink { link })
+            }
+            Some(A::Properties) if self.link_from.is_none() && self.aimed_link.is_some() => {
+                Some(C::Properties)
+            }
+            Some(A::Menu) => Some(C::Menu),
+            Some(A::Undo) => Some(C::Undo),
+            Some(A::Redo) => Some(C::Redo),
+            _ => None,
+        }
+    }
+}
+
+/// How far along the view `at` lies when it is under the reticle.
+fn aim(camera: &Camera, forward: [f32; 3], max_distance: f32, at: [f32; 3]) -> Option<f32> {
+    let d: [f32; 3] = std::array::from_fn(|i| at[i] - camera.position[i]);
+    let along: f32 = (0..3).map(|i| d[i] * forward[i]).sum();
+    if !(0.1..=max_distance).contains(&along) {
+        return None;
+    }
+    let side: f32 = (0..3).map(|i| (d[i] - along * forward[i]).powi(2)).sum();
+    // The aim target is at least a quarter world unit wide, then grows with
+    // distance so it subtends the same small angle as the central reticle.
+    (side <= (0.25 + along * 0.012).powi(2)).then_some(along)
 }

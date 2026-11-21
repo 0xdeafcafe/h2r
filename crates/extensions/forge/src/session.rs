@@ -1,11 +1,13 @@
 use std::path::Path;
 
 use forge_doc::{
-    Before, Edit, Entry, F32, FieldWrite, ForgeDoc, Limits, LogHead, Op, Placement, Proposal,
-    Sha256, Value,
+    ActiveLink, Before, BlockKind, Edit, Entry, F32, FieldWrite, Forge, ForgeDoc, Limits, Link,
+    Links, LogHead, Op, Placement, Proposal, Sha256, Value,
 };
 
-use crate::{Frame, OpId, PaletteItem, PlacedObject, World, files, scene};
+use crate::{
+    Frame, Linkable, OpId, PaletteItem, PlacedObject, Teleporter, World, files, links, scene,
+};
 
 #[derive(Clone, Debug)]
 pub struct Session {
@@ -15,6 +17,8 @@ pub struct Session {
     palette: Vec<PaletteItem>,
     budget: usize,
     objects: Vec<PlacedObject>,
+    /// The loaded map's teleporter flags with their own channels.
+    teleporters: Vec<Teleporter>,
     head: LogHead,
     log: Vec<Entry>,
     log_bytes: usize,
@@ -54,6 +58,7 @@ impl Session {
             palette,
             budget,
             objects: vec![],
+            teleporters: vec![],
             head,
             log: vec![],
             log_bytes: 0,
@@ -62,6 +67,21 @@ impl Session {
             redo: vec![],
             repair: None,
         })
+    }
+
+    /// The loaded map's teleporter flags, which the Links tool can join.
+    pub fn with_teleporters(mut self, teleporters: Vec<Teleporter>) -> Result<Self, String> {
+        let count = self
+            .limits
+            .base_counts
+            .get(&BlockKind::NetgameFlags)
+            .copied()
+            .ok_or("The map is missing its netgame flag count.")?;
+        if teleporters.iter().any(|t| t.index >= count) {
+            return Err("A teleporter names a missing netgame flag.".into());
+        }
+        self.teleporters = teleporters;
+        Ok(self)
     }
 
     pub fn document(&self) -> &ForgeDoc {
@@ -81,6 +101,70 @@ impl Session {
     }
     pub fn budget(&self) -> usize {
         self.budget
+    }
+
+    /// The map's teleporter flags with the channels the document gives them.
+    pub fn teleporters(&self) -> Vec<Teleporter> {
+        let channels = self
+            .resolved(&self.doc)
+            .map(|l| links::effective(&self.teleporters, &l))
+            .unwrap_or_default();
+        self.teleporters
+            .iter()
+            .map(|t| Teleporter {
+                channel: channels.get(&t.index).copied().unwrap_or(t.channel),
+                ..*t
+            })
+            .collect()
+    }
+
+    /// The active links naming `thing`, oldest first.
+    pub fn links_of(&self, thing: Linkable) -> Vec<ActiveLink> {
+        let end = thing.endpoint();
+        self.resolved(&self.doc)
+            .map(|l| l.active)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|a| a.link.endpoints().contains(&end))
+            .collect()
+    }
+
+    /// Device links reach the game only when the map is materialised again:
+    /// the engine entry that sets a live device group is unproven.
+    pub fn pending_rebuild(&self) -> usize {
+        self.resolved(&self.doc).map_or(0, |l| {
+            l.active
+                .iter()
+                .filter(|a| matches!(a.link, Link::Device { .. }))
+                .count()
+        })
+    }
+
+    fn resolved(&self, doc: &ForgeDoc) -> Result<Links, String> {
+        doc.links(&self.limits.base_counts).map_err(reason)
+    }
+
+    /// Join two things with one link op. Teleporters take a shared channel;
+    /// two machines join one device group.
+    pub fn link(
+        &mut self,
+        world: &mut impl World,
+        tick: u32,
+        a: Linkable,
+        b: Linkable,
+    ) -> Result<OpId, String> {
+        let current = self.resolved(&self.doc)?;
+        let link = links::link(a, b, &self.teleporters, &self.objects, &current)?;
+        let ops = self.ops(vec![Edit::Forge(Forge::Link(link))])?;
+        let id = ops[0].id;
+        self.edit(world, tick, ops, None)?;
+        Ok(id)
+    }
+
+    /// End the link op `link` made. A teleporter returns to the map's channel.
+    pub fn unlink(&mut self, world: &mut impl World, tick: u32, link: OpId) -> Result<(), String> {
+        let ops = self.ops(vec![Edit::Forge(Forge::Unlink { link })])?;
+        self.edit(world, tick, ops, None)
     }
     pub fn bind_spawn(&mut self, staged: u32, actual: u32) {
         for object in &mut self.objects {
@@ -109,11 +193,11 @@ impl Session {
             vector("position", frame.position)?,
             vector("rotation", frame.rotation)?,
         ];
-        let ops = self.ops(vec![Placement::Add {
+        let ops = self.ops(vec![Edit::Placement(Placement::Add {
             block: item.block,
             like: None,
             fields,
-        }])?;
+        })])?;
         let id = ops[0].id;
         self.edit(world, tick, ops, None)?;
         Ok(id)
@@ -134,11 +218,11 @@ impl Session {
             ("rotation", object.frame.rotation, frame.rotation),
         ] {
             if old.map(f32::to_bits) != new.map(f32::to_bits) {
-                edits.push(Placement::Set {
+                edits.push(Edit::Placement(Placement::Set {
                     block: object.item.block,
                     index,
                     write: vector(name, new)?,
-                });
+                }));
             }
         }
         if edits.is_empty() {
@@ -151,10 +235,18 @@ impl Session {
     pub fn delete(&mut self, world: &mut impl World, tick: u32, id: OpId) -> Result<(), String> {
         self.restore(world)?;
         let (object, index) = self.target(id)?;
-        let ops = self.ops(vec![Placement::Remove {
+        // A linked entry cannot be removed, so its links end in the same
+        // undo step.
+        let mut edits: Vec<_> = self
+            .links_of(Linkable::Object(id))
+            .into_iter()
+            .map(|a| Edit::Forge(Forge::Unlink { link: a.id }))
+            .collect();
+        edits.push(Edit::Placement(Placement::Remove {
             block: object.item.block,
             index,
-        }])?;
+        }));
+        let ops = self.ops(edits)?;
         self.edit(world, tick, ops, None)
     }
 
@@ -354,7 +446,7 @@ impl Session {
         Ok((object, index))
     }
 
-    fn ops(&self, edits: Vec<Placement>) -> Result<Vec<Op>, String> {
+    fn ops(&self, edits: Vec<Edit>) -> Result<Vec<Op>, String> {
         edits
             .into_iter()
             .enumerate()
@@ -363,10 +455,7 @@ impl Session {
                     .last_id
                     .checked_add(i as u32 + 1)
                     .ok_or("Forge operation IDs exhausted.")?;
-                Ok(Op {
-                    id: OpId(id),
-                    edit: Edit::Placement(edit),
-                })
+                Ok(Op { id: OpId(id), edit })
             })
             .collect()
     }
@@ -378,9 +467,23 @@ impl Session {
         respawn: bool,
     ) -> Result<(), String> {
         let desired = scene::project(doc, &self.limits, &self.palette, self.budget)?;
+        let channels = self.channel_changes(doc)?;
         self.restore(world)?;
         let before: Vec<_> = self.objects.iter().map(scene::Object::from).collect();
-        if let Err(error) = scene::reconcile(world, &mut self.objects, &desired, respawn) {
+        let mut result = scene::reconcile(world, &mut self.objects, &desired, respawn);
+        if result.is_ok() {
+            for (i, &(flag, new, _)) in channels.iter().enumerate() {
+                if let Err(error) = world.channel(flag, new) {
+                    // Put back the channels already written.
+                    for &(flag, _, old) in channels[..i].iter().rev() {
+                        let _ = world.channel(flag, old);
+                    }
+                    result = Err(error);
+                    break;
+                }
+            }
+        }
+        if let Err(error) = result {
             if let Err(repair_error) = scene::reconcile(world, &mut self.objects, &before, true) {
                 self.repair = Some(before);
                 return Err(format!(
@@ -390,6 +493,22 @@ impl Session {
             return Err(error);
         }
         Ok(())
+    }
+
+    /// Teleporter channels that differ between the current document and
+    /// `doc`, as (flag, new, old).
+    fn channel_changes(&self, doc: &ForgeDoc) -> Result<Vec<(u32, i16, i16)>, String> {
+        let next = self.resolved(doc)?;
+        links::check_roles(&self.teleporters, &next)?;
+        let old = links::effective(&self.teleporters, &self.resolved(&self.doc)?);
+        let new = links::effective(&self.teleporters, &next);
+        Ok(new
+            .into_iter()
+            .filter_map(|(flag, channel)| {
+                let was = old.get(&flag).copied().unwrap_or(channel);
+                (was != channel).then_some((flag, channel, was))
+            })
+            .collect())
     }
 
     fn restore(&mut self, world: &mut impl World) -> Result<(), String> {
