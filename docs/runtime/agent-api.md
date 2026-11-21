@@ -2021,10 +2021,18 @@ directly on its own `--socket` (`H2_AGENT`, else the cache's `theater.sock`).
 |---|---|---|
 | `theater.play` | `{"id":"film-id","range":[300,900]}` to open, `{}` to resume; omit `range` for the whole film | `{id, starting:true}` on launch, otherwise transport state |
 | `theater.state` | `{}` | transport state, or `{id:null}` with no player |
+| `theater.compat` | `{"id":"film-id"}` | `{state, reasons, film: {xbe, contract, hooks, abi}, installed: [{stamp, state}]}` |
 | `theater.pause` | `{}` | holds guest execution and reports state |
 | `theater.speed` | `{"speed":0.5}` | sets host pacing from 0.25 to 4 times realtime |
 | `theater.seek` | `{"tick":900}`, optionally `"clip_marks":[300,null]` | restarts the player and fast-forwards to the target, carrying camera and timeline state; direct socket clients reconnect after the restart |
 | `theater.camera` | `{"mode":"orbit","player":"<name>","look":[0.2,-0.1],"zoom":-1}` or `{"mode":"first_person","seat":3}` | selects the view and returns transport state; an absolute film seat is 0 to 15 |
+
+`theater.compat` is a read method on the library agent. It accepts a local
+film ID or `live:<game-id>` for a cached host film. States are `playable` and
+`unavailable`. Reasons are strings, and `contract` and `hooks` are null
+when the recording supplies no digest. The preflight checks the XBE,
+simulation ABI, guest image contract, and required external start files.
+The replay verifies installed hooks before entering the guest.
 
 The rendered player starts at the clip's first tick and loops at its end.
 Its overlay uses the player's agent socket for transport and `cheat.set
@@ -2044,7 +2052,7 @@ player's name or seat to select a drawn viewport. Headless playback
 (`--render-every 0`) accepts only `default`.
 
 Transport state carries `id`, `tick`, `length_ticks`, `paused`, `speed`,
-`seeking`, `camera`, optional `camera_player` and `camera_seat`, and
+`seeking`, `compatibility`, `camera`, optional `camera_player` and `camera_seat`, and
 discovered kill marker ticks in `kills`, alongside the usual `at` stamp.
 Tick zero is boot. A paused seek holds at its target until play. The HLE
 compares the recorded call index and game-thread hash samples during

@@ -362,7 +362,7 @@ fn detail_cell(row: usize, left: i16, right: i16, numeric: bool, data: bool) -> 
 }
 
 fn film_panel() -> Panel {
-    let mut texts = (0..HEADER_LINES)
+    let mut texts = (0..=HEADER_LINES)
         .map(|row| detail_cell(row, TABLE_LEFT, lobby::TABLE_RIGHT, false, row != 0))
         .collect::<Vec<_>>();
     for row in 0..=ROSTER {
@@ -426,6 +426,16 @@ fn header_values(entry: &Entry, player: Option<&str>) -> Vec<String> {
         values.push(format!("Result: {result}"));
     }
     values.resize(HEADER_LINES, String::new());
+    values.push(if film.source == super::adapter::Source::Host
+        && film.archive_id().is_some()
+        && film.version.is_none()
+    {
+        "Compatibility checked on download".into()
+    } else if film.watch_unavailable().is_some() {
+        "Unavailable".into()
+    } else {
+        "Playable".into()
+    });
 
     values
 }
@@ -603,7 +613,13 @@ pub(super) fn spec(theater: &Theater, list: bool) -> ScreenSpec {
                 .selected
                 .as_ref()
                 .and_then(|e| e.film.watch_unavailable())
-                .map(str::to_owned)
+                .map(|reason| {
+                    text_fit::paragraph(
+                        reason,
+                        i32::from(FILM_STATUS.rect[3] - FILM_STATUS.rect[1]),
+                        2,
+                    )
+                })
         } else {
             Some(text_fit::paragraph(
                 &state.status,

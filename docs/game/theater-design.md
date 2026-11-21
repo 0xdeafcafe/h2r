@@ -371,9 +371,12 @@ replayed simulation.
   cancels it and returns to the tick the jump left.
 ### Film compatibility
 
-The film page shows one of two states, computed from the film's header
-and the installed images before any download
-(`boot::theater::image_match`, `Session::check_simulation_hooks`):
+The film page shows one of two compatibility states. The library uses
+`boot::theater::image_match` to compare the local or cached film header
+with the installed images. For an uncached account film, the library
+checks the downloaded header before starting a player.
+`Session::check_simulation_hooks` verifies the effective hook digest
+before entering the guest.
 
 | State | Condition | Playback |
 |---|---|---|

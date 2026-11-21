@@ -985,7 +985,7 @@ mod tests {
                 length_ticks: 3000,
                 source: Source::Host,
                 image_stamp: "test".into(),
-                playable_here: true,
+                compatibility: api::CompatibilityState::Playable,
                 ..FilmMeta::default()
             },
             clip: None,

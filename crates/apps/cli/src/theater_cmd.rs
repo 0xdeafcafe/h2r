@@ -185,7 +185,7 @@ fn child(opts: Options, work: &Path) -> Result<()> {
             Err(e) => diagnostics.push(format!("{}: {e}", path.display())),
         }
     }
-    let (image, _stamp, compatibility) = images
+    let (image, _, compatibility) = images
         .into_iter()
         .min_by_key(|(_, _, mode)| *mode != film::image::ImageMatch::Native)
         .with_context(|| {
@@ -307,7 +307,7 @@ fn child(opts: Options, work: &Path) -> Result<()> {
         // When the recorded guest used a headless device, the independent
         // observer can present the match without changing that device's answers.
         let observer = film.header.version >= 2 && local_gpu != Some(true);
-        let mut meta = film_entry(film::LibraryEntry::read(&opts.film)?, &_stamp);
+        let mut meta = film_entry(film::LibraryEntry::read(&opts.film)?);
         let title = meta.map.clone();
         if let Ok(id) = std::env::var("H2_THEATER_FILM_ID") {
             meta.id = id;

@@ -180,6 +180,7 @@ impl Session {
                         paused: s.paused,
                         speed: s.speed,
                         seeking: s.seeking.is_some() || s.restart.is_some(),
+                        compatibility: api::CompatibilityState::Playable,
                         camera_seat: seat,
                         camera: s.presentation.camera.mode,
                         camera_player: s.presentation.camera.player.clone(),
@@ -210,17 +211,18 @@ pub fn playback_images(xbe: &[u8], out: &std::path::Path) -> Vec<(PathBuf, Strin
         .collect()
 }
 
-pub fn playable_entry(entry: &film::LibraryEntry, stamp: &str) -> bool {
-    (entry.version >= 2 || entry.meta.source == Source::Host)
-        && image_match(
-            entry.version,
-            &entry.meta.image_stamp,
-            &entry.runtime_stamp,
-            entry.guest_image.as_ref(),
-            stamp,
-            &entry.xbe_sha256,
-        )
-        .is_ok()
+fn library_entry(dir: &std::path::Path, id: &str) -> Result<film::LibraryEntry, RpcError> {
+    let unavailable = |e: String| RpcError::new(code::UNAVAILABLE, e);
+    if let Some(game) = id.strip_prefix("live:") {
+        let path = crate::theater_ui::adapter::archive_path(dir, game).map_err(unavailable)?;
+        crate::theater_ui::adapter::archive_entry(&path, game)
+    } else {
+        if !dir.is_dir() {
+            return Err(unavailable("unknown film ID".into()));
+        }
+        film::Library::open(dir).and_then(|lib| lib.get(id))
+    }
+    .map_err(|e| unavailable(e.to_string()))
 }
 
 /// In the original game, Watch selects a local or downloaded film and
@@ -231,7 +233,7 @@ pub fn library_methods(
     disc: PathBuf,
     out: PathBuf,
     data: PathBuf,
-    image_stamps: Vec<String>,
+    installation: Installation,
 ) {
     struct PlayerProcess {
         child: std::process::Child,
@@ -239,10 +241,17 @@ pub fn library_methods(
         id: String,
     }
     let player = Arc::new(Mutex::new(None::<PlayerProcess>));
-    let image_stamps = Arc::new(image_stamps);
+    let installation = Arc::new(installation);
+    let compat_dir = dir.clone();
+    let compat_installation = installation.clone();
+    a.add_method(api::COMPAT, Access::Read, move |p| {
+        let request = params::<api::Compat>(p)?;
+        let entry = library_entry(&compat_dir, &request.id)?;
+        Ok(serde_json::json!(compat_installation.compatibility(&entry)))
+    });
     for name in api::METHODS {
         let player = player.clone();
-        let image_stamps = image_stamps.clone();
+        let installation = installation.clone();
         let (dir, disc, out, data) = (dir.clone(), disc.clone(), out.clone(), data.clone());
         a.add_method(
             name,
@@ -269,21 +278,10 @@ pub fn library_methods(
                         if player.is_some() {
                             return Err(unavailable("A film is already playing".into()));
                         }
-                        let entry = if let Some(game) = id.strip_prefix("live:") {
-                            let path = crate::theater_ui::adapter::archive_path(&dir, game)
-                                .map_err(unavailable)?;
-                            crate::theater_ui::adapter::archive_entry(&path, game)
-                        } else {
-                            film::Library::open(&dir).and_then(|lib| lib.get(&id))
-                        }
-                        .map_err(|e| unavailable(e.to_string()))?;
-                        if !image_stamps
-                            .iter()
-                            .any(|stamp| playable_entry(&entry, stamp))
-                        {
-                            return Err(unavailable(
-                                "Recording needs a compatible game build and an engine film".into(),
-                            ));
+                        let entry = library_entry(&dir, &id)?;
+                        let compatibility = installation.compatibility(&entry);
+                        if compatibility.state == api::CompatibilityState::Unavailable {
+                            return Err(unavailable(compatibility.reasons.join(" ")));
                         }
                         let meta = entry.meta;
                         let path = entry.path;

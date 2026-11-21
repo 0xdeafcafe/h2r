@@ -2,7 +2,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use app::theater_overlay as shell;
-use boot::theater::playable_entry;
+use agent_proto::theater::CompatibilityState;
+use boot::theater::Installation;
 use boot::theater_ui::{
     Key, Theater,
     adapter::{FilmMeta, Library, Player, Source, game_type},
@@ -16,13 +17,15 @@ pub(super) fn open_library(dir: &Path) -> Result<Box<dyn Library>, String> {
 struct FilmLibrary(film::Library);
 
 impl Library for FilmLibrary {
-    fn list(&self, stamps: &[String]) -> Result<Vec<FilmMeta>, String> {
+    fn list(&self, installation: &Installation) -> Result<Vec<FilmMeta>, String> {
         let entries = self.0.list().map_err(|e| e.to_string())?;
         Ok(entries
             .into_iter()
             .map(|entry| {
-                let selected = stamps.iter().find(|stamp| playable_entry(&entry, stamp));
-                film_entry(entry, selected.map_or("", String::as_str))
+                let compatibility = installation.compatibility(&entry);
+                let mut film = film_entry(entry);
+                film.apply_compatibility(compatibility);
+                film
             })
             .collect())
     }
@@ -42,8 +45,7 @@ impl Library for FilmLibrary {
 
 /// Both the library selector and the playback transport use the sealed header
 /// for tape length and identity and the match summary for match-only results.
-pub(crate) fn film_entry(entry: film::LibraryEntry, stamp: &str) -> FilmMeta {
-    let playable_here = playable_entry(&entry, stamp);
+pub(crate) fn film_entry(entry: film::LibraryEntry) -> FilmMeta {
     let meta = entry.meta;
     let host = meta.source == film::Source::Host;
     let mut row = FilmMeta {
@@ -67,7 +69,7 @@ pub(crate) fn film_entry(entry: film::LibraryEntry, stamp: &str) -> FilmMeta {
         source: if host { Source::Host } else { Source::Local },
         version: Some(entry.version),
         image_stamp: meta.image_stamp,
-        playable_here,
+        compatibility: CompatibilityState::Playable,
         saved: entry.saved,
         live_game_id: entry.game_id.filter(|_| host),
         ticks_per_second: entry.ticks_per_second,
@@ -185,7 +187,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn exact_host_films_use_the_image_stamp_and_retain_the_live_id() {
+    fn exact_host_films_retain_the_live_id() {
         let meta = film::FilmMeta {
             id: "local-file-id".into(),
             map: "lockout".into(),
@@ -202,6 +204,7 @@ mod tests {
             version: 1,
             ticks_per_second: None,
             runtime_stamp: String::new(),
+            simulation_hooks: None,
             xbe_sha256: String::new(),
             guest_image: None,
             saved: false,
@@ -209,11 +212,10 @@ mod tests {
             game_id: Some("hl-game".into()),
             path: "host.h2film".into(),
         };
-        let playable = film_entry(entry.clone(), "image stamp");
-        assert!(playable.playable_here);
-        assert_eq!(playable.id, "local-file-id");
-        assert_eq!(playable.live_game_id.as_deref(), Some("hl-game"));
-        assert!(!film_entry(entry, "other image").playable_here);
+        let row = film_entry(entry);
+        assert_eq!(row.image_stamp, "image stamp");
+        assert_eq!(row.id, "local-file-id");
+        assert_eq!(row.live_game_id.as_deref(), Some("hl-game"));
     }
 
     #[test]
@@ -248,6 +250,7 @@ mod tests {
             ticks_per_second: Some(60),
             version: 3,
             runtime_stamp: "h2-sim/1".into(),
+            simulation_hooks: Some("fixture".into()),
             xbe_sha256: String::new(),
             guest_image: None,
             lease_id: None,
@@ -255,8 +258,8 @@ mod tests {
             saved: true,
             path: "local.h2film".into(),
         };
-        let row = film_entry(entry, "local image");
-        assert!(row.playable_here && row.saved);
+        let row = film_entry(entry);
+        assert!(row.saved);
         assert_eq!(row.map, "a30");
         assert_eq!(row.mode.as_deref(), Some("Co-op"));
         assert_eq!(row.game_type.as_deref(), Some("Campaign"));
