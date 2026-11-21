@@ -22,6 +22,7 @@ use scenario_edit::{BlockKind, Scenario};
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Baseline {
     blocks: BTreeMap<BlockKind, LoadedBlock>,
+    object_rows: super::objects::Rows,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -56,6 +57,7 @@ pub struct Diff {
 impl Baseline {
     pub fn source(s: &Scenario) -> Self {
         Self {
+            object_rows: super::objects::source(s),
             blocks: BLOCKS
                 .iter()
                 .map(|b| {
@@ -85,7 +87,25 @@ impl Baseline {
                 (b.kind, loaded)
             })
             .collect();
-        Baseline { blocks }
+        Baseline {
+            blocks,
+            object_rows: super::objects::document(s),
+        }
+    }
+
+    /// Placement frames in the file, independent of subsequent field acknowledgements.
+    pub(super) fn object_rows(&self) -> &super::objects::Rows {
+        &self.object_rows
+    }
+
+    /// The frame a respawn reads after acknowledged field writes.
+    pub(super) fn object_frame(
+        &self,
+        kind: BlockKind,
+        index: usize,
+    ) -> Option<super::objects::Frame> {
+        let bytes = self.blocks.get(&kind)?.entries.get(index)?;
+        super::objects::Frame::from_entry(kind, bytes)
     }
 
     /// The game now holds `w` (it was written).

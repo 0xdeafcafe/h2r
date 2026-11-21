@@ -540,7 +540,7 @@ impl PlayUi {
             if ui.button("Keep the game as it is") {
                 action = Some(Apply::Keep);
             }
-            if ui.button("Put it back as it loaded") {
+            if ui.button("Restore journalled fields") {
                 action = Some(Apply::Restore);
             }
             if action.is_some() || !app.pairing.leaving {

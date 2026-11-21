@@ -16,6 +16,7 @@ pub mod auto;
 pub mod launch;
 pub mod link;
 pub mod pair;
+pub mod objects;
 pub mod playtest;
 pub(crate) mod presence;
 pub(crate) mod select;
@@ -224,6 +225,7 @@ pub struct Play {
     next_push: Instant,
     edits: Edits,
     presence: presence::Presence,
+    objects: objects::State,
     reload_copy: Option<edits::ReloadCopy>,
     launch_baseline: Option<(Baseline, tag_sync::TagBaseline)>,
     /// Blocks with entries added or removed since the baseline.
@@ -288,6 +290,7 @@ impl Play {
             next_push: Instant::now(),
             edits: Edits::default(),
             presence: Default::default(),
+            objects: objects::State::default(),
             reload_copy: None,
             launch_baseline: None,
             reload: Vec::new(),
@@ -812,6 +815,7 @@ impl Play {
         let now = Instant::now();
         select::update(app, now);
         Self::update_shared_camera(app);
+        self.update_objects(app, now);
         self.publish(app);
         self.update_presence(app, now);
     }
@@ -1032,6 +1036,7 @@ impl Play {
                 ));
             }
             Event::Lost(why) => {
+                self.objects.transport_lost();
                 if matches!(self.waiting, Waiting::Spawn(_)) {
                     app.error("game link closed before the player move was acknowledged");
                 }
@@ -1130,6 +1135,7 @@ impl Play {
             (Purpose::Journal(epoch), result) => self.edit_journal(app, epoch, result),
             (Purpose::Revert { leave, epoch }, result) => self.reverted(app, leave, epoch, result),
             (Purpose::Take { id, at }, result) => self.take_answer(app, id, at, result),
+            (Purpose::Object(ticket), result) => self.object_answer(app, ticket, result),
             (Purpose::Edit(id), result) => self.batch_answer(app, id, result),
             (Purpose::Reload(id), result) => self.reload_answer(app, id, result),
             (Purpose::Focus, Ok(_)) => {}

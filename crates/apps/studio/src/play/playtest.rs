@@ -106,6 +106,11 @@ impl Step {
     }
 }
 
+// An acknowledged preview is informational. A lost object receipt needs a fresh map.
+fn needs_playtest(row: &Value) -> bool {
+    row["doc"] != "object" || row["unknown"] == true
+}
+
 pub fn decide(
     link: &LinkState,
     identity_refusal: Option<&str>,
@@ -125,8 +130,12 @@ pub fn decide(
         }
         LinkState::OtherMap { .. } if own || authorized => reload,
         LinkState::OtherMap { .. } => Step::Ask { ask: Ask::Load },
-        _ if !pending.is_empty() && !own && !authorized => Step::Ask { ask: Ask::Send },
-        _ if pending.iter().any(|row| row["class"] == tag_sync::RELOAD) => reload,
+        _ if !own && !authorized && pending.iter().any(needs_playtest) => {
+            Step::Ask { ask: Ask::Send }
+        }
+        _ if pending.iter().any(|row| needs_playtest(row) && row["class"] == tag_sync::RELOAD) => {
+            reload
+        }
         _ => Step::Resume,
     }
 }
@@ -363,7 +372,7 @@ impl Play {
             Step::Resume => {
                 if self.edits.sent.is_some() {
                     self.waiting = Waiting::Batch;
-                } else if !app.pairing.pending.is_empty() {
+                } else if app.pairing.pending.iter().any(needs_playtest) {
                     if let Some(why) = self.edit_refusal(app) {
                         return Err(why);
                     }

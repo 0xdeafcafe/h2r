@@ -795,8 +795,10 @@ status, and a second connection for the binary live mirror.
   leaves the entire batch unapplied. In **Pending**, choose **Take the game's value**
   to put the game's value in the document or **Overwrite** to send the
   document's value. The field badge shows when the game reads it.
-  Placements take effect when the object is next created. Block growth
-  and other structural changes appear under **Reload**.
+  Moving or turning a placement also moves its linked live object. Deleting
+  a placement deletes that object. **Respawn now** applies creation-time
+  edits using the loaded placement. Pending shows when a changed block or
+  an appended placement needs **Reload**.
 - **Go to player** puts the camera's focus on player one, looking the way
   they face. **Teleport player here** moves them to the ground under the
   camera's focus; **T** over the viewport moves them to the point under
@@ -823,15 +825,6 @@ diff and the command line.
 
 Not yet:
 
-- **Moving live objects.** Placements reach the game's scenario, not the
-  objects already made from them. Moving one means writing the object's
-  own position and letting the engine re-cluster it, which needs the
-  object update path read first (hot-iteration.md, "What is left"). An
-  agent method for it (`world.object.set {id, pos}`) would let a moved
-  vehicle or weapon follow at once.
-- **Fields beyond placements.** Only the scenario's placement blocks are
-  compared. Other tags (`shad` and the rest `edit.*` names) are edited
-  with `h2 agent edit` today.
 - **Checking the game's copy.** Pairing trusts that the game runs the map
   as the editor shows it; a field whose `old` differs is reported once.
   Reading the game's placements back (`edit.get` per block) would show

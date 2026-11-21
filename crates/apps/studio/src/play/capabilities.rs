@@ -18,6 +18,8 @@ const FEATURES: &[(&str, &str)] = &[
     (live::STATUS, "Refreshing stream counters and map identity"),
     (sim::method::STATE_SET, "Moving the player to an editor position"),
     (sim::method::MAP_RELOAD, "Loading a play copy in the running game"),
+    (sim::method::OBJECT_SET, "Moving a placement’s live object"),
+    (sim::method::OBJECT_DELETE, "Deleting a placement’s live object"),
     (sim::method::OBJECT_RESPAWN, "Respawning an edited placement"),
     (editor::method::LINK, "Showing the editor link in the game"),
     (editor::method::MARKS, "Marking the editor selection in the game"),
@@ -49,6 +51,7 @@ impl Play {
             .iter()
             .filter(|(method, _)| !self.has_method(method))
             .map(|(method, feature)| format!("{feature} requires {method}."))
+            .chain(self.objects.waiting_for_sample.map(str::to_owned))
             .collect()
     }
 

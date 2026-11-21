@@ -39,6 +39,8 @@ pub fn session(tag: &str) -> (Temp, Session) {
 
 #[cfg(unix)]
 pub(crate) mod fake {
+    mod object_game;
+
     use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
     use std::sync::{Arc, Mutex};
     use std::thread;
@@ -113,6 +115,7 @@ pub(crate) mod fake {
                     },
                     ..unit
                 });
+                self.edits.lock().unwrap().objects.capture(world);
             }
             if layers.objects && let Some(object) = self.edits.lock().unwrap().extra_object {
                 world.objects.push(object);
@@ -134,6 +137,7 @@ pub(crate) mod fake {
     /// The invented game: what the host methods were sent.
     #[derive(Default)]
     pub(crate) struct FakeEdits {
+        objects: object_game::Objects,
         pub(crate) checksum: u32,
         pub(crate) extra_object: Option<live::Object>,
         map: Option<String>,
@@ -151,6 +155,7 @@ pub(crate) mod fake {
     }
     /// The agent server and the state observed at its synthetic game boundaries.
     pub(crate) struct Game {
+        kind: SessionKind,
         pub(crate) edits: Arc<Mutex<FakeEdits>>,
         pub(crate) path: std::path::PathBuf,
         pub(crate) agent: Agent,
@@ -176,7 +181,10 @@ pub(crate) mod fake {
                     v
                 }
             };
-            let edits = Arc::new(Mutex::new(FakeEdits::default()));
+            let edits = Arc::new(Mutex::new(FakeEdits {
+                peers: (kind == SessionKind::MpHost).then_some(1),
+                ..Default::default()
+            }));
             let loaded = map.to_owned();
             let state = edits.clone();
             agent.add_game_method("edit.map", Access::Read, move |_, ctx| {
@@ -188,10 +196,14 @@ pub(crate) mod fake {
                 let checksum = state.former_checksum.take().unwrap_or(state.checksum);
                 let mut session = agent_proto::sim::SessionView {
                     kind,
-                    peers: (kind == SessionKind::MpHost).then(|| state.peers.unwrap_or(1)),
+                    peers: state.peers,
                     ..Default::default()
                 }
                 .settle();
+                if kind == SessionKind::MpHost && state.peers.is_none() {
+                    session.writes = false;
+                    session.why = Some("multiplayer host peer count is unknown".into());
+                }
                 if state.external_live {
                     session.writes = false;
                     session.why = Some("external Live session".into());
@@ -360,6 +372,7 @@ pub(crate) mod fake {
                 }
             });
             Game {
+                kind,
                 edits,
                 path,
                 agent,

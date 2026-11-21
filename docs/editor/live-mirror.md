@@ -27,6 +27,7 @@ tag editor, and Halo 1 tags are in [click-to-edit.md](click-to-edit.md).
 | Live objects and players | Built: a binary stream on a second connection, interpolated bind-pose models and player overlays | `agent_proto::live`, `live_mirror::Store`, `studio::play` |
 | Pause, step, resume, go to player, teleport | Built | `play.rs`; `session.claim`, `pause`, `step`, `sim.state.set` |
 | Placement field edits sent live | Built: a diff against `sync::Baseline` every 200 ms, one conditional `edit.batch` with the tag document’s fields and raw placement paths on the game’s `scnr`; shows when the object is next made | `play/sync.rs` |
+| Move, delete and remake live objects | Editor side built: in Edit the streamed placement object follows a move or delete, and respawns from the loaded entry, when the game lists `world.object.set`, `.delete` and `.respawn` | `crates/apps/studio/src/play/objects.rs` |
 | Tag field writes in the game | Built: View/Edit, field classes, the Pending tab, `edit.map`, conditional `edit.batch`, journal adoption and `edit.revert` | `crates/extensions/hot-tags`, [hot-iteration.md](../graphics/hot-iteration.md) |
 | No writes in co-op or as a client | Built | `agent_proto::sim::SessionKind::writes` |
 | Typed object reads | Built: transform, velocity, sphere, vitality, node matrices, unit player, team, seat, weapons and aim | `crates/rewrites/sim-state` (`ObjectView`, `UnitView`), over `crates/hooking/guest-layout` |
@@ -270,7 +271,7 @@ pending list.
 | **Poke, next use** | values read when used: damage, rates of fire, machine speeds and delays, a projectile's drag | `edit.batch` | the next shot, hit or cycle |
 | **Poke, next creation** | values copied into an object when it is made: a projectile's initial speed, an object's vitality, placement fields | `edit.batch`, then optionally a respawn | objects made after it; **Respawn now** remakes the ones that exist |
 | **Poke, unknown** | any field with no recorded class | `edit.batch` | written at once; the badge says when it shows is not known |
-| **Object** | moving, turning or deleting a thing that exists; previewing a new placement | `world.object.set`, `.delete`, `.respawn`, `sim.spawn` | next tick |
+| **Object** | moving, turning or deleting a thing that exists; previewing a new placement | `world.object.set`, `.delete`, `.respawn` | next tick |
 | **Reload** | placement slots added, duplicated or removed, changes to tag block counts, new tags, new strings, grown blocks, structure BSP and lightmap edits, bitmap pixels of another size | saving the play copy and loading the map again | after the reload |
 
 The class of a field is data, not a guess made in the UI: `tags::defs`
@@ -279,15 +280,22 @@ evidence, as names have theirs, and the table in
 [hot-iteration.md](../graphics/hot-iteration.md), "What shows when", is
 its first content. A field with none is `unknown`.
 
-**Placements.** Moving a placement writes its `scnr` fields as today.
-In Edit, the object made from it (matched by the `objects` layer's
-placement link) is also moved with `world.object.set`, so the thing
-follows the gizmo. Adding a placement cannot grow the game's block, so
-the editor spawns a preview object with `sim.spawn` from the entry's tag
-and transform and marks the entry "in the game as a preview until the map
-reloads". Deleting one deletes its object and marks the entry "still in
-the game's scenario until the map reloads", since a respawn timer may
-make it again.
+**Placements.** In Edit, dragging a placement writes its scenario fields
+and moves its linked object with `world.object.set`. The editor sends at
+most one move per push interval during a drag, then sends the released
+frame. Deleting the placement deletes the live object. Undoing the delete
+requests a respawn at the original loaded slot. **Respawn now** applies
+creation-time fields after the game acknowledges the scenario write.
+
+An added placement requests a preview through `world.object.respawn`.
+The host reads creation fields from its loaded scenario. An index beyond
+that block needs a reload on this host. On success, the editor tracks the
+returned salted object ID even when the preview has no placement link.
+Undoing the add deletes that preview. Pending gives the reason when a
+session, missing method or game refusal prevents an object edit. If the
+connection closes or times out before a spawn or delete is acknowledged,
+Pending recommends reloading the map. The editor keeps that outcome visible
+through undo and reconnect so it cannot spawn a second preview by retrying.
 
 **Reload.** The editor compares each placement block's layout revision with the
 revision in the loaded file or Play copy. A remove followed by an add can
@@ -316,8 +324,9 @@ the set of writes to send, so undo sends the old bytes back with no
 second undo log. Each write carries `was`, the bytes the baseline
 expects; the game refuses a batch whose `was` differs
 (`MISMATCH`, naming the field and what it holds), which replaces "trust
-that the game runs the map as shown". Object edits keep an inverse beside
-the undo step: a move's old transform, a preview's object to delete.
+that the game runs the map as shown". After undo or redo, `play::objects::diff` compares the placement document
+with the acknowledged object edits and requests the corresponding move,
+delete or respawn.
 
 **Take the game's value** reads the conflicted field at a game boundary in
 the paired epoch. A successful read updates the document and its baseline.
@@ -333,7 +342,8 @@ game journal. A BSP switch retains entries for tag allocations that survive.
 Reverting a journal in the same epoch updates the baseline with the restored
 bytes and the bytes the game reports for fields it leaves alone. Choosing
 **Restore** on disconnect stops new writes, waits for the outstanding batch,
-then reverts before closing the link.
+then reverts before closing the link. The journal contains field bytes. Reloading
+the map restores its original population of live objects and removes previews.
 
 Saving is the existing path and is not changed by pairing: **Save map
 as** and **Save as package** write the document

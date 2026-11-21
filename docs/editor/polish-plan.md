@@ -1,6 +1,6 @@
 # h2-editor polish: what is wrong, the design, and the slices
 
-Status: P1 to P7, P12, P18, G1 to G3, G5, G6 and the editor camera modes and player move in G7 are implemented. The remaining slices describe the design.
+Status: P1 to P7, P12, P18, G1 to G3, G5, G6, the editor camera modes and player move in G7, and G8 are implemented. The remaining slices describe the design.
 Code: `crates/apps/studio/src` (the window: `ui.rs`, `ui/`, `play.rs`, `viewport.rs`, `theme.rs`), `crates/tools/scenario-edit/src` (the scene and its renderer). Tests: named per slice.
 Switch: none.
 
@@ -338,7 +338,7 @@ Objects follow the document too (`play/objects.rs`):
 | In the editor | In the game |
 |---|---|
 | a placement moved or turned | its `scnr` bytes (`edit.batch`) and, for its live object, `world.object.set` with the new frame |
-| a placement added | `sim.spawn` from the entry's tag and frame; the entry is "a preview until the map reloads" |
+| a placement added | requests a preview with `world.object.respawn {placement}` for an unoccupied new slot. A host that only reads the loaded block refuses an appended slot. Pending shows the reason and the block needs Reload. |
 | a placement deleted | `world.object.delete` on its object; the entry is "still in the game's scenario until the map reloads" |
 | a placement field read at creation changed | the poke, then **Respawn now** (`world.object.respawn`) for the objects that exist |
 
@@ -351,6 +351,8 @@ the preview of an undone add, or respawns the object of an undone
 delete. No second undo log exists, and a step that touched a tag and a
 placement undoes in the game as it does here.
 
+The editor keeps the returned salted object ID for an unlinked preview.
+A changed block layout keeps field writes out of shifted slots.
 A drag sends `world.object.set` at most once per push interval and
 once more when the gizmo is released. A game without `world.object.*`
 gets the `scnr` bytes alone and the pending list says objects move at

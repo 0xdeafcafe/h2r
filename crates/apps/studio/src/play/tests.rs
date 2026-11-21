@@ -1526,3 +1526,5 @@ fn a_refused_one_shot_batch_keeps_its_edit_mode() {
         assert!(game.calls("editor.focus").is_empty());
     }
 }
+
+mod object_edits;

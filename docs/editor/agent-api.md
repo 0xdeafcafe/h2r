@@ -351,7 +351,12 @@ Notes on some:
   confirms the peer count using `confirm` with `peers`, including when
   another map is loaded. Confirmation applies to the paired host, map epoch
   and peer count. Field writes still require the open map. `reload` writes
-  a play copy, and `respawn` uses the game’s optional object method.
+  a play copy. In Edit, `respawn` applies acknowledged creation-time
+  placement edits through `world.object.respawn`. Moving, deleting and
+  undoing placements use the same document actions as the window. The
+  game link calls the advertised object methods with the current host
+  confirmation. Object rows in `mirror.pending` explain changes that
+  need a reload or cannot reach a live object.
   `pair.disconnect {leave:"keep"|"restore"}` makes the leave choice over the
   API. During restore, `mirror.pending.leaving` stays true while the editor
   waits for an outstanding batch, reverts the journal, and disconnects on

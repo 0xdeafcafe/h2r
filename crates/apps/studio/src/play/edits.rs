@@ -64,12 +64,12 @@ pub(super) struct Edits {
     pub(super) epoch: Option<u64>,
     loaded: Option<std::sync::Arc<HashSet<TagId>>>,
     last_diff: Option<(u64, u64, u64, bool)>,
-    checksum: Option<u32>,
+    pub(super) checksum: Option<u32>,
     name: Option<String>,
     world: Option<u64>,
     session_reason: Option<String>,
     pub peers: Option<u32>,
-    confirmed: Option<u32>,
+    pub(super) confirmed: Option<u32>,
     pub(super) journal_ready: bool,
     journal_requested: bool,
     reverting: bool,
@@ -79,7 +79,7 @@ pub(super) struct Edits {
     pub(super) sent: Option<Batch>,
     next: u64,
     conflicts: Vec<Value>,
-    created: Vec<sync::Write>,
+    pub(super) created: Vec<sync::Write>,
 }
 
 impl Edits {
@@ -117,7 +117,7 @@ impl Play {
     }
 
     pub fn can_respawn(&self) -> bool {
-        self.has_method(agent_proto::sim::method::OBJECT_RESPAWN) && !self.edits.created.is_empty()
+        self.has_method(agent_proto::sim::method::OBJECT_RESPAWN) && self.objects.can_respawn()
     }
 
     fn reset_baseline(&mut self, app: &App) {
@@ -199,7 +199,11 @@ impl Play {
             serde_json::from_value::<SessionView>(v["session"].clone()).unwrap_or_default();
         self.session = Some(session.kind);
         self.edits.session_reason = session.kind.writes().err().map(str::to_owned).or_else(|| {
-            (!session.writes).then(|| session.why.unwrap_or_else(|| "game refused edits".into()))
+            if session.kind == SessionKind::MpHost && session.peers.is_none() {
+                Some("the game cannot verify the multiplayer peer count".into())
+            } else {
+                (!session.writes).then(|| session.why.unwrap_or_else(|| "game refused edits".into()))
+            }
         });
         self.edits.peers = (session.kind == SessionKind::MpHost)
             .then_some(session.peers)
@@ -483,6 +487,7 @@ impl Play {
                 pending.push(c.clone());
             }
         }
+        self.objects.publish(&mut pending);
         app.pairing.pending = pending;
         if !writable || self.edits.sent.is_some() || self.edits.taking.is_some()
             || !self.edits.conflicts.is_empty()
@@ -517,6 +522,7 @@ impl Play {
             return;
         }
         let batch = self.edits.sent.take().unwrap();
+        self.objects.field_answer();
         let playtest = self.waiting == Waiting::Sent;
         if self.edits.world != Some(app.session.world_rev()) {
             self.edits.restore_after_batch = false;
@@ -533,6 +539,13 @@ impl Play {
                 if let Some((_, base)) = &mut self.baseline {
                     for w in batch.placements {
                         base.wrote(&w);
+                        let def = scenario_edit::layout::block(w.block);
+                        if def.object_type.is_none() || def.field(w.field).is_some_and(|f| {
+                            matches!(f.role, scenario_edit::Role::Position | scenario_edit::Role::Rotation
+                                | scenario_edit::Role::Facing)
+                        }) {
+                            continue;
+                        }
                         self.edits
                             .created
                             .retain(|p| p.block != w.block || p.index != w.index);
@@ -781,19 +794,7 @@ impl Play {
                 }
                 if action == Apply::Respawn {
                     self.require_method(agent_proto::sim::method::OBJECT_RESPAWN)?;
-                    if !self.can_respawn() {
-                        return Err("no acknowledged placement edits to respawn".into());
-                    }
-                    for w in &self.edits.created {
-                        self.call(
-                            agent_proto::sim::method::OBJECT_RESPAWN,
-                            json!({
-                                "placement": {"block": crate::api::block_name(w.block), "index": w.index},
-                                "confirm_peers": self.edits.confirmed,
-                            }),
-                            Purpose::Other,
-                        );
-                    }
+                    self.respawn_objects(app)?;
                 } else {
                     self.remember_place(app);
                     let route = playtest::Reload::route(

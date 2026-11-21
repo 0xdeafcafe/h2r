@@ -38,6 +38,7 @@ pub enum Purpose {
     LiveStatus,
     /// One in-flight conditional document batch.
     Edit(u64),
+    Object(u64),
     Take { id: u64, at: u32 },
     Teleport,
     Spawn(Instant),
