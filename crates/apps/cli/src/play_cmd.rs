@@ -700,7 +700,11 @@ pub(crate) fn run_with_theater(
         None => boot::tier::Choice::from_env()?,
     };
     let jobs = std::thread::available_parallelism().map_or(4, |n| n.get());
-    let lib = boot::tier::prepare(&xbe, &disc, &out, choice, jobs, true)?.dylib;
+    let tier_plan = boot::tier::prepare(&xbe, &disc, &out, choice, jobs, true)?;
+    let lib = tier_plan.dylib.clone();
+    // A start on the fast tier while clang builds runs slowly: say so on
+    // screen, and say when the full-speed image is ready.
+    let building_clang = tier_plan.background_clang.then(|| out.clone());
     if crate::mappack_cmd::auto_enabled(no_mappack) {
         crate::mappack_cmd::auto_install(&disc, &data);
     }
@@ -753,6 +757,11 @@ pub(crate) fn run_with_theater(
         config.watermark = Some(play_watermark(render_thread(
             std::env::var("H2_RENDER_THREAD").ok().as_deref(),
         )));
+    }
+    if config.banner.is_none()
+        && let Some(out) = building_clang
+    {
+        config.banner = Some(tier_banner(out));
     }
     if let Some(c) = frame_stats {
         timeline::phase::start(c).context("starting frame stats")?;
@@ -1062,6 +1071,69 @@ fn follow_banner(path: PathBuf) -> app::Banner {
     banner
 }
 
+/// The window's banner while clang builds the full-speed image in the
+/// background (`boot::tier::background_build`): this start runs on the
+/// slow fast tier until the next one.
+fn tier_banner(out: PathBuf) -> app::Banner {
+    let banner = app::Banner::new();
+    let b = banner.clone();
+    b.set(tier_notice(TierBuild::Building));
+    std::thread::Builder::new()
+        .name("tier-status".into())
+        .spawn(move || {
+            let log = boot::tier::background_log(&out);
+            loop {
+                std::thread::sleep(Duration::from_secs(2));
+                let text = std::fs::read_to_string(&log).unwrap_or_default();
+                let state = tier_build_state(&text);
+                b.set(tier_notice(state));
+                if state != TierBuild::Building {
+                    return;
+                }
+            }
+        })
+        .expect("spawning the tier status reader");
+    banner
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TierBuild {
+    Building,
+    Ready,
+    Failed,
+}
+
+/// Where clang's background build is, from its log: its summary line
+/// (`clang (...): N compiled, ...`) ends a good build, `Error:` a failed
+/// one.
+fn tier_build_state(log: &str) -> TierBuild {
+    if log.lines().any(|l| l.starts_with("Error:") || l.starts_with("error:")) {
+        TierBuild::Failed
+    } else if log.lines().any(|l| l.starts_with("clang (") && l.contains(" compiled, ")) {
+        TierBuild::Ready
+    } else {
+        TierBuild::Building
+    }
+}
+
+fn tier_notice(state: TierBuild) -> Option<app::Notice> {
+    let (kind, text) = match state {
+        TierBuild::Building => (
+            app::NoticeKind::Info,
+            "Slow start: building the full-speed game in the background. Restart when it's ready.",
+        ),
+        TierBuild::Ready => (
+            app::NoticeKind::Info,
+            "Full-speed game built. Quit and start h2 play again to use it.",
+        ),
+        TierBuild::Failed => (
+            app::NoticeKind::Error,
+            "The full-speed build failed; see clang-build.log. This start stays slow.",
+        ),
+    };
+    Some(app::Notice { kind, text: text.into() })
+}
+
 /// Whether `h2 play` renders on a render thread, from `H2_RENDER_THREAD`
 /// (the same rule as `h2 run`'s).
 fn render_thread(value: Option<&str>) -> bool {
@@ -1071,6 +1143,25 @@ fn render_thread(value: Option<&str>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_tier_banner_follows_clang_s_log() {
+        assert_eq!(tier_build_state(""), TierBuild::Building);
+        assert_eq!(
+            tier_build_state("lift: 0.2s\nemit: 2.6s, 18662 owners\n"),
+            TierBuild::Building
+        );
+        assert_eq!(
+            tier_build_state("emit: 2.6s\nclang (O1): 965 compiled, 42 reused, 1.0s keying\n"),
+            TierBuild::Ready
+        );
+        assert_eq!(tier_build_state("emit: 2.6s\nError: clang failed\n"), TierBuild::Failed);
+        let text = tier_notice(TierBuild::Building).unwrap().text;
+        assert!(text.len() <= 96, "fits the banner: {text}");
+        for s in [TierBuild::Ready, TierBuild::Failed] {
+            assert!(tier_notice(s).unwrap().text.len() <= 96);
+        }
+    }
 
     /// `h2 play`, `h2 run` and the editor's variant store share one default
     /// data root; the variants crate checks its side against the same path.

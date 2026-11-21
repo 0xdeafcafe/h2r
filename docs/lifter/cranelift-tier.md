@@ -245,7 +245,10 @@ the next start uses clang's module.** No hot swap.
   once when another background build holds `<out>/clang-build.lock`. It
   builds in place: `boot::build` removes the old stamp first and writes the
   new one last, so a half-built module is never current. The next start
-  finds clang's module current and uses it. `--tier fast` runs the fast
+  finds clang's module current and uses it. While that build runs, `h2
+  play`'s window shows a notice that this start is slow, then that the
+  full-speed module is built and the next start uses it (or that the build
+  failed), from the log (`play_cmd.rs`, `tier_banner`). `--tier fast` runs the fast
   tier only; `--tier clang` is the foreground clang build. `h2 serve` never
   builds and runs clang's module unless told `--tier`.
 - **Why not hot-swap**: a running guest has handlers on the host stack
