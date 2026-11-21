@@ -239,7 +239,7 @@ mod tests {
     #[test]
     fn every_sample_lies_between_its_neighbours() {
         for (m, from, to) in [
-            (Motion::Ease, 0.0, 2.0 / 3.0),
+            (Motion::Ease, 0.0f32, 2.0f32 / 3.0),
             (Motion::Ease, 2.0 / 3.0, 1.0 / 3.0),
             (Motion::Ending, 2.0 / 3.0, 1.0),
             (Motion::RunOut, 2.0 / 3.0, 0.0),
