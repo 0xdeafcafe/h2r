@@ -23,7 +23,7 @@ pub enum Refusal {
     Decode(#[from] DecodeError),
     #[error("IR version {0} is unsupported (this build reads {IR_VERSION})")]
     IrVersion(u16),
-    #[error("API version {0} is unsupported (this build has {})", caps::API_VERSION)]
+    #[error("API version {0} is unsupported (this build has {api})", api = caps::API_VERSION)]
     ApiVersion(u16),
     #[error("engine index {0} cannot carry a script")]
     Carrier(u8),
