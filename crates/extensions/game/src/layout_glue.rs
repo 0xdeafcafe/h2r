@@ -1549,6 +1549,9 @@ pub fn install(
                 if !custom_games::browser_is_live(&*ctx.runtime().memory(), cpu.ecx) {
                     return Ok(event.invoke(cpu, ctx, custom_games::BROWSER_EVENT));
                 }
+                if let Some(handled) = custom_games::browser_filters::handle_event(cpu, ctx) {
+                    return handled;
+                }
                 LIVE_BACK.store(true, Ordering::SeqCst);
                 call_then(cpu, ctx, sh, |_, _| {
                     LIVE_BACK.store(false, Ordering::SeqCst);

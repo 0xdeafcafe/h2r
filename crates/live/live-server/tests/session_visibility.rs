@@ -41,6 +41,7 @@ fn ad(addr: Option<&str>, visibility: Visibility) -> NewSession {
         campaign: None,
         ping_ms: None,
         variant_ext: None,
+        browser: None,
     }
 }
 

@@ -3,6 +3,9 @@ use anyhow::Context;
 use live_hle::{Hle, LiveConfig, ServerOptions, maps::MapGate};
 use std::sync::Arc;
 
+mod browser_advertisement;
+pub use browser_advertisement::install as install_browser_advertisement;
+
 /// Install before guest execution, after attaching the kernel. Disabled is a
 /// complete no-op, including account I/O, guest allocation and console settings.
 /// `maps` is the join-time map gate (docs/game/maps.md §5; the boot builds it with

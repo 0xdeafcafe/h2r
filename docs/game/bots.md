@@ -3015,6 +3015,10 @@ Game Setup gets a **Clankers** row next to the Halo 1 Options row. It is
 added the same way (`crate::h1_options_row` is the model). The row opens a
 **Clankers** page.
 
+Live custom game advertisements report whether the host plans Clanker
+seats, so the browser's **Clankers** filter can find games with or without
+them. [Browser controls](../live/live-custom-games.md#filter-games)
+
 The page is a native ui_kit page: a `ListPage` or a `Page` impl
 (`crates/extensions/game/src/ui_kit/page.rs`). That gives it the kit's preview, its
 layout checks and the `Page` table tests. These are its rows:

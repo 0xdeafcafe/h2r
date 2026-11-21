@@ -1076,10 +1076,13 @@ and the hooks disarm.
 
 **Guest.** A console that joined a host's co-op session (an accepted
 invite, joining a friend from the friends list, or the custom games
-browser, which lists co-op sessions too) is a co-op guest. A watcher asks
-the HLE once a second, while the squad session has a second console and
-this one is not its host, which session it joined; when the server says it
-is a `coop` session, the console arms (10.3), takes the host's skulls for
+browser) is a co-op guest. In the browser, **Y** opens filters for
+**Campaign co-op**, campaign title and difficulty.
+[Browser controls](live-custom-games.md#filter-games)
+
+While the guest shares a squad with the host, a watcher asks the HLE
+once a second which session it joined. When the server reports a `coop`
+session, the console arms (10.3), takes the host's skulls for
 the campaign start, and opens the join screen at the next tick
 (`H2_COOP_JOIN_SCREEN=0` leaves that to the Co-op Campaign row, which opens
 the join screen for a guest): Host (`<gamertag>, 42 ms` once a ping came

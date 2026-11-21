@@ -1,11 +1,13 @@
 //! Public match ABI over local advertisements or asynchronous server discovery.
 //! Exchange keys remain local; remote search records carry a zero HLE key.
 use crate::{
+    browser::{Browser, BrowserProbe, BrowserStatus},
     client::{MatchRequest, Pending, Reply, Service, Session},
     matchmaking::DedicatedMatch,
     state::{Error, Storage},
     status::*,
 };
+use live_proto::session::{BrowserFilters, BrowserMetadata};
 use runtime::{Guest, GuestFault, guest::Access};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -61,6 +63,8 @@ pub struct LocalSession {
     /// The game variant's h2recomp options for the host's next game
     /// (docs/game/game-options.md section 3), when the host set them.
     pub variant_ext: Option<live_proto::session::VariantExt>,
+    /// The host's current multiplayer setup for Live browser filters.
+    pub browser: Option<BrowserMetadata>,
 }
 struct Record {
     // A title may advertise no capacity at all, notably in campaign co-op.
@@ -76,7 +80,11 @@ enum Task {
     Done,
     EmptySearch,
     HeldEmpty { until: std::time::Instant },
-    Search { array: u32, count: u32 },
+    Search {
+        array: u32,
+        count: u32,
+        browser: Option<u64>,
+    },
     Pending { request: Pending, intent: Intent },
     Queue {
         search: Box<crate::matchmaking::Search>,
@@ -99,6 +107,8 @@ enum Intent {
         retail: bool,
         /// FindFromID's session: the first step of a join, logged.
         find: Option<[u8; 8]>,
+        /// The browser filter generation this search answered.
+        browser: Option<u64>,
     },
 }
 pub(crate) struct Context<'a> {
@@ -135,6 +145,9 @@ impl Op {
 pub(crate) struct Sessions {
     records: BTreeMap<[u8; 8], Record>,
     slot_update: Option<([u8; 8], SessionSlots, Pending)>,
+    browser: Browser,
+    browser_probe: Option<BrowserProbe>,
+    browser_update: Option<BrowserUpdate>,
     results: crate::qos_memory::QosMemory,
     tasks: BTreeMap<u32, Task>,
     /// The elected host gets an empty search, then publishes using this lease.
@@ -185,6 +198,13 @@ pub(crate) struct Sessions {
     reported: BTreeMap<[u8; 8], BTreeSet<live_proto::Xuid>>,
     /// Clanker hoppers' search runs ([`crate::clankermatch::Hold`]).
     clanker_hold: crate::clankermatch::Hold,
+}
+
+struct BrowserUpdate {
+    id: [u8; 8],
+    previous: Option<BrowserMetadata>,
+    next: Option<BrowserMetadata>,
+    pending: Pending,
 }
 
 struct MatchJoin {
@@ -458,14 +478,25 @@ impl Sessions {
         self.background.retain(|p| p.take().is_none());
         let visibility = self.visibility;
         let coop = self.coop.clone();
+        let coop_browser = (coop.is_some() && self.browser_probe.is_some()).then(coop_browser_metadata);
         let skulls = self.advertised_skulls();
         for (id, record) in &mut self.records {
             let want = coop_visibility(visibility, coop.is_some());
             let drop_ping = coop.is_none() && record.session.ping_ms.is_some();
+            let browser_update = self.browser_update.as_ref().filter(|update| update.id == *id);
+            let previous_browser = browser_update
+                .map_or(&record.session.browser, |update| &update.next);
+            let browser = if coop.is_some() || record.session.campaign.is_some() {
+                (previous_browser != &coop_browser)
+                    .then(|| coop_browser.clone().unwrap_or_default())
+            } else {
+                None
+            };
             if record.session.campaign == coop
                 && record.session.visibility == want
                 && record.session.skulls == skulls
                 && !drop_ping
+                && browser.is_none()
             {
                 continue;
             }
@@ -479,6 +510,7 @@ impl Sessions {
                         skulls: (record.session.skulls != skulls)
                             .then(|| skulls.clone().unwrap_or_default()),
                         ping_ms: drop_ping.then_some(0),
+                        browser: browser.clone(),
                         ..Default::default()
                     },
                 };
@@ -490,6 +522,12 @@ impl Sessions {
             record.session.campaign = coop.clone();
             if drop_ping {
                 record.session.ping_ms = None;
+            }
+            if browser.is_some() {
+                record.session.browser = coop_browser.clone();
+                if browser_update.is_some() {
+                    self.browser_update = None;
+                }
             }
             record.session.visibility = want;
             record.session.skulls = skulls.clone();
@@ -584,6 +622,92 @@ impl Sessions {
     pub fn set_probe(&mut self, probe: Option<VisibilityProbe>) {
         self.probe = probe;
     }
+    pub fn set_browser_filters(&mut self, filters: BrowserFilters) {
+        self.browser.set_filters(filters);
+    }
+
+    pub fn browser_result(&self) -> (Option<usize>, Option<bool>) {
+        self.browser.result()
+    }
+
+    pub fn browser_status(&self) -> BrowserStatus {
+        self.browser.status()
+    }
+
+    pub fn set_browser_probe(&mut self, probe: BrowserProbe) {
+        self.browser_probe = Some(probe);
+    }
+
+    fn browser_metadata(
+        &self,
+        guest: &Guest,
+        map_id: Option<live_proto::maps::MapId>,
+    ) -> Option<BrowserMetadata> {
+        let probe = self.browser_probe.as_ref()?;
+        if self.coop.is_some() {
+            return Some(coop_browser_metadata());
+        }
+        probe(guest, map_id).filter(|metadata| metadata != &BrowserMetadata::default())
+    }
+
+    fn has_title_update(&self, id: [u8; 8]) -> bool {
+        self.tasks.values().any(|task| {
+            matches!(task, Task::Pending { intent: Intent::Put { session, .. }, .. } if session.id == id)
+        })
+    }
+
+    pub fn lobby_browser_changed(
+        &mut self,
+        guest: &Guest,
+        service: Option<&Service>,
+        connection: Option<&Session>,
+    ) {
+        if let Some(update) = self.browser_update.take() {
+            let Some(result) = update.pending.take() else {
+                self.browser_update = Some(update);
+                return;
+            };
+            if matches!(result, Ok(Reply::Matches(_)))
+                && let Some(record) = self.records.get_mut(&update.id)
+                && record.session.browser == update.previous
+            {
+                record.session.browser = update.next;
+                record.session.revision = record.session.revision.saturating_add(1);
+            }
+        }
+        let Some(id) = self.current_id() else {
+            return;
+        };
+        if self.has_title_update(id) {
+            return;
+        }
+        let next = self.browser_metadata(guest, self.records[&id].session.map_id);
+        let record = self.records.get_mut(&id).expect("current hosted session");
+        if next == record.session.browser {
+            return;
+        }
+        if let (Some(service), Some(connection)) = (service, connection) {
+            let request = MatchRequest::Update {
+                id: live_proto::sign::hex(&id),
+                update: live_proto::session::Update {
+                    browser: Some(next.clone().unwrap_or_default()),
+                    ..Default::default()
+                },
+            };
+            if let Ok(pending) = service.match_request(connection, request) {
+                self.browser_update = Some(BrowserUpdate {
+                    id,
+                    previous: record.session.browser.clone(),
+                    next,
+                    pending,
+                });
+            }
+        } else {
+            record.session.browser = next;
+            record.session.revision = record.session.revision.saturating_add(1);
+        }
+    }
+
     pub fn set_map_probe(&mut self, probe: Option<MapProbe>) {
         self.map_probe = probe;
     }
@@ -629,6 +753,8 @@ impl Sessions {
     pub fn clear(&mut self) {
         self.records.clear();
         self.slot_update = None;
+        self.browser_update = None;
+        self.browser.signed_out();
         self.looked_up.clear();
         self.tasks.clear();
         self.matchmaking = None;
@@ -732,6 +858,25 @@ impl Sessions {
             match request.take() {
                 None => Task::Pending { request, intent },
                 Some(Err(e)) => self.failed_request(&intent, e),
+                Some(Ok(Reply::BrowserMatches(page))) => {
+                    match intent {
+                        Intent::Search { browser: Some(generation), .. } => {
+                            match self.complete(m, intent, page.items) {
+                                Ok(task) => {
+                                    let count = match &task {
+                                        Task::Search { count, .. } => *count as usize,
+                                        _ => 0,
+                                    };
+                                    self.browser.complete(generation, count, page.variants);
+                                    task
+                                }
+                                Err(Failure::Hr(e)) => Task::Failed(e),
+                                Err(Failure::Fault(f)) => return Err(f),
+                            }
+                        }
+                        _ => self.failed_request(&intent, INVALID_ARGUMENT),
+                    }
+                }
                 Some(Ok(Reply::Matches(rows))) => match self.complete(m, intent, rows) {
                     Ok(v) => v,
                     Err(Failure::Hr(e)) => Task::Failed(e),
@@ -897,6 +1042,7 @@ impl Sessions {
                             campaign: self.coop.clone(),
                             ping_ms: self.coop.as_ref().and(self.coop_ping),
                             variant_ext: self.variant_ext.clone(),
+                            browser: None,
                         },
                     )
                 } else {
@@ -915,6 +1061,7 @@ impl Sessions {
                 let was_coop = session.campaign.clone();
                 session.campaign = self.coop.clone();
                 session.map_id = map_id;
+                session.browser = self.browser_metadata(m, map_id);
                 for attr in attributes {
                     // Attribute identity excludes its datatype. A changed NULL
                     // clears the value; unchanged entries never dereference data.
@@ -1000,6 +1147,18 @@ impl Sessions {
                                         .get(&id)
                                         .is_none_or(|r| r.session.variant_ext.as_ref() != Some(v))
                                 }),
+                                browser: {
+                                    // A background selection update may already be ahead
+                                    // of this title update in the worker.
+                                    let previous = self
+                                        .browser_update
+                                        .as_ref()
+                                        .filter(|update| update.id == id)
+                                        .map_or(&self.records[&id].session.browser, |update| &update.next);
+                                    (previous != &session.browser
+                                        || (self.browser_probe.is_some() && self.has_title_update(id)))
+                                        .then(|| session.browser.clone().unwrap_or_default())
+                                },
                                 ..Default::default()
                             },
                         }
@@ -1174,30 +1333,41 @@ impl Sessions {
                                     bytes: a[4],
                                     retail: true,
                                     find: None,
+                                    browser: None,
                                 },
                             },
                         );
                         return Ok(0);
                     }
-                    let filters = if a[0] == 1 {
-                        BTreeMap::new()
+                    let (browser, request) = if let Some(query) = optimatch.filter(|q| q.hopper == -1) {
+                        let (generation, filters) = self.browser.request();
+                        (Some(generation), MatchRequest::Browse {
+                            limit: a[1],
+                            query,
+                            filters,
+                        })
                     } else {
-                        params
-                            .into_iter()
-                            .filter(|v| v.value != SessionAttributeValue::Null)
-                            .map(|v| (v.id, v.value))
-                            .collect()
+                        let attributes = if a[0] == 1 {
+                            BTreeMap::new()
+                        } else {
+                            params
+                                .into_iter()
+                                .filter(|v| v.value != SessionAttributeValue::Null)
+                                .map(|v| (v.id, v.value))
+                                .collect()
+                        };
+                        (None, MatchRequest::Search {
+                            limit: a[1],
+                            attributes,
+                            optimatch,
+                        })
                     };
                     self.remote_search(
                         m,
                         storage,
                         service,
                         connection,
-                        MatchRequest::Search {
-                            limit: a[1],
-                            attributes: filters,
-                            optimatch,
-                        },
+                        request,
                         (
                             a[6],
                             Intent::Search {
@@ -1205,6 +1375,7 @@ impl Sessions {
                                 bytes: a[4],
                                 retail: a[0] == 1,
                                 find: None,
+                                browser,
                             },
                         ),
                     )
@@ -1233,6 +1404,7 @@ impl Sessions {
                                 bytes: MAX_RESULTS_BYTES,
                                 retail: true,
                                 find: Some(id(a[0], a[1])),
+                                browser: None,
                             },
                         ),
                     )
@@ -1247,7 +1419,12 @@ impl Sessions {
             Op::Results => {
                 let (array, count) = match self.tasks.get(&a[0]) {
                     Some(Task::EmptySearch | Task::HeldEmpty { .. }) => (0, 0),
-                    Some(Task::Search { array, count }) => (*array, *count),
+                    Some(Task::Search { browser: Some(generation), .. })
+                        if !self.browser.current(*generation) =>
+                    {
+                        (0, 0)
+                    }
+                    Some(Task::Search { array, count, .. }) => (*array, *count),
                     _ => return hr(INVALID_ARGUMENT),
                 };
                 m.check(a[1], 4, Access::Write, 1)?;
@@ -1339,7 +1516,11 @@ impl Sessions {
                 bytes,
                 retail,
                 find,
+                browser,
             } => {
+                if browser.is_some_and(|generation| !self.browser.current(generation)) {
+                    return Ok(Task::EmptySearch);
+                }
                 let mut rows: Vec<_> = rows
                     .into_iter()
                     .filter(|v| v.state == "open")
@@ -1385,6 +1566,7 @@ impl Sessions {
                 Ok(Task::Search {
                     array,
                     count: rows.len() as u32,
+                    browser,
                 })
             }
         }
@@ -1538,6 +1720,10 @@ fn results_len(m: &Guest, a: &[u32]) -> Result<u32> {
     })
 }
 
+fn coop_browser_metadata() -> BrowserMetadata {
+    BrowserMetadata { clankers: Some(false), ..Default::default() }
+}
+
 fn advertisement(s: &LocalSession) -> live_proto::session::NewSession {
     live_proto::session::NewSession {
         addr: Some(std::net::Ipv4Addr::new(
@@ -1566,6 +1752,7 @@ fn advertisement(s: &LocalSession) -> live_proto::session::NewSession {
         campaign: s.campaign.clone(),
         ping_ms: s.ping_ms,
         variant_ext: s.variant_ext.clone(),
+        browser: s.browser.clone(),
     }
 }
 /// Whether a new round trip is worth a session update: it appeared, went,
@@ -1821,6 +2008,7 @@ mod tests {
                 campaign: None,
                 ping_ms: None,
                 variant_ext: None,
+                browser: None,
             }),
             key: [0; 16],
             assignment: Some(assignment.into()),

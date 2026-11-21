@@ -112,6 +112,7 @@ pub(crate) enum Reply {
     Done,
     Teams(Vec<live_proto::team::Team>),
     Matches(Vec<live_proto::session::Session>),
+    BrowserMatches(BrowserPage),
     Matchmaking(Box<crate::matchmaking::Step>),
     MatchmakingUnsupported,
     Social(SocialSnapshot),
@@ -216,6 +217,13 @@ pub(crate) enum TeamRequest {
     Team(Xuid),
     Change(live_proto::team::Action),
 }
+#[derive(Clone, serde::Deserialize)]
+pub(crate) struct BrowserPage {
+    pub items: Vec<live_proto::session::Session>,
+    /// Omitted by Live servers that do not support custom game filters.
+    pub variants: Option<Vec<String>>,
+}
+
 #[derive(Clone)]
 pub(crate) enum MatchRequest {
     Create {
@@ -236,6 +244,11 @@ pub(crate) enum MatchRequest {
         limit: u32,
         attributes: BTreeMap<u32, live_proto::session::AttributeValue>,
         optimatch: Option<live_proto::optimatch::Query>,
+    },
+    Browse {
+        limit: u32,
+        query: live_proto::optimatch::Query,
+        filters: live_proto::session::BrowserFilters,
     },
     Find(String),
     /// The hosted session's players changed: `PlayerJoined` and
@@ -1289,16 +1302,13 @@ impl Worker {
             } => {
                 vec![self.create_match(Writer::Account(user), &new, assignment.as_deref())?]
             }
-            MatchRequest::Queue { .. } | MatchRequest::JoinDedicated(_) => {
+            MatchRequest::Queue { .. }
+            | MatchRequest::JoinDedicated(_)
+            | MatchRequest::Browse { .. } => {
                 return Err(Error::Protocol);
             }
             MatchRequest::Update { id, update } => {
-                self.match_event(
-                    user,
-                    &id,
-                    session::UPDATED,
-                    serde_json::to_value(update).map_err(|_| Error::Protocol)?,
-                )?;
+                self.write_match_update(Writer::Account(user), &id, &update)?;
                 self.fetch_match(user, &id)?
             }
             MatchRequest::Delete(id) => {
@@ -1358,7 +1368,49 @@ impl Worker {
                 }
             }
         };
-        for item in &items {
+        self.remember_matches(&items)?;
+        Ok(items)
+    }
+
+    fn browse_matches(
+        &self,
+        user: &Identity,
+        limit: u32,
+        query: &live_proto::optimatch::Query,
+        filters: &live_proto::session::BrowserFilters,
+    ) -> Result<Reply, Error> {
+        let query_json = serde_json::to_string(query).map_err(|_| Error::Protocol)?;
+        let filters_json = serde_json::to_string(filters).map_err(|_| Error::Protocol)?;
+        let search = |query: &str| {
+            let mut params = url::form_urlencoded::Serializer::new(String::new());
+            params
+                .append_pair("state", "open")
+                .append_pair("limit", &limit.max(1).to_string())
+                .append_pair("optimatch", query)
+                .append_pair("browser_variants", "true");
+            if filters != &live_proto::session::BrowserFilters::default() {
+                params.append_pair("filters", &filters_json);
+            }
+            self.team_json::<BrowserPage>(user, &format!("/sessions?{}", params.finish()))
+        };
+        let mut page = match search(&query_json) {
+            Err(Error::Status(400)) => search(&without_map_pack(query)?),
+            result => result,
+        }?;
+        if page.items.len() > limit as usize && limit != 0 {
+            return Err(Error::Protocol);
+        }
+        if limit == 0 {
+            page.items.clear();
+        }
+        page.items.retain(|s| self.map_ready(s, false));
+        self.remember_matches(&page.items)?;
+        Ok(Reply::BrowserMatches(page))
+    }
+
+    fn remember_matches(&self, items: &[live_proto::session::Session]) -> Result<(), Error> {
+        use live_proto::session;
+        for item in items {
             item.advertisement.validate().map_err(|_| Error::Protocol)?;
             if !session::valid_id(&item.session_id)
                 || item.xnkid != item.session_id
@@ -1367,8 +1419,8 @@ impl Worker {
                 return Err(Error::Protocol);
             }
         }
-        self.saw(&items);
-        Ok(items)
+        self.saw(items);
+        Ok(())
     }
     /// Keeps recent sessions, for a guest's game start (the host's
     /// skulls) and its co-op join screen (the campaign, the host).
@@ -1476,6 +1528,25 @@ impl Worker {
             }
         }
         last
+    }
+
+    fn write_match_update(
+        &self,
+        writer: Writer<'_>,
+        id: &str,
+        update: &live_proto::session::Update,
+    ) -> Result<(), Error> {
+        let write = |update: &live_proto::session::Update| {
+            let data = serde_json::to_value(update).map_err(|_| Error::Protocol)?;
+            self.write_match_event(writer, id, live_proto::session::UPDATED, data)
+        };
+        match write(update) {
+            // The old strict payload decoder rejects unknown fields.
+            Err(Error::Status(400)) if update.browser.is_some() => {
+                write(&live_proto::session::Update { browser: None, ..update.clone() })
+            }
+            result => result,
+        }
     }
 
     fn match_event(
@@ -1840,6 +1911,11 @@ impl Worker {
                     return self
                         .join_dedicated(&user, join)
                         .map(|step| Reply::Matchmaking(Box::new(step)))
+                        .map_err(Error::result);
+                }
+                if let MatchRequest::Browse { limit, query, filters } = request {
+                    return self
+                        .browse_matches(&user, *limit, query, filters)
                         .map_err(Error::result);
                 }
                 let rows = self

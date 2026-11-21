@@ -98,23 +98,41 @@ pub fn in_main_menu<M: Gm>(m: &M) -> bool {
         == Some(MAIN_MENU)
 }
 
+fn slots_block<M: Gm>(m: &M) -> Option<(u32, u32)> {
+    let matg = m.u32(GLOBALS_TAG).filter(|&a| a != 0 && in_main_menu(m))?;
+    let at = matg.checked_add(MATG_UI)?;
+    let ui = match (m.u32(at), m.u32(at.checked_add(4)?)) {
+        (Some(n), Some(a)) if n >= 1 && a != 0 => a,
+        _ => return None,
+    };
+    let at = ui.checked_add(UI_MP)?;
+    let (count, addr) = (m.u32(at)?, m.u32(at.checked_add(4)?)?);
+    (count <= MAX_SLOTS && addr != 0).then_some((count, addr))
+}
+
+/// A selected level's scenario path in the title's active multiplayer slots.
+pub(crate) fn selected_path<M: Gm>(m: &M, id: u32) -> Option<String> {
+    if id == FREE {
+        return None;
+    }
+    let (count, addr) = slots_block(m)?;
+    let slot = (0..count)
+        .filter_map(|i| addr.checked_add(i * SLOT_LEN as u32))
+        .find(|at| m.u32(*at) == Some(id))?;
+    let mut path = [0u8; 0x100];
+    if !m.rd(slot.checked_add(MP_PATH as u32)?, &mut path) {
+        return None;
+    }
+    let len = path.iter().position(|&byte| byte == 0).unwrap_or(path.len());
+    (len != 0).then(|| String::from_utf8_lossy(&path[..len]).into_owned())
+}
+
 /// The loaded map's multiplayer slots; empty when it has none (not the
 /// main menu, no UI level data).
 pub fn read_slots<M: Gm>(m: &M) -> Vec<Slot> {
-    let ok = in_main_menu(m);
-    let Some(matg) = m.u32(GLOBALS_TAG).filter(|&a| ok && a != 0) else {
+    let Some((count, addr)) = slots_block(m) else {
         return Vec::new();
     };
-    let ui = match (m.u32(matg + MATG_UI), m.u32(matg + MATG_UI + 4)) {
-        (Some(n), Some(a)) if n >= 1 && a != 0 => a,
-        _ => return Vec::new(),
-    };
-    let (Some(count), Some(addr)) = (m.u32(ui + UI_MP), m.u32(ui + UI_MP + 4)) else {
-        return Vec::new();
-    };
-    if count > MAX_SLOTS || addr == 0 {
-        return Vec::new();
-    }
     let mut all = vec![0u8; count as usize * SLOT_LEN];
     if !m.rd(addr, &mut all) {
         return Vec::new();

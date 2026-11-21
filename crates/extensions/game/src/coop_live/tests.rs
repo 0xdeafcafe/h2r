@@ -463,6 +463,7 @@ fn coop_session(skulls: Option<Vec<u8>>) -> live_proto::session::Session {
             }),
             ping_ms: None,
             variant_ext: None,
+            browser: None,
         },
         matchmaking: None,
         since: String::new(),

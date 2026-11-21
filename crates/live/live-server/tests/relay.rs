@@ -54,6 +54,7 @@ async fn session(h: &Harness, host: &User, flags: &str) -> String {
         campaign: None,
         ping_ms: None,
         variant_ext: None,
+        browser: None,
     };
     let r = h
         .call(

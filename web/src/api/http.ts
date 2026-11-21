@@ -4,6 +4,7 @@ import type { AccountKeyEntry, Frame, GameDetail, GameSummary, MapOutline, WireE
 import type { SimDetail, SimFilter, SimFilterOptions, SimRun } from "../admin/simRuns";
 import type { ServerTarget } from "./server";
 import { formatSkullsParam } from "../lib/skulls";
+import { sessionFiltersParam, sessionVariant, type SessionFilters } from "../lib/sessionFilters";
 import { openHostFilm } from "./host-film";
 import { decodeKeyframes } from "./pack";
 import { CHUNK_TYPE, chunkFrames, chunkIndex, chunksIn, type ChunkIndex, type RecordingChunk } from "./chunk";
@@ -101,12 +102,15 @@ export function api(t: ServerTarget, reader: Reader = async () => null) {
     return url.toString();
   };
   /** Follows `next` cursors to the end (bounded). */
-  async function all<T>(path: string, q: Record<string, string | number | undefined | null>, s?: AbortSignal, maxPages = 50): Promise<Page<T>> {
+  async function all<T>(path: string, q: Record<string, string | number | undefined | null>,
+    s?: AbortSignal, maxPages = 50, firstPage?: (body: unknown) => void): Promise<Page<T>> {
     const out: T[] = [];
     let cursor: string | null = null;
     let position: number | null = null;
     for (let i = 0; i < maxPages; i++) {
-      const p: Page<T> = page<T>(await getJson(u(path, { ...q, cursor }), s, await who()));
+      const body = await getJson<unknown>(u(path, { ...q, cursor }), s, await who());
+      if (i === 0) firstPage?.(body);
+      const p = page<T>(body);
       out.push(...p.items);
       position ??= p.position;
       // A page can be empty and still have a `next`: the log leaves out
@@ -238,8 +242,22 @@ export function api(t: ServerTarget, reader: Reader = async () => null) {
     },
     /** A package's preview image (only when its summary has `image`). */
     mapImageUrl: (id: string) => u("/maps/" + encodeURIComponent(id) + "/image"),
-    /** Open session advertisements (docs/live/live-api.md "Sessions"), following cursors. */
-    sessions: (s?: AbortSignal) => all<unknown>("/sessions", { limit: 100 }, s, 10),
+    /** Open session advertisements (docs/live/live-api.md "Sessions"), following cursors.
+     *  A browser query also reads the visible variant choices from the first page. */
+    sessions: async (s?: AbortSignal, filters?: SessionFilters) => {
+      let variants: string[] | undefined;
+      const result = await all<unknown>("/sessions", {
+        limit: 100,
+        filters: filters ? sessionFiltersParam(filters) : undefined,
+        browser_variants: filters ? "true" : undefined,
+      }, s, 10, (body) => {
+        const raw = (body as { variants?: unknown } | null)?.variants;
+        if (filters && Array.isArray(raw)) {
+          variants = raw.map(sessionVariant).filter((name): name is string => name !== undefined);
+        }
+      });
+      return { ...result, variants };
+    },
     /** Finished co-op campaign games, newest first (docs/live/live-api.md "Co-op games"); one page.
      *  `player` is a gamertag or XUID. A server without the endpoint answers 404. `bearer`, a
      *  `read` token, says who reads: friends-only games show to their players and the host's

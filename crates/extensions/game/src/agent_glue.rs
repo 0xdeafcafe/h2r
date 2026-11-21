@@ -343,6 +343,16 @@ pub fn add_host_methods(agent: &agent::Agent) {
     agent.add_game_method(agent_proto::sim::method::BOT_STATS, Access::Read, |v, _| {
         crate::sim_bots::stats(v, bots::phantom::global())
     });
+    agent.add_method(method::UI_BROWSER_FILTERS, Access::Read, |params| {
+        if !params.is_null() && !params.as_object().is_some_and(|fields| fields.is_empty()) {
+            return Err(RpcError::new(
+                code::INVALID_PARAMS,
+                "ui.browser.filters takes no parameters",
+            ));
+        }
+        let filters = crate::custom_games::browser_filters::active_filters();
+        Ok(json!({ "filters": filters }))
+    });
     agent.add_method(method::LIVE_JOIN_OPEN, Access::Act, |params| {
         use live_hle::join_link::{self, Source, SubmitError};
         #[derive(serde::Deserialize)]
@@ -677,6 +687,13 @@ mod tests {
         };
         let r = call(method::UI_LOBBY_PLAYERS, json!({"unknown": true}));
         assert_eq!(r["error"]["code"], code::INVALID_PARAMS, "{r}");
+        let r = call(method::UI_BROWSER_FILTERS, json!({"kind": "coop"}));
+        assert_eq!(r["error"]["code"], code::INVALID_PARAMS, "{r}");
+        let r = call(method::UI_BROWSER_FILTERS, Value::Null);
+        assert_eq!(
+            r["result"]["filters"],
+            serde_json::to_value(crate::custom_games::browser_filters::active_filters()).unwrap()
+        );
         let r = call(agent_proto::sim::method::BOT_STATS, json!({}));
         assert!(r["result"]["bots"].is_array(), "{r}");
         let r = call(method::RENDER_STATS, Value::Null);

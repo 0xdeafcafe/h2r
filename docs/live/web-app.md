@@ -46,7 +46,7 @@ waypoints, kills, scores, endings and new games.
 - `H2_MOCK_STATIC=<dir>`: also serve a built app with SPA fallback, as `h2 live serve` does: `bun run build && H2_MOCK_STATIC=$PWD/dist bun run mock`.
 - `H2_MOCK_GAME_ART=1`: serve a stand-in `/art/game` manifest so the game-art path runs (see [web-viewer.md](web-viewer.md), "Game art"). Without it `/art/game` has no pictures, like a server with no game art.
 - `H2_MOCK_MAP_GEOMETRY=0`: turn off the mock's own map geometry, which is otherwise served either way; `/art/game` then answers 404.
-- `H2_MOCK_SESSIONS=<n>`: how many open sessions the mock keeps for the stats home's Open Games table (default 5; 0 hides the table).
+- `H2_MOCK_SESSIONS=<n>`: how many open sessions the mock keeps for the stats home's Open Games table (default 5; 0 shows the empty state).
 - `H2_MOCK_QUIET=1`: end the games in progress after the history is seeded and start no more, so the stats home's Live Now panel shows the last game on a loop (with `H2_MOCK_HISTORY_MIN=0` too, no games at all: the map montage).
 - `H2_MOCK_ACTORS=1`: put the mock campaign's AI and vehicles (`mock/campaign.ts`: about thirty actors, two vehicles in use and three parked empty, and a `bsp` zone that changes every 25 s, added by a frame hook) into every game's frames; without it only games whose mode is `campaign` get them.
 - `H2_MOCK_INDOOR=1`: shut each arena's glb inside a busy building (an inward-facing shell, partition walls, an upper floor, pillars and two "machines", over two `bsp_<n>` zones and a `machines` node, plus a third zone marked cinematic-only and a `backdrop` of far hills), for trying the 3D view's cutaways and zones.
@@ -186,6 +186,13 @@ The stats home's Open Games table (`/games/halo2`, `src/stats/Home.tsx`)
 shows advertised sessions with the host, map, game type and player count.
 It polls `GET /v1/sessions` every four seconds while the tab is showing
 (`src/state/sessions.ts`). **Join in Halo 2** opens the installed player.
+**Filters** opens controls for multiplayer or campaign co-op, Clankers,
+game type, named variant, map category, available public seats, campaign
+and difficulty. **Apply** sends the choices with each session list page.
+The variant field suggests names from sessions visible to the reader.
+The browser remembers applied choices locally and **Clear filters**
+restores the full list.
+
 The game's detail page and a friend's lobby presence offer the same action
 when the session admits the viewer. [Session links](live-custom-games.md#join-in-halo-2)
 
