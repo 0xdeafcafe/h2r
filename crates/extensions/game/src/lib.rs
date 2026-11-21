@@ -220,6 +220,7 @@ pub mod theater;
 pub mod theater_ui;
 pub mod touch_glue;
 pub mod trace;
+pub mod tweakers;
 pub mod ui;
 mod ui_audit;
 pub mod ui_back;

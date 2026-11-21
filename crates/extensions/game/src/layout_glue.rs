@@ -918,6 +918,16 @@ pub fn install(
                     }
                     None => {}
                 }
+                // The game type list's Tweakers row has no pane of its own:
+                // Slayer's, with our title and description over its texts.
+                if crate::tweakers::is_our_pane(&*mem, screen, id, row) {
+                    let base = mem.u8(screen + 0x5f3)? as i8;
+                    drop(mem);
+                    let word = live.2 + 8;
+                    return hooks::entry::start_with(cpu, ctx, PANE_SET, move |cx| {
+                        Box::pin(crate::tweakers::pane(cx, sh, screen, base, word))
+                    });
+                }
                 // The Xbox Live menu: our row shows our pane, Content
                 // Download (moved down one) its own. The row is handed over
                 // in our word, not written back through the caller's pointer.

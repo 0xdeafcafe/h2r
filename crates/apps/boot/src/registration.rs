@@ -223,6 +223,12 @@ pub(crate) fn register_core_film(
             .add(&variant_page::MoreRow)
             .map_err(|e| anyhow::anyhow!("variant options row: {e}"))?;
     }
+    // The game type list's Tweakers row, after Territories, and its variant
+    // lists: Superbounce and the other tweaked-rules variants
+    // (docs/game/community-gametypes.md "Tweakers").
+    features
+        .add(&crate::tweakers::Tweakers)
+        .map_err(|e| anyhow::anyhow!("tweakers: {e}"))?;
     features.add(&hud::Hud).map_err(|e| anyhow::anyhow!("hud: {e}"))?;
     features
         .add(&crate::loaded_map::LoadedMap)
