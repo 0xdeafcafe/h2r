@@ -971,6 +971,7 @@ fn object_vertex_program(o: &mut Opened, vs: TagId, geometry: u16, influences: u
 fn set_parts(lit: &LitModelInput) -> Vec<((u16, u8), SetPart)> {
     lit.parts
         .iter()
+        .filter(|p| !p.indices.is_empty())
         .map(|p| {
             let mut e = SetPart { shader: p.shader_tag as u16, ..SetPart::default() };
             for (n, slot) in p.implementations.iter().enumerate() {
@@ -1201,13 +1202,16 @@ mod tests {
             implementations,
             subparts: None,
         };
+        let mut empty = part(2, 5, [Some((0, 0)), None, None, None, None]);
+        empty.indices = 0..0;
         let lit = LitModelInput {
-            parts: vec![part(2, 0, [Some((0, 0)), None, Some((1, 0)), None, None]), part(2, 3, [None, Some((2, 0)), None, None, None])],
+            parts: vec![part(2, 0, [Some((0, 0)), None, Some((1, 0)), None, None]), part(2, 3, [None, Some((2, 0)), None, None, None]), empty],
             ..LitModelInput::default()
         };
         let parts: HashMap<(u16, u8), SetPart> = set_parts(&lit).into_iter().collect();
         assert_eq!(parts[&(2, 0)], SetPart { shader: 0x0465, implementations: 0b101, texaccum: 0 });
         assert_eq!(parts[&(2, 3)].implementations, 0b010);
+        assert!(!parts.contains_key(&(2, 5)), "a part without index data is not resident");
         assert_eq!(parts.len(), 2);
     }
 }

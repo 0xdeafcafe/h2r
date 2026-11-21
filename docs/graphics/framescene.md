@@ -378,8 +378,10 @@ joins it to the completed original present. A ready palette covers all
 its renderable definitions, every drawable model part and the layer-3
 material implementations they require. A partial model, an invalid
 reference or a pending upload prevents a successful readiness gate.
-A declined object plan leaves the guest's packet available to the frame
-owner. The worker's `scene_unresident` counts actual missing instances
+Full cutover requires an unavailable instance to be omitted for that
+frame and counted. On the guarded display path, a declined object plan
+still leaves the guest's packet available to the frame owner. The
+worker's `scene_unresident` counts actual missing instances
 in relinquished work. Palette readiness independently measures the
 native cache even when a carried packet can draw the object.
 

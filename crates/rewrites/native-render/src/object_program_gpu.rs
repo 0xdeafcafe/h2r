@@ -122,6 +122,17 @@ impl LitModelInput {
         self.parts.is_empty()
     }
 
+    fn valid_draw_references(&self) -> bool {
+        self.parts.iter().all(|part| {
+            part.implementations.iter().flatten().all(|&(program, buffer)| {
+                let Some(buffer) = self.buffers.get(buffer) else { return false };
+                let fits = |range: &Range<u32>| range.start <= range.end && range.end as usize <= buffer.indices.len();
+                program < self.programs.len() && fits(&part.indices)
+                    && part.subparts.as_ref().is_none_or(|subparts| subparts.ranges.iter().all(fits))
+            })
+        })
+    }
+
     /// Whether a program samples the texture accumulation target
     /// ([`crate::object_program::TEXACCUM_TEXTURE`]): a pass drawing the
     /// model then needs the level bound ([`LitObjects::draws`]).
@@ -314,10 +325,13 @@ impl LitObjects {
         }
     }
 
-    /// Uploads `input` as model `index`'s lit parts (replacing any); not
-    /// when a program samples the normalization cube and it is not
-    /// uploaded (the build refuses such a program without it).
+    /// Publish a model only when its geometry and every material program
+    /// upload successfully. Failure keeps the previous entry, if present.
+    /// The result belongs to this upload, even when the key was already used.
     pub fn add_model(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, index: u32, input: LitModelInput) -> bool {
+        if !input.valid_draw_references() {
+            return false;
+        }
         let mut layouts = HashMap::new();
         let buffers = input
             .buffers
@@ -1605,6 +1619,26 @@ mod tests {
     }
 
     #[test]
+    fn model_upload_checks_all_geometry_and_material_references() {
+        let mut input = LitModelInput {
+            parts: vec![part(0, 0, [Some((0, 0)), None, None, None, None])],
+            programs: vec![LitProgramInput { pass: equal_pass(0), images: Default::default() }],
+            buffers: vec![LitBufferInput { indices: vec![0, 1, 2], ..Default::default() }],
+        };
+        assert!(input.valid_draw_references());
+        input.parts[0].implementations[0] = Some((0, 1));
+        assert!(!input.valid_draw_references());
+        input.parts[0].implementations[0] = Some((1, 0));
+        assert!(!input.valid_draw_references());
+        input.parts[0].implementations[0] = Some((0, 0));
+        input.parts[0].subparts = Some(SubpartRanges { first: 0, ranges: vec![1..4] });
+        assert!(!input.valid_draw_references());
+        input.parts[0].subparts = None;
+        input.parts[0].indices = 2..4;
+        assert!(!input.valid_draw_references());
+    }
+
+    #[test]
     fn object_draws_reuse_their_pipeline_and_bindings_across_swaps_and_poses() {
         let Ok(ctx) = gfx::GfxContext::headless() else { return };
         let mut objects = LitObjects::new(&ctx.device);
@@ -1620,6 +1654,11 @@ mod tests {
             buffers: vec![buffer],
             parts: vec![part(0, 0, [Some((0, 0)), None, None, None, None])],
         });
+        let invalid = LitModelInput {
+            parts: vec![part(0, 0, [Some((0, 0)), None, None, None, None])],
+            ..Default::default()
+        };
+        assert!(!objects.add_model(&ctx.device, &ctx.queue, 7, invalid), "failed replacement reports its own result");
         let mut requested = objects.plan(7, &frame(), &key(0, 0, 0), &[[1.0; 4]; 3], &entry()).unwrap();
         assert!(objects.has_draw_assets(7, &requested));
         assert!(!objects.has_draw_assets(8, &requested));
