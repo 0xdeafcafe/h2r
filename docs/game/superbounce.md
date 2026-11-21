@@ -334,6 +334,17 @@ while after a teleport has no level pair to write (three runs of seven
 found none 20 ticks after the teleport), and a pair that is rebuilt
 comes back at 0.
 
+**Where −3 comes from** (Code, [havok-runtime.md](../engine/havok-runtime.md)).
+The word is the pair's tolerance level in the pair pass `FUN_00317950`.
+At 0 or more it widens when contact points fall outside the tolerance and
+narrows when they fit. −3 is the give-up value. `FUN_00316460` writes it
+when a point is still outside after widening (`0x00316755`,
+`0x00316958`), and from then on the pass runs that pair's agent at a
+tolerance of −1000. Nothing re-arms −3; only −2 goes back to 0. A capsule
+standing up into the corner's ceiling is deep in the geometry, which fits
+the give-up path. **Code** for the paths; **Trace** that it happens on
+standing up.
+
 ## The geometry (Code, from the map)
 
 The structure collision BSP of `ascension` at the patch (surface indices
@@ -354,11 +365,12 @@ rest on the ramp side of the crease.
 
 ## Open
 
-- **Why a negative pair word launches.** The word picks the pair's input
-  threshold mode ([pair word](#the-pair-word-trace-lab-playback)); how
-  that mode turns a landing on the crease into +12 isn't read. Nor is
-  which path at `0x00317ab9` and `0x00317ac9` takes the word from 0 to
-  −3 when the capsule stands up in the corner.
+- **Why a pair at −3 launches.** At −3 the pair pass runs the agent at a
+  tolerance of −1000 ([pair word](#the-pair-word-trace-lab-playback)).
+  One reading is that the capsule then gets no early contact points from
+  the level and sinks 7 to 14 cm into the crease before the solver
+  pushes it out, but which contact points the agent keeps at −1000, and
+  what the virtual `+0x74` before the write does, aren't read.
 - **What drops the pair.** Entering a crouch and a long stand both
   rebuild it at 0, which ends the effect. How long a stand it takes isn't
   measured.
