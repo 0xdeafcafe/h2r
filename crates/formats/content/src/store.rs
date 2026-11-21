@@ -35,8 +35,8 @@ pub enum DataHost {
 }
 
 impl DataHost {
-    /// The convention of the host this binary runs on: Apple, Windows, or
-    /// XDG on every other Unix (as `d3d::pipeline_store`'s cache host).
+    /// The convention of the host this binary runs on: Apple targets use
+    /// Library, Windows uses Windows, and every other Unix uses XDG.
     pub const CURRENT: Self = if cfg!(target_vendor = "apple") {
         Self::Library
     } else if cfg!(windows) {
