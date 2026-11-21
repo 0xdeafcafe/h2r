@@ -8,7 +8,7 @@ use std::sync::Mutex;
 use anyhow::{Context, ensure};
 use bots::los::Walls;
 use engine::GuestMemory;
-use forge::{PaletteItem, Session, Teleporter};
+use forge::{BlockKind, PaletteItem, Session, Teleporter, tool::Extent};
 use forge_doc::{BuilderVersions, ForgeDoc, Limits, MapRef, Sha256, TagKey, WorldBounds};
 use guest_layout::{
     game::{GameGlobals, MODE_MULTIPLAYER, cache_checksum},
@@ -109,6 +109,11 @@ pub(crate) struct Opened {
     pub session: Session,
     /// Salted definition tag datums in exactly the session's palette order.
     pub tags: Vec<u32>,
+    /// Each palette item's bounding sphere, in the same order.
+    pub extents: Vec<Extent>,
+    /// The scenario palette entries left out of the Objects palette, each
+    /// as `path: reason`.
+    pub refused: Vec<String>,
     /// Structure collision indexed by the game's active BSP.
     pub walls: Vec<Walls>,
 }
@@ -179,6 +184,7 @@ fn decode(bytes: &[u8], loaded: &Loaded) -> anyhow::Result<Opened> {
     let view = TagView::new(&root, address);
     let mut base_counts = BTreeMap::new();
     let mut rows = BTreeMap::new();
+    let mut refused = Vec::new();
     for def in scenario_layout::BLOCKS {
         let count = u32::from_le_bytes(view.at(def.offset as usize, 4)?.try_into()?);
         base_counts.insert(def.kind, count);
@@ -191,30 +197,55 @@ fn decode(bytes: &[u8], loaded: &Loaded) -> anyhow::Result<Opened> {
             if id == TagId::NULL || !palette.groups.contains(&group.0) {
                 continue;
             }
-            let tag = map.tag(id)?;
-            let Some(path) = &tag.name else {
+            // A palette row naming a tag the map does not hold, or one of
+            // another group, is the map's own loose end: left out by name.
+            let Ok(tag) = map.tag(id) else {
+                refused.push(format!("tag {:#010x}: the map has no such tag", id.0));
                 continue;
             };
-            if tag.group == group && !path.is_empty() {
-                rows.insert((def.kind, group, path.clone()), id.0);
+            let Some(path) = tag.name.clone().filter(|p| !p.is_empty()) else {
+                continue;
+            };
+            if tag.group != group {
+                refused.push(format!("{path}: it is not a {group} tag"));
+                continue;
+            }
+            if rows.contains_key(&(def.kind, group, path.clone())) {
+                continue;
+            }
+            let extent = map
+                .read_tag_bytes(id)
+                .map_err(|e| format!("its definition does not read ({e})"))
+                .and_then(|bytes| placeable(def.kind, group, &bytes))
+                .and_then(|(extent, model)| match map.tag(model) {
+                    Ok(m) if m.group == FourCC(*b"hlmt") => Ok(extent),
+                    _ => Err("its model is not in the map, so it would be invisible".into()),
+                });
+            match extent {
+                Ok(extent) => {
+                    rows.insert((def.kind, group, path), (id.0, extent));
+                }
+                Err(reason) => refused.push(format!("{path}: {reason}")),
             }
         }
     }
-    let (palette, tags) = rows
-        .into_iter()
-        .map(|((block, group, path), datum)| {
-            (
-                PaletteItem {
-                    block,
-                    tag: TagKey {
-                        group: group.to_string(),
-                        path,
-                    },
-                },
-                datum,
-            )
-        })
-        .unzip();
+    for line in &refused {
+        eprintln!("forge: the Objects palette leaves out {line}");
+    }
+    let mut palette = Vec::with_capacity(rows.len());
+    let mut tags = Vec::with_capacity(rows.len());
+    let mut extents = Vec::with_capacity(rows.len());
+    for ((block, group, path), (datum, extent)) in rows {
+        palette.push(PaletteItem {
+            block,
+            tag: TagKey {
+                group: group.to_string(),
+                path,
+            },
+        });
+        tags.push(datum);
+        extents.push(extent);
+    }
     let teleporters = teleporters(&view, &root)?;
     let (bounds, walls) = geometry(&mut map, &view)?;
     let doc = ForgeDoc {
@@ -244,8 +275,64 @@ fn decode(bytes: &[u8], loaded: &Loaded) -> anyhow::Result<Opened> {
             .and_then(|s| s.with_teleporters(teleporters))
             .map_err(anyhow::Error::msg)?,
         tags,
+        extents,
+        refused,
         walls,
     })
+}
+
+/// The object definition header (`obje`, docs/formats/objects.md): its
+/// type, bounding sphere and model reference.
+const OBJECT_TYPE: usize = 0x0;
+const BOUNDING_RADIUS: usize = 0x4;
+const BOUNDING_OFFSET: usize = 0x8;
+const MODEL_DATUM: usize = 0x38;
+/// The bounding radius past which a definition is not taken as an object to
+/// carry, in world units.
+const MAX_RADIUS: f32 = 1024.0;
+
+/// Whether a palette entry of `block` and `group` is an object the
+/// Objects tool can place and show, from its definition's bytes `def`: its
+/// bounding sphere and model datum, or why not in plain words.
+fn placeable(block: BlockKind, group: FourCC, def: &[u8]) -> Result<(Extent, TagId), String> {
+    if block == BlockKind::SoundScenery {
+        return Err("sound scenery has no body to place or see".into());
+    }
+    let u32_at = |at: usize| {
+        def.get(at..at + 4)
+            .map(|b| u32::from_le_bytes(b.try_into().expect("four bytes")))
+            .ok_or_else(|| "its definition is too short".to_string())
+    };
+    let f32_at = |at: usize| u32_at(at).map(f32::from_bits);
+    let kind = def
+        .get(OBJECT_TYPE..OBJECT_TYPE + 2)
+        .map(|b| u16::from_le_bytes([b[0], b[1]]))
+        .ok_or("its definition is too short")?;
+    let expected = tags::object::OBJECT_TYPES
+        .iter()
+        .find(|t| t.group.as_bytes() == group.0.as_slice())
+        .map(|t| t.index);
+    if expected != Some(kind) {
+        return Err(format!("its definition is not a {group} object"));
+    }
+    let radius = f32_at(BOUNDING_RADIUS)?;
+    let offset = [
+        f32_at(BOUNDING_OFFSET)?,
+        f32_at(BOUNDING_OFFSET + 4)?,
+        f32_at(BOUNDING_OFFSET + 8)?,
+    ];
+    if !(radius.is_finite() && (0.0..=MAX_RADIUS).contains(&radius))
+        || !offset
+            .iter()
+            .all(|v| v.is_finite() && v.abs() <= MAX_RADIUS)
+    {
+        return Err("its bounding sphere is not a usable size".into());
+    }
+    let model = TagId(u32_at(MODEL_DATUM)?);
+    if model == TagId::NULL {
+        return Err("it has no model, so it would be invisible".into());
+    }
+    Ok((Extent { radius, offset }, model))
 }
 
 /// The scenario's teleporter flags for the Links tool: netgame flags of

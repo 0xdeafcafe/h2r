@@ -58,13 +58,19 @@ test); the sound gestalt merge a transplanted voice needs
 
 ## Objects
 
-The local palette lists named tags in the map's scenario palettes. The
-full palette design uses the map's own tag index by group (weapons, vehicles,
+The local palette lists named tags in the map's scenario palettes that
+are objects a player can place and see: a definition of its own group's
+object type with a model and a usable bounding sphere. Sound scenery and
+the rest are left out by name ([forge-design.md](forge-design.md), "F4
+in detail"). The full palette design uses the map's own tag index by group (weapons, vehicles,
 equipment, scenery, crates, machines, controls), then the kit's
 block-out set, then **My imports**. Labels are tag base names read from
-the user's map at run time. The local monitor aims against the active
-BSP's collision. Its gizmo shows the position and rotation until A
-confirms placement. Properties changes the heading or the rotation step.
+the user's map at run time; two in one group with the same base name
+carry the nearest folder that differs, as `boulder (rocks)`. The local monitor aims against the active
+BSP's collision. A held object sits in front of the camera at a
+distance set by its size and turns with the view; its gizmo shows the
+position, rotation and bounding-sphere outline until A confirms
+placement. Properties changes the heading or the rotation step.
 The wider properties design includes respawn time, team, game types,
 placed at start, physics (fixed or normal) and additional snapping modes.
 

@@ -632,11 +632,46 @@ and `world.ai` ([ai-networking.md](ai-networking.md), probes P1 and P2).
 
 **F4 in detail.** `forge_map` reads the active cache, validates the
 base map and constructs the palette, placement counts, object budget,
-BSP bounds and collision queries from that map. The Objects tool edits
-Forge placements. In the native renderer a three-axis gizmo shows the proposed
-frame on the aim ray. Moving a held object changes that frame until the
-player confirms. A drop that changes position and rotation is one undo
-step. Properties exposes heading and the rotation increment.
+BSP bounds and collision queries from that map. The palette takes a
+scenario palette entry only when its tag is in the map, of the entry's
+group, and an object the player can place and see: its definition's
+object type is its group's, its model reference names an `hlmt` in the
+map, and its bounding radius and offset are finite and at most 1024
+units (`forge_map::placeable`). Sound scenery is left out: it has no body,
+and the game adapter refuses its block. Each entry left out is logged as
+`forge: the Objects palette leaves out <path>: <reason>` and listed in
+`forge.status` as `palette_refused`. Names in one group that share a
+base name carry the nearest folder that differs (`boulder (rocks)`), and
+the full path only when that is shared too.
+
+The Objects tool edits Forge placements. A held object is carried as
+Halo 3's Forge carries one: in front of the camera, with the world around
+it (`forge::tool::Extent`). A new object's bounding-sphere centre sits two
+and a half of its reaches away (radius plus offset length, at least one
+unit), pulled in to a nearer wall; a picked-up one stays at the distance
+it was taken from. Neither comes nearer than its reach plus a quarter
+unit, so the camera is never inside it and the near plane never cuts it.
+The held offset is kept along the camera's forward, right and up, so the
+object turns with the view and the camera can look all round; holding
+RB or the right mouse button turns the object instead. In the native
+renderer the gizmo shows the proposed frame's three axes and a dashed
+outline of the bounding sphere (`forge_glue::gizmo`), drawn by the
+compositor: the renderer has no translucent preview of an object, and
+the object in the world moves only when the player confirms. A drop that
+changes position and rotation is one undo step. Properties exposes
+heading and the rotation increment.
+
+The monitor parks the local biped at the game tick
+(`forge_controls::render::park`: invulnerable while parked) and hides it
+from the main view by the "not drawn" exit at `OBJECT_RENDER_SETUP`
+([occlusion-culling.md](../graphics/occlusion-culling.md), "Where to
+skip"). The hook is ordered first, ahead of the native scene lists'
+setup, so the biped has no layer-3 items and the native objects stage,
+which draws only the walk of those items, never meets it. The biped stays
+in the visibility list, so its shadow is still chosen as a caster.
+`forge.status` gives the parked unit as `parked`. The Forge lobby's Start
+and an ordinary local game open the same session: the player starts in
+the biped and D-pad Up or Tab enters the monitor.
 
 `forge::Session` validates edits against the loaded map and folds their
 entries with F1. Its `World` interface resolves each placement to a
