@@ -2557,13 +2557,19 @@ how it is drawn; the default is a thin opaque line. A style has:
   each edge and pointing along a world direction. They flow along
   the direction when their speed is not zero;
 - an optional floor `ribbon`, a translucent strip of a world width
-  along each edge, clipped at the near plane.
+  along each edge, clipped at the near plane;
+- a `label_face`: the 8x8 debug font (`Debug`, the default), or the
+  disc's HUD font with its button glyphs (`Hud`), once a source has
+  published one with `gfx::world_lines::set_hud_font`. A `Hud` label is
+  drawn in the 8x8 font while none is published.
 
 The window draws every edge as an anti-aliased screen-space quad, with the
 core, halo and dashes in the fragment shader, and the ribbons, arrowheads
-and label pixels as triangles in the same vertex buffer. All of it is one
-pipeline and one draw per frame
-(`crates/apps/app/src/overlay/marks.rs`).
+and label pixels as triangles in the same vertex buffer. A HUD-font glyph
+is a textured quad sampling the font's atlas, bound once per draw. All of
+it is one pipeline and one draw per frame
+(`crates/apps/app/src/overlay/marks.rs`). A label's opacity is the
+style's `alpha` times its fade and pulse.
 
 Genuine guest images captured with samples carry their own per-view
 cameras and aspect factors. Repeated scanout keeps the same samples

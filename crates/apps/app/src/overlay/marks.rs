@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 pub use gfx::world_lines::ImageSamples;
-use gfx::world_lines::{Fade, LineStyle, Pulse, ShownMarks, WorldLine};
+use gfx::world_lines::{Fade, LineStyle, Pulse, ShownMarks, TextLayout, WorldLine};
 
 use crate::scale::Viewport;
 
@@ -223,12 +223,83 @@ fn label_glyph_scale(style: &LineStyle, pixel_scale: f32) -> f32 {
 
 /// The top-left pixel of a label of `chars` glyphs at `point`: just below
 /// and right of it, or centred on it.
-fn label_origin([x, y]: [f32; 2], chars: usize, glyph: f32, centered: bool) -> [f32; 2] {
+fn label_origin(point: [f32; 2], chars: usize, glyph: f32, centered: bool) -> [f32; 2] {
+    text_origin(point, [chars as f32 * 8.0 * glyph, 8.0 * glyph], centered)
+}
+
+/// The top-left pixel of a label `size` pixels wide and tall at `point`:
+/// just below and right of it, or centred on it.
+fn text_origin([x, y]: [f32; 2], [width, height]: [f32; 2], centered: bool) -> [f32; 2] {
     if centered {
-        [x - chars as f32 * 8.0 * glyph * 0.5, y - 4.0 * glyph]
+        [x - width * 0.5, y - height * 0.5]
     } else {
         [x.ceil() + 5.0, y.ceil() + 5.0]
     }
+}
+
+/// The HUD is drawn for this many lines: a disc font's pixel is a HUD
+/// pixel at `label_scale` [`HUD_FACE_SCALE`].
+const HUD_LINES: f32 = 480.0;
+/// The `label_scale` at which a HUD-font label is the HUD's own size.
+const HUD_FACE_SCALE: f32 = 2.0;
+
+/// Output pixels in one font pixel of a HUD-font label: the output height
+/// over the HUD's, times the style's scale over [`HUD_FACE_SCALE`].
+fn hud_font_pixel(style: &LineStyle, output_height: u32) -> f32 {
+    style.label_scale.max(0.25) / HUD_FACE_SCALE * output_height as f32 / HUD_LINES
+}
+
+/// One glyph of a HUD-font label on screen: its pixel rectangle (left,
+/// top, right, bottom), its atlas rectangle in 0..1, and whether it keeps
+/// its own colours.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct GlyphQuad {
+    rect: [f32; 4],
+    uv: [f32; 4],
+    coloured: bool,
+}
+
+/// The quads of a laid-out label with its top-left at `origin` (rounded
+/// to a whole pixel) and `pixel` output pixels a font pixel, for an atlas
+/// `atlas` texels in size. Glyphs whose left edge is past `right` are
+/// dropped.
+fn glyph_quads(
+    layout: &TextLayout,
+    atlas: [u32; 2],
+    origin: [f32; 2],
+    pixel: f32,
+    right: f32,
+) -> Vec<GlyphQuad> {
+    let (ox, oy) = (origin[0].round(), origin[1].round());
+    let (aw, ah) = (atlas[0].max(1) as f32, atlas[1].max(1) as f32);
+    layout
+        .glyphs
+        .iter()
+        .filter_map(|p| {
+            let g = &p.glyph;
+            let left = ox + p.x as f32 * pixel;
+            if left > right {
+                return None;
+            }
+            let top = oy + p.y as f32 * pixel;
+            let [tx, ty] = [g.atlas[0] as f32, g.atlas[1] as f32];
+            Some(GlyphQuad {
+                rect: [
+                    left,
+                    top,
+                    left + f32::from(g.width) * pixel,
+                    top + f32::from(g.height) * pixel,
+                ],
+                uv: [
+                    tx / aw,
+                    ty / ah,
+                    (tx + f32::from(g.width)) / aw,
+                    (ty + f32::from(g.height)) / ah,
+                ],
+                coloured: g.coloured,
+            })
+        })
+        .collect()
 }
 
 /// The most arrowheads along one edge.
@@ -324,7 +395,7 @@ fn clip_near(polygon: &[[f32; 4]]) -> Vec<[f32; 4]> {
 mod renderer {
     use font8x8::UnicodeFonts;
 
-    use gfx::world_lines::Chevrons;
+    use gfx::world_lines::{Chevrons, LabelFace, LabelFont};
 
     use super::*;
 
@@ -334,11 +405,19 @@ mod renderer {
     /// A shape's half-width for a flat fill: the whole quad is core.
     const FILL: f32 = 1.0e4;
 
+    /// A shape's core half-width that marks a textured glyph quad: its
+    /// `local` is then the atlas coordinate.
+    const GLYPH: f32 = -1.0;
+
     /// Triangles, one buffer, one draw. Every vertex carries its own
     /// coverage shape: `shape` is (core half-width, outer half-width,
     /// dash period, glow opacity), all in pixels, and `local` the
-    /// pixel's (along, across) place on its line.
+    /// pixel's (along, across) place on its line. A HUD-font glyph has a
+    /// negative core and samples the font atlas at `local`, its colour
+    /// times the vertex's.
     const SHADER: &str = r#"
+@group(0) @binding(0) var atlas: texture_2d<f32>;
+@group(0) @binding(1) var atlas_sampler: sampler;
 struct Out {
     @builtin(position) position: vec4<f32>,
     @location(0) color: vec4<f32>,
@@ -356,6 +435,10 @@ fn vs(
 }
 @fragment
 fn fs(in: Out) -> @location(0) vec4<f32> {
+    if in.shape.x < 0.0 {
+        let t = textureSampleLevel(atlas, atlas_sampler, in.local, 0.0);
+        return vec4<f32>(in.color.rgb * t.rgb, in.color.a * t.a);
+    }
     if in.shape.z > 0.0 && fract(in.local.x / in.shape.z) > 5.0 / 9.0 {
         discard;
     }
@@ -384,6 +467,21 @@ fn fs(in: Out) -> @location(0) vec4<f32> {
         dash: f32,
     }
 
+    /// The bind group layout, pipeline layout and sampler of the font
+    /// atlas, and a blank atlas for frames without a HUD font.
+    struct Binding {
+        bgl: wgpu::BindGroupLayout,
+        layout: wgpu::PipelineLayout,
+        sampler: wgpu::Sampler,
+        blank: wgpu::BindGroup,
+    }
+
+    /// The uploaded atlas of one [`LabelFont`] generation.
+    struct Atlas {
+        generation: u64,
+        bind: wgpu::BindGroup,
+    }
+
     #[derive(Default)]
     pub(crate) struct MarkRenderer {
         pipelines: Vec<(wgpu::TextureFormat, wgpu::RenderPipeline)>,
@@ -391,6 +489,71 @@ fn fs(in: Out) -> @location(0) vec4<f32> {
         buffer: Option<wgpu::Buffer>,
         seconds: f32,
         started: Option<Instant>,
+        /// The HUD font for this frame's [`LabelFace::Hud`] labels.
+        font: Option<Arc<LabelFont>>,
+        binding: Option<Binding>,
+        atlas: Option<Atlas>,
+    }
+
+    fn atlas_texture(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        (width, height): (u32, u32),
+        rgba: &[u8],
+    ) -> wgpu::TextureView {
+        let size = wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        };
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("mark font atlas"),
+            size,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            rgba,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(width * 4),
+                rows_per_image: Some(height),
+            },
+            size,
+        );
+        texture.create_view(&Default::default())
+    }
+
+    fn atlas_bind(
+        device: &wgpu::Device,
+        binding: &wgpu::BindGroupLayout,
+        sampler: &wgpu::Sampler,
+        view: &wgpu::TextureView,
+    ) -> wgpu::BindGroup {
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("mark font atlas"),
+            layout: binding,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(sampler),
+                },
+            ],
+        })
     }
 
     impl MarkRenderer {
@@ -402,6 +565,7 @@ fn fs(in: Out) -> @location(0) vec4<f32> {
                 .get_or_insert_with(Instant::now)
                 .elapsed()
                 .as_secs_f32();
+            self.font = gfx::world_lines::hud_font();
         }
 
         pub(crate) fn push(
@@ -453,10 +617,33 @@ fn fs(in: Out) -> @location(0) vec4<f32> {
                     if fade > 0.0
                         && let Some(point) = project_point(camera, area, mark.anchor)
                     {
-                        let a = fade * pulse_factor(style.pulse, self.seconds);
+                        let a = style.alpha.clamp(0.0, 1.0)
+                            * fade
+                            * pulse_factor(style.pulse, self.seconds);
                         let color = [mark.color[0], mark.color[1], mark.color[2], a];
-                        let glyph = label_glyph_scale(&style, scale);
-                        self.label(label, point, color, glyph, style.label_centered, size, camera, area);
+                        // A HUD-face label without a HUD font loaded is drawn in
+                        // the 8x8 font; its source notes that (LabelFace::Hud).
+                        let font = match style.label_face {
+                            LabelFace::Hud => self.font.clone(),
+                            LabelFace::Debug => None,
+                        };
+                        if let Some(font) = font {
+                            let pixel = hud_font_pixel(&style, size.1);
+                            self.hud_label(
+                                &font,
+                                label,
+                                point,
+                                color,
+                                pixel,
+                                style.label_centered,
+                                size,
+                                camera,
+                                area,
+                            );
+                        } else {
+                            let glyph = label_glyph_scale(&style, scale);
+                            self.label(label, point, color, glyph, style.label_centered, size, camera, area);
+                        }
                     }
                 }
             }
@@ -626,6 +813,62 @@ fn fs(in: Out) -> @location(0) vec4<f32> {
             self.glyphs(&text, [x, y], color, glyph, right, size);
         }
 
+        /// A label in the disc's HUD font: one textured quad a glyph, with a
+        /// drop shadow when centred. Button glyphs keep their colours.
+        #[allow(clippy::too_many_arguments)]
+        fn hud_label(
+            &mut self,
+            font: &LabelFont,
+            label: &str,
+            point: [f32; 2],
+            color: [f32; 4],
+            pixel: f32,
+            centered: bool,
+            size: (u32, u32),
+            camera: &MarkCamera,
+            area: Viewport,
+        ) {
+            let [_, _, bottom, right] = camera.viewport;
+            let right = area.x as f32 + right * area.width as f32;
+            let bottom = area.y as f32 + bottom * area.height as f32;
+            let layout = font.layout(label);
+            let box_size = [
+                layout.width as f32 * pixel,
+                font.line_height() as f32 * pixel,
+            ];
+            let [x, y] = text_origin(point, box_size, centered);
+            if y + box_size[1] > bottom {
+                return;
+            }
+            let mut glyphs = |at: [f32; 2], color: [f32; 4], shadow: bool| {
+                for q in glyph_quads(&layout, font.size, at, pixel, right) {
+                    let tint = if q.coloured && !shadow {
+                        [1.0, 1.0, 1.0, color[3]]
+                    } else {
+                        color
+                    };
+                    let shape = [GLYPH, 0.0, 0.0, 0.0];
+                    let [l, t, r, b] = q.rect;
+                    let [u0, v0, u1, v1] = q.uv;
+                    let corner = |pos, uv| ((pos, uv), tint, shape);
+                    self.quad(
+                        [
+                            corner([l, t], [u0, v0]),
+                            corner([l, b], [u0, v1]),
+                            corner([r, b], [u1, v1]),
+                            corner([r, t], [u1, v0]),
+                        ],
+                        size,
+                    );
+                }
+            };
+            if centered {
+                let off = pixel.max(1.0);
+                glyphs([x + off, y + off], [0.0, 0.0, 0.0, color[3] * 0.7], true);
+            }
+            glyphs([x, y], color, false);
+        }
+
         /// The text's lit font pixels as runs of `glyph`-pixel squares.
         fn glyphs(
             &mut self,
@@ -691,9 +934,10 @@ fn fs(in: Out) -> @location(0) vec4<f32> {
                 label: Some("editor marks"),
                 source: wgpu::ShaderSource::Wgsl(SHADER.into()),
             });
+            let layout = &self.binding(device).layout;
             let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("editor marks"),
-                layout: None,
+                layout: Some(layout),
                 vertex: wgpu::VertexState {
                     module: &shader,
                     entry_point: Some("vs"),
@@ -729,6 +973,85 @@ fn fs(in: Out) -> @location(0) vec4<f32> {
             pipeline
         }
 
+        /// The atlas binding, made on first use with a 1x1 blank atlas.
+        fn binding(&mut self, device: &wgpu::Device) -> &Binding {
+            self.binding.get_or_insert_with(|| {
+                let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                    label: Some("mark font atlas"),
+                    entries: &[
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 0,
+                            visibility: wgpu::ShaderStages::FRAGMENT,
+                            ty: wgpu::BindingType::Texture {
+                                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                                view_dimension: wgpu::TextureViewDimension::D2,
+                                multisampled: false,
+                            },
+                            count: None,
+                        },
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 1,
+                            visibility: wgpu::ShaderStages::FRAGMENT,
+                            ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                            count: None,
+                        },
+                    ],
+                });
+                let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                    label: Some("editor marks"),
+                    bind_group_layouts: &[Some(&bgl)],
+                    immediate_size: 0,
+                });
+                // Linear: labels are scaled to the output, rarely by a whole number.
+                let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+                    label: Some("mark font atlas"),
+                    mag_filter: wgpu::FilterMode::Linear,
+                    min_filter: wgpu::FilterMode::Linear,
+                    ..Default::default()
+                });
+                // wgpu clears a new texture: the blank atlas is transparent.
+                let blank = device.create_texture(&wgpu::TextureDescriptor {
+                    label: Some("mark blank atlas"),
+                    size: wgpu::Extent3d {
+                        width: 1,
+                        height: 1,
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: wgpu::TextureFormat::Rgba8Unorm,
+                    usage: wgpu::TextureUsages::TEXTURE_BINDING,
+                    view_formats: &[],
+                });
+                let blank = atlas_bind(device, &bgl, &sampler, &blank.create_view(&Default::default()));
+                Binding {
+                    bgl,
+                    layout,
+                    sampler,
+                    blank,
+                }
+            })
+        }
+
+        /// The bind group for this frame: the HUD font's atlas, uploaded
+        /// when its generation changes, or the blank one.
+        fn bind_group(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) -> wgpu::BindGroup {
+            self.binding(device);
+            let Some(font) = self.font.clone() else {
+                return self.binding.as_ref().expect("atlas binding").blank.clone();
+            };
+            if self.atlas.as_ref().is_none_or(|a| a.generation != font.generation) {
+                let view = atlas_texture(device, queue, (font.size[0], font.size[1]), &font.rgba);
+                let binding = self.binding.as_ref().expect("atlas binding");
+                self.atlas = Some(Atlas {
+                    generation: font.generation,
+                    bind: atlas_bind(device, &binding.bgl, &binding.sampler, &view),
+                });
+            }
+            self.atlas.as_ref().expect("uploaded atlas").bind.clone()
+        }
+
         pub(crate) fn draw(
             &mut self,
             device: &wgpu::Device,
@@ -754,6 +1077,7 @@ fn fs(in: Out) -> @location(0) vec4<f32> {
                 }));
             }
             let pipeline = self.pipeline(device, format);
+            let bind = self.bind_group(device, queue);
             let buffer = self.buffer.as_ref().expect("editor vertex buffer");
             queue.write_buffer(buffer, 0, &self.vertices);
             let count = (bytes / STRIDE) as u32;
@@ -774,6 +1098,7 @@ fn fs(in: Out) -> @location(0) vec4<f32> {
                 multiview_mask: None,
             });
             pass.set_pipeline(&pipeline);
+            pass.set_bind_group(0, &bind, &[]);
             pass.set_vertex_buffer(0, buffer.slice(..));
             pass.draw(0..count, 0..1);
         }
@@ -980,6 +1305,71 @@ mod tests {
         // Six 8-pixel glyphs at 2x are 96 wide and 16 tall: centred on the anchor.
         assert_eq!(label_origin([100.0, 50.0], 6, 2.0, true), [52.0, 42.0]);
         assert_eq!(label_origin([100.2, 50.0], 6, 1.0, false), [106.0, 55.0]);
+    }
+
+    #[test]
+    fn a_hud_label_box_is_centred_or_hangs_off_its_anchor() {
+        assert_eq!(text_origin([100.0, 50.0], [40.0, 20.0], true), [80.0, 40.0]);
+        assert_eq!(text_origin([100.2, 50.0], [40.0, 20.0], false), [106.0, 55.0]);
+    }
+
+    #[test]
+    fn a_hud_font_pixel_is_a_hud_pixel_at_scale_two() {
+        let at = |scale| LineStyle {
+            label_scale: scale,
+            label_face: gfx::world_lines::LabelFace::Hud,
+            ..LineStyle::default()
+        };
+        // 480 lines to 1080: 2.25 output pixels a HUD pixel.
+        assert_eq!(hud_font_pixel(&at(2.0), 1080), 2.25);
+        assert_eq!(hud_font_pixel(&at(1.0), 960), 1.0);
+        assert_eq!(hud_font_pixel(&at(3.0), 480), 1.5);
+        // A scale of nothing still draws something.
+        assert!(hud_font_pixel(&at(0.0), 1080) > 0.0);
+    }
+
+    fn hud_font() -> gfx::world_lines::LabelFont {
+        use gfx::world_lines::{GlyphPixels, LabelFont};
+        let glyph = |unit: u16, width: u16, coloured: bool| GlyphPixels {
+            unit,
+            advance: width as i16 + 1,
+            x_offset: 0,
+            y_offset: 12,
+            width,
+            height: 12,
+            rgba: vec![255; usize::from(width) * 12 * 4],
+            coloured,
+        };
+        LabelFont::build(
+            "test",
+            12,
+            4,
+            vec![glyph(u16::from(b'H'), 8, false), glyph(0xe102, 16, true)],
+            Vec::new(),
+        )
+    }
+
+    #[test]
+    fn glyph_quads_place_each_glyph_at_its_pen_scaled_with_its_atlas_box() {
+        let font = hud_font();
+        let layout = font.layout("H\u{e102}");
+        let quads = glyph_quads(&layout, font.size, [10.4, 20.6], 2.0, 1000.0);
+        assert_eq!(quads.len(), 2);
+        // Rounded to (10, 21); H is 8 by 12 font pixels at 2 pixels each.
+        assert_eq!(quads[0].rect, [10.0, 21.0, 26.0, 45.0]);
+        // The button glyph follows H's advance of 9, and keeps its colours.
+        assert_eq!(quads[1].rect, [28.0, 21.0, 60.0, 45.0]);
+        assert!(quads[1].coloured && !quads[0].coloured);
+        for (q, unit) in quads.iter().zip([u16::from(b'H'), 0xe102]) {
+            let g = font.glyph(unit).unwrap();
+            let [w, h] = [font.size[0] as f32, font.size[1] as f32];
+            assert_eq!(q.uv[0] * w, g.atlas[0] as f32);
+            assert_eq!(q.uv[1] * h, g.atlas[1] as f32);
+            assert!(((q.uv[2] - q.uv[0]) * w - f32::from(g.width)).abs() < 1e-3);
+            assert!(((q.uv[3] - q.uv[1]) * h - f32::from(g.height)).abs() < 1e-3);
+        }
+        // A glyph that starts past the viewport's right edge is dropped.
+        assert_eq!(glyph_quads(&layout, font.size, [0.0, 0.0], 2.0, 10.0).len(), 1);
     }
 
     #[test]
