@@ -344,6 +344,9 @@ pub trait ExternalPass: Send {
 
     /// A resolved draw admission can retain its original, immutable D3D packet for
     /// ordered fallback on the worker. Guest-mask reservations leave this empty.
+    /// For a native producer (`Device::try_native_*_draw`) the packet stands in
+    /// for the guest's own emission, which is skipped once the draw is queued, so
+    /// it must be the whole draw the guest would issue.
     fn resolved_fallback(&self) -> Option<std::sync::Arc<ResolvedDraw>> { None }
 
     /// An immutable packet for render diagnostics, independent of whether
