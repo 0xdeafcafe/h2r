@@ -21,6 +21,9 @@ pub const FIREFIGHT_ENDED: &str = "FirefightEnded";
 pub const SUPERBOUNCE: &str = "Superbounce";
 /// A player died falling out of or through the map while trying a bounce.
 pub const BOUNCED: &str = "Bounced";
+/// A player teabagged another's body (docs/game/teabag.md): the event the
+/// `incel` medal is worked out from.
+pub const TEABAG: &str = "Teabag";
 pub const SCORE_CHANGED: &str = "ScoreChanged";
 pub const GAME_FRAME: &str = "GameFrame";
 pub const GAME_ENDED: &str = "GameEnded";
@@ -29,7 +32,7 @@ pub const MAP_OUTLINE_STORED: &str = "MapOutlineStored";
 
 /// The game event types a player's console may append in a batch; the
 /// server writes `GameStarted` (from `POST /v1/games`) and `GameFrame`.
-pub const CLIENT_GAME_EVENTS: [&str; 10] = [
+pub const CLIENT_GAME_EVENTS: [&str; 11] = [
     PLAYER_JOINED,
     PLAYER_LEFT,
     PLAYER_KILLED,
@@ -38,6 +41,7 @@ pub const CLIENT_GAME_EVENTS: [&str; 10] = [
     FIREFIGHT_ENDED,
     SUPERBOUNCE,
     BOUNCED,
+    TEABAG,
     SCORE_CHANGED,
     GAME_ENDED,
 ];
@@ -391,6 +395,20 @@ pub struct Bounced {
     /// (0) from a host that sends no chain.
     #[serde(default)]
     pub chain: u32,
+}
+
+/// A teabag: the player in slot `player` crouched over the body of the
+/// player in slot `victim`, as the game's teabag rule has it
+/// (docs/game/teabag.md, "The rule"). A player in a game with none, giving
+/// or getting one, who completed the game earns `incel`
+/// (`film::events::medals`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Teabag {
+    pub tick: u64,
+    /// The crouching player's slot.
+    pub player: u32,
+    /// The slot of the player whose body it was.
+    pub victim: u32,
 }
 
 pub const KILL_KINDS: [&str; 4] = ["kill", "suicide", "betrayal", "world"];
@@ -1099,6 +1117,15 @@ pub struct BouncedRecord {
     pub at: String,
 }
 
+/// A teabag as `GET /v1/games/{id}` lists it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TeabagRecord {
+    #[serde(flatten)]
+    pub teabag: Teabag,
+    pub position: u64,
+    pub at: String,
+}
+
 /// `GET /v1/games/{id}`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GameDetail {
@@ -1123,6 +1150,14 @@ pub struct GameDetail {
     /// The last 100 bounce deaths, oldest first.
     #[serde(default)]
     pub bounced: Vec<BouncedRecord>,
+    /// The last 100 teabags, oldest first.
+    #[serde(default)]
+    pub teabags: Vec<TeabagRecord>,
+    /// The slots of the players in the game who joined it after its first
+    /// `PlayerKilled`: they did not play all of it, so earn no `incel`
+    /// (docs/game/teabag.md, "The medal"). Left out when none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub joined_late: Vec<u32>,
     pub winner: Option<Winner>,
     pub end_reason: Option<String>,
     pub position: u64,
@@ -1247,6 +1282,15 @@ pub fn validate(kind: &str, data: &Value, players: &[Player]) -> Result<(), Stri
             let d: Bounced = parse(data)?;
             if !known(d.player) {
                 return Err("player must be a player of the game".into());
+            }
+        }
+        TEABAG => {
+            let d: Teabag = parse(data)?;
+            if !known(d.player) || !known(d.victim) {
+                return Err("player and victim must be players of the game".into());
+            }
+            if d.player == d.victim {
+                return Err("a player cannot teabag their own body".into());
             }
         }
         FIREFIGHT_ENDED => {
@@ -2183,6 +2227,7 @@ mod tests {
             (SUPERBOUNCE, json!({"tick": 9, "player": 1, "chain": 1})),
             (SUPERBOUNCE, json!({"tick": 9, "player": 0, "chain": 7})),
             (BOUNCED, json!({"tick": 9, "player": 1})),
+            (TEABAG, json!({"tick": 9, "player": 0, "victim": 1})),
         ] {
             assert_eq!(validate(kind, &data, &p), Ok(()), "{kind} {data}");
         }
@@ -2216,6 +2261,11 @@ mod tests {
             (SUPERBOUNCE, json!({"player": 0, "chain": 1})),
             (BOUNCED, json!({"tick": 9, "player": 5})),
             (BOUNCED, json!({"tick": 9})),
+            (TEABAG, json!({"tick": 9, "player": 5, "victim": 1})),
+            (TEABAG, json!({"tick": 9, "player": 0, "victim": 5})),
+            (TEABAG, json!({"tick": 9, "player": 1, "victim": 1})),
+            (TEABAG, json!({"tick": 9, "player": 0})),
+            (TEABAG, json!({"player": 0, "victim": 1})),
             (GAME_STARTED, json!({})),
             (GAME_FRAME, json!({})),
         ] {

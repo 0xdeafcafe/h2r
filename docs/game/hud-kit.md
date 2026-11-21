@@ -880,7 +880,9 @@ preview sheet beside the retail medals with `--preview DIR --h2 BIN`), and
 `font::medals::replacements` adds the seven glyphs to `conduit-13` and
 `conduit-12` through the font rewrite ([button-icons.md](../input/button-icons.md),
 `font::patch`) at spare code points of the icon range, U+E2A0 to
-U+E2A6, each placed as the font's own Double Kill (U+E038: its advance
+U+E2A6, and an eighth at U+E2A7 for the Incel medal
+([teabag.md](teabag.md)), whose picture is a placeholder gradient disc
+(`art::INCEL`) until the medal redraw and which no HUD line shows; each placed as the font's own Double Kill (U+E038: its advance
 and offsets; a font without a 24 by 24 one gets none). Every other font
 is left alone. `font::medals::patch` is the same patch for tools that
 read the disc's fonts (`hud-edit`'s renderer, the preview). New art is a new `art.rs`: the

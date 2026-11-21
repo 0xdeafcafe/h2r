@@ -220,6 +220,7 @@ pub mod superbounce_world;
 pub mod superbounce_mode;
 pub mod superbounce_verify;
 pub mod sweep_diag;
+pub mod teabag;
 pub mod theater;
 pub mod theater_ui;
 pub mod touch_glue;

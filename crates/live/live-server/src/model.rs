@@ -79,6 +79,8 @@ pub const KEPT_KILLS: usize = 50;
 /// How many superbounces, and how many bounce deaths, a game keeps for
 /// `GET /v1/games/{id}`.
 pub const KEPT_BOUNCES: usize = 100;
+/// How many teabags a game keeps for `GET /v1/games/{id}`.
+pub const KEPT_TEABAGS: usize = 100;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Game {
@@ -112,6 +114,13 @@ pub struct Game {
     pub bounces: VecDeque<BounceRecord>,
     /// The last [`KEPT_BOUNCES`] deaths trying a bounce.
     pub bounced: VecDeque<BouncedRecord>,
+    /// The last [`KEPT_TEABAGS`] teabags, bots' included
+    /// (docs/game/teabag.md, "Recording").
+    pub teabags: VecDeque<game::TeabagRecord>,
+    /// The slots of players who joined after the game's first kill, while
+    /// they are in it: they earn no `incel` (docs/game/teabag.md, "The
+    /// medal").
+    pub joined_late: std::collections::BTreeSet<u32>,
     pub last_tick: Option<u64>,
     pub ended: Option<(GameEnded, String)>,
     pub(crate) recording: crate::replay_archive::Recording,
@@ -501,6 +510,8 @@ impl Model {
                 kills: VecDeque::new(),
                 bounces: VecDeque::new(),
                 bounced: VecDeque::new(),
+                teabags: VecDeque::new(),
+                joined_late: Default::default(),
                 last_tick: None,
                 ended: None,
                 recording: crate::replay_archive::Recording { position: e.position, next_version: e.version + 1, ..Default::default() },
@@ -532,6 +543,11 @@ impl Model {
                     g.xuids.push(x);
                 }
                 g.all_players_identified &= d.player.xuid.is_some();
+                if g.kills.is_empty() {
+                    g.joined_late.remove(&d.player.index);
+                } else {
+                    g.joined_late.insert(d.player.index);
+                }
                 g.players.push(d.player);
             }
             game::FIREFIGHT_SCORE | game::FIREFIGHT_ENDED => g.firefight = true,
@@ -545,6 +561,7 @@ impl Model {
                     g.departed_teams.insert(xuid, player.team);
                 }
                 g.players.retain(|p| p.index != d.index);
+                g.joined_late.remove(&d.index);
             }
             game::PLAYER_KILLED => {
                 let Some(mut kill) = data::<game::PlayerKilled>(e) else {
@@ -585,6 +602,20 @@ impl Model {
                 }
                 g.bounced.push_back(BouncedRecord {
                     bounced,
+                    position: e.position,
+                    at: b.at.clone(),
+                });
+            }
+            game::TEABAG => {
+                let Some(teabag) = data::<game::Teabag>(e) else {
+                    return;
+                };
+                g.last_tick = Some(teabag.tick);
+                if g.teabags.len() == KEPT_TEABAGS {
+                    g.teabags.pop_front();
+                }
+                g.teabags.push_back(game::TeabagRecord {
+                    teabag,
                     position: e.position,
                     at: b.at.clone(),
                 });

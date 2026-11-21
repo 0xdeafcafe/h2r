@@ -90,6 +90,8 @@ pub struct Totals {
     /// Deaths falling out of the map while trying a bounce (the `bounced`
     /// medal).
     pub bounced: u64,
+    /// Teabags, every player's (docs/game/teabag.md).
+    pub teabags: u64,
 }
 
 impl Totals {
@@ -110,6 +112,7 @@ impl Totals {
         self.legendary += o.legendary;
         self.bounces += o.bounces;
         self.bounced += o.bounced;
+        self.teabags += o.teabags;
     }
 }
 
@@ -131,6 +134,8 @@ struct PlayerAgg {
     legendary: BTreeSet<String>,
     bounces: u64,
     bounced: u64,
+    teabags_given: u64,
+    teabags_received: u64,
 }
 
 impl PlayerAgg {
@@ -151,6 +156,8 @@ impl PlayerAgg {
         self.legendary.extend(o.legendary.iter().cloned());
         self.bounces += o.bounces;
         self.bounced += o.bounced;
+        self.teabags_given += o.teabags_given;
+        self.teabags_received += o.teabags_received;
     }
 }
 
@@ -477,6 +484,12 @@ impl Inner {
                 };
                 self.bounced(id, d.player, at, true);
             }
+            game::TEABAG => {
+                let Some(d) = data::<game::Teabag>(e) else {
+                    return;
+                };
+                self.teabagged(id, d.player, d.victim, at);
+            }
             game::GAME_ENDED => {
                 let Some(d) = data::<GameEnded>(e) else {
                     return;
@@ -670,6 +683,32 @@ impl Inner {
         self.hour(at, add);
     }
 
+    /// A teabag counts in the totals, and in the giver's and the
+    /// receiver's rows when each is a player with an account and not a
+    /// bot.
+    fn teabagged(&mut self, id: &str, giver: u32, victim: u32, at: i64) {
+        let Some(g) = self.games.get(id) else {
+            return;
+        };
+        let row = |slot: u32| {
+            g.slots
+                .get(&slot)
+                .filter(|_| !g.bots.contains(&slot))
+                .and_then(|(x, name, _)| x.map(|x| (x, name.clone())))
+        };
+        let (giver, victim) = (row(giver), row(victim));
+        self.bump(at, |b| {
+            b.totals.teabags += 1;
+            if let Some((x, name)) = &giver {
+                b.player(*x, name, at).teabags_given += 1;
+            }
+            if let Some((x, name)) = &victim {
+                b.player(*x, name, at).teabags_received += 1;
+            }
+        });
+        self.hour(at, |t| t.teabags += 1);
+    }
+
     fn killed(&mut self, id: &str, k: &game::PlayerKilled, at: i64) {
         let Some(g) = self.games.get_mut(id) else {
             return;
@@ -838,6 +877,8 @@ impl Inner {
                 legendary: p.legendary.len() as u64,
                 bounces: p.bounces,
                 bounced: p.bounced,
+                teabags_given: p.teabags_given,
+                teabags_received: p.teabags_received,
             })
             .collect();
         players.sort_by(|a, b| (b.kills, b.games, &a.xuid).cmp(&(a.kills, a.games, &b.xuid)));
@@ -922,6 +963,9 @@ pub struct PlayerRow {
     pub legendary: u64,
     pub bounces: u64,
     pub bounced: u64,
+    /// Teabags this player gave, and got (docs/game/teabag.md).
+    pub teabags_given: u64,
+    pub teabags_received: u64,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -1058,6 +1102,7 @@ impl Stats {
                 | game::FIREFIGHT_ENDED
                 | game::SUPERBOUNCE
                 | game::BOUNCED
+                | game::TEABAG
                 | game::GAME_ENDED
         ) {
             return Vec::new();
@@ -1350,6 +1395,42 @@ mod tests {
         assert_eq!((s.last_24h.bounces, s.last_24h.bounced), (6, 2));
         assert_eq!((row(&s, A).bounces, row(&s, A).bounced), (2, 0));
         assert_eq!((row(&s, B).bounces, row(&s, B).bounced), (1, 1));
+        assert_eq!(s.players.len(), 2, "no row for the guest or the bot");
+    }
+
+    /// Teabags count in the totals, and as given and received in the rows
+    /// of players with accounts; a bot's side and an unlinked guest's are
+    /// in no row (docs/game/teabag.md, "Recording").
+    #[test]
+    fn teabags_count_given_and_received_in_the_rows_of_players_with_accounts() {
+        let mut log = Log::new();
+        log.start("g1", json!({}), T0);
+        log.push(
+            "g1",
+            game::PLAYER_JOINED,
+            json!({"player": {"index": 3, "name": "Clanker", "team": 1, "bot": true}}),
+            T0 + 1,
+        );
+        for (player, victim) in [(0, 1), (0, 1), (1, 2), (3, 0), (0, 3)] {
+            log.push(
+                "g1",
+                game::TEABAG,
+                json!({"tick": 5, "player": player, "victim": victim}),
+                T0 + 10,
+            );
+        }
+        log.end("g1", "finished", json!({"team": 0}), T0 + 60);
+        let s = log.stats.summary_at(Some(1), T0 + 100);
+        assert_eq!(s.totals.teabags, 5);
+        assert_eq!(s.last_24h.teabags, 5);
+        assert_eq!(
+            (row(&s, A).teabags_given, row(&s, A).teabags_received),
+            (3, 1)
+        );
+        assert_eq!(
+            (row(&s, B).teabags_given, row(&s, B).teabags_received),
+            (1, 2)
+        );
         assert_eq!(s.players.len(), 2, "no row for the guest or the bot");
     }
 

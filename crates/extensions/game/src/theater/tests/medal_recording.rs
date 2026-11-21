@@ -8,6 +8,8 @@ use std::collections::BTreeMap;
 /// Exercise the production observer, completed tick writer, teardown flush
 /// and front-of-file range reader. Ben's last-word is announced after he
 /// left and Cara took his seat. The match clock starts long after boot.
+/// Ada, in it throughout with no teabag, earns incel at the end; Ben left
+/// and Cara joined after the first kill (docs/game/teabag.md, "The medal").
 #[test]
 fn sealed_menu_medals_match_the_recorded_awards_across_a_seat_replacement() {
     let dir = std::env::temp_dir().join(format!("film-medals-{}", live_proto::sign::random_id()));
@@ -105,7 +107,12 @@ fn sealed_menu_medals_match_the_recorded_awards_across_a_seat_replacement() {
                     earned_at,
                     medal,
                 } => {
-                    let name = &killers[&(player, earned_at)];
+                    // Incel is given at the end, to whoever holds the seat.
+                    let name = if medal == "incel" {
+                        &slot[&player]
+                    } else {
+                        &killers[&(player, earned_at)]
+                    };
                     *emitted.get_mut(name).unwrap().entry(medal).or_default() += 1;
                 }
                 _ => {}
@@ -114,7 +121,11 @@ fn sealed_menu_medals_match_the_recorded_awards_across_a_seat_replacement() {
     }
     assert_eq!(
         emitted["Ada"],
-        BTreeMap::from([("opening-act".into(), 1), ("twofer".into(), 1)])
+        BTreeMap::from([
+            ("opening-act".into(), 1),
+            ("twofer".into(), 1),
+            ("incel".into(), 1)
+        ])
     );
     assert_eq!(
         emitted["Ben"],
@@ -214,11 +225,17 @@ fn sealed_menu_counts_the_recorded_bounce_medals() {
             ("superbounce".into(), 3),
             ("double-bounce".into(), 1),
             ("triple-bounce".into(), 1),
+            ("incel".into(), 1),
         ])
     );
+    // No teabag in the game: both completed it clean.
     assert_eq!(
         emitted["Ben"],
-        BTreeMap::from([("superbounce".into(), 1), ("bounced".into(), 1)])
+        BTreeMap::from([
+            ("superbounce".into(), 1),
+            ("bounced".into(), 1),
+            ("incel".into(), 1)
+        ])
     );
     assert_eq!(summary, emitted);
     std::fs::remove_dir_all(dir).unwrap();

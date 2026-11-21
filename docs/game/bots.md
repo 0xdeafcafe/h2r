@@ -1172,7 +1172,9 @@ their own ordinary kills, at a lower rate.
 
 The bot may emote only when:
 
-- the body is within 8 m;
+- the body is within 1.5 world units (about 4.5 m: `emote::NEAR`, the
+  game's teabag radius, so every emote is a teabag for the Incel medal,
+  [teabag.md](teabag.md#the-rule));
 - no enemy has been in the bot's view for 1.5 s;
 - the bot is not carrying, defending or contesting an objective that is live
   (a flag at risk, a bomb armed, a hill or territory contested);

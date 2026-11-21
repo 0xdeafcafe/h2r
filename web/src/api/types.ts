@@ -346,6 +346,9 @@ export interface PlayerKilled {
 export interface Superbounce { tick: number; player: number; chain: number }
 /** A death falling out of or through the map while trying a bounce. */
 export interface Bounced { tick: number; player: number; chain?: number }
+/** A teabag: `player` crouched over the body of `victim`
+ *  (docs/game/teabag.md). Neither earns `incel` in that game. */
+export interface Teabag { tick: number; player: number; victim: number }
 export interface ScoreChanged { tick: number; players: PlayerScore[]; teams?: TeamScore[] | null }
 /** `{team}` in team games, `{player}` (slot index) otherwise, null for a draw or quit. */
 export type Winner = { team: number } | { player: number };
@@ -393,6 +396,7 @@ export interface GameSummary extends GameKindFields, DedicatedHostFields {
 export interface KillRecord extends PlayerKilled { position?: number; at?: string }
 export interface BounceRecord extends Superbounce { position?: number; at?: string }
 export interface BouncedRecord extends Bounced { position?: number; at?: string }
+export interface TeabagRecord extends Teabag { position?: number; at?: string }
 
 /** `GET /v1/games/{id}`: the summary plus scoreboard and the last 50 kills.
  *  Fields past the summary are read when present. */
@@ -404,6 +408,11 @@ export interface GameDetail extends GameSummary {
    *  first; absent from servers before them. */
   bounces?: BounceRecord[];
   bounced?: BouncedRecord[];
+  /** The last 100 teabags, oldest first; absent from servers before them. */
+  teabags?: TeabagRecord[];
+  /** Slots of players in the game who joined after its first kill: no
+   *  `incel` for them. Absent when none. */
+  joined_late?: number[];
   team_play?: boolean;
   score_limit?: number | null;
   time_limit_s?: number | null;

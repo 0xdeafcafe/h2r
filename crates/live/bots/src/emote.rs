@@ -165,8 +165,10 @@ fn team_game(m: &dyn GuestMemory) -> Result<bool, MemFault> {
 
 /// The taunt of a bot with no personality of its own (§9.1's default).
 pub const DEFAULT_TAUNT: f32 = 0.3;
-/// The body within 8 m (world units are about 3 m).
-pub const NEAR: f32 = 8.0 / 3.0;
+/// The body within 1.5 world units (about 4.5 m): the game's teabag
+/// radius (`game::teabag::RADIUS`, docs/game/teabag.md), so every emote is
+/// a teabag the incel medal sees.
+pub const NEAR: f32 = 1.5;
 /// No enemy in view for 1.5 s.
 pub const CLEAR_TICKS: u32 = 45;
 /// At most one emote in 30 s.

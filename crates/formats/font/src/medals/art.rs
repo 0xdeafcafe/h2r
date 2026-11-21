@@ -208,3 +208,33 @@ pub const BOUNCED: [u16; 576] = [
     0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x1b54, 0x9b43, 0xfb43, 0xfb43, 0xfb43, 0xfb44, 0xfb54, 0xfb44, 0xfb43, 0xfa43, 0xf933, 0xf832, 0x9832, 0x1832, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000,
     0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x1b43, 0x6a43, 0xaa43, 0xda43, 0xea43, 0xe933, 0xd933, 0xa933, 0x6933, 0x1832, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000,
 ];
+
+/// U+E2A7, Incel (docs/game/teabag.md). PLACEHOLDER, to be replaced: a
+/// plain gradient disc made here, not drawn art. The real picture comes
+/// with the redrawn medal set; it replaces this constant with rows like
+/// the others'. `scripts/superbounce-medals.py` does not draw it: until
+/// the redraw adds it there, a run of the script drops it.
+pub const INCEL: [u16; 576] = placeholder_disc();
+
+/// A round, opaque disc in a violet-to-teal gradient (8 by 8 blocks of
+/// three pixels), clear outside a radius of 11.5: enough colours and the
+/// clear corners the medal checks want.
+const fn placeholder_disc() -> [u16; 576] {
+    let mut out = [0u16; 576];
+    let mut y = 0;
+    while y < 24 {
+        let mut x = 0;
+        while x < 24 {
+            let dx = 2 * x as i32 - 23;
+            let dy = 2 * y as i32 - 23;
+            if dx * dx + dy * dy <= 23 * 23 {
+                let r = 4 + (y / 3) as u16;
+                let g = 5 + (x / 3) as u16;
+                out[y * 24 + x] = 0xf000 | (r << 8) | (g << 4) | 0xc;
+            }
+            x += 1;
+        }
+        y += 1;
+    }
+    out
+}
