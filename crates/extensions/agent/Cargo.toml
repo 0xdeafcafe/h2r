@@ -43,7 +43,6 @@ snapshot = { path = "../../runtime/snapshot" }
 png = "0.18"
 
 background.workspace = true
-tags.workspace = true
 map.workspace = true
 
 [dev-dependencies]
