@@ -107,7 +107,7 @@ async fn run_traces_a_scenario_on_the_fake_game() {
     for bad in [
         json!({"ticks": 36_001}),
         json!({"players": [{"slot": 16}]}),
-        json!({"ticks": 5, "timeline": [{"tick": 6, "events": []}]}),
+        json!({"ticks": 5, "timeline": [{"tick": 6, "events": [{"type": "round_end"}]}]}),
         json!({"timeline": [{"tick": 1, "events": [{"type": "fly"}]}]}),
     ] {
         let r = post(

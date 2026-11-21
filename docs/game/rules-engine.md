@@ -793,8 +793,8 @@ editor exists. The browser runs no compiler: Live's
   its victim dead and counts a kill and a death, a spawn marks the player
   alive, a join seats one and a quit removes one after its handler. The
   trace keeps the ticks in which a handler other than `on tick` ran, a
-  call was made, a variable or player row changed, a warning was raised
-  or the script stopped. The run stops at a script error, after the tick
+  call was made, a variable or player row changed (a timer counting
+  down is no change), a warning was raised or the script stopped. The run stops at a script error, after the tick
   that calls `end_round`, or past 4,000,000 ops, and the same input gives
   the same trace.
 - **Save.** A signed-in account saves a script that checks clean; Live

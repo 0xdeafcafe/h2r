@@ -340,7 +340,8 @@ pub struct Trace {
     pub hash: String,
     pub options: u32,
     /// Ticks in which a handler other than `on tick` ran, a call was made,
-    /// a variable changed, a warning was raised or the script stopped.
+    /// a variable other than a timer changed, a warning was raised or the
+    /// script stopped.
     pub ticks: Vec<TickTrace>,
     /// The last tick run.
     pub last_tick: u32,
@@ -680,7 +681,21 @@ pub fn run(src: &str, scenario: &Scenario) -> Result<Trace, RunError> {
         ops: 0,
         scores: Vec::new(),
     };
-    let mut last_vars = (globals(&vm), players(&vm, &g));
+    // A timer counts down every tick; its value alone is no change.
+    let timers: Vec<String> = vm
+        .ir()
+        .slots
+        .iter()
+        .filter(|s| s.ty == Ty::Timer)
+        .map(|s| slot_name(vm.ir(), s))
+        .collect();
+    let untimed = |v: &[(String, String)]| -> Vec<(String, String)> {
+        v.iter()
+            .filter(|(n, _)| !timers.contains(n))
+            .cloned()
+            .collect()
+    };
+    let mut last_vars = (untimed(&globals(&vm)), players(&vm, &g));
 
     for tick in 0..=scenario.ticks {
         vm.begin_tick(tick);
@@ -710,11 +725,11 @@ pub fn run(src: &str, scenario: &Scenario) -> Result<Trace, RunError> {
                 g.players.remove(&p);
             }
         }
-        let timers = due_timers(&vm);
+        let due = due_timers(&vm);
         let before_update = vm.ext().stopped.is_none();
         let f = vm.update(&mut g);
         if before_update {
-            ran.extend(timers);
+            ran.extend(due);
         }
         let tick_ran = f == Fired::Ran;
 
@@ -739,7 +754,8 @@ pub fn run(src: &str, scenario: &Scenario) -> Result<Trace, RunError> {
             .filter(|e| e.tick == tick)
             .map(|e| error_text(vm.ir(), &e));
         let vars = (globals(&vm), players(&vm, &g));
-        let changed = vars != last_vars;
+        let key = (untimed(&vars.0), vars.1.clone());
+        let changed = key != last_vars;
         let ended = calls.iter().any(|c| c.entry == "end_round");
         if !ran.is_empty() || !calls.is_empty() || !warnings.is_empty() || error.is_some() || changed {
             if tick_ran {
@@ -762,7 +778,7 @@ pub fn run(src: &str, scenario: &Scenario) -> Result<Trace, RunError> {
                 ));
             }
         }
-        last_vars = vars;
+        last_vars = key;
         if let Some(e) = error {
             trace.error = Some(e);
             break;
