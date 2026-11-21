@@ -710,7 +710,14 @@ mod tests {
         let answer = publish(&client, &accounts, None, &pkg, None, None).unwrap();
         assert_eq!(answer.map.summary.map_id, MapId::of(&m));
         assert_eq!(answer.map.summary.author.gamertag, "Modder");
-        assert!(answer.map.summary.image.is_some());
+        // The preview is uploaded, but a signed manifest alone does not
+        // clear it for display (docs/live/live-api.md "Verified
+        // screenshot uploads").
+        assert!(answer.map.summary.image.is_none());
+        assert_eq!(
+            answer.map.manifest.package.image.as_deref(),
+            Some("preview.png")
+        );
         assert!(answer.missing.is_empty());
         let all = list(&client, None, None).unwrap();
         assert_eq!(all.len(), 1);
