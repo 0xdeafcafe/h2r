@@ -102,6 +102,10 @@ pub struct ReplayFrame {
     /// Exact contents last established by an earlier clear or whole upload.
     /// Existing display attachments already hold these pixels.
     pub initial: Vec<(TargetRef, super::TargetSeed)>,
+    /// Private target contents retained by the display worker before the
+    /// first write of this present. The cell belongs to this sealed frame.
+    #[cfg(feature = "gpu")]
+    pub target_snapshots: super::TargetSnapshots,
     pub ops: Vec<(SlotAt, ReplayOp)>,
     pub aux: Vec<AuxTarget>,
     pub colour: Option<AuxTarget>,
@@ -117,6 +121,8 @@ impl Default for ReplayFrame {
             flags: 0,
             gamma: None,
             initial: Vec::new(),
+            #[cfg(feature = "gpu")]
+            target_snapshots: Default::default(),
             ops: Vec::new(),
             aux: Vec::new(),
             colour: None,

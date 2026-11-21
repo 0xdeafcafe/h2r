@@ -4,6 +4,9 @@
 //! overwrite can make an unknown aspect independent of its old contents.
 
 mod rects;
+mod requirements;
+#[cfg(feature = "gpu")]
+pub use requirements::TargetSnapshots;
 #[cfg(feature = "gpu")]
 mod overwrite;
 
@@ -28,7 +31,7 @@ fn channels(red: bool, green: bool, blue: bool, alpha: bool) -> u8 {
 }
 
 impl ReplayFrame {
-    fn desc(&self, target: TargetRef) -> Option<AuxTarget> {
+    pub(crate) fn desc(&self, target: TargetRef) -> Option<AuxTarget> {
         match target {
             TargetRef::SceneColour => self.colour,
             TargetRef::SceneDepth => self.depth,
@@ -56,30 +59,34 @@ impl ReplayFrame {
     /// attachments were freshly allocated. The in-place owner can still
     /// draw it against its persistent attachments.
     pub fn private_target_refusal(&self) -> Option<&'static str> {
-        self.read_refusal(self.ops.len(), self.presented, false, false)
+        self.private_read_refusal(self.ops.len(), self.presented)
     }
 
     /// Fresh display targets must also reproduce every guest-visible count.
     pub fn display_target_refusal(&self) -> Option<&'static str> {
-        self.read_refusal(self.ops.len(), self.presented, true, false)
+        self.read_refusal(&[(self.ops.len(), self.presented)], true, false, &self.copied_aspects())
     }
 
     /// Whether a pass snapshot through the first `end` commands can read
     /// all of `colour` without pixels inherited from another frame.
     pub fn private_read_refusal(&self, end: usize, colour: TargetRef) -> Option<&'static str> {
-        self.read_refusal(end, colour, false, false)
+        self.read_refusal(&[(end, colour)], false, false, &self.copied_aspects())
     }
 
     /// A handoff between live target sets with different histories needs
     /// every attachment and every frozen sampled output to agree. Do not
     /// count retained seeds: in-place replay leaves the live pixels alone.
     pub fn all_targets_defined(&self) -> bool {
-        self.refusals.is_empty() && self.read_refusal(self.ops.len(), self.presented, true, true).is_none()
+        self.refusals.is_empty() && self.read_refusal(&[(self.ops.len(), self.presented)], true, true, &[]).is_none()
     }
 
-    fn read_refusal(&self, end: usize, colour: TargetRef, feedback: bool, all: bool) -> Option<&'static str> {
+    fn read_refusal(&self, reads: &[(usize, TargetRef)], feedback: bool, all: bool, supplied: &[(TargetRef, u8)]) -> Option<&'static str> {
+        let Some(&(end, _)) = reads.last() else { return None };
+        if end > self.ops.len() { return Some("invalid_scene_read"); }
+        let mut reads = reads.iter().copied().peekable();
         let mut state = Contents::default();
         if !all {
+            for &(target, mask) in supplied { if mask != 0 { state.define(target, mask); } }
             for (target, seed) in &self.initial {
                 let mask = match seed {
                     super::TargetSeed::Colour(_) => COLOUR,
@@ -91,7 +98,16 @@ impl ReplayFrame {
         let mut attachments = None;
         let mut samples = HashMap::new();
         let mut query_defined = false;
-        for (_, op) in self.ops.iter().take(end) {
+        // Check all requested pass boundaries in one walk. Reads at i see
+        // operations [0, i), including reads before the first operation.
+        for i in 0..=end {
+            while let Some(&(at, target)) = reads.peek() {
+                if at != i { break; }
+                if !self.desc(target).is_some_and(|d| !d.depth) || !state.has(target, COLOUR) { return Some("frame_needs_previous_target_contents"); }
+                reads.next();
+            }
+            if i == end { break; }
+            let op = &self.ops[i].1;
             match op {
                 ReplayOp::Bind { colour, depth } => attachments = Some((*colour, *depth)),
                 ReplayOp::Clear { colour, depth, clear } => {
@@ -205,7 +221,7 @@ impl ReplayFrame {
                 return Some("frame_needs_previous_target_contents");
             }
         }
-        (!state.has(colour, COLOUR)).then_some("frame_needs_previous_target_contents")
+        None
     }
 }
 

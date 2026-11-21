@@ -14,6 +14,8 @@ mod census;
 pub mod window;
 mod contents;
 #[cfg(feature = "gpu")]
+pub use contents::TargetSnapshots;
+#[cfg(feature = "gpu")]
 mod frozen;
 #[cfg(feature = "gpu")]
 pub use frozen::{FrozenImages, FrozenSample};
