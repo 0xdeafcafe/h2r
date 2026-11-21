@@ -404,7 +404,7 @@ impl SunShadows {
                         module,
                         entry_point: Some("vs_depth"),
                         compilation_options: Default::default(),
-                        buffers: &[VERTEX_LAYOUT],
+                        buffers: &[Some(VERTEX_LAYOUT)],
                     },
                     primitive: wgpu::PrimitiveState {
                         cull_mode: None,
@@ -437,7 +437,7 @@ impl SunShadows {
                         module,
                         entry_point: Some("vs_receive"),
                         compilation_options: Default::default(),
-                        buffers: &[VERTEX_LAYOUT],
+                        buffers: &[Some(VERTEX_LAYOUT)],
                     },
                     primitive: wgpu::PrimitiveState {
                         cull_mode: None,
