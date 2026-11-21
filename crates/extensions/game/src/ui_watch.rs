@@ -52,13 +52,17 @@
 //! 0 Campaign, 1 Xbox Live, 2 Split Screen, 3 System Link, 4 Settings.
 //! With Theater installed, it occupies row 2 and shifts the remaining rows.
 
-use std::sync::Mutex;
+use std::path::Path;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use engine::points;
 
 use crate::layout_glue::Gm;
+use crate::ui_audit::ObservedFindings;
 use crate::ui_kit::lifecycle::SCREEN_NEXT;
+use crate::ui_kit::preview::{Fonts, SyntheticSource};
+use crate::ui_kit::view::Metrics;
 
 pub const FEATURE: &str = "ui-watch";
 
@@ -437,21 +441,28 @@ pub fn top<M: Gm + ?Sized>(m: &M) -> Option<Top> {
     read(m).top
 }
 
-/// The newest screen and layout findings sampled on the same UI update.
+/// The newest screen and widget findings sampled on the same UI update.
+#[derive(Clone)]
 struct Snapshot {
     at: Instant,
     top: Option<Top>,
     dialog: Option<Dialog>,
-    findings: Vec<serde_json::Value>,
+    findings: ObservedFindings,
+    fonts: Option<Arc<Fonts>>,
 }
 
 static LAST: Mutex<Option<Snapshot>> = Mutex::new(None);
 
 pub fn last_json() -> Option<serde_json::Value> {
-    let last = LAST.lock().unwrap_or_else(|e| e.into_inner());
-    let read = last.as_ref()?;
+    let mut read = LAST.lock().unwrap_or_else(|e| e.into_inner()).clone()?;
+    let metrics: &dyn Metrics = match read.fonts.as_deref() {
+        Some(fonts) => fonts,
+        None => &SyntheticSource,
+    };
+    read.findings.resolve_authored(metrics);
     let mut json = screen_json(read.at.elapsed(), read.top, read.dialog);
-    json["layout_findings"] = serde_json::json!(read.findings);
+    json["layout_findings"] = serde_json::json!(read.findings.layout);
+    json["content_findings"] = serde_json::json!(read.findings.content);
     Some(json)
 }
 
@@ -474,12 +485,13 @@ pub fn screen_json(
 /// The line said last, so a line is said only on a change.
 static SAID: Mutex<String> = Mutex::new(String::new());
 
-fn note(r: Read, findings: Vec<serde_json::Value>) -> Option<String> {
+fn note(r: Read, findings: ObservedFindings, fonts: Option<Arc<Fonts>>) -> Option<String> {
     *LAST.lock().unwrap_or_else(|e| e.into_inner()) = Some(Snapshot {
         at: Instant::now(),
         top: r.top,
         dialog: r.dialog,
         findings,
+        fonts,
     });
     let mut line = r.line();
     if r.top.is_some_and(|top| top.id == JOIN_SCREEN)
@@ -504,7 +516,10 @@ pub fn wanted(v: Option<&str>) -> bool {
     )
 }
 
-pub struct UiWatch;
+#[derive(Default)]
+pub struct UiWatch {
+    fonts: Option<Arc<Fonts>>,
+}
 
 impl hooks::Feature for UiWatch {
     fn manifest(&self) -> hooks::Manifest {
@@ -516,21 +531,23 @@ impl hooks::Feature for UiWatch {
     }
 
     fn build(&self, b: &mut hooks::Builder) -> Result<(), hooks::BuildError> {
+        let fonts = self.fonts.clone();
         b.raw()
-            .observe_after(&points::UI_UPDATE, "ui: watch the screen", |o| {
+            .observe_after(&points::UI_UPDATE, "ui: watch the screen", move |o| {
                 let g = o.guest();
                 let r = read(&*g);
-                let mut findings = r.top.map_or_else(Vec::new, |t| {
-                    crate::ui_audit::layout_findings(&*g, t.screen, Some(t.id))
+                let mut findings = r.top.map_or_else(ObservedFindings::default, |t| {
+                    crate::ui_audit::observe(&*g, t.screen, Some(t.id), channel(t.window, t.slot))
                 });
                 if let Some(d) = r.dialog
                     && let Some(ch) = channel(d.window, d.slot)
                     && let Some(active) = Gm::u32(&*g, ch + ACTIVE).filter(|&s| s != 0)
                     && r.top.is_none_or(|t| t.screen != active)
                 {
-                    findings.extend(crate::ui_audit::layout_findings(&*g, active, d.id));
+                    findings.append(crate::ui_audit::observe(&*g, active, d.id, Some(ch)));
                 }
-                if let Some(line) = note(r, findings) {
+                drop(g);
+                if let Some(line) = note(r, findings, fonts.clone()) {
                     eprintln!("{line}");
                 }
             })
@@ -543,12 +560,19 @@ impl hooks::Feature for UiWatch {
 }
 
 /// Adds the watch when `H2_UI_WATCH` asks for it.
-pub fn install(registry: &mut hooks::Registry) -> anyhow::Result<bool> {
+pub fn install(registry: &mut hooks::Registry, disc: &Path) -> anyhow::Result<bool> {
     if !wanted(std::env::var("H2_UI_WATCH").ok().as_deref()) {
         return Ok(false);
     }
+    let fonts = match Fonts::open(disc) {
+        Ok(fonts) => Some(Arc::new(fonts)),
+        Err(e) => {
+            eprintln!("ui: font metrics unavailable: {e:#}");
+            None
+        }
+    };
     registry
-        .add(&UiWatch)
+        .add(&UiWatch { fonts })
         .map_err(|e| anyhow::anyhow!("ui-watch: {e}"))
 }
 
@@ -907,7 +931,7 @@ mod tests {
     #[test]
     fn the_watch_observes_ui_updates_during_a_simulation_pause() {
         let mut r = hooks::Registry::new(hooks::Switches::defaults());
-        assert!(r.add(&UiWatch).unwrap());
+        assert!(r.add(&UiWatch::default()).unwrap());
         let plan = r.build(&hooks::Base).unwrap().text();
         assert!(plan.contains("UI_UPDATE"), "{plan}");
         assert!(!plan.contains("GAME_TICK"), "{plan}");
@@ -935,20 +959,25 @@ mod tests {
             why_none: "slot 4: no window; slot 0: no window".into(),
             dialog: None,
         };
-        assert!(note(r(Some(a)), Vec::new()).is_some());
-        assert_eq!(note(r(Some(a)), Vec::new()), None);
-        assert_eq!(note(r(Some(b)), Vec::new()).as_deref(), Some(b.line().as_str()));
+        assert!(note(r(Some(a)), ObservedFindings::default(), None).is_some());
+        assert_eq!(note(r(Some(a)), ObservedFindings::default(), None), None);
+        assert_eq!(note(r(Some(b)), ObservedFindings::default(), None).as_deref(), Some(b.line().as_str()));
         assert_eq!(
-            note(r(None), Vec::new()).as_deref(),
+            note(r(None), ObservedFindings::default(), None).as_deref(),
             Some("ui: screen none (slot 4: no window; slot 0: no window)")
         );
-        assert_eq!(note(r(None), Vec::new()), None);
+        assert_eq!(note(r(None), ObservedFindings::default(), None), None);
         let finding = serde_json::json!({"issue": {"kind": "unsafe"}});
-        assert_eq!(note(r(None), vec![finding.clone()]), None);
+        let content = serde_json::json!({"issue": {"kind": "placeholder"}});
+        let mut findings = ObservedFindings::default();
+        findings.layout.push(finding.clone());
+        findings.content.push(content.clone());
+        assert_eq!(note(r(None), findings, None), None);
         let wire = last_json().unwrap();
         assert!(wire["screen"].is_null());
         assert_eq!(wire["layout_findings"][0], finding);
-        assert_eq!(note(r(None), Vec::new()), None);
+        assert_eq!(wire["content_findings"][0], content);
+        assert_eq!(note(r(None), ObservedFindings::default(), None), None);
         assert_eq!(last_json().unwrap()["layout_findings"], serde_json::json!([]));
         assert!(wanted(Some("1")) && wanted(Some("on")) && !wanted(None) && !wanted(Some("0")));
     }

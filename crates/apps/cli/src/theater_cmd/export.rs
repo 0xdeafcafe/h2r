@@ -2,7 +2,7 @@
 //! a restart of the watching player during a seek.
 mod output;
 
-use super::{Options, Temp, child_with_start};
+use super::{Options, Temp, child_with_start, retry_seek};
 use agent_proto::theater::{ClipExport, ClipFormat, ClipJob, ClipStatus};
 use anyhow::{Context, Result, ensure};
 use boot::theater::{ClipCapture, ClipSink, ClipSpan, FilmCamera, Media, Picture, Presentation, Restart};
@@ -200,18 +200,23 @@ pub(super) fn run(mut opts: Options, job: &Path) -> Result<()> {
             clip.format == ClipFormat::Mp4,
             sink,
         ));
-        let start = Restart {
+        let mut start = Restart {
             target: clip.from.saturating_sub(1),
             from_tick: None,
-            source: Some(agent_proto::theater::SeekRoute::Boot),
+            source: None,
             speed: 1.0,
             paused: false,
             presentation: request.presentation,
         };
         opts.every = 1;
-        let temp = Temp::new()?;
-        child_with_start(opts, &temp.0, start, Some(capture.clone()))?;
-        capture.finish()
+        let mut retries = 0;
+        loop {
+            let temp = Temp::new()?;
+            child_with_start(opts.clone(), &temp.0, start.clone(), Some(capture.clone()))?;
+            if !retry_seek(&temp.0, &mut start, &mut retries)? {
+                break capture.finish();
+            }
+        }
     });
     let result = result.unwrap_or_else(|_| Err(anyhow::anyhow!("offline clip player panicked")));
     if let Err(error) = &result {

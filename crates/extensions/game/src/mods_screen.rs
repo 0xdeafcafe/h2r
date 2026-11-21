@@ -1865,6 +1865,10 @@ impl ListRows {
 }
 
 impl Rows for ListRows {
+    fn content_spec(&self) -> Option<crate::ui_kit::spec::ScreenSpec> {
+        Some(spec::list_spec(&self.0))
+    }
+
     fn restore_missing_picture(&self) -> bool {
         true
     }
@@ -1943,6 +1947,10 @@ impl PackRows {
 }
 
 impl Rows for PackRows {
+    fn content_spec(&self) -> Option<crate::ui_kit::spec::ScreenSpec> {
+        Some(spec::pack_spec(&self.0))
+    }
+
     fn restore_missing_picture(&self) -> bool {
         true
     }
@@ -2018,6 +2026,10 @@ impl DetailRows {
 }
 
 impl Rows for DetailRows {
+    fn content_spec(&self) -> Option<crate::ui_kit::spec::ScreenSpec> {
+        Some(spec::detail_spec(&self.0))
+    }
+
     fn restore_missing_picture(&self) -> bool {
         true
     }

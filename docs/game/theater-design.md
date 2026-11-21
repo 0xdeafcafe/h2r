@@ -108,7 +108,7 @@ The same container also holds the film: the inputs (tag 1) and digests
 | The HLE tape: every host answer the guest received, on one call index | Built | `crates/live/film/src/tape.rs` (`Call`, `Playback::call`); `impl Tap for Session` in `theater.rs` |
 | Capture points every 150 ticks and local sidecar snapshots every sixth point | Recorder and player use the snapshot build key and recorded device boundaries | `crates/extensions/game/src/theater/record.rs`, `crates/live/film/src/sidecar.rs` |
 | Machine snapshots: guest RAM, kernel, D3D, audio, XAPI, feature sections, a RAM hash | Built, tested on synthetic machines | [snapshots.md](../runtime/snapshots.md) |
-| The player: an isolated child process per film; a seek ends the child and starts another | Built | `crates/apps/cli/src/theater_cmd.rs` (`run`, the restart loop) |
+| The player: an isolated child process per film with an opt-in warm rewind ring | Built | `crates/apps/cli/src/theater_cmd.rs` (`run`, the restart loop) |
 | A film without a usable keyframe plays from boot | Built | `EngineReplay::open` in `crates/extensions/game/src/theater/replay.rs` (`ImageMatch::FromBoot`) |
 | Transport over the agent API: `theater.play`, `state`, `pause`, `speed`, `seek`, `step`, `keyframes`, `camera`, `hud` | Built | `crates/extensions/agent-proto/src/theater.rs` |
 | Cameras: a view replaced in the guest's renderer with a private random seed; a separate GPU view for a playerless host film | Built | `crates/extensions/game/src/theater/camera.rs` (`Seeds`), `host_view.rs` |
@@ -117,23 +117,15 @@ The same container also holds the film: the inputs (tag 1) and digests
 | Live: host film upload, film lists, pins, clips as tick ranges, public range reads for the web viewer | Built | [live-api.md](../live/live-api.md#theater) |
 | Engine-level playback (a film played without its machine section) and arena keyframes | Not built | "Before and after the sim rewrite"; [sim-rewrite.md](../engine/sim-rewrite.md) section 7 (`sim_state::Keyframe`) |
 
-Five gaps follow from that table, and the design is their answers:
+Three gaps remain:
 
-1. **A film is mostly keyframes, and carries the stats.** At the
-   planning rate a film gains 5.75 MiB of guest RAM a minute, which is
-   game data and cannot leave the machine, beside a few kilobytes of
-   input. The poses and events in the same file are read by the web and
-   never by the engine.
-2. **A seek costs a process start.** Every jump boots the image again
-   (`theater_cmd.rs`: "Each seek starts a new process so the game, HLE
-   allocators and feature statics all restart").
-3. **The replay depends on more than inputs.** Playback answers every HLE
+1. **The film and the stats share a container.** The web reads the poses
+   and events. The engine reads the inputs and digests. Captured machine
+   keyframes live in a local cache.
+2. **The replay depends on more than inputs.** Playback answers every HLE
    call from the tape, so a film carries received packets, account
    observations and pad reads encoded as JSON.
-4. **A film stops being playable when the build changes.** The hook digest
-   changes with every hook added or moved. This is accepted: a film plays
-   until the next breaking change and is then refused.
-5. **Only a leased dedicated host can upload a film**, and only a
+3. **Only a leased dedicated host can upload a film**, and only a
    participant can download the exact recording.
 
 ## The film

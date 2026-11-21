@@ -5,7 +5,7 @@ use agent_proto::{RpcError, code, theater as api};
 use serde::{Deserialize, Serialize};
 use std::time::{Duration, Instant};
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Restart {
     pub target: u64,
     pub from_tick: Option<u64>,
@@ -37,6 +37,9 @@ impl State {
         }
         self.step_until = None;
         self.paused = paused;
+        if let Some((_, hold)) = &mut self.warm_check {
+            *hold = paused;
+        }
     }
 
     pub(super) fn set_speed(&mut self, speed: f64) {

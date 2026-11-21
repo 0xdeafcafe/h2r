@@ -1,7 +1,7 @@
 use super::*;
 use crate::snapshot_glue::{Host, Shelf};
 use crate::theater::{
-    Presentation, Replay, Session,
+    Presentation, Replay, Restart, Session,
     tests::{arena, host_facts, options},
 };
 use kernel::{Kernel, Machine, RunOutcome, snapshot::Rebuilders};
@@ -188,6 +188,10 @@ fn watched_session(fixture: &Fixture, machine: &mut Machine) -> Arc<Session> {
         Some(Replay {
             path,
             verification: None,
+            cache: None,
+            unpaced: false,
+            from_tick: None,
+            seek_source: None,
             render_every: 0,
             speed: 1.0,
             seek_tick: 0,
@@ -238,10 +242,10 @@ fn cold_restart(
     assert_eq!(replay.try_warm_seek(target, boot, None), None);
     assert_eq!(replay.lock().restart, Some(target));
     replay.write_cold_restart(target).unwrap();
-    let (restart_tick, _, _, view): (u64, f64, bool, Presentation) =
+    let restart: Restart =
         serde_json::from_slice(&fs::read(fixture.dir.join("restart")).unwrap()).unwrap();
-    assert_eq!(restart_tick, target);
-    view
+    assert_eq!(restart.target, target);
+    restart.presentation
 }
 
 #[test]
@@ -331,8 +335,8 @@ fn divergence_on_the_warm_target_tick_retries_that_jump_cold() {
     }
     assert!(replay.try_warm_seek(30, &mut boot, None).is_none());
     replay.write_cold_restart(30).unwrap();
-    let (target, _, paused, view): (u64, f64, bool, Presentation) =
+    let restart: Restart =
         serde_json::from_slice(&fs::read(fixture.dir.join("restart")).unwrap()).unwrap();
-    assert_eq!(target, 30);
-    assert!(paused && view.warm_disabled);
+    assert_eq!(restart.target, 30);
+    assert!(restart.paused && restart.presentation.warm_disabled);
 }

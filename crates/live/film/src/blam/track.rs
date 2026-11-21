@@ -738,22 +738,16 @@ impl<R: Read + Seek> TrackReader<R> {
         Ok(embedded.map(Selection::Embedded))
     }
 
-    /// Read a frame at this boundary without moving the tick decoder.
+    /// Read a compatible embedded frame at this boundary without moving
+    /// the tick decoder or loading the frame's RAM anchor.
     pub fn read_keyframe_at(&mut self, tick: u64) -> Result<Option<Keyframe>> {
-        match self.selection(tick)? {
-            Some(Selection::Embedded(index)) if self.directory.keyframes[index].tick == tick => {
-                let key = &self.directory.keyframes[index];
-                read_keyframe(&mut self.reader, key).map(Some)
-            }
-            Some(Selection::Sidecar(index)) => {
-                let sidecar = self.sidecar.as_mut().unwrap();
-                if sidecar.tick(index) == tick {
-                    return sidecar.keyframe(index).map(Some);
-                }
-                Ok(None)
-            }
-            _ => Ok(None),
+        if !self.embedded_enabled {
+            return Ok(None);
         }
+        let Ok(index) = self.directory.keyframes.binary_search_by_key(&tick, |key| key.tick) else {
+            return Ok(None);
+        };
+        read_keyframe(&mut self.reader, &self.directory.keyframes[index]).map(Some)
     }
 
     /// The launcher prepares guest storage before booting the machine. Disk

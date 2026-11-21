@@ -32,6 +32,7 @@ use engine::entry::{Cx, EntryError, GuestCall};
 use engine::memory::{GuestMemory, MemFault};
 use engine::points;
 
+use crate::ui_kit::animation::TransitionStyle;
 use crate::ui_kit::dialog::DialogBase;
 
 use crate::list_class::{
@@ -196,6 +197,103 @@ const PANE_BITMAPS: u32 = 0x24;
 const LIST_SKIN: u32 = 0x04;
 const LIST_VISIBLE: u32 = 0x06;
 const LIST_ANCHOR: u32 = 0x08;
+pub(crate) const LIST_ANIMATION: u32 = 0x0c;
+pub(crate) const PANE_ANIMATION: u32 = 0x02;
+const BLOCK_ANIMATION: usize = 0x04;
+
+/// Animation collection slots as native text, bitmap and list definitions
+/// store them (docs/formats/ui.md "Animations and transitions").
+#[derive(Clone, Copy)]
+pub(crate) struct PaneTracks {
+    pub(crate) pane: u16,
+    pub(crate) rows: u16,
+}
+
+impl PaneTracks {
+    pub(crate) fn inherited(pane: u16, rows: u16) -> Self {
+        Self {
+            pane: if pane != 0 { pane } else { rows },
+            rows: if rows != 0 { rows } else { pane },
+        }
+    }
+
+    pub(crate) fn for_style(m: &dyn GuestMemory, style: TransitionStyle) -> Option<Self> {
+        let count = match style {
+            TransitionStyle::Retail { .. } => animation_count(m),
+            _ => None,
+        };
+        Self::override_style(style, count)
+    }
+
+    fn override_style(style: TransitionStyle, count: Option<u32>) -> Option<Self> {
+        let (pane, rows) = match style {
+            TransitionStyle::Off => (0, 0),
+            TransitionStyle::Retail { pane, rows }
+                if count.is_some_and(|count| u32::from(pane.max(rows)) <= count) =>
+            {
+                (pane, rows)
+            }
+            _ => return None,
+        };
+        Some(Self { pane, rows })
+    }
+}
+
+fn pane_tracks(m: &dyn GuestMemory, pane: u32, list: u32) -> Result<PaneTracks, MemFault> {
+    Ok(PaneTracks::inherited(
+        m.u16(pane + PANE_ANIMATION)?,
+        m.u16(list + LIST_ANIMATION)?,
+    ))
+}
+
+/// The default references of a retail template from the current interface.
+pub(crate) fn tag_tracks(m: &dyn GuestMemory, tag: u32) -> Result<Option<PaneTracks>, MemFault> {
+    if m.u32(tag + list_class::SCREEN_PANES)? == 0 {
+        return Ok(None);
+    }
+    let pane = m.u32(tag + list_class::SCREEN_PANES + 4)?;
+    if pane == 0 || m.u32(pane + PANE_LISTS)? == 0 {
+        return Ok(None);
+    }
+    let list = m.u32(pane + PANE_LISTS + 4)?;
+    if list == 0 {
+        return Ok(None);
+    }
+    Ok(Some(pane_tracks(m, pane, list)?))
+}
+
+/// The widget collection selected by the current scenario (0x1482e8).
+pub(crate) fn interface_widgets(m: &dyn GuestMemory) -> Option<u32> {
+    let scenario = points::SCENARIO.pointer(m).ok()??;
+    let globals = points::GLOBALS_TAG.pointer(m).ok()??;
+    if m.u32(globals.checked_add(0x110)?).ok()? == 0 {
+        return None;
+    }
+    let interface = m.u32(globals.checked_add(0x114)?).ok()?;
+    if interface == 0 {
+        return None;
+    }
+    let offset = match m.u16(scenario.checked_add(0x10)?).ok()? {
+        2 => 0x84,
+        0 => 0x8c,
+        1 => 0x94,
+        _ => return None,
+    };
+    tag_of(m, m.u32(interface.checked_add(offset)?).ok()?)
+        .ok()
+        .flatten()
+}
+
+/// The current interface's collection count (0x148350).
+fn animation_count(m: &dyn GuestMemory) -> Option<u32> {
+    let wgtz = interface_widgets(m)?;
+    let wigl = tag_of(m, m.u32(wgtz.checked_add(4)?).ok()?).ok()??;
+    m.u32(wigl.checked_add(0x120)?).ok()
+}
+
+fn set_block_slot(b: &mut [u8], slot: u16) {
+    b[BLOCK_ANIMATION..BLOCK_ANIMATION + 2].copy_from_slice(&slot.to_le_bytes());
+}
 
 /// Writes at `at` the dialog's tag (see the module docs) from the retail
 /// Controls tag at `retail`: its root with `pieces.layout` for the header
@@ -231,6 +329,7 @@ pub fn write_tag(
     if lists == 0 {
         return Ok(None);
     }
+    let motion = pane_tracks(m, pane_from, list_from)?;
     let copy = |m: &mut dyn GuestMemory, from: u32, to: u32, len: u32| -> Result<(), MemFault> {
         let mut b = vec![0u8; len as usize];
         m.read(from, &mut b)?;
@@ -249,9 +348,11 @@ pub fn write_tag(
 
     m.write(pane, &[0u8; list_class::PANE_SIZE as usize])?;
     copy(m, pane_from, pane, 4)?;
+    m.set_u16(pane + PANE_ANIMATION, motion.pane)?;
     debug_assert!(PANE_BLOCKS.iter().all(|o| o + 8 <= list_class::PANE_SIZE));
 
     copy(m, list_from, list_at, LIST_BLOCK_SIZE)?;
+    m.set_u16(list_at + LIST_ANIMATION, motion.rows)?;
     m.set_u16(list_at + LIST_SKIN, list.skin as u16)?;
     if list.visible > 0 {
         m.set_u16(list_at + LIST_VISIBLE, list.visible as u16)?;
@@ -262,13 +363,17 @@ pub fn write_tag(
     m.set_u32(pane + PANE_LISTS + 4, list_at)?;
 
     for (i, b) in art.iter().enumerate() {
-        m.write(bitmaps + i as u32 * BITMAP_BLOCK_SIZE, b)?;
+        let mut b = *b;
+        set_block_slot(&mut b, motion.pane);
+        m.write(bitmaps + i as u32 * BITMAP_BLOCK_SIZE, &b)?;
     }
     m.set_u32(pane + PANE_BITMAPS, art.len() as u32)?;
     m.set_u32(pane + PANE_BITMAPS + 4, bitmaps)?;
 
     for (i, (t, &s)) in pieces.texts.iter().zip(strings).enumerate() {
-        m.write(texts + i as u32 * TEXT_BLOCK_SIZE, &text_block(t, s))?;
+        let mut b = text_block(t, s);
+        set_block_slot(&mut b, motion.pane);
+        m.write(texts + i as u32 * TEXT_BLOCK_SIZE, &b)?;
     }
     m.set_u32(pane + PANE_TEXTS, pieces.texts.len() as u32)?;
     m.set_u32(pane + PANE_TEXTS + 4, texts)?;
@@ -296,8 +401,9 @@ pub const fn base_tag_size(bitmaps: u32, texts: u32) -> u32 {
 /// its first list showing `list.visible` rows on `list.skin` at
 /// `list.anchor`, and `texts` for text blocks in place of the base's (its
 /// own are the retail dialog's message). Every other block is empty.
-/// Returns the copy's address and size; `None` when the base has no pane
-/// or no list.
+/// The pane and its contents share one track. A valid style override
+/// replaces the pane and list tracks before the pane is constructed.
+/// Returns the copy's address and size, or `None` without a pane or list.
 pub fn write_base_tag(
     m: &mut dyn GuestMemory,
     base: u32,
@@ -305,6 +411,7 @@ pub fn write_base_tag(
     list: &ListLayout,
     skip: &[u16],
     texts: &[[u8; TEXT_BLOCK_SIZE as usize]],
+    style: TransitionStyle,
 ) -> Result<Option<(u32, u32)>, MemFault> {
     let (panes, pane_from) = (
         m.u32(base + list_class::SCREEN_PANES)?,
@@ -320,6 +427,10 @@ pub fn write_base_tag(
     if lists == 0 {
         return Ok(None);
     }
+    let motion = match PaneTracks::for_style(m, style) {
+        Some(tracks) => tracks,
+        None => pane_tracks(m, pane_from, list_from)?,
+    };
     let (all, bitmaps_from) = (
         m.u32(pane_from + PANE_BITMAPS)?,
         m.u32(pane_from + PANE_BITMAPS + 4)?,
@@ -344,8 +455,10 @@ pub fn write_base_tag(
     m.set_u32(at + list_class::SCREEN_PANES + 4, pane)?;
     m.write(pane, &[0u8; list_class::PANE_SIZE as usize])?;
     copy(m, pane_from, pane, 4)?;
+    m.set_u16(pane + PANE_ANIMATION, motion.pane)?;
 
     copy(m, list_from, list_at, LIST_BLOCK_SIZE)?;
+    m.set_u16(list_at + LIST_ANIMATION, motion.rows)?;
     m.set_u16(list_at + LIST_SKIN, list.skin as u16)?;
     if list.visible > 0 {
         m.set_u16(list_at + LIST_VISIBLE, list.visible as u16)?;
@@ -356,18 +469,18 @@ pub fn write_base_tag(
     m.set_u32(pane + PANE_LISTS + 4, list_at)?;
 
     for (to, &from) in kept.iter().enumerate() {
-        copy(
-            m,
-            bitmaps_from + from * BITMAP_BLOCK_SIZE,
-            bitmaps + to as u32 * BITMAP_BLOCK_SIZE,
-            BITMAP_BLOCK_SIZE,
-        )?;
+        let mut b = [0; BITMAP_BLOCK_SIZE as usize];
+        m.read(bitmaps_from + from * BITMAP_BLOCK_SIZE, &mut b)?;
+        set_block_slot(&mut b, motion.pane);
+        m.write(bitmaps + to as u32 * BITMAP_BLOCK_SIZE, &b)?;
     }
     m.set_u32(pane + PANE_BITMAPS, n)?;
     m.set_u32(pane + PANE_BITMAPS + 4, bitmaps)?;
 
     for (i, t) in texts.iter().enumerate() {
-        m.write(text_at + i as u32 * TEXT_BLOCK_SIZE, t)?;
+        let mut b = *t;
+        set_block_slot(&mut b, motion.pane);
+        m.write(text_at + i as u32 * TEXT_BLOCK_SIZE, &b)?;
     }
     m.set_u32(pane + PANE_TEXTS, texts.len() as u32)?;
     m.set_u32(pane + PANE_TEXTS + 4, text_at)?;
@@ -474,7 +587,7 @@ fn strings_of(m: &dyn GuestMemory, tag: u32) -> Result<Option<[u8; 8]>, MemFault
     Ok((reference[4..] != u32::MAX.to_le_bytes()).then_some(reference))
 }
 
-async fn screen_tag(cx: &Cx, id: u32) -> Result<Option<u32>, EntryError> {
+pub(crate) async fn screen_tag(cx: &Cx, id: u32) -> Result<Option<u32>, EntryError> {
     let handle = cx
         .call(GuestCall::new(points::SCREEN_TAG_BY_ID.base).args([id]))
         .await?
@@ -491,6 +604,7 @@ pub async fn prepare(
     d: &Registered,
     host_screen: u32,
     name: &str,
+    style: TransitionStyle,
 ) -> Result<(), EntryError> {
     let Some(base) = screen_tag(cx, d.base.screen_id() as u32).await? else {
         eprintln!("{name}: no dialog screen {} in this interface; not drawn as a dialog", d.base.screen_id());
@@ -512,7 +626,15 @@ pub async fn prepare(
         if m.u32(d.page + TAG_SOURCE)? == base && strings_of(m, d.page)? == Some(strings) {
             return Ok(());
         }
-        match write_base_tag(m, base, d.page, &d.list, d.base.content_bitmaps(), &[])? {
+        match write_base_tag(
+            m,
+            base,
+            d.page,
+            &d.list,
+            d.base.content_bitmaps(),
+            &[],
+            style,
+        )? {
             Some((at, size)) => {
                 m.write(at + SCREEN_STRINGS, &strings)?;
                 m.set_u32(d.page + TAG_SOURCE, base)?;
@@ -688,6 +810,24 @@ mod tests {
     }
 
     #[test]
+    fn native_overrides_are_bounded_by_the_current_interface() {
+        let inherited = PaneTracks::inherited(7, 11);
+        assert_eq!((inherited.pane, inherited.rows), (7, 11));
+        assert_eq!(PaneTracks::inherited(0, 11).pane, 11);
+        assert_eq!(PaneTracks::inherited(7, 0).rows, 7);
+        assert!(PaneTracks::override_style(TransitionStyle::Default, Some(64)).is_none());
+
+        let style = TransitionStyle::Retail { pane: 2, rows: 15 };
+        assert!(PaneTracks::override_style(style, None).is_none());
+        assert!(PaneTracks::override_style(style, Some(14)).is_none());
+        let chosen = PaneTracks::override_style(style, Some(15)).unwrap();
+        assert_eq!((chosen.pane, chosen.rows), (2, 15));
+
+        let off = PaneTracks::override_style(TransitionStyle::Off, None).unwrap();
+        assert_eq!((off.pane, off.rows), (0, 0));
+    }
+
+    #[test]
     fn text_blocks_carry_justification_and_string() {
         let p = pieces(&view());
         let b = text_block(&p.texts[1], 0xdead_0001);
@@ -775,6 +915,7 @@ mod tests {
         assert_eq!(u32_at(list), 0xaa);
         assert_eq!(u32_at(list + 0x10), 0xbb);
         assert_eq!(u16_at(list + 6), 1);
+        assert_eq!(u16_at(list + LIST_ANIMATION), 7);
         assert_eq!(
             [u16_at(list + 8) as i16, u16_at(list + 10) as i16],
             LIST.anchor
@@ -782,6 +923,7 @@ mod tests {
         assert_eq!(u32_at(pane + 0x24), 10);
         let bitmaps = u32_at(pane + 0x28);
         for i in 0..10u32 {
+            assert_eq!(u16_at(bitmaps + i * BITMAP_BLOCK_SIZE + 4), 7);
             assert_eq!(
                 m.u8(bitmaps + i * BITMAP_BLOCK_SIZE + 0x37).unwrap(),
                 i as u8 + 1
@@ -792,7 +934,9 @@ mod tests {
         for (i, t) in p.texts.iter().enumerate() {
             let mut b = [0u8; TEXT_BLOCK_SIZE as usize];
             m.read(texts + i as u32 * TEXT_BLOCK_SIZE, &mut b).unwrap();
-            assert_eq!(b, text_block(t, 0x5000 + i as u32), "{}", t.id);
+            let mut expected = text_block(t, 0x5000 + i as u32);
+            set_block_slot(&mut expected, 7);
+            assert_eq!(b, expected, "{}", t.id);
         }
         assert!(texts + 8 * TEXT_BLOCK_SIZE == AT + p.tag_size());
     }
@@ -866,9 +1010,18 @@ mod tests {
             bitmaps_left_of: i16::MIN,
             visible: 4,
         };
-        let text = [7u8; TEXT_BLOCK_SIZE as usize];
+        let mut text = [7u8; TEXT_BLOCK_SIZE as usize];
+        set_block_slot(&mut text, 7);
         assert_eq!(
-            write_base_tag(&mut g, RETAIL, AT, &list, &[1], &[text]),
+            write_base_tag(
+                &mut g,
+                RETAIL,
+                AT,
+                &list,
+                &[1],
+                &[text],
+                TransitionStyle::Default
+            ),
             Ok(Some((AT, base_tag_size(2, 1))))
         );
         let m: &dyn GuestMemory = &g;
@@ -899,10 +1052,45 @@ mod tests {
     }
 
     #[test]
+    fn a_rows_dialog_can_disable_animation_before_construction() {
+        let mut g = retail_with_bitmaps(2);
+        let text = [0x5au8; TEXT_BLOCK_SIZE as usize];
+        assert_eq!(
+            write_base_tag(
+                &mut g,
+                RETAIL,
+                AT,
+                &LIST,
+                &[],
+                &[text],
+                TransitionStyle::Off
+            ),
+            Ok(Some((AT, base_tag_size(2, 1))))
+        );
+        let pane = g.u32(AT + list_class::SCREEN_PANES + 4).unwrap();
+        let list = g.u32(pane + PANE_LISTS + 4).unwrap();
+        let art = g.u32(pane + PANE_BITMAPS + 4).unwrap();
+        let body = g.u32(pane + PANE_TEXTS + 4).unwrap();
+        assert_eq!(g.u16(pane + PANE_ANIMATION), Ok(0));
+        assert_eq!(g.u16(list + LIST_ANIMATION), Ok(0));
+        assert_eq!(g.u16(art + BLOCK_ANIMATION as u32), Ok(0));
+        assert_eq!(g.u16(body + BLOCK_ANIMATION as u32), Ok(0));
+        assert_eq!(g.u8(body), Ok(0x5a));
+    }
+
+    #[test]
     fn a_rows_dialog_takes_at_most_sixteen_bitmaps_and_needs_a_list() {
         let mut g = retail_with_bitmaps(20);
         assert_eq!(
-            write_base_tag(&mut g, RETAIL, AT, &LIST, &[], &[]),
+            write_base_tag(
+                &mut g,
+                RETAIL,
+                AT,
+                &LIST,
+                &[],
+                &[],
+                TransitionStyle::Default
+            ),
             Ok(Some((AT, base_tag_size(BASE_BITMAPS, 0))))
         );
         let pane = g.u32(AT + 0x24).unwrap();
@@ -912,16 +1100,41 @@ mod tests {
         let l = g.u32(pane + 0x10).unwrap();
         g.put_u16(RETAIL_LIST + 6, 6);
         let none = ListLayout { visible: 0, ..LIST };
-        write_base_tag(&mut g, RETAIL, AT, &none, &[], &[]).unwrap();
+        write_base_tag(
+            &mut g,
+            RETAIL,
+            AT,
+            &none,
+            &[],
+            &[],
+            TransitionStyle::Default,
+        )
+        .unwrap();
         assert_eq!(g.u16(l + 6), Ok(6));
         g.put_u32(RETAIL_PANE + 0x0c, 0);
         assert_eq!(
-            write_base_tag(&mut g, RETAIL, AT, &LIST, &[], &[]),
+            write_base_tag(
+                &mut g,
+                RETAIL,
+                AT,
+                &LIST,
+                &[],
+                &[],
+                TransitionStyle::Default
+            ),
             Ok(None)
         );
         g.put_u32(RETAIL + 0x20, 0);
         assert_eq!(
-            write_base_tag(&mut g, RETAIL, AT, &LIST, &[], &[]),
+            write_base_tag(
+                &mut g,
+                RETAIL,
+                AT,
+                &LIST,
+                &[],
+                &[],
+                TransitionStyle::Default
+            ),
             Ok(None)
         );
     }
@@ -959,7 +1172,14 @@ mod tests {
                 .put_u32(HOST + SCREEN_STRINGS + 4, host_strings);
             let f = move |cx| -> EntryFuture {
                 Box::pin(async move {
-                    prepare(&cx, &d, list_class::CONTROLS_SCREEN_ID, d.name).await?;
+                    prepare(
+                        &cx,
+                        &d,
+                        list_class::CONTROLS_SCREEN_ID,
+                        d.name,
+                        TransitionStyle::Default,
+                    )
+                    .await?;
                     Ok(Ret::new(0, 0))
                 })
             };

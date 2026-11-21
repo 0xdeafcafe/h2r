@@ -634,7 +634,8 @@ impl Session {
         if let Mode::Replay(_, replay) = &s.mode {
             let window_closed = replay.window_closed.as_ref().is_some_and(|closed| closed());
             s.check_end(slices)?;
-            if teardown && let Some(writer) = s.engine.as_mut().and_then(|e| e.sidecar.take())
+            if teardown && s.failure.is_none()
+                && let Some(writer) = s.engine.as_mut().and_then(|e| e.sidecar.take())
                 && let Mode::Replay(_, opts) = &s.mode
             {
                 if let Err(e) = writer.finish(&opts.path) {

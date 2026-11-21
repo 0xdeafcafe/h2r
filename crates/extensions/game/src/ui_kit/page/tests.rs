@@ -390,7 +390,7 @@ fn game_options_page() {
                 E::Focus(1),
                 E::Stepped("skulls page: right on row 1: skulls: Assassins off for Chief".into()),
             ],
-            "focus 1 Assassins = < Off >",
+            "focus 1 Assassins = Off",
         ),
         list_case(
             "focus-0",
@@ -400,7 +400,7 @@ fn game_options_page() {
                 E::Stepped("skulls: Assassins off for Chief".into()),
                 E::Stepped("skulls: Assassins on for Chief".into()),
             ],
-            "focus 1 Assassins = < On >",
+            "focus 1 Assassins = On",
         ),
         list_case(
             "focus-0",
@@ -432,9 +432,9 @@ fn halo1_game_options_rows() {
                 E::Focus(2),
                 E::Stepped("skulls page: left on row 2: h1 options: halo1.hud -> Halo 2".into()),
                 E::Stepped("skulls page: right on row 2: h1 options: halo1.hud -> Halo 1".into()),
-                E::Stepped("h1 options: halo1.hud -> Halo 2".into()),
+                E::Open(crate::ui_kit::picker::NAME),
             ],
-            "focus 2 HUD = < Halo 2 >",
+            "focus 2 HUD = Halo 1",
         )],
     );
 }
@@ -477,13 +477,13 @@ fn halo1_options_page() {
                 "focus-0",
                 &[A],
                 vec![E::Open(crate::ui_kit::picker::NAME)],
-                "focus 0 Sandbox = < Halo 1 >",
+                "focus 0 Sandbox = Halo 1",
             ),
             list_case(
                 "focus-0",
                 &[Down, Down],
                 vec![E::Focus(1), E::None],
-                "focus 1 HUD = < Halo 1 >",
+                "focus 1 HUD = Halo 1",
             ),
             list_case(
                 "focus-0",
@@ -492,7 +492,7 @@ fn halo1_options_page() {
                     "h1 options: right on row 0: h1 options: multiplayer.halo1_sandbox -> Halo 2"
                         .into(),
                 )],
-                "focus 0 Sandbox = < Halo 2 >",
+                "focus 0 Sandbox = Halo 2",
             ),
         ],
     );
@@ -569,7 +569,7 @@ fn kit_example_page() {
             "focus-0",
             &[X, Start, Y],
             vec![E::Action, E::Action, E::None],
-            "focus 0 Grunts = < On >",
+            "focus 0 Grunts = On",
         )],
     );
 }
@@ -595,7 +595,7 @@ fn kit_choices_page() {
                     step("right on row 0: kit.example_count -> 8"),
                     step("right on row 0: kit.example_count -> 0"),
                 ],
-                "focus 0 Count = < 0 >",
+                "focus 0 Count = 0",
             ),
             list_case(
                 "focus-1",
@@ -605,19 +605,19 @@ fn kit_choices_page() {
                     step("left on row 1: kit.example_level -> Legendary"),
                     E::Open(crate::ui_kit::picker::NAME),
                 ],
-                "focus 1 Difficulty = < Legendary >",
+                "focus 1 Difficulty = Legendary",
             ),
             list_case(
                 "focus-0",
                 &[Down, Down, Up, X, Start],
                 vec![E::Focus(1), E::None, E::Focus(0), E::Action, E::Action],
-                "focus 0 Count = < 4 >",
+                "focus 0 Count = 4",
             ),
             list_case(
                 "focus-1",
                 &[B],
                 vec![E::Close],
-                "focus 1 Difficulty = < Normal >",
+                "focus 1 Difficulty = Normal",
             ),
         ],
     );

@@ -28,6 +28,7 @@ use runtime::guest::Permissions;
 
 use crate::list_class::{Action, ListClass, ListLayout, LiveText, OnFree, Rows, TextBlock};
 use crate::ui::{Chosen, LABEL_SLOT, VALUE_SLOT};
+use crate::ui_kit::animation::TransitionStyle;
 use crate::ui_kit::dialog::{DialogBase, DialogSpec};
 use crate::ui_kit::ids::{self, Family};
 use crate::ui_kit::input::{Glyph, Input, OpenerGuard, Prompt};
@@ -72,7 +73,7 @@ enum Kind {
         get: Get<usize>,
         set: Arc<dyn Fn(usize) -> String + Send + Sync>,
     },
-    Info(Get<String>),
+    Info(Get<(String, bool)>),
     Text {
         get: Get<String>,
         max_chars: u16,
@@ -98,10 +99,8 @@ impl Row {
     pub fn action(label: &str, press: impl Fn() -> Then + Send + Sync + 'static) -> Self {
         Self::of(label, Kind::Action(Arc::new(press)))
     }
-    /// Left and right step through `values` (wrapping); A opens the value
-    /// picker on them (`crate::ui_kit::picker`, as retail's settings do),
-    /// or steps right when the picker can't list them. `get` is the
-    /// current index, `set` stores one and says what to log.
+    /// A opens the value picker on `values`. Left and right can step through
+    /// them. `get` is the current index and `set` stores one.
     pub fn value(
         label: &str,
         values: &[&str],
@@ -119,6 +118,15 @@ impl Row {
     }
     /// Read-only: `value` beside the label.
     pub fn info(label: &str, value: impl Fn() -> String + Send + Sync + 'static) -> Self {
+        Self::info_from_source(label, move || (value(), true))
+    }
+    /// A read-only value and whether its source supplied one in this state.
+    /// Its fallback remains visible while the content check records that
+    /// the source has no value for this row.
+    pub fn info_from_source(
+        label: &str,
+        value: impl Fn() -> (String, bool) + Send + Sync + 'static,
+    ) -> Self {
         Self::of(label, Kind::Info(Arc::new(value)))
     }
     /// A opens the game's keyboard; `typed` gets the text (`None`: backed
@@ -169,19 +177,29 @@ impl Row {
         }
     }
     fn spec(&self) -> RowSpec {
-        let r = match &self.kind {
-            Kind::Action(_) => RowSpec::action(&self.label),
+        self.spec_with_source().0
+    }
+
+    fn spec_with_source(&self) -> (RowSpec, bool) {
+        let (row, loaded) = match &self.kind {
+            Kind::Action(_) => (RowSpec::action(&self.label), true),
             Kind::Value { values, get, .. } => {
-                let v: Vec<&str> = values.iter().map(String::as_str).collect();
-                RowSpec::value(&self.label, &v, get())
+                let choices: Vec<&str> = values.iter().map(String::as_str).collect();
+                (RowSpec::value(&self.label, &choices, get()), true)
             }
-            Kind::Info(v) => RowSpec::info(&self.label, &v()),
-            Kind::Text { get, max_chars, .. } => RowSpec::text(&self.label, &get(), *max_chars),
+            Kind::Info(value) => {
+                let (text, loaded) = value();
+                (RowSpec::info(&self.label, &text), loaded)
+            }
+            Kind::Text { get, max_chars, .. } => {
+                (RowSpec::text(&self.label, &get(), *max_chars), true)
+            }
         };
-        match &self.description {
-            Some(d) => r.describe(d),
-            None => r,
-        }
+        let row = match &self.description {
+            Some(description) => row.describe(description),
+            None => row,
+        };
+        (row, loaded)
     }
 }
 
@@ -278,6 +296,7 @@ pub struct KitScreen {
     row_help: Option<String>,
     rows: Vec<Row>,
     layout: Option<ListLayout>,
+    animation: TransitionStyle,
     style: ValueStyle,
     description: Option<TextBlock>,
     live_help: Option<LiveHelp>,
@@ -309,6 +328,7 @@ impl KitScreen {
             row_help: None,
             rows: Vec::new(),
             layout: None,
+            animation: TransitionStyle::default(),
             style: ValueStyle::Column,
             description: None,
             live_help: None,
@@ -334,6 +354,12 @@ impl KitScreen {
         self.style = style;
         self
     }
+    /// Use a page transition other than the template's native default.
+    pub fn animation(mut self, style: TransitionStyle) -> Self {
+        self.animation = style;
+        self
+    }
+
     /// A dialog of rows (docs/game/ui-builder.md "The Dialog kind"): the
     /// rows in `base`'s list, on its panel and header, opened over the
     /// screen beneath on the dialogs' window and closed by B, as the
@@ -600,6 +626,7 @@ impl KitScreen {
         );
         let mut c =
             ListClass::with_rows(self.feature, self.name, Arc::clone(self) as Arc<dyn Rows>)
+                .animation(self.animation)
                 .action(self.action())
                 .sideways()
                 .on_free(self.on_free());
@@ -631,6 +658,9 @@ impl Rows for KitScreen {
     }
     fn count(&self) -> usize {
         self.rows.len()
+    }
+    fn content_spec(&self) -> Option<ScreenSpec> {
+        Some(self.spec())
     }
     fn texts(&self, row: i16) -> Vec<(u32, u32)> {
         let Some(r) = usize::try_from(row).ok().and_then(|i| self.rows.get(i)) else {
@@ -672,10 +702,7 @@ impl Rows for KitScreen {
                     Arc::clone(set),
                 )
                 .over(self.dialog.map_or(Opener::MAIN_MENU, |(_, o)| o));
-                match crate::ui_kit::picker::offer(pick) {
-                    Some(picker) => Chosen::Open(picker),
-                    None => Chosen::Stepped(set((get() + 1) % values.len().max(1))),
-                }
+                crate::ui_kit::picker::offer_list(pick).map_or(Chosen::Nothing, Chosen::Open)
             }
             Kind::Info(_) => Chosen::Nothing,
             Kind::Text { .. } => pend(Pending::Keyboard(row as usize)),
@@ -744,18 +771,24 @@ impl Rows for KitScreen {
 impl Describe for KitScreen {
     fn spec(&self) -> ScreenSpec {
         let mut s = ScreenSpec::new(self.name, &self.title);
+        s.animation = self.animation;
         s.list = ListPlace::from(self.layout);
         s.style = self.style;
-        s.rows = self
-            .rows
-            .iter()
-            .enumerate()
-            .map(|(i, r)| match self.row_icon(i) {
-                Some(icon) => r.spec().art(crate::ui_kit::dialog::quick_icon(icon)),
-                None => r.spec(),
-            })
-            .collect();
+        for (i, row) in self.rows.iter().enumerate() {
+            let (mut row, loaded) = row.spec_with_source();
+            if !loaded {
+                s.content.unavailable_values.push(format!("row.{i}.value"));
+            }
+            if let Some(icon) = self.row_icon(i) {
+                row = row.art(crate::ui_kit::dialog::quick_icon(icon));
+            }
+            s.rows.push(row);
+        }
         s.description = self.description_block().map(spec::DescriptionBlock::from);
+        s.content.row_help = self.description.is_some() && self.live_help.is_none();
+        if self.header_picture().is_some() {
+            s.content.required_icons.push("art.0".into());
+        }
         s.help = self.live_help.as_ref().map(|help| (help.get)());
         s.prompts = self.prompts.clone();
         s.inputs = vec![
@@ -837,6 +870,12 @@ pub fn example() -> (KitScreen, Arc<AtomicUsize>) {
     let grunts = Arc::new(AtomicUsize::new(0));
     let (g, s) = (Arc::clone(&grunts), Arc::clone(&grunts));
     let screen = KitScreen::new("kit-example", "kit.example", IDS, "Example")
+        .description(TextBlock {
+            rect: [-24, -242, -64, 120],
+            font: 1,
+            colour: [0.678431, 0.764706, 0.847059],
+            animation: 0,
+        })
         .row(
             Row::value(
                 "Grunts",
@@ -849,19 +888,13 @@ pub fn example() -> (KitScreen, Arc<AtomicUsize>) {
             )
             .describe("Grunts' heads pop."),
         )
-        .row(Row::info("Status", || "Ready".into()))
-        .row(Row::text(
-            "Name",
-            15,
-            || "Chief".into(),
-            |t| format!("typed {t:?}"),
-        ))
+        .row(Row::info("Status", || "Ready".into()).describe("The match is ready."))
+        .row(
+            Row::text("Name", 15, || "Chief".into(), |t| format!("typed {t:?}"))
+                .describe("Choose a display name."),
+        )
         .row(Row::action("Start", || Then::Close).describe("Start the level."))
-        .prompts(&[
-            Prompt::new(&[Glyph::DpadLeft, Glyph::DpadRight], "Change"),
-            Prompt::new(&[Glyph::A], "Start"),
-            Prompt::new(&[Glyph::B], "Back"),
-        ]);
+        .prompts(&[Prompt::new(&[Glyph::B], "Back")]);
     (screen, grunts)
 }
 
@@ -869,6 +902,13 @@ pub fn example() -> (KitScreen, Arc<AtomicUsize>) {
 mod tests {
     use super::*;
     use crate::ui_kit::lifecycle;
+
+    #[test]
+    fn the_page_animation_override_is_in_its_authored_model() {
+        let (page, _) = example();
+        let page = page.animation(TransitionStyle::Off);
+        assert_eq!(Describe::spec(&page).animation, TransitionStyle::Off);
+    }
 
     /// Each screen's texts are a feature of their own, so a second kit
     /// screen in the game no longer fails the plan with DuplicateFeature.
@@ -952,15 +992,12 @@ mod tests {
             let b = &slots[(id - IDS.base) as usize].0;
             String::from_utf8_lossy(&b[..b.len() - 1]).into_owned()
         };
-        assert_eq!(t(IDS.id(2)), "< On >");
+        assert_eq!(t(IDS.id(2)), "On");
         s.texts(1);
         assert_eq!(t(IDS.id(4)), "Ready");
         let d = Rows::description(&s, 0).unwrap();
         assert_eq!(t(d), "Grunts' heads pop.", "the legend is the footer's");
-        assert_eq!(
-            s.spec().footer_text().unwrap(),
-            "\u{e10a}  \u{e10b} CHANGE  \u{e100} START  \u{e101} BACK"
-        );
+        assert_eq!(s.spec().footer_text().unwrap(), "\u{e101} BACK");
         assert!(s.slots() <= IDS.len);
     }
 
@@ -1013,7 +1050,7 @@ mod tests {
         assert!(
             s.describe(4)
                 .unwrap()
-                .starts_with("kit.example: \"Example\"; rows: [0] \"Grunts\" = \"< On >\"")
+                .starts_with("kit.example: \"Example\"; rows: [0] \"Grunts\" = \"On\"")
         );
         assert!(s.guard.last().is_some(), "opening starts the guard");
     }

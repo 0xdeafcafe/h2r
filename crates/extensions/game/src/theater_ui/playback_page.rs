@@ -114,7 +114,7 @@ pub(super) fn bar(track: &Track, ready: bool, notice: Option<&str>) -> ScreenSpe
         "Playing"
     };
     let time = format!(
-        "{status}    {} / {}",
+        "{status} | {} / {}",
         clock(track.tick, track.tick_rate),
         clock(track.length, track.tick_rate)
     );
@@ -181,7 +181,7 @@ pub(super) fn bar(track: &Track, ready: bool, notice: Option<&str>) -> ScreenSpe
         .or_else(|| {
             track.jump.filter(|_| track.seeking).map(|j| {
                 format!(
-                    "Target {}   /   {} ticks left",
+                    "Target {} / {} ticks left",
                     clock(j.target, track.tick_rate),
                     j.remaining_ticks
                 )

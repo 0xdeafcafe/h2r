@@ -189,11 +189,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
         boot::theater::configure_replay_child(&mut reader, &mut cmd)?;
         let status = cmd.status().context("starting film playback")?;
         ensure!(status.success(), "film playback exited with {status}");
-        let retry = temp.0.join("retry-build.json");
-        if retry.try_exists()? {
-            ensure!(retries < 2, "could not prepare a consistent disk for this seek");
-            launch.presentation.snapshot_build = Some(serde_json::from_reader(fs::File::open(retry)?)?);
-            retries += 1;
+        if retry_seek(&temp.0, &mut launch, &mut retries)? {
             continue;
         }
         retries = 0;
@@ -202,6 +198,17 @@ pub fn run(args: Vec<String>) -> Result<()> {
         }
         launch = serde_json::from_reader(fs::File::open(restart)?)?;
     }
+}
+
+fn retry_seek(work: &Path, launch: &mut boot::theater::Restart, retries: &mut u8) -> Result<bool> {
+    let retry = work.join("retry-build.json");
+    if !retry.try_exists()? {
+        return Ok(false);
+    }
+    ensure!(*retries < 2, "could not prepare a consistent disk for this seek");
+    launch.presentation.snapshot_build = Some(serde_json::from_reader(fs::File::open(retry)?)?);
+    *retries += 1;
+    Ok(true)
 }
 
 fn child(opts: Options, work: &Path) -> Result<()> {
@@ -342,16 +349,12 @@ fn child_with_start(
         window_closed: None,
     };
     let retry = work.join("retry-build.json");
-    #[cfg(feature = "desktop")]
-    let may_retry = capture.is_none();
-    #[cfg(not(feature = "desktop"))]
-    let may_retry = true;
     let run = move |host, window_closed| -> Result<()> {
         let mut replay = replay;
         replay.window_closed = window_closed;
         let r = boot::run_theater(&xbe, &image, &boot, host, replay, child_started);
         vfs::flush_pending_metadata();
-        if may_retry && let Err(e) = &r
+        if let Err(e) = &r
             && let Some(build) = e.downcast_ref::<boot::theater::RetrySeek>()
         {
             serde_json::to_writer(fs::File::create_new(retry)?, &build.0)?;

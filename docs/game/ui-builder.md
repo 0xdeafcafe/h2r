@@ -129,7 +129,7 @@ Commands (output only to a directory you name, never the repository):
 
 ```sh
 h2 ui preview list                                       # screens and their states
-h2 ui preview <screen> [--state NAME|all] [--focus N] [--synthetic] [--out DIR]
+h2 ui preview <screen> [--state NAME|all] [--focus N] [--animation PHASE] [--synthetic] [--out DIR]
 h2 ui sheet [--synthetic] [--out DIR]                    # every screen x state, and sheet.png
 ```
 
@@ -153,6 +153,34 @@ h2 ui sheet [--synthetic] [--out DIR]                    # every screen x state,
 
 Screens come in as `ScreenSpec`s, from their `Page` ("Behaviour"). A spec
 with `ScreenSpec::dialog` set is drawn as a modal ("The modal dialog").
+
+## Transitions
+
+The kit uses the retail pane, list and skin animation tracks. The pane's
+track moves and fades its panel art, title, description, footer and other
+text together. Rows and the selection bar use the list and skin tracks.
+Dialogs and pickers animate over the existing page, including their body,
+status and icons. `ListClass::animation` and `KitScreen::animation` set a
+page's preference. `TransitionStyle::Default` inherits the source tracks,
+`Off` disables the pane and list transitions, and `Retail { pane, rows }`
+selects one-based slots from the active map's interface tag. A zero slot
+disables that track. An unavailable override falls back to the source pane
+and list.
+
+`AnimatedView` captures the resting widget bounds and opacity once.
+`seek(Phase)` reuses those buffers and computes the same pose for the same
+tick. The builder samples a page slide and fade, staggered rows and
+selection, and a modal fade. These samples use representative timing.
+The game plays the native curves from the active map. Both paths move the
+text with the other widgets on its track.
+
+Use `--animation in:6`, `--animation rest`, `--animation out:4` or
+`--animation all` to append the sampled phase to each PNG and JSON name.
+For example, `h2 ui preview theater.playback --animation all --synthetic`
+writes both ends and middle samples of playback's transitions. The UI
+Screens tab in the editor offers the same fixed samples in its
+**Transition** selector. Layout and content checks use the resting pose,
+so a deliberate slide never produces a false overflow.
 
 ## The checks
 
@@ -196,13 +224,34 @@ metrics to catch text that exceeds its text box. The tests:
 - every screen in every state passes against the disc with nothing
   skipped (the disc test).
 
-No finding is left on purpose.
+### Content findings
+
+`ui_kit::content::check` checks the authored spec and visible widgets.
+CLI previews and the editor display these findings alongside the layout
+findings. `ui.screen` reports them separately in `content_findings`.
+
+| Finding | What it checks |
+|---|---|
+| broken strings | Required empty text, unresolved keys and format tokens, raw hexadecimal IDs, editing markers, invalid encoding, repeated or trailing spaces, angle selectors and inconsistent row-label casing |
+| font and fit | Characters missing from the selected font when its metrics are available, and visible text wider or taller than its box |
+| dead controls | Action rows without a confirm action, prompts without a supported input, and offline focus routes or input probes that cannot reach or operate a control |
+| missing content | Empty lists without a message, pickers without choices, absent descriptions for rows that share a help slot, missing icon or emblem widgets or unresolved required preview images, and sentinel values without an explicitly unavailable source |
+
+Use `ScreenSpec::content` to declare empty-state and required icon
+widgets, shared description slots, or a value awaiting its source.
+The content tests visit every registered page and named state, traverse
+focus in both directions, and probe advertised buttons on fresh offline
+models. Worker-backed or external actions use the authored action
+contract. The live watcher examines the current widget tree and registered
+Rust list models without sending input. It can inspect resolved text from
+stock screens that have no authored model and uses installed font
+metrics for authored text when available.
 
 What the checks hold the screens to:
 
 - **Unfocused rows stay readable.** Unfocused rows draw at about 40% alpha (`view::UNFOCUSED_ALPHA`, observed from a game screenshot, not traced); contrast on the real bars is 2.9 to 3.1.
 - **The skulls page keeps none of the Controls art.** It copies the level select's own bracket (`ul_02`) at run time (`ListClass::frame`); the frame provenance check names a bracket borrowed from the wrong list. Its view draws the skull picture (`ScreenSpec::art`), untinted.
-- **Legends sit in the footer**, not in the description block: the account menu's, and the co-op screens' (`A SELECT`, `START START GAME` or `READY`, `B BACK`, set in game from the co-op text table by `coop_live::prompts`).
+- **Legends sit in the footer.** The account and co-op screens use a footer separate from their description. Co-op offers Start and Back when applicable and leaves confirm off informational rows. The campaign options footer follows the focused Start, picker, toggle or locked row.
 
 **The full-height Game Options list.** The Game Options page lays out
 13 rows
@@ -215,9 +264,8 @@ same anchor under the same bracket (its list block's visible count), so
 rows running past it are retail's own composition. A "list longer than
 its frame" check would flag the game's screen, so there is none.
 `ListPlace::Moved` carries the layout's visible count, and both
-geometries (synthetic and disc) draw that many rows. The bracket plays its own animation from the level select (2, read off the disc,
-`skulls_menu::FRAME_ANIMATION`), so it slides out with the page and isn't
-left drawn over the screen coming back on B. The sheet's files are named
+geometries (synthetic and disc) draw that many rows. The bracket joins
+the pane's track, so it exits with the title and descriptions. The sheet's files are named
 by the preview's screen name, not the spec's: `skulls.h1` and `skulls`
 are both `skulls` specs, and the Halo 1 page's tiles overwrote the
 campaign page's.
@@ -611,8 +659,8 @@ its description:
 A on a value sets it through the row's own setter (the settings store:
 saved, its change callbacks run) and closes; B closes and changes
 nothing; X, Start, left and right do nothing there. Left and right on
-the row itself still step. A row with one value, or more than
-`picker::MAX_CHOICES` (61, its string-id family), keeps stepping on A.
+the row itself still step. A kit value row can open a picker with one
+option. Pickers with many options reuse text slots as the list scrolls.
 The legend is `(A) SELECT (B) CANCEL`; the pages' own legends include
 `(A) SELECT`.
 
@@ -628,10 +676,10 @@ owned disc's fonts and row art, then blends it over the published film
 picture. The pause menu's pickers keep their parent focused behind them.
 `ui.screen` and `ui.input` use that same playback model.
 
-Not on the picker: the Video and Voice screens (`ui::Model` rows,
-`Model::press`), the skulls (toggles, not settings) and the variant
-editor's More Options page (`variant_page`, its own rows). They step
-on A.
+The Video and Voice screens use `ui::Model::press`. The skulls are
+direct toggles. More Options (`variant_page`) and the Halo 1 Assets and
+HUD rows open the kit picker on A. Back dismisses a picker without
+changing the held value.
 
 `h2 ui preview kit.picker` and `kit.picker.game` draw it (the kit's
 Count, nine values, 4 held, over Game Setup).
@@ -923,7 +971,7 @@ A game run has to show:
 - draw order: our dialog on top of the screen beneath, and the footer widget keeping our legend (`0x2300cf` may refill it from the tag);
 - alpha 0 hiding a widget, and tint changes taking effect while the screen is up;
 - the backing's blend: whether `framing_center` and `dialog1`/`dialog2` draw as opaque as the preview shows;
-- transitions and animations (the preview draws everything at rest);
+- the native animation timing and the panel, rows and selection in both directions on the game shell and paused game;
 - input timing: key repeat, the opener-press guard, and the keyboard's return;
 - that the Controls constructor accepts a tag recipe whose list holds one item and whose pane has more text blocks than the Controls tag;
 - the "Not verified" items of the modal, picker, header and Game Setup sections above, through their game runs.
