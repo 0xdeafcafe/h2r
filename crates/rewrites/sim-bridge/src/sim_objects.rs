@@ -16,8 +16,8 @@
 //! it go through its chain, so those hooks run around the body as around
 //! the original.
 //!
-//! The tick's `Damage` and `Kill` events (`sim_state::events`) are
-//! recorded by observers at the damage report and the kill credit, and
+//! The tick's combat events (`sim_state::events`) are recorded by
+//! observers at the damage report and the player kill credit, and
 //! the buffer is emptied at the tick's entry (docs/engine/object-update.md,
 //! "Slice 8 body").
 //!

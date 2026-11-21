@@ -89,6 +89,13 @@ pub(crate) enum Work {
     Start(Box<Start>),
     Tick(Box<Snapshot>),
     Kill(Box<Kill>),
+    ActorKilled {
+        tick: u64,
+        unit: u32,
+        character: Option<u32>,
+        owner: Option<u32>,
+        weapon: u8,
+    },
     End(Box<Snapshot>),
     FinishSim(serde_json::Value),
 }
@@ -479,6 +486,9 @@ pub(crate) fn apply(session: &mut Session, work: Work) -> Option<Box<Snapshot>> 
                 cinematic,
             } = *kill;
             session.kill(tick, attacker, victim, source, object, cinematic);
+        }
+        Work::ActorKilled { tick, unit, character, owner, weapon } => {
+            session.actor_killed(tick, unit, character, owner, weapon);
         }
         Work::Forward(_) | Work::FinishSim(_) => unreachable!("handled by the worker"),
         Work::End(snapshot) => {

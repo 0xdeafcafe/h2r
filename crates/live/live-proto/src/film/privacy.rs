@@ -159,6 +159,7 @@ fn view<'a>(r: stream::Record<'a>, packer: Option<&mut crate::pack::Decoder>) ->
                         | Medal { .. }
                         | WeaponFire { .. }
                         | Damage(_)
+                        | ActorKilled(_)
                         | Impact(_)
                         | ProjectileEnded(_)
                         | Pickup { .. }

@@ -10,9 +10,15 @@
 //! adds (the tick, the victim's position, a player's unit) falls back to
 //! none, so a missing side record never drops the event.
 
-use crate::events::{Damage, Kill};
+use crate::events::{Damage, Kill, SimEvent};
 use crate::view::Objects;
-use guest_layout::{DamageReport, Datum, DatumArray, Fault, GameTime, Mem, Object, ObjectType, Player, Unit};
+use guest_layout::actor::Actor;
+use guest_layout::damage::DEPLETING;
+use guest_layout::view::Datums;
+use guest_layout::{
+    DamageReport, Datum, DatumArray, DatumHandle, Fault, GameTime, GuestMemory, Mem, Object,
+    ObjectType, Player, Unit, global,
+};
 
 /// The game tick, `None` without game time.
 pub fn tick<M: Mem + ?Sized>(m: &M) -> Option<u32> {
@@ -49,6 +55,36 @@ pub fn damage<M: Mem + ?Sized>(m: &M, report: u32, victim: Datum) -> Result<Dama
         }
     }
     Ok(event)
+}
+
+/// The actor kill this damage report describes. Only the report that
+/// depletes the body can credit a kill. Both sides of the actor-to-unit
+/// link must still resolve at entry.
+pub fn actor_killed(m: &dyn GuestMemory, report: u32, victim: Datum) -> Option<SimEvent> {
+    let report = DamageReport::at(report);
+    if report.flags(m).ok()? & DEPLETING == 0 {
+        return None;
+    }
+    let (kind, body) = object(m, victim)?;
+    if !is_unit(kind) || body.addr == 0 {
+        return None;
+    }
+    let unit = Unit::at(body.addr);
+    if !unit.player(m).ok()?.is_none() {
+        return None;
+    }
+    let actor = DatumHandle::from_raw(unit.actor(m).ok()?.raw())?;
+    let actors = Datums::<Actor>::from_global(m, global::ACTORS.base).ok()??;
+    let actor = actors.get(m, actor).ok()??;
+    if actor.unit(m).ok()? != victim.raw() {
+        return None;
+    }
+    Some(SimEvent::ActorKilled {
+        unit: victim,
+        character: Datum(actor.character(m).ok()?),
+        killer: report.owner_player(m).ok()?,
+        weapon: report.code(m).ok()?,
+    })
 }
 
 /// The [`Kill`] `15ce70` is about to credit: `attacker` and `victim` are

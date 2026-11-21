@@ -12,6 +12,7 @@ pub const GAME_STARTED: &str = "GameStarted";
 pub const PLAYER_JOINED: &str = "PlayerJoined";
 pub const PLAYER_LEFT: &str = "PlayerLeft";
 pub const PLAYER_KILLED: &str = "PlayerKilled";
+pub const ACTOR_KILLED: &str = "ActorKilled";
 pub const SCORE_CHANGED: &str = "ScoreChanged";
 pub const GAME_FRAME: &str = "GameFrame";
 pub const GAME_ENDED: &str = "GameEnded";
@@ -20,10 +21,11 @@ pub const MAP_OUTLINE_STORED: &str = "MapOutlineStored";
 
 /// The game event types a player's console may append in a batch; the
 /// server writes `GameStarted` (from `POST /v1/games`) and `GameFrame`.
-pub const CLIENT_GAME_EVENTS: [&str; 5] = [
+pub const CLIENT_GAME_EVENTS: [&str; 6] = [
     PLAYER_JOINED,
     PLAYER_LEFT,
     PLAYER_KILLED,
+    ACTOR_KILLED,
     SCORE_CHANGED,
     GAME_ENDED,
 ];
@@ -332,6 +334,24 @@ pub struct PlayerKilled {
     /// The victim's position.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pos: Option<[f64; 3]>,
+}
+
+/// A unit lost to a body-depleting damage report while controlled by AI.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ActorKilled {
+    pub tick: u64,
+    /// Salted unit object datum.
+    pub unit: u32,
+    /// Salted character tag datum, when assigned.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub character: Option<u32>,
+    /// The credited player's roster slot, when present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub killer: Option<u32>,
+    /// Stable damage-source key from the killing blow.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub weapon: Option<String>,
 }
 
 pub const KILL_KINDS: [&str; 4] = ["kill", "suicide", "betrayal", "world"];
@@ -1087,6 +1107,18 @@ pub fn validate(kind: &str, data: &Value, players: &[Player]) -> Result<(), Stri
             }
             if d.pos.is_some_and(|p| p.iter().any(|c| !c.is_finite())) {
                 return Err("pos must be finite".into());
+            }
+        }
+        ACTOR_KILLED => {
+            let d: ActorKilled = parse(data)?;
+            if d.unit == u32::MAX || d.unit >> 16 == 0 {
+                return Err("unit must be a salted object datum".into());
+            }
+            if d.killer.is_some_and(|k| !known(k)) {
+                return Err("killer must be a player of the game".into());
+            }
+            if d.weapon.as_deref().is_some_and(|w| !valid_id(w)) {
+                return Err("weapon must be a damage-source key".into());
             }
         }
         SCORE_CHANGED => {

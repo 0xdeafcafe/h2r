@@ -54,8 +54,9 @@ virtual addresses; bare numbers in tables are hex. Names are ours.
   dialogue's `before` on `UNIT_DIALOGUE_UPDATE`, and the Halo 1
   flashlight's and scope's `before`s on `UNIT_LIGHT_UPDATE`.
 - `sim_bridge::sim_objects` also installs the event observers: the buffer is
-  emptied at `GAME_TICK`'s entry, and `Damage` and `Kill` events are
-  appended at `DAMAGE_REPORT` and `PLAYER_KILLED` ("Slice 8 body").
+  emptied at `GAME_TICK`'s entry. `DAMAGE_REPORT` appends `Damage` and
+  appends `ActorKilled` when the report depletes an actor unit's body.
+  `PLAYER_KILLED` appends `Kill` ("Slice 8 body").
 
 ## Entries
 

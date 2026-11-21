@@ -21,11 +21,14 @@ pub enum EventKind {
     Deleted,
     Damage,
     Kill,
+    ActorKilled,
 }
 
 impl EventKind {
-    pub const ALL: [EventKind; 3] = [EventKind::Deleted, EventKind::Damage, EventKind::Kill];
-    pub const NAMES: [&'static str; 3] = ["deleted", "damage", "kill"];
+    pub const ALL: [EventKind; 4] = [
+        EventKind::Deleted, EventKind::Damage, EventKind::Kill, EventKind::ActorKilled,
+    ];
+    pub const NAMES: [&'static str; 4] = ["deleted", "damage", "kill", "actor_killed"];
 
     pub const fn name(self) -> &'static str {
         Self::NAMES[self as usize]
@@ -56,6 +59,13 @@ pub enum SimEvent {
     },
     Damage(DamageEvent),
     Kill(KillEvent),
+    ActorKilled {
+        unit: String,
+        character: Option<String>,
+        killer: Option<String>,
+        /// Packed damage code of the killing blow.
+        weapon: u8,
+    },
 }
 
 /// A damage instance, as the damage report applied it.

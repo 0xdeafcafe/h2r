@@ -1,7 +1,7 @@
 # AI over the network
 
-Status: Design. Slice AN0 (the agent API methods the probes need) is built; nothing else is.
-Code: `crates/extensions/agent/src/net.rs` (`net.replication`), `crates/extensions/agent/src/ai.rs` (`world.ai`). Planned: `crates/formats/host-log`, `crates/live/actor-net`, `crates/extensions/game/src/actor_net/`. Tests: each crate's own, on invented data.
+Status: Design. AN0 supplies the agent probes and AN6 records actor kills.
+Code: `crates/extensions/agent/src/net.rs` (`net.replication`), `crates/extensions/agent/src/ai.rs` (`world.ai`), `crates/rewrites/sim-objects/src/damage.rs` (actor kills). Planned: `crates/formats/host-log`, `crates/live/actor-net`, `crates/extensions/game/src/actor_net/`. Tests: each crate's own, on invented data.
 Switch: `agent-net` (the event counter behind `net.replication`), listed in [switches.md](../runtime/switches.md). The `actor-net` feature of `H2_FEATURES` (off until probe P3 is seen in the game) joins it with the code.
 
 AI actors in a network game: who runs them, what reaches the other
@@ -185,7 +185,7 @@ Live actor caps by player count (**Design**, provisional until P5):
 | up to 8 | 24 |
 | up to 16 | 16 |
 
-The engine's actor pool holds 256 (**Code**, `ai.rs`). At 16 seats the
+The engine's actor pool holds 256 (**Code**, `guest_layout::actor`). At 16 seats the
 match is already at the host target with no actors, so 16-player
 Firefight needs either an unpacked host with a whole core or the object
 and animation phases of [sim-rewrite.md](../engine/sim-rewrite.md).
@@ -224,6 +224,11 @@ Clients pay only for the bodies, as they do for 16 more players.
   caption dialogue without re-deriving them.
 - **Web Theater** already draws actors: telemetry frames carry up to 128
   actor rows (**Code**, `live_proto::game::FrameActor`).
+- **Actor kills** come from the body-depleting damage report on a unit
+  with a live actor link and no controlling player. The event carries the
+  salted unit and character datums, the report's credited player and the
+  killing damage source. Live telemetry and the public stats stream
+  record it as `ActorKilled` ([film-format.md](film-format.md#tagged-records)).
 - **A client's own film** shows what that client saw: puppets.
 
 ## Determinism and digests
@@ -345,7 +350,7 @@ AN3, AN4 and AN5 follow AN2 in parallel. Probes P1 and P6 need only AN0
   [notes/ai-networking.md](notes/ai-networking.md).
 - **E** The lobby-only join check: `SESSION_JOIN_CHECK`,
   `crates/hooking/guest-layout/src/points.rs`.
-- **Code** The actor pool and record: `crates/extensions/agent/src/ai.rs`.
+- **Code** The actor pool and record: `crates/hooking/guest-layout/src/{global,actor}.rs`.
 - **Code** Datagram counters: `crates/live/live-hle/src/traffic.rs`.
 - **S** Every row marked so above, with the probe that settles it.
 

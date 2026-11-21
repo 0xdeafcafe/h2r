@@ -250,6 +250,7 @@ mod tests {
     #[derive(Default)]
     struct CaptureLog {
         events: Mutex<Vec<String>>,
+        actor_kills: Mutex<Vec<GameEvent>>,
         frames: Mutex<Vec<u64>>,
         clock: Mutex<Option<u64>>,
         dropped: Mutex<Vec<&'static str>>,
@@ -262,6 +263,9 @@ mod tests {
         }
         fn event(&self, event: &GameEvent, _: u64) -> Result<(), String> {
             self.events.lock().unwrap().push(event.kind.clone());
+            if event.kind == live_proto::game::ACTOR_KILLED {
+                self.actor_kills.lock().unwrap().push(event.clone());
+            }
             Ok(())
         }
         fn frame(&self, frame: Frame) -> Result<(), String> {
@@ -356,6 +360,70 @@ mod tests {
         t.close_film();
         assert_eq!(*log.events.lock().unwrap(), ["GameStarted", "GameEnded"]);
         assert!(!t.disabled());
+    }
+
+    #[test]
+    fn actor_kill_telemetry_projects_one_stats_record_with_the_credited_seat() {
+        use crate::{layout, memory::fixture};
+        use guest_layout::{DamageReport, DatumArray, actor::Actor, damage::DEPLETING, global};
+        use live_proto::film::events::{Event, Tracker};
+        use live_proto::game::ActorKilled;
+
+        let log = Arc::new(CaptureLog::default());
+        let mut registry = ::hooks::Registry::new(::hooks::Switches::defaults());
+        let telemetry = install_film(
+            &mut registry,
+            &TelemetryConfig::default(),
+            Some(Box::new(log.clone())),
+            live_proto::film::TelemetryHooks::UNIFIED,
+        )
+        .unwrap()
+        .unwrap();
+
+        let mut guest = fixture::memory();
+        guest.set_u32(fixture::GLOBALS + layout::OPTIONS + layout::OPTIONS_TYPE, 2).unwrap();
+        guest.set_u16(fixture::GLOBALS + layout::OPTIONS + layout::OPTIONS_TICK_RATE, 30).unwrap();
+        guest.write_bytes(layout::CACHE_MAP_NAME, b"synthetic\0", 1).unwrap();
+        fixture::put_player(&mut guest, 0, "Killer", 0, true, u32::MAX);
+        fixture::put_actor(&mut guest, 1, 1, [1.0, 2.0, 3.0]);
+        let unit = fixture::object_datum(1);
+
+        let bitmap = 0x160000;
+        let actors = 0x161000;
+        let data = 0x162000;
+        let report = 0x164000;
+        let character = 0xe200_0003;
+        guest.set_u32(fixture::OBJECTS + DatumArray::BITMAP.offset, bitmap).unwrap();
+        guest.set_u32(bitmap, 1 << 1).unwrap();
+        guest.set_u32(global::ACTORS.base, actors).unwrap();
+        guest.set_u32(actors + DatumArray::ELEMENT_SIZE.offset, Actor::SIZE).unwrap();
+        guest.set_u32(actors + DatumArray::HIGH_WATER.offset, 2).unwrap();
+        guest.set_u32(actors + DatumArray::DATA.offset, data).unwrap();
+        let actor = data + Actor::SIZE;
+        guest.set_u16(actor, 0xa000).unwrap();
+        guest.set_u32(actor + Actor::UNIT, unit).unwrap();
+        guest.set_u32(actor + Actor::CHARACTER, character).unwrap();
+        guest.set_u32(report + DamageReport::OWNER_PLAYER.offset, 0x8001_0000).unwrap();
+        guest.set_u8(report + DamageReport::CODE.offset, 13).unwrap();
+
+        telemetry.start(&guest).unwrap();
+        guest.set_u32(fixture::TIME + layout::TIME_TICK, 12).unwrap();
+        telemetry.actor_killed(&guest, report, unit).unwrap();
+        guest.set_u32(report + DamageReport::FLAGS.offset, DEPLETING).unwrap();
+        telemetry.actor_killed(&guest, report, unit).unwrap();
+
+        let events = log.actor_kills.lock().unwrap();
+        assert_eq!(events.len(), 1);
+        let records = Tracker::default().event(&events[0].kind, &events[0].data, 13).unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].tick, 12);
+        assert_eq!(records[0].event, Event::ActorKilled(ActorKilled {
+            tick: 12,
+            unit,
+            character: Some(character),
+            killer: Some(0),
+            weapon: Some("sniper_rifle".into()),
+        }));
     }
 
     #[test]

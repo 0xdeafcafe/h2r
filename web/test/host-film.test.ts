@@ -126,6 +126,21 @@ test("public joins, host migration and closing observations retain order and tim
   expect(f.calls.length).toBe(count);
 });
 
+test("the public stats reader preserves actor kills at their playback ticks", async () => {
+  const credited = {tick: 54, unit: 0x80010001, character: 0x90010002, killer: 0, weapon: "smg"};
+  const uncredited = {tick: 55, unit: 0x80020001};
+  const f = fixture([
+    ...framed(1, 2, [1, ...json({tick: credited.tick, kind: "ActorKilled", data: credited})]),
+    ...framed(0, 2, [1, ...json({tick: uncredited.tick, kind: "ActorKilled", data: uncredited})]),
+  ]);
+  const film = (await openHostFilm(f.fetch))!;
+  const movie = new Movie(await film.index(), front.match_start_tick, 50, "game", film.chunk);
+  const {frames, events} = await movie.read(movie.segments.at(-1)!, signal());
+  expect(events.filter(e => e.type === "ActorKilled").map(e => e.data)).toEqual([credited, uncredited]);
+  const timeline = new ReplayTimeline(frames, events, movie.segments);
+  expect(timeline.kills.map(k => k.victim)).toEqual([1]);
+});
+
 test("menu summary permits public player names without account IDs and preserves optional drop counts", () => {
   const players = [{seat: 1, name: "Red", team: 1, score: 3, medals: {}}];
   const projected = {...summary, players, dropped_samples: {pose: 2}};

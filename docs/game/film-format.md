@@ -212,9 +212,15 @@ The event envelope carries both the film observation time and, in subtype 1,
 the originating match clock. A late hit, medal or final scoreboard retains
 its original time. The game statistics projection consumes GameStarted,
 PlayerJoined, PlayerLeft, PlayerKilled, ScoreChanged and GameEnded.
-Highlights include additional weapon fire, damage, assists, medals, item
-and vehicle transitions and objective changes. Recomputing stats from a
-highlight as well as its canonical event would count it twice.
+Highlights include actor kills, additional weapon fire, damage, assists,
+medals, item and vehicle transitions and objective changes. A highlight
+that duplicates a canonical event only contributes once to stats.
+
+`ActorKilled` carries the match tick and salted unit object datum, with
+the character tag datum, credited player slot and damage-source key when
+available. It comes from the report that depleted an actor unit's body.
+It is public stats data, with no input, score or digest attached. Player
+kill totals and medals come from `PlayerKilled`.
 
 ## Private machine data and earlier formats
 

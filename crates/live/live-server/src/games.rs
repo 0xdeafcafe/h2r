@@ -759,6 +759,11 @@ impl Live {
                 game::PLAYER_LEFT => {
                     players.retain(|p| Some(p.index as u64) != b.data["index"].as_u64())
                 }
+                game::ACTOR_KILLED if !by_host => {
+                    return Err(forbidden(format!(
+                        "event {i}: only the host reports actor kills"
+                    )));
+                }
                 game::GAME_ENDED if !by_host => {
                     return Err(forbidden(format!(
                         "event {i}: only the host ends the game; a player leaves with PlayerLeft"

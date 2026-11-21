@@ -2,12 +2,11 @@
 
 use agent_proto::{Kind, ObjectId, RpcError, code};
 use engine::{GuestMemory, MemFault, view::Datums};
+use guest_layout::{actor::Actor, global::ACTORS};
 use serde_json::{Value, json};
 
 use crate::{Access, Agent};
 
-// Actor pool creation at 0x001dfb24 (256 records, stride 0x888).
-const ACTORS: u32 = 0x004f55f0;
 const ACTIVE_BSP: u32 = 0x004e0348;
 const PROP_REFS: u32 = 0x00502418;
 // The retail behavior descriptors and their parallel name table. Slots
@@ -20,25 +19,6 @@ engine::record! {
     // the object handle at +0x20 to read the target's object body.
     struct PropRef: 0x3c {
         object @ 0x20: u32,
-    }
-}
-
-engine::record! {
-    struct Actor: 0x888 {
-        // 0x001e0dab also installs the reciprocal actor handle in the unit.
-        unit @ 0x18: u32,
-        team @ 0x24: i16,
-        // Squad assignment at 0x00203e84, scenario squad index.
-        squad @ 0x30: i32,
-        character @ 0x54: u32,
-        // ai_combat_status takes the maximum of these (0x00276070).
-        combat_status @ 0x86: i16,
-        // 0x001a813d reads the top of four 64-byte behavior frames.
-        behavior_depth @ 0x190: i16,
-        // 0x0026c19d checks the cache before refreshing position and sector.
-        location_cached @ 0x278: u8,
-        sector @ 0x28c: i32,
-        focus @ 0x338: Option<engine::handle::DatumHandle>,
     }
 }
 
@@ -66,7 +46,7 @@ fn globals(m: &dyn GuestMemory) -> Result<Option<Value>, MemFault> {
 }
 
 fn snapshot(m: &dyn GuestMemory) -> Result<Vec<Value>, MemFault> {
-    let Some(pool) = Datums::<Actor>::from_global(m, ACTORS)? else {
+    let Some(pool) = Datums::<Actor>::from_global(m, ACTORS.base)? else {
         return Ok(Vec::new());
     };
     let props = Datums::<PropRef>::from_global(m, PROP_REFS)?;
@@ -159,7 +139,7 @@ mod tests {
     #[test]
     fn reports_the_active_frame_and_only_a_current_in_range_sector() {
         let mut m = FakeGuest::new();
-        m.put_u32(ACTORS, 0);
+        m.put_u32(ACTORS.base, 0);
         assert!(snapshot(&m).unwrap().is_empty());
         let pool = fake::datums::<Actor>(&mut m, 0x10000, 4);
         let (id, a) = fake::push(&mut m, &pool);
@@ -168,7 +148,7 @@ mod tests {
         m.put_u32(PROP_REFS, props.array.addr)
             .put_u32(a.addr + 0x338, focus.raw())
             .put_u32(target.addr + 0x20, 0xe1230042);
-        m.put_u32(ACTORS, pool.array.addr)
+        m.put_u32(ACTORS.base, pool.array.addr)
             .put_u32(ACTIVE_BSP, 0x20000)
             .put_u32(0x200c4, 1)
             .put_u32(0x200c8, 0x21000)

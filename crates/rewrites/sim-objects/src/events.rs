@@ -25,6 +25,15 @@ pub enum SimEvent {
     Damage(Damage),
     /// A player was killed and the kill credited ([`Kill`]).
     Kill(Kill),
+    /// A body-depleting damage report for an actor-controlled unit.
+    ActorKilled {
+        unit: Datum,
+        character: Datum,
+        /// Player credited by the depleting report, or none.
+        killer: Datum,
+        /// The report's packed damage code, as [`Damage::code`].
+        weapon: u8,
+    },
 }
 
 /// One damage instance, read where the game applies it: the damage report
@@ -80,8 +89,8 @@ impl Damage {
 
 /// A kill, read where the game credits it: `PLAYER_KILLED` (`15ce70`)'s
 /// entry, after recent-damage attribution, so the attacker is final. Only
-/// players are credited there; an object's death without a player is a
-/// [`Damage`] that is [`Damage::depleting`].
+/// players are credited there. An actor death is reported by
+/// [`SimEvent::ActorKilled`] at the depleting damage report.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Kill {
     /// The game tick, `None` without game time.

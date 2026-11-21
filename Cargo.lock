@@ -3695,6 +3695,7 @@ dependencies = [
  "rustls",
  "serde",
  "serde_json",
+ "sim-objects",
  "tags",
  "time",
  "timeline",

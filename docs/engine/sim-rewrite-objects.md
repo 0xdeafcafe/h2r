@@ -754,12 +754,10 @@ pub struct ObjectIter<'a>;                         // live headers in slot order
   a keyframe load needs no invalidation here.
 - **Events.** A per-tick `Vec<SimEvent>`, cleared at `GAME_TICK`'s entry,
   appended only by serial code on the game thread: `ObjectDeleted { id,
-  kind, definition }` from finalize pass B (slice 1), `Damage` at the
-  damage report `d9640` and `Kill` at the kill credit `15ce70` (slice 8:
-  the damage update applies damage only through those callees, so the
-  events are read at their entries, whoever calls them). Events are not
-  persistent state: they are read at tick end and are not in keyframes or
-  the hash. The buffer (`sim_objects::events`, read through
+  kind, definition }` from finalize pass B (slice 1), `Damage` and any
+  `ActorKilled` at the damage report `d9640`, and `Kill` at the player kill
+  credit `15ce70`. Observers append at the callee entries. The buffer
+  holds one tick and stays outside the keyframes and hash. The buffer (`sim_objects::events`, read through
   `sim_state::events` and the agent API's `sim.events`) belongs to the
   thread that runs the walks. The records are in
   [object-update.md](object-update.md), "Slice 8 body".

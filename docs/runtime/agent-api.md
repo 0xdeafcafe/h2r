@@ -1744,7 +1744,7 @@ boundary while the game ticks. The wire types are `agent_proto::sim`.
 | `sim.expect` | read | `{checks}`: expectations judged against `sim.view`, at one tick |
 | `sim.session` | read | the session kind and whether writes are allowed |
 | `sim.objects` | read | `{kinds?, max?}`: every live object in slot order through the simulation's typed views, `{objects, truncated}` |
-| `sim.events` | read | `{kinds?}`: the last tick's simulation events in order (`deleted`, `damage`, `kill`), `{events}` |
+| `sim.events` | read | `{kinds?}`: the last tick's simulation events in order (`deleted`, `damage`, `kill`, `actor_killed`), `{events}` |
 
 **Brains.** For a brain-driven simulated player, `sim.player.add`,
 `sim.player.list` and the `sim` root of `sim.view` include `brain` when
@@ -1792,8 +1792,8 @@ The wire types are `agent_proto::sim::objects`.
 (`sim_state::events`, [sim-rewrite-objects.md](../engine/sim-rewrite-objects.md)
 section 8). The game answers at a tick boundary, so the events are the
 tick that just ran, in the order they happened. The buffer is emptied when
-each tick starts. `kinds` filters by type (`deleted`, `damage`, `kill`;
-another name is `INVALID_PARAMS`). Datums are `0x` and eight hex digits,
+each tick starts. `kinds` filters by type. An unknown name returns
+`INVALID_PARAMS`. Datums are `0x` and eight hex digits,
 or `null` for none. Each event has a `type`:
 
 - `deleted`: finalize deleted an object. `id`, `kind` (its tag group) and
@@ -1808,6 +1808,9 @@ or `null` for none. Each event has a `type`:
 - `kill`: the game credited a kill. `tick`, `attacker` and `victim` (player
   datums), `code`, `damage_type`, `modifier`, `victim_unit`,
   `attacker_unit`, `position` and `attacker_position`.
+- `actor_killed`: a damage report depleted an actor unit's body.
+  `unit` is the object datum, `character` the character tag datum,
+  `killer` the credited player datum, and `weapon` the packed damage code.
 
 Events are recorded only while `impl.sim.native.objects` is on; with it
 off the list is empty. The records and where they are read are in

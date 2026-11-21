@@ -1202,12 +1202,18 @@ pub fn tick_starts() {
 }
 
 /// The damage report `d9640` is about to apply the report at `report`
-/// (`edi`) to `victim` (its stack argument): record the `Damage` event.
+/// (`edi`) to `victim` (its stack argument): record the damage and any
+/// actor kill.
 /// A report the guest could not read records nothing (the guest function
 /// faults on it too).
 pub fn damage_report(g: &Guest, report: u32, victim: u32) {
     if let Ok(d) = ::sim_objects::damage::damage(mem(g), report, Datum(victim)) {
         events::push(SimEvent::Damage(d));
+        if d.depleting()
+            && let Some(kill) = ::sim_objects::damage::actor_killed(mem(g), report, d.victim)
+        {
+            events::push(kill);
+        }
     }
 }
 
