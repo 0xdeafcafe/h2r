@@ -832,16 +832,25 @@ mod tests {
             jti: "j".into(),
             lxm: "m".into(),
         };
+        let signed = Token::parse(&key.sign_json(TYP_TOKEN, &long)).unwrap();
+        // Times beyond 2^53 go through a double in the canonical JSON, so
+        // a token carrying them does not parse back to i64 claims. The
+        // claims themselves, held with a valid signature, fail verify
+        // without overflowing its arithmetic.
         for (iat, exp) in [(i64::MIN, NOW), (NOW, i64::MAX), (i64::MAX, i64::MIN)] {
             let claims = Claims {
                 iat,
                 exp,
                 ..long.clone()
             };
-            let t = Token::parse(&key.sign_json(TYP_TOKEN, &claims)).unwrap();
+            assert!(Token::parse(&key.sign_json(TYP_TOKEN, &claims)).is_err());
+            let t = Token {
+                jws: signed.jws.clone(),
+                claims,
+            };
             assert!(t.verify(pk, "h", "m", NOW).is_err());
         }
-        let long = Token::parse(&key.sign_json(TYP_TOKEN, &long)).unwrap();
+        let long = signed;
         assert_eq!(
             long.verify(pk, "h", "m", NOW),
             Err(SignError::Claims("token lifetime exceeds 60 s"))
