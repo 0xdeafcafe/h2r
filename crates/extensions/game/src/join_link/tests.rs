@@ -254,3 +254,23 @@ fn the_menu_selects_this_target_and_joins_with_the_resolved_controller() {
         [SELECT_TARGET, JOIN_SELECTED]
     );
 }
+
+/// Both run before UI_UPDATE; with no order between them the plan refused
+/// and every boot with Live enabled stopped at the feature plan.
+#[test]
+fn the_join_link_and_lab_consent_plan_together_at_ui_update() {
+    let live = Hle::new(live_hle::LiveConfig {
+        enabled: true,
+        server_url: Some("https://live.example".into()),
+        ..Default::default()
+    })
+    .unwrap();
+    let mut features = hooks::Registry::new(hooks::Switches::defaults());
+    install(&mut features, Some(live), false).unwrap();
+    crate::lab_takeover::install(&mut features, &agent::Agent::new()).unwrap();
+    let plan = features.build(&hooks::Base).unwrap().text();
+    assert!(
+        plan.contains("process a Live join link") && plan.contains("open or expire a lab request"),
+        "{plan}"
+    );
+}
