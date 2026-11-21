@@ -186,11 +186,13 @@ are under [Reviews](#reviews).
 - [forge.md](game/forge.md): what Halo 3's Forge is and what retail Halo 2 has for one to sit on: placement blocks, the netgame equipment spawner, object creation
 - [forge-design.md](game/forge-design.md): design for the full Forge: the document and its ops, what applies live and what needs a rebuild, the host's edit log, films, sharing on Live, each feature's cost, the UI and the slices (not built)
 - [forge-features.md](game/forge-features.md): design for each Forge feature: monitor bodies, objects, links and triggers, emitters, barriers, nav, AI, geometry and paint, character import (not built)
+- [ai-networking.md](game/ai-networking.md): AI actors in network games: host actors in the distributed model, the synchronous model for campaign, what retail replicates, the actor channel, budgets, probes and slices (design)
+- [firefight.md](game/firefight.md): Firefight: waves of AI on multiplayer maps for up to 16 players, the director, the map kit, scoring, lives, skulls and Live (not built)
 - Notes: [high-framerate.md](game/notes/high-framerate.md) (prior art and measurements for 60 and 120 fps)
 - [theater-design.md](game/theater-design.md): design for the full in-game Theater: stats is the summary and the film is the simulation; rewind and jumps from sidecar keyframes, warm restore, cameras, clips, sharing through Live and the web-to-game link; slices in build order (design)
 - [input-film.md](game/input-film.md): what a film holds (seed, per-seat inputs, joins, digests), every host answer replay depends on, the Halo 3 reference, the column encoding, sizes and memory (design)
 - [forge.md](game/forge.md): design for Forge on Halo 2 multiplayer maps (not built)
-- Notes: [high-framerate.md](game/notes/high-framerate.md) (prior art and measurements for 60 and 120 fps), [halo3-film.md](game/notes/halo3-film.md) (Halo 3's saved film layout and sizes, from public sources)
+- Notes: [high-framerate.md](game/notes/high-framerate.md) (prior art and measurements for 60 and 120 fps), [halo3-film.md](game/notes/halo3-film.md) (Halo 3's saved film layout and sizes, from public sources), [ai-networking.md](game/notes/ai-networking.md) (what retail's distributed replication carries, read from the image)
 
 ## Halo 1 (`halo1/`)
 
