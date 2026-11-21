@@ -30,10 +30,14 @@ established).
   ceiling) is real. So is a crouch term that moves a mid-air biped by its
   height change. Neither was involved in any recorded bounce: all five
   were standing, 3.5 to 28 seconds after the last crouch. **Code**, **Trace**
-- A forced crouch leaves nothing behind: in a third trace the player
-  forced a crouch under the lip, walked out (standing up on the ground in
-  six ticks, every crouch field back to normal) and bounced on a later
-  standing jump. **Trace**
+- A forced crouch does leave something behind, and the game's teleport
+  clears it. Played back from before two forced crouches, a player's
+  recorded input bounced 4 times in 4. From a teleport after the
+  crouches, the same walk and jump landed on the same spot at the same
+  speed 6 times and never bounced
+  ([playback](#the-forced-crouch-leaves-state-trace-lab-playback)). Every
+  crouch field reads normal again after the crouch, so the state is
+  somewhere not yet read. **Trace**, **Open** for where
 
 ## Forced crouch (Code)
 
@@ -203,6 +207,76 @@ shape. The remaining candidate is Havok's collision agents: the per-pair
 caches between the body and the level (closest features, welding), which
 a shape swap mid-contact could leave stale. **Open**
 
+### The forced crouch leaves state (Trace, lab playback)
+
+Measured 2026-11-21 on a second Mac through the lab (`h2 lab run --serve
+--level ascension -- --fps 30`, [lab.md](../runtime/lab.md)), driven by
+`h2 lab agent`. The lab runs at 30 frames a second. The player reported
+that bounces don't happen at 60, and every run here was at 30.
+
+**The recipe**, from two recordings of the player (`input.record` and
+`trace.start` together):
+
+1. Forced crouch. Stand at (−10.85, 1.16, −1.45) facing yaw −121°, click
+   crouch (left stick) and crouch-walk at full stick into the corner at
+   (−10.91, 0.72, −1.16), turning slightly toward it. Release crouch
+   while still pushing. The crouch request stays set with the button up
+   (the standing capsule doesn't fit) for as long as you stay. Turn about
+   67° to yaw −66° while pushing forward, and the player slides out and
+   stands up in six ticks.
+2. Walk to the upper level, about (−8.2, 2.4, −0.72), by way of
+   (−10.2, −0.3), (−9.5, −0.5), (−8.5, −0.2), (−8.0, 0.8), (−7.8, 1.5).
+3. A running jump from about (−8.4, 2.5, −0.76), heading (−0.8, 0.6) at
+   about 1.6 units/s, easing off the stick in the air.
+4. It lands on (−10.2 to −10.7, 3.93 to 4.04, −3.19) at −5.4 units/s,
+   the fall speed after that drop. All the player's bounces here landed
+   like this. In the player's control run, 7 of 44 such jumps bounced.
+
+A stand-in for each step without the player's own input never worked.
+Crouching anywhere but in the corner doesn't catch the request. Scripted
+stick timings walk past it. A standing jump at the patch lands at −3 and
+is never a test.
+
+**Playback.** `input.pad` steps rebuilt tick for tick from the recorded
+input log (one step per tick read), from a `sim.state.set` teleport to
+where the recording starts. A playback is repeatable: two runs of the
+same steps gave the same launch to 0.01 units/s.
+
+| Run | Start | Bounced | Launch |
+|---|---|---|---|
+| A, C | teleport before both forced crouches, then the recorded crouches, walk and jump | 4 of 4 | +11.4 to +12.0 |
+| B, D | teleport to where the player stood after the second crouch, then the recorded walk and jump | 0 of 6 | — |
+
+Four of the six B and D runs landed at (−10.26, 4.02, −3.18) at −5.3 to
+−5.4, the place and speed of the bounces. The B and D runs came right
+after runs that had crouched, so each body had crouched and was then
+teleported. The teleport is `object_teleport`'s body (`0x29ffb0`), which
+places the unit through `0x14e200`.
+
+Also measured:
+
+- **The animation counter at biped `+0x3a8` is not the state.** The
+  biped physics update (`0x000e2678`) counts ticks in which the current
+  animation is idle (`0x0400000C`) while the wanted group (`+0x34a`) is 1
+  (moving or airborne). The count resets to 0 on the first idle tick
+  after the animation was anything else (`+0x3a9`, set from `0x000dd300`
+  each tick). While count × tick length is under 0.1 s (`0x45DC68`) it
+  forces the switch to the wanted state. In play it runs between 0 and
+  about 30 all the time, crouched or not. Writing 0 to it (`world.poke`)
+  just before the jump of run C didn't change the launch (+11.52, the
+  same as A).
+- **Pausing the game mid-playback changes the outcome.** A
+  `session.pause` four ticks before the jump took the next landing off
+  the bounce. Read state from a playback well before the run-up, not
+  during it.
+- `state.save` is refused on this build ("not quiescent", seven features
+  not yet audited for snapshots), so every run starts from a teleport.
+
+**Open:** where the state is. The next check reads `world.raw`,
+`havok.contacts` and `havok.agents` at the same tick of a playback (a
+primed body) and of a B run (teleported), then writes the differing
+values across half at a time, to find which ones decide the bounce.
+
 ## The geometry (Code, from the map)
 
 The structure collision BSP of `ascension` at the patch (surface indices
@@ -223,6 +297,13 @@ rest on the ramp side of the crease.
 
 ## Open
 
+- **What the forced crouch leaves behind.** It's on the body until a
+  teleport, and it's not the object, physics record, body, motion or
+  shape bytes read so far, nor the `+0x3a8` counter
+  ([playback](#the-forced-crouch-leaves-state-trace-lab-playback)).
+- **60 frames a second.** The player reports no bounces at 60. That isn't
+  measured here, and how a frame rate would reach the 30 Hz tick isn't
+  known.
 - **The launch rule.** It is Havok's contact response for a capsule
   pushed into a concave crease next to a coplanar seam. Decoding it means
   reading the solver in the Havok library code (the step at `0x00311100`
