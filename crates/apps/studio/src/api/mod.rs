@@ -36,6 +36,7 @@ mod playlists;
 mod scenario;
 pub mod seams;
 pub mod server;
+mod sound;
 mod tag_fields;
 mod tag_io;
 mod tags;

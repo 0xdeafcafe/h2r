@@ -7,6 +7,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+pub mod audition;
 pub mod commands;
 pub(crate) mod convert;
 pub mod hud;
@@ -502,6 +503,8 @@ pub struct App {
     /// What the last tag export and import did, for the agent API.
     pub(crate) last_tag_export: Option<(PathBuf, tag_bundle::ExportReport)>,
     pub(crate) last_tag_import: Option<tag_bundle::ImportReport>,
+    /// Sound audition: the decoded sound, the audio output and what plays.
+    pub audition: audition::Audition,
 }
 
 impl Default for App {
@@ -566,6 +569,7 @@ impl App {
             tag_preview: None,
             last_tag_export: None,
             last_tag_import: None,
+            audition: Default::default(),
         }
     }
 
@@ -1708,6 +1712,8 @@ impl App {
 pub(crate) mod tag_tests;
 #[cfg(test)]
 mod tag_data_tests;
+#[cfg(test)]
+mod audition_tests;
 #[cfg(test)]
 pub(crate) mod map_cards_tests;
 #[cfg(test)]

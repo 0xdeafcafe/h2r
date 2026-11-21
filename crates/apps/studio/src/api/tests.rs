@@ -158,6 +158,13 @@ fn setup(api: &mut Api, app: &mut App, t: &Temp, name: &str) {
                 json!({"block": "starting_locations", "index": 1}),
             );
         }
+        m::SOUND_READ | m::SOUND_PLAY | m::SOUND_STOP => {
+            // A map with a sound, played to the headless output.
+            let map = t.path("sound.map");
+            std::fs::write(&map, super::sound::tests::sound_map()).unwrap();
+            c(m::SOURCE_OPEN, json!({"path": map.display().to_string()}));
+            app.audition.headless = true;
+        }
         m::VOLUME_LIST | m::VOLUME_SELECT | m::VOLUME_SET | m::VOLUME_REMOVE | m::VOLUME_ADD => {
             let map = t.path("volumes.map");
             std::fs::write(&map, fixture::fixture_with_volumes()).unwrap();

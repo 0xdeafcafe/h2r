@@ -177,6 +177,7 @@ before anything runs (`INVALID_PARAMS`). Indices are 0-based throughout
 | `source` | `open {path}`, `maps` |
 | `doc` | `list`, `open {map \| path \| package \| variant \| playlists}`, `save`, `save_as {path}`, `diff`, `undo`, `redo`, `close` |
 | `tag` | `list {group, name, query, path, limit, homes}`, `browse {map}`, `resources {tag}`, `export {tag, out, dependencies, resources}`, `import {path, tag, skip_missing}`, `read {tag, depth, elements, hex}`, `fields {tag, path?}`, `tree {root?, depth?}`, `refs {tag, limit?}`, `follow {tag, ref}`, `set {tag, path, value}`, `block.add`, `block.remove`, `block.duplicate` |
+| `sound` | `read {tag, range?, permutation?, bins?}`, `play {tag, range?, permutation?, from_ms?}`, `stop` |
 | `scenario` | `blocks`, `list {block}`, `get`, `set {block, index, field, value}`, `add {block, like, position}`, `move {block, index, position, ypr}`, `delete`, `duplicate`, `select` |
 | `volume` | `list {kind?}` (short form `volumes [kind]`), `select {index?, focus?}`, `set {index, origin?, center?, forward?, up?, size?}`, `add {kill?, center?, origin?, forward?, up?, size?}`, `remove {kind?, index}` |
 | `collision` | `surfaces {class?, bsp?, offset?, limit?}`, `at {origin, dir}` or `at {point, within?}` (with `select?`), `select {index?, focus?}`, `objects {block?, index?}` |
@@ -286,6 +287,22 @@ Notes on some:
   replaces the open map's tags with a bundle's as one undo step of the
   `tags` document. It does not add tags: one the map lacks refuses the
   import unless `skip_missing`.
+- **Sounds.** `sound.read` lists a `snd!` tag of the map the Tags tool
+  shows: its header, every pitch range with its permutations
+  (`encoded_bytes`, `chunks`), and for the permutation asked for (range 0,
+  permutation 0 by default) its decoded `channels`, `rate`, `frames`,
+  `duration_ms` and `bins` waveform columns of `[low, high]` 16-bit
+  peaks. A permutation that cannot be decoded gives `refusal` in place of
+  those (a codec stream without the game's executable says `This sound
+  needs the game's executable to decode.`) or `error` (a bad length, a
+  missing resource file). It also gives `playback`: whether something
+  plays, which, `position_ms` and the `output`. `sound.play` plays a
+  permutation from `from_ms` through the host's default audio output,
+  opened on the first call, and returns at once; a refusal is `REFUSED`,
+  no device or an unreadable resource `FAILED`. `sound.stop` stops it. The
+  executable comes from the source: the disc's `default.xbe`, or the one
+  beside a loose map or folder (`H2_XBE` names another). The window's
+  Sound window calls the same `App::sound_*` methods.
 - **Placements.** `scenario.set` takes a number, `[x, y, z]`, or for a tag
   reference `{"id": "0x..."}` (or `null` for none). The scenario checks it
   first: read-only fields, integer ranges, finite floats, palette indices,
@@ -735,7 +752,8 @@ identical profiles.
   `Api::pump` (the window's between-frames answer).
 - `api/server.rs`: the socket. `api/{docs,scenario,tags,variants,playlists,ui_screens,view}.rs`:
   the namespaces (`volume.*` is in `api/scenario.rs`, `collision.*` in `api/collision.rs`). `api/seams.rs`: providers; `api/tag_fields.rs`,
-  `api/tag_io.rs` and `api/hud.rs` the Tags and HUD tools'.
+  `api/tag_io.rs`, `api/sound.rs` and `api/hud.rs` the Tags, sound and
+  HUD tools'.
 - `app/commands.rs`: the actions added for the API and the window
   (`SetField`, `EditSelection`, `MovePlacement`, `EditPlaylist`,
   `UndoIn`), `PlaylistEdit`, and `App::perform`. The viewport gizmo

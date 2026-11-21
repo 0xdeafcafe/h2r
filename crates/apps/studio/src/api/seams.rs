@@ -52,6 +52,8 @@ pub fn register(api: &mut Api) {
     api.register(Box::new(super::nav::Navigation));
     // The Tags tool's browsing (shared caches), resources and tag bundles.
     api.register(Box::new(super::tag_io::TagIo));
+    // Sound audition: decode, play and the waveform of a snd! tag.
+    api.register(Box::new(super::sound::Sound));
     api.register(Box::new(super::tags::TagGraph));
     // studio-hud: the HUD tool's HUDs, widgets, picture, checks and save.
     api.register(Box::new(super::hud::Hud));

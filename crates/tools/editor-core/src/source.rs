@@ -60,6 +60,26 @@ impl Disc {
         })
     }
 
+    /// A file in the disc's root directory (`default.xbe`), at most `max`
+    /// bytes. Names match without regard to case.
+    pub fn read_root_file(&self, name: &str, max: u64) -> Result<Vec<u8>> {
+        let entry = self
+            .entries
+            .iter()
+            .find(|e| !e.is_dir && e.path.trim_start_matches('/').eq_ignore_ascii_case(name))
+            .with_context(|| format!("no {name} on the disc"))?;
+        if u64::from(entry.size) > max {
+            bail!("{name} is larger than {max} bytes");
+        }
+        let mut file = File::open(&self.path)?;
+        file.seek(SeekFrom::Start(
+            self.partition + u64::from(entry.sector) * xiso::SECTOR,
+        ))?;
+        let mut bytes = vec![0; entry.size as usize];
+        file.read_exact(&mut bytes)?;
+        Ok(bytes)
+    }
+
     pub fn open_map(&self, name: &str) -> Result<Map<BufReader<File>>> {
         let (base, len) = self.region(name)?;
         Ok(Map::from_region(
@@ -152,6 +172,24 @@ impl MapSource {
                     (name, group)
                 })
                 .collect(),
+        }
+    }
+
+    /// The game's executable (`default.xbe`): the disc's root file, or for a
+    /// loose map or a folder the one beside it (`H2_XBE` names another, as
+    /// for the variants' save names). At most 16 MiB.
+    pub fn executable(&self) -> Result<Vec<u8>> {
+        const MAX: u64 = 16 << 20;
+        match self {
+            MapSource::Disc(d) => d.read_root_file("default.xbe", MAX),
+            _ => {
+                let path = crate::variant_sources::xbe_path(Some(self))
+                    .context("no default.xbe beside the maps (H2_XBE names one)")?;
+                if std::fs::metadata(&path)?.len() > MAX {
+                    bail!("{} is larger than {MAX} bytes", path.display());
+                }
+                Ok(std::fs::read(&path)?)
+            }
         }
     }
 
