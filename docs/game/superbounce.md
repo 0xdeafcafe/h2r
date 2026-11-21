@@ -662,3 +662,169 @@ pass, no depth test):
   superbounce spot is a crease next to a seam is not checked. The
   [scan](#spots-in-the-geometry) finds candidates of that shape; none is
   traced.
+
+## Charge, crouch spots and landings
+
+Design, not built. What the mode shows next about the three steps of a
+bounce: getting the charge, keeping it, and landing it. The HUD parts
+(the meter under the pill, the prompt line, the notifications, the
+navpoint) are in [hud-kit.md](hud-kit.md), "The charge meter"; this is
+the state they read, the scanner's rules and the world overlay. The
+numbers are in [notes/superbounce-spots.md](notes/superbounce-spots.md).
+
+### Charge
+
+The pair word has no amount. It is 0 through a crouch, forced or not,
+and −3 from the first tick of the stand-up out of a forced crouch, where
+the crouch lets go at the band's way out, 6 cm from where the body
+rested in the measured corner (**Trace**, the note). So "how charged" is
+two things the engine does have:
+
+- **How far through the recipe.** `near` (crouched by a crouch spot),
+  `under` (crouched and the standing capsule does not fit: output bit 1
+  of the character physics update, [forced crouch](#forced-crouch-code)),
+  `held` (the crouch button is up and the request, unit flags bit 23, is
+  still set), `primed` (the word is −3).
+- **How long it will last.** A primed body that stands still sleeps
+  after 38 to 40 ticks and wakes with a new pair at 0 (**Trace**). The
+  mode counts the ticks the body's speed is under 0.03 units/s, back to
+  0 when it moves; the charge left is 1 less that count over 38. A
+  crouch ends the charge at once (**Trace**).
+
+`superbounce_mode`'s state carries it as `charge`: the phase, the fill
+(0, 1/3, 2/3, then the charge left), the still ticks and the bit.
+`superbounce.state` returns it, and `world.object`'s `physics` block
+gains `standing_fits`, read where the biped physics update tests it
+(`0x000e28f4`).
+
+Not a charge, and not shown as one: how long the crouch is held (nothing
+counts it), and how deep the standing capsule is in the lip (most bands
+are far deeper than the one that is known to prime, the note).
+
+### Crouch spots: the stricter rule
+
+The scan keeps a forced-crouch region by the rules of
+[Crouch](#crouch), then:
+
+1. **In play.** The stand point is no more than 1.0 below the lowest of
+   the scenario's player starting locations. Regions under the map are
+   dropped (5 of Ascension's 21).
+2. **By a strip.** A bounce spot's stand is within 8 units, straight
+   line: a rule, where the score only prefers a strip within 15. If
+   fewer than 3 spots pass on a map, the 3 nearest a strip are kept
+   (Coagulation).
+3. **Spread out.** A spot within 3.0 of a better one is dropped, and the
+   12 best are kept.
+4. **Proven first.** A measured priming place
+   (`crates/live/bots/src/glitches/spots.rs`, a list beside the bounce
+   spots, given to the scan as points) is kept whatever the other rules
+   say and ranks first. A spot within 0.3 of one is `proven`; the others
+   are `likely`. The Ascension corner is the one proven spot, and it
+   ranks 13th of 21 by score alone.
+5. **Stand at the way out.** `stand` is the region's exit sample (a
+   forced sample with standing room next door) nearest the nearest
+   strip, not the sample nearest the centre: the word turns at the way
+   out. The spot also reports `out`, the unit direction from `stand` to
+   that standing room, and `lip`, up to 8 edges of the faces the
+   standing capsule hits there, at their own height.
+
+There is no depth rule: a cut by the standing capsule's overlap drops
+almost nothing and has no measurement behind it (the note).
+`--explain` prints, per region, each rule's verdict in this order, with
+the lowest starting location, the nearest strip and its distance, the
+better spot that crowded it out, and its tier. Expected on the disc's
+maps: 7 to 12 a map, 3 on a map whose strips are far from its lips
+(**S**, the note's table; `h2 superbounce scan <map> --json` counts
+them).
+
+Which `likely` spots prime is a game run's to say. A lab pass walks
+each kept spot (below) and its result is a row in the proven list or a
+row in a not-priming list the scan drops.
+
+### Crouch spots in the world
+
+One spot is one figure on the floor, drawn by the window's world-line
+pass (`crates/apps/app/src/overlay/marks.rs`):
+
+- **The footprint.** A ring of the capsule's radius (0.175) round
+  `stand`, on the floor: the size of the player's own feet, where to be.
+  It is thin while the player is elsewhere and solid and pulsing once
+  the phase is `under`.
+- **The lip.** The `lip` edges, a thin line at head height: what to get
+  under.
+- **The way.** Floor chevrons along `out`, flowing in toward the ring
+  until the phase is `held`, then flowing out: walk in, then walk out.
+- **The label.** `Crouch` over the nearest spot within 3 units, in whole
+  words as the HUD writes them; none on the others. The verb with the
+  button is on the HUD's prompt line.
+
+Only the nearest 3 get the lip and the way; the rest are the ring alone.
+A `likely` spot is drawn at half strength, a `proven` one at full. While
+primed every crouch figure drops to a fifth and the strips come up, as
+the strips are dimmed while not primed: what is bright is what to do
+next, and a crouch now would lose the charge.
+
+### Landings
+
+The scanner's bounce spot gains `width` (the gap between its two
+joints) and `need` (the touchdown speed its `fall` is worked from).
+
+- **Where.** The floor ribbon is the slot itself: `width` across, not a
+  fixed 0.2, the overlap long, closed at both ends, with a cross tick at
+  `stand`, under the line down its middle.
+- **How high.** A thin post stands at `stand` with a tick at `fall`
+  above the strip: jump from a floor at or above the tick. The tick's
+  label is the height in whole metres. A strip a standing jump reaches
+  (`fall` at most 0.05) has no post.
+- **From here?** A strip's colour says whether the player's own floor is
+  high enough: full strength when their feet are at least `fall` above
+  it (or it needs no fall), half when they must climb. A sweep from
+  green to red by `fall` alone leaves the player to do that sum.
+- **On course.** While primed and falling, the landing the assist
+  predicts (`predicted_landing`) is a ring of the capsule's radius on
+  the strip's floor: solid when it is inside the slot, open when the
+  assist can still bring it in (`Hold X`), and a cross when it cannot.
+  Beside it, the speed the player will touch down at, `√(vz² + 2 × 4.15
+  × height)`, is a short bar that fills to `need`.
+- **What happened.** On the tick a primed or unprimed player touches
+  down within 0.5 of a strip the mode files the landing: `bounce` when
+  the vertical speed comes out over 8 units/s, else the first of
+  `not primed` (the word was not −3 on the tick before), `missed` (the
+  origin was outside the slot, with the distance), `too slow` (the speed
+  in was under `need`), `no bounce`. A bounce flashes the strip once and
+  the others dim it for a second. The HUD says it in the notification
+  list, and `superbounce.state` returns the last landing (the outcome,
+  the strip, the speed in and out, the miss).
+
+The colours are the game's: lines take the user's HUD colour
+(`0x0013927e`, as the navpoint does), and a warning takes the `hudg`
+timer-warning record's peak. Labels are drawn in the disc's HUD font
+(font 6) with its button glyphs, in sentence case, numbers in whole
+metres. No colour or letter shape is ours.
+
+### Checking it on the lab
+
+Each of these is a lab run through the agent API
+([agent-api.md](../runtime/agent-api.md), [lab.md](../runtime/lab.md)) at
+30 frames a second, read every tick at pinned ticks:
+
+- **The phases.** Play back the recorded forced crouch (above, "The
+  recipe") and read `superbounce.state` with `world.object` and
+  `havok.agents`: the phase is `under` from the first tick the standing
+  capsule does not fit, `held` from the tick the button is up, `primed`
+  on the tick the word is −3.
+- **The time left.** Set −3 with `havok.pair.set`, stand still, and read
+  `havok.agents` until the pair goes: the fill reaches 0 on that tick,
+  within 2. Then creep at 0.02, 0.05 and 0.1 units/s for the speed
+  limit.
+- **Each kept crouch spot.** `sim.state.set` to 0.3 out along `out`,
+  facing in; `input.pad` crouch held and the stick in, crouch released,
+  then the stick out; read the request bit and the word. A spot that
+  holds the request and turns the word is proven. The measured corner
+  was not reached by scripted sticks, only by the recorded input, so a
+  miss here is not proof a spot fails: try three approach angles.
+- **The landing report.** The recorded jump with the word at −3, at 0,
+  from a lower take-off and 0.3 to the side: `bounce`, `not primed`,
+  `too slow` and `missed` in turn.
+
+No game was run for this section.

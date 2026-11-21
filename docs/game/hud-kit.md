@@ -1,6 +1,6 @@
 # The HUD kit: HUD elements of ours, drawn by Halo 2's own HUD
 
-Status: In progress. Built: the model, the compiler, the preview and the checks (build plan slices 1 and 2), with the superbounce HUD as their first HUD. Not built: the runtime (slices 3 to 5); the game still shows the host overlay in `crates/apps/app/src/superbounce_hud.rs`, which slice 6 replaces.
+Status: In progress. Built: the model, the compiler, the preview and the checks (build plan slices 1 and 2), with the superbounce HUD as their first HUD. Not built: the runtime (slices 3 to 5); the game still shows the host overlay in `crates/apps/app/src/superbounce_hud.rs`, which slice 6 replaces. Designed, not built: the superbounce HUD's charge meter, its prompts and messages, and the navpoint's two targets.
 Code: `crates/tools/hud-kit` (the model, the compiler, the preview, the checks; the superbounce HUD in `src/huds/superbounce.rs` until slice 6), `crates/extensions/game/src/hud_kit.rs` (the runtime, not built), `crates/apps/cli/src/hud_cmd.rs` (`h2 hud`). Tests: `crates/tools/hud-kit/src/tests.rs`, `crates/tools/hud-kit/tests/disc.rs`.
 Switch: none (the runtime is the feature `hud-kit`).
 
@@ -597,10 +597,97 @@ the pill (D: `h2 bitmap`). Which to use is open (Design, "Not verified").
 | scanning | `Dim`: half alpha |
 | no strips, scan failed | hidden |
 
+While the charge is about to go (the meter below under a third), the
+icon is `Flash(TimeWarning)`, the timer's warning record.
+
+### The charge meter
+
+Design, not built. `sb.charge` is a `Meter` under the pill: how far the
+player is through priming, then how long the charge has left.
+
+**What a charge is.** The engine has no charge amount. The pair word is
+0 through the whole crouch and −3 from the first tick of the stand-up; it
+does not step ([superbounce-spots.md](notes/superbounce-spots.md), "The
+pair word around a forced crouch"). What does change by degrees is the
+player's place in the recipe, and after it the time a still body has
+before it sleeps and the pair is rebuilt at 0. The meter shows those two
+and nothing invented:
+
+| Phase | When (`superbounce_mode`'s state) | Fill | Pill and icon |
+|---|---|---|---|
+| hidden | not primed, and not crouched within 1.5 units of a crouch spot | not shown | inactive |
+| near | crouched within 1.5 of a crouch spot, the standing capsule fits | 0, the empty strip | inactive |
+| under | crouched, the standing capsule does not fit, crouch held | 1/3 | inactive |
+| held | crouch let go and the request still set: the forced crouch | 2/3 | inactive, the icon `Flash(Help)` |
+| primed | the word is −3 | 1 less the still ticks over 38 | lit |
+| lost | the word left −3 | 0 for one second, then hidden | inactive |
+
+"The standing capsule fits" is the engine's own answer, output bit 1 of
+the character physics update (E `0x001e55d0`,
+[superbounce.md](superbounce.md), "Forced crouch"), not a test of ours.
+The still ticks count up while the body's speed is under 0.03 units/s
+and return to 0 when it moves; 38 is the measured time to sleep (S: the
+speed limit, and that Havok counts the same ticks). A crouch while
+primed is `lost` at once.
+
+**The record.** A meter in Halo 2 is a bitmap widget with a meter
+shader; the widget has no fill or colour field
+([the research](notes/2026-11-21-h2-custom-hud-mods.md)). The kit's
+`Art::StripMeter` is that: the energy sword's battery strip and its
+shader, which lights the texels whose blue is below `hud_input1`
+([health.md](../halo1/health.md)). The strip is 92 by 8 and the pill is
+27 wide, so the meter is the strip's last 27 columns, cropped as the
+pill is cropped from the frag pill (`Art::StripMeterEnd(27)`, a crop of
+`Art::StripMeter`'s template).
+
+| Field | Value |
+|---|---|
+| `input_1`..`input_4` | 0; the input hook answers `hud_input1` |
+| the four show and four hide words | 0; the gate hook shows it |
+| the three thresholds | 0 |
+| `anchor` | the grenade row's (top left) |
+| `bitmap`, `shader` | the strip meter template's |
+| `sequence_full`, `_half`, `_quarter` | the template's (0) |
+| `offset_*` | `Origin::NextGrenadePill` plus (0, 21): 2 pixels under the pill, screen (154, 57) to (181, 65) fullscreen |
+| `registration_*` | (0, 0) |
+| `effects` | empty |
+| `special` | 0 (not 5: the shield meter's type takes the inputs over) |
+| crop, in `Compiled` | columns 65 to 92 of 92 |
+
+A cropped meter shows only part of the strip's blue ramp, so the hook
+gives `hud_input1 = b0 + fill × (b1 − b0)`, with `b0` and `b1` the blue
+of the crop's first and last columns, read from the strip's texels when
+the templates resolve (on the disc the ramp runs from column 13 to the
+right edge, V [health.md](../halo1/health.md)). The colours are the
+shader's own, the ammunition counters'. Nothing of ours tints it.
+
+The checks treat it as any widget: `fit` and `retail` against the
+grenade panel above it (2 pixels clear) and the prompt line below (y 96);
+`modes` with the pill, which it shares every screen mode with.
+
+**The prompts and messages.** The recipe's verbs go on the game's own
+prompt line, with the bound button drawn by the game, and the results in
+its notification list:
+
+| Channel | Text | When |
+|---|---|---|
+| `Prompt` | Hold (crouch) and walk under | near, standing or crouched, not primed, within 1.5 of a crouch spot |
+| `Prompt` | Let go of (crouch) | under |
+| `Prompt` | Walk out to stand up | held |
+| `Message` | Primed | the word becomes −3 |
+| `Message` | Charge lost | lost |
+| `Message` | Superbounce, 12 m | a bounce, with the height gained at its top in whole metres |
+| `Message` | Not primed. / Missed the strip. / Too slow. / No bounce. | a landing within 0.5 of a strip that did not bounce, by its first failed test ([superbounce.md](superbounce.md), "Landings") |
+
+(crouch) is the action token the game replaces with the bound button
+(`0x0022d2ee`). A prompt of the game's own wins the line.
+
 ### The navpoint
 
-`sb.navpoint` is a `Navpoint` channel over the nearest strip's stand
-point, in every screen mode. Halo 2 draws a navpoint in
+`sb.navpoint` is a `Navpoint` channel over the next thing to do, in
+every screen mode: while not primed, the nearest crouch spot's stand
+point; while primed, the nearest strip's (Design, not built: the
+preview's states show the strip's alone). Halo 2 draws a navpoint in
 `0x0024e59f` (E, called per slot from `0x0024da7d`): it projects the
 point (`0x0002b400`, `0x0002b460`), clamps it into the waypoint area
 (`hudg` `waypoint_*_inset`, `+0xec`..`+0xf8`), then draws three HUD
@@ -635,9 +722,10 @@ above the frame's centre) the arrow with its tip on the point, the
 marker's in-view sequence 1 pixel above it (`NAVPOINT_GAP`) and "12"
 centred 2 pixels above the marker (`NAVPOINT_NUMBER_GAP`), the texels
 times the notifications' colour (the same `0x0013927e`; S: that the HUD
-shader multiplies). The outline is not drawn (decoding 8). Primed it is
-`Normal`; not primed `Dim`. It is hidden while scanning and without a
-strip.
+shader multiplies). The outline is not drawn (decoding 8). It is
+`Normal` over either target, and hidden while scanning and without a
+target. The built preview draws the strip's navpoint `Dim` while not
+primed, having no crouch target.
 
 ### States
 
@@ -649,6 +737,10 @@ strip.
 | `no-strips` | hidden | hidden | |
 | `tutorial-1` | inactive | dim | step 1 |
 | `tutorial-2`, `-3`, `-4` | lit | lit | steps 2 to 4 |
+
+The charge meter adds preview states (not built): `near`, `under`,
+`held`, `primed` at fill 1, `draining` at fill 0.25 with the icon's
+warning flash, and `lost`.
 
 ### The runtime, for this HUD
 
@@ -799,6 +891,17 @@ agent API had no game to attach to, and a design page starts none.
   bitmap by eye) and so whether 20 pixels of body is clear of it in
   every sequence, and which retail widget draws an unselected grenade's
   pill (the `Inactive` look greys the lit one instead).
+- The charge meter: that a cropped strip fills as the remap says (the
+  blue ramp between the crop's columns is taken as even), what the
+  shader draws of the unlit part, and the strip's sequence in split
+  screen. Whether a retail widget reads the bomb arming input (`0x44` in
+  Assembly's list), which would be the game's own "hold to charge" art:
+  list the bitmap widgets of every `nhdt` on the disc by input.
+- That the still-tick count matches the body's sleep: prime with
+  `havok.pair.set`, stand still, and read `havok.agents` each tick until
+  the pair goes, with `superbounce.state`'s charge beside it.
+- That the (crouch) action token exists for the prompt line as the
+  pickup prompt's (X) does.
 - The frame cost.
 - The preview on the disc: `tests/disc.rs` has not been run, so the
   grenade row on lockout (it asserts the panel, (106, 0) and
