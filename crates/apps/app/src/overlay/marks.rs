@@ -977,7 +977,8 @@ mod tests {
 
     #[test]
     fn labels_are_centred_or_hang_off_their_anchor() {
-        assert_eq!(label_origin([100.0, 50.0], 6, 2.0, true), [76.0, 42.0]);
+        // Six 8-pixel glyphs at 2x are 96 wide and 16 tall: centred on the anchor.
+        assert_eq!(label_origin([100.0, 50.0], 6, 2.0, true), [52.0, 42.0]);
         assert_eq!(label_origin([100.2, 50.0], 6, 1.0, false), [106.0, 55.0]);
     }
 
