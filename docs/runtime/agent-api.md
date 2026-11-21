@@ -1013,7 +1013,8 @@ receivers compared with the Sharp edge, `lights_shadowed` the tiles (one
 per shadowed light of the guest's) and `tiles_refused` the shadow maps
 left at the guest's size. The display on the guest's live attachments
 draws no tiles. The other stages and counters are zero: the lights lit
-are still the guest's. The guest's light selections are in
+are still the guest's, and no game frame hands the renderer sun casters
+yet (`e3.sun`, `sun_tiles`, `sun_tiles_redrawn`, `atlas_halved`). The guest's light selections are in
 `render.scene.views`.
 Retail graph draws omit `e3`.
 
