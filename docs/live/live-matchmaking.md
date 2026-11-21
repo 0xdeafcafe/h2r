@@ -1084,6 +1084,15 @@ lowercase hex digits.
    failure's status as the Live worker maps it (an unreachable server is
    `CANNOT_ACCESS_SERVICE`). With no server (System Link, offline), the
    calls are only kept and complete at once.
+   - A failed Register ends the game's matchmaking lobby as soon as it
+     fills (result `0x11`, [bots.md](../game/bots.md) §8.4). Register and
+     Report therefore retry through an outage under the worker's `Retry`,
+     as reads do: the server writes a second registration or report as
+     nothing. ExtendRound writes each time, so it is sent once.
+   - Each failure is logged with the server's answer: `live: arbitration
+     <session>/<round>/<call> for <gamertag> failed: the server answered
+     404` (or `could not be reached`). A 404 is a session the server does
+     not know; 401 or 403 is the account's token.
 3. **Server.** `ArbitrationRegistered`, `ArbitrationExtended` and
    `ArbitrationReported` are server-signed on
    `round-<session>-<round>`, carrying the token's account as `xuid`.
