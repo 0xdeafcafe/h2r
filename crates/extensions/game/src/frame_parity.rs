@@ -223,30 +223,43 @@ pub fn native(present: u64, image: Result<Rgba, String>) {
 }
 
 fn complete(present: u64, side: Side, image: Result<Rgba, String>, sequence: Option<u64>) {
+    complete_with(present, side, image, sequence, compare_pair);
+}
+
+fn compare_pair(tick: u32, (reference, native): Images) -> Result<ParityReply, RpcError> {
+    compare(&reference, &native, false)
+        .map(|(compare, _)| ParityReply { tick: Some(u64::from(tick)), compare })
+        .map_err(|e| unavailable(e.to_string()))
+}
+
+fn complete_with(
+    present: u64,
+    side: Side,
+    image: Result<Rgba, String>,
+    sequence: Option<u64>,
+    compare: impl FnOnce(u32, Images) -> Result<ParityReply, RpcError>,
+) {
     if !wanted(present) {
         return;
     }
-    let (job, tick, images) = {
+    let (sequence, tick, images) = {
         let mut s = state();
-        if sequence.is_some_and(|seq| seq != s.sequence) {
+        if TARGET.load(Ordering::Relaxed) != present || sequence.is_some_and(|seq| seq != s.sequence) {
             return;
         }
-        let Some(job) = s.job.as_mut() else { return };
-        let Some(pair) = &mut job.pair else { return };
+        let Some(pair) = s.job.as_mut().and_then(|job| job.pair.as_mut()) else { return };
         let Some(images) = pair.push(present, side, image) else { return };
         let tick = pair.tick;
         TARGET.store(0, Ordering::Release);
-        (s.job.take().expect("bound parity request"), tick, images)
+        (s.sequence, tick, images)
     };
-    // A comparison at display resolution can take much longer than a
-    // mutex acquisition. Neither the game thread nor a later request
-    // waits behind the pixel walk.
-    if job.client.waiting() {
-        job.client.finish(images.map_err(unavailable).and_then(|(reference, native)| {
-            compare(&reference, &native, false)
-                .map(|(compare, _)| ParityReply { tick: Some(u64::from(tick)), compare })
-                .map_err(|e| unavailable(e.to_string()))
-        }));
+
+    // Keep the client reachable for interruption or reset while the
+    // renderer walks the pixels without holding the state lock.
+    let result = images.map_err(unavailable).and_then(|images| compare(tick, images));
+    let mut s = state();
+    if s.sequence == sequence && let Some(job) = s.job.take() {
+        job.client.finish(result);
     }
 }
 
@@ -280,8 +293,77 @@ mod tests {
         }
     }
 
-    // Both RPC tests install a renderer in the process-wide agent registry.
+    // RPC tests install a renderer in the process-wide agent registry.
     static RPC_RENDERER: Mutex<()> = Mutex::new(());
+
+    struct Installed;
+    impl Installed {
+        fn new() -> Self {
+            install();
+            Self
+        }
+    }
+    impl Drop for Installed {
+        fn drop(&mut self) { uninstall(); }
+    }
+
+    #[test]
+    fn replacement_and_timeline_reset_interrupt_a_comparison_in_progress() {
+        use agent::render::{CAPTURE, HOSTED};
+        use serde_json::{Value, json};
+        use std::sync::mpsc;
+
+        struct Reader;
+        impl agent::Reader for Reader {
+            fn status(&mut self) -> agent::GameStatus { agent::GameStatus::default() }
+            fn objects(&mut self) -> Result<Vec<agent_proto::Object>, String> { Ok(Vec::new()) }
+        }
+
+        let _serial = RPC_RENDERER.lock().unwrap_or_else(|e| e.into_inner());
+        let _installed = Installed::new();
+        let agent = agent::Agent::new();
+        agent::render::add_frame_methods(&agent, &CAPTURE, &HOSTED);
+        let (tx, replies) = mpsc::sync_channel(4);
+        let conn = agent.connect(tx);
+        let request = |id: u32| {
+            agent.submit(conn, &json!({
+                "jsonrpc":"2.0", "id":id, "method":"render.parity", "params":{"arm":true}
+            }).to_string());
+            agent.on_tick(&mut Reader);
+        };
+        let start_frame = || {
+            bind(101, 47);
+            native(101, Ok(image(8)));
+        };
+        let reply = || -> Value {
+            agent.on_tick(&mut Reader);
+            serde_json::from_str(&replies.try_recv().unwrap()).unwrap()
+        };
+
+        request(1);
+        start_frame();
+        complete_with(101, Side::Reference, Ok(image(5)), None, |tick, images| {
+            request(2);
+            // Reuse the exact same tick and present during the first pixel
+            // walk. Only the request sequence distinguishes the two clients.
+            start_frame();
+            compare_pair(tick, images)
+        });
+        let replaced = reply();
+        assert_eq!(replaced["id"], 1);
+        assert_eq!(replaced["error"]["code"], code::INTERRUPTED);
+        assert!(replies.try_recv().is_err());
+
+        complete_with(101, Side::Reference, Ok(image(5)), None, |tick, images| {
+            reset("test timeline reset");
+            compare_pair(tick, images)
+        });
+        let reset = reply();
+        assert_eq!(reset["id"], 2);
+        assert_eq!(reset["error"]["code"], code::UNAVAILABLE);
+        assert_eq!(reset["error"]["message"], "test timeline reset");
+        assert!(replies.try_recv().is_err());
+    }
 
     #[test]
     fn parity_rpc_compares_the_display_surface_to_a_fresh_gpu_draw() {
@@ -311,12 +393,7 @@ mod tests {
             }
         };
         let _serial = RPC_RENDERER.lock().unwrap_or_else(|e| e.into_inner());
-        install();
-        struct Installed;
-        impl Drop for Installed {
-            fn drop(&mut self) { uninstall(); }
-        }
-        let _installed = Installed;
+        let _installed = Installed::new();
         let agent = agent::Agent::new();
         agent::render::add_frame_methods(&agent, &CAPTURE, &HOSTED);
         let (tx, replies) = mpsc::sync_channel(4);
