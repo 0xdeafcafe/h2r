@@ -173,7 +173,7 @@ impl ApplicationHandler for App {
                 .expect("create window"),
         );
         let size = window.inner_size();
-        let instance = GfxContext::desktop_instance();
+        let instance = wgpu::Instance::default();
         let surface = instance.create_surface(window.clone()).expect("create surface");
         let ctx = pollster::block_on(GfxContext::new(instance, Some(&surface))).expect("init gpu");
         let presenter = Presenter::new(&ctx, surface, (size.width, size.height)).expect("configure surface");

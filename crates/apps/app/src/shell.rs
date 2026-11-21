@@ -205,7 +205,7 @@ impl Shell {
         #[cfg(target_os = "macos")]
         app_icon::set_dock_icon();
         let size = window.inner_size();
-        let instance = GfxContext::desktop_instance();
+        let instance = wgpu::Instance::default();
         let surface = instance.create_surface(Arc::clone(&window))?;
         let ctx = pollster::block_on(GfxContext::new(instance, Some(&surface)))?;
         let info = ctx.adapter.get_info();

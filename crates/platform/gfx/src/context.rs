@@ -35,18 +35,6 @@ pub struct GfxContext {
 }
 
 impl GfxContext {
-    /// Creates the instance used by desktop windows and headless rendering.
-    /// `WGPU_BACKEND` selects a backend explicitly. Windows defaults to Vulkan.
-    /// Embedded shells supply their own instance for their native surface.
-    pub fn desktop_instance() -> wgpu::Instance {
-        let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
-        if cfg!(windows) {
-            desc.backends = wgpu::Backends::VULKAN;
-        }
-        desc.backends = desc.backends.with_env();
-        wgpu::Instance::new(desc)
-    }
-
     /// Creates a context, preferring an adapter that can present to
     /// `compatible_surface`.
     pub async fn new(instance: wgpu::Instance, compatible_surface: Option<&wgpu::Surface<'_>>) -> Result<Self, GfxError> {
@@ -71,6 +59,6 @@ impl GfxContext {
 
     /// Headless context (no surface), blocking.
     pub fn headless() -> Result<Self, GfxError> {
-        pollster::block_on(Self::new(Self::desktop_instance(), None))
+        pollster::block_on(Self::new(wgpu::Instance::default(), None))
     }
 }

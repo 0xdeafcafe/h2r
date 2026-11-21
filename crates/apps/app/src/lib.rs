@@ -1,7 +1,7 @@
 //! The host shell the recompiled game runs inside (see docs/runtime/app.md).
 //!
-//! [`run`] opens a desktop window on the main thread, creates the wgpu
-//! device for its surface, opens the audio device, then starts the guest
+//! [`run`] owns the macOS main thread: it opens the window, creates the wgpu
+//! device on a Metal surface, opens the audio device, then starts the guest
 //! on a worker thread with a [`GuestHost`]. The guest side uses the host
 //! for everything platform-shaped:
 //!

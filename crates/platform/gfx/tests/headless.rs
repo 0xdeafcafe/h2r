@@ -1,5 +1,5 @@
-//! GPU smoke tests using synthetic draws and textures. A software Vulkan
-//! adapter is mandatory for the explicitly selected Windows CI probe.
+//! GPU smoke tests. They need an adapter (Metal on macOS CI/dev machines) and
+//! skip themselves with a message when none is available.
 
 use gfx::blit::Blitter;
 use gfx::repack::FetchMode;
@@ -44,9 +44,6 @@ fn context() -> Option<Gpu> {
             Some(Gpu { ctx, scope })
         }
         Err(e) => {
-            if std::env::var_os("WGPU_BACKEND").is_some() {
-                panic!("could not open the requested desktop GPU backend: {e}");
-            }
             eprintln!("skipping GPU test: {e}");
             None
         }
@@ -80,29 +77,9 @@ fn draw<'a>(streams: &'a [VertexStream<'a>], count: u32, layout: &'a VertexLayou
 #[test]
 fn cull_mode_controls_visibility() {
     let Some(ctx) = context() else { return };
-    check_culling(&ctx);
-}
-
-/// The Windows CI job supplies a software Vulkan ICD. A missing driver,
-/// hardware adapter, or different backend fails the job.
-#[test]
-#[ignore = "requires a software Vulkan ICD"]
-fn software_vulkan_renders_and_reads_back() {
-    let ctx = GfxContext::headless().expect("open the software Vulkan device");
-    let info = ctx.adapter.get_info();
-    eprintln!(
-        "Vulkan smoke adapter: {} ({:?}, {:?})",
-        info.name, info.backend, info.device_type
-    );
-    assert_eq!(info.backend, wgpu::Backend::Vulkan);
-    assert_eq!(info.device_type, wgpu::DeviceType::Cpu);
-    check_culling(&ctx);
-}
-
-fn check_culling(ctx: &GfxContext) {
     let (w, h) = (64u32, 64u32);
     let target = OffscreenTarget::new(&ctx.device, (w, h), wgpu::TextureFormat::Bgra8Unorm);
-    let mut renderer = Renderer::new(ctx);
+    let mut renderer = Renderer::new(&ctx);
     let layout = VertexLayout::from_fvf(fvf::XYZRHW | fvf::DIFFUSE).unwrap();
     let verts = [vertex(0.0, 0.0, 0xFFFF0000), vertex(64.0, 0.0, 0xFFFF0000), vertex(0.0, 64.0, 0xFFFF0000)].concat();
 
@@ -111,7 +88,7 @@ fn check_culling(ctx: &GfxContext) {
         let mut enc = ctx.device.create_command_encoder(&Default::default());
         renderer
             .render(
-                ctx,
+                &ctx,
                 &mut enc,
                 &target.target(),
                 Clear::all([0.0, 0.0, 0.0, 1.0]),
@@ -119,7 +96,7 @@ fn check_culling(ctx: &GfxContext) {
             )
             .unwrap();
         ctx.queue.submit([enc.finish()]);
-        target.read_pixels(ctx)
+        target.read_pixels(&ctx)
     };
 
     // BGRA bytes: red is [0, 0, 255, 255].
