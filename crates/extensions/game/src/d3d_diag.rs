@@ -31,11 +31,13 @@ use std::io::Write;
 use std::sync::{Arc, Mutex};
 
 use d3d::backend::{
-    Backend, DrawOutcome, GuestLayoutKind, RectClear, ResolvedDraw, StreamBytes, TargetInfo,
-    TextureInfo,
+    Backend, DisplaySurfacePixels, DrawOutcome, GuestLayoutKind, RectClear, RenderExtents,
+    ResolvedDraw, StreamBytes, TargetInfo, TextureInfo,
 };
 use gfx::texture::{DecodedTexture, TextureDesc, TextureKind};
 use gfx::{Clear, D3DFormat};
+
+mod layout;
 
 /// Presents so far, for timelines keyed on frames (`H2_BOOT_INPUT`).
 static PRESENTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -255,9 +257,16 @@ pub struct DiagBackend<B: Backend> {
 }
 
 /// A host texture with the ID the capture names it by.
-pub struct Tracked<T> {
+pub struct Tracked<T, S> {
     pub id: u64,
     pub inner: T,
+    source: TextureSource<S>,
+}
+
+enum TextureSource<S> {
+    Upload,
+    Placeholder,
+    Surface(&'static str, S),
 }
 
 struct Capture {
@@ -446,29 +455,29 @@ impl<B: Backend> DiagBackend<B> {
     /// Reads the current pass's colour target back into a PNG under the
     /// cache directory's `frames/`, and tells the probe.
     fn probe_snap(&mut self, ask: agent::render::SnapAsk) {
-        let result = match self.probe_target {
-            None => Err("the pass's size is unknown (no draw in it)".to_owned()),
-            Some((surface, w, h)) => {
-                let layout = GuestLayoutKind::Linear { pitch: w * 4 };
-                self.inner
-                    .read_surface(surface, D3DFormat::LinA8R8G8B8, w, h, layout)
-                    .and_then(|bgra| {
-                        let rgba: Vec<u8> = bgra
-                            .chunks_exact(4)
-                            .flat_map(|p| [p[2], p[1], p[0], 0xff])
-                            .collect();
-                        let dir = agent_proto::cache_dir().join("frames");
-                        let path = dir.join(format!("frame-{}-pass-{}.png", ask.seq, ask.pass));
-                        std::fs::create_dir_all(&dir)
-                            .map_err(|e| e.to_string())
-                            .and_then(|()| {
-                                crate::d3d_glue::write_png(&path, &rgba, w, h)
-                                    .map_err(|e| e.to_string())
-                            })
-                            .map(|()| path.display().to_string())
-                    })
-            }
-        };
+        let result = self.probe_target
+            .ok_or_else(|| "the pass's size is unknown (no draw in it)".to_owned())
+            .and_then(|(surface, w, h)| {
+                if ask.display {
+                    self.inner.read_display_surface(surface)?
+                        .ok_or_else(|| "the backend has no display readback for this surface".into())
+                } else {
+                    let layout = GuestLayoutKind::Linear { pitch: w * 4 };
+                    self.inner
+                        .read_surface(surface, D3DFormat::LinA8R8G8B8, w, h, layout)
+                        .map(|bgra| ((w, h), bgra))
+                }
+            })
+            .and_then(|((w, h), bgra)| {
+                let rgba: Vec<u8> = bgra.chunks_exact(4)
+                    .flat_map(|p| [p[2], p[1], p[0], 0xff])
+                    .collect();
+                let dir = agent_proto::cache_dir().join("frames");
+                let path = dir.join(format!("frame-{}-pass-{}.png", ask.seq, ask.pass));
+                std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+                crate::d3d_glue::write_png(&path, &rgba, w, h).map_err(|e| e.to_string())?;
+                Ok(path.display().to_string())
+            });
         self.probe.snapped(ask.pass, result);
     }
 }
@@ -503,6 +512,7 @@ fn probe_draw<S: std::fmt::Debug>(
         vs: vertex_name(&draw.shader.vertex),
         depth_state: Some(depth_record(draw)),
         constants: Some(draw.shader.constants.clone() as Arc<[[f32; 4]]>),
+        layout: None,
     }
 }
 
@@ -584,7 +594,7 @@ impl<B: Backend> DiagBackend<B> {
 
 impl<B: Backend> Backend for DiagBackend<B> {
     type Surface = B::Surface;
-    type Texture = Tracked<B::Texture>;
+    type Texture = Tracked<B::Texture, B::Surface>;
 
     fn create_surface(
         &mut self,
@@ -635,7 +645,7 @@ impl<B: Backend> Backend for DiagBackend<B> {
             self.origin(id, || {
                 format!("copy of surface {surface:?} opaque={opaque}")
             });
-            Tracked { id, inner }
+            Tracked { id, inner, source: TextureSource::Surface("snapshot of", surface) }
         }))
     }
     fn judge(&self) -> Option<Box<dyn d3d::backend::DrawJudge>> {
@@ -704,7 +714,7 @@ impl<B: Backend> Backend for DiagBackend<B> {
             self.origin(id, || {
                 format!("depth bits of surface {depth:?} ({format:?} {width}x{height}) at +{offset:#x} generation {generation}")
             });
-            Tracked { id, inner }
+            Tracked { id, inner, source: TextureSource::Surface("depth bits of", depth) }
         }))
     }
     fn can_sample_surfaces(&self) -> bool {
@@ -724,7 +734,7 @@ impl<B: Backend> Backend for DiagBackend<B> {
             self.origin(id, || {
                 format!("render-to-texture surface {surface:?} in place")
             });
-            Tracked { id, inner }
+            Tracked { id, inner, source: TextureSource::Surface("render-to-texture", surface) }
         }))
     }
     fn clear_pixel_count(&mut self) -> Result<(), String> {
@@ -757,7 +767,27 @@ impl<B: Backend> Backend for DiagBackend<B> {
         &mut self, surfaces: d3d::ExternalSurfaces<Self::Surface>, request: d3d::ExternalPassRequest,
         textures: [Option<&Self::Texture>; 4], plan: &d3d::ExternalPlan, copy: d3d::TargetCopy, pass: d3d::SharedReplacement,
     ) -> Result<Option<Vec<d3d::ExternalRecording>>, String> {
-        self.inner.prepare_external(surfaces, request, textures.map(|t| t.map(|t| &t.inner)), plan, copy, pass)
+        let draw = if self.probe.layout_requested() {
+            pass.lock().unwrap_or_else(|e| e.into_inner()).diagnostic_draw()
+        } else {
+            None
+        };
+        let (color, depth) = (surfaces.color, surfaces.depth);
+        let inner = textures.map(|t| t.map(|t| &t.inner));
+        let result = self.inner.prepare_external(surfaces, request, inner, plan, copy, pass);
+        if matches!(&result, Ok(Some(recordings)) if !recordings.is_empty())
+            && let Some(draw) = draw
+        {
+            let depth = draw.target.depth_format.map(|_| depth);
+            self.probe_enter(color, depth, Some((draw.target.width, draw.target.height)));
+            let extents = self.inner.render_extents(color, depth, inner);
+            let mut info = probe_draw(color, depth, &draw, &Ok(DrawOutcome::Drawn));
+            info.layout = Some(layout::describe(
+                &draw, textures, extents, Some(format!("{:?}", plan.stage)),
+            ));
+            self.probe.draw(info);
+        }
+        result
     }
 
     fn reusable_external_attachments(&self) -> bool {
@@ -840,6 +870,19 @@ impl<B: Backend> Backend for DiagBackend<B> {
     fn surface_extent(&self, surface: Self::Surface) -> Option<(u32, u32)> {
         self.inner.surface_extent(surface)
     }
+
+    fn render_extents(
+        &mut self, color: Self::Surface, depth: Option<Self::Surface>,
+        textures: [Option<&Self::Texture>; 4],
+    ) -> RenderExtents {
+        self.inner.render_extents(color, depth, textures.map(|t| t.map(|t| &t.inner)))
+    }
+
+    fn read_display_surface(
+        &mut self, surface: Self::Surface,
+    ) -> Result<Option<DisplaySurfacePixels>, String> {
+        self.inner.read_display_surface(surface)
+    }
     fn gpu_fence(&mut self) -> Option<Box<dyn Fn() -> bool + Send>> {
         self.inner.gpu_fence()
     }
@@ -853,7 +896,7 @@ impl<B: Backend> Backend for DiagBackend<B> {
             let id = self.next_texture;
             self.next_texture += 1;
             self.origin(id, || format!("depth level surface {surface:?}"));
-            Tracked { id, inner }
+            Tracked { id, inner, source: TextureSource::Surface("depth level", surface) }
         }))
     }
     fn drop_pixel_count(&mut self, ticket: u64) {
@@ -869,7 +912,7 @@ impl<B: Backend> Backend for DiagBackend<B> {
         let inner = self.inner.texture_placeholder(desc)?;
         let id = self.next_texture;
         self.next_texture += 1;
-        Ok(Tracked { id, inner })
+        Ok(Tracked { id, inner, source: TextureSource::Placeholder })
     }
     fn upload_texture(&mut self, texture: &DecodedTexture) -> Result<Self::Texture, String> {
         let r = self.inner.upload_texture(texture);
@@ -923,7 +966,7 @@ impl<B: Backend> Backend for DiagBackend<B> {
                 ),
             );
         }
-        r.map(|inner| Tracked { id, inner })
+        r.map(|inner| Tracked { id, inner, source: TextureSource::Upload })
     }
     fn bc_supported(&self) -> bool {
         self.inner.bc_supported()
@@ -1011,7 +1054,12 @@ impl<B: Backend> Backend for DiagBackend<B> {
             std::array::from_fn(|i| textures[i].map(|t| &t.inner));
         let r = self.inner.draw(color, depth, draw, inner);
         if probing {
-            self.probe.draw(probe_draw(color, depth, draw, &r));
+            let mut info = probe_draw(color, depth, draw, &r);
+            if self.probe.layout_requested() {
+                let extents = self.inner.render_extents(color, depth, inner);
+                info.layout = Some(layout::describe(draw, textures, extents, None));
+            }
+            self.probe.draw(info);
         }
         if let Some(s) = &mut self.sweep {
             if s.dumping(self.in_frame) {
@@ -1653,6 +1701,33 @@ mod tests {
         assert_eq!(draw.constants[&-38], [0.0, 0.0, 16384.0, 1.0]);
         assert_eq!(draw.constants[&58], [320.0, -240.0, 16777215.0, 0.0]);
         assert_eq!(draw.depth.as_ref().map(|d| d.w), Some(true));
+    }
+
+    #[test]
+    fn frame_layout_keeps_guest_clip_and_reports_the_display_clip() {
+        let _one = PRESENTING.lock().unwrap_or_else(|e| e.into_inner());
+        static PROBE: agent::render::FrameProbe = agent::render::FrameProbe::new();
+        let mut inner = d3d::RecordingBackend::new();
+        inner.extents.insert(1, (1920, 1080));
+        let (backend, _) = DiagBackend::new(inner);
+        let mut backend = backend.with_probe(&PROBE);
+
+        let mut draw = depth_draw();
+        draw.clip = Some(d3d::backend::PixelRect { x: 0, y: 0, width: 640, height: 480 });
+        draw.ui_fit = d3d::backend::UiFit::about((1920, 1080), [320.0, 240.0]);
+
+        PROBE.arm_layout(&agent_proto::FrameParams { arm: true, ..Default::default() }).unwrap();
+        backend.present(1, 0).unwrap();
+        backend.draw(1, None, &draw, [None; 4]).unwrap();
+        backend.present(1, 0).unwrap();
+
+        let frame = PROBE.reply().frame.unwrap();
+        let layout = frame.draws[0].layout.as_ref().unwrap();
+        assert_eq!(layout.guest_size, [640, 480]);
+        assert_eq!(layout.display_size, Some([1920, 1080]));
+        assert_eq!(layout.clip, [[0, 0, 640, 480]]);
+        assert_eq!(layout.display_clip, [[240, 0, 1440, 1080]]);
+        assert_eq!(layout.ui_fit, Some([0.75, 1.0, 80.0, 0.0]));
     }
 
     #[test]

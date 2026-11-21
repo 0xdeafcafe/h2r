@@ -15,7 +15,8 @@ use super::pacing::{Rate, Schedule, alpha, blendable, defer};
 use super::reproject::{self, Screen};
 use super::screen_space::{self, Fit, PassThrough};
 use crate::backend::{
-    Backend, DrawJudge, DrawOutcome, GuestLayoutKind, RectClear, ResolvedDraw, StreamBytes,
+    Backend, DisplaySurfacePixels, DrawJudge, DrawOutcome, GuestLayoutKind, RectClear,
+    RenderExtents, ResolvedDraw, StreamBytes,
 };
 use crate::shader::{Constants, Microcode, VertexProcessing};
 
@@ -1663,6 +1664,22 @@ where
             });
         }
         Ok(r)
+    }
+
+    fn render_extents(
+        &mut self,
+        color: Self::Surface,
+        depth: Option<Self::Surface>,
+        textures: [Option<&Self::Texture>; 4],
+    ) -> RenderExtents {
+        self.inner.render_extents(color, depth, textures)
+    }
+
+    fn read_display_surface(
+        &mut self,
+        surface: Self::Surface,
+    ) -> Result<Option<DisplaySurfacePixels>, String> {
+        self.inner.read_display_surface(surface)
     }
 
     fn read_surface(

@@ -75,8 +75,9 @@ use gfx::texture::{DecodedTexture, TextureDesc};
 use gfx::{Clear, D3DFormat};
 
 use crate::backend::{
-    Backend, DrawJudge, DrawOutcome, ExternalAttachments, ExternalCommands, ExternalCopies,
-    ExternalRecording, GuestLayoutKind, RectClear, ResolvedDraw, StreamBytes, TargetCopy,
+    Backend, DisplaySurfacePixels, DrawJudge, DrawOutcome, ExternalAttachments, ExternalCommands,
+    ExternalCopies, ExternalRecording, GuestLayoutKind, RectClear, RenderExtents, ResolvedDraw,
+    StreamBytes, TargetCopy,
     prepare_external_recordings,
 };
 
@@ -1024,6 +1025,28 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
             Ok(())
         });
         Ok(DrawOutcome::Drawn)
+    }
+
+    fn render_extents(
+        &mut self,
+        color: u32,
+        depth: Option<u32>,
+        textures: [Option<&ProxyTexture<B>>; 4],
+    ) -> RenderExtents {
+        let texture_ids = textures.map(|texture| texture.map(|t| t.id));
+        self.call(move |worker| {
+            let color = worker.surface(color)?;
+            let depth = worker.depth(depth)?;
+            let textures = texture_ids.map(|id| id.and_then(|id| worker.textures.get(&id)));
+            Ok(worker.inner.render_extents(color, depth, textures))
+        }).unwrap_or_default()
+    }
+
+    fn read_display_surface(&mut self, surface: u32) -> Result<Option<DisplaySurfacePixels>, String> {
+        self.call(move |worker| {
+            let surface = worker.surface(surface)?;
+            worker.inner.read_display_surface(surface)
+        })
     }
 
     fn read_surface(

@@ -27,6 +27,17 @@ pub struct TargetInfo {
     pub depth_format: Option<D3DFormat>,
 }
 
+/// Host allocation sizes for a draw's attachments and texture stages.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RenderExtents {
+    pub color: Option<(u32, u32)>,
+    pub depth: Option<(u32, u32)>,
+    pub textures: [Option<(u32, u32)>; 4],
+}
+
+/// A display surface's extent and its tightly packed BGRA8 pixels.
+pub type DisplaySurfacePixels = ((u32, u32), Vec<u8>);
+
 /// A bound texture, as its guest header describes it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TextureInfo {
@@ -334,6 +345,12 @@ pub trait ExternalPass: Send {
     /// A resolved draw admission can retain its original, immutable D3D packet for
     /// ordered fallback on the worker. Guest-mask reservations leave this empty.
     fn resolved_fallback(&self) -> Option<std::sync::Arc<ResolvedDraw>> { None }
+
+    /// An immutable packet for render diagnostics, independent of whether
+    /// this pass can replay that packet as a fallback.
+    fn diagnostic_draw(&self) -> Option<std::sync::Arc<ResolvedDraw>> {
+        self.resolved_fallback()
+    }
 
     /// Number of suppressed guest items represented by this reservation. Most
     /// geometry promises one range per item; multi-range effects override it.
@@ -1169,6 +1186,11 @@ impl ResolvedDraw {
         rect.projected_x((v.x, v.y, v.width, v.height), *factor)
     }
 
+    /// Texture stages whose program reads the bound image.
+    pub fn sampled_texture_stages(&self) -> [bool; 4] {
+        crate::device::sampled_stages(&self.shader, &self.raw, &self.state)
+    }
+
     /// Whether submission can change the attached guest depth or stencil.
     pub fn writes_depth_stencil(&self) -> bool {
         crate::device::writes_depth_or_stencil(&self.state.render, self.target.depth_format)
@@ -1308,6 +1330,35 @@ pub trait Backend: Send {
         let _ = surface;
         None
     }
+    /// Host allocation sizes of the selected display copy, or the
+    /// reference copy when that draw has no display allocation. A backend
+    /// may need to wait for resource creation on a worker. This reports
+    /// backing allocations, so a temporary attachment used by a particular
+    /// draw can have a different size.
+    fn render_extents(
+        &mut self,
+        color: Self::Surface,
+        depth: Option<Self::Surface>,
+        textures: [Option<&Self::Texture>; 4],
+    ) -> RenderExtents {
+        let _ = textures;
+        RenderExtents {
+            color: self.surface_extent(color),
+            depth: depth.and_then(|surface| self.surface_extent(surface)),
+            textures: [None; 4],
+        }
+    }
+
+    /// Reads a selected display allocation at its host size for diagnostics.
+    /// Unsupported backends return `Ok(None)`.
+    fn read_display_surface(
+        &mut self,
+        surface: Self::Surface,
+    ) -> Result<Option<DisplaySurfacePixels>, String> {
+        let _ = surface;
+        Ok(None)
+    }
+
     /// Submits the work recorded so far and returns a check that answers
     /// whether the GPU has finished it, without waiting. Host-only: the
     /// interpolated replay drops an in-between frame while the last one is
