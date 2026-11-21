@@ -38,6 +38,14 @@ pub const XMO_STATUSF_PAUSED: u32 = 0x2_0000;
 pub const DSBCAPS_CTRL3D: u32 = 0x0000_0010;
 pub const DSBCAPS_MIXIN: u32 = 0x0000_2000;
 pub const DSBCAPS_MIXIN_LIKE_MASK: u32 = 0x0018_2000;
+/// The two `DSBCAPS_FXIN` bits: a buffer that reads the FX send bin named by
+/// its `dwInputMixBin`. The library tests them before `DSBCAPS_MIXIN` when it
+/// picks a buffer's input bin (`0x37cf1e`).
+pub const DSBCAPS_FXIN_MASK: u32 = 0x0018_0000;
+/// The input bin the library gives a `DSBCAPS_MIXIN` buffer that is not
+/// `DSBCAPS_FXIN`, whatever `dwInputMixBin` says (`0x37cf36`): a voice whose
+/// output buffer is such a submix lists this bin (`audio::route::SUBMIX`).
+pub const DSMIXBIN_SUBMIX: u32 = 0x1f;
 
 // Play / Lock flags (Play: bit 4 verified at 0x382d4f, bit 2 at 0x382d7e).
 pub const DSBPLAY_LOOPING: u32 = 0x1;
