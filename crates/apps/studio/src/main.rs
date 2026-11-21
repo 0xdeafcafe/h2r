@@ -730,6 +730,9 @@ impl ApplicationHandler for Runner {
                 let size = win.window.inner_size();
                 win.resize(size.width, size.height);
             }
+            WindowEvent::Focused(focused) if id == win.window.id() => {
+                win.studio.play.play.window_focus(&self.app, focused);
+            }
             WindowEvent::CloseRequested => self.app.dispatch(Action::Quit),
             WindowEvent::DroppedFile(path) => self.app.dispatch(Action::OpenSource(path)),
             WindowEvent::RedrawRequested => {

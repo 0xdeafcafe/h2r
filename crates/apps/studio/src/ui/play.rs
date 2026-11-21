@@ -19,6 +19,7 @@ pub struct PlayUi {
     sockets: Vec<PathBuf>,
     step_ticks: i32,
     open_link_popup: bool,
+    picking_game: bool,
 }
 
 impl Default for PlayUi {
@@ -28,6 +29,7 @@ impl Default for PlayUi {
             sockets: launch::discover(),
             step_ticks: 1,
             open_link_popup: false,
+            picking_game: false,
         }
     }
 }
@@ -49,7 +51,7 @@ impl PlayUi {
         });
     }
 
-    pub fn menu(&mut self, ui: &Ui, app: &App) {
+    pub fn menu(&mut self, ui: &Ui, app: &mut App) {
         let Some(_menu) = ui.begin_menu("Game") else {
             return;
         };
@@ -74,6 +76,13 @@ impl PlayUi {
             self.play.request(Request::Unpair);
         }
         ui.separator();
+        if ui.menu_item_enabled_selected_no_shortcut(
+            "Pause the game while I edit",
+            app.pairing.pause_while_editing,
+            true,
+        ) {
+            app.pairing.pause_while_editing = !app.pairing.pause_while_editing;
+        }
         let (label, request) = if view.paused {
             ("Resume", Request::Resume)
         } else {
@@ -106,8 +115,45 @@ impl PlayUi {
     }
 
     pub fn bar_pill(&mut self, ui: &Ui, app: &mut App, view: &LinkView) {
-        let open = std::mem::take(&mut self.open_link_popup);
+        let pick = self.play.picking_game();
+        let open = std::mem::take(&mut self.open_link_popup) || (pick && !self.picking_game);
+        self.picking_game = pick;
         self.pill(ui, app, view, open);
+        if pick && !open && !ui.is_popup_open(LINK_POPUP) {
+            self.play.cancel_picker();
+        }
+        const ASK: &str = "Playtest";
+        if app.pairing.prompt.is_some() && !ui.is_popup_open(ASK) {
+            ui.open_popup(ASK);
+        }
+        if let Some(_modal) = ui.begin_modal_popup_config(ASK).begin() {
+            let Some(prompt) = app.pairing.prompt.clone() else {
+                ui.close_current_popup();
+                return;
+            };
+            let (message, yes, no, alternative) = match prompt.ask {
+                play::playtest::Ask::Send => (
+                    "Send your edits to this game?", "Send edits".into(), "Cancel".into(), "cancel",
+                ),
+                play::playtest::Ask::Load => (
+                    "The game is running another map.",
+                    format!("Load {} in the game", app.loaded_map().unwrap_or("map")),
+                    format!("Open {} here", self.play.map().unwrap_or("map")),
+                    "open",
+                ),
+            };
+            ui.text(message);
+            let choice = if ui.button(yes) {
+                Some(prompt.ask.name())
+            } else {
+                ui.same_line();
+                ui.button(no).then_some(alternative)
+            };
+            if let Some(choice) = choice {
+                self.play.request(Request::PlayAnswer(prompt, choice.into()));
+                ui.close_current_popup();
+            }
+        }
     }
 
     fn pill(&mut self, ui: &Ui, app: &mut App, view: &LinkView, open: bool) {
@@ -288,14 +334,14 @@ impl PlayUi {
             ui.set_item_tooltip("Moves the player to the ground under the camera focus. T over the viewport uses the point under the cursor. Refused in co-op and as a client.");
         }
         ui.set_next_item_width(180.0);
-        if let Some(_combo) = ui.begin_combo("Spawn", self.play.spawn.label()) {
+        if let Some(_combo) = ui.begin_combo("Spawn", self.play.spawn_choice(app).label()) {
             for spawn in Spawn::ALL {
                 if ui
                     .selectable_config(spawn.label())
-                    .selected(spawn == self.play.spawn)
+                    .selected(spawn == self.play.spawn_choice(app))
                     .build()
                 {
-                    self.play.spawn = spawn;
+                    app.pairing.spawn = Some(spawn);
                 }
             }
         }

@@ -96,7 +96,7 @@ pub(super) fn draw(
 
 /// The width of the link pill and the controls that follow it.
 fn link_width(ui: &Ui, view: &LinkView) -> f32 {
-    let buttons = [view.can_stop || view.can_play, view.can_pause, view.paused];
+    let buttons = [view.can_play, view.can_stop, view.can_pause, view.paused];
     let mut width = theme::pill_width(ui, link_icon(view.tone), &view.text)
         + (theme::BAR_BUTTON + theme::BAR_SPACING)
             * buttons.into_iter().filter(|&on| on).count() as f32;
@@ -111,15 +111,16 @@ fn link_width(ui: &Ui, view: &LinkView) -> f32 {
 fn link(ui: &Ui, app: &mut App, play: &mut PlayUi, view: &LinkView) {
     play.bar_pill(ui, app, view);
     let same_line = || ui.same_line_with_spacing(0.0, theme::BAR_SPACING);
+    if view.can_play {
+        same_line();
+        if theme::transport_button(ui, TransportIcon::Play, "Play (F5)") {
+            play.play.request(Request::Play);
+        }
+    }
     if view.can_stop {
         same_line();
         if theme::transport_button(ui, TransportIcon::Stop, "Stop (Shift+F5)") {
             play.play.request(Request::Stop);
-        }
-    } else if view.can_play {
-        same_line();
-        if theme::transport_button(ui, TransportIcon::Play, "Play (F5)") {
-            play.play.request(Request::Play);
         }
     }
     if view.can_pause {

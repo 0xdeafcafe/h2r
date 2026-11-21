@@ -14,7 +14,7 @@ use scenario_edit::{BlockKind, Command, Value as FieldValue};
 use serde_json::{Value, json};
 
 use super::testing::Temp;
-use super::testing::fake::{Game, SCNR, UNIT, VEHICLE, until};
+use super::testing::fake::{Game, PLAYER_AT, SCNR, UNIT, VEHICLE, until};
 use super::*;
 use crate::app::{Action, App};
 
@@ -283,7 +283,7 @@ fn teleport_and_spawn_move_the_player() {
     // No structure in the invented map: the point itself, lifted.
     assert_eq!(s["pos"], json!([3.0, 4.0, 5.0 + f64::from(LIFT)]));
     // A launched game's spawn waits for gameplay, then moves the player.
-    play.pending_spawn = Some([1.0, 2.0, 3.0]);
+    play.pending_spawn = Some(Destination::Position([1.0, 2.0, 3.0]));
     until(&mut play, &mut app, "the spawn", |_, _| {
         game.calls("sim.state.set").len() == 2
     });
@@ -300,7 +300,7 @@ fn a_coop_session_gets_no_writes() {
     assert!(why.contains("co-op"), "{why}");
     move_flag(&mut app, [5.0, 6.0, 7.0]);
     play.teleport_to_camera(&mut app);
-    play.pending_spawn = Some([1.0, 2.0, 3.0]);
+    play.pending_spawn = Some(Destination::Position([1.0, 2.0, 3.0]));
     let end = Instant::now() + Duration::from_millis(600);
     while Instant::now() < end {
         play.update(&mut app);
@@ -719,8 +719,8 @@ fn a_running_game_is_offered_with_its_map_and_pairs_on_request() {
 
 #[test]
 fn a_game_on_another_map_is_offered_and_says_so() {
-    let t = Temp::new("other");
-    let game = Game::start("other", "zanzibar", SessionKind::Local);
+    let t = Temp::new("offer-other");
+    let game = Game::start("offer-other", "zanzibar", SessionKind::Local);
     let mut app = editor(&t);
     app.pairing.auto_pair = false;
     let mut play = Play::new();
@@ -941,6 +941,11 @@ fn the_link_view_names_every_state() {
     until(&mut play, &mut app, "listed game", |p, _| !p.finder.running().is_empty());
     play.on_event(&mut app, Event::Lost("socket closed".into()));
     check(&play, &app, "reconnecting", LinkTone::Notice);
+    play.publish(&mut app);
+    let status = crate::api::Api::new().call(&mut app, "pair.status", Value::Null).unwrap();
+    assert_eq!(status["state"], "reconnecting");
+    assert_eq!(status["link"]["state"], "reconnecting");
+    assert_eq!(status["socket"], endpoint.to_string());
     play.reconnect(&mut app, Instant::now() + Duration::from_secs(30));
     until(&mut play, &mut app, "the loss", |p, _| {
         matches!(p.conn, Conn::Lost(_))
@@ -989,11 +994,17 @@ fn discovery_prefers_the_child_then_the_unique_matching_map() {
     let open = Some("example");
     let skipped = HashSet::new();
     assert_eq!(auto::choose(&[&found, &other], open, None, &skipped), Some(found.path.clone()));
-    assert_eq!(auto::choose(&[&found, &other], open, Some(&other.endpoint()), &skipped), Some(other.path));
+    assert_eq!(
+        auto::choose(&[&found, &other], open, Some(&other.endpoint()), &skipped),
+        Some(other.path)
+    );
     assert_eq!(auto::choose(&[&found], None, None, &skipped), Some(found.path.clone()));
     play.unpair(&mut app);
     assert_eq!(auto::choose(&[&found], open, None, &play.auto_tried), None);
-    play.update(&mut app); // The socket left the list.
+    play.finder.look_again();
+    until(&mut play, &mut app, "scan without the socket", |p, _| {
+        !p.auto_tried.contains(&found.path)
+    });
     assert_eq!(auto::choose(&[&found], open, None, &play.auto_tried), Some(found.path));
 }
 
@@ -1022,4 +1033,129 @@ fn reconnect_keeps_acknowledged_edits_only_for_the_same_identity() {
         assert_eq!(app.pairing.pending.is_empty(), !changed);
         assert_eq!(game.calls("edit.batch").len(), 1);
     }
+}
+
+#[test]
+fn playtest_decides_each_link_and_reload_route() {
+    use playtest::{Ask, Reload, Step, decide};
+    let view = LinkState::Viewing { map: Some("fixture".into()), phase: None, tick: None };
+    let found = LinkState::Found { map: None, matches: MapMatch::Unknown };
+    let other = LinkState::OtherMap { game: "other".into(), open: "fixture".into() };
+    let reload = [json!({"class": "Reload"})];
+    let poke = [json!({"class": "Poke"})];
+    assert_eq!(decide(&LinkState::NoGame, &poke, false, false, false), Step::Launch);
+    assert_eq!(decide(&found, &[], false, false, false), Step::Pair);
+    assert_eq!(decide(&view, &[], false, false, false), Step::Resume);
+    assert_eq!(decide(&view, &poke, false, true, false), Step::Resume);
+    assert_eq!(decide(&view, &poke, false, false, true), Step::Ask { ask: Ask::Send });
+    assert_eq!(decide(&view, &reload, true, false, true), Step::Reload(Reload::Method));
+    assert_eq!(decide(&other, &[], true, false, false), Step::Reload(Reload::Relaunch));
+    assert_eq!(decide(&other, &[], false, false, true), Step::Ask { ask: Ask::Load });
+    assert_eq!(decide(&other, &[], false, true, true), Step::Reload(Reload::Method));
+    assert_eq!(decide(&view, &reload, false, true, false), Step::Reload(Reload::Manual));
+}
+
+#[test]
+fn playtest_asks_then_sends_one_batch_resumes_and_focuses() {
+    let (_t, game, mut app, mut play) = tag_pair("playtest-send");
+    app.session.select(Some((BlockKind::NetgameFlags, 0)));
+    app.session.camera_mut().yaw = 1.2;
+    speed(&mut app);
+    let selection = app.session.selected();
+    let camera = *app.session.camera();
+    let undo = app.tags.undo_len();
+    assert!(undo > 0);
+    play.window_focus(&app, true);
+    assert!(!play.controller);
+    app.pairing.pause_while_editing = true;
+    play.window_focus(&app, false);
+    assert!(!play.controller);
+    play.window_focus(&app, true);
+    until(&mut play, &mut app, "pause on focus and pending tag", |p, a| {
+        p.paused && !a.pairing.pending.is_empty()
+    });
+    play.request(Request::Play);
+    play.update(&mut app);
+    assert_eq!(app.pairing.prompt.as_ref().unwrap().ask, playtest::Ask::Send);
+    assert!(game.calls("edit.batch").is_empty());
+    assert!(game.calls("editor.focus").is_empty());
+    let mut api = crate::api::Api::new();
+    let r = api.call(&mut app, "pair.playtest", json!({"confirm": "send"})).unwrap();
+    assert_eq!(r["step"], "resume");
+    until(&mut play, &mut app, "sent, resumed and focused", |p, a| {
+        !p.paused && a.pairing.pending.is_empty() && !game.calls("editor.focus").is_empty()
+    });
+    assert_eq!(game.calls("edit.batch").len(), 1);
+    assert_eq!(game.calls("editor.focus").len(), 1);
+    assert!(!game.agent.is_paused());
+    assert_eq!(app.session.selected(), selection);
+    assert_eq!(*app.session.camera(), camera);
+    assert_eq!(app.tags.undo_len(), undo);
+}
+
+#[test]
+fn playtest_reloads_a_fresh_copy_and_restores_the_streamed_place() {
+    let t = Temp::new("playtest-reload");
+    let game = Game::start("playtest-reload", "example", SessionKind::Local);
+    let file = t.0.join("example.map");
+    std::fs::write(&file, scenario_edit::fixture::fixture_at_end()).unwrap();
+    let mut app = App::new();
+    app.set_data_root(t.0.join("data"));
+    app.dispatch(Action::OpenSource(file));
+    let mut play = Play::new();
+    play.pair(&mut app, Endpoint::Unix(game.path.clone()));
+    until(&mut play, &mut app, "local player's place", |p, a| {
+        p.edits.journal_ready && p.spawn_choice(a) == Spawn::Resume
+    });
+    app.session.set_allow_growth(true);
+    let kind = scenario_edit::layout::BLOCKS.iter().map(|b| b.kind)
+        .find(|k| app.session.add_refusal(*k).is_none()).unwrap();
+    app.session.add_entry(kind, None).unwrap();
+    play.apply_edits(&mut app, Apply::Send).unwrap();
+    play.request(Request::Play);
+    until(&mut play, &mut app, "restored place", |_, _| !game.calls("editor.focus").is_empty());
+    assert!(game.edits.lock().unwrap().teleport_map_ticks >= SPAWN_AFTER_TICKS);
+    let moves = game.calls("sim.state.set");
+    assert_eq!(moves, [json!({"player":"player.0", "pos":PLAYER_AT, "yaw":90.0, "pitch":0.0})]);
+    assert!(app.pairing.pending.is_empty());
+}
+
+#[test]
+fn foreign_map_confirmation_is_scoped_to_the_pairing() {
+    let (_t, game, mut app, mut play) = paired("ask-load", "other", SessionKind::Local);
+    play.request(Request::Play);
+    play.update(&mut app);
+    assert!(game.calls("map.reload").is_empty());
+    let prompt = app.pairing.prompt.clone().unwrap();
+    assert_eq!(prompt.ask, playtest::Ask::Load);
+    play.request(Request::PlayAnswer(prompt.clone(), "cancel".into()));
+    play.update(&mut app);
+    assert!(app.pairing.prompt.is_none());
+    play.unpair(&mut app);
+    play.request(Request::PlayAnswer(prompt, "load".into()));
+    play.update(&mut app);
+    assert!(game.calls("map.reload").is_empty());
+}
+
+#[test]
+fn playtest_pairs_then_resumes_without_an_unlisted_focus_call() {
+    let t = Temp::new("playtest-pair");
+    let game = Game::start("playtest-pair", "example", SessionKind::Local);
+    let mut app = editor(&t);
+    app.pairing.auto_pair = false;
+    let mut play = Play::new();
+    play.finder = finder_for(&[&game]);
+    until(&mut play, &mut app, "one game offered", |p, a| p.notice(a).is_some());
+    let mut api = crate::api::Api::new();
+    let step = api.call(&mut app, "pair.playtest", Value::Null).unwrap();
+    assert_eq!(step, json!({"step":"pair"}));
+    until(&mut play, &mut app, "paired and focused", |_, _| game.calls("editor.focus").len() == 1);
+    assert!(!play.live_edits);
+
+    play.on_answer(&mut app, Purpose::Capabilities, "session.methods", Ok(json!([])));
+    play.pause();
+    until(&mut play, &mut app, "pause", |p, _| p.paused);
+    api.call(&mut app, "pair.play", Value::Null).unwrap();
+    until(&mut play, &mut app, "resume", |p, _| !p.paused);
+    assert_eq!(game.calls("editor.focus").len(), 1);
 }

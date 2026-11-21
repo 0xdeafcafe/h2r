@@ -52,7 +52,7 @@ pub(crate) mod fake {
     use crate::app::App;
     use crate::play::Play;
 
-    const PLAYER_AT: [f32; 3] = [10.0, -4.0, 2.0];
+    pub(crate) const PLAYER_AT: [f32; 3] = [10.0, -4.0, 2.0];
     pub(crate) const VEHICLE: u32 = 0x0010_0002;
     pub(crate) const UNIT: u32 = 0x0010_0001;
     pub(crate) const SCNR: &str = "0xe1780003";
@@ -65,6 +65,7 @@ pub(crate) mod fake {
     struct World {
         map: String,
         tick: u64,
+        edits: Arc<Mutex<FakeEdits>>,
         moved: Arc<AtomicBool>,
         bsp: Arc<AtomicU32>,
     }
@@ -77,6 +78,10 @@ pub(crate) mod fake {
                 mode: Some("multiplayer".into()),
                 bsp: Some(self.bsp.load(Ordering::Relaxed)),
             }
+        }
+
+        fn live_metadata(&mut self) -> (u16, Option<u32>) {
+            (30, Some(self.edits.lock().unwrap().checksum))
         }
 
         fn objects(&mut self) -> Result<Vec<Object>, String> {
@@ -127,6 +132,7 @@ pub(crate) mod fake {
     #[derive(Default)]
     pub(crate) struct FakeEdits {
         pub(crate) checksum: u32,
+        pub(crate) teleport_map_ticks: u64,
         pub(crate) external_live: bool,
         pub(crate) bytes: std::collections::HashMap<String, String>,
         pub(crate) placements: std::collections::HashMap<String, u32>,
@@ -274,7 +280,9 @@ pub(crate) mod fake {
                 Ok(json!({"id":1,"applied":writes.len(),"changes":writes}))
             });
             let r = rec("sim.state.set");
-            agent.add_method(agent_proto::sim::method::STATE_SET, Access::Act, move |v| {
+            let state = Arc::clone(&edits);
+            agent.add_game_method(agent_proto::sim::method::STATE_SET, Access::Act, move |v, ctx| {
+                state.lock().unwrap().teleport_map_ticks = ctx.at.map_ticks;
                 // The game's own refusal (boot's sim glue).
                 kind.writes()
                     .map_err(|m| RpcError::new(code::INVALID_REQUEST, m))?;
@@ -291,6 +299,11 @@ pub(crate) mod fake {
                 let loaded = scenario_edit::MapSource::file(file).open().unwrap();
                 state.lock().unwrap().checksum = loaded.header().checksum;
                 reload_bsp.fetch_add(1, Ordering::Relaxed);
+                Ok(json!({"queued":true, "map":loaded.header().name, "file":file, "checksum":loaded.header().checksum}))
+            });
+            let r = rec(agent_proto::editor::method::FOCUS);
+            agent.add_method(agent_proto::editor::method::FOCUS, Access::Act, move |params| {
+                r(params);
                 Ok(json!({}))
             });
             let server = Server::listen(&path, agent.clone()).unwrap();
@@ -302,10 +315,12 @@ pub(crate) mod fake {
             let boundary = Arc::new(Mutex::new(()));
             let game_boundary = Arc::clone(&boundary);
             let game_bsp = Arc::clone(&bsp);
+            let world_edits = Arc::clone(&edits);
             let thread = thread::spawn(move || {
                 let mut w = World {
                     map,
                     tick: 100,
+                    edits: world_edits,
                     moved: game_moved,
                     bsp: game_bsp,
                 };

@@ -1,6 +1,6 @@
 # h2-editor polish: what is wrong, the design, and the slices
 
-Status: P1 to P7, P12, P18 and G1, G3 and G5 are implemented. The remaining slices describe the design.
+Status: P1 to P7, P12, P18, G1, G2, G3 and G5 are implemented. The remaining slices describe the design.
 Code: `crates/apps/studio/src` (the window: `ui.rs`, `ui/`, `play.rs`, `viewport.rs`, `theme.rs`), `crates/tools/scenario-edit/src` (the scene and its renderer). Tests: named per slice.
 Switch: none.
 
@@ -234,8 +234,8 @@ pending list and the game's methods, and returns one step:
   editor takes focus. **Pause the game while I edit** (Game menu, off
   by default) pauses it when the editor's window gains focus and
   resumes it on F5.
-- After the step the editor calls `editor.focus` to queue a request
-  for the window system to give the game focus.
+- After the step the editor calls `editor.focus`, when the game lists it,
+  to queue a request for the window system to give the game focus.
 
 #### The game shows the link
 
@@ -474,8 +474,7 @@ session never works over unknown bytes.
 
 **Pending** (its own tab): one row per edit not in the game, grouped by
 class, each with its reason. Buttons: **Send** (View to Edit),
-**Respawn now**, **Reload map** (Play again for a game the editor
-started; `map.reload` otherwise).
+**Respawn now**, **Reload map** (the same reload route as F5).
 
 ### Field names and descriptions
 
@@ -669,10 +668,11 @@ when built. The game's methods for the link follow in their own table.
 
 | Method | Params | Result |
 |---|---|---|
-| `pair.status` | none | includes `link` with `{state, text, why}` from `LinkView` |
+| `pair.status` | none | includes `link` with `{state, text, why}` from `LinkView` and `elapsed_ms` while reconnecting |
 | `pair.edit` | `{enabled}` | queues the Edit switch change and returns `{requested}`. Read the mode in `pair.status`. |
-| `pair.status` | none | `link` gains `issues: [{kind, text, target}]` and the `reconnecting` state |
-| `pair.playtest` | `{confirm?: "send" \| "load"}` | what F5 does now: `{step: launch \| pair \| resume \| reload \| ask, ask?, place?}`. `confirm` answers an `ask` |
+| `pair.status` | none | G9 adds `issues: [{kind, text, target}]` to `link` |
+| `pair.settings` | `{spawn?, pause_while_editing?}` | reads or sets the spawn choice and pause on editor focus |
+| `pair.playtest` | `{confirm?: "send" \| "cancel" \| "load" \| "open"}` | the F5 decision: `{step: launch \| pair \| resume \| reload \| ask, ask?, place?}`. `confirm` answers an `ask` |
 | `mirror.pick` | `{from: "aim"}` or `{ray: {origin, dir}}` | the live object hit: `{object, placement, tag, point, distance}`, or `null` |
 | `mirror.aim_select` | `{enabled?}` | whether the aim cursor selects, and the current candidate |
 | `mirror.camera` | `{mode?: free \| follow \| eyes \| lead, target?}` | the mode and what it follows; `lead` is **Game follows editor** |
@@ -774,7 +774,7 @@ The stable Game and Log window keys allow saved dock layouts to load.
 
 The tests use invented data.
 
-- `play::tests::the_link_view_names_every_state` goes through all eight
+- `play::tests::the_link_view_names_every_state` goes through all nine
   states against the fake game and checks the state, tone and label.
 - `play::tests::blocked_names_the_reason` checks the co-op explanation
   from `SessionKind::writes`.

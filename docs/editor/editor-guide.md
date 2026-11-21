@@ -480,11 +480,21 @@ multiplayer, everyone in the game needs the same edited map.
 ### Play from the editor
 
 Press **F5**, click the Play button beside the game link, or choose
-**Game > Play** in any tool. The game opens in its own window on a copy
-of the open map with your edits. The Game tab's **Spawn** picker lets
-you start at the level's own spawn, under the editor camera or at the
-selected placement. Press **Shift+F5** or click Stop to close that
-game. Play needs the disc and `h2`. Running the editor from a checkout with
+**Game > Play** in any tool. With no game, the editor launches a copy
+of the open map with your edits. With a game running, it pairs, sends
+pending edits and resumes play. A structural edit reloads a fresh copy.
+A game you started yourself asks before accepting edits. If it is on
+another map, choose whether to load your document in the game or open
+the game's map in the editor. A game without reload support needs a
+manual load unless the editor started it and can relaunch it.
+
+The Game tab's **Spawn** picker offers the level spawn, editor camera,
+selected placement and **Where I was**. Once you have played this map,
+the editor remembers your position and facing for the next playtest.
+Your editor selection, camera and undo history stay in place. Enable
+**Game > Pause the game while I edit** to pause when you return to the
+editor. Press **Shift+F5** or click Stop to close a game the editor
+started. Launching needs the disc and `h2`. Running the editor from a checkout with
 `cargo run`, build `h2` beside it with `cargo build --release -p cli --bin
 h2`; otherwise install it (`~/.cargo/bin/h2`) or set the path under
 **Advanced** in the Game tab.
@@ -537,7 +547,7 @@ retries for 30 seconds. Click **Cancel** to stay unpaired or **Pair again**
 after the retry window ends.
 
 An agent drives the same with `pair.list`, `pair.status`, `pair.connect`,
-`pair.disconnect`, `pair.auto`, `pair.play`, `pair.stop`, `pair.control`
+`pair.disconnect`, `pair.auto`, `pair.playtest`, `pair.settings`, `pair.stop`, `pair.control`
 and `pair.edit` ([agent-api.md](agent-api.md)).
 
 ### Your packages in the Maps list

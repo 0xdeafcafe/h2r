@@ -24,6 +24,8 @@ pub enum Purpose {
     /// The loaded file, map epoch and session write permissions.
     Map,
     Capabilities,
+    Reload,
+    Focus,
     Journal(u64),
     Revert {
         leave: bool,

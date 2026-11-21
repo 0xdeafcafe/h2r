@@ -408,6 +408,27 @@ fn every_method_in_methods_has_a_test() {
     assert_eq!(ran.len(), Api::new().methods().len());
 }
 
+#[test]
+fn pair_playtest_and_settings_share_the_window_controls() {
+    let t = Temp::new("playtest-api");
+    let mut app = app(&t);
+    let mut api = Api::new();
+    assert_eq!(code_of(api.call(&mut app, m::PAIR_PLAYTEST, Value::Null)), code::REFUSED);
+    crate::play::Play::new().update(&mut app);
+    assert_eq!(call(&mut api, &mut app, m::PAIR_PLAYTEST, Value::Null), json!({"step":"launch"}));
+    assert_eq!(app.pairing.requests, [crate::play::pair::Request::Play]);
+    assert_eq!(
+        code_of(api.call(&mut app, m::PAIR_PLAYTEST, json!({"confirm":"send"}))),
+        code::REFUSED,
+    );
+    let settings = call(&mut api, &mut app, m::PAIR_SETTINGS, json!({
+        "pause_while_editing": true, "spawn": "resume"
+    }));
+    assert_eq!(settings, json!({"pause_while_editing":true, "spawn":"resume"}));
+    assert!(app.pairing.pause_while_editing);
+    assert_eq!(app.pairing.spawn, Some(crate::play::Spawn::Resume));
+}
+
 #[cfg(unix)]
 #[test]
 fn pair_status_carries_link_view() {
@@ -430,7 +451,7 @@ fn pair_status_carries_link_view() {
     fake::pair_for_view(&mut play, &mut app, &game);
     let status = call(&mut api, &mut app, m::PAIR_STATUS, Value::Null);
     assert_eq!(status["state"], "connected");
-    assert_eq!(status["link"]["state"], "blocked");
+    assert_eq!(status["link"]["state"], "viewing");
     assert_eq!(status["link"]["text"], play.link_view(&app).text);
 }
 

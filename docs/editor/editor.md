@@ -694,9 +694,17 @@ the game's agent socket ([agent-api.md](../runtime/agent-api.md)). The
 code is `studio::play` (`play.rs`, `play/{launch,link,sync}.rs`) and
 `ui/play.rs`; nothing of it runs the game in the editor's process.
 
-**Play** (F5) starts the open map in its own window. **Stop** (Shift+F5)
-closes the game the editor started. The bar and Game menu provide these
-commands in every tool. Play runs this command:
+**Play** (F5) takes the open document into the game. With a matching map
+it sends pending pokes, resumes a paused game and raises its window if
+the game lists `editor.focus`. Structural edits require a freshly written
+play copy. The editor calls `map.reload {file}` when available, relaunches
+its own game otherwise, or leaves the edits pending for a manual load in
+a foreign game. A foreign game asks before receiving edits or switching
+maps. The other choice in the map prompt opens the game's map here.
+`play::playtest::decide` supplies the bar, Game menu and socket API.
+
+**Stop** (Shift+F5) closes the game the editor started. With no game,
+Play launches the copy in its own window:
 
 ```
 H2_AGENT=<cache>/h2recomp/editor-<pid>-<n>.sock H2_MAP_DIR=$TMPDIR/h2-editor-play-<pid>/maps \
@@ -718,15 +726,19 @@ H2_AGENT=<cache>/h2recomp/editor-<pid>-<n>.sock H2_MAP_DIR=$TMPDIR/h2-editor-pla
   scratch directory (`scenario_edit::save::save_as`, which is not a save:
   the map stays unsaved) and served with `H2_MAP_DIR` as a whole-file
   override of the retail path. Installed packages have their own content
-  paths. [Map packages](../game/maps.md#8-saving-packages-from-the-editor) A new map (a
-  derived package, such as a converted Halo 1 map) plays from its
-  package: save it first.
+  paths. The launch copy includes unsaved edits to a derived map as
+  well. The level name must resolve on the disc or in an installed
+  campaign (`level_boot::resolve_in`).
+  [Map packages](../game/maps.md#8-saving-packages-from-the-editor)
 - `--level` boots the level with one default player
   ([level-boot.md](../runtime/level-boot.md)).
-- **Spawn**: the level's own, the ground under the editor camera's focus,
-  or the selected placement. Once the game reports gameplay 30 ticks
-  into the map, the editor moves player one there with `sim.state.set
-  {player, pos}`.
+- **Spawn** offers the level's own spawn, the editor camera, the selected
+  placement and **Where I was**. The last becomes the default once the
+  stream supplies a local player on this map. After a reload the editor
+  checks the copy's checksum and new epoch and waits for gameplay and
+  at least 30 ticks before restoring position, yaw and pitch with `sim.state.set`.
+- **Game > Pause the game while I edit** pauses on editor window focus.
+  It defaults to off. F5 resumes a paused game.
 - The game's output goes to `play-<n>.log` in the scratch directory.
   Game > Advanced shows the path. The editor waits up to 20 minutes for
   the socket because `h2 play` may build its image first.

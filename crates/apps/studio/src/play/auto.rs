@@ -18,7 +18,9 @@ pub fn choose(
     } else if let [one] = games {
         *one
     } else {
-        let mut same = games.iter().filter(|g| MapMatch::of(open, g.map()) == MapMatch::Same);
+        let mut same = games
+            .iter()
+            .filter(|g| MapMatch::of(open, g.map()) == MapMatch::Same);
         let one = *same.next()?;
         if same.next().is_some() {
             return None;
@@ -38,7 +40,11 @@ pub struct Backoff {
 impl Backoff {
     pub fn new(now: Instant) -> Self {
         let delay = Duration::from_millis(250);
-        Self { since: now, next: now + delay, delay }
+        Self {
+            since: now,
+            next: now + delay,
+            delay,
+        }
     }
 
     pub fn expired(&self, now: Instant) -> bool {

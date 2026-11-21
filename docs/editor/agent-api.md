@@ -87,6 +87,8 @@ What goes through actions, from both sides:
 | Variant edits | `OpenVariant`, `NewVariant`, `CopyBuiltin`, `SetVariantName`, `SetSetting`, `ImportVariant*`, `DeleteVariant` | the variant tool | `doc.open`, `variant.*` |
 | Playlist edits | `EditPlaylist(PlaylistEdit)`, `SetEntryVariant` | the title and description fields, the table's row buttons, weights, Add, the unused slot's "Make a … playlist" buttons and "Remove playlist" apply the same `PlaylistEdit`s | `playlist.set`, `playlist.entry`, `playlist.entry_variant` |
 | UI screens | `UiPick`, `UiPress` | the UI Screens tool | `ui.pick`, `ui.press` |
+| Playtest | `play::playtest::decide` | F5, Play button, Game menu and confirmation dialog | `pair.playtest {confirm?}` |
+| Playtest settings | `play::pair::Bridge` | Game menu and Game tab spawn picker | `pair.settings {spawn?, pause_while_editing?}` |
 | Game link | `play::pair::Request` | game link bar, Game menu and Game panel | `pair.connect`, `pair.disconnect`, `pair.auto`, `pair.play`, `pair.stop`, `pair.control`, `pair.edit` |
 
 The playlist fields apply their `PlaylistEdit`s inside the frame's
@@ -296,8 +298,18 @@ Notes on some:
   `text` and its `why` tooltip (string or null). Its states are
   `no_game`, `found`, `connecting`, `reconnecting`, `viewing`, `editing`, `blocked`,
   `other_map` and `lost`. The top-level `state` continues to report the
-  socket connection.
-- **Game controls.** `pair.play` starts the open map. `pair.stop` stops
+  socket connection. During reconnect, `link.elapsed_ms` counts from the drop.
+- **Playtest.** `pair.playtest {}` queues F5 and reports the step for the
+  window's published state: `launch`, `pair`, `resume`, `reload` or
+  `ask`. A reload or launch using the saved player place includes
+  `place: {pos, yaw, pitch}` (angles in degrees). An unavailable reload
+  reports the manual-load instruction in `why`. For `ask: "send"` answer
+  with `confirm: "send"` or `"cancel"`. For `ask: "load"` answer with
+  `"load"` or `"open"` (open the game's map here). After automatic
+  pairing, poll `pair.status.ask` for the follow-up prompt.
+  `pair.settings` reads or sets `pause_while_editing` (default false)
+  and `spawn` (`auto`, `level`, `resume`, `camera` or `selection`).
+- **Game controls.** `pair.play` queues the same action as F5. `pair.stop` stops
   the editor's own game. `pair.control` accepts `pause`, `resume` or
   `step` as `action`. Step requires a paused game and accepts `ticks`
   from 1 to 600 (default 1). `pair.edit {enabled}` sets the Edit switch

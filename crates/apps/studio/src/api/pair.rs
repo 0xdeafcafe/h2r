@@ -14,7 +14,7 @@ use studio_proto::{code, method as m};
 
 use super::{MethodDef, P, Provider, Reply, err};
 use crate::App;
-use crate::play::LinkView;
+use crate::play::{LinkView, Spawn};
 use crate::play::pair::Request;
 
 /// The pairing provider.
@@ -50,7 +50,7 @@ const METHODS: &[MethodDef] = &[
         m::PAIR_STATUS,
         "The socket connection, game status, edit permissions and auto-pair setting, with the game link pill's state, label and tooltip. Needs the window",
         "{}",
-        r#"{"state":"off|connecting|reconnecting|connected|lost","why":"string|null","socket":"string|null","map":"string|null","phase":"string|null","paused":"boolean|null","tick":"integer|null","matches":"same|different|unknown","open_map":"string|null","live_edits":"boolean","edits_blocked":"string|null","auto_pair":"boolean","games":"integer","link":{"state":"no_game|found|connecting|reconnecting|viewing|editing|blocked|other_map|lost","text":"string","why":"string|null"}}"#,
+        r#"{"state":"off|connecting|reconnecting|connected|lost","why":"string|null","socket":"string|null","map":"string|null","phase":"string|null","paused":"boolean|null","tick":"integer|null","matches":"same|different|unknown","open_map":"string|null","live_edits":"boolean","edits_blocked":"string|null","auto_pair":"boolean","games":"integer","ask":"send|load|null","playtest_busy":"boolean","link":{"state":"no_game|found|connecting|reconnecting|viewing|editing|blocked|other_map|lost","text":"string","why":"string|null","elapsed_ms?":"integer"}}"#,
         "null",
     ),
     def(
@@ -80,6 +80,20 @@ const METHODS: &[MethodDef] = &[
         "{}",
         r#"{"requested":"boolean"}"#,
         "null",
+    ),
+    def(
+        m::PAIR_PLAYTEST,
+        "Play the open document in the game. A confirmation answers the current playtest prompt",
+        r#"{"confirm?":"send|cancel|load|open"}"#,
+        r#"{"step":"launch|pair|resume|reload|ask","ask?":"send|load","place?":"{pos,yaw,pitch}"}"#,
+        "null",
+    ),
+    def(
+        m::PAIR_SETTINGS,
+        "Read or set the playtest spawn and pause on editor focus",
+        r#"{"spawn?":"auto|level|resume|camera|selection","pause_while_editing?":"boolean"}"#,
+        r#"{"spawn":"auto|level|resume|camera|selection","pause_while_editing":"boolean"}"#,
+        r#"{"pause_while_editing":true}"#,
     ),
     def(
         m::PAIR_STOP,
@@ -134,6 +148,9 @@ fn call(app: &mut App, method: &str, p: &P) -> Reply {
             let mut status = status.clone();
             status["link"] =
                 json!({"state": link.state.name(), "text": link.text, "why": link.why});
+            if let crate::play::LinkState::Reconnecting { since } = &link.state {
+                status["link"]["elapsed_ms"] = json!(since.elapsed().as_millis());
+            }
             Ok(status)
         }
         m::PAIR_CONNECT => {
@@ -183,6 +200,57 @@ fn call(app: &mut App, method: &str, p: &P) -> Reply {
             Ok(json!({ "auto_pair": app.pairing.auto_pair }))
         }
         m::PAIR_PLAY => enqueue(app, Request::Play),
+        m::PAIR_PLAYTEST => {
+            let (_, link) = need_window(app)?;
+            if let Some(why) = Request::Play.refusal(link) {
+                return Err(err(code::REFUSED, why));
+            }
+            let offer = app.pairing.playtest.as_ref()
+                .ok_or_else(|| err(code::REFUSED, "waiting for the editor window"))?;
+            let (request, reply) = match p.opt_str("confirm")? {
+                None => {
+                    app.pairing.prompt = offer.prompt.clone();
+                    (Request::Play, offer.step.report(offer.place))
+                }
+                Some(choice) => {
+                    let prompt = app.pairing.prompt.clone()
+                        .ok_or_else(|| err(code::REFUSED, "there is no playtest prompt to answer"))?;
+                    let reply = if choice == prompt.ask.name() {
+                        offer.confirmed.report(offer.place)
+                    } else if choice == "cancel" || (choice == "open" && prompt.ask.name() == "load") {
+                        json!({"step": "ask", "answer": choice})
+                    } else {
+                        return Err(err(code::INVALID_PARAMS, "choose an action offered by the prompt"));
+                    };
+                    (Request::PlayAnswer(prompt, choice.into()), reply)
+                }
+            };
+            app.pairing.requests.push(request);
+            Ok(reply)
+        }
+        m::PAIR_SETTINGS => {
+            let spawn = match p.opt_str("spawn")? {
+                None => app.pairing.spawn,
+                Some("auto") => None,
+                Some("level") => Some(Spawn::Level),
+                Some("resume") => Some(Spawn::Resume),
+                Some("camera") => Some(Spawn::Camera),
+                Some("selection") => Some(Spawn::Selection),
+                Some(_) => return Err(err(code::INVALID_PARAMS, "unknown spawn choice")),
+            };
+            if p.get("pause_while_editing").is_some() {
+                app.pairing.pause_while_editing = p.bool("pause_while_editing")?;
+            }
+            app.pairing.spawn = spawn;
+            let name = match spawn {
+                None => "auto",
+                Some(Spawn::Level) => "level",
+                Some(Spawn::Resume) => "resume",
+                Some(Spawn::Camera) => "camera",
+                Some(Spawn::Selection) => "selection",
+            };
+            Ok(json!({"spawn": name, "pause_while_editing": app.pairing.pause_while_editing}))
+        }
         m::PAIR_STOP => enqueue(app, Request::Stop),
         m::PAIR_EDIT => {
             let enabled = p.bool("enabled")?;

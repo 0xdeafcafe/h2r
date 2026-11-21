@@ -59,8 +59,17 @@ impl Edits {
         self.sent.is_some() || self.reverting || self.restore_after_batch
     }
 
+    pub(super) fn document_changed(&self, app: &App) -> bool {
+        self.last_diff.is_none_or(|(world, placements, tags, _)| {
+            world != app.session.world_rev()
+                || placements != app.session.markers_rev()
+                || tags != app.tags.rev()
+        })
+    }
+
     pub(super) fn transport_lost(&mut self) {
         self.map_requested = false;
+        self.reload_copy = None;
         self.journal_requested = false;
         self.reverting = false;
         self.taking = None;
@@ -75,7 +84,11 @@ type Reply = Result<Value, RpcError>;
 
 impl Play {
     pub(super) fn known_tag_epoch(&self) -> Option<u64> {
-        self.edits.loaded.as_ref().and(self.edits.epoch)
+        if matches!(self.conn, Conn::Reconnecting { .. }) {
+            None
+        } else {
+            self.edits.loaded.as_ref().and(self.edits.epoch)
+        }
     }
 
     pub fn can_respawn(&self) -> bool {
@@ -104,12 +117,18 @@ impl Play {
         self.edits.map_requested = false;
         let Ok(v) = result else {
             self.session = None;
-            self.edits.session_reason = Some(result.unwrap_err().to_string());
+            let why = result.unwrap_err().to_string();
+            if matches!(self.waiting, Waiting::Pair | Waiting::Reload | Waiting::Launch) {
+                self.cancel_reload();
+                app.error(format!("Play: edit.map: {why}"));
+            }
+            self.edits.session_reason = Some(why);
             return;
         };
         let epoch = v["epoch"].as_u64();
         let checksum = v["checksum"].as_u64().and_then(|n| u32::try_from(n).ok());
         let name = v["name"].as_str().map(str::to_owned);
+        let mut loaded_copy = false;
         if self.edits.epoch != epoch
             && self
                 .edits
@@ -122,9 +141,18 @@ impl Play {
                 })
             && let Some((world, sum, base, tags)) = self.edits.reload_copy.take()
         {
+            loaded_copy = true;
             app.pairing.play_copy = Some((world, sum));
             self.launch_baseline = Some((base, tags));
             self.launched_copy = self.endpoint().cloned().map(|ep| (ep, world, sum));
+        }
+        if self.waiting == Waiting::Reload && !loaded_copy && epoch != self.edits.epoch
+            && self.status.as_ref().is_some_and(|s| {
+                s.at.phase == Phase::Gameplay && s.at.map.is_some() && s.at.map == name
+            })
+        {
+            self.cancel_reload();
+            app.error("the game loaded a different map copy; the player stays at its spawn");
         }
         let reconnecting = matches!(self.conn, Conn::Reconnecting { .. });
         if reconnecting {
@@ -163,6 +191,9 @@ impl Play {
             self.edits.last_diff = None;
         }
         if changed {
+            if !loaded_copy && self.waiting != Waiting::Reload {
+                self.playtest_consent = false;
+            }
             app.sync_tags();
             app.tags.live_datums = None;
             if reconnecting || self.edits.epoch.is_some() {
@@ -192,6 +223,14 @@ impl Play {
         {
             self.edits.journal_requested = true;
             self.call("edit.changes", Value::Null, Purpose::Journal(epoch));
+        }
+        if loaded_copy && self.waiting == Waiting::Reload {
+            // The poll that triggered edit.map may still describe the old level.
+            self.spawn_after_tick = self.status.as_ref().map_or(0, |s| s.at.ticks + SPAWN_AFTER_TICKS);
+            self.status = None;
+            self.waiting = Waiting::Launch;
+            // The user approved this copy, including when the game is foreign.
+            self.edits.own_start = self.playtest_consent;
         }
         if self.map_refusal(app).is_none() {
             app.tags.live_datums = self.edits.loaded.clone();
@@ -245,8 +284,11 @@ impl Play {
     }
 
     pub(super) fn edit_refusal(&self, app: &App) -> Option<String> {
-        self.map_refusal(app)
-            .or_else(|| self.edits.session_reason.clone())
+        self.map_refusal(app).or_else(|| self.session_refusal(app))
+    }
+
+    pub(super) fn session_refusal(&self, app: &App) -> Option<String> {
+        self.edits.session_reason.clone()
             .or_else(|| (self.session.is_none()).then(|| "waiting for the session".into()))
             .or_else(|| (!self.edits.journal_ready).then(|| "checking the game journal".into()))
             .or_else(|| {
@@ -297,13 +339,23 @@ impl Play {
                     self.edits.own_start = false;
                 }
             }
-            Ok(_) => app.error("game returned an unreadable edit journal"),
-            Err(e) => app.error(format!("edit.changes: {e}")),
+            Ok(_) => {
+                self.waiting = Waiting::Idle;
+                app.error("game returned an unreadable edit journal");
+            }
+            Err(e) => {
+                self.waiting = Waiting::Idle;
+                app.error(format!("edit.changes: {e}"));
+            }
         }
     }
 
     pub(super) fn push_edits(&mut self, app: &mut App) {
-        let writable = self.edits_blocked(app).is_none();
+        self.refresh_pending(app, true);
+    }
+
+    pub(super) fn refresh_pending(&mut self, app: &mut App, send: bool) {
+        let writable = send && self.waiting != Waiting::Reload && self.edits_blocked(app).is_none();
         let revisions = (
             app.session.world_rev(),
             app.session.markers_rev(),
@@ -443,6 +495,7 @@ impl Play {
                 }
             }
             Err(e) if e.code == agent_proto::code::MISMATCH => {
+                self.waiting = Waiting::Idle;
                 self.edits.conflicts = e
                     .data
                     .and_then(|d| d["fields"].as_array().cloned())
@@ -470,6 +523,7 @@ impl Play {
                 app.error("the game changed a field; resolve it in Pending");
             }
             other => {
+                self.waiting = Waiting::Idle;
                 self.live_edits = false;
                 app.error(format!(
                     "edit.batch: {}",
@@ -638,8 +692,12 @@ impl Play {
                     return Err(why);
                 }
                 self.live_edits = true;
+                self.playtest_consent = true;
             }
             Apply::Reload | Apply::Respawn => {
+                if self.waiting == Waiting::Reload {
+                    return Err("waiting for the requested map to load".into());
+                }
                 if let Some(why) = self.edits_blocked(app) {
                     return Err(why);
                 }
@@ -648,50 +706,61 @@ impl Play {
                         return Err("no acknowledged placement edits to respawn".into());
                     }
                     for w in &self.edits.created {
-                        self.call("world.object.respawn",json!({"placement":{"block":crate::api::block_name(w.block),"index":w.index}}),Purpose::Other);
+                        self.call(agent_proto::sim::method::OBJECT_RESPAWN,json!({"placement":{"block":crate::api::block_name(w.block),"index":w.index}}),Purpose::Other);
                     }
-                } else if self.child.is_some() && self.endpoint() == self.child_endpoint.as_ref() {
-                    self.launch(app);
                 } else {
-                    let level = app.loaded_map().ok_or("open a map first")?;
-                    let dir = launch::scratch().join("reload");
-                    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-                    let file = dir.join(format!(
-                        "{}.map",
-                        std::path::Path::new(level)
-                            .file_stem()
-                            .ok_or("missing map name")?
-                            .to_string_lossy()
-                    ));
-                    scenario_edit::save::save_as(
-                        app.session.source().ok_or("no map source")?,
-                        app.session.scenario().unwrap(),
-                        &file,
-                    )
-                    .map_err(|e| e.to_string())?;
-                    let saved = scenario_edit::MapSource::file(file.clone())
-                        .open()
-                        .map_err(|e| e.to_string())?;
-                    self.edits.reload_copy = Some((
-                        app.session.world_rev(),
-                        saved.header().checksum,
-                        Baseline::of(app.session.scenario().unwrap()),
-                        TagBaseline::of(&app.tags),
-                    ));
-                    app.info(format!(
-                        "Play copy saved to {}. Load it in the game if map.reload is unavailable.",
-                        file.display()
-                    ));
-                    if !self.edits.reload {
-                        return Ok(());
-                    }
-                    self.call("map.reload", json!({"file":file}), Purpose::Other);
+                    self.remember_place(app);
+                    let route = playtest::Reload::route(self.edits.reload, self.own_game());
+                    self.reload_for_play(app, route)?;
                 }
             }
             Apply::Keep => unreachable!(),
         }
         self.edits.last_diff = None;
         self.next_push = Instant::now();
+        Ok(())
+    }
+
+    pub(super) fn cancel_reload(&mut self) {
+        self.edits.reload_copy = None;
+        self.pending_spawn = None;
+        self.waiting = Waiting::Idle;
+    }
+
+    pub(super) fn reload_for_play(
+        &mut self,
+        app: &mut App,
+        route: playtest::Reload,
+    ) -> Result<(), String> {
+        if route == playtest::Reload::Manual {
+            return Err(playtest::MANUAL_RELOAD.into());
+        }
+        if route == playtest::Reload::Relaunch {
+            return self.launch_copy(app);
+        }
+        let level = app.loaded_map().ok_or("open a map first")?;
+        let scenario = app.session.scenario().ok_or("open a map first")?;
+        let dir = launch::scratch().join("reload");
+        let file = launch::write_copy(&app.session, level, &dir)?;
+        let saved = scenario_edit::MapSource::file(file.clone())
+            .open()
+            .map_err(|e| e.to_string())?;
+        self.edits.reload_copy = Some((
+            app.session.world_rev(),
+            saved.header().checksum,
+            Baseline::of(scenario),
+            TagBaseline::of(&app.tags),
+        ));
+        self.play_world = app.session.world_rev();
+        self.pending_spawn = self.destination(app);
+        self.waiting = Waiting::Reload;
+        self.live_edits = true;
+        self.playtest_consent = true;
+        if self.paused {
+            self.ensure_claim();
+            self.resume();
+        }
+        self.call(agent_proto::sim::method::MAP_RELOAD, json!({"file": file}), Purpose::Reload);
         Ok(())
     }
 

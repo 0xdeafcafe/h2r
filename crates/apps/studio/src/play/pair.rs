@@ -70,10 +70,12 @@ impl Finder {
     }
 
     /// Once a frame: takes a finished scan, starts the next when due.
-    pub fn poll(&mut self) {
+    pub fn poll(&mut self) -> bool {
+        let mut refreshed = false;
         if let Some(rx) = &self.pending {
             match rx.try_recv() {
                 Ok(found) => {
+                    refreshed = true;
                     self.games = found;
                     self.scanned = true;
                     self.pending = None;
@@ -86,11 +88,19 @@ impl Finder {
         if self.pending.is_none() && due {
             self.start();
         }
+        refreshed
     }
 
     /// Looks again at the next [`Finder::poll`].
     pub fn look_again(&mut self) {
         self.last = None;
+    }
+
+    /// A child exit is newer than either a cached or an in-flight scan.
+    pub(super) fn forget(&mut self, endpoint: &Endpoint) {
+        self.games.retain(|g| &g.endpoint() != endpoint);
+        self.pending = None;
+        self.look_again();
     }
 
     fn start(&mut self) {
@@ -182,6 +192,7 @@ pub enum Request {
     Unpair,
     Apply(super::Apply),
     Play,
+    PlayAnswer(super::playtest::Prompt, String),
     Stop,
     Edit(bool),
     Pause,
@@ -192,10 +203,13 @@ pub enum Request {
 impl Request {
     pub fn refusal(&self, link: &LinkView) -> Option<&'static str> {
         match self {
-            Self::Play if matches!(link.state, LinkState::Connecting | LinkState::Reconnecting { .. }) => {
+            Self::Play | Self::PlayAnswer(..) if matches!(link.state, LinkState::Connecting | LinkState::Reconnecting { .. }) => {
                 Some("wait for the game link to connect or cancel it")
             }
-            Self::Play if !link.can_play => Some("open a map first"),
+            Self::Play | Self::PlayAnswer(..) if link.playtest_busy => {
+                Some("a playtest is already in progress")
+            }
+            Self::Play | Self::PlayAnswer(..) if !link.can_play => Some("open a map first"),
             Self::Stop if !link.can_stop => Some("the editor has no game of its own to stop"),
             Self::Edit(_) if !link.state.can_edit() => Some("pair with a game first"),
             Self::Pause | Self::Resume | Self::Step(_) if !link.can_pause => {
@@ -213,6 +227,10 @@ impl Request {
 pub struct Bridge {
     /// Pair on its own with the one game running, once per game. On by default.
     pub auto_pair: bool,
+    pub pause_while_editing: bool,
+    pub spawn: Option<super::Spawn>,
+    pub playtest: Option<super::playtest::Offer>,
+    pub prompt: Option<super::playtest::Prompt>,
     /// Left by `pair.*`, taken once a frame.
     pub requests: Vec<Request>,
     /// What `Play` last published: `None` until a window has drawn a
@@ -240,6 +258,10 @@ impl Default for Bridge {
     fn default() -> Self {
         Bridge {
             auto_pair: true,
+            pause_while_editing: false,
+            spawn: None,
+            playtest: None,
+            prompt: None,
             requests: Vec::new(),
             published: None,
             link: None,
@@ -258,6 +280,7 @@ impl Default for Bridge {
 
 impl Bridge {
     pub(super) fn clear_mirror(&mut self) {
+        self.prompt = None;
         self.pending.clear();
         self.journal.clear();
         self.leaving = false;

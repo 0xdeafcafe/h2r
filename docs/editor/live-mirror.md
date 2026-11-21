@@ -297,11 +297,9 @@ restores the earlier revision. Loading a Play copy sets the baseline to
 the layout saved in that copy.
 
 Pending reload edits collect under one **Reload map** button.
-For a game the editor started it is Play again: the play copy is written
-and the game relaunched (`play/launch.rs`). For a game it only paired
-with, the editor writes the play copy and calls `map.reload {file}`; a
-game that cannot (see Interfaces) leaves the button saying to save the
-map and load it in the game.
+It uses the same play copy and reload decision as F5, including the
+manual-load message for a foreign game without `map.reload`.
+[Play and pair](editor.md#play-and-pair)
 
 ### Undo and sync
 

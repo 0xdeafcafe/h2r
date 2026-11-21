@@ -60,6 +60,26 @@ pub fn find_h2_from(given: Option<&Path>, exe: Option<&Path>) -> Option<PathBuf>
         })
 }
 
+/// Write a play copy from the document, including its unsaved edits. Both
+/// a launch override and a map.reload request use the same map writer.
+pub(super) fn write_copy(
+    session: &scenario_edit::Session,
+    level: &str,
+    dir: &Path,
+) -> Result<PathBuf, String> {
+    let name = Path::new(level).file_name().ok_or("missing map name")?;
+    let name = name.to_str().ok_or("invalid map name")?.trim_end_matches(".map");
+    let file = dir.join(format!("{name}.map"));
+    std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    scenario_edit::save::save_as(
+        session.source().ok_or("no map source")?,
+        session.scenario().ok_or("open a map first")?,
+        &file,
+    )
+    .map_err(|e| format!("writing {}: {e}", file.display()))?;
+    Ok(file)
+}
+
 /// What to start.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Launch {
