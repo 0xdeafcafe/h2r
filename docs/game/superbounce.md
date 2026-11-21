@@ -585,16 +585,23 @@ nearest spot 6.1 m  launch +17.9
   scan says why.
 
 **The lines.** Each spot is a world-space line (the window's world-line
-pass, no depth test):
+pass, no depth test; the styles are described in
+[the agent API](../runtime/agent-api.md#drawing-world-space-lines-over-the-frame)):
 
 - A bounce spot's edge is coloured by the fall onto it: green for a
   standing jump (0), yellow at 1.5 world units, red at 3 and more (a hue
-  sweep, clamped). Its label is the launch speed, `+17.9`.
-- Bounce lines are dimmed to 35% while the player is not primed, so a
-  bright line means a landing there launches.
-- A forced-crouch spot is a dashed cyan line labelled `crouch`, always at
-  full brightness.
-- Only the 40 spots nearest the player are drawn.
+  sweep, clamped). It is a 3 px core with a soft halo, over a floor ribbon
+  as wide as the strip's slot (0.2). When the spot has a drift, small
+  chevrons on the floor point along it, the way to come in.
+- While the player is primed a bounce line pulses and its chevrons flow.
+  While not, it is dimmed to 35% and still, so a bright, moving line means
+  a landing there launches.
+- A forced-crouch spot is a thin dashed cyan line with a soft halo, steady
+  and at full brightness.
+- Both kinds fade out between 25 and 45 world units from the camera.
+- Only the 40 spots nearest the player are drawn. Of those, only the
+  nearest 3 bounce strips carry their launch label (`+17.9`) and only the
+  nearest 2 crouch spots carry `crouch`.
 
 ## Open
 

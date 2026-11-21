@@ -2263,13 +2263,35 @@ The window still expires the plate and marks on wall time
 A windowed host registers a `WorldLineSource` with
 `Host::add_world_line_source` before boot. Each source provides an
 immutable sample of world-space edges, with an anchor, color, dash
-flag and optional label for each group. A sample can live as long as
+flag, optional label and style for each group. A sample can live as long as
 its image or carry its own lease. Only the editor sample contributes
 to `editor.marks` status. The superbounce game type is another source, and
 its sample stays image-lived (`crates/extensions/game/src/superbounce_mode.rs`;
 `crates/extensions/game/src/run_opts.rs`,
 `crates/extensions/game/src/world_lines.rs`,
 `crates/platform/gfx/src/world_lines.rs`).
+
+A group's `LineStyle` (`crates/platform/gfx/src/world_lines.rs`) sets
+how it is drawn; the default is a thin opaque line. A style has:
+
+- a core `width` in pixels at 1080p, scaled by the output height;
+- an `alpha`;
+- an optional `glow`, a wider low-opacity halo around the core;
+- an optional `pulse`, a period and depth read from the present
+  time, so brightness breathes between full and `1 - depth`;
+- an optional distance `fade`, full opacity up to its start and none
+  from its end, in world units from the camera;
+- optional `chevrons`, small arrowheads lying flat in the world along
+  each edge and pointing along a world direction. They flow along
+  the direction when their speed is not zero;
+- an optional floor `ribbon`, a translucent strip of a world width
+  along each edge, clipped at the near plane.
+
+The window draws every edge as an anti-aliased screen-space quad, with the
+core, halo and dashes in the fragment shader, and the ribbons, arrowheads
+and label pixels as triangles in the same vertex buffer. All of it is one
+pipeline and one draw per frame
+(`crates/apps/app/src/overlay/marks.rs`).
 
 Genuine guest images captured with samples carry their own per-view
 cameras and aspect factors. Repeated scanout keeps the same samples
