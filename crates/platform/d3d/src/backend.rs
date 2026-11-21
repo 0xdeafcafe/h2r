@@ -1126,6 +1126,15 @@ mod raster_tests {
     }
 }
 
+/// The ordinary display probe reads tightly packed guest-format BGRA pixels.
+pub(crate) fn read_frame_probe<B: Backend + ?Sized>(
+    backend: &mut B, surface: B::Surface, width: u32, height: u32,
+) -> Result<Vec<u8>, String> {
+    let pitch = width.checked_mul(4).ok_or("frame probe row pitch overflow")?;
+    pitch.checked_mul(height).ok_or("frame probe image size overflow")?;
+    backend.read_surface(surface, D3DFormat::LinA8R8G8B8, width, height, GuestLayoutKind::Linear { pitch })
+}
+
 /// Host rendering for the device.
 /// `Send` (with its handles) so a device can sit behind the runtime's
 /// `Send + Sync` override handlers.
@@ -1325,6 +1334,16 @@ pub trait Backend: Send {
             clear.color.map(|c| c.1)
         )))
     }
+    /// Diagnostic pixels at this pass boundary. A worker that adopts the
+    /// sealed scene discards this callback; its graph provides the snapshot.
+    /// A read failure belongs to the probe and leaves guest rendering live.
+    fn queue_frame_probe_read(
+        &mut self, surface: Self::Surface, width: u32, height: u32,
+        done: Box<dyn FnOnce(Result<Vec<u8>, String>) + Send>,
+    ) {
+        done(read_frame_probe(self, surface, width, height));
+    }
+
     /// Reads a colour surface back as guest bytes: `format` texels of a
     /// `width x height` level laid out as `layout` (render-to-texture
     /// write-back). The default cannot.

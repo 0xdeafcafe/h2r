@@ -64,6 +64,7 @@
 
 mod capacity;
 pub mod owner;
+mod probe;
 
 use crate::scene_sink::ReplaySample;
 
@@ -107,6 +108,7 @@ enum Cmd<B: Backend> {
     /// resource or retrieve a visibility ticket from an earlier present.
     Independent(Job<B>),
     FrameStats(timeline::phase::WorkerFrame),
+    ProbeRead(Box<probe::Read>),
     /// Resolves a shader resource at this exact point in the command list.
     /// The original callback includes the backend's depth-alias fallback.
     Sample(Box<SampleCmd<B>>),
@@ -424,8 +426,21 @@ impl<B: Backend> Worker<B> {
             // A read, query, resource lifetime change or external command
             // needs the original GPU state in queue order.
             let commands = pending.barrier();
-            for saved in commands {
-                self.exec_original(saved);
+            if !pending.refused && !commands.is_empty() {
+                // Only probe reads preceded this barrier. Preserve the
+                // bytes before it runs, and let the eventual presenter
+                // decide whether the diagnostic receives those bytes.
+                let mut saved = commands;
+                for cmd in &mut saved {
+                    if let Cmd::ProbeRead(read) = cmd {
+                        read.preserve(self);
+                    }
+                }
+                self.transaction.as_mut().expect("owner installed").commands = saved;
+            } else {
+                for saved in commands {
+                    self.exec_original(saved);
+                }
             }
         }
         self.exec_original(cmd);
@@ -444,6 +459,7 @@ impl<B: Backend> Worker<B> {
             Cmd::Sample(sample) => (sample.original)(self),
             Cmd::Job(job) | Cmd::Independent(job) => job(self),
             Cmd::FrameStats(frame) => frame.finish(),
+            Cmd::ProbeRead(read) => read.deliver(self),
             Cmd::ReleaseTexture(proxy) => self.release_texture(proxy),
             Cmd::ExternalRun(run) => {
                 for recording in run { self.inner.commit_external(recording); }
@@ -1246,6 +1262,17 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
             Ok(())
         });
         Ok(DrawOutcome::Drawn)
+    }
+
+    fn queue_frame_probe_read(
+        &mut self, surface: u32, width: u32, height: u32,
+        done: Box<dyn FnOnce(Result<Vec<u8>, String>) + Send>,
+    ) {
+        if let Err(error) = self.check() {
+            done(Err(error));
+            return;
+        }
+        self.push(Cmd::ProbeRead(Box::new(probe::Read::new(surface, width, height, done))));
     }
 
     fn read_surface(

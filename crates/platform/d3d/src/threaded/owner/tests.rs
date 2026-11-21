@@ -3,6 +3,7 @@
 //! frames can observe exactly which target a command wrote.
 
 mod pacing;
+mod probe;
 mod live_views;
 
 use super::*;
@@ -18,6 +19,7 @@ struct Pixels {
     shown: Vec<u8>,
     clears: usize,
     parity_inputs: Vec<u8>,
+    probe_reads: usize,
     hold_present: Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>,
 }
 
@@ -75,12 +77,18 @@ impl Backend for Pixels {
     fn read_surface(
         &mut self,
         surface: u32,
-        _: D3DFormat,
-        _: u32,
-        _: u32,
-        _: GuestLayoutKind,
+        format: D3DFormat,
+        width: u32,
+        height: u32,
+        layout: GuestLayoutKind,
     ) -> Result<Vec<u8>, String> {
-        Ok(vec![self.surfaces[surface as usize]])
+        let pixel = self.surfaces[surface as usize];
+        if format == D3DFormat::LinA8R8G8B8 {
+            self.probe_reads += 1;
+            assert_eq!((width, height, layout), (1, 1, GuestLayoutKind::Linear { pitch: 4 }));
+            return Ok(vec![0, 0, pixel, 255]);
+        }
+        Ok(vec![pixel])
     }
 }
 

@@ -172,7 +172,7 @@ impl RenderOp {
 
 pub(super) struct Transaction<B: Backend> {
     pub commands: Vec<Cmd<B>>,
-    refused: bool,
+    pub(super) refused: bool,
 }
 
 impl<B: Backend> Transaction<B> {
@@ -181,14 +181,14 @@ impl<B: Backend> Transaction<B> {
     }
 
     pub fn hold(&self, cmd: &Cmd<B>) -> bool {
-        !self.refused && matches!(cmd, Cmd::Draw(_) | Cmd::Render(_) | Cmd::Sample(_) | Cmd::ReleaseTexture(_) | Cmd::FrameStats(_))
+        !self.refused && matches!(cmd, Cmd::Draw(_) | Cmd::Render(_) | Cmd::Sample(_) | Cmd::ReleaseTexture(_) | Cmd::FrameStats(_) | Cmd::ProbeRead(_))
     }
 
     pub fn barrier(&mut self) -> Vec<Cmd<B>> {
         if self.commands.is_empty() {
             return Vec::new();
         }
-        self.refused = true;
+        self.refused |= self.commands.iter().any(|cmd| !matches!(cmd, Cmd::ProbeRead(_)));
         std::mem::take(&mut self.commands)
     }
 }
@@ -257,13 +257,13 @@ fn target_map<B: Backend>(
     // Only a trailing stats marker can be joined to the work of this
     // whole graph. A split Swap can place one between two sets of draws.
     if let Some(i) = commands.iter().position(|cmd| matches!(cmd, Cmd::FrameStats(_)))
-        && commands[i + 1..].iter().any(|cmd| !matches!(cmd, Cmd::ReleaseTexture(_)))
+        && commands[i + 1..].iter().any(|cmd| !matches!(cmd, Cmd::ReleaseTexture(_) | Cmd::ProbeRead(_)))
     {
         return None;
     }
     // The worker checks all speculative draw outcomes. A skipped draw
     // omitted by the scene sink must still execute and verify its result.
-    let mut original = commands.iter().filter(|cmd| !matches!(cmd, Cmd::FrameStats(_)));
+    let mut original = commands.iter().filter(|cmd| !matches!(cmd, Cmd::FrameStats(_) | Cmd::ProbeRead(_)));
     let mut released = HashSet::new();
     for (_, op) in &frame.ops {
         if let ReplayOp::Bind { colour, depth } = op {
