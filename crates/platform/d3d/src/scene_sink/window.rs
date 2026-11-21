@@ -2,23 +2,48 @@
 //! Swap numbers. Only completion of that same Swap advances the measured
 //! interval. Interpolated images and private captures never enter it.
 use std::collections::{BTreeMap, VecDeque};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use frame_scene::Readback;
 
-#[derive(Default)]
-pub struct PresentWindow(Mutex<State>);
+use super::Census;
+
+/// Original Swaps in one boot of the FrameScene census corpus.
+pub const CORPUS_PRESENT: u64 = 3000;
+
+pub struct Checkpoint {
+    pub sealed: bool,
+    pub inventory: Option<Arc<Census>>,
+    pub counters: Option<BTreeMap<String, u64>>,
+}
+
+pub struct PresentWindow {
+    state: Mutex<State>,
+    seal_probe: fn() -> bool,
+}
+
+impl Default for PresentWindow {
+    fn default() -> Self { Self::new(false) }
+}
 
 #[derive(Default)]
 struct State {
     owner_enabled: bool,
     submitted: u64,
     pending: VecDeque<(u64, Input, PaletteViews)>,
+    completed: u64,
+    ordinal_gap: bool,
+    map_changed: bool,
+    sealed_at_boundary: bool,
+    inventory_through: u64,
+    inventory_gap: bool,
+    inventory_at_boundary: Option<Arc<Census>>,
+    measured_at_boundary: Option<Measured>,
     measured: Option<Measured>,
     views: PaletteViews,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct Measured {
     start: u64,
     through: u64,
@@ -61,13 +86,52 @@ pub(crate) enum DisplayResult {
 
 impl PresentWindow {
     pub fn new(owner_enabled: bool) -> Self {
-        Self(Mutex::new(State { owner_enabled, ..Default::default() }))
+        Self { state: Mutex::new(State { owner_enabled, ..Default::default() }), seal_probe: || false }
+    }
+
+    /// Reads the active map's last seal once, at the original corpus boundary.
+    pub fn with_seal_probe(mut self, probe: fn() -> bool) -> Self {
+        self.seal_probe = probe;
+        self
+    }
+
+    /// A second game start before the boundary interrupts this level's
+    /// post-activation interval. Already-submitted Swaps keep their map.
+    pub fn next_game(&self) {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if state.measured.is_some() && state.submitted < CORPUS_PRESENT { state.map_changed = true; }
+    }
+
+    /// Called under the cumulative inventory's lock. Prove that its rows
+    /// cover this device's consecutive original Swaps, starting at one.
+    pub(super) fn observe_inventory(&self, present: u64, census: &Census) {
+        if present > CORPUS_PRESENT { return; }
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if present != state.inventory_through + 1 || present != state.submitted || census.frames != present {
+            state.inventory_gap = true;
+        }
+        state.inventory_through = present;
+        if present == CORPUS_PRESENT && !state.inventory_gap && state.inventory_at_boundary.is_none() {
+            state.inventory_at_boundary = Some(Arc::new(census.clone()));
+        }
+    }
+
+    /// Exact prefix of this device's boot. Missing evidence stays absent,
+    /// even if an activation or a zero-valued reading appears later.
+    pub fn checkpoint(&self) -> Option<Checkpoint> {
+        let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        (state.submitted >= CORPUS_PRESENT).then(|| Checkpoint {
+            sealed: state.sealed_at_boundary,
+            inventory: state.inventory_at_boundary.clone(),
+            counters: state.measured_at_boundary.as_ref().map(|m| m.counters(state.owner_enabled)),
+        })
     }
 
     /// Opens immediately after the last original Swap submitted by this
     /// device. An already-submitted Swap can still be drawing on its worker.
     pub fn activate(&self) {
-        let mut state = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if state.measured.is_some() { return; }
         let start = state.submitted;
         state.measured = Some(Measured { start, through: start, ..Default::default() });
         state.pending.clear();
@@ -77,7 +141,7 @@ impl PresentWindow {
     /// Readiness on entry to each game view. Keep every observation until
     /// its original Swap, including an early split view before a later upload.
     pub fn game_view(&self, palette_ready: Option<bool>) {
-        let mut state = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         if state.measured.is_some() {
             state.views.count += 1;
             state.views.pending |= palette_ready == Some(false);
@@ -86,8 +150,13 @@ impl PresentWindow {
     }
 
     pub(super) fn submit(&self, present: u64, input: Input) {
-        let mut state = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        state.submitted = present;
+        let boundary_sealed = present == CORPUS_PRESENT && (self.seal_probe)();
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if state.submitted < CORPUS_PRESENT && present != state.submitted + 1 { state.ordinal_gap = true; }
+        if present == CORPUS_PRESENT && state.submitted < present {
+            state.sealed_at_boundary = boundary_sealed;
+        }
+        state.submitted = state.submitted.max(present);
         if state.measured.is_some() {
             let views = std::mem::take(&mut state.views);
             state.pending.push_back((present, input, views));
@@ -96,8 +165,28 @@ impl PresentWindow {
 
     pub(crate) fn complete(&self, present: u64, result: DisplayResult,
         residency: Option<(u64, bool)>, worker_drops: u64) {
-        let mut state = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        let State { pending, measured, .. } = &mut *state;
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if state.completed < CORPUS_PRESENT && present != state.completed + 1 { state.ordinal_gap = true; }
+        state.completed = state.completed.max(present);
+        state.join(present, result, residency, worker_drops);
+        if present == CORPUS_PRESENT && !state.ordinal_gap && !state.map_changed && state.measured_at_boundary.is_none() {
+            state.measured_at_boundary = state.measured.as_ref()
+                .filter(|m| m.start < present && m.through == present && m.gaps == 0)
+                .cloned();
+        }
+    }
+
+    /// A single completed prefix of original presents, sampled without
+    /// pausing the guest or draining any in-flight rendering.
+    pub fn counters(&self) -> BTreeMap<String, u64> {
+        let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.measured.as_ref().map(|m| m.counters(state.owner_enabled)).unwrap_or_default()
+    }
+}
+
+impl State {
+    fn join(&mut self, present: u64, result: DisplayResult, residency: Option<(u64, bool)>, worker_drops: u64) {
+        let State { pending, measured, .. } = self;
         let Some(m) = measured.as_mut() else { return };
         if present <= m.start { return; }
         if present != m.through + 1 || pending.front().map(|p| p.0) != Some(present) {
@@ -130,23 +219,21 @@ impl PresentWindow {
         m.unresident += missing;
         m.unknown += u64::from(unknown);
     }
+}
 
-    /// A single completed prefix of original presents, sampled without
-    /// pausing the guest or draining any in-flight rendering.
-    pub fn counters(&self) -> BTreeMap<String, u64> {
-        let state = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        let Some(m) = &state.measured else { return BTreeMap::new() };
+impl Measured {
+    fn counters(&self, owner_enabled: bool) -> BTreeMap<String, u64> {
         let mut out: BTreeMap<_, _> = [
-            ("owner_enabled", u64::from(state.owner_enabled)), ("start", m.start), ("through", m.through), ("gaps", m.gaps),
-            ("games", m.games), ("owned", m.owned), ("ordinary", m.ordinary),
-            ("failed", m.failed), ("stage_drops", m.drops), ("unresident", m.unresident),
-            ("unknown_residency", m.unknown), ("flare_queries", m.flare_queries),
-            ("unmatched_flare_frames", m.unmatched_frames),
-            ("palette_views", m.palette_views),
-            ("palette_pending_frames", m.palette_pending_frames),
-            ("palette_unknown_frames", m.palette_unknown_frames),
+            ("owner_enabled", u64::from(owner_enabled)), ("start", self.start), ("through", self.through), ("gaps", self.gaps),
+            ("games", self.games), ("owned", self.owned), ("ordinary", self.ordinary),
+            ("failed", self.failed), ("stage_drops", self.drops), ("unresident", self.unresident),
+            ("unknown_residency", self.unknown), ("flare_queries", self.flare_queries),
+            ("unmatched_flare_frames", self.unmatched_frames),
+            ("palette_views", self.palette_views),
+            ("palette_pending_frames", self.palette_pending_frames),
+            ("palette_unknown_frames", self.palette_unknown_frames),
         ].into_iter().map(|(name, n)| (format!("scene_window_{name}"), n)).collect();
-        for (kind, n) in Readback::ALL.into_iter().zip(m.reads) {
+        for (kind, n) in Readback::ALL.into_iter().zip(self.reads) {
             out.insert(format!("scene_window_read_{}", kind.name()), n);
         }
         out
@@ -161,6 +248,74 @@ mod tests {
         let mut input = Input { game_view: true, ..Default::default() };
         input.reads[Readback::PixelCount.index()] = reads;
         input
+    }
+
+    #[test]
+    fn corpus_freezes_the_original_inventory_and_completed_window_at_the_same_swap() {
+        use frame_scene::Slot;
+        use super::super::{TargetUse, Uses};
+
+        let w = PresentWindow::new(false).with_seal_probe(|| true);
+        let mut inventory = Census::default();
+        let target = TargetUse { width: 3, height: 7, format: 9, depth: false, slot: Slot::Opaque, operation: "copy_to" };
+        for n in 1..=CORPUS_PRESENT {
+            inventory.frames = n;
+            if n == CORPUS_PRESENT {
+                let once = Uses { count: 1, first_frame: n, last_frame: n };
+                inventory.reads.insert((Slot::AfterLights, "surface"), once);
+                inventory.targets.insert(target, once);
+            }
+            w.submit(n, input(0));
+            w.observe_inventory(n, &inventory);
+            if n < CORPUS_PRESENT {
+                w.complete(n, DisplayResult::Ordinary, None, 0);
+                assert!(w.checkpoint().is_none());
+            }
+            if n == CORPUS_PRESENT - 1 { w.activate(); }
+        }
+        let producer = w.checkpoint().unwrap();
+        assert!(producer.sealed);
+        assert_eq!(producer.inventory.unwrap().frames, CORPUS_PRESENT);
+        assert!(producer.counters.is_none());
+
+        // The game can change after submission while Swap 3000 is still executing.
+        w.next_game();
+        w.submit(CORPUS_PRESENT + 1, input(9));
+        inventory.frames += 1;
+        inventory.reads.get_mut(&(Slot::AfterLights, "surface")).unwrap().last_frame = inventory.frames;
+        inventory.targets.insert(TargetUse { width: 11, ..target }, Uses { count: 1, first_frame: inventory.frames, last_frame: inventory.frames });
+        w.observe_inventory(CORPUS_PRESENT + 1, &inventory);
+        w.complete(CORPUS_PRESENT, DisplayResult::Ordinary, Some((0, false)), 0);
+        w.complete(CORPUS_PRESENT + 1, DisplayResult::Failed, None, 2);
+        let checkpoint = w.checkpoint().unwrap();
+        let inventory = checkpoint.inventory.unwrap();
+        assert_eq!(inventory.reads[&(Slot::AfterLights, "surface")].last_frame, CORPUS_PRESENT);
+        assert_eq!(inventory.targets.len(), 1);
+        assert_eq!(inventory.targets[&target].first_frame, CORPUS_PRESENT);
+        let counters = checkpoint.counters.unwrap();
+        assert_eq!((counters["scene_window_start"], counters["scene_window_through"]), (CORPUS_PRESENT - 1, CORPUS_PRESENT));
+        assert_eq!((counters["scene_window_games"], counters["scene_window_failed"]), (1, 0));
+        assert_eq!(w.counters()["scene_window_failed"], 1);
+    }
+
+    #[test]
+    fn absent_or_late_activation_map_changes_and_missing_ordinals_cannot_certify_the_prefix() {
+        for case in ["absent", "late", "changed", "producer_gap", "worker_gap", "inventory_gap"] {
+            let w = PresentWindow::default();
+            let mut inventory = Census::default();
+            for n in 1..=CORPUS_PRESENT {
+                inventory.frames = n;
+                if case != "producer_gap" || n != 1 { w.submit(n, Input::default()); }
+                if case != "inventory_gap" || n != 1 { w.observe_inventory(n, &inventory); }
+                if case != "worker_gap" || n != 1 { w.complete(n, DisplayResult::Ordinary, None, 0); }
+                if n == 2 && !matches!(case, "absent" | "late") { w.activate(); }
+                if n == 3 && case == "changed" { w.next_game(); }
+            }
+            if case == "late" { w.activate(); }
+            let checkpoint = w.checkpoint().unwrap();
+            assert_eq!(checkpoint.counters.is_some(), case == "inventory_gap", "{case}");
+            assert_eq!(checkpoint.inventory.is_some(), !matches!(case, "inventory_gap" | "producer_gap"), "{case}");
+        }
     }
 
     #[test]

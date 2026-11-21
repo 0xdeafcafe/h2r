@@ -810,7 +810,7 @@ h2 agent render.parity '{"arm": true}'
 | `render.compare` | read | `{a, b, diff?}`: two PNG paths, and where to write a difference image | `{size: [w, h], differing, max_channel, mean, first: [x, y] \| null, within_bar, diff?}` |
 | `render.spawn_view` | act | `{index, yaw_offset?}` or `{reset: true}` | `{index, count, position: [x,y,z], yaw}` or `{reset: true}` |
 | `render.capture` | read | `{tick?, pass?, lighting?}` | `{path, tick, present, pass?, lighting?, scene_hash}` |
-| `render.scene` | read | `{dump?}` | `{sealed, map_epoch, frame, tick, hash, cut, views, counters, entries?, carried?, carried_census?, carried_activation?, dump?}` |
+| `render.scene` | read | `{dump?}` | `{sealed, map_epoch, frame, tick, hash, cut, views, counters, entries?, carried?, carried_census?, carried_activation?, carried_checkpoint?, dump?}` |
 | `render.parity` | act | `{arm: true}` | `render.compare`'s fields plus `tick` |
 | `sim.hashes` | read | `{from_tick?, max?}` | `{rows: [{tick, gameplay, arena?}], dropped, resets, truncated?}` |
 
@@ -984,6 +984,18 @@ h2 agent render.parity '{"arm": true}'
   On a direct level boot, `carried_activation` records the loaded map, its
   activation present, sink frame and a snapshot of process counters. A row
   whose `last_frame` exceeds `carried_activation.frame` occurred after loading.
+  `carried_checkpoint` freezes the census corpus at original Swap 3000.
+  It contains `present`, `sealed`, optional `inventory` and optional
+  `counters`. It appears once the device has submitted the boundary.
+  `sealed` records whether the active map already had a sealed scene.
+  The original census supplies an `inventory` with the same schema as
+  `carried_census` for original Swaps 1 through 3000 inclusive.
+  A device or ordinal gap leaves that inventory absent. When the display
+  worker completes Swap 3000, `counters` preserves its `scene_window_*`
+  readings for the interval after level activation through that Swap.
+  Missing or late activation, a second game start within the interval,
+  or a missing original or worker ordinal leaves the checkpoint without
+  counters. Later game activity does not modify the frozen values.
   A threaded GPU sink also reports `scene_window_*` counters from one device.
   `start` is its original Swap at activation and `through` is the last
   completed Swap. The interval excludes `start` and includes `through`.

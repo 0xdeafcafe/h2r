@@ -91,6 +91,10 @@ fn present_window() -> Option<std::sync::Arc<Window>> {
     WINDOW.lock().unwrap_or_else(|e| e.into_inner()).upgrade()
 }
 
+pub(crate) fn next_game() {
+    if let Some(window) = present_window() { window.next_game(); }
+}
+
 static ACTIVATION: std::sync::OnceLock<agent_proto::SceneCensusActivation> = std::sync::OnceLock::new();
 
 /// Called by level boot at the same boundary as its first-level-loaded mark.
@@ -117,12 +121,23 @@ fn source(dump: bool) -> Result<SceneReply, String> {
     let counters = counters(sink);
     let summary = if sink { d3d::scene_sink::last() } else { None };
     let census = if sink { d3d::scene_sink::census().map(carried_census) } else { None };
+    let checkpoint = if sink {
+        present_window().and_then(|w| w.checkpoint()).map(|p| agent_proto::SceneCensusCheckpoint {
+            present: d3d::scene_sink::window::CORPUS_PRESENT,
+            sealed: p.sealed,
+            inventory: p.inventory.map(|c| carried_census((*c).clone())),
+            counters: p.counters,
+        })
+    } else {
+        None
+    };
     let Some(scene) = render_bridge::scene_step::last() else {
         return Ok(SceneReply {
             counters,
             entries: entries(),
             carried: summary.as_ref().map(carried),
             carried_census: census,
+            carried_checkpoint: checkpoint,
             carried_activation: ACTIVATION.get().cloned(),
             ..SceneReply::default()
         });
@@ -130,6 +145,7 @@ fn source(dump: bool) -> Result<SceneReply, String> {
     let mut reply = reply(&scene, counters, summary.as_ref());
     reply.entries = entries();
     reply.carried_census = census;
+    reply.carried_checkpoint = checkpoint;
     reply.carried_activation = ACTIVATION.get().cloned();
     if dump {
         reply.dump = Some(write_dump(&scene)?);
@@ -273,6 +289,7 @@ fn reply(scene: &FrameScene, counters: BTreeMap<String, u64>, summary: Option<&C
         entries: None,
         carried: summary.map(carried),
         carried_census: None,
+        carried_checkpoint: None,
         carried_activation: None,
         dump: None,
     }

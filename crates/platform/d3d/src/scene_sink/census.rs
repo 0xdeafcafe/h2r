@@ -114,12 +114,13 @@ pub(super) fn skip() {
     SKIPPED.store(true, Ordering::Relaxed);
 }
 
-pub(super) fn record<D>(f: &Carried<D>) {
-    CENSUS
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .get_or_insert_with(Census::default)
-        .record(f);
+pub(super) fn record<D>(f: &Carried<D>, present: u64, window: Option<&super::window::PresentWindow>) {
+    let mut history = CENSUS.lock().unwrap_or_else(|e| e.into_inner());
+    let census = history.get_or_insert_with(Census::default);
+    census.record(f);
+    if !SKIPPED.load(Ordering::Relaxed) && let Some(window) = window {
+        window.observe_inventory(present, census);
+    }
 }
 
 /// Returns no census until a sink has recorded at least one frame.

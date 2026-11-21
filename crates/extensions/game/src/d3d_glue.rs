@@ -988,7 +988,12 @@ where
         && profile == film::RenderHooks::Gpu
         && switches.feature(render_bridge::carried_slots::ID, false);
     let window = measure.then(|| {
-        Arc::new(d3d::scene_sink::window::PresentWindow::new(scenes.is_some() && interp.is_none()))
+        let w = d3d::scene_sink::window::PresentWindow::new(scenes.is_some() && interp.is_none());
+        Arc::new(w.with_seal_probe(|| {
+            render_bridge::scene_step::last().is_some_and(|scene| {
+                scene.id.map_epoch == render_bridge::native_map_work::generation()
+            })
+        }))
     });
     let worker = if let Some(scenes) = scenes {
         if threaded && interp.is_none() {

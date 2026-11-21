@@ -413,6 +413,9 @@ pub struct SceneReply {
     /// Side target uses and readbacks across all frames the device's sink recorded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub carried_census: Option<SceneCarriedCensus>,
+    /// Frozen census corpus at original Swap 3000.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub carried_checkpoint: Option<SceneCensusCheckpoint>,
     /// Activation of the requested level on a fresh level boot.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub carried_activation: Option<SceneCensusActivation>,
@@ -429,6 +432,18 @@ pub struct SceneCarriedCensus {
     pub game_frames: u64,
     pub targets: Vec<SceneTargetUse>,
     pub reads: Vec<SceneReadUse>,
+}
+
+/// Only a consecutive prefix from boot can supply the inventory and the
+/// measured window. Each field appears when its own side reaches the Swap.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SceneCensusCheckpoint {
+    pub present: u64,
+    pub sealed: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inventory: Option<SceneCarriedCensus>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub counters: Option<BTreeMap<String, u64>>,
 }
 
 /// The level-boot mark, used as the baseline for post-load deltas.
@@ -775,6 +790,10 @@ mod tests {
     fn the_census_preserves_counts_and_frame_bounds_on_the_wire() {
         let uses = SceneUses { count: 3, first_frame: 2, last_frame: 7 };
         let reply = SceneReply {
+            carried_checkpoint: Some(SceneCensusCheckpoint {
+                present: 3000, sealed: true, inventory: None,
+                counters: Some(BTreeMap::from([("scene_window_games".into(), 5)])),
+            }),
             carried_activation: Some(SceneCensusActivation {
                 map: "invented".into(), present: 2, frame: 2,
                 counters: BTreeMap::from([("scene_readback".into(), 1)]),
@@ -791,12 +810,17 @@ mod tests {
             ..Default::default()
         };
         let v = serde_json::to_value(&reply).unwrap();
+        let saved = &v["carried_checkpoint"];
+        assert_eq!(saved["present"], 3000);
+        assert_eq!(saved["counters"]["scene_window_games"], 5);
+        assert!(saved.get("inventory").is_none());
         let census = &v["carried_census"];
         assert_eq!(census["targets"][0]["first_frame"], 2);
         assert_eq!(census["reads"][0]["last_frame"], 7);
         assert_eq!(census["reads"][0]["count"], 3);
         assert_eq!(serde_json::from_value::<SceneReply>(v).unwrap(), reply);
         let mut old = serde_json::to_value(SceneReply::default()).unwrap();
+        assert!(old.get("carried_checkpoint").is_none());
         assert!(old.as_object_mut().unwrap().remove("carried_census").is_none());
         assert!(serde_json::from_value::<SceneReply>(old).unwrap().carried_census.is_none());
     }

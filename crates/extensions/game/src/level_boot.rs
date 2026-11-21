@@ -704,6 +704,8 @@ impl hooks::Feature for LoadedMark {
         let req = self.0.clone();
         b.game().on_start("loaded mark", move |o| {
             if loaded_at().is_some() {
+                #[cfg(feature = "gpu")]
+                crate::scene_glue::next_game();
                 return;
             }
             let found = active_game(&*o.guest());
