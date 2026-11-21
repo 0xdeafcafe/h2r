@@ -5938,6 +5938,7 @@ dependencies = [
  "pollster",
  "serde",
  "serde_json",
+ "shaders",
  "tags",
  "thiserror 2.0.21",
  "toml",
