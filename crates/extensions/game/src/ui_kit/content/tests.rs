@@ -75,6 +75,7 @@ fn capitalization_compares_row_labels_and_accepts_short_acronyms() {
         "inconsistent_case"
     );
     assert!(findings(&["Sort by Date", "Game Type", "CTF"]).is_empty());
+    assert!(findings(&["Envy", "IWHBYD", "Black Eye"]).is_empty());
     assert!(findings(&["SORT BY DATE", "GAME TYPE"]).is_empty());
 }
 

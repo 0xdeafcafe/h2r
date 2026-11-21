@@ -217,8 +217,9 @@ fn label_case(label: &str) -> Option<LetterCase> {
         lower += usize::from(ch.is_lowercase());
     }
     match (upper, lower) {
-        // A short all-caps word often names a game mode or a controller button.
-        (0..=4, 0) if !label.contains(' ') => None,
+        // One all-caps word is an acronym or a name: a game mode, a
+        // controller button, or a skull such as IWHBYD.
+        (_, 0) if !label.contains(' ') => None,
         (0, 0) => None,
         (_, 0) => Some(LetterCase::Upper),
         (0, _) => Some(LetterCase::Lower),
