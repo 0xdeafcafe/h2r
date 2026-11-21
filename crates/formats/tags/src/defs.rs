@@ -145,7 +145,8 @@ pub struct FieldDef {
     /// What it means and the evidence for the name (`E` engine code, `V`
     /// checked on the retail disc, `D` a choice made here). The marker
     /// `A Halo2Xbox <filename>` cites a layout observation in the named
-    /// retail Xbox plugin.
+    /// retail Xbox plugin, `A Halo2 <filename>` in the retail plugin that
+    /// Assembly reads for an Xbox map when `Halo2Xbox` has none.
     pub meaning: String,
     /// Description shown by editors, in the definition author's own words.
     pub doc: Option<String>,

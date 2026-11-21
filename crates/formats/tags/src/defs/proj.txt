@@ -21,16 +21,17 @@ group proj 0x1a4
   0x108 tagref ref_108
   0x110 tagref ref_110
   0x118 tagref super_detonation_damage groups=jpt! -- V: retail needler_shard_super_detonation
-  0x120 tagref ref_120
-  0x128 unknown 0x4 seen=27 -- small integers
+  0x120 tagref detonation_sound -- A Halo2 proj.xml
+  0x128 enum8 damage_reporting_type -- A Halo2 proj.xml
+  0x129 unknown 0x3
   0x12c tagref attached_super_detonation_damage groups=jpt! -- V: retail needler_shard_attached_super_detonation
-  0x134 unknown 0x4 seen=3 -- floats
+  0x134 f32 material_effect_radius -- A Halo2 proj.xml
   0x138 tagref ref_138
   0x140 tagref ref_140
   0x148 tagref impact_damage groups=jpt! -- V: every retail bullet's and bolt's damage effect (smg_bullet, magnum_bullet, ...), rocket_launcher_impact, needler_shard_impact
   0x150 unknown 0x4 seen=2 -- floats
-  0x154 tagref ref_154
-  0x15c tagref ref_15c
+  0x154 tagref boarding_detonation_damage -- A Halo2 proj.xml
+  0x15c tagref boarding_attached_detonation_damage -- A Halo2 proj.xml
   0x164 unknown 0x4 seen=7 -- floats
   0x168 unknown 0x4 seen=3 -- floats
   0x16c unknown 0x4 seen=13 -- floats

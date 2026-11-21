@@ -3,6 +3,142 @@
 Evidence for [polish-plan.md](../polish-plan.md), "Field names and
 descriptions".
 
+## 2026-11-21: the Halo 2 fallback folder and other retail games
+
+Commit: branch `tag-names-xver`, from `c263b9cbc`. Reference revision:
+`fd14ef3c46135e9422966c6a64cd926fb0bd23fb`. Method: a read of the
+plugin tree and of `src/Blamite/Formats/Engines.xml` at that revision,
+and an offline comparison script, kept outside the repository, that
+reads our definitions and the plugins. The Rust code was not built or
+tested.
+
+### Why the earlier comparison found 14 plugins
+
+`Halo2Xbox` holds only the 14 groups whose Xbox layout differs.
+Assembly's engine table gives the retail Xbox build (engine "Halo 2",
+build `02.09.27.09809`) `Halo2Xbox` as its plugin folder and `Halo2`
+as its `fallbackPlugins`. A group with no `Halo2Xbox` plugin is read
+from `Halo2`, the retail Halo 2 Vista folder (98 plugins, roots
+`game="Halo2"`). The weapon, equipment, biped, scenery, machine, crate
+and damage plugins are there. The earlier comparison opened `Halo2Xbox`
+alone, and the reader refused any root but `game="Halo2Xbox"`.
+
+The four possible causes, checked:
+
+| Cause | Finding |
+|---|---|
+| File names differ from our groups | One case. Assembly writes `_` for characters a Windows file name cannot hold: `_fx_.xml` is `<fx>`. Every other object group uses its own spelling. |
+| Shared base layouts | Not the cause. Each `Halo2` plugin is flat and repeats the object, item, unit and device fields. |
+| The reader skips them | Yes. `Folder::open` read only `Halo2Xbox` and required its game attribute. |
+| A different branch | No. `master` has both folders. |
+
+The root sizes of the `Halo2` plugins for `weap`, `eqip`, `vehi`, `bipd`,
+`proj`, `scen`, `mach`, `bloc` and `jpt!` equal our definitions'. The
+`Halo2` and `Halo2Xbox` copies of the 14 overridden groups differ in a
+few strides and tooltips (in `vehi`, the phantom shape element is `0xf0`
+in `Halo2` and `0x2a0` in `Halo2Xbox`).
+
+### The reader
+
+`tag_names::assembly::Folder` indexes `Halo2Xbox` and, for the groups it
+lacks, `Halo2` (`FALLBACK`). Each file's root must name its folder's
+game. `Folder::game` says which folder a group came from; both carry the
+`assembly` source in a merge, as Assembly itself does.
+
+`tag_names::assembly::Hints` indexes the other retail folders in
+`HINTS`: `Halo2MCC`, `Halo2A`, `Halo2AMCC`, `Halo3`, `Halo3MCC`, `ODST`,
+`ODSTMCC`, `Reach`, `ReachMCC`, `Halo4`, `Halo4MCC`. Each root names its
+folder. Halo 2's folders read references, blocks and data references as
+8 bytes; the later engines' as 16, 12 and 20. `tag_names::hints` returns
+a name from one of them for an unnamed field of ours only where the
+structure around it matches:
+
+- the plugin's field starts at our offset with our width: a scalar over
+  an unknown word, or a compatible type over a typed field;
+- and the element has the plugin element's size with every named field
+  of ours lining up, or the nearest named field on each side lines up.
+
+A hint carries its game and is never written as our name.
+
+`REFUSED` names the pre-release and leak-derived folders: `Halo2Alpha`,
+`Halo2Beta`, `Halo2E3_04`, `Halo3Alpha`, `Halo3Beta` (and so its
+`march_delta` children), `Halo3PreAlpha`, `ReachAlpha`, `ReachBeta`,
+`Halo4NetTest`, `HaloOnline`, `ElDewrito`, `ManagedDonkey`, and four
+other pre-release spellings kept from the first list. A refused name anywhere in
+a path refuses it. The retail names the first list held (`Halo3`,
+`Halo2MCC`, `Halo4` and others) are no longer refused.
+
+### Names written into the definitions
+
+The citation for a `Halo2` plugin is `A Halo2 <file>`. Names are our
+snake_case, without the plugin's parentheses, units or descriptions.
+A `degree` field gets `unit=degrees`. Enumerations and flags get no
+value or bit names. A new scalar tiles one or more whole consecutive
+unknown spans; a plugin field that crosses a named field or a span
+boundary is left out. A plugin reference, string ID, block or data
+reference over an unknown span is left out: our schema has no fixup
+there.
+
+Sources per definition:
+
+| Definition | Sources, in order | Checked against |
+|---|---|---|
+| `obje` | `Halo2Xbox vehi.xml`, `Halo2 scen.xml` | `Halo2` `weap`, `bipd`, `mach`, `bloc` |
+| `item` | `Halo2 weap.xml` | `Halo2` `eqip`, `garb` |
+| `unit` | `Halo2Xbox vehi.xml`, `Halo2 bipd.xml` | each other |
+| `devi` | `Halo2 mach.xml` | `Halo2 ctrl.xml` |
+| `weap`, `eqip`, `bipd`, `proj`, `scen`, `mach`, `ctrl`, `bloc`, `jpt!`, `ssce`, `crea`, `garb` | `Halo2 <group>.xml` | |
+| `vehi` | `Halo2Xbox vehi.xml` | |
+
+"Checked against": a shared-layer field is taken only where every other
+plugin with a field at that offset agrees on its type, width and stride.
+No other game's plugin supplied a name to the definitions.
+
+A field that a converter writes by its byte-valued path keeps that path
+and representation (rule above). The comparison script treats a name as
+written by a converter when a string literal in the object converters
+(`crates/tools/h1objects`, `h1campaign`, `studio`, `agent`,
+`tags/src/object`) holds it, and when a converter builds the names in
+a loop: `weap` `block_2c8` (triggers), `vehi` `block_2f8` (phantom) and
+`obje` `change_colors`.
+
+### Counts
+
+Counted by reading, as the registry counts them
+(`Layout::coverage`): each embedded struct's fields once per group, a
+block's element once, an unknown span as its words (`registry::fill`),
+a typed field whose name ends in its offset as unnamed. The last column
+counts unnamed fields for which the plugin has a usable name at the
+same offset and width but a converter writes the field by its byte path.
+
+| Group | Named before | Unnamed before | Named after | Unnamed after | Kept for a converter |
+|---|---:|---:|---:|---:|---:|
+| `weap` | 60 | 244 | 102 | 200 | 141 |
+| `vehi` | 111 | 374 | 132 | 351 | 171 |
+| `bipd` | 46 | 305 | 75 | 277 | 176 |
+| `eqip` | 33 | 73 | 46 | 60 | 37 |
+| `proj` | 55 | 87 | 63 | 81 | 53 |
+| `scen` | 27 | 54 | 30 | 51 | 30 |
+| `mach` | 41 | 63 | 45 | 60 | 37 |
+| `ctrl` | 40 | 63 | 44 | 59 | 36 |
+| `bloc` | 27 | 53 | 30 | 50 | 29 |
+| `jpt!` | 4 | 59 | 11 | 52 | 45 |
+| `ssce` | 27 | 56 | 30 | 53 | 28 |
+| `crea` | 27 | 180 | 38 | 170 | 34 |
+| `garb` | 30 | 114 | 43 | 101 | 36 |
+
+The shared layers count in every group that embeds them.
+`H2_FIELD_NAMES` with the ignored comparison test prints the registry's
+own counts.
+
+### Disagreements found
+
+| Definition and offset | Ours | `Halo2` plugin | Kept because |
+|---|---|---|---|
+| weap +0x130, +0x284 | Unknown words | String IDs | No string fixup in our schema. |
+| bipd `block_1c8` | Element `0xb4` | Element `0xb0` | The schema infers `0xb4` in `bipd`; objects.md and the `vehi` element have `0xb0`. Correcting the stride is schema work. |
+| vehi `block_1c8` +0x44 | Unknown word | Float range at +0x44 | The range crosses into the next word, which a converter writes. |
+
 ## 2026-11-21: retail reference and checked-in mappings
 
 On 2026-11-21 the owner of this repository, one of Assembly's creators,

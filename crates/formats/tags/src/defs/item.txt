@@ -6,21 +6,21 @@ struct item 0x12c
   0xc0 unknown 0x4
   0xc4 unknown 0x4
   0xc8 unknown 0x4
-  0xcc string string_cc
-  0xd0 string string_d0
+  0xcc string pickup_message -- A Halo2 weap.xml
+  0xd0 string swap_message -- A Halo2 weap.xml
   0xd4 string string_d4
-  0xd8 string string_d8
-  0xdc string string_dc
+  0xd8 string swap_or_dual_wield_message -- A Halo2 weap.xml
+  0xdc string dual_wield_only_message -- A Halo2 weap.xml
   0xe0 string string_e0
-  0xe4 string string_e4
-  0xe8 string string_e8
-  0xec string string_ec
-  0xf0 string string_f0
+  0xe4 string singular_quantity_message -- A Halo2 weap.xml
+  0xe8 string plural_quantity_message -- A Halo2 weap.xml
+  0xec string switch_to_message -- A Halo2 weap.xml
+  0xf0 string switch_to_from_ai_message -- A Halo2 weap.xml
   0xf4 tagref ref_f4 groups=foot -- V: material effects in the item layer
   0xfc tagref collision_sound -- V: snd! on retail items (docs/halo1/objects.md, "Weapon effects and sounds")
-  0x104 block block_104 0x8 align 4
+  0x104 block predicted_bitmaps 0x8 align 4 -- A Halo2 weap.xml
     0x0 tagref ref_0
-  0x10c tagref ref_10c
+  0x10c tagref detonation_damage_effect -- A Halo2 weap.xml
   0x114 unknown 0x4
   0x118 unknown 0x4
   0x11c tagref detonating_effect -- S: effe group words on retail items; Halo 1 item +0x2e8
@@ -29,11 +29,12 @@ group weap 0x31c
   0x0 struct item item -- the item layer
   0x12c u32 weapon_flags -- E: bit 16 suppresses binocular zoom (0xc89c1..0xc89df), bits 22 and 23 permit the off hand (0xcd8a8..0xcd8d7, 0xcdaee..0xcdb0d)
   0x130 unknown 0x4
-  0x134 unknown 0x4
-  0x138 unknown 0x4
+  0x134 enum16 secondary_trigger_mode -- A Halo2 weap.xml
+  0x136 i16 maximum_alternate_shots_loaded -- A Halo2 weap.xml
+  0x138 f32 turn_on_time -- A Halo2 weap.xml
   0x13c unknown 0x4
   0x140 tagref ready_effect -- E/V: docs/halo1/objects.md, "Weapon effects and sounds"
-  0x148 tagref ref_148 groups=jpt! -- V (object/layouts.rs WEAP): jpt! where set; a definition default of zero words reads as a reference to tag 0
+  0x148 tagref ready_damage_effect groups=jpt! -- V (object/layouts.rs WEAP): jpt! where set; a definition default of zero words reads as a reference to tag 0; A Halo2 weap.xml
   0x150 unknown 0x4
   0x154 unknown 0x4
   0x158 unknown 0x4
@@ -42,27 +43,27 @@ group weap 0x31c
   0x164 unknown 0x4
   0x168 unknown 0x4
   0x16c tagref overheated_effect -- E/V: docs/halo1/objects.md, "Weapon effects and sounds"
-  0x174 tagref ref_174 groups=jpt! -- V (object/layouts.rs WEAP): jpt! where set; a definition default of zero words reads as a reference to tag 0
+  0x174 tagref overheated_damage_effect groups=jpt! -- V (object/layouts.rs WEAP): jpt! where set; a definition default of zero words reads as a reference to tag 0; A Halo2 weap.xml
   0x17c tagref detonation_effect -- E/V: docs/halo1/objects.md, "Weapon effects and sounds"
-  0x184 tagref ref_184 groups=jpt! -- V (object/layouts.rs WEAP): jpt! where set; a definition default of zero words reads as a reference to tag 0
-  0x18c tagref ref_18c groups=jpt! -- V (object/layouts.rs WEAP): jpt! where set; a definition default of zero words reads as a reference to tag 0
-  0x194 tagref ref_194 groups=jpt! -- V (object/layouts.rs WEAP): jpt! where set; a definition default of zero words reads as a reference to tag 0
-  0x19c unknown 0x4
-  0x1a0 unknown 0x4
-  0x1a4 unknown 0x4
-  0x1a8 unknown 0x4
-  0x1ac unknown 0x4
+  0x184 tagref detonation_damage_effect groups=jpt! -- V (object/layouts.rs WEAP): jpt! where set; a definition default of zero words reads as a reference to tag 0; A Halo2 weap.xml
+  0x18c tagref player_melee_damage groups=jpt! -- V (object/layouts.rs WEAP): jpt! where set; a definition default of zero words reads as a reference to tag 0; A Halo2 weap.xml
+  0x194 tagref player_melee_response groups=jpt! -- V (object/layouts.rs WEAP): jpt! where set; a definition default of zero words reads as a reference to tag 0; A Halo2 weap.xml
+  0x19c f32 magnetism_angle unit=degrees -- A Halo2 weap.xml
+  0x1a0 f32 magnetism_range -- A Halo2 weap.xml
+  0x1a4 f32 throttle_magnitude -- A Halo2 weap.xml
+  0x1a8 f32 throttle_minimum_distance -- A Halo2 weap.xml
+  0x1ac f32 throttle_maximum_adjustment_angle unit=degrees -- A Halo2 weap.xml
   0x1b0 unknown 0x4
   0x1b4 unknown 0x4
-  0x1b8 unknown 0x4
+  0x1b8 f32 damage_pyramid_depth -- A Halo2 weap.xml
   0x1bc tagref ref_1bc
   0x1c4 tagref ref_1c4
   0x1cc tagref ref_1cc
   0x1d4 tagref ref_1d4
   0x1dc tagref ref_1dc
   0x1e4 tagref ref_1e4
-  0x1ec tagref ref_1ec
-  0x1f4 tagref ref_1f4
+  0x1ec tagref lunge_melee_damage -- A Halo2 weap.xml
+  0x1f4 tagref lunge_melee_response -- A Halo2 weap.xml
   0x1fc unknown 0x2
   0x1fe i16 magnification_levels -- E: 0x1010cd bounds the scoped zoom level, 0xc89ca chooses between scoped and binocular zoom
   0x200 f32[2] magnification_range -- E: 0x101103 and 0x10111c read the lower and upper zoom magnification
@@ -90,14 +91,15 @@ group weap 0x31c
   0x264 tagref pickup_sound -- E/V: docs/halo1/objects.md, "Weapon effects and sounds"
   0x26c tagref zoom_in_sound -- E/V: docs/halo1/objects.md, "Weapon effects and sounds"
   0x274 tagref zoom_out_sound -- E/V: docs/halo1/objects.md, "Weapon effects and sounds"
-  0x27c unknown 0x4
-  0x280 unknown 0x4
+  0x27c f32 active_camo_ding -- A Halo2 weap.xml
+  0x280 f32 active_camo_regrowth_rate -- A Halo2 weap.xml
   0x284 unknown 0x4
   0x288 string string_288
   0x28c string string_28c
   0x290 i16 multiplayer_weapon_type -- E/V: 0 ordinary, 1 flag or bomb, 2 ball, 4 juggernaut powerup (0x101280, Zanzibar)
   0x292 i16 weapon_type -- E/V: shotgun 1 (shell reload at 0x10271d), needler 2, plasma pistol 3, plasma rifle 4
-  0x294 unknown 0x4
+  0x294 enum16 tracking_type -- A Halo2 weap.xml
+  0x296 unknown 0x2
   0x298 unknown 0x4
   0x29c unknown 0x4
   0x2a0 unknown 0x4
@@ -108,7 +110,7 @@ group weap 0x31c
   0x2b0 tagref hud groups=nhdt -- V: the weapon's HUD interface (retail ui\hud\<weapon>)
   0x2b8 block block_2b8 0x8 align 4
     0x0 unknown 0x4
-    0x4 datum datum_4
+    0x4 datum tag_index -- A Halo2 weap.xml
   0x2c0 block magazines 0x5c align 4 -- V2 (docs/halo1/objects.md): magazine elements, stride 0x5c
     0x0 unknown 0x4
     0x4 unknown 0x2
@@ -163,7 +165,7 @@ group weap 0x31c
     0x24 unknown 0x4
     0x28 unknown 0x4
     0x2c unknown 0x4
-    0x30 string string_30
+    0x30 string optional_barrel_marker_name -- A Halo2 weap.xml
     0x34 i16 prediction_type -- E/V: multiplayer firing at 0x10429b; continuous 1, discrete 2 on the SMG and shotgun
     0x36 i16 firing_noise -- V: equals Halo 1's trigger +0x2e (the AI's hearing of a shot: silent, medium, loud, ...) on eight retail pairs
     0x38 unknown 0x4
@@ -177,7 +179,7 @@ group weap 0x31c
     0x58 unknown 0x4
     0x5c unknown 0x4
     0x60 unknown 0x4
-    0x64 unknown 0x4
+    0x64 f32 dual_wield_damage_scale -- A Halo2 weap.xml
     0x68 unknown 0x4
     0x6c unknown 0x4
     0x70 unknown 0x4
@@ -194,9 +196,8 @@ group weap 0x31c
     0xa4 unknown 0x4
     0xa8 unknown 0x4
     0xac unknown 0x4
-    0xb0 unknown 0x4
-    0xb4 unknown 0x4
-    0xb8 unknown 0x4
+    0xb0 f32[2] angle_change_per_shot unit=degrees -- A Halo2 weap.xml
+    0xb8 f32 angle_change_acceleration_time -- A Halo2 weap.xml
     0xbc unknown 0x4
     0xc0 unknown 0x4
     0xc4 unknown 0x4
@@ -221,14 +222,11 @@ group weap 0x31c
   0x2e4 unknown 0x4
   0x2e8 unknown 0x4
   0x2ec unknown 0x4
-  0x2f0 tagref ref_2f0
-  0x2f8 tagref ref_2f8
-  0x300 tagref ref_300
-  0x308 unknown 0x4
-  0x30c unknown 0x4
-  0x310 unknown 0x4
-  0x314 unknown 0x4
-  0x318 unknown 0x4
+  0x2f0 tagref deployed_vehicle -- A Halo2 weap.xml
+  0x2f8 tagref age_effect -- A Halo2 weap.xml
+  0x300 tagref aged_weapon -- A Halo2 weap.xml
+  0x308 f32[3] first_person_weapon_offset -- A Halo2 weap.xml
+  0x314 f32[2] first_person_scope_size -- A Halo2 weap.xml
 group eqip 0x13c
   0x0 struct item item -- the item layer
   0x12c i16 powerup_type -- V: Halo 1's eqip +0x308 values on the retail pairs (over shield 2, active camouflage 3, grenades 6); health 5 (docs/halo1/health.md)
