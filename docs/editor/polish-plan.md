@@ -1,6 +1,6 @@
 # h2-editor polish: what is wrong, the design, and the slices
 
-Status: P1 and P2 are implemented. The remaining slices describe the design.
+Status: P1, P2 and P4 are implemented. The remaining slices describe the design.
 Code: `crates/apps/studio/src` (the window: `ui.rs`, `ui/`, `play.rs`, `viewport.rs`, `theme.rs`), `crates/tools/scenario-edit/src` (the scene and its renderer). Tests: named per slice.
 Switch: none.
 
@@ -46,9 +46,7 @@ during the read, so nothing here comes from the socket API.
 | # | Problem | Where |
 |---|---|---|
 | R18 | The scenario tag cannot be read. The registry has no `scnr` definition (`crates/formats/tags/src/defs` has no `scnr.txt`), so the tag shows no fields, and it is read-only because the Scenario tool owns its bytes. | `app/tag_doc.rs:270` to `app/tag_doc.rs:273` |
-| R19 | No view starts from the scenario. The tag tree arranges every tag of the map by group or by path; nothing shows what the scenario uses (its BSPs, lightmaps, skies, object palettes, globals). The chain walker follows only fields a layout names, so it finds no links out of the scenario. | `app/tag_tree.rs:11`, `app/tag_api/chain.rs:157` (`links`) |
 | R20 | Structure BSP and lightmap tags cannot be opened: their data is in a BSP region the tag document does not read. | `app/tag_doc.rs:267`, `app/tag_doc.rs:39` |
-| R21 | A group with more than 600 tags lists the first 600 and "N more: type to narrow". | `ui/tags.rs:26`, `ui/tags.rs:181` |
 
 ### What cannot be seen or edited in the viewport
 
@@ -194,28 +192,24 @@ All tags (by group | by path)
 Not reachable from the scenario (n)
 ```
 
-- `app/tag_tree.rs` gains `scenario_tree(doc, scenario) -> ScenarioTree`
-  with no UI. Its named roots come from what the tree already reads:
-  the BSP and lightmap pairs (`native_render::load::scenario_bsps`), the
-  skies (`scene::scenario_skies`), and every object palette of
-  `scenario_edit::layout::BLOCKS` with the count of placements that name
-  each entry. Below a palette entry it is `tag_api::chain`.
-- **Other references** come from a reference scan for tags with no
-  layout: `tag_api::scan_refs(doc, tag)` walks the tag's bytes at
-  4-byte steps and keeps each (group, datum) pair whose datum is a tag of
-  the map and whose group is that tag's group or one of its parents.
-  The same scan feeds `chain` for any group the registry lacks, which
-  closes R19 for the scenario and for every other unlabelled group.
-- **Not reachable** is the set difference of all tags and the tags the
-  walk from the scenario and globals reaches; it is where UI, HUD and
-  sound tags with no placement are found, with **All tags**.
-- Rows show the edited mark, the shared-cache mark and, with a game
-  paired, the live mark of the pending list. Selecting a row makes the
-  tag the inspector's subject (`Selection::Tag`), as a jump does.
-  Selecting a palette entry also outlines its placements in the
-  viewport.
-- The 600-row cap (R21) goes: every list is drawn through ImGui's list
-  clipper, so only visible rows cost anything.
+- [scenario_tree](../../crates/apps/studio/src/app/tag_tree.rs) builds
+  the named sections from the source BSP and lightmap pairs, skies and
+  globals, and counts current placements by palette slot. Object
+  entries use the tag chain for their children.
+- **Other references** uses the layout walk and the aligned reference
+  scan. The scan accepts a pair when its full datum resolves in this
+  map and its group matches the target's group or an ancestor. It
+  supplies links for a group with no registry layout and fills in
+  scenario links outside the structural schema.
+- **Not reachable** lists the tags the walk from the scenario and
+  globals does not reach. The walk visits each tag once and is
+  independent of the depth shown under palette entries.
+- Tag rows show edited and shared-cache marks, plus a pending mark
+  for edited tag metadata awaiting a matching paired game. A tag row
+  selects the inspector subject. A palette row also selects the
+  placements that use that slot for the viewport outlines.
+- The scenario rows and the lists of tags use Dear ImGui's list
+  clipper.
 - The scenario's own fields (R18) get a `scnr.txt` definition in
   `crates/formats/tags/src/defs`, started with the fields this
   repository already has evidence for (the skies, the palettes and
@@ -571,10 +565,9 @@ The tests use invented data.
   (`crates/rewrites/render-bridge/src/scene_step.rs`,
   `crates/rewrites/scene-extract`); `crates/rewrites/frame-scene` itself
   depends on neither a guest nor a GPU.
-- **S**: a tag's size in the index covers its blocks, so `scan_refs`
-  over that range sees every reference. Verified by P4's fixture test
-  and an opt-in disc test that compares the scan with the layout walk
-  for every group the registry has.
+- **Code**: `TagDoc::scan_refs` scans the readable range owned by the
+  tag. A known layout can also follow block pointers into the document's
+  other readable ranges.
 - **S**: the trigger volume's size field and the kill trigger element's
   layout. Verified by P8's read of the retail volume test.
 - **S**: the engine tests a trigger volume against the scenario's bytes

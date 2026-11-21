@@ -1065,10 +1065,13 @@ Two marks say where a tag lives, both computed from the maps alone:
   (`shared_refs::Homes`, `TagDoc::homes`), cached until the document's
   shape changes (`TagDoc::shape_rev`: load, block changes, undo, redo).
 
-`app/tag_tree.rs` arranges the tree with no UI: a search where each word
-must be in `group:name`, the matches by group (then name), or as a
-folder tree of their paths with counts per folder. `tag.list` uses the
-same search.
+`app/tag_tree.rs` builds the open scenario's tree from its structure
+BSPs and lightmaps, skies, object palettes, globals and other references.
+Palette counts use the current placements. The reference walker follows
+layout fields and scans aligned group and datum pairs for unlabelled tags.
+The reachability walk starts from the scenario and globals. All tags
+keeps the group and folder views, with a search matching each word in
+`group:name`. `tag.list` uses the same search.
 
 The inspector lists a tag's **data and resources** (`tag_api::resources`):
 every data reference (path, size, address) and raw pointer (path, file,
@@ -1137,8 +1140,8 @@ step (`TagDoc::squash`) and saves with the map like any edit.
 
 `ui/tags.rs` draws the tool: the **map picker** (the source maps in their
 sections with an **(open map)** marker for the Scenario tool's map),
-the **tag tree** (by group or path, with a word search and marks for
-edited tags and where their data lives), the **fields** of the selected tag with Export and
+the **tag tree** (Scenario, All tags and Not reachable from the
+scenario, with edited and shared-cache marks), the **fields** of the selected tag with Export and
 Import, and **Data and bytes**: the tag's data and resources (with a
 bitmap preview), then the bytes of the element under the mouse with the
 hovered field lit and edited bytes marked.

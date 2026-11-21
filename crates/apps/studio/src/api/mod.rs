@@ -207,13 +207,8 @@ pub const METHODS: &[MethodDef] = &[
         r#"{"id":"string","group":"string","name":"string|null","size":"integer","fields":"[field]"}"#,
         r#"{"tag":"scnr"}"#,
     ),
-    def(
-        m::TAG_REFS,
-        "Every tag reference in a tag (through its blocks), with where it sits and what it names",
-        r#"{"tag":"string","limit?":"integer (default 500)"}"#,
-        r#"[{"path":"string","group":"string","id":"string","name":"string|null"}]"#,
-        r#"{"tag":"scnr"}"#,
-    ),
+    tags::TREE,
+    tags::REFS,
     def(
         m::TAG_FOLLOW,
         "Follow one reference (a tag.refs path, or its position in that list) to the tag it names",

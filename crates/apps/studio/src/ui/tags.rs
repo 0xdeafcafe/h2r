@@ -1,29 +1,21 @@
-//! The Tags tool's windows. The outliner: which map's tags are shown (the
-//! open map, or another map of the source browsed read-only: a shared
-//! cache), a search, and the tags by group or as a tree of their paths,
-//! each marked with where its data lives. The centre: the selected tag's
-//! fields ([`crate::fields::panel`]), with export and import. The
-//! inspector: the tag's data and raw resources (a bitmap's preview), then
-//! the raw bytes of the element under the mouse with the hovered field
-//! lit. State lives in [`crate::app::TagDoc`] ([`App::shown_tags`]);
-//! everything goes back as [`Action`]s.
-use std::path::PathBuf;
+//! The scenario tree, all tags by group or path, and the Tags tool's
+//! field and resource windows. Actions go through the same navigation
+//! and editing commands as the scene inspector.
+use std::{collections::HashMap, path::PathBuf};
 
-use dear_imgui_rs::{Condition, Ui};
+use dear_imgui_rs::{Condition, ListClipper, Ui};
 use editor_core::tag_bundle;
 use map::{FourCC, TagId};
 
 use crate::app::tag_bundle::{ExportOptions, ImportOptions};
 use crate::app::tag_doc::{Access, TagDoc, TagEntry};
-use crate::app::tag_tree::{self, Arrange, Folder};
-use crate::app::{Action, App, TagAction, tag_api};
+use crate::app::tag_tree::{self, Arrange, Folder, Row, ScenarioRoots, ScenarioTree};
+use crate::app::{Action, App, NavAction, TagAction, tag_api};
 use crate::fields::{self, PanelState};
 use crate::theme::{self, Fonts, icon};
 use crate::ui::map_list::{self, MapListUi};
 use crate::viewport::Gpu;
 
-/// Tags a group or folder lists at most (type to narrow).
-const LISTED: usize = 600;
 /// Resources the inspector lists at most.
 const RESOURCES_SHOWN: usize = 200;
 
@@ -33,6 +25,7 @@ pub struct TagsUi {
     pub filter: String,
     /// The filter the tree's open state was last set for.
     opened_for: Option<String>,
+    scenario: ScenarioOutliner,
     pub panel: PanelState,
     /// By group or by path.
     pub arrange: Arrange,
@@ -72,7 +65,9 @@ fn map_picker(ui: &Ui, app: &App, actions: &mut Vec<Action>) {
         let entries = app.halo2_map_entries();
         // A package or a Map Pack map can be open without a source row.
         if let Some(m) = open
-            && !entries.iter().any(|entry| entry.stem.eq_ignore_ascii_case(m))
+            && !entries
+                .iter()
+                .any(|entry| entry.stem.eq_ignore_ascii_case(m))
             && ui
                 .selectable_config(format!("{m} (open map)##tag-map-open"))
                 .selected(browse.is_none())
@@ -107,8 +102,44 @@ fn map_picker(ui: &Ui, app: &App, actions: &mut Vec<Action>) {
     }
 }
 
-/// The outliner: the map picker, the search, and the tags by group or by
-/// path.
+#[derive(Default)]
+struct ScenarioOutliner {
+    source: Option<(u64, Option<ScenarioRoots>)>,
+    model: Option<((u64, u64), ScenarioTree)>,
+    opened: HashMap<Vec<usize>, bool>,
+}
+
+impl ScenarioOutliner {
+    fn update(&mut self, app: &App) {
+        let Some(scenario) = app.session.scenario() else {
+            return;
+        };
+        let world = app.session.world_rev();
+        if self.source.as_ref().is_none_or(|(rev, _)| *rev != world) {
+            let roots = app
+                .session
+                .source()
+                .and_then(|source| source.open().ok())
+                .map(|mut map| ScenarioRoots::read(&mut map));
+            self.source = Some((world, roots));
+            self.model = None;
+            self.opened.clear();
+        }
+        let Some(roots) = self.source.as_ref().and_then(|(_, roots)| roots.as_ref()) else {
+            return;
+        };
+        let rev = (app.tags.rev(), app.session.markers_rev());
+        if self.model.as_ref().is_none_or(|(at, _)| *at != rev) {
+            self.model = Some((
+                rev,
+                tag_tree::scenario_tree(&app.tags, scenario, roots, tag_api::DEFAULT_DEPTH),
+            ));
+        }
+    }
+}
+
+/// The scenario comes first on the open map. The group and path browsers
+/// are under All tags, including when browsing a shared cache.
 pub fn tree(ui: &Ui, app: &App, st: &mut TagsUi, fonts: &Fonts, actions: &mut Vec<Action>) {
     map_picker(ui, app, actions);
     let doc = app.shown_tags();
@@ -121,6 +152,73 @@ pub fn tree(ui: &Ui, app: &App, st: &mut TagsUi, fonts: &Fonts, actions: &mut Ve
         });
         return;
     }
+    let browse = app.browsing().is_some();
+    let scenario = (!browse).then(|| app.session.scenario()).flatten();
+    let paired =
+        !browse
+            && app.pairing.published.as_ref().is_some_and(|status| {
+                status["state"] == "connected" && status["matches"] == "same"
+            });
+    let view = RowView {
+        doc,
+        browse,
+        paired,
+        selected: selected(app),
+        edited_scenario: scenario.filter(|s| s.is_modified()).map(|s| s.tag),
+    };
+    if !browse {
+        st.scenario.update(app);
+    }
+    let model = st
+        .scenario
+        .model
+        .as_ref()
+        .filter(|_| scenario.is_some())
+        .map(|(_, tree)| tree);
+    if let Some(tree) = model {
+        scenario_rows(ui, &view, tree, &mut st.scenario.opened, actions);
+    }
+    if let Some(_all) = ui
+        .tree_node_config("##all-tags")
+        .label("All tags")
+        .default_open(true)
+        .span_avail_width(true)
+        .push()
+    {
+        all_tags(ui, &view, st, fonts, actions);
+    }
+    if let Some(tree) = st
+        .scenario
+        .model
+        .as_ref()
+        .filter(|_| scenario.is_some())
+        .map(|(_, tree)| tree)
+        && let Some(_unreachable) = ui
+            .tree_node_config("##unreachable-tags")
+            .label(format!(
+                "Not reachable from the scenario ({})",
+                tree.unreachable.len()
+            ))
+            .span_avail_width(true)
+            .push()
+    {
+        tag_rows(
+            ui,
+            &view,
+            &tree.unreachable,
+            ListNames::GroupAndPath,
+            actions,
+        );
+    }
+}
+
+fn all_tags(
+    ui: &Ui,
+    view: &RowView<'_>,
+    st: &mut TagsUi,
+    fonts: &Fonts,
+    actions: &mut Vec<Action>,
+) {
     if ui.radio_button_bool("Groups", st.arrange == Arrange::Group) {
         st.arrange = Arrange::Group;
     }
@@ -133,34 +231,34 @@ pub fn tree(ui: &Ui, app: &App, st: &mut TagsUi, fonts: &Fonts, actions: &mut Ve
         .hint(format!("{} words of group:name", icon::SEARCH))
         .build();
     let filter = st.filter.to_ascii_lowercase();
-    let hits = tag_tree::search(doc.tags(), &filter);
+    let hits = tag_tree::search(view.doc.tags(), &filter);
     let refilter = st.opened_for.as_deref() != Some(filter.as_str());
     st.opened_for = Some(filter.clone());
     let narrowed = refilter && !filter.is_empty();
     match st.arrange {
-        Arrange::Group => by_group(ui, doc, &hits, narrowed, fonts, actions),
+        Arrange::Group => by_group(ui, view, &hits, narrowed, fonts, actions),
         Arrange::Path => {
-            let root = tag_tree::by_path(doc.tags(), &hits);
+            let root = tag_tree::by_path(view.doc.tags(), &hits);
             let f = ui.push_font(fonts.bold);
             ui.text(format!("{} tags", root.count));
             f.pop();
-            folder(ui, doc, &root, "", narrowed, actions);
+            folder(ui, view, &root, "", narrowed, actions);
         }
     }
 }
 
 fn by_group(
     ui: &Ui,
-    doc: &TagDoc,
+    view: &RowView<'_>,
     hits: &[usize],
     narrowed: bool,
     fonts: &Fonts,
     actions: &mut Vec<Action>,
 ) {
-    let groups = tag_tree::by_group(doc.tags(), hits);
-    let sel_group = doc
+    let groups = tag_tree::by_group(view.doc.tags(), hits);
+    let sel_group = view
         .selected
-        .and_then(|id| doc.tag(id))
+        .and_then(|id| view.doc.tag(id))
         .map(|t| group_text(t.group));
     let f = ui.push_font(fonts.bold);
     ui.text(format!("{} groups, {} tags", groups.len(), hits.len()));
@@ -175,16 +273,18 @@ fn by_group(
             node = node.opened(list.len() <= 50, Condition::Always);
         }
         let Some(_n) = node.push() else { continue };
-        for &i in list.iter().take(LISTED) {
-            row(ui, doc, &doc.tags()[i], &doc.tags()[i].name, actions);
-        }
-        if list.len() > LISTED {
-            ui.text_disabled(format!("{} more: type to narrow", list.len() - LISTED));
-        }
+        tag_rows(ui, view, list, ListNames::Path, actions);
     }
 }
 
-fn folder(ui: &Ui, doc: &TagDoc, f: &Folder, path: &str, narrowed: bool, actions: &mut Vec<Action>) {
+fn folder(
+    ui: &Ui,
+    view: &RowView<'_>,
+    f: &Folder,
+    path: &str,
+    narrowed: bool,
+    actions: &mut Vec<Action>,
+) {
     for (name, sub) in &f.folders {
         let here = if path.is_empty() {
             name.clone()
@@ -199,35 +299,187 @@ fn folder(ui: &Ui, doc: &TagDoc, f: &Folder, path: &str, narrowed: bool, actions
             node = node.opened(sub.count <= 50, Condition::Always);
         }
         let Some(_n) = node.push() else { continue };
-        folder(ui, doc, sub, &here, narrowed, actions);
+        folder(ui, view, sub, &here, narrowed, actions);
     }
-    for &i in f.tags.iter().take(LISTED) {
-        let t = &doc.tags()[i];
-        let text = format!("{}  ({})", tag_tree::leaf(&t.name), group_text(t.group));
-        row(ui, doc, t, &text, actions);
-    }
-    if f.tags.len() > LISTED {
-        ui.text_disabled(format!("{} more: type to narrow", f.tags.len() - LISTED));
+    tag_rows(ui, view, &f.tags, ListNames::GroupAndLeaf, actions);
+}
+
+enum ListNames {
+    Path,
+    GroupAndLeaf,
+    GroupAndPath,
+}
+
+fn clipped_rows(ui: &Ui, len: usize, mut draw: impl FnMut(usize)) {
+    for i in ListClipper::new(len).begin(ui).iter() {
+        draw(i);
     }
 }
 
-/// One tag in the outliner: its text, an edited mark, read-only and where
-/// its data lives.
-fn row(ui: &Ui, doc: &TagDoc, t: &TagEntry, text: &str, actions: &mut Vec<Action>) {
-    let mark = if doc.is_changed(t.id) { "  *" } else { "" };
-    let lock = match t.access {
-        Access::Edit => "",
-        Access::Read(_) => "  (read-only)",
-        Access::None(_) => "  (no data here)",
-    };
-    let home = home_mark(doc, t);
-    if ui
-        .selectable_config(format!("{text}{mark}{lock}{home}##tag-{:x}", t.id.0))
-        .selected(doc.selected == Some(t.id))
-        .build()
-    {
-        actions.push(Action::Tag(TagAction::Select(t.id)));
+fn tag_rows(
+    ui: &Ui,
+    view: &RowView<'_>,
+    indices: &[usize],
+    names: ListNames,
+    actions: &mut Vec<Action>,
+) {
+    clipped_rows(ui, indices.len(), |i| {
+        let t = &view.doc.tags()[indices[i]];
+        let text = match names {
+            ListNames::Path => t.name.clone(),
+            ListNames::GroupAndLeaf => {
+                format!("{}  ({})", tag_tree::leaf(&t.name), group_text(t.group))
+            }
+            ListNames::GroupAndPath => format!("{}  {}", group_text(t.group), t.name),
+        };
+        if ui
+            .selectable_config(format!("{}###tag-{:x}", view.marked(t, &text), t.id.0))
+            .selected(view.selected == Some(t.id))
+            .build()
+        {
+            view.select(t.id, None, actions);
+        }
+    });
+}
+
+struct RowView<'a> {
+    doc: &'a TagDoc,
+    browse: bool,
+    paired: bool,
+    selected: Option<TagId>,
+    edited_scenario: Option<TagId>,
+}
+
+impl RowView<'_> {
+    fn marked(&self, t: &TagEntry, text: &str) -> String {
+        let edited = self.doc.is_changed(t.id);
+        let mark = if edited || self.edited_scenario == Some(t.id) {
+            "  *"
+        } else {
+            ""
+        };
+        // The game receives placement writes. Edited tag metadata is
+        // still pending on this map while paired.
+        let live = if self.paired && edited {
+            "  [Pending]"
+        } else {
+            ""
+        };
+        let lock = match t.access {
+            Access::Edit => "",
+            Access::Read(_) => "  (read-only)",
+            Access::None(_) => "  (no data here)",
+        };
+        format!("{text}{mark}{live}{lock}{}", home_mark(self.doc, t))
     }
+
+    fn select(
+        &self,
+        id: TagId,
+        palette: Option<&[(scenario_edit::BlockKind, usize)]>,
+        actions: &mut Vec<Action>,
+    ) {
+        actions.push(Action::Tag(TagAction::Select(id)));
+        if !self.browse {
+            let nav = match palette {
+                Some(placements) => NavAction::SelectPalette {
+                    tag: id,
+                    placements: placements.to_vec(),
+                },
+                None => NavAction::SelectTag(id),
+            };
+            actions.push(Action::Navigate(nav));
+        }
+    }
+}
+
+struct VisibleRow<'a> {
+    row: &'a Row,
+    path: Vec<usize>,
+    open: bool,
+}
+
+fn visible_rows<'a>(
+    row: &'a Row,
+    path: &mut Vec<usize>,
+    opened: &HashMap<Vec<usize>, bool>,
+    out: &mut Vec<VisibleRow<'a>>,
+) {
+    let open = !row.children.is_empty() && opened.get(path).copied().unwrap_or(path.len() <= 1);
+    out.push(VisibleRow {
+        row,
+        path: path.clone(),
+        open,
+    });
+    if open {
+        for (i, child) in row.children.iter().enumerate() {
+            path.push(i);
+            visible_rows(child, path, opened, out);
+            path.pop();
+        }
+    }
+}
+
+fn scenario_rows(
+    ui: &Ui,
+    view: &RowView<'_>,
+    tree: &ScenarioTree,
+    opened: &mut HashMap<Vec<usize>, bool>,
+    actions: &mut Vec<Action>,
+) {
+    let mut rows = Vec::new();
+    visible_rows(&tree.root, &mut Vec::new(), opened, &mut rows);
+    clipped_rows(ui, rows.len(), |i| {
+        let VisibleRow { row, path, open } = &rows[i];
+        let _id = ui.push_id(format!("{path:?}"));
+        let indent = 16.0 * path.len() as f32;
+        if indent > 0.0 {
+            ui.indent_by(indent);
+        }
+        let entry = row.tag.and_then(|id| view.doc.tag(id));
+        let mut label = row.label.clone();
+        if let Some(id) = row.tag {
+            if !label.is_empty() {
+                label.push_str("  ");
+            }
+            label = match entry {
+                Some(t) => view.marked(t, &format!("{label}{}  {}", group_text(t.group), t.name)),
+                None => format!("{label}Missing tag {:#010x}", id.0),
+            };
+        }
+        if let Some(placements) = &row.placements {
+            label.push_str(&format!("  ({} placed)", placements.len()));
+        }
+        if row.cycle {
+            label.push_str("  (cycle)");
+        }
+        let shown = ui
+            .tree_node_config("##row")
+            .label(label)
+            .opened(*open, Condition::Always)
+            .no_tree_push_on_open(true)
+            .span_avail_width(true)
+            .leaf(row.children.is_empty())
+            .open_on_arrow(entry.is_some())
+            .selected(entry.is_some_and(|t| view.selected == Some(t.id)))
+            .push()
+            .is_some();
+        if !row.children.is_empty() && shown != *open {
+            opened.insert(path.clone(), shown);
+        }
+        if let Some(t) = entry
+            && ui.is_item_clicked()
+            && !ui.is_item_toggled_open()
+        {
+            view.select(t.id, row.placements.as_deref(), actions);
+        }
+        if let Some(via) = &row.via {
+            ui.set_item_tooltip(via);
+        }
+        if indent > 0.0 {
+            ui.unindent_by(indent);
+        }
+    });
 }
 
 /// The selected tag's fields, with export and import.
@@ -558,4 +810,80 @@ pub fn hex(
 /// The selected tag, for scripts and tests.
 pub fn selected(app: &App) -> Option<TagId> {
     app.shown_tags().selected
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[ignore = "requires an exclusive Dear ImGui context"]
+    fn scenario_tree_large_group_draws_all_rows_as_it_scrolls() {
+        use map::{
+            CacheType, Map,
+            build::{Block, TagPayload, TagSet},
+        };
+
+        const COUNT: usize = 5_000;
+        const PREFIX: &str = "test_tag_";
+        let group = FourCC(*b"demo");
+        let mut set = TagSet::new(CacheType::Multiplayer, "many_tags", "test");
+        set.add_group(group, None, None);
+        for i in 0..COUNT {
+            set.add_tag(
+                group,
+                &format!("{PREFIX}{i:04}"),
+                TagPayload::Built(Block::zeroed(8)),
+            )
+            .unwrap();
+        }
+        let (bytes, _) = set.build().unwrap();
+        let mut doc = TagDoc::default();
+        doc.load(&mut Map::from_reader(std::io::Cursor::new(bytes)).unwrap())
+            .unwrap();
+        let view = RowView {
+            doc: &doc,
+            browse: true,
+            paired: false,
+            selected: Some(doc.tags()[0].id),
+            edited_scenario: None,
+        };
+        let hits = tag_tree::search(doc.tags(), "");
+        assert_eq!(hits.len(), COUNT);
+
+        let (mut ctx, fonts) = crate::context(None);
+        ctx.font_atlas()
+            .try_claim_legacy_renderer()
+            .unwrap()
+            .build();
+        ctx.io_mut().set_display_size([400.0, 300.0]);
+        ctx.io_mut().set_delta_time(1.0 / 60.0);
+        let mut drawn = vec![false; COUNT];
+        let mut actions = Vec::new();
+        let mut height = 0.0;
+        // Each frame sees a little over ten rows. Overlap the pages to
+        // check the whole range, including the last row.
+        for first in (0..COUNT).step_by(10).chain([COUNT - 1]) {
+            let ui = ctx.frame();
+            crate::probe::begin();
+            ui.window("Large tag group")
+                .position([0.0, 0.0], Condition::Always)
+                .size([380.0, 260.0], Condition::Always)
+                .scroll([-1.0, first as f32 * height])
+                .build(|| {
+                    height = ui.text_line_height_with_spacing();
+                    by_group(ui, &view, &hits, false, &fonts, &mut actions);
+                });
+            let mut rows_this_frame = 0;
+            for item in crate::probe::items() {
+                if let Some(index) = item.label.strip_prefix(PREFIX).and_then(|s| s.get(..4)) {
+                    drawn[index.parse::<usize>().unwrap()] = true;
+                    rows_this_frame += 1;
+                }
+            }
+            assert!(rows_this_frame < 100);
+            let _ = ctx.render_legacy();
+        }
+        assert_eq!(drawn.iter().filter(|&&shown| shown).count(), COUNT);
+    }
 }

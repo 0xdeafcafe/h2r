@@ -1083,15 +1083,17 @@ packages, or a converted Halo 1 map), then select the **Tags** tab beside **Scen
   map's tags read-only or select the row marked **(open map)** to
   edit the Scenario tool's map. Selecting `shared` or
   `single_player_shared` in **Maps** opens its tags here.
-- **The tag tree** (left) lists the map's tags by **Groups** (`weap`,
-  `proj`, `vehi`, ...) or by **Paths**, a folder tree of their names
-  (`objects`, `weapons`, `rifle`, ...). Type words in the search box to
-  narrow it: each word must be in the tag's group or name (`weap rifle`).
-  A `*` marks a tag you have edited; `(read-only)` one you can look at
-  but not change. A mark in brackets says where the tag's data lives
-  when it isn't all in this map: `[shared]`, `[sp shared]`, `[mainmenu]`
-  for pictures, models and sounds kept in a shared map, `[in shared]`
-  for a tag whose fields are there.
+- **The tag tree** (left) starts with **Scenario**. Expand Structure,
+  Skies, Objects or Other references to see what the level uses. Select
+  Globals to inspect the map's globals tag. Each object palette row gives
+  the number of placements using that entry. Selecting it opens the tag
+  and outlines its placements in the viewport. **All tags** offers
+  **Groups** and **Paths**. Search with words such as `weap rifle`, each
+  matching the group or name. **Not reachable from the scenario** helps
+  find tags outside the walk from the scenario and globals.
+  A `*` marks an edit. `[Pending]` marks edited tag metadata waiting
+  to reach a paired game. Shared-cache marks show where the data lives,
+  such as `[shared]` for resources and `[in shared]` for tag fields.
 - **The fields** (Inspector) are the selected tag's fields, top to bottom.
   Fields we have a name for show it in white; the rest show grey, named
   by where they are (`+0x14`), with their value shown the way it looks

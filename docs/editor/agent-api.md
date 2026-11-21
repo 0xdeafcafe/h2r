@@ -146,7 +146,7 @@ before anything runs (`INVALID_PARAMS`). Indices are 0-based throughout
 | `session` | `status`, `methods`, `log` |
 | `source` | `open {path}`, `maps` |
 | `doc` | `list`, `open {map \| path \| package \| variant \| playlists}`, `save`, `save_as {path}`, `diff`, `undo`, `redo`, `close` |
-| `tag` | `list {group, name, query, path, limit, homes}`, `browse {map}`, `resources {tag}`, `export {tag, out, dependencies, resources}`, `import {path, tag, skip_missing}`, `read {tag, depth, elements, hex}`, `refs {tag}`, `follow {tag, ref}`, `set {tag, path, value}`, `block.add`, `block.remove`, `block.duplicate` |
+| `tag` | `list {group, name, query, path, limit, homes}`, `browse {map}`, `resources {tag}`, `export {tag, out, dependencies, resources}`, `import {path, tag, skip_missing}`, `read {tag, depth, elements, hex}`, `tree {root?, depth?}`, `refs {tag, limit?}`, `follow {tag, ref}`, `set {tag, path, value}`, `block.add`, `block.remove`, `block.duplicate` |
 | `scenario` | `blocks`, `list {block}`, `get`, `set {block, index, field, value}`, `add {block, like, position}`, `move {block, index, position, ypr}`, `delete`, `duplicate`, `select` |
 | `variant` | `list`, `get`, `set {setting, value}`, `rename`, `copy`, `export`, `import`, `delete` |
 | `playlist` | `list` (with `unused` per playlist and the `templates`), `get {playlist}`, `set {playlist, title, description, template, clear}` (`template`: make the slot a playlist of that kind, or give a playlist another kind; `clear: true`: make it unused; [live-matchmaking.md §6.10](../live/live-matchmaking.md)), `entry {playlist, op, entry, to, weight}`, `entry_variant` |
@@ -165,11 +165,7 @@ Notes on some:
 
 - **Tags.** A `tag` param is an id (`"0xe1230045"` or a number), a full
   name, `name.group`, or a group alone when the map has one tag of it
-  (`"scnr"`, `"matg"`). `tag.read` and `tag.refs` read the map as opened
-  from its source, with the layout schema (`tags::schema`): blocks with
-  their elements (`depth` levels, `elements` per block), tag references,
-  datums and string IDs, labelled by offset. `tag.follow` takes a
-  `tag.refs` path (`"0x98[0].0x0"`) or its position in that list.
+  (`"scnr"`, `"matg"`).
   `tag.read`, `tag.set` and `tag.block.*` are the Tags tool's
   (`api/tag_fields.rs` over `app::tag_api`, the registry
   `tags::registry`): every field by its label, paths from the root
@@ -180,6 +176,27 @@ Notes on some:
   the schema's structural view instead. The scenario tag's edits stay with
   the Scenario tool: `tag.set` paths `netgame_flags[0].position` and
   `tag.block.*` on `netgame_flags` run as the matching `scenario.*` calls.
+- **Scenario tree.** `tag.tree {"root":"scenario","depth":2}` reads the
+  open scenario and returns `{root, unreachable, truncated}`. The
+  root's children are Structure (BSPs with their lightmaps), Skies,
+  Objects (grouped by palette), Globals and Other references.
+  Each row has `label`, `tag` (ID), `group`, `name`, `placed` (the
+  count for a palette entry), `via`, `cycle`, `edited`, `cache` and
+  `children`. Section labels can include a count. `root` defaults to
+  `"scenario"`. `depth` limits references below palette entries
+  (default 3, maximum 8). `unreachable` uses the full walk from
+  the scenario and globals regardless of display depth. `truncated`
+  indicates that an object chain hit its walk budget.
+- **References.** `tag.refs {tag, limit?}` lists direct links in the
+  open tag document, including in-memory tag edits. Each result has
+  `to` (the target ID), `via` (the field path or scanned tag offset),
+  and `found` (`"field"` or `"scan"`), alongside `path`, `id`, `group`,
+  `name` and `missing` when the target is absent. The aligned scan covers
+  a group without a layout and supplements the scenario's structural
+  schema. Tags whose payload lives in a separate BSP region use the
+  source schema. `tag.follow` accepts a result's offset path
+  (`"0x98[0].0x0"`), `via`, or its position in the list. The list has
+  a default limit of 500.
 - **Tag chains.** `tag.chain {"block":"weapons","index":0}` follows a
   placement's palette or item reference in the open map.
   `tag.chain {"tag":"weap","depth":2}` starts at a tag in the document
@@ -192,8 +209,7 @@ Notes on some:
   name or ID, if known), `cycle` and `children`. A missing target keeps
   its ID and path with null tag metadata. Cycles stop the current branch.
   `truncated` means a traversal limit beyond the requested depth cuts
-  the result short. Live handles and usage counts belong to later slices
-  of the [click-to-edit design](click-to-edit.md).
+  the result short. Live handles belong to the [click-to-edit design](click-to-edit.md).
 - **Inspector navigation.** `scenario.select {"tag":"weap"}` makes
   a tag the inspector's selection and clears the placement selection.
   `nav.go {"tag":"hlmt","path":"render_model"}` focuses a tag and,
@@ -211,7 +227,7 @@ Notes on some:
   `single_player_shared`, `mainmenu`, any level); `tag.browse {}` goes
   back to the open map. `tag.list`, `tag.read`, `tag.set` (refused),
   `tag.resources` and `tag.export` then work on the browsed map;
-  `tag.read {"raw": true}` and `tag.refs` still read the open map.
+  `tag.tree`, `tag.refs` and `tag.read {"raw": true}` use the open map.
   `tag.list` searches like the Tags tool (`query`: words each in
   `group:name`; `path`: a folder) and marks each tag with `elsewhere`
   (the shared cache that has the data of a tag with none here) and, with
@@ -333,6 +349,8 @@ the window and the API stay one path.
   (`TagIo`, after it) answers `tag.list` (replacing the built-in one),
   `tag.browse`, `tag.resources`, `tag.export` and `tag.import` through
   `Action::BrowseTags`, `Action::TagExport` and `Action::TagImport`.
+  `api/tags.rs` uses the outliner's tree for `tag.tree` and the
+  inspector's reference walker for `tag.refs` and `tag.follow`.
 - **HUDs (studio-hud, landed).** `api/hud.rs`: `hud.list` opens a map of
   the source (or a package) in the HUD tool and lists its `nhdt` tags
   and who names them; `hud.read` shows one and gives its widgets

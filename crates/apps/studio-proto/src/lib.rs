@@ -79,6 +79,7 @@ pub mod method {
 
     pub const TAG_LIST: &str = "tag.list";
     pub const TAG_READ: &str = "tag.read";
+    pub const TAG_TREE: &str = "tag.tree";
     pub const TAG_REFS: &str = "tag.refs";
     pub const TAG_CHAIN: &str = "tag.chain";
     pub const TAG_FOLLOW: &str = "tag.follow";
