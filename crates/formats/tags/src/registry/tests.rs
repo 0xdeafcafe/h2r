@@ -81,9 +81,12 @@ fn the_definitions_merge_without_conflicts() {
 #[test]
 fn named_definition_fields_sit_at_their_offsets() {
     fn walk(path: &str, d: &StructDef, l: &Layout, bad: &mut Vec<String>) {
-        let mut leaves = Vec::new();
-        flatten(d, 0, "", None, "", &mut leaves);
-        for leaf in leaves {
+        let mut flat = Flat {
+            leaves: Vec::new(),
+            titles: BTreeMap::new(),
+        };
+        flatten(d, 0, "", None, "", None, &mut flat);
+        for leaf in flat.leaves {
             let f = leaf.def;
             if f.kind.is_unknown() || f.typed_only() || f.name.starts_with("unknown") {
                 continue;
