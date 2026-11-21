@@ -4,227 +4,19 @@
 //! `sim.state.set`) recording what they are sent. No game, no game data.
 #![cfg(unix)]
 
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::Ordering;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use agent::{Access, Agent, GameStatus, Reader, Server};
+use agent_proto::Endpoint;
 use agent_proto::sim::SessionKind;
-use agent_proto::live;
-use agent_proto::{Endpoint, Object, RpcError, code};
 use scenario_edit::{BlockKind, Command, Value as FieldValue};
 use serde_json::{Value, json};
 
 use super::testing::Temp;
+use super::testing::fake::{Game, SCNR, UNIT, VEHICLE, until};
 use super::*;
 use crate::app::{Action, App};
-
-const PLAYER_AT: [f32; 3] = [10.0, -4.0, 2.0];
-const VEHICLE: u32 = 0x0010_0002;
-const UNIT: u32 = 0x0010_0001;
-const SCNR: &str = "0xe1780003";
-
-struct World {
-    map: String,
-    tick: u64,
-    moved: Arc<AtomicBool>,
-}
-
-impl Reader for World {
-    fn status(&mut self) -> GameStatus {
-        GameStatus {
-            tick: Some(self.tick),
-            map: Some(self.map.clone()),
-            mode: Some("multiplayer".into()),
-            bsp: Some(0),
-        }
-    }
-
-    fn objects(&mut self) -> Result<Vec<Object>, String> {
-        panic!("the editor must read the mirror, not poll world.query")
-    }
-
-    fn live_capture(&mut self, layers: live::Layers, world: &mut live::World) -> bool {
-        world.objects.clear();
-        world.players.clear();
-        if layers.objects {
-            let unit = live::Object {
-                id: UNIT,
-                tag: Some(0x1234),
-                kind: 0,
-                position: PLAYER_AT,
-                scale: 1.0,
-                forward: [0.0, 1.0, 0.0],
-                up: [0.0, 0.0, 1.0],
-                ..Default::default()
-            };
-            world.objects.push(unit);
-            world.objects.push(live::Object {
-                id: VEHICLE,
-                kind: 1,
-                position: if self.moved.load(Ordering::Relaxed) {
-                    [5.0, 2.0, 3.0]
-                } else {
-                    [1.0, 2.0, 3.0]
-                },
-                ..unit
-            });
-        }
-        if layers.players {
-            world.players.push(live::Player {
-                index: 0,
-                name: "Tester".into(),
-                unit: Some(UNIT),
-                local_user: Some(0),
-                aim: [0.0, 1.0, 0.0],
-                ..Default::default()
-            });
-        }
-        true
-    }
-}
-
-/// The invented game: what the host methods were sent.
-#[derive(Default)]
-struct FakeEdits {
-    checksum: u32,
-    external_live: bool,
-    bytes: std::collections::HashMap<String, String>,
-    journal: Vec<Value>,
-}
-struct Game {
-    edits: Arc<Mutex<FakeEdits>>,
-    path: std::path::PathBuf,
-    agent: Agent,
-    _server: Server,
-    stop: Arc<AtomicBool>,
-    moved: Arc<AtomicBool>,
-    thread: Option<thread::JoinHandle<()>>,
-    calls: Arc<Mutex<Vec<(String, Value)>>>,
-}
-
-impl Game {
-    fn start(tag: &str, map: &str, kind: SessionKind) -> Game {
-        let path = std::env::temp_dir().join(format!("h2e-{}-{tag}.sock", std::process::id()));
-        let agent = Agent::new();
-        let calls: Arc<Mutex<Vec<(String, Value)>>> = Arc::default();
-        let rec = |name: &'static str| {
-            let calls = Arc::clone(&calls);
-            move |v: Value| {
-                calls.lock().unwrap().push((name.to_owned(), v.clone()));
-                v
-            }
-        };
-        let edits = Arc::new(Mutex::new(FakeEdits::default()));
-        let loaded = map.to_owned();
-        let state = edits.clone();
-        agent.add_method("edit.map", Access::Read, move |_| {
-            let state = state.lock().unwrap();
-            let mut session = agent_proto::sim::SessionView {
-                kind,
-                ..Default::default()
-            }
-            .settle();
-            if state.external_live {
-                session.writes = false;
-                session.why = Some("external Live session".into());
-            }
-            Ok(
-                json!({"name":loaded,"file":"invented.map","checksum":state.checksum,"epoch":1,
-                "scenario":SCNR,"session":session}),
-            )
-        });
-        let state = edits.clone();
-        agent.add_method("edit.changes", Access::Read, move |_| {
-            Ok(json!({"changes":state.lock().unwrap().journal}))
-        });
-        let r = rec("edit.revert");
-        let state = edits.clone();
-        agent.add_method("edit.revert", Access::Act, move |v| {
-            kind.writes()
-                .map_err(|e| RpcError::new(code::INVALID_REQUEST, e))?;
-            r(v);
-            *state.lock().unwrap() = FakeEdits::default();
-            Ok(json!({"dropped":[]}))
-        });
-        let r = rec("edit.batch");
-        let state = edits.clone();
-        agent.add_method("edit.batch",Access::Act,move |v| {
-            kind.writes().map_err(|e| RpcError::new(code::INVALID_REQUEST,e))?;
-            let v = r(v);
-            let writes = v["writes"].as_array().unwrap();
-            let mut state = state.lock().unwrap();
-            let key = |w: &Value| w.get("at").unwrap_or(&w["path"]).to_string();
-            for w in writes {
-                if let Some(holds) = state.bytes.get(&key(w)) && w["was"].as_str() != Some(holds.as_str()) && w["value"].as_str() != Some(holds.as_str()) {
-                    return Err(RpcError {code:code::MISMATCH,message:"game changed the field".into(),
-                        data:Some(json!({"fields":[{"at":w["at"],"path":w["path"],"was":w["was"],"holds_bytes":holds}]}))});
-                }
-            }
-            for w in writes {
-                state.bytes.insert(key(w),w["value"].as_str().unwrap().into());
-                if let Some(at) = w["at"].as_u64() {
-                    state.journal.push(json!({"addr":format!("{at:#010x}"),"holds":w["value"],"path":"fixture field","stale":false}));
-                }
-            }
-            Ok(json!({"id":1,"applied":writes.len(),"changes":writes}))
-        });
-        let r = rec("sim.state.set");
-        agent.add_method(agent_proto::sim::method::STATE_SET, Access::Act, move |v| {
-            // The game's own refusal (boot's sim glue).
-            kind.writes()
-                .map_err(|m| RpcError::new(code::INVALID_REQUEST, m))?;
-            r(v);
-            Ok(json!({"wrote": ["pos"]}))
-        });
-        let server = Server::listen(&path, agent.clone()).unwrap();
-        let stop = Arc::new(AtomicBool::new(false));
-        let (s, a) = (Arc::clone(&stop), agent.clone());
-        let map = map.to_owned();
-        let moved = Arc::new(AtomicBool::new(false));
-        let game_moved = Arc::clone(&moved);
-        let thread = thread::spawn(move || {
-            let mut w = World { map, tick: 100, moved: game_moved };
-            while !s.load(Ordering::Relaxed) {
-                w.tick += 1;
-                a.on_tick(&mut w);
-                a.between_slices(&mut w, 0);
-                thread::sleep(Duration::from_millis(5));
-            }
-        });
-        Game {
-            edits,
-            path,
-            agent,
-            _server: server,
-            stop,
-            moved,
-            thread: Some(thread),
-            calls,
-        }
-    }
-
-    fn calls(&self, name: &str) -> Vec<Value> {
-        self.calls
-            .lock()
-            .unwrap()
-            .iter()
-            .filter(|(n, _)| n == name)
-            .map(|(_, v)| v.clone())
-            .collect()
-    }
-}
-
-impl Drop for Game {
-    fn drop(&mut self) {
-        self.stop.store(true, Ordering::Relaxed);
-        self.agent.shutdown();
-        if let Some(t) = self.thread.take() {
-            let _ = t.join();
-        }
-    }
-}
 
 /// The editor with the invented map open as `example`.
 fn editor(t: &Temp) -> App {
@@ -233,23 +25,6 @@ fn editor(t: &Temp) -> App {
     app.dispatch(Action::OpenSource(t.map("example")));
     assert_eq!(app.loaded_map(), Some("example"));
     app
-}
-
-/// Runs the editor's frames until `done` holds (or fails after 25 s; a call to a game that
-/// stopped answering times out after 10).
-fn until(play: &mut Play, app: &mut App, what: &str, mut done: impl FnMut(&Play, &App) -> bool) {
-    let end = Instant::now() + Duration::from_secs(25);
-    while Instant::now() < end {
-        play.update(app);
-        if done(play, app) {
-            return;
-        }
-        thread::sleep(Duration::from_millis(5));
-    }
-    panic!(
-        "timed out waiting for {what}; log: {:?}",
-        app.log().iter().map(|l| &l.status).collect::<Vec<_>>()
-    );
 }
 
 fn paired(tag: &str, map: &str, kind: SessionKind) -> (Temp, Game, App, Play) {
@@ -629,7 +404,7 @@ fn tag_and_placement_share_a_batch_and_undo_sends_the_old_field() {
 }
 
 #[test]
-fn conflicts_take_or_overwrite_only_after_a_choice() {
+fn taking_reads_the_current_field_and_overwrite_checks_the_mismatch_value() {
     use crate::app::tag_tests::WEAP;
     for take in [true, false] {
         let (_t, game, mut app, mut play) = tag_pair(if take {
@@ -649,6 +424,12 @@ fn conflicts_take_or_overwrite_only_after_a_choice() {
             a.pairing.pending.iter().any(|r| r["conflict"] == true)
         });
         assert_eq!(game.edits.lock().unwrap().bytes[&WEAP.to_string()], holds);
+        if take {
+            game.edits.lock().unwrap().bytes.insert(
+                WEAP.to_string(),
+                sync::hex(&11f32.to_le_bytes()),
+            );
+        }
         play.apply_edits(
             &mut app,
             if take {
@@ -661,14 +442,93 @@ fn conflicts_take_or_overwrite_only_after_a_choice() {
         until(&mut play, &mut app, "document matches the game", |p, a| {
             a.pairing.pending.is_empty() && p.edits.sent.is_none()
         });
-        let expected = sync::hex(&(if take { 9f32 } else { 4.5f32 }).to_le_bytes());
+        let expected = sync::hex(&(if take { 11f32 } else { 4.5f32 }).to_le_bytes());
         assert_eq!(sync::hex(&app.tags.read(WEAP, 4).unwrap()), expected);
         assert_eq!(
             game.edits.lock().unwrap().bytes[&WEAP.to_string()],
             expected
         );
         assert_eq!(game.calls("edit.batch").len(), if take { 1 } else { 2 });
+        assert_eq!(game.calls("edit.read").len(), if take { 1 } else { 0 });
     }
+}
+
+#[test]
+fn taking_a_placement_reads_its_path_in_the_paired_epoch() {
+    let (_t, game, mut app, mut play) = paired("take-placement", "example", SessionKind::Local);
+    let kind = BlockKind::NetgameFlags;
+    let block = app.session.scenario().unwrap().block(kind);
+    let pos = block.def.field("position").unwrap();
+    // The Play copy can resolve a placement outside the document's original block.
+    let at = block.address + pos.offset + 0x10000;
+    let key = json!(sync::path(kind, 0, pos)).to_string();
+    let encode = |pos: [f32; 3]| {
+        let bytes: Vec<_> = pos.into_iter().flat_map(f32::to_le_bytes).collect();
+        sync::hex(&bytes)
+    };
+    {
+        let mut state = game.edits.lock().unwrap();
+        state.placements.insert(key.clone(), at);
+        state.bytes.insert(key.clone(), encode([9., 8., 7.]));
+    }
+    move_flag(&mut app, [6., 5., 4.]);
+    play.apply_edits(&mut app, Apply::Send).unwrap();
+    until(&mut play, &mut app, "placement conflict", |_, a| {
+        a.pairing.pending.iter().any(|r| r["at"] == at && r["conflict"] == true)
+    });
+    let latest = [13., 14., 15.];
+    game.edits.lock().unwrap().bytes.insert(key, encode(latest));
+    play.apply_edits(&mut app, Apply::Take(at)).unwrap();
+    until(&mut play, &mut app, "latest placement value", |_, a| {
+        a.pairing.pending.is_empty()
+    });
+    assert_eq!(
+        app.session.scenario().unwrap().get(kind, 0, "position").unwrap(),
+        FieldValue::Vec3(latest)
+    );
+    assert_eq!(game.calls("edit.get").len(), 1);
+    assert_eq!(game.calls("edit.batch").len(), 1);
+}
+
+#[test]
+fn reverting_a_changed_field_uses_its_observed_bytes_on_the_next_send() {
+    use crate::app::tag_tests::WEAP;
+    let (_t, game, mut app, mut play) = tag_pair("revert-baseline");
+    speed(&mut app);
+    play.apply_edits(&mut app, Apply::Send).unwrap();
+    until(&mut play, &mut app, "first write acknowledged", |p, _| {
+        game.calls("edit.batch").len() == 1 && p.edits.sent.is_none()
+    });
+
+    let holds = sync::hex(&7f32.to_le_bytes());
+    game.edits.lock().unwrap().bytes.insert(WEAP.to_string(), holds.clone());
+    play.apply_edits(&mut app, Apply::Revert).unwrap();
+    until(&mut play, &mut app, "revert finished", |p, a| {
+        !game.calls("edit.revert").is_empty()
+            && p.edits.journal_ready
+            && a.log().iter().any(|l| l.status.text().contains("left those alone"))
+    });
+    assert_eq!(game.edits.lock().unwrap().bytes[&WEAP.to_string()], holds);
+    assert_eq!(app.tags.read(WEAP, 4).unwrap(), 4.5f32.to_le_bytes());
+
+    play.apply_edits(&mut app, Apply::Send).unwrap();
+    until(&mut play, &mut app, "write against the observed bytes", |p, a| {
+        game.calls("edit.batch").len() == 2
+            && p.edits.sent.is_none()
+            && a.pairing.pending.is_empty()
+    });
+    assert_eq!(game.calls("edit.batch")[1]["writes"][0]["was"], holds);
+}
+
+#[test]
+fn map_identity_accepts_case_differences_for_live_edits() {
+    let (_t, game, mut app, mut play) = paired("case-map", "Example", SessionKind::Local);
+    assert_eq!(app.loaded_map(), Some("example"));
+    play.apply_edits(&mut app, Apply::Send).unwrap();
+    move_flag(&mut app, [3., 4., 5.]);
+    until(&mut play, &mut app, "case-matched placement write", |p, _| {
+        !game.calls("edit.batch").is_empty() && p.edits.sent.is_none()
+    });
 }
 
 #[test]

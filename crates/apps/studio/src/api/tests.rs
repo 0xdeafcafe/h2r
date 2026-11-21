@@ -281,9 +281,12 @@ fn every_method_in_methods_has_a_test() {
     assert_eq!(ran.len(), Api::new().methods().len());
 }
 
+#[cfg(unix)]
 #[test]
 fn pair_status_carries_link_view() {
-    use crate::play::{Conn, Play};
+    use crate::play::Play;
+    use crate::play::testing::fake;
+    use agent_proto::sim::SessionKind;
 
     let t = Temp::new("pair-link");
     let mut app = app(&t);
@@ -296,12 +299,231 @@ fn pair_status_carries_link_view() {
         status["link"],
         json!({"state":"no_game", "text":"No game", "why":null})
     );
-    play.conn = Conn::Connected;
-    play.update(&mut app);
+    let game = fake::Game::start("api-link", "example", SessionKind::Local);
+    fake::pair_for_view(&mut play, &mut app, &game);
     let status = call(&mut api, &mut app, m::PAIR_STATUS, Value::Null);
     assert_eq!(status["state"], "connected");
     assert_eq!(status["link"]["state"], "viewing");
     assert_eq!(status["link"]["text"], play.link_view(&app).text);
+}
+
+#[cfg(unix)]
+mod paired_socket {
+    use super::*;
+    use crate::app::tag_tests::{self, WEAP};
+    use crate::play::testing::fake::{self, Game, batch_pending, until};
+    use crate::play::{Conn, Play, sync};
+    use agent_proto::sim::SessionKind;
+    use std::sync::mpsc::Receiver;
+    use std::time::Duration;
+
+    // The editor socket is pumped by the same thread that advances Play,
+    // just as it is between frames of the window.
+    struct Editor {
+        client: agent_proto::Client,
+        _listener: server::Listener,
+        rx: Receiver<server::Incoming>,
+        app: App,
+        api: Api,
+        play: Play,
+    }
+
+    impl Editor {
+        fn paired(t: &Temp, tag: &str) -> (Game, Self) {
+            let game = Game::start(tag, "example", SessionKind::Local);
+            let (mut app, ..) = tag_tests::app(&t.0);
+            let mut play = Play::new();
+            fake::pair_for_view(&mut play, &mut app, &game);
+            let sock = t.path("w.sock");
+            let (listener, rx) = server::listen(&sock).unwrap();
+            let client = studio_proto::cli::connect(&sock).unwrap();
+            client.set_timeout(Some(Duration::from_secs(5))).unwrap();
+            let mut api = Api::new();
+            api.window = true;
+            (
+                game,
+                Self {
+                    client,
+                    _listener: listener,
+                    rx,
+                    app,
+                    api,
+                    play,
+                },
+            )
+        }
+
+        fn call(&mut self, method: &str, params: Value) -> Value {
+            let client = &mut self.client;
+            std::thread::scope(|scope| {
+                let request = scope.spawn(move || client.call(method, params));
+                while !request.is_finished() {
+                    self.api.pump(&mut self.app, &self.rx);
+                    self.play.update(&mut self.app);
+                    std::thread::sleep(Duration::from_millis(2));
+                }
+                request.join().unwrap().unwrap()
+            })
+        }
+
+        fn wait(&mut self, what: &str, done: impl FnMut(&Play, &App) -> bool) {
+            until(&mut self.play, &mut self.app, what, done);
+        }
+
+        fn send_speed(&mut self) {
+            self.call(
+                m::TAG_SET,
+                json!({"tag":"weap", "path":"speed", "value":4.5}),
+            );
+            self.wait("the pending field", |_, a| !a.pairing.pending.is_empty());
+            let pending = self.call(m::MIRROR_PENDING, Value::Null);
+            let rows = pending["pending"].as_array().unwrap();
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0]["doc"], "tags");
+            assert_eq!(rows[0]["at"], WEAP);
+            assert!(rows[0]["path"].as_str().unwrap().contains("speed"));
+            assert!(rows[0]["class"].as_str().unwrap().starts_with("Poke"));
+            assert_eq!(
+                self.call(m::MIRROR_APPLY, json!({"what":"send"})),
+                json!({"queued":"send"})
+            );
+            self.wait("the outgoing batch", |p, _| batch_pending(p));
+        }
+    }
+
+    #[test]
+    fn mirror_apply_clears_the_pending_field_only_after_ack() {
+        let t = Temp::new("mir-ack");
+        let (game, mut editor) = Editor::paired(&t, "mir-ack");
+        let boundary = game.boundary.lock().unwrap();
+        editor.send_speed();
+        editor.call(m::MIRROR_APPLY, json!({"what":"send"}));
+        assert_eq!(
+            editor.call(m::MIRROR_PENDING, Value::Null)["pending"][0]["at"],
+            WEAP
+        );
+
+        // A diff while the first write waits still compares to the file.
+        editor.call(m::DOC_UNDO, json!({"doc":"tags"}));
+        editor.wait("undo compared to the file", |_, a| {
+            a.pairing.pending.is_empty()
+        });
+        editor.call(m::DOC_REDO, json!({"doc":"tags"}));
+        editor.wait("redo compared to the file", |_, a| {
+            !a.pairing.pending.is_empty()
+        });
+        assert!(batch_pending(&editor.play));
+        drop(boundary);
+
+        editor.wait("the acknowledged field", |p, a| {
+            !batch_pending(p) && a.pairing.pending.is_empty()
+        });
+        assert_eq!(
+            editor.call(m::MIRROR_PENDING, Value::Null)["pending"],
+            json!([])
+        );
+
+        // The inverse is a fence on the ordered game connection. Any
+        // duplicate batch queued before the ack would arrive first.
+        editor.call(m::DOC_UNDO, json!({"doc":"tags"}));
+        editor.wait("the inverse write", |p, a| {
+            !batch_pending(p)
+                && a.pairing.pending.is_empty()
+                && game.calls("edit.batch").len() >= 2
+        });
+        let calls = game.calls("edit.batch");
+        assert_eq!(calls.len(), 2);
+        let (first, undo) = (&calls[0]["writes"][0], &calls[1]["writes"][0]);
+        assert_eq!(first["at"], WEAP);
+        assert_eq!(first["value"], sync::hex(&4.5f32.to_le_bytes()));
+        assert_eq!(first["was"], sync::hex(&2.5f32.to_le_bytes()));
+        assert_eq!(undo["was"], first["value"]);
+        assert_eq!(undo["value"], first["was"]);
+    }
+
+    #[test]
+    fn pair_disconnect_restores_after_the_outstanding_batch() {
+        let t = Temp::new("mir-leave");
+        let (game, mut editor) = Editor::paired(&t, "mir-leave");
+        let boundary = game.boundary.lock().unwrap();
+        editor.send_speed();
+        editor.call(m::PAIR_DISCONNECT, json!({"leave":"restore"}));
+        assert_eq!(editor.call(m::MIRROR_PENDING, Value::Null)["leaving"], true);
+        assert_eq!(
+            editor.call(m::PAIR_STATUS, Value::Null)["state"],
+            "connected"
+        );
+        drop(boundary);
+
+        editor.wait("restore and disconnect", |p, _| p.conn == Conn::Off);
+        assert_eq!(game.calls("edit.batch").len(), 1);
+        assert_eq!(game.calls("edit.revert").len(), 1);
+        let state = game.edits.lock().unwrap();
+        assert!(state.journal.is_empty());
+        assert_eq!(state.bytes[&WEAP.to_string()], sync::hex(&2.5f32.to_le_bytes()));
+    }
+
+    #[test]
+    fn losing_the_socket_mid_batch_keeps_the_field_pending() {
+        let t = Temp::new("mir-lost");
+        let (game, mut editor) = Editor::paired(&t, "mir-lost");
+        let boundary = game.boundary.lock().unwrap();
+        editor.send_speed();
+        game.agent.shutdown();
+        drop(boundary);
+        drop(game);
+        editor.wait("the failed connection", |p, a| {
+            matches!(p.conn, Conn::Lost(_)) && !a.pairing.pending.is_empty()
+        });
+        assert_eq!(
+            editor.call(m::MIRROR_PENDING, Value::Null)["pending"][0]["at"],
+            WEAP
+        );
+
+        let replacement = Game::start("mir-new", "example", SessionKind::Local);
+        fake::pair_for_view(&mut editor.play, &mut editor.app, &replacement);
+        editor.call(m::MIRROR_APPLY, json!({"what":"send"}));
+        editor.wait("the fresh game to acknowledge the edit", |p, a| {
+            !batch_pending(p)
+                && a.pairing.pending.is_empty()
+                && !replacement.calls("edit.batch").is_empty()
+        });
+        let calls = replacement.calls("edit.batch");
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0]["writes"][0]["was"], sync::hex(&2.5f32.to_le_bytes()));
+    }
+
+    #[test]
+    fn an_epoch_change_mid_batch_requires_a_fresh_send() {
+        let t = Temp::new("mir-cut");
+        let (game, mut editor) = Editor::paired(&t, "mir-cut");
+        let boundary = game.boundary.lock().unwrap();
+        editor.send_speed();
+        game.bsp.store(1, std::sync::atomic::Ordering::Relaxed);
+        drop(boundary);
+
+        editor.wait("the new epoch and its journal", |p, a| {
+            a.pairing.shown.as_ref().is_some_and(|s| s.epoch == 2)
+                && p.link_view(a).state.name() == "viewing"
+                && !a.pairing.pending.is_empty()
+        });
+        assert_eq!(game.calls("edit.batch").len(), 1);
+        assert!(game.edits.lock().unwrap().bytes.is_empty());
+        assert_eq!(
+            editor.call(m::MIRROR_PENDING, Value::Null)["pending"][0]["at"],
+            WEAP
+        );
+
+        editor.call(m::MIRROR_APPLY, json!({"what":"send"}));
+        editor.wait("the new epoch to acknowledge", |p, a| {
+            !batch_pending(p) && a.pairing.pending.is_empty()
+        });
+        let calls = game.calls("edit.batch");
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0]["epoch"], 1);
+        assert_eq!(calls[1]["epoch"], 2);
+        assert_eq!(calls[1]["writes"], calls[0]["writes"]);
+    }
 }
 
 #[test]
