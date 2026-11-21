@@ -120,7 +120,7 @@ impl ScenarioOutliner {
                 .session
                 .source()
                 .and_then(|source| source.open().ok())
-                .map(|mut map| ScenarioRoots::read(&app.tags, &mut map));
+                .map(|mut map| ScenarioRoots::read(&mut map));
             self.source = Some((world, roots));
             self.model = None;
             self.opened.clear();
@@ -553,10 +553,6 @@ pub fn fields(
         }
     }
     io_bar(ui, app, st, t, dialogs, actions);
-    if let Some(bytes) = doc.bsp_bytes(id) {
-        ui.child_window("##bsp-bytes").build(ui, || bsp_hex(ui, bytes));
-        return;
-    }
     if let Some(layout) = doc.layout(id) {
         let c = layout.coverage();
         ui.text_disabled(format!(
@@ -567,7 +563,12 @@ pub fn fields(
         ui.checkbox("padding", &mut st.panel.show_pad);
     } else {
         // No layout: the bytes only.
-        if let Some(b) = doc.read(t.address, t.size.min(4096)) {
+        if t.bsp.is_some() {
+            if let Some(bytes) = doc.read_source(id, t.address, t.size) {
+                ui.child_window("##bsp-bytes")
+                    .build(ui, || bsp_hex(ui, bytes));
+            }
+        } else if let Some(b) = doc.read(id, t.address, t.size.min(4096)) {
             ui.text(fields::hex_lines(&b));
         }
         return;
@@ -774,15 +775,19 @@ pub fn hex(
         ui.text_disabled("No tag selected.");
         return;
     };
-    if let Some(bytes) = doc.bsp_bytes(id) {
+    if let Some(t) = doc.tag(id)
+        && t.bsp.is_some()
+        && doc.layout(id).is_none()
+        && let Some(bytes) = doc.read_source(id, t.address, t.size)
+    {
         bsp_hex(ui, bytes);
         return;
     }
     data(ui, app, id, gpu, pictures, actions);
     let p = &st.panel;
     let (at, size, name) = match &p.focus {
-        Some((at, l)) => (*at, l.size, l.name.clone()),
-        None => match (doc.tag(id), doc.layout(id)) {
+        Some((tag, at, l)) if *tag == id => (*at, l.size, l.name.clone()),
+        _ => match (doc.tag(id), doc.layout(id)) {
             (Some(t), Some(l)) => (t.address, l.size, l.name.clone()),
             _ => return,
         },
@@ -805,10 +810,10 @@ pub fn hex(
     }
     ui.text_disabled(format!("{name}: {size:#x} bytes at {at:#010x}"));
     let shown = size.min(4096);
-    let Some(bytes) = doc.read(at, shown) else {
+    let Some(bytes) = doc.read(id, at, shown) else {
         return;
     };
-    let source = doc.read_source(at, shown);
+    let source = doc.read_source(id, at, shown);
     let lit = p
         .hovered
         .as_ref()

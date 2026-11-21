@@ -995,7 +995,10 @@ mod tests {
         assert_eq!(app.tags.selected, Some(tag_tests::weap_id()));
         h.step(&mut app, &click("quiet##b1")).unwrap();
         h.frames(&mut app, 2).unwrap();
-        let flags = app.tags.read(tag_tests::WEAP + 4, 2).unwrap();
+        let flags = app
+            .tags
+            .read(tag_tests::weap_id(), tag_tests::WEAP + 4, 2)
+            .unwrap();
         assert_eq!(flags, [3, 0], "both flags set");
         assert!(app.tags.is_changed(tag_tests::weap_id()));
         // The block lists its elements; the hex pane follows the mouse.
@@ -1017,7 +1020,12 @@ mod tests {
             Some("flags")
         );
         app.dispatch(Action::Undo);
-        assert_eq!(app.tags.read(tag_tests::WEAP + 4, 2).unwrap(), [1, 0]);
+        assert_eq!(
+            app.tags
+                .read(tag_tests::weap_id(), tag_tests::WEAP + 4, 2)
+                .unwrap(),
+            [1, 0]
+        );
         let (rgba, _) = h.capture(&mut app, 2).unwrap();
         let distinct: std::collections::HashSet<[u8; 4]> = rgba
             .as_chunks::<4>()

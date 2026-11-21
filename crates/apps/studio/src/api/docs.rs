@@ -469,7 +469,7 @@ fn diff(app: &mut App, t: ToolKind) -> Reply {
         ToolKind::Scenario | ToolKind::Tags => {
             let s = super::scenario::open(app)?;
             let changes = s.changes();
-            let patches: Vec<Value> = changes
+            let mut patches: Vec<Value> = changes
                 .patches
                 .iter()
                 .map(|(address, bytes)| {
@@ -505,7 +505,8 @@ fn diff(app: &mut App, t: ToolKind) -> Reply {
                         v["block"] = json!(block_name(b.def.kind));
                         v["fields"] = json!(["count"]);
                     } else if let Some(t) = app.tags.tags().iter().find(|t| {
-                        *address >= t.address
+                        t.bsp.is_none()
+                            && *address >= t.address
                             && (*address as u64) < t.address as u64 + t.size as u64
                     }) {
                         // A Tags tool edit.
@@ -515,6 +516,14 @@ fn diff(app: &mut App, t: ToolKind) -> Reply {
                     v
                 })
                 .collect();
+            patches.extend(changes.bsp_patches.iter().map(|patch| {
+                json!({
+                    "address": format!("{:#010x}", patch.address),
+                    "bsp_region_offset": patch.space.file_offset,
+                    "len": patch.bytes.len(),
+                    "bytes": hex(&patch.bytes),
+                })
+            }));
             let grown: Vec<Value> = changes
                 .grown
                 .iter()

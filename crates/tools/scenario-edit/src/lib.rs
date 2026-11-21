@@ -47,7 +47,7 @@ pub use edit::{Command, History, SetField};
 pub use layout::{BlockKind, FieldType, Role};
 pub use package::{PackageForm, SavedPackage};
 pub use save::MapSource;
-pub use scenario::{Changes, Grown, Removed, Scenario, TagGrown, TagRef, Value};
+pub use scenario::{BspPatch, Changes, Grown, Removed, Scenario, TagGrown, TagRef, Value};
 pub use session::{GROWTH_REFUSAL, Reference, RotationField, Session, Transform};
 
 /// Why an edit, read or save was refused.

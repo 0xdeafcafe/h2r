@@ -14,7 +14,6 @@ use super::{MethodDef, P, Provider, Reply, def, err};
 use crate::App;
 use crate::app::{
     TagDoc, tag_api,
-    tag_doc::{Access, IN_BSP},
     tag_tree::{self, Row, ScenarioRoots},
 };
 
@@ -276,7 +275,7 @@ fn tree(app: &mut App, p: &P) -> Reply {
     super::tag_fields::sync_open_tags(app)?;
     let scenario = super::scenario::open(app)?;
     let doc = &app.tags;
-    let roots = ScenarioRoots::read(doc, &mut open_map(app)?);
+    let roots = ScenarioRoots::read(&mut open_map(app)?);
     let tree = tag_tree::scenario_tree(doc, scenario, &roots, depth as usize);
     let mut root = row_json(doc, &tree.root);
     root["edited"] = json!(scenario.is_modified() || root["edited"] == true);
@@ -295,16 +294,7 @@ fn refs_of(app: &mut App, p: &P, limit: usize) -> Result<Vec<Value>, RpcError> {
     let doc = &app.tags;
     let id = tag_api::lookup(doc, p.get("tag").unwrap_or(&Value::Null))
         .map_err(|e| err(code::INVALID_PARAMS, e))?;
-    let refs = if doc
-        .tag(id)
-        .is_some_and(|t| t.access == Access::None(IN_BSP))
-    {
-        let mut map = open_map(app)?;
-        tag_api::region_refs(doc, &mut map, id)
-            .map_err(|e| err(code::FAILED, format!("reading {}: {e}", tag_id(id))))?
-    } else {
-        doc.tag_refs(id, app.session.scenario())
-    };
+    let refs = doc.tag_refs(id, app.session.scenario());
     Ok(refs
         .links
         .into_iter()
@@ -646,6 +636,8 @@ mod tests {
             let schema = Schema::parse(concat!(
                 "group weap 0x8 align 4\n  0x0 tagref\n",
                 "group more 0x8 align 4\n  0x0 block 0x8 align 4\n    0x0 tagref\n",
+                "group sbsp 0x23c align 4\n  0x84 block 0x88 align 4\n    0x20 tagref\n",
+                "group ltmp 0x104 align 4\n",
                 "group scnr 0x3e0 align 4\n  0x120 block 0x90 align 4\n    0x58 tagref\n",
             ))
             .unwrap();
@@ -904,7 +896,7 @@ mod tests {
     fn scenario_tree_palette_selection_keeps_the_tag_and_outlines_its_placements() {
         let mut f = fixture();
         let mut map = open_map(&f.app).unwrap();
-        let roots = ScenarioRoots::read(&f.app.tags, &mut map);
+        let roots = ScenarioRoots::read(&mut map);
         let tree =
             tag_tree::scenario_tree(&f.app.tags, f.app.session.scenario().unwrap(), &roots, 0);
         let objects = tree

@@ -999,13 +999,12 @@ with `--nocapture`. The names grow as definitions do: a name added to
 `app/tag_doc.rs` (`TagDoc`) holds the open map's tags, ordinary metadata
 and BSP regions. `App::sync_tags` loads them when the tool first opens
 for a map revision. The BSP buffers use file offsets as keys because
-their virtual addresses can overlap. Edits form a byte overlay on
-ordinary metadata. Every edit is an undo step (a drag is one step: writes
-merge by key until `TagAction::Seal`); each change hands every changed
-run to the session (`Session::set_tag_patches`), which keeps them on the
-scenario (`Scenario::set_tag_patches`) so `changes()` includes them: the
-map's dirty mark, map files and packages all count them. Undo and redo in
-the Tags tool step the tag edits only.
+their virtual addresses can overlap. The overlay and undo stack track
+each write by region and address. Writes from a drag merge by key within
+the region until `TagAction::Seal`. The session stores the changed runs
+through `Session::set_tag_patches` and `Session::set_bsp_patches`. The
+map's dirty mark, map files and packages include both. Undo and redo in
+the Tags tool step through tag edits.
 
 What can be written, and what not (the reason shows in the panel and as
 the refusal's text):
@@ -1015,7 +1014,7 @@ the refusal's text):
 | Fields of any tag in the ordinary metadata whose group has a layout | Editable: fixed-length patches in place. |
 | Counts, addresses, raw pointers and sizes, BSP descriptors | Shown only: changing them by hand corrupts the map. Blocks change through add / remove / duplicate. |
 | The scenario tag | The field panel shows the source values through `scnr.txt`. The Scenario tool owns edits. Placement and palette blocks link to Scene. |
-| Tags in a structure BSP region (`sbsp`, `ltmp`) | Read-only hex from the tag's own region. The tree row identifies the BSP. |
+| Tags in a structure BSP region (`sbsp`, `ltmp`) | Editable in place through their layouts. Child block addresses resolve in the same region. The tree row identifies the BSP. |
 | Tags with no data in the map (shared-map tags) | Nothing to show here; the tree names the shared cache that has their data (`[in shared]`), and **Show it in ...** browses it there. |
 | Tags of a browsed map | Read-only: only the open map saves. |
 | A group with no layout, a tag shorter than its layout | Read-only (hex only without a layout). |
@@ -1026,8 +1025,9 @@ the refusal's text):
 bytes, dead until re-added), duplicate inserts a copy after the element,
 add appends a blank one (zero, null references). Within the elements it
 had in the source (and while it still points where it did) a block
-changes in place. Past that it is full, and grows only while **Edit >
-Allow growing full blocks** is on (the session's switch, shared with the
+changes in place. BSP blocks use their source capacity. Blocks in
+ordinary metadata grow past that capacity while **Edit > Allow growing
+full blocks** is on (the session's switch, shared with the
 Scenario tool; off by default because the engine's headroom for more tag
 memory is not established, [scenario-editor.md](scenario-editor.md) §6).
 A grown block's elements are copied, with the new one, to room past the

@@ -183,7 +183,7 @@ impl TagFields {
                     .map_err(|e| err(code::INVALID_PARAMS, format!("{path}: {e}")))?;
                 perform(app, action)?;
                 let (at, _, f) = tag_api::resolve(&app.tags, id, path).map_err(failed)?;
-                Ok(json!({ "value": tag_api::value(&app.tags, at, &f) }))
+                Ok(json!({ "value": tag_api::value(&app.tags, id, at, &f) }))
             }
             _ => {
                 let path = p.str("path")?;
@@ -200,7 +200,11 @@ impl TagFields {
                 perform(app, action)?;
                 let count = tag_api::resolve(&app.tags, id, path)
                     .ok()
-                    .and_then(|(at, _, f)| tag_api::value(&app.tags, at, &f).as_array().map(Vec::len));
+                    .and_then(|(at, _, f)| {
+                        tag_api::value(&app.tags, id, at, &f)
+                            .as_array()
+                            .map(Vec::len)
+                    });
                 Ok(json!({ "count": count }))
             }
         }

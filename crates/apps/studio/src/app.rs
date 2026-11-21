@@ -1161,6 +1161,8 @@ impl App {
         }
         let r = self.session.set_tag_patches(self.tags.patches());
         self.ok_or_log(r);
+        let r = self.session.set_bsp_patches(self.tags.bsp_patches());
+        self.ok_or_log(r);
         let r = self.session.set_tag_grown(self.tags.grown());
         self.ok_or_log(r);
         let r = self

@@ -1,8 +1,7 @@
 //! The inspector's tag tree, walked over the current TagDoc (including edits).
 use std::collections::HashSet;
-use std::io::{Read, Seek};
 
-use map::{FourCC, Map, TagId};
+use map::{FourCC, TagId};
 use scenario_edit::{
     BlockKind, Scenario,
     Value as ScenarioValue,
@@ -10,7 +9,6 @@ use scenario_edit::{
 };
 use serde_json::{Value, json};
 use tags::registry::{Kind, Layout};
-use tags::schema::{Field, Schema, Struct};
 
 use super::{TagDoc, le};
 use crate::app::tag_doc::Access;
@@ -103,7 +101,7 @@ impl TagDoc {
         if t.address.checked_add(t.size).is_none() {
             return Vec::new();
         }
-        let Some(bytes) = self.read(t.address, t.size) else {
+        let Some(bytes) = self.read(tag, t.address, t.size) else {
             return Vec::new();
         };
         bytes
@@ -201,31 +199,6 @@ impl TagDoc {
                     group.is_none_or(|group| self.fits(t.group, &[group]))
                 }))
     }
-}
-
-/// Read direct links in a payload that lives in a BSP address space.
-/// Keep the structural offset paths used by tag.follow for those tags.
-pub(crate) fn region_refs<R: Read + Seek>(
-    doc: &TagDoc,
-    map: &mut Map<R>,
-    id: TagId,
-) -> map::Result<References> {
-    let tag = map.tag(id)?;
-    let (Some(location), Some(layout)) = (tag.location, Schema::builtin().groups.get(&tag.group))
-    else {
-        return Ok(References {
-            incomplete: true,
-            ..References::default()
-        });
-    };
-    let bytes = map.read_tag_bytes(id)?;
-    let mut walk = Walk::new(doc);
-    let mut links = Vec::new();
-    walk.region_element((&bytes, location.address), layout, (0, ""), &mut links, 0);
-    Ok(References {
-        links,
-        incomplete: walk.truncated,
-    })
 }
 
 /// Resolve the placement's current palette entry or item reference.
@@ -332,9 +305,9 @@ impl<'a> Walk<'a> {
         let mut refs = Vec::new();
         match doc.layout(tag) {
             Some(layout) if layout.size <= t.size => {
-                let default = string_id(doc, t.address, layout, "default_variant");
+                let default = string_id(doc, tag, t.address, layout, "default_variant");
                 let variant = variant.filter(|&v| v != 0 && v != u32::MAX).or(default);
-                self.element(t.group, t.address, layout, ("", ""), variant, &mut refs, 0);
+                self.element(t, t.address, layout, ("", ""), variant, &mut refs, 0);
 
                 // The scenario definition names only known fields. Keep
                 // scanning for references in the remaining bytes.
@@ -347,6 +320,7 @@ impl<'a> Walk<'a> {
                     );
                 }
             }
+            None if t.bsp.is_some() => self.truncated = true,
             None => refs = doc.scan_refs(tag),
             Some(_) => {}
         }
@@ -356,7 +330,7 @@ impl<'a> Walk<'a> {
     #[allow(clippy::too_many_arguments)]
     fn element(
         &mut self,
-        group: FourCC,
+        tag: &crate::app::tag_doc::TagEntry,
         at: u32,
         layout: &Layout,
         prefixes: (&str, &str),
@@ -380,7 +354,7 @@ impl<'a> Walk<'a> {
             };
             match &f.kind {
                 Kind::TagRef { .. } | Kind::Datum { .. } => {
-                    let Some(bytes) = self.doc.read(address, f.kind.width()) else {
+                    let Some(bytes) = self.doc.read(tag.id, address, f.kind.width()) else {
                         continue;
                     };
                     let id = TagId(le(&bytes[bytes.len() - 4..]) as u32);
@@ -390,10 +364,12 @@ impl<'a> Walk<'a> {
                         continue;
                     }
                     let to = self.doc.tag(id).map(|t| t.group).or(field_group);
-                    let shortcut = to.and_then(|to| shortcut(group, to, prefix, &f.name));
+                    let shortcut = to.and_then(|to| shortcut(tag.group, to, prefix, &f.name));
                     let variant = match shortcut {
                         Some("Model") => variant,
-                        Some("Collection entry") => string_id(self.doc, at, layout, "variant"),
+                        Some("Collection entry") => {
+                            string_id(self.doc, tag.id, at, layout, "variant")
+                        }
                         _ => None,
                     };
                     refs.push(Link {
@@ -406,8 +382,9 @@ impl<'a> Walk<'a> {
                         variant,
                     });
                 }
-                Kind::Block(child) if child.size > 0 => {
-                    let Some((n, start)) = self.doc.block(address, child) else {
+                Kind::Block(child) if child.size > 0 && (tag.bsp.is_none() || has_refs(child)) => {
+                    let Some((n, start)) = self.doc.block(tag.id, address, child) else {
+                        self.truncated |= tag.bsp.is_some();
                         continue;
                     };
                     for i in 0..n {
@@ -417,7 +394,7 @@ impl<'a> Walk<'a> {
                         let path = format!("{prefix}{}[{i}].", f.name);
                         let offset_path = format!("{offsets}{:#x}[{i}].", f.offset);
                         self.element(
-                            group,
+                            tag,
                             at,
                             child,
                             (&path, &offset_path),
@@ -435,82 +412,6 @@ impl<'a> Walk<'a> {
         }
     }
 
-    fn region_element(
-        &mut self,
-        region: (&[u8], u32),
-        layout: &Struct,
-        element: (usize, &str),
-        refs: &mut Vec<Link>,
-        depth: usize,
-    ) {
-        let (bytes, base) = region;
-        let (at, path) = element;
-        if depth > MAX_BLOCK_DEPTH || layout.size as usize > bytes.len().saturating_sub(at) {
-            self.truncated = true;
-            return;
-        }
-        let word = |offset: usize| le(&bytes[offset..offset + 4]) as u32;
-        let field_path = |offset: u32| {
-            if path.is_empty() {
-                format!("{offset:#x}")
-            } else {
-                format!("{path}.{offset:#x}")
-            }
-        };
-        for (&offset, field) in &layout.fields {
-            if self.fields_left == 0 {
-                self.truncated = true;
-                return;
-            }
-            self.fields_left -= 1;
-            let p = at + offset as usize;
-            match field {
-                Field::TagRef | Field::TagId => {
-                    let tag_ref = matches!(field, Field::TagRef);
-                    let datum_at = if tag_ref { p + 4 } else { p };
-                    let id = TagId(word(datum_at));
-                    let group = tag_ref.then(|| FourCC::from_u32(word(p)));
-                    if self.doc.is_reference(id, group) {
-                        let here = field_path(offset);
-                        refs.push(Link {
-                            tag: id,
-                            via: here.clone(),
-                            path: here,
-                            found: "field",
-                            datum_at: 0,
-                            shortcut: None,
-                            variant: None,
-                        });
-                    }
-                }
-                Field::Block(child) if child.size > 0 && region_has_refs(child) => {
-                    let count = word(p);
-                    if count == 0 {
-                        continue;
-                    }
-                    let start = word(p + 4).checked_sub(base).map(|n| n as usize);
-                    let len = count.checked_mul(child.size).map(|n| n as usize);
-                    let Some(start) = start.zip(len).and_then(|(start, len)| {
-                        (len <= bytes.len().saturating_sub(start)).then_some(start)
-                    }) else {
-                        self.truncated = true;
-                        continue;
-                    };
-                    let here = field_path(offset);
-                    for index in 0..count as usize {
-                        let path = format!("{here}[{index}]");
-                        let at = start + index * child.size as usize;
-                        self.region_element(region, child, (at, &path), refs, depth + 1);
-                        if self.truncated && self.fields_left == 0 {
-                            return;
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-
     fn model_variant(&self, tag: TagId, variant: u32) -> Option<String> {
         let t = self.doc.tag(tag)?;
         if t.group != FourCC(*b"hlmt") || matches!(t.access, Access::None(_)) {
@@ -518,7 +419,7 @@ impl<'a> Walk<'a> {
         }
         let variant = if variant == 0 {
             let (at, _, f) = super::resolve(self.doc, tag, "variants[0].name").ok()?;
-            le(&self.doc.read(at.checked_add(f.offset)?, 4)?) as u32
+            le(&self.doc.read(tag, at.checked_add(f.offset)?, 4)?) as u32
         } else {
             variant
         };
@@ -530,20 +431,20 @@ impl<'a> Walk<'a> {
     }
 }
 
-fn region_has_refs(layout: &Struct) -> bool {
-    layout.fields.values().any(|field| match field {
-        Field::TagRef | Field::TagId => true,
-        Field::Block(child) => region_has_refs(child),
+fn has_refs(layout: &Layout) -> bool {
+    layout.fields.iter().any(|f| match &f.kind {
+        Kind::TagRef { .. } | Kind::Datum { .. } => true,
+        Kind::Block(child) => has_refs(child),
         _ => false,
     })
 }
 
-fn string_id(doc: &TagDoc, at: u32, layout: &Layout, name: &str) -> Option<u32> {
+fn string_id(doc: &TagDoc, tag: TagId, at: u32, layout: &Layout, name: &str) -> Option<u32> {
     let f = layout
         .fields
         .iter()
         .find(|f| f.name == name && matches!(f.kind, Kind::StringId))?;
-    Some(le(&doc.read(at.checked_add(f.offset)?, 4)?) as u32)
+    Some(le(&doc.read(tag, at.checked_add(f.offset)?, 4)?) as u32)
 }
 
 fn shortcut(from: FourCC, to: FourCC, prefix: &str, field: &str) -> Option<&'static str> {

@@ -3,6 +3,7 @@
 use super::sync;
 use crate::app::TagDoc;
 use map::TagId;
+use scenario_edit::BspPatch;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use tags::registry::{Field, Kind, Layout};
@@ -14,6 +15,7 @@ pub const RELOAD: &str = "Reload";
 #[derive(Default, Clone)]
 pub struct TagBaseline {
     bytes: BTreeMap<u32, u8>,
+    bsp_patches: Vec<BspPatch>,
     // Operations already baked into a Play copy, including provisional
     // addresses whose actual storage was allocated by the map writer.
     structural: Vec<(String, Vec<(u32, u32)>)>,
@@ -22,13 +24,16 @@ pub struct TagBaseline {
 
 impl TagBaseline {
     pub fn of(doc: &TagDoc) -> Self {
-        let mut base = Self::default();
+        let mut base = Self {
+            bsp_patches: doc.bsp_patches(),
+            ..Self::default()
+        };
         for (at, bytes) in doc.patches() {
             base.wrote(at, &bytes);
         }
         for (label, ranges) in doc.structural_edits() {
             for &(at, n) in ranges {
-                if let Some(bytes) = doc.read(at, n) {
+                if let Some(bytes) = doc.read_metadata(at, n) {
                     base.wrote(at, &bytes);
                 }
             }
@@ -61,7 +66,7 @@ pub fn class(doc: &TagDoc, tag: TagId, at: u32, field: &Field) -> (&'static str,
     let Some(entry) = doc.tag(tag) else {
         return reload("tag is absent");
     };
-    if matches!(&entry.group.0, b"sbsp" | b"ltmp" | b"coll" | b"phmo") {
+    if entry.bsp.is_some() || matches!(&entry.group.0, b"sbsp" | b"ltmp" | b"coll" | b"phmo") {
         return reload("geometry or collision is built at map load");
     }
     if doc.is_grown_room(at) {
@@ -78,7 +83,7 @@ pub fn class(doc: &TagDoc, tag: TagId, at: u32, field: &Field) -> (&'static str,
                 0
             };
             let datum = doc
-                .read(at + offset, 4)
+                .read(tag, at + offset, 4)
                 .and_then(|v| Some(u32::from_le_bytes(v.try_into().ok()?)));
             if datum.is_none_or(|d| d != u32::MAX && !doc.resident(TagId(d))) {
                 return reload("reference target is absent from the loaded metadata");
@@ -86,7 +91,7 @@ pub fn class(doc: &TagDoc, tag: TagId, at: u32, field: &Field) -> (&'static str,
         }
         Kind::StringId => {
             let id = doc
-                .read(at, 4)
+                .read(tag, at, 4)
                 .and_then(|v| Some(u32::from_le_bytes(v.try_into().ok()?)));
             if id.is_none_or(|id| id != u32::MAX && !doc.source_string(id)) {
                 return reload("string ID is absent from the loaded string table");
@@ -106,6 +111,7 @@ pub fn class(doc: &TagDoc, tag: TagId, at: u32, field: &Field) -> (&'static str,
 /// addresses outside the owning instance have no writable field here.
 fn field_at<'a>(
     doc: &TagDoc,
+    tag: TagId,
     root: u32,
     layout: &'a Layout,
     at: u32,
@@ -123,7 +129,7 @@ fn field_at<'a>(
         };
         let Some((count, first)) = root
             .checked_add(field.offset)
-            .and_then(|p| doc.block(p, child))
+            .and_then(|p| doc.block(tag, p, child))
         else {
             continue;
         };
@@ -146,7 +152,9 @@ fn field_at<'a>(
             .any(|f| matches!(f.kind, Kind::Block(_)))
         {
             for i in 0..count {
-                if let Some(found) = field_at(doc, first + i * child.size, child, at, depth - 1) {
+                if let Some(found) =
+                    field_at(doc, tag, first + i * child.size, child, at, depth - 1)
+                {
                     return Some(found);
                 }
             }
@@ -161,6 +169,25 @@ pub fn diff(base: &TagBaseline, doc: &TagDoc) -> (Vec<Write>, Vec<Value>) {
         addresses.extend((at..).take(bytes.len()));
     }
     let mut rows = Vec::new();
+    let bsp_patches = doc.bsp_patches();
+    let spaces: BTreeSet<_> = bsp_patches
+        .iter()
+        .chain(&base.bsp_patches)
+        .map(|p| p.space)
+        .collect();
+    for space in spaces {
+        let now = bsp_patches.iter().filter(|p| p.space == space);
+        let was = base.bsp_patches.iter().filter(|p| p.space == space);
+        if !now.eq(was) {
+            rows.push(row(
+                "tags",
+                Value::Null,
+                &format!("BSP region at file offset {:#x}", space.file_offset),
+                RELOAD,
+                "geometry or collision is built at map load",
+            ));
+        }
+    }
     let mut excluded = Vec::new();
     let mut structures = BTreeSet::new();
     for (label, ranges) in doc.structural_edits().chain(&base.structural) {
@@ -169,10 +196,10 @@ pub fn diff(base: &TagBaseline, doc: &TagDoc) -> (Vec<Write>, Vec<Value>) {
         }
         excluded.extend_from_slice(ranges);
         if ranges.iter().any(|&(at, n)| {
-            let Some(now) = doc.read(at, n) else {
+            let Some(now) = doc.read_metadata(at, n) else {
                 return true;
             };
-            let Some(src) = doc.read_source(at, n) else {
+            let Some(src) = doc.read_metadata_source(at, n) else {
                 return true;
             };
             now.iter()
@@ -222,7 +249,7 @@ pub fn diff(base: &TagBaseline, doc: &TagDoc) -> (Vec<Write>, Vec<Value>) {
         let Some(entry) = doc
             .tags()
             .iter()
-            .find(|t| at.checked_sub(t.address).is_some_and(|o| o < t.size))
+            .find(|t| t.bsp.is_none() && at.checked_sub(t.address).is_some_and(|o| o < t.size))
         else {
             rows.push(row(
                 "tags",
@@ -236,7 +263,7 @@ pub fn diff(base: &TagBaseline, doc: &TagDoc) -> (Vec<Write>, Vec<Value>) {
         let id = json!(format!("{:#010x}", entry.id.0));
         let Some((start, f)) = doc
             .layout(entry.id)
-            .and_then(|l| field_at(doc, entry.address, l, at, 12))
+            .and_then(|l| field_at(doc, entry.id, entry.address, l, at, 12))
         else {
             rows.push(row(
                 "tags",
@@ -249,7 +276,7 @@ pub fn diff(base: &TagBaseline, doc: &TagDoc) -> (Vec<Write>, Vec<Value>) {
         };
         let n = f.kind.width();
         covered = u64::from(start) + u64::from(n);
-        let Some(mut was) = doc.read_source(start, n).map(<[u8]>::to_vec) else {
+        let Some(mut was) = doc.read_source(entry.id, start, n).map(<[u8]>::to_vec) else {
             continue;
         };
         for (a, b) in (start..).zip(&mut was) {
@@ -257,7 +284,7 @@ pub fn diff(base: &TagBaseline, doc: &TagDoc) -> (Vec<Write>, Vec<Value>) {
                 *b = *v;
             }
         }
-        let Some(value) = doc.read(start, n) else {
+        let Some(value) = doc.read(entry.id, start, n) else {
             continue;
         };
         if value == was {

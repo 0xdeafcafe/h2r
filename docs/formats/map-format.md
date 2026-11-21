@@ -687,7 +687,10 @@ StringID lengths would require repairing references in opaque tags.
 
 `patch_metadata(address, bytes)` is the same fixed-size patch addressed by
 ordinary metadata virtual address instead of a tag and offset, so a caller can
-patch bytes of any tag, or between tags, in one transaction.
+patch bytes within that region in one transaction. `patch_bsp(space,
+address, bytes)` uses a BSP region resolved from the source map. Its
+file offset distinguishes BSP regions that reuse virtual addresses.
+The writer checks the range and protects the region header.
 
 ### Growing the metadata
 
