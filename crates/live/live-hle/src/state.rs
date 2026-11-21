@@ -1019,6 +1019,21 @@ impl State {
             .find(|k| !own.contains(k))
             .map(|k| live_proto::sign::hex(k))
     }
+    pub fn archived_session(&self, keys: &[[u8; 8]]) -> bool {
+        let Some(service) = &self.service else {
+            return false;
+        };
+        if self.hosted_session().is_some() || self.sessions.dedicated_match(keys).is_some() {
+            return true;
+        }
+        self.joined_session(keys).is_some_and(|id| {
+            service
+                .seen
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .contains_key(&id)
+        })
+    }
     pub fn cached_host_skulls(&self, keys: &[[u8; 8]]) -> Option<Vec<u8>> {
         let id = self.joined_session(keys)?;
         let seen = self

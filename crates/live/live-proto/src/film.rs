@@ -5,6 +5,7 @@ pub mod range;
 pub mod privacy;
 pub mod stream;
 pub mod objects;
+pub mod sharing;
 
 use std::collections::BTreeMap;
 

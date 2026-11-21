@@ -3713,6 +3713,8 @@ name = "live-hle"
 version = "0.1.0"
 dependencies = [
  "actor-net",
+ "background",
+ "cloud-saves",
  "content",
  "coop",
  "film",
@@ -3856,9 +3858,11 @@ dependencies = [
  "live-proto",
  "live-server",
  "object_store",
+ "ruzstd",
  "send_wrapper",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "sqlx",
  "tokio",
  "tower",

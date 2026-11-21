@@ -423,6 +423,15 @@ reference the canonical game ID and the original tick range.
 
 | Method and path | Token scope | Result |
 |---|---|---|
+| `GET /v1/films?player=<xuid>&kind=library` | owner, `read` | Participant host games and private uploads in the account library, with pin state. |
+| `GET /v1/films?player=<xuid>&kind=shared` | public or `read` | The player's public uploads. Owners can also see their private and link-visible shares. |
+| `POST /v1/films` | `films.write` | Reserve two objects with `{film,stats,visibility}`. Each object specifies byte size, SHA-256 and ordered part hashes. Identical reservations return the same film ID. |
+| `PUT /v1/films/{id}?object=film\|stats&part=<n>` | owner, `films.write` | Store numbered parts, starting at zero. Repeating a part is safe. |
+| `POST /v1/films/{id}?continue=1` | owner, `films.write` | Verify and publish. Continue on 202 until 201. Quota refusals return 413 and a displayable reason. |
+| `GET /v1/films/{id}` | visible reader | Film detail. |
+| `GET /v1/films/{id}/film` | visible reader | A ranged read selects admitted stats extents. Signed-in readers can request `?object=film` for exact film ranges with a revision ETag. |
+| `PUT /v1/films/{id}/visibility` | owner, `films.write` | Set `{visibility}` to `private`, `link` or `public`. |
+| `DELETE /v1/films/{id}` | `films.write` | Remove an upload as owner or admin. A participant can remove a host game from their own library. |
 | `GET /v1/films?player=<xuid>&kind=recent` | public or `read` | Up to 25 of the player's visible games, newest first. |
 | `GET /v1/films?player=<xuid>&kind=saved` | public or `read` | Games pinned by that player, newest game first. |
 | `GET /v1/films?player=<xuid>&kind=clips` | public or `read` | Clips authored by that player across all games, newest clip first. Each item is `{clip, film}`. |
@@ -836,7 +845,7 @@ except account creation. Signed bodies are sent raw as a compact JWS with
 | `DELETE /v1/accounts/{gamertag}/invite-grant` | no body, same token scope | remove the explicit grant and close the account's open invites unless it is an admin. 200 `InviteGrantRevoked` wire event or 409 if there is no explicit grant |
 | `POST /v1/invites` | `invites.write` token. Signed `InviteCreated {jti, exp}` for an account, bare or in `{"event": <jws>, "code": "..."}`. No body for operator form (`?days=&code=`) | create a single-use invite. 201 `{invite, custom, jti, exp, position}` |
 | `POST /v1/invites/{jti}/revoke` | `invites.write` token and signed `InviteRevoked {jti}` | end an open invite. Admins can end any invite and granted accounts can end their own |
-| `POST /v1/games` | `GameStarted` data without `game_id` | starts a game; returns `{game_id}` |
+| `POST /v1/games` | `GameStarted` data without `game_id` | starts a game and returns `{game_id, position, identifiers}` |
 | `POST /v1/games/{id}/events` | `[{type, data}]` | append game events in order |
 | `PUT /v1/maps/{map}/outline` | outline JSON, admin or operator's `games.write` token | store or replace a map outline |
 | `POST /v1/local/signin` | `{"once": token}`, no token | embedded server and loopback peers only: answers once with the browser account entry `h2 play --live-local` offered; otherwise 404 (live-admin.md §4) |
@@ -2182,8 +2191,7 @@ Settled after the first client was built against this page.
 Decisions made while building the games slice; they override the tables
 above where they differ.
 
-- **`POST /v1/games`** returns `{game_id}`; the server picks the id (32 hex)
-  and writes `GameStarted` itself, signed by the server key, with an extra
+- **`POST /v1/games`** returns `{game_id, position, identifiers}`. Live assigns the game its id (32 hex) and 16 seat and machine slots in `identifiers.seats` and `identifiers.machines`. Retries of the same game receive the same slots. A new game receives new identifiers for the same players. Live writes `GameStarted` itself, signed by the server key, with an extra
   `host` field naming the token's author. Later game events are written by
   the host or a player in the game.
 - **`POST /v1/events`** returns the stored wire event (a superset of

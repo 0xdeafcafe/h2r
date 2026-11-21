@@ -437,6 +437,20 @@ build whose simulation is bit-exact
 - **Both homes.** The routes sit behind the same storage traits as the
   host-film routes and run on the native server and on Workers.
 
+### Account film library
+
+Every signed-in Live account has a film library. Both Live homes project it from the same signed journal.
+
+**Decisions — ownership.** A game appears in every participant's library when Live accepts the host recording. The library refers to the existing host object. A machine queues its own offline and LAN recordings for private background upload after the game seals them. The upload records its last acknowledged numbered part, resumes after interruption and backs off when Live is unreachable.
+
+**Decisions — playback.** The account list is the same on every signed-in machine. Watch uses an existing local recording when available. A missing recording is read in ranges into the local library and checked against its digest. Each machine rebuilds its own keyframe sidecars. The sync worker transfers only the film and its stats companion.
+
+**Decisions — sync.** Live owns library membership. Pins and deletes are signed changes in server commit order. The last committed pin change wins. Each machine keeps its upload queue and acknowledgements in `<data>/films-sync/<server>/<account>`, beside the cloud-save state.
+
+**Decisions — quota.** Each account has **1 GB (1,000,000,000 bytes)**. Uploaded films and their stats companions use that space. A host film uses account space only while the player pins it. On publication the oldest unpinned uploads go first. Pinned films stay. When an upload cannot fit beside the pinned films, Live refuses it and the game displays the reason. Quota eviction leaves every local copy on disk.
+
+**Decisions — both homes.** The native server and Cloudflare Worker serve the same routes over the event and blob storage traits. Parity coverage includes the merged library list, numbered background uploads, eviction order, pins and deletes.
+
 ### The link between the web and the game
 
 A share link is the web address of the film or clip:
@@ -570,7 +584,7 @@ Added to [live-api.md](../live/live-api.md#theater) when built.
 
 | Method and path | Token scope | Result |
 |---|---|---|
-| `POST /v1/films`, `PUT /v1/films/{film}?part=<n>` | `films.write` | Upload a film and its stats stream; 202 while inspection continues, 201 with `{film, url}` on publication. At most 256 MiB a film and 2 GiB an account. |
+| `POST /v1/films`, `PUT /v1/films/{film}?object=film\|stats&part=<n>` | `films.write` | Upload a film and its stats stream; 202 while inspection continues, 201 with `{film, url}` on publication. At most 256 MiB a film and 1 GB an account. |
 | `GET /v1/films/{film}` | by visibility | The listing row, with `compat`: the XBE digest, guest contract digest, simulation ABI and hook digest from the film's seed. |
 | `GET /v1/films/{film}/film` | by visibility | With a range, the stats stream's public ranges, as `GET /v1/games/{game}/film`. Without one, the film, to a signed-in account; byte ranges of the film resume a download. |
 | `PUT /v1/films/{film}/visibility` | `films.write`, the uploader | `{visibility}` |

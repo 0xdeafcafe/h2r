@@ -1,6 +1,6 @@
 //! Validate the directory against physical chunk boundaries as the bytes pass
 //! into storage. The public HTTP range reader trusts only that validated index.
-mod checkpoint;
+pub(super) mod checkpoint;
 mod privacy;
 
 use std::{fmt, io::Read};
@@ -79,6 +79,10 @@ struct CheckedDirectory {
 pub(super) struct Inspector {
     #[serde(with = "checkpoint::digest")]
     file_digest: Sha256,
+    #[serde(default)]
+    stats_only: bool,
+    #[serde(default)]
+    pub(in crate::films) stats_id: Option<String>,
     work: usize,
     pos: u64,
     prefix: Vec<u8>,
@@ -135,6 +139,12 @@ fn digest_tick(
 }
 
 impl Inspector {
+    pub(super) fn stats_only() -> Self {
+        Self {
+            stats_only: true,
+            ..Self::default()
+        }
+    }
     #[cfg(test)]
     pub(super) fn consume(&mut self, mut bytes: &[u8]) -> ApiResult<()> {
         while !bytes.is_empty() {
@@ -185,6 +195,9 @@ impl Inspector {
                     let front: Front = serde_json::from_slice(raw)
                         .map_err(|_| invalid("invalid film front summary"))?;
                     self.public_safe = privacy::public_front(raw, &front);
+                    if self.stats_only {
+                        self.stats_id = Some(front.id);
+                    }
                     if front.ticks_per_second == Some(0) {
                         return Err(invalid("film tick rate must be positive"));
                     }
@@ -254,6 +267,16 @@ impl Inspector {
 
     fn start_chunk(&mut self) -> ApiResult<()> {
         let offset = self.pos - 8;
+        if self.stats_only
+            && !matches!(
+                &self.tag,
+                b"HEAD" | b"TICK" | b"CIDX" | b"INDX" | b"IPRV" | b"PSUM" | b"SUMM"
+            )
+        {
+            return Err(invalid(
+                "stats companion contains machine or simulation data",
+            ));
+        }
         if self.private_events.is_some() && self.tag != range::TICK {
             return Err(invalid("private film events must immediately precede their time chunk"));
         }
@@ -351,6 +374,16 @@ impl Inspector {
             b"TICK" => {
                 let raw = inflate_limited(&self.collected, MAX_TICK_BYTES)?;
                 let chunk = live_proto::film::stream::Chunk::parse(&raw).map_err(invalid)?;
+                if self.stats_only {
+                    for record in chunk.records() {
+                        if matches!(
+                            record.map_err(invalid)?.tag,
+                            live_proto::film::stream::INPUT | live_proto::film::stream::HASH
+                        ) {
+                            return Err(invalid("stats companion contains inputs or digests"));
+                        }
+                    }
+                }
                 let first = chunk.first_tick;
                 let last = first + u64::from(chunk.tick_count - 1);
                 if let Some(expected) = self.private_events.take() {

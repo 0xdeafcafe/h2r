@@ -50,6 +50,9 @@ pub(super) struct FilmEvents {
 }
 
 impl FilmEvents {
+    /// Player file shares validate stats events without importing them into the ledger.
+    pub(super) fn discard_rows(&mut self) { self.rows.clear(); }
+
     pub(super) fn chunk(&mut self, raw: &[u8]) -> ApiResult<usize> {
         let before = self.rows.len();
         let chunk = stream::Chunk::parse(raw).map_err(invalid)?;

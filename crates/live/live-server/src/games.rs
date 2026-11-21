@@ -625,10 +625,7 @@ impl Live {
             && let Some(g) = self.model.read().games.get(id)
         {
             return if g.started.host == author.to_string() && g.started.game == new {
-                Ok(GameCreated {
-                    game_id: id.clone(),
-                    position: g.position,
-                })
+                Ok(GameCreated::new(id.clone(), g.position))
             } else {
                 Err(conflict("that game id is already in use"))
             };
@@ -646,7 +643,7 @@ impl Live {
         let recorded = self.store.append(events, &[(stream, 0)]).await?;
         let position = recorded.last().expect("game start appended").position;
         self.wait_applied(position).await?;
-        Ok(GameCreated { game_id, position })
+        Ok(GameCreated::new(game_id, position))
     }
 
     /// `POST /v1/games/{id}/events` (after [`Live::authenticate`]).
@@ -1550,6 +1547,7 @@ impl Live {
     pub async fn sweep(&self) {
         let now = now();
         crate::films::continue_staged(self).await;
+        crate::films::shared::sweep(self).await;
         let cleanup = self.model.read().films.next_cleanup();
         if let Some(id) = cleanup {
             crate::films::cleanup_published(self, &id).await;

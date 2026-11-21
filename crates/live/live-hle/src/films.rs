@@ -1,4 +1,5 @@
 //! Fetch the signed-in account's Theater library off the game thread.
+pub mod sync;
 
 use std::io::{Read, Write};
 
@@ -12,9 +13,17 @@ use crate::{LiveConfig, account_setup, config::Account};
 const PAGE_SIZE: usize = 25;
 const MAX_LIST: u64 = (2 << 20) + (PAGE_SIZE * live_proto::film::MAX_SUMMARY_BYTES) as u64;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, serde::Serialize, Deserialize)]
 pub struct RecentFilm {
     pub game_id: String,
+    #[serde(default)]
+    pub saved: bool,
+    #[serde(default)]
+    pub shared: bool,
+    #[serde(default)]
+    pub visibility: Option<live_proto::film::sharing::Visibility>,
+    #[serde(default)]
+    pub length_ticks: u64,
     pub map: String,
     pub mode: String,
     pub variant: Option<String>,
@@ -109,6 +118,42 @@ impl Archive {
             .set("Authorization", &format!("Bearer {token}"))
     }
 
+    pub fn library(&self) -> Result<Vec<RecentFilm>, String> {
+        self.list("library")
+    }
+
+    pub fn remove(&self, id: &str) -> Result<(), String> {
+        check_id(id)?;
+        match self
+            .request(
+                "DELETE",
+                &format!("{}/films/{id}", self.api),
+                lxm::FILMS_WRITE,
+            )
+            .call()
+        {
+            Ok(_) | Err(ureq::Error::Status(404, _)) => Ok(()),
+            Err(e) => Err(http_error(e)),
+        }
+    }
+
+    pub fn set_visibility(
+        &self,
+        id: &str,
+        visibility: live_proto::film::sharing::Visibility,
+    ) -> Result<(), String> {
+        check_id(id)?;
+        self.request(
+            "PUT",
+            &format!("{}/films/{id}/visibility", self.api),
+            lxm::FILMS_WRITE,
+        )
+        .set("Content-Type", "application/json")
+        .send_string(&serde_json::json!({"visibility":visibility}).to_string())
+        .map(|_| ())
+        .map_err(http_error)
+    }
+
     pub fn recent(&self) -> Result<Vec<RecentFilm>, String> {
         self.list("recent")
     }
@@ -161,6 +206,23 @@ impl Archive {
         .map_err(http_error)
     }
 
+    pub fn share_clip(&self, game: &str, start: u64, end: u64) -> Result<String, String> {
+        check_id(game)?;
+        let url = format!("{}/films/{game}/clips", self.api);
+        let response = self
+            .request("POST", &url, lxm::FILMS_WRITE)
+            .set("Content-Type", "application/json")
+            .send_string(
+                &serde_json::json!({"from_tick":start,"to_tick":end,"title":"Film clip"})
+                    .to_string(),
+            )
+            .map_err(http_error)?;
+        let clip: ArchiveClip = serde_json::from_reader(response.into_reader().take(4096))
+            .map_err(|e| e.to_string())?;
+        check_id(&clip.id)?;
+        Ok(clip.id)
+    }
+
     pub fn delete_clip(&self, clip: &str) -> Result<(), String> {
         check_id(clip)?;
         let url = format!("{}/clips/{clip}", self.api);
@@ -169,6 +231,96 @@ impl Archive {
             .call()
             .map(|_| ())
             .map_err(http_error)
+    }
+
+    pub fn detail(&self, game: &str) -> Result<RecentFilm, String> {
+        check_id(game)?;
+        self.read_one(&format!("{}/films/{game}", self.api))
+    }
+
+    pub fn clip(&self, id: &str) -> Result<(String, ArchiveClip), String> {
+        #[derive(Deserialize)]
+        struct Row {
+            game: String,
+            #[serde(flatten)]
+            clip: ArchiveClip,
+        }
+        check_id(id)?;
+        let row: Row = self.read_one(&format!("{}/clips/{id}", self.api))?;
+        Ok((row.game, row.clip))
+    }
+
+    fn read_one<T: DeserializeOwned>(&self, url: &str) -> Result<T, String> {
+        let response = self
+            .request("GET", url, lxm::READ)
+            .timeout(account_setup::TIMEOUT)
+            .call()
+            .map_err(http_error)?;
+        serde_json::from_reader(response.into_reader().take(MAX_LIST + 1))
+            .map_err(|e| e.to_string())
+    }
+
+    fn exact(&self, game: &str) -> Result<ureq::Request, String> {
+        check_id(game)?;
+        Ok(self.request(
+            "GET",
+            &format!("{}/films/{game}/film?object=film", self.api),
+            lxm::READ,
+        ))
+    }
+
+    /// A one-byte authenticated probe also checks visibility on cache hits.
+    pub fn revision(&self, game: &str) -> Result<Option<(u64, String)>, String> {
+        let response = match self.exact(game)?.set("Range", "bytes=0-0").call() {
+            Ok(r) => r,
+            Err(ureq::Error::Status(409, _)) => return Ok(None),
+            Err(e) => return Err(http_error(e)),
+        };
+        let size = response
+            .header("Content-Range")
+            .and_then(|h| h.strip_prefix("bytes 0-0/"))
+            .and_then(|s| s.parse().ok())
+            .ok_or("Invalid film size")?;
+        let hash = response
+            .header("ETag")
+            .and_then(|h| h.strip_prefix("\"film-"))
+            .and_then(|s| s.strip_suffix('"'))
+            .ok_or("Missing film digest")?;
+        if response.status() != 206 {
+            return Err("Live did not return a film range".into());
+        }
+        Ok(Some((size, hash.into())))
+    }
+
+    pub fn range(
+        &self,
+        game: &str,
+        range: std::ops::Range<u64>,
+        size: u64,
+        digest: &str,
+    ) -> Result<Vec<u8>, String> {
+        let span = format!("{}-{}", range.start, range.end - 1);
+        let etag = format!("\"film-{digest}\"");
+        let response = self
+            .exact(game)?
+            .set("Range", &format!("bytes={span}"))
+            .set("If-Match", &etag)
+            .call()
+            .map_err(http_error)?;
+        if response.status() != 206
+            || response.header("ETag") != Some(etag.as_str())
+            || response.header("Content-Range") != Some(format!("bytes {span}/{size}").as_str())
+        {
+            return Err("Live returned a different film range".into());
+        }
+        let mut bytes = Vec::new();
+        copy_film(
+            response.into_reader(),
+            &mut bytes,
+            Some(range.end - range.start),
+            range.end - range.start,
+        )?;
+        Ok(bytes)
     }
 
     pub fn download(&self, game: &str, mut out: impl Write) -> Result<(), String> {
@@ -221,7 +373,19 @@ fn check_id(id: &str) -> Result<(), String> {
 
 fn http_error(error: ureq::Error) -> String {
     match error {
-        ureq::Error::Status(code, _) => format!("Live films: HTTP {code}"),
+        ureq::Error::Status(code, response) => {
+            let body =
+                serde_json::from_reader::<_, serde_json::Value>(response.into_reader().take(4096))
+                    .ok();
+            body.as_ref()
+                .and_then(|v| {
+                    v["message"]
+                        .as_str()
+                        .or_else(|| v.pointer("/error/message")?.as_str())
+                })
+                .map(str::to_owned)
+                .unwrap_or_else(|| format!("Live films: HTTP {code}"))
+        }
         ureq::Error::Transport(_) => "Could not reach Live films".into(),
     }
 }

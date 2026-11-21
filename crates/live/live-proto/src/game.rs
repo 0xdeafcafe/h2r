@@ -1068,6 +1068,50 @@ pub struct GameDetail {
 pub struct GameCreated {
     pub game_id: String,
     pub position: u64,
+    /// Earlier Live homes did not issue simulation identifiers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identifiers: Option<GameIdentifiers>,
+}
+
+/// Slots, including spare slots for joins, are scoped to Live's fresh game ID.
+/// A machine hosting multiple seats uses one machine slot for all of them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GameIdentifiers {
+    pub seats: [String; 16],
+    pub machines: [String; 16],
+}
+
+impl GameIdentifiers {
+    pub fn for_game(game: &str) -> Self {
+        use sha2::{Digest, Sha256};
+        let hash = |domain: &[u8], slot: usize| {
+            let mut h = Sha256::new();
+            h.update(b"h2-film-id/v1\0");
+            h.update(game.as_bytes());
+            h.update([0]);
+            h.update(domain);
+            h.update([slot as u8]);
+            h.finalize()
+        };
+        Self {
+            seats: std::array::from_fn(|s| crate::sign::hex(&hash(b"seat", s)[..8])),
+            machines: std::array::from_fn(|s| {
+                let mut h = hash(b"machine", s);
+                h[0] = (h[0] & 0xfc) | 2; // locally administered unicast
+                crate::sign::hex(&h[..6])
+            }),
+        }
+    }
+}
+
+impl GameCreated {
+    pub fn new(game_id: String, position: u64) -> Self {
+        Self {
+            identifiers: Some(GameIdentifiers::for_game(&game_id)),
+            game_id,
+            position,
+        }
+    }
 }
 
 /// Checks game event data by type; `Err` is a message for a 400.
