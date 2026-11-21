@@ -1,0 +1,9 @@
+[package]
+name = "actor-net"
+description = "Versioned actor presentation records and per-client scheduling for distributed games"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[package.metadata.h2]
+doc = ["game/ai-networking.md"]

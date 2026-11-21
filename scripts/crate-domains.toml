@@ -63,7 +63,7 @@ guest_free = ["frame-scene", "native-render", "scene-extract", "sim-anim", "sim-
 about = "Live, co-op transport, bots, films, cloud saves, the dedicated host's data, the service itself (another session owns this domain)"
 uses = ["formats", "runtime", "platform", "hooking", "rewrites"]
 crates = [
-    "bots", "cloud-saves", "coop", "film", "host-data", "live-hle", "live-proto",
+    "actor-net", "bots", "cloud-saves", "coop", "film", "host-data", "live-hle", "live-proto",
     "live-server", "live-telemetry", "live-worker", "sim-bench",
 ]
 
