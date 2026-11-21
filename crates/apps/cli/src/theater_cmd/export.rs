@@ -43,10 +43,15 @@ pub(super) fn media(
     frames: app::FrameSink,
     raster: boot::run_opts::NativeSize,
 ) -> Media {
+    // FrameSink is Send but not Sync (its editor mark source is FnMut); the
+    // lock lets the shared capture closure read from it.
+    let frames = std::sync::Mutex::new(frames);
     Media {
         screenshots: dir.join("screenshots"),
         latest: Box::new(move || {
             let (size, rgba) = frames
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
                 .read_latest_published_rgba()
                 .context("no game frame to capture yet")?;
             Ok(Picture { size, rgba })
