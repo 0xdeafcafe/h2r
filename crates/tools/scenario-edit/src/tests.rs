@@ -1123,6 +1123,17 @@ fn names(s: &Scenario) -> Vec<(i16, i16)> {
 }
 
 #[test]
+fn object_names_read_their_text() {
+    let mut b = fixture();
+    b[sfile(NAMES_AT + 0x24)..sfile(NAMES_AT + 0x24) + 6].copy_from_slice(b"crate\0");
+    let s = read(b);
+    assert_eq!(
+        (0..4).map(|n| s.names.name(n)).collect::<Vec<_>>(),
+        [Some("nm"), Some("crate"), Some("nm"), None]
+    );
+}
+
+#[test]
 fn remove_swaps_the_last_entry_in_and_repoints_names() {
     let src = fixture();
     let mut s = read(src.clone());
