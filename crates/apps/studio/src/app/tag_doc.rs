@@ -1,5 +1,5 @@
 //! The tag editor's document, with no UI toolkit in sight: the open map's
-//! tags and ordinary metadata, the field edits over them, their undo
+//! tags, ordinary metadata and BSP regions, the field edits, their undo
 //! stack, block element add / remove / duplicate, and what may not be
 //! written and why.
 //!
@@ -28,7 +28,8 @@ use std::collections::{BTreeMap, HashMap};
 use std::io::{Read, Seek};
 use std::sync::Arc;
 
-use map::{FourCC, Map, TagId};
+use map::{AddressSpace, FourCC, Map, TagId};
+use scenario_edit::layout::{BLOCKS, BlockDef};
 use tags::registry::{Kind, Layout, Registry};
 
 /// Why a tag's bytes can be read but not written.
@@ -36,7 +37,7 @@ pub const SCENARIO_OWNED: &str = "the scenario tag's bytes belong to the Scenari
      placements there); shown as in the source";
 /// Why a tag has no fields here.
 pub const NO_DATA: &str = "no data in this map: the tag lives in a shared map";
-pub const IN_BSP: &str = "lives in a structure BSP region, which the tag editor does not read yet";
+pub const IN_BSP: &str = "the structure BSP region opens for byte inspection only";
 pub const NO_LAYOUT: &str = "no layout for this group in the registry";
 pub const TOO_SHORT: &str = "shorter than its group's root layout";
 /// Why a block may not grow past the elements it had in the source.
@@ -76,10 +77,19 @@ pub struct TagEntry {
     pub address: u32,
     pub size: u32,
     pub access: Access,
+    /// The separate region that owns this BSP or lightmap payload.
+    pub bsp: Option<BspTag>,
     /// For a tag with no data here: the shared map that has a tag of the
     /// same group and name with data (`shared`, `single_player_shared`,
     /// `mainmenu`), when one was found ([`TagDoc::set_elsewhere`]).
     pub elsewhere: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct BspTag {
+    /// Index in the scenario's structure BSP block, when available.
+    pub index: Option<usize>,
+    pub space: AddressSpace,
 }
 
 /// One write of a field's bytes (one undo step, or merged into the last by
@@ -157,6 +167,9 @@ struct Loaded {
     base: u32,
     /// The source's ordinary metadata.
     meta: Vec<u8>,
+    /// Read-only BSP regions, keyed by file offset. Virtual addresses can
+    /// repeat in different regions.
+    bsp_regions: HashMap<u64, Vec<u8>>,
     /// Changed bytes by address (only those that differ from `meta`).
     overlay: BTreeMap<u32, u8>,
     /// The scenario payload `[lo, hi)`.
@@ -251,7 +264,7 @@ impl TagDoc {
         self.registry
     }
 
-    /// Read `map`'s tags and ordinary metadata; drops every edit.
+    /// Read `map`'s tags, ordinary metadata and BSP regions. Drops every edit.
     pub fn load<R: Read + Seek>(&mut self, map: &mut Map<R>) -> map::Result<()> {
         self.close();
         let space = map.metadata_space();
@@ -263,19 +276,37 @@ impl TagDoc {
             .scenario()
             .and_then(|t| t.location)
             .map(|l| (l.address, l.address.saturating_add(l.size)));
+        let bsp_indices: HashMap<TagId, usize> =
+            scenario_edit::geometry::scenario_bsp_lightmaps(map)
+                .unwrap_or_default()
+                .into_iter()
+                .enumerate()
+                .flat_map(|(i, (bsp, lightmap))| {
+                    std::iter::once((bsp, i)).chain(lightmap.map(|id| (id, i)))
+                })
+                .collect();
+        let mut bsp_sizes = HashMap::<u64, u32>::new();
         let mut tags = Vec::new();
         for t in map.tags() {
+            let bsp = t.location.filter(|l| Some(l.space) != space).map(|l| {
+                bsp_sizes
+                    .entry(l.space.file_offset)
+                    .and_modify(|size| *size = (*size).max(l.space.size))
+                    .or_insert(l.space.size);
+                BspTag {
+                    index: bsp_indices.get(&t.id).copied(),
+                    space: l.space,
+                }
+            });
             let (address, size, access) = match t.location {
                 None => (0, 0, Access::None(NO_DATA)),
                 Some(l) if l.size == 0 => (l.address, 0, Access::None(NO_DATA)),
-                Some(l) if Some(l.space) != space => (l.address, l.size, Access::None(IN_BSP)),
+                Some(l) if bsp.is_some() => (l.address, l.size, Access::Read(IN_BSP)),
+                Some(l) if t.group.0 == *b"scnr" => (l.address, l.size, Access::Read(SCENARIO_OWNED)),
                 Some(l) => {
                     let access = match self.registry.group(t.group) {
                         None => Access::Read(NO_LAYOUT),
                         Some(r) if l.size < r.size => Access::Read(TOO_SHORT),
-                        _ if Some(t.id) == map.scenario().map(|s| s.id) => {
-                            Access::Read(SCENARIO_OWNED)
-                        }
                         _ => Access::Edit,
                     };
                     (l.address, l.size, access)
@@ -291,8 +322,13 @@ impl TagDoc {
                 address,
                 size,
                 access,
+                bsp,
                 elsewhere: None,
             });
+        }
+        let mut bsp_regions = HashMap::new();
+        for (offset, size) in bsp_sizes {
+            bsp_regions.insert(offset, map.read_file_range(offset, u64::from(size))?);
         }
         let by_id = tags.iter().enumerate().map(|(i, t)| (t.id, i)).collect();
         let parents = map
@@ -322,6 +358,7 @@ impl TagDoc {
             new_strings: Vec::new(),
             base,
             meta,
+            bsp_regions,
             overlay: BTreeMap::new(),
             scenario,
             ext_base,
@@ -374,7 +411,42 @@ impl TagDoc {
 
     /// The root layout of a tag's group.
     pub fn layout(&self, id: TagId) -> Option<&Arc<Layout>> {
-        self.registry.group(self.tag(id)?.group)
+        let tag = self.tag(id)?;
+        let layout = self.registry.group(tag.group)?;
+        if tag.bsp.is_some() || (tag.group.0 == *b"scnr" && tag.size < layout.size) {
+            return None;
+        }
+        Some(layout)
+    }
+
+    /// A BSP or lightmap's payload in its own region, separate from
+    /// ordinary metadata and its edit overlay.
+    pub fn bsp_bytes(&self, id: TagId) -> Option<&[u8]> {
+        let tag = self.tag(id)?;
+        if tag.size == 0 {
+            return None;
+        }
+        let space = tag.bsp?.space;
+        let start = tag.address.checked_sub(space.virtual_base)? as usize;
+        let end = start.checked_add(tag.size as usize)?;
+        self.loaded
+            .as_ref()?
+            .bsp_regions
+            .get(&space.file_offset)?
+            .get(start..end)
+    }
+
+    /// The Scene block that owns this scenario root pair. A palette jumps
+    /// to the block whose placements use it.
+    pub(crate) fn scene_block(&self, tag: TagId, pair: u32) -> Option<&'static BlockDef> {
+        let entry = self.tag(tag)?;
+        if entry.access != Access::Read(SCENARIO_OWNED) {
+            return None;
+        }
+        let offset = pair.checked_sub(entry.address)?;
+        BLOCKS.iter().find(|def| {
+            def.offset == offset || def.palette.as_ref().is_some_and(|p| p.offset == offset)
+        })
     }
 
     /// `len` bytes at `address`, edits applied; `None` outside the
@@ -897,7 +969,8 @@ impl TagDoc {
         let (Some(l), Some(t)) = (self.loaded.as_ref(), self.tag(id)) else {
             return false;
         };
-        t.size > 0
+        t.bsp.is_none()
+            && t.size > 0
             && l.overlay
                 .range(t.address..t.address + t.size)
                 .next()

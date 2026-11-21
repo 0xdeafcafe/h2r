@@ -627,6 +627,127 @@ fn a_user_package_opens_over_its_disc_map_from_the_list() {
 }
 
 #[test]
+fn save_rewrites_the_package_the_map_came_from() {
+    let t = Temp::new("save-origin");
+    let map = t.map("example", &fixture::fixture());
+    let mut app = app_with(&t);
+    app.dispatch(Action::OpenSource(map.clone()));
+    move_flag(&mut app, 7.0);
+    let mut form = app.session.form_defaults();
+    form.author = "Test author".into();
+    form.description = "Test description".into();
+    form.activate = true;
+    let image = t.0.join("cover.png");
+    std::fs::write(&image, b"\x89PNG\r\n\x1a\n").unwrap();
+    form.image = Some(image.clone());
+    let pkg = app.session.maps_dir().join(&form.dir);
+    app.dispatch(Action::SavePackage(form.clone()));
+    let active = app.session.maps_dir().join("active.toml");
+    let choice = std::fs::read(&active).unwrap();
+    let mut manifest = app.session.packages().pop().unwrap().manifest;
+    let mut pack = manifest.patches[0].clone();
+    let pack_bytes = std::fs::read(pkg.join(&pack.file)).unwrap();
+    pack.file = "extra.pack".into();
+    std::fs::write(pkg.join(&pack.file), &pack_bytes).unwrap();
+    manifest.packs.push(pack.clone());
+    manifest
+        .list
+        .get_or_insert_with(Default::default)
+        .name
+        .insert("en".into(), "Fixture edit".into());
+    let manifest_path = pkg.join("manifest.toml");
+    let first = manifest.to_toml();
+    std::fs::write(&manifest_path, &first).unwrap();
+    std::fs::remove_file(image).unwrap();
+
+    app.dispatch(Action::SelectMap("example".into()));
+    app.dispatch(Action::OpenPackageEntry(form.dir.clone()));
+    assert_eq!(app.save_target(), SaveTarget::Package(pkg.clone()));
+    move_flag(&mut app, 9.0);
+    app.dispatch(Action::Save);
+    assert!(app.package_form.is_none());
+    assert!(!app.is_dirty());
+    assert_ne!(std::fs::read_to_string(manifest_path).unwrap(), first);
+    assert_eq!(
+        std::fs::read(pkg.join("preview.png")).unwrap().as_slice(),
+        b"\x89PNG\r\n\x1a\n",
+    );
+    assert_eq!(std::fs::read(active).unwrap(), choice);
+    let packages = app.session.packages();
+    let saved = &packages[0].manifest;
+    assert_eq!(saved.package.author.as_deref(), Some(form.author.as_str()));
+    assert_eq!(
+        saved.package.description.as_deref(),
+        Some(form.description.as_str())
+    );
+    assert_eq!(saved.list, manifest.list);
+    assert_eq!(saved.packs, [pack]);
+    assert_eq!(std::fs::read(pkg.join("extra.pack")).unwrap(), pack_bytes);
+
+    app.dispatch(Action::SelectMap("example".into()));
+    app.dispatch(Action::OpenPackageEntry(form.dir));
+    assert_eq!(flag_x(&app), 9.0);
+    assert_eq!(std::fs::read(map).unwrap(), fixture::fixture());
+}
+
+#[test]
+fn save_offers_a_named_package_for_a_read_only_base_map() {
+    let t = Temp::new("save-read-only");
+    let map = t.map("example", &fixture::fixture());
+    let mut permissions = std::fs::metadata(&map).unwrap().permissions();
+    permissions.set_readonly(true);
+    std::fs::set_permissions(&map, permissions).unwrap();
+    let mut app = app_with(&t);
+    assert_eq!(app.save_target(), SaveTarget::Nothing);
+    app.dispatch(Action::OpenSource(map));
+    move_flag(&mut app, 7.0);
+    assert_eq!(
+        app.save_target(),
+        SaveTarget::PackageForm { name: "example edit".into() }
+    );
+    app.dispatch(Action::Save);
+    let form = app.package_form.as_ref().unwrap();
+    assert_eq!((form.name.as_str(), form.dir.as_str()), ("example edit", "example-edit"));
+    assert!(app.is_dirty());
+    assert!(!app.session.maps_dir().exists());
+}
+
+#[test]
+fn save_rewrites_the_last_standalone_output() {
+    let t = Temp::new("save-standalone");
+    let map = t.map("example", &fixture::fixture());
+    let mut app = app_with(&t);
+    app.dispatch(Action::OpenSource(map.clone()));
+    let output = t.0.join("mine.map");
+    move_flag(&mut app, 7.0);
+    app.dispatch(Action::SaveMapAs(output.clone()));
+    assert_eq!(app.save_target(), SaveTarget::File(output.clone()));
+    let first = std::fs::read(&output).unwrap();
+    move_flag(&mut app, 9.0);
+    app.dispatch(Action::Save);
+    assert!(app.package_form.is_none());
+    assert!(!app.is_dirty());
+    assert_ne!(std::fs::read(output).unwrap(), first);
+    assert_eq!(std::fs::read(map).unwrap(), fixture::fixture());
+}
+
+#[test]
+fn palette_counts_matches_beyond_its_per_kind_limit() {
+    use commands::{Kind, PALETTE_LIMIT, palette};
+
+    let t = Temp::new("palette-limit");
+    for i in 0..PALETTE_LIMIT + 2 {
+        t.map(&format!("invented-{i:02}"), &fixture::fixture());
+    }
+    let mut app = app_with(&t);
+    app.dispatch(Action::OpenSource(t.0.clone()));
+    let result = palette(&mut app, "INVENTED .map");
+    assert_eq!(result.total(Kind::Map), PALETTE_LIMIT + 2);
+    assert_eq!(result.entries.len(), PALETTE_LIMIT);
+    assert_eq!(result.entries[0].label, "invented-00");
+}
+
+#[test]
 fn a_converted_variant_opens_and_saves_as_a_new_derived_package() {
     let t = Temp::new("h1pkg");
     let mut app = app_with(&t);

@@ -2,15 +2,7 @@
 //! filter matches and what a click with modifiers selects.
 use scenario_edit::BlockKind;
 
-/// Whether an entry shows under `filter`: every word of the filter (any
-/// case) is in the block's name, the entry's label (its index and tag
-/// name) or `#<index>`. An empty filter shows everything.
-pub fn matches(filter: &str, block: &str, label: &str, index: usize) -> bool {
-    let hay = format!("{block} {label} #{index}").to_ascii_lowercase();
-    filter
-        .split_whitespace()
-        .all(|w| hay.contains(&w.to_ascii_lowercase()))
-}
+pub(super) use crate::app::commands::placement_matches as matches;
 
 /// What a click on entry `(kind, index)` selects: Ctrl/Cmd adds or takes
 /// it away, Shift takes the run from the primary selection to it (in the

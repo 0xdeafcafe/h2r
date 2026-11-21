@@ -154,9 +154,9 @@ pub const METHODS: &[MethodDef] = &[
     ),
     def(
         m::DOC_SAVE,
-        "Save in place: a variant to its save, a playlist file to its path, a map to the file it was last saved as",
+        "Save to the document's destination, or open the package form for a source map",
         r#"{"doc?":"map|variant|playlists (default: the tool shown)"}"#,
-        r#"{"saved":"boolean","path?":"string","log":"[string]"}"#,
+        r#"{"saved":"boolean","path?":"string","bytes?":"integer","package_form?":"{name,dir}","log":"[string]"}"#,
         r#"{"doc":"map"}"#,
     ),
     def(
@@ -208,8 +208,6 @@ pub const METHODS: &[MethodDef] = &[
         r#"{"id":"string","group":"string","name":"string|null","size":"integer","fields":"[field]"}"#,
         r#"{"tag":"scnr"}"#,
     ),
-    tags::TREE,
-    tags::REFS,
     def(
         m::TAG_FOLLOW,
         "Follow one reference (a tag.refs path, or its position in that list) to the tag it names",
@@ -398,6 +396,13 @@ pub const METHODS: &[MethodDef] = &[
         r#"{"playlist":"integer","entry":"integer"}"#,
         r#"{"variant":"string"}"#,
         r#"{"playlist":0,"entry":0}"#,
+    ),
+    def(
+        m::UI_PALETTE,
+        "Search the Go to anything palette, or run a shown entry by its zero-based index",
+        r#"{"query":"string","run?":"integer"}"#,
+        r#"{"entries":"[{kind,label,detail}]","totals":"{map,tag,placement,command}","ran?":"integer"}"#,
+        r#"{"query":"blaster"}"#,
     ),
     def(
         m::UI_SCREENS,

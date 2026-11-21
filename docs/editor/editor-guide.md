@@ -133,10 +133,11 @@ The window is made of panels that dock together:
 - **Status bar** (bottom) shows the latest message, a hint for the
   control or viewport under the pointer, and the frame rate.
 
-The menus at the top: **File** (open, save, packages, quit), **Edit**
-(**Undo**, **Redo**, **Duplicate**, **Delete**, **Allow growing full
-blocks**), **View** (**Frame map**, **Focus selection**, the gizmo
-mode, **Reset layout**) and **Game** (play, pair and game controls).
+The **File** menu holds **Save**, **Save as...**, open, packages and quit.
+**Edit** holds **Go to anything...**, **Undo**, **Redo**, **Duplicate**,
+**Delete** and **Allow growing full blocks**. **View** holds **Frame map**,
+**Focus selection**, the gizmo mode and **Reset layout**. **Game** holds
+play, pair and game controls.
 
 ![The File menu open: Open disc or map..., Open maps folder..., Save map as..., Save as package... (highlighted), Open package... and Quit, with their shortcuts](../images/editor/menu-file.png)
 
@@ -173,10 +174,17 @@ Keyboard shortcuts (Cmd on macOS, Ctrl elsewhere):
 | Keys | Action |
 |---|---|
 | Cmd+O | Open a disc image or map |
-| Cmd+S | Save: the map as a new file (Scenario), the variant (Game variants), the playlist file (Playlists) |
+| Cmd+S | Save the map, variant, playlist file or HUD edits in the active tool |
+| Shift+Cmd+S | Choose a path for the map or playlist file |
+| Cmd+P | Open Go to anything |
 | Cmd+Z | Undo in the tool you're in |
 | Cmd+Shift+Z or Cmd+Y | Redo |
 | Cmd+Q | Quit |
+
+Use **Edit > Go to anything...** to search maps, tags, placements and
+menu commands from one box. Type any words from the name or detail line.
+Use Up and Down to highlight a result, Enter to open or run it, and Esc
+to close the search.
 
 The Scenario tool adds Cmd+D (duplicate), Delete (delete), F (focus the
 selection), Home (frame the map), and W and E (move or rotate gizmo).
@@ -401,10 +409,13 @@ concern).
 
 ### Save as a map package or as a map file
 
-There are two ways to save. Either way, the disc and the map you opened
-are never changed.
+Choose **File > Save** (Cmd+S) to update the open package or the last
+standalone file the editor wrote for the map. When you work from a base
+map, **Save** opens **Save as package...** with a name filled in. Saving
+keeps the disc or loose source map intact.
 
-**As a map package (recommended).** Choose **File > Save as package...**.
+**As a map package (recommended).** Choose **File > Save as package...**
+to choose the package details.
 
 ![The Save as package window: in data/maps, Name ascension edit, Author, Description, Image (PNG/JPEG) optional at most 512 KB, Directory ascension-edit, Make it the active package for this map, Save package and Cancel](../images/editor/package-form.png)
 
@@ -429,19 +440,18 @@ plus a description. The game finds the package at boot. Pick it from
 [Map selection](../game/map-select.md)
 
 To keep working on a package later, open the same map, choose **File >
-Open package...** and click **Open** next to it. Saving again with the
-same **Directory** updates that package (the window says `Replaces this
-package's patch.`).
+Open package...** and click **Open** next to it. Use **Save** to update
+the package. Use **Save as package...** when you want to set its display
+details or write to another package directory.
 
 
 ![The Open package window listing one package, ascension edit in ascension-edit, with an Open button and Close](../images/editor/package-open.png)
 
 ***Open package** lists this map's packages.*
 
-**As a whole `.map` file.** Choose **File > Save map as...** (Cmd+S) and
-pick where to write it. The editor refuses to overwrite the map it read
-from. (Where to write it is chosen in your system's own save window, so
-it isn't pictured here.)
+**As a whole `.map` file.** Choose **File > Save as...** (Shift+Cmd+S)
+and pick the destination in your system's save window. The editor keeps
+that path as the open map's Save destination.
 
 ### Playing your edited map
 
@@ -532,9 +542,9 @@ and `pair.edit` ([agent-api.md](agent-api.md)).
 Every package in the data folder is listed under **Packages** in **Maps**,
 by the name you gave it, with its image beside it when the package has
 one (`[package] image`) and its description in the tooltip. Click one to keep working on it: the editor opens
-its map from your disc and the package over it, ready to edit. **File >
-Save as package...** then offers the same **Directory**, so saving updates
-that package. (The disc that has the package's map must be open.)
+its map from your disc and the package over it, ready to edit. Use
+**File > Save** to update the package. A package based on a disc map
+requires that disc to be open.
 
 
 ![The Maps list showing an Ascension package and the read-only Halo 1 source](../images/editor/maps-groups.png)
@@ -568,7 +578,7 @@ Saving never changes the Map Pack's files:
 
 - **File > Save as package...** saves a package in `<data>/maps` over
   the Map Pack map, as for a disc map.
-- **File > Save map as...** writes a whole `.map` wherever you choose,
+- **File > Save as...** writes a whole `.map` wherever you choose,
   except into the game's installed content, which the editor refuses.
 
 ### Halo 1 maps
@@ -1072,9 +1082,9 @@ masterchief`; add `--hud-widget <name>` to select a widget by its name.
 
 ## 9. Tags: every field of a tag
 
-**Tags** shows every tag of the open map and lets you change any field of
-it: a weapon's numbers, a projectile's flags, the tag a vehicle's weapon
-points at. Open a map in **Maps** first (a disc map, one of your
+**Tags** shows every tag of the open map. Editable fields include a
+weapon's numbers, a projectile's flags and a vehicle's weapon reference.
+Open a map in **Maps** first (a disc map, one of your
 packages, or a converted Halo 1 map), then select the **Tags** tab beside **Scene**.
 
 - **Which map** (the list at the top left) groups the source's maps by
@@ -1090,7 +1100,8 @@ packages, or a converted Halo 1 map), then select the **Tags** tab beside **Scen
   and outlines its placements in the viewport. **All tags** offers
   **Groups** and **Paths**. Search with words such as `weap rifle`, each
   matching the group or name. **Not reachable from the scenario** helps
-  find tags outside the walk from the scenario and globals.
+  find tags outside the walk from the scenario and globals. If that walk
+  is incomplete, the section says so and leaves the list empty.
   A `*` marks an edit. `[Pending]` marks edited tag metadata waiting
   to reach a paired game. Shared-cache marks show where the data lives,
   such as `[shared]` for resources and `[in shared]` for tag fields.
@@ -1100,6 +1111,12 @@ packages, or a converted Halo 1 map), then select the **Tags** tab beside **Scen
   most likely (a decimal number, a whole number or hex). Right-click a
   grey field to see it another way. Hover a field for its type, where it
   is and what we know about it.
+- **Scenario** shows the source fields read-only. Expand a placement or
+  palette block and choose **Open … in Scene**. A placement link selects
+  the displayed placement if it exists. A palette link selects the
+  first placement that uses the displayed entry.
+- **Structure BSPs and lightmaps** open as read-only hex. Their rows
+  identify the BSP, and the byte offsets start at the selected payload.
 - **Data and bytes** (beside Log): the tag's data and resources first: each
   block of raw data inside the tag with its size, and each resource
   (pixels, model geometry, sound) with the map it is in (`local` for this
@@ -1138,9 +1155,9 @@ counts and addresses (use Add/Remove instead), the scenario tag (use the
 Scenario tool for what is placed on the map), and tags of the level's
 structure (not shown yet).
 
-Every change is an undo step (one drag is one step). Save as with the
-Scenario tool: **File > Save map as...** or **Save as package...** writes
-your tag edits and your placement edits together. The Scenario tool's
+Every change is an undo step (one drag is one step). **Save**,
+**Save as...** and **Save as package...** write your tag edits and
+placement edits together. The Scenario tool's
 `*` shows when the map has unsaved edits of either kind.
 
 ### Export and import a tag
@@ -1329,5 +1346,5 @@ drags, typing), a crop (`--crop`) and numbered boxes (`--callout`).
 [editor.md](editor.md) lists the flags.
 
 Not everything can be pictured this way: your system's own open and save
-windows (**Open...**, **Save map as...**, **Export...**, **Save as...**)
+windows (**Open...**, **Export...**, **Save as...**)
 are outside the editor, so the guide describes them in words.

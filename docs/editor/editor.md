@@ -93,13 +93,21 @@ layout restores the default).
 *The headless renderer's `--callout` labels the menu bar, tool bar,
 Scene, viewport, inspector, Log and status bar.*
 
-- **Main menu**: File (open a disc or map, open a folder of maps, save the
-  map as a new `.map`, save as or open a package, the variant and
-  playlist tools' file commands, quit), Edit (undo, redo, duplicate,
+- **Main menu**: File (open a disc or map, open a folder of maps, **Save**,
+  **Save as...**, save as or open a package, the other tools' file
+  commands, quit), Edit (**Go to anything...**, undo, redo, duplicate,
   delete, allow growing full blocks), View (frame the map, frame the
   selection, gizmo mode (move, rotate, scale) and local or world axes,
   grid and angle snapping, reset layout), and Game (Play, Stop, Pair,
   Unpair, Pause, Step, Resume and Edit).
+- **Save** (Cmd/Ctrl+S, `App::save_target`) writes the open package or
+  the standalone file the editor last saved for this map. A base map
+  opens **Save as package...** with its name filled in. **Save as...**
+  (Shift+Cmd/Ctrl+S) asks for a standalone `.map` path.
+- **Go to anything** (Cmd/Ctrl+P, `ui/palette.rs`) searches the Maps list,
+  the open map's tags and placements, and available menu actions. Each
+  word must match. Use Up or Down to move, Enter to open or run the
+  selection, and Esc to close.
 - **The bar** (under the menu, `ui/bar.rs`), visible in every tool. Left:
   the tools as tabs, Map, Variants, Playlists, UI and HUD. Middle: the
   document name; a `*` marks unsaved edits. Right: the game link. Its
@@ -175,11 +183,12 @@ Scene, viewport, inspector, Log and status bar.*
   asks first, naming the tool: another source or map (scenario), another,
   new or imported variant, or an entry's variant opened from a playlist
   (variants), another or new playlist file (playlists). Save (Save as...
-  for a map, or a playlist file with no path yet), Discard or Cancel.
+  for a base map or an untitled playlist file), Discard or Cancel.
   Quitting asks about each tool with unsaved edits in turn.
 
-Shortcuts: Cmd/Ctrl+O open, Cmd/Ctrl+S save (the map as a new file, the
-variant, the playlist file), Cmd/Ctrl+Z undo and Shift+Cmd/Ctrl+Z or
+Shortcuts include Cmd/Ctrl+O to open, Cmd/Ctrl+S to save, Shift+Cmd/Ctrl+S
+to save a map or playlist to a chosen path, Cmd/Ctrl+P to open Go to
+anything, Cmd/Ctrl+Z to undo and Shift+Cmd/Ctrl+Z or
 Cmd/Ctrl+Y redo (in the active tool), F5 Play, Shift+F5 stop the
 game the editor started, and Cmd/Ctrl+Q quit. In the scenario tool,
 Cmd/Ctrl+D duplicate and Delete or Backspace delete (the whole
@@ -192,8 +201,8 @@ opens it.
 ## Scenario
 
 Picking a map in **Maps** opens it, unless the open map has unsaved edits
-(the guard asks). **Save map as...** always asks for a new path (a whole
-`.map`, the export): the source map is never overwritten. **Save as
+(the guard asks). **File > Save as...** asks for the path of a whole
+`.map` export. The base map stays untouched. **Save as
 package...** and **Open package...** save and open map packages in
 `<data>/maps` (scenario-editor.md §5, [maps.md](../game/maps.md) §8).
 
@@ -456,7 +465,7 @@ Saving never writes the installed files:
 
 - **Save as package** writes a package over the pack map (its base, by
   hash), as for a disc map. Its **Packages** tooltip names the pack map.
-- **Save map as** writes the patched `.map` (`save::save_as`) anywhere
+- **Save as...** writes the patched `.map` (`save::save_as`) anywhere
   but the installed content: `App::save_refusal` refuses a path inside
   `T:\$c` on the host, or any installed pack map file (whatever the data
   root).
@@ -467,7 +476,7 @@ under invented names and records):
 - the map pack disc's maps named and ordered from the install, and
   opened from the disc;
 - opening in the Scenario and Tags tools, the unsaved-edits guard;
-- Save map as: byte-exact when unedited; with one edit, only the edited
+- Save as: byte-exact when unedited; with one edit, only the edited
   field and the checksum differ, the same as the same edit on the map
   opened loose; refused inside `$c`;
 - a package based on the pack map that reopens with the edit and
@@ -611,8 +620,9 @@ build), and keeps the last four maps' scenes so reopening one is instant.
   Clicking skips hidden placement categories and hidden structure.
 - **Gameplay layers.** Spawn points have a team-coloured pawn and an
   arrow pointing along the spawn facing. Netgame flags have a team tint
-  and a pennant for their type. The label gives the type and identifier,
-  using the raw type number for an unknown value. Hill and territory
+  and a pennant for their type. The pick spheres cover the arrow and
+  pennant tips. The label gives the type and identifier, using the raw
+  type number for an unknown value. Hill and territory
   markers of the same type and identifier are joined in placement order.
   Two markers form a segment and three or more form a closed outline.
   Netgame equipment shows its model when available and a respawn label.
@@ -942,8 +952,8 @@ publish by itself.
 
 Every field of any tag of the open map (a disc map, a package, a
 converted Halo 1 map), labelled, with a widget per type. Edits save with
-the map: **Save map as...** and **Save as package...** write them through
-the same lossless `MapEditor` path as the scenario's. Any other map of
+the map. **Save**, **Save as...** and **Save as package...** write them
+through the same lossless `MapEditor` path as the scenario's. Any other map of
 the source (the shared caches among them) can be browsed read-only, and
 tags go out to and come back from tag bundles (below).
 
@@ -984,10 +994,11 @@ with `--nocapture`. The names grow as definitions do: a name added to
 
 ### The document
 
-`app/tag_doc.rs` (`TagDoc`) holds the open map's tags and its ordinary
-metadata, read once when the tool is first shown for a map
-(`App::sync_tags`, keyed by the session's map revision), with the edits
-as a byte overlay. Every edit is an undo step (a drag is one step: writes
+`app/tag_doc.rs` (`TagDoc`) holds the open map's tags, ordinary metadata
+and BSP regions. `App::sync_tags` loads them when the tool first opens
+for a map revision. The BSP buffers use file offsets as keys because
+their virtual addresses can overlap. Edits form a byte overlay on
+ordinary metadata. Every edit is an undo step (a drag is one step: writes
 merge by key until `TagAction::Seal`); each change hands every changed
 run to the session (`Session::set_tag_patches`), which keeps them on the
 scenario (`Scenario::set_tag_patches`) so `changes()` includes them: the
@@ -1001,8 +1012,8 @@ the refusal's text):
 | --- | --- |
 | Fields of any tag in the ordinary metadata whose group has a layout | Editable: fixed-length patches in place. |
 | Counts, addresses, raw pointers and sizes, BSP descriptors | Shown only: changing them by hand corrupts the map. Blocks change through add / remove / duplicate. |
-| The scenario tag | Read-only: its bytes belong to the Scenario tool (its placement edits would overlap). Shown as in the source. |
-| Tags in a structure BSP region (`sbsp`, `ltmp`) | Not shown yet: they have their own address space. |
+| The scenario tag | The field panel shows the source values through `scnr.txt`. The Scenario tool owns edits. Placement and palette blocks link to Scene. |
+| Tags in a structure BSP region (`sbsp`, `ltmp`) | Read-only hex from the tag's own region. The tree row identifies the BSP. |
 | Tags with no data in the map (shared-map tags) | Nothing to show here; the tree names the shared cache that has their data (`[in shared]`), and **Show it in ...** browses it there. |
 | Tags of a browsed map | Read-only: only the open map saves. |
 | A group with no layout, a tag shorter than its layout | Read-only (hex only without a layout). |
@@ -1076,10 +1087,12 @@ Two marks say where a tag lives, both computed from the maps alone:
 
 `app/tag_tree.rs` builds the open scenario's tree from its structure
 BSPs and lightmaps, skies, object palettes, globals and other references.
-Palette counts use the current placements. The reference walker follows
-layout fields and scans aligned group and datum pairs for unlabelled tags.
-The reachability walk starts from the scenario and globals. All tags
-keeps the group and folder views, with a search matching each word in
+Palette counts and scenario-owned reference fields use the current
+placements. The reference walker follows layout fields, reads BSP-region
+payloads, and scans aligned group and datum pairs for unlabelled tags.
+The reachability walk starts from the scenario and globals. The tree
+shows an incomplete walk in place of the unreachable list. All tags keeps
+the group and folder views, with a search matching each word in
 `group:name`. `tag.list` uses the same search.
 
 The inspector lists a tag's **data and resources** (`tag_api::resources`):

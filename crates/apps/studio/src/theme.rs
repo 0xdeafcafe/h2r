@@ -14,6 +14,10 @@ pub const CAPTION_SIZE: f32 = 12.0;
 pub const FONT_SIZE: f32 = 15.0;
 pub const TITLE_SIZE: f32 = 18.0;
 
+/// The command palette's preferred width and visible result rows.
+pub const PALETTE_WIDTH: f32 = 560.0;
+pub const PALETTE_ROWS: f32 = 7.0;
+
 pub(crate) static INTER_REGULAR: &[u8] = include_bytes!("../assets/fonts/Inter-Regular.ttf");
 static INTER_SEMIBOLD: &[u8] = include_bytes!("../assets/fonts/Inter-SemiBold.ttf");
 static LUCIDE: &[u8] = include_bytes!("../assets/fonts/lucide-subset.ttf");

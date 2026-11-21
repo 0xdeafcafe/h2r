@@ -137,10 +137,11 @@ impl App {
         if matches!(action, NavAction::Back | NavAction::Forward) {
             if let Some(next) = self.nav.target(action == NavAction::Forward, &self.session) {
                 self.nav.cursor = next;
-                let placements = &self.nav.entries[next].placements;
-                if *placements != self.session.selection() {
-                    self.session.select_many(placements.clone());
+                let destination = &self.nav.entries[next];
+                if destination.placements != self.session.selection() {
+                    self.session.select_many(destination.placements.clone());
                 }
+                self.tags.selected = destination.tag();
                 self.tags.seal();
             }
             return Ok(());
@@ -197,6 +198,7 @@ impl App {
                 self.nav.sync(self.session.world_rev(), before);
                 // The field clicked is the exact place Back returns to.
                 self.nav.entries[self.nav.cursor] = source;
+                self.tags.selected = after.tag();
                 self.nav.push(after);
                 self.tags.seal();
                 return Ok(());
@@ -204,6 +206,7 @@ impl App {
             NavAction::Back | NavAction::Forward => unreachable!(),
         }
         self.check_location(&after)?;
+        self.tags.selected = after.tag();
         if after != before {
             if before.placements != after.placements {
                 self.session.select_many(after.placements.clone());

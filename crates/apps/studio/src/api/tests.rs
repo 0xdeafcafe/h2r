@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 use studio_proto::{code, method as m};
 
 use super::*;
-use crate::app::{Action, PlaylistEdit};
+use crate::app::{Action, PlaylistEdit, Selection};
 
 struct Temp(PathBuf);
 impl Temp {
@@ -222,6 +222,76 @@ fn setup(api: &mut Api, app: &mut App, t: &Temp, name: &str) {
         }
         _ => {}
     }
+}
+
+#[test]
+fn ui_palette_lists_and_runs_fixture_maps_tags_and_placements() {
+    let t = Temp::new("palette");
+    let mut app = app(&t);
+    let map = t.path("blaster.map");
+    std::fs::write(&map, fixture::fixture()).unwrap();
+    app.dispatch(Action::OpenSource(map));
+    let mut api = Api::new();
+
+    let list = call(&mut api, &mut app, m::UI_PALETTE, json!({"query":"blast"}));
+    let entries = list["entries"].as_array().unwrap();
+    let kinds: Vec<_> = entries.iter().map(|e| e["kind"].as_str().unwrap()).collect();
+    assert_eq!(kinds, ["map", "tag", "placement", "placement"]);
+    assert_eq!(list["totals"], json!({"map":1, "tag":1, "placement":2, "command":0}));
+    assert_eq!(entries[0]["label"], "blaster");
+    assert_eq!(entries[1]["label"], "objects\\test\\blaster");
+    assert_eq!(entries[2]["label"], "0: blaster");
+
+    let filtered = call(&mut api, &mut app, m::UI_PALETTE, json!({"query":"WEAP bla"}));
+    assert_eq!(filtered["totals"], json!({"map":0, "tag":1, "placement":2, "command":0}));
+    let result = call(
+        &mut api, &mut app, m::UI_PALETTE, json!({"query":"blast", "run":1}),
+    );
+    assert_eq!(result["ran"], 1);
+    assert_eq!(app.selection(), Some(Selection::Tag(fixture::id(2))));
+    call(&mut api, &mut app, m::UI_PALETTE, json!({"query":"blast", "run":3}));
+    assert_eq!(
+        app.selection(),
+        Some(Selection::Placement(BlockKind::Weapons, 1))
+    );
+    let bad_index = api.call(&mut app, m::UI_PALETTE, json!({"query":"blast", "run":4}));
+    assert_eq!(code_of(bad_index), code::INVALID_PARAMS);
+    assert_eq!(
+        app.selection(),
+        Some(Selection::Placement(BlockKind::Weapons, 1))
+    );
+
+    let result = call(
+        &mut api,
+        &mut app,
+        m::UI_PALETTE,
+        json!({"query":"growing full blocks", "run":0}),
+    );
+    assert_eq!(result["entries"][0]["kind"], "command");
+    assert_eq!(result["ran"], 0);
+    assert!(app.session.allow_growth());
+}
+
+#[test]
+fn doc_save_rewrites_the_open_package() {
+    let t = Temp::new("doc-save-package");
+    let mut app = app(&t);
+    let mut api = Api::new();
+    let form = app.session.form_defaults();
+    app.dispatch(Action::SavePackage(form));
+    call(
+        &mut api, &mut app, m::SCENARIO_MOVE,
+        json!({"block":"netgame_flags", "index":0, "position":[7, 3, 3]}),
+    );
+    let path = app.session.maps_dir().join("example-edit");
+    let result = call(&mut api, &mut app, m::DOC_SAVE, json!({"doc":"map"}));
+    assert_eq!(result["saved"], true);
+    assert_eq!(result["path"], path.display().to_string());
+    assert!(app.package_form.is_none());
+    assert!(!app.is_dirty());
+    app.dispatch(Action::SelectMap("example".into()));
+    app.dispatch(Action::OpenPackageEntry("example-edit".into()));
+    assert_eq!(flag_position(&app), [7.0, 3.0, 3.0]);
 }
 
 #[test]
@@ -881,11 +951,11 @@ fn outputs_stay_out_of_git_and_off_the_source() {
         std::fs::read(t.path("example.map")).unwrap(),
         fixture::fixture()
     );
-    // Saving in place needs a file of its own first.
-    assert_eq!(
-        code_of(api.call(&mut app, m::DOC_SAVE, json!({"doc": "map"}))),
-        code::REFUSED
-    );
+    let save = call(&mut api, &mut app, m::DOC_SAVE, json!({"doc": "map"}));
+    assert_eq!(save["saved"], false);
+    assert_eq!(save["package_form"], json!({"name":"example edit", "dir":"example-edit"}));
+    assert_eq!(app.package_form.as_ref().unwrap().dir, "example-edit");
+    assert_eq!(std::fs::read(t.path("example.map")).unwrap(), fixture::fixture());
     let first = crate::app::UiScreens::tree()[0].0;
     call(&mut api, &mut app, m::UI_PICK, json!({"screen": first}));
     let png = Path::new(env!("CARGO_MANIFEST_DIR")).join("never.png");
@@ -1679,6 +1749,27 @@ fn placement_inspector_and_tag_set_make_identical_documents_and_saves() {
     ui.perform(Action::SaveMapAs(window_save.clone()), false).unwrap();
     call(&mut api, &mut agent, m::DOC_SAVE_AS, json!({"doc":"map", "path":socket_save}));
     assert_eq!(std::fs::read(window_save).unwrap(), std::fs::read(socket_save).unwrap());
+}
+
+#[test]
+fn back_and_forward_restore_the_tags_document_selection() {
+    use crate::app::NavAction;
+
+    let t = Temp::new("tag-navigation");
+    let mut app = crate::app::tag_tests::placement_app(&t.0);
+    let mut api = Api::new();
+    let weapon = fixture::id(2);
+    let model = fixture::id(4);
+    for tag in [weapon, model] {
+        app.perform(Action::Navigate(NavAction::SelectTag(tag)), false)
+            .unwrap();
+        assert_eq!(app.tags.selected, Some(tag));
+    }
+
+    call(&mut api, &mut app, m::NAV_BACK, json!({}));
+    assert_eq!(app.tags.selected, Some(weapon));
+    call(&mut api, &mut app, m::NAV_FORWARD, json!({}));
+    assert_eq!(app.tags.selected, Some(model));
 }
 
 #[test]

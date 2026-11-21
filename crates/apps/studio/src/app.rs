@@ -89,6 +89,15 @@ pub enum Selection {
     Tag(map::TagId),
 }
 
+/// Where Save writes the map, or what it asks for first.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SaveTarget {
+    File(PathBuf),
+    Package(PathBuf),
+    PackageForm { name: String },
+    Nothing,
+}
+
 /// One user command. Everything the menus, toolbar, outliner and keyboard
 /// shortcuts do goes through [`App::dispatch`].
 #[derive(Clone, Debug, PartialEq)]
@@ -97,6 +106,8 @@ pub enum Action {
     OpenSource(PathBuf),
     /// Open a map from the source's list.
     SelectMap(String),
+    /// Save the map to its current destination or open the package form.
+    Save,
     /// Write the edited map as a new `.map` file.
     SaveMapAs(PathBuf),
     /// Save the edits as a map package under the data root.
@@ -166,6 +177,8 @@ pub enum Action {
     },
     Select(Option<(BlockKind, usize)>),
     Navigate(NavAction),
+    /// Open the Map workspace on the palette's tag or placement.
+    GoTo(Selection),
     /// Add a placement to the selection, or take it out (Ctrl/Cmd+click).
     ToggleSelect((BlockKind, usize)),
     /// Select these placements, the first as the primary (Shift+click in
@@ -339,8 +352,7 @@ impl Action {
 /// The answer to the unsaved-changes prompt.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Answer {
-    /// Save in place first (a variant to its save, a playlist file to its
-    /// path), then go on.
+    /// Save to the document's current destination, then go on.
     Save,
     /// Save the edited map or playlist file here first, then go on.
     SaveAs(PathBuf),
@@ -365,7 +377,7 @@ pub struct App {
     h2_map_groups: HashMap<String, MapGroup>,
     /// The map loaded into the scenario session, by name.
     loaded: Option<String>,
-    /// The file the edited map was last saved to.
+    /// The current map's standalone output, if that was its last save.
     saved_path: Option<PathBuf>,
     pub tool: ToolKind,
     fly_speed: f32,
@@ -558,6 +570,22 @@ impl App {
     pub fn saved_path(&self) -> Option<&Path> {
         self.saved_path.as_deref()
     }
+    /// Decide from the open document's origin, without touching the filesystem.
+    pub fn save_target(&self) -> SaveTarget {
+        let Some(map) = self.session.map_name() else {
+            return SaveTarget::Nothing;
+        };
+        if let Some(path) = &self.saved_path {
+            SaveTarget::File(path.clone())
+        } else if let Some(dir) = self.session.package_dir() {
+            SaveTarget::Package(self.session.maps_dir().join(dir))
+        } else {
+            SaveTarget::PackageForm {
+                name: format!("{map} edit"),
+            }
+        }
+    }
+
     /// Any tool has unsaved edits.
     pub fn is_dirty(&self) -> bool {
         ToolKind::ALL.into_iter().any(|t| self.tool_dirty(t))
@@ -724,7 +752,7 @@ impl App {
             Answer::Cancel => return,
             Answer::Discard => self.close_tool(tool),
             Answer::Save => match tool {
-                ToolKind::Scenario => self.error("save the map with Save as..."),
+                ToolKind::Scenario => self.run(Action::Save),
                 ToolKind::Variants => self.run(Action::SaveVariant),
                 ToolKind::Playlists => self.run(Action::SaveHopper),
                 ToolKind::Hud => self.error("save the HUD edits with Save as..."),
@@ -752,6 +780,7 @@ impl App {
             ToolKind::Scenario => {
                 self.session.close();
                 self.loaded = None;
+                self.saved_path = None;
                 self.forget_library_state();
             }
             ToolKind::Variants => {
@@ -773,6 +802,7 @@ impl App {
                 if self.loaded.as_deref() == Some(name.as_str())
                     && self.opened_package.is_none() => {}
             Action::SelectMap(name) => self.select_map(&name),
+            Action::Save => self.save_map(),
             Action::SaveMapAs(path) => {
                 if let Some(why) = self.save_refusal(&path) {
                     self.error(why);
@@ -786,11 +816,7 @@ impl App {
             Action::SavePackage(form) => {
                 let r = self.session.save_package(&form);
                 if self.session_result(r).is_some() {
-                    self.package_form = None;
-                    self.refresh_packages();
-                    if self.packages.iter().any(|e| e.key() == form.dir) {
-                        self.opened_package = Some(form.dir.clone());
-                    }
+                    self.package_saved();
                 }
             }
             Action::OpenPackageEntry(key) => self.open_package_entry(&key),
@@ -805,7 +831,10 @@ impl App {
             }
             Action::OpenPackage(dir) => {
                 let r = self.session.open_package(&dir);
-                self.session_result(r);
+                if self.session_result(r).is_some() {
+                    self.saved_path = None;
+                    self.opened_package = Some(dir);
+                }
             }
             Action::Undo => self.undo_redo(self.tool, true),
             Action::Redo => self.undo_redo(self.tool, false),
@@ -862,6 +891,7 @@ impl App {
                     self.error(e);
                 }
             }
+            Action::GoTo(selection) => self.go_to(selection),
             Action::PlaceAt(kind, like, at) => self.place_at(kind, like, at),
             Action::Delete if self.session.selection().len() > 1 => self.delete_selection(),
             Action::Duplicate if self.session.selection().len() > 1 => self.duplicate_selection(),
@@ -1468,6 +1498,70 @@ impl App {
         }
     }
 
+    fn save_map(&mut self) {
+        match self.save_target() {
+            SaveTarget::File(path) => {
+                if let Some(why) = Self::map_output_refusal(&path) {
+                    return self.error(why);
+                }
+                self.run(Action::SaveMapAs(path));
+            }
+            SaveTarget::Package(dir) => {
+                if let Some(why) = Self::map_output_refusal(&dir.join("manifest.toml")) {
+                    return self.error(why);
+                }
+                let r = self.session.rewrite_package();
+                if self.session_result(r).is_some() {
+                    self.package_saved();
+                }
+            }
+            SaveTarget::PackageForm { name } => {
+                let map = self
+                    .session
+                    .map_name()
+                    .expect("a package form needs an open map");
+                let form = PackageForm {
+                    dir: PackageForm::default_dir(map, "edit"),
+                    name,
+                    ..PackageForm::default()
+                };
+                self.show_package_form(form);
+            }
+            SaveTarget::Nothing => self.error("open an editable map first"),
+        }
+    }
+
+    fn package_saved(&mut self) {
+        self.saved_path = None;
+        self.package_form = None;
+        self.refresh_packages();
+        let dir = self
+            .session
+            .package_dir()
+            .expect("the saved package has a directory");
+        self.opened_package = self
+            .packages
+            .iter()
+            .any(|e| e.key() == dir)
+            .then(|| dir.to_owned());
+    }
+
+    fn map_output_refusal(path: &Path) -> Option<String> {
+        let dir = path
+            .parent()
+            .filter(|d| !d.as_os_str().is_empty())
+            .unwrap_or(Path::new("."));
+        let repo = ui_screens::git_checkout(dir).or_else(|| {
+            let real_dir = dir.canonicalize().ok()?;
+            ui_screens::git_checkout(&real_dir)
+        })?;
+        Some(format!(
+            "save refused: {} is inside {}",
+            path.display(),
+            repo.display()
+        ))
+    }
+
     /// The default file name for "Save map as": the last save, else
     /// `<map>.map`.
     pub fn suggested_save_name(&self) -> String {
@@ -1485,11 +1579,15 @@ impl App {
     /// Open the "Save as package" form with its defaults.
     pub fn open_package_form(&mut self) {
         if self.session.is_open() {
-            self.package_form = Some(self.session.form_defaults());
-            self.package_image.clear();
+            self.show_package_form(self.session.form_defaults());
         } else {
             self.error("open a map first");
         }
+    }
+
+    fn show_package_form(&mut self, form: PackageForm) {
+        self.package_form = Some(form);
+        self.package_image.clear();
     }
 }
 

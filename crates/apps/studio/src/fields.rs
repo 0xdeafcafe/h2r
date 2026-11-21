@@ -17,11 +17,12 @@ use std::sync::Arc;
 
 use dear_imgui_rs::{Drag, DragRange, NumericFormat, Ui};
 use map::{FourCC, TagId};
+use scenario_edit::{Role, Scenario};
 use tags::registry::{Field, Hint, Kind, Layout};
 
-use crate::app::tag_doc::STRUCTURAL;
 use crate::app::tag_api::FieldFocus;
-use crate::app::{Action, BlockOp, NavAction, TagAction, TagDoc, TagWrite};
+use crate::app::tag_doc::STRUCTURAL;
+use crate::app::{Action, BlockOp, NavAction, TagAction, TagDoc, TagWrite, ToolKind};
 use crate::theme::icon;
 
 /// How an unnamed span is shown.
@@ -108,7 +109,27 @@ pub fn panel(
     st: &mut PanelState,
     actions: &mut Vec<Action>,
 ) {
-    panel_impl(ui, doc, tag, path, st, actions, None);
+    panel_impl(ui, doc, tag, path, st, actions, PanelNavigation::default());
+}
+
+/// The Tags panel can jump to Scene for the scenario it edits.
+pub fn tag_panel(
+    ui: &Ui,
+    doc: &TagDoc,
+    tag: TagId,
+    scene: Option<&Scenario>,
+    st: &mut PanelState,
+    actions: &mut Vec<Action>,
+) {
+    panel_impl(
+        ui,
+        doc,
+        tag,
+        &[],
+        st,
+        actions,
+        PanelNavigation { trail: None, scene },
+    );
 }
 
 /// The root panel in the inspector, with reference buttons that keep the
@@ -121,7 +142,24 @@ pub fn inspector_panel(
     st: &mut PanelState,
     actions: &mut Vec<Action>,
 ) {
-    panel_impl(ui, doc, tag, &[], st, actions, Some(trail));
+    panel_impl(
+        ui,
+        doc,
+        tag,
+        &[],
+        st,
+        actions,
+        PanelNavigation {
+            trail: Some(trail),
+            scene: None,
+        },
+    );
+}
+
+#[derive(Default)]
+struct PanelNavigation<'a> {
+    trail: Option<&'a [TagId]>,
+    scene: Option<&'a Scenario>,
 }
 
 fn panel_impl(
@@ -131,7 +169,7 @@ fn panel_impl(
     path: &[(u32, u32)],
     st: &mut PanelState,
     actions: &mut Vec<Action>,
-    trail: Option<&[TagId]>,
+    navigation: PanelNavigation<'_>,
 ) {
     st.hovered = None;
     let Some((at, layout)) = doc.resolve(tag, path) else {
@@ -146,7 +184,8 @@ fn panel_impl(
         editable,
         st,
         actions,
-        trail,
+        trail: navigation.trail,
+        scene: navigation.scene,
         prefix: String::new(),
     };
     cx.element(at, &layout);
@@ -160,6 +199,7 @@ struct Cx<'a> {
     st: &'a mut PanelState,
     actions: &'a mut Vec<Action>,
     trail: Option<&'a [TagId]>,
+    scene: Option<&'a Scenario>,
     prefix: String,
 }
 
@@ -264,15 +304,17 @@ impl Cx<'_> {
             ui.text_disabled(&f.name);
         }
         self.hover(at, layout, f);
-        let (class, why) = crate::play::tag_sync::class(self.doc, self.tag, at + f.offset, f);
-        let tone = if class == crate::play::tag_sync::RELOAD {
-            crate::play::LinkTone::Warn
-        } else {
-            crate::play::LinkTone::View
-        };
-        crate::theme::link_badge(ui, tone, class);
-        if ui.is_item_hovered() {
-            ui.tooltip_text(why);
+        if self.editable {
+            let (class, why) = crate::play::tag_sync::class(self.doc, self.tag, at + f.offset, f);
+            let tone = if class == crate::play::tag_sync::RELOAD {
+                crate::play::LinkTone::Warn
+            } else {
+                crate::play::LinkTone::View
+            };
+            crate::theme::link_badge(ui, tone, class);
+            if ui.is_item_hovered() {
+                ui.tooltip_text(why);
+            }
         }
         ui.same_line_with_pos(LABEL);
         ui.set_next_item_width(-1.0);
@@ -656,8 +698,9 @@ impl Cx<'_> {
             return;
         };
         let cap = self.doc.capacity(pair);
+        let mode = if self.editable { "Reload" } else { "Read-only" };
         let header = format!(
-            "{}  · Reload  [{n}]{}",
+            "{}  · {mode}  [{n}]{}",
             f.name,
             if cap > n {
                 format!(" of {cap}")
@@ -685,9 +728,39 @@ impl Cx<'_> {
         // Element picker and the block's commands.
         let mut shown = i as i32;
         ui.set_next_item_width(110.0);
-        if n > 0 && ui.input_int("element##idx", &mut shown) {
+        let i = if n > 0 && ui.input_int("element##idx", &mut shown) {
             let shown = shown.clamp(0, n as i32 - 1) as u32;
             self.st.index.insert(pair, shown);
+            shown
+        } else {
+            i
+        };
+        if let Some(scene) = self.scene.filter(|s| s.tag == self.tag && s.address == at)
+            && let Some(def) = self.doc.scene_block(self.tag, pair)
+        {
+            if n > 0 {
+                ui.same_line();
+            }
+            if ui.small_button(format!("Open {} in Scene", def.label)) {
+                let block = scene.block(def.kind);
+                let index = if f.offset == def.offset {
+                    let index = i as usize;
+                    (index < block.len()).then_some(index)
+                } else {
+                    def.role(Role::PaletteIndex).and_then(|field| {
+                        (0..block.len()).find(|&index| {
+                            scene
+                                .get(def.kind, index, field.name)
+                                .ok()
+                                .and_then(|value| value.as_int())
+                                == Some(i64::from(i))
+                        })
+                    })
+                };
+                self.actions.push(Action::SetTool(ToolKind::Scenario));
+                self.actions
+                    .push(Action::Select(index.map(|index| (def.kind, index))));
+            }
         }
         let tag = self.tag;
         let op_button = |cx: &mut Cx, label: &str, op: BlockOp| {
@@ -751,9 +824,10 @@ impl Cx<'_> {
     fn data(&mut self, at: u32, layout: &Arc<Layout>, f: &Field, b: &[u8]) {
         let ui = self.ui;
         let (n, a) = (le(b, 0, 4) as u32, le(b, 4, 4) as u32);
+        let mode = if self.editable { "Reload" } else { "Read-only" };
         let node = ui
             .tree_node_config(format!("dat{:x}", at + f.offset))
-            .label(format!("{}  · Reload  ({n} bytes)", f.name))
+            .label(format!("{}  · {mode}  ({n} bytes)", f.name))
             .span_avail_width(true)
             .push();
         self.hover(at, layout, f);

@@ -139,6 +139,119 @@ fn diff(a: &[u8], b: &[u8]) -> Vec<(usize, usize)> {
 }
 
 #[test]
+fn scene_owned_scenario_blocks_are_read_only_in_the_panel() {
+    let mut map = map::Map::from_reader(std::io::Cursor::new(fixture::fixture())).unwrap();
+    let mut doc = TagDoc::default();
+    doc.load(&mut map).unwrap();
+    let id = fixture::id(1);
+    let address = doc.tag(id).unwrap().address;
+    let layout = doc.layout(id).unwrap();
+    for def in scenario_edit::layout::BLOCKS {
+        let blocks = std::iter::once((def.offset, def.stride))
+            .chain(def.palette.as_ref().map(|p| (p.offset, p.stride)));
+        for (offset, stride) in blocks {
+            let field = layout.field_at(offset).unwrap();
+            let tags::registry::Kind::Block(child) = &field.kind else {
+                panic!("{} has no block layout at {offset:#x}", def.label);
+            };
+            assert!(field.named);
+            assert_eq!(child.size, stride);
+            let pair = address + offset;
+            assert_eq!(
+                doc.scene_block(id, pair).map(|owner| owner.kind),
+                Some(def.kind)
+            );
+            for op in [BlockOp::Add, BlockOp::Remove(0), BlockOp::Duplicate(0)] {
+                assert_eq!(
+                    doc.block_refusal(id, pair, child, &op),
+                    Some(tag_doc::SCENARIO_OWNED)
+                );
+            }
+        }
+    }
+    assert!(doc.scene_block(id, address + 0x8).is_none());
+    assert_eq!(doc.refusal(id), Some(tag_doc::SCENARIO_OWNED));
+    let shown = read_tag(&doc, id).unwrap();
+    assert!(shown["fields"]["weapons"][0]["position"].is_array());
+}
+
+#[test]
+fn bsp_and_lightmap_bytes_use_their_own_read_only_regions() {
+    use map::CacheType;
+    use map::build::{Block, BspField, FixupKind, TagPayload, TagSet};
+
+    let mut set = TagSet::new(CacheType::Multiplayer, "regions", "test\\regions");
+    for group in [b"matg", b"scnr", b"sbsp", b"ltmp"] {
+        set.add_group(FourCC(*group), None, None);
+    }
+    set.globals = set
+        .add_tag(
+            FourCC(*b"matg"),
+            "test\\globals",
+            TagPayload::Built(Block::zeroed(4)),
+        )
+        .unwrap();
+    let mut add = |group: FourCC, name: &str, byte: u8| {
+        let payload = TagPayload::Built(Block::new(vec![byte; 0x20]));
+        set.add_tag(group, name, payload).unwrap()
+    };
+    let first = add(FourCC(*b"sbsp"), "test\\first", 0x11);
+    let second = add(FourCC(*b"sbsp"), "test\\second", 0x22);
+    let lightmap = add(FourCC(*b"ltmp"), "test\\light", 0x33);
+    let mut entries = Block::zeroed(2 * 0x44);
+    let regions = [(first, None), (second, Some(lightmap))];
+    for (i, (bsp, light)) in regions.into_iter().enumerate() {
+        let section = set.add_bsp(bsp, light);
+        let at = (i * 0x44) as u32;
+        for (offset, field) in [
+            (0, BspField::FileOffset),
+            (4, BspField::Size),
+            (8, BspField::Address),
+        ] {
+            entries.fixup(at + offset, FixupKind::Bsp { section, field });
+        }
+        entries
+            .tag_ref(at + 0x10, bsp)
+            .tag_ref(at + 0x18, light.unwrap_or(TagId::NULL));
+    }
+    let mut scenario = Block::zeroed(0x3e0);
+    scenario.block(0x210, 2, entries);
+    set.scenario = set
+        .add_tag(FourCC(*b"scnr"), "test\\regions", TagPayload::Built(scenario))
+        .unwrap();
+
+    let (bytes, _) = set.build().unwrap();
+    let mut map = map::Map::from_reader(std::io::Cursor::new(bytes)).unwrap();
+    let mut doc = TagDoc::default();
+    doc.load(&mut map).unwrap();
+    assert_eq!(
+        doc.tag(first).unwrap().address,
+        doc.tag(second).unwrap().address
+    );
+    for (id, i, byte) in [(first, 0, 0x11), (second, 1, 0x22), (lightmap, 1, 0x33)] {
+        let entry = doc.tag(id).unwrap();
+        assert_eq!(entry.bsp.unwrap().index, Some(i));
+        assert_eq!(super::tag_tree::bsp_label(entry), Some(format!("BSP {i}")));
+        assert_eq!(entry.access, Access::Read(tag_doc::IN_BSP));
+        let source = map.read_tag_bytes(id).unwrap();
+        assert_eq!(doc.bsp_bytes(id), Some(source.as_slice()));
+        assert!(doc.bsp_bytes(id).unwrap().iter().all(|&b| b == byte));
+        let address = entry.address;
+        assert_eq!(
+            doc.write(TagWrite {
+                tag: id,
+                address,
+                bytes: vec![0],
+                label: "test".into(),
+                merge: None,
+            }),
+            Err(tag_doc::IN_BSP.into())
+        );
+        assert!(!doc.is_changed(id));
+    }
+}
+
+#[test]
 fn the_tags_tool_lists_every_tag_with_its_fields_named() {
     let t = Temp::new("list");
     let (app, ..) = app(&t.0);

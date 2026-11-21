@@ -120,7 +120,7 @@ impl ScenarioOutliner {
                 .session
                 .source()
                 .and_then(|source| source.open().ok())
-                .map(|mut map| ScenarioRoots::read(&mut map));
+                .map(|mut map| ScenarioRoots::read(&app.tags, &mut map));
             self.source = Some((world, roots));
             self.model = None;
             self.opened.clear();
@@ -187,28 +187,30 @@ pub fn tree(ui: &Ui, app: &App, st: &mut TagsUi, fonts: &Fonts, actions: &mut Ve
     {
         all_tags(ui, &view, st, fonts, actions);
     }
-    if let Some(tree) = st
-        .scenario
-        .model
-        .as_ref()
-        .filter(|_| scenario.is_some())
-        .map(|(_, tree)| tree)
-        && let Some(_unreachable) = ui
+    if let Some(tree) = model {
+        let label = if tree.incomplete {
+            "Not reachable from the scenario (walk incomplete)".to_owned()
+        } else {
+            format!("Not reachable from the scenario ({})", tree.unreachable.len())
+        };
+        if let Some(_unreachable) = ui
             .tree_node_config("##unreachable-tags")
-            .label(format!(
-                "Not reachable from the scenario ({})",
-                tree.unreachable.len()
-            ))
+            .label(label)
             .span_avail_width(true)
             .push()
-    {
-        tag_rows(
-            ui,
-            &view,
-            &tree.unreachable,
-            ListNames::GroupAndPath,
-            actions,
-        );
+        {
+            if tree.incomplete {
+                ui.text_disabled("Reachability is unknown for tags outside the walk.");
+            } else {
+                tag_rows(
+                    ui,
+                    &view,
+                    &tree.unreachable,
+                    ListNames::GroupAndPath,
+                    actions,
+                );
+            }
+        }
     }
 }
 
@@ -332,8 +334,9 @@ fn tag_rows(
             }
             ListNames::GroupAndPath => format!("{}  {}", group_text(t.group), t.name),
         };
+        let label = view.marked(t, &text, "");
         if ui
-            .selectable_config(format!("{}###tag-{:x}", view.marked(t, &text), t.id.0))
+            .selectable_config(format!("{label}###tag-{:x}", t.id.0))
             .selected(view.selected == Some(t.id))
             .build()
         {
@@ -351,7 +354,7 @@ struct RowView<'a> {
 }
 
 impl RowView<'_> {
-    fn marked(&self, t: &TagEntry, text: &str) -> String {
+    fn marked(&self, t: &TagEntry, text: &str, label: &str) -> String {
         let edited = self.doc.is_changed(t.id);
         let mark = if edited || self.edited_scenario == Some(t.id) {
             "  *"
@@ -370,7 +373,10 @@ impl RowView<'_> {
             Access::Read(_) => "  (read-only)",
             Access::None(_) => "  (no data here)",
         };
-        format!("{text}{mark}{live}{lock}{}", home_mark(self.doc, t))
+        let bsp = tag_tree::bsp_label(t)
+            .filter(|bsp| bsp.as_str() != label)
+            .map_or_else(String::new, |bsp| format!("  [{bsp}]"));
+        format!("{text}{mark}{live}{lock}{bsp}{}", home_mark(self.doc, t))
     }
 
     fn select(
@@ -379,8 +385,9 @@ impl RowView<'_> {
         palette: Option<&[(scenario_edit::BlockKind, usize)]>,
         actions: &mut Vec<Action>,
     ) {
-        actions.push(Action::Tag(TagAction::Select(id)));
-        if !self.browse {
+        if self.browse {
+            actions.push(Action::Tag(TagAction::Select(id)));
+        } else {
             let nav = match palette {
                 Some(placements) => NavAction::SelectPalette {
                     tag: id,
@@ -439,12 +446,18 @@ fn scenario_rows(
         let entry = row.tag.and_then(|id| view.doc.tag(id));
         let mut label = row.label.clone();
         if let Some(id) = row.tag {
-            if !label.is_empty() {
-                label.push_str("  ");
-            }
+            let prefix = if label.is_empty() {
+                String::new()
+            } else {
+                format!("{label}  ")
+            };
             label = match entry {
-                Some(t) => view.marked(t, &format!("{label}{}  {}", group_text(t.group), t.name)),
-                None => format!("{label}Missing tag {:#010x}", id.0),
+                Some(t) => view.marked(
+                    t,
+                    &format!("{prefix}{}  {}", group_text(t.group), t.name),
+                    &label,
+                ),
+                None => format!("{prefix}Missing tag {:#010x}", id.0),
             };
         }
         if let Some(placements) = &row.placements {
@@ -518,6 +531,9 @@ pub fn fields(
     if let Some(m) = app.browsing() {
         ui.text_disabled(format!("{} in {m}, browsed read-only", icon::DISC));
     }
+    if let Some(bsp) = tag_tree::bsp_label(t) {
+        ui.text_disabled(bsp);
+    }
     if let Some(line) = app.tag_shared_note(id) {
         ui.text_disabled(format!("{} {line}", icon::LAYERS));
     }
@@ -537,6 +553,10 @@ pub fn fields(
         }
     }
     io_bar(ui, app, st, t, dialogs, actions);
+    if let Some(bytes) = doc.bsp_bytes(id) {
+        ui.child_window("##bsp-bytes").build(ui, || bsp_hex(ui, bytes));
+        return;
+    }
     if let Some(layout) = doc.layout(id) {
         let c = layout.coverage();
         ui.text_disabled(format!(
@@ -560,8 +580,13 @@ pub fn fields(
         }
     }
     ui.separator();
+    let scene = if app.browsing().is_none() {
+        app.session.scenario()
+    } else {
+        None
+    };
     ui.child_window("##fields").build(ui, || {
-        fields::panel(ui, doc, id, &[], &mut st.panel, actions)
+        fields::tag_panel(ui, doc, id, scene, &mut st.panel, actions)
     });
 }
 
@@ -749,6 +774,10 @@ pub fn hex(
         ui.text_disabled("No tag selected.");
         return;
     };
+    if let Some(bytes) = doc.bsp_bytes(id) {
+        bsp_hex(ui, bytes);
+        return;
+    }
     data(ui, app, id, gpu, pictures, actions);
     let p = &st.panel;
     let (at, size, name) = match &p.focus {
@@ -807,6 +836,14 @@ pub fn hex(
     }
 }
 
+fn bsp_hex(ui: &Ui, bytes: &[u8]) {
+    clipped_rows(ui, bytes.len().div_ceil(16), |i| {
+        let at = i * 16;
+        let row = &bytes[at..(at + 16).min(bytes.len())];
+        ui.text(format!("{at:08x}  {}", fields::hex(row)));
+    });
+}
+
 /// The selected tag, for scripts and tests.
 pub fn selected(app: &App) -> Option<TagId> {
     app.shown_tags().selected
@@ -817,7 +854,6 @@ mod tests {
     use super::*;
 
     #[test]
-    #[ignore = "requires an exclusive Dear ImGui context"]
     fn scenario_tree_large_group_draws_all_rows_as_it_scrolls() {
         use map::{
             CacheType, Map,
@@ -851,6 +887,9 @@ mod tests {
         let hits = tag_tree::search(doc.tags(), "");
         assert_eq!(hits.len(), COUNT);
 
+        let _turn = crate::headless::ONE_CONTEXT
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let (mut ctx, fonts) = crate::context(None);
         ctx.font_atlas()
             .try_claim_legacy_renderer()

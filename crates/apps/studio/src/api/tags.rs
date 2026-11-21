@@ -10,29 +10,46 @@ use tags::schema::{Field, Schema, Struct};
 
 use super::params::{block_kind, block_name};
 use super::scenario::{group_text, parse_tag_id, tag_id};
-use super::{MethodDef, P, Reply, def, err};
+use super::{MethodDef, P, Provider, Reply, def, err};
 use crate::App;
 use crate::app::{
     TagDoc, tag_api,
-    tag_doc::Access,
+    tag_doc::{Access, IN_BSP},
     tag_tree::{self, Row, ScenarioRoots},
 };
 
-pub(super) const TREE: MethodDef = def(
+const TREE: MethodDef = def(
     m::TAG_TREE,
     "The open scenario's tag tree and the tags it cannot reach",
     r#"{"root?":"string (scenario)","depth?":"integer (references below palettes, default 3, max 8)"}"#,
-    r#"{"root":"{label,tag,group,name,placed,via,cycle,children:[row]}","unreachable":"[row]","truncated":"boolean"}"#,
+    r#"{"root":"{label,tag,group,name,placed,via,cycle,children:[row]}","unreachable":"[row]","incomplete":"boolean","truncated":"boolean"}"#,
     "{}",
 );
 
-pub(super) const REFS: MethodDef = def(
+const REFS: MethodDef = def(
     m::TAG_REFS,
     "Direct links from a tag's fields or an aligned reference scan",
     r#"{"tag":"string|integer","limit?":"integer (default 500)"}"#,
     r#"[{"to":"string","via":"string","found":"field|scan","path":"string","id":"string","group":"string|null","name":"string|null","missing?":"boolean"}]"#,
     r#"{"tag":"scnr"}"#,
 );
+
+pub(super) struct TagGraph;
+
+impl Provider for TagGraph {
+    fn methods(&self) -> Vec<MethodDef> {
+        vec![TREE, REFS]
+    }
+
+    fn call(&mut self, app: &mut App, method: &str, params: &Value) -> Option<Reply> {
+        let p = P(params);
+        match method {
+            m::TAG_TREE => Some(tree(app, &p)),
+            m::TAG_REFS => Some(refs(app, &p)),
+            _ => None,
+        }
+    }
+}
 
 /// The map open in the scenario tool, read from its source (edits are not
 /// in it: the scenario's show through `scenario.*`).
@@ -192,64 +209,6 @@ impl Ctx<'_> {
         }
         v
     }
-
-    /// Every tag reference under the element at `at`, with its path.
-    fn refs(
-        &self,
-        s: &Struct,
-        at: usize,
-        path: &str,
-        out: &mut Vec<Value>,
-        limit: usize,
-        depth: u32,
-    ) {
-        if depth > 32 {
-            return;
-        }
-        for (&o, f) in &s.fields {
-            if out.len() >= limit {
-                return;
-            }
-            let p = at + o as usize;
-            let here = if path.is_empty() {
-                format!("{o:#x}")
-            } else {
-                format!("{path}.{o:#x}")
-            };
-            let w0 = u32_at(self.bytes, p).unwrap_or(0);
-            let w1 = u32_at(self.bytes, p + 4).unwrap_or(0);
-            match f {
-                Field::TagRef | Field::TagId => {
-                    let id = TagId(if matches!(f, Field::TagRef) { w1 } else { w0 });
-                    if id != TagId::NULL && id.0 != 0 {
-                        let mut v = self.tag(id);
-                        v["to"] = v["id"].clone();
-                        v["via"] = json!(here);
-                        v["path"] = json!(here);
-                        v["found"] = json!("field");
-                        out.push(v);
-                    }
-                }
-                Field::Block(child) if w0 > 0 && w1 >= self.base => {
-                    let start = (w1 - self.base) as usize;
-                    if start + child.size as usize * w0 as usize > self.bytes.len() {
-                        continue;
-                    }
-                    for i in 0..w0 as usize {
-                        self.refs(
-                            child,
-                            start + i * child.size as usize,
-                            &format!("{here}[{i}]"),
-                            out,
-                            limit,
-                            depth + 1,
-                        );
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
 }
 
 /// Reads a tag and calls `f` with its structural reader and root layout.
@@ -316,8 +275,8 @@ fn tree(app: &mut App, p: &P) -> Reply {
     }
     super::tag_fields::sync_open_tags(app)?;
     let scenario = super::scenario::open(app)?;
-    let roots = ScenarioRoots::read(&mut open_map(app)?);
     let doc = &app.tags;
+    let roots = ScenarioRoots::read(doc, &mut open_map(app)?);
     let tree = tag_tree::scenario_tree(doc, scenario, &roots, depth as usize);
     let mut root = row_json(doc, &tree.root);
     root["edited"] = json!(scenario.is_modified() || root["edited"] == true);
@@ -326,6 +285,7 @@ fn tree(app: &mut App, p: &P) -> Reply {
         "unreachable": tree.unreachable.iter().map(|&i| {
             row_json(doc, &Row { tag: Some(doc.tags()[i].id), ..Row::default() })
         }).collect::<Vec<_>>(),
+        "incomplete": tree.incomplete,
         "truncated": tree.truncated,
     }))
 }
@@ -335,20 +295,18 @@ fn refs_of(app: &mut App, p: &P, limit: usize) -> Result<Vec<Value>, RpcError> {
     let doc = &app.tags;
     let id = tag_api::lookup(doc, p.get("tag").unwrap_or(&Value::Null))
         .map_err(|e| err(code::INVALID_PARAMS, e))?;
-    if doc
+    let refs = if doc
         .tag(id)
-        .is_some_and(|t| matches!(t.access, Access::None(_)))
+        .is_some_and(|t| t.access == Access::None(IN_BSP))
     {
-        return with_tag(app, id.0, usize::MAX, false, |_, layout| {
-            let mut out = Vec::new();
-            if let Some((ctx, root)) = layout {
-                ctx.refs(root, 0, "", &mut out, limit, 0);
-            }
-            out
-        });
-    }
-    Ok(doc
-        .tag_refs(id)
+        let mut map = open_map(app)?;
+        tag_api::region_refs(doc, &mut map, id)
+            .map_err(|e| err(code::FAILED, format!("reading {}: {e}", tag_id(id))))?
+    } else {
+        doc.tag_refs(id, app.session.scenario())
+    };
+    Ok(refs
+        .links
         .into_iter()
         .take(limit)
         .map(|link| {
@@ -369,6 +327,11 @@ fn refs_of(app: &mut App, p: &P, limit: usize) -> Result<Vec<Value>, RpcError> {
             out
         })
         .collect())
+}
+
+fn refs(app: &mut App, p: &P) -> Reply {
+    let limit = p.opt_usize("limit")?.unwrap_or(500);
+    Ok(Value::Array(refs_of(app, p, limit)?))
 }
 
 pub fn call(app: &mut App, method: &str, p: &P) -> Reply {
@@ -429,11 +392,6 @@ pub fn call(app: &mut App, method: &str, p: &P) -> Reply {
                 );
                 v
             })
-        }
-        m::TAG_TREE => tree(app, p),
-        m::TAG_REFS => {
-            let limit = p.opt_usize("limit")?.unwrap_or(500);
-            Ok(Value::Array(refs_of(app, p, limit)?))
         }
         m::TAG_FOLLOW => {
             let refs = refs_of(app, p, 500)?;
@@ -559,6 +517,7 @@ mod tests {
         weapon: TagId,
         sky: TagId,
         bsp: TagId,
+        bsp_asset: TagId,
         lightmap: TagId,
         globals: TagId,
         scan: TagId,
@@ -566,6 +525,8 @@ mod tests {
         ui_only: TagId,
         globals_child: TagId,
         other: TagId,
+        old_item: TagId,
+        new_item: TagId,
     }
 
     fn add(set: &mut TagSet, group: &[u8; 4], name: &str, block: Block) -> TagId {
@@ -574,23 +535,35 @@ mod tests {
     }
 
     fn fixture() -> Fixture {
+        fixture_with_other_rows(0)
+    }
+
+    fn fixture_with_other_rows(rows: u32) -> Fixture {
         let mut set = TagSet::new(CacheType::Multiplayer, "tree", "test\\tree");
+        set.salt_base = 0;
         for group in [
             b"scnr", b"matg", b"sky ", b"sbsp", b"ltmp", b"weap", b"xref", b"base", b"wgit",
-            b"more",
+            b"more", b"itmc",
         ] {
             set.add_group(FourCC(*group), None, None);
         }
         set.add_group(FourCC(*b"chil"), Some(FourCC(*b"base")), None);
 
+        let sky = add(&mut set, b"sky ", "test\\sky", Block::zeroed(8));
         let ui_only = add(&mut set, b"more", "test\\menu_content", Block::zeroed(8));
         let mut ui = Block::zeroed(8);
         ui.tag_ref(0, ui_only);
         add(&mut set, b"wgit", "test\\menu", ui);
 
         let child = add(&mut set, b"chil", "test\\child", Block::zeroed(8));
-        let other = add(&mut set, b"more", "test\\other", Block::zeroed(8));
-        let mut bytes = Block::zeroed(0x30);
+        let mut other = Block::zeroed(8);
+        if rows != 0 {
+            let mut entries = Block::zeroed(rows as usize * 8);
+            entries.tag_ref((rows - 1) * 8, ui_only);
+            other.block(0, rows, entries);
+        }
+        let other = add(&mut set, b"more", "test\\other", other);
+        let mut bytes = Block::zeroed(0x38);
         bytes
             .tag_ref(0, child)
             .put_u32(8, FourCC(*b"base").as_u32())
@@ -599,7 +572,8 @@ mod tests {
             .put_u32(20, child.0)
             .put_u32(24, FourCC(*b"chil").as_u32())
             .put_u32(28, child.0 ^ 0x0001_0000)
-            .put_u32(0x2c, FourCC(*b"chil").as_u32());
+            .put_u32(0x2c, FourCC(*b"chil").as_u32())
+            .tag_ref(0x30, sky);
         bytes.bytes[0x21..0x25].copy_from_slice(&FourCC(*b"chil").as_u32().to_le_bytes());
         bytes.bytes[0x25..0x29].copy_from_slice(&child.0.to_le_bytes());
         let scan = add(&mut set, b"xref", "test\\scan", bytes);
@@ -610,9 +584,15 @@ mod tests {
         let mut weapon = Block::zeroed(8);
         weapon.tag_ref(0, scan);
         let weapon = add(&mut set, b"weap", "test\\blaster", weapon);
-        let sky = add(&mut set, b"sky ", "test\\sky", Block::zeroed(8));
-        let bsp = add(&mut set, b"sbsp", "test\\room", Block::zeroed(0x20));
-        let lightmap = add(&mut set, b"ltmp", "test\\lightmap", Block::zeroed(0x20));
+        let bsp_asset = add(&mut set, b"more", "test\\bsp_asset", Block::zeroed(8));
+        let mut material = Block::zeroed(0x88);
+        material.tag_ref(0x20, bsp_asset);
+        let mut bsp = Block::zeroed(0x23c);
+        bsp.block(0x84, 1, material);
+        let bsp = add(&mut set, b"sbsp", "test\\room", bsp);
+        let lightmap = add(&mut set, b"ltmp", "test\\lightmap", Block::zeroed(0x104));
+        let old_item = add(&mut set, b"itmc", "test\\old_item", Block::zeroed(8));
+        let new_item = add(&mut set, b"itmc", "test\\new_item", Block::zeroed(8));
         let globals_child = add(&mut set, b"more", "test\\global_content", Block::zeroed(8));
         let mut global_data = Block::zeroed(8);
         global_data.tag_ref(0, globals_child);
@@ -644,10 +624,15 @@ mod tests {
         let mut skies = Block::zeroed(8);
         skies.tag_ref(0, sky);
 
+        let equipment = scenario_edit::layout::block(BlockKind::NetgameEquipment);
+        let mut item = Block::zeroed(equipment.stride as usize);
+        item.tag_ref(equipment.field("item").unwrap().offset, old_item);
+
         let mut scenario = Block::zeroed(0x3e0);
         scenario
             .block(0x8, 1, skies)
             .block(def.offset, 4, placed)
+            .block(equipment.offset, 1, item)
             .block(palette.offset, 3, entries)
             .block(0x210, 1, descriptor)
             .tag_ref(0x3d0, other);
@@ -658,7 +643,12 @@ mod tests {
         app.session.build_scenes = false;
         static REGISTRY: std::sync::OnceLock<tags::registry::Registry> = std::sync::OnceLock::new();
         app.tags = TagDoc::new(REGISTRY.get_or_init(|| {
-            let schema = Schema::parse("group weap 0x8 align 4\n  0x0 tagref\n").unwrap();
+            let schema = Schema::parse(concat!(
+                "group weap 0x8 align 4\n  0x0 tagref\n",
+                "group more 0x8 align 4\n  0x0 block 0x8 align 4\n    0x0 tagref\n",
+                "group scnr 0x3e0 align 4\n  0x120 block 0x90 align 4\n    0x58 tagref\n",
+            ))
+            .unwrap();
             tags::registry::Registry::build(&schema, &tags::defs::Defs::default())
         }));
         let (bytes, _) = set.build().unwrap();
@@ -675,6 +665,7 @@ mod tests {
             weapon,
             sky,
             bsp,
+            bsp_asset,
             lightmap,
             globals,
             scan,
@@ -682,6 +673,8 @@ mod tests {
             ui_only,
             globals_child,
             other,
+            old_item,
+            new_item,
         }
     }
 
@@ -705,13 +698,14 @@ mod tests {
         let tree = call(&mut api, &mut f.app, 3);
         let root = &tree["root"];
         assert_eq!(root["group"], "scnr");
+        assert_eq!(tree["incomplete"], false);
         let bsp = section(section(root, "Structure"), "BSP 0");
         assert_eq!(bsp["tag"], tag_id(f.bsp));
         assert_eq!(section(bsp, "Lightmap")["tag"], tag_id(f.lightmap));
         assert_eq!(section(root, "Skies")["children"][0]["tag"], tag_id(f.sky));
         assert_eq!(section(root, "Globals")["tag"], tag_id(f.globals));
         assert_eq!(
-            section(root, "Other references (1)")["children"][0]["tag"],
+            section(root, "Other references (2)")["children"][0]["tag"],
             tag_id(f.other)
         );
 
@@ -782,14 +776,14 @@ mod tests {
             refs.iter()
                 .map(|r| (r.tag, r.via.as_str()))
                 .collect::<Vec<_>>(),
-            [(f.child, "+0x0"), (f.child, "+0x8")]
+            [(f.child, "+0x0"), (f.child, "+0x8"), (f.sky, "+0x30")]
         );
 
         let mut api = Api::new();
         let refs = api
             .call(&mut f.app, m::TAG_REFS, json!({"tag": f.scan.0}))
             .unwrap();
-        assert_eq!(refs.as_array().unwrap().len(), 2);
+        assert_eq!(refs.as_array().unwrap().len(), 3);
         assert_eq!(refs[1]["to"], tag_id(f.child));
         assert_eq!(refs[1]["found"], "scan");
         assert_eq!(refs[1]["via"], "+0x8");
@@ -811,11 +805,106 @@ mod tests {
         assert_eq!(refs[0]["path"], "0x0");
     }
 
+    fn unreachable(tree: &Value, id: TagId) -> bool {
+        tree["unreachable"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["tag"] == tag_id(id))
+    }
+
+    #[test]
+    fn scenario_tree_and_tag_refs_follow_bsp_region_links() {
+        let mut f = fixture();
+        let mut api = Api::new();
+        let refs = api
+            .call(&mut f.app, m::TAG_REFS, json!({"tag": f.bsp.0}))
+            .unwrap();
+        assert_eq!(refs[0]["to"], tag_id(f.bsp_asset));
+        assert_eq!(refs[0]["path"], "0x84[0].0x20");
+        let tree = api.call(&mut f.app, m::TAG_TREE, json!({})).unwrap();
+        assert_eq!(tree["incomplete"], false);
+        assert!(!unreachable(&tree, f.bsp_asset));
+        assert!(unreachable(&tree, f.ui_only));
+    }
+
+    #[test]
+    fn scenario_tree_omits_unreachable_tags_when_the_walk_exhausts_its_budget() {
+        // The final row's link is just outside the 100,000-field walk budget.
+        let mut f = fixture_with_other_rows(100_000);
+        let tree = Api::new()
+            .call(&mut f.app, m::TAG_TREE, json!({"depth": 0}))
+            .unwrap();
+        assert_eq!(tree["incomplete"], true);
+        assert_eq!(tree["unreachable"], json!([]));
+        assert_eq!(tree["truncated"], false);
+    }
+
+    #[test]
+    fn scenario_tree_and_tag_refs_use_unsaved_scenario_item_edits() {
+        let mut f = fixture();
+        let mut api = Api::new();
+        let before = api.call(&mut f.app, m::TAG_TREE, json!({})).unwrap();
+        assert_eq!(before["incomplete"], false);
+        assert!(!unreachable(&before, f.old_item));
+        assert!(unreachable(&before, f.new_item));
+
+        api.call(
+            &mut f.app,
+            m::SCENARIO_SET,
+            json!({
+                "block": "netgame_equipment", "index": 0, "field": "item",
+                "value": {"id": tag_id(f.new_item)},
+            }),
+        )
+        .unwrap();
+
+        let after = api.call(&mut f.app, m::TAG_TREE, json!({})).unwrap();
+        assert_eq!(after["incomplete"], false);
+        assert!(unreachable(&after, f.old_item));
+        assert!(!unreachable(&after, f.new_item));
+        let other = section(&after["root"], "Other references (2)");
+        assert!(
+            other["children"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|row| row["tag"] == tag_id(f.new_item))
+        );
+        let refs = api
+            .call(&mut f.app, m::TAG_REFS, json!({"tag": "scnr"}))
+            .unwrap();
+        let item = refs
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|link| link["path"] == "0x120[0].0x58")
+            .unwrap();
+        assert_eq!(item["to"], tag_id(f.new_item));
+    }
+
+    #[test]
+    fn scenario_tree_and_scan_accept_slot_zero_with_salt_zero() {
+        let mut f = fixture();
+        assert_eq!(f.sky, TagId(0));
+        let mut api = Api::new();
+        let tree = api.call(&mut f.app, m::TAG_TREE, json!({})).unwrap();
+        assert_eq!(
+            section(&tree["root"], "Skies")["children"][0]["tag"],
+            tag_id(f.sky)
+        );
+        let refs = api
+            .call(&mut f.app, m::TAG_REFS, json!({"tag": f.scan.0}))
+            .unwrap();
+        assert_eq!(refs[2]["found"], "scan");
+        assert_eq!(refs[2]["to"], tag_id(f.sky));
+    }
+
     #[test]
     fn scenario_tree_palette_selection_keeps_the_tag_and_outlines_its_placements() {
         let mut f = fixture();
         let mut map = open_map(&f.app).unwrap();
-        let roots = ScenarioRoots::read(&mut map);
+        let roots = ScenarioRoots::read(&f.app.tags, &mut map);
         let tree =
             tag_tree::scenario_tree(&f.app.tags, f.app.session.scenario().unwrap(), &roots, 0);
         let objects = tree

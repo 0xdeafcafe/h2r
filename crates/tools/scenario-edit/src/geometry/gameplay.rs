@@ -120,7 +120,7 @@ pub fn flag_outlines(markers: &[Marker], data: impl Fn(&Marker) -> Gameplay) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::geometry::{dot, marker_triangles_styled, rotation, sub};
+    use crate::geometry::{Ray, add, dot, marker_triangles_styled, pick, rotation, sub};
     use std::io::Cursor;
 
     fn marker(block: BlockKind, index: usize) -> Marker {
@@ -156,6 +156,32 @@ mod tests {
         assert!(dot(arrow_tip, [-facing[1], facing[0], 0.0]).abs() < 1e-5);
         assert!(arrow_tip[2].abs() < 0.1);
         assert_eq!(Gameplay::of(Some(&scenario), &m).team, Some(1));
+    }
+
+    #[test]
+    fn picking_reaches_the_spawn_arrow_and_flag_pennant_tips() {
+        let cases = [
+            (BlockKind::StartingLocations, None, [0.95, 0.0, 0.04]),
+            (BlockKind::NetgameFlags, Some(8), [0.75, 0.0, 1.60]),
+        ];
+        for (kind, flag_type, offset) in cases {
+            let m = marker(kind, 0);
+            let tip = add(m.position, offset);
+            assert!(
+                marker_triangles_styled(&m, flag_type)
+                    .into_iter()
+                    .flatten()
+                    .any(|point| {
+                        let delta = sub(point, tip);
+                        dot(delta, delta) < 1e-8
+                    })
+            );
+            let ray = Ray {
+                origin: add(tip, [0.0, -5.0, 0.0]),
+                dir: [0.0, 1.0, 0.0],
+            };
+            assert_eq!(pick(&[m], &ray), Some((kind, 0)));
+        }
     }
 
     #[test]
