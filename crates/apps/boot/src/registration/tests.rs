@@ -460,8 +460,10 @@ mod render_thread_plan {
     /// [`REFUSED`] with its reason, and every listed entry is still used.
     /// The ones the render path meets in a default run (the locale lookups,
     /// Blind, the native world's and objects' layer draw) are context-only,
-    /// and so are the native transparents' geometry handler and the native
-    /// lights' passes. The native post's colour pass and screen effect are
+    /// and so are the native transparents' geometry handler, the native
+    /// lights' passes, and the dynamic lights' call (the frame step reads
+    /// the light candidates before the decal mode after it, not on the
+    /// lights' return). The native post's colour pass and screen effect are
     /// not: their return hooks commit or replay the held draws.
     #[test]
     fn every_feature_hook_runs_on_the_render_thread_or_says_why_not() {
@@ -538,6 +540,7 @@ mod render_thread_plan {
             "RENDER_LIGHT_PASSES",
             "LIGHT_GEOMETRY_DRAW",
             "RENDER_DYNAMIC_LIGHTS",
+            "RENDER_DECAL_MODE",
         ] {
             assert!(safe.contains(&p), "{p} runs on the render thread");
         }
