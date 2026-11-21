@@ -138,9 +138,14 @@ header and the count fill it. The strip takes the band:
   (`lobby_tabs::Notice`).
 
 The strip is updated where the lobby's panel is
-(`lobby_options::update`, on `LOBBY_VARIANT_PANEL`), and the widgets are
-found again on each update by their string ids (`ui_kit::ids` family
-`lobby tabs`), not by kept addresses.
+(`lobby_options::update`, on `LOBBY_VARIANT_PANEL`;
+`lobby_tabs::strip::update`). The widgets are found again on each update
+by their block indices (`lobby_tabs::strip::BLOCK_BASE` and up, past any
+of the tag's own, so no retail lookup by index finds one), not by kept
+addresses. A pane that lacks them, at its first update or after its
+rebuild on a mode change, has the missing ones added there and then.
+Their texts are the `lobby tabs` string family's (`ui_kit::ids`), served
+from our string table.
 
 ### Switching
 
@@ -250,8 +255,7 @@ pick a mode in the menus.
   (the widgets), `LOBBY_VARIANT_PANEL` (the update), `LOBBY_MODE_SET`,
   `LOBBY_SET_MAP`, `LOBBY_START_STATE`, `LOBBY_ALL_READY`,
   `HOPPER_LISTED`, `QUICKMATCH_HOPPER`, `SQUAD_SETTINGS_LIST_CTOR`.
-  Points the slices add: the lobby screen's build (where the widgets
-  are added), the playlist press's entry (`0x2b2181`), Switch To:
+  Points the slices add: the playlist press's entry (`0x2b2181`), Switch To:
   Custom Game's press and Switch To: Co-Op Game's press past its gate.
 - **Ours**: `lobby_start::{mode, set_mode}`, `lobby_mode::{arrange,
   remote_members, start_refused}`, `clankermatch::{active, set_active,
@@ -265,9 +269,10 @@ pick a mode in the menus.
   `on`, `off`; `ui.press` takes the actions `tab_prev` and `tab_next`.
   `ui.screen`'s layout findings cover the strip's widgets as any
   text's.
-- **Preview**: `h2 ui preview lobby.tabs --state all` draws the retail
-  lobby's pane with the strip in each place and on each tab
-  (`ui_kit::preview::Retail` with added texts).
+- **Preview**: `h2 ui preview lobby.tabs --state all` draws the strip
+  in each place and on each tab it can be on, and a member's
+  (`lobby_tabs::preview`): the widgets the update shows, at their cells,
+  in the lobby's font and colours, without the retail pane under them.
 
 ## Slices
 
@@ -279,7 +284,7 @@ lobby working.
 | # | Slice | Size | Owns | Tests | Agent-API check |
 |---|---|---|---|---|---|
 | **T1** | The model, no hooks: `Tab`, `Place`, `Avail`, `parts`, `Tab::of`, `available`, `step`, `cells`, the labels and reasons | S | `lobby_tabs.rs`, `lobby_tabs/tests.rs`, the `mod` line in `lib.rs` | `every_tab_round_trips_through_its_parts`, `availability_by_place` (the table above, cell by cell), `a_tab_that_is_off_has_a_reason`, `a_feature_that_is_off_removes_its_tab`, `step_skips_tabs_that_are_off_and_names_the_first`, `the_ends_do_not_wrap`, `cells_stay_in_the_band_and_do_not_overlap`, `cells_close_up_without_a_tab`; `ui_kit::content::check` over every label and reason | none |
-| **T2** | The strip drawn, read-only: the widgets on the lobby's build, the three looks, the header hidden, the count narrowed, the update; `lobby.tabs` in the preview; `ui.lobby.tabs` | M | `lobby_tabs/strip.rs`, `lobby_options.rs` (the update's call), `lobby_mode.rs` (`set_header` removed), `ui_kit/ids.rs` (the family), `ui_kit/preview.rs` and `ui_kit/screens.rs` (`lobby.tabs`), `agent_glue.rs` and `crates/extensions/agent-proto` (the method), `points.rs` (the lobby's build), [agent-api.md](../runtime/agent-api.md) | `FlatMemory` tests: `one_look_shows_per_tab`, `the_header_is_hidden_and_put_back_with_the_strip_off`, `the_strip_is_found_again_by_its_ids`, `a_member_has_no_glyphs`; `the_strip_takes_the_lobby_texts_animation`; disc tests (`#[ignore]`) `every_tab_label_fits_its_cell`, `the_player_count_fits_its_narrowed_rectangle`, `the_strip_cells_are_inside_the_header_band`; `string_ids.rs` over the family | Split Screen lobby: `ui.lobby.tabs` has `selected` CUSTOM GAMES, MATCHMAKING and CLANKERS `off` with their reasons; Change Mode... to Forge, then `selected` is FORGE; `ui.screen` has no layout finding |
+| **T2** | The strip drawn, read-only: the widgets added on the update, the three looks, the header hidden, the count narrowed, the update; `lobby.tabs` in the preview; `ui.lobby.tabs` | M | `lobby_tabs/strip.rs`, `lobby_options.rs` (the update's call), `lobby_mode.rs` (`set_header` removed), `ui_kit/ids.rs` (the family), `lobby_tabs/preview.rs` and `ui_kit/screens.rs` (`lobby.tabs`), `agent_glue.rs` and `crates/extensions/agent-proto` (the method), [agent-api.md](../runtime/agent-api.md) | `FakeGuest` tests: `one_look_shows_per_tab`, `the_header_is_hidden_and_put_back_with_the_strip_off`, `the_strip_is_found_again_by_its_ids`, `a_member_has_no_glyphs`; `the_strip_takes_the_lobby_texts_animation`; disc tests (`#[ignore]`) `every_tab_label_fits_its_cell`, `the_player_count_fits_its_narrowed_rectangle`, `the_strip_cells_are_inside_the_header_band`; `string_ids.rs` over the family | Split Screen lobby: `ui.lobby.tabs` has `selected` CUSTOM GAMES, MATCHMAKING and CLANKERS `off` with their reasons; Change Mode... to Forge, then `selected` is FORGE; `ui.screen` has no layout finding |
 | **T3** | Switching inside the custom lobby: the bumpers, leader only, the countdown lock, CUSTOM GAMES, FORGE and FIREFIGHT, the map into the tab's category, the reason line; `tab_prev` and `tab_next`; Change Mode... and its picker removed | M | `lobby_tabs/input.rs`, `lobby_tabs/switch.rs`, `lobby_mode.rs` (`arrange`, `MODE_ACTION`, `mode_pick`), `lobby_status.rs`, `ui_press.rs`, `ui_kit/view.rs` and `ui_kit/screens.rs` (`kit.picker.mode` removed), [switches.md](../runtime/switches.md), [firefight.md](firefight.md), [forge-design.md](forge-design.md), [map-select.md](map-select.md) | `a_member_cannot_switch`, `no_switch_during_the_countdown`, `black_and_white_are_handled_and_nothing_else_is`, `switching_to_firefight_holds_the_setting_and_picks_a_kit_map`, `switching_to_forge_keeps_a_halo_2_map`, `a_press_toward_a_tab_that_is_off_shows_its_reason_for_four_seconds`, `game_setup_has_no_mode_row` (the `Page` tables of `lobby_mode/tests.rs` per tab), `leaving_the_lobby_clears_the_mode` unchanged | Split Screen: `ui.press tab_next` from CUSTOM GAMES gives FORGE, then FIREFIGHT; `ui.lobby_options` has the tab's lines; `tab_prev` at CUSTOM GAMES stays and `notice` is Matchmaking's reason; Game Setup's rows in `ui.audit` have no Change Mode... |
 | **T4** | CO-OP: the retail mode switch between 2 and 0 with the party kept, Switch To rows dropped from Game Setup | M | `lobby_tabs/switch.rs`, `lobby_mode.rs` (`arrange`), `points.rs` (the two Switch To presses) | `arrange_drops_the_switch_to_rows`, `co_op_runs_the_co_op_switch_after_ours_are_set`, `leaving_co_op_puts_the_custom_mode_back`, `co_op_is_off_on_system_link` | Split Screen with two profiles and an Xbox Live custom game with one remote member: `tab_next` to CO-OP, `ui.lobby.players` is the same roster, `ui.audit` shows the co-op pane and Game Setup's level and difficulty rows; back to CUSTOM GAMES the same |
 | **T5** | MATCHMAKING and CLANKERS: the playlist a tab opens on, the entry with a hopper, Change Playlist..., the search lock, `clankermatch::active` in the snapshot section | M | `lobby_tabs/switch.rs`, `lobby_tabs/playlist.rs`, `clankermatch.rs`, `lobby_mode.rs` (the section's byte), `points.rs` (the playlist entry) | `the_tab_opens_on_the_last_playlist_when_listed`, `else_on_the_first_listed`, `no_listed_playlist_turns_the_tab_off`, `clankers_lists_only_clanker_hoppers`, `matchmaking_never_remembers_a_clanker_hopper` (`clankermatch::remembered` unchanged), `no_switch_during_a_search`, `the_section_round_trips_the_clanker_flag` | Xbox Live custom game: `tab_prev` to MATCHMAKING, `ui.audit` shows the matchmaking pane with a playlist named, the roster unchanged; Game Setup has only Change Playlist...; to CLANKERS, Start Game, and `ui.lobby.players` fills with Clankers |

@@ -7,8 +7,10 @@
 //! sits below the Quick Options box, next to the footer.
 //!
 //! The lobby's mode (`crate::lobby_mode`) puts its lines first (the Forge
-//! map; Firefight's wave set, difficulty and starting lives) and sets the
-//! lobby's header after the update.
+//! map; Firefight's wave set, difficulty and starting lives), and the
+//! party lobby's mode strip (`crate::lobby_tabs::strip`) is updated after
+//! retail's panel update. The strip's own text widgets are left out of the
+//! count of the screen's texts here.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -163,7 +165,11 @@ fn widgets(m: &dyn GuestMemory, screen: u32) -> Option<[u32; PANEL_ROWS]> {
         if child == 0 {
             break;
         }
-        if m.u32(child.checked_add(WIDGET_KIND)?).ok()? == TEXT_KIND {
+        let ours = || {
+            m.u16(child.wrapping_add(WIDGET_INDEX))
+                .is_ok_and(crate::lobby_tabs::strip::is_ours)
+        };
+        if m.u32(child.checked_add(WIDGET_KIND)?).ok()? == TEXT_KIND && !ours() {
             if let Some(slot) = text.checked_sub(FIRST_OPTION_TEXT) {
                 if m.u32(child).ok()? != TEXT_VTABLE
                     || m.u16(child.checked_add(WIDGET_INDEX)?).ok()? as usize
@@ -277,7 +283,7 @@ impl LobbyOptions {
             .await;
         self.passing.store(false, Ordering::SeqCst);
         let retail = retail?;
-        crate::lobby_mode::set_header(&cx, screen).await?;
+        crate::lobby_tabs::strip::update(&cx, screen).await?;
         if variant == 0 {
             return Ok(Ret::new(retail.eax, 4));
         }

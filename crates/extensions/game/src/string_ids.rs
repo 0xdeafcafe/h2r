@@ -47,6 +47,7 @@ fn table_members() -> Vec<(&'static str, Vec<u32>)> {
                 .collect(),
         ),
         ("lobby status", ids(crate::lobby_status::STRINGS.to_vec())),
+        ("lobby tabs", ids(crate::lobby_tabs::strings())),
         ("skulls pages", ids(skulls_menu::strings())),
         (
             "variant page",
@@ -179,6 +180,7 @@ fn every_served_id_is_in_its_registered_family() {
                 .collect(),
         ),
         ("lobby status", ids(crate::lobby_status::STRINGS.to_vec())),
+        ("lobby tabs", ids(crate::lobby_tabs::strings())),
         // The model's ids run past the "ui model" block into "ui model
         // more" (video_screen::MORE); each must be in one of the two.
         ("ui model", model_ids.0),

@@ -23,7 +23,8 @@
 //! **The cells** ([`cells`]): one per tab present, cut for its label,
 //! 5 units apart from -244, on the header band.
 //!
-//! This module is the model alone: no guest memory, no hooks.
+//! The strip drawn on the lobby and read by the agent API is [`strip`];
+//! its preview (`h2 ui preview lobby.tabs`) is [`preview`].
 
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -36,6 +37,9 @@ use crate::ui_kit::input::Glyph;
 
 /// The strip's texts: the labels, the two glyphs, the reasons.
 pub const IDS: Family = ids::family("lobby tabs");
+
+pub mod preview;
+pub mod strip;
 
 // ---- the tabs ----
 

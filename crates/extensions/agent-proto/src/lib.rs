@@ -240,6 +240,9 @@ pub mod method {
     pub const UI_CAMPAIGN: &str = "ui.campaign";
     /// The pregame session's player slots, peer indices, names and connection bars.
     pub const UI_LOBBY_PLAYERS: &str = "ui.lobby.players";
+    /// The pregame lobby's mode strip: `{place, leader, selected, tabs:
+    /// [{tab, label, state, reason}], notice}` (docs/game/party-lobby.md).
+    pub const UI_LOBBY_TABS: &str = "ui.lobby.tabs";
     pub const UI_SCREEN: &str = "ui.screen";
     /// Active filters of the Live Custom Game Browser.
     pub const UI_BROWSER_FILTERS: &str = "ui.browser.filters";

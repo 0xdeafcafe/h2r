@@ -276,7 +276,7 @@ pub fn account_spec(a: &crate::account_screen::AccountScreen, now: i64) -> Scree
 }
 
 /// The screens `h2 ui preview` knows, by name.
-pub const NAMES: [&str; 42] = [
+pub const NAMES: [&str; 43] = [
     "forge.hud",
     "forge.palette",
     "forge.menu",
@@ -319,6 +319,7 @@ pub const NAMES: [&str; 42] = [
     MODE_PICKER,
     FORGE_MAP_PICKER,
     crate::custom_games::browser_filters::SCREEN,
+    crate::lobby_tabs::preview::NAME,
 ];
 
 /// The value picker as the lobby's Mode row opens it, over Game Setup,
@@ -356,6 +357,10 @@ pub fn live(name: &str) -> Option<Box<dyn Live>> {
             crate::forge_screens::pages::live(name)
         }
         "signin-code" => Some(Box::new(Driven::new(crate::signin_screen::SigninPage))),
+        // The party lobby's mode strip (`crate::lobby_tabs::strip`).
+        crate::lobby_tabs::preview::NAME => {
+            Some(Box::new(Driven::new(crate::lobby_tabs::preview::TabsPage)))
+        }
         "account" => Some(Box::new(Driven::new(AccountPage))),
         "mods" | "mods.pack" | "mods.detail" => {
             use crate::mods_screen::spec::{Sample, preview::Preview};

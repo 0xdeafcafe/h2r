@@ -413,30 +413,6 @@ fn the_list_takes_the_modes_rows() {
 }
 
 #[test]
-fn the_header_is_the_lobbys_first_text() {
-    const SCREEN: u32 = 0x4000;
-    let mut g = FakeGuest::new();
-    g.map(SCREEN, 0x1000);
-    let (bitmap, header, footer) = (SCREEN + 0x200, SCREEN + 0x400, SCREEN + 0x600);
-    g.put_u32(SCREEN + WIDGET_CHILD, bitmap)
-        .put_u32(bitmap + WIDGET_KIND, 8)
-        .put_u32(bitmap + WIDGET_NEXT, header)
-        .put_u32(header, TEXT_VTABLE)
-        .put_u32(header + WIDGET_KIND, TEXT_KIND)
-        .put_u32(header + WIDGET_NEXT, footer)
-        .put_u32(footer, TEXT_VTABLE)
-        .put_u32(footer + WIDGET_KIND, TEXT_KIND);
-    assert_eq!(header_widget(&g, SCREEN), Some(header));
-    g.put_u32(header, 0x1234);
-    assert_eq!(
-        header_widget(&g, SCREEN),
-        None,
-        "not a text widget of ours to set"
-    );
-    assert_eq!(header_widget(&g, 0x9000), None, "no screen");
-}
-
-#[test]
 fn a_snapshot_keeps_the_lobbys_mode() {
     lobby_start::set_mode(Mode::Forge);
     lobby_start::set_forge_map(Some("Castle".into()));

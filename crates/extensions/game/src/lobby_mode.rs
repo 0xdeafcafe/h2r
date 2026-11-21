@@ -11,7 +11,7 @@
 //! and close the dialog: Game Setup builds its list each time it opens
 //! (`crate::h1_options_row`), so the next open has the new mode's rows. The
 //! skin has no value column, so the mode shows in the row's help line and
-//! the lobby's header, never as "Mode: Forge".
+//! the lobby's mode strip, never as "Mode: Forge".
 //!
 //! **Rows by mode** ([`arrange`]): an `after` on the list's constructor,
 //! after every other row of ours is added, rewrites the list
@@ -24,10 +24,10 @@
 //! `<data>/forge` ([`forge_map_pick`]); the Forge session loads the choice
 //! as it opens ([`crate::forge_glue`]).
 //!
-//! **The panel and header** ([`panel_ids`], [`set_header`]): the lobby's
-//! variant panel update (`crate::lobby_options`) adds the mode's lines and
-//! sets the header to FORGE or FIREFIGHT, putting retail's back in
-//! Multiplayer.
+//! **The panel** ([`panel_ids`]): the lobby's variant panel update
+//! (`crate::lobby_options`) adds the mode's lines. The lobby's title is the
+//! mode strip's selected tab (`crate::lobby_tabs::strip`), which hides the
+//! retail header.
 //!
 //! **Start Game with a remote member.** Forge across consoles needs the
 //! session log on the network (slice F5). Until then, an `after` on the
@@ -44,7 +44,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 
-use engine::entry::{Cx, EntryError, EntryFuture, GuestCall, Ret};
+use engine::entry::{EntryFuture, GuestCall, Ret};
 use engine::memory::{GuestMemory, MemFault};
 use engine::points;
 use hooks::{BuildError, Builder, Call, Flow, Manifest};
@@ -71,13 +71,12 @@ pub const FORGE_MAP_ACTION: i16 = 15;
 /// Retail's game type row, "Change Rules...".
 pub const CHANGE_RULES: i16 = 1;
 
-/// The rows' texts, the help lines, the header and the panel lines.
+/// The rows' texts, the help lines and the panel lines.
 pub const IDS: Family = ids::family("lobby mode");
 const MODE_LABEL_SLOT: u32 = 0;
 const FORGE_MAP_LABEL_SLOT: u32 = 1;
 const MODE_HELP_SLOT: u32 = 2;
 const FORGE_MAP_HELP_SLOT: u32 = 3;
-const HEADER_SLOT: u32 = 4;
 const PANEL_SLOTS: u32 = 5;
 /// The most panel lines a mode has (Firefight's three).
 pub const MAX_PANEL_LINES: usize = 3;
@@ -233,7 +232,7 @@ pub fn forge_map_pick(saved: Result<Vec<String>, String>, current: Option<&str>)
     .over(Opener::GAME_SETUP_FORGE)
 }
 
-// ---- the panel and the header ----
+// ---- the panel ----
 
 /// The variant panel's lines for the lobby's `mode`: the Forge map, or
 /// Firefight's wave set, difficulty and starting lives (`firefight`, the
@@ -305,73 +304,6 @@ pub fn panel_ids(m: &mut dyn GuestMemory, store: &Store) -> Result<Vec<u32>, Mem
         .collect();
     TEXTS.write(m)?;
     Ok(ids)
-}
-
-const WIDGET_CHILD: u32 = 0x14;
-const WIDGET_NEXT: u32 = 0x18;
-const WIDGET_KIND: u32 = 4;
-const TEXT_KIND: u32 = 6;
-const TEXT_VTABLE: u32 = 0x0045_8940;
-/// A text widget's inline UTF-16 buffer (`crate::lobby_options`).
-const TEXT_BUFFER: u32 = 0x74 + 0x44;
-const TEXT_BYTES: usize = 256 * 2;
-
-/// The lobby screen's header: its first text widget, the built-in header
-/// (`crate::lobby_options`: the first two texts are the header and the
-/// footer).
-pub fn header_widget(m: &dyn GuestMemory, screen: u32) -> Option<u32> {
-    let mut child = m.u32(screen.checked_add(WIDGET_CHILD)?).ok()?;
-    for _ in 0..128 {
-        if child == 0 {
-            return None;
-        }
-        if m.u32(child.checked_add(WIDGET_KIND)?).ok()? == TEXT_KIND {
-            return (m.u32(child).ok()? == TEXT_VTABLE).then_some(child);
-        }
-        child = m.u32(child.checked_add(WIDGET_NEXT)?).ok()?;
-    }
-    None
-}
-
-/// Retail's header text on the screen it was taken from, kept while ours
-/// shows so Multiplayer can put it back.
-static RETAIL_HEADER: Mutex<Option<(u32, Vec<u8>)>> = Mutex::new(None);
-
-/// Sets the lobby `screen`'s header for its mode, after the panel update:
-/// FORGE or FIREFIGHT through `TEXT_SET`, keeping retail's text; in
-/// Multiplayer, retail's put back.
-pub async fn set_header(cx: &Cx, screen: u32) -> Result<(), EntryError> {
-    let Some(widget) = cx.read(|m| header_widget(m, screen)) else {
-        return Ok(());
-    };
-    let header = lobby_start::mode().header();
-    let saved = RETAIL_HEADER
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .clone()
-        .filter(|(s, _)| *s == screen);
-    match header {
-        None => {
-            if let Some((_, bytes)) = saved {
-                cx.write(|m| m.write(widget + TEXT_BUFFER, &bytes))?;
-                *RETAIL_HEADER.lock().unwrap_or_else(|e| e.into_inner()) = None;
-            }
-        }
-        Some(text) => {
-            if saved.is_none() {
-                let bytes = cx.read(|m| {
-                    let mut b = vec![0; TEXT_BYTES];
-                    m.read(widget + TEXT_BUFFER, &mut b).map(|()| b)
-                })?;
-                *RETAIL_HEADER.lock().unwrap_or_else(|e| e.into_inner()) = Some((screen, bytes));
-            }
-            let id = TEXTS.set(HEADER_SLOT, text);
-            cx.write(|m| TEXTS.write(m))?;
-            cx.call(GuestCall::new(points::TEXT_SET.base).edi(widget).args([id]))
-                .await?;
-        }
-    }
-    Ok(())
 }
 
 // ---- Start Game with a remote member ----
@@ -593,6 +525,9 @@ impl hooks::Feature for LobbyMode {
         b.locale().source("lobby mode", |id| TEXTS.address(id));
 
         let request_at = b.guest_alloc(0x1000, Permissions::RW)?;
+        // The mode strip's text blocks (`crate::lobby_tabs::strip`).
+        let blocks = b.guest_alloc(0x1000, Permissions::RW)?;
+        crate::lobby_tabs::strip::install(blocks);
         let offer = self.offer;
         let building: Arc<Mutex<Vec<u32>>> = Arc::default();
         let (noted, live) = (Arc::clone(&building), Arc::clone(&building));
