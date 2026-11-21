@@ -1032,30 +1032,46 @@ fn run_configured(
     native_map::set_vfs(k.vfs());
     let editor_link = host.editor_link.take();
     #[cfg(feature = "gpu")]
-    let world_line_present = {
+    let (world_line_present, debug_capture_unavailable) = {
         let sources = std::mem::take(&mut host.world_line_sources);
         let disabled = if render_hooks != film::RenderHooks::Gpu
             || !hooks::switches::native_render_on(features.switches())
         {
-            Some(agent::editor::MarkAvailability::NativeOff)
-        } else if !features.switches().feature(render_bridge::scene_step::ID, true) {
-            Some(agent::editor::MarkAvailability::SceneOff)
+            Some((
+                agent::editor::MarkAvailability::NativeOff,
+                "native rendering is off",
+            ))
+        } else if !features
+            .switches()
+            .feature(render_bridge::scene_step::ID, true)
+        {
+            Some((
+                agent::editor::MarkAvailability::SceneOff,
+                "frame scene capture is off",
+            ))
         } else {
             None
         };
-        if let Some(reason) = disabled {
+        if let Some((reason, why)) = disabled {
             if let Some(link) = &editor_link {
                 link.set_mark_capture_disabled(reason);
             }
-            None
-        } else if editor_link.is_some() || !sources.is_empty() {
-            d3d_calls.as_ref().map(|device| {
-                world_lines::present_observer(editor_link.clone(), sources, device.snapshot.clone())
-            })
+            (None, Some(why))
+        } else if let Some(device) = &d3d_calls
+            && (editor_link.is_some() || !sources.is_empty())
+        {
+            let observer = world_lines::present_observer(
+                editor_link.clone(),
+                sources,
+                device.snapshot.clone(),
+            );
+            (Some(observer), None)
         } else {
-            None
+            (None, Some("no world-line capture source"))
         }
     };
+    #[cfg(not(feature = "gpu"))]
+    let debug_capture_unavailable = Some("this host has no GPU renderer");
     #[cfg(feature = "gpu")]
     let world_line_capture_requested = world_line_present.is_some();
     // The lockstep harness, the agent, our cheats, the render features and
@@ -1175,6 +1191,9 @@ fn run_configured(
     }
     // Paired editor presentation and the debug menu's host methods.
     if let Some(a) = &agent {
+        a.agent
+            .collision_traces()
+            .bind(&loaded.runtime, lockstep_on || film.is_some());
         agent::editor::install(&a.agent, editor_link.clone());
         agent::editor::install_scene(&a.agent, editor_link.clone());
         debug_menu_glue::install(
@@ -1368,6 +1387,20 @@ fn run_configured(
         anyhow::bail!("light host needs sim-frame: {why}");
     }
     if let Some(a) = &agent {
+        #[cfg(feature = "gpu")]
+        let debug_capture_unavailable = debug_capture_unavailable.or_else(|| {
+            installed
+                .off_reason(render_bridge::scene_step::ID)
+                .map(|_| "frame scene capture is off")
+        });
+        let unavailable = if headless {
+            Some("this host has no window")
+        } else if host.debug_views.is_none() {
+            Some("this window has no debug-view source")
+        } else {
+            debug_capture_unavailable
+        };
+        debug_views::install(&a.agent, host.debug_views.take(), unavailable);
         a.set_plan(&plan, &installed);
         if let Some(why) = installed.off_reason("agent") {
             a.agent.set_no_tick_hook();

@@ -4,17 +4,13 @@ use std::sync::{Arc, Mutex};
 
 use engine::view::players;
 use engine::{DatumHandle, GuestMemory, MemFault, points};
+use guest_layout::sound::SoundListener;
 use hooks::{Builder, Flow};
 
 const LOCAL_COUNT: u32 = 0x8;
 const LOCAL_MAP: usize = 4; // relative to LOCAL_COUNT
 const USERS: usize = 4;
 const LOCAL_BYTES: usize = LOCAL_MAP + 4 * USERS;
-const LISTENERS: u32 = 0x88;
-const LISTENER_STRIDE: u32 = 0x48;
-const LISTENER_ACTIVE: u32 = 0x6;
-#[cfg(feature = "local-io")]
-const LISTENER_POSITION: u32 = 0x30;
 
 #[derive(Clone, Copy, Default)]
 struct Seat {
@@ -87,7 +83,10 @@ impl LocalUsers {
         let globals = m.u32(points::SOUND_GLOBALS.base)?;
         if globals != 0 {
             for (user, seat) in self.seats.iter().enumerate() {
-                let active = listener(globals, user) + LISTENER_ACTIVE;
+                let Some(listener) = SoundListener::for_user(globals, user) else {
+                    continue;
+                };
+                let active = listener.addr_of(SoundListener::ACTIVE);
                 if seat.sound_player().is_none() && m.u8(active)? != 0 {
                     m.set_u8(active, 0)?;
                 }
@@ -95,10 +94,6 @@ impl LocalUsers {
         }
         Ok(())
     }
-}
-
-fn listener(globals: u32, user: usize) -> u32 {
-    globals + LISTENERS + user as u32 * LISTENER_STRIDE
 }
 
 pub(super) fn install(b: &mut Builder) {
@@ -182,13 +177,13 @@ fn inspect_listeners(m: &dyn GuestMemory) -> Result<serde_json::Value, ()> {
     let users = LocalUsers::read(m).map_err(|_| ())?.ok_or(())?;
     let mut rows = Vec::new();
     for (user, seat) in users.seats.iter().enumerate() {
-        let at = listener(globals, user);
-        if m.u8(at + LISTENER_ACTIVE).map_err(|_| ())? != 0 {
+        let listener = SoundListener::for_user(globals, user).ok_or(())?;
+        if listener.active(m).map_err(|_| ())? != 0 {
             rows.push(json!({
                 "user": user,
                 "player_datum": seat.player.map(DatumHandle::raw),
                 "phantom": seat.phantom,
-                "position": m.vec3(at + LISTENER_POSITION).map_err(|_| ())?,
+                "position": listener.position(m).map_err(|_| ())?,
             }));
         }
     }
@@ -245,9 +240,9 @@ mod tests {
         g.put_u32(points::PLAYER_GLOBALS.base, players);
         g.put_u32(points::PLAYERS.base, 0);
         g.put(players + LOCAL_COUNT + LOCAL_MAP as u32, &[0xff; 4 * USERS]);
-        let stale = listener(sound, 2);
-        g.put_u8(stale + LISTENER_ACTIVE, 1);
-        g.put_f32(stale + LISTENER_POSITION, 4.0);
+        let stale = SoundListener::for_user(sound, 2).unwrap();
+        g.put_u8(stale.addr_of(SoundListener::ACTIVE), 1);
+        g.put_f32(stale.addr_of(SoundListener::POSITION), 4.0);
 
         assert_eq!(
             inspect_listeners(&g).unwrap(),

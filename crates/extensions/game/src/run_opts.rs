@@ -132,6 +132,8 @@ pub struct Host {
     pub embedded_live: bool,
     /// The perf overlay's on/off switch, for `perf.overlay`.
     pub perf_overlay: Option<Arc<std::sync::atomic::AtomicBool>>,
+    /// Shared with the registered debug-view world-line producer on a windowed run.
+    pub debug_views: Option<Arc<agent::debug_views::DebugViews>>,
     /// The window consumer for the paired-editor plate and focus requests.
     pub editor_link: Option<agent::editor::EditorLink>,
     #[cfg(feature = "gpu")]

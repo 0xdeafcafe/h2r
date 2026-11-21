@@ -189,6 +189,7 @@ pub struct Agent {
 
 #[derive(Default)]
 struct Shared {
+    collision_traces: Arc<crate::CollisionTraces>,
     state: Mutex<State>,
     wake: Condvar,
     connection_reads_running: AtomicUsize,
@@ -198,6 +199,7 @@ struct Shared {
 struct State {
     live: crate::live::Mirror,
     editor_marks: Option<crate::editor::MarkObserver>,
+    debug_views: Option<crate::debug_views::Observer>,
     live_epoch: u64,
     // The last epoch that replaced the map or restored its state.
     map_epoch: u64,
@@ -511,6 +513,14 @@ impl Agent {
             .insert(name.to_owned(), (access, Box::new(f)));
     }
 
+    pub fn collision_traces(&self) -> Arc<crate::CollisionTraces> {
+        self.shared.collision_traces.clone()
+    }
+
+    pub(crate) fn set_debug_views(&self, views: crate::debug_views::Observer) {
+        self.lock().debug_views = Some(views);
+    }
+
     pub(crate) fn set_editor_marks(&self, marks: crate::editor::MarkObserver) {
         let mut state = self.lock();
         if state.no_tick_hook {
@@ -531,6 +541,7 @@ impl Agent {
 
     /// Same-map checkpoint restores need a key even if the game clock moves forward.
     pub(crate) fn live_cut(&self) {
+        self.shared.collision_traces.clear();
         let mut s = self.lock();
         s.advance_live_epoch();
         s.map_epoch = s.live_epoch;
@@ -567,6 +578,7 @@ impl Agent {
         };
         let map_ticks = r.u64().map_err(e)?;
         r.finish().map_err(e)?;
+        self.shared.collision_traces.clear();
         let mut s = self.lock();
         s.cinematic = cinematic;
         s.game.map = map;
@@ -695,6 +707,11 @@ impl Agent {
         if let Some(marks) = &s.editor_marks {
             marks.on_tick(reader);
         }
+        if let Some(views) = &s.debug_views
+            && views.active()
+        {
+            views.refresh(reader, &s.game);
+        }
         s.serve(reader, Where::Tick);
         s.capture_live(reader, None, stepping);
         s.settle_deferred(reader);
@@ -752,7 +769,11 @@ impl Agent {
         // clock timeouts. Once ticks stop (loading), read here, at most
         // every SLICE_REFRESH, for waits and events.
         let due = s.slice_refresh.is_none_or(|t| t.elapsed() >= SLICE_REFRESH);
-        let idle_work = !s.ticking() && due && (!s.waits.is_empty() || s.wants_events());
+        // A socketless menu has no tick hook. Maintain its map cache on
+        // the existing slice clock while a debug view needs geometry.
+        let local_views = s.no_tick_hook && s.debug_views.as_ref().is_some_and(|v| v.active());
+        let idle_work =
+            !s.ticking() && due && (local_views || !s.waits.is_empty() || s.wants_events());
         if !s.deferred.is_empty() && !s.ticking() {
             s.settle_deferred(reader);
         }
@@ -768,6 +789,9 @@ impl Agent {
         // (a BSP switch, a map change): answers keep the last tick's state.
         if !s.ticking() {
             s.refresh(reader, Where::Slice);
+            if local_views && let Some(views) = &s.debug_views {
+                views.refresh(reader, &s.game);
+            }
         }
         s.serve(reader, Where::Slice);
         s.settle_waits();

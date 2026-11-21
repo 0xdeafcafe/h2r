@@ -1850,6 +1850,50 @@ impl PhysicsModel {
     }
 }
 
+/// Visit each distinct face's boundary vertices in winding order.
+pub fn visit_hull_faces(
+    verts: &[[f32; 3]],
+    planes: &[[f32; 4]],
+    mut visit: impl FnMut(&[usize]) -> Result<()>,
+) -> Result<()> {
+    if verts.len() > MAX_HULL_ELEMENTS || planes.len() > MAX_HULL_ELEMENTS {
+        return Err(Error::Invalid("polyhedron exceeds the export budget"));
+    }
+    let mut seen = std::collections::HashSet::new();
+    for pl in planes {
+        let n = [pl[0], pl[1], pl[2]];
+        let mut on: Vec<usize> = (0..verts.len())
+            .filter(|&i| {
+                (n[0] * verts[i][0] + n[1] * verts[i][1] + n[2] * verts[i][2] + pl[3]).abs() < 1e-3
+            })
+            .collect();
+        if on.len() < 3 || !seen.insert(on.clone()) {
+            continue;
+        }
+        let c: [f32; 3] =
+            std::array::from_fn(|a| on.iter().map(|&i| verts[i][a]).sum::<f32>() / on.len() as f32);
+        // Basis in the plane.
+        let ref_axis = if n[0].abs() < 0.9 {
+            [1.0, 0.0, 0.0]
+        } else {
+            [0.0, 1.0, 0.0]
+        };
+        let u = cross(n, ref_axis);
+        let ul = dot(u, u).sqrt().max(1e-12);
+        let u = [u[0] / ul, u[1] / ul, u[2] / ul];
+        let w = cross(n, u);
+        on.sort_by(|&a, &b| {
+            let ang = |i: usize| {
+                let d = [verts[i][0] - c[0], verts[i][1] - c[1], verts[i][2] - c[2]];
+                dot(d, w).atan2(dot(d, u))
+            };
+            ang(a).total_cmp(&ang(b))
+        });
+        visit(&on)?;
+    }
+    Ok(())
+}
+
 #[derive(Default)]
 struct Obj {
     text: String,
@@ -1892,56 +1936,20 @@ impl Obj {
             self.tri(base + q[0] + 1, base + q[2] + 1, base + q[3] + 1);
         }
     }
-    /// One polygon per distinct face (the vertices lying on a plane, ordered
-    /// around their centroid). Planes naming an already-emitted face are skipped
-    /// (retail hulls have near-parallel planes that pick overlapping vertex sets,
-    /// so no tighter per-hull triangle bound holds), and the running triangle
-    /// count is checked against the export budget after every face.
     fn hull(&mut self, verts: &[[f32; 3]], planes: &[[f32; 4]]) -> Result<()> {
-        if verts.len() > MAX_HULL_ELEMENTS || planes.len() > MAX_HULL_ELEMENTS {
+        let base = self.next;
+        if verts.len() > MAX_HULL_ELEMENTS {
             return Err(Error::Invalid("polyhedron exceeds the export budget"));
         }
-        let base = self.next;
-        let mut seen = std::collections::HashSet::new();
         for v in verts {
             self.v(*v);
         }
-        for pl in planes {
-            let n = [pl[0], pl[1], pl[2]];
-            let mut on: Vec<usize> = (0..verts.len())
-                .filter(|&i| {
-                    (n[0] * verts[i][0] + n[1] * verts[i][1] + n[2] * verts[i][2] + pl[3]).abs()
-                        < 1e-3
-                })
-                .collect();
-            if on.len() < 3 || !seen.insert(on.clone()) {
-                continue;
-            }
-            let c: [f32; 3] = std::array::from_fn(|a| {
-                on.iter().map(|&i| verts[i][a]).sum::<f32>() / on.len() as f32
-            });
-            // Basis in the plane.
-            let ref_axis = if n[0].abs() < 0.9 {
-                [1.0, 0.0, 0.0]
-            } else {
-                [0.0, 1.0, 0.0]
-            };
-            let u = cross(n, ref_axis);
-            let ul = dot(u, u).sqrt().max(1e-12);
-            let u = [u[0] / ul, u[1] / ul, u[2] / ul];
-            let w = cross(n, u);
-            on.sort_by(|&a, &b| {
-                let ang = |i: usize| {
-                    let d = [verts[i][0] - c[0], verts[i][1] - c[1], verts[i][2] - c[2]];
-                    dot(d, w).atan2(dot(d, u))
-                };
-                ang(a).total_cmp(&ang(b))
-            });
+        visit_hull_faces(verts, planes, |on| {
             for k in 1..on.len() - 1 {
                 self.tri(base + on[0] + 1, base + on[k] + 1, base + on[k + 1] + 1);
             }
-            self.check()?;
-        }
+            self.check()
+        })?;
         self.check()
     }
     /// A capsule between `a` and `b` (a sphere when they coincide), 12x6 UV rings,
