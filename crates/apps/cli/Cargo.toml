@@ -64,6 +64,8 @@ agent-proto = { path = "../../extensions/agent-proto" }
 agent = { path = "../../extensions/agent", default-features = false }
 # h2 studio: the editor's agent API client (docs/editor/agent-api.md).
 studio-proto = { path = "../studio-proto", optional = true }
+# `h2 rules`: the scripted game types' tooling (docs/game/rules-engine.md).
+rules.workspace = true
 # Our settings (play --set, h2 settings).
 settings = { path = "../../formats/settings" }
 timeline = { path = "../../runtime/timeline" }

@@ -784,9 +784,34 @@ Tooling:
   as a form, and a budget meter (worst-tick estimate, slots, IR bytes)
   that names the costliest handler. The blob carries an optional line
   table for messages; the VM ignores it.
-- **Scenario tests**: `h2 rules run` steps a script over a recorded
-  event list with no game; `h2 sim` runs it in a headless match. Each
-  built-in script has scenario tests beside its source.
+- **Command line**: `h2 rules` is pure over its inputs and needs no
+  disc (`crates/apps/cli/src/rules_cmd.rs`).
+  - `h2 rules check <file.rules>` compiles and verifies. Errors print as
+    `file:line:col: message` and the exit status is 1. The report gives
+    the worst-tick estimate against the budget, the costliest handler,
+    the IR bytes, the slots by scope, the blob's id, what the script can
+    do in the words of `caps::CAPABILITIES`, and the entries a host
+    cannot make.
+  - `h2 rules build <file.rules> -o <out.rir>` writes the verified blob
+    and prints its SHA-256.
+  - `h2 rules run <file.rules> --scenario <scenario.json> [--trace]`
+    steps the script over a scenario on the fake game, printing the calls
+    made each tick (with `--trace`, each event and call), the final
+    scores and the result; a script error exits 1.
+  - `h2 rules caps` lists the capabilities and the API entries with their
+    status; `h2 rules builtin [name]` lists the built-in scripts or
+    prints one.
+- **Scenario tests**: a scenario is JSON read by `rules::scenario`:
+  `seed`, `options` (bits; the blob's defaults when absent), `players`
+  (`slot`, `team`, `alive`, `score`, `lives`), `teams`,
+  `round_time_left`, and `ticks`, each with `events` of `kill`
+  (`victim`, `killer`), `spawn`, `death`, `join`, `quit`, `enter` and
+  `leave` (`zone`, `object`), `press`, `pickup` and `drop` (`player`,
+  `object`), `squad_dead` and `round_end`. Tick 0 reports `init` and
+  `round_start` first; each tick ends with the per-tick group; queued
+  calls are made at the start of the next tick and after the last.
+  `h2 sim` runs a script in a headless match. Each built-in script has
+  scenario tests beside its source.
 - **Agent API**: `rules.state` (script, hash, refusal, budget use),
   `rules.vars`, `rules.trace` (handlers run and calls made per tick),
   `rules.step` and `rules.load` (swap a verified blob between rounds).
