@@ -673,7 +673,8 @@ with `INVALID_PARAMS`) answers from the state the
 | `vz` | the local player's vertical velocity, world units a second, up positive |
 | `yaw` | the way the local player's unit aims, radians from +X toward +Y: the first-person camera's yaw |
 | `charge` | the charge meter: `phase` (`near`, `under`, `held`, `primed`, `lost`), `fill` (0, 1/3, 2/3, then 1 less `still_ticks` over 38 while primed, 0 while lost) and `still_ticks`; absent while hidden ([superbounce.md](../game/superbounce.md#charge)) |
-| `verb` | the prompt line's step: `let_go_of_crouch` while `under`, `walk_out_to_stand` while `held` |
+| `verb` | the prompt line's verb: `let_go_of_crouch` while `under`, `walk_out_to_stand` while `held`, `keep_moving` while primed and still for 19 ticks or more, `charge_again` for 150 ticks after a loss while no crouch step has begun |
+| `lost_reason` | why the charge went, while `lost` and while the verb is `charge_again`: `stood_still` (the word left −3 after 30 still ticks or more), `crouched` (a crouch while primed), `unknown` (the word left −3 for another reason); absent otherwise ([superbounce.md](../game/superbounce.md#charge)) |
 | `nav_target` | the navpoint's target: `at` (the spot's stand point), `kind` (`crouch` while not primed, `strip` while primed), `distance` (world units) |
 | `landing` | while airborne and falling toward a strip, the landing the assist predicts: `at` (at the strip's floor height), `verdict` (`on_slot`, `fixable`, `miss`), `speed` (the touchdown speed, units/s) and the strip's `need` |
 | `last_landing` | the last touchdown within 0.5 of a strip: `result` (`bounce`, `not_primed`, `missed`, `too_slow`, `no_bounce`), the game `tick` and the origin `at` on the tick before ([superbounce.md](../game/superbounce.md#landings)) |

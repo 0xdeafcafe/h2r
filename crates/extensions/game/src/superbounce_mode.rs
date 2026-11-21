@@ -38,7 +38,8 @@ use engine::GuestMemory;
 use superbounce::{Kind, Spot, Vec3};
 
 pub use crate::superbounce_charge::{
-    Charge, ChargePhase, Course, Landing, LandingResult, NavKind, NavTarget, Predicted, Verb,
+    Charge, ChargePhase, Course, Landing, LandingResult, Lost, LostReason, NavKind, NavTarget,
+    Predicted, Verb,
 };
 use crate::superbounce_capsule::Room;
 use crate::superbounce_charge::{Tick, Tracker};
@@ -284,6 +285,13 @@ pub fn reply(s: &State) -> agent_proto::superbounce::State {
         verb: s.verb.map(|v| match v {
             Verb::LetGoOfCrouch => wire::Verb::LetGoOfCrouch,
             Verb::WalkOutToStand => wire::Verb::WalkOutToStand,
+            Verb::KeepMoving => wire::Verb::KeepMoving,
+            Verb::ChargeAgain(_) => wire::Verb::ChargeAgain,
+        }),
+        lost_reason: lost(s).map(|l| match l.reason {
+            LostReason::StoodStill => wire::LostReason::StoodStill,
+            LostReason::Crouched => wire::LostReason::Crouched,
+            LostReason::Unknown => wire::LostReason::Unknown,
         }),
         nav_target: s.nav_target.map(|n| wire::NavTarget {
             at: v3(n.at),
@@ -316,6 +324,15 @@ pub fn reply(s: &State) -> agent_proto::superbounce::State {
         }),
         standing_fits: s.standing_fits,
     }
+}
+
+/// The last loss, while the charge shows `lost` or the verb asks for a
+/// new charge.
+pub fn lost(s: &State) -> Option<Lost> {
+    s.charge.and_then(|c| c.lost).or(match s.verb {
+        Some(Verb::ChargeAgain(l)) => Some(l),
+        _ => None,
+    })
 }
 
 /// `superbounce.state` takes no parameters: null or `{}`.
@@ -1055,6 +1072,7 @@ mod tests {
             charge: Some(Charge {
                 phase: ChargePhase::Primed,
                 fill: 0.5,
+                lost: None,
             }),
             still_ticks: 19,
             verb: Some(Verb::WalkOutToStand),
@@ -1100,6 +1118,53 @@ mod tests {
             (wire::LandingResult::TooSlow, 6753, [0.5, 0.5, -3.0])
         );
         assert_eq!(r.standing_fits, Some(false));
+        assert_eq!(r.lost_reason, None);
+    }
+
+    #[test]
+    fn the_agent_reply_says_why_the_charge_went_while_lost_and_after() {
+        use agent_proto::superbounce as wire;
+        let lost = Lost {
+            reason: LostReason::StoodStill,
+            tick: 7000,
+        };
+        let s = State {
+            active: true,
+            charge: Some(Charge {
+                phase: ChargePhase::Lost,
+                fill: 0.0,
+                lost: Some(lost),
+            }),
+            verb: Some(Verb::ChargeAgain(lost)),
+            ..State::EMPTY
+        };
+        let r = reply(&s);
+        assert_eq!(r.lost_reason, Some(wire::LostReason::StoodStill));
+        assert_eq!(r.verb, Some(wire::Verb::ChargeAgain));
+        // After the lost second the charge is hidden; the verb keeps it.
+        let after = State {
+            charge: None,
+            verb: Some(Verb::ChargeAgain(Lost {
+                reason: LostReason::Crouched,
+                ..lost
+            })),
+            ..s.clone()
+        };
+        assert_eq!(reply(&after).lost_reason, Some(wire::LostReason::Crouched));
+        let unknown = State {
+            verb: Some(Verb::ChargeAgain(Lost {
+                reason: LostReason::Unknown,
+                ..lost
+            })),
+            ..after.clone()
+        };
+        assert_eq!(reply(&unknown).lost_reason, Some(wire::LostReason::Unknown));
+        let warned = State {
+            verb: Some(Verb::KeepMoving),
+            ..State::EMPTY
+        };
+        let r = reply(&warned);
+        assert_eq!((r.verb, r.lost_reason), (Some(wire::Verb::KeepMoving), None));
     }
 
     #[test]

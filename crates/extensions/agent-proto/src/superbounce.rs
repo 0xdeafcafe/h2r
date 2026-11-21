@@ -111,9 +111,15 @@ pub struct State {
     /// by a crouch spot).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub charge: Option<Charge>,
-    /// The recipe's step on the HUD's prompt line, while `under` or `held`.
+    /// The next thing to do on the HUD's prompt line: a crouch step
+    /// while `under` or `held`, the warning while primed and still, the
+    /// new charge after a loss.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verb: Option<Verb>,
+    /// Why the charge went: while `lost`, and while the verb is
+    /// `charge_again`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lost_reason: Option<LostReason>,
     /// The navpoint's target: the nearest crouch spot while not primed,
     /// the nearest strip while primed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -160,7 +166,7 @@ pub struct Charge {
     pub still_ticks: u32,
 }
 
-/// The prompt line's verb for a crouch step.
+/// The prompt line's verb.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Verb {
@@ -168,6 +174,24 @@ pub enum Verb {
     LetGoOfCrouch,
     /// "Walk out to stand up".
     WalkOutToStand,
+    /// "Keep moving or lose the charge": primed and still for 19 ticks or
+    /// more.
+    KeepMoving,
+    /// "Find a crouch spot to charge again": for 150 ticks after a loss,
+    /// while no crouch step has begun.
+    ChargeAgain,
+}
+
+/// Why the charge went.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LostReason {
+    /// The word left -3 after 30 still ticks or more: the body slept.
+    StoodStill,
+    /// A crouch while primed.
+    Crouched,
+    /// The word left -3 for another reason.
+    Unknown,
 }
 
 /// What the navpoint points at.
@@ -787,6 +811,7 @@ mod tests {
                 still_ticks: 0,
             }),
             verb: Some(Verb::WalkOutToStand),
+            lost_reason: Some(LostReason::StoodStill),
             nav_target: Some(NavTarget {
                 at: [1.0, 2.0, 3.0],
                 kind: NavKind::Crouch,
@@ -808,6 +833,7 @@ mod tests {
         let v = serde_json::to_value(&s).unwrap();
         assert_eq!(v["charge"]["phase"], "held");
         assert_eq!(v["verb"], "walk_out_to_stand");
+        assert_eq!(v["lost_reason"], "stood_still");
         assert_eq!(v["nav_target"]["kind"], "crouch");
         assert_eq!(v["landing"]["verdict"], "on_slot");
         assert_eq!(v["last_landing"]["result"], "not_primed");
@@ -816,6 +842,7 @@ mod tests {
         for absent in [
             "charge",
             "verb",
+            "lost_reason",
             "nav_target",
             "landing",
             "last_landing",
@@ -834,6 +861,18 @@ mod tests {
         assert_eq!(
             serde_json::to_value(Verb::LetGoOfCrouch).unwrap(),
             "let_go_of_crouch"
+        );
+        assert_eq!(
+            serde_json::to_value(Verb::KeepMoving).unwrap(),
+            "keep_moving"
+        );
+        assert_eq!(
+            serde_json::to_value(Verb::ChargeAgain).unwrap(),
+            "charge_again"
+        );
+        assert_eq!(
+            serde_json::to_value(LostReason::Crouched).unwrap(),
+            "crouched"
         );
         assert_eq!(serde_json::to_value(Course::Fixable).unwrap(), "fixable");
         assert_eq!(v["word"], "fffffffd");

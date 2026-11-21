@@ -664,8 +664,10 @@ the pill (D: `h2 bitmap`). Which to use is open (Design, "Not verified").
 | scanning | `Dim`: half alpha |
 | no strips, scan failed | hidden |
 
-While the charge is about to go (the meter below under a third), the
-icon is `Flash(TimeWarning)`, the timer's warning record.
+While the charge is about to go (the meter below at half or under:
+19 still ticks of 38, the tick the prompt line says "Keep moving or lose
+the charge"), the icon is `Flash(TimeWarning)`, the timer's warning
+record.
 
 ### The charge meter
 
@@ -745,14 +747,20 @@ its notification list:
 | `Prompt` | Hold (crouch) and walk under | near, not primed, within 1.5 of a crouch spot |
 | `Prompt` | Let go of (crouch) | under |
 | `Prompt` | Walk out to stand up | held |
+| `Prompt` | Keep moving or lose the charge | primed and still for 19 ticks or more, the fill at half or under |
+| `Prompt` | Find a crouch spot to charge again | for 150 ticks after a loss, until a crouch step begins |
 | `Message` | Primed | the word becomes −3 |
-| `Message` | Charge lost | lost |
+| `Message` | Charge lost: you stood still / Charge lost: you crouched / Charge lost | lost, by its reason ([superbounce.md](superbounce.md), "Charge"): the body slept, a crouch, another reason |
 | `Message` | Superbounce, 12 m | a bounce, with the height gained at its top in whole metres |
 | `Message` | Not primed. / Missed the strip. / Too slow. / No bounce. | a landing within 0.5 of a strip that did not bounce, by its first failed test ([superbounce.md](superbounce.md), "Landings") |
 
 (crouch) is U+E110, the left stick click's glyph, the default crouch
 button ([button-icons.md](../input/button-icons.md)), which the button
-swap redraws as the bound key's picture on the other input sets. A prompt of the game's own wins the line.
+swap redraws as the bound key's picture on the other input sets. U+E110 is one glyph, 38 by 19, that shows
+both sticks: the left one lit and outlined, the right one faint (alpha
+3 of 15), as every retail stick glyph does. The preview draws it as the
+game does, so the prompt reads "Let go of" and a pair of sticks. A
+prompt of the game's own wins the line.
 The landing's result is `superbounce_mode`'s `last_landing`; the bounce
 message has no height until the state carries one ("Superbounce"
 alone).
@@ -811,7 +819,10 @@ target.
 | `held` | inactive, icon `Flash(Help)` | 2/3 | Walk out to stand up | crouch spot, "1" | |
 | `primed-full` | lit | 1 | Primed | strip, "12" | |
 | `primed-draining` | lit, icon `Flash(TimeWarning)` | 0.25 | | strip, "12" | |
-| `lost` | inactive | 0 | Charge lost | crouch spot, "12" | |
+| `primed-still-warning` | lit, icon `Flash(TimeWarning)` | 0.5 | Keep moving or lose the charge | strip, "12" | |
+| `lost` | inactive | 0 | Find a crouch spot to charge again; Charge lost | crouch spot, "12" | |
+| `lost-stood-still` | inactive | 0 | Find a crouch spot to charge again; Charge lost: you stood still | crouch spot, "12" | |
+| `lost-crouched` | inactive | 0 | Find a crouch spot to charge again; Charge lost: you crouched | crouch spot, "12" | |
 | `bounced` | lit | 1 | Superbounce, 12 m | strip, "12" | |
 | `missed` | lit | 0.8 | Missed the strip. | strip, "12" | |
 | `scanning` | dim | hidden | | hidden | |
@@ -829,7 +840,8 @@ feeds it each tick from `superbounce_mode`'s state through one adapter,
 |---|---|
 | `scan` | ready with spots, ready with none (`NoStrips`), failed, else scanning |
 | `charge` (phase, fill) | the charge, as it is |
-| `verb` | the prompt's verb; in the near phase, not primed and with no verb, "Hold (crouch) and walk under" |
+| `verb` | the prompt's verb (a crouch step, keep moving, charge again); in the near phase, not primed and with no verb, "Hold (crouch) and walk under" |
+| the loss (`charge`'s while lost, `ChargeAgain`'s after) | its reason's message at its tick, when newer than the last landing; the HUD keeps the last loss past the 150 ticks the state has it, so an older landing does not take its place |
 | `nav_target` (point, kind, distance) | the navpoint's target and distance, world units to metres; its point goes to `Handle::navpoint` |
 | `last_landing` (result, tick) | the landing's message at its tick, a bounce without its height |
 
@@ -840,7 +852,9 @@ newer than the last it saw (`superbounce_hud::watch`).
 What shows in the game: the pill and its icon while primed (`Inactive`
 not drawn), the charge meter through the recipe and the charge, the
 prompt verbs, the navpoint (the game's arrow and marker, no number) and
-the tutorial's training text. The notifications do not show.
+the tutorial's training text. The notifications do not show, so in the
+game a loss shows as the prompt's "Find a crouch spot to charge again"
+without its reason, which `superbounce.state` has as `lost_reason`.
 
 ### The tutorial
 
