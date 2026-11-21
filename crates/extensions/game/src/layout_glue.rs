@@ -36,7 +36,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use crate::custom_games;
 use crate::fov_row;
-use crate::setting_defs::{FOV, PAD_SPEAKER};
+use crate::setting_defs::{FOV, PAD_LIGHTBAR, PAD_SPEAKER};
 use crate::skulls_menu;
 use crate::speaker_row;
 use crate::theater_ui::menu as theater_menu;
@@ -278,11 +278,14 @@ pub fn strings() -> Vec<(u32, &'static str)> {
 }
 
 /// Every string served with these features on.
-pub fn served_strings(speaker: bool) -> Vec<(u32, &'static str)> {
+pub fn served_strings(speaker: bool, lightbar: bool) -> Vec<(u32, &'static str)> {
     let mut v = strings();
     if speaker {
         v.push((speaker_row::SMALL_ON_ID, speaker_row::SMALL_ON_TEXT));
         v.push((speaker_row::SMALL_OFF_ID, speaker_row::SMALL_OFF_TEXT));
+    }
+    if lightbar {
+        v.extend_from_slice(speaker_row::LIGHTBAR_TEXTS);
     }
     v
 }
@@ -537,7 +540,7 @@ fn announce(seen: &AtomicBool, name: &str) {
 }
 
 /// Install every hook: the button layouts, and the rows of `model`
-/// (`crate::video_screen::model`): the Controller Speaker row on Controls,
+/// (`crate::video_screen::model`): the controller options on Controls,
 /// the Video row on Settings and the screen it opens, and the camera hook
 /// when the Video screen has the Field of View row.
 /// Every row's count, text and press come from the model. A missing
@@ -554,8 +557,8 @@ pub fn install(
             .is_some_and(|m| m.index_of(list, &kind).is_some())
     };
     let with_speaker = has(List::Controls, RowKind::Setting(PAD_SPEAKER.key));
-    // Any row of ours on the Controls list (the speaker's, the Steam
-    // Controller's): its text and press hooks.
+    let with_lightbar = has(List::Controls, RowKind::Setting(PAD_LIGHTBAR.key));
+    // Any row of ours on the Controls list enables its text and press hooks.
     let with_controls = model.as_ref().is_some_and(|m| {
         m.count(List::Controls, speaker_row::VANILLA_ROWS) > speaker_row::VANILLA_ROWS
     });
@@ -582,13 +585,19 @@ pub fn install(
     });
     let store = Arc::clone(model.store());
     let speaker_on = with_speaker.then(|| store.handle::<bool>(PAD_SPEAKER.key));
-    let small_values = speaker_row::small_values(with_speaker, with_aim_assist);
+    let lightbar_on = with_lightbar.then(|| store.handle::<bool>(PAD_LIGHTBAR.key));
+    let small_values = speaker_row::small_values(with_speaker, with_aim_assist, with_lightbar);
     let small_extra = small_values.len() as u32;
     let with_small = small_extra > 0;
     let fov = with_fov.then(|| store.handle::<u32>(FOV.key));
+    let max_visible_extra = if with_lightbar {
+        speaker_row::MAX_VISIBLE_EXTRA_WITH_LIGHTBAR
+    } else {
+        speaker_row::MAX_VISIBLE_EXTRA
+    };
     let extra_items = (model.count(List::Controls, speaker_row::VANILLA_ROWS)
         - speaker_row::VANILLA_ROWS)
-        .min(speaker_row::MAX_VISIBLE_EXTRA);
+        .min(max_visible_extra);
     // The Live menu's (tag copies, item widgets, pane word) in our data.
     let live: (u32, u32, u32);
     let theater_items;
@@ -600,7 +609,7 @@ pub fn install(
         if extra_items > 0 {
             mem.map_zeroed(EXTRA_BASE, EXTRA_SIZE, Permissions::RW)?;
         }
-        let mut served = served_strings(with_speaker);
+        let mut served = served_strings(with_speaker, with_lightbar);
         served.extend(model.strings().iter().map(|(i, t)| (*i, t.as_str())));
         served.extend(crate::pause_menu::TEXTS.iter().copied());
         if with_aim_assist {
@@ -1109,7 +1118,7 @@ pub fn install(
                 })
             });
         }
-        // In-game Controller Settings: append the speaker and iOS aim-assist rows.
+        // In-game Controller Settings: append the platform's extra rows.
         if let (Some(o), true) = (originals.remove(&speaker_row::SMALL_CTOR), with_small) {
             let sh = alias(d, &mut next_shadow, &o, speaker_row::SMALL_CTOR);
             let seen = AtomicBool::new(false);
@@ -1130,12 +1139,14 @@ pub fn install(
         }
         if let (Some(o), true) = (originals.remove(&speaker_row::SMALL_ROW_TEXT), with_small) {
             let seen = AtomicBool::new(false);
-            let s = speaker_on.clone();
             d.register_override(speaker_row::SMALL_ROW_TEXT, "speaker:small-row-text", move |cpu, ctx, _| {
-                let on = s.as_ref().map(|s| s.get());
+                let speaker = speaker_on.as_ref().map(|s| s.get());
+                let lightbar = lightbar_on.as_ref().map(|s| s.get());
                 let rt = Arc::clone(ctx.runtime());
                 let mut mem = rt.memory();
-                let text = speaker_row::small_row_text(&*mem, cpu.ecx, cpu.esp, on, with_aim_assist);
+                let text = speaker_row::small_row_text(
+                    &*mem, cpu.ecx, cpu.esp, speaker, with_aim_assist, lightbar,
+                );
                 if let Some(text) = text {
                     announce(&seen, "small controls: row text of ours");
                     let item = mem.u32(cpu.esp + 4)?;
@@ -1151,23 +1162,25 @@ pub fn install(
             d.register_override(speaker_row::SMALL_ROW_CHOSEN, "speaker:small-row-chosen", move |cpu, ctx, _| {
                 let press = speaker_row::small_press(
                     &*ctx.runtime().memory(), cpu.ecx, cpu.esp, with_speaker, with_aim_assist,
+                    with_lightbar,
                 );
-                match press {
-                    speaker_row::SmallPress::Retail => {}
+                let def = match press {
+                    speaker_row::SmallPress::Retail => {
+                        return Ok(o.invoke(cpu, ctx, speaker_row::SMALL_ROW_CHOSEN));
+                    }
                     speaker_row::SmallPress::LockedAimAssist => {
                         return ctx.runtime().memory().ret(cpu, 8);
                     }
-                    speaker_row::SmallPress::Speaker => {
-                        announce(&seen, "speaker row: small row chosen");
-                        // The store callback applies it with no guest memory held.
-                        match store.step(PAD_SPEAKER.key) {
-                            Ok(o) => eprintln!("{}", o.describe(&PAD_SPEAKER)),
-                            Err(e) => eprintln!("pad speaker: {e}"),
-                        }
-                        return ctx.runtime().memory().ret(cpu, 8);
-                    }
+                    speaker_row::SmallPress::Speaker => &PAD_SPEAKER,
+                    speaker_row::SmallPress::Lightbar => &PAD_LIGHTBAR,
+                };
+                announce(&seen, "small controls: row chosen");
+                // The store callback applies it with no guest memory held.
+                match store.step(def.key) {
+                    Ok(o) => eprintln!("{}", o.describe(def)),
+                    Err(e) => eprintln!("{}: {e}", def.key),
                 }
-                Ok(o.invoke(cpu, ctx, speaker_row::SMALL_ROW_CHOSEN))
+                ctx.runtime().memory().ret(cpu, 8)
             });
         }
         // The first-person camera's field of view: the original, then ours.
@@ -1609,9 +1622,8 @@ pub fn install(
             Err(e) => eprintln!("campaigns: {e}"),
         }
     }
-    // The Controls list's row text and row chosen, on the plan: our rows
-    // there (the speaker row, the Steam Controller's) as data, and the
-    // layouts' value text around the original.
+    // The Controls list's row text and row chosen read our rows as data.
+    // The layouts' value text sits around the original.
     if with_controls {
         let rows = crate::retail_rows::Extension {
             id: "controls-rows",
@@ -2098,7 +2110,7 @@ mod tests {
     fn strings_are_written_nul_terminated_and_addressable() {
         for speaker in [true, false] {
             let mut f = Fake::default();
-            let all = served_strings(speaker);
+            let all = served_strings(speaker, true);
             let (addrs, end) = write_strings(&mut f, 0x1000, &all).unwrap();
             assert_eq!(addrs.len(), all.len());
             assert_eq!(
@@ -2114,18 +2126,19 @@ mod tests {
                 assert_eq!(b[text.len()], 0);
             }
         }
-        assert_eq!(served_strings(false).len(), 6);
+        assert_eq!(served_strings(false, false).len(), 6);
         assert_eq!(
-            served_strings(true)[6..],
+            served_strings(true, false)[6..],
             [
                 (speaker_row::SMALL_ON_ID, speaker_row::SMALL_ON_TEXT),
                 (speaker_row::SMALL_OFF_ID, speaker_row::SMALL_OFF_TEXT),
             ]
         );
-        let mut ids: Vec<u32> = served_strings(true).iter().map(|(i, _)| *i).collect();
+        assert_eq!(&served_strings(true, true)[8..], speaker_row::LIGHTBAR_TEXTS);
+        let mut ids: Vec<u32> = served_strings(true, true).iter().map(|(i, _)| *i).collect();
         ids.sort();
         ids.dedup();
-        assert_eq!(ids.len(), 8);
+        assert_eq!(ids.len(), 11);
     }
 
     /// A datum array constructor call: name at [esp+4], element size 4 at
@@ -2298,6 +2311,16 @@ mod tests {
         let row = model.row(List::Controls, speaker_row::ROW).unwrap();
         assert!(matches!(model.press(row), Chosen::Stepped(_)));
         assert!(!speaker.enabled());
+        let index = model
+            .index_of(List::Controls, &RowKind::Setting(PAD_LIGHTBAR.key))
+            .unwrap();
+        let row = model.row(List::Controls, index).unwrap();
+        let lightbar = store.handle::<bool>(PAD_LIGHTBAR.key);
+        assert!(lightbar.get());
+        assert_eq!(model.texts(row)[1].1, speaker_row::LIGHTBAR_TEAM_ID);
+        assert!(matches!(model.press(row), Chosen::Stepped(_)));
+        assert!(!lightbar.get());
+        assert_eq!(model.texts(row)[1].1, speaker_row::OFF_ID);
         // On the Video screen each row steps and saves, keeping the rest.
         for r in 0..3 {
             let row = model.row(video_screen::LIST, r).unwrap();
@@ -2311,6 +2334,7 @@ mod tests {
         // The next run reads them all back.
         let next = load();
         assert_eq!(next.get(PAD_SPEAKER.key), Some(Value::Bool(false)));
+        assert_eq!(next.get(PAD_LIGHTBAR.key), Some(Value::Bool(false)));
         assert_eq!(next.get(FOV.key), Some(Value::Int(75)));
         assert_eq!(next.get(FPS.key), Some(Value::Int(60)));
         assert_eq!(next.get(RENDER_SCALE.key), Some(Value::Int(2)));

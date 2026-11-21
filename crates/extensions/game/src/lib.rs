@@ -147,6 +147,7 @@ pub mod scene_glue;
 pub mod new_maps;
 #[cfg(feature = "test-maps")]
 pub mod test_maps;
+pub mod pad_lightbar;
 pub mod pad_speaker;
 pub mod precision;
 #[cfg(feature = "desktop-runtime")]

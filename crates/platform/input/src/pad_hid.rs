@@ -5,9 +5,9 @@
 //! raw reports, so this opens the same device a second time, in shared mode
 //! (macOS: an `IOHIDManager` opened with `kIOHIDOptionsTypeNone`, never
 //! seizing it), reads only the mute bit out of its input reports and writes
-//! only output reports whose other valid-flag bits are clear
-//! ([`crate::dualsense::output_report`]): rumble, lightbar and player LEDs
-//! stay with the other backends.
+//! audio and mute reports whose other valid-flag bits stay clear
+//! ([`crate::dualsense::output_report`]). On macOS the game routes lightbar
+//! output through the controller's GameController connection.
 //!
 //! [`PadLink`] is the per-device state machine: what to send when the device
 //! opens, when the mute button is pressed, when the speaker is switched and
@@ -110,6 +110,7 @@ impl PadLink {
         let req = OutputRequest {
             mute_led: self.led(),
             speaker: self.speaker.then_some(true),
+            lightbar: None,
         };
         self.report(req)
     }
@@ -126,6 +127,7 @@ impl PadLink {
         let req = OutputRequest {
             mute_led: self.led(),
             speaker: None,
+            lightbar: None,
         };
         self.report(req)
     }
@@ -144,11 +146,13 @@ impl PadLink {
             return self.report(OutputRequest {
                 mute_led: Some(dualsense::MuteLed::Off),
                 speaker: None,
+                lightbar: None,
             });
         }
         self.report(OutputRequest {
             mute_led: self.led(),
             speaker: None,
+            lightbar: None,
         })
     }
 
@@ -162,6 +166,7 @@ impl PadLink {
         self.report(OutputRequest {
             mute_led: None,
             speaker: Some(on),
+            lightbar: None,
         })
     }
 }
@@ -368,7 +373,14 @@ fn run(
 /// without seizing it.
 #[cfg(all(target_os = "macos", feature = "hid"))]
 pub fn iokit_opener() -> HidOpener {
-    Box::new(iokit::open)
+    Box::new(|| iokit::open(dualsense::DUALSENSE_PIDS))
+}
+
+/// The first wired or Bluetooth DualShock 4, opened for shared raw reports.
+/// Use [`dualsense::ds4_lightbar_report`] for its lightbar output.
+#[cfg(all(target_os = "macos", feature = "hid"))]
+pub fn iokit_ds4_opener() -> HidOpener {
+    Box::new(|| iokit::open(dualsense::DS4_PIDS))
 }
 
 /// This platform's opener ([`iokit_opener`] on macOS with the `hid`

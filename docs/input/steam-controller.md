@@ -181,9 +181,9 @@ Speaker is on; otherwise the routed sounds play on the main output only.
 | `steam_pad.sensitivity` | Trackpad Aim | `H2_STEAM_SENSITIVITY` | 1 to 10, default 5 |
 | `steam_pad.left_pad` | Left Trackpad | `H2_STEAM_LEFT_PAD` | `dpad` (default), `stick` |
 
-The rows sit on the profile's Controls screen, after Controller Speaker.
-All three apply at once. The iOS app never shows them; it shows the touch
-rows instead. Other switches:
+The rows sit on the profile's Controls screen, after Controller Speaker
+and Lightbar on macOS. All three apply at once. The iOS Controls screen
+shows the touch rows. Other switches:
 
 - `H2_STEAM_PAD=0`: don't open Steam Controllers at all (lizard mode stays
   as the controller has it).
@@ -240,8 +240,6 @@ Open questions:
   also offers a 2026 controller as a pad. If it does, the controller shows
   up twice.
 - **Speaker quality.** How recognisable the speaker rendition is.
-- **Ten Controls rows.** With the Steam rows, the Controls list shows ten
-  rows: the six retail ones, Controller Speaker and the three Steam rows.
-  The list is grown the way the speaker row grows it, one item height per
-  row with no scrolling. Whether ten rows fit on screen hasn't been seen
-  in game.
+- **Controls viewport.** With the Steam rows, the Controls list has ten
+  visible items. On macOS the Lightbar row brings the count to eleven
+  and Left Trackpad scrolls into view. The layout still needs a play test.

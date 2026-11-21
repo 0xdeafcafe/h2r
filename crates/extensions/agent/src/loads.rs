@@ -233,6 +233,8 @@ impl LoadTracker {
 
 #[cfg(test)]
 mod tests {
+    use timeline::phase::Counter;
+
     use super::*;
 
     fn totals(frames: u64, read: u64, shaders: u64) -> Option<Totals> {

@@ -9,6 +9,7 @@
 //! directory, which should be under `$TMPDIR` or `target/`.
 
 pub use game::*;
+mod controller_lights;
 // maps.test.*: test maps from recipes (docs/game/test-maps.md).
 pub mod registration;
 #[cfg(feature = "test-maps")]
@@ -852,6 +853,9 @@ fn run_configured(
     let xa = host.input.take()
         .map(|input| xapi_glue::register_with(&loaded.runtime, &k, input))
         .transpose()?;
+    let mut controller_lights = xa.as_ref().filter(|_| !host_light).map(|x| {
+        controller_lights::ControllerLights::new(x, host.settings.as_deref())
+    });
     // Voice chat's communicator (docs/live/live-voice.md): off until a
     // microphone is chosen on the Voice screen.
     #[cfg(feature = "local-io")]
@@ -996,6 +1000,9 @@ fn run_configured(
             host.settings.clone(),
             host.perf_overlay.clone(),
         );
+        if let Some(lights) = &controller_lights {
+            lights.install(&a.agent);
+        }
     }
     if sim_mode.is_some() || host_light {
         features
@@ -1384,6 +1391,9 @@ fn run_configured(
         if let Some(link) = voice_link.as_mut() {
             link.pump();
         }
+        if let Some(lights) = &mut controller_lights {
+            lights.sample(&loaded.runtime);
+        }
         if let Some(x) = &xa
             && timeline::host::INPUT
                 .time(|| {
@@ -1442,6 +1452,7 @@ fn run_configured(
             break;
         }
     }
+    drop(controller_lights);
     if let Some(audit) = &audit {
         audit.finish(&loaded.runtime)?;
     }

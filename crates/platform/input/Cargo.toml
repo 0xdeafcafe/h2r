@@ -9,7 +9,7 @@ description = "Xbox gamepad model (XINPUT_GAMEPAD), 4-port device model and host
 default = ["gilrs", "game-controller", "hid"]
 # Physical gamepads through gilrs (IOKit HID on macOS).
 gilrs = ["dep:gilrs"]
-# Apple GameController (GCController): hot-plug, pressure buttons and rumble
+# Apple GameController (GCController): hot-plug, pressure buttons, rumble and lightbars
 # on macOS and tvOS. The platform half is compiled only on Apple platforms; the mapping layer is
 # portable and always built with this feature.
 game-controller = ["dep:objc2", "dep:objc2-foundation", "dep:objc2-game-controller", "dep:objc2-core-haptics", "dep:block2", "dep:dispatch2"]
@@ -35,8 +35,8 @@ block2 = { version = "0.6", optional = true }
 dispatch2 = { version = "0.3", optional = true }
 objc2-foundation = { version = "0.3", optional = true, default-features = false, features = ["std", "NSArray", "NSString", "NSError", "NSSet", "NSObject", "NSEnumerator", "NSRunLoop", "NSDate", "NSObjCRuntime"] }
 objc2-game-controller = { version = "0.3", optional = true, default-features = false, features = [
-    "std", "GCController", "GCControllerElement", "GCControllerButtonInput", "GCControllerAxisInput",
-    "GCControllerDirectionPad", "GCDevice", "GCDeviceHaptics", "GCDualSenseGamepad", "GCDualShockGamepad", "GCExtendedGamepad", "GCMicroGamepad", "GCPhysicalInputProfile", "block2", "dispatch2",
+    "std", "GCColor", "GCController", "GCControllerElement", "GCControllerButtonInput", "GCControllerAxisInput",
+    "GCControllerDirectionPad", "GCDevice", "GCDeviceHaptics", "GCDeviceLight", "GCDualSenseGamepad", "GCDualShockGamepad", "GCExtendedGamepad", "GCMicroGamepad", "GCPhysicalInputProfile", "block2", "dispatch2",
 ] }
 objc2-core-haptics = { version = "0.3", optional = true, default-features = false, features = [
     "std", "block2", "CHHapticEngine", "CHHapticEvent", "CHHapticParameter", "CHHapticPattern", "CHHapticPatternPlayer",

@@ -56,6 +56,7 @@ mod exec;
 pub mod havok;
 pub mod hostpads;
 pub mod hot;
+pub mod lightbar;
 mod live;
 mod loads;
 pub mod menu;

@@ -36,6 +36,7 @@ pub mod gamepad;
 pub mod haptics;
 pub mod host;
 pub mod layouts;
+pub mod lightbar;
 pub mod look;
 pub mod pad_hid;
 pub mod report;
