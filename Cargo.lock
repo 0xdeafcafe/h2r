@@ -1002,6 +1002,7 @@ dependencies = [
  "firefight-kit",
  "flate2",
  "font",
+ "forge",
  "forge-build",
  "gltf",
  "h1-assets",
@@ -2180,6 +2181,9 @@ version = "0.1.0"
 dependencies = [
  "content",
  "forge-doc",
+ "serde",
+ "serde_json",
+ "settings",
 ]
 
 [[package]]

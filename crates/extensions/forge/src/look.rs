@@ -7,6 +7,7 @@
 //! look is turned down; [`census`] lists the models a machine can draw;
 //! [`saved`] keeps a look in the profile's settings.
 pub mod census;
+pub mod monitors;
 mod refusal;
 pub mod saved;
 

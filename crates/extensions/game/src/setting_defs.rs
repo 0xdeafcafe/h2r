@@ -971,6 +971,13 @@ pub static ALL: &[&Def] = &[
     &crate::skulls::SKULLS[18],
     &crate::skulls::SKULLS[19],
     &crate::skulls::SKULLS[20],
+    // The Forge monitor's look, kept per profile (forge::look::saved,
+    // docs/game/forge-monitor-appearance.md).
+    &forge::look::saved::DEFS[0],
+    &forge::look::saved::DEFS[1],
+    &forge::look::saved::DEFS[2],
+    &forge::look::saved::DEFS[3],
+    &forge::look::saved::DEFS[4],
     // Skulls in multiplayer games (crate::skulls_mp, docs/game/skulls.md).
     &crate::skulls_mp::MP_FAMINE,
     &crate::skulls_mp::MP_BLIND,

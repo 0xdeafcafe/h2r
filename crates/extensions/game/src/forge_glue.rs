@@ -3,6 +3,7 @@
 //! any map file still being read by the background worker.
 mod editing;
 pub mod gizmo;
+pub mod marker;
 
 use std::path::{Path, PathBuf};
 use std::sync::{
@@ -13,6 +14,11 @@ use std::sync::{
 
 use agent::forge::local::{self, LocalApi, ProposalReply};
 use agent::sim::calls;
+use forge::look::{
+    Refusal,
+    census::{self, Entry as Model},
+    monitors::{Looks, Who},
+};
 use forge_doc::{Entry, ForgeDoc, Op, Sha256};
 use guest_layout::game::{GameGlobals, GameTime};
 use hooks::{BuildError, Builder, Feature, Manifest, SnapshotPolicy};
@@ -68,6 +74,10 @@ fn admitted(m: &dyn engine::GuestMemory, generation: u64) -> bool {
 }
 
 struct Driver {
+    /// The monitor looks: this machine's catalogue and, while a session is
+    /// open, the local seat's look (docs/game/forge-monitor-appearance.md).
+    looks: Looks,
+    store: Option<Arc<settings::Store>>,
     calls: calls::Shared,
     vfs: Option<Arc<Mutex<vfs::Vfs>>>,
     data: PathBuf,
@@ -81,6 +91,7 @@ impl Driver {
     fn reset(&mut self) {
         GENERATION.fetch_add(1, Ordering::AcqRel);
         self.editor = None;
+        self.looks.close();
         self.opening = None;
         self.loaded = None;
         self.reason = "Waiting for a local multiplayer map.".into();
@@ -138,12 +149,17 @@ impl Driver {
             self.opening = None;
             match result {
                 Ok(opened) => {
-                    self.editor = Some(Editor::new(
-                        opened,
-                        &self.data,
-                        loaded.scenario,
-                        self.calls.clone(),
-                    ));
+                    let mut editor =
+                        Editor::new(opened, &self.data, loaded.scenario, self.calls.clone());
+                    let tick = GameTime::current(m)
+                        .ok()
+                        .flatten()
+                        .and_then(|t| t.tick(m).ok())
+                        .unwrap_or_default();
+                    if let Some(notice) = self.looks.open(self.store.as_deref(), &who_of(Some(m))) {
+                        editor.say(notice, tick);
+                    }
+                    self.editor = Some(editor);
                 }
                 Err(error) => {
                     eprintln!("forge: {error}");
@@ -221,11 +237,44 @@ impl Feature for Hooks {
     }
 }
 
+/// The profile of local slot 0 and its colour: whose monitor look this is.
+/// Without a signed-in profile it is the default profile
+/// ([`crate::skulls::DEFAULT_PROFILE`]) and palette colour 0.
+fn who_of(m: Option<&dyn engine::GuestMemory>) -> Who {
+    match m {
+        Some(m) => Who {
+            profile: crate::skulls::profile_or_default(&crate::layout_glue::ReadGm(m), 0),
+            colour: crate::pad_lightbar::seat_colour(m, 0).unwrap_or(0),
+        },
+        None => Who {
+            profile: crate::skulls::DEFAULT_PROFILE.to_owned(),
+            colour: 0,
+        },
+    }
+}
+
+/// This machine's catalogue of monitor models: the census `h2 forge looks`
+/// last wrote under the data root, or empty with the reason.
+fn catalogue(data: &Path) -> (Vec<Model>, Option<String>) {
+    match census::load_latest(&data.join("cache")) {
+        Ok(Some(c)) => (c.entries, None),
+        Ok(None) => (
+            Vec::new(),
+            Some(
+                "No census yet: run `h2 forge looks` to list the models this install can draw"
+                    .into(),
+            ),
+        ),
+        Err(e) => (Vec::new(), Some(e)),
+    }
+}
+
 pub fn install(
     registry: &mut hooks::Registry,
     agent: Option<&crate::agent_glue::AgentGlue>,
     vfs: Option<Arc<Mutex<vfs::Vfs>>>,
     data: &Path,
+    store: Option<Arc<settings::Store>>,
 ) -> anyhow::Result<()> {
     let calls = if let Some(sim) = agent.and_then(|a| a.sim.as_ref()) {
         sim.calls().unwrap_or_else(calls::shared)
@@ -236,7 +285,10 @@ pub fn install(
             .map_err(anyhow::Error::msg)?;
         calls
     };
+    let (models, note) = catalogue(data);
     let driver = Arc::new(Mutex::new(Driver {
+        looks: Looks::new(models, note),
+        store,
         calls,
         vfs,
         data: data.into(),
@@ -272,6 +324,30 @@ impl Backend {
 }
 
 impl LocalApi for Backend {
+    fn who(&self, m: Option<&dyn engine::GuestMemory>) -> Who {
+        who_of(m)
+    }
+
+    fn look(&self, who: &Who, seat: Option<u64>) -> Result<Value, Refusal> {
+        let driver = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        driver.looks.report(driver.store.as_deref(), who, seat)
+    }
+
+    fn look_set(&self, who: &Who, params: Value) -> Result<Value, Refusal> {
+        let mut driver = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let store = driver.store.clone();
+        driver.looks.set(store.as_deref(), who, &params)
+    }
+
+    fn monitors(&self, who: &Who) -> Value {
+        let driver = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let (monitor, pose) = driver
+            .editor
+            .as_ref()
+            .map_or((false, None), |e| (e.monitor(), e.pose()));
+        driver.looks.monitors(who, monitor, pose)
+    }
+
     fn status(&self) -> Result<Value, String> {
         Ok(self
             .read(Editor::status)

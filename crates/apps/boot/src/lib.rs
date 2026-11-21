@@ -1156,7 +1156,13 @@ fn run_configured(
     let mut harness = late.harness;
     let mut agent = late.agent;
     if local_forge {
-        forge_glue::install(&mut features, agent.as_ref(), k.vfs(), &opts.data_root)?;
+        forge_glue::install(
+            &mut features,
+            agent.as_ref(),
+            k.vfs(),
+            &opts.data_root,
+            host.settings.clone(),
+        )?;
     }
     if let Some(a) = &mut agent {
         a.configure_takeover(

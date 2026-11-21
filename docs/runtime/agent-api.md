@@ -77,7 +77,7 @@ connection to hold `session.claim`.
 | `bots.bounce_to` | act | [Bounce routes](#bounce-routes) |
 | `bots.bounce_status`, `superbounce.spots` | read | [Bounce routes](#bounce-routes) |
 | `sim.*` | read or act | [`sim`](#sim-simulated-players-and-direct-state) |
-| `forge.status`, `forge.doc`, `forge.log`, `forge.propose`, `forge.input` | read or act | [Local Forge session](#local-forge-session) |
+| `forge.status`, `forge.doc`, `forge.log`, `forge.propose`, `forge.input`, `forge.look`, `forge.look.set`, `forge.status.monitors` | read or act | [Local Forge session](#local-forge-session) |
 | `forge.capacity`, `forge.probe` | read, act | [Forge probes](#forge-probes) |
 | `firefight.state`, `firefight.kit` | read | [Firefight](#firefight) |
 | `firefight.command` | act | [Firefight](#firefight) |
@@ -3054,6 +3054,9 @@ feature is enabled.
 | `forge.log` (read) | `{since?}` | `{entries}` in sequence order, starting strictly after `since` (default zero) |
 | `forge.input` (act) | `{action}` or `{movement?, look?, roll?, rotating?}` | `{queued:true}` when the current local session accepts one monitor input |
 | `forge.propose` (act) | `{op, was?}` | `{entry}` on acceptance, or a refusal with its reason |
+| `forge.look` (read) | `{seat?}` | The monitor look: `{session, look, drawn_as, saved, catalogue, locks}`, and `notice`, `catalogue_note` and `problems` when there are any. `look` is the session's look, or with no session the saved one as this machine can use it. `drawn_as` is what other players see: `{as: "model" \| "marker" \| "hidden", reason?}`. `saved` is `{look, source}` as the profile holds it. `catalogue` is each model of the census: `{key, name, source, sha256, variants, colours, light, nodes, triangles, available, refusal?}`. `locks` maps each locked field to its reason. A `seat` other than 0 is refused: offline there is one seat |
+| `forge.look.set` (act) | `{reset?, save?, model?, variant?, primary?, secondary?, tint?, light?, light_colour?}` | `{look, changed, saved, drawn_as}`: the look as accepted. `reset: true` is the default look (the marker in the seat's colour) and takes no field. `variant: null` clears the variant. `save: true` also writes the profile (`not_saved` says why when the file was not written). A refusal is an error whose `data` is `{code, message, ...fields}`: `monitor_look_invalid` (`field`, `reason`), `monitor_look_locked` (`field`, `reason`) or `monitor_look_no_session` outside a Forge session; the look stays as it was |
+| `forge.status.monitors` (read) | `{}` or omitted | `{monitors: [{seat, name, monitor, pose, look, drawn_as, peers_see, seen_ticks_ago}]}`. Offline it holds seat 0 once a session is open and is empty before. `pose` is `{position, yaw, pitch}` while the monitor camera exists. `drawn_as` is how the seat looks in its own view, always `hidden` with the reason; `peers_see` is what another machine draws |
 
 The input queue accepts `toggle`, `accept`, `back`, `delete`, `palette`,
 `properties`, `menu`, `undo`, `redo`, `up`, `down` and `link`. `link`

@@ -47,21 +47,54 @@ fn a_good_look_validates_and_the_default_is_the_seats_marker() {
 #[test]
 fn every_bound_has_a_refusing_case() {
     let cases: Vec<(&str, Box<dyn Fn(&mut MonitorLook)>)> = vec![
-        ("model", Box::new(|l| l.model = String::new())),
-        ("model", Box::new(|l| l.model = "x".repeat(KEY_MAX + 1))),
-        ("model", Box::new(|l| l.model = "Upper".into())),
-        ("model", Box::new(|l| l.model = "a-b".into())),
-        ("variant", Box::new(|l| l.variant = Some(String::new()))),
+        (
+            "model",
+            Box::new(|l: &mut MonitorLook| l.model = String::new()),
+        ),
+        (
+            "model",
+            Box::new(|l: &mut MonitorLook| l.model = "x".repeat(KEY_MAX + 1)),
+        ),
+        (
+            "model",
+            Box::new(|l: &mut MonitorLook| l.model = "Upper".into()),
+        ),
+        (
+            "model",
+            Box::new(|l: &mut MonitorLook| l.model = "a-b".into()),
+        ),
         (
             "variant",
-            Box::new(|l| l.variant = Some("x".repeat(VARIANT_MAX + 1))),
+            Box::new(|l: &mut MonitorLook| l.variant = Some(String::new())),
         ),
-        ("variant", Box::new(|l| l.variant = Some("A b".into()))),
-        ("primary", Box::new(|l| l.primary = PALETTE)),
-        ("secondary", Box::new(|l| l.secondary = PALETTE)),
-        ("tint", Box::new(|l| l.tint = TINT_MAX + 1)),
-        ("light", Box::new(|l| l.light = LIGHT_MAX + 1)),
-        ("light_colour", Box::new(|l| l.light_colour = PALETTE)),
+        (
+            "variant",
+            Box::new(|l: &mut MonitorLook| l.variant = Some("x".repeat(VARIANT_MAX + 1))),
+        ),
+        (
+            "variant",
+            Box::new(|l: &mut MonitorLook| l.variant = Some("A b".into())),
+        ),
+        (
+            "primary",
+            Box::new(|l: &mut MonitorLook| l.primary = PALETTE),
+        ),
+        (
+            "secondary",
+            Box::new(|l: &mut MonitorLook| l.secondary = PALETTE),
+        ),
+        (
+            "tint",
+            Box::new(|l: &mut MonitorLook| l.tint = TINT_MAX + 1),
+        ),
+        (
+            "light",
+            Box::new(|l: &mut MonitorLook| l.light = LIGHT_MAX + 1),
+        ),
+        (
+            "light_colour",
+            Box::new(|l: &mut MonitorLook| l.light_colour = PALETTE),
+        ),
     ];
     for (field, change) in cases {
         let mut l = look();
@@ -90,9 +123,11 @@ fn every_bound_has_a_refusing_case() {
 #[test]
 fn the_marker_has_no_variant_tint_or_light() {
     let cases: [(&str, fn(&mut MonitorLook)); 3] = [
-        ("variant", |l| l.variant = Some("x".into())),
-        ("tint", |l| l.tint = 1),
-        ("light", |l| l.light = 1),
+        ("variant", |l: &mut MonitorLook| {
+            l.variant = Some("x".into())
+        }),
+        ("tint", |l: &mut MonitorLook| l.tint = 1),
+        ("light", |l: &mut MonitorLook| l.light = 1),
     ];
     for (field, change) in cases {
         let mut l = MonitorLook::default_for(0);
@@ -382,9 +417,9 @@ fn a_bad_value_is_reported_by_key_and_left_in_the_file() {
     assert!(text.contains("monitor_primary"), "{text}");
     assert!(text.contains("monitor_model"), "{text}");
     assert!(text.contains("monitor_source"), "{text}");
-    // A tint on a marker is not a look: the whole saved look is not used.
+    // Nothing valid was saved, so the seat's marker is used.
     assert_eq!(loaded.saved, Saved::marker(5));
-    assert!(text.contains("saved monitor look was not used"), "{text}");
+    assert!(text.contains("monitor_tint"), "{text}");
     assert_eq!(
         std::fs::read_to_string(&path).unwrap(),
         file,
@@ -624,4 +659,217 @@ fn the_cache_key_is_the_set_of_map_hashes_and_the_census_round_trips() {
     assert!(census::load_cached(&dir, "old").is_none());
     std::fs::write(census::cache_path(&dir, "junk"), "not json").unwrap();
     assert!(census::load_cached(&dir, "junk").is_none());
+}
+
+// ---- the seat's look through the agent API's rules ----
+
+use super::monitors::{Looks, Who, drawn_as};
+
+fn who() -> Who {
+    Who {
+        profile: "Chief".into(),
+        colour: 4,
+    }
+}
+
+fn looks(bodies: bool) -> Looks {
+    let catalogue = vec![
+        entry("widget", &["blue", "red"], true),
+        entry("plain", &["only"], false),
+    ];
+    Looks::new(catalogue, None).with_bodies(bodies)
+}
+
+#[test]
+fn with_no_session_the_report_is_the_saved_look_and_the_catalogue() {
+    let l = looks(false);
+    let v = l.report(None, &who(), None).unwrap();
+    assert_eq!(v["session"], false);
+    assert_eq!(v["look"], MonitorLook::default_for(4).to_value());
+    assert_eq!(v["saved"]["look"], v["look"]);
+    assert_eq!(v["drawn_as"]["as"], "marker");
+    assert_eq!(v["catalogue"].as_array().unwrap().len(), 2);
+    assert_eq!(v["catalogue"][0]["key"], "widget");
+    assert_eq!(v["catalogue"][0]["available"], false);
+    assert_eq!(
+        v["catalogue"][0]["refusal"]["code"],
+        "monitor_look_renderer"
+    );
+    assert_eq!(v["locks"]["tint"], "The marker has no tint");
+    assert!(
+        l.report(None, &who(), Some(1)).is_err(),
+        "no seat 1 offline"
+    );
+    assert!(l.report(None, &who(), Some(0)).is_ok());
+    // An empty catalogue says why.
+    let empty = Looks::new(vec![], Some("run h2 forge looks".into()));
+    assert_eq!(
+        empty.report(None, &who(), None).unwrap()["catalogue_note"],
+        "run h2 forge looks"
+    );
+}
+
+#[test]
+fn a_set_needs_a_session_and_each_refusal_leaves_the_look() {
+    let mut l = looks(true);
+    assert_eq!(
+        l.set(None, &who(), &json!({"tint": 1})),
+        Err(Refusal::NoSession)
+    );
+    assert!(l.open(None, &who()).is_none());
+    let before = l.session().cloned().unwrap();
+    assert_eq!(before, MonitorLook::default_for(4));
+    let refused = [
+        (json!({}), "monitor_look_invalid"),
+        (json!({"nope": 1}), "monitor_look_invalid"),
+        (json!({"tint": 9}), "monitor_look_invalid"),
+        (json!({"tint": 1}), "monitor_look_invalid"),
+        (json!({"model": "ghost"}), "monitor_look_invalid"),
+        (
+            json!({"model": "widget", "variant": "green"}),
+            "monitor_look_invalid",
+        ),
+        (json!({"reset": true, "tint": 1}), "monitor_look_invalid"),
+        (json!({"reset": 1}), "monitor_look_invalid"),
+        (json!({"save": true, "tint": 1}), "monitor_look_invalid"),
+        (json!(7), "monitor_look_invalid"),
+    ];
+    for (params, code) in refused {
+        let r = l.set(None, &who(), &params).unwrap_err();
+        assert_eq!(r.code(), code, "{params}");
+        assert_eq!(l.session(), Some(&before), "{params}");
+    }
+    // A model with no colour areas locks its colour rows.
+    l.set(None, &who(), &json!({"model": "plain"})).unwrap();
+    let locked = l.set(None, &who(), &json!({"primary": 9})).unwrap_err();
+    assert_eq!(locked.code(), "monitor_look_locked");
+}
+
+#[test]
+fn a_set_and_a_reset_change_the_session_look() {
+    let mut l = looks(true);
+    l.open(None, &who());
+    let v = l
+        .set(
+            None,
+            &who(),
+            &json!({"model": "widget", "variant": "red", "primary": 9, "tint": 2, "light": 1}),
+        )
+        .unwrap();
+    assert_eq!(v["changed"], true);
+    assert_eq!(v["saved"], false);
+    assert_eq!(v["look"]["model"], "widget");
+    assert_eq!(v["look"]["variant"], "red");
+    assert_eq!(v["look"]["secondary"], 4, "the seat's colour stays");
+    assert_eq!(v["drawn_as"]["as"], "model");
+    assert_eq!(l.report(None, &who(), None).unwrap()["look"], v["look"]);
+    let again = l.set(None, &who(), &json!({"primary": 9})).unwrap();
+    assert_eq!(again["changed"], false);
+    let reset = l.set(None, &who(), &json!({"reset": true})).unwrap();
+    assert_eq!(reset["look"], MonitorLook::default_for(4).to_value());
+    assert_eq!(reset["changed"], true);
+    l.close();
+    assert_eq!(l.session(), None);
+    assert_eq!(
+        l.set(None, &who(), &json!({"reset": true})),
+        Err(Refusal::NoSession)
+    );
+}
+
+#[test]
+fn save_writes_the_profile_only_when_asked() {
+    let path = tmp("set-save");
+    let (s, _) = store(&path);
+    let mut l = looks(true);
+    l.open(Some(&s), &who());
+    l.set(Some(&s), &who(), &json!({"model": "widget", "tint": 1}))
+        .unwrap();
+    assert!(!path.exists(), "a set alone writes nothing");
+    let v = l
+        .set(Some(&s), &who(), &json!({"save": true, "light": 2}))
+        .unwrap();
+    assert_eq!(v["saved"], true);
+    let saved_look = saved::load(&s, "Chief", 4).saved;
+    assert_eq!(saved_look.look.model, "widget");
+    assert_eq!(saved_look.look.light, 2);
+    assert_eq!(saved_look.source.as_deref(), Some("a".repeat(64).as_str()));
+    // With no store a save is refused, not skipped.
+    let mut bare = looks(true);
+    bare.open(None, &who());
+    assert!(
+        bare.set(None, &who(), &json!({"save": true, "tint": 0, "light": 0}))
+            .is_err()
+    );
+}
+
+#[test]
+fn opening_a_session_uses_the_saved_look_and_says_when_it_cannot() {
+    let path = tmp("open");
+    let (s, _) = store(&path);
+    let want = Saved {
+        look: look(),
+        source: Some("b".repeat(64)),
+    };
+    saved::save(&s, "Chief", &want).unwrap();
+    let before = std::fs::read_to_string(&path).unwrap();
+    let mut l = looks(true);
+    let notice = l.open(Some(&s), &who()).unwrap();
+    assert!(notice.contains("Widget needs a campaign map"), "{notice}");
+    assert!(l.session().unwrap().is_marker());
+    let v = l.report(Some(&s), &who(), None).unwrap();
+    assert_eq!(v["notice"], notice);
+    assert_eq!(v["saved"]["look"]["model"], "widget", "still saved");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
+}
+
+#[test]
+fn the_monitors_report_the_local_seat_and_what_others_see() {
+    let mut l = looks(false);
+    assert_eq!(l.monitors(&who(), false, None), json!({"monitors": []}));
+    l.open(None, &who());
+    l.set(None, &who(), &json!({"model": "widget"})).unwrap();
+    let v = l.monitors(&who(), true, Some(([1.0, 2.0, 3.0], 0.5, -0.25)));
+    let m = &v["monitors"][0];
+    assert_eq!(
+        (m["seat"].clone(), m["name"].clone()),
+        (json!(0), json!("Chief"))
+    );
+    assert_eq!(m["monitor"], true);
+    assert_eq!(m["pose"]["position"], json!([1.0, 2.0, 3.0]));
+    assert_eq!(m["drawn_as"]["as"], "hidden");
+    assert!(
+        m["drawn_as"]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("own view")
+    );
+    assert_eq!(m["peers_see"]["as"], "marker");
+    assert!(
+        m["peers_see"]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("does not draw")
+    );
+    assert_eq!(m["look"]["model"], "widget");
+    assert_eq!(m["seen_ticks_ago"], 0);
+    let out = l.monitors(&who(), false, None);
+    assert!(out["monitors"][0]["pose"].is_null());
+    assert_eq!(out["monitors"][0]["peers_see"]["as"], "hidden");
+}
+
+#[test]
+fn drawn_as_names_the_reason_for_anything_but_the_asked_look() {
+    let catalogue = [entry("widget", &["blue"], true)];
+    let marker = MonitorLook::default_for(1);
+    assert_eq!(drawn_as(&marker, &catalogue, false).kind, "marker");
+    assert_eq!(drawn_as(&marker, &catalogue, false).reason, None);
+    let widget = MonitorLook {
+        model: "widget".into(),
+        variant: None,
+        ..marker.clone()
+    };
+    assert_eq!(drawn_as(&widget, &catalogue, true).kind, "model");
+    assert_eq!(drawn_as(&widget, &catalogue, true).reason, None);
+    assert!(drawn_as(&widget, &catalogue, false).reason.is_some());
+    assert!(drawn_as(&widget, &[], true).reason.is_some());
 }

@@ -14,6 +14,9 @@ pub mod method {
     pub const INPUT: &str = "forge.input";
     pub const PROPOSE: &str = "forge.propose";
     pub const PROBE: &str = "forge.probe";
+    pub const LOOK: &str = "forge.look";
+    pub const LOOK_SET: &str = "forge.look.set";
+    pub const MONITORS: &str = "forge.status.monitors";
 }
 
 /// One monitor input. Directions are normalized axes in camera space.

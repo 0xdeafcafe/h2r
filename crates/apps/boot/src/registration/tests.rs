@@ -253,7 +253,7 @@ fn registry_for_profile(case: &Case, profile: film::RenderHooks) -> hooks::Regis
     }
     // What `run_hosted_with_live` adds after `register_late`, in its order.
     if features.switches().feature("forge", false) && !case.light && !lockstep_on {
-        crate::forge_glue::install(&mut features, late.agent.as_ref(), None, nowhere).unwrap();
+        crate::forge_glue::install(&mut features, late.agent.as_ref(), None, nowhere, None).unwrap();
     }
     if let Some(a) = &mut late.agent {
         a.configure_takeover(&mut features, case.takeover && !case.light, case.takeover && !case.light)

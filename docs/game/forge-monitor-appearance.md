@@ -1,7 +1,7 @@
 # Forge monitor appearance
 
-Status: Partly built (ML1 to ML2). The look, its profile keys, its refusals and the census exist; no model is drawn, no page edits a look and nobody else can see a monitor.
-Code: `crates/extensions/forge/src/look.rs` and `look/` (the look, `census`, `saved`), `crates/apps/cli/src/forge_looks.rs` (the disc reader behind `h2 forge looks`), `crates/extensions/game/src/forge_controls/render.rs` (the parked biped and the monitor's view), `crates/extensions/forge/src/camera.rs` (the pose), `crates/extensions/game/src/ui_kit/forge.rs` (the pages). Tests: `look/tests.rs` and `forge_looks.rs`; each later slice names its own.
+Status: Partly built (ML1 to ML3). The look, its profile keys, its refusals, the census, the marker's projection and the offline agent methods exist; no model is drawn, no page edits a look and nobody else can see a monitor.
+Code: `crates/extensions/forge/src/look.rs` and `look/` (the look, `census`, `saved`), `crates/apps/cli/src/forge_looks.rs` (the disc reader behind `h2 forge looks`), `crates/extensions/forge/src/look/monitors.rs` (the seat's look and the agent methods' rules), `crates/extensions/game/src/forge_glue/marker.rs` (the marker), `crates/extensions/game/src/forge_controls/render.rs` (the parked biped and the monitor's view), `crates/extensions/forge/src/camera.rs` (the pose), `crates/extensions/game/src/ui_kit/forge.rs` (the pages). Tests: `look/tests.rs`, `forge_looks.rs`, `forge_glue/marker.rs` and `crates/extensions/agent/src/forge/tests.rs`; each later slice names its own.
 Switch: `forge`, listed in [switches.md](../runtime/switches.md). No switch of its own.
 
 What a player looks like while they fly as a monitor in a Forge session:
@@ -135,6 +135,17 @@ lists several permutations the look takes the one with the highest
 probability, the first on a tie (**Design**; the game draws by
 `0x0016dad0`, which is not reproduced, objects.md). Damage states are
 never chosen.
+
+**The marker.** `forge_glue::marker::Marker` is the ring: its centre is
+the monitor's position projected through the frame's world camera by the
+function the gizmo's axes use (`gizmo::pixel_of`), its radius is a fixed
+world radius projected the same way, and its label point sits above the
+ring. `Marker::paint` draws the ring into the HUD canvas behind the
+reticle and panels, in the primary colour read from the map's player
+colours (`pad_lightbar::palette_rgb`). The name is drawn by the
+compositor's text path at the label point. Nothing draws a marker yet:
+a monitor never draws its own, and no other seat exists until the
+session channel (ML7).
 
 **Pose.** The body sits at the camera's position, turned to its yaw and
 pitch, in the model's rest pose, with a slow vertical bob computed from
@@ -283,10 +294,10 @@ pose:   {seat, position, yaw, pitch, monitor: bool, held: OpId?}
 
 | Refusal | When |
 |---|---|
-| `monitor_look_invalid` | a field out of bounds, an unknown key, a variant the model lacks |
+| `monitor_look_invalid` `{field, reason}` | a field out of bounds, an unknown key, a model or variant the catalogue lacks |
 | `monitor_look_source_missing` `{machine, map}` | a machine in the session does not hold the model's source map at that hash |
 | `monitor_look_renderer` `{machine}` | a machine in the session runs without the native renderer |
-| `monitor_look_locked` `{field}` | the host set team colours and the look changes primary |
+| `monitor_look_locked` `{field, reason}` | the look changes a field the model or the session locks: the host's team colours lock primary, a model with no colour areas locks both colours, one variant locks the variant, the marker locks variant, tint and light |
 | `monitor_look_version` | at join: the joiner's look version is not the host's; the join is refused before the map loads |
 | `monitor_look_no_session` | a set outside a Forge session through the agent API (the menu writes the profile instead) |
 
@@ -352,18 +363,24 @@ starts with a subtype byte: 0 is a log entry, 1 a look, 2 a pose.
 ## Interfaces
 
 **Agent API** (game), in [agent-api.md](../runtime/agent-api.md),
-"Local Forge session", when built. The methods are added because every
-later look test, lane and tool reads and sets looks through them.
+"Local Forge session". Every look test, lane and tool reads and sets
+looks through these. They are in `crates/extensions/agent/src/forge/local.rs`
+and ride the `forge` feature, like the rest of that section.
 
 | Method | Access | Parameters | Result |
 |---|---|---|---|
-| `forge.look` | read | `{seat?}` | `{look, drawn_as, saved, catalogue: [{key, name, source, sha256, variants, colours, light, available, refusal?}], locks}`; with no session, the profile's saved look and this machine's catalogue |
-| `forge.look.set` | act | any of the look's fields; `reset: true` | `{look}` as accepted, or the refusal with its code and fields |
-| `forge.look.preview` | act | `{look, path?, size?}` | `{path, width, height}`: the preview target as a PNG under the data root, `NO_GPU` where there is none |
-| `forge.status` | read | | gains `monitors: [{seat, name, monitor, pose, look, drawn_as, seen_ticks_ago}]` |
+| `forge.look` | read | `{seat?}` | `{session, look, drawn_as, saved, catalogue: [{key, name, source, sha256, variants, colours, light, available, refusal?}], locks}`; with no session, the profile's saved look and this machine's catalogue |
+| `forge.look.set` | act | any of the look's fields; `reset: true`; `save: true` | `{look, changed, saved, drawn_as}` as accepted, or the refusal with its code and fields |
+| `forge.status.monitors` | read | | `{monitors: [{seat, name, monitor, pose, look, drawn_as, peers_see, seen_ticks_ago}]}` |
+| `forge.look.preview` | act | `{look, path?, size?}` | `{path, width, height}`: the preview target as a PNG under the data root, `NO_GPU` where there is none (ML6) |
 
 `drawn_as` is `model`, `marker` or `hidden`, with the reason when it is
-not what the look asks for. `ui.screen` reports the `forge.look` page
+not what the look asks for. `peers_see` is the same for another
+machine. A set changes the session's look; it writes the profile only
+with `save: true`, so a test does not rewrite the player's settings. The
+set methods speak for the profile signed in on local slot 0 and take its
+primary colour as the seat's colour; with no profile that is the
+`default` profile and palette colour 0. `ui.screen` reports the `forge.look` page
 and its `Scene3d` widget by id like any kit page.
 
 **CLI.** `h2 forge looks [--disc <iso>]` prints the census. `h2 ui
@@ -427,7 +444,7 @@ data.
 | **ML9** | The lobby row and team colours | S | F14, ML6 | the lobby opens the page; the team lock holds and names itself |
 | **ML10** | A real body's look: the Bodies heading, the `body` op's colours, locked rows | M | F10, ML6 | the op writes the unit's change colours over a fake game and folds through the log; two fake peers hash alike |
 
-ML1, ML2 and ML3 can start at once. ML4 is the first that needs the
+ML1, ML2 and ML3 are built. ML4 is the first that needs the
 native renderer's object path. ML7 and ML8 wait for F5; ML9 for F14;
 ML10 for F10.
 
