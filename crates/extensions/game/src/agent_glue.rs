@@ -235,6 +235,9 @@ impl AgentGlue {
         agent::collision::install(&agent);
         agent::raw::install(&agent, &sim);
         agent::havok::install_writes(&agent, &sim);
+        // `world.*`'s `physics.standing_fits`: the superbounce mode's
+        // capsule test, while it is on (docs/game/superbounce.md, "Charge").
+        agent.set_standing_fits(Box::new(crate::superbounce_mode::StandingFitsNow));
         // The superbounce game type's state, published each tick by
         // `superbounce_mode` (docs/game/superbounce.md).
         agent.add_game_method(

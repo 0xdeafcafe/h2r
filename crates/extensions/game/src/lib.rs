@@ -206,6 +206,8 @@ pub mod speaker_setting;
 pub mod steam_speaker;
 pub mod stopgaps;
 pub mod superbounce_assist;
+pub mod superbounce_capsule;
+pub mod superbounce_charge;
 pub mod superbounce_prompts;
 pub mod superbounce_mode;
 pub mod sweep_diag;

@@ -18,6 +18,16 @@
 //! publishes all of it as one [`State`]. The HUD (`app::superbounce_hud`,
 //! fed from [`hud_state`] by `h2 play`), the world lines ([`gpu::Lines`])
 //! and the agent method ([`reply`]) read that state.
+//!
+//! **The charge, the next thing to do and the landings**
+//! (docs/game/superbounce.md, "Charge, crouch spots and landings") are on
+//! the same state: [`State::charge`] and [`State::verb`] from the
+//! [`superbounce_charge`](crate::superbounce_charge) tracker, which also
+//! files [`State::last_landing`] and picks [`State::nav_target`];
+//! [`State::landing`] from the assist's prediction
+//! ([`crate::superbounce_assist::predict`]). The standing-capsule test
+//! behind `under` is [`crate::superbounce_capsule`], over the collision the
+//! scan reads.
 
 use std::collections::{HashMap, HashSet};
 use std::io::{Read, Seek};
@@ -27,6 +37,12 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use engine::GuestMemory;
 use gfx::world_lines::{Chevrons, Fade, Glow, LineStyle, Pulse, Ribbon};
 use superbounce::{Kind, Spot, Vec3};
+
+pub use crate::superbounce_charge::{
+    Charge, ChargePhase, Course, Landing, LandingResult, NavKind, NavTarget, Predicted, Verb,
+};
+use crate::superbounce_capsule::Room;
+use crate::superbounce_charge::{Tick, Tracker};
 
 /// The feature's name.
 pub const FEATURE: &str = "superbounce";
@@ -299,6 +315,29 @@ pub struct State {
     /// The unit's aim as a yaw, radians from +X toward +Y. The first-person
     /// camera looks along it.
     pub yaw: Option<f32>,
+    /// The charge meter: the phase of the recipe and its fill; `None` is
+    /// hidden (not primed, and not crouched by a crouch spot).
+    pub charge: Option<Charge>,
+    /// The recipe's step for the HUD's prompt line, while `under` or
+    /// `held`.
+    pub verb: Option<Verb>,
+    /// The navpoint's target: the nearest crouch spot while not primed,
+    /// the nearest strip while primed. `None` without a position or a spot
+    /// of that kind.
+    pub nav_target: Option<NavTarget>,
+    /// The landing the assist predicts, while airborne and falling toward
+    /// a strip.
+    pub landing: Option<Predicted>,
+    /// The last landing within 0.5 of a strip, filed at touchdown; kept
+    /// until the next one or the game's end.
+    pub last_landing: Option<Landing>,
+    /// Ticks the primed body has been still (speed under 0.03 units/s);
+    /// 0 while not primed. The primed fill is 1 less this over 38.
+    pub still_ticks: u32,
+    /// Whether the standing capsule fits at the player's origin, by the
+    /// capsule test against the scanned collision
+    /// ([`crate::superbounce_capsule`]); `None` before the scan is ready.
+    pub standing_fits: Option<bool>,
 }
 
 impl State {
@@ -314,6 +353,13 @@ impl State {
         airborne: false,
         vz: None,
         yaw: None,
+        charge: None,
+        verb: None,
+        nav_target: None,
+        landing: None,
+        last_landing: None,
+        still_ticks: 0,
+        standing_fits: None,
     };
 
     pub fn primed(&self) -> bool {
@@ -413,6 +459,51 @@ pub fn reply(s: &State) -> agent_proto::superbounce::State {
         airborne: s.position.map(|_| s.airborne),
         vz: s.vz.map(f64::from),
         yaw: s.yaw.map(f64::from),
+        charge: s.charge.map(|c| wire::Charge {
+            phase: match c.phase {
+                ChargePhase::Near => wire::ChargePhase::Near,
+                ChargePhase::Under => wire::ChargePhase::Under,
+                ChargePhase::Held => wire::ChargePhase::Held,
+                ChargePhase::Primed => wire::ChargePhase::Primed,
+                ChargePhase::Lost => wire::ChargePhase::Lost,
+            },
+            fill: f64::from(c.fill),
+            still_ticks: s.still_ticks,
+        }),
+        verb: s.verb.map(|v| match v {
+            Verb::LetGoOfCrouch => wire::Verb::LetGoOfCrouch,
+            Verb::WalkOutToStand => wire::Verb::WalkOutToStand,
+        }),
+        nav_target: s.nav_target.map(|n| wire::NavTarget {
+            at: v3(n.at),
+            kind: match n.kind {
+                NavKind::Crouch => wire::NavKind::Crouch,
+                NavKind::Strip => wire::NavKind::Strip,
+            },
+            distance: f64::from(n.distance),
+        }),
+        landing: s.landing.map(|p| wire::Predicted {
+            at: v3(p.at),
+            verdict: match p.verdict {
+                Course::OnSlot => wire::Course::OnSlot,
+                Course::Fixable => wire::Course::Fixable,
+                Course::Miss => wire::Course::Miss,
+            },
+            speed: f64::from(p.speed),
+            need: f64::from(p.need),
+        }),
+        last_landing: s.last_landing.map(|l| wire::Landing {
+            result: match l.result {
+                LandingResult::Bounce => wire::LandingResult::Bounce,
+                LandingResult::NotPrimed => wire::LandingResult::NotPrimed,
+                LandingResult::Missed => wire::LandingResult::Missed,
+                LandingResult::TooSlow => wire::LandingResult::TooSlow,
+                LandingResult::NoBounce => wire::LandingResult::NoBounce,
+            },
+            tick: l.tick,
+            at: v3(l.at),
+        }),
+        standing_fits: s.standing_fits,
     }
 }
 
@@ -441,12 +532,21 @@ struct ScanKey {
     bsp: usize,
 }
 
+/// One scan's result: the spots, and the collision they were found in
+/// (for the standing-capsule test).
+struct Scanned {
+    spots: Vec<Spot>,
+    room: Room,
+}
+
 #[derive(Default)]
 struct Scans {
     current: Option<ScanKey>,
     spots: Arc<Vec<Spot>>,
+    /// The current key's collision; empty until its scan is ready.
+    room: Arc<Room>,
     status: ScanState,
-    cache: HashMap<ScanKey, Arc<Vec<Spot>>>,
+    cache: HashMap<ScanKey, (Arc<Vec<Spot>>, Arc<Room>)>,
     /// Scans running now, so leaving a map and coming back does not start a
     /// second one.
     inflight: HashSet<ScanKey>,
@@ -457,21 +557,26 @@ fn scans() -> &'static Mutex<Scans> {
     S.get_or_init(Mutex::default)
 }
 
-/// The spots of the structure BSP `bsp` of an open map. Isolated so that
-/// `superbounce::scan_map` taking a raw resource source is a one-line
-/// change here.
+/// The spots of the structure BSP `bsp` of an open map, and its collision
+/// for the capsule test (`superbounce::scan_map` is `scan` over
+/// `map_polys`). Isolated so that the scan taking a raw resource source is
+/// a one-line change here.
 #[cfg_attr(not(feature = "gpu"), allow(dead_code))]
 fn scan_one<R: Read + Seek>(
     map: &mut map::Map<R>,
     raw: &mut dyn tags::geometry::RawSource,
     bsp: usize,
-) -> Result<Vec<Spot>, String> {
+) -> Result<Scanned, String> {
     let _ = &raw;
-    superbounce::scan_map(map, bsp).map_err(|e| e.to_string())
+    let polys = superbounce::map_polys(map, bsp).map_err(|e| e.to_string())?;
+    Ok(Scanned {
+        spots: superbounce::scan(&polys),
+        room: Room::new(&polys),
+    })
 }
 
 #[cfg(feature = "gpu")]
-fn scan(key: &ScanKey) -> Result<Vec<Spot>, String> {
+fn scan(key: &ScanKey) -> Result<Scanned, String> {
     let (mut map, files) = crate::native_map::open(&key.map).map_err(|e| e.to_string())?;
     if map.header().checksum != key.checksum {
         return Err("the mounted map file is not the loaded one".into());
@@ -481,7 +586,7 @@ fn scan(key: &ScanKey) -> Result<Vec<Spot>, String> {
 }
 
 #[cfg(not(feature = "gpu"))]
-fn scan(_: &ScanKey) -> Result<Vec<Spot>, String> {
+fn scan(_: &ScanKey) -> Result<Scanned, String> {
     Err("this build has no map access".into())
 }
 
@@ -489,6 +594,7 @@ fn scan(_: &ScanKey) -> Result<Vec<Spot>, String> {
 /// first time the key is seen.
 struct ScanView {
     spots: Arc<Vec<Spot>>,
+    room: Arc<Room>,
     status: ScanState,
 }
 
@@ -496,14 +602,17 @@ fn request_scan(key: ScanKey) -> ScanView {
     let mut s = lock(scans());
     if s.current.as_ref() != Some(&key) {
         s.current = Some(key.clone());
-        if let Some(spots) = s.cache.get(&key).cloned() {
+        if let Some((spots, room)) = s.cache.get(&key).cloned() {
             s.spots = spots;
+            s.room = room;
             s.status = ScanState::Ready;
         } else if s.inflight.contains(&key) {
             s.spots = Arc::default();
+            s.room = Arc::default();
             s.status = ScanState::Scanning;
         } else {
             s.spots = Arc::default();
+            s.room = Arc::default();
             s.status = ScanState::Scanning;
             s.inflight.insert(key.clone());
             let k = key.clone();
@@ -522,26 +631,28 @@ fn request_scan(key: ScanKey) -> ScanView {
     }
     ScanView {
         spots: Arc::clone(&s.spots),
+        room: Arc::clone(&s.room),
         status: s.status.clone(),
     }
 }
 
-fn finish_scan(key: ScanKey, found: Result<Vec<Spot>, String>) {
+fn finish_scan(key: ScanKey, found: Result<Scanned, String>) {
     let mut s = lock(scans());
     s.inflight.remove(&key);
     let here = s.current.as_ref() == Some(&key);
     match found {
-        Ok(spots) => {
+        Ok(Scanned { spots, room }) => {
             eprintln!(
                 "superbounce: {} spots on {} (BSP {})",
                 spots.len(),
                 key.map,
                 key.bsp
             );
-            let spots = Arc::new(spots);
-            s.cache.insert(key, Arc::clone(&spots));
+            let (spots, room) = (Arc::new(spots), Arc::new(room));
+            s.cache.insert(key, (Arc::clone(&spots), Arc::clone(&room)));
             if here {
                 s.spots = spots;
+                s.room = room;
                 s.status = ScanState::Ready;
             }
         }
@@ -557,6 +668,32 @@ fn finish_scan(key: ScanKey, found: Result<Vec<Spot>, String>) {
 /// The spots of the current scan, for the world lines.
 pub fn current_spots() -> Arc<Vec<Spot>> {
     Arc::clone(&lock(scans()).spots)
+}
+
+/// The collision of the current scan, for the standing-capsule test;
+/// empty until the scan is ready.
+pub fn current_room() -> Arc<Room> {
+    Arc::clone(&lock(scans()).room)
+}
+
+/// Whether the standing capsule fits at `origin` on the loaded map, while
+/// the mode is on and its scan is ready (`world.object`'s
+/// `physics.standing_fits`); `None` otherwise.
+pub fn standing_fits_at(origin: Vec3) -> Option<bool> {
+    if !active() {
+        return None;
+    }
+    let room = current_room();
+    (!room.is_empty()).then(|| room.standing_fits(origin))
+}
+
+/// `world.object`'s `physics.standing_fits`, from [`standing_fits_at`].
+pub struct StandingFitsNow;
+
+impl agent::StandingFits for StandingFitsNow {
+    fn standing_fits(&mut self, origin: [f64; 3]) -> Option<bool> {
+        standing_fits_at(origin.map(|v| v as f32))
+    }
 }
 
 // ---- reading the game ----
@@ -627,14 +764,34 @@ struct Live {
     airborne: bool,
     vz: Option<f32>,
     yaw: Option<f32>,
+    /// World units a second.
+    velocity: Option<Vec3>,
+    /// The crouch request, unit flags bit 23.
+    request: bool,
+    /// The game tick.
+    tick: Option<u32>,
+}
+
+/// The game tick, from the game-time record.
+fn game_tick(m: &dyn GuestMemory) -> Option<u32> {
+    use live_telemetry::layout::{GAME_TIME_PTR, TIME_TICK};
+    let time = m.u32(GAME_TIME_PTR).ok().filter(|&t| t != 0)?;
+    m.u32(time.wrapping_add(TIME_TICK)).ok()
 }
 
 fn read_live(m: &dyn GuestMemory) -> Live {
+    let tick = game_tick(m);
     let Ok(units) = crate::skulls_custom::local_units(m) else {
-        return Live::default();
+        return Live {
+            tick,
+            ..Live::default()
+        };
     };
     let Some(u) = units.first() else {
-        return Live::default();
+        return Live {
+            tick,
+            ..Live::default()
+        };
     };
     let position = (|| {
         let at = u.body.wrapping_add(OBJECT_POSITION);
@@ -644,7 +801,9 @@ fn read_live(m: &dyn GuestMemory) -> Live {
     let word = live_telemetry::havok_agents::fixed_pair_word(m, u.unit)
         .ok()
         .flatten();
-    use live_telemetry::layout::{BIPED_FLAGS, BODY_VELOCITY, UNIT_AIM};
+    use live_telemetry::layout::{
+        BIPED_FLAGS, BODY_VELOCITY, UNIT_AIM, UNIT_FLAG_CROUCH, UNIT_FLAGS,
+    };
     let f = |at: u32| {
         m.u32(u.body.wrapping_add(at))
             .ok()
@@ -652,6 +811,10 @@ fn read_live(m: &dyn GuestMemory) -> Live {
             .filter(|v| v.is_finite())
     };
     let vz = f(BODY_VELOCITY + 8);
+    let velocity = (|| Some([f(BODY_VELOCITY)?, f(BODY_VELOCITY + 4)?, vz?]))();
+    let request = m
+        .u32(u.body.wrapping_add(UNIT_FLAGS))
+        .is_ok_and(|flags| flags & UNIT_FLAG_CROUCH != 0);
     let yaw = match (f(UNIT_AIM), f(UNIT_AIM + 4)) {
         (Some(x), Some(y)) if x != 0.0 || y != 0.0 => Some(y.atan2(x)),
         _ => None,
@@ -666,6 +829,9 @@ fn read_live(m: &dyn GuestMemory) -> Live {
         airborne,
         vz,
         yaw,
+        velocity,
+        request,
+        tick,
     }
 }
 
@@ -690,10 +856,13 @@ fn scan_key(m: &dyn GuestMemory) -> Option<ScanKey> {
 /// guest's late host block is picked up. A second at 30 Hz.
 const RECHECK: u32 = 30;
 static TICKS: AtomicU32 = AtomicU32::new(0);
+/// The charge and landing state kept from tick to tick.
+static TRACKER: Mutex<Tracker> = Mutex::new(Tracker::new());
 
 fn reset() {
     ACTIVE.store(false, Ordering::Relaxed);
     *lock(&STATE) = State::EMPTY;
+    *lock(&TRACKER) = Tracker::new();
 }
 
 /// Decides on or off from the game now. Going off clears the state.
@@ -704,6 +873,7 @@ fn decide(o: &hooks::Obs) {
     };
     if ACTIVE.swap(on, Ordering::Relaxed) && !on {
         *lock(&STATE) = State::EMPTY;
+        *lock(&TRACKER) = Tracker::new();
     }
 }
 
@@ -723,9 +893,9 @@ fn on_tick(o: &hooks::Obs) {
     };
     let map = key.as_ref().map(|k| k.map.clone());
     let view = key.map(request_scan);
-    let (spots, scan) = match view {
-        Some(v) => (v.spots, v.status),
-        None => (Arc::default(), ScanState::Idle),
+    let (spots, room, scan) = match view {
+        Some(v) => (v.spots, v.room, v.status),
+        None => (Arc::default(), Arc::default(), ScanState::Idle),
     };
     let nearest = live.position.and_then(|p| {
         superbounce::nearest(&spots, p).map(|(s, d)| Near {
@@ -736,6 +906,35 @@ fn on_tick(o: &hooks::Obs) {
         })
     });
     let count = |k: Kind| spots.iter().filter(|s| s.kind == k).count();
+    let standing_fits = live
+        .position
+        .filter(|_| !room.is_empty())
+        .map(|p| room.standing_fits(p));
+    let step = lock(&TRACKER).step(
+        &Tick {
+            tick: live.tick,
+            word: live.word,
+            position: live.position,
+            velocity: live.velocity,
+            airborne: live.airborne,
+            request: live.request,
+            crouch_held: crate::superbounce_assist::crouch_held(),
+            standing_fits,
+        },
+        &spots,
+    );
+    let landing = match (live.position, live.velocity) {
+        (Some(position), Some(velocity)) => crate::superbounce_assist::predict(
+            &spots,
+            &crate::superbounce_assist::Body {
+                position,
+                velocity,
+                yaw: live.yaw.unwrap_or(0.0),
+                airborne: live.airborne,
+            },
+        ),
+        _ => None,
+    };
     *lock(&STATE) = State {
         active: true,
         word: live.word,
@@ -748,6 +947,13 @@ fn on_tick(o: &hooks::Obs) {
         airborne: live.airborne,
         vz: live.vz,
         yaw: live.yaw,
+        charge: step.charge,
+        verb: step.verb,
+        nav_target: step.nav_target,
+        landing,
+        last_landing: step.last_landing,
+        still_ticks: step.still_ticks,
+        standing_fits,
     };
 }
 
@@ -767,7 +973,9 @@ impl hooks::Feature for SuperbounceMode {
 
     fn build(&self, b: &mut hooks::Builder) -> Result<(), hooks::BuildError> {
         // State is rebuilt from guest RAM every tick and the scan cache holds
-        // only map-derived spots, so a snapshot needs nothing from us.
+        // only map-derived spots, so a snapshot needs nothing from us. The
+        // charge tracker (still ticks, the lost second, the last landing)
+        // is presentation only: after a load it restarts from the next tick.
         b.snapshot(hooks::SnapshotPolicy::Stateless);
         b.game().on_start("superbounce: a new game", |o| {
             reset();
@@ -1102,6 +1310,7 @@ mod tests {
             airborne: true,
             vz: Some(12.5),
             yaw: Some(0.5),
+            ..State::EMPTY
         };
         let r = reply(&s);
         assert!(r.active && r.primed);
@@ -1117,5 +1326,69 @@ mod tests {
         assert_eq!((idle.airborne, idle.vz, idle.yaw), (None, None, None));
         assert_eq!(idle.scan.status, "idle");
         assert!(!idle.active && !idle.primed && idle.word.is_none());
+        assert!(idle.charge.is_none() && idle.nav_target.is_none());
+        assert!(idle.landing.is_none() && idle.last_landing.is_none());
+        assert!(idle.verb.is_none() && idle.standing_fits.is_none());
+    }
+
+    #[test]
+    fn the_agent_reply_carries_the_charge_the_target_and_the_landings() {
+        use agent_proto::superbounce as wire;
+        let s = State {
+            active: true,
+            charge: Some(Charge {
+                phase: ChargePhase::Primed,
+                fill: 0.5,
+            }),
+            still_ticks: 19,
+            verb: Some(Verb::WalkOutToStand),
+            nav_target: Some(NavTarget {
+                at: [1.0, 2.0, 3.0],
+                kind: NavKind::Strip,
+                distance: 4.0,
+            }),
+            landing: Some(Predicted {
+                at: [1.0, 2.0, -3.0],
+                verdict: Course::Fixable,
+                speed: 5.5,
+                need: 4.0,
+            }),
+            last_landing: Some(Landing {
+                result: LandingResult::TooSlow,
+                tick: 6753,
+                at: [0.5, 0.5, -3.0],
+            }),
+            standing_fits: Some(false),
+            ..State::EMPTY
+        };
+        let r = reply(&s);
+        let c = r.charge.unwrap();
+        assert_eq!(
+            (c.phase, c.fill, c.still_ticks),
+            (wire::ChargePhase::Primed, 0.5, 19)
+        );
+        assert_eq!(r.verb, Some(wire::Verb::WalkOutToStand));
+        let n = r.nav_target.unwrap();
+        assert_eq!(
+            (n.at, n.kind, n.distance),
+            ([1.0, 2.0, 3.0], wire::NavKind::Strip, 4.0)
+        );
+        let p = r.landing.unwrap();
+        assert_eq!(
+            (p.verdict, p.speed, p.need),
+            (wire::Course::Fixable, 5.5, 4.0)
+        );
+        let l = r.last_landing.unwrap();
+        assert_eq!(
+            (l.result, l.tick, l.at),
+            (wire::LandingResult::TooSlow, 6753, [0.5, 0.5, -3.0])
+        );
+        assert_eq!(r.standing_fits, Some(false));
+    }
+
+    #[test]
+    fn standing_fits_is_absent_while_the_mode_is_off() {
+        ACTIVE.store(false, Ordering::Relaxed);
+        assert_eq!(standing_fits_at([0.0; 3]), None);
     }
 }

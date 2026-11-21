@@ -430,6 +430,12 @@ another object answers `GONE` and never another object's data.
   most 32): `key`, `other`, `point`, `normal`, `value` (the first pass
   wants at least 1e-4), `flags`. The airborne bit is decided from these,
   unlike `havok.contacts`, which lists the solver's contact constraints.
+  Bipeds also get `standing_fits`: whether a standing capsule fits at the
+  origin, the test that decides whether letting go of crouch clears
+  `crouch_request`. It is the superbounce mode's capsule test against the
+  loaded map's collision (`crates/extensions/game/src/superbounce_capsule.rs`),
+  so it is there only while that mode is on and its scan is ready
+  ([superbounce.md](../game/superbounce.md#charge)).
   Poll `object player.0` on one `h2 agent -` connection and keep one reply
   per stamped tick for a movement trace, or use [a trace](#tick-traces-and-the-flight-recorder).
 
@@ -664,6 +670,12 @@ with `INVALID_PARAMS`) answers from the state the
 | `airborne` | the local player's biped is off the ground (biped flags bit 0, as `world.object`'s `physics.airborne`); absent without a player |
 | `vz` | the local player's vertical velocity, world units a second, up positive |
 | `yaw` | the way the local player's unit aims, radians from +X toward +Y: the first-person camera's yaw |
+| `charge` | the charge meter: `phase` (`near`, `under`, `held`, `primed`, `lost`), `fill` (0, 1/3, 2/3, then 1 less `still_ticks` over 38 while primed, 0 while lost) and `still_ticks`; absent while hidden ([superbounce.md](../game/superbounce.md#charge)) |
+| `verb` | the prompt line's step: `let_go_of_crouch` while `under`, `walk_out_to_stand` while `held` |
+| `nav_target` | the navpoint's target: `at` (the spot's stand point), `kind` (`crouch` while not primed, `strip` while primed), `distance` (world units) |
+| `landing` | while airborne and falling toward a strip, the landing the assist predicts: `at` (at the strip's floor height), `verdict` (`on_slot`, `fixable`, `miss`), `speed` (the touchdown speed, units/s) and the strip's `need` |
+| `last_landing` | the last touchdown within 0.5 of a strip: `result` (`bounce`, `not_primed`, `missed`, `too_slow`, `no_bounce`), the game `tick` and the origin `at` on the tick before ([superbounce.md](../game/superbounce.md#landings)) |
+| `standing_fits` | whether the standing capsule fits at the player's origin, as `world.object`'s `physics.standing_fits`; absent before the scan is ready |
 
 ```sh
 printf '%s\n' 'superbounce.state' | h2 agent -

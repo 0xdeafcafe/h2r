@@ -801,12 +801,22 @@ lab run.
 
 ## Charge, crouch spots and landings
 
-Design, not built. What the mode shows next about the three steps of a
-bounce: getting the charge, keeping it, and landing it. The HUD parts
-(the meter under the pill, the prompt line, the notifications, the
-navpoint) are in [hud-kit.md](hud-kit.md), "The charge meter"; this is
-the state they read, the scanner's rules and the world overlay. The
-numbers are in [notes/superbounce-spots.md](notes/superbounce-spots.md).
+What the mode shows about the three steps of a bounce: getting the
+charge, keeping it, and landing it. The HUD parts (the meter under the
+pill, the prompt line, the notifications, the navpoint) are in
+[hud-kit.md](hud-kit.md), "The charge meter"; this is the state they
+read, the scanner's rules and the world overlay. The numbers are in
+[notes/superbounce-spots.md](notes/superbounce-spots.md).
+
+The state is built: `superbounce_mode::State` carries `charge`, `verb`,
+`nav_target`, `landing`, `last_landing`, `still_ticks` and
+`standing_fits` (Code: `crates/extensions/game/src/superbounce_charge.rs`
+for the tracker and the landing classifier,
+`superbounce_capsule.rs` for the capsule test, `superbounce_assist.rs`'s
+`predict` for the predicted landing), and `superbounce.state` returns
+them ([agent-api.md](../runtime/agent-api.md#superbounce-the-superbounce-game-type)).
+The scanner's rules, the world overlay and the HUD parts are design, not
+built.
 
 ### Charge
 
@@ -816,22 +826,48 @@ the crouch lets go at the band's way out, 6 cm from where the body
 rested in the measured corner (**Trace**, the note). So "how charged" is
 two things the engine does have:
 
-- **How far through the recipe.** `near` (crouched by a crouch spot),
-  `under` (crouched and the standing capsule does not fit: output bit 1
-  of the character physics update, [forced crouch](#forced-crouch-code)),
-  `held` (the crouch button is up and the request, unit flags bit 23, is
-  still set), `primed` (the word is −3).
+- **How far through the recipe.** `near` (crouched, the crouch request
+  set, within 1.5 of a crouch spot's stand point), `under` (crouched with
+  crouch held and the standing capsule does not fit), `held` (the crouch
+  button is up and the request, unit flags bit 23, is still set: the
+  engine keeps it only while standing does not fit, [forced
+  crouch](#forced-crouch-code)), `primed` (the word is −3 and the request
+  is clear).
 - **How long it will last.** A primed body that stands still sleeps
   after 38 to 40 ticks and wakes with a new pair at 0 (**Trace**). The
   mode counts the ticks the body's speed is under 0.03 units/s, back to
   0 when it moves; the charge left is 1 less that count over 38. A
-  crouch ends the charge at once (**Trace**).
+  crouch ends the charge at once (**Trace**), so a primed player whose
+  request is set is `lost`, as is one whose word leaves −3. `lost` shows
+  for 30 ticks.
 
-`superbounce_mode`'s state carries it as `charge`: the phase, the fill
-(0, 1/3, 2/3, then the charge left), the still ticks and the bit.
-`superbounce.state` returns it, and `world.object`'s `physics` block
-gains `standing_fits`, read where the biped physics update tests it
-(`0x000e28f4`).
+`superbounce_mode`'s state carries it as `charge` (the phase and the
+fill: 0, 1/3, 2/3, then the charge left, 0 while lost), `still_ticks`,
+`verb` (`LetGoOfCrouch` while `under`, `WalkOutToStand` while `held`) and
+`standing_fits`. `superbounce.state` returns them, and `world.object`'s
+`physics` block has `standing_fits` for bipeds.
+
+Two inputs are not the engine's own:
+
+- **The standing capsule.** The engine's answer, output flags bit 1 of
+  the character physics update (`0x001e55d0`), is not kept in a field
+  found so far, so `under` and `standing_fits` come from the mode's own
+  test (`superbounce_capsule.rs`): the scan's standing capsule (bottom
+  at the origin, 0.725 tall, radius 0.175, in deeper than 5 mm, upward
+  faces at the feet are support) against the structure BSP's collision
+  polygons, which the scan keeps in a 2-unit grid. It exists only while
+  the mode is on and its scan is ready (**S**: that it agrees with the
+  engine's bit at the measured corner). Reading the engine's bit needs a
+  hook at `0x000e28f4` or the output pointer of `0x001e55d0`, and is
+  **Open**.
+- **The crouch button.** `held` needs to know the button is up. The fall
+  assist's input tap (`superbounce_assist.rs`) reads it from the pad the
+  guest gets on the first controller, through the player's action table
+  (`0x51ea18 + 8 + 10`, crouch's slot; the Default layout's left-stick
+  click when it cannot be read), with the agent's `input.pad` steps and
+  before an `H2_INPUT_REPLAY`'s. Without the tap (the
+  `superbounce-assist` feature off) the button is unknown and the phase
+  goes from `under` to `primed` with no `held`.
 
 Not a charge, and not shown as one: how long the crouch is held (nothing
 counts it), and how deep the standing capsule is in the lip (most bands
@@ -903,7 +939,11 @@ next, and a crouch now would lose the charge.
 ### Landings
 
 The scanner's bounce spot gains `width` (the gap between its two
-joints) and `need` (the touchdown speed its `fall` is worked from).
+joints) and `need` (the touchdown speed its `fall` is worked from). Until
+it has them, the mode takes the slot as the floor ribbon's 0.2 wide and
+works `need` from `fall` as a standing jump's landing (3 units/s) plus
+the fall: `√(9 + 2 × 4.15 × fall)` (`superbounce_charge.rs`, `width_of`
+and `need_of`).
 
 - **Where.** The floor ribbon is the slot itself: `width` across, not a
   fixed 0.2, the overlap long, closed at both ends, with a cross tick at
@@ -921,16 +961,24 @@ joints) and `need` (the touchdown speed its `fall` is worked from).
   the strip's floor: solid when it is inside the slot, open when the
   assist can still bring it in (`Hold X`), and a cross when it cannot.
   Beside it, the speed the player will touch down at, `√(vz² + 2 × 4.15
-  × height)`, is a short bar that fills to `need`.
+  × height)`, is a short bar that fills to `need`. The state is the
+  mode's `landing` (`superbounce_assist::predict`), there whenever the
+  player is airborne and falling, primed or not: of the strips below
+  whose stand point the coasting landing is within 3 units of, the one
+  it lands nearest the slot of, with its `verdict` (`OnSlot`, `Fixable`
+  by the assist's reach gate, else `Miss`), `speed` and `need`.
 - **What happened.** On the tick a primed or unprimed player touches
   down within 0.5 of a strip the mode files the landing: `bounce` when
   the vertical speed comes out over 8 units/s, else the first of
   `not primed` (the word was not −3 on the tick before), `missed` (the
-  origin was outside the slot, with the distance), `too slow` (the speed
-  in was under `need`), `no bounce`. A bounce flashes the strip once and
-  the others dim it for a second. The HUD says it in the notification
-  list, and `superbounce.state` returns the last landing (the outcome,
-  the strip, the speed in and out, the miss).
+  origin was outside the slot), `too slow` (the speed in was under
+  `need`), `no bounce`. A touchdown is a tick whose previous tick was
+  airborne and falling at 1 unit/s or more and which has stopped falling
+  (over −0.5), launched, or landed; the origin tested is the previous
+  tick's, before the contact moves it. A bounce flashes the strip once
+  and the others dim it for a second. The HUD says it in the
+  notification list, and `superbounce.state` returns the last landing as
+  `last_landing`: the outcome, the game tick and the origin.
 
 The colours are the game's: lines take the user's HUD colour
 (`0x0013927e`, as the navpoint does), and a warning takes the `hudg`

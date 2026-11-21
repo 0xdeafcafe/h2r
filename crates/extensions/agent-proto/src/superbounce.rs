@@ -87,6 +87,135 @@ pub struct State {
     /// the first-person camera's yaw.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub yaw: Option<f64>,
+    /// The charge meter; absent while hidden (not primed, and not crouched
+    /// by a crouch spot).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub charge: Option<Charge>,
+    /// The recipe's step on the HUD's prompt line, while `under` or `held`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verb: Option<Verb>,
+    /// The navpoint's target: the nearest crouch spot while not primed,
+    /// the nearest strip while primed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nav_target: Option<NavTarget>,
+    /// The landing the assist predicts, while airborne and falling toward
+    /// a strip.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub landing: Option<Predicted>,
+    /// The last landing within 0.5 of a strip, filed at touchdown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_landing: Option<Landing>,
+    /// Whether the standing capsule fits at the player's origin (the
+    /// mode's capsule test against the scanned collision); absent before
+    /// the scan is ready.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub standing_fits: Option<bool>,
+}
+
+/// How far through priming the player is, or that the charge just went.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChargePhase {
+    /// Crouched within 1.5 of a crouch spot, the standing capsule fits.
+    Near,
+    /// Crouched, crouch held, the standing capsule does not fit.
+    Under,
+    /// Crouch let go and the crouch request still set: the forced crouch.
+    Held,
+    /// The word is -3 and the player is not crouching.
+    Primed,
+    /// The charge just went: shown for a second.
+    Lost,
+}
+
+/// The charge meter.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Charge {
+    pub phase: ChargePhase,
+    /// 0..1: 0 near, 1/3 under, 2/3 held, 1 less `still_ticks` over 38
+    /// primed, 0 lost.
+    pub fill: f64,
+    /// Ticks the primed body has been still (speed under 0.03 units/s); 0
+    /// while not primed.
+    pub still_ticks: u32,
+}
+
+/// The prompt line's verb for a crouch step.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Verb {
+    /// "Let go of (crouch)".
+    LetGoOfCrouch,
+    /// "Walk out to stand up".
+    WalkOutToStand,
+}
+
+/// What the navpoint points at.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NavKind {
+    Crouch,
+    Strip,
+}
+
+/// The navpoint's target.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct NavTarget {
+    /// The spot's stand point, world units.
+    pub at: [f64; 3],
+    pub kind: NavKind,
+    /// From the player's origin, world units.
+    pub distance: f64,
+}
+
+/// Whether a predicted landing is on the slot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Course {
+    /// The coasting landing is inside the slot.
+    OnSlot,
+    /// It is not, and the fall assist can still bring it in.
+    Fixable,
+    /// It is not, and the assist cannot.
+    Miss,
+}
+
+/// The landing the assist predicts.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Predicted {
+    /// Where the player lands coasting, at the strip's floor height.
+    pub at: [f64; 3],
+    pub verdict: Course,
+    /// The vertical speed at touchdown, units/s (positive).
+    pub speed: f64,
+    /// The touchdown speed the strip needs, units/s.
+    pub need: f64,
+}
+
+/// What a landing by a strip came to, by its first failed test.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LandingResult {
+    /// The vertical speed came out over 8 units/s.
+    Bounce,
+    /// The word was not -3 on the tick before.
+    NotPrimed,
+    /// The origin was outside the slot.
+    Missed,
+    /// The speed in was under the strip's need.
+    TooSlow,
+    /// Primed, in the slot, fast enough, no bounce.
+    NoBounce,
+}
+
+/// A landing filed at touchdown.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Landing {
+    pub result: LandingResult,
+    /// The game tick it was filed on.
+    pub tick: u32,
+    /// The origin on the tick before touchdown, world units.
+    pub at: [f64; 3],
 }
 
 // ---- superbounce.set ----
@@ -239,8 +368,61 @@ mod tests {
             airborne: Some(true),
             vz: Some(-4.5),
             yaw: None,
+            charge: Some(Charge {
+                phase: ChargePhase::Held,
+                fill: 0.5,
+                still_ticks: 0,
+            }),
+            verb: Some(Verb::WalkOutToStand),
+            nav_target: Some(NavTarget {
+                at: [1.0, 2.0, 3.0],
+                kind: NavKind::Crouch,
+                distance: 2.5,
+            }),
+            landing: Some(Predicted {
+                at: [1.0, 2.0, -3.0],
+                verdict: Course::OnSlot,
+                speed: 5.5,
+                need: 4.0,
+            }),
+            last_landing: Some(Landing {
+                result: LandingResult::NotPrimed,
+                tick: 6753,
+                at: [1.0, 2.0, -3.0],
+            }),
+            standing_fits: Some(false),
         };
         let v = serde_json::to_value(&s).unwrap();
+        assert_eq!(v["charge"]["phase"], "held");
+        assert_eq!(v["verb"], "walk_out_to_stand");
+        assert_eq!(v["nav_target"]["kind"], "crouch");
+        assert_eq!(v["landing"]["verdict"], "on_slot");
+        assert_eq!(v["last_landing"]["result"], "not_primed");
+        assert_eq!(v["standing_fits"], false);
+        let bare = serde_json::to_value(State::default()).unwrap();
+        for absent in [
+            "charge",
+            "verb",
+            "nav_target",
+            "landing",
+            "last_landing",
+            "standing_fits",
+        ] {
+            assert!(bare.get(absent).is_none(), "{absent}");
+        }
+        for (r, name) in [
+            (LandingResult::Bounce, "bounce"),
+            (LandingResult::Missed, "missed"),
+            (LandingResult::TooSlow, "too_slow"),
+            (LandingResult::NoBounce, "no_bounce"),
+        ] {
+            assert_eq!(serde_json::to_value(r).unwrap(), name);
+        }
+        assert_eq!(
+            serde_json::to_value(Verb::LetGoOfCrouch).unwrap(),
+            "let_go_of_crouch"
+        );
+        assert_eq!(serde_json::to_value(Course::Fixable).unwrap(), "fixable");
         assert_eq!(v["word"], "fffffffd");
         assert!(v.get("nearest").is_none() && v["scan"].get("error").is_none());
         assert_eq!(v["airborne"], true);
