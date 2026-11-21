@@ -440,8 +440,13 @@ impl Refusals {
             }
             if !singleton {
                 let mut row = tag_sync::row(
-                    "batch", Value::Null, "Field edits", "Batch refused", &group.why,
+                    "batch",
+                    Value::Null,
+                    "Field edits",
+                    tag_sync::Effect::NotKnown,
+                    &group.why,
                 );
+                row["text"] = json!("Batch refused");
                 row["refused"] = json!(true);
                 row["target"] = json!({"panel": "pending"});
                 rows.push(row);

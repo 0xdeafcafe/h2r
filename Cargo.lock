@@ -6729,6 +6729,7 @@ dependencies = [
  "anyhow",
  "app-icon",
  "assets",
+ "audio",
  "boot",
  "content",
  "dear-imgui-rs",
@@ -6761,6 +6762,7 @@ dependencies = [
  "vfs",
  "wgpu",
  "winit",
+ "wma",
  "xbe",
 ]
 

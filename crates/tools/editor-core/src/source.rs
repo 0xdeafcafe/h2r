@@ -175,24 +175,6 @@ impl MapSource {
         }
     }
 
-    /// The game's executable (`default.xbe`): the disc's root file, or for a
-    /// loose map or a folder the one beside it (`H2_XBE` names another, as
-    /// for the variants' save names). At most 16 MiB.
-    pub fn executable(&self) -> Result<Vec<u8>> {
-        const MAX: u64 = 16 << 20;
-        match self {
-            MapSource::Disc(d) => d.read_root_file("default.xbe", MAX),
-            _ => {
-                let path = crate::variant_sources::xbe_path(Some(self))
-                    .context("no default.xbe beside the maps (H2_XBE names one)")?;
-                if std::fs::metadata(&path)?.len() > MAX {
-                    bail!("{} is larger than {MAX} bytes", path.display());
-                }
-                Ok(std::fs::read(&path)?)
-            }
-        }
-    }
-
     /// Opens a map by name: from the disc, or (loose) the file itself or a
     /// sibling `<name>.map` in its directory.
     pub fn open_map(&self, name: &str) -> Result<Map<BufReader<File>>> {

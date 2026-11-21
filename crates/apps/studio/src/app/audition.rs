@@ -662,6 +662,7 @@ impl App {
         }
         let bytes = source
             .executable()
+            .map(|(_, bytes)| bytes)
             .map_err(|_| SoundError::Refused(NEEDS_EXECUTABLE.into()))?;
         let tables = Arc::new(load_tables(&bytes)?);
         self.audition.tables = Some((key, tables.clone()));
