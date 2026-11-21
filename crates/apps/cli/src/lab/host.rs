@@ -1,6 +1,6 @@
-//! `h2 lab host`: the lab's side on the machine that plays. One job at a
-//! time (a build, or a run that may build first), each in `runs/<id>/` with
-//! its log and metadata. See docs/runtime/lab.md.
+//! `h2 lab host`: the lab's side on the machine that plays. Each job keeps
+//! its log and metadata in `runs/<id>/`. Jobs can overlap, with at most one
+//! building an image at a time. See docs/runtime/lab.md.
 
 use std::collections::{BTreeMap, HashMap};
 use std::fs::{self, File, OpenOptions, TryLockError};
@@ -15,14 +15,14 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use agent_proto::takeover::{Operation, Request as TakeoverRequest};
-use anyhow::{Context, Result, anyhow, bail, ensure};
+use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 use super::proto::{self, BuildSpec, INPUT_FILE, Manifest, Request, RunReq};
 use super::transfer::Transfers;
-use super::{discovery, lan, service, takeover, transfer};
+use super::{discovery, lan, service, takeover, transfer, watch};
 
 /// Where the host keeps everything, and what it runs.
 #[derive(Clone, Debug)]
@@ -36,9 +36,10 @@ pub struct HostConfig {
     pub h2: PathBuf,
     /// The image directory for `--current` runs (default: `h2 play`'s).
     pub out: Option<PathBuf>,
-    /// The data root runs share (default: `<root>/data`).
+    /// Persistent data for serial runs and the seed for concurrent runs.
     pub data: PathBuf,
     pub cargo: PathBuf,
+    pub max_jobs: usize,
     pub lan: Option<lan::Listen>,
     pub managed: bool,
     pub explicit_h2: bool,
@@ -72,6 +73,11 @@ pub struct Meta {
     pub build_env: BTreeMap<String, String>,
     pub level: Option<String>,
     pub created: u64,
+    /// Persist phase times so file readers can see transitions between polls.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub build_elapsed_s: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub run_elapsed_s: Option<f64>,
     pub duration_s: Option<f64>,
     pub exit_code: Option<i32>,
     pub signal: Option<i32>,
@@ -87,19 +93,21 @@ pub struct Meta {
     pub h2: Option<String>,
 }
 
-fn is_final(state: &str) -> bool {
+pub(super) fn is_final(state: &str) -> bool {
     matches!(state, "done" | "failed" | "stopped" | "skipped")
 }
 
 struct Active {
-    id: String,
     pgid: Option<i32>,
     stop: bool,
+    building: bool,
 }
 
 #[derive(Default)]
 struct Inner {
-    active: Option<Active>,
+    active: BTreeMap<String, Active>,
+    /// Keep maintenance and other processes out until the last job finishes.
+    activity_lock: Option<File>,
     jobs: HashMap<String, Meta>,
 }
 
@@ -124,7 +132,7 @@ impl std::fmt::Display for Stopped {
 }
 impl std::error::Error for Stopped {}
 
-fn now() -> u64 {
+pub(super) fn now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_secs())
@@ -137,6 +145,7 @@ pub fn serve(cfg: HostConfig) -> Result<()> {
             .with_context(|| format!("creating {}", cfg.dir(d).display()))?;
     }
     fs::create_dir_all(&cfg.data)?;
+    recover(&cfg)?;
     let lan = cfg.lan.as_ref().map(open_lan).transpose()?;
     let authority = lan
         .as_ref()
@@ -160,7 +169,6 @@ pub fn serve(cfg: HostConfig) -> Result<()> {
         checkout: Mutex::new(()),
         takeover,
     });
-    recover(&shared);
     eprintln!(
         "lab: listening on {} (root {}, repo {}, disc {})",
         shared.cfg.socket.display(),
@@ -251,16 +259,21 @@ fn serve_lan(sh: Arc<Shared>, listener: TcpListener, authority: lan::Server) {
     }
 }
 
-fn try_activity_lock(root: &Path) -> Result<Option<File>> {
+fn open_activity_lock(root: &Path) -> Result<File> {
     fs::create_dir_all(root)?;
-    let lock = OpenOptions::new()
+    OpenOptions::new()
         .read(true)
         .write(true)
         .create(true)
         .truncate(false)
         .mode(0o600)
         .custom_flags(libc::O_NOFOLLOW)
-        .open(root.join("activity.lock"))?;
+        .open(root.join("activity.lock"))
+        .with_context(|| format!("opening the lab activity lock in {}", root.display()))
+}
+
+fn try_activity_lock(root: &Path) -> Result<Option<File>> {
+    let lock = open_activity_lock(root)?;
     match lock.try_lock() {
         Ok(()) => Ok(Some(lock)),
         Err(TryLockError::WouldBlock) => Ok(None),
@@ -313,15 +326,20 @@ pub fn bind(path: &Path) -> Result<UnixListener> {
 }
 
 /// Jobs a previous host left unfinished are failed: nothing watches them now.
-fn recover(sh: &Shared) {
-    for m in disk_metas(&sh.cfg) {
+fn recover(cfg: &HostConfig) -> Result<()> {
+    // A host on another socket can have the same root. Recover only while
+    // no host is writing jobs there, including during a LaunchAgent restart.
+    let lock = open_activity_lock(&cfg.root)?;
+    lock.lock().context("locking the lab root for job recovery")?;
+    for m in disk_metas(cfg) {
         if !is_final(&m.state) {
             let mut m = m;
             m.state = "failed".into();
             m.error = Some("the host stopped while this job ran".into());
-            let _ = write_meta(&sh.cfg, &m);
+            let _ = write_meta(cfg, &m);
         }
     }
+    Ok(())
 }
 
 fn reply(w: &mut impl Write, result: Result<Value>) -> Result<()> {
@@ -389,6 +407,11 @@ fn connection<S: Read + Write>(
             Request::Fetch { id } => {
                 fetch(sh, &mut conn, &id)?;
                 return Ok(());
+            }
+            Request::Logs { id, follow } => {
+                // A continuous feed must let an idle host restart.
+                drop(transfer);
+                return logs(sh, &mut conn, &id, follow, &authorized);
             }
             Request::Sync {
                 branch,
@@ -464,6 +487,60 @@ fn fetch(sh: &Shared, conn: &mut BufReader<impl Read + Write>, id: &str) -> Resu
     reply(conn.get_mut(), result)
 }
 
+fn logs<S: Read + Write>(
+    sh: &Shared,
+    conn: &mut BufReader<S>,
+    id: &str,
+    follow: bool,
+    authorized: &impl Fn(&S) -> Result<bool>,
+) -> Result<()> {
+    let id = (id != proto::CURRENT_JOB).then_some(id);
+    let mut feed = match watch::Watch::new(&sh.cfg.root, id) {
+        Ok(feed) => feed,
+        Err(error) => return reply(conn.get_mut(), Err(error)),
+    };
+    reply(conn.get_mut(), Ok(json!({})))?;
+
+    // Check revocation while idle and when a large tail takes multiple
+    // frames to send. Heartbeats notice clients that close an idle feed.
+    let mut last_write = Instant::now();
+    let mut wire_failed = false;
+    let result = (|| {
+        loop {
+            // Keep checking the driver even if there is nothing to send.
+            ensure!(authorized(conn.get_ref())?, "the lab pairing was revoked");
+            let mut checked_at = Instant::now();
+            let finished = feed.poll(!follow, &mut |line| {
+                if checked_at.elapsed() >= watch::POLL_INTERVAL {
+                    ensure!(authorized(conn.get_ref())?, "the lab pairing was revoked");
+                    checked_at = Instant::now();
+                }
+                let mut frame = line.as_bytes().to_vec();
+                frame.push(b'\n');
+                let sent = transfer::send_log_frame(conn.get_mut(), &frame);
+                wire_failed = sent.is_err();
+                last_write = Instant::now();
+                sent
+            })?;
+            if finished || !follow {
+                return Ok(json!({}));
+            }
+            if last_write.elapsed() >= Duration::from_secs(5) {
+                let sent = transfer::send_log_frame(conn.get_mut(), transfer::LOG_HEARTBEAT);
+                wire_failed = sent.is_err();
+                sent?;
+                last_write = Instant::now();
+            }
+            std::thread::sleep(watch::POLL_INTERVAL);
+        }
+    })();
+    if wire_failed {
+        return result.map(|_| ());
+    }
+    transfer::send_log_frame(conn.get_mut(), b"")?;
+    reply(conn.get_mut(), result)
+}
+
 fn sync<S: Read + Write>(
     sh: &Shared,
     conn: &mut BufReader<S>,
@@ -518,7 +595,11 @@ fn handle(sh: &Arc<Shared>, r: Request, requester: &str) -> Result<Value> {
     match r {
         Request::Status => {
             let inner = sh.inner.lock().unwrap();
-            let active = inner.active.as_ref().and_then(|a| inner.jobs.get(&a.id));
+            let jobs_active: Vec<_> = inner
+                .active
+                .keys()
+                .filter_map(|id| inner.jobs.get(id))
+                .collect();
             Ok(json!({
                 "version": proto::VERSION,
                 "build_version": env!("CARGO_PKG_VERSION"),
@@ -530,7 +611,9 @@ fn handle(sh: &Arc<Shared>, r: Request, requester: &str) -> Result<Value> {
                 "repo": cfg.repo,
                 "disc": cfg.disc,
                 "h2": cfg.h2,
-                "active": active,
+                "active": jobs_active.first(),
+                "jobs_active": jobs_active,
+                "max_jobs": cfg.max_jobs,
             }))
         }
         Request::SyncBases { branch, commit } => {
@@ -546,7 +629,9 @@ fn handle(sh: &Arc<Shared>, r: Request, requester: &str) -> Result<Value> {
             }
             Ok(json!({ "known": known, "bases": bases }))
         }
-        Request::Fetch { .. } | Request::Sync { .. } | Request::Update => unreachable!(),
+        Request::Fetch { .. } | Request::Logs { .. } | Request::Sync { .. } | Request::Update => {
+            unreachable!()
+        }
         Request::Run(run) => start(sh, Job::Run(run), requester),
         Request::Build(b) => start(sh, Job::Build(b), requester),
         Request::Wait { id, timeout } => wait(sh, &id, timeout.map(Duration::from_secs_f64)),
@@ -632,18 +717,13 @@ impl Job {
 
 fn start(sh: &Arc<Shared>, job: Job, requester: &str) -> Result<Value> {
     let cfg = &sh.cfg;
-    // Everything that can be refused is refused before a job exists.
-    let commit = match &job.spec().rev {
-        Some(rev) => Some(resolve_rev(&cfg.repo, rev)?),
+    // Resolve image and recording inputs before admitting the job.
+    let mut image = match &job.spec().rev {
+        Some(rev) => Some(prepare_image(cfg, job.spec(), resolve_rev(&cfg.repo, rev)?)?),
         None => None,
     };
-    if let Some(name) = proto::pgo_from(&job.spec().env)? {
-        ensure!(
-            cfg.dir("pgo").join(name).is_file(),
-            "no PGO profile pgo/{name} (h2 lab put --pgo FILE)"
-        );
-    }
     let mut level = None;
+    let mut recording_job = None;
     if let Job::Run(r) = &job {
         level = r.level.clone();
         if let Some(name) = &r.replay {
@@ -654,6 +734,7 @@ fn start(sh: &Arc<Shared>, job: Job, requester: &str) -> Result<Value> {
                 "recording {name} starts from a snapshot, which this host can't restore yet"
             );
             level = level.or(m.level);
+            recording_job = m.run;
         }
         if let Some(name) = &r.record {
             ensure!(
@@ -667,14 +748,42 @@ fn start(sh: &Arc<Shared>, job: Job, requester: &str) -> Result<Value> {
         );
     }
     let mut inner = sh.inner.lock().unwrap();
-    if let Some(a) = &inner.active {
-        let state = inner.jobs.get(&a.id).map_or("busy", |m| m.state.as_str());
+    if inner.active.len() >= cfg.max_jobs {
+        if cfg.max_jobs == 1
+            && let Some(id) = inner.active.keys().next()
+        {
+            let state = inner.jobs[id].state.as_str();
+            bail!(
+                "busy: job {id} is {state}; one job at a time (h2 lab wait {id} or h2 lab stop {id})"
+            );
+        }
+        let ids = inner.active.keys().map(String::as_str).collect::<Vec<_>>();
         bail!(
-            "busy: job {} is {state}; one job at a time (h2 lab wait {0} or h2 lab stop {0})",
-            a.id
+            "busy: --max-jobs {} reached; active jobs: {}",
+            cfg.max_jobs,
+            ids.join(", ")
         );
     }
-    let lock = activity_lock(&cfg.root)?;
+    if let Some(id) = recording_job
+        && inner.active.contains_key(&id)
+    {
+        bail!("job {id} is still recording (h2 lab wait {id})");
+    }
+    let lock = if inner.active.is_empty() {
+        Some(activity_lock(&cfg.root)?)
+    } else {
+        None
+    };
+    // Check the cache and reserve the build slot under the same mutex.
+    let needs_build = image.as_mut().is_some_and(|image| {
+        image.cached = image.dir.join("ready").is_file();
+        !image.cached
+    });
+    if needs_build
+        && let Some((id, _)) = inner.active.iter().find(|(_, active)| active.building)
+    {
+        bail!("busy: job {id} is building an image (h2 lab wait {id})");
+    }
     let id = next_id(cfg, &inner);
     fs::create_dir_all(cfg.dir("runs").join(&id))?;
     let (kind, request) = match &job {
@@ -686,7 +795,9 @@ fn start(sh: &Arc<Shared>, job: Job, requester: &str) -> Result<Value> {
         kind: kind.into(),
         state: "queued".into(),
         request,
-        commit: commit.clone(),
+        commit: image.as_ref().map(|image| image.commit.clone()),
+        image: image.as_ref().map(|image| image.key.clone()),
+        cached: image.as_ref().map(|image| image.cached),
         build_env: job.spec().env.clone(),
         level,
         created: now(),
@@ -694,16 +805,22 @@ fn start(sh: &Arc<Shared>, job: Job, requester: &str) -> Result<Value> {
     };
     write_meta(cfg, &m)?;
     inner.jobs.insert(id.clone(), m.clone());
-    inner.active = Some(Active {
-        id: id.clone(),
-        pgid: None,
-        stop: false,
-    });
+    inner.active.insert(
+        id.clone(),
+        Active {
+            pgid: None,
+            stop: false,
+            building: needs_build,
+        },
+    );
+    if lock.is_some() {
+        inner.activity_lock = lock;
+    }
     drop(inner);
     let sh2 = Arc::clone(sh);
     let id2 = id.clone();
     let requester = requester.to_owned();
-    std::thread::spawn(move || execute(&sh2, &id2, job, commit, &requester, lock));
+    std::thread::spawn(move || execute(&sh2, &id2, job, image, &requester));
     Ok(json!({ "id": id, "job": m }))
 }
 
@@ -745,56 +862,56 @@ impl Shared {
     }
 
     fn stop_requested(&self, id: &str) -> bool {
+        self.inner.lock().unwrap().active.get(id).is_some_and(|a| a.stop)
+    }
+
+    fn owns_game(&self, socket: Option<&Path>, pid: Option<u32>) -> bool {
         let inner = self.inner.lock().unwrap();
-        inner.active.as_ref().is_some_and(|a| a.id == id && a.stop)
+        let group = pid
+            .and_then(|pid| i32::try_from(pid).ok())
+            .filter(|&pid| pid > 0)
+            .map(|pid| {
+                // SAFETY: getpgid only queries the process group of a positive PID.
+                unsafe { libc::getpgid(pid) }
+            });
+        inner.active.iter().any(|(id, active)| {
+            inner.jobs[id].state == "running"
+                && ((group.is_some() && group == active.pgid)
+                    || socket.is_some_and(|path| path == agent_socket_path(&self.cfg, id).as_path()))
+        })
     }
 
     /// Runs one step of job `id` in its own process group, so stop reaches
     /// what it starts (cargo's rustc, the game's helpers) too.
     fn step(&self, id: &str, mut cmd: Command, log: &File) -> Result<std::process::ExitStatus> {
-        if self.stop_requested(id) {
-            return Err(Stopped.into());
-        }
         cmd.stdin(Stdio::null())
             .stdout(log.try_clone()?)
             .stderr(log.try_clone()?)
             .process_group(0);
+        // Publish the process group before stop can inspect this job.
+        let mut inner = self.inner.lock().unwrap();
+        let active = inner.active.get_mut(id).expect("executing job is active");
+        if active.stop {
+            return Err(Stopped.into());
+        }
         let mut child = cmd
             .spawn()
             .with_context(|| format!("starting {:?}", cmd.get_program()))?;
         let pgid = child.id() as i32;
-        let stop_now = {
-            let mut inner = self.inner.lock().unwrap();
-            match inner.active.as_mut() {
-                Some(a) if a.id == id => {
-                    a.pgid = Some(pgid);
-                    a.stop
-                }
-                _ => false,
-            }
-        };
-        if stop_now {
-            // SAFETY: signalling the group we just made.
-            unsafe { libc::kill(-pgid, libc::SIGTERM) };
-        }
-        let status = child.wait()?;
-        let stopped = {
-            let mut inner = self.inner.lock().unwrap();
-            match inner.active.as_mut() {
-                Some(a) if a.id == id => {
-                    a.pgid = None;
-                    a.stop
-                }
-                _ => false,
-            }
-        };
+        active.pgid = Some(pgid);
+        drop(inner);
+
+        let status = child.wait();
+        let mut inner = self.inner.lock().unwrap();
         // Whatever the group left behind goes with it.
-        // SAFETY: as above; the group may be gone already.
+        // SAFETY: signalling the group we made. It may already be gone.
         unsafe { libc::kill(-pgid, libc::SIGKILL) };
-        if stopped {
+        let active = inner.active.get_mut(id).expect("executing job is active");
+        active.pgid = None;
+        if active.stop {
             return Err(Stopped.into());
         }
-        Ok(status)
+        Ok(status?)
     }
 }
 
@@ -805,21 +922,48 @@ struct Image {
     env: BTreeMap<String, String>,
 }
 
+impl Image {
+    fn command(&self, action: &str, disc: &Path) -> Command {
+        let mut cmd = Command::new(&self.h2);
+        cmd.arg(action).arg(disc);
+        if let Some(out) = &self.out {
+            cmd.arg("--out").arg(out);
+        }
+        for (k, _) in std::env::vars_os() {
+            if k.to_str().is_some_and(|k| k.starts_with("H2_")) {
+                cmd.env_remove(k);
+            }
+        }
+        cmd.envs(&self.env);
+        cmd
+    }
+}
+
+/// A revision's image and the inputs needed to populate its cache entry.
+struct RevisionImage {
+    commit: String,
+    key: String,
+    dir: PathBuf,
+    features: Vec<String>,
+    pgo_hash: String,
+    image: Image,
+    cached: bool,
+}
+
 enum JobOutcome {
     Finished(Option<std::process::ExitStatus>),
     Skipped(&'static str),
 }
 
 fn execute(
-    sh: &Arc<Shared>,
+    sh: &Shared,
     id: &str,
     job: Job,
-    commit: Option<String>,
+    image: Option<RevisionImage>,
     requester: &str,
-    lock: File,
 ) {
-    let t = Instant::now();
-    let outcome = run_job(sh, id, &job, commit.as_deref(), requester);
+    let started = Instant::now();
+    let outcome = run_job(sh, id, &job, image, requester, started);
     let (state, error) = match &outcome {
         Ok(JobOutcome::Finished(Some(st))) if st.success() => ("done", None),
         Ok(JobOutcome::Finished(Some(st))) => (
@@ -844,29 +988,28 @@ fn execute(
         Ok(JobOutcome::Skipped(reason)) => (None, Some(reason.to_owned())),
         Err(_) => (None, None),
     };
-    // A stopped game exits through its SIGTERM handler or the signal.
-    let state = if state == "failed" && sh.stop_requested(id) {
+    let _ = fs::remove_dir_all(sh.cfg.dir("scratch").join(id));
+    let _ = fs::remove_file(agent_socket_path(&sh.cfg, id));
+    let mut inner = sh.inner.lock().unwrap();
+    let active = inner.active.remove(id).expect("executing job is active");
+    let state = if state == "failed" && active.stop {
         "stopped"
     } else {
         state
     };
-    let _ = fs::remove_dir_all(sh.cfg.dir("scratch").join(id));
-    let _ = fs::remove_file(agent_socket_path(&sh.cfg, id));
-    let mut inner = sh.inner.lock().unwrap();
     if let Some(m) = inner.jobs.get_mut(id) {
         m.state = state.into();
         m.error = error;
         m.skip_reason = skip_reason;
-        m.duration_s = Some(t.elapsed().as_secs_f64());
+        m.duration_s = Some(started.elapsed().as_secs_f64());
         m.exit_code = status.and_then(|s| s.code());
         m.signal = status.and_then(|s| s.signal());
         m.summary = summary;
         let _ = write_meta(&sh.cfg, m);
     }
-    if inner.active.as_ref().is_some_and(|a| a.id == id) {
-        inner.active = None;
+    if inner.active.is_empty() {
+        drop(inner.activity_lock.take());
     }
-    drop(lock);
     drop(inner);
     sh.cv.notify_all();
 }
@@ -926,6 +1069,7 @@ fn request_takeover(
         request,
         |phase| sh.update(id, |m| m.state = phase.into()),
         || sh.stop_requested(id),
+        |socket, pid| sh.owns_game(socket, pid),
     );
     match outcome {
         _ if sh.stop_requested(id) => Err(Stopped.into()),
@@ -936,33 +1080,61 @@ fn request_takeover(
 }
 
 fn run_job(
-    sh: &Arc<Shared>,
+    sh: &Shared,
     id: &str,
     job: &Job,
-    commit: Option<&str>,
+    revision: Option<RevisionImage>,
     requester: &str,
+    started: Instant,
 ) -> Result<JobOutcome> {
     let cfg = &sh.cfg;
     let run_dir = cfg.dir("runs").join(id);
-    let planned = commit.map(|c| plan_image(cfg, job.spec(), c)).transpose()?;
-    let builds_image = planned.as_ref().is_some_and(|p| !p.cached);
+    let commit = revision.as_ref().map(|image| image.commit.clone());
+    let builds_image = revision.as_ref().is_some_and(|image| !image.cached);
     let consent = |builds_image| {
         request_takeover(
             sh,
             id,
-            takeover_request(job, commit, requester, builds_image, cfg.takeover.timeout_seconds),
+            takeover_request(
+                job,
+                commit.as_deref(),
+                requester,
+                builds_image,
+                cfg.takeover.timeout_seconds,
+            ),
         )
     };
     if (builds_image || matches!(job, Job::Run(_))) && let Some(skipped) = consent(builds_image)? {
         return Ok(skipped);
     }
-    let image = match (commit, planned) {
-        (Some(c), Some(planned)) => {
-            sh.update(id, |m| m.state = "building".into());
-            let log = File::create(run_dir.join("build.log"))?;
-            ensure_image(sh, id, job.spec(), c, planned, &log)?
+    let image = match revision {
+        Some(revision) => {
+            let mut log = File::create(run_dir.join("build.log"))?;
+            if revision.cached {
+                writeln!(
+                    log,
+                    "lab: image {} for {} is built",
+                    revision.key, revision.commit
+                )?;
+            } else {
+                sh.update(id, |m| {
+                    m.state = "building".into();
+                    m.build_elapsed_s = Some(started.elapsed().as_secs_f64());
+                });
+                build_image(sh, id, job.spec(), &revision, &log)?;
+                if matches!(job, Job::Run(_)) {
+                    sh.update(id, |m| m.state = "queued".into());
+                }
+                let mut inner = sh.inner.lock().unwrap();
+                let active = inner.active.get_mut(id).expect("executing job is active");
+                active.building = false;
+                if active.stop {
+                    return Err(Stopped.into());
+                }
+            }
+            revision.image
         }
-        _ => Image {
+        None => Image {
             h2: cfg.h2.clone(),
             out: cfg.out.clone(),
             env: BTreeMap::new(),
@@ -975,10 +1147,22 @@ fn run_job(
         return Ok(skipped);
     }
     let log = File::create(run_dir.join("run.log"))?;
-    let cmd = play_command(cfg, id, run, &image, commit)?;
+    if cfg.max_jobs > 1 {
+        // A stale image would make `play` build outside the reserved slot.
+        let mut check = image.command("build", &cfg.disc);
+        check.arg("--check").current_dir(&run_dir);
+        let status = sh.step(id, check, &log)?;
+        ensure!(
+            status.success(),
+            "--max-jobs > 1 requires a current image verified by h2 build --check (run.log)"
+        );
+    }
+    let data = prepare_run_data(sh, id, run, &log)?;
+    let cmd = play_command(cfg, id, run, &image, commit.as_deref(), &data)?;
     let sock = agent_socket_path(cfg, id);
     sh.update(id, |m| {
         m.state = "running".into();
+        m.run_elapsed_s = Some(started.elapsed().as_secs_f64());
         m.agent_socket = Some(sock.display().to_string());
         m.h2 = Some(image.h2.display().to_string());
     });
@@ -995,6 +1179,35 @@ fn run_job(
     Ok(JobOutcome::Finished(Some(st)))
 }
 
+fn prepare_run_data(sh: &Shared, id: &str, run: &RunReq, log: &File) -> Result<PathBuf> {
+    let cfg = &sh.cfg;
+    if !run.fresh_data && cfg.max_jobs == 1 {
+        return Ok(cfg.data.clone());
+    }
+    let scratch = cfg.dir("scratch").join(id);
+    let data = scratch.join("data");
+    if run.fresh_data {
+        fs::create_dir_all(&data)?;
+        return Ok(data);
+    }
+
+    fs::create_dir_all(&scratch)?;
+    let seed = cfg.data.canonicalize()?;
+    ensure!(
+        !scratch.canonicalize()?.starts_with(&seed),
+        "the lab scratch directory must be outside the --data seed"
+    );
+    let mut copy = Command::new("cp");
+    if cfg!(target_os = "macos") {
+        // macOS cp falls back to a copy when the filesystem cannot clone.
+        copy.arg("-c");
+    }
+    copy.args(["-R", "-L"]).arg(&seed).arg(&data);
+    let status = sh.step(id, copy, log)?;
+    ensure!(status.success(), "copying the lab data seed failed (run.log)");
+    Ok(data)
+}
+
 /// `h2 play` for `run` with `image`, its environment cleaned of the host's
 /// own `H2_*` variables so a run means the same whatever terminal the host
 /// started in. Writes the recording's manifest when it records.
@@ -1004,29 +1217,16 @@ fn play_command(
     run: &RunReq,
     image: &Image,
     commit: Option<&str>,
+    data: &Path,
 ) -> Result<Command> {
     let run_dir = cfg.dir("runs").join(id);
-    let mut cmd = Command::new(&image.h2);
-    cmd.arg("play").arg(&cfg.disc);
-    if let Some(out) = &image.out {
-        cmd.arg("--out").arg(out);
-    }
-    let data = if run.fresh_data {
-        let d = cfg.dir("scratch").join(id).join("data");
-        fs::create_dir_all(&d)?;
-        d
-    } else {
-        cfg.data.clone()
-    };
+    let mut cmd = image.command("play", &cfg.disc);
     cmd.arg("--data").arg(data);
     let mut level = run.level.clone();
     let mut difficulty = run.difficulty.clone();
-    for (k, _) in std::env::vars_os() {
-        if k.to_str().is_some_and(|k| k.starts_with("H2_")) {
-            cmd.env_remove(k);
-        }
+    if cfg.max_jobs > 1 && image.env.get("H2_PGO").is_some_and(|pgo| pgo == "gen") {
+        cmd.env("H2_PGO_OUT", run_dir.join("h2.profraw"));
     }
-    cmd.envs(&image.env);
     if run.stats != Some(false) {
         cmd.env("H2_FRAME_STATS", "1")
             .env("H2_FRAME_STATS_CSV", run_dir.join("frames.csv"));
@@ -1049,7 +1249,7 @@ fn play_command(
     }
     if let Some(name) = &run.record {
         let dir = cfg.dir("recordings").join(name);
-        fs::create_dir_all(&dir)?;
+        fs::create_dir(&dir).with_context(|| format!("creating recording {name}"))?;
         let m = Manifest {
             name: name.clone(),
             level: level.clone(),
@@ -1068,14 +1268,14 @@ fn play_command(
         cmd.env("H2_PERF_FROM", "level");
     }
     cmd.envs(&run.env);
-    // Every run answers the agent API, for `h2 lab agent`. After the
-    // run's own variables, which can't name it (proto::RUN_ENV).
+    // The host owns the agent socket and the output root (proto::RUN_ENV).
     let sock = agent_socket_path(cfg, id);
     if let Some(dir) = sock.parent() {
         fs::create_dir_all(dir)?;
     }
     let _ = fs::remove_file(&sock);
-    cmd.env(agent_proto::ENV, &sock);
+    cmd.env(agent_proto::ENV, &sock)
+        .env(agent_proto::OUT_ENV, &run_dir);
     if let Some(l) = &level {
         cmd.arg("--level").arg(l);
         if let Some(d) = &difficulty {
@@ -1101,9 +1301,8 @@ pub fn agent_socket_path(cfg: &HostConfig, id: &str) -> PathBuf {
 }
 
 /// `agent`: runs `h2 agent ARGS --socket <the run's socket>` and answers
-/// with its exit code and output, so every `h2 agent` call works as it does
-/// on this machine and nothing is special-cased here. The `h2` is the
-/// run's own image's, so a short form that branch knows is understood.
+/// with its exit code and output. The run's own `h2` understands the short
+/// forms of its image. `flight show` always reads from the game's socket.
 fn agent_call(
     sh: &Arc<Shared>,
     id: &str,
@@ -1148,9 +1347,16 @@ fn agent_call(
         std::thread::sleep(Duration::from_millis(100));
     };
     let mut cmd = Command::new(&h2);
-    cmd.arg("agent")
-        .args(args)
-        .arg("--socket")
+    cmd.arg("agent");
+    if let [domain, verb, rest @ ..] = args
+        && domain == "flight"
+        && verb == "show"
+    {
+        cmd.args(["flight", "show", "--remote"]).args(rest);
+    } else {
+        cmd.args(args);
+    }
+    cmd.arg("--socket")
         .arg(&sock)
         .arg("--timeout")
         .arg(secs.to_string());
@@ -1228,7 +1434,14 @@ pub fn run_direct(cfg: &HostConfig, run: &RunReq) -> Result<std::process::ExitSt
         out: cfg.out.clone(),
         env: BTreeMap::new(),
     };
-    let mut cmd = play_command(cfg, &id, run, &image, None)?;
+    let data = if run.fresh_data {
+        let data = cfg.dir("scratch").join(&id).join("data");
+        fs::create_dir_all(&data)?;
+        data
+    } else {
+        cfg.data.clone()
+    };
+    let mut cmd = play_command(cfg, &id, run, &image, None, &data)?;
     let t = Instant::now();
     let st = cmd
         .status()
@@ -1250,64 +1463,58 @@ pub fn run_direct(cfg: &HostConfig, run: &RunReq) -> Result<std::process::ExitSt
     Ok(st)
 }
 
-/// Resolve the cache key once so admission and the builder agree about
-/// whether a job will start an expensive compile.
-struct ImagePlan {
-    image: Image,
-    key: String,
-    dir: PathBuf,
-    features: Vec<String>,
-    pgo_hash: String,
-    cached: bool,
-}
-
-fn plan_image(cfg: &HostConfig, spec: &BuildSpec, commit: &str) -> Result<ImagePlan> {
+fn prepare_image(cfg: &HostConfig, spec: &BuildSpec, commit: String) -> Result<RevisionImage> {
     let mut env = spec.env.clone();
     let mut pgo_hash = String::new();
     if let Some(name) = proto::pgo_from(&spec.env)? {
         let p = cfg.dir("pgo").join(name);
+        ensure!(
+            p.is_file(),
+            "no PGO profile pgo/{name} (h2 lab put --pgo FILE)"
+        );
         pgo_hash = hex_sha(&fs::read(&p).with_context(|| format!("reading {}", p.display()))?);
         env.insert("H2_PGO".into(), format!("use:{}", p.display()));
     }
     let mut features = spec.features.clone();
     features.sort();
     features.dedup();
-    let key = image_key(commit, &features, &spec.env, &pgo_hash);
+    let key = image_key(&commit, &features, &spec.env, &pgo_hash);
     let dir = cfg.dir("images").join(&key);
     let image = Image {
         h2: dir.join("h2"),
         out: Some(dir.join("out")),
         env,
     };
-    let cached = dir.join("ready").is_file();
-    Ok(ImagePlan { image, key, dir, features, pgo_hash, cached })
+    Ok(RevisionImage {
+        commit,
+        key,
+        dir,
+        features,
+        pgo_hash,
+        image,
+        cached: false,
+    })
 }
 
-/// From the image cache when built before, else build a detached checkout
-/// with the requested features and shared object cache.
-fn ensure_image(
+/// Fill the reserved cache entry from a detached worktree, the shared
+/// cargo target and the shared object cache. Publish `ready` last.
+fn build_image(
     sh: &Shared,
     id: &str,
     spec: &BuildSpec,
-    commit: &str,
-    plan: ImagePlan,
+    revision: &RevisionImage,
     log: &File,
-) -> Result<Image> {
+) -> Result<()> {
     let cfg = &sh.cfg;
-    let ImagePlan { image, key, dir, features, pgo_hash, cached } = plan;
+    let RevisionImage {
+        commit,
+        dir,
+        features,
+        pgo_hash,
+        image,
+        ..
+    } = revision;
     let mut w = log.try_clone()?;
-    if cached {
-        writeln!(w, "lab: image {key} for {commit} is built")?;
-        sh.update(id, |m| {
-            m.image = Some(key);
-            m.cached = Some(true);
-        });
-        return Ok(image);
-    }
-    sh.update(id, |m| {
-        m.image = Some(key.clone());
-        m.cached = Some(false);
-    });
     let src = cfg.dir("src").join(commit);
     if !src.join(".git").exists() {
         writeln!(w, "lab: worktree {} at {commit}", src.display())?;
@@ -1341,30 +1548,19 @@ fn ensure_image(
         .envs(&image.env);
     let st = sh.step(id, cargo, log)?;
     ensure!(st.success(), "cargo build failed (build.log)");
-    fs::create_dir_all(&dir)?;
+    fs::create_dir_all(dir)?;
     fs::copy(target.join("release/h2"), &image.h2).context("copying the built h2")?;
     writeln!(w, "lab: h2 build into {}", dir.join("out").display())?;
-    let mut build = Command::new(&image.h2);
+    let mut build = image.command("build", &cfg.disc);
     build
-        .arg("build")
-        .arg(&cfg.disc)
-        .arg("--out")
-        .arg(dir.join("out"));
-    for (k, _) in std::env::vars_os() {
-        if k.to_str().is_some_and(|k| k.starts_with("H2_")) {
-            build.env_remove(k);
-        }
-    }
-    build
-        .envs(&image.env)
         .env("H2_OBJ_CACHE", cfg.dir("obj-cache"))
-        .current_dir(&dir);
+        .current_dir(dir);
     let st = sh.step(id, build, log)?;
     ensure!(st.success(), "h2 build failed (build.log)");
     let info = json!({ "commit": commit, "features": features, "env": spec.env, "pgo_sha256": pgo_hash, "built": now() });
     fs::write(dir.join("image.json"), serde_json::to_vec_pretty(&info)?)?;
     fs::write(dir.join("ready"), b"")?;
-    Ok(image)
+    Ok(())
 }
 
 /// The image cache key: commit, features and build environment (with the
@@ -1414,7 +1610,7 @@ fn wait(sh: &Shared, id: &str, timeout: Option<Duration>) -> Result<Value> {
 
 fn stop(sh: &Arc<Shared>, id: &str) -> Result<Value> {
     let mut inner = sh.inner.lock().unwrap();
-    let Some(a) = inner.active.as_mut().filter(|a| a.id == id) else {
+    let Some(a) = inner.active.get_mut(id) else {
         let m = inner
             .jobs
             .get(id)
@@ -1431,14 +1627,9 @@ fn stop(sh: &Arc<Shared>, id: &str) -> Result<Value> {
         std::thread::spawn(move || {
             std::thread::sleep(sh2.cfg.grace);
             let inner = sh2.inner.lock().unwrap();
-            if let Some(Active {
-                id, pgid: Some(p), ..
-            }) = inner.active.as_ref()
-            {
-                if *id == id2 && *p == pgid {
-                    // SAFETY: still the job's group.
-                    unsafe { libc::kill(-pgid, libc::SIGKILL) };
-                }
+            if inner.active.get(&id2).and_then(|a| a.pgid) == Some(pgid) {
+                // SAFETY: still the job's group.
+                unsafe { libc::kill(-pgid, libc::SIGKILL) };
             }
         });
     }
@@ -1459,9 +1650,30 @@ fn write_meta(cfg: &HostConfig, m: &Meta) -> Result<()> {
 }
 
 fn read_meta(cfg: &HostConfig, id: &str) -> Result<Meta> {
-    let p = meta_path(cfg, id);
-    let b = fs::read(&p).map_err(|_| anyhow!("no job {id}"))?;
-    Ok(serde_json::from_slice(&b)?)
+    load_meta(&cfg.dir("runs").join(id))?.with_context(|| format!("no job {id}"))
+}
+
+pub(super) fn load_meta(run_dir: &Path) -> Result<Option<Meta>> {
+    let path = run_dir.join("meta.json");
+    let mut file = match OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(&path)
+    {
+        Ok(file) => file,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e).with_context(|| format!("opening {}", path.display())),
+    };
+    ensure!(
+        file.metadata()?.is_file(),
+        "{} is not a metadata file",
+        path.display()
+    );
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)?;
+    let meta = serde_json::from_slice(&bytes)
+        .with_context(|| format!("reading {}", path.display()))?;
+    Ok(Some(meta))
 }
 
 fn disk_metas(cfg: &HostConfig) -> Vec<Meta> {

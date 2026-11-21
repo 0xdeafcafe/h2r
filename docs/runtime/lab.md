@@ -16,6 +16,7 @@ h2 lab run --host laptop ...  --TLS-->  h2 lab host (Aqua LaunchAgent)
                                           |-- cargo build, h2 build (cached)
                                           `-- h2 play --level ... (a window)
 h2 lab fetch <id>              <--TLS--  archive of runs/<id>
+h2 lab logs current --follow   <--TLS--  job and LaunchAgent logs
 h2 lab agent <id> <call>        --TLS-->  h2 agent <call> --socket a/<id>.sock
 ```
 
@@ -104,9 +105,9 @@ The host keeps its files under `--root`, by default
 | Path | What |
 |---|---|
 | `bin/h2` | stable LaunchAgent executable |
-| `logs/` | LaunchAgent stdout, stderr and explicit update log, with a current file and one rotated copy of up to 8 MiB each |
+| `logs/` | LaunchAgent stdout and stderr, host updates, and pairing offers, successful pairings and revocations. Each log has a current file and one rotated copy of up to 8 MiB each. |
 | `auth/` | TLS identity and pairing state |
-| `runs/<id>/` | one job: `meta.json`, `build.log`, `run.log`, `frames.csv`, `profile/` |
+| `runs/<id>/` | one job: `meta.json`, `build.log`, `run.log`, `frames.csv`, `profile/`, `traces/`, `flights/`, `inputs/` |
 | `a/<id>.sock` | the run's game's agent API socket, removed when the run ends |
 | `takeover-declined-until` | the player's consent cool-down, kept across lab host restarts |
 | `recordings/<name>/` | `manifest.json` and `input.bin` |
@@ -115,21 +116,59 @@ The host keeps its files under `--root`, by default
 | `target/` | the cargo target directory those builds share |
 | `images/<key>/` | a built `h2` and its image (`out/`), per commit and build |
 | `obj-cache/` | `H2_OBJ_CACHE` for every image build |
-| `data/` | the data root runs use |
+| `data/` | persistent data at the default cap and the seed for private copies at higher caps |
+| `scratch/<id>/data` | temporary data for an isolated run |
 
 Host and install flags take the same paths. `--repo` sets the checkout
 and defaults to the one used to build the CLI. `--disc` defaults to
 `$H2_DISC`, then the checkout's `disc/halo2.iso`. `--h2` and `--out`
 select the binary and image for `--current` runs. They default to the
 host executable and the usual `h2 play` image directory. `--data` sets
-the data root and `--cargo` selects the cargo executable. Install saves
-the Terminal's `PATH` for the LaunchAgent's build tools.
+the persistent data root and `--cargo` selects the cargo executable.
+`--max-jobs N` caps active builds and runs together and defaults to 1.
+Install saves a custom cap in the LaunchAgent's arguments and saves the
+Terminal's `PATH` for the build tools. Changing an installed cap requires
+uninstalling and reinstalling the LaunchAgent.
 
 The local socket is `~/Library/Caches/h2recomp/lab.sock` (mode 0600),
 or a path set by `--socket` or the lab socket environment setting in
-[Switches](switches.md#tools). To stop a foreground host, stop its job
-first (`h2 lab stop <id>`), then press Ctrl-C. A host marks jobs it
-finds unfinished as failed on startup.
+[Switches](switches.md#tools). To stop a foreground host, stop each
+active job (`h2 lab stop <id>`), then press Ctrl-C. During startup, the
+host waits for exclusive access to the lab root before marking any
+unfinished jobs failed.
+
+### Watching jobs
+
+Run `h2 lab host watch [--root DIR]` on the laptop. The watcher reads
+`runs/<id>/meta.json`, `build.log`, `run.log` and the logs in `logs/`
+directly from the lab root, so it works while the host is busy or
+restarting. On attachment it shows every active job, or the latest job
+when the host is idle. It follows each new job and keeps streaming older
+jobs until they finish. Each job shows its build log before its run log.
+State changes include the job ID, kind, level, short commit, elapsed time
+and note. A job using the host's own image shows `commit=current`. Host events
+use the `[host]` prefix and include pairing offers, successful pairings,
+revocations and updates. On attachment the watcher starts with up to 16
+KiB per log, then prints new lines as the files grow. Prefix
+color is enabled on a terminal. See `crates/apps/cli/src/lab/watch.rs`
+and `crates/apps/cli/src/lab/service.rs`.
+
+On the driving Mac, use the paired connection:
+
+```sh
+h2 lab logs current --follow --host laptop
+h2 lab logs 0007 --follow --host laptop
+h2 lab logs 0007 --host laptop
+```
+
+`current --follow` follows the same feed as `host watch`. A named job
+shows its own state and logs, and `--follow` keeps the stream open until
+that job finishes, fails, is skipped or is cancelled. Omit `--follow`
+for a snapshot of the current feed or a named job. Run the command again
+to resume following after a host restart. The stream uses the existing lab
+connection and transfer framing, with at most 64 KiB of payload per
+frame. See `crates/apps/cli/src/lab/proto.rs`,
+`crates/apps/cli/src/lab/host.rs` and `crates/apps/cli/src/lab/transfer.rs`.
 
 ## The agent's side
 
@@ -172,8 +211,8 @@ being the commit, the features and the build variables (`H2_OPT`,
 each once. The build variables are set again on every run of the image,
 since an `h2` whose `H2_OPT` or `H2_PGO` differs from its image's rebuilds
 it. A job's `meta.json` records its commit, image key, whether the image
-was cached and the build variables. `h2 lab status` shows a job `building`,
-then `running`.
+was cached and the build variables. `h2 lab status` shows jobs building
+an image as `building` and games as `running`.
 
 `H2_PGO=use:NAME` names a profile uploaded with
 `h2 lab put FILE --pgo --as NAME`.
@@ -205,8 +244,27 @@ network, no names with `/` or a leading `.`. The host also drops every
 same regardless of the host's environment. A paired driver can send
 source code for the host to build and run as the logged-in user.
 
-One job runs at a time. Another `run` or `build` is refused with the busy
-job's ID. `h2 lab wait <id> [--timeout S]` exits 0 when the job completes
+With a free slot, a run can start from a cached image even while another
+job builds. Only one job builds an image at a time. If another job needs
+a build, the host refuses it and names the job already building. When
+all slots are occupied, the host refuses new jobs and lists the active
+IDs. `h2 lab status` lists all active jobs in `jobs_active` and includes
+the first one in `active` for compatibility.
+
+With `--max-jobs` above 1, every run gets its own data root under
+`scratch/<id>/data`, removed when that run ends. The host copies the
+`--data` seed and follows symlinks so writes stay local to the run.
+macOS clones files where the filesystem supports it and copies them
+otherwise. `--fresh-data` starts with an empty root. Keep the scratch
+directory outside the seed. Before opening the game,
+the host verifies the image with `h2 build --check` so play cannot
+start by rebuilding a stale image. The run's binary must support this
+check, including when it comes from a cached commit. Point `--current`
+at a prebuilt image that passes the check with the host's `h2`.
+Instrumented runs (`H2_PGO=gen`) use `runs/<id>/h2.profraw` for their raw
+profile.
+
+`h2 lab wait <id> [--timeout S]` exits 0 when the job completes
 or is skipped, 1 when it fails or is stopped, and 3 when it is still
 going. `h2 lab stop <id>` stops a pending request or sends SIGTERM to
 the job's process group, then SIGKILL 5 s later.
@@ -216,6 +274,12 @@ and the frame stats report from the log: the last `frame stats:` line,
 the three worst frames and the `outcome:` line. `h2 lab fetch <id>` copies
 `runs/<id>` here as `<DIR>/<id>` (`--to DIR`; default `$RUSH_KEEP/lab`,
 else `./lab`) using an archive streamed over the lab connection.
+The host sets the game's [agent output root](switches.md#tools) to
+`runs/<id>`. The archive includes the game's `traces/` from `trace.start`,
+`flights/` from `flight.dump` and `inputs/` from `input.record`. Each job
+gets its own directories, so concurrent jobs can use the same file names.
+Use `trace.stop` and `input.stop` to finish writing before stopping the
+job or fetching its files.
 
 ## Player consent before a job
 
@@ -224,8 +288,9 @@ Mac for a game window. It asks the game's [agent API](agent-api.md) on
 the per-process sockets under `~/Library/Caches/h2recomp/agents/` and
 on its own run sockets. It also checks the local process list for
 recognizable game launches, including the bundled macOS app.
-A headless serve leaves the Mac available for lab jobs. An open game
-window whose agent cannot show the prompt leaves the job skipped.
+A headless serve and jobs already running under this host leave the Mac
+available for new lab jobs. An open player game window whose agent cannot
+show the prompt leaves the job skipped.
 Service updates use the separate maintenance path.
 
 The game shows the requesting lab driver, the run or build, the commit or
@@ -263,25 +328,30 @@ h2 lab agent --host laptop <id> <method|short form> [json-params] [--timeout S]
 h2 lab agent --host laptop 0007 wait '{"phase":"gameplay","map_ticks":30}' 600000 --timeout 700
 h2 lab agent --host laptop 0007 capture 600 --timeout 200
 h2 lab agent --host laptop 0007 session.status
+h2 lab agent --host laptop 0007 trace.list
+h2 lab agent --host laptop 0007 flight show crouch-bug.jsonl --field physics.crouch
+h2 lab agent --host laptop 0007 input.log.read '{"name":"fight","limit":4096}'
 h2 lab agent --host laptop 0007 - < script.txt        # an `h2 agent -` script
 ```
 
-Everything after the id is what follows `h2 agent` on a command line, passed
-through unchanged: the host runs the run's own `h2` (its image's, so a short
-form that branch knows is understood) as `h2 agent <call> --socket <the run's
-socket> --timeout S`. What the call printed to stdout and stderr comes back
-as is, and `h2 lab agent` exits with its exit code, so scripts and `expect`
-lines behave as with a local `h2 agent`. Nothing is special-cased: any
-method, short form, input recording (`record`, `replay`, `press`, ...),
-`capture`, `render`, `counters`, `state`, `sim`. `--timeout S` (default 300,
+Everything after the id is a call for `h2 agent`. The host runs the job's
+own `h2` as `h2 agent <call> --socket <the run's socket> --timeout S`.
+Stdout, stderr and the exit code come back to the driver, so scripts and
+`expect` lines behave as with a local `h2 agent`. `--timeout S` (default 300,
 at most 7200) is how long the call may take, and is the call's socket
 timeout; give a `capture` or a `wait` more than it needs. The host waits up
 to two minutes for a just-started game's socket to appear. The call is
 refused while the job is still building and once the run has ended.
 
-Not forwarded: `--socket`, `--xbox` (the run's socket is the only one), and
-`flight show` and `raw-diff`, which read files on the machine they run on
-(fetch the files and run those here).
+`flight show` takes a bare file name and always reads through the job's
+socket. Use `trace.list` to find file names and `input.list` to find
+recording names. A lab agent call can return up to 64 MiB of output.
+For larger files, fetch them or call
+[`trace.read`](agent-api.md#tick-traces-and-the-flight-recorder) or
+[`input.log.read`](agent-api.md#input-act-like-a-player) one page at a time.
+The game and lab host must both support artifact readback. The host
+reserves `--socket` and `--xbox` for routing. Use `raw-diff` locally on
+fetched files.
 
 ### `--serve` and `bench`
 
@@ -324,11 +394,10 @@ or not the window is paced to 30 fps; the `fps` is the wall rate, which a
 paced run pins near 30. Add `-- --unpaced --no-vsync` to let the frame rate
 float. A failure (the job ends first, no gameplay in time, a call exits
 non-zero) stops the run and says so; its logs stay in `runs/<id>` for
-`h2 lab fetch`. Two invocations that differ in `--env` (or `--branch`, or
-`--build-env`) are an A/B: the host runs them one after the other, and the
-quiet machine is the point. A bench starts the level at its beginning, and
-two runs of one level drift apart over minutes (agent-api.md), so keep the
-window short and compare percentiles, not frames.
+`h2 lab fetch`. For an A/B, run the two invocations sequentially on a quiet
+host, varying `--env`, `--branch` or `--build-env`. A bench starts the level
+at its beginning, and two runs of one level drift apart over minutes
+(agent-api.md), so keep the window short and compare percentiles, not frames.
 
 Report both render resolution and LOD Distance with results above 480 lines.
 In offline runs at the default distance of 1x, higher resolutions also retain
@@ -352,6 +421,21 @@ runs (so the agent sees the run), else directly into the default root. A
 recording made elsewhere goes up with `h2 lab put FILE --as NAME --level
 MAP`; `h2 lab recordings` lists them.
 
+To use an agent recording from a lab job with `--replay`, finish the
+recording with `input.stop`, fetch the job, and upload its input log as a
+lab recording. Supply the recorded level and difficulty so replay boots
+with the same settings.
+
+```sh
+h2 lab fetch --host laptop 0007 --to ./lab
+h2 lab put --host laptop ./lab/0007/inputs/fight.input --as fight \
+    --level 03a_oldmombasa --difficulty heroic
+h2 lab run --host laptop --replay fight --frames 3000
+```
+
+For a replay from level boot, start the recording at the same point in
+boot so the game's read indices line up.
+
 A recording is a directory with a manifest, not a file:
 
 ```json
@@ -361,7 +445,7 @@ A recording is a directory with a manifest, not a file:
 ```
 
 `commit` is the image's commit when the host built it (null for
-`--current`).
+`--current`). Wait for the recording job to finish before replaying it.
 
 ### What replay does and doesn't promise
 
@@ -393,7 +477,9 @@ The test suite exercises the Unix socket and paired TLS on loopback,
 job lifecycle, the image cache, Git bundle sync, artifact transfers, and
 `lab agent` and `bench` against a fake game. Unit tests cover pairing
 expiry, single use, rejected keys and replays, and LaunchAgent generation
-and lifecycle commands through a fake controller.
+and lifecycle commands through a fake controller. Synthetic log feed tests
+cover job transitions, overlapping jobs, log growth and rotation, and
+stream framing.
 
 Live checks remaining include Bonjour across two Macs, macOS Firewall,
 LaunchAgent startup after login, and the game's window, Metal device and

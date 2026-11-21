@@ -74,6 +74,7 @@ the final result through that directory.
 | `h2 play --join URL`, `live-join-link` | open a [Live session link](../live/live-custom-games.md#join-in-halo-2) on the selected service during Live player runs. Film recording and playback disable joins. `H2_FEATURES=-live-join-link` disables game-side handling. |
 | `H2_AGENT`, `agent-calls` | the agent API socket ([agent-api.md](agent-api.md)): a path or `tcp://HOST:PORT`; unset, `h2 play` opens `<cache>/h2recomp/agents/<pid>.sock` for editors to find ("Finding a game"); on macOS, a windowed game also publishes that socket when using a custom endpoint; `off` (or `0`, `none`, `false`, `no`) keeps every socket closed; `-agent-calls` leaves out the agent's calls into the game (`sim` teleports, give and spawn, and `maps.test.load`, [test-maps.md](../game/test-maps.md)) |
 | `agent-edit-lifecycle` | Permits on-demand editor hooks for live object writes and map reloads. The first authorized write adopts the game. Opening the agent socket or displaying the pairing indicator leaves its hooks untouched. [Object edits](agent-api.md#object-edits) |
+| `H2_AGENT_OUT=DIR` | game-side root for `traces/`, `flights/` and `inputs/` ([agent-api.md](agent-api.md#tick-traces-and-the-flight-recorder)). Defaults to the game's cache directory when unset or empty. Lab sets it to the job's run directory. |
 | `agent-net` | the observer that counts replication events by type for `net.replication` ([agent-api.md](agent-api.md#netreplication)); `-agent-net` leaves the counts at zero |
 | `creature-probe` | off by default. `H2_FEATURES=creature-probe` registers the experimental slot-17 creature definition and selects its replication version for Live and System Link. Both peers use the same setting ([P7](../game/ai-networking.md#creature-slot-probe)) |
 | `h2 host bundle --sim-stores DIR` | package verified shared resource stores; leased hosts select the bundle’s store directory ([dedicated-host-build.md](../live/dedicated-host-build.md#package-recorded-shared-resources)) |
@@ -84,6 +85,8 @@ the final result through that directory.
 | `H2_STUDIO` | Editor agent socket path when `--socket` is absent (`crates/apps/studio-proto/src/lib.rs`, [editor API](../editor/agent-api.md)). |
 | `H2_FFMPEG` | Selects the local ffmpeg executable for movie conversion (`crates/formats/movies/src/install.rs`). |
 | `H2_LAB_HOST`, `H2_LAB_SOCKET` | default driving target and local lab socket ([lab.md](lab.md)) |
+| `h2 lab host [install] --max-jobs N` | active job cap, default 1 ([lab.md](lab.md#host-files-and-flags)) |
+| `h2 lab host watch [--root DIR]`, `h2 lab logs <id\|current> [--follow]` | watch job and service logs on the host or through the paired lab connection ([Watching jobs](lab.md#watching-jobs)) |
 | `h2 lab host [install] --takeover-timeout SECONDS` | player consent answer timeout, 1 to 3600 seconds, default 60 ([Player consent](lab.md#player-consent-before-a-job)) |
 | `h2 lab host [install] --takeover-cooldown SECONDS` | delay after a decline before asking again, default 1800 seconds, 0 lets every job ask ([Player consent](lab.md#player-consent-before-a-job)) |
 | `lab-takeover`, `lab-takeover-dialog` | the windowed game's consent driver and dialog. Turning either off makes consent unavailable while the game window is open ([Player consent](lab.md#player-consent-before-a-job)) |

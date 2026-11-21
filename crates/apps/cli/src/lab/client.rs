@@ -1,6 +1,6 @@
 //! The lab's client commands (`h2 lab status|run|...`), and `h2 lab record`.
 
-use std::io::{self, BufRead, BufReader, Read, Seek, Write};
+use std::io::{self, BufRead, BufReader, IsTerminal, Read, Seek, Write};
 use std::net::SocketAddr;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
@@ -10,7 +10,7 @@ use anyhow::{Context, Result, bail, ensure};
 use serde_json::{Value, json};
 
 use super::proto::{self, BuildSpec, RunReq};
-use super::{USAGE, default_socket, discovery, lan, transfer};
+use super::{USAGE, default_socket, discovery, lan, transfer, watch};
 
 enum Remote {
     Local(PathBuf),
@@ -52,22 +52,31 @@ impl Conn {
     }
 
     fn reply(&mut self) -> Result<Value> {
-        let mut line = String::new();
-        if self.0.read_line(&mut line)? == 0 {
-            bail!("the lab host closed the connection");
-        }
-        let v: Value =
-            serde_json::from_str(&line).with_context(|| format!("bad answer {line:?}"))?;
-        if v["ok"] != Value::Bool(true) {
-            bail!("{}", v["error"].as_str().unwrap_or("the host refused"));
-        }
-        Ok(v)
+        read_reply(&mut self.0)
+    }
+
+    fn log_reply(&mut self) -> Result<Value> {
+        read_reply((&mut self.0).take(transfer::FRAME_MAX as u64))
     }
 
     fn call(&mut self, req: Value) -> Result<Value> {
         self.request(req)?;
         self.reply()
     }
+}
+
+fn read_reply(mut reader: impl BufRead) -> Result<Value> {
+    let mut line = String::new();
+    if reader.read_line(&mut line)? == 0 {
+        bail!("the lab host closed the connection");
+    }
+    ensure!(line.ends_with('\n'), "unterminated lab reply");
+    let value: Value =
+        serde_json::from_str(&line).with_context(|| format!("bad answer {line:?}"))?;
+    if value["ok"] != Value::Bool(true) {
+        bail!("{}", value["error"].as_str().unwrap_or("the host refused"));
+    }
+    Ok(value)
 }
 
 /// Options every client command takes; the rest stay for the command.
@@ -127,6 +136,7 @@ pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
             print(&r.connect()?.call(json!({"cmd": "stop", "id": id}))?)
         }
         "runs" => runs_cmd(&r, args),
+        "logs" => logs_cmd(&r, args),
         "fetch" => {
             let mut id = None;
             let mut to = None;
@@ -420,6 +430,41 @@ fn fetch(r: &Remote, id: &str, to: Option<PathBuf>) -> Result<PathBuf> {
     conn.reply()?;
     std::fs::create_dir_all(&to).with_context(|| format!("creating {}", to.display()))?;
     transfer::extract_run(&archive.path, &to, id)
+}
+
+fn logs_cmd(r: &Remote, args: Vec<String>) -> Result<()> {
+    let mut id = None;
+    let mut follow = false;
+    for arg in args {
+        match arg.as_str() {
+            "--follow" if !follow => follow = true,
+            _ if id.is_none() && !arg.starts_with('-') => id = Some(arg),
+            _ => bail!("unexpected {arg}\n\n{USAGE}"),
+        }
+    }
+    let id = id.context("usage: h2 lab logs <id|current> [--follow] --host NAME")?;
+    proto::check_log_id(&id)?;
+
+    let mut conn = r.connect()?;
+    conn.request(json!({"cmd": "logs", "id": id, "follow": follow}))?;
+    conn.log_reply()?;
+
+    let mut stdout = io::stdout().lock();
+    let color = stdout.is_terminal();
+    let received = transfer::receive_logs(&mut conn.0, |line| {
+        watch::write_line(&mut stdout, line, color)
+    });
+    if received
+        .as_ref()
+        .err()
+        .and_then(|error| error.downcast_ref::<io::Error>())
+        .is_some_and(|e| e.kind() == io::ErrorKind::BrokenPipe)
+    {
+        return Ok(());
+    }
+    received?;
+    conn.log_reply()?;
+    Ok(())
 }
 
 fn runs_cmd(r: &Remote, args: Vec<String>) -> Result<()> {

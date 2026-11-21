@@ -85,7 +85,7 @@ pub struct Input {
     delivered: BTreeMap<u32, Delivered>,
     /// An [`AgentTap`] was made (the game has XAPI input).
     pub(crate) tap: bool,
-    /// Where input logs (and captures) go; the cache directory unless set.
+    /// Explicit root for input logs, traces, flights and captures.
     pub(crate) dir: Option<PathBuf>,
     /// The flight recorder's reads since the last tick (`crate::trace`);
     /// `None` while it isn't running.
@@ -180,9 +180,13 @@ impl MenuPad {
 }
 
 impl Input {
-    /// Where input logs (and captures) go.
+    /// Where profile captures go.
     pub fn dir(&self) -> PathBuf {
         self.dir.clone().unwrap_or_else(agent_proto::cache_dir)
+    }
+
+    pub(crate) fn output_dir(&self) -> PathBuf {
+        self.dir.clone().unwrap_or_else(agent_proto::output_dir)
     }
 
     /// The game's tick moved (or a map loaded and it started again).
@@ -753,7 +757,7 @@ pub(crate) fn add_input_methods(agent: &Agent, input: &Arc<Mutex<Input>>) {
     let i = Arc::clone(input);
     agent.add_method(method::INPUT_RECORD, Access::Act, move |v| {
         let p: RecordParams = params(v)?;
-        let path = log_path(&lock(&i).dir(), &p.name)?;
+        let path = log_path(&lock(&i).output_dir(), &p.name)?;
         if path.exists() && !p.replace {
             return Err(RpcError::new(
                 code::INVALID_PARAMS,
@@ -768,7 +772,7 @@ pub(crate) fn add_input_methods(agent: &Agent, input: &Arc<Mutex<Input>>) {
     let i = Arc::clone(input);
     agent.add_method(method::INPUT_REPLAY, Access::Act, move |v| {
         let p: ReplayParams = params(v)?;
-        let path = log_path(&lock(&i).dir(), &p.name)?;
+        let path = log_path(&lock(&i).output_dir(), &p.name)?;
         let bad =
             |e: String| RpcError::new(code::INVALID_PARAMS, format!("{}: {e}", path.display()));
         let text = std::fs::read_to_string(&path).map_err(|e| bad(e.to_string()))?;

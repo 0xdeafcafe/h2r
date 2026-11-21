@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::io::{self, Read, Write};
 use std::mem::size_of;
 use std::net::{IpAddr, SocketAddr, TcpStream};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -21,6 +21,7 @@ use ring::rand::{SecureRandom, SystemRandom};
 use subtle::ConstantTimeEq;
 
 use self::credentials::{Peer, Store};
+use super::service;
 
 const AUTH: u8 = 1;
 const PAIR: u8 = 2;
@@ -47,14 +48,18 @@ pub fn new_pairing(root: &Path) -> Result<String> {
     let store = Store::new(root)?;
     let (pin, _) = tls::identity(store.identity()?)?;
     let secret = store.offer(credentials::now()?)?;
+    service::access_event(root, "pairing code issued locally");
     Ok(pair_code(pin, secret))
 }
 
 pub fn revoke(root: &Path) -> Result<()> {
-    Store::new(root)?.revoke()
+    Store::new(root)?.revoke()?;
+    service::access_event(root, "pairing revoked locally");
+    Ok(())
 }
 
 pub struct Server {
+    root: PathBuf,
     store: Arc<Store>,
     tls: Arc<rustls::ServerConfig>,
     connections: Arc<AtomicUsize>,
@@ -67,6 +72,7 @@ impl Server {
         let store = Arc::new(Store::new(root)?);
         let (_, tls) = tls::identity(store.identity()?)?;
         Ok(Self {
+            root: root.to_owned(),
             store,
             tls,
             connections: Arc::new(AtomicUsize::new(0)),
@@ -143,7 +149,11 @@ impl Server {
                             .then_some(()))
                     })?
                     .is_some();
-                send(&mut stream, &[if accepted { ACCEPTED } else { DENIED }])?;
+                let response = send(&mut stream, &[if accepted { ACCEPTED } else { DENIED }]);
+                if accepted {
+                    service::access_event(&self.root, "driver paired");
+                }
+                response?;
                 Ok(None)
             }
             _ => Ok(None),
@@ -375,7 +385,6 @@ mod tests {
     use std::fs;
     use std::net::{Ipv6Addr, TcpListener};
     use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-    use std::path::PathBuf;
     use std::thread::{self, JoinHandle};
 
     use super::*;
@@ -491,6 +500,19 @@ mod tests {
         let (addr, task) = serve_once(&server);
         assert!(authenticate(addr, std::slice::from_ref(&peer)).is_err());
         assert!(task.join().unwrap().unwrap().is_none());
+        let access = root.0.join("logs/host-access.log");
+        assert_eq!(
+            fs::read_to_string(&access).unwrap(),
+            concat!(
+                "lab access: pairing code issued locally\n",
+                "lab access: driver paired\n",
+                "lab access: pairing revoked locally\n",
+            ),
+        );
+        assert_eq!(
+            fs::metadata(access).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
     }
 
     fn paired_server(key: Key) -> (TestRoot, Arc<Server>, Peer) {

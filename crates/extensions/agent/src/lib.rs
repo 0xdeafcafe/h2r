@@ -66,6 +66,7 @@ mod live;
 mod loads;
 pub mod menu;
 pub mod net;
+mod outputs;
 pub mod raw;
 mod reader;
 pub mod render;

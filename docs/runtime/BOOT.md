@@ -68,6 +68,10 @@ Environment variables the boot runner reads. Every other variable and
 | `H2_BOOT_DRAWLOG=<file>` | log every backend call of the frames in `H2_BOOT_DRAWLOG_FRAMES` (present counts, default `240`; frame N matches `frame-N.png`) |
 | `H2_BOOT_DRAWLOG_VERTS=1` | with `H2_BOOT_DRAWLOG`, add the vertex layout and the first 8 vertices of each stream |
 
+`H2_AGENT_OUT` sets the [agent output root](switches.md#tools) for
+tick traces, flight dumps and input logs when the agent API is active
+(`agent_proto::output_dir`, [agent-api.md](agent-api.md#tick-traces-and-the-flight-recorder)).
+
 The run prints a report when it ends. It covers:
 
 - the outcome and the stop, with the last EIP;
