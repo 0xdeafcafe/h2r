@@ -21,6 +21,7 @@ pub fn scaled_owner() -> FrameOwner<Scaled> {
             let to_check = Arc::clone(&replay);
             Some(Submission::Native(Candidate {
                 frame: Arc::clone(&replay),
+                before_original: Some(native_render::frame_graph::freeze_scaled_inputs),
                 eligible: Box::new(move |backend: &Scaled, targets| {
                     backend.can_draw_scene(&to_check, targets)
                 }),

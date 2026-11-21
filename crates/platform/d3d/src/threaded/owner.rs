@@ -39,6 +39,10 @@ pub type DrawFrame<B> = Box<
         -> Result<Outputs<<B as Backend>::Texture>, String> + Send,
 >;
 
+pub type FreezeInputs<B> = fn(
+    &mut B, &ReplayFrame, &HashMap<TargetRef, <B as Backend>::Surface>,
+) -> Result<(), String>;
+
 /// The private replay and window draw use the same scene. The latter must
 /// render into the supplied targets and issue the present.
 pub struct Candidate<B: Backend> {
@@ -47,6 +51,8 @@ pub struct Candidate<B: Backend> {
     /// write is consumed. A refusal runs the retained commands normally.
     pub eligible: Box<dyn FnOnce(&B, &HashMap<TargetRef, B::Surface>) -> bool + Send>,
     pub draw: DrawFrame<B>,
+    /// A matched but ineligible frame may still be captured privately.
+    pub before_original: Option<FreezeInputs<B>>,
 }
 
 /// The parity reference needs the same input attachments as the private
@@ -55,7 +61,7 @@ pub enum Submission<B: Backend> {
     Native(Candidate<B>),
     Reference {
         frame: Arc<ReplayFrame>,
-        freeze: fn(&mut B, &ReplayFrame, &HashMap<TargetRef, B::Surface>) -> Result<(), String>,
+        freeze: FreezeInputs<B>,
     },
 }
 
@@ -375,10 +381,17 @@ impl<B: Backend> Worker<B> {
             }).collect::<Option<HashMap<_, _>>>();
             match submission {
                 Submission::Native(candidate) => {
-                    let Some(surfaces) = surfaces.filter(|t| (candidate.eligible)(&self.inner, t)) else {
+                    let Some(surfaces) = surfaces else {
                         TARGET_REFUSALS.fetch_add(1, Ordering::Relaxed);
                         return None;
                     };
+                    if !(candidate.eligible)(&self.inner, &surfaces) {
+                        TARGET_REFUSALS.fetch_add(1, Ordering::Relaxed);
+                        if let Some(freeze) = candidate.before_original {
+                            let _ = freeze(&mut self.inner, &candidate.frame, &surfaces);
+                        }
+                        return None;
+                    }
                     Some((candidate.frame, candidate.draw, surfaces, proxies.samples))
                 }
                 Submission::Reference { frame, freeze } => {

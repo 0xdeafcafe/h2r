@@ -508,6 +508,7 @@ fn canonical_flare_tickets_and_mid_frame_reads_keep_their_original_proxy() {
             let displayed = Arc::clone(&displayed);
             Some(Submission::Native(Candidate {
                 frame,
+                before_original: None,
                 eligible: Box::new(|_, _| true),
                 draw: Box::new(move |gpu: &mut RecordingBackend, targets| {
                     displayed.fetch_add(1, Ordering::Relaxed);

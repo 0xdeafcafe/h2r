@@ -123,6 +123,7 @@ fn device(eligible: bool) -> (ThreadedBackend<Pixels>, Arc<AtomicUsize>, u32) {
                 let count = Arc::clone(&count);
                 Some(Submission::Native(Candidate {
                     frame: Arc::new(frame(n, byte)),
+                    before_original: None,
                     eligible: Box::new(move |_, _| eligible),
                     draw: Box::new(move |gpu: &mut Pixels, targets| {
                         count.fetch_add(1, Ordering::Relaxed);
@@ -251,6 +252,7 @@ fn a_snapshot_keeps_its_value_and_guest_handle_across_native_or_legacy_present()
                     let count = count.clone();
                     Some(Submission::Native(Candidate {
                         frame: Arc::new(replay),
+                        before_original: None,
                         eligible: Box::new(|_, _| true),
                         draw: Box::new(move |device: &mut Pixels, targets| {
                             count.fetch_add(1, Ordering::Relaxed);
@@ -303,6 +305,7 @@ fn previous_present_flare_reports_can_land_while_the_next_frame_is_retained() {
             let count = Arc::clone(&count);
             Some(Submission::Native(Candidate {
                 frame: Arc::new(frame(n, 13)),
+                before_original: None,
                 eligible: Box::new(|_, _| true),
                 draw: Box::new(move |gpu: &mut RecordingBackend, targets| {
                     count.fetch_add(1, Ordering::Relaxed);
@@ -342,6 +345,7 @@ fn a_failed_native_write_faults_the_worker_without_replaying_into_the_same_targe
     gpu.frame_owner.as_mut().unwrap().select = Box::new(|n| {
         Some(Submission::Native(Candidate {
             frame: Arc::new(frame(n, 1)),
+            before_original: None,
             eligible: Box::new(|_, _| true),
             draw: Box::new(|gpu, targets| {
                 gpu.clear(targets[&TargetRef::SceneColour], None, clear(42))?;

@@ -283,6 +283,7 @@ fn the_worker_adopts_only_the_actual_immutable_draw_packet_including_unused_nan_
             let target = replay.presented;
             Some(Submission::Native(Candidate {
                 frame: Arc::new(replay),
+                before_original: None,
                 eligible: Box::new(|_, _| true),
                 draw: Box::new(move |gpu: &mut RecordingBackend, targets| {
                     gpu.present(targets[&target], 0)?;

@@ -252,6 +252,7 @@ fn an_earlier_snapshot_survives_guest_release_and_replays_after_either_present_p
                     let count = Arc::clone(&count);
                     Some(Submission::Native(Candidate {
                         frame,
+                        before_original: None,
                         eligible: Box::new(|_, _| true),
                         draw: Box::new(move |gpu: &mut GfxBackend, targets| {
                             let mut pass = GuestDrawPass::on_existing(gpu, &draw, targets)?;

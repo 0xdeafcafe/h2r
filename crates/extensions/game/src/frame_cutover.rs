@@ -45,6 +45,7 @@ pub fn owner(lighting: Box<dyn Fn() -> d3d::Lighting + Send + Sync>) -> FrameOwn
             let to_check = Arc::clone(&replay);
             Some(Submission::Native(Candidate {
                 frame: Arc::clone(&replay),
+                before_original: Some(frame_graph::freeze_display_inputs),
                 eligible: Box::new(move |gpu: &d3d::GfxBackend, targets| gpu.matches_scene_targets(&to_check, targets)),
                 draw: Box::new(move |backend, targets| {
                     let mode = lighting();
