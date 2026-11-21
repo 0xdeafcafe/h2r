@@ -309,12 +309,21 @@ expects; the game refuses a batch whose `was` differs
 that the game runs the map as shown". Object edits keep an inverse beside
 the undo step: a move's old transform, a preview's object to delete.
 
+**Take the game's value** reads the conflicted field at a game boundary in
+the paired epoch. A successful read updates the document and its baseline.
+A conditional overwrite sends the value seen in the conflict as `was`.
+
 On pairing, `edit.map` gives the loaded map's name, file and checksum.
+Map identity uses the same case-insensitive level name as the game link.
 Same checksum as the file the editor's document came from: the baseline
 is that file, and unsaved edits show as pending until the user picks
 Edit, which sends them. Another checksum: View only, with the reason. A
-new map epoch (a reload, `state.load`, a revert) resets the baseline to
-the file the game loaded and the pending list is built again.
+new epoch rebuilds Pending from the loaded file or Play copy and reads the
+game journal. A BSP switch retains entries for tag allocations that survive.
+Reverting a journal in the same epoch updates the baseline with the restored
+bytes and the bytes the game reports for fields it leaves alone. Choosing
+**Restore** on disconnect stops new writes, waits for the outstanding batch,
+then reverts before closing the link.
 
 Saving is the existing path and is not changed by pairing: **Save map
 as** and **Save as package** write the document
@@ -330,6 +339,7 @@ loaded"), not done by default.
 | Theater playback | yes; the scrubber and the film's transport are separate | no: a film replays inputs, and a write changes what they produce |
 | Co-op host or guest (synchronous) | yes: reads do not touch the sim hash | no. The switch is disabled with the reason; edits stay in the document as pending |
 | System Link host, with other machines in the game | yes | only after a prompt that names how many machines will not have the change; tag pokes are local to the host, so clients predict with the old values. Object edits replicate as the host's state does |
+| System Link host, peer count unknown | yes | no until the game can verify the peer count |
 | Multiplayer client | yes: what this machine holds | no: the host overwrites it |
 | A Live session (not the local embedded server of `--live-local`) | no stream while a game is in progress: it would show one player every position | no |
 | Session unknown | yes | no |

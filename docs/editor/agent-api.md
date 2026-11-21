@@ -289,13 +289,18 @@ Notes on some:
   `mirror.pending` returns `pending` rows with `doc,tag,path,class,why`,
   the game’s existing `journal` from `edit.changes`, and `leaving`.
   `mirror.apply {what:"send"}` enters Edit. On MISMATCH, `take` and
-  `overwrite` require the row’s numeric `at`. On rejoin, `adopt` takes
+  `overwrite` require the row’s numeric `at`. `take` reads the field at the
+  current game boundary before applying the bytes to the document and baseline.
+  An unsuccessful read leaves the conflict pending. On rejoin, `adopt` takes
   the game's current bytes as the baseline and preserves the document.
-  `revert` restores the journal using `edit.revert`. A System Link host
+  `revert` uses the game's reported restored and left-alone bytes as the
+  baseline for the next send. A System Link host
   confirms the peer count using `confirm` with `peers`. `reload` writes
   a play copy, and `respawn` uses the game’s optional object method.
   `pair.disconnect {leave:"keep"|"restore"}` makes the leave choice over the
-  API. Omitting `leave` opens the prompt in the window. Both `edit.set` and
+  API. During restore, `mirror.pending.leaving` stays true while the editor
+  waits for an outstanding batch, reverts the journal, and disconnects on
+  acknowledgement. Omitting `leave` opens the prompt in the window. Both `edit.set` and
   `edit.revert` enforce the same game-side session check as `edit.batch`.
 - **Live mirror.** The paired window reads the game's `objects` and
   `players` stream. `mirror.status` reports the stream state, layers,

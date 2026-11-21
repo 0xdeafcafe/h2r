@@ -13,6 +13,7 @@
 //! laid out where the map put it, so that needs a reload.
 
 use std::collections::BTreeMap;
+use std::ops::Range;
 
 use scenario_edit::layout::{self, BLOCKS, FieldDef};
 use scenario_edit::{BlockKind, Scenario};
@@ -92,6 +93,50 @@ impl Baseline {
         }
     }
 
+    /// Apply bytes observed in the game to its placement baseline. Return the
+    /// ranges of the input belonging to placements so the caller can reconcile
+    /// the remaining bytes with the tag document.
+    pub fn observe(&mut self, s: &Scenario, at: u32, bytes: &[u8]) -> Vec<Range<usize>> {
+        let start = u64::from(at);
+        let end = start + bytes.len() as u64;
+        let mut spans = Vec::new();
+        for (kind, entries) in &mut self.blocks {
+            let block = s.block(*kind);
+            // The map writer relocates a grown block in a play copy. Only a
+            // path resolved by the game identifies its slots in that case.
+            if block.address == 0 || entries.len() > block.capacity() {
+                continue;
+            }
+            let first = u64::from(block.address);
+            let stride = u64::from(block.def.stride);
+            let lo = start.max(first);
+            let hi = end.min(first + stride * entries.len() as u64);
+            if lo >= hi {
+                continue;
+            }
+            let span = (lo - start) as usize..(hi - start) as usize;
+            let mut src = &bytes[span.clone()];
+            let mut offset = ((lo - first) % stride) as usize;
+            for entry in &mut entries[((lo - first) / stride) as usize..] {
+                let n = src.len().min(entry.len() - offset);
+                entry[offset..offset + n].copy_from_slice(&src[..n]);
+                src = &src[n..];
+                if src.is_empty() {
+                    break;
+                }
+                offset = 0;
+            }
+            spans.push(span);
+        }
+        spans.sort_unstable_by_key(|span| span.start);
+        spans
+    }
+
+    /// Whether an index in this document block still names the game's slot.
+    pub fn layout_matches(&self, s: &Scenario, kind: BlockKind) -> bool {
+        self.len(kind) == s.block(kind).len()
+    }
+
     /// Entries the baseline has in `kind`.
     pub fn len(&self, kind: BlockKind) -> usize {
         self.blocks.get(&kind).map_or(0, Vec::len)
@@ -118,7 +163,7 @@ pub fn diff(base: &Baseline, now: &Scenario) -> Diff {
         let Some(old) = base.blocks.get(&b.kind) else {
             continue;
         };
-        if old.len() != block.len() {
+        if !base.layout_matches(now, b.kind) {
             out.reload.push(b.kind);
             continue;
         }
@@ -153,7 +198,7 @@ pub fn hex(b: &[u8]) -> String {
 }
 
 pub fn unhex(s: &str) -> Option<Vec<u8>> {
-    if s.len() % 2 != 0 {
+    if !s.len().is_multiple_of(2) {
         return None;
     }
     (0..s.len())
@@ -224,6 +269,25 @@ mod tests {
         let d = diff(&base, s.scenario().unwrap());
         assert_eq!(d.reload, vec![kind]);
         assert!(d.writes.iter().all(|w| w.block != kind));
+    }
+
+    #[test]
+    fn observed_bytes_update_partial_placement_fields_across_slots() {
+        let (_t, s) = session("sync-observe");
+        let scenario = s.scenario().unwrap();
+        let mut base = Baseline::source(scenario);
+        let kind = BlockKind::Weapons;
+        let block = scenario.block(kind);
+        let stride = block.def.stride as usize;
+        let mut bytes = vec![0xc3; stride + 6];
+        bytes[0] = 0xff;
+        let spans = base.observe(scenario, block.address - 1, &bytes);
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0], 1..bytes.len());
+        let entries = &base.blocks[&kind];
+        assert_eq!(entries[0], bytes[1..1 + stride]);
+        assert_eq!(entries[1][..5], bytes[1 + stride..]);
+        assert_eq!(entries[1][5..], block.entry(1).unwrap()[5..]);
     }
 
     #[test]

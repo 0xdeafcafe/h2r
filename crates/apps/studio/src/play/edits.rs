@@ -45,6 +45,8 @@ pub(super) struct Edits {
     pub(super) journal_ready: bool,
     journal_requested: bool,
     reverting: bool,
+    restore_after_batch: bool,
+    taking: Option<u64>,
     tags: TagBaseline,
     pub(super) sent: Option<Batch>,
     next: u64,
@@ -99,7 +101,7 @@ impl Play {
                 .is_some_and(|(world, sum, _, _)| {
                     *world == app.session.world_rev()
                         && Some(*sum) == checksum
-                        && app.loaded_map() == name.as_deref()
+                        && MapMatch::of(app.loaded_map(), name.as_deref()) == MapMatch::Same
                 })
             && let Some((world, sum, base, tags)) = self.edits.reload_copy.take()
         {
@@ -109,7 +111,8 @@ impl Play {
         }
         let changed = self.edits.epoch != epoch
             || self.edits.checksum != checksum
-            || self.edits.name != name
+            || (self.edits.name != name
+                && MapMatch::of(self.edits.name.as_deref(), name.as_deref()) != MapMatch::Same)
             || self.edits.world != Some(app.session.world_rev());
         self.scenario_tag = v["scenario"].as_str().map(str::to_owned);
         let session =
@@ -146,6 +149,10 @@ impl Play {
             self.edits.checksum = checksum;
             self.edits.name = name;
             self.edits.sent = None;
+            self.edits.taking = None;
+            if std::mem::take(&mut self.edits.restore_after_batch) {
+                app.error("the map changed while leaving; choose how to leave the current map");
+            }
             self.edits.conflicts.clear();
             self.edits.created.clear();
             self.edits.confirmed = None;
@@ -181,7 +188,9 @@ impl Play {
         if open.is_none() {
             return Some("no map is open".into());
         }
-        if self.map() != open || self.edits.name.as_deref() != open {
+        if self.map_match(app) != MapMatch::Same
+            || MapMatch::of(open, self.edits.name.as_deref()) != MapMatch::Same
+        {
             return Some(format!(
                 "the game runs {}, the editor has {}",
                 self.map().unwrap_or("?"),
@@ -388,6 +397,7 @@ impl Play {
         }
         let batch = self.edits.sent.take().unwrap();
         if self.edits.world != Some(app.session.world_rev()) {
+            self.edits.restore_after_batch = false;
             return;
         }
         match result {
@@ -448,6 +458,11 @@ impl Play {
         }
         self.edits.last_diff = None;
         self.next_push = Instant::now();
+        if std::mem::take(&mut self.edits.restore_after_batch)
+            && let Err(why) = self.apply_edits(app, Apply::Restore)
+        {
+            app.error(why);
+        }
     }
 
     fn finish_leave(&mut self, app: &mut App) {
@@ -484,8 +499,24 @@ impl Play {
                     self.finish_leave(app);
                     return;
                 }
-                self.reset_baseline(app);
+                if self.edits.world != Some(app.session.world_rev()) {
+                    return;
+                }
+                for row in ["reverted", "dropped"]
+                    .iter()
+                    .filter_map(|key| v[*key].as_array())
+                    .flatten()
+                {
+                    if row["holds_bytes"].is_string()
+                        && let Err(why) = self.accept_game_bytes(app, row, false)
+                    {
+                        app.error(format!("edit.revert: {why}"));
+                    }
+                }
+                self.edits.created.clear();
                 self.edits.conflicts.clear();
+                self.edits.last_diff = None;
+                self.next_push = Instant::now();
                 app.pairing.journal.clear();
                 self.edits.journal_ready = false;
                 self.edits.journal_requested = true;
@@ -499,10 +530,18 @@ impl Play {
             self.finish_leave(app);
             return Ok(());
         }
+        if action == Apply::Restore && self.is_paired() {
+            self.request_leave(app);
+            self.edits.taking = None;
+            if self.edits.sent.is_some() {
+                self.edits.restore_after_batch = true;
+                return Ok(());
+            }
+        }
         if let Some(why) = self.map_refusal(app) {
             return Err(why);
         }
-        if self.edits.sent.is_some() || self.edits.reverting {
+        if self.edits.sent.is_some() || self.edits.reverting || self.edits.taking.is_some() {
             return Err("waiting for the game to acknowledge the previous write".into());
         }
         match action {
@@ -520,7 +559,24 @@ impl Play {
                     .position(|c| c["at"].as_u64() == Some(u64::from(at)))
                     .ok_or("no conflict at this address")?;
                 let c = self.edits.conflicts[i].clone();
-                self.accept_game_bytes(app, &c, action == Apply::Take(at))?;
+                if action == Apply::Take(at) {
+                    let len = observed_bytes(&c)?.len();
+                    let epoch = self.edits.epoch.unwrap();
+                    let (method, params) = if c["doc"] == "scenario" {
+                        (
+                            "edit.get",
+                            json!({"epoch":epoch,"tag":self.scenario_tag,"group":"scnr","path":c["path"]}),
+                        )
+                    } else {
+                        ("edit.read", json!({"epoch":epoch,"at":at,"len":len}))
+                    };
+                    self.edits.next += 1;
+                    let id = self.edits.next;
+                    self.edits.taking = Some(id);
+                    self.call(method, params, Purpose::Take { id, at });
+                    return Ok(());
+                }
+                self.accept_game_bytes(app, &c, false)?;
                 self.edits.conflicts.remove(i);
             }
             Apply::Adopt => {
@@ -615,53 +671,102 @@ impl Play {
         Ok(())
     }
 
-    fn accept_game_bytes(&mut self, app: &mut App, c: &Value, take: bool) -> Result<(), String> {
-        let at = c["at"]
-            .as_u64()
-            .and_then(|v| u32::try_from(v).ok())
-            .or_else(|| u32::from_str_radix(c["addr"].as_str()?.strip_prefix("0x")?, 16).ok())
-            .ok_or("missing game address")?;
-        let bytes = sync::unhex(
-            c["holds_bytes"]
-                .as_str()
-                .or(c["holds"].as_str())
-                .ok_or("missing current game bytes")?,
-        )
-        .ok_or("invalid game bytes")?;
-        let scenario = app.session.scenario().ok_or("no open scenario")?;
-        for b in BLOCKS {
-            let block = scenario.block(b.kind);
-            let Some(offset) = at.checked_sub(block.address) else {
-                continue;
-            };
-            let index = (offset / b.stride) as usize;
-            let Some(f) = b
-                .fields
+    pub(super) fn take_answer(&mut self, app: &mut App, id: u64, at: u32, result: Reply) {
+        if self.edits.taking != Some(id) {
+            return;
+        }
+        self.edits.taking = None;
+        let outcome: Result<(), String> = (|| {
+            let reply = result.map_err(|e| e.to_string())?;
+            if let Some(why) = self.map_refusal(app) {
+                return Err(why);
+            }
+            let i = self
+                .edits
+                .conflicts
                 .iter()
-                .find(|f| f.offset == offset % b.stride && f.ty.size() as usize == bytes.len())
-            else {
-                continue;
+                .position(|c| c["at"].as_u64() == Some(u64::from(at)))
+                .ok_or("the conflict has expired")?;
+            let mut field = self.edits.conflicts[i].clone();
+            let len = observed_bytes(&field)?.len();
+            field["holds_bytes"] = if field["doc"] == "scenario" {
+                reply["value"].clone()
+            } else {
+                reply["holds_bytes"].clone()
             };
-            let Some(value) = block.field_value(index, f, &bytes) else {
-                continue;
-            };
-            let w = sync::Write {
-                block: b.kind,
-                index,
-                field: f.name,
-                path: sync::path(b.kind, index, f),
-                was: String::new(),
-                value: sync::hex(&bytes),
-            };
-            if take {
-                app.session
-                    .apply(scenario_edit::Command::set(b.kind, index, f.name, value))
-                    .map_err(|e| e.to_string())?;
+            let received = field["holds_bytes"].as_str().and_then(sync::unhex);
+            if game_address(&reply)? != at || received.as_ref().map(Vec::len) != Some(len) {
+                return Err("the game returned a different field".into());
             }
-            if let Some((_, base)) = &mut self.baseline {
-                base.wrote(&w);
+            self.accept_game_bytes(app, &field, true)?;
+            self.edits.conflicts.remove(i);
+            self.edits.last_diff = None;
+            self.next_push = Instant::now();
+            Ok(())
+        })();
+        if let Err(why) = outcome {
+            app.error(format!("take the game's value: {why}"));
+        }
+    }
+
+    fn accept_game_bytes(&mut self, app: &mut App, c: &Value, take: bool) -> Result<(), String> {
+        let at = game_address(c)?;
+        let bytes = observed_bytes(c)?;
+        let scenario = app.session.scenario().ok_or("no open scenario")?;
+        // A grown block in a Play copy can live at a different address from
+        // the open document. Its scenario path still names the original slot.
+        let scenario_row = c["doc"] == "scenario"
+            || c["tag"]
+                .as_str()
+                .is_some_and(|tag| Some(tag) == self.scenario_tag.as_deref());
+        if scenario_row
+            && let Some(path) = c["path"].as_str()
+            && let Some((_, tail)) = path.split_once('[')
+            && let Some((index, _)) = tail.split_once(']')
+            && let Ok(index) = index.parse::<usize>()
+        {
+            for b in BLOCKS {
+                let Some(f) = b.fields.iter().find(|f| {
+                    f.ty.size() as usize == bytes.len() && sync::path(b.kind, index, f) == path
+                }) else {
+                    continue;
+                };
+                let (_, base) = self.baseline.as_mut().ok_or("no placement baseline")?;
+                if take {
+                    if !base.layout_matches(scenario, b.kind) {
+                        return Err("reload the changed placement block first".into());
+                    }
+                    let value = scenario
+                        .block(b.kind)
+                        .field_value(index, f, &bytes)
+                        .ok_or("the placement no longer exists")?;
+                    app.session
+                        .apply(scenario_edit::Command::set(b.kind, index, f.name, value))
+                        .map_err(|e| e.to_string())?;
+                }
+                base.wrote(&sync::Write {
+                    block: b.kind,
+                    index,
+                    field: f.name,
+                    path: path.to_owned(),
+                    was: String::new(),
+                    value: sync::hex(&bytes),
+                });
+                return Ok(());
             }
-            return Ok(());
+        }
+        if c["doc"] == "scenario" {
+            return Err("the game returned an unknown placement field".into());
+        }
+        let mut covered = Vec::new();
+        if !take
+            && c["doc"] != "tags"
+            && let Some((_, base)) = &mut self.baseline
+        {
+            covered = base.observe(scenario, at, &bytes);
+            if covered.first() == Some(&(0..bytes.len())) {
+                return Ok(());
+            }
         }
         app.sync_tags();
         let entry = app
@@ -688,7 +793,35 @@ impl Play {
                 return Err("the document refused the game value".into());
             }
         }
-        self.edits.tags.wrote(at, &bytes);
+        let mut start = 0;
+        for range in covered {
+            if start < range.start {
+                self.edits
+                    .tags
+                    .wrote(at + start as u32, &bytes[start..range.start]);
+            }
+            start = start.max(range.end);
+        }
+        if start < bytes.len() {
+            self.edits.tags.wrote(at + start as u32, &bytes[start..]);
+        }
         Ok(())
     }
+}
+
+fn game_address(row: &Value) -> Result<u32, String> {
+    row["at"]
+        .as_u64()
+        .and_then(|v| u32::try_from(v).ok())
+        .or_else(|| u32::from_str_radix(row["addr"].as_str()?.strip_prefix("0x")?, 16).ok())
+        .ok_or_else(|| "missing game address".into())
+}
+
+fn observed_bytes(row: &Value) -> Result<Vec<u8>, String> {
+    row["holds_bytes"]
+        .as_str()
+        .or(row["holds"].as_str())
+        .and_then(sync::unhex)
+        .filter(|bytes| !bytes.is_empty())
+        .ok_or_else(|| "missing or invalid current game bytes".into())
 }
