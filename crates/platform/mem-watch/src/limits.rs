@@ -34,9 +34,11 @@ pub(crate) struct Limits {
 
 impl Limits {
     pub(crate) fn defaults(ram: Option<u64>) -> Self {
+        // Three quarters of RAM: Ascension at 4x peaks near 8 GB while it
+        // loads (lab job 0026), which two fifths of an 18 GB Mac cut off.
         let hard = ram
             .filter(|n| *n > 0)
-            .map_or(16 * GIB, |n| (16 * GIB).min(n / 5 * 2));
+            .map_or(16 * GIB, |n| (16 * GIB).min(n / 4 * 3));
         Self {
             soft: 8 * GIB,
             hard,

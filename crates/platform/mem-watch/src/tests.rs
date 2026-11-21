@@ -13,7 +13,8 @@ fn parses_binary_sizes_and_rejects_overflow_and_bad_units() {
     for raw in ["G", "-1", "4MB/s", "12.5", "18446744073709551615K"] {
         assert!(parse_size(raw).is_err());
     }
-    assert_eq!(Limits::defaults(Some(10 << 30)).hard, 4 << 30);
+    assert_eq!(Limits::defaults(Some(8 << 30)).hard, 6 << 30);
+    assert_eq!(Limits::defaults(Some(18 << 30)).hard, (18 << 30) / 4 * 3);
     assert_eq!(Limits::defaults(Some(64 << 30)).hard, 16 << 30);
 }
 
