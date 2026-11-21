@@ -10,10 +10,15 @@ use std::sync::{Arc, Mutex, Weak};
 use engine::memory::GuestMemory;
 use hooks::{BuildError, Builder, Feature, Manifest, SnapshotPolicy};
 
-/// Publishes the name in the loaded cache header, if it can be read.
+/// Publishes the name in the loaded cache header, if it can be read: to
+/// the panel, and to the D3D pipeline cache, which records and prewarms
+/// programs by map (docs/graphics/graphics.md, "Pipeline compiles
+/// (`compile.rs`) and the pipeline cache").
 pub fn republish(m: &dyn GuestMemory) {
     if let Ok(name) = crate::health::loaded_map_name(m) {
         kernel::level::publish(&name);
+        #[cfg(feature = "gpu")]
+        d3d::pipeline_store::set_map(&name);
     }
 }
 

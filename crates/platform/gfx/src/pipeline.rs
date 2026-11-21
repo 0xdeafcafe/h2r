@@ -29,6 +29,12 @@ pub struct TargetFormats {
     pub samples: u32,
 }
 
+/// The meaning of a serialized [`PipelineKey`]. Bump it when a key that
+/// still parses would build a different pipeline than it did (a field's
+/// interpretation, a translation the key is made from): persisted keys of
+/// another version are not loaded (`d3d::pipeline_store`).
+pub const KEY_VERSION: u32 = 1;
+
 /// Everything that distinguishes one wgpu render pipeline from another.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct PipelineKey {

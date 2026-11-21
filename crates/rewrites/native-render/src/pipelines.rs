@@ -37,9 +37,13 @@ pub fn start(path: Option<PathBuf>) {
     });
 }
 
+/// The native archive's record format (`d3d::pipeline_store` versions every
+/// line): bump it when a fingerprint or a stored descriptor changes meaning.
+const ARCHIVE_VERSION: u32 = 1;
+
 fn run_archive(path: PathBuf, receive: mpsc::Receiver<Message>) {
     let _scope = mem_watch::scope("render.pipeline");
-    let (mut store, loaded) = PipelineStore::open::<u64>(&path);
+    let (mut store, loaded) = PipelineStore::open::<u64>(&path, ARCHIVE_VERSION);
     let mut recipes: HashMap<u64, HashSet<PipelineKey>> = HashMap::new();
     for item in loaded.pipelines {
         if let Some(id) = item.program {
@@ -59,7 +63,8 @@ fn run_archive(path: PathBuf, receive: mpsc::Receiver<Message>) {
             }
             Message::Record(id, key) => {
                 if recipes.entry(id).or_default().insert(key.clone()) {
-                    store.record(Some((id, &id)), false, &key);
+                    store.record_program(id, &id, None);
+                    store.record(Some(id), false, &key);
                 }
             }
         }

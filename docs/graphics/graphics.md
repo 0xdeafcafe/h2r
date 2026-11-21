@@ -503,17 +503,46 @@ persisted through wgpu. What is done instead:
 - **Persisted keys, prewarmed.** `d3d::pipeline_store` appends every
   pipeline a draw needed to a JSON-lines file: the NV2A program
   (`ProgramKey`: microcode or the pre-transformed program, the combiner
-  program without constants, the code-changing options) and the
-  `PipelineKey`. On startup `Nv2aShaders` translates the recorded programs
-  on a thread of its own, registers them as frames go by
-  (`ShaderProvider::maintain`, at every present) and queues their
-  pipelines on the workers. A draw that needs a program the prewarm thread
-  is still on waits for that one (`prewarm wait`) instead of translating
-  it twice. The file is `H2_PIPELINE_CACHE` (a path, or `off`), by default
+  program without constants, the code-changing options), the maps each
+  program drew on, and the `PipelineKey`.
+  - *Versioned.* Every line carries the record version
+    (`nv2a::STORE_VERSION`, from `PROGRAM_KEY_VERSION` in `nv2a.rs` and
+    `gfx::pipeline::KEY_VERSION`). Only the running build's version loads.
+    Lines of an older version, lines with no version and torn lines are
+    dead; a newer build's lines are kept for it. A key whose meaning
+    changes while it still parses bumps the version, so old records are
+    never translated for nothing.
+  - *Compacted.* When dead lines (stale, torn, duplicate, or naming a
+    program never recorded) reach `COMPACT_DEAD_LINES` or a quarter of
+    the file, `PipelineStore::open` writes the live lines to a temporary
+    file and renames it over the cache. Several processes may append at
+    once: one appending during a rewrite can lose that append, but no
+    reader sees a partial file. A file with no record in it is never
+    rewritten.
+  - *Scoped by map.* The game publishes each loaded map
+    (`pipeline_store::set_map`, from the `loaded_map` feature), and a
+    program's first draw on a map records a sighting. At startup
+    `Nv2aShaders` prewarms the programs seen before any map loaded and on
+    the main menu (`MENU_MAP`); when a map loads it prewarms that map's.
+    Each scope takes the most recently seen programs first, at most
+    `PREWARM_PROGRAMS` (1024; `H2_PREWARM_PROGRAMS`, `0` or `off` for
+    none), and a new scope replaces what is left of the last.
+  - *Paced.* One thread translates the batch and makes each program's
+    module, at most `PREWARM_BACKLOG` (16) ahead of registration. Each
+    present (`ShaderProvider::maintain`) registers at most
+    `PREWARM_PER_PRESENT` (8) of them and queues their pipelines on the
+    workers. A draw that needs a program the thread has not delivered
+    translates it on the spot and the thread skips it; nothing waits on
+    the thread. Registered programs keep their module, which later
+    pipelines of the same program are built from; nothing else is held.
+    The thread's and the translator's allocations are tagged
+    `render.prewarm` and `render.translate` in mem-watch.
+
+  The file is `H2_PIPELINE_CACHE` (a path, or `off`), by default
   `pipelines-v2.jsonl` in the cache directory
-  ([storage.md](../runtime/storage.md#host-directories)). It derives from the game's shaders, so it is never committed.
-  Several processes may append to it at once; torn or unparsable lines are
-  skipped. `h2 play` and `h2 run` (`H2_BOOT_GFX`) use it.
+  ([storage.md](../runtime/storage.md#host-directories)). It derives from
+  the game's shaders, so it is never committed. `h2 play` and `h2 run`
+  (`H2_BOOT_GFX`) use it. Why it is bounded: [pipeline-cache.md](notes/pipeline-cache.md).
 
 The native world, object, light, fog, water and decorator programs use
 `crates/rewrites/native-render/src/pipelines.rs`. Their utility workers

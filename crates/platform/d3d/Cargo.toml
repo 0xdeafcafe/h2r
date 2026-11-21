@@ -17,6 +17,9 @@ gfx = { path = "../gfx", default-features = false }
 wgpu = { version = "30", optional = true }
 thiserror.workspace = true
 runtime.workspace = true
+# The prewarm thread's and the translator's allocations are tagged
+# (`render.prewarm`, `render.translate`; nv2a.rs).
+mem-watch.workspace = true
 # Swap/KickOff/drain/submit spans and the frame counter (docs/perf/profiling.md).
 timeline = { path = "../../runtime/timeline" }
 # NV2A program translation behind `nv2a::Nv2aShaders` (the ShaderProvider).
