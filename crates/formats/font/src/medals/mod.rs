@@ -5,8 +5,9 @@
 //! starts with its medal.
 //!
 //! The pictures are [`art`]: 24 by 24 ARGB 4444 rows drawn for this
-//! project by `scripts/superbounce-medals.py` in the manner of the retail
-//! multi-kill discs, but for Incel's, a placeholder. Nothing is copied from a disc font. [`replacements`]
+//! project in the manner of the retail multi-kill discs, the bounce medals
+//! by `scripts/superbounce-medals.py` and Incel by `scripts/live-medals.py`
+//! (`--font-art`). Nothing is copied from a disc font. [`replacements`]
 //! gives them to [`crate::patch::apply`] for the fonts in [`FONTS`], placed
 //! as the font places its own Double Kill medal (U+E038), so a line of ours
 //! sits where a retail one does.
@@ -31,8 +32,7 @@ pub const BOUNCETACULAR: u16 = 0xe2a5;
 /// U+E2A6: Bounced, a fall out of the map during a bounce.
 pub const BOUNCED: u16 = 0xe2a6;
 /// U+E2A7: Incel, a game completed without teabagging or getting
-/// teabagged. Reserved: its picture is a placeholder ([`art::INCEL`]) and
-/// no HUD line shows it yet.
+/// teabagged: a teabag under a red no sign. No HUD line shows it yet.
 pub const INCEL: u16 = 0xe2a7;
 
 /// Every medal and its picture: the chain's tiers in order, then Bounced,

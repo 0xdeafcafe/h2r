@@ -1,7 +1,6 @@
 # Teabags and the Incel medal
 
-Status: Built. No HUD line shows the medal in the game, and its picture is
-a placeholder.
+Status: Built. No HUD line shows the medal in the game.
 Code: `crates/extensions/game/src/teabag.rs` (`Watch::step`, the feature
 `TeabagWatch`); the medal in `crates/live/live-proto/src/film/events/medals.rs`
 (`Incel`). Tests: `crates/extensions/game/src/teabag_tests.rs`, the
@@ -105,10 +104,12 @@ in `gameAwards` beside the kill and bounce medals. It reads `late` from a
 `PlayerJoined` after a kill in the stream, and from `joined_late` in a
 snapshot.
 
-**The pictures.** The HUD message fonts reserve U+E2A7 for it
-(`font::medals::INCEL`), whose picture (`art::INCEL`) is a placeholder
-disc until the medal redraw. The site's file is `medals/incel.webp`
-(`web/public/art/medals/`), named after the id.
+**The pictures.** A teabag under a red no sign, drawn by
+`scripts/live-medals.py` in the bounce medals' manner. The HUD message
+fonts carry it at U+E2A7 (`font::medals::INCEL`; the rows are
+`art::INCEL`, which the script writes with `--font-art`). The site's
+files are `medals/incel.webp` and `@2x` (`web/public/art/medals/`, in
+`PACK_MEDALS`), named after the id.
 
 **In the game.** No line shows it. The medal is worked out in the film and
 on Live at `GameEnded`, when the game's HUD has gone to the post-game
