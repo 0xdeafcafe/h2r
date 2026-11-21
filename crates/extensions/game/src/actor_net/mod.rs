@@ -1,6 +1,7 @@
-//! Engine integration of the distributed actor presentation channel.
+//! Engine integration for distributed actors and creature replication.
 
 pub mod client;
+pub mod creature;
 mod dialogue;
 pub mod host;
 

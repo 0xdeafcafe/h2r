@@ -2,10 +2,9 @@
 //! distributed simulation is replicating, for the probes of
 //! docs/game/ai-networking.md.
 //!
-//! Three readings at one tick boundary: the simulation world's mode, the
-//! live objects by kind with how many carry a replication entity, and the
-//! replication events queued since the process started, by type. The
-//! host adds the datagram counters. Nothing here writes.
+//! At one tick boundary, read the simulation mode and live objects by
+//! kind, including their creature entity bindings. Read the process's
+//! event and datagram counters at that same boundary.
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -134,6 +133,22 @@ pub struct Traffic {
     pub largest: u64,
 }
 
+/// Slot registration and the live, locally bound creature entities.
+#[derive(Debug, Default)]
+pub struct CreatureReplication {
+    pub slot: Option<u32>,
+    pub entities: Vec<CreatureEntity>,
+}
+
+/// A full replication identity, its local salted object handle and the
+/// number of movement updates sent or applied during this binding.
+#[derive(Debug)]
+pub struct CreatureEntity {
+    pub entity: u32,
+    pub object: u32,
+    pub updates: u64,
+}
+
 fn mode_name(mode: u32) -> &'static str {
     match mode {
         0 => "none",
@@ -186,6 +201,7 @@ fn reply(
     m: &dyn GuestMemory,
     events: &EventCounts,
     traffic: Option<Traffic>,
+    creatures: CreatureReplication,
 ) -> Result<Value, MemFault> {
     let mode = world_mode(m)?;
     let kinds = objects(m)?;
@@ -209,12 +225,26 @@ fn reply(
             )
         })
         .collect();
+    let creature_rows: Vec<Value> = creatures.slot.map_or_else(Vec::new, |slot| {
+        creatures
+            .entities
+            .into_iter()
+            .map(|row| json!({
+                "entity": row.entity,
+                "type": slot,
+                "object": agent_proto::sim::objects::handle(row.object),
+                "updates": row.updates,
+            }))
+            .collect()
+    });
     Ok(json!({
         "world_mode": mode,
         "mode": mode.map(mode_name),
         "distributed": matches!(mode, Some(4 | 5)),
         "objects": objects,
         "entities": entities,
+        "creature_type": creatures.slot,
+        "creatures": creature_rows,
         "events": {
             "total": counts.iter().sum::<u64>(),
             "by_type": by_type,
@@ -230,8 +260,13 @@ fn reply(
 }
 
 /// Registers `net.replication`. `traffic` answers the datagram counters
-/// (`None` when the host has no socket layer).
-pub fn install(agent: &Agent, traffic: impl Fn() -> Option<Traffic> + Send + 'static) {
+/// (`None` when the host has no socket layer). `creatures` reads the
+/// active definition and live bindings at the same boundary as the objects.
+pub fn install(
+    agent: &Agent,
+    traffic: impl Fn() -> Option<Traffic> + Send + 'static,
+    creatures: impl Fn(&dyn GuestMemory) -> CreatureReplication + Send + 'static,
+) {
     agent.add_game_method(METHOD, Access::Read, move |p, ctx| {
         if !p.is_null() && !p.as_object().is_some_and(|o| o.is_empty()) {
             return Err(RpcError::new(
@@ -241,7 +276,7 @@ pub fn install(agent: &Agent, traffic: impl Fn() -> Option<Traffic> + Send + 'st
         }
         let traffic = traffic();
         ctx.with_guest(|m| {
-            reply(&*m, &EVENTS, traffic).map_err(|e| {
+            reply(&*m, &EVENTS, traffic, creatures(&*m)).map_err(|e| {
                 RpcError::new(
                     code::UNAVAILABLE,
                     format!("reading the simulation at {:#x}", e.addr),
@@ -272,13 +307,14 @@ mod tests {
     }
 
     /// One more live object of type `kind` with `entity` at body `+0xd4`.
-    fn push(m: &mut FakeGuest, pool: &Datums<Header>, slot: u32, kind: u8, entity: u32) {
-        let (_, header) = fake::push(m, pool);
+    fn push(m: &mut FakeGuest, pool: &Datums<Header>, slot: u32, kind: u8, entity: u32) -> u32 {
+        let (handle, header) = fake::push(m, pool);
         let body = BODIES + slot * 0x200;
         m.map(body, 0x200);
         m.put_u8(header.addr + 0x3, kind)
             .put_u32(header.addr + 0x8, body)
             .put_u32(body + BODY_ENTITY, entity);
+        handle.raw()
     }
 
     #[test]
@@ -288,7 +324,7 @@ mod tests {
         push(&mut m, &pool, 1, 0, u32::MAX);
         push(&mut m, &pool, 2, 5, 9);
         push(&mut m, &pool, 3, 200, u32::MAX);
-        let r = reply(&m, &EventCounts::new(), None).unwrap();
+        let r = reply(&m, &EventCounts::new(), None, CreatureReplication::default()).unwrap();
         assert_eq!(r["world_mode"], 4);
         assert_eq!(r["mode"], "dist-server");
         assert_eq!(r["distributed"], true);
@@ -305,7 +341,7 @@ mod tests {
         let mut m = FakeGuest::new();
         m.put_u32(engine::points::SIM_GLOBALS.base, 0)
             .put_u32(engine::points::OBJECTS.base, 0);
-        let r = reply(&m, &EventCounts::new(), None).unwrap();
+        let r = reply(&m, &EventCounts::new(), None, CreatureReplication::default()).unwrap();
         assert!(r["world_mode"].is_null());
         assert!(r["mode"].is_null());
         assert_eq!(r["distributed"], false);
@@ -316,7 +352,7 @@ mod tests {
     #[test]
     fn a_local_game_is_not_distributed() {
         let (m, _) = guest(1);
-        let r = reply(&m, &EventCounts::new(), None).unwrap();
+        let r = reply(&m, &EventCounts::new(), None, CreatureReplication::default()).unwrap();
         assert_eq!(r["mode"], "local");
         assert_eq!(r["distributed"], false);
     }
@@ -328,7 +364,7 @@ mod tests {
         events.count(12);
         events.count(12);
         events.count(22);
-        let r = reply(&m, &events, None).unwrap();
+        let r = reply(&m, &events, None, CreatureReplication::default()).unwrap();
         assert_eq!(r["events"]["total"], 3);
         let rows = r["events"]["by_type"].as_array().unwrap();
         assert_eq!(rows.len(), 2);
@@ -337,7 +373,7 @@ mod tests {
         assert_eq!(rows[0]["count"], 2);
         assert_eq!(rows[1]["name"], "grenade release");
         events.count(12);
-        let r = reply(&m, &events, None).unwrap();
+        let r = reply(&m, &events, None, CreatureReplication::default()).unwrap();
         assert_eq!(r["events"]["by_type"][0]["count"], 3);
     }
 
@@ -347,12 +383,39 @@ mod tests {
         let events = EventCounts::new();
         events.count(26);
         events.count(u32::MAX);
-        let r = reply(&m, &events, None).unwrap();
+        let r = reply(&m, &events, None, CreatureReplication::default()).unwrap();
         let rows = r["events"]["by_type"].as_array().unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0]["name"], "other");
         assert!(rows[0]["type"].is_null());
         assert_eq!(rows[0]["count"], 2);
+    }
+
+    #[test]
+    fn creature_entities_report_objects_and_updates() {
+        let (mut m, pool) = guest(5);
+        let object = push(&mut m, &pool, 0, ObjectType::Creature as u8, 0x401);
+        let creatures = CreatureReplication {
+            slot: Some(17),
+            entities: vec![CreatureEntity {
+                entity: 0x401,
+                object,
+                updates: 3,
+            }],
+        };
+        let r = reply(&m, &EventCounts::new(), None, creatures).unwrap();
+        assert_eq!(r["objects"]["crea"]["with_entity"], 1);
+        assert_eq!(r["creature_type"], 17);
+        assert_eq!(r["creatures"], json!([{
+            "entity": 0x401,
+            "type": 17,
+            "object": format!("0x{object:08x}"),
+            "updates": 3,
+        }]));
+
+        let control = reply(&m, &EventCounts::new(), None, CreatureReplication::default()).unwrap();
+        assert!(control["creature_type"].is_null());
+        assert_eq!(control["creatures"], json!([]));
     }
 
     #[test]
@@ -365,7 +428,7 @@ mod tests {
             received_bytes: 90,
             largest: 300,
         };
-        let r = reply(&m, &EventCounts::new(), Some(t)).unwrap();
+        let r = reply(&m, &EventCounts::new(), Some(t), CreatureReplication::default()).unwrap();
         assert_eq!(r["traffic"]["sent_bytes"], 400);
         assert_eq!(r["traffic"]["largest"], 300);
     }
@@ -374,7 +437,7 @@ mod tests {
     fn the_method_is_registered() {
         use agent_proto::Object;
         let a = Agent::new();
-        install(&a, || None);
+        install(&a, || None, |_| CreatureReplication::default());
         let (tx, rx) = std::sync::mpsc::sync_channel(8);
         let conn = a.connect(tx);
         struct NoGuest;

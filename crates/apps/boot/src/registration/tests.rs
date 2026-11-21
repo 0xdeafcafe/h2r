@@ -183,6 +183,26 @@ fn assert_builds(case: &Case) {
 }
 
 #[test]
+fn the_creature_probe_plan_keeps_admission_on_in_both_arms() {
+    use crate::actor_net::creature::FEATURE;
+
+    for (switches, enabled) in [
+        (ALL_ON.to_owned(), false),
+        (format!("{ALL_ON},{FEATURE}"), true),
+    ] {
+        let mut case = Case::full(&switches);
+        case.coop_live = true;
+        let plan = plan(&case).unwrap();
+        let installed = |id| {
+            plan.chains.values().any(|chain| chain.hooks().any(|hook| hook.feature == id))
+        };
+
+        assert!(installed(crate::replication_admission::FEATURE));
+        assert_eq!(installed(FEATURE), enabled);
+    }
+}
+
+#[test]
 fn a_desktop_player_registers_only_the_films_render_groups() {
     use film::RenderHooks::{Desktop, Gpu, Slim};
     for profile in [Slim, Desktop, Gpu] {

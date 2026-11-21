@@ -1,9 +1,11 @@
 //! HLE-only QoS side channel. This is not the Xbox encrypted wire protocol.
+use live_proto::replication;
 use std::{
     collections::BTreeMap,
+    io,
     net::{Ipv4Addr, SocketAddr, SocketAddrV4, UdpSocket},
     sync::{
-        Arc, Mutex,
+        Arc, Mutex, OnceLock,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
     thread::JoinHandle,
@@ -11,6 +13,66 @@ use std::{
 };
 const QUERY: &[u8; 8] = b"H2QOS001";
 const REPLY: &[u8; 8] = b"H2QOR001";
+pub(crate) const LOOKUP_REQUEST_LEN: usize = 24;
+const LOOKUP_REPLY_HEADER: usize = 23;
+pub(crate) const MAX_LOOKUP_DATA: usize = 1020;
+const VERSION_MARKER: [u8; 2] = *b"RV";
+
+/// One version for the title sockets, tunnel responder and Live worker.
+/// Boot selects it before guest execution. Standalone HLE uses stock.
+#[derive(Clone, Default)]
+pub(crate) struct Version(Arc<OnceLock<u16>>);
+
+impl Version {
+    pub(crate) fn set(&self, version: u16) {
+        assert!(version != 0, "replication version must be explicit");
+        assert!(
+            self.0.set(version).is_ok(),
+            "replication version is fixed at startup"
+        );
+    }
+
+    pub(crate) fn get(&self) -> u16 {
+        self.0.get().copied().unwrap_or(replication::STOCK)
+    }
+}
+
+pub(crate) struct Lookup {
+    pub nonce: [u8; 8],
+    kid: [u8; 8],
+    version: Option<u16>,
+}
+
+pub(crate) fn decode_lookup(input: &[u8]) -> Option<Lookup> {
+    if input.len() != LOOKUP_REQUEST_LEN || &input[..8] != QUERY {
+        return None;
+    }
+    let nonce: [u8; 8] = input[8..16].try_into().unwrap();
+    Some(Lookup {
+        version: (nonce[6..8] == VERSION_MARKER)
+            .then(|| u16::from_le_bytes([nonce[4], nonce[5]])),
+        nonce,
+        kid: input[16..24].try_into().unwrap(),
+    })
+}
+
+/// Tag the opaque nonce to keep the query recognizable by legacy responders.
+/// The response carries its own version beyond the length-delimited title data.
+fn encode_lookup(nonce: u32, kid: [u8; 8], version: u16) -> [u8; LOOKUP_REQUEST_LEN] {
+    let mut request = [0; LOOKUP_REQUEST_LEN];
+    request[..8].copy_from_slice(QUERY);
+    request[8..12].copy_from_slice(&nonce.to_le_bytes());
+    request[12..14].copy_from_slice(&version.to_le_bytes());
+    request[14..16].copy_from_slice(&VERSION_MARKER);
+    request[16..24].copy_from_slice(&kid);
+    request
+}
+
+pub(crate) fn reply_nonce(response: &[u8]) -> Option<[u8; 8]> {
+    (response.len() >= LOOKUP_REPLY_HEADER && &response[..8] == REPLY)
+        .then(|| response[8..16].try_into().unwrap())
+}
+
 /// A co-op ping (docs/live/live-coop.md, "Ping"): magic, nonce, then the
 /// sender's own last round trip to us in ms (0: none yet), so the host
 /// learns its guest's measurement from the guest's next ping. Answered by
@@ -165,6 +227,49 @@ pub(crate) fn answer(
     };
     Some((true, entry.bandwidth, data))
 }
+
+/// Answer Live join preflight on UDP or the dedicated tunnel. Only matching
+/// peers receive a title description and contribute a session key hint.
+pub(crate) fn answer_lookup(
+    listeners: &Listeners,
+    asked: &Asked,
+    sender: Ipv4Addr,
+    lookup: &Lookup,
+    local: u16,
+) -> Option<Vec<u8>> {
+    let (mut enabled, bandwidth, mut data) =
+        answer(&listeners.lock().unwrap_or_else(|e| e.into_inner()), &lookup.kid)?;
+    match replication::require(local, lookup.version) {
+        Ok(()) => {
+            asked
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(sender, lookup.kid);
+        }
+        Err(error) => {
+            eprintln!("live: qos: {sender}: {error}");
+            enabled = false;
+            data.clear();
+        }
+    }
+
+    let mut response = Vec::with_capacity(LOOKUP_REPLY_HEADER + data.len() + 2);
+    response.extend_from_slice(REPLY);
+    response.extend_from_slice(&lookup.nonce);
+    response.push(if enabled {
+        3 | if data.is_empty() { 0 } else { 8 }
+    } else {
+        7
+    });
+    response.extend_from_slice(&bandwidth.to_le_bytes());
+    response.extend_from_slice(&(data.len() as u16).to_le_bytes());
+    response.extend_from_slice(&data);
+    if lookup.version.is_some() {
+        response.extend_from_slice(&local.to_le_bytes());
+    }
+    Some(response)
+}
+
 #[derive(Default)]
 pub(crate) struct Info {
     pub flags: u8,
@@ -185,6 +290,7 @@ impl Responder {
         listeners: Listeners,
         pings: Pings,
         asked: Asked,
+        version: Version,
     ) -> std::io::Result<Self> {
         let socket = UdpSocket::bind((address.ip().to_owned(), address.port() + 2))?;
         socket.set_nonblocking(true)?;
@@ -195,7 +301,7 @@ impl Responder {
         let thread = std::thread::Builder::new()
             .name("h2-xnet-qos".into())
             .spawn(move || {
-                let mut input = [0; 24];
+                let mut input = [0; LOOKUP_REQUEST_LEN + 1];
                 // Each session a peer asked for that this console doesn't
                 // listen for, said once: the usual cause of the title's
                 // "network problems" join failure.
@@ -222,20 +328,15 @@ impl Responder {
                         }
                         continue;
                     }
-                    if n != 24 || &input[..8] != QUERY {
+                    let (SocketAddr::V4(peer), Some(lookup)) =
+                        (sender, decode_lookup(&input[..n]))
+                    else {
                         continue;
-                    }
-                    let kid: [u8; 8] = input[16..24].try_into().unwrap();
-                    let entry = answer(&listeners.lock().unwrap_or_else(|e| e.into_inner()), &kid);
-                    if entry.is_some()
-                        && let SocketAddr::V4(v4) = sender
-                    {
-                        asked
-                            .lock()
-                            .unwrap_or_else(|e| e.into_inner())
-                            .insert(*v4.ip(), kid);
-                    }
-                    let Some((enabled, bandwidth, data)) = entry else {
+                    };
+                    let Some(response) =
+                        answer_lookup(&listeners, &asked, *peer.ip(), &lookup, version.get())
+                    else {
+                        let kid = lookup.kid;
                         if unknown.insert(kid) {
                             let ours: Vec<_> = listeners
                                 .lock()
@@ -256,17 +357,6 @@ impl Responder {
                         }
                         continue;
                     };
-                    let mut response = Vec::with_capacity(23 + data.len());
-                    response.extend_from_slice(REPLY);
-                    response.extend_from_slice(&input[8..16]);
-                    response.push(if enabled {
-                        3 | if data.is_empty() { 0 } else { 8 }
-                    } else {
-                        7
-                    });
-                    response.extend_from_slice(&bandwidth.to_le_bytes());
-                    response.extend_from_slice(&(data.len() as u16).to_le_bytes());
-                    response.extend_from_slice(&data);
                     let _ = socket.send_to(&response, sender);
                 }
             })?;
@@ -293,46 +383,86 @@ pub(crate) const QUERY_TRIES: u32 = 3;
 const QUERY_WAIT: Duration = Duration::from_millis(100);
 /// Asks the responder at `address` (its QoS port, + 2) about session
 /// `kid`; the error is the last try's.
-pub(crate) fn query_why(address: SocketAddrV4, kid: [u8; 8], probes: u16) -> std::io::Result<Info> {
-    let mut last = std::io::Error::from(std::io::ErrorKind::TimedOut);
+pub(crate) fn query_why(
+    address: SocketAddrV4,
+    kid: [u8; 8],
+    probes: u16,
+    local: u16,
+) -> io::Result<Info> {
+    let mut last = io::Error::from(io::ErrorKind::TimedOut);
     for _ in 0..QUERY_TRIES {
-        match query_once(address, kid, probes) {
+        match query_once(address, kid, probes, local) {
             Ok(info) => return Ok(info),
-            // Nothing listens there: another try can't help.
-            Err(e) if e.kind() == std::io::ErrorKind::ConnectionRefused => return Err(e),
+            Err(e)
+                if e.kind() == io::ErrorKind::ConnectionRefused || version_refusal(&e).is_some() =>
+            {
+                return Err(e);
+            }
             Err(e) => last = e,
         }
     }
     Err(last)
 }
-fn query_once(address: SocketAddrV4, kid: [u8; 8], probes: u16) -> std::io::Result<Info> {
-    {
-        let socket = UdpSocket::bind((std::net::Ipv4Addr::UNSPECIFIED, 0))?;
-        socket.connect((address.ip().to_owned(), address.port() + 2))?;
-        socket.set_read_timeout(Some(QUERY_WAIT))?;
-        let mut request = [0; 24];
-        request[..8].copy_from_slice(QUERY);
-        let nonce = NONCE.fetch_add(1, Ordering::Relaxed).to_le_bytes();
-        request[8..16].copy_from_slice(&nonce);
-        request[16..24].copy_from_slice(&kid);
-        socket.send(&request)?;
-        let mut response = [0; 1043];
-        let len = socket.recv(&mut response)?;
-        if len < 23 || &response[..8] != REPLY || response[8..16] != nonce {
-            return Err(std::io::ErrorKind::InvalidData.into());
-        }
-        let data_len = u16::from_le_bytes(response[21..23].try_into().unwrap()) as usize;
-        if data_len > 1020 || 23 + data_len != len {
-            return Err(std::io::ErrorKind::InvalidData.into());
-        }
-        Ok(Info {
-            flags: response[16],
-            probes,
-            rtt: 5,
-            bandwidth: u32::from_le_bytes(response[17..21].try_into().unwrap()),
-            data: response[23..len].to_vec(),
-        })
+
+/// The queue uses the same version check as title-driven Live direct and
+/// invited joins. A refusal ends the candidate check before handing it off.
+pub(crate) fn ready_to_join(
+    address: SocketAddrV4,
+    kid: [u8; 8],
+    local: u16,
+) -> Result<bool, replication::IncompatibleVersion> {
+    join_readiness(query_why(address, kid, 1, local))
+}
+
+fn join_readiness(reply: io::Result<Info>) -> Result<bool, replication::IncompatibleVersion> {
+    match reply {
+        Ok(info) => Ok(!info.data.is_empty()),
+        Err(error) => match version_refusal(&error) {
+            Some(reason) => Err(reason),
+            None => Ok(false),
+        },
     }
+}
+
+pub(crate) fn version_refusal(error: &io::Error) -> Option<replication::IncompatibleVersion> {
+    error.get_ref()?.downcast_ref().copied()
+}
+
+fn query_once(address: SocketAddrV4, kid: [u8; 8], probes: u16, local: u16) -> io::Result<Info> {
+    let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0))?;
+    socket.connect((address.ip().to_owned(), address.port() + 2))?;
+    socket.set_read_timeout(Some(QUERY_WAIT))?;
+    let request = encode_lookup(NONCE.fetch_add(1, Ordering::Relaxed) as u32, kid, local);
+    let nonce = request[8..16].try_into().unwrap();
+    socket.send(&request)?;
+    let mut response = [0; LOOKUP_REPLY_HEADER + MAX_LOOKUP_DATA + 3];
+    let len = socket.recv(&mut response)?;
+    decode_reply(&response[..len], nonce, probes, local)
+}
+
+fn decode_reply(response: &[u8], nonce: [u8; 8], probes: u16, local: u16) -> io::Result<Info> {
+    if reply_nonce(response) != Some(nonce) {
+        return Err(io::ErrorKind::InvalidData.into());
+    }
+    let data_len = u16::from_le_bytes(response[21..23].try_into().unwrap()) as usize;
+    let end = LOOKUP_REPLY_HEADER + data_len;
+    if data_len > MAX_LOOKUP_DATA || end > response.len() {
+        return Err(io::ErrorKind::InvalidData.into());
+    }
+    let version = match &response[end..] {
+        [] => None,
+        [low, high] => Some(u16::from_le_bytes([*low, *high])),
+        _ => return Err(io::ErrorKind::InvalidData.into()),
+    };
+    replication::require(local, version)
+        .map_err(|e| io::Error::new(io::ErrorKind::Unsupported, e))?;
+    Ok(Info {
+        flags: response[16],
+        probes,
+        rtt: 5,
+        bandwidth: u32::from_le_bytes(response[17..21].try_into().unwrap()),
+        data: response[LOOKUP_REPLY_HEADER..end].to_vec(),
+    })
 }
 
 #[cfg(test)]
@@ -410,6 +540,145 @@ mod tests {
         assert_eq!(answer(&l, &session), Some((false, 7, vec![])));
         assert_eq!(answer(&l, &squad).unwrap().2, b"older lobby");
         assert_eq!(answer(&l, &[9; 8]), None);
+    }
+
+    const JOIN_KID: [u8; 8] = [0x81; 8];
+    const JOIN_PEER: Ipv4Addr = Ipv4Addr::new(192, 0, 2, 12);
+    const LOBBY: &[u8] = b"synthetic title description";
+
+    fn join_listener() -> Listeners {
+        let listeners = Listeners::default();
+        listeners.lock().unwrap().insert(
+            JOIN_KID,
+            Listener {
+                enabled: true,
+                bandwidth: 1234,
+                data: LOBBY.to_vec(),
+                data_set: 1,
+            },
+        );
+        listeners
+    }
+
+    #[test]
+    fn mixed_versions_are_refused_before_replication() {
+        use replication::{CREATURE_FULL, CREATURE_PROBE, IncompatibleVersion, STOCK};
+
+        let listeners = join_listener();
+        for host in [STOCK, CREATURE_PROBE, CREATURE_FULL] {
+            for guest in [STOCK, CREATURE_PROBE, CREATURE_FULL] {
+                let asked = Asked::default();
+                let request = encode_lookup(73, JOIN_KID, guest);
+                let lookup = decode_lookup(&request).unwrap();
+                assert_eq!(lookup.version, Some(guest));
+                let packet = answer_lookup(&listeners, &asked, JOIN_PEER, &lookup, host).unwrap();
+                let result = decode_reply(&packet, lookup.nonce, 1, guest);
+                if guest == host {
+                    let info = result.unwrap();
+                    assert_eq!(info.data, LOBBY);
+                    assert_eq!(info.flags, 0xb);
+                    assert_eq!(info.bandwidth, 1234);
+                    assert_eq!(asked.lock().unwrap().get(&JOIN_PEER), Some(&JOIN_KID));
+                } else {
+                    // The host refused before publishing any lobby or peer
+                    // key data. The joiner also verifies the host's version.
+                    assert_eq!(packet[16], 7);
+                    assert_eq!(packet[21..23], [0, 0]);
+                    assert_eq!(packet.len(), LOOKUP_REPLY_HEADER + 2);
+                    assert!(asked.lock().unwrap().is_empty());
+                    let reason = result.err().unwrap();
+                    assert_eq!(reason.kind(), io::ErrorKind::Unsupported);
+                    assert_eq!(
+                        reason.get_ref().unwrap().downcast_ref::<IncompatibleVersion>(),
+                        Some(&IncompatibleVersion { local: guest, peer: Some(host) })
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn legacy_live_lookup_is_explicitly_incompatible_in_both_directions() {
+        let listeners = join_listener();
+        let asked = Asked::default();
+        let mut old_request = encode_lookup(73, JOIN_KID, replication::STOCK);
+        old_request[12..16].fill(0);
+        let old_lookup = decode_lookup(&old_request).unwrap();
+        assert_eq!(old_lookup.version, None);
+        let rejection = answer_lookup(
+            &listeners,
+            &asked,
+            JOIN_PEER,
+            &old_lookup,
+            replication::STOCK,
+        )
+        .unwrap();
+        assert_eq!(rejection[16], 7);
+        assert_eq!(rejection.len(), LOOKUP_REPLY_HEADER);
+        assert!(asked.lock().unwrap().is_empty());
+
+        let new_request = encode_lookup(73, JOIN_KID, replication::STOCK);
+        let new_lookup = decode_lookup(&new_request).unwrap();
+        let mut old_reply = answer_lookup(
+            &listeners,
+            &asked,
+            JOIN_PEER,
+            &new_lookup,
+            replication::STOCK,
+        )
+        .unwrap();
+        // An old responder echoes the same nonce and title data. Its
+        // reply has no version after the title payload.
+        old_reply.truncate(old_reply.len() - 2);
+        let reason = decode_reply(&old_reply, new_lookup.nonce, 1, replication::STOCK)
+            .err()
+            .unwrap();
+        assert_eq!(reason.kind(), io::ErrorKind::Unsupported);
+        assert!(reason.to_string().starts_with("replication_version_mismatch"));
+    }
+
+    #[test]
+    fn queue_join_readiness_preserves_definite_refusals() {
+        let mismatch = replication::IncompatibleVersion {
+            local: replication::CREATURE_PROBE,
+            peer: Some(replication::STOCK),
+        };
+        assert_eq!(
+            join_readiness(Err(io::Error::new(io::ErrorKind::Unsupported, mismatch))),
+            Err(mismatch),
+        );
+        for kind in [io::ErrorKind::TimedOut, io::ErrorKind::Unsupported] {
+            assert_eq!(join_readiness(Err(kind.into())), Ok(false));
+        }
+        assert_eq!(join_readiness(Ok(Info::default())), Ok(false));
+        assert_eq!(
+            join_readiness(Ok(Info {
+                flags: 0xb,
+                data: LOBBY.to_vec(),
+                ..Info::default()
+            })),
+            Ok(true),
+        );
+    }
+
+    #[test]
+    fn a_qos_reply_must_match_its_query_and_have_a_complete_version() {
+        let listeners = join_listener();
+        let asked = Asked::default();
+        let request = encode_lookup(73, JOIN_KID, replication::STOCK);
+        let lookup = decode_lookup(&request).unwrap();
+        let mut reply =
+            answer_lookup(&listeners, &asked, JOIN_PEER, &lookup, replication::STOCK).unwrap();
+        let wrong_nonce = [0; 8];
+        let reason = decode_reply(&reply, wrong_nonce, 1, replication::STOCK)
+            .err()
+            .unwrap();
+        assert_eq!(reason.kind(), io::ErrorKind::InvalidData);
+        reply.pop();
+        let reason = decode_reply(&reply, lookup.nonce, 1, replication::STOCK)
+            .err()
+            .unwrap();
+        assert_eq!(reason.kind(), io::ErrorKind::InvalidData);
     }
 
     #[test]
