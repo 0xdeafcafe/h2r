@@ -58,12 +58,7 @@ pub fn start_with(
         .shared_cache(autonav::shared_cache_dir())
         .on_demand(move |name, source| lookup(&vfs, &content, name, source))
         .stay(true)
-        .background(true)
-        .on_built(|name, d| {
-            if autonav::loaded().eq_ignore_ascii_case(name) && autonav::offer(name, d.clone(), None) {
-                eprintln!("bots: {name}: the new nav mesh is in use");
-            }
-        });
+        .background(true);
     if let Some(first) = first {
         handle.want(&first);
     }
@@ -94,6 +89,7 @@ fn content_root(data_root: &Path) -> PathBuf {
 /// no generated package registration. Look for their filename outside
 /// the VFS lock when the disc has no such map.
 fn lookup(vfs: &SharedVfs, content: &Path, name: &str, source: Option<&str>) -> Option<Box<dyn Source>> {
+    let _stage = timeline::setup::Stage::Nav.worker();
     if !played(name) || name.contains(['/', '\\']) {
         return None;
     }

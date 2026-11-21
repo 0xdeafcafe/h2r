@@ -2941,8 +2941,11 @@ the serial brain's. With simulated transport, the uplink credits that
 tick against the requested delay (`Uplink::think_ticks`). A script or
 recording supplies a current pad and gets its full configured delay. A think from before an input reset (generation) or a tick
 gap is dropped, and the seat sends a neutral pad. When the hosted game
-ends, the thinks in flight are settled. The fade gate (§5.4) is
-unchanged: brains observe and plan through the fade, the uplink sends a
+ends, the host discards queued decisions and unpublished reports. Workers can
+finish an old decision while the shell draws. If the next match already needs
+input, the host supplies neutral pads until those workers finish and resets
+each source before sampling it again. During the fade (§5.4), brains observe
+and plan, the uplink sends a
 neutral pad while it is up, and the first clear tick sends the newest
 pad at once.
 
@@ -3975,11 +3978,14 @@ game checks.
      version 3, the **stamp** (the generator version
      `cache::GENERATOR` and the source map's fingerprint), then the mesh
      and the walls and tactical places. The data comes from the disc, so it stays on this
-     machine and out of git. When the loaded map's name (`0x547898`)
-     changes, the glue loads `<map>.0.bots` on a background thread
-     (`bots-map-data`). Until
-     the data is ready, the bots can walk toward known goals. Host visual
-     contacts require a loaded BSP.
+     machine and out of git. The frame hook tracks the loaded short name
+     and source checksum. For automatic multiplayer builds it queues that
+     load on `bots-nav`. The worker checks the mounted source header before
+     publishing a cached mesh or building a replacement. For sim, campaign
+     or manual meshes, `bots-map-data` reads the local file. This worker
+     sleeps between loads and coalesces pending reads. Until a mesh is
+     ready the bots can walk toward known goals. Host visual contacts
+     require a loaded BSP.
    - **Built for you** (`bots::autonav`, `game::bots_nav_auto`). One
      worker (`bots-nav`) sleeps until a boot, a map selection with
      Clankers on, or a map load requests a map. It looks up that map as
@@ -4035,11 +4041,12 @@ game checks.
        `generator_output_is_pinned` records its output on a small scene
        with the version, so changing the output without the bump fails.
      - **Order.** A request (`Handle::want`) moves its map to the front.
-       A repeated request for a grid already under construction allows its
-       current pass to finish. The bots steer toward known goals until
-       their mesh arrives (`autonav::offer`). A disk read carries its load
-       generation so revisiting a map cannot publish a previous visit's
-       late read. The visibility worker verifies the wall fingerprint
+       Another menu pick for the same grid lets its current pass finish.
+       An active slot request can interrupt a speculative grid to publish
+       the mesh. Boot and menu requests populate the cache. Only a result
+       carrying the active load's generation can publish
+       (`autonav::offer`), including after returning to the same named
+       map. The visibility worker verifies the wall fingerprint
        outside the lock used by bot ticks and attaches the grid to the
        matching mesh.
      - **Picked with Clankers on.** `bots::autonav::build_soon(map)` asks
@@ -4077,8 +4084,8 @@ game checks.
      the old file when the rename fails; BSP 0 written last; the queue
      (the booted map first, one source per map); a pass building the
      stale multiplayer maps only, then nothing, then only an edited one;
-     a map installed after boot built when wanted; the worker's data
-     winning over a late file read. `cargo test -p game --lib
+     a map installed after boot built when wanted; delayed builds and
+     cached files checked against the active load. `cargo test -p game --lib
      bots_nav_auto`: finding a requested content map through the VFS, a
      map read through the VFS in chunks, nothing started when off, the
      lookup skipping the menu

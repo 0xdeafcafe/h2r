@@ -35,9 +35,11 @@ starts lowers itself.
 | Thread | Code | Work |
 |---|---|---|
 | `bots-nav` and its build workers | `crates/extensions/game/src/bots_nav_auto.rs`, `bots::vis::Threads::background` | nav meshes and visibility grids requested for boot, lobby selection or play ([bots.md](../game/bots.md) section 10) |
-| `bots-map-data` | `crates/extensions/game/src/bot_glue.rs` (`load_map_data`) | releasing the retired mesh and reading the loaded map's `.bots` and `.vis` |
+| `bots-map-data` | `crates/extensions/game/src/bot_glue.rs` (`load_map_data`) | a blocking receiver that releases retired meshes and reads manually built or sim maps |
+| `native-map retire` | `crates/extensions/game/src/native_map.rs` | releasing world and object resources, including first-person models, after their last queued pass finishes |
 | `native-world load` | `crates/extensions/game/src/native_world_glue.rs` | retiring BSP resources, reading and uploading world, lights, fog, water, scene layers and decorator looks |
 | `native-objects load`, `native-first-person load`, `native-lights models` | `crates/extensions/game/src/native_objects_glue.rs`, `native_first_person_load.rs`, `native_lights_glue/models.rs` | model geometry and materials for object, arm and light draws |
+| `native light materials` | `crates/extensions/game/src/native_lights_glue/materials.rs` | translating runtime light shaders, uploading their images and evicting cached materials |
 | `native-decorators load` | `crates/extensions/game/src/native_decorators_glue.rs` | translating and uploading resident decorator materials |
 | `native pipeline N`, `native pipeline archive` | `crates/rewrites/native-render/src/pipelines.rs` | compile native shader variants and persist observed descriptors. The workers sleep on their queues between requests |
 | `pad-speaker-index` | `crates/extensions/game/src/pad_speaker.rs` | the controller speaker's sound index |
