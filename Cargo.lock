@@ -1011,6 +1011,7 @@ dependencies = [
  "host-data",
  "host-dirs",
  "hs",
+ "hud-kit",
  "iced-x86",
  "image",
  "input",
@@ -3065,6 +3066,23 @@ dependencies = [
  "png",
  "scenario-edit",
  "tags",
+ "xiso",
+]
+
+[[package]]
+name = "hud-kit"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "assets",
+ "h1-assets",
+ "h1map",
+ "hud-edit",
+ "map",
+ "scenario-edit",
+ "serde_json",
+ "tags",
+ "xbe",
  "xiso",
 ]
 
