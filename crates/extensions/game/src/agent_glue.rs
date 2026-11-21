@@ -176,6 +176,12 @@ impl AgentGlue {
             Err(e) => anyhow::bail!("agent-calls: {e}"),
         }
         agent::forge::install(&agent, sim.clone(), &agent::sim::hashes::HASHES);
+        // firefight.*: the Firefight runtime, or why there is none
+        // (docs/game/firefight.md, "Agent API").
+        agent::firefight::install(
+            &agent,
+            std::sync::Arc::new(crate::firefight::feature::AgentSource::installed()),
+        );
         let probes = agent::probe::Probes::default();
         if registry.add(&probes).map_err(|e| anyhow::anyhow!("agent-probes: {e}"))? {
             probes.install(&agent, &sim);

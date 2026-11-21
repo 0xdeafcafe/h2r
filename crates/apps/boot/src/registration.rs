@@ -279,6 +279,10 @@ pub(crate) fn register_core_film(
         features, i.settings.clone(), telemetry.clone(), custom_maps, sources.as_deref(),
     )
         .context("installing our skulls")?;
+    // Firefight on a kit map (docs/game/firefight.md, "The host runtime"):
+    // off unless H2_FEATURES names `firefight`. A film replays the host's
+    // entries.
+    crate::firefight::feature::install(features, film.is_some()).context("installing Firefight")?;
     for effect in [
         &crate::h1_particle_physics::H1ParticlePhysics as &dyn hooks::Feature,
         &crate::h1_flag::H1Flag,

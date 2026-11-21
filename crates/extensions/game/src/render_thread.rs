@@ -111,6 +111,13 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
     // Game-thread points: the simulation, the UI and the level start.
     ("actor-net", "*", "capture and dialogue share per-match state on the simulation thread"),
     (
+        "firefight",
+        "*",
+        "the game's start and tick on the game thread: starts the mode, applies entries through \
+         guest calls before the tick (an async answer that re-enters it) and steps the director \
+         after it",
+    ),
+    (
         "variant-vitality",
         "*",
         "a damage instance in the simulation, on the game thread; scales the body and shield parts",
