@@ -13,16 +13,91 @@ pub struct WorldLine<'a> {
     pub color: [f32; 3],
     pub dashed: bool,
     pub label: Option<&'a str>,
+    pub style: LineStyle,
+}
+
+/// A soft halo around a line's core.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Glow {
+    /// Extra half-width on each side, in pixels at 1080p.
+    pub width: f32,
+    /// The halo's peak opacity as a fraction of the line's own.
+    pub alpha: f32,
+}
+
+/// Arrowheads along a line, lying in the world.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Chevrons {
+    /// The way they point (world space; used flat in the XY plane).
+    pub direction: [f32; 3],
+    /// World units between arrowheads.
+    pub spacing: f32,
+    /// World units from an arrowhead's tip back to its wings.
+    pub size: f32,
+    /// World units a second the arrowheads travel along `direction`;
+    /// zero keeps them still.
+    pub speed: f32,
+}
+
+/// A filled strip on the floor along each edge.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Ribbon {
+    /// World units across.
+    pub width: f32,
+    /// Opacity as a fraction of the line's own.
+    pub alpha: f32,
+}
+
+/// Brightness that breathes with the present time.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Pulse {
+    /// Seconds a cycle.
+    pub period: f32,
+    /// 0..1: how far the dark end drops below full brightness.
+    pub depth: f32,
+}
+
+/// Opacity that falls away with the distance from the camera.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Fade {
+    /// World units: full opacity up to here.
+    pub start: f32,
+    /// World units: invisible from here.
+    pub end: f32,
+}
+
+/// How a [`WorldLine`] is drawn. The default is a thin, opaque line.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LineStyle {
+    /// Core width in pixels at 1080p (scaled by the output height).
+    pub width: f32,
+    pub alpha: f32,
+    pub glow: Option<Glow>,
+    pub pulse: Option<Pulse>,
+    pub fade: Option<Fade>,
+    pub chevrons: Option<Chevrons>,
+    pub ribbon: Option<Ribbon>,
+}
+
+impl Default for LineStyle {
+    fn default() -> Self {
+        Self {
+            width: 1.0,
+            alpha: 1.0,
+            glow: None,
+            pulse: None,
+            fade: None,
+            chevrons: None,
+            ribbon: None,
+        }
+    }
 }
 
 /// How long a sample can appear when its image is shown again.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ImageValidity {
     Image,
-    Lease {
-        expires: Instant,
-        generation: u64,
-    },
+    Lease { expires: Instant, generation: u64 },
 }
 
 /// Geometry captured on the render owner and consumed on the window thread.
@@ -80,7 +155,10 @@ impl ImageSamples {
                 shown.expires = Some(shown.expires.map_or(expires, |old| old.min(expires)));
             }
         }
-        if let Some(ImageValidity::Lease { expires, generation }) = self
+        if let Some(ImageValidity::Lease {
+            expires,
+            generation,
+        }) = self
             .editor
             .as_ref()
             .and_then(|editor| editor.visit(now, visitor))
