@@ -1,0 +1,14 @@
+[package]
+name = "forge-build"
+description = "Deterministic local Forge map materialisation over the user's Halo 2 maps"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+content.workspace = true
+forge-doc.workspace = true
+map.workspace = true
+scenario-edit = { path = "../scenario-edit" }
+tags.workspace = true
+thiserror.workspace = true

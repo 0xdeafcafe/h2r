@@ -1,11 +1,11 @@
 # Forge: the design
 
-Status: F1 implements the document and edit log. Materialising and
-editing in game are planned.
-Code: `crates/formats/forge-doc` defines the document, ops, validation
-and log. Its tests use invented data. The planned crates are
-`forge-build` for materialising, `forge` for the session and tools, and
-`asset-import` for converting glTF and FBX. Screens belong in
+Status: The document, edit log and local materialiser are implemented.
+In-game tools are planned.
+Code: `crates/formats/forge-doc` defines the document and log.
+`crates/tools/forge-build` materialises it. Both have tests on invented
+maps. The planned crates are `forge` for the session and tools and
+`asset-import` for conversions. Screens belong in
 `crates/extensions/game/src/ui_kit/`.
 Switch: the `forge` feature of `H2_FEATURES` (off until slice F4 is seen in the game); it joins [switches.md](../runtime/switches.md) with the code.
 
@@ -66,10 +66,12 @@ tags added at build time so that most edits in a session are Live.
 - Spare entries at the end of each placement block, the netgame flag,
   netgame equipment and starting location blocks, and the object name
   block, up to the engine's per-type limits (scenario-editor.md, "Add").
-  A spare entry is inert: palette index -1, or a flag type no reader
-  matches (**S** per block; the test is that an unedited kit map plays as
-  its base).
-- Spare device groups and squad slots.
+  F2 leaves the root count at the active entries. Where the format has
+  a sentinel, the reserved rows carry it (for example palette index
+  -1). F3 probes whether engine readers take the count from the root
+  on each walk.
+- Spare device groups, squad groups and squad slots follow the same
+  active-count rule.
 - Generated tags of our own, built from nothing on the disc: barrier
   boxes in a ladder of sizes, a block-out set (box, ramp, wedge,
   cylinder), marker objects for emitters and volumes. Each is a `bloc` or
@@ -86,9 +88,11 @@ F3 measures it. A kit that does not fit is cut in a fixed order (block-out
 set, spare entries, then recipes are refused by name), so two machines
 cut alike.
 
-A published map is materialised without the unused kit: `forge-build`
-drops spare capacity the document does not use, so a finished map costs
-only what it holds.
+A session document requests the kit with the `forge_kit` generate
+recipe. F2 reserves up to eight slots per block, in scenario root
+offset order, and reduces a reservation to fit the writer's bounds.
+The recipe is part of the hashed document. A published play document
+omits the kit recipe.
 
 ## How it works
 
@@ -145,11 +149,13 @@ A **recipe** brings tags into the map by reference:
 
 `forge-build` turns a document and the user's disc into a map package
 ([maps.md](maps.md) section 1) under `<data>/maps/forge-<first 16 hex of
-the id>/`. It is the editor's save path run headless: placement ops
-through `scenario_edit::Session`, mesh and bitmap ops through
-`geometry-edit` and `bitmap-edit`, recipes through `map::build::TagSet`,
-then pathfinding (`pathfind::generate`) for any BSP whose collision
-changed, then the package writer (`scenario_edit::package`).
+the id>/`. F2 runs placement commands through
+`scenario_edit::Session`, applies named typed tag-field writes, and
+saves with the editor's map writer. It verifies the pinned versions
+and each named source hash. The later geometry and paint slices use
+`geometry-edit` and `bitmap-edit`. Later recipes use
+`map::build::TagSet`, and collision edits regenerate pathfinding with
+`pathfind::generate`.
 
 - **It is deterministic.** The same document, disc hashes and builder
   versions give the same bytes, on arm64 and x86-64. The `builder` field
@@ -161,8 +167,12 @@ changed, then the package writer (`scenario_edit::package`).
   manifest has one `[[forge]]` layer naming the document's hash, and
   `content::MapId` gains a `forge` list in its canonical form (manifest
   format 2). Format 2 hashes the base map's SHA-256 and the Forge
-  document's identity. Build and load compare `expect.map_id`, when
-  present, with that computed ID and name a mismatch.
+  document's identity. Its canonical JSON is
+  `{"base":"<base hash>","forge":["<document hash>"],"format":2}`.
+  Build and load compare `expect.map_id`, when present, with that
+  computed ID and report `forge_expect_map_id` on a mismatch. The
+  resolver verifies the packaged document, disc base and built map
+  hashes before serving the file.
 - **Rebuild in a session.** The host announces a rebuild in the log.
   Every machine materialises the document as of that log position, the
   session saves each player's position and body, the map loads again
@@ -457,8 +467,10 @@ every Forge test, lane and later tool drives a session through it.
 actions to `forge.propose`. `import.*` (list, convert, check, remove)
 for bundles, a provider in the studio's `api`.
 
-**CLI.** `h2 forge build <doc>` (materialise), `h2 forge check <doc>`
-(validate), `h2 import-asset <file> --chassis <key>`.
+**CLI.** `h2 forge build <doc> [--disc <iso>] [--maps <dir>]`
+materialises and writes the package. `h2 forge check <doc> [--disc <iso>]`
+runs the same checks in memory. `h2 import-asset <file> --chassis <key>`
+is planned.
 
 **Live.** `ForgePublished` and its routes, in [live-api.md](../live/live-api.md)
 when built; `NewSession.map_id` is unchanged.
@@ -552,9 +564,14 @@ variants are reserved for later slices. The
 [crate README](../../crates/formats/forge-doc/README.md) describes the
 wire caps and API.
 
-**F2 in detail.** The package's format 2 identity is derived from the
-base map hash and the Forge document hash. `expect.map_id` is checked
-against that identity at build and load. A difference is a named error.
+**F2 in detail.** `forge-build` materialises the placement and
+tag-field ops and the session kit. It uses format 2 identity derived
+from the base map hash and Forge document hash. Build and load check
+`expect.map_id` against that identity. Forge packages contain the
+canonical document and the locally built map. They resolve through
+`content::Library::resolve_package` and require explicit selection. The
+[crate README](../../crates/tools/forge-build/README.md) lists the CLI
+and recipe contract.
 
 **F3 in detail.** Methods in `crates/extensions/agent` with their
 `agent-proto` types and fake-game tests. `forge.capacity` reads the two
@@ -600,7 +617,9 @@ The owner's choices, which the sections above follow.
   this way load and play ([map-builder.md](../formats/map-builder.md)).
 - **Code**: `forge-doc` defines the portable document, recipes, and log
   validation and folding.
-- **Design**: the kit, the two network modes, `ForgeExt`, the chassis
+- **Code**: `forge-build` materialises the document, including its kit
+  allocation. `content::Library::resolve_package` loads the local map.
+- **Design**: the two network modes, `ForgeExt`, the chassis
   rule, the sharing table, and the model upload check.
 
 ## Not verified

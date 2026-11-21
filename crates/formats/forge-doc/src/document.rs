@@ -5,9 +5,9 @@ use serde::{Deserialize, Serialize};
 use crate::{BlockKind, Limits, MapId, Refusal, Result, Sha256, validate, wire};
 
 /// The `.h2forge` wire version.
-pub const FORMAT: u32 = 1;
+pub const FORMAT: u32 = content::forge::DOCUMENT_FORMAT;
 /// The maximum wire size of a document in bytes.
-pub const MAX_DOC_BYTES: usize = 8 * 1024 * 1024;
+pub const MAX_DOC_BYTES: usize = content::forge::MAX_DOCUMENT_BYTES;
 
 pub(crate) const MAX_SOURCES: usize = 64;
 pub(crate) const MAX_RECIPES: usize = 1024;
@@ -61,13 +61,9 @@ impl ForgeDoc {
 
     pub(crate) fn id_validated(&self) -> Result<Sha256> {
         wire::measure(self, "document bytes", MAX_DOC_BYTES)?;
-        let mut value = serde_json::to_value(self).map_err(wire::json_error)?;
-        if let serde_json::Value::Object(fields) = &mut value {
-            fields.remove("expect");
-        }
-        let json = content::canonicalize(&value)
-            .map_err(|error| Refusal::invalid("canonical JSON", error.to_string()))?;
-        Ok(Sha256::of(json.as_bytes()))
+        let value = serde_json::to_value(self).map_err(wire::json_error)?;
+        content::forge::document_id(value)
+            .map_err(|error| Refusal::invalid("document identity", error))
     }
 }
 

@@ -19,6 +19,7 @@
 //! and hash, and the tests use synthetic maps.
 pub mod campaign_list;
 mod canonical;
+pub mod forge;
 mod hash;
 mod id;
 pub mod manifest;

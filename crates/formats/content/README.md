@@ -17,6 +17,7 @@ guest, `variants` and the editors read packages, and `boot`, `cli`,
   identity of a map (SHA-256 of its canonical JSON).
 - `src/patch/`, `src/patch_lvl.rs`: patch readers; offset patches become
   overlays laid over the base as it streams.
+- `src/forge.rs`: the format 2 document identity and load checks.
 - `src/store.rs`, `src/resolve.rs`: the packages under `<data>/maps/` and
   the resolver.
 - `src/map_pack.rs`, `src/map_list.rs`, `src/campaign_list.rs`: map packs

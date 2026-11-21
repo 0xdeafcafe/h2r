@@ -18,7 +18,7 @@
 //! 2. Otherwise, of the valid packages whose `[base] map` is the name, the
 //!    one whose directory name sorts last (byte order) wins, so dated or
 //!    numbered directories pick the newest. A notice says when there was
-//!    more than one.
+//!    more than one. Forge packages require explicit selection.
 //!
 //! Map names match ASCII case-insensitively, as on the disc.
 //!
@@ -97,7 +97,7 @@ pub enum BaseRef {
 pub enum Data {
     /// The base with an overlay laid over it as it is read.
     Overlay { base: BaseRef, overlay: Overlay },
-    /// A complete file in the cache.
+    /// A complete materialised map file.
     File { path: PathBuf, file: File, len: u64 },
 }
 
@@ -156,6 +156,10 @@ pub enum ResolveError {
     Hash { file: String },
     #[error("the {what} does not match the package's base (SHA-256 differs)")]
     Base { what: String },
+    #[error("Forge document {file}: {why}")]
+    ForgeDocument { file: String, why: String },
+    #[error("forge_expect_map_id: document expects {expected}, computed {actual}")]
+    ForgeExpectedMapId { expected: MapId, actual: MapId },
     #[error("{0}")]
     Io(#[from] io::Error),
 }
@@ -356,7 +360,10 @@ impl Library {
             None => {}
         }
         let candidates: Vec<usize> = (0..self.packages.len())
-            .filter(|&i| self.packages[i].manifest.base.map.eq_ignore_ascii_case(map))
+            .filter(|&i| {
+                let manifest = &self.packages[i].manifest;
+                manifest.forge.is_empty() && manifest.base.map.eq_ignore_ascii_case(map)
+            })
             .collect();
         // Sorted by directory when scanned: the last is the newest by name.
         let &chosen = candidates.last()?;
@@ -546,6 +553,10 @@ fn resolve_package(
     hashes: Option<&DiscHashes>,
 ) -> Result<Resolved, ResolveError> {
     let m = &package.manifest;
+    if !m.forge.is_empty() || m.package.format == crate::manifest::FORGE_FORMAT {
+        m.validate()?;
+        return resolve_forge(package, disc, hashes);
+    }
     let mut layers = Vec::new();
     for l in &m.patches {
         layers.push(load_layer(&package.dir, l)?);
@@ -703,6 +714,92 @@ fn resolve_package(
         package: package.dir.clone(),
         data: Data::Overlay { base, overlay },
         packs,
+    })
+}
+
+fn resolve_forge(
+    package: &Package,
+    disc: &mut dyn Source,
+    hashes: Option<&DiscHashes>,
+) -> Result<Resolved, ResolveError> {
+    use std::io::Read as _;
+
+    let m = &package.manifest;
+    let [layer] = m.forge.as_slice() else {
+        return Err(ManifestError::Forge("requires one layer").into());
+    };
+    let want = m.base.sha256.ok_or(ManifestError::BaseHash)?;
+    let (_, doc) = open_in(&package.dir, &layer.document_file)?;
+    let mut bytes = Vec::new();
+    doc.take(crate::forge::MAX_DOCUMENT_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)?;
+    let header = crate::forge::read_header(&bytes).map_err(|why| ResolveError::ForgeDocument {
+        file: layer.document_file.clone(),
+        why,
+    })?;
+    if header.base.map != m.base.map || header.base.sha256 != want || header.id != layer.document {
+        return Err(ResolveError::ForgeDocument {
+            file: layer.document_file.clone(),
+            why: "document hash or base differs from the manifest".into(),
+        });
+    }
+    let id = MapId::forge(want, header.id);
+    if let Some(expected) = header.expect
+        && expected.map_id != id
+    {
+        return Err(ResolveError::ForgeExpectedMapId {
+            expected: expected.map_id,
+            actual: id,
+        });
+    }
+    if id != package.id {
+        return Err(ResolveError::ForgeDocument {
+            file: layer.document_file.clone(),
+            why: "map ID differs from the loaded manifest".into(),
+        });
+    }
+    if let Some(expected) = header.expect
+        && m.result.as_ref().and_then(|r| r.geometry) != Some(expected.geometry)
+    {
+        return Err(ResolveError::ForgeDocument {
+            file: layer.document_file.clone(),
+            why: "expected geometry differs from the build's result".into(),
+        });
+    }
+
+    let hash = Tee {
+        src: disc,
+        hash: Hasher::default(),
+        next: 0,
+    }
+    .finish()?;
+    if let Some(h) = hashes {
+        h.insert(&m.base.map, hash);
+    }
+    if hash != want {
+        return Err(ResolveError::Base {
+            what: format!("disc's {}.map", m.base.map),
+        });
+    }
+    let (path, file) = open_in(&package.dir, &layer.file)?;
+    let len = file.metadata()?.len();
+    let mut source = FileSource::new(file.try_clone()?)?;
+    let hash = Tee {
+        src: &mut source,
+        hash: Hasher::default(),
+        next: 0,
+    }
+    .finish()?;
+    if hash != layer.sha256 {
+        return Err(ResolveError::Hash {
+            file: layer.file.clone(),
+        });
+    }
+    Ok(Resolved {
+        id,
+        package: package.dir.clone(),
+        data: Data::File { path, file, len },
+        packs: Vec::new(),
     })
 }
 

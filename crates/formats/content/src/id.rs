@@ -6,7 +6,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use crate::{
     Manifest, Sha256,
     hash::{BadHex, parse_hex32, write_hex},
-    manifest::FORMAT,
+    manifest::FORGE_FORMAT,
 };
 
 /// The SHA-256 of a manifest's identity in canonical JSON (RFC 8785).
@@ -24,6 +24,9 @@ use crate::{
 /// lowercase, `sha256` omitted for a derived map without one, and layers in
 /// manifest order. Two manifests have the same `MapId` exactly when they
 /// start from the same base and apply the same layers in the same order.
+///
+/// Format 2 hashes `{"base":"<base hash>","forge":["<document hash>"],"format":2}`.
+/// See docs/game/forge-design.md for the document hash and expectations.
 ///
 /// Displays, parses and serialises as 64 lowercase hex digits.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -56,8 +59,18 @@ impl MapId {
         Self::of(&Manifest::retail(name, sha256))
     }
 
+    /// The format 2 identity of a materialised Forge document.
+    pub fn forge(base: Sha256, document: Sha256) -> Self {
+        Self(Sha256::of(canonical_forge(base, document).as_bytes()).0)
+    }
+
     /// The canonical JSON that [`MapId::of`] hashes.
     pub fn canonical(manifest: &Manifest) -> String {
+        if manifest.package.format == FORGE_FORMAT
+            && let (Some(base), [layer]) = (manifest.base.sha256, manifest.forge.as_slice())
+        {
+            return canonical_forge(base, layer.document);
+        }
         let id = Identity {
             format: manifest.package.format,
             base: IdentityBase {
@@ -73,7 +86,9 @@ impl MapId {
     }
 }
 
-const _: () = assert!(FORMAT == 1, "a new format must decide its identity");
+fn canonical_forge(base: Sha256, document: Sha256) -> String {
+    format!(r#"{{"base":"{base}","forge":["{document}"],"format":2}}"#)
+}
 
 impl FromStr for MapId {
     type Err = BadHex;
@@ -169,6 +184,57 @@ mod tests {
             d.map_id().to_string(),
             "9fc960abddcb17edd8753bb59f86ab3ed4dd821967f7774d8aaf81de9247601d"
         );
+    }
+
+    #[test]
+    fn forge_format_2_golden_vector() {
+        use crate::manifest::ForgeLayer;
+
+        let mut manifest = Manifest::retail("fixture", h(0x11));
+        manifest.package.format = FORGE_FORMAT;
+        manifest.forge = vec![ForgeLayer {
+            document: h(0x22),
+            document_file: "document.h2forge".into(),
+            file: "local.map".into(),
+            sha256: h(0x33),
+        }];
+        assert_eq!(Manifest::from_toml(&manifest.to_toml()).unwrap(), manifest);
+        assert_eq!(
+            MapId::canonical(&manifest),
+            r#"{"base":"1111111111111111111111111111111111111111111111111111111111111111","forge":["2222222222222222222222222222222222222222222222222222222222222222"],"format":2}"#
+        );
+        let id = manifest.map_id();
+        assert_eq!(id, MapId::forge(h(0x11), h(0x22)));
+        assert_eq!(
+            id.to_string(),
+            "ff9e7c653b78c31eba63f40bd105efee54628c026cbcd89135dab606c8029774"
+        );
+
+        manifest.package.name = "Renamed".into();
+        manifest.forge[0].file = "rebuilt.map".into();
+        manifest.forge[0].sha256 = h(0x44);
+        assert_eq!(manifest.map_id(), id);
+        assert_ne!(MapId::forge(h(0x99), h(0x22)), id);
+        assert_ne!(MapId::forge(h(0x11), h(0x99)), id);
+
+        let mut invalid = manifest.clone();
+        invalid.package.format = 1;
+        assert!(invalid.validate().is_err());
+        invalid = manifest.clone();
+        invalid.forge.push(manifest.forge[0].clone());
+        assert!(invalid.validate().is_err());
+        invalid = manifest.clone();
+        invalid.base.derived = true;
+        assert!(invalid.validate().is_err());
+        invalid = manifest.clone();
+        invalid.packs.push(Layer {
+            file: "x.toml".into(),
+            sha256: h(0x33),
+        });
+        assert!(invalid.validate().is_err());
+        invalid = manifest;
+        invalid.forge[0].document_file = "../outside.h2forge".into();
+        assert!(invalid.validate().is_err());
     }
 
     #[test]

@@ -122,6 +122,16 @@ The types live in `crates/formats/content` (manifest, `MapId`, patch format
 readers, resolver), which vfs, boot, editor, live-proto and live-server
 depend on.
 
+A local [Forge package](forge-design.md#materialising) uses format 2
+and one `[[forge]]` layer. The layer names the document hash
+(`document`), the canonical `.h2forge` file (`document_file`), and the
+materialised `.map` (`file`, `sha256`). The ID hashes the canonical
+JSON `{"base":"<base hash>","forge":["<document hash>"],"format":2}`.
+The document hash omits the entire `expect` block. The resolver checks
+the document, the expected MapId when present, the disc's copy of the
+base, and the local map file. These packages require explicit selection
+and stay local. Format 1 uses the identity above.
+
 ### The package directory
 
 ```text
