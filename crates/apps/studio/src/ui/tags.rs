@@ -740,7 +740,7 @@ pub(crate) fn header_top(app: &App, t: &TagEntry) -> Vec<HeaderLine> {
     }
     if app.browsing().is_none() && t.access == Access::Edit {
         for text in link_lines(fields::Link::of(app)) {
-            out.push(line(Tone::Note, None, text.to_owned()));
+            out.push(line(Tone::Note, None, text.to_string()));
         }
     }
     match &t.access {
