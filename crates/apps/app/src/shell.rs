@@ -23,7 +23,7 @@ use crate::menu_overlay::MenuRenderer;
 use crate::overlay::marks::{MarkFrameStatus, MarkRenderer};
 use crate::overlay::{EditorPlateRenderer, OverlayRenderer};
 use crate::pacing::{PaceStats, Pacer, WindowedRate};
-use crate::surface::WindowSurface;
+use crate::surface::{SurfaceKind, WindowSurface};
 use crate::theater_overlay;
 use crate::watermark::{LiveStats, Panels, WatermarkRenderer};
 use crate::worker::{GuestFn, GuestWorker};
@@ -280,6 +280,7 @@ impl Shell {
             surface,
             (size.width, size.height),
             &self.config,
+            SurfaceKind::Window,
         )?;
         eprintln!(
             "app: {} ({:?}), surface {:?}",
