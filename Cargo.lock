@@ -1616,6 +1616,7 @@ dependencies = [
  "ir",
  "kernel",
  "lift",
+ "mem-watch",
  "naga",
  "png",
  "pollster",
