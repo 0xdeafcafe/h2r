@@ -1,5 +1,5 @@
 //! `h2 rules check|build|run|caps|builtin`: the rules language's tooling
-//! (docs/game/rules-engine.md, "Tooling"). Every command is pure over its
+//! (docs/game/rules-engine.md, "Security and usability"). Every command is pure over its
 //! inputs: no game, no disc. The `*_text` functions build what a command
 //! prints, so tests read it without a process.
 
