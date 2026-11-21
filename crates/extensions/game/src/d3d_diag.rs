@@ -1081,6 +1081,12 @@ impl<B: Backend> Backend for DiagBackend<B> {
     ) -> Result<bool, String> {
         self.inner.warp_surface(src, dst, h)
     }
+    fn measure_present_raster(&mut self, surface: Option<Self::Surface>) -> d3d::backend::RasterMeasurement {
+        self.inner.measure_present_raster(surface)
+    }
+    fn take_presented_extent(&mut self) -> Option<(u32, u32)> {
+        self.inner.take_presented_extent()
+    }
     fn surface_extent(&self, surface: Self::Surface) -> Option<(u32, u32)> {
         self.inner.surface_extent(surface)
     }

@@ -418,6 +418,7 @@ impl<B: Backend> Worker<B> {
 
         use crate::scene_sink::window::DisplayResult;
         let mut outcome = DisplayResult::Failed;
+        let raster = self.measure_present_raster(surface);
         self.inner.stamp_present(at);
         if let Some((frame, draw, targets, samples)) = accepted {
             // The worker owns this scene and all of its original commands.
@@ -468,7 +469,8 @@ impl<B: Backend> Worker<B> {
         }
         let residency = self.residency.present(!self.shared.failed.load(Ordering::Relaxed));
         if let Some(window) = self.shared.window.get() {
-            window.complete(n, outcome, residency, crate::scene_stage::take_local_drops());
+            let extent = self.inner.take_presented_extent().filter(|_| !matches!(&outcome, DisplayResult::Failed));
+            window.complete_at_scale(n, outcome, residency, crate::scene_stage::take_local_drops(), raster.finish(extent));
         }
         self.run(Self::land_pixel_counts);
     }

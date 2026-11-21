@@ -1504,6 +1504,17 @@ impl<R: Backend, V: ScaleView<R>> Backend for ScaledBackend<R, V> {
         }
     }
 
+    fn measure_present_raster(&mut self, surface: Option<Self::Surface>) -> crate::backend::RasterMeasurement {
+        // The same display view handles a scaled target, a sleeping view's
+        // reference, and the native graph's borrowed presentation target.
+        self.view.measure_present_raster(None);
+        crate::backend::RasterMeasurement { configured: Some(self.scale), guest: surface.map(|s| s.size) }
+    }
+
+    fn take_presented_extent(&mut self) -> Option<(u32, u32)> {
+        self.view.take_presented_extent()
+    }
+
     fn surface_extent(&self, surface: Self::Surface) -> Option<(u32, u32)> {
         if self.single() { return self.view.surface_extent(self.image(surface)); }
         // What a present shows: the view's copy while it draws, else the

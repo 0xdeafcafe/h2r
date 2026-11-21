@@ -1579,6 +1579,14 @@ where
         self.inner.frame_stats()
     }
 
+    fn measure_present_raster(&mut self, surface: Option<Self::Surface>) -> crate::backend::RasterMeasurement {
+        self.inner.measure_present_raster(surface)
+    }
+
+    fn take_presented_extent(&mut self) -> Option<(u32, u32)> {
+        self.inner.take_presented_extent()
+    }
+
     fn stamp_present(&mut self, at: std::time::Instant) {
         self.stamp = Some(Self::wall_ns(self.base, at));
     }

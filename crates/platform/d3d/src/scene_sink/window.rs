@@ -179,6 +179,7 @@ impl PresentWindow {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn complete(&self, present: u64, result: DisplayResult,
         residency: Option<(u64, bool)>, worker_drops: u64) {
         self.complete_at_scale(present, result, residency, worker_drops, PresentScale::default());

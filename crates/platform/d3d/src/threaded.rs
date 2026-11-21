@@ -349,6 +349,15 @@ impl<B: Backend> Worker<B> {
             .copied()
             .ok_or_else(|| format!("render thread: surface {id} is not live"))
     }
+    fn measure_present_raster(&mut self, id: u32) -> crate::backend::RasterMeasurement {
+        if self.shared.window.get().is_some() {
+            let surface = self.surface(id).ok();
+            self.inner.measure_present_raster(surface)
+        } else {
+            Default::default()
+        }
+    }
+
     fn depth(&self, id: Option<u32>) -> Result<Option<B::Surface>, String> {
         id.map(|d| self.surface(d)).transpose()
     }
@@ -1192,6 +1201,7 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
             self.push(Cmd::OwnerPresent(Box::new(owner::Present { n, surface, at, flags, gamma, candidate, declined, failed })));
         } else {
             self.post(move |w| {
+                let raster = w.measure_present_raster(surface);
                 w.inner.stamp_present(at);
                 let r = w.surface(surface).and_then(|s| w.inner.present_with_gamma(s, flags, gamma.as_deref()));
                 let complete = r.is_ok() && !w.shared.failed.load(Ordering::Relaxed);
@@ -1199,7 +1209,8 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
                 if let Some(window) = w.shared.window.get() {
                     use crate::scene_sink::window::DisplayResult;
                     let outcome = if complete { DisplayResult::Ordinary } else { DisplayResult::Failed };
-                    window.complete(n, outcome, residency, crate::scene_stage::take_local_drops());
+                    let extent = w.inner.take_presented_extent().filter(|_| complete);
+                    window.complete_at_scale(n, outcome, residency, crate::scene_stage::take_local_drops(), raster.finish(extent));
                 }
                 w.shared.display_capacity.release(n);
                 r?;

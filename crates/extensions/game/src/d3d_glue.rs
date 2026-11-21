@@ -1380,6 +1380,12 @@ impl d3d::backend::Backend for Headless {
         let r = self.0.warp_surface(src, dst, h);
         self.forget(r)
     }
+    fn measure_present_raster(&mut self, surface: Option<Self::Surface>) -> d3d::backend::RasterMeasurement {
+        self.0.measure_present_raster(surface)
+    }
+    fn take_presented_extent(&mut self) -> Option<(u32, u32)> {
+        self.0.take_presented_extent()
+    }
     fn surface_extent(&self, surface: u32) -> Option<(u32, u32)> {
         self.0.surface_extent(surface)
     }

@@ -212,15 +212,74 @@ fn an_in_place_frame_retains_pixels_outside_its_scissor_and_releases_no_live_sur
         "needs prior scene colour"
     );
     let targets = HashMap::from([(scene, id)]);
+    let raster = gpu.measure_present_raster(Some(id));
     let mut pass = GuestDrawPass::on_existing(&mut gpu, &frame, &targets).unwrap();
     pass.apply(&frame.ops[0].1).unwrap();
     let (_, pixels) = pass.read_target(scene).unwrap();
     assert_eq!(pixel(&pixels, 20, 20), [0, 0, 255, 255]);
     assert_eq!(pixel(&pixels, 2, 2), [255, 0, 0, 255]);
     pass.present(4, None).unwrap();
+    assert_eq!(raster.finish(gpu.take_presented_extent()).physical, Some(1));
     assert_eq!(gpu.last_presented(), Some(id));
     assert_eq!(gpu.surface_extent(id), Some((W, H)));
     gpu.destroy_surface(id).unwrap();
+}
+
+#[test]
+fn display_scale_measures_each_owned_or_ordinary_guest_swap() {
+    use d3d::Backend;
+    use d3d::scaled::ScaledScenePass;
+    use d3d::scene_sink::window::PresentScale;
+    use std::collections::HashMap;
+
+    let ctx = match GfxContext::headless() {
+        Ok(ctx) => ctx,
+        Err(e) => {
+            eprintln!("skipping GPU test: {e}");
+            return;
+        }
+    };
+    let reference = GfxBackend::new(GfxContext {
+        instance: ctx.instance.clone(),
+        adapter: ctx.adapter.clone(),
+        device: ctx.device.clone(),
+        queue: ctx.queue.clone(),
+        caps: ctx.caps,
+    });
+    let mut gpu = d3d::ScaledBackend::with_single_copy(reference, GfxBackend::new(ctx), 4, true).unwrap();
+    let back = gpu.create_surface(D3DFormat::LinA8R8G8B8, W, H, false).unwrap();
+    let small = gpu.create_surface(D3DFormat::LinA8R8G8B8, W / 2, H / 2, false).unwrap();
+    let scene = TargetRef::SceneColour;
+    let frame = ReplayFrame {
+        colour: Some(colour()),
+        presented: scene,
+        ops: vec![(SlotAt { slot: Slot::Opaque, view: 0 }, clear(scene, [1., 0., 0., 1.]))],
+        ..Default::default()
+    };
+    let targets = HashMap::from([(scene, back)]);
+    let expected = |configured, physical| PresentScale { configured: Some(configured), physical };
+
+    // A menu-sized side target is displayed at 1x in this otherwise 4x run.
+    let measure = gpu.measure_present_raster(Some(small));
+    gpu.present(small, 0).unwrap();
+    assert_eq!(measure.finish(gpu.take_presented_extent()), expected(4, Some(1)));
+
+    // An in-between image alone must leave an armed original Swap unknown.
+    let measure = gpu.measure_present_raster(Some(back));
+    gpu.present_replay(back, None).unwrap();
+    assert_eq!(measure.finish(gpu.take_presented_extent()), expected(4, None));
+
+    // The setting changes *after* this owned display's 4x draw.
+    gpu.follow_scale(|| 1);
+    let measure = gpu.measure_present_raster(Some(back));
+    let mut pass = ScaledScenePass::new(&mut gpu, &frame, &targets).unwrap();
+    pass.apply(&frame.ops[0].1).unwrap();
+    pass.present(0, None).unwrap();
+    assert_eq!(measure.finish(gpu.take_presented_extent()), expected(4, Some(4)));
+
+    let measure = gpu.measure_present_raster(Some(back));
+    gpu.present(back, 0).unwrap();
+    assert_eq!(measure.finish(gpu.take_presented_extent()), expected(1, Some(1)));
 }
 
 #[test]

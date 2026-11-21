@@ -1091,6 +1091,41 @@ pub enum DrawOutcome {
 #[cfg(feature = "gpu")]
 pub type AssetUpload = Box<dyn FnOnce(&wgpu::Device, &wgpu::Queue) + Send>;
 
+/// The resolution setting and guest surface size at the start of a Swap.
+/// A scaled backend applies setting changes after it shows the frame.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct RasterMeasurement {
+    pub configured: Option<u32>,
+    pub guest: Option<(u32, u32)>,
+}
+
+impl RasterMeasurement {
+    pub fn finish(self, shown: Option<(u32, u32)>) -> crate::scene_sink::window::PresentScale {
+        let physical = self.guest.zip(shown).and_then(|((gw, gh), (w, h))| {
+            let scale = w.checked_div(gw)?;
+            (gh != 0 && scale != 0 && gw.checked_mul(scale) == Some(w)
+                && gh.checked_mul(scale) == Some(h)).then_some(scale)
+        });
+        crate::scene_sink::window::PresentScale { configured: self.configured, physical }
+    }
+}
+
+#[cfg(test)]
+mod raster_tests {
+    use super::RasterMeasurement;
+
+    #[test]
+    fn a_physical_scale_needs_a_uniform_integral_extent_in_both_dimensions() {
+        let measure = RasterMeasurement { configured: Some(4), guest: Some((8, 4)) };
+        for shown in [None, Some((0, 0)), Some((28, 14)), Some((32, 4)), Some((4, 2))] {
+            assert_eq!(measure.finish(shown).physical, None);
+        }
+        assert_eq!(measure.finish(Some((8, 4))).physical, Some(1));
+        assert_eq!(measure.finish(Some((32, 16))).physical, Some(4));
+        assert_eq!(RasterMeasurement::default().finish(Some((32, 16))).physical, None);
+    }
+}
+
 /// Host rendering for the device.
 /// `Send` (with its handles) so a device can sit behind the runtime's
 /// `Send + Sync` override handlers.
@@ -1200,6 +1235,15 @@ pub trait Backend: Send {
     fn stamp_present(&mut self, at: std::time::Instant) {
         let _ = at;
     }
+    /// Observe the next original Swap on this device. A wrapping display may
+    /// provide the guest extent itself and arm its view with no surface.
+    fn measure_present_raster(&mut self, _surface: Option<Self::Surface>) -> RasterMeasurement {
+        RasterMeasurement::default()
+    }
+    /// Physical texel extent actually handed to the display for that Swap.
+    /// A failed or unshown Swap and a backend without an observer return None.
+    fn take_presented_extent(&mut self) -> Option<(u32, u32)> { None }
+
     /// Shows a host-only frame between the guest's presents (an
     /// interpolated replay, `crate::interp`): the present hook sees it,
     /// but it is not a guest frame, so frame counters, shader upkeep and

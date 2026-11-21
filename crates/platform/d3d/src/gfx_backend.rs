@@ -168,6 +168,8 @@ pub struct GfxBackend {
     scene_uploads: guest_draw_pass::TextureCache,
     present_hook: Option<PresentHook>,
     guest_present_observer: Option<GuestPresentObserver>,
+    measure_raster: bool,
+    displayed_extent: Option<(u32, u32)>,
     recorded_pass_observer: Option<RecordedPassObserver>,
     submission_uploads: Option<Box<dyn FnMut() + Send>>,
     submitted_frame_observer: Option<Box<dyn FnMut() + Send>>,
@@ -356,6 +358,8 @@ impl GfxBackend {
             scene_uploads: Default::default(),
             present_hook: None,
             guest_present_observer: None,
+            measure_raster: false,
+            displayed_extent: None,
             recorded_pass_observer: None,
             submission_uploads: None,
             submitted_frame_observer: None,
@@ -1152,6 +1156,9 @@ impl GfxBackend {
             Some(reference) => (&reference.ctx, &reference.store),
             None => (&self.ctx, &self.store),
         };
+        if self.measure_raster {
+            self.displayed_extent = store.get(surface).ok().map(|s| (s.desc().width, s.desc().height));
+        }
         if let Some(observer) = &mut self.guest_present_observer {
             observer(self.frame - 1, ctx, store, surface, lighting);
         }
@@ -2183,6 +2190,20 @@ impl Backend for GfxBackend {
         Ok(true)
     }
 
+    fn measure_present_raster(&mut self, surface: Option<SurfaceId>) -> crate::backend::RasterMeasurement {
+        self.measure_raster = true;
+        self.displayed_extent = None;
+        crate::backend::RasterMeasurement {
+            configured: Some(1),
+            guest: surface.and_then(|s| self.surface_extent(s)),
+        }
+    }
+
+    fn take_presented_extent(&mut self) -> Option<(u32, u32)> {
+        self.measure_raster = false;
+        self.displayed_extent.take()
+    }
+
     fn surface_extent(&self, surface: SurfaceId) -> Option<(u32, u32)> {
         let d = *self.store.get(surface).ok()?.desc();
         Some((d.width, d.height))
@@ -2421,13 +2442,19 @@ mod tests {
         display.observe_guest_present(move |n, _, _, _, _| ordinals.lock().unwrap().push(n));
 
         // A failed view may still show the reference under the same number.
+        display.measure_present_raster(None);
         display.external_ordering_error = Some("failed scaled view".into());
         assert!(display.present_from(None, back, 0, None).is_err());
         display.present_from(Some(&reference), back, 0, None).unwrap();
+        assert_eq!(display.take_presented_extent(), Some((8, 8)));
         // A lost fallback consumes the number, without showing an image.
+        display.measure_present_raster(None);
         display.external_ordering_error = Some("failed reference view".into());
         assert!(display.present_from(Some(&reference), back, 0, None).is_err());
+        assert_eq!(display.take_presented_extent(), None);
+        display.measure_present_raster(None);
         display.present_from(Some(&reference), back, 0, None).unwrap();
+        assert_eq!(display.take_presented_extent(), Some((8, 8)));
         assert_eq!(*observed.lock().unwrap(), [1, 3]);
     }
 
