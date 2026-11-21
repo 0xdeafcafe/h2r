@@ -400,16 +400,18 @@ pub fn light_entry() {
 /// An object shadow `0x00032350` of the open view begins, with its call's
 /// two arguments (`identity`) when the caller matched its caster entry;
 /// `None` ends the one before without a new one. Opens the view first
-/// when none is.
+/// when none is. A creature caster is marked: it takes the ground-shadow
+/// branch.
 pub fn object_shadow(mem: &dyn GuestMemory, identity: Option<[u32; 2]>) {
     with_step(|step| step.shadow_open = false);
     let Some(identity) = identity else { return };
     if view(mem).is_none() {
         return;
     }
+    let creature = scene_extract::layout::objects::kind(&Ro(mem), identity[0]) == Some(scene_extract::layout::objects::CREATURE);
     with_step(|step| {
         step.light_open = false;
-        step.shadow_open = step.builder.push_object_shadow(identity).is_ok();
+        step.shadow_open = step.builder.push_object_shadow(identity, creature).is_ok();
         if !step.shadow_open {
             REFUSED.fetch_add(1, Ordering::Relaxed);
         }

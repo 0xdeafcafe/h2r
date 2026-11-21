@@ -18,7 +18,7 @@ use std::ops::Range;
 use serde::Serialize;
 
 use crate::layer::LayerOwner;
-use crate::scene::{FrameScene, Row};
+use crate::scene::{FrameScene, InstanceKey, Row};
 
 /// Which call drew a group's layer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
@@ -138,10 +138,46 @@ impl LightGroup {
 pub struct ObjectShadow {
     /// Into [`FrameScene::views`]: the view it was drawn in.
     pub view: u32,
-    /// The call's two arguments, the caster entry's `+8` and `+0xc`.
+    /// The call's two arguments, the caster entry's `+8` and `+0xc`:
+    /// the caster's object handle and its ranked fade.
     pub identity: [u32; 2],
     /// Into [`FrameScene::shadow_groups`].
     pub groups: Range<u32>,
+    /// The caster is a creature (object type 12), which takes the
+    /// ground-shadow branch `0x00032ce0` and its own geometry, not the
+    /// mask branch.
+    pub creature: bool,
+    /// The light weight the mask branch publishes before its layers
+    /// (`0x00032912`): the sample's strength times the caster's two
+    /// fades, as f32 bits, read at its layer 11. `None` when that layer
+    /// was not gathered or the word did not read.
+    pub weight_bits: Option<u32>,
+}
+
+impl ObjectShadow {
+    /// The caster's object handle.
+    pub fn caster(&self) -> InstanceKey {
+        InstanceKey(self.identity[0])
+    }
+
+    /// [`Self::weight_bits`] as a number.
+    pub fn weight(&self) -> Option<f32> {
+        self.weight_bits.map(f32::from_bits)
+    }
+
+    /// The direction towards the light, unnormalized: hardware `c[41].xyz`
+    /// of the projection its layer 11 (else layer 10) read (`0x00048f85`,
+    /// `engine::shadow_constants`). `None` without a projection.
+    pub fn towards_light(&self, scene: &FrameScene) -> Option<[f32; 3]> {
+        let groups = scene.shadow_groups_of(self);
+        let projection = groups
+            .iter()
+            .find(|g| g.layer == 11 && g.projection.is_some())
+            .or_else(|| groups.iter().find(|g| g.layer == 10 && g.projection.is_some()))?
+            .projection?;
+        let [x, y, z, _] = projection[1].map(f32::from_bits);
+        Some([x, y, z])
+    }
 }
 
 fn slice<'a, T>(v: &'a [T], r: &Range<u32>) -> &'a [T] {
@@ -318,14 +354,16 @@ mod tests {
         assert_eq!(b.push_shadow_group(group(10, GroupSite::ObjectShadow), &[]).unwrap_err(), BuildError::NoShadow);
         let caster = entry(0, LayerOwner::Object(InstanceKey(0xe400_0001)), LightPose::Rows(0..0));
         let rows = vec![[1.0, 2.0, 3.0, 4.0]; 3];
-        assert_eq!(b.push_object_shadow([0x11, 0x12]).unwrap(), 0);
+        assert_eq!(b.set_shadow_weight(0.5), Err(BuildError::NoShadow));
+        assert_eq!(b.push_object_shadow([0x11, 0x12], false).unwrap(), 0);
         b.push_shadow_group(group(10, GroupSite::ObjectShadow), &[(caster.clone(), rows.clone())]).unwrap();
         b.push_shadow_group(group(11, GroupSite::ObjectShadow), &[(entry(1, LayerOwner::Cluster(3), LightPose::World), vec![])])
             .unwrap();
         b.open_view(ViewKey { kind: ViewKind::Game, player: 0, view: 1 }, camera()).unwrap();
         assert_eq!(b.push_shadow_group(group(10, GroupSite::ObjectShadow), &[]).unwrap_err(), BuildError::NoShadow,
             "the last object shadow is another view's");
-        b.push_object_shadow([0x21, 0x22]).unwrap();
+        b.push_object_shadow([0x21, 0x22], true).unwrap();
+        b.set_shadow_weight(0.25).unwrap();
         b.push_shadow_group(group(10, GroupSite::ObjectShadow), &[]).unwrap();
         let s = b.seal(Stamp::default()).unwrap();
         s.check().unwrap();
@@ -337,12 +375,45 @@ mod tests {
         assert_eq!(groups.iter().map(|g| g.layer).collect::<Vec<_>>(), [10, 11]);
         assert_eq!(s.pose_rows(&s.entries_of(&groups[0])[0]), rows.as_slice());
         assert_eq!(s.object_shadows_of(1)[0].identity, [0x21, 0x22]);
+        assert_eq!((first[0].creature, first[0].weight()), (false, None));
+        let second = &s.object_shadows_of(1)[0];
+        assert_eq!((second.creature, second.weight(), second.caster()), (true, Some(0.25), InstanceKey(0x21)));
         assert_eq!(s.shadow_groups_of(&s.object_shadows_of(1)[0])[0].light, 1);
+        assert_eq!(first[0].towards_light(&s), None, "no projection was read");
         let mut bad = (*s).clone();
         bad.shadow_groups[0].site = GroupSite::Light;
         assert!(bad.check().is_err());
         let mut bad = (*s).clone();
         bad.object_shadows[1].view = 5;
         assert!(bad.check().is_err());
+    }
+
+    /// The direction is `c[41].xyz` of layer 11's projection, layer 10's
+    /// when 11 read none.
+    #[test]
+    fn an_object_shadows_light_direction_is_c41_of_its_projection() {
+        let mut b = SceneBuilder::default();
+        b.begin(SceneId::default());
+        b.open_view(ViewKey { kind: ViewKind::Game, player: 0, view: 0 }, camera()).unwrap();
+        b.push_object_shadow([0x11, 0x12], false).unwrap();
+        let block = |c41: [f32; 3]| {
+            let mut p = [[0u32; 4]; PROJECTION_ROWS];
+            p[1] = [c41[0].to_bits(), c41[1].to_bits(), c41[2].to_bits(), 7];
+            Some(p)
+        };
+        let mut ten = group(10, GroupSite::ObjectShadow);
+        ten.projection = block([0.0, 0.0, 1.0]);
+        b.push_shadow_group(ten, &[]).unwrap();
+        b.push_object_shadow([0x21, 0x22], false).unwrap();
+        let mut ten = group(10, GroupSite::ObjectShadow);
+        ten.projection = block([0.0, 0.0, 1.0]);
+        b.push_shadow_group(ten, &[]).unwrap();
+        let mut eleven = group(11, GroupSite::ObjectShadow);
+        eleven.projection = block([1.0, -2.0, 3.0]);
+        b.push_shadow_group(eleven, &[]).unwrap();
+        let s = b.seal(Stamp::default()).unwrap();
+        let shadows = s.object_shadows_of(0);
+        assert_eq!(shadows[0].towards_light(&s), Some([0.0, 0.0, 1.0]));
+        assert_eq!(shadows[1].towards_light(&s), Some([1.0, -2.0, 3.0]));
     }
 }
