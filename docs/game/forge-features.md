@@ -16,7 +16,9 @@ Evidence labels are those of [docs-style.md](../meta/docs-style.md).
 ## Monitor mode and bodies
 
 The editing player toggles between their own biped and a flying editor
-body. Two bodies exist in the design:
+body. Bodies exist in Forge sessions only: a published map played as a
+match gives every player their own biped, and its package is
+materialised without the body recipes. Two bodies exist in the design:
 
 - **The camera body** (slice F4). The player's biped is parked
   (invulnerable, hidden, input cut) and their view is the director's
@@ -105,11 +107,11 @@ warning in the editor.
 Open: which placement fields seed a projectile's velocity and owner when
 it is made outside a weapon's fire (**S**; the fire path is hooked for
 telemetry, [film-format.md](film-format.md), "Weapon fire, damage and
-projectile endpoints", and is the place to read). In a distributed
-session a client draws a projectile only if the host's creation
-replicates (**S**; expected not, as weapon fire travels as an event). If
-it does not, emitters fire on every machine from the shared schedule,
-with damage decided by the host.
+projectile endpoints", and is the place to read). In the
+host-replicated mode every machine fires an emitter from the shared
+schedule and the host decides damage ([forge-design.md](forge-design.md),
+"The edit log and multiplayer"), so nothing rests on the engine
+replicating a projectile made outside weapon fire.
 
 ## Invisible barriers
 
@@ -173,7 +175,8 @@ spawn waves.
 
 What must hold: AI updates only when the AI flag is set and the game
 engine allows it (**E**, bots.md 2.4); multiplayer scenarios carry no AI
-data, so the kit adds all of it; the session is synchronous. Costs to
+data, so the kit adds all of it; the session is synchronous, or
+host-replicated with the actors as puppets once slice F15 is built. Costs to
 measure: a character's closure against the tag headroom, the sound
 gestalt merge, and the tick time with actors (the phase 0 census of
 sim-rewrite.md).
@@ -190,12 +193,35 @@ The kernels are the editor's: `mesh-edit`, `geometry-edit`,
 | Instances and models | move, turn and delete instanced geometry; swap an object's material or permutation | Live preview, Rebuild to keep (instances); Live (objects) |
 | Faces | pick a face, push or pull it (`ExtrudeFaces`, `Transform`), delete, set material, planar texture coordinates | Live preview, Rebuild for collision |
 | Paint | brush, fill, colour pick on the texture under the reticle | Live picture; saved as strokes |
-| Vertices, loops, welds, unwraps | not on a pad | the paired editor |
+| Vertices, edges, loops, welds, texture coordinates (slice F16, after the tiers above) | the full `MeshOp` set, below | Live preview, Rebuild for collision |
 
-The paired editor is the precise tool. `h2-editor` paired with a game in
+The order is block-out (F8), then instances, faces and paint (F13),
+then full vertex editing (F16).
+
+**Vertex editing in game.** Edit mode is entered on the aimed target
+(a cluster, an instance definition, a model section) and shows its
+wireframe.
+
+- *Modes*: vert, edge, face, switched on the D-pad; the reticle picks
+  the nearest element within a screen radius, A toggles it, holding A
+  and sweeping paints a selection, X held draws a screen box.
+- *Select more*: loop and ring from the aimed edge, linked, more, less,
+  by material.
+- *Move*: with a selection, the left stick moves it on the view plane
+  and the triggers along the view axis; D-pad Left and Right lock an
+  axis or the face normal; a grid step and vertex snapping are on by
+  default, and Y opens the exact value in a picker.
+- *Tools*, a radial menu on LB: extrude, loop cut (with a count), merge,
+  weld by distance, dissolve, fill, bevel, inset, flip, set material,
+  project texture coordinates.
+- Each gesture is one `MeshOp` proposed to the log, the same op the
+  editor makes, so undo, replay and the saved document are the editor's.
+- Mouse and keyboard use the editor's Blender-style keys.
+
+The paired editor stays available. `h2-editor` paired with a game in
 a Forge session proposes its `Action`s to the host's log like any
-player, so a friend can fly as a monitor while another edits verts with
-a mouse. This replaces the paired editor's own write rule for Forge
+player, so one friend can fly as a monitor while another works with a
+mouse. This replaces the paired editor's own write rule for Forge
 sessions only: outside one, live-mirror.md's "Networked games" table
 stands.
 
@@ -235,7 +261,9 @@ base map replaced ([shader-instances.md](../formats/shader-instances.md)).
 The output is a **bundle** under `<data>/imports/<sha256>/`: loose tags
 in the repository's file format and a manifest (source file hash,
 chassis, the user's note on where the file came from). Bundles are
-outside Git and outside Live.
+outside Git. A bundle reaches Live only from an account an admin has
+approved for model uploads, through the upload check, and can be
+reported and taken down ("Custom models on Live", below).
 
 Why a chassis: the sim reads the biped, its collision and its animation
 graph, all retail and on every disc. The skin is presentation. So a
@@ -248,6 +276,74 @@ no sim path reads a render model; the node-matrix and marker paths read
 the `mode`'s nodes and markers, so an import keeps the chassis's nodes
 and marker groups exactly, and the importer refuses a mapping that drops
 one).
+
+A prop is different: its collision and physics are its own, so the sim
+needs the bundle. A document with a prop slot is joinable only by a
+machine that holds the bundle or can download it; otherwise the join is
+refused by name before the map loads.
+
+## Custom models on Live
+
+Only an account an admin has approved may upload content that carries
+custom models. Everyone else's imports stay on their machine.
+
+**The flag.** `model_uploads` on the account, off by default. An admin
+sets it with `PUT /v1/admin/model-uploads/{gamertag}` `{approved, note?}`
+(token `lxm` `content.moderate`), a server-signed `ModelUploadsSet` event
+on the account's stream, beside `ContentUploadsSet`
+([live-admin.md](../live/live-admin.md) section 7), so it replays from
+the log. A player asks for it from the dashboard
+(`POST /v1/account/model-uploads/request` `{statement}`, a
+`ModelUploadsRequested` event); the request appears in the admin's
+queue. Turning the general upload switch off also stops model uploads.
+
+**What is uploaded.** A bundle is one blob of kind `model-bundle`: the
+loose tags the importer wrote (`mode`, `bitm`, `shad`, `coll`, `phmo`,
+`jmad`) and its manifest, with a preview picture. It never holds a tag
+copied from a disc: a skin's biped is a `variant` recipe in the
+document.
+
+**The upload check**, the same in both homes. It lives in one function
+of `live-proto` that the local server and the Worker both call, over the
+store trait each home implements, and the parity suite runs every case
+below against both.
+
+| Step | Refused with |
+|---|---|
+| The uploader's `model_uploads` is on, read from the log at upload time | 403 `model_uploads_not_approved` |
+| The blob parses as a bundle: only the listed groups, every tag decodes, counts inside the importer's limits, the store's size cap | 422 `not_a_bundle` |
+| Its hash is not blocked and not on the retail list | 410 |
+| The upload carries the author's statement that the work is theirs or licensed to share | 422 `statement_missing` |
+
+`ForgePublished` and `MapPublished` are checked again at publish: a
+document or package that names a hosted bundle is refused unless the
+bundle is in the store, is not taken down, and its uploader is approved
+at that moment. A `model-bundle` is the only way
+tags reach the store outside a patch layer; a package may list bundles
+in its manifest (`[[bundle]]`), and one that does goes through this
+check. A patch layer cannot be inspected for a model, so mods shipped
+as patches stay under the existing moderation alone.
+
+**Report and review.** Any account reports a bundle, or a map that uses
+one, with the existing `POST /v1/content/{sha256}/report` and
+`/v1/maps/{id}/report`, with the reason kind `third_party_asset`. In
+game the row is **Report model** on a map's page.
+
+- The Halo Admin's **Custom content** tab gains a **Models** queue: each
+  bundle with its preview, uploader, statement, the maps that use it,
+  its reports, and a download for inspection in `h2-editor`.
+- Actions are the existing ones (`hide`, `delete`, `block`) on the
+  bundle's hash; a taken-down bundle answers 410 and every map that
+  names it draws the chassis from the next join. **Revoke approval**
+  turns the uploader's flag off and offers "hide everything this account
+  uploaded".
+- Three reports from different accounts hide a bundle until an admin
+  reviews it (`ContentModerated` with `by` the server).
+- The queue also lists pending `ModelUploadsRequested` entries with
+  Approve and Decline.
+
+**The player's side.** A setting, **Show other players' models** (on),
+draws every skin as its chassis when off. It changes nothing in the sim.
 
 ## Not verified
 

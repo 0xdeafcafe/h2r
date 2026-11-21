@@ -491,7 +491,7 @@ Design only. No type, crate or command named here exists.
 - **Content packs.** Data that changes what the game loads: a manifest naming
   things on the user's own disc with hashes to check it applies, a `ContentKind`
   validated on a copy and then applied, identity by the SHA-256 of the canonical
-  JSON form ([forge.md](../game/forge.md) 2.1). A pack is data, never code, and
+  JSON form ([forge-design.md](../game/forge-design.md), "The document"). A pack is data, never code, and
   carries no game bytes.
 - **Recording and replay.** Every place something from outside reaches the guest
   is a named boundary (pad reads, device changes, network, random, Live answers,
