@@ -198,6 +198,7 @@ pub mod speaker_setting;
 #[cfg(feature = "local-io")]
 pub mod steam_speaker;
 pub mod stopgaps;
+pub mod superbounce_assist;
 pub mod superbounce_mode;
 pub mod sweep_diag;
 pub mod theater;
