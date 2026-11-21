@@ -31,8 +31,19 @@ replay parity on its invented cache.
   entry, then writes the authored fields. Palette changes and tag
   references carry a group and path. Tag field writes carry a dotted
   field path with optional array indices and can pin the old value by
-  its canonical digest in `was`. Mesh, Bitmap and Forge-family variants
-  are reserved for their later slices.
+  its canonical digest in `was`. Mesh and Bitmap variants are reserved
+  for their later slices.
+- Forge-family edits hold links written as retail data. A teleporter link
+  names a sender and a receiver netgame flag and a channel; a device link
+  names two machines. An endpoint is a base entry by its base index or the
+  entry an Add op made, so it survives later appends and swap-removes.
+  `ForgeDoc::links` resolves the active links to final indices from the
+  base counts, and `replay` hands them to `Apply::links` after every other
+  edit. An unlink names the link op it ends; the entries then keep the
+  bytes they had without it. The validator refuses a link to a missing or
+  removed entry, the removal of a linked entry, a flag in two roles or on
+  two channels, a repeated link and a device link whose lower endpoint is
+  not first.
 - The sequence-zero log head hashes the starting document. An entry
   hashes its canonical JSON including the preceding hash. The host
   checks the proposal's author, conditions and map state and calls
@@ -55,8 +66,8 @@ replay parity on its invented cache.
 
 `cargo test --locked -p forge-doc` covers document and entry hash
 vectors, chain integrity and inverses, validator refusals, a seeded
-10,000-document fuzz test and placement parity against
-`scenario_edit::Session`. All inputs are invented.
+10,000-document fuzz test, link identity and refusals, and placement
+parity against `scenario_edit::Session`. All inputs are invented.
 
 ## Docs
 

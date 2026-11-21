@@ -6,12 +6,14 @@
 #![forbid(unsafe_code)]
 
 mod document;
+mod links;
 mod log;
 mod validate;
 mod wire;
 
 pub use content::{MapId, Sha256};
 pub use document::*;
+pub use links::*;
 pub use log::*;
 pub use map::scenario_layout::BlockKind;
 pub use validate::{Limits, WorldBounds, validate};
@@ -71,18 +73,33 @@ impl Refusal {
 pub trait Apply {
     fn placement(&mut self, edit: &Placement) -> Result<()>;
     fn tag_field(&mut self, write: &TagWrite) -> Result<()>;
+
+    /// Write the active links as retail data, after every placement and tag
+    /// edit. Indices are the entries' final ones.
+    fn links(&mut self, links: &Links) -> Result<()> {
+        if links.active.is_empty() {
+            Ok(())
+        } else {
+            Err(Refusal::Unsupported("link".into()))
+        }
+    }
 }
 
 /// Validate the entire document before handing its edits to the adapter.
 /// If the adapter refuses an edit, replay stops there.
 pub fn replay(doc: &ForgeDoc, limits: &Limits, target: &mut impl Apply) -> Result<()> {
     validate(doc, limits)?;
+    let mut linked = false;
     for op in &doc.ops {
         match &op.edit {
             Edit::Placement(edit) => target.placement(edit)?,
             Edit::TagField(write) => target.tag_field(write)?,
+            Edit::Forge(_) => linked = true,
             edit => return Err(edit.unsupported()),
         }
+    }
+    if linked {
+        target.links(&doc.links(&limits.base_counts)?)?;
     }
     Ok(())
 }
