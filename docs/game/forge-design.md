@@ -125,7 +125,7 @@ An `Op` is one of the editor's own commands or a Forge one:
 | Tag field | set a field by tag key and path | `edit.batch`'s write, with a digest of the prior typed value in `was` |
 | Mesh | a `MeshOp` on a target | modeling.md, "Operations" |
 | Bitmap | a `BitmapOp` (strokes, fills, adjusts) | modeling.md, "Texture editing" |
-| Forge | emitter, volume, barrier, link, logic node, squad, nav setting, body | this page |
+| Forge | emitter, volume, barrier, link, label, logic node, squad, nav setting, body | this page; labels in [rules-engine.md](rules-engine.md) "Forge labels" |
 
 Tags are named by group and path, resolved through the map's tag index
 when the document is applied. A Mesh op holds coordinates the author
@@ -140,6 +140,9 @@ SHA-256 of its canonical form with the entire `expect` block omitted.
 Use `ForgeDoc::from_bytes` to read the 8 MiB
 bounded format and `ForgeDoc::canonical_json` to write it. The saved
 file is `<data>/forge/<name>.h2forge`. A draft can omit `expect`.
+The `format` is 1, or 2 when an op sets or clears a label; validation
+refuses the other number, so a document has one spelling and every
+document without labels keeps its identity.
 
 A **recipe** brings tags into the map by reference:
 

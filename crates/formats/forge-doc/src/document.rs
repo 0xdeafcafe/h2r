@@ -4,8 +4,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::{BlockKind, Forge, Limits, MapId, Refusal, Result, Sha256, validate, wire};
 
-/// The `.h2forge` wire version.
+/// The `.h2forge` wire version of a document with no labels.
 pub const FORMAT: u32 = content::forge::DOCUMENT_FORMAT;
+/// The wire version of a document with at least one label op.
+pub const FORMAT_LABELS: u32 = content::forge::DOCUMENT_FORMAT_LABELS;
 /// The maximum wire size of a document in bytes.
 pub const MAX_DOC_BYTES: usize = content::forge::MAX_DOCUMENT_BYTES;
 
@@ -38,6 +40,17 @@ pub struct ForgeDoc {
 }
 
 impl ForgeDoc {
+    /// The wire version this document's ops need: [`FORMAT_LABELS`] when any
+    /// op sets or clears a label, otherwise [`FORMAT`]. Validation refuses
+    /// any other `format`, so a document has one spelling.
+    pub fn required_format(&self) -> u32 {
+        let labelled = self
+            .ops
+            .iter()
+            .any(|op| matches!(op.edit, Edit::Forge(Forge::Label { .. })));
+        if labelled { FORMAT_LABELS } else { FORMAT }
+    }
+
     /// Read an untrusted file. Input size is checked before deserialising,
     /// and collection limits are enforced as the arrays are read.
     pub fn from_bytes(bytes: &[u8], limits: &Limits) -> Result<Self> {

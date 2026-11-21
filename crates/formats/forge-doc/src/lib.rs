@@ -6,6 +6,7 @@
 #![forbid(unsafe_code)]
 
 mod document;
+mod labels;
 mod links;
 mod log;
 mod validate;
@@ -13,6 +14,7 @@ mod wire;
 
 pub use content::{MapId, Sha256};
 pub use document::*;
+pub use labels::*;
 pub use links::*;
 pub use log::*;
 pub use map::scenario_layout::BlockKind;
@@ -26,7 +28,7 @@ pub type Result<T> = std::result::Result<T, Refusal>;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, thiserror::Error)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum Refusal {
-    #[error("Forge format {0} is unsupported (this build reads {FORMAT})")]
+    #[error("Forge format {0} is unsupported (this build reads 1, and 2 for documents with labels)")]
     Format(u32),
     #[error("invalid JSON: {0}")]
     Json(String),
@@ -83,6 +85,17 @@ pub trait Apply {
             Err(Refusal::Unsupported("link".into()))
         }
     }
+
+    /// Hand over the active labels, after the links. Indices are the
+    /// entries' final ones. Labels are document data with no scenario
+    /// bytes, so an adapter keeps them in its own table.
+    fn labels(&mut self, labels: &Labels) -> Result<()> {
+        if labels.active.is_empty() {
+            Ok(())
+        } else {
+            Err(Refusal::Unsupported("label".into()))
+        }
+    }
 }
 
 /// Validate the entire document before handing its edits to the adapter.
@@ -90,16 +103,21 @@ pub trait Apply {
 pub fn replay(doc: &ForgeDoc, limits: &Limits, target: &mut impl Apply) -> Result<()> {
     validate(doc, limits)?;
     let mut linked = false;
+    let mut labelled = false;
     for op in &doc.ops {
         match &op.edit {
             Edit::Placement(edit) => target.placement(edit)?,
             Edit::TagField(write) => target.tag_field(write)?,
+            Edit::Forge(Forge::Label { .. }) => labelled = true,
             Edit::Forge(_) => linked = true,
             edit => return Err(edit.unsupported()),
         }
     }
     if linked {
         target.links(&doc.links(&limits.base_counts)?)?;
+    }
+    if labelled {
+        target.labels(&doc.labels(&limits.base_counts)?)?;
     }
     Ok(())
 }
