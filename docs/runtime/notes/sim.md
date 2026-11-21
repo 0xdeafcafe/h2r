@@ -33,3 +33,20 @@ the earlier two-bot run at about 11.9 ms/tick.
 The measured numbers that replace it are in
 [sim-budget.md](../../perf/sim-budget.md): 14.12 ms/tick on Waterworks and
 8.49 ms/tick on Lockout with four local bots.
+
+## 2026-11-21: same-seed repeatability on Lockout
+
+Two runs of `sim-examples/results/aggressive-vs-base/runs/lockout-s1/match.toml`
+(Lockout, seed 1, four phantoms, 9000 ticks, `H2_FEATURES=-impl.sim.native`,
+`H2_OPT=2`) on one image. Before the spawn words were written, `h2 sim diff`
+found the first difference at tick 1: every player spawned elsewhere, with
+the shared seed (`0x8116017e`), its second word and the logical clock equal
+in both. A trace at `PLAYER_SPAWN` showed the game options' words
+`[[0x4e6948]+0x10]`, `+0x14` differing between runs (`0x6ca0017e
+0xd66f5226` against `0x1ca36eaa 0x044b844f`); `0x14ef00` mixes them into the
+spot choice. With `sim_glue::spawn_words` written ahead of the first spawn
+(branch `sim-seed-early`), the two runs were identical: 9000 ticks, every
+component equal.
+
+Reproduce: run the match twice with `--report a.json` and `--report b.json`
+(separate `--data` directories), then `h2 sim diff a.json b.json`.
