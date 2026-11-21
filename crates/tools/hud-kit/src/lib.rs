@@ -30,8 +30,8 @@ pub mod templates;
 pub use compile::{Compiled, compile};
 pub use hud_edit::Mode;
 pub use model::{
-    Anchor, Art, Describe, Element, Font, Hud, HudRef, Justify, Kind, Place, Pulse, Style, Value,
-    Values,
+    Anchor, Art, Describe, Element, Font, Hud, HudRef, Justify, Kind, Origin, Place, Pulse, Style,
+    Value, Values,
 };
 pub use source::Source;
 pub use templates::Templates;

@@ -14,7 +14,7 @@ use crate::huds::superbounce::{self, Superbounce};
 use crate::model::*;
 use crate::preview;
 use crate::templates::{self, Templates};
-use crate::{Source, compile, hudg};
+use crate::{Source, compile, hudg, synthetic};
 
 fn synthetic() -> Source {
     Source::synthetic().expect("the synthetic map")
@@ -116,19 +116,19 @@ fn one_layout_per_hud() {
     let hud = superbounce::hud();
     let mut v = Superbounce.states().remove(1).1;
     assert!(v.layout_problems(&hud).is_empty());
-    v.0.retain(|(id, _)| *id != superbounce::DROP);
+    v.0.retain(|(id, _)| *id != superbounce::NAVPOINT);
     v.0.push(("sb.nope", Value::shown()));
-    v.0.push((superbounce::LAUNCH, Value::shown()));
+    v.0.push((superbounce::PILL_ICON, Value::shown()));
     let p = v.layout_problems(&hud);
-    assert!(p.contains(&"sb.drop has no value".to_owned()), "{p:?}");
-    assert!(p.contains(&"sb.launch has 2 values".to_owned()), "{p:?}");
+    assert!(p.contains(&"sb.navpoint has no value".to_owned()), "{p:?}");
+    assert!(p.contains(&"sb.pill.icon has 2 values".to_owned()), "{p:?}");
     assert!(
         p.contains(&"sb.nope is not an element of superbounce".to_owned()),
         "{p:?}"
     );
     let mut twice = hud.clone();
     twice.elements.push(twice.elements[0].clone());
-    assert_eq!(twice.problems(), ["sb.status is named twice"]);
+    assert_eq!(twice.problems(), ["sb.pill is named twice"]);
     let mut src = synthetic();
     let t = src.templates(&twice);
     assert!(compile(&twice, &t).is_err());
@@ -210,10 +210,10 @@ fn the_synthetic_sheet_draws_and_passes() {
         r.skipped.iter().map(|s| s.0).collect::<Vec<_>>(),
         [Check::Glyphs]
     );
-    assert_eq!(r.shots.len(), 9 * 3);
+    assert_eq!(r.shots.len(), 8 * 3);
     let (sheet, tiles) = preview::sheet(&r.shots, 3);
-    assert_eq!((sheet.width, sheet.height), (3 * 320, 9 * 240));
-    assert_eq!(tiles["tiles"].as_array().unwrap().len(), 27);
+    assert_eq!((sheet.width, sheet.height), (3 * 320, 8 * 240));
+    assert_eq!(tiles["tiles"].as_array().unwrap().len(), 24);
     let s = r
         .shots
         .iter()
@@ -228,47 +228,65 @@ fn the_synthetic_sheet_draws_and_passes() {
     assert_eq!(
         drawn,
         [
-            "sb.status",
-            "sb.pointer",
-            "sb.distance",
-            "sb.distance.unit",
-            "sb.drop.label",
-            "sb.drop",
-            "sb.drop.unit",
-            "sb.launch.meter",
-            "sb.launch"
+            superbounce::PILL,
+            superbounce::PILL_ICON,
+            superbounce::NAVPOINT
         ]
     );
     let at = |id| s.element(id).unwrap().rect.unwrap().pixels();
-    // The table's rectangles (docs/game/hud-kit.md, "The block"), in the
-    // stand-in font: 7 pixels a character, 12 high.
-    assert_eq!(at("sb.status"), [47, 272, 47 + 7 * 10, 284]);
-    assert_eq!(at("sb.pointer"), [47, 296, 63, 312]);
-    assert_eq!(at("sb.distance"), [82, 296, 110, 308]);
-    assert_eq!(at("sb.launch.meter"), [47, 320, 139, 328]);
-    assert_eq!(at("sb.launch"), [145, 316, 173, 328]);
-    // The retail tracker and shield meter are in the picture.
+    // The pill is the grenade row's next: the frag pill at x 53 plus the
+    // 53 from the plasma pill to it, under the top-left anchor (48, 36).
+    let [px, py] = [
+        2 * synthetic::PILLS[0].0 - synthetic::PILLS[1].0,
+        2 * synthetic::PILLS[0].1 - synthetic::PILLS[1].1,
+    ]
+    .map(i32::from);
+    let (pw, ph) = synthetic::PILL_SIZE;
+    assert_eq!(
+        at(superbounce::PILL),
+        [
+            48 + px,
+            36 + py,
+            48 + px + i32::from(pw),
+            36 + py + i32::from(ph)
+        ]
+    );
+    // The icon centred where the next count would be.
+    let icon = s.element(superbounce::PILL_ICON).unwrap().rect.unwrap();
+    let cx = 48.0 + f32::from(2 * synthetic::COUNTS[0].0 - synthetic::COUNTS[1].0);
+    assert_eq!((icon.x0 + icon.x1) / 2.0, cx);
+    // The navpoint at the sample point, right of and above the centre.
+    let n = s.element(superbounce::NAVPOINT).unwrap();
+    let nr = n.rect.unwrap();
+    assert!(nr.x0 > 320.0 && nr.y1 < 240.0, "{nr:?}");
+    assert_eq!(n.text.as_deref(), Some("12"));
+    // The retail tracker and frag pill are in the picture.
     assert!(
         s.retail
             .iter()
             .any(|p| p.drawn && p.rect.unwrap().pixels() == [47, 360, 130, 443])
     );
-    // In split screen the block and the tutorial are hidden, and say why.
-    for (state, id) in [
-        ("not-primed", superbounce::STATUS),
-        ("tutorial-1", superbounce::TUTORIAL),
-    ] {
-        let half = r
-            .shots
+    assert!(s.retail.iter().any(|p| p.drawn && p.name == "frag_pill"));
+    // In split screen the tutorial is hidden and says why; the pill and
+    // the navpoint show.
+    let half = |state: &str| {
+        r.shots
             .iter()
             .find(|s| s.state == state && s.mode == Mode::Half)
-            .unwrap();
-        let d = half.element(id).unwrap();
-        assert!(
-            !d.drawn && d.hidden.as_deref() == Some("no half screen offset"),
-            "{id}"
-        );
-    }
+            .unwrap()
+    };
+    let d = half("tutorial-1").element(superbounce::TUTORIAL).unwrap();
+    assert!(!d.drawn && d.hidden.as_deref() == Some("no half screen offset"));
+    let h = half("primed");
+    assert!(h.element(superbounce::PILL).unwrap().drawn);
+    assert!(h.element(superbounce::NAVPOINT).unwrap().drawn);
+    // No strips: nothing but the retail HUD.
+    let none = r
+        .shots
+        .iter()
+        .find(|s| s.state == "no-strips" && s.mode == Mode::Full)
+        .unwrap();
+    assert!(none.elements.iter().all(|d| !d.drawn));
     // The tutorial's box is drawn in the middle.
     let t = r
         .shots
@@ -289,7 +307,7 @@ fn the_synthetic_sheet_draws_and_passes() {
     assert!(std::fs::read(&png).unwrap().starts_with(b"\x89PNG"));
     assert!(png.ends_with("superbounce-not-primed-full.png"));
     let back: serde_json::Value = serde_json::from_slice(&std::fs::read(&js).unwrap()).unwrap();
-    assert_eq!(back["elements"][0]["id"], "sb.status");
+    assert_eq!(back["elements"][0]["id"], "sb.pill");
     assert_eq!(back["source"], "synthetic");
     let _ = std::fs::remove_dir_all(&dir);
     let inside = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("out");
@@ -349,30 +367,33 @@ fn the_json_rectangles_are_the_compiled_bytes() {
             compared += 1;
         }
     }
-    assert!(compared > 40, "{compared}");
+    assert_eq!(compared, 2 * 8, "the pill and its icon in eight states");
 }
 
-/// A `Dim` text is drawn fainter than a `Normal` one; the preview's kit
-/// text colour is the widget stand-in.
+/// The pill is lit primed (its texels as they are, the icon in the kit
+/// text colour), greyed not primed and faded while scanning.
 #[test]
-fn styles_change_the_text_colour() {
+fn styles_change_the_pill() {
     let mut src = synthetic();
     let r = check::hud(&mut src, &Superbounce, &[Mode::Full]).unwrap();
-    let px = |state: &str| {
+    let px = |state: &str, id: &str, dx: f32, dy: f32| {
         let s = r.shots.iter().find(|s| s.state == state).unwrap();
-        let rect = s.element(superbounce::STATUS).unwrap().rect.unwrap();
-        let (x, y) = (rect.x0 as u32 + 1, rect.y0 as u32 + 4);
+        let rect = s.element(id).unwrap().rect.unwrap();
+        let (x, y) = ((rect.x0.round() + dx) as u32, (rect.y0.round() + dy) as u32);
         let i = ((y * s.canvas.width + x) * 4) as usize;
-        s.canvas.rgba[i..i + 3].to_vec()
+        let p = &s.canvas.rgba[i..i + 3];
+        [p[0], p[1], p[2]]
     };
-    let normal = px("primed-airborne");
-    assert_eq!(normal, render::TEXT_COLOUR[..3]);
-    assert_ne!(px("not-primed"), normal, "dim");
-    assert_eq!(
-        px("primed"),
-        src.colours.flash(Pulse::Objective)[..3],
-        "the objective flash at its start"
-    );
+    let sat = |p: [u8; 3]| p.iter().max().unwrap() - p.iter().min().unwrap();
+    // The pill's right end, clear of the icon.
+    let pill = |state| px(state, superbounce::PILL, 45.0, 8.0);
+    let (lit, off, dim) = (pill("primed"), pill("not-primed"), pill("scanning"));
+    assert!(sat(off) * 2 < sat(lit), "greyed: {off:?} against {lit:?}");
+    assert_ne!(dim, lit, "faded");
+    let icon = |state| px(state, superbounce::PILL_ICON, 1.0, 4.0);
+    assert_eq!(icon("primed"), render::TEXT_COLOUR[..3]);
+    assert_ne!(icon("not-primed"), icon("primed"));
+    assert_ne!(icon("scanning"), icon("primed"));
 }
 
 /// A text in a transparent colour (a flash record with no alpha) puts no

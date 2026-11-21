@@ -1,56 +1,39 @@
 //! The superbounce HUD on the kit (docs/game/hud-kit.md, "The superbounce
-//! HUD on the kit"): a block bottom left, above the shield meter and the
-//! tracker, and the tutorial in the game's training box. Fullscreen only.
+//! HUD on the kit"), made of things Halo 2 already draws:
+//!
+//! - a pill in the grenade row, the next one after the frag and plasma
+//!   pills, in the frag pill's own art, with a chevron where a pill's
+//!   count sits: lit while primed, inactive while not, dim while the map
+//!   is scanned, hidden on a map with no strips;
+//! - a navpoint over the nearest strip's stand point, the game's waypoint
+//!   marker and arrow with the distance in whole metres under them: lit
+//!   while primed, dim while not;
+//! - the tutorial in the game's training box.
 //!
 //! [`View`] is what the HUD shows of `superbounce_mode`'s state; slice 6
-//! fills it from `State` each tick. The "Hold X" hint is not in the
-//! block: it is drawn in the world, on the strip.
+//! fills it from `State` each tick. Launch and drop are not on the HUD:
+//! they are on the strips' labels in the world and in the agent API.
 
 use crate::model::{
-    Anchor, Art, Describe, Element, Font, Hud, Justify, Kind, Place, Pulse, Style, Value, Values,
+    Describe, Element, Font, Hud, Justify, Kind, Origin, Place, Style, Value, Values,
 };
 
 pub const NAME: &str = "superbounce";
 
-pub const STATUS: &str = "sb.status";
-pub const POINTER: &str = "sb.pointer";
-pub const DISTANCE: &str = "sb.distance";
-pub const DISTANCE_UNIT: &str = "sb.distance.unit";
-pub const DROP_LABEL: &str = "sb.drop.label";
-pub const DROP: &str = "sb.drop";
-pub const DROP_UNIT: &str = "sb.drop.unit";
-pub const LAUNCH_METER: &str = "sb.launch.meter";
-pub const LAUNCH: &str = "sb.launch";
+pub const PILL: &str = "sb.pill";
+pub const PILL_ICON: &str = "sb.pill.icon";
+pub const NAVPOINT: &str = "sb.navpoint";
 pub const TUTORIAL: &str = "sb.tutorial";
 
-/// The status line while primed: the pair word's -3 is shown (the user's
-/// choice).
-pub const PRIMED_TEXT: &str = "PRIMED -3";
-pub const NOT_PRIMED_TEXT: &str = "NOT PRIMED";
-pub const SCANNING_TEXT: &str = "SCANNING";
-pub const NO_STRIPS_TEXT: &str = "NO STRIPS HERE";
-pub const SCAN_FAILED_TEXT: &str = "SCAN FAILED";
-/// The widest status text.
-pub const STATUS_LONGEST: &str = NO_STRIPS_TEXT;
-pub const DROP_LABEL_TEXT: &str = "DROP";
-
-/// The unit distances and drops are shown in.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Unit {
-    Metres,
-    WorldUnits,
-}
-
-/// The drop's unit: metres, as the distance (the user's choice).
-pub const DROP_IN: Unit = Unit::Metres;
-/// The unit's label after a number in metres.
-pub const METRES: &str = "m";
-/// Metres in a world unit (10 feet; `superbounce_mode::METRES_PER_UNIT`).
-pub const METRES_PER_UNIT: f32 = 3.048;
-/// The launch, in world units a second, at which the meter is full.
-pub const LAUNCH_FULL: f32 = 30.0;
-/// The widest number: one decimal under 100.
-pub const NUMBER_LONGEST: &str = "99.9";
+/// The pill's icon: the HUD font's chevron (`^` in `conduit-13`, the font
+/// of the grenade counts; its arrow characters U+2191 and U+25B2 are the
+/// missing box, and its d-pad glyph U+E108 is swapped for the bound key's
+/// picture on the other input sets, docs/input/button-icons.md).
+pub const ICON_TEXT: &str = "^";
+/// The widest navpoint number: whole metres under 1000.
+pub const DISTANCE_LONGEST: &str = "999";
+/// The distance the preview's navpoint shows.
+pub const SAMPLE_DISTANCE_M: f32 = 12.0;
 
 /// The four tutorial steps, two lines each (X is the font's button glyph,
 /// U+E102).
@@ -71,195 +54,93 @@ pub enum Scan {
     Failed,
 }
 
-/// The nearest strip.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Nearest {
-    /// To its nearest edge, metres.
-    pub distance_m: f32,
-    /// World units a second.
-    pub launch: f32,
-    /// The fall it needs, world units.
-    pub fall: f32,
-}
-
 /// What the HUD shows.
 #[derive(Clone, Debug, PartialEq)]
 pub struct View {
     pub primed: bool,
     pub scan: Scan,
-    pub nearest: Option<Nearest>,
-    /// Radians from the unit's aim, clockwise; `None` without an aim or
-    /// standing on the strip.
-    pub bearing: Option<f32>,
-    pub airborne: bool,
+    /// Metres to the nearest strip's stand point; `None` without one.
+    pub nearest_m: Option<f32>,
     /// The tutorial step shown, 1 to 4.
     pub tutorial: Option<u8>,
-    /// The tick the player became primed (the status's flash).
-    pub primed_tick: Option<u32>,
 }
 
-/// The launch meter's fill: 0 at 0, full at [`LAUNCH_FULL`], clamped; 0
-/// for a NaN.
-pub fn gauge_fill(launch: f32) -> f32 {
-    if launch.is_nan() {
-        0.0
-    } else {
-        (launch / LAUNCH_FULL).clamp(0.0, 1.0)
+/// A distance as the navpoint shows it: whole metres, as the game's
+/// counts are whole (the count fonts have no `.`), clamped to
+/// [`DISTANCE_LONGEST`].
+pub fn distance_text(m: f32) -> String {
+    if m.is_nan() {
+        return "0".into();
     }
+    format!("{:.0}", m.clamp(0.0, 999.0))
 }
 
-/// A length in metres: one decimal under 100, whole above.
-pub fn metres_text(m: f32) -> String {
-    if m < 99.95 {
-        format!("{m:.1}")
-    } else {
-        format!("{m:.0}")
-    }
-}
-
-/// The drop's number in [`DROP_IN`].
-pub fn drop_text(fall_units: f32) -> String {
-    match DROP_IN {
-        Unit::Metres => metres_text(fall_units * METRES_PER_UNIT),
-        Unit::WorldUnits => format!("{fall_units:.1}"),
-    }
-}
-
-/// The launch to one decimal.
-pub fn launch_text(launch: f32) -> String {
-    format!("{launch:.1}")
-}
-
-/// The elements, in draw order. Rows are 22 apart for a 21-pixel line;
-/// the block's bottom is y 333, above the Halo 1 health strip at 336.
+/// The elements, in draw order.
 pub fn hud() -> Hud {
-    let bl = |x, y| Place::new(Anchor::BottomLeft, (x, y));
-    let mut elements = vec![
-        Element::text(
-            STATUS,
-            Font::Hud,
-            Justify::Start,
-            STATUS_LONGEST,
-            bl(-1, -172),
-        ),
-        Element::pointer(
-            POINTER,
-            Art::WaypointArrow,
-            bl(7, -140).registered([0.5, 0.5]),
-        ),
-        Element::text(
-            DISTANCE,
-            Font::Lcd,
-            Justify::End,
-            NUMBER_LONGEST,
-            bl(62, -148),
-        ),
-        Element::text(
-            DISTANCE_UNIT,
-            Font::Hud,
-            Justify::Start,
-            METRES,
-            bl(65, -150),
-        ),
-        Element::text(
-            DROP_LABEL,
-            Font::Hud,
-            Justify::Start,
-            DROP_LABEL_TEXT,
-            bl(86, -150),
-        ),
-        Element::text(
-            DROP,
-            Font::Lcd,
-            Justify::Start,
-            NUMBER_LONGEST,
-            bl(128, -148),
-        ),
-    ];
-    if DROP_IN == Unit::Metres {
-        // After the widest drop ("99.9" is 44 wide in font 8 at x 176).
-        elements.push(Element::text(
-            DROP_UNIT,
-            Font::Hud,
-            Justify::Start,
-            METRES,
-            bl(175, -150),
-        ));
-    }
-    elements.extend([
-        Element::meter(LAUNCH_METER, Art::StripMeter, bl(-1, -124)),
-        Element::text(
-            LAUNCH,
-            Font::Lcd,
-            Justify::Start,
-            NUMBER_LONGEST,
-            bl(97, -128),
-        ),
-        Element::channel(
-            TUTORIAL,
-            Kind::Training {
-                longest: TUTORIAL_TEXT[2],
-            },
-        ),
-    ]);
     Hud {
         name: NAME,
-        elements,
+        elements: vec![
+            Element::icon(
+                PILL,
+                crate::model::Art::GrenadePill,
+                Place::in_grenade_row(Origin::NextGrenadePill),
+            ),
+            // Centred where a pill's count is, as the counts are.
+            Element::text(
+                PILL_ICON,
+                Font::Hud,
+                Justify::Centre,
+                ICON_TEXT,
+                Place::in_grenade_row(Origin::NextGrenadeCount),
+            )
+            .over(PILL),
+            Element {
+                at: Place::GAME.split((0, 0), (0, 0)),
+                ..Element::channel(
+                    NAVPOINT,
+                    Kind::Navpoint {
+                        longest: DISTANCE_LONGEST,
+                    },
+                )
+            },
+            Element::channel(
+                TUTORIAL,
+                Kind::Training {
+                    longest: TUTORIAL_TEXT[2],
+                },
+            ),
+        ],
     }
 }
 
 /// The values for `v`: every element of [`hud`], once.
 pub fn values(v: &View) -> Values {
     let mut out = Values::default();
-    let (status, style) = match v.scan {
-        Scan::Scanning => (SCANNING_TEXT, Style::Flash(Pulse::Help)),
-        Scan::NoStrips => (NO_STRIPS_TEXT, Style::Dim),
-        Scan::Failed => (SCAN_FAILED_TEXT, Style::Dim),
-        Scan::Ready if v.primed => (
-            PRIMED_TEXT,
-            if v.primed_tick.is_some() {
-                Style::Flash(Pulse::Objective)
-            } else {
-                Style::Normal
-            },
-        ),
-        Scan::Ready => (NOT_PRIMED_TEXT, Style::Dim),
+    let pill = match v.scan {
+        Scan::NoStrips | Scan::Failed => None,
+        Scan::Scanning => Some(Style::Dim),
+        Scan::Ready if v.primed => Some(Style::Normal),
+        Scan::Ready => Some(Style::Inactive),
     };
-    let mut s = Value::text(status).styled(style);
-    s.since_tick = v.primed_tick.unwrap_or(0);
-    out.set(STATUS, s);
-    let near = v.nearest.filter(|_| v.scan == Scan::Ready);
-    let or_hide = |show: bool, val: Value| if show { val } else { Value::hidden() };
+    let (p, icon) = match pill {
+        Some(style) => (
+            Value::shown().styled(style),
+            Value::text(ICON_TEXT).styled(style),
+        ),
+        None => (Value::hidden(), Value::hidden()),
+    };
+    out.set(PILL, p);
+    out.set(PILL_ICON, icon);
     out.set(
-        POINTER,
-        match (near, v.bearing) {
-            (Some(_), Some(b)) => Value::angle(b),
-            _ => Value::hidden(),
+        NAVPOINT,
+        match v.nearest_m.filter(|_| v.scan == Scan::Ready) {
+            Some(m) => Value::text(distance_text(m)).styled(if v.primed {
+                Style::Normal
+            } else {
+                Style::Dim
+            }),
+            None => Value::hidden(),
         },
-    );
-    out.set(
-        DISTANCE,
-        near.map_or_else(Value::hidden, |n| Value::text(metres_text(n.distance_m))),
-    );
-    out.set(DISTANCE_UNIT, or_hide(near.is_some(), Value::text(METRES)));
-    out.set(
-        DROP_LABEL,
-        or_hide(near.is_some(), Value::text(DROP_LABEL_TEXT)),
-    );
-    out.set(
-        DROP,
-        near.map_or_else(Value::hidden, |n| Value::text(drop_text(n.fall))),
-    );
-    if DROP_IN == Unit::Metres {
-        out.set(DROP_UNIT, or_hide(near.is_some(), Value::text(METRES)));
-    }
-    out.set(
-        LAUNCH_METER,
-        near.map_or_else(Value::hidden, |n| Value::fill(gauge_fill(n.launch))),
-    );
-    out.set(
-        LAUNCH,
-        near.map_or_else(Value::hidden, |n| Value::text(launch_text(n.launch))),
     );
     out.set(
         TUTORIAL,
@@ -279,47 +160,26 @@ impl Describe for Superbounce {
         hud()
     }
 
-    /// The five states and the four tutorial steps.
+    /// The four states and the four tutorial steps.
     fn states(&self) -> Vec<(&'static str, Values)> {
         let not_primed = View {
             primed: false,
             scan: Scan::Ready,
-            nearest: Some(Nearest {
-                distance_m: 12.4,
-                launch: 17.9,
-                fall: 1.1,
-            }),
-            bearing: Some(0.6),
-            airborne: false,
+            nearest_m: Some(SAMPLE_DISTANCE_M),
             tutorial: None,
-            primed_tick: None,
         };
         let primed = View {
             primed: true,
-            primed_tick: Some(0),
             ..not_primed.clone()
-        };
-        let airborne = View {
-            airborne: true,
-            nearest: Some(Nearest {
-                distance_m: 3.1,
-                launch: 24.6,
-                fall: 0.4,
-            }),
-            bearing: Some(-0.2),
-            primed_tick: None,
-            ..primed.clone()
         };
         let scanning = View {
             scan: Scan::Scanning,
-            nearest: None,
-            bearing: None,
+            nearest_m: None,
             ..not_primed.clone()
         };
-        let no_strip = View {
+        let no_strips = View {
             scan: Scan::NoStrips,
-            nearest: None,
-            bearing: None,
+            nearest_m: None,
             ..not_primed.clone()
         };
         let step = |v: &View, n| View {
@@ -327,15 +187,14 @@ impl Describe for Superbounce {
             ..v.clone()
         };
         vec![
-            ("scanning", values(&scanning)),
             ("not-primed", values(&not_primed)),
             ("primed", values(&primed)),
-            ("primed-airborne", values(&airborne)),
-            ("no-strip", values(&no_strip)),
+            ("scanning", values(&scanning)),
+            ("no-strips", values(&no_strips)),
             ("tutorial-1", values(&step(&not_primed, 1))),
             ("tutorial-2", values(&step(&primed, 2))),
             ("tutorial-3", values(&step(&primed, 3))),
-            ("tutorial-4", values(&step(&airborne, 4))),
+            ("tutorial-4", values(&step(&primed, 4))),
         ]
     }
 }
@@ -344,62 +203,64 @@ impl Describe for Superbounce {
 mod tests {
     use super::*;
 
-    #[test]
-    fn numbers_read_as_the_page_says() {
-        assert_eq!(metres_text(12.44), "12.4");
-        assert_eq!(metres_text(99.94), "99.9");
-        assert_eq!(metres_text(250.4), "250");
-        assert_eq!(drop_text(1.1), "3.4", "metres: 1.1 units is 3.35 m");
-        assert_eq!(launch_text(17.85), "17.9");
-        assert_eq!(gauge_fill(15.0), 0.5);
-        assert_eq!(gauge_fill(45.0), 1.0);
-        assert_eq!(gauge_fill(f32::NAN), 0.0);
+    fn state(name: &str) -> Values {
+        Superbounce
+            .states()
+            .into_iter()
+            .find(|(n, _)| *n == name)
+            .unwrap()
+            .1
     }
 
     #[test]
-    fn the_status_reads_primed_minus_three() {
-        let d = Superbounce;
-        let states = d.states();
-        let status = |name: &str| {
-            let v = &states.iter().find(|(n, _)| *n == name).unwrap().1;
-            v.get(STATUS).unwrap().clone()
+    fn the_distance_is_whole_metres() {
+        assert_eq!(distance_text(12.4), "12");
+        assert_eq!(distance_text(12.6), "13");
+        assert_eq!(distance_text(4000.0), "999");
+        assert_eq!(distance_text(f32::NAN), "0");
+        assert!(!distance_text(3.4).contains('.'));
+    }
+
+    /// The pill is lit primed, inactive not primed, dim scanning, hidden
+    /// with no strips; the navpoint lit primed, dim not, hidden without a
+    /// strip.
+    #[test]
+    fn the_pill_and_the_navpoint_follow_the_state() {
+        let style = |s: &str, id: &str| {
+            let v = state(s);
+            let x = v.get(id).unwrap();
+            x.shown.then_some(x.style)
         };
-        assert_eq!(status("primed").text, "PRIMED -3");
-        assert_eq!(status("primed").style, Style::Flash(Pulse::Objective));
-        assert_eq!(status("primed-airborne").text, "PRIMED -3");
-        assert_eq!(status("primed-airborne").style, Style::Normal);
-        assert_eq!(status("not-primed").style, Style::Dim);
-        assert_eq!(status("scanning").style, Style::Flash(Pulse::Help));
-        assert_eq!(status("no-strip").text, NO_STRIPS_TEXT);
+        assert_eq!(style("primed", PILL), Some(Style::Normal));
+        assert_eq!(style("primed", PILL_ICON), Some(Style::Normal));
+        assert_eq!(style("not-primed", PILL), Some(Style::Inactive));
+        assert_eq!(style("scanning", PILL), Some(Style::Dim));
+        assert_eq!(style("no-strips", PILL), None);
+        assert_eq!(style("no-strips", PILL_ICON), None);
+        assert_eq!(style("primed", NAVPOINT), Some(Style::Normal));
+        assert_eq!(style("not-primed", NAVPOINT), Some(Style::Dim));
+        assert_eq!(style("scanning", NAVPOINT), None);
+        assert_eq!(style("no-strips", NAVPOINT), None);
+        assert_eq!(state("primed").get(NAVPOINT).unwrap().text, "12");
+        assert_eq!(state("primed").get(PILL_ICON).unwrap().text, ICON_TEXT);
     }
 
-    /// No state of the block carries a "Hold X" hint: it is drawn in the
-    /// world. The fourth tutorial step still names the button.
+    /// No state carries a "Hold X" hint or a launch or drop number; the
+    /// fourth tutorial step still names the button.
     #[test]
-    fn the_block_has_no_hold_x_hint() {
+    fn the_hud_has_no_numbers_but_the_distance() {
         let h = hud();
-        assert!(h.elements.iter().all(|e| !e.id.contains("hint")));
+        let ids: Vec<_> = h.elements.iter().map(|e| e.id).collect();
+        assert_eq!(ids, [PILL, PILL_ICON, NAVPOINT, TUTORIAL]);
         for (name, v) in Superbounce.states() {
             for (id, val) in &v.0 {
                 if *id != TUTORIAL {
                     assert!(!val.text.contains('\u{e102}'), "{name} {id}");
+                    assert!(!val.text.contains('.'), "{name} {id}");
                 }
             }
         }
         assert!(TUTORIAL_TEXT[3].contains('\u{e102}'));
-    }
-
-    #[test]
-    fn distance_and_drop_are_in_metres() {
-        let h = hud();
-        assert_eq!(DROP_IN, Unit::Metres);
-        assert!(h.element(DISTANCE_UNIT).is_some() && h.element(DROP_UNIT).is_some());
-        let states = Superbounce.states();
-        let v = &states.iter().find(|(n, _)| *n == "not-primed").unwrap().1;
-        assert_eq!(v.get(DISTANCE).unwrap().text, "12.4");
-        assert_eq!(v.get(DROP).unwrap().text, "3.4");
-        assert_eq!(v.get(DROP_UNIT).unwrap().text, "m");
-        assert_eq!(v.get(DISTANCE_UNIT).unwrap().text, "m");
     }
 
     #[test]
@@ -410,11 +271,10 @@ mod tests {
         assert_eq!(
             names,
             [
-                "scanning",
                 "not-primed",
                 "primed",
-                "primed-airborne",
-                "no-strip",
+                "scanning",
+                "no-strips",
                 "tutorial-1",
                 "tutorial-2",
                 "tutorial-3",
@@ -426,7 +286,5 @@ mod tests {
             let t = v.get(TUTORIAL).unwrap();
             assert_eq!(t.shown, name.starts_with("tutorial"), "{name}");
         }
-        let scan = &states[0].1;
-        assert!(!scan.get(DISTANCE).unwrap().shown && !scan.get(POINTER).unwrap().shown);
     }
 }

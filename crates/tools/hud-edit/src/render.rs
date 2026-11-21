@@ -303,6 +303,31 @@ pub trait Answers {
     fn angle(&self, _hud: usize, _w: &Widget) -> Option<f32> {
         None
     }
+    /// How a bitmap widget's texels are drawn, in place of as they are.
+    fn look(&self, _hud: usize, _w: &Widget) -> Option<Look> {
+        None
+    }
+}
+
+/// A bitmap widget's texels as an [`Answers::look`] draws them: alpha
+/// scaled, and greyed (each texel its luma) or not.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Look {
+    pub alpha: f32,
+    pub grey: bool,
+}
+
+impl Look {
+    pub fn apply(self, [r, g, b, a]: [u8; 4]) -> [u8; 4] {
+        let [r, g, b] = if self.grey {
+            let l = (0.299 * f32::from(r) + 0.587 * f32::from(g) + 0.114 * f32::from(b)).round() as u8;
+            [l, l, l]
+        } else {
+            [r, g, b]
+        };
+        let a = (f32::from(a) * self.alpha.clamp(0.0, 1.0)).round() as u8;
+        [r, g, b, a]
+    }
 }
 
 /// No answers: every widget as its bytes say.
@@ -551,6 +576,7 @@ fn draw_bitmap<R: Read + Seek>(
     // A turn about the sprite's centre: each pixel reads the texel turned
     // back, within the sprite's own rectangle (corners turned out of it
     // are not drawn).
+    let look = answers.look(h, w);
     let turn = answers
         .angle(h, w)
         .filter(|a| *a != 0.0)
@@ -579,10 +605,11 @@ fn draw_bitmap<R: Read + Seek>(
                 Some(rgba) => {
                     let i = ((sy * pw + sx) * 4) as usize;
                     let t = [rgba[i], rgba[i + 1], rgba[i + 2], rgba[i + 3]];
-                    match fill {
+                    let t = match fill {
                         Some(f) => meter(t, f),
                         None => t,
-                    }
+                    };
+                    look.map_or(t, |l| l.apply(t))
                 }
                 // No texels: a hatched stand-in of the sprite's size.
                 None => {

@@ -10,8 +10,10 @@ use anyhow::{Result, bail};
 use hud_edit::model::{self, WidgetKind};
 use map::{FourCC, Map, TagId, TagQuery};
 
+use hud_edit::Mode;
+
 use crate::hudg::Hudg;
-use crate::model::{Art, Hud, HudRef};
+use crate::model::{Art, Hud, HudRef, Origin};
 
 pub const BITM: FourCC = FourCC(*b"bitm");
 
@@ -27,6 +29,15 @@ pub const STRIP_SEQUENCE: i8 = 0;
 /// The text template: the first text widget of the `nhdt` whose first
 /// input is the frag grenade count (E `0x0013ad48`, input 20).
 pub const TEXT_TEMPLATE_INPUT: u8 = 20;
+
+/// Word A of the gate with the frag grenade selected, and with the
+/// plasma (V: retail `ui\hud\masterchief` widgets 0 and 1 and the counts
+/// `frag_count`, `plasma_count`; `hud_edit::state::HudState::masks`).
+pub const FRAG_SELECTED: u16 = 0x04;
+pub const PLASMA_SELECTED: u16 = 0x08;
+/// The grenade counts' inputs (E `0x0013ad48`: 20 frag, 21 plasma).
+pub const FRAG_COUNT_INPUT: u8 = 20;
+pub const PLASMA_COUNT_INPUT: u8 = 21;
 
 /// The player's `nhdt` the preview draws, when the map has it (the
 /// multiplayer Master Chief's: `hud_edit`'s disc test).
@@ -48,6 +59,31 @@ pub struct TextTemplate {
     pub string: u32,
 }
 
+/// Where the player's grenade row would put a next pill and its count:
+/// per screen mode, the frag pill's offset plus the step from the plasma
+/// pill to the frag pill, and the same for the counts, each with the
+/// anchor of the frag widget it steps from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GrenadeRow {
+    pub pill_anchor: u16,
+    pub pill: [(i16, i16); 3],
+    pub count_anchor: u16,
+    pub count: [(i16, i16); 3],
+}
+
+impl GrenadeRow {
+    /// The anchor and offset `origin` names in `mode` (`None` for
+    /// [`Origin::Anchor`]).
+    pub fn at(&self, origin: Origin, mode: Mode) -> Option<(u16, (i16, i16))> {
+        let m = Mode::ALL.iter().position(|x| *x == mode)?;
+        match origin {
+            Origin::Anchor => None,
+            Origin::NextGrenadePill => Some((self.pill_anchor, self.pill[m])),
+            Origin::NextGrenadeCount => Some((self.count_anchor, self.count[m])),
+        }
+    }
+}
+
 /// The templates of one player `nhdt` for one HUD.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Templates {
@@ -55,6 +91,7 @@ pub struct Templates {
     pub nhdt: TagId,
     pub text: Result<TextTemplate, String>,
     pub art: Vec<(Art, Result<ArtTemplate, String>)>,
+    pub row: Result<GrenadeRow, String>,
 }
 
 impl Templates {
@@ -80,6 +117,11 @@ impl Templates {
                 out.push(format!("{a:?}: {e}"));
             }
         }
+        if hud.uses_grenade_row()
+            && let Err(e) = &self.row
+        {
+            out.push(format!("the grenade row: {e}"));
+        }
         out
     }
 
@@ -100,8 +142,78 @@ impl Templates {
                 (a, t)
             })
             .collect();
-        Templates { nhdt, text, art }
+        let row = grenade_row(map, nhdt);
+        Templates {
+            nhdt,
+            text,
+            art,
+            row,
+        }
     }
+}
+
+/// A widget's four show words (state bytes `+0x08`..`+0x0f`, E
+/// `0x0013ac87`).
+fn show_words(w: &model::Widget) -> [u16; 4] {
+    let s = w.state();
+    std::array::from_fn(|i| u16::from_le_bytes([s[2 * i], s[2 * i + 1]]))
+}
+
+/// The first bitmap widget shown on word A `word` alone: a grenade pill.
+fn pill(hud: &model::Hud, word: u16) -> Result<&model::Widget, String> {
+    hud.widgets
+        .iter()
+        .find(|w| w.key.kind == WidgetKind::Bitmap && show_words(w) == [word, 0, 0, 0])
+        .ok_or_else(|| {
+            format!(
+                "{} has no bitmap widget shown on word A {word:#x} alone",
+                hud.name
+            )
+        })
+}
+
+/// The first text widget of input `input` shown on word A bit `word`: a
+/// grenade count (not its `_hidden` twin, which shows the other way).
+fn count(hud: &model::Hud, input: u8, word: u16) -> Result<&model::Widget, String> {
+    hud.widgets
+        .iter()
+        .find(|w| {
+            w.key.kind == WidgetKind::Text && w.inputs()[0] == input && show_words(w)[0] & word != 0
+        })
+        .ok_or_else(|| {
+            format!(
+                "{} has no text widget of input {input} shown on word A {word:#x}",
+                hud.name
+            )
+        })
+}
+
+/// The next step of a row, per mode: `a` (frag) plus `a - b` (plasma).
+fn step(a: &model::Widget, b: &model::Widget) -> [(i16, i16); 3] {
+    Mode::ALL.map(|m| {
+        let (ax, ay) = a.offset(m);
+        let (bx, by) = b.offset(m);
+        (2 * ax - bx, 2 * ay - by)
+    })
+}
+
+fn grenade_row<R: Read + Seek>(map: &mut Map<R>, nhdt: TagId) -> Result<GrenadeRow, String> {
+    let hud = model::read(map, nhdt).map_err(|e| e.to_string())?;
+    let (frag, plasma) = (pill(&hud, FRAG_SELECTED)?, pill(&hud, PLASMA_SELECTED)?);
+    let fc = count(&hud, FRAG_COUNT_INPUT, FRAG_SELECTED)?;
+    let pc = count(&hud, PLASMA_COUNT_INPUT, PLASMA_SELECTED)?;
+    if frag.anchor() != plasma.anchor() || fc.anchor() != pc.anchor() {
+        return Err(format!(
+            "{}: the grenade pills or counts have two anchors",
+            hud.name
+        ));
+    }
+    Ok(GrenadeRow {
+        pill_anchor: frag.anchor(),
+        pill: step(frag, plasma),
+        count_anchor: fc.anchor(),
+        count: step(fc, pc),
+    })
 }
 
 fn group_of<R: Read + Seek>(map: &Map<R>, id: TagId) -> Result<FourCC, String> {
@@ -175,6 +287,39 @@ fn art_template<R: Read + Seek>(
                 sequences: [seq; 3],
             })
         }
+        Art::NavpointArrow => {
+            let arrow = hudg
+                .ok_or("the map has no hudg")?
+                .navpoint_arrow
+                .ok_or_else(|| {
+                    format!(
+                        "the hudg has no arrow_assets[{}] with an image and a shader",
+                        crate::hudg::NAVPOINT_ARROW
+                    )
+                })?;
+            let seq = i8::try_from(arrow.sequence)
+                .map_err(|_| format!("arrow sequence {}", arrow.sequence))?;
+            Ok(ArtTemplate {
+                bitmap: arrow.image,
+                shader: (group_of(map, arrow.material)?, arrow.material),
+                sequences: [seq; 3],
+            })
+        }
+        Art::GrenadePill => {
+            let h = model::read(map, nhdt).map_err(|e| e.to_string())?;
+            let w = pill(&h, FRAG_SELECTED)?;
+            let bitmap = w
+                .bitmap()
+                .ok_or_else(|| format!("{}'s {} has no bitmap", h.name, w.name))?;
+            let shader = w
+                .shader()
+                .ok_or_else(|| format!("{}'s {} has no shader", h.name, w.name))?;
+            Ok(ArtTemplate {
+                bitmap,
+                shader: (group_of(map, shader)?, shader),
+                sequences: Mode::ALL.map(|m| w.sequence(m)),
+            })
+        }
         Art::Widget { hud, name } => {
             let id = match hud {
                 HudRef::Player => nhdt,
@@ -195,7 +340,7 @@ fn art_template<R: Read + Seek>(
             Ok(ArtTemplate {
                 bitmap,
                 shader: (group_of(map, shader)?, shader),
-                sequences: hud_edit::Mode::ALL.map(|m| w.sequence(m)),
+                sequences: Mode::ALL.map(|m| w.sequence(m)),
             })
         }
     }

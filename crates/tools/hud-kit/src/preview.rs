@@ -12,12 +12,12 @@ use anyhow::{Context as _, Result, bail};
 use hud_edit::Mode;
 use hud_edit::model::Widget;
 use hud_edit::place::{self, Frame, Rect};
-use hud_edit::render::{self, Answers, Canvas, Cover, FALLBACK_CHAR, Fonts, Placed};
+use hud_edit::render::{self, Answers, Canvas, Cover, FALLBACK_CHAR, Fonts, Look, Placed, Sprite};
 use hud_edit::state::{Grenade, HudState};
 use serde_json::{Value as Json, json};
 
 use crate::compile::Compiled;
-use crate::model::{Element, Hud, Kind, Style, Value, Values};
+use crate::model::{Element, Hud, Kind, NAVPOINT_FONT, Style, Value, Values};
 use crate::rects::{self, MESSAGE_LINE, PROMPT_DOWN, TRAINING_PAD};
 use crate::source::{Colours, Source};
 
@@ -30,6 +30,16 @@ pub const KIT: usize = 1;
 /// A `Dim` text's alpha, as a fraction of the game's (Design; slice 4
 /// sets it against the game's own alpha at `HUD_TEXT_SETUP`).
 pub const DIM_ALPHA: f32 = 0.5;
+/// An `Inactive` text's or sprite's alpha, as a fraction of the game's
+/// (greyed as well).
+pub const INACTIVE_ALPHA: f32 = 0.7;
+/// The preview's navpoint: its point is a sample, this fraction of the
+/// frame's width and height from the frame's centre (the runtime's is the
+/// strip's stand point projected, slice 6).
+pub const NAVPOINT_SAMPLE: [f32; 2] = [0.2, -0.25];
+/// Pixels between a navpoint's arrow, marker and number (S: the engine's
+/// spacing, `0x0024e9c7`..`0x0024f55e`, is not read).
+pub const NAVPOINT_GAP: f32 = 2.0;
 /// The message and training font: font id 6 fullscreen, 5 in split
 /// screen (E `0x0024cfaf`..`0x0024cfc9`, `0x001e71d7`).
 pub const MESSAGE_FONT: [i16; 2] = [6, 5];
@@ -137,9 +147,30 @@ pub fn style_colour(base: [u8; 4], style: Style, colours: &Colours) -> [u8; 4] {
             base[2],
             (f32::from(base[3]) * DIM_ALPHA).round() as u8,
         ],
+        Style::Inactive => Look {
+            alpha: INACTIVE_ALPHA,
+            grey: true,
+        }
+        .apply(base),
         // The record's colour at its start (`hudg::Flash::start`); the
         // curve over `since_tick` is slice 4's.
         Style::Flash(p) => colours.flash(p),
+    }
+}
+
+/// How a bitmap element's texels are drawn for its style: as they are
+/// (`Normal`, `Flash`), faded (`Dim`), greyed (`Inactive`).
+pub fn style_look(style: Style) -> Option<Look> {
+    match style {
+        Style::Normal | Style::Flash(_) => None,
+        Style::Dim => Some(Look {
+            alpha: DIM_ALPHA,
+            grey: false,
+        }),
+        Style::Inactive => Some(Look {
+            alpha: INACTIVE_ALPHA,
+            grey: true,
+        }),
     }
 }
 
@@ -182,6 +213,10 @@ impl Answers for KitAnswers<'_> {
     fn angle(&self, h: usize, w: &Widget) -> Option<f32> {
         let (e, v) = self.of(h, w)?;
         matches!(e.kind, Kind::Pointer { .. }).then_some(v.angle)
+    }
+    fn look(&self, h: usize, w: &Widget) -> Option<Look> {
+        let (e, v) = self.of(h, w)?;
+        e.kind.art().and_then(|_| style_look(v.style))
     }
 }
 
@@ -288,12 +323,15 @@ fn channel_rect(kind: &Kind, frame: &Frame, mode: Mode, size: [f32; 2]) -> Rect 
 
 fn channel(
     canvas: &mut Canvas,
-    src: &Source,
+    src: &mut Source,
     frame: &Frame,
     mode: Mode,
     e: &Element,
     v: &Value,
 ) -> Drawn {
+    if let Kind::Navpoint { .. } = e.kind {
+        return navpoint(canvas, src, frame, mode, e, v);
+    }
     let fonts = src.fonts.as_ref();
     let font = MESSAGE_FONT[usize::from(mode != Mode::Full)];
     let longest = e.kind.longest().unwrap_or("");
@@ -376,6 +414,184 @@ fn channel(
         y += size[1];
     }
     d.rect = Some(rect);
+    d.drawn = true;
+    d.cover = Some(cover);
+    d
+}
+
+fn union(a: Option<Rect>, b: Rect) -> Rect {
+    match a {
+        None => b,
+        Some(a) => Rect {
+            x0: a.x0.min(b.x0),
+            y0: a.y0.min(b.y0),
+            x1: a.x1.max(b.x1),
+            y1: a.y1.max(b.y1),
+        },
+    }
+}
+
+/// A rectangle of `size` centred across `cx` with its top at `top`.
+fn centred(cx: f32, top: f32, size: [f32; 2]) -> Rect {
+    let x0 = (cx - size[0] / 2.0).round();
+    Rect {
+        x0,
+        y0: top.round(),
+        x1: x0 + size[0],
+        y1: top.round() + size[1],
+    }
+}
+
+/// Draws `sprite` into `at`, each texel multiplied by `tint` (the HUD
+/// shader's colour), into `cover`; without texels, a hatched stand-in.
+fn draw_sprite(canvas: &mut Canvas, cover: &mut Cover, sprite: &Sprite, at: &Rect, tint: [u8; 4]) {
+    let [pw, ph] = sprite.px;
+    let [x0, y0] = [at.x0 as i32, at.y0 as i32];
+    let mul = |a: u8, b: u8| ((u16::from(a) * u16::from(b) + 127) / 255) as u8;
+    for y in 0..ph {
+        for x in 0..pw {
+            let t = match &sprite.rgba {
+                Some(rgba) => {
+                    let i = ((y * pw + x) * 4) as usize;
+                    [rgba[i], rgba[i + 1], rgba[i + 2], rgba[i + 3]]
+                }
+                None if (x + y) % 6 < 2 => [255, 80, 200, 160],
+                None => [255, 80, 200, 40],
+            };
+            let c = [
+                mul(t[0], tint[0]),
+                mul(t[1], tint[1]),
+                mul(t[2], tint[2]),
+                mul(t[3], tint[3]),
+            ];
+            let (cx, cy) = (x0 + x as i32, y0 + y as i32);
+            if c[3] > 64 {
+                cover.set(cx, cy);
+            }
+            canvas.blend(cx, cy, c);
+        }
+    }
+}
+
+/// A navpoint as the game draws one (E `0x0024e59f`): the `hudg`
+/// waypoint marker's in-view sequence centred on the point (`0x0024ecae`),
+/// the navpoint arrow (`hudg::NAVPOINT_ARROW`) above it (`0x0024e9c7`),
+/// both through the HUD
+/// shader in the user's HUD colour (`0x0024dbb0`, the notifications'
+/// colour here) at the style's alpha; then the value's number, centred
+/// under them in [`NAVPOINT_FONT`] (the game draws no number: the kit's).
+fn navpoint(
+    canvas: &mut Canvas,
+    src: &mut Source,
+    frame: &Frame,
+    mode: Mode,
+    e: &Element,
+    v: &Value,
+) -> Drawn {
+    let font = NAVPOINT_FONT.engine();
+    let in_mode = e.at.offset(mode).is_some();
+    let mut d = Drawn {
+        id: e.id,
+        kind: e.kind.name(),
+        channel: true,
+        rect: None,
+        reserved: None,
+        text: v.shown.then(|| v.text.clone()),
+        style: v.style,
+        fill: None,
+        angle: None,
+        shown: v.shown,
+        drawn: false,
+        hidden: if !in_mode {
+            Some(format!("no {} offset", mode.label()))
+        } else if !v.shown {
+            Some("not shown in this state".to_owned())
+        } else {
+            None
+        },
+        cover: None,
+        font: Some(font),
+        notes: vec![
+            "the point is the preview's sample".into(),
+            "the spacing of arrow, marker and number is the kit's (S)".into(),
+        ],
+    };
+    if !in_mode {
+        return d;
+    }
+    let c = frame.anchor_point(4).expect("the centre");
+    let point = [
+        c[0] + NAVPOINT_SAMPLE[0] * f32::from(frame.right - frame.left),
+        c[1] + NAVPOINT_SAMPLE[1] * f32::from(frame.bottom - frame.top),
+    ];
+    let hudg = src.hudg.clone();
+    let mut sprite = |image, seq: i16, what: &str, notes: &mut Vec<String>| {
+        let seq = i8::try_from(seq).unwrap_or(-1);
+        match src.art.sprite(&mut src.map, image, seq) {
+            Ok(s) => {
+                notes.extend(s.note.clone());
+                Some(s)
+            }
+            Err(why) => {
+                notes.push(format!("the {what}: {why}"));
+                None
+            }
+        }
+    };
+    let marker = match hudg.as_ref().and_then(|h| h.marker) {
+        Some(m) => sprite(m.image, m.visible, "marker", &mut d.notes),
+        None => {
+            d.notes
+                .push("the hudg has no waypoint_markers[0]: no marker".into());
+            None
+        }
+    };
+    let arrow = match hudg.as_ref().and_then(|h| h.navpoint_arrow) {
+        Some(a) => sprite(a.image, a.sequence, "arrow", &mut d.notes),
+        None => None,
+    };
+    // Top to bottom: arrow, marker (centred on the point), number.
+    let mrect = marker
+        .as_ref()
+        .map(|m| centred(point[0], point[1] - (m.size[1] / 2.0).floor(), m.size));
+    let arect = arrow.as_ref().map(|a| {
+        let bottom = mrect.map_or(point[1] + (a.size[1] / 2.0).floor(), |m| {
+            m.y0 - NAVPOINT_GAP
+        });
+        centred(point[0], bottom - a.size[1], a.size)
+    });
+    let below = mrect.or(arect).map_or(point[1], |r| r.y1 + NAVPOINT_GAP);
+    let fonts = src.fonts.as_ref();
+    let longest = e.kind.longest().unwrap_or("");
+    let lrect = centred(point[0], below, render::text_size(fonts, font, longest));
+    let mut reserved = None;
+    for r in [arect, mrect].into_iter().flatten() {
+        reserved = Some(union(reserved, r));
+    }
+    d.reserved = Some(union(reserved, lrect));
+    if d.hidden.is_some() {
+        return d;
+    }
+    let colour = style_colour(src.colours.message, v.style, &src.colours);
+    let mut cover = Cover::new();
+    let mut rect = reserved;
+    for (s, r) in [(&arrow, arect), (&marker, mrect)] {
+        if let (Some(s), Some(r)) = (s, r) {
+            draw_sprite(canvas, &mut cover, s, &r, colour);
+        }
+    }
+    let trect = centred(point[0], below, render::text_size(fonts, font, &v.text));
+    blit(
+        canvas,
+        &mut cover,
+        fonts,
+        font,
+        &v.text,
+        colour,
+        [trect.x0, trect.y0],
+    );
+    rect = Some(union(rect, trect));
+    d.rect = rect;
     d.drawn = true;
     d.cover = Some(cover);
     d

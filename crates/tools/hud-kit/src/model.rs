@@ -34,10 +34,14 @@ impl Hud {
         out
     }
 
-    /// Every [`Art`] the elements draw, once each.
+    /// Every [`Art`] the elements draw, once each (a navpoint's arrow
+    /// included).
     pub fn arts(&self) -> Vec<Art> {
         let mut out: Vec<Art> = Vec::new();
-        for a in self.elements.iter().filter_map(|e| e.kind.art()) {
+        for a in self.elements.iter().filter_map(|e| match e.kind {
+            Kind::Navpoint { .. } => Some(Art::NavpointArrow),
+            _ => e.kind.art(),
+        }) {
             if !out.contains(&a) {
                 out.push(a);
             }
@@ -51,6 +55,12 @@ impl Hud {
             .iter()
             .any(|e| matches!(e.kind, Kind::Text { .. }))
     }
+
+    /// Whether any element is placed in the grenade row (and needs the
+    /// row's template).
+    pub fn uses_grenade_row(&self) -> bool {
+        self.elements.iter().any(|e| e.at.origin != Origin::Anchor)
+    }
 }
 
 /// One element: its id (unique in its HUD), what it is, where it sits.
@@ -61,6 +71,10 @@ pub struct Element {
     /// For the channels ([`Kind::is_channel`]) only the screen modes it
     /// has count: the game places them.
     pub at: Place,
+    /// The element of the same HUD this one is drawn on by design, as a
+    /// grenade count is on its pill: the fit and own checks let the two
+    /// overlap.
+    pub over: Option<&'static str>,
 }
 
 impl Element {
@@ -79,6 +93,7 @@ impl Element {
                 longest,
             },
             at,
+            over: None,
         }
     }
     pub fn meter(id: &'static str, art: Art, at: Place) -> Self {
@@ -86,6 +101,7 @@ impl Element {
             id,
             kind: Kind::Meter { art },
             at,
+            over: None,
         }
     }
     pub fn icon(id: &'static str, art: Art, at: Place) -> Self {
@@ -93,6 +109,7 @@ impl Element {
             id,
             kind: Kind::Icon { art },
             at,
+            over: None,
         }
     }
     pub fn pointer(id: &'static str, art: Art, at: Place) -> Self {
@@ -100,17 +117,25 @@ impl Element {
             id,
             kind: Kind::Pointer { art },
             at,
+            over: None,
         }
     }
-    /// A channel element: [`Kind::Message`], [`Kind::Prompt`] or
-    /// [`Kind::Training`], fullscreen only ([`Place::GAME`]).
+    /// A channel element: [`Kind::Message`], [`Kind::Prompt`],
+    /// [`Kind::Training`] or [`Kind::Navpoint`], fullscreen only
+    /// ([`Place::GAME`]).
     pub fn channel(id: &'static str, kind: Kind) -> Self {
         debug_assert!(kind.is_channel());
         Element {
             id,
             kind,
             at: Place::GAME,
+            over: None,
         }
+    }
+    /// Drawn on `id` by design (see [`Element::over`]).
+    pub fn over(mut self, id: &'static str) -> Self {
+        self.over = Some(id);
+        self
     }
 }
 
@@ -138,7 +163,16 @@ pub enum Kind {
     /// The framed box in the middle of the screen (the scripted training
     /// text).
     Training { longest: &'static str },
+    /// A navpoint over a point of the world: the `hudg` waypoint marker
+    /// and arrow (E `0x0024e59f`), with the value's text, a whole number,
+    /// under them in [`NAVPOINT_FONT`]. Its screen point is the runtime's
+    /// (the preview's is a sample).
+    Navpoint { longest: &'static str },
 }
+
+/// The font a navpoint's number is in: the grenade counts' (font byte 0,
+/// engine font 6).
+pub const NAVPOINT_FONT: Font = Font::Hud;
 
 impl Kind {
     /// The name the JSON and the findings use.
@@ -151,10 +185,22 @@ impl Kind {
             Kind::Message { .. } => "message",
             Kind::Prompt { .. } => "prompt",
             Kind::Training { .. } => "training",
+            Kind::Navpoint { .. } => "navpoint",
         }
     }
     /// A channel into the message or training parts, not a widget.
     pub fn is_channel(&self) -> bool {
+        matches!(
+            self,
+            Kind::Message { .. }
+                | Kind::Prompt { .. }
+                | Kind::Training { .. }
+                | Kind::Navpoint { .. }
+        )
+    }
+    /// A channel into the game's text lines: a message, the prompt or the
+    /// training box (the prompt check's).
+    pub fn is_lines(&self) -> bool {
         matches!(
             self,
             Kind::Message { .. } | Kind::Prompt { .. } | Kind::Training { .. }
@@ -171,7 +217,8 @@ impl Kind {
             Kind::Text { longest, .. }
             | Kind::Message { longest }
             | Kind::Prompt { longest }
-            | Kind::Training { longest } => Some(longest),
+            | Kind::Training { longest }
+            | Kind::Navpoint { longest } => Some(longest),
             _ => None,
         }
     }
@@ -191,6 +238,7 @@ pub enum Anchor {
 /// element in that mode.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Place {
+    /// Unused with an [`Origin`] in the grenade row: the row's anchor.
     pub anchor: Anchor,
     pub full: (i16, i16),
     pub half: Option<(i16, i16)>,
@@ -198,6 +246,22 @@ pub struct Place {
     /// The point of the sprite (fractions of its size) put on the offset;
     /// unused by texts, whose point is their top.
     pub registration: [f32; 2],
+    /// What the offsets are from.
+    pub origin: Origin,
+}
+
+/// What a [`Place`]'s offsets are from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Origin {
+    /// The anchor's corner of the HUD frame.
+    Anchor,
+    /// The next pill of the player's grenade row: the frag pill's place
+    /// stepped on by the step from the plasma pill to the frag pill, in
+    /// each screen mode (`templates::GrenadeRow`).
+    NextGrenadePill,
+    /// Where the next pill's count sits: the frag count's place stepped
+    /// on by the step from the plasma count to the frag count.
+    NextGrenadeCount,
 }
 
 impl Place {
@@ -213,7 +277,19 @@ impl Place {
             half: None,
             quarter: None,
             registration: [0.0, 0.0],
+            origin: Origin::Anchor,
         }
+    }
+    /// Offsets from `origin` in the grenade row, in every screen mode the
+    /// row has (the anchor is the row's).
+    pub const fn in_grenade_row(origin: Origin) -> Self {
+        Place::new(Anchor::TopLeft, (0, 0))
+            .split((0, 0), (0, 0))
+            .from(origin)
+    }
+    pub const fn from(mut self, origin: Origin) -> Self {
+        self.origin = origin;
+        self
     }
     pub const fn registered(mut self, registration: [f32; 2]) -> Self {
         self.registration = registration;
@@ -286,6 +362,12 @@ pub enum Art {
     /// `hudg` `arrow_assets[0]`: the waypoint arrow's image, shader and
     /// sequence.
     WaypointArrow,
+    /// `hudg` `arrow_assets[hudg::NAVPOINT_ARROW]`: the arrow the game's
+    /// navpoints draw.
+    NavpointArrow,
+    /// The player's frag grenade pill: the `nhdt`'s first bitmap widget
+    /// shown on word A `0x04` alone (`templates::FRAG_SELECTED`).
+    GrenadePill,
     /// A retail widget's bitmap, shader and sequences, by its name string.
     Widget { hud: HudRef, name: &'static str },
 }
@@ -306,6 +388,8 @@ pub enum Style {
     Normal,
     /// The game's alpha, scaled down.
     Dim,
+    /// Greyed and a little faded: off, as an unselected grenade's pill.
+    Inactive,
     /// Run through a `hudg` flash record.
     Flash(Pulse),
 }
@@ -315,6 +399,7 @@ impl Style {
         match self {
             Style::Normal => "normal".into(),
             Style::Dim => "dim".into(),
+            Style::Inactive => "inactive".into(),
             Style::Flash(p) => format!("flash {}", p.name()),
         }
     }

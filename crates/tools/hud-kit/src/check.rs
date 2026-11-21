@@ -10,7 +10,7 @@ use hud_edit::render::{self, Cover};
 use serde_json::{Value as Json, json};
 
 use crate::compile::{self, Compiled};
-use crate::model::{Describe, Hud, Kind, Values};
+use crate::model::{Describe, Hud, Kind, NAVPOINT_FONT, Values};
 use crate::preview::{self, MESSAGE_FONT, Shot, mode_name};
 use crate::rects::{self, FRAME_SLACK, RESERVED, TRAINING_PAD};
 use crate::source::Source;
@@ -227,11 +227,12 @@ fn glyphs_in(
 
 /// The glyph check: every character of every text's longest and of every
 /// state's text, in each font the element is drawn in (a channel's in
-/// font 6 and, split screen, 5).
+/// font 6 and, split screen, 5; a navpoint's number in [`NAVPOINT_FONT`]).
 pub fn glyphs(r: &mut Report, hud: &Hud, states: &[(&'static str, Values)], has: GlyphLookup) {
     for e in &hud.elements {
         let fs: Vec<i16> = match &e.kind {
             Kind::Text { font, .. } => vec![font.engine()],
+            Kind::Navpoint { .. } => vec![NAVPOINT_FONT.engine()],
             k if k.is_channel() => MESSAGE_FONT.to_vec(),
             _ => continue,
         };
@@ -410,6 +411,8 @@ fn per_shot(
     // The rectangle an element claims: its reserved area and where it
     // landed.
     let claims = |d: &preview::Drawn| d.reserved.into_iter().chain(d.rect).collect::<Vec<_>>();
+    // `x` is drawn on `y` by design ([`crate::model::Element::over`]).
+    let over = |x: &str, y: &str| hud.element(x).is_some_and(|e| e.over == Some(y));
     for d in &s.elements {
         let Some(e) = hud.element(d.id) else { continue };
         // Modes: hidden in a mode it has no offset for.
@@ -464,7 +467,11 @@ fn per_shot(
                         ),
                     ));
                 }
-                for o in s.elements.iter().filter(|o| o.id != d.id) {
+                for o in s
+                    .elements
+                    .iter()
+                    .filter(|o| o.id != d.id && !over(d.id, o.id) && !over(o.id, d.id))
+                {
                     if let Some(x) = claims(o).iter().find_map(|c| c.intersect(&res)) {
                         r.push(f(
                             Check::Fit,
@@ -499,7 +506,7 @@ fn per_shot(
             ));
         }
         // Prompt: in the modes the channel shows in.
-        if e.kind.is_channel() && e.at.offset(s.mode).is_some() {
+        if e.kind.is_lines() && e.at.offset(s.mode).is_some() {
             let font = d.font.unwrap_or(MESSAGE_FONT[0]);
             let mut texts = vec![(
                 "its longest".to_owned(),
@@ -548,10 +555,11 @@ fn per_shot(
         }
     }
     // Own: no two elements overlap, by their claims and their pixels (two
-    // channels are the game's, one at a time).
+    // channels are the game's, one at a time; an element drawn over
+    // another by design, as a count on its pill, is not compared with it).
     for (i, a) in s.elements.iter().enumerate() {
         for b in &s.elements[i + 1..] {
-            if a.channel && b.channel {
+            if (a.channel && b.channel) || over(a.id, b.id) || over(b.id, a.id) {
                 continue;
             }
             let ids = vec![a.id.to_owned(), b.id.to_owned()];

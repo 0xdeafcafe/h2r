@@ -19,7 +19,7 @@ use hud_edit::model::{self as hm, WidgetKey, WidgetKind};
 use map::build::{Block, FixupKind};
 use tags::defs::{self, Defs, Record, Str, StructDef, Val};
 
-use crate::model::{Element, Hud, Kind, Place};
+use crate::model::{Element, Hud, Kind, Origin, Place};
 use crate::templates::{BITM, Templates};
 
 /// The input byte of every kit widget: input 0, "zero" (E `0x0013ad48`).
@@ -101,16 +101,38 @@ const MODES: [(Mode, &str); 3] = [
     (Mode::Quarter, "quarter"),
 ];
 
+/// The anchor and the offset per mode `at` gives on `t` (a hidden mode
+/// keeps the fullscreen offset; the gate hides it). An offset from the
+/// grenade row is added to the row's point, in the row's anchor.
+pub fn placed(at: &Place, t: &Templates) -> Result<(u16, [(i16, i16); 3])> {
+    let own = MODES.map(|(m, _)| at.offset(m).unwrap_or(at.full));
+    if at.origin == Origin::Anchor {
+        return Ok((at.anchor as u16, own));
+    }
+    let row = t
+        .row
+        .as_ref()
+        .map_err(|why| anyhow::anyhow!("the grenade row: {why}"))?;
+    let mut anchor = 0;
+    let mut out = own;
+    for (i, (m, _)) in MODES.iter().enumerate() {
+        let (a, (x, y)) = row.at(at.origin, *m).expect("a row origin");
+        anchor = a;
+        out[i] = (x + own[i].0, y + own[i].1);
+    }
+    Ok((anchor, out))
+}
+
 /// The fields both widget kinds share: the inputs, the anchor and the
-/// offsets (a hidden mode keeps the fullscreen offset; the gate hides it).
-fn common(def: &StructDef, at: &Place) -> Result<Record> {
+/// offsets ([`placed`]).
+fn common(def: &StructDef, at: &Place, t: &Templates) -> Result<Record> {
     let mut r = defs::default_record(def);
     for i in 1..=4 {
         set(&mut r, &format!("input_{i}"), Val::Int(KIT_INPUT.into()))?;
     }
-    set(&mut r, "anchor", Val::Enum(at.anchor as u32))?;
-    for (m, name) in MODES {
-        let (x, y) = at.offset(m).unwrap_or(at.full);
+    let (anchor, offsets) = placed(at, t)?;
+    set(&mut r, "anchor", Val::Enum(anchor.into()))?;
+    for ((_, name), (x, y)) in MODES.iter().zip(offsets) {
         set(&mut r, &format!("offset_{name}"), pair(x, y))?;
     }
     Ok(r)
@@ -144,7 +166,7 @@ fn bitmap(def: &StructDef, e: &Element, t: &Templates) -> Result<Vec<u8>> {
     let a = t
         .art(&art)
         .map_err(|why| anyhow::anyhow!("{}: {why}", e.id))?;
-    let mut r = common(def, &e.at)?;
+    let mut r = common(def, &e.at, t)?;
     set(&mut r, "bitmap", Val::tag(BITM, a.bitmap))?;
     set(&mut r, "shader", Val::tag(a.shader.0, a.shader.1))?;
     for (i, (_, name)) in MODES.iter().enumerate() {
@@ -170,7 +192,7 @@ fn text(def: &StructDef, e: &Element, t: &Templates) -> Result<Vec<u8>> {
         .text
         .as_ref()
         .map_err(|why| anyhow::anyhow!("{}: {why}", e.id))?;
-    let mut r = common(def, &e.at)?;
+    let mut r = common(def, &e.at, t)?;
     set(&mut r, "shader", Val::tag(tt.shader.0, tt.shader.1))?;
     set(&mut r, "text", Val::String(Str::Index(tt.string)))?;
     set(&mut r, "justification", Val::Enum(justify as u32))?;

@@ -290,7 +290,14 @@ answers hooks, and the checks cover every state).
 ```rust
 pub struct Hud { pub name: &'static str, pub elements: Vec<Element> }
 
-pub struct Element { pub id: &'static str, pub kind: Kind, pub at: Place }
+pub struct Element {
+    pub id: &'static str,
+    pub kind: Kind,
+    pub at: Place,
+    /// Drawn on that element by design (a count on its pill): the fit and
+    /// own checks let the two overlap.
+    pub over: Option<&'static str>,
+}
 
 pub enum Kind {
     /// A line in a HUD font. `longest` is the widest text any state gives it.
@@ -305,6 +312,7 @@ pub enum Kind {
     Message { longest: &'static str },
     Prompt { longest: &'static str },
     Training { longest: &'static str },
+    Navpoint { longest: &'static str },
 }
 
 /// Anchor and offsets in HUD pixels, per screen mode. `None` hides the
@@ -315,16 +323,23 @@ pub struct Place {
     pub half: Option<(i16, i16)>,
     pub quarter: Option<(i16, i16)>,
     pub registration: [f32; 2],
+    pub origin: Origin,
 }
+
+/// What the offsets are from: the anchor's corner, or where the player's
+/// grenade row puts a next pill or a next count (`templates::GrenadeRow`).
+pub enum Origin { Anchor, NextGrenadePill, NextGrenadeCount }
 
 pub enum Font { Hud, Lcd }            // a text widget's font index 0 and 1
 pub enum Art {
     StripMeter,                       // the sword's battery strip and its shader
     WaypointArrow,                    // hudg arrow_assets[0]
+    NavpointArrow,                    // hudg arrow_assets[1], the navpoints' arrow
+    GrenadePill,                      // the player's frag pill: shown on word A 0x04 alone
     Widget { hud: HudRef, name: &'static str }, // a retail widget's bitmap, shader and sequence, by its name string
 }
 pub enum HudRef { Player, Named(&'static str) } // the player's nhdt, or one by tag name
-pub enum Style { Normal, Dim, Flash(Pulse) }
+pub enum Style { Normal, Dim, Inactive, Flash(Pulse) }
 pub enum Pulse { Help, Objective, TimeWarning, TimeExpired } // the hudg records
 
 pub struct Value { pub shown: bool, pub text: String, pub fill: f32, pub angle: f32, pub style: Style, pub since_tick: u32 }
@@ -347,7 +362,9 @@ datums and the sequences, and for text the shader and string ID of a
 retail text widget of the same `nhdt` (the grenade count: the first text
 widget whose first input is 20). The strip meter is found by the names
 `h1objects::health_hud` uses (`disintegrator_meter`, `ammo_meter`,
-sequence 0). The same `Compiled` bytes go to the game and to the
+sequence 0). An element placed from the grenade row takes its anchor
+and offsets from the row's (`compile::placed`): the frag pill or count,
+stepped on by the plasma-to-frag step, plus the element's own offsets. The same `Compiled` bytes go to the game and to the
 preview, so what is checked offline is what the game is given.
 
 What the bytes leave to the runtime's hooks: the four show words are
@@ -358,14 +375,15 @@ A text hidden in a screen mode has the font byte -1 there, so the game's
 own text draw skips it (E `0x0022a85b`). A hidden mode keeps the
 fullscreen offset.
 
-Three more elements are not widgets. They are channels into the message
-and training parts, one text each:
+Four more elements are not widgets. They are channels into the game's
+message, training and navpoint parts, one text each:
 
 | Element | What the player sees | Through |
 |---|---|---|
 | `Message` | a notification in the pickup list, top left, that fades | the notification queue (`0x0024cbbf`) |
 | `Prompt` | the prompt line, top left, as "Hold X to pick up" | the user's prompt fields (`+0x220`, `+0x440`, `+0x444`), while the game shows no prompt of its own |
 | `Training` | the framed box in the middle of the screen | the scripted training text (`+0x6c0`, `+0x6c4`) |
+| `Navpoint` | the waypoint marker and arrow over a point of the world, a whole number under them | the navpoint list (`0x0024da7d`, below in "The navpoint"), the number the kit's |
 
 Their texts are UTF-16 with the font's button glyphs or action tokens.
 A channel, like a widget, shows only in the screen modes its place has:
@@ -457,7 +475,8 @@ state x mode, `sheet.png` (half-size tiles, a column per mode),
 finding. `Source::disc` reads the map (default `lockout`), the fonts and
 the XBE's colour constants from the user's disc (`--disc`, else
 `$H2_DISC`); `Source::synthetic` draws an invented map whose tracker,
-shield meter and frag count are flat boxes on the retail rectangles,
+shield meter, grenade pills and counts are flat boxes on the retail
+rectangles and whose `hudg` has an arrow and a marker,
 with `hud_edit`'s fixed-advance stand-in font, so `cargo test` draws the
 sheet without a disc. Output goes to a directory you name outside the
 Git checkout; one inside it is refused.
@@ -466,7 +485,9 @@ The preview's colours: the prompt's and the flash records' from the
 map's `hudg`; notifications' and the training text's from the XBE
 (`0x00468c84`, three floats, and `0x0045e518`, `0x0045e51c` with blue 1;
 S: the order); a kit text widget's is `hud_edit`'s stand-in until
-decoding 4. `Dim` halves the alpha, and `Flash` draws the record's
+decoding 4. `Dim` halves the alpha; `Inactive` greys (a text's colour, a
+bitmap's texels, each its luma) at 0.7 alpha, through the renderer's
+`Answers::look` for bitmaps; and `Flash` draws the record's
 colour at the flash's start (`hudg::Flash::start`): the rest colour, or
 the peak with flags bit 0, as the help line picks `+0xa4` or `+0xa8`
 (E `0x0024d194`); the objective line draws only its rest colour `+0xcc`
@@ -481,11 +502,11 @@ the check, the elements and the state and mode:
 
 | Check | Rule |
 |---|---|
-| fit | every state's text of a text widget is no wider than its `longest`, and the `longest` stays inside the frame's width and meets no other element |
-| glyphs | every character of every `longest` and state text is in the element's font (a channel's in fonts 6 and 5): not record 0, not the record U+FFFF reads, and no copy of either's bitmap (`font::Font::has_glyph`; MSLCD-14 maps `.`, `-` and `~` to a copy of its box) |
+| fit | every state's text of a text widget is no wider than its `longest`, and the `longest` stays inside the frame's width and meets no other element but the one it is `over` |
+| glyphs | every character of every `longest` and state text is in the element's font (a channel's in fonts 6 and 5, a navpoint's number in font 6): not record 0, not the record U+FFFF reads, and no copy of either's bitmap (`font::Font::has_glyph`; MSLCD-14 maps `.`, `-` and `~` to a copy of its box) |
 | frame | every rectangle, reserved or drawn, is inside the HUD frame and the screen; an element may sit `FRAME_SLACK` (1) pixel outside the frame, as the tracker and the shield meter do (x 47, the frame's left 48) |
 | retail | no widget element's opaque pixels meet a retail widget's at any `HudState` of the sheet (plain, overshield, plasma grenades, zoomed), and no widget element's rectangle meets the reserved rectangles (`PROMPT_LINE`, `TRAINING_BOX`, `H1_HEALTH`, `RETICLE`); the channels are the game's own text and are not checked against them |
-| own | no two elements of any registered HUDs overlap, by their rectangles and their pixels, texts included; two channels are the game's, one at a time, and are not compared |
+| own | no two elements of any registered HUDs overlap, by their rectangles and their pixels, texts included; two channels are the game's, one at a time, and are not compared, nor is an element with the one it is `over` |
 | one layout | every state has a value for every element and for nothing else, and every element id is used once |
 | templates | every `Art` and the text template resolve on the map (both sources; on every map of the disc in the disc test) |
 | prompt | a `Message`, `Prompt` or `Training` text, and its `longest`, has at most two lines and fits the frame's width (less the training box's margin) |
@@ -506,103 +527,131 @@ the preview's JSON, with `render.frame` for the pixels.
 elements, `values(&View)` (what the HUD shows of `superbounce_mode`'s
 state) and the preview's states. Slice 6 moves it beside the mode,
 publishing a `Values` from `State` each tick. It is shown to the first
-local player, fullscreen only.
+local player. It is made only of things Halo 2 draws already: a grenade
+pill, a navpoint and the training box. Launch and drop are not on the
+HUD: they are on the strips' labels in the world and in the agent API.
 
 ```sh
 h2 hud preview superbounce --state all --out DIR      # the disc's lockout
+h2 hud preview superbounce --state all --mode all --out DIR
 h2 hud preview superbounce --state all --synthetic --out DIR
 ```
 
-### The block
+### The pill
 
-Bottom left, above the shield meter and the tracker, left edges in line
-with theirs. Anchor 2 (bottom left, (48, 444) at 640 by 480); offsets in
-HUD pixels; rectangles at 640 by 480 fullscreen.
+| Element | Kind | Place | Art |
+|---|---|---|---|
+| `sb.pill` | Icon | `Origin::NextGrenadePill`, every mode | `Art::GrenadePill`: the frag pill's bitmap, shader and sequences |
+| `sb.pill.icon` | Text, `Hud`, centred, over `sb.pill` | `Origin::NextGrenadeCount`, every mode | the text template (the frag count's shader and string); `^` in font 6 |
 
-| Element | Kind | Offset | Rectangle | Disc assets |
-|---|---|---|---|---|
-| `sb.status` | Text, `Hud`, start | (-1, -172) | x 47.., y 272..293 | font 6; the `hudg` help and objective flash records |
-| `sb.pointer` | Pointer, registered at its centre | (7, -140) | centre (55, 304), within 16 by 16 (S) | `hudg` waypoint arrow image, shader and sequence |
-| `sb.distance` | Text, `Lcd`, end | (62, -148) | x ..110, y 296..313 | font 8 |
-| `sb.distance.unit` | Text, `Hud`, start | (65, -150) | x 113.., y 294..315 | font 6 |
-| `sb.drop.label` | Text, `Hud`, start | (86, -150) | x 134.., y 294..315 | font 6 |
-| `sb.drop` | Text, `Lcd`, start | (128, -148) | x 176.., y 296..313 | font 8 |
-| `sb.drop.unit` | Text, `Hud`, start | (175, -150) | x 223.., y 294..315 | font 6 |
-| `sb.launch.meter` | Meter, registered top left | (-1, -124) | x 47..139, y 320..328 | the sword's battery strip and the legacy meter shader |
-| `sb.launch` | Text, `Lcd`, start | (97, -128) | x 145.., y 316..333 | font 8 |
-| `sb.tutorial` | Training | the game's | the training box | font 6; the `hudg` training art |
+The grenade row is read from the player's `nhdt`
+(`templates::GrenadeRow`): the frag pill is the first bitmap widget
+shown on word A `0x04` alone, the plasma pill on `0x08` alone (V: retail
+`ui\hud\masterchief` widgets 0 and 1, docs/halo1/hud.md "Grenades"),
+and the counts the first text widgets of inputs 20 and 21 shown on those
+bits. The pill sits where a third pill would: per screen mode, the frag
+pill's offset plus the step from the plasma pill to the frag pill, in
+their anchor; the icon where a third count would, the same way. So the
+pill is the grenade pills' size, in line with them, in every mode, on
+any map whose player HUD has the row. With retail's counts at (12, -1)
+and (65, -1), the icon is centred at (118, -1) from the top-left anchor
+(S: the pills' own offsets are the disc's, read at install).
 
-Words are in the HUD font and numbers in the count font, as the weapon
-panels do. The rows are 22 apart for a 21-pixel line. The block's bottom
-is y 333; the Halo 1 health strip starts at 336 and the shield band at
-346. The x positions on the middle row are from measured widths ("17.9"
-is 44 wide; `sb.drop.unit` is 3 past a 44-wide drop) and are S until the
-`fit` check runs on the disc.
+The icon is `^`, the chevron of `conduit-13` (font 6, the counts'
+font). The font's arrows (U+2191, U+25B2, U+21E7) are its missing box
+(D: `h2 font conduit-13`), and its d-pad glyph U+E108 is swapped for the
+bound key's picture on the other input sets
+([button-icons.md](../input/button-icons.md)). The pill art is the frag
+pill's whole sprite: if that sprite holds the frag grenade's picture,
+the pill shows it beside the chevron (S until the disc preview is seen).
 
-There is no "Hold X" hint in the block: the hold-X and jump prompts are
-drawn in the world, on the strip.
+| State | Pill and icon |
+|---|---|
+| primed | `Normal`: the pill as the frag pill draws, the icon in the text colour |
+| not primed | `Inactive`: greyed (each texel its luma) at 0.7 alpha |
+| scanning | `Dim`: half alpha |
+| no strips, scan failed | hidden |
+
+### The navpoint
+
+`sb.navpoint` is a `Navpoint` channel over the nearest strip's stand
+point, in every screen mode. Halo 2 draws a navpoint in
+`0x0024e59f` (E, called per slot from `0x0024da7d`): it projects the
+point (`0x0002b400`, `0x0002b460`), clamps it into the waypoint area
+(`hudg` `waypoint_*_inset`, `+0xec`..`+0xf8`), then draws three HUD
+shader quads (`0x0022a664`):
+
+- the arrow, `hudg` `arrow_assets[1]` (`+0x408`; image, material and
+  sequence), `0x0024e9c7`: the row is the draw record's `+4`, which
+  `0x0024da7d` sets to 1 (`0x0024db90`; `hudg::NAVPOINT_ARROW`). Row 0
+  is another sprite, the one `Art::WaypointArrow` names;
+- the marker, `hudg` `waypoint_markers[0]` (`+0x410`; the in-view,
+  obscured and outside sequences), `0x0024ecae`, the record's one layer;
+- an outline, `arrow_assets[1]`'s `outline_image`, `0x0024f0fc`.
+
+Their colour is the user's HUD colour (`0x0013927e`, copied to
+`0x004e6950` and `0x004e695c` for the shader), their alpha the user's HUD
+alpha (`0x004e69c0`) times the navpoint's opacity. The game draws no
+number with a navpoint: the distance under it is the kit's, whole
+metres in font 6, as the grenade counts are whole (the count fonts have
+no `.`, D: `h2 font MSLCD-14 '1.2'`).
+
+The preview draws the marker's in-view sequence centred on a sample
+point (`NAVPOINT_SAMPLE`, right of and above the frame's centre), the
+arrow above it and "12" under it, 2 pixels apart (S: the engine's
+spacing and the outline are not drawn), in the notifications' colour
+(the same `0x0013927e`). Primed it is `Normal`; not primed `Dim`. It is
+hidden while scanning and without a strip.
 
 ### States
 
-Each drawing is the screen's bottom-left corner; one column is about 8
-HUD pixels. `>` is the pointer, `#` the meter's fill.
+| State | Pill | Navpoint | Tutorial |
+|---|---|---|---|
+| `not-primed` | inactive | dim, "12" | |
+| `primed` | lit | lit, "12" | |
+| `scanning` | dim | hidden | |
+| `no-strips` | hidden | hidden | |
+| `tutorial-1` | inactive | dim | step 1 |
+| `tutorial-2`, `-3`, `-4` | lit | lit | steps 2 to 4 |
 
-`scanning`: the status line pulses with the help record.
+### The runtime, for this HUD
 
-```text
-y272  SCANNING
+Three things slice 3 on has to settle; this is the plan, not built.
 
-
-y346  [=shield=========]
-y360  (    tracker     )
-```
-
-`not-primed`, a strip in range: the status is `Dim`; the pointer, the
-distance, the drop and the launch show at full strength.
-
-```text
-y272  NOT PRIMED
-y294  >   12.4 m   DROP 3.4 m
-y320  [######------]  17.9
-y346  [=shield=========]
-y360  (    tracker     )
-```
-
-`primed`: the status flashes with the objective record for its count
-when the pair word becomes -3, then stays `Normal`.
-
-```text
-y272  PRIMED -3
-y294  >   12.4 m   DROP 3.4 m
-y320  [######------]  17.9
-y346  [=shield=========]
-y360  (    tracker     )
-```
-
-`primed-airborne`: primed and falling; the same rows, nearer.
-
-```text
-y272  PRIMED -3
-y294  >    3.1 m   DROP 1.2 m
-y320  [########----]  24.6
-y346  [=shield=========]
-y360  (    tracker     )
-```
-
-`no-strip` (the scan is done and the map has none, or the scan failed):
-the status alone, `Dim`: `NO STRIPS HERE` or `SCAN FAILED`.
-
-Each text above is one constant in `superbounce.rs`, so a wording
-change is one line.
-
-| Piece | Rule |
-|---|---|
-| Primed | `PRIMED -3` when the level pair's word is -3, else `NOT PRIMED` |
-| Launch | the meter is `gauge_fill`: the nearest strip's launch over 30 units a second, full past 30; the number is the launch to one decimal |
-| Distance | metres to the strip's nearest edge: one decimal under 100, whole above |
-| Direction | the pointer's angle is the bearing from the unit's aim yaw; hidden without an aim or standing on the strip |
-| Drop | the fall the strip needs, in metres as the distance (`DROP_IN`), with its unit |
-| Scan | `SCANNING` until the scan is done; then the rows appear |
+1. **Where the shared code lives.** `crates/extensions/game` may not
+   depend on `crates/tools` (`scripts/crate-domains.toml`), so it cannot
+   use `crates/tools/hud-kit`. The model, the templates (`GrenadeRow`
+   included) and the compiler move to a crate the extensions may use
+   (a new crate in the `rewrites` domain), with the
+   map reads behind the `map` crate they already use; `hud-kit` keeps
+   the preview, the checks and the synthetic map and depends on it.
+2. **The pill joins the player's `nhdt`.** At install, for each player
+   `nhdt`, resolve the grenade row and compile: `sb.pill` is one more
+   bitmap record and `sb.pill.icon` one more text record after the
+   retail ones (the install step above), drawn by the game's own widget
+   loop. The look is the kit's hooks: the gate shows them; `Normal`
+   changes nothing; `Dim` scales the alpha the game chose for the quad
+   and the text (`HUD_SHADER_QUAD`, `HUD_TEXT_SETUP`); `Inactive` greys
+   them, which a colour hook alone cannot do for a bitmap: either a
+   grey constant in the shader quad's colour, or the retail unselected
+   pill's shader written into the record (S: which widget draws the
+   unselected pill is not read).
+3. **The navpoint goes through the game's list.** The navpoint draw
+   reads up to 4 slots of 12 bytes per user at `[0x005023f8] + user *
+   0x30` (E `0x0024da7d`..`0x0024db6e`: `+0` an `i16`, -1 ends the list;
+   `+2` its low four bits a kind, 15 skips the slot, 0 a scenario point
+   (`[0x004e0350] +0x1e4`, `0x38` each, the point at `+0x24`; S: a
+   scenario block), else an object;
+   `+4` a height added to the point; `+8` the object datum or the point
+   index). An object at the
+   strip's stand point (or a scenario point, if a free one can be
+   written) in a slot the game is not using gets the game's own arrow,
+   marker and placement, in every split screen. Slice 6 writes the slot
+   each tick from `State`; the kit's runtime adds the number by a text
+   draw at the projected point after `0x0024e59f` returns, and the
+   colour through the navpoint's opacity. If no slot is free (a gametype
+   uses all four), the kit draws the same three quads itself at the
+   projected point.
 
 ### The tutorial
 
@@ -632,7 +681,7 @@ the frame art (S: decoding 3 gives its outer edge). The widest first
 line is 304 pixels in font 6 (V, measured as above), inside the frame's
 544. The element's `longest` is step 3, the most characters; which
 step is widest in font 6 is S until the disc's checks run. The tutorial
-is fullscreen only, as the block. The step machine is `Tutorial` (its
+is fullscreen only. The step machine is `Tutorial` (its
 thresholds, F4, the `superbounce.tutorial_seen` setting and
 `H2_SUPERBOUNCE_TUTORIAL`), moved beside the HUD. A game training prompt
 of its own takes the box while it shows; the tutorial's step waits.
@@ -702,11 +751,14 @@ agent API had no game to attach to, and a design page starts none.
   right under Pinned and Centered at wide aspects.
 - Whether lockstep and co-op hashes cover the tag memory and the
   training state the kit writes.
-- The waypoint arrow's sprite: which sequence is the plain pointer, and
-  its size.
+- What `arrow_assets[0]` and `[1]` and `waypoint_markers[0]` look like
+  on the disc, and the spacing of a navpoint's arrow, marker and outline
+  (`0x0024e9c7`..`0x0024f55e` read for which assets, not for where).
+- Whether the frag pill's sprite holds the grenade's picture, and which
+  retail widget draws an unselected grenade's pill.
 - The frame cost.
 - The preview on the disc: `tests/disc.rs` has not been run, so the
-  superbounce block's measured positions, the retail state words
+  grenade row's offsets on lockout, the retail state words
   (`RETAIL_WORDS`) and the XBE colour reads are unchecked there.
 - Where a notification is drawn against the first message line (the
   preview puts it below the line's five-line box).
@@ -770,9 +822,10 @@ Each slice is code and tests only; the coordinator compiles and runs.
    `h2 hud preview superbounce`). Rewrite "The HUD" and "The tutorial"
    in [superbounce.md](superbounce.md) and the overlay paragraphs of
    `docs/runtime/app.md`; add the glass panel to
-   `docs/game/notes/not-adopted.md`. Tests: each `State` gives the
-   documented values; the preview's five states and four tutorial steps
-   pass the checks. Verify in a run with `hud.kit` and `render.frame`
+   `docs/game/notes/not-adopted.md`; the pill joins the player's `nhdt`
+   and the navpoint goes through the game's list ("The runtime, for this
+   HUD"). Tests: each `State` gives the documented values; the preview's
+   four states and four tutorial steps pass the checks. Verify in a run with `hud.kit` and `render.frame`
    against the preview's JSON, at 4:3 and 16:9, Pinned and Centered.
 7. **Preview fidelity.** Decodings 3 and 5, so the preview draws the
    training box's frame and a retail widget's own flash; `h2 hud

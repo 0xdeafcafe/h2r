@@ -476,3 +476,14 @@ fn answers_take_the_place_of_the_bytes() {
     let mid = px(&kit, (r.x0 + 2.0) as u32, (r.y0 + 4.0) as u32);
     assert_eq!(mid, [255, 0, 0]);
 }
+
+/// A look scales a texel's alpha and greys it to its luma.
+#[test]
+fn a_look_dims_and_greys_a_texel() {
+    use crate::render::Look;
+    let t = [200, 100, 50, 200];
+    assert_eq!(Look { alpha: 1.0, grey: false }.apply(t), t);
+    assert_eq!(Look { alpha: 0.5, grey: false }.apply(t), [200, 100, 50, 100]);
+    let g = Look { alpha: 1.0, grey: true }.apply(t);
+    assert_eq!((g[0], g[1], g[2], g[3]), (124, 124, 124, 200));
+}

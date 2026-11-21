@@ -1,8 +1,8 @@
 //! The synthetic source's invented map, built with `map::build`: a player
-//! `nhdt` whose motion tracker, shield meter and frag count are flat boxes
-//! on the retail rectangles ([`crate::rects`]), the strip meter's bitmap
-//! and shader under the retail names, a `hudg` with a waypoint arrow, and
-//! the biped naming the HUD. Nothing comes from a disc; `cargo test` draws
+//! `nhdt` whose motion tracker, shield meter, grenade pills and counts are
+//! flat boxes on the retail rectangles ([`crate::rects`]), the strip
+//! meter's bitmap and shader under the retail names, a `hudg` with a
+//! waypoint arrow and marker, and the biped naming the HUD. Nothing comes from a disc; `cargo test` draws
 //! the sheet from it.
 
 use anyhow::{Result, anyhow};
@@ -27,6 +27,17 @@ const ALWAYS: [u8; 20] = [
 const FRAG_STATE: [u8; 20] = [
     0x04, 0, 0, 0, 0, 0, 0, 0, 0x2a, 0x06, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
 ];
+/// The plasma grenade widgets' (retail, V; `h1objects::h1hud::GRENADE_STATES`).
+const PLASMA_STATE: [u8; 20] = [
+    0x08, 0, 0, 0, 0, 0, 0, 0, 0x26, 0x06, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+];
+/// The invented grenade row, top left, frag then plasma: the plasma pill
+/// at x 0 and the frag pill at 53 (pills 50 by 16, one pixel down), their
+/// counts centred at 12 and 65 (the retail counts' offsets,
+/// docs/halo1/hud.md).
+pub const PILLS: [(i16, i16); 2] = [(53, 1), (0, 1)];
+pub const COUNTS: [(i16, i16); 2] = [(65, -1), (12, -1)];
+pub const PILL_SIZE: (u16, u16) = (50, 16);
 
 /// A flat bitmap: a `size` power-of-two image whose sequence 0 is one
 /// sprite of `sprite` pixels at its top left, each texel `texel(x, y)`
@@ -104,8 +115,8 @@ fn shader(set: &mut TagSet, name: &str) -> Result<TagId> {
     Ok(set.add_tag(SHAD, name, TagPayload::Built(Block::zeroed(0x10)))?)
 }
 
-/// A bitmap widget of the invented player HUD: anchor 2 (bottom left),
-/// registered at its top left, split-screen offsets half the fullscreen.
+/// A bitmap widget of the invented player HUD shown on word A `0x1000`:
+/// anchor 2 (bottom left), registered at its top left.
 fn bitmap_widget(
     name: &str,
     offset: (i16, i16),
@@ -113,13 +124,32 @@ fn bitmap_widget(
     shader: TagId,
     special: u16,
 ) -> Block {
+    let mut b = gated_widget(name, 2, ALWAYS, offset, bitmap, shader, special);
+    // Split-screen offsets half the fullscreen.
+    for at in &bw::OFFSETS[1..] {
+        b.put_u16(*at, (offset.0 / 2) as u16);
+        b.put_u16(at + 2, (offset.1 / 2) as u16);
+    }
+    b
+}
+
+/// A bitmap widget at `anchor`, gated on `state`, at `offset` in every
+/// screen mode.
+fn gated_widget(
+    name: &str,
+    anchor: u16,
+    state: [u8; 20],
+    offset: (i16, i16),
+    bitmap: TagId,
+    shader: TagId,
+    special: u16,
+) -> Block {
     let mut b = Block::zeroed(layout::BITMAP_SIZE);
-    b.bytes[bw::STATE..bw::STATE_END].copy_from_slice(&ALWAYS);
-    b.put_u16(bw::ANCHOR, 2).put_u16(bw::SPECIAL, special);
-    for (m, at) in bw::OFFSETS.iter().enumerate() {
-        let d = if m == 0 { 1 } else { 2 };
-        b.put_u16(*at, (offset.0 / d) as u16);
-        b.put_u16(at + 2, (offset.1 / d) as u16);
+    b.bytes[bw::STATE..bw::STATE_END].copy_from_slice(&state);
+    b.put_u16(bw::ANCHOR, anchor).put_u16(bw::SPECIAL, special);
+    for at in bw::OFFSETS {
+        b.put_u16(at, offset.0 as u16);
+        b.put_u16(at + 2, offset.1 as u16);
     }
     b.string_id(bw::NAME as u32, name);
     b.tag_ref(bw::BITMAP as u32, bitmap);
@@ -197,6 +227,29 @@ pub fn build() -> Result<Vec<u8>> {
             }
         },
     )?;
+    // The grenade pill: a flat blue box.
+    let pill = bitmap(
+        &mut set,
+        "synthetic\\hud\\grenade_pill",
+        (64, 16),
+        PILL_SIZE,
+        |_, _| [60, 120, 200, 200],
+    )?;
+    // The waypoint marker: a 12 by 12 diamond.
+    let marker = bitmap(
+        &mut set,
+        "synthetic\\hud\\waypoint_marker",
+        (16, 16),
+        (12, 12),
+        |x, y| {
+            let d = (x as i32 - 6).abs() + (y as i32 - 6).abs();
+            if d <= 6 {
+                [230, 230, 230, 255]
+            } else {
+                [0, 0, 0, 0]
+            }
+        },
+    )?;
     let plain = shader(&mut set, "synthetic\\hud\\shaders\\plain")?;
     let meter = shader(&mut set, STRIP_SHADER)?;
     let arrow_shader = shader(&mut set, "synthetic\\hud\\shaders\\waypoint_arrow")?;
@@ -211,23 +264,41 @@ pub fn build() -> Result<Vec<u8>> {
                 meter,
                 layout::SPECIAL_SHIELD,
             ),
+            gated_widget("frag_pill", 1, FRAG_STATE, PILLS[0], pill, plain, 0),
+            gated_widget("plasma_pill", 1, PLASMA_STATE, PILLS[1], pill, plain, 0),
         ],
-        vec![{
-            // Top left, centred at (113, 35): the frag count.
+        [
+            (
+                "frag_count",
+                crate::templates::FRAG_COUNT_INPUT,
+                FRAG_STATE,
+                COUNTS[0],
+            ),
+            (
+                "plasma_count",
+                crate::templates::PLASMA_COUNT_INPUT,
+                PLASMA_STATE,
+                COUNTS[1],
+            ),
+        ]
+        .into_iter()
+        .map(|(name, input, state, (x, y))| {
+            // Top left, centred: a grenade count.
             let mut t = Block::zeroed(layout::TEXT_SIZE);
-            t.bytes[tw::INPUTS] = crate::templates::TEXT_TEMPLATE_INPUT;
-            t.bytes[tw::STATE..tw::STATE_END].copy_from_slice(&FRAG_STATE);
+            t.bytes[tw::INPUTS] = input;
+            t.bytes[tw::STATE..tw::STATE_END].copy_from_slice(&state);
             t.put_u16(tw::ANCHOR, 1)
                 .put_u16(tw::FLAGS, 1)
                 .put_u16(tw::JUSTIFICATION, 1);
             for at in tw::OFFSETS {
-                t.put_u16(at, 65).put_u16(at + 2, (-1i16) as u16);
+                t.put_u16(at, x as u16).put_u16(at + 2, y as u16);
             }
-            t.string_id(tw::NAME as u32, "frag_count");
+            t.string_id(tw::NAME as u32, name);
             t.string_id(tw::STRING as u32, "hud_input1");
             t.tag_ref(tw::SHADER as u32, text_shader);
             t
-        }],
+        })
+        .collect(),
     );
     let player = set.add_tag(hud_edit::model::NHDT, PLAYER, TagPayload::Built(player))?;
     let mut bipd = Block::zeroed(0x1b0);
@@ -249,8 +320,27 @@ pub fn build() -> Result<Vec<u8>> {
     put(&mut row, "arrow_image", Val::tag(FourCC(*b"bitm"), arrow))?;
     put(&mut row, "arrow_material", Val::tag(SHAD, arrow_shader))?;
     put(&mut row, "sprite_sequence", Val::Int(0))?;
+    let mchild = def
+        .child("waypoint_markers")
+        .expect("hudg waypoint_markers");
+    let mut mrow = defs::default_record(mchild);
+    put(
+        &mut mrow,
+        "marker_image",
+        Val::tag(FourCC(*b"bitm"), marker),
+    )?;
+    put(&mut mrow, "marker_material", Val::tag(SHAD, arrow_shader))?;
+    for seq in ["visible_sequence", "obscured_sequence", "outside_sequence"] {
+        put(&mut mrow, seq, Val::Int(0))?;
+    }
     let mut root = defs::default_record(def);
-    put(&mut root, "arrow_assets", Val::Block(vec![row]))?;
+    // Rows 0 and 1 (the navpoints' arrow, hudg::NAVPOINT_ARROW) alike.
+    put(
+        &mut root,
+        "arrow_assets",
+        Val::Block(vec![row.clone(), row]),
+    )?;
+    put(&mut root, "waypoint_markers", Val::Block(vec![mrow]))?;
     let hudg_block = defs::to_built(def, &root, &mut |_| None).map_err(|e| anyhow!("hudg: {e}"))?;
     set.add_tag(
         hudg::HUDG,

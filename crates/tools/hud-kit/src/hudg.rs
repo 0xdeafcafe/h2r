@@ -37,6 +37,18 @@ pub struct Arrow {
     pub sequence: i16,
 }
 
+/// `hudg` `waypoint_markers[0]`: the marker a navpoint draws, its sprite
+/// sequence for a point in view, hidden by geometry, and off the view (E
+/// `0x0024ecae`, which reads `hudg +0x410`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Marker {
+    pub image: TagId,
+    pub material: TagId,
+    pub visible: i16,
+    pub obscured: i16,
+    pub outside: i16,
+}
+
 /// The training box's art: the shader and the four bitmaps (upper right,
 /// upper centre, upper left, middle), for the human and the Elite HUD.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -63,8 +75,21 @@ pub struct Hudg {
     /// The next notification starts the drawn height times this lower.
     pub message_spacing: f32,
     pub training: TrainingArt,
+    /// `arrow_assets[0]`.
     pub arrow: Option<Arrow>,
+    /// `arrow_assets[NAVPOINT_ARROW]`, the arrow a navpoint draws.
+    pub navpoint_arrow: Option<Arrow>,
+    /// `waypoint_markers[NAVPOINT_MARKER]`.
+    pub marker: Option<Marker>,
 }
+
+/// The `arrow_assets` row a navpoint of the game's list draws: the draw
+/// record's `+4`, which `0x0024da7d` sets to 1 (E `0x0024db90`) and
+/// `0x0024e9c7` indexes `hudg +0x40c` with.
+pub const NAVPOINT_ARROW: usize = 1;
+/// The `waypoint_markers` row: the record's first layer, 0 (E
+/// `0x0024dbde`, read by `0x0024ecae` against `hudg +0x410`).
+pub const NAVPOINT_MARKER: usize = 0;
 
 /// Bit 0 of a flash record's flags: the flash runs from the peak colour
 /// to the rest colour, not the other way (E `0x0024d1aa`, help's
@@ -179,21 +204,53 @@ pub fn read<R: Read + Seek>(map: &mut Map<R>) -> Result<Hudg> {
         );
     }
     let f = Fields { def, bytes: &bytes };
-    let arrow = match f.block("arrow_assets")? {
-        (0, _) => None,
-        (_, address) => {
-            let child = def.child("arrow_assets").expect("hudg arrow_assets");
-            let at = map.file_offset(address, child.size)?;
-            let row = map.read_file_range(at, u64::from(child.size))?;
-            let r = Fields {
-                def: child,
-                bytes: &row,
-            };
+    let (arrows, address) = f.block("arrow_assets")?;
+    let arrow_row = |map: &mut Map<R>, i: usize| -> Result<Option<Arrow>> {
+        if i >= arrows as usize {
+            return Ok(None);
+        }
+        let child = def.child("arrow_assets").expect("hudg arrow_assets");
+        let at = map.file_offset(address + i as u32 * child.size, child.size)?;
+        let row = map.read_file_range(at, u64::from(child.size))?;
+        let r = Fields {
+            def: child,
+            bytes: &row,
+        };
+        Ok(
             match (r.reference("arrow_image")?, r.reference("arrow_material")?) {
                 (Some(image), Some(material)) => Some(Arrow {
                     image,
                     material,
                     sequence: r.i16("sprite_sequence")?,
+                }),
+                _ => None,
+            },
+        )
+    };
+    let arrow = arrow_row(map, 0)?;
+    let navpoint_arrow = arrow_row(map, NAVPOINT_ARROW)?;
+    let marker = match f.block("waypoint_markers")? {
+        (n, _) if n as usize <= NAVPOINT_MARKER => None,
+        (_, address) => {
+            let child = def
+                .child("waypoint_markers")
+                .expect("hudg waypoint_markers");
+            let at = map.file_offset(address + NAVPOINT_MARKER as u32 * child.size, child.size)?;
+            let row = map.read_file_range(at, u64::from(child.size))?;
+            let r = Fields {
+                def: child,
+                bytes: &row,
+            };
+            match (
+                r.reference("marker_image")?,
+                r.reference("marker_material")?,
+            ) {
+                (Some(image), Some(material)) => Some(Marker {
+                    image,
+                    material,
+                    visible: r.i16("visible_sequence")?,
+                    obscured: r.i16("obscured_sequence")?,
+                    outside: r.i16("outside_sequence")?,
                 }),
                 _ => None,
             }
@@ -232,6 +289,8 @@ pub fn read<R: Read + Seek>(map: &mut Map<R>) -> Result<Hudg> {
             ])?,
         },
         arrow,
+        navpoint_arrow,
+        marker,
     })
 }
 
@@ -272,6 +331,11 @@ mod tests {
         let arrow = d.child("arrow_assets").unwrap();
         assert_eq!(arrow.size, 0x24);
         assert_eq!(arrow.field("sprite_sequence").unwrap().offset, 0x10);
+        // The navpoint's marker block (E 0x0024ece9: cmp [hudg +0x410]).
+        assert_eq!(at("waypoint_markers"), 0x410);
+        let marker = d.child("waypoint_markers").unwrap();
+        assert_eq!(marker.size, 0x18);
+        assert_eq!(marker.field("visible_sequence").unwrap().offset, 0x10);
     }
 
     /// A flash starts at its rest colour, or its peak when reversed: an
