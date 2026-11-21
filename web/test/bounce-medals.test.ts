@@ -100,9 +100,10 @@ describe("a game's bounces", () => {
   test("the game's medals hold every player's bounces, a bot's included", () => {
     const g = world().games.g!;
     const awards = gameAwards(g);
-    expect(Object.fromEntries(countMedals(awards, new Set([0])))).toEqual({ "superbounce": 2, "double-bounce": 1 });
-    expect(Object.fromEntries(countMedals(awards, new Set([1])))).toEqual({ "bounced": 1 });
-    expect(Object.fromEntries(countMedals(awards, new Set([2])))).toEqual({ "superbounce": 1 });
+    // A finished game with no teabag: everyone completed it clean (incel).
+    expect(Object.fromEntries(countMedals(awards, new Set([0])))).toEqual({ "superbounce": 2, "double-bounce": 1, "incel": 1 });
+    expect(Object.fromEntries(countMedals(awards, new Set([1])))).toEqual({ "bounced": 1, "incel": 1 });
+    expect(Object.fromEntries(countMedals(awards, new Set([2])))).toEqual({ "superbounce": 1, "incel": 1 });
   });
 
   test("a career holds the player's own bounce medals", () => {

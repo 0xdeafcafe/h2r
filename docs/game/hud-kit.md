@@ -285,7 +285,7 @@ The kit names retail art by the widget that draws it, never by pixels.
 |---|---|---|
 | A meter fills | the shader compares the texture with `hud_input1`; the shield by its own code (special type 5), up to five layers | V, [health.md](../halo1/health.md) |
 | A meter flashes | a second widget over it (the shield's mask) whose input is a state (22, shield low) | V |
-| A widget pulses, scales or turns | the widget's effects block (`+0x58`, text `+0x4c`), through `0x0022bcaf` | E; not decoded (5) |
+| A widget pulses, scales or turns | the widget's effects block (`+0x58`, text `+0x4c`), through `0x0022bcaf` | E; the record not decoded (5). The kit scales its own widgets at that call (runtime step 4) |
 | A warning appears | the state gate, with thresholds at `+0x18` | E |
 | A prompt changes | a quarter-second run from white, and a sound | E above |
 | A notification leaves | hold, then a fade with a fixed exponent | E above |
@@ -360,6 +360,9 @@ pub struct Element {
     /// Drawn on that element by design (a count on its pill): the fit and
     /// own checks let the two overlap.
     pub over: Option<&'static str>,
+    /// Word D bits that hide it (as a retail widget's `hide_when_d`): ours
+    /// gives way while the game draws a retail widget in its place.
+    pub hide_when_d: u16,
 }
 
 pub enum Kind {
@@ -407,7 +410,12 @@ pub enum PillPart { Body, End }       // the pill's first PILL_BODY (20) pixels,
 pub enum Style { Normal, Dim, Inactive, Flash(Pulse) }
 pub enum Pulse { Help, Objective, TimeWarning, TimeExpired } // the hudg records
 
-pub struct Value { pub shown: bool, pub text: String, pub fill: f32, pub angle: f32, pub style: Style, pub since_tick: u32 }
+pub struct Value {
+    pub shown: bool, pub text: String, pub fill: f32, pub angle: f32, pub style: Style, pub since_tick: u32,
+    pub motion: Motion, // how the fill and visibility move after a change, on wall time (below)
+    pub from: f32,      // the runtime's: the fill shown when the value changed
+}
+pub enum Motion { None, Ease, Ending, RunOut, Blink }
 pub struct Values(pub Vec<(&'static str, Value)>);
 
 pub trait Describe {
@@ -463,6 +471,28 @@ A text hidden in a screen mode has the font byte -1 there, so the game's
 own text draw skips it (E `0x0022a85b`). A hidden mode keeps the
 fullscreen offset.
 
+**Motion** (`hud_kit_core::motion`). A HUD's logic stays per tick: it
+publishes a target fill and a `Motion` at 30 Hz. The draw hooks run once
+per drawn HUD, and each asks the curve at the milliseconds since the
+value changed, so a curve is the same at 30, 60 or 120 frames a second,
+only sampled more often (docs/game/high-framerate.md). The curves are
+pure functions of those milliseconds: `fill_at`, `shown_at` and
+`scale_at`, and `animate(&Value, ms, scaled)` for a whole value.
+
+| Motion | Fill | Shown | Scale |
+|---|---|---|---|
+| `None` | the fill | yes | 1 |
+| `Ease` | from `from` to the fill in 200 ms, smoothstep | yes | 1 |
+| `Ending` | from `from` to full in 130 ms | off 290 to 360 ms; gone at 600 ms (at 430 ms unscaled) | 130 to 290 ms a swell to 1.12 wide and 1.30 tall and back (a half sine); from 430 ms the width closes to 0 by 600 ms, the height kept |
+| `RunOut` | from `from` to 0 in 200 ms | gone at 300 ms | 1 |
+| `Blink` | the fill | on and off in sixths of 500 ms, three times on; gone at 500 ms | 1 |
+
+Every step is at least 60 ms, so at 30 frames a second a blink or the
+swell still gets two frames. `motion::restamp` decides a stamp: a change
+of shown, fill or motion is stamped from the fill the old value was
+showing then (0 if it was not showing); the same value again keeps its
+stamp and its `from`. Text and style alone are no change.
+
 Four more elements are not widgets. They are channels into the game's
 message, training and navpoint parts, one text each:
 
@@ -512,20 +542,44 @@ returns a `Handle`), then publishes a `Values` whenever its state changes
 2. **Gate** (`HUD_WIDGET_GATE`, before, at the widget loop's two calls):
    a widget in the kit's memory is drawn while its value is shown, in a
    style the runtime draws, in a screen mode its place has (one local
-   view fullscreen, two half, more quarter: `player_globals +8`). The
+   view fullscreen, two half, more quarter: `player_globals +8`), and
+   none of its element's `hide_when_d` bits is set in the game's word D,
+   the gate's third stack argument (`[esp+12]`, its low 16 bits). The
    retail gate is skipped for it; a retail widget costs two loads.
 3. **Inputs** (`HUD_WIDGET_INPUTS`, before): `hud_input1` is
    `records::Widget::input(fill)`, the other three 0.
-4. **String** (`HUD_WIDGET_STRING`, before): the value's text, UTF-16, in
+
+   The gate and the inputs read a value with a motion as it draws now:
+   `Handle::publish` stamps a changed one with a host `Instant`
+   (`hud_kit::stamp_values`, through `motion::restamp`), and
+   `hud_kit::animated` puts it on its curve at the milliseconds since.
+4. **Scale** (`HUD_WIDGET_EFFECTS`, `0x0022bcaf`, before, at the bitmap
+   draw's call, return `0x0022b19d`): a kit bitmap widget's basis
+   factors in the draw's frame, `[ebp]` across and `[ebp+0x34]` down (the
+   two `h1_hud_text::weapon`'s split-screen scale writes; S: which is
+   which), are multiplied by `motion::scale_at`; the widget is
+   `[ebp+0x78]` (`hud_kit::scale_basis`). A factor that is not a positive
+   number is left. The first time the hook meets a kit widget it sets
+   `hud_kit::EFFECTS_SEEN`: the game does call it for a widget with an
+   empty effects block, and the scale applies. Until then the curves run
+   unscaled and the ending is the plain one (sweep, blink, gone at
+   430 ms); a crop-based close was not chosen, as it would need the
+   sprite hook to narrow from both sides.
+5. **String** (`HUD_WIDGET_STRING`, before): the value's text, UTF-16, in
    the element's engine font for the mode, and the four inputs copied to
    the HUD material's (`0x004e6980`), as the text draw does.
-5. **Crop** (`HUD_WIDGET_SPRITE`, before): for a cropped widget the hook
-   picks the sprite as the game does (the mode's sequence, its first
-   sprite, the image's width and height) and narrows its bounds to the
-   crop (`hud_kit::narrow`). The crop is applied to the sprite's bounds,
+6. **Crop** (`HUD_WIDGET_SPRITE`, before): for a cropped widget the hook
+   picks the sprite as the game does (`hud_kit::sprite_pick`: the mode's
+   sequence and its first sprite; a sequence with no sprites, its
+   `first_image` whole; no such sequence, image 0 whole; then the
+   image's width and height) and narrows its bounds to the crop
+   (`hud_kit::narrow`). A sprite-less sequence is cropped too: the
+   battery strip and the grenade panel are drawn as whole images, and
+   left to the game they drew 92 and 103 pixels wide, the meter across
+   the full strip and the pill over the retail pills' art. The crop is applied to the sprite's bounds,
    not to the quad's corners at `HUD_SHADER_QUAD`, whose order is not
    read (decoding 7).
-6. **Channels**, at the tick's end (`GAME_TICK`, after) and in the prompt
+7. **Channels**, at the tick's end (`GAME_TICK`, after) and in the prompt
    hook:
    - `Prompt`: the first shown prompt text is written to the first local
      player's prompt fields (`+0x220`, `+0x440`, `+0x444`, the fade
@@ -758,26 +812,27 @@ record.
 
 ### The charge meter
 
-`sb.charge` is a `Meter` under the pill: how far the player is through
-priming, then how long the charge has left. The preview draws it in
-every state; the runtime is in "The runtime, for this HUD".
+`sb.charge` is a `Meter` under the pill: how long the charge has left,
+primed, and the empty strip of a loss. How far the player is through
+priming is on the arming bar (below, "The arming bar"). The preview
+draws it in every state; the runtime is in "The runtime, for this HUD".
 
 **What a charge is.** The engine has no charge amount. The pair word is
 0 through the whole crouch and −3 from the first tick of the stand-up; it
 does not step ([superbounce-spots.md](notes/superbounce-spots.md), "The
 pair word around a forced crouch"). What does change by degrees is the
 player's place in the recipe, and after it the time a still body has
-before it sleeps and the pair is rebuilt at 0. The meter shows those two
-and nothing invented:
+before it sleeps and the pair is rebuilt at 0. The arming bar shows the
+first and the strip the second, and nothing invented:
 
-| Phase | When (`superbounce_mode`'s state) | Fill | Pill and icon |
-|---|---|---|---|
-| hidden | not primed, and not crouched within 1.5 units of a crouch spot | not shown | inactive |
-| near | crouched within 1.5 of a crouch spot, the standing capsule fits | 0, the empty strip | inactive |
-| under | crouched, the standing capsule does not fit, crouch held | 1/3 | inactive |
-| held | crouch let go and the request still set: the forced crouch | 2/3 | inactive, the icon `Flash(Help)` |
-| primed | the word is −3 | 1 less the still ticks over 38 | lit |
-| lost | the word left −3 | 0 for one second, then hidden | inactive |
+| Phase | When (`superbounce_mode`'s state) | Arming bar | Strip | Pill and icon |
+|---|---|---|---|---|
+| hidden | not primed, and not crouched within 1.5 units of a crouch spot | hidden; run out if a step came before | hidden | inactive |
+| near | crouched within 1.5 of a crouch spot, the standing capsule fits | 0, the empty bar | hidden | inactive |
+| under | crouched, the standing capsule does not fit, crouch held | 1/3 | hidden | inactive |
+| held | crouch let go and the request still set: the forced crouch | 2/3 | hidden | inactive, the icon `Flash(Help)` |
+| primed | the word is −3 | the ending, then hidden | 1 less the still ticks over 38 | lit |
+| lost | the word left −3 | the blink | 0 for one second, then hidden | inactive |
 
 "The standing capsule fits" is the engine's own answer for `held` (the
 request stays set with the button up only while it does not fit), and
@@ -836,7 +891,10 @@ its notification list:
 | `Prompt` | Walk out to stand up | held |
 | `Prompt` | Keep moving or lose the charge | primed and still for 19 ticks or more, the fill at half or under |
 | `Prompt` | Find a crouch spot to charge again | for 150 ticks after a loss, until a crouch step begins; the reason is the loss's notification |
-| `Message` | Primed | the word becomes −3 |
+| `Prompt` | Press (X) to show ghost | looking at a spot with a ghost run, when no recipe step is on the line (it replaces "Hold (crouch) and walk under"; [superbounce.md](superbounce.md#ghost-runs)) |
+| `Prompt` | Press (X) to stop ghost | while a ghost run plays, as above |
+| `Message` | Charging... | a recipe step begins (near, under or held, not primed) after none: the arming bar comes up |
+| `Message` | Primed! | the word becomes −3 |
 | `Message` | Charge lost: you stood still / Charge lost: you crouched / Charge lost | lost, by its reason ([superbounce.md](superbounce.md), "Charge"): the body slept, a crouch, another reason |
 | `Message` (`sb.medal`) | a medal line (below, "The medals") | a bounce, or a Bounced |
 | `Message` | Not primed. / Missed the strip. / Too slow. / No bounce. | a landing within 0.5 of a strip that did not bounce, by its first failed test ([superbounce.md](superbounce.md), "Landings") |
@@ -849,7 +907,51 @@ both sticks: the left one lit and outlined, the right one faint (alpha
 game does, so the prompt reads "Let go of" and a pair of sticks. A
 prompt of the game's own wins the line.
 The landing's result is `superbounce_mode`'s `last_landing`. A bounce's
-line is its medal.
+line is its medal. "Charging..." and "Primed!" are the shape of
+Assault's pair, "Bomb is arming..." and "Bomb armed!" (V:
+`multiplayer\multiplayer_globals`), in the same list.
+
+### The arming bar
+
+`sb.arm` is Assault's bomb arming bar, reused: how far the player is
+through the recipe, then a short ending when primed. Halo 2 draws it
+low in the middle while a bomb carrier arms; ours is the same widget's
+art at the same place.
+
+| Field | Value |
+|---|---|
+| element | `Element::meter("sb.arm", Art::Widget { hud: HudRef::Named("ui\\hud\\scoreboard"), name: "bomb_defusal" }, ..)`, `hidden_on_d(0x400)` |
+| place | anchor centre, (0, 110) fullscreen, (0, 27) half and quarter, registration (0.5, 0.5): the retail widget's (V) |
+| art | the scoreboard `nhdt`'s bitmap widget `bomb_defusal`: `ui\hud\bitmaps\new_hud\bomb_meter`, a capsule 140 by 13 (sequence 0) and 86 by 9 (sequence 1, split screen), its blue rising 4 to 253 left to right; the shader `ui\hud\shaders\bomb_defusal_meter` on `widget_legacy_meter`, red `6d2323` to `cf6767` where the texel's blue is below `hud_input1`, white for the outline (V) |
+| input | uncropped, so `hud_input1` is the fill itself |
+| crop, ramp | none |
+
+The retail widget's input is `0x43`, the bomb arming amount, and it is
+shown on word D `0x400` alone (V: `zanzibar.map`; `0x40` and `0x41` are
+the two score fractions, `0x42` "winning"). The kit's record has zero
+words and inputs, as every kit widget, and its gate hides it while the
+game's word D has `0x400`: in an Assault game the retail bar wins its
+place. A map without the scoreboard `nhdt` gets no superbounce HUD, with
+the reason logged; every multiplayer map has it.
+
+The bar follows the charge's phase each tick
+(`superbounce::ArmTrack`); its motion plays on wall time (runtime step
+4 and "Motion", above):
+
+| Tick | Fill | Motion |
+|---|---|---|
+| near, under, held | 0, 1/3, 2/3 | `Ease`: 200 ms to the step's fill from the fill shown |
+| primed (the tick the word becomes −3) | 1 | `Ending`: the sweep to full (0 to 130 ms), the swell, 12% wide and 30% tall (130 to 290), one blink off (290 to 360), the close to its centre, across (430 to 600), gone |
+| no charge after a step: left early | 0 | `RunOut`: drained in 200 ms, gone at 300 |
+| lost | 0 | `Blink`: the empty bar three times in 500 ms, beside the loss's notification, then gone |
+| no charge after the ending, the run out or the blink | as it was | the same: its curve has hidden it |
+
+The pill lights and the strip under it fills on the primed tick itself;
+"Primed!" is in the list a tick later. Without the effects hook
+(`hud_kit::EFFECTS_SEEN` unset) the ending is the plain one: the sweep
+and the blink, gone at 430 ms. The bar is silent. Two reds mean two
+things: the bar's "charging", the world's lock-on "on course"
+([superbounce.md](superbounce.md#lock-on)).
 
 ### The medals
 
@@ -888,7 +990,9 @@ preview sheet beside the retail medals with `--preview DIR --h2 BIN`), and
 `font::medals::replacements` adds the seven glyphs to `conduit-13` and
 `conduit-12` through the font rewrite ([button-icons.md](../input/button-icons.md),
 `font::patch`) at spare code points of the icon range, U+E2A0 to
-U+E2A6, each placed as the font's own Double Kill (U+E038: its advance
+U+E2A6, and an eighth at U+E2A7 for the Incel medal
+([teabag.md](teabag.md)), a teabag under a red no sign drawn by
+`scripts/live-medals.py`, which no HUD line shows; each placed as the font's own Double Kill (U+E038: its advance
 and offsets; a font without a 24 by 24 one gets none). Every other font
 is left alone. `font::medals::patch` is the same patch for tools that
 read the disc's fonts (`hud-edit`'s renderer, the preview). New art is a new `art.rs`: the
@@ -919,8 +1023,14 @@ notification.
 
 `sb.navpoint` is a `Navpoint` channel over the next thing to do, in
 every screen mode: while not primed, the nearest crouch spot's stand
-point; while primed, the nearest strip's (`superbounce_mode`'s
-`nav_target`). Halo 2 draws a navpoint in
+point; while primed, the chosen strip's (`superbounce_mode`'s
+`nav_target`: the nearest strip the player's floor is high enough for,
+else the nearest, and while falling the strip the predicted landing is
+on), the same strip the world's landing mark and lock-on are on
+([superbounce.md](superbounce.md#floor-marks)). Its number is whole
+metres: over a crouch spot the distance to it, over a strip the drop to
+come from (the strip's `fall`, 0 for a standing jump), as "3" over the
+crease in the design. Halo 2 draws a navpoint in
 `0x0024e59f` (E, called per slot from `0x0024da7d`): it projects the
 point (`0x0002b400`, `0x0002b460`), clamps it into the waypoint area
 (`hudg` `waypoint_*_inset`, `+0xec`..`+0xf8`), then draws three HUD
@@ -953,7 +1063,8 @@ no `.`, D: `h2 font MSLCD-14 '1.2'`).
 The preview draws at a sample point (`NAVPOINT_SAMPLE`, right of and
 above the frame's centre) the arrow with its tip on the point, the
 marker's in-view sequence 1 pixel above it (`NAVPOINT_GAP`) and "12"
-centred 2 pixels above the marker (`NAVPOINT_NUMBER_GAP`), the texels
+over a crouch spot or "3" over a strip (`SAMPLE_DISTANCE_M`,
+`SAMPLE_DROP_M`) centred 2 pixels above the marker (`NAVPOINT_NUMBER_GAP`), the texels
 times the notifications' colour (the same `0x0013927e`; S: that the HUD
 shader multiplies). The outline is not drawn (decoding 8). It is
 `Normal` over either target, and hidden while scanning and without a
@@ -961,30 +1072,32 @@ target.
 
 ### States
 
-| State | Pill and icon | Charge | Prompt, message | Navpoint | Tutorial |
-|---|---|---|---|---|---|
-| `not-primed` | inactive | hidden | | crouch spot, "12" | |
-| `near` | inactive | 0 | Hold (crouch) and walk under | crouch spot, "1" | |
-| `under` | inactive | 1/3 | Let go of (crouch) | crouch spot, "1" | |
-| `held` | inactive, icon `Flash(Help)` | 2/3 | Walk out to stand up | crouch spot, "1" | |
-| `primed-full` | lit | 1 | Primed | strip, "12" | |
-| `primed-draining` | lit, icon `Flash(TimeWarning)` | 0.25 | | strip, "12" | |
-| `primed-still-warning` | lit, icon `Flash(TimeWarning)` | 0.5 | Keep moving or lose the charge | strip, "12" | |
-| `lost` | inactive | 0 | Find a crouch spot to charge again; Charge lost | crouch spot, "12" | |
-| `lost-stood-still` | inactive | 0 | Find a crouch spot to charge again; Charge lost: you stood still | crouch spot, "12" | |
-| `lost-crouched` | inactive | 0 | Find a crouch spot to charge again; Charge lost: you crouched | crouch spot, "12" | |
-| `bounced` | lit | 1 | (medal) Superbounce! | strip, "12" | |
-| `medal-double` | lit | 1 | (medal) Double bounce! | strip, "12" | |
-| `medal-triple` | lit | 1 | (medal) Triple bounce! | strip, "12" | |
-| `medal-quad` | lit | 1 | (medal) Quad bounce! | strip, "12" | |
-| `medal-chain` | lit | 1 | (medal) Chain bounce! | strip, "12" | |
-| `medal-bouncetacular` | lit | 1 | (medal) Bouncetacular! | strip, "12" | |
-| `medal-bounced` | inactive | hidden | (medal) Bounced! | crouch spot, "12" | |
-| `missed` | lit | 0.8 | Missed the strip. | strip, "12" | |
-| `scanning` | dim | hidden | | hidden | |
-| `no-strips` | hidden | hidden | | hidden | |
-| `tutorial-1` | inactive | hidden | | crouch spot | step 1 |
-| `tutorial-2`, `-3`, `-4` | lit | 1 | Primed | strip | steps 2 to 4 |
+| State | Pill and icon | Strip | Arming bar | Prompt, message | Navpoint | Tutorial |
+|---|---|---|---|---|---|---|
+| `not-primed` | inactive | hidden | hidden | | crouch spot, "12" | |
+| `near` | inactive | hidden | 0, ease | Hold (crouch) and walk under; Charging... | crouch spot, "1" | |
+| `under` | inactive | hidden | 1/3, ease | Let go of (crouch) | crouch spot, "1" | |
+| `held` | inactive, icon `Flash(Help)` | hidden | 2/3, ease | Walk out to stand up | crouch spot, "1" | |
+| `primed-ending` | lit | 1 | 1, ending | Primed! | strip, "3" | |
+| `left-early` | inactive | hidden | 0, run out | | crouch spot, "12" | |
+| `primed-full` | lit | 1 | hidden | Primed! | strip, "3" | |
+| `primed-draining` | lit, icon `Flash(TimeWarning)` | 0.25 | hidden | | strip, "3" | |
+| `primed-still-warning` | lit, icon `Flash(TimeWarning)` | 0.5 | hidden | Keep moving or lose the charge | strip, "3" | |
+| `lost` | inactive | 0 | 0, blink | Find a crouch spot to charge again; Charge lost | crouch spot, "12" | |
+| `lost-stood-still` | inactive | 0 | 0, blink | Find a crouch spot to charge again; Charge lost: you stood still | crouch spot, "12" | |
+| `lost-crouched` | inactive | 0 | 0, blink | Find a crouch spot to charge again; Charge lost: you crouched | crouch spot, "12" | |
+| `bounced` | lit | 1 | hidden | (medal) Superbounce! | strip, "3" | |
+| `medal-double` | lit | 1 | hidden | (medal) Double bounce! | strip, "3" | |
+| `medal-triple` | lit | 1 | hidden | (medal) Triple bounce! | strip, "3" | |
+| `medal-quad` | lit | 1 | hidden | (medal) Quad bounce! | strip, "3" | |
+| `medal-chain` | lit | 1 | hidden | (medal) Chain bounce! | strip, "3" | |
+| `medal-bouncetacular` | lit | 1 | hidden | (medal) Bouncetacular! | strip, "3" | |
+| `medal-bounced` | inactive | hidden | hidden | (medal) Bounced! | crouch spot, "12" | |
+| `missed` | lit | 0.8 | hidden | Missed the strip. | strip, "3" | |
+| `scanning` | dim | hidden | hidden | | hidden | |
+| `no-strips` | hidden | hidden | hidden | | hidden | |
+| `tutorial-1` | inactive | hidden | hidden | | crouch spot | step 1 |
+| `tutorial-2`, `-3`, `-4` | lit | 1 | hidden | Primed! | strip | steps 2 to 4 |
 
 `bounced` and the six `medal-` states are the seven medals, one line
 each, with the glyph in its own colours as the game's font draw leaves
@@ -1011,15 +1124,15 @@ feeds it each tick from `superbounce_mode`'s state through one adapter,
 | State (`superbounce_mode::State`) | View |
 |---|---|
 | `scan` | ready with spots, ready with none (`NoStrips`), failed, else scanning |
-| `charge` (phase, fill) | the charge, as it is |
+| `charge` (phase, fill) | the charge, as it is; the arming bar from the phase tick to tick (`ArmTrack`: the run out when a step gives way to no charge); on a recipe step begun, one `Handle::notify` of "Charging..." |
 | `verb` | the prompt's verb (a crouch step, keep moving, charge again); in the near phase, not primed and with no verb, "Hold (crouch) and walk under" |
-| `word` | on its change to −3, one `Handle::notify` of Primed |
+| `word` | on its change to −3, one `Handle::notify` of "Primed!" |
 | the loss (`charge`'s while lost, `ChargeAgain`'s after) | its reason's message at its tick, when newer than the last landing; the HUD keeps the last loss past the 150 ticks the state has it, so an older landing does not take its place. One `Handle::notify` per loss, by its tick |
 | `nav_target` (point, kind, distance) | the navpoint's target and distance, world units to metres; its point goes to `Handle::navpoint` |
 | `last_landing` (result, tick) | the landing's message at its tick, for a landing that did not bounce; one `Handle::notify` per such landing, by its tick |
 | `medals` (the awards newer than the last sent) | `sb.medal`: the last local award's highest medal at its tick; one `Handle::notify` per award of a local player, to its user: the line of its highest medal ([superbounce.md](superbounce.md#medals)) |
 
-Primed, the loss and the landing go to user 0, the first local player's,
+Charging, primed, the loss and the landing go to user 0, the first local player's,
 whose state the mode tracks. The first state after the mode comes on is
 not news: what it already holds is not sent (`superbounce_hud::Sent`).
 
@@ -1028,10 +1141,11 @@ watches primed, the nearest bounce spot in metres and a bounce landing
 newer than the last it saw (`superbounce_hud::watch`).
 
 What shows in the game: the pill and its icon while primed (`Inactive`
-not drawn), the charge meter through the recipe and the charge, the
-prompt verbs, the navpoint (the game's arrow and marker, no number) and
-the tutorial's training text, and in the notification list Primed, a
-loss's reason, a landing that did not bounce and the medals.
+not drawn), the arming bar through the recipe, the charge meter while
+primed, the prompt verbs, the navpoint (the game's arrow and marker, no
+number) and the tutorial's training text, and in the notification list
+"Charging...", "Primed!", a loss's reason, a landing that did not bounce
+and the medals.
 `superbounce.state` has a loss's reason as `lost_reason` and the medals
 as `medals`.
 
@@ -1046,7 +1160,7 @@ diagrams: a retail training prompt has none.
 |---|---|---|
 | 1 | Crouch, walk in under a lip, / let go, then walk out. | primed |
 | 2 | You are primed. / Do not crouch again. | a bounce spot within 8 m |
-| 3 | Find a strip. Its post is the height / to fall from. No post: just jump. | a bounce, or 20 s |
+| 3 | Follow the navpoint. Jump from the / Jump mark onto the Land mark. | a bounce, or 20 s |
 | 4 | Jump or fall onto the strip. / Fall Assist (Controls) can steer. | a bounce, or 15 s |
 
 No step asks for a button: the fall assist is opt in
@@ -1070,7 +1184,9 @@ step 3, the widest line (its unit test checks that); which
 step is widest in font 6 is S until the disc's checks run. The tutorial
 is fullscreen only. The step machine is
 `hud_kit_core::huds::superbounce::Tutorial` (its thresholds);
-`superbounce_hud` runs it and sets the `superbounce.tutorial_seen`
+`superbounce_hud` runs it once a game tick on game seconds (ticks over
+30, `tutorial_seconds`), so 20 s is 600 ticks at every frame rate, and
+sets the `superbounce.tutorial_seen`
 setting when it closes (`H2_SUPERBOUNCE_TUTORIAL=1` shows it anyway). A
 game training prompt of its own takes the box while it shows; the
 tutorial's step waits.
@@ -1081,7 +1197,8 @@ tutorial's step waits.
   `Handle::publish(values)` and `Handle::navpoint(Option<point>)`. A
   `Prompt` or `Training` element's shown text is the channel's text.
 - Guest points hooked: `HUD_WIDGET_GATE`, `HUD_WIDGET_INPUTS`,
-  `HUD_WIDGET_STRING`, `HUD_WIDGET_SPRITE`, `HUD_INTERACTION_VISIBLE`,
+  `HUD_WIDGET_STRING`, `HUD_WIDGET_SPRITE`, `HUD_WIDGET_EFFECTS`,
+  `HUD_INTERACTION_VISIBLE`,
   `GAME_ACTIVATE`, `GAME_TICK`, and the string lookup `0x001a0180`
   through `community_variants`' override.
 - Guest memory written: the two block fields of each player `nhdt` root,
@@ -1172,9 +1289,15 @@ particular:
 - The charge meter: that a cropped strip fills as the remap says (the
   blue ramp between the crop's columns is taken as even), what the
   shader draws of the unlit part, and the strip's sequence in split
-  screen. Whether a retail widget reads the bomb arming input (`0x44` in
-  Assembly's list), which would be the game's own "hold to charge" art:
-  list the bitmap widgets of every `nhdt` on the disc by input.
+  screen.
+- The arming bar: that the game calls `0x0022bcaf` for a widget with an
+  empty effects block (else the plain ending, runtime step 4), that
+  `[ebp]` is the factor across and `[ebp+0x34]` down and that they scale
+  about the registration point, that the factors are set afresh for
+  each widget, that word D is the gate's third stack argument and
+  `0x400` its arming bit in our build, and the shader's on and off
+  opacities. The retail bar's input is `0x43` on the disc, not
+  Assembly's `0x44`.
 - That the still-tick count matches the body's sleep: prime with
   `havok.pair.set`, stand still, and read `havok.agents` each tick until
   the pair goes, with `superbounce.state`'s charge beside it.

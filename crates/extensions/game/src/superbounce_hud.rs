@@ -5,17 +5,23 @@
 //! tutorial's step machine and its `superbounce.tutorial_seen` setting.
 //!
 //! The HUD shows for the first local player while the mode is on; with
-//! the mode off every element is hidden. Its notifications (primed, a
-//! loss's reason, a landing that did not bounce, and every local player's
-//! medals) are sent through the kit's `Handle::notify` once each
-//! ([`Sent::notes`]).
+//! the mode off every element is hidden. Its notifications ("Charging..."
+//! as the arming bar comes up, "Primed!", a loss's reason, a landing that
+//! did not bounce, and every local player's medals) are sent through the
+//! kit's `Handle::notify` once each ([`Sent::notes`]). The arming bar
+//! follows the charge's phase tick to tick ([`ArmTrack`]); the kit plays
+//! its motion on wall time.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::Instant;
+
+use engine::memory::{GuestMemory, MemFault};
+use engine::points;
+use hooks::Flow;
 
 use hud_kit_core::huds::superbounce::{
-    self as sb, Change, Charge, Landed, Lost, Medal, Note, Phase, Scan, Superbounce, Target,
-    Tutorial, Verb, View, Watch,
+    self as sb, ArmTrack, Change, Charge, Landed, Lost, Medal, Note, Phase, Scan, Superbounce,
+    Target, Tutorial, Verb, View, Watch, arm_for,
 };
 use hud_kit_core::model::Values;
 
@@ -28,17 +34,31 @@ use crate::superbounce_mode::{self as mode, METRES_PER_UNIT, ScanState, State};
 /// The feature's id.
 pub const FEATURE: &str = "superbounce-hud";
 
+/// Game ticks a second.
+const TICKS_PER_SECOND: f64 = 30.0;
+
+/// The tutorial's clock after `ticks` of the HUD's: game seconds, so a
+/// step's time limit is the same at every frame rate and runs slow with
+/// the game below 30 fps.
+pub fn tutorial_seconds(ticks: u64) -> f64 {
+    ticks as f64 / TICKS_PER_SECOND
+}
+
 /// The HUD's [`View`] of the mode's state `s`, with the tutorial at step
 /// `tutorial`.
 ///
 /// - The scan: ready with spots, ready with none, failed, else scanning.
-/// - The charge: the mode's phase and fill as they are.
+/// - The charge: the mode's phase and fill as they are; the arming bar,
+///   the phase's on its own ([`arm_for`]: the tick loop's [`ArmTrack`]
+///   adds the run out).
 /// - The verb: the mode's (a crouch step, the warning to keep moving, the
 ///   new charge after a loss); in the near phase, not primed and with no
 ///   verb of the mode's, "hold (crouch) and walk under".
-/// - The navpoint: the mode's target and its distance, world units to
-///   metres (S: the contract's distance is in world units, as the state's
-///   other distances are).
+/// - The navpoint: the mode's target and its number in metres (world
+///   units to metres; S: the contract's distances are in world units, as
+///   the state's other distances are): over a crouch spot the distance to
+///   it, over a strip the drop to come from (its `fall`; 0 for a standing
+///   jump).
 /// - The note: the newer of the loss ([`mode::lost`]: why, at its tick)
 ///   and the last landing's result at its tick ([`note`]); a bounce's
 ///   line is its medal.
@@ -71,17 +91,17 @@ pub fn view(s: &State, tutorial: Option<u8>) -> View {
         }
         None => None,
     };
-    let nav = s.nav_target.as_ref().map(|n| {
-        let target = match &n.kind {
-            mode::NavKind::Crouch => Target::Crouch,
-            mode::NavKind::Strip => Target::Strip,
-        };
-        (target, n.distance * METRES_PER_UNIT)
+    // A ghost run's prompt (superbounce_ghost.rs).
+    let verb = crate::superbounce_ghost::hud_verb(verb);
+    let nav = s.nav_target.as_ref().map(|n| match &n.kind {
+        mode::NavKind::Crouch => (Target::Crouch, n.distance * METRES_PER_UNIT),
+        mode::NavKind::Strip => (Target::Strip, n.fall.max(0.0) * METRES_PER_UNIT),
     });
     View {
         primed: s.primed(),
         scan,
         charge,
+        arm: arm_for(charge.map(|c| c.phase)),
         verb,
         nav,
         note: note(s, mode::lost(s)),
@@ -138,6 +158,8 @@ fn landed(result: mode::LandingResult) -> Option<Landed> {
 pub struct Sent {
     /// The state has been seen once: what it held then is not news.
     seen: bool,
+    /// In a recipe step, the arming bar up.
+    charging: bool,
     primed: bool,
     lost: Option<u32>,
     landing: Option<u32>,
@@ -147,7 +169,8 @@ pub struct Sent {
 
 impl Sent {
     /// The notifications `s` has that were not sent yet, each a local
-    /// user and its line, in order: primed, a loss's reason, a landing
+    /// user and its line, in order: charging (a recipe step begun, not
+    /// primed), primed, a loss's reason, a landing
     /// that did not bounce (each the first local player's, user 0), then
     /// each new medal award of a local player, its highest medal's line,
     /// to that player's user. `s` of `None` (the mode off) forgets all.
@@ -162,8 +185,12 @@ impl Sent {
         if last_seq < self.medal {
             self.medal = 0;
         }
+        let charging = recipe_step(s);
         let mut out = Vec::new();
         if self.seen {
+            if charging && !self.charging {
+                out.push((0, Note::Charging.text()));
+            }
             if s.primed() && !self.primed {
                 out.push((0, Note::Primed.text()));
             }
@@ -184,12 +211,25 @@ impl Sent {
             }
         }
         self.seen = true;
+        self.charging = charging;
         self.primed = s.primed();
         self.lost = lost.map(|l| l.tick).or(self.lost);
         self.landing = landing.map(|l| l.tick).or(self.landing);
         self.medal = self.medal.max(last_seq);
         out
     }
+}
+
+/// Whether `s` is in a recipe step (near, under or held) and not primed:
+/// the arming bar is up and filling.
+pub fn recipe_step(s: &State) -> bool {
+    !s.primed()
+        && s.charge.as_ref().is_some_and(|c| {
+            matches!(
+                c.phase,
+                mode::ChargePhase::Near | mode::ChargePhase::Under | mode::ChargePhase::Held
+            )
+        })
 }
 
 /// What the tutorial watches in `s`: primed, metres to the nearest bounce
@@ -214,6 +254,84 @@ pub fn hidden() -> Values {
     })
 }
 
+// ---- the red reticle ----
+
+/// The HUD widget input Halo 2's unit lists as "autoaimed": the third
+/// unit input, after shield (16) and body (17), before the grenade
+/// counts (20, 21) and shield low (22) that are decoded
+/// (docs/halo1/health.md). From Assembly's `nhdt` plugin's list and that
+/// order; S: that the weapon reticles read it and their shader turns red
+/// on it (docs/game/superbounce.md, "Lock-on").
+pub const AUTOAIMED: u8 = 18;
+/// The widget loop's return from a bitmap widget's inputs (E
+/// `0x0013a532`; `hud_kit::INPUT_RETURNS`): the reticles are bitmaps.
+pub const BITMAP_INPUTS_RETURN: u32 = 0x0013_a61c;
+
+/// The lock holds this tick: the reticle reads autoaimed.
+static LOCKED: AtomicBool = AtomicBool::new(false);
+
+/// Whether the lock holds in `s` (primed, in the air, falling onto the
+/// slot fast enough), the rule the world's red brackets follow.
+pub fn reticle_locked(s: &State) -> bool {
+    s.primed() && s.airborne && s.landing.is_some_and(|l| l.locked())
+}
+
+/// A retail bitmap widget's inputs call the lock answers on its way out:
+/// where the call returns to (the stack after its `ret 12`), its four
+/// outputs, and which of them read [`AUTOAIMED`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Autoaim {
+    pub sp_after: u32,
+    pub out: u32,
+    pub slots: u8,
+}
+
+/// The slots of `inputs` that read [`AUTOAIMED`], one bit each.
+pub fn autoaim_slots(inputs: [u8; 4]) -> u8 {
+    inputs
+        .iter()
+        .enumerate()
+        .filter(|(_, i)| **i == AUTOAIMED)
+        .fold(0, |m, (k, _)| m | 1 << k)
+}
+
+/// At the inputs call's entry (`sp` at its return address): while
+/// `locked`, the first local player's bitmap widget that reads
+/// [`AUTOAIMED`] is answered on the way out. The game computes the call;
+/// only those slots are changed after it.
+pub fn autoaim_entry(
+    mem: &dyn GuestMemory,
+    sp: u32,
+    locked: bool,
+) -> Result<Option<Autoaim>, MemFault> {
+    if !locked || mem.u32(sp)? != BITMAP_INPUTS_RETURN || mem.u32(sp + 4)? != 0 {
+        return Ok(None);
+    }
+    let mut inputs = [0u8; 4];
+    mem.read(mem.u32(sp + 8)?, &mut inputs)?;
+    let slots = autoaim_slots(inputs);
+    Ok((slots != 0).then_some(Autoaim {
+        sp_after: sp + 16,
+        out: mem.u32(sp + 12)?,
+        slots,
+    }))
+}
+
+/// On the way out of the call `a` was taken at (`sp` its stack after the
+/// return): the autoaimed slots read 1, as over an enemy in range. A
+/// return to another stack is not that call: nothing is written.
+pub fn autoaim_exit(mem: &mut dyn GuestMemory, sp: u32, a: Autoaim) -> Result<bool, MemFault> {
+    if sp != a.sp_after {
+        return Ok(false);
+    }
+    for k in 0..4 {
+        if a.slots & 1 << k != 0 {
+            mem.set_f32(a.out + 4 * k, 1.0)?;
+        }
+    }
+    Ok(true)
+}
+
 struct Hud {
     handle: Handle,
     tutorial: Tutorial,
@@ -225,9 +343,12 @@ struct Hud {
     /// A landing older than the HUD's first tick is not a bounce of the
     /// tutorial's.
     started: bool,
-    start: Instant,
+    /// Ticks the HUD has seen: the tutorial's clock ([`tutorial_seconds`]).
+    ticks: u64,
     settings: Option<Arc<settings::Store>>,
     sent: Sent,
+    /// The arming bar, tick to tick.
+    arm: ArmTrack,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -236,18 +357,22 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 
 impl Hud {
     fn tick(&mut self) {
+        self.ticks += 1;
         let Some(s) = mode::hud_state() else {
+            LOCKED.store(false, Ordering::Relaxed);
             self.lost = None;
+            self.arm.clear();
             self.sent.notes(None, None);
             self.handle.publish(hidden());
             self.handle.navpoint(None);
             return;
         };
+        LOCKED.store(reticle_locked(&s), Ordering::Relaxed);
         for (user, text) in self.sent.notes(Some(&s), mode::lost(&s)) {
             self.handle.notify(user, &text);
         }
         self.lost = mode::lost(&s).or(self.lost);
-        let now = self.start.elapsed().as_secs_f64();
+        let now = tutorial_seconds(self.ticks);
         let mut w = watch(&s, self.seen_tick);
         if !self.started {
             self.started = true;
@@ -257,9 +382,11 @@ impl Hud {
         if self.tutorial.update(Some(w), now) == Change::Done {
             self.mark_seen();
         }
+        let base = view(&s, self.tutorial.step());
         let v = View {
             note: note(&s, self.lost),
-            ..view(&s, self.tutorial.step())
+            arm: self.arm.update(base.charge.map(|c| c.phase)),
+            ..base
         };
         self.handle.publish(sb::values(&v));
         self.handle.navpoint(
@@ -302,6 +429,40 @@ impl hooks::Feature for SuperbounceHud {
         let hud = Arc::clone(&self.hud);
         b.frame()
             .on_tick("superbounce hud: values", move |_| lock(&hud).tick());
+        // The red reticle while the lock holds: the game's own reticle
+        // widgets, through the input they read for autoaim. The kit's and
+        // `h1_hud_text`'s answers for their own widgets come first.
+        let pending: Arc<Mutex<Option<Autoaim>>> = Arc::default();
+        let at_entry = Arc::clone(&pending);
+        b.raw()
+            .before(
+                &points::HUD_WIDGET_INPUTS,
+                "superbounce hud: reticle autoaim in",
+                move |c| {
+                    let a =
+                        autoaim_entry(&*c.ctx.memory(), c.cpu.esp, LOCKED.load(Ordering::Relaxed))
+                            .map_err(crate::h1_particle_physics::fault)?;
+                    *lock(&at_entry) = a;
+                    Ok(Flow::Continue)
+                },
+            )
+            .context_only()
+            .after_feature(crate::hud_kit::FEATURE)
+            .after_feature(crate::h1_hud_text::FEATURE);
+        b.raw()
+            .after(
+                &points::HUD_WIDGET_INPUTS,
+                "superbounce hud: reticle autoaim out",
+                move |c| {
+                    let Some(a) = lock(&pending).take() else {
+                        return Ok(());
+                    };
+                    autoaim_exit(&mut *c.ctx.memory(), c.cpu.esp, a)
+                        .map_err(crate::h1_particle_physics::fault)?;
+                    Ok(())
+                },
+            )
+            .context_only();
         Ok(())
     }
 }
@@ -327,9 +488,10 @@ pub fn install(
         lost: None,
         seen_tick: None,
         started: false,
-        start: Instant::now(),
+        ticks: 0,
         settings,
         sent: Sent::default(),
+        arm: ArmTrack::default(),
     };
     registry
         .add(&SuperbounceHud {

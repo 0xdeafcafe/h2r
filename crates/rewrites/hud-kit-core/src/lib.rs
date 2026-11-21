@@ -7,6 +7,7 @@
 //! - [`templates`]: what a compiled element takes from the loaded map,
 //!   the grenade row included, resolved through a [`MapView`];
 //! - [`map_file`]: a [`MapView`] over an open map file and its resources;
+//! - [`motion`]: how a value moves between ticks, on wall time;
 //! - [`records`]: elements to `nhdt` widget record bytes;
 //! - [`huds`]: the HUDs the kit knows (superbounce).
 //!
@@ -16,6 +17,7 @@
 pub mod huds;
 pub mod map_file;
 pub mod model;
+pub mod motion;
 pub mod records;
 pub mod templates;
 
@@ -23,6 +25,7 @@ pub use model::{
     Anchor, Art, Describe, Element, Font, Hud, HudRef, Justify, Kind, Origin, PillPart, Place,
     Pulse, Style, Value, Values,
 };
+pub use motion::Motion;
 pub use records::{Compiled, Widget, WidgetKind, compile};
 pub use templates::{MapView, Templates};
 

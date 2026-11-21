@@ -140,6 +140,60 @@ impl Room {
         }
         !self.big.iter().any(hits)
     }
+
+    /// The height of the highest floor under `xy` at or below `top`: a
+    /// face that looks up more than [`FLOOR_NZ`] whose outline, seen from
+    /// above, holds `xy`. `None` over a hole or with no such face.
+    pub fn floor_at(&self, xy: [f32; 2], top: f32) -> Option<f32> {
+        if !xy.iter().chain([&top]).all(|v| v.is_finite()) {
+            return None;
+        }
+        let mut best: Option<f32> = None;
+        let mut test = |i: &u32| {
+            let f = &self.faces[*i as usize];
+            if f.normal[2] <= FLOOR_NZ
+                || f.min[0] > xy[0]
+                || f.max[0] < xy[0]
+                || f.min[1] > xy[1]
+                || f.max[1] < xy[1]
+                || f.min[2] > top
+                || !inside_xy(&f.verts, xy)
+            {
+                return;
+            }
+            let v = f.verts[0];
+            let n = f.normal;
+            let z = v[2] - (n[0] * (xy[0] - v[0]) + n[1] * (xy[1] - v[1])) / n[2];
+            if z <= top + 1e-3 && best.is_none_or(|b| z > b) {
+                best = Some(z);
+            }
+        };
+        if let Some(v) = self.grid.get(&(cell(xy[0]), cell(xy[1]))) {
+            v.iter().for_each(&mut test);
+        }
+        self.big.iter().for_each(&mut test);
+        best
+    }
+}
+
+/// A face looking up more than this is floor for [`Room::floor_at`]: walkable
+/// ground, not a wall's slope.
+pub const FLOOR_NZ: f32 = 0.7;
+
+/// Whether `xy` is inside the outline of `verts` seen from above (even-odd).
+fn inside_xy(verts: &[Vec3], xy: [f32; 2]) -> bool {
+    let mut inside = false;
+    let mut j = verts.len() - 1;
+    for i in 0..verts.len() {
+        let (a, b) = (verts[i], verts[j]);
+        if (a[1] > xy[1]) != (b[1] > xy[1])
+            && xy[0] < (b[0] - a[0]) * (xy[1] - a[1]) / (b[1] - a[1]) + a[0]
+        {
+            inside = !inside;
+        }
+        j = i;
+    }
+    inside
 }
 
 // ---- geometry (as crates/live/superbounce/src/geom.rs has it) ----
@@ -287,6 +341,48 @@ mod tests {
             [0.0, 0.0, -1.0],
         );
         Room::new(&[floor, lid])
+    }
+
+    /// The floor under a point is the highest upward face at or below the
+    /// height asked from; none over a hole.
+    #[test]
+    fn the_floor_under_a_point_is_the_highest_up_to_the_top() {
+        let ledge = quad(
+            [
+                [0.0, 0.0, 2.0],
+                [2.0, 0.0, 2.0],
+                [2.0, 2.0, 2.0],
+                [0.0, 2.0, 2.0],
+            ],
+            [0.0, 0.0, 1.0],
+        );
+        let floor = quad(
+            [
+                [-5.0, -5.0, 0.0],
+                [5.0, -5.0, 0.0],
+                [5.0, 5.0, 0.0],
+                [-5.0, 5.0, 0.0],
+            ],
+            [0.0, 0.0, 1.0],
+        );
+        // A wall's face, looking sideways: never floor.
+        let wall = quad(
+            [
+                [2.0, 0.0, 0.0],
+                [2.0, 2.0, 0.0],
+                [2.0, 2.0, 2.0],
+                [2.0, 0.0, 2.0],
+            ],
+            [1.0, 0.0, 0.0],
+        );
+        let r = Room::new(&[floor, ledge, wall]);
+        assert_eq!(r.floor_at([1.0, 1.0], 3.0), Some(2.0));
+        // From under the ledge: the floor below it.
+        assert_eq!(r.floor_at([0.5, 0.5], 1.0), Some(0.0));
+        assert_eq!(r.floor_at([3.0, 3.0], 3.0), Some(0.0));
+        // Off the map's floor: a hole.
+        assert_eq!(r.floor_at([9.0, 9.0], 3.0), None);
+        assert_eq!(r.floor_at([f32::NAN, 0.0], 3.0), None);
     }
 
     #[test]

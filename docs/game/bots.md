@@ -1172,7 +1172,9 @@ their own ordinary kills, at a lower rate.
 
 The bot may emote only when:
 
-- the body is within 8 m;
+- the body is within 1.5 world units (about 4.5 m: `emote::NEAR`, the
+  game's teabag radius, so every emote is a teabag for the Incel medal,
+  [teabag.md](teabag.md#the-rule));
 - no enemy has been in the bot's view for 1.5 s;
 - the bot is not carrying, defending or contesting an objective that is live
   (a flag at risk, a bomb armed, a hill or territory contested);
@@ -1779,6 +1781,12 @@ and is not tallied. Turning the mode off ends a practice route
 (`practice`: the state, the site, attempts, bounces, and by site the
 attempts, bounces and reasons), so a game of practising bots is a live
 verifier too.
+
+Each bounce a practising bot makes is recorded by the game as a ghost
+run, and the best run of each spot is kept in `<map>.ghosts` beside the
+spots and verified files, proving the spot as it goes
+([superbounce.md](superbounce.md#ghost-runs)). Nothing in the bots crate
+records it: the game reads the bots' units each tick.
 
 #### Driving a player
 

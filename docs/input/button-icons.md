@@ -186,7 +186,8 @@ own, in the unused part of the icon range:
 | Apple TV remote | U+E260 to U+E271 |
 | Steam Controller | U+E280 to U+E291 |
 
-The superbounce medals take U+E2A0 to U+E2A6, in `conduit-13` and
+The superbounce medals take U+E2A0 to U+E2A6, and the Incel medal
+([teabag.md](../game/teabag.md)) U+E2A7, in `conduit-13` and
 `conduit-12` only (`font::medals`, [hud-kit.md](../game/hud-kit.md),
 "The medals"), through the same rewrite and `apply`.
 

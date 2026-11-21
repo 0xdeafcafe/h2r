@@ -510,7 +510,10 @@ come from the superbounce mode through `Telemetry::superbounce` and
 `Telemetry::bounced`, which read the game tick and queue the session's
 `superbounce` and `bounced` ([superbounce.md](../game/superbounce.md#recording)).
 They are sent at the match clock for a player of the match, and not in a
-cinematic or after the end.
+cinematic or after the end. `Teabag` (`tick`, `player`, `victim`) comes
+the same way from the teabag watch through `Telemetry::teabag` and the
+session's `teabag`, for two players of the match who are not the same one
+([teabag.md](../game/teabag.md#recording)).
 
 ## Server ingest
 
@@ -568,7 +571,7 @@ were never created.
   outbox (4096) until the server has answered for them. A `GameStarted` is
   created with `POST /v1/games` when it reaches the front; the game's events
   wait behind it. Past the bound the oldest `ActorKilled`, `PlayerKilled`,
-  `ScoreChanged`, `Superbounce` or `Bounced` is dropped; starts, ends, joins
+  `ScoreChanged`, `Superbounce`, `Bounced` or `Teabag` is dropped; starts, ends, joins
   and leaves never are.
 - **Answers.** A signed batch leaves the outbox on its answer. A batched
   socket reports frame refusals as `frame_error`, so the sink can handle

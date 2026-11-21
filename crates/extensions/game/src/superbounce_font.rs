@@ -38,6 +38,8 @@ pub const HUD_COLOUR_ADDR: u32 = 0x0046_8c84;
 pub const UNREAD_COLOUR: [f32; 3] = [1.0, 1.0, 1.0];
 /// The X button's glyph (docs/input/button-icons.md).
 pub const X_GLYPH: char = '\u{e102}';
+/// The A button's glyph (docs/input/button-icons.md): jump.
+pub const A_GLYPH: char = '\u{e100}';
 /// The button glyphs packed with the letters: A to the right stick click.
 pub const BUTTONS: std::ops::RangeInclusive<u16> = 0xe100..=0xe111;
 
@@ -60,6 +62,15 @@ impl Look {
             X_GLYPH.to_string()
         } else {
             "X".into()
+        }
+    }
+
+    /// The A button as label text: its glyph, or the letter without one.
+    pub fn a_button(&self) -> String {
+        if self.glyphs {
+            A_GLYPH.to_string()
+        } else {
+            "A".into()
         }
     }
 }

@@ -106,6 +106,11 @@ pub(crate) enum Work {
         player: u32,
         chain: u32,
     },
+    Teabag {
+        tick: u64,
+        player: u32,
+        victim: u32,
+    },
     End(Box<Snapshot>),
     FinishSim(serde_json::Value),
 }
@@ -521,6 +526,11 @@ pub(crate) fn apply(session: &mut Session, work: Work) -> Option<Box<Snapshot>> 
             player,
             chain,
         } => session.bounced(tick, player, chain),
+        Work::Teabag {
+            tick,
+            player,
+            victim,
+        } => session.teabag(tick, player, victim),
         Work::Forward(_) | Work::FinishSim(_) => unreachable!("handled by the worker"),
         Work::End(snapshot) => {
             session.end(&snapshot);

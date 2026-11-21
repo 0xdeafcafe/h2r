@@ -34,6 +34,9 @@ pub enum Event {
     /// A death falling out of the map while trying a bounce. The Tracker
     /// follows it with a `bounced` `Medal`.
     Bounced(game::Bounced),
+    /// A teabag (docs/game/teabag.md). Both players lose the chance of an
+    /// `incel` `Medal`, which the Tracker writes at `GameEnded`.
+    Teabag(game::Teabag),
     /// The scoreboard reports the count. It does not identify which victim.
     Assist {
         player: u32,
@@ -103,6 +106,7 @@ impl Event {
             Self::GameEnded(e) => Some((game::GAME_ENDED, json!(e))),
             Self::Superbounce(e) => Some((game::SUPERBOUNCE, json!(e))),
             Self::Bounced(e) => Some((game::BOUNCED, json!(e))),
+            Self::Teabag(e) => Some((game::TEABAG, json!(e))),
             _ => None,
         }
     }
@@ -134,7 +138,8 @@ impl Record {
 
     /// Inspect the bounded JSON envelope and borrow its raw data. Live only
     /// materialises its game records: the six of the first films, then
-    /// `Superbounce` and `Bounced`. A reader without a kind passes over it.
+    /// `Superbounce`, `Bounced` and `Teabag`. A reader without a kind
+    /// passes over it.
     /// A new
     /// presentation or highlight kind can therefore arrive before a server
     /// update, and a busy firefight allocates no hit or shot payloads here.
@@ -164,6 +169,7 @@ impl Record {
             game::GAME_ENDED => Event::GameEnded(body(row.data)?),
             game::SUPERBOUNCE => Event::Superbounce(body(row.data)?),
             game::BOUNCED => Event::Bounced(body(row.data)?),
+            game::TEABAG => Event::Teabag(body(row.data)?),
             _ => return Ok(None),
         };
         Ok(event.telemetry().map(|(kind, data)| (row.tick, kind, data)))
@@ -175,6 +181,8 @@ impl Record {
 #[derive(Default)]
 pub struct Tracker {
     medals: medals::Tally,
+    /// Who completes the game without a teabag, by generation.
+    incel: medals::Incel,
     participants: BTreeMap<u32, super::PlayerSummary>,
     ended: bool,
     // The same slot may hold a different participant after a leave.
@@ -203,6 +211,7 @@ impl Tracker {
     fn join(&mut self, player: &game::Player) -> Result<(), String> {
         let seat = u8::try_from(player.index).map_err(|_| "film player seat exceeds 255")?;
         let generation = self.generation(player.index);
+        self.incel.joined(generation);
         self.participants.insert(
             generation,
             super::PlayerSummary {
@@ -300,6 +309,7 @@ impl Tracker {
                 fallback_tick
             }
             Event::PlayerKilled(kill) => {
+                self.incel.killed();
                 let victim = self.generation(kill.victim);
                 let killer = kill
                     .killer
@@ -354,6 +364,12 @@ impl Tracker {
                 });
                 death.tick
             }
+            Event::Teabag(bag) => {
+                let giver = self.generation(bag.player);
+                let victim = self.generation(bag.victim);
+                self.incel.teabag(giver, victim);
+                bag.tick
+            }
             Event::ScoreChanged(e) => {
                 self.score_changes(
                     &e.players,
@@ -363,7 +379,7 @@ impl Tracker {
                 e.tick
             }
             Event::GameEnded(e) => {
-                self.ended = true;
+                let first = !std::mem::replace(&mut self.ended, true);
                 self.score_changes(&e.players, &[], &mut extra);
                 if let Some((player, earned_at)) = self
                     .last_scoring
@@ -373,6 +389,27 @@ impl Tracker {
                         player,
                         earned_at,
                         medal: "last-word".into(),
+                    });
+                }
+                // Everyone still in the game who completed it without a
+                // teabag, in slot order (docs/game/teabag.md, "The medal").
+                let incel: Vec<(u32, u32)> = self
+                    .generations
+                    .iter()
+                    .filter(|&(_, g)| {
+                        first
+                            && self.participants.contains_key(g)
+                            && self.incel.earns(*g, &e.reason)
+                    })
+                    .map(|(&slot, &g)| (slot, g))
+                    .collect();
+                for (slot, generation) in incel {
+                    self.medals.incel_with(generation, |medal| {
+                        extra.push(Event::Medal {
+                            player: slot,
+                            earned_at: e.tick,
+                            medal: medal.into(),
+                        });
                     });
                 }
                 e.tick
@@ -921,6 +958,131 @@ mod tests {
         assert!(
             Record::decode_telemetry(br#"{"tick":9,"kind":"Superbounce","data":{"player":1}}"#)
                 .is_err()
+        );
+    }
+
+    /// Incel at the game's end (docs/game/teabag.md, "The medal"): one
+    /// `Medal` at `GameEnded`'s tick for each player who was in the game
+    /// before its first death, is still in it, and was on neither side of a
+    /// `Teabag`; a bot counts. A teabag is a stats record.
+    #[test]
+    fn incel_goes_to_who_completed_the_game_without_a_teabag() {
+        use crate::film::PlayerSummary;
+        let started = json!({"host":"h","game_id":"g","map":"lockout","mode":"multiplayer",
+            "team_play":false,"players":[
+                {"index":0,"name":"Ada","team":0},{"index":1,"name":"Ben","team":0},
+                {"index":2,"name":"Cy","team":0},{"index":3,"name":"Clanker 3","team":0,"bot":true}]});
+        let play = |reason: &str| {
+            let mut tracker = Tracker::default();
+            tracker.event(game::GAME_STARTED, &started, 0).unwrap();
+            // Before anyone dies: on time.
+            tracker
+                .event(
+                    game::PLAYER_JOINED,
+                    &json!({"player":{"index":4,"name":"Di","team":0}}),
+                    5,
+                )
+                .unwrap();
+            tracker
+                .event(
+                    game::PLAYER_KILLED,
+                    &json!({"tick":10,"killer":0,"victim":1,"kind":"kill"}),
+                    10,
+                )
+                .unwrap();
+            // After the first death: late.
+            tracker
+                .event(
+                    game::PLAYER_JOINED,
+                    &json!({"player":{"index":5,"name":"Eve","team":0}}),
+                    12,
+                )
+                .unwrap();
+            let bag = tracker
+                .event(game::TEABAG, &json!({"tick":40,"player":0,"victim":1}), 41)
+                .unwrap();
+            assert_eq!(
+                bag,
+                [Record {
+                    tick: 40,
+                    event: Event::Teabag(game::Teabag {
+                        tick: 40,
+                        player: 0,
+                        victim: 1
+                    })
+                }]
+            );
+            tracker
+                .event(game::PLAYER_LEFT, &json!({"index":2}), 50)
+                .unwrap();
+            let end = tracker
+                .event(
+                    game::GAME_ENDED,
+                    &json!({"tick":900,"reason":reason,"players":[]}),
+                    900,
+                )
+                .unwrap();
+            (tracker, end, bag)
+        };
+        let (tracker, end, bag) = play("finished");
+        let incel: Vec<_> = end
+            .iter()
+            .filter_map(|r| match &r.event {
+                Event::Medal {
+                    player,
+                    earned_at,
+                    medal,
+                } if medal == medals::INCEL => Some((*player, *earned_at, r.tick)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(incel, [(3, 900, 900), (4, 900, 900)]);
+        let mut rows: Vec<_> = [
+            (0, "Ada"),
+            (1, "Ben"),
+            (3, "Clanker 3"),
+            (4, "Di"),
+            (5, "Eve"),
+        ]
+        .into_iter()
+        .map(|(seat, name)| PlayerSummary {
+            seat,
+            name: name.into(),
+            ..Default::default()
+        })
+        .collect();
+        tracker.summary_medals(&mut rows);
+        let has = |name: &str| {
+            rows.iter()
+                .find(|r| r.name == name)
+                .is_some_and(|r| r.medals.contains_key(medals::INCEL))
+        };
+        assert!(has("Clanker 3") && has("Di"));
+        assert!(!has("Ada") && !has("Ben") && !has("Eve"));
+
+        // A game that did not finish gives none.
+        for reason in ["quit", "lost"] {
+            let (_, end, _) = play(reason);
+            assert!(
+                !end.iter().any(
+                    |r| matches!(&r.event, Event::Medal { medal, .. } if medal == medals::INCEL)
+                ),
+                "{reason}"
+            );
+        }
+
+        // The stats reader takes the teabag and passes over the medal.
+        assert_eq!(
+            Record::decode_telemetry(&bag[0].encode().unwrap()).unwrap(),
+            Some((40, game::TEABAG, json!({"tick":40,"player":0,"victim":1})))
+        );
+        let medal = end
+            .iter()
+            .find(|r| matches!(r.event, Event::Medal { .. }))
+            .unwrap();
+        assert_eq!(
+            Record::decode_telemetry(&medal.encode().unwrap()).unwrap(),
+            None
         );
     }
 

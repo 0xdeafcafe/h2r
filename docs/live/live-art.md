@@ -1068,6 +1068,16 @@ server without game art, or a browser it won't share the art with, still
 gets a finished header. The home strip is 180 px tall either way, so the
 page doesn't jump when the art arrives.
 
+**Source art.** `web/art-source/medals/` holds the Live and superbounce
+medals drawn natively at 512 × 512 and halved to 256 (`<id>-512.png`,
+`<id>-256.png`, transparent, 8 bits a channel, no 4-bit quantisation):
+source art for banners and other pictures, not for a medal view, where
+they would sit wrong beside the 24-pixel medals and Halo 2's glyphs. They
+are outside `web/public/`, so not served, and no page names them.
+`python3 scripts/live-medals.py --out DIR --hires` draws them (about four
+minutes) into `DIR/hires/`, from the same drawing as the site's medal files
+(`web/public/art/ART.md`, Batches 06 to 08).
+
 **Limits.** Shots name spawn indexes and map stems of the retail disc; a
 different disc or map pack may need new ones (`check` catches only a
 malformed plan; a missing spot skips the composition). Skies are drawn as

@@ -2,11 +2,12 @@
 //! values each state gives (docs/game/hud-kit.md, "States").
 
 use hud_kit_core::huds::superbounce::{
-    self as sb, CHARGE, LOW_CHARGE, Landed, Lost, MESSAGE, MESSAGE_LOST_CROUCHED,
+    self as sb, ARM, CHARGE, LOW_CHARGE, Landed, Lost, MESSAGE, MESSAGE_LOST_CROUCHED,
     MESSAGE_LOST_STOOD_STILL, Medal, NAVPOINT, Note, PILL, PILL_ICON, PROMPT, PROMPT_CHARGE_AGAIN,
     PROMPT_HELD, PROMPT_KEEP_MOVING, PROMPT_NEAR, PROMPT_UNDER, Phase, Scan, Target, Verb,
 };
 use hud_kit_core::model::{Pulse, Style};
+use hud_kit_core::motion::Motion;
 
 use super::*;
 use crate::superbounce_chain::Award;
@@ -38,6 +39,7 @@ fn crouch_spot(distance: f32) -> Option<NavTarget> {
         at: [1.0, 2.0, 3.0],
         kind: NavKind::Crouch,
         distance,
+        fall: 0.0,
     })
 }
 
@@ -99,11 +101,62 @@ fn the_recipe_steps_give_their_verbs_and_fills() {
     };
     let values = sb::values(&view(&held, None));
     assert_eq!(values.get(PROMPT).unwrap().text, PROMPT_HELD);
-    assert_eq!(values.get(CHARGE).unwrap().fill, 2.0 / 3.0);
+    // The recipe is on the arming bar, eased to each step's fill; the
+    // strip under the pill waits for primed.
+    let arm = values.get(ARM).unwrap();
+    assert_eq!(
+        (arm.shown, arm.fill, arm.motion),
+        (true, 2.0 / 3.0, Motion::Ease)
+    );
+    assert!(!values.get(CHARGE).unwrap().shown);
     // Not primed: the pill is inactive, which the runtime does not draw
-    // yet; the charge meter is drawn.
+    // yet.
     assert_eq!(values.get(PILL).unwrap().style, Style::Inactive);
-    assert!(values.get(CHARGE).unwrap().shown);
+}
+
+/// Tick to tick through the view: the steps ease, leaving early runs
+/// out, primed plays the ending, a loss blinks.
+#[test]
+fn the_arming_bar_follows_the_charge_tick_to_tick() {
+    let mut track = ArmTrack::default();
+    let mut bar = |c: Option<Charge>| {
+        let base = view(
+            &State {
+                charge: c,
+                ..ready()
+            },
+            None,
+        );
+        let v = View {
+            arm: track.update(base.charge.map(|c| c.phase)),
+            ..base
+        };
+        let a = sb::values(&v).get(ARM).unwrap().clone();
+        a.shown.then_some((a.fill, a.motion))
+    };
+    assert_eq!(bar(None), None);
+    assert_eq!(
+        bar(charge(ChargePhase::Near, 0.0)),
+        Some((0.0, Motion::Ease))
+    );
+    assert_eq!(
+        bar(charge(ChargePhase::Under, 0.3)),
+        Some((1.0 / 3.0, Motion::Ease))
+    );
+    assert_eq!(bar(None), Some((0.0, Motion::RunOut)), "left early");
+    assert_eq!(
+        bar(charge(ChargePhase::Held, 0.6)),
+        Some((2.0 / 3.0, Motion::Ease))
+    );
+    assert_eq!(
+        bar(charge(ChargePhase::Primed, 1.0)),
+        Some((1.0, Motion::Ending))
+    );
+    assert_eq!(
+        bar(charge(ChargePhase::Lost, 0.0)),
+        Some((0.0, Motion::Blink))
+    );
+    assert_eq!(bar(None), Some((0.0, Motion::Blink)));
 }
 
 #[test]
@@ -115,13 +168,18 @@ fn primed_lights_the_pill_and_drains_the_meter() {
             at: [0.0; 3],
             kind: NavKind::Strip,
             distance: 4.0,
+            fall: 1.0,
         }),
         ..ready()
     };
     let v = view(&s, None);
     assert!(v.primed);
     assert_eq!(v.verb, None);
-    assert_eq!(v.nav.map(|n| n.0), Some(Target::Strip));
+    // Over a strip the number is the drop, not the distance.
+    let (target, m) = v.nav.unwrap();
+    assert_eq!(target, Target::Strip);
+    assert!((m - METRES_PER_UNIT).abs() < 1e-4, "{m}");
+    assert_eq!(sb::values(&v).get(NAVPOINT).unwrap().text, "3");
     let values = sb::values(&v);
     assert_eq!(values.get(PILL).unwrap().style, Style::Normal);
     assert_eq!(values.get(CHARGE).unwrap().fill, 0.25);
@@ -355,9 +413,21 @@ fn each_notification_is_sent_once() {
     s.medals.recent = vec![award(1, Some(0), 3, vec![Medal::Superbounce])];
     assert!(sent.notes(Some(&s), None).is_empty(), "the first state");
 
+    // A recipe step begins: "Charging...", once; the next step is the
+    // same charge.
+    s.charge = charge(ChargePhase::Near, 0.0);
+    assert_eq!(
+        sent.notes(Some(&s), None),
+        vec![(0, "Charging...".to_string())]
+    );
+    s.charge = charge(ChargePhase::Under, 0.3);
+    assert!(sent.notes(Some(&s), None).is_empty(), "the same charge");
+
     s.word = Some(PRIMED_WORD as u32);
-    assert_eq!(sent.notes(Some(&s), None), vec![(0, Note::Primed.text())]);
+    s.charge = charge(ChargePhase::Primed, 1.0);
+    assert_eq!(sent.notes(Some(&s), None), vec![(0, "Primed!".to_string())]);
     assert!(sent.notes(Some(&s), None).is_empty(), "primed again");
+    s.charge = None;
 
     let lost = mode::Lost {
         reason: LostReason::Crouched,
@@ -416,4 +486,125 @@ fn each_notification_is_sent_once() {
 fn off_hides_everything() {
     assert!(hidden().0.iter().all(|(_, v)| !v.shown));
     assert_eq!(hidden().0.len(), sb::hud().elements.len());
+}
+
+/// The lock holds primed, in the air, falling onto the slot fast enough:
+/// the rule the world's brackets follow.
+#[test]
+fn the_reticle_locks_with_the_landing() {
+    use crate::superbounce_charge::{Course, Predicted};
+    let landing = |verdict, speed| {
+        Some(Predicted {
+            at: [0.0; 3],
+            verdict,
+            speed,
+            need: 5.0,
+            edge: [[0.0, -1.0, 0.0], [0.0, 1.0, 0.0]],
+            stand: [0.0; 3],
+            width: 0.2,
+            fall: 1.0,
+        })
+    };
+    let s = State {
+        word: Some(PRIMED_WORD as u32),
+        airborne: true,
+        landing: landing(Course::OnSlot, 6.0),
+        ..ready()
+    };
+    assert!(reticle_locked(&s));
+    assert!(!reticle_locked(&State {
+        landing: landing(Course::Fixable, 6.0),
+        ..s.clone()
+    }));
+    assert!(!reticle_locked(&State {
+        landing: landing(Course::OnSlot, 4.0),
+        ..s.clone()
+    }));
+    assert!(!reticle_locked(&State {
+        word: Some(0),
+        ..s.clone()
+    }));
+    assert!(!reticle_locked(&State {
+        airborne: false,
+        ..s
+    }));
+}
+
+/// While locked, a retail bitmap widget of the first local player that
+/// reads the autoaimed input gets 1 in that slot after the game's own
+/// answer; nothing else is touched.
+#[test]
+fn the_locked_reticle_reads_autoaimed() {
+    use engine::memory::FlatMemory;
+    const SP: u32 = 0x0010_0000;
+    const INPUTS: u32 = 0x0010_0100;
+    const OUT: u32 = 0x0010_0200;
+    let mut m = FlatMemory::new(SP, 0x1000);
+    m.set_u32(SP, BITMAP_INPUTS_RETURN).unwrap();
+    m.set_u32(SP + 4, 0).unwrap();
+    m.set_u32(SP + 8, INPUTS).unwrap();
+    m.set_u32(SP + 12, OUT).unwrap();
+    m.write(INPUTS, &[5, AUTOAIMED, 0, AUTOAIMED]).unwrap();
+    assert_eq!(autoaim_slots([5, AUTOAIMED, 0, AUTOAIMED]), 0b1010);
+    assert_eq!(autoaim_slots([16, 17, 20, 21]), 0);
+    let a = autoaim_entry(&m, SP, true).unwrap().unwrap();
+    assert_eq!(
+        a,
+        Autoaim {
+            sp_after: SP + 16,
+            out: OUT,
+            slots: 0b1010
+        }
+    );
+    // The game's answer, then ours on the way out.
+    for k in 0..4 {
+        m.set_f32(OUT + 4 * k, 0.25).unwrap();
+    }
+    assert!(!autoaim_exit(&mut m, SP + 4, a).unwrap(), "another stack");
+    assert!(autoaim_exit(&mut m, SP + 16, a).unwrap());
+    let out: Vec<f32> = (0..4).map(|k| m.f32(OUT + 4 * k).unwrap()).collect();
+    assert_eq!(out, [0.25, 1.0, 0.25, 1.0]);
+    // Not locked, a text widget, another player, or no autoaimed input:
+    // left alone.
+    assert_eq!(autoaim_entry(&m, SP, false).unwrap(), None);
+    m.set_u32(SP, 0x0013_a673).unwrap();
+    assert_eq!(autoaim_entry(&m, SP, true).unwrap(), None);
+    m.set_u32(SP, BITMAP_INPUTS_RETURN).unwrap();
+    m.set_u32(SP + 4, 1).unwrap();
+    assert_eq!(autoaim_entry(&m, SP, true).unwrap(), None);
+    m.set_u32(SP + 4, 0).unwrap();
+    m.write(INPUTS, &[16, 17, 20, 21]).unwrap();
+    assert_eq!(autoaim_entry(&m, SP, true).unwrap(), None);
+}
+
+#[test]
+fn the_tutorial_counts_game_ticks_not_presents_or_wall_time() {
+    use hud_kit_core::huds::superbounce::{Change, STEP3_SECS, Tutorial, Watch};
+    assert_eq!(tutorial_seconds(0), 0.0);
+    assert_eq!(tutorial_seconds(30), 1.0);
+    // Step 3 gives way after 600 ticks without a bounce, whatever the
+    // display rate (a tick is a tick at 60 and 120 fps) and however slow
+    // the wall clock runs below 30 fps.
+    let near = Watch {
+        primed: true,
+        strip_m: Some(1.0),
+        bounced: false,
+    };
+    let mut t = Tutorial::new(true);
+    let mut tick = 0;
+    for _ in 0..3 {
+        t.update(Some(near), tutorial_seconds(tick));
+        tick += 1;
+    }
+    assert_eq!(t.step(), Some(3));
+    let limit = (STEP3_SECS * 30.0) as u64;
+    let shown = tick - 1;
+    while t.update(Some(near), tutorial_seconds(tick)) == Change::None {
+        tick += 1;
+        assert!(tick < shown + 2 * limit, "step 3 never gave way");
+    }
+    // To a tick (the float sum of 1/30s).
+    let after = tick - shown;
+    assert!((limit..=limit + 1).contains(&after), "after {after} ticks");
+    assert_eq!(t.step(), Some(4));
 }

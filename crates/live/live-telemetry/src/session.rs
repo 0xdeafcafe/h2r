@@ -6,7 +6,7 @@ use live_proto::game::{
     MAX_FRAME_HITS, MAX_FRAME_ITEMS, MAX_FRAME_MACHINES, MAX_FRAME_OBJECTS, MAX_FRAME_PROJECTILES,
     MAX_FRAME_SEAT, MAX_FRAME_SHIELD, MAX_FRAME_SHOTS, MAX_FRAME_SPEED, MAX_FRAME_VEHICLES,
     MAX_MACHINE_POSITIONS, MAX_PROJECTILE_SPEED, MachinePosition, ObjectKind, PlayerKilled,
-    PlayerLeft, ScoreChanged, Superbounce,
+    PlayerLeft, ScoreChanged, Superbounce, Teabag,
 };
 
 use crate::event::{
@@ -1090,6 +1090,34 @@ impl Session {
         );
     }
 
+    /// A player of the match teabagged another's body at the engine's
+    /// `tick` (docs/game/teabag.md): `player` crouched, `victim` was the
+    /// body's. The teabag watch calls it, through
+    /// [`crate::Telemetry::teabag`], for every player it watches. The rules
+    /// are those of [`Session::superbounce`]; both must be players of the
+    /// match, and not the same one.
+    pub fn teabag(&mut self, tick: u64, player: u32, victim: u32) {
+        let Some(current) = self.current.as_mut().filter(|m| !m.ended && !m.cinematic) else {
+            return;
+        };
+        let known = |i: u32| current.players.iter().any(|p| p.player.index == i);
+        if player == victim || !known(player) || !known(victim) {
+            return;
+        }
+        let tick = current.clock(tick);
+        current.sent_tick = current.sent_tick.max(tick);
+        Self::event_to(
+            &mut self.output,
+            current.game_id.clone(),
+            live_proto::game::TEABAG,
+            Teabag {
+                tick,
+                player,
+                victim,
+            },
+        );
+    }
+
     pub(crate) fn end_without_scoreboard(&mut self, tick: Option<u64>) {
         if let Some(current) = &self.current {
             self.end(&Snapshot { tick: tick.unwrap_or(current.tick), ..Snapshot::default() });
@@ -2088,6 +2116,44 @@ mod tests {
         session.take_output();
         session.superbounce(95, 1, 1);
         session.bounced(96, 1, 0);
+        assert!(kinds(&mut session).is_empty());
+    }
+
+    /// A teabag goes out as a game event at the match's clock for two
+    /// players of the match; a stranger on either side, a player's own
+    /// body and anything after the end send nothing. The one sent is valid
+    /// for the server.
+    #[test]
+    fn teabags_are_game_events_for_players_of_the_match() {
+        let mut session = Session::new("test", None);
+        session.start(&info(), vec![player(0, 0), player(1, 0)]);
+        session.take_output();
+        session.teabag(40, 0, 1);
+        session.teabag(41, 5, 1);
+        session.teabag(42, 0, 5);
+        session.teabag(43, 1, 1);
+        let events: Vec<_> = session
+            .take_output()
+            .into_iter()
+            .filter_map(|o| match o {
+                Output::Event(e) => Some(e),
+                Output::Frame(_) => None,
+            })
+            .collect();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, live_proto::game::TEABAG);
+        assert_eq!(
+            events[0].data,
+            serde_json::json!({"tick": 40, "player": 0, "victim": 1})
+        );
+        let roster = [player(0, 0).player, player(1, 0).player];
+        assert_eq!(
+            live_proto::game::validate(&events[0].kind, &events[0].data, &roster),
+            Ok(())
+        );
+        session.end(&snapshot(90, vec![player(0, 0), player(1, 0)]));
+        session.take_output();
+        session.teabag(95, 0, 1);
         assert!(kinds(&mut session).is_empty());
     }
 

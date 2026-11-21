@@ -40,6 +40,7 @@ An `impl.` name is an implementation switch
 | `H2_LIVE_SERVER` | Service selected by `h2 play --live`. Use a URL or `off` ([app.md](app.md)). |
 | `forge` | On by default; `-forge` turns it off. The [local Forge session](../game/forge-design.md#the-ui) on offline multiplayer maps: D-pad Up or Tab toggles the monitor. The main menu's **FORGE** row, below THEATER, opens the lobby that starts one. Light hosts, film replays and lockstep runs never have it. |
 | `tweakers` | on by default. Adds the Tweakers row under Territories in the game type list and lists Superbounce there instead of under Slayer ([community-gametypes.md](../game/community-gametypes.md#tweakers)). `H2_FEATURES=-tweakers` leaves the retail list, with Superbounce under Slayer |
+| `teabag` | on by default. Watches every game for teabags and records them to the film and Live, where they take the Incel medal ([teabag.md](../game/teabag.md)). `H2_FEATURES=-teabag` records none, so Live and the film give Incel to everyone who completes a game |
 | `ui-back` | on by default. B or Back returns to Game Setup from its nested selectors. `H2_FEATURES=-ui-back` restores the retail selector Back behavior ([Back navigation](../game/ui-screens.md#back-navigation)) |
 | `return-to-menu` | on in ordinary windowed runs. Shows the host loading picture on the return from a game ([level-boot.md](level-boot.md#returning-to-the-main-menu)) |
 | `impl.render.native=off` | turns off the native GPU renderer, every stage together ([native-renderer.md](../graphics/native-renderer.md)) |

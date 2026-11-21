@@ -22,7 +22,8 @@ export type MedalId =
   | "opening-act" | "last-word" | "payback"
   | "twofer" | "hat-trick" | "full-house" | "encore"
   | "hot-streak" | "wildfire" | "untouchable"
-  | BounceMedalId;
+  | BounceMedalId
+  | "incel";
 
 /** The superbounce medals (docs/game/superbounce.md, "Medals"), from a
  *  game's bounces and bounce deaths rather than its kills. */
@@ -51,6 +52,7 @@ export const MEDALS: MedalDef[] = [
   { id: "chain-bounce", name: "Chain Bounce", blurb: "5 bounces with no ground between", tier: 2 },
   { id: "bouncetacular", name: "Bouncetacular", blurb: "6 bounces with no ground between", tier: 3 },
   { id: "bounced", name: "Bounced", blurb: "Fell out of the map trying a bounce", tier: 0 },
+  { id: "incel", name: "Incel", blurb: "Completed a game without teabagging or getting teabagged", tier: 1 },
 ];
 /** The bounce medals, in table order. */
 export const BOUNCE_MEDALS: BounceMedalId[] = [
@@ -130,10 +132,28 @@ export function gameBounceMedals(bounces: readonly Bounce[]): MedalAward[] {
   return out;
 }
 
-/** Every medal of a game: the kills' and the bounces'. `kills` narrows the
- *  kills (a career leaves out those with a bot on either side). */
-export function gameAwards(g: Pick<GameState, "kills" | "bounces">, kills: readonly Kill[] = g.kills): MedalAward[] {
-  return [...gameMedals(kills), ...gameBounceMedals(g.bounces ?? [])];
+/** The fields `gameIncel` reads; a game without them has no `incel`. */
+type IncelFields = Partial<Pick<GameState, "players" | "teabags" | "status" | "end_reason" | "last_tick">>;
+
+/** `incel` at the game's end, a copy of `Incel` in
+ *  crates/live/live-proto/src/film/events/medals.rs (docs/game/teabag.md,
+ *  "The medal"): once to every player still in a game that finished, who
+ *  joined before its first kill (`late`) and was on neither side of a
+ *  teabag. Bots count. */
+export function gameIncel(g: IncelFields): MedalAward[] {
+  if (g.status !== "ended" || g.end_reason !== "finished" || !g.players) return [];
+  const bagged = new Set<number>();
+  for (const t of g.teabags ?? []) { bagged.add(t.player); bagged.add(t.victim); }
+  return Object.values(g.players)
+    .filter((p) => !p.left && !p.late && !bagged.has(p.index))
+    .sort((a, b) => a.index - b.index)
+    .map((p) => ({ medal: "incel" as const, slot: p.index, tick: g.last_tick ?? 0 }));
+}
+
+/** Every medal of a game: the kills', the bounces' and `incel`. `kills`
+ *  narrows the kills (a career leaves out those with a bot on either side). */
+export function gameAwards(g: Pick<GameState, "kills" | "bounces"> & IncelFields, kills: readonly Kill[] = g.kills): MedalAward[] {
+  return [...gameMedals(kills), ...gameBounceMedals(g.bounces ?? []), ...gameIncel(g)];
 }
 
 /** Longest run of scoring kills without dying, per slot. */

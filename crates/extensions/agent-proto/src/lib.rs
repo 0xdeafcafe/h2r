@@ -264,6 +264,10 @@ pub mod method {
     /// reasons, the pipelined render, the frame-stats counters
     /// ([`crate::RenderStats`]).
     pub const RENDER_STATS: &str = "render.stats";
+    /// Where the window drew the world marks on its last presents: the
+    /// frame kind, a made frame's blend fraction and camera shift, and the
+    /// first anchors' window pixels (no params; the first call arms it).
+    pub const RENDER_MARKS: &str = "render.marks";
     /// Two PNG files compared pixel by pixel ([`crate::CompareParams`]).
     pub const RENDER_COMPARE: &str = "render.compare";
     /// The frame of a sim tick as a PNG ([`crate::FrameCaptureParams`]).

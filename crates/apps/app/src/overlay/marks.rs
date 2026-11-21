@@ -17,11 +17,23 @@ pub struct MarkCamera {
 
 pub type MarkCameras = [Option<MarkCamera>; 4];
 
+/// Which camera a frame's marks are projected with.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum MarkCameraSource {
+    /// The genuine image's own cameras: its tick's.
+    Tick,
+    /// An in-between frame the host made at `fraction`. `shifted`: some
+    /// view was drawn with another camera than the marks' image, and the
+    /// cameras here were moved onto it (`d3d::interp::marks`).
+    Made { fraction: f32, shifted: bool },
+}
+
 /// All sources on an image use its per-view cameras.
 #[derive(Debug)]
 pub struct ProjectedMarks {
     pub cameras: MarkCameras,
     pub samples: Arc<ImageSamples>,
+    pub source: MarkCameraSource,
 }
 
 impl ProjectedMarks {
@@ -86,6 +98,17 @@ impl FrameMarks {
         }
     }
 
+    /// What the `render.marks` probe calls this frame.
+    pub(crate) fn probe_kind(&self) -> gfx::world_lines::probe::Kind {
+        use gfx::world_lines::probe::Kind;
+        match self {
+            Self::Guest(_) => Kind::Guest,
+            Self::GuestWithoutWorldView => Kind::GuestWithoutWorldView,
+            Self::Synthetic(_) => Kind::Synthetic,
+            Self::Raw => Kind::Raw,
+        }
+    }
+
     pub(crate) fn status(&self, drawn_generation: Option<u64>) -> MarkFrameStatus {
         match self {
             Self::Guest(_) => {
@@ -118,6 +141,48 @@ fn pixels(camera: &MarkCamera, area: Viewport, [x, y, _, w]: [f32; 4]) -> Option
         area.x as f32 + x * area.width as f32,
         area.y as f32 + y * area.height as f32,
     ])
+}
+
+/// Where the window drew a frame: one [`gfx::world_lines::probe::Presented`]
+/// for the `render.marks` probe, while it is armed. `anchors` are the
+/// groups' anchors in window pixels through the first view's camera.
+pub(crate) fn record_probe(
+    marks: Option<&FrameMarks>,
+    loading: bool,
+    anchors: Vec<Option<[f32; 2]>>,
+    at: Instant,
+) {
+    use gfx::world_lines::probe::{Kind, PRESENTED, Presented};
+    if !PRESENTED.armed() {
+        return;
+    }
+    let (fraction, shifted) = match marks.and_then(FrameMarks::marks).map(|m| m.source) {
+        Some(MarkCameraSource::Made { fraction, shifted }) => (Some(fraction), shifted),
+        _ => (None, false),
+    };
+    let kind = match marks {
+        _ if loading => Kind::Loading,
+        Some(m) => m.probe_kind(),
+        None => Kind::Raw,
+    };
+    PRESENTED.record(Presented {
+        seq: 0,
+        at,
+        kind,
+        fraction,
+        shifted,
+        anchors,
+    });
+}
+
+/// `anchor` in window pixels through the first usable view of `cameras`;
+/// `None` off screen or behind it (the `render.marks` probe).
+pub(crate) fn anchor_pixels(
+    cameras: &MarkCameras,
+    area: Viewport,
+    anchor: [f32; 3],
+) -> Option<[f32; 2]> {
+    project_point(cameras.iter().flatten().next()?, area, anchor)
 }
 
 fn project_point(camera: &MarkCamera, area: Viewport, point: [f32; 3]) -> Option<[f32; 2]> {
@@ -620,7 +685,9 @@ fn fs(in: Out) -> @location(0) vec4<f32> {
                             &pen,
                         );
                     }
-                    self.stroke(camera, area, size, edge, &pen);
+                    if style.stroke {
+                        self.stroke(camera, area, size, edge, &pen);
+                    }
                     if let Some(chevrons) = style.chevrons {
                         self.chevrons(camera, area, size, edge, chevrons, &pen);
                     }
@@ -1244,6 +1311,25 @@ mod tests {
         assert_eq!(
             project_point(&CAMERA, AREA, [0.0, 0.0, -3.0]),
             Some([190.0, 60.0])
+        );
+    }
+
+    #[test]
+    fn the_probe_reads_anchors_through_the_first_view_and_names_the_frame() {
+        let cameras = [None, Some(CAMERA), None, None];
+        assert_eq!(
+            anchor_pixels(&cameras, AREA, [0.0, 0.0, -3.0]),
+            Some([190.0, 60.0])
+        );
+        assert_eq!(anchor_pixels(&cameras, AREA, [0.0, 0.0, 3.0]), None, "behind");
+        assert_eq!(anchor_pixels(&[None; 4], AREA, [0.0, 0.0, -3.0]), None);
+        use gfx::world_lines::probe::Kind;
+        assert_eq!(FrameMarks::Synthetic(None).probe_kind(), Kind::Synthetic);
+        assert_eq!(FrameMarks::Guest(None).probe_kind(), Kind::Guest);
+        assert_eq!(FrameMarks::Raw.probe_kind(), Kind::Raw);
+        assert_eq!(
+            FrameMarks::GuestWithoutWorldView.probe_kind().name(),
+            "no_world_view"
         );
     }
 

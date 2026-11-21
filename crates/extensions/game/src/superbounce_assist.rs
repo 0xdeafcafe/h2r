@@ -265,7 +265,7 @@ pub fn plan(spots: &[Spot], body: &Body) -> Option<Plan> {
 /// does not and [`reach`] says the assist can still bring it in, else
 /// `miss`. `None` on the ground, rising, or with no such strip.
 pub fn predict(spots: &[Spot], body: &Body) -> Option<superbounce_mode::Predicted> {
-    use crate::superbounce_charge::{edge_distance_xy, need_of, slot_miss};
+    use crate::superbounce_charge::{edge_distance_xy, need_of, slot_miss, width_of};
     use superbounce_mode::{Course, Predicted};
     let vz = body.velocity[2];
     if !body.airborne || !vz.is_finite() || vz >= 0.0 {
@@ -299,6 +299,10 @@ pub fn predict(spots: &[Spot], body: &Body) -> Option<superbounce_mode::Predicte
         verdict,
         speed: (vz * vz + 2.0 * GRAVITY * height).sqrt(),
         need: need_of(spot),
+        edge: spot.edge,
+        stand: spot.stand,
+        width: width_of(spot),
+        fall: spot.fall,
     })
 }
 
@@ -675,6 +679,11 @@ impl AssistTap {
         // The charge's `held` phase: the crouch button of the player's own
         // layout, in the pad as the guest gets it.
         publish_crouch(button_down(&pad, crouch_button(memory)));
+        // The ghost run's button (superbounce_ghost.rs).
+        crate::superbounce_ghost::publish_button(button_down(
+            &pad,
+            crate::superbounce_ghost::BUTTON,
+        ));
         // Opt in: with the setting off the button is the game's.
         let held =
             opted_in() && (pad.analog(BUTTON) >= PRESSED || TEST_HOLD.load(Ordering::Relaxed));

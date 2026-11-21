@@ -1314,3 +1314,121 @@ async fn the_host_reports_bounces_and_the_game_and_stats_serve_them() {
         "no row for the bot"
     );
 }
+
+/// Teabags (docs/game/teabag.md, "Recording"): only the host reports them,
+/// for two players of the game who are not the same one; the game serves
+/// them, a bot's included, and the players who joined after its first kill;
+/// the stats summary counts them in the totals and, given and received, in
+/// the rows of players with accounts. The Worker runs the same checks
+/// (live-worker's `sqlstore.rs`).
+#[tokio::test]
+async fn the_host_reports_teabags_and_the_game_and_stats_serve_them() {
+    let h = harness().await;
+    let host = h.create("Host").await;
+    let guest = h.create("Guest").await;
+    let id = h
+        .start_game(
+            &host,
+            json!({
+                "console": "Den", "map": "lockout", "mode": "multiplayer", "variant": "Slayer",
+                "team_play": false, "tick": 0, "kind": "custom",
+                "players": [
+                    {"index": 0, "name": "Host", "xuid": host.xuid, "team": 0, "local": true},
+                    {"index": 1, "name": "Guest", "xuid": guest.xuid, "team": 1},
+                    {"index": 2, "name": "Clanker 2", "team": 1, "local": true, "bot": true}
+                ]
+            }),
+        )
+        .await;
+    let bag = |player: u32, victim: u32| {
+        (
+            "Teabag",
+            json!({"tick": 40 + player, "player": player, "victim": victim}),
+        )
+    };
+    // A guest reports no teabags, not even its own.
+    let r = h
+        .post_batch(&guest, &id, h.batch(&guest, &id, &[bag(1, 0)]))
+        .await;
+    assert_eq!(
+        r.status,
+        StatusCode::FORBIDDEN,
+        "{}",
+        String::from_utf8_lossy(&r.body)
+    );
+    for bad in [bag(0, 0), bag(7, 1), bag(0, 7)] {
+        let r = h.post_batch(&host, &id, h.batch(&host, &id, &[bad])).await;
+        assert_eq!(
+            r.status,
+            StatusCode::BAD_REQUEST,
+            "{}",
+            String::from_utf8_lossy(&r.body)
+        );
+    }
+    let events = h.batch(
+        &host,
+        &id,
+        &[
+            (
+                "PlayerKilled",
+                json!({"tick": 30, "victim": 1, "killer": 0, "kind": "kill", "weapon": "br"}),
+            ),
+            (
+                "PlayerJoined",
+                json!({"player": {"index": 3, "name": "Clanker 3", "team": 0, "local": true, "bot": true}}),
+            ),
+            bag(0, 1),
+            bag(2, 0),
+            bag(1, 2),
+            (
+                "GameEnded",
+                json!({"tick": 900, "reason": "finished", "winner": {"player": 0}}),
+            ),
+        ],
+    );
+    let r = h.post_batch(&host, &id, events).await;
+    assert_eq!(
+        r.status,
+        StatusCode::CREATED,
+        "{}",
+        String::from_utf8_lossy(&r.body)
+    );
+
+    let g = h.get(&format!("/v1/games/{id}")).await.json();
+    let bags: Vec<(u64, u64)> = g["teabags"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|b| (b["player"].as_u64().unwrap(), b["victim"].as_u64().unwrap()))
+        .collect();
+    assert_eq!(bags, [(0, 1), (2, 0), (1, 2)]);
+    assert!(g["teabags"][0]["position"].as_u64().is_some());
+    assert_eq!(g["teabags"][1]["tick"], 42);
+    assert_eq!(g["joined_late"], json!([3]));
+
+    let v = h.get("/v1/stats/summary?window=all").await.json();
+    assert_eq!(v["totals"]["teabags"], 3, "the totals count everyone");
+    let row = |x: &User| {
+        v["players"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["xuid"] == x.xuid.to_string())
+            .cloned()
+            .unwrap()
+    };
+    assert_eq!(
+        (
+            row(&host)["teabags_given"].clone(),
+            row(&host)["teabags_received"].clone()
+        ),
+        (json!(1), json!(1))
+    );
+    assert_eq!(
+        (
+            row(&guest)["teabags_given"].clone(),
+            row(&guest)["teabags_received"].clone()
+        ),
+        (json!(1), json!(1))
+    );
+}

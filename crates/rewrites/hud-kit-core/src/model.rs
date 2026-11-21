@@ -4,6 +4,7 @@
 //! removes or moves an element.
 
 use crate::Mode;
+use crate::motion::Motion;
 
 /// A HUD of ours.
 #[derive(Clone, Debug, PartialEq)]
@@ -84,6 +85,12 @@ pub struct Element {
     /// grenade count is on its pill: the fit and own checks let the two
     /// overlap.
     pub over: Option<&'static str>,
+    /// Bits of the game's HUD state word D that hide it, as a retail
+    /// widget's `hide_when_d` (`nhdt` `+0x16`): while the game would draw
+    /// a retail widget of its own in its place, ours gives way. The
+    /// runtime's gate reads the word (E `0x0013ac87`, its third stack
+    /// argument); the record's own words stay zero.
+    pub hide_when_d: u16,
 }
 
 impl Element {
@@ -103,6 +110,7 @@ impl Element {
             },
             at,
             over: None,
+            hide_when_d: 0,
         }
     }
     pub fn meter(id: &'static str, art: Art, at: Place) -> Self {
@@ -111,6 +119,7 @@ impl Element {
             kind: Kind::Meter { art },
             at,
             over: None,
+            hide_when_d: 0,
         }
     }
     pub fn icon(id: &'static str, art: Art, at: Place) -> Self {
@@ -119,6 +128,7 @@ impl Element {
             kind: Kind::Icon { art },
             at,
             over: None,
+            hide_when_d: 0,
         }
     }
     pub fn pointer(id: &'static str, art: Art, at: Place) -> Self {
@@ -127,6 +137,7 @@ impl Element {
             kind: Kind::Pointer { art },
             at,
             over: None,
+            hide_when_d: 0,
         }
     }
     /// A channel element: [`Kind::Message`], [`Kind::Prompt`],
@@ -139,11 +150,18 @@ impl Element {
             kind,
             at: Place::GAME,
             over: None,
+            hide_when_d: 0,
         }
     }
     /// Drawn on `id` by design (see [`Element::over`]).
     pub fn over(mut self, id: &'static str) -> Self {
         self.over = Some(id);
+        self
+    }
+    /// Hidden while any of `bits` is set in the game's word D (see
+    /// [`Element::hide_when_d`]).
+    pub fn hidden_on_d(mut self, bits: u16) -> Self {
+        self.hide_when_d = bits;
         self
     }
 }
@@ -488,6 +506,12 @@ pub struct Value {
     pub style: Style,
     /// The tick the style started (a flash's phase).
     pub since_tick: u32,
+    /// How the fill and visibility move after a change, on wall time
+    /// (`crate::motion`).
+    pub motion: Motion,
+    /// The fill a [`Value::motion`] starts from: the runtime's, the fill
+    /// shown when the value changed (`motion::restamp`). A HUD leaves it 0.
+    pub from: f32,
 }
 
 impl Value {
@@ -523,6 +547,10 @@ impl Value {
     }
     pub fn styled(mut self, style: Style) -> Self {
         self.style = style;
+        self
+    }
+    pub fn moving(mut self, motion: Motion) -> Self {
+        self.motion = motion;
         self
     }
 }

@@ -239,7 +239,9 @@ def argb4444(px):
 RS_HEAD = """\
 //! The superbounce medal glyphs' pictures (docs/game/hud-kit.md, "The
 //! medals"): 24 by 24, ARGB 4444, row-major, top row first. Written by
-//! `scripts/superbounce-medals.py`; new art is a new file of the same
+//! `scripts/superbounce-medals.py`, but for the part after the marker line
+//! near the end (Incel), which `scripts/live-medals.py --font-art` writes;
+//! each script keeps the other's part. New art is a new file of the same
 //! shape. Do not edit the rows by hand unless the art is meant to change.
 
 /// Width and height of each picture.
@@ -248,7 +250,18 @@ pub const SIZE: u16 = 24;
 """
 
 
+# The line after which scripts/live-medals.py writes its glyph medals (Incel);
+# what follows it is kept.
+LIVE_MARK = "// ---- Live's medals with a glyph: written by scripts/live-medals.py --font-art ----\n"
+
+
 def write_rs(path, pics):
+    tail = ""
+    if os.path.exists(path):
+        with open(path) as f:
+            text = f.read()
+        if LIVE_MARK in text:
+            tail = "\n" + LIVE_MARK + text.split(LIVE_MARK, 1)[1]
     with open(path, "w") as f:
         f.write(RS_HEAD)
         for i, ((unit, name, line), pic) in enumerate(zip(MEDALS, pics)):
@@ -261,6 +274,7 @@ def write_rs(path, pics):
                 row = pic[y * SIZE:(y + 1) * SIZE]
                 f.write("    " + ", ".join(f"0x{v:04x}" for v in row) + ",\n")
             f.write("];\n")
+        f.write(tail)
 
 
 def to_image(pic):

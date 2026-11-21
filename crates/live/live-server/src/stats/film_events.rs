@@ -49,6 +49,11 @@ fn imported_tick_events_produce_the_same_stats_as_live_telemetry() {
             game::PLAYER_KILLED,
             json!({"tick":GUEST_START+60,"kind":"suicide","victim":0,"killer":0}),
         ),
+        (
+            62,
+            game::TEABAG,
+            json!({"tick":GUEST_START+62,"player":0,"victim":1}),
+        ),
         (65, game::PLAYER_LEFT, json!({"index":2})),
         (
             90,
@@ -106,10 +111,15 @@ fn imported_tick_events_produce_the_same_stats_as_live_telemetry() {
         earned_at: GUEST_START + 55,
         medal: "bounced".into()
     }));
+    assert!(!highlights.iter().any(|e| matches!(
+        e,
+        events::Event::Superbounce(_) | events::Event::Bounced(_) | events::Event::Teabag(_)
+    )));
+    // Both sides of the teabag lose incel, and Cee left: no one earns it.
     assert!(
         !highlights
             .iter()
-            .any(|e| matches!(e, events::Event::Superbounce(_) | events::Event::Bounced(_)))
+            .any(|e| matches!(e, events::Event::Medal { medal, .. } if medal == "incel"))
     );
     assert!(highlights.contains(&events::Event::ObjectiveScore {
         game_type: "CTF".into(),
@@ -126,6 +136,14 @@ fn imported_tick_events_produce_the_same_stats_as_live_telemetry() {
     assert_eq!(
         (row(&expected, A).bounces, row(&expected, B).bounced),
         (2, 1)
+    );
+    assert_eq!(expected.totals.teabags, 1);
+    assert_eq!(
+        (
+            row(&expected, A).teabags_given,
+            row(&expected, B).teabags_received
+        ),
+        (1, 1)
     );
     assert_eq!(film.stats.summary_at(Some(7), T0 + 100), expected);
 }

@@ -79,7 +79,7 @@ const game = (over: Partial<GameState> = {}): GameState => ({
   score_limit: 15, time_limit_s: null, started_at: "2026-11-18T20:00:00.000Z", ended_at: "2026-11-18T20:05:00.000Z",
   status: "ended", end_reason: null, winner: null, start_tick: 0,
   players: { 0: { index: 0, name: "Sneaky Pete", xuid: null, team: 0, local: true } as unknown as GameState["players"][number] },
-  scores: {}, teams: {}, kills: [], bounces: [], last_tick: 0, first_position: 0, positions: [],
+  scores: {}, teams: {}, kills: [], bounces: [], teabags: [], last_tick: 0, first_position: 0, positions: [],
   ...over,
 });
 

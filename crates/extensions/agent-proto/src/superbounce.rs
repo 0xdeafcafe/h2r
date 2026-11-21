@@ -47,6 +47,8 @@ pub mod method {
         VERIFY,
         VERIFY_STATUS,
         VERIFY_CANCEL,
+        super::GHOSTS,
+        super::GHOST_SHOW,
     ];
 }
 
@@ -128,10 +130,17 @@ pub struct State {
     /// `charge_again`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lost_reason: Option<LostReason>,
-    /// The navpoint's target: the nearest crouch spot while not primed,
-    /// the nearest strip while primed.
+    /// The navpoint's target: the nearest crouch spot while not primed;
+    /// while primed the chosen strip (the nearest one the player's floor
+    /// is high enough for, else the nearest; falling, the predicted
+    /// landing's).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nav_target: Option<NavTarget>,
+    /// Where to jump from for the chosen strip, while primed: the floor
+    /// mark's place (docs/game/superbounce.md, "Floor marks"); absent
+    /// when none is found.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub takeoff: Option<[f64; 3]>,
     /// The landing the assist predicts, while airborne and falling toward
     /// a strip.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -291,6 +300,10 @@ pub struct NavTarget {
     pub kind: NavKind,
     /// From the player's origin, world units.
     pub distance: f64,
+    /// A strip's fall (world units), the drop the navpoint's number
+    /// gives in metres; 0 for a crouch spot.
+    #[serde(default)]
+    pub fall: f64,
 }
 
 /// Whether a predicted landing is on the slot.
@@ -315,6 +328,12 @@ pub struct Predicted {
     pub speed: f64,
     /// The touchdown speed the strip needs, units/s.
     pub need: f64,
+    /// How far the landing is outside the slot, world units (0 inside).
+    #[serde(default)]
+    pub miss: f64,
+    /// In the slot and at least `need`: the lock-on is red.
+    #[serde(default)]
+    pub locked: bool,
 }
 
 /// What a landing by a strip came to, by its first failed test.
@@ -871,6 +890,111 @@ pub struct VerifyReport {
     pub error: Option<String>,
 }
 
+// ---- superbounce.ghosts, superbounce.ghost_show (ghost runs) ----
+//
+// Recorded runs that bounced off a spot, shown on request
+// (crates/extensions/game/src/superbounce_ghost.rs; docs/game/superbounce.md,
+// "Ghost runs").
+
+/// `superbounce.ghosts`: the loaded map's ghost runs, the one the player
+/// looks at, the prompt and the playback. A read; no params.
+pub const GHOSTS: &str = "superbounce.ghosts";
+/// `superbounce.ghost_show`: plays a ghost run once, or stops it
+/// ([`GhostShowParams`], [`GhostShow`]). An act.
+pub const GHOST_SHOW: &str = "superbounce.ghost_show";
+
+/// A button a run pressed.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct GhostPress {
+    /// The frame (ticks from the run's start).
+    pub frame: u32,
+    /// `crouch` or `jump`.
+    pub button: String,
+}
+
+/// One ghost run.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct GhostRun {
+    /// Its place in the list: what `superbounce.ghost_show` takes.
+    pub index: usize,
+    /// The bounce spot's stand point.
+    pub at: [f64; 3],
+    /// Where the run touched down.
+    pub landing: [f64; 3],
+    /// `bot`, `verify` or `player`.
+    pub source: String,
+    /// Game ticks (30 a second) from the start to the top of the bounce.
+    pub ticks: u32,
+    /// The vertical speed out of the bounce, units/s.
+    pub launch: f64,
+    /// The run primed itself with a crouch (not a word set for it).
+    pub crouch_primed: bool,
+    pub presses: Vec<GhostPress>,
+}
+
+/// The playback now.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct GhostPlaying {
+    pub index: usize,
+    /// Seconds since it started, by the clock.
+    pub seconds: f64,
+    /// The run's tick at that time, with the fraction to the next.
+    pub tick: f64,
+    /// Where the figure is.
+    pub at: [f64; 3],
+    /// It has reached the top of the bounce and holds there.
+    pub done: bool,
+}
+
+/// `superbounce.ghosts`'s result.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Ghosts {
+    /// The superbounce mode is on.
+    pub active: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub map: Option<String>,
+    /// The ghosts file, once there is a bots directory.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file: Option<String>,
+    /// Why the file could not be read; nothing is written over it then.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    pub ghosts: Vec<GhostRun>,
+    /// The run whose spot the first local player looks at.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub looked_at: Option<usize>,
+    /// The prompt line's ghost verb, as the HUD writes it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub playing: Option<GhostPlaying>,
+    /// Runs kept (a new best for their spot) since the game started.
+    pub recorded: u32,
+}
+
+/// `superbounce.ghost_show`'s params: the run by its index, else the one
+/// the player looks at; or `stop`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GhostShowParams {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spot: Option<usize>,
+    #[serde(default)]
+    pub stop: bool,
+}
+
+/// `superbounce.ghost_show`'s result.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct GhostShow {
+    /// A run is playing now.
+    pub playing: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub index: Option<usize>,
+    /// Its length in game ticks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ticks: Option<u32>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -905,12 +1029,16 @@ mod tests {
                 at: [1.0, 2.0, 3.0],
                 kind: NavKind::Crouch,
                 distance: 2.5,
+                fall: 0.0,
             }),
+            takeoff: None,
             landing: Some(Predicted {
                 at: [1.0, 2.0, -3.0],
                 verdict: Course::OnSlot,
                 speed: 5.5,
                 need: 4.0,
+                miss: 0.0,
+                locked: true,
             }),
             last_landing: Some(Landing {
                 result: LandingResult::NotPrimed,
@@ -952,6 +1080,8 @@ mod tests {
         assert_eq!(v["lost_reason"], "stood_still");
         assert_eq!(v["nav_target"]["kind"], "crouch");
         assert_eq!(v["landing"]["verdict"], "on_slot");
+        assert_eq!(v["landing"]["locked"], true);
+        assert_eq!(v["nav_target"]["fall"], 0.0);
         assert_eq!(v["last_landing"]["result"], "not_primed");
         assert_eq!(v["standing_fits"], false);
         let bare = serde_json::to_value(State::default()).unwrap();
@@ -960,6 +1090,7 @@ mod tests {
             "verb",
             "lost_reason",
             "nav_target",
+            "takeoff",
             "landing",
             "last_landing",
             "standing_fits",
@@ -1025,6 +1156,8 @@ mod tests {
                 VERIFY,
                 VERIFY_STATUS,
                 VERIFY_CANCEL,
+                GHOSTS,
+                GHOST_SHOW,
             ]
         );
     }
@@ -1075,5 +1208,43 @@ mod tests {
         };
         let v = serde_json::to_value(&r).unwrap();
         assert_eq!(v["medals"][1], "double-bounce");
+    }
+
+    #[test]
+    fn ghost_show_takes_a_spot_or_stop_and_the_list_round_trips() {
+        let p: GhostShowParams = serde_json::from_value(serde_json::json!({"spot": 2})).unwrap();
+        assert_eq!((p.spot, p.stop), (Some(2), false));
+        let p: GhostShowParams = serde_json::from_value(serde_json::json!({"stop": true})).unwrap();
+        assert_eq!((p.spot, p.stop), (None, true));
+        let p: GhostShowParams = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert_eq!(p, GhostShowParams::default());
+        assert!(
+            serde_json::from_value::<GhostShowParams>(serde_json::json!({"index": 1})).is_err()
+        );
+        assert!(method::ALL.contains(&GHOSTS) && method::ALL.contains(&GHOST_SHOW));
+        let g = Ghosts {
+            active: true,
+            map: Some("ascension".into()),
+            ghosts: vec![GhostRun {
+                index: 0,
+                at: [-10.62, 3.88, -3.19],
+                landing: [-10.6, 3.9, -3.19],
+                source: "bot".into(),
+                ticks: 212,
+                launch: 12.3,
+                crouch_primed: true,
+                presses: vec![GhostPress {
+                    frame: 30,
+                    button: "crouch".into(),
+                }],
+            }],
+            looked_at: Some(0),
+            prompt: Some("Press \u{e102} to show ghost".into()),
+            ..Ghosts::default()
+        };
+        let v = serde_json::to_value(&g).unwrap();
+        assert!(v.get("playing").is_none() && v.get("file").is_none());
+        assert_eq!(v["ghosts"][0]["presses"][0]["button"], "crouch");
+        assert_eq!(serde_json::from_value::<Ghosts>(v).unwrap(), g);
     }
 }

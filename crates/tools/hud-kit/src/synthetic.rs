@@ -2,8 +2,10 @@
 //! `nhdt` whose motion tracker, shield meter, grenade pills and counts are
 //! flat boxes on the retail rectangles ([`crate::rects`]), the strip
 //! meter's bitmap and shader under the retail names, a `hudg` with a
-//! waypoint arrow and marker, and the biped naming the HUD. Nothing comes from a disc; `cargo test` draws
-//! the sheet from it.
+//! waypoint arrow and marker, the biped naming the HUD, and a scoreboard
+//! `nhdt` with Assault's arming bar (`bomb_defusal`, at its retail place)
+//! for the arming bar's `Art::Widget`. Nothing comes from a disc; `cargo
+//! test` draws the sheet from it.
 
 use anyhow::{Result, anyhow};
 use h1map::bitmap::{BITM, Bitmap, IMAGE_LEN, Image, Sequence, Sprite};
@@ -18,6 +20,10 @@ use crate::templates::{STRIP_BITMAP, STRIP_SHADER};
 pub const SHAD: FourCC = FourCC(*b"shad");
 /// The invented player HUD's name.
 pub const PLAYER: &str = "synthetic\\hud\\player";
+/// The scoreboard `nhdt`, under the retail name the arming bar's art
+/// names, and its bar's bitmap.
+pub const SCOREBOARD: &str = "ui\\hud\\scoreboard";
+pub const SCOREBOARD_BAR_BITMAP: &str = "ui\\hud\\bitmaps\\new_hud\\bomb_meter";
 
 /// Shown on word A `0x1000` (the retail shield meter's show word).
 const ALWAYS: [u8; 20] = [
@@ -317,6 +323,29 @@ pub fn build() -> Result<Vec<u8>> {
         .collect(),
     );
     let player = set.add_tag(hud_edit::model::NHDT, PLAYER, TagPayload::Built(player))?;
+    // The scoreboard's arming bar: a 140 by 13 capsule whose blue rises
+    // left to right, centre (0, 110), (0, 27) in split screen, registered
+    // at its centre, as retail's (docs/game/hud-kit.md, "The arming bar").
+    let bomb = bitmap(
+        &mut set,
+        SCOREBOARD_BAR_BITMAP,
+        (256, 16),
+        (140, 13),
+        |x, _| [200, 90, (4 + x * 249 / 139) as u8, 255],
+    )?;
+    let bomb_shader = shader(&mut set, "ui\\hud\\shaders\\bomb_defusal_meter")?;
+    let mut bar = gated_widget("bomb_defusal", 4, [0; 20], (0, 110), bomb, bomb_shader, 0);
+    for at in &bw::OFFSETS[1..] {
+        bar.put_u16(at + 2, 27);
+    }
+    for at in bw::REGISTRATIONS {
+        bar.put_f32(at, 0.5).put_f32(at + 4, 0.5);
+    }
+    set.add_tag(
+        hud_edit::model::NHDT,
+        SCOREBOARD,
+        TagPayload::Built(nhdt(vec![bar], Vec::new())),
+    )?;
     let mut bipd = Block::zeroed(0x1b0);
     let mut iface = Block::zeroed(8);
     iface.tag_ref(0, player);

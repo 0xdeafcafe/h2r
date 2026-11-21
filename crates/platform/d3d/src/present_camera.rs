@@ -18,31 +18,70 @@ pub struct Image {
     pub payload: Payload,
 }
 
+/// How a made (in-between) frame drew one view, against the camera of the
+/// genuine image its marks come from.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ViewShift {
+    /// The view on the target: top, left, bottom and right as fractions of
+    /// it (the order of a mark camera's viewport).
+    pub viewport: [f32; 4],
+    /// World to world, four rows acting on column vectors: the source
+    /// image's camera for this view times this is the camera the frame drew
+    /// the view with (`C⁻¹ B`). The identity when it drew the source's.
+    pub world: [[f64; 4]; 4],
+}
+
+impl ViewShift {
+    /// `view_projection` (column-major, `view_projection[column][row]`, as
+    /// [`Camera::view_projection`] gives it) times [`Self::world`]: a
+    /// projection of the source's tick moved onto the camera the frame was
+    /// drawn with.
+    pub fn apply(&self, view_projection: [[f32; 4]; 4]) -> [[f32; 4]; 4] {
+        let m = |row: usize, column: usize| f64::from(view_projection[column][row]);
+        std::array::from_fn(|column| {
+            std::array::from_fn(|row| {
+                (0..4).map(|k| m(row, k) * self.world[k][column]).sum::<f64>() as f32
+            })
+        })
+    }
+
+    /// Whether the frame drew the view with the source's own camera.
+    pub fn is_identity(&self) -> bool {
+        (0..4).all(|i| (0..4).all(|j| self.world[i][j] == if i == j { 1.0 } else { 0.0 }))
+    }
+
+    /// The shift for the view at `viewport` (top, left, bottom, right as
+    /// fractions of the image) among `shifts`: the one within a hundredth
+    /// of it on every side. With a single view on both sides, that one.
+    pub fn find(shifts: &[ViewShift], viewport: [f32; 4], views: usize) -> Option<&ViewShift> {
+        let near = |s: &&ViewShift| (0..4).all(|i| (s.viewport[i] - viewport[i]).abs() <= 0.01);
+        shifts
+            .iter()
+            .find(near)
+            .or_else(|| (shifts.len() == 1 && views == 1).then(|| &shifts[0]))
+    }
+}
+
 #[derive(Clone)]
 pub enum Present {
     Guest {
         image: Option<Arc<Image>>,
         reference: bool,
     },
+    /// An in-between frame the host made (docs/game/high-framerate.md,
+    /// "World marks on made frames").
     Synthetic {
-        /// Projection from the last genuine source image at this blend fraction.
-        frozen: Option<Arc<Image>>,
+        /// The genuine image the marks come from: the newest, or while a
+        /// blended replay is nearer the frame before, that one.
+        source: Option<Arc<Image>>,
+        /// For each view the frame drew with another camera than the
+        /// source's, how to move the source's camera onto it. A view with
+        /// none drew the source's own.
+        shifts: Vec<ViewShift>,
+        /// The blend fraction: 0 is the frame before, 1 the newest.
+        fraction: f32,
         reference: bool,
     },
-}
-
-#[cfg(any(feature = "gpu", test))]
-impl Present {
-    pub(crate) fn synthetic(
-        fraction: f32,
-        previous: Option<&Arc<Image>>,
-        current: Option<&Arc<Image>>,
-    ) -> Self {
-        Self::Synthetic {
-            frozen: if fraction >= 1.0 { current } else { previous }.cloned(),
-            reference: false,
-        }
-    }
 }
 
 pub(crate) struct Images<S> {
@@ -141,26 +180,48 @@ pub(crate) fn with<R>(metadata: Option<Present>, present: impl FnOnce() -> R) ->
 mod tests {
     use super::*;
 
+    fn shift(viewport: [f32; 4], world: [[f64; 4]; 4]) -> ViewShift {
+        ViewShift { viewport, world }
+    }
+
     #[test]
-    fn synthetic_frames_hold_the_source_projection_until_the_endpoint() {
-        let image = |n: u32| {
-            Arc::new(Image {
-                views: [None; 4],
-                payload: Arc::new(n),
-            })
-        };
-        let previous = image(1);
-        let current = image(2);
-        let sample = |fraction, previous: Option<&Arc<Image>>, current: Option<&Arc<Image>>| {
-            let Present::Synthetic { frozen, .. } = Present::synthetic(fraction, previous, current)
-            else {
-                panic!("an interpolated image must be synthetic");
-            };
-            frozen.map(|frame| *frame.payload.downcast_ref::<u32>().unwrap())
-        };
-        assert_eq!(sample(0.0, Some(&previous), Some(&current)), Some(1));
-        assert_eq!(sample(0.75, Some(&previous), Some(&current)), Some(1));
-        assert_eq!(sample(1.0, Some(&previous), Some(&current)), Some(2));
-        assert_eq!(sample(0.75, None, Some(&current)), None);
+    fn a_shift_multiplies_the_projection_on_the_world_side() {
+        // Columns: x scaled by 2, then a world move of +3 in x.
+        let mut vp = [[0.0f32; 4]; 4];
+        vp[0][0] = 2.0;
+        vp[1][1] = 1.0;
+        vp[2][2] = 1.0;
+        vp[3][3] = 1.0;
+        let mut world = [[0.0; 4]; 4];
+        for (i, row) in world.iter_mut().enumerate() {
+            row[i] = 1.0;
+        }
+        world[0][3] = 3.0;
+        let out = shift([0.0, 0.0, 1.0, 1.0], world).apply(vp);
+        // The world point (1, 0, 0) is at x = 2 * (1 + 3).
+        let x: f32 = (0..4).map(|k| out[k][0] * [1.0, 0.0, 0.0, 1.0][k]).sum();
+        assert_eq!(x, 8.0);
+        assert_eq!(out[3][3], 1.0);
+    }
+
+    #[test]
+    fn shifts_are_found_by_their_view() {
+        let id = [
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ];
+        let top = shift([0.0, 0.0, 0.5, 1.0], id);
+        let bottom = shift([0.5, 0.0, 1.0, 1.0], id);
+        let both = [top, bottom];
+        assert_eq!(
+            ViewShift::find(&both, [0.502, 0.0, 1.0, 0.999], 2),
+            Some(&bottom)
+        );
+        assert_eq!(ViewShift::find(&both, [0.0, 0.0, 1.0, 1.0], 2), None);
+        // One view each side pairs even when the rectangles disagree.
+        assert_eq!(ViewShift::find(&[top], [0.0, 0.0, 1.0, 1.0], 1), Some(&top));
+        assert_eq!(ViewShift::find(&[top], [0.0, 0.0, 1.0, 1.0], 2), None);
     }
 }
