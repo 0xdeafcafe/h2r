@@ -152,7 +152,17 @@ mod tests {
             assert_eq!(marker.centre, [320, 240], "straight ahead is the middle");
         }
         // Out of the view is out for both.
-        assert!(Axes::from_frame(frame(-4.), &camera()).is_none());
+        assert!(
+            Axes::from_frame(
+                frame(-4.),
+                forge::tool::Extent {
+                    radius: 1.,
+                    offset: [0.; 3]
+                },
+                &camera()
+            )
+            .is_none()
+        );
         assert!(Marker::from_frame(frame(-4.), &camera(), [0; 3]).is_none());
     }
 
