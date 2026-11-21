@@ -701,10 +701,45 @@ pub fn narrow(b: [f32; 4], crop: [f32; 4]) -> [f32; 4] {
     ]
 }
 
+/// The image and bounds (`[l, r, t, b]` of the image) bitmap `bitmap`
+/// draws at sequence `seq`, as the game's pick gives them (E `0x0022ae21`,
+/// `0x0022ae94`..`0x0022af3c`; `hud_edit::render::sprite_at`): the
+/// sequence's first sprite; a sequence with no sprites, its first image
+/// whole; no such sequence, image 0 whole. `None` for an image the bitmap
+/// does not have.
+pub fn sprite_pick(
+    mem: &dyn GuestMemory,
+    bitmap: u32,
+    seq: i8,
+) -> Result<Option<(u32, [f32; 4])>, MemFault> {
+    const WHOLE: [f32; 4] = [0.0, 1.0, 0.0, 1.0];
+    let sequences = mem.u32(bitmap + 0x3c)?;
+    let (image, bounds) = if seq >= 0 && (seq as u32) < sequences {
+        let seq = mem.u32(bitmap + 0x40)? + 0x3c * seq as u32;
+        if mem.u32(seq + 0x34)? > 0 {
+            let sprite = mem.u32(seq + 0x38)?;
+            let mut b = [0f32; 4];
+            for (i, v) in b.iter_mut().enumerate() {
+                *v = mem.f32(sprite + 8 + 4 * i as u32)?;
+            }
+            (u32::from(mem.u16(sprite)?), b)
+        } else {
+            // The sequence's `first_image` (bitm sequences +0x20).
+            let first = mem.u16(seq + 0x20)? as i16;
+            (u32::try_from(first).unwrap_or(0), WHOLE)
+        }
+    } else {
+        (0, WHOLE)
+    };
+    Ok((image < mem.u32(bitmap + 0x44)?).then_some((image, bounds)))
+}
+
 /// A cropped kit widget's sprite: the image, bounds and size the game's
-/// own pick gives (sequence of the mode, its first sprite: E `0x0022ae21`,
-/// as `h1_hud_text::weapon`'s pick reads them), the bounds narrowed to the
-/// crop. A widget whose sequence has no sprites is left to the game.
+/// own pick gives ([`sprite_pick`]), the bounds narrowed to the crop. A
+/// sequence with no sprites draws its first image whole, so the crop
+/// narrows the whole image (the charge meter's strip and the pill's panel
+/// are such images: drawn uncropped they are 92 and 103 pixels wide, not
+/// 27). An image the bitmap does not have is left to the game.
 pub fn crop_sprite(
     mem: &mut dyn GuestMemory,
     sp: u32,
@@ -724,20 +759,10 @@ pub fn crop_sprite(
     };
     let at = mode(&*mem)?.index() as u32;
     let seq = mem.u8(widget + records::bitmap::SEQUENCES as u32 + at)? as i8;
-    if seq < 0 || seq as u32 >= mem.u32(bitmap + 0x3c)? {
+    let Some((image, b)) = sprite_pick(&*mem, bitmap, seq)? else {
         return Ok(false);
-    }
-    let seq = mem.u32(bitmap + 0x40)? + 0x3c * seq as u32;
-    if mem.u32(seq + 0x34)? == 0 {
-        return Ok(false);
-    }
-    let sprite = mem.u32(seq + 0x38)?;
-    let image = u32::from(mem.u16(sprite)?);
+    };
     let data = mem.u32(bitmap + 0x48)? + 0x74 * image;
-    let mut b = [0f32; 4];
-    for (i, v) in b.iter_mut().enumerate() {
-        *v = mem.f32(sprite + 8 + 4 * i as u32)?;
-    }
     for (i, v) in narrow(b, crop).iter().enumerate() {
         mem.set_f32(bounds + 4 * i as u32, *v)?;
     }

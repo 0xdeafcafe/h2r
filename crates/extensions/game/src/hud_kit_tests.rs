@@ -268,7 +268,9 @@ fn the_string_is_the_values_text_in_its_font() {
 }
 
 /// A crop narrows the sprite's bounds; the sprite hook reads the bitmap's
-/// sequence and gives its image and size with the narrowed bounds.
+/// sequence and gives its image and size with the narrowed bounds, a
+/// sequence without sprites included (the charge meter drew all 92
+/// columns of its strip while such sequences were left to the game).
 #[test]
 fn the_crop_narrows_the_sprite() {
     assert_eq!(
@@ -303,6 +305,7 @@ fn the_crop_narrows_the_sprite() {
     let (seqs, sprites, images) = (bitmap + 0x100, bitmap + 0x200, bitmap + 0x300);
     m.set_u32(bitmap + 0x3c, 1).unwrap();
     m.set_u32(bitmap + 0x40, seqs).unwrap();
+    m.set_u32(bitmap + 0x44, 2).unwrap();
     m.set_u32(bitmap + 0x48, images).unwrap();
     m.set_u32(seqs + 0x34, 1).unwrap();
     m.set_u32(seqs + 0x38, sprites).unwrap();
@@ -329,6 +332,46 @@ fn the_crop_narrows_the_sprite() {
         ],
         [1, 128, 8]
     );
+    // A sequence with no sprites draws its first image whole (the disc's
+    // battery strip, 92 by 8): the crop narrows the whole image, so the
+    // meter is the strip's last half, not all 92 columns.
+    m.set_u32(seqs + 0x34, 0).unwrap();
+    m.set_u16(seqs + 0x20, 0).unwrap();
+    m.set_u16(images + 4, 92).unwrap();
+    m.set_u16(images + 6, 8).unwrap();
+    assert!(crop_sprite(&mut m, SP, meter, bounds, &t).unwrap());
+    let b: Vec<f32> = (0..4).map(|i| m.f32(bounds + 4 * i).unwrap()).collect();
+    assert_eq!(b, [0.5, 1.0, 0.0, 1.0]);
+    assert_eq!(
+        [
+            m.u32(image).unwrap(),
+            m.u32(width).unwrap(),
+            m.u32(height).unwrap()
+        ],
+        [0, 92, 8]
+    );
+    // Its first image is its own `first_image`.
+    m.set_u16(seqs + 0x20, 1).unwrap();
+    assert!(crop_sprite(&mut m, SP, meter, bounds, &t).unwrap());
+    assert_eq!(m.u32(image).unwrap(), 1);
+    assert_eq!(
+        sprite_pick(&m, bitmap, 0).unwrap(),
+        Some((1, [0.0, 1.0, 0.0, 1.0]))
+    );
+    // No such sequence: image 0 whole, as the game draws it.
+    assert_eq!(
+        sprite_pick(&m, bitmap, 3).unwrap(),
+        Some((0, [0.0, 1.0, 0.0, 1.0]))
+    );
+    assert_eq!(
+        sprite_pick(&m, bitmap, -1).unwrap(),
+        Some((0, [0.0, 1.0, 0.0, 1.0]))
+    );
+    // An image the bitmap does not have is left to the game.
+    m.set_u16(seqs + 0x20, 2).unwrap();
+    assert_eq!(sprite_pick(&m, bitmap, 0).unwrap(), None);
+    assert!(!crop_sprite(&mut m, SP, meter, bounds, &t).unwrap());
+    m.set_u16(seqs + 0x20, 0).unwrap();
     // An uncropped widget, or another caller, is left to the game.
     assert!(!crop_sprite(&mut m, SP, t.widgets[1].address, bounds, &t).unwrap());
     m.set_u32(SP, 0x1234).unwrap();

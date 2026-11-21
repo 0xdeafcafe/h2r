@@ -520,9 +520,14 @@ returns a `Handle`), then publishes a `Values` whenever its state changes
    the element's engine font for the mode, and the four inputs copied to
    the HUD material's (`0x004e6980`), as the text draw does.
 5. **Crop** (`HUD_WIDGET_SPRITE`, before): for a cropped widget the hook
-   picks the sprite as the game does (the mode's sequence, its first
-   sprite, the image's width and height) and narrows its bounds to the
-   crop (`hud_kit::narrow`). The crop is applied to the sprite's bounds,
+   picks the sprite as the game does (`hud_kit::sprite_pick`: the mode's
+   sequence and its first sprite; a sequence with no sprites, its
+   `first_image` whole; no such sequence, image 0 whole; then the
+   image's width and height) and narrows its bounds to the crop
+   (`hud_kit::narrow`). A sprite-less sequence is cropped too: the
+   battery strip and the grenade panel are drawn as whole images, and
+   left to the game they drew 92 and 103 pixels wide, the meter across
+   the full strip and the pill over the retail pills' art. The crop is applied to the sprite's bounds,
    not to the quad's corners at `HUD_SHADER_QUAD`, whose order is not
    read (decoding 7).
 6. **Channels**, at the tick's end (`GAME_TICK`, after) and in the prompt
