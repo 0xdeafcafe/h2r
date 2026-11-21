@@ -47,6 +47,8 @@ jobs:
         run: cargo check --workspace --tests --keep-going
       - name: Run synthetic unit tests
         run: cargo test -p ir -p runtime -p asf -p xiso -p snapshot --lib
+      - name: Verify input mapping and audio mixing
+        run: cargo test -p input -p audio --lib
       - name: Check the guest C ABI
         run: cargo test -p runtime --test layout
       - name: Check local agent connections
