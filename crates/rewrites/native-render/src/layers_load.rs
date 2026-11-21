@@ -557,9 +557,15 @@ fn compile_layer3<R: std::io::Read + std::io::Seek>(
             Stage::Host(h) => return Err(format!("stage {n} is a host stage ({h:?})")),
         }
     }
+    let mut state = pass.state;
+    if pass.inherits_cull {
+        let (cull_mode, front_face) = device_default_cull();
+        state.primitive.cull_mode = cull_mode;
+        state.primitive.front_face = front_face;
+    }
     let fog_pass = fog_gpu::FogPass {
         look: pass.look,
-        state: pass.state,
+        state,
         fog: FogWords::default(),
     };
     let mut p = FogProgram::compile(&fog_pass, &code)?;
@@ -578,6 +584,22 @@ fn compile_layer3<R: std::io::Read + std::io::Seek>(
         }
     }
     Ok(p)
+}
+
+/// The cull a layer-3 pass that leaves `CULLMODE` unset draws with when
+/// no game holds the device's (`look::WorldPass::inherits_cull`): the D3D
+/// device's default, `CULLMODE` CCW with `FRONTFACE` CW. The source is
+/// `d3d::state::StateWords::defaults`, which translates to
+/// `gfx::state::RenderState::default()` (its test
+/// `defaults_translate_cleanly_to_gfx_defaults`), and the world draws
+/// keep it unless a pass sets its own.
+pub fn device_default_cull() -> (Option<wgpu::Face>, wgpu::FrontFace) {
+    let p = gfx::translate::primitive_state(
+        &gfx::state::RenderState::default(),
+        wgpu::PrimitiveTopology::TriangleList,
+        gfx::translate::Capabilities::from_features(wgpu::Features::empty()),
+    );
+    (p.cull_mode, p.front_face)
 }
 
 /// Whether image `image` of `bitmap` (bound at stage `stage`) is 2D: a
@@ -789,6 +811,14 @@ mod tests {
             plan_without_game(&view, &[], 8, 0.0),
             StaticLayer::default()
         );
+    }
+
+    /// The device's default cull culls one face: a pass inheriting it no
+    /// longer draws both.
+    #[test]
+    fn a_pass_inheriting_cull_takes_the_devices_default() {
+        let (cull, _) = device_default_cull();
+        assert!(cull.is_some());
     }
 
     /// Layer 3's plan draws every compiled material with the parts that

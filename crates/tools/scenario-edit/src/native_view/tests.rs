@@ -435,6 +435,10 @@ fn the_game_mode_draws_layer_3_where_it_compiled() {
             .map(|(_, k)| k)
             .collect()
     };
+    // Material 2 has no base map: only layer 3 draws it, and it picks.
+    let own: Vec<u16> = load.layer3_only().iter().map(|d| d.material).collect();
+    assert_eq!(own, [2]);
+    assert_eq!(load.triangles().len(), 6, "three quads of two triangles");
     let data = &load.layers().unwrap().layer3.data;
     assert_eq!(
         keys(Some(data)),

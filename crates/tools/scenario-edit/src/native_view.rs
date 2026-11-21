@@ -267,6 +267,10 @@ impl NativeLoad {
         );
         let mut out = Self::new(loaded.bsp, loaded.world, base, pages);
         out.layers = Some(Arc::new(layers));
+        // The parts only layer 3 draws (no base map) count as drawn.
+        let own = out.layer3_only().len();
+        out.stats.draws += own;
+        out.stats.untextured = out.stats.untextured.saturating_sub(own);
         out.stats.failed_sections = loaded.failed_sections;
         out.lightmap_error = loaded.lightmap_error;
         Ok(out)
@@ -330,14 +334,33 @@ impl NativeLoad {
         &self.world
     }
 
+    /// The parts the Game mode draws with their layer-3 pass that the
+    /// drawn world leaves out (no base map, or a lit part with no page):
+    /// counted in the stats and picked as drawn. Their index ranges are in
+    /// the drawn world's buffers (a filter keeps every vertex and index).
+    fn layer3_only(&self) -> Vec<&native_render::world::WorldDraw> {
+        let Some(l) = self.layers() else {
+            return Vec::new();
+        };
+        let drawn: std::collections::HashSet<(Owner, u8)> =
+            self.world.draws.iter().map(|d| (d.owner, d.part)).collect();
+        base_parts(self, Some(&l.layer3.data))
+            .into_iter()
+            .filter(|(d, k)| matches!(k, PassKey::Layer3(_)) && !drawn.contains(&(d.owner, d.part)))
+            .map(|(d, _)| d)
+            .collect()
+    }
+
     /// The drawn triangles in world space, for picking with the same ray
-    /// code as the editor's world ([`crate::geometry::surface`]).
+    /// code as the editor's world ([`crate::geometry::surface`]): the
+    /// drawn world's and the parts only layer 3 draws.
     pub fn triangles(&self) -> Vec<crate::geometry::Tri> {
         use crate::geometry::{cross, normalize, sub};
         let w = &self.world;
         let at = |i: u32| w.vertices.get(i as usize).map(|v| v.position);
         w.draws
             .iter()
+            .chain(self.layer3_only())
             .flat_map(|d| {
                 let start = d.first_index as usize;
                 let end = start + d.index_count as usize;

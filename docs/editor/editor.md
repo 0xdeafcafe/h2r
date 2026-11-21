@@ -649,8 +649,11 @@ build), and keeps the last four maps' scenes so reopening one is instant.
   look's set, `native_view::base_parts`). A material whose layer 3 is
   refused, and a part its pass does not take, draw the base look, and
   `view.stats` counts each by cause (`by_layer`, layer 3: `refused`,
-  `parts_refused`). Flat, Lightmap only and Collision draw the base
-  look alone.
+  `parts_refused`). A part only layer 3 draws (no base map) counts in
+  the BSP's `draws` and is picked. A pass that leaves `CULLMODE` unset
+  culls as the D3D device's default (CCW;
+  `layers_load::device_default_cull`). Flat, Lightmap only and Collision
+  draw the base look alone.
 - **World layers.** In the Game mode each BSP also draws the world
   layers 1, 5, 7, 8 and 20 with the materials' own translated passes
   (`native_view::NativeLayers`), in the game's order: layer 1 before the
