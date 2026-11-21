@@ -186,3 +186,58 @@ fn loose_grenades_use_the_maps_equipment_refs_and_exclude_attached_objects() {
     assert_eq!(ground.loose_grenades, [([0.; 3], Kind::Frag), ([1., 0., 0.], Kind::Plasma)]);
     assert!(ground.grenades.is_empty());
 }
+
+#[test]
+fn a_dodge_jump_never_lands_off_an_edge() {
+    // A platform 0 to 11.3 in X at height 2, over a void.
+    let map = MapData {
+        places: Default::default(),
+        nav: NavMesh::new(
+            vec![Poly::new(vec![
+                [0.0, -10.0, 2.0],
+                [11.3, -10.0, 2.0],
+                [11.3, 10.0, 2.0],
+                [0.0, 10.0, 2.0],
+            ])],
+            vec![],
+        ),
+        walls: Walls::default(),
+    };
+    let me = |aim| Me {
+        position: [10.0, 0.0, 2.0],
+        aim,
+        ..Me::default()
+    };
+    let dodge_to = |me: Me, grenade: Grenade| {
+        let mut dodge = Evasion::default();
+        for tick in 0..5 {
+            assert!(
+                dodge
+                    .dodge(tick, Skill::Legendary, &me, Some(&map), &[grenade])
+                    .is_none()
+            );
+        }
+        dodge
+            .dodge(5, Skill::Legendary, &me, Some(&map), &[grenade])
+            .unwrap()
+    };
+    // The grenade behind it: away is +X, off the edge inside a jump's
+    // carry. It still runs, on foot.
+    let (dir, jump) = dodge_to(
+        me([-1.0, 0.0, 0.0]),
+        Grenade {
+            id: 1,
+            at: [8.5, 0.0, 2.0],
+        },
+    );
+    assert!(dir[0] > 0.9 && !jump, "{dir:?} {jump}");
+    // The grenade ahead of it, along the platform: the same dodge jumps.
+    let (dir, jump) = dodge_to(
+        me([1.0, 0.0, 0.0]),
+        Grenade {
+            id: 2,
+            at: [11.5, 0.0, 2.0],
+        },
+    );
+    assert!(dir[0] < -0.9 && jump, "{dir:?} {jump}");
+}

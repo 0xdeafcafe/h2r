@@ -127,12 +127,15 @@ impl Evasion {
             .into_iter()
             .map(|turn| [(yaw + turn).cos(), (yaw + turn).sin()])
             .find(|&dir| map.is_none_or(|m| moves::standable(m, me.position, dir)))?;
+        // Check the jump's longer carry as well as overhead clearance.
         let jump = distance < 2.0
             && !notice.jumped
             && map.is_some_and(|m| {
                 let high = [eye[0], eye[1], eye[2] + 0.65];
                 let ahead = [high[0] + walk[0] * 0.7, high[1] + walk[1] * 0.7, high[2]];
-                m.walls.clear(eye, high) && m.walls.clear(high, ahead)
+                moves::jumpable(m, me.position, walk)
+                    && m.walls.clear(eye, high)
+                    && m.walls.clear(high, ahead)
             });
         notice.jumped |= jump;
         Some((walk, jump))
