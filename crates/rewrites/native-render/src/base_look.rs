@@ -145,12 +145,44 @@ pub fn base_stage(material: u16) -> Stage {
 /// The stage an unlit part's lightmap stage samples: white.
 pub const WHITE_STAGE: Stage = Stage::Host(HostStage::White);
 
-/// The material key an unlit part of `material` draws under: its program
-/// samples [`WHITE_STAGE`] where a lit part's samples the lightmap.
-pub const fn unlit(material: u16) -> u16 {
-    material | UNLIT
+/// What a part of a base-look set draws: a material's base look, lit
+/// (its lightmap at stage 3) or not ([`WHITE_STAGE`] there), or the
+/// material's own layer-3 pass (`layers_load::load_layer3`). A set's
+/// material slots stand for these through [`SetKeys`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum PassKey {
+    Base { material: u16, lit: bool },
+    Layer3(u16),
 }
-const UNLIT: u16 = 0x8000;
+
+/// A set's material slots (`fog_gpu::FogSet` keys its materials by
+/// `u16`): one per [`PassKey`], dense and in the order first asked, so
+/// no two keys share a slot.
+#[derive(Clone, Debug, Default)]
+pub struct SetKeys {
+    slots: HashMap<PassKey, u16>,
+    keys: Vec<PassKey>,
+}
+
+impl SetKeys {
+    /// `key`'s slot, given one when it has none; an error past the
+    /// `u16` slots.
+    pub fn slot(&mut self, key: PassKey) -> Result<u16, String> {
+        if let Some(&slot) = self.slots.get(&key) {
+            return Ok(slot);
+        }
+        let slot = u16::try_from(self.keys.len())
+            .map_err(|_| "more pass keys than a set has material slots".to_owned())?;
+        self.slots.insert(key, slot);
+        self.keys.push(key);
+        Ok(slot)
+    }
+
+    /// The key `slot` stands for.
+    pub fn key(&self, slot: u16) -> Option<PassKey> {
+        self.keys.get(usize::from(slot)).copied()
+    }
+}
 
 /// The base look's pass state: opaque, depth tested less-or-equal and
 /// written, nothing culled.
@@ -206,14 +238,14 @@ pub fn base_program(material: u16, lit: bool) -> Result<FogProgram, String> {
 }
 
 /// Every material's base look for `draws` (each part's material and
-/// whether it is lit): the programs by key (the material, or [`unlit`]
-/// of it), or the first that does not compile.
+/// whether it is lit): the programs by [`PassKey::Base`], or the first
+/// that does not compile.
 pub fn base_programs(
     draws: impl IntoIterator<Item = (u16, bool)>,
-) -> Result<HashMap<u16, Vec<FogProgram>>, String> {
+) -> Result<HashMap<PassKey, Vec<FogProgram>>, String> {
     let mut out = HashMap::new();
     for (material, lit) in draws {
-        let key = if lit { material } else { unlit(material) };
+        let key = PassKey::Base { material, lit };
         if !out.contains_key(&key) {
             out.insert(key, vec![base_program(material, lit)?]);
         }
@@ -247,7 +279,6 @@ mod tests {
         );
         let unlit_stage = base_program(3, false).unwrap().program.stages[3];
         assert_eq!(unlit_stage, WHITE_STAGE);
-        assert_eq!(unlit(3), 0x8003);
         // Not a tag: its own stage kind, bound from the host's lookup.
         assert!(base_stage(7).takes_image() && WHITE_STAGE.takes_image());
         assert!(!Stage::Lightmap.takes_image());
@@ -256,9 +287,42 @@ mod tests {
             Stage::Host(HostStage::BaseMap(7))
         );
         let keys = base_programs([(0, true), (0, false), (0, true)]).unwrap();
-        let mut keys: Vec<u16> = keys.into_keys().collect();
+        let mut keys: Vec<PassKey> = keys.into_keys().collect();
         keys.sort_unstable();
-        assert_eq!(keys, [0, 0x8000]);
+        assert_eq!(
+            keys,
+            [
+                PassKey::Base {
+                    material: 0,
+                    lit: false
+                },
+                PassKey::Base {
+                    material: 0,
+                    lit: true
+                }
+            ]
+        );
+    }
+
+    /// Each key has its own slot, dense in the order asked: a material's
+    /// lit and unlit looks and its layer-3 pass never share one.
+    #[test]
+    fn every_pass_key_has_its_own_slot() {
+        let mut keys = SetKeys::default();
+        let lit = PassKey::Base {
+            material: 0x8003,
+            lit: true,
+        };
+        let unlit = PassKey::Base {
+            material: 3,
+            lit: false,
+        };
+        assert_eq!(keys.slot(lit), Ok(0));
+        assert_eq!(keys.slot(unlit), Ok(1));
+        assert_eq!(keys.slot(PassKey::Layer3(3)), Ok(2));
+        assert_eq!(keys.slot(lit), Ok(0));
+        assert_eq!(keys.key(1), Some(unlit));
+        assert_eq!(keys.key(3), None);
     }
 
     /// An instruction naming two constants (or two inputs) is an error,

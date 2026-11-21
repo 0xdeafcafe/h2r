@@ -16,7 +16,7 @@
 use crate::geometry::{Camera, Marker};
 use assets::ResourceFiles;
 use map::{Map, TagId};
-use native_render::base_look;
+use native_render::base_look::{self, PassKey, SetKeys};
 use native_render::camera::RenderCamera;
 use native_render::cull::CullStats;
 use native_render::gpu::{DepthRule, GpuWorld, Image, PassViewport};
@@ -192,8 +192,8 @@ pub struct NativeLoad {
     base_unbound: Arc<std::sync::OnceLock<String>>,
 }
 
-/// The base look's programs by material key ([`base_look::base_programs`]).
-type BasePasses = HashMap<u16, Vec<native_render::fog_gpu::FogProgram>>;
+/// The base look's programs by key ([`base_look::base_programs`]).
+type BasePasses = HashMap<PassKey, Vec<native_render::fog_gpu::FogProgram>>;
 
 /// `world`'s base look as translated passes, or why it cannot be: a
 /// program that does not compile, or a placement with no model rows (the
@@ -526,32 +526,34 @@ fn base_set(
     load: &NativeLoad,
     lighting: Lighting,
 ) -> Result<(native_render::fog_gpu::FogSet, DrawnLayer), String> {
-    let programs = load.base_passes.as_ref().map_err(Clone::clone)?;
+    let base = load.base_passes.as_ref().map_err(Clone::clone)?;
     let w = &load.world;
-    let key = |d: &native_render::world::WorldDraw| {
-        if d.lightmap.is_some() {
-            d.material
-        } else {
-            base_look::unlit(d.material)
+    // Each part's key, through the set's slots (`FogSet` keys by `u16`).
+    let mut keys = SetKeys::default();
+    let mut programs = HashMap::new();
+    let mut parts: Vec<layers_load::Part> = Vec::with_capacity(w.draws.len());
+    for d in &w.draws {
+        let key = PassKey::Base {
+            material: d.material,
+            lit: d.lightmap.is_some(),
+        };
+        let slot = keys.slot(key)?;
+        if !programs.contains_key(&slot) {
+            let passes = base.get(&key).ok_or("a draw has no base look")?;
+            programs.insert(slot, passes.clone());
         }
-    };
-    let parts: Vec<layers_load::Part> = w
-        .draws
-        .iter()
-        .map(|d| {
-            (
-                (d.owner, d.part),
-                (d.first_index, d.index_count, d.lightmap, key(d)),
-            )
-        })
-        .collect();
+        parts.push((
+            (d.owner, d.part),
+            (d.first_index, d.index_count, d.lightmap, slot),
+        ));
+    }
     let white = Image::solid([255; 4]);
     let set = native_render::fog_gpu::FogSet::new(
         device,
         queue,
         w,
         parts.clone(),
-        (**programs).clone(),
+        programs,
         &mut |s| match s {
             Stage::Host(HostStage::White) => Some(white.clone()),
             Stage::Host(HostStage::BaseMap(m)) => load.base.get(&m).map(|i| lighting.base(i)),
