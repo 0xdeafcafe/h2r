@@ -633,8 +633,10 @@ wrapper. On a device with a native frame owner, the recorder waits for
 the worker's presentation decision. An original presentation supplies
 the D3D report. A native presentation supplies the executed graph's
 attachment runs, slots, typed stages, snapshots and `display_frame`
-counters. A readback required for a guest-pass snapshot can make the
-worker present the original commands for that frame.
+counters. The worker keeps a requested original pass read at its position
+among the guest commands. If the native graph takes the frame, its own
+pass observer supplies the snapshot. Arming a snapshot preserves the
+worker's choice of renderer.
 
 - **The frame.** `totals` (passes, draws by outcome, vertices, clears,
   copies, reads, distinct targets); `passes`: runs of work on one colour
@@ -666,9 +668,12 @@ worker present the original commands for that frame.
   (`constants -38..-35,58`), implies `draws`, and `max N` sets `max_draws`.
 - **Snapshots.** `snap` (at most 4 pass numbers): when such a pass ends,
   its colour target is read back as BGRA and written as a PNG under the
-  cache directory's `frames/` (`frame-<seq>-pass-<n>.png`); `snaps` gives
-  each file or error. A pass with no draw has no known size and says so.
-  This is a GPU round trip, only when asked.
+  cache directory's `frames/`. Original passes use
+  `frame-<pid>-<seq>-pass-<n>.png`. Native passes use a `display-` or
+  `private-` prefix. Read the path or error in `snaps`. An original pass
+  with no known colour size reports that it cannot be read. A completed
+  report retains its files. Replacing a pending capture releases its
+  provisional snapshots. A snapshot incurs a GPU round trip.
 
 A private capture has its own recorder. When the private scene renderer
 is installed, arm the recorder before requesting a lighting capture,

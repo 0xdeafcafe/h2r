@@ -97,7 +97,12 @@ enum Stage {
     Recording(Box<Recording>),
     Graph(Arming),
     /// The original draw report, pending the worker's choice for this device Swap.
-    Routing { swap: u64, arming: Arming, original: Box<FrameRecord> },
+    Routing {
+        swap: u64,
+        arming: Arming,
+        original: Box<FrameRecord>,
+        original_files: Vec<private_capture::Written>,
+    },
 }
 
 #[derive(Clone)]
@@ -112,6 +117,9 @@ struct Arming {
 
 struct Recording {
     arming: Arming,
+    // Original snapshots become public with their report. A rearm or
+    // a native presentation discards any files still held by this route.
+    files: Vec<private_capture::Written>,
     began: Instant,
     rec: FrameRecord,
     targets: BTreeSet<String>,
@@ -180,17 +188,20 @@ impl FrameProbe {
         let seq = s.next_seq;
         s.next_seq += 1;
         let at_present = s.presents;
-        s.stage = Stage::Waiting(Arming {
+        let old = std::mem::replace(&mut s.stage, Stage::Waiting(Arming {
             seq,
             at_present,
             draws: p.draws,
             max_draws,
             snap: p.snap.iter().copied().collect(),
             constants: p.constants.clone(),
-        });
+        }));
         s.last = None;
         self.armed.store(true, Ordering::Relaxed);
-        Ok(reply(&s))
+        let answer = reply(&s);
+        drop(s);
+        drop(old);
+        Ok(answer)
     }
 
     /// A superseded pass capture owns only its own display arming. An
@@ -199,8 +210,10 @@ impl FrameProbe {
         let Some(seq) = job.and_then(|j| j.probe_seq) else { return };
         let mut s = self.lock();
         if s.stage.arming().is_some_and(|a| a.seq == seq) {
-            s.stage = Stage::Idle;
+            let old = std::mem::replace(&mut s.stage, Stage::Idle);
             self.armed.store(false, Ordering::Relaxed);
+            drop(s);
+            drop(old);
         }
     }
 
@@ -295,6 +308,7 @@ impl FrameProbe {
                         ..Default::default()
                     },
                     arming,
+                    files: Vec::new(),
                     began: Instant::now(),
                     targets: BTreeSet::new(),
                     key: None,
@@ -311,8 +325,11 @@ impl FrameProbe {
                 r.rec.totals.passes = r.rec.passes.len();
                 r.rec.totals.targets = r.targets.len();
                 if let Some(swap) = swap {
-                    s.stage = Stage::Routing { swap, arming: r.arming, original: Box::new(r.rec) };
+                    s.stage = Stage::Routing {
+                        swap, arming: r.arming, original: Box::new(r.rec), original_files: r.files,
+                    };
                 } else {
+                    for file in r.files { file.retain(); }
                     s.last = Some(r.rec);
                     if ask.is_none() {
                         self.armed.store(false, Ordering::Relaxed);
@@ -326,16 +343,46 @@ impl FrameProbe {
     /// Where a snapshot the probe asked for went, or why it failed. The
     /// frame may be done already (a snapshot asked for at its present).
     pub fn snapped(&self, pass: usize, result: Result<String, String>) {
-        self.note_snap(None, pass, result);
+        self.note_snap(None, pass, result, None);
     }
 
     /// A callback can arrive after a second arming. Only the request which
     /// paid for this readback may consume it.
     pub fn snapped_for(&self, ask: SnapAsk, result: Result<String, String>) {
-        self.note_snap(Some(ask.seq), ask.pass, result);
+        self.note_snap(Some(ask.seq), ask.pass, result, None);
     }
 
-    fn note_snap(&self, seq: Option<u64>, pass: usize, result: Result<String, String>) {
+    /// Write the original pass for this arming. A stale request skips the
+    /// read, and a replacement during readback or PNG encoding discards the
+    /// file. The display worker may still choose a different graph.
+    pub fn write_snapshot(&self, ask: SnapAsk, read: impl FnOnce() -> Result<crate::compare::Rgba, String>) {
+        self.write_snapshot_in(ask, &agent_proto::cache_dir().join("frames"), read);
+    }
+
+    fn write_snapshot_in(&self, ask: SnapAsk, dir: &Path, read: impl FnOnce() -> Result<crate::compare::Rgba, String>) {
+        let wanted = {
+            let s = self.lock();
+            match &s.stage {
+                Stage::Recording(r) => r.arming.seq == ask.seq,
+                Stage::Routing { original, .. } => original.seq == ask.seq,
+                Stage::Idle => s.last.as_ref().is_some_and(|f| f.seq == ask.seq && f.display_frame.is_none()),
+                _ => false,
+            }
+        };
+        if !wanted { return; }
+        let written = read().and_then(|image| {
+            let name = format!("frame-{}-{}-pass-{}.png", std::process::id(), ask.seq, ask.pass);
+            let file = private_capture::Written::new(dir.join(name));
+            crate::compare::write_png(file.path(), &image).map_err(|e| e.to_string())?;
+            Ok(file)
+        });
+        match written {
+            Ok(file) => self.note_snap(Some(ask.seq), ask.pass, Ok(file.path().display().to_string()), Some(file)),
+            Err(error) => self.snapped_for(ask, Err(error)),
+        }
+    }
+
+    fn note_snap(&self, seq: Option<u64>, pass: usize, result: Result<String, String>, file: Option<private_capture::Written>) {
         let mut s = self.lock();
         let belongs = |actual| seq.is_none_or(|wanted| wanted == actual);
         let snap = match result {
@@ -351,11 +398,18 @@ impl FrameProbe {
             },
         };
         match &mut s.stage {
-            Stage::Recording(r) if belongs(r.arming.seq) => r.rec.snaps.push(snap),
-            Stage::Routing { original, .. } if belongs(original.seq) => original.snaps.push(snap),
+            Stage::Recording(r) if belongs(r.arming.seq) => {
+                r.rec.snaps.push(snap);
+                r.files.extend(file);
+            }
+            Stage::Routing { original, original_files, .. } if belongs(original.seq) => {
+                original.snaps.push(snap);
+                original_files.extend(file);
+            }
             Stage::Idle => {
-                if let Some(last) = &mut s.last && belongs(last.seq) {
+                if let Some(last) = &mut s.last && belongs(last.seq) && last.display_frame.is_none() {
                     last.snaps.push(snap);
+                    if let Some(file) = file { file.retain(); }
                     self.armed.store(false, Ordering::Relaxed);
                 }
             }
@@ -1128,6 +1182,38 @@ mod tests {
             depth_write: true,
             ..DrawInfo::default()
         }
+    }
+
+    #[test]
+    fn original_snapshots_survive_only_if_their_frame_is_published() {
+        let p = FrameProbe::new();
+        let params = FrameParams { arm: true, snap: vec![0], ..Default::default() };
+        let dir = std::env::temp_dir().join(format!("h2-probe-original-{}", std::process::id()));
+        let arm = |start| {
+            let seq = p.arm(&params).unwrap().seq.unwrap();
+            p.present(start);
+            p.clear("colour", None);
+            (SnapAsk { seq, pass: 0 }, dir.join(format!("frame-{}-{seq}-pass-0.png", std::process::id())))
+        };
+        let image = || Ok(crate::compare::Rgba::filled(2, 1, [40, 12, 9, 255]));
+
+        // The first snapshot arrives while the original frame is open.
+        let (old, old_path) = arm(1);
+        p.write_snapshot_in(old, &dir, image);
+        assert!(old_path.is_file());
+        p.present_routed(2, Some(2));
+        let (current, path) = arm(3);
+        assert!(!old_path.exists(), "the abandoned route released its PNG");
+        p.write_snapshot_in(old, &dir, || panic!("a stale pass requested pixels"));
+
+        // The final pass's callback can arrive after the original present.
+        assert_eq!(p.present(4), Some(current));
+        p.write_snapshot_in(current, &dir, image);
+        assert_eq!(p.reply().frame.unwrap().snaps[0].file.as_deref(), path.to_str());
+        p.arm(&params).unwrap();
+        assert!(path.is_file(), "a published reply owns its file");
+        std::fs::remove_file(path).unwrap();
+        std::fs::remove_dir(dir).unwrap();
     }
 
     #[test]
