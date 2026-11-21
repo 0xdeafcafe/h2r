@@ -1,0 +1,74 @@
+name: Windows desktop
+
+on:
+  push:
+    branches: [windows-desktop]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-desktop-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  WGPU_BACKEND: vulkan
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  desktop:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable-x86_64-pc-windows-msvc
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - name: Install LLVM 22
+        shell: pwsh
+        run: |
+          $bin = "$env:ProgramFiles\LLVM\bin"
+          if (!(Test-Path "$bin\clang.exe") -or ((& "$bin\clang.exe" --version)[0] -notmatch 'clang version 22\.')) {
+            $url = 'https://github.com/llvm/llvm-project/releases/download/llvmorg-22.1.8/LLVM-22.1.8-win64.exe'
+            $installer = "$env:RUNNER_TEMP\llvm.exe"
+            curl.exe -fLsS --retry 3 $url -o $installer
+            if ($LASTEXITCODE) { exit $LASTEXITCODE }
+            $result = Start-Process $installer -ArgumentList '/S' -Wait -PassThru
+            if ($result.ExitCode) { exit $result.ExitCode }
+          }
+          & "$bin\clang.exe" --version
+          $bin >> $env:GITHUB_PATH
+      - uses: Swatinem/rust-cache@v2
+      - name: Check workspace and tests
+        run: cargo check --workspace --tests
+      - name: Run synthetic unit tests
+        run: cargo test -p ir -p hostfault -p runtime --lib
+      - name: Compile and load a generated DLL
+        run: cargo test -p emit --test windows -- --nocapture
+      - name: Install Vulkan loader and Mesa lavapipe
+        shell: pwsh
+        run: |
+          $dir = "$env:RUNNER_TEMP\lavapipe"
+          $url = 'https://github.com/pal1000/mesa-dist-win/releases/download/26.2.6/mesa3d-26.2.6-release-msvc.7z'
+          curl.exe -fLsS --retry 3 $url -o "$env:RUNNER_TEMP\mesa.7z"
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          7z x "$env:RUNNER_TEMP\mesa.7z" "-o$dir" 'x64/*'
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $icd = (Resolve-Path "$dir\x64\lvp_icd.x86_64.json").Path
+          "$dir\x64" >> $env:GITHUB_PATH
+          "VK_DRIVER_FILES=$icd" >> $env:GITHUB_ENV
+          "VK_ICD_FILENAMES=$icd" >> $env:GITHUB_ENV
+          if (!(Test-Path "$env:SystemRoot\System32\vulkan-1.dll")) {
+            $runtime = 'https://sdk.lunarg.com/sdk/download/1.4.328.1/windows/VulkanRT-X64-1.4.328.1-Components.zip'
+            curl.exe -fLsS --retry 3 $runtime -o "$dir\loader.zip"
+            if ($LASTEXITCODE) { exit $LASTEXITCODE }
+            Expand-Archive "$dir\loader.zip" "$dir\loader"
+            $dll = Get-ChildItem "$dir\loader" -Recurse -Filter 'vulkan-1.dll' | Where-Object { $_.Directory.Name -eq 'x64' } | Select-Object -First 1
+            if (!$dll) { throw 'x64 Vulkan loader missing from runtime archive' }
+            $dll.DirectoryName >> $env:GITHUB_PATH
+          }
+      - name: Render and read back on lavapipe
+        run: cargo test -p gfx --test headless -- --include-ignored --test-threads=1 --nocapture
