@@ -257,7 +257,14 @@ impl NativeLoad {
                 pages.insert(k, image);
             }
         }
-        let layers = NativeLayers::read(map, files, &loaded.shaders, &loaded.world, &pages);
+        let layers = NativeLayers::read(
+            map,
+            files,
+            &loaded.shaders,
+            &loaded.world,
+            &pages,
+            loaded.lightmap_bitmap.is_none(),
+        );
         let mut out = Self::new(loaded.bsp, loaded.world, base, pages);
         out.layers = Some(Arc::new(layers));
         out.stats.failed_sections = loaded.failed_sections;
@@ -384,13 +391,20 @@ pub fn editor_plan(layer: u8, mut plan: StaticLayer) -> StaticLayer {
 /// refused, named). Each layer is planned with no game
 /// (`layers_load::plan_without_game` at render time 0: an animated pass
 /// is refused, so the time reaches no draw), and layer 1 is refused
-/// whole ([`editor_plan`]).
+/// whole ([`editor_plan`]). Layer 3 is loaded with its own translated
+/// passes too (`layers_load::load_layer3`, planned by
+/// `layers_load::plan_layer3`), drawn in the Game mode in the base look's
+/// set ([`base_parts`]).
 pub struct NativeLayers {
     view: LayersView,
     /// The world's draws and placements before the base-map filter: a
     /// layer draws a part whatever its base map, from the same buffers.
     world: World,
     images: StageImages,
+    /// Layer 3 with its own translated passes
+    /// (`layers_load::load_layer3`), which the Game mode draws in place of
+    /// the base look; its plan is in `plans` under 3.
+    layer3: layers_load::Layer3,
     plans: BTreeMap<u8, StaticLayer>,
 }
 
@@ -401,6 +415,7 @@ impl NativeLayers {
         shaders: &[TagId],
         world: &World,
         pages: &HashMap<LightmapKey, Image>,
+        unlit_bsp: bool,
     ) -> Self {
         let world = World {
             draws: world.draws.clone(),
@@ -421,17 +436,30 @@ impl NativeLayers {
             &mut decoder,
             Some(&CAMERA_GIVEN),
         );
-        let plans = native_render::layer_pass::LAYERS
+        let layer3 = layers_load::load_layer3(
+            map,
+            files,
+            shaders,
+            &world,
+            pages,
+            &mut images,
+            &mut decoder,
+            unlit_bsp,
+            Some(&CAMERA_GIVEN),
+        );
+        let mut plans: BTreeMap<u8, StaticLayer> = native_render::layer_pass::LAYERS
             .into_iter()
             .map(|layer| {
                 let plan = layers_load::plan_without_game(&view, shaders, layer, 0.0);
                 (layer, editor_plan(layer, plan))
             })
             .collect();
+        plans.insert(layers_load::LAYER_3, layers_load::plan_layer3(&layer3));
         Self {
             view,
             world,
             images,
+            layer3,
             plans,
         }
     }
@@ -515,11 +543,47 @@ pub struct NativeWorld {
 /// game's layer 3, which the base look stands in for).
 const BASE_LAYER: u8 = 3;
 
-/// `load`'s base look in `lighting` as a translated pass
-/// ([`NativeLoad::base_passes`]): each draw's base map (the mode's),
-/// times its lightmap page (the mode's, white where the mode has none)
-/// or white when unlit. The cause when the passes did not compile or a
-/// part does not bind.
+/// The parts `load`'s base-look set draws, in the world's draw order,
+/// each with what it draws: with `layer3` (the Game mode), a part its
+/// material's layer-3 pass takes draws that pass, from the world before
+/// the base-map filter; every other part of the drawn world draws its
+/// material's base look, lit or not.
+pub fn base_parts<'a>(
+    load: &'a NativeLoad,
+    layer3: Option<&layers_load::LayerData>,
+) -> Vec<(&'a native_render::world::WorldDraw, PassKey)> {
+    let base_key = |d: &native_render::world::WorldDraw| PassKey::Base {
+        material: d.material,
+        lit: d.lightmap.is_some(),
+    };
+    let (Some(layer3), Some(layers)) = (layer3, load.layers()) else {
+        return load.world.draws.iter().map(|d| (d, base_key(d))).collect();
+    };
+    let own: std::collections::HashSet<(Owner, u8)> =
+        layer3.parts.iter().map(|&(k, _)| k).collect();
+    let drawn: std::collections::HashSet<(Owner, u8)> =
+        load.world.draws.iter().map(|d| (d.owner, d.part)).collect();
+    layers
+        .world
+        .draws
+        .iter()
+        .filter_map(|d| {
+            let k = (d.owner, d.part);
+            if own.contains(&k) {
+                Some((d, PassKey::Layer3(d.material)))
+            } else {
+                drawn.contains(&k).then(|| (d, base_key(d)))
+            }
+        })
+        .collect()
+}
+
+/// `load`'s base look in `lighting` as translated passes
+/// ([`NativeLoad::base_passes`], [`base_parts`]): each draw's base map
+/// (the mode's), times its lightmap page (the mode's, white where the
+/// mode has none) or white when unlit; in the Game mode a part its
+/// material's own layer-3 pass takes draws that pass instead. The cause
+/// when the passes did not compile or a part does not bind.
 fn base_set(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
@@ -528,25 +592,29 @@ fn base_set(
 ) -> Result<(native_render::fog_gpu::FogSet, DrawnLayer), String> {
     let base = load.base_passes.as_ref().map_err(Clone::clone)?;
     let w = &load.world;
+    let layer3 = load
+        .layers()
+        .filter(|_| lighting == Lighting::Game)
+        .map(|l| &l.layer3);
     // Each part's key, through the set's slots (`FogSet` keys by `u16`).
     let mut keys = SetKeys::default();
     let mut programs = HashMap::new();
-    let mut parts: Vec<layers_load::Part> = Vec::with_capacity(w.draws.len());
-    for d in &w.draws {
-        let key = PassKey::Base {
-            material: d.material,
-            lit: d.lightmap.is_some(),
-        };
+    let mut parts: Vec<layers_load::Part> = Vec::new();
+    for (d, key) in base_parts(load, layer3.map(|l| &l.data)) {
         let slot = keys.slot(key)?;
         if !programs.contains_key(&slot) {
-            let passes = base.get(&key).ok_or("a draw has no base look")?;
-            programs.insert(slot, passes.clone());
+            let passes = match key {
+                PassKey::Base { .. } => base.get(&key),
+                PassKey::Layer3(m) => layer3.and_then(|l| l.data.programs.get(&m)),
+            };
+            programs.insert(slot, passes.ok_or("a part has no pass")?.clone());
         }
         parts.push((
             (d.owner, d.part),
             (d.first_index, d.index_count, d.lightmap, slot),
         ));
     }
+    let stage_images = load.layers().map(|l| &l.images);
     let white = Image::solid([255; 4]);
     let set = native_render::fog_gpu::FogSet::new(
         device,
@@ -557,7 +625,9 @@ fn base_set(
         &mut |s| match s {
             Stage::Host(HostStage::White) => Some(white.clone()),
             Stage::Host(HostStage::BaseMap(m)) => load.base.get(&m).map(|i| lighting.base(i)),
-            _ => None,
+            // A layer-3 pass's own stage image.
+            Stage::Bitmap { bitmap, image } => stage_images?.get(&(bitmap, image)).cloned(),
+            Stage::Empty | Stage::Lightmap | Stage::Engine(_) => None,
         },
         &mut |k| {
             Some(
@@ -637,7 +707,8 @@ impl NativeWorld {
             .layers()
             .filter(|_| lighting == Lighting::Game && base.is_some())
         {
-            for (&layer, plan) in &l.plans {
+            // Layer 3 draws in the base look's set ([`base_set`]).
+            for (&layer, plan) in l.plans.iter().filter(|(l, _)| **l != BASE_LAYER) {
                 let Some(set) = layers_load::upload_static(
                     &l.view,
                     layer,

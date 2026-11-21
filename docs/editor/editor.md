@@ -642,6 +642,15 @@ build), and keeps the last four maps' scenes so reopening one is instant.
   `native_view::DEPTH_RULE`), so a mark on a surface passes the depth
   test against it. A map whose BSPs the native loader does not read (a Halo 1
   reference) draws its textured scene instead.
+- **Layer 3.** In the Game mode each BSP draws its materials' own
+  translated layer-3 passes in place of the base look
+  (`layers_load::load_layer3`, compiled as the game's world glue
+  compiles them, with the camera's view constants; drawn in the base
+  look's set, `native_view::base_parts`). A material whose layer 3 is
+  refused, and a part its pass does not take, draw the base look, and
+  `view.stats` counts each by cause (`by_layer`, layer 3: `refused`,
+  `parts_refused`). Flat, Lightmap only and Collision draw the base
+  look alone.
 - **World layers.** In the Game mode each BSP also draws the world
   layers 1, 5, 7, 8 and 20 with the materials' own translated passes
   (`native_view::NativeLayers`), in the game's order: layer 1 before the
