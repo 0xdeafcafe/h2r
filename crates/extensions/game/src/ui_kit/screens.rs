@@ -926,7 +926,8 @@ mod tests {
     ///   cover their opener's rows.
     /// - The same for the dialogs opened over another page: the browser's
     ///   filters and the Clanker card (Quick Options), and the Theater
-    ///   pause menu's pickers (the large dialog, over the menu's own rows).
+    ///   pause menu's pickers (the large dialog, over the menu's own rows;
+    ///   its camera picker's title also lands on them).
     fn known(screen: &str, issue: &crate::ui_kit::layout::Issue) -> bool {
         use crate::ui_kit::layout::Issue;
         matches!(
@@ -937,6 +938,9 @@ mod tests {
                 Issue::Contrast { id, .. }
             )
                 if id.starts_with("row.")
+        ) || matches!(
+            (screen, issue),
+            ("theater.pause-menu", Issue::Contrast { id, .. }) if id == "title"
         )
     }
 
