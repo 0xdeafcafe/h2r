@@ -107,30 +107,30 @@ pub fn run(args: Vec<String>) -> Result<()> {
     }
     let mut reader = film::Reader::open(&opts.film)?;
     let header = reader.header.clone();
-    let mut target = opts
+    let target = opts
         .seek
         .unwrap_or_else(|| opts.range.map_or(0, |[start, _]| start));
     if let Some([start, end]) = opts.range {
         ensure!((start..end).contains(&target), "seek outside film clip");
     }
     ensure!(target <= header.meta.length_ticks, "seek beyond film");
-    let mut speed = opts.speed;
-    let mut paused = false;
-    let mut presentation = boot::theater::Presentation::default();
-    let mut from_tick = 0;
+    let mut launch = boot::theater::Restart {
+        target,
+        from_tick: (opts.seek.is_some() || target > 0).then_some(0),
+        source: None,
+        speed: opts.speed,
+        paused: false,
+        presentation: Default::default(),
+    };
     loop {
         let temp = Temp::new()?;
         let restart = temp.0.join("restart.json");
-        serde_json::to_writer(fs::File::create(temp.0.join("view.json"))?, &presentation)?;
+        serde_json::to_writer(fs::File::create(temp.0.join("launch.json"))?, &launch)?;
         let mut cmd = Command::new(std::env::current_exe()?);
         cmd.arg("theater")
             .args(&args)
             .env("H2_AGENT", &opts.socket)
             .env("H2_THEATER_WORK", &temp.0)
-            .env("H2_THEATER_TARGET", target.to_string())
-            .env("H2_THEATER_FROM", from_tick.to_string())
-            .env("H2_THEATER_SPEED", speed.to_string())
-            .env("H2_THEATER_PAUSED", if paused { "1" } else { "0" })
             .env("H2_HOST_LOBBY", if header.lobby { "1" } else { "0" })
             .env(
                 "H2_HOST_LOBBY_MACHINE_START",
@@ -159,8 +159,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
         if !restart.try_exists()? {
             return Ok(());
         }
-        (target, speed, paused, presentation, from_tick) =
-            serde_json::from_reader(fs::File::open(restart)?)?;
+        launch = serde_json::from_reader(fs::File::open(restart)?)?;
     }
 }
 
@@ -209,12 +208,14 @@ fn child(opts: Options, work: &Path) -> Result<()> {
     );
     let entry = film.machine_section().unique(film::DATA)?.clone();
     let data = work.join("data");
-    let target: u64 = std::env::var("H2_THEATER_TARGET")?.parse()?;
-    let delta = if target > 0
+    let launch: boot::theater::Restart =
+        serde_json::from_reader(fs::File::open(work.join("launch.json"))?)?;
+    let delta = if launch.target > 0
         && film.header.version >= 2
         && compatibility == film::image::ImageMatch::Native
+        && launch.source != Some(agent_proto::theater::SeekRoute::Boot)
     {
-        film::blam::TrackReader::open(&opts.film)?.disk_delta_at(target)?
+        film::blam::TrackReader::open(&opts.film)?.disk_delta_at(launch.target)?
     } else {
         Vec::new()
     };
@@ -239,21 +240,19 @@ fn child(opts: Options, work: &Path) -> Result<()> {
     #[cfg(feature = "desktop")]
     let film_parent = opts.film.parent().unwrap_or(Path::new(".")).to_owned();
     let camera = boot::theater::FilmCamera::default();
-    let presentation: boot::theater::Presentation =
-        serde_json::from_reader(fs::File::open(work.join("view.json"))?)?;
     #[cfg(feature = "desktop")]
-    let clip_marks = presentation.clip_marks;
+    let clip_marks = launch.presentation.clip_marks;
+    #[cfg(feature = "desktop")]
+    let starting_seek = (launch.target > 0).then_some(launch.target);
     let replay = boot::theater::Replay {
         path: opts.film.clone(),
         render_every: opts.every,
-        speed: std::env::var("H2_THEATER_SPEED")?.parse()?,
-        seek_tick: target,
-        from_tick: std::env::var("H2_THEATER_FROM")
-            .ok()
-            .and_then(|tick| tick.parse().ok())
-            .unwrap_or(0),
-        paused_at_target: std::env::var("H2_THEATER_PAUSED")? == "1",
-        presentation,
+        speed: launch.speed,
+        seek_tick: launch.target,
+        from_tick: launch.from_tick,
+        seek_source: launch.source,
+        paused_at_target: launch.paused,
+        presentation: launch.presentation,
         restart: work.join("restart.json"),
         camera: camera.clone(),
         window_closed: None,
@@ -324,6 +323,7 @@ fn child(opts: Options, work: &Path) -> Result<()> {
             meta,
             opts.range,
             clip_marks,
+            starting_seek,
             opts.socket,
             dir.clone(),
         )?;

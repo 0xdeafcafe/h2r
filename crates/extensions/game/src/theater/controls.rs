@@ -128,12 +128,12 @@ impl Session {
                             if p.id.is_some_and(|id| id != s.header.meta.id) {
                                 return Err(RpcError::new(code::GONE, "film is not loaded"));
                             }
-                            s.paused = false;
+                            s.set_paused(false);
                         }
                         api::PAUSE | api::STATE => {
                             let _: Empty = params(p)?;
                             if name == api::PAUSE {
-                                s.paused = true;
+                                s.set_paused(true);
                             }
                         }
                         api::SPEED => {
@@ -144,45 +144,13 @@ impl Session {
                                     "speed must be 0.25 to 4",
                                 ));
                             }
-                            s.speed = p.speed;
+                            s.set_speed(p.speed);
                         }
                         api::SEEK => {
-                            let p = params::<api::Seek>(p)?;
-                            if p.tick > s.header.meta.length_ticks {
-                                return Err(RpcError::new(
-                                    code::INVALID_PARAMS,
-                                    "seek beyond film",
-                                ));
-                            }
-                            if let Some(marks) = p.clip_marks {
-                                let [start, end] = marks;
-                                if start.is_some_and(|tick| tick > s.header.meta.length_ticks)
-                                    || end.is_some_and(|tick| {
-                                        tick > s.header.meta.length_ticks.saturating_add(1)
-                                            || start.is_none_or(|start| tick <= start)
-                                    })
-                                {
-                                    return Err(RpcError::new(
-                                        code::INVALID_PARAMS,
-                                        "invalid clip marks",
-                                    ));
-                                }
-                                s.presentation.clip_marks = marks;
-                            }
-                            let source = s
-                                .engine
-                                .as_ref()
-                                .map_or(api::SeekSource::Boot, |engine| {
-                                    engine.seek_source(p.tick)
-                                });
-                            s.seek = Some(SeekProgress {
-                                target: p.tick,
-                                from_tick: s.tick,
-                                source,
-                                warm: false,
-                                restore_ms: None,
-                            });
-                            s.restart = Some(p.tick);
+                            s.seek(params(p)?)?;
+                        }
+                        api::STEP => {
+                            s.step(params(p)?)?;
                         }
                         api::CAMERA => {
                             let p = params::<api::Camera>(p)?;
@@ -213,22 +181,16 @@ impl Session {
                     Ok(serde_json::json!(api::State {
                         id: s.header.meta.id.clone(),
                         tick: s.tick,
-                        length_ticks: s.header.meta.length_ticks,
+                        length_ticks: s.length(),
                         paused: s.paused,
                         speed: s.speed,
-                        seeking: s.seeking.is_some() || s.restart.is_some(),
+                        speed_reached: s.speed_reached(),
+                        seeking: s.jump_in_progress(),
                         camera_seat: seat,
                         camera: s.presentation.camera.mode,
                         camera_player: s.presentation.camera.player.clone(),
                         kills: s.presentation.kills.iter().copied().collect(),
-                        seek: s.seek.as_ref().map(|seek| api::SeekInfo {
-                            target: seek.target,
-                            from_tick: seek.from_tick,
-                            source: seek.source,
-                            warm: seek.warm,
-                            remaining_ticks: seek.target.saturating_sub(s.tick),
-                            restore_ms: seek.restore_ms,
-                        }),
+                        seek: s.seek_info(),
                     }))
                 },
             );

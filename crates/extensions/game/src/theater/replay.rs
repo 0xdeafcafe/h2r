@@ -19,10 +19,19 @@ pub(super) struct EngineReplay {
 impl EngineReplay {
     pub(super) fn open(replay: &Replay, image: film::image::ImageMatch) -> Result<Self> {
         let mut track = TrackReader::open(&replay.path)?;
-        let keyframe = match image {
-            film::image::ImageMatch::Native => track.seek(replay.seek_tick)?,
-            film::image::ImageMatch::FromBoot => None,
+        let keyframe = match (image, replay.seek_source) {
+            (film::image::ImageMatch::Native, source)
+                if source != Some(agent_proto::theater::SeekRoute::Boot) =>
+            {
+                track.seek(replay.seek_tick)?
+            }
+            _ => None,
         };
+        ensure!(
+            replay.seek_source != Some(agent_proto::theater::SeekRoute::Keyframe)
+                || keyframe.is_some(),
+            "no compatible keyframe at or before tick {}", replay.seek_tick,
+        );
         Ok(Self {
             track,
             map_vfs: None,
@@ -133,6 +142,9 @@ impl Session {
     ) -> Result<()> {
         let (tick, expected) = {
             let mut state = self.lock();
+            if state.restart.is_some() {
+                return Ok(());
+            }
             let tick = state.tick;
             let Mode::Replay(tape, _) = &mut state.mode else {
                 return Ok(());
@@ -251,7 +263,6 @@ impl Session {
         );
         tape.resume_keyframe(offset, frame.tick, frame.calls, frame.lobby_boundary)?;
         let reached_target = replay.seek_tick == frame.tick;
-        let pause = replay.paused_at_target;
         s.tick = frame.tick;
         s.calls = frame.calls;
         if let Some(seek) = &mut s.seek {
@@ -259,7 +270,6 @@ impl Session {
         }
         if reached_target {
             s.seeking = None;
-            s.paused = pause;
         }
         Ok(frame.slices)
     }

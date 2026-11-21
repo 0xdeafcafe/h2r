@@ -262,6 +262,7 @@ impl Theater {
         film: FilmMeta,
         range: Option<[u64; 2]>,
         clip_marks: [Option<u64>; 2],
+        starting_seek: Option<u64>,
         socket: PathBuf,
         dir: PathBuf,
     ) -> std::io::Result<Self> {
@@ -280,6 +281,7 @@ impl Theater {
                 },
                 rpc,
                 clip_marks,
+                starting_seek,
             )),
             playback_dir: Some(dir),
             ..Shared::default()

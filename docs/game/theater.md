@@ -314,6 +314,7 @@ full local frame or selects the first available player in a version 3 host film.
 | Action | Controller | Keyboard and mouse |
 |---|---|---|
 | Play or pause | A | Space |
+| Advance one tick while paused | D-pad Down | `.` |
 | Speed (0.25×, 0.5×, 1×, 2×, 4×) | LT / RT | `[` / `]` |
 | Seek backwards or forwards | D-pad Left / Right. Tap for 5 s, hold for 30 s | Left / Right, with the same timing, or click the timeline |
 | Cycle camera | Y | C |
@@ -326,10 +327,15 @@ full local frame or selects the first available player in a version 3 host film.
 | Toggle transport and scoreboard | Back | H |
 | Toggle game HUD | Start | J |
 | Save a screenshot | D-pad Up | F12 |
-| Leave playback | B | Escape |
+| Cancel an active seek or leave playback | B | Escape |
 
-The timeline marks kills as the replay encounters them. Seeking carries
-those markers and any in/out marks across the restart. Completed clip
+The timeline marks kills as the replay encounters them. During a seek
+it marks the destination and fills up to the verified replay cursor.
+Skip taps that arrive within 250 ms of one another accumulate into one
+jump. Cancelling a jump returns to its departure tick and holds there.
+The bar includes the measured speed if playback falls behind the
+requested speed. Seeking carries kill markers and any in/out marks
+across the restart. Completed clip
 ranges appear in Clips and loop when watched. Screenshots are saved under
 `<data>/films/screenshots`. Pad and keyboard controls stay with the
 playback window while the overlay is hidden. Paused camera changes apply

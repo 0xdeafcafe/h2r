@@ -22,6 +22,9 @@ pub use startup::Startup;
 pub use startup::configure_replay_child;
 mod replay;
 mod local_pads;
+mod transport;
+pub use transport::Restart;
+pub(crate) use transport::SeekTaps;
 mod video_menu;
 use anyhow::{Context, Result, bail, ensure};
 use legacy_camera::ReplayCamera;
@@ -47,9 +50,9 @@ pub struct Replay {
     pub render_every: u32,
     pub speed: f64,
     pub seek_tick: u64,
-    /// The tick the seek left, carried across the player restart. A fresh
-    /// launch seeks from tick 0.
-    pub from_tick: u64,
+    /// Present on an explicit jump, including a jump to tick zero.
+    pub from_tick: Option<u64>,
+    pub seek_source: Option<agent_proto::theater::SeekRoute>,
     pub paused_at_target: bool,
     pub presentation: Presentation,
     /// Receiver for a requested restart, consumed by the CLI parent.
@@ -108,6 +111,7 @@ struct SeekProgress {
     target: u64,
     from_tick: u64,
     source: agent_proto::theater::SeekSource,
+    requested_source: Option<agent_proto::theater::SeekRoute>,
     warm: bool,
     restore_ms: Option<u64>,
 }
@@ -119,6 +123,8 @@ struct State {
     calls: u64,
     paused: bool,
     speed: f64,
+    rate: transport::PlaybackRate,
+    step_until: Option<u64>,
     seeking: Option<u64>,
     seek: Option<SeekProgress>,
     /// The film's recorded D3D capture boundaries, as ticks, from load time.
@@ -229,7 +235,7 @@ impl Session {
             let (speed, target, paused) = (
                 r.speed,
                 (r.seek_tick > 0).then_some(r.seek_tick),
-                r.paused_at_target && r.seek_tick == 0,
+                r.paused_at_target,
             );
             (Mode::Replay(tape, r), h, speed, target, paused, capture_points)
         } else if let Some(path) = record {
@@ -326,15 +332,16 @@ impl Session {
             _ => None,
         };
         let seek = match &mode {
-            Mode::Replay(_, r) if r.seek_tick > 0 => Some(SeekProgress {
+            Mode::Replay(_, r) if r.seek_tick > 0 || r.from_tick.is_some() => Some(SeekProgress {
                 target: r.seek_tick,
-                from_tick: r.from_tick,
+                from_tick: r.from_tick.unwrap_or(0),
                 source: match &engine {
                     Some(engine) if engine.has_keyframe() => {
                         agent_proto::theater::SeekSource::Keyframe
                     }
                     _ => agent_proto::theater::SeekSource::Boot,
                 },
+                requested_source: r.seek_source,
                 warm: false,
                 restore_ms: None,
             }),
@@ -368,6 +375,8 @@ impl Session {
                 engine,
                 header,
                 speed,
+                rate: Default::default(),
+                step_until: None,
                 seeking,
                 seek,
                 capture_points,
@@ -405,10 +414,6 @@ impl Session {
         s.tick += 1;
         let tick = s.tick;
         let reached_target = s.seeking == Some(tick);
-        if reached_target {
-            s.seeking = None;
-            s.paused = matches!(&s.mode, Mode::Replay(_,r) if r.paused_at_target);
-        }
         if s.header.version >= 2 {
             let hash = crate::sim_glue::film_gameplay_hash(guest);
             if let Mode::Record(rec) = &mut s.mode {
@@ -423,14 +428,25 @@ impl Session {
                 s.measure_match_start(tick);
             }
         }
-        if reached_target && let Some(run) = &mut s.measurements {
-            run.reached_target(tick);
+        if tick.is_multiple_of(30) {
+            Self::checkpoint_interval(&mut s, guest);
         }
-        if !tick.is_multiple_of(30) {
+        if s.failure.is_some() {
             return;
         }
+        if reached_target {
+            s.seeking = None;
+            if let Some(run) = &mut s.measurements {
+                run.reached_target(tick);
+            }
+        }
+        s.completed_transport_tick(reached_target);
+    }
+
+    /// The guest-arena hash and HLE call cursor share the 30-tick checkpoint.
+    fn checkpoint_interval(s: &mut State, guest: &runtime::Guest) {
         let actual = Check {
-            tick,
+            tick: s.tick,
             sim: lockstep::hash_sim(guest, lockstep::SimRegion::HALO2),
             calls: s.calls,
         };
@@ -485,19 +501,13 @@ impl Session {
                 if r.window_closed.as_ref().is_some_and(|closed| closed()) {
                     return Ok(false);
                 }
-                if let Some(target) = s.restart {
-                    let mut presentation = s.presentation.clone();
-                    if s.header.version >= 2 { r.camera.save(&mut presentation); }
-                    std::fs::write(
-                        &r.restart,
-                        serde_json::to_vec(&(target, s.speed, s.paused, &presentation, s.tick))?,
-                    )?;
+                if s.write_restart(r)? {
                     return Ok(false);
                 }
                 if s.complete {
                     return Ok(false);
                 }
-                if !s.paused {
+                if !s.holding() {
                     let pace = s
                         .seeking
                         .is_none()
@@ -833,7 +843,7 @@ impl hooks::Feature for Observer {
                         o.runtime.request_preempt(runtime::preempt::REQUEST);
                         break;
                     }
-                    if !s.paused {
+                    if !s.holding() {
                         break;
                     }
                 }
