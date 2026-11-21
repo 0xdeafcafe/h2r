@@ -281,6 +281,8 @@ pub mod code {
     /// in the ticks it had; `data` is a [`crate::state::Busy`] naming what
     /// stayed live.
     pub const BUSY: i64 = 7;
+    /// A conditional tag batch disagreed with the loaded bytes.
+    pub const MISMATCH: i64 = 8;
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

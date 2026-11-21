@@ -4,24 +4,26 @@
 //!
 //! * [`launch`]: the `h2 play` command, the `h2` binary, socket discovery.
 //! * [`link`]: the agent socket, on its own thread.
-//! * [`sync`]: which scenario edits go to the game, as `edit.set` writes.
+//! * [`sync`] and [`tag_sync`]: conditional placement and tag writes for `edit.batch`.
 //!
 //! [`Play`] holds a pairing's state and turns the link's answers into the
-//! editor's: the live players and objects for the viewport, the status
-//! chip, edits sent as they are made, the spawn of a launched game, and
-//! the camera and teleport moves. The UI (`ui::play`) only draws it and
+//! editor's: the live players and objects for the viewport, the game
+//! link in the bar, edits sent as they are made, and the spawn, camera and
+//! teleport moves. The UI (`ui::play`) only draws it and
 //! calls its methods; tests drive it against the agent crate's server.
 
 pub mod launch;
 pub mod link;
 pub mod pair;
 pub mod sync;
+pub mod tag_sync;
+pub use edits::Apply;
 #[cfg(test)]
 pub(crate) mod testing;
 #[cfg(test)]
 mod tests;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::process::Child;
 use std::time::{Duration, Instant};
@@ -32,11 +34,11 @@ use scenario_edit::BlockKind;
 use scenario_edit::geometry::{self, Ray, Vec3};
 use serde_json::{Value, json};
 
-use crate::app::App;
+use crate::app::{Action, App};
 use agent_proto::discover::MapMatch;
 use link::{Event, Link, Options, Purpose};
 use pair::{Finder, Notice, Request};
-use sync::{Baseline, Write};
+use sync::Baseline;
 
 /// How long a launched game may take to open its socket (`h2 play` may
 /// build the game image first).
@@ -84,35 +86,130 @@ pub enum Conn {
     Lost(String),
 }
 
+/// What the link offers the editor, including whether writes can reach it.
+#[derive(Clone, Debug, PartialEq)]
+pub enum LinkState {
+    NoGame,
+    Found {
+        map: Option<String>,
+        matches: MapMatch,
+    },
+    Connecting,
+    Viewing {
+        map: Option<String>,
+        phase: Option<Phase>,
+        tick: Option<u64>,
+    },
+    Editing {
+        map: String,
+        phase: Phase,
+        tick: u64,
+    },
+    Blocked {
+        why: String,
+    },
+    OtherMap {
+        game: String,
+        open: String,
+    },
+    Lost {
+        why: String,
+    },
+}
+
+impl LinkState {
+    /// Stable spelling for `pair.status`.
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::NoGame => "no_game",
+            Self::Found { .. } => "found",
+            Self::Connecting => "connecting",
+            Self::Viewing { .. } => "viewing",
+            Self::Editing { .. } => "editing",
+            Self::Blocked { .. } => "blocked",
+            Self::OtherMap { .. } => "other_map",
+            Self::Lost { .. } => "lost",
+        }
+    }
+
+    /// Whether the user can toggle Edit for this pairing.
+    pub fn can_edit(&self) -> bool {
+        matches!(self, Self::Viewing { .. } | Self::Editing { .. })
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LinkTone {
+    Idle,
+    Notice,
+    View,
+    Live,
+    Warn,
+    Error,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct LinkView {
+    pub state: LinkState,
+    pub tone: LinkTone,
+    pub text: String,
+    pub why: Option<String>,
+    pub can_play: bool,
+    pub can_stop: bool,
+    pub can_pause: bool,
+    pub paused: bool,
+}
+
+pub(super) fn phase_label(phase: Phase, paused: bool) -> &'static str {
+    match (paused, phase) {
+        (true, _) => "paused",
+        (_, Phase::Loading) => "loading",
+        (_, Phase::Menu) => "menu",
+        (_, Phase::Gameplay) => "playing",
+        (_, Phase::Cinematic) => "cinematic",
+    }
+}
+
+pub(super) fn session_label(kind: SessionKind) -> &'static str {
+    match kind {
+        SessionKind::None => "No simulation",
+        SessionKind::Local => "Local session",
+        SessionKind::CoopHost => "Co-op host",
+        SessionKind::CoopGuest => "Co-op guest",
+        SessionKind::MpHost => "Multiplayer host",
+        SessionKind::MpClient => "Multiplayer client",
+        SessionKind::Unknown => "Unknown session kind",
+    }
+}
+
 /// A pairing with a game, launched or attached.
 pub struct Play {
     link: Option<Link>,
+    /// The endpoint to retry after the link drops.
+    retry: Option<Endpoint>,
     pub conn: Conn,
     /// The last `session.status`.
     pub status: Option<Status>,
     /// Next read of the binary stream's writer counters over the control link.
     next_live_status: Instant,
-    /// The game's scenario datum (`edit.tags`), for `edit.set`.
+    /// Scenario datum from edit.map, for the placement paths in edit.batch.
     scenario_tag: Option<String>,
-    /// The map the datum and session kind were read on.
-    read_on: Option<String>,
     pub session: Option<SessionKind>,
     /// What the game is taken to hold, and the map it is for.
     baseline: Option<(String, Baseline)>,
     /// Send edits as they are made.
     pub live_edits: bool,
     next_push: Instant,
-    sent: HashMap<u64, Write>,
-    next_write: u64,
+    edits: Edits,
+    launch_baseline: Option<(Baseline, tag_sync::TagBaseline)>,
     /// Blocks with entries added or removed since the baseline.
     pub reload: Vec<BlockKind>,
-    told_when: bool,
-    told_mismatch: bool,
     /// We hold `session.claim`.
     pub controller: bool,
     pub paused: bool,
     /// The launched game, its log, and the spawn it waits for.
     child: Option<Child>,
+    child_endpoint: Option<Endpoint>,
     /// Identity of the editor's launch copy, including when it pairs again.
     launched_copy: Option<(Endpoint, u64, u32)>,
     pub log_path: Option<PathBuf>,
@@ -130,7 +227,7 @@ pub struct Play {
     /// Sockets already paired with, by hand or by itself: auto-pair takes
     /// each game once, so an Unpair stays unpaired.
     auto_tried: HashSet<PathBuf>,
-    /// Pair and Unpair asked for by the UI, taken at the next update.
+    /// UI requests taken at the next update.
     queue: Vec<Request>,
 }
 
@@ -144,23 +241,23 @@ impl Play {
     pub fn new() -> Self {
         Self {
             link: None,
+            retry: None,
             conn: Conn::Off,
             status: None,
             next_live_status: Instant::now(),
             scenario_tag: None,
-            read_on: None,
+
             session: None,
             baseline: None,
-            live_edits: true,
+            live_edits: false,
             next_push: Instant::now(),
-            sent: HashMap::new(),
-            next_write: 0,
+            edits: Edits::default(),
+            launch_baseline: None,
             reload: Vec::new(),
-            told_when: false,
-            told_mismatch: false,
             controller: false,
             paused: false,
             child: None,
+            child_endpoint: None,
             launched_copy: None,
             log_path: None,
             pending_spawn: None,
@@ -191,65 +288,156 @@ impl Play {
     pub fn is_paired(&self) -> bool {
         self.conn == Conn::Connected
     }
-    /// A game this editor started is still running.
-    pub fn game_running(&mut self) -> bool {
-        self.child
-            .as_mut()
-            .is_some_and(|c| matches!(c.try_wait(), Ok(None)))
-    }
     /// The game's map, from the last poll.
     pub fn map(&self) -> Option<&str> {
         self.status.as_ref()?.at.map.as_deref()
     }
 
-    /// The chip with what the editor knows of its open map: while paired,
-    /// whether the game's map is the open one; while not, a game it
-    /// could pair with.
-    pub fn chip_in(&self, app: &App) -> String {
-        let chip = self.chip();
-        match self.conn {
-            Conn::Connected => match (self.map_match(app), app.loaded_map()) {
-                (MapMatch::Same, _) => format!("{chip} (the open map)"),
-                (MapMatch::Different, Some(open)) => format!("{chip} (the editor has {open})"),
-                _ => chip,
-            },
-            _ => match self.notice(app) {
-                Some(n) => format!("Game: {}", n.short),
-                None => chip,
-            },
-        }
-    }
+    /// The state shared by the bar, the Game panel and `pair.status`.
+    pub fn link_view(&self, app: &App) -> LinkView {
+        use LinkState as State;
+        use LinkTone as Tone;
 
-    /// The status chip's text: the connection, the game's map and tick.
-    pub fn chip(&self) -> String {
-        match &self.conn {
-            Conn::Off => "Game: not paired".into(),
-            Conn::Connecting => "Game: connecting...".into(),
-            Conn::Lost(_) => "Game: lost".into(),
-            Conn::Connected => match &self.status {
-                None => "Game: paired".into(),
-                Some(s) => {
-                    let phase = match (s.at.paused, s.at.phase) {
-                        (true, _) => "paused",
-                        (_, Phase::Loading) => "loading",
-                        (_, Phase::Menu) => "menu",
-                        (_, Phase::Gameplay) => "playing",
-                        (_, Phase::Cinematic) => "cinematic",
+        let can_pause = self.is_paired();
+        let paused = can_pause && self.paused;
+        let (state, tone, text, why) = match &self.conn {
+            Conn::Off => match self.notice(app) {
+                Some(n) => (
+                    State::Found {
+                        map: n.map,
+                        matches: n.matches,
+                    },
+                    Tone::Notice,
+                    n.short,
+                    Some(n.text),
+                ),
+                None => (State::NoGame, Tone::Idle, "No game".into(), None),
+            },
+            Conn::Connecting => (
+                State::Connecting,
+                Tone::Notice,
+                "Connecting...".into(),
+                None,
+            ),
+            Conn::Lost(why) => (
+                State::Lost { why: why.clone() },
+                Tone::Error,
+                "Game lost".into(),
+                Some(why.clone()),
+            ),
+            Conn::Connected => {
+                let at = self.status.as_ref().map(|s| &s.at);
+                let map = self.map();
+                if let (MapMatch::Different, Some(game), Some(open)) =
+                    (self.map_match(app), map, app.loaded_map())
+                {
+                    (
+                        State::OtherMap {
+                            game: game.into(),
+                            open: open.into(),
+                        },
+                        Tone::Warn,
+                        format!("Game runs {game}"),
+                        Some(format!("Edits stay here while the editor has {open} open.")),
+                    )
+                } else if !self.live_edits && self.edit_refusal(app).is_none() {
+                    let phase = at.map(|a| a.phase);
+                    let tick = at.map(|a| a.tick.unwrap_or(a.ticks));
+                    let shown_map = map.unwrap_or("game");
+                    let activity = phase.map_or("waiting for status", |p| phase_label(p, paused));
+                    (
+                        State::Viewing {
+                            map: map.map(str::to_owned),
+                            phase,
+                            tick,
+                        },
+                        Tone::View,
+                        format!("Viewing {shown_map} · {activity}"),
+                        None,
+                    )
+                } else if let Some(why) = self.edit_refusal(app) {
+                    let kind = self
+                        .session
+                        .filter(|k| k.writes().err() == Some(why.as_str()));
+                    let short = match kind {
+                        Some(SessionKind::CoopHost | SessionKind::CoopGuest) => "co-op session",
+                        Some(SessionKind::MpClient) => "multiplayer client",
+                        Some(SessionKind::Unknown) => "unknown session",
+                        _ => why.as_str(),
                     };
-                    format!(
-                        "Game: {} {phase} tick {}",
-                        s.at.map.as_deref().unwrap_or("-"),
-                        s.at.tick.unwrap_or(s.at.ticks)
+                    let text = format!("Edits stay here: {short}");
+                    (
+                        State::Blocked { why: why.clone() },
+                        Tone::Warn,
+                        text,
+                        Some(why),
+                    )
+                } else {
+                    // edits_blocked has established the map and status.
+                    let at = at.expect("an editable game has reported its status");
+                    let map = map.expect("an editable game has reported its map");
+                    (
+                        State::Editing {
+                            map: map.into(),
+                            phase: at.phase,
+                            tick: at.tick.unwrap_or(at.ticks),
+                        },
+                        Tone::Live,
+                        format!("Editing {map} live"),
+                        None,
                     )
                 }
-            },
+            }
+        };
+        LinkView {
+            state,
+            tone,
+            text,
+            why,
+            can_play: app.loaded_map().is_some() && self.conn != Conn::Connecting,
+            can_stop: self.child.is_some(),
+            can_pause,
+            paused,
         }
     }
 
-    /// Leave `Pair` or `Unpair` for the next update (the status bar draws
-    /// with the app borrowed shared).
+    /// Leave a UI request for the next update.
     pub fn request(&mut self, r: Request) {
         self.queue.push(r);
+    }
+
+    pub fn retry_endpoint(&self) -> Option<&Endpoint> {
+        self.retry.as_ref()
+    }
+
+    pub fn pair_socket_text(&mut self, app: &mut App) {
+        let text = self.socket_text.trim();
+        let endpoint = if text.is_empty() {
+            Ok(Endpoint::Unix(agent_proto::default_socket()))
+        } else {
+            Endpoint::parse(text)
+        };
+        match endpoint {
+            Ok(endpoint) => self.request(Request::Pair(endpoint)),
+            Err(e) => app.error(format!("pair: {e}")),
+        }
+    }
+
+    /// Select the game map through the usual unsaved-changes prompt.
+    pub fn open_game_map(&self, app: &mut App) {
+        let Some(game) = self.map() else { return };
+        let map = app
+            .maps()
+            .iter()
+            .chain(&app.mappack_maps())
+            .find(|name| MapMatch::of(Some(name), Some(game)) == MapMatch::Same)
+            .cloned();
+        match map {
+            Some(name) => app.dispatch(Action::SelectMap(name)),
+            None => app.error(format!(
+                "Open a source that contains {game}."
+            )),
+        }
     }
 
     /// The running games the editor is not paired with, as one notice:
@@ -273,7 +461,7 @@ impl Play {
             self.auto_tried.insert(p.clone());
         }
         self.start(app, endpoint, Options::default());
-        self.baseline = baseline_of(app);
+        self.baseline = None;
         app.info(format!(
             "pairing with the game at {}",
             self.endpoint().map(ToString::to_string).unwrap_or_default()
@@ -281,21 +469,24 @@ impl Play {
     }
 
     fn start(&mut self, app: &mut App, endpoint: Endpoint, options: Options) {
+        app.tags.live_datums = None;
         app.pairing.clear_mirror();
-        app.pairing.play_copy = self.launched_copy.as_ref()
+        app.pairing.play_copy = self
+            .launched_copy
+            .as_ref()
             .filter(|(game, _, _)| game == &endpoint)
             .map(|(_, revision, checksum)| (*revision, *checksum));
         self.link = Some(Link::open(endpoint, options));
+        self.retry = None;
         self.conn = Conn::Connecting;
         self.status = None;
         self.next_live_status = Instant::now();
         self.scenario_tag = None;
-        self.read_on = None;
+
         self.session = None;
-        self.sent.clear();
+        self.edits = Edits::default();
+        self.live_edits = false;
         self.reload.clear();
-        self.told_when = false;
-        self.told_mismatch = false;
         self.controller = false;
         self.paused = false;
         self.pending_spawn = None;
@@ -308,6 +499,11 @@ impl Play {
         }
         app.pairing.clear_mirror();
         self.conn = Conn::Off;
+        self.baseline = None;
+        app.tags.live_datums = None;
+        self.edits = Edits::default();
+        self.retry = None;
+        self.live_edits = false;
         self.controller = false;
         self.paused = false;
     }
@@ -327,7 +523,7 @@ impl Play {
         let session = &app.session;
         let scenario = session.scenario().ok_or("open a map first")?;
         let h2 = launch::find_h2(Some(PathBuf::from(self.h2_path.trim())).as_deref())
-            .ok_or("no h2 binary: install it (cargo install --path crates/apps/cli) or name it in the Game panel")?;
+            .ok_or("no h2 binary: install it (cargo install --path crates/apps/cli) or name it under Advanced in the Game panel")?;
         let disc = match app.source() {
             Some(editor_core::MapSource::Disc(d)) => Some(d.path().to_owned()),
             _ => editor_core::default_disc(None),
@@ -401,6 +597,7 @@ impl Play {
                 self.log_path = Some(log.clone());
                 self.last_command = Some(line.clone());
                 let endpoint = Endpoint::Unix(l.socket.clone());
+                self.child_endpoint = Some(endpoint.clone());
                 self.launched_copy = l.map_dir.as_ref().and_then(|dir| {
                     // The checksum of the saved launch copy includes unsaved
                     // edits to the document. Later edits keep this identity.
@@ -416,7 +613,12 @@ impl Play {
                         ..Options::default()
                     },
                 );
-                self.baseline = baseline_of(app);
+                self.edits.own_start = true;
+                self.live_edits = true;
+                self.launch_baseline = app
+                    .session
+                    .scenario()
+                    .map(|s| (Baseline::of(s), tag_sync::TagBaseline::of(&app.tags)));
                 self.pending_spawn = spawn;
                 app.info(format!("Play: {line} (log: {})", log.display()));
             }
@@ -469,7 +671,11 @@ impl Play {
             self.launched_copy = None;
             self.link = None;
             app.pairing.clear_mirror();
+            self.retry = None;
             self.conn = Conn::Off;
+            self.paused = false;
+            self.live_edits = false;
+            self.controller = false;
         }
         let events = self.link.as_ref().map(Link::drain).unwrap_or_default();
         for e in events {
@@ -496,15 +702,41 @@ impl Play {
         self.publish(app);
     }
 
-    /// Pair and Unpair asked for by the UI and by `pair.connect` and
-    /// `pair.disconnect`.
+    /// Game-link controls requested by the UI and by `pair.*`.
     fn take_requests(&mut self, app: &mut App) {
         let mut reqs = std::mem::take(&mut self.queue);
         reqs.append(&mut app.pairing.requests);
         for r in reqs {
+            if let Some(why) = r.refusal(&self.link_view(app)) {
+                app.error(why);
+                continue;
+            }
             match r {
+                Request::Pair(e) if self.is_paired() && self.endpoint() != Some(&e) => {
+                    self.edits.next_pair = Some(e);
+                    self.request_leave(app);
+                }
                 Request::Pair(e) => self.pair(app, e),
-                Request::Unpair => self.unpair(app),
+                Request::Unpair => self.request_leave(app),
+                Request::Apply(action) => {
+                    if let Err(why) = self.apply_edits(app, action) {
+                        app.error(why);
+                    }
+                }
+                Request::Play => self.launch(app),
+                Request::Stop => self.stop_game(app),
+                Request::Edit(true) => {
+                    if let Err(why) = self.apply_edits(app, Apply::Send) {
+                        app.error(why);
+                    }
+                }
+                Request::Edit(false) => {
+                    self.live_edits = false;
+                    self.edits.own_start = false;
+                }
+                Request::Pause => self.pause(),
+                Request::Resume => self.resume(),
+                Request::Step(ticks) => self.step(ticks),
             }
         }
     }
@@ -532,7 +764,7 @@ impl Play {
             .first()
             .and_then(|g| g.map().map(str::to_owned));
         app.info(format!(
-            "found Halo 2 running {}: pairing with it (Game panel: Auto-pair turns this off)",
+            "found Halo 2 running {}: pairing with it (turn off Auto-pair in the game link)",
             map.as_deref().unwrap_or("with no map yet")
         ));
         self.pair(app, Endpoint::Unix(path));
@@ -563,10 +795,13 @@ impl Play {
             "open_map": app.loaded_map(),
             "live_edits": self.live_edits,
             "edits_blocked": self.edits_blocked(app),
+            "edit_refusal": self.edit_refusal(app),
+            "edit_peers": self.edits.peers,
             "auto_pair": app.pairing.auto_pair,
             "games": self.finder.running().len(),
         });
         app.pairing.published = Some(published);
+        app.pairing.link = Some(self.link_view(app));
     }
 
     fn call(&self, method: &str, params: Value, purpose: Purpose) {
@@ -579,6 +814,7 @@ impl Play {
         match e {
             Event::Connected => {
                 self.conn = Conn::Connected;
+                self.call(method::METHODS, Value::Null, Purpose::Capabilities);
                 app.pairing.mirror = self.endpoint().cloned().map(live_mirror::Stream::open);
                 app.info(format!(
                     "paired with the game at {}",
@@ -588,7 +824,7 @@ impl Play {
             Event::Lost(why) => {
                 app.error(format!("game link: {why}"));
                 self.conn = Conn::Lost(why);
-                self.link = None;
+                self.retry = self.link.take().map(|l| l.endpoint.clone());
                 app.pairing.clear_mirror();
                 self.controller = false;
             }
@@ -596,22 +832,13 @@ impl Play {
                 if let Ok(s) = serde_json::from_value::<Status>(status) {
                     self.paused = s.at.paused;
                     self.controller = s.controller;
-                    let map = s.at.map.clone();
                     self.status = Some(s);
-                    if map.is_some() && map != self.read_on {
-                        // A new map: its scenario and session, read again.
-                        self.read_on = map;
-                        self.scenario_tag = None;
-                        self.session = None;
+                    if !self.edits.map_requested {
+                        self.edits.map_requested = true;
                         self.call(
-                            "edit.tags",
-                            json!({"group": "scnr", "limit": 1}),
-                            Purpose::Scenario,
-                        );
-                        self.call(
-                            agent_proto::sim::method::SESSION,
-                            Value::Null,
-                            Purpose::SessionKind,
+                            "edit.map",
+                            json!({"known_epoch":self.known_tag_epoch()}),
+                            Purpose::Map,
                         );
                     }
                 }
@@ -629,7 +856,7 @@ impl Play {
         app: &mut App,
         purpose: Purpose,
         method: &str,
-        result: Result<Value, String>,
+        result: Result<Value, agent_proto::RpcError>,
     ) {
         match (purpose, result) {
             (Purpose::LiveStatus, result) => {
@@ -641,46 +868,15 @@ impl Play {
                     reply["streams"].as_array()?.iter().find(|s| s["stream"] == id).cloned()
                 });
             }
-            (Purpose::Scenario, Ok(v)) => {
-                self.scenario_tag = v.get("scenario").and_then(Value::as_str).map(str::to_owned);
+            (Purpose::Capabilities, Ok(v)) => {
+                let has = |name: &str| v.as_array().is_some_and(|a| a.iter().any(|m| m == name));
+                self.edits.respawn = has("world.object.respawn");
+                self.edits.reload = has("map.reload");
             }
-            (Purpose::Scenario, Err(e)) => {
-                app.error(format!(
-                    "the game can't take tag edits ({e}); live edits are off"
-                ));
-            }
-            (Purpose::SessionKind, Ok(v)) => {
-                // Only `kind` is needed (SessionView's other fields may grow).
-                self.session = Some(
-                    v.get("kind")
-                        .cloned()
-                        .and_then(|k| serde_json::from_value::<SessionKind>(k).ok())
-                        .unwrap_or_default(),
-                );
-            }
-            (Purpose::SessionKind, Err(_)) => self.session = Some(SessionKind::Unknown),
-            (Purpose::Edit(id), r) => {
-                let Some(w) = self.sent.remove(&id) else {
-                    return;
-                };
-                match r {
-                    Ok(v) => {
-                        let old = v.get("old").and_then(Value::as_str);
-                        if old.is_some_and(|o| o != w.was) && !self.told_mismatch {
-                            self.told_mismatch = true;
-                            app.error(format!(
-                                "the game's {:?} {} {} differed from the editor's before this edit: \
-                                 it may be running another version of the map (Play starts it with the editor's)",
-                                w.block, w.index, w.field
-                            ));
-                        }
-                    }
-                    Err(e) => app.error(format!(
-                        "live edit of {:?} {} {}: {e}",
-                        w.block, w.index, w.field
-                    )),
-                }
-            }
+            (Purpose::Map, result) => self.edit_map(app, result),
+            (Purpose::Journal(epoch), result) => self.edit_journal(app, epoch, result),
+            (Purpose::Revert { leave, epoch }, result) => self.reverted(app, leave, epoch, result),
+            (Purpose::Edit(id), result) => self.batch_answer(app, id, result),
             (Purpose::Teleport, Ok(_)) => app.info("moved the player"),
             (Purpose::Control(what), Ok(_)) => {
                 match what {
@@ -702,76 +898,8 @@ impl Play {
         if !self.is_paired() {
             return Some("not paired".into());
         }
-        if !self.live_edits {
-            return Some("live edits are off".into());
-        }
-        let Some(open) = app.loaded_map() else {
-            return Some("no map is open".into());
-        };
-        let Some(game) = self.map() else {
-            return Some("the game's map isn't known yet".into());
-        };
-        if game != open {
-            return Some(format!("the game runs {game}, the editor has {open}"));
-        }
-        match &self.baseline {
-            Some((m, _)) if m == open => {}
-            _ => return Some("pair again to take the open map as the game's".into()),
-        }
-        if self.scenario_tag.is_none() {
-            return Some("the game's scenario isn't known yet".into());
-        }
-        match self.session {
-            None => Some("the session kind isn't known yet".into()),
-            Some(k) => k.writes().err().map(str::to_owned),
-        }
-    }
-
-    /// Send the fields changed since the baseline.
-    fn push_edits(&mut self, app: &mut App) {
-        if self.edits_blocked(app).is_some() {
-            return;
-        }
-        let (Some(scenario), Some(tag), Some((_, base))) = (
-            app.session.scenario(),
-            self.scenario_tag.clone(),
-            self.baseline.as_mut(),
-        ) else {
-            return;
-        };
-        let d = sync::diff(base, scenario);
-        if d.reload != self.reload {
-            if !d.reload.is_empty() {
-                app.info(format!(
-                    "entries added or removed in {:?}: the game sees them after Play again (the map loads anew)",
-                    d.reload
-                ));
-            }
-            self.reload = d.reload.clone();
-        }
-        if d.writes.is_empty() {
-            return;
-        }
-        for w in d.writes {
-            base.wrote(&w);
-            self.next_write += 1;
-            let id = self.next_write;
-            if let Some(l) = &self.link {
-                l.call(
-                    "edit.set",
-                    json!({"tag": tag, "group": "scnr", "path": w.path, "value": w.value}),
-                    Purpose::Edit(id),
-                );
-            }
-            self.sent.insert(id, w);
-        }
-        if !self.told_when {
-            self.told_when = true;
-            app.info(
-                "sent the edit to the game's scenario: an object shows it when it is made again \
-                 (a respawn, a checkpoint revert, or Play again); live objects don't move yet",
-            );
-        }
+        self.edit_refusal(app)
+            .or_else(|| (!self.live_edits).then(|| "View mode".into()))
     }
 
     fn maybe_spawn(&mut self, app: &mut App) {
@@ -888,15 +1016,6 @@ impl Play {
             self.controller = true;
         }
     }
-}
-
-/// The editor's placements as the game is taken to hold them, for the
-/// open map.
-fn baseline_of(app: &App) -> Option<(String, Baseline)> {
-    Some((
-        app.loaded_map()?.to_owned(),
-        Baseline::of(app.session.scenario()?),
-    ))
 }
 
 /// The ground under `p` (the structure's nearest surface below a point a

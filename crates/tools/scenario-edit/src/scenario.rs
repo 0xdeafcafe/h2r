@@ -98,6 +98,19 @@ impl Block {
     pub fn entry(&self, index: usize) -> Option<&[u8]> {
         self.entries.get(index).map(Vec::as_slice)
     }
+    pub fn source_entries(&self) -> &[Vec<u8>] {
+        &self.original
+    }
+    /// Decode a field supplied by the game's conditional write reply.
+    pub fn field_value(&self, index: usize, field: &FieldDef, bytes: &[u8]) -> Option<Value> {
+        let mut entry = self.entry(index)?.to_vec();
+        if bytes.len() != field.ty.size() as usize {
+            return None;
+        }
+        let at = field.offset as usize;
+        entry.get_mut(at..at + bytes.len())?.copy_from_slice(bytes);
+        Some(read_field(&entry, field))
+    }
     /// Elements the source block holds: up to this many fit in place.
     pub fn capacity(&self) -> usize {
         self.original.len()

@@ -3,11 +3,9 @@
 //!
 //! The pairing lives with the window ([`crate::play::Play`]); these methods
 //! leave requests on the app's [`crate::play::pair::Bridge`] and read what
-//! the window published there. So `pair.status`, `pair.connect` and
-//! `pair.disconnect` need the window (a headless editor has no pairing)
-//! and `pair.connect` answers before the window has acted: poll
-//! `pair.status`. `pair.list` looks at the games itself, and works
-//! headless. docs/editor/agent-api.md, docs/editor/editor-guide.md.
+//! the window published there. The controls answer before the window acts.
+//! Read `pair.status` for the result. `pair.list` looks for games itself
+//! and works headless. docs/editor/agent-api.md, docs/editor/editor-guide.md.
 
 use agent_proto::discover::{self, MapMatch};
 use agent_proto::{Endpoint, RpcError};
@@ -16,6 +14,7 @@ use studio_proto::{code, method as m};
 
 use super::{MethodDef, P, Provider, Reply, err};
 use crate::App;
+use crate::play::LinkView;
 use crate::play::pair::Request;
 
 /// The pairing provider.
@@ -49,22 +48,22 @@ const METHODS: &[MethodDef] = &[
     ),
     def(
         m::PAIR_STATUS,
-        "The pairing: off, connecting, connected or lost, the game's socket, map, phase and tick, whether its map is the open one, why edits are not sent, and the auto-pair setting. Needs the window",
+        "The socket connection, game status, edit permissions and auto-pair setting, with the game link pill's state, label and tooltip. Needs the window",
         "{}",
-        r#"{"state":"off|connecting|connected|lost","why":"string|null","socket":"string|null","map":"string|null","phase":"string|null","paused":"boolean|null","tick":"integer|null","matches":"same|different|unknown","open_map":"string|null","live_edits":"boolean","edits_blocked":"string|null","auto_pair":"boolean","games":"integer"}"#,
+        r#"{"state":"off|connecting|connected|lost","why":"string|null","socket":"string|null","map":"string|null","phase":"string|null","paused":"boolean|null","tick":"integer|null","matches":"same|different|unknown","open_map":"string|null","live_edits":"boolean","edits_blocked":"string|null","auto_pair":"boolean","games":"integer","link":{"state":"no_game|found|connecting|viewing|editing|blocked|other_map|lost","text":"string","why":"string|null"}}"#,
         "null",
     ),
     def(
         m::PAIR_CONNECT,
-        "Pair with a game, as Pair in the Game panel does: the socket given (a path or tcp://HOST:PORT), else the one game running. Answers at once; poll pair.status for connected. Needs the window",
+        "Pair with a game in View mode: the socket given (a path or tcp://HOST:PORT), else the one game running. Answers at once; poll pair.status for connected. Needs the window",
         r#"{"socket?":"string"}"#,
         r#"{"requested":"string"}"#,
         r#"{"socket":"/tmp/h2-pair-example.sock"}"#,
     ),
     def(
         m::PAIR_DISCONNECT,
-        "Unpair (the game keeps running; control is released). Needs the window",
-        "{}",
+        "Unpair. Choose keep or restore, or open the leave prompt",
+        r#"{"leave?":"keep|restore"}"#,
         r#"{"requested":"boolean"}"#,
         "null",
     ),
@@ -74,6 +73,34 @@ const METHODS: &[MethodDef] = &[
         r#"{"enabled?":"boolean"}"#,
         r#"{"auto_pair":"boolean"}"#,
         r#"{"enabled":false}"#,
+    ),
+    def(
+        m::PAIR_PLAY,
+        "Play the open map from the editor. Needs the window",
+        "{}",
+        r#"{"requested":"boolean"}"#,
+        "null",
+    ),
+    def(
+        m::PAIR_STOP,
+        "Stop the game the editor started. Needs the window",
+        "{}",
+        r#"{"requested":"boolean"}"#,
+        "null",
+    ),
+    def(
+        m::PAIR_EDIT,
+        "Set the Edit switch for the paired game. REFUSED includes the current reason",
+        r#"{"enabled":"boolean"}"#,
+        r#"{"requested":"boolean","mode":"edit|view"}"#,
+        r#"{"enabled":true}"#,
+    ),
+    def(
+        m::PAIR_CONTROL,
+        "Pause, step or resume through the editor's game link. Needs the window",
+        r#"{"action":"string","ticks?":"integer"}"#,
+        r#"{"requested":"boolean"}"#,
+        r#"{"action":"step","ticks":1}"#,
     ),
 ];
 
@@ -90,8 +117,8 @@ impl Provider for Pair {
     }
 }
 
-fn need_window(app: &App) -> Result<&Value, RpcError> {
-    app.pairing.published.as_ref().ok_or_else(|| {
+fn need_window(app: &App) -> Result<(&Value, &LinkView), RpcError> {
+    app.pairing.published.as_ref().zip(app.pairing.link.as_ref()).ok_or_else(|| {
         err(
             code::REFUSED,
             "pairing runs in the editor window: this editor has none (or has not drawn a frame yet)",
@@ -102,7 +129,13 @@ fn need_window(app: &App) -> Result<&Value, RpcError> {
 fn call(app: &mut App, method: &str, p: &P) -> Reply {
     match method {
         m::PAIR_LIST => Ok(list(app)),
-        m::PAIR_STATUS => Ok(need_window(app)?.clone()),
+        m::PAIR_STATUS => {
+            let (status, link) = need_window(app)?;
+            let mut status = status.clone();
+            status["link"] =
+                json!({"state": link.state.name(), "text": link.text, "why": link.why});
+            Ok(status)
+        }
         m::PAIR_CONNECT => {
             need_window(app)?;
             let endpoint = match p.opt_str("socket")? {
@@ -132,7 +165,13 @@ fn call(app: &mut App, method: &str, p: &P) -> Reply {
         }
         m::PAIR_DISCONNECT => {
             need_window(app)?;
-            app.pairing.requests.push(Request::Unpair);
+            let request = match p.opt_str("leave")? {
+                None => Request::Unpair,
+                Some("keep") => Request::Apply(crate::play::Apply::Keep),
+                Some("restore") => Request::Apply(crate::play::Apply::Restore),
+                _ => return Err(err(code::INVALID_PARAMS, "leave must be keep or restore")),
+            };
+            app.pairing.requests.push(request);
             Ok(json!({ "requested": true }))
         }
         m::PAIR_AUTO => {
@@ -143,8 +182,48 @@ fn call(app: &mut App, method: &str, p: &P) -> Reply {
             }
             Ok(json!({ "auto_pair": app.pairing.auto_pair }))
         }
+        m::PAIR_PLAY => enqueue(app, Request::Play),
+        m::PAIR_STOP => enqueue(app, Request::Stop),
+        m::PAIR_EDIT => {
+            let enabled = p.bool("enabled")?;
+            if enabled && let Some(why) = need_window(app)?["edit_refusal"].as_str() {
+                return Err(err(code::REFUSED, why));
+            }
+            let mut result = enqueue(app, Request::Edit(enabled))?;
+            result["mode"] = json!(if enabled { "edit" } else { "view" });
+            Ok(result)
+        }
+        m::PAIR_CONTROL => {
+            let req = match (p.str("action")?, p.get("ticks")) {
+                ("pause", None) => Request::Pause,
+                ("resume", None) => Request::Resume,
+                ("step", _) => {
+                    let ticks = p.opt_u64("ticks")?.unwrap_or(1);
+                    if !(1..=600).contains(&ticks) {
+                        return Err(err(code::INVALID_PARAMS, "ticks must be between 1 and 600"));
+                    }
+                    Request::Step(ticks)
+                }
+                _ => {
+                    return Err(err(
+                        code::INVALID_PARAMS,
+                        "use pause, resume, or step (with optional ticks)",
+                    ));
+                }
+            };
+            enqueue(app, req)
+        }
         _ => Err(err(code::METHOD_NOT_FOUND, format!("no method {method}"))),
     }
+}
+
+fn enqueue(app: &mut App, req: Request) -> Reply {
+    let (_, link) = need_window(app)?;
+    if let Some(why) = req.refusal(link) {
+        return Err(err(code::REFUSED, why));
+    }
+    app.pairing.requests.push(req);
+    Ok(json!({ "requested": true }))
 }
 
 /// The games found now, as `pair.list` lists them.

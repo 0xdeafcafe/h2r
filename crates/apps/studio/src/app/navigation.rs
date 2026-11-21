@@ -10,6 +10,10 @@ const HISTORY_LIMIT: usize = 128;
 #[derive(Clone, Debug, PartialEq)]
 pub enum NavAction {
     SelectTag(TagId),
+    SelectPalette {
+        tag: TagId,
+        placements: Vec<(BlockKind, usize)>,
+    },
     Go {
         tag: TagId,
         path: Option<String>,
@@ -27,6 +31,7 @@ pub enum NavAction {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NavLocation {
     placements: Vec<(BlockKind, usize)>,
+    palette_subject: bool,
     pub trail: Vec<TagId>,
     pub path: Option<String>,
 }
@@ -35,13 +40,16 @@ impl NavLocation {
     fn placements(session: &Session) -> Self {
         Self {
             placements: session.selection(),
+            palette_subject: false,
             trail: Vec::new(),
             path: None,
         }
     }
 
     pub fn selection(&self) -> Option<Selection> {
-        if let Some(&(kind, index)) = self.placements.first() {
+        if !self.palette_subject
+            && let Some(&(kind, index)) = self.placements.first()
+        {
             Some(Selection::Placement(kind, index))
         } else {
             self.trail.first().copied().map(Selection::Tag)
@@ -144,6 +152,21 @@ impl App {
         match action {
             NavAction::SelectTag(tag) => {
                 after.placements.clear();
+                after.palette_subject = false;
+                after.trail = vec![tag];
+                after.path = None;
+            }
+            NavAction::SelectPalette {
+                tag,
+                mut placements,
+            } => {
+                placements.retain(|&(kind, index)| {
+                    self.session
+                        .scenario()
+                        .is_some_and(|s| index < s.block(kind).len())
+                });
+                after.placements = placements;
+                after.palette_subject = true;
                 after.trail = vec![tag];
                 after.path = None;
             }
@@ -152,6 +175,7 @@ impl App {
                 after.path = path;
             }
             NavAction::Open(trail) => {
+                after.palette_subject &= !trail.is_empty();
                 after.trail = trail;
                 after.path = None;
             }

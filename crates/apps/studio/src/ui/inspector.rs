@@ -5,9 +5,7 @@
 //!   a facing in degrees; scale (0 reads as 1).
 //! - The palette entry and the item reference as searchable combos.
 //! - Flags fields as a checkbox per bit.
-//! - A netgame flag's type by name where the community's enum names it
-//!   (`h1convert::placements::H2Flag`, not yet confirmed from engine
-//!   code), team 8 as neutral.
+//! - A netgame flag's type by its viewport label or raw value, and its team.
 //! - Netgame equipment's spawn settings under their own heading.
 //!
 //! With many selected, only the fields every one has are shown; a field
@@ -18,6 +16,7 @@ use std::hash::{Hash, Hasher};
 
 use dear_imgui_rs::{Drag, Ui};
 use map::TagId;
+use scenario_edit::geometry::flag_type_name;
 use scenario_edit::layout::{FieldDef, FieldType, Role};
 use scenario_edit::session::FieldEdit;
 use scenario_edit::{BlockKind, Scenario, TagRef, Value};
@@ -36,19 +35,6 @@ pub struct InspectorState {
     chain: Option<(u64, TagId, &'static str, Chain)>,
     tag_world: Option<u64>,
     focus: Option<(TagId, String)>,
-}
-
-/// Netgame flag types the community's enum names (see the module docs).
-pub fn flag_type_name(v: i64) -> Option<&'static str> {
-    Some(match v {
-        0 => "CTF flag spawn",
-        1 => "CTF flag return",
-        4 => "Oddball spawn",
-        7 => "Teleporter source",
-        8 => "Teleporter destination",
-        11..=16 => "Hill marker",
-        _ => return None,
-    })
 }
 
 /// A field's heading in the inspector.
@@ -86,7 +72,7 @@ fn merge_key(selection: &[(BlockKind, usize)], field: &str) -> u64 {
 }
 
 /// Draw the inspector for the selection and apply its edits.
-pub fn draw(ui: &Ui, bold: dear_imgui_rs::FontId, app: &mut App, state: &mut InspectorState) {
+pub fn draw(ui: &Ui, fonts: &theme::Fonts, app: &mut App, state: &mut InspectorState) {
     let location = app.nav_location();
     let (kind, index) = match location.selection() {
         Some(Selection::Placement(kind, index)) => (kind, index),
@@ -97,8 +83,12 @@ pub fn draw(ui: &Ui, bold: dear_imgui_rs::FontId, app: &mut App, state: &mut Ins
         None => {
             state.focus = None;
             state.tag_panel.clear_field_focus();
-            ui.text_disabled("Select a placement in the outliner or the viewport.");
-            ui.text_disabled("Ctrl/Cmd+click adds to the selection, Shift+click a run.");
+            let title = if app.session.is_open() {
+                "Click something in the level"
+            } else {
+                "Open a map to inspect it"
+            };
+            theme::empty_card(ui, fonts, title, || {});
             return;
         }
     };
@@ -106,7 +96,7 @@ pub fn draw(ui: &Ui, bold: dear_imgui_rs::FontId, app: &mut App, state: &mut Ins
     let Some(scenario) = app.session.scenario() else {
         return;
     };
-    let f = ui.push_font(bold);
+    let f = ui.push_font(fonts.title);
     if selection.len() == 1 {
         ui.text(format!(
             "{}  {}",
@@ -146,6 +136,12 @@ pub fn draw(ui: &Ui, bold: dear_imgui_rs::FontId, app: &mut App, state: &mut Ins
         );
     }
 
+    theme::link_badge(
+        ui,
+        crate::play::LinkTone::View,
+        crate::play::tag_sync::CREATION,
+    );
+    ui.set_item_tooltip("Placement fields apply when the object is next created.");
     let fields = app.session.shared_fields();
     let mut edits: Vec<(&'static str, FieldEdit)> = Vec::new();
     let mut done = false;
@@ -158,7 +154,7 @@ pub fn draw(ui: &Ui, bold: dear_imgui_rs::FontId, app: &mut App, state: &mut Ins
         let mixed = values.iter().any(|v| *v != first);
         let h = section(kind, f);
         if h != heading {
-            ui.separator_with_text(h);
+            theme::section(ui, h);
             heading = h;
         }
         let d = ui.begin_disabled_with_cond(!f.editable);
@@ -218,7 +214,7 @@ fn tags(
         return;
     };
     app.sync_tags();
-    ui.separator_with_text("Tags");
+    theme::section(ui, "Tags");
     let doc = &app.tags;
     if let Some(error) = &doc.error {
         ui.text_colored(theme::ERROR, error);
@@ -242,13 +238,13 @@ fn tags(
     let mut actions = Vec::new();
     breadcrumbs(ui, app, location, &mut actions);
     let undo = ui.begin_disabled_with_cond(!doc.can_undo());
-    if ui.small_button("Undo tag edit") {
+    if ui.button("Undo tag edit") {
         actions.push(Action::UndoIn(ToolKind::Tags));
     }
     undo.end();
     ui.same_line();
     let redo = ui.begin_disabled_with_cond(!doc.can_redo());
-    if ui.small_button("Redo tag edit") {
+    if ui.button("Redo tag edit") {
         actions.push(Action::RedoIn(ToolKind::Tags));
     }
     redo.end();
@@ -515,20 +511,16 @@ fn field_row(
                 Some(n) => format!("{v}: {n}"),
                 None => v.to_string(),
             };
-            let options: Vec<(i64, String)> = (0..=16).map(|v| (v, text(v))).collect();
+            let options: Vec<(i64, String)> = (0..=18).map(|v| (v, text(v))).collect();
             let r = search_combo(ui, &id("flagtype"), &text(x), x, &options, state)
                 .map(|v| FieldEdit::Set(Value::Int(v)));
-            ui.set_item_tooltip(
-                "Names from the community's enum for Halo 2's netgame flags \
-                 (the disc agrees; not yet confirmed from engine code)",
-            );
+            ui.set_item_tooltip("Unidentified flag types are shown by their raw value.");
             r
         }
         (_, Value::Int(mut x)) => {
-            let text = match (f.name, kind) {
-                ("respawn time", _) => "respawn time (s)",
-                ("team", BlockKind::NetgameFlags) => "team / channel",
-                (n, _) => n,
+            let text = match f.name {
+                "respawn time" => "respawn time (s)",
+                name => name,
             };
             label(ui, f, text, mixed);
             ui.set_next_item_width(-1.0);
@@ -545,9 +537,10 @@ fn field_row(
                 .then_some(FieldEdit::Set(Value::Int(x)));
             match (f.name, kind) {
                 ("respawn time", _) => ui.set_item_tooltip("0: the collection's default"),
-                ("team", BlockKind::NetgameFlags) => ui.set_item_tooltip(
-                    "The team (8 is neutral); a teleporter's channel; a hill's number",
-                ),
+                ("team", BlockKind::NetgameFlags) => ui.set_item_tooltip("Team 8 is neutral."),
+                ("identifier", BlockKind::NetgameFlags) => {
+                    ui.set_item_tooltip("Teleporter channel or territory index.")
+                }
                 _ => {}
             }
             r
@@ -733,7 +726,8 @@ mod tests {
         assert_eq!(flag_type_name(0), Some("CTF flag spawn"));
         assert_eq!(flag_type_name(4), Some("Oddball spawn"));
         assert_eq!(flag_type_name(12), Some("Hill marker"));
-        assert_eq!(flag_type_name(2), None);
+        assert_eq!(flag_type_name(18), Some("Hill marker"));
+        assert_eq!(flag_type_name(19), None);
     }
 
     #[test]

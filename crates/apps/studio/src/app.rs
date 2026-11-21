@@ -37,6 +37,7 @@ pub use ui_screens::{Pick, UiScreens};
 use editor_core::map_groups::MapGroup;
 use editor_core::{MapPack, MapSource, Status, variant_sources};
 use hopper_edit::HopperSession;
+use scenario_edit::layers::{LayerId, Layers};
 use scenario_edit::{BlockKind, MapSource as EditSource, PackageForm, Session};
 use variants::panel::Origin;
 use variants::{GameType, GameVariant, SettingId, VariantEditor};
@@ -114,6 +115,7 @@ pub enum Action {
     SelectHalo1Map(String),
     /// Draw a converted map's Halo 1 source over it.
     SetOverlay(bool),
+    SetLayers(Layers),
     /// Convert the Halo 1 map on show to Halo 2, in the background.
     ConvertHalo1(ConvertSandbox),
     /// The sandbox "Convert to Halo 2" uses.
@@ -183,6 +185,7 @@ pub enum Action {
     DuplicateEntry(BlockKind, usize),
     FrameAll,
     FocusSelected,
+    SetFlySpeed(f32),
     SetAllowGrowth(bool),
     /// Show another tool.
     SetTool(ToolKind),
@@ -365,6 +368,7 @@ pub struct App {
     /// The file the edited map was last saved to.
     saved_path: Option<PathBuf>,
     pub tool: ToolKind,
+    fly_speed: f32,
     pub session: Session,
     /// The action held behind the unsaved-changes prompt, and the tool
     /// whose edits it would drop.
@@ -418,7 +422,7 @@ pub struct App {
     h1_loaded: Option<String>,
     /// The open converted map's Halo 1 source.
     compare: Option<Compare>,
-    show_overlay: bool,
+    pub layers: Layers,
     overlay_rev: u64,
     /// The conversion running, why the last one wrote nothing, and what
     /// runs it.
@@ -465,6 +469,7 @@ impl App {
             loaded: None,
             saved_path: None,
             tool: ToolKind::Scenario,
+            fly_speed: crate::camera::DEFAULT_SPEED,
             session: Session::new(),
             pending: None,
             variants: None,
@@ -494,7 +499,7 @@ impl App {
             h1_view: None,
             h1_loaded: None,
             compare: None,
-            show_overlay: true,
+            layers: Layers::default(),
             overlay_rev: 0,
             convert: None,
             convert_error: None,
@@ -602,6 +607,16 @@ impl App {
             ToolKind::Tags => self.tags.can_redo(),
         }
     }
+    pub fn fly_speed(&self) -> f32 {
+        self.fly_speed
+    }
+
+    pub(crate) fn set_fly_speed(&mut self, speed: f32) {
+        if speed.is_finite() {
+            self.fly_speed = speed.clamp(crate::camera::MIN_SPEED, crate::camera::MAX_SPEED);
+        }
+    }
+
     pub fn should_quit(&self) -> bool {
         self.quit
     }
@@ -613,9 +628,8 @@ impl App {
         self.log.last().map(|l| &l.status)
     }
 
-    /// The window title: what the active tool edits, a dirty mark, the
-    /// app.
-    pub fn title(&self) -> String {
+    /// The document name and its unsaved mark, shared by both title bars.
+    pub(crate) fn document_caption(&self) -> Option<String> {
         let what = match self.tool {
             ToolKind::Scenario => self.loaded.clone(),
             ToolKind::Variants => self
@@ -643,10 +657,14 @@ impl App {
         // A browsed map is never dirty: the open map's mark is its own.
         let dirty = self.tool_dirty(self.tool)
             || (self.tool == ToolKind::Tags && self.browsing().is_none() && self.session.is_dirty());
-        match what {
-            Some(name) => format!("{name}{} - h2-editor", if dirty { " *" } else { "" }),
-            None => "h2-editor".to_owned(),
-        }
+        what.map(|name| if dirty { format!("{name} *") } else { name })
+    }
+
+    pub fn title(&self) -> String {
+        self.document_caption().map_or_else(
+            || "h2-editor".to_owned(),
+            |name| format!("{name} - h2-editor"),
+        )
     }
 
     pub fn info(&mut self, msg: impl Into<String>) {
@@ -778,7 +796,8 @@ impl App {
             Action::OpenPackageEntry(key) => self.open_package_entry(&key),
             Action::OpenMapPack(key) => self.open_pack_map(&key),
             Action::SelectHalo1Map(name) => self.select_halo1_map(&name),
-            Action::SetOverlay(on) => self.set_overlay(on),
+            Action::SetOverlay(on) => self.layers.set(LayerId::Halo1, on),
+            Action::SetLayers(layers) => self.layers = layers,
             Action::ConvertHalo1(sandbox) => self.start_convert(sandbox),
             Action::SetConvertSandbox(sandbox) => {
                 self.convert_sandbox = sandbox;
@@ -874,6 +893,7 @@ impl App {
             }
             Action::FrameAll => self.session.frame_all(),
             Action::FocusSelected => self.frame_selection(),
+            Action::SetFlySpeed(speed) => self.set_fly_speed(speed),
             Action::SetAllowGrowth(allow) => {
                 self.session.set_allow_growth(allow);
                 self.tags.allow_growth = allow;
@@ -1140,7 +1160,7 @@ impl App {
         self.run_map_tag(action);
     }
 
-    fn run_map_tag(&mut self, action: TagAction) {
+    pub(crate) fn run_map_tag(&mut self, action: TagAction) {
         let r = match action {
             TagAction::Select(id) => {
                 if self.tags.tag(id).is_some() {

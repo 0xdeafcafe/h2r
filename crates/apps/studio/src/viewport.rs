@@ -12,6 +12,7 @@ use std::collections::BTreeSet;
 use dear_imgui_rs::{Key, MouseButton, TextureId, Ui};
 use dear_imgui_wgpu::{ExternalTextureId, WgpuRenderer};
 use dear_imguizmo::{GuizmoExt, Mode, Operation};
+use scenario_edit::layers::{LayerId, Layers};
 use scenario_edit::render::{self, Viewport};
 use scenario_edit::{BlockKind, Session, geometry};
 
@@ -102,6 +103,8 @@ pub struct ViewportView {
     markers_rev: Option<u64>,
     linked: BTreeSet<(BlockKind, usize)>,
     overlay_rev: Option<u64>,
+    layers: Option<Layers>,
+    labels: Vec<mirror::Label>,
     pub op: GizmoOp,
     /// Gizmo axes follow the placement (local) or the world.
     pub local: bool,
@@ -118,6 +121,7 @@ pub struct ViewportView {
     /// The next left click in the viewport places a new entry of this
     /// block there (a copy of the entry, when given).
     pub placing: Option<(BlockKind, Option<usize>)>,
+    hovered: bool,
     /// Where the last frame showed the image: origin and size in points.
     shown: Option<[f32; 4]>,
 }
@@ -137,6 +141,8 @@ impl ViewportView {
             markers_rev: None,
             linked: BTreeSet::new(),
             overlay_rev: None,
+            layers: None,
+            labels: Vec::new(),
             op: GizmoOp::Translate,
             local: false,
             snap: Snap::default(),
@@ -146,6 +152,7 @@ impl ViewportView {
             orbiting: false,
             panning: false,
             placing: None,
+            hovered: false,
             shown: None,
         }
     }
@@ -154,6 +161,10 @@ impl ViewportView {
     /// points), and its render target: the headless tests compare the two.
     pub fn shown(&self) -> Option<([f32; 4], &wgpu::Texture)> {
         Some((self.shown?, self.vp.as_ref()?.color_texture()?))
+    }
+
+    pub fn hovered(&self) -> bool {
+        self.hovered
     }
 
     /// Whether the camera has the mouse (keyboard shortcuts then fly).
@@ -181,21 +192,22 @@ impl ViewportView {
             }
             self.world_rev = Some(session.world_rev());
         }
-        if world_changed || self.markers_rev != Some(session.markers_rev()) || self.linked != live.linked {
-            let selected = session.selection();
-            match session.scene() {
-                Some(scene) => vp.set_linked_placements(gpu.device, scene, session.markers(), &selected, &live.linked),
-                None => vp.set_markers(
-                    gpu.device,
-                    &render::marker_vertices(session.markers(), &selected),
-                ),
-            }
+        let layers_changed = self.layers.as_ref() != Some(&app.layers);
+        if layers_changed {
+            vp.set_layers(&app.layers);
+            self.layers = Some(app.layers.clone());
+        }
+        if world_changed || layers_changed || self.markers_rev != Some(session.markers_rev())
+            || self.linked != live.linked
+        {
+            upload_placements(vp, gpu.device, app, &live.linked);
+            self.labels = mirror::gameplay_labels(app);
             self.markers_rev = Some(session.markers_rev());
             self.linked.clone_from(&live.linked);
         }
         vp.set_live_instances(gpu.device, gpu.queue, session.source(), &live.instances);
         if self.overlay_rev != Some(app.overlay_rev()) {
-            vp.set_overlay(gpu.device, &overlay_vertices(app));
+            upload_overlays(vp, gpu.device, app);
             self.overlay_rev = Some(app.overlay_rev());
         }
         let resized = vp.render(gpu.device, gpu.queue, session.camera(), size_px);
@@ -229,6 +241,7 @@ impl ViewportView {
             (size[1] * scale[1]).round() as u32,
         ];
         let origin = ui.cursor_screen_pos();
+        self.hovered = false;
         let live = mirror::Scene::shown(app);
         let Some(texture) = self.prepare(gpu, app, &live, px) else {
             ui.text_disabled("The viewport could not create its render target.");
@@ -237,11 +250,13 @@ impl ViewportView {
         ui.image(texture, size);
         let rect = [origin[0], origin[1], size[0], size[1]];
         self.shown = Some(rect);
+        mirror::draw_labels(ui, app.session.camera(), rect, &self.labels);
         live.overlay(ui, app.session.camera(), rect);
         let hovered = ui.is_item_hovered();
+        self.hovered = hovered;
         let aspect = size[0] / size[1].max(1.0);
 
-        let (over_gizmo, using_gizmo) = self.gizmo(ui, app, origin, size, aspect);
+        let (over_gizmo, using_gizmo) = self.gizmo(ui, app, origin, size, aspect, &live.linked);
 
         let io = ui.io();
         let alt = io.key_alt();
@@ -263,7 +278,7 @@ impl ViewportView {
                 .session
                 .selection_sphere()
                 .map(|(c, _)| c)
-                .or_else(|| app.session.surface_hit(&ray))
+                .or_else(|| app.session.surface_hit_visible(&ray, &app.layers))
                 .unwrap_or(app.session.camera().target);
             self.camera.begin_orbit(pivot);
             self.orbiting = true;
@@ -306,7 +321,9 @@ impl ViewportView {
             fast: io.key_shift(),
             height: size[1],
         };
+        self.camera.speed = app.fly_speed();
         self.camera.update(app.session.camera_mut(), &input);
+        app.set_fly_speed(self.camera.speed);
         let ray = app.session.camera().ray(uv[0], uv[1], aspect);
 
         if self.placing.is_some() && ui.is_key_pressed(Key::Escape) {
@@ -320,7 +337,7 @@ impl ViewportView {
         // Placing: the click puts the new entry where the cursor meets the
         // level.
         if clicked && let Some((kind, like)) = self.placing {
-            match app.session.surface_hit(&ray) {
+            match app.session.surface_hit_visible(&ray, &app.layers) {
                 Some(at) => {
                     let at = if self.snap.grid {
                         snap_to_grid(at, self.snap.grid_step)
@@ -337,13 +354,13 @@ impl ViewportView {
         // Double-click focuses what is under the cursor: a placement, else
         // the surface.
         if hovered && !alt && !over_gizmo && ui.is_mouse_double_clicked(MouseButton::Left) {
-            match app.session.pick(&ray) {
+            match app.session.pick_visible_linked(&ray, &app.layers, &live.linked) {
                 Some(hit) => {
                     actions.push(Action::Select(Some(hit)));
                     actions.push(Action::FocusSelected);
                 }
                 None => {
-                    if let Some(p) = app.session.surface_hit(&ray) {
+                    if let Some(p) = app.session.surface_hit_visible(&ray, &app.layers) {
                         let to = camera::focus_point(app.session.camera(), p, 30.0);
                         self.camera.go_to(app.session.camera_mut(), to);
                     }
@@ -353,7 +370,7 @@ impl ViewportView {
         }
         // Left click picks; with Ctrl/Cmd it adds to or takes from the
         // selection.
-        if clicked && let Some(action) = pick_action(&app.session, &ray, cmd) {
+        if clicked && let Some(action) = pick_action(&app.session, &ray, cmd, &app.layers, &live.linked) {
             actions.push(action);
         }
     }
@@ -368,13 +385,20 @@ impl ViewportView {
         origin: [f32; 2],
         size: [f32; 2],
         aspect: f32,
+        linked: &BTreeSet<(BlockKind, usize)>,
     ) -> (bool, bool) {
         let camera = *app.session.camera();
         let view = geometry::flat(&camera.view());
         let proj = geometry::flat(&camera.proj(aspect));
         let mut over = false;
         let mut using = false;
-        if let Some(t) = app.session.selected_transform() {
+        let visible = app.session.selected().is_some_and(|(kind, i)| {
+            app.layers.placement(kind) && (app.layers.visible(LayerId::Markers)
+                || (app.layers.visible(LayerId::Objects) && !linked.contains(&(kind, i))
+                    && app.session.markers().iter().find(|m| (m.block, m.index) == (kind, i))
+                        .is_some_and(|m| app.session.scene().and_then(|s| s.model_of(m)).is_some())))
+        });
+        if visible && let Some(t) = app.session.selected_transform() {
             let scale = app.session.selected_scale();
             let mut model = t.matrix();
             if self.op == GizmoOp::Scale
@@ -437,8 +461,14 @@ impl ViewportView {
     }
 }
 
-pub(crate) fn pick_action(session: &Session, ray: &geometry::Ray, extend: bool) -> Option<Action> {
-    let hit = session.pick(ray);
+pub(crate) fn pick_action(
+    session: &Session,
+    ray: &geometry::Ray,
+    extend: bool,
+    layers: &Layers,
+    linked: &BTreeSet<(BlockKind, usize)>,
+) -> Option<Action> {
+    let hit = session.pick_visible_linked(ray, layers, linked);
     if extend {
         hit.map(Action::ToggleSelect)
     } else {
@@ -455,22 +485,70 @@ fn selection_label(app: &App) -> String {
     }
 }
 
-/// The colour of a converted map's Halo 1 source drawn over it.
-pub const OVERLAY_COLOR: [f32; 3] = [1.0, 0.55, 0.15];
-
-/// The overlay's vertices: the Halo 1 source's triangles and glyphs, in
-/// one colour (none when the overlay is off or has no source).
-pub fn overlay_vertices(app: &App) -> Vec<render::Vertex> {
-    let Some(v) = app.overlay() else {
-        return Vec::new();
+/// Both the interactive view and view.snapshot use the same placement filters.
+pub(crate) fn upload_placements(
+    vp: &mut Viewport,
+    device: &wgpu::Device,
+    app: &App,
+    linked: &BTreeSet<(BlockKind, usize)>,
+) {
+    let session = &app.session;
+    let markers: Vec<_> = session.markers().iter().copied()
+        .filter(|m| app.layers.placement(m.block))
+        .collect();
+    let selected = session.selection();
+    let gameplay = |m: &geometry::Marker| geometry::Gameplay::of(session.scenario(), m);
+    let style = |m: &geometry::Marker| {
+        let data = gameplay(m);
+        (crate::theme::placement_color(m.block, data.team), data.flag_type)
     };
-    let mut out = render::overlay_vertices(&crate::app::library_tris(v), OVERLAY_COLOR);
-    let mut glyphs = render::marker_vertices(&crate::app::library_markers(v), &[]);
-    for g in &mut glyphs {
-        g.color = OVERLAY_COLOR;
+    match session.scene() {
+        Some(scene) => vp.set_linked_placements_styled(
+            device, scene, &markers, &selected, linked, style,
+        ),
+        None => vp.set_markers(
+            device, &render::glyph_vertices_styled(&markers, &selected, |_| false, style),
+        ),
     }
-    out.extend(glyphs);
-    out
+
+    let mut lines = Vec::new();
+    if app.layers.visible(LayerId::Markers) {
+        let color = crate::theme::layer_color(LayerId::Flags);
+        for outline in geometry::flag_outlines(&markers, gameplay) {
+            let mut segment = |a, b| {
+                for position in [a, b] {
+                    lines.push(render::Vertex {
+                        position,
+                        center: position,
+                        normal: [0.0, 0.0, 1.0],
+                        color,
+                    });
+                }
+            };
+            for edge in outline.windows(2) {
+                segment(edge[0], edge[1]);
+            }
+            if outline.len() > 2 {
+                segment(outline[outline.len() - 1], outline[0]);
+            }
+        }
+    }
+    vp.set_layer_overlay(device, LayerId::Flags, &[], &lines);
+}
+
+pub(crate) fn upload_overlays(vp: &mut Viewport, device: &wgpu::Device, app: &App) {
+    let mut tris = Vec::new();
+    if let Some(source) = app.compare().and_then(|c| c.view.as_ref().ok()) {
+        let color = crate::theme::layer_color(LayerId::Halo1);
+        tris = render::overlay_vertices(&crate::app::library_tris(source), color);
+        tris.extend(render::glyph_vertices_styled(
+            &crate::app::library_markers(source),
+            &[],
+            |_| false,
+            |_| (color, None),
+        ));
+    }
+    vp.set_layer_overlay(device, LayerId::Halo1, &tris, &[]);
 }
 
 #[cfg(test)]

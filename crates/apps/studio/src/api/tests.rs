@@ -209,7 +209,7 @@ fn setup(api: &mut Api, app: &mut App, t: &Temp, name: &str) {
         ),
         // The window's pairing, as its first frame publishes it.
         n if n.starts_with("pair.") => {
-            app.pairing.published = Some(json!({"state": "off"}));
+            crate::play::Play::new().update(app);
         }
         n if n.starts_with("hud.") => {
             // The HUD fixture's map as the source (it has no scenario).
@@ -222,6 +222,20 @@ fn setup(api: &mut Api, app: &mut App, t: &Temp, name: &str) {
         }
         _ => {}
     }
+}
+
+#[test]
+fn the_camera_api_reads_and_sets_fly_speed() {
+    let temp = Temp::new("fly-speed");
+    let mut app = app(&temp);
+    let mut api = Api::new();
+    let initial = api.call(&mut app, m::VIEW_CAMERA, json!({})).unwrap();
+    assert_eq!(initial["fly_speed"], json!(crate::camera::DEFAULT_SPEED));
+    let response = api.call(&mut app, m::VIEW_CAMERA, json!({"fly_speed": 32})).unwrap();
+    assert_eq!(response["fly_speed"], json!(32.0));
+    let error = api.call(&mut app, m::VIEW_CAMERA, json!({"fly_speed": 0})).unwrap_err();
+    assert_eq!(error.code, code::INVALID_PARAMS);
+    assert_eq!(app.fly_speed(), 32.0);
 }
 
 #[test]
@@ -244,6 +258,12 @@ fn every_method_in_methods_has_a_test() {
             (Some(_), Ok(v)) => panic!("{} is planned but answered {v}", d.name),
             // No renderer on this machine: the snapshot says so.
             (None, Err(e)) if d.name == m::VIEW_SNAPSHOT && e.code == code::NO_GPU => {}
+            // The first frame has no paired or editor-launched game.
+            (None, Err(e))
+                if matches!(
+                    d.name,
+                    m::PAIR_STOP | m::PAIR_EDIT | m::PAIR_CONTROL | m::MIRROR_APPLY
+                ) && e.code == code::REFUSED => {}
             (None, Err(e)) => panic!("{} {params}: {e}", d.name),
             (None, Ok(v)) => assert!(!v.is_null() || d.name == m::METHODS, "{}", d.name),
         }
@@ -259,6 +279,164 @@ fn every_method_in_methods_has_a_test() {
         );
     }
     assert_eq!(ran.len(), Api::new().methods().len());
+}
+
+#[test]
+fn pair_status_carries_link_view() {
+    use crate::play::{Conn, Play};
+
+    let t = Temp::new("pair-link");
+    let mut app = app(&t);
+    let mut play = Play::new();
+    let mut api = Api::new();
+    play.update(&mut app);
+    let status = call(&mut api, &mut app, m::PAIR_STATUS, Value::Null);
+    assert_eq!(status["state"], "off");
+    assert_eq!(
+        status["link"],
+        json!({"state":"no_game", "text":"No game", "why":null})
+    );
+    play.conn = Conn::Connected;
+    play.update(&mut app);
+    let status = call(&mut api, &mut app, m::PAIR_STATUS, Value::Null);
+    assert_eq!(status["state"], "connected");
+    assert_eq!(status["link"]["state"], "viewing");
+    assert_eq!(status["link"]["text"], play.link_view(&app).text);
+}
+
+#[test]
+fn view_layers_applies_overrides_atomically_and_shares_the_halo1_menu_switch() {
+    let t = Temp::new("view-layers");
+    let mut app = app(&t);
+    let mut api = Api::new();
+    let result = call(&mut api, &mut app, m::VIEW_LAYERS, json!({
+        "preset": "everything", "set": {"fog": false}, "xray": true
+    }));
+    assert_eq!(result["xray"], true);
+    let rows = result["layers"].as_array().unwrap();
+    assert_eq!(rows.iter().find(|r| r["name"] == "fog").unwrap()["on"], false);
+    let scenery = rows.iter().find(|r| r["label"] == "Scenery").unwrap();
+    assert_eq!(scenery["count"], 1);
+    assert_eq!(scenery["on"], true);
+    assert_eq!(scenery["color"].as_array().unwrap().len(), 3);
+
+    for invalid in [
+        json!({"preset": "missing"}),
+        json!({"preset": "art", "set": []}),
+        json!({"preset": "art", "set": {"fog": true, "unknown": false}}),
+        json!({"set": {"fog": "on"}}),
+        json!({"set": {"fog": true}, "xray": 1}),
+    ] {
+        let reply = api.call(&mut app, m::VIEW_LAYERS, invalid);
+        assert_eq!(code_of(reply), code::INVALID_PARAMS);
+        assert_eq!(call(&mut api, &mut app, m::VIEW_LAYERS, Value::Null), result);
+    }
+
+    assert!(app.overlay_shown());
+    app.dispatch(Action::SetOverlay(false));
+    let hidden = call(&mut api, &mut app, m::VIEW_LAYERS, Value::Null);
+    let halo = hidden["layers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["name"] == "halo1")
+        .unwrap();
+    assert_eq!(halo["on"], false);
+    call(&mut api, &mut app, m::VIEW_LAYERS, json!({"set": {"halo1": true}}));
+    assert!(app.overlay_shown());
+}
+
+fn png_pixels(path: &Path) -> Vec<u8> {
+    let file = std::io::BufReader::new(std::fs::File::open(path).unwrap());
+    let mut png = png::Decoder::new(file).read_info().unwrap();
+    let mut rgba = vec![0; png.output_buffer_size().unwrap()];
+    png.next_frame(&mut rgba).unwrap();
+    rgba
+}
+
+#[test]
+fn view_layers_changes_snapshot_pixels_on_the_fixture() {
+    let t = Temp::new("view-layer-pixels");
+    let mut app = app(&t);
+    let mut api = Api::new();
+    let out = t.path("view.png");
+    let params = json!({
+        "out": out, "size": [128, 96],
+        "camera": {"target": [5, 5, 5], "distance": 2, "yaw": 15, "pitch": 15}
+    });
+    // The fixture has one scenery glyph at [5, 5, 5].
+    call(&mut api, &mut app, m::VIEW_LAYERS, json!({"preset": "everything"}));
+    match api.call(&mut app, m::VIEW_SNAPSHOT, params.clone()) {
+        Err(e) if e.code == code::NO_GPU => return,
+        Ok(_) => {}
+        Err(e) => panic!("view.snapshot: {e}"),
+    }
+    let shown = png_pixels(&out);
+    call(&mut api, &mut app, m::VIEW_LAYERS, json!({"set": {"scenery": false}}));
+    call(&mut api, &mut app, m::VIEW_SNAPSHOT, params.clone());
+    assert!(png_pixels(&out) != shown, "hiding scenery must remove its glyph from the snapshot");
+    call(&mut api, &mut app, m::VIEW_LAYERS, json!({"set": {"scenery": true}}));
+    call(&mut api, &mut app, m::VIEW_SNAPSHOT, params);
+    assert!(png_pixels(&out) == shown, "showing scenery must restore the original pixels");
+}
+
+#[test]
+fn view_layers_gameplay_legend_counts_survive_changes_of_preset() {
+    let t = Temp::new("view-gameplay-legend");
+    let mut app = app(&t);
+    let mut api = Api::new();
+    for (preset, enabled) in [
+        ("gameplay", [true, true, true]),
+        ("art", [false, false, true]),
+        ("collision", [false, false, false]),
+    ] {
+        let state = call(&mut api, &mut app, m::VIEW_LAYERS, json!({"preset": preset}));
+        let rows = state["layers"].as_array().unwrap();
+        for ((name, count), on) in [("spawn_points", 2), ("flags", 1), ("netgame_items", 1)]
+            .into_iter()
+            .zip(enabled)
+        {
+            let row = rows.iter().find(|r| r["name"] == name).unwrap();
+            assert_eq!(row["group"], "Gameplay", "{name}");
+            assert_eq!(row["count"], count, "{name}");
+            assert_eq!(row["on"], on, "{preset} / {name}");
+        }
+    }
+}
+
+#[test]
+fn view_layers_gameplay_switches_and_respawn_labels_change_snapshot_pixels() {
+    let t = Temp::new("view-gameplay-pixels");
+    let mut app = app(&t);
+    let mut api = Api::new();
+    let path = t.path("gameplay.png");
+    // All three kinds of placement are in frame. Keep the camera fixed so
+    // only the changed layer (or the edited respawn caption) affects pixels.
+    let params = json!({
+        "out": path, "size": [320, 240],
+        "camera": {"target": [1, 1, 1], "distance": 14, "yaw": 80, "pitch": 15}
+    });
+    call(&mut api, &mut app, m::VIEW_LAYERS, json!({"preset": "gameplay"}));
+    match api.call(&mut app, m::VIEW_SNAPSHOT, params.clone()) {
+        Err(e) if e.code == code::NO_GPU => return,
+        Err(e) => panic!("view.snapshot: {e}"),
+        Ok(_) => {}
+    }
+    let shown = png_pixels(&path);
+    for name in ["spawn_points", "flags", "netgame_items"] {
+        call(&mut api, &mut app, m::VIEW_LAYERS, json!({"set": {(name): false}}));
+        call(&mut api, &mut app, m::VIEW_SNAPSHOT, params.clone());
+        assert!(png_pixels(&path) != shown, "hiding {name} must change the picture");
+        call(&mut api, &mut app, m::VIEW_LAYERS, json!({"set": {(name): true}}));
+    }
+    call(&mut api, &mut app, m::VIEW_SNAPSHOT, params.clone());
+    assert!(png_pixels(&path) == shown, "showing all three layers must restore the picture");
+
+    call(&mut api, &mut app, m::SCENARIO_SET, json!({
+        "block": "netgame_equipment", "index": 0, "field": "respawn time", "value": 77
+    }));
+    call(&mut api, &mut app, m::VIEW_SNAPSHOT, params);
+    assert!(png_pixels(&path) != shown, "the equipment's new respawn time must appear in its caption");
 }
 
 #[test]
@@ -1345,7 +1523,9 @@ fn viewport_pick_pushes_one_history_entry() {
         origin: [0.0, 1.0, 12.0],
         dir: [0.0, 0.0, -1.0],
     };
-    let pick = crate::viewport::pick_action(&app.session, &ray, false).unwrap();
+    let pick = crate::viewport::pick_action(
+        &app.session, &ray, false, &app.layers, &Default::default(),
+    ).unwrap();
     assert_eq!(pick, Action::Select(Some((BlockKind::Weapons, 0))));
     app.dispatch(pick.clone());
     let after = call(&mut api, &mut app, m::NAV_STATUS, json!({}));

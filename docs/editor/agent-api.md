@@ -76,13 +76,16 @@ What goes through actions, from both sides:
 | Any tag's field or block | `Tag(TagAction)` built by `app::tag_api::{set_field, block}` | the Tags tool | `tag.set`, `tag.block.*` |
 | Move and turn a placement | `MovePlacement` (one step); `GestureSet {position, ypr}`, `GestureScale`, `EndGesture` (a drag: one step, a multi-selection riding along) | the viewport gizmo dispatches the gesture actions every frame of a drag | `scenario.move` |
 | Add, duplicate, delete | `Add`, `DuplicateEntry`, `DeleteEntry` | outliner, toolbar, keys | `scenario.add`, `.duplicate`, `.delete`, `tag.block.*` |
-| Select, frame | `Select`, `FocusSelected`, `FrameAll` | outliner, viewport, keys | `scenario.select`, `view.camera` |
+| Select, frame | `Select`, `FocusSelected`, `FrameAll` | Scene, viewport, keys | `scenario.select`, `view.camera` |
+| Set fly speed | `SetFlySpeed` | viewport toolbar, wheel while flying | `view.camera {fly_speed}` |
+| Show or hide viewport layers | `SetLayers`, `SetOverlay` | Show popover, Scene legend, View > Halo 1 overlay | `view.layers` |
 | Navigate tag fields | `Navigate` | inspector links and breadcrumbs | `nav.go`, `nav.back`, `nav.forward` |
 | Undo, redo | `Undo`, `Redo` (the tool shown), `UndoIn(tool)`, `RedoIn(tool)` | Edit menu, keys | `doc.undo`, `doc.redo` |
 | Save | `SaveMapAs`, `SaveVariant`, `SaveHopper(As)`, `ExportVariant` | File menu, prompt | `doc.save`, `doc.save_as` |
 | Variant edits | `OpenVariant`, `NewVariant`, `CopyBuiltin`, `SetVariantName`, `SetSetting`, `ImportVariant*`, `DeleteVariant` | the variant tool | `doc.open`, `variant.*` |
 | Playlist edits | `EditPlaylist(PlaylistEdit)`, `SetEntryVariant` | the title and description fields, the table's row buttons, weights, Add, the unused slot's "Make a … playlist" buttons and "Remove playlist" apply the same `PlaylistEdit`s | `playlist.set`, `playlist.entry`, `playlist.entry_variant` |
 | UI screens | `UiPick`, `UiPress` | the UI Screens tool | `ui.pick`, `ui.press` |
+| Game link | `play::pair::Request` | game link bar, Game menu and Game panel | `pair.connect`, `pair.disconnect`, `pair.auto`, `pair.play`, `pair.stop`, `pair.control`, `pair.edit` |
 
 The playlist fields apply their `PlaylistEdit`s inside the frame's
 `HopperSession::edit_with`, so a typing run stays one undo step (merged
@@ -144,27 +147,26 @@ before anything runs (`INVALID_PARAMS`). Indices are 0-based throughout
 | `session` | `status`, `methods`, `log` |
 | `source` | `open {path}`, `maps` |
 | `doc` | `list`, `open {map \| path \| package \| variant \| playlists}`, `save`, `save_as {path}`, `diff`, `undo`, `redo`, `close` |
-| `tag` | `list {group, name, query, path, limit, homes}`, `browse {map}`, `resources {tag}`, `export {tag, out, dependencies, resources}`, `import {path, tag, skip_missing}`, `read {tag, depth, elements, hex}`, `refs {tag}`, `follow {tag, ref}`, `set {tag, path, value}`, `block.add`, `block.remove`, `block.duplicate` |
+| `tag` | `list {group, name, query, path, limit, homes}`, `browse {map}`, `resources {tag}`, `export {tag, out, dependencies, resources}`, `import {path, tag, skip_missing}`, `read {tag, depth, elements, hex}`, `tree {root?, depth?}`, `refs {tag, limit?}`, `follow {tag, ref}`, `set {tag, path, value}`, `block.add`, `block.remove`, `block.duplicate` |
 | `scenario` | `blocks`, `list {block}`, `get`, `set {block, index, field, value}`, `add {block, like, position}`, `move {block, index, position, ypr}`, `delete`, `duplicate`, `select` |
 | `variant` | `list`, `get`, `set {setting, value}`, `rename`, `copy`, `export`, `import`, `delete` |
 | `playlist` | `list` (with `unused` per playlist and the `templates`), `get {playlist}`, `set {playlist, title, description, template, clear}` (`template`: make the slot a playlist of that kind, or give a playlist another kind; `clear: true`: make it unused; [live-matchmaking.md §6.10](../live/live-matchmaking.md)), `entry {playlist, op, entry, to, weight}`, `entry_variant` |
 | `ui` | `screens`, `pick {screen, state \| retail}`, `press {input}`, `widgets`, `render {out}` |
-| `pair` | `list`, `status`, `connect {socket}`, `disconnect`, `auto {enabled}` |
-| `mirror` | `status`, `objects {kind?, near?, limit?, at_tick?}` |
-| `view` | `camera {yaw, pitch, distance, target, focus, all}`, `snapshot {out, size, camera}`, `stats` |
+| `pair` | `list`, `status`, `connect {socket?}`, `disconnect {leave?}`, `auto {enabled?}`, `play`, `stop`, `control {action, ticks?}`, `edit {enabled}` |
+| `mirror` | `status`, `objects {kind?, near?, limit?, at_tick?}`, `pending`, `apply {what, at?, peers?}` |
+| `view` | `camera {yaw, pitch, distance, target, focus, all, fly_speed}`, `snapshot {out, size, camera}`, `stats` |
 | `hud` | `list {map \| package}`, `read {hud, state}`, `set {hud, widget, field, value, merge}`, `move {hud, widget, x, y, mode, merge}`, `render {hud, state, out}`, `check {hud, state}`, `save_as {path}` |
 | `model` (planned) | `list`, `read`, `render`, `colors`, `emblem` |
 | `custom` (planned) | `list`, `set` |
+
+`view.camera` returns `fly_speed` in world units per second. Its optional
+`fly_speed` parameter accepts values from 0.5 through 1000.
 
 Notes on some:
 
 - **Tags.** A `tag` param is an id (`"0xe1230045"` or a number), a full
   name, `name.group`, or a group alone when the map has one tag of it
-  (`"scnr"`, `"matg"`). `tag.read` and `tag.refs` read the map as opened
-  from its source, with the layout schema (`tags::schema`): blocks with
-  their elements (`depth` levels, `elements` per block), tag references,
-  datums and string IDs, labelled by offset. `tag.follow` takes a
-  `tag.refs` path (`"0x98[0].0x0"`) or its position in that list.
+  (`"scnr"`, `"matg"`).
   `tag.read`, `tag.set` and `tag.block.*` are the Tags tool's
   (`api/tag_fields.rs` over `app::tag_api`, the registry
   `tags::registry`): every field by its label, paths from the root
@@ -175,6 +177,27 @@ Notes on some:
   the schema's structural view instead. The scenario tag's edits stay with
   the Scenario tool: `tag.set` paths `netgame_flags[0].position` and
   `tag.block.*` on `netgame_flags` run as the matching `scenario.*` calls.
+- **Scenario tree.** `tag.tree {"root":"scenario","depth":2}` reads the
+  open scenario and returns `{root, unreachable, truncated}`. The
+  root's children are Structure (BSPs with their lightmaps), Skies,
+  Objects (grouped by palette), Globals and Other references.
+  Each row has `label`, `tag` (ID), `group`, `name`, `placed` (the
+  count for a palette entry), `via`, `cycle`, `edited`, `cache` and
+  `children`. Section labels can include a count. `root` defaults to
+  `"scenario"`. `depth` limits references below palette entries
+  (default 3, maximum 8). `unreachable` uses the full walk from
+  the scenario and globals regardless of display depth. `truncated`
+  indicates that an object chain hit its walk budget.
+- **References.** `tag.refs {tag, limit?}` lists direct links in the
+  open tag document, including in-memory tag edits. Each result has
+  `to` (the target ID), `via` (the field path or scanned tag offset),
+  and `found` (`"field"` or `"scan"`), alongside `path`, `id`, `group`,
+  `name` and `missing` when the target is absent. The aligned scan covers
+  a group without a layout and supplements the scenario's structural
+  schema. Tags whose payload lives in a separate BSP region use the
+  source schema. `tag.follow` accepts a result's offset path
+  (`"0x98[0].0x0"`), `via`, or its position in the list. The list has
+  a default limit of 500.
 - **Tag chains.** `tag.chain {"block":"weapons","index":0}` follows a
   placement's palette or item reference in the open map.
   `tag.chain {"tag":"weap","depth":2}` starts at a tag in the document
@@ -187,8 +210,7 @@ Notes on some:
   name or ID, if known), `cycle` and `children`. A missing target keeps
   its ID and path with null tag metadata. Cycles stop the current branch.
   `truncated` means a traversal limit beyond the requested depth cuts
-  the result short. Live handles and usage counts belong to later slices
-  of the [click-to-edit design](click-to-edit.md).
+  the result short. Live handles belong to the [click-to-edit design](click-to-edit.md).
 - **Inspector navigation.** `scenario.select {"tag":"weap"}` makes
   a tag the inspector's selection and clears the placement selection.
   `nav.go {"tag":"hlmt","path":"render_model"}` focuses a tag and,
@@ -206,7 +228,7 @@ Notes on some:
   `single_player_shared`, `mainmenu`, any level); `tag.browse {}` goes
   back to the open map. `tag.list`, `tag.read`, `tag.set` (refused),
   `tag.resources` and `tag.export` then work on the browsed map;
-  `tag.read {"raw": true}` and `tag.refs` still read the open map.
+  `tag.tree`, `tag.refs` and `tag.read {"raw": true}` use the open map.
   `tag.list` searches like the Tags tool (`query`: words each in
   `group:name`; `path`: a folder) and marks each tag with `elsewhere`
   (the shared cache that has the data of a tag with none here) and, with
@@ -226,8 +248,8 @@ Notes on some:
   `GROWTH_REFUSAL` the window shows; `data` has the count and capacity);
   `.delete` where something refers to entries by index. A new entry goes
   to `position`, else the camera focus, in one undo step.
-- **Pairing.** The editor pairs with a running game (the Game panel's
-  Pair; [editor-guide.md](editor-guide.md), "Play from the editor").
+- **Pairing.** The editor pairs with a running game through the game
+  link in the bar. [Editor guide](editor-guide.md#play-from-the-editor)
   `pair.list` looks at the games now: the sockets in the agents directory
   where `h2 play` listens by default (`agent_proto::discover`), plus the
   default and `$H2_AGENT` sockets and Play's own. Each entry has its
@@ -241,6 +263,40 @@ Notes on some:
   `pair.status` for `state: "connected"`. `pair.connect` with no `socket`
   takes the one game running, and is refused with none or several.
   `pair.auto {enabled}` reads or sets auto-pair, on by default.
+  The `link` object in `pair.status` contains `state`, the pill's
+  `text` and its `why` tooltip (string or null). Its states are
+  `no_game`, `found`, `connecting`, `viewing`, `editing`, `blocked`,
+  `other_map` and `lost`. The top-level `state` continues to report the
+  socket connection.
+- **Game controls.** `pair.play` starts the open map. `pair.stop` stops
+  the editor's own game. `pair.control` accepts `pause`, `resume` or
+  `step` as `action`. Step requires a paused game and accepts `ticks`
+  from 1 to 600 (default 1). `pair.edit {enabled}` sets the Edit switch
+  on the pairing. A game that is already running pairs in View mode.
+  Play starts its own game in Edit mode. The four calls need the window,
+  queue a request on it and return `{"requested":true}`. Read
+  `pair.status` for the result in a later frame. A call that needs a
+  game, an open map or a pause returns `REFUSED` when that requirement
+  is missing. The pill's **Open** action uses the normal map selection
+  path (`doc.open {map}` for a map in the source).
+- **Live tag editing.** Pairing starts in View. Play starts the editor's own
+  copy in Edit. `pair.edit` returns the requested `mode` or `REFUSED` with
+  the reason. The editor checks the loaded file checksum, epoch and session
+  from the game's `edit.map`. In Edit, tag fields and placement fields travel
+  together in one `edit.batch`, each with its expected `was` value. Tags use
+  the `at` form with hex bytes. The optional `known_epoch` on `edit.map`
+  refreshes the loaded datum table used to check reference targets. Undo and redo use the same check.
+  `mirror.pending` returns `pending` rows with `doc,tag,path,class,why`,
+  the game’s existing `journal` from `edit.changes`, and `leaving`.
+  `mirror.apply {what:"send"}` enters Edit. On MISMATCH, `take` and
+  `overwrite` require the row’s numeric `at`. On rejoin, `adopt` takes
+  the game's current bytes as the baseline and preserves the document.
+  `revert` restores the journal using `edit.revert`. A System Link host
+  confirms the peer count using `confirm` with `peers`. `reload` writes
+  a play copy, and `respawn` uses the game’s optional object method.
+  `pair.disconnect {leave:"keep"|"restore"}` makes the leave choice over the
+  API. Omitting `leave` opens the prompt in the window. Both `edit.set` and
+  `edit.revert` enforce the same game-side session check as `edit.batch`.
 - **Live mirror.** The paired window reads the game's `objects` and
   `players` stream. `mirror.status` reports the stream state, layers,
   frame rate, presentation delay, dropped and skipped counts, and the
@@ -253,6 +309,21 @@ Notes on some:
   of attached objects are relative to their parents. `near` takes
   `{point: [x,y,z], radius}` in world space. Bind-pose objects have no
   streamed nodes. Pairing and presentation are described in [live-mirror.md](live-mirror.md).
+- **Viewport layers.** `view.layers {}` returns `{layers, xray}`. Each layer
+  has a stable `name` for calls, a display `label`, a `group`, the visibility
+  switch `on`, a `count` and its legend `color` (RGB, each channel 0 to 1).
+  Counts include hidden entries. For example,
+  `view.layers {"preset":"everything","set":{"fog":false},"xray":true}`
+  shows every layer except fog and draws occluded overlays at quarter
+  strength. Presets are `art`, `gameplay`, `collision` and `everything`.
+  Individual switches apply after the preset. An invalid name or value
+  rejects the entire request. The window and `view.snapshot` share these
+  settings.
+  The Gameplay rows are `spawn_points`, `flags` and `netgame_items`. Their
+  counts cover starting locations, netgame flags and netgame equipment,
+  respectively. Each uses its matching placement block switch as well.
+  Turn off `markers` to hide annotations, including the flag-type and
+  equipment respawn labels. The Art preset keeps equipment models visible.
 - **Renders.** `ui.render` draws on the CPU (no GPU needed); `view.snapshot`
   renders the open map offscreen through the viewport's own renderer
   (wgpu, no window) and answers `NO_GPU` on a machine without an adapter.
@@ -312,6 +383,8 @@ the window and the API stay one path.
   (`TagIo`, after it) answers `tag.list` (replacing the built-in one),
   `tag.browse`, `tag.resources`, `tag.export` and `tag.import` through
   `Action::BrowseTags`, `Action::TagExport` and `Action::TagImport`.
+  `api/tags.rs` uses the outliner's tree for `tag.tree` and the
+  inspector's reference walker for `tag.refs` and `tag.follow`.
 - **HUDs (studio-hud, landed).** `api/hud.rs`: `hud.list` opens a map of
   the source (or a package) in the HUD tool and lists its `nhdt` tags
   and who names them; `hud.read` shows one and gives its widgets
@@ -463,6 +536,8 @@ system temp directory):
   document, render (refused in a Git checkout), save as and re-open; and
   the window's actions and the API's make identical patches;
 - a registered provider answers a planned method;
+- `view.layers` validates changes atomically, shares the Halo 1 menu switch,
+  and changes the invented map’s snapshot pixels on a machine with a GPU;
 - `view.stats` of an invented scene reports its BSP's lighting, its
   triangles by blend, its materials and its sky's sun and fog
   (`api::view::tests`);

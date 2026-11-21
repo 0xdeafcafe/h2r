@@ -1042,7 +1042,13 @@ fn run_configured(
         {
             a.agent.set_live_session_probe(agent_glue::remote_live_game);
         }
-        hot_glue::install(&a.agent, &loaded.runtime, maps(), watch_overrides);
+        hot_glue::install(
+            &a.agent,
+            &loaded.runtime,
+            maps(),
+            watch_overrides,
+            replaying,
+        );
         ui_stack::install(&a.agent, core.ui_navigation);
         // profile.faults: the fault census (agent_glue.rs).
         agent_glue::add_runtime_methods(&a.agent, &loaded.runtime);

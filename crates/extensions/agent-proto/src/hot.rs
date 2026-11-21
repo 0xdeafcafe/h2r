@@ -8,6 +8,8 @@
 
 /// Method names.
 pub mod method {
+    pub const EDIT_MAP: &str = "edit.map";
+    pub const EDIT_BATCH: &str = "edit.batch";
     /// The loaded map's tags: `{"group"?: "shad", "name"?: "<substring>",
     /// "limit"?: 200}` → `{"scenario", "names", "total", "tags": [{"tag",
     /// "group", "name", "address", "size", "defined"}]}`.
@@ -44,6 +46,8 @@ pub mod method {
 
     /// Every hot method.
     pub const ALL: &[&str] = &[
+        EDIT_MAP,
+        EDIT_BATCH,
         EDIT_TAGS,
         EDIT_GET,
         EDIT_SET,

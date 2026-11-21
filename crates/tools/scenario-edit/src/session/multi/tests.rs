@@ -1,7 +1,8 @@
 //! Multi-selection on the invented cache (`crate::fixture`): two weapons,
 //! two starting locations, one flag, one netgame item, one scenery.
 use crate::fixture::fixture;
-use crate::geometry::Ray;
+use crate::geometry::{Marker, Ray, Tri, rotation};
+use crate::layers::{LayerId, Layers};
 use crate::layout::BlockKind;
 use crate::save::MapSource;
 use crate::scenario::Value;
@@ -220,6 +221,47 @@ fn scaling_scales_every_selected_entry_with_a_scale_by_the_same_factor() {
         ed.scenario().unwrap().get(W1.0, W1.1, "scale").unwrap(),
         Value::Float(2.0)
     );
+}
+
+#[test]
+fn picking_skips_hidden_glyphs_and_structure() {
+    let near = Marker {
+        block: BlockKind::Weapons,
+        index: 1,
+        position: [0.0, 0.0, 2.0],
+        axes: rotation([0.0; 3]),
+        scale: 1.0,
+        object: None,
+    };
+    let far = Marker {
+        block: BlockKind::Scenery,
+        position: [0.0; 3],
+        ..near
+    };
+    let mut ed = Session::new();
+    ed.open_reference(crate::Reference {
+        markers: vec![near, far],
+        world: vec![Tri {
+            p: [[-2.0, -1.0, 0.0], [2.0, -1.0, 0.0], [0.0, 2.0, 0.0]],
+            n: [0.0, 0.0, 1.0],
+        }],
+        ..Default::default()
+    });
+    let ray = Ray {
+        origin: [0.0, 0.0, 5.0],
+        dir: [0.0, 0.0, -1.0],
+    };
+    let mut layers = Layers::default();
+    assert_eq!(ed.pick_visible(&ray, &layers), Some((near.block, near.index)));
+    // A selection glyph must also disappear with its block.
+    ed.select(Some((near.block, near.index)));
+    layers.set(LayerId::Placement(near.block), false);
+    assert_eq!(ed.pick_visible(&ray, &layers), Some((far.block, far.index)));
+    layers.set(LayerId::Markers, false);
+    assert_eq!(ed.pick_visible(&ray, &layers), None);
+    assert_eq!(ed.surface_hit_visible(&ray, &layers), Some([0.0; 3]));
+    layers.set(LayerId::Structure, false);
+    assert_eq!(ed.surface_hit_visible(&ray, &layers), None);
 }
 
 #[test]

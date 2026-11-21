@@ -137,6 +137,8 @@ pub struct FieldDef {
     /// Default value text for a fresh tag (`default=` in the file), else
     /// zero, null or empty.
     pub default: Option<String>,
+    /// When a live write shows, where the field has evidence.
+    pub applies: Option<&'static str>,
 }
 
 /// A field's type.
@@ -505,6 +507,13 @@ impl Defs {
                 kind,
                 meaning: l.meaning.clone(),
                 default: params.get("default").cloned(),
+                applies: match params.get("applies").map(String::as_str) {
+                    None => None,
+                    Some("frame") => Some("frame"),
+                    Some("use") => Some("use"),
+                    Some("creation") => Some("creation"),
+                    Some(s) => return Err(err(format!("unknown applies={s}"))),
+                },
             });
         }
         Ok(out)
@@ -701,6 +710,9 @@ impl StructDef {
                 Kind::Pad { len } => {
                     let _ = write!(out, "pad {len:#x}");
                 }
+            }
+            if let Some(a) = f.applies {
+                let _ = write!(out, " applies={a}");
             }
             if let Some(d) = &f.default {
                 let _ = write!(out, " default={d}");

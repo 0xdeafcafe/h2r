@@ -1,25 +1,24 @@
-//! The Game panel (Play, pair, live edits, the player, pause and step),
-//! the viewport teleport shortcut, and the status chip. The
-//! state and every command are `crate::play::Play`'s; this only draws it.
+//! The Game panel and the controls shared with the bar and Game menu.
 
 use std::path::PathBuf;
 
-use dear_imgui_rs::{Key, Ui, WindowKey};
-
-use crate::app::App;
 use agent_proto::Endpoint;
 use agent_proto::discover::MapMatch;
+use dear_imgui_rs::{Key, TreeNodeFlags, Ui, WindowKey};
 
-use crate::play::pair::Request;
-use crate::play::{self, Conn, Play, Spawn, launch};
+use crate::app::App;
+use crate::play::pair::{Request, relation_text};
+use crate::play::{self, LinkState, LinkTone, LinkView, Play, Spawn, launch, phase_label};
 use crate::theme::{self, icon};
+
+const LINK_POPUP: &str = "##game-link-popup";
 
 /// The panel's state around [`Play`].
 pub struct PlayUi {
     pub play: Play,
-    /// Sockets found by the last look.
     sockets: Vec<PathBuf>,
     step_ticks: i32,
+    open_link_popup: bool,
 }
 
 impl Default for PlayUi {
@@ -28,293 +27,348 @@ impl Default for PlayUi {
             play: Play::discovering(),
             sockets: launch::discover(),
             step_ticks: 1,
+            open_link_popup: false,
         }
     }
 }
 
 impl PlayUi {
-    /// Once a frame, whatever tool is shown: the link's news and edits.
     pub fn update(&mut self, app: &mut App) {
         self.play.update(app);
     }
 
     /// F5 plays, Shift+F5 stops the game this editor started.
-    pub fn shortcuts(&mut self, ui: &Ui, app: &mut App) {
-        if ui.io().want_text_input() || !ui.is_key_pressed(Key::F5) {
+    pub fn shortcuts(&mut self, ui: &Ui) {
+        if ui.io().want_text_input() || !ui.is_key_pressed_with_repeat(Key::F5, false) {
             return;
         }
-        if ui.io().key_shift() {
-            self.play.stop_game(app);
+        self.play.request(if ui.io().key_shift() {
+            Request::Stop
         } else {
-            self.play.launch(app);
+            Request::Play
+        });
+    }
+
+    pub fn menu(&mut self, ui: &Ui, app: &App) {
+        let Some(_menu) = ui.begin_menu("Game") else {
+            return;
+        };
+        let view = self.play.link_view(app);
+        for (label, key, enabled, request) in [
+            ("Play", "F5", view.can_play, Request::Play),
+            ("Stop", "Shift+F5", view.can_stop, Request::Stop),
+        ] {
+            if ui.menu_item_enabled_selected_with_shortcut(label, key, false, enabled) {
+                self.play.request(request);
+            }
+        }
+        ui.separator();
+        let found = self.play.notice(app);
+        let can_pair = found.is_some() || self.play.retry_endpoint().is_some();
+        if ui.menu_item_enabled_selected_no_shortcut("Pair with the running game", false, can_pair)
+            && !self.pair_offer(found)
+        {
+            self.open_link_popup = true;
+        }
+        if ui.menu_item_enabled_selected_no_shortcut("Unpair", false, view.can_pause) {
+            self.play.request(Request::Unpair);
+        }
+        ui.separator();
+        let (label, request) = if view.paused {
+            ("Resume", Request::Resume)
+        } else {
+            ("Pause", Request::Pause)
+        };
+        if ui.menu_item_enabled_selected_no_shortcut(label, false, view.can_pause) {
+            self.play.request(request);
+        }
+        if ui.menu_item_enabled_selected_no_shortcut("Step", false, view.paused) {
+            self.play.request(Request::Step(self.step_ticks as u64));
+        }
+        if ui.menu_item_enabled_selected_no_shortcut(
+            "Edit",
+            self.play.live_edits,
+            view.state.can_edit(),
+        ) {
+            self.play.request(Request::Edit(!self.play.live_edits));
         }
     }
 
-    /// The status bar's chip, and its colour.
-    pub fn chip(&self, app: &App) -> (String, [f32; 4]) {
-        let offer = self.play.notice(app);
-        let c = match (&self.play.conn, &offer) {
-            (Conn::Connected, _) if app.pairing.mirror.as_ref().and_then(|m| m.error()).is_some() => theme::WARN,
-            (Conn::Connected, _) if !self.play.paused && app.pairing.shown.as_ref().is_some_and(|s| s.stale) => theme::DIM,
-            (Conn::Connected, _) => theme::OK,
-            (Conn::Connecting, _) => theme::WARN,
-            (_, Some(n)) if n.matches == MapMatch::Same => theme::OK,
-            (_, Some(_)) => theme::WARN,
-            (Conn::Lost(_), None) => theme::ERROR,
-            (Conn::Off, None) => theme::DIM,
+    /// Pair immediately when there is a single offer. With several games
+    /// the popover lets the user choose.
+    fn pair_offer(&mut self, offer: Option<play::pair::Notice>) -> bool {
+        if let Some(socket) = offer.and_then(|n| n.socket) {
+            self.play.request(Request::Pair(Endpoint::Unix(socket)));
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn bar_pill(&mut self, ui: &Ui, app: &mut App, view: &LinkView) {
+        let open = std::mem::take(&mut self.open_link_popup);
+        self.pill(ui, app, view, open);
+    }
+
+    fn pill(&mut self, ui: &Ui, app: &mut App, view: &LinkView, open: bool) {
+        let clicked = theme::pill(
+            ui,
+            theme::link_colour(view.tone),
+            link_icon(view.tone),
+            &view.text,
+        );
+        if let Some(why) = &view.why {
+            ui.set_item_tooltip(why);
+        }
+        let pair_now = clicked
+            && matches!(view.state, LinkState::Found { .. })
+            && self.pair_offer(self.play.notice(app));
+        if open || (clicked && !pair_now) {
+            ui.open_popup(LINK_POPUP);
+        }
+        let Some(_popup) = ui.begin_popup(LINK_POPUP) else {
+            return;
         };
-        let mut chip = self.play.chip_in(app);
-        if let Some(stream) = &app.pairing.mirror {
-            let meta = stream.status(app.pairing.latest || self.play.paused);
-            if let (Some(fps), Some(ms)) = (meta["fps"].as_f64(), meta["delay_ms"].as_f64()) {
-                chip.push_str(&format!(" · {fps:.0} Hz · {ms:.0} ms"));
+
+        match &view.state {
+            LinkState::Connecting if ui.button("Cancel") => {
+                self.play.request(Request::Unpair);
+                ui.close_current_popup();
             }
-            if let Some(counters) = &app.pairing.counters {
-                chip.push_str(&format!(
-                    " · {} dropped, {} skipped",
-                    counters["dropped"], counters["skipped"]
+            LinkState::Lost { .. } => {
+                if let Some(endpoint) = self.play.retry_endpoint().cloned()
+                    && ui.button("Pair again")
+                {
+                    self.play.request(Request::Pair(endpoint));
+                    ui.close_current_popup();
+                }
+            }
+            LinkState::OtherMap { game, .. } if ui.button(format!("Open {game}")) => {
+                self.play.open_game_map(app);
+                ui.close_current_popup();
+            }
+            _ => {}
+        }
+
+        let games = self.play.finder.running();
+        if games.is_empty() && self.play.endpoint().is_none() {
+            ui.text_disabled("No games found");
+        }
+        let mut selected = None;
+        for game in games {
+            let Some(status) = &game.status else { continue };
+            let socket = game.path.to_string_lossy();
+            let _id = ui.push_id(socket.as_ref());
+            let endpoint = game.endpoint();
+            let current = self.play.endpoint() == Some(&endpoint);
+            let map = status.at.map.as_deref().unwrap_or("No map yet");
+            ui.text(format!(
+                "{map} · {}",
+                phase_label(status.at.phase, status.at.paused)
+            ));
+            ui.set_item_tooltip(format!(
+                "{socket}\n{}",
+                relation_text(
+                    MapMatch::of(app.loaded_map(), game.map()),
+                    game.map(),
+                    app.loaded_map()
+                ),
+            ));
+            ui.same_line();
+            if current {
+                ui.text_disabled(if view.can_pause {
+                    "Paired"
+                } else {
+                    "Connecting"
+                });
+            } else if ui.small_button("Pair") {
+                selected = Some(endpoint);
+            }
+        }
+        if let Some(endpoint) = selected {
+            self.play.request(Request::Pair(endpoint));
+            ui.close_current_popup();
+        }
+        ui.separator();
+        if view.can_pause && ui.button("Unpair") {
+            self.play.request(Request::Unpair);
+            ui.close_current_popup();
+        }
+        ui.checkbox("Auto-pair", &mut app.pairing.auto_pair);
+        ui.set_item_tooltip("Pairs in View mode when exactly one game is running, once per game.");
+    }
+
+    pub fn edit_switch(&mut self, ui: &Ui, view: &LinkView) {
+        let _disabled = ui.begin_disabled_with_cond(!view.state.can_edit());
+        let on = self.play.live_edits;
+        if theme::edit_switch(ui, on) {
+            self.play.request(Request::Edit(!on));
+        }
+        ui.set_item_tooltip(if on {
+            "Return to View mode"
+        } else {
+            "Send tag and placement edits to the paired game"
+        });
+    }
+
+    pub fn step(&mut self) {
+        self.play.request(Request::Step(self.step_ticks as u64));
+    }
+
+    pub fn window(&mut self, ui: &Ui, app: &mut App, key: &WindowKey) {
+        ui.window(key).build(|| {
+            let view = self.play.link_view(app);
+            self.pill(ui, app, &view, false);
+            theme::section(ui, "Session");
+            self.session(ui, app, &view);
+            theme::section(ui, "Player");
+            self.player(ui, app, &view);
+            if ui.collapsing_header("Advanced", TreeNodeFlags::NONE) {
+                self.advanced(ui, app);
+            }
+        });
+    }
+
+    fn session(&mut self, ui: &Ui, app: &mut App, view: &LinkView) {
+        if view.can_pause {
+            self.edit_switch(ui, view);
+        }
+        let p = &self.play;
+        if view.can_pause {
+            if let Some(at) = p.status.as_ref().map(|s| &s.at) {
+                let kind = p
+                    .session
+                    .map_or("Waiting for session kind", play::session_label);
+                ui.text(format!(
+                    "{} · {} · tick {} · {kind}",
+                    at.map.as_deref().unwrap_or("No map yet"),
+                    phase_label(at.phase, at.paused),
+                    at.tick.unwrap_or(at.ticks),
                 ));
             }
-        }
-        (chip, c)
-    }
-
-    /// The status bar's Pair button, beside the chip, when exactly one
-    /// running game could be paired with.
-    pub fn status_pair_button(&mut self, ui: &Ui, app: &App) {
-        let Some(socket) = self.play.notice(app).and_then(|n| n.socket) else {
-            return;
-        };
-        ui.same_line();
-        if ui.small_button("Pair") {
-            self.play.request(Request::Pair(Endpoint::Unix(socket)));
-        }
-        if ui.is_item_hovered() {
-            ui.tooltip_text("Pair with the running game (Game panel).");
-        }
-    }
-
-    /// The Game panel.
-    pub fn window(&mut self, ui: &Ui, app: &mut App, key: &WindowKey) {
-        ui.window(key).build(|| self.panel(ui, app));
-    }
-
-    fn panel(&mut self, ui: &Ui, app: &mut App) {
-        let (chip, c) = self.chip(app);
-        let p = &mut self.play;
-        ui.text_colored(c, chip);
-        if let Conn::Lost(why) = &p.conn {
-            ui.text_colored(theme::ERROR, why);
-        }
-
-        // Play.
-        ui.separator();
-        let can_play = app.loaded_map().is_some();
-        {
-            let d = ui.begin_disabled_with_cond(!can_play);
-            if ui.button(format!("{} Play (F5)", icon::ZAP)) {
-                p.launch(app);
+            if let Some(stream) = &app.pairing.mirror {
+                let meta = stream.status(app.pairing.latest || view.paused);
+                if let (Some(fps), Some(ms)) = (meta["fps"].as_f64(), meta["delay_ms"].as_f64()) {
+                    let counts = app.pairing.counters.as_ref().map_or_else(String::new, |c| {
+                        format!(" · {} dropped, {} skipped", c["dropped"], c["skipped"])
+                    });
+                    ui.text(format!("{fps:.0} Hz · {ms:.0} ms delay{counts}"));
+                }
+                if let Some(error) = stream.error() {
+                    ui.text_colored(theme::WARN, error);
+                } else if !view.paused && app.pairing.shown.as_ref().is_some_and(|s| s.stale) {
+                    ui.text_disabled("Waiting for live frames");
+                }
             }
-            d.end();
-        }
-        if !can_play {
-            ui.set_item_tooltip("Open a map to play it.");
-        }
-        ui.same_line();
-        let running = p.game_running();
-        {
-            let d = ui.begin_disabled_with_cond(!running);
-            if ui.button(format!("{} Stop (Shift+F5)", icon::CLOSE)) {
-                p.stop_game(app);
+            let mut live = app.layers.visible(scenario_edit::layers::LayerId::Live);
+            if ui.checkbox("Show live objects in the viewport", &mut live) {
+                let mut layers = app.layers.clone();
+                layers.set(scenario_edit::layers::LayerId::Live, live);
+                app.dispatch(crate::app::Action::SetLayers(layers));
             }
-            d.end();
+            ui.checkbox("Latest (no interpolation)", &mut app.pairing.latest);
+            if !p.reload.is_empty() {
+                ui.text_colored(theme::WARN, format!("Needs Play again: {:?}", p.reload));
+            }
+            if matches!(view.state, LinkState::Editing { .. }) {
+                ui.text_wrapped("Placement edits show when the game creates the object again.");
+            }
+        }
+    }
+
+    fn player(&mut self, ui: &Ui, app: &mut App, view: &LinkView) {
+        if view.can_pause {
+            if ui.button(format!("{} Go to player", icon::CROSSHAIR)) {
+                self.play.go_to_player(app);
+            }
+            ui.same_line();
+            if ui.button(format!("{} Teleport player here", icon::MOVE)) {
+                self.play.teleport_to_camera(app);
+            }
+            ui.set_item_tooltip("Moves the player to the ground under the camera focus. T over the viewport uses the point under the cursor. Refused in co-op and as a client.");
         }
         ui.set_next_item_width(180.0);
-        if let Some(_c) = ui.begin_combo("Spawn", p.spawn.label()) {
-            for s in Spawn::ALL {
+        if let Some(_combo) = ui.begin_combo("Spawn", self.play.spawn.label()) {
+            for spawn in Spawn::ALL {
                 if ui
-                    .selectable_config(s.label())
-                    .selected(s == p.spawn)
+                    .selectable_config(spawn.label())
+                    .selected(spawn == self.play.spawn)
                     .build()
                 {
-                    p.spawn = s;
+                    self.play.spawn = spawn;
                 }
             }
         }
-        let found = launch::find_h2(Some(PathBuf::from(p.h2_path.trim())).as_deref());
-        ui.set_next_item_width(-1.0);
-        ui.input_text("##h2-binary", &mut p.h2_path)
-            .hint(
-                found
-                    .as_ref()
-                    .map(|f| format!("h2: {}", f.display()))
-                    .unwrap_or_else(|| "h2 binary (not found: ~/.cargo/bin/h2, $H2_BIN)".into()),
-            )
-            .build();
-        if ui.is_item_hovered() {
-            ui.tooltip_text(
-                "The h2 binary Play runs. Empty: $H2_BIN, else ~/.cargo/bin/h2, else h2 on the PATH.",
-            );
-        }
-        if let Some(l) = &p.log_path {
-            ui.text_disabled(format!("log: {}", l.display()));
-        }
-        if let Some(cmd) = &p.last_command
-            && ui.is_item_hovered()
-        {
-            ui.tooltip_text(cmd);
-        }
+        ui.set_item_tooltip("Where Play starts the player.");
+    }
 
-        // Pair.
-        ui.separator();
-        if let Some(n) = p.notice(app) {
-            let tone = if n.matches == MapMatch::Same { theme::OK } else { theme::WARN };
-            ui.text_colored(tone, &n.text);
-            if let Some(s) = n.socket
-                && ui.button(format!("{} Pair with it", icon::ZAP))
-            {
-                p.request(Request::Pair(Endpoint::Unix(s)));
-            }
-        }
-        ui.checkbox("Auto-pair with a game that is running", &mut app.pairing.auto_pair);
-        if ui.is_item_hovered() {
-            ui.tooltip_text(
-                "Pairs by itself when exactly one game is running and the editor is not \
-                 paired, once per game. Pairing only reads the game; edits are sent only \
-                 while the game runs the map open here.",
-            );
-        }
-        ui.text("Pair with a running game");
-        ui.set_next_item_width(-60.0);
+    fn advanced(&mut self, ui: &Ui, app: &mut App) {
+        let p = &mut self.play;
+        ui.set_next_item_width(-1.0);
         ui.input_text("##agent-socket", &mut p.socket_text)
             .hint("socket path or tcp://HOST:PORT")
             .build();
-        ui.same_line();
-        if ui.small_button("Pair") {
-            pair_text(p, app);
+        if ui.button("Pair") {
+            p.pair_socket_text(app);
         }
-        if ui.small_button(format!("{} Find", icon::SEARCH)) {
+        ui.same_line();
+        if ui.button(format!("{} Find", icon::SEARCH)) {
             self.sockets = launch::discover();
             p.finder.look_again();
         }
-        for g in p.finder.games.clone() {
-            let shown = g.path.display().to_string();
-            let what = match (&g.status, &g.note) {
-                (Some(s), _) => format!(
-                    "{} {}{}",
-                    s.at.map.as_deref().unwrap_or("no map"),
-                    if s.at.paused { "paused" } else { "running" },
-                    g.pid.map(|p| format!(", pid {p}")).unwrap_or_default()
-                ),
-                (None, _) => format!("not answering ({shown})"),
-            };
-            let rel = play::pair::relation_text(
-                MapMatch::of(app.loaded_map(), g.map()),
-                g.map(),
-                app.loaded_map(),
-            );
+        for socket in &self.sockets {
+            let path = socket.to_string_lossy();
             if ui
-                .selectable_config(format!("{what}##game-{shown}"))
-                .selected(p.endpoint().is_some_and(|e| e.to_string() == shown))
+                .selectable_config(path.as_ref())
+                .selected(p.socket_text == path.as_ref())
                 .build()
             {
-                p.request(Request::Pair(g.endpoint()));
+                p.socket_text = path.into_owned();
             }
-            if ui.is_item_hovered() {
-                ui.tooltip_text(format!("{shown}\n{rel}"));
-            }
-        }
-        for s in &self.sockets {
-            let shown = s.display().to_string();
-            if ui
-                .selectable_config(format!("{shown}##sock-{shown}"))
-                .selected(p.endpoint().is_some_and(|e| e.to_string() == shown))
-                .build()
-            {
-                p.socket_text = shown;
-                pair_text(p, app);
-            }
-        }
-        if p.endpoint().is_some() && ui.small_button("Unpair") {
-            p.unpair(app);
         }
 
-        if !p.is_paired() {
-            return;
-        }
-
-        // While paired.
-        ui.separator();
-        ui.checkbox("Send edits live", &mut p.live_edits);
-        match p.edits_blocked(app) {
-            None => ui.text_colored(
-                theme::OK,
-                "Edits go to the game's scenario as you make them.",
-            ),
-            Some(why) => ui.text_colored(theme::WARN, format!("Edits stay here: {why}")),
-        }
-        ui.text_wrapped(
-            "A placement edit shows when its object is made again (a respawn, a checkpoint \
-             revert, or Play again); objects already in the world don't move.",
+        let found = launch::find_h2(Some(PathBuf::from(p.h2_path.trim())).as_deref());
+        ui.set_next_item_width(-1.0);
+        ui.input_text("##h2-binary", &mut p.h2_path)
+            .hint(found.map_or_else(
+                || "h2 binary".into(),
+                |path| format!("h2: {}", path.display()),
+            ))
+            .build();
+        ui.set_item_tooltip(
+            "The h2 binary Play runs. Empty uses $H2_BIN, ~/.cargo/bin/h2, or h2 on the PATH.",
         );
-        if !p.reload.is_empty() {
-            ui.text_colored(
-                theme::WARN,
-                format!(
-                    "Needs Play again (entries added or removed): {:?}",
-                    p.reload
-                ),
-            );
-        }
-        ui.checkbox("Show live objects in the viewport", &mut app.pairing.show_objects);
-        ui.checkbox("Latest (no interpolation)", &mut app.pairing.latest);
-        if let Some(error) = app.pairing.mirror.as_ref().and_then(|m| m.error()) {
-            ui.text_colored(theme::WARN, error);
-        }
-        if let Some(sample) = &app.pairing.shown {
-            ui.text_disabled(format!("{} objects, {} players", sample.objects.len(), sample.players.len()));
-        }
-        if ui.button(format!("{} Go to player", icon::CROSSHAIR)) {
-            p.go_to_player(app);
-        }
-        ui.same_line();
-        if ui.button(format!("{} Teleport player here", icon::MOVE)) {
-            p.teleport_to_camera(app);
-        }
-        if ui.is_item_hovered() {
-            ui.tooltip_text(
-                "Moves the player to the ground under the camera's focus. Over the viewport, \
-                 T moves them to the point under the cursor. Refused in co-op and as a client.",
-            );
-        }
-
-        ui.separator();
-        if p.paused {
-            if ui.button("Resume") {
-                p.resume();
+        if let Some(log) = &p.log_path {
+            ui.text_wrapped(format!("Launch log: {}", log.display()));
+            if let Some(cmd) = &p.last_command {
+                ui.set_item_tooltip(cmd);
             }
-        } else if ui.button("Pause") {
-            p.pause();
         }
-        if ui.is_item_hovered() {
-            ui.tooltip_text(
-                "Claims control of the game while paused; Resume gives it back. A pause \
-                 resumes by itself after 10 minutes. In h2 play it also stops the window.",
-            );
-        }
-        ui.same_line();
-        if ui.button("Step") {
-            p.step(self.step_ticks.max(1) as u64);
-        }
-        ui.same_line();
-        ui.set_next_item_width(80.0);
-        ui.input_int("ticks", &mut self.step_ticks);
+        ui.set_next_item_width(100.0);
+        ui.input_int("Step ticks", &mut self.step_ticks);
         self.step_ticks = self.step_ticks.clamp(1, 600);
     }
 
     /// T over the viewport teleports the player to the point under the cursor.
     pub fn overlay(&mut self, ui: &Ui, app: &mut App, rect: Option<[f32; 4]>) {
         let Some([x, y, w, h]) = rect else { return };
+        let view = self.play.link_view(app);
+        if matches!(
+            view.state,
+            LinkState::Editing { .. } | LinkState::Blocked { .. }
+        ) && w > theme::LIVE_FRAME
+            && h > theme::LIVE_FRAME
+        {
+            let inset = theme::LIVE_FRAME * 0.5;
+            ui.get_window_draw_list()
+                .add_rect(
+                    [x + inset, y + inset],
+                    [x + w - inset, y + h - inset],
+                    theme::link_colour(view.tone),
+                )
+                .thickness(theme::LIVE_FRAME)
+                .build();
+        }
         let p = &self.play;
         if !p.is_paired() {
             return;
@@ -337,20 +391,111 @@ impl PlayUi {
     }
 }
 
-fn pair_text(p: &mut Play, app: &mut App) {
-    let text = p.socket_text.trim().to_owned();
-    let text = if text.is_empty() {
-        agent_proto::default_socket().display().to_string()
-    } else {
-        text
-    };
-    match agent_proto::Endpoint::parse(&text) {
-        Ok(e) => p.pair(app, e),
-        Err(e) => app.error(format!("pair: {e}")),
+pub fn link_icon(tone: LinkTone) -> &'static str {
+    match tone {
+        LinkTone::View => icon::EYE,
+        LinkTone::Live => icon::ZAP,
+        LinkTone::Warn | LinkTone::Error => icon::ALERT,
+        LinkTone::Idle | LinkTone::Notice => icon::INFO,
     }
 }
 
-/// Draws the chip in its colour.
-pub fn status_chip(ui: &Ui, chip: &(String, [f32; 4])) {
-    ui.text_colored(chip.1, &chip.0);
+impl PlayUi {
+    pub fn pending_window(&mut self, ui: &Ui, app: &mut App, key: &WindowKey) {
+        use crate::play::Apply;
+        let p = &mut self.play;
+        let mut action = None;
+        ui.window(key).build(|| {
+            if !app.pairing.journal.is_empty() {
+                ui.separator_with_text("Already in the game");
+                for c in &app.pairing.journal {
+                    ui.text(format!("{}  {}  {}", c["tag"], c["path"], c["holds"]));
+                }
+                if ui.button("Adopt game baseline") {
+                    action = Some(Apply::Adopt);
+                }
+                ui.same_line();
+                if ui.button("Revert game journal") {
+                    action = Some(Apply::Revert);
+                }
+            }
+            if let Some(peers) = app
+                .pairing
+                .published
+                .as_ref()
+                .and_then(|v| v["edit_peers"].as_u64())
+            {
+                if ui.button(format!(
+                    "Confirm edits visible only on this host ({} other machines)",
+                    peers - 1
+                )) {
+                    action = Some(Apply::Confirm(peers as u32));
+                }
+            }
+            let mut rows: Vec<_> = app.pairing.pending.iter().collect();
+            rows.sort_by(|a, b| a["class"].as_str().cmp(&b["class"].as_str()));
+            let mut class = "";
+            for r in rows {
+                let next = r["class"].as_str().unwrap_or("Pending");
+                if class != next {
+                    ui.separator_with_text(next);
+                    class = next;
+                }
+                ui.text_wrapped(format!(
+                    "{} · {}",
+                    r["path"].as_str().unwrap_or("?"),
+                    r["why"].as_str().unwrap_or("")
+                ));
+                if r["conflict"] == true
+                    && let Some(at) = r["at"].as_u64()
+                {
+                    let _id = ui.push_id(at as usize);
+                    if ui.button("Take the game's value") {
+                        action = Some(Apply::Take(at as u32));
+                    }
+                    ui.same_line();
+                    if ui.button("Overwrite") {
+                        action = Some(Apply::Overwrite(at as u32));
+                    }
+                }
+            }
+            if app.pairing.pending.is_empty() {
+                ui.text_disabled("No pending edits");
+            } else {
+                if let Some(why) = p.edits_blocked(app) {
+                    ui.text_wrapped(why);
+                }
+                if ui.button("Send") {
+                    action = Some(Apply::Send);
+                }
+                if app.pairing.pending.iter().any(|r| r["class"] == "Reload") {
+                    ui.same_line();
+                    if ui.button("Reload map") {
+                        action = Some(Apply::Reload);
+                    }
+                }
+            }
+            if p.can_respawn() && ui.button("Respawn now") {
+                action = Some(Apply::Respawn);
+            }
+        });
+        const LEAVE: &str = "Unpair from the game?";
+        if app.pairing.leaving && !ui.is_popup_open(LEAVE) {
+            ui.open_popup(LEAVE);
+        }
+        if let Some(_modal) = ui.begin_modal_popup_config(LEAVE).begin() {
+            if ui.button("Keep the game as it is") {
+                action = Some(Apply::Keep);
+            }
+            if ui.button("Put it back as it loaded") {
+                action = Some(Apply::Restore);
+            }
+            if action.is_some() || !app.pairing.leaving {
+                ui.close_current_popup();
+            }
+        }
+        if let Some(action) = action {
+            p.request(Request::Apply(action));
+        }
+    }
 }

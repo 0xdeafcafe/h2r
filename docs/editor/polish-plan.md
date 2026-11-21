@@ -1,6 +1,6 @@
 # h2-editor polish: what is wrong, the design, and the slices
 
-Status: Design. Nothing here is built; each slice below ships part of it.
+Status: P1, P2, P4, P6 and P7 are implemented. The remaining slices describe the design.
 Code: `crates/apps/studio/src` (the window: `ui.rs`, `ui/`, `play.rs`, `viewport.rs`, `theme.rs`), `crates/tools/scenario-edit/src` (the scene and its renderer). Tests: named per slice.
 Switch: none.
 
@@ -29,37 +29,17 @@ during the read, so nothing here comes from the socket API.
 
 | # | Problem | Where |
 |---|---|---|
-| R1 | Tools and maps share one window. The **Tools** list (six rows) and the whole **Maps** browser (disc, map pack, packages, Halo 1, shared) sit in one panel that the default layout gives 38 % of the left column, so the map list scrolls in a slot about seven rows tall. | `ui.rs:672` (`tools_window`), headings at `ui.rs:682` and `ui.rs:698`, split at `ui.rs:67` |
-| R2 | Picking a tool swaps what three windows mean. The window with the ID `viewport` is titled Viewport, Settings, Entries, Preview, HUD or Fields; `outliner` and `inspector` change the same way. A user who docks "the inspector" somewhere finds a hex dump there in the Tags tool. | `ui.rs:576` to `ui.rs:664` (`variant_windows` through `tag_windows`) |
 | R3 | Scenario and Tags are two tools over one map. They have separate selections, a second map picker, and separate undo: the inspector's tag section carries its own **Undo tag edit** and **Redo tag edit** buttons because Cmd+Z goes to the active tool's stack. | `ui/tags.rs:62` (`map_picker`), `ui/inspector.rs:245` to `ui/inspector.rs:251`, `app.rs:585` (`can_undo`) |
-| R4 | The viewport toolbar is a row of small text buttons with the keys in their labels (`Move (W)`), followed by a line of dim help text that is cut off in a narrow window. Snap steps are behind a right-click that only a tooltip mentions. | `ui.rs:1213` (`viewport_toolbar`), `ui.rs:1278`, `ui.rs:1297`, `ui.rs:1314` |
-| R5 | Nothing chooses what the viewport shows. The View menu holds gizmo modes and snapping; the only show or hide switches are **Halo 1 overlay** and, in the Game panel, **Show live objects**. Markers, the sky, models and fog cannot be turned off. | `ui.rs:390` to `ui.rs:459`, `ui/play.rs:269` |
+
 | R6 | Save is always "Save as". Cmd+S opens a file dialog every time for a map, and a package opened from the Maps list is saved through a different menu item with a form. | `ui.rs:189`, `ui.rs:316` to `ui.rs:335` |
-| R7 | Empty states do not say what to do next. With no source: "Pick a map to see it here." and "No map open." With no selection: two lines about click modifiers. No button opens a disc from the centre of the window. | `ui.rs:909`, `ui.rs:780`, `ui/inspector.rs:100` |
-| R8 | The status bar is three unseparated runs of text (the last message, the game chip, the counts) in one colour family; the message repeats the last log line. Its background is a literal colour outside the theme. | `ui.rs:956` (`status_bar`), `ui.rs:968` |
 | R9 | No search across the app. Maps, tags and placements each have their own filter box, and commands are only in menus. | `ui.rs:784`, `ui/tags.rs:132` |
-| R10 | The look is flat: one font size for everything, 24 `small_button`s for primary actions, section headings that are bold text, marker colours set as literals in the scene crate. | `theme.rs:71` (`apply`), `crates/tools/scenario-edit/src/geometry.rs:698` |
-
-### The game link
-
-| # | Problem | Where |
-|---|---|---|
-| R11 | The Game panel is the second tab behind the Log, so it is hidden at start. | `ui.rs:78` |
-| R12 | The panel, the F5 shortcut and the status chip exist only in the Scenario tool. The link itself runs in every tool (`self.play.update`), so edits can be going to a game while nothing on screen says so. | `ui.rs:143`, `ui.rs:154`, `ui.rs:155`, `ui.rs:984` to `ui.rs:988` |
-| R13 | The chip is a line of coloured text in the status bar ("Game: zanzibar playing tick 1234 (the open map) · 60 Hz · 12 ms · 0 dropped, 0 skipped"). It is not a control, and colour alone carries its state. | `ui/play.rs:354` (`status_chip`), `ui/play.rs:54` (`chip`), `play.rs:224` |
-| R14 | The panel is one column of about thirty controls in the order they were built: Play, Stop, the spawn, a path field for the `h2` binary, the log path, a notice, Auto-pair, a socket field, two different **Pair** buttons, **Find**, a list of games, a list of raw socket paths, Unpair, then the paired controls. | `ui/play.rs:102` to `ui/play.rs:313` |
-| R15 | Whether edits are going to the game is a checkbox and a sentence inside that panel. The viewport and the inspector look the same paired and unpaired. | `ui/play.rs:248` to `ui/play.rs:259` |
-| R16 | Only placement fields are sent. A tag edit made in the Tags tool or the inspector stays in the document; the game has `edit.set` for it and the editor never calls it for a tag other than the scenario. | `play.rs:731` (`push_edits`), `play/sync.rs` |
-| R17 | The game's `edit.set` and `edit.revert` do not check the session. `sim.state.set` refuses in co-op and as a client (`crates/extensions/agent/src/sim/mod.rs:408`); the edit methods have no such check, so the editor's own check (`play.rs:726`) is the only one. | `crates/extensions/agent/src/hot.rs:121` |
 
 ### Tags and the scenario
 
 | # | Problem | Where |
 |---|---|---|
 | R18 | The scenario tag cannot be read. The registry has no `scnr` definition (`crates/formats/tags/src/defs` has no `scnr.txt`), so the tag shows no fields, and it is read-only because the Scenario tool owns its bytes. | `app/tag_doc.rs:270` to `app/tag_doc.rs:273` |
-| R19 | No view starts from the scenario. The tag tree arranges every tag of the map by group or by path; nothing shows what the scenario uses (its BSPs, lightmaps, skies, object palettes, globals). The chain walker follows only fields a layout names, so it finds no links out of the scenario. | `app/tag_tree.rs:11`, `app/tag_api/chain.rs:157` (`links`) |
 | R20 | Structure BSP and lightmap tags cannot be opened: their data is in a BSP region the tag document does not read. | `app/tag_doc.rs:267`, `app/tag_doc.rs:39` |
-| R21 | A group with more than 600 tags lists the first 600 and "N more: type to narrow". | `ui/tags.rs:26`, `ui/tags.rs:181` |
 
 ### What cannot be seen or edited in the viewport
 
@@ -68,7 +48,6 @@ during the read, so nothing here comes from the socket API.
 | R22 | The scene reads eleven scenario blocks, all placements. Trigger volumes, kill triggers, BSP-switch volumes, decals and portals are not read by the editor. | `crates/tools/scenario-edit/src/layout.rs:12` (`BlockKind`) |
 | R23 | Collision is not drawn. The parsers exist (`Bsp::decode_structure`, `Collision::decode`, `PhysicsModel::decode` in `crates/formats/tags/src/collision.rs`) and no editor code calls them. Picking uses render triangles, so a wall with collision and no render geometry cannot be seen, clicked or measured. | `crates/tools/scenario-edit/src/geometry.rs:880` (`surface`) |
 | R24 | Instanced geometry has no collision reader anywhere in the tree; `crates/formats/tags/src/structure.rs` reads instance definitions for drawing only. | `crates/formats/tags/src/structure.rs:185` |
-| R25 | Spawn points and netgame flags are glyphs with one colour per block. Facing, team and flag type are in the inspector only. | `crates/tools/scenario-edit/src/geometry.rs:694` to `geometry.rs:745` |
 
 ### The viewport's picture
 
@@ -103,15 +82,16 @@ side panels' contents, never the regions.
 ```
 
 - **The bar** under the menu (`ui/bar.rs`) is fixed, 36 pt, and drawn in
-  every tool. Left: the tools as tabs (the Tools list of R1 goes away).
+  every tool. Left: the tools as tabs.
   Centre: the open document's name and its unsaved mark. Right: the
   game link (below).
 - **Left dock**: **Scene** (the outliner: placements, then Volumes and
   Collision groups), **Tags** (the scenario tag tree) and **Maps** as
   three tabs of one full-height column. Maps has the whole column when
   picked. The Map tool is click-to-edit.md's: `ToolKind::Tags` is a tab,
-  not a tool.
-- **Windows keep one meaning** (R2). Each tool has its own window keys
+  not a top-level tool. The Tags tree, fields and Data and bytes tab
+  live alongside the viewport and share the Map document.
+- **Windows keep one meaning**. Each tool has its own window keys
   (`variants-list`, `variants-settings`, ...), shown only in that tool
   and placed by the default layout in the same regions. The Scene,
   Viewport and Inspector windows are the Map tool's alone.
@@ -121,9 +101,9 @@ side panels' contents, never the regions.
   action and its key, in groups: gizmo (move, rotate, scale, axes),
   snapping (a toggle and a step combo each, no right-click), camera
   (frame all, frame selection, fly speed), **Show** (the layers popover)
-  and **Lighting**. The mouse help moves to the status bar's hint slot,
+  (P6) and **Lighting** (P14). Mouse help uses the status bar's hint slot,
   which changes with what the pointer is over.
-- **Empty states** (R7) are a centred card with the one action that
+- **Empty states** are a centred card with the one action that
   moves on: **Open a disc or map...** with no source, the map grid with
   a source and no map, "Click something in the level" with a map and no
   selection.
@@ -164,23 +144,23 @@ UI types, that the bar, the Game panel and `pair.status` all read:
 | `OtherMap { game, open }` | amber, "Game runs lockout" | **Open lockout** |
 | `Lost { why }` | red, "Game lost" | **Pair again** |
 
-- The pill is in the bar in every tool (R12). Clicking it opens a
-  popover: the games found, by map name and phase, one click to pair;
-  Unpair; Auto-pair. The socket path field, **Find**, the `h2` binary
-  path and the launch log are under **Advanced** in the Game panel
-  (R14).
+- The pill is in the bar in every tool. Clicking it opens a
+  popover with games by map name and phase, Unpair and Auto-pair.
+  Clicking the pill when one game is offered pairs directly. The socket
+  path field, **Find**, the `h2` binary path and the launch log are under
+  **Advanced** in the Game panel.
 - **Play**, **Stop**, **Pause**, **Step** and **Resume** are icon
   buttons beside the pill, shown when they apply. A **Game** menu holds
   the same commands with their keys, so F5 works in every tool.
-- **View and Edit** are live-mirror.md's switch. It replaces the "Send
-  edits live" checkbox (R15). While `Editing`, the viewport has a 2 pt
-  green frame and the inspector's title row shows a "Live" pill; while
-  `Blocked`, both are amber. Unpaired, neither is drawn.
-- The Game panel keeps the detail in three sections drawn by
-  `theme::section`: **Session** (map, phase, tick, stream rate and
-  delay, the session kind), **Player** (go to player, teleport, the
-  spawn choice) and **Advanced**. The pending list is its own tab.
-- The status bar loses the chip.
+- The **Edit** switch uses `Play::live_edits`. A game that is already
+  running pairs in View mode. While `Editing`, the viewport has a 2 pt
+  green frame and the inspector shows a "Live" pill. While `Blocked`,
+  both are amber. P12 adds the pending edits and apply classes described
+  in [live-mirror.md](live-mirror.md).
+- The Game panel's **Session** section shows the map, phase, tick,
+  stream rate, delay and session kind. **Player** holds go to player,
+  teleport and the spawn choice. Both use `theme::section`. **Advanced**
+  starts collapsed. P12 adds the Pending tab.
 
 ### The scenario tag tree
 
@@ -204,28 +184,24 @@ All tags (by group | by path)
 Not reachable from the scenario (n)
 ```
 
-- `app/tag_tree.rs` gains `scenario_tree(doc, scenario) -> ScenarioTree`
-  with no UI. Its named roots come from what the tree already reads:
-  the BSP and lightmap pairs (`native_render::load::scenario_bsps`), the
-  skies (`scene::scenario_skies`), and every object palette of
-  `scenario_edit::layout::BLOCKS` with the count of placements that name
-  each entry. Below a palette entry it is `tag_api::chain`.
-- **Other references** come from a reference scan for tags with no
-  layout: `tag_api::scan_refs(doc, tag)` walks the tag's bytes at
-  4-byte steps and keeps each (group, datum) pair whose datum is a tag of
-  the map and whose group is that tag's group or one of its parents.
-  The same scan feeds `chain` for any group the registry lacks, which
-  closes R19 for the scenario and for every other unlabelled group.
-- **Not reachable** is the set difference of all tags and the tags the
-  walk from the scenario and globals reaches; it is where UI, HUD and
-  sound tags with no placement are found, with **All tags**.
-- Rows show the edited mark, the shared-cache mark and, with a game
-  paired, the live mark of the pending list. Selecting a row makes the
-  tag the inspector's subject (`Selection::Tag`), as a jump does.
-  Selecting a palette entry also outlines its placements in the
-  viewport.
-- The 600-row cap (R21) goes: every list is drawn through ImGui's list
-  clipper, so only visible rows cost anything.
+- [scenario_tree](../../crates/apps/studio/src/app/tag_tree.rs) builds
+  the named sections from the source BSP and lightmap pairs, skies and
+  globals, and counts current placements by palette slot. Object
+  entries use the tag chain for their children.
+- **Other references** uses the layout walk and the aligned reference
+  scan. The scan accepts a pair when its full datum resolves in this
+  map and its group matches the target's group or an ancestor. It
+  supplies links for a group with no registry layout and fills in
+  scenario links outside the structural schema.
+- **Not reachable** lists the tags the walk from the scenario and
+  globals does not reach. The walk visits each tag once and is
+  independent of the depth shown under palette entries.
+- Tag rows show edited and shared-cache marks, plus a pending mark
+  for edited tag metadata awaiting a matching paired game. A tag row
+  selects the inspector subject. A palette row also selects the
+  placements that use that slot for the viewport outlines.
+- The scenario rows and the lists of tags use Dear ImGui's list
+  clipper.
 - The scenario's own fields (R18) get a `scnr.txt` definition in
   `crates/formats/tags/src/defs`, started with the fields this
   repository already has evidence for (the skies, the palettes and
@@ -279,8 +255,7 @@ before sending it; the class is shown as a badge on the field.
 **What blocks all of it.** Not paired; View mode; another map or
 another checksum in the game; a session that refuses writes
 (`SessionKind::writes`); the timeline scrubbed into the past. The
-`Blocked` pill names which. The game enforces the session rule itself
-(R17): `edit.set`, `edit.batch` and `edit.revert` call the same check
+`Blocked` pill names which. The game enforces the session rule at the write boundary: `edit.set`, `edit.batch` and `edit.revert` call the same check
 `sim.state.set` does.
 
 **Undo.** The document is the truth. Undo and redo change the document;
@@ -466,8 +441,8 @@ and `edit.revert`.
 
 | Method | Params | Result |
 |---|---|---|
-| `pair.status` | none | gains `link`: `{state, text, why, actions: [name]}`, the `LinkView` |
-| `pair.edit` | `{enabled}` | the mode after it; `REFUSED` with the reason |
+| `pair.status` | none | includes `link` with `{state, text, why}` from `LinkView` |
+| `pair.edit` | `{enabled}` | queues the Edit switch change and returns `{requested}`. Read the mode in `pair.status`. |
 | `tag.tree` | `{root?, depth?}` | the scenario tree: sections, rows with `tag`, `group`, `name`, `placed`, `children` |
 | `tag.refs` | `{tag}` | `[{to, via, found: field \| scan}]` |
 | `view.layers` | `{set?: {name: bool}, preset?, xray?}` | every layer: `name`, `group`, `on`, `count` |
@@ -491,7 +466,7 @@ under 2,500, L more.
 
 | # | Slice | Size | Needs | Files | Tests and acceptance |
 |---|---|---|---|---|---|
-| P1 | **The game link in the bar** | S | nothing | below | below |
+| P1 | **The game link in the bar** | S | nothing | `play.rs`, `ui/bar.rs`, `ui/play.rs`, `api/pair.rs` | below |
 | P2 | **The bar and the layout**: tool tabs; Maps, Scene as tabs of one column; per-tool window keys; icon toolbar with tooltips and step combos; status-bar hint slot; empty-state cards; `theme` tokens, `section`, type sizes | M | P1 | `ui.rs`, `ui/bar.rs`, `ui/map_list.rs`, `theme.rs`, `headless.rs` | `the_default_layout_places_every_window` (each tool's windows exist and none shares an ID); a saved layout with the three old IDs loads; `--do` scripts that click `Scenario` in the Tools list click the Map tab (the script step maps the old label); no colour literal outside `theme.rs` in `ui/` (a source test); the guide's screenshots are re-shot by `scripts/editor-screenshots.sh` |
 | P3 | **Save where it came from, and Go to anything** | S | P2 | `app.rs`, `app/commands.rs`, `ui/palette.rs`, `api/ui_screens.rs` (for `ui.palette`) | Cmd+S on an opened package rewrites it with no dialog; on a disc map opens the package form; `ui.palette "zan"` lists the map, its tags and matching placements in that order; Enter on a command dispatches its `Action` |
 | P4 | **The scenario tag tree** | M | nothing | `app/tag_tree.rs`, `app/tag_api/chain.rs` (`scan_refs`), `ui/tags.rs`, `api/tags.rs`, `crates/apps/studio-proto/src/lib.rs` | fixture scenario with a palette, a sky and a BSP: `tag.tree` lists them under their sections with placement counts; `scan_refs` on an invented tag with no layout finds a planted reference and rejects a pair whose group does not match the datum's tag; a tag only a UI tag names is under Not reachable; a 5,000-tag invented group draws every row (list clipper) |
@@ -514,85 +489,26 @@ after P1. Click-to-edit's C3 to C6 and live-mirror's M2 to M11 keep
 their own rows on their pages; P2 is where C4's "the Tags windows docked
 into Map" lands.
 
-### P1, ready to hand off
+### P1. The game link in the bar
 
-**Goal.** In every tool, the user can see whether a game is linked and
-whether edits are going to it, and can Play, Pair, Unpair, Pause and
-switch edits on or off without opening a panel.
+`play.rs` reduces the connection, game status, discovery and edit
+permission to `LinkView`. The bar and Game panel draw that state.
+`play::pair::Bridge` publishes it for `pair.status`. The Game menu and
+the bar use the same `play::pair::Request` commands as the socket API.
+The stable Game and Log window keys allow saved dock layouts to load.
 
-**Build.**
+The tests use invented data.
 
-1. `play.rs`: add `LinkState` (the eight variants of the table in "The
-   game link"), `LinkTone` (`Idle`, `Notice`, `View`, `Live`, `Warn`,
-   `Error`) and `LinkView { state, tone, text, why: Option<String>,
-   can_play, can_stop, can_pause, paused }`. Add
-   `Play::link_view(&self, app: &App) -> LinkView`, built from `conn`,
-   `status`, `notice(app)`, `map_match(app)`, `live_edits` and
-   `edits_blocked(app)`. `Blocked` is "paired, edits wanted, and
-   `edits_blocked` gives a reason other than the switch being off";
-   `OtherMap` is `MapMatch::Different`. No ImGui types.
-2. `theme.rs`: `BAR: f32 = 36.0`; `pill(ui, tone_colour, icon, text) ->
-   bool` (a filled rounded rect behind the text, returns clicked); a
-   colour per `LinkTone` beside `OK`, `WARN` and `ERROR`.
-3. `ui/bar.rs` (new): `draw(ui, app, play: &mut PlayUi, fonts)`. A
-   fixed window under the menu bar, built as `status_bar` builds its own
-   (`ui.rs:956`), at the main viewport's `work_pos`, height `BAR`. This
-   slice fills only its right side: the pill, then Play or Stop, Pause
-   or Resume and Step when `LinkView` allows, then the **Edit** switch
-   bound to `Play::live_edits`. The pill's popover lists
-   `play.finder.games` by map and phase with a **Pair** row action,
-   **Unpair** when paired, and the Auto-pair checkbox. A pill click with
-   one found game pairs with it.
-4. `ui.rs`: call `bar::draw` after `menu_bar` in `frame`; move the
-   dock host down by `theme::BAR` (`dockspace`, `ui.rs:463`); draw the
-   Game window in every tool (move `self.play.window` out of the
-   `ToolKind::Scenario` arm at `ui.rs:155`) and move
-   `self.play.shortcuts` beside the global shortcuts; add a **Game**
-   menu (Play, Stop, Pair with the running game, Unpair, Pause, Step,
-   Send edits live); remove the chip and `status_pair_button` from
-   `status_bar` (`ui.rs:984` to `ui.rs:988`). The default layout puts
-   Game before Log (`ui.rs:78`).
-5. `ui/play.rs`: the panel opens with the same pill; the socket field,
-   **Find**, the socket list, the `h2` path and the log path go under a
-   collapsed **Advanced** header; one **Pair** button remains. While
-   `Live`, `viewport_window` draws a 2 pt frame in the tone's colour
-   around the image rect (`ViewportView::shown`).
-6. `api/pair.rs`: `pair.status` gains `link` (`state`, `text`, `why`).
-   Update its `MethodDef` result text and
-   [agent-api.md](agent-api.md)'s row. `Bridge` publishes the
-   `LinkView` beside what it already publishes.
-7. Docs in the same branch: editor.md's "The window" and "Play and
-   pair" (the bar, the Game menu, the pill's states; the status chip
-   sentence goes), editor-guide.md where it tells the user to open the
-   Game tab, and this page's R11 to R15 deleted.
-
-**Tests** (no game data; the fake game of `play::tests`).
-
-- `play::tests::the_link_view_names_every_state`: drive the fake game
-  through no game, found, connecting, paired with the same map, paired
-  with another map, edits on, a co-op session and a dropped socket;
-  assert `state`, `tone` and that `text` is not empty for each.
-- `play::tests::blocked_names_the_reason`: co-op gives `Blocked` whose
-  `why` is `SessionKind::writes`' text.
-- `api::tests`: `pair.status` carries `link.state` for off and
-  connected (it already runs against a published bridge).
-- `headless::tests::the_game_link_shows_in_every_tool`: for each
-  `ToolKind`, render three frames and find the pill's item by its label
-  prefix in `h.scene.items`, as
-  `the_tags_tool_edits_a_field_through_its_widgets` finds its widgets;
-  click **Edit** and assert `play.live_edits` flipped. Skipped without
-  an adapter.
-- Existing `play::tests` pass unchanged.
-
-**Acceptance.** The pill and its buttons are on screen in all six
-tools; F5 starts the game from any tool; with a game paired and edits
-on, the viewport is framed and the pill reads "Editing <map> live";
-unpaired there is no frame; the status bar holds no game text; a layout
-saved before the change loads with the Game tab present.
-
-**Not in P1.** The tool tabs and the document name in the bar (P2);
-View and Edit as live-mirror defines them with a pending list (P12):
-here the switch is the existing `live_edits` flag under its new name.
+- `play::tests::the_link_view_names_every_state` goes through all eight
+  states against the fake game and checks the state, tone and label.
+- `play::tests::blocked_names_the_reason` checks the co-op explanation
+  from `SessionKind::writes`.
+- `api::tests::pair_status_carries_link_view` checks the link published
+  for the off and connected states. The fake game pairing test also
+  switches from View to Edit through `pair.edit`.
+- `headless::tests::the_game_link_shows_in_every_tool` finds the pill and
+  exercises F5 in all six tools, then toggles Edit through the bar.
+  It skips on machines without a wgpu adapter.
 
 ## Rules and limits
 
@@ -618,12 +534,6 @@ here the switch is the existing `live_edits` flag under its new name.
 
 ## Evidence
 
-- **Code**: the Game panel, F5 and the chip are in the Scenario arm
-  only (`crates/apps/studio/src/ui.rs`, `Studio::frame` and
-  `status_bar`), while `PlayUi::update` runs before the tool match.
-- **Code**: `edit.set` is registered with no session check
-  (`crates/extensions/agent/src/hot.rs`); `sim.state.set` has one
-  (`crates/extensions/agent/src/sim/mod.rs`).
 - **Code**: `TagDoc::patches` gives `(address, bytes)` pairs in the
   map's own addresses (`crates/apps/studio/src/app/tag_doc.rs`); the
   game's tag index gives each tag's address and size from the same
@@ -643,10 +553,9 @@ here the switch is the existing `live_edits` flag under its new name.
   (`crates/rewrites/render-bridge/src/scene_step.rs`,
   `crates/rewrites/scene-extract`); `crates/rewrites/frame-scene` itself
   depends on neither a guest nor a GPU.
-- **S**: a tag's size in the index covers its blocks, so `scan_refs`
-  over that range sees every reference. Verified by P4's fixture test
-  and an opt-in disc test that compares the scan with the layout walk
-  for every group the registry has.
+- **Code**: `TagDoc::scan_refs` scans the readable range owned by the
+  tag. A known layout can also follow block pointers into the document's
+  other readable ranges.
 - **S**: the trigger volume's size field and the kill trigger element's
   layout. Verified by P8's read of the retail volume test.
 - **S**: the engine tests a trigger volume against the scenario's bytes

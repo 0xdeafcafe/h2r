@@ -1,4 +1,6 @@
 //! The inspector's tag tree, walked over the current TagDoc (including edits).
+use std::collections::HashSet;
+
 use map::{FourCC, TagId};
 use scenario_edit::{
     BlockKind, Scenario,
@@ -18,9 +20,13 @@ const MAX_BLOCK_DEPTH: usize = 16;
 
 /// A reference from a placement or tag. The path on a tag uses the same
 /// spelling as tag.set and tag.read.
-struct Link {
-    tag: TagId,
-    via: String,
+pub(crate) struct Link {
+    pub tag: TagId,
+    pub via: String,
+    /// Offset path for callers of tag.follow.
+    pub path: String,
+    pub found: &'static str,
+    datum_at: u32,
     shortcut: Option<&'static str>,
     variant: Option<u32>,
 }
@@ -75,6 +81,56 @@ impl Node {
     }
 }
 
+impl TagDoc {
+    /// Find aligned (group, datum) pairs whose group fits the indexed tag.
+    /// The scan is confined to this tag's readable payload.
+    pub(crate) fn scan_refs(&self, tag: TagId) -> Vec<Link> {
+        let Some(t) = self
+            .tag(tag)
+            .filter(|t| !matches!(t.access, Access::None(_)))
+        else {
+            return Vec::new();
+        };
+        if t.address.checked_add(t.size).is_none() {
+            return Vec::new();
+        }
+        let Some(bytes) = self.read(t.address, t.size) else {
+            return Vec::new();
+        };
+        bytes
+            .windows(8)
+            .step_by(4)
+            .enumerate()
+            .filter_map(|(i, pair)| {
+                let group = FourCC::from_u32(le(&pair[..4]) as u32);
+                let id = TagId(le(&pair[4..]) as u32);
+                if id == TagId::NULL || id.0 == 0 || group.0 == [0; 4] || group.0 == [0xff; 4] {
+                    return None;
+                }
+                let target = self.tag(id)?;
+                if !self.fits(target.group, &[group]) {
+                    return None;
+                }
+                let offset = i * 4;
+                Some(Link {
+                    tag: id,
+                    via: format!("+{offset:#x}"),
+                    path: format!("{offset:#x}"),
+                    found: "scan",
+                    datum_at: t.address + offset as u32 + 4,
+                    shortcut: shortcut(t.group, target.group, "", ""),
+                    variant: None,
+                })
+            })
+            .collect()
+    }
+
+    /// Direct links through the same layout walk or scan as the inspector.
+    pub(crate) fn tag_refs(&self, tag: TagId) -> Vec<Link> {
+        Walk::new(self).links(tag, None)
+    }
+}
+
 /// Resolve the placement's current palette entry or item reference.
 pub fn placement_root(
     scenario: &Scenario,
@@ -95,17 +151,15 @@ pub fn placement_root(
 /// A placement without an object or item collection has no root. For a
 /// tag root, `via` is empty. Depth counts references below the root.
 pub fn chain(doc: &TagDoc, root: Option<(TagId, &str)>, depth: usize) -> Chain {
-    let mut walk = Walk {
-        doc,
-        nodes_left: MAX_NODES,
-        fields_left: MAX_FIELDS,
-        truncated: false,
-    };
+    let mut walk = Walk::new(doc);
     let root = root.map(|(tag, via)| {
         walk.node(
             Link {
                 tag,
                 via: via.into(),
+                path: String::new(),
+                found: "field",
+                datum_at: 0,
                 shortcut: None,
                 variant: None,
             },
@@ -126,14 +180,30 @@ struct Walk<'a> {
     truncated: bool,
 }
 
-impl Walk<'_> {
+impl<'a> Walk<'a> {
+    fn new(doc: &'a TagDoc) -> Self {
+        Self {
+            doc,
+            nodes_left: MAX_NODES,
+            fields_left: MAX_FIELDS,
+            truncated: false,
+        }
+    }
+
     fn node(&mut self, link: Link, depth: usize, ancestors: &mut Vec<TagId>) -> Node {
         self.nodes_left -= 1;
         let cycle = ancestors.contains(&link.tag);
         let variant = link.variant.and_then(|v| self.model_variant(link.tag, v));
         let mut children = Vec::new();
         if !cycle && depth > 0 {
-            let refs = self.links(link.tag, link.variant);
+            let mut refs = self.links(link.tag, link.variant);
+            // Keep the model chain ahead of wide branches like shaders.
+            refs.sort_by_key(|r| match r.shortcut {
+                Some("Model") => 0,
+                Some("Render model") => 1,
+                Some(_) => 2,
+                None => 3,
+            });
             ancestors.push(link.tag);
             for next in refs {
                 if self.nodes_left == 0 {
@@ -155,24 +225,34 @@ impl Walk<'_> {
     }
 
     fn links(&mut self, tag: TagId, variant: Option<u32>) -> Vec<Link> {
-        let mut refs = Vec::new();
         let doc = self.doc;
-        if let Some(t) = doc.tag(tag)
-            && !matches!(t.access, Access::None(_))
-            && let Some(layout) = doc.layout(tag)
-            && layout.size <= t.size
-        {
-            let default = string_id(self.doc, t.address, layout, "default_variant");
-            let variant = variant.filter(|&v| v != 0 && v != u32::MAX).or(default);
-            self.element(t.group, t.address, layout, "", variant, &mut refs, 0);
+        let Some(t) = doc
+            .tag(tag)
+            .filter(|t| !matches!(t.access, Access::None(_)))
+        else {
+            return Vec::new();
+        };
+        let mut refs = Vec::new();
+        match doc.layout(tag) {
+            Some(layout) if layout.size <= t.size => {
+                let default = string_id(doc, t.address, layout, "default_variant");
+                let variant = variant.filter(|&v| v != 0 && v != u32::MAX).or(default);
+                self.element(t.group, t.address, layout, ("", ""), variant, &mut refs, 0);
+
+                // The scenario has a structural schema, but until it has a
+                // definition that walk covers only part of its references.
+                if t.group.0 == *b"scnr" && layout.coverage().named_fields == 0 {
+                    let known: HashSet<_> = refs.iter().map(|r| r.datum_at).collect();
+                    refs.extend(
+                        doc.scan_refs(tag)
+                            .into_iter()
+                            .filter(|r| !known.contains(&r.datum_at)),
+                    );
+                }
+            }
+            None => refs = doc.scan_refs(tag),
+            Some(_) => {}
         }
-        // Keep the model chain ahead of wide branches like shaders.
-        refs.sort_by_key(|r| match r.shortcut {
-            Some("Model") => 0,
-            Some("Render model") => 1,
-            Some(_) => 2,
-            None => 3,
-        });
         refs
     }
 
@@ -182,7 +262,7 @@ impl Walk<'_> {
         group: FourCC,
         at: u32,
         layout: &Layout,
-        prefix: &str,
+        prefixes: (&str, &str),
         variant: Option<u32>,
         refs: &mut Vec<Link>,
         depth: usize,
@@ -191,6 +271,7 @@ impl Walk<'_> {
             self.truncated = true;
             return;
         }
+        let (prefix, offsets) = prefixes;
         for f in &layout.fields {
             if self.fields_left == 0 {
                 self.truncated = true;
@@ -221,6 +302,9 @@ impl Walk<'_> {
                     refs.push(Link {
                         tag: id,
                         via: format!("{prefix}{}", f.name),
+                        path: format!("{offsets}{:#x}", f.offset),
+                        found: "field",
+                        datum_at: address + f.kind.width() - 4,
                         shortcut,
                         variant,
                     });
@@ -234,7 +318,16 @@ impl Walk<'_> {
                             break;
                         };
                         let path = format!("{prefix}{}[{i}].", f.name);
-                        self.element(group, at, child, &path, variant, refs, depth + 1);
+                        let offset_path = format!("{offsets}{:#x}[{i}].", f.offset);
+                        self.element(
+                            group,
+                            at,
+                            child,
+                            (&path, &offset_path),
+                            variant,
+                            refs,
+                            depth + 1,
+                        );
                         if self.fields_left == 0 {
                             return;
                         }

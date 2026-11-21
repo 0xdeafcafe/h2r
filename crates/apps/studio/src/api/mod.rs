@@ -46,6 +46,7 @@ mod view;
 mod tests;
 
 pub use params::P;
+pub(crate) use params::block_name;
 pub use seams::Provider;
 
 /// One method: what it does, its params and result, and an example call.
@@ -207,13 +208,8 @@ pub const METHODS: &[MethodDef] = &[
         r#"{"id":"string","group":"string","name":"string|null","size":"integer","fields":"[field]"}"#,
         r#"{"tag":"scnr"}"#,
     ),
-    def(
-        m::TAG_REFS,
-        "Every tag reference in a tag (through its blocks), with where it sits and what it names",
-        r#"{"tag":"string","limit?":"integer (default 500)"}"#,
-        r#"[{"path":"string","group":"string","id":"string","name":"string|null"}]"#,
-        r#"{"tag":"scnr"}"#,
-    ),
+    tags::TREE,
+    tags::REFS,
     def(
         m::TAG_FOLLOW,
         "Follow one reference (a tag.refs path, or its position in that list) to the tag it names",
@@ -440,10 +436,17 @@ pub const METHODS: &[MethodDef] = &[
     ),
     def(
         m::VIEW_CAMERA,
-        "Read or set the viewport camera (degrees and world units), or frame a placement",
-        r#"{"yaw?":"number","pitch?":"number","distance?":"number","target?":"[x,y,z]","focus?":{"block":"string","index":"integer"},"all?":"boolean"}"#,
-        r#"{"yaw":"number","pitch":"number","distance":"number","target":"[x,y,z]"}"#,
+        "Read or set the viewport camera (degrees and world units), set fly speed, or frame a placement",
+        r#"{"yaw?":"number","pitch?":"number","distance?":"number","target?":"[x,y,z]","focus?":{"block":"string","index":"integer"},"all?":"boolean","fly_speed?":"number (0.5..1000 units/s)"}"#,
+        r#"{"yaw":"number","pitch":"number","distance":"number","target":"[x,y,z]","fly_speed":"number"}"#,
         r#"{"yaw":45,"pitch":30,"distance":40}"#,
+    ),
+    def(
+        m::VIEW_LAYERS,
+        "Read the viewport legend, or apply a preset, layer switches and X-ray to the window and snapshots",
+        r#"{"set?":"{layer name: boolean}","preset?":"art|gameplay|collision|everything","xray?":"boolean"}"#,
+        r#"{"layers":"[{name,label,group,on,count,color}]","xray":"boolean"}"#,
+        r#"{"preset":"everything","set":{"fog":false},"xray":true}"#,
     ),
     def(
         m::VIEW_SNAPSHOT,
@@ -669,6 +672,7 @@ impl Api {
     fn view(&mut self, app: &mut App, method: &str, p: &P) -> Reply {
         match method {
             m::VIEW_CAMERA => view::camera(app, p),
+            m::VIEW_LAYERS => view::layers(app, p),
             m::VIEW_STATS => view::stats(app, p),
             m::VIEW_SNAPSHOT => {
                 let gpu = self

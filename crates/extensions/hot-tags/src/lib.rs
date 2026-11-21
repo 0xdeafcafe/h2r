@@ -20,6 +20,8 @@
 //! Edits are tied to the map they were made on (the scenario's datum): a
 //! journal entry from another map is never written back.
 
+mod batch;
+pub use batch::BatchError;
 pub mod index;
 pub mod names;
 pub mod path;
@@ -83,12 +85,16 @@ pub struct Change {
     pub group: String,
     pub name: Option<String>,
     pub path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
     #[serde(serialize_with = "hex32")]
     pub addr: u32,
     #[serde(rename = "type")]
     pub kind: String,
     pub old: Value,
     pub new: Value,
+    #[serde(skip)]
+    batch: bool,
     #[serde(skip)]
     old_bytes: Vec<u8>,
     #[serde(skip)]
@@ -114,6 +120,7 @@ pub struct TagSel {
 pub struct Editor {
     journal: Vec<Change>,
     next_id: u64,
+    epoch: Option<u64>,
     names: Option<NameSource>,
     cached: Option<Names>,
 }
@@ -133,6 +140,13 @@ fn group_text(g: FourCC) -> String {
 }
 
 impl Editor {
+    pub fn at_epoch(&mut self, epoch: u64) {
+        if self.epoch.replace(epoch) != Some(epoch) {
+            self.journal.clear();
+            self.cached = None;
+        }
+    }
+
     pub fn new() -> Editor {
         Editor::default()
     }
@@ -436,9 +450,17 @@ impl Editor {
             .map(str::to_owned);
         let new = value::read(&loc.kind, &bytes);
         // A second edit of the same bytes keeps the first one's original.
-        let change = match self.journal.iter_mut().find(|c| {
-            c.scenario == idx.scenario && c.addr == loc.addr && c.new_bytes.len() == bytes.len()
-        }) {
+        let change = match self
+            .journal
+            .iter_mut()
+            .rev()
+            .find(|c| {
+                c.scenario == idx.scenario
+                    && u64::from(c.addr) < u64::from(loc.addr) + bytes.len() as u64
+                    && u64::from(loc.addr) < u64::from(c.addr) + c.new_bytes.len() as u64
+            })
+            .filter(|c| !c.batch && c.addr == loc.addr && c.new_bytes.len() == bytes.len())
+        {
             Some(c) => {
                 c.new_bytes = bytes;
                 c.new = new;
@@ -454,10 +476,12 @@ impl Editor {
                     group: group_text(e.group),
                     name,
                     path: path.into(),
+                    label: None,
                     addr: loc.addr,
                     kind: value::kind_text(&loc.kind),
                     old: value::read(&loc.kind, &current),
                     new,
+                    batch: false,
                     old_bytes: current,
                     new_bytes: bytes,
                     kind_def: loc.kind.clone(),
@@ -473,23 +497,31 @@ impl Editor {
     /// there (`live`) and whether it was made on another map (`stale`).
     pub fn changes(&self, g: &Guest) -> Value {
         let scenario = index::index(g).ok().map(|i| i.scenario);
-        let list: Vec<Value> = self
-            .journal
-            .iter()
-            .map(|c| {
-                let stale = scenario != Some(c.scenario);
+        let mut list: Vec<Value> = Vec::new();
+        for chunk in self.journal.chunk_by(|a,b| a.id == b.id) {
+            let fields: Vec<_> = chunk.iter().map(|c| {
+            let stale = scenario != Some(c.scenario);
                 let now = (!stale)
                     .then(|| read_bytes(g, c.addr, c.new_bytes.len() as u32).ok())
                     .flatten();
                 let mut v = serde_json::to_value(c).unwrap_or(Value::Null);
+                v["was_bytes"] = json!(value::hex(&c.old_bytes));
+                v["new_bytes"] = json!(value::hex(&c.new_bytes));
+                v["holds"] = json!(now.as_ref().map(|b| value::hex(b)));
                 v["stale"] = json!(stale);
                 v["live"] = json!(now.as_ref() == Some(&c.new_bytes));
                 if let Some(now) = &now {
                     v["now"] = value::read(&c.kind_def, now);
                 }
                 v
-            })
-            .collect();
+            }).collect();
+            let first = &chunk[0];
+            if first.batch {
+                list.push(json!({"id":first.id,"label":first.label,"fields":fields}));
+            } else {
+                list.extend(fields);
+            }
+        }
         json!({ "changes": list })
     }
 
@@ -507,26 +539,26 @@ impl Editor {
         let scenario = index::index(g).ok().map(|i| i.scenario);
         let mut reverted = Vec::new();
         let mut dropped = Vec::new();
-        let mut kept = Vec::new();
-        for c in std::mem::take(&mut self.journal).into_iter().rev() {
+        for index in (0..self.journal.len()).rev() {
+            let c = &self.journal[index];
             if id.is_some_and(|i| i != c.id) {
-                kept.push(c);
                 continue;
             }
             if scenario != Some(c.scenario) {
                 dropped.push(json!({"id": c.id, "why": "made on another map"}));
+                self.journal.remove(index);
                 continue;
             }
             let now = read_bytes(g, c.addr, c.new_bytes.len() as u32)?;
             if now != c.new_bytes {
                 dropped.push(json!({"id": c.id, "why": "the game changed it since; left alone"}));
+                self.journal.remove(index);
                 continue;
             }
             g.write_bytes(c.addr, &c.old_bytes, 1).map_err(fault)?;
             reverted.push(json!({"id": c.id, "path": c.path, "value": c.old}));
+            self.journal.remove(index);
         }
-        kept.reverse();
-        self.journal = kept;
         Ok(json!({ "reverted": reverted, "dropped": dropped }))
     }
 }

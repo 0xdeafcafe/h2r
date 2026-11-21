@@ -264,6 +264,16 @@ impl Cx<'_> {
             ui.text_disabled(&f.name);
         }
         self.hover(at, layout, f);
+        let (class, why) = crate::play::tag_sync::class(self.doc, self.tag, at + f.offset, f);
+        let tone = if class == crate::play::tag_sync::RELOAD {
+            crate::play::LinkTone::Warn
+        } else {
+            crate::play::LinkTone::View
+        };
+        crate::theme::link_badge(ui, tone, class);
+        if ui.is_item_hovered() {
+            ui.tooltip_text(why);
+        }
         ui.same_line_with_pos(LABEL);
         ui.set_next_item_width(-1.0);
     }
@@ -647,7 +657,7 @@ impl Cx<'_> {
         };
         let cap = self.doc.capacity(pair);
         let header = format!(
-            "{}  [{n}]{}",
+            "{}  · Reload  [{n}]{}",
             f.name,
             if cap > n {
                 format!(" of {cap}")
@@ -743,7 +753,7 @@ impl Cx<'_> {
         let (n, a) = (le(b, 0, 4) as u32, le(b, 4, 4) as u32);
         let node = ui
             .tree_node_config(format!("dat{:x}", at + f.offset))
-            .label(format!("{}  ({n} bytes)", f.name))
+            .label(format!("{}  · Reload  ({n} bytes)", f.name))
             .span_avail_width(true)
             .push();
         self.hover(at, layout, f);

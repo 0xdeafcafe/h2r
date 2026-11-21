@@ -506,6 +506,231 @@ mod tests {
     use crate::app::Action;
     use scenario_edit::{BlockKind, fixture};
 
+    #[test]
+    fn the_game_link_shows_in_every_tool() {
+        use crate::ToolKind;
+        use crate::play::{Conn, Play};
+
+        let Some((_turn, mut h)) = headless() else {
+            return;
+        };
+        let mut app = App::new();
+        // This test's link is independent of any real game on the machine.
+        h.studio.play.play = Play::new();
+        for tool in ToolKind::ALL {
+            app.dispatch(Action::SetTool(tool));
+            h.frames(&mut app, 3).unwrap();
+            assert!(
+                h.scene
+                    .items
+                    .iter()
+                    .any(|i| { i.window == "##studio-bar" && i.label.starts_with("No game") }),
+                "game link missing in {tool:?}",
+            );
+            assert!(
+                h.scene
+                    .items
+                    .iter()
+                    .any(|i| { i.window.ends_with("###game") && i.label.starts_with("No game") }),
+                "Game tab missing in {tool:?}",
+            );
+            // No map is open, so F5 reaches Play and reports the missing map.
+            let log_len = app.log().len();
+            h.step(&mut app, &Step::Key(dear_imgui_rs::Key::F5, 1))
+                .unwrap();
+            assert!(app.log().len() > log_len);
+            assert!(
+                app.status()
+                    .is_some_and(|s| s.text().contains("open a map"))
+            );
+        }
+
+        h.studio.play.play.conn = Conn::Connected;
+        h.frames(&mut app, 3).unwrap();
+        assert!(!h.studio.play.play.live_edits);
+        assert!(
+            h.scene
+                .items
+                .iter()
+                .any(|i| { i.window == "##studio-bar" && i.label.starts_with("Viewing") }),
+        );
+        let edit = h
+            .scene
+            .items
+            .iter()
+            .find(|i| i.window == "##studio-bar" && i.label.starts_with("Edit"))
+            .unwrap()
+            .label
+            .clone();
+        h.step(
+            &mut app,
+            &Step::Click(format!("##studio-bar>{edit}"), Button::Left),
+        )
+        .unwrap();
+        assert!(h.studio.play.play.live_edits);
+    }
+
+    #[test]
+    fn the_default_layout_places_every_window() {
+        use crate::ToolKind;
+        let Some((_turn, mut h)) = headless() else { return };
+        let source = crate::app::map_cards_tests::Temp::new("workspaces");
+        let mut app = App::new();
+        app.set_data_root(source.0.join("data"));
+        let workspaces = [
+            (ToolKind::Scenario, ["maps", "viewport", "inspector"]),
+            (ToolKind::Tags, ["tags", "viewport", "inspector"]),
+            (ToolKind::Variants, ["variants-list", "variants-settings", "variants-inspector"]),
+            (ToolKind::Playlists, ["playlists-list", "playlists-entries", "playlists-inspector"]),
+            (ToolKind::UiScreens, ["screens-list", "screens-preview", "screens-inspector"]),
+            (ToolKind::Hud, ["hud-list", "hud-preview", "hud-inspector"]),
+        ];
+        // Each workspace's own IDs use the same dock geometry. Scenario
+        // and Tags are two tabs of Map, so they share its centre and right.
+        let mut regions = None;
+        let mut workspace_keys = std::collections::HashSet::new();
+        for (tool, keys) in workspaces {
+            if tool != ToolKind::Tags {
+                assert!(keys.iter().all(|key| workspace_keys.insert(*key)));
+            }
+            app.dispatch(Action::SetTool(tool));
+            h.frames(&mut app, 4).unwrap();
+            let actual = keys.map(|key| h.scene.find(&format!("win:###{key}")).unwrap().0);
+            assert!(actual[0][2] < actual[1][0] && actual[1][2] < actual[2][0]);
+            if let Some(regions) = regions {
+                assert_eq!(actual, regions, "{tool:?} must fit the same regions");
+            }
+            regions = Some(actual);
+        }
+    }
+
+    #[test]
+    fn the_saved_layout_with_the_three_old_ids_loads() {
+        use crate::ToolKind;
+        let Some((_turn, mut first)) = headless() else { return };
+        let mut app = App::new();
+        let source = crate::app::map_cards_tests::Temp::new("legacy-layout");
+        let path = source.0.join("invented.map");
+        std::fs::write(&path, fixture::fixture()).unwrap();
+        app.set_data_root(source.0.join("data"));
+        app.dispatch(Action::OpenSource(path));
+        first.frames(&mut app, 4).unwrap();
+        let before = ["outliner", "viewport", "inspector"].map(|name| {
+            first.scene.find(&format!("win:###{name}")).unwrap().0
+        });
+        let mut settings = String::new();
+        first.ctx.save_ini_settings(&mut settings);
+        drop(first);
+
+        let legacy = settings
+            .split("
+
+")
+            .filter(|section| {
+                section.starts_with("[Docking]")
+                    || ["outliner", "viewport", "inspector", "log", "game"]
+                        .iter()
+                        .any(|name| section.starts_with(&format!("[Window][###{name}]")))
+            })
+            .collect::<Vec<_>>()
+            .join("
+
+");
+        assert!(legacy.contains("[Window][###outliner]"));
+        assert!(legacy.contains("[Docking]"));
+
+        let mut h = Headless::new([1280.0, 800.0], 1.0).unwrap();
+        h.ctx.load_ini_settings(&legacy);
+        h.frames(&mut app, 4).unwrap();
+        let after = ["outliner", "viewport", "inspector"].map(|name| {
+            h.scene.find(&format!("win:###{name}")).unwrap().0
+        });
+        assert_eq!(after, before);
+
+        app.dispatch(Action::SetTool(ToolKind::Variants));
+        h.frames(&mut app, 4).unwrap();
+        let variants = ["variants-list", "variants-settings", "variants-inspector"].map(|name| {
+            h.scene.find(&format!("win:###{name}")).unwrap().0
+        });
+        assert_eq!(variants, before);
+    }
+
+    #[test]
+    fn the_legacy_scenario_click_switches_to_map() {
+        use crate::ToolKind;
+        let Some((_turn, mut h)) = headless() else { return };
+        let source = crate::app::map_cards_tests::Temp::new("legacy-scenario");
+        let mut app = App::new();
+        app.set_data_root(source.0.join("data"));
+        app.dispatch(Action::SetTool(ToolKind::Variants));
+        h.frames(&mut app, 3).unwrap();
+        let script = crate::script::parse("click ###tools>Scenario").unwrap();
+        h.step(&mut app, &script[0]).unwrap();
+        assert_eq!(app.tool, ToolKind::Scenario);
+        assert!(h.scene.find("##studio-bar>###tool-Map").is_ok());
+        assert!(h.scene.find("Open a disc or map...").is_ok());
+    }
+
+    #[test]
+    fn the_toolbar_has_icon_buttons_and_visible_snap_steps() {
+        let Some((_turn, mut h)) = headless() else { return };
+        let source = crate::app::map_cards_tests::Temp::new("toolbar");
+        let path = source.0.join("invented.map");
+        std::fs::write(&path, fixture::fixture()).unwrap();
+        let mut app = App::new();
+        app.set_data_root(source.0.join("data"));
+        app.dispatch(Action::OpenSource(path));
+        let steps = crate::script::parse(
+            "click Rotate (E); click ##Grid step; click Combo>1; click ##Angle step; click Combo>45°",
+        )
+        .unwrap();
+        crate::probe::want(crate::script::labels(crate::script::targets(&steps)));
+        h.frames(&mut app, 4).unwrap();
+        for step in &steps {
+            h.step(&mut app, step).unwrap();
+        }
+        assert_eq!(h.studio.viewport.op, crate::viewport::GizmoOp::Rotate);
+        let snap = h.studio.viewport.snap;
+        assert!(snap.grid && snap.angle);
+        assert_eq!((snap.grid_step, snap.angle_step), (1.0, 45.0));
+    }
+
+    #[test]
+    fn ui_colours_come_from_the_theme() {
+        fn check(file: &Path) {
+            if file.is_dir() {
+                for entry in file.read_dir().unwrap() {
+                    check(&entry.unwrap().path());
+                }
+                return;
+            }
+            if file.extension().and_then(|e| e.to_str()) != Some("rs") {
+                return;
+            }
+            let source = std::fs::read_to_string(file).unwrap();
+            let code = source.lines()
+                .map(|line| line.split_once("//").map_or(line, |(code, _)| code))
+                .collect::<Vec<_>>()
+                .join("
+");
+            for value in code.split('[').filter_map(|s| s.split_once(']').map(|(v, _)| v)) {
+                let numbers: Vec<_> = value.split(',').map(str::trim).filter(|v| !v.is_empty()).collect();
+                assert!(
+                    numbers.len() != 4 || !numbers.iter().all(|n| n.parse::<f32>().is_ok()),
+                    "{} has a colour literal [{value}]",
+                    file.display()
+                );
+            }
+            for constructor in ["rgb(", "rgba(", "from_rgb(", "from_rgba("] {
+                assert!(!code.contains(constructor), "{} calls {constructor}", file.display());
+            }
+        }
+
+        let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        check(&src.join("ui.rs"));
+        check(&src.join("ui"));
+    }
+
     /// One real frame of the shell over the invented test map, read back:
     /// the UI drew something other than the clear colour, and the PNG
     /// writes. Skipped when the machine has no wgpu adapter.
@@ -724,7 +949,7 @@ mod tests {
     /// installed it says how to install it; with an (invented) install it
     /// lists the map by its record's name with the picture beside it, and
     /// a click opens it in the scenario tool. The window is tall enough
-    /// for the Tools pane to show the group unscrolled: Dear ImGui names a
+    /// for the Maps tab to show the group unscrolled: Dear ImGui names a
     /// clipped row to nobody, so the probe would not find it. Skipped
     /// without a wgpu adapter.
     #[test]
@@ -767,11 +992,6 @@ mod tests {
             h.studio.map_list.shown(Group::MapPack),
             Some(&Shown::Maps(vec![("Ridge".into(), true)]))
         );
-        h.step(&mut app, &Step::Click("Ridge##pack-ridge".into(), Button::Left))
-            .unwrap();
-        h.frames(&mut app, 2).unwrap();
-        assert_eq!(app.opened_pack_map(), Some("ridge"));
-        assert!(app.session.is_open());
         let (rgba, _) = h.capture(&mut app, 2).unwrap();
         // The picture (R 0xe0, G 0x80, B 0x20 at the record's alpha 0xbf,
         // so blended a quarter with the dark panel) fills the thumbnail.
@@ -782,6 +1002,11 @@ mod tests {
             .filter(|p| (150..215).contains(&p[0]) && (80..135).contains(&p[1]) && p[2] < 70)
             .count();
         assert!(orange >= 100, "the thumbnail is drawn: {orange} pixels");
+        h.step(&mut app, &Step::Click("Ridge##pack-ridge".into(), Button::Left))
+            .unwrap();
+        h.frames(&mut app, 2).unwrap();
+        assert_eq!(app.opened_pack_map(), Some("ridge"));
+        assert!(app.session.is_open());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -791,8 +1016,8 @@ mod tests {
     /// menu's names, each with its picture beside it, and the shared cache
     /// and the menu itself by file name with none; a package with an image
     /// of its own shows it; the Map Pack, not installed, its hint. A click
-    /// on a named map opens it. The window is tall enough for the Tools
-    /// pane to show every group unscrolled. Skipped without a wgpu
+    /// on a named map opens it. The window is tall enough for the Maps
+    /// tab to show every group unscrolled. Skipped without a wgpu
     /// adapter.
     #[test]
     fn the_maps_list_names_and_pictures_every_group() {
@@ -836,7 +1061,7 @@ mod tests {
         assert_eq!(h.studio.map_list.shown(Group::Halo1), None);
         h.step(
             &mut app,
-            &Step::Click("The Pier##map-02_pier".into(), Button::Left),
+            &Step::Click("##map-grid>The Pier##map-02_pier".into(), Button::Left),
         )
         .unwrap();
         h.frames(&mut app, 2).unwrap();

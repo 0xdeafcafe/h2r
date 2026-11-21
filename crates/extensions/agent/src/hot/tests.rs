@@ -99,6 +99,12 @@ fn edit_methods_read_write_list_and_revert() {
         &agent,
         Editor::new(),
         Arc::new(move |f: &mut dyn FnMut(&mut Guest)| f(&mut g.lock().unwrap())),
+        |_| SessionView {
+            kind: agent_proto::sim::SessionKind::Local,
+            ..Default::default()
+        },
+        |_| Some("fixture.map".into()),
+        false,
     );
     let c = Client::new(&agent);
 
@@ -153,6 +159,123 @@ fn edit_methods_read_write_list_and_revert() {
         .unwrap();
     let e = c.call(method::EDIT_TAGS, Value::Null);
     assert_eq!(e["error"]["code"], code::UNAVAILABLE, "{e}");
+}
+
+#[test]
+fn conditional_batch_validates_all_fields_and_reverts_one_id() {
+    let guest = Arc::new(Mutex::new(level()));
+    let g = guest.clone();
+    let agent = Agent::new();
+    add_edit_methods(
+        &agent,
+        Editor::new(),
+        Arc::new(move |f| f(&mut g.lock().unwrap())),
+        |_| SessionView {
+            kind: agent_proto::sim::SessionKind::Local,
+            ..Default::default()
+        },
+        |_| None,
+        false,
+    );
+    let c = Client::new(&agent);
+    let map = c.ok(method::EDIT_MAP, json!({"known_epoch": null}));
+    assert_eq!(map["scenario"], "0xe0000000");
+    assert!(
+        map["loaded"]
+            .as_array()
+            .unwrap()
+            .contains(&json!(0xe1110001u32))
+    );
+    let same = c.ok(method::EDIT_MAP, json!({"known_epoch": map["epoch"]}));
+    assert!(same.get("loaded").is_none());
+    let typed = json!({"tag":"0xe1110001","path":"postprocess[0].colors[1].color","was":0xff804020u32,"value":7});
+    let raw = json!({"at":SHAD_AT,"was":"0000","value":"1122"});
+    let bad = json!({"at":SHAD_AT,"was":"ffff","value":"1122"});
+    let err = c.call(method::EDIT_BATCH, json!({"writes":[typed,bad]}));
+    assert_eq!(err["error"]["code"], code::MISMATCH);
+    assert_eq!(err["error"]["data"]["fields"][0]["holds_bytes"], "0000");
+    let outside = json!({"at":ENTRIES,"was":"ff","value":"01"});
+    assert_eq!(
+        c.call(method::EDIT_BATCH, json!({"writes":[typed,outside]}))["error"]["code"],
+        code::INVALID_PARAMS
+    );
+    assert_eq!(
+        guest.lock().unwrap().u32(COLORS_AT + 4).unwrap(),
+        0xff804020
+    );
+    assert_eq!(
+        c.ok(method::EDIT_CHANGES, Value::Null)["changes"],
+        json!([])
+    );
+    let reply = c.ok(
+        method::EDIT_BATCH,
+        json!({"writes":[typed,raw], "label":"Two fields"}),
+    );
+    assert_eq!(reply["applied"], 2);
+    let journal = c.ok(method::EDIT_CHANGES, Value::Null);
+    assert_eq!(journal["changes"].as_array().unwrap().len(), 1);
+    assert_eq!(journal["changes"][0]["label"], "Two fields");
+    assert_eq!(journal["changes"][0]["fields"].as_array().unwrap().len(), 2);
+    assert_eq!(reply["changes"][1]["id"], reply["id"]);
+    assert_eq!(guest.lock().unwrap().u32(SHAD_AT).unwrap(), 0x2211);
+    c.ok(method::EDIT_REVERT, json!({"id":reply["id"]}));
+    assert_eq!(guest.lock().unwrap().u32(SHAD_AT).unwrap(), 0);
+    assert_eq!(
+        guest.lock().unwrap().u32(COLORS_AT + 4).unwrap(),
+        0xff804020
+    );
+}
+
+#[test]
+fn every_edit_write_checks_the_current_session() {
+    use agent_proto::sim::SessionKind::{CoopGuest, CoopHost, Local, MpClient, MpHost, Unknown};
+    let guest = Arc::new(Mutex::new(level()));
+    let g = guest.clone();
+    let kind = Arc::new(Mutex::new(Local));
+    let current = kind.clone();
+    let agent = Agent::new();
+    add_edit_methods(
+        &agent,
+        Editor::new(),
+        Arc::new(move |f| f(&mut g.lock().unwrap())),
+        move |_| SessionView {
+            kind: *current.lock().unwrap(),
+            peers: Some(3),
+            ..Default::default()
+        },
+        |_| None,
+        false,
+    );
+    let c = Client::new(&agent);
+    let p = json!({"tag":"0xe1110001","path":"postprocess[0].colors[1].color","value":7});
+    c.ok(method::EDIT_SET, p.clone());
+    *kind.lock().unwrap() = MpHost;
+    let mut confirmed = p.clone();
+    confirmed["confirm_peers"] = json!(2);
+    assert_eq!(
+        c.call(method::EDIT_SET, confirmed.clone())["error"]["code"],
+        code::INVALID_REQUEST
+    );
+    confirmed["confirm_peers"] = json!(3);
+    c.ok(method::EDIT_SET, confirmed);
+    for session in [CoopHost, CoopGuest, MpClient, Unknown, Local] {
+        *kind.lock().unwrap() = session;
+        if session == Local {
+            agent.set_live_session_probe(|_| true);
+        }
+        for (m, params) in [
+            (method::EDIT_SET, p.clone()),
+            (method::EDIT_BATCH, json!({"writes":[p]})),
+            (method::EDIT_REVERT, Value::Null),
+        ] {
+            assert_eq!(
+                c.call(m, params)["error"]["code"],
+                code::INVALID_REQUEST,
+                "{m} {session:?}"
+            );
+        }
+        assert_eq!(guest.lock().unwrap().u32(COLORS_AT + 4).unwrap(), 7);
+    }
 }
 
 #[cfg(feature = "render-overrides")]

@@ -138,6 +138,7 @@ struct Step {
     /// `(address, before, after)`.
     writes: Vec<(u32, Vec<u8>, Vec<u8>)>,
     merge: Option<u64>,
+    reload: Vec<(String, Vec<(u32, u32)>)>,
     /// String IDs this step added (the last of the document's).
     strings: Vec<String>,
 }
@@ -193,6 +194,8 @@ impl Loaded {
 /// The tag editor's document.
 pub struct TagDoc {
     registry: &'static Registry,
+    /// Datums resident in the checksum-matched game (including shared tags).
+    pub(crate) live_datums: Option<Arc<std::collections::HashSet<TagId>>>,
     loaded: Option<Loaded>,
     /// The tag shown.
     pub selected: Option<TagId>,
@@ -229,6 +232,7 @@ impl TagDoc {
     pub fn new(registry: &'static Registry) -> Self {
         Self {
             registry,
+            live_datums: None,
             loaded: None,
             selected: None,
             undo: Vec::new(),
@@ -332,6 +336,7 @@ impl TagDoc {
 
     /// Forget the map and every edit.
     pub fn close(&mut self) {
+        self.live_datums = None;
         self.loaded = None;
         self.selected = None;
         self.undo.clear();
@@ -360,6 +365,13 @@ impl TagDoc {
         let l = self.loaded.as_ref()?;
         l.tags.get(*l.by_id.get(&id)?)
     }
+    pub(crate) fn resident(&self, id: TagId) -> bool {
+        self.live_datums.as_ref().map_or_else(
+            || self.tag(id).is_some_and(|t| t.size != 0),
+            |loaded| loaded.contains(&id),
+        )
+    }
+
     /// The root layout of a tag's group.
     pub fn layout(&self, id: TagId) -> Option<&Arc<Layout>> {
         self.registry.group(self.tag(id)?.group)
@@ -583,6 +595,13 @@ impl TagDoc {
             let after = after.clone();
             self.put(*at, &after);
         }
+        step.reload.push((
+            step.label.clone(),
+            step.writes
+                .iter()
+                .map(|(a, _, b)| (*a, b.len() as u32))
+                .collect(),
+        ));
         self.undo.push(step);
         self.redo.clear();
         self.sealed = true;
@@ -648,6 +667,13 @@ impl TagDoc {
             let after = after.clone();
             self.put(*to, &after);
         }
+        step.reload.push((
+            step.label.clone(),
+            step.writes
+                .iter()
+                .map(|(a, _, b)| (*a, b.len() as u32))
+                .collect(),
+        ));
         self.undo.push(step);
         self.redo.clear();
         self.sealed = true;
@@ -771,6 +797,7 @@ impl TagDoc {
             ..Step::default()
         };
         for s in steps {
+            one.reload.extend(s.reload);
             one.writes.extend(s.writes);
             one.strings.extend(s.strings);
         }
@@ -800,6 +827,10 @@ impl TagDoc {
         if let Some(&i) = l.by_id.get(&id) {
             l.tags[i].elsewhere = Some(map.to_owned());
         }
+    }
+
+    pub(crate) fn structural_edits(&self) -> impl Iterator<Item = &(String, Vec<(u32, u32)>)> {
+        self.undo.iter().flat_map(|s| &s.reload)
     }
 
     /// Every changed run in the source's metadata: `(address, bytes)`,
@@ -877,6 +908,16 @@ impl TagDoc {
         self.loaded
             .as_ref()
             .is_some_and(|l| !l.overlay.is_empty() || !l.new_strings.is_empty())
+    }
+
+    pub(crate) fn source_string(&self, id: u32) -> bool {
+        self.loaded.as_ref().is_some_and(|l| {
+            tags::StringId(id)
+                .resolve(&l.strings)
+                .ok()
+                .flatten()
+                .is_some()
+        })
     }
 
     /// The string of a string ID's value, if the map has it (or it was
