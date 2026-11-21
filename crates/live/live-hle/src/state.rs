@@ -1031,7 +1031,8 @@ impl State {
                 .seen
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
-                .contains_key(&id)
+                .get(&id)
+                .is_some()
         })
     }
     pub fn cached_host_skulls(&self, keys: &[[u8; 8]]) -> Option<Vec<u8>> {

@@ -143,7 +143,7 @@ fn resolve(
     }
     let mut local_clip = entry.clip.clone();
     let local_library = (location.open)(&location.dir)
-        .and_then(|lib| lib.list(&location.stamps))
+        .and_then(|lib| lib.list(&location.installation))
         .unwrap_or_default();
     let local = local_library.into_iter().find(|row| {
         row.live_game_id.as_deref() == Some(&link.film)
@@ -172,10 +172,8 @@ fn resolve(
         )?;
         let path = adapter::archive_path(&location.dir, &link.film)?;
         let local = adapter::archive_entry(&path, &link.film).map_err(|e| e.to_string())?;
-        film.playable_here = location
-            .stamps
-            .iter()
-            .any(|stamp| crate::theater::playable_entry(&local, stamp));
+        film.version = Some(local.version);
+        film.apply_compatibility(location.installation.compatibility(&local));
         film.length_ticks = local.meta.length_ticks;
     }
     link.check_bounds(
@@ -477,7 +475,7 @@ mod tests {
                 id: "live:example".into(),
                 map: "lockout".into(),
                 source: adapter::Source::Host,
-                playable_here: true,
+                compatibility: api::CompatibilityState::Playable,
                 live_game_id: Some("example".into()),
                 ..Default::default()
             },

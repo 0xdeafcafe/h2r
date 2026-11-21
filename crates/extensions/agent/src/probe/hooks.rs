@@ -1,7 +1,7 @@
 //! The transient values have already disappeared by the next agent tick.
 use super::*;
 use engine::points;
-use hooks::{BuildError, Builder, Feature, Manifest, Obs, SnapshotPolicy};
+use ::hooks::{BuildError, Builder, Feature, Manifest, Obs, SnapshotPolicy};
 use std::collections::BTreeMap;
 
 #[derive(Default, serde::Serialize, serde::Deserialize)]

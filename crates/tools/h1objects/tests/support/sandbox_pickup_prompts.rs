@@ -60,11 +60,7 @@ fn bloodgulch_pickup_text_survives_both_sandboxes() {
         .unwrap();
         let mopp = structure_mopp(&p.collision).unwrap();
         let fresh = p.build_fresh(&mut base, &mopp).unwrap();
-        assert!(
-            fresh.report.scratch.is_some(),
-            "{:?}",
-            fresh.report.scratch_failed
-        );
+        assert!(fresh.report.scratch.is_some());
         let mut out = Map::from_reader(Cursor::new(fresh.bytes)).unwrap();
         let scenario = out.scenario().unwrap().id;
         let scenario = out.read_tag_bytes(scenario).unwrap();
