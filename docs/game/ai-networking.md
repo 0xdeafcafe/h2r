@@ -16,13 +16,23 @@ Evidence labels are those of [docs-style.md](../meta/docs-style.md).
 The static read behind the **E** rows is in
 [notes/ai-networking.md](notes/ai-networking.md).
 
+## Decisions
+
+- **System Link.** Distributed System Link games get host-run AI through
+  entity and event replication. Dialogue and posture require the actor
+  channel on the Live tunnel, so System Link omits them.
+- **Creatures.** h2recomp registers a creature entity type in one of the
+  16 unused slots in the retail entity table built at `0x82240`. Every
+  h2recomp machine registers the same type, and the session check refuses
+  mixed replication protocol versions before gameplay.
+
 ## Which model, by mode
 
 | Mode | Model | Players | Why |
 |---|---|---|---|
 | Campaign co-op (Halo 2 and converted Halo 1 levels) | **Synchronous**, as built ([live-coop.md](../live/live-coop.md) sections 10 to 14) | 2 to 4 in practice, 16 allowed | Scripts, cutscenes, checkpoints and devices have no replication; every machine must run them. Nothing in this page changes it. |
-| Firefight; a Forge map with squads | **Distributed, host actors**: the host runs AI, clients get each actor's body through retail's replication and the rest through the actor channel | 2 to 16 | Retail already skips AI on a distributed client and nowhere else (**E**), a body is a unit entity (**E**), and firing, grenades, melee and vehicles are events (**E**). Players keep their prediction. One slow client holds nobody. It is the model dedicated hosts run. |
-| Firefight when the probes fail; Forge editing sessions | Synchronous, through the same host log | 2 to 4 | The fallback. The director and the log are written against the host log, not against a protocol, so the mode is a session setting. |
+| Firefight; a Forge map with squads | **Distributed, host actors**: the host runs AI, clients get bodies through entity replication, and Live adds the actor channel | Firefight ships for 1 to 4, with a 16-player playlist gated on [P5](#probes). Forge supports 2 to 16. | Retail skips AI on a distributed client (**E**), a biped body is a unit entity (**E**), and firing, grenades, melee and vehicles are events (**E**). Players keep their prediction. One slow client holds nobody. It is the model dedicated hosts run. |
+| Firefight when the probes fail; Forge editing sessions | Synchronous, through the same host log | Firefight 1 to 4, Forge 2 to 4 | The director and the Forge editor both issue host-log entries, which each machine applies at the entry's tick. |
 
 There is no mixed session: a session is synchronous or distributed for
 its whole life. "Hybrid" here means the choice is made per mode.
@@ -58,29 +68,32 @@ types. The ones an actor needs:
 | Posture and AI-only animation (berserk, flee, cower, sleep, alert) | nothing | **E** | actor channel |
 | Dialogue | nothing | **E** (no sound field or event) | actor channel |
 | Perception, targets, orders | nothing, and nothing needed: the host decides | **E** `0x1c83c0` | none |
-| Creatures (the `crea` object type) | no entity type | **E** | not supported in a distributed session; a kit leaves them out |
+| Creatures (the `crea` object type) | creature entity in an unused retail slot | **E** retail has no creature type; **Design** extension | AN11 traces the slot, P7 probes it and AN13 builds the entity |
 
 So the host needs nothing new to *run* actors in a distributed game:
 `ai_update` returns early only when the network mode byte is 4, the
 distributed client (**E**, `0x1c83c0`). What is new is data (a
 multiplayer map has no characters, squads or sectors;
-[firefight.md](firefight.md), "The kit") and the three gaps above.
+[firefight.md](firefight.md), "The kit"), the actor channel and the
+creature entity.
 
 ## How it works
 
 Three layers, in a distributed session.
 
-**1. Retail replication.** Unchanged. The host's actors are units like
-any other, so their bodies, shots and deaths ride the entity and event
-types above, ranked by relevance and sent at each entity's period per
-client (**E**, notes). Hits are the host's to judge, as for players.
+**1. Entity and event replication.** The host's biped actors are units,
+so their bodies, shots and deaths ride the retail entity and event types
+above. Creatures use the registered creature type in the same stream.
+The sender ranks entities by relevance and sends them at each entity's
+period per client (**E**, notes). The host judges hits.
 
 **2. The actor channel** (`crates/live/actor-net`). A host-to-client
 stream for what layer 1 lacks. It is unreliable and ordered by tick, sent
 on a frame kind of the Live datagram tunnel next to the game's own
 packets (`crates/live/live-hle`, the tunnel the film side stream uses,
-[input-film.md](input-film.md), "The action side stream"). A System Link
-session has no tunnel and gets layer 1 only.
+[input-film.md](input-film.md), "The action side stream"). System Link
+uses layer 1 for AI. It has no actor channel records, including dialogue
+and posture.
 
 | Record | When | Holds | Size (design) |
 |---|---|---|---|
@@ -138,13 +151,47 @@ tick.
 4. `Line`: start the sound through the engine's sound entry on the
    unit's head marker.
 
-A client writes nothing that decides an outcome: no damage, no position,
-no death.
+The actor channel writes presentation fields. The entity stream carries
+the host's authoritative damage, position and death state.
+
+### Creature entity
+
+**Design.** Every h2recomp machine installs the same definition at
+simulation initialisation. AN11 selects the slot and establishes the
+encoder and decoder bounds. The session check requires the same
+replication protocol version on Live and System Link, including on maps
+with zero creatures. An absent or different version gives a named
+incompatibility error before admission or entity traffic. Both the host
+and the joining machine check compatibility. The full definition uses
+a different protocol version from the probe's minimal definition.
+
+| Record | Fields |
+|---|---|
+| Create | map-local `crea` definition index, initial position, forward and up, scale, linear and angular velocity, body and shield vitality, and dead flag |
+| Update | a change mask for position, forward and up, scale, linear and angular velocity, body and shield vitality, and dead flag |
+| Delete | the replication entity identity, through the existing entity removal path |
+
+The host creates, simulates, damages and removes the creature. A client
+creates a replica from the locally resolved definition, applies the
+host's state and animates its body from that state. Perception, targets,
+dialogue and posture stay out of this entity. AN11 traces the shared
+object codecs and the creature creation and update entries. AN13 uses
+the compatible codecs and pins the chosen masks, units, ranges and
+bit widths with synthetic vectors.
+
+**Risks.** A spare table pointer can sit beyond the encoder's type
+range or a reader's loop bound. A type index that aliases a sentinel or
+uses the wrong width can desynchronise packet decoding. An old decoder
+may discard the whole update or misread the next record, so the join
+check guards both transports. A client that runs creature behaviour can
+fight the host's updates. Too many relevant creatures can starve player
+and projectile updates in the shared sender budget.
 
 ## Budgets
 
-Numbers marked **S** are estimates until probes P4 and P5 put a note
-behind them. The caps are design choices and move with the measurements.
+Numbers marked **S** are estimates. P4 measures actor traffic, P5
+measures host CPU work and P7 measures traffic for the minimal creature
+definition. The caps are design choices and move with the measurements.
 
 ### Bandwidth, 30 ticks a second
 
@@ -161,6 +208,15 @@ probe P4 measures the rate with 0, 8, 16 and 24 actors.
 | Their shots, grenades and projectiles | 2 KB/s | 30 KB/s | **S** |
 | Actor channel, cap | 1 KB/s | 15 KB/s | **Design**, enforced by `actor_net::Budget` |
 | Target for actors in all | 8 KB/s | 120 KB/s (0.96 Mbit/s) | **Design** |
+| Creatures, additional steady-state target | 1 KB/s | 15 KB/s | **Design**, includes replication overhead attributable to creatures |
+
+The creature budget starts with four relevant movers per client at up to
+5 updates/s each (**Design**). At an estimated 32 bytes per update
+(**S**), that uses 640 B/s and leaves 360 B/s for framing and lifecycle
+traffic. The sender gives creation and deletion priority over movement
+and defers movement when it runs out of room. AN13 checks the budget on
+an encoded synthetic stream and P7 records the two-peer wire measurement
+for the probe's minimal definition.
 
 The target roughly doubles the egress dedicated-host.md assumes, so that
 page's bandwidth line is revised from P4's result before a Firefight
@@ -175,21 +231,24 @@ host class is priced.
 | A light match | 6 to 10 | dedicated-host.md, "Packed hosts" |
 | One actor (object, animation, physics, AI) | 0.3 to 0.6 | **S**; no census has an actor in it ([sim-attribution.md](../perf/sim-attribution.md), census B) |
 | The actor channel's capture, 32 actors, 15 clients | under 0.1 | **Design**; a bench in AN3 holds it |
-| Host target, p99 | 28 | **Design**: the pack's admission closes at 36 |
+| Host CPU target, p99 | 28 | **Design**, game-thread CPU time per tick. The pack uses a separate wall-clock admission threshold. |
 
 Live actor caps by player count (**Design**, provisional until P5):
 
 | Players | Live actors |
 |---:|---:|
 | up to 4 | 32 |
-| up to 8 | 24 |
-| up to 16 | 16 |
+| up to 8 (probe load) | 24 |
+| up to 16 (playlist after P5) | 16 |
 
 The engine's actor pool holds 256 (**Code**, `ai.rs`). At 16 seats the
 match is already at the host target with no actors, so 16-player
 Firefight needs either an unpacked host with a whole core or the object
 and animation phases of [sim-rewrite.md](../engine/sim-rewrite.md).
-Clients pay only for the bodies, as they do for 16 more players.
+P5 sets the 16-seat cap from the measured p99 on the intended Firefight
+host class. The 16-player playlist opens only once that configuration
+meets the 28 ms p99 target at its chosen live-actor cap. Clients pay for
+the replicated bodies.
 
 ## Join in progress
 
@@ -261,7 +320,7 @@ keeps mirrors, schedules and the capability mark.
 | Squad place and erase entry | `crates/extensions/game/src/actor_net/squads.rs` | the "squad place" sink (F11) | waves |
 | Actor channel | `crates/live/actor-net`, `actor_net/` | puppets in host-replicated sessions (F15) | the same |
 | Sectors on a multiplayer map | `pathfind::generate`, called by the kit builder | "sectors at materialise" (F11) | [firefight.md](firefight.md), "The kit" |
-| Probes | `net.replication`, `world.ai` | F3's replication and AI questions | probes P1 to P6 |
+| Probes | `net.replication`, `world.ai` | F3's replication and AI questions | probes P1 to P7 |
 
 ## Interfaces
 
@@ -270,6 +329,7 @@ keeps mirrors, schedules and the capability mark.
 | Method | Access | Purpose |
 |---|---|---|
 | `net.replication` | read | the simulation world's mode, objects by kind with and without an entity, cumulative events queued by type, cumulative datagram and byte counters ([agent-api.md](../runtime/agent-api.md#netreplication)) |
+| `net.replication` creature fields (AN12) | read | `creature_type`: registered slot or null. `creatures`: `{entity, type, object, updates}` per live creature entity. `object` is the local salted object handle and `updates` counts sent updates on the host and applied updates on the client for that entity's lifetime. |
 | `world.ai` | read | the actor snapshot; also the two AI globals bytes `ai_update` gates on |
 | `actors.net` (slice AN8) | read | per client: channel bytes a second, keys and deltas sent, records dropped by the budget; on a client: puppets, records waiting, digest mismatches |
 
@@ -281,6 +341,7 @@ keeps mirrors, schedules and the capability mark.
 | `ai_update` | `0x1c83c0` (`AI_UPDATE`) | nothing is hooked; its gate is read |
 | AI globals | `[0x4f55d0]` (`AI_GLOBALS`): `+0` on, `+1` initialised | `world.ai`; Firefight's host sets `+0` |
 | Entity index | object body `+0xd4` | naming actors on the channel |
+| Replication type registration | `0x82240` | AN11 traces the table and its readers. AN12 and AN13 install the creature definition |
 | Dialogue queue entry | `0x20d0c0` (`AI_DIALOGUE_ENQUEUE`, [halo1/ai.md](../halo1/ai.md)) | AN3 observes it for `Line` |
 | Entity to object | not traced; `0xa5930` and `0xa5980` translate event references and are the place to start | AN4 |
 
@@ -299,8 +360,65 @@ and `CLIENT` are the two agent sockets of a System Link pair
 | **P2** | Does AI run on a distributed host on a multiplayer map? | `HOST: maps.test.load firefight-probe`; start the game. `HOST: world.ai` | `globals.on` and `globals.initialised` both true and `actors` non-empty with a `behavior`; if `on` is false, FF4's host switch is needed and the probe is repeated with `world.poke` on the byte |
 | **P3** | What does a client see of an actor? | With P2 running: `CLIENT: sim.objects {kinds: ["biped"]}` twice 30 ticks apart (positions change); `CLIENT: render.capture` while the actor walks, fires, throws and dies; `HOST` and `CLIENT: net.replication` before and after a firefight | which of walk cycle, firing, grenade, melee and death look right decides whether `Control` is built; the host's event counts by type show which events actors raise |
 | **P4** | What do actors cost in bytes? | 16 seats (phantoms, `sim.player.add`), then 0, 8, 16 and 24 actors: `HOST: net.replication`, `wait {map_ticks: 900}`, `HOST: net.replication` | `traffic.sent_bytes` difference over 30 s, per client, per actor count |
-| **P5** | What do actors cost in CPU? | The same four runs: `HOST: host.metrics` and `host.perf` | tick time by actor count; the per-actor slope sets the caps |
+| **P5** | What do actors cost in CPU? | The same four runs. On the intended Firefight host class, take `HOST: host.metrics` after 30 steady gameplay seconds at each count. Read `game_cpu_ms_per_tick_p99` (FF11). Repeat at the chosen cap if it differs from the sampled counts. Keep 16 seats occupied for the confirmation run. | game-thread CPU time by actor count sets the caps. FF13 requires p99 at or below 28 ms at the 16-seat cap |
 | **P6** | Can a machine join a distributed game in progress? | With `H2_FEATURES=+mp-jip-probe` (AN9) on the host: start, then join from the second instance. `HOST: net.replication`; `CLIENT: sim.session`, `sim.objects` | the client reaches `mp_client` and its object counts match the host's entity counts |
+| **P7** | Does the reserved creature slot carry a creation and a movement update while stock replication continues? | Run [the creature slot probe](#creature-slot-probe) on System Link | both peers observe the same new creature entity of the AN11 type, the client receives its motion, and player entities continue updating |
+
+### Creature slot probe
+
+AN12 supplies the minimal definition needed for P7. It carries a
+definition index and initial transform on creation and position on update.
+Run a control pair on h2recomp without that definition, then a candidate
+pair with the definition and the same replication version on both peers.
+Use the same two-player distributed Slayer setup for both. Each machine
+loads the same locally built map with a resolvable `crea` definition, no
+creature placements and a clear drop point high enough for the host to
+observe motion across several update periods. Fix the definition, drop
+coordinates and yaw across trials and keep the disc-specific values in
+the coordinator's private fixture.
+
+Use the following RPCs through `h2 agent --socket <path> <method> '<JSON>'`.
+The pair starts in gameplay, with the host and client on distinct sockets.
+
+1. On both, call `session.methods {}`, then
+   `session.wait {"until":{"phase":"gameplay","map_ticks":300},"timeout_ms":30000}`.
+   Call `net.replication {}` and require `dist-server` on the host and
+   `dist-client` on the client. Confirm the candidate reports the AN11
+   slot in `creature_type` on both peers and empty `creatures` arrays.
+2. On both, record `sim.objects {"kinds":["crea","bipd"]}` and
+   `net.replication {}`. Wait on the host with
+   `session.wait {"until":{"ticks":30},"timeout_ms":10000}`, then repeat
+   `net.replication {}` on both for an empty-window traffic baseline.
+   Treat an absent `objects.crea` count as zero.
+3. On the host, call `sim.spawn` with
+   `{"tag":"crea:<local definition>","pos":[x,y,z],"yaw":0}` using the
+   drop point, and save the returned `object` and `pos`. As soon as it
+   answers, call `net.replication {}` and
+   `sim.objects {"kinds":["crea","bipd"]}` on both. Then wait on the host
+   with `session.wait {"until":{"ticks":30},"timeout_ms":10000}` and take
+   the two reads on both again. Wait a further 120 ticks with
+   `session.wait {"until":{"ticks":120},"timeout_ms":10000}` and repeat
+   both reads. Use the returned spawn position and the later snapshots
+   to check that the replica follows the drop and settles at the host
+   position within the probe codec's precision.
+4. In the candidate, require `objects.crea.with_entity` and the client's
+   `objects.crea.objects` each to rise by one. Require the same `entity`
+   and AN11 `type` in both `creatures` arrays, with each `object`
+   matching its own peer's `sim.objects` row. The client's `updates`
+   must show at least one applied update. To check stock replication in
+   the candidate run, move the host's local biped on clear ground with
+   `sim.state.set {"player":"player.0","pos":[x,y,z]}`, wait another 30
+   ticks with the same RPC, and check `sim.objects {"kinds":["bipd"]}` on
+   the client for the new position. Use a normal host with a local
+   player for this check.
+5. Compare the control and candidate at the same tick intervals. Record
+   the count and position changes, and the host send and client receive
+   byte deltas divided by elapsed ticks at 30 Hz. Record aggregate
+   datagram bytes as such. Establish the creature's encoded sizes
+   separately with the probe's synthetic packets.
+
+The mixed-version check is a lobby test with synthetic peers in AN12.
+P7 uses matched pairs so no old peer receives a creature update.
 
 ## Slices
 
@@ -320,10 +438,14 @@ under a day, M one to three days, L a week.
 | **AN8** | `actors.net`, its doc section and `h2 agent` examples | S | AN3, AN4, AN5 | `crates/extensions/agent/src/actors.rs`, `agent-api.md` | `host_reports_per_client_rates`, `client_reports_puppets_and_waiting` | the method answers on a fake host and a fake client |
 | **AN9** | `mp-jip-probe`: lift the in-game join refusal on a distributed host behind a feature, log each stage | S | P1 | `crates/extensions/game/src/mp_jip_probe.rs` | `the_refusal_is_lifted_only_for_a_distributed_session_with_the_feature_on` | P6 can be run |
 | **AN10** | Distributed join in progress, built from P6's answer | M | AN9, P6 | decided by P6 | decided by P6 | a third fake peer joining gets a `Key` and equal puppet tables |
+| **AN11** | Static read of creature registration: the 16 spare slots, table walks and bounds, serializers and unknown-type receive path | M | nothing | [notes/ai-networking.md](notes/ai-networking.md#creature-slot-research) | `entity_table_bounds_trace`, `entity_type_codec_trace`, `unknown_type_receive_trace` (static checks) | the notes justify a usable slot and its registration contract, or identify the exact bound that blocks it. They show whether an unextended client rejects the update and at which check |
+| **AN12** | P7: minimal creature definition and registration, session version check, agent readout for the selected type and its live entities | M | AN11 identifies a usable slot, AN0, P1 | planned `crates/extensions/game/src/actor_net/creature.rs`; `crates/hooking/guest-layout/src/points.rs`; `crates/live/live-hle/` and the guest session join check; `crates/extensions/agent/src/net.rs`; [agent-api.md](../runtime/agent-api.md#netreplication) | `probe_definition_uses_the_selected_slot`, `probe_creation_and_position_round_trip`, `creature_entities_report_objects_and_updates`, `mixed_versions_are_refused_before_replication` | P7 shows creature creation and position updates on both peers with stock player replication intact. Synthetic Live and System Link joins refuse either direction of a mixed-version pair before entity traffic |
+| **AN13** | Creature entity: full creation, masked updates and removal, host authority, scheduling and bandwidth | L | AN12, P7 passes | planned `crates/extensions/game/src/actor_net/creature.rs` and `crates/extensions/game/src/actor_net/creature_wire.rs`; `crates/hooking/guest-layout/src/points.rs`; `crates/apps/boot/src/registration.rs` | `creature_create_update_delete_round_trip`, `a_creation_resolves_only_a_local_crea_tag`, `invalid_masks_and_truncated_packets_leave_state_unchanged`, `unknown_and_stale_entity_updates_are_rejected`, `retail_entities_keep_their_wire_encoding`, `only_the_host_advances_creature_behaviour`, `creature_updates_fit_the_sender_budget`, `the_full_definition_refuses_the_probe_version` | synthetic packets cover lifecycle, field bounds, loss and slot reuse with no stale writes. A 30-second synthetic stream at the design load fits 1 KB/s per peer with the stock entity budget preserved. Both transports use the same definition and version gate |
 
 AN0, AN1, AN2 and AN6 start at once and touch no existing behaviour.
 AN3, AN4 and AN5 follow AN2 in parallel. Probes P1 and P6 need only AN0
-(and AN9); P2 to P5 wait for the probe map.
+(and AN9); P2 to P5 wait for the probe map. AN11 can start alongside AN2.
+Its result gates AN12 and P7 gates AN13.
 
 ## Rules and limits
 
@@ -331,9 +453,8 @@ AN3, AN4 and AN5 follow AN2 in parallel. Probes P1 and P6 need only AN0
 - A distributed session with actors needs every machine on the same map
   package; the capability mark of forge-design.md refuses a joiner
   without it.
-- No creatures in a distributed session.
-- The actor channel is Live-only. On System Link, actors have no
-  dialogue and no posture.
+- Distributed sessions require matching replication protocol versions.
+  Session admission checks the version before accepting entity traffic.
 - Ragdolls and other client-only effects differ between machines.
 - The channel's records name nothing from the disc: ids are indices
   into tables each machine builds from its own map.
@@ -351,7 +472,8 @@ AN3, AN4 and AN5 follow AN2 in parallel. Probes P1 and P6 need only AN0
 
 ## Not verified
 
-- Everything probes P1 to P6 ask.
+- Everything probes P1 to P7 ask, including the creature slot's
+  registration and decode bounds.
 - That generated sectors are accepted by the engine and actors walk on
   them ([pathfinding.md](../formats/pathfinding.md)).
 - Who judges a client's shot at an actor, and with what lag.
