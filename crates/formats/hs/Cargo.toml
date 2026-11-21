@@ -4,6 +4,10 @@ edition.workspace = true
 version.workspace = true
 license.workspace = true
 
+[features]
+# Invented script tables and an invented executable for tests (src/fixture.rs).
+fixture = []
+
 [dependencies]
 map.workspace = true
 xbe.workspace = true

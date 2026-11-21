@@ -124,7 +124,7 @@ field agreed but these, all the statue's own:
 |---|---|---|
 | `scen.object.predicted_resources` | the statue's 8, pinned | the object's model and bitmaps |
 | `hlmt.block_58`, `hlmt.block_84` | the statue's one element each, pinned | empty (retail-valid, above) |
-| `scen.object.unknown_18`, `scen.unknown_bc`, `hlmt.unknown_28`, `unknown_2c`, `unknown_a4`, `unknown_e4` | the statue's values | zero (no retail majority) |
+| `scen.object.unknown_18`, `scen.pathfinding_policy`, `hlmt.unknown_28`, `unknown_2c`, `unknown_a4`, `unknown_e4` | the statue's values | zero (no retail majority) |
 | null references (`bloc`, `shad`, `effe`, `foot`, `phys`, `udlg`) | group word kept, datum null | `0xffffffff` both |
 
 The `coll` was the same tag on both paths. The role words matched the
@@ -205,7 +205,7 @@ retail vehicles byte-identical with no pinned values):
 |---|---|
 | `vehi +0x1f0` `vehicle_type` (`enum16`: tank, jeep, type_2, dropship, hover, flier, turret) | E: objects.md (vehicle type). V: the names by the retail vehicles holding each value: 0 scorpion, 1 warthog, 3 pelican, phantom and gravity throne, 4 ghost, wraith, spectre and creep, 5 banshee, 6 the turrets; none holds 2 |
 | `vehi +0x1c8` seat `label` | V: the scenario's seat-mapping masks select seats by it (`h1scripts::seats`, on 05a) |
-| `vehi +0x284` `snd_ref_284`, `+0x294` `foot_ref_294` (were unknown) | V: objects.md lists snd! and foot here; the group word is `snd!`/none and `foot` and the datum null on every retail vehicle, so the schema could not see them. As unknown spans a fresh tag held zero, which names tag 0 |
+| `vehi +0x284` `suspension_sound`, `+0x294` `foot_ref_294` (were unknown) | V: objects.md lists snd! and foot here; the group word is `snd!`/none and `foot` and the datum null on every retail vehicle, so the schema could not see them. As unknown spans a fresh tag held zero, which names tag 0 |
 
 Proof (`H1_ISO=... H2_DISC=...`):
 
@@ -1191,11 +1191,11 @@ starts from the definition default, then:
   material effects take Halo 1's converted tags, or none
   ([role-audit.md](role-audit.md)).
 - **What a shot and a reload play** (converter version 97): each barrel's
-  firing effects (`barrels.block_e4`, `0x34`) are its Halo 1 trigger's
+  firing effects (`barrels.firing_effects`, `0x34`) are its Halo 1 trigger's
   (`+0x108`, `0x84`: `h1::FiringEffect`), one element per Halo 1
   element, the firing, misfire and empty effects (Halo 1 `+0x24`,
   `+0x34`, `+0x44`) converted with `Converter::effect` (their `snd!`
-  parts with `h1sounds`) into `ref_4`, `ref_c`, `ref_14`
+  parts with `h1sounds`) into `firing_effect`, `misfire_effect`, `empty_effect`
   (`arsenal::FIRING_EFFECT_REFS`); one Halo 1 names as a bare `snd!`
   (the plasma rifle's empty effect) is converted as a sound and named
   as one, which retail's slots also hold. Each magazine's reloading effect
@@ -1205,12 +1205,12 @@ starts from the definition default, then:
   weapon with no counterpart (the vehicle guns) had none and fired
   silent; magazines had no reloading effect. Live (converter version
   83, Blood Gulch, `h2 agent edit get`): each of the eight converted
-  hand weapons' `block_e4` elements was datum for datum a retail
+  hand weapons' `firing_effects` elements was datum for datum a retail
   weapon's, and the three converted vehicle guns had none. V
   (`weapon_sounds_disc`): Halo 1 firing effects hold `effe` or `snd!`
   only at `+0x24/+0x34/+0x44` and `jpt!` only at `+0x54/+0x64/+0x74` on every
-  map; retail's `ref_4..ref_14` hold `effe` or `snd!` and
-  `ref_1c..ref_2c` `jpt!`; on Blood Gulch every weapon's built firing
+  map; retail's `firing_effect`, `misfire_effect` and `empty_effect` hold
+  `effe` or `snd!` and the three damage slots `jpt!`; on Blood Gulch every weapon's built firing
   and reloading effects are Halo 1's by path and play Halo 1's sounds.
   The weapon's own effects and sounds (ready, overheated, detonation,
   light, pickup, zoom, collision) and the chambering effect are Halo 1's
@@ -1235,7 +1235,7 @@ arsenal against Coagulation's counterparts):
 | `proj +0xc8` `collision_radius`, `+0xe0` `maximum_range` | equal to Halo 1's `+0x1a0` on 9 of 10, `+0x1c8` on 3 |
 | `proj +0x100` `detonation_damage`, `+0x118` `super_detonation_damage`, `+0x12c` `attached_super_detonation_damage`, `+0x148` `impact_damage` (`jpt!`) | the retail targets' names (`rocket_launcher_explosion`, `needler_shard_*`, every bullet's damage at `+0x148`) |
 | `jpt! +0x1c` `damage_lower_bound`, `+0x20` `damage_upper_bound` (from, to) | Halo 1's `+0x1d0`, `+0x1d4`: in both games lower <= from <= to on 6 of 8 pairs, all three equal on the sniper rifles |
-| `obje` change colour `+0x8` `block_8` (`0x28`) | filled on the needler shard projectile only |
+| `obje` change colour `+0x8` `functions` (`0x28`) | filled on the needler shard projectile only |
 | `proj +0x19c` `material_responses` (`0x58`): `+0x2` `response`, `+0xc` `material_name`, `+0x10` `material`, `+0x14` `potential_response`, `+0x16` `potential_flags`, `+0x18` `chance`, `+0x1c` `angle_bounds`, `+0x24` `velocity_bounds`, `+0x34` `scale_effects_by`, `+0x38` `angular_noise`, `+0x3c` `velocity_noise`, `+0x48` `initial_friction`, `+0x4c` `maximum_distance`, `+0x50`, `+0x54` frictions | Halo 1's element (`0xa0`) in the same order without its padding; on two bases each of the 179 retail elements' `material` is its name's position in `matg +0x150` and its flags zero; Halo 1's most common response, mapped, is the retail default material's on all 8 Blood Gulch / Coagulation pairs (grenades bounce 4, needle attach 3, rocket and bullets impact 0), Halo 1's water overpenetration is retail's thin liquid 2, and the plasma grenade's attach chance (Halo 1 potential 4, flags 1, skip 0) is retail's (3, 1, chance 1) (`material_responses_pair_with_retail`) |
 | `jmad` first-person modes | every retail first-person graph on Coagulation (34) has the one mode `any` and `+0x54` (`any`, `any`) (`first_person_graphs_take_retail_modes`) |
 | `matg +0x100` grenades (`0x2c`: maximum `+0`, `eqip` `+0x1c`, `proj` `+0x24`); Halo 1's `matg +0x128` (`0x44`: `+0`, `+0x24`, `+0x34`) | element 0 the frag grenade, 1 the plasma grenade on three Halo 2 bases and all eleven Halo 1 maps, and each Halo 1 grenade's `eqip` grenade type its element (`grenade_blocks_pair_across_the_discs`) |

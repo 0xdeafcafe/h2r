@@ -74,6 +74,7 @@ fn ext_changed(a: &Ext, b: &Ext) -> u8 {
         a.secondary != b.secondary,
         a.team_size != b.team_size,
         a.superbounce != b.superbounce,
+        a.script != b.script,
     ];
     fields.iter().position(|&d| d).unwrap_or(fields.len()) as u8
 }

@@ -46,8 +46,17 @@ h1map = { path = "../../tools/h1map" }
 # The converted map card's PNG.
 assets.workspace = true
 map.workspace = true
+# Sound audition (src/app/audition.rs): the ADPCM decoder, the host output
+# (cpal, through the audio crate's DeviceSink) and the WMA decoder, whose
+# tables come from the user's own default.xbe.
+audio = { path = "../../platform/audio" }
+wma = { path = "../../platform/wma" }
 # The tag editor's field registry (schema structure + definition names).
 tags.workspace = true
+# The Scripts tool: the scenario's script tables, decompiled with the
+# source's own default.xbe (docs/editor/rich-editors.md, "Scripts").
+hs.workspace = true
+xbe.workspace = true
 # The UI Screens tool: our game screens' pages, preview and checks
 # (boot::ui_kit; docs/game/ui-builder.md).
 boot.workspace = true
@@ -72,3 +81,5 @@ libc = "0.2"
 hud-edit = { path = "../../tools/hud-edit", features = ["fixture"] }
 # The agent's real server behind an invented game (src/play/tests.rs).
 agent = { path = "../../extensions/agent" }
+# Invented script tables and an invented executable for the Scripts tool.
+hs = { workspace = true, features = ["fixture"] }

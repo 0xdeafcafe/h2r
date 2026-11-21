@@ -265,11 +265,11 @@ fn a10_shield_charger_keeps_its_lamp_four_scrolls_and_power_colours() {
         );
         let path = format!("devi.obje.functions[{k}]");
         assert_eq!(
-            mach.at(&format!("{path}.string_4")),
+            mach.at(&format!("{path}.import_name")),
             Some(&Val::text("power"))
         );
         assert_eq!(mach.at(&format!("{path}.output")), Some(&Val::text(name)));
-        let f = curve(&mach, &format!("{path}.data_14"));
+        let f = curve(&mach, &format!("{path}.default_function"));
         for power in [0.0f32, 0.05, 0.1, 0.49, 0.5, 0.5f32.next_up(), 0.75, 1.0] {
             let want = [
                 (10.0 * power).min(1.0),
@@ -289,15 +289,15 @@ fn a10_shield_charger_keeps_its_lamp_four_scrolls_and_power_colours() {
                     [1.0, 1.0, 1.0, 1.0, warm, warm]
                 ][k]
             );
-            let path = format!("devi.obje.change_colors[{k}].block_8[0]");
+            let path = format!("devi.obje.change_colors[{k}].functions[0]");
             assert_eq!(
-                mach.at(&format!("{path}.string_24")),
+                mach.at(&format!("{path}.scale_by")),
                 Some(&Val::text(name))
             );
             for at in (8..0x20).step_by(4) {
                 assert_eq!(
-                    mach.at(&format!("{path}.unknown_{at:x}")),
-                    Some(&Val::Bytes(src[at..at + 4].to_vec()))
+                    mach.bytes(&format!("{path}.@{at:#x}"), 4),
+                    Some(src[at..at + 4].to_vec())
                 );
             }
         }

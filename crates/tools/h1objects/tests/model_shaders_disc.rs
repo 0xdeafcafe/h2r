@@ -434,23 +434,23 @@ fn bloodgulch_cyborg_and_scorpion_take_change_colours() {
     );
     for k in 0..4 {
         assert_eq!(
-            count(&bipd, &format!("unit.obje.change_colors[{k}].block_0")),
+            count(&bipd, &format!("unit.obje.change_colors[{k}].initial_permutations")),
             0
         );
     }
     let vehi = record(b"vehi", "vehicles\\scorpion\\scorpion_mp");
     assert_eq!(count(&vehi, "unit.obje.change_colors"), 4);
     assert_eq!(
-        count(&vehi, "unit.obje.change_colors[0].block_0"),
+        count(&vehi, "unit.obje.change_colors[0].initial_permutations"),
         1,
         "Halo 1's grey"
     );
-    match vehi.at("unit.obje.change_colors[0].block_0[0].unknown_4") {
-        Some(Val::Bytes(b)) => {
+    match vehi.bytes("unit.obje.change_colors[0].initial_permutations[0].color_lower_bound", 4) {
+        Some(b) => {
             let v = f32::from_le_bytes(b[..4].try_into().unwrap());
             assert!((v - 0.45).abs() < 0.01, "lower red {v}");
         }
-        other => panic!("{other:?}"),
+        None => panic!("no lower bound"),
     }
 }
 

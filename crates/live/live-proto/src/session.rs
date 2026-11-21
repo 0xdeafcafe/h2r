@@ -170,9 +170,23 @@ pub struct NewSession {
     /// host that sends none (System Link, every build before this field).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub variant_ext: Option<VariantExt>,
+    /// The SHA-256 of the rules IR blob the host's next game runs, 64
+    /// lowercase hex digits (docs/game/rules-engine.md, "Carrying a
+    /// script"). Guests fetch the blob by this hash. Left out by a host
+    /// that sends none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rules: Option<String>,
     /// Optional facts for custom game discovery.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub browser: Option<BrowserMetadata>,
+}
+/// The digits of a rules IR hash ([`NewSession::rules`]): a SHA-256.
+pub const RULES_HASH_LEN: usize = 64;
+/// Whether `s` is a rules IR hash: 64 lowercase hex digits.
+pub fn valid_rules_hash(s: &str) -> bool {
+    s.len() == RULES_HASH_LEN
+        && s.bytes()
+            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
 }
 /// The bytes of a variant's extension block ([`VariantExt::block`]).
 pub const VARIANT_EXT_LEN: usize = 0x24;
@@ -316,6 +330,10 @@ pub struct Update {
     /// absent keeps them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub variant_ext: Option<VariantExt>,
+    /// The rules IR hash for the next game ([`NewSession::rules`]); absent
+    /// keeps it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rules: Option<String>,
     /// Replaces all browser metadata. An empty object clears it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub browser: Option<BrowserMetadata>,
@@ -378,6 +396,9 @@ impl NewSession {
         }
         if let Some(v) = &self.variant_ext {
             v.validate()?;
+        }
+        if self.rules.as_deref().is_some_and(|r| !valid_rules_hash(r)) {
+            return Err("rules is a 64-digit SHA-256, lowercase hex".into());
         }
         if let Some(c) = &self.campaign {
             if !self.is_coop() {
@@ -508,6 +529,9 @@ impl Session {
         if let Some(v) = &u.variant_ext {
             next.variant_ext = Some(v.clone());
         }
+        if let Some(v) = &u.rules {
+            next.rules = Some(v.clone());
+        }
         if let Some(browser) = &u.browser {
             next.browser = (browser != &BrowserMetadata::default()).then(|| browser.clone());
         }
@@ -603,6 +627,7 @@ mod tests {
             campaign: None,
             ping_ms: None,
             variant_ext: None,
+            rules: None,
             browser: None,
         }
     }
@@ -830,6 +855,44 @@ mod tests {
             s.apply(UPDATED, &json!({"variant_ext": {"block": "1", "key": "2"}}), "", 104)
                 .is_err()
         );
+    }
+    #[test]
+    fn rules_hash_is_optional_checked_and_updated() {
+        let old = json!({"addr":null,"port":3074,"host_address":vec![0u8;36],
+            "slots":{"public_filled":1,"public_open":7,"private_filled":0,"private_open":0},
+            "attributes":{},"map":"lockout"});
+        let n: NewSession = serde_json::from_value(old.clone()).unwrap();
+        assert_eq!(n.rules, None);
+        assert!(serde_json::to_value(&n).unwrap().get("rules").is_none());
+        let hash = "ab".repeat(32);
+        let mut with = old;
+        with["rules"] = json!(hash);
+        let n: NewSession = serde_json::from_value(with.clone()).unwrap();
+        assert_eq!(n.validate(), Ok(()));
+        assert_eq!(n.rules.as_deref(), Some(hash.as_str()));
+        for bad in [
+            "".to_string(),
+            "ab".repeat(31),
+            "ab".repeat(33),
+            "AB".repeat(32),
+            "zz".repeat(32),
+        ] {
+            with["rules"] = json!(bad);
+            let n: NewSession = serde_json::from_value(with.clone()).unwrap();
+            assert!(n.validate().is_err(), "{bad}");
+        }
+        // Updates: absent keeps it, a new one replaces it, a bad one fails.
+        let mut s = session("observed", "203.0.113.5", Visibility::Public);
+        let up = serde_json::to_value(Update {
+            rules: Some(hash.clone()),
+            ..Default::default()
+        })
+        .unwrap();
+        assert!(s.apply(UPDATED, &up, "", 102).unwrap());
+        assert_eq!(s.advertisement.rules.as_deref(), Some(hash.as_str()));
+        assert!(!s.apply(UPDATED, &json!({}), "", 103).unwrap());
+        assert_eq!(s.advertisement.rules.as_deref(), Some(hash.as_str()));
+        assert!(s.apply(UPDATED, &json!({"rules": "abc"}), "", 104).is_err());
     }
     #[test]
     fn skulls_are_optional_checked_and_updated() {

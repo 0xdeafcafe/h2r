@@ -1002,6 +1002,7 @@ dependencies = [
  "firefight-kit",
  "flate2",
  "font",
+ "forge",
  "forge-build",
  "gltf",
  "h1-assets",
@@ -1032,6 +1033,7 @@ dependencies = [
  "perf",
  "png",
  "ring",
+ "rules",
  "rustls",
  "scenario-edit",
  "serde",
@@ -2180,6 +2182,9 @@ version = "0.1.0"
 dependencies = [
  "content",
  "forge-doc",
+ "serde",
+ "serde_json",
+ "settings",
 ]
 
 [[package]]
@@ -3911,6 +3916,7 @@ dependencies = [
  "hooks",
  "input",
  "runtime",
+ "sim-ext",
  "xapi",
 ]
 
@@ -5577,6 +5583,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "rules"
+version = "0.1.0"
+dependencies = [
+ "content",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "runtime"
 version = "0.1.0"
 dependencies = [
@@ -6266,6 +6282,7 @@ dependencies = [
  "hooks",
  "lifted",
  "runtime",
+ "sim-ext",
 ]
 
 [[package]]
@@ -6282,6 +6299,10 @@ dependencies = [
  "simd",
  "x87",
 ]
+
+[[package]]
+name = "sim-ext"
+version = "0.1.0"
 
 [[package]]
 name = "sim-objects"
@@ -6725,6 +6746,7 @@ dependencies = [
  "anyhow",
  "app-icon",
  "assets",
+ "audio",
  "boot",
  "content",
  "dear-imgui-rs",
@@ -6739,6 +6761,7 @@ dependencies = [
  "h1map",
  "h1objects",
  "hopper-edit",
+ "hs",
  "hud-edit",
  "libc",
  "live-mirror",
@@ -6756,6 +6779,8 @@ dependencies = [
  "vfs",
  "wgpu",
  "winit",
+ "wma",
+ "xbe",
 ]
 
 [[package]]

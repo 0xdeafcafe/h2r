@@ -34,10 +34,11 @@ pub fn parse_doc(d: &str) -> Result<ToolKind, RpcError> {
         "ui" | "ui-screens" => ToolKind::UiScreens,
         "tags" => ToolKind::Tags,
         "hud" => ToolKind::Hud,
+        "scripts" => ToolKind::Scripts,
         other => {
             return Err(err(
                 code::INVALID_PARAMS,
-                format!("no document {other:?} (map, tags, variant, playlists, ui, hud)"),
+                format!("no document {other:?} (map, tags, scripts, variant, playlists, ui, hud)"),
             ));
         }
     })
@@ -51,6 +52,7 @@ pub fn doc_name(t: ToolKind) -> &'static str {
         ToolKind::UiScreens => "ui",
         ToolKind::Tags => "tags",
         ToolKind::Hud => "hud",
+        ToolKind::Scripts => "scripts",
     }
 }
 
@@ -62,6 +64,7 @@ fn is_open(app: &App, t: ToolKind) -> bool {
         ToolKind::UiScreens => app.ui_screens.pick.is_some(),
         ToolKind::Tags => app.session.is_open(),
         ToolKind::Hud => app.hud.session.is_some(),
+        ToolKind::Scripts => app.scripts_loaded().is_ok(),
     }
 }
 
@@ -78,7 +81,7 @@ fn can(app: &App, t: ToolKind) -> (bool, bool) {
             .as_ref()
             .map_or((false, false), |e| (e.can_undo(), e.can_redo())),
         ToolKind::Playlists => (app.hoppers.can_undo(), app.hoppers.can_redo()),
-        ToolKind::UiScreens => (false, false),
+        ToolKind::UiScreens | ToolKind::Scripts => (false, false),
         ToolKind::Tags => (app.tags.can_undo(), app.tags.can_redo()),
         ToolKind::Hud => app
             .hud
@@ -108,6 +111,7 @@ fn name_of(app: &App, t: ToolKind) -> Option<String> {
             Some(h) => format!("{} / {}", s.name, h.name),
             None => s.name.clone(),
         }),
+        ToolKind::Scripts => app.scripts_loaded().ok().map(|l| l.map.clone()),
     }
 }
 
@@ -358,6 +362,9 @@ pub fn game_type(t: &str) -> Result<GameType, RpcError> {
         })
 }
 
+/// The Scripts tool writes nothing (docs/editor/rich-editors.md, slice H3).
+const SCRIPTS_READ_ONLY: &str = "the Scripts tool is read only: it saves nothing";
+
 /// Tag edits save and diff with the map: the session writes them.
 fn map_for_tags(t: ToolKind) -> ToolKind {
     match t {
@@ -416,6 +423,7 @@ fn save(app: &mut App, t: ToolKind) -> Reply {
             code::REFUSED,
             "UI screens have nothing to save: ui.render writes a PNG",
         )),
+        ToolKind::Scripts => Err(err(code::REFUSED, SCRIPTS_READ_ONLY)),
         ToolKind::Hud => match app.hud.session.as_ref().and_then(|s| s.saved_path.clone()) {
             Some(path) => save_as(app, t, path),
             None => Err(err(
@@ -450,6 +458,7 @@ fn save_as(app: &mut App, t: ToolKind, path: PathBuf) -> Reply {
                 "UI screens save nothing: ui.render writes a PNG",
             ));
         }
+        ToolKind::Scripts => return Err(err(code::REFUSED, SCRIPTS_READ_ONLY)),
     };
     if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
         std::fs::create_dir_all(dir)
@@ -573,6 +582,7 @@ fn diff(app: &mut App, t: ToolKind) -> Reply {
             Ok(json!({ "doc": "variant", "dirty": dirty, "changed_from_defaults": changed }))
         }
         ToolKind::UiScreens => Ok(json!({ "doc": "ui", "dirty": false })),
+        ToolKind::Scripts => Ok(json!({ "doc": "scripts", "dirty": false })),
         ToolKind::Hud => super::hud::diff(app),
     }
 }

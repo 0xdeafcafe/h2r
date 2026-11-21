@@ -1,15 +1,64 @@
 //! One local player's Objects and Links tools. Only confirming a preview or
 //! a link's second end produces an edit.
+use std::sync::Arc;
+
 use crate::{BlockKind, Frame, Linkable, Session, camera::Camera};
 use forge_doc::OpId;
 
 /// Full stick deflection, in radians per second for look or object rotation.
 pub const TURN_RATE: f32 = 2.4;
 /// Full stick deflection while manipulating, in world units per second that
-/// a held object is pushed away or pulled in.
+/// a held or new object is pushed away or pulled in. It is never pushed past
+/// a nearer wall nor pulled nearer than [`Extent::near`].
 pub const PUSH_RATE: f32 = 6.0;
-/// The nearest a held object is pulled in.
-pub const MIN_DISTANCE: f32 = 0.5;
+/// The furthest an object is carried, in world units.
+pub const MAX_HOLD: f32 = 80.0;
+
+/// A new object is carried this many of its reaches ([`Extent::reach`])
+/// in front of the camera, as Halo 3's Forge holds an object: whole in
+/// view, with the world around it.
+pub const HOLD_RADII: f32 = 2.5;
+/// The nearest a held object is carried, in world units.
+pub const MIN_HOLD: f32 = 1.0;
+/// The gap kept between the camera and a held object's bounding sphere,
+/// in world units, so the near plane never cuts it.
+pub const NEAR_GAP: f32 = 0.25;
+
+/// A palette item's bounding sphere, from its object definition: the
+/// radius and the centre's offset from the object's origin in its own
+/// axes, in world units.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Extent {
+    pub radius: f32,
+    pub offset: [f32; 3],
+}
+
+impl Default for Extent {
+    /// What a tool with no definition data carries: a half-unit sphere.
+    fn default() -> Self {
+        Self {
+            radius: 0.5,
+            offset: [0.; 3],
+        }
+    }
+}
+
+impl Extent {
+    /// The furthest the sphere reaches from the object's origin.
+    pub fn reach(self) -> f32 {
+        self.radius + self.offset.iter().map(|v| v * v).sum::<f32>().sqrt()
+    }
+
+    /// How far in front of the camera the object is carried.
+    pub fn hold(self) -> f32 {
+        (HOLD_RADII * self.reach()).max(MIN_HOLD)
+    }
+
+    /// The nearest the object may come, so the camera stays outside it.
+    pub fn near(self) -> f32 {
+        (self.reach() + NEAR_GAP).min(self.hold())
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Action {
@@ -105,10 +154,16 @@ pub struct Tool {
     /// Degrees between turn snaps.
     rotation_step: f32,
     rotation: [f32; 3],
+    /// Each palette item's bounding sphere, in palette order.
+    extents: Arc<[Extent]>,
     /// Orientation on pickup. Snap the *delta* so picking up never changes orientation.
     initial_rotation: [f32; 3],
-    /// Offset from the aim point. Preserves the exact position on pickup.
+    /// Offset from the aim point along the camera's forward, right and up,
+    /// so a held object turns with the view and keeps its place in it.
     offset: [f32; 3],
+    /// How far in front of the camera the object is carried: its
+    /// [`Extent::hold`] for a new one, where it was taken for a picked-up
+    /// one, then pushed and pulled.
     distance: f32,
 }
 
@@ -126,6 +181,7 @@ impl Default for Tool {
             link_from: None,
             rotation_step: 15.0,
             rotation: [0.; 3],
+            extents: Arc::from(Vec::new()),
             initial_rotation: [0.; 3],
             offset: [0.; 3],
             distance: 4.0,
@@ -134,9 +190,32 @@ impl Default for Tool {
 }
 
 impl Tool {
+    /// A tool whose palette items have these bounding spheres, in palette
+    /// order. An item without one carries [`Extent::default`].
+    pub fn with_extents(extents: Arc<[Extent]>) -> Self {
+        Self {
+            extents,
+            ..Self::default()
+        }
+    }
+
+    /// The bounding sphere of what is placed or held, if anything.
+    pub fn extent(&self, session: &Session) -> Option<Extent> {
+        let index = match (self.placing, self.held) {
+            (Some(index), _) => index,
+            (None, Some(id)) => {
+                let obj = session.objects().iter().find(|o| o.id == id)?;
+                session.palette().iter().position(|p| *p == obj.item)?
+            }
+            (None, None) => return None,
+        };
+        Some(self.extents.get(index).copied().unwrap_or_default())
+    }
+
     pub fn select(&mut self, index: usize) {
         self.cancel();
         self.placing = Some(index);
+        self.distance = self.extents.get(index).copied().unwrap_or_default().hold();
     }
 
     /// Chooses the tool: the Links tool, or the Objects tool.
@@ -242,24 +321,23 @@ impl Tool {
             return Ok(None);
         }
         let previewing = self.placing.is_some() || self.held.is_some();
+        let extent = self.extent(session).unwrap_or_default();
         let mut hit = None;
         if let Some(camera) = &mut self.camera {
             let turning = previewing && input.rotating;
+            // Manipulating: the left stick's forward axis pushes the object
+            // away and pulls it in.
+            let mut push = 0.;
             if turning {
                 self.rotation[0] += input.look[0];
                 self.rotation[1] += input.look[1];
                 self.rotation[2] += input.roll;
-                // Manipulating: the left stick's forward axis pushes a held
-                // object away and pulls it in.
-                if self.held.is_some() {
-                    let push = input.movement[1] * PUSH_RATE * input.seconds.clamp(0., 0.1);
-                    self.distance = (self.distance + push).clamp(MIN_DISTANCE, 80.);
-                }
+                push = input.movement[1] * PUSH_RATE * input.seconds.clamp(0., 0.1);
             } else {
                 camera.fly(input.movement, input.look, input.seconds.clamp(0., 0.1));
             }
             let surface = surface(*camera).filter(|d| d.is_finite() && *d >= 0.);
-            let max_distance = surface.unwrap_or(80.).min(80.);
+            let max_distance = surface.unwrap_or(MAX_HOLD).min(MAX_HOLD);
             let forward = camera.forward();
             hit = session
                 .objects()
@@ -271,15 +349,24 @@ impl Tool {
                 .min_by(|a, b| a.1.total_cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
             self.aimed = hit.map(|(id, _)| id);
             if previewing {
-                let distance = if self.placing.is_some() {
-                    surface.unwrap_or(self.distance)
-                } else {
-                    self.distance.min(max_distance)
-                };
+                // A new object is carried at its hold distance and a
+                // picked-up one where it was taken, each pushed and pulled
+                // from there, pulled in to a nearer wall but never nearer
+                // than its own sphere allows, so it never fills the view.
+                let near = extent.near();
+                let carried = |d: f32| d.min(max_distance).max(near);
+                // A push or pull moves it from where it shows, so pushing
+                // stops at the wall rather than building up behind it, and
+                // with no push a wall pulls it in only while it is there.
+                if push != 0. {
+                    self.distance = carried(carried(self.distance) + push);
+                }
+                let distance = carried(self.distance);
                 let pos = camera.point(distance);
+                let offset = camera.to_world(self.offset);
                 let step = self.rotation_step.to_radians();
                 self.ghost = Some(Frame {
-                    position: std::array::from_fn(|i| pos[i] + self.offset[i]),
+                    position: std::array::from_fn(|i| pos[i] + offset[i]),
                     rotation: std::array::from_fn(|i| {
                         self.initial_rotation[i] + (self.rotation[i] / step).round() * step
                     }),
@@ -312,10 +399,20 @@ impl Tool {
                         .iter()
                         .find(|o| o.id == id)
                         .ok_or("Object is no longer present")?;
+                    let near = session
+                        .palette()
+                        .iter()
+                        .position(|p| *p == obj.item)
+                        .and_then(|i| self.extents.get(i))
+                        .copied()
+                        .unwrap_or_default()
+                        .near();
+                    let distance = distance.max(near);
                     self.held = Some(id);
                     self.distance = distance;
                     let p = camera.point(distance);
-                    self.offset = std::array::from_fn(|i| obj.frame.position[i] - p[i]);
+                    self.offset =
+                        camera.to_local(std::array::from_fn(|i| obj.frame.position[i] - p[i]));
                     self.initial_rotation = obj.frame.rotation;
                     self.ghost = Some(obj.frame);
                     None

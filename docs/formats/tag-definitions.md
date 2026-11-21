@@ -4,9 +4,7 @@ Status: Built. The disc checks under “Proof” cover the groups in the results
 Code: `crates/formats/tags/src/defs.rs` and `crates/formats/tags/src/defs/*.txt`.
 Evidence labels are those of [map-format.md](map-format.md): **E** engine
 code, **V** checked on the owner's disc, **D** a naming or interpretation
-choice made here. **A Halo2Xbox** identifies a retail Assembly reference,
-**A Halo2** the retail plugin Assembly reads for an Xbox map when
-`Halo2Xbox` has none.
+choice made here.
 
 The Halo 1 converter writes scenery, vehicles, bipeds, devices, physics
 models, effects, weapons and particles from these definitions. That
@@ -29,14 +27,13 @@ written from a definition has a defined value in every byte.
 
 ## Rules
 
-- Names and descriptions are written here. A field named with reference
-  to Assembly carries `-- A Halo2Xbox <filename>` or `-- A Halo2
-  <filename>`. Its type and extent
-  must agree with the local layout. The reference, permission and
-  retained disagreements are in [the field-name note](../editor/notes/tag-field-names.md).
-- **A name needs evidence.** A field whose type is known but not its role
-  (a reference, a string ID, a block found by the schema) gets a name
-  ending in `_<offset in hex>`: `string_1c`, `foot_ref_54`, `block_5c`.
+- Names and descriptions are written here, in our words. A name carries
+  no source label. A field's type and extent must agree with the local
+  layout. The names' reference, permission and the disagreements kept
+  are in [the field-name note](../editor/notes/tag-field-names.md).
+- **A name needs a known role.** A field whose type is known but not its
+  role (a reference, a string ID, a block found by the schema) gets a name
+  ending in `_<offset in hex>`: `string_1c`, `phys_ref_18`, `block_5c`.
   The coverage report counts those as **typed**, not **named**.
 - **No retail values at length.** Files record offsets, types and names.
   `seen=` summarises an unknown span's retail values as `zero`, `const`,
@@ -194,6 +191,18 @@ rec.at("object.functions[0].output"); rec.set("object.bounding_radius", Val::Flo
   Encoding shares exactly those arrays, and shares fresh records with
   equal content. `share` is layout, not value: equality and `diff`
   ignore it.
+- **Raw bytes into typed fields.** `Record::set` with `Val::Bytes` also
+  writes over typed fields: from the field the path names, the bytes fill
+  as many consecutive plain fields (integers, floats, enums, flags,
+  unknown spans) as they cover, and each field reads them back as its own
+  type, bit for bit. The path's last part is a field name, a name and a
+  byte offset into it (`pitch_range+0x4`), or a byte offset in the
+  element (`@0x38`). Bytes that cover a reference, string or block, or
+  run past the element, are an error. `Record::bytes(path, len)` reads
+  the same span back. The Halo 1 converter writes its raw words this way,
+  so naming a field it writes does not change its output. Records from
+  `decode`, `from_built` and `default_record` carry the field offsets for
+  this; a `Record::new` has none.
 - **Builder trees.** `from_built` reads a reference fixup's group word as
   the builder will write it: null as `0xffffffff`, a target's group as 0.
   The builder fills in the target's group itself, so a template's stale
@@ -292,12 +301,12 @@ summary:
   - V: widgets, change colours, predicted resources (each element's `+4`
     an existing tag), the `weap` magazines and barrels (strides and the
     barrel's `proj` reference, [objects.md](../halo1/objects.md) V2).
-  - The `weap` aim-assist floats (`+0x208..+0x218`) stay unknown here.
-    Their offsets are E (`0x1a50a0`); [aim-assist.md](../game/aim-assist.md)
-    labels them by those reads (`cone_angle`, `cone_range`, `pull_angle`,
-    `pull_range`, `bend_angle`).
-    The heat, magazine and barrel scalars are `S` in docs/halo1/objects.md, so
-    they stay unknown too.
+  - The other object-family names (the `weap` heat, aim-assist, magazine
+    and barrel scalars, the `vehi` seats, gears and physics points, the
+    `bipd` movement and shapes, `proj`, `jpt!`) match the layouts the
+    [field-name note](../editor/notes/tag-field-names.md) records. The
+    `weap` aim-assist offsets are E (`0x1a50a0`);
+    [aim-assist.md](../game/aim-assist.md) describes them by those reads.
 - **`hlmt`**:
   - E: the model chain (`object_new`), variants (`0x0016d1bb`, region
     map `0x0016d764`), regions (`0x0016d205`).

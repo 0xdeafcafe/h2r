@@ -1185,6 +1185,7 @@ mod tests {
             campaign: None,
             ping_ms: None,
             variant_ext: None,
+            rules: None,
             browser: None,
         })
         .unwrap();

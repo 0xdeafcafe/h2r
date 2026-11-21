@@ -30,6 +30,8 @@ pub struct TagsUi {
     opened_for: Option<String>,
     scenario: ScenarioOutliner,
     pub panel: PanelState,
+    /// The navigation's field last focused in the panel.
+    focus: Option<(TagId, String)>,
     /// By group or by path.
     pub arrange: Arrange,
     /// Export the tags the selected one references too.
@@ -521,7 +523,7 @@ pub fn fields(
     let Some(id) = doc.selected else {
         ui.text_wrapped(
             "Pick a tag on the left. Every field is shown: named ones by their name, the \
-             rest by their offset and the type their bytes suggest. Edits save with the map \
+             rest by their type and offset under Unnamed fields. Edits save with the map \
              (File, Save map as / Save as package). Import a tag bundle here to replace a \
              tag of the open map.",
         );
@@ -531,55 +533,46 @@ pub fn fields(
         return;
     };
     let Some(t) = doc.tag(id) else { return };
-    let f = ui.push_font(fonts.title);
-    ui.text(format!("{}  {}", group_text(t.group), t.name));
-    f.pop();
-    ui.text_disabled(format!(
-        "{:#010x}  at {:#010x}, {} bytes{}",
-        t.id.0,
-        t.address,
-        t.size,
-        if doc.is_changed(id) { "  *edited" } else { "" }
-    ));
-    if let Some(m) = app.browsing() {
-        ui.text_disabled(format!("{} in {m}, browsed read-only", icon::DISC));
-    }
-    if let Some(bsp) = tag_tree::bsp_label(t) {
-        ui.text_disabled(bsp);
-    }
-    if let Some(line) = app.tag_shared_note(id) {
-        ui.text_disabled(format!("{} {line}", icon::LAYERS));
-    }
-    match &t.access {
-        Access::Edit => {}
-        Access::Read(why) => {
-            ui.text_colored(theme::WARN, format!("{} Read-only: {why}.", icon::ALERT));
-        }
-        Access::None(why) => {
-            ui.text_colored(theme::WARN, format!("{} {why}.", icon::ALERT));
-            if let Some(m) = &t.elsewhere
-                && ui.button(format!("{} Show it in {m}", icon::EYE))
-            {
-                actions.push(Action::BrowseTags(Some(m.clone())));
+    for line in header_top(app, t) {
+        let text = match line.icon {
+            Some(glyph) => format!("{glyph} {}", line.text),
+            None => line.text,
+        };
+        match line.tone {
+            Tone::Title => {
+                let f = ui.push_font(fonts.title);
+                ui.text(text);
+                f.pop();
             }
-            return;
+            Tone::Note => ui.text_disabled(text),
+            Tone::Warn => ui.text_colored(theme::WARN, text),
         }
+    }
+    if let Access::None(_) = &t.access {
+        if let Some(m) = &t.elsewhere
+            && ui.button(format!("{} Show it in {m}", icon::EYE))
+        {
+            actions.push(Action::BrowseTags(Some(m.clone())));
+        }
+        return;
     }
     io_bar(ui, app, st, t, dialogs, actions);
-    if let Some(layout) = doc.layout(id) {
-        let c = layout.coverage();
-        ui.text_disabled(format!(
-            "layout {}: {} named fields, {} by offset",
-            layout.name, c.named_fields, c.unnamed_fields
-        ));
+    st.panel.follow(app);
+    if let Some(line) = coverage(doc, id) {
+        let mut settings = st.panel.settings.clone();
+        if ui.checkbox("Show unnamed fields", &mut settings.unnamed) {
+            st.panel.set_settings(settings);
+        }
+        if ui.is_item_hovered() {
+            ui.set_item_tooltip("Open every element's Unnamed fields group");
+        }
         ui.same_line();
-        ui.checkbox("padding", &mut st.panel.show_pad);
+        ui.text_disabled(line);
     } else {
         // No layout: the bytes only.
         if t.bsp.is_some() {
             if let Some(bytes) = doc.read_source(id, t.address, t.size) {
-                ui.child_window("##bsp-bytes")
-                    .build(ui, || bsp_hex(ui, bytes));
+                theme::panel_body(ui, "##bsp-bytes", || bsp_hex(ui, bytes));
             }
         } else if let Some(b) = doc.read(id, t.address, t.size.min(4096)) {
             ui.text(fields::hex_lines(&b));
@@ -605,21 +598,132 @@ pub fn fields(
         inspector::issues(app)
     };
     let mut resolution = None;
-    ui.child_window("##fields").build(ui, || {
-        fields::panel_with_marks(
-            ui,
-            doc,
-            id,
-            &[],
-            &mut st.panel,
-            actions,
-            fields::PanelRoot::Tags(scene),
-            &mut inspector::tag_field_marks(ui, issues, &mut resolution),
-        );
-    });
+    // A field the navigation names (nav.go, tag.view) is focused once.
+    let want = match app.browsing() {
+        None => {
+            let location = app.nav_location();
+            location.tag().filter(|&tag| tag == id).zip(location.path)
+        }
+        Some(_) => None,
+    };
+    if st.focus != want {
+        st.panel.clear_field_focus();
+        if let Some((tag, path)) = &want
+            && let Ok(field) = tag_api::field_focus(doc, *tag, path)
+        {
+            st.panel.focus_field(*tag, field);
+        }
+        st.focus = want;
+    }
+    // Nothing is pinned over the rows: the header scrolls with them, in
+    // the window (docs/editor/tag-editing.md, "Panels on short windows").
+    fields::panel_with_marks(
+        ui,
+        doc,
+        id,
+        &[],
+        &mut st.panel,
+        actions,
+        fields::PanelRoot::Tags(scene),
+        &mut inspector::tag_field_marks(ui, issues, &mut resolution),
+    );
     if let Some(action) = resolution {
         app.pairing.requests.push(Request::Apply(action));
     }
+    st.panel.store(app);
+}
+
+/// How a header line is drawn.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Tone {
+    Title,
+    Note,
+    Warn,
+}
+
+pub(crate) struct HeaderLine {
+    pub tone: Tone,
+    pub icon: Option<&'static str>,
+    pub text: String,
+}
+
+/// The header's lines over the selected tag's fields, before the export
+/// bar: its kind and name, its datum, address and size, where it is
+/// browsed, its BSP, its shared-map note and why it is read-only.
+pub(crate) fn header_top(app: &App, t: &TagEntry) -> Vec<HeaderLine> {
+    let doc = app.shown_tags();
+    let line = |tone, glyph, text| HeaderLine {
+        tone,
+        icon: glyph,
+        text,
+    };
+    let mut out = vec![
+        line(
+            Tone::Title,
+            None,
+            format!("{}  {}", group_text(t.group), t.name),
+        ),
+        line(
+            Tone::Note,
+            None,
+            format!(
+                "{:#010x}  at {:#010x}, {} bytes{}",
+                t.id.0,
+                t.address,
+                t.size,
+                if doc.is_changed(t.id) { "  *edited" } else { "" }
+            ),
+        ),
+    ];
+    if let Some(m) = app.browsing() {
+        out.push(line(
+            Tone::Note,
+            Some(icon::DISC),
+            format!("in {m}, browsed read-only"),
+        ));
+    }
+    if let Some(bsp) = tag_tree::bsp_label(t) {
+        out.push(line(Tone::Note, None, bsp));
+    }
+    if let Some(note) = app.tag_shared_note(t.id) {
+        out.push(line(Tone::Note, Some(icon::LAYERS), note));
+    }
+    match &t.access {
+        Access::Edit => {}
+        Access::Read(why) => out.push(line(
+            Tone::Warn,
+            Some(icon::ALERT),
+            format!("Read-only: {why}."),
+        )),
+        Access::None(why) => out.push(line(Tone::Warn, Some(icon::ALERT), format!("{why}."))),
+    }
+    out
+}
+
+/// The layout's line beside **Show unnamed fields**: how many of its
+/// fields have names. None without a layout.
+pub(crate) fn coverage(doc: &TagDoc, id: TagId) -> Option<String> {
+    let layout = doc.layout(id)?;
+    let c = layout.coverage();
+    Some(format!(
+        "layout {}: {} named fields, {} by offset",
+        layout.name, c.named_fields, c.unnamed_fields
+    ))
+}
+
+/// The header's lines as drawn, without icons, for `tag.view`.
+pub(crate) fn header(app: &App, id: TagId) -> Vec<String> {
+    let doc = app.shown_tags();
+    let Some(t) = doc.tag(id) else {
+        return Vec::new();
+    };
+    let mut out: Vec<String> = header_top(app, t).into_iter().map(|l| l.text).collect();
+    if !matches!(t.access, Access::None(_))
+        && let Some(line) = coverage(doc, id)
+    {
+        out.push(line);
+    }
+    out
 }
 
 /// Export the tag (with what it references, with its resources) and

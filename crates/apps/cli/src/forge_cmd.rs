@@ -8,7 +8,8 @@ use content::store::default_data_root;
 use scenario_edit::MapSource;
 
 const USAGE: &str = "usage: h2 forge build <doc.h2forge> [--disc <iso>] [--maps <dir>]
-       h2 forge check <doc.h2forge> [--disc <iso>]";
+       h2 forge check <doc.h2forge> [--disc <iso>]
+       h2 forge looks [--disc <iso>] [--json]";
 
 #[derive(Debug, PartialEq, Eq)]
 enum Action {
@@ -57,6 +58,9 @@ pub fn run(args: Vec<String>) -> Result<()> {
     if matches!(args.as_slice(), [arg] if matches!(arg.as_str(), "-h" | "--help")) {
         println!("{USAGE}");
         return Ok(());
+    }
+    if args.first().map(String::as_str) == Some("looks") {
+        return crate::forge_looks::run(args[1..].to_vec());
     }
     let args = parse(args)?;
     let file = File::open(&args.document)

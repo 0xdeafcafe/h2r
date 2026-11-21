@@ -1069,9 +1069,9 @@ from the definition: white (`[0x468710]`) unless the slot has initial
 permutations. Then it picks one by weight among those whose variant
 (`+0x1c`) is 0 or the object's, and a colour between its bounds
 (`0x000be40e..0x000be44b`). The `obje` block at `+0xac` (`0x10` each)
-holds those permutations (`block_0`, `0x20` each: `+0` weight, `+4` lower
+holds those permutations (`initial_permutations`, `0x20` each: `+0` weight, `+4` lower
 RGB, `+0x10` upper RGB, `+0x1c` variant string id) and the functions
-(`block_8`) (E). So the count must reach the slots the shaders read.
+(`functions`) (E). So the count must reach the slots the shaders read.
 
 The shader reads them as constants. The Chief's stem
 `opaque\tex_bump_env_four_change_color` draws base x detail x 2 x the

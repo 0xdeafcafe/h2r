@@ -23,7 +23,7 @@ pub mod bindings;
 mod render;
 pub use bindings::{BINDINGS, Binding, Gesture};
 use bindings::{Does, Held, Pad, Side};
-pub use render::{camera_hooks, forget_park};
+pub use render::{camera_hooks, forget_park, parked};
 
 #[derive(Clone, Copy)]
 enum Event {

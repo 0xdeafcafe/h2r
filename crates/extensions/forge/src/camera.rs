@@ -15,6 +15,25 @@ impl Camera {
         [cy * cp, sy * cp, sp]
     }
 
+    /// Forward, right and up, a right-handed orthonormal basis.
+    pub fn basis(self) -> [[f32; 3]; 3] {
+        let (sy, cy) = self.yaw.sin_cos();
+        let (sp, cp) = self.pitch.sin_cos();
+        [self.forward(), [sy, -cy, 0.0], [-cy * sp, -sy * sp, cp]]
+    }
+
+    /// `local` (along forward, right and up) in world axes.
+    pub fn to_world(self, local: [f32; 3]) -> [f32; 3] {
+        let b = self.basis();
+        std::array::from_fn(|i| local[0] * b[0][i] + local[1] * b[1][i] + local[2] * b[2][i])
+    }
+
+    /// The world vector `v` along forward, right and up.
+    pub fn to_local(self, v: [f32; 3]) -> [f32; 3] {
+        self.basis()
+            .map(|axis| axis[0] * v[0] + axis[1] * v[1] + axis[2] * v[2])
+    }
+
     pub fn point(self, distance: f32) -> [f32; 3] {
         let forward = self.forward();
         std::array::from_fn(|i| self.position[i] + distance * forward[i])

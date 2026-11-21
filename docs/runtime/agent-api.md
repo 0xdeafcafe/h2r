@@ -77,7 +77,7 @@ connection to hold `session.claim`.
 | `bots.bounce_to` | act | [Bounce routes](#bounce-routes) |
 | `bots.bounce_status`, `superbounce.spots` | read | [Bounce routes](#bounce-routes) |
 | `sim.*` | read or act | [`sim`](#sim-simulated-players-and-direct-state) |
-| `forge.status`, `forge.doc`, `forge.log`, `forge.propose`, `forge.input` | read or act | [Local Forge session](#local-forge-session) |
+| `forge.status`, `forge.doc`, `forge.log`, `forge.propose`, `forge.input`, `forge.look`, `forge.look.set`, `forge.status.monitors` | read or act | [Local Forge session](#local-forge-session) |
 | `forge.capacity`, `forge.probe` | read, act | [Forge probes](#forge-probes) |
 | `firefight.state`, `firefight.kit` | read | [Firefight](#firefight) |
 | `firefight.command` | act | [Firefight](#firefight) |
@@ -978,7 +978,9 @@ readbacks come from `crates/platform/d3d/src/scaled.rs` and
 
 No params. `interp` is `d3d::interp::InterpStats` with every field
 (frames blended and held, replays, warps, and the hold reasons `unsure_*`,
-`mismatch_*`, `dropped`), read from its `Debug` text so fields added there
+`mismatch_*`, `dropped`, and per draw `held_draws_*`: draws a made frame
+drew at their own matrices, `held_draws_palette` when their node
+registers are not their pair's), read from its `Debug` text so fields added there
 appear with no change here; `pipeline` is the pipelined render's totals
 (`pipelined`, `completed`, `serial` reasons, `fallbacks` by call, joins,
 snapshot coverage, and times in ms including `overlap_ms` for the worker's
@@ -3067,11 +3069,14 @@ feature is enabled.
 
 | Method and access | Parameters | Result |
 |---|---|---|
-| `forge.status` (read) | `{}` or omitted | The local session, role, log head, budget, monitor camera, aimed and held IDs, screen and focus, pending call or file work, and last notice. Links fields: `tool` (`objects` or `links`), `aimed_link` and `link_from` (`{teleporter: flag}` or `{object: id}`), `teleporters` (`{flag, sender, channel, position}` with the channel the document gives), `links` (`{id, kind:"teleporter", sender, receiver, channel}` or `{id, kind:"device", machines, applies:"rebuild"}`, final indices) and `pending_rebuild`, the active device links. An inactive session returns `{session:"inactive", reason}` |
+| `forge.status` (read) | `{}` or omitted | The local session, role, log head, budget, monitor camera, aimed and held IDs, screen and focus, pending call or file work, and last notice. Links fields: `tool` (`objects` or `links`), `aimed_link` and `link_from` (`{teleporter: flag}` or `{object: id}`), `teleporters` (`{flag, sender, channel, position}` with the channel the document gives), `links` (`{id, kind:"teleporter", sender, receiver, channel}` or `{id, kind:"device", machines, applies:"rebuild"}`, final indices) and `pending_rebuild`, the active device links. Palette fields: `palette` (the Objects palette's item count) and `palette_refused` (each scenario palette entry left out, as `"path: reason"`). `parked`: the hex handle of the biped the monitor parks and hides, or `null` while none is. An inactive session returns `{session:"inactive", reason}` |
 | `forge.doc` (read) | `{}` or omitted | `{document}`, the folded Forge document including confirmed edits |
 | `forge.log` (read) | `{since?}` | `{entries}` in sequence order, starting strictly after `since` (default zero) |
 | `forge.input` (act) | `{action}` or `{movement?, look?, roll?, rotating?}` | `{queued:true}` when the current local session accepts one monitor input |
 | `forge.propose` (act) | `{op, was?}` | `{entry}` on acceptance, or a refusal with its reason |
+| `forge.look` (read) | `{seat?}` | The monitor look: `{session, look, drawn_as, saved, catalogue, locks}`, and `notice`, `catalogue_note` and `problems` when there are any. `look` is the session's look, or with no session the saved one as this machine can use it. `drawn_as` is what other players see: `{as: "model" \| "marker" \| "hidden", reason?}`. `saved` is `{look, source}` as the profile holds it. `catalogue` is each model of the census: `{key, name, source, sha256, variants, colours, light, nodes, triangles, available, refusal?}`. `locks` maps each locked field to its reason. A `seat` other than 0 is refused: offline there is one seat |
+| `forge.look.set` (act) | `{reset?, save?, model?, variant?, primary?, secondary?, tint?, light?, light_colour?}` | `{look, changed, saved, drawn_as}`: the look as accepted. `reset: true` is the default look (the marker in the seat's colour) and takes no field. `variant: null` clears the variant. `save: true` also writes the profile (`not_saved` says why when the file was not written). A refusal is an error whose `data` is `{code, message, ...fields}`: `monitor_look_invalid` (`field`, `reason`), `monitor_look_locked` (`field`, `reason`) or `monitor_look_no_session` outside a Forge session; the look stays as it was |
+| `forge.status.monitors` (read) | `{}` or omitted | `{monitors: [{seat, name, monitor, pose, look, drawn_as, peers_see, seen_ticks_ago}]}`. Offline it holds seat 0 once a session is open and is empty before. `pose` is `{position, yaw, pitch}` while the monitor camera exists. `drawn_as` is how the seat looks in its own view, always `hidden` with the reason; `peers_see` is what another machine draws |
 
 The input queue accepts `toggle`, `accept`, `back`, `delete`, `palette`,
 `properties`, `tools`, `settings`, `undo`, `redo` and `link`. `palette`

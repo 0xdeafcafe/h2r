@@ -144,9 +144,10 @@ persist and each has a picker.
 - **Fine movement** scales flying, pushing and turning to a fifth.
   **Thrust** triples flying while held.
 - **Manipulate.** With RT held the left stick's forward and back change
-  the hold distance (`Tool`, `distance`, at `tool::PUSH_RATE`, no nearer
-  than `tool::MIN_DISTANCE`) and its sideways axis rolls; the right stick
-  yaws and pitches.
+  the hold distance (`Tool`, `distance`, at `tool::PUSH_RATE`), from
+  where the object shows: never past a nearer wall, nor nearer than its
+  reach plus `tool::NEAR_GAP` (`Extent::near`). Its sideways axis rolls;
+  the right stick yaws and pitches.
 - **Coordinates** is a screen opened from Properties: X, Y, Z, Yaw,
   Pitch and Roll, each with its value. A on a row opens the game's
   keyboard for a number. Left and right nudge the row by the snap in

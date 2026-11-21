@@ -21,7 +21,7 @@ const TABS: [(ToolKind, &str); 5] = [
 const EDGE: f32 = 10.0;
 
 pub(super) fn is_map(tool: ToolKind) -> bool {
-    matches!(tool, ToolKind::Scenario | ToolKind::Tags)
+    matches!(tool, ToolKind::Scenario | ToolKind::Tags | ToolKind::Scripts)
 }
 
 pub(super) fn draw(

@@ -487,3 +487,58 @@ fn builtin_definitions_round_trip_their_defaults() {
         assert_eq!(decode(def, &t).unwrap(), r, "{g}");
     }
 }
+
+#[test]
+fn raw_bytes_fill_typed_fields_and_read_back() {
+    let mut defs = Defs::default();
+    defs.parse_into(
+        "invented",
+        "group rawb 0x1c
+  0x0 i16 low
+  0x2 enum16 mode values=a|b
+  0x4 f32[2] range
+  0xc unknown 0x4
+  0x10 string label
+  0x14 block parts 0x8 align 4
+    0x0 f32 weight
+    0x4 u16 first
+    0x6 u16 second
+",
+    )
+    .unwrap();
+    let d = defs.group(FourCC(*b"rawb")).unwrap();
+    let mut r = default_record(d);
+    // One word over two fields, each read back as its own type.
+    r.set("low", Val::Bytes(vec![1, 0, 2, 0])).unwrap();
+    assert_eq!(r.get("low"), Some(&Val::Int(1)));
+    assert_eq!(r.get("mode"), Some(&Val::Enum(2)));
+    // A name and an offset into it, then an element offset.
+    r.set("range+0x4", Val::Bytes(1.5f32.to_le_bytes().to_vec())).unwrap();
+    assert_eq!(r.get("range"), Some(&Val::floats(&[0.0, 1.5])));
+    r.set("@0xc", Val::Bytes(vec![9; 4])).unwrap();
+    assert_eq!(r.get("unknown_c"), Some(&Val::Bytes(vec![9; 4])));
+    // An unknown span by its own name is a plain write, as before.
+    r.set("unknown_c", Val::Bytes(vec![7; 4])).unwrap();
+    assert_eq!(r.bytes("@0xc", 4), Some(vec![7; 4]));
+    // Float bits survive, NaN payload included.
+    let nan = 0x7fc0_1234u32.to_le_bytes().to_vec();
+    r.set("range", Val::Bytes(nan.clone())).unwrap();
+    assert_eq!(r.bytes("range", 4), Some(nan));
+    // Through a block element.
+    let parts = d.child("parts").unwrap();
+    r.set("parts", Val::Block(vec![default_record(parts)])).unwrap();
+    r.set("parts[0].first", Val::Bytes(vec![3, 0, 4, 0])).unwrap();
+    assert_eq!(r.at("parts[0].second"), Some(&Val::Int(4)));
+    assert_eq!(r.bytes("parts[0].@0x4", 4), Some(vec![3, 0, 4, 0]));
+    // Over a string, or past the element, is refused and changes nothing.
+    let before = r.clone();
+    assert!(r.set("@0xc", Val::Bytes(vec![0; 8])).is_err());
+    assert!(r.set("parts[0].@0x6", Val::Bytes(vec![0; 4])).is_err());
+    assert!(r.set("range+0x8", Val::Bytes(vec![0; 4])).is_err());
+    // Compared as text: the NaN written above is never equal to itself.
+    assert_eq!(format!("{r:?}"), format!("{before:?}"));
+    assert_eq!(r.bytes("@0x10", 4), None);
+    // A record built without a definition has no layout.
+    let mut bare = Record::new(vec![("x".into(), Val::Int(0))]);
+    assert!(bare.set("x", Val::Bytes(vec![0; 4])).is_err());
+}

@@ -2,35 +2,35 @@
 # Evidence: crates/formats/tags/src/ui.rs (SharedGlobals), docs/formats/ui.md (E engine read, V disc-checked).
 group wigl 0x1c4 align 4
   0x0 unknown 0x44
-  0x44 f32 covered_screen_opacity doc="Scales the opacity of the screen beneath an overlay." -- A Halo2Xbox wigl.xml
-  0x48 i16 text_reveal_interval doc="Interval between updates to text that appears incrementally." -- A Halo2Xbox wigl.xml
-  0x4a i16 text_reveal_character doc="Character setting for a text block that appears incrementally." -- A Halo2Xbox wigl.xml
+  0x44 f32 covered_screen_opacity doc="Scales the opacity of the screen beneath an overlay."
+  0x48 i16 text_reveal_interval doc="Interval between updates to text that appears incrementally."
+  0x4a i16 text_reveal_character doc="Character setting for a text block that appears incrementally."
   0x4c f32 text_parameter -- E 0x00253765: applied to text blocks with flag bit 3; ui.rs:1134
   0x50 f32[4] meter_color -- E 0x002b07e2: ARGB fill colour of meter bitmaps; ui.rs:1136
-  0x60 f32 camera_near_distance doc="Distance to the near clipping plane for UI rendering." -- A Halo2Xbox wigl.xml
-  0x64 f32 camera_projection_distance doc="Distance to the UI projection plane." -- A Halo2Xbox wigl.xml
-  0x68 f32 camera_far_distance doc="Distance to the far clipping plane for UI rendering." -- A Halo2Xbox wigl.xml
-  0x6c f32[4] overlay_tint doc="Tint applied to the interface under an overlay." -- A Halo2Xbox wigl.xml
+  0x60 f32 camera_near_distance doc="Distance to the near clipping plane for UI rendering."
+  0x64 f32 camera_projection_distance doc="Distance to the UI projection plane."
+  0x68 f32 camera_far_distance doc="Distance to the far clipping plane for UI rendering."
+  0x6c f32[4] overlay_tint doc="Tint applied to the interface under an overlay."
   0x7c unknown 0xc
-  0x88 block error_categories 0x28 align 4 doc="Supplies dialog defaults and messages for each category of error." -- A Halo2Xbox wigl.xml
-    0x0 string category doc="String identifier for this error category." -- A Halo2Xbox wigl.xml
-    0x4 flags16 dialog_options doc="Presentation options for the error dialog." -- A Halo2Xbox wigl.xml
-    0x6 enum8 initial_button doc="Selects which button has focus when the dialog opens." -- A Halo2Xbox wigl.xml
+  0x88 block error_categories 0x28 align 4 doc="Supplies dialog defaults and messages for each category of error."
+    0x0 string category doc="String identifier for this error category."
+    0x4 flags16 dialog_options doc="Presentation options for the error dialog."
+    0x6 enum8 initial_button doc="Selects which button has focus when the dialog opens."
     0x7 unknown 0x1
-    0x8 tagref message_strings doc="References the text used by dialogs in this category." -- A Halo2Xbox wigl.xml
-    0x10 string fallback_title doc="Title used by default for errors in this category." -- A Halo2Xbox wigl.xml
-    0x14 string fallback_message doc="Message shown unless the individual error supplies one." -- A Halo2Xbox wigl.xml
-    0x18 string fallback_accept_label doc="Default label for the confirmation button." -- A Halo2Xbox wigl.xml
-    0x1c string fallback_cancel_label doc="Default label for the cancellation button." -- A Halo2Xbox wigl.xml
-    0x20 block messages 0x18 align 4 doc="Overrides the category defaults for particular errors." -- A Halo2Xbox wigl.xml
-      0x0 enum32 error_code doc="Selects the error whose message this entry provides." -- A Halo2Xbox wigl.xml
-      0x4 flags16 dialog_options doc="Presentation options for the error dialog." -- A Halo2Xbox wigl.xml
-      0x6 enum8 initial_button doc="Selects which button has focus when the dialog opens." -- A Halo2Xbox wigl.xml
+    0x8 tagref message_strings doc="References the text used by dialogs in this category."
+    0x10 string fallback_title doc="Title used by default for errors in this category."
+    0x14 string fallback_message doc="Message shown unless the individual error supplies one."
+    0x18 string fallback_accept_label doc="Default label for the confirmation button."
+    0x1c string fallback_cancel_label doc="Default label for the cancellation button."
+    0x20 block messages 0x18 align 4 doc="Overrides the category defaults for particular errors."
+      0x0 enum32 error_code doc="Selects the error whose message this entry provides."
+      0x4 flags16 dialog_options doc="Presentation options for the error dialog."
+      0x6 enum8 initial_button doc="Selects which button has focus when the dialog opens."
       0x7 unknown 0x1
-      0x8 string dialog_title doc="Title for the dialog reporting this error." -- A Halo2Xbox wigl.xml
-      0xc string dialog_message doc="Body text for this error." -- A Halo2Xbox wigl.xml
-      0x10 string accept_label doc="Text for the confirmation button on this dialog." -- A Halo2Xbox wigl.xml
-      0x14 string cancel_label doc="Text for the cancellation button on this dialog." -- A Halo2Xbox wigl.xml
+      0x8 string dialog_title doc="Title for the dialog reporting this error."
+      0xc string dialog_message doc="Body text for this error."
+      0x10 string accept_label doc="Text for the confirmation button on this dialog."
+      0x14 string cancel_label doc="Text for the cancellation button on this dialog."
   0x90 tagref sound_0 groups=snd! -- E 0x00236299: UI sound 0 by index; V; ui.rs:1143,1197
   0x98 tagref sound_1 groups=snd! -- E 0x00236299: UI sound 1 by index; V; ui.rs:1143,1197
   0xa0 tagref sound_2 groups=snd! -- E 0x00236299: UI sound 2 by index; V; ui.rs:1143,1197
@@ -50,7 +50,7 @@ group wigl 0x1c4 align 4
   0x110 tagref bitmap groups=bitm -- E 0x00236235; V; ui.rs:1145
   0x118 tagref strings groups=unic -- E 0x0023620d; V; ui.rs:1147
   0x120 block animations 0x2c align 4 -- E 0x0022e65e: selected by a widget animation index minus one; V; ui.rs:1149,1208
-    0x0 flags32 track_flags doc="Options shared by the transition tracks in this animation." -- A Halo2Xbox wigl.xml
+    0x0 flags32 track_flags doc="Options shared by the transition tracks in this animation."
     0x4 u32 primary_period_ms -- E 0x0022e65e: transition kind 0 forwards, 2 backwards; ui.rs:547
     0x8 block primary_keyframes 0x14 align 4 -- E; ui.rs:524,547
       0x0 unknown 0x4
@@ -71,20 +71,20 @@ group wigl 0x1c4 align 4
       0x4 f32 alpha -- E 0x0022e3cd: widget alpha multiplier, interpolated linearly; ui.rs:497
       0x8 f32[3] offset -- E 0x0022e3cd: x, y, z added to the widget position, interpolated linearly; ui.rs:499
   0x128 unknown 0x8
-  0x130 block background_animations 0x10 align 4 doc="Animation tracks for UI backgrounds that persist between screens." -- A Halo2Xbox wigl.xml
+  0x130 block background_animations 0x10 align 4 doc="Animation tracks for UI backgrounds that persist between screens."
     0x0 unknown 0x4
-    0x4 i32 animation_period doc="Time covered by one cycle of the keyframe track." -- A Halo2Xbox wigl.xml
-    0x8 block keyframes 0x14 align 4 doc="Interpolation targets for the background animation." -- A Halo2Xbox wigl.xml
-      0x0 i32 transition_index doc="Selects the transition that starts at this keyframe." -- A Halo2Xbox wigl.xml
-      0x4 f32 opacity doc="Opacity of the animated element at this keyframe." -- A Halo2Xbox wigl.xml
-      0x8 f32[3] position doc="Position of the animated element at this keyframe." -- A Halo2Xbox wigl.xml
+    0x4 i32 animation_period doc="Time covered by one cycle of the keyframe track."
+    0x8 block keyframes 0x14 align 4 doc="Interpolation targets for the background animation."
+      0x0 i32 transition_index doc="Selects the transition that starts at this keyframe."
+      0x4 f32 opacity doc="Opacity of the animated element at this keyframe."
+      0x8 f32[3] position doc="Position of the animated element at this keyframe."
   0x138 block skins 0x8 align 4 -- E 0x0014837a: list skins by List skin_index; V; ui.rs:1154
     0x0 tagref skin groups=skin -- E; V; ui.rs:1211
-  0x140 tagref button_legend_strings doc="Supplies text for button legends." -- A Halo2Xbox wigl.xml
-  0x148 tagref game_type_strings doc="Supplies names for game types." -- A Halo2Xbox wigl.xml
+  0x140 tagref button_legend_strings doc="Supplies text for button legends."
+  0x148 tagref game_type_strings doc="Supplies names for game types."
   0x150 unknown 0x8
-  0x158 block skill_intervals 0x4 align 4 doc="Groups player skills into ranges for display." -- A Halo2Xbox wigl.xml
-    0x0 i16[2] skill_range doc="Lower and upper skill values for this entry." -- A Halo2Xbox wigl.xml
+  0x158 block skill_intervals 0x4 align 4 doc="Groups player skills into ranges for display."
+    0x0 i16[2] skill_range doc="Lower and upper skill values for this entry."
   0x160 i16[4] header_fonts -- E 0x0022fda6: header font per layout slot; ui.rs:1163
   0x168 f32[4] header_color -- E 0x0022fda6: header text colour a, r, g, b; ui.rs:1165
   0x178 i16[4] header_rect_0 -- E 0x0022fda6: header text rect (top, left, bottom, right) for layout slot 0; ui.rs:1167,1219
@@ -96,4 +96,4 @@ group wigl 0x1c4 align 4
   0x1a8 i16[4] header_rect_3 -- E 0x0022fda6: header text rect (top, left, bottom, right) for layout slot 3; ui.rs:1167,1219
   0x1b0 i16[4] secondary_rect_3 -- E 0x0022ff53: rect of the screen's other built-in text widget, layout slot 3; ui.rs:1121,1220
   0x1b8 tagref looping_sound groups=lsnd -- E 0x00235b46; V; ui.rs:1169
-  0x1c0 i32 music_fade_time doc="Duration of the menu music fade." -- A Halo2Xbox wigl.xml
+  0x1c0 i32 music_fade_time doc="Duration of the menu music fade."

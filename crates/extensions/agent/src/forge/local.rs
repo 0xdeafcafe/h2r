@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, mpsc};
 
+use ::forge::look::{Refusal, monitors::Who};
 use ::forge::{BlockKind, Frame, PaletteItem, Session, World};
 use agent_proto::{Boundary, Kind, ObjectId, RpcError, code, forge::method};
 use engine::GuestMemory;
@@ -244,6 +245,17 @@ fn spawned_handles(made: Value, expected: usize) -> Result<Vec<u32>, String> {
 pub type ProposalReply = mpsc::Receiver<Result<Entry, String>>;
 
 pub trait LocalApi: Send + Sync + 'static {
+    /// The profile and seat colour the monitor look methods speak for: the
+    /// signed-in profile of local slot 0, from guest memory when there is
+    /// one.
+    fn who(&self, m: Option<&dyn GuestMemory>) -> Who;
+    /// `forge.look`: the look, how it is drawn, the saved look and the
+    /// catalogue. Works with no session.
+    fn look(&self, who: &Who, seat: Option<u64>) -> Result<Value, Refusal>;
+    /// `forge.look.set`. Refused outside a session.
+    fn look_set(&self, who: &Who, params: Value) -> Result<Value, Refusal>;
+    /// `forge.status.monitors`.
+    fn monitors(&self, who: &Who) -> Value;
     fn status(&self) -> Result<Value, String>;
     fn document(&self) -> Result<ForgeDoc, String>;
     fn log(&self, since: u32) -> Result<Vec<Entry>, String>;
@@ -263,6 +275,20 @@ struct Propose {
 struct Log {
     #[serde(default)]
     since: u32,
+}
+
+#[derive(Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Look {
+    seat: Option<u64>,
+}
+
+/// A monitor look refusal as an error: its code and sentence in the
+/// message, and `{code, message, ...fields}` as the data.
+fn look_refusal(r: Refusal) -> RpcError {
+    let mut e = RpcError::new(code::INVALID_REQUEST, r.to_string());
+    e.data = Some(r.to_value());
+    e
 }
 
 fn empty(v: Value) -> Result<(), RpcError> {
@@ -328,6 +354,27 @@ pub fn install(agent: &Agent, backend: impl LocalApi) {
         host.status().map_err(super::unavailable)
     });
     let host = backend.clone();
+    agent.add_game_method(method::LOOK, Access::Read, move |v, ctx| {
+        let p: Look = if v.is_null() {
+            Look::default()
+        } else {
+            serde_json::from_value(v).map_err(|e| super::invalid(e.to_string()))?
+        };
+        let who = who_of(&*host, ctx);
+        host.look(&who, p.seat).map_err(look_refusal)
+    });
+    let host = backend.clone();
+    agent.add_game_method(method::LOOK_SET, Access::Act, move |v, ctx| {
+        let who = who_of(&*host, ctx);
+        host.look_set(&who, v).map_err(look_refusal)
+    });
+    let host = backend.clone();
+    agent.add_game_method(method::MONITORS, Access::Read, move |v, ctx| {
+        empty(v)?;
+        let who = who_of(&*host, ctx);
+        Ok(host.monitors(&who))
+    });
+    let host = backend.clone();
     agent.add_game_method(method::DOC, Access::Read, move |v, _| {
         empty(v)?;
         host.document()
@@ -384,6 +431,12 @@ pub fn install(agent: &Agent, backend: impl LocalApi) {
         );
         Ok(Value::Null)
     });
+}
+
+/// Who the look methods speak for, from guest memory where there is any.
+fn who_of(host: &impl LocalApi, ctx: &mut crate::GameCtx<'_>) -> Who {
+    ctx.with_guest(|m| Ok(host.who(Some(&*m))))
+        .unwrap_or_else(|_| host.who(None))
 }
 
 fn refused(message: String) -> RpcError {
