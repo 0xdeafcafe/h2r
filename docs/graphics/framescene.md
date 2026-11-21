@@ -361,7 +361,9 @@ They also define the hand-off required for display cutover.
 
 - *Paced* (play): the sim publishes and goes on. The render thread
   keeps the last two scenes it took. If the sim published more than one
-  since, the older ones are dropped and counted (`scene_dropped`).
+  since, the mailbox keeps the newest pending scene. The private
+  mailbox counts replacements in `scene_private_replaced`. The planned
+  display counter is `scene_dropped`.
 - *Locked* (headless capture, `--unpaced`, lab runs with
   `H2_BOOT_STOP_AT_PRESENT`): publish blocks while two scenes wait.
   The receiver takes every scene in order. The display must draw each
