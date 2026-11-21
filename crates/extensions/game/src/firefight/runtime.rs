@@ -57,6 +57,46 @@ const BODY_DEPLETED: u16 = 1 << 2;
 pub type SkullSink =
     dyn Fn(&BTreeSet<Skull>, &mut dyn GuestMemory) -> anyhow::Result<()> + Send + Sync;
 
+/// What the host reports of a match as it plays: each credited score and
+/// the result (docs/game/firefight.md, "Scoring and stats"). In the game it
+/// goes to Live telemetry, which records it in the game stream and the film.
+pub enum Report {
+    Score(live_proto::firefight::FirefightScore),
+    Ended(live_proto::firefight::FirefightEnded),
+}
+
+pub type ReportSink = dyn Fn(Report) + Send + Sync;
+
+/// A credit as the wire names it.
+fn score_report(credit: super::host::Credit) -> live_proto::firefight::FirefightScore {
+    live_proto::firefight::FirefightScore {
+        tick: u64::from(credit.tick),
+        player: u32::from(credit.player),
+        points: credit.points,
+        reason: match credit.reason {
+            ::firefight::ScoreReason::Kill => "kill",
+            ::firefight::ScoreReason::Assist => "assist",
+        }
+        .into(),
+        class: credit.class,
+    }
+}
+
+/// A result as the wire names it. The set's name is cut to the wire's 32.
+fn ended_report(ended: super::host::Ended) -> live_proto::firefight::FirefightEnded {
+    live_proto::firefight::FirefightEnded {
+        tick: u64::from(ended.tick),
+        set: ended.set.chars().take(32).collect(),
+        outcome: match ended.outcome {
+            Outcome::Won => "won",
+            Outcome::Lost => "lost",
+        }
+        .into(),
+        rounds_cleared: ended.rounds_cleared,
+        lives_used: ended.lives_used,
+    }
+}
+
 /// One engine call an entry needs, made in the tick's async body.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Call {
@@ -345,6 +385,8 @@ pub struct Runtime {
     sink: Box<SkullSink>,
     /// What Game Setup chose, read when a game starts.
     options: Box<options::Source>,
+    /// Where scores and the result go.
+    reports: Box<ReportSink>,
 }
 
 /// The loaded map's name, from the cache header copy.
@@ -378,7 +420,13 @@ impl Runtime {
             // Without a settings store (a headless run with none) the match
             // is the settings' defaults: Holdout, Normal, skulls on.
             options: Box::new(|| Ok(Options::default())),
+            reports: Box::new(|_| {}),
         }
+    }
+
+    /// Where the host's scores and result go (`Report`).
+    pub fn set_reports(&mut self, reports: Box<ReportSink>) {
+        self.reports = reports;
     }
 
     /// Where the match's choices come from (`options::source`).
@@ -590,6 +638,12 @@ impl Runtime {
             *players = g.players().len().min(usize::from(u8::MAX)) as u8;
             host.post_tick(tick, &g)
         };
+        for credit in host.take_credits() {
+            (self.reports)(Report::Score(score_report(credit)));
+        }
+        if let Some(ended) = host.take_ended() {
+            (self.reports)(Report::Ended(ended_report(ended)));
+        }
         // The HUD's mode blob, for the actor channel and the local draw.
         let mut announce = None;
         match mode_blob(&game.host, game.players) {

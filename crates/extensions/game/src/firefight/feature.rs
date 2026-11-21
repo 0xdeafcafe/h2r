@@ -162,19 +162,24 @@ impl hooks::Feature for Firefight {
 /// a film back. The match is the settings' defaults; [`install_with`] reads
 /// Game Setup's choices.
 pub fn install(registry: &mut hooks::Registry, film: bool) -> anyhow::Result<bool> {
-    install_with(registry, film, None)
+    install_with(registry, film, None, None)
 }
 
 /// [`install`] with the source of Game Setup's choices
-/// ([`super::options::source`]), read when each game starts.
+/// ([`super::options::source`]), read when each game starts, and where the
+/// host's scores and result go ([`runtime::Report`]).
 pub fn install_with(
     registry: &mut hooks::Registry,
     film: bool,
     options: Option<Box<super::options::Source>>,
+    reports: Option<Box<runtime::ReportSink>>,
 ) -> anyhow::Result<bool> {
     let shared = Arc::new(Shared::new(film, Box::new(write_skulls)));
     if let Some(options) = options {
         shared.lock().set_options(options);
+    }
+    if let Some(reports) = reports {
+        shared.lock().set_reports(reports);
     }
     let added = registry
         .add(&Firefight(Arc::clone(&shared)))

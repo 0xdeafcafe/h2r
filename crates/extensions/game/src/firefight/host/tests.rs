@@ -559,3 +559,68 @@ fn only_the_host_takes_operator_commands_or_holds() {
         assert_eq!(host.head().seq, 0);
     }
 }
+
+#[test]
+fn credits_pair_each_kill_with_its_class_and_assist() {
+    let mut game = FakeGame::new();
+    game.players = vec![player(0, 0), player(1, 0), player(2, 0)];
+    game.kills = vec![KillSeen {
+        character: ELITE,
+        killer: Some(2),
+        assist: Some(1),
+    }];
+    let mut host = start(Role::Host, &game);
+    host.post_tick(0, &game).unwrap();
+    assert_eq!(
+        host.take_credits(),
+        [
+            Credit {
+                tick: 0,
+                player: 2,
+                points: 100,
+                reason: ScoreReason::Kill,
+                class: Some("elite".into())
+            },
+            Credit {
+                tick: 0,
+                player: 1,
+                points: 25,
+                reason: ScoreReason::Assist,
+                class: None
+            },
+        ]
+    );
+    assert!(host.take_credits().is_empty(), "each credit is taken once");
+    assert_eq!(host.take_ended(), None);
+}
+
+#[test]
+fn a_score_with_no_kill_to_pair_keeps_its_points() {
+    let kill = |class: &str, killer: Option<u8>| Kill {
+        class: class.into(),
+        killer,
+        assist: None,
+    };
+    let seen = Observed {
+        kills: vec![kill("elite", Some(0)), kill("elite", None), kill("hunter", Some(0))],
+        ..Default::default()
+    };
+    // "hunter" scores nothing; an unclaimed kill scores nothing; a score the
+    // kills do not explain is kept with no class.
+    let commands = [score(0, 100), score(3, 5)];
+    let got = credits(9, &seen, &commands, |class| class == "elite");
+    assert_eq!(
+        got.iter().map(|c| (c.player, c.points, c.class.as_deref())).collect::<Vec<_>>(),
+        [(0, 100, Some("elite")), (3, 5, None)]
+    );
+}
+
+#[test]
+fn a_finish_makes_the_result_with_the_rounds_it_cleared() {
+    let finish = |outcome| [Command::Respawn { player: 0 }, Command::Finish { outcome }];
+    let won = result(5, "Holdout".into(), 2, 3, 4, &finish(Outcome::Won)).unwrap();
+    assert_eq!((won.outcome, won.rounds_cleared, won.lives_used), (Outcome::Won, 3, 4));
+    let lost = result(5, "Holdout".into(), 2, 3, 4, &finish(Outcome::Lost)).unwrap();
+    assert_eq!((lost.outcome, lost.rounds_cleared, lost.set.as_str()), (Outcome::Lost, 2, "Holdout"));
+    assert_eq!(result(5, "x".into(), 0, 3, 0, &[score(0, 1)]), None);
+}

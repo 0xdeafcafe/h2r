@@ -285,7 +285,19 @@ pub(crate) fn register_core_film(
     // Its Game Setup row and options page come with it, where there is a
     // settings store to keep the choices.
     let firefight_options = i.settings.as_ref().map(crate::firefight::options::source);
-    if crate::firefight::feature::install_with(features, film.is_some(), firefight_options)
+    // The host's scores and result go to Live and the film through telemetry.
+    let firefight_reports = telemetry.clone().map(|t| {
+        Box::new(move |report: crate::firefight::runtime::Report| match report {
+            crate::firefight::runtime::Report::Score(score) => t.firefight_score(score),
+            crate::firefight::runtime::Report::Ended(ended) => t.firefight_ended(ended),
+        }) as Box<crate::firefight::runtime::ReportSink>
+    });
+    if crate::firefight::feature::install_with(
+        features,
+        film.is_some(),
+        firefight_options,
+        firefight_reports,
+    )
         .context("installing Firefight")?
         && let Some(store) = i.settings.as_ref()
     {
