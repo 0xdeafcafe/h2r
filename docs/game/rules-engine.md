@@ -1119,11 +1119,18 @@ Tooling:
 ### Workbench
 
 **Code.** The web app's Game Types page (`statsPath("/rules")`,
-`web/src/stats/Rules.tsx`, its pure half in `web/src/lib/rules.ts`) is
-where a script is written, checked, tested and saved before Studio's
-editor exists. The browser runs no compiler: Live's
-[Rules scripts](../live/live-api.md#rules-scripts) routes call
-`rules::workbench` in both homes.
+`web/src/stats/Rules.tsx`, its test half in `web/src/stats/RulesTest.tsx`,
+its pure half in `web/src/lib/rules.ts`) is where a script is written,
+checked, tested and saved before Studio's editor exists. The browser runs
+no compiler: Live's [Rules scripts](../live/live-api.md#rules-scripts)
+routes call `rules::workbench` in both homes.
+
+The **Workbench** tab is one screen. The editor is on the left with the
+check beside it (Problems, Budget, Capabilities); under them the test
+scenario sits beside the results of running it. Under 1100 px the parts
+stack in that order. The page's other tabs are **My Scripts** and **My
+Game Types**. The layout, its states and its copy are described in
+[web-app.md, "Game type scripts"](../live/web-app.md#game-type-scripts).
 
 - **Check.** `workbench::check` compiles, verifies and measures source:
   the IR hash, errors with line and column (0 for a verifier refusal or
@@ -1131,8 +1138,10 @@ editor exists. The browser runs no compiler: Live's
   handler's worst case, slots per scope against their limits, IR bytes
   against 64 KiB, the declared capabilities in the lobby's words, and
   every unhostable entry the script calls. The page checks 450 ms after
-  typing stops; each error with a place is a marker in the editor, and
-  its place in the list below selects it.
+  typing stops and has no Check button; each error with a place is a
+  marker in the editor, and its place in the Problems list selects it. A
+  check the server refuses (a source over 256 KiB) is listed as a problem
+  of the whole script.
 - **Editor.** The script box is Monaco (`web/src/stats/RulesEditor.tsx`),
   loaded by a dynamic import on this page only, so it is a chunk of its
   own: the core editor (`monaco-editor/esm/vs/editor/edcore.main`, no
@@ -1164,7 +1173,12 @@ editor exists. The browser runs no compiler: Live's
   call was made, a variable or player row changed (a timer counting
   down is no change), a warning was raised or the script stopped. The run stops at a script error, after the tick
   that calls `end_round`, or past 4,000,000 ops, and the same input gives
-  the same trace.
+  the same trace. The page runs the scenario by itself, 350 ms after the
+  checked script's hash or the scenario changes, and shows the trace as
+  final standings and a timeline (`rules.ts`, `timeline` and
+  `standings`): each tick the scenario put an event in or the trace
+  kept, with the event as a sentence, the handlers that ran, their
+  calls, and each score, team, lives count or variable that changed.
 - **Editor.** `POST /v1/rules/ide` answers one editor request (complete,
   hover, signature, definition, references, tokens, symbols, format or
   diagnostics) from `rules::ide`, in LSP's field names, so the page's

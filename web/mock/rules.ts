@@ -16,6 +16,9 @@
 //   completions, hovers, signatures, definitions, references, tokens,
 //   outline and format, canned from the page's own word lists
 //   (src/lib/rulesIde.ts) and a few regexes (`mockIde`).
+// - With the tools off (`H2_MOCK_RULES=0`), every route here is the 404
+//   "no such endpoint" of a server from before them, so the page's
+//   "no script tools" state can be seen.
 
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -397,11 +400,13 @@ const summary = (s: Saved) => ({ hash: s.hash, name: s.name, version: s.version,
 export class MockRules {
   readonly saved = new Map<string, Saved>();
 
-  constructor(private world: World) {}
+  /** `tools` false: a server from before the rules routes. */
+  constructor(private world: World, private tools = true) {}
 
   async handle(req: Request, u: URL): Promise<Reply | null> {
     const path = u.pathname;
     if (!path.startsWith("/v1/rules")) return null;
+    if (!this.tools) return fail(404, "not_found", "no such endpoint");
     const body = async (): Promise<Record<string, unknown> | null> => {
       try { const b = await req.json(); return b && typeof b === "object" ? b as Record<string, unknown> : null; } catch { return null; }
     };

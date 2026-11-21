@@ -164,7 +164,7 @@ const bans = new Bans(world, admin, reports);
 // Mute lists (mock/mutes.ts).
 const mutes = new Mutes(world, admin);
 // The rules workbench and saved scripts (mock/rules.ts).
-const rulesBench = new MockRules(world);
+const rulesBench = new MockRules(world, process.env.H2_MOCK_RULES !== "0");
 // Game variants (mock/variants.ts), built from the workbench's scripts.
 const variants = new MockVariants(world, rulesBench);
 // Cloud saves (mock/cloudsaves.ts).

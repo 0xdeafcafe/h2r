@@ -1,48 +1,96 @@
-/* The game type script workbench (stats/Rules.tsx): the editor's box
-   (Monaco's colours are its theme, stats/rulesMonaco.ts), the Insert
-   menus, the error list, budget meters, the scenario tables and the
-   trace. Same flat greys, thin rules and small type as the rest of the
-   stats site. */
+/* The game type script workbench (stats/Rules.tsx, stats/RulesTest.tsx):
+   the editor's box (Monaco's colours are its theme, stats/rulesMonaco.ts)
+   with the problems, budget and capabilities beside it, and under them
+   the test scenario beside its results. Same flat greys, thin rules and
+   small type as the rest of the stats site. The page needs more room
+   than the site's column, so the column is wider while it is shown; under
+   1100px everything stacks. */
+
+.s-column:has(.s-rules) { --s-width: 1240px; }
 
 .s-rules-wrap { padding: 8px; }
-.s-rules-bar { flex-wrap: wrap; }
-.s-rules-status { margin-left: auto; font-size: 11px; color: #d6d6d6; white-space: nowrap; }
+.s-rules-bench[hidden] { display: none; }
+.s-rules-bar { flex-wrap: wrap; border-bottom: 1px solid #444; }
+.s-rules-bar > a { font-size: 11px; }
+.s-rules-status { margin-left: auto; font-size: 11px; color: #d6d6d6; }
 .s-rules-status code { color: #9fb6d6; }
 .s-rules-good { color: #8fd18f; font-weight: bold; }
 .s-rules-bad { color: #ff8c7a; }
 .s-rules-warn { color: #f0c36a; }
 .s-rules-muted { color: #8d8d8d; }
 .s-rules-note { font-size: 11px; color: #c5d6ee; }
-.s-rules-wrap > .s-pad { padding: 4px 2px; font-size: 11px; }
+.s-rules-wrap > .s-pad, .s-rules .s-box-body > .s-pad { padding: 6px 8px; font-size: 11px; line-height: 15px; }
+.s-rules-none { padding: 4px 0; font-size: 11px; line-height: 15px; }
+.s-rules-clean b { color: #8fd18f; }
 
-.s-rules-editwrap[hidden] { display: none; }
-.s-rules-editor { position: relative; height: 460px; margin-top: 6px; border: 1px solid #444; background: #0b0b0b; }
+/* Every value a person can change reads as a value: black on white, as
+   the site's other fields are. */
+.s-rules input[type="number"], .s-rules input[type="text"], .s-rules select,
+.s-rules-dialog input[type="number"], .s-rules-dialog textarea {
+  box-sizing: border-box; padding: 1px 3px; font: 11px var(--font-ui); color: #000; color-scheme: light; background: #fff; border: 1px solid #7f9db9; border-radius: 0; opacity: 1;
+}
+.s-rules input[type="number"], .s-rules input[type="text"], .s-rules select, .s-rules-dialog input[type="number"] { height: 19px; }
+.s-rules input[type="checkbox"], .s-rules-dialog input[type="checkbox"] { color-scheme: light; margin: 0; }
+.s-rules input:focus-visible, .s-rules select:focus-visible { outline: 1px solid #fff; outline-offset: 0; }
+.s-rules-num { width: 52px; }
+.s-rules-num--wide { width: 68px; }
+.s-rules-timein { width: 64px; font-variant-numeric: tabular-nums; }
+
+/* Lines about the page's own state: what it did, why a button is off,
+   a request that failed, a server without the script tools. */
+.s-rules-notice { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; padding: 4px 8px; font-size: 11px; line-height: 15px; color: #c5d6ee; border: 1px solid #2a3d59; background: #101e33; }
+.s-rules-notice.bad { color: #f2d6d2; border-color: #5a2a2a; background: #1a1010; }
+.s-rules-notice .s-btn { flex: none; margin-left: auto; }
+.s-rules-why { display: flex; flex-wrap: wrap; gap: 2px 14px; padding: 4px 8px; font-size: 11px; line-height: 15px; color: #c9c9c9; background: #101010; border: 1px solid #444; border-top: 0; }
+.s-rules-why b { color: #f0c36a; font-weight: normal; }
+.s-rules-missing { margin-top: 8px; padding: 8px 10px; font-size: 12px; line-height: 17px; color: #f2e2b8; border: 1px solid #6b5520; background: #1f1a0c; }
+.s-rules-missing b { display: block; font-size: 13px; color: #fff; }
+.s-rules-missing p { max-width: 86ch; margin: 2px 0 6px; }
+.s-rules-trouble { display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: baseline; padding: 6px 8px; font-size: 11px; line-height: 15px; color: #f2e2b8; background: #1f1a0c; border-bottom: 1px solid #000; }
+.s-rules-trouble b { flex: none; color: #f0c36a; }
+.s-rules-trouble span { flex: 1 1 200px; min-width: 0; }
+.s-rules-trouble--script { color: #f2d6d2; background: #1a1010; }
+.s-rules-trouble--script b { color: #ff8c7a; }
+.s-rules-hold { padding: 4px 8px; font-size: 11px; line-height: 15px; color: #f2e2b8; border: 1px solid #6b5520; background: #1f1a0c; }
+
+/* The script and its check, side by side. */
+.s-rules-top { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 8px; align-items: start; margin-top: 8px; }
+.s-rules-main { min-width: 0; }
+.s-rules-side { min-width: 0; }
+.s-rules-side .s-box { margin-bottom: 8px; }
+.s-rules-side .s-box:last-child { margin-bottom: 0; }
+
+.s-rules-editor { position: relative; height: 520px; border: 1px solid #444; background: #0b0b0b; }
 .s-rules-monaco { position: absolute; inset: 0; }
 .s-rules-loading { position: absolute; top: 6px; left: 8px; margin: 0; font-size: 11px; color: #8d8d8d; pointer-events: none; }
 .s-rules-text { box-sizing: border-box; width: 100%; height: 100%; margin: 0; padding: 6px 8px; resize: none; overflow: auto; white-space: pre; font: 12px/16px var(--font-mono); tab-size: 4; color: #e8e8e8; background: transparent; border: 0; outline: none; }
 .s-rules-text:focus { box-shadow: inset 0 0 0 1px #6f93c4; }
 
-/* The Insert menus' buttons, and the read-only built-in's bar. */
-.s-rules-insert { flex-wrap: wrap; gap: 4px 6px; margin-top: 6px; }
+/* The Insert menus' buttons, and the read-only script's bar. */
+.s-rules-insert { flex-wrap: wrap; gap: 4px 6px; }
 .s-rules-insert-label { font: bold 11px/16px var(--font-ui); color: #fff; }
-.s-rules-keys { margin-left: auto; font-size: 10px; color: #7e8ea6; }
-.s-rules-locked { display: flex; gap: 8px; align-items: center; margin-top: 6px; padding: 4px 8px; font-size: 11px; color: #f2e2b8; border: 1px solid #6b5520; background: #1f1a0c; }
-.s-rules-locked .s-btn { margin-left: auto; }
+.s-rules-keys { padding: 3px 2px 0; font-size: 10px; line-height: 14px; color: #7e8ea6; }
+.s-rules-locked { display: flex; gap: 8px; align-items: center; margin-bottom: 6px; padding: 4px 8px; font-size: 11px; color: #f2e2b8; border: 1px solid #6b5520; background: #1f1a0c; }
+.s-rules-locked .s-btn { flex: none; margin-left: auto; }
 .s-rules-insert-dialog { width: min(560px, 94vw); }
 .s-rules-insert-group + .s-rules-insert-group { margin-top: 8px; }
 .s-rules-insert-group h4 { margin: 0 0 4px; font: bold 12px/16px var(--font-ui); color: #fff; }
 .s-rules-insert-group h4 small { font-weight: normal; font-size: 10px; color: #8d9aab; }
 .s-rules-insert-dialog .s-rules-picks code { font: 11px/14px var(--font-mono); }
 
-.s-rules-errors { margin: 6px 0 0; padding: 0; list-style: none; border: 1px solid #5a2a2a; background: #1a1010; }
-.s-rules-errors li { display: flex; gap: 8px; align-items: baseline; padding: 3px 6px; font-size: 11px; color: #f2d6d2; border-top: 1px solid #000; }
+/* Problems: a place to go to, then what is wrong there. */
+.s-rules-problems .s-box-body { max-height: 220px; overflow: auto; }
+.s-rules-errors { margin: 0; padding: 0; list-style: none; background: #1a1010; }
+.s-rules-results .s-rules-errors { border: 1px solid #5a2a2a; }
+.s-rules-errors li { display: grid; gap: 1px; padding: 5px 8px; font-size: 11px; line-height: 15px; color: #f2d6d2; border-top: 1px solid #000; }
 .s-rules-errors li:first-child { border-top: 0; }
-.s-rules-errlink { flex: none; padding: 0; font: bold 11px/14px var(--font-ui); color: var(--s-link); cursor: pointer; background: none; border: 0; }
+.s-rules-errlink { justify-self: start; padding: 0; font: bold 11px/14px var(--font-ui) !important; color: var(--s-link); cursor: pointer; background: none; border: 0; }
 .s-rules-errlink:hover:not(:disabled) { text-decoration: underline; }
 .s-rules-errlink:disabled { color: #b5a3a0; cursor: default; }
+.s-rules-errplace { font: bold 11px/14px var(--font-ui); color: #b5a3a0; }
 
 .s-rules-meters { display: grid; gap: 6px; padding: 8px 8px 6px; }
-.s-rules-meter { display: grid; grid-template-columns: 68px minmax(0, 1fr); gap: 2px 6px; align-items: center; font-size: 10px; color: #d6d6d6; }
+.s-rules-meter { display: grid; grid-template-columns: 76px minmax(0, 1fr); gap: 2px 6px; align-items: center; font-size: 10px; color: #d6d6d6; }
 .s-rules-meter-label { text-transform: capitalize; }
 .s-rules-meter-bar { height: 8px; overflow: hidden; background: #111; border: 1px solid #3a3a3a; }
 .s-rules-meter-bar i { display: block; height: 100%; background: #4f7db5; }
@@ -51,7 +99,8 @@
 .s-rules-meter-text { grid-column: 2; color: #8d9aab; }
 .s-rules-handlers { width: 100%; font-size: 10px; color: #c9c9c9; border-collapse: collapse; }
 .s-rules-handlers td { padding: 1px 0; }
-.s-rules-handlers td:last-child { text-align: right; color: #8d9aab; }
+.s-rules-handlers td:last-child { text-align: right; color: #8d9aab; white-space: nowrap; }
+.s-rules-handlers tr.top td:first-child { color: #fff; }
 
 .s-rules-caps { margin: 0; padding: 4px 0; list-style: none; }
 .s-rules-caps li { display: flex; flex-direction: column; padding: 3px 8px; font-size: 11px; color: #e6e6e6; border-top: 1px solid #1e1e1e; }
@@ -59,27 +108,64 @@
 .s-rules-caps li small { font-size: 9px; color: #7e8ea6; }
 .s-rules-caps li.bad b { color: #ff8c7a; }
 
-.s-rules-scenario { margin-top: 6px; }
-.s-rules-settings { flex-wrap: wrap; gap: 6px 10px; }
-.s-rules-settings label { display: inline-flex; gap: 4px; align-items: center; color: #d6d6d6; font-size: 11px; }
-.s-rules-settings input[type="number"] { width: 70px; }
-.s-rules-split { display: grid; grid-template-columns: 200px minmax(0, 1fr); gap: 8px; margin: 6px 0; }
-.s-rules-split h4 { margin: 0 0 3px; font: bold 12px/16px var(--font-ui); color: #fff; }
-.s-rules-table td { white-space: normal; vertical-align: top; }
-.s-rules-table select, .s-rules-table input { font-size: 11px; }
-.s-rules-tick { width: 58px; }
-.s-rules-time { color: #8d9aab; font-variant-numeric: tabular-nums; }
-.s-rules-fields { display: flex; flex-wrap: wrap; gap: 4px 8px; }
-.s-rules-field { display: inline-flex; gap: 3px; align-items: center; color: #aab4c2; font-size: 10px; }
-.s-rules-field input { width: 54px; }
-.s-rules-add { margin-top: 4px; }
+/* The test: the scenario beside what running it gave. */
+.s-rules-test { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 8px; align-items: start; margin-top: 8px; }
+.s-rules-testbox { margin-bottom: 0; }
+.s-rules-testbox > .s-box-body { padding: 8px; }
+.s-rules-scenario, .s-rules-results { display: grid; gap: 8px; min-width: 0; font-size: 11px; color: #d6d6d6; }
+.s-rules-scenario h4, .s-rules-results h4 { margin: 4px 0 3px; font: bold 12px/16px var(--font-ui); color: #fff; }
+.s-rules-scenario h4 small { margin-left: 4px; font-weight: normal; font-size: 10px; color: #8d9aab; }
 
-.s-rules-trace { margin-top: 6px; }
-.s-rules-trace .s-toolbar span { font-size: 11px; color: #d6d6d6; }
-.s-rules-trace .s-toolbar .s-btn { margin-left: auto; }
-.s-rules-chip { display: inline-block; margin: 0 4px 1px 0; padding: 0 4px; font-size: 10px; color: #dfe7f2; border: 1px solid #33496a; border-radius: 3px; background: #0e1a2c; }
-.s-rules-errrow td { background: #2a1414 !important; }
-.s-rules-trace code, .s-rules-table code { font: 11px/14px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.s-rules-set { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: center; padding: 6px 8px; background: #000; border: 1px solid #444; }
+.s-rules-set label { display: inline-flex; gap: 5px; align-items: center; color: #d6d6d6; white-space: nowrap; }
+.s-rules-set label > span { color: #fff; }
+.s-rules-set small { font-size: 10px; color: #8d9aab; }
+.s-rules-set .s-btn { margin-left: auto; }
+.s-rules-issues { margin: 0; padding: 4px 8px; list-style: none; font-size: 11px; line-height: 15px; color: #f2d6d2; border: 1px solid #5a2a2a; background: #1a1010; }
+.s-rules-issues li::first-letter { text-transform: uppercase; }
+
+.s-rules-part { min-width: 0; }
+.s-rules-table { border: 1px solid #444; }
+.s-rules-table td { overflow: visible; text-overflow: clip; vertical-align: middle; padding-top: 3px; padding-bottom: 3px; }
+.s-rules-end { width: 1%; text-align: right; }
+.s-rules-add { display: flex; gap: 8px; align-items: center; margin-top: 4px; }
+.s-rules-list td { overflow: visible; text-overflow: clip; }
+
+.s-rules-quick { display: flex; flex-wrap: wrap; gap: 5px 6px; align-items: center; padding: 6px 8px; color: #d6d6d6; background: #000; border: 1px solid #444; }
+.s-rules-events { margin: 0; padding: 0; list-style: none; border: 1px solid #444; border-top: 0; }
+.s-rules-ev { display: grid; grid-template-columns: 64px 104px minmax(0, 1fr) auto; gap: 4px 8px; align-items: center; padding: 3px 8px; border-top: 1px solid #000; }
+.s-rules-ev > select { width: 100%; }
+.s-rules-events .s-rules-ev:nth-child(odd) { background: #1a1a1a; }
+.s-rules-events .s-rules-ev:nth-child(even) { background: #272727; }
+.s-rules-ev--head { margin-top: 6px; padding-top: 4px; padding-bottom: 3px; font: bold 12px/15px var(--font-ui); color: #fff; background: #000; border: 1px solid #444; border-bottom: 0; }
+.s-rules-ev--head span:last-child { width: 58px; }
+.s-rules-ev-what { display: flex; flex-wrap: wrap; gap: 4px 6px; align-items: center; min-width: 0; color: #c9c9c9; }
+
+/* Results: how it ended, the standings, then each moment in order. */
+.s-rules-runbar { display: flex; flex-wrap: wrap; gap: 6px 8px; align-items: center; }
+.s-rules-copy { margin-left: auto; }
+.s-rules-stale { opacity: .55; }
+.s-rules-run { display: grid; gap: 6px; min-width: 0; }
+.s-rules-sum { font-size: 12px; line-height: 16px; color: #e6e6e6; }
+.s-rules-standings { max-width: 360px; }
+.s-rules-teams { font-size: 11px; color: #c9c9c9; }
+.s-rules-timeline { margin: 0; padding: 0; list-style: none; border: 1px solid #444; }
+.s-rules-timeline > li { display: grid; grid-template-columns: 62px minmax(0, 1fr); gap: 0 10px; padding: 5px 8px; font-size: 11px; line-height: 15px; border-top: 1px solid #000; }
+.s-rules-timeline > li:first-child { border-top: 0; }
+.s-rules-timeline > li:nth-child(odd) { background: #1a1a1a; }
+.s-rules-timeline > li:nth-child(even) { background: #272727; }
+.s-rules-timeline > li.s-rules-tl--bad { background: #2a1414; }
+.s-rules-tl-when { font-weight: bold; color: #fff; font-variant-numeric: tabular-nums; }
+.s-rules-tl-when small { display: block; font-weight: normal; font-size: 9px; line-height: 11px; color: #8d9aab; }
+.s-rules-tl-what { display: grid; gap: 2px; min-width: 0; overflow-wrap: anywhere; }
+.s-rules-tl-event { font-size: 12px; color: #fff; }
+.s-rules-tl-did { display: flex; flex-wrap: wrap; gap: 2px 6px; align-items: baseline; }
+.s-rules-tl-score b { color: #8fd18f; }
+.s-rules-tl-score.down b { color: #ff8c7a; }
+.s-rules-tl-score span { color: #8d9aab; }
+.s-rules-tl-change { color: #c5d6ee; }
+.s-rules-chip { display: inline-block; padding: 0 4px; font-size: 10px; color: #dfe7f2; border: 1px solid #33496a; border-radius: 3px; background: #0e1a2c; }
+.s-rules code { font: 11px/14px var(--font-mono); }
 
 .s-rules-dialog { width: min(420px, 92vw); max-height: 80vh; padding: 0; color: #e6e6e6; background: #1b1b1b; border: 1px solid #2a3d59; }
 .s-rules-dialog::backdrop { background: #080b11b8; }
@@ -112,3 +198,21 @@
 .s-variant-bar { flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
 .s-variant-bar a.s-btn { display: inline-flex; align-items: center; text-decoration: none; }
 .s-variant .s-facts { margin-bottom: 8px; }
+
+@media (max-width: 1100px) {
+  .s-rules-top, .s-rules-test { grid-template-columns: minmax(0, 1fr); }
+  .s-rules-editor { height: 420px; }
+  .s-rules-problems .s-box-body { max-height: none; }
+}
+@media (max-width: 560px) {
+  .s-rules-status { flex-basis: 100%; margin-left: 0; }
+  .s-rules-editor { height: 340px; }
+  .s-rules-ev { grid-template-columns: 64px minmax(0, 1fr) auto; }
+  .s-rules-ev-what { grid-column: 1 / -1; grid-row: 2; }
+  .s-rules-ev--head { display: none; }
+  .s-rules-events { border-top: 1px solid #444; margin-top: 6px; }
+  .s-rules-set .s-btn { margin-left: 0; }
+  .s-rules-hint { margin-left: 0; }
+  .s-rules-row { grid-template-columns: minmax(0, 1fr); }
+  .s-rules-row > small { grid-column: 1; }
+}
