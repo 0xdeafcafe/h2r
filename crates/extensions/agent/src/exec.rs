@@ -569,6 +569,7 @@ impl Agent {
         let mut s = self.lock();
         s.advance_live_epoch();
         s.map_epoch = s.live_epoch;
+        input::lock(&s.input).clear_routes("checkpoint_restored");
     }
 
     /// What a machine snapshot keeps of the game as the agent saw it
@@ -610,6 +611,7 @@ impl Agent {
         s.activation = 0;
         s.advance_live_epoch();
         s.map_epoch = s.live_epoch;
+        input::lock(&s.input).clear_routes("snapshot_loaded");
         Ok(())
     }
 

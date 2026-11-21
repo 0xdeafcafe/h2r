@@ -23,6 +23,7 @@ use crate::tactics::{self, Shot, Style, Tactics};
 pub(crate) mod feel;
 mod look;
 pub(crate) mod pad;
+mod route;
 #[cfg(test)]
 use look::turn_rate;
 
@@ -30,6 +31,7 @@ use feel::{Rng, reached};
 pub use look::AimTrace;
 use look::{Hand, angle_error};
 use pad::{Buttons, Feet, Fidget, Tap};
+pub use route::{RouteMotion, RoutePad};
 
 /// How good a bot is (docs/game/bots.md, section 3.4).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -336,6 +338,12 @@ fn dist_xy(a: Vec3, b: Vec3) -> f32 {
 fn up(p: Vec3, h: f32) -> Vec3 {
     [p[0], p[1], p[2] + h]
 }
+
+fn movement_stick([x, y]: [f32; 2], yaw: f32) -> (f32, f32) {
+    let (s, c) = yaw.sin_cos();
+    (x * s - y * c, x * c + y * s)
+}
+
 fn angles(v: Vec3) -> (f32, f32) {
     let flat = (v[0] * v[0] + v[1] * v[1]).sqrt();
     (v[1].atan2(v[0]), v[2].atan2(flat))
@@ -1465,15 +1473,14 @@ impl Mind {
         } else {
             1.0
         };
-        let [x, y] = self.feet.step(
+        let walk = self.feet.step(
             walk.map(|w| w.walk),
             dt,
             slow,
             jump || dodge.is_some(),
             |d| map.is_none_or(|m| crate::moves::bend_clear(m, me.position, d)),
         );
-        let (s, c) = facing.0.sin_cos();
-        pad.left_stick = (x * s - y * c, x * c + y * s);
+        pad.left_stick = movement_stick(walk, facing.0);
         // An emote over a dumb death: stand, crouch in rhythm, nothing
         // else. Never while an objective is live for it: carrying,
         // guarding, hunting a carrier, in or going to the hill.

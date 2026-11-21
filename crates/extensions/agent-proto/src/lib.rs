@@ -25,6 +25,7 @@ pub mod hot;
 pub mod live;
 mod load;
 mod pad;
+pub mod route;
 pub mod raw;
 mod render;
 pub mod shadow;
@@ -124,7 +125,7 @@ pub mod method {
     /// Read a page of a saved input log.
     pub const INPUT_LOG_READ: &str = "input.log.read";
 
-    /// Every method, in the order `session.methods` lists them.
+    /// Core methods, in the order `session.methods` lists them.
     pub const ALL: &[&str] = &[
         STATUS,
         METHODS,
@@ -149,10 +150,8 @@ pub mod method {
     /// Methods that change the run; they need `session.claim` first.
     pub const CONTROL: &[&str] = &[PAUSE, RESUME, STEP];
 
-    // Host methods: answered only where they are registered
-    // (`Agent::add_method`): the input methods by the agent's input tap
-    // when the game has XAPI input, the rest by boot's agent glue. So
-    // `session.methods` lists them only there.
+    // Optional methods: `session.methods` lists only those registered by
+    // the input tap, game-thread features or host glue.
 
     /// Submit a website join through the same inbox as the OS and CLI.
     pub const LIVE_JOIN_OPEN: &str = "live.join.open";
@@ -162,6 +161,12 @@ pub mod method {
     pub const LIVE_MATCHMAKING_TRACE: &str = "live.matchmaking.trace";
     /// Queue pad steps for a player ([`crate::PadParams`]).
     pub const INPUT_PAD: &str = "input.pad";
+    /// Drive one controller port through a sequence of movement legs.
+    pub const INPUT_ROUTE: &str = "input.route";
+    /// Read a port's active or most recent route.
+    pub const INPUT_ROUTE_STATUS: &str = "input.route.status";
+    /// Stop the active route and release the port.
+    pub const INPUT_ROUTE_STOP: &str = "input.route.stop";
     /// Drop the queued steps and let go of everything.
     pub const INPUT_RELEASE: &str = "input.release";
     /// What each pad holds now, what is queued, and recording or replay.

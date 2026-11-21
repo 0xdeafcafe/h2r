@@ -20,6 +20,7 @@ pub mod agent_glue;
 pub mod forge_controls;
 pub mod forge_glue;
 mod forge_map;
+mod agent_route;
 pub mod aim_assist;
 pub mod attract;
 mod audio_loop_agent;
