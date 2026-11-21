@@ -42,21 +42,20 @@ const UNSAVED: &str = "Unsaved changes###unsaved";
 const SAVE_PACKAGE: &str = "Save as package###save-package";
 const OPEN_PACKAGE: &str = "Open package###open-package";
 
-/// A tab of the Map workspace's left dock node, in the order
-/// [`Studio::frame`] draws them.
+/// A tab of the Map workspace's left dock node.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum MapTab {
-    Maps = 0,
-    Scene = 1,
-    Tags = 2,
-    Scripts = 3,
+    Maps,
+    Scene,
+    Tags,
+    Scripts,
 }
 
 impl MapTab {
     /// Frames a tab is asked for before giving up (a collapsed or hidden
     /// floating window never draws; asking forever would take focus from
     /// every other window).
-    const TRIES: u8 = 4;
+    const TRIES: u8 = 6;
 }
 
 /// The studio UI.
@@ -185,16 +184,23 @@ impl Studio {
                 // the windows that appear with a new layout take it, and Dear
                 // ImGui selects the last new tab of a node when its windows
                 // first dock. So the wanted tab is asked for every frame until
-                // it draws in a frame that did not apply a layout.
+                // it shows in a frame that did not apply a layout. A docked
+                // window built in the frame it is focused runs its contents
+                // even behind another tab, hidden, so "shows" is the window's
+                // own Hidden flag, not whether its contents ran.
                 let want = self.want_tab.map(|(tab, _)| tab);
-                let shown = [
-                    self.maps_window(ui, app, gpu, want == Some(MapTab::Maps), &mut actions),
-                    self.outliner_window(ui, app, want == Some(MapTab::Scene), &mut actions),
-                    self.tags_window(ui, app, want == Some(MapTab::Tags), &mut actions),
-                    self.scripts_window(ui, app, want == Some(MapTab::Scripts), &mut actions),
-                ];
+                self.maps_window(ui, app, gpu, want == Some(MapTab::Maps), &mut actions);
+                self.outliner_window(ui, app, want == Some(MapTab::Scene), &mut actions);
+                self.tags_window(ui, app, want == Some(MapTab::Tags), &mut actions);
+                self.scripts_window(ui, app, want == Some(MapTab::Scripts), &mut actions);
                 if let Some((tab, tries)) = self.want_tab {
-                    let done = shown[tab as usize] && !reset;
+                    let key = match tab {
+                        MapTab::Maps => &self.keys.maps,
+                        MapTab::Scene => &self.keys.outliner,
+                        MapTab::Tags => &self.keys.tags,
+                        MapTab::Scripts => &self.keys.scripts,
+                    };
+                    let done = layout::shows(key) && !reset;
                     self.want_tab = (!done && tries > 1).then_some((tab, tries - 1));
                 }
                 self.viewport_window(ui, app, gpu, &mut actions);
@@ -678,7 +684,7 @@ impl Studio {
         app: &mut App,
         focus: bool,
         actions: &mut Vec<Action>,
-    ) -> bool {
+    ) {
         app.sync_tags();
         let fonts = &self.fonts;
         let st = &mut self.tags;
@@ -693,8 +699,7 @@ impl Studio {
                 actions.push(Action::SetTool(ToolKind::Tags));
             }
             tags::tree(ui, app, st, fonts, actions);
-        })
-        .is_some()
+        });
     }
 
     fn scripts_window(
@@ -703,7 +708,7 @@ impl Studio {
         app: &mut App,
         focus: bool,
         actions: &mut Vec<Action>,
-    ) -> bool {
+    ) {
         let fonts = &self.fonts;
         let st = &mut self.scripts;
         let dialogs = self.dialogs;
@@ -722,8 +727,7 @@ impl Studio {
             // map opens and this tab is first drawn for it.
             app.sync_scripts();
             scripts::list(ui, app, st, fonts, dialogs, actions);
-        })
-        .is_some()
+        });
     }
 
     fn maps_window(
@@ -733,9 +737,9 @@ impl Studio {
         gpu: &mut Gpu<'_>,
         focus: bool,
         actions: &mut Vec<Action>,
-    ) -> bool {
+    ) {
         let mut list = std::mem::take(&mut self.map_list);
-        let drawn = ui.window(&self.keys.maps).focused(focus).build(|| {
+        ui.window(&self.keys.maps).focused(focus).build(|| {
             if ui.button(format!("{} Open...", icon::FOLDER_OPEN)) {
                 self.open_source_dialog(actions);
             }
@@ -762,7 +766,6 @@ impl Studio {
             map_list::source_rows(ui, app, &mut list, gpu, &shared, actions);
         });
         self.map_list = list;
-        drawn.is_some()
     }
 
     /// The user packages, converted variants and read-only Halo 1 maps.
@@ -806,7 +809,7 @@ impl Studio {
         app: &mut App,
         focus: bool,
         actions: &mut Vec<Action>,
-    ) -> bool {
+    ) {
         let window = ui.window(&self.keys.outliner)
             .flags(WindowFlags::NO_FOCUS_ON_APPEARING)
             .focused(focus);
@@ -937,8 +940,7 @@ impl Studio {
                 if place.is_some() {
                     self.viewport.placing = place;
                 }
-            })
-            .is_some()
+            });
     }
 
     fn viewport_window(
