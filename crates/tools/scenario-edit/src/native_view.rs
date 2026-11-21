@@ -550,6 +550,8 @@ pub fn read_all<R: Read + Seek>(
 
 /// A [`NativeLoad`] on the GPU in one Lighting mode.
 pub struct NativeWorld {
+    /// The BSP it draws.
+    bsp: TagId,
     gpu: GpuWorld,
     lighting: Lighting,
     pool: gfx::ring::UploadPool,
@@ -753,12 +755,35 @@ impl NativeWorld {
             }
         }
         Self {
+            bsp: load.bsp,
             gpu,
             lighting,
             pool: Default::default(),
             base,
             layers,
         }
+    }
+
+    /// The BSP this world draws.
+    pub fn bsp(&self) -> TagId {
+        self.bsp
+    }
+
+    /// Move one section's vertices (the Modeling tool's live preview):
+    /// see `GpuWorld::set_section_vertices`.
+    pub fn set_section_vertices(
+        &mut self,
+        queue: &wgpu::Queue,
+        owner: Owner,
+        positions: &[[f32; 3]],
+        normals: Option<&[[f32; 3]]>,
+    ) -> bool {
+        self.gpu.set_section_vertices(queue, owner, positions, normals)
+    }
+
+    /// Whether this world drew a section for `owner`.
+    pub fn has_section(&self, owner: Owner) -> bool {
+        self.gpu.world().section(owner).is_some()
     }
 
     /// Records `layers`' draws that this world uploaded, in that order.

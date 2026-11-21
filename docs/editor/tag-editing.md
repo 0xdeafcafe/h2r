@@ -402,15 +402,20 @@ line's meaning text ([tag-definitions.md](../formats/tag-definitions.md),
 
 1. **E**: the engine's reader, by guest address.
 2. **V**: a check on the owner's disc.
-3. **A Halo2Xbox `<file>`**: the retail Halo 2 Xbox plugin of Assembly,
-   read as a reference under the permission and at the revision recorded
-   in [notes/tag-field-names.md](notes/tag-field-names.md). A name is our
+3. **A Halo2Xbox `<file>`**, **A Halo2 `<file>`**: the retail Halo 2
+   Xbox plugin of Assembly, or the retail Halo 2 Vista plugin that
+   Assembly reads for an Xbox map when `Halo2Xbox` has none, read as a
+   reference under the permission and at the revision recorded in
+   [notes/tag-field-names.md](notes/tag-field-names.md). A name is our
    own `snake_case` word and a description is our own sentence. No plugin
    file, name list, option list or comment text is committed.
 4. **D**: a choice made here.
 
 Projects built from leaked builds are not a source for anything.
-`tag_names::assembly` refuses a plugin folder of any build but retail.
+`tag_names::assembly` refuses a pre-release or leak-derived plugin
+folder (`REFUSED`). Other retail games' plugins (`HINTS`) give hints
+only: `tag_names::hints` names a field from one where the layout around
+it lines up, and the name carries its game.
 
 A lane adds names to one group like this:
 
@@ -419,21 +424,24 @@ A lane adds names to one group like this:
 2. With a local checkout of the reference outside the repository,
    `H2_FIELD_NAMES=<dir> cargo test -p tag-names -- --ignored
    every_plugin_merges_against_our_definitions` prints, per group, the
-   fields the reference describes and ours does not, and every
-   disagreement in width, stride or type.
+   fields the reference describes and ours does not, every
+   disagreement in width, stride or type, and how many hints each other
+   retail game gives.
 3. For each field whose offset and width agree, write the line in
    `defs/<group>.txt`: our name, `doc="..."`, `unit=`, and `-- A
-   Halo2Xbox <file>` after any E or V evidence. Fields tile the span
+   Halo2Xbox <file>` (or `A Halo2 <file>`) after any E or V evidence. Fields tile the span
    they replace exactly. A disagreement keeps our layout and gets a row
    in the note's table.
 4. `cargo test -p tags defs registry` checks tiling, agreement with the
    schema and each attribute's words.
 5. Add the group's counts to the note.
 
-Evidence **Code**: the note records that the retail reference has no
-plugin for weapons, equipment, scenery, machines and crates, and none for
-14 schema groups. Their names need E or V evidence, or a source the owner
-permits (see the report that accompanies this design).
+Evidence **Code**: the note's entry "the Halo 2 fallback folder and
+other retail games" finds the weapon, equipment, biped, scenery,
+machine, crate and damage plugins in Assembly's `Halo2` folder, which
+Assembly's engine table names as the retail Xbox build's fallback. A
+field a converter writes by its byte-valued path keeps its unknown
+name; the note counts those per group.
 
 ### The editor's socket API
 

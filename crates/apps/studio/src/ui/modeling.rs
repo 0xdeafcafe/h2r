@@ -1,0 +1,141 @@
+//! The Modeling section of the map inspector (docs/editor/modeling.md):
+//! pick a cluster or instanced definition, open it in edit mode, select
+//! and move its vertices with undo. Every button is an `Action::Model`,
+//! the same command `geometry.*` and `mesh.*` run.
+
+use dear_imgui_rs::{TreeNodeFlags, Ui};
+use geometry_edit::TargetInfo;
+use geometry_edit::mesh_edit::{MeshOp, SelectMode};
+
+use crate::App;
+use crate::app::Action;
+use crate::app::modeling::ModelAction;
+use crate::theme;
+
+/// What the section keeps between frames.
+#[derive(Default)]
+pub struct ModelingPanel {
+    /// The open map's targets (`World rev`, list), read when the section
+    /// first opens on a map.
+    targets: Option<(u64, Vec<TargetInfo>)>,
+    picked: usize,
+    delta: [f32; 3],
+}
+
+/// The section, under the inspector's fields.
+pub fn section(ui: &Ui, app: &mut App, st: &mut ModelingPanel, actions: &mut Vec<Action>) {
+    if !app.session.is_open() {
+        return;
+    }
+    if !ui.collapsing_header("Modeling##modeling", TreeNodeFlags::NONE) {
+        return;
+    }
+    let rev = app.session.world_rev();
+    if st.targets.as_ref().is_none_or(|(r, _)| *r != rev) {
+        let list = app.modeling_targets(None).unwrap_or_default();
+        st.targets = Some((rev, list));
+        st.picked = 0;
+    }
+    let Some((_, targets)) = &st.targets else {
+        return;
+    };
+    if targets.is_empty() {
+        ui.text_disabled("This map has no editable geometry.");
+        return;
+    }
+    let label = |t: &TargetInfo| {
+        format!(
+            "{} {} of {} ({} vertices)",
+            t.target.kind.label(),
+            t.target.index,
+            t.tag_name,
+            t.vertices
+        )
+    };
+    let picked = st.picked.min(targets.len() - 1);
+    // A picker, not arrows: the list opens on top.
+    if let Some(_c) = ui.begin_combo("Target##modeling-target", label(&targets[picked])) {
+        for (i, t) in targets.iter().enumerate() {
+            if ui.selectable_config(label(t)).selected(i == picked).build() {
+                st.picked = i;
+            }
+        }
+    }
+    let info = &targets[st.picked.min(targets.len() - 1)];
+    let t = info.target;
+    let g = &app.modeling.session;
+    let editing = g.active == Some(t);
+    if !editing {
+        if ui.button("Edit mode##modeling-open") {
+            actions.push(Action::Model(ModelAction::Open(t)));
+        }
+        if !info.local {
+            ui.same_line();
+            ui.text_disabled("In a shared cache: shown, not saved.");
+        }
+        return;
+    }
+    if ui.button("Leave edit mode##modeling-close") {
+        actions.push(Action::Model(ModelAction::Close(t)));
+    }
+    let apply = |ops: Vec<MeshOp>| {
+        Action::Model(ModelAction::Apply {
+            target: t,
+            ops,
+            merge: None,
+        })
+    };
+    let selected = g.mesh(t).map_or(0, |m| m.selection().len());
+    ui.text(format!("{selected} selected"));
+    if ui.button("Select all##modeling-all") {
+        actions.push(apply(vec![
+            MeshOp::Mode {
+                mode: SelectMode::Vert,
+            },
+            MeshOp::SelectAll,
+        ]));
+    }
+    ui.same_line();
+    if ui.button("Select none##modeling-none") {
+        actions.push(apply(vec![MeshOp::SelectNone]));
+    }
+    for (axis, name) in ["x", "y", "z"].iter().enumerate() {
+        let mut v = st.delta[axis];
+        if ui.input_float(format!("Move {name}##modeling-delta-{name}"), &mut v) && v.is_finite() {
+            st.delta[axis] = v;
+        }
+    }
+    let finite = st.delta.iter().all(|v| v.is_finite());
+    if ui.button("Move selection##modeling-move") && finite && selected > 0 {
+        let d = st.delta;
+        actions.push(apply(vec![MeshOp::Transform {
+            matrix: [
+                [1.0, 0.0, 0.0, d[0]],
+                [0.0, 1.0, 0.0, d[1]],
+                [0.0, 0.0, 1.0, d[2]],
+            ],
+            pivot: None,
+        }]));
+    }
+    if ui.button("Undo##modeling-undo") {
+        actions.push(Action::Model(ModelAction::Undo));
+    }
+    ui.same_line();
+    if ui.button("Redo##modeling-redo") {
+        actions.push(Action::Model(ModelAction::Redo));
+    }
+    for c in g.check(Some(t)) {
+        ui.text(format!(
+            "{} moved, {} faces' lightmaps stale: {}",
+            c.moved,
+            c.lightmap_stale,
+            c.class.name().replace('_', " ")
+        ));
+        if let Some(why) = &c.refused {
+            ui.text_colored(theme::ERROR, why);
+        }
+    }
+    if let Some(why) = app.geometry_save_refusal() {
+        ui.text_wrapped(format!("Save refused: {why}"));
+    }
+}

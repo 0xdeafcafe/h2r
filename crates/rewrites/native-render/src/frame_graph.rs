@@ -9,7 +9,9 @@ mod inputs;
 pub use inputs::{freeze_display_inputs, freeze_scaled_inputs};
 mod lighting;
 mod private;
+mod sun;
 pub use lighting::{E3Report, PassWork};
+pub use sun::{RECEIVER_DEPTH_BIAS, SunSkip};
 
 use std::ops::Range;
 
@@ -165,12 +167,32 @@ impl FramePass for ScaledScenePass<'_> {
     }
 }
 
+/// E3's sun tiles for one draw of `replay` on `device`
+/// ([`sun`]): `None` in any other mode, so retail replays every op.
+fn sun_tiles(
+    device: &wgpu::Device,
+    scene: &FrameScene,
+    replay: &ReplayFrame,
+    scale: u32,
+    lighting: Lighting,
+) -> Option<sun::SunReplay> {
+    if lighting != Lighting::E3 {
+        return None;
+    }
+    let models = crate::sun_casters::models_for(scene.id.map_epoch);
+    let models = models
+        .as_deref()
+        .map(|m| m as &dyn crate::sun_casters::CasterModels);
+    sun::plan(device, scene, replay, scale, models)
+}
+
 fn record(
     pass: &mut impl FramePass,
     frame: &ReplayFrame,
     fresh_targets: bool,
     lighting: Lighting,
     observer: Option<&mut dyn PassObserver>,
+    sun_replay: Option<sun::SunReplay>,
 ) -> Result<Option<E3Report>, String> {
     // The graph replays the guest's layers in both modes. Only work
     // submitted by the E3 stages belongs to these four pass rows.
@@ -181,24 +203,40 @@ fn record(
         .unwrap_or_default();
     let mut rows = rows.into_iter().enumerate().peekable();
     let mut observer = observer;
-    for (i, (at, op)) in frame.ops.iter().enumerate() {
-        pass.apply(op)
-            .map_err(|e| format!("view {} {} op {i}: {e}", at.view, at.slot.name()))?;
-        if let Some((index, row)) = rows.next_if(|(_, row)| row.ops.end == i + 1)
-            && let Some(observer) = observer.as_deref_mut()
-        {
-            observer.pass_end(index, &row, &mut || {
-                if fresh_targets
-                    && let Some(reason) = frame.private_read_refusal(row.ops.end, row.colour)
-                {
-                    return Err(reason.into());
-                }
-                pass.read_target(row.colour)
-            });
+    let ran = (|| -> Result<(), String> {
+        for (i, (at, op)) in frame.ops.iter().enumerate() {
+            let named = |e: String| format!("view {} {} op {i}: {e}", at.view, at.slot.name());
+            // An admitted object shadow's ops: its sun stage stands in.
+            if !sun_replay.as_ref().is_some_and(|s| s.skip[i]) {
+                pass.apply(op).map_err(named)?;
+            }
+            if let Some(stage) = sun_replay.as_ref().and_then(|s| s.after.get(&i)) {
+                pass.apply(stage).map_err(named)?;
+            }
+            if let Some((index, row)) = rows.next_if(|(_, row)| row.ops.end == i + 1)
+                && let Some(observer) = observer.as_deref_mut()
+            {
+                observer.pass_end(index, &row, &mut || {
+                    if fresh_targets
+                        && let Some(reason) = frame.private_read_refusal(row.ops.end, row.colour)
+                    {
+                        return Err(reason.into());
+                    }
+                    pass.read_target(row.colour)
+                });
+            }
         }
+        Ok(())
+    })();
+    if let Some(s) = &sun_replay {
+        s.finish(ran.is_ok());
     }
+    ran?;
     if let (Some(report), Some(tiles)) = (e3.as_mut(), pass.tile_work()) {
         report.add_tiles(tiles);
+    }
+    if let (Some(report), Some(s)) = (e3.as_mut(), &sun_replay) {
+        report.add_sun(s.work());
     }
     Ok(e3)
 }
@@ -230,8 +268,9 @@ pub fn draw_private_with_observer(
         return private::draw_mixed(backend, scene, replay, scale, lighting, observer);
     }
     let before = backend.batch_stats();
+    let sun_replay = sun_tiles(&backend.ctx.device, scene, replay, scale, lighting);
     let mut pass = GuestDrawPass::new_lit(backend, replay, scale, lighting)?;
-    let e3 = record(&mut pass, replay, true, lighting, observer)?;
+    let e3 = record(&mut pass, replay, true, lighting, observer, sun_replay)?;
     let (size, rgba) = pass.read_rgba()?;
     Ok(CapturedFrame {
         id: scene.id,
@@ -256,8 +295,9 @@ pub fn draw_display(
     observer: Option<&mut dyn PassObserver>,
 ) -> Result<FrameReport, String> {
     let before = backend.batch_stats();
+    let sun_replay = sun_tiles(&backend.ctx.device, scene, replay, scale, lighting);
     let mut pass = GuestDrawPass::new_display_lit(backend, replay, scale, lighting)?;
-    let e3 = record(&mut pass, replay, true, lighting, observer)?;
+    let e3 = record(&mut pass, replay, true, lighting, observer, sun_replay)?;
     pass.present(flags, gamma)?;
     Ok(FrameReport::new(
         scene.id,
@@ -287,9 +327,10 @@ pub fn draw_display_on(
     // Failure belongs to private replay. The live graph still owns its
     // original attachments and can complete this display.
     let _ = freeze_display_inputs(backend, replay, targets);
+    let sun_replay = sun_tiles(&backend.ctx.device, scene, replay, 1, lighting);
     let mut pass = GuestDrawPass::on_existing(backend, replay, targets)?;
     pass.set_lighting(lighting);
-    let e3 = record(&mut pass, replay, false, lighting, observer)?;
+    let e3 = record(&mut pass, replay, false, lighting, observer, sun_replay)?;
     let outputs = pass.present_with_outputs(flags, gamma)?;
     Ok((
         FrameReport::new(scene.id, lighting, e3, before, backend.batch_stats()),
@@ -319,7 +360,9 @@ pub fn draw_scaled_display_on(
     let before = backend.view().batch_stats();
     let mut pass = ScaledScenePass::new(backend, replay, targets)?;
     let _ = inputs::freeze_native_scaled_inputs(&mut pass, replay);
-    let e3 = record(&mut pass, replay, false, lighting, observer)?;
+    // The scaled display draws no sun tile: every object shadow keeps
+    // retail's mask there.
+    let e3 = record(&mut pass, replay, false, lighting, observer, None)?;
     let (after, outputs) = pass.present(replay.flags, replay.gamma.as_deref())?;
     Ok((
         FrameReport::new(scene.id, lighting, e3, before, after),

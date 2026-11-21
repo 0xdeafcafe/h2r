@@ -28,6 +28,7 @@ pub(crate) enum MenuCommand {
     Duplicate,
     Delete,
     AllowGrowth,
+    AllowUnverifiedGeometry,
     FrameAll,
     FocusSelected,
     Overlay,
@@ -41,7 +42,7 @@ pub(crate) struct MenuItem {
 }
 
 impl MenuCommand {
-    const ALL: [Self; 14] = [
+    const ALL: [Self; 15] = [
         Self::Save,
         Self::SaveVariant,
         Self::SavePlaylist,
@@ -52,6 +53,7 @@ impl MenuCommand {
         Self::Duplicate,
         Self::Delete,
         Self::AllowGrowth,
+        Self::AllowUnverifiedGeometry,
         Self::FrameAll,
         Self::FocusSelected,
         Self::Overlay,
@@ -106,6 +108,12 @@ impl MenuCommand {
                 "Allow growing full blocks",
                 "",
                 Action::SetAllowGrowth(!app.session.allow_growth()),
+                open,
+            ),
+            Self::AllowUnverifiedGeometry => (
+                "Allow unverified geometry writes",
+                "",
+                Action::SetAllowUnverifiedGeometry(!app.modeling.allow_unverified),
                 open,
             ),
             Self::FrameAll => ("Frame map", "Home", Action::FrameAll, open),

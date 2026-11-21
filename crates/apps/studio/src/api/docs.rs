@@ -67,6 +67,11 @@ fn is_open(app: &App, t: ToolKind) -> bool {
 
 fn can(app: &App, t: ToolKind) -> (bool, bool) {
     match t {
+        // A target in edit mode takes the map's undo (docs/editor/modeling.md).
+        ToolKind::Scenario if app.modeling.session.active.is_some() => {
+            let g = &app.modeling.session;
+            (g.can_undo(), g.can_redo())
+        }
         ToolKind::Scenario => (app.session.can_undo(), app.session.can_redo()),
         ToolKind::Variants => app
             .variants

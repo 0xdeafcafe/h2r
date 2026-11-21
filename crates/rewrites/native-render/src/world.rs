@@ -269,6 +269,66 @@ pub struct World {
     pub stats: BuildStats,
     /// Each placement's model rows ([`model_rows`]), sorted by placement.
     pub placements: Vec<(u32, ModelRows)>,
+    /// Where each added section's vertices are, in the order added: an
+    /// editor moves a section's vertices in place with
+    /// `GpuWorld::set_section_vertices` (docs/editor/modeling.md).
+    pub sections: Vec<SectionRun>,
+}
+
+/// One added section's run of [`World::vertices`] and how it was placed.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SectionRun {
+    pub owner: Owner,
+    pub first_vertex: u32,
+    pub vertex_count: u32,
+    pub place: Placement,
+}
+
+impl World {
+    /// The run of a section added for `owner`.
+    pub fn section(&self, owner: Owner) -> Option<&SectionRun> {
+        self.sections.iter().find(|s| s.owner == owner)
+    }
+
+    /// Replace the positions and normals of `owner`'s section (in its own
+    /// space; placed here as when added) in both vertex lists. Returns
+    /// the run, or `None` when `owner` has no section or the counts
+    /// differ. Draw bounds are not recomputed.
+    pub fn set_section_vertices(
+        &mut self,
+        owner: Owner,
+        positions: &[[f32; 3]],
+        normals: Option<&[[f32; 3]]>,
+    ) -> Option<SectionRun> {
+        let run = *self.section(owner)?;
+        let n = run.vertex_count as usize;
+        if positions.len() != n || normals.is_some_and(|v| v.len() != n) {
+            return None;
+        }
+        let first = run.first_vertex as usize;
+        let programs = self.program_vertices.len() == self.vertices.len();
+        for i in 0..n {
+            let v = &mut self.vertices[first + i];
+            v.position = if run.place == Placement::IDENTITY {
+                positions[i]
+            } else {
+                run.place.point(positions[i])
+            };
+            if let Some(normals) = normals {
+                v.normal = run.place.normal(normals[i]);
+            }
+            v.packed = pack_frame(v.normal, v.binormal, v.tangent, v.lighting);
+            if programs {
+                let p = &mut self.program_vertices[first + i];
+                p.position = positions[i];
+                if let Some(normals) = normals {
+                    p.normal = normals[i];
+                }
+                p.packed = pack_frame(p.normal, p.binormal, p.tangent, p.lighting);
+            }
+        }
+        Some(run)
+    }
 }
 
 /// The three model rows `c[50..52]` (hardware numbering) the structure
@@ -306,6 +366,7 @@ pub struct WorldBuilder {
     draws: Vec<WorldDraw>,
     transparents: Vec<TransparentDraw>,
     stats: BuildStats,
+    sections: Vec<SectionRun>,
 }
 
 impl WorldBuilder {
@@ -329,6 +390,12 @@ impl WorldBuilder {
         let lightmap = lightmap.filter(|_| lit);
         let inputs = section_inputs(section, lit);
         let base = self.vertices.len() as u32;
+        self.sections.push(SectionRun {
+            owner,
+            first_vertex: base,
+            vertex_count: n as u32,
+            place: *place,
+        });
         for i in 0..n {
             let normal = section.normals.get(i).copied().unwrap_or([0.0, 0.0, 1.0]);
             let turn = |v: &Vec<[f32; 3]>| v.get(i).map_or([0.0; 3], |&v| place.normal(v));
@@ -469,6 +536,7 @@ impl WorldBuilder {
             transparents: self.transparents,
             bounds: (!bounds.is_empty()).then_some(bounds),
             stats: self.stats,
+            sections: self.sections,
         }
     }
 }
@@ -599,6 +667,32 @@ mod tests {
         b.add_section(Owner::Cluster(0), &quad(0, false, true), &Placement::IDENTITY, PAGE);
         let v = b.finish().vertices[0];
         assert_eq!((v.binormal, v.tangent, v.lighting), ([0.0; 3], [0.0; 3], [0.0; 3]), "none: zero");
+    }
+
+    /// An editor's moved vertices land on the section's own run, placed
+    /// as it was added; the other section keeps its vertices.
+    #[test]
+    fn a_sections_vertices_are_replaced_in_place() {
+        let place = Placement {
+            scale: 1.0,
+            basis: [[0.0, 1.0, 0.0], [-1.0, 0.0, 0.0], [0.0, 0.0, 1.0]],
+            position: [10.0, 0.0, 0.0],
+        };
+        let mut b = WorldBuilder::new();
+        b.add_section(Owner::Cluster(0), &quad(0, false, false), &Placement::IDENTITY, None);
+        b.add_section(Owner::Instance(3), &quad(0, false, false), &place, None);
+        let mut w = b.finish();
+        assert_eq!(w.sections.len(), 2);
+        let before = w.vertices[..4].to_vec();
+        let moved = [[0.0, 0.0, 1.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [1.0, 1.0, 0.0]];
+        let run = w.set_section_vertices(Owner::Instance(3), &moved, None).unwrap();
+        assert_eq!((run.first_vertex, run.vertex_count), (4, 4));
+        assert_eq!(w.vertices[4].position, [10.0, 0.0, 1.0]);
+        assert_eq!(w.program_vertices[4].position, [0.0, 0.0, 1.0]);
+        assert_eq!(w.vertices[5].position, [10.0, 1.0, 0.0], "placed as added");
+        assert_eq!(w.vertices[..4], before[..]);
+        assert!(w.set_section_vertices(Owner::Cluster(0), &moved[..3], None).is_none());
+        assert!(w.set_section_vertices(Owner::Cluster(9), &moved, None).is_none());
     }
 
     /// Dropping a material's draws leaves one batch per run of what is

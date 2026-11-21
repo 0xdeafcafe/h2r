@@ -2,8 +2,8 @@
 //! (`engine::abi::OVERRIDES`: datum arrays, tag lookup, locale lookup)
 //! placed through the plan as implementations. Each is switched by
 //! `impl.engine.<group>.<name>`, falling back to `impl.engine.<group>` and
-//! `impl.engine`; groups are `locale`, `tags` and `datums`, and only
-//! `locale` is on by default ([`default_on`]).
+//! `impl.engine`; groups are `locale`, `tags` and `datums`, all on by
+//! default.
 //!
 //! The Rust `locale_string_id_find` serves the plan's string sources
 //! (`crate::locale`), so with it on our strings need no hook.
@@ -25,16 +25,6 @@ pub fn group(name: &str) -> &'static str {
     } else {
         "datums"
     }
-}
-
-/// Whether a group is on with no switch set. The locale functions are:
-/// the differential harness agrees on every call, through the game's path
-/// too, and `LOCALE_FIND` is overridden for our strings anyway, so the
-/// Rust lookup costs no extra dispatch. Datums and tags stay off until a
-/// play-test measures them: they are the hottest leaves and each override
-/// takes them off the direct-call path (docs/engine/feature-engine.md, Phase 2).
-pub fn default_on(group: &str) -> bool {
-    group == "locale"
 }
 
 /// A point for each adapter: the table's own where it names the address,
@@ -68,7 +58,7 @@ impl Feature for EngineLeaves {
         for (o, point) in engine::abi::OVERRIDES.iter().zip(leaf_points()) {
             let g = group(o.name);
             let key = format!("engine.{g}.{}", o.name);
-            if !b.switches().implementation(&key, default_on(g)) {
+            if !b.switches().implementation(&key, true) {
                 continue;
             }
             if point.name == points::LOCALE_FIND.name {

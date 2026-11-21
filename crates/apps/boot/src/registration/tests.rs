@@ -16,7 +16,9 @@ use std::sync::{Arc, Mutex};
 use super::{AgentSource, CoreInputs, LateInputs, register_core_film, register_late_for_profile};
 use crate::lockstep_glue;
 
-/// Every switch that adds hooks, on (the native renderer is on by default).
+/// Every switch that adds hooks, on (the native renderer, the engine leaves,
+/// Forge, the actor capture, Firefight and the creature probe are on by
+/// default; only the diagnostics and `impl.engine=on` are spelled out).
 pub(crate) const ALL_ON: &str = "impl.engine=on,render-timing,actor-net,firefight";
 /// Added to [`ALL_ON`]: the native renderer (on by default) off.
 pub(crate) const NATIVE_OFF: &str = "impl.render.native=off";
@@ -252,7 +254,7 @@ fn registry_for_profile(case: &Case, profile: film::RenderHooks) -> hooks::Regis
         crate::coop_probe::install_live(&rt, &mut features, nowhere).unwrap();
     }
     // What `run_hosted_with_live` adds after `register_late`, in its order.
-    if features.switches().feature("forge", false) && !case.light && !lockstep_on {
+    if features.switches().feature("forge", true) && !case.light && !lockstep_on {
         crate::forge_glue::install(&mut features, late.agent.as_ref(), None, nowhere).unwrap();
     }
     if let Some(a) = &mut late.agent {
@@ -298,8 +300,8 @@ fn the_creature_probe_plan_keeps_admission_on_in_both_arms() {
     use crate::actor_net::creature::FEATURE;
 
     for (switches, enabled) in [
-        (ALL_ON.to_owned(), false),
-        (format!("{ALL_ON},{FEATURE}"), true),
+        (format!("{ALL_ON},-{FEATURE}"), false),
+        (ALL_ON.to_owned(), true),
     ] {
         let mut case = Case::full(&switches);
         case.coop_live = true;
@@ -339,8 +341,8 @@ fn a_desktop_player_registers_only_the_films_render_groups() {
 }
 
 #[test]
-fn actor_capture_is_opt_in_and_observes_the_host_tick_and_dialogue() {
-    for (switches, enabled) in [("", false), (ALL_ON, true)] {
+fn actor_capture_is_on_unless_switched_off_and_observes_the_host_tick_and_dialogue() {
+    for (switches, enabled) in [("-actor-net", false), ("", true)] {
         let plan = plan(&Case::full(switches)).unwrap();
         let mut hooks: Vec<_> = plan.chains.values().flat_map(|chain| {
             chain.hooks().filter(|hook| hook.feature == "actor-net")
@@ -437,8 +439,9 @@ fn the_plan_builds_with_every_hook_switch_on() {
     assert_builds(&Case::full(ALL_ON));
     assert_builds(&Case::full(&format!("{ALL_ON},render-census")));
     assert_builds(&Case::full(&format!("{ALL_ON},{NATIVE_OFF}")));
-    // Forge is off by default; boot installs it with its switch on.
-    assert_builds(&Case::full(&format!("{ALL_ON},forge")));
+    // Forge is on by default; `-forge` leaves it out.
+    assert_builds(&Case::full(ALL_ON));
+    assert_builds(&Case::full(&format!("{ALL_ON},-forge")));
 }
 
 /// The features `run_hosted_with_live` adds around `register_core` and
@@ -470,13 +473,15 @@ fn the_full_case_plans_every_feature_boot_adds_outside_the_registration_function
     let missing: Vec<_> = expected.iter().copied().filter(|id| !ids.contains(id)).collect();
     assert!(missing.is_empty(), "the full case leaves out {missing:?}; planned: {ids:?}");
 
-    // The light host's registrations, and Forge with its switch.
+    // The light host's registrations, and Forge, on by default.
     let mut light = Case::full("");
     light.light = true;
     let light = plan(&light).unwrap();
     assert!(light.features.iter().any(|f| f.id == sim_bridge::sim_frame::ID));
-    let forge = plan(&Case::full("forge")).unwrap();
+    let forge = plan(&Case::full("")).unwrap();
     assert!(forge.features.iter().any(|f| f.id == "forge"));
+    let no_forge = plan(&Case::full("-forge")).unwrap();
+    assert!(!no_forge.features.iter().any(|f| f.id == "forge"));
 }
 
 /// Where boot registers features outside `register_core` and
@@ -491,7 +496,7 @@ const BOOT_SITES: &[(&str, &str)] = &[
     ("register_core_film", "registry_for_profile (a film's session is not covered: it needs a recording)"),
     ("render_aspect::install", "Case::drawing (gpu)"),
     ("register_late_for_profile", "registry_for_profile"),
-    ("forge_glue::install", "the forge switch"),
+    ("forge_glue::install", "Case::full, and `-forge` in the full-case plan test"),
     ("AgentGlue::configure_takeover", "Case::takeover"),
     ("dsound_glue::add_loop_agent_method", "not covered: needs the audio device (agent-audio)"),
     ("register_viewer_skips", "Case::light"),

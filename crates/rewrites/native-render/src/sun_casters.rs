@@ -15,7 +15,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use frame_scene::{FrameScene, NodeMatrix, View};
+use frame_scene::{FrameScene, InstanceKey, LayerOwner, NodeMatrix, View};
 
 use crate::model::Model;
 use crate::sun_tiles::{SunCaster, floats_hash};
@@ -84,6 +84,82 @@ pub enum CasterRefusal {
     Faint,
     /// The skinned mesh has no triangle.
     Empty,
+    /// Its layer 11 is not in the scene whole, or has no entry: what
+    /// retail's receivers draw is not known.
+    NoReceivers,
+    /// A layer-11 receiver is a structure cluster or an instanced
+    /// placement: the frame graph has no geometry of its own for it.
+    WorldReceiver,
+}
+
+/// One receiver of an object shadow's tile, in world space.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ReceiverMesh {
+    pub key: InstanceKey,
+    pub mesh: CasterMesh,
+    pub centre: [f32; 3],
+    pub radius: f32,
+}
+
+/// What object shadow `shadow` (into `scene.object_shadows`) draws its
+/// receivers on, as layer 11 lists them: each object once, skinned like
+/// a caster. Refused when the layer is not in the scene whole, or when an
+/// entry is not an instance of the view with nodes and a loaded model.
+pub fn receivers(
+    scene: &FrameScene,
+    shadow: usize,
+    models: &dyn CasterModels,
+) -> Result<Vec<ReceiverMesh>, CasterRefusal> {
+    let o = scene
+        .object_shadows
+        .get(shadow)
+        .ok_or(CasterRefusal::NoReceivers)?;
+    let v = scene
+        .views
+        .get(o.view as usize)
+        .ok_or(CasterRefusal::NoInstance)?;
+    let group = scene
+        .shadow_groups_of(o)
+        .iter()
+        .find(|g| g.layer == 11 && g.whole())
+        .ok_or(CasterRefusal::NoReceivers)?;
+    let entries = scene.entries_of(group);
+    if entries.is_empty() {
+        return Err(CasterRefusal::NoReceivers);
+    }
+    let instances = scene.instances_of(v);
+    let mut out: Vec<ReceiverMesh> = Vec::new();
+    for entry in entries {
+        let LayerOwner::Object(key) = entry.owner else {
+            return Err(CasterRefusal::WorldReceiver);
+        };
+        if out.iter().any(|r| r.key == key) {
+            continue;
+        }
+        let instance = instances
+            .iter()
+            .find(|i| i.key == key)
+            .ok_or(CasterRefusal::NoInstance)?;
+        let nodes = scene.nodes_of(instance);
+        if nodes.is_empty() || !nodes.iter().all(NodeMatrix::is_finite) {
+            return Err(CasterRefusal::NoNodes);
+        }
+        let loaded = models
+            .model(instance.definition)
+            .ok_or(CasterRefusal::NoModel)?;
+        let mesh = skin(loaded, nodes);
+        if mesh.indices.is_empty() {
+            return Err(CasterRefusal::Empty);
+        }
+        let (centre, radius) = instance.sphere;
+        out.push(ReceiverMesh {
+            key,
+            mesh,
+            centre,
+            radius,
+        });
+    }
+    Ok(out)
 }
 
 /// A caster's world-space triangles, for `sun_tiles_gpu::SunMesh::new`.
@@ -254,8 +330,9 @@ mod tests {
     use super::*;
     use crate::model::{ModelDraw, ModelVertex};
     use frame_scene::{
-        GroupSite, InstanceInput, InstanceKey, LightGroup, PROJECTION_ROWS, RenderCamera,
-        SceneBuilder, SceneId, Stamp, ViewKey, ViewKind,
+        GroupSite, InstanceInput, InstanceKey, LightBinding, LightEntry, LightGroup, LightPose,
+        LightStream, PROJECTION_ROWS, RenderCamera, Row, SceneBuilder, SceneId, Stamp, Topology,
+        ViewKey, ViewKind,
     };
     use std::collections::HashMap;
 
@@ -313,6 +390,42 @@ mod tests {
     /// A view with instances `keys` at x = 10, each moved up a unit, and
     /// object shadows for `shadows` (caster handle, creature, weight).
     fn shadow_scene(keys: &[u32], shadows: &[(u32, bool, Option<f32>)]) -> FrameScene {
+        shadow_scene_on(keys, shadows, &[])
+    }
+
+    /// An entry of a layer 11 drawn on `owner`.
+    fn receiver_entry(owner: LayerOwner) -> (LightEntry, Vec<Row>) {
+        let entry = LightEntry {
+            slot: 0,
+            record: 0,
+            owner,
+            model: 0,
+            stream: LightStream {
+                section: 0,
+                part: 0,
+                vertex_class: 0,
+                first_index: 0,
+                index_count: 3,
+                topology: Topology::List,
+            },
+            pose: LightPose::World,
+            binding: LightBinding {
+                shader: 0,
+                selector: 0,
+                variant: 0,
+                implementation: 3,
+            },
+        };
+        (entry, Vec::new())
+    }
+
+    /// [`shadow_scene`], each shadow's layer 11 drawn on `on`.
+    fn shadow_scene_on(
+        keys: &[u32],
+        shadows: &[(u32, bool, Option<f32>)],
+        on: &[LayerOwner],
+    ) -> FrameScene {
+        let entries: Vec<_> = on.iter().map(|&o| receiver_entry(o)).collect();
         let mut b = SceneBuilder::default();
         b.begin(SceneId::default());
         b.open_view(
@@ -351,7 +464,7 @@ mod tests {
                 entries: 0..0,
                 remainder: 0,
             };
-            b.push_shadow_group(group, &[]).unwrap();
+            b.push_shadow_group(group, &entries).unwrap();
             if let Some(w) = weight {
                 b.set_shadow_weight(w).unwrap();
             }
@@ -393,6 +506,35 @@ mod tests {
         let mut moved = s.clone();
         moved.nodes[0].position[2] = 1.5;
         assert_ne!(gather(&moved, 0, 480, &models).admitted[0].caster.rows, a);
+    }
+
+    /// A shadow's receivers are its layer 11's objects, each once, skinned;
+    /// a cluster or a placement among them refuses the shadow by name.
+    #[test]
+    fn receivers_are_layer_11s_objects_and_a_world_receiver_refuses() {
+        let models = Models(HashMap::from([(DEFINITION, triangle_model())]));
+        let objects = [
+            LayerOwner::Object(InstanceKey(1)),
+            LayerOwner::Object(InstanceKey(2)),
+            LayerOwner::Object(InstanceKey(1)),
+        ];
+        let s = shadow_scene_on(&[1, 2], &[(1, false, Some(0.5))], &objects);
+        let got = receivers(&s, 0, &models).unwrap();
+        assert_eq!(
+            got.iter().map(|r| r.key).collect::<Vec<_>>(),
+            [InstanceKey(1), InstanceKey(2)]
+        );
+        assert_eq!(got[0].mesh.positions[0], [10.0, 0.0, 1.0]);
+        assert_eq!((got[0].centre, got[0].radius), ([10.5, 0.5, 1.0], 1.0));
+        let world = [LayerOwner::Object(InstanceKey(1)), LayerOwner::Cluster(4)];
+        let s = shadow_scene_on(&[1], &[(1, false, Some(0.5))], &world);
+        assert_eq!(receivers(&s, 0, &models), Err(CasterRefusal::WorldReceiver));
+        let s = shadow_scene_on(&[1], &[(1, false, Some(0.5))], &[LayerOwner::Placement(0)]);
+        assert_eq!(receivers(&s, 0, &models), Err(CasterRefusal::WorldReceiver));
+        let s = shadow_scene(&[1], &[(1, false, Some(0.5))]);
+        assert_eq!(receivers(&s, 0, &models), Err(CasterRefusal::NoReceivers));
+        let s = shadow_scene_on(&[1], &[(1, false, Some(0.5))], &objects[1..2]);
+        assert_eq!(receivers(&s, 0, &models), Err(CasterRefusal::NoInstance));
     }
 
     /// The render thread reads a map's caster models only for that map's

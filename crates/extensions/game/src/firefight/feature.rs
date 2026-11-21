@@ -96,7 +96,6 @@ impl hooks::Feature for Firefight {
             FEATURE,
             "Firefight: the director and its host log on a kit map",
         )
-        .off_by_default()
         .doc("docs/game/firefight.md")
     }
 

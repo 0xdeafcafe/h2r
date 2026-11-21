@@ -51,7 +51,6 @@ struct State {
 impl Feature for Capture {
     fn manifest(&self) -> Manifest {
         Manifest::new("actor-net", "Capture distributed host actor presentation")
-            .off_by_default()
             .doc("docs/game/ai-networking.md")
     }
 

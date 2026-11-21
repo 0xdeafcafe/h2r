@@ -528,8 +528,8 @@ pub(crate) fn register_late_for_profile(
         a.install_matchmaking_trace(features)?;
         cheats::install(features, &a.agent, i.rt, lockstep_on, i.live.clone())?;
     }
-    // The Rust datum, tag and locale functions, when H2_FEATURES has
-    // impl.engine=on (off by default).
+    // The Rust datum, tag and locale functions (on unless H2_FEATURES has
+    // impl.engine=off).
     features
         .add(&hooks::leaves::EngineLeaves)
         .map_err(|e| anyhow::anyhow!("engine leaves: {e}"))?;

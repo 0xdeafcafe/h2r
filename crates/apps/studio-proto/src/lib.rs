@@ -168,6 +168,16 @@ pub mod method {
     pub const VIEW_LIGHTING: &str = "view.lighting";
     pub const VIEW_SNAPSHOT: &str = "view.snapshot";
     pub const VIEW_STATS: &str = "view.stats";
+    pub const GEOMETRY_LIST: &str = "geometry.list";
+    pub const GEOMETRY_OPEN: &str = "geometry.open";
+    pub const GEOMETRY_CLOSE: &str = "geometry.close";
+    pub const GEOMETRY_READ: &str = "geometry.read";
+    pub const GEOMETRY_CHECK: &str = "geometry.check";
+    pub const MESH_MODE: &str = "mesh.mode";
+    pub const MESH_SELECT: &str = "mesh.select";
+    pub const MESH_TRANSFORM: &str = "mesh.transform";
+    pub const MESH_OPS: &str = "mesh.ops";
+    pub const MESH_APPLY: &str = "mesh.apply";
 
     // Planned namespaces: listed by `session.methods` with status
     // "planned"; a call answers NOT_YET until its lane registers it.

@@ -4,7 +4,9 @@ Status: Built. The disc checks under “Proof” cover the groups in the results
 Code: `crates/formats/tags/src/defs.rs` and `crates/formats/tags/src/defs/*.txt`.
 Evidence labels are those of [map-format.md](map-format.md): **E** engine
 code, **V** checked on the owner's disc, **D** a naming or interpretation
-choice made here. **A Halo2Xbox** identifies a retail Assembly reference.
+choice made here. **A Halo2Xbox** identifies a retail Assembly reference,
+**A Halo2** the retail plugin Assembly reads for an Xbox map when
+`Halo2Xbox` has none.
 
 The Halo 1 converter writes scenery, vehicles, bipeds, devices, physics
 models, effects, weapons and particles from these definitions. That
@@ -28,7 +30,8 @@ written from a definition has a defined value in every byte.
 ## Rules
 
 - Names and descriptions are written here. A field named with reference
-  to Assembly carries `-- A Halo2Xbox <filename>`. Its type and extent
+  to Assembly carries `-- A Halo2Xbox <filename>` or `-- A Halo2
+  <filename>`. Its type and extent
   must agree with the local layout. The reference, permission and
   retained disagreements are in [the field-name note](../editor/notes/tag-field-names.md).
 - **A name needs evidence.** A field whose type is known but not its role

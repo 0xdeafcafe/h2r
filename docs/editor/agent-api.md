@@ -187,6 +187,8 @@ before anything runs (`INVALID_PARAMS`). Indices are 0-based throughout
 | `mirror` | `status`, `objects {kind?, near?, limit?, at_tick?}`, `pick {from? \| ray?}`, `aim_select {enabled?}`, `camera {mode?, target?}`, `player {to, facing?}`, `pending`, `apply {what, at?, peers?}` |
 | `view` | `camera {yaw, pitch, distance, target, focus, all, fly_speed}`, `snapshot {out, size, camera}`, `stats`, `layers {set?, preset?, xray?}` |
 | `hud` | `list {map \| package}`, `read {hud, state}`, `set {hud, widget, field, value, merge}`, `move {hud, widget, x, y, mode, merge}`, `render {hud, state, out}`, `check {hud, state}`, `save_as {path}` |
+| `geometry` | `list {model?}`, `open {target}`, `close {target?}`, `read {target?}`, `check {target?}` |
+| `mesh` | `mode {mode}`, `select {ids, op \| all \| none \| invert}`, `transform {translate \| matrix, pivot?, merge?}`, `ops`, `apply {ops}`; each with `target?` |
 | `model` (planned) | `list`, `read`, `render`, `colors`, `emblem` |
 | `custom` (planned) | `list`, `set` |
 
@@ -635,6 +637,20 @@ the window and the API stay one path.
   the source or into Git. `doc.*` with `"doc": "hud"` undoes, redoes,
   diffs (patches by widget and field) and saves the same session. String
   IDs are the Tags tool's to edit (`REFUSED`).
+- **Modeling (studio-modeling, landed in part).** `api/geometry.rs`:
+  `geometry.list` gives the open map's structure clusters and instanced
+  definitions (and a render model's sections with `model`) as target ids
+  `kind:tag:index` (`cluster:e1000004:0`); `geometry.open` enters edit
+  mode on one, after which a `target` param may be left out.
+  `geometry.read` gives the mesh (positions by vertex id, faces, the
+  selection); `mesh.*` are `Action::Model(ModelAction::Apply)`, one undo
+  step each (`mesh.transform` with a `merge` key joins a drag), and
+  `mesh.apply` replays a `mesh.ops` log as one step. While a target is in
+  edit mode, `doc.undo` and `doc.redo` with `"doc": "map"` are its undo.
+  `geometry.check` gives each open target's write class and
+  `save_refusal`, why a save would be refused (Allow unverified geometry
+  writes off, `allow_unverified`, or an edit that changes a count);
+  docs/editor/modeling.md, "Interfaces".
 - **Player models (planned, not started).** See "Planned: player
   models and customisation" below.
 - **Customisation (later).** Same section.
@@ -735,7 +751,8 @@ identical profiles.
   `Api::pump` (the window's between-frames answer).
 - `api/server.rs`: the socket. `api/{docs,scenario,tags,variants,playlists,ui_screens,view}.rs`:
   the namespaces (`volume.*` is in `api/scenario.rs`, `collision.*` in `api/collision.rs`). `api/seams.rs`: providers; `api/tag_fields.rs`,
-  `api/tag_io.rs` and `api/hud.rs` the Tags and HUD tools'.
+  `api/tag_io.rs` and `api/hud.rs` the Tags and HUD tools',
+  `api/geometry.rs` the Modeling tool's.
 - `app/commands.rs`: the actions added for the API and the window
   (`SetField`, `EditSelection`, `MovePlacement`, `EditPlaylist`,
   `UndoIn`), `PlaylistEdit`, and `App::perform`. The viewport gizmo

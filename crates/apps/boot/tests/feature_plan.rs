@@ -10,7 +10,11 @@ use boot::telemetry::{TelemetryConfig, TelemetrySinkConfig};
 #[test]
 fn the_full_plan_builds_and_reads_as_expected() {
     let path = std::env::temp_dir().join(format!("h2-plan-{}.jsonl", std::process::id()));
-    let mut r = hooks::Registry::new(hooks::Switches::defaults());
+    // The datum and tag leaves are on by default and add 20 more chains; this
+    // plan keeps to the locale pair.
+    let mut r = hooks::Registry::new(
+        hooks::Switches::parse("impl.engine.tags=off,impl.engine.datums=off").unwrap(),
+    );
     let config = TelemetryConfig {
         enabled: true,
         sink: TelemetrySinkConfig::File(path.clone()),

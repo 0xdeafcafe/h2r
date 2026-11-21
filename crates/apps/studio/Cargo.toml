@@ -31,6 +31,8 @@ rfd = "0.18"
 content.workspace = true
 editor-core = { path = "../../tools/editor-core" }
 scenario-edit = { path = "../../tools/scenario-edit" }
+# The Modeling tool's targets, undo and in-place writes (docs/editor/modeling.md).
+geometry-edit = { path = "../../tools/geometry-edit" }
 # The HUD tool's logic (docs/editor/hud-editor.md).
 hud-edit = { path = "../../tools/hud-edit" }
 variants = { path = "../../formats/variants" }

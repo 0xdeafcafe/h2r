@@ -1391,6 +1391,17 @@ and its `Hud*` actions. `ui/hud.rs` draws it and uses the shared map
 sections for the source and package picker. The logic lives in
 `crates/tools/hud-edit`.
 
+## Modeling
+
+The developer's page is [modeling.md](modeling.md), with the targets and
+the save in [modeling-targets.md](modeling-targets.md). `app/modeling.rs`
+(`Modeling`, `ModelAction`) holds the geometry session over the open map
+and hands its writes to the map's save; `ui/modeling.rs` draws the map
+inspector's Modeling section; `api/geometry.rs` is `geometry.*` and
+`mesh.*`. The viewport redraws open structure targets through
+`Viewport::set_native_section`. The logic lives in
+`crates/tools/geometry-edit` over `crates/tools/mesh-edit`.
+
 ## Code
 
 The tools' logic lives in UI-free crates with their own tests; the
@@ -1404,6 +1415,9 @@ studio crate only draws them and turns input into actions.
   `packages` (the packages under a data root, Halo 1 origins),
   `halo1` (Halo 1 sources and what is shown of a map) and `tag_bundle`
   (the tag bundle format, [Tag bundles](#tag-bundles)).
+- `crates/tools/geometry-edit`: the Modeling tool's targets
+  (`Target`, `list`), `GeometrySession` (meshes, undo, op log, write
+  classes, `changes`, `previews`) and the in-place section rewrite.
 - `crates/tools/scenario-edit`: `Session` holds the scenario editor's state and
   every command (open, select, add, remove, plane drags, gizmo gestures,
   undo, save, packages); `session/multi.rs` holds the multi-selection

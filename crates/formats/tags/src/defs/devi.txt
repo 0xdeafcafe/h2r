@@ -34,7 +34,8 @@ group mach 0x134
   0x128 unknown 0x4 seen=zero
   0x12c u16 collision_response -- V: 0 or 1 on retail doors and lifts
   0x12e i16 elevator_node -- V: 1 on retail lifts (their moving node), 0 elsewhere
-  0x130 unknown 0x4 seen=4
+  0x130 enum16 pathfinding_policy -- A Halo2 mach.xml
+  0x132 unknown 0x2
 group ctrl 0x140
   0x0 struct devi devi -- the device layer
   0x11c u16 control_type -- E read at 0x0011baa3
@@ -43,4 +44,4 @@ group ctrl 0x140
   0x124 string action_string -- E read at 0x0011ba3a. V: a string ID on every retail control but one
   0x128 tagref ctrl_ref_128 -- V (objects.md): null on the disc
   0x130 tagref ctrl_ref_130 -- V (objects.md): null on the disc
-  0x138 tagref ctrl_ref_138 -- V (objects.md): null on the disc
+  0x138 tagref deny -- V (objects.md): null on the disc; A Halo2 ctrl.xml

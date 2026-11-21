@@ -135,9 +135,19 @@ The window is made of panels that dock together:
 
 The **File** menu holds **Save**, **Save as...**, open, packages and quit.
 **Edit** holds **Go to anything...**, **Undo**, **Redo**, **Duplicate**,
-**Delete** and **Allow growing full blocks**. **View** holds **Frame map**,
-**Focus selection**, the gizmo mode and **Reset layout**. **Game** holds
-play, pair and game controls.
+**Delete**, **Allow growing full blocks** and **Allow unverified geometry
+writes**. **View** holds **Frame map**, **Focus selection**, the gizmo mode
+and **Reset layout**. **Game** holds play, pair and game controls.
+
+The map inspector's **Modeling** section edits level geometry: pick a
+cluster or instanced definition under **Target**, press **Edit mode**,
+**Select all** (or select through the agent API), type a **Move x**,
+**Move y** and **Move z** and press **Move selection**. The viewport
+redraws the moved vertices; **Undo** and **Cmd+Z** step back while the
+target is in edit mode. The edits save with the map, but only with
+**Edit > Allow unverified geometry writes** on: until a game run has
+loaded a written section, the save is refused and says why
+([modeling.md](modeling.md)).
 
 ![The File menu open: Open disc or map..., Open maps folder..., Save map as..., Save as package... (highlighted), Open package... and Quit, with their shortcuts](../images/editor/menu-file.png)
 

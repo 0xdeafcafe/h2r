@@ -17,11 +17,11 @@ struct obje 0xbc
   0x2c unknown 0x4
   0x30 string default_variant doc="Selects the model variant when the caller supplies none." -- E 0x000ba571: the variant used when none is asked for, passed to the variant lookup 0x0016d180; A Halo2Xbox vehi.xml
   0x34 tagref model groups=hlmt doc="Names the model definition resolved during object creation." -- E object_new 0x000b7b40 resolves the datum (+0x38) and reads the hlmt through it; A Halo2Xbox vehi.xml
-  0x3c tagref bloc_ref_3c groups=bloc -- V: references a bloc where set (bloc, mach)
-  0x44 tagref shad_ref_44 groups=shad -- V (objects.md): a shad reference; null on every disc instance of these groups
+  0x3c tagref crate_object groups=bloc -- V: references a bloc where set (bloc, mach); A Halo2Xbox vehi.xml
+  0x44 tagref modifier_shader groups=shad -- V (objects.md): a shad reference; null on every disc instance of these groups; A Halo2Xbox vehi.xml
   0x4c tagref creation_effect groups=effe doc="Names the effect started when this object is created." -- E object_new passes the datum (+0x50) to 0x00176780 once the object exists; null on the disc; A Halo2Xbox vehi.xml
   0x54 tagref foot_ref_54 groups=foot -- V: references a foot (material effects) where set
-  0x5c block block_5c 0x10 align 4 doc="Supplies per-object properties for AI." -- V: at most one element; A Halo2Xbox vehi.xml
+  0x5c block ai_properties 0x10 align 4 doc="Supplies per-object properties for AI." -- V: at most one element; A Halo2Xbox vehi.xml
     0x0 flags32 ai_object_flags doc="Configures how AI treats this object." -- A Halo2Xbox vehi.xml
     0x4 string string_4 doc="Names the object type presented to AI." -- A Halo2Xbox vehi.xml
     0x8 unknown 0x4

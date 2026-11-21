@@ -185,6 +185,12 @@ pub struct Changes {
     pub tag_grown: Vec<TagGrown>,
     /// String IDs to add after the map's own, in order (the tag editor's).
     pub strings: Vec<String>,
+    /// Fixed-size replacements inside local raw blocks (the Modeling
+    /// tool's in-place geometry writes).
+    pub raw_patches: Vec<RawPatch>,
+    /// Why the Modeling tool's edits cannot be saved, when they cannot: a
+    /// save is then refused whole, before anything is written.
+    pub geometry_refusal: Option<String>,
 }
 impl Changes {
     pub fn is_empty(&self) -> bool {
@@ -193,7 +199,31 @@ impl Changes {
             && self.grown.is_empty()
             && self.tag_grown.is_empty()
             && self.strings.is_empty()
+            && self.raw_patches.is_empty()
+            && self.geometry_refusal.is_none()
     }
+}
+
+/// A fixed-size replacement inside a raw data block of the map
+/// (`map::MapEditor::patch_raw`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RawPatch {
+    pub block: map::RawPointer,
+    pub block_size: u32,
+    /// Offset of the first byte in the block.
+    pub offset: u32,
+    pub bytes: Vec<u8>,
+}
+
+/// What the Modeling tool hands the save (docs/editor/modeling-targets.md,
+/// "The session and the save"): tag patches in the ordinary metadata and
+/// BSP regions, raw block patches, or the reason it cannot be written.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct GeometryChanges {
+    pub patches: Vec<(u32, Vec<u8>)>,
+    pub bsp_patches: Vec<BspPatch>,
+    pub raw_patches: Vec<RawPatch>,
+    pub refusal: Option<String>,
 }
 
 /// A fixed-size replacement inside a structure BSP region.
@@ -319,6 +349,8 @@ pub struct Scenario {
     tag_grown: Vec<TagGrown>,
     /// New string IDs. See [`Self::set_tag_strings`].
     tag_strings: Vec<String>,
+    /// The Modeling tool's writes. See [`Self::set_geometry_changes`].
+    geometry: GeometryChanges,
 }
 
 pub(crate) fn u32_at(b: &[u8], o: usize) -> u32 {
@@ -532,6 +564,7 @@ impl Scenario {
             bsp_patches: Vec::new(),
             tag_grown: Vec::new(),
             tag_strings: Vec::new(),
+            geometry: GeometryChanges::default(),
         })
     }
 
@@ -670,8 +703,13 @@ impl Scenario {
             bsp_patches: self.bsp_patches.clone(),
             tag_grown: self.tag_grown.clone(),
             strings: self.tag_strings.clone(),
+            raw_patches: self.geometry.raw_patches.clone(),
+            geometry_refusal: self.geometry.refusal.clone(),
             ..Changes::default()
         };
+        out.patches.extend(self.geometry.patches.iter().cloned());
+        out.bsp_patches
+            .extend(self.geometry.bsp_patches.iter().cloned());
         for b in &self.blocks {
             let root = self.address + b.def.offset;
             if b.len() > b.capacity() {
@@ -752,6 +790,31 @@ impl Scenario {
     /// Replace the BSP region patches. Save checks the ranges against the source map.
     pub fn set_bsp_patches(&mut self, patches: Vec<BspPatch>) {
         self.bsp_patches = patches;
+    }
+
+    /// Replace the Modeling tool's writes (all of them, not a delta).
+    /// Refused when a tag patch touches this scenario's payload. A patch
+    /// that overlaps the tag editor's is refused by the save, which names
+    /// both as overlapping edits.
+    pub fn set_geometry_changes(&mut self, changes: GeometryChanges) -> Result<()> {
+        let (lo, hi) = (
+            u64::from(self.address),
+            u64::from(self.address) + u64::from(self.size),
+        );
+        if changes.patches.iter().any(|(a, b)| {
+            let (a, e) = (u64::from(*a), u64::from(*a) + b.len() as u64);
+            a < hi && lo < e
+        }) {
+            return Err(Error::Refused(
+                "the scenario tag's bytes belong to the Scenario tool",
+            ));
+        }
+        self.geometry = changes;
+        Ok(())
+    }
+    /// The Modeling tool's writes.
+    pub fn geometry_changes(&self) -> &GeometryChanges {
+        &self.geometry
     }
 
     /// Replace the other tags' grown blocks (all of them, not a delta).

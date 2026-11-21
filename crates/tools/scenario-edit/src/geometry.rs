@@ -85,7 +85,8 @@ pub struct RawFiles<R> {
     files: Vec<(ResourceFile, Map<R>)>,
 }
 impl RawFiles<crate::save::MapReader> {
-    pub(crate) fn open(source: &MapSource) -> crate::Result<Self> {
+    /// The map of `source` and the shared caches it reads.
+    pub fn open(source: &MapSource) -> crate::Result<Self> {
         let mut files = vec![(ResourceFile::Local, source.open()?)];
         for (file, shared) in shared_sources(source) {
             if let Ok(map) = shared.open() {

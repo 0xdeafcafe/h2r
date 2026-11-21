@@ -37,7 +37,7 @@ class that holds it, and the status bar and `geometry.check` name it.
 
 | Class | When | Writes | Gate |
 |---|---|---|---|
-| **In place** | no element count changes: verts moved, coordinates or normals changed | `raw_patches` over the old block, `tag_patches` for bounds | none |
+| **In place** | no element count changes: verts moved, coordinates or normals changed | `raw_patches` over the old block, `tag_patches` for bounds | Allow unverified geometry writes, until a game run has loaded one |
 | **Grown raw** | vertex, index or part counts change | a new raw block in `raw_new`; `tag_patches` for the block info, resource entries and counts | Allow unverified geometry writes, until a game run has loaded one |
 | **Grown blocks** | a tag block gets more elements (collision, a new material) | `raw_new` as needed, and the block appended to the ordinary metadata with its `(count, address)` pointed there (`Changes::tag_grown`) | Allow growing full blocks, and for a block of an `sbsp` also Allow unverified geometry writes |
 

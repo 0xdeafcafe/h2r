@@ -239,14 +239,12 @@ One depth map per caster, in place of retail's object-shadow masks
 - **Not done:** the first-person model neither casts into tiles nor
   receives them; it has its own projection.
 
-**Built: tiles, receivers, the cache and the casters**
-(`native_render::sun_tiles`, `native_render::sun_tiles_gpu`,
-`native_render::sun_casters`). The plan, the draws and the gather from
-the scene exist and are tested on invented scenes, the replay marks
-each object shadow's ops, and the casters' models reach the render
-thread. The frame graph does not call them yet. Until it does, the graph
-draws no sun tile, retail's mask chain draws every object shadow in both
-modes, and the sun counters are zero.
+**Built: tiles, receivers, the cache, the casters and the frame graph's
+stage** (`native_render::sun_tiles`, `native_render::sun_tiles_gpu`,
+`native_render::sun_casters`, `crates/rewrites/native-render/src/frame_graph/sun.rs`).
+Under E3 the frame graph skips an admitted object shadow's ops and draws
+its sun tile in their place. Retail replays every op, marks included, as
+it does with no marks.
 
 - **The replay's marks.** The scene sink writes a
   `ReplayOp::ObjectShadow(Some(index))` before the first op the guest
@@ -284,6 +282,33 @@ modes, and the sun counters are zero.
   reads them for a scene of that epoch only (`sun_casters::models_for`).
   They are keyed by object definition, since definitions sharing a
   render model can choose different regions. Retail never reads them.
+- **The receivers.** `sun_casters::receivers` takes what the shadow's
+  layer 11 draws on: each object of its entries once, skinned like a
+  caster. The layer must be in the scene whole. A structure cluster or an
+  instanced placement among the entries refuses the shadow
+  (`CasterRefusal::WorldReceiver`): the frame graph has no geometry of
+  its own for them yet, so the shadow keeps retail's mask. Most object
+  shadows fall on the structure, so most keep it until world receivers
+  exist.
+- **The frame graph's stage.** For an E3 draw on the guest-draw pass
+  (`draw_private`, `draw_display`, `draw_display_on`), `frame_graph::sun`
+  takes each marked shadow with its caster admitted, its receivers drawn,
+  a 24-bit scene depth, a viewport, ops that end on the scene's colour
+  and depth, and nothing they write or sample read after them. The
+  planner places the admitted casters' tiles. For each shadow with a
+  tile, its marked ops are not applied, except binds, samples and flare
+  queries, and a scene stage after its last op multiplies the scene's
+  colour by its receivers against its tile. The frame's first stage also
+  draws the tiles that changed. Receivers write the guest's W-buffer
+  depth for their view depth (full scale, `1 / far`, floored), less
+  `RECEIVER_DEPTH_BIAS` (0.005 world units) towards the eye, and test it
+  `LessEqual` against the guest's depth. Each device keeps its atlas and
+  planner. A draw that fails, or a plan no stage drew, invalidates the
+  atlas. Every other shadow keeps its ops and retail's mask, its cause
+  named (`frame_graph::SunSkip`). The scaled display and the mixed-size
+  private draw take no sun stage yet: their shadows keep retail's mask.
+  Test: `e3_skips_an_admitted_shadows_mask_and_retail_replays_it_unchanged`
+  (`tests/world_layers_gpu/frame_graph.rs`).
 - **The gather.** `sun_casters::gather` admits an object shadow whose
   caster is an instance of the view with node matrices and a loaded
   model, with a direction and a weight above retail's 0.09. Its mesh is
@@ -608,7 +633,7 @@ runs the game.
 | L2 | `frame_scene::Light` holds each candidate and both constant sets. `scene_extract::lights` reads the view's visibility gather, and `render.scene` reports the counts | A synthetic guest with 20 lights gives 20 candidates with the guest's five marked; the scene hash and `sim.hashes` do not change with `H2_LIGHTING` | sim-thread extraction time, both modes |
 | L3 | The mode as a render-thread parameter; `render.capture {lighting}`; the pass rows and counters | With no E3 pass yet, a retail and an E3 capture of one tick are identical (`max_channel == 0`) | none |
 | L4 | Built. Local-light shadows: the guest's shadow maps drawn as tiles at `shadow_scale`, the Sharp edge on layer 11 ("Shadows from local lights") | Synthetic: `render_scale::e3_tiles_give_a_replayed_shadow_the_sharp_edge`, a replayed tile's shadow with the L1 edge at 1x and 2x and retail's map in retail mode; the plan's tests in `tiles.rs`. Game: on a tick with a shadowed light, the E3 capture differs from retail's only within eight pixels of retail's shadow edges, `e3.tiles` and `e3.marks` have draws, `lights_shadowed` is one per shadowed light and `tiles_refused` is 0 | Frame and render-thread time of E3 against retail at 1x and 4x; the first numbers for the budget |
-| L5 | Partly built: the tile plan, the cache, the atlas, the caster and receiver draws, and the casters gathered from the scene's object shadows, tested on invented scenes. The frame graph does not draw them yet: it needs each object shadow's replayed ops, to skip its mask, and the casters' models on the render thread | Synthetic, built (`tests/world_layers_gpu/sun_tiles.rs`): `a_box_on_a_plane_casts_a_hard_shadow`, `an_l_shaped_caster_shadows_itself`, `nonpositive_normal_terms_keep_rgb_and_mixed_terms_interpolate`, `a_still_casters_tile_is_not_redrawn_and_a_moved_one_is`; the plan's tests in `sun_tiles.rs`. Game, pending: an outdoor gameplay tick differs from retail around every caster, and no retail mask pass is drawn for a caster with a tile | GPU ms with 8, 16 and 32 casters (`sim.spawn`) at 1x and 4x; `sun_tiles_redrawn` at 60 fps |
+| L5 | Partly built: the tile plan, the cache, the atlas, the caster and receiver draws, the casters and receivers gathered from the scene's object shadows, the replay's marks, the models on the render thread, and the frame graph's stage that skips an admitted shadow's mask, tested on invented scenes. A shadow on the structure or a placement keeps retail's mask until world receivers exist | Synthetic, built (`tests/world_layers_gpu/sun_tiles.rs`): `a_box_on_a_plane_casts_a_hard_shadow`, `an_l_shaped_caster_shadows_itself`, `nonpositive_normal_terms_keep_rgb_and_mixed_terms_interpolate`, `a_still_casters_tile_is_not_redrawn_and_a_moved_one_is`; the plan's tests in `sun_tiles.rs`. Game, pending: an outdoor gameplay tick differs from retail around every caster, and no retail mask pass is drawn for a caster with a tile | GPU ms with 8, 16 and 32 casters (`sim.spawn`) at 1x and 4x; `sun_tiles_redrawn` at 60 fps |
 | L6 | The renderer's light choice: score, the cap of 16, the view's own lights first, the first-person pass | Synthetic: 20 candidates draw the 16 highest in score order, the same every run. Game: firing in a dark street (`input.pad`) lights the firer and the ground in the E3 capture; `lights_lit` and `lights_over_cap` | GPU ms of `e3.lights` against `lights_lit` |
 | L7 | Shadows from cones the content flagged off, with the renderer's caster gather; four slots; the flashlight | Synthetic: a no-shadow cone casts in E3 and not in retail. Game: a lamp placement and the flashlight cast in the E3 capture | The flashlight frame: all of the mode's passes at 4x. This is the worst case the budget must hold |
 | L8 | Casters outside the view: extraction of instances near it | A caster behind the camera shadows the ground in view | sim-thread frame step, rise under 0.1 ms |

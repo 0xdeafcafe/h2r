@@ -16,7 +16,7 @@ in `crates/apps/cli/src/firefight_cmd.rs`. The host runtime is
 methods are `crates/extensions/agent/src/firefight.rs`. The HUD is
 `firefight/hud.rs`, the Game Setup row and options page `firefight/options.rs`.
 The slice table lists the planned Live code. Tests use invented data.
-Switch: the `firefight` feature of `H2_FEATURES`, off by default until FF4 is seen in the game ([switches.md](../runtime/switches.md)).
+Switch: the `firefight` feature of `H2_FEATURES`, on by default ([switches.md](../runtime/switches.md)).
 
 Firefight is a co-operative mode on multiplayer maps. One team holds
 out against waves of AI, with shared lives, rounds, skulls and a score.
@@ -205,7 +205,7 @@ runtime at the game's start and at each tick boundary. The tests drive
 `Host` over a fake game that records every call, and the runtime over
 invented guest memory with fake engine callees.
 
-**The feature.** `firefight` is off by default. Boot registers it
+**The feature.** `firefight` is on by default (`-firefight` turns it off). Boot registers it
 (`registration::register_core`) and its hooks are on game-thread points
 only (`render_thread::REFUSED`):
 
@@ -543,7 +543,7 @@ boundary. Every address below is **E** unless the row says otherwise.
 
 Each run is on the `firefight-probe` map (`h2 agent maps create
 firefight-probe`, then `h2 agent maps load firefight-probe`) with
-`H2_FEATURES=firefight`. R1 needs nothing new. R2 to R4 hold the
+the default features. R1 needs nothing new. R2 to R4 hold the
 director first (`h2 agent firefight.command '{"director":"hold"}'`), so
 only the run's own entries reach the game, and append them with
 `firefight.command`. R3 reads each player's lives and score from

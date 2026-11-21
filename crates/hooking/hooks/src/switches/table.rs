@@ -73,7 +73,7 @@ pub const TABLE: &[Switch] = &[
         "the native renderer owns the frame (review 4.3): delete with the D3D path"),
     sw("impl.render.pipelined_frame", Off, "render", "2026-11-18",
         "the pipelined COW worker in its current form is a dead end (review 5): delete"),
-    sw("impl.render.interpolate", Off, "render", "2026-11-14",
+    sw("impl.render.interpolate", On, "render", "2026-11-14",
         "the presentation snapshot (sim-review lane 7) replaces it: delete"),
     sw("impl.render.reproject", Off, "render", "2026-11-18",
         "the presentation snapshot (sim-review lane 7) replaces it: delete"),
@@ -82,9 +82,9 @@ pub const TABLE: &[Switch] = &[
     // Engine leaves (the per-function keys are `crate::leaves`').
     sw("impl.engine", Group, "engine", "2026-11-16", "goes with its last group"),
     sw("impl.engine.locale", On, "engine", "2026-11-16", EXACT),
-    sw("impl.engine.tags", Off, "engine", "2026-11-16",
+    sw("impl.engine.tags", On, "engine", "2026-11-16",
         "hot leaves: on once thin transfers make an override free (review 5 item 1), else delete"),
-    sw("impl.engine.datums", Off, "engine", "2026-11-16",
+    sw("impl.engine.datums", On, "engine", "2026-11-16",
         "hot leaves: on once thin transfers make an override free (review 5 item 1), else delete"),
     // Audio.
     sw("impl.audio.packet-clock", On, "audio", "2026-11-20", EXACT),
