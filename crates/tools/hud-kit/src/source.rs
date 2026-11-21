@@ -15,8 +15,13 @@ use map::{Map, TagId};
 use scenario_edit::MapSource;
 use scenario_edit::save::MapReader;
 
+use hud_edit::model::WidgetKind;
+use hud_edit::state::{HudState, shown};
+
 use crate::hudg::{self, Hudg};
 use crate::model::{Hud, Pulse};
+use crate::preview::RETAIL_WORDS;
+use crate::rects;
 use crate::templates::{self, Templates};
 
 /// The colours the preview draws texts in (RGBA), and where they came
@@ -80,6 +85,11 @@ pub struct Source {
     pub hudg: Option<Hudg>,
     /// The player `nhdt` drawn and joined.
     pub player: TagId,
+    /// The state words the retail HUD is drawn at
+    /// (`preview::retail_states`): [`Source::retail_words`].
+    pub words: [u16; 4],
+    /// Where [`Source::words`] came from.
+    pub words_note: String,
     pub synthetic: bool,
 }
 
@@ -96,14 +106,18 @@ impl Source {
         files.set_bytes(map::ResourceFile::Local, bytes);
         let hudg = hudg::read(&mut map).ok();
         let player = templates::player_huds(&mut map)?[0];
+        let mut art = Art::new(files);
+        let (words, words_note) = retail_words(&mut map, &mut art, None, player);
         Ok(Source {
             name: "synthetic".into(),
             map,
-            art: Art::new(files),
+            art,
             fonts: None,
             colours: Colours::synthetic(),
             hudg,
             player,
+            words,
+            words_note,
             synthetic: true,
         })
     }
@@ -122,22 +136,116 @@ impl Source {
         let hudg = hudg::read(&mut map).ok();
         let player = templates::player_huds(&mut map)?[0];
         let colours = disc_colours(iso, hudg.as_ref());
+        let mut art = Art::new(files);
+        let (words, words_note) = retail_words(&mut map, &mut art, fonts.as_ref(), player);
         Ok(Source {
             name,
             map,
-            art: Art::new(files),
+            art,
             fonts,
             colours,
             hudg,
             player,
+            words,
+            words_note,
             synthetic: false,
         })
     }
 
     /// The templates `hud` needs, for the player `nhdt`.
     pub fn templates(&mut self, hud: &Hud) -> Templates {
-        Templates::resolve(&mut self.map, self.player, self.hudg.as_ref(), hud)
+        templates::resolve(
+            &mut self.map,
+            &mut self.art,
+            self.player,
+            self.hudg.as_ref(),
+            hud,
+        )
     }
+
+    /// The map's cache type is multiplayer (`map::CacheType`): the HUDs
+    /// that are multiplayer only (`Describe::multiplayer_only`) are
+    /// checked only on these.
+    pub fn multiplayer(&self) -> bool {
+        self.map.header().cache_type == map::CacheType::Multiplayer
+    }
+}
+
+/// The state words the sheet draws the retail HUD at: [`RETAIL_WORDS`]
+/// (the shield meter's show word) plus one bit of a show word of the
+/// widget the HUD editor places on the motion tracker's rim
+/// ([`rects::TRACKER`]), the first bit that lets it through the gate
+/// (`hud_edit::state::shown`, with the bits the state sets). S: that the
+/// game sets that bit whenever it draws the tracker; the gate's words are
+/// not all decoded (decoding 5). A HUD with no widget on the tracker
+/// (a campaign HUD, the synthetic map's tracker on `0x1000`) keeps
+/// [`RETAIL_WORDS`].
+pub fn retail_words<R: std::io::Read + std::io::Seek>(
+    map: &mut Map<R>,
+    art: &mut Art,
+    fonts: Option<&Fonts>,
+    player: TagId,
+) -> ([u16; 4], String) {
+    let base = RETAIL_WORDS;
+    let hud = match hud_edit::model::read(map, player) {
+        Ok(h) => h,
+        Err(e) => return (base, format!("the retail words: the player nhdt: {e}")),
+    };
+    let st = HudState {
+        words: base,
+        ..HudState::default()
+    };
+    let p = hud_edit::render::draw(map, art, fonts, &[&hud], &st);
+    let tracker = p.placed.iter().find(|w| {
+        w.key.kind == WidgetKind::Bitmap
+            && w.rect
+                .is_some_and(|r| r.pixels() == rects::TRACKER.pixels())
+    });
+    let Some(widget) = tracker.and_then(|t| hud.widgets.iter().find(|w| w.key == t.key)) else {
+        return (
+            base,
+            "the retail words: no widget on the tracker's rim".into(),
+        );
+    };
+    let state = widget.state();
+    let gated = |words: [u16; 4]| {
+        let st = HudState {
+            words,
+            gate: true,
+            ..HudState::default()
+        };
+        shown(state, st.masks())
+    };
+    if gated(base) {
+        return (
+            base,
+            format!("the retail words: {} shows on them", widget.name),
+        );
+    }
+    for i in 0..4 {
+        let show = u16::from_le_bytes([state[2 * i], state[2 * i + 1]]);
+        for bit in (0..16).map(|b| 1u16 << b).filter(|b| show & b != 0) {
+            let mut words = base;
+            words[i] |= bit;
+            if gated(words) {
+                let word = ["A", "B", "C", "D"][i];
+                return (
+                    words,
+                    format!(
+                        "the retail words: word {word} bit {bit:#06x}, {}'s first show bit",
+                        widget.name
+                    ),
+                );
+            }
+        }
+    }
+    (
+        base,
+        format!(
+            "the retail words: no show bit of {} lets it through",
+            widget.name
+        ),
+    )
 }
 
 fn float_colour(v: [f32; 3]) -> [u8; 4] {

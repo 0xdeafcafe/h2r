@@ -16,7 +16,7 @@ use hud_edit::render::{self, Answers, Canvas, Cover, FALLBACK_CHAR, Fonts, Look,
 use hud_edit::state::{Grenade, HudState};
 use serde_json::{Value as Json, json};
 
-use crate::compile::Compiled;
+use crate::compile::{AsHudEdit, Compiled};
 use crate::model::{Element, Hud, Kind, NAVPOINT_FONT, Style, Value, Values};
 use crate::rects::{self, MESSAGE_LINE, PROMPT_DOWN, TRAINING_PAD};
 use crate::source::{Colours, Source};
@@ -47,9 +47,12 @@ pub const NAVPOINT_NUMBER_GAP: f32 = 2.0;
 /// The message and training font: font id 6 fullscreen, 5 in split
 /// screen (E `0x0024cfaf`..`0x0024cfc9`, `0x001e71d7`).
 pub const MESSAGE_FONT: [i16; 2] = [6, 5];
-/// The retail HUD's state words for the sheet: word A `0x1000`, the
-/// retail shield meter's show word (S: what else the game sets; the disc
-/// test checks the tracker and the shield meter draw at it).
+/// The retail HUD's state words the sheet starts from: word A `0x1000`,
+/// the retail shield meter's show word. Each source adds the word the
+/// widget on the motion tracker's rectangle shows on
+/// (`source::retail_words`; S: that the game sets it whenever it draws the
+/// tracker); the disc test checks the tracker and the shield meter draw
+/// at the result.
 pub const RETAIL_WORDS: [u16; 4] = [0x1000, 0, 0, 0];
 
 /// A screen mode's name in file names, the JSON and the command line.
@@ -65,13 +68,14 @@ pub fn parse_mode(s: &str) -> Option<Mode> {
     Mode::ALL.into_iter().find(|m| mode_name(*m) == s)
 }
 
-/// The retail HUD states of the sheet, the first the one pictures are
-/// drawn at: plain, overshield, plasma grenades selected, zoomed.
-pub fn retail_states(mode: Mode) -> Vec<HudState> {
+/// The retail HUD states of the sheet at the state words `words`
+/// (`Source::words`), the first the one pictures are drawn at: plain,
+/// overshield, plasma grenades selected, zoomed.
+pub fn retail_states(mode: Mode, words: [u16; 4]) -> Vec<HudState> {
     let base = HudState {
         mode,
         gate: true,
-        words: RETAIL_WORDS,
+        words,
         ..HudState::default()
     };
     vec![
@@ -202,9 +206,17 @@ impl Answers for KitAnswers<'_> {
         let (e, v) = self.of(h, w)?;
         Some(v.shown && e.at.offset(self.mode).is_some())
     }
+    /// `hud_input1` as the runtime's input hook gives it: the fill, or a
+    /// cropped meter's ramp at the fill (`hud_kit_core::records::Widget::input`).
     fn fill(&self, h: usize, w: &Widget) -> Option<f32> {
         let (e, v) = self.of(h, w)?;
-        matches!(e.kind, Kind::Meter { .. }).then_some(v.fill.clamp(0.0, 1.0))
+        if !matches!(e.kind, Kind::Meter { .. }) {
+            return None;
+        }
+        Some(match self.compiled.widget(e.id) {
+            Some(c) => c.input(v.fill),
+            None => v.fill.clamp(0.0, 1.0),
+        })
     }
     fn text(&self, h: usize, w: &Widget) -> Option<String> {
         let (e, v) = self.of(h, w)?;
@@ -532,7 +544,7 @@ fn navpoint(
         return d;
     }
     let c = frame.anchor_point(4).expect("the centre");
-    let point = [
+    let mut point = [
         c[0] + NAVPOINT_SAMPLE[0] * f32::from(frame.right - frame.left),
         c[1] + NAVPOINT_SAMPLE[1] * f32::from(frame.bottom - frame.top),
     ];
@@ -562,21 +574,37 @@ fn navpoint(
         Some(a) => sprite(a.image, a.sequence, "arrow", &mut d.notes),
         None => None,
     };
-    // Bottom to top: the arrow's tip on the point, the marker, the number.
-    let arect = arrow
-        .as_ref()
-        .map(|a| centred(point[0], point[1] - a.size[1], a.size));
-    let mrect = marker.as_ref().map(|m| {
-        let bottom = arect.map_or(point[1], |a| a.y0 - NAVPOINT_GAP);
-        centred(point[0], bottom - m.size[1], m.size)
-    });
-    let top = mrect
-        .or(arect)
-        .map_or(point[1], |r| r.y0 - NAVPOINT_NUMBER_GAP);
     let fonts = src.fonts.as_ref();
     let longest = e.kind.longest().unwrap_or("");
     let lsize = render::text_size(fonts, font, longest);
-    let lrect = centred(point[0], top - lsize[1], lsize);
+    // Bottom to top: the arrow's tip on the point, the marker, the number.
+    let stack = |point: [f32; 2]| {
+        let arect = arrow
+            .as_ref()
+            .map(|a| centred(point[0], point[1] - a.size[1], a.size));
+        let mrect = marker.as_ref().map(|m| {
+            let bottom = arect.map_or(point[1], |a| a.y0 - NAVPOINT_GAP);
+            centred(point[0], bottom - m.size[1], m.size)
+        });
+        let top = mrect
+            .or(arect)
+            .map_or(point[1], |r| r.y0 - NAVPOINT_NUMBER_GAP);
+        (arect, mrect, top, centred(point[0], top - lsize[1], lsize))
+    };
+    // A navpoint is drawn inside the waypoint area, the safe bounds less
+    // `hudg +0xec`..`+0xf8` (A: the waypoint insets; S: the game keeps a
+    // navpoint's stack in it). The sample is the preview's own, so one
+    // whose stack would leave the frame's top (a split-screen frame is
+    // 204 high) is moved down until it fits.
+    let lift = f32::from(frame.top) - stack(point).3.y0;
+    if lift > 0.0 {
+        point[1] += lift.ceil();
+        d.notes.push(format!(
+            "the sample moved {} down to keep it in the frame",
+            lift.ceil()
+        ));
+    }
+    let (arect, mrect, top, lrect) = stack(point);
     let mut reserved = None;
     for r in [arect, mrect].into_iter().flatten() {
         reserved = Some(union(reserved, r));

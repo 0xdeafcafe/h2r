@@ -1,7 +1,8 @@
 //! The kit on the owner's disc (`H2_DISC`, else `disc/halo2.iso`): the
-//! templates on every map, the retail rectangles where the HUD editor
-//! places the retail widgets, every registered HUD passing every check
-//! with nothing skipped, and the glyphs in fonts 6 and 8.
+//! templates on every map (the preview's and the runtime's the same), the
+//! retail rectangles where the HUD editor places the retail widgets,
+//! every registered HUD passing every check with nothing skipped, and the
+//! glyphs in fonts 6 and 8.
 
 use std::path::PathBuf;
 
@@ -24,15 +25,20 @@ fn iso() -> PathBuf {
 const MAP: &str = "lockout";
 
 /// Every map with a player HUD resolves every registered HUD's
-/// templates; the shared caches and the main menu have none and are
-/// skipped.
+/// templates, and the runtime's reader
+/// (`hud_kit_core::map_file::MapFile`) resolves the same ones. The shared
+/// caches and the main menu have no player HUD and are skipped; a HUD
+/// that is multiplayer only (`Describe::multiplayer_only`) is not
+/// resolved on a campaign map (its player HUD has no grenade row), and
+/// each such skip is counted with its reason.
 #[test]
 #[ignore = "needs the owner's disc image (H2_DISC)"]
 fn templates_resolve_on_every_map() {
     let iso = iso();
     let maps = MapSource::disc_maps(&iso).unwrap();
-    let mut checked = 0;
-    for (name, _) in &maps {
+    let (mut checked, mut multiplayer) = (0, 0);
+    let mut skipped: Vec<String> = Vec::new();
+    for (name, source) in &maps {
         if ["shared", "single_player_shared", "mainmenu"]
             .iter()
             .any(|s| name.eq_ignore_ascii_case(s))
@@ -40,19 +46,38 @@ fn templates_resolve_on_every_map() {
             continue;
         }
         let mut src = Source::disc(&iso, name).unwrap_or_else(|e| panic!("{name}: {e:#}"));
+        let mp = src.multiplayer();
         for d in huds::all() {
             let hud = d.hud();
+            if let (false, Some(why)) = (mp, d.multiplayer_only()) {
+                skipped.push(format!("{name}: {}: {why}", hud.name));
+                continue;
+            }
             let t = src.templates(&hud);
             assert_eq!(t.missing(&hud), Vec::<String>::new(), "{name}");
+            // The runtime's reader, on the same map file.
+            let mut map = source.open().unwrap();
+            let mut files = scenario_edit::scene::resource_files(source);
+            let player = hud_kit_core::map_file::player_huds(&mut map);
+            assert_eq!(player.first(), Some(&src.player), "{name}: the player nhdt");
+            let mut view = hud_kit_core::map_file::MapFile::new(&mut map, &mut files);
+            let rt = hud_kit_core::templates::resolve(&mut view, src.player, &hud);
+            assert_eq!(rt.row, t.row, "{name}: the grenade row");
+            assert_eq!(rt.text, t.text, "{name}: the text template");
+            assert_eq!(rt.art, t.art, "{name}: the art templates");
         }
         checked += 1;
+        multiplayer += usize::from(mp);
     }
     assert!(checked > 10, "{checked} maps");
+    assert!(multiplayer > 10, "{multiplayer} multiplayer maps");
+    eprintln!("skipped, by reason:\n{}", skipped.join("\n"));
 }
 
 /// The rectangles of `rects` are where the HUD editor places the retail
 /// player HUD's tracker and shield meter, and the converter's health
-/// strip where `Place::above` puts it.
+/// strip where `rects::above` puts it. The sheet's retail state words
+/// (`Source::retail_words`) let the tracker through the gate.
 #[test]
 #[ignore = "needs the owner's disc image (H2_DISC)"]
 fn the_retail_rectangles_match_the_editors_placement() {
@@ -61,7 +86,8 @@ fn the_retail_rectangles_match_the_editors_placement() {
     assert_eq!(name.as_deref(), Some(templates::PLAYER_HUD));
     let hud = hud_edit::model::read(&mut src.map, src.player).unwrap();
     // At the sheet's HUD state, so the retail check sees them.
-    let st = hud_kit::preview::retail_states(Mode::Full).remove(0);
+    let st = hud_kit::preview::retail_states(Mode::Full, src.words).remove(0);
+    eprintln!("{}", src.words_note);
     let p = hud_edit::render::draw(&mut src.map, &mut src.art, src.fonts.as_ref(), &[&hud], &st);
     let drawn: Vec<_> = p
         .placed
@@ -90,7 +116,7 @@ fn the_retail_rectangles_match_the_editors_placement() {
     let r = r.rect.unwrap();
     assert!(r.contains(&rects::SHIELD_BAND), "{r:?}");
     assert_eq!([r.x0, r.y0], [rects::SHIELD_BAND.x0, rects::SHIELD_BAND.y0]);
-    let strip = hud_kit::Place::above(rects::SHIELD_BAND, 2, 8);
+    let strip = rects::above(rects::SHIELD_BAND, 2, 8);
     let pt = place::widget_point(&Frame::FULLSCREEN, strip.anchor as u16, strip.full).unwrap();
     assert_eq!(
         place::bitmap_rect(pt, [92.0, 8.0], [0.0, 0.0]),

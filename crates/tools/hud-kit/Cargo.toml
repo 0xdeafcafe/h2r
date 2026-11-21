@@ -18,6 +18,9 @@ assets.workspace = true
 xiso.workspace = true
 xbe.workspace = true
 serde_json.workspace = true
+# The model, the templates, the compiler and the HUDs, shared with the
+# game's runtime.
+hud-kit-core.workspace = true
 # The preview draws through the HUD editor's renderer and placement.
 hud-edit = { path = "../hud-edit" }
 scenario-edit = { path = "../scenario-edit" }

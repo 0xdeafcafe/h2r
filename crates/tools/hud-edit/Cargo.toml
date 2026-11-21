@@ -13,6 +13,8 @@ tags.workspace = true
 assets.workspace = true
 xiso.workspace = true
 font = { path = "../../formats/font" }
+# The screen modes the HUD kit's model shares (`layout::Mode`).
+hud-kit-core.workspace = true
 png = "0.18"
 scenario-edit = { path = "../scenario-edit" }
 # The invented test map (feature `fixture`): its bitmap goes through the
