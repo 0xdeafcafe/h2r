@@ -1,6 +1,6 @@
 # The Lighting row on the D3D path
 
-Status: Built. This page describes the scaled D3D backend. The native frame graph also accepts the lighting mode.
+Status: Built. This page describes the scaled D3D backend. The native frame graph accepts the same setting and draws the game's retail light passes in both modes.
 Code: `crates/platform/d3d/src/scaled.rs` (`Lighting`, `follow_lighting`, `shadow_scale`), `crates/formats/shaders/src/psh/shadow.rs` (`PixelOptions::hard_shadow`). Tests: `crates/platform/d3d/tests/render_scale.rs`, `crates/formats/shaders/tests/shadow.rs`.
 Switch: `H2_LIGHTING` (`retail`), listed in [switches.md](../runtime/switches.md).
 
