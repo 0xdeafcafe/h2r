@@ -511,6 +511,21 @@ impl Telemetry {
         });
     }
 
+    /// The player in slot `player` teabagged the body of the player in slot
+    /// `victim`, as the game's teabag watch decides (docs/game/teabag.md):
+    /// a `Teabag` game event, which takes the `incel` medal from both in
+    /// the film and on Live. The watch calls it on the console that
+    /// records the game.
+    pub fn teabag(&self, guest: &runtime::Guest, player: u32, victim: u32) {
+        self.bounce_work(guest, |tick| Work::Teabag {
+            tick,
+            player,
+            victim,
+        });
+    }
+
+    /// Queues a medal event at the game tick, as a kill: none in a
+    /// cinematic.
     fn bounce_work(&self, guest: &runtime::Guest, work: impl FnOnce(u64) -> Work) {
         self.protect(|| {
             if memory::cinematic(guest).unwrap_or(false) {

@@ -60,6 +60,7 @@ Event types so far (payload fields):
 | `game-<id>` | `FirefightEnded` | `tick`, `set` (the wave set's name), `outcome` (`won`/`lost`), `rounds_cleared`, `lives_used`. Published by the host, once, before `GameEnded`. |
 | `game-<id>` | `Superbounce` | `tick`, `player` (a slot of the game), `chain` (the bounce's place in its chain, 1 and up). Published by the host, for every player it watches, bots included ([superbounce.md](../game/superbounce.md#recording)). |
 | `game-<id>` | `Bounced` | `tick`, `player`, `chain` (the count of the chain it ended, 0 if none; absent reads as 0): a death falling out of or through the map while trying a bounce, beside its `PlayerKilled`. Published by the host. |
+| `game-<id>` | `Teabag` | `tick`, `player` (the crouching player's slot), `victim` (the slot of the player whose body it was; not `player`): a teabag. Published by the host, for every player it watches, bots included ([teabag.md](../game/teabag.md#recording)). |
 | `game-<id>` | `ScoreChanged` | `tick`, `players: [{index, score, kills, deaths, assists}]`, `teams?: [{team, score}]` |
 | `game-<id>` | `FrameChunk` | a stored chunk of the game's recorded frames ([Frame chunks](#frame-chunks)) |
 | `game-<id>` | `GameFrame` | a frame (below), recorded at 1 Hz for replays by servers before frame chunks |
@@ -389,7 +390,7 @@ the index once and fetches the one chunk whose window holds the tick.
 | `GET /v1/presence` | who is online now: `{xuid, gamertag, state, game_id?, activity?, since, build?, capabilities?}`; a player in a game or session the reader may not see shows no `game_id` and `activity: "In a game"` ([Co-op games](#co-op-games), "Presence") |
 | `GET /v1/coop/games?player=` | finished co-op campaign games, newest first ([Co-op games](#co-op-games), below) |
 | `GET /v1/games?state=live\|ended&map=&map_id=&skulls=` | game summaries: `{game_id, map, mode, kind, variant, playlist?, playlist_id?, difficulty?, online?, team_play, started_at, ended_at?, players, teams?, map_id?, skulls?}`; `map` keeps games on that base map, modded or not, `map_id` one exact map (`none`: games with no `map_id`), `skulls` (comma-separated indices, `4,6`) games that had every one of them on; without the co-op games the reader may not see ([Co-op games](#co-op-games)) |
-| `GET /v1/games/{id}` | summary plus scoreboard, the last 50 kills, and the last 100 superbounces (`bounces`: `tick`, `player`, `chain`, `position`, `at`) and bounce deaths (`bounced`: `tick`, `player`, `chain`, `position`, `at`), each oldest first and empty in a game with none; 404, as for no game, for a co-op game the reader may not see ([Co-op games](#co-op-games)) |
+| `GET /v1/games/{id}` | summary plus scoreboard, the last 50 kills, and the last 100 superbounces (`bounces`: `tick`, `player`, `chain`, `position`, `at`) and bounce deaths (`bounced`: `tick`, `player`, `chain`, `position`, `at`), and the last 100 teabags (`teabags`: `tick`, `player`, `victim`, `position`, `at`), each oldest first and empty in a game with none; `joined_late`, the slots of players in the game who joined after its first kill (left out when none; [teabag.md](../game/teabag.md#the-medal)); 404, as for no game, for a co-op game the reader may not see ([Co-op games](#co-op-games)) |
 | `GET /v1/games/{id}/join` | `{session_id}` for the game's current reader. The value is null unless the running game's own custom lobby or linked co-op session is joinable. The game and lobby each follow their own visibility rules. Hidden games return 404 and responses are private and uncached. |
 | `GET /v1/games/{id}/chunks` | the game's [frame chunk](#frame-chunks) index: `{game_id, chunk_ticks, ended, items}`, `items` the `FrameChunk` data oldest first; empty for a game recorded before chunks |
 | `GET /v1/games/{id}/chunks/{tick}` | one chunk by its first tick, `application/x-h2-chunk`; checked against its index entry's hash. Anonymous reads are `public, max-age=31536000, immutable` (it is never rewritten) |
@@ -637,12 +638,13 @@ UTC days, today included) or `all`; anything else is 400.
   "totals":   { "games": 41, "multiplayer": 33, "campaign": 8, "matchmaking": 20, "custom": 13,
                 "coop": 3, "kills": 1210, "deaths": 1302, "betrayals": 17, "suicides": 75,
                 "campaign_deaths": 40, "player_seconds": 302400, "legendary": 2,
-                "bounces": 6, "bounced": 1 },
+                "bounces": 6, "bounced": 1, "teabags": 3 },
   "last_24h": { ...the same counts, over the last 24 hours },
   "all_time": { ...the same counts, over the whole log },
   "players":  [ { "xuid": "...", "name": "Sneaky Pete", "games": 9, "multiplayer": 8, "campaign": 1,
                   "wins": 5, "kills": 120, "deaths": 88, "betrayals": 1, "best_spree": 9,
-                  "seconds": 7200, "legendary": 1, "bounces": 4, "bounced": 0 } ],
+                  "seconds": 7200, "legendary": 1, "bounces": 4, "bounced": 0,
+                  "teabags_given": 1, "teabags_received": 2 } ],
   "maps":      [ { "map": "lockout", "map_id": "...?", "campaign": false, "games": 12, "kills": 480 } ],
   "weapons":   [ { "weapon": "battle_rifle", "kills": 310 } ],
   "playlists": [ { "playlist": "Team Slayer", "games": 14 } ],
@@ -681,6 +683,9 @@ death to a bot a career death. The game record keeps every one of them.
 `bounces` (`Superbounce` events) and `bounced` (`Bounced` events) count
 on the day they happened, every player's in the totals and an account's
 in its row; a bot's are in the totals and the game record only.
+`teabags` (`Teabag` events) count the same way, and an account's row has
+`teabags_given` (as the crouching player) and `teabags_received` (as the
+body's).
 A credited environmental death counts toward kills for the player and map.
 Weapon rankings omit falls, collisions, splatters, guardians, teleporters
 and explosions with no identified weapon.

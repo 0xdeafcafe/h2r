@@ -1,11 +1,13 @@
 //! The superbounce medal glyphs (docs/game/hud-kit.md, "The medals"):
-//! seven medals of our own, added to the HUD message fonts at spare
-//! private-use code points so a notification line can start with one, as
-//! a retail multi-kill line starts with its medal.
+//! seven medals of our own, and Incel's (docs/game/teabag.md), added to
+//! the HUD message fonts at spare private-use code points so a
+//! notification line can start with one, as a retail multi-kill line
+//! starts with its medal.
 //!
 //! The pictures are [`art`]: 24 by 24 ARGB 4444 rows drawn for this
-//! project by `scripts/superbounce-medals.py` in the manner of the retail
-//! multi-kill discs. Nothing is copied from a disc font. [`replacements`]
+//! project in the manner of the retail multi-kill discs, the bounce medals
+//! by `scripts/superbounce-medals.py` and Incel by `scripts/live-medals.py`
+//! (`--font-art`). Nothing is copied from a disc font. [`replacements`]
 //! gives them to [`crate::patch::apply`] for the fonts in [`FONTS`], placed
 //! as the font places its own Double Kill medal (U+E038), so a line of ours
 //! sits where a retail one does.
@@ -29,9 +31,13 @@ pub const CHAIN_BOUNCE: u16 = 0xe2a4;
 pub const BOUNCETACULAR: u16 = 0xe2a5;
 /// U+E2A6: Bounced, a fall out of the map during a bounce.
 pub const BOUNCED: u16 = 0xe2a6;
+/// U+E2A7: Incel, a game completed without teabagging or getting
+/// teabagged: a teabag under a red no sign. No HUD line shows it yet.
+pub const INCEL: u16 = 0xe2a7;
 
-/// Every medal and its picture: the chain's tiers in order, then Bounced.
-pub const MEDALS: [(u16, &[u16; 576]); 7] = [
+/// Every medal and its picture: the chain's tiers in order, then Bounced,
+/// then Incel.
+pub const MEDALS: [(u16, &[u16; 576]); 8] = [
     (SUPERBOUNCE, &art::SUPERBOUNCE),
     (DOUBLE_BOUNCE, &art::DOUBLE_BOUNCE),
     (TRIPLE_BOUNCE, &art::TRIPLE_BOUNCE),
@@ -39,6 +45,7 @@ pub const MEDALS: [(u16, &[u16; 576]); 7] = [
     (CHAIN_BOUNCE, &art::CHAIN_BOUNCE),
     (BOUNCETACULAR, &art::BOUNCETACULAR),
     (BOUNCED, &art::BOUNCED),
+    (INCEL, &art::INCEL),
 ];
 
 /// The fonts that get the medals: the two HUD message fonts, the ones the

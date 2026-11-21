@@ -361,6 +361,9 @@ pub(crate) fn register_core_film(
     // (docs/game/superbounce.md): idle unless the variant or
     // H2_SUPERBOUNCE asks for it.
     crate::superbounce_mode::install(features, telemetry.clone()).context("installing the superbounce mode")?;
+    // Teabags in every game, for the incel medal (docs/game/teabag.md):
+    // recorded to Live and the film on the console that records the game.
+    crate::teabag::install(features, telemetry.clone()).context("installing the teabag watch")?;
     // HUD elements of ours drawn by the game's HUD (docs/game/hud-kit.md),
     // and the superbounce HUD on it, fed from the mode's state; its
     // tutorial's seen flag is a setting.

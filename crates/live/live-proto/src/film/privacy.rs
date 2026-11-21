@@ -154,7 +154,8 @@ fn view<'a>(r: stream::Record<'a>, packer: Option<&mut crate::pack::Decoder>) ->
                     };
                     let import = match &record.event {
                         GameStarted(_) | PlayerJoined(_) | PlayerLeft(_) | PlayerKilled(_)
-                        | ScoreChanged(_) | GameEnded(_) | Superbounce(_) | Bounced(_) => true,
+                        | ScoreChanged(_) | GameEnded(_) | Superbounce(_) | Bounced(_)
+                        | Teabag(_) => true,
                         Assist { .. }
                         | Medal { .. }
                         | WeaponFire { .. }

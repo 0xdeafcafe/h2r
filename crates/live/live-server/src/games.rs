@@ -791,6 +791,13 @@ impl Live {
                         "event {i}: only the host reports superbounces"
                     )));
                 }
+                // And every player's teabags (docs/game/teabag.md,
+                // "Recording"): a guest would report its own player's.
+                game::TEABAG if !by_host => {
+                    return Err(forbidden(format!(
+                        "event {i}: only the host reports teabags"
+                    )));
+                }
                 game::GAME_ENDED if !by_host => {
                     return Err(forbidden(format!(
                         "event {i}: only the host ends the game; a player leaves with PlayerLeft"
@@ -1415,6 +1422,8 @@ impl Live {
             kills: g.kills.iter().cloned().collect(),
             bounces: g.bounces.iter().cloned().collect(),
             bounced: g.bounced.iter().cloned().collect(),
+            teabags: g.teabags.iter().cloned().collect(),
+            joined_late: g.joined_late.iter().copied().collect(),
             winner: g.ended.as_ref().and_then(|e| e.0.winner.clone()),
             end_reason: g.ended.as_ref().map(|e| e.0.reason.clone()),
             position,
