@@ -287,3 +287,86 @@ fn an_invented_world_draws_in_each_lighting_mode() {
     assert_eq!(stats.visible, 0);
     assert_eq!(&px[..3], &[0, 0, 0]);
 }
+
+/// The invented textured BSP opened as a map, and its raw resources.
+fn textured() -> (Map<std::io::Cursor<Vec<u8>>>, ResourceFiles) {
+    let bytes = crate::fixture::fixture_with_textured_bsp();
+    let mut files = ResourceFiles::new();
+    files.set_bytes(map::ResourceFile::Local, bytes.clone().into());
+    (
+        Map::from_reader(std::io::Cursor::new(bytes)).unwrap(),
+        files,
+    )
+}
+
+/// The whole map path: `load_world` reads the invented cluster, the
+/// shader names its base map, and both bitmaps decode, the page
+/// through the lightmap group's palette.
+#[test]
+fn the_invented_textured_bsp_loads_with_its_images() {
+    use crate::fixture::{TEX_BASE_RGBA, TEX_FLOOR, id};
+    let (mut map, mut files) = textured();
+    let load = NativeLoad::read(&mut map, &mut files, 0).unwrap();
+    assert_eq!(load.bsp, id(4));
+    assert_eq!(load.lightmap_error, None);
+    let s = load.stats();
+    assert_eq!(
+        (
+            s.draws,
+            s.batches,
+            s.materials,
+            s.lightmap_pages,
+            s.untextured,
+            s.failed_sections
+        ),
+        (1, 1, 1, 1, 0, 0)
+    );
+    let w = load.world();
+    assert_eq!(w.draws[0].lightmap, Some(PAGE));
+    assert_eq!(w.indices.len(), 6);
+    let corners: Vec<[f32; 3]> = w.vertices.iter().map(|v| v.position).collect();
+    assert!(
+        corners.contains(&[TEX_FLOOR, TEX_FLOOR, 0.0]),
+        "{corners:?}"
+    );
+    let base = &load.base[&0];
+    assert_eq!((base.width, base.height), (4, 4));
+    assert_eq!(base.rgba[..4], TEX_BASE_RGBA);
+    let page = &load.pages[&PAGE];
+    assert_eq!(page.rgba[..4], [0x80, 0x80, 0x80, 0xff]);
+    assert!(
+        NativeLoad::read(&mut map, &mut files, 1).is_err(),
+        "no second BSP"
+    );
+}
+
+/// The invented map draws through `GpuWorld` into the viewport's
+/// formats: the floor under the camera is the base map's red, darker
+/// with its lightmap page than in Flat. Skipped without a wgpu adapter.
+#[test]
+fn the_invented_map_draws_through_the_native_world() {
+    let Some((device, queue)) = device() else {
+        return;
+    };
+    let (mut map, mut files) = textured();
+    let load = NativeLoad::read(&mut map, &mut files, 0).unwrap();
+    let half = crate::fixture::TEX_FLOOR / 2.0;
+    let camera = Camera {
+        target: [half, half, 0.0],
+        yaw: 0.0,
+        pitch: 1.3,
+        distance: 6.0,
+        ..Camera::default()
+    };
+    let (game, stats) = centre(&device, &queue, &load, Lighting::Game, &camera);
+    assert_eq!((stats.visible, stats.total), (1, 1));
+    let (flat, _) = centre(&device, &queue, &load, Lighting::Flat, &camera);
+    assert!(
+        flat[0] > flat[1] && flat[1] > flat[2],
+        "the base map: {flat:?}"
+    );
+    assert!(
+        game[0] < flat[0] && game[0] > game[2],
+        "lit by the page: {game:?}"
+    );
+}

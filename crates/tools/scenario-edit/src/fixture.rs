@@ -582,3 +582,255 @@ pub fn fixture_with_object_collision() -> Vec<u8> {
     b[sfile(SCENERY_AT)..sfile(SCENERY_AT) + 2].copy_from_slice(&0i16.to_le_bytes());
     b
 }
+
+/// Where [`fixture_with_textured_bsp`]'s tags are in the metadata, and
+/// their sizes: the structure BSP, its lightmap, the floor's shader, its
+/// base map and the lightmap page.
+pub const TEX_SBSP: usize = 0x1300;
+pub const TEX_SBSP_SIZE: usize = 0x400;
+pub const TEX_LTMP: usize = 0x1700;
+pub const TEX_LTMP_SIZE: usize = 0x600;
+pub const TEX_SHAD: usize = 0x1d00;
+pub const TEX_BASE: usize = 0x1e00;
+pub const TEX_PAGE: usize = 0x1f00;
+/// Where the section's raw block and the two bitmaps' pixels are in the
+/// file (past the metadata), and each bitmap LOD's size.
+pub const TEX_BLOCK_FILE: usize = 0x3200;
+pub const TEX_BASE_FILE: usize = 0x3600;
+pub const TEX_PAGE_FILE: usize = 0x3700;
+pub const TEX_LOD_SIZE: usize = 0x80;
+/// The floor quad: `TEX_FLOOR` units square in the `z = 0` plane from the
+/// origin.
+pub const TEX_FLOOR: f32 = 4.0;
+/// The base map's one colour (R, G, B, A) and the lightmap page's palette
+/// colour (`A8R8G8B8`), index 1.
+pub const TEX_BASE_RGBA: [u8; 4] = [200, 60, 20, 255];
+pub const TEX_PAGE_COLOR: u32 = 0xff80_8080;
+/// The BSP's checksum, which its lightmap group repeats.
+const TEX_CHECKSUM: u32 = 0x00c0_ffee;
+
+/// One resource of a raw `blkh` block: (kind, field, secondary, bytes).
+type Resource = (u8, u16, u16, Vec<u8>);
+
+fn bytes16(values: &[u16]) -> Vec<u8> {
+    values.iter().flat_map(|v| v.to_le_bytes()).collect()
+}
+fn bytes32(values: impl IntoIterator<Item = u32>) -> Vec<u8> {
+    values.into_iter().flat_map(|v| v.to_le_bytes()).collect()
+}
+
+/// The floor's structure section: four vertices, two triangles in one
+/// triangle-list part of material 0, with positions, texture coordinates,
+/// a `+z` tangent frame and lightmap coordinates.
+fn floor_resources() -> Vec<Resource> {
+    let mut part = vec![0u8; 0x48];
+    part[0..2].copy_from_slice(&2u16.to_le_bytes()); // kind: drawn, opaque
+    part[2..4].copy_from_slice(&0xbu16.to_le_bytes()); // triangle list
+    part[8..10].copy_from_slice(&6u16.to_le_bytes()); // index count
+    part[0xc..0xe].copy_from_slice(&1u16.to_le_bytes()); // one subpart
+    let subpart = bytes16(&[0, 6, 0xffff, 0]);
+    let indices = bytes16(&[0, 1, 2, 1, 3, 2]);
+    let mut descriptors = vec![0u8; 0x80];
+    for (i, (kind, stride)) in [(0x01u8, 12u8), (0x18, 8), (0x1b, 12), (0x1f, 4)]
+        .into_iter()
+        .enumerate()
+    {
+        descriptors[i * 0x20] = kind;
+        descriptors[i * 0x20 + 1] = stride;
+    }
+    let s = TEX_FLOOR;
+    let corners = [[0.0f32, 0.0], [s, 0.0], [0.0, s], [s, s]];
+    let positions = bytes32(
+        corners
+            .iter()
+            .flat_map(|c| [c[0], c[1], 0.0])
+            .map(f32::to_bits),
+    );
+    let uvs = bytes32(
+        [[0.0f32, 0.0], [1.0, 0.0], [0.0, 1.0], [1.0, 1.0]]
+            .iter()
+            .flatten()
+            .map(|v| v.to_bits()),
+    );
+    // +z normal packed 11:11:10 (z = 511 in the top ten bits), binormal
+    // and tangent zero.
+    let frame = bytes32((0..4).flat_map(|_| [511u32 << 22, 0, 0]));
+    // Two normalised i16 coordinates, both one half.
+    let lightmap = bytes16(&[0x4000; 8]);
+    vec![
+        (0, 0, 0x48, part),
+        (0, 8, 8, subpart),
+        (0, 0x20, 2, indices),
+        (0, 0x38, 0x20, descriptors),
+        (2, 0x38, 0, positions),
+        (2, 0x38, 1, uvs),
+        (2, 0x38, 2, frame),
+        (2, 0x38, 3, lightmap),
+    ]
+}
+
+/// A `blkh` raw block of a 0x44-byte structure section and its resource
+/// table. The section's block counts follow from its resources.
+fn raw_block(resources: &[Resource]) -> (Vec<u8>, Vec<[u8; 16]>) {
+    let mut section = vec![0u8; 0x44];
+    let mut data = Vec::new();
+    let mut table = Vec::new();
+    for (kind, field, secondary, bytes) in resources {
+        if *kind == 0 {
+            let at = usize::from(*field);
+            let count = (bytes.len() / usize::from(*secondary)) as u32;
+            section[at..at + 4].copy_from_slice(&count.to_le_bytes());
+        }
+        data.extend(b"crsr");
+        let mut e = [0u8; 16];
+        e[0] = *kind;
+        e[1] = 2;
+        e[2..4].copy_from_slice(&field.to_le_bytes());
+        e[4..6].copy_from_slice(&field.to_le_bytes());
+        e[6..8].copy_from_slice(&secondary.to_le_bytes());
+        e[8..12].copy_from_slice(&(bytes.len() as u32).to_le_bytes());
+        e[12..16].copy_from_slice(&(data.len() as u32).to_le_bytes());
+        data.extend(bytes);
+        table.push(e);
+    }
+    let mut block = b"hklb".to_vec();
+    block.extend((data.len() as u32).to_le_bytes());
+    block.extend(&section);
+    block.extend(&data);
+    block.extend(b"fklb");
+    (block, table)
+}
+
+/// One 4 by 4 swizzled bitmap with one image of `format` whose LOD 0 is
+/// at `pixels_file` in the file, written at metadata offset `at`.
+fn put_bitmap(b: &mut [u8], at: usize, format: u16, pixels_file: usize) {
+    let root = META_FILE + at;
+    let image = 0x50;
+    put(b, root + 0x44, 1);
+    put(b, root + 0x48, META + (at + image) as u32);
+    let i = root + image;
+    put(b, i, FourCC(*b"bitm").as_u32());
+    b[i + 4..i + 6].copy_from_slice(&4u16.to_le_bytes());
+    b[i + 6..i + 8].copy_from_slice(&4u16.to_le_bytes());
+    b[i + 8] = 1; // depth
+    b[i + 0xc..i + 0xe].copy_from_slice(&format.to_le_bytes());
+    b[i + 0xe..i + 0x10].copy_from_slice(&8u16.to_le_bytes()); // swizzled
+    put(b, i + 0x1c, pixels_file as u32); // LOD 0, local
+    for w in [0x20, 0x24, 0x28, 0x2c, 0x30] {
+        put(b, i + w, u32::MAX);
+    }
+    put(b, i + 0x34, TEX_LOD_SIZE as u32);
+}
+
+/// A map with one textured, lit structure BSP: one cluster, the floor
+/// quad, its material's shader naming a base map, and a lightmap whose
+/// group gives the cluster page 0 of a P8 bitmap through palette 0. Tags
+/// 4 to 8 are the BSP, the lightmap, the shader, the base map and the
+/// page. Everything is invented; the readers it goes through are
+/// `native_render::load::load_world`, `base_map` and the decodes.
+pub fn fixture_with_textured_bsp() -> Vec<u8> {
+    let mut b = fixture();
+    let mut names = NAMES.to_vec();
+    names.extend(
+        b"levels\\test\\floor\0levels\\test\\floor_lightmap\0levels\\test\\shaders\\floor\0levels\\test\\bitmaps\\floor\0levels\\test\\bitmaps\\floor_lightmap\0",
+    );
+    tag_names(&mut b, &names);
+    let mut classes = CLASSES.to_vec();
+    classes.extend([*b"sbsp", *b"ltmp", *b"shad", *b"bitm", *b"bitm"]);
+    let mut payloads = PAYLOADS.to_vec();
+    payloads.extend([
+        (TEX_SBSP, TEX_SBSP_SIZE),
+        (TEX_LTMP, TEX_LTMP_SIZE),
+        (TEX_SHAD, 0x100),
+        (TEX_BASE, 0x100),
+        (TEX_PAGE, 0x100),
+    ]);
+    tag_index(&mut b, &classes, &payloads);
+    let file = |at: usize| META_FILE + at;
+    let addr = |at: usize| META + at as u32;
+
+    // The structure BSP: checksum, one material, one cluster.
+    let s = file(TEX_SBSP);
+    put(&mut b, s + 8, TEX_CHECKSUM);
+    let (material, cluster, table) = (TEX_SBSP + 0x150, TEX_SBSP + 0x180, TEX_SBSP + 0x240);
+    put(&mut b, s + 0xa4, 1);
+    put(&mut b, s + 0xa8, addr(material));
+    put(&mut b, file(material) + 8, FourCC(*b"shad").as_u32());
+    put(&mut b, file(material) + 0xc, id(6).0);
+    put(&mut b, s + 0x9c, 1);
+    put(&mut b, s + 0xa0, addr(cluster));
+    let (block, entries) = raw_block(&floor_resources());
+    assert!(TEX_BLOCK_FILE + block.len() <= TEX_BASE_FILE);
+    assert!(table + 16 * entries.len() <= TEX_SBSP + TEX_SBSP_SIZE);
+    b[TEX_BLOCK_FILE..TEX_BLOCK_FILE + block.len()].copy_from_slice(&block);
+    let c = file(cluster);
+    b[c..c + 2].copy_from_slice(&4u16.to_le_bytes()); // vertices
+    b[c + 2..c + 4].copy_from_slice(&2u16.to_le_bytes()); // triangles
+    b[c + 4..c + 6].copy_from_slice(&1u16.to_le_bytes()); // parts
+    b[c + 0xc..c + 0xe].copy_from_slice(&4u16.to_le_bytes());
+    let info = c + 0x28;
+    put(&mut b, info, TEX_BLOCK_FILE as u32);
+    put(&mut b, info + 4, block.len() as u32);
+    put(&mut b, info + 8, 0x44);
+    put(&mut b, info + 0xc, (block.len() - 0x44 - 12) as u32);
+    put(&mut b, info + 0x10, entries.len() as u32);
+    put(&mut b, info + 0x14, addr(table));
+    put(&mut b, info + 0x18, id(4).0);
+    b[info + 0x1c..info + 0x1e].copy_from_slice(&0x24u16.to_le_bytes());
+    b[info + 0x1f] = 1;
+    put(&mut b, info + 0x20, u32::MAX);
+    for (i, e) in entries.iter().enumerate() {
+        let at = file(table) + 16 * i;
+        b[at..at + 16].copy_from_slice(e);
+    }
+    let f = TEX_FLOOR;
+    for (i, v) in [0.0f32, f, 0.0, f, 0.0, 0.0].into_iter().enumerate() {
+        putf(&mut b, c + 0x54 + 4 * i, v);
+    }
+    b[c + 0x6e] = 0xff; // no sky
+
+    // The lightmap: one group for that checksum, the page bitmap, one
+    // palette, and the cluster on page 0 through palette 0.
+    let l = file(TEX_LTMP);
+    let (group, render, palette) = (TEX_LTMP + 0x110, TEX_LTMP + 0x180, TEX_LTMP + 0x200);
+    put(&mut b, l + 0x80, 1);
+    put(&mut b, l + 0x84, addr(group));
+    let g = file(group);
+    put(&mut b, g + 4, TEX_CHECKSUM);
+    put(&mut b, g + 8, 1);
+    put(&mut b, g + 0xc, addr(palette));
+    put(&mut b, file(palette) + 4, TEX_PAGE_COLOR);
+    put(&mut b, g + 0x18, FourCC(*b"bitm").as_u32());
+    put(&mut b, g + 0x1c, id(8).0);
+    put(&mut b, g + 0x28, 1);
+    put(&mut b, g + 0x2c, addr(render));
+    put(&mut b, file(render), 0); // page 0, palette 0
+
+    // The shader: no template, one postprocess naming the base map.
+    let h = file(TEX_SHAD);
+    let (post, bitmaps) = (TEX_SHAD + 0x60, TEX_SHAD + 0xe0);
+    put(&mut b, h + 4, u32::MAX);
+    put(&mut b, h + 0x20, 1);
+    put(&mut b, h + 0x24, addr(post));
+    put(&mut b, file(post) + 4, 1);
+    put(&mut b, file(post) + 8, addr(bitmaps));
+    put(&mut b, file(bitmaps), id(7).0);
+
+    // The base map, ARGB8888 (bytes B, G, R, A), and the P8 page, every
+    // texel index 1.
+    put_bitmap(&mut b, TEX_BASE, 11, TEX_BASE_FILE);
+    let [r, g8, bl, a] = TEX_BASE_RGBA;
+    let texels = [bl, g8, r, a].repeat(TEX_LOD_SIZE / 4);
+    b[TEX_BASE_FILE..TEX_BASE_FILE + TEX_LOD_SIZE].copy_from_slice(&texels);
+    put_bitmap(&mut b, TEX_PAGE, 18, TEX_PAGE_FILE);
+    b[TEX_PAGE_FILE..TEX_PAGE_FILE + TEX_LOD_SIZE].fill(1);
+
+    // The scenario names the BSP and its lightmap.
+    block(&mut b, 0x210, 1, BSPS_AT);
+    let e = sfile(BSPS_AT);
+    put(&mut b, e + 0x10, FourCC(*b"sbsp").as_u32());
+    put(&mut b, e + 0x14, id(4).0);
+    put(&mut b, e + 0x18, FourCC(*b"ltmp").as_u32());
+    put(&mut b, e + 0x1c, id(5).0);
+    b
+}
