@@ -54,23 +54,38 @@ pub fn open_source_from_vfs(
     name: &str,
     slot_source: Option<&str>,
 ) -> Result<(NativeMap, ResourceFiles), Error> {
-    let (local, shared) = {
-        let mut vfs = vfs.lock().unwrap_or_else(|e| e.into_inner());
+    let (local, candidates, shared) = {
+        let mut mounted = vfs.lock().unwrap_or_else(|e| e.into_inner());
+        let mut candidates = Vec::new();
         let local = if let Some(path) = slot_source {
-            vfs.file_source(path)
-        } else if let Some(path) = vfs.content_map_path(name) {
-            vfs.file_source(&path)
+            mounted.file_source(path)
+        } else if let Some(path) = mounted.content_map_path(name) {
+            mounted.file_source(&path)
         } else {
-            let path = format!("{}\\maps\\{name}.map", vfs::CDROM_DEVICE);
-            vfs.file_source(&path)
-                .or_else(|| crate::map_override::map_file(&mut vfs, name).map(FileSource::Host))
-        }
-        .ok_or("the map's file is not found")?;
+            let dir = format!("{}\\maps", vfs::CDROM_DEVICE);
+            let path = format!("{dir}\\{name}.map");
+            let local = mounted.file_source(&path)
+                .or_else(|| mounted.host_file(&path).map(FileSource::Host));
+            if local.is_none() {
+                candidates = crate::map_override::disc_map_paths(&mut mounted, &dir);
+            }
+            local
+        };
         // Raw pointers select fixed DVD paths, independent of the loaded map's
         // name and any installed content with the same name.
-        let shared = SHARED_MAPS.map(|(file, path)| (file, vfs.file_source(path)));
-        (local, shared)
+        let shared = SHARED_MAPS.map(|(file, path)| (file, mounted.file_source(path)));
+        (local, candidates, shared)
     };
+    let local = local.or_else(|| {
+        candidates.into_iter().find_map(|path| {
+            let file = vfs.lock().unwrap_or_else(|e| e.into_inner()).host_file(&path)?;
+            // The foreground uses this VFS too. Release it before opening and
+            // seeking a candidate, even when every map has a different name.
+            crate::map_override::header_name(&file)
+                .is_some_and(|n| n.eq_ignore_ascii_case(name))
+                .then_some(FileSource::Host(file))
+        })
+    }).ok_or("the map's file is not found")?;
 
     let map = match &local {
         FileSource::Host(file) => {
