@@ -254,10 +254,10 @@ modes, and the sun counters are zero.
   (`identity`), its layers 10 and 11 as groups with the projection they
   read, whether the caster is a creature (object type 12, header `+3`,
   which takes the ground-shadow branch), and the light weight read at its
-  layer 11. **S**. The weight is the word the material inputs call the
-  light's weight (`0x00485a30`), beside the words the shadow setup
-  writes; that `0x00032912` stores the product there is not yet read
-  (`h2 disasm 0x00032905 40`). `ObjectShadow::towards_light` is `c[41]`
+  layer 11. **R**. The mask branch stores the weight at `0x00032912`
+  (`movss [0x00485a30], xmm0`, the product loaded from `[esp+0x14]` at
+  `0x0003290a`; `h2 disasm 0x00032905 40`), the word the material inputs
+  call the light's weight. `ObjectShadow::towards_light` is `c[41]`
   of layer 11's projection (**R**, `0x00048f85`).
 - **The gather.** `sun_casters::gather` admits an object shadow whose
   caster is an instance of the view with node matrices and a loaded
@@ -473,7 +473,7 @@ gathered groups come from the actual pass.
 | The object's lighting record (direction, colours) | `Instance::lighting` | Built |
 | Materials per part and layer | `PartDraw::key`, the loaders' templates for layers 10 to 14 | Layer 3 built; the rest with FrameScene slice 3 |
 | Every candidate light: record frame, colours, intensity, bounds, effective volume shape and extent after placement overrides, definition flags, gel, owner instance and per-view eligibility, the guest's choice and weight, constants for both shadow decisions | `FrameScene::lights` | Built |
-| The object shadows: caster, projection, weight, creature branch | `FrameScene::object_shadows`, `ObjectShadow` | Built; the weight's address is **S** |
+| The object shadows: caster, projection, weight, creature branch | `FrameScene::object_shadows`, `ObjectShadow` | Built |
 | The guest's local-light shadow lists: casters, receivers | `FrameScene::light_groups` (layers 10 and 11) | Built |
 | First-person parts | `View::first_person` | Design (FrameScene slice 3) |
 | Cluster parts with bounds | the renderer's loaded world (`native_render::world`, `cull`) | Built |

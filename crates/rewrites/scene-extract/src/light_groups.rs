@@ -53,11 +53,10 @@ use crate::layout::skip::{GEOMETRY_BUILD, GEOMETRY_DRAW, ITEM_SIZE, RENDER_RECOR
 /// The structure BSP's pointer.
 pub const ACTIVE_BSP: u32 = 0x004e_0348;
 /// The light weight an object shadow's mask branch publishes
-/// (`0x00032912`): the word layer inputs 16 and 17 read
-/// (`layout::layer_inputs::LIGHT_WEIGHT`). **S** that `0x00032912`
-/// stores there: it is the light block's weight word beside the words the
-/// shadow setup writes (docs/graphics/e3-lighting.md, "Sun shadows from
-/// objects").
+/// before its layers: `0x00032912` is `movss [0x00485a30], xmm0`, the
+/// product loaded from `[esp+0x14]` at `0x0003290a`. It is the word layer
+/// inputs 16 and 17 read (`layout::layer_inputs::LIGHT_WEIGHT`;
+/// docs/graphics/e3-lighting.md, "Sun shadows from objects").
 pub const OBJECT_SHADOW_WEIGHT: u32 = crate::layout::layer_inputs::LIGHT_WEIGHT;
 /// The shadow projection block, 36 words.
 pub const SHADOW_PROJECTION: u32 = 0x004c_9798;
