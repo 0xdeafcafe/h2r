@@ -1066,10 +1066,10 @@ mutations respect `session.claim`, and a concurrent mutation is `BUSY`.
   (`game::ui_watch`): `{screen, window, slot, class?, live_menu_row, mode,
   dialog, age_ms, layout_findings}`, or `UNAVAILABLE` before the first read. `class` names
   a Rust list screen whose numeric ID identifies its retail skin.
-  The pause Settings lists report `pause-settings` or `mp-pause-settings`.
-  Video and Voice report `video` and `voice`. All four use screen 200 in
-  a game. Press B or Back with `h2 agent press` (`input.pad`) and check
-  that the previous class returns on the same window and slot. See the
+  In a paused game, Player Settings reports screen 196 or 200. Its Video
+  Settings and Voice children report classes `video` and `voice` on
+  screen 200. Press B or Back with `h2 agent press` (`input.pad`) to
+  check that the previous screen returns on the same window and slot. See the
   [pause Settings walkthrough](../game/settings-menu.md#to-check-in-game).
   `main_menu_theater` is present and true when Theater occupies the
   row after Xbox Live. Lobby scripts use it to locate Split Screen and

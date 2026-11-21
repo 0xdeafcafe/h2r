@@ -886,7 +886,7 @@ mod tests {
 
     #[test]
     fn in_game_list_classes_distinguish_screens_with_the_same_retail_id() {
-        for class in ["pause-settings", "mp-pause-settings", "video", "voice"] {
+        for class in ["video", "voice"] {
             let top = Top {
                 window: 5,
                 slot: 1,

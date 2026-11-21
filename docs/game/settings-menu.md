@@ -1,6 +1,6 @@
 # Expanded settings menu
 
-Status: Built. Video, Voice, pause Settings and the extra Controls rows use native game screens driven by `settings::Def`s.
+Status: Built. Video, Voice, Player Settings and the extra Controls rows use native game screens driven by `settings::Def`s.
 Code: `crates/extensions/game/src/video_screen.rs`, `crates/extensions/game/src/pause_menu.rs`, `crates/extensions/game/src/voice_settings.rs`, `crates/extensions/game/src/profile_voice_row.rs`, `crates/extensions/game/src/fov_row.rs`, `crates/extensions/game/src/setting_defs.rs`, `crates/formats/settings`, `crates/apps/cli/src/settings_cmd.rs`. Tests: in those files.
 Switch: one variable per setting, in `setting_defs.rs` and listed in [switches.md](../runtime/switches.md).
 
@@ -10,16 +10,16 @@ holds: a setting is one `settings::Def`, and nothing on a screen writes guest
 simulation memory except through a hook that says so (the clamp global in
 "Field of view").
 
-- The top-level Settings list has a **Video** row that opens our Video screen:
+- The top-level Settings list has a **Video Settings** row that opens the Video screen:
   field of view, frame rate, resolution, lighting and LOD distance ("Video screen",
   "Field of view").
 - The Controls screen has rows for the controller speaker, the Steam
   Controller (speaker, trackpad aim, left trackpad) and, on iOS, the touch
   controls and Aim Assist ([playstation-audio.md](../audio/playstation-audio.md)
   "In-game setting", [ios.md](../runtime/ios.md#controls)).
-- **Settings** in the campaign and multiplayer pause menus opens a list
-  containing **Video**, **Voice** and the native controller or player
-  settings ("Pause menu").
+- **Player Settings** in the campaign and multiplayer pause menus opens the
+  native settings list, which includes **Video Settings** and **Voice**
+  ("Pause menu").
 - A player profile's Edit Profile screen has a **Voice Chat** row right
   after Voice Masking that opens the same Voice screen ("Edit Profile").
 - The button layouts are rows on the Button Layout screen
@@ -160,7 +160,7 @@ privacy screen sets it; [live-custom-games.md](../live/live-custom-games.md)),
 ## Video screen
 
 The top-level Settings list (Player Profiles, Game Variants) has a third
-row, **Video**. A on it opens a screen titled "Video" with five display options:
+row, **Video Settings**. A on it opens the display options:
 
 | Row | Values | Saved as | Applies | Locked by |
 |---|---|---|---|---|
@@ -187,7 +187,7 @@ works there as a variable).
 
 Code: the rows are `Def`s in `boot::setting_defs` with a `menu` naming
 the screen; `boot::video_screen::model` builds the screen as
-`ui::Screen::new("video").rows_from_settings(..)`, the Video row as
+`ui::Screen::new("video").rows_from_settings(..)`, the Video Settings row as
 `ui::extend(List::Settings, 2)` and the speaker row as
 `ui::extend(List::Controls, 6)` ([Settings as a schema](#settings-as-a-schema));
 the hooks registered by `layout_glue::install` ask that model for counts,
@@ -230,7 +230,7 @@ Controls edit buffer on close: only the profile screen's back handler
 (`0x2b7abe` → `0x148bff`) and the generic `0x230b32` commit and clear it,
 and no profile is being edited from the Settings list.
 
-**Settings root as the entry.** Video is a row of the top-level Settings
+**Settings root as the entry.** Video Settings is a row of the top-level Settings
 list, next to Player Profiles and Game Variants, because none of its
 settings belongs to a profile. It is added the way the Controls rows are: a
 `ui::extend(List::Settings, 2)` row in the model, the list hook growing
@@ -242,27 +242,26 @@ skipped.
 
 ## Pause menu
 
-Open **Settings** from the campaign or multiplayer pause menu. In campaign
-it contains **Controller Settings**, **Video** and **Voice**. In multiplayer
-the first row is **Player Settings**, which uses the game's normal choice of
-Player Settings or Controller Settings for that player. The two other rows
-open the same Video and Voice pages available from the main menu.
+Open **Player Settings** from the campaign or multiplayer pause menu. It
+opens the game's Controller Settings or Player Settings list for the
+pressing player. Both native lists include **Video Settings** and **Voice**
+after the game's settings. Those rows open the same pages as the main
+menu and Edit Profile.
 
 | Menu | Rows, top to bottom |
 |---|---|
-| Campaign (GAME PAUSED) | Continue, Revert to Last Checkpoint, Restart Level, Settings, Save and Quit |
-| Multiplayer (GAME MENU) | Leave Game, Settings, Handicap, then Change Teams, Party Privacy and End Game when the game shows them |
+| Campaign (GAME PAUSED) | Continue, Revert to Last Checkpoint, Restart Level, Player Settings, Save and Quit |
+| Multiplayer (GAME MENU) | Leave Game, Player Settings, Handicap, then Change Teams, Party Privacy and End Game when the game shows them |
 
-B or Back from Video or Voice returns to Settings at the row the player
-opened. A second B returns to the pause menu. Campaign stays paused
-through both steps. Multiplayer continues to run.
+B or Back from Video Settings or Voice returns to its row in the native
+list. Another B returns to the pause menu. Campaign stays paused through
+both steps. Multiplayer continues to run.
 
-Code: `game::pause_menu::Settings`, registered by
-`layout_glue::install`. `features.pause-rows` and
-`features.pause-mp-rows` control the campaign and multiplayer Settings
-lists. Each list includes the Video and Voice pages whose classes are
-enabled. With neither page enabled, the game handles its Settings row
-directly.
+Code: `game::pause_menu` and `layout_glue::install`. The
+`features.pause-rows` and `features.pause-mp-rows` switches control the
+campaign and multiplayer extensions. Each list includes the Video and
+Voice pages whose classes are enabled. When neither page is enabled, the
+game handles its original Settings row directly.
 
 ### How Start opens it (Local, static)
 
@@ -302,10 +301,11 @@ confirmation (`0x19b5af(3, 0xaa, 4, mask, 0x2323b7)`); row 3 closes the
 menu and opens the in-game Controller Settings (screen 200, loader
 `0x231db5`, [playstation-audio.md](../audio/playstation-audio.md)); row 4
 opens screen 168, or 183 when `0x18f911` says more than one. The
-multiplayer menu's action 1 opens Controller Settings (screen 200) or the
-player settings screen (196, loader `0x23252e`) when `0x2b505c(player)`,
-and leaves the menu up; actions 0 and 2 to 5 go to `0x2329a7`, `0x232b63`,
-`0x232bb4`, `0x232c05` and `0x232c4d` [not read further].
+multiplayer menu's action 1 calls `0x232aff`. This opens Controller
+Settings (screen 200) when `0x2b505c(player)` is true and the player
+settings screen (196, loader `0x23252e`) otherwise. The window saves the
+pause menu as a reopen request. Actions 0 and 2 to 5 go to `0x2329a7`,
+`0x232b63`, `0x232bb4`, `0x232c05` and `0x232c4d` [not read further].
 
 The row names, from the row text functions and the game's strings: the
 campaign menu's rows 0 to 4 are Continue (`0x08000144`), Revert to Last
@@ -367,19 +367,26 @@ uses the setting during play.
 
 ### How our rows are added
 
-The pause lists retain their native row counts and action words.
-`pause_menu::Settings` relabels campaign row 3 to Settings and intercepts
-that row's press and multiplayer action 1. The new list is a
-`list_class::ListClass` using the game's Controller Settings skin. On
-campaign it opens the in-game Controller Settings loader directly.
-On multiplayer the Player Settings row forwards the original action with
-the pause screen's native datum handle, so the game still selects the
-appropriate native dialog.
+The pause menus retain their native row counts and action words.
+`pause_menu::Settings` labels campaign row 3 and multiplayer action 1
+**Player Settings**. In campaign it opens Controller Settings directly on
+the pause screen's window and slot so the window can restore the pause
+menu. In multiplayer the game's original action 1 picks the native list
+for the pressing player.
 
-`list_class::push` uses the parent screen's window and slot for Settings,
-Video and Voice. The normal Controls back handler closes the top screen
-on that stack. This also keeps the pages on the pressing player's stack
-in split screen.
+The player list (196) uses constructor `0x2b4f5c`, row text `0x2b508c`
+and row chosen `0x2b50d9`. The constructor has four possible native
+actions and may omit some of them. `layout_glue::install` extends the
+datum capacity of each native list and appends one datum per enabled page
+after its normal rows. The new action words are 8 for **Video Settings**
+and 9 for **Voice**. They are independent of the number of visible
+widgets, so the existing list scrolls to show them. Native rows keep
+their original labels and actions.
+
+`list_class::push` opens Video Settings and Voice on the native list's
+window and slot. The game-shell window saves the parent loader and focus.
+The normal Back handler restores them, including in the pressing player's
+quarter in split screen.
 
 ### In a game, our screens use screen 200
 
@@ -410,11 +417,12 @@ the list per account. A host row would call that same HLE.
 
 ### Tests
 
-`game::pause_menu::tests` covers the exact Settings labels and row order,
-native controller/player settings routes, and B and Back restoring the
-Settings list at the same row. It also covers live Video and Voice
-changes. `game::video_screen::tests` checks the five display options,
-Mute Button in Voice and Aim Assist on the iOS Controls list.
+`game::pause_menu::tests` covers the pause row labels, the native
+multiplayer Settings action, both destination lists' new action words,
+feature switches, and live Video and Voice changes.
+`game::list_class::tests` covers the window and slot passed to a child
+loader. `game::video_screen::tests` checks the display options, Mute
+Button in Voice and Aim Assist on the iOS Controls list.
 `game::speaker_row::tests` checks the read-only iOS Aim Assist row.
 
 ### To check in game
@@ -423,25 +431,26 @@ Use `H2_UI_WATCH=1`, `h2 agent press` for buttons and
 [`h2 agent ui`](../runtime/agent-api.md#ui-what-the-menus-show) to check the
 screen after each step.
 
-1. Start in campaign or multiplayer, select Settings and press A. Check
-   for `class: "pause-settings"` in campaign or
-   `class: "mp-pause-settings"` in multiplayer.
-2. Select Video and press A. Check for `class: "video"` on the same
-   window and slot, and the five display options. Press B, wait for
-   Settings, then move down to Voice and press A. Check for
-   `class: "voice"` on the same window and slot and **Mute Button** below
-   **Voice Volume**. Press Back and check that Settings is active again.
-3. Press B to return to the pause menu. In campaign, Continue resumes the
+1. Start in campaign or multiplayer, select **Player Settings** and press
+   A. Check for screen 200 in campaign or screen 196 or 200 in multiplayer.
+2. Scroll to **Video Settings** and press A. Check for `class: "video"` on
+   the same window and slot and the display options. Press B and check
+   that the native list returns at **Video Settings**.
+3. Select **Voice** and press A. Check for `class: "voice"` on the same
+   window and slot and **Mute Button** below **Voice Volume**. Press Back
+   and check that the native list returns at **Voice**.
+4. Press B to return to the pause menu. In campaign, Continue resumes the
    game. In multiplayer, play continues behind the menus. Check the
-   same navigation from the second seat in split screen.
-4. On iOS, open Controller Settings from pause Settings and check
-   **Aim Assist: Change in Main Menu**. Check **Aim Assist** in the main
-   menu's profile Controls and step its value there. On other platforms
-   Controls has no Aim Assist row.
+   same navigation from the second seat in split screen. Use `h2 agent
+   ui.stack` to inspect that seat's channel.
+5. On iOS, check **Aim Assist: Change in Main Menu** in the in-game
+   Controller Settings list. Check **Aim Assist** in the main menu's
+   profile Controls and step its value there. On other platforms Controls
+   has no Aim Assist row.
 
 ## Voice screen
 
-Open **Voice** from either pause Settings list or **Voice Chat** from
+Open **Voice** from **Player Settings** or **Voice Chat** from
 Edit Profile. The rows are host settings (`Scope::Host`) and apply at
 once. The voice chat reads its settings through
 `voice_settings::VoiceHandles`. The DualSense HID thread follows **Mute
@@ -536,7 +545,7 @@ So the list tells its rows apart by index, not by a value word.
   ids) and open the Voice screen (`list_class::open`); rows 0 to 3 go
   straight to the original.
 - **Pane.** Our row keeps the pane shown (`profile_voice_row::pane`), as
-  the Settings list's Video row does; Online Status and Subtitles ask for
+  the Settings list's Video Settings row does; Online Status and Subtitles ask for
   their own pane (4 and 5) through a word of ours.
 - **Scrolling.** The first pane's list has six item widgets and the
   others five, so retail already scrolls; with seven rows every pane
@@ -704,8 +713,8 @@ and which it wants on ([skulls.md](skulls.md)).
   and their layouts. Nothing here reads or writes the retail values.
 - Which row-level behaviours only a game run shows: the Video rows apply as
   the tables say (frame rate, resolution, lighting and LOD distance without a flash or a
-  black frame); the Video and Voice screens return to the Settings list
-  with B; in split screen each page opens in the pressing player's
+  black frame); the Video Settings and Voice screens return to the native settings
+  list with B; in split screen each page opens in the pressing player's
   quarter.
 - Field of view: the first-person weapon model, the HUD scope overlays and
   the sniper's zoom ring at wide values, and whether the following camera
