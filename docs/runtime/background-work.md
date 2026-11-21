@@ -39,6 +39,7 @@ starts lowers itself.
 | `native-world load` | `crates/extensions/game/src/native_world_glue.rs` | retiring BSP resources, reading and uploading world, lights, fog, water, scene layers and decorator looks |
 | `native-objects load`, `native-first-person load`, `native-lights models` | `crates/extensions/game/src/native_objects_glue.rs`, `native_first_person_load.rs`, `native_lights_glue/models.rs` | model geometry and materials for object, arm and light draws |
 | `native-decorators load` | `crates/extensions/game/src/native_decorators_glue.rs` | translating and uploading resident decorator materials |
+| `native pipeline N`, `native pipeline archive` | `crates/rewrites/native-render/src/pipelines.rs` | compile native shader variants and persist observed descriptors. The workers sleep on their queues between requests |
 | `pad-speaker-index` | `crates/extensions/game/src/pad_speaker.rs` | the controller speaker's sound index |
 | `film-map-hash` | `crates/extensions/game/src/theater/metadata.rs` | the film's map digest |
 | `film-upload` | `crates/extensions/game/src/theater.rs` | a host film's upload |
