@@ -1,5 +1,7 @@
 //! Dispatch sites for fitting each on-screen HUD group to its own anchor.
-use super::{Point, Sig, RENDER_GAME_VIEW, UI_HUD_DRAW, UI_RENDER_LAYERS, ui_render};
+use super::{
+    Point, RENDER_ALTERNATE_VIEW, RENDER_GAME_VIEW, Sig, UI_HUD_DRAW, UI_RENDER_LAYERS, ui_render,
+};
 
 pub const DOC: &str = "docs/graphics/high-resolution.md";
 pub const ANCHOR: Point = Point::new("HUD_LAYOUT_ANCHOR", 0x0013_96c7, Sig::Site, DOC);
@@ -7,6 +9,13 @@ pub const ANCHOR_READY: Point = Point::new("HUD_LAYOUT_ANCHOR_READY", 0x0013_992
 // Fade over the whole per-player UI viewport inside the menu callback.
 pub const MENU_FILL: Point = Point::new("UI_MENU_VIEW_FILL", 0x0014_7cdb, Sig::Site, DOC);
 pub const MENU_FILL_END: Point = Point::new("UI_MENU_VIEW_FILL_END", 0x0014_7d10, Sig::Site, DOC);
+// Shared compositor around the backdrop target switches and immediate fans.
+pub const MENU_BACKDROP: Point = Point::new(
+    "UI_MENU_BACKDROP",
+    0x0025_48f0,
+    Sig::Opaque,
+    DOC,
+);
 // The flare reports the area of a rectangle projected on the CPU. These
 // two boundaries enclose just the vertices and END after that area is known.
 pub const FLARE_QUERY: Point = Point::new("FLARE_QUERY_SCREEN_QUAD", 0x0002_e82b, Sig::Site, DOC);
@@ -50,6 +59,7 @@ pub const GROUPS: [(u32, Point); 6] = [
 pub fn instruction_entries() -> impl Iterator<Item = u32> {
     [
         RENDER_GAME_VIEW.base,
+        RENDER_ALTERNATE_VIEW.base,
         UI_HUD_DRAW.base,
         UI_RENDER_LAYERS.base,
         ui_render::HUD_RETURN.base,
@@ -59,6 +69,7 @@ pub fn instruction_entries() -> impl Iterator<Item = u32> {
         ANCHOR_READY.base,
         MENU_FILL.base,
         MENU_FILL_END.base,
+        MENU_BACKDROP.base,
         FLARE_QUERY.base,
         FLARE_QUERY_END.base,
         FLARE_REFLECTION.base,

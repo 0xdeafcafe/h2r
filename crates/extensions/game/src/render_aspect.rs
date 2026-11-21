@@ -7,7 +7,7 @@ use engine::{GuestMemory, points};
 use hooks::{Builder, Feature, Flow, Manifest};
 use points::render_aspect::{
     ANCHOR, ANCHOR_READY, DOC, FLARE_QUERY, FLARE_QUERY_END, FLARE_REFLECTION,
-    FLARE_REFLECTION_END, GROUPS, MENU_FILL, MENU_FILL_END,
+    FLARE_REFLECTION_END, GROUPS, MENU_BACKDROP, MENU_FILL, MENU_FILL_END,
 };
 
 type Size = Arc<dyn Fn() -> (u32, u32) + Send + Sync>;
@@ -207,6 +207,23 @@ struct Layout {
 }
 
 impl Layout {
+    fn begin_menu_composite(&mut self) -> bool {
+        if self.active.is_none_or(|canvas| canvas.hud) {
+            return false;
+        }
+        let was_fitted = self.current().is_some();
+        self.groups.push((MENU_BACKDROP.base, None));
+        was_fitted
+    }
+
+    fn end_group(&mut self, owner: u32) -> bool {
+        let Some(index) = self.groups.iter().rposition(|&(end, _)| end == owner) else {
+            return false;
+        };
+        self.groups.truncate(index);
+        true
+    }
+
     fn current(&self) -> Option<UiFit> {
         self.groups
             .last()
@@ -221,16 +238,14 @@ impl Feature for RenderAspect {
     }
 
     fn build(&self, b: &mut Builder) -> Result<(), hooks::BuildError> {
-        let (size, sink) = (self.size.clone(), self.sink.clone());
-        b.raw()
-            .observe_before(
-                &points::RENDER_GAME_VIEW,
-                "select the GPU projection",
-                move |o| {
+        for point in [&points::RENDER_GAME_VIEW, &points::RENDER_ALTERNATE_VIEW] {
+            let (size, sink) = (self.size.clone(), self.sink.clone());
+            b.raw()
+                .observe_before(point, "select the GPU projection", move |o| {
                     sink.set_projection_factor(projection_factor(&*o.guest(), size()));
-                },
-            )
-            .optional();
+                })
+                .optional();
+        }
 
         let layout = Arc::new(Mutex::new(Layout::default()));
         for (point, hud) in [
@@ -380,6 +395,30 @@ impl Feature for RenderAspect {
             })
             .context_only()
             .optional();
+        // The backdrop processes the scene underneath the widget layers.
+        // Drain at the helper's boundaries so guest and native fans use
+        // the same full-viewport mapping throughout the target chain.
+        let (on_backdrop, sink) = (layout.clone(), self.sink.clone());
+        b.raw()
+            .observe_before(&MENU_BACKDROP, "begin the full-view menu backdrop", move |o| {
+                let mut l = on_backdrop.lock().unwrap_or_else(|e| e.into_inner());
+                if l.begin_menu_composite() {
+                    sink.set_fit(&mut *o.guest(), None);
+                }
+            })
+            .context_only()
+            .optional();
+        let (on_backdrop, sink) = (layout.clone(), self.sink.clone());
+        b.raw()
+            .observe_after(&MENU_BACKDROP, "restore the menu widget fit", move |o| {
+                let mut l = on_backdrop.lock().unwrap_or_else(|e| e.into_inner());
+                if l.end_group(MENU_BACKDROP.base) {
+                    sink.set_fit(&mut *o.guest(), l.current());
+                }
+            })
+            .context_only()
+            .optional();
+
         let (on_fill, sink) = (layout.clone(), self.sink.clone());
         b.raw()
             .before(
@@ -409,12 +448,7 @@ impl Feature for RenderAspect {
             b.raw()
                 .before(end, "restore the enclosing HUD layout", move |c| {
                     let mut l = layout.lock().unwrap_or_else(|e| e.into_inner());
-                    if let Some(index) = l
-                        .groups
-                        .iter()
-                        .rposition(|&(owner, _)| owner == c.point.base)
-                    {
-                        l.groups.truncate(index);
+                    if l.end_group(c.point.base) {
                         sink.set_fit(&mut c.ctx.memory(), l.current());
                     }
                     Ok(Flow::Continue)
@@ -478,6 +512,57 @@ mod tests {
             (xy[0] * sx + ox) * (output.0 as f32 / 640.0),
             (xy[1] * sy + oy) * (output.1 as f32 / 480.0),
         ]
+    }
+
+    #[test]
+    fn the_menu_backdrop_uses_the_scene_raster_and_restores_the_widget_fit() {
+        for output in [(2768, 1342), (2560, 1920), (1200, 1600)] {
+            let guest = FakeGuest::new();
+            let lens = projection_factor(&guest, output);
+            let canvas = Canvas {
+                output,
+                rect: FULL,
+                hud: false,
+                pinned: false,
+                projection_factor: lens,
+            };
+            let mut layout = Layout {
+                active: pixel_aspect(output).map(|_| canvas),
+                ..Default::default()
+            };
+            let widget_fit = layout.current();
+            assert_eq!(layout.begin_menu_composite(), widget_fit.is_some());
+            let backdrop_fit = layout.current();
+            let origin = physical(backdrop_fit, output, [0., 0.]);
+            let bounds = physical(backdrop_fit, output, [640., 480.]);
+            assert_eq!(origin, [0., 0.]);
+            close(bounds[0], output.0 as f32);
+            close(bounds[1], output.1 as f32);
+
+            // A full-frame copy with 0–1 UVs covers the first and last
+            // output pixel centres on both axes.
+            for (axis, extent) in [output.0, output.1].into_iter().enumerate() {
+                let uv = |pixel| (pixel - origin[axis]) / (bounds[axis] - origin[axis]);
+                assert!(uv(0.5) > 0.0);
+                assert!(uv(extent as f32 - 0.5) < 1.0);
+            }
+
+            // A scene with the display lens has equal physical units
+            // around the centre along both axes.
+            let x = physical(None, output, [320. + 20. * lens, 240.]);
+            let y = physical(None, output, [320., 260.]);
+            close(x[0] - y[0], y[1] - x[1]);
+
+            assert_eq!(layout.end_group(MENU_BACKDROP.base), widget_fit.is_some());
+            assert_eq!(layout.current(), widget_fit);
+            let origin = physical(widget_fit, output, [0., 0.]);
+            let bounds = physical(widget_fit, output, [640., 480.]);
+            let unit = (output.0 as f32 / 640.).min(output.1 as f32 / 480.);
+            close(bounds[0] - origin[0], 640. * unit);
+            close(bounds[1] - origin[1], 480. * unit);
+            close(bounds[0] + origin[0], output.0 as f32);
+            close(bounds[1] + origin[1], output.1 as f32);
+        }
     }
 
     #[test]

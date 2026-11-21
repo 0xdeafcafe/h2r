@@ -53,8 +53,9 @@ The Xbox projection builder (`0x0002fb70`) applies this rule to its
 widescreen factor at `0x0045dfdc`. A 16:9 image can therefore occupy
 the same 640x480 allocation as a 4:3 image.
 
-In live play, `render_aspect` reads the Xbox anamorphic state at the start
-of each view. For a recognised perspective draw, the host scales the
+`crates/extensions/game/src/render_aspect.rs` reads the Xbox anamorphic
+state at both the game and alternate view entries. For a recognised
+perspective draw, the host scales the
 horizontal clip coordinate by the ratio of the guest's pixel aspect to
 the displayed pixel aspect. For translated shaders, the recogniser
 requires a four-row perspective transform. Programs with an unrecognised
@@ -466,10 +467,16 @@ crossfade (`0x002ab270`) and the depth-based fog and distortion pass on the
 menu. Halo-2-HD's write-up counts about 25 render targets in four or five
 allocations, from 512x512 down to 64x64.
 
-The blur chain uses its guest-size targets. The final composite onto the
-back buffer runs on the display grid. Frame-sized intermediates and
-feedback copies also use the display grid so a full-frame composite
-preserves the scene detail.
+Fixed-size blur targets keep their guest texel grids. Frame-sized
+intermediates and feedback copies use the display grid
+(`crates/platform/d3d/src/scaled.rs`). The shared menu backdrop helper
+(`UI_MENU_BACKDROP`) processes the scene in the view's own coordinates.
+`crates/extensions/game/src/render_aspect.rs` drains pending draws at the
+helper's entry and return, suspends the widget safe-area fit for the
+backdrop's target chain, and restores the fit for subsequent UI draws.
+The final backdrop fan (`crates/rewrites/engine/src/ui_backdrop.rs`)
+interpolates normalized texture coordinates over the guest's composite
+rectangle. The back buffer rasterises it on the display grid.
 
 Known failure modes to test for, all seen in xemu at more than 1x:
 
