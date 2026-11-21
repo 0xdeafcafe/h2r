@@ -36,6 +36,59 @@ pub const NETGAME_AT: usize = 0x600;
 pub const SCENERY_AT: usize = 0x700;
 pub const NAMES_AT: usize = 0x800;
 
+/// The invented tags' names, in tag order, each ending in a NUL.
+const NAMES: &[u8] =
+    b"globals\0levels\\test\\fixture\0objects\\test\\blaster\0objects\\test\\kit\0";
+const CLASSES: [[u8; 4]; 4] = [*b"matg", *b"scnr", *b"weap", *b"itmc"];
+/// Each tag's (metadata offset, size).
+const PAYLOADS: [(usize, usize); 4] =
+    [(0, 0x10), (SCNR, SCNR_SIZE), (0x1100, 0x10), (0x1200, 0x10)];
+
+/// Write the tag-name table: the NUL-separated names at 0x980, their
+/// offsets at 0x900, one per tag.
+fn tag_names(b: &mut [u8], names: &[u8]) {
+    let count = names.iter().filter(|&&c| c == 0).count();
+    b[0x980..0x980 + names.len()].copy_from_slice(names);
+    put(b, 0x2c0, count as u32);
+    put(b, 0x2c4, 0x980);
+    put(b, 0x2c8, names.len() as u32);
+    put(b, 0x2cc, 0x900);
+    let mut at = 0;
+    for (i, n) in names.split(|&c| c == 0).take(count).enumerate() {
+        put(b, 0x900 + i * 4, at);
+        at += n.len() as u32 + 1;
+    }
+}
+
+/// Write the tag index: one group per class, then one tag per class
+/// (tag `i` is [`id`]`(i)`, its payload at metadata offset
+/// `payloads[i].0`). The scenario is tag 1 and the globals tag 0.
+fn tag_index(b: &mut [u8], classes: &[[u8; 4]], payloads: &[(usize, usize)]) {
+    let groups = INDEX + 32;
+    let tags = groups + classes.len() * 12;
+    for (i, c) in classes.iter().enumerate() {
+        put(b, groups + i * 12, FourCC(*c).as_u32());
+        put(b, groups + i * 12 + 4, u32::MAX);
+        put(b, groups + i * 12 + 8, u32::MAX);
+        let t = tags + i * 16;
+        put(b, t, FourCC(*c).as_u32());
+        put(b, t + 4, id(i as u32).0);
+        put(b, t + 8, META + payloads[i].0 as u32);
+        put(b, t + 12, payloads[i].1 as u32);
+    }
+    for (o, v) in [
+        (0, 0x8000_0020),
+        (4, classes.len() as u32),
+        (8, 0x8000_0020 + 12 * classes.len() as u32),
+        (12, id(1).0),
+        (16, id(0).0),
+        (24, classes.len() as u32),
+        (28, FourCC(*b"tags").as_u32()),
+    ] {
+        put(b, INDEX + o, v);
+    }
+}
+
 /// A multiplayer cache with globals, a scenario, a weapon and a collection.
 pub fn fixture() -> Vec<u8> {
     let mut b = vec![0u8; FILE];
@@ -54,49 +107,8 @@ pub fn fixture() -> Vec<u8> {
     b[0x120..0x12e].copy_from_slice(b"02.09.27.09809");
     put(&mut b, 0x140, 1);
     b[0x198..0x19f].copy_from_slice(b"fixture");
-    // Tag names.
-    let names = b"globals\0levels\\test\\fixture\0objects\\test\\blaster\0objects\\test\\kit\0";
-    b[0x980..0x980 + names.len()].copy_from_slice(names);
-    put(&mut b, 0x2c0, 4);
-    put(&mut b, 0x2c4, 0x980);
-    put(&mut b, 0x2c8, names.len() as u32);
-    put(&mut b, 0x2cc, 0x900);
-    let mut at = 0;
-    for (i, n) in names.split(|&c| c == 0).take(4).enumerate() {
-        put(&mut b, 0x900 + i * 4, at);
-        at += n.len() as u32 + 1;
-    }
-    // Groups, tags.
-    let classes = [*b"matg", *b"scnr", *b"weap", *b"itmc"];
-    let groups = INDEX + 32;
-    let tags = groups + classes.len() * 12;
-    let payloads = [
-        (0usize, 0x10usize),
-        (SCNR, SCNR_SIZE),
-        (0x1100, 0x10),
-        (0x1200, 0x10),
-    ];
-    for (i, c) in classes.iter().enumerate() {
-        put(&mut b, groups + i * 12, FourCC(*c).as_u32());
-        put(&mut b, groups + i * 12 + 4, u32::MAX);
-        put(&mut b, groups + i * 12 + 8, u32::MAX);
-        let t = tags + i * 16;
-        put(&mut b, t, FourCC(*c).as_u32());
-        put(&mut b, t + 4, id(i as u32).0);
-        put(&mut b, t + 8, META + payloads[i].0 as u32);
-        put(&mut b, t + 12, payloads[i].1 as u32);
-    }
-    for (o, v) in [
-        (0, 0x8000_0020),
-        (4, classes.len() as u32),
-        (8, 0x8000_0020 + 12 * classes.len() as u32),
-        (12, id(1).0),
-        (16, id(0).0),
-        (24, classes.len() as u32),
-        (28, FourCC(*b"tags").as_u32()),
-    ] {
-        put(&mut b, INDEX + o, v);
-    }
+    tag_names(&mut b, NAMES);
+    tag_index(&mut b, &CLASSES, &PAYLOADS);
     // Unknown bytes everywhere in the block area, so preservation is tested.
     for (k, x) in b[sfile(0x400)..sfile(0x800)].iter_mut().enumerate() {
         *x = 0xa0 ^ (k as u8);
@@ -206,9 +218,138 @@ pub fn fixture_with_volumes() -> Vec<u8> {
 /// The fixture with its metadata region ending the file, as in retail maps,
 /// so a block can grow.
 pub fn fixture_at_end() -> Vec<u8> {
-    let mut b = fixture();
+    at_end(fixture())
+}
+
+/// [`fixture_with_volumes`] with its metadata ending the file, so the
+/// volume blocks can grow.
+pub fn fixture_with_volumes_at_end() -> Vec<u8> {
+    at_end(fixture_with_volumes())
+}
+
+fn at_end(mut b: Vec<u8>) -> Vec<u8> {
     let end = META_FILE + 0x2000;
     b.truncate(end);
     put(&mut b, 8, end as u32);
+    b
+}
+
+/// Where [`fixture_with_collision`]'s structure BSP payload is, in the
+/// metadata, and its size.
+pub const SBSP: usize = 0x1300;
+pub const SBSP_SIZE: usize = 0x600;
+/// The collision BSP's blocks inside that payload.
+pub const SBSP_COLLISION_AT: usize = 0x200;
+/// The scenario's structure BSP block (`scnr+0x210`, one 0x44 entry).
+pub const BSPS_AT: usize = 0xa00;
+/// The corner of [`collision_room`] in [`fixture_with_collision`], far
+/// from the placements and volumes.
+pub const ROOM_AT: [f32; 3] = [200.0, 200.0, 0.0];
+
+/// An invented collision BSP of quads, each (four corners, plane). Each
+/// quad's four edges run round it on their own (left surface the quad,
+/// right none); no node, leaf or 2D tree, since only the surfaces are read.
+/// Surface 2 has the breakable flag (bit 3).
+pub fn collision_quads(quads: &[([[f32; 3]; 4], [f32; 4])]) -> tags::collision::Bsp {
+    use tags::collision::{Bsp, Edge, Plane, Surface, Vertex};
+    let mut bsp = Bsp::default();
+    for (q, (corners, plane)) in quads.iter().enumerate() {
+        let v0 = bsp.vertices.len() as u16;
+        let e0 = bsp.edges.len() as u16;
+        for c in corners {
+            bsp.vertices.push(Vertex {
+                point: *c,
+                edge: u32::from(e0),
+            });
+        }
+        for k in 0..4u16 {
+            bsp.edges.push(Edge {
+                start_vertex: v0 + k,
+                end_vertex: v0 + (k + 1) % 4,
+                forward_edge: e0 + (k + 1) % 4,
+                reverse_edge: e0 + (k + 3) % 4,
+                left_surface: q as u16,
+                right_surface: 0xffff,
+            });
+        }
+        bsp.planes.push(Plane(*plane));
+        bsp.surfaces.push(Surface {
+            plane: q as u16,
+            first_edge: e0,
+            flags: if q == 2 { 0x08 } else { 0 },
+            breakable_surface: 0xff,
+            material: q as u16,
+        });
+    }
+    bsp
+}
+
+/// The invented room with its corner at `at`: surface 0 a 10 by 10
+/// floor, surface 1 a wall 4 high on the room's low-x side facing in,
+/// surface 2 the same wall on the high-x side.
+pub fn collision_room(at: [f32; 3]) -> tags::collision::Bsp {
+    let p = |x: f32, y: f32, z: f32| [at[0] + x, at[1] + y, at[2] + z];
+    collision_quads(&[
+        (
+            [
+                p(0.0, 0.0, 0.0),
+                p(10.0, 0.0, 0.0),
+                p(10.0, 10.0, 0.0),
+                p(0.0, 10.0, 0.0),
+            ],
+            [0.0, 0.0, 1.0, at[2]],
+        ),
+        (
+            [
+                p(0.0, 0.0, 0.0),
+                p(0.0, 10.0, 0.0),
+                p(0.0, 10.0, 4.0),
+                p(0.0, 0.0, 4.0),
+            ],
+            [1.0, 0.0, 0.0, at[0]],
+        ),
+        (
+            [
+                p(10.0, 0.0, 0.0),
+                p(10.0, 0.0, 4.0),
+                p(10.0, 10.0, 4.0),
+                p(10.0, 10.0, 0.0),
+            ],
+            [-1.0, 0.0, 0.0, -(at[0] + 10.0)],
+        ),
+    ])
+}
+
+/// [`fixture`] with a fifth tag, a structure BSP the scenario names
+/// (`scnr+0x210`), whose collision BSP is [`collision_room`] at
+/// [`ROOM_AT`]. It has no render geometry and no lightmap, so nothing
+/// drawn covers any of its surfaces.
+pub fn fixture_with_collision() -> Vec<u8> {
+    let mut b = fixture();
+    let mut names = NAMES.to_vec();
+    names.extend(b"levels\\test\\room\0");
+    tag_names(&mut b, &names);
+    let mut classes = CLASSES.to_vec();
+    classes.push(*b"sbsp");
+    let mut payloads = PAYLOADS.to_vec();
+    payloads.push((SBSP, SBSP_SIZE));
+    tag_index(&mut b, &classes, &payloads);
+    // The structure BSP: an empty root but for its collision block.
+    let root = META_FILE + SBSP;
+    let blocks = META + (SBSP + SBSP_COLLISION_AT) as u32;
+    let field = tags::pathfinding::SBSP_COLLISION_FIELD;
+    put(&mut b, root + field, 1);
+    put(&mut b, root + field + 4, blocks);
+    let encoded = collision_room(ROOM_AT).encode_blocks(blocks);
+    assert!(SBSP_COLLISION_AT + encoded.len() <= SBSP_SIZE);
+    let at = root + SBSP_COLLISION_AT;
+    b[at..at + encoded.len()].copy_from_slice(&encoded);
+    // The scenario names it: tag reference at +0x10, no lightmap.
+    block(&mut b, 0x210, 1, BSPS_AT);
+    let e = sfile(BSPS_AT);
+    put(&mut b, e + 0x10, FourCC(*b"sbsp").as_u32());
+    put(&mut b, e + 0x14, id(4).0);
+    put(&mut b, e + 0x18, u32::MAX);
+    put(&mut b, e + 0x1c, u32::MAX);
     b
 }

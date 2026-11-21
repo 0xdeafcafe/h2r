@@ -141,6 +141,9 @@ pub fn layer_color(id: scenario_edit::layers::LayerId) -> [f32; 3] {
         LayerId::Flags => placement_color(scenario_edit::BlockKind::NetgameFlags, None),
         LayerId::NetgameItems => placement_color(scenario_edit::BlockKind::NetgameEquipment, None),
         LayerId::Volume(kind) => volume_color(kind),
+        // Pale for all collision, red for the invisible walls.
+        LayerId::LevelCollision => [0.75, 0.85, 0.95],
+        LayerId::CollisionOnly => [1.0, 0.15, 0.25],
         LayerId::Halo1 => [1.0, 0.55, 0.15],
         LayerId::Live => [0.42, 0.8, 0.55],
     }

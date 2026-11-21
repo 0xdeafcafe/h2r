@@ -25,6 +25,7 @@ use studio_proto::{code, method as m};
 
 use crate::App;
 
+mod collision;
 mod docs;
 mod hud;
 mod mirror;
@@ -358,6 +359,48 @@ pub const METHODS: &[MethodDef] = &[
     def(
         m::VOLUME_SELECT,
         "Select a trigger volume by index (clearing the placements) and frame it with focus, or clear the selection",
+        r#"{"index?":"integer","focus?":"boolean"}"#,
+        r#"{"selected":"integer|null"}"#,
+        r#"{"index":0,"focus":true}"#,
+    ),
+    def(
+        m::VOLUME_SET,
+        "Give a trigger volume a new box as one undo step: forward, up and size over its own, then the corner origin or the centre (its own when neither is given). Forward and up are squared",
+        r#"{"index":"integer","origin?":"[x,y,z]","center?":"[x,y,z]","forward?":"[x,y,z]","up?":"[x,y,z]","size?":"[x,y,z]"}"#,
+        r#"{"volume":"{index,name,label,kinds,origin,forward,up,size,center,parent,world,named_by}"}"#,
+        r#"{"index":0,"center":[102,102,3],"size":[4,4,6]}"#,
+    ),
+    def(
+        m::VOLUME_ADD,
+        "Add a trigger volume (a 2-unit cube at the camera focus unless the box is given) and select it; kill adds a kill trigger naming it in the same undo step (Make a kill volume). Refused past the block's source size while growth is off",
+        r#"{"kill?":"boolean","center?":"[x,y,z]","origin?":"[x,y,z]","forward?":"[x,y,z]","up?":"[x,y,z]","size?":"[x,y,z]"}"#,
+        r#"{"index":"integer","kill_trigger":"integer|null","volume":"{index,...}"}"#,
+        r#"{"kill":true,"center":[0,0,2]}"#,
+    ),
+    def(
+        m::VOLUME_REMOVE,
+        "Remove a trigger volume or a kill trigger (the last entry takes its slot; kill triggers and BSP switches follow a moved volume). A volume a kill trigger or BSP switch names is refused, naming them, as is a source volume of a scripted map",
+        r#"{"kind?":"trigger|kill","index":"integer"}"#,
+        r#"{"removed":"{kind,index}","triggers":"integer","kill_triggers":"integer","selected":"integer|null"}"#,
+        r#"{"kind":"kill","index":0}"#,
+    ),
+    def(
+        m::COLLISION_SURFACES,
+        "The open map's level collision surfaces (each structure BSP's collision BSP): plane, raw flags, material, ring, and class, collision_only when no drawn triangle lies on the surface's plane over it (the invisible walls). Filter by class or BSP; offset and limit (200) page the list",
+        r#"{"class?":"drawn|collision_only","bsp?":"integer","offset?":"integer","limit?":"integer"}"#,
+        r#"{"bsps":"[string]","counts":"{drawn,collision_only}","matching":"integer","surfaces":"[{index,bsp,surface,class,plane,flags,breakable,breakable_surface,material,covered,area,center,ring}]","selected":"integer|null","errors":"[{bsp,error}]"}"#,
+        r#"{"class":"collision_only","limit":10}"#,
+    ),
+    def(
+        m::COLLISION_AT,
+        "The level collision surface a ray meets first (origin and dir) or the one a point lies on (within 0.05 units of its plane, over it), and its class, whatever layers are shown; select selects it (or clears the selection on a miss)",
+        r#"{"origin?":"[x,y,z]","dir?":"[x,y,z]","point?":"[x,y,z]","within?":"number","select?":"boolean"}"#,
+        r#"{"surface":"{index,bsp,surface,class,...}|null","distance":"number|null","selected":"integer|null"}"#,
+        r#"{"origin":[205,205,1],"dir":[1,0,0]}"#,
+    ),
+    def(
+        m::COLLISION_SELECT,
+        "Select a level collision surface by index (clearing the placements and the volume) and frame it with focus, or clear the selection. Read only",
         r#"{"index?":"integer","focus?":"boolean"}"#,
         r#"{"selected":"integer|null"}"#,
         r#"{"index":0,"focus":true}"#,
@@ -697,6 +740,7 @@ impl Api {
             "tag" => tags::call(app, method, &p),
             "scenario" => scenario::call(app, method, &p),
             "volume" => scenario::volume(app, method, &p),
+            "collision" => collision::call(app, method, &p),
             "variant" => variants::call(app, method, &p),
             "playlist" => playlists::call(app, method, &p),
             "ui" => ui_screens::call(app, method, &p),

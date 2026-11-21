@@ -158,9 +158,19 @@ fn setup(api: &mut Api, app: &mut App, t: &Temp, name: &str) {
                 json!({"block": "starting_locations", "index": 1}),
             );
         }
-        m::VOLUME_LIST | m::VOLUME_SELECT => {
+        m::VOLUME_LIST | m::VOLUME_SELECT | m::VOLUME_SET | m::VOLUME_REMOVE | m::VOLUME_ADD => {
             let map = t.path("volumes.map");
             std::fs::write(&map, fixture::fixture_with_volumes()).unwrap();
+            c(m::SOURCE_OPEN, json!({"path": map.display().to_string()}));
+            if name == m::VOLUME_ADD {
+                // Both blocks are full: make room for a kill volume.
+                c(m::VOLUME_REMOVE, json!({"kind": "kill", "index": 0}));
+                c(m::VOLUME_REMOVE, json!({"index": 1}));
+            }
+        }
+        m::COLLISION_SURFACES | m::COLLISION_AT | m::COLLISION_SELECT => {
+            let map = t.path("collision.map");
+            std::fs::write(&map, fixture::fixture_with_collision()).unwrap();
             c(m::SOURCE_OPEN, json!({"path": map.display().to_string()}));
         }
         m::DOC_CLOSE | m::PLAYLIST_LIST | m::PLAYLIST_GET | m::PLAYLIST_SET | m::PLAYLIST_ENTRY => {
@@ -930,6 +940,280 @@ fn volume_list_and_select_read_the_invented_volumes() {
     assert!(
         png_pixels(&out) != hidden,
         "the Kill layer alone draws the kill box"
+    );
+}
+
+/// P10: the invented structure BSP's room through `collision.*`. It has
+/// no render geometry, so all three surfaces are collision only;
+/// `collision.at` finds the far wall by ray and by point whatever layers
+/// are shown, and selecting it replaces the placements. The collision
+/// layers start hidden and count the surfaces.
+#[test]
+fn collision_surfaces_and_at_report_the_invented_rooms_walls() {
+    let t = Temp::new("collision");
+    let mut app = app(&t);
+    let mut api = Api::new();
+    let map = t.path("collision.map");
+    std::fs::write(&map, fixture::fixture_with_collision()).unwrap();
+    call(
+        &mut api,
+        &mut app,
+        m::SOURCE_OPEN,
+        json!({"path": map.display().to_string()}),
+    );
+    let all = call(&mut api, &mut app, m::COLLISION_SURFACES, Value::Null);
+    assert_eq!(all["bsps"].as_array().unwrap().len(), 1);
+    assert_eq!(all["counts"], json!({"drawn": 0, "collision_only": 3}));
+    assert_eq!(all["errors"], json!([]));
+    let rows = all["surfaces"].as_array().unwrap();
+    assert_eq!(rows.len(), 3);
+    assert_eq!(rows[2]["class"], "collision_only");
+    assert_eq!(rows[2]["breakable"], true);
+    assert_eq!(rows[2]["ring"].as_array().unwrap().len(), 4);
+    assert_eq!(rows[0]["breakable"], false);
+    let drawn = call(
+        &mut api,
+        &mut app,
+        m::COLLISION_SURFACES,
+        json!({"class": "drawn"}),
+    );
+    assert_eq!(drawn["matching"], 0);
+    let paged = call(
+        &mut api,
+        &mut app,
+        m::COLLISION_SURFACES,
+        json!({"offset": 1, "limit": 1}),
+    );
+    assert_eq!(paged["matching"], 3);
+    assert_eq!(paged["surfaces"][0]["index"], 1);
+    for bad in [
+        (m::COLLISION_SURFACES, json!({"class": "invisible"})),
+        (
+            m::COLLISION_AT,
+            json!({"origin": [0, 0, 0], "dir": [1, 0, 0], "point": [0, 0, 0]}),
+        ),
+        (m::COLLISION_AT, json!({"origin": [0, 0, 0]})),
+        (
+            m::COLLISION_AT,
+            json!({"origin": [0, 0, 0], "dir": [0, 0, 0]}),
+        ),
+        (m::COLLISION_SELECT, json!({"index": 3})),
+    ] {
+        assert_eq!(
+            code_of(api.call(&mut app, bad.0, bad.1.clone())),
+            code::INVALID_PARAMS,
+            "{}",
+            bad.1
+        );
+    }
+
+    // The far wall stands at x 210; the layers are hidden by default.
+    let ray = call(
+        &mut api,
+        &mut app,
+        m::COLLISION_AT,
+        json!({
+            "origin": [205, 205, 1], "dir": [2, 0, 0]
+        }),
+    );
+    assert_eq!(ray["surface"]["index"], 2);
+    assert_eq!(ray["surface"]["class"], "collision_only");
+    assert!((ray["distance"].as_f64().unwrap() - 5.0).abs() < 1e-4);
+    let point = call(
+        &mut api,
+        &mut app,
+        m::COLLISION_AT,
+        json!({"point": [209.98, 205, 1]}),
+    );
+    assert_eq!(point["surface"]["index"], 2);
+    let miss = call(
+        &mut api,
+        &mut app,
+        m::COLLISION_AT,
+        json!({"point": [205, 205, 2]}),
+    );
+    assert_eq!(miss["surface"], Value::Null);
+
+    call(
+        &mut api,
+        &mut app,
+        m::SCENARIO_SELECT,
+        json!({"block": "netgame_flags", "index": 0}),
+    );
+    let picked = call(
+        &mut api,
+        &mut app,
+        m::COLLISION_AT,
+        json!({
+            "origin": [205, 205, 1], "dir": [1, 0, 0], "select": true
+        }),
+    );
+    assert_eq!(picked["selected"], 2);
+    assert_eq!(app.session.selected(), None);
+    let cleared = call(&mut api, &mut app, m::COLLISION_SELECT, Value::Null);
+    assert_eq!(cleared["selected"], Value::Null);
+    let framed = call(
+        &mut api,
+        &mut app,
+        m::COLLISION_SELECT,
+        json!({"index": 0, "focus": true}),
+    );
+    assert_eq!(framed["selected"], 0);
+    let target = app.session.camera().target;
+    assert!(
+        (target[0] - 205.0).abs() < 1e-3 && (target[1] - 205.0).abs() < 1e-3,
+        "{target:?}"
+    );
+
+    let layers = call(&mut api, &mut app, m::VIEW_LAYERS, Value::Null);
+    let row = |name: &str| {
+        layers["layers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["name"] == name)
+            .unwrap()
+            .clone()
+    };
+    for (name, count) in [("level_collision", 3), ("collision_only", 3)] {
+        assert_eq!(row(name)["group"], "Collision", "{name}");
+        assert_eq!(row(name)["count"], count, "{name}");
+        assert_eq!(row(name)["on"], false, "{name}");
+    }
+    let shown = call(
+        &mut api,
+        &mut app,
+        m::VIEW_LAYERS,
+        json!({"preset": "collision"}),
+    );
+    assert!(
+        shown["layers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|r| r["group"] == "Collision")
+            .all(|r| r["on"] == true)
+    );
+}
+
+/// P9: `volume.set` moves, turns and resizes a box as one undo step each;
+/// `volume.remove` refuses a volume a kill trigger names, naming it, and
+/// takes the kill trigger first; `volume.add` with `kill` adds both
+/// entries, refused past the source size while growth is off.
+#[test]
+fn volume_set_add_and_remove_edit_through_the_command_layer() {
+    let t = Temp::new("volume-edits");
+    let mut app = app(&t);
+    let mut api = Api::new();
+    let map = t.path("volumes.map");
+    std::fs::write(&map, fixture::fixture_with_volumes()).unwrap();
+    call(
+        &mut api,
+        &mut app,
+        m::SOURCE_OPEN,
+        json!({"path": map.display().to_string()}),
+    );
+    let undo = |api: &mut Api, app: &mut App| {
+        call(api, app, m::DOC_UNDO, json!({"doc": "map"}));
+    };
+
+    // Move by the centre, then resize keeping it, then turn.
+    let moved = call(
+        &mut api,
+        &mut app,
+        m::VOLUME_SET,
+        json!({"index": 0, "center": [110, 100, 2]}),
+    );
+    assert_eq!(moved["volume"]["center"], json!([110.0, 100.0, 2.0]));
+    assert_eq!(moved["volume"]["size"], json!([4.0, 4.0, 4.0]));
+    let sized = call(
+        &mut api,
+        &mut app,
+        m::VOLUME_SET,
+        json!({"index": 0, "size": [8, 2, 4]}),
+    );
+    assert_eq!(sized["volume"]["center"], json!([110.0, 100.0, 2.0]));
+    assert_eq!(sized["volume"]["origin"], json!([106.0, 99.0, 0.0]));
+    let turned = call(
+        &mut api,
+        &mut app,
+        m::VOLUME_SET,
+        json!({"index": 0, "forward": [0, 2, 0]}),
+    );
+    assert_eq!(turned["volume"]["forward"], json!([0.0, 1.0, 0.0]));
+    assert_eq!(turned["volume"]["center"], json!([110.0, 100.0, 2.0]));
+    assert_eq!(
+        code_of(api.call(
+            &mut app,
+            m::VOLUME_SET,
+            json!({"index": 0, "size": [0, 1, 1]})
+        )),
+        code::INVALID_PARAMS
+    );
+    assert_eq!(
+        code_of(api.call(&mut app, m::VOLUME_SET, json!({"index": 5}))),
+        code::INVALID_PARAMS
+    );
+    for _ in 0..3 {
+        undo(&mut api, &mut app);
+    }
+    let row = &call(&mut api, &mut app, m::VOLUME_LIST, Value::Null)["volumes"][0];
+    assert_eq!(row["origin"], json!(fixture::VOLUMES[0].0));
+    assert_eq!(row["size"], json!(fixture::VOLUMES[0].2));
+    assert!(!app.session.is_dirty());
+
+    // Volume 1 is the kill box: the refusal names its kill trigger.
+    let e = api
+        .call(&mut app, m::VOLUME_REMOVE, json!({"index": 1}))
+        .unwrap_err();
+    assert_eq!(e.code, code::REFUSED);
+    assert!(e.message.contains("kill trigger 0"), "{}", e.message);
+    assert_eq!(
+        e.data.unwrap()["named_by"],
+        json!([{"kind": "kill", "index": 0}])
+    );
+    let gone = call(
+        &mut api,
+        &mut app,
+        m::VOLUME_REMOVE,
+        json!({"kind": "kill", "index": 0}),
+    );
+    assert_eq!(gone["kill_triggers"], 0);
+    let gone = call(&mut api, &mut app, m::VOLUME_REMOVE, json!({"index": 1}));
+    assert_eq!(gone["triggers"], 1);
+
+    // Room for one more of each: Make a kill volume fills it.
+    let made = call(
+        &mut api,
+        &mut app,
+        m::VOLUME_ADD,
+        json!({"kill": true, "center": [0, 0, 2], "size": [10, 10, 1]}),
+    );
+    assert_eq!(
+        (made["index"].clone(), made["kill_trigger"].clone()),
+        (json!(1), json!(0))
+    );
+    assert_eq!(made["volume"]["kinds"], json!(["kill", "trigger"]));
+    assert_eq!(made["volume"]["center"], json!([0.0, 0.0, 2.0]));
+    assert_eq!(app.session.selected_volume(), Some(1));
+    let e = api
+        .call(&mut app, m::VOLUME_ADD, json!({"kill": true}))
+        .unwrap_err();
+    assert_eq!(e.code, code::REFUSED);
+    assert_eq!(e.data.unwrap()["capacity"], 2);
+    // One undo takes both entries away.
+    undo(&mut api, &mut app);
+    let list = call(&mut api, &mut app, m::VOLUME_LIST, Value::Null);
+    assert_eq!(list["volumes"].as_array().unwrap().len(), 1);
+    assert_eq!(list["kill_triggers"], 0);
+    // BSP switches are read only.
+    assert_eq!(
+        code_of(api.call(
+            &mut app,
+            m::VOLUME_REMOVE,
+            json!({"kind": "bsp_switch", "index": 0})
+        )),
+        code::INVALID_PARAMS
     );
 }
 

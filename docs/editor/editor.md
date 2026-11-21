@@ -616,7 +616,7 @@ build), and keeps the last four maps' scenes so reopening one is instant.
   individual placement blocks, Halo 1 reference and live objects. Each
   row shows its colour and count. Art, Gameplay, Collision and Everything
   choose a set of layers in one click. Collision shows the level structure
-  for context. The viewport and `view.snapshot` share these settings.
+  for context, the kill volumes and the collision layers. The viewport and `view.snapshot` share these settings.
   Clicking skips hidden placement categories and hidden structure.
 - **Gameplay layers.** Spawn points have a team-coloured pawn and an
   arrow pointing along the spawn facing. Netgame flags have a team tint
@@ -634,9 +634,25 @@ build), and keeps the last four maps' scenes so reopening one is instant.
   and BSP switches (the volumes a kill trigger or a BSP switch names), in
   the colour of the most specific one shown (`scenario_edit::volumes`,
   `theme::volume_color`). A click on a box selects it when no placement is
-  under the cursor; the Scene tab's Volumes group lists them, and the
-  inspector shows the box, its parent and what names it, read only. A
-  volume with a parent object is listed and not drawn.
+  under the cursor; the Scene tab's Volumes group lists them and brings
+  a picked one into view, and the inspector shows the box, its parent and
+  what names it. A volume with a parent object is listed and not drawn.
+  A selected world-space volume takes the gizmo: move, turn, and scale
+  along each axis, each drag one undo step; the inspector edits its
+  centre, size and (upright boxes) facing. The Volumes group's menu adds
+  a trigger volume or makes a kill volume (a volume and a kill trigger
+  naming it, one step) at the camera focus; Delete and the inspector
+  remove one, refused while a kill trigger or BSP switch names it, and
+  a kill trigger's Remove drops just the kill trigger
+  ([scenario-editor.md](scenario-editor.md), "Trigger volumes, kill
+  triggers and BSP switches").
+- **Collision.** Level collision draws every surface of each structure
+  BSP's collision BSP as translucent faces with wire edges; Collision
+  only draws, in red, the surfaces no drawn triangle covers: the
+  invisible walls (`scenario_edit::collision_view::classify`). Both
+  start hidden. A click on a shown surface selects it when nothing else
+  is under the cursor, and the inspector shows its class, plane, raw
+  flags, material and ring, read only.
 - **Glyphs and labels.** Other placements without a model use a diamond
   in their block colour. Past 40 world units glyphs and their pick
   spheres grow with distance so the whole map stays readable. Gameplay

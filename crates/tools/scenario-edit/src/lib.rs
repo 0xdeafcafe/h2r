@@ -19,7 +19,10 @@
 //! - [`scene`]: the map's art for the viewport: the BSP textured with each
 //!   shader's base map, and the placed objects' render models.
 //! - [`volumes`]: the trigger volumes, kill triggers and BSP switches as
-//!   oriented boxes to draw and pick (read only).
+//!   oriented boxes to draw, pick and edit (BSP switches read only), kept
+//!   as the editor's own block list beside [`layout`].
+//! - [`collision_view`]: the structure BSPs' collision surfaces, and which
+//!   of them nothing drawn covers (the invisible walls).
 //!
 //! Entries are removed in place (swap with the last, lower the count) and
 //! added in place up to the source size; a block that grows past it is
@@ -27,6 +30,7 @@
 //! docs/editor/scenario-editor.md §6. No game data is in this crate or its tests.
 #![forbid(unsafe_code)]
 
+pub mod collision_view;
 pub mod edit;
 /// An invented cache for tests and the editor's screenshots.
 #[doc(hidden)]
@@ -50,7 +54,9 @@ pub use edit::{Command, History, SetField};
 pub use layout::{BlockKind, FieldType, Role};
 pub use package::{PackageForm, SavedPackage};
 pub use save::MapSource;
-pub use scenario::{BspPatch, Changes, Grown, Removed, Scenario, TagGrown, TagRef, Value};
+pub use scenario::{
+    BspPatch, Changes, Grown, Removed, Scenario, TagGrown, TagRef, Value, VolumeRemoved,
+};
 pub use session::{GROWTH_REFUSAL, Reference, RotationField, Session, Transform};
 
 /// Why an edit, read or save was refused.
@@ -74,6 +80,9 @@ pub enum Error {
     Value(&'static str, &'static str),
     #[error("refused: {0}")]
     Refused(&'static str),
+    /// A refusal whose reason names entries (a volume's holders, say).
+    #[error("refused: {0}")]
+    Declined(String),
     #[error("save: {0}")]
     Save(&'static str),
     #[error("package: {0}")]

@@ -1,6 +1,6 @@
 # h2-editor polish: what is wrong, the design, and the slices
 
-Status: P1 to P8, P12, P18, G1 to G3, G5, G6, the editor camera modes and player move in G7, G8 and G9 are implemented. P8's layouts rest on this repository's readers and writers; the engine's own volume readers are not disassembled. The remaining slices describe the design.
+Status: P1 to P10, P12, P18, G1 to G3, G5, G6, the editor camera modes and player move in G7, G8 and G9 are implemented. P8's layouts rest on this repository's readers and writers; the engine's own volume readers are not disassembled. The remaining slices describe the design.
 Code: `crates/apps/studio/src` (the window: `ui.rs`, `ui/`, `play.rs`, `viewport.rs`, `theme.rs`), `crates/tools/scenario-edit/src` (the scene and its renderer). Tests: named per slice.
 Switch: none.
 
@@ -589,21 +589,32 @@ placement under the cursor wins over a box, since placements sit inside
 volumes. A volume pick selects it in place of the placements
 (`Session::select_volume`, `Action::SelectVolume`), the Scene tab's
 Volumes group highlights its row, and the inspector shows its box and
-what names it. A surface pick (`Selection::Surface`) follows with P10.
+what names it. A collision surface is picked when nothing else is under
+the cursor (`Session::pick_surface`, `Action::SelectSurface`), replaces
+the placements and the volume, and the inspector shows it read only.
 Hidden layers are never picked. A box is one selection whatever its
 kinds: kill triggers and BSP switches name trigger volumes, so the
 selection is the trigger volume's index.
 
 ### Editing volumes and barriers
 
-- **Trigger, kill and BSP-switch volumes** are scenario blocks edited as
-  placements are: new entries in `layout::BLOCKS` with their fields, the
-  same `Set`, `Add` and `Remove` ops, the same undo. The gizmo moves and
-  turns the box; scale handles on its faces change its size. Removing
-  one is refused while a script, a kill trigger or a BSP switch names it
-  by index (the refusal names the holder), as scenario-editor.md's
-  section 6 does for placements. Adding one grows the block under the
-  existing growth rule.
+- **Trigger volumes and kill triggers** are edited as placements are,
+  through the editor's own volume block list
+  (`scenario_edit::volumes::VolumeBlock`, held by `Scenario`) and its own
+  ops (`Op::VolumeSet`, `VolumeAdd`, `VolumeRemove`) in the same
+  `History`, with the same undo, merging and growth rule. They are not
+  entries of `layout::BLOCKS`: that is `map::scenario_layout`, which
+  Forge documents depend on (the forge-doc wire format and its
+  validation, the game's Forge map and the Halo 1 converter read it), so
+  a block added there would change what a Forge document may hold. The
+  gizmo moves, turns and scales the box along each axis (`Frame::matrix`,
+  `viewport::volume_gizmo_frame`); a drag is one undo step. Removing one
+  is refused while a kill trigger or a BSP switch names it by index (the
+  refusal names the holder), and, in a map with compiled scripts, for a
+  volume the map came with, since script atoms name volumes by index and
+  the editor does not read their types. A swap-removal repoints the
+  kill triggers and BSP switches of the volume that moves. BSP switches
+  stay read only until what refers to them is surveyed.
 - **Make a kill volume** is one command: add a trigger volume at the
   camera focus and a kill trigger that names it.
 - **Collision-only surfaces** cannot be edited in place: the collision
@@ -715,9 +726,12 @@ when built. The game's methods for the link follow in their own table.
 | `view.lighting` | `{mode?}` | the mode |
 | `volume.list` | `{kind?}` | `{volumes: [{index, name, label, kinds, origin, forward, up, size, center, parent, world, named_by}], kill_triggers, bsp_switches, selected, error}` (built) |
 | `volume.select` | `{index?, focus?}` | `{selected}` (built) |
-| `volume.set`, `volume.add`, `volume.remove` | as `scenario.set` and its kin | the volume; refusals name the holder |
-| `collision.surfaces` | `{bsp?, class?, limit?}` | counts by class, and surfaces with `plane`, `flags`, `material`, `class`, `ring` |
-| `collision.at` | `{ray \| point}` | the surface hit and its class |
+| `volume.set` | `{index, origin?, center?, forward?, up?, size?}` | `{volume}` (built) |
+| `volume.add` | `{kill?, center?, origin?, forward?, up?, size?}` | `{index, kill_trigger, volume}` (built) |
+| `volume.remove` | `{kind?: trigger \| kill, index}` | `{removed, triggers, kill_triggers, selected}`; a refusal names the holder and carries `{named_by}` (built) |
+| `collision.surfaces` | `{class?, bsp?, offset?, limit?}` | `{bsps, counts: {drawn, collision_only}, matching, surfaces: [{index, bsp, surface, class, plane, flags, breakable, breakable_surface, material, covered, area, center, ring}], selected, errors}` (built) |
+| `collision.at` | `{origin, dir}` or `{point, within?}`, `select?` | `{surface, distance, selected}`: the surface hit and its class, whatever layers are shown (built) |
+| `collision.select` | `{index?, focus?}` | `{selected}` (built) |
 | `ui.palette` | `{query, run?}` | visible entries and per-kind totals, optionally runs the entry at index `run` |
 | `tag.fields` | `{tag, path?}` | `{fields: [{offset, name, kind, size, value, description}]}`. A block element path selects its rows. A missing description is `null` |
 
@@ -765,8 +779,8 @@ under 2,500, L more.
 | P6 | **Layers and the overlay pass** | M | nothing | `crates/tools/scenario-edit/src/layers.rs`, `render.rs`, `scene.rs`, `viewport.rs`, `ui.rs`, `api/view.rs` | `view.layers` toggles change `view.snapshot`'s pixels on the fixture; a hidden layer is not picked; the Halo 1 overlay is a layer and its menu item still works; X-ray draws a box behind a wall at reduced strength (pixel test, skipped without an adapter) |
 | P7 | **Spawn and netgame layers**: facing arrows, team tint, flag-type pennants and labels, joined outlines | S | P6 | `geometry.rs`, `layers.rs`, `theme.rs` | glyph geometry tests: an arrow points along the facing; two flags of one type and index make one outline; colours come from the theme's layer tokens |
 | P8 | **Trigger, kill and BSP-switch volumes: see and pick** (implemented) | M | P6 | `scenario-edit/src/volumes.rs`, `scenario.rs`, `layers.rs`, `session.rs`, `fixture.rs` (`fixture_with_volumes`); studio `viewport.rs`, `viewport/mirror.rs`, `ui.rs`, `ui/inspector.rs`, `play/presence.rs`, `api/scenario.rs` (`volume.list`, `volume.select`) | the layouts are recorded in scenario-editor.md, "Trigger volumes, kill triggers and BSP switches", labelled S from this repository's writers and the game-side volume view; the retail readers are not disassembled. `volumes::tests` (box frame, ray pick, holders, the fixture read, pick and frame through `Session`), `api::tests::volume_list_and_select_read_the_invented_volumes` (frames and sizes, the kill box in the Kill layer, layer counts and snapshot pixels), `headless::tests::a_click_on_a_volume_selects_it`, `presence::tests::a_selected_volume_is_marked_as_its_box` |
-| P9 | **Edit volumes** | M | P8 | `layout.rs` (`BLOCKS`), `edit.rs`, `session.rs`, `ui/inspector.rs`, `viewport.rs` | move, turn and resize through the gizmo are one undo step each; the saved map differs only in the volume's bytes and the checksum; removing a volume a kill trigger names is refused by name; Make a kill volume adds both entries and undoes as one step |
-| P10 | **Level collision and the Collision only layer** | M | P6 | `scenario-edit/src/collision_view.rs`, `geometry.rs`, `api/view.rs` (`collision.*`) | invented room with one wall that has no render face: `classify` puts that wall alone in Collision only; a render face 1 mm off its plane still covers it; `collision.at` on the wall returns its class; triangulated rings equal `Bsp::surface_ring` |
+| P9 | **Edit volumes** (implemented) | M | P8 | `scenario-edit/src/volumes.rs` (`VolumeBlock`, `Frame::matrix`), `scenario.rs`, `edit.rs` (`Op::Volume*`), `session/volume_edit.rs`; studio `app.rs`, `viewport.rs` (the volume gizmo), `ui.rs` (the Volumes menu), `ui/inspector.rs`, `api/scenario.rs` (`volume.set`, `.add`, `.remove`). Not `layout.rs`: see "Editing volumes and barriers" | `volume_edit::tests` (a gizmo move, turn and resize are one undo step each; the saved map differs only in the volume's bytes and the checksum; removal refused naming the kill trigger and the BSP switch; Make a kill volume adds both and undoes as one step; a removal repoints the moved volume's kill trigger; a scripted map keeps its source volumes; bad frames are refused), `viewport::tests::a_volume_gizmo_moves_turns_or_stretches_only`, `api::tests::volume_set_add_and_remove_edit_through_the_command_layer`. A paired game does not see volume edits until a reload: the live poke the marks table names needs a game run |
+| P10 | **Level collision and the Collision only layer** (implemented) | M | P6 | `scenario-edit/src/collision_view.rs` (`LevelCollision`, `classify`), `layers.rs` (Level collision and Collision only, hidden until shown), `session/collision.rs`, `fixture.rs` (`fixture_with_collision`); studio `viewport.rs` (`upload_collision`, the surface pick), `ui/inspector.rs`, `api/collision.rs` (`collision.surfaces`, `.at`, `.select`) | `collision_view::tests` (the invented room's wall with no render face is alone in Collision only; a render face 0.001 off its plane still covers it, 0.1 off does not, and one touching the edge does not; triangulated rings equal `Bsp::surface_ring`; a ray and a point find the wall; the structure's collision block reads back), `session::collision::tests` (the invented structure BSP's room reads with the map, picks only while a collision layer shows it, and a bad BSP is named), `layers::tests`, `api::tests::collision_surfaces_and_at_report_the_invented_rooms_walls`. Not checked on a retail map: how many surfaces the classifier calls collision only there, and its cost on open, need a disc run |
 | P11 | **Object and instance collision** | M | P10 | `crates/formats/tags/src/structure.rs` (instance collision reader), `collision_view.rs` | research first: the instance definition's collision block, labelled in structure-bsp.md. Fixture object with a `coll` box and a `phmo` sphere: both drawn at the placement's transform; an invented instance's collision reads back |
 | P12 | **Tag edits reach the game** (live-mirror M7): `edit.map`; `edit.batch` with `was` and the `at` form; the session check on every `edit.*` write; `tag_sync`; View and Edit; class badges; the Pending tab; leave and rejoin | L | P1 | `crates/extensions/agent-proto/src/hot.rs`, `crates/extensions/agent/src/hot.rs`, `crates/extensions/hot-tags/src/lib.rs`, `play/tag_sync.rs`, `play.rs`, `ui/play.rs`, `fields.rs`, `api/pair.rs`, `api/mirror.rs` | live-mirror.md's M7 row, plus: an `at` write outside every tag is refused; an edit that grows a block is listed under Reload and nothing is sent; a `MISMATCH` offers both choices and each leaves document and baseline equal; pairing with a non-empty journal lists it; `edit.set` in a co-op session is refused by the game |
 | P13 | **`applies` on fields** | S, repeatable | P12 | `crates/formats/tags/src/defs/*.txt`, `crates/formats/tags/src/defs.rs` | the parser reads `applies=frame\|use\|creation` with its evidence; hot-iteration.md's "What shows when" rows are the first entries; a field with none is `unknown` |

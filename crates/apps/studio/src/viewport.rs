@@ -14,7 +14,7 @@ use dear_imgui_wgpu::{ExternalTextureId, WgpuRenderer};
 use dear_imguizmo::{GuizmoExt, Mode, Operation};
 use scenario_edit::layers::{LayerId, Layers};
 use scenario_edit::render::{self, Viewport};
-use scenario_edit::volumes::VolumeKind;
+use scenario_edit::volumes::{Frame, VolumeKind};
 use scenario_edit::{BlockKind, Session, geometry};
 
 use crate::app::{Action, App};
@@ -26,7 +26,8 @@ use crate::play::select;
 pub enum GizmoOp {
     Translate,
     Rotate,
-    /// Uniform scale, for placements with a scale (objects).
+    /// Uniform scale, for placements with a scale (objects); a trigger
+    /// volume's box scales along each of its axes.
     Scale,
 }
 
@@ -74,6 +75,29 @@ pub fn gizmo_snap(op: GizmoOp, snap: &Snap) -> Option<[f32; 3]> {
         GizmoOp::Rotate if snap.angle => Some([snap.angle_step, 0.0, 0.0]),
         GizmoOp::Scale if snap.grid => Some([0.1; 3]),
         _ => None,
+    }
+}
+
+/// The gizmo on a trigger volume: it moves, turns and stretches the box
+/// along each axis.
+pub fn volume_gizmo_operation(op: GizmoOp) -> Operation {
+    match op {
+        GizmoOp::Translate => Operation::TRANSLATE,
+        GizmoOp::Rotate => Operation::ROTATE,
+        GizmoOp::Scale => Operation::SCALE,
+    }
+}
+
+/// The box the gizmo's matrix gives a volume that was `before`: a move
+/// changes only the centre, a turn only the axes (about the centre), a
+/// scale only the size (about the centre).
+pub fn volume_gizmo_frame(op: GizmoOp, before: &Frame, model: &[f32; 16]) -> Option<Frame> {
+    let moved = Frame::from_matrix(model)?;
+    let (centre, [forward, _, up]) = (before.center()?, before.axes()?);
+    match op {
+        GizmoOp::Translate => Frame::around(moved.center()?, forward, up, before.size),
+        GizmoOp::Rotate => Frame::around(centre, moved.forward, moved.up, before.size),
+        GizmoOp::Scale => Frame::around(centre, forward, up, moved.size),
     }
 }
 
@@ -388,6 +412,9 @@ impl ViewportView {
                     if let Some(volume) = app.session.pick_volume(&ray, &app.layers) {
                         actions.push(Action::SelectVolume(Some(volume)));
                         actions.push(Action::FocusSelected);
+                    } else if let Some(surface) = app.session.pick_surface(&ray, &app.layers) {
+                        actions.push(Action::SelectSurface(Some(surface)));
+                        actions.push(Action::FocusSelected);
                     } else if let Some(p) = app.session.surface_hit_visible(&ray, &app.layers) {
                         let to = camera::focus_point(app.session.camera(), p, 30.0);
                         self.camera.go_to(app.session.camera_mut(), to);
@@ -420,6 +447,9 @@ impl ViewportView {
         let proj = geometry::flat(&camera.proj(aspect));
         let mut over = false;
         let mut using = false;
+        if let Some(r) = self.volume_gizmo(ui, app, origin, size, &view, &proj) {
+            (over, using) = r;
+        }
         let visible = app.session.selected().is_some_and(|(kind, i)| {
             app.layers.placement(kind) && (app.layers.visible(LayerId::Markers)
                 || (app.layers.visible(LayerId::Objects) && !linked.contains(&(kind, i))
@@ -486,6 +516,51 @@ impl ViewportView {
             app.info(format!("{verb} {what}"));
         }
         (over, using)
+    }
+
+    /// The gizmo on the selected world-space trigger volume, when one is
+    /// selected and shown: whether the mouse is over it and whether it is
+    /// being dragged.
+    fn volume_gizmo(
+        &mut self,
+        ui: &Ui,
+        app: &mut App,
+        origin: [f32; 2],
+        size: [f32; 2],
+        view: &[f32; 16],
+        proj: &[f32; 16],
+    ) -> Option<(bool, bool)> {
+        let index = app.session.selected_volume()?;
+        let before = app.session.selected_volume_frame()?;
+        let shown = app
+            .session
+            .volumes()?
+            .kinds(index)
+            .into_iter()
+            .any(|k| app.layers.visible(LayerId::Volume(k)));
+        if !shown {
+            return None;
+        }
+        let mut model = before.matrix()?;
+        let gizmo = ui.guizmo();
+        gizmo.set_drawlist_window();
+        gizmo.set_rect(origin[0], origin[1], size[0], size[1]);
+        gizmo.set_orthographic(false);
+        let mode = if self.local { Mode::Local } else { Mode::World };
+        let mut config = gizmo
+            .manipulate_config(view, proj, &mut model)
+            .operation(volume_gizmo_operation(self.op))
+            .mode(mode);
+        if let Some(snap) = gizmo_snap(self.op, &self.snap) {
+            config = config.snap(snap);
+        }
+        let changed = config.build();
+        let r = (gizmo.is_over(), gizmo.is_using());
+        if changed && let Some(frame) = volume_gizmo_frame(self.op, &before, &model) {
+            // Through the command layer, as the agent API's edits.
+            app.dispatch(Action::VolumeGesture(frame));
+        }
+        Some(r)
     }
 }
 
@@ -570,11 +645,23 @@ pub(crate) fn pick_action(
     {
         return Some(Action::SelectVolume(Some(volume)));
     }
+    // A shown collision surface is picked when nothing else is.
+    if hit.is_none()
+        && let Some(surface) = session.pick_surface(ray, layers)
+    {
+        return Some(Action::SelectSurface(Some(surface)));
+    }
     Some(Action::Select(hit))
 }
 
 fn selection_label(app: &App) -> String {
     let n = app.session.selection().len();
+    if let (Some(i), Some(v)) = (app.session.selected_volume(), app.session.volumes()) {
+        return v.label(i);
+    }
+    if let Some(s) = app.session.selected_surface_data() {
+        return surface_label(s);
+    }
     match (app.session.selected(), app.session.scenario()) {
         _ if n > 1 => format!("{n} placements"),
         (Some((kind, i)), Some(s)) => format!("{:?} {}", kind, s.label(kind, i)),
@@ -632,6 +719,57 @@ pub(crate) fn upload_placements(
     }
     vp.set_layer_overlay(device, LayerId::Flags, &[], &lines);
     upload_volumes(vp, device, app);
+    upload_collision(vp, device, app);
+}
+
+/// A collision surface as the status line and inspector name it.
+pub(crate) fn surface_label(s: &scenario_edit::collision_view::CollisionSurface) -> String {
+    format!("BSP {} collision surface {}", s.bsp, s.surface)
+}
+
+/// The level collision as two overlays: every surface under Level
+/// collision, the uncovered ones again under Collision only (in its own
+/// colour), each as translucent faces and wire edges, the selected
+/// surface's edges in the selection colour. A hidden layer uploads
+/// nothing, so a large map's collision costs nothing until it is shown.
+fn upload_collision(vp: &mut Viewport, device: &wgpu::Device, app: &App) {
+    use scenario_edit::collision_view::SurfaceClass;
+    let selected = app.session.selected_surface();
+    for (id, only) in [
+        (LayerId::LevelCollision, false),
+        (LayerId::CollisionOnly, true),
+    ] {
+        let (mut faces, mut lines) = (Vec::new(), Vec::new());
+        if let Some(c) = app.session.collision().filter(|_| app.layers.visible(id)) {
+            let color = crate::theme::layer_color(id);
+            for (i, s) in c.surfaces.iter().enumerate() {
+                if only && s.class != SurfaceClass::CollisionOnly {
+                    continue;
+                }
+                let n = s.normal();
+                let tris: Vec<geometry::Tri> = s
+                    .triangles()
+                    .into_iter()
+                    .map(|p| geometry::Tri { p, n })
+                    .collect();
+                faces.extend(render::overlay_vertices(&tris, color));
+                let edge = if selected == Some(i) {
+                    crate::theme::VOLUME_SELECTED
+                } else {
+                    color
+                };
+                for position in s.edges().into_iter().flatten() {
+                    lines.push(render::Vertex {
+                        position,
+                        center: position,
+                        normal: n,
+                        color: edge,
+                    });
+                }
+            }
+        }
+        vp.set_layer_overlay(device, id, &faces, &lines);
+    }
 }
 
 /// The trigger volumes as boxes, one overlay per kind a box is drawn as
@@ -740,6 +878,55 @@ mod tests {
             gizmo_operation(GizmoOp::Scale, &facing, false),
             Operation::TRANSLATE
         );
+    }
+
+    /// A volume's gizmo matrix is its box: a move keeps the axes and size,
+    /// a turn keeps the centre and size, a stretch keeps the centre and
+    /// axes, whatever else the matrix drifted by.
+    #[test]
+    fn a_volume_gizmo_moves_turns_or_stretches_only() {
+        let before = Frame::around(
+            [1.0, 2.0, 3.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [4.0, 2.0, 1.0],
+        )
+        .unwrap();
+        let m = before.matrix().unwrap();
+        assert_eq!(m[12..15], [1.0, 2.0, 3.0]);
+        assert_eq!(Frame::from_matrix(&m), Some(before));
+        assert_eq!(volume_gizmo_operation(GizmoOp::Scale), Operation::SCALE);
+
+        // Moved by (5, 0, 0) and, by float drift, stretched a hair.
+        let mut moved = m;
+        moved[12] += 5.0;
+        moved[0] *= 1.001;
+        let f = volume_gizmo_frame(GizmoOp::Translate, &before, &moved).unwrap();
+        let c = f.center().unwrap();
+        assert!(
+            (0..3).all(|k| (c[k] - [6.0, 2.0, 3.0][k]).abs() < 1e-5),
+            "{c:?}"
+        );
+        assert_eq!(f.size, before.size);
+        assert_eq!(f.forward, before.forward);
+
+        // Turned a quarter about z: forward becomes +y; the centre stays.
+        let mut turned = m;
+        turned[0..3].copy_from_slice(&[0.0, 4.0, 0.0]);
+        turned[4..7].copy_from_slice(&[-2.0, 0.0, 0.0]);
+        turned[12] += 0.5;
+        let f = volume_gizmo_frame(GizmoOp::Rotate, &before, &turned).unwrap();
+        assert_eq!(f.forward, [0.0, 1.0, 0.0]);
+        assert_eq!(f.center(), Some([1.0, 2.0, 3.0]));
+        assert_eq!(f.size, before.size);
+
+        // Stretched to twice the height.
+        let mut tall = m;
+        tall[10] = 2.0;
+        let f = volume_gizmo_frame(GizmoOp::Scale, &before, &tall).unwrap();
+        assert_eq!(f.size, [4.0, 2.0, 2.0]);
+        assert_eq!(f.center(), Some([1.0, 2.0, 3.0]));
+        assert_eq!(f.forward, before.forward);
     }
 }
 
