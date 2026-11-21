@@ -192,6 +192,7 @@ are under [Reviews](#reviews).
 - [forge-design.md](game/forge-design.md): Forge documents, edit logs, local map builds and the design for in-game tools and sharing
 - [Forge probes](game/notes/forge-probes.md) records the runtime measurement procedure and results for Forge.
 - [forge-features.md](game/forge-features.md): design for each Forge feature: monitor bodies, objects, links and triggers, emitters, barriers, nav, AI, geometry and paint, character import (not built)
+- [forge-monitor-appearance.md](game/forge-monitor-appearance.md): design for what a Forge monitor looks like: its model from the disc, colours, tint and light, the picker and preview, how a session agrees on it, and how Theater shows it (not built)
 - [ai-networking.md](game/ai-networking.md): AI actors in network games: host actors in the distributed model, the synchronous model for campaign, what retail replicates, the actor channel, budgets, probes and slices
 - [firefight.md](game/firefight.md): Firefight: waves of AI on multiplayer maps for up to 16 players, the director, the offline map kit, wave-set definitions and the design for scoring, lives, skulls and Live
 - [theater-design.md](game/theater-design.md): design for the full in-game Theater: stats is the summary and the film is the simulation; rewind and jumps from sidecar keyframes, warm restore, cameras, clips, sharing through Live and the web-to-game link; slices in build order (design)
