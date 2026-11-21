@@ -453,6 +453,17 @@ meet the default scheduling policy's 3 GiB per vCPU minimum.
 [Scheduling policies](https://developers.cloudflare.com/containers/configuration/scheduling-policy/) ·
 [Custom instance constraints](https://developers.cloudflare.com/changelog/post/2026-09-29-remove-disk-to-memory-ratio/)
 
+Both applications run one image from the account's Cloudflare registry,
+`h2-live-host`, tagged with a hash of what `deploy/host/Dockerfile`
+copies: the Dockerfile, the entrypoint and the binaries `deploy/host/build.sh` stages.
+`crates/live/live-worker/deploy.sh` computes the tag and checks the
+registry. A tag the registry holds is deployed as it is, so a deploy
+needs Docker only when the host binaries change; then it builds and
+pushes the image first (`wrangler containers build --push`) and stops
+with a named error if Docker is not running. The generated config names
+`registry.cloudflare.com/<account>/h2-live-host:<tag>` in place of the
+Dockerfile. [Image management](https://developers.cloudflare.com/containers/platform-details/image-management/)
+
 | Worker setting | Purpose |
 |---|---|
 | `LIVE_MAX_HOSTS` | Shared lease cap across both classes. The default is 4. Operators may select 0–4 or a measured fleet step (16, 64, 256, 1,024). Deployment calculates a separate container limit for each class. [Fleet caps](host-halving.md#caps) |

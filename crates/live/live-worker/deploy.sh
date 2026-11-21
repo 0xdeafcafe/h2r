@@ -25,6 +25,12 @@
 #                      "0" (Live refuses host launches). Needed until the host
 #                      image is staged (deploy/host/build.sh fills deploy/host/stage)
 #
+# Host image: the containers run registry.cloudflare.com/<account>/h2-live-host
+# tagged with a hash of what the Dockerfile copies (the Dockerfile, the
+# entrypoint and deploy/host/stage). A tag the registry already holds is
+# deployed as it is, without Docker; a new one is built and pushed first,
+# which needs Docker running (colima start).
+#
 # Environment:
 #   H2_LIVE_KEY_FILE      cutover/production: read the key from this file
 #                         (the machine server's server.key) instead of asking
@@ -34,13 +40,15 @@
 #                         (default ~/.config/h2-live-worker/staging)
 #   H2_WORKER_HOME        the toolchain's home (default ~/.cache/h2-live-worker)
 #   WRANGLER              how to run wrangler (default: bunx wrangler@4)
+#   CLOUDFLARE_ACCOUNT_ID the account whose registry holds the host image
+#                         (default: the one account wrangler whoami lists)
 set -eu
 
 here=$(cd "$(dirname "$0")" && pwd)
 repo=$(cd "$here/../../.." && pwd)
 
 usage() {
-    sed -n '2,36p' "$0" | sed 's/^# \{0,1\}//' >&2
+    sed -n '2,44p' "$0" | sed 's/^# \{0,1\}//' >&2
     exit 2
 }
 
@@ -158,6 +166,40 @@ case "$who" in
 esac
 printf '%s\n' "$who" | grep -E "logged in|Account Name|Account ID|email" || true
 
+# The host image, by content: deploy the registry's copy when it has this
+# tag, otherwise build and push it (the one step that needs Docker).
+hosts_on=0
+if [ "$no_hosts" = 0 ] && [ "$(toml_value "[env.$env_name.vars]" LIVE_MAX_HOSTS)" != 0 ]; then
+    hosts_on=1
+fi
+if [ "$hosts_on" = 1 ]; then
+    host_dir="$repo/deploy/host"
+    host_tag=$(cd "$host_dir" && shasum -a 256 Dockerfile entrypoint.sh stage/h2 \
+        stage/image/libh2game.so stage/image/libh2game.so.stamp | shasum -a 256 | cut -c1-16)
+    step "host image: h2-live-host:$host_tag"
+    account=${CLOUDFLARE_ACCOUNT_ID:-}
+    if [ -z "$account" ]; then
+        ids=$(printf '%s\n' "$who" | grep -owE '[0-9a-f]{32}' | sort -u)
+        [ "$(printf '%s\n' "$ids" | grep -c .)" = 1 ] ||
+            die "wrangler whoami lists no single account; set CLOUDFLARE_ACCOUNT_ID"
+        account=$ids
+    fi
+    if wrangler containers images list --json --filter '^h2-live-host$' 2>/dev/null |
+        grep -q "\"$host_tag\""; then
+        echo "in the registry; deploying it without a build"
+    else
+        docker info >/dev/null 2>&1 ||
+            die "h2-live-host:$host_tag is not in the registry and Docker is not running: start it (colima start) and run again"
+        echo "not in the registry: building and pushing it"
+        wrangler containers build --push --tag "h2-live-host:$host_tag" "$host_dir"
+    fi
+    image="registry.cloudflare.com/$account/h2-live-host:$host_tag"
+    sed "s|^image = \".*deploy/host/Dockerfile\"\$|image = \"$image\"|" "$config" > "$config.new"
+    mv "$config.new" "$config"
+    grep -q "deploy/host/Dockerfile" "$config" && die "the generated config still builds from the Dockerfile"
+    echo "containers run $image"
+fi
+
 step "R2: bucket $bucket"
 if wrangler r2 bucket list 2>/dev/null | grep -qE "name:[[:space:]]+$bucket\$"; then
     echo "$bucket exists"
@@ -230,9 +272,11 @@ fi
 step "deploy: wrangler deploy --env $env_name"
 log=$(mktemp "${TMPDIR:-/tmp}/h2-live-deploy.XXXXXX")
 # shellcheck disable=SC2086
-wrangler deploy --env "$env_name" $vars 2>&1 | tee "$log"
+{ wrangler deploy --env "$env_name" $vars 2>&1; echo "$?" > "$log.status"; } | tee "$log"
+status=$(cat "$log.status")
 url=$(grep -oE 'https://[a-z0-9.-]+\.workers\.dev' "$log" | head -1 || true)
-rm -f "$log"
+rm -f "$log" "$log.status"
+[ "$status" = 0 ] || die "wrangler deploy failed (exit $status); nothing after it ran"
 
 if [ -n "$key" ]; then
     step "server key: wrangler secret put H2_LIVE_SERVER_KEY --env $env_name"
