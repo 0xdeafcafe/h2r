@@ -136,7 +136,9 @@ passes no CRT state across the host boundary ([xbox.md](xbox.md)).
 
 | Area | macOS / Unix | Windows |
 | --- | --- | --- |
-| guest memory, fastmem, threads, preemption | portable Rust (no mmap or signals on the game path) | as is |
+| guest RAM and faults | platform mappings and POSIX signal handlers | guarded VirtualAlloc reservations, private file views for restores, paged address translation and x64 vectored exception handling |
+| local agent API | Unix domain sockets | pathname AF_UNIX sockets on Windows 10 version 1803 or later |
+| generated game code | native object files and shared library | Cranelift fast tier or Clang, COFF objects and a DLL loaded through libloading |
 | rendering | wgpu on Metal | Vulkan in desktop and headless mode, DX12 in the Xbox app |
 | host-owned surface (`app::embedded`) | `CAMetalLayer` | XAML `SwapChainPanel` (`app::embedded::host_surface`), the UWP seam |
 | windowed shell, keyboard, mouse | winit | winit |

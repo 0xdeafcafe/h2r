@@ -47,7 +47,11 @@ jobs:
       - name: Check workspace and tests
         run: cargo check --workspace --tests
       - name: Run synthetic unit tests
-        run: cargo test -p ir -p runtime --lib
+        run: cargo test -p ir -p runtime -p asf -p xiso -p snapshot --lib
+      - name: Check the guest C ABI
+        run: cargo test -p runtime --test layout
+      - name: Check local agent connections
+        run: cargo test -p agent --test socket --test tcp
       - name: Exercise host fault dispatch
         run: cargo test -p hostfault
       - name: Compare the Cranelift and C tiers
