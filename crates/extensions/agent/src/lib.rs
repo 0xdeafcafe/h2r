@@ -28,6 +28,8 @@
 //!   world's call, bail and decode counters.
 //! * [`havok`] answers `havok.bodies` and `havok.contacts`: the Havok
 //!   world's rigid bodies and contact points ([`Agent::add_game_method`]).
+//! * [`firefight`] answers `firefight.*` over the game's Firefight
+//!   runtime, which the game registers as a [`firefight::Source`].
 //! * [`raw`] answers `world.raw`: an object's body, physics component,
 //!   Havok entity, motion and shape as raw bytes. `world.poke` writes
 //!   bounded byte ranges within those parts.
@@ -57,6 +59,7 @@ pub mod compare;
 pub mod debug_views;
 pub mod editor;
 mod exec;
+pub mod firefight;
 pub mod forge;
 pub mod havok;
 pub mod hostpads;
