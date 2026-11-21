@@ -189,8 +189,9 @@ fn begin_step(step: &mut Step, m: &Ro<'_>) {
     step.shadow_open = false;
 }
 
-/// `render_views`' entry: a new scene.
-fn begin(mem: &dyn GuestMemory, present: Option<&Arc<dyn PresentObserver>>) {
+/// `render_views`' entry: a new scene. `present` samples the image the
+/// scene is drawn for; a scene-lifecycle test opens one with `None`.
+pub fn begin(mem: &dyn GuestMemory, present: Option<&Arc<dyn PresentObserver>>) {
     let m = Ro(mem);
     let presentation = present.and_then(|observer| {
         let payload = observer.capture(mem)?;

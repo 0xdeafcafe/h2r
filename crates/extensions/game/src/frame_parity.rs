@@ -538,7 +538,7 @@ mod tests {
         agent.on_tick(&mut Reader);
         assert!(armed());
 
-        scene_step::begin(&mem);
+        scene_step::begin(&mem, None);
         assert!(scene_step::open_view(&mem).is_some());
         assert!(sink.copy_surface(src, dst).unwrap());
         sink.present(dst, 0).unwrap();
@@ -591,7 +591,7 @@ mod tests {
         use std::time::{Duration, Instant};
 
         let capture = |lighting, tick| {
-            let params = FrameCaptureParams { lighting: Some(lighting), tick, pass: None };
+            let params = FrameCaptureParams { lighting: Some(lighting), tick, pass: None, game_id: None };
             let seq = CAPTURE.arm(&params, &std::env::temp_dir()).unwrap();
             let deadline = Instant::now() + Duration::from_secs(15);
             let reply = loop {

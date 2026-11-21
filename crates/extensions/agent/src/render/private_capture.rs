@@ -470,6 +470,7 @@ mod tests {
                 tick,
                 lighting: Some(lighting),
                 pass: None,
+                game_id: None,
             };
             let seq = c.arm(&p, &dir).unwrap();
             c.finish(seq).unwrap().unwrap()
@@ -487,6 +488,7 @@ mod tests {
             lighting: Some(CaptureLighting::E3),
             tick: Some(43),
             pass: None,
+            game_id: None,
         };
         let later = c.arm(&later_params, &dir).unwrap();
         assert!(c.finish(later).is_none());
@@ -532,6 +534,7 @@ mod tests {
             tick: Some(42),
             lighting: Some(CaptureLighting::E3),
             pass: None,
+            game_id: None,
         };
         let seq = c.arm(&old, &dir).unwrap();
         assert_eq!(
