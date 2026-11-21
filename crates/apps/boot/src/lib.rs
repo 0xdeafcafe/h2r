@@ -1018,6 +1018,17 @@ fn run_configured(
         host_metrics::install(&mut features, &a.agent, host_light)?;
         host_lobby::install(&mut features, &a.agent, host_light, opts, _live.clone())?;
     }
+    #[cfg(feature = "gpu")]
+    if opts.d3d
+        && !headless
+        && film.is_none()
+        && !lockstep_on
+        && let Some(screen) = host.return_to_menu.take()
+    {
+        features
+            .add(&return_to_menu::ReturnToMenu(Arc::from(screen)))
+            .map_err(anyhow::Error::msg)?;
+    }
     if let Some(audit) = &audit {
         anyhow::ensure!(features.add(audit).map_err(anyhow::Error::msg)?,
             "H2_HOST_AUDIT needs the host-audit feature");

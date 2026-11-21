@@ -109,6 +109,7 @@ fn guest(layout: Layout, store: Arc<settings::Store>) -> app::worker::GuestFn {
                 choice: Default::default(),
                 gamepads: true,
             }),
+            return_to_menu: Some(host.loading_screen()),
             between_slices: Some(Box::new(move |k: &kernel::Kernel| {
                 host.tick(k.clock().counter()) == app::Control::Continue
             })),

@@ -316,7 +316,9 @@ impl Shell {
             self.config.filter,
             wgpu::Color::BLACK,
         );
-        if let Some(wm) = &self.config.watermark
+        if frame.as_ref().is_some_and(|f| f.loading) {
+            self.watermark_text = None;
+        } else if let Some(wm) = &self.config.watermark
             && wm.visible()
         {
             let published = g.source.stats().published;

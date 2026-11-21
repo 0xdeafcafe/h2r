@@ -55,6 +55,57 @@ pub struct FrameStats {
     pub dropped: u64,
 }
 
+/// The host's loading picture stays up until a new guest frame is ready.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum Transition {
+    #[default]
+    Hidden,
+    Holding,
+    ReleaseOnPresent,
+}
+
+impl Transition {
+    fn set(&mut self, hold: bool) {
+        if hold {
+            *self = Self::Holding;
+        } else if *self == Self::Holding {
+            *self = Self::ReleaseOnPresent;
+        }
+    }
+
+    fn presented(&mut self) {
+        if *self == Self::ReleaseOnPresent {
+            *self = Self::Hidden;
+        }
+    }
+}
+
+const LOADING_SIZE: (u32, u32) = (640, 480);
+
+fn loading_pixels() -> Vec<u8> {
+    let (width, height) = LOADING_SIZE;
+    let mut pixels = [9, 18, 28, 255].repeat((width * height) as usize);
+    let notice = crate::overlay::Notice {
+        kind: crate::overlay::NoticeKind::Info,
+        text: "Returning to Main Menu...".into(),
+    };
+    let (w, h, text) = crate::overlay::rasterize(&notice);
+    let x = (width - w) / 2;
+    let y = (height - h) / 2;
+    for (row, src) in text.chunks_exact((w * 4) as usize).enumerate() {
+        let start = ((y as usize + row) * width as usize + x as usize) * 4;
+        let dst = &mut pixels[start..start + src.len()];
+        for (pixel, ink) in dst.chunks_exact_mut(4).zip(src.chunks_exact(4)) {
+            let alpha = u16::from(ink[3]);
+            for i in 0..3 {
+                pixel[i] =
+                    ((u16::from(ink[i]) * alpha + u16::from(pixel[i]) * (255 - alpha)) / 255) as u8;
+            }
+        }
+    }
+    pixels
+}
+
 /// A frame the window can draw.
 #[derive(Clone, Debug)]
 pub struct ShownFrame {
@@ -64,10 +115,12 @@ pub struct ShownFrame {
     pub texture: wgpu::Texture,
     /// Size in pixels.
     pub size: (u32, u32),
-    /// Publish sequence number, from 1.
+    /// Guest publish sequence number, from 1. The host loading picture uses 0.
     pub seq: u64,
     /// True if this frame is newer than the one returned last time.
     pub new: bool,
+    /// A host loading picture shown while the title rebuilds its menu.
+    pub loading: bool,
 }
 
 struct Slot {
@@ -83,10 +136,17 @@ struct State {
     next_seq: u64,
 }
 
+#[derive(Default)]
+struct LoadingState {
+    mode: Transition,
+    picture: Option<Slot>,
+}
+
 type Waker = Arc<dyn Fn() + Send + Sync>;
 
 struct Shared {
     state: Mutex<State>,
+    loading: Mutex<LoadingState>,
     wake_pending: AtomicBool,
     waker: Mutex<Option<Waker>>,
 }
@@ -94,6 +154,17 @@ struct Shared {
 impl Shared {
     fn lock(&self) -> MutexGuard<'_, State> {
         self.state.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn loading(&self) -> MutexGuard<'_, LoadingState> {
+        self.loading.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn show_loading(&self, hold: bool) {
+        self.loading().mode.set(hold);
+        if hold {
+            self.wake();
+        }
     }
 
     fn stats(&self) -> FrameStats {
@@ -125,6 +196,7 @@ pub fn channel(ctx: &GfxContext) -> (FrameSink, FrameSource) {
             slots: [None, None, None],
             next_seq: 1,
         }),
+        loading: Mutex::default(),
         wake_pending: AtomicBool::new(false),
         waker: Mutex::new(None),
     });
@@ -181,27 +253,18 @@ impl FrameSink {
         }
         let ctx = &self.ctx;
         publish_with(&self.shared, ctx, size, |slot| {
-            ctx.queue.write_texture(
-                wgpu::TexelCopyTextureInfo {
-                    texture: &slot.texture,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d::ZERO,
-                    aspect: wgpu::TextureAspect::All,
-                },
-                pixels,
-                wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(size.0 * 4),
-                    rows_per_image: Some(size.1),
-                },
-                wgpu::Extent3d {
-                    width: size.0,
-                    height: size.1,
-                    depth_or_array_layers: 1,
-                },
-            );
+            write_rgba(ctx, slot, pixels);
             Ok(())
         })
+    }
+
+    pub(crate) fn loading_screen(&self) -> Box<dyn Fn(bool) + Send + Sync> {
+        let slot = make_slot(&self.ctx, LOADING_SIZE);
+        write_rgba(&self.ctx, &slot, &loading_pixels());
+        self.shared.loading().picture = Some(slot);
+        let shared = Arc::clone(&self.shared);
+        let screen = LoadingScreen(shared);
+        Box::new(move |hold| screen.show(hold))
     }
 
     /// Publishes any sampleable 2D colour view of `size` pixels, scaled to
@@ -361,8 +424,48 @@ fn publish_with(
         st.tb.publish();
         seq
     };
+    shared.loading().mode.presented();
     shared.wake();
     Ok(seq)
+}
+
+/// If the guest stops during a load, let the window show its final frame.
+struct LoadingScreen(Arc<Shared>);
+
+impl LoadingScreen {
+    fn show(&self, hold: bool) {
+        self.0.show_loading(hold);
+    }
+}
+
+impl Drop for LoadingScreen {
+    fn drop(&mut self) {
+        *self.0.loading() = LoadingState::default();
+        self.0.wake();
+    }
+}
+
+fn write_rgba(ctx: &GfxContext, slot: &Slot, pixels: &[u8]) {
+    let (width, height) = slot.size;
+    ctx.queue.write_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture: &slot.texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        pixels,
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(width * 4),
+            rows_per_image: Some(height),
+        },
+        wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+    );
 }
 
 fn check_size(size: (u32, u32)) -> Result<(), FrameError> {
@@ -417,9 +520,24 @@ impl FrameSource {
         self.shared.wake_pending.store(false, Ordering::Release);
     }
 
-    /// The newest frame (taking it if one was published since the last
-    /// call), or `None` before the first.
+    /// The current host loading picture, or the newest guest frame (taking
+    /// it if one was published since the last call).
     pub fn latest(&self) -> Option<ShownFrame> {
+        {
+            let loading = self.shared.loading();
+            if loading.mode != Transition::Hidden
+                && let Some(slot) = &loading.picture
+            {
+                return Some(ShownFrame {
+                    view: slot.view.clone(),
+                    texture: slot.texture.clone(),
+                    size: slot.size,
+                    seq: 0,
+                    new: false,
+                    loading: true,
+                });
+            }
+        }
         let mut st = self.shared.lock();
         let new = st.tb.take().is_some();
         let front = st.tb.front()?;
@@ -430,6 +548,7 @@ impl FrameSource {
             size: slot.size,
             seq: slot.seq,
             new,
+            loading: false,
         })
     }
 
@@ -638,5 +757,54 @@ impl Compositor {
             pass.set_bind_group(0, &bind, &[]);
             pass.draw(0..3, 0..1);
         }
+    }
+}
+
+#[cfg(test)]
+mod transition_tests {
+    use super::*;
+
+    #[test]
+    fn transition_keeps_the_loading_picture_until_a_new_frame_is_published() {
+        let mut transition = Transition::default();
+        transition.set(false);
+        assert_eq!(transition, Transition::Hidden);
+        transition.set(true);
+        transition.presented();
+        assert_eq!(transition, Transition::Holding);
+        transition.set(false);
+        assert_eq!(transition, Transition::ReleaseOnPresent);
+        transition.presented();
+        assert_eq!(transition, Transition::Hidden);
+    }
+
+    #[test]
+    fn a_second_transition_can_retain_the_loading_picture() {
+        let mut transition = Transition::Holding;
+        transition.set(false);
+        transition.set(true);
+        transition.presented();
+        assert_eq!(transition, Transition::Holding);
+    }
+
+    #[test]
+    fn the_loading_picture_is_opaque_and_centred() {
+        let pixels = loading_pixels();
+        assert_eq!(pixels.len(), (LOADING_SIZE.0 * LOADING_SIZE.1 * 4) as usize);
+        let (first, last) = pixels.split_at(pixels.len() - 4);
+        assert_eq!(&first[..4], &[9, 18, 28, 255]);
+        assert_eq!(last, &[9, 18, 28, 255]);
+        let ink: Vec<_> = pixels
+            .chunks_exact(4)
+            .enumerate()
+            .filter(|(_, pixel)| pixel[0] == 240)
+            .map(|(n, _)| (n % LOADING_SIZE.0 as usize, n / LOADING_SIZE.0 as usize))
+            .collect();
+        assert!(!ink.is_empty());
+        assert!(
+            ink.iter()
+                .all(|&(x, y)| (100..540).contains(&x) && (226..254).contains(&y))
+        );
+        assert!(pixels.chunks_exact(4).all(|pixel| pixel[3] == 255));
     }
 }

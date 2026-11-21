@@ -35,6 +35,13 @@ surface as the compatibility hint) and the guest gets another handle to it
 through `GuestHost::gfx_context()`. Every guest GPU object must be made on
 that device, so build `d3d::GfxBackend` from it and from nothing else.
 
+The shell can draw a host loading picture while the guest switches maps.
+The view and its status have their own short lock, so the window can take
+the picture even while the guest frame mailbox is publishing. The loading
+picture is independent of guest frame counts and clears after a new guest
+present. The desktop shell hides the performance watermark while this
+picture is up. Embedded hosts draw it through the same frame source.
+
 ## API
 
 ```rust
@@ -61,6 +68,7 @@ icon from [art/app-icon](../../art/app-icon/README.md)).
 | `gfx_context() -> GfxContext` | The shared device. `d3d::GfxBackend::new(host.gfx_context())`. |
 | `present_hook()` | `impl FnMut(&GfxContext, &SurfaceStore, SurfaceId, u32, Option<&[u8; 768]>) + Send + 'static`, exactly what `GfxBackend::on_present` takes. The last argument borrows the current RGB gamma ramp for this present. The handoff applies it once when copying the swapped surface (resolving MSAA and forcing alpha opaque for X8/R5G6B5 formats). Errors are printed, never returned to the guest. Custom hooks must apply the ramp themselves; `gfx::surface::present_surface` is a raw helper and does not apply it. |
 | `frame_sink() -> FrameSink` | For frames that are not gfx surfaces: `submit_rgba(size, &pixels)`, `submit_view(&view, size, opaque)`, `submit_surface(&store, id)`. |
+| `loading_screen()` | Prepares the window's return-to-menu picture. Its callback wakes the shell immediately to show it and hands back to the guest on a subsequent present. |
 | `take_input() -> Option<InputManager>` | Once. Player one combines keyboard/mouse with the first physical pad; scripts replace live sources. Build `xapi::Xapi` on it. |
 | `keyboard() -> Option<&KeyboardMouse>` | The handle the window feeds; absent in timeline mode. |
 | `mixer() -> Arc<Mutex<audio::Mixer>>`, `sample_rate()` | The mixer the device plays, created at the device rate. Build `dsound::DirectSound` on it. |

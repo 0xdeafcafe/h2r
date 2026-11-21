@@ -324,6 +324,13 @@ impl GuestHost {
         self.sink.another()
     }
 
+    /// Prepares the host's return-to-menu picture on this device. The callback
+    /// switches the window to it on `true` and lets the next published guest
+    /// frame replace it after `false`.
+    pub fn loading_screen(&self) -> Box<dyn Fn(bool) + Send + Sync> {
+        self.sink.loading_screen()
+    }
+
     /// The input manager, once. Build `xapi::Xapi::new(config, input, storage)`
     /// on it and run [`pump_input`] once per guest frame.
     pub fn take_input(&mut self) -> Option<InputManager> {

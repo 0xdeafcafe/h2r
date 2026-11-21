@@ -392,6 +392,7 @@ fn hosted(
         input,
         keyboard,
         icons: Some(icons),
+        return_to_menu: Some(host.loading_screen()),
         between_slices: Some(Box::new({
             let mut slices = 0u64;
             // The HID thread lives as long as the run.

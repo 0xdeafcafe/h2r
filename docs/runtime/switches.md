@@ -22,6 +22,7 @@ An `impl.` name is an implementation switch
 | `H2_LEVEL`, `H2_DIFFICULTY` | boot straight into a level ([level-boot.md](level-boot.md)) |
 | `H2_MAP_DIR`, `H2_MAPPACK*` | editor maps and the map pack ([map-pack.md](../game/map-pack.md)) |
 | `ui-back` | on by default. B or Back returns to Game Setup from its nested selectors. `H2_FEATURES=-ui-back` restores the retail selector Back behavior ([Back navigation](../game/ui-screens.md#back-navigation)) |
+| `return-to-menu` | on in ordinary windowed runs. Shows the host loading picture on the return from a game ([level-boot.md](level-boot.md#returning-to-the-main-menu)) |
 | `impl.render.native=off` | turns off the native GPU renderer, every stage together ([native-renderer.md](../graphics/native-renderer.md)) |
 | `impl.render.reproject` | in-between frames by reprojection, the 60 fps choice ([high-framerate.md](../game/high-framerate.md)) |
 | `audio.hrtf`, `audio.distance_reverb` | headphone binaural filtering; extra distance reverb |
