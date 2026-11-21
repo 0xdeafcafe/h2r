@@ -948,7 +948,9 @@ to the guest's draws (**Code**):
   - **The stage** (`frame-scene.layers`, an option with the native
     renderer on; `render_bridge::native_layers`, its host
     `boot::native_layers_glue`). At the world's load (only with the
-    option placed) each world material's passes of each of the five
+    option placed; `native_render::layers_load::load`, which reads the
+    map file alone, so the editor loads the same layers) each world
+    material's passes of each of the five
     layers are compiled as the fog's layer 16 is (`fog_gpu::layer_passes`,
     `FogProgram`), all or nothing per material and layer, and each
     material is resolved once with its instance's properties and input

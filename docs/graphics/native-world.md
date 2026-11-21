@@ -604,7 +604,7 @@ and its pipeline completions have crossed a frame boundary.
   palettes bound at stages 0..3 when it starts (`Device::stage_palette`,
   read-only), and refuses a palettized bitmap at stage 3 or at a stage
   with no full 256-entry palette. One decoder does this for every pass
-  loaded with the world (`native_world_glue::StageDecoder`: layer 3
+  loaded with the world (`native_render::stage_images::StageDecoder`: layer 3
   and the transparents' layer-15 passes, which share its images; the
   objects can take it too): an image is expanded once, and another
   stage shares it only when it holds the same palette; a refusal for
