@@ -731,7 +731,7 @@ What a sim run's result depends on, and what breaks reproducibility:
 | Spawn locations | `0x14ef00` mixes the player index and spawn count with two game-options words that the session fills anew for each game, not the shared seed. Sim writes them from the match seed ahead of the first spawn (`crates/extensions/game/src/sim_glue.rs`); without that, two runs start their players in different places |
 | The bots' randomness | SplitMix64 of the match seed and logical seat drives individual choices (`sim::config::bot_seed`). The gamertag fixes the profile |
 | `HashMap` iteration in the bots (`mind.rs` tracks, `los`, `nav`) | lookups and `retain` only, as read (**S**: worth a check in review) |
-| The nav mesh | built in the background on a thread at the wall clock's mercy (`bots_nav_auto`): **off in sim mode** (`H2_BOTS_NAV_AUTO=0`). A map with no current mesh is reported (`"nav": "missing"`); build them first with `h2 bots nav <map>` |
+| The nav mesh | built in the background on a thread at the wall clock's mercy (`bots_nav_auto`): **off in sim mode** (`H2_BOTS_NAV_AUTO=0`). A map with no current mesh is reported (`"nav": "missing"`); build them first with `h2 bots nav <map>`. A built mesh is read on the game thread in sim mode (`H2_BOTS_MAP_INLINE=1`): read on a worker, the bots of a loaded host acted without it for their first ticks, and two runs split soon after the opening hold |
 | Wall-clock limits (`max_wall_s`) | can end a match at a different tick on a slower host: the report says `"end": "wall_limit"`. Use `max_ticks` for reproducible ends |
 | Our own observers | read-only; the agent's tick observer adds dispatch transfers, the same in every run that has it |
 
@@ -1042,10 +1042,10 @@ headers and blocks while those dependencies are being traced.
 
 ## Not verified
 
-- Same-build determinism beyond one case: two runs of Lockout seed 1
-  (`docs/runtime/sim-examples`, four phantoms, 9000 ticks) give identical
-  components at every tick ([notes/sim.md](notes/sim.md)). Other maps,
-  seeds and rosters are unchecked.
+- Same-build determinism beyond the example batch: repeated runs of its
+  15 matches (Lockout, Midship, Ascension; four phantoms; 9000 ticks) give
+  identical components at every tick ([notes/sim.md](notes/sim.md)).
+  Other maps, rosters and game types are unchecked.
 - Whether skipping the render changes anything the tick reads beyond the
   seed: compare a skipped run with the same match at `render_every = 1`.
   `render_every` is the fallback if it does.

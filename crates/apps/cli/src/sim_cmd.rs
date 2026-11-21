@@ -354,6 +354,8 @@ fn run_one(args: Vec<String>) -> Result<()> {
     // SAFETY: set before the run starts any thread; boot reads them once.
     unsafe {
         std::env::set_var("H2_BOTS_NAV_AUTO", "0");
+        // Bot map data read on the game thread (game::bot_glue::MAP_INLINE_ENV).
+        std::env::set_var("H2_BOTS_MAP_INLINE", "1");
         std::env::remove_var("H2_LEVEL");
         if let Some(s) = &socket {
             std::env::set_var(agent_proto::ENV, s);
