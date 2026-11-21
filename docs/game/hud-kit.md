@@ -851,7 +851,7 @@ diagrams: a retail training prompt has none.
 
 | Step | Text | Moves on when |
 |---|---|---|
-| 1 | Crouch under a crouch spot's lip, / then stand up. | primed |
+| 1 | Crouch, walk in under a lip, / let go, then walk out. | primed |
 | 2 | You are primed. / Do not crouch again. | a bounce spot within 8 m |
 | 3 | Find a strip. Its post is the height / to fall from. No post: just jump. | a bounce, or 20 s |
 | 4 | Jump or fall onto the strip. / Fall Assist (Controls) can steer. | a bounce, or 15 s |
@@ -863,8 +863,8 @@ names its Controls row once.
 ```text
                  x 163                              x 477
           y 218  +----------------------------------+
-                 | Crouch under a crouch spot's lip, |
-                 |          then stand up.           |
+                 |   Crouch, walk in under a lip,    |
+                 |      let go, then walk out.       |
           y 262  +----------------------------------+
                           (HUD frame centre 320, 240)
 ```

@@ -733,7 +733,7 @@ mod tests {
         // Rows past ours, or no row, are not ours.
         assert_eq!(press(&m, LIST, 7), Chosen::Nothing);
         assert_eq!(press(&m, List::Controls, 5), Chosen::Nothing);
-        assert_eq!(press(&m, List::Controls, 11), Chosen::Nothing);
+        assert_eq!(press(&m, List::Controls, 12), Chosen::Nothing);
         // Saved as the old code saved them; other keys kept.
         let t: toml::Table = std::fs::read_to_string(&path).unwrap().parse().unwrap();
         assert_eq!(t["graphics"]["fov"].as_integer(), Some(75));

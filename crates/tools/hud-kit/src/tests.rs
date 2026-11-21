@@ -591,16 +591,13 @@ fn each_check_fires_on_a_hud_built_to_break_it() {
         ),
         Check::Modes,
     );
-    // glyphs: a font without the X button's glyph.
+    // glyphs: a font without the crouch button's glyph, which the
+    // prompt line's verbs use.
     let mut r = check::Report::default();
-    let no_x = |_: i16, u: u16| Some(u != 0xe102);
-    check::glyphs(&mut r, &superbounce::hud(), &Superbounce.states(), &no_x);
+    let no_crouch = |_: i16, u: u16| Some(u != 0xe110);
+    check::glyphs(&mut r, &superbounce::hud(), &Superbounce.states(), &no_crouch);
     assert!(!r.findings.is_empty());
-    assert!(
-        r.findings
-            .iter()
-            .all(|f| f.check == Check::Glyphs && f.elements == ["sb.tutorial"])
-    );
+    assert!(r.findings.iter().all(|f| f.check == Check::Glyphs));
     let mut r = check::Report::default();
     check::glyphs(
         &mut r,

@@ -647,7 +647,7 @@ the checks").
 **The tutorial.** The first time the mode is on, four steps show in the
 game's training box, two centred lines each:
 
-1. Crouch under a crouch spot's lip, then stand up.
+1. Crouch, walk in under a lip, let go, then walk out.
 2. You are primed. Do not crouch again.
 3. Find a strip. Its post is the height to fall from. No post: just jump.
 4. Jump or fall onto the strip. Fall Assist (Controls) can steer.

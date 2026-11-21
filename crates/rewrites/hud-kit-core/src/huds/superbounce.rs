@@ -88,7 +88,7 @@ pub const MESSAGE_LONGEST: &str = "Superbounce, 999 m";
 /// own: the last step names the opt-in fall assist once, by its Controls
 /// row, and no step asks for a button. The third is the widest.
 pub const TUTORIAL_TEXT: [&str; 4] = [
-    "Crouch under a crouch spot's lip,\nthen stand up.",
+    "Crouch, walk in under a lip,\nlet go, then walk out.",
     "You are primed.\nDo not crouch again.",
     "Find a strip. Its post is the height\nto fall from. No post: just jump.",
     "Jump or fall onto the strip.\nFall Assist (Controls) can steer.",
