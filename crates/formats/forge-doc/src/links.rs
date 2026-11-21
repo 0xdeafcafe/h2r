@@ -10,7 +10,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
-use crate::{BlockKind, Edit, ForgeDoc, Op, OpId, Placement, Refusal, Result, wire};
+use crate::{
+    ActiveLabel, BlockKind, Edit, ForgeDoc, Label, Labels, Op, OpId, Placement, Refusal, Result,
+    wire,
+};
 
 /// The largest channel a teleporter link writes. The netgame flag's
 /// identifier is an `i16`; retail channels are small non-negative values.
@@ -46,6 +49,13 @@ pub enum Forge {
     /// End the active link the op `link` made.
     Unlink {
         link: OpId,
+    },
+    /// Set the label of a placement, replacing any it has, or clear it
+    /// (`label` absent). Needs format 2.
+    Label {
+        target: Endpoint,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        label: Option<Label>,
     },
 }
 
@@ -128,6 +138,12 @@ impl ForgeDoc {
         let pass = Pass::run(&self.ops, base_counts)?;
         pass.resolve()
     }
+
+    /// Resolve the active labels to final indices. The map's base count is
+    /// needed for each block a label names.
+    pub fn labels(&self, base_counts: &BTreeMap<BlockKind, u32>) -> Result<Labels> {
+        Pass::run(&self.ops, base_counts)?.resolve_labels()
+    }
 }
 
 fn invalid(what: &str, reason: impl Into<String>) -> Refusal {
@@ -137,6 +153,7 @@ fn invalid(what: &str, reason: impl Into<String>) -> Refusal {
 /// Checks that need only the op itself.
 pub(crate) fn op(edit: &Forge) -> Result<()> {
     let link = match edit {
+        Forge::Label { target, label } => return crate::labels::check_op(target, label.as_ref()),
         Forge::Unlink { link } if link.0 == 0 => {
             return Err(invalid("unlink", "want the ID of a link op"));
         }
@@ -208,6 +225,7 @@ struct Pass<'a> {
     active: BTreeMap<OpId, Link>,
     order: Vec<OpId>,
     roles: BTreeMap<Endpoint, Role>,
+    labels: BTreeMap<Endpoint, (OpId, Label)>,
 }
 
 impl<'a> Pass<'a> {
@@ -220,12 +238,16 @@ impl<'a> Pass<'a> {
             active: BTreeMap::new(),
             order: Vec::new(),
             roles: BTreeMap::new(),
+            labels: BTreeMap::new(),
         };
         for op in ops {
             match &op.edit {
                 Edit::Placement(placement) => pass.placement(op.id, placement)?,
                 Edit::Forge(Forge::Link(link)) => pass.link(op.id, link)?,
                 Edit::Forge(Forge::Unlink { link }) => pass.unlink(*link)?,
+                Edit::Forge(Forge::Label { target, label }) => {
+                    pass.label(op.id, *target, label.as_ref())?
+                }
                 _ => {}
             }
         }
@@ -233,9 +255,6 @@ impl<'a> Pass<'a> {
     }
 
     fn rows(&mut self, block: BlockKind) -> Option<&mut Vec<Endpoint>> {
-        if !matches!(block, BlockKind::NetgameFlags | BlockKind::Machines) {
-            return None;
-        }
         let count = *self.base.get(&block)?;
         Some(self.rows.entry(block).or_insert_with(|| {
             (0..count)
@@ -262,6 +281,9 @@ impl<'a> Pass<'a> {
                     let end = rows.swap_remove(index as usize);
                     if self.linked(end) {
                         return Err(invalid(block.name(), "remove the entry's links first"));
+                    }
+                    if self.labels.contains_key(&end) {
+                        return Err(invalid(block.name(), "clear the entry's label first"));
                     }
                     self.gone.insert(end);
                 }
@@ -352,6 +374,52 @@ impl<'a> Pass<'a> {
             }
         }
         Ok(())
+    }
+
+    fn label(&mut self, id: OpId, target: Endpoint, label: Option<&Label>) -> Result<()> {
+        let present = match target {
+            Endpoint::Base { block, index } => self.base.get(&block).is_none_or(|&n| index < n),
+            Endpoint::Added(add) => self.added.contains_key(&add),
+        };
+        if !present || self.gone.contains(&target) {
+            return Err(invalid("label", "names no entry"));
+        }
+        match label {
+            Some(label) => {
+                self.labels.insert(target, (id, label.clone()));
+            }
+            None => {
+                if self.labels.remove(&target).is_none() {
+                    return Err(invalid("label", "the entry has no label to clear"));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn resolve_labels(mut self) -> Result<Labels> {
+        let labels = std::mem::take(&mut self.labels);
+        let mut active = Vec::with_capacity(labels.len());
+        for (target, (id, label)) in labels {
+            let block = match target {
+                Endpoint::Base { block, .. } => block,
+                Endpoint::Added(add) => self.added[&add],
+            };
+            if self.rows(block).is_none() {
+                return Err(invalid(
+                    "labels",
+                    format!("the map's {} count is needed", block.name()),
+                ));
+            }
+            active.push(ActiveLabel {
+                id,
+                block,
+                index: self.index(block, target)?,
+                label,
+            });
+        }
+        active.sort_by_key(|l| (l.block, l.index));
+        Ok(Labels { active })
     }
 
     fn index(&self, block: BlockKind, end: Endpoint) -> Result<u32> {

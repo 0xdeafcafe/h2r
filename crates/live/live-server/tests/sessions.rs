@@ -42,6 +42,7 @@ fn new() -> NewSession {
         campaign: None,
         ping_ms: None,
         variant_ext: None,
+        rules: None,
         browser: None,
     }
 }
@@ -552,6 +553,7 @@ async fn sessions_carry_the_hosts_variant_options() {
     let second = VariantExt::new(&[0; VARIANT_EXT_LEN], 2);
     let up = serde_json::to_value(Update {
         variant_ext: Some(second.clone()),
+        rules: None,
         ..Default::default()
     })
     .unwrap();
@@ -567,6 +569,45 @@ async fn sessions_carry_the_hosts_variant_options() {
         serde_json::to_value(&second).unwrap()
     );
     let bad = json!({"variant_ext": {"block": "00", "key": "0000000000000003"}});
+    assert_eq!(
+        batch(&h, &a, &id, &[body(&a, &id, session::UPDATED, bad)])
+            .await
+            .status,
+        StatusCode::BAD_REQUEST
+    );
+}
+
+/// A host's rules IR hash (docs/game/rules-engine.md, "Carrying a script")
+/// is kept on its session and listed beside the variant options; an update
+/// replaces it, and a malformed hash is refused at create and at update.
+/// The Worker runs these routes too.
+#[tokio::test]
+async fn sessions_carry_the_hosts_rules_hash() {
+    let h = harness().await;
+    let a = h.create("Host").await;
+    let first = "ab".repeat(32);
+    let mut n = new();
+    for bad in ["zz", "AB", &"ab".repeat(31)[..]] {
+        n.rules = Some(bad.into());
+        assert_eq!(create(&h, &a, &n).await.status, StatusCode::BAD_REQUEST);
+    }
+    n.rules = Some(first.clone());
+    let r = create(&h, &a, &n).await;
+    assert_eq!(r.status, StatusCode::CREATED);
+    let id = r.json()["session_id"].as_str().unwrap().to_owned();
+    let listed = h.get("/v1/sessions?hopper=7").await.json();
+    assert_eq!(listed["items"][0]["advertisement"]["rules"], json!(first));
+    let second = "cd".repeat(32);
+    let up = json!({"rules": second});
+    assert_eq!(
+        batch(&h, &a, &id, &[body(&a, &id, session::UPDATED, up)])
+            .await
+            .status,
+        StatusCode::CREATED
+    );
+    let listed = h.get("/v1/sessions?hopper=7").await.json();
+    assert_eq!(listed["items"][0]["advertisement"]["rules"], json!(second));
+    let bad = json!({"rules": "00"});
     assert_eq!(
         batch(&h, &a, &id, &[body(&a, &id, session::UPDATED, bad)])
             .await

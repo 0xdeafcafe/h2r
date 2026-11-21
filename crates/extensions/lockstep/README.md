@@ -4,11 +4,11 @@ The determinism harness: a hash of guest RAM at every guest tick and present, a 
 
 ## Where it sits
 
-`extensions`. Uses `runtime`, `hooks`, `engine`, `xapi` and `input`. Used by `app`, `boot`, `cli`, `game`, `coop` and `snapshot`.
+`extensions`. Uses `runtime`, `hooks`, `engine`, `sim-ext`, `xapi` and `input`. Used by `app`, `boot`, `cli`, `game`, `coop` and `snapshot`.
 
 ## Layout
 
-- `src/lib.rs`: `RamHash`, `hash_guest`, `hash_sim`, the traces and their comparison.
+- `src/lib.rs`: `RamHash`, `hash_guest`, `hash_sim` (with the `SimExt` digest folded in by `fold_ext`), the traces and their comparison.
 - `src/pools.rs`: the RAM pools hashed.
 - `src/synthetic.rs`: synthetic traces for tests.
 

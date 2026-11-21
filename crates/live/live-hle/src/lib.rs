@@ -169,6 +169,22 @@ pub enum HostVariantExt {
     },
 }
 
+/// What a guest knows of its host's rules IR hash ([`Hle::host_rules`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HostRules {
+    /// No session joined.
+    NotJoined,
+    /// Joined `session`, whose advertisement was never read.
+    Unknown { session: String },
+    /// Joined `session`, whose host advertised `rules` (None: a host that
+    /// sends none); `refreshed` when read just now.
+    Known {
+        session: String,
+        rules: Option<String>,
+        refreshed: bool,
+    },
+}
+
 /// What a host knows of its players' builds ([`Hle::players_lacking`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Lacking {
@@ -795,6 +811,19 @@ impl Hle {
             },
         }
     }
+    /// What the host of the session this console joined advertised as the
+    /// SHA-256 of its rules IR blob: [`Hle::joined`]'s answer.
+    pub fn host_rules(&self, wait: std::time::Duration) -> HostRules {
+        match self.joined(wait) {
+            Joined::NotJoined => HostRules::NotJoined,
+            Joined::Unknown { session } => HostRules::Unknown { session },
+            Joined::Known { session, refreshed } => HostRules::Known {
+                session: session.session_id.clone(),
+                rules: session.advertisement.rules.clone(),
+                refreshed,
+            },
+        }
+    }
     /// Which of `xuids` (the players of this console's game: the session's
     /// roster, or the game's own player list) are on a build without
     /// `capability`, from their presence ([`live_proto::lacking`]). Waits at
@@ -874,6 +903,15 @@ impl Hle {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .set_session_variant_ext(ext)
+    }
+    /// The host's rules IR hash (64 lowercase hex digits) for the game it
+    /// starts: advertisements carry it from now, and open ones are updated
+    /// at once. No guest memory access.
+    pub fn set_session_rules(&self, rules: Option<String>) {
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .set_session_rules(rules)
     }
     /// The bots (server accounts) in this console's hosted game, beside
     /// its signed-in users: the Live session their roster is for

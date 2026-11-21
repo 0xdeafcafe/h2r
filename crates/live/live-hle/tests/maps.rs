@@ -101,6 +101,7 @@ fn a_published_package_is_fetched_over_http_and_installed() {
         campaign: None,
         ping_ms: None,
         variant_ext: None,
+        rules: None,
         browser: None,
         map_id: Some(id),
     };
