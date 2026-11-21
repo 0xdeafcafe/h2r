@@ -392,6 +392,9 @@ impl MapDocument {
     /// The extras' checks (the manifest has its own): a known category, a
     /// short `http`/`https` source URL with no spaces or controls.
     pub fn validate_extras(&self) -> Result<(), String> {
+        if !self.manifest.forge.is_empty() {
+            return Err("materialised Forge packages stay local".into());
+        }
         if self.staged_for.as_deref().is_some_and(|id| !pack_id_ok(id)) {
             return Err("invalid staged pack id".into());
         }
@@ -701,6 +704,25 @@ pub fn ranked_flags(flags: &str) -> bool {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn materialised_forge_packages_cannot_be_published_as_map_documents() {
+        use content::manifest::{FORGE_FORMAT, ForgeLayer};
+
+        let mut manifest = Manifest::retail("fixture", Sha256([1; 32]));
+        manifest.package.format = FORGE_FORMAT;
+        manifest.forge.push(ForgeLayer {
+            document: Sha256([2; 32]),
+            document_file: "document.h2forge".into(),
+            file: "materialised.map".into(),
+            sha256: Sha256([3; 32]),
+        });
+        manifest.validate().unwrap();
+        assert_eq!(
+            MapDocument::new(manifest, None).validate_extras().unwrap_err(),
+            "materialised Forge packages stay local"
+        );
+    }
 
     #[test]
     fn pins_parse_validate_and_allow() {

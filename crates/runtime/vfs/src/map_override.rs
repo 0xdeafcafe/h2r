@@ -295,6 +295,7 @@ pub(crate) fn override_id_from_hash(map: &str, sha256: content::Sha256) -> conte
             sha256,
         }],
         packs: Vec::new(),
+        forge: Vec::new(),
         result: None,
         list: None,
         variants: Vec::new(),

@@ -4,6 +4,7 @@
 *.xiso
 *.xbe
 *.map
+*.h2forge
 *.bik
 /extracted
 /out

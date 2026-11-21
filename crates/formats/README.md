@@ -14,6 +14,7 @@ crate needs another it depends on it directly (`tags` on `map`, `asf` on
 | [asf](asf/) | Bounded ASF container demuxer for the game's WMA streams |
 | [content](content/) | Map packages: manifest, `MapId`, patch readers and the resolver |
 | [font](font/) | Packed bitmap font parser, encoder and CPU text rasteriser |
+| [forge-doc](forge-doc/) | Forge documents, portable ops and the host-stamped edit log |
 | [h1-contract](h1-contract/) | Names shared by the Halo 1 converters and the in-game Halo 1 hooks |
 | [hs](hs/) | Compiled HaloScript: decode, check, cast, and the script VM |
 | [map](map/) | Cache v8 `.map` reader and writer |

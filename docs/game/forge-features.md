@@ -1,7 +1,10 @@
 # Forge: the features
 
-Status: Design. Nothing here is built.
-Code: `crates/extensions/forge` (the tools and the Forge step), `crates/tools/forge-build` (recipes and the kit), `crates/tools/asset-import` (glTF and FBX to tags). Tests: each crate's own, on invented data.
+Status: Design. The document and edit log are in `forge-doc`. The
+in-game tools are planned.
+Code: `crates/formats/forge-doc` defines the portable edits. The planned
+crates are `forge` for the tools and Forge step, `forge-build` for the
+kit and recipes, and `asset-import` for converting glTF and FBX.
 Switch: the `forge` feature of `H2_FEATURES`, as [forge-design.md](forge-design.md).
 
 What each Forge feature is made of, its options and the engine points

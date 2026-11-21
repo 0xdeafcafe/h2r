@@ -17,6 +17,7 @@ mod format;
 mod reader;
 /// Converted campaign recording controls shared by the encoder and playback.
 pub mod recording;
+pub mod scenario_layout;
 /// Pass-through cache writing (not a rebuild) and bounded edits.
 pub mod writer;
 

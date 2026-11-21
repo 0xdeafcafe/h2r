@@ -5,6 +5,7 @@ The tools domain is offline work on game data: the Halo 1 readers and converters
 | Crate | What it is |
 |---|---|
 | [h1map](h1map/README.md) | Halo 1 Xbox cache file reader. |
+| [forge-build](forge-build/) | Local Forge document materialisation and kit allocation |
 | [h1-assets](h1-assets/README.md) | Halo 1 bitmaps, models, sounds, skies and text as Halo 2 tags. |
 | [h1objects](h1objects/README.md) | Halo 1 sandbox objects as Halo 2 tags. |
 | [h1convert](h1convert/README.md) | Halo 1 multiplayer maps converted to Halo 2 tags. |

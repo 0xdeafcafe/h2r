@@ -8,7 +8,7 @@ use std::io::BufReader;
 use map::{CacheType, Map};
 
 /// `scnr+0x118`: netgame flags, `0x20` each: position, facing, `u16` type at
-/// `0x10`, `u16` team at `0x12` (crates/tools/scenario-edit/src/layout.rs).
+/// `0x10`, `u16` team at `0x12` (crates/formats/map/src/scenario_layout.rs).
 const NETGAME_FLAGS: usize = 0x118;
 const FLAG_LEN: usize = 0x20;
 
