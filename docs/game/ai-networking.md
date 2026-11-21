@@ -1,7 +1,7 @@
 # AI over the network
 
-Status: Partly built. The probe methods (AN0), actor channel (AN2) and distributed host capture (AN3) are implemented. Client puppets and transport are separate slices.
-Code: `crates/extensions/agent/src/net.rs` (`net.replication`), `crates/extensions/agent/src/ai.rs` (`world.ai`), `crates/live/actor-net/src/wire.rs`, `set.rs` and `budget.rs` (actor channel), `crates/extensions/game/src/actor_net/host.rs` (capture and per-client scheduling). Tests: each crate's own, on invented data.
+Status: Partly built. The probe methods (AN0), actor channel (AN2), distributed host capture (AN3) and Live tunnel transport (AN5) are implemented. Client puppets are a separate slice.
+Code: `crates/extensions/agent/src/net.rs` (`net.replication`), `crates/extensions/agent/src/ai.rs` (`world.ai`), `crates/live/actor-net/src/wire.rs`, `set.rs` and `budget.rs` (actor channel), `crates/extensions/game/src/actor_net/host.rs` (capture), `crates/extensions/game/src/actor_net/link.rs` (per-peer scheduling) and `crates/live/live-hle/src/tunnel_host.rs` and `tunnel_client.rs` (transport). Tests: each crate's own, on invented data.
 Switch: `agent-net` and `actor-net`, listed in [switches.md](../runtime/switches.md).
 
 AI actors in a network game: who runs them, what reaches the other
@@ -77,10 +77,12 @@ client (**E**, notes). Hits are the host's to judge, as for players.
 
 **2. The actor channel** (`crates/live/actor-net`). A host-to-client
 stream for what layer 1 lacks. It is unreliable and ordered by tick, sent
-on a frame kind of the Live datagram tunnel next to the game's own
-packets (`crates/live/live-hle`, the tunnel the film side stream uses,
-[input-film.md](input-film.md), "The action side stream"). A System Link
-session has no tunnel and gets layer 1 only.
+on the [Live datagram tunnel](../live/dedicated-host.md#host-tunnel) next
+to the game's own packets. The host schedules one budget per negotiated
+tunnel peer and enqueues packets after capture. The client drains a bounded
+inbox before the game tick. A new tunnel peer is owed a key, and repeated
+requests coalesce into at most one answer every 30 ticks. A System Link
+session or a Live client without the channel gets layer 1 only.
 
 Version 1 begins with a version byte, a little-endian 32-bit host tick and an
 8-bit record count. Each record starts with a one-byte tag. Multibyte fields
@@ -356,7 +358,7 @@ under a day, M one to three days, L a week.
 | **AN2** | `actor-net` wire: the seven records, quantisers, `encode`/`decode`, `Key` build and apply over a plain `ActorSet`, `Budget` | M | nothing | `crates/live/actor-net/src/{wire,set,budget}.rs` | `every_record_round_trips`, `key_then_deltas_equals_host_set`, `lost_packets_converge_after_the_next_key`, `budget_never_exceeds_its_bytes`, `line_survives_two_lost_packets_in_three`, `decode_never_panics_on_fuzz` | 10,000 seeded lossy runs converge within one `Key` period; no packet over the budget |
 | **AN3** | Host capture: `sim_state::ActorView`, the per-tick diff, per-client fill order, the observer on `AI_DIALOGUE_ENQUEUE` | M | AN2 | `crates/rewrites/sim-state/src/actors.rs`, `crates/extensions/game/src/actor_net/host.rs`, `points.rs` | `diff_reports_new_removed_and_posture`, `nearest_actors_get_control_first`, `capture_leaves_the_arena_hash_unchanged`, `a_line_is_queued_once` | over a fake guest with a scripted actor pool, the packets decode to the pool; the arena hash is equal with the channel on and off |
 | **AN4** | Client puppets: the entity-to-object lookup (traced first), the puppet table, posture and control writes, the dialogue start | M | AN2; P3's answer for `Control` | `crates/extensions/game/src/actor_net/client.rs`, `points.rs` | `a_record_waits_for_its_entity_then_applies`, `an_unknown_entity_is_dropped_after_30_ticks`, `a_client_writes_no_damage_or_position`, `key_replaces_the_puppet_table` | over a fake guest, a `Key` and deltas produce the expected engine calls and no other write |
-| **AN5** | Transport: the tunnel frame kind, send on the host's post-tick, receive queue on clients, `Key` on join and on request | S | AN2 | `crates/live/live-hle/src/tunnel*.rs`, `crates/extensions/game/src/actor_net/link.rs` | `frames_of_another_kind_are_ignored`, `a_key_request_is_answered_once_a_second_at_most`, `no_tunnel_means_no_channel` | two fake peers over the simulated link (`crates/live/coop`'s) converge under loss and reorder |
+| **AN5** | Transport: the tunnel frame kind, send on the host's post-tick, receive queue on clients, `Key` on join and on request | S | AN2 | `crates/live/live-hle/src/tunnel*.rs`, `crates/extensions/game/src/actor_net/link.rs` | `frames_of_another_kind_are_ignored`, `a_key_request_is_answered_once_a_second_at_most`, `no_tunnel_means_no_channel`, `lost_actor_frames_converge_on_the_next_key`, `reordered_actor_frames_cannot_rewind_a_newer_key`, `a_tunnel_down_retires_the_peer_and_rejoin_gets_a_key`, `a_client_without_the_channel_keeps_receiving_retail_datagrams` | two fake peers over the simulated link (`crates/live/coop`'s) converge under loss and reorder |
 | **AN6** | Actor events: `SimEvent::ActorKilled {unit, character, killer, weapon}`, the film `Event` variant, the telemetry row | S | nothing | `crates/rewrites/sim-objects/src/events.rs`, `crates/live/live-proto/src/film/events.rs`, `crates/live/live-telemetry/` | `a_fatal_damage_to_an_actor_unit_is_one_actor_killed`, `a_player_death_is_not_an_actor_kill`, `actor_killed_round_trips_in_a_film` | on a fake guest, one fatal damage report on a unit with an actor yields exactly one event with the killer's player |
 | **AN7** | Films and digests: the host-log record tag, recording and playback apply, `Digest` build and check, the client's resync | M | AN1, AN2, AN5 | `crates/live/live-proto/src/film/stream.rs`, `crates/live/film/`, `actor_net/digest.rs` | `a_film_replays_entries_at_their_ticks`, `playback_never_runs_a_producer`, `a_wrong_head_asks_for_a_key`, `three_mismatches_end_the_session` | a recorded fake session replays to the same log head and mode state hash |
 | **AN8** | `actors.net`, its doc section and `h2 agent` examples | S | AN3, AN4, AN5 | `crates/extensions/agent/src/actors.rs`, `agent-api.md` | `host_reports_per_client_rates`, `client_reports_puppets_and_waiting` | the method answers on a fake host and a fake client |

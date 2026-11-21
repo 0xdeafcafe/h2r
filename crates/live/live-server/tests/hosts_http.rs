@@ -245,6 +245,10 @@ mod tunnel {
         request
             .headers_mut()
             .insert("x-h2-tunnel-peer", "spoofed".parse().unwrap());
+        request.headers_mut().insert(
+            live_proto::tunnel::ACTOR_CHANNEL_HEADER,
+            live_proto::tunnel::ACTOR_CHANNEL_OFFER.parse().unwrap(),
+        );
         if let Some(token) = token {
             request.headers_mut().insert(
                 header::AUTHORIZATION,
@@ -367,6 +371,10 @@ mod tunnel {
                 tokio_tungstenite::accept_hdr_async(tcp, |req: &Request, res: Response| {
                     assert!(req.headers().get(header::AUTHORIZATION).is_none());
                     assert_eq!(req.headers()["x-h2-tunnel-peer"].to_str().unwrap(), peer);
+                    assert_eq!(
+                        req.headers()[live_proto::tunnel::ACTOR_CHANNEL_HEADER],
+                        live_proto::tunnel::ACTOR_CHANNEL_OFFER,
+                    );
                     Ok(res)
                 })
                 .await

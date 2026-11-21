@@ -8,11 +8,15 @@ use super::{
     writable,
 };
 use crate::{host, qos, socket_wait::SocketWait, traffic};
-use polling::Poller;
+use actor_net::{Packet, Record, WireError, budget::TICKS_PER_SECOND};
 use live_proto::{
     Xuid,
-    tunnel::{Frame, Kind, decode, encode},
+    tunnel::{
+        ACTOR_CHANNEL_HEADER, ACTOR_CHANNEL_OFFER, ACTOR_CHANNEL_VERSION, Frame, Kind, decode,
+        encode,
+    },
 };
+use polling::Poller;
 use runtime::Runtime;
 use std::{
     collections::BTreeMap,
@@ -107,21 +111,42 @@ struct Peer {
     out: SyncSender<Frame>,
     wake: Arc<Poller>,
     rate: Rate,
+    actor: Option<ActorPeer>,
+}
+
+struct ActorPeer {
+    needs_key: bool,
+    last_key: Option<u32>,
+}
+
+impl ActorPeer {
+    fn key_requested(&self, tick: u32) -> bool {
+        self.needs_key
+            && self
+                .last_key
+                .is_none_or(|last| tick.wrapping_sub(last) >= TICKS_PER_SECOND)
+    }
 }
 
 impl Peer {
     fn send(&mut self, id: u32, port: u16, payload: &[u8], now: Instant) {
         if self.rate.take(now) {
-            // A full queue drops datagrams, as a busy UDP link would.
-            if self.out.try_send(Frame {
+            self.enqueue(Frame {
                 kind: Kind::Datagram,
                 port,
                 peer: id,
                 payload: payload.to_vec(),
-            }).is_ok() {
-                let _ = self.wake.notify();
-            }
+            });
         }
+    }
+
+    fn enqueue(&self, frame: Frame) -> bool {
+        // A full queue drops frames, as a busy datagram link would.
+        if self.out.try_send(frame).is_err() {
+            return false;
+        }
+        let _ = self.wake.notify();
+        true
     }
 }
 
@@ -132,7 +157,12 @@ struct Peers {
 }
 
 impl Peers {
-    fn register(&mut self, now: Instant, wake: Arc<Poller>) -> Option<(u32, Receiver<Frame>)> {
+    fn register(
+        &mut self,
+        now: Instant,
+        wake: Arc<Poller>,
+        actor_channel: bool,
+    ) -> Option<(u32, Receiver<Frame>)> {
         if self.active.len() >= MAX_PEERS || self.last_id >= u32::from(u16::MAX - 1) {
             return None;
         }
@@ -147,6 +177,10 @@ impl Peers {
                 out,
                 wake,
                 rate: Rate::new(now),
+                actor: actor_channel.then_some(ActorPeer {
+                    needs_key: true,
+                    last_key: None,
+                }),
             },
         );
         Some((id, incoming))
@@ -165,6 +199,47 @@ impl Peers {
             peer.send(id, port, payload, now);
         }
         !self.active.is_empty()
+    }
+
+    fn actor_peers(&self, tick: u32) -> Vec<(u32, bool)> {
+        self.active
+            .iter()
+            .filter_map(|(&id, peer)| {
+                peer.actor
+                    .as_ref()
+                    .map(|actor| (id, actor.key_requested(tick)))
+            })
+            .collect()
+    }
+
+    fn request_actor_key(&mut self, id: u32) {
+        if let Some(actor) = self.active.get_mut(&id).and_then(|peer| peer.actor.as_mut()) {
+            actor.needs_key = true;
+        }
+    }
+
+    fn send_actor(&mut self, id: u32, packet: &Packet) -> Result<bool, WireError> {
+        let Some(peer) = self.active.get_mut(&id) else {
+            return Ok(false);
+        };
+        let Some(actor) = &peer.actor else {
+            return Ok(false);
+        };
+        let key = packet
+            .records
+            .iter()
+            .any(|record| matches!(record, Record::Key { .. }));
+        if actor.last_key.is_none() && !key {
+            return Ok(false);
+        }
+        let sent = peer.enqueue(control(Kind::Actor, id, actor_net::encode(packet)?));
+        if key && let Some(actor) = &mut peer.actor {
+            actor.needs_key = !sent;
+            if sent {
+                actor.last_key = Some(packet.tick);
+            }
+        }
+        Ok(sent)
     }
 
     fn source(&self, id: u32, base: u16, port: u16) -> Option<SocketAddrV4> {
@@ -280,6 +355,7 @@ impl TunnelHost {
         use live_proto::matchmaking::{PACK_ECHO_PATH, REGION_ECHO};
         let mut xuid = None;
         let mut echo = false;
+        let mut actor_channel = false;
         // Tungstenite requires an HTTP error response even for a callback
         // that always accepts the handshake.
         #[allow(clippy::result_large_err)]
@@ -298,6 +374,10 @@ impl TunnelHost {
                 }
                 return Ok(response);
             }
+            actor_channel = request
+                .headers()
+                .get(ACTOR_CHANNEL_HEADER)
+                .is_some_and(|offer| offer == ACTOR_CHANNEL_OFFER);
             xuid = request
                 .headers()
                 .get("x-h2-tunnel-peer")
@@ -321,7 +401,7 @@ impl TunnelHost {
         let wake = Arc::new(Poller::new()?);
         let wait = SocketWait::new(wake.clone(), Some(ws.get_ref()), None)?;
         let (id, out) = lock(&self.peers)
-            .register(Instant::now(), wake)
+            .register(Instant::now(), wake, actor_channel)
             .ok_or("host tunnel is full")?;
         let peer = ConnectedPeer {
             tunnel: self,
@@ -332,7 +412,7 @@ impl TunnelHost {
             "live: host tunnel joined peer {id} ({}, xuid {peer})",
             peer_ip(id)
         );
-        write_frame(&mut ws, &hello(id))?;
+        write_frame(&mut ws, &hello(id, actor_channel))?;
         self.exchange(&mut ws, id, out, wait)
     }
 
@@ -371,6 +451,10 @@ impl TunnelHost {
                             self.deliver(id, &frame);
                         }
                         Kind::Datagram => {}
+                        Kind::ActorKeyRequest if ingress.take(Instant::now()) => {
+                            lock(&self.peers).request_actor_key(id);
+                        }
+                        Kind::ActorKeyRequest => {}
                         Kind::Bye => {
                             lock(&self.peers).remove(id);
                             write_frame(ws, &control(Kind::Bye, id, Vec::new()))?;
@@ -378,6 +462,7 @@ impl TunnelHost {
                             return Ok(());
                         }
                         Kind::Hello => return Err("duplicate client tunnel hello".into()),
+                        Kind::Actor => return Err("unexpected client actor packet".into()),
                     }
                 }
                 Ok(Message::Pong(_)) => last_pong = Instant::now(),
@@ -560,15 +645,22 @@ fn control(kind: Kind, peer: u32, payload: Vec<u8>) -> Frame {
     }
 }
 
-fn hello(peer: u32) -> Frame {
-    control(Kind::Hello, peer, HOST_IP.octets().to_vec())
+fn hello(peer: u32, actor_channel: bool) -> Frame {
+    let mut payload = HOST_IP.octets().to_vec();
+    if actor_channel {
+        payload.push(ACTOR_CHANNEL_VERSION);
+    }
+    control(Kind::Hello, peer, payload)
 }
 
 fn valid_client_frame(frame: &Frame) -> bool {
     frame.peer == 0
         && match frame.kind {
             Kind::Datagram => datagram_fits(frame.port, frame.payload.len()),
-            Kind::Hello | Kind::Bye => frame.port == 0 && frame.payload.is_empty(),
+            Kind::Hello | Kind::Bye | Kind::ActorKeyRequest => {
+                frame.port == 0 && frame.payload.is_empty()
+            }
+            Kind::Actor => false,
         }
 }
 
@@ -627,6 +719,30 @@ fn enabled(network: &Network) -> Option<&'static TunnelHost> {
     tunnel
         .as_deref()
         .filter(|tunnel| tunnel.address == network.config.address)
+}
+
+impl crate::Hle {
+    fn actor_host_tunnel(&self) -> Option<&'static TunnelHost> {
+        HOST.get()?
+            .as_deref()
+            .filter(|tunnel| !self.offline_film && tunnel.address == self.network.config.address)
+    }
+
+    /// Actor-capable tunnel peer IDs and whether each needs a key at this tick.
+    /// IDs are unique to a connection within the lease.
+    pub fn actor_tunnel_peers(&self, tick: u32) -> Vec<(u32, bool)> {
+        self.actor_host_tunnel()
+            .map_or_else(Vec::new, |tunnel| lock(&tunnel.peers).actor_peers(tick))
+    }
+
+    /// Queue an actor packet for one peer. A missing peer or a full queue
+    /// returns false. The scheduler charges the encoded payload separately.
+    pub fn send_actor_tunnel_packet(&self, peer: u32, packet: &Packet) -> Result<bool, WireError> {
+        let Some(tunnel) = self.actor_host_tunnel() else {
+            return Ok(false);
+        };
+        lock(&tunnel.peers).send_actor(peer, packet)
+    }
 }
 
 /// One Winsock dispatch hook. Operations that need no tunnel work continue
@@ -859,6 +975,10 @@ fn bound_offset(socket: &Socket) -> Option<u16> {
 }
 
 #[cfg(test)]
+#[path = "tunnel_host/actor_tests.rs"]
+mod actor_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::{collections::VecDeque, sync::mpsc::TryRecvError};
@@ -866,24 +986,33 @@ mod tests {
     const BASE: u16 = 31000;
 
     fn register(peers: &mut Peers, now: Instant) -> Option<(u32, Receiver<Frame>)> {
-        peers.register(now, Arc::new(Poller::new().unwrap()))
+        peers.register(now, Arc::new(Poller::new().unwrap()), false)
     }
 
     #[test]
     fn hello_and_bye_use_the_contract_wire() {
         assert_eq!(
-            encode(&hello(0x0102)),
+            encode(&hello(0x0102, false)),
             [1, 1, 0, 0, 2, 1, 0, 0, 10, 77, 0, 1],
         );
         assert_eq!(
             encode(&control(Kind::Bye, 0x0102, Vec::new())),
             [1, 2, 0, 0, 2, 1, 0, 0],
         );
+        assert_eq!(
+            encode(&hello(0x0102, true)),
+            [1, 1, 0, 0, 2, 1, 0, 0, 10, 77, 0, 1, ACTOR_CHANNEL_VERSION],
+        );
+        let request = control(Kind::ActorKeyRequest, 0, Vec::new());
+        assert_eq!(encode(&request), [1, 4, 0, 0, 0, 0, 0, 0]);
+        assert!(valid_client_frame(&request));
+        assert!(!valid_client_frame(&control(Kind::ActorKeyRequest, 0, vec![1])));
+        assert!(!valid_client_frame(&control(Kind::Actor, 0, Vec::new())));
 
         let client_hello = decode(&[1, 1, 0, 0, 0, 0, 0, 0]).unwrap();
         assert!(matches!(client_hello.kind, Kind::Hello));
         assert!(valid_client_frame(&client_hello));
-        assert!(!valid_client_frame(&hello(0x0102)));
+        assert!(!valid_client_frame(&hello(0x0102, false)));
         assert!(!valid_client_frame(&control(Kind::Hello, 0, vec![1])));
         assert!(!valid_client_frame(&control(Kind::Bye, 0x0102, Vec::new())));
         assert!(valid_client_frame(&control(Kind::Bye, 0, Vec::new())));

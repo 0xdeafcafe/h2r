@@ -725,11 +725,26 @@ fans out to all active tunnel peers and still goes out over native UDP.
 The tunnel answers HLE QoS queries on offset +2 using the same advertised
 data as the UDP responder.
 
+A client offers actor channel version 1 with the `x-h2-actor-channel: 1`
+upgrade header. The host acknowledges it with one version byte after the
+four IPv4 bytes in its binary hello. For a peer without the offer, the
+host sends the four-byte hello and ordinary XNet traffic. Negotiated
+peers receive actor packets as kind 3 with port 0 and the recipient's
+ID. A client requests a fresh key with kind 4, port 0, peer 0 and an
+empty payload. System Link sessions use retail replication for actors.
+
+The actor sender enqueues from the simulation tick and the client
+drains its bounded queue at the tick boundary. A full send queue drops
+the packet. A full client inbox drops its oldest packet. Packet loss is
+repaired by a later key. Actor packets have a separate 1,000-byte
+rolling budget over 30 ticks that excludes the eight-byte tunnel header.
+[Actor channel](../game/ai-networking.md#how-it-works)
+
 The host allows 16 concurrent connections, including pending upgrades.
 The payload ceiling is 1,264 bytes. Each peer can send and receive up to
 240 datagrams per second, with a burst of 64 in each direction. An
-outbound queue holds 64 datagrams per peer. Rate limits and full queues
-drop datagrams. Bye or WebSocket close makes the address unreachable.
+outbound queue holds 64 frames per peer. Rate limits and full queues
+drop packets. Bye or WebSocket close makes the address unreachable.
 The next receive skips pending packets from that peer and the next XNet
 address operation drops any cached mapping.
 

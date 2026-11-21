@@ -214,3 +214,6 @@ pub mod xapi_glue;
 #[cfg(test)]
 pub mod string_ids;
 pub mod run_opts;
+
+#[path = "actor_net/link.rs"]
+pub mod actor_net_link;
