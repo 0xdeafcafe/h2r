@@ -587,15 +587,20 @@ for tuning these rules against a real map.
 
 ## The superbounce game type
 
-A built-in Slayer variant, Superbounce, for practising: Bounce Practice's
+A built-in variant, Superbounce, for practising: Bounce Practice's
 rules (no score or time limit, 3 s respawn, no suicide penalty,
 overshields, damage resistance, a magnum, nothing on the map) plus a HUD
-and lines over the map. The mode is on when the active variant is the
-built-in Superbounce (told by its name,
-`crates/extensions/game/src/community_variants.rs` has no field for the
-flag), when the variant's extension block has the superbounce flag (bit 2
-of `+0x10f`, [game-options.md](game-options.md)), or with
-`H2_SUPERBOUNCE=1` ([switches](../runtime/switches.md)). An agent can
+and lines over the map. It is listed under **Tweakers**, the last row of
+the game type list (after Territories), and not under Slayer; underneath
+it is a Slayer variant ([community-gametypes.md](community-gametypes.md#tweakers)).
+Its entry in `crates/extensions/game/src/community_variants.rs` is
+`Category::Tweakers(SUPERBOUNCE_EXT)`, and `crate::tweakers` writes that
+extension block into its built-in record, so a game on it and a saved
+copy of it carry the flag. The mode is on when the variant's extension
+block has the superbounce flag (bit 2 of `+0x10f`,
+[game-options.md](game-options.md)), when the active variant's name is
+the built-in Superbounce's (a fallback for a game whose block did not
+arrive), or with `H2_SUPERBOUNCE=1` ([switches](../runtime/switches.md)). An agent can
 force it on or off in any game with `superbounce.set`
 ([agent-api.md](../runtime/agent-api.md#superbounce-the-superbounce-game-type)). It is
 `crates/extensions/game/src/superbounce_mode.rs`.

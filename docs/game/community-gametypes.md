@@ -5,7 +5,9 @@ Switch: none.
 
 Halo 2 ships with 39 built-in game variants (Slayer, Rockets, Ninjanaut,
 Crazy King and so on). This adds thirteen classics the community set up by
-hand in custom games, and a practice mode (Superbounce), as extra built-ins. In the variant list they carry a
+hand in custom games, and a practice mode (Superbounce), as extra built-ins. The classics are listed under
+their game types; Superbounce is listed under [Tweakers](#tweakers), a row
+of ours at the bottom of the game type list. In the variant list they carry a
 "two players" icon where the retail ones carry a padlock. Like the retail
 built-ins they cannot be edited in place: choosing Edit asks for a name and
 makes a copy, which is an ordinary saved variant.
@@ -129,7 +131,7 @@ Settings not listed stay at the game type's default.
 | Bounce Practice | Slayer | no score or time limit; 3 s respawn; no suicide penalty; overshields; damage resistance; a magnum and no secondary weapon; nothing on the map; no grenades |
 | Glitch Hunt | Slayer | no score or time limit; 3 s respawn; no suicide penalty; overshields; damage resistance; energy sword and rocket launcher; no friendly fire |
 | Bumper Cars | Slayer | no starting weapon (one of our added choices) and no secondary; no grenades at start or on the map; nothing on the map; no pickups; Warthog and Ghost, no other vehicles or turrets; 25 points |
-| Superbounce | Slayer | Bounce Practice's rules, plus the superbounce HUD and spot lines ([superbounce.md](superbounce.md#the-superbounce-game-type)); the game's own list has no field for them, so the mode is keyed on the variant's name or the extension block's superbounce flag |
+| Superbounce | Slayer | Bounce Practice's rules, plus the superbounce HUD and spot lines ([superbounce.md](superbounce.md#the-superbounce-game-type)); listed under [Tweakers](#tweakers), not Slayer; its built-in record carries the extension block's superbounce flag, and the mode also matches the variant's name |
 
 Why these, and the sources:
 
@@ -240,6 +242,67 @@ padlock), the private id range, the UTF-16 buffer, the merged block (retail
 entries byte for byte, ours decode back to their symbolic settings, a
 second call is a no-op), a variant with a value the game does not offer
 being left out, and a failed read leaving the tag alone.
+
+## Tweakers
+
+Tweakers is a game type row of ours, last in the game type list (after
+Territories), for familiar game types with tweaked rules. Its label is
+"Tweakers", its pane title "TWEAKERS", and its description "Play familiar
+game types with tweaked rules, from bounce practice to new twists on the
+classics." Superbounce is the only tweaker. Choosing the row opens a
+variant list of the tweakers, built-in and saved; Slayer's list no longer
+shows them. The row is an ordinary list row, chosen with A like the game
+types above it.
+
+Code: `crates/extensions/game/src/tweakers.rs` (feature `tweakers`, on by
+default, [switches](../runtime/switches.md)). A variant is a tweaker when
+its extension block has a tweak flag (the superbounce flag) or its name is
+a Tweakers built-in's (`community_variants::is_tweaker`). Every tweaker is
+a Slayer variant underneath (`Category::Tweakers`, checked by a test), so
+the Tweakers list is Slayer's variant list filtered: its defaults, copies
+and saves are Slayer's. Saving or editing a tweaker keeps the flag, so the
+copy stays under Tweakers.
+
+Hooks, all on retail's own screens (static reading of the XBE, 2026-11-21):
+
+| Address | What it is | Ours |
+|---|---|---|
+| `0x2b1ab3` | the game type screen's constructor (screens 207, Change Rules, and 60, Settings, Game Variants); its list at `+0x614` holds one datum per row, the row's word at `+2` | `after`: add a datum with word 9 last, except in the create mode (`+0xb39`) |
+| `0x2c5823` | a row's text, by word | `before`: word 9 draws "Tweakers" |
+| `0x2c5897` | a row chosen | `before`: word 9 runs retail's press with Slayer's word, with a flag set that marks the variant list it opens |
+| `0x2c9ddb` | the variant list's constructor | `after`: write the mark at `+0x4fde` (a spare byte no code reads): 1 while the Tweakers press runs, else 0 |
+| `0x215900` | a content category's variants, called by the list's fill at `0x2ca113` | `before`, from that caller only, for Slayer's category: run the original, then keep the tweakers and drop Create New in a marked list, or drop the tweakers in an unmarked one. Each handle is read with `0x212bc0`, as the fill does. The first fill writes the ext block into the built-in Superbounce record (`[0x51ea14]`, records of `0x1e4`) |
+| `0x2cad45` | the variant list's per-frame update | `before` on a marked list: our title and description in the texts retail sets for Slayer's |
+| `0x2cac1a` | the loader a screen stack reopens the variant list with | `before` on a marked list: an entry of ours wrapping Slayer's loader for the same mode, which opens it marked |
+| pane set (`layout_glue`) | the row's pane | the Tweakers row shows Slayer's pane with our title and description over its texts |
+
+Live browser filters have no Tweakers choice: a session advertises its
+base game type, so a Superbounce game is a Slayer game there, and the
+Variant filter finds it by name ([live-custom-games.md](../live/live-custom-games.md#filter-games)).
+
+Tests (`cargo test -p game --lib tweakers`) run on synthetic memory: the
+row is last, after Territories, added once, on both screens and not in the
+create mode; Superbounce is under Tweakers and no longer under Slayer;
+every tweaker is a Slayer variant; a renamed copy with the flag stays
+under Tweakers, a block with only other changes or a bad check does not;
+the built-in records are patched once; a whole fill through the hook for
+Slayer's list and the Tweakers list, and another category's left alone;
+the pane and its texts; the reopen loader per mode; the hooks on the plan.
+
+Not verified in a game run:
+
+- the row and its label on both screens, and its pane with our texts;
+- the variant lists: Slayer's without Superbounce, Tweakers' with it and no
+  Create New, and our title and description;
+- a game started from Tweakers having the mode on through the flag (the
+  ext block surviving from the built-in record into the active variant);
+- Edit on Superbounce saving a copy that lists under Tweakers;
+- Back from a game or a nested screen reopening the Tweakers list;
+- that the lifter exposes the seven new points as hookable entries.
+
+Change Rules opens with Slayer focused when the lobby's variant is a
+tweaker: retail's `0x2c5782` focuses the row by game type, and ours is not
+mapped.
 
 ## Not done and risks
 
