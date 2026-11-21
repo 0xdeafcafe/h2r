@@ -225,3 +225,17 @@ fn retail_welded_tree_uses_its_wrapped_structure_in_both_orders() {
         assert_eq!(t.children[0].cache.kind, "swept_convex");
     }
 }
+
+#[test]
+fn pair_word_writes_only_the_objects_own_pairs() {
+    let (mut m, datum) = scene();
+    let entry = PAIRS + 0x20;
+    assert_eq!(set_pair_word(&mut m, datum, entry, 0xffff_fffd).unwrap(), Some(u32::MAX));
+    assert_eq!(agents(&m, datum).unwrap()[0].pair_word, 0xffff_fffd);
+    // The unrelated pair and the one without an agent are refused, untouched.
+    for other in [PAIRS, PAIRS + 0x10] {
+        let before = m.u32(other + PAIR_WORD).unwrap();
+        assert_eq!(set_pair_word(&mut m, datum, other, 7).unwrap(), None);
+        assert_eq!(m.u32(other + PAIR_WORD).unwrap(), before);
+    }
+}

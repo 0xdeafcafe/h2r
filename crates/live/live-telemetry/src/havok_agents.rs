@@ -17,6 +17,9 @@ const ISLAND_PAIRS: u32 = 0x68;
 const HANDLE_IN_ENTITY: u32 = 0x1c;
 const MAX_PAIRS: u32 = 32768;
 const MAX_CACHE_BYTES: u32 = 256 * 1024;
+/// The pair word's offset in a 16-byte pair record
+/// (docs/engine/havok-runtime.md, "Collision agents").
+pub const PAIR_WORD: u32 = 12;
 
 #[derive(Debug)]
 pub struct Pair {
@@ -136,7 +139,7 @@ fn pair(
         other_entity,
         other_datum,
         other_fixed: fixed != 0 && other_island == Some(fixed),
-        pair_word: m.u32(entry + 12)?,
+        pair_word: m.u32(entry + PAIR_WORD)?,
         cache,
         tree,
     }))
@@ -173,6 +176,23 @@ pub fn agents(m: &dyn GuestMemory, datum: u32) -> Result<Vec<Pair>, MemFault> {
         }
     }
     Ok(out)
+}
+
+/// Writes `word` over the pair word of `entry`, which must be one of the
+/// object's pairs as [`agents`] finds them. The word before, or `None` when
+/// `entry` isn't one of them.
+pub fn set_pair_word(
+    m: &mut dyn GuestMemory,
+    datum: u32,
+    entry: u32,
+    word: u32,
+) -> Result<Option<u32>, MemFault> {
+    if !agents(&*m, datum)?.iter().any(|p| p.entry == entry) {
+        return Ok(None);
+    }
+    let before = m.u32(entry + PAIR_WORD)?;
+    m.write(entry + PAIR_WORD, &word.to_le_bytes())?;
+    Ok(Some(before))
 }
 
 #[cfg(test)]
