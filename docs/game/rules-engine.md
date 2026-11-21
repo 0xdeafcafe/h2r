@@ -873,7 +873,9 @@ The phased mode is the check that the API is wide enough:
 ## Forge labels
 
 A prerequisite. `crates/formats/forge-doc` has teleporter and device
-links (`links.rs`) and no way to tell a script which placement is which.
+links (`links.rs`) and labels (`labels.rs`) to tell a script which
+placement is which. Status: the document side is built; the `RulesExt`
+table and `objects labelled` are not.
 
 **Design.** A label is a string of at most 32 bytes plus an optional
 number (`"checkpoint" 3`, `"hill" 0`). It is a field of a placement in
@@ -885,11 +887,36 @@ read it through `objects labelled`. Retail maps with no Forge document
 get labels from a built-in table per netgame flag type, so
 `objects labelled "ctf_flag_spawn"` works on every map.
 
-A label is a change of the document format: the format is one number
-(`forge_doc::FORMAT`, 1), the document's structs refuse unknown fields
-and `crates/formats/forge-doc/src/validate.rs` refuses any other number,
-so a labelled document takes the next number and an older build refuses
-it whole.
+**Built.** `Forge::Label { target, label }` sets or clears a label on
+a placement named as a link names one (`Endpoint`: a base entry by
+index, or the entry an add op made), so it follows the entry through
+appends and swap-removes. The text is 1 to 32 bytes of lowercase ASCII,
+digits, `_`, `-` and `.`; the number is an `i32`. A placement has one
+label and a later set replaces it. Labels are not unique: the number
+tells placements with one text apart, and a script asks for all of them.
+The validator refuses bad text, an entry that is missing or removed, a
+clear of an unlabelled entry and the removal of a labelled entry.
+`ForgeDoc::labels` resolves the active labels to final indices and
+`replay` hands them to `Apply::labels` after the links.
+
+`forge_doc::builtin_label(flag_type)` is the built-in table: 0
+`ctf_flag_spawn`, 1 `ctf_flag_return`, 2 `assault_bomb_spawn`, 3
+`assault_bomb_return`, 4 `oddball_spawn`, 7 `teleporter_sender`, 8
+`teleporter_receiver`, 10 `territory`, and 11 to 18 `hill_corner` with
+the hill number 0 to 7 as its number. Types 0, 1, 4, 7, 8, 10 and 11 to
+18 are traced (bots.md 3.7); the names for 2 and 3 are the less certain
+(bots.md calls them "bomb and plate"). Types 5, 6 and 9 have no label.
+The `RulesExt` table applies a placement's own label first and the
+built-in label of its flag type otherwise.
+
+A label is a change of the document format. The format is one number
+(`forge_doc::FORMAT`, 1; `FORMAT_LABELS`, 2). A document takes 2 when
+any op is a label op and 1 otherwise, and
+`crates/formats/forge-doc/src/validate.rs` refuses the other number, so
+a document has one spelling: every document without labels keeps its
+bytes and its identity, and a fold that retracts the last label
+returns to format 1. This build reads both; an older build refuses a
+labelled document whole.
 
 ## Roadmap
 
@@ -898,7 +925,7 @@ Each phase lands by itself and ends on its exit criteria.
 | # | Phase | Exit criteria |
 |---|---|---|
 | 1 | `SimExt` side arena (forge-design.md slice F7; sim-rewrite.md section 2) | a test record survives checkpoint, revert, snapshot and a film keyframe, and changes the sim hash |
-| 2 | Forge labels | labels round-trip through the document and the edit log; the built-in flag-type table resolves on a disc map (`#[ignore]` test) |
+| 2 | Forge labels | labels round-trip through the document and the edit log (built); the built-in flag-type table resolves on a disc map (`#[ignore]` test, not built) |
 | 3 | Language, verifier, IR, VM, host runtime, capabilities | the compiler and verifier pass their suites; a fuzzer finds no panic in the verifier or VM; a script scores a fake game through the `Game`-style trait; a call or grant outside `requires` is refused, and a blob naming an unknown capability is refused by that name |
 | 4 | Firefight port | every built-in definition, compiled to IR, gives the Rust director's `Command` log in the director's own tests; `firefight.state` reads the same from both |
 | 5 | Slayer port | parity on every retail Slayer built-in on three maps; a script Slayer game played on Live |

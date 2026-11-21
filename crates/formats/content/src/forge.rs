@@ -8,6 +8,9 @@ use crate::{MapId, Sha256, canonicalize};
 
 /// The version of the Forge document that format 2 packages carry.
 pub const DOCUMENT_FORMAT: u32 = 1;
+/// The document version a document with Forge labels takes. A package may
+/// carry either version.
+pub const DOCUMENT_FORMAT_LABELS: u32 = 2;
 /// Largest canonical document accepted inside a package.
 pub const MAX_DOCUMENT_BYTES: usize = 8 * 1024 * 1024;
 
@@ -65,7 +68,7 @@ pub(crate) fn read_header(bytes: &[u8]) -> Result<Header, String> {
         base,
         expect,
     } = Wire::deserialize(&document).map_err(|e| e.to_string())?;
-    if format != DOCUMENT_FORMAT {
+    if format != DOCUMENT_FORMAT && format != DOCUMENT_FORMAT_LABELS {
         return Err(format!("unsupported document format {format}"));
     }
     Ok(Header {

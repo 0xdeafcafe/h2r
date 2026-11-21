@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use map::scenario_layout::{self as layout, BlockDef, FieldType, Role};
 
 use crate::{
-    BlockKind, BuilderVersions, Edit, FORMAT, FieldWrite, ForgeDoc, ImportId, MAX_DOC_BYTES, Op,
+    BlockKind, BuilderVersions, Edit, FieldWrite, ForgeDoc, ImportId, MAX_DOC_BYTES, Op,
     OpId, Placement, Recipe, Refusal, Result, Sha256, TagKey, TagWrite, Value,
     document::{MAX_FIELDS, MAX_IMPORTS, MAX_OPS, MAX_RECIPES, MAX_SOURCES},
     wire,
@@ -95,7 +95,7 @@ pub fn validate(doc: &ForgeDoc, limits: &Limits) -> Result<()> {
 }
 
 pub(crate) fn document(doc: &ForgeDoc, limits: &Limits) -> Result<()> {
-    if doc.format != FORMAT {
+    if doc.format != doc.required_format() {
         return Err(Refusal::Format(doc.format));
     }
     if let Some(expected) = limits.builder
