@@ -46,6 +46,10 @@ Compiler flags: part of the dylib stamp, so set them for both build and run.
 
 ## Tools
 
+`H2_THEATER_EXPORT_JOB` passes a private job directory from the watching
+Theater process to its offline clip worker. The worker reports progress and
+the final result through that directory.
+
 | Switch | What |
 |---|---|
 | `h2 lighting split <map> [--bsp N] [--light ID] [--disc ISO] --out DIR` | Offline [lightmap comparison](../graphics/dynamic-lighting.md#the-split-offline). BSP and sky light default to 0. IDs are zero-based. A number selects a light in scenario sky order among skies used by the BSP; `placed:N` selects scenario lamp placement N. The disc follows the usual map lookup. Use a new or empty directory outside Git and open its `index.html`. |

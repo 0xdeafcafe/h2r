@@ -351,6 +351,8 @@ fn hosted(
     boot::Host {
         film_out: None,
         film_view: None,
+        film_media: None,
+        film_capture: None,
         host_light: false,
         host_bots: false,
         gfx: Some(gfx),

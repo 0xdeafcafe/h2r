@@ -1,3 +1,4 @@
+mod media;
 mod pad_inputs;
 
 use super::*;

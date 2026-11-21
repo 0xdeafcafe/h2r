@@ -3,7 +3,7 @@ use agent::Access;
 use agent_proto::{RpcError, code, theater as api};
 use serde::de::DeserializeOwned;
 
-fn params<T: DeserializeOwned>(v: Value) -> Result<T, RpcError> {
+pub(super) fn params<T: DeserializeOwned>(v: Value) -> Result<T, RpcError> {
     serde_json::from_value(if v.is_null() {
         serde_json::json!({})
     } else {
@@ -92,7 +92,8 @@ impl Session {
         if !self.replaying() {
             return;
         }
-        for name in api::METHODS {
+        self.add_media_methods(a);
+        for name in api::TRANSPORT_METHODS {
             let session = self.clone();
             a.add_method(
                 name,
@@ -246,7 +247,7 @@ pub fn library_methods(
         let (dir, disc, out, data) = (dir.clone(), disc.clone(), out.clone(), data.clone());
         a.add_method(
             name,
-            if name == api::STATE {
+            if matches!(name, api::STATE | api::CLIP_STATUS) {
                 Access::Read
             } else {
                 Access::Act
@@ -340,8 +341,9 @@ pub fn library_methods(
                 };
                 let mut client = agent_proto::Client::connect(&active.socket)
                     .map_err(|_| unavailable(format!("film {} is starting", active.id)))?;
+                let timeout = if name == api::SCREENSHOT { 61 } else { 2 };
                 client
-                    .set_timeout(Some(std::time::Duration::from_secs(2)))
+                    .set_timeout(Some(std::time::Duration::from_secs(timeout)))
                     .map_err(|e| unavailable(e.to_string()))?;
                 client.call(name, p).map_err(|e| match e {
                     agent_proto::CallError::Rpc(e) => e,

@@ -84,7 +84,7 @@ pub struct GameCtx<'a> {
     pub at: At,
     host: &'a mut BTreeMap<String, (Access, HostMethod)>,
     /// Set by [`GameCtx::defer`]: the answer comes at a later boundary.
-    later: Option<(Later, u64, Duration)>,
+    later: Option<(Later, u64, Duration, bool)>,
 }
 
 /// A deferred answer ([`GameCtx::defer`]): polled at each boundary after
@@ -140,7 +140,13 @@ impl GameCtx<'_> {
 
     /// A deferred operation with its own, shorter wall-clock deadline.
     pub fn defer_for(&mut self, ticks: u64, wall: Duration, poll: Later) {
-        self.later = Some((poll, ticks.clamp(1, DEFER_TICKS_MAX), wall.min(DEFER_WALL)));
+        self.later = Some((poll, ticks.clamp(1, DEFER_TICKS_MAX), wall.min(DEFER_WALL), false));
+    }
+
+    /// A host-side action can complete on a Theater transport poll while the
+    /// guest tick is still held. Its poll must not depend on guest execution.
+    pub fn defer_at_boundary(&mut self, poll: Later) {
+        self.later = Some((poll, DEFER_TICKS_MAX, DEFER_WALL, true));
     }
 }
 
@@ -151,6 +157,7 @@ struct Deferred {
     poll: Later,
     from_ticks: u64,
     tick_limit: u64,
+    paused_safe: bool,
     deadline: Instant,
 }
 
@@ -955,13 +962,21 @@ impl State {
     /// Polls the deferred answers: answers what is ready, times out what
     /// waited too long.
     fn settle_deferred(&mut self, reader: &mut dyn Reader) {
+        self.settle_deferred_at(reader, false);
+    }
+
+    fn settle_deferred_at(&mut self, reader: &mut dyn Reader, theater_paused: bool) {
         if self.deferred.is_empty() {
             return;
         }
         let now = Instant::now();
         let at = self.at();
         for mut d in std::mem::take(&mut self.deferred) {
-            let fresh = self.ticks == d.from_ticks;
+            if theater_paused && !d.paused_safe {
+                self.deferred.push(d);
+                continue;
+            }
+            let fresh = self.ticks == d.from_ticks && !d.paused_safe;
             let out = if fresh {
                 None
             } else {
@@ -1126,13 +1141,14 @@ impl State {
             {
                 t.record_lobby(b, m, &p)
             }
-            if let (Ok(_), Some((poll, ticks, wall))) = (&out, ctx.later.take()) {
+            if let (Ok(_), Some((poll, ticks, wall, paused_safe))) = (&out, ctx.later.take()) {
                 self.deferred.push(Deferred {
                     conn,
                     id: req.id,
                     poll,
                     from_ticks: self.ticks,
                     tick_limit: ticks,
+                    paused_safe,
                     deadline: Instant::now() + wall,
                 });
                 return None;

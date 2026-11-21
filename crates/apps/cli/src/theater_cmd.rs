@@ -7,7 +7,11 @@ use std::{
     process::Command,
 };
 
+#[cfg(feature = "desktop")]
+mod export;
+
 const USAGE: &str = "h2 theater play FILM [--seek TICK] [--render-every N] [--speed 0.25..4] [--disc ISO] [--out IMAGE_DIR] [--data INITIAL_DATA] [--movies DIR] [--socket PATH]";
+#[derive(Clone)]
 struct Options {
     film: PathBuf,
     every: u32,
@@ -102,6 +106,10 @@ impl Drop for Temp {
 
 pub fn run(args: Vec<String>) -> Result<()> {
     let opts = Options::parse(args.clone().into_iter())?;
+    #[cfg(feature = "desktop")]
+    if let Some(job) = std::env::var_os("H2_THEATER_EXPORT_JOB") {
+        return export::run(opts, Path::new(&job));
+    }
     if let Some(work) = std::env::var_os("H2_THEATER_WORK") {
         return child(opts, Path::new(&work));
     }
@@ -161,7 +169,36 @@ pub fn run(args: Vec<String>) -> Result<()> {
     }
 }
 
+struct Start {
+    tick: u64,
+    speed: f64,
+    paused: bool,
+    presentation: boot::theater::Presentation,
+}
+
 fn child(opts: Options, work: &Path) -> Result<()> {
+    child_with_start(
+        opts,
+        work,
+        Start {
+            tick: std::env::var("H2_THEATER_TARGET")?.parse()?,
+            speed: std::env::var("H2_THEATER_SPEED")?.parse()?,
+            paused: std::env::var("H2_THEATER_PAUSED")? == "1",
+            presentation: serde_json::from_reader(fs::File::open(work.join("view.json"))?)?,
+        },
+        #[cfg(feature = "desktop")]
+        None,
+    )
+}
+
+fn child_with_start(
+    opts: Options,
+    work: &Path,
+    start: Start,
+    #[cfg(feature = "desktop")] capture: Option<std::sync::Arc<boot::theater::ClipCapture>>,
+) -> Result<()> {
+    #[cfg(feature = "desktop")]
+    let media_options = opts.clone();
     let mut film = film::Reader::open(&opts.film)?;
     let xbe = boot::read_xbe(&opts.disc)?;
     let xbe_sha256 = film::xbe_digest(&xbe);
@@ -205,7 +242,7 @@ fn child(opts: Options, work: &Path) -> Result<()> {
     );
     let entry = film.machine_section().unique(film::DATA)?.clone();
     let data = work.join("data");
-    let target: u64 = std::env::var("H2_THEATER_TARGET")?.parse()?;
+    let target = start.tick;
     let delta = if target > 0
         && film.header.version >= 2
         && compatibility == film::image::ImageMatch::Native
@@ -235,16 +272,15 @@ fn child(opts: Options, work: &Path) -> Result<()> {
     #[cfg(feature = "desktop")]
     let film_parent = opts.film.parent().unwrap_or(Path::new(".")).to_owned();
     let camera = boot::theater::FilmCamera::default();
-    let presentation: boot::theater::Presentation =
-        serde_json::from_reader(fs::File::open(work.join("view.json"))?)?;
+    let presentation = start.presentation;
     #[cfg(feature = "desktop")]
     let clip_marks = presentation.clip_marks;
     let replay = boot::theater::Replay {
         path: opts.film.clone(),
         render_every: opts.every,
-        speed: std::env::var("H2_THEATER_SPEED")?.parse()?,
+        speed: start.speed,
         seek_tick: target,
-        paused_at_target: std::env::var("H2_THEATER_PAUSED")? == "1",
+        paused_at_target: start.paused,
         presentation,
         restart: work.join("restart.json"),
         camera: camera.clone(),
@@ -265,6 +301,11 @@ fn child(opts: Options, work: &Path) -> Result<()> {
     } else {
         None
     };
+    #[cfg(feature = "desktop")]
+    if let Some(capture) = capture {
+        let observer = film.header.version >= 2 && local_gpu != Some(true);
+        return run(export::host(capture, camera, observer, host_bots)?, None);
+    }
     if opts.every == 0 {
         let host = boot::Host { host_light: true, host_bots, ..Default::default() };
         if local_gpu == Some(true) {
@@ -342,6 +383,12 @@ fn child(opts: Options, work: &Path) -> Result<()> {
             }
             let native: boot::run_opts::NativeSize = std::sync::Arc::new(window.native_size());
             let raster = boot::d3d_glue::output_size(Some(&store), native.clone())?;
+            let film_media = export::media(
+                media_options,
+                dir,
+                window.frame_sink(),
+                raster.clone(),
+            );
             let (gfx, gfx_view, film_view) = if observer {
                 let mut sink = window.frame_sink();
                 (
@@ -379,6 +426,7 @@ fn child(opts: Options, work: &Path) -> Result<()> {
                     gfx,
                     gfx_view,
                     film_view,
+                    film_media: Some(film_media),
                     between_slices: Some(Box::new(move |_| !window.should_stop())),
                     host_light: true,
                     host_bots,

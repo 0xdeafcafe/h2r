@@ -672,6 +672,12 @@ fn run_configured(
     }
     let _telemetry = core.telemetry;
     if let Some(f) = &film {
+        if let Some(capture) = &host.film_capture {
+            f.attach_capture(capture.clone())?;
+        }
+        if let Some(media) = host.film_media.take() {
+            f.attach_media(media, &loaded.runtime)?;
+        }
         #[cfg(feature = "gpu")]
         if let Some(view) = host.film_view.take() {
             f.attach_host_view(view, k.vfs().context("Theater observer requires a mounted map")?)?;
@@ -810,7 +816,9 @@ fn run_configured(
                     stats.lock().unwrap_or_else(|e| e.into_inner()).presentation
                 }));
                 let report = Some(d3d_glue::scale_report(&mut b));
-                let installed = if host.render_thread {
+                let installed = if host.render_thread && host.film_capture.is_some() {
+                    d3d_glue::install_export_threaded(&loaded.runtime, b, report, interp, render_hooks)
+                } else if host.render_thread {
                     d3d_glue::install_threaded_for_profile(&loaded.runtime, b, report, interp, render_hooks)
                 } else {
                     d3d_glue::install_for_profile(&loaded.runtime, b, report, render_hooks)
@@ -818,7 +826,9 @@ fn run_configured(
                 installed.with_gpu_view(Some(scale_stats))
             }
             None => {
-                let installed = if host.render_thread {
+                let installed = if host.render_thread && host.film_capture.is_some() {
+                    d3d_glue::install_export_threaded(&loaded.runtime, b, None, interp, render_hooks)
+                } else if host.render_thread {
                     d3d_glue::install_threaded_for_profile(&loaded.runtime, b, None, interp, render_hooks)
                 } else {
                     d3d_glue::install_for_profile(&loaded.runtime, b, None, render_hooks)
@@ -893,7 +903,7 @@ fn run_configured(
         .then(|| dsound_glue::install_clock_only(&loaded.runtime, &k, xbe_bytes))
         .transpose()?;
     #[cfg(feature = "local-io")]
-    let ds = if opts.dsound && clock_only_audio {
+    let mut ds = if opts.dsound && clock_only_audio {
         Some(dsound_glue::install_clock_only(&loaded.runtime, &k, xbe_bytes)?)
     } else {
         match (opts.dsound, host.audio_sink.take()) {
@@ -908,6 +918,11 @@ fn run_configured(
             (true, None) => Some(dsound_glue::install(&loaded.runtime, &k, xbe_bytes)?),
         }
     };
+    #[cfg(feature = "local-io")]
+    if let (Some(audio), Some(capture)) = (&mut ds, &host.film_capture) {
+        let capture = capture.clone();
+        audio.output.tap_samples(move |pcm| capture.audio(pcm));
+    }
     if let Some(audio) = &ds {
         let mixer = audio.mixer();
         let mut mixer = mixer.lock().unwrap_or_else(|e| e.into_inner());

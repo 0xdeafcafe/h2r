@@ -2,6 +2,10 @@
 //! then seal and optionally upload at the first slice after game over.
 mod actions;
 mod camera;
+mod capture;
+mod media;
+pub use capture::{ClipCapture, ClipSink, ClipSpan, Picture};
+pub use media::Media;
 mod compatibility;
 #[cfg(feature = "gpu")]
 mod host_view;
@@ -146,6 +150,9 @@ pub struct Session {
     replaying: bool,
     state: Mutex<State>,
     video_menu: std::sync::OnceLock<Arc<settings::Store>>,
+    capture: std::sync::OnceLock<Arc<ClipCapture>>,
+    media: std::sync::OnceLock<(Media, std::sync::Weak<runtime::Runtime>)>,
+    scaled_screenshot: std::sync::OnceLock<media::ScaledScreenshot>,
     #[cfg(feature = "gpu")]
     view: std::sync::OnceLock<Mutex<host_view::MountedView>>,
     bots: Mutex<bot_tape::BotTape>,
@@ -322,6 +329,9 @@ impl Session {
         Ok(Some(Arc::new(Self {
             version: header.version,
             video_menu: Default::default(),
+            capture: Default::default(),
+            media: Default::default(),
+            scaled_screenshot: Default::default(),
             replaying: matches!(&mode, Mode::Replay(_, _)),
             require_upload: matches!(&mode, Mode::Record(rec) if rec.upload.is_some())
                 && std::env::var("H2_HOST_ARCHIVE").as_deref() == Ok("film"),
@@ -344,6 +354,23 @@ impl Session {
             }),
             upload: Mutex::default(),
         })))
+    }
+
+    pub fn attach_capture(&self, capture: Arc<ClipCapture>) -> Result<()> {
+        self.capture.set(capture).map_err(|_| anyhow::anyhow!("clip sink already attached"))
+    }
+
+    /// Begin sampling the new tick before its first present.
+    fn advance_capture(&self) -> Result<bool> {
+        let Some(capture) = self.capture.get() else { return Ok(false) };
+        let tick = {
+            let state = self.lock();
+            if let Some(error) = &state.failure {
+                bail!("{error}");
+            }
+            state.tick
+        };
+        capture.advance(tick)
     }
 
     pub fn has_engine_track(&self) -> bool {
@@ -426,8 +453,11 @@ impl Session {
     ) -> Result<bool> {
         self.bot_boundary()?;
         loop {
+            let clip_done = self.advance_capture()?;
             #[cfg(feature = "gpu")]
-            self.draw_host_view(rt);
+            if !clip_done {
+                self.draw_host_view(rt);
+            }
             {
                 let mut s = self.lock();
                 s.check_end(slices)?;
@@ -449,13 +479,11 @@ impl Session {
                     )?;
                     return Ok(false);
                 }
-                if s.complete {
+                if s.complete || clip_done {
                     return Ok(false);
                 }
                 if !s.paused {
-                    let pace = s
-                        .seeking
-                        .is_none()
+                    let pace = (s.seeking.is_none() && self.capture.get().is_none())
                         .then(|| (kernel::clock::Clock::FREQUENCY as f64 * s.speed) as u64);
                     if m.pacer.as_ref().map(|p| p.ticks_per_second) != pace {
                         m.pacer = pace.map(|rate| {
@@ -509,7 +537,14 @@ impl Session {
             if let Some(e) = &s.failure {
                 bail!("{e}")
             }
-            if teardown && !s.complete && s.restart.is_none() && !window_closed {
+            if teardown && s.complete
+                && let Some(capture) = self.capture.get()
+            {
+                capture.advance(s.tick.saturating_add(1))?;
+            }
+            if teardown && !s.complete && s.restart.is_none() && !window_closed
+                && !self.capture.get().is_some_and(|capture| capture.done())
+            {
                 bail!(
                     "playback stopped before the end of the film at tick {}",
                     s.tick
@@ -774,6 +809,13 @@ impl hooks::Feature for Observer {
         let agent = self.1.clone();
         b.frame().on_tick("film checkpoint", move |o| {
             session.checkpoint(&o.guest());
+            match session.advance_capture() {
+                Ok(false) => {}
+                Ok(true) | Err(_) => {
+                    o.runtime.request_preempt(runtime::preempt::REQUEST);
+                    return;
+                }
+            }
             loop {
                 #[cfg(feature = "gpu")]
                 session.draw_host_view(o.runtime);

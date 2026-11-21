@@ -1,7 +1,7 @@
 //! A playerless host has no retail director or D3D views. Draw an independent
 //! desktop view from its re-simulated player datums, posed objects and mounted
 //! map. No observer texture, camera or device is visible to the guest.
-use super::{FilmCamera, Mode, Session};
+use super::{FilmCamera, Mode, Picture, Session};
 use crate::native_map::{self, NativeMap};
 use crate::native_world_glue::{self as world_glue, Raw, ReadMemory};
 use crate::telemetry::layout;
@@ -145,12 +145,40 @@ impl Session {
             }
             view.unavailable = unavailable;
         }
-        if let Err(e) = view.draw(frame, &camera, dimensions) {
+        if let Err(e) = view.draw(frame, &camera, dimensions, None) {
             if view.error.as_deref() != Some(&e) {
                 eprintln!("theater: playerless observer: {e}");
                 view.error = Some(e);
             }
         }
+    }
+
+    pub(super) fn capture_scaled_host_view(
+        &self,
+        rt: &runtime::Runtime,
+        raster: (u32, u32),
+    ) -> anyhow::Result<Picture> {
+        let camera = {
+            let state = self.lock();
+            let Mode::Replay(_, replay) = &state.mode else {
+                anyhow::bail!("screenshot needs replay");
+            };
+            replay.camera.clone()
+        };
+        let mut view = self.view.get().ok_or_else(|| anyhow::anyhow!("no replay observer"))?
+            .lock().unwrap_or_else(|e| e.into_inner());
+        let limit = view.output.gfx.device.limits().max_texture_dimension_2d;
+        anyhow::ensure!(raster.0 <= limit && raster.1 <= limit,
+            "scaled screenshot exceeds the GPU render size limit ({limit})");
+        let dimensions = Dimensions { raster, display: view.output.dimensions().display };
+        let frame = Frame::read(
+            &rt.memory(),
+            view.map.as_ref().map(|(bsp, _)| bsp),
+            &mut Vec::new(),
+        );
+        let mut picture = None;
+        view.draw(frame, &camera, dimensions, Some(&mut picture)).map_err(anyhow::Error::msg)?;
+        picture.ok_or_else(|| anyhow::anyhow!("no scaled screenshot was rendered"))
     }
 }
 
@@ -444,6 +472,7 @@ impl MountedView {
         frame: Option<Frame>,
         camera: &FilmCamera,
         dimensions: Dimensions,
+        capture: Option<&mut Option<Picture>>,
     ) -> Result<(), String> {
         let gfx = &self.output.gfx;
         if self.target.target().size != dimensions.raster {
@@ -510,7 +539,7 @@ impl MountedView {
         }
         // A map transition or lost first-person subject clears the last POV.
         let blank = visible.is_none();
-        if blank && self.blank {
+        if blank && self.blank && capture.is_none() {
             return Ok(());
         }
         let mut encoder = gfx.device.create_command_encoder(&Default::default());
@@ -596,8 +625,16 @@ impl MountedView {
         gfx.queue
             .submit(patches.into_iter().chain([encoder.finish()]));
         gfx.queue.on_submitted_work_done(move || drop(arena));
-        (self.output.present)(target.color, dimensions.raster)?;
-        self.blank = blank;
+        if let Some(capture) = capture {
+            let mut rgba = self.target.read_pixels(gfx);
+            for pixel in rgba.chunks_exact_mut(4) {
+                pixel[3] = 255;
+            }
+            *capture = Some(Picture { size: dimensions.raster, rgba });
+        } else {
+            (self.output.present)(target.color, dimensions.raster)?;
+            self.blank = blank;
+        }
         Ok(())
     }
 }

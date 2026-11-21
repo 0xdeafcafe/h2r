@@ -216,6 +216,36 @@ pub struct FrameSink {
 }
 
 impl FrameSink {
+    /// A private frame channel with no swapchain, input or audio device.
+    pub fn headless() -> Result<Self, gfx::GfxError> {
+        let ctx = GfxContext::headless()?;
+        Ok(channel(&ctx).0)
+    }
+
+    /// Read the latest game picture without taking or advancing the window's
+    /// front slot. Keep the slot locked until the GPU copy is submitted and read.
+    pub fn read_published_rgba(&self) -> Option<((u32, u32), Vec<u8>)> {
+        let state = self.shared.lock();
+        let slot = state.slots.iter().flatten()
+            .find(|slot| slot.seq != 0 && slot.seq == state.next_seq - 1)?;
+        let pixels = gfx::readback::read_texture(
+            &self.ctx, &slot.texture, wgpu::TextureAspect::All, 4, slot.size,
+        );
+        Some((slot.size, pixels))
+    }
+
+    /// Publish a guest viewport with the same gamma and crop as the window.
+    pub fn submit_guest_surface(
+        &mut self,
+        store: &SurfaceStore,
+        id: SurfaceId,
+        gamma: Option<&[u8; 768]>,
+        crop: Option<[u32; 4]>,
+        guest_size: (u32, u32),
+    ) -> Result<u64, FrameError> {
+        self.submit_surface_region(store, id, gamma, crop, Some(guest_size))
+    }
+
     fn new(shared: Arc<Shared>, ctx: GfxContext) -> Self {
         Self {
             shared,

@@ -337,15 +337,20 @@ second renderer for it.
 - **Screenshot.** The shell saves the published game frame before
   Theater's plates are drawn (`crates/apps/app/src/theater_overlay.rs`,
   `screenshot`). A scale above 1 renders one frame at a higher internal
-  resolution through the paused-camera path.
+  resolution. The independent observer redraws from its current scene.
+  Guest-drawn views use the paused-camera redraw and return to the held
+  tick before saving the picture.
 - **Clip export.** `theater.clip.export` starts a second, windowless
   player on the same film, seeks to the in mark, and plays to the out
   mark unpaced with a frame sink that receives every presented frame and
   the mixer's tapped audio. Frames go to a PNG sequence, or to the user's
   own ffmpeg as raw video for an MP4, the way `h2 movies` finds and runs
   it (`crates/apps/cli/src/movies_cmd.rs`). The export carries the rig, so
-  the clip shows the camera the player chose. The watching session keeps
-  running.
+  the clip shows the camera the player chose. The 30 Hz film clock sets
+  the frame count at either export rate. Missing presents hold the last
+  picture, and a 60 fps export uses two distinct pictures on ticks that
+  presented twice. The watching session keeps running, including across
+  seeks.
 - A clip on Live stays a tick range ([film-format.md](film-format.md)); a
   video file is a local export.
 
@@ -546,7 +551,7 @@ Existing methods keep their parameters.
 | `theater.hud` | `{game?: bool, bar?: bool}` | transport state |
 | `theater.screenshot` | `{scale?: 1..4, path?}` | `{path, width, height, tick}` |
 | `theater.clip.mark` | `{in?: tick, out?: tick, clear?: true}` | the marks |
-| `theater.clip.export` | `{from, to, fps: 30 \| 60, format: "png" \| "mp4", path?}` | `{job}`; `theater.clip.status {job}` gives `{frames_done, frames_total, path, error}` |
+| `theater.clip.export` | `{from, to, fps: 30 \| 60, format: "png" \| "mp4", path?}` | `{job}`; `theater.clip.status {job}` gives `{frames_done, frames_total, path, error, finished}` |
 | `theater.compat` | `{id}` | `{state, reasons: [text], film: {xbe, contract, hooks, abi}, installed: [{stamp, state}]}` |
 | `theater.share` | `{id, visibility, clip?}` | `{film, url}` after the upload |
 | `theater.open` | `{url}` | the film page's `ui.screen`, or a refusal naming the field |

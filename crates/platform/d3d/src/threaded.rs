@@ -467,6 +467,7 @@ pub struct ThreadedBackend<B: Backend + 'static> {
     next_texture: u64,
     next_ticket: u64,
     presents: u64,
+    synchronous_presents: bool,
     waits: Waits,
     /// The inner backend's draw outcomes, answered here (`None`: they are
     /// speculated as drawn).
@@ -478,6 +479,12 @@ pub struct ThreadedBackend<B: Backend + 'static> {
 }
 
 impl<B: Backend + 'static> ThreadedBackend<B> {
+    /// Offline capture must finish every swap before the replay clock advances.
+    pub fn with_synchronous_presents(mut self, enabled: bool) -> Self {
+        self.synchronous_presents = enabled;
+        self
+    }
+
     /// Moves `inner` to a new thread named `d3d-render`.
     pub fn new(inner: B) -> std::io::Result<Self> {
         let (tx, rx) = mpsc::channel::<Vec<Cmd<B>>>();
@@ -599,6 +606,7 @@ impl<B: Backend + 'static> ThreadedBackend<B> {
             next_texture: 1,
             next_ticket: 1,
             presents: 0,
+            synchronous_presents: false,
             waits: Waits::default(),
             judge,
             surface_formats: HashMap::new(),
@@ -990,6 +998,9 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
             w.land_pixel_counts()
         });
         self.flush();
+        if self.synchronous_presents {
+            return self.call(|_| Ok(()));
+        }
         // Frame-in-flight limit: wall time only, never logical time.
         let t = std::time::Instant::now();
         let mut done = self.shared.presented.lock().unwrap();
