@@ -194,9 +194,9 @@ fn the_options_page_steps_and_opens_pickers() {
             vec![],
         ),
         case(
-            "focus-3",
-            &[Back],
-            vec![ListEffect::Close],
+            "focus-2",
+            &[Down, Back],
+            vec![ListEffect::Focus(3), ListEffect::Close],
             "focus 3 Starting lives = Default",
             vec![],
         ),
