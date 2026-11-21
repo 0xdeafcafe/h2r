@@ -89,7 +89,17 @@ fn apply(app: &mut App, p: &P) -> Reply {
             }
             Apply::Send
         }
-        "confirm" => Apply::Confirm(number("peers")?),
+        "confirm" => {
+            let peers = number("peers")?;
+            let scope = app
+                .pairing
+                .peer_confirmation
+                .filter(|s| s.peers == peers)
+                .ok_or_else(|| {
+                    err(code::REFUSED, "the host has no matching peer count to confirm")
+                })?;
+            Apply::Confirm(scope)
+        }
         "respawn" => Apply::Respawn,
         "reload" => Apply::Reload,
         "adopt" => Apply::Adopt,

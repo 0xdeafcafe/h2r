@@ -60,6 +60,82 @@ pub fn find_h2_from(given: Option<&Path>, exe: Option<&Path>) -> Option<PathBuf>
         })
 }
 
+/// The open disc image, or the extracted disc containing the open maps.
+pub(super) fn source_disc(source: &editor_core::MapSource) -> Option<PathBuf> {
+    use editor_core::MapSource;
+    let maps = match source {
+        MapSource::Disc(disc) => return Some(disc.path().to_owned()),
+        MapSource::Folder(dir) => dir.as_path(),
+        MapSource::Loose(file) => file.parent()?,
+    };
+    if !maps.file_name()?.eq_ignore_ascii_case("maps") {
+        return None;
+    }
+    let root = maps.parent()?;
+    let root = if root.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        root
+    };
+    std::fs::read_dir(root)
+        .ok()?
+        .flatten()
+        .any(|entry| {
+            entry.file_name().eq_ignore_ascii_case("default.xbe") && entry.path().is_file()
+        })
+        .then(|| root.to_owned())
+}
+
+/// Write the override under the file name `h2 play --level` will request.
+/// A package's served name is the document name. Its cache may still
+/// identify a launchable level after a rename.
+pub(super) fn write_launch_copy(
+    session: &scenario_edit::Session,
+    disc: &Path,
+    data: &Path,
+    dir: &Path,
+) -> Result<String, String> {
+    let document = session.map_name().ok_or("open a map first")?;
+    let (cache, scenario) = session.source_identity().ok_or("no map source")?;
+    let names = [document, cache, scenario];
+    let mut reason = String::new();
+    let mut level: Option<String> = None;
+    for (i, name) in names.iter().copied().enumerate() {
+        if name.is_empty() || names[..i].iter().any(|seen| seen.eq_ignore_ascii_case(name)) {
+            continue;
+        }
+        match boot::level_boot::resolve_in(disc, Some(data), name, Default::default()) {
+            Ok(request) => {
+                if let Some(other) = &level
+                    && !request.name.eq_ignore_ascii_case(other)
+                {
+                    return Err(format!(
+                        "{document} identifies two launch levels ({other} and {}). \
+                         Save it as a package and load it from the game's map list.",
+                        request.name
+                    ));
+                }
+                level = Some(request.name);
+                if i == 0 {
+                    break;
+                }
+            }
+            Err(e) if reason.is_empty() => {
+                reason = e.to_string().lines().next().unwrap_or_default().to_owned();
+            }
+            Err(_) => {}
+        }
+    }
+    let level = level.ok_or_else(|| {
+        format!(
+            "cannot launch {document} from the disc or an installed campaign ({reason}). \
+             Save the map as a package and load it from the game's map list, or open a map from the disc."
+        )
+    })?;
+    write_copy(session, &level, dir)?;
+    Ok(level)
+}
+
 /// Write a play copy from the document, including its unsaved edits. Both
 /// a launch override and a map.reload request use the same map writer.
 pub(super) fn write_copy(
@@ -227,6 +303,95 @@ mod tests {
     }
 
     use super::*;
+    use crate::play::testing::Temp;
+
+    #[test]
+    fn the_open_maps_can_supply_the_extracted_disc_root() {
+        let t = Temp::new("extracted-root");
+        let maps = t.0.join("Maps");
+        std::fs::create_dir(&maps).unwrap();
+        let folder = editor_core::MapSource::Folder(maps.clone());
+        let loose = editor_core::MapSource::Loose(maps.join("invented.map"));
+        assert_eq!(source_disc(&folder), None);
+        std::fs::write(t.0.join("DEFAULT.XBE"), b"invented").unwrap();
+        assert_eq!(source_disc(&folder), Some(t.0.clone()));
+        assert_eq!(source_disc(&loose), Some(t.0.clone()));
+    }
+
+    #[test]
+    fn a_derived_launch_uses_the_resolved_level_for_the_override() {
+        let t = Temp::new("derived-launch");
+        let maps = t.0.join("disc/maps");
+        std::fs::create_dir_all(&maps).unwrap();
+        let source = t.map("anchor");
+        let mut cache = scenario_edit::MapSource::file(&source);
+        cache.bytes = Some(std::fs::read(&source).unwrap().into());
+        let mut session = scenario_edit::Session::new();
+        session
+            .open_derived(cache, "renamed", Some("my-package".into()), "")
+            .unwrap();
+        let dir = t.0.join("override");
+        let prepare = || write_launch_copy(&session, &t.0.join("disc"), &t.0, &dir);
+
+        std::fs::copy(&source, maps.join("Fixture.map")).unwrap();
+        assert_eq!(prepare().unwrap(), "Fixture");
+        assert!(dir.join("Fixture.map").is_file());
+        assert!(!dir.join("renamed.map").exists());
+
+        // A launchable package identity wins over the name in its cache.
+        std::fs::copy(&source, maps.join("renamed.map")).unwrap();
+        assert_eq!(prepare().unwrap(), "renamed");
+        assert!(dir.join("renamed.map").is_file());
+    }
+
+    #[test]
+    fn a_renamed_map_can_resolve_by_its_cache_scenario() {
+        let t = Temp::new("scenario-launch");
+        let maps = t.0.join("disc/maps");
+        std::fs::create_dir_all(&maps).unwrap();
+        let mut bytes = scenario_edit::fixture::fixture();
+        let scenario = br"levels\invented\district";
+        bytes[0x1bc..0x1bc + scenario.len()].copy_from_slice(scenario);
+        std::fs::write(maps.join("slot.map"), &bytes).unwrap();
+        let source = t.0.join("private-edit.map");
+        std::fs::write(&source, bytes).unwrap();
+        let mut session = scenario_edit::Session::new();
+        session.open(scenario_edit::MapSource::file(source)).unwrap();
+
+        let dir = t.0.join("override");
+        let name = write_launch_copy(&session, &t.0.join("disc"), &t.0, &dir).unwrap();
+        assert_eq!(name, "slot");
+        assert!(dir.join("slot.map").is_file());
+
+        // The header's short name also exists as a different boot level.
+        // Neither cache alias is strong enough to choose between them.
+        std::fs::write(maps.join("fixture.map"), scenario_edit::fixture::fixture()).unwrap();
+        let why = write_launch_copy(&session, &t.0.join("disc"), &t.0, &dir).unwrap_err();
+        assert!(why.contains("two launch levels") && why.contains("slot") && why.contains("fixture"));
+        assert!(!dir.join("fixture.map").exists());
+    }
+
+    #[test]
+    fn an_unlaunchable_map_leaves_the_play_copy_alone() {
+        let t = Temp::new("unlaunchable");
+        let disc = t.0.join("disc");
+        std::fs::create_dir_all(disc.join("maps")).unwrap();
+        let mut session = scenario_edit::Session::new();
+        session
+            .open(scenario_edit::MapSource::file(t.map("invented")))
+            .unwrap();
+        let dir = t.0.join("override");
+        std::fs::create_dir(&dir).unwrap();
+        let path = dir.join("invented.map");
+        std::fs::write(&path, b"running copy").unwrap();
+
+        let why = write_launch_copy(&session, &disc, &t.0, &dir).unwrap_err();
+        assert!(
+            why.contains("invented") && why.contains("game's map list"),
+            "{why}"
+        );
+        assert_eq!(std::fs::read(path).unwrap(), b"running copy");
+    }
 
     #[test]
     fn the_command_boots_the_level_with_the_agent_and_the_override() {

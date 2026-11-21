@@ -486,7 +486,9 @@ pending edits and resumes play. A structural edit reloads a fresh copy.
 A game you started yourself asks before accepting edits. If it is on
 another map, choose whether to load your document in the game or open
 the game's map in the editor. A game without reload support needs a
-manual load unless the editor started it and can relaunch it.
+manual load unless the editor started it and can relaunch it. The same
+applies when a game refuses the play copy. F5 leaves the Edit switch as
+you set it. In View, later edits wait for your next F5.
 
 The Game tab's **Spawn** picker offers the level spawn, editor camera,
 selected placement and **Where I was**. Once you have played this map,
@@ -543,7 +545,8 @@ for structural edits. If a co-op session or
 another restriction prevents writes, the pill says "Edits stay here"
 and the frame and **Live** pill turn amber. Hover the pill for the
 reason. If the connection drops while the game is still present, the editor
-retries for 30 seconds. Click **Cancel** to stay unpaired or **Pair again**
+retries for 30 seconds. The same retry window applies to a socket you
+named under **Advanced**. Click **Cancel** to stay unpaired or **Pair again**
 after the retry window ends.
 
 An agent drives the same with `pair.list`, `pair.status`, `pair.connect`,

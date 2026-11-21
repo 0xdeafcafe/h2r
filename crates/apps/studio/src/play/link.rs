@@ -24,7 +24,7 @@ pub enum Purpose {
     /// The loaded file, map epoch and session write permissions.
     Map,
     Capabilities,
-    Reload,
+    Reload(u64),
     Focus,
     Journal(u64),
     Revert {
@@ -38,6 +38,7 @@ pub enum Purpose {
     Edit(u64),
     Take { id: u64, at: u32 },
     Teleport,
+    Spawn(Instant),
     Control(&'static str),
     /// A call the user asked for by hand.
     Other,
@@ -73,6 +74,8 @@ pub struct Options {
     /// its socket once it has booted); zero tries once.
     pub wait: Duration,
     pub poll: Duration,
+    /// How long an unanswered request keeps this connection open.
+    pub call_timeout: Duration,
 }
 
 impl Default for Options {
@@ -80,6 +83,7 @@ impl Default for Options {
         Self {
             wait: Duration::ZERO,
             poll: POLL,
+            call_timeout: CALL_TIMEOUT,
         }
     }
 }
@@ -167,7 +171,7 @@ fn run(
             return;
         }
     };
-    let _ = c.set_timeout(Some(CALL_TIMEOUT));
+    let _ = c.set_timeout(Some(options.call_timeout));
     let _ = events.send(Event::Connected);
     let mut next_poll = Instant::now();
     loop {

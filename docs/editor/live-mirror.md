@@ -255,9 +255,9 @@ one from a player's aim.
 ## Live edit
 
 The **Edit** switch in the bar and Game panel changes between View and Edit.
-Pairing starts in View: nothing is written. Edit is the user's choice. A
-game the editor started with Play starts in Edit, since it is the
-editor's own copy of the map.
+An attached game starts in View. F5 can send one confirmed batch or load a
+play copy in View. Later changes stay in Pending until the next F5 or the
+user enables Edit. A game the editor launches starts in Edit.
 
 ### How an edit applies
 
@@ -297,8 +297,13 @@ restores the earlier revision. Loading a Play copy sets the baseline to
 the layout saved in that copy.
 
 Pending reload edits collect under one **Reload map** button.
-It uses the same play copy and reload decision as F5, including the
-manual-load message for a foreign game without `map.reload`.
+Like F5, it sends the game the path and checks the queued reply against the
+play copy. Before resuming field writes or restoring the player, the editor
+waits for `edit.map` to report a different epoch from the one before the
+request and the checksum saved in the copy. It keeps the destination through
+a reconnect and retries the identity check for up to 30 seconds. A lost
+reply does not cause a second reload. If the host refuses to bind the file,
+the editor relaunches its own game or asks the user to load the saved map.
 [Play and pair](editor.md#play-and-pair)
 
 ### Undo and sync
@@ -349,13 +354,16 @@ loaded"), not done by default.
 | A Live session (not the local embedded server of `--live-local`) | no stream while a game is in progress: it would show one player every position | no |
 | Session unknown | yes | no |
 
+The host confirmation in Pending applies to the current pairing, game map
+epoch and peer count. It can authorize loading the open map while the host
+runs another one. Field writes still require a matching map and checksum.
+
 The game enforces this, not only the editor: `edit.set`, `edit.batch`,
 `world.object.*` and `map.reload` refuse by `SessionKind::writes`, as
 `sim.state.set` does, and refuse on a Live session whatever its kind.
-`live.subscribe` refuses on a Live session in a game. Nothing is ever
-written without the Edit switch on, and the switch never turns itself on
-for a game the editor did not start. For a changed map in a networked
-game, every machine loads the same saved map, as now
+`live.subscribe` refuses on a Live session in a game. Continuous writes require Edit. A confirmed F5 in View
+authorizes that playtest and leaves later edits in Pending. For a changed
+map in a networked game, every machine loads the same saved map
 ([editor-guide.md](editor-guide.md)).
 
 ## The editor's UI

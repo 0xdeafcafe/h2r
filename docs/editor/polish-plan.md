@@ -183,8 +183,10 @@ second, and `play::auto` (`auto::choose`) picks from that list:
 3. Several games running: the one whose map is the open map, when
    exactly one is; otherwise none, and the pill says how many run and
    its popover lists them.
-4. A game the user unpaired from stays unpaired until its process
-   exits.
+4. A game the user unpairs stays unpaired until its process exits or the user
+   pairs it again. For sockets without a known PID, only manual pairing clears
+   this choice. A failed automatic attempt can retry when its socket leaves
+   discovery and returns.
 
 When the link drops, `Play` asks the finder whether the game is still
 there. A game whose process is gone gives `NoGame` and one log line. A
@@ -197,7 +199,8 @@ seconds the state is `Lost` with the socket's last error. A game that
 restarts on a new socket is a new game and pairs by rules 1 to 3.
 
 A `tcp://` endpoint (the Xbox app) and a socket outside the discovery
-directory are typed once under **Advanced**.
+directory are typed once under **Advanced**. Both get the same 30-second
+retry window and keep their address for **Pair again** after it expires.
 
 #### Play is one action
 
@@ -212,13 +215,16 @@ pending list and the game's methods, and returns one step:
 | a local game found, not paired | any | pairs, then decides again |
 | paired, the open map | none, or pokes only | sends the pokes, resumes a paused game, raises the game window (`Resume`) |
 | paired, the open map | some need a reload | reloads the map from a new play copy, then puts the player back (`Reload`) |
+| paired, map identity blocked | any | reports the reason, including a checksum mismatch |
 | paired, another map, the editor's own game | any | the same reload, onto the open map |
 | paired, another map, a game the editor did not start | any | asks: **Load zanzibar in the game** (`map.reload {file}`) or **Open lockout here** |
 
 - A reload is `map.reload {file}` where the game lists it and a
-  relaunch of the editor's own game where it does not. A game the
-  editor did not start and that lacks `map.reload` leaves the edits
-  pending and says to save the map and load it in the game.
+  relaunch of the editor's own game if the method is absent or the host
+  refuses the file. A foreign game in either case leaves edits pending and
+  gives the manual-load instruction. The editor checks the queued receipt
+  and waits up to 30 seconds for a new epoch with the copy's checksum.
+  A reconnect checks the loaded copy before any further edits go out.
 - Sending edits to a game the editor did not start asks once per
   pairing ("Send your edits to this game?"), since F5 never turns Edit
   on by itself there.
@@ -226,14 +232,15 @@ pending list and the game's methods, and returns one step:
   takes the local player's position and facing from the stream
   (`playtest::Place`). When the map is back in gameplay and
   `SPAWN_AFTER_TICKS` have run, it sends them with `sim.state.set`.
-  The spawn choice gains **Where I was**, the default once a game has
-  run this map; Level's spawn, Editor camera and Selected placement
-  remain.
+  The editor waits for the move's reply before focusing the game. A missing
+  player or move acknowledgement times out after 30 seconds. **Where I was**
+  is the default once a game has run this map. The other choices are Level's
+  spawn, Editor camera and Selected placement.
 - **The editor's state is kept.** A playtest changes no selection,
   camera, undo history or open tag. The game keeps running when the
   editor takes focus. **Pause the game while I edit** (Game menu, off
   by default) pauses it when the editor's window gains focus and
-  resumes it on F5.
+  resumes it on F5. A focus change during a playtest waits for the move to finish.
 - After the step the editor calls `editor.focus`, when the game lists it,
   to queue a request for the window system to give the game focus.
 
@@ -668,11 +675,11 @@ when built. The game's methods for the link follow in their own table.
 
 | Method | Params | Result |
 |---|---|---|
-| `pair.status` | none | includes `link` with `{state, text, why}` from `LinkView` and `elapsed_ms` while reconnecting |
+| `pair.status` | none | includes `link` with `{state, text, why}` from `LinkView` with `elapsed_ms` while reconnecting and `unavailable?` listing features missing from the host |
 | `pair.edit` | `{enabled}` | queues the Edit switch change and returns `{requested}`. Read the mode in `pair.status`. |
 | `pair.status` | none | G9 adds `issues: [{kind, text, target}]` to `link` |
 | `pair.settings` | `{spawn?, pause_while_editing?}` | reads or sets the spawn choice and pause on editor focus |
-| `pair.playtest` | `{confirm?: "send" \| "cancel" \| "load" \| "open"}` | the F5 decision: `{step: launch \| pair \| resume \| reload \| ask, ask?, place?}`. `confirm` answers an `ask` |
+| `pair.playtest` | `{confirm?: "send" \| "cancel" \| "load" \| "open", prompt?: integer}` | `{step: launch \| pair \| resume \| reload \| ask, ask?, prompt?, place?, why?, answer?}`. Echo the prompt ID with a choice to answer that ask. A manual reload carries `why`. Cancel and open carry `answer`. |
 | `mirror.pick` | `{from: "aim"}` or `{ray: {origin, dir}}` | the live object hit: `{object, placement, tag, point, distance}`, or `null` |
 | `mirror.aim_select` | `{enabled?}` | whether the aim cursor selects, and the current candidate |
 | `mirror.camera` | `{mode?: free \| follow \| eyes \| lead, target?}` | the mode and what it follows; `lead` is **Game follows editor** |
@@ -704,7 +711,7 @@ and `map.reload` rows are live-mirror.md's, with the shapes fixed here.
 | `world.object.set` | act | `{id, pos?, forward?, up?}` | `{at, object}` after the next tick, through the engine's own move |
 | `world.object.delete` | act | `{id}` | `{at, deleted}` |
 | `world.object.respawn` | act | `{id}` or `{placement: {block, index}}` | `{at, old, object, linked}` |
-| `map.reload` | act | `{file?}` | `{queued, map}` |
+| `map.reload` | act | `{file?, confirm_peers?}` | `{queued, map}` or `{queued, map, file, checksum}` for a file override. A host that cannot bind the requested file returns `REFUSED` with its reason. |
 
 `editor.link` and `editor.marks` hold leases and never
 write simulation state, so they are allowed in View and in every

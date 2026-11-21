@@ -50,7 +50,7 @@ const METHODS: &[MethodDef] = &[
         m::PAIR_STATUS,
         "The socket connection, game status, edit permissions and auto-pair setting, with the game link pill's state, label and tooltip. Needs the window",
         "{}",
-        r#"{"state":"off|connecting|reconnecting|connected|lost","why":"string|null","socket":"string|null","map":"string|null","phase":"string|null","paused":"boolean|null","tick":"integer|null","matches":"same|different|unknown","open_map":"string|null","live_edits":"boolean","edits_blocked":"string|null","auto_pair":"boolean","games":"integer","ask":"send|load|null","playtest_busy":"boolean","link":{"state":"no_game|found|connecting|reconnecting|viewing|editing|blocked|other_map|lost","text":"string","why":"string|null","elapsed_ms?":"integer"}}"#,
+        r#"{"state":"off|connecting|reconnecting|connected|lost","why":"string|null","socket":"string|null","map":"string|null","phase":"string|null","paused":"boolean|null","tick":"integer|null","matches":"same|different|unknown","open_map":"string|null","live_edits":"boolean","edits_blocked":"string|null","auto_pair":"boolean","games":"integer","ask":"send|load|null","prompt":"integer|null","playtest_busy":"boolean","link":{"state":"no_game|found|connecting|reconnecting|viewing|editing|blocked|other_map|lost","text":"string","why":"string|null","elapsed_ms?":"integer","unavailable?":"[string]"}}"#,
         "null",
     ),
     def(
@@ -84,8 +84,8 @@ const METHODS: &[MethodDef] = &[
     def(
         m::PAIR_PLAYTEST,
         "Play the open document in the game. A confirmation answers the current playtest prompt",
-        r#"{"confirm?":"send|cancel|load|open"}"#,
-        r#"{"step":"launch|pair|resume|reload|ask","ask?":"send|load","place?":"{pos,yaw,pitch}"}"#,
+        r#"{"confirm?":"send|cancel|load|open","prompt?":"integer"}"#,
+        r#"{"step":"launch|pair|resume|reload|ask","ask?":"send|load","prompt?":"integer","place?":"{pos,yaw,pitch}","why?":"string","answer?":"cancel|open"}"#,
         "null",
     ),
     def(
@@ -146,8 +146,16 @@ fn call(app: &mut App, method: &str, p: &P) -> Reply {
         m::PAIR_STATUS => {
             let (status, link) = need_window(app)?;
             let mut status = status.clone();
+            let prompt = app.pairing.playtest.as_ref()
+                .filter(|offer| offer.current_document(app))
+                .and(app.pairing.prompt.as_ref());
+            status["ask"] = json!(prompt.map(|p| p.ask.name()));
+            status["prompt"] = json!(prompt.map(|p| p.id));
             status["link"] =
                 json!({"state": link.state.name(), "text": link.text, "why": link.why});
+            if !link.unavailable.is_empty() {
+                status["link"]["unavailable"] = json!(link.unavailable);
+            }
             if let crate::play::LinkState::Reconnecting { since } = &link.state {
                 status["link"]["elapsed_ms"] = json!(since.elapsed().as_millis());
             }
@@ -155,7 +163,8 @@ fn call(app: &mut App, method: &str, p: &P) -> Reply {
         }
         m::PAIR_CONNECT => {
             need_window(app)?;
-            let endpoint = match p.opt_str("socket")? {
+            let socket = p.opt_str("socket")?;
+            let endpoint = match socket {
                 Some(s) => Endpoint::parse(s).map_err(|e| err(code::INVALID_PARAMS, e))?,
                 None => {
                     let games = running(app);
@@ -177,7 +186,11 @@ fn call(app: &mut App, method: &str, p: &P) -> Reply {
                 }
             };
             let requested = endpoint.to_string();
-            app.pairing.requests.push(Request::Pair(endpoint));
+            app.pairing.requests.push(if socket.is_some() {
+                Request::PairSocket(endpoint)
+            } else {
+                Request::Pair(endpoint)
+            });
             Ok(json!({ "requested": requested }))
         }
         m::PAIR_DISCONNECT => {
@@ -199,24 +212,49 @@ fn call(app: &mut App, method: &str, p: &P) -> Reply {
             }
             Ok(json!({ "auto_pair": app.pairing.auto_pair }))
         }
-        m::PAIR_PLAY => enqueue(app, Request::Play),
-        m::PAIR_PLAYTEST => {
+        m::PAIR_PLAY | m::PAIR_PLAYTEST => {
             let (_, link) = need_window(app)?;
             if let Some(why) = Request::Play.refusal(link) {
                 return Err(err(code::REFUSED, why));
             }
             let offer = app.pairing.playtest.as_ref()
                 .ok_or_else(|| err(code::REFUSED, "waiting for the editor window"))?;
+            if !offer.current_document(app) {
+                return Err(err(code::REFUSED, "the document changed; wait for the next editor frame"));
+            }
+            let mut report = offer.step.report(offer.place)
+                .map_err(|why| err(code::REFUSED, why))?;
+            if method == m::PAIR_PLAY {
+                app.pairing.requests.push(Request::Play);
+                return Ok(json!({"requested": true}));
+            }
+            let prompt_id = p.opt_u64("prompt")?;
             let (request, reply) = match p.opt_str("confirm")? {
                 None => {
-                    app.pairing.prompt = offer.prompt.clone();
-                    (Request::Play, offer.step.report(offer.place))
+                    if prompt_id.is_some() {
+                        return Err(err(code::INVALID_PARAMS, "prompt needs a confirm action"));
+                    }
+                    let prompt = offer.prompt.clone();
+                    if let Some(p) = &prompt {
+                        report["prompt"] = json!(p.id);
+                    }
+                    app.pairing.show_prompt(prompt);
+                    (Request::Play, report)
                 }
                 Some(choice) => {
                     let prompt = app.pairing.prompt.clone()
                         .ok_or_else(|| err(code::REFUSED, "there is no playtest prompt to answer"))?;
+                    if prompt_id.is_some_and(|id| id != prompt.id)
+                        || offer.prompt.as_ref() != Some(&prompt)
+                    {
+                        return Err(err(
+                            code::REFUSED,
+                            "the game or pending edits changed; press Play again",
+                        ));
+                    }
                     let reply = if choice == prompt.ask.name() {
-                        offer.confirmed.report(offer.place)
+                        prompt.confirmed.report(offer.place)
+                            .map_err(|why| err(code::REFUSED, why))?
                     } else if choice == "cancel" || (choice == "open" && prompt.ask.name() == "load") {
                         json!({"step": "ask", "answer": choice})
                     } else {
@@ -306,7 +344,7 @@ fn games(app: &App) -> Vec<Value> {
         .into_iter()
         .map(|g| {
             let at = g.status.as_ref().map(|s| &s.at);
-            let m = match MapMatch::of(app.loaded_map(), g.map()) {
+            let m = match crate::play::pair::map_match(app, g.map()) {
                 MapMatch::Same => "same",
                 MapMatch::Different => "different",
                 MapMatch::Unknown => "unknown",

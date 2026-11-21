@@ -75,8 +75,9 @@ impl Reload {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Step {
+    Refused(String),
     Launch,
     Pair,
     Resume,
@@ -85,30 +86,37 @@ pub enum Step {
 }
 
 impl Step {
-    pub fn report(self, place: Option<Place>) -> Value {
+    pub fn report(&self, place: Option<Place>) -> Result<Value, &str> {
         let name = match self {
+            Self::Refused(why) => return Err(why),
             Self::Launch => "launch",
             Self::Pair => "pair",
             Self::Resume => "resume",
-            Self::Reload(Reload::Manual) => return json!({"step": "reload", "why": MANUAL_RELOAD}),
+            Self::Reload(Reload::Manual) => {
+                return Ok(json!({"step": "reload", "why": MANUAL_RELOAD}));
+            }
             Self::Reload(_) => "reload",
-            Self::Ask { ask } => return json!({"step": "ask", "ask": ask.name()}),
+            Self::Ask { ask } => return Ok(json!({"step": "ask", "ask": ask.name()})),
         };
         let mut result = json!({"step": name});
         if matches!(self, Self::Reload(_) | Self::Launch) && let Some(place) = place {
             result["place"] = place.json();
         }
-        result
+        Ok(result)
     }
 }
 
 pub fn decide(
     link: &LinkState,
+    identity_refusal: Option<&str>,
     pending: &[Value],
     own: bool,
     authorized: bool,
     reload: bool,
 ) -> Step {
+    if matches!(link, LinkState::Blocked { .. }) && let Some(why) = identity_refusal {
+        return Step::Refused(why.into());
+    }
     let reload = Step::Reload(Reload::route(reload, own));
     match link {
         LinkState::NoGame | LinkState::Lost { .. } => Step::Launch,
@@ -123,20 +131,45 @@ pub fn decide(
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Document {
+    world: u64,
+    placements: u64,
+    tags: u64,
+}
+
+impl Document {
+    fn of(app: &App) -> Self {
+        Self {
+            world: app.session.world_rev(),
+            placements: app.session.markers_rev(),
+            tags: app.tags.rev(),
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Offer {
+    document: Document,
     pub step: Step,
-    pub confirmed: Step,
     pub place: Option<Place>,
     pub prompt: Option<Prompt>,
 }
 
+impl Offer {
+    pub(crate) fn current_document(&self, app: &App) -> bool {
+        self.document == Document::of(app)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Prompt {
+    pub id: u64,
     pub ask: Ask,
+    pub confirmed: Step,
+    document: Document,
     pairing: u64,
     epoch: Option<u64>,
-    world: u64,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -147,7 +180,9 @@ pub(super) enum Waiting {
     Pair,
     Launch,
     Batch,
+    Sent,
     Reload,
+    Spawn(Instant),
 }
 
 #[derive(Clone, Copy)]
@@ -173,7 +208,7 @@ impl Play {
 
     pub(super) fn remember_place(&mut self, app: &App) {
         if self.status.as_ref().is_some_and(|s| s.at.phase == Phase::Gameplay)
-            && !matches!(self.waiting, Waiting::Reload | Waiting::Launch)
+            && !matches!(self.waiting, Waiting::Reload | Waiting::Launch | Waiting::Spawn(_))
             && let (Some(map), Some(sum)) = (app.loaded_map(), app.session.source_checksum())
             && let Some(place) = Place::player(app)
         {
@@ -208,20 +243,29 @@ impl Play {
     }
 
     fn awaiting_identity(&self) -> bool {
-        self.is_paired() && (!self.capabilities_ready || self.edits.epoch.is_none())
+        self.is_paired()
+            && (self.methods.is_none()
+                || (self.has_method(agent_proto::hot::method::EDIT_MAP)
+                    && self.edits.epoch.is_none()))
     }
 
     pub(super) fn offer(&self, app: &App, link: &LinkView) -> Offer {
         // A send decision for this map never authorizes switching a foreign game to another.
         let authorized = (self.live_edits || self.playtest_consent)
             && !matches!(link.state, LinkState::OtherMap { .. });
+        let identity_refusal = if matches!(link.state, LinkState::Blocked { .. }) {
+            self.map_refusal(app)
+        } else {
+            None
+        };
         let decision = |authorized| {
             decide(
                 &link.state,
+                identity_refusal.as_deref(),
                 &app.pairing.pending,
                 self.own_game(),
                 authorized,
-                self.edits.reload,
+                self.has_method(agent_proto::sim::method::MAP_RELOAD),
             )
         };
         let found_after_loss = matches!(link.state, LinkState::Lost { .. })
@@ -231,9 +275,24 @@ impl Play {
         } else {
             decision(authorized)
         };
-        let (confirmed, prompt) = match step {
-            Step::Ask { ask } => (decision(true), Some(self.prompt(app, ask))),
-            _ => (step, None),
+        let document = Document::of(app);
+        let prompt = match step {
+            Step::Ask { ask } => {
+                let active = app.pairing.prompt.as_ref();
+                let mut prompt = Prompt {
+                    id: active.map_or(app.pairing.next_prompt, |p| p.id),
+                    ask,
+                    confirmed: decision(true),
+                    document,
+                    pairing: self.pairing_id,
+                    epoch: self.edits.epoch,
+                };
+                if active != Some(&prompt) {
+                    prompt.id = app.pairing.next_prompt;
+                }
+                Some(prompt)
+            }
+            _ => None,
         };
         let place = if self.spawn_choice(app) == Spawn::Resume {
             self.saved_place(app)
@@ -241,19 +300,10 @@ impl Play {
             None
         };
         Offer {
+            document,
             step,
-            confirmed,
             place,
             prompt,
-        }
-    }
-
-    fn prompt(&self, app: &App, ask: Ask) -> Prompt {
-        Prompt {
-            ask,
-            pairing: self.pairing_id,
-            epoch: self.edits.epoch,
-            world: app.session.world_rev(),
         }
     }
 
@@ -288,20 +338,21 @@ impl Play {
                     self.open_game_map(app);
                     return Ok(());
                 }
-                (Ask::Load, "load") | (Ask::Send, "send") => step = offer.confirmed,
+                (Ask::Load, "load") | (Ask::Send, "send") => step = prompt.confirmed,
                 _ => return Err("choose one of the offered playtest actions".into()),
             }
         }
         match step {
-            Step::Ask { .. } => app.pairing.prompt = offer.prompt,
+            Step::Refused(why) => return Err(why),
+            Step::Ask { .. } => app.pairing.show_prompt(offer.prompt),
             Step::Launch => self.launch_copy(app)?,
             Step::Pair => {
                 let games = self.finder.running();
                 if let Some(path) = auto::choose(
                     &games,
-                    app.loaded_map(),
+                    |game| pair::map_match(app, game.map()) == MapMatch::Same,
                     self.child_endpoint.as_ref(),
-                    &HashSet::new(),
+                    |_| false,
                 ) {
                     self.pair(app, Endpoint::Unix(path));
                     self.waiting = Waiting::Pair;
@@ -310,17 +361,17 @@ impl Play {
                 }
             }
             Step::Resume => {
-                if !app.pairing.pending.is_empty() {
-                    if self.edits.sent.is_none() {
-                        self.apply_edits(app, Apply::Send)?;
-                        self.push_edits(app);
+                if self.edits.sent.is_some() {
+                    self.waiting = Waiting::Batch;
+                } else if !app.pairing.pending.is_empty() {
+                    if let Some(why) = self.edit_refusal(app) {
+                        return Err(why);
                     }
+                    self.refresh_pending(app, true);
                     if self.edits.sent.is_none() {
                         return Err("resolve the pending edits before playing".into());
                     }
-                }
-                if self.edits.sent.is_some() {
-                    self.waiting = Waiting::Batch;
+                    self.waiting = Waiting::Sent;
                 } else {
                     self.finish_playtest();
                 }
@@ -335,7 +386,7 @@ impl Play {
                 let refusal = if self.map_match(app) == MapMatch::Different {
                     self.session_refusal(app)
                 } else {
-                    self.edit_refusal(app)
+                    self.map_refusal(app).or_else(|| self.session_refusal(app))
                 };
                 if let Some(why) = refusal {
                     return Err(why);
@@ -346,12 +397,16 @@ impl Play {
         Ok(())
     }
 
-    fn finish_playtest(&mut self) {
+    pub(super) fn finish_playtest(&mut self) {
         if self.paused {
             self.ensure_claim();
             self.resume();
+        } else if self.controller {
+            // The pause can expire while this connection still owns the claim.
+            self.release_control();
         }
-        if self.focus_available {
+        if self.has_method(agent_proto::editor::method::FOCUS) {
+            self.pause_on_return = false;
             self.call(agent_proto::editor::method::FOCUS, Value::Null, Purpose::Focus);
         }
         self.waiting = Waiting::Idle;
@@ -359,10 +414,22 @@ impl Play {
 
     pub(super) fn continue_playtest(&mut self, app: &mut App) {
         let decide_again = match self.waiting {
-            Waiting::Pair => self.is_paired() && self.capabilities_ready && self.edits.journal_ready,
+            Waiting::Pair => {
+                self.is_paired()
+                    && self.methods.is_some()
+                    && (!self.has_method(agent_proto::hot::method::EDIT_MAP)
+                        || (self.edits.epoch.is_some()
+                            && (!self.has_method(agent_proto::hot::method::EDIT_CHANGES)
+                                || self.edits.journal_ready)))
+            }
             Waiting::Batch => self.edits.sent.is_none(),
+            Waiting::Sent if self.edits.sent.is_none() => {
+                self.waiting = Waiting::Idle;
+                app.error("the game changed before the playtest batch was acknowledged");
+                false
+            }
             Waiting::Launch => {
-                if self.is_paired() && self.capabilities_ready && self.status.is_some()
+                if self.is_paired() && self.methods.is_some() && self.status.is_some()
                     && self.pending_spawn.is_none()
                 {
                     self.finish_playtest();
@@ -381,7 +448,9 @@ impl Play {
 
     /// The native window supplies focus changes. Tests can supply the same signal.
     pub fn window_focus(&mut self, app: &App, focused: bool) {
-        if focused && app.pairing.pause_while_editing && self.is_paired() && !self.paused {
+        let should_pause = focused && app.pairing.pause_while_editing && self.is_paired();
+        self.pause_on_return = should_pause && self.waiting != Waiting::Idle;
+        if should_pause && self.waiting == Waiting::Idle && !self.paused {
             self.pause();
         }
     }

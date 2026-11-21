@@ -19,10 +19,13 @@ pub mod pair;
 pub mod playtest;
 pub mod sync;
 pub mod tag_sync;
+mod capabilities;
 mod edits;
 pub use edits::Apply;
 #[cfg(test)]
 pub(crate) mod testing;
+#[cfg(all(test, unix))]
+mod reload_tests;
 #[cfg(test)]
 mod tests;
 
@@ -56,6 +59,8 @@ pub const PAUSE_MAX_MS: u64 = 600_000;
 /// Ticks into a level before a launched game's player is moved to the
 /// chosen spawn (the level's first ticks run its start-up scripts).
 pub const SPAWN_AFTER_TICKS: u64 = 30;
+/// Time for the local player and move acknowledgement after the game connects or reloads.
+const SPAWN_WAIT: Duration = Duration::from_secs(30);
 /// Lifted this far above the ground a spawn or teleport lands on.
 pub const LIFT: f32 = 0.25;
 
@@ -165,6 +170,7 @@ pub struct LinkView {
     pub tone: LinkTone,
     pub text: String,
     pub why: Option<String>,
+    pub unavailable: Vec<String>,
     pub can_play: bool,
     pub playtest_busy: bool,
     pub can_stop: bool,
@@ -199,6 +205,8 @@ pub struct Play {
     link: Option<Link>,
     /// The endpoint to retry after the link drops.
     retry: Option<Endpoint>,
+    pair_source: pair::Source,
+    paired_pid: Option<u32>,
     pub conn: Conn,
     /// The last `session.status`.
     pub status: Option<Status>,
@@ -213,6 +221,7 @@ pub struct Play {
     pub live_edits: bool,
     next_push: Instant,
     edits: Edits,
+    reload_copy: Option<edits::ReloadCopy>,
     launch_baseline: Option<(Baseline, tag_sync::TagBaseline)>,
     /// Blocks with entries added or removed since the baseline.
     pub reload: Vec<BlockKind>,
@@ -230,10 +239,12 @@ pub struct Play {
     play_world: u64,
     pairing_id: u64,
     waiting: Waiting,
-    capabilities_ready: bool,
-    focus_available: bool,
+    /// The full method list for this control connection, once received.
+    methods: Option<HashSet<String>>,
     playtest_consent: bool,
     spawn_after_tick: u64,
+    spawn_deadline: Option<Instant>,
+    pause_on_return: bool,
     launches: u32,
     /// The `h2` binary typed in the panel (empty: found as `launch::find_h2`).
     pub h2_path: String,
@@ -243,9 +254,9 @@ pub struct Play {
     pub last_command: Option<String>,
     /// Looks for running games ([`Play::discovering`]).
     pub finder: Finder,
-    /// Sockets already paired with, by hand or by itself: auto-pair takes
-    /// each game once, so an Unpair stays unpaired.
+    /// Auto-pair attempts are forgotten when the socket leaves the finder.
     auto_tried: HashSet<PathBuf>,
+    unpaired: auto::Unpaired,
     /// UI requests taken at the next update.
     queue: Vec<Request>,
 }
@@ -261,6 +272,8 @@ impl Play {
         Self {
             link: None,
             retry: None,
+            pair_source: pair::Source::Finder,
+            paired_pid: None,
             conn: Conn::Off,
             status: None,
             next_live_status: Instant::now(),
@@ -271,6 +284,7 @@ impl Play {
             live_edits: false,
             next_push: Instant::now(),
             edits: Edits::default(),
+            reload_copy: None,
             launch_baseline: None,
             reload: Vec::new(),
             controller: false,
@@ -284,10 +298,11 @@ impl Play {
             play_world: 0,
             pairing_id: 0,
             waiting: Waiting::Idle,
-            capabilities_ready: false,
-            focus_available: false,
+            methods: None,
             playtest_consent: false,
             spawn_after_tick: 0,
+            spawn_deadline: None,
+            pause_on_return: false,
             launches: 0,
             h2_path: String::new(),
             socket_text: String::new(),
@@ -296,6 +311,7 @@ impl Play {
             // panel uses `discovering`.
             finder: Finder::with_scan(std::sync::Arc::new(Vec::<agent_proto::discover::Found>::new)),
             auto_tried: HashSet::new(),
+            unpaired: auto::Unpaired::default(),
             queue: Vec::new(),
         }
     }
@@ -426,6 +442,7 @@ impl Play {
             tone,
             text,
             why,
+            unavailable: self.unavailable_features(),
             can_play: app.loaded_map().is_some()
                 && matches!(self.waiting, Waiting::Idle | Waiting::Pick)
                 && !matches!(self.conn, Conn::Connecting | Conn::Reconnecting { .. }),
@@ -453,7 +470,7 @@ impl Play {
             Endpoint::parse(text)
         };
         match endpoint {
-            Ok(endpoint) => self.request(Request::Pair(endpoint)),
+            Ok(endpoint) => self.request(Request::PairSocket(endpoint)),
             Err(e) => app.error(format!("pair: {e}")),
         }
     }
@@ -481,15 +498,25 @@ impl Play {
         if matches!(self.conn, Conn::Connected | Conn::Connecting | Conn::Reconnecting { .. }) {
             return None;
         }
-        pair::notice(&self.finder.running(), app.loaded_map())
+        pair::notice(&self.finder.running(), app)
     }
 
     /// How the paired game's map compares with the one open here.
     pub fn map_match(&self, app: &App) -> MapMatch {
-        MapMatch::of(app.loaded_map(), self.map())
+        pair::map_match(app, self.map())
     }
 
-    /// Attach to a game already running at `endpoint`. The game is taken
+    fn request_pair(&mut self, app: &mut App, endpoint: Endpoint, source: pair::Source) {
+        if self.is_paired() && self.endpoint() != Some(&endpoint) {
+            self.edits.next_pair = Some((endpoint, source));
+            self.request_leave(app);
+        } else {
+            self.pair(app, endpoint);
+            self.pair_source = source;
+        }
+    }
+
+    /// Attach to a game offered by the finder. The game is taken
     /// to hold the map as the editor shows it now.
     pub fn pair(&mut self, app: &mut App, endpoint: Endpoint) {
         let own = self.child_endpoint.as_ref() == Some(&endpoint);
@@ -507,8 +534,11 @@ impl Play {
     }
 
     fn start(&mut self, app: &mut App, endpoint: Endpoint, options: Options) {
+        self.pair_source = pair::Source::Finder;
+        self.paired_pid = self.pid_for(&endpoint);
         if let Endpoint::Unix(path) = &endpoint {
             self.auto_tried.insert(path.clone());
+            self.unpaired.allow(path, self.paired_pid);
         }
         app.tags.live_datums = None;
         app.pairing.clear_mirror();
@@ -518,10 +548,11 @@ impl Play {
             .filter(|(game, _, _)| game == &endpoint)
             .map(|(_, revision, checksum)| (*revision, *checksum));
         self.waiting = Waiting::Idle;
-        self.capabilities_ready = false;
-        self.focus_available = false;
+        self.methods = None;
         self.playtest_consent = false;
+        self.pause_on_return = false;
         self.spawn_after_tick = 0;
+        self.spawn_deadline = None;
         self.play_world = app.session.world_rev();
         self.pairing_id += 1;
         self.link = Some(Link::open(endpoint, options));
@@ -533,6 +564,7 @@ impl Play {
 
         self.session = None;
         self.edits = Edits::default();
+        self.reload_copy = None;
         self.live_edits = false;
         self.reload.clear();
         self.controller = false;
@@ -543,7 +575,8 @@ impl Play {
     /// Drop the pairing (the game keeps running; our control is released).
     pub fn unpair(&mut self, app: &mut App) {
         if let Some(Endpoint::Unix(path)) = self.endpoint().cloned() {
-            self.auto_tried.insert(path);
+            self.auto_tried.remove(&path);
+            self.unpaired.remember(path, self.paired_pid);
         }
         if self.link.take().is_some() {
             app.info("unpaired from the game");
@@ -566,32 +599,32 @@ impl Play {
     /// The launch for the open map: writes the edited map to the scratch
     /// directory for `H2_MAP_DIR`.
     pub fn prepare(&mut self, app: &mut App) -> Result<launch::Launch, String> {
-        let level = app.loaded_map().ok_or("open a map first")?.to_owned();
         let session = &app.session;
+        let document = session.map_name().ok_or("open a map first")?;
         let h2 = launch::find_h2(Some(PathBuf::from(self.h2_path.trim())).as_deref())
             .ok_or("no h2 binary: build it beside the editor (cargo build --release -p cli --bin h2), install it (cargo install --path crates/apps/cli), or name it under Advanced in the Game panel")?;
-        let disc = match app.source() {
-            Some(editor_core::MapSource::Disc(d)) => Some(d.path().to_owned()),
-            _ => editor_core::default_disc(None),
-        }
-        .ok_or("h2 play needs the disc image: open the disc, or set H2_DISC")?;
+        let disc = app
+            .source()
+            .and_then(launch::source_disc)
+            .or_else(|| editor_core::default_disc(None))
+            .ok_or("h2 play needs the disc: open its image or its extracted maps folder, or set H2_DISC")?;
         let data = session
             .maps_dir()
             .parent()
             .map(PathBuf::from)
             .ok_or("no data root")?;
         let map_dir = launch::scratch().join("maps");
-        launch::write_copy(session, &level, &map_dir)?;
+        let level = launch::write_launch_copy(session, &disc, &data, &map_dir)?;
         // A Map Pack map plays from the editor's bytes (the map override) on
         // the Halo 2 disc. `h2 play` installs the map pack itself from beside
         // that disc (`mappack.iso`); say so when this one is elsewhere.
-        if app.is_mappack_map(&level)
+        if app.is_mappack_map(document)
             && let Some(pack) = app.mappack().map(|p| p.path().to_owned())
         {
             let found = editor_core::mappack::beside(&disc);
             if !found.is_some_and(|f| matches!((f.canonicalize(), pack.canonicalize()), (Ok(a), Ok(b)) if a == b)) {
                 app.info(format!(
-                    "Play: {level} is a Map Pack map and {} is not beside the disc, so h2 play will not install the map pack; it plays from the editor's copy. Put the pack beside the disc as mappack.iso to install it as well",
+                    "Play: {document} is a Map Pack map and {} is not beside the disc, so h2 play will not install the map pack; it plays from the editor's copy. Put the pack beside the disc as mappack.iso to install it as well",
                     pack.display()
                 ));
             }
@@ -700,10 +733,15 @@ impl Play {
     /// Once a frame: the link's news, the launched game's state, and edits
     /// to send.
     pub fn update(&mut self, app: &mut App) {
+        self.expire_reload(app, Instant::now());
         if self.waiting != Waiting::Idle && self.play_world != app.session.world_rev() {
             self.cancel_reload();
         }
         if self.finder.poll() {
+            self.unpaired.retain_processes(auto::process_alive);
+            if let Some(pid) = self.endpoint().and_then(|ep| self.pid_for(ep)) {
+                self.paired_pid = Some(pid);
+            }
             self.auto_tried.retain(|path| {
                 self.finder.games.iter().any(|g| &g.path == path)
                     || matches!(&self.child_endpoint, Some(Endpoint::Unix(own)) if own == path)
@@ -739,12 +777,17 @@ impl Play {
                     app.pairing.stream_map = stream.status(false)["map"].clone();
                 }
                 self.next_live_status = Instant::now() + Duration::from_secs(1);
-                self.call(agent_proto::live::STATUS, Value::Null, Purpose::LiveStatus);
+                if self.has_method(agent_proto::live::STATUS) {
+                    self.call(agent_proto::live::STATUS, Value::Null, Purpose::LiveStatus);
+                }
             }
         }
         self.remember_place(app);
         self.maybe_spawn(app);
         self.continue_playtest(app);
+        if self.waiting == Waiting::Idle && std::mem::take(&mut self.pause_on_return) {
+            self.window_focus(app, true);
+        }
         if !matches!(self.conn, Conn::Reconnecting { .. }) {
             if Instant::now() >= self.next_push {
                 self.next_push = Instant::now() + PUSH_EVERY;
@@ -766,11 +809,8 @@ impl Play {
                 continue;
             }
             match r {
-                Request::Pair(e) if self.is_paired() && self.endpoint() != Some(&e) => {
-                    self.edits.next_pair = Some(e);
-                    self.request_leave(app);
-                }
-                Request::Pair(e) => self.pair(app, e),
+                Request::Pair(e) => self.request_pair(app, e, pair::Source::Finder),
+                Request::PairSocket(e) => self.request_pair(app, e, pair::Source::Named),
                 Request::Unpair => self.request_leave(app),
                 Request::Apply(action) => {
                     if let Err(why) = self.apply_edits(app, action) {
@@ -793,7 +833,9 @@ impl Play {
                     }
                 }
                 Request::Edit(false) => {
-                    self.pending_spawn = None;
+                    if let Some(copy) = &mut self.reload_copy {
+                        copy.resume_edits = false;
+                    }
                     self.live_edits = false;
                     self.edits.own_start = false;
                     self.playtest_consent = false;
@@ -805,22 +847,51 @@ impl Play {
         }
     }
 
-    pub fn auto_target(&self, on: bool, open: Option<&str>) -> Option<PathBuf> {
-        if !on || !matches!(self.conn, Conn::Off | Conn::Lost(_)) {
+    pub fn auto_target(&self, on: bool, app: &App) -> Option<PathBuf> {
+        if !on
+            || !matches!(self.conn, Conn::Off | Conn::Lost(_))
+            || (matches!(self.conn, Conn::Lost(_)) && self.pair_source == pair::Source::Named)
+        {
             return None;
         }
-        auto::choose(&self.finder.running(), open, self.child_endpoint.as_ref(), &self.auto_tried)
+        auto::choose(
+            &self.finder.running(),
+            |game| pair::map_match(app, game.map()) == MapMatch::Same,
+            self.child_endpoint.as_ref(),
+            |game| {
+                self.auto_tried.contains(&game.path)
+                    || self.unpaired.contains(&game.path, self.pid_for(&game.endpoint()))
+            },
+        )
     }
 
     fn auto_pair(&mut self, app: &mut App) {
-        if let Some(path) = self.auto_target(app.pairing.auto_pair, app.loaded_map()) {
+        if let Some(path) = self.auto_target(app.pairing.auto_pair, app) {
             self.pair(app, Endpoint::Unix(path));
         }
     }
 
-    fn listed(&self) -> bool {
+    fn pid_for(&self, ep: &Endpoint) -> Option<u32> {
+        let Endpoint::Unix(path) = ep else {
+            return None;
+        };
+        if Some(ep) == self.child_endpoint.as_ref()
+            && let Some(child) = &self.child
+        {
+            return Some(child.id());
+        }
+        self.finder
+            .games
+            .iter()
+            .find(|g| &g.path == path)
+            .and_then(|g| g.pid)
+            .or_else(|| agent_proto::discover::pid_of(path))
+    }
+
+    fn reconnectable(&self) -> bool {
         self.retry.as_ref().is_some_and(|ep| {
-            Some(ep) == self.child_endpoint.as_ref()
+            (self.pair_source == pair::Source::Named && self.conn != Conn::Connecting)
+                || Some(ep) == self.child_endpoint.as_ref()
                 || self.finder.games.iter().any(|g| &g.endpoint() == ep)
         })
     }
@@ -828,12 +899,17 @@ impl Play {
     fn disconnect(&mut self, app: &mut App) {
         self.link = None;
         self.retry = None;
+        self.pair_source = pair::Source::Finder;
+        self.paired_pid = None;
         self.conn = Conn::Off;
+        self.pause_on_return = false;
+        self.methods = None;
         self.waiting = Waiting::Idle;
         self.status = None;
         self.session = None;
         self.baseline = None;
         self.edits = Edits::default();
+        self.reload_copy = None;
         self.controller = false;
         self.paused = false;
         self.live_edits = false;
@@ -847,7 +923,7 @@ impl Play {
         if !matches!(self.conn, Conn::Reconnecting { .. }) {
             return;
         }
-        if !self.listed() {
+        if !self.reconnectable() {
             app.info("game link closed; the game is no longer listed");
             self.disconnect(app);
             return;
@@ -858,6 +934,7 @@ impl Play {
             app.error(format!("game link: {why}"));
             self.conn = Conn::Lost(why.clone());
             self.live_edits = false;
+            self.cancel_reload();
         } else if self.link.is_none() && backoff.due(now) {
             self.link = self.retry.clone().map(|ep| Link::open(ep, Options::default()));
         }
@@ -878,6 +955,7 @@ impl Play {
             app.pairing.prompt = None;
         }
         app.pairing.playtest = Some(offer);
+        app.pairing.peer_confirmation = self.peer_confirmation();
         let at = self.status.as_ref().map(|s| &s.at);
         let published = json!({
             "state": state,
@@ -900,6 +978,7 @@ impl Play {
             "auto_pair": app.pairing.auto_pair,
             "games": self.finder.running().len(),
             "ask": app.pairing.prompt.as_ref().map(|p| p.ask.name()),
+            "prompt": app.pairing.prompt.as_ref().map(|p| p.id),
             "playtest_busy": link.playtest_busy,
         });
         app.pairing.published = Some(published);
@@ -919,22 +998,31 @@ impl Play {
                     self.conn = Conn::Connected;
                 }
                 self.call(method::METHODS, Value::Null, Purpose::Capabilities);
-                app.pairing.mirror = self.endpoint().cloned().map(live_mirror::Stream::open);
                 app.info(format!(
                     "paired with the game at {}",
                     self.endpoint().map(ToString::to_string).unwrap_or_default()
                 ));
             }
             Event::Lost(why) => {
+                if matches!(self.waiting, Waiting::Spawn(_)) {
+                    app.error("game link closed before the player move was acknowledged");
+                }
                 self.retry = self.link.take().map(|l| l.endpoint.clone()).or(self.retry.take());
                 self.controller = false;
                 self.paused = false;
                 self.status = None;
                 self.session = None;
-                self.waiting = Waiting::Idle;
-                self.capabilities_ready = false;
-                self.focus_available = false;
-                self.pending_spawn = None;
+                if let Some(copy) = &mut self.reload_copy {
+                    // Its reply may have been lost after the host queued the reload.
+                    // The reopened socket only reads the identity of the loaded copy.
+                    copy.check_identity = true;
+                } else if self.waiting != Waiting::Launch || self.pending_spawn.is_none() {
+                    // Once a move is dispatched its outcome is unknown on a drop.
+                    self.waiting = Waiting::Idle;
+                    self.pending_spawn = None;
+                    self.spawn_deadline = None;
+                }
+                self.methods = None;
                 app.pairing.prompt = None;
                 app.pairing.drop_stream();
                 app.tags.live_datums = None;
@@ -952,7 +1040,7 @@ impl Play {
                 self.edits.transport_lost();
                 if let Conn::Reconnecting { why: last, .. } = &mut self.conn {
                     *last = why;
-                } else if self.listed() {
+                } else if self.reconnectable() {
                     self.conn = Conn::Reconnecting {
                         backoff: auto::Backoff::new(Instant::now()),
                         why,
@@ -970,10 +1058,10 @@ impl Play {
                     self.paused = s.at.paused;
                     self.controller = s.controller;
                     self.status = Some(s);
-                    if !self.edits.map_requested {
+                    if self.has_method(agent_proto::hot::method::EDIT_MAP) && !self.edits.map_requested {
                         self.edits.map_requested = true;
                         self.call(
-                            "edit.map",
+                            agent_proto::hot::method::EDIT_MAP,
                             json!({"known_epoch":self.known_tag_epoch()}),
                             Purpose::Map,
                         );
@@ -1005,27 +1093,27 @@ impl Play {
                     reply["streams"].as_array()?.iter().find(|s| s["stream"] == id).cloned()
                 });
             }
-            (Purpose::Capabilities, Err(e)) => {
-                self.capabilities_ready = true;
-                app.error(format!("session.methods: {e}"));
-            }
-            (Purpose::Capabilities, Ok(v)) => {
-                let has = |name: &str| v.as_array().is_some_and(|a| a.iter().any(|m| m == name));
-                self.edits.respawn = has(agent_proto::sim::method::OBJECT_RESPAWN);
-                self.edits.reload = has(agent_proto::sim::method::MAP_RELOAD);
-                self.focus_available = has(agent_proto::editor::method::FOCUS);
-                self.capabilities_ready = true;
-            }
+            (Purpose::Capabilities, result) => self.received_methods(app, result),
             (Purpose::Map, result) => self.edit_map(app, result),
             (Purpose::Journal(epoch), result) => self.edit_journal(app, epoch, result),
             (Purpose::Revert { leave, epoch }, result) => self.reverted(app, leave, epoch, result),
             (Purpose::Take { id, at }, result) => self.take_answer(app, id, at, result),
             (Purpose::Edit(id), result) => self.batch_answer(app, id, result),
-            (Purpose::Reload, Err(e)) => {
-                self.cancel_reload();
-                app.error(format!("map.reload: {e}"));
+            (Purpose::Reload(id), result) => self.reload_answer(app, id, result),
+            (Purpose::Focus, Ok(_)) => {}
+            (Purpose::Spawn(ticket), result) => {
+                if self.waiting == Waiting::Spawn(ticket) {
+                    self.pending_spawn = None;
+                    self.spawn_deadline = None;
+                    match result {
+                        Ok(_) => self.finish_playtest(),
+                        Err(e) => {
+                            self.waiting = Waiting::Idle;
+                            app.error(format!("could not move the player: {e}"));
+                        }
+                    }
+                }
             }
-            (Purpose::Reload | Purpose::Focus, Ok(_)) => {}
             (Purpose::Teleport, Ok(_)) => app.info("moved the player"),
             (Purpose::Control(what), Ok(_)) => {
                 match what {
@@ -1051,47 +1139,77 @@ impl Play {
             .or_else(|| (!self.live_edits).then(|| "View mode".into()))
     }
 
+    fn arm_spawn_wait(&mut self) {
+        self.spawn_deadline = self.pending_spawn.map(|_| Instant::now() + SPAWN_WAIT);
+    }
+
+    fn abandon_spawn(&mut self, app: &mut App, why: &str) {
+        self.pending_spawn = None;
+        self.spawn_deadline = None;
+        self.waiting = Waiting::Idle;
+        app.error(format!("Play: {why}"));
+    }
+
     fn maybe_spawn(&mut self, app: &mut App) {
-        if self.waiting == Waiting::Reload || !self.is_paired() {
-            return;
-        }
         let Some(destination) = self.pending_spawn else {
             return;
         };
+        if self.waiting == Waiting::Reload || !self.is_paired() {
+            return;
+        }
+        let deadline = *self
+            .spawn_deadline
+            .get_or_insert_with(|| Instant::now() + SPAWN_WAIT);
+        if Instant::now() >= deadline {
+            self.abandon_spawn(
+                app,
+                "timed out waiting for the local player to reach the chosen spawn",
+            );
+            return;
+        }
+        if matches!(self.waiting, Waiting::Spawn(_)) || self.methods.is_none() {
+            return;
+        }
+        if let Some(missing) = [
+            agent_proto::sim::method::STATE_SET,
+            agent_proto::hot::method::EDIT_MAP,
+            agent_proto::hot::method::EDIT_CHANGES,
+            agent_proto::live::SUBSCRIBE,
+        ]
+        .into_iter()
+        .find(|name| !self.has_method(name))
+        {
+            self.abandon_spawn(app, &format!("moving the local player needs {missing}"));
+            return;
+        }
         let Some(s) = &self.status else { return };
         if s.at.phase != Phase::Gameplay
             || s.at.map_ticks < SPAWN_AFTER_TICKS
             || s.at.ticks < self.spawn_after_tick
+            || self.session.is_none()
+            || !self.edits.journal_ready
+            || self.map_match(app) != MapMatch::Same
+            || self.edits.epoch.is_none()
         {
-            return;
-        }
-        if self.session.is_none() || !self.edits.journal_ready {
-            return;
-        }
-        if self.map_match(app) != MapMatch::Same || self.edits.epoch.is_none() {
             return;
         }
         if app.pairing.shown.as_ref().is_some_and(|s| !app.pairing.matches_sample(app, s)) {
             return;
         }
-        self.pending_spawn = None;
-        if let Some(why) = self.edit_refusal(app) {
-            app.error(format!("spawn: {why}"));
+        if let Some(why) = self.map_refusal(app).or_else(|| self.session_refusal(app)) {
+            self.abandon_spawn(app, &why);
             return;
         }
-        match destination {
-            Destination::Position(pos) => self.teleport(app, pos),
-            Destination::Place(place) => {
-                let Some((player, _)) = app.pairing.player().filter(|(p, _)| p.local_user.is_some())
-                else {
-                    self.pending_spawn = Some(destination);
-                    return;
-                };
-                let mut params = place.json();
-                params["player"] = json!(format!("player.{}", player.index));
-                self.call(agent_proto::sim::method::STATE_SET, params, Purpose::Teleport);
-            }
-        }
+        let Some((player, _)) = app.pairing.player().filter(|(p, _)| p.local_user.is_some()) else {
+            return;
+        };
+        let mut params = match destination {
+            Destination::Position(pos) => json!({"pos": pos}),
+            Destination::Place(place) => place.json(),
+        };
+        params["player"] = json!(format!("player.{}", player.index));
+        self.waiting = Waiting::Spawn(deadline);
+        self.call(agent_proto::sim::method::STATE_SET, params, Purpose::Spawn(deadline));
     }
 
     /// Move the editor camera to the player, looking the way they face.
@@ -1139,9 +1257,15 @@ impl Play {
             app.error("not paired with a game");
             return;
         }
-        if self.map_match(app) != MapMatch::Same
-            || app.pairing.shown.as_ref().is_some_and(|s| !app.pairing.matches_sample(app, s))
-        {
+        if !self.has_method(agent_proto::sim::method::STATE_SET) {
+            app.error("this game does not offer sim.state.set to move the player");
+            return;
+        }
+        if let Some(why) = self.map_refusal(app) {
+            app.error(format!("cannot move the player: {why}"));
+            return;
+        }
+        if app.pairing.shown.as_ref().is_some_and(|s| !app.pairing.matches_sample(app, s)) {
             app.error("open the streamed map to teleport the player to an editor position");
             return;
         }
@@ -1174,6 +1298,10 @@ impl Play {
     }
     pub fn resume(&mut self) {
         self.call(method::RESUME, Value::Null, Purpose::Control("resume"));
+        self.release_control();
+    }
+
+    fn release_control(&mut self) {
         // Give control back so other clients (and agents) may act.
         self.call(method::RELEASE, Value::Null, Purpose::Control("release"));
         self.controller = false;

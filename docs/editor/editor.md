@@ -699,7 +699,7 @@ it sends pending pokes, resumes a paused game and raises its window if
 the game lists `editor.focus`. Structural edits require a freshly written
 play copy. The editor calls `map.reload {file}` when available, relaunches
 its own game otherwise, or leaves the edits pending for a manual load in
-a foreign game. A foreign game asks before receiving edits or switching
+a foreign game. F5 leaves the Edit switch as set. A foreign game asks before receiving edits or switching
 maps. The other choice in the map prompt opens the game's map here.
 `play::playtest::decide` supplies the bar, Game menu and socket API.
 
@@ -715,20 +715,23 @@ H2_AGENT=<cache>/h2recomp/editor-<pid>-<n>.sock H2_MAP_DIR=$TMPDIR/h2-editor-pla
   editor's executable (a checkout's `target/<profile>/h2`), else
   `~/.cargo/bin/h2`, else `h2` on the `PATH`, else the lab host's copy
   (`launch::find_h2`). The editor never builds it.
-- The disc is the open disc image, else `H2_DISC` or the repository's
-  `disc/halo2.iso` (`editor_core::default_disc`). For a Map Pack map this
-  is still the Halo 2 disc: `h2 play` installs the map pack itself from
+- The disc is the open image or the extracted disc containing the open
+  `maps` folder or file. Otherwise Play uses `H2_DISC` or the repository's
+  `disc/halo2.iso` (`launch::source_disc`, `editor_core::default_disc`).
+  Before stopping its running game, the editor resolves the launch level
+  with the same `level_boot::resolve_in` as `h2 play`. For a Map Pack map
+  this is still the Halo 2 disc: `h2 play` installs the map pack itself from
   `mappack.iso` beside that disc (`mappack_cmd::auto_install`) and the
   editor's copy plays through the override. When the open pack is
   elsewhere, the editor logs that `h2 play` will not install it (it does
   not run `h2 import-mappack` itself).
-- The editor's bytes, edits included, are written as `<map>.map` to the
-  scratch directory (`scenario_edit::save::save_as`, which is not a save:
-  the map stays unsaved) and served with `H2_MAP_DIR` as a whole-file
-  override of the retail path. Installed packages have their own content
-  paths. The launch copy includes unsaved edits to a derived map as
-  well. The level name must resolve on the disc or in an installed
-  campaign (`level_boot::resolve_in`).
+- A package opens under its manifest's `base.map`. If the document name
+  does not resolve, `launch::write_launch_copy` tries the internal cache
+  name and scenario path. It writes the edited bytes under the resolved
+  level's file name for `H2_MAP_DIR`. The document stays unsaved. When
+  the cache name and scenario resolve to different levels, or none of the
+  names resolves, Play keeps the running game and explains how to load
+  the map from the game's map list.
   [Map packages](../game/maps.md#8-saving-packages-from-the-editor)
 - `--level` boots the level with one default player
   ([level-boot.md](../runtime/level-boot.md)).
@@ -754,7 +757,8 @@ pill to pair with the single discovered game or choose from the list
 when several are running. The list shows each game's map and phase.
 It also offers **Unpair** and **Auto-pair**. Auto-pair defaults to on and
 chooses the editor's own game, the sole game, or the only game on the open
-map (`play::auto::choose`). Unpair skips that socket until it leaves discovery. An empty path in Game > Advanced pairs with the default socket.
+map (`play::auto::choose`). A deliberate Unpair skips the process across finder scans until it exits.
+If no PID is known, the socket stays unpaired until the user pairs it again. An empty path in Game > Advanced pairs with the default socket.
 The game is taken to hold the map as the editor shows it at that moment.
 
 `Play::link_view` supplies the pill in the bar and the Game panel, and
@@ -765,7 +769,7 @@ the `link` in `pair.status`.
 | No game | Play is available when a map is open. |
 | `Halo 2 is running <map>` | Click to pair. |
 | Connecting… | Click for **Cancel**. |
-| Reconnecting… | The game is still present. Click for **Cancel**. A matching epoch and checksum keep the edit mode and baselines. |
+| Reconnecting… | The editor retries the discovered or explicitly named socket for up to 30 seconds. Click for **Cancel**. A matching epoch and checksum preserve acknowledged edits. An interrupted write requires a fresh journal check. |
 | `Viewing <map> · <phase>` | The editor reads the running game in View mode. |
 | `Editing <map> live` | The Edit switch is on and tag and placement edits can reach the game. The viewport frame and the inspector's Live pill are green. |
 | Edits stay here | The Edit switch is on and the game is blocking writes. Hover for the reason. The frame and Live pill are amber. |

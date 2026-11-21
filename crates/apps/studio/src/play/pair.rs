@@ -124,6 +124,17 @@ impl Finder {
     }
 }
 
+/// The game reports the cache header name, which a renamed document can retain.
+pub(crate) fn map_match(app: &crate::App, game: Option<&str>) -> MapMatch {
+    let by_name = MapMatch::of(app.loaded_map(), game);
+    let cache = app.session.source_identity().map(|(name, _)| name);
+    if by_name == MapMatch::Different && MapMatch::of(cache, game) == MapMatch::Same {
+        MapMatch::Same
+    } else {
+        by_name
+    }
+}
+
 /// How a game's map compares with the editor's, in words.
 pub fn relation_text(m: MapMatch, game: Option<&str>, open: Option<&str>) -> String {
     match (m, game, open) {
@@ -149,18 +160,18 @@ pub struct Notice {
 }
 
 /// The notice for the games the finder sees, when not paired.
-pub fn notice(games: &[&Found], open: Option<&str>) -> Option<Notice> {
+pub fn notice(games: &[&Found], app: &crate::App) -> Option<Notice> {
     match games {
         [] => None,
         [g] => {
             let map = g.map();
-            let m = MapMatch::of(open, map);
+            let m = map_match(app, map);
             let shown = map.unwrap_or("no map yet");
             let text = match m {
                 MapMatch::Same => format!("Halo 2 is running {shown}, the map open here."),
                 MapMatch::Different => format!(
                     "Halo 2 is running {shown}. The editor has {} open.",
-                    open.unwrap_or("-")
+                    app.loaded_map().unwrap_or("-")
                 ),
                 MapMatch::Unknown => format!("Halo 2 is running ({shown})."),
             };
@@ -189,6 +200,7 @@ pub fn notice(games: &[&Found], open: Option<&str>) -> Option<Notice> {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Request {
     Pair(Endpoint),
+    PairSocket(Endpoint),
     Unpair,
     Apply(super::Apply),
     Play,
@@ -198,6 +210,12 @@ pub enum Request {
     Pause,
     Resume,
     Step(u64),
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Source {
+    Finder,
+    Named,
 }
 
 impl Request {
@@ -221,6 +239,14 @@ impl Request {
     }
 }
 
+/// The host and session whose peer count the user saw in Pending.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PeerConfirmation {
+    pub(super) pairing: u64,
+    pub(super) epoch: u64,
+    pub peers: u32,
+}
+
 /// Where the agent API and the window's [`super::Play`] meet, on the app
 /// they both see.
 #[derive(Debug)]
@@ -231,6 +257,8 @@ pub struct Bridge {
     pub spawn: Option<super::Spawn>,
     pub playtest: Option<super::playtest::Offer>,
     pub prompt: Option<super::playtest::Prompt>,
+    pub(super) next_prompt: u64,
+    pub peer_confirmation: Option<PeerConfirmation>,
     /// Left by `pair.*`, taken once a frame.
     pub requests: Vec<Request>,
     /// What `Play` last published: `None` until a window has drawn a
@@ -262,6 +290,8 @@ impl Default for Bridge {
             spawn: None,
             playtest: None,
             prompt: None,
+            next_prompt: 1,
+            peer_confirmation: None,
             requests: Vec::new(),
             published: None,
             link: None,
@@ -279,8 +309,16 @@ impl Default for Bridge {
 }
 
 impl Bridge {
+    pub(crate) fn show_prompt(&mut self, prompt: Option<super::playtest::Prompt>) {
+        if let Some(prompt) = &prompt {
+            self.next_prompt = prompt.id + 1;
+        }
+        self.prompt = prompt;
+    }
+
     pub(super) fn clear_mirror(&mut self) {
         self.prompt = None;
+        self.peer_confirmation = None;
         self.pending.clear();
         self.journal.clear();
         self.leaving = false;
@@ -300,7 +338,7 @@ impl Bridge {
     pub(crate) fn matches_sample(&self, app: &crate::App, sample: &live_mirror::Sample) -> bool {
         if !app.session.is_open()
             || self.stream_map["epoch"].as_u64() != Some(sample.epoch)
-            || MapMatch::of(app.loaded_map(), self.stream_map["name"].as_str()) != MapMatch::Same
+            || map_match(app, self.stream_map["name"].as_str()) != MapMatch::Same
         {
             return false;
         }
@@ -310,7 +348,9 @@ impl Bridge {
             .or_else(|| app.session.source_checksum());
         match (expected, self.stream_map["checksum"].as_u64()) {
             (Some(a), Some(b)) => u64::from(a) == b,
-            _ => true,
+            // Different documents can retain the same internal cache name.
+            // Using that alias for coordinates needs the checksum as well.
+            _ => MapMatch::of(app.loaded_map(), self.stream_map["name"].as_str()) == MapMatch::Same,
         }
     }
 

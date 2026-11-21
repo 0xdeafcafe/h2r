@@ -6635,6 +6635,7 @@ dependencies = [
  "h1objects",
  "hopper-edit",
  "hud-edit",
+ "libc",
  "live-mirror",
  "live-proto",
  "map",

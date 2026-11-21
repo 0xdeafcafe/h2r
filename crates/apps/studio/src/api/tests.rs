@@ -431,6 +431,46 @@ fn pair_playtest_and_settings_share_the_window_controls() {
 
 #[cfg(unix)]
 #[test]
+fn pair_playtest_describes_manual_reload_and_prompt_answers() {
+    use crate::play::{Play, playtest, testing::fake};
+    use agent_proto::sim::SessionKind;
+
+    let t = Temp::new("playtest-result");
+    let mut app = app(&t);
+    let mut api = Api::new();
+    let definition = api.methods().into_iter().find(|d| d.name == m::PAIR_PLAYTEST).unwrap();
+    let result: Value = serde_json::from_str(definition.result).unwrap();
+    assert_eq!(result["why?"], "string");
+    assert_eq!(result["answer?"], "cancel|open");
+
+    let game = fake::Game::start("playtest-result", "other", SessionKind::Local);
+    let mut play = Play::new();
+    play.pair(&mut app, agent_proto::Endpoint::Unix(game.path.clone()));
+    fake::until(&mut play, &mut app, "other game map", |_, a| {
+        a.pairing.playtest.as_ref().is_some_and(|offer| offer.step
+            == (playtest::Step::Ask { ask: playtest::Ask::Load }))
+    });
+    let mut previous = None;
+    for choice in ["cancel", "open"] {
+        let ask = call(&mut api, &mut app, m::PAIR_PLAYTEST, Value::Null);
+        assert_eq!(ask["ask"], "load");
+        let prompt = ask["prompt"].as_u64().unwrap();
+        if let Some(old) = previous.replace(prompt) {
+            assert_ne!(old, prompt);
+            let stale = api.call(&mut app, m::PAIR_PLAYTEST, json!({"confirm":choice,"prompt":old}));
+            assert_eq!(code_of(stale), code::REFUSED);
+        }
+        let reply = call(&mut api, &mut app, m::PAIR_PLAYTEST, json!({"confirm": choice}));
+        assert_eq!(reply, json!({"step":"ask", "answer":choice}));
+        play.update(&mut app);
+    }
+    let manual = playtest::Step::Reload(playtest::Reload::Manual).report(None).unwrap();
+    assert_eq!(manual["step"], "reload");
+    assert!(manual["why"].as_str().unwrap().contains("load it in the game"));
+}
+
+#[cfg(unix)]
+#[test]
 fn pair_status_carries_link_view() {
     use crate::play::Play;
     use crate::play::testing::fake;
@@ -481,7 +521,12 @@ mod paired_socket {
             let game = Game::start(tag, "example", SessionKind::Local);
             let (mut app, ..) = tag_tests::app(&t.0);
             let mut play = Play::new();
-            fake::pair_for_view(&mut play, &mut app, &game);
+            play.request(crate::play::pair::Request::PairSocket(agent_proto::Endpoint::Unix(
+                game.path.clone(),
+            )));
+            until(&mut play, &mut app, "the named game and its journal", |p, a| {
+                p.edits_blocked(a).as_deref() == Some("View mode")
+            });
             let sock = t.path("w.sock");
             let (listener, rx) = server::listen(&sock).unwrap();
             let client = studio_proto::cli::connect(&sock).unwrap();
@@ -620,8 +665,8 @@ mod paired_socket {
         game.agent.shutdown();
         drop(boundary);
         drop(game);
-        editor.wait("the failed connection", |p, a| {
-            matches!(p.conn, Conn::Lost(_)) && !a.pairing.pending.is_empty()
+        editor.wait("the interrupted connection", |p, a| {
+            matches!(p.conn, Conn::Reconnecting { .. }) && !a.pairing.pending.is_empty()
         });
         assert_eq!(
             editor.call(m::MIRROR_PENDING, Value::Null)["pending"][0]["at"],

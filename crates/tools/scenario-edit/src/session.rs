@@ -23,6 +23,8 @@ pub use multi::FieldEdit;
 struct Doc {
     source: MapSource,
     source_checksum: u32,
+    cache_name: String,
+    scenario_path: String,
     /// The map's name (`maps\\<name>.map`), the base a package names.
     name: String,
     /// The package directory this state came from or was last saved to.
@@ -439,6 +441,8 @@ impl Session {
         );
         self.doc = Some(Doc {
             source_checksum: map.header().checksum,
+            cache_name: map.header().name.clone(),
+            scenario_path: map.header().scenario_path.clone(),
             source,
             name: name.to_owned(),
             package: None,
@@ -483,6 +487,13 @@ impl Session {
     /// Cache-header checksum of the loaded bytes, stable across edits in memory.
     pub fn source_checksum(&self) -> Option<u32> {
         self.doc.as_ref().map(|d| d.source_checksum)
+    }
+
+    /// The internal map name reported by the game and the cache's scenario path.
+    /// A renamed file or a package can have a different document name.
+    pub fn source_identity(&self) -> Option<(&str, &str)> {
+        let doc = self.doc.as_ref()?;
+        Some((&doc.cache_name, &doc.scenario_path))
     }
 
     /// The open map's source.

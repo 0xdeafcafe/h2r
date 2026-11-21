@@ -3,7 +3,6 @@
 use std::path::PathBuf;
 
 use agent_proto::Endpoint;
-use agent_proto::discover::MapMatch;
 use dear_imgui_rs::{Key, TreeNodeFlags, Ui, WindowKey};
 
 use crate::app::App;
@@ -185,7 +184,7 @@ impl PlayUi {
                 if let Some(endpoint) = self.play.retry_endpoint().cloned()
                     && ui.button("Pair again")
                 {
-                    self.play.request(Request::Pair(endpoint));
+                    self.play.request(Request::PairSocket(endpoint));
                     ui.close_current_popup();
                 }
             }
@@ -194,6 +193,10 @@ impl PlayUi {
                 ui.close_current_popup();
             }
             _ => {}
+        }
+
+        for reason in &view.unavailable {
+            ui.text_wrapped(reason);
         }
 
         let games = self.play.finder.running();
@@ -215,7 +218,7 @@ impl PlayUi {
             ui.set_item_tooltip(format!(
                 "{socket}\n{}",
                 relation_text(
-                    MapMatch::of(app.loaded_map(), game.map()),
+                    play::pair::map_match(app, game.map()),
                     game.map(),
                     app.loaded_map()
                 ),
@@ -465,17 +468,12 @@ impl PlayUi {
                     action = Some(Apply::Revert);
                 }
             }
-            if let Some(peers) = app
-                .pairing
-                .published
-                .as_ref()
-                .and_then(|v| v["edit_peers"].as_u64())
-            {
+            if let Some(scope) = app.pairing.peer_confirmation {
                 if ui.button(format!(
                     "Confirm edits visible only on this host ({} other machines)",
-                    peers - 1
+                    scope.peers - 1
                 )) {
-                    action = Some(Apply::Confirm(peers as u32));
+                    action = Some(Apply::Confirm(scope));
                 }
             }
             let mut rows: Vec<_> = app.pairing.pending.iter().collect();

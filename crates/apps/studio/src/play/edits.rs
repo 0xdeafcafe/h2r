@@ -1,6 +1,8 @@
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use super::*;
 use crate::app::{TagAction, TagWrite};
-use agent_proto::{RpcError, sim::SessionView};
+use agent_proto::{RpcError, hot::method as hot, sim::SessionView};
 use map::TagId;
 use scenario_edit::layout::BLOCKS;
 use tag_sync::{CREATION, RELOAD, TagBaseline};
@@ -8,7 +10,7 @@ use tag_sync::{CREATION, RELOAD, TagBaseline};
 #[derive(Clone, Debug, PartialEq)]
 pub enum Apply {
     Send,
-    Confirm(u32),
+    Confirm(pair::PeerConfirmation),
     Adopt,
     Revert,
     Keep,
@@ -25,14 +27,40 @@ pub(super) struct Batch {
     placements: Vec<sync::Write>,
 }
 
+const RELOAD_TIMEOUT: Duration = Duration::from_secs(30);
+static NEXT_COPY: AtomicU64 = AtomicU64::new(1);
+
+pub(super) struct ReloadCopy {
+    id: u64,
+    world: u64,
+    before_epoch: u64,
+    checksum: u32,
+    file: PathBuf,
+    placements: Baseline,
+    tags: TagBaseline,
+    pub(super) resume_edits: bool,
+    pub(super) check_identity: bool,
+    deadline: Instant,
+}
+
+impl ReloadCopy {
+    fn acknowledged(&self, app: &App, reply: &Value) -> bool {
+        let Some(file) = reply["file"].as_str().map(std::path::Path::new) else {
+            return false;
+        };
+        reply["queued"] == true
+            && reply["checksum"].as_u64() == Some(u64::from(self.checksum))
+            && pair::map_match(app, reply["map"].as_str()) == MapMatch::Same
+            && (file == self.file.as_path()
+                || matches!((file.canonicalize(), self.file.canonicalize()), (Ok(a), Ok(b)) if a == b))
+    }
+}
+
 #[derive(Default)]
 pub(super) struct Edits {
-    pub next_pair: Option<Endpoint>,
-    reload_copy: Option<(u64, u32, Baseline, TagBaseline)>,
+    pub next_pair: Option<(Endpoint, pair::Source)>,
     pub own_start: bool,
     pub map_requested: bool,
-    pub respawn: bool,
-    pub reload: bool,
     pub(super) epoch: Option<u64>,
     loaded: Option<std::sync::Arc<HashSet<TagId>>>,
     last_diff: Option<(u64, u64, u64, bool)>,
@@ -69,14 +97,11 @@ impl Edits {
 
     pub(super) fn transport_lost(&mut self) {
         self.map_requested = false;
-        self.reload_copy = None;
         self.journal_requested = false;
         self.reverting = false;
         self.taking = None;
         self.sent = None;
         self.last_diff = None;
-        self.respawn = false;
-        self.reload = false;
     }
 }
 
@@ -92,7 +117,7 @@ impl Play {
     }
 
     pub fn can_respawn(&self) -> bool {
-        self.edits.respawn && !self.edits.created.is_empty()
+        self.has_method(agent_proto::sim::method::OBJECT_RESPAWN) && !self.edits.created.is_empty()
     }
 
     fn reset_baseline(&mut self, app: &App) {
@@ -115,45 +140,46 @@ impl Play {
 
     pub(super) fn edit_map(&mut self, app: &mut App, result: Reply) {
         self.edits.map_requested = false;
-        let Ok(v) = result else {
-            self.session = None;
-            let why = result.unwrap_err().to_string();
-            if matches!(self.waiting, Waiting::Pair | Waiting::Reload | Waiting::Launch) {
-                self.cancel_reload();
-                app.error(format!("Play: edit.map: {why}"));
+        let v = match result {
+            Ok(v) => v,
+            Err(e) => {
+                self.session = None;
+                if e.code == agent_proto::code::UNAVAILABLE
+                    && (self.reload_copy.is_some()
+                        || (self.waiting == Waiting::Launch && self.pending_spawn.is_some()))
+                {
+                    // The tag index is unavailable while the game changes maps.
+                    self.edits.session_reason = Some(e.message);
+                    return;
+                }
+                if matches!(self.waiting, Waiting::Pair | Waiting::Reload | Waiting::Launch) {
+                    self.cancel_reload();
+                    app.error(format!("Play: edit.map: {e}"));
+                }
+                self.edits.session_reason = Some(e.to_string());
+                return;
             }
-            self.edits.session_reason = Some(why);
-            return;
         };
         let epoch = v["epoch"].as_u64();
         let checksum = v["checksum"].as_u64().and_then(|n| u32::try_from(n).ok());
         let name = v["name"].as_str().map(str::to_owned);
-        let mut loaded_copy = false;
-        if self.edits.epoch != epoch
-            && self
-                .edits
-                .reload_copy
-                .as_ref()
-                .is_some_and(|(world, sum, _, _)| {
-                    *world == app.session.world_rev()
-                        && Some(*sum) == checksum
-                        && MapMatch::of(app.loaded_map(), name.as_deref()) == MapMatch::Same
-                })
-            && let Some((world, sum, base, tags)) = self.edits.reload_copy.take()
+        if let Some(copy) = &self.reload_copy
+            && (!copy.check_identity
+                || epoch.is_none_or(|epoch| epoch == copy.before_epoch)
+                || checksum != Some(copy.checksum)
+                || copy.world != app.session.world_rev()
+                || pair::map_match(app, name.as_deref()) != MapMatch::Same)
         {
-            loaded_copy = true;
-            app.pairing.play_copy = Some((world, sum));
-            self.launch_baseline = Some((base, tags));
-            self.launched_copy = self.endpoint().cloned().map(|ep| (ep, world, sum));
+            // The new epoch and its tag index can become visible on different polls.
+            self.session = None;
+            return;
         }
-        if self.waiting == Waiting::Reload && !loaded_copy && epoch != self.edits.epoch
-            && self.status.as_ref().is_some_and(|s| {
-                s.at.phase == Phase::Gameplay && s.at.map.is_some() && s.at.map == name
-            })
-        {
-            self.cancel_reload();
-            app.error("the game loaded a different map copy; the player stays at its spawn");
-        }
+        let resume_edits = self.reload_copy.take().map(|copy| {
+            app.pairing.play_copy = Some((copy.world, copy.checksum));
+            self.launch_baseline = Some((copy.placements, copy.tags));
+            self.launched_copy = self.endpoint().cloned().map(|ep| (ep, copy.world, copy.checksum));
+            copy.resume_edits
+        });
         let reconnecting = matches!(self.conn, Conn::Reconnecting { .. });
         if reconnecting {
             self.conn = Conn::Connected;
@@ -165,6 +191,9 @@ impl Play {
             || (self.edits.name != name
                 && MapMatch::of(self.edits.name.as_deref(), name.as_deref()) != MapMatch::Same)
             || self.edits.world != Some(app.session.world_rev());
+        if reconnecting && changed && self.waiting == Waiting::Launch && self.pending_spawn.is_some() {
+            self.abandon_spawn(app, "the loaded map changed before the player could be moved");
+        }
         self.scenario_tag = v["scenario"].as_str().map(str::to_owned);
         let session =
             serde_json::from_value::<SessionView>(v["session"].clone()).unwrap_or_default();
@@ -191,7 +220,7 @@ impl Play {
             self.edits.last_diff = None;
         }
         if changed {
-            if !loaded_copy && self.waiting != Waiting::Reload {
+            if resume_edits.is_none() {
                 self.playtest_consent = false;
             }
             app.sync_tags();
@@ -217,20 +246,17 @@ impl Play {
             self.reset_baseline(app);
             self.edits.journal_requested = false;
         }
-        if let Some(epoch) = epoch
-            && !self.edits.journal_ready
-            && !self.edits.journal_requested
-        {
-            self.edits.journal_requested = true;
-            self.call("edit.changes", Value::Null, Purpose::Journal(epoch));
+        if let Some(epoch) = epoch {
+            self.request_journal(epoch);
         }
-        if loaded_copy && self.waiting == Waiting::Reload {
+        if let Some(resume_edits) = resume_edits {
             // The poll that triggered edit.map may still describe the old level.
             self.spawn_after_tick = self.status.as_ref().map_or(0, |s| s.at.ticks + SPAWN_AFTER_TICKS);
             self.status = None;
             self.waiting = Waiting::Launch;
-            // The user approved this copy, including when the game is foreign.
-            self.edits.own_start = self.playtest_consent;
+            self.arm_spawn_wait();
+            self.edits.own_start = resume_edits;
+            self.playtest_consent = true;
         }
         if self.map_refusal(app).is_none() {
             app.tags.live_datums = self.edits.loaded.clone();
@@ -243,16 +269,19 @@ impl Play {
         }
     }
 
-    fn map_refusal(&self, app: &App) -> Option<String> {
+    pub(super) fn map_refusal(&self, app: &App) -> Option<String> {
         if !self.is_paired() {
             return Some("not paired".into());
+        }
+        if let Err(why) = self.require_method(hot::EDIT_MAP) {
+            return Some(why);
         }
         let open = app.loaded_map();
         if open.is_none() {
             return Some("no map is open".into());
         }
         if self.map_match(app) != MapMatch::Same
-            || MapMatch::of(open, self.edits.name.as_deref()) != MapMatch::Same
+            || pair::map_match(app, self.edits.name.as_deref()) != MapMatch::Same
         {
             return Some(format!(
                 "the game runs {}, the editor has {}",
@@ -284,11 +313,15 @@ impl Play {
     }
 
     pub(super) fn edit_refusal(&self, app: &App) -> Option<String> {
-        self.map_refusal(app).or_else(|| self.session_refusal(app))
+        self.map_refusal(app)
+            .or_else(|| self.session_refusal(app))
+            .or_else(|| self.require_method(hot::EDIT_BATCH).err())
     }
 
     pub(super) fn session_refusal(&self, app: &App) -> Option<String> {
-        self.edits.session_reason.clone()
+        self.require_method(hot::EDIT_MAP).err()
+            .or_else(|| self.edits.session_reason.clone())
+            .or_else(|| self.require_method(hot::EDIT_CHANGES).err())
             .or_else(|| (self.session.is_none()).then(|| "waiting for the session".into()))
             .or_else(|| (!self.edits.journal_ready).then(|| "checking the game journal".into()))
             .or_else(|| {
@@ -310,6 +343,16 @@ impl Play {
                 (app.pairing.leaving || self.edits.reverting)
                     .then(|| "finishing the pairing".into())
             })
+    }
+
+    fn request_journal(&mut self, epoch: u64) {
+        if !self.edits.journal_ready
+            && !self.edits.journal_requested
+            && self.has_method(hot::EDIT_CHANGES)
+        {
+            self.edits.journal_requested = true;
+            self.call(hot::EDIT_CHANGES, Value::Null, Purpose::Journal(epoch));
+        }
     }
 
     pub(super) fn edit_journal(&mut self, app: &mut App, epoch: u64, result: Reply) {
@@ -351,11 +394,11 @@ impl Play {
     }
 
     pub(super) fn push_edits(&mut self, app: &mut App) {
-        self.refresh_pending(app, true);
+        self.refresh_pending(app, self.live_edits);
     }
 
     pub(super) fn refresh_pending(&mut self, app: &mut App, send: bool) {
-        let writable = send && self.waiting != Waiting::Reload && self.edits_blocked(app).is_none();
+        let writable = send && self.reload_copy.is_none() && self.edit_refusal(app).is_none();
         let revisions = (
             app.session.world_rev(),
             app.session.markers_rev(),
@@ -441,7 +484,9 @@ impl Play {
             }
         }
         app.pairing.pending = pending;
-        if !writable || self.edits.sent.is_some() || !self.edits.conflicts.is_empty() {
+        if !writable || self.edits.sent.is_some() || self.edits.taking.is_some()
+            || !self.edits.conflicts.is_empty()
+        {
             return;
         }
         let mut writes: Vec<_> = tags.iter().map(tag_sync::Write::wire).collect();
@@ -456,7 +501,7 @@ impl Play {
         self.edits.next += 1;
         let id = self.edits.next;
         self.call(
-            "edit.batch",
+            hot::EDIT_BATCH,
             json!({"epoch":self.edits.epoch,"confirm_peers":self.edits.confirmed,"writes":writes}),
             Purpose::Edit(id),
         );
@@ -472,6 +517,7 @@ impl Play {
             return;
         }
         let batch = self.edits.sent.take().unwrap();
+        let playtest = self.waiting == Waiting::Sent;
         if self.edits.world != Some(app.session.world_rev()) {
             self.edits.restore_after_batch = false;
             return;
@@ -492,6 +538,10 @@ impl Play {
                             .retain(|p| p.block != w.block || p.index != w.index);
                         self.edits.created.push(w);
                     }
+                }
+                if playtest {
+                    self.playtest_consent = true;
+                    self.finish_playtest();
                 }
             }
             Err(e) if e.code == agent_proto::code::MISMATCH => {
@@ -517,14 +567,16 @@ impl Play {
                         c["class"] = json!(CREATION);
                     }
                 }
-                if self.edits.conflicts.is_empty() {
+                if !playtest && self.edits.conflicts.is_empty() {
                     self.live_edits = false;
                 }
                 app.error("the game changed a field; resolve it in Pending");
             }
             other => {
                 self.waiting = Waiting::Idle;
-                self.live_edits = false;
+                if !playtest {
+                    self.live_edits = false;
+                }
                 app.error(format!(
                     "edit.batch: {}",
                     other
@@ -546,8 +598,8 @@ impl Play {
     fn finish_leave(&mut self, app: &mut App) {
         let next = self.edits.next_pair.take();
         self.unpair(app);
-        if let Some(e) = next {
-            self.pair(app, e);
+        if let Some((endpoint, source)) = next {
+            self.request_pair(app, endpoint, source);
         }
     }
 
@@ -597,16 +649,40 @@ impl Play {
                 self.next_push = Instant::now();
                 app.pairing.journal.clear();
                 self.edits.journal_ready = false;
-                self.edits.journal_requested = true;
-                self.call("edit.changes", Value::Null, Purpose::Journal(epoch));
+                self.request_journal(epoch);
             }
         }
     }
 
+    pub(super) fn peer_confirmation(&self) -> Option<pair::PeerConfirmation> {
+        if !self.is_paired()
+            || self.session != Some(SessionKind::MpHost)
+            || self.edits.session_reason.is_some()
+        {
+            return None;
+        }
+        Some(pair::PeerConfirmation {
+            pairing: self.pairing_id,
+            epoch: self.edits.epoch?,
+            peers: self.edits.peers?,
+        })
+    }
+
     pub fn apply_edits(&mut self, app: &mut App, action: Apply) -> Result<(), String> {
+        if let Apply::Confirm(scope) = action {
+            if self.peer_confirmation() != Some(scope) {
+                return Err("the paired host, map epoch or peer count changed".into());
+            }
+            self.edits.confirmed = Some(scope.peers);
+            self.next_push = Instant::now();
+            return Ok(());
+        }
         if action == Apply::Keep {
             self.finish_leave(app);
             return Ok(());
+        }
+        if matches!(action, Apply::Revert | Apply::Restore) {
+            self.require_method(hot::EDIT_REVERT)?;
         }
         if action == Apply::Restore && self.is_paired() {
             self.request_leave(app);
@@ -642,12 +718,13 @@ impl Play {
                     let epoch = self.edits.epoch.unwrap();
                     let (method, params) = if c["doc"] == "scenario" {
                         (
-                            "edit.get",
+                            hot::EDIT_GET,
                             json!({"epoch":epoch,"tag":self.scenario_tag,"group":"scnr","path":c["path"]}),
                         )
                     } else {
-                        ("edit.read", json!({"epoch":epoch,"at":at,"len":len}))
+                        (hot::EDIT_READ, json!({"epoch":epoch,"at":at,"len":len}))
                     };
+                    self.require_method(method)?;
                     self.edits.next += 1;
                     let id = self.edits.next;
                     self.edits.taking = Some(id);
@@ -675,7 +752,7 @@ impl Play {
                 self.edits.reverting = true;
                 let epoch = self.edits.epoch.unwrap();
                 self.call(
-                    "edit.revert",
+                    hot::EDIT_REVERT,
                     json!({"epoch":epoch,"confirm_peers":self.edits.confirmed}),
                     Purpose::Revert {
                         leave: action == Apply::Restore,
@@ -683,38 +760,50 @@ impl Play {
                     },
                 );
             }
-            Apply::Confirm(peers) if self.edits.peers == Some(peers) => {
-                self.edits.confirmed = Some(peers);
-            }
-            Apply::Confirm(_) => return Err("the peer count changed".into()),
             Apply::Send => {
                 if let Some(why) = self.edit_refusal(app) {
                     return Err(why);
                 }
+                if let Some(copy) = &mut self.reload_copy {
+                    copy.resume_edits = true;
+                }
                 self.live_edits = true;
-                self.playtest_consent = true;
             }
             Apply::Reload | Apply::Respawn => {
                 if self.waiting == Waiting::Reload {
                     return Err("waiting for the requested map to load".into());
                 }
-                if let Some(why) = self.edits_blocked(app) {
+                if let Some(why) = self.session_refusal(app) {
                     return Err(why);
                 }
+                if !self.live_edits {
+                    return Err("View mode".into());
+                }
                 if action == Apply::Respawn {
+                    self.require_method(agent_proto::sim::method::OBJECT_RESPAWN)?;
                     if !self.can_respawn() {
                         return Err("no acknowledged placement edits to respawn".into());
                     }
                     for w in &self.edits.created {
-                        self.call(agent_proto::sim::method::OBJECT_RESPAWN,json!({"placement":{"block":crate::api::block_name(w.block),"index":w.index}}),Purpose::Other);
+                        self.call(
+                            agent_proto::sim::method::OBJECT_RESPAWN,
+                            json!({
+                                "placement": {"block": crate::api::block_name(w.block), "index": w.index},
+                                "confirm_peers": self.edits.confirmed,
+                            }),
+                            Purpose::Other,
+                        );
                     }
                 } else {
                     self.remember_place(app);
-                    let route = playtest::Reload::route(self.edits.reload, self.own_game());
+                    let route = playtest::Reload::route(
+                        self.has_method(agent_proto::sim::method::MAP_RELOAD),
+                        self.own_game(),
+                    );
                     self.reload_for_play(app, route)?;
                 }
             }
-            Apply::Keep => unreachable!(),
+            Apply::Keep | Apply::Confirm(_) => unreachable!(),
         }
         self.edits.last_diff = None;
         self.next_push = Instant::now();
@@ -722,9 +811,66 @@ impl Play {
     }
 
     pub(super) fn cancel_reload(&mut self) {
-        self.edits.reload_copy = None;
+        self.reload_copy = None;
         self.pending_spawn = None;
+        self.spawn_deadline = None;
         self.waiting = Waiting::Idle;
+    }
+
+    pub(super) fn expire_reload(&mut self, app: &mut App, now: Instant) {
+        if self.reload_copy.as_ref().is_some_and(|copy| now >= copy.deadline) {
+            self.cancel_reload();
+            // Require another identity poll before a write to the current game.
+            self.session = None;
+            app.error("Play: timed out waiting for the game to load the requested map copy");
+        }
+    }
+
+    pub(super) fn reload_answer(&mut self, app: &mut App, id: u64, result: Reply) {
+        let Some(copy) = self.reload_copy.as_mut().filter(|copy| copy.id == id) else {
+            return;
+        };
+        match result {
+            Ok(v) if copy.acknowledged(app, &v) => {
+                copy.check_identity = true;
+            }
+            Err(e) if e.code == agent_proto::sim::REFUSED => {
+                let why = e.data.as_ref().and_then(|v| v["why"].as_str()).unwrap_or(&e.message);
+                let destination = self.pending_spawn;
+                let resume_edits = copy.resume_edits;
+                self.cancel_reload();
+                if self.own_game() {
+                    app.info(format!("map.reload: {why}; relaunching the game"));
+                    if let Err(why) = self.relaunch_copy(app, destination, resume_edits) {
+                        app.error(format!("Play: {why}"));
+                    }
+                } else {
+                    app.error(format!("map.reload: {why}. Save the map and load it in the game."));
+                }
+            }
+            other => {
+                let why = match other {
+                    Ok(v) if v["queued"] == false => "the game did not queue the reload".into(),
+                    Ok(_) => "the game did not acknowledge the requested map copy".into(),
+                    Err(e) => e.to_string(),
+                };
+                self.cancel_reload();
+                app.error(format!("map.reload: {why}"));
+            }
+        }
+    }
+
+    fn relaunch_copy(
+        &mut self,
+        app: &mut App,
+        destination: Option<Destination>,
+        resume_edits: bool,
+    ) -> Result<(), String> {
+        self.launch_copy(app)?;
+        self.pending_spawn = destination;
+        self.live_edits = resume_edits;
+        self.edits.own_start = resume_edits;
+        Ok(())
     }
 
     pub(super) fn reload_for_play(
@@ -736,31 +882,43 @@ impl Play {
             return Err(playtest::MANUAL_RELOAD.into());
         }
         if route == playtest::Reload::Relaunch {
-            return self.launch_copy(app);
+            let destination = self.destination(app);
+            return self.relaunch_copy(app, destination, self.live_edits);
         }
+        self.require_method(agent_proto::sim::method::MAP_RELOAD)?;
         let level = app.loaded_map().ok_or("open a map first")?;
         let scenario = app.session.scenario().ok_or("open a map first")?;
-        let dir = launch::scratch().join("reload");
+        let before_epoch = self.edits.epoch.ok_or("waiting for the loaded map epoch")?;
+        let id = NEXT_COPY.fetch_add(1, Ordering::Relaxed);
+        let dir = launch::scratch().join(format!("reload-{id}"));
         let file = launch::write_copy(&app.session, level, &dir)?;
         let saved = scenario_edit::MapSource::file(file.clone())
             .open()
             .map_err(|e| e.to_string())?;
-        self.edits.reload_copy = Some((
-            app.session.world_rev(),
-            saved.header().checksum,
-            Baseline::of(scenario),
-            TagBaseline::of(&app.tags),
-        ));
+        self.reload_copy = Some(ReloadCopy {
+            id,
+            world: app.session.world_rev(),
+            before_epoch,
+            checksum: saved.header().checksum,
+            file: file.clone(),
+            placements: Baseline::of(scenario),
+            tags: TagBaseline::of(&app.tags),
+            resume_edits: self.live_edits,
+            check_identity: false,
+            deadline: Instant::now() + RELOAD_TIMEOUT,
+        });
         self.play_world = app.session.world_rev();
         self.pending_spawn = self.destination(app);
         self.waiting = Waiting::Reload;
-        self.live_edits = true;
-        self.playtest_consent = true;
         if self.paused {
             self.ensure_claim();
             self.resume();
         }
-        self.call(agent_proto::sim::method::MAP_RELOAD, json!({"file": file}), Purpose::Reload);
+        self.call(
+            agent_proto::sim::method::MAP_RELOAD,
+            json!({"file": file, "confirm_peers": self.edits.confirmed}),
+            Purpose::Reload(id),
+        );
         Ok(())
     }
 

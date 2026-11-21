@@ -74,7 +74,7 @@ pub(crate) mod fake {
         fn status(&mut self) -> GameStatus {
             GameStatus {
                 tick: Some(self.tick),
-                map: Some(self.map.clone()),
+                map: Some(self.edits.lock().unwrap().map.clone().unwrap_or_else(|| self.map.clone())),
                 mode: Some("multiplayer".into()),
                 bsp: Some(self.bsp.load(Ordering::Relaxed)),
             }
@@ -132,8 +132,15 @@ pub(crate) mod fake {
     #[derive(Default)]
     pub(crate) struct FakeEdits {
         pub(crate) checksum: u32,
+        map: Option<String>,
+        // While the new tag index loads, edit.map is unavailable, then can still
+        // report the former checksum at the new epoch for one poll.
+        pub(crate) loading: bool,
+        former_checksum: Option<u32>,
+        pub(crate) hold_reload_reply: bool,
         pub(crate) teleport_map_ticks: u64,
         pub(crate) external_live: bool,
+        pub(crate) peers: Option<u32>,
         pub(crate) bytes: std::collections::HashMap<String, String>,
         pub(crate) placements: std::collections::HashMap<String, u32>,
         pub(crate) journal: Vec<Value>,
@@ -169,10 +176,15 @@ pub(crate) mod fake {
             let loaded = map.to_owned();
             let state = edits.clone();
             agent.add_game_method("edit.map", Access::Read, move |_, ctx| {
-                let state = state.lock().unwrap();
+                let mut state = state.lock().unwrap();
+                if state.loading {
+                    state.loading = false;
+                    return Err(RpcError::new(code::UNAVAILABLE, "tag index is loading"));
+                }
+                let checksum = state.former_checksum.take().unwrap_or(state.checksum);
                 let mut session = agent_proto::sim::SessionView {
                     kind,
-                    peers: (kind == SessionKind::MpHost).then_some(1),
+                    peers: (kind == SessionKind::MpHost).then(|| state.peers.unwrap_or(1)),
                     ..Default::default()
                 }
                 .settle();
@@ -181,7 +193,7 @@ pub(crate) mod fake {
                     session.why = Some("external Live session".into());
                 }
                 Ok(
-                    json!({"name":loaded,"file":"invented.map","checksum":state.checksum,"epoch":fixture_epoch(ctx),
+                    json!({"name":state.map.as_ref().unwrap_or(&loaded),"file":"invented.map","checksum":checksum,"epoch":fixture_epoch(ctx),
                     "scenario":SCNR,"session":session}),
                 )
             });
@@ -292,14 +304,24 @@ pub(crate) mod fake {
             let bsp = Arc::new(AtomicU32::new(0));
             let reload_bsp = Arc::clone(&bsp);
             let state = Arc::clone(&edits);
-            let r = rec("map.reload");
-            agent.add_method("map.reload", Access::Act, move |params| {
-                let params = r(params);
+            let r = rec(agent_proto::sim::method::MAP_RELOAD);
+            agent.add_game_method(agent_proto::sim::method::MAP_RELOAD, Access::Act, move |v, ctx| {
+                let params = r(v);
                 let file = params["file"].as_str().unwrap();
-                let loaded = scenario_edit::MapSource::file(file).open().unwrap();
-                state.lock().unwrap().checksum = loaded.header().checksum;
+                let map = scenario_edit::MapSource::file(file).open().unwrap();
+                let checksum = map.header().checksum;
+                let mut state = state.lock().unwrap();
+                state.former_checksum = Some(state.checksum);
+                state.map = Some(map.header().name.clone());
+                state.loading = true;
+                state.checksum = checksum;
+                state.journal.clear();
                 reload_bsp.fetch_add(1, Ordering::Relaxed);
-                Ok(json!({"queued":true, "map":loaded.header().name, "file":file, "checksum":loaded.header().checksum}))
+                let reply = json!({"queued": true, "map": state.map, "file": file, "checksum": checksum});
+                if state.hold_reload_reply {
+                    ctx.defer(300, Box::new(|_| None));
+                }
+                Ok(reply)
             });
             let r = rec(agent_proto::editor::method::FOCUS);
             agent.add_method(agent_proto::editor::method::FOCUS, Access::Act, move |params| {
