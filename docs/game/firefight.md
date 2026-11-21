@@ -477,9 +477,11 @@ have no director and so no blob until the host log carries the mode state
 
 ### Live
 
-- **Variant.** The Slayer record carries two of the variant extension's
-  reserved bytes ([game-options.md](game-options.md), "The extension"):
-  a mode id and a definition-hash prefix. The definition itself travels
+- **Variant.** The Slayer record names the mode in the variant
+  extension's reserved bytes ([game-options.md](game-options.md), "The
+  extension"), in the layout of
+  [rules-engine.md](rules-engine.md#carrying-a-script): mode 1 and the
+  8-byte prefix of the definition's hash. The definition itself travels
   in the session data beside the extension (`NewSession.firefight`), in
   both homes.
 - **Hoppers.** A Firefight hopper entry identifies a kit map and the
