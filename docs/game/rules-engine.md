@@ -1,7 +1,7 @@
 # Rules engine: scripted game types
 
-Status: Design. Nothing is built; this page is the plan. Decisions by the user, 2026-11-21.
-Code: none. The plan adds a formats crate named `rules` (language, verifier, IR, VM) and a `rules` module in `crates/extensions/game/src`. Tests: none.
+Status: Design, partly built: the `rules` formats crate runs on a fake game in tests only. Decisions by the user, 2026-11-21.
+Code: `crates/formats/rules` (language, verifier, IR codec, capabilities, VM). The plan adds a `rules` module in `crates/extensions/game/src`. Tests: `cargo test -p rules`.
 Switch: a `rules` feature of `H2_FEATURES`, added to [switches.md](../runtime/switches.md) when it is built.
 
 One scriptable engine runs every multiplayer game type. A game type is a
@@ -245,16 +245,20 @@ The header names the script, its version, its carrier, its teams and the
 capabilities it requires: `requires player.weapons, hud.message`.
 
 **Types.** `int` (32-bit, saturating), `fixed` (16.16, for seconds and
-distances), `bool`, `player`, `team`, `object`, `squad`, `timer` (counts
-ticks down, then fires `on timer`), and `enum` types a script declares.
+distances), `bool`, `player`, `team`, `object`, `squad`, `timer` (a global variable that
+counts ticks down, then fires `on timer`), and `enum` types a script declares.
 `player`, `team` and `object` values may be `none`. A `table` is constant
 rows of typed columns, indexed by `int`. There are no floats and no
 strings at run time: text is a string-table index with typed arguments.
+An `int` indexes a table's rows; a value of the first column's type
+finds the first row holding it (`points[class]`), and a key no row holds
+reads the columns' zero values. A row out of range is a script error.
 
 **Expressions and control.** Ordinary expressions with precedence and
 parentheses (`a = b + c * 2`), `if` / `else if` / `else`, `and` binding
-tighter than `or`. These are the things the ReachVariantTool dialect
-lacks ("Prior art").
+tighter than `or`; both short-circuit. A statement ends at a line break,
+`;` or `}`. A `let` or a parameter is not assigned again. These are the
+things the ReachVariantTool dialect lacks ("Prior art").
 
 **Variables** are declared, named and scoped:
 `global|player|team|object var name: type = init`. The compiler assigns
@@ -394,8 +398,9 @@ fn open(n: int) {
     for each objects labelled "barrier" b where b.number < n { delete(b) }
     spawn_areas(team 0, "attack", n)
     spawn_areas(team 1, "defend", n)
-    if n == 2 { register_objective(create("<core tag path>", first(objects labelled "core")), team 0) }
+    if n == 2 { create("<core tag path>", first(objects labelled "core")) }
 }
+on pickup(p, o) { if phase == 2 and not is_objective(o) { register_objective(o, team 0) } }
 on round_start { open(0) }
 on tick {
     if phase < 2 and ticks_held(labelled "zone" phase, team 0) >= seconds(capture_time) { open(phase + 1) }
@@ -441,6 +446,17 @@ arithmetic, compare, slot load and store, forward conditional jump,
 entry. There is no backward jump and no indirect jump, so termination is
 a property of the format, and the verifier needs no fixpoint.
 
+**Ops** (IR version 1, `crates/formats/rules/src/ir.rs`): `Const`,
+`Move`, `Arith` (add, subtract, multiply, divide, remainder; saturating
+`int` or 16.16 `fixed`), `Neg`, `Cmp`, `Not`, `Load` and `Store` (a slot,
+through an owner register for a scoped slot), `Opt` (a script option),
+`Variant` (a record field), `TableRead`, `TableFind`, `Jump`, `JumpIf`,
+`JumpIfNot`, `ForEach`, `Call`, `Grant`, `Revoke` and `Granted`. Each
+handler declares the type of every register, so the verifier checks
+types op by op, and a jump inside a `ForEach` body cannot leave it. A
+read through `none` gives the slot's initial value and a write through
+`none` does nothing.
+
 **Budget.** A tick may execute 20,000 ops across all its handlers. The
 count is always enforced and nothing is marked proven: a handler's worst
 case follows from the set bounds (16 players, 8 teams, 256 labelled
@@ -475,8 +491,9 @@ entries that replicas and films apply at the tick boundary (firefight.md
 "The director"); and object creation, deletion and teleports, not known
 to be legal inside a damage or AI update (`AI_ERASE` only marks an actor
 the AI is updating, `0x2736fc`). A read sees every call made so far and
-no queued one. `for each` visits players by slot index, teams by index,
-objects by label then placement id.
+no queued one, and a queued call returns nothing to the script. `for
+each` visits players by slot index, teams by index, objects by label
+then placement id.
 
 **Determinism.** The VM uses integers and fixed point only. Where the
 API must look at floats (a position against a zone), the test runs in

@@ -52,6 +52,7 @@ boot = { path = "crates/apps/boot" }
 content = { path = "crates/formats/content" }
 forge = { path = "crates/extensions/forge" }
 forge-doc = { path = "crates/formats/forge-doc" }
+rules = { path = "crates/formats/rules" }
 forge-build = { path = "crates/tools/forge-build" }
 host-dirs = { path = "crates/formats/host-dirs" }
 live-proto = { path = "crates/live/live-proto" }

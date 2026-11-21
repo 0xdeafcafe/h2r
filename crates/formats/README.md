@@ -23,6 +23,7 @@ crate needs another it depends on it directly (`tags` on `map`, `asf` on
 | [mopp](mopp/) | Havok MOPP code for structure BSPs: query model, validator, compiler |
 | [movies](movies/) | Transcoded movie manifest, lookup and resumable installer |
 | [pathfind](pathfind/) | AI pathfinding data: decode, generate, compare, emit |
+| [rules](rules/) | Scripted game types: the rules language, verified IR, capabilities and VM |
 | [settings](settings/) | Host settings as a schema, one store, one writer for `settings.toml` |
 | [shaders](shaders/) | NV2A vertex microcode and register combiners to WGSL |
 | [tags](tags/) | Tag definitions, codecs, repository and owned domain types |

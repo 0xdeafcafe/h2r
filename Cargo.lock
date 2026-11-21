@@ -5566,6 +5566,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "rules"
+version = "0.1.0"
+dependencies = [
+ "content",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "runtime"
 version = "0.1.0"
 dependencies = [

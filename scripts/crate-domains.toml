@@ -15,7 +15,7 @@ about = "Disc, tag and file formats, ours and the game's: plain data, no guest, 
 uses = []
 crates = [
     "asf", "content", "firefight", "font", "forge-doc", "h1-contract", "host-dirs", "host-log", "hs", "map",
-    "mopp", "movies", "pathfind", "settings", "shaders", "tags", "variants", "xbe", "xiso",
+    "mopp", "movies", "pathfind", "rules", "settings", "shaders", "tags", "variants", "xbe", "xiso",
 ]
 
 [recompiler]
