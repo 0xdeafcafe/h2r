@@ -18,6 +18,7 @@ the converters, the editors, `game`, `agent` and `boot` use it.
 - `src/writer.rs`, `src/build.rs`: write a map, and build one from blocks.
 - `src/checksum.rs`: the map checksum.
 - `src/recording.rs`: a recording reader that logs which ranges were read.
+- `src/scenario_layout.rs`: the placement schema shared by `scenario-edit` and `forge-doc`.
 
 ## Tests
 

@@ -65,7 +65,7 @@ during the read, so nothing here comes from the socket API.
 
 | # | Problem | Where |
 |---|---|---|
-| R22 | The scene reads eleven scenario blocks, all placements. Trigger volumes, kill triggers, BSP-switch volumes, decals and portals are not read by the editor. | `crates/tools/scenario-edit/src/layout.rs:12` (`BlockKind`) |
+| R22 | The scene reads eleven scenario blocks, all placements. Trigger volumes, kill triggers, BSP-switch volumes, decals and portals are not read by the editor. | `crates/formats/map/src/scenario_layout.rs` (`BlockKind`) |
 | R23 | Collision is not drawn. The parsers exist (`Bsp::decode_structure`, `Collision::decode`, `PhysicsModel::decode` in `crates/formats/tags/src/collision.rs`) and no editor code calls them. Picking uses render triangles, so a wall with collision and no render geometry cannot be seen, clicked or measured. | `crates/tools/scenario-edit/src/geometry.rs:880` (`surface`) |
 | R24 | Instanced geometry has no collision reader anywhere in the tree; `crates/formats/tags/src/structure.rs` reads instance definitions for drawing only. | `crates/formats/tags/src/structure.rs:185` |
 | R25 | Spawn points and netgame flags are glyphs with one colour per block. Facing, team and flag type are in the inspector only. | `crates/tools/scenario-edit/src/geometry.rs:694` to `geometry.rs:745` |

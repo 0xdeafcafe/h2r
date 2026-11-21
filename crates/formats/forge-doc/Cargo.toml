@@ -1,0 +1,16 @@
+[package]
+name = "forge-doc"
+description = "Forge documents: portable map edits, bounded canonical JSON and the host edit log"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+content.workspace = true
+map.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+scenario-edit = { path = "../../tools/scenario-edit" }
