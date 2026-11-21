@@ -20,6 +20,9 @@ pub const METHODS: &[&str] = &[SUBSCRIBE, STATUS, CLOSE];
 
 const OBJECTS: u8 = 1;
 const PLAYERS: u8 = 2;
+/// Ids follow the layer table in docs/editor/live-mirror.md; 3 to 6 are
+/// kept for the poses, anim, projectiles and devices layers.
+const CAMERA: u8 = 7;
 const MAX_FRAME: usize = 8 * 1024 * 1024;
 const MAX_RECORDS: usize = u16::MAX as usize;
 
@@ -44,16 +47,28 @@ fn default_key_every() -> u32 {
 pub struct Layers {
     pub objects: bool,
     pub players: bool,
+    pub camera: bool,
 }
 
 impl Layers {
-    pub fn negotiate(names: &[String]) -> (Self, BTreeMap<String, String>) {
+    /// `camera_refused` is why this server has no `camera` layer, or
+    /// `None` when it has a camera source.
+    pub fn negotiate(
+        names: &[String],
+        camera_refused: Option<&str>,
+    ) -> (Self, BTreeMap<String, String>) {
         let mut result = Self::default();
         let mut refused = BTreeMap::new();
         for name in names {
             match name.as_str() {
                 "objects" => result.objects = true,
                 "players" => result.players = true,
+                "camera" => match camera_refused {
+                    None => result.camera = true,
+                    Some(why) => {
+                        refused.insert(name.clone(), why.to_owned());
+                    }
+                },
                 _ => {
                     refused.insert(name.clone(), "layer unavailable on this server".into());
                 }
@@ -70,6 +85,9 @@ impl Layers {
         if self.players {
             names.push("players");
         }
+        if self.camera {
+            names.push("camera");
+        }
         names
     }
 }
@@ -80,6 +98,10 @@ impl Layers {
 pub struct World {
     pub objects: Vec<Object>,
     pub players: Vec<Player>,
+    /// Sorted by key. Taken from the last sealed frame scene when the
+    /// capture is encoded, so a camera can be a rendered frame behind the
+    /// tick it travels with (`scene_tick` says which).
+    pub cameras: Vec<View>,
 }
 
 #[derive(Clone, Copy, Default, Debug, PartialEq)]
@@ -109,6 +131,62 @@ pub struct Player {
     pub held: Option<u32>,
     pub aim: [f32; 3],
     pub local_user: Option<u16>,
+}
+
+/// One view the game drew: its camera as the renderer used it and the
+/// objects drawn in it (`frame_scene::View` and its instances).
+#[derive(Clone, Default, Debug, PartialEq)]
+pub struct View {
+    /// [`view_key`]: the view kind, the player and the guest's view index.
+    pub key: u32,
+    /// The game tick of the sealed scene this camera comes from.
+    pub scene_tick: u32,
+    pub position: [f32; 3],
+    pub forward: [f32; 3],
+    pub up: [f32; 3],
+    /// Vertical field of view, radians.
+    pub fov: f32,
+    pub near: f32,
+    pub far: f32,
+    /// Top, left, bottom, right in guest pixels.
+    pub viewport: [i16; 4],
+    /// Nothing of this camera blends from the scene before.
+    pub cut: bool,
+    /// Salted handles of the objects the view drew, in draw order.
+    pub drawn: Vec<u32>,
+}
+
+/// View kinds in a [`View::key`], in `frame_scene::ViewKind`'s order.
+pub const VIEW_KINDS: [&str; 4] = ["game", "cinematic", "alternate", "first_person"];
+
+/// `kind << 16 | player << 8 | view`, `kind` an index into [`VIEW_KINDS`].
+pub fn view_key(kind: u8, player: u8, view: u8) -> u32 {
+    (u32::from(kind) << 16) | (u32::from(player) << 8) | u32::from(view)
+}
+
+impl View {
+    /// `game:0:0` (kind:player:view), as `render.scene` names a view.
+    pub fn name(&self) -> String {
+        let kind = (self.key >> 16) as usize;
+        let kind = VIEW_KINDS.get(kind).copied().unwrap_or("unknown");
+        format!("{kind}:{}:{}", (self.key >> 8) & 0xff, self.key & 0xff)
+    }
+
+    /// The parsed form of [`View::name`].
+    pub fn key_of(name: &str) -> Option<u32> {
+        let mut parts = name.split(':');
+        let kind = VIEW_KINDS.iter().position(|k| Some(*k) == parts.next())?;
+        let player = parts.next()?.parse().ok()?;
+        let view = parts.next()?.parse().ok()?;
+        parts
+            .next()
+            .is_none()
+            .then(|| view_key(kind as u8, player, view))
+    }
+
+    pub fn is_game(&self) -> bool {
+        self.key >> 16 == 0
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -232,6 +310,7 @@ pub struct Frame {
     pub header: Header,
     objects: Option<Changes<Object>>,
     players: Option<Changes<Player>>,
+    camera: Option<Changes<View>>,
 }
 
 impl Frame {
@@ -248,6 +327,7 @@ impl Frame {
                 header,
                 objects: None,
                 players: None,
+                camera: None,
             };
         }
         if previous.is_none()
@@ -275,6 +355,9 @@ impl Frame {
             players: layers
                 .players
                 .then(|| Changes::between(&base.players, &current.players)),
+            camera: layers
+                .camera
+                .then(|| Changes::between(&base.cameras, &current.cameras)),
         }
     }
 
@@ -291,6 +374,9 @@ impl Frame {
         }
         if let Some(players) = &self.players {
             write_layer(&mut out, PLAYERS, players)?;
+        }
+        if let Some(camera) = &self.camera {
+            write_layer(&mut out, CAMERA, camera)?;
         }
         let size = out.len() - 4;
         if size > MAX_FRAME {
@@ -337,6 +423,7 @@ impl Frame {
             header,
             objects: None,
             players: None,
+            camera: None,
         };
         while !input.is_empty() {
             let id = u8::read(&mut input)?;
@@ -352,14 +439,17 @@ impl Frame {
                 PLAYERS if frame.players.is_none() && kind != Kind::Notice => {
                     frame.players = Some(Changes::read(section, kind)?);
                 }
-                OBJECTS | PLAYERS => return Err(invalid("unexpected live layer")),
+                CAMERA if frame.camera.is_none() && kind != Kind::Notice => {
+                    frame.camera = Some(Changes::read(section, kind)?);
+                }
+                OBJECTS | PLAYERS | CAMERA => return Err(invalid("unexpected live layer")),
                 _ => {}
             }
         }
         Ok(frame)
     }
 
-    /// Apply both layers atomically. Keys replace all state; delta rows
+    /// Apply every layer atomically. Keys replace all state; delta rows
     /// are keyed by salted handle / player index. Outputs are sorted by id.
     /// The store checks the stream sequence and epoch before applying a delta.
     pub fn apply(&self, world: &mut World) -> io::Result<()> {
@@ -379,6 +469,11 @@ impl Frame {
             .as_ref()
             .map(|s| s.applied(&base.players))
             .transpose()?;
+        let cameras = self
+            .camera
+            .as_ref()
+            .map(|s| s.applied(&base.cameras))
+            .transpose()?;
         if self.header.kind == Kind::Key {
             *world = empty;
         }
@@ -387,6 +482,9 @@ impl Frame {
         }
         if let Some(players) = players {
             world.players = players;
+        }
+        if let Some(cameras) = cameras {
+            world.cameras = cameras;
         }
         Ok(())
     }

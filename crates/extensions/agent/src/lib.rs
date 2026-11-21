@@ -85,6 +85,7 @@ pub use exec::{
     Access, Agent, ConnId, DEFER_TICKS_MAX, GameCtx, GameMethod, HostMethod, Later, LobbyTape,
     Page, SnapshotMachine, Snapshots, TICK_STALE, query,
 };
+pub use live::CameraSource;
 pub use loads::{LoadTracker, TimelineTotals, TotalsSource};
 pub use reader::{
     GameStatus, GuestReader, Reader, TagNames, actor_object, machine_object, name_tags,

@@ -212,6 +212,10 @@ struct Shared {
 #[derive(Default)]
 struct State {
     live: crate::live::Mirror,
+    /// The `camera` layer's source ([`Agent::set_camera_source`]), and why
+    /// this run has none ([`Agent::set_camera_unavailable`]).
+    cameras: Option<crate::live::CameraSource>,
+    camera_off: Option<String>,
     editor_marks: Option<crate::editor::MarkObserver>,
     debug_views: Option<crate::debug_views::Observer>,
     live_epoch: u64,
