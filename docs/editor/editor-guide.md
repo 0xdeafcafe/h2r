@@ -985,11 +985,13 @@ skulls, the co-op screens, the Xbox Live sign-in and account screens)
 the way the game draws them, without starting the game. Use it to see a
 screen in each of its states, try its buttons, and check its layout.
 
-- **Screens** (left): **Our screens**, each with its named states (a
-  list's first, middle and last row focused; the sign-in prompt's pages,
-  such as `code-wrong` or `checking`). Click a state to show it. Under
-  them, **Retail screens** lists the game's own screens from your disc
-  (type in the filter to find one). Those are drawn for comparison only.
+- **Screens** (left): one filter at the top narrows both lists. **Our
+  screens** lists each of our screens with its named states (a list's
+  first, middle and last row focused; the sign-in prompt's pages, such
+  as `code-wrong` or `checking`). Click a state to show it. **Retail
+  screens** lists the game's own screens from your disc. Those are drawn
+  for comparison only. Both lists fold, and the panel scrolls as a whole,
+  so neither list is squeezed on a short window.
 - **Preview** (centre): the screen at the game's 640 by 480. **Zoom**
   makes it bigger. **Rects** outlines every widget, **Title safe** the
   area a TV always shows (green), and **Reserved** the areas a screen
