@@ -2,6 +2,8 @@
 //! substitutions. See docs/halo1/text.md for the two engines' readers.
 
 use crate::models::Converted;
+use map::TagId;
+use map::build::{Block, FixupKind};
 use tags::defs::{Defs, Record, Val, default_record, to_built};
 
 use crate::text::{Error, Result};
@@ -53,7 +55,7 @@ pub(crate) fn rebuild(
     events: &Events,
     help_flash: &[u8; 0x18],
     unit_hud: &[u8],
-    string_names: &[Option<String>],
+    string_names: Option<&[Option<String>]>,
 ) -> Result<Converted> {
     let def = Defs::builtin().group(GROUP).expect("hmt definition");
     debug_assert_eq!(def.size, SIZE);
@@ -172,12 +174,14 @@ pub(crate) fn rebuild(
         widgets.push(record);
         Ok(())
     };
-    for &(name, control) in WIDGET_NAMES {
-        add_widget(name, control)?;
-    }
-    for name in string_names.iter().flatten() {
-        if name.contains("reticle") || name.contains("crosshair") {
-            add_widget(name, CROSSHAIR)?;
+    if let Some(string_names) = string_names {
+        for &(name, control) in WIDGET_NAMES {
+            add_widget(name, control)?;
+        }
+        for name in string_names.iter().flatten() {
+            if name.contains("reticle") || name.contains("crosshair") {
+                add_widget(name, CROSSHAIR)?;
+            }
         }
     }
     root.set("widgets", Val::Block(widgets))?;
@@ -186,6 +190,21 @@ pub(crate) fn rebuild(
         root: to_built(def, &root, &mut |_| None)?,
         raw: Vec::new(),
     })
+}
+
+pub(crate) fn bind_subjects(root: &mut Block, definitions: impl IntoIterator<Item = (usize, TagId)>) {
+    if let Some(FixupKind::Block { child, .. }) = root
+        .fixups
+        .iter_mut()
+        .find(|fixup| fixup.offset == PROMPT_SUBJECTS)
+        .map(|fixup| &mut fixup.kind)
+    {
+        for (index, id) in definitions {
+            let offset = index as u32 * PROMPT_SUBJECT_SIZE;
+            child.fixups.retain(|fixup| fixup.offset != offset);
+            child.tag_id(offset, id);
+        }
+    }
 }
 
 /// Fill the `h1_hud_flash` struct at `path` from Halo 1's 0x18-byte flash

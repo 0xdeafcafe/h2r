@@ -664,7 +664,9 @@ fn the_handling_reads_from_the_weapon_and_projectile_tags() {
         .put_u32(e + 4, PROJ_DATUM)
         .put_u32(e + 8, PROJ_TAG)
         .map(PROJ_TAG, 0x400)
-        .put_f32(PROJ_TAG + PROJ_INITIAL_VELOCITY, 400.0);
+        .put_f32(PROJ_TAG + PROJ_INITIAL_VELOCITY, 400.0)
+        .put_f32(PROJ_TAG + PROJ_AIR_DAMAGE_RANGE_END, 16.0)
+        .put_f32(PROJ_TAG + PROJ_MAXIMUM_RANGE, 40.0);
     // The rifle: one zoom level, one trigger firing once per pull, aim
     // assist to 20, a barrel of 6 rounds a second firing that projectile.
     let triggers = BR_TAG + 0x380;
@@ -691,10 +693,25 @@ fn the_handling_reads_from_the_weapon_and_projectile_tags() {
             rate: 6.0,
             pellets: 1,
             shot_speed: 400.0,
+            damage_reach: 16.0,
             ..Profile::default()
         }
     );
     assert_eq!(p.role(), Role::Precise);
+    assert_eq!(crate::weapons::reach(&p).fire.1, 16.0);
+    for (damage, travel, expected) in [
+        (40.0, 9.0, 9.0),
+        (8.0, 0.0, 8.0),
+        (0.0, 40.0, 40.0),
+        (f32::NAN, -1.0, 0.0),
+    ] {
+        w.g.put_f32(PROJ_TAG + PROJ_AIR_DAMAGE_RANGE_END, damage)
+            .put_f32(PROJ_TAG + PROJ_MAXIMUM_RANGE, travel);
+        assert_eq!(
+            WeaponDef::profile(&w.g, BR_TAG).unwrap().damage_reach,
+            expected
+        );
+    }
     // The pistol has no triggers block in this fake: no trigger, and no
     // aim assist, so weapon-blind (not a blade).
     let pp = a.other.expect("the pistol").profile;

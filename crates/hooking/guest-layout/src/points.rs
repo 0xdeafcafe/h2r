@@ -569,6 +569,10 @@ points! { ALL;
     WEAPON_STAT_BUCKET @ 0x0019_6ef0: [fn(code: ecx) -> eax ret 0], Optional; "docs/runtime/sim.md";
     /// Object deletion before the salted header and body are freed.
     OBJECT_DELETE @ 0x000b_8540: [fn(object: stack 0) ret 4], Optional; "docs/game/skulls.md";
+    /// Retail calls this after object_new succeeds for a barrel projectile.
+    BARREL_PROJECTILE @ 0x000f_a100: [fn(projectile: ecx) ret 0]; "docs/runtime/agent-api.md";
+    /// Projectile update passes the completed collision result before resolving damage.
+    PROJECTILE_IMPACT @ 0x000f_aa60: [opaque]; "docs/runtime/agent-api.md";
     /// Attach a weapon to a unit, or detach when the unit is -1.
     ITEM_SET_UNIT @ 0x0010_ca80: [fn(item: eax, unit: stack 0) ret 4], Optional; "docs/game/bots.md";
     /// Successful power-up application before the consumed equipment is deleted.

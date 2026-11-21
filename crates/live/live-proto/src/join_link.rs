@@ -38,7 +38,7 @@ impl JoinLink {
     }
 }
 
-fn server_base(raw: &str) -> Result<String, LinkError> {
+pub(crate) fn server_base(raw: &str) -> Result<String, LinkError> {
     // Reject spellings a browser's permissive URL parser silently repairs
     // (an empty authority, backslashes, ignored whitespace or dot segments).
     let (_, rest) = raw.split_once("://").ok_or(LinkError::Server)?;

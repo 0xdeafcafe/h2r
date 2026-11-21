@@ -35,6 +35,8 @@ object_store = { version = "0.14", default-features = false }
 chrono = { version = "0.4", default-features = false, features = ["std"] }
 
 [dev-dependencies]
+ruzstd = "0.9.1"
+sha2 = "0.10"
 # The D1 store's SQL run on SQLite here, against the shared store tests and
 # the native SQLite store.
 live-server = { path = "../live-server", features = ["conformance"] }

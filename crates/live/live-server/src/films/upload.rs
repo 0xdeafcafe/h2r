@@ -299,7 +299,8 @@ impl Upload<'_> {
                         .await
                         .map_err(blob_error)?;
                 }
-                let mut receipt = json!({"game":self.id, "blob":c.blob});
+                let mut receipt =
+                    json!({"game":self.id, "blob":c.blob, "size":c.size, "sha256":sha256});
                 if let Some(ranges) = film.web_ranges {
                     receipt["web_ranges"] = json!(ranges);
                 }

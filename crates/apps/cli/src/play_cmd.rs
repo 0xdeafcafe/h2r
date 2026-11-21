@@ -824,6 +824,9 @@ pub(crate) fn run_with_theater(
     }
     let theater = open_library.map(|open| (boot::theater_ui::Theater::default(), open));
     if let Some((controller, _)) = &theater {
+        if let Some(session) = &session {
+            controller.configure_sync(&opts.data_root, &session.server_id, session.account.as_ref().map(|a| a.xuid));
+        }
         let (overlay, _) = theater::overlay(
             controller.clone(),
             opts.data_root.join("films/screenshots"),

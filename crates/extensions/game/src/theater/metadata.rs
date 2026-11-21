@@ -29,6 +29,7 @@ pub(super) struct Capture {
     result_order: Vec<u32>,
     host_machine: Option<String>,
     live_service: bool,
+    pub(super) archived_on_live: bool,
     lease_mode: Option<Mode>,
 }
 
@@ -49,6 +50,7 @@ impl Capture {
         });
         Self {
             descriptor: MatchHeader::default(),
+            archived_on_live: false,
             map_digest: None,
             lease_mode,
             variant_name: String::new(),
@@ -129,6 +131,7 @@ impl Capture {
                 &mut self.descriptor.variant_blob,
                 1,
             )?;
+            self.archived_on_live = s.is_some() && self.live.upgrade().is_some_and(|h| h.archived_session());
             self.descriptor.match_start_tick = Some(tick);
             self.descriptor.ticks_per_second = Some(info.tick_rate.max(1));
 

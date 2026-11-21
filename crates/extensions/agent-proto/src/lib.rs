@@ -33,6 +33,7 @@ pub mod hot;
 pub mod live;
 mod load;
 mod pad;
+pub mod probe;
 pub mod route;
 pub mod raw;
 mod render;

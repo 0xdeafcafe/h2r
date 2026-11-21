@@ -122,6 +122,37 @@ impl Drop for Temp {
 }
 
 pub fn run(args: Vec<String>) -> Result<()> {
+    if args.first().is_some_and(|s| s == "open") {
+        let [_, url] = args.as_slice() else {
+            bail!("usage: h2 theater open URL");
+        };
+        let link: live_proto::theater_link::TheaterLink = url.parse()?;
+        #[cfg(unix)]
+        let socket = crate::agent_cmd::only_game().unwrap_or_else(agent_proto::default_socket);
+        #[cfg(not(unix))]
+        let socket = agent_proto::default_socket();
+        match agent_proto::Client::connect(&socket) {
+            Ok(mut client) => {
+                client.set_timeout(Some(std::time::Duration::from_secs(60)))?;
+                let screen =
+                    client.call(agent_proto::theater::OPEN, serde_json::json!({"url":url}))?;
+                println!("{screen}");
+                return Ok(());
+            }
+            Err(error) if std::env::var_os(agent_proto::ENV).is_some() => return Err(error.into()),
+            Err(_) => {}
+        }
+        #[cfg(feature = "desktop")]
+        {
+            boot::theater_ui::external_link(link);
+            return crate::play_cmd::run(vec!["--live".into()]);
+        }
+        #[cfg(not(feature = "desktop"))]
+        {
+            let _ = link;
+            bail!("Open the desktop game to receive this Theater link");
+        }
+    }
     let opts = Options::parse(args.clone().into_iter())?;
     #[cfg(feature = "desktop")]
     if let Some(job) = std::env::var_os("H2_THEATER_EXPORT_JOB") {
@@ -138,20 +169,29 @@ pub fn run(args: Vec<String>) -> Result<()> {
         !opts.prepare || header.version >= 2,
         "this film does not have an engine replay track"
     );
+    let view = std::env::var("H2_THEATER_VIEW")
+        .ok()
+        .map(|v| serde_json::from_str::<agent_proto::theater::InitialView>(&v))
+        .transpose()?;
     let target = opts
         .seek
+        .or_else(|| view.and_then(|v| v.tick.map(u64::from)))
         .unwrap_or_else(|| opts.range.map_or(0, |[start, _]| start));
     if let Some([start, end]) = opts.range {
         ensure!((start..end).contains(&target), "seek outside film clip");
     }
     ensure!(target <= header.meta.length_ticks, "seek beyond film");
+    let mut presentation = boot::theater::Presentation::default();
+    if let Some(view) = view {
+        presentation.start_view(view);
+    }
     let mut launch = boot::theater::Restart {
         target,
         from_tick: (opts.seek.is_some() || target > 0).then_some(0),
         source: None,
         speed: opts.speed,
         paused: false,
-        presentation: Default::default(),
+        presentation,
     };
     let mut retries = 0;
     loop {

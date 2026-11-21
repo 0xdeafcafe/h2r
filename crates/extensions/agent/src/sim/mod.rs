@@ -137,6 +137,29 @@ impl SimHandle {
         self.lock().spawn_object(params, Some(session), Some(&group), ctx)
     }
 
+    pub(crate) fn probe_queue(&self) -> Result<calls::Shared, RpcError> {
+        self.lock().calls()
+    }
+
+    pub(crate) fn string_id(&self, name: &str) -> Result<u32, RpcError> {
+        self.lock()
+            .tags
+            .as_mut()
+            .and_then(|tags| tags.string_id(name))
+            .ok_or_else(|| invalid(format!("loaded map has no unique string ID for {name:?}")))
+    }
+    pub(crate) fn string(&self, id: u32) -> Result<String, RpcError> {
+        self.lock()
+            .tags
+            .as_mut()
+            .and_then(|tags| tags.string(id))
+            .ok_or_else(|| invalid(format!("loaded map has no name for string ID {id:#x}")))
+    }
+
+    pub(crate) fn probe_tag(&self, name: &str, group: &str) -> Result<calls::TagRef, RpcError> {
+        self.lock().find_tag(name, &[group])
+    }
+
     /// Sets the session probe.
     pub fn set_probe(&self, probe: SessionProbe) {
         *self.lock().probe.lock().unwrap_or_else(|e| e.into_inner()) = Some(probe);

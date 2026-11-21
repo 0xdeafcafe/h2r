@@ -9,7 +9,7 @@ import { getJson, requireOk, type Page, type Reader } from "./http";
 import type { HostFilmSummary } from "./host-film";
 import type { Xuid } from "./types";
 
-export type FilmKind = "recent" | "saved";
+export type FilmKind = "recent" | "saved" | "shared" | "library";
 
 export interface FilmSummary {
   has_host_film?: boolean;

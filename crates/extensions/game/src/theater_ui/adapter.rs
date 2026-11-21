@@ -63,6 +63,7 @@ pub struct FilmMeta {
     pub result: Option<String>,
     pub host: Option<String>,
     pub live_game_id: Option<String>,
+    pub shared: bool,
     pub live_start_tick: Option<u64>,
     pub kill_ticks: Vec<u64>,
 }
@@ -292,6 +293,9 @@ impl TryFrom<live_hle::films::RecentFilm> for FilmMeta {
         let rate = film.ticks_per_second.filter(|hz| *hz != 0).unwrap_or(30);
         let mut row = Self {
             id: format!("live:{}", film.game_id),
+            saved: film.saved,
+            shared: film.shared,
+            length_ticks: film.length_ticks,
             map: film.map,
             game_type,
             mode: Some(mode),
@@ -390,6 +394,10 @@ pub fn archive_path(dir: &Path, game: &str) -> Result<PathBuf, String> {
 pub fn archive_entry(path: &Path, game: &str) -> anyhow::Result<film::LibraryEntry> {
     let entry = film::LibraryEntry::read(path)?;
     anyhow::ensure!(
+        entry.version != 4,
+        "This recording is cached. Playback requires a build with the split-film player."
+    );
+    anyhow::ensure!(
         entry.meta.source == film::Source::Host,
         "Live did not return a host recording"
     );
@@ -402,8 +410,22 @@ pub fn archive_entry(path: &Path, game: &str) -> anyhow::Result<film::LibraryEnt
     Ok(entry)
 }
 
+pub(super) fn cached_film(
+    account: &live_hle::films::sync::Sync,
+    dir: &Path,
+    game: &str,
+    clip: Option<&Clip>,
+    start: Option<u64>,
+) -> Option<Result<Option<Clip>, String>> {
+    let expected = account.cached_revision(game)?;
+    let path = archive_path(dir, game).ok()?;
+    (film::share::revision(&path).ok()? == expected)
+        .then(|| downloaded_clip(&path, game, clip, start))
+}
+
 pub(super) fn download_film(
     archive: &live_hle::films::Archive,
+    account: Option<&live_hle::films::sync::Sync>,
     dir: &Path,
     game: &str,
     account_clip: Option<&Clip>,
@@ -412,6 +434,18 @@ pub(super) fn download_film(
     let path = archive_path(dir, game)?;
     std::fs::create_dir_all(path.parent().expect("archive directory"))
         .map_err(|e| e.to_string())?;
+    if let Some((size, digest)) = archive.revision(game)? {
+        film::share::download(&path, size, &digest, |r| {
+            archive
+                .range(game, r, size, &digest)
+                .map_err(anyhow::Error::msg)
+        })
+        .map_err(|e| e.to_string())?;
+        if let Some(account) = account {
+            account.remember_download(game, &(size, digest))?;
+        }
+        return downloaded_clip(&path, game, account_clip, live_start_tick);
+    }
     let part = path.with_extension(format!("{}.part", live_proto::sign::random_id()));
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create_new(true);
@@ -423,43 +457,58 @@ pub(super) fn download_film(
     let file = options.open(&part).map_err(|e| e.to_string())?;
     let result = (|| {
         archive.download(game, file)?;
-        let film = archive_entry(&part, game).map_err(|e| format!("Invalid host film: {e}"))?;
-        let playback_clip = account_clip
-            .map(|clip| {
-                if film.version < 3 {
-                    // Pre-CIDX recorders and their selector used the stored bounds
-                    // directly. They did not record a guest-to-tape clock mapping.
-                    return Ok::<_, String>(clip.clone());
-                }
-                let input = std::fs::File::open(&part).map_err(|e| e.to_string())?;
-                let reader = film::range::RangeReader::new(input).map_err(|e| e.to_string())?;
-                let [from_tick, to_tick] = reader
-                    .directory
-                    .film_range_for_guest(
-                        clip.from_tick,
-                        clip.to_tick,
-                        reader
-                            .front
-                            .match_start_tick
-                            .or_else(|| reader.directory.chunks.first().map(|c| c.first))
-                            .unwrap_or(0),
-                        live_start_tick.unwrap_or(0),
-                    )
-                    .ok_or_else(|| "Live clip is outside the recorded match clock".to_owned())?;
-                Ok(Clip {
-                    film: clip.film.clone(),
-                    from_tick,
-                    to_tick,
-                })
-            })
-            .transpose()?;
+        let clip = downloaded_clip(&part, game, account_clip, live_start_tick)?;
         std::fs::rename(&part, &path).map_err(|e| e.to_string())?;
-        Ok(playback_clip)
+        if let Some(account) = account {
+            account.remember_download(
+                game,
+                &film::share::revision(&path).map_err(|e| e.to_string())?,
+            )?;
+        }
+        Ok(clip)
     })();
     if result.is_err() {
         let _ = std::fs::remove_file(part);
     }
     result
+}
+
+fn downloaded_clip(
+    path: &Path,
+    game: &str,
+    account_clip: Option<&Clip>,
+    live_start_tick: Option<u64>,
+) -> Result<Option<Clip>, String> {
+    let film = archive_entry(path, game).map_err(|e| format!("Invalid host film: {e}"))?;
+    account_clip
+        .map(|clip| {
+            if film.version < 3 {
+                // Pre-CIDX recorders and their selector used the stored bounds
+                // directly. They did not record a guest-to-tape clock mapping.
+                return Ok::<_, String>(clip.clone());
+            }
+            let input = std::fs::File::open(path).map_err(|e| e.to_string())?;
+            let reader = film::range::RangeReader::new(input).map_err(|e| e.to_string())?;
+            let [from_tick, to_tick] = reader
+                .directory
+                .film_range_for_guest(
+                    clip.from_tick,
+                    clip.to_tick,
+                    reader
+                        .front
+                        .match_start_tick
+                        .or_else(|| reader.directory.chunks.first().map(|c| c.first))
+                        .unwrap_or(0),
+                    live_start_tick.unwrap_or(0),
+                )
+                .ok_or_else(|| "Live clip is outside the recorded match clock".to_owned())?;
+            Ok(Clip {
+                film: clip.film.clone(),
+                from_tick,
+                to_tick,
+            })
+        })
+        .transpose()
 }
 
 pub trait Library: Send + Sync {

@@ -207,6 +207,7 @@ Halo 1 (Xbox) running in the Halo 2 engine: its data read from your own `halo1.i
 - [campaign.md](halo1/campaign.md): Halo 1's campaign in the Halo 2 engine: the decisions, the pipeline, and every step. All ten levels convert offline at import (`h2 import halo1`); a30 has run headless, none has been played yet
 - [multiplayer.md](halo1/multiplayer.md): Halo 1's 13 disc multiplayer maps converted onto Halo 2 base maps (`h2 h1 convert`): collision, structure BSP, MOPP, placements, packages with variants
 - [campaign-picker.md](halo1/campaign-picker.md): how 1.0's menus list campaign levels and keep progress, and the campaign picker and per-campaign progress built on them (confirmed in the game)
+- [parity.md](halo1/parity.md): headless behavioural checks of converted Blood Gulch and a30 against the Halo 1 disc, driven through the agent API's `probe.*` methods (`h2 parity`)
 - [health.md](halo1/health.md): Halo 1's health model on Halo 2's engine: no body regeneration, health packs, the meter in Halo 2's HUD; picked from the map at game start (`H2_HEALTH_MODEL` overrides)
 - [hud.md](halo1/hud.md): Halo 1's HUD on converted maps: the unit HUD is built and the default; weapon HUDs, grenades and the HUD globals are not converted yet
 - [script-builtins.md](halo1/script-builtins.md): Halo 1 unit, object and miscellaneous script builtins: retail equivalents and the hooks on converted campaign maps (`boot::h1_script_builtins`)

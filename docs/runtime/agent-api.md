@@ -2873,6 +2873,8 @@ directly on its own `--socket` (`H2_AGENT`, else the cache's `theater.sock`).
 
 | Method | Parameters | Result |
 |---|---|---|
+| `theater.open` | `{"url":"h2recomp://theater/<film>?server=<encoded-origin>"}` | Opens the film detail page in the signed-in game and returns its `ui.screen`. Watch starts playback when pressed. Optional `clip`, `t`, `seat` and `camera` select the initial view. |
+| `theater.share` | `{"id":"film-id","visibility":"link"}`, optional `clip` is a clip ID or two tick bounds | Returns `{film,url}` after publication. Visibility accepts `private`, `link` or `public`. A participant shares the existing host film by link. |
 | `theater.play` | `{"id":"film-id","range":[300,900]}` to open, `{}` to resume; omit `range` for the whole film | `{id, starting:true}` on launch, otherwise transport state |
 | `theater.prepare` | `{"id":"film-id"}` on the library agent | starts a background Prepare replay and returns its progress. A duplicate request for an active job returns that job's progress. |
 | `theater.state` | `{}` | transport state, or `{id:null,active:false}` with no player |
@@ -3352,6 +3354,37 @@ tests), `crates/extensions/agent/src/trace/tests.rs`, `crates/extensions/agent/s
   guest time; owner attribution of frame cost; kernel I/O seeks and cache
   hits in the load timeline; a widget-level HUD; setting a feature switch through the API; loading a named level
   other than a test map (`maps.test.load`).
+
+## Behaviour probes
+
+**Built.** A socket-enabled serve registers these four game methods under
+`agent-probes`. Their names and wire types are in `agent-proto`'s `probe` module (`crates/extensions/agent-proto/src/probe.rs`); the implementation is `crates/extensions/agent/src/probe/`. Discover them with `session.methods`. The three acting
+methods require a writable local/host session and a ticking game. Use a
+single controller connection for a multi-call experiment. Object arguments
+are full eight-digit hex datums, as returned by `sim.give`, `sim.spawn` or
+a player's `world.query` row.
+
+| Method | Request and result |
+|---|---|
+| `probe.weapon` | Give the weapon with `sim.give` and wait until it is held. Send `{"player":0,"object":"e1230042","ticks":60,"steps":[{"rt":1,"ticks":55},{"ticks":5}]}`. The initial sample and one row per subsequent tick contain first-magazine loaded/reserve counts, magazine state and heat. Each tick's `shots` lists barrel events and the projectiles launched by each. Each projectile has its datum, definition datum, applied cone in radians, barrel error fraction (`bloom`), direction vector and measured deflection in radians. Two trigger steps separated by a neutral step exercise two presses. A step with `"buttons":["x"]` exercises a reload. |
+| `probe.animation` | Send `{"unit":"e1230043","path":["combat","rifle","ar","fire_1"],"overlay":false}`. The four strings are mode, class, weapon type and action. Set `overlay` for an overlay lookup. Returns the unit's graph datum/name, requested path, selected mode/class/type string IDs and names, inherited graph index, animation index, selected clip name and frame count. The native selector runs against the unit's current animation manager. This samples the answer to a state request without changing the unit's playing channel. |
+| `probe.hit` | Send `{"projectile":"proj:weapons/assault rifle/bullet","target":"e1230043","from":[3,0,1],"to":[2,0,1],"ticks":12}`. Coordinates are world-space, or target node-local when `node` is supplied. The projectile starts at `from` and travels in the direction of `to` with the projectile definition's velocity and range. Optional `shield` sets the target's shield fraction at launch. Returns the first collision of this projectile, including kind, position, object datum, region, node and global material index. Object hits include vitality `before` and `after` as [body, shield]. `damage` contains the game's damage reports for the specified victim during that projectile's impact. A wall or a different victim is a reportable hit. A miss through the entire window is an error. Damage and shield preparation affect the world. |
+| `probe.round` | Send `{}`. Returns the engine's round-start tick, per-player first applied control and first movement/fire ticks, and any observation error. Capture starts at map activation, so callers can ask after the countdown. Join player indices to `sim.player.list.clankers` to identify bots. |
+
+Weapon and hit captures share one slot. Their window is 1–290 ticks. A
+changed weapon, missing object, unreadable fields or discontinuous weapon
+trace fails the request. Machine snapshots preserve round history and refuse
+an in-progress capture. Take a snapshot before a destructive experiment and
+load it afterwards.
+
+The simulation hooks measure the barrel fire call at `0x104150`, the launch
+call at `0x1052c5`, projectile collision at `0xfaa60` and its nested damage
+report. The animation selectors are `0x1db170` and `0x1dbc80`, with entry
+resolution at `0x1daea0`. The round observer uses the two non-neutral
+per-player callers of `0xc6de0`. None of the probes requires rendering.
+
+The [Halo 1 parity suite](../halo1/parity.md) drives these methods against
+converted Blood Gulch and a30.
 
 ## Related
 

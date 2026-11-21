@@ -113,6 +113,19 @@ impl Default for Presentation {
     }
 }
 
+impl Presentation {
+    pub fn start_view(&mut self, view: agent_proto::theater::InitialView) {
+        if let Some(mode) = view.camera {
+            self.camera.mode = mode;
+        }
+        if view.seat.is_some() {
+            self.camera.seat = view.seat;
+        }
+        // An explicit view replaces the default camera choice for the film.
+        self.camera.initialized |= view.camera.is_some() || view.seat.is_some();
+    }
+}
+
 struct Recording {
     out: Option<Writer<File>>,
     batch: Batch,
@@ -208,8 +221,13 @@ pub struct Session {
     bots: Mutex<bot_tape::BotTape>,
     upload: Mutex<Option<std::thread::JoinHandle<Result<()>>>>,
     require_upload: bool,
+    recording_account: std::sync::OnceLock<Option<live_hle::films::sync::Sync>>,
+    film_sync: std::sync::OnceLock<Box<dyn Fn() -> Option<live_hle::films::sync::Sync> + Send + Sync>>,
 }
 impl Session {
+    pub fn sync_library(&self, sync: impl Fn() -> Option<live_hle::films::sync::Sync> + Send + Sync + 'static) {
+        let _ = self.film_sync.set(Box::new(sync));
+    }
     fn lock(&self) -> MutexGuard<'_, State> {
         self.state.lock().unwrap_or_else(|e| e.into_inner())
     }
@@ -400,6 +418,8 @@ impl Session {
         Ok(Some(Arc::new(Self {
             warm: Mutex::new(warm),
             version: header.version,
+            film_sync: Default::default(),
+            recording_account: Default::default(),
             video_menu: Default::default(),
             capture: Default::default(),
             media: Default::default(),
@@ -489,6 +509,9 @@ impl Session {
                 if let Err(e) = rec.post_tick(guest, tick, hash) {
                     s.fail(format!("writing engine tick: {e:#}"));
                     return;
+                }
+                if rec.meta.descriptor().match_start_tick == Some(tick) {
+                    let _ = self.recording_account.set(self.film_sync.get().and_then(|account| account()));
                 }
             } else {
                 Session::check_replay_tick(&mut s, guest, hash);
@@ -699,6 +722,10 @@ impl Session {
             return Ok(());
         }
         let matched = rec.match_over;
+        let account_upload = !rec.meta.archived_on_live
+            && !rec.unified.live_session
+            && rec.meta.descriptor().mode != film::blam::Mode::Matchmaking
+            && s.header.game_id.is_none();
         let mut summary = rec.meta.summary(s.tick);
         rec.unified.summary_medals(&mut summary.players);
         if !summary.level.is_empty() {
@@ -749,6 +776,13 @@ impl Session {
         rec.frame = Default::default();
         s.complete = true;
         drop(s);
+        if matched
+            && account_upload
+            && let Some(sync) = self.recording_account.get().and_then(Option::as_ref)
+            && let Err(error) = sync.enqueue(&header.meta.id, &path)
+        {
+            eprintln!("film library: {error}");
+        }
         if matched && let Some(target) = upload {
             // Create before spawning so a stopped uploader leaves its sealed
             // output recoverable when the supervisor cleans the lease.

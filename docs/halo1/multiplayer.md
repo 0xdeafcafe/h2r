@@ -238,6 +238,16 @@ variants (**Built**)" below for how the choice is made at game start.
   (the `h2` variant of each package), keyed by `base.map`. The hook is
   idle in the Halo 1 sandbox, which places Halo 1's assault rifle.
 
+## Bot shotgun range (Built)
+
+The Halo 1 sandbox carries over the first barrel's projectile damage
+range. Blood Gulch's shotgun has a 3-unit air damage endpoint, 15-unit aim
+assist and 40-unit projectile travel. The bot uses the 3-unit endpoint to
+limit its shots. The Halo 2 sandbox uses Coagulation's shotgun, with an
+8-unit endpoint. Blood Gulch's assault rifle has a 15-unit air damage
+endpoint. The ignored `weapon_range_disc` test reads both discs and both
+installed sandboxes through the live bot's weapon profile reader.
+
 ## Placements plan (**Built** as `h1convert::placements`)
 
 `plan_map` turns a Halo 1 map's multiplayer parts into Halo 2 sandbox
@@ -1772,6 +1782,15 @@ name; the converted cyborg's HUD (`nhdt`) has a widget on the body
 (input 17), built by `h1objects::health_hud`. A health pack
 is an `eqip` with `+0x12c` = 5 (i16) and `+0x130` > 0; retail Halo 2
 already handles that powerup type, so no hook is needed.
+
+### Pickup HUD text (**Built**)
+
+The Halo 1 sandbox's weapons show their source name and silhouette in
+the pickup and swap prompts. Halo 2 sandbox weapons use the retail
+HUD strings. In both sandboxes, automatic Halo 1 power-up pickups show
+their source pickup notification. The scenario's `hmt ` ties the
+rebuilt items to the existing HUD lookup. See [the disc and XBE
+evidence](text.md#multiplayer-pickup-text).
 
 ## What only a game run can prove
 

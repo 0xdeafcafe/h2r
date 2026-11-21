@@ -902,7 +902,11 @@ impl Mind {
                     None => self.tracks.get(&o.id).map_or([0.0; 3], |t| t.vel),
                 };
                 let projected = add(target, scale(vel, aim.lead * dist / shot.speed));
-                let led = if clear(projected) { projected } else { target };
+                let (led, shot_clear) = if clear(projected) {
+                    (projected, true)
+                } else {
+                    (target, clear(target))
+                };
                 let reacted = reached(p.tick, ready);
                 let blade = shot.role == arms::Role::Blade;
                 let juggernaut = p.objective.as_ref().is_some_and(|o| o.am_juggernaut());
@@ -910,20 +914,24 @@ impl Mind {
                 if reacted {
                     let off = angle_between(sub(led, eye), me.aim);
                     let cone = aim.fire_cone + (0.4 / dist.max(0.5)).min(0.3);
-                    // Fire while near the target: never dry, only in the
-                    // weapon's range.
                     // B is the quick sword slash at arm's length. A target
                     // beyond that needs the sword's RT lunge.
                     let sword_lunge = blade
+                        && shot_clear
                         && held.is_some_and(|g| g.ready())
                         && (MELEE_RANGE..shot.lunge).contains(&dist);
+                    // A visible enemy can have a blocked aim point (e.g.
+                    // the centre of its vehicle while a rider is in view).
+                    // Fire while near the target: never dry, only in the
+                    // weapon's range.
+                    let can_fire = shot_clear && shot.in_range(dist) && shot.ready && !melee;
                     let fired = if sword_lunge {
                         self.fight.trigger(
                             p.tick,
                             tactics::Pull::Tap(crate::weapons::MELEE_EVERY),
                             off < cone,
                         )
-                    } else if shot.in_range(dist) && shot.ready && !melee {
+                    } else if can_fire {
                         let locked = locking.is_none_or(|(_, locked)| locked);
                         self.fight.trigger(p.tick, shot.pull, off < cone && locked)
                     } else {
@@ -971,7 +979,7 @@ impl Mind {
                             tick: p.tick,
                             target: Some(o.id),
                             dist,
-                            on_target: off < cone,
+                            on_target: shot_clear && off < cone,
                             reacted,
                             shield_down,
                             combo_chance: weights.map(|w| w.noob_combo),
@@ -985,7 +993,10 @@ impl Mind {
                     if combo.busy && matches!(self.kit, Kit::Switch | Kit::Reload) {
                         self.kit = Kit::Fine;
                     }
-                    if combo.trigger.unwrap_or(fired) {
+                    // A sword fly uses the blade's trigger to lunge.
+                    let sword_fly =
+                        blade && shot_clear && combo.trick == Some(crate::glitches::Trick::SwordFly);
+                    if (can_fire || sword_lunge || sword_fly) && combo.trigger.unwrap_or(fired) {
                         pad.right_trigger = 1.0;
                     }
                     if combo.switch {
@@ -1003,20 +1014,16 @@ impl Mind {
                     // Dual wielding: the left trigger fires the left gun.
                     if let Some(l) = me.arms.and_then(|a| a.left) {
                         let (lo, hi) = l.reach().fire;
-                        let want = off < cone && (lo..hi).contains(&dist) && !melee;
+                        let left_in_range = shot_clear && (lo..hi).contains(&dist) && !melee;
                         if l.profile.dual == Some(arms::DualGun::Smg)
                             && let Some(right) =
                                 held.filter(|g| g.profile.dual == Some(arms::DualGun::PlasmaPistol))
                         {
-                            let on_target = !melee && off < cone && shot.in_range(dist);
-                            pad.right_trigger =
-                                if self.paired_pistol.trigger(p.tick, &right, on_target) {
-                                    1.0
-                                } else {
-                                    0.0
-                                };
+                            let firing =
+                                can_fire && self.paired_pistol.trigger(p.tick, &right, off < cone);
+                            pad.right_trigger = if firing { 1.0 } else { 0.0 };
                         }
-                        if self.left.trigger(p.tick, &l, want) {
+                        if left_in_range && self.left.trigger(p.tick, &l, off < cone) {
                             pad.left_trigger = 1.0;
                         }
                     }

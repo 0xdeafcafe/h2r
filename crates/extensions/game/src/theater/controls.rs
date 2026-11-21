@@ -287,6 +287,7 @@ impl LibraryLaunch {
             .env("H2_FILM_DIR", &self.dir)
             .env("H2_THEATER_FILM_ID", id)
             .env_remove("H2_THEATER_RANGE")
+            .env_remove("H2_THEATER_VIEW")
             .env_remove("H2_THEATER_WORK");
         Ok(command)
     }
@@ -394,6 +395,20 @@ pub fn library_methods(
                             return Err(unavailable("A film is already playing".into()));
                         }
                         let entry = launch.entry(&id)?;
+                        if let Some(view) = request.view {
+                            if view.seat.is_some_and(|n| n >= 16)
+                                || view.tick.is_some_and(|tick| {
+                                    let t = u64::from(tick);
+                                    t > entry.meta.length_ticks
+                                        || request.range.is_some_and(|[a, b]| !(a..b).contains(&t))
+                                })
+                            {
+                                return Err(RpcError::new(
+                                    code::INVALID_PARAMS,
+                                    "invalid starting tick or seat",
+                                ));
+                            }
+                        }
                         let meta = entry.meta;
                         let path = entry.path;
                         if request.range.is_some_and(|[start, end]| {
@@ -404,6 +419,13 @@ pub fn library_methods(
                         let socket = std::env::temp_dir()
                             .join(format!("h2t-{}.sock", live_proto::sign::random_id()));
                         let mut command = launch.command("play", &id, &path, &socket)?;
+                        if let Some(view) = request.view {
+                            command.env(
+                                "H2_THEATER_VIEW",
+                                serde_json::to_string(&view)
+                                    .map_err(|e| unavailable(e.to_string()))?,
+                            );
+                        }
                         if let Some([start, end]) = request.range {
                             command.env("H2_THEATER_RANGE", format!("{start}:{end}"));
                         }

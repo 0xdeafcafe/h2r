@@ -13,6 +13,9 @@
 pub mod doretry;
 #[cfg(any(target_arch = "wasm32", test))]
 mod film_cache;
+#[cfg(test)]
+#[path = "../../live-server/tests/support/film_library.rs"]
+mod film_library_parity;
 pub mod settings;
 pub mod site;
 pub mod sqlstore;

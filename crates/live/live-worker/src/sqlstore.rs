@@ -646,6 +646,34 @@ mod tests {
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
+    #[tokio::test]
+    async fn worker_film_library() {
+        use live_server::{
+            Live, Policy, ServerIdentity,
+            app::Timers,
+            blobs::{BlobStore, Blobs},
+            titleblobs::BlobsElsewhere,
+        };
+        let path = temp_db("film-library");
+        let store = SqlStore::open(Sqlite(pool(&path).await)).await.unwrap();
+        let private = BlobStore::memory();
+        let store = BlobsElsewhere::new(Arc::new(store), private.clone());
+        let identity = ServerIdentity::open(path.parent().unwrap(), Some("live.test")).unwrap();
+        let policy = Policy {
+            write_rate: (1000., 1000),
+            ..Policy::default()
+        };
+        let live = Live::start_with(Arc::new(store), identity, policy, Timers::Driven)
+            .await
+            .unwrap();
+        live.set_blobs(Blobs {
+            private,
+            public: None,
+        });
+        crate::film_library_parity::exercise(live).await;
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
     /// `GET /v1/rank-stats` on the Worker's own composition: the SQL
     /// store, title files through `BlobsElsewhere`, driven timers, the
     /// shared router. No hopper file is published, so the default one

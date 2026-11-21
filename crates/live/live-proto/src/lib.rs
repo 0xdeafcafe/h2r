@@ -18,6 +18,7 @@ pub mod host_pack;
 pub mod hosts; // dh-lease
 pub mod jcs;
 pub mod join_link;
+pub mod theater_link;
 pub use join_link::JoinLink;
 pub mod mailbox;
 pub mod map_details;

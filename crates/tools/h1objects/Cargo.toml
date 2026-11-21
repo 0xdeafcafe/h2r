@@ -7,6 +7,7 @@ license.workspace = true
 autotests = false
 
 [dependencies]
+xbe.workspace = true
 h1map = { path = "../h1map" }
 # Converted render models and animation graphs.
 h1-assets = { path = "../h1-assets" }
@@ -29,8 +30,6 @@ content.workspace = true
 scenario-edit = { path = "../scenario-edit", default-features = false }
 # The motion sensor's alpha-scaled copy decoded back from the built map.
 assets.workspace = true
-# Halo 2's motion sensor table read from the disc's XBE.
-xbe.workspace = true
 # The built-in game variants' starting weapons (tests/sandbox_disc.rs).
 variants = { path = "../../formats/variants" }
 # Halo 2's HUD text font measured against Halo 1's digits (tests/hud_layout_disc.rs).

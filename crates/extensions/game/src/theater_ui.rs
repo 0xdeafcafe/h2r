@@ -1,7 +1,9 @@
 //! The main menu's Theater library, film lobby and host playback controls.
 
 pub mod adapter;
+mod link;
 mod overlay;
+pub use link::external_link;
 mod pages;
 mod playback_page;
 pub mod preview;
@@ -144,6 +146,7 @@ struct State {
     load: Load,
     tab: Tab,
     selected: Option<Entry>,
+    view: Option<agent_proto::theater::InitialView>,
     roster_page: usize,
     confirm_delete: bool,
     selector: Selector,
@@ -233,6 +236,7 @@ impl State {
 
     fn select(&mut self, entry: Entry) {
         self.selected = Some(entry);
+        self.view = None;
         self.roster_page = 0;
         self.confirm_delete = false;
         self.status.clear();
@@ -263,6 +267,9 @@ pub struct Theater(Arc<Shared>);
 #[derive(Default)]
 struct Shared {
     state: Mutex<State>,
+    link: Mutex<Option<link::Ready>>,
+    sync_home: std::sync::OnceLock<(PathBuf, String, Option<live_proto::Xuid>)>,
+    sync: Mutex<std::collections::BTreeMap<live_proto::Xuid, live_hle::films::sync::Sync>>,
     library: Mutex<Option<Box<dyn Library>>>,
     location: Mutex<Option<Location>>,
     playback: Mutex<overlay::Session>,
@@ -303,6 +310,40 @@ impl Theater {
             playback_recording: Some(recording),
             ..Shared::default()
         })))
+    }
+
+    pub fn configure_sync(
+        &self,
+        data: &Path,
+        server_id: &str,
+        default_account: Option<live_proto::Xuid>,
+    ) {
+        let _ = self
+            .0
+            .sync_home
+            .set((data.into(), server_id.into(), default_account));
+    }
+
+    pub fn sync(&self) -> Option<live_hle::films::sync::Sync> {
+        let (data, server, default_account) = self.0.sync_home.get()?;
+        let controller = self.state().controller;
+        let location = self.0.location.lock().unwrap_or_else(|e| e.into_inner());
+        let location = location.as_ref()?;
+        let by = location
+            .signed_in
+            .as_ref()
+            .and_then(|h| h.signed_in_account(controller))
+            .map(|(id, _)| id)
+            .or(*default_account)?;
+        let mut accounts = self.0.sync.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(sync) = accounts.get(&by) {
+            return Some(sync.clone());
+        }
+        let sync = live_hle::films::sync::Sync::start(data, server, by, location.live.clone())
+            .inspect_err(|e| eprintln!("film library: {e}"))
+            .ok()?;
+        accounts.insert(by, sync.clone());
+        Some(sync)
     }
 
     fn state(&self) -> MutexGuard<'_, State> {
@@ -416,30 +457,45 @@ impl Theater {
         account: Option<live_proto::Xuid>,
     ) {
         let mut errors = Vec::new();
-        let Ok(Some(archive)) = live_hle::films::Archive::connect(&location.live, account)
-            .inspect_err(|error| errors.push(error.clone()))
-        else {
-            if let Some(error) = errors.pop() {
-                let mut state = self.state();
-                if state.open_generation == generation {
-                    state.archive_error = Some(error);
-                    state.changed();
-                }
+        let sync = self.sync().filter(|s| Some(s.account()) == account);
+        if let Some(e) = sync.as_ref().and_then(|s| s.error()) {
+            errors.push(e);
+        }
+        let archive = match live_hle::films::Archive::connect(&location.live, account) {
+            Ok(value) => value,
+            Err(e) => {
+                errors.push(e);
+                None
             }
-            return;
         };
-        let recent = archive.recent().unwrap_or_else(|error| {
-            errors.push(error);
-            Vec::new()
-        });
-        let saved = archive.saved().unwrap_or_else(|error| {
-            errors.push(error);
-            Vec::new()
-        });
-        let clips = archive.clips().unwrap_or_else(|error| {
-            errors.push(error);
-            Vec::new()
-        });
+        let current = archive
+            .as_ref()
+            .and_then(|a| a.library().inspect_err(|e| errors.push(e.clone())).ok());
+        let authoritative = current.is_some();
+        let recent = if let Some(rows) = current {
+            if let Some(s) = &sync
+                && let Err(e) = s.remember_library(&rows)
+            {
+                errors.push(e);
+            }
+            rows
+        } else {
+            sync.as_ref()
+                .and_then(|s| {
+                    s.read_library()
+                        .inspect_err(|e| errors.push(e.clone()))
+                        .ok()
+                })
+                .unwrap_or_default()
+        };
+        let saved = archive
+            .as_ref()
+            .and_then(|a| a.saved().inspect_err(|e| errors.push(e.clone())).ok())
+            .unwrap_or_default();
+        let clips = archive
+            .as_ref()
+            .and_then(|a| a.clips().inspect_err(|e| errors.push(e.clone())).ok())
+            .unwrap_or_default();
         let mut films = std::collections::BTreeMap::new();
         let mut recent_ids = HashSet::new();
         let mut archive_clips = Vec::new();
@@ -450,7 +506,7 @@ impl Theater {
                     if !pinned {
                         recent_ids.insert(film.id.clone());
                     }
-                    film.saved = pinned;
+                    film.saved |= pinned;
                     films.insert(film.id.clone(), film);
                 }
             }
@@ -476,11 +532,35 @@ impl Theater {
                 archive_clip: Some((row.clip.id, row.clip.title)),
             });
         }
+        let local_ids: Vec<_> = self.state().films().iter().map(|f| f.id.clone()).collect();
+        let mut published = std::collections::HashMap::new();
+        if let Some(sync) = sync {
+            for id in local_ids {
+                if let Some(remote) = sync.published(&id) {
+                    published.insert(id, remote);
+                }
+            }
+        }
         let mut state = self.state();
         if state.open_generation != generation {
             return;
         }
         if let Load::Ready(list) = &mut state.load {
+            list.retain_mut(|local| {
+                let remote = local
+                    .live_game_id
+                    .clone()
+                    .or_else(|| published.remove(&local.id));
+                let Some(remote) = remote else { return true };
+                if let Some(row) = films.remove(&format!("live:{remote}")) {
+                    local.live_game_id = Some(remote);
+                    local.shared = row.shared;
+                    local.saved = row.saved;
+                    return true;
+                }
+                // The file stays on disk when removed or evicted on another machine.
+                !authoritative
+            });
             list.extend(films.into_values());
         }
         state.archive_clips = archive_clips;
@@ -492,6 +572,16 @@ impl Theater {
     fn change_library(&self, action: pages::Action, entry: &Entry) -> Result<(), String> {
         let id = &entry.film.id;
         if entry.clip.is_none() {
+            if let Some(sync) = self
+                .sync()
+                .filter(|s| Some(s.account()) == self.state().account)
+            {
+                match action {
+                    pages::Action::Save => sync.change_local(id, Some(!entry.film.saved))?,
+                    pages::Action::Delete => sync.change_local(id, None)?,
+                    _ => {}
+                }
+            }
             let library = self.0.library.lock().unwrap_or_else(|e| e.into_inner());
             let library = library.as_ref().ok_or("Film library is unavailable")?;
             match action {
@@ -593,19 +683,83 @@ impl Theater {
             .spawn(move || {
                 let mut entry = entry;
                 let result = (|| {
-                    let game = entry.film.archive_id().ok_or("Missing Live film ID")?.to_owned();
+                    let sync_account = this.sync().filter(|s| Some(s.account()) == account);
+                    if matches!(action, pages::Action::Delete | pages::Action::Save)
+                        && entry.archive_clip.is_none()
+                        && entry.clip.is_none()
+                        && let (Some(sync), Some(game)) =
+                            (&sync_account, entry.film.live_game_id.as_deref())
+                    {
+                        let pin = (action == pages::Action::Save).then_some(!entry.film.saved);
+                        sync.change_remote(game, pin)?;
+                        return Ok(None);
+                    }
+                    if action == pages::Action::Watch
+                        && let (Some(sync), Some(game)) = (&sync_account, entry.film.archive_id())
+                        && let Some(result) = adapter::cached_film(
+                            sync,
+                            &location.dir,
+                            game,
+                            entry.archive_clip.as_ref().and(entry.clip.as_ref()),
+                            entry.film.live_start_tick,
+                        )
+                    {
+                        if result.is_ok() {
+                            entry.film.check_cached(&location.dir, &location.installation);
+                        }
+                        return result;
+                    }
                     if action == pages::Action::Prepare {
-                        let path = adapter::archive_path(&location.dir, &game)?;
-                        if adapter::archive_entry(&path, &game).is_ok() {
+                        let game = entry.film.archive_id().ok_or("Missing Live film ID")?;
+                        let path = adapter::archive_path(&location.dir, game)?;
+                        if adapter::archive_entry(&path, game).is_ok() {
                             entry.film.check_cached(&location.dir, &location.installation);
                             return Ok(None);
                         }
                     }
                     let archive = live_hle::films::Archive::connect(&location.live, account)?
                         .ok_or("Live archives are unavailable")?;
+                    let mut id = entry
+                        .film
+                        .archive_id()
+                        .or(entry.film.live_game_id.as_deref())
+                        .map(str::to_owned);
+                    if action == pages::Action::Share {
+                        if let Some(game) = &id {
+                            if entry.film.shared
+                                && archive.detail(game)?.visibility
+                                    == Some(live_proto::film::sharing::Visibility::Private)
+                            {
+                                archive.set_visibility(
+                                    game,
+                                    live_proto::film::sharing::Visibility::Link,
+                                )?;
+                            }
+                        } else {
+                            let sync = this
+                                .sync()
+                                .filter(|s| Some(s.account()) == account)
+                                .ok_or("Sign in to share this recording")?;
+                            let local = film::Library::open(&location.dir)
+                                .and_then(|library| library.get(&entry.film.id))
+                                .map_err(|error| error.to_string())?;
+                            sync.enqueue(&entry.film.id, &local.path)?;
+                            let shared = sync.share(
+                                &entry.film.id,
+                                live_proto::film::sharing::Visibility::Link,
+                            )?;
+                            id = Some(shared);
+                        }
+                    } else if id.is_none()
+                        && let Some(sync) = this.sync().filter(|s| Some(s.account()) == account)
+                    {
+                        id = sync.published(&entry.film.id);
+                    }
+                    let game = id.as_deref().ok_or("Share this film first")?;
                     match action {
                         pages::Action::Watch | pages::Action::Prepare => adapter::download_film(
                             &archive,
+                            sync_account.as_ref(),
                             &location.dir,
                             &game,
                             entry.archive_clip.as_ref().and(entry.clip.as_ref()),
@@ -614,12 +768,44 @@ impl Theater {
                         .inspect(|_| {
                             entry.film.check_cached(&location.dir, &location.installation);
                         }),
+                        pages::Action::Share | pages::Action::CopyLink => {
+                            let clip = if let Some((id, _)) = &entry.archive_clip {
+                                Some(id.clone())
+                            } else if let Some(clip) = &entry.clip {
+                                Some(archive.share_clip(game, clip.from_tick, clip.to_tick)?)
+                            } else {
+                                None
+                            };
+                            let link = link::share_url(&archive, &location, game, clip.as_deref())?;
+                            if action == pages::Action::CopyLink {
+                                link::copy(&link)?;
+                            }
+                            let mut state = this.state();
+                            if state.open_generation == generation
+                                && state
+                                    .selected
+                                    .as_ref()
+                                    .is_some_and(|e| e.film.id == entry.film.id)
+                            {
+                                state.status = if action == pages::Action::CopyLink {
+                                    "Link copied".into()
+                                } else {
+                                    link
+                                };
+                                state.changed();
+                            }
+                            Ok(None)
+                        }
                         pages::Action::Save => {
                             archive.set_saved(&game, !entry.film.saved).map(|()| None)
                         }
                         pages::Action::Delete => {
-                            let (id, _) = entry.archive_clip.as_ref().ok_or("Missing clip ID")?;
-                            archive.delete_clip(id).map(|()| None)
+                            if let Some((id, _)) = &entry.archive_clip {
+                                archive.delete_clip(id)?;
+                            } else {
+                                archive.remove(game)?;
+                            }
+                            Ok(None)
                         }
                     }
                 })();
@@ -659,6 +845,7 @@ impl Theater {
                     .selected
                     .as_ref()
                     .is_some_and(|e| e.film.id == entry.film.id && e.clip == entry.clip);
+            let view = state.view;
             drop(state);
             if still_selected && action == pages::Action::Prepare {
                 if !entry.can_prepare() {
@@ -670,7 +857,7 @@ impl Theater {
                 if playback_clip.is_some() {
                     playback.clip = playback_clip;
                 }
-                self.session().play(&playback)
+                self.session().play(&playback, view)
             } else {
                 Ok(())
             }
@@ -712,6 +899,7 @@ impl Theater {
             Ok(()) => match action {
                 pages::Action::Watch => "Opening film...".into(),
                 pages::Action::Prepare => String::new(),
+                pages::Action::CopyLink | pages::Action::Share => state.status.clone(),
                 pages::Action::Save => {
                     let saved = !entry.film.saved;
                     if let Load::Ready(films) = &mut state.load
@@ -736,9 +924,20 @@ impl Theater {
                     }
                 }
                 pages::Action::Delete => {
-                    state
-                        .archive_clips
-                        .retain(|clip| clip.archive_clip != entry.archive_clip);
+                    if entry.archive_clip.is_none() {
+                        if let Load::Ready(rows) = &mut state.load {
+                            rows.retain(|f| f.id != entry.film.id);
+                        }
+                        state.recent_archives.remove(&entry.film.id);
+                        state.archive_clips.retain(|c| c.film.id != entry.film.id);
+                        if selected {
+                            state.selected = None;
+                        }
+                    } else {
+                        state
+                            .archive_clips
+                            .retain(|clip| clip.archive_clip != entry.archive_clip);
+                    }
                     if selected {
                         state.confirm_delete = false;
                     }
@@ -754,6 +953,7 @@ impl Theater {
 
     pub fn connect(&self, agent: &agent::Agent) {
         self.session().connect(agent);
+        self.link_method(agent);
     }
 
     fn start_prepare(&self, id: &str) -> Result<(), String> {
@@ -890,6 +1090,7 @@ impl Theater {
     /// Called outside the compositor and guest memory lock. A completed
     /// in/out pair becomes a range entry in the local Clips tab.
     pub fn pump(&self) {
+        self.pump_external_link();
         let done = std::mem::take(
             &mut *self
                 .0

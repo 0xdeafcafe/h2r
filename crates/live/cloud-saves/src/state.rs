@@ -68,7 +68,18 @@ impl Places {
     /// `<data>/cloud-saves/<server id>/<xuid>`. A server id is a host name
     /// (and port); anything else in it becomes `_`.
     pub fn new(data: &Path, server_id: &str, xuid: &str) -> Self {
+        Self::under(data.join("cloud-saves"), server_id, xuid)
+    }
+
+    pub fn films(data: &Path, server_id: &str, xuid: &str) -> Self {
+        Self::under(data.join("films-sync"), server_id, xuid)
+    }
+
+    fn under(root: PathBuf, server_id: &str, xuid: &str) -> Self {
         let safe = |s: &str| -> String {
+            if matches!(s, "" | "." | "..") {
+                return "_".into();
+            }
             s.chars()
                 .map(|c| {
                     if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_') {
@@ -80,7 +91,7 @@ impl Places {
                 .collect()
         };
         Places {
-            dir: data.join("cloud-saves").join(safe(server_id)).join(safe(xuid)),
+            dir: root.join(safe(server_id)).join(safe(xuid)),
         }
     }
 
