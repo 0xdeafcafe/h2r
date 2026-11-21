@@ -16,6 +16,7 @@ pub(crate) enum SurfaceKind {
     /// A DXGI composition swap chain on a XAML `SwapChainPanel` (the UWP
     /// app, [`crate::embedded`]): the first mode listed, which is `Auto`,
     /// so the panel's own composition decides.
+    #[cfg_attr(not(windows), allow(dead_code))] // made only by the Windows embedded host
     Composition,
 }
 
