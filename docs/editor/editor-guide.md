@@ -1092,7 +1092,8 @@ packages, or a converted Halo 1 map), then select the **Tags** tab beside **Scen
   and outlines its placements in the viewport. **All tags** offers
   **Groups** and **Paths**. Search with words such as `weap rifle`, each
   matching the group or name. **Not reachable from the scenario** helps
-  find tags outside the walk from the scenario and globals.
+  find tags outside the walk from the scenario and globals. If that walk
+  is incomplete, the section says so and leaves the list empty.
   A `*` marks an edit. `[Pending]` marks edited tag metadata waiting
   to reach a paired game. Shared-cache marks show where the data lives,
   such as `[shared]` for resources and `[in shared]` for tag fields.

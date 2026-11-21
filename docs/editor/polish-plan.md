@@ -30,7 +30,6 @@ during the read, so nothing here comes from the socket API.
 | # | Problem | Where |
 |---|---|---|
 | R3 | Scenario and Tags are two tools over one map. They have separate selections, a second map picker, and separate undo: the inspector's tag section carries its own **Undo tag edit** and **Redo tag edit** buttons because Cmd+Z goes to the active tool's stack. | `ui/tags.rs:62` (`map_picker`), `ui/inspector.rs:245` to `ui/inspector.rs:251`, `app.rs:585` (`can_undo`) |
-
 | R6 | Save is always "Save as". Cmd+S opens a file dialog every time for a map, and a package opened from the Maps list is saved through a different menu item with a form. | `ui.rs:189`, `ui.rs:316` to `ui.rs:335` |
 | R9 | No search across the app. Maps, tags and placements each have their own filter box, and commands are only in menus. | `ui.rs:784`, `ui/tags.rs:132` |
 

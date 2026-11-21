@@ -1682,6 +1682,27 @@ fn placement_inspector_and_tag_set_make_identical_documents_and_saves() {
 }
 
 #[test]
+fn back_and_forward_restore_the_tags_document_selection() {
+    use crate::app::NavAction;
+
+    let t = Temp::new("tag-navigation");
+    let mut app = crate::app::tag_tests::placement_app(&t.0);
+    let mut api = Api::new();
+    let weapon = fixture::id(2);
+    let model = fixture::id(4);
+    for tag in [weapon, model] {
+        app.perform(Action::Navigate(NavAction::SelectTag(tag)), false)
+            .unwrap();
+        assert_eq!(app.tags.selected, Some(tag));
+    }
+
+    call(&mut api, &mut app, m::NAV_BACK, json!({}));
+    assert_eq!(app.tags.selected, Some(weapon));
+    call(&mut api, &mut app, m::NAV_FORWARD, json!({}));
+    assert_eq!(app.tags.selected, Some(model));
+}
+
+#[test]
 fn reference_jump_and_history_restore_the_tag_and_field() {
     let t = Temp::new("inspector-nav");
     let mut app = crate::app::tag_tests::placement_app(&t.0);

@@ -611,8 +611,9 @@ build), and keeps the last four maps' scenes so reopening one is instant.
   Clicking skips hidden placement categories and hidden structure.
 - **Gameplay layers.** Spawn points have a team-coloured pawn and an
   arrow pointing along the spawn facing. Netgame flags have a team tint
-  and a pennant for their type. The label gives the type and identifier,
-  using the raw type number for an unknown value. Hill and territory
+  and a pennant for their type. The pick spheres cover the arrow and
+  pennant tips. The label gives the type and identifier, using the raw
+  type number for an unknown value. Hill and territory
   markers of the same type and identifier are joined in placement order.
   Two markers form a segment and three or more form a closed outline.
   Netgame equipment shows its model when available and a respawn label.
@@ -1076,10 +1077,12 @@ Two marks say where a tag lives, both computed from the maps alone:
 
 `app/tag_tree.rs` builds the open scenario's tree from its structure
 BSPs and lightmaps, skies, object palettes, globals and other references.
-Palette counts use the current placements. The reference walker follows
-layout fields and scans aligned group and datum pairs for unlabelled tags.
-The reachability walk starts from the scenario and globals. All tags
-keeps the group and folder views, with a search matching each word in
+Palette counts and scenario-owned reference fields use the current
+placements. The reference walker follows layout fields, reads BSP-region
+payloads, and scans aligned group and datum pairs for unlabelled tags.
+The reachability walk starts from the scenario and globals. The tree
+shows an incomplete walk in place of the unreachable list. All tags keeps
+the group and folder views, with a search matching each word in
 `group:name`. `tag.list` uses the same search.
 
 The inspector lists a tag's **data and resources** (`tag_api::resources`):

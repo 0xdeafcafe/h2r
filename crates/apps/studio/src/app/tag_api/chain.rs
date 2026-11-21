@@ -1,13 +1,16 @@
 //! The inspector's tag tree, walked over the current TagDoc (including edits).
 use std::collections::HashSet;
+use std::io::{Read, Seek};
 
-use map::{FourCC, TagId};
+use map::{FourCC, Map, TagId};
 use scenario_edit::{
     BlockKind, Scenario,
+    Value as ScenarioValue,
     layout::{FieldType, Role},
 };
 use serde_json::{Value, json};
 use tags::registry::{Kind, Layout};
+use tags::schema::{Field, Schema, Struct};
 
 use super::{TagDoc, le};
 use crate::app::tag_doc::Access;
@@ -29,6 +32,12 @@ pub(crate) struct Link {
     datum_at: u32,
     shortcut: Option<&'static str>,
     variant: Option<u32>,
+}
+
+#[derive(Default)]
+pub(crate) struct References {
+    pub links: Vec<Link>,
+    pub incomplete: bool,
 }
 
 pub struct Chain {
@@ -104,7 +113,7 @@ impl TagDoc {
             .filter_map(|(i, pair)| {
                 let group = FourCC::from_u32(le(&pair[..4]) as u32);
                 let id = TagId(le(&pair[4..]) as u32);
-                if id == TagId::NULL || id.0 == 0 || group.0 == [0; 4] || group.0 == [0xff; 4] {
+                if id == TagId::NULL || group.0 == [0; 4] || group.0 == [0xff; 4] {
                     return None;
                 }
                 let target = self.tag(id)?;
@@ -126,9 +135,97 @@ impl TagDoc {
     }
 
     /// Direct links through the same layout walk or scan as the inspector.
-    pub(crate) fn tag_refs(&self, tag: TagId) -> Vec<Link> {
-        Walk::new(self).links(tag, None)
+    /// The scenario session owns the reference fields in its placement blocks.
+    pub(crate) fn tag_refs(&self, tag: TagId, scenario: Option<&Scenario>) -> References {
+        let mut walk = Walk::new(self);
+        let mut links = walk.links(tag, None);
+        if let Some(scenario) = scenario.filter(|s| s.tag == tag) {
+            self.overlay_scenario_refs(scenario, &mut links);
+        }
+        References {
+            links,
+            incomplete: walk.truncated,
+        }
     }
+
+    fn overlay_scenario_refs(&self, scenario: &Scenario, links: &mut Vec<Link>) {
+        let layout = self.layout(scenario.tag);
+        let mut source_datums = HashSet::new();
+        let mut current = Vec::new();
+        for block in &scenario.blocks {
+            // Keep the registry's named path when it describes these fields.
+            let root_field =
+                layout.and_then(|l| l.fields.iter().find(|f| f.offset == block.def.offset));
+            let block_name = root_field.map_or(block.def.label, |f| f.name.as_str());
+            for field in block.def.fields.iter().filter(|f| f.ty == FieldType::TagRef) {
+                for index in 0..block.capacity() as u32 {
+                    source_datums
+                        .insert(block.address + index * block.def.stride + field.offset + 4);
+                }
+                let child_field = root_field.and_then(|f| match &f.kind {
+                    Kind::Block(child) => child.fields.iter().find(|f| f.offset == field.offset),
+                    _ => None,
+                });
+                let field_name = child_field.map_or(field.name, |f| f.name.as_str());
+                for index in 0..block.len() {
+                    let Ok(ScenarioValue::Tag(reference)) =
+                        scenario.get(block.def.kind, index, field.name)
+                    else {
+                        continue;
+                    };
+                    if !self.is_reference(reference.id, Some(reference.group)) {
+                        continue;
+                    }
+                    current.push(Link {
+                        tag: reference.id,
+                        via: format!("{block_name}[{index}].{field_name}"),
+                        path: format!("{:#x}[{index}].{:#x}", block.def.offset, field.offset),
+                        found: "field",
+                        datum_at: 0,
+                        shortcut: None,
+                        variant: None,
+                    });
+                }
+            }
+        }
+        links.retain(|link| !source_datums.contains(&link.datum_at));
+        links.extend(current);
+    }
+
+    /// A zero datum in a group-coded field may also be blank padding.
+    /// Accept it when its group and datum identify a real tag.
+    fn is_reference(&self, id: TagId, group: Option<FourCC>) -> bool {
+        id != TagId::NULL
+            && (id.0 != 0
+                || self.tag(id).is_some_and(|t| {
+                    group.is_none_or(|group| self.fits(t.group, &[group]))
+                }))
+    }
+}
+
+/// Read direct links in a payload that lives in a BSP address space.
+/// Keep the structural offset paths used by tag.follow for those tags.
+pub(crate) fn region_refs<R: Read + Seek>(
+    doc: &TagDoc,
+    map: &mut Map<R>,
+    id: TagId,
+) -> map::Result<References> {
+    let tag = map.tag(id)?;
+    let (Some(location), Some(layout)) = (tag.location, Schema::builtin().groups.get(&tag.group))
+    else {
+        return Ok(References {
+            incomplete: true,
+            ..References::default()
+        });
+    };
+    let bytes = map.read_tag_bytes(id)?;
+    let mut walk = Walk::new(doc);
+    let mut links = Vec::new();
+    walk.region_element((&bytes, location.address), layout, (0, ""), &mut links, 0);
+    Ok(References {
+        links,
+        incomplete: walk.truncated,
+    })
 }
 
 /// Resolve the placement's current palette entry or item reference.
@@ -287,12 +384,12 @@ impl<'a> Walk<'a> {
                         continue;
                     };
                     let id = TagId(le(&bytes[bytes.len() - 4..]) as u32);
-                    if id == TagId::NULL || id.0 == 0 {
+                    let field_group =
+                        (bytes.len() == 8).then(|| FourCC::from_u32(le(&bytes[..4]) as u32));
+                    if !self.doc.is_reference(id, field_group) {
                         continue;
                     }
-                    let to = self.doc.tag(id).map(|t| t.group).or_else(|| {
-                        (bytes.len() == 8).then(|| FourCC::from_u32(le(&bytes[..4]) as u32))
-                    });
+                    let to = self.doc.tag(id).map(|t| t.group).or(field_group);
                     let shortcut = to.and_then(|to| shortcut(group, to, prefix, &f.name));
                     let variant = match shortcut {
                         Some("Model") => variant,
@@ -328,7 +425,83 @@ impl<'a> Walk<'a> {
                             refs,
                             depth + 1,
                         );
-                        if self.fields_left == 0 {
+                        if self.truncated && self.fields_left == 0 {
+                            return;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn region_element(
+        &mut self,
+        region: (&[u8], u32),
+        layout: &Struct,
+        element: (usize, &str),
+        refs: &mut Vec<Link>,
+        depth: usize,
+    ) {
+        let (bytes, base) = region;
+        let (at, path) = element;
+        if depth > MAX_BLOCK_DEPTH || layout.size as usize > bytes.len().saturating_sub(at) {
+            self.truncated = true;
+            return;
+        }
+        let word = |offset: usize| le(&bytes[offset..offset + 4]) as u32;
+        let field_path = |offset: u32| {
+            if path.is_empty() {
+                format!("{offset:#x}")
+            } else {
+                format!("{path}.{offset:#x}")
+            }
+        };
+        for (&offset, field) in &layout.fields {
+            if self.fields_left == 0 {
+                self.truncated = true;
+                return;
+            }
+            self.fields_left -= 1;
+            let p = at + offset as usize;
+            match field {
+                Field::TagRef | Field::TagId => {
+                    let tag_ref = matches!(field, Field::TagRef);
+                    let datum_at = if tag_ref { p + 4 } else { p };
+                    let id = TagId(word(datum_at));
+                    let group = tag_ref.then(|| FourCC::from_u32(word(p)));
+                    if self.doc.is_reference(id, group) {
+                        let here = field_path(offset);
+                        refs.push(Link {
+                            tag: id,
+                            via: here.clone(),
+                            path: here,
+                            found: "field",
+                            datum_at: 0,
+                            shortcut: None,
+                            variant: None,
+                        });
+                    }
+                }
+                Field::Block(child) if child.size > 0 && region_has_refs(child) => {
+                    let count = word(p);
+                    if count == 0 {
+                        continue;
+                    }
+                    let start = word(p + 4).checked_sub(base).map(|n| n as usize);
+                    let len = count.checked_mul(child.size).map(|n| n as usize);
+                    let Some(start) = start.zip(len).and_then(|(start, len)| {
+                        (len <= bytes.len().saturating_sub(start)).then_some(start)
+                    }) else {
+                        self.truncated = true;
+                        continue;
+                    };
+                    let here = field_path(offset);
+                    for index in 0..count as usize {
+                        let path = format!("{here}[{index}]");
+                        let at = start + index * child.size as usize;
+                        self.region_element(region, child, (at, &path), refs, depth + 1);
+                        if self.truncated && self.fields_left == 0 {
                             return;
                         }
                     }
@@ -355,6 +528,14 @@ impl<'a> Walk<'a> {
                 .map_or_else(|| format!("{variant:#010x}"), str::to_owned)
         })
     }
+}
+
+fn region_has_refs(layout: &Struct) -> bool {
+    layout.fields.values().any(|field| match field {
+        Field::TagRef | Field::TagId => true,
+        Field::Block(child) => region_has_refs(child),
+        _ => false,
+    })
 }
 
 fn string_id(doc: &TagDoc, at: u32, layout: &Layout, name: &str) -> Option<u32> {

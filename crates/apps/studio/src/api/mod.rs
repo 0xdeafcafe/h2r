@@ -208,8 +208,6 @@ pub const METHODS: &[MethodDef] = &[
         r#"{"id":"string","group":"string","name":"string|null","size":"integer","fields":"[field]"}"#,
         r#"{"tag":"scnr"}"#,
     ),
-    tags::TREE,
-    tags::REFS,
     def(
         m::TAG_FOLLOW,
         "Follow one reference (a tag.refs path, or its position in that list) to the tag it names",

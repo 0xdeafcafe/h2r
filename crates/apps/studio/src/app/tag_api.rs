@@ -18,6 +18,7 @@ use tags::registry::{Field, Kind, Layout};
 use super::tag_doc::{Access, BlockOp, TagAction, TagDoc, TagWrite};
 
 mod chain;
+pub(crate) use chain::{References, region_refs};
 pub use chain::{Chain, DEFAULT_DEPTH, MAX_DEPTH, Node, chain, placement_root};
 
 /// Elements of a block [`read_tag`] lists at most.

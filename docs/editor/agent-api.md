@@ -154,7 +154,7 @@ before anything runs (`INVALID_PARAMS`). Indices are 0-based throughout
 | `ui` | `screens`, `pick {screen, state \| retail}`, `press {input}`, `widgets`, `render {out}` |
 | `pair` | `list`, `status`, `connect {socket?}`, `disconnect {leave?}`, `auto {enabled?}`, `play`, `stop`, `control {action, ticks?}`, `edit {enabled}` |
 | `mirror` | `status`, `objects {kind?, near?, limit?, at_tick?}`, `pending`, `apply {what, at?, peers?}` |
-| `view` | `camera {yaw, pitch, distance, target, focus, all, fly_speed}`, `snapshot {out, size, camera}`, `stats` |
+| `view` | `camera {yaw, pitch, distance, target, focus, all, fly_speed}`, `snapshot {out, size, camera}`, `stats`, `layers {set?, preset?, xray?}` |
 | `hud` | `list {map \| package}`, `read {hud, state}`, `set {hud, widget, field, value, merge}`, `move {hud, widget, x, y, mode, merge}`, `render {hud, state, out}`, `check {hud, state}`, `save_as {path}` |
 | `model` (planned) | `list`, `read`, `render`, `colors`, `emblem` |
 | `custom` (planned) | `list`, `set` |
@@ -178,19 +178,22 @@ Notes on some:
   the Scenario tool: `tag.set` paths `netgame_flags[0].position` and
   `tag.block.*` on `netgame_flags` run as the matching `scenario.*` calls.
 - **Scenario tree.** `tag.tree {"root":"scenario","depth":2}` reads the
-  open scenario and returns `{root, unreachable, truncated}`. The
-  root's children are Structure (BSPs with their lightmaps), Skies,
+  open scenario and returns `{root, unreachable, incomplete, truncated}`.
+  The root's children are Structure (BSPs with their lightmaps), Skies,
   Objects (grouped by palette), Globals and Other references.
   Each row has `label`, `tag` (ID), `group`, `name`, `placed` (the
   count for a palette entry), `via`, `cycle`, `edited`, `cache` and
   `children`. Section labels can include a count. `root` defaults to
   `"scenario"`. `depth` limits references below palette entries
-  (default 3, maximum 8). `unreachable` uses the full walk from
-  the scenario and globals regardless of display depth. `truncated`
-  indicates that an object chain hit its walk budget.
+  (default 3, maximum 8). `unreachable` uses the full walk from the
+  scenario and globals, including BSP-region links and unsaved
+  scenario reference edits. `incomplete` marks a partial reachability
+  walk and leaves `unreachable` empty. `truncated` indicates that an
+  object chain hit its display walk budget.
 - **References.** `tag.refs {tag, limit?}` lists direct links in the
-  open tag document, including in-memory tag edits. Each result has
-  `to` (the target ID), `via` (the field path or scanned tag offset),
+  open map, including in-memory tag edits and current scenario-owned
+  reference fields. Each result has `to` (the target ID),
+  `via` (the field path or scanned tag offset),
   and `found` (`"field"` or `"scan"`), alongside `path`, `id`, `group`,
   `name` and `missing` when the target is absent. The aligned scan covers
   a group without a layout and supplements the scenario's structural
@@ -391,8 +394,8 @@ the window and the API stay one path.
   (`TagIo`, after it) answers `tag.list` (replacing the built-in one),
   `tag.browse`, `tag.resources`, `tag.export` and `tag.import` through
   `Action::BrowseTags`, `Action::TagExport` and `Action::TagImport`.
-  `api/tags.rs` uses the outliner's tree for `tag.tree` and the
-  inspector's reference walker for `tag.refs` and `tag.follow`.
+  `api/tags.rs` registers `TagGraph` for `tag.tree` and `tag.refs`.
+  The tree and `tag.follow` share the reference reader with `tag.refs`.
 - **HUDs (studio-hud, landed).** `api/hud.rs`: `hud.list` opens a map of
   the source (or a package) in the HUD tool and lists its `nhdt` tags
   and who names them; `hud.read` shows one and gives its widgets

@@ -120,7 +120,7 @@ impl ScenarioOutliner {
                 .session
                 .source()
                 .and_then(|source| source.open().ok())
-                .map(|mut map| ScenarioRoots::read(&mut map));
+                .map(|mut map| ScenarioRoots::read(&app.tags, &mut map));
             self.source = Some((world, roots));
             self.model = None;
             self.opened.clear();
@@ -187,28 +187,30 @@ pub fn tree(ui: &Ui, app: &App, st: &mut TagsUi, fonts: &Fonts, actions: &mut Ve
     {
         all_tags(ui, &view, st, fonts, actions);
     }
-    if let Some(tree) = st
-        .scenario
-        .model
-        .as_ref()
-        .filter(|_| scenario.is_some())
-        .map(|(_, tree)| tree)
-        && let Some(_unreachable) = ui
+    if let Some(tree) = model {
+        let label = if tree.incomplete {
+            "Not reachable from the scenario (walk incomplete)".to_owned()
+        } else {
+            format!("Not reachable from the scenario ({})", tree.unreachable.len())
+        };
+        if let Some(_unreachable) = ui
             .tree_node_config("##unreachable-tags")
-            .label(format!(
-                "Not reachable from the scenario ({})",
-                tree.unreachable.len()
-            ))
+            .label(label)
             .span_avail_width(true)
             .push()
-    {
-        tag_rows(
-            ui,
-            &view,
-            &tree.unreachable,
-            ListNames::GroupAndPath,
-            actions,
-        );
+        {
+            if tree.incomplete {
+                ui.text_disabled("Reachability is unknown for tags outside the walk.");
+            } else {
+                tag_rows(
+                    ui,
+                    &view,
+                    &tree.unreachable,
+                    ListNames::GroupAndPath,
+                    actions,
+                );
+            }
+        }
     }
 }
 
@@ -379,8 +381,9 @@ impl RowView<'_> {
         palette: Option<&[(scenario_edit::BlockKind, usize)]>,
         actions: &mut Vec<Action>,
     ) {
-        actions.push(Action::Tag(TagAction::Select(id)));
-        if !self.browse {
+        if self.browse {
+            actions.push(Action::Tag(TagAction::Select(id)));
+        } else {
             let nav = match palette {
                 Some(placements) => NavAction::SelectPalette {
                     tag: id,
@@ -817,7 +820,6 @@ mod tests {
     use super::*;
 
     #[test]
-    #[ignore = "requires an exclusive Dear ImGui context"]
     fn scenario_tree_large_group_draws_all_rows_as_it_scrolls() {
         use map::{
             CacheType, Map,
@@ -851,6 +853,9 @@ mod tests {
         let hits = tag_tree::search(doc.tags(), "");
         assert_eq!(hits.len(), COUNT);
 
+        let _turn = crate::headless::ONE_CONTEXT
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let (mut ctx, fonts) = crate::context(None);
         ctx.font_atlas()
             .try_claim_legacy_renderer()

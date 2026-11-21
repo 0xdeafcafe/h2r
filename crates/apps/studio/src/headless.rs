@@ -500,6 +500,10 @@ pub fn read_texture(
     Ok(out)
 }
 
+/// Dear ImGui allows one context at a time: the tests take turns.
+#[cfg(test)]
+pub(crate) static ONE_CONTEXT: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1075,9 +1079,6 @@ mod tests {
         assert_eq!(app.loaded_map(), Some("02_pier"));
         assert!(app.session.is_open());
     }
-
-    /// Dear ImGui allows one context at a time: the tests take turns.
-    static ONE_CONTEXT: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     fn headless() -> Option<(std::sync::MutexGuard<'static, ()>, Headless)> {
         let turn = ONE_CONTEXT.lock().unwrap_or_else(|e| e.into_inner());

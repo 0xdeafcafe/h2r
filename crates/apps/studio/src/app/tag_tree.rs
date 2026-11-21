@@ -11,7 +11,7 @@ use scenario_edit::{BlockKind, Role, Scenario, geometry, layout::BLOCKS, scene};
 
 use super::{
     tag_api::{self, Node},
-    tag_doc::{TagDoc, TagEntry},
+    tag_doc::{Access, IN_BSP, TagDoc, TagEntry},
 };
 
 /// How the outliner arranges the tags.
@@ -72,14 +72,33 @@ pub struct ScenarioRoots {
     bsps: Vec<(TagId, Option<TagId>)>,
     skies: Vec<TagId>,
     globals: Option<TagId>,
+    region_refs: HashMap<TagId, tag_api::References>,
 }
 
 impl ScenarioRoots {
-    pub fn read<R: Read + Seek>(map: &mut Map<R>) -> Self {
+    pub fn read<R: Read + Seek>(doc: &TagDoc, map: &mut Map<R>) -> Self {
+        let region_refs = doc
+            .tags()
+            .iter()
+            .filter(|tag| tag.access == Access::None(IN_BSP))
+            .map(|tag| {
+                let refs = tag_api::region_refs(doc, map, tag.id).unwrap_or_else(|_| {
+                    tag_api::References {
+                        incomplete: true,
+                        ..tag_api::References::default()
+                    }
+                });
+                (tag.id, refs)
+            })
+            .collect();
         Self {
             bsps: geometry::scenario_bsp_lightmaps(map).unwrap_or_default(),
             skies: scene::scenario_skies(map),
-            globals: map.globals().map(|tag| tag.id),
+            globals: map
+                .globals()
+                .map(|tag| tag.id)
+                .filter(|id| *id != TagId::NULL),
+            region_refs,
         }
     }
 }
@@ -88,6 +107,9 @@ pub struct ScenarioTree {
     pub root: Row,
     /// Indices in the tag document, in its order.
     pub unreachable: Vec<usize>,
+    /// A reference walk stopped early, so the complement is unknown.
+    pub incomplete: bool,
+    /// A displayed palette chain hit its own walk budget.
     pub truncated: bool,
 }
 
@@ -149,11 +171,11 @@ pub fn scenario_tree(
     let mut structure = Vec::new();
     for (i, &(bsp, lightmap)) in roots.bsps.iter().enumerate() {
         let mut row = Row::section(format!("BSP {i}"), Vec::new());
-        if bsp != TagId::NULL && bsp.0 != 0 {
+        if bsp != TagId::NULL {
             row.tag = Some(bsp);
             named.insert(bsp);
         }
-        if let Some(lightmap) = lightmap.filter(|id| id.0 != 0) {
+        if let Some(lightmap) = lightmap.filter(|id| *id != TagId::NULL) {
             named.insert(lightmap);
             row.children = Arc::from([Row {
                 label: "Lightmap".into(),
@@ -168,7 +190,7 @@ pub fn scenario_tree(
         .skies
         .iter()
         .copied()
-        .filter(|id| *id != TagId::NULL && id.0 != 0)
+        .filter(|id| *id != TagId::NULL)
         .map(|id| {
             named.insert(id);
             Row::tag(id)
@@ -199,7 +221,7 @@ pub fn scenario_tree(
                 placements: Some(placed),
                 ..Row::default()
             };
-            if reference.is_none() || reference.id.0 == 0 {
+            if reference.is_none() {
                 row.label = format!("Empty entry {slot}");
             } else {
                 let id = reference.id;
@@ -231,8 +253,10 @@ pub fn scenario_tree(
     sections.push(globals);
 
     let mut seen = named;
-    let other: Vec<_> = doc
-        .tag_refs(scenario.tag)
+    let scenario_refs = doc.tag_refs(scenario.tag, Some(scenario));
+    let mut incomplete = scenario_refs.incomplete;
+    let other: Vec<_> = scenario_refs
+        .links
         .into_iter()
         .filter(|link| doc.tag(link.tag).is_some() && seen.insert(link.tag))
         .map(|link| Row {
@@ -253,24 +277,36 @@ pub fn scenario_tree(
         .filter(|id| *id != scenario.tag)
         .collect();
     while let Some(id) = todo.pop() {
-        for link in doc.tag_refs(id) {
+        let local;
+        let refs = if let Some(refs) = roots.region_refs.get(&id) {
+            refs
+        } else {
+            local = doc.tag_refs(id, None);
+            &local
+        };
+        incomplete |= refs.incomplete;
+        for link in &refs.links {
             if doc.tag(link.tag).is_some() && seen.insert(link.tag) {
                 todo.push(link.tag);
             }
         }
     }
-    let unreachable = doc
-        .tags()
-        .iter()
-        .enumerate()
-        .filter_map(|(i, tag)| (!seen.contains(&tag.id)).then_some(i))
-        .collect();
+    let unreachable = if incomplete {
+        Vec::new()
+    } else {
+        doc.tags()
+            .iter()
+            .enumerate()
+            .filter_map(|(i, tag)| (!seen.contains(&tag.id)).then_some(i))
+            .collect()
+    };
     ScenarioTree {
         root: Row {
             tag: Some(scenario.tag),
             ..Row::section("Scenario", sections)
         },
         unreachable,
+        incomplete,
         truncated,
     }
 }
