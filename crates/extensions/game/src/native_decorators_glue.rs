@@ -217,6 +217,7 @@ impl Prepared {
                     Some(depth)
                 }
                 Err(why) => {
+                    drop(materials);
                     log_once(&why);
                     None
                 }
