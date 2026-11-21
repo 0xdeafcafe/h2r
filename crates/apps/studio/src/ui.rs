@@ -897,7 +897,9 @@ impl Studio {
 
     fn inspector_window(&mut self, ui: &Ui, app: &mut App, actions: &mut Vec<Action>) {
         let mut state = std::mem::take(&mut self.inspector);
-        ui.window(&self.keys.inspector).build(|| {
+        // The closure borrows the whole shell, so the key is its own value.
+        let key = self.keys.inspector.clone();
+        ui.window(&key).build(|| {
             let link = self.play.play.link_view(app);
             if matches!(
                 link.state,
@@ -907,6 +909,7 @@ impl Studio {
                 if let Some(why) = &link.why {
                     ui.set_item_tooltip(why);
                 }
+            }
             if app.tool == ToolKind::Tags {
                 tags::fields(ui, app, &mut self.tags, &self.fonts, self.dialogs, actions);
                 return;

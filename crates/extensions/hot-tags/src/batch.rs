@@ -44,7 +44,7 @@ impl Editor {
                     .as_str()
                     .filter(|s| {
                         !s.is_empty()
-                            && s.len() % 2 == 0
+                            && s.len().is_multiple_of(2)
                             && s.bytes().all(|b| b.is_ascii_hexdigit())
                     })
                     .ok_or_else(|| Error::invalid("value must be nonempty hex bytes"))?;
