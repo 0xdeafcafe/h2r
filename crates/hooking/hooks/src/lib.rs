@@ -69,6 +69,9 @@ pub struct Manifest {
     pub default_on: bool,
     pub doc: &'static str,
     pub(crate) presentation_only: bool,
+    /// How the game works, not an enhancement: it has no switch (set by
+    /// the builder method of the same name).
+    pub(crate) always_on: bool,
 }
 
 impl Manifest {
@@ -79,7 +82,16 @@ impl Manifest {
             default_on: true,
             doc: "",
             presentation_only: false,
+            always_on: false,
         }
+    }
+    /// The feature is how the game works and has no switch: `-<id>` (or
+    /// `<id>=off`) is refused by name at [`Registry::add`] rather than
+    /// leaving it out.
+    pub fn always_on(mut self) -> Self {
+        self.always_on = true;
+        self.default_on = true;
+        self
     }
     pub fn off_by_default(mut self) -> Self {
         self.default_on = false;
@@ -408,11 +420,19 @@ impl Registry {
     }
 
     /// Builds `feature` when its switch is on. `Ok(false)`: switched off.
+    /// A feature that is [`Manifest::always_on`] and switched off is an
+    /// error naming it.
     /// A build error leaves the feature out (nothing it declared is kept)
     /// and is returned. A second feature with the same id is a conflict at
     /// [`build`](Self::build).
     pub fn add(&mut self, feature: &dyn Feature) -> Result<bool, BuildError> {
         let m = feature.manifest();
+        if m.always_on && !self.switches.feature(m.id, true) {
+            return Err(BuildError(format!(
+                "{} has no switch: it is how the game works ({})",
+                m.id, m.doc
+            )));
+        }
         let on = self.switches.feature(m.id, m.default_on);
         if !on {
             self.features

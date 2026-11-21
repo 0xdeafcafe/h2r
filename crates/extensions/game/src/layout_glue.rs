@@ -664,6 +664,7 @@ pub fn install(
             served.push((theater_menu::LABEL_ID, theater_menu::LABEL));
         }
         served.extend(crate::lobby_status::STRINGS);
+        served.extend(crate::lobby_tabs::strings());
         if with_skulls {
             served.extend(skulls_menu::strings());
         }

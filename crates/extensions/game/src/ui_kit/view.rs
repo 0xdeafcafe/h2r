@@ -145,28 +145,10 @@ impl Opener {
         focus: 4,
         ..Opener::GAME_SETUP
     };
-    /// [`Opener::GAME_SETUP`] with the lobby's Mode row first, as a
-    /// Multiplayer lobby on a Halo 2 map lists it, on the Mode row: what
-    /// the Mode picker opens over (`crate::lobby_mode`).
-    pub const GAME_SETUP_MODE: Opener = Opener {
-        rows: &[
-            crate::lobby_mode::MODE_LABEL,
-            "Change Map...",
-            "Change Rules...",
-            "Quick Options...",
-            "Clanker Options...",
-            "Firefight Options...",
-            "Switch To: Co-Op Game",
-            "Switch To: Matchmaking",
-        ],
-        focus: 0,
-        ..Opener::GAME_SETUP
-    };
     /// [`Opener::GAME_SETUP`] as a Forge lobby lists it, on the Forge Map
-    /// row: what the Forge Map picker opens over.
+    /// row: what the Forge Map picker opens over (`crate::lobby_mode`).
     pub const GAME_SETUP_FORGE: Opener = Opener {
         rows: &[
-            crate::lobby_mode::MODE_LABEL,
             "Change Map...",
             crate::lobby_mode::FORGE_MAP_LABEL,
             "Change Rules...",
@@ -174,7 +156,7 @@ impl Opener {
             "Switch To: Co-Op Game",
             "Switch To: Matchmaking",
         ],
-        focus: 2,
+        focus: 1,
         ..Opener::GAME_SETUP
     };
     /// The Xbox Live menu (screen `0xba`) on Quickmatch, its rows as the

@@ -327,6 +327,35 @@ fn duplicate_ids_are_refused() {
     );
 }
 
+/// A feature with no switch, for [`a_feature_that_is_always_on_refuses_its_switch`].
+struct Always;
+
+impl hooks::Feature for Always {
+    fn manifest(&self) -> hooks::Manifest {
+        hooks::Manifest::new("always", "a part of the game")
+            .doc("docs/x.md")
+            .always_on()
+    }
+    fn build(&self, b: &mut hooks::Builder) -> Result<(), BuildError> {
+        b.frame().on_tick("t", |_| {});
+        Ok(())
+    }
+}
+
+#[test]
+fn a_feature_that_is_always_on_refuses_its_switch() {
+    let mut r = Registry::new(Switches::defaults());
+    assert_eq!(r.add(&Always), Ok(true));
+    for spec in ["-always", "always=off"] {
+        let mut r = Registry::new(Switches::parse(spec).unwrap());
+        let e = r.add(&Always).unwrap_err();
+        assert!(e.0.contains("always has no switch"), "{spec}: {e}");
+        assert!(e.0.contains("docs/x.md"), "{spec}: {e}");
+    }
+    let mut r = Registry::new(Switches::parse("always=on").unwrap());
+    assert_eq!(r.add(&Always), Ok(true), "on is what it is anyway");
+}
+
 #[test]
 fn switched_off_and_failed_features_declare_nothing() {
     let mut r = Registry::new(Switches::parse("-quiet").unwrap());

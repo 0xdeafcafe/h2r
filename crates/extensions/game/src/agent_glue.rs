@@ -758,6 +758,16 @@ pub fn add_host_methods(agent: &agent::Agent) {
         }
         ctx.read_guest(crate::lobby_quality::match_peer_rtts)?
     });
+    agent.add_game_method(method::UI_LOBBY_TABS, Access::Read, |params, ctx| {
+        if !params.is_null() && !params.as_object().is_some_and(|p| p.is_empty()) {
+            return Err(RpcError::new(
+                code::INVALID_PARAMS,
+                "ui.lobby.tabs takes no parameters",
+            ));
+        }
+        ctx.read_guest(crate::lobby_tabs::strip::inspect)?
+            .map_err(|why| RpcError::new(code::UNAVAILABLE, why))
+    });
     agent.add_game_method(method::UI_LOBBY_PLAYERS, Access::Read, |params, ctx| {
         if !params.is_null() && !params.as_object().is_some_and(|p| p.is_empty()) {
             return Err(RpcError::new(
@@ -1112,6 +1122,8 @@ mod tests {
             serde_json::from_str(&rx.recv_timeout(Duration::from_secs(5)).unwrap()).unwrap()
         };
         let r = call(method::UI_LOBBY_PLAYERS, json!({"unknown": true}));
+        assert_eq!(r["error"]["code"], code::INVALID_PARAMS, "{r}");
+        let r = call(method::UI_LOBBY_TABS, json!({"unknown": true}));
         assert_eq!(r["error"]["code"], code::INVALID_PARAMS, "{r}");
         let r = call(method::UI_BROWSER_FILTERS, json!({"kind": "coop"}));
         assert_eq!(r["error"]["code"], code::INVALID_PARAMS, "{r}");
