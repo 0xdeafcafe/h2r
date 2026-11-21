@@ -42,12 +42,20 @@ jobs:
           & "$bin\clang.exe" --version
           $bin >> $env:GITHUB_PATH
       - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
       - name: Check workspace and tests
         run: cargo check --workspace --tests
       - name: Run synthetic unit tests
-        run: cargo test -p ir -p hostfault -p runtime --lib
+        run: cargo test -p ir -p runtime --lib
+      - name: Exercise host fault dispatch
+        run: cargo test -p hostfault
+      - name: Compare the Cranelift and C tiers
+        run: cargo test -p clif --test differential
       - name: Compile and load a generated DLL
         run: cargo test -p emit --test windows -- --nocapture
+      - name: Link and start h2.exe
+        run: cargo run -p cli -- settings list
       - name: Install Vulkan loader and Mesa lavapipe
         shell: pwsh
         run: |

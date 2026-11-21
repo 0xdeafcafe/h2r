@@ -208,9 +208,12 @@ fn light_layers(scene: &FrameScene, view: &frame_scene::View) -> BTreeMap<String
     out
 }
 
-/// The cache directory: `$XDG_CACHE_HOME/h2recomp`, else
+/// Windows uses the agent cache. Elsewhere: `$XDG_CACHE_HOME/h2recomp`, else
 /// `~/Library/Caches/h2recomp` on macOS and `~/.cache/h2recomp` elsewhere.
 fn cache_dir() -> PathBuf {
+    if cfg!(windows) {
+        return agent_proto::cache_dir();
+    }
     if let Some(x) = std::env::var_os("XDG_CACHE_HOME") {
         return PathBuf::from(x).join("h2recomp");
     }

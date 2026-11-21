@@ -4,8 +4,8 @@ Status: Built.
 Code: `crates/apps/app/src` (`shell.rs`, `embedded.rs`, `lib.rs`), `crates/apps/cli/src/play_cmd.rs` (`h2 play`). Tests: `crates/apps/app/tests/`.
 Switch: `H2_FPS` (30), the rest in [switches.md](switches.md).
 
-`crates/apps/app` is the platform layer the game runs inside on macOS: a window
-with a Metal surface, presentation of the guest's frames, live keyboard,
+`crates/apps/app` is the platform layer the game runs inside on the desktop: a window
+with a Metal surface on macOS or Vulkan on Windows, presentation of the guest's frames, live keyboard,
 mouse and controller input, the audio device, and the guest thread's
 lifecycle. Everything the recompiled game touches (D3D, XAPI, DirectSound,
 the kernel) stays in its own crate; the shell only hands those crates a
@@ -21,7 +21,7 @@ The handoff, pacing, scaling and input pump are platform-free.
  main thread (macOS UI rule)                 guest thread ("guest", 64 MiB stack)
  ---------------------------                 ------------------------------------
  winit event loop                            your closure: FnOnce(GuestHost)
- window + wgpu Metal surface                   Machine::run(chunk) loop
+ window + wgpu surface                         Machine::run(chunk) loop
  cpal output stream (not Send)                 d3d GfxBackend on host.gfx_context()
  keys/mouse -> KeyboardMouse  ---(Arc)--->     InputManager (pad + keyboard fallback)
                                                xapi::Xapi ... app::pump_input
