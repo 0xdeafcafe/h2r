@@ -350,6 +350,42 @@ fn the_invented_textured_bsp_loads_with_its_images() {
     );
 }
 
+/// Step 2: the invented BSP's layers are read and planned for each of
+/// the five layers the game draws them in. Its shader has no template,
+/// so its one material does not resolve: it is counted by cause, and no
+/// layer draws. A world not read from a map has no layers.
+#[test]
+fn the_invented_bsps_layers_name_what_does_not_draw() {
+    let (mut map, mut files) = textured();
+    let load = NativeLoad::read(&mut map, &mut files, 0).unwrap();
+    let layers = load.layers().expect("read from the map");
+    let planned: Vec<u8> = layers.plans().keys().copied().collect();
+    assert_eq!(planned, native_render::layer_pass::LAYERS);
+    for plan in layers.plans().values() {
+        assert_eq!(plan.compiled, 0, "{plan:?}");
+        assert!(plan.drawn.is_empty() && plan.parts.is_empty(), "{plan:?}");
+    }
+    assert_eq!(
+        layers.unresolved().values().sum::<usize>(),
+        1,
+        "{:?}",
+        layers.unresolved()
+    );
+    let bare = NativeLoad::new(load.bsp, World::default(), HashMap::new(), HashMap::new());
+    assert!(bare.layers().is_none());
+}
+
+/// The layers draw in the game's order around the base look: 1 before
+/// it, then 5, 8 and 20, then 7; each of the five once.
+#[test]
+fn the_layers_draw_in_the_games_order() {
+    assert_eq!(LAYERS_BEFORE, [1]);
+    assert_eq!(LAYERS_AFTER, [5, 8, 20, 7]);
+    let mut all: Vec<u8> = LAYERS_BEFORE.iter().chain(&LAYERS_AFTER).copied().collect();
+    all.sort_unstable();
+    assert_eq!(all, native_render::layer_pass::LAYERS);
+}
+
 /// The invented map draws through `GpuWorld` into the viewport's
 /// formats: the floor under the camera is the base map's red, darker
 /// with its lightmap page than in Flat. Skipped without a wgpu adapter.

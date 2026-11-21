@@ -6,6 +6,12 @@
 //! colour and depth targets. The look is the renderer's `world.wgsl`: base
 //! map times lightmap. The Lighting menu's modes swap the images the
 //! world is uploaded with ([`Lighting`]).
+//!
+//! Step 2 (slice P15) adds the world layers 1, 5, 7, 8 and 20 with their
+//! own translated passes ([`NativeLayers`]): loaded as the game loads
+//! them, planned with no game, drawn in the Game mode around the base
+//! look, and every material left out named with its cause in
+//! `view.stats`.
 use crate::geometry::{Camera, Marker};
 use assets::ResourceFiles;
 use map::{Map, TagId};
@@ -13,12 +19,16 @@ use native_render::camera::RenderCamera;
 use native_render::cull::CullStats;
 use native_render::gpu::{DepthRule, GpuWorld, Image, PassViewport};
 use native_render::instances::ObjectInput;
+use native_render::layers_load::{self, LayersView, StaticLayer};
 use native_render::load;
 use native_render::model::{Model, NodeMatrix};
 use native_render::model_gpu::GpuModels;
-use native_render::world::{LightmapKey, World, keep_draws};
-use std::collections::HashMap;
+use native_render::program::{CAMERA_GIVEN, ViewInputs};
+use native_render::stage_images::{StageDecoder, StageImages};
+use native_render::world::{LightmapKey, Owner, World, keep_draws};
+use std::collections::{BTreeMap, HashMap};
 use std::io::{Read, Seek};
+use std::sync::Arc;
 
 /// What the viewport's world shows (the Lighting menu).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -167,6 +177,9 @@ pub struct NativeLoad {
     stats: NativeStats,
     /// Why the lightmap did not read, when it did not.
     pub lightmap_error: Option<String>,
+    /// The world layers, when the BSP was read from a map
+    /// ([`NativeLoad::read`]).
+    layers: Option<Arc<NativeLayers>>,
 }
 
 impl NativeLoad {
@@ -208,7 +221,9 @@ impl NativeLoad {
                 pages.insert(k, image);
             }
         }
+        let layers = NativeLayers::read(map, files, &loaded.shaders, &loaded.world, &pages);
         let mut out = Self::new(loaded.bsp, loaded.world, base, pages);
+        out.layers = Some(Arc::new(layers));
         out.stats.failed_sections = loaded.failed_sections;
         out.lightmap_error = loaded.lightmap_error;
         Ok(out)
@@ -241,11 +256,17 @@ impl NativeLoad {
             pages,
             stats,
             lightmap_error: None,
+            layers: None,
         }
     }
 
     pub fn stats(&self) -> NativeStats {
         self.stats
+    }
+
+    /// The world layers and their plans, when they were read.
+    pub fn layers(&self) -> Option<&NativeLayers> {
+        self.layers.as_deref()
     }
 
     /// The world as drawn: what picking and the stats read.
@@ -272,6 +293,96 @@ impl NativeLoad {
                 Some(crate::geometry::Tri { p, n })
             })
             .collect()
+    }
+}
+
+/// The layer drawn before the base look: the game draws layer 1 after the
+/// view's clear and before layer 3 (docs/graphics/render-loop.md, "Base
+/// layers").
+pub const LAYERS_BEFORE: [u8; 1] = [1];
+/// The layers drawn after it, in the game's order: 5, 8 and 20 with the
+/// base layers, then 7 at the start of the middle passes.
+pub const LAYERS_AFTER: [u8; 4] = [5, 8, 20, 7];
+
+/// One BSP's world layers 1, 5, 7, 8 and 20 for the viewport (slice
+/// P15), on the CPU. Loaded as the game loads them
+/// (`layers_load::load_with`) from the world's draws before the base-map
+/// filter, with the view constants the editor's camera gives
+/// (`program::CAMERA_GIVEN`: a pass reading another is refused, named
+/// with the register) and no stage palettes (a palettized stage bitmap is
+/// refused, named). Each layer is planned with no game
+/// (`layers_load::plan_without_game` at render time 0: an animated pass
+/// is refused, so the time reaches no draw).
+pub struct NativeLayers {
+    view: LayersView,
+    /// The world's draws and placements before the base-map filter: a
+    /// layer draws a part whatever its base map, from the same buffers.
+    world: World,
+    images: StageImages,
+    plans: BTreeMap<u8, StaticLayer>,
+}
+
+impl NativeLayers {
+    pub fn read<R: Read + Seek>(
+        map: &mut Map<R>,
+        files: &mut ResourceFiles,
+        shaders: &[TagId],
+        world: &World,
+        pages: &HashMap<LightmapKey, Image>,
+    ) -> Self {
+        let world = World {
+            draws: world.draws.clone(),
+            batches: world.batches.clone(),
+            transparents: world.transparents.clone(),
+            placements: world.placements.clone(),
+            ..Default::default()
+        };
+        let mut images = StageImages::new();
+        let mut decoder = StageDecoder::new(Default::default());
+        let view = layers_load::load_with(
+            map,
+            files,
+            shaders,
+            &world,
+            pages,
+            &mut images,
+            &mut decoder,
+            Some(&CAMERA_GIVEN),
+        );
+        let plans = native_render::layer_pass::LAYERS
+            .into_iter()
+            .map(|layer| {
+                let plan = layers_load::plan_without_game(&view, shaders, layer, 0.0);
+                (layer, plan)
+            })
+            .collect();
+        Self {
+            view,
+            world,
+            images,
+            plans,
+        }
+    }
+
+    /// Each layer's plan: what compiled, what draws and why the rest
+    /// does not.
+    pub fn plans(&self) -> &BTreeMap<u8, StaticLayer> {
+        &self.plans
+    }
+
+    /// The world materials that did not resolve, by cause, with how
+    /// many: they have no layer passes.
+    pub fn unresolved(&self) -> &BTreeMap<String, usize> {
+        &self.view.unresolved
+    }
+}
+
+impl std::fmt::Debug for NativeLayers {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NativeLayers")
+            .field("unresolved", &self.view.unresolved)
+            .field("plans", &self.plans)
+            .finish_non_exhaustive()
     }
 }
 
@@ -319,6 +430,16 @@ pub struct NativeWorld {
     gpu: GpuWorld,
     lighting: Lighting,
     pool: gfx::ring::UploadPool,
+    /// The uploaded layers (the Game mode only): what each draws.
+    layers: Vec<DrawnLayer>,
+}
+
+/// One uploaded layer: the parts its set draws and the fog they draw
+/// with.
+struct DrawnLayer {
+    layer: u8,
+    selected: Vec<(Owner, u8)>,
+    fogs: layers_load::Fogs,
 }
 
 impl NativeWorld {
@@ -328,17 +449,74 @@ impl NativeWorld {
         load: &NativeLoad,
         lighting: Lighting,
     ) -> Self {
-        let gpu = GpuWorld::new(
+        let mut gpu = GpuWorld::new(
             device,
             queue,
             load.world.clone(),
             &mut |m| load.base.get(&m).map(|i| lighting.base(i)),
             &mut |k| load.pages.get(&k).and_then(|i| lighting.page(i)),
         );
+        // The layers are the game's look: the other modes draw the base
+        // look alone.
+        let mut layers = Vec::new();
+        if let Some(l) = load.layers().filter(|_| lighting == Lighting::Game) {
+            for (&layer, plan) in &l.plans {
+                let Some(set) = layers_load::upload_static(
+                    &l.view,
+                    layer,
+                    plan,
+                    &l.images,
+                    device,
+                    queue,
+                    &l.world,
+                    &mut |k| load.pages.get(&k).cloned(),
+                ) else {
+                    continue;
+                };
+                gpu.set_layer(layer, set.set);
+                layers.push(DrawnLayer {
+                    layer,
+                    selected: set.selected,
+                    fogs: set.fogs,
+                });
+            }
+        }
         Self {
             gpu,
             lighting,
             pool: Default::default(),
+            layers,
+        }
+    }
+
+    /// Records `layers`' draws that this world uploaded, in that order.
+    #[allow(clippy::too_many_arguments)]
+    fn encode_layers(
+        &mut self,
+        layers: &[u8],
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        color: &wgpu::TextureView,
+        color_format: wgpu::TextureFormat,
+        depth: &wgpu::TextureView,
+        depth_format: wgpu::TextureFormat,
+        size: [u32; 2],
+    ) {
+        for &layer in layers {
+            let Some(l) = self.layers.iter().find(|l| l.layer == layer) else {
+                continue;
+            };
+            self.gpu.encode_layer(
+                layer,
+                device,
+                encoder,
+                color,
+                color_format,
+                depth,
+                depth_format,
+                (size[0], size[1]),
+                &l.selected,
+            );
         }
     }
 
@@ -348,7 +526,10 @@ impl NativeWorld {
 
     /// Clear what `clear` names (the colour to its colour, the depth to the
     /// far plane), then draw the world seen by `camera` into the whole
-    /// `size` target. Returns what the frustum kept.
+    /// `size` target: layer 1, the base look, then layers 5, 8, 20 and 7
+    /// ([`LAYERS_BEFORE`], [`LAYERS_AFTER`]) where they were uploaded,
+    /// with the camera's view constants (`ViewInputs::from_camera`).
+    /// Returns what the frustum kept.
     #[allow(clippy::too_many_arguments)]
     pub fn render(
         &mut self,
@@ -375,8 +556,23 @@ impl NativeWorld {
                 encoder: &mut encoder,
                 arena: &arena,
             };
+            let inputs = ViewInputs::from_camera(&view, (size[0], size[1]));
+            for l in &self.layers {
+                self.gpu
+                    .prepare_layer(l.layer, &mut uploads, &inputs, &l.fogs);
+            }
             self.gpu.prepare(&mut uploads, &view, DEPTH_RULE)
         };
+        self.encode_layers(
+            &LAYERS_BEFORE,
+            device,
+            &mut encoder,
+            color,
+            color_format,
+            depth,
+            depth_format,
+            size,
+        );
         self.gpu.encode(
             device,
             &mut encoder,
@@ -391,6 +587,16 @@ impl NativeWorld {
                 height: size[1] as f32,
             },
             (size[0], size[1]),
+        );
+        self.encode_layers(
+            &LAYERS_AFTER,
+            device,
+            &mut encoder,
+            color,
+            color_format,
+            depth,
+            depth_format,
+            size,
         );
         let patches = arena.upload_commands(queue);
         queue.submit(patches.into_iter().chain([encoder.finish()]));

@@ -548,7 +548,15 @@ Notes on some:
   level on the native renderer (`scenario_edit::native_view`): the
   `lighting` mode, each BSP's `bsp`, `draws`, `batches`, `materials`,
   `lightmap_pages`, `untextured` (draws left out for a missing picture),
-  `failed_sections` and `lightmap_error`, the `errors` of BSPs that
+  `failed_sections` and `lightmap_error`, its world `layers` (null
+  when not read from the map: `unresolved`, the world materials that
+  did not resolve by cause with how many, and `by_layer`, for each of
+  layers 1, 5, 7, 8 and 20 the `layer`, the materials whose passes
+  `compiled`, those `drawn` and their `parts`, and every other
+  material's cause with how many, `refused`, as `cause: detail`:
+  `program` for the load's refusals, such as a view constant the camera
+  does not give, then the plan's causes, `animated` and `fog`; they draw
+  in the `game` mode only), the `errors` of BSPs that
   did not load, and the placed `objects`: how many object tags have a
   native model (`models`), how many placements draw one (`placed`), and
   each tag left to the scene's model with why (`errors`, `tag` and

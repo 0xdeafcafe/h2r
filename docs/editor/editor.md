@@ -634,6 +634,18 @@ build), and keeps the last four maps' scenes so reopening one is instant.
   overlays draw over the level with its depth (view depth over the far
   plane). A map whose BSPs the native loader does not read (a Halo 1
   reference) draws its textured scene instead.
+- **World layers.** In the Game mode each BSP also draws the world
+  layers 1, 5, 7, 8 and 20 with the materials' own translated passes
+  (`native_view::NativeLayers`), in the game's order: layer 1 before the
+  base look, then 5, 8, 20 and 7 over it. They load as the game loads
+  them (`native_render::layers_load`) and each material is planned with
+  no game (`layers_load::plan_without_game`: render time, no fog, no
+  dynamic light). A material draws only when nothing it reads is left
+  out: a pass that reads a view constant the camera does not give
+  (`program::CAMERA_GIVEN`), an input the game-free run state does not
+  give, a palettized stage bitmap (no stage palettes), an animated
+  constant or its own fog is refused, and `view.stats` counts it by
+  cause. The other modes draw the base look alone.
   Clicking skips hidden placement categories and hidden structure.
 - **Gameplay layers.** Spawn points have a team-coloured pawn and an
   arrow pointing along the spawn facing. Netgame flags have a team tint
@@ -723,11 +735,12 @@ sun, the fog check, colour conversion and bilinear samples, the floor
 under a point), `tests::the_first_lightmap_group_lights_a_bsp_with_its_checksum`
 the group choice, and `api::view::tests` the stats.
 
-Not yet: the shaders' own passes (the native renderer translates each
-material's layer-3 pass and its unlit-BSP implementation; the viewport
-draws a base map, its detail maps and a lightmap, so bump, environment
-and specular layers, and the engine lighting vectors of an unlit BSP, are
-missing); the bucket streams (types `2f` and `30`: per-vertex colour and
+Not yet: the shaders' own layer-3 passes (the native renderer translates
+each material's layer-3 pass and its unlit-BSP implementation; the
+viewport draws a base map, its detail maps and a lightmap there, so the
+bump, environment and specular parts of layer 3, and the engine lighting
+vectors of an unlit BSP, are missing; layers 1, 5, 7, 8 and 20 draw
+their own passes where the plan takes them, "World layers" above); the bucket streams (types `2f` and `30`: per-vertex colour and
 light direction, not interpreted); the lightmap's light probes and the
 sky's fallback object-lighting colour (reported, not drawn); fog B,
 patchy fog and the BSP's fog planes; the sky's node transforms, its tag's

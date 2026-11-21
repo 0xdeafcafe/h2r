@@ -270,6 +270,7 @@ pub fn native_stats(app: &App) -> Value {
                 "untextured": s.untextured,
                 "failed_sections": s.failed_sections,
                 "lightmap_error": l.lightmap_error,
+                "layers": layer_stats(l),
             })
         })
         .collect();
@@ -299,6 +300,29 @@ pub fn native_stats(app: &App) -> Value {
         "errors": errors,
         "objects": objects,
     })
+}
+
+/// One BSP's world layers 1, 5, 7, 8 and 20 (`NativeLayers`): the world
+/// materials that did not resolve, by cause, and for each layer the
+/// materials whose passes compiled, those drawn and their parts, and
+/// every other material's cause with how many. They draw in the Game
+/// lighting mode only. Null when the BSP's layers were not read.
+fn layer_stats(load: &scenario_edit::native_view::NativeLoad) -> Value {
+    let Some(read) = load.layers() else { return Value::Null };
+    let by_layer: Vec<Value> = read
+        .plans()
+        .iter()
+        .map(|(layer, plan)| {
+            json!({
+                "layer": layer,
+                "compiled": plan.compiled,
+                "drawn": plan.drawn.len(),
+                "parts": plan.parts.len(),
+                "refused": plan.refused,
+            })
+        })
+        .collect();
+    json!({ "unresolved": read.unresolved(), "by_layer": by_layer })
 }
 
 /// A scene's render stats: the counts, each BSP's lighting, the world's
