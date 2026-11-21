@@ -443,11 +443,8 @@ fn capture(tick: Option<u64>) -> Result<Option<Arc<dyn PrivateCaptureScene>>, Rp
 /// Pin the seal associated with this exact guest swap for a transaction
 /// on the display renderer. A miss leaves the queued commands in order.
 pub fn pair_for_present(present: u64) -> Option<(Arc<FrameScene>, Arc<ReplayFrame>)> {
-    // The parity comparison's reference must execute guest commands on
-    // the original backend, including on a device eligible for cutover.
-    if crate::frame_parity::wanted(present) {
-        return None;
-    }
+    // A reference submission needs the same pair as an adopted frame so
+    // the worker can freeze its incoming pixels before the original draw.
     let shared = active()?;
     let scenes = shared.scenes.lock().unwrap_or_else(|e| e.into_inner());
     let frame = scenes.published.as_ref()?.inputs.as_ref().ok()?;

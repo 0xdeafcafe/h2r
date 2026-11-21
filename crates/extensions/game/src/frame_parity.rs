@@ -280,6 +280,9 @@ mod tests {
         }
     }
 
+    // Both RPC tests install a renderer in the process-wide agent registry.
+    static RPC_RENDERER: Mutex<()> = Mutex::new(());
+
     #[test]
     fn parity_rpc_compares_the_display_surface_to_a_fresh_gpu_draw() {
         use std::sync::mpsc;
@@ -307,7 +310,7 @@ mod tests {
                 return;
             }
         };
-        // This test owns the process's parity source for its duration.
+        let _serial = RPC_RENDERER.lock().unwrap_or_else(|e| e.into_inner());
         install();
         struct Installed;
         impl Drop for Installed {
@@ -374,6 +377,90 @@ mod tests {
             assert_eq!(result["max_channel"], if n == 1 { 0 } else { 255 });
             assert_eq!(result["differing"], if n == 1 { 0 } else { 32 });
         }
+    }
+
+    #[test]
+    fn parity_reference_pins_an_inherited_target_before_the_original_swap() {
+        use d3d::{Backend, GfxBackend, SceneSink, ThreadedBackend};
+        use engine::memory::{FlatMemory, GuestMemory};
+        use frame_scene::{Slot, SlotAt, mailbox::Mode};
+        use gfx::{Clear, D3DFormat, GfxContext};
+        use native_render::camera::RENDER_CAMERA;
+        use render_bridge::scene_step;
+        use serde_json::{Value, json};
+        use std::{sync::mpsc, time::Duration};
+
+        let ctx = match GfxContext::headless() {
+            Ok(ctx) => ctx,
+            Err(e) => {
+                eprintln!("skipping GPU parity input test: {e}");
+                return;
+            }
+        };
+        let _serial = RPC_RENDERER.lock().unwrap_or_else(|e| e.into_inner());
+        let private = GfxBackend::new(crate::d3d_glue::share_context(&ctx));
+        let service = crate::frame_owner::Service::new(private, Mode::Locked).unwrap();
+        let mut display = GfxBackend::new(ctx);
+        display.observe_guest_present(service.reference_observer());
+
+        // Bound parity frames use the original renderer. The owner must
+        // still receive their sealed pair to snapshot inherited pixels.
+        let owner = crate::frame_cutover::owner(Box::new(|| panic!("expected a reference Swap")));
+        let display = ThreadedBackend::new(display).unwrap().with_frame_owner(owner);
+        let mut sink = SceneSink::new(display, || Some(SlotAt { slot: Slot::Opaque, view: 0 }))
+            .with_replay(crate::frame_cutover::record(&service))
+            .with_guest_reference_request(armed);
+        let format = D3DFormat::LinA8R8G8B8;
+        let src = sink.create_surface(format, 8, 4, false).unwrap();
+        let dst = sink.create_surface(format, 8, 4, false).unwrap();
+        // The source has real GPU contents, unknown to the scene's CPU
+        // seed tracker. The private draw cannot synthesize them itself.
+        sink.inner_mut().with_surface(src, |gpu, id| {
+            gpu.clear(id, None, Clear { color: Some([0., 1., 1., 1.]), ..Clear::NONE })
+        }).unwrap();
+        let mut mem = FlatMemory::new(RENDER_CAMERA, 0x48);
+        for (offset, value) in [(0xc, 1.), (0x20, 1.), (0x28, 1.), (0x40, 0.1), (0x44, 20.)] {
+            mem.set_f32(RENDER_CAMERA + offset, value).unwrap();
+        }
+        mem.set_u16(RENDER_CAMERA + 0x34, 4).unwrap();
+        mem.set_u16(RENDER_CAMERA + 0x36, 8).unwrap();
+
+        struct Reader;
+        impl agent::Reader for Reader {
+            fn status(&mut self) -> agent::GameStatus { agent::GameStatus::default() }
+            fn objects(&mut self) -> Result<Vec<agent_proto::Object>, String> { Ok(Vec::new()) }
+        }
+        let agent = agent::Agent::new();
+        agent::render::add_frame_methods(&agent, &agent::render::CAPTURE, &agent::render::HOSTED);
+        let (tx, rx) = mpsc::sync_channel(1);
+        let conn = agent.connect(tx);
+        let request = json!({"jsonrpc":"2.0","id":1,"method":"render.parity","params":{"arm":true}});
+        agent.submit(conn, &request.to_string());
+        agent.on_tick(&mut Reader);
+        assert!(armed());
+
+        scene_step::begin(&mem);
+        assert!(scene_step::open_view(&mem).is_some());
+        assert!(sink.copy_surface(src, dst).unwrap());
+        sink.present(dst, 0).unwrap();
+        sink.inner_mut().finish().unwrap();
+        let (_, replay) = crate::frame_owner::pair_for_present(1).expect("sealed game view");
+        assert_eq!(replay.frozen_target_seeds().unwrap().len(), 1);
+        // Drive the existing agent request while the private GPU worker
+        // finishes. Each pump is a host tick, independent of the scene.
+        let reply = (0..200).find_map(|_| {
+            agent.on_tick(&mut Reader);
+            match rx.recv_timeout(Duration::from_millis(50)) {
+                Ok(response) => Some(response),
+                Err(mpsc::RecvTimeoutError::Timeout) => None,
+                Err(e) => panic!("parity reply channel: {e}"),
+            }
+        }).expect("parity reply for the inherited input");
+        let json: Value = serde_json::from_str(&reply).unwrap();
+        let result = &json["result"];
+        assert_eq!(result["size"], json!([8, 4]), "{json}");
+        assert_eq!(result["differing"], 0, "{json}");
+        assert_eq!(result["max_channel"], 0, "{json}");
     }
 
     #[test]
