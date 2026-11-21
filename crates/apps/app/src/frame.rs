@@ -82,28 +82,11 @@ impl Transition {
 
 const LOADING_SIZE: (u32, u32) = (640, 480);
 
+/// The return-to-menu picture: opaque black, as the console shows between a
+/// game and the menu. No host text: it reads as part of the game.
 fn loading_pixels() -> Vec<u8> {
     let (width, height) = LOADING_SIZE;
-    let mut pixels = [9, 18, 28, 255].repeat((width * height) as usize);
-    let notice = crate::overlay::Notice {
-        kind: crate::overlay::NoticeKind::Info,
-        text: "Returning to Main Menu...".into(),
-    };
-    let (w, h, text) = crate::overlay::rasterize(&notice);
-    let x = (width - w) / 2;
-    let y = (height - h) / 2;
-    for (row, src) in text.chunks_exact((w * 4) as usize).enumerate() {
-        let start = ((y as usize + row) * width as usize + x as usize) * 4;
-        let dst = &mut pixels[start..start + src.len()];
-        for (pixel, ink) in dst.chunks_exact_mut(4).zip(src.chunks_exact(4)) {
-            let alpha = u16::from(ink[3]);
-            for i in 0..3 {
-                pixel[i] =
-                    ((u16::from(ink[i]) * alpha + u16::from(pixel[i]) * (255 - alpha)) / 255) as u8;
-            }
-        }
-    }
-    pixels
+    [0, 0, 0, 255].repeat((width * height) as usize)
 }
 
 /// A frame the window can draw.
@@ -837,23 +820,9 @@ mod transition_tests {
     }
 
     #[test]
-    fn the_loading_picture_is_opaque_and_centred() {
+    fn the_loading_picture_is_opaque_black() {
         let pixels = loading_pixels();
         assert_eq!(pixels.len(), (LOADING_SIZE.0 * LOADING_SIZE.1 * 4) as usize);
-        let (first, last) = pixels.split_at(pixels.len() - 4);
-        assert_eq!(&first[..4], &[9, 18, 28, 255]);
-        assert_eq!(last, &[9, 18, 28, 255]);
-        let ink: Vec<_> = pixels
-            .chunks_exact(4)
-            .enumerate()
-            .filter(|(_, pixel)| pixel[0] == 240)
-            .map(|(n, _)| (n % LOADING_SIZE.0 as usize, n / LOADING_SIZE.0 as usize))
-            .collect();
-        assert!(!ink.is_empty());
-        assert!(
-            ink.iter()
-                .all(|&(x, y)| (100..540).contains(&x) && (226..254).contains(&y))
-        );
-        assert!(pixels.chunks_exact(4).all(|pixel| pixel[3] == 255));
+        assert!(pixels.chunks_exact(4).all(|pixel| pixel == [0, 0, 0, 255]));
     }
 }
