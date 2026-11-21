@@ -11,6 +11,7 @@ use hud_edit::model::WidgetKind;
 use hud_edit::place::{self, Frame};
 use hud_kit::check;
 use hud_kit::{Source, huds, rects, templates};
+use hud_kit_core::map_file;
 use scenario_edit::MapSource;
 
 fn iso() -> PathBuf {
@@ -64,7 +65,20 @@ fn templates_resolve_on_every_map() {
             let rt = hud_kit_core::templates::resolve(&mut view, src.player, &hud);
             assert_eq!(rt.row, t.row, "{name}: the grenade row");
             assert_eq!(rt.text, t.text, "{name}: the text template");
-            assert_eq!(rt.art, t.art, "{name}: the art templates");
+            // The arrows are the one deliberate difference: the runtime
+            // leaves them to the game's navpoint list
+            // (`map_file::NO_ARROWS`), the preview draws them.
+            let (rt_arrows, rt_art): (Vec<_>, Vec<_>) =
+                rt.art.iter().partition(|(a, _)| map_file::unresolved(a));
+            let t_art: Vec<_> = t
+                .art
+                .iter()
+                .filter(|(a, _)| !map_file::unresolved(a))
+                .collect();
+            assert_eq!(rt_art, t_art, "{name}: the art templates");
+            for (a, r) in rt_arrows {
+                assert_eq!(r, &Err(map_file::NO_ARROWS.to_owned()), "{name}: {a:?}");
+            }
         }
         checked += 1;
         multiplayer += usize::from(mp);

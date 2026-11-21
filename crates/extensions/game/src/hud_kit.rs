@@ -830,7 +830,7 @@ fn compile_for_map(name: &str) -> Result<Vec<(u32, Vec<(usize, Hud, Compiled)>)>
             }
             let mut view = MapFile::new(&mut map, &mut files);
             let t = hud_kit_core::templates::resolve(&mut view, nhdt, hud);
-            let missing = t.missing(hud);
+            let missing = t.missing_widgets(hud);
             if !missing.is_empty() {
                 eprintln!(
                     "hud kit: {name}: {} not joined: {}",
@@ -938,11 +938,33 @@ impl hooks::Feature for HudKit {
                 activate(&mut *c.ctx.memory(), region, points_region);
                 Ok(Flow::Continue)
             })
-            .after_feature(crate::hud_swap::FEATURE);
+            // The other match-start befores (the HUD swap first: the kit
+            // reads the nhdt datums it points the owners at) read nothing
+            // the kit writes; the plan wants an order.
+            .after_feature(crate::hud_swap::FEATURE)
+            .after_feature(crate::variant_ext::FEATURE)
+            .after_feature(crate::aim_assist::FEATURE)
+            .after_feature(crate::precision::FEATURE)
+            .after_feature(crate::h1_hud_text::FEATURE);
+        // At the tick's end, after the features that change the tick's
+        // state there; the kit writes only HUD state (the training slot,
+        // the navpoint list), which none of them reads.
         b.raw()
             .after(&points::GAME_TICK, "hud kit: channels", move |c| {
                 tick(&mut *c.ctx.memory(), points_region).map_err(fault)
-            });
+            })
+            .after_feature(crate::cheats::FEATURE)
+            .after_feature(crate::h1_hud_text::FEATURE)
+            .after_feature(crate::skulls_custom::FEATURE)
+            .after_feature(crate::touch_glue::FEATURE);
+        // The widget hooks share their points with `h1_hud_text`'s, and the
+        // two never answer the same widget: the kit answers only a widget
+        // inside its own memory ([`in_region`], then its draw table), and
+        // `h1_hud_text` only a converted Halo 1 widget, marked by its
+        // byte `+0x1b` (0xe0 plus a screen index), which the kit's
+        // compiler leaves 0 (the state's pad byte) and which lives in the
+        // converted nhdt's own blocks, not ours. Each passes the other's
+        // widgets through, so the order between them only has to exist.
         let values = |h: usize, id: &str| value(h, id);
         b.raw()
             .before(&points::HUD_WIDGET_GATE, "hud kit: gate", move |c| {
@@ -960,7 +982,8 @@ impl hooks::Feature for HudKit {
                     None => Ok(Flow::Continue),
                 }
             })
-            .context_only();
+            .context_only()
+            .after_feature(crate::h1_hud_text::FEATURE);
         b.raw()
             .before(&points::HUD_WIDGET_INPUTS, "hud kit: inputs", move |c| {
                 let table = read(&TABLE);
@@ -972,7 +995,8 @@ impl hooks::Feature for HudKit {
                 }
                 Ok(Flow::Continue)
             })
-            .context_only();
+            .context_only()
+            .after_feature(crate::h1_hud_text::FEATURE);
         b.raw()
             .before(&points::HUD_WIDGET_STRING, "hud kit: string", move |c| {
                 if !in_region(c.cpu.ebx) {
@@ -986,7 +1010,8 @@ impl hooks::Feature for HudKit {
                 }
                 Ok(Flow::Continue)
             })
-            .context_only();
+            .context_only()
+            .after_feature(crate::h1_hud_text::FEATURE);
         b.raw()
             .before(&points::HUD_WIDGET_SPRITE, "hud kit: crop", move |c| {
                 if !in_region(c.cpu.ecx) {
@@ -1006,7 +1031,8 @@ impl hooks::Feature for HudKit {
                 }
                 Ok(Flow::Continue)
             })
-            .context_only();
+            .context_only()
+            .after_feature(crate::h1_hud_text::FEATURE);
         b.raw()
             .before(
                 &points::HUD_INTERACTION_VISIBLE,
@@ -1016,10 +1042,10 @@ impl hooks::Feature for HudKit {
                     let mut mem = c.ctx.memory();
                     // Only for the first local player, at the interaction
                     // code's call, while the game shows no prompt of its own.
-                    if user != 0
-                        || mem.u32(sp).map_err(fault)? != FROM_INTERACTION
-                        || mem.u32(sp + 4).map_err(fault)? != 0
-                    {
+                    // `h1_hud_text`'s Halo 1 prompt runs first (it is
+                    // ordered outside this hook) and, when it shows one,
+                    // returns before the kit's is written.
+                    if user != 0 || mem.u32(sp)? != FROM_INTERACTION || mem.u32(sp + 4)? != 0 {
                         return Ok(Flow::Continue);
                     }
                     let Some(text) = channel(|k| matches!(k, Kind::Prompt { .. })) else {
@@ -1030,7 +1056,8 @@ impl hooks::Feature for HudKit {
                     c.ret(4).map(Flow::Return)
                 },
             )
-            .context_only();
+            .context_only()
+            .after_feature(crate::h1_hud_text::FEATURE);
         Ok(())
     }
 }

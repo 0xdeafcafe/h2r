@@ -21,6 +21,20 @@ pub const UNIT_HUD_INTERFACES: usize = 0x1a0;
 /// (`hud_edit::model::HALO1_SUFFIXES`), ordered last.
 pub const HALO1_SUFFIXES: [&str; 3] = ["_h1_hud", "_h1_weapon_hud", "_h1_health"];
 
+/// Why [`MapFile`] resolves no arrow: the runtime's navpoint goes through
+/// the game's own navpoint list, which draws the `hudg`'s arrow and marker
+/// itself, and no kit widget draws an arrow yet. The preview resolves
+/// them to draw the game's navpoint.
+pub const NO_ARROWS: &str = "the game draws its own navpoints: no arrow is resolved for them";
+
+/// The arts [`MapFile`] deliberately leaves unresolved ([`NO_ARROWS`]).
+pub fn unresolved(art: &crate::model::Art) -> bool {
+    matches!(
+        art,
+        crate::model::Art::WaypointArrow | crate::model::Art::NavpointArrow
+    )
+}
+
 fn u32_at(b: &[u8], at: usize) -> u32 {
     u32::from_le_bytes(b[at..at + 4].try_into().unwrap())
 }
@@ -173,8 +187,7 @@ impl<R: Read + Seek> MapView for MapFile<'_, R> {
     }
 
     fn arrows(&mut self) -> [Result<ArrowRef, String>; 2] {
-        let none =
-            || Err("the game draws its own navpoints: no arrow is resolved for them".to_owned());
+        let none = || Err(NO_ARROWS.to_owned());
         [none(), none()]
     }
 }

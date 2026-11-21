@@ -375,7 +375,10 @@ through a `MapView`: `hud_kit::templates::EditView` over the HUD
 editor's model and renderer for the preview, and
 `hud_kit_core::map_file::MapFile` over the map file and its resources
 for the runtime; the disc test resolves both on every map and compares
-them. The strip meter is found by the names
+them. The one difference is deliberate: `MapFile` resolves no arrow
+(`map_file::NO_ARROWS`), as the runtime's navpoint is the game's own and
+the runtime checks only the widgets' templates
+(`Templates::missing_widgets`). The strip meter is found by the names
 `h1objects::health_hud` uses (`disintegrator_meter`, `ammo_meter`,
 sequence 0). An element placed from the grenade row takes its anchor
 and offsets from the row's (`compile::placed`): the next pill or count
