@@ -70,11 +70,13 @@ use crate::ui_kit::ids::{Family, family};
 pub const FEATURE: &str = "hud-kit";
 
 /// Our guest memory for the copied widget blocks: a [`Header`], then the
-/// blocks.
-pub const REGION_LEN: u32 = 0x1_0000;
+/// blocks. The guest arena is shared by every feature and nearly full, so
+/// this is kept small; blocks that do not fit are not installed (logged).
+pub const REGION_LEN: u32 = 0x8000;
 /// Our guest memory for the scenario's point block with our point after
-/// it: a [`PointHeader`], then the block.
-pub const POINTS_LEN: u32 = 0x8000;
+/// it: a [`PointHeader`], then the block; a block that does not fit gets
+/// no navpoint point (logged).
+pub const POINTS_LEN: u32 = 0x4000;
 
 const NHDT: u32 = u32::from_be_bytes(*b"nhdt");
 const BITM: u32 = u32::from_be_bytes(*b"bitm");
