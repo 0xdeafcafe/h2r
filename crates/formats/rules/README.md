@@ -54,8 +54,18 @@ not built) implements `vm::Game` over `engine::entry::Cx` and keeps
 
 `builtin::builtin(engine_index)` returns the built-in source for a
 retail engine index. Slayer (`src/builtin/slayer.rules`) is the only one.
-`fake::FakeGame` is a table-backed `Game` that logs calls, for tests and
-`h2 rules run`.
+`builtin::ALL` lists each with its name and engine index.
+`fake::FakeGame` is a table-backed `Game` that logs calls and counts
+kills and deaths, for tests and `h2 rules run`.
+
+## Workbench
+
+`workbench::check` compiles, verifies and measures a script (hash, errors
+with line and column, budget, slots, IR bytes, capabilities in plain
+words, unhostable entries). `workbench::run` steps a `Scenario` over
+`FakeGame` into a per-tick `Trace`, within 36,000 ticks, 4,096 events and
+4,000,000 ops. Live's `/v1/rules/check` and `/v1/rules/run` serve them to
+the web app ([Workbench](../../../docs/game/rules-engine.md#workbench)).
 
 ## Tests
 

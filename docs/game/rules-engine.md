@@ -1,6 +1,6 @@
 # Rules engine: scripted game types
 
-Status: Design, partly built: the `rules` formats crate runs on a fake game in tests only. Decisions by the user, 2026-11-21.
+Status: Design, partly built: the `rules` formats crate runs on a fake game in tests and in the web workbench. Decisions by the user, 2026-11-21.
 Code: `crates/formats/rules` (language, verifier, IR codec, capabilities, VM). The plan adds a `rules` module in `crates/extensions/game/src`. Tests: `cargo test -p rules`.
 Switch: a `rules` feature of `H2_FEATURES`, added to [switches.md](../runtime/switches.md) when it is built.
 
@@ -769,6 +769,40 @@ Tooling:
   `rules.vars`, `rules.trace` (handlers run and calls made per tick),
   `rules.step` and `rules.load` (swap a verified blob between rounds).
   They join [agent-api.md](../runtime/agent-api.md) when built.
+
+### Workbench
+
+**Code.** The web app's Game Types page (`statsPath("/rules")`,
+`web/src/stats/Rules.tsx`, its pure half in `web/src/lib/rules.ts`) is
+where a script is written, checked, tested and saved before Studio's
+editor exists. The browser runs no compiler: Live's
+[Rules scripts](../live/live-api.md#rules-scripts) routes call
+`rules::workbench` in both homes.
+
+- **Check.** `workbench::check` compiles, verifies and measures source:
+  the IR hash, errors with line and column (0 for a verifier refusal or
+  the budget), the worst-tick estimate against the 20,000-op budget, each
+  handler's worst case, slots per scope against their limits, IR bytes
+  against 64 KiB, the declared capabilities in the lobby's words, and
+  every unhostable entry the script calls. The page checks 450 ms after
+  typing stops; an error's place moves the caret to it.
+- **Run.** `workbench::run` steps a scenario (seated players, variant
+  fields, options, seed, round time, and a list of events by tick) over
+  `fake::FakeGame`. Each tick: the queue is flushed, the tick's events
+  fire in order, then `update` runs timers and `on tick`. A kill marks
+  its victim dead and counts a kill and a death, a spawn marks the player
+  alive, a join seats one and a quit removes one after its handler. The
+  trace keeps the ticks in which a handler other than `on tick` ran, a
+  call was made, a variable or player row changed, a warning was raised
+  or the script stopped. The run stops at a script error, after the tick
+  that calls `end_round`, or past 4,000,000 ops, and the same input gives
+  the same trace.
+- **Save.** A signed-in account saves a script that checks clean; Live
+  keeps its source under the IR hash and compiles it again to serve the
+  blob.
+- **Drafts.** The page keeps the source and the scenario in
+  `localStorage`, and starts from a blank starter, a built-in
+  (`builtin::ALL`) or one of the player's saved scripts.
 
 ## Porting the seven engines
 
