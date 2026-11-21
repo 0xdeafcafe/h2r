@@ -304,6 +304,11 @@ pub(crate) fn register_core_film(
         crate::firefight::options::install(features, store)
             .context("installing the Firefight options page")?;
     }
+    // Rules scripts (docs/game/rules-engine.md, "The host runtime"): off
+    // unless H2_FEATURES names `rules`. A Live host puts the script's hash
+    // on its session.
+    #[cfg(feature = "rules")]
+    crate::rules::feature::install(features, i.live.clone()).context("installing rules scripts")?;
     for effect in [
         &crate::h1_particle_physics::H1ParticlePhysics as &dyn hooks::Feature,
         &crate::h1_flag::H1Flag,

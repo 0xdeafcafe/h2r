@@ -132,7 +132,7 @@ objc2-app-kit = { version = "0.3", default-features = false, features = ["std", 
 [features]
 default = ["desktop"]
 # The runtime commands, agent client, simulation and dedicated-host entry point.
-host = []
+host = ["boot/rules"]
 # dhat as the global allocator; writes dhat-heap.json when `h2` returns
 # from `main` (`-c build_mode.dhat=true` under Buck).
 dhat-heap = []

@@ -191,6 +191,14 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
          guest calls before the tick (an async answer that re-enters it) and steps the director \
          after it",
     ),
+    #[cfg(feature = "rules")]
+    (
+        "rules",
+        "*",
+        "the game's start, kills, tick and end on the game thread: starts the script, runs its \
+         handlers and makes their calls through guest calls before the tick (an async answer \
+         that re-enters it)",
+    ),
     (
         "variant-vitality",
         "*",

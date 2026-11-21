@@ -1,8 +1,8 @@
 # Rules engine: scripted game types
 
-Status: Design, partly built: the `rules` formats crate runs on a fake game in tests only. Decisions by the user, 2026-11-21.
-Code: `crates/formats/rules` (language, verifier, IR codec, capabilities, VM). The plan adds a `rules` module in `crates/extensions/game/src`. Tests: `cargo test -p rules`.
-Switch: a `rules` feature of `H2_FEATURES`, added to [switches.md](../runtime/switches.md) when it is built.
+Status: Design, partly built: the `rules` formats crate runs on a fake game, and the host runtime on invented guest memory, in tests only. Decisions by the user, 2026-11-21.
+Code: `crates/formats/rules` (language, verifier, IR codec, capabilities, VM); `crates/extensions/game/src/rules` (the host runtime). Tests: `cargo test -p rules`, `cargo test -p game rules::`.
+Switch: `rules` in `H2_FEATURES`, off by default ([switches.md](../runtime/switches.md)); the `rules` cargo feature of `game` and `boot` compiles it in.
 
 One scriptable engine runs every multiplayer game type. A game type is a
 script compiled to a small verified IR, plus option values in the variant
@@ -221,30 +221,108 @@ A System Link game cannot name any other script.
 
 ### The host runtime
 
-**Design.** The runtime follows Firefight's
-(`crates/extensions/game/src/firefight/`, [firefight.md](firefight.md#the-host-runtime)):
+**Code**, tests only (`crates/extensions/game/src/rules/`): `runtime`
+holds one game's script and implements `rules::vm::Game` over guest
+memory, `guest` the reads and engine calls behind the API entries, and
+`feature` the hooks. It follows Firefight's runtime
+(`crates/extensions/game/src/firefight/`, [firefight.md](firefight.md#the-host-runtime)).
+Boot registers the `rules` feature (`registration::register_core`), off
+unless `H2_FEATURES` names it, and its hooks are on game-thread points
+only (`render_thread::REFUSED`).
 
-- an observer after a successful `GAME_ACTIVATE` (`0x18f000`) reads the
-  block, finds the blob by hash, verifies it and starts the VM, or keeps
-  a refusal with its reason;
-- a `before` on each rule callback of the carrier engine, and on its
-  per-tick update, answers with an async body (as Firefight's
-  `GAME_TICK` hook does) that runs the handler and makes its engine
-  calls in place, through `engine::entry::Cx`;
-- an observer after `GAME_TICK` gathers the events no engine callback
-  reports (squads, actor kills, bounces) and runs their handlers;
-- a `before` on `GAME_TICK` makes the queued calls ("Order").
+**At the game's start**, an observer after a successful `GAME_ACTIVATE`
+(`0x18f000`) reads the active record's block (`G+0x13c+0x10c`) and engine
+index (`+0x44`):
 
-All hooks are on game-thread points. The VM runs on the authoritative
-machine only (`GAME_ENGINE_AUTHORITATIVE`, `0x15b2f0`) and in a film's
-replay, where it re-runs from the recorded inputs. Its variables, timers
-and generator state live in a `RulesExt` record in the `SimExt` blob
+| Record | What runs |
+|---|---|
+| mode 2 | the blob whose SHA-256 starts with the record's 8-byte prefix: a built-in (`rules::builtin`, compiled once at first use), else the fetch, which refuses by name ("fetching a blob from Live is not built"); a System Link game takes only a built-in |
+| mode 0 | the built-in of the record's engine when the engine is in `runtime::PORTED`, which is empty: nothing runs, and Slayer stays lifted until its port passes parity |
+| mode 1 | nothing: Firefight's own feature runs it |
+| any other | refused: "script mode `n` is unknown to this build" |
+
+The blob is loaded (`verify::load`) and refused, by name, when its hash
+does not start with the record's prefix, when it rides another engine
+than the record's, when it calls an entry no host can make
+(`verify::unhostable`), or when it needs what this runtime does not do
+yet (`runtime::host_refusal`): an event other than `init`, `kill`,
+`timer` and `tick`; a read other than the scores, kills, deaths,
+`alive`, `team_of`, `lives`, `round_time_left` and `is_objective`; an
+action other than `score`, `end_round`, `set_lives` and `respawn`; a
+variant field other than `team_play`, `score_limit`, `time_limit` and
+`lives`, whose record offsets are not traced; a `grant`; a Forge label.
+Then the VM starts with the record's option bits and seed 0 (as
+Firefight's, until the session carries one), `on init` runs, and its
+state becomes the `RULES` record. **A refused script is logged
+("refused, the game plays the carrier engine's own rules: ...") and kept
+with its reason for `rules.state`, and the game plays as the record's
+own engine.** Nothing runs with a call stubbed out.
+
+A Live host (`variant_ext::part`) puts the running blob's full hash on
+its session at every start (`Hle::set_session_rules`, none when no
+script runs, so a stale hash does not linger) and logs each guest whose
+presence lacks `rules/1` (`Hle::players_lacking`). `rules/1` is in this
+build's presence capabilities only while the feature is on
+(`live_glue::capabilities`).
+
+**Events and calls.** Every call a handler makes is kept and made by a
+`before` on the next `GAME_TICK`, which answers with an async body
+(`runtime::run_work`, the mechanism of Firefight's tick hook): the calls
+in the order made, then the VM's queued calls, then the tick, whose chain
+lets the hook pass. It sits inside Firefight's tick hook and the hooks
+Firefight sits inside.
+
+| Handlers | Run from | Their calls |
+|---|---|---|
+| `on kill` | an observer before `PLAYER_KILLED` (`0x15ce70`): the attacker and victim player datums at `[esp+4]` and `[esp+8]`, as live telemetry reads them | at the next tick boundary |
+| `on timer`, then `on tick` | an observer after `GAME_TICK` | at the next tick boundary |
+| `on init` | the start observer | at the first tick boundary |
+
+This differs from "Order" in one way, for every handler: a call is made
+at the next tick boundary, not inside the event. `PLAYER_KILLED` is
+opaque, so a hook there can only observe; the carrier's kill callback
+(Slayer's vtable slot `+0x78`) has no named point; and the per-tick
+group runs after `GAME_TICK`, not in place of `0x15c150`. So a score
+lands one boundary after the kill, a read in the same handler does not
+see it, and the lifted carrier's own kill scoring still runs beside a
+script's. A mode 2 script on a lifted carrier is therefore not a parity
+game; answering the carrier's callbacks in place ("Which engine index a
+script rides") is what makes one.
+
+The calls: `score(p, n)` is `SCORE_ADD` (`0x15b7c0`) with `n` in EAX,
+clamped to ±30,000, and the salted player datum; `set_lives(p, n)`
+writes player `+0x1ac` and marks the player entity's lives bit through
+`PLAYER_ENTITY_DIRTY` (`0xa7840`); `respawn` and `end_round` are
+Firefight's bodies (`firefight::guest::respawn`, `end_game`), and the
+winner is not passed, since naming one is not traced. A script error
+ends the round the same way. A call the engine refuses is kept, with its
+tick and entry name, in `rules.state`'s `errors`.
+
+**Authority.** The first tick boundary's body also calls
+`GAME_ENGINE_AUTHORITATIVE` (`0x15b2f0`). A machine it answers false for
+drops the script, its calls and its record ("this machine is not the
+game engine's authority"). A film's playback is not told apart: it runs
+the script where the replayed engine answers true.
+
+**State.** The `RULES` record (`sim_ext::RULES`) holds
+`RulesExt::encode`, set at the start, written after every run that
+changed it and removed after `GAME_END` and at the next start
 ([sim-rewrite.md](../engine/sim-rewrite.md#2-who-owns-state)), so
-checkpoints, snapshots, film keyframes and the sim hash carry them.
-`SimExt` is the first prerequisite ("Roadmap"). Its container, hooks and
-hash fold are built and tested on synthetic memory (`crates/rewrites/sim-ext`,
-`crates/rewrites/sim-bridge/src/sim_ext.rs`; sim-rewrite.md, "The `SimExt`
-blob"); `RULES` is registered and holds no VM state yet.
+checkpoints, snapshots, film keyframes and the sim hash carry it. Before
+each run the record is compared with the bytes last written: a
+checkpoint revert or a snapshot load that changed it resumes the VM from
+it (`Vm::resume`), and a record that is gone (a full restore) stops the
+script with a refusal. A snapshot is refused while calls wait for the
+next tick boundary.
+
+The tests (`crates/extensions/game/src/rules/runtime/tests.rs`) drive the
+runtime over invented guest memory with fake engine callees: the
+built-in Slayer starting from a record and setting the record, a kill
+making a `SCORE_ADD` call at the next boundary, a suicide's negative
+score, a machine that is not the authority, a refusal for an unknown
+hash and for System Link, refusals by entry and by event, another
+engine's record, a record with no mode, the record removed at the game's
+end, and a reverted record resuming the VM.
 
 ## The language
 
@@ -517,8 +595,8 @@ zero gives 0 and a trace warning.
 **Versioning.** A build that can host or join script games advertises
 `rules/1` in its presence capabilities, beside `variant-ext/1`
 (**Code**, `live_proto::capability::RULES` in
-`crates/live/live-proto/src/lib.rs`; no build advertises it until the
-`rules` feature exists).
+`crates/live/live-proto/src/lib.rs`; a build advertises it while the
+`rules` feature is on, `live_glue::capabilities`).
 An older build cannot host a script game. As a guest it is **warned
 about, not refused**. No guest on any build runs the script, so an older
 guest predicts exactly as a newer one does, from the same replicated

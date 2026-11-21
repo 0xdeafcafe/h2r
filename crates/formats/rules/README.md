@@ -9,9 +9,10 @@ capability list, the numbered engine API and the built-in scripts.
 
 The `formats` domain. It has no I/O and no guest types, so Studio, the
 cli, Live's upload route and the host runtime all link the same code. It
-uses `content` for SHA-256. The host runtime (`crates/extensions/game`,
-not built) implements `vm::Game` over `engine::entry::Cx` and keeps
-`RulesExt` in `SimExt`.
+uses `content` for SHA-256. The host runtime
+(`crates/extensions/game/src/rules`) implements `vm::Game` over guest
+memory, makes its calls through `engine::entry::Cx` and keeps `RulesExt`
+as the `SimExt` blob's `RULES` record.
 
 ## Pipeline
 
