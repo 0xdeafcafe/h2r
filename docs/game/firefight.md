@@ -446,9 +446,7 @@ the choices, and dimmed with its reason while no kit map is installed.
 Selecting it sets the page's Firefight choice on and puts the lobby on
 a kit map; Game Setup then lists the Firefight rows, and the variant
 panel shows the wave set, the difficulty and the starting lives in
-place of Quick Options' lines. Until the strip's slice T3 lands, the
-mode is picked on Game Setup's first row, **Change Mode...**
-(`lobby_mode.rs`, action 14).
+place of Quick Options' lines.
 
 | Row | A does |
 |---|---|

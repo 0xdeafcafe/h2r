@@ -2066,8 +2066,11 @@ requires a rendering check. [Transition reader](../../crates/extensions/game/src
 
 `ui.press` accepts `{target, action, row?, phase?}`. Copy the token from
 the latest audit. Actions are `up`, `down`, `left`, `right`, `choose` (A),
-`back` (B), `friends` (Y), and `open_live_menu` (A on the Live players
-screen in mode 3). Move focus, audit again, then send `choose` with the
+`back` (B), `friends` (Y), `open_live_menu` (A on the Live players
+screen in mode 3), and `tab_prev` (White) and `tab_next` (Black), the
+pregame lobby's mode strip bumpers, refused with `GONE` on any other
+screen ([party-lobby.md](../game/party-lobby.md#switching); read the
+result with `ui.lobby.tabs`). Move focus, audit again, then send `choose` with the
 observed row. A changed owner, row or requested phase invalidates the
 press. The XAPI tap checks the target again when the game reads the pad.
 A successful result contains `{delivered:true, target, action, row,

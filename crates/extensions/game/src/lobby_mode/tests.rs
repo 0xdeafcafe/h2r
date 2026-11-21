@@ -25,7 +25,6 @@ const ALL: Offer = Offer {
 /// A row's text, as the Game Setup list draws it.
 fn label(action: i16) -> &'static str {
     match action {
-        MODE_ACTION => MODE_LABEL,
         FORGE_MAP_ACTION => FORGE_MAP_LABEL,
         CHANGE_MAP => "Change Map...",
         CHANGE_RULES => "Change Rules...",
@@ -47,14 +46,14 @@ fn page(mode: Mode, offer: Offer, actions: &[i16]) -> Vec<&'static str> {
         .collect()
 }
 
-/// Game Setup in each mode: Mode first, then the mode's rows.
+/// Game Setup in each mode: the mode's rows, with no Mode row (the mode
+/// strip picks the mode, `crate::lobby_tabs`).
 #[test]
 fn game_setup_lists_the_rows_of_each_mode() {
     let table: [(Mode, &[&str]); 3] = [
         (
             Mode::Multiplayer,
             &[
-                MODE_LABEL,
                 "Change Map...",
                 "Change Rules...",
                 "Quick Options...",
@@ -67,7 +66,6 @@ fn game_setup_lists_the_rows_of_each_mode() {
         (
             Mode::Forge,
             &[
-                MODE_LABEL,
                 "Change Map...",
                 FORGE_MAP_LABEL,
                 "Change Rules...",
@@ -79,7 +77,6 @@ fn game_setup_lists_the_rows_of_each_mode() {
         (
             Mode::Firefight,
             &[
-                MODE_LABEL,
                 "Change Map...",
                 "Firefight Options...",
                 "Quick Options...",
@@ -92,11 +89,6 @@ fn game_setup_lists_the_rows_of_each_mode() {
     for (mode, want) in table {
         assert_eq!(page(mode, ALL, &CUSTOM), want, "{mode:?}");
     }
-    assert_eq!(
-        Opener::GAME_SETUP_MODE.rows,
-        page(Mode::Multiplayer, ALL, &CUSTOM).as_slice(),
-        "the Mode picker's opener is a Multiplayer lobby's Game Setup"
-    );
     assert_eq!(
         Opener::GAME_SETUP_FORGE.rows,
         page(
@@ -116,11 +108,10 @@ fn game_setup_lists_the_rows_of_each_mode() {
 fn forge_mode_lists_change_map_and_forge_map() {
     let rows = arrange(Mode::Forge, ALL, &CUSTOM).unwrap();
     let at = |a: i16| rows.iter().position(|&r| r == a);
-    assert_eq!(at(MODE_ACTION), Some(0));
-    assert_eq!(at(CHANGE_MAP), Some(1));
+    assert_eq!(at(CHANGE_MAP), Some(0));
     assert_eq!(
         at(FORGE_MAP_ACTION),
-        Some(2),
+        Some(1),
         "Forge Map follows Change Map"
     );
     assert!(at(CHANGE_RULES).is_some(), "the game type row stays");
@@ -137,18 +128,12 @@ fn forge_mode_lists_change_map_and_forge_map() {
     .unwrap();
     assert_eq!(
         h1,
-        [
-            MODE_ACTION,
-            CHANGE_MAP,
-            FORGE_MAP_ACTION,
-            CHANGE_RULES,
-            OPTIONS_ACTION
-        ]
+        [CHANGE_MAP, FORGE_MAP_ACTION, CHANGE_RULES, OPTIONS_ACTION]
     );
 }
 
 #[test]
-fn a_lobby_with_no_mode_to_pick_or_no_change_map_is_retails() {
+fn a_lobby_with_no_mode_on_offer_or_no_change_map_is_retails() {
     assert_eq!(arrange(Mode::Multiplayer, Offer::default(), &CUSTOM), None);
     assert_eq!(
         arrange(Mode::Forge, ALL, &[CHANGE_RULES, QUICK_OPTIONS]),
@@ -159,46 +144,34 @@ fn a_lobby_with_no_mode_to_pick_or_no_change_map_is_retails() {
         forge: true,
         firefight: false,
     };
-    assert_eq!(
-        arrange(Mode::Multiplayer, forge_only, &CUSTOM).unwrap()[0],
-        MODE_ACTION,
-        "one mode besides Multiplayer is enough for the row"
+    assert!(
+        arrange(Mode::Forge, forge_only, &CUSTOM).is_some(),
+        "one mode besides Multiplayer is enough"
     );
 }
 
+/// No tab's Game Setup has a Mode row: the strip is the only way to pick
+/// the mode (docs/game/party-lobby.md, "The lobby by tab").
 #[test]
-fn firefight_mode_holds_the_setting_on() {
-    let store = Arc::new(Store::defaults(&ff::DEFS));
-    store.set(ff::ENABLED.key, Value::Bool(false)).unwrap();
-    let pick = mode_pick(ALL, Mode::Multiplayer, Some(Arc::clone(&store)));
-    assert_eq!(pick.values, ["Multiplayer", "Forge", "Firefight"]);
-    assert_eq!(pick.current, 0);
-    assert_eq!(pick.title, "MODE");
-    let firefight = pick.values.iter().position(|v| v == "Firefight").unwrap();
-    assert_eq!((pick.set)(firefight), "lobby mode: Firefight");
-    assert_eq!(lobby_start::mode(), Mode::Firefight);
-    assert_eq!(store.get(ff::ENABLED.key), Some(Value::Bool(true)));
-    // Without a store to hold it, the pick says so.
-    let pick = mode_pick(ALL, Mode::Multiplayer, None);
-    assert!((pick.set)(firefight).contains("no settings store"));
-    // Back to Multiplayer leaves the setting as it is.
-    let pick = mode_pick(ALL, Mode::Firefight, Some(Arc::clone(&store)));
-    assert_eq!(pick.current, 2, "the held mode is focused");
-    assert_eq!((pick.set)(0), "lobby mode: Multiplayer");
-    assert_eq!(lobby_start::mode(), Mode::Multiplayer);
-}
-
-#[test]
-fn the_mode_picker_lists_only_the_modes_on_offer() {
-    let forge_only = Offer {
-        forge: true,
-        firefight: false,
-    };
-    let pick = mode_pick(forge_only, Mode::Forge, None);
-    assert_eq!(pick.values, ["Multiplayer", "Forge"]);
-    assert_eq!(pick.current, 1);
-    assert!(!pick.description.contains("Firefight"));
-    assert!((pick.set)(5).contains("not on offer"));
+fn game_setup_has_no_mode_row() {
+    for tab in [
+        crate::lobby_tabs::Tab::CustomGames,
+        crate::lobby_tabs::Tab::Forge,
+        crate::lobby_tabs::Tab::Firefight,
+    ] {
+        let rows = page(tab.parts().mode, ALL, &CUSTOM);
+        assert!(
+            rows.iter().all(|r| !r.contains("Mode")),
+            "{tab:?}: {rows:?}"
+        );
+        assert_eq!(rows[0], "Change Map...", "{tab:?}");
+    }
+    assert!(
+        Opener::GAME_SETUP_FORGE
+            .rows
+            .iter()
+            .all(|r| !r.contains("Mode"))
+    );
 }
 
 #[test]
@@ -292,16 +265,7 @@ fn the_start_is_refused_only_in_a_forge_lobby() {
 }
 
 #[test]
-fn the_help_lines_name_the_mode_and_the_map() {
-    assert_eq!(
-        mode_help(Mode::Forge, 0),
-        "This lobby plays Forge. Build and edit the map in a game, then save it."
-    );
-    assert!(mode_help(Mode::Firefight, 2).starts_with("This lobby plays Firefight."));
-    assert!(
-        mode_help(Mode::Firefight, 0).contains("h2 firefight kit MAP"),
-        "no kit map: how to build one"
-    );
+fn the_help_lines_name_the_map() {
     assert_eq!(forge_map_help(None), "New starts from the map as it is.");
     assert!(forge_map_help(Some("Castle")).contains("Castle"));
 }
@@ -311,7 +275,7 @@ fn the_help_lines_name_the_mode_and_the_map() {
 #[test]
 fn the_copy_has_no_colon_values_or_repeated_spaces() {
     let options = ff::Options::default();
-    let mut texts: Vec<String> = vec![MODE_LABEL.into(), FORGE_MAP_LABEL.into(), NEW_MAP.into()];
+    let mut texts: Vec<String> = vec![FORGE_MAP_LABEL.into(), NEW_MAP.into()];
     texts.extend(Mode::ALL.iter().map(|m| m.label().to_owned()));
     texts.extend(panel_lines(Mode::Forge, None, None));
     texts.extend(panel_lines(Mode::Forge, Some("Castle"), None));
@@ -321,10 +285,7 @@ fn the_copy_has_no_colon_values_or_repeated_spaces() {
         assert!(!t.contains("  "), "{t:?} has two spaces");
         assert!(!t.trim_end_matches("...").contains("..."), "{t:?}");
     }
-    let picks = [
-        mode_pick(ALL, Mode::Forge, None),
-        forge_map_pick(Ok(vec!["Castle".into()]), None),
-    ];
+    let picks = [forge_map_pick(Ok(vec!["Castle".into()]), None)];
     for p in &picks {
         assert!(!p.description.contains("  "), "{}", p.description);
         assert!(p.values.iter().all(|v| !v.contains(':')), "{:?}", p.values);
@@ -478,7 +439,6 @@ fn the_rows_actions_are_their_own() {
         crate::clankermatch::SWITCH_ACTION,
         FIREFIGHT,
     ] {
-        assert!(MODE_ACTION > theirs && FORGE_MAP_ACTION > theirs);
+        assert!(FORGE_MAP_ACTION > theirs);
     }
-    assert_ne!(MODE_ACTION, FORGE_MAP_ACTION);
 }

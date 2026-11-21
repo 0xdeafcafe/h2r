@@ -1,21 +1,15 @@
 //! The lobby's modes on Game Setup (docs/game/forge-firefight-ui.md, "The
 //! lobbies"): Multiplayer, Forge and Firefight as modes of the retail
-//! pregame lobby, chosen on a row of ours.
+//! pregame lobby, chosen on the party lobby's mode strip
+//! (`crate::lobby_tabs`, docs/game/party-lobby.md).
 //!
-//! **The Mode row.** "Change Mode..." ([`MODE_ACTION`]) is the first row of
-//! every Game Setup list that has Change Map (Split Screen, a hosted System
-//! Link game, an Xbox Live custom game), while a mode besides Multiplayer is
-//! on offer ([`Offer::any`]). A opens the value picker
-//! ([`crate::ui_kit::picker`]) of the modes on offer ([`mode_pick`]) and
-//! closes Game Setup behind it, as retail's Switch To rows open their screen
-//! and close the dialog: Game Setup builds its list each time it opens
-//! (`crate::h1_options_row`), so the next open has the new mode's rows. The
-//! skin has no value column, so the mode shows in the row's help line and
-//! the lobby's mode strip, never as "Mode: Forge".
+//! **No mode row.** The strip's bumpers are the one way to change mode
+//! (`crate::lobby_tabs::input`, on `PREGAME_LOBBY_INPUT`, which this
+//! feature places); Game Setup has no row that does.
 //!
 //! **Rows by mode** ([`arrange`]): an `after` on the list's constructor,
 //! after every other row of ours is added, rewrites the list
-//! ([`crate::h1_options_row::rewrite_rows`]): Mode first; in Forge,
+//! ([`crate::h1_options_row::rewrite_rows`]): in Forge,
 //! **Forge Map...** ([`FORGE_MAP_ACTION`]) after Change Map, the game type
 //! row kept, Clanker Options and Firefight Options hidden; in Firefight,
 //! Firefight Options after Change Map and the game type row hidden.
@@ -50,7 +44,7 @@ use engine::points;
 use hooks::{BuildError, Builder, Call, Flow, Manifest};
 use runtime::GuestFault;
 use runtime::guest::Permissions;
-use settings::{Store, Value};
+use settings::Store;
 
 use crate::firefight::options as ff;
 use crate::h1_options_row::{self as h1row, CHANGE_MAP};
@@ -62,26 +56,21 @@ use crate::ui_kit::view::Opener;
 
 /// The feature (`features.lobby-mode` switches it).
 pub const FEATURE: &str = "lobby-mode";
-/// The Mode row's action: past Firefight Options' 13 (retail uses 0 to 9;
-/// the row-chosen jump table has no bounds check, so the press never
+/// The Forge Map row's action: past Firefight Options' 13 (retail uses 0
+/// to 9; the row-chosen jump table has no bounds check, so the press never
 /// reaches the original).
-pub const MODE_ACTION: i16 = 14;
-/// The Forge Map row's action.
 pub const FORGE_MAP_ACTION: i16 = 15;
 /// Retail's game type row, "Change Rules...".
 pub const CHANGE_RULES: i16 = 1;
 
 /// The rows' texts, the help lines and the panel lines.
 pub const IDS: Family = ids::family("lobby mode");
-const MODE_LABEL_SLOT: u32 = 0;
 const FORGE_MAP_LABEL_SLOT: u32 = 1;
-const MODE_HELP_SLOT: u32 = 2;
 const FORGE_MAP_HELP_SLOT: u32 = 3;
 const PANEL_SLOTS: u32 = 5;
 /// The most panel lines a mode has (Firefight's three).
 pub const MAX_PANEL_LINES: usize = 3;
 
-pub const MODE_LABEL: &str = "Change Mode...";
 pub const FORGE_MAP_LABEL: &str = "Forge Map...";
 /// The Forge Map picker's first choice: no saved map.
 pub const NEW_MAP: &str = "New";
@@ -109,15 +98,18 @@ pub fn shown(mode: Mode, action: i16) -> bool {
 
 /// The rows of a Game Setup list with `actions` in `mode`, or `None` to
 /// leave it as built: not a custom game's list (no Change Map), or no mode
-/// besides Multiplayer on offer.
+/// besides Multiplayer on offer. No row changes the mode: that is the
+/// strip's.
 pub fn arrange(mode: Mode, offer: Offer, actions: &[i16]) -> Option<Vec<i16>> {
     if !offer.any() || !actions.contains(&CHANGE_MAP) {
         return None;
     }
-    let ours = |a: &i16| *a == MODE_ACTION || *a == FORGE_MAP_ACTION;
     let firefight_row = mode == Mode::Firefight && actions.contains(&ff::ROW_ACTION);
-    let mut out = vec![MODE_ACTION];
-    for &a in actions.iter().filter(|a| !ours(a) && shown(mode, **a)) {
+    let mut out = Vec::new();
+    for &a in actions
+        .iter()
+        .filter(|a| **a != FORGE_MAP_ACTION && shown(mode, **a))
+    {
         if firefight_row && a == ff::ROW_ACTION {
             continue;
         }
@@ -133,63 +125,12 @@ pub fn arrange(mode: Mode, offer: Offer, actions: &[i16]) -> Option<Vec<i16>> {
     Some(out)
 }
 
-/// The Mode row's help line: the lobby's mode and what it plays, or why
-/// Firefight has no map to play on.
-pub fn mode_help(mode: Mode, kit_maps: usize) -> String {
-    if mode == Mode::Firefight && kit_maps == 0 {
-        return "This lobby plays Firefight, and no installed map carries its kit. \
-                Build one from a disc map with h2 firefight kit MAP."
-            .into();
-    }
-    format!("This lobby plays {}. {}", mode.label(), mode.description())
-}
-
 /// The Forge Map row's help line: the map's description.
 pub fn forge_map_help(name: Option<&str>) -> String {
     match name {
         None => "New starts from the map as it is.".into(),
         Some(name) => format!("Loads the saved map {name} and its edits."),
     }
-}
-
-/// The Mode row's pick: the modes on offer, the lobby's held. Choosing
-/// Firefight holds the `firefight` setting on for the games the lobby
-/// starts (`store`).
-pub fn mode_pick(offer: Offer, current: Mode, store: Option<Arc<Store>>) -> Pick {
-    let modes = offer.modes();
-    let held = modes.iter().position(|&m| m == current).unwrap_or(0);
-    let description = modes
-        .iter()
-        .map(|m| m.summary())
-        .collect::<Vec<_>>()
-        .join(" ");
-    let values = modes.iter().map(|m| m.label().to_owned()).collect();
-    Pick::new(
-        "Mode",
-        values,
-        held,
-        &description,
-        Arc::new(move |i: usize| {
-            let Some(&mode) = modes.get(i) else {
-                return format!("mode {i} is not on offer");
-            };
-            lobby_start::set_mode(mode);
-            if mode == Mode::Firefight {
-                match store
-                    .as_ref()
-                    .map(|s| s.set(ff::ENABLED.key, Value::Bool(true)))
-                {
-                    Some(Ok(_)) => {}
-                    Some(Err(e)) => {
-                        return format!("lobby mode: Firefight, but {}: {e}", ff::ENABLED.key);
-                    }
-                    None => return "lobby mode: Firefight, but no settings store holds it".into(),
-                }
-            }
-            format!("lobby mode: {}", mode.label())
-        }),
-    )
-    .over(Opener::GAME_SETUP_MODE)
 }
 
 /// The Forge Map row's pick over `saved` (`forge::saved_names`): New, then
@@ -365,8 +306,8 @@ fn after_rows(h: hooks::HookRef<'_>) {
         .after_feature(ff::ROW_FEATURE);
 }
 
-/// The Mode and Forge Map rows, the rows by mode, the start refusal and the
-/// leave.
+/// The Forge Map row, the rows by mode, the mode strip's bumpers, the start
+/// refusal and the leave.
 pub struct LobbyMode {
     pub offer: Offer,
     /// The settings store Firefight's choices live in.
@@ -383,11 +324,10 @@ fn row_text(c: &mut Call, seen: &AtomicBool) -> Result<Flow, GuestFault> {
         let action = item
             .and_then(|i| mem.u32(i + 0x70).ok())
             .and_then(|row| h1row::row_action(&*mem, c.cpu.ecx, row));
-        let slot = match action {
-            Some(MODE_ACTION) => MODE_LABEL_SLOT,
-            Some(FORGE_MAP_ACTION) => FORGE_MAP_LABEL_SLOT,
-            _ => return Ok(Flow::Continue),
-        };
+        if action != Some(FORGE_MAP_ACTION) {
+            return Ok(Flow::Continue);
+        }
+        let slot = FORGE_MAP_LABEL_SLOT;
         let Some(item) = item else {
             return Ok(Flow::Continue);
         };
@@ -408,7 +348,7 @@ fn row_text(c: &mut Call, seen: &AtomicBool) -> Result<Flow, GuestFault> {
 }
 
 fn row_chosen(c: &mut Call, me: &LobbyMode, request_at: u32) -> Result<Flow, GuestFault> {
-    let (action, player, screen, stack) = {
+    let (action, player, stack) = {
         let mem = c.ctx.runtime().memory();
         let row = mem.u32(c.cpu.esp + 8).ok().and_then(|p| mem.u32(p).ok());
         let action = row.and_then(|row| h1row::row_action(&*mem, c.cpu.ecx, row));
@@ -420,25 +360,18 @@ fn row_chosen(c: &mut Call, me: &LobbyMode, request_at: u32) -> Result<Flow, Gue
                 mem.u32(s + crate::ui_kit::lifecycle::SCREEN_SLOT).ok()?,
             ))
         });
-        (action, player, screen, stack)
+        (action, player, stack)
     };
-    let pick = match action {
-        Some(MODE_ACTION) => mode_pick(me.offer, lobby_start::mode(), me.store.clone()),
-        Some(FORGE_MAP_ACTION) => forge_map_pick(
-            ::forge::saved_names(&me.data),
-            lobby_start::forge_map().as_deref(),
-        ),
-        _ => return Ok(Flow::Continue),
-    };
-    let what = if action == Some(MODE_ACTION) {
-        "Mode"
-    } else {
-        "Forge Map"
-    };
+    if action != Some(FORGE_MAP_ACTION) {
+        return Ok(Flow::Continue);
+    }
+    let pick = forge_map_pick(
+        ::forge::saved_names(&me.data),
+        lobby_start::forge_map().as_deref(),
+    );
+    let what = "Forge Map";
     let loader = picker::offer_list(pick).and_then(list_class_loader);
-    let (Some(player), Some(screen), Some((window, slot)), Some(loader)) =
-        (player, screen, stack, loader)
-    else {
+    let (Some(player), Some((window, slot)), Some(loader)) = (player, stack, loader) else {
         eprintln!(
             "lobby mode: the {what} picker not opened (player {player:?}, stack {stack:?}, picker {})",
             if list_class_loader(picker::NAME).is_some() {
@@ -449,9 +382,6 @@ fn row_chosen(c: &mut Call, me: &LobbyMode, request_at: u32) -> Result<Flow, Gue
         );
         return c.ret(8).map(Flow::Return);
     };
-    // The Mode picker closes Game Setup behind it, so the dialog is built
-    // again, with the new mode's rows, when it next opens.
-    let close = action == Some(MODE_ACTION);
     eprintln!(
         "lobby mode: opening the {what} picker (player {player}) on window {window}, slot {slot}"
     );
@@ -460,9 +390,6 @@ fn row_chosen(c: &mut Call, me: &LobbyMode, request_at: u32) -> Result<Flow, Gue
         Box::pin(async move {
             cx.write(|m| m.write(request_at, &request))?;
             cx.call(GuestCall::new(loader).args([request_at])).await?;
-            if close {
-                crate::ui_kit::dialog_tag::close(&cx, screen).await?;
-            }
             Ok(Ret::new(0, 8))
         })
     })
@@ -520,7 +447,6 @@ impl hooks::Feature for LobbyMode {
         let len = IDS.len * crate::ui_kit::screen::SLOT_LEN;
         let base = b.guest_alloc(len.next_multiple_of(0x1000), Permissions::RW)?;
         TEXTS.base.store(base, Ordering::SeqCst);
-        TEXTS.set(MODE_LABEL_SLOT, MODE_LABEL);
         TEXTS.set(FORGE_MAP_LABEL_SLOT, FORGE_MAP_LABEL);
         b.locale().source("lobby mode", |id| TEXTS.address(id));
 
@@ -595,20 +521,28 @@ impl hooks::Feature for LobbyMode {
                 },
             )
             .optional();
-        // Leaving the lobby clears its mode.
+        // Leaving the lobby clears its mode and the strip's reason line.
         b.raw()
             .before(
                 &points::PARTY_LEAVE,
                 "the lobby's mode ends with it",
                 |_| {
                     lobby_start::clear();
+                    crate::lobby_tabs::clear_notice();
                     Ok(Flow::Continue)
                 },
             )
             .optional();
+        // The mode strip's bumpers (docs/game/party-lobby.md, "Switching").
+        let store = self.store.clone();
+        b.raw().before(
+            &points::PREGAME_LOBBY_INPUT,
+            "the mode strip's bumpers",
+            move |c| crate::lobby_tabs::input::press(c, store.clone()),
+        );
 
         b.snapshot(hooks::SnapshotPolicy::section_forbid_while(
-            move || h1row::building_live(&live),
+            move || h1row::building_live(&live).or_else(crate::lobby_tabs::switch::in_flight),
             save_state,
             |bytes, _| load_state(bytes),
         ));
@@ -618,16 +552,6 @@ impl hooks::Feature for LobbyMode {
 
 /// Adds the rows and registers their help lines.
 pub fn install(registry: &mut hooks::Registry, feature: LobbyMode) -> anyhow::Result<()> {
-    crate::game_setup_help::register(
-        MODE_ACTION,
-        crate::game_setup_help::image::CUSTOM_GAME,
-        Arc::new(|m: &mut dyn GuestMemory| {
-            let kit = crate::map_select::current().map_or(0, |c| lobby_start::kit_maps(&c).len());
-            let id = TEXTS.set(MODE_HELP_SLOT, &mode_help(lobby_start::mode(), kit));
-            TEXTS.write(m).ok()?;
-            Some(id)
-        }),
-    );
     crate::game_setup_help::register(
         FORGE_MAP_ACTION,
         crate::game_setup_help::image::QUICK_OPTIONS,

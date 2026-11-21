@@ -276,7 +276,7 @@ pub fn account_spec(a: &crate::account_screen::AccountScreen, now: i64) -> Scree
 }
 
 /// The screens `h2 ui preview` knows, by name.
-pub const NAMES: [&str; 43] = [
+pub const NAMES: [&str; 42] = [
     "forge.hud",
     "forge.palette",
     "forge.menu",
@@ -316,15 +316,11 @@ pub const NAMES: [&str; 43] = [
     crate::theater_ui::PAUSE_MENU,
     "kit.picker",
     "kit.picker.game",
-    MODE_PICKER,
     FORGE_MAP_PICKER,
     crate::custom_games::browser_filters::SCREEN,
     crate::lobby_tabs::preview::NAME,
 ];
 
-/// The value picker as the lobby's Mode row opens it, over Game Setup,
-/// with every mode on offer (`crate::lobby_mode::mode_pick`).
-pub const MODE_PICKER: &str = "kit.picker.mode";
 /// The value picker as the Forge Map row opens it, with two saved maps
 /// (`crate::lobby_mode::forge_map_pick`).
 pub const FORGE_MAP_PICKER: &str = "kit.picker.forge-map";
@@ -422,20 +418,10 @@ pub fn picker_sample() -> crate::ui_kit::picker::Pick {
     .over(crate::ui_kit::view::Opener::GAME_SETUP_CLANKERS)
 }
 
-/// The lobby's pickers' samples ([`MODE_PICKER`], [`FORGE_MAP_PICKER`]):
-/// every mode on offer with Forge held, and New with two saved maps, the
-/// second held. Their choices write a store of their own, never a file.
+/// The lobby's picker's sample ([`FORGE_MAP_PICKER`]): New with two saved
+/// maps, the second held. Its choice writes no file.
 pub fn lobby_pick_sample(name: &str) -> Option<crate::ui_kit::picker::Pick> {
-    use crate::lobby_start::{Mode, Offer};
-    let offer = Offer {
-        forge: true,
-        firefight: true,
-    };
     match name {
-        MODE_PICKER => {
-            let store = Arc::new(settings::Store::defaults(&crate::firefight::options::DEFS));
-            Some(crate::lobby_mode::mode_pick(offer, Mode::Forge, Some(store)))
-        }
         FORGE_MAP_PICKER => Some(crate::lobby_mode::forge_map_pick(
             Ok(vec!["Castle Keep".into(), "Lockout Towers".into()]),
             Some("Lockout Towers"),
@@ -630,7 +616,7 @@ pub fn list_page(name: &str) -> Option<ListPage> {
             ));
             list(ListPage::new(p.class(), described(&p)))
         }
-        MODE_PICKER | FORGE_MAP_PICKER => {
+        FORGE_MAP_PICKER => {
             crate::ui_kit::picker::offer_list(lobby_pick_sample(name)?)?;
             let p = Arc::new(crate::ui_kit::picker::Picker::new(false));
             list(ListPage::new(p.class(), described(&p)))
@@ -996,7 +982,7 @@ mod tests {
             (screen, issue),
             (
                 "kit.dialog" | "kit.dialog.large" | "clankers" | "firefight" | "h1-options" | "kit.picker" | "kit.picker.game"
-                | MODE_PICKER | FORGE_MAP_PICKER
+                | FORGE_MAP_PICKER
                 | "browser.filters" | "clanker_player_options" | "theater.pause-menu"
                 | "forge.objects" | "forge.tools" | "forge.link" | "forge.question",
                 Issue::Contrast { id, .. }
