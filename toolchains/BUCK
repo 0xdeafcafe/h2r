@@ -40,7 +40,7 @@ system_genrule_toolchain(
     visibility = ["PUBLIC"],
 )
 
-# The prelude's internal tools are Python scripts.
+# The prelude's internal tools are Python scripts
 system_python_bootstrap_toolchain(
     name = "python_bootstrap",
     interpreter = host_tool("python"),
