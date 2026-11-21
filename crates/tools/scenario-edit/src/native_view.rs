@@ -23,6 +23,7 @@ use native_render::gpu::{DepthRule, GpuWorld, Image, PassViewport};
 use native_render::instances::ObjectInput;
 use native_render::layers_load::{self, LayersView, StaticLayer};
 use native_render::load;
+use native_render::look::{HostStage, Stage};
 use native_render::model::{Model, NodeMatrix};
 use native_render::model_gpu::GpuModels;
 use native_render::program::{CAMERA_GIVEN, ViewInputs};
@@ -552,12 +553,10 @@ fn base_set(
         w,
         parts.clone(),
         (**programs).clone(),
-        &mut |s| {
-            if s == base_look::WHITE_STAGE {
-                return Some(white.clone());
-            }
-            let m = base_look::base_material(s)?;
-            load.base.get(&m).map(|i| lighting.base(i))
+        &mut |s| match s {
+            Stage::Host(HostStage::White) => Some(white.clone()),
+            Stage::Host(HostStage::BaseMap(m)) => load.base.get(&m).map(|i| lighting.base(i)),
+            _ => None,
         },
         &mut |k| {
             Some(

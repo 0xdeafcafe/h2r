@@ -15,6 +15,9 @@
 //! instruction list: the base look's programs take it, and a program
 //! built on it (the editor's invented layer pass) computes the same
 //! position, bit for bit, through the same generated code.
+//!
+//! The images it samples are [`crate::look::HostStage`]s (a material's
+//! base map, white), a stage kind of their own that no tag can name.
 
 use std::collections::HashMap;
 
@@ -26,7 +29,7 @@ use shaders::vsh::encode::{Inst, Operand as O, program};
 use shaders::vsh::{IluOp, MacOp, OutReg, SrcReg};
 
 use crate::fog_gpu::{FogPass, FogProgram, FogWords};
-use crate::look::{PassLook, Stage};
+use crate::look::{HostStage, PassLook, Stage};
 use crate::pass_state::PassState;
 use crate::program::MODEL_ROWS;
 
@@ -132,34 +135,15 @@ fn base_coordinates() -> [Inst; 2] {
     ]
 }
 
-/// The stage key the base look's programs sample a material's base map
-/// through (not a tag: the host's stage-image lookup answers it with the
-/// material's base map in the Lighting mode).
+/// The stage a material's base look samples its base map through
+/// ([`HostStage::BaseMap`]: the host's stage-image lookup answers it with
+/// the material's base map in the Lighting mode).
 pub fn base_stage(material: u16) -> Stage {
-    Stage::Bitmap {
-        bitmap: TagId(BASE_KEY | u32::from(material)),
-        image: 0,
-    }
+    Stage::Host(HostStage::BaseMap(material))
 }
 
-/// The material whose base map `stage` stands for ([`base_stage`]).
-pub fn base_material(stage: Stage) -> Option<u16> {
-    match stage {
-        Stage::Bitmap { bitmap, image: 0 } if bitmap.0 & 0xffff_0000 == BASE_KEY => {
-            Some(bitmap.0 as u16)
-        }
-        _ => None,
-    }
-}
-
-/// The stage key an unlit part's lightmap stage samples: white.
-pub const WHITE_STAGE: Stage = Stage::Bitmap {
-    bitmap: TagId(WHITE_KEY),
-    image: 0,
-};
-
-const BASE_KEY: u32 = 0xfffe_0000;
-const WHITE_KEY: u32 = 0xfffd_0000;
+/// The stage an unlit part's lightmap stage samples: white.
+pub const WHITE_STAGE: Stage = Stage::Host(HostStage::White);
 
 /// The material key an unlit part of `material` draws under: its program
 /// samples [`WHITE_STAGE`] where a lit part's samples the lightmap.
@@ -264,8 +248,13 @@ mod tests {
         let unlit_stage = base_program(3, false).unwrap().program.stages[3];
         assert_eq!(unlit_stage, WHITE_STAGE);
         assert_eq!(unlit(3), 0x8003);
-        assert_eq!(base_material(base_stage(7)), Some(7));
-        assert_eq!(base_material(WHITE_STAGE), None);
+        // Not a tag: its own stage kind, bound from the host's lookup.
+        assert!(base_stage(7).takes_image() && WHITE_STAGE.takes_image());
+        assert!(!Stage::Lightmap.takes_image());
+        assert_eq!(
+            base_program(7, true).unwrap().program.stages[0],
+            Stage::Host(HostStage::BaseMap(7))
+        );
         let keys = base_programs([(0, true), (0, false), (0, true)]).unwrap();
         let mut keys: Vec<u16> = keys.into_keys().collect();
         keys.sort_unstable();
