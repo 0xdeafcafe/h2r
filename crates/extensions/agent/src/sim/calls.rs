@@ -152,6 +152,8 @@ pub enum Call {
         tag: u32,
         pos: [f32; 3],
         facing: Option<[f32; 3]>,
+        /// Forge's probe rechecks the distributed host and scenario at execution.
+        mp_scenario: Option<u32>,
     },
     /// Build game options with `steps` and queue them: a new game loads
     /// at the game's next transition.
@@ -467,7 +469,30 @@ pub async fn run(cx: &Cx, call: &Call, scratch: u32) -> Result<Outcome, EntryErr
                 json!({ "object": hex(made), "unit": hex(unit), "mode": mode }),
             ))
         }
-        Call::Spawn { tag, pos, facing } => {
+        Call::Spawn {
+            tag,
+            pos,
+            facing,
+            mp_scenario,
+        } => {
+            if let Some(scenario) = mp_scenario {
+                let still_host = cx.read(|m| {
+                    use guest_layout::global;
+                    m.u32(global::SCENARIO.base) == Ok(scenario)
+                        && m.u32(global::SIM_GLOBALS.base)
+                            .ok()
+                            .filter(|&world| world != 0)
+                            .and_then(|world| world.checked_add(8))
+                            .and_then(|mode| m.u32(mode).ok())
+                            .map(agent_proto::sim::SessionKind::from_sim_mode)
+                            == Some(agent_proto::sim::SessionKind::MpHost)
+                });
+                if !still_host {
+                    return Ok(Err(
+                        "the replication probe's multiplayer host or scenario changed".into(),
+                    ));
+                }
+            }
             cx.call(
                 GuestCall::new(addr::PLACEMENT_NEW)
                     .esi(scratch)

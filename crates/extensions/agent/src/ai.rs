@@ -42,6 +42,15 @@ engine::record! {
     }
 }
 
+/// Count live actors without reading their bodies or behavior records.
+pub(crate) fn actor_count(m: &dyn GuestMemory) -> Result<u32, MemFault> {
+    use engine::datum::layout::ACTIVE_COUNT;
+    let Some(pool) = Datums::<Actor>::from_global(m, ACTORS)? else {
+        return Ok(0);
+    };
+    Ok(pool.array.header_field(m, ACTIVE_COUNT)?.max(0) as u32)
+}
+
 fn sector_count(m: &dyn GuestMemory) -> Result<i32, MemFault> {
     let bsp = m.u32(ACTIVE_BSP)?;
     if bsp == 0 || m.i32(bsp + 0xc4)? != 1 {

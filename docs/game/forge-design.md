@@ -1,12 +1,14 @@
 # Forge: the design
 
-Status: The document, edit log and local materialiser are implemented.
-In-game tools are planned.
-Code: `crates/formats/forge-doc` defines the document and log.
-`crates/tools/forge-build` materialises it. Both have tests on invented
-maps. The planned crates are `forge` for the session and tools and
-`asset-import` for conversions. Screens belong in
-`crates/extensions/game/src/ui_kit/`.
+Status: The document, edit log, local materialiser and runtime probes are
+implemented. In-game editing and session modes are planned.
+Code: `crates/formats/forge-doc` defines the document, ops and validation.
+`crates/tools/forge-build` materialises it. The Forge probes live in
+`crates/extensions/agent`. The planned crates are `crates/extensions/forge`
+for the session, tools and session edit log, and `crates/tools/asset-import`
+for glTF and FBX conversion. Screens belong in
+`crates/extensions/game/src/ui_kit/`. The implemented crates have tests on
+invented data.
 Switch: the `forge` feature of `H2_FEATURES` (off until slice F4 is seen in the game); it joins [switches.md](../runtime/switches.md) with the code.
 
 Forge is an in-game editor for multiplayer maps: fly as a monitor, place
@@ -574,13 +576,15 @@ canonical document and the locally built map. They resolve through
 and recipe contract.
 
 **F3 in detail.** Methods in `crates/extensions/agent` with their
-`agent-proto` types and fake-game tests. `forge.capacity` reads the two
-arena cursors scenario-editor.md section 6 names and the block counts.
-`forge.probe {what: "replication", group}` makes one object of the
-group on an `mp_host` and returns its id for the client's `sim.objects`
-to be asked for. `{what: "sync"}` reports the protocol and the hash
-series of a session started on a multiplayer map with no variant.
-`{what: "ai"}` reports the AI flag and the actor count.
+`agent-proto` types and fake-game tests. The [Forge probes](../runtime/agent-api.md#forge-probes) read the arena
+cursors, object pool, block counts and candidate kit tails.
+`forge.probe {what: "replication", group}` makes one object on an
+`mp_host` so the client can check for it through `sim.objects`.
+`{what: "sync"}` reports the protocol and tick hashes of a session
+started on a multiplayer map with no variant. `{what: "ai"}` reports
+AI flags and the actor count. `{what: "kit"}` gives a runtime census
+alongside the block counts for comparison with the base map. The
+[measurement procedure](notes/forge-probes.md) covers all four probes.
 
 ## Decisions
 

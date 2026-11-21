@@ -405,6 +405,7 @@ fn eligible(seats: usize) -> Eligibility {
         map: MAP,
         want_map: MAP,
         protocol: 2,
+        want_protocol: 2,
         max: seats as u32,
         want_max: seats as u32,
         players: seats,
@@ -818,11 +819,11 @@ fn a_local_seat_migration_or_broken_membership_refuses_start() {
 #[test]
 fn stale_world_or_session_numbers_do_not_report_playing() {
     let mp = Some(level_boot::MODE_MULTIPLAYER);
-    assert_eq!(phase(3, 4, false, mp, None, false).unwrap(), Phase::Loading);
-    assert!(phase(3, 4, false, mp, Some(5), false).is_err());
-    assert!(phase(7, 4, false, mp, Some(4), false).is_err());
+    assert_eq!(phase(3, 4, false, mp, None, session::WORLD_DIST_SERVER, false).unwrap(), Phase::Loading);
+    assert!(phase(3, 4, false, mp, Some(5), session::WORLD_DIST_SERVER, false).is_err());
+    assert!(phase(7, 4, false, mp, Some(4), session::WORLD_DIST_SERVER, false).is_err());
     assert_eq!(
-        phase(4, 5, false, None, None, false).unwrap(),
+        phase(4, 5, false, None, None, session::WORLD_DIST_SERVER, false).unwrap(),
         Phase::Postgame
     );
 }
@@ -947,4 +948,47 @@ fn open_tracks_the_network_squad_when_create_replaces_the_menu_squad() {
         reply(call, m)
     });
     assert_eq!(run.result.unwrap(), Ret::new(1, 0));
+}
+
+#[test]
+fn synchronous_open_keeps_the_fresh_squad_variant_free_and_can_request_start() {
+    let test = |cx: Cx| -> EntryFuture {
+        Box::pin(async move {
+            let mut machine = Machine::default();
+            let config = Config { variant: Variant::Absent, ..config() };
+            for expected in [
+                SimOpen::SquadCreated,
+                SimOpen::SessionStarted,
+                SimOpen::Wait("checking replicated lobby parameters"),
+                SimOpen::Ready,
+            ] {
+                assert_eq!(machine.open(&cx, &config, SCRATCH, None, &[]).await.map_err(rpc)?, expected);
+            }
+            cx.write(|m| -> Result<(), MemFault> {
+                m.set_u32(S + PEER_COUNT, 2)?;
+                m.set_u32(S + PEERS + PEER_MAP_STATUS, 3)?;
+                m.set_u32(S + PEERS + PEER_SIZE + PEER_MAP_STATUS, 3)?;
+                peer(m, 1, 1, "FixtureClient")
+            })?;
+            assert!(machine.state(&cx).await.map_err(rpc)?.ready);
+            assert!(matches!(machine.start(&cx, true).await.map_err(rpc)?, Progress::Done(_)));
+            Ok(Ret::new(1, 0))
+        })
+    };
+    let run = testing::run(&test, menu(), Regs::default(), |call, m| {
+        let result = reply(call, m);
+        if call.target == points::BROWSER_CREATE_SQUAD.base {
+            m.set_u32(S + PROTOCOL, 1).unwrap();
+            m.set_u16(S + coop_probe::layout::DIFFICULTY, coop_probe::NO_DIFFICULTY).unwrap();
+        }
+        result
+    });
+    assert_eq!(run.result.unwrap(), Ret::new(1, 0));
+    assert!(!run.calls.iter().any(|call| call.target == SET_VARIANT));
+    assert!(run.calls.iter().any(|call| call.target == MACHINE_LOAD_REQUEST));
+    assert_eq!(
+        phase(3, 4, false, Some(level_boot::MODE_MULTIPLAYER), Some(WORLD_SYNC_SERVER),
+              WORLD_SYNC_SERVER, false).unwrap(),
+        Phase::Playing
+    );
 }

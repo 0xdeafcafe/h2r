@@ -53,6 +53,7 @@ mod capture;
 pub mod collision;
 pub mod compare;
 mod exec;
+pub mod forge;
 pub mod havok;
 pub mod hostpads;
 pub mod hot;

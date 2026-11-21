@@ -233,8 +233,9 @@ and sound listeners use the humans' local-user mappings.
 
 ### 2.4 AI (traced)
 
-`ai_update` `0x1c83c0` runs only when AI is enabled (`[0x4f55d0]+1`) and the
-game-engine state at `[0x4e6948]+0xc` is not 4. The actor array is at
+`ai_update` `0x1c83c0` checks the enable byte at `[0x4f55d0]`
+(`0x1c83d8`, [ai-control.md](../halo1/ai-control.md)) and the game state
+at `[0x4e6948]+0xc`, where 4 suppresses updates. The actor array is at
 `[0x4f55f0]`, stride `0x888`. MP scenarios carry no characters, squads or
 `pathfinding` blocks (Repo: the h1ai and pathfind work generate exactly
 these for converted maps). This is why option (c) would need a whole AI

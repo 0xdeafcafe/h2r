@@ -293,6 +293,7 @@ fn a_spawn_places_the_object_where_and_facing_as_asked() {
             tag: 0xe200_0002,
             pos: [5.0, 6.0, 7.0],
             facing: Some([0.0, 1.0, 0.0]),
+            mp_scenario: None,
         },
         |c, m| {
             if c.target == addr::OBJECT_NEW {
@@ -443,4 +444,28 @@ fn a_queued_game_refuses_a_write_past_its_options_block() {
     let (out, calls, _) = one(world(), Call::QueueGame { steps }, |_, _| Regs::default());
     assert!(out.unwrap_err().contains("past the options block"));
     assert!(calls.is_empty());
+}
+
+#[test]
+fn a_replication_spawn_checks_the_host_and_scenario_when_the_call_runs() {
+    const SCENARIO: u32 = 0x8100_0000;
+    const WORLD: u32 = 0x8101_0000;
+    for (scenario, mode) in [(SCENARIO, 3), (SCENARIO + 0x1000, 4)] {
+        let mut w = world();
+        w.g.put_u32(guest_layout::global::SCENARIO.base, scenario)
+            .put_u32(guest_layout::global::SIM_GLOBALS.base, WORLD)
+            .put_u32(WORLD + 8, mode);
+        let (out, calls, _) = one(
+            w,
+            Call::Spawn {
+                tag: 0xa100_0001,
+                pos: [1.0, 2.0, 3.0],
+                facing: None,
+                mp_scenario: Some(SCENARIO),
+            },
+            |_, _| panic!("changed session must not enter the guest"),
+        );
+        assert!(out.unwrap_err().contains("host or scenario changed"));
+        assert!(calls.is_empty());
+    }
 }

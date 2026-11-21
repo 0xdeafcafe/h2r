@@ -16,6 +16,7 @@ pub mod discover;
 pub mod collision;
 mod endpoint;
 pub mod expect;
+pub mod forge;
 pub mod havok;
 pub mod host_lobby;
 pub mod hot;
