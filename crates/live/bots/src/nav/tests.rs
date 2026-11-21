@@ -789,6 +789,169 @@ fn the_jump_sweep_uses_crouch_height_and_rejects_solid_obstructions() {
     assert!(!jump_clear(&walls, a, b, true));
 }
 
+/// The pre-shared-sweep sequence, spelling out the ray endpoints and
+/// using the full hit query so the two sweep implementations are independent.
+fn old_jump_clear(walls: &Walls, a: V3, b: V3, crouch: bool) -> bool {
+    let side = sub(b, a);
+    let line = [side[1], -side[0], 0.0];
+    let shoulder = scale(line, 0.16 / len(line).max(1e-6));
+    let at = |t: f32| {
+        let p = add(a, scale(side, t));
+        let rise = 1.44 * t * (1.0 - t);
+        add(p, [0.0, 0.0, rise])
+    };
+    let height = |step| if crouch && step >= 2 { CROUCHED } else { STANDING };
+    for side in [scale(shoulder, -1.0), [0.0; 3], shoulder] {
+        for i in 1..=12 {
+            let lo = add(side, at((i - 1) as f32 / 12.0));
+            let hi = add(side, at(i as f32 / 12.0));
+            if !walls.clear(add(hi, [0.0, 0.0, 0.025]), add(hi, [0.0, 0.0, height(i)])) {
+                return false;
+            }
+            for h in [0.025, 0.28, 1.0] {
+                let offset = |n| [0.0, 0.0, if h == 1.0 { height(n) } else { h }];
+                if walls
+                    .hit(add(lo, offset(i - 1)), add(hi, offset(i)))
+                    .is_some()
+                {
+                    return false;
+                }
+            }
+        }
+    }
+    true
+}
+
+#[test]
+fn shared_jump_probes_choose_the_same_posture() {
+    let a = [0.0; 3];
+    let mut kinds = FxHashSet::default();
+    for obstacle_x in [0.0, 0.1, 0.42, 0.55, 1.0] {
+        for obstacle_z in [0.2, 0.65, 0.99, 1.5] {
+            let roof = floor_quad(obstacle_x, -0.2, obstacle_z, 0.25, 0.4);
+            let walls = Walls::from_polygons([roof.verts.as_slice()]);
+            for b in [[1.0, 0.0, 0.0], [1.0, 0.2, 0.3], [-1.0, 0.0, 0.0]] {
+                let arc = JumpArc::new(a, b);
+                for try_standing in [false, true] {
+                    let expected = if try_standing && old_jump_clear(&walls, a, b, false) {
+                        Some(Kind::Jump)
+                    } else if old_jump_clear(&walls, a, b, true) {
+                        Some(Kind::CrouchJump)
+                    } else {
+                        None
+                    };
+                    kinds.insert(expected);
+                    assert_eq!(
+                        arc.kind(&walls, try_standing),
+                        expected,
+                        "{obstacle_x}, {obstacle_z}, {b:?}"
+                    );
+                }
+            }
+        }
+    }
+    assert_eq!(kinds.len(), 3);
+}
+
+fn jump_course(cols: usize, rows: usize) -> Bsp {
+    let quads: Vec<_> = (0..rows)
+        .flat_map(|y| {
+            (0..cols).map(move |x| {
+                let x0 = x as f32 * 2.5 - 7.0;
+                let y0 = y as f32 * 2.0 - 9.0;
+                let z = (x % 3) as f32 * 0.125;
+                (x0, y0, x0 + 2.0, y0 + 2.0, z)
+            })
+        })
+        .collect();
+    floors_bsp(&quads)
+}
+
+#[test]
+fn parallel_nav_and_places_match_serial_cache_bytes() {
+    let bsp = jump_course(20, 8);
+    let stamp = crate::cache::Stamp::now(1);
+    let build = |count| {
+        let threads = Threads { count, background: false };
+        let mut data = crate::cache::build_with(&bsp, threads).unwrap();
+        assert!(data.nav.edges.iter().any(|e| e.kind == Kind::Jump));
+        data.places = crate::places::Places::build_with(&data.nav, &data.walls, &[], threads);
+        data.to_bytes(stamp)
+    };
+    assert_eq!(build(1), build(4));
+}
+
+/// All shared links have an independent fixture: the east side of a tile,
+/// then its north side, in tile order. Outer boundary probes link nothing.
+#[test]
+fn tiled_floor_nav_cache_bytes_match_the_expected_mesh_and_walls() {
+    use crate::cache::{MapData, Stamp};
+
+    let cols = 18usize;
+    let rows = 8usize;
+    let mut quads = Vec::new();
+    let mut polys = Vec::new();
+    let mut edges = Vec::new();
+    for y in 0..rows {
+        for x in 0..cols {
+            let i = (y * cols + x) as u32;
+            let (x0, y0) = (2.0 * x as f32, 2.0 * y as f32);
+            let (x1, y1) = (x0 + 2.0, y0 + 2.0);
+            quads.push((x0, y0, x1, y1, 0.0));
+            polys.push(floor_quad(x0, y0, 0.0, 2.0, 2.0));
+            for (neighbor, to, a, b) in [
+                (x + 1 < cols, i + 1, [x1, y0, 0.0], [x1, y1, 0.0]),
+                (y + 1 < rows, i + cols as u32, [x1, y1, 0.0], [x0, y1, 0.0]),
+            ] {
+                if neighbor {
+                    edges.push(Edge { from: i, to, a, b, kind: Kind::Walk });
+                    edges.push(Edge { from: to, to: i, a, b, kind: Kind::Walk });
+                }
+            }
+        }
+    }
+    let floor_triangles = polys
+        .iter()
+        .flat_map(|p| {
+            let v = &p.verts;
+            [[v[0], v[1], v[2]], [v[0], v[2], v[3]]]
+        })
+        .collect();
+    let expected = MapData {
+        walls: Walls::new(floor_triangles),
+        nav: NavMesh::new(polys, edges),
+        places: Default::default(),
+    };
+    let threads = Threads { count: 4, background: false };
+    let actual = crate::cache::build_with(&floors_bsp(&quads), threads).unwrap();
+    let stamp = Stamp::now(1);
+    assert_eq!(actual.to_bytes(stamp), expected.to_bytes(stamp));
+}
+
+#[test]
+#[ignore = "synthetic cold nav build timing"]
+fn nav_build_timing() {
+    let bsp = jump_course(48, 30);
+    for threads in [Threads { count: 1, background: false }, Threads::foreground()] {
+        for attempt in 1..=3 {
+            let start = std::time::Instant::now();
+            let data = crate::cache::build_with(std::hint::black_box(&bsp), threads).unwrap();
+            let nav = start.elapsed();
+            let places = crate::places::Places::build_with(&data.nav, &data.walls, &[], threads);
+            let elapsed = start.elapsed();
+            std::hint::black_box(&places);
+            eprintln!(
+                "{} workers, run {attempt}: {} polygons, {} links, nav {:.3} s, places {:.3} s",
+                threads.count,
+                data.nav.polys.len(),
+                data.nav.edges.len(),
+                nav.as_secs_f64(),
+                (elapsed - nav).as_secs_f64(),
+            );
+        }
+    }
+}
+
 #[test]
 fn overhead_geometry_removes_the_standing_walk_link() {
     let bsp = floors_bsp(&[(0.0, 0.0, 2.0, 2.0, 0.0), (2.0, 0.0, 4.0, 2.0, 0.05)]);
@@ -796,7 +959,12 @@ fn overhead_geometry_removes_the_standing_walk_link() {
         pathfind::generate::generate(&bsp, 0, 0, &pathfind::generate::Options::default()).unwrap();
     let roof = floor_quad(2.0, 0.0, 0.6, 2.0, 2.0);
     let walls = Walls::from_polygons([roof.verts.as_slice()]);
-    let nav = NavMesh::from_collision(&pf, &Build::default(), &walls);
+    let nav = NavMesh::from_collision(
+        &pf,
+        &Build::default(),
+        &walls,
+        Threads { count: 1, background: false },
+    );
     assert!(nav.path([1.0, 1.0, 0.0], [3.0, 1.0, 0.05]).is_none());
 }
 

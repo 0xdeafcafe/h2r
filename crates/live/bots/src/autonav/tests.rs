@@ -157,10 +157,13 @@ fn the_write_is_atomic_and_leaves_no_temporary_file() {
     let dir = tmp("atomic");
     let path = dir.join("lockout.0.bots");
     std::fs::write(&path, b"old").unwrap();
-    // A temporary file left by a crash is overwritten, never read.
-    std::fs::write(dir.join(format!(".lockout.0.bots.{}.tmp", std::process::id())), b"half").unwrap();
+    // The previously interrupted write is ignored.
+    let abandoned = dir.join(".lockout.0.bots.abandoned.tmp");
+    std::fs::write(&abandoned, b"half").unwrap();
     write_atomic(&path, b"new and whole").unwrap();
     assert_eq!(std::fs::read(&path).unwrap(), b"new and whole");
+    assert_eq!(std::fs::read(&abandoned).unwrap(), b"half");
+    std::fs::remove_file(abandoned).unwrap();
     assert!(leftovers(&dir).is_empty());
     // A rename that fails (a directory in the way) leaves what was there
     // and no temporary file.
@@ -173,6 +176,168 @@ fn the_write_is_atomic_and_leaves_no_temporary_file() {
     // No directory: an error, nothing written.
     assert!(write_atomic(&dir.join("gone").join("x.bots"), b"new").is_err());
     std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn same_process_atomic_writers_do_not_share_temporary_files() {
+    let dir = tmp("writers");
+    let path = dir.join("map.cache");
+    let a = vec![0xa5; 8192];
+    let b = vec![0x9b; 4096];
+    std::thread::scope(|scope| {
+        let one = scope.spawn(|| write_atomic(&path, &a));
+        write_atomic(&path, &b).unwrap();
+        one.join().unwrap().unwrap();
+    });
+    let written = std::fs::read(&path).unwrap();
+    assert!(written == a || written == b);
+    assert!(leftovers(&dir).is_empty());
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn a_region_digest_covers_exactly_the_pinned_region() {
+    use std::io::Cursor;
+
+    let h = header("rooms", MP, 2);
+    let mut bytes = b"container header".to_vec();
+    let base = bytes.len();
+    bytes.extend_from_slice(&h);
+    bytes.extend_from_slice(b"synthetic map");
+    let end = bytes.len();
+    bytes.extend_from_slice(b"outside the region");
+    let expected = Sha256::of(&bytes[base..end]);
+    let current = Arc::new(Mutex::new(bytes));
+    let opened = Arc::clone(&current);
+    let mut region = Region::new(
+        "rooms",
+        base as u64,
+        (end - base) as u64,
+        Box::new(move || Ok(Box::new(Cursor::new(opened.lock().unwrap().clone())))),
+    );
+
+    assert_eq!(region.header().unwrap(), h);
+    current.lock().unwrap()[end - 1] ^= 1;
+    assert_eq!(region.cache_digest(), Some(expected));
+    assert_eq!(region.header().unwrap(), h, "the changed tail has the same header");
+    assert_ne!(region.cache_digest(), Some(expected));
+    current.lock().unwrap().truncate(end - 1);
+    assert_eq!(region.header().unwrap(), h);
+    assert_eq!(region.cache_digest(), None, "never cache a short region");
+}
+
+#[test]
+fn shared_cache_preserves_all_bsp_bytes_and_rebuilds_on_a_miss() {
+    struct CachedFake {
+        source: Fake,
+        digest: Sha256,
+    }
+
+    impl Source for CachedFake {
+        fn key(&self) -> &str {
+            self.source.key()
+        }
+        fn header(&mut self) -> Result<Vec<u8>, String> {
+            self.source.header()
+        }
+        fn cache_digest(&mut self) -> Option<Sha256> {
+            Some(self.digest)
+        }
+        fn build(&mut self) -> Result<Vec<MapData>, String> {
+            self.source.build()
+        }
+    }
+
+    let root = tmp("shared");
+    let shared = root.join("machine-cache");
+    let builds: Log = Arc::default();
+    let calls: Log = Arc::default();
+    let lines: Log = Arc::default();
+    let run = |dir: PathBuf, digest: Sha256, force: bool| {
+        let builds = Arc::clone(&builds);
+        let source = move || {
+            vec![Box::new(CachedFake {
+                source: Fake {
+                    key: "rooms".into(),
+                    header: header("rooms", MP, 21),
+                    bsps: 2,
+                    builds: Arc::clone(&builds),
+                },
+                digest,
+            }) as Box<dyn Source>]
+        };
+        let (worker, _) = Worker::new(dir, Box::new(source));
+        let (calls, lines) = (Arc::clone(&calls), Arc::clone(&lines));
+        let sum = worker
+            .shared_cache(Some(shared.clone()))
+            .force(force)
+            .on_built(move |map, _| calls.lock().unwrap().push(map.into()))
+            .log(move |line| lines.lock().unwrap().push(line.into()))
+            .run();
+        assert_eq!(sum.built, ["rooms"]);
+        assert!(sum.failed.is_empty());
+    };
+    let bytes = |dir: &Path| {
+        (0..2)
+            .flat_map(|k| [cache::file_name("rooms", k), crate::vis::file_name("rooms", k)])
+            .map(|name| std::fs::read(dir.join(name)).unwrap())
+            .collect::<Vec<_>>()
+    };
+
+    let digest = Sha256::of(b"synthetic source");
+    let cold = root.join("cold");
+    run(cold.clone(), digest, false);
+    let original = bytes(&cold);
+    assert_eq!(builds.lock().unwrap().len(), 1);
+
+    let warm = root.join("warm");
+    run(warm.clone(), digest, false);
+    assert_eq!(bytes(&warm), original);
+    assert_eq!(builds.lock().unwrap().len(), 1);
+    assert!(lines.lock().unwrap().iter().any(|line| line.contains("2 BSPs restored")));
+
+    // A nav file already in the data directory can recover just its grid.
+    let main_grid = warm.join(crate::vis::file_name("rooms", 0));
+    std::fs::remove_file(main_grid).unwrap();
+    run(warm.clone(), digest, false);
+    assert_eq!(bytes(&warm), original);
+    assert_eq!(builds.lock().unwrap().len(), 1);
+
+    // A changed grid bit or header with its old checksum must be ignored.
+    let grid = shared_cache::grid_path(&shared, Sha256::of(&original[0]));
+    let mut corrupted = std::fs::read(&grid).unwrap();
+    let last_payload_byte = corrupted.len() - 33;
+    corrupted[last_payload_byte] ^= 1;
+    std::fs::write(&grid, &corrupted).unwrap();
+    let repaired = root.join("repaired-grid");
+    run(repaired.clone(), digest, false);
+    assert_eq!(bytes(&repaired), original);
+    assert_eq!(builds.lock().unwrap().len(), 1);
+    assert_ne!(std::fs::read(grid).unwrap(), corrupted);
+
+    let other = Sha256::of(b"same map header, different synthetic tail");
+    run(root.join("changed-input"), other, false);
+    assert_eq!(builds.lock().unwrap().len(), 2);
+
+    std::fs::write(shared_cache::nav_path(&shared, digest), b"truncated nav entry").unwrap();
+    run(root.join("repaired-nav"), digest, false);
+    assert_eq!(builds.lock().unwrap().len(), 3);
+
+    let forced = root.join("forced");
+    lines.lock().unwrap().clear();
+    run(forced.clone(), digest, true);
+    assert_eq!(bytes(&forced), original);
+    assert_eq!(builds.lock().unwrap().len(), 4);
+    assert!(lines.lock().unwrap().iter().all(|line| !line.contains("shared cache")));
+    assert_eq!(calls.lock().unwrap().len(), 6, "only nav writes offer a new mesh");
+
+    std::fs::remove_dir_all(&shared).unwrap();
+    std::fs::write(&shared, b"the cache root is unavailable").unwrap();
+    let uncached = root.join("unavailable-cache");
+    run(uncached.clone(), digest, false);
+    assert_eq!(bytes(&uncached), original);
+    assert_eq!(builds.lock().unwrap().len(), 5);
+    std::fs::remove_dir_all(root).unwrap();
 }
 
 #[test]

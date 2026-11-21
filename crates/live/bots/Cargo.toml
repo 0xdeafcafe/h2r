@@ -18,7 +18,9 @@ tags = { path = "../../formats/tags" }
 # (bots::autonav).
 map = { path = "../../formats/map" }
 pathfind = { path = "../../formats/pathfind" }
-# The game's nav worker builds its visibility grids as background work
+# The shared nav cache keys map regions and verifies output with SHA-256.
+content.workspace = true
+# The game's nav worker runs parallel build phases as background work
 # (vis::Threads::background).
 background.workspace = true
 

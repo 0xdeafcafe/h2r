@@ -4,7 +4,7 @@
 use map::build::{Block, BspField, FixupKind, TagPayload, TagSet};
 use map::{CacheType, FourCC, Map};
 use pathfind::compare::compare;
-use pathfind::generate::{Options, generate};
+use pathfind::generate::{Options, generate, generate_with_surfaces, surface_edges};
 use pathfind::geom::{V3, is_convex_xy, newell};
 use std::io::Cursor;
 
@@ -115,6 +115,23 @@ fn level() -> Bsp {
             &[10, 11, 12, 13],
         ],
     )
+}
+
+#[test]
+fn ring_observer_sees_nonwalkable_surfaces_in_collision_order() {
+    let mut bsp = level();
+    let invalid = Surface { first_edge: u16::MAX, ..bsp.surfaces[0] };
+    bsp.surfaces.push(invalid);
+    let opts = Options::default();
+    let expected: Vec<_> = (0..bsp.surfaces.len())
+        .filter_map(|surface| surface_edges(&bsp, surface))
+        .collect();
+    let mut rings = Vec::new();
+    let data = generate_with_surfaces(&bsp, 0, 0, &opts, |ring| rings.push(ring.to_vec())).unwrap();
+    assert_eq!(data, generate(&bsp, 0, 0, &opts).unwrap());
+    assert_eq!(expected.len(), 5);
+    assert_eq!(rings, expected);
+    assert_eq!(data.sectors.len(), 3);
 }
 
 #[test]
