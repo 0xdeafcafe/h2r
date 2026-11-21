@@ -29,7 +29,7 @@ use serde_json::{Map, Value};
 pub(crate) fn live_dir() -> Result<PathBuf> {
     live_dir_from(
         std::env::var_os(LIVE_DIR_ENV),
-        content::store::app_data_dir(content::store::DataHost::CURRENT, |name| std::env::var_os(name)),
+        host_dirs::data(),
     )
 }
 

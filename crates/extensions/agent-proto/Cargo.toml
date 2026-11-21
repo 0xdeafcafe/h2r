@@ -8,6 +8,8 @@ license.workspace = true
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
+# `cache_dir`: the socket, input logs and captures.
+host-dirs.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 socket2 = "0.6"

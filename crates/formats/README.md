@@ -15,6 +15,7 @@ crate needs another it depends on it directly (`tags` on `map`, `asf` on
 | [content](content/) | Map packages: manifest, `MapId`, patch readers and the resolver |
 | [font](font/) | Packed bitmap font parser, encoder and CPU text rasteriser |
 | [h1-contract](h1-contract/) | Names shared by the Halo 1 converters and the in-game Halo 1 hooks |
+| [host-dirs](host-dirs/) | The per-user data, cache and config directories under each host's convention |
 | [hs](hs/) | Compiled HaloScript: decode, check, cast, and the script VM |
 | [map](map/) | Cache v8 `.map` reader and writer |
 | [mopp](mopp/) | Havok MOPP code for structure BSPs: query model, validator, compiler |

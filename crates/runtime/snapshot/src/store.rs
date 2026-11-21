@@ -5,10 +5,9 @@
 //! <root>/<BuildKey::id>/<name>.h2snap
 //! ```
 //!
-//! `<root>` is `$H2_SNAPSHOTS`, else `~/Library/Caches/h2recomp/snapshots`
-//! on Apple hosts, `%LOCALAPPDATA%\h2recomp\cache\snapshots` on Windows and
-//! `$XDG_CACHE_HOME/h2recomp/snapshots` (`~/.cache/...`) elsewhere: the
-//! same directory the pipeline cache and the agent socket use. A build's
+//! `<root>` is `$H2_SNAPSHOTS`, else `snapshots` in the cache directory
+//! ([`host_dirs::cache`], docs/runtime/storage.md): the same directory the
+//! pipeline cache and the agent socket use. A build's
 //! snapshots are useless to any other build, so a rebuilt image starts with
 //! an empty list and old directories can be deleted wholesale.
 use crate::Error;
@@ -18,39 +17,17 @@ use std::path::{Path, PathBuf};
 pub const ENV: &str = "H2_SNAPSHOTS";
 pub const EXTENSION: &str = "h2snap";
 
-/// The default root from the environment; `None` without a home directory.
+/// The default root from the environment; `None` without a cache
+/// directory.
 pub fn default_root() -> Option<PathBuf> {
-    root_from(
-        std::env::var_os(ENV),
-        std::env::var_os("XDG_CACHE_HOME"),
-        std::env::var_os("HOME"),
-        std::env::var_os("LOCALAPPDATA"),
-    )
+    root_from(std::env::var_os(ENV), host_dirs::cache())
 }
 
-fn root_from(
-    var: Option<std::ffi::OsString>,
-    xdg: Option<std::ffi::OsString>,
-    home: Option<std::ffi::OsString>,
-    local_app_data: Option<std::ffi::OsString>,
-) -> Option<PathBuf> {
-    let nonempty = |v: Option<std::ffi::OsString>| v.filter(|v| !v.is_empty());
-    if let Some(v) = nonempty(var) {
+fn root_from(var: Option<std::ffi::OsString>, cache_dir: Option<PathBuf>) -> Option<PathBuf> {
+    if let Some(v) = var.filter(|v| !v.is_empty()) {
         return Some(PathBuf::from(v));
     }
-    let cache = if cfg!(target_vendor = "apple") {
-        PathBuf::from(nonempty(home)?).join("Library/Caches/h2recomp")
-    } else if cfg!(windows) {
-        PathBuf::from(nonempty(local_app_data)?)
-            .join("h2recomp")
-            .join("cache")
-    } else {
-        nonempty(xdg)
-            .map(PathBuf::from)
-            .or_else(|| Some(PathBuf::from(nonempty(home)?).join(".cache")))?
-            .join("h2recomp")
-    };
-    Some(cache.join("snapshots"))
+    Some(cache_dir?.join("snapshots"))
 }
 
 /// A snapshot name: 1 to 64 of `a-z 0-9 . _ -`, not starting with a dot.
@@ -255,26 +232,19 @@ mod tests {
     #[test]
     fn the_root_follows_the_platform_cache() {
         let os = |s: &str| Some(std::ffi::OsString::from(s));
+        let cache = || Some(PathBuf::from("/c/h2recomp"));
         assert_eq!(
-            root_from(os("/x/snaps"), None, os("/h"), None),
+            root_from(os("/x/snaps"), cache()),
             Some(PathBuf::from("/x/snaps"))
         );
-        let home = root_from(os(""), os("/xdg"), os("/h"), os("C:\\L"));
-        if cfg!(target_vendor = "apple") {
-            assert_eq!(
-                home,
-                Some(PathBuf::from("/h/Library/Caches/h2recomp/snapshots"))
-            );
-        } else if cfg!(windows) {
-            assert_eq!(
-                home,
-                Some(PathBuf::from("C:\\L").join("h2recomp/cache/snapshots"))
-            );
-        } else {
-            assert_eq!(home, Some(PathBuf::from("/xdg/h2recomp/snapshots")));
-        }
-        if !cfg!(windows) {
-            assert_eq!(root_from(None, None, None, None), None);
-        }
+        assert_eq!(
+            root_from(os(""), cache()),
+            Some(PathBuf::from("/c/h2recomp/snapshots"))
+        );
+        assert_eq!(
+            root_from(None, cache()),
+            Some(PathBuf::from("/c/h2recomp/snapshots"))
+        );
+        assert_eq!(root_from(None, None), None);
     }
 }

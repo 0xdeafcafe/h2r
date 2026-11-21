@@ -13,6 +13,8 @@ required-features = ["host"]
 film = { path = "../../live/film" }
 # The default data root (`content::store::default_data_root`).
 content.workspace = true
+# The app data, cache and config directories (coop, Live, lab, follow).
+host-dirs.workspace = true
 hs = { workspace = true, optional = true }
 tags = { workspace = true, optional = true }
 shaders = { path = "../../formats/shaders", optional = true }

@@ -143,13 +143,9 @@ pub fn read_inputs(ws: &Workspace, outside: &OutsideInputs, packages: &BTreeSet<
 
 /// Where passes are recorded: one empty-ish file per key.
 pub fn dir() -> PathBuf {
-    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
-    let cache = if cfg!(target_os = "macos") {
-        home.join("Library/Caches")
-    } else {
-        std::env::var_os("XDG_CACHE_HOME").map(PathBuf::from).unwrap_or_else(|| home.join(".cache"))
-    };
-    cache.join("h2recomp/xtask-ledger")
+    host_dirs::cache()
+        .unwrap_or_else(|| std::env::temp_dir().join(host_dirs::APP))
+        .join("xtask-ledger")
 }
 
 pub fn passed(dir: &Path, key: &str) -> bool {

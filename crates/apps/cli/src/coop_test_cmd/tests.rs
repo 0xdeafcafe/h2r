@@ -1,22 +1,31 @@
 use super::*;
 use crate::coop_verdict::Seen;
-use content::store::DataHost;
+use host_dirs::Convention;
 
 fn args(s: &[&str]) -> Vec<String> {
     s.iter().map(|a| a.to_string()).collect()
 }
 
+/// An absolute path on the host running the test: Windows needs a drive.
+fn abs(p: &str) -> String {
+    if cfg!(windows) {
+        format!("C:{p}")
+    } else {
+        p.to_owned()
+    }
+}
+
 fn env(k: &str) -> Option<String> {
     match k {
-        "HOME" => Some("/home/player".into()),
-        "LOCALAPPDATA" => Some(r"C:\Local".into()),
+        "HOME" => Some(abs("/home/player")),
+        "LOCALAPPDATA" => Some(abs("/Local")),
         "H2_DISC" => Some("/discs/halo2.iso".into()),
         _ => None,
     }
 }
 
 fn opts(s: &[&str]) -> Opts {
-    match parse(args(s), DataHost::Xdg, env).unwrap() {
+    match parse(args(s), Convention::Xdg, env).unwrap() {
         Cmd::Test(o) => o,
         c => panic!("{c:?}"),
     }
@@ -37,7 +46,7 @@ fn defaults_and_flags() {
     assert!(!o.auto && !o.fresh && !o.dry_run && !o.extras && !o.pad_on_guest);
     assert_eq!(
         o.root,
-        PathBuf::from("/home/player/.local/share/h2recomp/coop-test")
+        PathBuf::from(abs("/home/player/.local/share/h2recomp/coop-test"))
     );
     assert_eq!((o.port, o.server_port), (31000, 8075));
     let o = opts(&[
@@ -88,24 +97,26 @@ fn the_default_root_follows_each_convention() {
         c => panic!("{c:?}"),
     };
     assert_eq!(
-        root(DataHost::Library),
-        PathBuf::from("/home/player/Library/Application Support/h2recomp/coop-test")
+        root(Convention::Apple),
+        PathBuf::from(abs(
+            "/home/player/Library/Application Support/h2recomp/coop-test"
+        ))
     );
     assert_eq!(
-        root(DataHost::Windows),
-        PathBuf::from(r"C:\Local")
+        root(Convention::Windows),
+        PathBuf::from(abs("/Local"))
             .join("h2recomp")
             .join("coop-test")
     );
     assert_eq!(
-        root(DataHost::Xdg),
-        PathBuf::from("/home/player/.local/share/h2recomp/coop-test")
+        root(Convention::Xdg),
+        PathBuf::from(abs("/home/player/.local/share/h2recomp/coop-test"))
     );
 }
 
 #[test]
 fn bad_arguments_say_why() {
-    let err = |s: &[&str]| format!("{:#}", parse(args(s), DataHost::Xdg, env).unwrap_err());
+    let err = |s: &[&str]| format!("{:#}", parse(args(s), Convention::Xdg, env).unwrap_err());
     assert!(err(&["test", "--players", "1"]).contains("2 to 16"));
     assert!(err(&["test", "--players", "17"]).contains("2 to 16"));
     assert!(err(&["test", "--pad", "both"]).contains("host or guest"));
@@ -115,7 +126,7 @@ fn bad_arguments_say_why() {
     assert!(err(&["test", "--root"]).contains("needs a value"));
     assert!(err(&["frobnicate"]).contains("unknown `h2 coop frobnicate`"));
     assert!(err(&[]).contains("usage"));
-    let no_disc = parse(args(&["test"]), DataHost::Xdg, |k| {
+    let no_disc = parse(args(&["test"]), Convention::Xdg, |k| {
         (k == "HOME").then(|| "/h".into())
     })
     .unwrap_err();
@@ -127,7 +138,7 @@ fn verdict_takes_a_log() {
     assert_eq!(
         parse(
             args(&["verdict", "/l/coop.log", "--auto"]),
-            DataHost::Xdg,
+            Convention::Xdg,
             env
         )
         .unwrap(),
@@ -136,7 +147,7 @@ fn verdict_takes_a_log() {
             auto: true
         }
     );
-    assert!(parse(args(&["verdict"]), DataHost::Xdg, env).is_err());
+    assert!(parse(args(&["verdict"]), Convention::Xdg, env).is_err());
 }
 
 #[test]
@@ -576,7 +587,7 @@ fn late_holds_back_the_last_guests_accept_and_names_it_late() {
         &["test", "--late", "--auto"][..],
         &["test", "--players", "3", "--late"],
     ] {
-        let e = parse(args(bad), DataHost::Xdg, env)
+        let e = parse(args(bad), Convention::Xdg, env)
             .unwrap_err()
             .to_string();
         assert!(e.contains("--late needs --auto"), "{e}");

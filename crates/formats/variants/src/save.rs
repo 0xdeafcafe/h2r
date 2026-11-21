@@ -351,7 +351,7 @@ impl SaveStore {
     /// The save root under the default data root: what `h2 play` and `h2
     /// run` use without `--data` (`content::store::default_data_root`,
     /// `$TMPDIR/h2boot-data`). `vfs::Config::for_title` names another root
-    /// (`~/Library/Application Support/h2recomp`) that the game does not
+    /// (the app data directory itself, docs/runtime/storage.md) that the game does not
     /// use today.
     pub fn default_root() -> Option<PathBuf> {
         Some(Self::root_under(&content::store::default_data_root()))

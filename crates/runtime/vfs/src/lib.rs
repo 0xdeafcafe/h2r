@@ -125,11 +125,10 @@ impl Config {
             .join(CONTENT_DIR)
             .join(content_dir_name(offer_id))
     }
-    /// The layout under the host's default data root:
-    /// [`content::store::app_data_dir`].
+    /// The layout under the host's app data directory:
+    /// [`host_dirs::data`].
     pub fn for_title(title_id: u32) -> Result<Self> {
-        let root = content::store::app_data_dir(content::store::DataHost::CURRENT, |name| std::env::var_os(name))
-            .ok_or(Error::InvalidParameter)?;
+        let root = host_dirs::data().ok_or(Error::InvalidParameter)?;
         Ok(Self::new(root, title_id))
     }
 }

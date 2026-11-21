@@ -127,7 +127,7 @@ pub struct Opts {
 /// with `host`'s app data convention for the default `--root`.
 pub fn parse(
     args: Vec<String>,
-    host: content::store::DataHost,
+    host: host_dirs::Convention,
     env: impl Fn(&str) -> Option<String>,
 ) -> Result<Cmd> {
     let mut it = args.into_iter();
@@ -226,7 +226,7 @@ pub fn parse(
     }
     let root = match root {
         Some(r) => r,
-        None => content::store::app_data_dir(host, |name| env(name).map(Into::into))
+        None => host_dirs::data_dir(host, |name| env(name).map(Into::into))
             .context("application data directory is unavailable; pass --root")?
             .join("coop-test"),
     };
@@ -462,7 +462,7 @@ pub fn accounts(client: &Client, games: &[Game], all: &Path) -> Result<Vec<Local
 
 pub fn run(args: Vec<String>) -> Result<()> {
     let env = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
-    match parse(args, content::store::DataHost::CURRENT, env)? {
+    match parse(args, host_dirs::Convention::HOST, env)? {
         Cmd::Verdict { log, auto } => {
             let text =
                 fs::read_to_string(&log).with_context(|| format!("reading {}", log.display()))?;

@@ -1,0 +1,11 @@
+[package]
+name = "host-dirs"
+description = "The per-user data, cache and config directories under each host's convention (docs/runtime/storage.md)"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[package.metadata.h2]
+doc = ["runtime/storage.md"]
+
+[dependencies]

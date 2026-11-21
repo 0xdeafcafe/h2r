@@ -59,10 +59,8 @@ pub const ENV: &str = "H2_AGENT";
 pub const XBOX_PORT: u16 = 4720;
 
 /// Where `h2 serve` listens and `h2 agent` connects when neither is told:
-/// `$H2_AGENT`, else the user's cache directory (`~/Library/Caches/h2recomp`
-/// on macOS, `%LOCALAPPDATA%\h2recomp\cache` on Windows,
-/// `$XDG_CACHE_HOME/h2recomp` or `~/.cache/h2recomp` elsewhere).
-/// Not under `$TMPDIR`, which differs between agent sessions.
+/// `$H2_AGENT`, else `agent.sock` in [`cache_dir`]. Not under `$TMPDIR`,
+/// which differs between agent sessions.
 pub fn default_socket() -> std::path::PathBuf {
     if let Some(p) = std::env::var_os(ENV).filter(|p| !p.is_empty()) {
         return p.into();
@@ -70,28 +68,12 @@ pub fn default_socket() -> std::path::PathBuf {
     cache_dir().join("agent.sock")
 }
 
-/// The user's cache directory for h2recomp (`~/Library/Caches/h2recomp`
-/// on macOS, `%LOCALAPPDATA%\h2recomp\cache` on Windows,
-/// `$XDG_CACHE_HOME/h2recomp` or `~/.cache/h2recomp` elsewhere).
-/// The agent keeps its input logs (`inputs/`) and captures (`captures/`)
-/// here, never in the repository.
+/// The user's cache directory for h2recomp ([`host_dirs::cache`],
+/// docs/runtime/storage.md), else `$TMPDIR/h2recomp` when the host has
+/// none. The agent keeps its input logs (`inputs/`) and captures
+/// (`captures/`) here, never in the repository.
 pub fn cache_dir() -> std::path::PathBuf {
-    if cfg!(windows) {
-        return std::env::var_os("LOCALAPPDATA")
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(std::env::temp_dir)
-            .join("h2recomp")
-            .join("cache");
-    }
-    let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
-    let cache = if cfg!(target_os = "macos") {
-        home.map(|h| h.join("Library/Caches"))
-    } else {
-        std::env::var_os("XDG_CACHE_HOME")
-            .map(Into::into)
-            .or_else(|| home.map(|h| h.join(".cache")))
-    };
-    cache.unwrap_or_else(std::env::temp_dir).join("h2recomp")
+    host_dirs::cache().unwrap_or_else(|| std::env::temp_dir().join(host_dirs::APP))
 }
 
 /// Method names. `session.methods` lists them at run time.

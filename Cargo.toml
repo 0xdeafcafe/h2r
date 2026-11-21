@@ -48,6 +48,7 @@ vfs = { path = "crates/runtime/vfs" }
 background = { path = "crates/runtime/background" }
 boot = { path = "crates/apps/boot" }
 content = { path = "crates/formats/content" }
+host-dirs = { path = "crates/formats/host-dirs" }
 live-proto = { path = "crates/live/live-proto" }
 live-server = { path = "crates/live/live-server" }
 cloud-saves = { path = "crates/live/cloud-saves" }
