@@ -934,7 +934,7 @@ fn mode_is_picked_from_what_is_installed() {
     let only = TranscodedSource::new(&dir, decoder.clone()).only(["INTRO_60"]);
     assert!(only.open("intro_60").is_some());
     assert!(only.open("attract_60").is_none());
-    std::fs::remove_file(dir.join("intro_60.mp4")).unwrap();
+    std::fs::remove_file(dir.join("intro_60.mov")).unwrap();
     assert_eq!(
         hle.prepare("intro_60"),
         Err(MovieOpenError::MissingOrChangedOutput)
