@@ -22,6 +22,9 @@ libc = "0.2"
 # The flat RAM window's fault region (src/window.rs).
 hostfault = { path = "../../recompiler/hostfault" }
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Security", "Win32_System_Memory", "Win32_System_SystemInformation"] }
+
 [dev-dependencies]
 iced-x86 = { version = "1", default-features = false, features = ["std", "decoder"] }
 runtime-test-probe = { path = "test-probe" }

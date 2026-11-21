@@ -19,5 +19,5 @@ cranelift-native = "=0.137.2"
 lift.workspace = true
 analyze.workspace = true
 xbe.workspace = true
-libc = "0.2"
+timeline = { path = "../../runtime/timeline" }
 iced-x86 = { version = "1", default-features = false, features = ["std", "decoder", "instr_info", "code_asm"] }

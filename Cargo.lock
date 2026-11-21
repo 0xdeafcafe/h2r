@@ -83,6 +83,8 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
+ "socket2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1047,8 +1049,8 @@ dependencies = [
  "emit",
  "iced-x86",
  "ir",
- "libc",
  "lift",
+ "timeline",
  "xbe",
 ]
 
@@ -2836,6 +2838,7 @@ name = "hostfault"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5413,6 +5416,7 @@ dependencies = [
  "thiserror 2.0.21",
  "timeline",
  "vfs",
+ "windows-sys 0.61.2",
  "x87",
  "xbe",
 ]

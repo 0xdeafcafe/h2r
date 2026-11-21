@@ -1,7 +1,7 @@
 //! Guest RAM storage, and copy-on-write copies of it for a second executor
 //! (docs/runtime/second-executor.md, section 2).
 //!
-//! Linux x86-64 reserves live RAM between two guard pages. Other hosts use
+//! Windows and Linux x86-64 reserve live RAM between two guard pages. Other hosts use
 //! a heap block by default. Flat RAM uses a shared memfd on Linux and a
 //! dedicated anonymous mapping on macOS. A macOS snapshot can share pages through
 //! `mach_vm_remap(copy = TRUE)`. With that mapping,
@@ -42,8 +42,12 @@ pub(crate) struct Ram {
 }
 
 enum Backing {
-    #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+    #[cfg(not(any(windows, all(target_os = "linux", target_arch = "x86_64"))))]
     Heap,
+    #[cfg(windows)]
+    WindowsReserved { base: NonNull<u8> },
+    #[cfg(windows)]
+    WindowsFileView,
     #[cfg(target_os = "macos")]
     MachLive,
     #[cfg(target_os = "macos")]
@@ -118,10 +122,14 @@ impl Ram {
                 unsafe { libc::munmap(p, len) };
             }
         }
-        #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+        #[cfg(windows)]
+        {
+            win::reserve(len).expect("reserve guarded guest physical RAM")
+        }
+        #[cfg(not(any(windows, all(target_os = "linux", target_arch = "x86_64"))))]
         Self::from_box(vec![0u8; len].into_boxed_slice())
     }
-    #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+    #[cfg(not(any(windows, all(target_os = "linux", target_arch = "x86_64"))))]
     fn from_box(b: Box<[u8]>) -> Self {
         let len = b.len();
         let ptr = NonNull::new(Box::into_raw(b).cast::<u8>()).expect("Box is non-null");
@@ -152,7 +160,14 @@ impl Ram {
             copy.copy_from_slice(self);
             copy
         };
-        #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+        #[cfg(windows)]
+        let copy = {
+            let _ = window;
+            let mut copy = win::reserve(self.len).expect("reserve guarded snapshot RAM");
+            copy.copy_from_slice(self);
+            copy
+        };
+        #[cfg(not(any(windows, all(target_os = "linux", target_arch = "x86_64"))))]
         let copy = {
             // A heap copy: the window cannot alias it, and the Guest that
             // needs one copies it again (`Guest::ensure_aliasable_ram`).
@@ -203,7 +218,11 @@ impl Ram {
         {
             self.cow_base.is_some() && matches!(self.backing, Backing::Guarded { file: None, .. })
         }
-        #[cfg(not(unix))]
+        #[cfg(windows)]
+        {
+            matches!(self.backing, Backing::WindowsFileView)
+        }
+        #[cfg(not(any(unix, windows)))]
         {
             false
         }
@@ -413,7 +432,12 @@ impl Ram {
             self.cow_base = Some(file);
             Ok(())
         }
-        #[cfg(not(unix))]
+        #[cfg(windows)]
+        {
+            *self = win::private_view(file, len)?;
+            Ok(())
+        }
+        #[cfg(not(any(unix, windows)))]
         {
             let _ = (file, len);
             Err(std::io::Error::new(
@@ -476,7 +500,7 @@ impl DerefMut for Ram {
 impl Drop for Ram {
     fn drop(&mut self) {
         match self.backing {
-            #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+            #[cfg(not(any(windows, all(target_os = "linux", target_arch = "x86_64"))))]
             Backing::Heap => {
                 // SAFETY: from_box took this slice out of its Box.
                 unsafe {
@@ -485,6 +509,16 @@ impl Drop for Ram {
                         self.len,
                     )));
                 }
+            }
+            #[cfg(windows)]
+            Backing::WindowsReserved { base } => {
+                // SAFETY: reserve() owns the entire reservation at base.
+                unsafe { win::release(base) };
+            }
+            #[cfg(windows)]
+            Backing::WindowsFileView => {
+                // SAFETY: private_view() transferred the mapped view to Ram.
+                unsafe { win::unmap(self.ptr) };
             }
             #[cfg(target_os = "macos")]
             Backing::MachLive | Backing::MachPaged => {
@@ -510,6 +544,9 @@ impl Drop for Ram {
         }
     }
 }
+
+#[cfg(windows)]
+mod win;
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 mod linux {

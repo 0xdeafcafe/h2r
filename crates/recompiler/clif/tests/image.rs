@@ -32,11 +32,7 @@ fn cached_analysis() -> Option<analyze::Analysis> {
 
 /// User plus system CPU time of this process so far.
 fn cpu_secs() -> f64 {
-    // SAFETY: getrusage fills the struct it is given.
-    let mut u: libc::rusage = unsafe { std::mem::zeroed() };
-    unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut u) };
-    let s = |t: libc::timeval| t.tv_sec as f64 + t.tv_usec as f64 / 1e6;
-    s(u.ru_utime) + s(u.ru_stime)
+    timeline::host::process_cpu_ns().expect("read process CPU time") as f64 / 1e9
 }
 
 #[test]
@@ -72,7 +68,7 @@ fn fast_tier_compiles_the_whole_image() {
         .and_then(|j| j.parse().ok())
         .unwrap_or_else(|| std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4));
     let dir = std::env::temp_dir().join(format!("h2clif-image-{}", std::process::id()));
-    let dylib = dir.join("libh2game.dylib");
+    let dylib = dir.join(emit::compile::Arch::host().module_file_name());
     let cpu0 = cpu_secs();
     let t = Instant::now();
     let r = clif::build_dylib(&owners, &dir, &header, &[("bridge.c", emit::host::BRIDGE)], &dylib, jobs);
