@@ -45,6 +45,7 @@ pub(crate) fn key(code: winit::keyboard::KeyCode, command: bool, shift: bool) ->
         K::KeyQ => Key::Fall,
         K::KeyF => Key::Palette,
         K::KeyR => Key::Properties,
+        K::KeyL => Key::Link,
         K::Delete => Key::Delete,
         K::Escape | K::Backspace => Key::Back,
         K::Enter | K::NumpadEnter | K::Space => Key::Accept,
@@ -66,5 +67,6 @@ mod tests {
         assert_eq!(key(KeyCode::KeyQ, true, false), None);
         assert_eq!(key(KeyCode::KeyZ, true, false), Some(Key::Undo));
         assert_eq!(key(KeyCode::KeyZ, true, true), Some(Key::Redo));
+        assert_eq!(key(KeyCode::KeyL, false, false), Some(Key::Link));
     }
 }

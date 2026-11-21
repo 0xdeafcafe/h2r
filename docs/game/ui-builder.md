@@ -76,8 +76,8 @@ widgets on a transparent surface with the preview renderer and disc fonts.
 Forge dialogs carry the HUD as their `underlay` and put a dark backing
 inside the retail panel so rows stay legible over bright scenery. A nested picker keeps the
 parent dialog beneath it with the selected row in focus. The preview pages
-are `forge.hud`, `forge.palette`, `forge.properties` and `forge.menu`
-(`crates/extensions/game/src/ui_kit/forge.rs`).
+are `forge.hud`, `forge.palette`, `forge.properties`, `forge.menu` and
+`forge.link` (`crates/extensions/game/src/ui_kit/forge.rs`).
 
 **Sign-in is a modal.** The sign-in
 prompt and its new-account gamertag and invite pages are `Over` dialogs,

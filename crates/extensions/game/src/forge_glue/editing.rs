@@ -4,8 +4,8 @@ use super::{GENERATION, admitted, controls};
 use agent::forge::local::{ForgeEdit, ForgeWorld, Guard, ProposalReply};
 use agent::sim::calls;
 use forge::tool::{Command, Tool};
-use forge::{PaletteItem, Session};
-use forge_doc::{Entry, Op, Sha256};
+use forge::{BlockKind, Linkable, OpId, PaletteItem, Session};
+use forge_doc::{ActiveLink, Endpoint, Entry, Link as DocLink, Op, Sha256};
 use serde_json::{Value, json};
 use std::{
     path::{Path, PathBuf},
@@ -51,6 +51,8 @@ pub(super) struct Editor {
     selected: usize,
     rotation_step: usize,
     notice: Option<(String, u32)>,
+    /// The link the open LINK dialog shows.
+    link_dialog: Option<OpId>,
 }
 
 impl Editor {
@@ -74,6 +76,7 @@ impl Editor {
             selected: 0,
             rotation_step: 2,
             notice: None,
+            link_dialog: None,
         }
     }
 
@@ -100,7 +103,13 @@ impl Editor {
             "session":"local", "role":"editor", "monitor":self.tool.monitor,
             "camera":self.tool.camera.map(|c| json!({"position":c.position,"yaw":c.yaw,"pitch":c.pitch})),
             "aimed":self.tool.aimed, "held":self.tool.held, "placing":self.tool.placing,
-            "screen":screen, "head":self.session.head(), "pending_rebuild":0,
+            "screen":screen, "head":self.session.head(), "pending_rebuild":self.session.pending_rebuild(),
+            "tool":if self.tool.links { "links" } else { "objects" },
+            "aimed_link":self.tool.aimed_link.map(linkable_json), "link_from":self.tool.link_from.map(linkable_json),
+            "teleporters":self.session.teleporters().iter().map(|t| json!({
+                "flag":t.index, "sender":t.sender, "channel":t.channel, "position":t.position,
+            })).collect::<Vec<_>>(),
+            "links":self.links_json(),
             "budget":{"used":self.session.objects().len(),"limit":self.session.budget()},
             "pending_call":self.pending.is_some(), "pending_file":self.file_job.is_some(), "file":self.filename,
             "notice":self.notice.as_ref().map(|(text,_)|text)
@@ -119,7 +128,122 @@ impl Editor {
         Some((&obj.item, self.tool.ghost.unwrap_or(obj.frame)))
     }
 
+    /// The active links with their ends' final indices, for `forge.status`.
+    fn links_json(&self) -> Vec<Value> {
+        let mut seen = std::collections::BTreeSet::new();
+        let mut all = Vec::new();
+        let things = self
+            .session
+            .teleporters()
+            .iter()
+            .map(|t| Linkable::Teleporter(t.index))
+            .chain(
+                self.session
+                    .objects()
+                    .iter()
+                    .map(|o| Linkable::Object(o.id)),
+            )
+            .collect::<Vec<_>>();
+        for thing in things {
+            for active in self.session.links_of(thing) {
+                if seen.insert(active.id) {
+                    all.push(active);
+                }
+            }
+        }
+        all.sort_by_key(|a| a.id);
+        all.iter()
+            .map(|a| match a.link {
+                DocLink::Teleporter { channel, .. } => json!({
+                    "id":a.id, "kind":"teleporter", "sender":a.indices[0], "receiver":a.indices[1], "channel":channel,
+                }),
+                DocLink::Device { .. } => json!({
+                    "id":a.id, "kind":"device", "machines":a.indices, "applies":"rebuild",
+                }),
+            })
+            .collect()
+    }
+
+    fn linkable(&self, thing: Linkable) -> String {
+        match thing {
+            Linkable::Teleporter(index) => self
+                .session
+                .teleporters()
+                .iter()
+                .find(|t| t.index == index)
+                .map_or_else(
+                    || format!("Netgame flag {index}"),
+                    |t| {
+                        let role = if t.sender { "sender" } else { "receiver" };
+                        format!("Teleporter {role} {index}, channel {}", t.channel)
+                    },
+                ),
+            Linkable::Object(id) => self
+                .session
+                .objects()
+                .iter()
+                .find(|o| o.id == id)
+                .map_or_else(|| "Machine".into(), |o| label(&o.item)),
+        }
+    }
+
+    fn endpoint(&self, end: Endpoint) -> String {
+        match end {
+            Endpoint::Base {
+                block: BlockKind::NetgameFlags,
+                index,
+            } => self.linkable(Linkable::Teleporter(index)),
+            Endpoint::Base { index, .. } => format!("Machine {index}"),
+            Endpoint::Added(id) => self.linkable(Linkable::Object(id)),
+        }
+    }
+
+    /// The Links tool's target line: what is aimed at, or the link in hand.
+    fn link_target(&self) -> String {
+        let aimed = self
+            .tool
+            .aimed_link
+            .filter(|&t| Some(t) != self.tool.link_from);
+        match (self.tool.link_from, aimed) {
+            (Some(from), Some(to)) => format!("{} to {}", self.linkable(from), self.linkable(to)),
+            (Some(from), None) => format!("From {}", self.linkable(from)),
+            (None, Some(thing)) => self.linkable(thing),
+            (None, None) => String::new(),
+        }
+    }
+
+    fn link_rows(&self, active: &ActiveLink) -> Vec<(String, String)> {
+        let [from, to] = active.link.endpoints();
+        let mut rows = vec![
+            ("From".to_string(), self.endpoint(from)),
+            ("To".to_string(), self.endpoint(to)),
+        ];
+        rows.push(match active.link {
+            DocLink::Teleporter { channel, .. } => ("Channel".into(), channel.to_string()),
+            DocLink::Device { .. } => ("Device group".into(), "Rebuild map to apply".into()),
+        });
+        rows
+    }
+
     fn hud(&self) -> Hud {
+        if self.tool.links {
+            let mode = if self.tool.link_from.is_some() {
+                Mode::Linking
+            } else if self.tool.aimed_link.is_some() {
+                Mode::Aimed
+            } else {
+                Mode::Idle
+            };
+            return Hud {
+                mode,
+                links: true,
+                target: self.link_target(),
+                used: self.session.objects().len(),
+                limit: self.session.budget(),
+                rebuild: self.session.pending_rebuild(),
+                notice: self.notice.as_ref().map(|(text, _)| text.clone()),
+            };
+        }
         let mode = if self.tool.placing.is_some() {
             Mode::Placing
         } else if self.tool.held.is_some() {
@@ -136,7 +260,9 @@ impl Editor {
                 .map_or_else(String::new, |(item, _)| label(item)),
             used: self.session.objects().len(),
             limit: self.session.budget(),
+            rebuild: self.session.pending_rebuild(),
             notice: self.notice.as_ref().map(|(text, _)| text.clone()),
+            links: false,
         }
     }
 
@@ -320,6 +446,19 @@ impl Editor {
                     self.selected,
                 ))
             }
+            Properties if self.tool.links => {
+                let thing = self
+                    .tool
+                    .aimed_link
+                    .ok_or("Aim at a teleporter or machine.")?;
+                let active = self
+                    .session
+                    .links_of(thing)
+                    .pop()
+                    .ok_or("Not linked. Press A to start a link.")?;
+                self.dialog = Some(Dialogs::link(self.link_rows(&active)));
+                self.link_dialog = Some(active.id);
+            }
             Properties => {
                 let (item, frame) = self.target().ok_or("Aim at a Forge object.")?;
                 self.dialog = Some(Dialogs::properties(
@@ -349,6 +488,8 @@ impl Editor {
                     Place { item, frame } => s.place(w, tick, item, frame).map(|_| ()),
                     Move { id, frame } => s.move_object(w, tick, id, frame),
                     Delete { id } => s.delete(w, tick, id),
+                    Link { from, to } => s.link(w, tick, from, to).map(|_| ()),
+                    Unlink { link } => s.unlink(w, tick, link),
                     Undo => s.undo(w, tick),
                     Redo => s.redo(w, tick),
                     _ => unreachable!("dialog command routed above"),
@@ -362,6 +503,11 @@ impl Editor {
         match action {
             Action::None => return Ok(()),
             Action::Close => (),
+            Action::Unlink => {
+                let link = self.link_dialog.take().ok_or("The link is gone.")?;
+                self.dialog = None;
+                return self.command(tick, Command::Unlink { link });
+            }
             Action::Select(i) => {
                 self.selected = i;
                 self.tool.select(i);
@@ -453,6 +599,13 @@ fn groups(items: &[PaletteItem]) -> Vec<(String, String)> {
             (group, name)
         })
         .collect()
+}
+
+fn linkable_json(thing: Linkable) -> Value {
+    match thing {
+        Linkable::Teleporter(flag) => json!({"teleporter":flag}),
+        Linkable::Object(id) => json!({"object":id}),
+    }
 }
 
 fn label(item: &PaletteItem) -> String {

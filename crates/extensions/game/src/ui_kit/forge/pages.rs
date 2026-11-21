@@ -1,7 +1,7 @@
 //! Named preview states run the same dialog transitions as the shell.
 
 use super::dialogs::Effect;
-use super::{Dialogs, HUD, Hud, MENU, Mode, PALETTE, PROPERTIES};
+use super::{Dialogs, HUD, Hud, LINK, MENU, Mode, PALETTE, PROPERTIES};
 use crate::ui_kit::{
     input::Input,
     page::{Driven, Live, Page, focus_line},
@@ -11,13 +11,15 @@ use crate::ui_kit::{
 pub(super) fn sample_hud(mode: Mode) -> Hud {
     Hud {
         mode,
-        target: if mode == Mode::Idle {
-            String::new()
-        } else {
-            "Beacon".into()
+        links: mode == Mode::Linking,
+        target: match mode {
+            Mode::Idle => String::new(),
+            Mode::Linking => "Teleporter sender 2 to Teleporter receiver 5".into(),
+            _ => "Beacon".into(),
         },
         used: 12,
         limit: 80,
+        rebuild: 0,
         notice: None,
     }
 }
@@ -40,27 +42,52 @@ impl Page for HudPage {
     }
 
     fn states(&self) -> Vec<(String, Hud)> {
-        [Mode::Idle, Mode::Aimed, Mode::Placing, Mode::Holding]
-            .into_iter()
-            .flat_map(|mode| {
-                let name = format!("{mode:?}").to_lowercase();
-                let hud = sample_hud(mode);
-                [
-                    (name.clone(), hud.clone()),
-                    (
-                        format!("{name}-refused"),
-                        Hud {
-                            notice: Some("The object budget is full.".into()),
-                            ..hud
-                        },
-                    ),
-                ]
-            })
-            .collect()
+        let mut states: Vec<_> = [
+            Mode::Idle,
+            Mode::Aimed,
+            Mode::Placing,
+            Mode::Holding,
+            Mode::Linking,
+        ]
+        .into_iter()
+        .flat_map(|mode| {
+            let name = format!("{mode:?}").to_lowercase();
+            let hud = sample_hud(mode);
+            [
+                (name.clone(), hud.clone()),
+                (
+                    format!("{name}-refused"),
+                    Hud {
+                        notice: Some("The object budget is full.".into()),
+                        ..hud
+                    },
+                ),
+            ]
+        })
+        .collect();
+        for mode in [Mode::Idle, Mode::Aimed] {
+            let name = format!("links-{mode:?}").to_lowercase();
+            let hud = Hud {
+                links: true,
+                target: if mode == Mode::Aimed {
+                    "Teleporter receiver 5, channel 2".into()
+                } else {
+                    String::new()
+                },
+                ..sample_hud(mode)
+            };
+            states.push((name.clone(), hud.clone()));
+            states.push((format!("{name}-rebuild"), Hud { rebuild: 2, ..hud }));
+        }
+        states
     }
 
     fn summary(&self, s: &Hud) -> String {
-        format!("{:?}", s.mode)
+        if s.links {
+            format!("Links {:?}", s.mode)
+        } else {
+            format!("{:?}", s.mode)
+        }
     }
 }
 
@@ -69,6 +96,7 @@ pub(super) enum DialogPage {
     Palette,
     Properties,
     Menu,
+    Link,
 }
 
 impl Page for DialogPage {
@@ -138,6 +166,27 @@ impl Page for DialogPage {
                     ("no-saves".into(), load(Dialogs::menu(vec![]))),
                 ]
             }
+            Self::Link => {
+                let row = |label: &str, value: &str| (label.to_string(), value.to_string());
+                vec![
+                    (
+                        "teleporter".into(),
+                        Dialogs::link(vec![
+                            row("From", "Teleporter sender 2"),
+                            row("To", "Teleporter receiver 5"),
+                            row("Channel", "3"),
+                        ]),
+                    ),
+                    (
+                        "device".into(),
+                        Dialogs::link(vec![
+                            row("From", "Gate"),
+                            row("To", "Lift"),
+                            row("Device group", "Rebuild map to apply"),
+                        ]),
+                    ),
+                ]
+            }
         }
     }
 
@@ -153,6 +202,7 @@ pub(in crate::ui_kit) fn live(name: &str) -> Option<Box<dyn Live>> {
         MENU => DialogPage::Menu,
         PROPERTIES => DialogPage::Properties,
         PALETTE => DialogPage::Palette,
+        LINK => DialogPage::Link,
         _ => return None,
     };
     Some(Box::new(Driven::new(page)))

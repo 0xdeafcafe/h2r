@@ -8,7 +8,7 @@ use std::sync::Mutex;
 use anyhow::{Context, ensure};
 use bots::los::Walls;
 use engine::GuestMemory;
-use forge::{PaletteItem, Session};
+use forge::{PaletteItem, Session, Teleporter};
 use forge_doc::{BuilderVersions, ForgeDoc, Limits, MapRef, Sha256, TagKey, WorldBounds};
 use guest_layout::{
     game::{GameGlobals, MODE_MULTIPLAYER, cache_checksum},
@@ -215,6 +215,7 @@ fn decode(bytes: &[u8], loaded: &Loaded) -> anyhow::Result<Opened> {
             )
         })
         .unzip();
+    let teleporters = teleporters(&view, &root)?;
     let (bounds, walls) = geometry(&mut map, &view)?;
     let doc = ForgeDoc {
         format: forge_doc::FORMAT,
@@ -240,10 +241,50 @@ fn decode(bytes: &[u8], loaded: &Loaded) -> anyhow::Result<Opened> {
     };
     Ok(Opened {
         session: Session::new(doc, limits, palette, loaded.free_slots)
+            .and_then(|s| s.with_teleporters(teleporters))
             .map_err(anyhow::Error::msg)?,
         tags,
         walls,
     })
+}
+
+/// The scenario's teleporter flags for the Links tool: netgame flags of
+/// type 7 (sender) or 8 (receiver) at a finite position, with their
+/// identifier as the channel (docs/game/bots.md 3.2).
+fn teleporters(view: &TagView<'_>, root: &[u8]) -> anyhow::Result<Vec<Teleporter>> {
+    let def = scenario_layout::block(forge::BlockKind::NetgameFlags);
+    let at = |name: &str| {
+        def.field(name)
+            .map(|f| f.offset as usize)
+            .with_context(|| format!("netgame flags have no {name}"))
+    };
+    let (kind, identifier, position) = (at("type")?, at("identifier")?, at("position")?);
+    let mut out = Vec::new();
+    for (index, flag) in view
+        .block(root, def.offset as usize, def.stride as usize)?
+        .into_iter()
+        .enumerate()
+    {
+        let short = |o: usize| [flag[o], flag[o + 1]];
+        let sender = match u16::from_le_bytes(short(kind)) {
+            7 => true,
+            8 => false,
+            _ => continue,
+        };
+        let position: [f32; 3] = std::array::from_fn(|k| {
+            let o = position + 4 * k;
+            f32::from_le_bytes([flag[o], flag[o + 1], flag[o + 2], flag[o + 3]])
+        });
+        if position.iter().all(|v| v.is_finite()) {
+            out.push(Teleporter {
+                index: u32::try_from(index)?,
+                position,
+                sender,
+                channel: i16::from_le_bytes(short(identifier)),
+            });
+        }
+    }
+    Ok(out)
 }
 
 fn geometry<R: Read + Seek>(
