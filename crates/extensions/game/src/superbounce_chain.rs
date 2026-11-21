@@ -11,6 +11,11 @@
 //!
 //! It is not in a snapshot: after a state load or a Theater seek a chain
 //! in flight starts again at 1.
+//!
+//! Each award of a tick is recorded for the film and Live through
+//! [`record`]: a bounce as `Telemetry::superbounce`, a Bounced as
+//! `Telemetry::bounced`, on the console whose simulation is the game's,
+//! as the kills are (docs/game/superbounce.md, "Recording").
 
 use std::collections::{BTreeMap, VecDeque};
 
@@ -393,6 +398,57 @@ impl Medals {
     /// The chain of player `slot`.
     pub fn chain(&self, slot: u8) -> Option<&Chain> {
         self.chains.get(usize::from(slot))
+    }
+}
+
+// ---- the record ----
+
+/// Where the awards go for the film and Live: `live_telemetry::Telemetry`
+/// in the game.
+pub trait Recorder {
+    /// A bounce by the player in slot `player`, `chain` into its chain.
+    fn superbounce(&self, guest: &runtime::Guest, player: u32, chain: u32);
+    /// A Bounced of the player in slot `player`, ending a chain of
+    /// `chain` (0 if none).
+    fn bounced(&self, guest: &runtime::Guest, player: u32, chain: u32);
+}
+
+impl Recorder for live_telemetry::Telemetry {
+    fn superbounce(&self, guest: &runtime::Guest, player: u32, chain: u32) {
+        live_telemetry::Telemetry::superbounce(self, guest, player, chain);
+    }
+    fn bounced(&self, guest: &runtime::Guest, player: u32, chain: u32) {
+        live_telemetry::Telemetry::bounced(self, guest, player, chain);
+    }
+}
+
+/// Whether this console records the game, by the simulation world's mode
+/// (`coop_look::view::mode`): not a synchronous or a distributed client.
+/// A kill is recorded where the game's own damage code runs, which is that
+/// console; a client's mode would see its players' bounces from its own
+/// simulation and record them twice.
+pub fn records(world_mode: Option<u32>) -> bool {
+    use crate::firefight::runtime::{WORLD_DIST_CLIENT, WORLD_SYNC_CLIENT};
+    !matches!(world_mode, Some(WORLD_SYNC_CLIENT | WORLD_DIST_CLIENT))
+}
+
+/// Records `awards` (one tick's, from [`Medals::step`]) to `to`, when
+/// this console records the game ([`records`]): a Bounced as
+/// [`Recorder::bounced`], any other award as [`Recorder::superbounce`]
+/// at its chain's count, each for its player slot. Every bounce is one
+/// call; the film and Live work its medals out from the count.
+/// `superbounce.medal_test`'s awards are not stepped, so not recorded.
+pub fn record(to: &dyn Recorder, guest: &runtime::Guest, awards: &[Award]) {
+    if awards.is_empty() || !records(crate::coop_look::view::mode(guest)) {
+        return;
+    }
+    for a in awards {
+        let player = u32::from(a.slot);
+        if a.medals.contains(&Medal::Bounced) {
+            to.bounced(guest, player, a.chain);
+        } else if !a.medals.is_empty() {
+            to.superbounce(guest, player, a.chain);
+        }
     }
 }
 

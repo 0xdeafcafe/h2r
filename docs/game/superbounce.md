@@ -1399,6 +1399,12 @@ kill medals are worked out from kills.
   `crates/live/live-telemetry/src/hooks.rs`, which read the game tick and
   queue `Session::superbounce` and `Session::bounced`), on the console
   that records the game: the host, or the one console of a local game.
+  `superbounce_chain::record` makes the calls for each tick's awards,
+  from `superbounce_mode`'s tick with the `Telemetry` the boot passes to
+  `superbounce_mode::install`; it skips a console whose simulation
+  world is a synchronous or distributed client (`superbounce_chain::records`),
+  where the game's own damage code, and so its kills, do not run.
+  `superbounce.medal_test`'s awards are not recorded.
   Like a kill, neither is sent in a cinematic, after the end, or for a
   slot that is not in the match. A full outbox may drop them, as it drops
   kills. A guest's own HUD line comes from its own simulation of its

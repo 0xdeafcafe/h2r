@@ -921,12 +921,19 @@ fn on_tick(o: &hooks::Obs) {
         .filter(|p| p.tick.is_some())
         .filter_map(|p| Some((p.slot, p.user?)))
         .min_by_key(|(_, user)| *user);
-    let medals = {
+    let (awards, medals) = {
         let tick = live.tick.unwrap_or_else(|| TICKS.load(Ordering::Relaxed));
         let mut m = lock(&MEDALS);
-        m.step(tick, &players, &spots);
-        m.view()
+        let awards = m.step(tick, &players, &spots);
+        (awards, m.view())
     };
+    // The film and Live get each bounce and Bounced, as the kills.
+    if !awards.is_empty()
+        && let Some(t) = lock(&TELEMETRY).clone()
+    {
+        let guest = o.guest();
+        chain::record(&*t, &guest, &awards);
+    }
     *lock(&STATE) = State {
         active: true,
         word: live.word,
@@ -981,8 +988,16 @@ impl hooks::Feature for SuperbounceMode {
     }
 }
 
-/// Adds the feature to `registry`.
-pub fn install(registry: &mut hooks::Registry) -> anyhow::Result<()> {
+/// Live telemetry, which records the medals' events
+/// (`superbounce_chain::record`); `None` without Live.
+static TELEMETRY: Mutex<Option<Arc<live_telemetry::Telemetry>>> = Mutex::new(None);
+
+/// Adds the feature to `registry`, recording the bounces to `telemetry`.
+pub fn install(
+    registry: &mut hooks::Registry,
+    telemetry: Option<Arc<live_telemetry::Telemetry>>,
+) -> anyhow::Result<()> {
+    *lock(&TELEMETRY) = telemetry;
     registry
         .add(&SuperbounceMode)
         .map(|_| ())

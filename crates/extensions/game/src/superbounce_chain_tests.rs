@@ -333,3 +333,64 @@ fn the_test_award_is_a_real_bounces_and_recent_keeps_eight() {
     assert_eq!(m.recent().count(), RECENT);
     assert_eq!(m.recent().last().unwrap().tick, 29);
 }
+
+/// A recorder that keeps its calls.
+#[derive(Default)]
+struct Calls(std::cell::RefCell<Vec<(&'static str, u32, u32)>>);
+
+impl Recorder for Calls {
+    fn superbounce(&self, _: &runtime::Guest, player: u32, chain: u32) {
+        self.0.borrow_mut().push(("superbounce", player, chain));
+    }
+    fn bounced(&self, _: &runtime::Guest, player: u32, chain: u32) {
+        self.0.borrow_mut().push(("bounced", player, chain));
+    }
+}
+
+fn award_of(slot: u8, chain: u32, medals: Vec<Medal>) -> Award {
+    Award {
+        seq: 1,
+        slot,
+        user: None,
+        tick: 40,
+        chain,
+        medals,
+    }
+}
+
+/// Each bounce is one `superbounce` call at its count and each Bounced one
+/// `bounced` call with the chain it ended, for every player, bots
+/// included, on the console that records the game.
+#[test]
+fn every_award_is_recorded_once_by_its_kind() {
+    let calls = Calls::default();
+    // A guest with no simulation globals reads no world mode: a local
+    // game, which records.
+    let guest = runtime::Guest::new();
+    let awards = [
+        award_of(0, 1, bounce_medals(1).to_vec()),
+        award_of(3, 6, bounce_medals(6).to_vec()),
+        award_of(2, 4, vec![Bounced]),
+        award_of(5, 0, vec![Bounced]),
+    ];
+    record(&calls, &guest, &awards);
+    assert_eq!(
+        calls.0.into_inner(),
+        vec![
+            ("superbounce", 0, 1),
+            ("superbounce", 3, 6),
+            ("bounced", 2, 4),
+            ("bounced", 5, 0),
+        ]
+    );
+}
+
+/// The host and a local game record; a client of either kind does not.
+#[test]
+fn only_the_console_whose_simulation_is_the_games_records() {
+    use crate::firefight::runtime::{WORLD_DIST_CLIENT, WORLD_SYNC_CLIENT};
+    assert!(records(None));
+    assert!(records(Some(1)));
+    assert!(!records(Some(WORLD_SYNC_CLIENT)));
+    assert!(!records(Some(WORLD_DIST_CLIENT)));
+}
