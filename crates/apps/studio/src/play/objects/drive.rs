@@ -404,6 +404,13 @@ impl Play {
                         continue;
                     }
                     change.op = Op::Set { id, frame: applied };
+                    // The frame to follow may be the one whose reply was lost.
+                    if let Some(failure) = self.objects.failed.get(&key)
+                        && failure.blocks(change)
+                    {
+                        active_failures.insert(key);
+                        continue;
+                    }
                 }
                 if !final_move && let Some(last) = self.objects.last_move.get(&id) {
                     let due = *last + PUSH_EVERY;
