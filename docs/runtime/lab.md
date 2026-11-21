@@ -275,6 +275,15 @@ or is skipped, 1 when it fails or is stopped, and 3 when it is still
 going. `h2 lab stop <id>` stops a pending request or sends SIGTERM to
 the job's process group, then SIGKILL 5 s later.
 
+A lab game closes its window when its guest thread returns, whether at the
+`--frames` limit or on a crash, and the job ends when the process exits
+(`close_on_guest_exit`, `crates/apps/cli/src/play_cmd.rs`). As a backstop,
+the host watches the run log for the shell's `app: guest thread exited:`
+line. A game still running 60 s after that line gets the same SIGTERM and
+SIGKILL as `h2 lab stop`, and the job ends with the outcome the line gave: `done` for `Returned`, else `failed` with exit 1.
+A note in the job's metadata and log records the stop (`wait_game`,
+`crates/apps/cli/src/lab/host.rs`).
+
 `h2 lab runs` lists jobs with their name, state, exit, duration, commit, level
 and the frame stats report from the log: the last `frame stats:` line,
 the three worst frames and the `outcome:` line. `h2 lab fetch <id>` copies

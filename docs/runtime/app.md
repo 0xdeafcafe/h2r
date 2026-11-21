@@ -577,7 +577,10 @@ stays on the main thread.
   returning. The pacer resets on resume, so the paused time is not slept off.
 - **Guest exits** (returns, errors or panics): the outcome goes in the title
   and the window stays up with the last frame (`keep_open_on_guest_exit`),
-  or the window closes.
+  or the window closes. `h2 play` closes it for a run with a planned end
+  (`--slices`, `H2_BOOT_STOP_AT_PRESENT`) and for every lab job, so the
+  process exits by itself (`close_on_guest_exit` in
+  `crates/apps/cli/src/play_cmd.rs`).
 
 The title bar shows guest presents per second, frames shown per second
 (one decimal), and frames dropped, all over the last 5 seconds

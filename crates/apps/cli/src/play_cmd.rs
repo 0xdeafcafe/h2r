@@ -38,7 +38,10 @@ Opens a window and runs the recompiled game live (builds the dylib first when
 (docs/runtime/storage.md; $H2_DATA if set; saves live there), as for `h2 run`.
 --tier (or H2_TIER) as for `h2 run`: by default clang's module when current,
 else the Cranelift fast tier (built in seconds) with clang's build started in
-the background for the next start. --slices is unlimited by default.
+the background for the next start. --slices is unlimited by default. When
+the guest returns, the window stays up with the outcome in its title, except
+for a run with --slices or H2_BOOT_STOP_AT_PRESENT, or a lab job: those close
+it and exit.
 --film FILE records guest inputs and the simulation to a new .h2film file.
 --status prints the frame rates once a second and the slice count every
 1000 slices (the unit H2_BOOT_INPUT scripts in). --frame-stats (or
@@ -654,6 +657,11 @@ pub(crate) fn run_with_theater(
         config.title = crate::lab::proto::window_title(&id, &name, app::BuildInfo::baked().sha);
         config.status_in_title = false;
     }
+    config.keep_open_on_guest_exit = !close_on_guest_exit(
+        slices,
+        std::env::var("H2_BOOT_STOP_AT_PRESENT").ok().as_deref(),
+        std::env::var_os("H2_LAB_JOB_ID").is_some_and(|v| !v.is_empty()),
+    );
     live.check()?;
     if live.join.is_some()
         && (film_out.is_some() || std::env::var_os("H2_FILM_OUT").is_some_and(|p| !p.is_empty()))
@@ -1042,6 +1050,15 @@ const WATERMARK_WINDOW_NS: u64 = 2_000_000_000;
 /// The watermark is on unless `--no-watermark` or `H2_WATERMARK=0`.
 fn watermark_on(no_flag: bool, env: Option<&str>) -> bool {
     !no_flag && env != Some("0")
+}
+
+/// Whether the window closes when the guest thread returns, so the process
+/// exits by itself: a run with a planned end (`--slices`, or
+/// `H2_BOOT_STOP_AT_PRESENT` as boot reads it) and every lab job (nobody
+/// is watching its window; the lab waits for the process). Other runs keep
+/// the window up with the last frame and the outcome in the title.
+fn close_on_guest_exit(slices: u64, stop_at_present: Option<&str>, lab_job: bool) -> bool {
+    lab_job || slices != u64::MAX || stop_at_present.is_some_and(|v| v.parse::<u64>().is_ok())
 }
 
 /// The debug menu is on unless `H2_DEBUG_MENU=0`.
@@ -1509,6 +1526,19 @@ mod tests {
         assert!(debug_menu_on(None));
         assert!(debug_menu_on(Some("1")));
         assert!(!debug_menu_on(Some("0")));
+    }
+
+    #[test]
+    fn runs_with_a_planned_end_and_lab_jobs_close_when_the_guest_returns() {
+        // An open-ended run keeps its window up with the outcome.
+        assert!(!close_on_guest_exit(u64::MAX, None, false));
+        // boot ignores a value it can't parse, so the window stays too.
+        assert!(!close_on_guest_exit(u64::MAX, Some("lots"), false));
+        // `h2 lab run --frames N` sets H2_BOOT_STOP_AT_PRESENT=N.
+        assert!(close_on_guest_exit(u64::MAX, Some("2700"), false));
+        assert!(close_on_guest_exit(5000, None, false));
+        // A lab job without a limit (a run that crashes) still exits.
+        assert!(close_on_guest_exit(u64::MAX, None, true));
     }
 
     #[test]
