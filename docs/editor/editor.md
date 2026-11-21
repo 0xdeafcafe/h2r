@@ -1303,6 +1303,19 @@ field lit and edited bytes marked. **Data and resources** gives the tag's
 data and resources, with a bitmap preview. `tag.bytes` and `tag.reset`
 are the window's bytes and its reset (`tag_api::{bytes_of, reset}`).
 
+The fields' header (`tags::header_top`; `tag.view` returns its lines)
+is the kind and name (`Weapon  blaster`: the group's `title=`, else its
+code), the tag's path with the unsaved count (`objects\test\blaster ·
+1 unsaved change`, `fields::row::unsaved`: the changed fields, as the
+dots mark them), notes for a browsed map, a BSP and a shared map, how a
+change reaches the game for a tag edited here (`tags::link_lines`: `Changes
+are saved with the map.`; viewing, `Changes wait in Pending until you
+turn Edit on.`; with Edit on, `Changes are sent as you make them.` and
+what an unmarked field means), and why the tag is read-only. The datum,
+address, size and the layout's coverage are under a folded **Developer
+details**. Section rules read the embedded struct's `title=`
+(`fields::row::section_title`).
+
 `fields.rs` is the field panel, reusable by any tool:
 `fields::panel(ui, &app.tags, tag, path, &mut PanelState, &mut actions)`
 draws the element at `path` (per step, a block field's offset and the
@@ -1320,7 +1333,10 @@ and `UV` upper case; an unnamed field by its type and offset, `Value at
 (`play::tag_sync::Effect`). That chip shows only with a game connected
 on the open map (`fields::Link`, set by `PanelState::follow`), never on
 a read-only row, and for a field whose effect is not known only once it
-is changed. The tooltip gives the type in words, the description, the
+is changed. A changed field's chip is its state in the game instead
+(`fields::row::Sending`): `Waiting` while viewing, `Not sent` with a
+refusal or a mismatch (the reason in the tooltip), `Waiting for reload`,
+else `Sent` with when the game reads it (`Sent · Not known`). The tooltip gives the type in words, the description, the
 read-only reason, the effect sentence with a game connected, and the
 evidence. A read-only row always has a sentence: the tag's refusal,
 `Edited in Scene.` for the scenario's placement lists, `Set by the

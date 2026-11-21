@@ -75,6 +75,72 @@ pub struct Live {
     pub text: String,
 }
 
+/// What became of a changed field with a game connected.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Sending {
+    /// Edit is on and the game took it.
+    Sent,
+    /// Viewing: the change waits in Pending until Edit is turned on.
+    Waiting,
+    /// Sent, and the game reads it when the map reloads.
+    WaitingForReload,
+    /// The game refused it, or holds another value (`live` says which).
+    NotSent,
+}
+
+impl Sending {
+    /// The id in `tag.fields`.
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Sent => "sent",
+            Self::Waiting => "waiting",
+            Self::WaitingForReload => "waiting_for_reload",
+            Self::NotSent => "not_sent",
+        }
+    }
+
+    /// The row's chip: `Sent` with when the game reads it (`Sent · Not
+    /// known`), else the state in words.
+    pub fn chip(self, effect: Effect) -> &'static str {
+        match (self, effect) {
+            (Self::Sent, Effect::Now) => "Sent · Now",
+            (Self::Sent, Effect::NextUse) => "Sent · Next use",
+            (Self::Sent, Effect::NextSpawn) => "Sent · Next spawn",
+            (Self::Sent, Effect::Reload) => "Sent · After reload",
+            (Self::Sent, Effect::NotKnown) => "Sent · Not known",
+            (Self::Waiting, _) => "Waiting",
+            (Self::WaitingForReload, _) => "Waiting for reload",
+            (Self::NotSent, _) => "Not sent",
+        }
+    }
+}
+
+/// A changed field's [`Sending`]: none unless a game is connected and the
+/// field is changed and editable. `refused` is a mismatch or refusal mark
+/// on the field; `reloading` that the tag has a change waiting for a
+/// reload.
+pub fn sending(
+    link: Link,
+    edited: bool,
+    read_only: bool,
+    effect: Effect,
+    refused: bool,
+    reloading: bool,
+) -> Option<Sending> {
+    if !link.connected() || !edited || read_only {
+        return None;
+    }
+    Some(if refused {
+        Sending::NotSent
+    } else if link == Link::Viewing {
+        Sending::Waiting
+    } else if effect == Effect::Reload && reloading {
+        Sending::WaitingForReload
+    } else {
+        Sending::Sent
+    })
+}
+
 /// A list's elements.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct List {
@@ -100,9 +166,12 @@ pub struct Row<'a> {
     pub read_only: Option<&'static str>,
     pub effect: Effect,
     pub why: &'static str,
-    /// The chip at the row's right edge: only with a game connected, and
-    /// for a `not_known` field only once it is changed.
+    /// The chip at the row's right edge: only with a game connected; a
+    /// changed field's [`Sending`], else when a change takes effect (for a
+    /// `not_known` field, none).
     pub chip: Option<&'static str>,
+    /// A changed field's state in the connected game.
+    pub sending: Option<Sending>,
     pub live: Option<Live>,
     /// The `tag.set` path.
     pub path: String,
@@ -159,7 +228,6 @@ fn row<'a>(
     let scene = matches!(f.kind, Kind::Block(_)) && doc.scene_block(tag, a).is_some();
     let read_only = reason(&f.kind, scene, refusal);
     let (effect, why) = tag_sync::effect(doc, tag, a, f);
-    let shown = chip(cx.link, effect, edited, read_only.is_some());
     let live = cx
         .link
         .connected()
@@ -169,6 +237,18 @@ fn row<'a>(
             kind: issue.kind.name(),
             text: issue.text.clone(),
         });
+    let state = sending(
+        cx.link,
+        edited,
+        read_only.is_some(),
+        effect,
+        live.is_some(),
+        cx.issues.tag_waiting(tag),
+    );
+    let shown = match state {
+        Some(s) => Some(s.chip(effect)),
+        None => chip(cx.link, effect, edited, read_only.is_some()),
+    };
     let (list, summary) = match &f.kind {
         Kind::Block(child) => match doc.block(tag, a, child) {
             Some((count, address)) => {
@@ -211,6 +291,7 @@ fn row<'a>(
         effect,
         why,
         chip: shown,
+        sending: state,
         live,
         path: format!("{}{}", cx.prefix, f.name),
         summary,
@@ -411,6 +492,64 @@ pub fn reference_text(doc: &TagDoc, id: u32) -> String {
     }
 }
 
+/// Fields of a tag [`unsaved`] looks at, at most.
+const UNSAVED_BUDGET: usize = 20_000;
+
+/// How many of a tag's fields differ from the loaded file, list elements
+/// included: the header's `3 unsaved changes`. A list whose size or place
+/// changed counts once (its new elements are not in the file to compare).
+/// Zero when the tag is unchanged; none when the tag is too big to count.
+pub fn unsaved(doc: &TagDoc, tag: TagId) -> Option<usize> {
+    if !doc.is_changed(tag) {
+        return Some(0);
+    }
+    let (t, l) = (doc.tag(tag)?, doc.layout(tag)?);
+    let mut budget = UNSAVED_BUDGET;
+    changed_in(doc, tag, t.address, l, &mut budget)
+}
+
+fn changed_in(doc: &TagDoc, tag: TagId, at: u32, l: &Layout, budget: &mut usize) -> Option<usize> {
+    let mut n = 0;
+    for f in &l.fields {
+        *budget = budget.checked_sub(1)?;
+        let a = at + f.offset;
+        let w = f.kind.width();
+        if let (Some(now), Some(file)) = (doc.read(tag, a, w), doc.read_source(tag, a, w))
+            && now.as_slice() != file
+        {
+            n += 1;
+        }
+        if let Kind::Block(child) = &f.kind
+            && let Some((count, first)) = doc.block(tag, a, child)
+        {
+            for i in 0..count {
+                n += changed_in(doc, tag, first + i * child.size, child, budget)?;
+            }
+        }
+    }
+    Some(n)
+}
+
+/// `1 unsaved change`, `3 unsaved changes`; none for no change. A tag too
+/// big to count reads `Unsaved changes`.
+pub fn unsaved_words(n: Option<usize>) -> Option<String> {
+    match n {
+        Some(0) => None,
+        Some(1) => Some("1 unsaved change".to_owned()),
+        Some(n) => Some(format!("{n} unsaved changes")),
+        None => Some("Unsaved changes".to_owned()),
+    }
+}
+
+/// A section rule's words: the embedded struct's `title=`, else the last
+/// step of its path in words (`unit.obje` reads `Obje`).
+pub fn section_title(layout: &Layout, section: &str) -> String {
+    match layout.section_titles.get(section) {
+        Some(title) => title.clone(),
+        None => words(section.rsplit('.').next().unwrap_or(section)),
+    }
+}
+
 /// A list's size in words.
 pub fn items(count: u32, capacity: u32) -> String {
     let n = match count {
@@ -553,6 +692,7 @@ impl Row<'_> {
                 "why": self.why,
             },
             "chip": self.chip,
+            "sending": self.sending.map(Sending::id),
             "live": self.live.as_ref().map(|l| json!({"kind": l.kind, "text": l.text})),
             "path": self.path,
             "summary": self.summary,

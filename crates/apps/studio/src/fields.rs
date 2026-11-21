@@ -522,7 +522,7 @@ impl Cx<'_, '_> {
             if r.field.section != section {
                 section = r.field.section.clone();
                 if !section.is_empty() {
-                    ui.separator_with_text(&section);
+                    ui.separator_with_text(row::section_title(layout, &section));
                 }
             }
             self.draw_row(at, layout, r);
@@ -645,14 +645,18 @@ impl Cx<'_, '_> {
         }
         if let Some(chip) = r.chip {
             ui.same_line();
-            let tone = if r.effect == Effect::Reload {
+            let warn = r.effect == Effect::Reload || r.sending == Some(row::Sending::NotSent);
+            let tone = if warn {
                 LinkTone::Warn
             } else {
                 LinkTone::View
             };
             theme::link_badge(ui, tone, chip);
             if ui.is_item_hovered() {
-                ui.tooltip_text(format!("{} {}", r.effect.sentence(), r.why));
+                match &r.live {
+                    Some(live) => ui.tooltip_text(&live.text),
+                    None => ui.tooltip_text(format!("{} {}", r.effect.sentence(), r.why)),
+                }
             }
         }
         self.trailing = 0.0;

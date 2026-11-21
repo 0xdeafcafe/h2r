@@ -32,6 +32,9 @@ pub struct TagsUi {
     pub panel: PanelState,
     /// The navigation's field last focused in the panel.
     focus: Option<(TagId, String)>,
+    /// The header's lines drawn last frame, without icons (`tag.view`'s
+    /// `header`, for tests).
+    pub header: Vec<String>,
     /// By group or by path.
     pub arrange: Arrange,
     /// Export the tags the selected one references too.
@@ -533,7 +536,9 @@ pub fn fields(
         return;
     };
     let Some(t) = doc.tag(id) else { return };
-    for line in header_top(app, t) {
+    let lines = header_top(app, t);
+    st.header = lines.iter().map(|l| l.text.clone()).collect();
+    for line in lines {
         let text = match line.icon {
             Some(glyph) => format!("{glyph} {}", line.text),
             None => line.text,
@@ -558,7 +563,22 @@ pub fn fields(
     }
     io_bar(ui, app, st, t, dialogs, actions);
     st.panel.follow(app);
-    if let Some(line) = coverage(doc, id) {
+    // The datum, the address and the layout's coverage are developer
+    // facts: folded, never on screen until asked for.
+    if let Some(_dev) = ui
+        .tree_node_config("tag-dev")
+        .label("Developer details")
+        .push()
+    {
+        ui.text_disabled(format!(
+            "Datum {:#010x}, at {:#010x}, {} bytes",
+            t.id.0, t.address, t.size
+        ));
+        if let Some(line) = coverage(doc, id) {
+            ui.text_disabled(line);
+        }
+    }
+    if coverage(doc, id).is_some() {
         let mut settings = st.panel.settings.clone();
         if ui.checkbox("Show unnamed fields", &mut settings.unnamed) {
             st.panel.set_settings(settings);
@@ -566,8 +586,6 @@ pub fn fields(
         if ui.is_item_hovered() {
             ui.set_item_tooltip("Open every element's Unnamed fields group");
         }
-        ui.same_line();
-        ui.text_disabled(line);
     } else {
         // No layout: the bytes only.
         if t.bsp.is_some() {
@@ -648,8 +666,10 @@ pub(crate) struct HeaderLine {
 }
 
 /// The header's lines over the selected tag's fields, before the export
-/// bar: its kind and name, its datum, address and size, where it is
-/// browsed, its BSP, its shared-map note and why it is read-only.
+/// bar: its kind and name, its path with the unsaved count, where it is
+/// browsed, its BSP, its shared-map note, how changes reach a game (for a
+/// tag edited here) and why it is read-only. No datum or address: those
+/// are under Developer details.
 pub(crate) fn header_top(app: &App, t: &TagEntry) -> Vec<HeaderLine> {
     let doc = app.shown_tags();
     let line = |tone, glyph, text| HeaderLine {
@@ -657,23 +677,13 @@ pub(crate) fn header_top(app: &App, t: &TagEntry) -> Vec<HeaderLine> {
         icon: glyph,
         text,
     };
+    let path = match fields::row::unsaved_words(fields::row::unsaved(doc, t.id)) {
+        Some(n) => format!("{} · {n}", t.name),
+        None => t.name.clone(),
+    };
     let mut out = vec![
-        line(
-            Tone::Title,
-            None,
-            format!("{}  {}", group_text(t.group), t.name),
-        ),
-        line(
-            Tone::Note,
-            None,
-            format!(
-                "{:#010x}  at {:#010x}, {} bytes{}",
-                t.id.0,
-                t.address,
-                t.size,
-                if doc.is_changed(t.id) { "  *edited" } else { "" }
-            ),
-        ),
+        line(Tone::Title, None, fields::row::reference_text(doc, t.id.0)),
+        line(Tone::Note, None, path),
     ];
     if let Some(m) = app.browsing() {
         out.push(line(
@@ -688,6 +698,11 @@ pub(crate) fn header_top(app: &App, t: &TagEntry) -> Vec<HeaderLine> {
     if let Some(note) = app.tag_shared_note(t.id) {
         out.push(line(Tone::Note, Some(icon::LAYERS), note));
     }
+    if app.browsing().is_none() && t.access == Access::Edit {
+        for text in link_lines(fields::Link::of(app)) {
+            out.push(line(Tone::Note, None, text.to_owned()));
+        }
+    }
     match &t.access {
         Access::Edit => {}
         Access::Read(why) => out.push(line(
@@ -700,8 +715,25 @@ pub(crate) fn header_top(app: &App, t: &TagEntry) -> Vec<HeaderLine> {
     out
 }
 
-/// The layout's line beside **Show unnamed fields**: how many of its
-/// fields have names. None without a layout.
+/// How a change reaches the game, by the game link: saved with the map,
+/// waiting in Pending, or sent as it is made (with what an unmarked field
+/// means).
+pub(crate) fn link_lines(link: fields::Link) -> &'static [&'static str] {
+    match link {
+        fields::Link::Off => &["Changes are saved with the map."],
+        fields::Link::Viewing => {
+            &["Game connected, viewing. Changes wait in Pending until you turn Edit on."]
+        }
+        fields::Link::Editing => &[
+            "Game connected. Changes are sent as you make them.",
+            "Fields with no mark are sent at once; when the game reads them is not known. \
+             Reload the map to be sure.",
+        ],
+    }
+}
+
+/// The layout's coverage, under the header's Developer details: how many
+/// of its fields have names. None without a layout.
 pub(crate) fn coverage(doc: &TagDoc, id: TagId) -> Option<String> {
     let layout = doc.layout(id)?;
     let c = layout.coverage();
@@ -717,13 +749,7 @@ pub(crate) fn header(app: &App, id: TagId) -> Vec<String> {
     let Some(t) = doc.tag(id) else {
         return Vec::new();
     };
-    let mut out: Vec<String> = header_top(app, t).into_iter().map(|l| l.text).collect();
-    if !matches!(t.access, Access::None(_))
-        && let Some(line) = coverage(doc, id)
-    {
-        out.push(line);
-    }
-    out
+    header_top(app, t).into_iter().map(|l| l.text).collect()
 }
 
 /// Export the tag (with what it references, with its resources) and

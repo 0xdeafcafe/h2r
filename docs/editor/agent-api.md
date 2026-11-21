@@ -229,9 +229,13 @@ Notes on some:
     (the file's value when edited, else null);
   - `effect: {id, text, why}` (an id of the effect table in
     [live-mirror.md](live-mirror.md), "How an edit applies"), always
-    given; `chip`, the effect
-    the row shows, null with no game connected; `live: {kind, text}`, a
-    changed field's `mismatch` or `refused` mark with a game connected;
+    given; `chip`, what the row shows at its right edge, null with no
+    game connected (when a change takes effect, or for a changed field
+    its state: `Waiting`, `Not sent`, `Waiting for reload`, `Sent · Not
+    known`); `sending`, a changed field's state with a game connected
+    (`sent`, `waiting`, `waiting_for_reload`, `not_sent`, else null);
+    `live: {kind, text}`, a changed field's `mismatch` or `refused` mark
+    with a game connected;
   - `path`, the `tag.set` path from the root by field names
     (`parts[1].value`, also for an offset path); `summary`, what the row
     shows on its line: `2 items` or `16 bytes` for a list or data, the
@@ -261,7 +265,10 @@ Notes on some:
   the root's `tag.fields` rows the panel shows, `unnamed_hidden` the
   unnamed rows in a folded group (`unnamed: true` adds them to `rows`),
   `field` the focused path, and `header` the header's lines as drawn,
-  without icons. The panel shows a tag's root and has no search yet, so
+  without icons: the kind and name, the path with the unsaved count, any
+  browsed, BSP, shared-map and read-only notes, and how a change reaches
+  the game (`Changes are saved with the map.` with no game). The datum
+  and address are not in it. The panel shows a tag's root and has no search yet, so
   `path` is always empty, `search` null and `changed` false, and those
   params are refused.
 - **Pick lists.** `tag.choices {tag, path, query?, kind?, limit?}`

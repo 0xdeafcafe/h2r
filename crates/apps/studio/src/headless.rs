@@ -1294,6 +1294,112 @@ mod tests {
         assert_eq!(speed["effect"]["id"], "not_known");
     }
 
+    /// The Tags header says how a change reaches the game in each link
+    /// state, counts unsaved changes and shows no datum or address; a
+    /// changed field reads `Waiting` while viewing and `Sent · Not known`
+    /// with Edit on. `tag.view`'s `header` is the drawn lines.
+    #[cfg(unix)]
+    #[test]
+    fn the_tags_header_says_how_changes_reach_the_game() {
+        use crate::app::tag_tests;
+        use crate::fields::Link;
+        use crate::play::Play;
+        use crate::play::testing::{Temp, fake};
+        use crate::script::{Button, Step};
+        use agent_proto::sim::SessionKind;
+        use studio_proto::method as m;
+        let Some((_turn, mut h)) = headless() else {
+            return;
+        };
+        let t = Temp::new("tag-header-link");
+        let (mut app, ..) = tag_tests::app(&t.0);
+        h.studio.play.play = Play::new();
+        h.frames(&mut app, 4).unwrap();
+        let click = |t: &str| Step::Click(t.into(), Button::Left);
+        h.step(&mut app, &click("weap  (1)")).unwrap();
+        h.frames(&mut app, 2).unwrap();
+        h.step(&mut app, &click("objects\\test\\blaster")).unwrap();
+        h.frames(&mut app, 2).unwrap();
+        let mut api = crate::api::Api::new();
+        let weap = format!("{:#010x}", tag_tests::weap_id().0);
+        let header = |api: &mut crate::api::Api, h: &Headless, app: &mut App| {
+            let view = api.call(app, m::TAG_VIEW, serde_json::json!({})).unwrap();
+            let drawn = h.studio.tags.header.clone();
+            assert_eq!(
+                view["header"],
+                serde_json::json!(drawn),
+                "tag.view's header is the drawn lines"
+            );
+            assert!(
+                drawn.iter().all(|l| !l.contains("0x")),
+                "no datum or address in the header: {drawn:?}"
+            );
+            drawn
+        };
+        let chip = |h: &Headless, path: &str| {
+            h.studio.tags.panel.drawn.iter().find(|d| d.path == path).and_then(|d| d.chip)
+        };
+
+        let set_speed = |app: &mut App, v: f32| {
+            app.dispatch(Action::Tag(crate::app::TagAction::Write(crate::app::TagWrite {
+                tag: tag_tests::weap_id(),
+                address: tag_tests::WEAP,
+                bytes: v.to_le_bytes().to_vec(),
+                label: "speed".into(),
+                merge: None,
+            })));
+            app.dispatch(Action::Tag(crate::app::TagAction::Seal));
+        };
+
+        let off = header(&mut api, &h, &mut app);
+        assert_eq!(off[..2], ["weap  blaster", "objects\\test\\blaster"]);
+        assert_eq!(off[2..], ["Changes are saved with the map."]);
+        set_speed(&mut app, 3.0);
+        h.frames(&mut app, 2).unwrap();
+        assert_eq!(
+            header(&mut api, &h, &mut app)[1],
+            "objects\\test\\blaster · 1 unsaved change"
+        );
+        assert_eq!(chip(&h, "speed"), None, "no chip with no game");
+        app.dispatch(Action::Undo);
+        h.frames(&mut app, 2).unwrap();
+        assert_eq!(header(&mut api, &h, &mut app)[1], "objects\\test\\blaster");
+
+        let game = fake::Game::start("tag-header-link", "example", SessionKind::Local);
+        fake::pair_for_view(&mut h.studio.play.play, &mut app, &game);
+        h.frames(&mut app, 3).unwrap();
+        assert_eq!(h.studio.tags.panel.link, Link::Viewing);
+        let viewing = header(&mut api, &h, &mut app);
+        assert_eq!(
+            viewing[2..],
+            ["Game connected, viewing. Changes wait in Pending until you turn Edit on."]
+        );
+        assert_eq!(chip(&h, "speed"), None, "an unchanged not_known field has no chip");
+        set_speed(&mut app, 3.0);
+        h.frames(&mut app, 3).unwrap();
+        assert_eq!(chip(&h, "speed"), Some("Waiting"));
+
+        api.call(&mut app, m::PAIR_EDIT, serde_json::json!({"enabled": true}))
+            .unwrap();
+        fake::until(&mut h.studio.play.play, &mut app, "Edit on", |_, a| {
+            Link::of(a) == Link::Editing
+        });
+        h.frames(&mut app, 3).unwrap();
+        // A change made with Edit on is sent as it is made.
+        set_speed(&mut app, 4.0);
+        h.frames(&mut app, 3).unwrap();
+        let editing = header(&mut api, &h, &mut app);
+        assert_eq!(
+            editing[2..],
+            [
+                "Game connected. Changes are sent as you make them.",
+                "Fields with no mark are sent at once; when the game reads them is not known. \
+                 Reload the map to be sure.",
+            ]
+        );
+        assert_eq!(chip(&h, "speed"), Some("Sent · Not known"));
+    }
+
     /// Unnamed fields sit in a folded group under the named ones; focusing
     /// one (`tag.view field`) opens it, and so does changing one after the
     /// group was folded by hand. The drawn rows are `tag.view`'s.
