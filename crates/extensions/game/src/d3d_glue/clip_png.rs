@@ -104,11 +104,24 @@ pub(super) fn parse_size(raw: &str, max: u32) -> Result<(u32, u32), String> {
         })
 }
 
+/// The centered part of the source with the output's aspect ratio, as a
+/// normalized `[x, y, w, h]` rect. The ratio is one division of exact
+/// integer products, so crops that land on a representable fraction (the
+/// 6x view's center 2160 rows are 0.125 and 0.75) come out exactly.
 fn center_crop((src_w, src_h): (u32, u32), (dst_w, dst_h): (u32, u32)) -> [f32; 4] {
-    let ratio = (dst_w as f32 / dst_h as f32) / (src_w as f32 / src_h as f32);
-    let w = ratio.min(1.0);
-    let h = ratio.recip().min(1.0);
-    [(1.0 - w) / 2.0, (1.0 - h) / 2.0, w, h]
+    let wide = u64::from(dst_w) * u64::from(src_h);
+    let tall = u64::from(src_w) * u64::from(dst_h);
+    let (w, h) = if wide >= tall {
+        (1.0, tall as f64 / wide as f64)
+    } else {
+        (wide as f64 / tall as f64, 1.0)
+    };
+    [
+        ((1.0 - w) / 2.0) as f32,
+        ((1.0 - h) / 2.0) as f32,
+        w as f32,
+        h as f32,
+    ]
 }
 
 #[cfg(test)]
