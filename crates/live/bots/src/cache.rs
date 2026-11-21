@@ -3,7 +3,7 @@
 //! and the walls for line of sight. Derived from the disc, so never
 //! committed.
 
-use tags::collision::Bsp;
+use tags::{collision::Bsp, pathfinding::PathfindingData};
 
 use crate::los::Walls;
 use crate::nav::{Build, NavMesh};
@@ -116,22 +116,43 @@ pub fn build(bsp: &Bsp) -> Result<MapData, String> {
 }
 
 pub(crate) fn build_with(bsp: &Bsp, threads: crate::vis::Threads) -> Result<MapData, String> {
+    Ok(build_geometry(bsp, 0, 0, threads)?.1)
+}
+
+/// Generate the engine's pathfinding element alongside the bot mesh that
+/// uses its sector indices. The element carries the owning BSP's checksum
+/// and one reference per instanced-geometry placement.
+pub fn build_with_pathfinding(
+    bsp: &Bsp,
+    instances: usize,
+    checksum: u32,
+) -> Result<(PathfindingData, MapData), String> {
+    build_geometry(bsp, instances, checksum, crate::vis::Threads::foreground())
+}
+
+fn build_geometry(
+    bsp: &Bsp,
+    instances: usize,
+    checksum: u32,
+    threads: crate::vis::Threads,
+) -> Result<(PathfindingData, MapData), String> {
     let mut tris = Vec::with_capacity(bsp.surfaces.len());
     let pf = pathfind::generate::generate_with_surfaces(
         bsp,
-        0,
-        0,
+        instances,
+        checksum,
         &pathfind::generate::Options::default(),
         |ring| Walls::fan_polygon(ring.iter().map(|&(_, v)| bsp.vertices[v].point), &mut tris),
     )
     .map_err(|e| e.to_string())?;
     let walls = Walls::new(tris);
     let nav = NavMesh::from_collision(&pf, &Build::default(), &walls, threads);
-    Ok(MapData {
+    let data = MapData {
         nav,
         walls,
         places: Default::default(),
-    })
+    };
+    Ok((pf, data))
 }
 
 impl MapData {

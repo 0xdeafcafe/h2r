@@ -42,7 +42,12 @@ fn every_built_in_recipe_parses_and_keeps_the_rules() {
     for (r, (name, _)) in all.iter().zip(BUILT_IN) {
         assert_eq!(r.name, *name, "a built-in's file name is its name");
         assert_eq!(r.package_dir(), format!("test-{name}"));
-        assert!(!r.place.is_empty(), "{name} places something");
+        if *name == "firefight-probe" {
+            assert_eq!(r.builder, Builder::FirefightProbe);
+        } else {
+            assert_eq!(r.builder, Builder::Placements);
+            assert!(!r.place.is_empty(), "{name} places something");
+        }
         if r.fidelity == Fidelity::Approximate {
             assert!(r.note.is_some(), "{name} says what it leaves out");
         }
@@ -54,6 +59,15 @@ fn every_built_in_recipe_parses_and_keeps_the_rules() {
     assert_eq!(built_in_named("spawn-grid").unwrap().name, "spawn-grid");
     let e = built_in_named("nope").unwrap_err().to_string();
     assert!(e.contains("spawn-grid"), "{e}");
+}
+
+#[test]
+fn the_firefight_probe_moves_to_another_base_and_rejects_placement_edits() {
+    let mut r = built_in_named("firefight-probe").unwrap().on_base("lockout").unwrap();
+    assert_eq!(r.builder, Builder::FirefightProbe);
+    assert_eq!(r.package_dir(), "test-firefight-probe-lockout");
+    r.clear = Clear::All("all".into());
+    assert!(r.validate().unwrap_err().to_string().contains("placement edits"));
 }
 
 #[test]
@@ -306,8 +320,9 @@ fn a_built_package_resolves_to_the_rig() {
         sc.get(BlockKind::StartingLocations, 0, "position").unwrap(),
         Value::Vec3(b.placed[0].pos)
     );
-    // A second build into the same directory is refused; the caller
-    // removes the old one first.
     assert!(build_package(MapSource::file(&src), &r, &data).is_err());
+    let (_, replaced) =
+        build_package_with_replace(MapSource::file(&src), &r, &data, true).unwrap();
+    assert_eq!(replaced.id, saved.id);
     std::fs::remove_dir_all(&d).unwrap();
 }

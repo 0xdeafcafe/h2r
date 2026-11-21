@@ -35,8 +35,12 @@ tests use invented data, and the disc test is `#[ignore]`.
 | `sbsp+14` block, stride `40`, count 1 | Collision BSP: eight blocks (nodes, planes, leaves, 2D refs, 2D nodes, surfaces, edges, vertices) with the strides of [collision.md](collision.md) | V: each child block starts where the previous ends; `Bsp::validate` passes on every BSP |
 | `sbsp+c4` block, stride `74`, count 0 or 1 | Pathfinding data | V: the first child block starts `0x74` bytes after the element |
 
-The pathfinding data is inside the `sbsp` tag, not a separate resource.
-Multiplayer maps, `00a_introduction`, `mainmenu` and the shared caches
+The `sbsp` owns the pathfinding block. On retail maps the element and
+its arrays sit within the BSP payload. The [Firefight kit](../game/firefight.md)
+places its generated block in ordinary metadata and sets the BSP field to
+its address. `PathfindingData::read` resolves each array against the owning
+BSP and ordinary metadata, with a byte budget for each region.
+Retail multiplayer maps, `00a_introduction`, `mainmenu` and the shared caches
 have none (count 0) (V). So the engine runs without it, at least where no AI
 spawns.
 

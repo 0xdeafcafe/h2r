@@ -308,6 +308,12 @@ scenario's root block (character palette `178`, squad groups `158`, squads
 them into a map with `map::build::TagSet` and reads them back through
 `h2::ScenarioAi::read`: the result equals the plan.
 
+The [Firefight kit](../game/firefight.md) already has Halo 2 character
+datums. It calls `h2::ScenarioAi::blocks()` directly and installs the
+character palette, squads and zones from the returned fields.
+`h2::ScenarioAi::read_map` follows their addresses throughout the map's
+ordinary metadata, including new arrays outside a pinned scenario tag.
+
 | Halo 1 | Halo 2 |
 |---|---|
 | encounter | a squad group and a zone of the same name; team carried over (S: both games number teams default, player, human, covenant, flood, sentinel) |
