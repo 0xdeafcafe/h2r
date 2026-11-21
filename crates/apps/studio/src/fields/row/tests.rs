@@ -283,6 +283,7 @@ fn bare(f: &Field) -> Row<'_> {
         path: f.name.clone(),
         summary: None,
         list: None,
+        sending: None,
     }
 }
 
