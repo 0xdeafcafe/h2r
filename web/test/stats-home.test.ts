@@ -214,6 +214,17 @@ describe("the mock's summary", () => {
     expect(f.summary("1y", T0, pos)).toBeNull();
   });
 
+  test("an environmental kill earns credit but does not rank as a weapon", () => {
+    const f = new StatsFold();
+    f.apply(ev("g", "GameStarted", T0, { mode: "multiplayer", map: "arena", players: [] }));
+    for (const weapon of ["fall", "collision", "splatter", "guardians", "teleporter", "explosion", "frag_grenade"]) {
+      f.apply(ev("g", "PlayerKilled", T0 + 1000, { victim: 1, killer: 0, kind: "kill", weapon }));
+    }
+    const s = f.summary("7d", T0 + 2000, pos)!;
+    expect(s.totals.kills).toBe(7);
+    expect(s.weapons).toEqual([{ weapon: "frag_grenade", kills: 1 }]);
+  });
+
   test("the archive is a month of games, the same every time", () => {
     const accts = Array.from({ length: 8 }, (_, i) => ({ xuid: `00090000000000${String(i).padStart(2, "0")}`, gamertag: `P${i}` }));
     const a = archive(accts, T0), b = archive(accts, T0);

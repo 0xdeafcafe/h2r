@@ -9,8 +9,9 @@
 //!   `--reset` replaces the secret).
 //! - `account recover <gamertag> [--code C]` makes a key here and adds it
 //!   to the account with a current code, then keeps it in accounts.json.
-//! - `invite create|list|revoke` as the operator (`--data`) or, with
-//!   `--as`, as an admin account.
+//! - `invite create` uses the operator key (`--data`) or an account with
+//!   invite access (`--as`). The list is for admins and the operator.
+//!   Revoking an invite uses an account key (`--as`) with access to it.
 
 use std::io::{BufRead, Write};
 use std::path::Path;
@@ -213,7 +214,7 @@ impl Signer {
         let as_tag = args.take("--as")?;
         match (data, as_tag) {
             (Some(_), Some(_)) => {
-                bail!("--data (the operator) or --as (an admin account), not both")
+                bail!("--data (the operator) or --as (an account), not both")
             }
             (None, Some(tag)) => Ok(Signer::Admin(Box::new(pick_account(
                 client,
@@ -237,10 +238,10 @@ impl Signer {
         })
     }
 
-    /// A signed event on the invites stream (admin accounts only).
+    /// An event on the invites stream signed by an account.
     fn event(&self, client: &Client, kind: &str, data: Value) -> Result<String> {
         let Signer::Admin(a) = self else {
-            bail!("only an admin account signs invite events");
+            bail!("this event needs an account key");
         };
         let key = a.key_pair()?;
         let author = author_of(client, a);
@@ -344,7 +345,7 @@ pub(crate) fn invite_revoke(mut args: Args) -> Result<()> {
         anyhow::anyhow!("invite revoke takes the invite's jti (h2 live invite list)")
     })?;
     if matches!(signer, Signer::Operator(_)) {
-        bail!("revoking is signed by an admin account: pass --as <gamertag>");
+        bail!("revoking needs an account key: pass --as <gamertag>");
     }
     let token = signer.token(&client, lxm::INVITES_WRITE)?;
     let event = signer.event(&client, "InviteRevoked", json!({"jti": jti}))?;

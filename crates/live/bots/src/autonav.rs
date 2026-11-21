@@ -16,12 +16,13 @@
 //! finishes, saving its progress every [`crate::vis::SAVE_EVERY`] so a
 //! build cut short carries on next time; a map whose `.bots` is fresh but
 //! whose `.vis` is not gets only the grid built, and one whose `.vis` is
-//! current gets nothing. A map
-//! asked for with [`Handle::want`] (the map being loaded) goes to the front
+//! current gets nothing. [`Worker::shared_cache`] can restore completed
+//! nav and visibility builds to a new data directory. A map asked for
+//! with [`Handle::want`] (the map being loaded) goes to the front
 //! of the queue, scanned again so a map installed since boot is found.
 //! `h2 bots nav` runs the same worker once, in the foreground; the game
 //! runs it on a background thread (`boot::bots_nav_auto`), switched off by
-//! [`ENV`]` = 0`, with [`Worker::background`]: the grids then split across
+//! [`ENV`]` = 0`, with [`Worker::background`]: parallel build phases use
 //! [`background::workers`] threads below the game's priority.
 //!
 //! Maps no bot plays ([`map_use`]: the main menu and the shared resource
@@ -30,13 +31,21 @@
 use std::collections::{HashSet, VecDeque};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Instant;
+
+use content::{Hasher, Sha256};
 
 use crate::cache::{self, MapData, Stamp};
 
 mod pads;
+pub(crate) mod shared_cache;
 mod traversals;
+
+/// The user-level cache of completed builds. The worker still writes the
+/// game's copies to its data directory.
+pub use shared_cache::default_dir as shared_cache_dir;
 
 /// `H2_BOTS_NAV_AUTO`: `0` (or `off`, `false`, `no`) stops the game
 /// building nav meshes by itself. Unset or anything else: on.
@@ -199,17 +208,29 @@ pub fn status(dir: &Path, map: &str, fingerprint: u64) -> Status {
 
 /// Writes `bytes` to `path` through a temporary file in the same
 /// directory, synced and then renamed over `path`: a reader sees the old
-/// file or the new one whole, and a crash leaves at most a `.tmp` file,
-/// which the next write of that name replaces.
+/// file or the new one whole. Writers in the same process use separate
+/// temporary files, and a temporary file left after a crash is ignored.
 pub fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    static NEXT_TMP: AtomicU64 = AtomicU64::new(0);
     let dir = path.parent().unwrap_or(Path::new("."));
     let name = path
         .file_name()
         .ok_or_else(|| std::io::Error::other("no file name"))?
         .to_string_lossy();
-    let tmp = dir.join(format!(".{name}.{}.tmp", std::process::id()));
+    let (tmp, mut f) = loop {
+        let id = NEXT_TMP.fetch_add(1, Ordering::Relaxed);
+        let tmp = dir.join(format!(".{name}.{}.{id}.tmp", std::process::id()));
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp)
+        {
+            Ok(f) => break (tmp, f),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(e) => return Err(e),
+        }
+    };
     let result = (|| {
-        let mut f = std::fs::File::create(&tmp)?;
         f.write_all(bytes)?;
         f.sync_all()?;
         drop(f);
@@ -234,10 +255,22 @@ pub fn write_map(dir: &Path, map: &str, fingerprint: u64, bsps: &[MapData]) -> s
             write_atomic(&dir.join(crate::vis::file_name(map, k)), &v.to_bytes(stamp))?;
         }
     }
-    let mut written = Vec::with_capacity(bsps.len());
-    for (k, d) in order() {
+    write_bots(dir, map, bsps.iter().map(|d| d.to_bytes(stamp)))
+}
+
+fn write_bots(
+    dir: &Path,
+    map: &str,
+    mut blobs: impl Iterator<Item = impl AsRef<[u8]>>,
+) -> std::io::Result<Vec<PathBuf>> {
+    let Some(first) = blobs.next() else {
+        return Ok(Vec::new());
+    };
+    let mut written = Vec::new();
+    let rest = blobs.enumerate().map(|(k, bytes)| (k + 1, bytes));
+    for (k, bytes) in rest.chain(std::iter::once((0, first))) {
         let file = dir.join(cache::file_name(map, k));
-        write_atomic(&file, &d.to_bytes(stamp))?;
+        write_atomic(&file, bytes.as_ref())?;
         written.push(file);
     }
     Ok(written)
@@ -246,6 +279,13 @@ pub fn write_map(dir: &Path, map: &str, fingerprint: u64, bsps: &[MapData]) -> s
 /// Builds every structure BSP of a map: the scenario's BSP block
 /// (`+0x210`, 0x44 each, the `sbsp` at `+0x14`), each BSP's collision.
 pub fn build_map<R: Read + Seek>(map: &mut map::Map<R>) -> Result<Vec<MapData>, String> {
+    build_map_with(map, crate::vis::Threads::foreground())
+}
+
+fn build_map_with<R: Read + Seek>(
+    map: &mut map::Map<R>,
+    threads: crate::vis::Threads,
+) -> Result<Vec<MapData>, String> {
     use tags::geometry::TagView;
     let e = |e: &dyn std::fmt::Display| e.to_string();
     let scenario = map.scenario().ok_or("no scenario")?.clone();
@@ -284,9 +324,9 @@ pub fn build_map<R: Read + Seek>(map: &mut map::Map<R>) -> Result<Vec<MapData>, 
             .map_err(|x| e(&x))?;
         let at = coll.first().ok_or("a BSP has no collision")?.as_ptr() as usize - b.as_ptr() as usize;
         let bsp = tags::collision::Bsp::decode_structure(&b, loc.address, at).map_err(|x| e(&x))?;
-        let mut data = cache::build(&bsp)?;
+        let mut data = cache::build_with(&bsp, threads)?;
         placements.add_links(&mut data);
-        data.places = crate::places::Places::build(&data.nav, &data.walls, &starts);
+        data.places = crate::places::Places::build_with(&data.nav, &data.walls, &starts, threads);
         data.places.pads = pads
             .iter()
             .copied()
@@ -304,8 +344,17 @@ pub trait Source: Send {
     fn key(&self) -> &str;
     /// The map's first [`MAP_HEADER_LEN`] bytes.
     fn header(&mut self) -> Result<Vec<u8>, String>;
+    /// The full byte identity of the source opened by [`Self::header`],
+    /// if it can be reused across data directories.
+    fn cache_digest(&mut self) -> Option<Sha256> {
+        None
+    }
     /// Every structure BSP's data.
     fn build(&mut self) -> Result<Vec<MapData>, String>;
+    /// Build with the caller's thread budget and priority.
+    fn build_with(&mut self, _threads: crate::vis::Threads) -> Result<Vec<MapData>, String> {
+        self.build()
+    }
 }
 
 /// A readable, seekable map stream.
@@ -321,6 +370,7 @@ pub struct Region {
     open: Opener,
     base: u64,
     len: u64,
+    reader: Option<Box<dyn ReadSeek>>,
 }
 
 impl Region {
@@ -330,6 +380,7 @@ impl Region {
             open,
             base,
             len,
+            reader: None,
         }
     }
 
@@ -355,17 +406,49 @@ impl Source for Region {
     }
 
     fn header(&mut self) -> Result<Vec<u8>, String> {
+        self.reader = None;
+        if self.len < MAP_HEADER_LEN as u64 {
+            return Err("the map region has no complete header".into());
+        }
         let mut r = (self.open)().map_err(|e| e.to_string())?;
         r.seek(SeekFrom::Start(self.base)).map_err(|e| e.to_string())?;
         let mut h = vec![0u8; MAP_HEADER_LEN];
         r.read_exact(&mut h).map_err(|e| format!("reading the header: {e}"))?;
+        // Keep the opened source for both digest and build. Replacing a
+        // map's directory entry cannot change which bytes this job uses.
+        self.reader = Some(r);
         Ok(h)
     }
 
+    fn cache_digest(&mut self) -> Option<Sha256> {
+        let r = self.reader.as_mut()?;
+        r.seek(SeekFrom::Start(self.base)).ok()?;
+        let mut region = r.take(self.len);
+        let mut hash = Hasher::default();
+        let mut buffer = vec![0; 256 * 1024];
+        loop {
+            let n = match region.read(&mut buffer) {
+                Ok(0) => break,
+                Ok(n) => n,
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(_) => return None,
+            };
+            hash.update(&buffer[..n]);
+        }
+        (region.limit() == 0).then(|| hash.finish())
+    }
+
     fn build(&mut self) -> Result<Vec<MapData>, String> {
-        let r = (self.open)().map_err(|e| e.to_string())?;
+        self.build_with(crate::vis::Threads::foreground())
+    }
+
+    fn build_with(&mut self, threads: crate::vis::Threads) -> Result<Vec<MapData>, String> {
+        let r = match self.reader.take() {
+            Some(r) => r,
+            None => (self.open)().map_err(|e| e.to_string())?,
+        };
         let mut map = map::Map::from_region(r, self.base, self.len).map_err(|e| e.to_string())?;
-        build_map(&mut map)
+        build_map_with(&mut map, threads)
     }
 }
 
@@ -457,6 +540,7 @@ type Lookup = Box<dyn FnMut(&str) -> Option<Box<dyn Source>> + Send>;
 /// Builds the stale maps a scan finds; see the module docs.
 pub struct Worker {
     dir: PathBuf,
+    shared_cache: Option<PathBuf>,
     scan: Scan,
     lookup: Option<Lookup>,
     first: Option<String>,
@@ -480,6 +564,7 @@ impl Worker {
         (
             Worker {
                 dir,
+                shared_cache: None,
                 scan,
                 lookup: None,
                 first: None,
@@ -511,7 +596,14 @@ impl Worker {
         self
     }
 
-    /// Build even fresh maps (`h2 bots nav --force`).
+    /// Reuse finished nav and visibility builds across data directories.
+    /// Missing or inaccessible entries leave the local build path in use.
+    pub fn shared_cache(mut self, dir: Option<PathBuf>) -> Self {
+        self.shared_cache = dir;
+        self
+    }
+
+    /// Build even fresh maps and bypass the shared cache (`h2 bots nav --force`).
     pub fn force(mut self, force: bool) -> Self {
         self.force = force;
         self
@@ -523,7 +615,7 @@ impl Worker {
         self
     }
 
-    /// Builds the visibility grids as background work
+    /// Builds navigation and visibility as background work
     /// ([`crate::vis::Threads::background`]): the game's worker. Off, they
     /// take half the machine's threads at the default priority
     /// (`h2 bots nav`, which the user waits for).
@@ -602,7 +694,7 @@ impl Worker {
             if let Some((map, count)) = self.later.pop_front() {
                 match crate::vis::status(&self.dir, &map) {
                     crate::vis::Status::Fresh => {}
-                    why => self.grids(&map, why, &mut sum, count),
+                    why => self.grids(&map, why, &mut sum, count, None),
                 }
                 continue;
             }
@@ -648,16 +740,34 @@ impl Worker {
         }
         let status = status(&self.dir, &header.name, header.fingerprint);
         if !status.stale() && !self.force {
+            drop(src);
             match crate::vis::status(&self.dir, &header.name) {
                 crate::vis::Status::Fresh => sum.fresh += 1,
-                vis => self.grids(&header.name, vis, sum, true),
+                vis => self.grids(&header.name, vis, sum, true, None),
             }
             return;
         }
         let t = Instant::now();
+        let stamp = Stamp::now(header.fingerprint);
+        let digest = self.shared_dir().and_then(|_| src.cache_digest());
+        if let Some(bsps) = self.shared_dir().zip(digest).and_then(|(dir, key)| {
+            shared_cache::restore_nav(dir, key, &self.dir, &header.name, stamp)
+        }) {
+            drop(src);
+            (self.log)(&format!(
+                "bots: restored the nav mesh for {} from the shared cache in {:.1} s",
+                header.name,
+                t.elapsed().as_secs_f32()
+            ));
+            (self.on_built)(&header.name, &bsps[0].data);
+            sum.built.push(header.name.clone());
+            let why = crate::vis::status(&self.dir, &header.name);
+            self.grids(&header.name, why, sum, false, Some(bsps));
+            return;
+        }
         // The nav files first, on their own: the bots walk on the mesh
         // while its grids build, and a grid cut short keeps its progress.
-        let built = src.build().and_then(|bsps| {
+        let built = src.build_with(self.threads).and_then(|bsps| {
             write_map(&self.dir, &header.name, header.fingerprint, &bsps)
                 .map(|_| bsps)
                 .map_err(|e| format!("writing {}: {e}", self.dir.display()))
@@ -677,7 +787,10 @@ impl Worker {
                 ));
                 (self.on_built)(&header.name, d);
                 sum.built.push(header.name.clone());
-                self.grids(&header.name, crate::vis::Status::Missing, sum, false);
+                if let Some((dir, key)) = self.shared_dir().zip(digest) {
+                    shared_cache::save_nav(dir, key, stamp, &bsps);
+                }
+                self.grids(&header.name, crate::vis::Status::Missing, sum, false, None);
             }
             Err(e) => {
                 (self.log)(&format!("bots: nav mesh for {} not built: {e}", header.name));
@@ -688,6 +801,10 @@ impl Worker {
 }
 
 impl Worker {
+    fn shared_dir(&self) -> Option<&Path> {
+        self.shared_cache.as_deref().filter(|_| !self.force)
+    }
+
     /// Builds `map`'s visibility grids from its `.bots` files, whose grid
     /// is `why` stale, carrying on from saved progress
     /// ([`crate::vis::rebuild_resumable`]). A map asked for meanwhile
@@ -696,17 +813,37 @@ impl Worker {
     /// empty.
     /// `count`: the map goes in the summary when its grid is done (not
     /// when its nav mesh was just built and counted).
-    fn grids(&mut self, map: &str, why: crate::vis::Status, sum: &mut Summary, count: bool) {
+    fn grids(
+        &mut self,
+        map: &str,
+        why: crate::vis::Status,
+        sum: &mut Summary,
+        count: bool,
+        prepared: Option<Vec<crate::vis::GridInput>>,
+    ) {
         let t = Instant::now();
         let shared = Arc::clone(&self.shared);
         let stop = move || {
             let w = shared.wants.lock().unwrap_or_else(|e| e.into_inner());
             !w.names.is_empty() || w.stop
         };
-        match crate::vis::rebuild_resumable(&self.dir, map, self.threads, &stop) {
-            Ok(Some(d)) => {
+        let cache = self.shared_dir();
+        let result = match prepared {
+            Some(bsps) => {
+                crate::vis::rebuild_prepared(&self.dir, map, self.threads, &stop, cache, bsps)
+            }
+            None => crate::vis::rebuild_cached(&self.dir, map, self.threads, &stop, cache),
+        };
+        match result {
+            Ok(Some(done)) => {
+                let d = done.data;
+                let reuse = if done.restored == 0 {
+                    String::new()
+                } else {
+                    format!(" ({} BSPs restored from the shared cache)", done.restored)
+                };
                 (self.log)(&format!(
-                    "bots: built the visibility grid for {map} ({}): {} in {:.1} s",
+                    "bots: built the visibility grid for {map} ({}): {} in {:.1} s{reuse}",
                     why.why(),
                     d.walls.vis().map_or_else(|| "none".into(), |v| v.summary()),
                     t.elapsed().as_secs_f32()

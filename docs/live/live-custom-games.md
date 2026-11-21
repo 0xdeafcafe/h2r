@@ -32,6 +32,42 @@ Labels follow [live-boundary.md](live-boundary.md): **confirmed** means read
 statically in the retail code, **likely** means consistent with that code but
 not proven. Addresses are guest VAs in the retail 5849 image.
 
+## Join in Halo 2
+
+On the Live website, **Join in Halo 2** opens a joinable game in the
+installed player. A friend in a joinable lobby has the same action.
+The browser may ask permission to open Halo 2. If the player doesn't
+open, the page offers installation instructions.
+
+On macOS, install the desktop CLI from the checkout, then run
+`just mac-install iso=/path/to/halo2.iso`. The bundle uses the player's own
+disc and registers the `h2recomp` scheme with Launch Services.
+[CLI installation](../../README.md) · [Build recipes](../runtime/building.md)
+
+Clicking a link starts the app or delivers it to its open window. The CLI accepts
+the same URL on platforms that support `h2 play`.
+
+```sh
+h2 play /path/to/halo2.iso --join 'h2recomp://join?server=https%3A%2F%2Flive.forbes.red&session=8000000000000001'
+```
+
+The action host is `join`. The two query parameters are the URL-encoded
+HTTP(S) base of the Live service and its 16-character lowercase hex session
+ID. A link contains no account, token, invitation or host network address.
+Halo 2 uses the player's selected service. To join a different service,
+choose that service explicitly with `h2 play --live-server URL --join LINK`.
+
+Halo 2 asks for confirmation when macOS or the agent delivers a joinable link.
+An explicit CLI join skips the question only at an empty main menu. In a
+lobby, match or campaign the player confirms before leaving. When the player
+is signed in the question names the host. After confirmation Halo 2 checks
+admission again as the signed-in player and uses the accepted-invite path
+to enter the host's session. Friends-only sessions require a friendship
+with the host. An invite-only, full or closed session produces a failure
+reason. During play an unconfirmed failure goes to the log and agent status.
+Session links are available in Live player runs outside film recording and
+playback. The agent exposes the request and its outcome. [Game agent API](../runtime/agent-api.md#live-session-links)
+
 ## 1. How the System Link browser works
 
 **Discovery on a LAN (confirmed).**

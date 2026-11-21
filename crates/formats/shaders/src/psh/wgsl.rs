@@ -975,7 +975,8 @@ fn fs_main(v: XboxVaryings, @builtin(front_facing) front: bool) -> @location(0) 
     }
     if options.stipple {
         s.push_str(
-            r#"    let xy = vec2u(v.position.xy) & vec2u(31u);
+            r#"    // depth_range.zw holds the target's host pixels per guest pixel.
+    let xy = vec2u(v.position.xy / xps.depth_range.zw) & vec2u(31u);
     let y = 31u - xy.y;
     let row = xps.stipple[y / 4u][y % 4u];
     if ((row & (1u << (xy.x ^ 7u))) == 0u) { discard; }

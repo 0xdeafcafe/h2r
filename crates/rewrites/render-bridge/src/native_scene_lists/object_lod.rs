@@ -76,16 +76,15 @@ fn guest_record_argument(m: &dyn GuestMemory, esp: u32, factor: f32) -> Option<(
     (scaled.to_bits() != pixels.to_bits()).then_some((arg, scaled))
 }
 
-pub(super) fn install(b: &mut Builder, scale: &Scale) {
-    let model_scale = scale.clone();
+pub(super) fn install(b: &mut Builder, scale: ViewLodScale) {
     b.raw()
         .before(&points::MODEL_LOD, "scale model LOD radius", move |c| {
-            let factor = model_scale();
-            if factor == 1.0 || c.addr != points::MODEL_LOD.base {
+            if c.addr != points::MODEL_LOD.base {
                 return Ok(Flow::Continue);
             }
             let mem = c.ctx.runtime().memory();
-            if mem.u32(c.cpu.esp).ok() == Some(MODEL_LOD_RETURN)
+            let factor = scale.read(&*mem);
+            if factor != 1.0 && mem.u32(c.cpu.esp).ok() == Some(MODEL_LOD_RETURN)
                 && let Some(hlmt) = c.cpu.ecx.checked_sub(MODEL_DISTANCES)
             {
                 let lane = &mut c.cpu.xmm[4][..4];
@@ -96,17 +95,16 @@ pub(super) fn install(b: &mut Builder, scale: &Scale) {
         })
         .context_only();
 
-    let record_scale = scale.clone();
     b.raw()
         .before(
             &points::SCENE_RECORD_WRITER,
             "bound projected record size",
             move |c| {
-                let factor = record_scale();
-                if factor == 1.0 || c.addr != points::SCENE_RECORD_WRITER.base {
+                if c.addr != points::SCENE_RECORD_WRITER.base {
                     return Ok(Flow::Continue);
                 }
                 let mut mem = c.ctx.runtime().memory();
+                let factor = scale.read(&*mem);
                 if let Some((arg, scaled)) = guest_record_argument(&*mem, c.cpu.esp, factor) {
                     mem.write_bytes_from(c.addr, arg, &scaled.to_le_bytes(), 1)?;
                 }

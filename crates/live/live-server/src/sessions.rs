@@ -3,6 +3,8 @@ use crate::ConnectInfo;
 use crate::host_identity::{Publisher, SESSIONS_PUBLISH}; // dh-identity
 use crate::{
     app::{ApiError, Live, conflict, forbidden, invalid, not_found, now, sign_error, unauthorized},
+    content::CatalogState,
+    matchmaking::{hopper_requires_map_pack, map_pack_map, reported_map_pack},
     model::{State, nonce_key},
     store::{NewEvent, RecordedEvent},
 };
@@ -13,7 +15,8 @@ use axum::{
     response::Response,
 };
 use live_proto::{
-    Author, Page, lxm,
+    Author, Page, Xuid, lxm,
+    matchmaking::Assignment,
     session::{self, Endpoint, NewSession, Session},
     sign::{MAX_EVENT_SKEW_S, SignedEvent, parse_time},
 };
@@ -131,6 +134,7 @@ impl Live {
             }
             new.hopper_id = Some(lease.assignment.hopper);
             new.flags = if lease.ranked { "ranked" } else { "hopper" }.into();
+            self.check_assigned_map(&new, &lease.assignment)?;
             Some(lease.assignment.clone())
         } else {
             None
@@ -219,6 +223,13 @@ impl Live {
         Ok(item)
     }
 
+    fn check_assigned_map(&self, ad: &NewSession, assignment: &Assignment) -> Result<(), ApiError> {
+        if !assignment.has_map_pack && advertises_pack_map(ad, &self.catalog.read()) {
+            return Err(forbidden("the assigned roster needs the Multiplayer Map Pack"));
+        }
+        Ok(())
+    }
+
     pub async fn append_session_events(
         &self,
         bearer: Option<&str>,
@@ -298,6 +309,9 @@ impl Live {
             if matches!(b.kind.as_str(), session::JOINED | session::LEFT) {
                 let p: session::Player = serde_json::from_value(b.data.clone())
                     .map_err(|_| invalid("invalid player"))?;
+                if b.kind == session::JOINED && !pack_assignment_allows(&item, p.xuid) {
+                    return Err(forbidden("player has no seat on this Map Pack assignment"));
+                }
                 let known = {
                     let m = self.model.read();
                     let eligible = grant.as_ref().is_none_or(|host| {
@@ -329,6 +343,11 @@ impl Live {
                 return Err(invalid("SessionDeleted must be last"));
             }
             let did = item.apply(&b.kind, &b.data, &b.at, at).map_err(invalid)?;
+            if b.kind == session::UPDATED
+                && let Some(assignment) = &item.matchmaking
+            {
+                self.check_assigned_map(&item.advertisement, assignment)?;
+            }
             if let Some(host) = &grant
                 && b.kind == session::UPDATED
             {
@@ -424,12 +443,24 @@ impl Live {
     /// as [`Live::read_caller`] does); the operator and admin accounts are
     /// [`Viewer::Admin`].
     pub fn read_viewer(&self, bearer: Option<&str>) -> Result<Viewer, ApiError> {
+        self.read_viewer_account(bearer).map(|(viewer, _)| viewer)
+    }
+
+    /// Keeps the account identity even when an admin can also read private game reports.
+    pub(crate) fn read_viewer_account(
+        &self,
+        bearer: Option<&str>,
+    ) -> Result<(Viewer, Option<live_proto::Xuid>), ApiError> {
         if bearer.is_none() {
             self.authorize_read(None)?;
-            return Ok(Viewer::Anonymous);
+            return Ok((Viewer::Anonymous, None));
         }
         let author = self.authenticate(bearer, lxm::READ)?;
-        Ok(self.viewer_of(&author))
+        let account = match &author {
+            Author::Account { xuid, .. } => Some(*xuid),
+            Author::Server(_) => None,
+        };
+        Ok((self.viewer_of(&author), account))
     }
 
     /// The reader behind a `read` token sent on a stream, and the token's
@@ -496,6 +527,9 @@ impl Live {
 /// follow its current visibility with [`finished_shows_to`]'s rule (who was
 /// in it counts). Only admins and the operator read host lifecycle and Theater events.
 pub fn event_shows_to(s: &State, stream: &str, viewer: Viewer) -> bool {
+    if stream == crate::games::SESSION_LINKS {
+        return viewer == Viewer::Operator;
+    }
     if viewer.is_admin() {
         return true;
     }
@@ -1005,6 +1039,26 @@ pub(crate) async fn list(
         .map(|s| serde_json::from_str(s))
         .transpose()
         .map_err(|_| invalid("invalid optimatch query"))?;
+    let mut hide_pack_sessions = false;
+    if let Some(query) = optimatch
+        && let Ok(hopper) = u32::try_from(query.hopper)
+        && hopper < live_proto::hopper::HOPPERS as u32
+    {
+        if let Some(xuid) = viewer {
+            let report = q.get("optimatch").and_then(|json| reported_map_pack(json.as_bytes()));
+            live.matchmaking.lock().unwrap().report_map_pack(xuid, report, now());
+        }
+        // Legacy search has one capability for the requesting console.
+        // A party can include other consoles whose maps it cannot attest.
+        hide_pack_sessions = viewer.is_none() || !query.has_map_pack || query.party != Some(1);
+        if hide_pack_sessions && hopper_requires_map_pack(&live, hopper).await? {
+            return Ok(crate::http::json(
+                StatusCode::OK,
+                &Page::<Session> { items: Vec::new(), next: None, position: live.position() },
+            ));
+        }
+    }
+    let catalog = hide_pack_sessions.then(|| live.catalog.read());
     let state = live.model.read();
     let listed = state.sessions.values().filter(|s| {
         s.session_id.as_str() > after
@@ -1028,7 +1082,12 @@ pub(crate) async fn list(
         // Ordered by match quality, so one page: no cursor.
         let items: Vec<_> = live_proto::optimatch::select(
             &query,
-            listed.filter(|s| s.matchmaking.is_none()),
+            listed.filter(|s| {
+                s.matchmaking.is_none()
+                    && catalog.as_deref().is_none_or(|catalog| {
+                        !advertises_pack_map(&s.advertisement, catalog)
+                    })
+            }),
             |s| &s.advertisement.attributes,
             limit,
         )
@@ -1060,9 +1119,32 @@ pub(crate) async fn list(
         },
     ))
 }
-fn assignment_endpoint_shows(s: &Session, viewer: Option<live_proto::Xuid>) -> bool {
+fn advertises_pack_map(ad: &NewSession, catalog: &CatalogState) -> bool {
+    ad.map.as_deref().is_some_and(map_pack_map)
+        || ad
+            .map_id
+            .as_ref()
+            .and_then(|id| catalog.maps.get(id))
+            .is_some_and(|package| {
+                let base = &package.doc.manifest.base;
+                !base.derived && map_pack_map(&base.map)
+            })
+}
+
+fn assignment_has_seat(assignment: &Assignment, xuid: Xuid) -> bool {
+    xuid == assignment.host || assignment.members.contains(&xuid)
+}
+
+fn assignment_endpoint_shows(s: &Session, viewer: Option<Xuid>) -> bool {
     s.matchmaking.as_ref().is_none_or(|assignment| {
-        viewer.is_some_and(|xuid| xuid == assignment.host || assignment.members.contains(&xuid))
+        viewer.is_some_and(|xuid| assignment_has_seat(assignment, xuid))
+    })
+}
+
+/// Only assigned seats can play in a lobby that may choose a Map Pack map.
+pub(crate) fn pack_assignment_allows(s: &Session, xuid: Xuid) -> bool {
+    s.matchmaking.as_ref().is_none_or(|assignment| {
+        !assignment.has_map_pack || assignment_has_seat(assignment, xuid)
     })
 }
 

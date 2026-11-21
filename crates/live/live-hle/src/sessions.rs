@@ -63,6 +63,8 @@ pub struct LocalSession {
     pub variant_ext: Option<live_proto::session::VariantExt>,
 }
 struct Record {
+    // A title may advertise no capacity at all, notably in campaign co-op.
+    needs_squad_slots: bool,
     session: LocalSession,
     key: [u8; 16],
 }
@@ -86,6 +88,9 @@ enum Intent {
     Put {
         session: Box<LocalSession>,
         key: [u8; 16],
+        /// The lease this publication claims. A late failure may arrive
+        /// after the title receives an assignment for a different group.
+        assignment: Option<String>,
     },
     Delete([u8; 8]),
     Search {
@@ -129,10 +134,13 @@ impl Op {
 #[derive(Default)]
 pub(crate) struct Sessions {
     records: BTreeMap<[u8; 8], Record>,
+    slot_update: Option<([u8; 8], SessionSlots, Pending)>,
     results: crate::qos_memory::QosMemory,
     tasks: BTreeMap<u32, Task>,
     /// The elected host gets an empty search, then publishes using this lease.
     matchmaking: Option<(live_proto::matchmaking::Assignment, std::time::Instant)>,
+    /// The queue's map-pack decision, tied to the published host session.
+    matchmaking_hosted: Option<([u8; 8], u32, bool)>,
     /// The selected queue result. Keep the lease route for FindFromID and
     /// the frame policy for this published session alone.
     match_join: Option<MatchJoin>,
@@ -241,6 +249,53 @@ fn hr<T>(value: u32) -> Result<T> {
     Err(Failure::Hr(value))
 }
 impl Sessions {
+    /// Backfill a zero-count advertisement from the actual hosted squad.
+    /// An explicit slot advertisement (including reserved seats) wins.
+    pub fn sync_squad_slots(
+        &mut self,
+        slots: SessionSlots,
+        service: Option<&Service>,
+        connection: Option<&Session>,
+    ) {
+        if let Some((id, sent, pending)) = &self.slot_update {
+            let Some(reply) = pending.take() else { return };
+            if reply.is_ok()
+                && let Some(record) = self.records.get_mut(id)
+                && record.needs_squad_slots
+            {
+                record.session.slots = *sent;
+            }
+            self.slot_update = None;
+        }
+        let Some(id) = self.current_id() else { return };
+        let record = &self.records[&id];
+        if !record.needs_squad_slots || record.session.slots == slots || !slots.validate() {
+            return;
+        }
+        // An explicit update queued by the title comes first. Sending guessed
+        // slots after it could override a newly reserved seat on the server.
+        if self.tasks.values().any(|task| {
+            matches!(
+                task, Task::Pending { intent: Intent::Put { session, .. }, .. } if session.id == id
+            )
+        }) {
+            return;
+        }
+        let (Some(service), Some(connection)) = (service, connection) else {
+            return;
+        };
+        let request = MatchRequest::Update {
+            id: live_proto::sign::hex(&id),
+            update: live_proto::session::Update {
+                slots: Some(slots),
+                ..Default::default()
+            },
+        };
+        if let Ok(pending) = service.match_request(connection, request) {
+            self.slot_update = Some((id, slots, pending));
+        }
+    }
+
     pub fn snapshot(&self) -> Vec<LocalSession> {
         self.records.values().map(|r| r.session.clone()).collect()
     }
@@ -573,13 +628,51 @@ impl Sessions {
     }
     pub fn clear(&mut self) {
         self.records.clear();
+        self.slot_update = None;
         self.looked_up.clear();
         self.tasks.clear();
         self.matchmaking = None;
+        self.matchmaking_hosted = None;
         self.match_join = None;
         self.results.clear();
     }
-    pub fn matchmaking_status(&self) -> Option<&str> {
+    fn pending_assignment(&self) -> Option<&live_proto::matchmaking::Assignment> {
+        use std::time::Duration;
+        let ttl = Duration::from_secs(live_proto::matchmaking::ASSIGNMENT_SECONDS as u64);
+        self.matchmaking.as_ref().filter(|(_, since)| since.elapsed() < ttl).map(|(a, _)| a)
+    }
+    fn clear_pending_assignment(&mut self, id: &str) -> bool {
+        if self.matchmaking.as_ref().is_some_and(|(held, _)| held.id == id) {
+            self.matchmaking = None;
+            true
+        } else {
+            false
+        }
+    }
+    fn failed_request(&mut self, intent: &Intent, error: u32) -> Task {
+        match intent {
+            Intent::Put { assignment: Some(id), .. } => {
+                self.clear_pending_assignment(id);
+            }
+            Intent::Search { find: Some(id), .. } => {
+                eprintln!(
+                    "live: join: find session {}: the server failed it ({error:#x})",
+                    live_proto::sign::hex(id)
+                );
+            }
+            _ => {}
+        }
+        Task::Failed(error)
+    }
+    fn hosted_rotation(&self) -> Option<(u32, bool)> {
+        let (session, hopper, pack) = self.matchmaking_hosted?;
+        (self.current == Some(session) && self.records.contains_key(&session)).then_some((hopper, pack))
+    }
+    pub fn allow_hopper_addons(&self, hopper: u32) -> bool {
+        self.pending_assignment().is_some_and(|a| a.hopper == hopper && a.has_map_pack)
+            || self.hosted_rotation() == Some((hopper, true))
+    }
+    pub fn matchmaking_status(&self, service: Option<&Service>) -> Option<&str> {
         self.tasks
             .values()
             .rev()
@@ -588,6 +681,16 @@ impl Sessions {
                 _ => None,
             })
             .flatten()
+            .or_else(|| {
+                let (hopper, pack) = self.pending_assignment().map(|a| (a.hopper, a.has_map_pack))
+                    .or_else(|| self.hosted_rotation())?;
+                let service = service?;
+                (!pack && service.addon_hopper(hopper)).then_some(if service.has_map_pack {
+                    crate::matchmaking::BASE_MAPS_PARTY
+                } else {
+                    crate::matchmaking::BASE_MAPS_LOCAL
+                })
+            })
     }
     pub fn frames_from_host(&self, session_id: &str) -> bool {
         self.match_join.as_ref().is_some_and(|joined| {
@@ -628,21 +731,13 @@ impl Sessions {
         let task = if let Task::Pending { request, intent } = task {
             match request.take() {
                 None => Task::Pending { request, intent },
-                Some(Err(e)) => {
-                    if let Intent::Search { find: Some(id), .. } = &intent {
-                        eprintln!(
-                            "live: join: find session {}: the server failed it ({e:#x})",
-                            live_proto::sign::hex(id)
-                        );
-                    }
-                    Task::Failed(e)
-                }
+                Some(Err(e)) => self.failed_request(&intent, e),
                 Some(Ok(Reply::Matches(rows))) => match self.complete(m, intent, rows) {
                     Ok(v) => v,
                     Err(Failure::Hr(e)) => Task::Failed(e),
                     Err(Failure::Fault(f)) => return Err(f),
                 },
-                _ => Task::Failed(INVALID_ARGUMENT),
+                _ => self.failed_request(&intent, INVALID_ARGUMENT),
             }
         } else {
             task
@@ -651,7 +746,7 @@ impl Sessions {
             use crate::matchmaking::Outcome;
             match search.poll() {
                 Ok(None) => {
-                    if search.status().is_some() {
+                    if search.host_status().is_some() {
                         self.matchmaking = None;
                     }
                     Task::Queue { search, intent }
@@ -718,6 +813,10 @@ impl Sessions {
         match self.tasks.remove(&h) {
             Some(Task::Search { array, .. }) => {
                 self.results.release(array);
+                true
+            }
+            Some(Task::Pending { intent: Intent::Put { assignment: Some(id), .. }, .. }) => {
+                self.clear_pending_assignment(&id);
                 true
             }
             Some(_) => true,
@@ -839,29 +938,30 @@ impl Sessions {
                 let h = storage.alloc(m, 8).ok_or(Failure::Hr(OUT_OF_MEMORY))?;
                 if let (Some(service), Some(connection)) = (service, connection) {
                     let data = advertisement(&session);
+                    let assignment = self
+                        .pending_assignment()
+                        .filter(|lease| {
+                            op == Op::Create
+                                && !data.is_coop()
+                                && live_proto::optimatch::playlist(&data.attributes)
+                                    == Some(lease.hopper)
+                        })
+                        .map(|lease| lease.id.clone());
                     let request = if op == Op::Create {
-                        let publish_window = std::time::Duration::from_secs(
-                            live_proto::matchmaking::ASSIGNMENT_SECONDS as u64,
-                        );
-                        let assignment = self
-                            .matchmaking
-                            .as_ref()
-                            .filter(|(lease, elected)| {
-                                elected.elapsed() < publish_window
-                                    && !data.is_coop()
-                                    && live_proto::optimatch::playlist(&data.attributes)
-                                        == Some(lease.hopper)
-                            })
-                            .map(|(lease, _)| lease.id.clone());
                         MatchRequest::Create {
                             session: data,
-                            assignment,
+                            assignment: assignment.clone(),
                         }
                     } else {
                         MatchRequest::Update {
                             id: live_proto::sign::hex(&id),
                             update: live_proto::session::Update {
-                                slots: Some(data.slots),
+                                // Repeated zero-count updates leave capacity with the
+                                // squad publisher. A pending capacity change may already
+                                // be on the wire ahead of this update.
+                                slots: (data.slots != SessionSlots::default()
+                                    || self.records.get(&id).is_none_or(|r| !r.needs_squad_slots))
+                                .then_some(data.slots),
                                 attributes: Some(data.attributes),
                                 // Only a change is sent, so a server that
                                 // predates visibility sees the same updates.
@@ -904,9 +1004,15 @@ impl Sessions {
                             },
                         }
                     };
-                    let pending = service
-                        .match_request(connection, request)
-                        .map_err(Failure::Hr)?;
+                    let pending = match service.match_request(connection, request) {
+                        Ok(pending) => pending,
+                        Err(e) => {
+                            if let Some(id) = &assignment {
+                                self.clear_pending_assignment(id);
+                            }
+                            return hr(e);
+                        }
+                    };
                     self.tasks.insert(
                         h,
                         Task::Pending {
@@ -914,6 +1020,7 @@ impl Sessions {
                             intent: Intent::Put {
                                 session: Box::new(session),
                                 key,
+                                assignment,
                             },
                         },
                     );
@@ -924,7 +1031,14 @@ impl Sessions {
                     if op == Op::Create {
                         self.advertised(id);
                     }
-                    self.records.insert(id, Record { session, key });
+                    self.records.insert(
+                        id,
+                        Record {
+                            needs_squad_slots: slots == SessionSlots::default(),
+                            session,
+                            key,
+                        },
+                    );
                     self.tasks.insert(h, Task::Session { id, key });
                 }
                 // All guest ranges were checked before submitting. Queue
@@ -985,16 +1099,23 @@ impl Sessions {
                         a[0], a[1]
                     );
                 }
-                // A clanker hopper (docs/game/bots.md §8.4): nobody to
-                // find. The run's searches answer with no sessions once its
-                // delay is over, and the game hosts.
-                let clanker = (a[0] == live_proto::optimatch::PROCEDURE)
+                // Procedure 1 is the retail stored procedure. Its positional
+                // arguments decode either to OptiMatch or to the custom browser.
+                let optimatch = (a[0] == live_proto::optimatch::PROCEDURE)
                     .then(|| {
                         let values: Vec<_> = params.iter().map(|v| v.value.clone()).collect();
                         live_proto::optimatch::Query::from_params(&values)
                     })
-                    .flatten()
-                    .and_then(|q| crate::clankermatch::clanker_search(ctx_clankers, q.hopper));
+                    .flatten();
+                if a[1] > 0 && optimatch.is_some_and(|query| {
+                    (0..live_proto::hopper::HOPPERS as i64).contains(&query.hopper)
+                }) {
+                    self.matchmaking = None;
+                    self.matchmaking_hosted = None;
+                }
+                // A clanker hopper (docs/game/bots.md §8.4) returns no sessions
+                // after its delay, and the game hosts.
+                let clanker = optimatch.and_then(|q| crate::clankermatch::clanker_search(ctx_clankers, q.hopper));
                 if let Some(hopper) = clanker {
                     let now = std::time::Instant::now();
                     let until = self.clanker_hold.answer_at(hopper, now, || {
@@ -1015,18 +1136,10 @@ impl Sessions {
                     return Ok(0);
                 }
                 if let (Some(service), Some(connection)) = (service, connection) {
-                    // Procedure 1 is the retail stored procedure: anonymous
-                    // parameters are positional, not attribute IDs. Its return
-                    // projection is the seven public title attributes. The
-                    // twelve-parameter shape is OptiMatch or the custom games
-                    // browser (live_proto::optimatch); the server filters it.
-                    // Other procedures' named filters round-trip.
-                    let optimatch = (a[0] == live_proto::optimatch::PROCEDURE)
-                        .then(|| {
-                            let values: Vec<_> = params.iter().map(|v| v.value.clone()).collect();
-                            live_proto::optimatch::Query::from_params(&values)
-                        })
-                        .flatten();
+                    let optimatch = optimatch.map(|mut query| {
+                        query.has_map_pack = service.has_map_pack;
+                        query
+                    });
                     if let Some(q) = &optimatch {
                         let line = optimatch_line(q);
                         if say_once_per(&mut self.said_search, &line, FIND_REPEAT) {
@@ -1037,11 +1150,13 @@ impl Sessions {
                         && let Some(query) = optimatch
                         && let Some(hopper) = crate::matchmaking::solo_hopper(query, users)
                         && let Some(connectivity) = crate::matchmaking::config()
+                            .or_else(|| service.addon_hopper(hopper).then(Default::default))
                     {
                         let h = storage.alloc(m, 8).ok_or(Failure::Hr(OUT_OF_MEMORY))?;
                         let ticket = live_proto::matchmaking::Ticket {
                             hopper,
                             port: u16::from_be_bytes([host[8], host[9]]),
+                            has_map_pack: service.has_map_pack,
                             dedicated: false,
                             connectivity,
                             samples: Vec::new(),
@@ -1175,18 +1290,20 @@ impl Sessions {
         rows: Vec<live_proto::session::Session>,
     ) -> Result<Task> {
         match intent {
-            Intent::Put { mut session, key } => {
+            Intent::Put { mut session, key, assignment } => {
+                let assignment = assignment.filter(|id| self.clear_pending_assignment(id));
                 let row = rows
                     .into_iter()
                     .next()
                     .ok_or(Failure::Hr(MATCH_INVALID_SESSION))?;
                 let id = wire_id(&row.session_id).ok_or(Failure::Hr(MATCH_INVALID_SESSION))?;
                 if let Some(lease) = &row.matchmaking
-                    && self.matchmaking.as_ref().is_some_and(|(held, _)| held.id == lease.id)
+                    && assignment.as_deref() == Some(lease.id.as_str())
                 {
-                    self.matchmaking = None;
+                    self.matchmaking_hosted = Some((id, lease.hopper, lease.has_map_pack));
                 }
                 session.id = id;
+                let needs_squad_slots = session.slots == SessionSlots::default();
                 session.slots = row.advertisement.slots;
                 session.attributes = row.advertisement.attributes;
                 debug("server advertise", &session);
@@ -1202,6 +1319,7 @@ impl Sessions {
                 self.records.insert(
                     id,
                     Record {
+                        needs_squad_slots,
                         session: *session,
                         key,
                     },
@@ -1210,6 +1328,9 @@ impl Sessions {
             }
             Intent::Delete(id) => {
                 self.records.remove(&id);
+                if self.matchmaking_hosted.is_some_and(|(session, _, _)| session == id) {
+                    self.matchmaking_hosted = None;
+                }
                 eprintln!("live: session {} deleted", live_proto::sign::hex(&id));
                 Ok(Task::Done)
             }
@@ -1654,6 +1775,61 @@ fn parse_result(m: &mut Guest, a: &[u32]) -> Result<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_picker_requires_a_live_pack_assignment_for_its_hopper() {
+        use std::time::{Duration, Instant};
+
+        let mut sessions = Sessions::default();
+        assert!(!sessions.allow_hopper_addons(4));
+        let mut lease: live_proto::matchmaking::Assignment = serde_json::from_value(serde_json::json!({
+            "id": "8000000000000001", "hopper": 4, "host": "0009000000000001",
+            "dedicated": false, "members": ["0009000000000001"], "rtt_ms": {},
+        })).unwrap();
+        sessions.matchmaking = Some((lease.clone(), Instant::now()));
+        assert!(!sessions.allow_hopper_addons(4), "a mixed assignment stays on the base maps");
+        lease.has_map_pack = true;
+        sessions.matchmaking = Some((lease.clone(), Instant::now()));
+        assert!(sessions.allow_hopper_addons(4));
+        assert!(!sessions.allow_hopper_addons(3));
+        let expired = Duration::from_secs(live_proto::matchmaking::ASSIGNMENT_SECONDS as u64 + 1);
+        sessions.matchmaking = Some((lease, Instant::now() - expired));
+        assert!(!sessions.allow_hopper_addons(4));
+    }
+
+    #[test]
+    fn failed_publication_revokes_only_the_lease_it_claimed() {
+        let mut sessions = Sessions::default();
+        let assignment: live_proto::matchmaking::Assignment = serde_json::from_value(serde_json::json!({
+            "id": "8000000000000002", "hopper": 4, "host": "0009000000000001",
+            "has_map_pack": true, "dedicated": false, "members": ["0009000000000001"],
+            "rtt_ms": {},
+        })).unwrap();
+        let id = assignment.id.clone();
+        sessions.matchmaking = Some((assignment, std::time::Instant::now()));
+        let put = |assignment: &str| Intent::Put {
+            session: Box::new(LocalSession {
+                id: [0; 8],
+                host_address: [0; 36],
+                host_users: Vec::new(),
+                slots: SessionSlots::default(),
+                attributes: BTreeMap::new(),
+                revision: 0,
+                visibility: Visibility::default(),
+                map_id: None,
+                skulls: None,
+                campaign: None,
+                ping_ms: None,
+                variant_ext: None,
+            }),
+            key: [0; 16],
+            assignment: Some(assignment.into()),
+        };
+        assert!(matches!(sessions.failed_request(&put("8000000000000001"), INVALID_USER), Task::Failed(INVALID_USER)));
+        assert!(sessions.allow_hopper_addons(4), "a newer assignment survives a late reply");
+        assert!(matches!(sessions.failed_request(&put(&id), INVALID_USER), Task::Failed(INVALID_USER)));
+        assert!(!sessions.allow_hopper_addons(4));
+    }
 
     #[test]
     fn a_ping_update_waits_for_a_real_change() {

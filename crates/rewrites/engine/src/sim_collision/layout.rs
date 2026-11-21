@@ -9,8 +9,12 @@ pub const BSP_INDEX: u32 = 0x0046_86c4;
 pub const STRUCTURE_BSP: u32 = 0x004e_033c;
 /// The active structure BSP tag.
 pub const ACTIVE_STRUCTURE: u32 = 0x004e_0348;
+/// Structure leaf block count, used to bound the decoded cluster table.
+pub const STRUCTURE_LEAF_COUNT: u32 = 0x2c;
 /// In it, the pointer to the leaves (8 bytes each, cluster `i16` at `+0`).
 pub const STRUCTURE_LEAVES: u32 = 0x30;
+/// Where the point-to-leaf call inside the location query returns.
+pub const LOCATION_AFTER_POINT: u32 = 0x0011_befb;
 /// Six rows of three `i16`: the `u` and `v` axes of each projection.
 pub const PROJECTION: u32 = 0x0044_0b94;
 /// The binary32 zero the matcher compares a normal against.
@@ -59,10 +63,13 @@ pub mod context {
     pub const SIZE: u32 = 0x28;
 }
 
-/// Bytes below the entry `esp` the vector test's frames can reach: 0x2c
-/// per recursion level to the kernel's depth limit, plus the wrapper's
-/// frame, the matcher and the ring test.
-pub const VECTOR_DEAD_BELOW: u32 = 0x3000;
+/// A near-child call enters 0x28 bytes below its parent. The deepest leaf
+/// uses another 0x30 to enter the matcher, 0x48 to call the ring test and
+/// 0x18 in that test. A depth beyond this limit declines before commit.
+pub const CONTEXT_DEAD_BELOW: u32 = (sim_collision::bsp::MAX_DEPTH - 1) * 0x28 + 0x90;
+/// The vector wrapper reserves its 0x28-byte context and calls the walker
+/// with four words and a return address below it.
+pub const VECTOR_DEAD_BELOW: u32 = 0x3c + CONTEXT_DEAD_BELOW;
 /// Bytes of stack arguments the vector-test entries pop (they also write
 /// into their own argument slots).
 pub const VECTOR_ARGS: u32 = 0x10;

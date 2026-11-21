@@ -1,38 +1,19 @@
-//! Invites made by admin accounts from the browser (docs/live/live-admin.md §5,
-//! docs/live/live-security.md §3).
+//! Server invites (docs/live/live-admin.md §5 and live-security.md §3).
 //!
-//! The operator mints invites with the server key (`h2 live invite
-//! create`, [`crate::Live::create_invite`]); nothing about those is logged.
-//! An admin account cannot hold the server key, so it asks the server to
-//! mint one with a request it signs itself:
+//! The operator can mint invites directly. An admin or an account with an
+//! invite grant sends an `invites.write` token and an [`CREATED`] event
+//! on the [`STREAM`] stream signed by the account. The server checks its
+//! current permission, rate and cap, then records the event before
+//! returning the code.
 //!
-//! - an `invites.write` token, self-issued by the admin's account key, and
-//! - as the body, an [`CREATED`] event on the [`STREAM`] stream, signed by
-//!   the same key: `{"jti": <its id>, "exp": <unix seconds>}`.
+//! Generated codes come from the invite's id and a server-only key. A
+//! custom code is sent beside the event and logged only as a MAC in a
+//! server-signed [`CODE_SET`] event. The list can show generated codes for
+//! open invites. Older server-signed JWS codes also redeem.
 //!
-//! The server checks the admin, the rate limit and the event like any
-//! signed write, appends the admin's JWS untouched (the audit trail names
-//! and is signed by whoever asked), and answers the invite: the same
-//! server-signed code the operator's command makes, with that `jti` and
-//! `exp`, so account creation verifies it exactly as before. Ed25519 is
-//! deterministic, so the same `jti` and `exp` always give the same code;
-//! [`list`] re-mints it for the invites still open.
-//!
-//! **Codes people type.** Besides that signed code, every invite the log
-//! knows has a short one: by default 25 characters in the old Xbox Live
-//! shape (`XXXXX-XXXXX-XXXXX-XXXXX-XXXXX`), derived from its `jti` with a
-//! key only the server has ([`Invites::generated`]), so it is not in the
-//! log and can be shown again; or one the admin picks, sent beside the
-//! event (`{"event": <jws>, "code": "..."}`), which the server logs only as
-//! a MAC (a server-signed [`CODE_SET`] `{jti, mac}`). Codes match ignoring
-//! case, spaces and dashes ([`live_proto::recovery::invite_code`]). The
-//! operator's invites (`h2 live invite create`) are logged the same way
-//! now, as server-signed [`CREATED`] events.
-//!
-//! [`REVOKED`] (`{"jti"}`) ends one. At redemption an invite the log knows
-//! must be open: not revoked, and its creator still an admin (revoking an
-//! admin kills the invites it made). Invites the log does not know (the
-//! operator's) are checked by their signature alone, as before.
+//! The server signs [`GRANTED`] and [`GRANT_REVOKED`] on the target's
+//! account stream. The projection closes open invites on admin revocation
+//! and when a non-admin loses its grant.
 
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
@@ -45,7 +26,7 @@ use axum::response::Response;
 use hmac::{Hmac, Mac};
 use live_proto::recovery::invite_code;
 use live_proto::sign::{Invite, MAX_EVENT_SKEW_S, SignedEvent, TYP_INVITE, parse_time};
-use live_proto::{Author, ErrorCode, Xuid, lxm, types};
+use live_proto::{Author, ErrorCode, Gamertag, InviteGrant, Xuid, lxm, streams, types};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use sha2::Sha256;
@@ -56,23 +37,30 @@ use crate::guard::RateLimiter;
 use crate::model::{invite_key, nonce_key};
 use crate::store::{NewEvent, RecordedEvent};
 
-/// The stream admin invite events go on.
+/// The stream invite events go on.
 pub const STREAM: &str = "invites";
-/// An admin made an invite: `{jti, exp}`, signed by the admin's key.
+/// An account or operator made an invite: `{jti, exp}`.
 pub const CREATED: &str = "InviteCreated";
-/// An admin ended an open invite: `{jti}`.
+/// An account or operator ended an open invite: `{jti}`.
 pub const REVOKED: &str = "InviteRevoked";
-/// The server set an invite's code to one the admin picked: `{jti, mac}`.
+/// The server recorded the MAC of a custom code: `{jti, mac}`.
 pub const CODE_SET: &str = "InviteCodeSet";
+/// The server granted or updated an account's explicit permission.
+pub const GRANTED: &str = "InviteGrantSet";
+/// The server ended an account's explicit permission.
+pub const GRANT_REVOKED: &str = "InviteGrantRevoked";
 /// The label of the invite-code key ([`crate::ServerIdentity::derive`]).
 pub const CODE_LABEL: &str = "h2live-invite-code-v1";
 /// The token method for admin-only reads (`GET /v1/invites`,
 /// `GET /v1/admin/status`).
 pub const LXM_ADMIN_READ: &str = "admin.read";
-/// The longest an admin's invite may last.
+/// The longest an account's invite may last.
 pub const MAX_DAYS: i64 = 30;
 /// Per author: one invite a minute on average, ten at once.
 pub const CREATE_RATE: (f64, u32) = (1.0 / 60.0, 10);
+/// Per explicitly granted non-admin: one invite a minute, three at once.
+pub const GRANTED_CREATE_RATE: (f64, u32) = (1.0 / 60.0, 3);
+const GRANT_REQUIRED: &str = "an admin must enable invite access for this account";
 
 /// One invite the log knows.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -86,7 +74,7 @@ pub struct Record {
     pub position: u64,
     pub revoked: bool,
     pub used_by: Option<Xuid>,
-    /// Its code is one the admin picked.
+    /// Its code was chosen by its creator.
     pub custom: bool,
 }
 
@@ -111,25 +99,29 @@ impl Record {
     }
 }
 
-/// The invites the log knows, projected in memory, plus the admin
-/// creation rate limit.
+/// Invite grants and records projected from the log, with per-author
+/// creation rate limits.
 pub struct Invites {
+    grants: RwLock<HashMap<Xuid, InviteGrant>>,
     by_jti: RwLock<HashMap<String, Record>>,
     /// MAC of a normalised code -> jti.
     by_code: RwLock<HashMap<String, String>>,
     code_key: [u8; 32],
     creates: RateLimiter,
-    /// Serializes the check-then-append of invite writes.
+    granted_creates: RateLimiter,
+    /// Serializes invite writes, grant changes and redemption.
     pub(crate) writes: tokio::sync::Mutex<()>,
 }
 
 impl Invites {
     pub fn new(code_key: [u8; 32]) -> Self {
         Invites {
+            grants: RwLock::default(),
             by_jti: RwLock::default(),
             by_code: RwLock::default(),
             code_key,
             creates: RateLimiter::new(CREATE_RATE.0, CREATE_RATE.1),
+            granted_creates: RateLimiter::new(GRANTED_CREATE_RATE.0, GRANTED_CREATE_RATE.1),
             writes: Default::default(),
         }
     }
@@ -163,11 +155,35 @@ impl Invites {
         self.by_jti.read().unwrap().get(jti).cloned()
     }
 
+    pub fn grant(&self, xuid: Xuid) -> Option<InviteGrant> {
+        self.grants.read().unwrap().get(&xuid).copied()
+    }
+
+    fn open_count(&self, by: &str, now: i64) -> usize {
+        self.by_jti
+            .read()
+            .unwrap()
+            .values()
+            .filter(|r| r.by == by && r.state(now) == "open")
+            .count()
+    }
+
     /// Every known invite, newest first.
     pub fn all(&self) -> Vec<Record> {
-        let mut v: Vec<Record> = self.by_jti.read().unwrap().values().cloned().collect();
-        v.sort_by_key(|r| std::cmp::Reverse(r.position));
-        v
+        self.list_matching(|_| true)
+    }
+
+    fn list_matching(&self, include: impl Fn(&Record) -> bool) -> Vec<Record> {
+        let mut records: Vec<_> = self
+            .by_jti
+            .read()
+            .unwrap()
+            .values()
+            .filter(|r| include(r))
+            .cloned()
+            .collect();
+        records.sort_by_key(|r| std::cmp::Reverse(r.position));
+        records
     }
 
     /// How many are in each state.
@@ -228,12 +244,15 @@ impl Subscriber for Invites {
                 let generated = self.mac(&self.generated(jti));
                 let mut by_code = self.by_code.write().unwrap();
                 by_code.remove(&generated);
-                by_code.entry(mac.to_string()).or_insert(jti.to_string());
+                by_code.insert(mac.to_string(), jti.to_string());
             }
             (STREAM, REVOKED, Some(jti)) => {
                 if let Some(r) = self.by_jti.write().unwrap().get_mut(jti) {
                     r.revoked = true;
                 }
+            }
+            (_, GRANTED | GRANT_REVOKED | crate::admin::ADMIN_REVOKED, _) => {
+                self.apply_permission_change(event);
             }
             (_, types::ACCOUNT_CREATED, _) => {
                 let (Some(jti), Some(xuid)) = (
@@ -254,9 +273,45 @@ impl Subscriber for Invites {
     }
 }
 
-/// Whether an invite with this `jti` (its signature already checked) may
-/// still be used: the log's invites must not be revoked and their creator
-/// must still be an admin. Unknown ones (the operator's) may.
+impl Invites {
+    fn apply_permission_change(&self, event: &RecordedEvent) {
+        let b = &event.body;
+        let Some(Author::Server(server)) = Author::parse(&b.author) else {
+            return;
+        };
+        let Some(xuid) = b.data["xuid"].as_str().and_then(|x| Xuid::parse(x).ok()) else {
+            return;
+        };
+        if b.stream != streams::account(xuid) {
+            return;
+        }
+        if b.kind == GRANTED {
+            if let Ok(open_cap) = serde_json::from_value(b.data["open_cap"].clone()) {
+                self.grants
+                    .write()
+                    .unwrap()
+                    .insert(xuid, InviteGrant { open_cap });
+            }
+        } else if let Some(at) = parse_time(&b.at) {
+            if b.kind == GRANT_REVOKED {
+                self.grants.write().unwrap().remove(&xuid);
+                if b.data["keep_open"].as_bool() == Some(true) {
+                    return;
+                }
+            }
+            let by = Author::Account { xuid, server }.to_string();
+            let at = at.unix_timestamp();
+            for r in self.by_jti.write().unwrap().values_mut() {
+                if r.by == by && r.state(at) == "open" {
+                    r.revoked = true;
+                }
+            }
+        }
+    }
+}
+
+/// Whether an invite with this `jti` may still be used. Known invites need
+/// a currently permitted creator. Legacy operator codes have no log record.
 pub fn check_redeemable(live: &Live, jti: &str) -> Result<(), ApiError> {
     let Some(r) = live.invites.get(jti) else {
         return Ok(());
@@ -266,14 +321,15 @@ pub fn check_redeemable(live: &Live, jti: &str) -> Result<(), ApiError> {
     }
     if let Some(xuid) = r.creator()
         && !live.admins.is_admin_xuid(xuid, &live.model.read())
+        && (live.invites.grant(xuid).is_none() || live.bans.read().in_force(xuid, now()).is_some())
     {
-        return Err(forbidden("invite: whoever made it is no longer an admin"));
+        return Err(forbidden("invite: its creator no longer has invite access"));
     }
     Ok(())
 }
 
-/// The redeemable invite a short code names: open (not used, revoked or
-/// expired) and its creator still an admin. Returns its `jti`.
+/// The open invite a short code names, with a permitted creator. Returns
+/// its `jti`.
 pub fn redeem_short(live: &Live, code: &str, now: i64) -> Result<String, ApiError> {
     let r = live
         .invites
@@ -372,7 +428,20 @@ async fn append(live: &Live, jws: &str, event: SignedEvent) -> Result<u64, ApiEr
     Ok(position)
 }
 
-/// `POST /v1/invites` with a signed [`CREATED`] event: an admin account
+fn permission(live: &Live, author: &Author) -> Result<(bool, Option<InviteGrant>), ApiError> {
+    let admin = live.admins.is_admin(author, &live.model.read());
+    let grant = match author {
+        Author::Account { xuid, .. } => live.invites.grant(*xuid),
+        Author::Server(_) => None,
+    };
+    if admin || grant.is_some() {
+        Ok((admin, grant))
+    } else {
+        Err(forbidden(GRANT_REQUIRED))
+    }
+}
+
+/// `POST /v1/invites` with a signed [`CREATED`] event: a permitted account
 /// mints an invite. Returns `{invite, jti, exp, position}`.
 pub async fn create(
     live: &Live,
@@ -380,8 +449,26 @@ pub async fn create(
     jws: &str,
     custom: Option<&str>,
 ) -> Result<Value, ApiError> {
-    let author = admin(live, bearer, lxm::INVITES_WRITE)?;
-    if !live.invites.creates.allow(&author.to_string()) {
+    let author = live.authenticate(bearer, lxm::INVITES_WRITE)?;
+    let _guard = live.invites.writes.lock().await;
+    let (admin, grant) = permission(live, &author)?;
+    let by = author.to_string();
+    let now = now();
+    if !admin
+        && let Some(cap) = grant.and_then(|g| g.open_cap)
+        && live.invites.open_count(&by, now) >= cap.get() as usize
+    {
+        return Err(ApiError::new(
+            ErrorCode::Conflict,
+            format!("open invite limit reached ({cap})"),
+        ));
+    }
+    let rate = if admin {
+        &live.invites.creates
+    } else {
+        &live.invites.granted_creates
+    };
+    if !rate.allow(&by) {
         return Err(ApiError::new(
             ErrorCode::RateLimited,
             "too many invites; try again in a minute",
@@ -393,14 +480,12 @@ pub async fn create(
         jti: String,
         exp: i64,
     }
-    let _guard = live.invites.writes.lock().await;
     let event = open_event(live, &author, jws, CREATED)?;
     let d: Data = serde_json::from_value(event.body.data.clone())
         .map_err(|e| invalid(format!("event data: {e}")))?;
     if !valid_jti(&d.jti) {
         return Err(invalid("jti is 16 to 64 of [A-Za-z0-9_-]"));
     }
-    let now = now();
     if d.exp <= now || d.exp > now + MAX_DAYS * 86_400 + MAX_EVENT_SKEW_S {
         return Err(invalid(format!(
             "exp is in the future, at most {MAX_DAYS} days"
@@ -493,22 +578,23 @@ pub async fn create_operator(
     Ok(reply(live, &jti, exp, custom, position))
 }
 
-/// `POST /v1/invites/{jti}/revoke` with a signed [`REVOKED`] event: an
-/// admin ends an open invite.
+/// `POST /v1/invites/{jti}/revoke` with a signed [`REVOKED`] event:
+/// admins end any open invite, and granted accounts end their own.
 pub async fn revoke(
     live: &Live,
     bearer: Option<&str>,
     jti: &str,
     jws: &str,
 ) -> Result<Value, ApiError> {
-    let author = admin(live, bearer, lxm::INVITES_WRITE)?;
+    let author = live.authenticate(bearer, lxm::INVITES_WRITE)?;
+    let _guard = live.invites.writes.lock().await;
+    let (admin, _) = permission(live, &author)?;
     live.rate_limit(&author, lxm::INVITES_WRITE)?;
     #[derive(Deserialize)]
     #[serde(deny_unknown_fields)]
     struct Data {
         jti: String,
     }
-    let _guard = live.invites.writes.lock().await;
     let event = open_event(live, &author, jws, REVOKED)?;
     let d: Data = serde_json::from_value(event.body.data.clone())
         .map_err(|e| invalid(format!("event data: {e}")))?;
@@ -519,6 +605,9 @@ pub async fn revoke(
         .invites
         .get(jti)
         .ok_or_else(|| not_found("no such invite"))?;
+    if !admin && r.by != author.to_string() {
+        return Err(not_found("no such invite"));
+    }
     if r.state(now()) != "open" {
         return Err(ApiError::new(
             ErrorCode::Conflict,
@@ -542,10 +631,22 @@ fn tag_of(live: &Live, xuid: Xuid) -> Option<String> {
 /// Open ones carry their code again.
 pub fn list(live: &Live, bearer: Option<&str>) -> Result<Value, ApiError> {
     admin(live, bearer, LXM_ADMIN_READ)?;
+    Ok(list_for(live, None))
+}
+
+fn list_mine(live: &Live, bearer: Option<&str>) -> Result<Value, ApiError> {
+    let author = live.authenticate(bearer, lxm::INVITES_READ)?;
+    permission(live, &author)?;
+    Ok(list_for(live, Some(&author.to_string())))
+}
+
+fn list_for(live: &Live, owner: Option<&str>) -> Value {
     let now = now();
-    let items: Vec<Value> = live
-        .invites
-        .all()
+    let records = match owner {
+        None => live.invites.all(),
+        Some(by) => live.invites.list_matching(|r| r.by == by && r.state(now) == "open"),
+    };
+    let items: Vec<Value> = records
         .into_iter()
         .map(|r| {
             let state = r.state(now);
@@ -572,7 +673,7 @@ pub fn list(live: &Live, bearer: Option<&str>) -> Result<Value, ApiError> {
             v
         })
         .collect();
-    Ok(json!({"items": items, "position": live.position()}))
+    json!({"items": items, "position": live.position()})
 }
 
 // HTTP handlers.
@@ -589,6 +690,67 @@ fn jws_text(body: Result<Bytes, BytesRejection>) -> Result<String, ApiError> {
 pub async fn get_invites(State(live): Shared, headers: HeaderMap) -> Result<Response, ApiError> {
     let v = list(&live, crate::http::bearer(&headers))?;
     Ok(crate::http::json(StatusCode::OK, &v))
+}
+
+pub async fn get_my_invites(State(live): Shared, headers: HeaderMap) -> Result<Response, ApiError> {
+    let v = list_mine(&live, crate::http::bearer(&headers))?;
+    Ok(crate::http::json(StatusCode::OK, &v))
+}
+
+async fn change_grant(
+    live: &Live,
+    author: Author,
+    tag: &str,
+    grant: Option<InviteGrant>,
+) -> Result<Response, ApiError> {
+    live.rate_limit(&author, lxm::INVITE_GRANTS_WRITE)?;
+    let _guard = live.invites.writes.lock().await;
+    if !live.admins.is_admin(&author, &live.model.read()) {
+        return Err(forbidden("this needs an admin"));
+    }
+    let tag = Gamertag::new(tag).map_err(|_| not_found("no such account"))?;
+    let xuid = crate::admin::account_xuid(live, &tag)?;
+    let mut data = json!({"xuid": xuid, "gamertag": tag, "by": author.to_string()});
+    let (kind, status) = if let Some(grant) = grant {
+        data["open_cap"] = json!(grant.open_cap);
+        (GRANTED, StatusCode::CREATED)
+    } else {
+        if live.invites.grant(xuid).is_none() {
+            return Err(ApiError::new(
+                ErrorCode::Conflict,
+                "this account has no invite grant",
+            ));
+        }
+        // Persist this decision so replay also respects the role held at revocation,
+        // including an admin supplied by configuration or the embedded server.
+        if live.admins.is_admin_xuid(xuid, &live.model.read()) {
+            data["keep_open"] = json!(true);
+        }
+        (GRANT_REVOKED, StatusCode::OK)
+    };
+    let event = crate::admin::append_account_event(live, xuid, kind, data).await?;
+    Ok(crate::http::json(status, &event))
+}
+
+pub async fn grant_invites(
+    State(live): Shared,
+    Path(tag): Path<String>,
+    headers: HeaderMap,
+    body: Result<Bytes, BytesRejection>,
+) -> Result<Response, ApiError> {
+    let author = admin(&live, crate::http::bearer(&headers), lxm::INVITE_GRANTS_WRITE)?;
+    let grant = serde_json::from_slice(&crate::http::body_bytes(body)?)
+        .map_err(|e| invalid(format!("invite grant: {e}")))?;
+    change_grant(&live, author, &tag, Some(grant)).await
+}
+
+pub async fn revoke_grant(
+    State(live): Shared,
+    Path(tag): Path<String>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    let author = admin(&live, crate::http::bearer(&headers), lxm::INVITE_GRANTS_WRITE)?;
+    change_grant(&live, author, &tag, None).await
 }
 
 pub async fn revoke_invite(

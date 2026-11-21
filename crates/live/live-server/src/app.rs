@@ -220,7 +220,8 @@ pub struct Live {
     pub(crate) mute_writes: tokio::sync::Mutex<()>,
     /// Each account's own cloud saves (docs/live/live-cloud-saves.md).
     pub(crate) cloud: crate::cloud_saves::CloudSaves,
-    /// Unix seconds the service started.
+    /// Unix seconds the native service started.
+    #[cfg(feature = "native")]
     pub(crate) started_at: i64,
     data_dir: crate::status::DataDir,
     /// Where content, cloud saves and published art are kept
@@ -290,6 +291,7 @@ fn may_write(author: &Author, stream: &str, kind: &str) -> bool {
         || live_proto::reports::KINDS.contains(&kind)
         || live_proto::bans::KINDS.contains(&kind)
         || live_proto::mutes::KINDS.contains(&kind)
+        || matches!(kind, crate::invites::GRANTED | crate::invites::GRANT_REVOKED)
     {
         return false;
     }
@@ -548,7 +550,10 @@ impl Live {
         dispatcher.subscribe(mutes.clone());
         let stats = Arc::new(crate::stats::Stats::with_model(model.clone()));
         dispatcher.subscribe(stats.clone());
-        let usage = Arc::new(crate::usage::Usage::default());
+        let usage = Arc::new(match timers {
+            Timers::Spawned => crate::usage::Usage::default(),
+            Timers::Driven => crate::usage::Usage::worker(),
+        });
         usage.load(&store.usage().await?);
         dispatcher.subscribe(usage.clone());
         let hosts =
@@ -605,6 +610,7 @@ impl Live {
             mutes,
             mute_writes: Default::default(),
             cloud: Default::default(),
+            #[cfg(feature = "native")]
             started_at: now(),
             data_dir: Default::default(),
             blobs: Default::default(),
@@ -823,15 +829,18 @@ impl Live {
     }
 
     pub(crate) fn server_event(&self, stream: String, kind: &str, data: Value) -> NewEvent {
+        self.server_event_at(stream, kind, data, time::OffsetDateTime::now_utc())
+    }
+
+    pub(crate) fn server_event_at(
+        &self,
+        stream: String,
+        kind: &str,
+        data: Value,
+        at: time::OffsetDateTime,
+    ) -> NewEvent {
         let key = &self.identity.key;
-        let body = EventBody::new(
-            key,
-            &self.identity.author(),
-            &stream,
-            kind,
-            data,
-            time::OffsetDateTime::now_utc(),
-        );
+        let body = EventBody::new(key, &self.identity.author(), &stream, kind, data, at);
         NewEvent {
             jws: body.sign(key).into(),
             jws_index: None,
@@ -873,6 +882,12 @@ impl Live {
         }
         let (req, key) = AccountRequest::open(jws, &self.identity.id, now()).map_err(sign_error)?;
         let tag = Gamertag::new(&req.gamertag).map_err(|e| invalid(e.to_string()))?;
+        // Keep redemption and its account append ordered with invite revocation.
+        let _invite_guard = if self.policy.invite_only && req.invite.is_some() {
+            Some(self.invites.writes.lock().await)
+        } else {
+            None
+        };
         let now = now();
         let invite = match (&req.invite, self.policy.invite_only) {
             // A signed code (the older, long form) or a short one.
@@ -1090,6 +1105,22 @@ impl Live {
                 "title files are at most 2 MiB",
             ));
         }
+        if title == live_proto::HALO_2_TITLE_ID
+            && name == live_proto::hopper::HALO_2_HOPPER_FILE
+            && let Ok(file) = live_proto::hopper::HopperFile::parse_legacy(bytes)
+        {
+            for index in 0..live_proto::hopper::HOPPERS {
+                if file.contains_addon_maps(index).map_err(|err| invalid(err.to_string()))?
+                    && !file.records(index).map_err(|err| invalid(err.to_string()))?
+                        .iter().any(|entry| live_proto::hopper::is_base_map(entry.id))
+                {
+                    return Err(invalid(format!(
+                        "Playlist {} needs a Halo 2 disc map for players without the Map Pack.",
+                        index + 1
+                    )));
+                }
+            }
+        }
         let meta = PublishedFile {
             title_id: title,
             name: name.into(),
@@ -1197,6 +1228,7 @@ impl Live {
             created_at: a.created_at.clone(),
             online: s.presence.contains_key(&a.xuid),
             admin: self.admins.is_admin_of(&a.gamertag, a.xuid),
+            invite_grant: self.invites.grant(a.xuid),
             bot: false,
         }
     }
@@ -1269,6 +1301,7 @@ impl Live {
                 created_at: s.bots.issued_at.get(&b.xuid).cloned().unwrap_or_default(),
                 online: false,
                 admin: false,
+                invite_grant: None,
                 bot: true,
             },
             id: Author::Account {

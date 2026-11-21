@@ -28,6 +28,11 @@ pub trait Bases: Send + Sync {
     /// a Multiplayer Map Pack map ([`content::map_pack`]) its copy
     /// installed by `h2 import-mappack`. None when there is neither.
     fn disc_hash(&self, map: &str) -> Option<Sha256>;
+
+    /// Whether all Map Pack maps are installed for the retail title to load.
+    fn has_map_pack(&self) -> bool {
+        false
+    }
 }
 
 /// [`Bases`] over a directory of `.map` files (the disc's `maps`), each
@@ -218,6 +223,7 @@ pub type Ready = Box<dyn Fn(MapId) -> Result<(), String> + Send + Sync>;
 pub struct MapGate {
     maps_dir: PathBuf,
     bases: Arc<dyn Bases>,
+    has_map_pack: bool,
     installed: Mutex<Option<Installed>>,
     ready: Mutex<Option<Ready>>,
 }
@@ -243,9 +249,11 @@ fn json<T: serde::de::DeserializeOwned>(f: &dyn Fetch, path: &str) -> Result<Opt
 impl MapGate {
     /// `maps_dir` is `<data>/maps`.
     pub fn new(maps_dir: impl Into<PathBuf>, bases: Arc<dyn Bases>) -> Self {
+        let has_map_pack = bases.has_map_pack();
         MapGate {
             maps_dir: maps_dir.into(),
             bases,
+            has_map_pack,
             installed: Mutex::new(None),
             ready: Mutex::new(None),
         }
@@ -269,6 +277,11 @@ impl MapGate {
 
     pub fn maps_dir(&self) -> &Path {
         &self.maps_dir
+    }
+
+    /// Installation is established at startup, when the title mounts its maps.
+    pub fn has_map_pack(&self) -> bool {
+        self.has_map_pack
     }
 
     /// The package here that has map `id`, if any (the mod repository's

@@ -49,8 +49,8 @@ impl Page {
 
     pub const fn value(self) -> u16 {
         match self {
-            Self::Video => 8,
-            Self::Voice => 9,
+            Self::Video => 9,
+            Self::Voice => 10,
         }
     }
 

@@ -132,6 +132,17 @@ scheduler boundaries, snapshots and the continuation data needed after a
 restore. It also covers cold replay when the first snapshot has yet to be
 taken. Absolute offsets preserve which calls preceded each snapshot.
 
+The private `BOOT` record includes the starting render scale and LOD Distance.
+Both settings have `View` scope because they affect the guest's visual record
+lists. The recorder captures saved values and locked overrides separately.
+Before launching a replay with `BOOT`, Theater removes the viewer's
+`H2_RENDER_SCALE` and `H2_LOD_DISTANCE` from the child process. It restores
+the film's values in the private data directory and reapplies recorded locks
+to the desktop settings store. An older `BOOT` without either key uses the
+schema default for that key. Local windowed playback uses a 1x GPU backend,
+so restoring a higher render-scale setting alone does not reproduce the
+recording's render target. [Startup settings](../../crates/extensions/game/src/theater/startup.rs).
+
 The private `INDX` is a JSON array in physical envelope order. Each row
 stores `tag` (four byte values), `offset` (u64) and `size` (u32).
 The first row of each contiguous machine run also stores `machine_span`

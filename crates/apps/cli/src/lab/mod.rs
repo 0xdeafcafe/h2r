@@ -23,9 +23,9 @@ const USAGE: &str = "usage:
   h2 lab host [install] [--root DIR] [--socket PATH] [--repo DIR] [--disc ISO]
               [--h2 PATH] [--out DIR] [--data DIR] [--cargo PATH]
               [--listen IP:PORT] [--name NAME]
-                          serve on the LAN (default port 29422); install starts
-                          an Aqua LaunchAgent and prints a pairing code
-                          use --local-only for a foreground Unix-socket host
+                          serve on the private Unix socket; --listen enables LAN
+                          install starts an Aqua LaunchAgent with LAN enabled
+                          (default 0.0.0.0:29422) and prints a pairing code
   h2 lab host status | update | uninstall
                           inspect, update or remove the local LaunchAgent
   h2 lab host pair-code | unpair [--root DIR]
@@ -131,6 +131,20 @@ pub fn default_socket() -> PathBuf {
 }
 
 pub fn host_config(args: &[String]) -> Result<host::HostConfig> {
+    parse_host_config(args, None)
+}
+
+fn install_config(args: &[String]) -> Result<host::HostConfig> {
+    parse_host_config(
+        args,
+        Some(SocketAddr::from((Ipv4Addr::UNSPECIFIED, discovery::PORT))),
+    )
+}
+
+fn parse_host_config(
+    args: &[String],
+    default_listener: Option<SocketAddr>,
+) -> Result<host::HostConfig> {
     let mut root = None;
     let mut socket = None;
     let mut repo = None;
@@ -176,6 +190,16 @@ pub fn host_config(args: &[String]) -> Result<host::HostConfig> {
             _ => bail!("unexpected {a}\n\n{USAGE}"),
         }
     }
+    ensure!(
+        !local_only || (listen.is_none() && name.is_none() && default_listener.is_none()),
+        "--local-only is exclusive with --listen, --name and host install"
+    );
+    let listen = listen.or(default_listener);
+    ensure!(
+        name.is_none() || listen.is_some(),
+        "--name requires --listen"
+    );
+
     let abs = |p: PathBuf| -> Result<PathBuf> {
         Ok(if p.is_absolute() {
             p
@@ -193,10 +217,6 @@ pub fn host_config(args: &[String]) -> Result<host::HostConfig> {
         None if repo.join("disc/halo2.iso").is_file() => repo.join("disc/halo2.iso"),
         None => crate::default_disc()?,
     };
-    ensure!(
-        !local_only || (listen.is_none() && name.is_none()),
-        "--local-only is exclusive with --listen and --name"
-    );
     let explicit_h2 = h2.is_some();
     Ok(host::HostConfig {
         socket: abs(socket.unwrap_or_else(default_socket))?,
@@ -207,13 +227,44 @@ pub fn host_config(args: &[String]) -> Result<host::HostConfig> {
         h2: abs(h2.map_or_else(std::env::current_exe, Ok)?)?,
         out: out.map(abs).transpose()?,
         cargo: cargo.unwrap_or_else(|| "cargo".into()),
-        lan: (!local_only).then(|| lan::Listen {
-            addr: listen
-                .unwrap_or_else(|| SocketAddr::from((Ipv4Addr::UNSPECIFIED, discovery::PORT))),
-            name,
-        }),
+        lan: listen.map(|addr| lan::Listen { addr, name }),
         explicit_h2,
         managed: false,
         grace: Duration::from_secs(5),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_install_defaults_to_a_lan_listener() {
+        let mut args = vec!["--disc".into(), "disc.iso".into()];
+        assert!(host_config(&args).unwrap().lan.is_none());
+        let installed = install_config(&args).unwrap().lan.unwrap();
+        assert_eq!(
+            installed.addr,
+            "0.0.0.0:29422".parse::<SocketAddr>().unwrap()
+        );
+
+        args.extend(["--name".into(), "laptop".into()]);
+        assert!(
+            host_config(&args)
+                .unwrap_err()
+                .to_string()
+                .contains("--listen")
+        );
+        assert_eq!(
+            install_config(&args).unwrap().lan.unwrap().name.as_deref(),
+            Some("laptop")
+        );
+        args.extend(["--listen".into(), "192.0.2.10:30000".into()]);
+        let foreground = host_config(&args).unwrap().lan.unwrap();
+        assert_eq!(
+            foreground.addr,
+            "192.0.2.10:30000".parse::<SocketAddr>().unwrap()
+        );
+        assert_eq!(foreground.name.as_deref(), Some("laptop"));
+    }
 }

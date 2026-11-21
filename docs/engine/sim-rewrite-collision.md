@@ -1,10 +1,13 @@
 # Simulation rewrite, phase 2: the collision world
 
-Status: design, 2026-11-20. Nothing here is built. This is the phase 2 spec
-of [sim-rewrite.md](sim-rewrite.md): a Rust-owned collision world behind
-`impl.sim.native.collision`, held to bar E (every guest-visible result
-bit-identical to the lifted code) and contract D (identical on arm64 and
-x86-64). An implementation lane can start from slice S0 below.
+The phase 2 design uses a Rust-owned collision world behind the native
+collision switch. A/B have native adapters. C–E record their entry
+controls and run lifted. The vector kernels are tested directly until
+their transitive scratch-state contract is closed. The [entry contracts](collision-queries.md)
+describe the implemented arithmetic, stack and register comparisons.
+Remaining slices are specified below. Bar E requires the guest-visible
+bits to match the lifted path, and contract D requires the same bits on
+arm64 and x86-64. [Umbrella plan](sim-rewrite.md)
 
 Sources: the Waterworks profile in [sim-budget.md](../perf/sim-budget.md)
 (84,358 main-thread samples; counts below were recomputed from its
@@ -18,9 +21,8 @@ or doc, **Guess** not established.
 
 ## 1. What changes
 
-Today each collision query is lifted retail code, with eight per-function
-ports on top that keep the retail register and stack shape. The retail shape
-is the cost:
+The lifted paths and the older per-function ports keep the retail register
+and stack shape:
 
 - The BSP walk recurses through the dispatcher once per plane crossing and
   reads node, plane, leaf, reference, 2D node, surface, edge and vertex
@@ -138,16 +140,17 @@ for the decoded tree, and `code::Code::parse`, `terminal_key`,
 
 ## 4. Data
 
-All types are `#[repr(C)]`, little-endian, position-independent (indices, no
-pointers), so `store.rs` can mmap them. Sizes are per element.
+Decoded records use guest indices. The S10 on-disk format needs explicit
+little-endian fields and a position-independent layout. The in-memory world
+owns the arrays and address index. The runtime adapter manages subscriptions. Sizes below are per
+element.
 
 ### 4.1 `CollisionWorld`
 
 ```rust
 pub struct CollisionWorld {
     epoch: Epoch,                       // map generation it was built for
-    bsps: Vec<Arc<Bsp>>,                // dense slots
-    by_addr: HashMap<u32, u32>,         // guest bsp pointer -> slot (lookup only)
+    bsps: Slots,                        // sorted guest addresses and decoded BSPs
     mopps: Vec<Arc<Tree>>,
     mopp_by_addr: HashMap<u32, u32>,    // guest code-object pointer -> slot
     structure: Option<Structure>,       // for the active sbsp
@@ -158,8 +161,10 @@ pub struct CollisionWorld {
 A BSP is named by the guest pointer the engine itself passes (element `+4`
 of a `coll` BSP, or the structure's). A MOPP tree is named by its code
 object pointer (`sbsp+0x1e4`, a cluster's `+0xac`, a `coll` slot's `+0x68`,
-a `phmo` code run). The maps are consulted for lookup only and never
-iterated, so they cannot affect results. Decode is lazy: the first query
+a `phmo` code run). The BSP implementation looks up a guest address in a
+sorted index. Its capacity and the owner of each decoded BSP count against
+the map budget. Only bookkeeping visits that index in address order. The
+query walks nodes in guest order. Decode is lazy: the first query
 that names a pointer builds its entry from the guest-resident bytes, the
 same bytes the guest would read. Nothing reads the map file separately.
 
@@ -167,23 +172,19 @@ same bytes the guest would read. Nothing reads the map file separately.
 
 | Array | Element | Size | Notes |
 |---|---|---:|---|
-| `nodes` | `BspNode { plane: [f32; 4], back: u32, front: u32, pad: [u32; 2] }` | 32 | Plane inlined, so a visit touches one line instead of node plus plane. `align(32)`. Child: node index, `0x8000_0000 \| leaf`, or `0xffff_ffff` for none. Guest node numbering is kept. |
-| `node_plane` | `u16` | 2 | The node's plane index; the matcher compares it. |
-| `planes` | `[f32; 4]` | 16 | Kept for result records, which return a guest plane pointer (`planes_addr + 16 * index`). |
-| `leaf_kind` | `u8` | 1 | `1 + (flags & 1)`, the state the segment walk uses. |
-| `leaf_refs` | `{ first: u32, count: u8 }` | 8 | |
-| `refs` | `Ref { plane: u16, flip: u8, proj: u8, root: u16, root_is_surface: u8 }` | 8 | `proj` 0..5 is the projection table row, fixed per reference at decode from the plane's dominant axis and the flip bit (rule in collision.md, "Projection"). |
-| `nodes2d` | `{ a: f32, b: f32, d: f32, back: i16, front: i16 }` | 16 | Guest layout. |
-| `surfaces` | `Surface { plane: u16, flags: u8, breakable: u8, material: u16, ring: [u32; 6] }` | 32 | `ring[proj]` indexes `rings`, `u32::MAX` if that projection is never reached. |
-| `rings` | `Ring { u: [f32; 8], v: [f32; 8], du: [f32; 8], dv: [f32; 8], n: u8 }` | 129 (`align(32)`: 160) | Section 4.4. |
-| `guest` | `BspAddrs { planes: u32, surfaces: u32, .. }` | | Guest block addresses for results that are pointers. |
-| `guard` | `Guard` | | `finite: bool` (every float finite), `max_ring: u8`. |
+| `nodes` | plane bits, two sign-extended children, plane index, validation flags | 32 | Each node is aligned to 32 bytes and contains its split plane. Bit 23 marks a leaf. All ones means solid. |
+| `planes`, `axis` | four binary32 words and a separate dominant-axis byte | 16 + 1 | The result can return the original guest address of the plane. |
+| `leaves` | flags, reference count, first reference | 4 | The matcher derives leaf state from the flags. |
+| `refs` | plane/flip word, 2D root, projection row | 6 | The row is computed from the dominant axis and flip at decode. |
+| `nodes_2d` | three binary32 words, two child words | 16 | Child indices retain their guest encoding. |
+| `surfaces` | plane, first edge, flags, breakable index, material, ring start and length | 16 | A scalar matcher can follow the original first edge. |
+| Optional ring edges | two binary32 xyz vertices | 24 | The current matcher uses pairs in traversal order. Section 4.4 describes the planned packed projection. |
 
 Leaf indices, surface indices, plane indices and material indices are guest
 visible and are never renumbered.
 
-Rings are built per (surface, projection) pair that some reference can
-reach, by walking each reference's 2D tree at decode. Retail rings have at
+The planned packed matcher builds a ring for each (surface, projection)
+pair that a reference can reach through its 2D tree. Retail rings have at
 most 8 vertices (collision.md, V). A longer ring sets `n = 0xff` and the
 matcher falls back to the scalar edge loop over `edges` and `vertices`,
 which are then kept as plain guest-layout arrays.
@@ -298,7 +299,7 @@ rejects the point when
 ```
 
 The answer is "no edge rejects", which does not depend on edge order. So
-the decoded ring stores `u = Au`, `v = Av`, `du = Bu - Au`, `dv = Bv - Av`
+the proposed packed ring stores `u = Au`, `v = Av`, `du = Bu - Au`, `dv = Bv - Av`
 for up to 8 edges (the two differences are the retail subtractions on static
 operands, done once), pads unused lanes with a copy of edge 0, and tests all
 edges in one 8-lane or two 4-lane steps: two subtractions, two
@@ -310,9 +311,12 @@ order. A NaN compares false in both forms.
 Per map on the multiplayer set the structure BSP is the bulk: about 32 bytes
 per node, 32 per surface and 160 per reached ring. The budget is **≤ 8 MiB
 per loaded map** for the whole collision world, inside the +32 MiB the plan
-allows all Rust sim state. S1 reports the measured size for every map on the
-disc; a map over budget drops rings first (scalar matcher) and says so in
-`Stats`.
+allows all Rust sim state. The world charges decoded array capacity, the
+packed leaf table, reserved address-index capacity and the BSP owners.
+On first overflow it releases expanded rings and uses scalar guest edge
+reads for that generation. Essential tables that exceed the budget yield
+a live cluster read or a `budget` bail. The disc sweep reports retained
+bytes and fallbacks for each map. See [collision-queries.md](collision-queries.md).
 
 ## 5. The guest boundary
 
@@ -331,9 +335,9 @@ disc; a map over budget drops rings first (scalar matcher) and says so in
    overflow or underflow was raised. With finite inputs (rule 4) that proves
    every intermediate was finite and no inexact subnormal was produced, which
    is exactly the set of values on which NEON, SSE2 and the guest's SSE and
-   x87 agree bit for bit. The kernel writes its result through
-   `core::hint::black_box` before the flags are read, so the compiler cannot
-   move work past the read. A spurious flag only costs a bail.
+   x87 agree bit for bit. The checked scalar operations use side-effecting host instructions. The
+   result passes through `core::hint::black_box` before the flags are sampled.
+   The region restores the incoming host status on return and unwind. A spurious flag only costs a bail.
 4. **Finite inputs.** Static data is checked at decode (`Guard::finite`;
    a BSP or tree with a non-finite float is `guest_only`). Dynamic inputs
    (ray start and delta, limits, sphere centre and radius, object bounds)
@@ -346,23 +350,28 @@ disc; a map over budget drops rings first (scalar matcher) and says so in
    - extended (`PC = 11`): bail.
    A value retail keeps unrounded on the x87 stack and compares (the MOPP
    ray's diagonal projections, the portal plane distance) is compared
-   unrounded in that format. S0 records which mode the game actually runs in
-   at these entries; both are implemented and tested against the `x87` crate.
-6. **Declared clobbers.** Each entry's contract lists the registers the
-   original writes. The adapter sets the return register and leaves the rest
-   of the clobber set unspecified but deterministic (it does not write them).
-   The x87 stack depth and tags are unchanged on return. Status bits
-   (EFLAGS arithmetic flags, x87 `C0..C3`, the x87 last-instruction words,
-   sticky MXCSR and x87 exception flags) are in the clobber set.
-7. **Dead stack.** The retail frames below the entry `esp` are not written.
-   The contract gives each entry's frame depth, and the differential harness
-   ignores exactly that window.
+   unrounded in that format. Entry histograms record which modes reach the
+   running game. Synthetic tests compare both supported modes with `x87`.
+6. **Registers.** The contract lists the registers, flags and x87 state the
+   entry writes. Replay each value that can reach a caller or a status
+   save. Omitting a value requires a liveness proof for every continuation,
+   including branches, tail calls and indirect callbacks.
+7. **Stack.** Replay observable writes. An exclusion in the differential
+   oracle names a bounded frame or argument slot and requires a caller
+   liveness proof before the adapter can be installed.
 8. **Faults.** A kernel reads guest memory through the checked bus. A fault
    during gather is a `Bail`: the original then faults at the retail
    instruction.
 
-Rules 6 and 7 are the two places this phase is deliberately *not*
-register-level. S0 proves them safe per entry (section 8.1).
+A–D specialize these rules. The bounded BSP expressions use `Fp` under
+nearest rounding, accepting FTZ/DAZ because all their operands and computed
+nonzero results are normal. C/D's bounded split division also admits
+extended guest precision. A/B replay all registers and the entire stack
+frame. See the [adapter contracts](collision-queries.md).
+
+The direct callers of C and D can forward volatile values to their own
+callers. Both entries run lifted while their candidate kernels are compared
+under the narrower masks in the differential harness (section 8.1).
 
 ### 5.2 Entries taken over
 
@@ -372,15 +381,15 @@ family.
 
 | # | Entry | ABI (E unless marked) | Subsumes | Guest writes the adapter must make |
 |---|---|---|---|---|
-| A | `0x0014a280` point to leaf | `node: eax, bsp: ecx, point: edx -> eax` (P) | — | none |
-| B | `0x0011bed0` location from point | `out: esi, point: edx`; reads `[0x4686c4]` (BSP index), `[0x4e033c]` (collision BSP), `[0x4e0348] + 0x30` (leaf table) | A | `out+0` leaf `u32`, `out+4` cluster `i16`, `out+6` BSP index `u16`; all three are `-1`/index forms as at `0x11bede` and `0x11bf19` |
+| A | `0x0014a280` point to leaf | `node: eax, bsp: ecx, point: edx -> eax` | — | saved ESI and EDI at entry ESP−4 and ESP−8 |
+| B | `0x0011bed0` location from point | `out: esi, point: edx`; reads `[0x4686c4]` (BSP index), `[0x4e033c]` (collision BSP), `[0x4e0348] + 0x30` (leaf table) | A | `out+0` leaf `u32`, `out+4` cluster `i16`, `out+6` BSP index `u16`; the no-structure and solid exits use the signed sentinel. Saved stack words are listed in the [entry contract](collision-queries.md#clobbers-and-dead-stack). |
 | C | `0x001de630` BSP vector test | `out: eax, flags: ecx, bsp: edx, limit: xmm0`, stack: breakable count `u16`, breakable mask pointer, start pointer, delta pointer; `-> al`; `ret 0x10` | `1de6d0`, `1dea00`, `1debd0`, `296520` | the result record R at `out` (below) |
-| D | `0x001de6d0` BSP vector test, context form | `ctx, node, t0, t1` on the stack; `-> al`; `ret 0x10` (P). Called directly by `0x001eff40` | its own recursion, `1dea00`, `1debd0`, `296520` | R through `ctx+0x18`; `ctx+0x1c` previous leaf, `ctx+0x20` previous kind, as the last retail visit leaves them |
+| D | `0x001de6d0` BSP vector test, context form | `ctx, node, t0, t1` on the stack; `-> al`; `ret 0x10` (P). Called directly by `0x001eff40` | its own recursion, `1dea00`, `1debd0`, `296520` | R through `ctx+0x18`; `ctx+0x1c` previous leaf, `ctx+0x20` previous kind and `ctx+0x24` last split plane |
 | E | `0x00244980` instanced-geometry trace of one cluster | `cluster: eax, start: esi, delta: edi`, stack: flags, the BSP filter bits from `0x168ae0`, result pointer; `-> al`; `ret 0xc` | `2df760`, `2df720`, `301800`, `3009e0`, `2df680`, the shape callbacks at vtables `0x459e0c`/`0x459e48`, `244c10`, `1691a0`, `1689b0`, `141590`, `183fc0`, `168b40`, C | instance marks `[0x4e7c20 + 4 * i] = [0x4e7c1c]` for every instance retail would test, in retail order; the query result record (5.4) when an instance hit is kept |
-| F | `0x00300150` MOPP box query | S0 reads the ABI: the code object, the query box and the `hkArray` of keys (pointer, size, capacity word) (P for the VM below it) | `2ff8b0` | keys appended at `array.data[size..]`, `array.size` |
+| F | `0x00300150` MOPP box query | `ecx` box VM, stack `code, aabb, array` in increasing address order, `ret 0xc` | `2ff8b0` | VM fields below, ordered key appends at `array.data[size..]` and `array.size` |
 | G | `0x0014a5b0` sphere cluster flood | stack: `cluster: i16, centre, radius, capacity: i16, out`; `-> ax` count; `ret 0x14` | its own recursion, `14a370`, `120850`, `23a160` | `out[i]` cluster `u16`s; cluster marks `[0x4e7418 + 4 * c] = [0x4e7414]` |
 | H | `0x000bb050` object spatial visit | `lists, types, location, centre, radius, out, capacity`; `ret 0x1c` (P) | G, `b8940`, `b8a10` | `[0x4e7414]` increment and `[0x4e7411]` set and clear; `[0x4de2fc]` increment; `[0x4de2f8]` set and final value; object marks `[0x4de300 + 4 * slot]`; `out[i]` handles; `ax` count |
-| I | `0x00301800` MOPP ray, general form | `this: ecx`, stack: tree shape words, code, ray input, output, collector; `ret 0x14` | `3009e0` | the ray VM object fields at `this+0x10..+0x64`; everything else is written by the guest callees it awaits |
+| I | `0x00301800` MOPP ray, general form | `ecx` ray VM, stack `collection, code, ray_input, parent_body, collector` in increasing address order, `ret 0x14` | `3009e0` | VM fields below and writes made by guest callbacks |
 | J | `0x001697c0` collision query | `flags, start, delta, ignore_a, ignore_b, out`; `-> al`; `ret 0x18` (P) | C, E, `16b500`, `168ae0`, `11e5e0`, `b8940`, `b89b0`, `169510`, `1eff40` and helpers, B | 5.4 |
 
 `0x0011e5e0` (segment against sphere) is not an entry of its own. It is a
@@ -393,18 +402,17 @@ kernel function used inside E, H and J. Its remaining guest callers
 |---|---|---|
 | `+0x00` | `f32` hit fraction; initialised to `max(limit, 0)` | always, then on hit |
 | `+0x04` | guest pointer to the hit plane | hit |
-| `+0x08`, `+0x0c` | two words copied to the query result `+0x4c`, `+0x50` | hit |
-| `+0x10` | `u32`; bit 15 of its low word says the plane is flipped | hit |
-| `+0x14`, `+0x15` | surface flag bytes copied to result `+0x58`, `+0x59` | hit |
+| `+0x08`, `+0x0c` | lookup leaf index, accepted surface index | hit |
+| `+0x10` | sign-extended surface plane word (bit 15 flipped) | hit |
+| `+0x14`, `+0x15` | surface flags and breakable index, one byte each | hit |
 | `+0x16` | `i16` material index | hit |
 | `+0x18` | `u32` leaf count | always (0 at start) |
 | `+0x1c..` | up to 256 leaf indices in visit order | per visited leaf |
 | `+0x418` | last leaf when the list is full | overflow |
 
-The exact contents of `+0x08..+0x15` are what `0x001dea00` writes for the
-accepted surface. S1 reads that function's tail and pins each field in
-`layout.rs`; the port in `sim_native/bsp.rs` shows where the matcher is
-called and with what.
+`0x001dea00` returns the surface. Its caller writes the accepted fields
+at `0x001de94c..0x001de9a2`. The adapter names each in
+`crates/rewrites/engine/src/sim_collision/layout.rs`.
 
 Breakable surfaces: a surface whose `breakable` index is below the count
 argument (0x100 for the structure, 8 for an instance) is skipped when its
@@ -440,8 +448,10 @@ ring test of section 4.4.
 cluster's MOPP tree with the ray from `start` to `start + delta` (each
 component one `f32` add). For each terminal key, in walk order:
 
-1. `i = key & 0xffff`. If `mark[i]` equals the epoch `[0x4e7c1c]`, skip.
-   Otherwise set it.
+1. Index the mark with the signed low 16 bits of the key. If that mark
+   equals the epoch `[0x4e7c1c]`, skip. Otherwise set it. Placement lookup
+   and result +0x3c use the full key. The callback also requires a live
+   code-object reference count to elide its destructor (see [entry E](collision-queries.md#entry-e--instance-trace-of-one-cluster)).
 2. Filter by definition flags (`0x1689b0`), then the sphere pretest against
    the placement sphere.
 3. Transform start and delta by the placement inverse (the scale multiply is
@@ -478,10 +488,45 @@ call. Entry E drives it with the native instance test. Entry I drives it
 from an `async` adapter that awaits the guest filter and child-shape calls
 (feature-engine.md, "Calling code that is still recompiled").
 
-**Box query** (P, `mopp::boxvm`, mopp.md "The box query"): setup
-`lo = round(min * scale) - 1`, `hi = round(max * scale) - 1` per axis, where
-the product is an x87 multiply and `fistp` (a `Chain`, round to nearest
-even), then the DFS of section 4.3. Keys are appended to the guest
+**Ray VM at entry I** (E, `0x002df74d`, `0x00301800`). The tree shape's
+slot `+0x24` (`0x002df720`) constructs a VM on its stack and passes the
+shape's collection at `+0x0c` and code at `+0x10`, followed by its own
+three arguments. After the call it restores its frame and saved registers.
+The result travels through the collector. The setup and terminal together
+establish these VM fields:
+
+| Offset | Value |
+|---|---|
+| `+0x10`, `+0x14` | Code pointer and the single-precision store of the x87 reciprocal of its scale. |
+| `+0x20`, `+0x30` | Two complete 16-byte vectors copied from ray input, the original endpoints before frame conversion. |
+| `+0x40`, `+0x44` | Two words copied from ray input `+0x20` and `+0x24`. The second points to the optional filter. The child and filter receive the copy beginning at VM `+0x20`. |
+| `+0x50` | One-byte hit flag cleared at setup. Only the sibling output-record path (`0x00301720`) sets it at a terminal. |
+| `+0x54` | Current early-out fraction, copied from `collector+4` at setup and refreshed from the collector after a child callback. |
+| `+0x58` | Output-record pointer used by the sibling path. Entry I clears the word, selecting the collector path. |
+| `+0x5c`, `+0x60`, `+0x64` | Collector, parent collision body and child-shape collection pointers. |
+
+At a terminal (`0x0030156c..0x0030160f`) the optional filter can reject
+the key. On acceptance the VM resolves a child through collection slot
+`+0x34`. It calls child slot `+0x24` with the copied ray input, a temporary
+child body and the collector. The child body carries the child shape, key,
+word at `parent_body+8` and parent body pointer. The VM reloads the
+collector's fraction before traversal resumes. Intervening padding in the
+VM is untouched by setup. Root segment coordinates use packed subtraction
+of the code origin followed by packed multiplication by the stored root
+frame scale. That scale is a separate x87 product of the code scale and
+the guest scalar at `0x0045dcac`.
+
+**Box query** (E, `0x002df659`, `0x00300150`; P, `mopp::boxvm`).
+The tree shape's slot `+0x30` (`0x002df640`) supplies the box VM on its
+stack. F writes the key-array pointer at VM `+0` and the code pointer at
+`+0x30`. For x, y, z in that order it converts the minimum then the
+maximum coordinate (AABB offsets `+0` and `+0x10` for x). Each conversion
+subtracts the corresponding code origin and multiplies by the code scale
+in x87 working precision, stores to binary32, reloads, converts with
+`fistp` and decrements with 32-bit wraparound. The VM stores the minimum
+integers at `+0x20..+0x28` and the maximum integers at `+0x10..+0x18`,
+without writing a fourth lane. F starts the DFS of section 4.3 at
+`code+0x30`. Keys are appended to the guest
 `hkArray`. If `size + keys > capacity & 0x7fff_ffff` the kernel bails and
 the lifted code runs and grows the array itself. S4 measures the bail rate;
 if it is above 1% of calls, the adapter becomes `async` and awaits
@@ -497,6 +542,14 @@ polygon test `0x0023a160` with radius `sqrt(r*r - d*d)` (x87). S5 ports
 `0x00120850` and `0x0023a160` into the kernel. The returned count includes
 clusters visited after the output filled (the caller clamps it), and the
 flood uses the epoch its caller set: it does not bump `[0x4e7414]` itself.
+
+One caller, `0x001cac60`, links a handle into the spatial partition. Both
+the object connector (`0x000b8710`, supplying a 0x14-byte reference
+payload) and the light-list insert (`0x000c30f0`, no payload) use it. On
+its sphere-flood path it increments the epoch, sets the active byte, calls
+G at `0x001cace3` with room for 256 clusters and clears the byte. It links
+each accepted cluster into the handle's list and each handle into the
+cluster's list (`0x001cad30..0x001cadce`). [Object and light list callers](object-update.md)
 
 **Object visit** (P, `sim_physics/visit.rs`): for each flooded cluster walk
 the collideable list (heads `[0x4de2e0]`, datum array `[0x4de2e4]`) and the
@@ -525,9 +578,20 @@ append the handle, stop when the output is full.
    default the object type mask (`0x1fff0`) when empty.
 6. For each leaf in list order, take its cluster; skip a cluster already
    marked in `[0x4e7418]`, else mark it. Then:
-   - bit 1: the cluster plane test (cluster byte `+0x70`, the 24-byte
-     records at structure `+0x68`): result type 2 when the segment crosses
-     the plane nearer than the current `t`;
+   - bit 1 tests the cluster's liquid boundary (`0x00169a9c..0x00169c28`).
+     Cluster byte `+0x70` must have its high bit set and differ from
+     `0xff`. Its low seven bits index a 0x18-byte record through structure
+     `+0x68`. The plane starts at record `+4`. Its material at `+2` must
+     differ from `-1`. With signed starting distance `s` and
+     `v = n·delta`, the tests require different `> 0` results,
+     `abs(v) > abs(s)` and `abs(v)` at least the guest threshold at
+     `0x45dbdc`. For a smaller fraction `0 - (s / v)`, write type 2,
+     fraction, material at result `+0x24`, plane at `+0x28` (each component
+     subtracted from zero if `s < 0`), and record index at `+0x38`.
+     The effect classifier at `0x00178d3b` uses the same record to
+     distinguish air from liquid. A cluster with a valid material and
+     high bit clear is wholly in that medium, so it has no boundary to
+     hit. [Particle medium classification](../../crates/extensions/game/src/h1_particle_physics.rs)
    - bit 2: entry E for the cluster;
    - bit 3: the object references of the cluster (`b8940`, `b89b0`): mark
      test and set in `[0x4de300]`, type mask, the reference flags against
@@ -635,7 +699,7 @@ uses workers, because no phase 2 batch is large enough.
 
 | State | Kind | Built | Dropped |
 |---|---|---|---|
-| `Bsp`, `Tree`, `Structure` | static | lazily, from guest-resident tag bytes, on first use of a pointer | map load (`Epoch` bump at `CACHE_BSP_FIXUP` `0x122b40` and `BSP_SWITCH` `0x11c1b0`); a structure switch rebuilds `Structure` only |
+| `Bsp`, `Tree`, `Structure` | static | lazily, from guest-resident tag bytes, on first use of a pointer | map load (`CACHE_TAGS_LOAD`), structure switch (`BSP_SWITCH`) and snapshot load advance the collision epoch |
 | Gathered reference lists, breakable words, key lists | transient | per query | end of the call |
 | `Stats` | diagnostic | — | never read by a kernel |
 
@@ -645,21 +709,42 @@ regression therefore need no action, because every piece of arena state a
 query depends on (object references, marks, epochs, breakable masks) is read
 live.
 
-The static tables assume the tag bytes they were decoded from do not change
-while the map is loaded. Two guards back that:
+A cross-query cache of object references is possible at the runtime
+adapter. A clean 4 KiB page bitmap alone cannot validate one. Under the same
+guest memory guard as the gather, `Guest::watch_virtual_read` can subscribe
+to every source span, including table pointers, cluster heads (even empty
+heads), datum layout and backing pointers, links, handles and bounds. The
+subscription sees writes through physical aliases and publishes pending
+generated-code stores. Reuse requires the same guest subscription, map
+generation and `write_watch_epoch()` (virtual layout and RAM replacement
+revision), no read trap, and clean pages for every dependency. A changed
+list head or link requires a fresh traversal and registration of its new
+dependencies. Failure to watch a range requires a live gather. Marks and
+query parameters remain per call. The renderer's section cache exercises
+alias writes and a COW refresh that clears dirty bits. H and J use live
+gathers until a cache implements this contract.
+[Virtual-range watches](../../crates/runtime/runtime/src/guest.rs),
+[physical-page tracking](../../crates/runtime/runtime/src/watch.rs),
+[renderer cache](../../crates/rewrites/render-bridge/src/native_world/section.rs)
 
-- each entry stores a 64-bit hash of its source ranges; the cache-cold arm
-  (ladder step 5) rebuilds every entry on every tick and compares;
-- a debug build re-hashes one entry per tick, round robin, and panics on a
-  mismatch.
+Entry B reads the live leaf-table descriptor and caches the packed
+cluster column under a physical write subscription. Dirty pages, a new
+layout or a RAM replacement change the table version. A provider that
+cannot validate the source reads the selected word directly.
+
+The runtime adapter watches the physical pages behind the BSP header,
+all eight tag blocks and the decode constants. An edit through any alias,
+a changed memory layout or a RAM replacement starts a fresh generation.
+An unreadable or unwatchable source declines before native execution.
+Each decoded BSP also stores a 64-bit source hash. The cache-cold arm
+(ladder step 5) can rebuild and compare those hashes independently.
 
 Known writers of nearby tag memory, none of which touch a decoded field:
 the Havok slot initialisers (`0x246c60`, vtables and reference counts), the
 MOPP reference count at code `+0x24` (`0x3009b0`), and the temporary shape
-`0x244980` builds on its stack. Entry E skips that temporary shape's
-reference-count increment and decrement on the cluster's code object. They
-cancel inside the call, and nothing reads the count in between once the
-callbacks are native. S3's contract check confirms no other reader.
+`0x244980` builds on its stack. Eliding the temporary reference requires a nonzero original count and
+isolation from other reads and writes. On a decrement to zero,
+`0x3009c0` calls the guest allocator. E executes the lifted path.
 
 Later (S10): `store.rs` writes each decoded map to the user cache directory
 keyed by `(map digest, format version)` and mmaps it, so a per-match host
@@ -676,7 +761,7 @@ For each entry in 5.2, recorded in `docs/engine/collision-queries.md`:
 - every call site (direct calls from the analysis database, plus vtable
   slots for F and I), and for each, that no register in the clobber set and
   no stack byte in the dead window is read after the call before it is
-  written. This is a mechanical forward scan from each return address;
+  written. Follow forwarded state through the outer returns as well;
 - every `stmxcsr`, `fnstenv`, `fnsave` and `fxsave` site in the image and
   what it does with the status bits, to close rule 6;
 - the x87 control word and MXCSR seen at each entry over one Waterworks and
@@ -806,25 +891,14 @@ theater or film.
 | MOPP programs share subtrees under different states and the unfolded tree blows up | decode bound hit, program `guest_only` | bound and count reported by the disc sweep before S3 lands |
 | Something writes decoded tag bytes at run time | stale static data | source hashes in the cold arm and the debug round robin |
 | `169510` and `1eff40` reach more guest state than read so far (damage regions, node matrices mid-update) | S7 grows | S7 starts with its own contract step; J stays lifted until it passes, and the smaller entries already carry about three quarters of the share |
-| Sticky MXCSR or x87 exception bits differ from retail after a kernel | a differential mismatch in status words only | declared clobber, with the S0 audit of every site that reads them |
+| Sticky MXCSR or x87 exception bits differ from retail after a kernel | the CRT can observe exception flags | preserve observable flags and compare them in the differential oracle |
 | An instance's hoisted inverse differs from the per-query one | wrong instance hits | disc sweep compares every placement; any mismatch moves the computation back into the query |
 
 ## 12. Not resolved
 
-- The precision control the game uses at these entries (S0 measures).
-- The exact fields `0x001dea00` writes at R `+0x08..+0x15` (S1 pins).
-- Entry F's and entry I's argument order beyond what the ports show
-  (S0 reads `0x00300150` and `0x00301800` prologues; I's fields at
-  `this+0x10..+0x64` are listed from `0x301800` but not all named).
-- What the cluster plane of result type 2 is (the 24-byte records at
-  structure `+0x68`): its test is specified, its meaning is not.
+- The x87 control words and MXCSR values reached in Waterworks and campaign. The per-entry histograms in `collision.stats` collect both.
 - Who calls `0x002df720` outside `0x00244980` on Waterworks (the stacks are
   cut by trampolines); S6 does not depend on the answer.
-- `0x001cac60`, the second caller of the cluster flood (129 samples), is not
-  identified. Entry G covers it whatever it is.
-- Whether the runtime's 4 KiB write tracker can validate a cached per-cluster
-  reference SoA across queries. If it can, H and J skip the gather; phase 2
-  does not assume it.
 - Campaign cost of this family: no census yet.
 
 ## Summary
@@ -848,5 +922,5 @@ theater or film.
    scatter of marks and epochs; the API ships now for phases 3 and 4.
 9. No derived caches: static data per map, everything else read live, so
    revert and snapshots need nothing.
-10. Slices S0 to S7 are lane-sized and ordered; S0 (contracts, `det`,
-    harness) starts today, and the open items are listed in section 12.
+10. Slices S0 to S7 are lane-sized and ordered; the contracts, float core and
+    differential harness support S1. Section 12 lists outstanding measurements.

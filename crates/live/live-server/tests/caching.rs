@@ -39,6 +39,7 @@ async fn built_assets_are_immutable_and_the_app_revalidates() {
     let r = get("/v1/games/0123456789abcdef0123456789abcdef").await;
     assert_eq!(r.status(), StatusCode::NOT_FOUND);
     assert_eq!(r.headers()["cache-control"], PRIVATE);
+    assert_eq!(r.headers()["vary"], "Authorization");
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
@@ -50,6 +51,9 @@ async fn public_reads_carry_an_etag_and_answer_304() {
     let r = h.get("/v1/games?state=live").await;
     assert_eq!(r.status, StatusCode::OK);
     assert_eq!(r.headers["cache-control"], PUBLIC);
+    // A tagged /v1/ answer varies on Authorization, so a shared cache never
+    // answers a request that bears a token from the anonymous entry.
+    assert_eq!(r.headers["vary"], "Authorization");
     let tag = r.headers["etag"].to_str().unwrap().to_string();
     assert!(tag.starts_with("W/\""), "{tag}");
     let again = h
@@ -63,6 +67,7 @@ async fn public_reads_carry_an_etag_and_answer_304() {
     assert_eq!(again.status, StatusCode::NOT_MODIFIED);
     assert!(again.body.is_empty());
     assert_eq!(again.headers["etag"].to_str().unwrap(), tag);
+    assert_eq!(again.headers["vary"], "Authorization");
     // A change makes a new tag.
     h.start_game(&host, two_player_game(&host)).await;
     let changed = h
@@ -75,19 +80,25 @@ async fn public_reads_carry_an_etag_and_answer_304() {
         .await;
     assert_eq!(changed.status, StatusCode::OK);
     assert_ne!(changed.headers["etag"].to_str().unwrap(), tag);
-    // With a token, or marked as sent with one: private, no tag.
-    for (uri, headers) in [
-        (
+    // With a token: private, no tag.
+    let r = h
+        .call(
+            Method::GET,
             "/v1/games?state=live",
-            vec![h.bearer(&host, live_proto::lxm::READ)],
-        ),
-        ("/v1/games?state=live&auth=1", vec![]),
-    ] {
-        let r = h.call(Method::GET, uri, &headers, Body::empty()).await;
-        assert_eq!(r.status, StatusCode::OK, "{uri}");
-        assert_eq!(r.headers["cache-control"], PRIVATE, "{uri}");
-        assert!(!r.headers.contains_key("etag"), "{uri}");
-    }
+            &[h.bearer(&host, live_proto::lxm::READ)],
+            Body::empty(),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert_eq!(r.headers["cache-control"], PRIVATE);
+    assert_eq!(r.headers["vary"], "Authorization");
+    assert!(!r.headers.contains_key("etag"));
+    // A stray `auth` query mark from an older web client changes nothing:
+    // the Authorization header alone says who reads.
+    let r = h.get("/v1/games?state=live&auth=1").await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert_eq!(r.headers["cache-control"], PUBLIC);
+    assert!(r.headers.contains_key("etag"));
     // Writes are not touched.
     let r = h
         .call(

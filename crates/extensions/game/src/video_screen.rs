@@ -34,8 +34,8 @@ use settings::Store;
 
 use crate::layout_glue::Gm;
 use crate::setting_defs::{
-    AIM_ASSIST, FOV, LOD_DISTANCE, PAD_SPEAKER, STEAM_LEFT_PAD, STEAM_SENSITIVITY, STEAM_SPEAKER,
-    TOUCH_ACCEL, TOUCH_AUTO_FIRE, TOUCH_CROUCH, TOUCH_GYRO, TOUCH_LOOK,
+    AIM_ASSIST, FOV, LOD_DISTANCE, PAD_LIGHTBAR, PAD_SPEAKER, STEAM_LEFT_PAD, STEAM_SENSITIVITY,
+    STEAM_SPEAKER, TOUCH_ACCEL, TOUCH_AUTO_FIRE, TOUCH_CROUCH, TOUCH_GYRO, TOUCH_LOOK,
 };
 use crate::speaker_row;
 use crate::ui::{self, List, Model, Row, Screen};
@@ -72,12 +72,14 @@ pub fn is_model_id(id: u32) -> bool {
 
 /// Which of our rows the model has. A game gets [`Switches::PLATFORM`]:
 /// every row, with the touch controls' rows in the Steam Controller's
-/// place on iOS (no Steam Controller reaches an iPhone or iPad) and no
-/// touch rows elsewhere. Tests build models with rows left out.
+/// place on iOS (no Steam Controller reaches an iPhone or iPad), no touch
+/// rows elsewhere, and the Lightbar row on macOS. Tests build models with
+/// rows left out.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Switches {
     pub speaker_row: bool,
-    /// The Steam Controller's three rows on Controls, after the speaker's.
+    pub lightbar_row: bool,
+    /// The Steam Controller's three rows on Controls.
     pub steam_rows: bool,
     /// The touch controls' three rows on Controls (iOS), after the
     /// speaker's: look speed, crouch, gyro.
@@ -91,6 +93,7 @@ pub struct Switches {
 impl Switches {
     pub const ALL: Switches = Switches {
         speaker_row: true,
+        lightbar_row: true,
         steam_rows: true,
         touch_rows: false,
         fov_row: true,
@@ -99,8 +102,9 @@ impl Switches {
     };
 
     /// This platform's rows: [`Switches::ALL`] with the touch rows in
-    /// place of Steam's on iOS.
+    /// place of Steam's on iOS, and a Lightbar row on macOS.
     pub const PLATFORM: Switches = Switches {
+        lightbar_row: cfg!(target_os = "macos"),
         steam_rows: !IOS,
         touch_rows: IOS,
         ..Switches::ALL
@@ -123,8 +127,7 @@ pub const SETTINGS_THIRD_ITEM: u32 = 0x220;
 
 /// The model of our rows: the Video screen from the settings that name it,
 /// the Video row that opens it on the Settings list (left out when the
-/// screen has no rows), and on Controls the Controller Speaker row and the
-/// Steam Controller's three (on/off rows with the game's own On and Off).
+/// screen has no rows), and the controller options on Controls.
 pub fn model(store: Arc<Store>, on: Switches) -> Result<Model, String> {
     let mut video = Screen::new(SCREEN).title("Video Settings");
     if on.video_screen {
@@ -139,6 +142,12 @@ pub fn model(store: Arc<Store>, on: Switches) -> Result<Model, String> {
     if on.speaker_row {
         controls = controls
             .row(Row::setting(PAD_SPEAKER.key).bool_ids(speaker_row::ON_ID, speaker_row::OFF_ID));
+    }
+    if on.lightbar_row {
+        controls = controls.row(
+            Row::setting(PAD_LIGHTBAR.key)
+                .bool_ids(speaker_row::LIGHTBAR_TEAM_ID, speaker_row::OFF_ID),
+        );
     }
     // The Steam Controller's rows (docs/input/steam-controller.md) sit with
     // the controller and speaker options.
@@ -329,7 +338,7 @@ mod tests {
         .unwrap();
         assert_eq!(no_fov.rows(LIST).len(), 4);
         assert_eq!(m.count(List::Settings, SETTINGS_ROWS), 3);
-        assert_eq!(m.count(List::Controls, 6), 10, "the speaker's and Steam's");
+        assert_eq!(m.count(List::Controls, 6), 11);
         // No Video screen: no Video row on Settings either.
         let none = model(
             store(),
@@ -340,13 +349,14 @@ mod tests {
         )
         .unwrap();
         assert!(none.rows(LIST).is_empty());
-        assert_eq!(none.count(List::Controls, 6), 10);
+        assert_eq!(none.count(List::Controls, 6), 11);
         assert_eq!(none.count(List::Settings, SETTINGS_ROWS), 2);
         let bare = model(
             store(),
             Switches {
                 video_screen: false,
                 speaker_row: false,
+                lightbar_row: false,
                 steam_rows: false,
                 touch_rows: false,
                 fov_row: true,
@@ -362,6 +372,7 @@ mod tests {
     #[test]
     fn the_touch_rows_take_the_steam_rows_place_on_ios() {
         let ios = Switches {
+            lightbar_row: false,
             steam_rows: false,
             touch_rows: true,
             ..Switches::ALL
@@ -400,7 +411,13 @@ mod tests {
         if cfg!(target_os = "ios") {
             assert_eq!(Switches::PLATFORM, ios);
         } else {
-            assert_eq!(Switches::PLATFORM, Switches::ALL);
+            assert_eq!(
+                Switches::PLATFORM,
+                Switches {
+                    lightbar_row: cfg!(target_os = "macos"),
+                    ..Switches::ALL
+                }
+            );
         }
     }
 
@@ -418,12 +435,12 @@ mod tests {
             assert_eq!(drawn(&m, List::Settings, r), None, "{r}");
         }
         assert_eq!(
-            drawn(&m, List::Controls, 7),
+            drawn(&m, List::Controls, 8),
             s("Steam Pad Speaker", "0x2000181")
         );
-        assert_eq!(drawn(&m, List::Controls, 8), s("Trackpad Aim", "5"));
-        assert_eq!(drawn(&m, List::Controls, 9), s("Left Trackpad", "D-Pad"));
-        assert_eq!(drawn(&m, List::Controls, 10), None);
+        assert_eq!(drawn(&m, List::Controls, 9), s("Trackpad Aim", "5"));
+        assert_eq!(drawn(&m, List::Controls, 10), s("Left Trackpad", "D-Pad"));
+        assert_eq!(drawn(&m, List::Controls, 11), None);
         // The Settings row text draws one text: the label, in slot 0.
         let title = m.title_id(SCREEN).unwrap();
         assert_eq!(settings_text(&m, Some(2)), Some((0, title)));
@@ -444,10 +461,10 @@ mod tests {
             no_speaker.index_of(List::Settings, &RowKind::Open(SCREEN)),
             Some(2)
         );
-        assert_eq!(no_speaker.count(List::Controls, 6), 9, "Steam's rows only");
+        assert_eq!(no_speaker.count(List::Controls, 6), 10, "Steam and Lightbar");
         assert_eq!(
             no_speaker.index_of(List::Controls, &RowKind::Setting(STEAM_SPEAKER.key)),
-            Some(6)
+            Some(7)
         );
         let no_steam = model(
             Arc::new(Store::defaults(ALL)),
@@ -457,7 +474,7 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(no_steam.count(List::Controls, 6), 7, "the speaker row only");
+        assert_eq!(no_steam.count(List::Controls, 6), 8, "Speaker and Lightbar");
     }
 
     #[test]
@@ -483,7 +500,7 @@ mod tests {
     #[test]
     fn the_controls_list_grows_by_our_rows() {
         let m = all();
-        assert_eq!(list_count(&m, speaker_row::LIST_NAME, 6), 10);
+        assert_eq!(list_count(&m, speaker_row::LIST_NAME, 6), 11);
         assert_eq!(list_count(&m, speaker_row::LIST_NAME, 4), 4);
         assert_eq!(list_count(&m, crate::layout_glue::LIST_NAME, 6), 6);
         assert_eq!(list_count(&m, 0x1234, 6), 6);
@@ -585,14 +602,14 @@ mod tests {
         );
         // The Steam Controller's rows step and save like the speaker's.
         assert_eq!(
-            press(&m, List::Controls, 7),
+            press(&m, List::Controls, 8),
             Chosen::Stepped("steam_pad.speaker: false".into())
         );
-        assert_eq!(drawn(&m, List::Controls, 8), s("Trackpad Aim", "5"));
-        press(&m, List::Controls, 8);
-        assert_eq!(drawn(&m, List::Controls, 8), s("Trackpad Aim", "6"));
+        assert_eq!(drawn(&m, List::Controls, 9), s("Trackpad Aim", "5"));
         press(&m, List::Controls, 9);
-        assert_eq!(drawn(&m, List::Controls, 9), s("Left Trackpad", "Stick"));
+        assert_eq!(drawn(&m, List::Controls, 9), s("Trackpad Aim", "6"));
+        press(&m, List::Controls, 10);
+        assert_eq!(drawn(&m, List::Controls, 10), s("Left Trackpad", "Stick"));
         assert_eq!(
             press(&m, LIST, 3),
             Chosen::Stepped("graphics.lighting: e3".into())
@@ -625,7 +642,7 @@ mod tests {
         // Rows past ours, or no row, are not ours.
         assert_eq!(press(&m, LIST, 7), Chosen::Nothing);
         assert_eq!(press(&m, List::Controls, 5), Chosen::Nothing);
-        assert_eq!(press(&m, List::Controls, 10), Chosen::Nothing);
+        assert_eq!(press(&m, List::Controls, 11), Chosen::Nothing);
         // Saved as the old code saved them; other keys kept.
         let t: toml::Table = std::fs::read_to_string(&path).unwrap().parse().unwrap();
         assert_eq!(t["graphics"]["fov"].as_integer(), Some(75));
@@ -701,7 +718,7 @@ mod tests {
         let mut ids: Vec<u32> = all.iter().map(|(i, _)| *i).collect();
         assert!(ids.iter().all(|i| is_ours(*i) && is_model_id(*i)));
         ids.extend(
-            crate::layout_glue::served_strings(true)
+            crate::layout_glue::served_strings(true, true)
                 .iter()
                 .map(|(i, _)| *i),
         );

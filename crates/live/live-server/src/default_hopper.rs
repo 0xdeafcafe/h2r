@@ -10,9 +10,9 @@
 //! or any other publish replaces them, and from then on the published file
 //! is served as before.
 
-use std::sync::OnceLock;
+use std::sync::{Arc, Mutex, OnceLock};
 
-use live_proto::hopper::{HALO_2_HOPPER_FILE, HopperFile};
+use live_proto::hopper::{HALO_2_HOPPER_FILE, HopperError, HopperFile};
 use live_proto::{HALO_2_TITLE_ID, PublishedFile, TitleId, sign};
 use sha2::{Digest, Sha256};
 
@@ -38,10 +38,65 @@ pub fn fallback(title: TitleId, name: &str) -> Option<(PublishedFile, Vec<u8>)> 
     (title == HALO_2_TITLE_ID && name == HALO_2_HOPPER_FILE).then(|| file().clone())
 }
 
+struct CompatibilityFile {
+    source: String,
+    projected: Option<(String, Vec<u8>)>,
+}
+
+/// A title-file client without the rotation hook gets a disc-only copy.
+/// The canonical file remains available to the editor and capable clients.
+pub fn compatibility_download(hash: String, bytes: Vec<u8>) -> Result<(String, Vec<u8>), HopperError> {
+    static CACHE: Mutex<Option<Arc<CompatibilityFile>>> = Mutex::new(None);
+    let cached = CACHE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .filter(|cached| cached.source == hash)
+        .cloned();
+    if let Some(chosen) = cached {
+        return Ok(chosen.projected.clone().unwrap_or((hash, bytes)));
+    }
+
+    // Inflation and rebuild happen outside the lock. Cache a negative
+    // result too: an unrecognised payload passes through to the game,
+    // which already falls back to its defaults.
+    let projected = match HopperFile::parse_legacy(&bytes) {
+        Ok(mut hopper) => {
+            if hopper.retain_base_maps()? {
+                let bytes = hopper.build_checked()?;
+                Some((sign::hex(&Sha256::digest(&bytes)), bytes))
+            } else {
+                None
+            }
+        }
+        _ => None,
+    };
+    let reply = projected.clone().unwrap_or((hash.clone(), bytes));
+    *CACHE.lock().unwrap_or_else(|e| e.into_inner()) =
+        Some(Arc::new(CompatibilityFile { source: hash, projected }));
+    Ok(reply)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use live_proto::hopper::defaults::retail_map_ids;
+
+    #[test]
+    fn legacy_hopper_download_keeps_the_base_map_and_has_its_own_etag() {
+        let mut rotation = HopperFile::default_set();
+        let base = rotation.entry(0, 0).unwrap();
+        let mut addon = base.clone();
+        addon.map_id = 0x12_345;
+        rotation.set_entries(0, &[addon, base.clone()]).unwrap();
+        let raw = rotation.build_checked().unwrap();
+        let hash = sign::hex(&Sha256::digest(&raw));
+        let (etag, bytes) = compatibility_download(hash.clone(), raw.clone()).unwrap();
+        assert_ne!(etag, hash);
+        assert_eq!(etag, sign::hex(&Sha256::digest(&bytes)));
+        assert_eq!(HopperFile::parse(&bytes).unwrap().entries(0).unwrap(), vec![base]);
+        assert_eq!(compatibility_download(hash, raw).unwrap(), (etag, bytes));
+    }
 
     #[test]
     fn the_default_is_a_file_the_game_takes() {

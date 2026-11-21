@@ -330,7 +330,7 @@ packed decoder.
 
 ## Timers and hibernation
 
-A Durable Object with a timer pending does not hibernate. On a machine
+In-memory timers keep a Durable Object awake. On a machine
 the server spawns loops: the dispatcher's poll, the sweep every 5 s and the
 100 ms packed tick. The hub starts the server with `Timers::Driven`
 instead, which spawns none of them:
@@ -338,12 +338,18 @@ instead, which spawns none of them:
   writer, and its wake sees every append.
 - After every request, socket message and alarm, the hub sets its one
   alarm (`LiveHub::schedule`) for the earliest of:
-  - `Live::sweep_due`: the next presence to expire, game to end as lost,
-    or co-op session to expire;
+  - `Live::sweep_due_with_hosts`: the next presence, game, session, film,
+    dedicated host or usage deadline;
   - each stream or ingest socket's auth deadline or token end.
 
   With nothing due there is no alarm. The alarm runs the sweep and the
   sockets' checks, then sets the next one.
+- Metered [usage](live-api.md#usage) accumulates in memory and flushes to
+  SQLite after five seconds or 256 meter increments, whichever comes first.
+  Requests and ingest messages both arm the sweep while a batch is pending.
+  The flush deadline is shorter than Cloudflare's usual ten-second idle
+  period before hibernation. A deploy or abrupt reset can discard a pending
+  batch. [Durable Object lifecycle](https://developers.cloudflare.com/durable-objects/concepts/durable-object-lifecycle/)
 - The packed tick runs only while a game is live (`Live::packed_active`),
   and stops by itself when none is.
 
@@ -652,14 +658,15 @@ directory and the PNG renderer version. On a cache hit the Worker serves
 the PNG directly. On a miss it reads the manifest and two mask PNGs from
 `H2_LIVE_GAME_ART_URL` and composes them with the native server's Rust
 renderer. The Worker caches successful PNGs under their full revisioned
-URL, per data center, with `public, max-age=31536000, immutable`. Changing
-the published directory changes the revision. The stable redirect
-revalidates and errors are uncached.
+URL, per data center, with `public, max-age=31536000, immutable`; a
+request that bears `Authorization` never reads from or fills that cache,
+so a cache key holds no auth. Changing the published directory changes the
+revision. The stable redirect revalidates and errors are uncached.
 [Workers Cache API](https://developers.cloudflare.com/workers/runtime-apis/cache/)
 
-The `/v1/` cache rules (`public, … s-maxage=5` with an `ETag` for
-anonymous reads, `private, no-store` for the rest) are the router's, so
-they hold on the Worker too.
+The `/v1/` cache rules (`public, … s-maxage=5` with an `ETag` and `Vary:
+Authorization` for anonymous reads, `private, no-store` for the rest) are
+the router's, so they hold on the Worker too.
 
 The Worker's source art is the published copy. Extracting everything the
 viewer and the stats site use

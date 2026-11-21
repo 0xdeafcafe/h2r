@@ -9,10 +9,14 @@ const SECOND: Xuid = Xuid(2);
 const SESSION: &str = "8abc1234def56789";
 
 fn config(global: bool, hopper: u32) -> DedicatedConfig {
+    config_with_map(global, hopper, "lockout")
+}
+
+fn config_with_map(global: bool, hopper: u32, map: &str) -> DedicatedConfig {
     DedicatedConfig::from_lookup(|key| match key {
         "LIVE_DEDICATED" if global => Some("1".into()),
         "LIVE_DEDICATED_HOPPERS" => Some(serde_json::json!({
-            (hopper.to_string()): {"map": "lockout", "variant": "Team Slayer"}
+            (hopper.to_string()): {"map": map, "variant": "Team Slayer"}
         }).to_string()),
         "LIVE_HOST_REGIONS" => Some(r#"{"lhr":"192.0.2.30:31000","iad":null}"#.into()),
         "LIVE_HOST_DEFAULT_REGION" => Some("iad".into()),
@@ -26,6 +30,7 @@ fn ticket(port: u16) -> Ticket {
         hopper: HOPPER,
         port,
         dedicated: false,
+        has_map_pack: false,
         connectivity: Connectivity::default(),
         samples: Vec::new(),
     }
@@ -45,7 +50,7 @@ fn make_cohort(
     with_probes: bool,
 ) -> (Lease, Option<HostLease>) {
     let probes = if with_probes { [Some(65), Some(70)] } else { [None, None] };
-    make_cohort_with_probes(config, provider, &probes, true, 45)
+    make_cohort_with_probes(config, provider, &probes, true, 45, &[])
 }
 
 fn make_cohort_with_probes(
@@ -54,11 +59,13 @@ fn make_cohort_with_probes(
     probes: &[Option<u16>],
     ranked: bool,
     peer_rtt: u16,
+    owners: &[bool],
 ) -> (Lease, Option<HostLease>) {
     let rules = Rules { size: probes.len(), team_count: 2, ranked };
     let mut bucket = Bucket::default();
     let mut tickets: Vec<_> = (0..probes.len()).map(|n| {
-        let t = ticket(31000 + 10 * n as u16);
+        let mut t = ticket(31000 + 10 * n as u16);
+        t.has_map_pack = owners.get(n).copied().unwrap_or(false);
         let endpoint = SocketAddrV4::new([192, 0, 2, 1 + n as u8].into(), t.port);
         (t, Xuid(1 + n as u64), endpoint)
     }).collect();
@@ -158,7 +165,7 @@ fn unranked_dedicated_rtt_veto_requires_a_majority_of_the_whole_cohort() {
     ];
     for &(probes, peer_rtt, veto) in cases {
         let (lease, request) = make_cohort_with_probes(
-            &config, Some(ProviderKind::Local), probes, false, peer_rtt,
+            &config, Some(ProviderKind::Local), probes, false, peer_rtt, &[],
         );
         assert_eq!(request.is_none(), veto, "{probes:?} vs {peer_rtt}");
         assert_eq!(lease.assignment.dedicated, !veto);
@@ -180,7 +187,7 @@ fn missing_regional_rtts_abstain_with_the_whole_cohort_as_denominator() {
         ([Some(121), None, Some(122)], true),
     ] {
         let (_, request) = make_cohort_with_probes(
-            &config, Some(ProviderKind::Cloudflare), &probes, false, 45,
+            &config, Some(ProviderKind::Cloudflare), &probes, false, 45, &[],
         );
         assert_eq!(request.is_none(), veto);
     }
@@ -190,7 +197,7 @@ fn missing_regional_rtts_abstain_with_the_whole_cohort_as_denominator() {
 fn ranked_hopper_keeps_the_dedicated_host_even_with_unanimous_slow_routes() {
     let config = config(true, HOPPER);
     let (lease, request) = make_cohort_with_probes(
-        &config, Some(ProviderKind::Local), &[Some(121), Some(240)], true, 45,
+        &config, Some(ProviderKind::Local), &[Some(121), Some(240)], true, 45, &[],
     );
     assert!(request.is_some());
     assert!(lease.assignment.dedicated);
@@ -428,21 +435,104 @@ async fn leased_publication_authorizes_only_the_assigned_session() {
 }
 
 #[test]
-fn warm_demand_counts_only_fresh_players_in_opted_in_hoppers() {
-    let mut matcher = Matchmaker { config: config(true, HOPPER), ..Default::default() };
-    let rules = Rules { size: 2, team_count: 2, ranked: false };
-    matcher.rules = Some(("synthetic".into(), [Some(rules); HOPPERS]));
-    let endpoint = "192.0.2.1:31000".parse().unwrap();
-    let bucket = matcher.buckets.entry(HOPPER).or_default();
-    let mut first = ticket(31000);
-    let lhr = matcher.config.regions.candidates().next().unwrap().clone();
-    first.samples.push(sample(&lhr, 60));
-    bucket.submit(&first, FIRST, endpoint, 1, FORMED, Some(&matcher.config.regions)).unwrap();
-    let mut registered = ticket(31001);
-    registered.dedicated = true;
-    bucket.submit(&registered, SECOND, endpoint, 1, FORMED, None).unwrap();
-    matcher.buckets.entry(HOPPER + 1).or_default()
-        .submit(&ticket(31002), Xuid(3), endpoint, 1, FORMED, None).unwrap();
-    assert_eq!(matcher.search_demand(FORMED), BTreeMap::from([(Some("lhr".into()), 1)]));
-    assert!(matcher.search_demand(FORMED + TICKET_SECONDS).is_empty());
+fn map_pack_only_requires_a_nonempty_rotation_without_a_disc_entry() {
+    let mut file = HopperFile::default_set();
+    let disc = file.entry(0, 0).unwrap();
+    let pack = live_proto::hopper::Entry {
+        map_id: u32::MAX - 1,
+        map_name: String::new(),
+        ..disc.clone()
+    };
+    file.set_entries(0, &[pack.clone()]).unwrap();
+    assert!(pack_only(&file, 0), "a raw import does not need to name its maps");
+    file.set_entries(0, &[pack, disc]).unwrap();
+    assert!(!pack_only(&file, 0), "the disc entry is a fallback");
+    file.set_entries(0, &[]).unwrap();
+    assert!(!pack_only(&file, 0), "an empty rotation has no maps to gate");
+}
+
+#[test]
+fn dedicated_map_pack_selection_requires_every_player() {
+    let config = DedicatedConfig::from_lookup(|key| match key {
+        "LIVE_DEDICATED" => Some("1".into()),
+        "LIVE_DEDICATED_HOPPERS" => Some(r#"{"2":{"map":"turf"}}"#.into()),
+        _ => None,
+    }).unwrap();
+
+    for (owners, can_play_pack) in [
+        ([true, true], true),
+        ([true, false], false),
+        ([false, true], false),
+        ([false, false], false),
+    ] {
+        let (lease, request) = make_cohort_with_probes(
+            &config, Some(ProviderKind::Local), &[None, None], true, 45, &owners,
+        );
+        assert_eq!(lease.assignment.has_map_pack, can_play_pack);
+        if can_play_pack {
+            assert_eq!(request.unwrap().map, "turf");
+            let Placement::Booting { fallback } = lease.placement else {
+                panic!("an ad hoc host needs a peer fallback");
+            };
+            assert!(fallback.has_map_pack);
+        } else {
+            assert!(request.is_none());
+            assert!(matches!(lease.placement, Placement::PeerOrRegistered));
+        }
+    }
+}
+
+#[test]
+fn availability_uses_the_latest_report_and_expires_it() {
+    let mut matcher = Matchmaker::default();
+    assert_eq!(matcher.map_pack_for(FIRST, FORMED), None);
+
+    matcher.report_map_pack(FIRST, reported_map_pack(br#"{"has_map_pack":true}"#), FORMED);
+    assert_eq!(matcher.map_pack_for(FIRST, FORMED), Some(true));
+    assert_eq!(matcher.map_pack_for(SECOND, FORMED), None);
+
+    let old = reported_map_pack(br#"{"hopper":2}"#);
+    matcher.report_map_pack(FIRST, old, FORMED + 1);
+    assert_eq!(matcher.map_pack_for(FIRST, FORMED + 1), None);
+
+    let later = FORMED + 2;
+    matcher.report_map_pack(FIRST, reported_map_pack(br#"{"has_map_pack":false}"#), later);
+    assert_eq!(matcher.map_pack_for(FIRST, later + CAPABILITY_SECONDS - 1), Some(false));
+    assert_eq!(matcher.map_pack_for(FIRST, later + CAPABILITY_SECONDS), None);
+}
+
+#[test]
+fn warm_demand_counts_only_fresh_players_eligible_for_the_configured_map() {
+    for (map, has_map_pack, eligible) in [
+        ("lockout", false, true),
+        ("turf", false, false),
+        ("turf", true, true),
+    ] {
+        let mut matcher = Matchmaker { config: config_with_map(true, HOPPER, map), ..Default::default() };
+        let rules = Rules { size: 2, team_count: 2, ranked: false };
+        matcher.lineup = Some(Lineup {
+            fingerprint: "synthetic".into(),
+            rules: [Some(rules); HOPPERS],
+            map_pack_only: [false; HOPPERS],
+        });
+        let endpoint = "192.0.2.1:31000".parse().unwrap();
+        let bucket = matcher.buckets.entry(HOPPER).or_default();
+        let mut first = ticket(31000);
+        first.has_map_pack = has_map_pack;
+        let lhr = matcher.config.regions.candidates().next().unwrap().clone();
+        first.samples.push(sample(&lhr, 60));
+        bucket.submit(&first, FIRST, endpoint, 1, FORMED, Some(&matcher.config.regions)).unwrap();
+        let mut registered = ticket(31001);
+        registered.dedicated = true;
+        bucket.submit(&registered, SECOND, endpoint, 1, FORMED, None).unwrap();
+        matcher.buckets.entry(HOPPER + 1).or_default()
+            .submit(&ticket(31002), Xuid(3), endpoint, 1, FORMED, None).unwrap();
+        let demand = matcher.search_demand(FORMED);
+        if eligible {
+            assert_eq!(demand, BTreeMap::from([(Some("lhr".into()), 1)]));
+        } else {
+            assert!(demand.is_empty());
+        }
+        assert!(matcher.search_demand(FORMED + TICKET_SECONDS).is_empty());
+    }
 }

@@ -113,6 +113,55 @@ async fn the_default_lineup_is_served_until_a_file_is_published() {
 }
 
 #[tokio::test]
+async fn disc_and_map_pack_downloads_have_independent_etags() {
+    let h = harness().await;
+    let mut file = HopperFile::default_set();
+    let base = file.entry(0, 0).unwrap();
+    let mut pack = base.clone();
+    pack.map_id = 0x12_345;
+    file.set_entries(0, &[pack.clone(), base.clone()]).unwrap();
+    let bytes = file.build_checked().unwrap();
+    let put = h.call(Method::PUT, FILE, &[operator(&h)], bytes.clone()).await;
+    assert_eq!(put.status, StatusCode::OK, "{}", put.error());
+
+    let full_path = format!("{FILE}?map_pack=1");
+    let full = h.get(&full_path).await;
+    assert_eq!(full.status, StatusCode::OK);
+    assert_eq!(full.body, bytes);
+    assert_eq!(
+        HopperFile::parse(&full.body).unwrap().entries(0).unwrap(),
+        vec![pack, base.clone()],
+    );
+
+    let disc = h.get(FILE).await;
+    assert_eq!(disc.status, StatusCode::OK);
+    assert_eq!(
+        HopperFile::parse(&disc.body).unwrap().entries(0).unwrap(),
+        vec![base],
+    );
+    let full_etag = full.headers["etag"].to_str().unwrap();
+    let disc_etag = disc.headers["etag"].to_str().unwrap();
+    assert_ne!(full_etag, disc_etag);
+
+    for (path, own, other) in [
+        (FILE, disc_etag, full_etag),
+        (full_path.as_str(), full_etag, disc_etag),
+    ] {
+        let cached = h
+            .call(Method::GET, path, &[("if-none-match", own.into())], "")
+            .await;
+        assert_eq!(cached.status, StatusCode::NOT_MODIFIED);
+        assert_eq!(cached.headers["etag"], own);
+        assert!(cached.body.is_empty());
+        let fresh = h
+            .call(Method::GET, path, &[("if-none-match", other.into())], "")
+            .await;
+        assert_eq!(fresh.status, StatusCode::OK);
+        assert_eq!(fresh.headers["etag"], own);
+    }
+}
+
+#[tokio::test]
 async fn pins_are_independent_of_the_default_file() {
     let h = harness().await;
     assert_eq!(h.get("/v1/hoppers/pins").await.json()["pins"], json!([]));

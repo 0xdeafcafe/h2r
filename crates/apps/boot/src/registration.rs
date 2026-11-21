@@ -99,13 +99,14 @@ pub struct Core {
 
 /// Registers everything from the telemetry hooks to the touch glue.
 pub fn register_core(features: &mut hooks::Registry, i: CoreInputs<'_>) -> anyhow::Result<Core> {
-    register_core_film(features, i, None)
+    register_core_film(features, i, None, false)
 }
 
 pub(crate) fn register_core_film(
     features: &mut hooks::Registry,
     i: CoreInputs<'_>,
     film: Option<Arc<crate::theater::Session>>,
+    non_player: bool,
 ) -> anyhow::Result<Core> {
     let rt: &Runtime = i.rt;
     let config = i.telemetry.unwrap_or_else(|error| {
@@ -186,6 +187,8 @@ pub(crate) fn register_core_film(
     // screen opened from the logon's polling (docs/live/live.md, "In-game
     // sign-in").
     signin_screen::install(rt, features, i.live.as_ref()).context("installing the sign-in prompt")?;
+    crate::join_link::install(features, i.live.clone(), non_player || film.is_some())
+        .context("installing Live join links")?;
     // A campaign level in place of the main menu (`h2 play --level`,
     // H2_LEVEL) and the level-loaded mark H2_PERF_FROM=level waits on
     // (docs/runtime/level-boot.md).
@@ -205,6 +208,11 @@ pub(crate) fn register_core_film(
     features
         .add(&variant_ext::Transport { hle: i.live.clone() })
         .map_err(|e| anyhow::anyhow!("variant options transport: {e}"))?;
+    if let Some(hle) = i.live.clone() {
+        features
+            .add(&crate::live_hopper::MapPackRotation(hle))
+            .map_err(|e| anyhow::anyhow!("matchmaking map pack rotation: {e}"))?;
+    }
     // Its damage, shield and health scales on each damage instance.
     features
         .add(&variant_ext::Vitality)
@@ -436,10 +444,10 @@ pub(crate) fn register_late_for_profile(
     if render_hooks == film::RenderHooks::Gpu {
         use render_bridge::native_scene_lists::NativeSceneLists;
 
-        let lod = if let Some(view) = i.view {
+        let view_scale = if let Some(view) = i.view {
             let lod = crate::lod_distance::LodDistance::new(i.settings.as_deref(), view.scale_stats.clone())?;
-            let enabled = features.add(&lod).map_err(|e| anyhow::anyhow!("LOD distance: {e}"))?;
-            enabled.then_some(lod)
+            features.add(&lod).map_err(|e| anyhow::anyhow!("LOD distance: {e}"))?;
+            lod.view_scale()
         } else {
             None
         };
@@ -510,8 +518,7 @@ pub(crate) fn register_late_for_profile(
         features
             .add(&render_bridge::native_world_layers::NativeWorldLayers)
             .map_err(|e| anyhow::anyhow!("native world layers: {e}"))?;
-        if let Some(lod) = lod {
-            let scale = Arc::new(move || lod.multiplier());
+        if let Some(scale) = view_scale {
             features.add(&NativeSceneLists::with_lod_scale(scale))
         } else {
             features.add(&NativeSceneLists)

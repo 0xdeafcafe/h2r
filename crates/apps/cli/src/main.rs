@@ -156,6 +156,8 @@ mod object;
 mod play_cloud;
 #[cfg(feature = "desktop")]
 mod play_cmd;
+#[cfg(all(feature = "desktop", target_os = "macos"))]
+mod mac_app;
 #[cfg(feature = "desktop")]
 mod play_live;
 #[cfg(feature = "desktop")]
@@ -369,7 +371,14 @@ fn main() -> Result<()> {
     #[cfg(feature = "desktop")]
     boot::live_glue::set_build(app::BuildInfo::baked().sha);
     let mut args = std::env::args().skip(1);
-    let Some(cmd) = args.next() else {
+    let command = args.next();
+    #[cfg(all(feature = "desktop", target_os = "macos"))]
+    if command.as_deref().is_none_or(|s| s.starts_with("-psn_"))
+        && let Some(resources) = mac_app::resources(&std::env::current_exe()?)
+    {
+        return mac_app::play(&resources);
+    }
+    let Some(cmd) = command else {
         bail!("{USAGE}")
     };
     match cmd.as_str() {

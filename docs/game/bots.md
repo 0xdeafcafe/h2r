@@ -366,8 +366,18 @@ the nav mesh, and shared read-only by every bot in the process.
   (`bots: built the visibility grid for lockout (none yet): ...`); a BSP
   whose `.vis` is current (`vis::current`: this version, the `.bots`
   stamp, its walls) is not built again.
+- **Build.** A row reuses the ordered collision candidates for center
+  rays with the same XY projection and the intersection terms that
+  depend only on the ray's origin (`los::BuildRays`). The proof
+  precomputes each triangle's plane and edges. It factors the 64
+  corner-crossing checks into two groups of eight projections per edge
+  and uses the direct projection at rounding boundaries. Candidate
+  order, proof limits and serialized grid bytes are identical to the
+  scalar proof (`visibility_build_matches_legacy_grid_bytes`).
 - **Progress.** A grid is built in about 64 chunks of rows of pairs
-  (`vis::fill`). After a chunk the build saves the grid so far and the
+  (`vis::fill`). The workers take rows from the current chunk and
+  reuse their scratch space for the whole grid. After a chunk the
+  build saves the grid so far and the
   first row not done to `<map>.<bsp>.vis.part` (magic `H2VP`) at most
   every `vis::SAVE_EVERY` (10 s), and the next build of that BSP carries
   on from it when it was made for the same `.bots` stamp and the same
@@ -3976,11 +3986,17 @@ game checks.
      version, or built from another map file is **stale** and is built;
      the rest are left alone. The boot never waits for it.
      - **Background work.** The worker runs on `background::spawn` and
-       builds each visibility grid on `background::workers` threads, each
-       lowered itself (`vis::Threads::background`), so it takes a quarter
-       of the cores below the game's priority
-       ([background-work.md](../runtime/background-work.md)). `h2 bots nav`
-       keeps half the cores at the default priority (`vis::Threads::foreground`).
+       splits collision probes, tactical place scoring and grid rows
+       across `background::workers` lowered threads
+       (`vis::Threads::background`). The budget defaults to a quarter
+       of the cores ([background-work.md](../runtime/background-work.md)).
+       `h2 bots nav` uses half the cores, up to eight, at the default
+       priority (`vis::Threads::foreground`).
+     - **Cold builds.** `cache::build_with` reads each collision surface
+       ring once for both pathfinding and walls. Jump probes reuse arc
+       samples and the feet and chest sweeps shared by both postures.
+       `nav::ordered_build_chunks` gathers completed probes in input
+       order, and the polygon spatial lookup is built once.
      - **Maps no bot plays.** `autonav::map_use` gives `Never` for
        `mainmenu`, `shared` and `single_player_shared` by name, and for a
        header of those kinds (`+0x140` 2, 3, 4); `LoadOnly` for campaign;
@@ -4000,9 +4016,19 @@ game checks.
        header, which holds its size, the tag index's offsets, its name and
        the XOR checksum of the rest (every map writer here recomputes it).
        Reading it costs 2 KiB a map, so a boot with every file up to date
-       does almost nothing. A converted Halo 1 map's two sandbox variants
-       are two map files: switching sandbox builds that map again (about
-       a second).
+       does almost nothing. A converted Halo 1 map's two sandbox
+       variants have separate cache identities.
+     - **Shared cache.** The game and `h2 bots nav all` can restore
+       completed files to a fresh data directory. `autonav::shared_cache`
+       keys a nav bundle by SHA-256 of the whole source map and the nav
+       format and generator versions. A visibility entry is per BSP,
+       keyed by SHA-256 of its exact `.bots` bytes and the grid version.
+       Entries are checksummed and disposable. They live under
+       `~/Library/Caches/h2recomp/bots` on macOS,
+       `$XDG_CACHE_HOME/h2recomp/bots` or `~/.cache/h2recomp/bots` on
+       Linux, and `%LOCALAPPDATA%/h2recomp/cache/bots` on Windows.
+       A cache miss or inaccessible cache uses the local build path.
+       Every file the game loads is still written under `<data>/bots`.
      - **The generator version** (`cache::GENERATOR`) is bumped whenever
        `bots::nav`, `bots::los`, `cache::build` or `crates/formats/pathfind`'s
        generator change what a map builds. The test
@@ -4020,22 +4046,22 @@ game checks.
        (Clankers turned on, or a map picked with them on), so a stale
        mesh is usually built by the time the game starts.
      - **Writes** are atomic: each file is written to
-       `.<file>.<pid>.tmp` beside it, synced and renamed over it, the
+       `.<file>.<pid>.<id>.tmp` beside it, synced and renamed over it, the
        other BSPs first and `<map>.0.bots` (the one checked) last. A crash
        leaves the old file or the new one, never half of one.
      - **Log**: one line a map built (`bots: built the nav mesh for
        lockout (none yet): 590 polygons, ... in 0.0 s`), one when its
        grid is (`bots: built the visibility grid for lockout ...`), and one summary
-       after the pass (`bots: nav meshes: 12 built, 0 up to date (0.5 s)`).
+       after the pass with the count and elapsed time. Shared cache
+       restores are identified in the per-map log.
      - **Off**: `H2_BOTS_NAV_AUTO=0` (or `off`). The worker also stays
        off when the bots feature is (`H2_FEATURES=-bots`).
    - **By hand**: `h2 bots nav <map|all> [--force] [--disc ISO] [--data DIR]`
      runs the same worker in the foreground over the disc. `all` builds
-     the disc's multiplayer maps that are stale and skips the rest;
-     `--force` builds them all. A named map (or a map file) is always
-     built, whatever its kind. Measured on an M-series Mac: the retail
-     disc's 12 multiplayer maps build in about half a second together;
-     every map on the disc, campaign included (80 BSPs), in about 20 s.
+     the disc's stale multiplayer maps and uses the shared cache.
+     `--force` and a named map or map file bypass the shared cache and
+     rebuild the mesh. A current local grid can still be reused. Use an
+     empty data directory to time both build phases.
    - Tests (`cargo test -p bots`): synthetic collision through the real
      generator (two floors sharing an edge, an L-shaped corridor, a ledge
      dropped off but not climbed, a low ledge jumped onto, a narrow gap

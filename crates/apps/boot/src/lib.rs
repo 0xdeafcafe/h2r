@@ -9,6 +9,7 @@
 //! directory, which should be under `$TMPDIR` or `target/`.
 
 pub use game::*;
+mod controller_lights;
 // maps.test.*: test maps from recipes (docs/game/test-maps.md).
 pub mod registration;
 #[cfg(feature = "test-maps")]
@@ -609,6 +610,7 @@ fn run_configured(
             bots,
         },
         film.clone(),
+        replaying || host_light || sim_mode.is_some(),
     )?;
     let (skulls_on, skulls_mp_on, skulls_custom_on, health_on) = (
         core.skulls_on,
@@ -660,6 +662,8 @@ fn run_configured(
     // hopper's title and finds the arbitration round by the session. A
     // clanker hopper's game is a Clankermatch (docs/game/bots.md §8.2).
     if let (Some(t), Some(hle)) = (&_telemetry, &_live) {
+        let lobby = Arc::clone(hle);
+        t.set_hosted_session_locator(Box::new(move || lobby.hosted_session()));
         let hle = Arc::clone(hle);
         t.set_playlist_locator(Box::new(move || {
             hle.matchmade().map(|(id, session)| telemetry::Playlist {
@@ -849,6 +853,9 @@ fn run_configured(
     let xa = host.input.take()
         .map(|input| xapi_glue::register_with(&loaded.runtime, &k, input))
         .transpose()?;
+    let mut controller_lights = xa.as_ref().filter(|_| !host_light).map(|x| {
+        controller_lights::ControllerLights::new(x, host.settings.as_deref())
+    });
     // Voice chat's communicator (docs/live/live-voice.md): off until a
     // microphone is chosen on the Voice screen.
     #[cfg(feature = "local-io")]
@@ -993,6 +1000,9 @@ fn run_configured(
             host.settings.clone(),
             host.perf_overlay.clone(),
         );
+        if let Some(lights) = &controller_lights {
+            lights.install(&a.agent);
+        }
     }
     if sim_mode.is_some() || host_light {
         features
@@ -1071,6 +1081,51 @@ fn run_configured(
             film_stamps(),
         );
     }
+    let bink = if opts.bink {
+        // A lockstep run compares schedules and movie pacing follows the
+        // wall clock, so it skips them; so, by default, do level boots and
+        // headless runs.
+        let why_off = if host_light {
+            Some("light host".into())
+        } else {
+            movies_glue::why_off(&opts.movies, lockstep_on, level_name.as_deref(), headless)
+        };
+        // Film recording and playback use the recorded movie policy and hook plan.
+        let allow_attract = why_off.is_none() && film.is_none();
+        let attract_file = if allow_attract && opts.movies != movies_glue::Movies::Off {
+            k.vfs().and_then(|vfs| {
+                vfs.lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .host_file(movies_glue::ATTRACT_VFS_PATH)
+            })
+        } else {
+            None
+        };
+        let (mode, hle, attract) = movies_glue::install(
+            &loaded.runtime,
+            &opts.movies,
+            &opts.disc,
+            attract_file,
+            allow_attract,
+            why_off.as_deref(),
+            #[cfg(feature = "local-io")]
+            ds.as_ref()
+                .filter(|_| !clock_only_audio)
+                .map(dsound_glue::Audio::mixer),
+            #[cfg(not(feature = "local-io"))]
+            None,
+        );
+        if allow_attract && mode == bink_hle::Mode::Playback {
+            attract.install(&mut features, agent.as_ref().map(|a| &a.agent))?;
+        }
+        if let Some(session) = &film {
+            session.record_movies(opts, mode);
+        }
+        Some(hle)
+    } else {
+        eprintln!("movies: off (--no-bink: the original player runs)");
+        None
+    };
     // Part of a machine snapshot's build key (snapshot_glue.rs).
     let switch_spec = features.switches().spec();
     let plan = features.build(&hooks::Base).map_err(|conflicts| {
@@ -1131,35 +1186,6 @@ fn run_configured(
         eprintln!("lockstep: hashing presents only: {why}");
         h.set_tick_note(why.to_owned());
     }
-    let bink = if opts.bink {
-        // A lockstep run compares schedules and movie pacing follows the
-        // wall clock, so it skips them; so, by default, do level boots and
-        // headless runs.
-        let why_off = if host_light {
-            Some("light host".into())
-        } else {
-            movies_glue::why_off(&opts.movies, lockstep_on, level_name.as_deref(), headless)
-        };
-        let (mode, hle) = movies_glue::install(
-            &loaded.runtime,
-            &opts.movies,
-            &opts.disc,
-            why_off.as_deref(),
-            #[cfg(feature = "local-io")]
-            ds.as_ref()
-                .filter(|_| !clock_only_audio)
-                .map(dsound_glue::Audio::mixer),
-            #[cfg(not(feature = "local-io"))]
-            None,
-        );
-        if let Some(session) = &film {
-            session.record_movies(opts, mode);
-        }
-        Some(hle)
-    } else {
-        eprintln!("movies: off (--no-bink: the original player runs)");
-        None
-    };
     let tr = if host_light {
         None
     } else {
@@ -1376,6 +1402,9 @@ fn run_configured(
         if let Some(link) = voice_link.as_mut() {
             link.pump();
         }
+        if let Some(lights) = &mut controller_lights {
+            lights.sample(&loaded.runtime);
+        }
         if let Some(x) = &xa
             && timeline::host::INPUT
                 .time(|| {
@@ -1434,6 +1463,7 @@ fn run_configured(
             break;
         }
     }
+    drop(controller_lights);
     if let Some(audit) = &audit {
         audit.finish(&loaded.runtime)?;
     }

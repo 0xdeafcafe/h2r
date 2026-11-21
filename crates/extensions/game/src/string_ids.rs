@@ -31,8 +31,8 @@ fn table_members() -> Vec<(&'static str, Vec<u32>)> {
     let model = video_screen::model(store, video_screen::Switches::ALL).unwrap();
     vec![
         (
-            "layouts and speaker",
-            ids(layout_glue::served_strings(true)),
+            "layouts and controls",
+            ids(layout_glue::served_strings(true, true)),
         ),
         (
             "ui model",

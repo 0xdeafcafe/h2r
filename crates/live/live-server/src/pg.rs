@@ -417,10 +417,12 @@ impl EventStore for PostgresStore {
             .execute(&mut *tx)
             .await?;
         }
-        sqlx::query("delete from usage where day <> '' and day < $1")
-            .bind(keep_from)
-            .execute(&mut *tx)
-            .await?;
+        if !keep_from.is_empty() {
+            sqlx::query("delete from usage where day <> '' and day < $1")
+                .bind(keep_from)
+                .execute(&mut *tx)
+                .await?;
+        }
         tx.commit().await?;
         Ok(())
     }

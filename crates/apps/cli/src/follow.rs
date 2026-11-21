@@ -417,6 +417,9 @@ const PLAY_VALUE_FLAGS: &[&str] = &[
     "--bindings",
     "--follow-status",
     "--movies",
+    "--join",
+    "--live-server",
+    "--gamertag",
 ];
 
 #[derive(Debug, PartialEq, Eq)]
@@ -2764,6 +2767,8 @@ fn main() {
         assert_eq!(out, PathBuf::from("/o"));
         assert_eq!(data, Some(PathBuf::from("/d")));
         // A value that looks like a path is not taken for the disc.
+        let (disc, ..) = play_paths(&args("--join LINK --live-server URL --gamertag Player disc.iso"));
+        assert_eq!(disc, Some(PathBuf::from("disc.iso")));
         let (disc, ..) = play_paths(&args("--bindings keys.toml disc.iso"));
         assert_eq!(disc, Some(PathBuf::from("disc.iso")));
         assert!(parse_args(args("--follow --follow-status x")).is_err());

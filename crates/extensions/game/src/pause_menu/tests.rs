@@ -105,8 +105,10 @@ fn either_native_list_labels_and_opens_video_and_voice_after_its_own_rows() {
     let pages = Pages::new(true, true, &hooks::Switches::defaults());
     // The native player list can omit retail rows. Our labels and presses
     // both follow the action word rather than the resulting row index.
+    let mut controller: Vec<u16> = (0..6).collect();
+    controller.extend(speaker_row::small_values(true, true, true));
     for (list, kind, retail) in [
-        (NativeList::Controller, 0, &[0, 1, 2, 3, 4, 5, 6, 7][..]),
+        (NativeList::Controller, 0, controller.as_slice()),
         (NativeList::Controller, 1, &[0, 1, 2, 3, 4, 5][..]),
         (NativeList::Player, 1, &[0, 1, 2, 3][..]),
         (NativeList::Player, 1, &[0, 3][..]),

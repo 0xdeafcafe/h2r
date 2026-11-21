@@ -1,7 +1,8 @@
 //! The bots' nav meshes, built while the game runs (docs/game/bots.md §10,
 //! stage 2, "Built for you"): [`bots::autonav::Worker`] on a background
-//! thread of its own ([`background::spawn`]), its visibility grids split
-//! across [`background::workers`] lowered threads, so the boot and a map
+//! thread of its own ([`background::spawn`]), with nav probes and
+//! visibility grid rows split across [`background::workers`] lowered
+//! threads, so the boot and a map
 //! load never wait for it, nor for the cores it uses.
 //!
 //! It scans retail maps as the VFS serves them, including explicit
@@ -84,6 +85,7 @@ pub fn start_with(
     };
     let (worker, handle) = Worker::new(bots::cache::dir(data_root), scan);
     let worker = worker
+        .shared_cache(autonav::shared_cache_dir())
         .on_demand(move |name| {
             if !played(name) {
                 return None;

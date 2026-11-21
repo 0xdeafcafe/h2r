@@ -95,10 +95,6 @@ impl DedicatedConfig {
         })
     }
 
-    pub(super) fn enabled(&self, hopper: u32) -> bool {
-        self.playlist(hopper).is_some()
-    }
-
     pub(super) fn playlist(&self, hopper: u32) -> Option<&DedicatedPlaylist> {
         self.hoppers.get(&hopper)
     }
@@ -161,8 +157,13 @@ impl Live {
             return Err(not_found("unknown probe region"));
         }
         let clock = crate::app::now();
-        if !matcher.buckets.iter().any(|(&hopper, bucket)| matcher.config.enabled(hopper)
-            && bucket.waiting.get(xuid).is_some_and(|w| !w.dedicated && w.seen + super::TICKET_SECONDS > clock)) {
+        if !matcher.buckets.iter().any(|(&hopper, bucket)| {
+            let Some(playlist) = matcher.ad_hoc_playlist(hopper) else { return false };
+            bucket.waiting.get(xuid).is_some_and(|w| {
+                !w.dedicated && w.seen + super::TICKET_SECONDS > clock
+                    && (!super::map_pack_map(&playlist.map) || w.has_map_pack)
+            })
+        }) {
             return Err(forbidden("a regional probe needs an active dedicated search"));
         }
         Ok(())
@@ -308,15 +309,15 @@ mod tests {
 
     #[test]
     fn both_switches_must_enable_the_hopper() {
-        assert!(!config(&[]).unwrap().enabled(1));
-        assert!(!config(&[(ENABLED, "1")]).unwrap().enabled(1));
+        assert!(config(&[]).unwrap().playlist(1).is_none());
+        assert!(config(&[(ENABLED, "1")]).unwrap().playlist(1).is_none());
         let playlists = r#"{"1":{"map":"lockout"},"3":{"map":"zanzibar","variant":"Team Slayer"}}"#;
-        assert!(!config(&[(HOPPERS_ENABLED, playlists)]).unwrap().enabled(1));
-        assert!(!config(&[(ENABLED, "true"), (HOPPERS_ENABLED, playlists)]).unwrap().enabled(1));
+        assert!(config(&[(HOPPERS_ENABLED, playlists)]).unwrap().playlist(1).is_none());
+        assert!(config(&[(ENABLED, "true"), (HOPPERS_ENABLED, playlists)]).unwrap().playlist(1).is_none());
         let enabled = config(&[(ENABLED, "1"), (HOPPERS_ENABLED, playlists)]).unwrap();
-        assert!(enabled.enabled(1));
-        assert!(enabled.enabled(3));
-        assert!(!enabled.enabled(2));
+        assert!(enabled.playlist(1).is_some());
+        assert!(enabled.playlist(3).is_some());
+        assert!(enabled.playlist(2).is_none());
         let playlist = enabled.playlist(3).unwrap();
         assert_eq!(playlist.map, "zanzibar");
         assert_eq!(playlist.variant.as_deref(), Some("Team Slayer"));
@@ -342,8 +343,8 @@ mod tests {
         let a = BTreeMap::from([(ams, Some(10)), (lhr, Some(55))]);
         let b = BTreeMap::from([(ams, Some(85)), (lhr, Some(60))]);
         let members = [
-            Entrant { xuid: Xuid(1), level: 1, since: 0, samples: &a },
-            Entrant { xuid: Xuid(2), level: 1, since: 0, samples: &b },
+            Entrant { xuid: Xuid(1), level: 1, has_map_pack: false, since: 0, samples: &a },
+            Entrant { xuid: Xuid(2), level: 1, has_map_pack: false, since: 0, samples: &b },
         ];
 
         let selected = regions.pick(&members).unwrap();
@@ -360,8 +361,8 @@ mod tests {
         let a = BTreeMap::from([(ams, Some(30)), (lhr, Some(60))]);
         let b = BTreeMap::from([(lhr, None)]);
         let members = [
-            Entrant { xuid: Xuid(1), level: 1, since: 0, samples: &a },
-            Entrant { xuid: Xuid(2), level: 1, since: 0, samples: &b },
+            Entrant { xuid: Xuid(1), level: 1, has_map_pack: false, since: 0, samples: &a },
+            Entrant { xuid: Xuid(2), level: 1, has_map_pack: false, since: 0, samples: &b },
         ];
         let selected = regions.pick(&members).unwrap();
         assert_eq!(selected.region, "lhr");
@@ -384,7 +385,7 @@ mod tests {
     fn ties_prefer_the_default_if_it_has_complete_measurements() {
         let regions = configured_regions("lhr");
         let samples = regions.candidates().map(|probe| (probe.xuid, Some(15))).collect();
-        let members = [Entrant { xuid: Xuid(1), level: 1, since: 0, samples: &samples }];
+        let members = [Entrant { xuid: Xuid(1), level: 1, has_map_pack: false, since: 0, samples: &samples }];
         assert_eq!(regions.pick(&members).unwrap().region, "lhr");
     }
 
@@ -394,7 +395,7 @@ mod tests {
         let ams = regions.regions["ams"].as_ref().unwrap().xuid;
         let lhr_echo = regions.echoes["lhr"].xuid;
         let samples = BTreeMap::from([(ams, Some(40)), (regions.echoes["ams"].xuid, Some(5)), (lhr_echo, Some(50))]);
-        let members = [Entrant { xuid: Xuid(1), level: 1, since: 0, samples: &samples }];
+        let members = [Entrant { xuid: Xuid(1), level: 1, has_map_pack: false, since: 0, samples: &samples }];
         regions.warm_until_ms.insert("lhr".into(), 1000);
         assert_eq!(regions.pick_at(&members, 999).unwrap().region, "lhr");
         assert_eq!(regions.pick_at(&members, 1000).unwrap().region, "ams");

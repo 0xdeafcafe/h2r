@@ -184,6 +184,8 @@ are under [Reviews](#reviews).
 - [theater.md](game/theater.md): Theater: saved films, free camera and spectating; the in-game selector and host-film player are built, the real-host experiments are pending
 - [film-format.md](game/film-format.md): the `.h2film` container a host records and Theater replays: layout, keyframes, seeking, determinism checks
 - [forge.md](game/forge.md): design for Forge on Halo 2 multiplayer maps (not built)
+- [forge-design.md](game/forge-design.md): design for the full Forge: the document and its ops, what applies live and what needs a rebuild, the host's edit log, films, sharing on Live, each feature's cost, the UI and the slices (not built)
+- [forge-features.md](game/forge-features.md): design for each Forge feature: monitor bodies, objects, links and triggers, emitters, barriers, nav, AI, geometry and paint, character import (not built)
 - Notes: [high-framerate.md](game/notes/high-framerate.md) (prior art and measurements for 60 and 120 fps)
 
 ## Halo 1 (`halo1/`)
@@ -226,6 +228,7 @@ Reading and converting Halo 1 data:
 - [web-viewer.md](live/web-viewer.md): the web app's optional game art and the game page's 2D map and 3D viewer
 - [viewer-overlay.md](live/viewer-overlay.md): the 3D view's opening camera, Halo 2-style overlay, name tags and progressive reveal (design only, not built)
 - [viewer-effects.md](live/viewer-effects.md): how damage reads in the viewer, and its combat effects: shields, explosions, impacts, melee, teleporters and deaths, what each derives from and the new telemetry two need (design only, not built)
+- [Grenade trajectories](live/notes/grenade-trajectories.md) compares the telemetry viewer’s grenade arcs with recorded Lockout projectiles.
 - [dash-concepts.md](live/dash-concepts.md): the Live dashboard as it is now: the orb, the menu blades, the Games screen and its Halo 2 panel
 - [live-hosting.md](live/live-hosting.md): hosting a server for friends (Cloudflare Tunnel, docker compose)
 - [live-worker.md](live/live-worker.md): the Live service on Workers, Durable Objects and R2, including the game header and cutover runbook
@@ -256,6 +259,7 @@ Reading and converting Halo 1 data:
 - [click-to-edit.md](editor/click-to-edit.md): design for one Map tool in place of Scenario and Tags: click a placement or live object to edit its tag chain, navigation, "where is this used", unique copies, and Halo 1 tags (converted maps with source overrides, and Halo 1 maps in their own format)
 - [modeling.md](editor/modeling.md): design for mesh, BSP and texture editing: the mesh kernel and its ops, the round trip for structure and model geometry, collision, lightmaps and `bitm`, the tools, the agent API methods and the slices
 - [modeling-targets.md](editor/modeling-targets.md): design for the Halo 2 round trip of each modeling target: read path, edit model, write classes, what is recomputed, limits and risks for `sbsp` render geometry and collision, portals, lightmaps, `mode`, `coll` and `phmo`
+- [polish-plan.md](editor/polish-plan.md): design for the editor's polish: what is wrong with file and line, one layout with the game link always on screen, the scenario tag tree, tag edits reaching the running game (what is safe, what needs a reload, undo), layers and overlays for trigger and kill volumes and collision-only geometry, editing those, the viewport on the native renderer, and slices P1 to P17 with P1 ready to hand off
 
 ## Working on the repository (`dev/`)
 

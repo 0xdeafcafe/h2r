@@ -590,7 +590,7 @@ The server marks what may be cached (live-api.md, "Caching"). By default Cloudfl
 - **When:** hostname is your Live host, the URI path starts with `/v1/`, and the method is `GET`.
 - **Then:** eligible for cache, edge TTL "use cache-control header if present", browser TTL "respect origin".
 
-The rule is safe for signed-in readers. Their reads are `private, no-store`, which Cloudflare never stores, and the web app adds `auth=1` to each one so it never shares a URL with an anonymous read. Assets are `immutable` and named by hash, so they are cached anyway; purge the zone once after the first deploy that carries the new headers.
+The rule is safe for signed-in readers. Cloudflare bypasses its cache for any request that carries an `Authorization` header, so a signed-in read is never answered from the anonymous entry, and its `private, no-store` answer is never stored. Cloudflare ignores `Vary: Authorization` unless a Cache Rules Vary setting lists it; the header is for other shared caches. Assets are `immutable` and named by hash, so they are cached anyway; purge the zone once after the first deploy that carries the new headers.
 
 Tunnel: `cloudflared` picks QUIC on UDP 7844 and opens 4 connections to the nearest Cloudflare locations it can reach. If its log shows QUIC dials failing ("no route to host"), or the connections land far from your readers, try `--protocol http2` (TCP 443). Argo Smart Routing shortens the path from the reader's edge to the tunnel. The edge cache does more than either, because a cached read never reaches the tunnel.
 
@@ -639,9 +639,10 @@ The server is on the internet now. What protects it:
 What you should decide:
 
 - **Who may create accounts.** By default anyone with the URL can.
-  `--invite-only` requires an invite code (`h2 live invite create`, run on
-  this machine, or an admin's dashboard: Settings → Server → Invites,
-  [live-admin.md](live-admin.md) §5). `serve` warns when a tunnel runs without it.
+  `--invite-only` requires an invite code. The operator, admins and
+  accounts with the **can invite** grant can make codes
+  ([live-admin.md](live-admin.md) §5). `serve` warns when a tunnel runs
+  without this setting.
 - **Who may read.** Reads (games, accounts, presence, the log) are public
   by default; `--private` needs a token for every read and on the stream.
 - **Admin names.** `--admin`/`H2_LIVE_ADMINS` name gamertags, and a
