@@ -109,14 +109,19 @@ pub fn harvest_run(
         };
         let target = into.join(&name);
         if is_verified {
-            let new = found(
+            let shared = read_verified(&target)?;
+            // What the run found, less what the shared file already holds
+            // (a run harvested twice adds nothing the second time).
+            let new: Vec<Entry> = found(
                 &read_verified(&start.join(&name))?,
                 &read_verified(&end.join(&name))?,
-            );
+            )
+            .into_iter()
+            .filter(|e| !shared.contains(e))
+            .collect();
             if new.is_empty() {
                 continue;
             }
-            let shared = read_verified(&target)?;
             out[i].verified += new.len();
             out[i].proven += new
                 .iter()

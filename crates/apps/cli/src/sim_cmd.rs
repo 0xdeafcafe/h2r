@@ -1296,6 +1296,7 @@ mod tests {
             nav: "loaded".into(),
             dispatch_per_tick: None,
             notes: vec![],
+            bounce: None,
         }
     }
 

@@ -406,7 +406,7 @@ pub fn heights(s: &telemetry::Snapshot) -> Vec<(u8, f32)> {
         .enumerate()
         .filter_map(|(i, p)| {
             let o = s.objects.get(i).and_then(Option::as_ref)?;
-            Some(((p.player.index & 0xff) as u8, o.pos[2]))
+            Some(((p.player.index & 0xff) as u8, o.pos[2] as f32))
         })
         .collect()
 }

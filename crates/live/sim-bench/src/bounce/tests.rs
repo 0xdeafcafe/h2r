@@ -278,7 +278,7 @@ fn the_match_report_carries_the_block_only_in_a_superbounce_match() {
         },
     );
     let r = t.report(finish());
-    let b = r.bounce.expect("a bounce block");
+    let b = r.bounce.clone().expect("a bounce block");
     assert_eq!(b.players.len(), 1);
     assert_eq!(b.players[0].stats.attempts, 1);
     assert_eq!(b.totals.why.get("too_slow"), Some(&1));
