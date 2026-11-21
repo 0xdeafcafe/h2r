@@ -47,9 +47,12 @@ const LIST_PICTURE: PictureSpec = PictureSpec {
     at: [22, 149],
     ..lobby::PICTURE
 };
+// The actions list shows four rows above the status block; Share and Copy
+// Link are the fifth and sixth, so the list scrolls to them.
+const FILM_VISIBLE: i16 = 4;
 const FILM_LAYOUT: ListLayout = ListLayout {
     anchor: [lobby::LIST.anchor[0], -77],
-    visible: DETAIL_ACTIONS,
+    visible: FILM_VISIBLE,
     ..lobby::LIST
 };
 const FILM_PICTURE: PictureSpec = PictureSpec {
