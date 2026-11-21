@@ -8,6 +8,7 @@ mod toolbar;
 pub(crate) mod inspector;
 mod layers;
 pub mod map_list;
+mod modeling;
 pub mod map_pack;
 mod outliner;
 mod palette;
@@ -64,6 +65,7 @@ pub struct Studio {
     pub ui_screens: ui_screens::UiScreensUi,
     pub hud: hud::HudUi,
     inspector: inspector::InspectorState,
+    modeling: modeling::ModelingPanel,
     /// Play and pair (the Game panel; `crate::play`).
     pub play: play::PlayUi,
     /// The Tags tab's UI state, including its field panel.
@@ -97,6 +99,7 @@ impl Studio {
             ui_screens: ui_screens::UiScreensUi::default(),
             hud: hud::HudUi::default(),
             inspector: inspector::InspectorState::default(),
+            modeling: modeling::ModelingPanel::default(),
             play: play::PlayUi::default(),
             tags: tags::TagsUi::default(),
             map_list: map_list::MapListUi::default(),
@@ -909,6 +912,7 @@ impl Studio {
                 compare_banner(ui, c);
             }
             inspector::draw(ui, &self.fonts, app, &mut state);
+            modeling::section(ui, app, &mut self.modeling, actions);
         });
         self.inspector = state;
     }
