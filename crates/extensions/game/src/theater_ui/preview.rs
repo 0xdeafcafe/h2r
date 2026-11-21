@@ -109,7 +109,10 @@ impl Kind {
                 "full-library",
                 "unplayable",
             ],
-            Self::Detail => &["list", "unplayable", "summary", "players", "confirm-delete"],
+            Self::Detail => &[
+                "list", "unplayable", "summary", "players", "preparing", "prepared",
+                "prepare-failed", "confirm-delete",
+            ],
             Self::Playback => &["playing", "paused"],
         }
     }
@@ -362,10 +365,26 @@ impl Live for Preview {
             _ => {}
         }
         state.select(entry.clone());
+        if let Some((tick, status)) = match name {
+            "preparing" => Some((6_080, super::PrepareStatus::Running)),
+            "prepared" => Some((entry.film.length_ticks, super::PrepareStatus::Complete)),
+            "prepare-failed" => Some((1_200, super::PrepareStatus::Failed {
+                error: "Film diverged at tick 1201.".into(),
+            })),
+            _ => None,
+        } {
+            state.prepare = Some(super::PrepareState {
+                id: entry.film.id.clone(),
+                tick,
+                length_ticks: entry.film.length_ticks,
+                status,
+            });
+            self.focus = Focus(1);
+        }
         if name == "confirm-delete" {
             state.confirm_delete = true;
             state.status = "Press A again to delete".into();
-            self.focus = Focus(2);
+            self.focus = Focus(3);
         }
         if matches!(self.initial, Kind::Playback) {
             let mut track = Track::from_entry(&entry);

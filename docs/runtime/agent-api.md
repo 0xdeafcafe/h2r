@@ -2020,11 +2020,25 @@ directly on its own `--socket` (`H2_AGENT`, else the cache's `theater.sock`).
 | Method | Parameters | Result |
 |---|---|---|
 | `theater.play` | `{"id":"film-id","range":[300,900]}` to open, `{}` to resume; omit `range` for the whole film | `{id, starting:true}` on launch, otherwise transport state |
-| `theater.state` | `{}` | transport state, or `{id:null}` with no player |
+| `theater.prepare` | `{"id":"film-id"}` on the library agent | starts a background Prepare replay and returns its progress. A duplicate request for an active job returns that job's progress. |
+| `theater.state` | `{}` | transport state, or `{id:null,active:false}` with no player |
+| `theater.state` | `{"id":"film-id"}` on the library agent | Prepare progress for that ID |
 | `theater.pause` | `{}` | holds guest execution and reports state |
 | `theater.speed` | `{"speed":0.5}` | sets host pacing from 0.25 to 4 times realtime |
 | `theater.seek` | `{"tick":900}`, optionally `"clip_marks":[300,null]` | restarts the player and fast-forwards to the target, carrying camera and timeline state; direct socket clients reconnect after the restart |
 | `theater.camera` | `{"mode":"orbit","player":"<name>","look":[0.2,-0.1],"zoom":-1}` or `{"mode":"first_person","seat":3}` | selects the view and returns transport state; an absolute film seat is 0 to 15 |
+
+Prepare accepts a local library ID or `live:<game-id>` for a host film
+downloaded into the library. It replays the entire film from boot in an
+isolated process without a window or realtime pacing. Prepare progress is
+`{id,status,tick,length_ticks}`. The status is `idle` before a job starts,
+`starting` while it boots, `running` while it replays, `complete` after
+verified replay and sidecar finalization, or `failed` with an `error`
+message. The ticks count from boot. The film length becomes available
+after the worker resolves the library entry. The library agent keeps
+each job's final status for its lifetime and a new request can retry it.
+For a command-line Prepare with `--socket PATH`, use `theater.state {}`
+on that socket to read its transport tick directly.
 
 The rendered player starts at the clip's first tick and loops at its end.
 Its overlay uses the player's agent socket for transport and `cheat.set
@@ -2046,7 +2060,10 @@ player's name or seat to select a drawn viewport. Headless playback
 Transport state carries `id`, `tick`, `length_ticks`, `paused`, `speed`,
 `seeking`, `camera`, optional `camera_player` and `camera_seat`, and
 discovered kill marker ticks in `kills`, alongside the usual `at` stamp.
-Tick zero is boot. A paused seek holds at its target until play. The HLE
+After a jump, `seek` identifies the target, the tick the viewer left, the
+remaining ticks, and the source (`sidecar`, embedded `keyframe`, or `boot`).
+`restore_ms` measures a successful snapshot restore. Tick zero is boot.
+A paused seek holds at its target until play. The HLE
 compares the recorded call index and game-thread hash samples during
 fast-forward ([theater.md](../game/theater.md)).
 

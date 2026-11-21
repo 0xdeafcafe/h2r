@@ -6,6 +6,7 @@ pub mod machine;
 pub mod manifest;
 pub mod presentation;
 pub mod range;
+pub mod sidecar;
 pub mod tape;
 use anyhow::{Context, Result, ensure};
 pub use library::{Library, LibraryEntry};
@@ -291,26 +292,18 @@ impl<W: Write + Seek> Writer<W> {
             });
         Ok(())
     }
+    /// Physical offset of the most recently written chunk, for a tape cursor.
+    pub fn last_chunk_offset(&self) -> Option<u64> {
+        self.index.last().map(|entry| entry.offset)
+    }
+
     fn write(&mut self, tag: Tag, raw: &[u8]) -> Result<()> {
         ensure!(!self.failed, "film output already failed");
-        if raw.len() > MAX_CHUNK {
-            return Err(ChunkTooLarge.into());
-        }
-        let mut frame = zstd::stream::Encoder::new(Vec::new(), 1)?;
-        frame.set_pledged_src_size(Some(raw.len() as u64))?;
-        frame.include_checksum(true)?;
-        frame.write_all(raw)?;
-        let bytes = frame.finish()?;
-        if bytes.len() > MAX_CHUNK {
-            return Err(ChunkTooLarge.into());
-        }
+        let bytes = compress_chunk(raw)?;
         let offset = self.out.stream_position()?;
         self.failed = true;
-        let size = bytes.len() as u32;
-        self.out.write_all(&tag)?;
-        self.out.write_all(&size.to_le_bytes())?;
-        self.out.write_all(&bytes)?;
-        self.index.push(Entry { tag, offset, size });
+        self.index
+            .push(write_envelope(&mut self.out, tag, offset, &bytes)?);
         self.failed = false;
         Ok(())
     }
@@ -515,6 +508,41 @@ impl<R: Read + Seek> Reader<R> {
     pub fn read<T: DeserializeOwned>(&mut self, entry: &Entry) -> Result<T> {
         decode(&mut self.input, entry)
     }
+
+    /// SHA-256 of the final HEAD payload, with the original encoding intact.
+    pub fn header_digest(&mut self) -> Result<String> {
+        ensure!(self.finalized, "film header is not sealed");
+        let head = self
+            .entries
+            .iter()
+            .rfind(|e| e.tag == HEAD)
+            .context("missing sealed film header")?
+            .clone();
+        Ok(xbe_digest(&self.read_bytes(&head)?))
+    }
+}
+
+fn compress_chunk(raw: &[u8]) -> Result<Vec<u8>> {
+    if raw.len() > MAX_CHUNK {
+        return Err(ChunkTooLarge.into());
+    }
+    let mut frame = zstd::stream::Encoder::new(Vec::new(), 1)?;
+    frame.set_pledged_src_size(Some(raw.len() as u64))?;
+    frame.include_checksum(true)?;
+    frame.write_all(raw)?;
+    let bytes = frame.finish()?;
+    if bytes.len() > MAX_CHUNK {
+        return Err(ChunkTooLarge.into());
+    }
+    Ok(bytes)
+}
+
+fn write_envelope(out: &mut impl Write, tag: Tag, offset: u64, bytes: &[u8]) -> Result<Entry> {
+    let size = u32::try_from(bytes.len())?;
+    out.write_all(&tag)?;
+    out.write_all(&size.to_le_bytes())?;
+    out.write_all(bytes)?;
+    Ok(Entry { tag, offset, size })
 }
 fn decode<R: Read + Seek, T: DeserializeOwned>(input: &mut R, e: &Entry) -> Result<T> {
     Ok(serde_json::from_slice(&read_bytes(input, e, MAX_CHUNK)?)?)

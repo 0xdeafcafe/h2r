@@ -106,7 +106,7 @@ The same container also holds the film: the inputs (tag 1) and digests
 | The `.h2film` container: time chunks, the private machine section, per-tick gameplay digests, arena hashes every 30 ticks | Built | [film-format.md](film-format.md), `crates/live/film` |
 | Per-tick inputs: the 92-byte retail action of every seat, read at the simulation-update boundary after pads, remote arrivals and phantom actions are resolved, and written back there in playback | Built | `capture` and `apply` in `crates/extensions/game/src/theater/actions.rs`; `SIM_UPDATE_APPLY` in `crates/hooking/guest-layout/src/points.rs` |
 | The HLE tape: every host answer the guest received, on one call index | Built | `crates/live/film/src/tape.rs` (`Call`, `Playback::call`); `impl Tap for Session` in `theater.rs` |
-| Machine keyframes written into the film every 30 s of guest time | Built; the design moves them out of the film | `KEYFRAME_SECONDS`, `try_keyframe` in `crates/extensions/game/src/theater/record.rs` |
+| Capture points every 150 ticks and local sidecar snapshots every sixth point | Recorder and player use the snapshot build key and recorded device boundaries | `crates/extensions/game/src/theater/record.rs`, `crates/live/film/src/sidecar.rs` |
 | Machine snapshots: guest RAM, kernel, D3D, audio, XAPI, feature sections, a RAM hash | Built, tested on synthetic machines | [snapshots.md](../runtime/snapshots.md) |
 | The player: an isolated child process per film; a seek ends the child and starts another | Built | `crates/apps/cli/src/theater_cmd.rs` (`run`, the restart loop) |
 | A film without a usable keyframe plays from boot | Built | `EngineReplay::open` in `crates/extensions/game/src/theater/replay.rs` (`ImageMatch::FromBoot`) |
@@ -224,20 +224,21 @@ A machine snapshot is not invisible to the guest's devices: capturing the
 D3D section drains the push buffer, writes dirty render targets back and
 reads visibility counts. The recorder marks every attempt as a
 `d3d_barrier` with its scheduler slice, and linear playback performs the
-same device work at the same slice (`Session::replay_device_barrier`,
+same device work at the same slice (`Session::replay_capture_point`,
 `film::tape::Playback::d3d_barrier`). A keyframe taken anywhere else would
 make the playback differ from the recording.
 
-So the player captures only at slices the film marks. The recorder makes
-a capture point every **150 ticks** (5 s): when the machine reports no
-blocker it performs the D3D section's device work and writes the mark.
-Nothing is published into the film. A recorder that keeps a sidecar
-(below) saves the whole machine at every sixth point, which is the 30 s
-keyframe cadence. A dedicated host saves none.
+The player captures only at slices the film marks. Every **150 ticks**
+(5 s), the recorder looks for an unblocked boundary during the first
+30 ticks of the interval. It runs the D3D section's device work and
+writes a mark with the outcome after flushing the call batch. Every sixth
+mark is eligible for a whole-machine snapshot if that device capture
+succeeds. The 30 s cadence assumes every interval has an unblocked
+boundary. A dedicated host records the marks and omits the sidecar.
 
 Captures take place between two slices, at a boundary the recording
 already has. The recorder never asks for an early slice end
-(`crates/apps/boot/src/lib.rs`, the loop that calls `try_keyframe`), and
+(`crates/apps/boot/src/lib.rs`, the loop that calls `try_capture_point`), and
 neither does the player, because an early end moves every later slice
 ([snapshots.md](../runtime/snapshots.md#running-the-probe)).
 
@@ -303,16 +304,18 @@ its own `TIDX`-shaped directory. `film::blam::TrackReader::seek` reads
 film and sidecar keyframes as one ordered list.
 
 - **The recorder writes one** for a film it records for local play: the
-  keyframes `try_keyframe` takes go to the sidecar, so the machine that
+  keyframes `try_capture_point` takes go to the sidecar, so the machine that
   played a game can jump in its film at once.
 - **The player writes one** as it plays or replays: a keyframe at every
   sixth capture point it passes that the sidecar lacks. A film from
   another machine becomes seekable as far as it has been watched.
   **Prepare** on the film page replays it to the end in the background
-  and reports progress.
+  without a window or realtime pacing. The film page gets progress and
+  the verified result from `theater.state {id}`.
 - A sidecar is rebuilt from the film whenever it is missing. It holds
   game data, is never uploaded, and is removed with the film or when the
-  cache passes its cap, least recently watched first.
+  cache passes its cap, least recently watched first. The user setting
+  `theater.cache_cap_gib` defaults to 4 GiB.
 - A sidecar loads only into the build that wrote it. Another build
   ignores it and writes its own.
 
@@ -453,8 +456,8 @@ opens `h2recomp://theater/<film>?clip=<clip>&t=<tick>&seat=<n>&camera=<mode>&ser
 | Guest RAM | 64 MiB: 16,384 pages of 4,096 bytes | **Code**: `RAM_SIZE`, `PAGE_SIZE` in `crates/runtime/runtime/src/guest.rs` |
 | Game-state arena | `0x3fe000` bytes: 4,186,112 bytes, 1,022 pages, 6.2% of RAM | **Code**: `crates/platform/xapi/tests/checkpoints.rs`; [sim-rewrite.md](../engine/sim-rewrite.md) |
 | Tick rate | 30 Hz; 33.3 ms of film per tick | [high-framerate.md](high-framerate.md) |
-| Sidecar keyframe cadence | 900 ticks (30 s) | **Code**: `KEYFRAME_SECONDS` |
-| Capture point cadence | 150 ticks (5 s) | **Design** |
+| Sidecar keyframe cadence | Every sixth capture point, usually 900 ticks (30 s) | **Code**: `POINTS_PER_KEYFRAME` |
+| Capture point cadence | 150 ticks (5 s) | **Code**: `CAPTURE_TICKS` |
 | Sidecar keyframe bytes | planning: 16 MiB anchor + 7 × 1 MiB deltas per 4 minutes = 5.75 MiB a minute; 57.5 MiB for a 10-minute match plus one lobby anchor | **Estimate** from [film-format.md](film-format.md#keyframe-ram-budget); not measured |
 | Film bytes | about 2,700 to 7,700 per player-minute and 3,650 a match-minute of digests; a 16-player 10-minute host film is about 0.5 MB | **Estimate**: [input-film.md](input-film.md#size-step-by-step) |
 | Ring entries | 12 (one minute at the capture cadence) | **Design** |
@@ -542,7 +545,7 @@ Existing methods keep their parameters.
 | `theater.step` | `{ticks: 1}` | runs that many ticks and holds |
 | `theater.keyframes` | `{}` | `{film: [tick], sidecar: [tick], ring: [tick], capture_points: [tick], ring_bytes, ring_cap, sidecar_bytes}` |
 | `theater.verify` | `{from?, to?, ring?: true}` | replays the range unrendered in a second player and returns `{ticks, digests_checked, arena_hashes_checked, ram_hashes_checked, first_divergence}`; `ring` takes and restores a ring entry at every capture point on the way |
-| `theater.prepare` | `{id}` | starts the pass that writes the sidecar and a missing stats file; `theater.state` of that id reports its progress |
+| `theater.prepare` | `{id}` | starts the pass that writes the sidecar, plus a missing stats file once the two streams are separate. Returns `{id, status, tick, length_ticks, error?}`, also available from `theater.state {id}` on the library agent. |
 | `theater.hud` | `{game?: bool, bar?: bool}` | transport state |
 | `theater.screenshot` | `{scale?: 1..4, path?}` | `{path, width, height, tick}` |
 | `theater.clip.mark` | `{in?: tick, out?: tick, clear?: true}` | the marks |
@@ -579,9 +582,11 @@ described in [film-format.md](film-format.md) when built:
   film's machine part. A reader that knows barriers needs no change.
 - The sidecar file: the eight bytes `H2KEYS1!`, the film id, the film's
   header digest, the build key, then `KEYF` envelopes and a closing
-  directory. Each keyframe's cursors include the film chunk and the
-  decoder's seat rows, so playback resumes the tick stream there. A
-  recorder's sidecar gets the digest when the film is sealed.
+  directory. Each sidecar keyframe has a `film::tape::SidecarCursor`
+  identifying its capture mark. The player resumes at the successor tick
+  in the indexed input block. The column decoder in slice 13 extends this
+  cursor with its film chunk and seat rows. A recorder's sidecar gets the
+  digest when the film is sealed.
 - The machine part's call tape is one binary stream in call order: a
   ULEB operation code from a table in the header, the thread, the
   arguments and the result as ULEBs, and each output as a length and
@@ -602,7 +607,7 @@ an order: 12, 13 and 14 start with 0 to 3.
 |---|---|---|---|
 | 0 | **Measure the existing player.** `theater.keyframes`, the `seek` block and `restore_ms` in `theater.state`; `h2 film stat FILE` printing each `KEYF`'s tick, stored bytes and anchor, the barrier marks, and for each tape stream its calls, inflated bytes, stored bytes and chunks. Then three films are recorded and played (a leased host match, a local multiplayer game, a campaign level) and a dated note records keyframes published and skipped with the blockers, anchor and delta bytes, capture time, pages written per 5 s and 30 s, child start to first slice, boot to match start, cold restore time, unrendered ticks a second, and the tape table per stream with the operations an offline game makes. | now | Tests on synthetic films for the new fields and `film stat`. The note `docs/game/notes/theater-seek.md` exists and the numbers on this page cite it or are corrected by it. |
 | 1 | **Jumps that show their work, on the cold path.** Seek progress and cancel; taps within 250 ms merged into one jump; `speed_reached`; `theater.step`; the timeline's target and fill. | now | `theater::tests`: a cancelled seek returns to the tick it left; five taps make one restart; a step of 1 advances one tick and holds. Agent-proto round trips. A boot-sourced seek on a synthetic film reports falling `remaining_ticks`. |
-| 2 | **Sidecar keyframes and Prepare.** The sidecar writer and reader, the merged keyframe list, the cache cap; the writer is one type used by the player and by the recorder. | now | A synthetic film without `KEYF`: play to the end, then a seek reports `source: "sidecar"` and its digests equal the straight run's. A sidecar of another build key is ignored. A damaged or missing sidecar is written again from the film. The cap evicts the least recently watched film's sidecar. |
+| 2 | **Sidecar keyframes and Prepare.** The sidecar writer and reader, the merged keyframe list, the cache cap and the film page's background Prepare pass. The writer is one type used by the player and by the recorder. | now | A synthetic film without `KEYF`: play to the end, then a seek reports `source: "sidecar"` and its digests equal the straight run's. The film page and agent report progress and the verified result. A sidecar of another build key is ignored. A damaged or missing sidecar is written again from the film. The cap evicts the least recently watched film's sidecar. |
 | 3 | **Capture points every 150 ticks** in the recorder, with no keyframe in the film. | now | `film` tests: a 30 s local recording holds six barrier marks and no `KEYF`, and its sidecar holds one keyframe; a host recording holds the marks and writes no sidecar; a film with barriers only at keyframes still plays. `theater::tests`: linear replay performs each barrier at its slice. |
 | 4 | **Warm restore and the ring.** The page pool, ring policy, in-process restore, the warm rules and the cold fallback, the paused-camera redraw. | code now; merges after slice 0 shows keyframes are taken in real films | Over a synthetic machine in the manner of `crates/runtime/kernel/tests/snapshot.rs`: run, capture at k, run to m, restore k in the same machine, run to m, and every slice digest matches; twice in a row. Pool: unchanged pages are shared, the cap evicts oldest first and is never passed. A forced RAM mismatch restarts cold and turns warm restores off. A disk delta between source and target restarts cold. `theater.verify {ring: true}` over each slice 0 film returns no divergence. |
 | 5 | **One camera rig.** The rig and `camera_pose` in state for rendered and playerless films, field of view, follow and orbit on rendered films, the game HUD and bar toggles as `theater.hud`. | now | `theater::tests`: the rig survives a seek; a camera change leaves the digests of a synthetic replay unchanged; `first-person` on a seat without a viewport falls to follow and says so in state. In a run: `theater.verify` with a free camera moving on a rendered film returns no divergence. |
@@ -658,14 +663,14 @@ is the only one whose merge waits on a measurement.
 - **Code**: a seek restarts the child. `crates/apps/cli/src/theater_cmd.rs`
   loops on `restart.json`; `boot::run_theater` restores the keyframe
   before the first slice (`crates/apps/boot/src/lib.rs`, `take_keyframe`).
-- **Code**: the recorder captures between slices when `keyframe_due`,
-  with no early slice end, and retries each tick while blocked
-  (`record.rs`, `try_keyframe`).
+- **Code**: the recorder captures between slices when `capture_point_due`,
+  with no early slice end, and retries on later ticks within the first
+  second of the interval (`record.rs`, `try_capture_point`).
 - **Code**: barriers are replayed at their slice and their outcome is
-  checked (`replay.rs`, `replay_device_barrier`).
-- **Test**: `seek_restores_machine_and_replays_only_the_remaining_ticks`
-  (`theater/tests.rs`) covers the cold keyframe path on a synthetic
-  machine.
+  checked (`replay.rs`, `replay_capture_point`).
+- **Test**: `theater/tests/capture_points.rs` covers local and host
+  capture points, playback rebuilding the sidecar, and cold seeks using
+  a sidecar or an embedded keyframe on synthetic machines.
 - **Test**: an in-process load into a running synthetic machine, twice,
   with matching per-slice digests (`crates/runtime/kernel/tests/snapshot.rs`).
 - **Code**: `state.load` already loads into a running game through

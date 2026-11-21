@@ -5,6 +5,8 @@
 *.xbe
 *.map
 *.bik
+*.h2keys
+**/cache/*/.stage-*
 /extracted
 /out
 # Your own disc lives here; `h2` picks it up automatically.

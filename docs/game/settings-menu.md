@@ -157,6 +157,14 @@ privacy screen sets it; [live-custom-games.md](../live/live-custom-games.md)),
 ([live-coop.md](../live/live-coop.md)), and `graphics.single_copy`
 ([high-resolution.md](../graphics/high-resolution.md)).
 
+### Theater keyframe cache
+
+`theater.cache_cap_gib` limits the disk space used by Theater keyframe
+sidecars. The default is 4 GiB. To change the limit, run
+`h2 settings set theater.cache_cap_gib 8` or set `cache_cap_gib = 8` under
+`[theater]` in the viewer's `settings.toml`. The setting takes effect
+at launch. Values are whole GiB, with `0` disabling the cache.
+
 ## Video screen
 
 The top-level Settings list (Player Profiles, Game Variants) has a third

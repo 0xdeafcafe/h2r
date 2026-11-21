@@ -129,8 +129,10 @@ impl Library {
     }
     pub fn delete(&self, id: &str) -> Result<()> {
         let path = self.get(id)?.path;
-        remove_pin(&path)?;
-        Ok(fs::remove_file(path)?)
+        crate::sidecar::remove_film_with(&self.dir, id, || {
+            remove_pin(&path)?;
+            Ok(fs::remove_file(path)?)
+        })
     }
 }
 fn remove_pin(path: &Path) -> Result<()> {

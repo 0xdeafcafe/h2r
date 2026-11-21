@@ -2,11 +2,11 @@ use super::{
     DESC, INPT, Keyframe, MAX_SEATS, MatchHeader, RecordData, SUMM, Summary, TIDX, Tick, stream,
     ticks, unified,
 };
-use crate::{Entry, KEYF, Reader, Writer};
+use crate::{Entry, KEYF, Reader, Writer, sidecar::SidecarReader, tape::SidecarCursor};
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::VecDeque,
+    collections::{BTreeMap, VecDeque},
     fs::File,
     io::{Read, Seek, Write},
     path::Path,
@@ -312,31 +312,10 @@ impl TrackWriter {
                 .is_none_or(|k| k.tick < frame.tick),
             "duplicate or out-of-order film keyframe"
         );
-        ensure!(!frame.snapshot.is_empty(), "empty film snapshot");
+        let raw = encode_keyframe(frame)?;
         if out.version < 3 {
             self.flush(out)?;
         }
-        let mut raw = Vec::with_capacity(50);
-        for n in [
-            frame.tick,
-            frame.slices,
-            frame.calls,
-            frame.lobby_boundary,
-            frame.disk_delta.len() as u64,
-        ] {
-            ticks::varint(n, &mut raw);
-        }
-        let payload_len = frame
-            .disk_delta
-            .len()
-            .checked_add(frame.snapshot.len())
-            .ok_or(crate::ChunkTooLarge)?;
-        if payload_len > crate::MAX_CHUNK - raw.len() {
-            return Err(crate::ChunkTooLarge.into());
-        }
-        raw.reserve_exact(payload_len);
-        raw.extend_from_slice(&frame.disk_delta);
-        raw.extend_from_slice(&frame.snapshot);
         let mut block = write_block(out, KEYF, frame.tick, 0, &raw)?;
         block.ram_anchor = ram_anchor;
         self.directory.keyframes.push(block);
@@ -471,6 +450,23 @@ pub fn summary<R: Read + Seek>(reader: &mut Reader<R>) -> Result<Summary> {
     Ok(summary)
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KeyframeSource {
+    Embedded,
+    Sidecar,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct KeyframeInfo {
+    pub tick: u64,
+    pub source: KeyframeSource,
+}
+
+enum Selection {
+    Embedded(usize),
+    Sidecar(usize),
+}
+
 pub struct TrackReader<R: Read + Seek> {
     reader: Reader<R>,
     pub descriptor: MatchHeader,
@@ -478,7 +474,10 @@ pub struct TrackReader<R: Read + Seek> {
     directory: Directory,
     next_block: usize,
     pending: VecDeque<Tick>,
+    sidecar: Option<SidecarReader>,
+    embedded_enabled: bool,
     keyframe_offset: Option<u64>,
+    sidecar_cursor: Option<SidecarCursor>,
 }
 
 impl TrackReader<File> {
@@ -594,7 +593,10 @@ impl<R: Read + Seek> TrackReader<R> {
             directory,
             next_block: 0,
             pending: VecDeque::new(),
+            sidecar: None,
+            embedded_enabled: true,
             keyframe_offset: None,
+            sidecar_cursor: None,
         })
     }
 
@@ -607,36 +609,159 @@ impl<R: Read + Seek> TrackReader<R> {
         self.keyframe_offset
     }
 
-    fn keyframe_index(&self, target: u64) -> Result<Option<usize>> {
+    /// Use the running build's cache even when this film's embedded snapshot
+    /// build is incompatible. Missing or damaged files leave the boot route.
+    pub fn attach_sidecar(&mut self, films_dir: &Path, stamp: &str, switches: &str) -> Result<()> {
+        self.sidecar = SidecarReader::open(films_dir, &mut self.reader, stamp, switches)?;
+        Ok(())
+    }
+
+    pub fn disable_embedded_keyframes(&mut self) {
+        self.embedded_enabled = false;
+    }
+
+    pub fn keyframe_source(&self) -> Option<KeyframeSource> {
+        if self.sidecar_cursor.is_some() {
+            Some(KeyframeSource::Sidecar)
+        } else {
+            self.keyframe_offset.map(|_| KeyframeSource::Embedded)
+        }
+    }
+
+    pub fn sidecar_cursor(&self) -> Option<SidecarCursor> {
+        self.sidecar_cursor
+    }
+
+    pub fn sidecar_mark_offset(&self) -> Option<u64> {
+        self.sidecar_cursor.map(|cursor| cursor.mark_offset)
+    }
+
+    pub fn sidecar_ticks(&self) -> Vec<u64> {
+        self.sidecar.iter().flat_map(SidecarReader::ticks).collect()
+    }
+
+    pub fn sidecar_bytes(&self) -> u64 {
+        self.sidecar.as_ref().map_or(0, SidecarReader::bytes)
+    }
+
+    /// Seek candidates sorted by tick. Enabled embedded frames win ties.
+    pub fn keyframes(&self) -> Vec<KeyframeInfo> {
+        let mut merged: BTreeMap<_, _> = self
+            .sidecar
+            .iter()
+            .flat_map(SidecarReader::ticks)
+            .map(|tick| (tick, KeyframeSource::Sidecar))
+            .collect();
+        if self.embedded_enabled {
+            merged.extend(
+                self.directory
+                    .keyframes
+                    .iter()
+                    .map(|key| (key.tick, KeyframeSource::Embedded)),
+            );
+        }
+        merged
+            .into_iter()
+            .map(|(tick, source)| KeyframeInfo { tick, source })
+            .collect()
+    }
+
+    /// Drop the attached cache after a machine snapshot or RAM-check failure.
+    pub fn invalidate_sidecar(&mut self) -> Result<()> {
+        self.sidecar_cursor = None;
+        if let Some(sidecar) = self.sidecar.take() {
+            sidecar.invalidate()?;
+        }
+        Ok(())
+    }
+
+    /// Check all cached payloads before Prepare decides which ticks to skip.
+    /// A damaged cache is invalidated so the replay can rebuild it from boot.
+    pub fn verify_sidecar(&mut self) -> Result<()> {
+        if let Some(sidecar) = self.sidecar.as_mut()
+            && sidecar.verify_payloads().is_err()
+        {
+            self.invalidate_sidecar()?;
+        }
+        Ok(())
+    }
+
+    fn selection(&self, target: u64) -> Result<Option<Selection>> {
         ensure!(target <= self.length_ticks(), "seek past film end");
-        let end = self
-            .directory
-            .keyframes
-            .partition_point(|k| k.tick <= target);
-        Ok(end.checked_sub(1))
+        let embedded = if self.embedded_enabled {
+            self.directory
+                .keyframes
+                .partition_point(|key| key.tick <= target)
+                .checked_sub(1)
+        } else {
+            None
+        };
+        if let Some(sidecar) = &self.sidecar
+            && let Some(index) = sidecar.nearest(target)
+            && embedded.is_none_or(|i| self.directory.keyframes[i].tick < sidecar.tick(index))
+        {
+            return Ok(Some(Selection::Sidecar(index)));
+        }
+        Ok(embedded.map(Selection::Embedded))
     }
 
     /// The launcher prepares guest storage before booting the machine. Disk
     /// changes are relative to DATA, so this lookup never reads the RAM anchor.
     pub fn disk_delta_at(&mut self, target: u64) -> Result<Vec<u8>> {
-        let Some(i) = self.keyframe_index(target)? else {
-            return Ok(Vec::new());
-        };
-        let key = &self.directory.keyframes[i];
-        let raw = read_block(&mut self.reader, key)?;
-        let (_, disk, _) = split_keyframe(&raw, key.tick)?;
-        Ok(disk.to_vec())
+        loop {
+            match self.selection(target)? {
+                Some(Selection::Sidecar(index)) => {
+                    match self.sidecar.as_mut().unwrap().disk_delta(index) {
+                        Ok(disk) => return Ok(disk),
+                        Err(_) => {
+                            let _ = self.invalidate_sidecar();
+                        }
+                    }
+                }
+                Some(Selection::Embedded(index)) => {
+                    let key = &self.directory.keyframes[index];
+                    let raw = read_block(&mut self.reader, key)?;
+                    let (_, disk, _) = split_keyframe(&raw, key.tick)?;
+                    return Ok(disk.to_vec());
+                }
+                None => return Ok(Vec::new()),
+            }
+        }
     }
 
     /// Select the nearest keyframe at/before target. When none exists, restore
     /// the start manifest. Step forward from that state to reach the target.
     pub fn seek(&mut self, target: u64) -> Result<Option<Keyframe>> {
-        let Some(index) = self.keyframe_index(target)? else {
-            self.next_block = 0;
-            self.keyframe_offset = None;
-            self.pending.clear();
-            return Ok(None);
-        };
+        loop {
+            match self.selection(target)? {
+                Some(Selection::Embedded(index)) => return self.seek_embedded(index).map(Some),
+                Some(Selection::Sidecar(index)) => {
+                    let sidecar = self.sidecar.as_mut().unwrap();
+                    let cursor = sidecar.cursor(index);
+                    match sidecar.keyframe(index) {
+                        Ok(frame) => {
+                            self.seek_after_sidecar(frame.tick)?;
+                            self.keyframe_offset = None;
+                            self.sidecar_cursor = Some(cursor);
+                            return Ok(Some(frame));
+                        }
+                        Err(_) => {
+                            let _ = self.invalidate_sidecar();
+                        }
+                    }
+                }
+                None => {
+                    self.next_block = 0;
+                    self.keyframe_offset = None;
+                    self.sidecar_cursor = None;
+                    self.pending.clear();
+                    return Ok(None);
+                }
+            }
+        }
+    }
+
+    fn seek_embedded(&mut self, index: usize) -> Result<Keyframe> {
         let key = &self.directory.keyframes[index];
         let mut frame = read_keyframe(&mut self.reader, key)?;
         if let Some(tick) = key.ram_anchor {
@@ -654,50 +779,76 @@ impl<R: Read + Seek> TrackReader<R> {
             .partition_point(|b| b.tick <= frame.tick);
         self.pending.clear();
         self.keyframe_offset = Some(key.offset);
-        Ok(Some(frame))
+        self.sidecar_cursor = None;
+        Ok(frame)
+    }
+
+    fn seek_after_sidecar(&mut self, tick: u64) -> Result<()> {
+        let next = self
+            .directory
+            .blocks
+            .partition_point(|block| block.tick <= tick);
+        let mut pending = VecDeque::new();
+        if let Some(index) = next.checked_sub(1) {
+            let block = &self.directory.blocks[index];
+            if tick - block.tick + 1 < u64::from(block.count) {
+                // Every block starts with a fresh seat dictionary. Decode it
+                // from its start to recover seats unchanged at the restore tick.
+                pending = self.decode_block(index)?;
+                pending.retain(|frame| frame.tick > tick);
+            }
+        }
+        self.next_block = next;
+        self.pending = pending;
+        Ok(())
+    }
+
+    fn decode_block(&mut self, index: usize) -> Result<VecDeque<Tick>> {
+        let block = &self.directory.blocks[index];
+        let raw = read_block(&mut self.reader, block)?;
+        if self.reader.header.version >= 3 {
+            let count = usize::from(block.count);
+            let mut public = unified::decode(&raw, block.tick, count)?;
+            if let Some(digest) = &block.identity_sha256 {
+                let i = self
+                    .reader
+                    .entries
+                    .binary_search_by_key(&block.offset, |e| e.offset)
+                    .ok()
+                    .and_then(|i| i.checked_sub(1))
+                    .context("missing private film events")?;
+                let entry = self.reader.entries[i].clone();
+                ensure!(
+                    entry.tag == live_proto::film::privacy::PRIVATE_TAG,
+                    "missing private film events"
+                );
+                let private = self.reader.read_bytes_limited(&entry, stream::MAX_BYTES)?;
+                ensure!(
+                    crate::xbe_digest(&private) == *digest,
+                    "corrupt private events at tick {}",
+                    block.tick
+                );
+                for (frame, original) in public
+                    .iter_mut()
+                    .zip(unified::decode(&private, block.tick, count)?)
+                {
+                    frame.events = original.events;
+                    frame.closing_events = original.closing_events;
+                }
+            }
+            Ok(public)
+        } else {
+            ticks::decode(&raw, block.tick, usize::from(block.count))
+        }
     }
 
     /// Return one complete set of inputs, events and its expected post-tick hash.
     pub fn step(&mut self) -> Result<Option<Tick>> {
         if self.pending.is_empty() {
-            let Some(block) = self.directory.blocks.get(self.next_block) else {
+            if self.next_block == self.directory.blocks.len() {
                 return Ok(None);
-            };
-            let raw = read_block(&mut self.reader, block)?;
-            self.pending = if self.reader.header.version >= 3 {
-                let count = usize::from(block.count);
-                let mut public = unified::decode(&raw, block.tick, count)?;
-                if let Some(digest) = &block.identity_sha256 {
-                    let i = self
-                        .reader
-                        .entries
-                        .binary_search_by_key(&block.offset, |e| e.offset)
-                        .ok()
-                        .and_then(|i| i.checked_sub(1))
-                        .context("missing private film events")?;
-                    let entry = self.reader.entries[i].clone();
-                    ensure!(
-                        entry.tag == live_proto::film::privacy::PRIVATE_TAG,
-                        "missing private film events"
-                    );
-                    let private = self.reader.read_bytes_limited(&entry, stream::MAX_BYTES)?;
-                    ensure!(
-                        crate::xbe_digest(&private) == *digest,
-                        "corrupt private events at tick {}",
-                        block.tick
-                    );
-                    for (frame, original) in public
-                        .iter_mut()
-                        .zip(unified::decode(&private, block.tick, count)?)
-                    {
-                        frame.events = original.events;
-                        frame.closing_events = original.closing_events;
-                    }
-                }
-                public
-            } else {
-                ticks::decode(&raw, block.tick, usize::from(block.count))?
-            };
+            }
+            self.pending = self.decode_block(self.next_block)?;
             self.next_block += 1;
         }
         Ok(self.pending.pop_front())
@@ -724,7 +875,7 @@ fn read_block<R: Read + Seek>(reader: &mut Reader<R>, block: &Block) -> Result<V
 }
 
 /// Return machine cursors, disk edits and encoded snapshot without copying.
-fn split_keyframe(mut bytes: &[u8], tick: u64) -> Result<([u64; 3], &[u8], &[u8])> {
+pub(crate) fn split_keyframe(mut bytes: &[u8], tick: u64) -> Result<([u64; 3], &[u8], &[u8])> {
     ensure!(
         ticks::read_varint(&mut bytes)? == tick,
         "invalid film keyframe tick"
@@ -741,13 +892,42 @@ fn split_keyframe(mut bytes: &[u8], tick: u64) -> Result<([u64; 3], &[u8], &[u8]
 }
 
 fn read_keyframe<R: Read + Seek>(reader: &mut Reader<R>, key: &Block) -> Result<Keyframe> {
-    let mut raw = read_block(reader, key)?;
-    let ([slices, calls, lobby_boundary], disk, snapshot) = split_keyframe(&raw, key.tick)?;
+    decode_keyframe(read_block(reader, key)?, key.tick)
+}
+
+pub(crate) fn encode_keyframe(frame: &Keyframe) -> Result<Vec<u8>> {
+    ensure!(!frame.snapshot.is_empty(), "empty film snapshot");
+    let mut raw = Vec::with_capacity(50);
+    for n in [
+        frame.tick,
+        frame.slices,
+        frame.calls,
+        frame.lobby_boundary,
+        frame.disk_delta.len() as u64,
+    ] {
+        ticks::varint(n, &mut raw);
+    }
+    let payload_len = frame
+        .disk_delta
+        .len()
+        .checked_add(frame.snapshot.len())
+        .ok_or(crate::ChunkTooLarge)?;
+    if payload_len > crate::MAX_CHUNK - raw.len() {
+        return Err(crate::ChunkTooLarge.into());
+    }
+    raw.reserve_exact(payload_len);
+    raw.extend_from_slice(&frame.disk_delta);
+    raw.extend_from_slice(&frame.snapshot);
+    Ok(raw)
+}
+
+pub(crate) fn decode_keyframe(mut raw: Vec<u8>, tick: u64) -> Result<Keyframe> {
+    let ([slices, calls, lobby_boundary], disk, snapshot) = split_keyframe(&raw, tick)?;
     let disk_delta = disk.to_vec();
     let prefix = raw.len() - snapshot.len();
     raw.drain(..prefix);
     Ok(Keyframe {
-        tick: key.tick,
+        tick,
         slices,
         calls,
         lobby_boundary,

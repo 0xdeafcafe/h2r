@@ -92,7 +92,11 @@ impl Session {
         if !self.replaying() {
             return;
         }
+        let unpaced = matches!(&self.lock().mode, Mode::Replay(_, replay) if replay.unpaced);
         for name in api::METHODS {
+            if unpaced && name != api::STATE {
+                continue;
+            }
             let session = self.clone();
             a.add_method(
                 name,
@@ -180,6 +184,7 @@ impl Session {
                         paused: s.paused,
                         speed: s.speed,
                         seeking: s.seeking.is_some() || s.restart.is_some(),
+                        seek: s.seek_info(replay),
                         camera_seat: seat,
                         camera: s.presentation.camera.mode,
                         camera_player: s.presentation.camera.player.clone(),
@@ -223,6 +228,84 @@ pub fn playable_entry(entry: &film::LibraryEntry, stamp: &str) -> bool {
         .is_ok()
 }
 
+pub(super) struct LibraryLaunch {
+    dir: PathBuf,
+    disc: PathBuf,
+    out: PathBuf,
+    data: PathBuf,
+    image_stamps: Vec<String>,
+}
+
+impl LibraryLaunch {
+    pub(super) fn entry(&self, id: &str) -> Result<film::LibraryEntry, RpcError> {
+        let unavailable = |e: String| RpcError::new(code::UNAVAILABLE, e);
+        let entry = if let Some(game) = id.strip_prefix("live:") {
+            let path = crate::theater_ui::adapter::archive_path(&self.dir, game)
+                .map_err(unavailable)?;
+            crate::theater_ui::adapter::archive_entry(&path, game)
+        } else {
+            film::Library::open(&self.dir).and_then(|lib| lib.get(id))
+        }
+        .map_err(|e| unavailable(e.to_string()))?;
+        if !self
+            .image_stamps
+            .iter()
+            .any(|stamp| playable_entry(&entry, stamp))
+        {
+            return Err(unavailable(
+                "Recording needs a compatible game build and an engine film".into(),
+            ));
+        }
+        Ok(entry)
+    }
+
+    pub(super) fn command(
+        &self,
+        mode: &str,
+        id: &str,
+        path: &std::path::Path,
+        socket: &std::path::Path,
+    ) -> Result<std::process::Command, RpcError> {
+        let unavailable = |e: String| RpcError::new(code::UNAVAILABLE, e);
+        let exe = std::env::current_exe().map_err(|e| unavailable(e.to_string()))?;
+        let cli = exe.file_stem().is_some_and(|s| s == "h2");
+        let bundled_cli = cfg!(target_os = "macos") && exe.ends_with("Contents/MacOS/Halo2");
+        if !cli && !bundled_cli {
+            return Err(unavailable(format!(
+                "launch host films with h2 theater {mode}"
+            )));
+        }
+        let mut command = std::process::Command::new(exe);
+        command
+            .args(["theater", mode])
+            .arg(path)
+            .arg("--data")
+            .arg(&self.data)
+            .arg("--disc")
+            .arg(&self.disc)
+            .arg("--out")
+            .arg(&self.out)
+            .arg("--socket")
+            .arg(socket)
+            .env("H2_FILM_DIR", &self.dir)
+            .env("H2_THEATER_FILM_ID", id)
+            .env_remove("H2_THEATER_RANGE")
+            .env_remove("H2_THEATER_WORK");
+        Ok(command)
+    }
+}
+
+fn valid_prepare_id(id: &str) -> Result<(), RpcError> {
+    if id.is_empty()
+        || id
+            .strip_prefix("live:")
+            .is_some_and(|game| !live_proto::game::valid_id(game))
+    {
+        return Err(RpcError::new(code::INVALID_PARAMS, "invalid film ID"));
+    }
+    Ok(())
+}
+
 /// In the original game, Watch selects a local or downloaded film and
 /// launches its isolated player. Transport requests follow that player.
 pub fn library_methods(
@@ -239,11 +322,27 @@ pub fn library_methods(
         id: String,
     }
     let player = Arc::new(Mutex::new(None::<PlayerProcess>));
-    let image_stamps = Arc::new(image_stamps);
+    let launch = Arc::new(LibraryLaunch {
+        dir,
+        disc,
+        out,
+        data,
+        image_stamps,
+    });
+    let jobs = super::prepare::Jobs::default();
+    a.add_method(api::PREPARE, Access::Act, {
+        let launch = launch.clone();
+        let jobs = jobs.clone();
+        move |p| {
+            let request = params::<api::Prepare>(p)?;
+            valid_prepare_id(&request.id)?;
+            Ok(serde_json::json!(jobs.start(request.id, launch.clone())?))
+        }
+    });
     for name in api::METHODS {
         let player = player.clone();
-        let image_stamps = image_stamps.clone();
-        let (dir, disc, out, data) = (dir.clone(), disc.clone(), out.clone(), data.clone());
+        let launch = launch.clone();
+        let jobs = jobs.clone();
         a.add_method(
             name,
             if name == api::STATE {
@@ -253,6 +352,15 @@ pub fn library_methods(
             },
             move |p| {
                 let unavailable = |e: String| RpcError::new(code::UNAVAILABLE, e);
+                let p = if name == api::STATE {
+                    if let Some(id) = params::<api::StateParams>(p)?.id {
+                        valid_prepare_id(&id)?;
+                        return Ok(serde_json::json!(jobs.state(&id)));
+                    }
+                    serde_json::json!({})
+                } else {
+                    p
+                };
                 let mut player = player.lock().unwrap_or_else(|e| e.into_inner());
                 if let Some(active) = player.as_mut()
                     && active
@@ -269,22 +377,7 @@ pub fn library_methods(
                         if player.is_some() {
                             return Err(unavailable("A film is already playing".into()));
                         }
-                        let entry = if let Some(game) = id.strip_prefix("live:") {
-                            let path = crate::theater_ui::adapter::archive_path(&dir, game)
-                                .map_err(unavailable)?;
-                            crate::theater_ui::adapter::archive_entry(&path, game)
-                        } else {
-                            film::Library::open(&dir).and_then(|lib| lib.get(&id))
-                        }
-                        .map_err(|e| unavailable(e.to_string()))?;
-                        if !image_stamps
-                            .iter()
-                            .any(|stamp| playable_entry(&entry, stamp))
-                        {
-                            return Err(unavailable(
-                                "Recording needs a compatible game build and an engine film".into(),
-                            ));
-                        }
+                        let entry = launch.entry(&id)?;
                         let meta = entry.meta;
                         let path = entry.path;
                         if request.range.is_some_and(|[start, end]| {
@@ -294,33 +387,11 @@ pub fn library_methods(
                         }
                         let socket = std::env::temp_dir()
                             .join(format!("h2t-{}.sock", live_proto::sign::random_id()));
-                        let exe =
-                            std::env::current_exe().map_err(|e| unavailable(e.to_string()))?;
-                        if exe.file_stem().is_none_or(|s| s != "h2") {
-                            return Err(unavailable(
-                                "launch host films with h2 theater play".into(),
-                            ));
-                        }
-                        let mut command = std::process::Command::new(exe);
-                        command
-                            .env("H2_FILM_DIR", &dir)
-                            .env("H2_THEATER_FILM_ID", &id)
-                            .env_remove("H2_THEATER_RANGE");
+                        let mut command = launch.command("play", &id, &path, &socket)?;
                         if let Some([start, end]) = request.range {
                             command.env("H2_THEATER_RANGE", format!("{start}:{end}"));
                         }
                         let child = command
-                            .args(["theater", "play"])
-                            .arg(path)
-                            .arg("--data")
-                            .arg(&data)
-                            .arg("--disc")
-                            .arg(&disc)
-                            .arg("--out")
-                            .arg(&out)
-                            .arg("--socket")
-                            .arg(&socket)
-                            .env_remove("H2_THEATER_WORK")
                             .spawn()
                             .map_err(|e| unavailable(e.to_string()))?;
                         *player = Some(PlayerProcess {

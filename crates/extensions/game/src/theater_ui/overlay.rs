@@ -411,6 +411,8 @@ pub struct OverlayView {
 enum Request {
     Open,
     State,
+    Prepare(String),
+    PrepareState(String),
     Pause,
     Seek,
     Speed(usize),
@@ -430,6 +432,8 @@ pub(super) struct Session {
     pub screenshot: bool,
     pub leave_requested: bool,
     pub completed_clip: Option<Clip>,
+    pub prepare_answers: Vec<(String, Result<api::PrepareState, String>)>,
+    last_prepare_poll: Option<(String, Instant)>,
     held_keys: HashSet<Key>,
     key_skip: SkipHold,
     camera_dirty: bool,
@@ -459,6 +463,39 @@ impl Session {
         );
         self.pending.insert(id, Request::Open);
         Ok(())
+    }
+
+    pub fn prepare(&mut self, id: &str) -> Result<(), String> {
+        if self.rpc.is_none() {
+            return Err("Playback agent is unavailable".into());
+        }
+        self.send(
+            api::PREPARE,
+            json!(api::Prepare { id: id.to_owned() }),
+            Request::Prepare(id.to_owned()),
+        );
+        Ok(())
+    }
+
+    pub fn poll_prepare(&mut self, id: &str) {
+        let now = Instant::now();
+        if self.rpc.is_none()
+            || self
+                .last_prepare_poll
+                .as_ref()
+                .is_some_and(|(last_id, last)| last_id == id && now.duration_since(*last) < REFRESH)
+            || self.pending.values().any(|request| {
+                matches!(request, Request::Prepare(pending) | Request::PrepareState(pending) if pending == id)
+            })
+        {
+            return;
+        }
+        self.last_prepare_poll = Some((id.to_owned(), now));
+        self.send(
+            api::STATE,
+            json!(api::StateParams { id: Some(id.to_owned()) }),
+            Request::PrepareState(id.to_owned()),
+        );
     }
 
     pub fn playback(entry: &Entry, rpc: Playback, [mark_in, mark_out]: [Option<u64>; 2]) -> Self {
@@ -509,6 +546,21 @@ impl Session {
         match (request, answer) {
             (Request::Open, Ok(_)) => {}
             (Request::Open, Err(error)) => self.open_error = Some(error),
+            (Request::Prepare(id), answer) => {
+                let progress =
+                    answer.and_then(|value| serde_json::from_value(value).map_err(|e| e.to_string()));
+                self.prepare_answers.push((id, progress));
+            }
+            (Request::PrepareState(id), Ok(value)) => {
+                let starting = self
+                    .pending
+                    .values()
+                    .any(|r| matches!(r, Request::Prepare(pending) if pending == &id));
+                if !starting && let Ok(progress) = serde_json::from_value(value) {
+                    self.prepare_answers.push((id, Ok(progress)));
+                }
+            }
+            (Request::PrepareState(_), Err(_)) => {}
             (Request::State, Ok(value)) => {
                 if let (Some(track), Ok(mut s)) =
                     (&mut self.track, serde_json::from_value::<AgentState>(value))

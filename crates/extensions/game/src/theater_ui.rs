@@ -10,6 +10,7 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
+use agent_proto::theater::{PrepareState, PrepareStatus};
 use adapter::{Clip, FilmMeta, Library, OpenLibrary};
 pub use overlay::{Control, Key, OverlayView};
 use selector::Selector;
@@ -120,6 +121,14 @@ struct Entry {
     archive_clip: Option<(String, String)>,
 }
 
+impl Entry {
+    fn can_prepare(&self) -> bool {
+        self.clip.is_none()
+            && self.film.version != Some(1)
+            && self.film.watch_unavailable().is_none()
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 enum Load {
     #[default]
@@ -139,6 +148,7 @@ struct State {
     archive_clips: Vec<Entry>,
     working: bool,
     status: String,
+    prepare: Option<PrepareState>,
     clips: Vec<Clip>,
     clips_error: Option<String>,
     local_error: Option<String>,
@@ -223,6 +233,7 @@ impl State {
         self.roster_page = 0;
         self.confirm_delete = false;
         self.status.clear();
+        self.prepare = None;
         self.changed();
     }
 
@@ -328,6 +339,7 @@ impl Theater {
             state.selected = None;
             state.working = false;
             state.status.clear();
+            state.prepare = None;
             state.selector = Selector::default();
             state.recent_archives.clear();
             state.archive_clips.clear();
@@ -556,7 +568,7 @@ impl Theater {
             }
             state.working = true;
             state.status = match action {
-                pages::Action::Watch => "Downloading host film...",
+                pages::Action::Watch | pages::Action::Prepare => "Downloading host film...",
                 _ => "Updating account films...",
             }
             .into();
@@ -568,9 +580,15 @@ impl Theater {
             .name("h2-theater-archive".into())
             .spawn(move || {
                 let result = (|| {
+                    let game = entry.film.archive_id().ok_or("Missing Live film ID")?;
+                    if action == pages::Action::Prepare {
+                        let path = adapter::archive_path(&location.dir, game)?;
+                        if adapter::archive_entry(&path, game).is_ok() {
+                            return Ok(None);
+                        }
+                    }
                     let archive = live_hle::films::Archive::connect(&location.live, account)?
                         .ok_or("Live archives are unavailable")?;
-                    let game = entry.film.archive_id().ok_or("Missing Live film ID")?;
                     match action {
                         pages::Action::Watch => adapter::download_film(
                             &archive,
@@ -579,6 +597,9 @@ impl Theater {
                             entry.archive_clip.as_ref().and(entry.clip.as_ref()),
                             entry.film.live_start_tick,
                         ),
+                        pages::Action::Prepare => {
+                            adapter::download_film(&archive, &location.dir, game, None, None)
+                        }
                         pages::Action::Save => {
                             archive.set_saved(game, !entry.film.saved).map(|()| None)
                         }
@@ -611,6 +632,22 @@ impl Theater {
         entry: Entry,
         result: Result<Option<Clip>, String>,
     ) {
+        if action == pages::Action::Prepare {
+            let result = result.and_then(|_| self.start_prepare(&entry.film.id));
+            let mut state = self.state();
+            if state.open_generation == generation {
+                state.working = false;
+                if state
+                    .selected
+                    .as_ref()
+                    .is_some_and(|e| e.film.id == entry.film.id)
+                {
+                    state.status = result.err().unwrap_or_default();
+                }
+                state.changed();
+            }
+            return;
+        }
         let result = result.and_then(|playback_clip| {
             if action != pages::Action::Watch {
                 return Ok(());
@@ -645,6 +682,7 @@ impl Theater {
             Err(error) => error,
             Ok(()) => match action {
                 pages::Action::Watch => "Opening film...".into(),
+                pages::Action::Prepare => unreachable!(),
                 pages::Action::Save => {
                     let saved = !entry.film.saved;
                     if let Load::Ready(films) = &mut state.load
@@ -687,6 +725,25 @@ impl Theater {
 
     pub fn connect(&self, agent: &agent::Agent) {
         self.session().connect(agent);
+    }
+
+    fn start_prepare(&self, id: &str) -> Result<(), String> {
+        self.session().prepare(id)?;
+        let mut state = self.state();
+        if let Some(entry) = state
+            .selected
+            .as_ref()
+            .filter(|e| e.film.id == id && e.can_prepare())
+        {
+            state.prepare = Some(PrepareState {
+                id: id.to_owned(),
+                tick: 0,
+                length_ticks: entry.film.length_ticks,
+                status: PrepareStatus::Starting,
+            });
+            state.changed();
+        }
+        Ok(())
     }
 
     fn session(&self) -> MutexGuard<'_, overlay::Session> {
@@ -757,11 +814,46 @@ impl Theater {
         for (generation, action, entry, result) in done {
             self.finish_archive_action(generation, action, entry, result);
         }
-        let (clip, open_error) = {
+        let prepare_id = self
+            .state()
+            .selected
+            .as_ref()
+            .filter(|entry| entry.can_prepare())
+            .map(|entry| entry.film.id.clone());
+        let (clip, open_error, prepare_answers) = {
             let mut session = self.session();
             session.pump();
-            (session.completed_clip.take(), session.open_error.take())
+            if let Some(id) = &prepare_id {
+                session.poll_prepare(id);
+            }
+            (
+                session.completed_clip.take(),
+                session.open_error.take(),
+                std::mem::take(&mut session.prepare_answers),
+            )
         };
+        for (id, answer) in prepare_answers {
+            let mut state = self.state();
+            if !state
+                .selected
+                .as_ref()
+                .is_some_and(|entry| entry.film.id == id && entry.can_prepare())
+            {
+                continue;
+            }
+            match answer {
+                Ok(progress) if state.prepare.as_ref() != Some(&progress) => {
+                    state.prepare = Some(progress);
+                    state.changed();
+                }
+                Err(error) => {
+                    state.prepare = None;
+                    state.status = error;
+                    state.changed();
+                }
+                _ => {}
+            }
+        }
         if let Some(error) = open_error {
             let mut state = self.state();
             state.status = error;

@@ -204,10 +204,12 @@ In the original version 1 layout:
   file. A scan rebuilds the offsets after interruption and drops an
   incomplete trailing chunk. Playback of a prefix ends at its last
   complete checkpoint. `KEYF` is reserved.
-- `film::Library::open(dir)` lists the 25 newest films and any older
-  saved films. Save/unsave persist pins beside the file. Delete resolves
-  the header ID in the library before removing the file. The host UI
-  uses `H2_FILM_DIR` or `<data>/films`.
+
+`film::Library::list` shows the 25 newest films and any older saved
+films. Save and Unsave manage pins beside the film. Delete resolves a
+film by its header ID and removes its keyframe sidecars, its pin and the
+film file. The host UI uses `H2_FILM_DIR` or `<data>/films`. The cache
+limit is set by [`theater.cache_cap_gib`](settings-menu.md#theater-keyframe-cache).
 
 **Record once.** Use a provisioned human-player lease and a LAN host from
 the combined dedicated-host build. Export its normal supervisor inputs
@@ -300,6 +302,15 @@ with only telemetry still has a film page and scoreboard. The selector
 reads the version 3 summary for local and host recordings and opens the
 exact player for supported films.
 
+**Prepare** on a playable engine film's page builds the local seek cache
+with a verified replay from boot. The replay runs without a window while
+the library stays open. The film page shows its progress and reports
+completion or the reason the pass stopped. For an account film, Prepare
+uses the downloaded recording or downloads it first. Use
+`h2 theater prepare FILM` to run the same pass on a file from the command
+line. That command returns when the pass finishes. The current combined
+film format keeps the stats in the recording.
+
 Rendered host playback opens in **Fly cam**. Local playback opens in the
 recorded retail view. **Orbit** circles the selected
 player and **Follow** looks over their shoulder. **First person** uses
@@ -347,7 +358,8 @@ participants. The menu and playback window use
 Offline samples are `theater.films`, `theater.film` and
 `theater.playback` in `h2 ui preview`. The browser includes empty Recent,
 Saved, Clips and filtered states. Film details include a summary without
-a recording and a paged roster with names only. The main-menu selection
+a recording, a paged roster with names only and Prepare progress and
+results. The main-menu selection
 dialog reports `kit.picker` through `ui.screen`.
 
 ### Web Theater
@@ -363,7 +375,7 @@ controls and clip share links.
 |---|---|
 | `theater-server` | films/clips routes and storage in live-server (both homes), the saved-film archive pin, tests |
 | `theater-web` | `/theater/*` pages, the Films tab, camera chips, the clip flow, tests |
-| `theater-film` | a `film` crate: `.h2film` writer/reader (chunks above), the host recorder taps (`NETR`, `RAND`, `HASH`) behind `H2_FILM_OUT` / `h2 host run --film`, upload at match end, `h2 theater play` exact playback + agent methods `theater.play/state/pause/speed/seek/camera` |
+| `theater-film` | a `film` crate: `.h2film` writer/reader (chunks above), the host recorder taps (`NETR`, `RAND`, `HASH`) behind `H2_FILM_OUT` / `h2 host run --film`, upload at match end, `h2 theater play` exact playback, `h2 theater prepare` and the Theater agent methods |
 | `theater-ui` | the in-game Theater row, Films screen, film page and playback overlay, against the `film` crate's `Library` API and the agent methods |
 
 ## 1. How Halo 3's Theater works, and whether Halo 2 fits

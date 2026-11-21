@@ -7,9 +7,11 @@ use std::{
     process::Command,
 };
 
-const USAGE: &str = "h2 theater play FILM [--seek TICK] [--render-every N] [--speed 0.25..4] [--disc ISO] [--out IMAGE_DIR] [--data INITIAL_DATA] [--movies DIR] [--socket PATH]";
+const USAGE: &str = "h2 theater play FILM [--seek TICK] [--render-every N] [--speed 0.25..4] [--disc ISO] [--out IMAGE_DIR] [--data INITIAL_DATA] [--movies DIR] [--socket PATH]\n\
+                    h2 theater prepare FILM [--disc ISO] [--out IMAGE_DIR] [--data INITIAL_DATA] [--movies DIR] [--socket PATH]";
 struct Options {
     film: PathBuf,
+    prepare: bool,
     every: u32,
     speed: f64,
     disc: PathBuf,
@@ -22,9 +24,13 @@ struct Options {
 }
 impl Options {
     fn parse(mut args: impl Iterator<Item = String>) -> Result<Self> {
-        ensure!(args.next().as_deref() == Some("play"), "{USAGE}");
+        let prepare = match args.next().as_deref() {
+            Some("play") => false,
+            Some("prepare") => true,
+            _ => bail!("{USAGE}"),
+        };
         let film = PathBuf::from(args.next().context(USAGE)?);
-        let mut every = u32::from(cfg!(feature = "desktop"));
+        let mut every = u32::from(!prepare && cfg!(feature = "desktop"));
         let mut data = None;
         let mut movies = None;
         let mut seek = None;
@@ -35,15 +41,21 @@ impl Options {
             .unwrap_or_else(|| std::env::temp_dir().join("h2boot"));
         let mut socket = std::env::var_os("H2_AGENT")
             .map(PathBuf::from)
-            .unwrap_or_else(|| agent_proto::cache_dir().join("theater.sock"));
+            .unwrap_or_else(|| {
+                if prepare {
+                    std::env::temp_dir().join(format!("h2t-{}.sock", live_proto::sign::random_id()))
+                } else {
+                    agent_proto::cache_dir().join("theater.sock")
+                }
+            });
         while let Some(flag) = args.next() {
             let value = args
                 .next()
                 .with_context(|| format!("{flag} needs a value"))?;
             match flag.as_str() {
-                "--render-every" => every = value.parse()?,
-                "--speed" => speed = value.parse()?,
-                "--seek" => seek = Some(value.parse().context("invalid seek tick")?),
+                "--render-every" if !prepare => every = value.parse()?,
+                "--speed" if !prepare => speed = value.parse()?,
+                "--seek" if !prepare => seek = Some(value.parse().context("invalid seek tick")?),
                 "--data" => data = Some(PathBuf::from(value)),
                 "--movies" => movies = Some(PathBuf::from(value)),
                 "--disc" => disc = Some(value.into()),
@@ -55,6 +67,7 @@ impl Options {
         ensure!((0.25..=4.).contains(&speed), "speed must be 0.25 to 4");
         Ok(Self {
             film,
+            prepare,
             every,
             speed,
             disc: disc.context("set H2_DISC or pass --disc")?,
@@ -63,10 +76,14 @@ impl Options {
             data,
             movies,
             seek,
-            range: std::env::var("H2_THEATER_RANGE")
-                .ok()
-                .map(|value| parse_range(&value))
-                .transpose()?,
+            range: if prepare {
+                None
+            } else {
+                std::env::var("H2_THEATER_RANGE")
+                    .ok()
+                    .map(|value| parse_range(&value))
+                    .transpose()?
+            },
         })
     }
 }
@@ -107,6 +124,10 @@ pub fn run(args: Vec<String>) -> Result<()> {
     }
     let mut reader = film::Reader::open(&opts.film)?;
     let header = reader.header.clone();
+    ensure!(
+        !opts.prepare || header.version >= 2,
+        "this film does not have an engine replay track"
+    );
     let mut target = opts
         .seek
         .unwrap_or_else(|| opts.range.map_or(0, |[start, _]| start));
@@ -117,6 +138,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
     let mut speed = opts.speed;
     let mut paused = false;
     let mut presentation = boot::theater::Presentation::default();
+    let mut retries = 0;
     loop {
         let temp = Temp::new()?;
         let restart = temp.0.join("restart.json");
@@ -154,6 +176,14 @@ pub fn run(args: Vec<String>) -> Result<()> {
         boot::theater::configure_replay_child(&mut reader, &mut cmd)?;
         let status = cmd.status().context("starting film playback")?;
         ensure!(status.success(), "film playback exited with {status}");
+        let retry = temp.0.join("retry-build.json");
+        if retry.try_exists()? {
+            ensure!(retries < 2, "could not prepare a consistent disk for this seek");
+            presentation.snapshot_build = Some(serde_json::from_reader(fs::File::open(retry)?)?);
+            retries += 1;
+            continue;
+        }
+        retries = 0;
         if !restart.try_exists()? {
             return Ok(());
         }
@@ -197,7 +227,7 @@ fn child(opts: Options, work: &Path) -> Result<()> {
             }
         })?;
     if compatibility == film::image::ImageMatch::FromBoot {
-        eprintln!("theater: compatible guest image; verifying from boot with recorded hashes");
+        eprintln!("theater: compatible guest image; using this build's local cache");
     }
     ensure!(
         film.header.version >= 2 || film.header.meta.source == film::Source::Host,
@@ -206,11 +236,29 @@ fn child(opts: Options, work: &Path) -> Result<()> {
     let entry = film.machine_section().unique(film::DATA)?.clone();
     let data = work.join("data");
     let target: u64 = std::env::var("H2_THEATER_TARGET")?.parse()?;
-    let delta = if target > 0
-        && film.header.version >= 2
-        && compatibility == film::image::ImageMatch::Native
-    {
-        film::blam::TrackReader::open(&opts.film)?.disk_delta_at(target)?
+    let presentation: boot::theater::Presentation =
+        serde_json::from_reader(fs::File::open(work.join("view.json"))?)?;
+    let viewer_data = opts.data.clone().unwrap_or_else(content::store::default_data_root);
+    let films_dir = std::env::var_os("H2_FILM_DIR").map(PathBuf::from)
+        .unwrap_or_else(|| viewer_data.join("films"));
+    let (settings, problems) = boot::setting_defs::load(&viewer_data, &[]);
+    for problem in problems {
+        eprintln!("theater: {problem}");
+    }
+    let cap_bytes = boot::setting_defs::theater_cache_cap_bytes(Some(&settings));
+    let delta = if target > 0 && film.header.version >= 2 {
+        let mut track = film::blam::TrackReader::open(&opts.film)?;
+        if compatibility == film::image::ImageMatch::FromBoot {
+            track.disable_embedded_keyframes();
+        }
+        if cap_bytes > 0
+            && let Some((stamp, switches)) = &presentation.snapshot_build
+            && stamp == &_stamp
+            && let Err(e) = track.attach_sidecar(&films_dir, stamp, switches)
+        {
+            eprintln!("theater: could not open sidecar for disk restore: {e:#}");
+        }
+        track.disk_delta_at(target)?
     } else {
         Vec::new()
     };
@@ -235,12 +283,16 @@ fn child(opts: Options, work: &Path) -> Result<()> {
     #[cfg(feature = "desktop")]
     let film_parent = opts.film.parent().unwrap_or(Path::new(".")).to_owned();
     let camera = boot::theater::FilmCamera::default();
-    let presentation: boot::theater::Presentation =
-        serde_json::from_reader(fs::File::open(work.join("view.json"))?)?;
     #[cfg(feature = "desktop")]
     let clip_marks = presentation.clip_marks;
     let replay = boot::theater::Replay {
         path: opts.film.clone(),
+        cache: Some(boot::theater::ReplayCache {
+            films_dir,
+            cap_bytes,
+            disk_digest: film::xbe_digest(&delta),
+        }),
+        unpaced: opts.prepare,
         render_every: opts.every,
         speed: std::env::var("H2_THEATER_SPEED")?.parse()?,
         seek_tick: target,
@@ -250,11 +302,18 @@ fn child(opts: Options, work: &Path) -> Result<()> {
         camera: camera.clone(),
         window_closed: None,
     };
+    let retry = work.join("retry-build.json");
     let run = move |host, window_closed| -> Result<()> {
         let mut replay = replay;
         replay.window_closed = window_closed;
         let r = boot::run_theater(&xbe, &image, &boot, host, replay);
         vfs::flush_pending_metadata();
+        if let Err(e) = &r
+            && let Some(build) = e.downcast_ref::<boot::theater::RetrySeek>()
+        {
+            serde_json::to_writer(fs::File::create_new(retry)?, &build.0)?;
+            return Ok(());
+        }
         r.map(|_| ())
     };
     let host_bots = film.header.host_bots;
@@ -320,7 +379,6 @@ fn child(opts: Options, work: &Path) -> Result<()> {
             dir.clone(),
         )?;
         let (overlay, controller) = overlay(theater, dir.join("screenshots"));
-        let data = opts.data.unwrap_or_else(content::store::default_data_root);
         let config = app::AppConfig {
             title: format!("Theater — {}", title),
             audio: false,
@@ -336,12 +394,8 @@ fn child(opts: Options, work: &Path) -> Result<()> {
             if let Some(input) = window.take_input() {
                 controller.attach_input(input);
             }
-            let (store, problems) = boot::setting_defs::load(&data, &[]);
-            for p in problems {
-                eprintln!("theater: {p}");
-            }
             let native: boot::run_opts::NativeSize = std::sync::Arc::new(window.native_size());
-            let raster = boot::d3d_glue::output_size(Some(&store), native.clone())?;
+            let raster = boot::d3d_glue::output_size(Some(&settings), native.clone())?;
             let (gfx, gfx_view, film_view) = if observer {
                 let mut sink = window.frame_sink();
                 (
@@ -429,6 +483,19 @@ mod tests {
         assert_eq!((o.every, o.speed), (0, 0.25));
         for v in ["NaN", "inf", "0", "4.01"] {
             assert!(options(v).is_err());
+        }
+    }
+
+    #[test]
+    fn prepare_takes_the_whole_film_and_runs_without_a_window() {
+        let args = ["prepare", "synthetic.h2film", "--disc", "synthetic.iso"];
+        let options = Options::parse(args.map(String::from).into_iter()).unwrap();
+        assert!(options.prepare);
+        assert_eq!(options.every, 0);
+        assert_eq!(options.seek, None);
+        assert_eq!(options.range, None);
+        for flag in ["--seek", "--speed", "--render-every"] {
+            assert!(Options::parse(args.into_iter().chain([flag, "1"]).map(String::from)).is_err());
         }
     }
 }

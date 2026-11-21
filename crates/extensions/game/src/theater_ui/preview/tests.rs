@@ -311,11 +311,75 @@ fn theater_delete_is_confirmed_and_restores_the_library() {
     let mut view = live(DETAIL).unwrap();
     view.press(Input::Down);
     view.press(Input::Down);
+    view.press(Input::Down);
     view.press(Input::A);
-    assert_eq!(view.spec().rows[2].label, "Confirm delete");
+    assert_eq!(view.spec().rows[3].label, "Confirm delete");
     view.press(Input::A);
     assert_eq!(view.spec().rows.len(), BROWSE_ROWS + 1);
     assert_eq!(view.spec().name, FILMS);
+}
+
+#[test]
+fn prepare_progress_uses_the_film_page_and_keeps_watch_available() {
+    use crate::ui_kit::spec::Press;
+
+    let mut view = live(DETAIL).unwrap();
+    assert_eq!(view.spec().rows[1].label, "Prepare");
+    assert!(view.go("preparing"));
+    let working = view.spec();
+    assert_eq!(working.rows[1].label, "Preparing... 40%");
+    assert_ne!(working.rows[1].press, Press::Act);
+    assert_ne!(working.rows[3].press, Press::Act);
+    assert_eq!(working.rows[0].press, Press::Act);
+
+    assert!(view.go("prepared"));
+    assert_eq!(view.spec().rows[1].label, "Prepare again");
+    assert_eq!(view.spec().help.as_deref(), Some("Prepared for this build."));
+
+    assert!(view.go("prepare-failed"));
+    assert_eq!(view.spec().rows[1].label, "Retry Prepare");
+    assert_eq!(view.spec().help.as_deref(), Some("Film diverged at tick 1201."));
+}
+
+#[test]
+fn choosing_prepare_starts_and_reads_the_selected_job_through_the_agent() {
+    use agent::{Access, Agent, GameStatus, Reader};
+    use agent_proto::{Object, theater as api};
+    use serde_json::json;
+
+    struct Empty;
+    impl Reader for Empty {
+        fn status(&mut self) -> GameStatus {
+            GameStatus::default()
+        }
+
+        fn objects(&mut self) -> Result<Vec<Object>, String> {
+            Ok(Vec::new())
+        }
+    }
+
+    let mut view = Preview::new(Kind::Detail);
+    let agent = Agent::new();
+    agent.add_method(api::PREPARE, Access::Act, |params| {
+        assert_eq!(params, json!({"id": "game-1"}));
+        Ok(json!({"id": "game-1", "status": "running", "tick": 7, "length_ticks": 10}))
+    });
+    agent.add_method(api::STATE, Access::Read, |params| {
+        assert_eq!(params, json!({"id": "game-1"}));
+        Ok(json!({"id": "game-1", "status": "complete", "tick": 10, "length_ticks": 10}))
+    });
+    view.theater.connect(&agent);
+    view.press(Input::Down);
+    view.press(Input::A);
+    assert_eq!(view.spec().rows[1].label, "Preparing...");
+
+    agent.between_slices(&mut Empty, 0);
+    view.theater.pump();
+    assert_eq!(view.spec().rows[1].label, "Preparing... 70%");
+
+    agent.between_slices(&mut Empty, 0);
+    view.theater.pump();
+    assert_eq!(view.spec().rows[1].label, "Prepare again");
 }
 
 #[test]

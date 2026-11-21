@@ -844,6 +844,38 @@ pub fn halo1_sandbox(store: &Store) -> &'static str {
     }
 }
 
+const GIB: u64 = 1 << 30;
+const THEATER_CACHE_DEFAULT_GIB: i64 = (film::sidecar::DEFAULT_CAP_BYTES / GIB) as i64;
+
+pub static THEATER_CACHE_CAP: Def = Def {
+    key: "theater.cache_cap_gib",
+    label: "Theater Cache Cap",
+    help: "Disk space for Theater keyframe sidecars, in GiB. Set to 0 to disable the cache.",
+    kind: Kind::Int {
+        valid: 0..=(u64::MAX / GIB) as i64,
+        steps: &[0, 1, 2, 4, 8, 16],
+        unit: Unit::Plain,
+    },
+    default: Value::Int(THEATER_CACHE_DEFAULT_GIB),
+    env: None,
+    flag: None,
+    aliases: &[],
+    parse_env: None,
+    apply: Apply::Restart,
+    scope: Scope::Host,
+    tier: Tier::User,
+    menu: None,
+};
+
+/// The effective on-disk keyframe cache limit for this viewer, in bytes.
+pub fn theater_cache_cap_bytes(store: Option<&Store>) -> u64 {
+    let gib = store
+        .and_then(|store| store.get(THEATER_CACHE_CAP.key))
+        .and_then(Value::as_int)
+        .unwrap_or(THEATER_CACHE_DEFAULT_GIB);
+    gib as u64 * GIB
+}
+
 /// Every setting, in the order `h2 settings list` shows them.
 pub static ALL: &[&Def] = &[
     &FOV,
@@ -859,6 +891,7 @@ pub static ALL: &[&Def] = &[
     &STEAM_SPEAKER,
     &STEAM_SENSITIVITY,
     &STEAM_LEFT_PAD,
+    &THEATER_CACHE_CAP,
     &LIVE_VISIBILITY,
     &COOP_MAX_PLAYERS,
     &COOP_JOIN_IN_PROGRESS,
@@ -993,6 +1026,23 @@ mod tests {
             assert!(d.key.contains('.'), "{}", d.key);
             assert_eq!(d.check(d.default), Ok(d.default), "{}", d.key);
         }
+    }
+
+    #[test]
+    fn theater_cache_cap_uses_the_viewers_saved_gib() {
+        let data = tmp("theater-cache");
+        assert_eq!(theater_cache_cap_bytes(None), 4 << 30);
+        for (toml, bytes) in [
+            ("", 4 << 30),
+            ("[theater]\ncache_cap_gib = 8", 8 << 30),
+            ("[theater]\ncache_cap_gib = 0", 0),
+        ] {
+            std::fs::write(settings::path_in(&data), toml).unwrap();
+            let (store, problems) = with_env(&data, &[]);
+            assert!(problems.is_empty(), "{problems:?}");
+            assert_eq!(theater_cache_cap_bytes(Some(&store)), bytes);
+        }
+        std::fs::remove_dir_all(data).unwrap();
     }
 
     #[test]

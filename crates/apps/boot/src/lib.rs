@@ -321,6 +321,13 @@ fn run_configured(
     let film_path = host.film_out.take().or_else(|| {
         std::env::var_os("H2_FILM_OUT").filter(|p| !p.is_empty()).map(PathBuf::from)
     });
+    let film_dir = || {
+        std::env::var_os("H2_FILM_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| opts.data_root.join("films"))
+    };
+    let viewer_cache = replay.as_ref().and_then(|r| r.cache.as_ref())
+        .map(|c| (c.films_dir.clone(), c.cap_bytes));
     let film = if replaying || film_path.is_some() {
         let stamp = running_stamp();
         let clock = k.clock();
@@ -599,11 +606,6 @@ fn run_configured(
     let level_name = level.as_ref().map(|l| l.name.clone());
     // Every feature the plan gets up to the touch glue is registered in
     // `registration` (and its tests build the plan from the same code).
-    let film_dir = || {
-        std::env::var_os("H2_FILM_DIR")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| opts.data_root.join("films"))
-    };
     let film_out = {
         let parent = dylib.parent().unwrap_or(Path::new("."));
         if tier == tier::Tier::Fast { parent.parent().unwrap_or(parent) } else { parent }
@@ -1347,8 +1349,20 @@ fn run_configured(
     }
     let shelf = if agent.is_some() || film.is_some() {
         let key = snapshot_glue::build_key(running_stamp(), &switch_spec, &plan, &snap_host.names());
-        // A film embeds snapshots. Its build key is needed even when the
-        // user has no standalone snapshot directory.
+        if let Some(session) = &film {
+            let (dir, cap) = viewer_cache.unwrap_or_else(|| {
+                let cap = match host.settings.as_deref() {
+                    Some(settings) => setting_defs::theater_cache_cap_bytes(Some(settings)),
+                    None => {
+                        let (settings, _) = setting_defs::load(&opts.data_root, &[]);
+                        setting_defs::theater_cache_cap_bytes(Some(&settings))
+                    }
+                };
+                (film_dir(), cap)
+            });
+            session.mount_sidecar(&dir, cap, &key, &opts.data_root)?;
+        }
+        // Film keyframes also need a build key without a standalone snapshot directory.
         let shelf = snapshot_glue::Shelf::from_env(key.clone()).or_else(|| {
             film.as_ref().map(|_| snapshot_glue::Shelf::new(&opts.data_root, key))
         });
@@ -1418,17 +1432,17 @@ fn run_configured(
     for slice in first_slice..opts.max_slices {
         if let Some(f) = &film {
             f.observe_pause(&loaded.runtime.memory());
-            if replaying {
-                if let Some(shelf) = &shelf {
-                    f.replay_device_barrier(slice, &snap_host, shelf)?;
-                }
-            } else {
-                if let Some(shelf) = &shelf && f.keyframe_due() {
-                    let lobby = agent.as_ref().map_or(0, |a| a.agent.film_lobby_boundary());
-                    let mut machine = snap_host.machine(
-                        &mut m, &plan, &rebuilders, shelf, d3d_diag::presents(),
-                    );
-                    f.try_keyframe(slice, lobby, &mut machine);
+            if let Some(shelf) = &shelf {
+                let lobby_boundary = || agent.as_ref().map_or(0, |a| a.agent.film_lobby_boundary());
+                let parts = (&mut m, &snap_host, &plan, &rebuilders);
+                let machine = move || {
+                    let (m, host, plan, rebuilders) = parts;
+                    host.machine(m, plan, rebuilders, shelf, d3d_diag::presents())
+                };
+                if replaying {
+                    f.replay_capture_point(slice, lobby_boundary, machine)?;
+                } else if f.capture_point_due() {
+                    f.try_capture_point(slice, lobby_boundary(), &mut machine());
                 }
             }
             if !f.before_slice(slice, &mut m, agent.as_ref(), &loaded.runtime)? {

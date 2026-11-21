@@ -1,4 +1,6 @@
+mod capture_points;
 mod pad_inputs;
+mod sidecar_restore;
 
 use super::*;
 use agent_proto::theater as api;
@@ -32,11 +34,13 @@ fn theater_replays_checkpoints_reports_first_divergence_and_registers_controls()
         rec.checkpoint(&g);
     }
     rec.finish(90, true).unwrap();
-    let open = |facts, render_every| {
+    let open = |facts, render_every, unpaced| {
         Session::open(
             None,
             Some(Replay {
                 path: file.clone(),
+                cache: None,
+                unpaced,
                 render_every,
                 speed: 1.,
                 seek_tick: 0,
@@ -54,10 +58,14 @@ fn theater_replays_checkpoints_reports_first_divergence_and_registers_controls()
     let wrong = open(
         Facts { stamp: "other image".into(), ..facts() },
         0,
+        false,
     );
     assert!(wrong.is_err_and(|e| e.to_string().contains("image stamp differs")));
-    let replay = || open(facts(), 0).unwrap().unwrap();
-    let matching = replay();
+    let replay = || open(facts(), 0, false).unwrap().unwrap();
+    let matching = open(facts(), 0, true).unwrap().unwrap();
+    assert!(matching.finish(0, true).is_err_and(|e| {
+        e.to_string().contains("playback stopped before the end")
+    }));
     for _ in 0..60 {
         matching.checkpoint(&g);
     }
@@ -105,7 +113,7 @@ fn theater_replays_checkpoints_reports_first_divergence_and_registers_controls()
         call(api::CAMERA, json!({"mode":"free"}))["error"]["message"],
         "playback has no rendered view"
     );
-    let rendered = open(facts(), 1).unwrap().unwrap();
+    let rendered = open(facts(), 1, false).unwrap().unwrap();
     rendered.add_methods(&a);
     let camera = match &rendered.lock().mode {
         Mode::Replay(_, replay) => replay.camera.clone(),
@@ -220,6 +228,8 @@ fn sealed_film_reinstalls_the_recorders_telemetry_and_impact_hook_chains() {
                 None,
                 Some(Replay {
                     path: path.clone(),
+                    cache: None,
+                    unpaced: false,
                     render_every: 0,
                     speed: 1.,
                     seek_tick: 0,
@@ -396,56 +406,6 @@ fn a_completed_host_match_is_listed_and_uploads_under_its_lease() {
     assert_eq!(entries[0].lease_id.as_deref(), Some("hl-fixture"));
     assert!(entries[0].playable_here("fixture"));
     assert!(!entries[0].playable_here("other image"));
-    std::fs::remove_dir_all(dir).unwrap();
-}
-
-#[test]
-fn seek_restores_machine_and_replays_only_the_remaining_ticks() {
-    let dir = std::env::temp_dir().join(format!("engine-seek-{}", live_proto::sign::random_id()));
-    std::fs::create_dir(&dir).unwrap();
-    let file = dir.join("game.h2film");
-    let opts = options(&dir);
-    let record = Session::open(Some(file.clone()), None, host_facts(), b"xbe", &opts)
-        .unwrap().unwrap();
-    let mut machine = crate::snapshot_glue::BootMachine {
-        parts: vec![],
-        checks: Box::new(Vec::new),
-        shelf: crate::snapshot_glue::Shelf::new(&dir, snapshot::BuildKey {
-            stamp: "fixture".into(),
-            switches: String::new(),
-        }),
-        hash: Box::new(|| lockstep::RamHash { total: 42, chunks: vec![42] }),
-        presents: 1,
-        rt: None,
-    };
-    let guest = arena();
-    for _ in 0..30 {
-        record.checkpoint(&guest);
-    }
-    record.try_keyframe(35, 0, &mut machine);
-    record.checkpoint(&guest);
-    record.finish(40, true).unwrap();
-
-    let replay = Session::open(None, Some(Replay {
-        path: file,
-        render_every: 0,
-        speed: 1.,
-        seek_tick: 31,
-        paused_at_target: true,
-        presentation: Presentation::default(),
-        restart: dir.join("restart"),
-        camera: Default::default(),
-                window_closed: None,
-    }), host_facts(), b"xbe", &opts).unwrap().unwrap();
-    let keyframe = replay.take_keyframe().unwrap();
-    assert_eq!(keyframe.tick, 30);
-    let start = replay.restore_keyframe(keyframe, &mut machine, None).unwrap();
-    assert_eq!(start, 35);
-    assert_eq!(replay.lock().tick, 30);
-    replay.checkpoint(&guest);
-    assert!(replay.lock().paused);
-    replay.finish(40, true).unwrap();
-    assert!(replay.lock().complete);
     std::fs::remove_dir_all(dir).unwrap();
 }
 

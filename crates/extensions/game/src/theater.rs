@@ -11,6 +11,7 @@ pub use camera::FilmCamera;
 pub mod bot_tape;
 mod legacy_camera;
 mod controls;
+mod prepare;
 mod metadata;
 mod unified;
 mod objectives;
@@ -20,6 +21,8 @@ mod startup;
 pub use startup::Startup;
 pub use startup::configure_replay_child;
 mod replay;
+mod sidecar;
+pub use sidecar::{ReplayCache, RetrySeek};
 mod local_pads;
 mod video_menu;
 use anyhow::{Context, Result, bail, ensure};
@@ -43,6 +46,9 @@ use std::{
 #[derive(Clone)]
 pub struct Replay {
     pub path: PathBuf,
+    pub cache: Option<ReplayCache>,
+    /// Prepare verifies the whole tape without waiting for wall time.
+    pub unpaced: bool,
     pub render_every: u32,
     pub speed: f64,
     pub seek_tick: u64,
@@ -62,11 +68,18 @@ pub struct Presentation {
     camera_seat: Option<u8>,
     kills: BTreeSet<u64>,
     pub clip_marks: [Option<u64>; 2],
+    /// The launcher can prepare the disk on the next cold seek. The child
+    /// always selects its RAM snapshot using its own mounted build key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot_build: Option<(String, String)>,
+    #[serde(default)]
+    seek_from: u64,
 }
 
 struct Recording {
     out: Option<Writer<File>>,
     batch: Batch,
+    sidecar: Option<film::sidecar::SidecarWriter>,
     file: PathBuf,
     match_over: bool,
     track: film::blam::TrackWriter,
@@ -284,6 +297,7 @@ impl Session {
                 Mode::Record(Recording {
                     out: Some(out),
                     batch: Batch::default(),
+                    sidecar: None,
                     file: path,
                     match_over: false,
                     track: Default::default(),
@@ -442,6 +456,7 @@ impl Session {
                 }
                 if let Some(target) = s.restart {
                     let mut presentation = s.presentation.clone();
+                    presentation.seek_from = s.tick;
                     if s.header.version >= 2 { r.camera.save(&mut presentation); }
                     std::fs::write(
                         &r.restart,
@@ -453,9 +468,7 @@ impl Session {
                     return Ok(false);
                 }
                 if !s.paused {
-                    let pace = s
-                        .seeking
-                        .is_none()
+                    let pace = (!r.unpaced && s.seeking.is_none())
                         .then(|| (kernel::clock::Clock::FREQUENCY as f64 * s.speed) as u64);
                     if m.pacer.as_ref().map(|p| p.ticks_per_second) != pace {
                         m.pacer = pace.map(|rate| {
@@ -515,6 +528,16 @@ impl Session {
                     s.tick
                 )
             }
+            if teardown && let Some(writer) = s.engine.as_mut().and_then(|e| e.sidecar.take())
+                && let Mode::Replay(_, opts) = &s.mode
+            {
+                if let Err(e) = writer.finish(&opts.path) {
+                    if opts.unpaced {
+                        return Err(e.context("sealing Prepare sidecar"));
+                    }
+                    eprintln!("theater: could not seal playback sidecar: {e:#}");
+                }
+            }
             if teardown && s.complete {
                 eprintln!("theater: hashes matched through tick {}", s.tick)
             }
@@ -570,6 +593,11 @@ impl Session {
         if let Err(e) = done {
             s.fail(format!("closing film: {e}"));
             return Ok(());
+        }
+        if let Some(writer) = rec.sidecar.take()
+            && let Err(error) = writer.finish(&path)
+        {
+            eprintln!("theater: could not seal the sidecar: {error:#}");
         }
         // Release the retained physical RAM anchor when a local game returns to the lobby.
         rec.frame = Default::default();

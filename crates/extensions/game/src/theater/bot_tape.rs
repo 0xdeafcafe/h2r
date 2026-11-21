@@ -91,7 +91,7 @@ impl Session {
             .lock()
             .engine
             .as_ref()
-            .and_then(|e| e.track.keyframe_offset())
+            .and_then(|e| e.track.sidecar_mark_offset().or(e.track.keyframe_offset()))
             .ok_or("restoring bot cursor without an indexed keyframe")?;
         t.cursor = cursor;
         t.pending = None;
