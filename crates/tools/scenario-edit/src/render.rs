@@ -167,8 +167,21 @@ struct V { @builtin(position) clip: vec4<f32>, @location(0) ndc: vec2<f32> };
 "#;
 
 const SHADER: &str = r#"
-struct U { view_proj: mat4x4<f32>, eye: vec4<f32> };
+struct U {
+    view_proj: mat4x4<f32>, eye: vec4<f32>,
+    right: vec4<f32>, up: vec4<f32>, forward: vec4<f32>, lens: vec4<f32>,
+};
 @group(0) @binding(0) var<uniform> u: U;
+// The depth the native world pass writes (native_view::DEPTH_RULE): view
+// depth over the far plane, so this pass's depth test agrees with the
+// level's. 1 / position.w is the perspective-correct view depth; lens.z is
+// 1 / far, and lens.w 1 to write it (the sky's own pass keeps the
+// rasterised depth).
+struct O { @location(0) c: vec4<f32>, @builtin(frag_depth) d: f32 };
+fn depth_out(clip: vec4<f32>) -> f32 {
+    if (u.lens.w < 0.5) { return clip.z; }
+    return clamp((1.0 / clip.w) * u.lens.z, 0.0, 1.0);
+}
 struct V { @builtin(position) clip: vec4<f32>, @location(0) n: vec3<f32>, @location(1) c: vec3<f32> };
 @vertex fn vs(@location(0) p: vec3<f32>, @location(1) n: vec3<f32>, @location(2) c: vec3<f32>, @location(3) center: vec3<f32>) -> V {
     var o: V;
@@ -178,13 +191,13 @@ struct V { @builtin(position) clip: vec4<f32>, @location(0) n: vec3<f32>, @locat
     o.c = c;
     return o;
 }
-@fragment fn fs(v: V) -> @location(0) vec4<f32> {
+@fragment fn fs(v: V) -> O {
     let l = normalize(vec3<f32>(0.4, 0.3, 0.85));
     let d = abs(dot(normalize(v.n), l));
-    return vec4<f32>(v.c * (0.3 + 0.7 * d), 1.0);
+    return O(vec4<f32>(v.c * (0.3 + 0.7 * d), 1.0), depth_out(v.clip));
 }
-@fragment fn fs_overlay(v: V) -> @location(0) vec4<f32> {
-    return vec4<f32>(v.c, 1.0);
+@fragment fn fs_overlay(v: V) -> O {
+    return O(vec4<f32>(v.c, 1.0), depth_out(v.clip));
 }
 "#;
 
@@ -209,6 +222,16 @@ struct P {
     emissive: f32, pad1: f32,
 };
 @group(0) @binding(0) var<uniform> u: U;
+// The depth the native world pass writes (native_view::DEPTH_RULE): view
+// depth over the far plane, so this pass's depth test agrees with the
+// level's. 1 / position.w is the perspective-correct view depth; lens.z is
+// 1 / far, and lens.w 1 to write it (the sky's own pass keeps the
+// rasterised depth).
+struct O { @location(0) c: vec4<f32>, @builtin(frag_depth) d: f32 };
+fn depth_out(clip: vec4<f32>) -> f32 {
+    if (u.lens.w < 0.5) { return clip.z; }
+    return clamp((1.0 / clip.w) * u.lens.z, 0.0, 1.0);
+}
 @group(1) @binding(0) var tex: texture_2d<f32>;
 @group(1) @binding(1) var samp: sampler;
 @group(1) @binding(2) var lm: texture_2d<f32>;
@@ -296,55 +319,55 @@ fn albedo(v: V) -> vec4<f32> {
     if (p.details > 1.5) { c = vec4<f32>(times_detail(c.rgb, d1), c.a); }
     return c;
 }
-@fragment fn fs_opaque(v: V) -> @location(0) vec4<f32> {
-    return vec4<f32>(fogged(v, lit(v, albedo(v).rgb)), 1.0);
+@fragment fn fs_opaque(v: V) -> O {
+    return O(vec4<f32>(fogged(v, lit(v, albedo(v).rgb)), 1.0), depth_out(v.clip));
 }
-@fragment fn fs_mask(v: V) -> @location(0) vec4<f32> {
+@fragment fn fs_mask(v: V) -> O {
     let c = albedo(v);
     if (c.a < 0.5) { discard; }
-    return vec4<f32>(fogged(v, lit(v, c.rgb)), 1.0);
+    return O(vec4<f32>(fogged(v, lit(v, c.rgb)), 1.0), depth_out(v.clip));
 }
 // Water and see-through surfaces of unknown blend: a fixed opacity.
-@fragment fn fs_translucent(v: V) -> @location(0) vec4<f32> {
+@fragment fn fs_translucent(v: V) -> O {
     let c = albedo(v);
-    return vec4<f32>(fogged(v, c.rgb * (0.6 + 0.4 * v.tint.rgb)), 0.3);
+    return O(vec4<f32>(fogged(v, c.rgb * (0.6 + 0.4 * v.tint.rgb)), 0.3), depth_out(v.clip));
 }
 // Blended by the picture's alpha, lit as a solid surface is.
-@fragment fn fs_alpha(v: V) -> @location(0) vec4<f32> {
+@fragment fn fs_alpha(v: V) -> O {
     let c = albedo(v);
-    return vec4<f32>(fogged(v, lit(v, c.rgb)), c.a);
+    return O(vec4<f32>(fogged(v, lit(v, c.rgb)), c.a), depth_out(v.clip));
 }
 // Added to what is behind it, unshaded (lights, shafts, glows); faded by
 // the fog. Without a picture it adds nothing.
-@fragment fn fs_additive(v: V) -> @location(0) vec4<f32> {
+@fragment fn fs_additive(v: V) -> O {
     if (p.textured < 0.5) { discard; }
     let c = albedo(v).rgb * (1.0 - fog_amount(v));
-    return vec4<f32>(c, 1.0);
+    return O(vec4<f32>(c, 1.0), depth_out(v.clip));
 }
 // Times what is behind it; the fog fades it to white (no change).
-@fragment fn fs_multiply(v: V) -> @location(0) vec4<f32> {
+@fragment fn fs_multiply(v: V) -> O {
     if (p.textured < 0.5) { discard; }
     let c = mix(albedo(v).rgb, vec3<f32>(1.0), fog_amount(v));
-    return vec4<f32>(c, 1.0);
+    return O(vec4<f32>(c, 1.0), depth_out(v.clip));
 }
 // Twice the picture times what is behind it, in gamma space as the game
 // does: the blend doubles, the factor 2^1.2 makes the rest of 2^2.2 in
 // linear light (mid-grey leaves the surface as it is). Fogged to neutral.
-@fragment fn fs_double(v: V) -> @location(0) vec4<f32> {
+@fragment fn fs_double(v: V) -> O {
     if (p.textured < 0.5) { discard; }
     let c = min(albedo(v).rgb * DOUBLE_SCALE, vec3<f32>(1.0));
-    return vec4<f32>(mix(c, vec3<f32>(0.5), fog_amount(v)), 1.0);
+    return O(vec4<f32>(mix(c, vec3<f32>(0.5), fog_amount(v)), 1.0), depth_out(v.clip));
 }
 // The sky: its base maps as they are, unlit (the sky is its own light).
-@fragment fn fs_sky(v: V) -> @location(0) vec4<f32> {
-    return vec4<f32>(albedo(v).rgb, 1.0);
+@fragment fn fs_sky(v: V) -> O {
+    return O(vec4<f32>(albedo(v).rgb, 1.0), depth_out(v.clip));
 }
-@fragment fn fs_sky_blend(v: V) -> @location(0) vec4<f32> {
-    return albedo(v);
+@fragment fn fs_sky_blend(v: V) -> O {
+    return O(albedo(v), depth_out(v.clip));
 }
 // An added sky layer (blend one, one): black adds nothing.
-@fragment fn fs_sky_add(v: V) -> @location(0) vec4<f32> {
-    return vec4<f32>(albedo(v).rgb, 0.0);
+@fragment fn fs_sky_add(v: V) -> O {
+    return O(vec4<f32>(albedo(v).rgb, 0.0), depth_out(v.clip));
 }
 "#;
 
@@ -1528,7 +1551,8 @@ impl Viewport {
                 right: w(r),
                 up: w(u),
                 forward: w(f),
-                lens: [(camera.fov_y * 0.5).tan(), aspect, 0.0, 0.0],
+                // 1 / far and 1: write the native depth rule.
+                lens: [(camera.fov_y * 0.5).tan(), aspect, 1.0 / camera.near_far().1, 1.0],
                 sun: self.atmosphere.sun,
                 sun_color: self.atmosphere.sun_color,
                 fog_color: self.atmosphere.fog_color,

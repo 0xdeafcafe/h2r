@@ -424,3 +424,46 @@ fn the_viewport_draws_the_level_through_the_native_world() {
     assert!(!vp.has_native());
     assert_eq!(draw(&mut vp), empty);
 }
+
+/// Step 2: the viewport's own passes write the native depth rule, so a
+/// placement glyph above the native floor is drawn over it and one under
+/// it is hidden by it. Skipped without a wgpu adapter.
+#[test]
+fn glyphs_test_depth_against_the_native_floor() {
+    let Some((device, queue)) = device() else {
+        return;
+    };
+    let (mut map, mut files) = textured();
+    let (loads, _) = read_all(&mut map, &mut files);
+    let half = crate::fixture::TEX_FLOOR / 2.0;
+    let camera = Camera {
+        target: [half, half, 0.0],
+        yaw: 0.0,
+        pitch: 1.3,
+        distance: 6.0,
+        ..Camera::default()
+    };
+    let mut vp = crate::render::Viewport::new(&device);
+    vp.set_native(&device, &queue, &loads);
+    let mut draw = |vp: &mut crate::render::Viewport, z: Option<f32>| {
+        let markers: Vec<_> = z
+            .map(|z| crate::geometry::Marker {
+                block: crate::layout::BlockKind::Weapons,
+                index: 0,
+                position: [half, half, z],
+                axes: crate::geometry::rotation([0.0; 3]),
+                scale: 1.0,
+                object: None,
+            })
+            .into_iter()
+            .collect();
+        vp.set_markers(&device, &crate::render::marker_vertices(&markers, &[]));
+        vp.render(&device, &queue, &camera, [64, 64]);
+        read_centre(&device, &queue, vp.color_texture().unwrap())
+    };
+    let floor = draw(&mut vp, None);
+    let above = draw(&mut vp, Some(0.5));
+    let below = draw(&mut vp, Some(-2.0));
+    assert_ne!(above, floor, "the glyph over the floor is drawn");
+    assert_eq!(below, floor, "the floor hides the glyph under it");
+}
