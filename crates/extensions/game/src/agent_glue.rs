@@ -300,6 +300,9 @@ impl AgentGlue {
         // Trials of the spots in the game (superbounce_verify.rs,
         // docs/game/superbounce.md, "Verifying spots").
         crate::superbounce_verify::install(&agent);
+        // Drive player.0 somewhere with the bots' route brain
+        // (player_goto.rs, docs/runtime/agent-api.md, "player.goto").
+        crate::player_goto::install(&agent);
         // HaloScript state: the threads and globals of the running scenario.
         agent::hs_state::install(&agent);
         // On the game thread: the sampler's main target.

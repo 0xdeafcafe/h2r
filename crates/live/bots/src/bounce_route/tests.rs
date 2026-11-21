@@ -619,3 +619,35 @@ fn a_touchdown_is_named_by_its_first_failed_test() {
     assert_eq!(Touchdown { miss: 0.2, ..t }.result(0.2, 4.0), "missed");
     assert_eq!(Touchdown { speed_in: 3.0, ..t }.result(0.2, 4.0), "too_slow");
 }
+
+// ---- a named site ----
+
+#[test]
+fn a_named_site_is_planned_by_itself_with_no_reach_limit() {
+    // Far past FUN_REACH, and the only site: the route still goes there.
+    let far = site(200.0, 0.0, 12.3);
+    let k = known(vec![site(10.0, 0.0, 14.0), far]);
+    let p = plan_site([0.0; 3], false, far, &k, &flat_walk, &|_| None).unwrap();
+    assert_eq!(p.why, Why::Asked);
+    assert_eq!(p.site, Some(far));
+    let names: Vec<_> = p.steps.iter().map(Step::name).collect();
+    assert_eq!(names, ["walk_crouched", "prime", "walk", "bounce", "fly"]);
+    assert_eq!(p.steps[2], Step::Walk { to: far.bounce.from(), crouch: false });
+    // Primed: no prime. A drop with no floor, or nowhere to prime: none.
+    let p = plan_site([0.0; 3], true, far, &k, &flat_walk, &|_| None).unwrap();
+    assert!(!p.steps.iter().any(|s| matches!(s, Step::Prime(_))));
+    let s = drop_site(10.0, 12.3);
+    assert!(plan_site([0.0; 3], false, s, &k, &flat_walk, &|_| None).is_none());
+    let floor = [9.0, 0.0, 2.4];
+    let p = plan_site([0.0; 3], false, s, &k, &flat_walk, &|_| Some(floor)).unwrap();
+    assert!(matches!(p.steps[3], Step::Drop { from, .. } if from == floor));
+    let bare = Known {
+        sites: vec![far],
+        crouches: Vec::new(),
+    };
+    assert!(plan_site([0.0; 3], false, far, &bare, &flat_walk, &|_| None).is_none());
+    // The approach: behind a standing site, the floor of a drop.
+    assert_eq!(approach(&far, &|_| None), Some(far.bounce.from()));
+    assert_eq!(approach(&s, &|_| Some(floor)), Some(floor));
+    assert_eq!(approach(&s, &|_| None), None);
+}

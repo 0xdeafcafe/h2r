@@ -24,6 +24,7 @@ pub mod expect;
 pub mod firefight;
 pub mod forge;
 pub mod frame_graph;
+pub mod goto;
 pub mod havok;
 pub mod superbounce;
 pub mod host_lobby;

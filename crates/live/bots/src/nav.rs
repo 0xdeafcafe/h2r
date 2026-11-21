@@ -1131,6 +1131,16 @@ impl Follower {
         self.path.get(self.next).map(|w| w.at)
     }
 
+    /// The waypoints still ahead, the one it walks to first.
+    pub fn ahead(&self) -> &[Waypoint] {
+        &self.path[self.next.min(self.path.len())..]
+    }
+
+    /// The waypoint it last passed, if any.
+    pub fn behind(&self) -> Option<Waypoint> {
+        self.next.checked_sub(1).and_then(|i| self.path.get(i)).copied()
+    }
+
     /// A turn to look into before the feet commit to it.
     pub(crate) fn corner(&self, at: V3) -> Option<V3> {
         let (w, next) = (self.path.get(self.next)?, self.path.get(self.next + 1)?);

@@ -12,7 +12,9 @@ use input::host::HostPadState;
 
 use super::{Mind, Vec3};
 use crate::brain::{Me, Perception, Seen};
-use crate::bounce_route::{self, Ask, Logged, Mode, OrderRun, Touchdown, Why};
+use crate::bounce_route::{
+    self, Ask, Logged, Mode, OrderRun, Touchdown, Why, launch_floor, path_length,
+};
 use crate::cache::MapData;
 use crate::glitches::prime::is_primed;
 
@@ -300,40 +302,6 @@ impl Ended {
             site: None,
         }
     }
-}
-
-/// How far sideways (world units) a launch floor may be from the slot it
-/// drops onto. **[guess]**: a 2.4-unit drop takes about a second, and the
-/// stick moves a bot about 2.5 units a second in the air.
-pub const LEDGE_REACH: f32 = 3.0;
-/// A launch floor is at most this much (world units) under the drop
-/// height, and at most [`LEDGE_OVER`] over it.
-pub const LEDGE_UNDER: f32 = 0.2;
-pub const LEDGE_OVER: f32 = 2.5;
-
-/// A launch floor for a site that needs a drop: the nav mesh's point
-/// nearest the site's target sideways, within [`LEDGE_REACH`], whose floor
-/// is the drop height over the target, to [`LEDGE_UNDER`] below and
-/// [`LEDGE_OVER`] above it.
-pub fn launch_floor(m: &MapData, s: &crate::spots::Site) -> Option<Vec3> {
-    let t = s.target();
-    let over = [t[0], t[1], t[2] + s.drop_height()];
-    m.nav
-        .nearest(over, LEDGE_REACH, LEDGE_OVER, LEDGE_UNDER)
-        .map(|(_, p)| p)
-}
-
-/// The length of the walk along the nav mesh from `from` to `to`.
-fn path_length(m: &MapData, from: Vec3, to: Vec3) -> Option<f32> {
-    let path = m.nav.path(from, to)?;
-    let mut at = from;
-    let mut total = 0.0;
-    for w in path {
-        total += ((w.at[0] - at[0]).powi(2) + (w.at[1] - at[1]).powi(2) + (w.at[2] - at[2]).powi(2))
-            .sqrt();
-        at = w.at;
-    }
-    Some(total)
 }
 
 #[cfg(test)]

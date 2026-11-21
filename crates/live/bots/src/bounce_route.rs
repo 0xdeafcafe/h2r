@@ -29,6 +29,43 @@ use crate::mind::RouteMotion;
 use crate::nav::RouteWalk;
 use crate::spots::{Crouch, Known, Site, dist_xy};
 
+// ---- the map's walks and launch floors ----
+
+/// How far sideways (world units) a launch floor may be from the slot it
+/// drops onto. **[guess]**: a 2.4-unit drop takes about a second, and the
+/// stick moves a bot about 2.5 units a second in the air.
+pub const LEDGE_REACH: f32 = 3.0;
+/// A launch floor is at most this much (world units) under the drop
+/// height, and at most [`LEDGE_OVER`] over it.
+pub const LEDGE_UNDER: f32 = 0.2;
+pub const LEDGE_OVER: f32 = 2.5;
+
+/// A launch floor for a site that needs a drop: the nav mesh's point
+/// nearest the site's target sideways, within [`LEDGE_REACH`], whose floor
+/// is the drop height over the target, to [`LEDGE_UNDER`] below and
+/// [`LEDGE_OVER`] above it. The [`Ledge`] a plan is made with.
+pub fn launch_floor(m: &MapData, s: &Site) -> Option<Vec3> {
+    let t = s.target();
+    let over = [t[0], t[1], t[2] + s.drop_height()];
+    m.nav
+        .nearest(over, LEDGE_REACH, LEDGE_OVER, LEDGE_UNDER)
+        .map(|(_, p)| p)
+}
+
+/// The length of the walk along the nav mesh from `from` to `to`: the
+/// [`Walk`] a plan is made with.
+pub fn path_length(m: &MapData, from: Vec3, to: Vec3) -> Option<f32> {
+    let path = m.nav.path(from, to)?;
+    let mut at = from;
+    let mut total = 0.0;
+    for w in path {
+        total += ((w.at[0] - at[0]).powi(2) + (w.at[1] - at[1]).powi(2) + (w.at[2] - at[2]).powi(2))
+            .sqrt();
+        at = w.at;
+    }
+    Some(total)
+}
+
 /// Gravity (world units a second squared): the jump model's estimate
 /// (`nav::route`).
 pub const GRAVITY: f32 = 5.2;
@@ -118,6 +155,9 @@ pub enum Why {
     Helps,
     /// A bounce for fun.
     Fun,
+    /// The asker named the place: a spot to walk to, prime at or bounce
+    /// on ([`plan_site`], [`prime_steps`]; `player.goto`).
+    Asked,
 }
 
 impl Why {
@@ -126,6 +166,7 @@ impl Why {
             Why::Plain => "plain",
             Why::Helps => "helps",
             Why::Fun => "fun",
+            Why::Asked => "asked",
         }
     }
 }
@@ -255,6 +296,30 @@ pub fn geo(c: &Crouch) -> Option<Geo> {
     })
 }
 
+/// The crouch spots a plan may prime at, with the walk to each: none
+/// when the asker is primed already, else the [`NEAR_CROUCHES`] nearest
+/// the start within `limit` (straight line), proven ones first.
+fn primes(ask: &Ask, known: &Known, limit: f32, query: &dyn Fn(Vec3, Vec3) -> Option<f32>) -> Vec<Prime> {
+    if ask.primed {
+        return Vec::new();
+    }
+    let mut near: Vec<Crouch> = known
+        .crouches
+        .iter()
+        .copied()
+        .filter(|c| dist_xy(ask.from, c.stand) <= limit)
+        .collect();
+    near.sort_by(|a, b| {
+        (!a.proven())
+            .cmp(&!b.proven())
+            .then(dist_xy(ask.from, a.stand).total_cmp(&dist_xy(ask.from, b.stand)))
+    });
+    near.into_iter()
+        .take(NEAR_CROUCHES)
+        .filter_map(|at| Some(Prime { at, lead: query(ask.from, prime_start(&at))? }))
+        .collect()
+}
+
 fn candidate(
     ask: &Ask,
     primes: &[Prime],
@@ -303,14 +368,7 @@ fn flight_z(ask: &Ask, site: &Site) -> f32 {
 fn route(ask: &Ask, c: &Candidate, why: Why) -> Plan {
     let mut steps = Vec::new();
     if let Some(at) = c.crouch {
-        // With the way out known the walk to its start is a plain walk
-        // and the prime crouch-walks in; else walk in crouched, as under a
-        // low ceiling.
-        steps.push(Step::Walk {
-            to: prime_start(&at),
-            crouch: geo(&at).is_none(),
-        });
-        steps.push(Step::Prime(at));
+        steps.extend(prime_steps(&at));
     }
     // From here to the bounce the crouch button stays up: another crouch
     // rebuilds the pair and the word is lost.
@@ -382,25 +440,7 @@ pub fn plan_with(ask: &Ask, known: &Known, walk: Walk, ledge: Ledge) -> Plan {
         Mode::Help => plain_cost.unwrap_or(FUN_REACH),
         Mode::Fun => FUN_REACH,
     };
-    let primes: Vec<Prime> = if ask.primed {
-        Vec::new()
-    } else {
-        let mut near: Vec<Crouch> = known
-            .crouches
-            .iter()
-            .copied()
-            .filter(|c| dist_xy(ask.from, c.stand) <= limit)
-            .collect();
-        near.sort_by(|a, b| {
-            (!a.proven())
-                .cmp(&!b.proven())
-                .then(dist_xy(ask.from, a.stand).total_cmp(&dist_xy(ask.from, b.stand)))
-        });
-        near.into_iter()
-            .take(NEAR_CROUCHES)
-            .filter_map(|at| Some(Prime { at, lead: query(ask.from, prime_start(&at))? }))
-            .collect()
-    };
+    let primes = primes(ask, known, limit, &query);
     if !ask.primed && primes.is_empty() {
         return plain;
     }
@@ -461,6 +501,64 @@ pub fn plan_with(ask: &Ask, known: &Known, walk: Walk, ledge: Ledge) -> Plan {
             best.map_or(plain, |c| route(ask, &c, Why::Fun))
         }
     }
+}
+
+/// Priming at the crouch spot `c`: walk to its start, then prime. With
+/// the way out known the walk there is a plain walk and the prime
+/// crouch-walks in; else the walk goes in crouched, as under a low
+/// ceiling.
+pub fn prime_steps(c: &Crouch) -> [Step; 2] {
+    [
+        Step::Walk {
+            to: prime_start(c),
+            crouch: geo(c).is_none(),
+        },
+        Step::Prime(*c),
+    ]
+}
+
+/// Where a bounce at `site` is taken from: its launch floor when it needs
+/// a drop (`ledge`), else behind it for the standing jump. `None` for a
+/// drop with no launch floor.
+pub fn approach(site: &Site, ledge: Ledge) -> Option<Vec3> {
+    if site.standing() {
+        Some(site.bounce.from())
+    } else {
+        ledge(site)
+    }
+}
+
+/// The route from `from` that bounces on `site` and nothing else, for an
+/// asker who named it (`player.goto`): prime at a crouch spot unless
+/// `primed` (the one with the least walking to the bounce, proven first,
+/// as [`plan_with`] picks), walk to the bounce's approach ([`approach`]),
+/// take the bounce and ride the launch back down. No reach limit and no
+/// walk to beat. `None` when no walk or no crouch spot gets there, or
+/// the site needs a drop with no launch floor.
+pub fn plan_site(
+    from: Vec3,
+    primed: bool,
+    site: Site,
+    known: &Known,
+    walk: Walk,
+    ledge: Ledge,
+) -> Option<Plan> {
+    let ask = Ask {
+        from,
+        to: site.target(),
+        primed,
+        mode: Mode::Fun,
+    };
+    let floor = if site.standing() { None } else { Some(ledge(&site)?) };
+    let primes = primes(&ask, known, f32::INFINITY, walk);
+    if !primed && primes.is_empty() {
+        return None;
+    }
+    let c = candidate(&ask, &primes, walk, site, floor)?;
+    let mut plan = route(&ask, &c, Why::Asked);
+    // Done once down: the asker is where it bounced.
+    plan.steps.retain(|s| !matches!(s, Step::Nav { .. }));
+    Some(plan)
 }
 
 // ---- playing a plan ----
@@ -685,6 +783,9 @@ pub struct OrderRun {
     log: Vec<Logged>,
     /// A show-off: the bot gives it up when it sees an enemy.
     pub show_off: bool,
+    /// How near the goal a [`Step::Nav`] ends ([`GOAL`] unless
+    /// [`OrderRun::arrive_within`] says).
+    goal: f32,
 }
 
 fn norm(d: [f32; 2]) -> ([f32; 2], f32) {
@@ -714,6 +815,22 @@ impl OrderRun {
             landing: None,
             log: Vec::new(),
             show_off: false,
+            goal: GOAL,
+        }
+    }
+
+    /// The same, with the last walk ([`Step::Nav`]) ending within `within`
+    /// of its goal instead of [`GOAL`].
+    pub fn arrive_within(mut self, within: f32) -> OrderRun {
+        self.goal = within;
+        self
+    }
+
+    /// The walk under way, while a walking step is.
+    pub fn walking(&self) -> Option<&RouteWalk> {
+        match &self.state {
+            State::Walk(w) => Some(w),
+            _ => None,
         }
     }
 
@@ -850,7 +967,7 @@ impl OrderRun {
             }
             let out = match step {
                 Step::Walk { to, crouch } => self.walk(map, at, tick, to, crouch, ARRIVED),
-                Step::Nav { to } => self.walk(map, at, tick, to, false, GOAL),
+                Step::Nav { to } => self.walk(map, at, tick, to, false, self.goal),
                 Step::Prime(c) => self.prime(c, at, tick, pair),
                 Step::Bounce(site) => self.bounce(site, at, tick),
                 Step::Drop { from, site } => self.drop(from, site, at, tick),
