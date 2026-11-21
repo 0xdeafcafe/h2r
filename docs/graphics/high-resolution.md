@@ -222,14 +222,20 @@ from the view and `frame-NNNNN-1x.png` from the reference
 ### Changing the scale during a run
 
 At each present, `ScaledBackend::follow_resolution` checks for a change. An
-explicit resolution takes effect at this boundary. During a window drag the
-compositor presents the existing raster until the Native drawable holds the
-same size for 150 ms. A new
-scale is made at that frame boundary, on the thread that presents (the
-render thread under `ThreadedBackend`): every scaled surface is made again at
-the new size and filled from the reference's, and the device's surface
-handles are mapped onto the new ones. At 640×480 with retail lighting and
-4:3 presentation, the view sleeps and the compositor shows the reference
+explicit resolution takes effect at this boundary. Native waits for the
+drawable size to hold steady for 150 ms
+(`crates/extensions/game/src/d3d_glue/output_size.rs`). The window redraws
+the latest published raster at each resize. For Source aspect and Fit
+scaling, Native takes its presentation aspect from the current physical
+drawable, including while it draws a cached frame from an earlier size.
+The compositor and the guest's display-size query share this placement
+rule (`crates/apps/app/src/scale.rs`).
+
+The backend applies a new scale at the frame boundary on the thread that
+presents (the render thread under `ThreadedBackend`). It recreates each
+scaled surface at the new size, fills it from the reference, and maps the
+device's surface handles onto the new allocations. At 640×480 with retail
+lighting and 4:3 presentation, the view sleeps and the compositor shows the reference
 (`ScaleStats::reference_frames`). A forced widescreen aspect or stretched
 window wakes the exact-mode view at the same raster size. The display gets
 the fitted HUD and adjusted projection while guest reads use the retail

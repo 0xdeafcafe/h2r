@@ -3,8 +3,8 @@
 
 use gfx::GfxContext;
 
-use crate::frame::MAX_FRAME_DIMENSION;
-use crate::scale::{NativeSize, limit_drawable};
+use crate::frame::{MAX_FRAME_DIMENSION, ShownFrame};
+use crate::scale::{NativeSize, Viewport, limit_drawable};
 use crate::AppConfig;
 
 /// The window's swapchain. gfx's `Presenter` always uses `AutoVsync` and
@@ -60,7 +60,8 @@ impl WindowSurface {
         surface.configure(&ctx.device, &config);
         Ok(Self {
             surface,
-            native_size: NativeSize::new(app.aspect, app.scaling, size),
+            native_size: NativeSize::new(app.aspect, app.scaling, size)
+                .with_native_fit(app.native_fit.clone()),
             dimension_limit,
             config,
             stale: false,
@@ -72,6 +73,12 @@ impl WindowSurface {
         (self.config.width, self.config.height)
     }
 
+    pub(crate) fn viewport(&self, frame: Option<&ShownFrame>) -> Viewport {
+        frame.map_or_else(Viewport::default, |frame| {
+            self.native_size.viewport(frame.size, self.size(), frame.loading)
+        })
+    }
+
     pub(crate) fn resize(&mut self, size: (u32, u32)) {
         if size.0 == 0 || size.1 == 0 {
             return;
@@ -81,10 +88,8 @@ impl WindowSurface {
         if size == self.size() {
             return;
         }
-        // Only recorded: reconfiguring inside the window's resize callback
-        // waits for the GPU to go idle there, and a failure in that
-        // callback cannot unwind (it aborted the process). The next acquire
-        // configures, inside an error scope.
+        // Acquire configures inside an error scope, on this redraw for a
+        // desktop resize and on the next display-link tick for embedded.
         self.config.width = size.0;
         self.config.height = size.1;
         self.stale = true;
@@ -93,7 +98,7 @@ impl WindowSurface {
     /// Configures the surface, catching a validation error (a GPU that did
     /// not go idle in time) instead of panicking; `stale` stays set so the
     /// next acquire tries again.
-    pub(crate) fn configure(&mut self, ctx: &GfxContext) -> bool {
+    fn configure(&mut self, ctx: &GfxContext) -> bool {
         let scope = ctx.device.push_error_scope(wgpu::ErrorFilter::Validation);
         self.surface.configure(&ctx.device, &self.config);
         match pollster::block_on(scope.pop()) {
@@ -105,13 +110,18 @@ impl WindowSurface {
             Some(e) => {
                 let message = e.to_string();
                 if self.last_configure_error.as_ref() != Some(&message) {
-                    eprintln!("app: surface configure failed, retrying next frame: {message}");
+                    eprintln!("app: surface configure failed, retrying on redraw: {message}");
                     self.last_configure_error = Some(message);
                 }
                 self.stale = true;
                 false
             }
         }
+    }
+
+    #[cfg(not(any(target_os = "tvos", target_os = "ios")))]
+    pub(crate) fn needs_configure(&self) -> bool {
+        self.stale
     }
 
     /// Waits for the display's vblank (`true`) or not, from the next frame.
@@ -135,7 +145,7 @@ impl WindowSurface {
         match self.surface.get_current_texture() {
             C::Success(t) | C::Suboptimal(t) => Some(t),
             C::Outdated | C::Lost => {
-                self.configure(ctx);
+                self.stale = true;
                 None
             }
             C::Timeout | C::Occluded => None,

@@ -22,7 +22,6 @@ use crate::audio_out::{AudioOut, FALLBACK_RATE};
 use crate::frame::{self, Compositor, FrameSource};
 use crate::lifecycle::Lifecycle;
 use crate::pacing::{PaceStats, Pacer};
-use crate::scale;
 use crate::surface::WindowSurface;
 use crate::worker::{GuestFn, GuestWorker};
 use crate::{AppConfig, ExitReport, GuestExit, GuestHost};
@@ -188,17 +187,7 @@ impl Embedded {
             return;
         };
         let view = target.texture.create_view(&Default::default());
-        let viewport = frame
-            .as_ref()
-            .map(|f| {
-                scale::place(
-                    f.size,
-                    self.config.aspect,
-                    self.config.scaling,
-                    self.surface.size(),
-                )
-            })
-            .unwrap_or_default();
+        let viewport = self.surface.viewport(frame.as_ref());
         let mut enc = self
             .ctx
             .device

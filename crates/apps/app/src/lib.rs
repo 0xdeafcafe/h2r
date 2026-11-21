@@ -28,6 +28,8 @@ pub mod keymap;
 pub mod lifecycle;
 pub mod mailbox;
 pub mod menu_overlay;
+#[cfg(target_os = "macos")]
+mod metal_resize;
 pub mod overlay;
 pub mod pacing;
 pub mod tile;
@@ -55,7 +57,7 @@ pub use input_pump::{PumpReport, pump_input};
 pub use lifecycle::{Control, Lifecycle};
 pub use overlay::{Banner, Notice, NoticeKind};
 pub use pacing::{PaceAction, PacePolicy, PaceStats, Pacer, VBlank, WindowedRate};
-pub use scale::{DisplayAspect, Scaling, Viewport};
+pub use scale::{DisplayAspect, NativeFit, Scaling, Viewport};
 pub use watermark::{BuildInfo, LiveStats, Watermark};
 
 /// Shell settings.
@@ -73,6 +75,9 @@ pub struct AppConfig {
     /// Displayed shape of the guest frame.
     pub aspect: DisplayAspect,
     pub scaling: Scaling,
+    /// With Native resolution, Source aspect and Fit scaling, the game
+    /// image follows the drawable's aspect while the raster catches up.
+    pub native_fit: Option<NativeFit>,
     pub filter: Filter,
     /// Wait for the display's vblank when presenting (`Fifo`). Off uses
     /// `AutoNoVsync` (tearing allowed); guest pacing is unaffected either way.
@@ -140,6 +145,7 @@ impl Default for AppConfig {
             fullscreen: false,
             aspect: DisplayAspect::Standard,
             scaling: Scaling::Fit,
+            native_fit: None,
             filter: Filter::Linear,
             vsync: true,
             fps: fps::FpsTarget::Thirty,

@@ -35,6 +35,9 @@ png = "0.18"
 # The Dock icon for the unbundled `h2 play` window (art/app-icon).
 [target.'cfg(target_os = "macos")'.dependencies]
 app-icon = { path = "../app-icon" }
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSView"] }
+objc2-quartz-core = { version = "0.3", default-features = false, features = ["std", "CALayer", "CAMetalLayer", "CATransaction"] }
 
 [[bin]]
 name = "h2-app-demo"

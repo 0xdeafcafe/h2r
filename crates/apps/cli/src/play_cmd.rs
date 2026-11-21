@@ -645,6 +645,10 @@ pub(crate) fn run_with_theater(
         eprintln!("play: {p}");
     }
     let store = Arc::new(store);
+    let resolution = store.handle::<settings::Resolution>(boot::setting_defs::RESOLUTION.key);
+    config.native_fit = Some(app::NativeFit::new(move || {
+        resolution.get() == settings::Resolution::Native
+    }));
     // --fps, then H2_FPS (both checked above), then the Video screen's
     // saved rate, then 30. The row changes it during the run.
     let fps = &boot::setting_defs::FPS;

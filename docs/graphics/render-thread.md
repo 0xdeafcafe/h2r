@@ -34,10 +34,14 @@ override, holding the guest memory lock and then the device lock.
 | the present hook (PNG or the app's frame copy) | `GfxBackend::present_with_gamma` | render thread |
 | the `D3DSWAP_FINISH` GPU wait | `GfxBackend` (`SwapFinish`) | render thread |
 
-The window thread in `h2 play` only shows the frame the hook published; the
-hook publishes into a shared frame slot, so it runs on the render thread
-unchanged. The persistent pipeline cache and its compile workers belong to
-the backend and move with it.
+The hook publishes into a shared frame slot (`crates/apps/app/src/frame.rs`).
+The `h2 play` window thread redraws the latest slot whenever the window
+size changes, independently of guest frame publication
+(`crates/apps/app/src/shell.rs`). On macOS, the window thread reconfigures
+and presents the Metal drawable during the resize callback
+(`crates/apps/app/src/surface.rs`, `crates/apps/app/src/metal_resize.rs`).
+The persistent pipeline cache and its compile workers belong to the backend
+and move with it.
 
 The boot glue wraps the backend when `d3d_glue::render_thread_requested()`
 holds (only the value `0` turns it off, `render_thread_from`): the

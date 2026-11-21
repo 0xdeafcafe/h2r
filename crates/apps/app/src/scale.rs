@@ -54,6 +54,22 @@ pub(crate) fn limit_drawable(size: (u32, u32), limit: u32) -> (u32, u32) {
     (scale(size.0), scale(size.1))
 }
 
+/// Reads whether the live resolution setting is Native.
+#[derive(Clone)]
+pub struct NativeFit(Arc<dyn Fn() -> bool + Send + Sync>);
+
+impl NativeFit {
+    pub fn new(is_native: impl Fn() -> bool + Send + Sync + 'static) -> Self {
+        Self(Arc::new(is_native))
+    }
+}
+
+impl std::fmt::Debug for NativeFit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NativeFit").finish_non_exhaustive()
+    }
+}
+
 /// Physical render extent shared by the shell and the render thread. Publish
 /// both axes together so a reader cannot observe half of a resize.
 #[derive(Clone)]
@@ -61,6 +77,7 @@ pub(crate) struct NativeSize {
     aspect: DisplayAspect,
     scaling: Scaling,
     pixels: Arc<AtomicU64>,
+    native_fit: Option<NativeFit>,
 }
 
 impl NativeSize {
@@ -69,9 +86,15 @@ impl NativeSize {
             aspect,
             scaling,
             pixels: Arc::new(AtomicU64::new(0)),
+            native_fit: None,
         };
         size.update(drawable);
         size
+    }
+
+    pub(crate) fn with_native_fit(mut self, native_fit: Option<NativeFit>) -> Self {
+        self.native_fit = native_fit;
+        self
     }
 
     pub(crate) fn update(&self, (w, h): (u32, u32)) {
@@ -98,12 +121,27 @@ impl NativeSize {
         (viewport.width, viewport.height)
     }
 
+    pub(crate) fn viewport(&self, src: (u32, u32), drawable: (u32, u32), loading: bool) -> Viewport {
+        // Native Fit takes its aspect from the drawable. The cached frame
+        // can still have the aspect of the last accepted raster resize.
+        let scaling = if !loading
+            && self.aspect == DisplayAspect::Source
+            && self.scaling == Scaling::Fit
+            && self.native_fit.as_ref().is_some_and(|fit| (fit.0)())
+        {
+            Scaling::Stretch
+        } else {
+            self.scaling
+        };
+        place(src, self.aspect, scaling, drawable)
+    }
+
     /// Compositor's physical destination for a source of this size.
     pub(crate) fn display_size(&self, src: (u32, u32)) -> (u32, u32) {
         let Some(drawable) = self.drawable() else {
             return src;
         };
-        let viewport = place(src, self.aspect, self.scaling, drawable);
+        let viewport = self.viewport(src, drawable, false);
         (viewport.width, viewport.height)
     }
 }
@@ -250,6 +288,57 @@ mod tests {
 
         let headless = NativeSize::new(DisplayAspect::Source, Scaling::Fit, (0, 0));
         assert_eq!(headless.display_size((5120, 2880)), (5120, 2880));
+    }
+
+    #[test]
+    fn native_fit_reuses_the_same_frame_at_each_new_drawable_aspect() {
+        let cached = (1280, 960);
+        let size = NativeSize::new(DisplayAspect::Source, Scaling::Fit, cached)
+            .with_native_fit(Some(NativeFit::new(|| true)));
+        for (target, rebuilt) in [
+            ((1600, 900), (1600, 900)),
+            ((1920, 1080), (1920, 1080)),
+            ((900, 1200), (900, 1200)),
+            ((5120, 2880), (3840, 2160)),
+        ] {
+            size.update(target);
+            let viewport = Viewport {
+                x: 0,
+                y: 0,
+                width: target.0,
+                height: target.1,
+            };
+            assert_eq!(size.viewport(cached, target, false), viewport);
+            assert_eq!(size.viewport(rebuilt, target, false), viewport);
+            assert_eq!(size.display_size(cached), target);
+        }
+    }
+
+    #[test]
+    fn native_fit_preserves_loading_fixed_aspect_and_integer_placement() {
+        use std::sync::atomic::AtomicBool;
+
+        let native = Arc::new(AtomicBool::new(true));
+        let mode = Arc::clone(&native);
+        let control = Some(NativeFit::new(move || mode.load(Ordering::Relaxed)));
+        let src = (640, 480);
+        let target = (1920, 1080);
+        let size = NativeSize::new(DisplayAspect::Source, Scaling::Fit, target)
+            .with_native_fit(control.clone());
+        let fitted = fit(4.0 / 3.0, target);
+        assert_eq!(size.viewport(src, target, true), fitted);
+        assert_eq!(size.display_size(src), target);
+
+        let forced = NativeSize::new(DisplayAspect::Standard, Scaling::Fit, target)
+            .with_native_fit(control.clone());
+        assert_eq!(forced.viewport(src, target, false), fitted);
+        let integer = NativeSize::new(DisplayAspect::Source, Scaling::Integer, target)
+            .with_native_fit(control);
+        assert_eq!(integer.display_size(src), (1280, 960));
+
+        native.store(false, Ordering::Relaxed);
+        assert_eq!(size.viewport(src, target, false), fitted);
+        assert_eq!(size.display_size(src), (1440, 1080));
     }
 
     #[test]

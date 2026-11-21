@@ -465,10 +465,18 @@ surface, clearing the rest to black.
   `GuestHost::native_size` publishes the physical drawable size for Native and
   `GuestHost::display_size` reports where a given raster is presented.
   `--aspect 4:3` and `16:9` fit those shapes inside the window. `Fit`
-  adds bars as needed, `Integer` takes the largest whole multiple of
-  the frame height that fits, and `Stretch` fills the drawable.
-- **Resize** reconfigures the window surface immediately. The game reallocates
-  its Native raster after the drawable size holds steady for 150 ms. Minimizing
+  adds bars as needed. In Native resolution with Source aspect, Fit uses
+  the drawable's aspect for the game frame. `Integer` takes the largest
+  whole multiple of the frame height that fits, and `Stretch` fills the
+  drawable.
+- **Resize** (`crates/apps/app/src/shell.rs`, `crates/apps/app/src/surface.rs`)
+  reconfigures the surface and redraws the latest frame in the resize
+  callback. On macOS, AppKit also requests redraws during live resize.
+  Both paths read the current backing size from the view. The Metal
+  presenter uses aspect-preserving contents gravity and presents the
+  resized drawable in a Core Animation transaction
+  (`crates/apps/app/src/metal_resize.rs`). The game reallocates its Native
+  raster after the drawable size holds steady for 150 ms. Minimizing
   preserves the last nonzero size.
 - **Vsync**: `AutoVsync` (Fifo) by default, `AutoNoVsync` with
   `vsync: false`. This only affects the window; guest pacing is separate.

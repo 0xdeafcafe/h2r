@@ -7,7 +7,7 @@ use gfx::GfxContext;
 use input::backend::keyboard::KeyboardMouse;
 use input::bindings::MouseButton;
 use winit::application::ApplicationHandler;
-use winit::dpi::LogicalSize;
+use winit::dpi::{LogicalSize, PhysicalSize};
 use winit::event::{DeviceEvent, DeviceId, ElementState, Ime, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::keyboard::{KeyCode, PhysicalKey};
@@ -21,7 +21,6 @@ use crate::lifecycle::Lifecycle;
 use crate::menu_overlay::MenuRenderer;
 use crate::overlay::OverlayRenderer;
 use crate::pacing::{PaceStats, Pacer, WindowedRate};
-use crate::scale;
 use crate::surface::WindowSurface;
 use crate::theater_overlay;
 use crate::watermark::{LiveStats, Panels, WatermarkRenderer};
@@ -50,6 +49,10 @@ struct Gpu {
     /// The adapter's backend, lower case (`metal`), for the watermark.
     backend: String,
     source: FrameSource,
+    #[cfg(target_os = "macos")]
+    metal_resize: Option<crate::metal_resize::MetalResize>,
+    #[cfg(target_os = "macos")]
+    last_presented_size: (u32, u32),
 }
 
 /// How often the watermark's numbers change.
@@ -205,13 +208,23 @@ impl Shell {
         let instance = wgpu::Instance::default();
         let surface = instance.create_surface(Arc::clone(&window))?;
         let ctx = pollster::block_on(GfxContext::new(instance, Some(&surface)))?;
+        let info = ctx.adapter.get_info();
+        #[cfg(target_os = "macos")]
+        let metal_resize = if info.backend == wgpu::Backend::Metal {
+            crate::metal_resize::MetalResize::new(&window, &surface)
+        } else {
+            None
+        };
+        #[cfg(target_os = "macos")]
+        let size = metal_resize
+            .as_ref()
+            .map_or(size, |metal| metal.drawable_size());
         let surface = WindowSurface::new(
             &ctx,
             surface,
             (size.width, size.height),
             &self.config,
         )?;
-        let info = ctx.adapter.get_info();
         eprintln!(
             "app: {} ({:?}), surface {:?}",
             info.name, info.backend, surface.config.format
@@ -279,28 +292,45 @@ impl Shell {
             ctx,
             surface,
             source,
+            #[cfg(target_os = "macos")]
+            metal_resize,
+            #[cfg(target_os = "macos")]
+            last_presented_size: (0, 0),
         });
         Ok(())
     }
 
-    fn redraw(&mut self) {
+    fn redraw(&mut self, size: Option<PhysicalSize<u32>>) {
         let Some(g) = self.gpu.as_mut() else { return };
-        let frame = g.source.latest();
+        // AppKit can call drawRect before delivering Resized. A queued
+        // resize event can also refer to an older size than the live view.
+        #[cfg(target_os = "macos")]
+        let size = g
+            .metal_resize
+            .as_ref()
+            .map(|metal| metal.drawable_size())
+            .or(size);
+        if let Some(size) = size {
+            if size.width == 0 || size.height == 0 {
+                return;
+            }
+            g.surface.resize((size.width, size.height));
+        }
+        let size = g.surface.size();
+        #[cfg(target_os = "macos")]
+        let transaction = g
+            .metal_resize
+            .as_ref()
+            .and_then(|metal| metal.transaction(size != g.last_presented_size));
         let Some(target) = g.surface.acquire(&g.ctx) else {
+            if g.surface.needs_configure() {
+                g.window.request_redraw();
+            }
             return;
         };
+        let frame = g.source.latest();
         let view = target.texture.create_view(&Default::default());
-        let viewport = frame
-            .as_ref()
-            .map(|f| {
-                scale::place(
-                    f.size,
-                    self.config.aspect,
-                    self.config.scaling,
-                    g.surface.size(),
-                )
-            })
-            .unwrap_or_default();
+        let viewport = g.surface.viewport(frame.as_ref());
         let mut enc = g
             .ctx
             .device
@@ -351,14 +381,21 @@ impl Shell {
                     &t.panels,
                     &view,
                     g.surface.config.format,
-                    g.surface.size(),
+                    size,
                     viewport,
                 );
             }
         }
         if let Some(renderer) = &mut g.theater {
-            renderer.draw(&g.ctx, &mut enc, &self.theater_view, &view,
-                g.surface.config.format, g.surface.size(), viewport);
+            renderer.draw(
+                &g.ctx,
+                &mut enc,
+                &self.theater_view,
+                &view,
+                g.surface.config.format,
+                size,
+                viewport,
+            );
         }
         // The debug menu over everything but the banner.
         if let Some(lines) = self
@@ -374,7 +411,7 @@ impl Shell {
                 &lines,
                 &view,
                 g.surface.config.format,
-                g.surface.size(),
+                size,
                 viewport,
             );
         }
@@ -388,13 +425,18 @@ impl Shell {
                     &notice,
                     &view,
                     g.surface.config.format,
-                    g.surface.size(),
+                    size,
                 );
             }
         }
         g.ctx.queue.submit([enc.finish()]);
         g.window.pre_present_notify();
         g.ctx.queue.present(target);
+        #[cfg(target_os = "macos")]
+        {
+            drop(transaction);
+            g.last_presented_size = size;
+        }
         if let Some(theater) = &self.config.theater
             && let Some(dir) = self.theater_screenshot.take()
         {
@@ -569,13 +611,8 @@ impl ApplicationHandler<UserEvent> for Shell {
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         match event {
             WindowEvent::CloseRequested => self.close(event_loop, "window closed"),
-            WindowEvent::Resized(size) => {
-                if let Some(g) = self.gpu.as_mut() {
-                    g.surface.resize((size.width, size.height));
-                    g.window.request_redraw();
-                }
-            }
-            WindowEvent::RedrawRequested => self.redraw(),
+            WindowEvent::Resized(size) => self.redraw(Some(size)),
+            WindowEvent::RedrawRequested | WindowEvent::Occluded(false) => self.redraw(None),
             WindowEvent::Focused(focused) => {
                 if !focused && let Some(theater) = &self.config.theater {
                     theater.0.release_keys();
