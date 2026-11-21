@@ -362,6 +362,11 @@ fn has_game_view(scene: &FrameScene, replay: &ReplayFrame) -> bool {
 fn sealed(sequence: u64, scene: Arc<FrameScene>) {
     let Some(shared) = active() else { return };
     let mut scenes = shared.scenes.lock().unwrap_or_else(|e| e.into_inner());
+    // Reset may retire this seal between publication and its observer. Leave
+    // the new timeline's pending Swap and capture/parity state untouched.
+    if scene_step::last().is_none_or(|current| !Arc::ptr_eq(&current, &scene)) {
+        return;
+    }
     let pending = scenes.pending.take((sequence, scene.id));
     if scenes.published.as_ref().is_some_and(|prev| {
         prev.id.map_epoch != scene.id.map_epoch
@@ -679,6 +684,9 @@ impl Service {
             let id = scene_step::open_identity();
             let mut scenes = shared.scenes.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(id) = id {
+                if id.1.map_epoch != render_bridge::native_map_work::generation() {
+                    return;
+                }
                 if replay.has_game_view() && crate::frame_parity::armed() {
                     if !replay.refusals.is_empty() {
                         crate::frame_parity::refuse(replay.refusals.join(", "));

@@ -553,39 +553,62 @@ pub fn open_identity() -> Option<(u64, SceneId)> {
 /// After `render_frame_and_present`: seal and publish the scene.
 pub fn seal() {
     let sealed = with_step(|step| {
-        let tick = step.builder.scene()?.id.tick;
+        let id = step.builder.scene()?.id;
+        if id.map_epoch != crate::native_map_work::generation() {
+            return None;
+        }
+        let tick = id.tick;
         let ticks_run = step.tick.map_or(0, |t| tick.wrapping_sub(t).min(u32::from(u8::MAX)) as u8);
         let scene = step.builder.seal(Stamp { published: Some(Instant::now()), ticks_run })?;
         step.tick = Some(tick);
-        Some((step.sequence, scene, step.builder.free_list().clone()))
+        // Publish under the same lock that retires the open and sealed scenes.
+        // A slow observer may return after a map change.
+        let old = LAST.lock().unwrap_or_else(|e| e.into_inner()).replace(Arc::clone(&scene));
+        Some((step.sequence, scene, old, step.builder.free_list().clone()))
     });
-    let Some((sequence, scene, free)) = sealed else { return };
+    let Some((sequence, scene, old, free)) = sealed else { return };
     SEALED.fetch_add(1, Ordering::Relaxed);
     let observer = *OBSERVER.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(o) = observer {
-        (o.sealed)(sequence, Arc::clone(&scene));
+        (o.sealed)(sequence, scene);
     }
-    let old = LAST.lock().unwrap_or_else(|e| e.into_inner()).replace(scene);
     if let Some(old) = old {
         free.recycle(old);
     }
 }
 
-/// A snapshot load: the next scene is a cut, the one being written is
-/// dropped at the next begin.
-pub fn forget() {
-    with_step(|step| step.builder.cut(Cut::LOAD));
+fn reset_timeline(why: Cut) {
+    with_step(|step| {
+        if step.builder.is_building() {
+            UNSEALED.fetch_add(1, Ordering::Relaxed);
+        }
+        step.builder.discard(why);
+        step.tick = None;
+        LAST.lock().unwrap_or_else(|e| e.into_inner()).take();
+    });
     let observer = *OBSERVER.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(o) = observer {
         (o.reset)();
     }
+}
+
+/// Map activation invalidates renderer pins even before its first frame.
+pub(crate) fn map_changed() {
+    reset_timeline(Cut::MAP);
+}
+
+/// Snapshot restoration also abandons any guest entry/slot scopes.
+pub fn forget() {
+    reset_timeline(Cut::LOAD);
     crate::entry_census::forget();
     crate::carried_slots::forget();
 }
 
 /// The scene sealed last.
 pub fn last() -> Option<Arc<FrameScene>> {
-    LAST.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    LAST.lock().unwrap_or_else(|e| e.into_inner()).as_ref()
+        .filter(|s| s.id.map_epoch == crate::native_map_work::generation())
+        .cloned()
 }
 
 /// The step's counters, for `render.scene`.

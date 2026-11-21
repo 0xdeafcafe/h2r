@@ -888,8 +888,10 @@ h2 agent render.parity '{"arm": true}'
   which answers `INTERRUPTED`. Unasked, the cost is one relaxed load per
   tick and per present. Capture does not wait for unresident scene
   content (framescene.md 9.2).
-- **`render.scene`.** The last sealed `FrameScene`, from the source the
-  frame step registers (`agent::render::set_scene_source`, in boot's
+- **`render.scene`.** Map activation or snapshot load clears the last
+  scene and any private capture pin immediately. `sealed` stays false
+  until a frame on the new timeline seals. The last sealed `FrameScene`
+  comes from the source the frame step registers (`agent::render::set_scene_source`, in boot's
   `scene_glue` over `render_bridge::scene_step`): whether
   one has been sealed, its map epoch, frame, tick, summary hash and cut
   reasons; per view (`key` is `kind:player:view`, `game:0:0`, the first
