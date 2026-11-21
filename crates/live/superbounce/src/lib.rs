@@ -31,9 +31,10 @@ pub const STANDING: f32 = 0.725;
 pub const CROUCHED: f32 = 0.5;
 
 /// What a spot is.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum Kind {
     /// A strip a primed (word -3) landing launches out of.
+    #[default]
     Bounce,
     /// A place where the standing capsule hits the geometry and the
     /// crouched one doesn't: a player there is forced into a crouch, which
@@ -41,8 +42,64 @@ pub enum Kind {
     Crouch,
 }
 
+/// Whether a game run has shown a spot works.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum Status {
+    /// Found in the geometry, not measured.
+    #[default]
+    Likely,
+    /// Within [`PROVEN_NEAR`] of a measured place ([`PROVEN`]).
+    Proven,
+}
+
+impl Status {
+    /// `likely` or `proven`, as `--json` and the agent API write it.
+    pub fn name(self) -> &'static str {
+        match self {
+            Status::Likely => "likely",
+            Status::Proven => "proven",
+        }
+    }
+}
+
+/// A crouch spot's [`Lip`] holds at most this many edges.
+pub const MAX_LIP: usize = 8;
+
+/// The edges of the faces the standing capsule hits at a crouch spot's
+/// `stand`, nearest first, at their own height: what a player gets under.
+/// Fixed-size so a [`Spot`] stays `Copy`.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Lip {
+    edges: [[Vec3; 2]; MAX_LIP],
+    len: u8,
+}
+
+impl Lip {
+    /// The first [`MAX_LIP`] of `edges`.
+    pub fn new(edges: &[[Vec3; 2]]) -> Lip {
+        let mut lip = Lip::default();
+        for (slot, e) in lip.edges.iter_mut().zip(edges) {
+            *slot = *e;
+        }
+        lip.len = edges.len().min(MAX_LIP) as u8;
+        lip
+    }
+
+    pub fn edges(&self) -> &[[Vec3; 2]] {
+        &self.edges[..usize::from(self.len)]
+    }
+
+    pub fn len(&self) -> usize {
+        usize::from(self.len)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+}
+
 /// One spot.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Spot {
     pub kind: Kind,
     /// The line to draw: for a bounce, the strip's midline at floor
@@ -61,8 +118,73 @@ pub struct Spot {
     /// A world direction (unit, X and Y) to drift along when landing on
     /// it, across the strip from the crease; zero for none.
     pub drift: [f32; 2],
-    /// 0..1: how sure the scan is.
+    /// 0..1: how sure the scan is; 1 for a proven crouch spot.
     pub score: f32,
+    /// Bounce: the gap between the slot's two joints (world units), the
+    /// ribbon's real width. Crouch: the widest the forced band measures
+    /// across its edge.
+    pub width: f32,
+    /// Bounce: the downward speed (world units a second) the landing must
+    /// touch down at for the capsule to sink onto both edges; `fall` is
+    /// worked from it. Crouch spots: 0.
+    pub need: f32,
+    /// Crouch: [`Status::Proven`] near a measured priming place, else
+    /// [`Status::Likely`]. Bounce spots: `Likely` (the measured bounces
+    /// are the bots' list, `crates/live/bots/src/glitches/spots.rs`).
+    pub status: Status,
+    /// Crouch: the unit direction (X and Y) from `stand` to the standing
+    /// room next to it, the way out. Bounce spots: zero.
+    pub out: [f32; 2],
+    /// Crouch: the edges the standing capsule hits at `stand`. Bounce
+    /// spots: empty.
+    pub lip: Lip,
+}
+
+/// A measured place where a forced crouch primed the pair word: a unit's
+/// origin, crouched.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Prime {
+    /// The map's short name, as its `.map` file and header name it.
+    pub map: &'static str,
+    pub at: Vec3,
+    /// Where it was measured.
+    pub source: &'static str,
+}
+
+/// Every measured priming place. A crouch region with a sample within
+/// [`PROVEN_NEAR`] of one is kept whatever the other rules say, ranks
+/// first, and is [`Status::Proven`] (docs/game/superbounce.md, "Crouch
+/// spots: the stricter rule").
+pub static PROVEN: &[Prime] = &[Prime {
+    map: "ascension",
+    // Where the body rested in the corner beside the prop's lip; it stood
+    // up 6 cm out, at the band's way out.
+    at: [-10.91, 0.72, -1.16],
+    source: "docs/game/superbounce.md, \"The pair word\"; \
+             docs/game/notes/superbounce-spots.md",
+}];
+
+/// A crouch region with a sample this close (world units) to a
+/// [`PROVEN`] place is that place.
+pub const PROVEN_NEAR: f32 = 0.3;
+
+/// The [`PROVEN`] places on `map` (its short name, any case).
+pub fn proven(map: &str) -> Vec<Vec3> {
+    PROVEN
+        .iter()
+        .filter(|p| !map.is_empty() && p.map.eq_ignore_ascii_case(map))
+        .map(|p| p.at)
+        .collect()
+}
+
+/// What the crouch rules know of the map beyond its geometry.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Context {
+    /// The scenario's player starting locations. Only those over the
+    /// scanned polygons' bounds count. None: the in-play rule is off.
+    pub spawns: Vec<Vec3>,
+    /// Measured priming places ([`proven`]).
+    pub proven: Vec<Vec3>,
 }
 
 /// One collision polygon: its vertices in winding order, and its plane's
@@ -76,12 +198,30 @@ pub struct Poly {
 /// Every spot in a set of collision polygons (a map's structure BSP plus
 /// its placed instanced geometry, already in world space).
 ///
-/// Bounce spots come first, then crouch spots, each kind best score first
-/// and at most 512 of it. A heuristic: the thresholds and their
+/// Bounce spots come first (at most 512), then crouch spots (at most 12,
+/// by the stricter rules), each kind best score first. With no
+/// [`Context`]: no starting locations and no proven places. A heuristic: the thresholds and their
 /// calibration against the two measured Ascension spots are in
 /// `bounce.rs` and `crouch.rs`.
 pub fn scan(polys: &[Poly]) -> Vec<Spot> {
-    scan::scan(polys)
+    scan::scan(polys, &Context::default())
+}
+
+/// [`scan`] with what the crouch rules know of the map: its starting
+/// locations and its measured priming places.
+pub fn scan_in(polys: &[Poly], ctx: &Context) -> Vec<Spot> {
+    scan::scan(polys, ctx)
+}
+
+/// One crouch rule's verdict on a region (`--explain`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Verdict {
+    /// `in play`, `by a strip`, `spread out`, `proven` or `stand at the
+    /// way out`.
+    pub rule: &'static str,
+    pub pass: bool,
+    /// What it measured.
+    pub note: String,
 }
 
 /// One forced-crouch region as the scan judged it, before and through its
@@ -106,26 +246,60 @@ pub struct CrouchRegion {
     pub rejected: Option<String>,
     /// The spot it makes when it passes the filters, before suppression.
     pub spot: Option<Spot>,
-    /// The stand of the better spot within 1.5 that dropped it.
+    /// The stand of the better spot within the spacing that dropped it.
     pub suppressed_by: Option<Vec3>,
     /// Whether it is among the spots [`scan`] returns.
     pub kept: bool,
+    /// Each crouch rule's verdict, in order, for a region that made a
+    /// spot; empty for one dropped before.
+    pub rules: Vec<Verdict>,
+    /// `Proven` near a measured priming place.
+    pub status: Status,
 }
 
 /// Every forced-crouch region with a sample within `r` of `at`, with how
 /// the scan's filters judged it.
 pub fn explain(polys: &[Poly], at: Vec3, r: f32) -> Vec<CrouchRegion> {
-    scan::explain(polys, at, r)
+    scan::explain(polys, &Context::default(), at, r)
 }
 
-/// [`explain`] on one structure BSP of a `.map`.
+/// [`explain`] with the map's [`Context`].
+pub fn explain_in(polys: &[Poly], ctx: &Context, at: Vec3, r: f32) -> Vec<CrouchRegion> {
+    scan::explain(polys, ctx, at, r)
+}
+
+/// [`explain`] on one structure BSP of a `.map`, with its
+/// [`map_context`].
 pub fn explain_map<R: std::io::Read + std::io::Seek>(
     map: &mut map::Map<R>,
     bsp: usize,
     at: Vec3,
     r: f32,
 ) -> Result<Vec<CrouchRegion>, tags::Error> {
-    Ok(explain(&map_polys(map, bsp)?, at, r))
+    let ctx = map_context(map)?;
+    Ok(explain_in(&map_polys(map, bsp)?, &ctx, at, r))
+}
+
+/// A `.map`'s [`Context`]: the scenario's player starting locations
+/// (`scnr+0x100`) and the [`PROVEN`] places for its header name.
+pub fn map_context<R: std::io::Read + std::io::Seek>(
+    map: &mut map::Map<R>,
+) -> Result<Context, tags::Error> {
+    let header = map.header();
+    let short = header
+        .scenario_path
+        .rsplit(['\\', '/'])
+        .next()
+        .unwrap_or_default()
+        .to_string();
+    let mut places = proven(&header.name);
+    if places.is_empty() {
+        places = proven(&short);
+    }
+    Ok(Context {
+        spawns: read::spawns(map)?,
+        proven: places,
+    })
 }
 
 /// The polygons of a decoded collision BSP, moved by `transform`
@@ -150,12 +324,13 @@ pub fn map_polys<R: std::io::Read + std::io::Seek>(
 }
 
 /// The spots on one structure BSP of a `.map` (its scenario index), with
-/// its instanced geometry.
+/// its instanced geometry and its [`map_context`].
 pub fn scan_map<R: std::io::Read + std::io::Seek>(
     map: &mut map::Map<R>,
     bsp: usize,
 ) -> Result<Vec<Spot>, tags::Error> {
-    Ok(scan(&map_polys(map, bsp)?))
+    let ctx = map_context(map)?;
+    Ok(scan_in(&map_polys(map, bsp)?, &ctx))
 }
 
 /// The nearest bounce spot to `at` (by distance to its edge) and that

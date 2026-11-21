@@ -147,6 +147,30 @@ pub struct SpotRecord {
     pub drift: [f32; 2],
     /// 0..1: how sure the scan is; 1 for a measured spot.
     pub score: f32,
+    /// Bounce: the slot's width, the gap between its two joints. Crouch:
+    /// the widest the forced band measures.
+    #[serde(default)]
+    pub width: f32,
+    /// Bounce: the downward speed (world units a second) the landing must
+    /// touch down at; `fall` is worked from it. Crouch: 0.
+    #[serde(default)]
+    pub need: f32,
+    /// Crouch: `proven` (a measured priming place) or `likely`. Bounce:
+    /// `likely`.
+    #[serde(default = "likely")]
+    pub status: String,
+    /// Crouch: the unit direction (X and Y) from `stand` to the standing
+    /// room beside it. Bounce: zero.
+    #[serde(default)]
+    pub out: [f32; 2],
+    /// Crouch: up to 8 edges of the faces the standing capsule hits at
+    /// `stand`, at their own height. Bounce: empty.
+    #[serde(default)]
+    pub lip: Vec<[[f32; 3]; 2]>,
+}
+
+fn likely() -> String {
+    "likely".into()
 }
 
 /// The result of `superbounce.spots`.

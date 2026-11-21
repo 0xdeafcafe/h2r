@@ -10,6 +10,9 @@ pub(crate) fn bounce_spot(stand: Vec3, launch: f32, score: f32) -> Spot {
         launch,
         drift: [0.0, 1.0],
         score,
+        width: 0.2,
+        need: 4.3,
+        ..Spot::default()
     }
 }
 
@@ -22,6 +25,10 @@ pub(crate) fn crouch_spot(stand: Vec3) -> Spot {
         launch: 0.0,
         drift: [0.0, 0.0],
         score: 0.9,
+        width: 0.05,
+        out: [0.0, 1.0],
+        lip: superbounce::Lip::new(&[[stand, [stand[0] + 0.4, stand[1], stand[2] + 0.5]]]),
+        ..Spot::default()
     }
 }
 
@@ -86,7 +93,8 @@ fn the_nearest_crouch_spot_is_by_straight_line() {
 
 #[test]
 fn the_spots_file_round_trips_and_refuses_damage() {
-    let spots = vec![bounce_spot([1.0, 2.0, 3.0], 12.5, 0.7), crouch_spot([4.0, 5.0, 6.0])];
+    let proven = Spot { status: superbounce::Status::Proven, ..crouch_spot([7.0, 8.0, 9.0]) };
+    let spots = vec![bounce_spot([1.0, 2.0, 3.0], 12.5, 0.7), crouch_spot([4.0, 5.0, 6.0]), proven];
     let stamp = Stamp::now(0xfeed);
     let b = to_bytes(&spots, stamp);
     assert_eq!(from_bytes(&b), Some((spots, stamp)));

@@ -333,6 +333,7 @@ mod tests {
             launch: 17.9,
             drift,
             score: 1.0,
+            ..Spot::default()
         }
     }
 

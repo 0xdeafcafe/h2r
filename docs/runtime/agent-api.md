@@ -2656,8 +2656,12 @@ and, for a failed route, `error`: `timeout`, `no_map`, `no_path`,
 read a scan; the measured spots are listed regardless) and `spots`, the
 measured ones first, then the scan best first. Each has `kind` (`bounce`
 or `crouch`; `kind` in the request filters), `source` (`measured` or
-`scan`), `edge` (two points), `stand`, `fall`, `launch`, `drift` and
-`score`.
+`scan`), `edge` (two points), `stand`, `fall`, `launch`, `drift`,
+`score`, `width` (a slot's gap between its joints, a crouch band's
+widest), `need` (a slot's touchdown speed down, which `fall` is worked
+from), `status` (`proven` for a crouch spot at a measured priming place,
+else `likely`), `out` (a crouch spot's way out from `stand`, X and Y) and
+`lip` (a crouch spot's edges overhead at `stand`, up to 8).
 
 ```sh
 # a bot standing at x, sent to y over a ledge, bouncing on the way

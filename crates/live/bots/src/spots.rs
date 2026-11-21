@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use superbounce::{Kind, Spot};
+use superbounce::{Kind, Lip, MAX_LIP, Spot, Status};
 
 use crate::brain::Vec3;
 use crate::cache::Stamp;
@@ -166,6 +166,7 @@ pub fn listing(map: &str) -> Vec<Listed> {
                 launch: MEASURED_LAUNCH,
                 drift: b.drift,
                 score: 1.0,
+                ..Spot::default()
             },
         })
         .collect();
@@ -229,13 +230,16 @@ pub fn scanned(map: &str) -> Arc<Vec<Spot>> {
 
 /// A spots file's first bytes and format version.
 pub const MAGIC: &[u8; 4] = b"H2SP";
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
 const HEADER: usize = 4 + 4 + 4 + 8 + 4;
-const SPOT_BYTES: usize = 1 + 4 * (6 + 3 + 1 + 1 + 2 + 1);
+/// Kind, status and lip count bytes, then the floats: edge, stand, fall,
+/// launch, drift, score, width, need, out, and [`MAX_LIP`] lip edges.
+const SPOT_FLOATS: usize = 6 + 3 + 1 + 1 + 2 + 1 + 1 + 1 + 2 + 6 * MAX_LIP;
+const SPOT_BYTES: usize = 3 + 4 * SPOT_FLOATS;
 
 /// The scanner's version. **Bump it whenever `superbounce`'s scan changes
 /// what it finds**: every file made by another version is scanned again.
-pub const SCAN: u32 = 1;
+pub const SCAN: u32 = 2;
 
 /// The stamp of a map's spots file: the nav generator and the scan
 /// version, for the map with `fingerprint`.
@@ -264,6 +268,13 @@ pub fn to_bytes(spots: &[Spot], stamp: Stamp) -> Vec<u8> {
             Kind::Bounce => 0,
             Kind::Crouch => 1,
         });
+        o.push(match s.status {
+            Status::Likely => 0,
+            Status::Proven => 1,
+        });
+        o.push(s.lip.len() as u8);
+        let mut lip = [[[0.0f32; 3]; 2]; MAX_LIP];
+        lip[..s.lip.len()].copy_from_slice(s.lip.edges());
         let floats = s
             .edge
             .iter()
@@ -271,7 +282,9 @@ pub fn to_bytes(spots: &[Spot], stamp: Stamp) -> Vec<u8> {
             .chain(&s.stand)
             .chain([&s.fall, &s.launch])
             .chain(&s.drift)
-            .chain([&s.score]);
+            .chain([&s.score, &s.width, &s.need])
+            .chain(&s.out)
+            .chain(lip.iter().flatten().flatten());
         for f in floats {
             o.extend_from_slice(&f.to_le_bytes());
         }
@@ -301,19 +314,34 @@ pub fn from_bytes(b: &[u8]) -> Option<(Vec<Spot>, Stamp)> {
     let spots = body
         .chunks_exact(SPOT_BYTES)
         .map(|c| {
-            let f = |k: usize| f32::from_le_bytes(c[1 + 4 * k..5 + 4 * k].try_into().unwrap());
+            let f = |k: usize| f32::from_le_bytes(c[3 + 4 * k..7 + 4 * k].try_into().unwrap());
+            let v = |k: usize| [f(k), f(k + 1), f(k + 2)];
+            let lip_len = usize::from(c[2]);
+            if lip_len > MAX_LIP {
+                return None;
+            }
+            let lip: Vec<[[f32; 3]; 2]> = (0..lip_len).map(|e| [v(18 + 6 * e), v(21 + 6 * e)]).collect();
             Some(Spot {
                 kind: match c[0] {
                     0 => Kind::Bounce,
                     1 => Kind::Crouch,
                     _ => return None,
                 },
-                edge: [[f(0), f(1), f(2)], [f(3), f(4), f(5)]],
-                stand: [f(6), f(7), f(8)],
+                status: match c[1] {
+                    0 => Status::Likely,
+                    1 => Status::Proven,
+                    _ => return None,
+                },
+                edge: [v(0), v(3)],
+                stand: v(6),
                 fall: f(9),
                 launch: f(10),
                 drift: [f(11), f(12)],
                 score: f(13),
+                width: f(14),
+                need: f(15),
+                out: [f(16), f(17)],
+                lip: Lip::new(&lip),
             })
         })
         .collect::<Option<Vec<_>>>()?;

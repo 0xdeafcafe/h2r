@@ -893,6 +893,7 @@ mod tests {
             launch,
             drift: [0.0, 0.0],
             score: 1.0,
+            ..Spot::default()
         }
     }
 

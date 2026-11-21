@@ -17,6 +17,10 @@ use crate::{Poly, Vec3};
 /// the agent's `debug_static.rs` read the same.
 const SCENARIO_BSPS: usize = 0x210;
 const SCENARIO_BSP_ROW: usize = 0x44;
+/// Scenario `+0x100`: the player starting locations, 0x34 a row, the
+/// position at `+0x00` (`crates/formats/tags/src/defs/scnr.txt`).
+const SCENARIO_STARTS: usize = 0x100;
+const SCENARIO_START_ROW: usize = 0x34;
 /// A map's structure and instances together stay well under this; past it
 /// the read stops with an error rather than allocating without bound.
 const MAX_POLYS: usize = 4 << 20;
@@ -131,6 +135,28 @@ pub(crate) fn instance_transform(i: &InstancedGeometryInstance) -> [[f32; 4]; 3]
 
 fn u32_at(b: &[u8], o: usize) -> u32 {
     u32::from_le_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]])
+}
+
+fn f32_at(b: &[u8], o: usize) -> f32 {
+    f32::from_bits(u32_at(b, o))
+}
+
+/// The scenario's player starting locations: every row's position, the
+/// finite ones.
+pub(crate) fn spawns<R: Read + Seek>(map: &mut Map<R>) -> Result<Vec<Vec3>> {
+    let scenario = map.scenario().ok_or(Error::Invalid("no scenario"))?.clone();
+    let location = scenario
+        .location
+        .ok_or(Error::Invalid("the scenario has no payload"))?;
+    let bytes = map.read_tag_bytes(scenario.id)?;
+    let view = TagView::new(&bytes, location.address);
+    let rows = view.block(view.bytes(), SCENARIO_STARTS, SCENARIO_START_ROW)?;
+    Ok(rows
+        .iter()
+        .filter(|row| row.len() >= 12)
+        .map(|row| [f32_at(row, 0), f32_at(row, 4), f32_at(row, 8)])
+        .filter(|p| p.iter().all(|v| v.is_finite()))
+        .collect())
 }
 
 pub(crate) fn map_polys<R: Read + Seek>(map: &mut Map<R>, bsp: usize) -> Result<Vec<Poly>> {

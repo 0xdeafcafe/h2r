@@ -488,13 +488,18 @@ What it reports:
   3 units/s is a standing jump's landing ("lands at −3"); 4.15 units/s²
   is the gravity that fits the recipe's jump, a 2.43 drop landing at
   5.4. Ascension comes out at about 1.1 units; the recipe drops 2.43.
+- **need**: that touchdown speed `v`, downward, in units/s: 4.28 at
+  Ascension.
+- **width**: the gap between the two joints, the slot's real width
+  (0.2 at Ascension).
 - **score**: 0.4, plus 0.3 × the overlap over a diameter (to 1), plus
   0.3 for a crease and a seam (the traced shape) or 0.15 for two
   creases.
 
 Strips along one line (drift to 5°, position across to 5 cm, height to
 10 cm) that touch or overlap within 10 cm are merged into one spot, so a
-floor split into pieces gives one edge.
+floor split into pieces gives one edge. The merged spot keeps the
+smallest `fall`, with the `need` and `width` it came from.
 
 ### Crouch
 
@@ -544,31 +549,41 @@ There is no length rule. On the map the measured corner is a pocket two
 samples (4 cm) long, between the lip's corner and a wall at x −11.10,
 0.18 from the axis.
 
-Then a spot within 1.5 of a better one is dropped, and the 30 best are
-kept.
+The regions that pass become spots, and the [stricter
+rule](#crouch-spots-the-stricter-rule) cuts them to the ones kept.
 
-- **stand**: when a bounce spot's stand is within 15 (straight line, not
-  walking distance) of the region's centre, the region's sample nearest
-  the nearest such stand: the end you leave from to go and bounce. At
-  Ascension that is the prop's corner, where the player stood. Otherwise
-  the sample nearest the region's centre.
+- **stand**: the region's exit sample (a forced sample with standing
+  room next door) nearest the nearest bounce spot's stand, straight line:
+  the way out you leave by to go and bounce, where the word turns. At
+  Ascension that is the prop's corner, where the player stood. With no
+  bounce spot on the geometry, the exit sample nearest the region's
+  centre.
+- **out**: the unit direction (X and Y) from `stand` to the standing room
+  beside it: the sum of the lattice sides with standing room.
+- **lip**: up to 8 edges, nearest first, of the faces the standing
+  capsule hits at `stand`: of each face, its edge nearest the capsule's
+  segment, at its own height, clipped to 0.5 each side of its point
+  nearest the capsule (`superbounce::Lip`).
+- **width**: the widest band measured at the probed exits.
 - **edge**: across the largest group of exits that have standing room
   the same way, between its two ends: where a player walks in crouched
   and can't stand up.
 - **score**: 0.4, plus 0.2 × the widest band over 0.15 (to 1), plus
-  0.1 × the region's length along its principal axis (to 1), plus 0.3 × (1 − the distance to
-  that bounce stand over 15) when there is one. You prime, then go and
-  bounce, so a crouch spot near a strip ranks first.
+  0.1 × the region's length along its principal axis (to 1), plus 0.3 ×
+  (1 − the distance from the region's centre to the nearest bounce stand
+  over 15) when one is within 15. You prime, then go and bounce, so a
+  crouch spot near a strip ranks first. A proven spot scores 1.
 
-`fall`, `launch` and `drift` are 0.
+`fall`, `launch`, `need` and `drift` are 0.
 
-`--explain x,y,z[,r]` (`superbounce::explain`) prints every forced-crouch
-region with a sample within r (default 1.0) of the point, before the
-filters and through them: its sample count and bounds, the band width at
-each probed exit, its length, whether the walk reaches open floor and
-where (or why not), why it was dropped, the better spot that suppressed
-it, and its score. It is the tool for tuning these rules against a real
-map.
+`--explain x,y,z[,r]` (`superbounce::explain`) prints the map's starting
+locations and measured priming places, then every forced-crouch region
+with a sample within r (default 1.0) of the point, before the filters
+and through them: its sample count and bounds, the band width at each
+probed exit, its length, whether the walk reaches open floor and where
+(or why not), each stricter rule's verdict, why it was dropped, the
+better spot that suppressed it, its score and its status. It is the tool
+for tuning these rules against a real map.
 
 ## The superbounce game type
 
@@ -801,8 +816,10 @@ lab run.
 
 ## Charge, crouch spots and landings
 
-Design, not built. What the mode shows next about the three steps of a
-bounce: getting the charge, keeping it, and landing it. The HUD parts
+What the mode shows about the three steps of a bounce: getting the
+charge, keeping it, and landing it. The scanner's part (the stricter
+crouch rule, and the strip's `width` and `need`) is built in
+`crates/live/superbounce`; the rest is design. The HUD parts
 (the meter under the pill, the prompt line, the notifications, the
 navpoint) are in [hud-kit.md](hud-kit.md), "The charge meter"; this is
 the state they read, the scanner's rules and the world overlay. The
@@ -840,42 +857,53 @@ are far deeper than the one that is known to prime, the note).
 ### Crouch spots: the stricter rule
 
 The scan keeps a forced-crouch region by the rules of
-[Crouch](#crouch), then:
+[Crouch](#crouch), then cuts the spots by these, in this order
+(`crouch.rs`, `select`):
 
 1. **In play.** The stand point is no more than 1.0 below the lowest of
-   the scenario's player starting locations. Regions under the map are
-   dropped (5 of Ascension's 21).
+   the scenario's player starting locations (`scnr+0x100`, the position
+   at `+0x00`), counting only those over the scanned geometry's bounds,
+   since a scenario's starting locations are for all its BSPs. With none
+   there the rule is off. Regions under the map are dropped (5 of
+   Ascension's 21).
 2. **By a strip.** A bounce spot's stand is within 8 units, straight
    line: a rule, where the score only prefers a strip within 15. If
-   fewer than 3 spots pass on a map, the 3 nearest a strip are kept
-   (Coagulation).
+   fewer than 3 spots are kept by the rules above and below, the spots
+   nearest a strip are added, nearest first, through the same spacing,
+   until 3 are (Coagulation). With no strip on the geometry that is the 3
+   best by score.
 3. **Spread out.** A spot within 3.0 of a better one is dropped, and the
    12 best are kept.
-4. **Proven first.** A measured priming place
-   (`crates/live/bots/src/glitches/spots.rs`, a list beside the bounce
-   spots, given to the scan as points) is kept whatever the other rules
-   say and ranks first. A spot within 0.3 of one is `proven`; the others
-   are `likely`. The Ascension corner is the one proven spot, and it
-   ranks 13th of 21 by score alone.
-5. **Stand at the way out.** `stand` is the region's exit sample (a
-   forced sample with standing room next door) nearest the nearest
-   strip, not the sample nearest the centre: the word turns at the way
-   out. The spot also reports `out`, the unit direction from `stand` to
-   that standing room, and `lip`, up to 8 edges of the faces the
-   standing capsule hits there, at their own height.
+4. **Proven first.** A measured priming place (`superbounce::PROVEN`,
+   looked up by the map's header name, or the list in the
+   `superbounce::Context` handed to `scan_in`) is kept whatever
+   the other rules say, before the others, so it crowds them out rather
+   than the other way round, and it scores 1, so it ranks first. A spot
+   with a sample within 0.3 of one is `proven`; the others are `likely`.
+   The Ascension corner (−10.91, 0.72, −1.16) is the one proven place;
+   by score alone it ranks 13th of 21.
+5. **Stand at the way out.** `stand` is the region's exit sample nearest
+   the nearest strip, not the sample nearest the centre: the word turns
+   at the way out. The spot also carries `out` and `lip`
+   ([Crouch](#crouch)).
+
+`superbounce::scan_map` and `explain_map` read the starting locations
+and the proven places from the map (`superbounce::map_context`);
+`superbounce::scan` and `explain` on bare polygons have neither, so the
+in-play rule is off and nothing is proven.
 
 There is no depth rule: a cut by the standing capsule's overlap drops
 almost nothing and has no measurement behind it (the note).
-`--explain` prints, per region, each rule's verdict in this order, with
-the lowest starting location, the nearest strip and its distance, the
-better spot that crowded it out, and its tier. Expected on the disc's
-maps: 7 to 12 a map, 3 on a map whose strips are far from its lips
-(**S**, the note's table; `h2 superbounce scan <map> --json` counts
-them).
+`--explain` prints, per region, each rule's verdict in this order (`in
+play`, `by a strip`, `spread out`, `proven`, `stand at the way out`),
+with the lowest starting location, the nearest strip and its distance,
+the better spot that crowded it out, and its status. Expected on the
+disc's maps: 7 to 12 a map, 3 on a map whose strips are far from its
+lips (an estimate from the note's table; `h2 superbounce scan <map>
+--json` counts them).
 
 Which `likely` spots prime is a game run's to say. A lab pass walks
-each kept spot (below) and its result is a row in the proven list or a
-row in a not-priming list the scan drops.
+each kept spot (below), and one that primes becomes a row in `PROVEN`.
 
 ### Crouch spots in the world
 
@@ -902,8 +930,9 @@ next, and a crouch now would lose the charge.
 
 ### Landings
 
-The scanner's bounce spot gains `width` (the gap between its two
-joints) and `need` (the touchdown speed its `fall` is worked from).
+The scanner's bounce spot carries `width` (the gap between its two
+joints) and `need` (the touchdown speed its `fall` is worked from;
+[Bounce](#bounce)).
 
 - **Where.** The floor ribbon is the slot itself: `width` across, not a
   fixed 0.2, the overlap long, closed at both ends, with a cross tick at

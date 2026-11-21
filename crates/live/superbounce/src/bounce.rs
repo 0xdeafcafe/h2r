@@ -330,6 +330,9 @@ fn strip(faces: &[Face], p: &Joint, q: &Joint) -> Option<Spot> {
         launch,
         drift,
         score,
+        width: gap,
+        need: land,
+        ..Spot::default()
     })
 }
 
@@ -381,7 +384,13 @@ fn merge_bounces(spots: Vec<Spot>) -> Vec<Spot> {
             let m = mid(last.edge);
             last.stand = [m[0] + offset[0], m[1] + offset[1], m[2] + offset[2]];
             last.launch = (last.launch * wl + s.launch * ws) / (wl + ws);
-            last.fall = last.fall.min(s.fall);
+            // The easiest landing along the merged slot, with the width
+            // and touchdown speed it is worked from.
+            if s.fall < last.fall {
+                last.fall = s.fall;
+                last.need = s.need;
+                last.width = s.width;
+            }
             last.score = last.score.max(s.score);
             continue;
         }

@@ -231,6 +231,11 @@ pub(crate) fn spots(raw: serde_json::Value) -> Result<serde_json::Value, agent_p
             launch: l.spot.launch,
             drift: l.spot.drift,
             score: l.spot.score,
+            width: l.spot.width,
+            need: l.spot.need,
+            status: l.spot.status.name().into(),
+            out: l.spot.out,
+            lip: l.spot.lip.edges().to_vec(),
         })
         .collect();
     let out = Spots {
