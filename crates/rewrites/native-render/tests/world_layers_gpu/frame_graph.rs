@@ -319,48 +319,63 @@ fn retail_and_e3_private_draws_of_one_sealed_tick_are_identical() {
 }
 
 #[test]
-fn canonical_targets_preserve_previous_frame_contents_outside_a_partial_draw() {
-    use d3d::Backend;
+fn private_draws_restore_inherited_colour_depth_and_stencil_before_blending() {
+    use d3d::{Backend, DrawOutcome};
+    use gfx::state::{BlendFactor, BlendOp, CompareFunc, StencilOp};
     use native_render::frame_graph::draw_display_on;
     use std::collections::HashMap;
     let _guard = CAPTURE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let Ok(ctx) = GfxContext::headless() else {
-        return;
-    };
-    let mut backend = GfxBackend::new(ctx);
-    let colour = backend.create_surface(FORMAT, SIZE, SIZE, false).unwrap();
-    let depth = backend.create_surface(DEPTH, SIZE, SIZE, true).unwrap();
-    // White on the real scene target was written before the sealed interval.
-    backend
-        .clear(colour, Some(depth), Clear::all([1.0, 1.0, 1.0, 1.0]))
-        .unwrap();
-    backend.flush().unwrap();
+    let Ok(ctx) = GfxContext::headless() else { return };
+    let validation = ctx.device.push_error_scope(wgpu::ErrorFilter::Validation);
+    let mut private = GfxBackend::new(ctx.clone());
+    let mut display = GfxBackend::new(ctx);
+    let colour = display.create_surface(FORMAT, SIZE, SIZE, false).unwrap();
+    let depth = display.create_surface(DEPTH, SIZE, SIZE, true).unwrap();
+    display.clear(colour, Some(depth), Clear::all([0.0, 0.0, 1.0, 1.0])).unwrap();
+    // Actual draws leave colour, W and stencil values on the live attachments.
+    let mut earlier = triangle(2.0, [1.0, 0.0, 0.0, 1.0], 7, false);
+    earlier.state.render.depth_func = CompareFunc::Always;
+    assert_eq!(display.draw(colour, Some(depth), &earlier, [None; 4]), Ok(DrawOutcome::Drawn));
+
+    // The sealed interval adds green once, only where both tests succeed.
+    // Replaying over the *result* of this draw would add green twice.
+    let mut add = triangle(2.0, [0.0, 0.5, 0.0, 1.0], 7, false);
+    let r = &mut add.state.render;
+    r.depth_func = CompareFunc::Equal;
+    r.depth_write = false;
+    r.stencil.func = CompareFunc::Equal;
+    r.stencil.pass = StencilOp::Keep;
+    r.blend_enable = true;
+    r.blend_op = BlendOp::Add;
+    r.src_blend = BlendFactor::One;
+    r.dst_blend = BlendFactor::One;
     let mut frame = replay();
     op(&mut frame, Slot::Opaque, bind());
-    op(
-        &mut frame,
-        Slot::Opaque,
-        guest_triangle(2.0, [0.0, 1.0, 0.0, 1.0], None),
-    );
+    op(&mut frame, Slot::Opaque, ReplayOp::Draw {
+        draw: Arc::new(add), textures: [None, None, None, None], camera: CameraUse::Unknown,
+    });
     let targets = HashMap::from([(MAIN, colour), (Z, depth)]);
-    draw_display_on(
-        &mut backend,
-        &sealed(),
-        &frame,
-        Lighting::Retail,
-        0,
-        None,
-        None,
-        &targets,
-    )
-    .unwrap();
-    assert_eq!(backend.last_presented(), Some(colour));
-    let (pixels, _) = backend.read_color(colour).unwrap();
-    assert_eq!(&pixels[0..4], [255; 4]);
-    let i = (4 * (4 * SIZE + 4)) as usize;
-    // Green and white have the same encoding in BGRA and RGBA.
-    assert_eq!(&pixels[i..i + 4], [0, 255, 0, 255]);
-    assert!(draw_private(&mut backend, &sealed(), &frame, 1, Lighting::Retail).is_err());
+    let scene = sealed();
+    assert!(frame.initial.is_empty());
+    draw_display_on(&mut display, &scene, &frame, Lighting::Retail, 0, None, None, &targets).unwrap();
+    assert_eq!(display.last_presented(), Some(colour));
+    assert_eq!(display.readbacks(), 0);
+
+    display.clear(colour, Some(depth), Clear::all([1.0; 4])).unwrap();
+    display.flush().unwrap();
+    display.destroy_surface(colour).unwrap();
+    display.destroy_surface(depth).unwrap();
+    let retail = draw_private(&mut private, &scene, &frame, 1, Lighting::Retail).unwrap();
+    let e3 = draw_private(&mut private, &scene, &frame, 1, Lighting::E3).unwrap();
+    assert_eq!(rgba(&retail, 0, 0), [0, 0, 255, 255]);
+    let blended = rgba(&retail, 4, 4);
+    assert_eq!([blended[0], blended[2], blended[3]], [255, 0, 255]);
+    assert!((127..=128).contains(&blended[1]), "green must have been added once");
+    assert_eq!(retail.rgba, e3.rgba);
+    assert_eq!(retail.scene_hash, e3.scene_hash);
+    assert!(retail.report.draws > 0 && e3.report.draws > 0);
+    assert!(private.last_presented().is_none());
+    assert!(pollster::block_on(validation.pop()).is_none());
 }
 
 mod scaled;

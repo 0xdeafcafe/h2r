@@ -65,6 +65,9 @@
 //! translation) counts nothing. Clearing and reporting the counter submit
 //! the pending pass first, so they stay in order with the counted draws.
 
+mod frozen_target;
+pub use frozen_target::FrozenTarget;
+
 pub(crate) mod guest_draw_pass;
 mod native_runs;
 
@@ -1799,6 +1802,11 @@ impl Backend for GfxBackend {
         // The pass limit can submit this recording immediately.
         self.external_on_submit.extend(recording.on_submit);
         self.submit_full_external_batch();
+    }
+
+    #[cfg(feature = "gpu")]
+    fn upload_scene_assets(&mut self, upload: crate::backend::AssetUpload) {
+        upload(&self.ctx.device, &self.ctx.queue);
     }
 
     fn supports_external_pass(&self) -> bool {

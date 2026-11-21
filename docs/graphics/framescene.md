@@ -1226,6 +1226,11 @@ records which game frames the native graph actually presents.
   can sample those images after the guest releases the proxy. Reference
   and display versions retain their own resolutions. An older in-place
   view has no frozen contents and makes the frame ineligible for replay.
+  Where a private draw needs incoming pixels from earlier draws, the
+  worker copies the required attachments before the first write. The
+  copies retain the source GPU format, raster dimensions and all depth
+  and stencil bits. Private draws restore them to matching attachments
+  on the same device before recording the sealed commands.
 - **Scheduling and probes.** For private drawing, `frame_scene::mailbox`
   keeps the newest pending scene in paced mode and blocks at two waiting
   scenes in locked mode. The display worker accepts two waiting transactions
