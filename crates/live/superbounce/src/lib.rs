@@ -10,8 +10,22 @@
 //!
 //! Coordinates are world units, Z up.
 
+mod geom;
+mod read;
+mod scan;
+
 /// A point in world units.
 pub type Vec3 = [f32; 3];
+
+/// The player's capsule radius: the biped's Havok shape (`+0x0c`, 0.175 for
+/// `masterchief_mp`; docs/game/superbounce.md, "Looking for state a forced
+/// crouch leaves behind").
+pub const RADIUS: f32 = 0.175;
+/// `masterchief_mp` standing and crouching heights (docs/game/superbounce.md,
+/// "The crouch height term"; `crates/live/bots/src/nav.rs` uses the same).
+pub const STANDING: f32 = 0.725;
+/// See [`STANDING`].
+pub const CROUCHED: f32 = 0.5;
 
 /// What a spot is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -57,17 +71,33 @@ pub struct Poly {
 
 /// Every spot in a set of collision polygons (a map's structure BSP plus
 /// its placed instanced geometry, already in world space).
+///
+/// Bounce spots come first, then crouch spots, each kind best score first
+/// and at most 512 of it. A heuristic: the thresholds and the calibration
+/// against the one traced slot are in `scan.rs`.
 pub fn scan(polys: &[Poly]) -> Vec<Spot> {
-    let _ = polys;
-    todo!("lane A")
+    scan::scan(polys)
 }
 
 /// The polygons of a decoded collision BSP, moved by `transform`
 /// (a row-major 3x4: rotation columns then translation), or as is for
 /// `None`.
+///
+/// One polygon per surface, every surface kept whatever its flags; the
+/// normal is the surface's plane, flipped when bit 15 of its plane word is
+/// set. Surfaces with a broken ring or a missing plane are left out.
 pub fn polys(bsp: &tags::collision::Bsp, transform: Option<[[f32; 4]; 3]>) -> Vec<Poly> {
-    let _ = (bsp, transform);
-    todo!("lane A")
+    read::polys(bsp, transform)
+}
+
+/// The world-space collision polygons of one structure BSP of a `.map`
+/// (its scenario index): the structure's collision BSP, then each
+/// instanced geometry placement's collision BSP moved by its placement.
+pub fn map_polys<R: std::io::Read + std::io::Seek>(
+    map: &mut map::Map<R>,
+    bsp: usize,
+) -> Result<Vec<Poly>, tags::Error> {
+    read::map_polys(map, bsp)
 }
 
 /// The spots on one structure BSP of a `.map` (its scenario index), with
@@ -76,8 +106,7 @@ pub fn scan_map<R: std::io::Read + std::io::Seek>(
     map: &mut map::Map<R>,
     bsp: usize,
 ) -> Result<Vec<Spot>, tags::Error> {
-    let _ = (map, bsp);
-    todo!("lane A")
+    Ok(scan(&map_polys(map, bsp)?))
 }
 
 /// The nearest bounce spot to `at` (by distance to its edge) and that
@@ -102,3 +131,6 @@ fn dist_to_edge([a, b]: [Vec3; 2], p: Vec3) -> f32 {
     let d = [ap[0] - ab[0] * t, ap[1] - ab[1] * t, ap[2] - ab[2] * t];
     (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt()
 }
+
+#[cfg(test)]
+mod tests;
