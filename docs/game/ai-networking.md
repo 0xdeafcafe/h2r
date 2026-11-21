@@ -152,7 +152,8 @@ the connected peers’ budgets.
    the speaker's salted unit resolves to an entity. A line keeps its
    original tick and enters each budget once, even if the engine queues
    the same line twice that tick.
-5. The transport schedules against the completed capture for each peer.
+5. Boot passes the completed capture to `HostLink::post_tick` for each
+   negotiated tunnel peer. The link owns one budget per connection.
    A due or requested key contains the current actor set. Otherwise the
    budget receives the membership and posture deltas. Lines are offered
    on either path. Controls, when requested, follow distance to the
