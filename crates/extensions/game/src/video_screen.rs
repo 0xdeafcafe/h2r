@@ -35,7 +35,7 @@ use settings::Store;
 use crate::layout_glue::Gm;
 use crate::setting_defs::{
     AIM_ASSIST, FOV, HUD_POSITION, LOD_DISTANCE, PAD_LIGHTBAR, PAD_SPEAKER, RESOLUTION,
-    STEAM_LEFT_PAD, STEAM_SENSITIVITY, STEAM_SPEAKER, TOUCH_ACCEL, TOUCH_AUTO_FIRE, TOUCH_CROUCH,
+    STEAM_LEFT_PAD, STEAM_SENSITIVITY, STEAM_SPEAKER, SUPERBOUNCE_FALL_ASSIST, TOUCH_ACCEL, TOUCH_AUTO_FIRE, TOUCH_CROUCH,
     TOUCH_GYRO, TOUCH_LOOK,
 };
 use crate::speaker_row;
@@ -86,6 +86,8 @@ pub struct Switches {
     /// speaker's: look speed, crouch, gyro.
     pub touch_rows: bool,
     pub fov_row: bool,
+    /// The superbounce Fall Assist row on Controls, last.
+    pub fall_assist_row: bool,
     pub video_screen: bool,
     /// The Voice screen (`crate::voice_settings`).
     pub voice_screen: bool,
@@ -98,6 +100,7 @@ impl Switches {
         steam_rows: true,
         touch_rows: false,
         fov_row: true,
+        fall_assist_row: true,
         video_screen: true,
         voice_screen: true,
     };
@@ -184,6 +187,14 @@ pub fn model_with_native_size(
                 Row::setting(TOUCH_AUTO_FIRE.key).bool_ids(speaker_row::ON_ID, speaker_row::OFF_ID),
             )
             .row(Row::setting(AIM_ASSIST.key));
+    }
+    // The superbounce fall assist, opt in (docs/game/superbounce.md, "Hold
+    // X: the fall assist"): a press turns it on or off.
+    if on.fall_assist_row {
+        controls = controls.row(
+            Row::setting(SUPERBOUNCE_FALL_ASSIST.key)
+                .bool_ids(speaker_row::ON_ID, speaker_row::OFF_ID),
+        );
     }
     let settings = ui::extend(List::Settings, SETTINGS_ROWS).row(Row::open(SCREEN));
     // The Voice screen opens from Player Settings and Edit Profile.
@@ -356,7 +367,7 @@ mod tests {
         .unwrap();
         assert_eq!(no_fov.rows(LIST).len(), 5);
         assert_eq!(m.count(List::Settings, SETTINGS_ROWS), 3);
-        assert_eq!(m.count(List::Controls, 6), 11);
+        assert_eq!(m.count(List::Controls, 6), 12);
         // No Video screen: no Video row on Settings either.
         let none = model(
             store(),
@@ -367,7 +378,7 @@ mod tests {
         )
         .unwrap();
         assert!(none.rows(LIST).is_empty());
-        assert_eq!(none.count(List::Controls, 6), 11);
+        assert_eq!(none.count(List::Controls, 6), 12);
         assert_eq!(none.count(List::Settings, SETTINGS_ROWS), 2);
         let bare = model(
             store(),
@@ -378,6 +389,7 @@ mod tests {
                 steam_rows: false,
                 touch_rows: false,
                 fov_row: true,
+                fall_assist_row: false,
                 voice_screen: true,
             },
         )
@@ -398,8 +410,8 @@ mod tests {
         let m = model(Arc::new(Store::defaults(ALL)), ios).unwrap();
         assert_eq!(
             m.count(List::Controls, 6),
-            13,
-            "the speaker's and the touch rows"
+            14,
+            "the speaker's, the touch rows and Fall Assist"
         );
         assert_eq!(drawn(&m, List::Controls, 7), s("Touch Look Speed", "5"));
         assert_eq!(drawn(&m, List::Controls, 8), s("Touch Crouch", "Toggle"));
@@ -413,7 +425,11 @@ mod tests {
             Chosen::Stepped("controls.aim_assist: default".into())
         );
         assert_eq!(drawn(&m, List::Controls, 12), s("Aim Assist", "Default"));
-        assert_eq!(drawn(&m, List::Controls, 13), None);
+        assert_eq!(
+            drawn(&m, List::Controls, 13).map(|(label, _)| label).as_deref(),
+            Some("Fall Assist")
+        );
+        assert_eq!(drawn(&m, List::Controls, 14), None);
         let desktop = all();
         assert_eq!(desktop.index_of(List::Controls, &RowKind::Setting(AIM_ASSIST.key)), None);
         let platform = model(Arc::new(Store::defaults(ALL)), Switches::PLATFORM).unwrap();
@@ -458,7 +474,11 @@ mod tests {
         );
         assert_eq!(drawn(&m, List::Controls, 9), s("Trackpad Aim", "5"));
         assert_eq!(drawn(&m, List::Controls, 10), s("Left Trackpad", "D-Pad"));
-        assert_eq!(drawn(&m, List::Controls, 11), None);
+        assert_eq!(
+            drawn(&m, List::Controls, 11).map(|(label, _)| label).as_deref(),
+            Some("Fall Assist")
+        );
+        assert_eq!(drawn(&m, List::Controls, 12), None);
         // The Settings row text draws one text: the label, in slot 0.
         let title = m.title_id(SCREEN).unwrap();
         assert_eq!(settings_text(&m, Some(2)), Some((0, title)));
@@ -479,7 +499,7 @@ mod tests {
             no_speaker.index_of(List::Settings, &RowKind::Open(SCREEN)),
             Some(2)
         );
-        assert_eq!(no_speaker.count(List::Controls, 6), 10, "Steam and Lightbar");
+        assert_eq!(no_speaker.count(List::Controls, 6), 11, "Steam, Lightbar and Fall Assist");
         assert_eq!(
             no_speaker.index_of(List::Controls, &RowKind::Setting(STEAM_SPEAKER.key)),
             Some(7)
@@ -492,7 +512,42 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(no_steam.count(List::Controls, 6), 8, "Speaker and Lightbar");
+        assert_eq!(no_steam.count(List::Controls, 6), 9, "Speaker, Lightbar and Fall Assist");
+    }
+
+    /// The superbounce fall assist is off until the player turns it on
+    /// from its Controls row.
+    #[test]
+    fn the_fall_assist_row_turns_the_assist_on_and_off() {
+        let store = Arc::new(Store::defaults(ALL));
+        let on = store.handle::<bool>(SUPERBOUNCE_FALL_ASSIST.key);
+        let m = model(Arc::clone(&store), Switches::ALL).unwrap();
+        let row = m
+            .index_of(
+                List::Controls,
+                &RowKind::Setting(SUPERBOUNCE_FALL_ASSIST.key),
+            )
+            .expect("a Fall Assist row");
+        assert!(!on.get(), "off by default");
+        assert!(matches!(press(&m, List::Controls, row), Chosen::Stepped(_)));
+        assert!(on.get());
+        press(&m, List::Controls, row);
+        assert!(!on.get());
+        let without = model(
+            store,
+            Switches {
+                fall_assist_row: false,
+                ..Switches::ALL
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            without.index_of(
+                List::Controls,
+                &RowKind::Setting(SUPERBOUNCE_FALL_ASSIST.key)
+            ),
+            None
+        );
     }
 
     #[test]
@@ -518,7 +573,7 @@ mod tests {
     #[test]
     fn the_controls_list_grows_by_our_rows() {
         let m = all();
-        assert_eq!(list_count(&m, speaker_row::LIST_NAME, 6), 11);
+        assert_eq!(list_count(&m, speaker_row::LIST_NAME, 6), 12);
         assert_eq!(list_count(&m, speaker_row::LIST_NAME, 4), 4);
         assert_eq!(list_count(&m, crate::layout_glue::LIST_NAME, 6), 6);
         assert_eq!(list_count(&m, 0x1234, 6), 6);
@@ -678,7 +733,7 @@ mod tests {
         // Rows past ours, or no row, are not ours.
         assert_eq!(press(&m, LIST, 7), Chosen::Nothing);
         assert_eq!(press(&m, List::Controls, 5), Chosen::Nothing);
-        assert_eq!(press(&m, List::Controls, 11), Chosen::Nothing);
+        assert_eq!(press(&m, List::Controls, 12), Chosen::Nothing);
         // Saved as the old code saved them; other keys kept.
         let t: toml::Table = std::fs::read_to_string(&path).unwrap().parse().unwrap();
         assert_eq!(t["graphics"]["fov"].as_integer(), Some(75));

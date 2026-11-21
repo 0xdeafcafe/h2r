@@ -11,8 +11,9 @@
 //!   recipe, then how long the charge has left;
 //! - the recipe's verbs on the game's prompt line, the bound button drawn
 //!   by the game;
-//! - the results (primed, lost, each landing on a strip) in the game's
-//!   notification list;
+//! - the results (primed, lost, each landing on a strip that did not
+//!   bounce) and the medals (a bounce's medal glyph and line, as a retail
+//!   multi-kill's) in the game's notification list;
 //! - a navpoint over the next thing to do, the nearest crouch spot while
 //!   not primed and the nearest strip while primed, the game's arrow
 //!   pointing down at it and its waypoint marker above, the distance in
@@ -38,6 +39,7 @@ pub const PILL_ICON: &str = "sb.pill.icon";
 pub const CHARGE: &str = "sb.charge";
 pub const PROMPT: &str = "sb.prompt";
 pub const MESSAGE: &str = "sb.message";
+pub const MEDAL: &str = "sb.medal";
 pub const NAVPOINT: &str = "sb.navpoint";
 pub const TUTORIAL: &str = "sb.tutorial";
 
@@ -57,9 +59,10 @@ pub const CHARGE_COLUMNS: u8 = (PILL_BODY + model::PILL_END) as u8;
 /// The meter's top below the pill's: the pill's 19 rows (V: `grenade_bkd`,
 /// 103 by 19) and 2 more.
 pub const CHARGE_DOWN: i16 = 21;
-/// Under this fill the charge is about to go: the icon flashes the
-/// timer's warning record.
-pub const LOW_CHARGE: f32 = 1.0 / 3.0;
+/// At this fill or under the charge is about to go: the icon flashes the
+/// timer's warning record. Half: 19 still ticks of the 38 a body has
+/// before it sleeps, where the prompt line warns ([`PROMPT_KEEP_MOVING`]).
+pub const LOW_CHARGE: f32 = 0.5;
 /// The fill of each recipe step before the word is -3
 /// (docs/game/hud-kit.md, "The charge meter").
 pub const FILL_NEAR: f32 = 0.0;
@@ -67,30 +70,137 @@ pub const FILL_UNDER: f32 = 1.0 / 3.0;
 pub const FILL_HELD: f32 = 2.0 / 3.0;
 
 /// The default crouch button's glyph, the left stick click (U+E110,
-/// docs/input/button-icons.md), as the tutorial names X by its glyph.
+/// docs/input/button-icons.md).
 pub const CROUCH: &str = "\u{e110}";
-/// The prompt line's verbs, one a recipe step.
+/// The prompt line's verbs: the recipe's steps, the warning while primed
+/// and still, and the new charge after a loss.
 pub const PROMPT_NEAR: &str = "Hold \u{e110} and walk under";
 pub const PROMPT_UNDER: &str = "Let go of \u{e110}";
 pub const PROMPT_HELD: &str = "Walk out to stand up";
+pub const PROMPT_KEEP_MOVING: &str = "Keep moving or lose the charge";
+/// After a loss: the loss's reason is its notification
+/// ([`Note::ChargeLost`]).
+pub const PROMPT_CHARGE_AGAIN: &str = "Find a crouch spot to charge again";
+/// The prompt line's widest verb: the most characters.
+pub const PROMPT_LONGEST: &str = PROMPT_CHARGE_AGAIN;
 
 /// The notifications.
 pub const MESSAGE_PRIMED: &str = "Primed";
 pub const MESSAGE_LOST: &str = "Charge lost";
+pub const MESSAGE_LOST_STOOD_STILL: &str = "Charge lost: you stood still";
+pub const MESSAGE_LOST_CROUCHED: &str = "Charge lost: you crouched";
 pub const MESSAGE_NOT_PRIMED: &str = "Not primed.";
 pub const MESSAGE_MISSED: &str = "Missed the strip.";
 pub const MESSAGE_TOO_SLOW: &str = "Too slow.";
 pub const MESSAGE_NO_BOUNCE: &str = "No bounce.";
-/// The widest notification: a bounce of three figures.
-pub const MESSAGE_LONGEST: &str = "Superbounce, 999 m";
+/// The widest notification: the most characters, all of them plain.
+pub const MESSAGE_LONGEST: &str = MESSAGE_LOST_STOOD_STILL;
 
-/// The four tutorial steps, two lines each (X is the font's button glyph,
-/// U+E102).
+/// A superbounce medal (docs/game/superbounce.md, "Medals"): the chain's
+/// tiers, then Bounced. Which bounce earns which is the chain's rule
+/// (`game::superbounce_chain::bounce_medals`); this is how each shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum Medal {
+    /// Every bounce.
+    Superbounce,
+    /// The second bounce of a chain.
+    DoubleBounce,
+    /// The third.
+    TripleBounce,
+    /// The fourth.
+    QuadBounce,
+    /// The fifth.
+    ChainBounce,
+    /// The sixth.
+    Bouncetacular,
+    /// A fall out of the map during a bounce.
+    Bounced,
+}
+
+/// Every medal, in [`Medal`]'s order.
+pub const MEDALS: [Medal; 7] = [
+    Medal::Superbounce,
+    Medal::DoubleBounce,
+    Medal::TripleBounce,
+    Medal::QuadBounce,
+    Medal::ChainBounce,
+    Medal::Bouncetacular,
+    Medal::Bounced,
+];
+
+/// Each medal's glyph in the HUD message fonts: new art added at spare
+/// private-use code points by the font rewrite (`font::medals`,
+/// docs/game/hud-kit.md, "The medals"). New art changes the pictures, not
+/// these.
+pub const MEDAL_GLYPHS: [(Medal, char); 7] = [
+    (Medal::Superbounce, '\u{e2a0}'),
+    (Medal::DoubleBounce, '\u{e2a1}'),
+    (Medal::TripleBounce, '\u{e2a2}'),
+    (Medal::QuadBounce, '\u{e2a3}'),
+    (Medal::ChainBounce, '\u{e2a4}'),
+    (Medal::Bouncetacular, '\u{e2a5}'),
+    (Medal::Bounced, '\u{e2a6}'),
+];
+
+/// The widest medal line: the most characters.
+pub const MEDAL_LONGEST: &str = "\u{e2a5} Bouncetacular!";
+
+impl Medal {
+    /// The id the film, Live and the agent API use (the canonical list is
+    /// `live_proto::film::events::medals`).
+    pub fn id(self) -> &'static str {
+        match self {
+            Medal::Superbounce => "superbounce",
+            Medal::DoubleBounce => "double-bounce",
+            Medal::TripleBounce => "triple-bounce",
+            Medal::QuadBounce => "quad-bounce",
+            Medal::ChainBounce => "chain-bounce",
+            Medal::Bouncetacular => "bouncetacular",
+            Medal::Bounced => "bounced",
+        }
+    }
+
+    /// The medal with id `id`.
+    pub fn from_id(id: &str) -> Option<Medal> {
+        MEDALS.into_iter().find(|m| m.id() == id)
+    }
+
+    /// The words of its line, in sentence case with `!`.
+    pub fn words(self) -> &'static str {
+        match self {
+            Medal::Superbounce => "Superbounce!",
+            Medal::DoubleBounce => "Double bounce!",
+            Medal::TripleBounce => "Triple bounce!",
+            Medal::QuadBounce => "Quad bounce!",
+            Medal::ChainBounce => "Chain bounce!",
+            Medal::Bouncetacular => "Bouncetacular!",
+            Medal::Bounced => "Bounced!",
+        }
+    }
+
+    /// Its glyph ([`MEDAL_GLYPHS`]).
+    pub fn glyph(self) -> char {
+        MEDAL_GLYPHS
+            .iter()
+            .find(|(m, _)| *m == self)
+            .map_or('\u{e2a0}', |(_, c)| *c)
+    }
+
+    /// Its notification: the glyph, a space and the words, as a retail
+    /// multi-kill line is.
+    pub fn line(self) -> String {
+        format!("{} {}", self.glyph(), self.words())
+    }
+}
+
+/// The four tutorial steps, two lines each. The landing is the player's
+/// own: the last step names the opt-in fall assist once, by its Controls
+/// row, and no step asks for a button. The third is the widest.
 pub const TUTORIAL_TEXT: [&str; 4] = [
-    "Crouch under a cyan crouch spot,\nthen stand up.",
+    "Crouch, walk in under a lip,\nlet go, then walk out.",
     "You are primed.\nDo not crouch again.",
-    "Find a strip. Green is a standing jump.\nRed needs a big drop.",
-    "Land on the strip.\nHold \u{e102} while falling.",
+    "Find a strip. Its post is the height\nto fall from. No post: just jump.",
+    "Jump or fall onto the strip.\nFall Assist (Controls) can steer.",
 ];
 
 /// The scan of the map for strips.
@@ -133,6 +243,10 @@ pub enum Verb {
     HoldAndWalkUnder,
     LetGoOfCrouch,
     WalkOutToStand,
+    /// Primed and still for half the time a body has before it sleeps.
+    KeepMoving,
+    /// A few seconds after a loss, until a recipe step begins, with why.
+    ChargeAgain(Lost),
 }
 
 impl Verb {
@@ -141,8 +255,21 @@ impl Verb {
             Verb::HoldAndWalkUnder => PROMPT_NEAR,
             Verb::LetGoOfCrouch => PROMPT_UNDER,
             Verb::WalkOutToStand => PROMPT_HELD,
+            Verb::KeepMoving => PROMPT_KEEP_MOVING,
+            Verb::ChargeAgain(_) => PROMPT_CHARGE_AGAIN,
         }
     }
+}
+
+/// Why the charge went (docs/game/superbounce.md, "Charge").
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Lost {
+    /// The body stood still until it slept.
+    StoodStill,
+    /// A crouch while primed.
+    Crouched,
+    /// The word left -3 for another reason.
+    Unknown,
 }
 
 /// What the navpoint is over.
@@ -154,14 +281,11 @@ pub enum Target {
     Strip,
 }
 
-/// How a landing within 0.5 of a strip ended, by its first failed test
-/// (docs/game/superbounce.md, "Landings").
+/// How a landing within 0.5 of a strip that did not bounce ended, by its
+/// first failed test (docs/game/superbounce.md, "Landings"). A bounce's
+/// line is its medal ([`Medal`]).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Landed {
-    /// A bounce, with the height gained at its top in metres when known.
-    Bounce {
-        height_m: Option<f32>,
-    },
     NotPrimed,
     Missed,
     TooSlow,
@@ -172,7 +296,7 @@ pub enum Landed {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Note {
     Primed,
-    ChargeLost,
+    ChargeLost(Lost),
     Landed(Landed),
 }
 
@@ -180,11 +304,9 @@ impl Note {
     pub fn text(self) -> String {
         match self {
             Note::Primed => MESSAGE_PRIMED.into(),
-            Note::ChargeLost => MESSAGE_LOST.into(),
-            Note::Landed(Landed::Bounce { height_m: Some(m) }) => {
-                format!("Superbounce, {} m", distance_text(m))
-            }
-            Note::Landed(Landed::Bounce { height_m: None }) => "Superbounce".into(),
+            Note::ChargeLost(Lost::StoodStill) => MESSAGE_LOST_STOOD_STILL.into(),
+            Note::ChargeLost(Lost::Crouched) => MESSAGE_LOST_CROUCHED.into(),
+            Note::ChargeLost(Lost::Unknown) => MESSAGE_LOST.into(),
             Note::Landed(Landed::NotPrimed) => MESSAGE_NOT_PRIMED.into(),
             Note::Landed(Landed::Missed) => MESSAGE_MISSED.into(),
             Note::Landed(Landed::TooSlow) => MESSAGE_TOO_SLOW.into(),
@@ -207,6 +329,8 @@ pub struct View {
     /// The latest notification and the tick it was raised at: a new tick
     /// queues it once.
     pub note: Option<(Note, u32)>,
+    /// The latest medal line and the tick it was raised at, as `note`.
+    pub medal: Option<(Medal, u32)>,
     /// The tutorial step shown, 1 to 4.
     pub tutorial: Option<u8>,
 }
@@ -221,6 +345,7 @@ impl View {
             verb: None,
             nav: None,
             note: None,
+            medal: None,
             tutorial: None,
         }
     }
@@ -280,13 +405,19 @@ pub fn hud() -> Hud {
             Element::channel(
                 PROMPT,
                 Kind::Prompt {
-                    longest: PROMPT_NEAR,
+                    longest: PROMPT_LONGEST,
                 },
             ),
             Element::channel(
                 MESSAGE,
                 Kind::Message {
                     longest: MESSAGE_LONGEST,
+                },
+            ),
+            Element::channel(
+                MEDAL,
+                Kind::Message {
+                    longest: MEDAL_LONGEST,
                 },
             ),
             Element {
@@ -322,7 +453,7 @@ pub fn values(v: &View) -> Values {
     // The icon flashes while the charge is about to go, and in the held
     // step (the next is to walk out).
     let icon_style = |style: Style| match charge {
-        Some(c) if v.primed && c.phase == Phase::Primed && c.fill < LOW_CHARGE => {
+        Some(c) if v.primed && c.phase == Phase::Primed && c.fill <= LOW_CHARGE => {
             Style::Flash(Pulse::TimeWarning)
         }
         Some(c) if !v.primed && c.phase == Phase::Held => Style::Flash(Pulse::Help),
@@ -358,6 +489,16 @@ pub fn values(v: &View) -> Values {
             Some((note, tick)) => Value {
                 since_tick: tick,
                 ..Value::text(note.text())
+            },
+            None => Value::hidden(),
+        },
+    );
+    out.set(
+        MEDAL,
+        match v.medal {
+            Some((medal, tick)) => Value {
+                since_tick: tick,
+                ..Value::text(medal.line())
             },
             None => Value::hidden(),
         },
@@ -406,6 +547,19 @@ pub fn views() -> Vec<(&'static str, View)> {
         note: Some((Note::Primed, 1)),
         ..primed(1.0)
     };
+    let lost = |why, tick| View {
+        charge: Some(Charge {
+            phase: Phase::Lost,
+            fill: 0.0,
+        }),
+        verb: Some(Verb::ChargeAgain(why)),
+        note: Some((Note::ChargeLost(why), tick)),
+        ..not_primed.clone()
+    };
+    let medal = |m, tick| View {
+        medal: Some((m, tick)),
+        ..primed(1.0)
+    };
     let scanning = View {
         scan: Scan::Scanning,
         ..View::idle()
@@ -422,26 +576,26 @@ pub fn views() -> Vec<(&'static str, View)> {
         ("primed-full", full.clone()),
         ("primed-draining", primed(0.25)),
         (
-            "lost",
+            "primed-still-warning",
             View {
-                charge: Some(Charge {
-                    phase: Phase::Lost,
-                    fill: 0.0,
-                }),
-                note: Some((Note::ChargeLost, 2)),
-                ..not_primed.clone()
+                verb: Some(Verb::KeepMoving),
+                ..primed(LOW_CHARGE)
             },
         ),
+        ("lost", lost(Lost::Unknown, 2)),
+        ("lost-stood-still", lost(Lost::StoodStill, 5)),
+        ("lost-crouched", lost(Lost::Crouched, 6)),
+        ("bounced", medal(Medal::Superbounce, 3)),
+        ("medal-double", medal(Medal::DoubleBounce, 7)),
+        ("medal-triple", medal(Medal::TripleBounce, 8)),
+        ("medal-quad", medal(Medal::QuadBounce, 9)),
+        ("medal-chain", medal(Medal::ChainBounce, 10)),
+        ("medal-bouncetacular", medal(Medal::Bouncetacular, 11)),
         (
-            "bounced",
+            "medal-bounced",
             View {
-                note: Some((
-                    Note::Landed(Landed::Bounce {
-                        height_m: Some(SAMPLE_DISTANCE_M),
-                    }),
-                    3,
-                )),
-                ..primed(1.0)
+                medal: Some((Medal::Bounced, 12)),
+                ..not_primed.clone()
             },
         ),
         (
@@ -641,11 +795,19 @@ mod tests {
         assert_eq!(fill("primed-full"), Some(1.0));
         assert_eq!(fill("primed-draining"), Some(0.25));
         assert_eq!(fill("lost"), Some(0.0));
+        assert_eq!(fill("lost-stood-still"), Some(0.0));
+        assert_eq!(fill("primed-still-warning"), Some(LOW_CHARGE));
         assert_eq!(fill("scanning"), None);
         assert_eq!(
             style("primed-draining", PILL_ICON),
             Some(Style::Flash(Pulse::TimeWarning))
         );
+        // The warning and the flash start together, at half.
+        assert_eq!(
+            style("primed-still-warning", PILL_ICON),
+            Some(Style::Flash(Pulse::TimeWarning))
+        );
+        assert_eq!(style("missed", PILL_ICON), Some(Style::Normal));
         assert_eq!(style("held", PILL_ICON), Some(Style::Flash(Pulse::Help)));
         assert_eq!(style("under", PILL_ICON), Some(Style::Inactive));
         assert_eq!(style("primed-draining", PILL), Some(Style::Normal));
@@ -658,10 +820,19 @@ mod tests {
         assert_eq!(prompt("under").as_deref(), Some(PROMPT_UNDER));
         assert_eq!(prompt("held").as_deref(), Some(PROMPT_HELD));
         assert_eq!(prompt("primed-full"), None);
+        assert_eq!(prompt("primed-draining"), None);
+        assert_eq!(
+            prompt("primed-still-warning").as_deref(),
+            Some(PROMPT_KEEP_MOVING)
+        );
+        // The hint alone: the reason is the loss's notification.
+        for s in ["lost", "lost-stood-still", "lost-crouched"] {
+            assert_eq!(prompt(s).as_deref(), Some(PROMPT_CHARGE_AGAIN), "{s}");
+        }
         assert!(PROMPT_NEAR.contains(CROUCH) && PROMPT_UNDER.contains(CROUCH));
     }
 
-    /// Each notification once, by its tick; a bounce says how high.
+    /// Each notification once, by its tick; a bounce's line is its medal.
     #[test]
     fn the_landings_and_the_charge_are_notified() {
         let msg = |s: &str| {
@@ -671,12 +842,24 @@ mod tests {
         };
         assert_eq!(msg("primed-full"), Some((MESSAGE_PRIMED.into(), 1)));
         assert_eq!(msg("lost"), Some((MESSAGE_LOST.into(), 2)));
-        assert_eq!(msg("bounced"), Some(("Superbounce, 12 m".into(), 3)));
+        assert_eq!(
+            msg("lost-stood-still"),
+            Some((MESSAGE_LOST_STOOD_STILL.into(), 5))
+        );
+        assert_eq!(
+            msg("lost-crouched"),
+            Some((MESSAGE_LOST_CROUCHED.into(), 6))
+        );
+        assert_eq!(msg("primed-still-warning"), None);
+        for m in [MESSAGE_LOST_STOOD_STILL, MESSAGE_LOST_CROUCHED] {
+            assert!(m.starts_with(MESSAGE_LOST) && m.len() <= MESSAGE_LONGEST.len());
+        }
+        for m in [MESSAGE_MISSED, MESSAGE_NOT_PRIMED] {
+            assert!(m.len() <= MESSAGE_LONGEST.len(), "{m}");
+        }
+        assert_eq!(msg("bounced"), None);
         assert_eq!(msg("missed"), Some((MESSAGE_MISSED.into(), 4)));
         assert_eq!(msg("near"), None);
-        let bounce = |h| Note::Landed(Landed::Bounce { height_m: h }).text();
-        assert_eq!(bounce(None), "Superbounce");
-        assert_eq!(bounce(Some(4000.0)), MESSAGE_LONGEST);
         for (n, t) in [
             (Landed::NotPrimed, MESSAGE_NOT_PRIMED),
             (Landed::TooSlow, MESSAGE_TOO_SLOW),
@@ -684,6 +867,45 @@ mod tests {
         ] {
             assert_eq!(Note::Landed(n).text(), t);
         }
+    }
+
+    /// A medal is its glyph, a space and its words, each under the game's
+    /// 63 characters, in the states that show it and no other.
+    #[test]
+    fn a_medal_line_is_its_glyph_and_its_words() {
+        let medal = |s: &str| {
+            let v = state(s);
+            let m = v.get(MEDAL).unwrap();
+            m.shown.then(|| (m.text.clone(), m.since_tick))
+        };
+        assert_eq!(medal("bounced"), Some(("\u{e2a0} Superbounce!".into(), 3)));
+        for (s, m) in [
+            ("medal-double", Medal::DoubleBounce),
+            ("medal-triple", Medal::TripleBounce),
+            ("medal-quad", Medal::QuadBounce),
+            ("medal-chain", Medal::ChainBounce),
+            ("medal-bouncetacular", Medal::Bouncetacular),
+            ("medal-bounced", Medal::Bounced),
+        ] {
+            assert_eq!(medal(s).map(|x| x.0), Some(m.line()), "{s}");
+        }
+        assert_eq!(medal("missed"), None);
+        assert_eq!(medal("primed-full"), None);
+        let glyphs: std::collections::HashSet<char> =
+            MEDAL_GLYPHS.iter().map(|(_, c)| *c).collect();
+        assert_eq!(glyphs.len(), MEDALS.len());
+        for (i, m) in MEDALS.into_iter().enumerate() {
+            assert_eq!(MEDAL_GLYPHS[i].0, m);
+            let line = m.line();
+            assert!(line.starts_with(m.glyph()) && line.ends_with('!'), "{line}");
+            assert!(line.encode_utf16().count() <= crate::model::MESSAGE_UNITS);
+            assert!(
+                line.chars().count() <= MEDAL_LONGEST.chars().count(),
+                "{line}"
+            );
+            assert_eq!(Medal::from_id(m.id()), Some(m));
+        }
+        assert_eq!(MEDAL_LONGEST, Medal::Bouncetacular.line());
     }
 
     /// No state carries a launch or drop number; the X button is only in
@@ -695,7 +917,7 @@ mod tests {
         assert_eq!(
             ids,
             [
-                PILL, PILL_END, CHARGE, PILL_ICON, PROMPT, MESSAGE, NAVPOINT, TUTORIAL
+                PILL, PILL_END, CHARGE, PILL_ICON, PROMPT, MESSAGE, MEDAL, NAVPOINT, TUTORIAL
             ]
         );
         for (name, v) in Superbounce.states() {
@@ -706,12 +928,21 @@ mod tests {
                 if *id != PROMPT {
                     assert!(!val.text.contains(CROUCH), "{name} {id}");
                 }
-                if ![TUTORIAL, MESSAGE].contains(id) {
+                if ![TUTORIAL, MESSAGE, MEDAL].contains(id) {
                     assert!(!val.text.contains('.'), "{name} {id}");
                 }
             }
         }
-        assert!(TUTORIAL_TEXT[3].contains('\u{e102}'));
+        // The tutorial asks for no button: the fall assist is opt in.
+        assert!(TUTORIAL_TEXT.iter().all(|t| !t.contains('\u{e102}')));
+        assert!(TUTORIAL_TEXT[3].contains("Fall Assist"));
+        // The layout is sized by the third step's text.
+        let widest = |t: &str| t.lines().map(str::len).max().unwrap_or(0);
+        assert!(
+            TUTORIAL_TEXT
+                .iter()
+                .all(|t| widest(t) <= widest(TUTORIAL_TEXT[2]))
+        );
     }
 
     #[test]
@@ -728,8 +959,17 @@ mod tests {
                 "held",
                 "primed-full",
                 "primed-draining",
+                "primed-still-warning",
                 "lost",
+                "lost-stood-still",
+                "lost-crouched",
                 "bounced",
+                "medal-double",
+                "medal-triple",
+                "medal-quad",
+                "medal-chain",
+                "medal-bouncetacular",
+                "medal-bounced",
                 "missed",
                 "scanning",
                 "no-strips",

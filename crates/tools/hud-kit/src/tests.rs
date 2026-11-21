@@ -213,7 +213,7 @@ fn the_synthetic_sheet_draws_and_passes() {
         [Check::Glyphs]
     );
     let states = Superbounce.states().len();
-    assert_eq!(states, 15);
+    assert_eq!(states, 18);
     assert_eq!(r.shots.len(), states * 3);
     let (sheet, tiles) = preview::sheet(&r.shots, 3);
     assert_eq!((sheet.width, sheet.height), (3 * 320, states as u32 * 240));
@@ -572,6 +572,14 @@ fn each_check_fires_on_a_hud_built_to_break_it() {
         case(vec![Element::icon("i", nope, bl(10, -150))], &[]),
         Check::Templates,
     );
+    // prompt: a notification over the game's 63 characters.
+    fires(
+        case(
+            vec![Element::channel("m", Kind::Message { longest: "a" })],
+            &[("m", Value::text("a".repeat(64)))],
+        ),
+        Check::Prompt,
+    );
     // prompt: three lines in the training box.
     fires(
         case(
@@ -591,16 +599,13 @@ fn each_check_fires_on_a_hud_built_to_break_it() {
         ),
         Check::Modes,
     );
-    // glyphs: a font without the X button's glyph.
+    // glyphs: a font without the crouch button's glyph, which the
+    // prompt line's verbs use.
     let mut r = check::Report::default();
-    let no_x = |_: i16, u: u16| Some(u != 0xe102);
-    check::glyphs(&mut r, &superbounce::hud(), &Superbounce.states(), &no_x);
+    let no_crouch = |_: i16, u: u16| Some(u != 0xe110);
+    check::glyphs(&mut r, &superbounce::hud(), &Superbounce.states(), &no_crouch);
     assert!(!r.findings.is_empty());
-    assert!(
-        r.findings
-            .iter()
-            .all(|f| f.check == Check::Glyphs && f.elements == ["sb.tutorial"])
-    );
+    assert!(r.findings.iter().all(|f| f.check == Check::Glyphs));
     let mut r = check::Report::default();
     check::glyphs(
         &mut r,
@@ -726,12 +731,14 @@ fn the_charge_meter_is_the_strips_end_under_the_pill() {
     assert!(!full("not-primed").drawn, "no charge building");
     assert!(full("primed-full").drawn);
     assert_eq!(full("primed-draining").fill, Some(0.25));
+    assert_eq!(full("primed-still-warning").fill, Some(superbounce::LOW_CHARGE));
     assert_eq!(full("near").fill, Some(superbounce::FILL_NEAR));
     assert_eq!(full("held").fill, Some(superbounce::FILL_HELD));
 }
 
-/// The step verbs go on the prompt line and the landings in the message
-/// area, in the states that have them.
+/// The step verbs, the warning and the new-charge hint go on the prompt
+/// line, and the landings and the losses in the message area, in the
+/// states that have them.
 #[test]
 fn the_prompt_and_message_carry_the_steps_and_landings() {
     let states = Superbounce.states();
@@ -751,5 +758,25 @@ fn the_prompt_and_message_carry_the_steps_and_landings() {
     assert!(!get("primed-full", superbounce::PROMPT).shown);
     assert_eq!(get("primed-full", superbounce::MESSAGE).text, superbounce::MESSAGE_PRIMED);
     assert_eq!(get("lost", superbounce::MESSAGE).text, superbounce::MESSAGE_LOST);
-    assert!(get("bounced", superbounce::MESSAGE).text.starts_with("Superbounce"));
+    assert_eq!(
+        get("primed-still-warning", superbounce::PROMPT).text,
+        superbounce::PROMPT_KEEP_MOVING
+    );
+    for (state, message) in [
+        ("lost", superbounce::MESSAGE_LOST),
+        ("lost-stood-still", superbounce::MESSAGE_LOST_STOOD_STILL),
+        ("lost-crouched", superbounce::MESSAGE_LOST_CROUCHED),
+    ] {
+        assert_eq!(get(state, superbounce::MESSAGE).text, message);
+        assert_eq!(
+            get(state, superbounce::PROMPT).text,
+            superbounce::PROMPT_CHARGE_AGAIN
+        );
+    }
+    // A bounce's line is its medal, on the medal channel.
+    assert!(!get("bounced", superbounce::MESSAGE).shown);
+    assert_eq!(
+        get("bounced", superbounce::MEDAL).text,
+        superbounce::Medal::Superbounce.line()
+    );
 }

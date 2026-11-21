@@ -28,6 +28,11 @@
 //! ([`crate::superbounce_assist::predict`]). The standing-capsule test
 //! behind `under` is [`crate::superbounce_capsule`], over the collision the
 //! scan reads.
+//!
+//! **The medals** (docs/game/superbounce.md, "Medals") are on it too:
+//! every player's chain of bounces ([`crate::superbounce_chain`]), stepped
+//! each tick for every listed player, bots included, published as
+//! [`State::medals`].
 
 use std::collections::{HashMap, HashSet};
 use std::io::{Read, Seek};
@@ -38,9 +43,11 @@ use engine::GuestMemory;
 use superbounce::{Kind, Spot, Vec3};
 
 pub use crate::superbounce_charge::{
-    Charge, ChargePhase, Course, Landing, LandingResult, NavKind, NavTarget, Predicted, Verb,
+    Charge, ChargePhase, Course, Landing, LandingResult, Lost, LostReason, NavKind, NavTarget,
+    Predicted, Verb,
 };
 use crate::superbounce_capsule::Room;
+use crate::superbounce_chain::{self as chain, Medals};
 use crate::superbounce_charge::{Tick, Tracker};
 
 /// The feature's name.
@@ -54,7 +61,7 @@ pub const PRIMED_WORD: i32 = -3;
 /// Metres in a world unit (10 feet).
 pub const METRES_PER_UNIT: f32 = 3.048;
 /// Where an object's position is, in its body.
-const OBJECT_POSITION: u32 = 0x30;
+pub const OBJECT_POSITION: u32 = 0x30;
 /// The most spot lines drawn: the nearest ones.
 pub const MAX_LINES: usize = 40;
 /// A bounce line's brightness while the player is not primed.
@@ -149,6 +156,9 @@ pub struct State {
     /// capsule test against the scanned collision
     /// ([`crate::superbounce_capsule`]); `None` before the scan is ready.
     pub standing_fits: Option<bool>,
+    /// Every player's medals this game: the records and the last awards
+    /// ([`crate::superbounce_chain`]).
+    pub medals: chain::View,
 }
 
 impl State {
@@ -171,6 +181,7 @@ impl State {
         last_landing: None,
         still_ticks: 0,
         standing_fits: None,
+        medals: chain::View::EMPTY,
     };
 
     pub fn primed(&self) -> bool {
@@ -284,6 +295,13 @@ pub fn reply(s: &State) -> agent_proto::superbounce::State {
         verb: s.verb.map(|v| match v {
             Verb::LetGoOfCrouch => wire::Verb::LetGoOfCrouch,
             Verb::WalkOutToStand => wire::Verb::WalkOutToStand,
+            Verb::KeepMoving => wire::Verb::KeepMoving,
+            Verb::ChargeAgain(_) => wire::Verb::ChargeAgain,
+        }),
+        lost_reason: lost(s).map(|l| match l.reason {
+            LostReason::StoodStill => wire::LostReason::StoodStill,
+            LostReason::Crouched => wire::LostReason::Crouched,
+            LostReason::Unknown => wire::LostReason::Unknown,
         }),
         nav_target: s.nav_target.map(|n| wire::NavTarget {
             at: v3(n.at),
@@ -315,7 +333,51 @@ pub fn reply(s: &State) -> agent_proto::superbounce::State {
             at: v3(l.at),
         }),
         standing_fits: s.standing_fits,
+        medals: medals_reply(&s.medals),
     }
+}
+
+/// `superbounce.state`'s `medals` for `m`.
+pub fn medals_reply(m: &chain::View) -> agent_proto::superbounce::Medals {
+    use agent_proto::superbounce as wire;
+    let ids = |medals: &[hud_kit_core::huds::superbounce::Medal]| {
+        medals.iter().map(|m| m.id().to_owned()).collect()
+    };
+    wire::Medals {
+        players: m
+            .players
+            .iter()
+            .map(|(slot, r)| wire::MedalPlayer {
+                player: *slot,
+                chain: r.chain,
+                live: r.live,
+                counts: r
+                    .counts
+                    .iter()
+                    .map(|(m, n)| (m.id().to_owned(), *n))
+                    .collect(),
+            })
+            .collect(),
+        recent: m
+            .recent
+            .iter()
+            .map(|a| wire::MedalAward {
+                player: a.slot,
+                tick: a.tick,
+                chain: a.chain,
+                medals: ids(&a.medals),
+            })
+            .collect(),
+    }
+}
+
+/// The last loss, while the charge shows `lost` or the verb asks for a
+/// new charge.
+pub fn lost(s: &State) -> Option<Lost> {
+    s.charge.and_then(|c| c.lost).or(match s.verb {
+        Some(Verb::ChargeAgain(l)) => Some(l),
+        _ => None,
+    })
 }
 
 /// `superbounce.state` takes no parameters: null or `{}`.
@@ -353,7 +415,14 @@ struct Scanned {
 #[derive(Default)]
 struct Scans {
     current: Option<ScanKey>,
+    /// The current key's spots with the map's verified file applied
+    /// (`superbounce::verified`), failed ones too: what the verifier
+    /// indexes.
+    scanned: Arc<Vec<Spot>>,
+    /// The same without the failed spots: what is drawn and steered onto.
     spots: Arc<Vec<Spot>>,
+    /// The bots' spots generation the verified file was applied at.
+    verified_at: u64,
     /// The current key's collision; empty until its scan is ready.
     room: Arc<Room>,
     status: ScanState,
@@ -379,9 +448,12 @@ fn scan_one<R: Read + Seek>(
     bsp: usize,
 ) -> Result<Scanned, String> {
     let _ = &raw;
+    // The starting locations and the measured priming places, as `h2
+    // superbounce scan` and the bots' scan use them.
+    let ctx = superbounce::map_context(map).map_err(|e| e.to_string())?;
     let polys = superbounce::map_polys(map, bsp).map_err(|e| e.to_string())?;
     Ok(Scanned {
-        spots: superbounce::scan(&polys),
+        spots: superbounce::scan_in(&polys, &ctx),
         room: Room::new(&polys),
     })
 }
@@ -409,20 +481,49 @@ struct ScanView {
     status: ScanState,
 }
 
+/// `raw` with the map's verified file applied: every spot, and the ones not
+/// failed.
+fn with_verified(map: &str, raw: &[Spot]) -> (Arc<Vec<Spot>>, Arc<Vec<Spot>>) {
+    let mut all = raw.to_vec();
+    superbounce::verified::apply(&mut all, &bots::spots::verified_for(map));
+    let shown: Vec<Spot> = all
+        .iter()
+        .filter(|s| s.status != superbounce::Status::Failed)
+        .copied()
+        .collect();
+    (Arc::new(all), Arc::new(shown))
+}
+
 fn request_scan(key: ScanKey) -> ScanView {
     let mut s = lock(scans());
+    // A verified file written (or read) since: apply it again.
+    let generation = bots::spots::generation();
+    if s.current.as_ref() == Some(&key)
+        && s.verified_at != generation
+        && let Some((raw, _)) = s.cache.get(&key).cloned()
+    {
+        let (all, shown) = with_verified(&key.map, &raw);
+        s.scanned = all;
+        s.spots = shown;
+        s.verified_at = generation;
+    }
     if s.current.as_ref() != Some(&key) {
         s.current = Some(key.clone());
         if let Some((spots, room)) = s.cache.get(&key).cloned() {
-            s.spots = spots;
+            let (all, shown) = with_verified(&key.map, &spots);
+            s.scanned = all;
+            s.spots = shown;
+            s.verified_at = generation;
             s.room = room;
             s.status = ScanState::Ready;
         } else if s.inflight.contains(&key) {
             s.spots = Arc::default();
+            s.scanned = Arc::default();
             s.room = Arc::default();
             s.status = ScanState::Scanning;
         } else {
             s.spots = Arc::default();
+            s.scanned = Arc::default();
             s.room = Arc::default();
             s.status = ScanState::Scanning;
             s.inflight.insert(key.clone());
@@ -460,9 +561,12 @@ fn finish_scan(key: ScanKey, found: Result<Scanned, String>) {
                 key.bsp
             );
             let (spots, room) = (Arc::new(spots), Arc::new(room));
-            s.cache.insert(key, (Arc::clone(&spots), Arc::clone(&room)));
+            s.cache.insert(key.clone(), (Arc::clone(&spots), Arc::clone(&room)));
             if here {
-                s.spots = spots;
+                let (all, shown) = with_verified(&key.map, &spots);
+                s.scanned = all;
+                s.spots = shown;
+                s.verified_at = bots::spots::generation();
                 s.room = room;
                 s.status = ScanState::Ready;
             }
@@ -476,9 +580,20 @@ fn finish_scan(key: ScanKey, found: Result<Scanned, String>) {
     }
 }
 
-/// The spots of the current scan, for the world lines.
+/// The spots of the current scan, for the world lines: the map's verified
+/// file applied, the failed spots left out.
 pub fn current_spots() -> Arc<Vec<Spot>> {
     Arc::clone(&lock(scans()).spots)
+}
+
+/// Every spot of the current scan with its verified status, failed ones
+/// too, and the map they are for: what `superbounce.verify` indexes.
+pub fn scanned_spots() -> (Option<String>, Arc<Vec<Spot>>) {
+    let s = lock(scans());
+    (
+        s.current.as_ref().map(|k| k.map.clone()),
+        Arc::clone(&s.scanned),
+    )
 }
 
 /// The collision of the current scan, for the standing-capsule test;
@@ -553,6 +668,15 @@ pub fn set_override(on: Option<bool>) -> &'static str {
     };
     OVERRIDE.store(v, Ordering::Relaxed);
     name
+}
+
+/// The override now: what [`set_override`] was last given.
+pub fn override_now() -> Option<bool> {
+    match OVERRIDE.load(Ordering::Relaxed) {
+        FORCE_ON => Some(true),
+        FORCE_OFF => Some(false),
+        _ => None,
+    }
 }
 
 /// Whether the mode is on in the game running now.
@@ -669,11 +793,52 @@ const RECHECK: u32 = 30;
 static TICKS: AtomicU32 = AtomicU32::new(0);
 /// The charge and landing state kept from tick to tick.
 static TRACKER: Mutex<Tracker> = Mutex::new(Tracker::new());
+/// Every player's chain and medals this game.
+static MEDALS: Mutex<Medals> = Mutex::new(Medals::empty());
+/// The first local player's slot and user at the last tick, for
+/// `superbounce.medal_test`.
+static LOCAL: Mutex<Option<(u8, u8)>> = Mutex::new(None);
 
 fn reset() {
     ACTIVE.store(false, Ordering::Relaxed);
+    bots::set_practice(false);
     *lock(&STATE) = State::EMPTY;
     *lock(&TRACKER) = Tracker::new();
+    *lock(&MEDALS) = Medals::empty();
+    *lock(&LOCAL) = None;
+}
+
+/// `superbounce.medal_test`: files a bounce at chain count `chain` (or a
+/// Bounced with `bounced`) for the first local player, as the chain's rule
+/// gives it. The HUD line and `medals` show it as a real one's; nothing
+/// is sent or recorded. Refused while the mode is off or there is no
+/// local player.
+pub fn medal_test(
+    p: &agent_proto::superbounce::MedalTestParams,
+) -> Result<agent_proto::superbounce::MedalTest, String> {
+    if !active() {
+        return Err("the superbounce mode is off (superbounce.set {\"on\":true})".into());
+    }
+    let chain = match (p.chain, p.bounced) {
+        (Some(0), _) => return Err("chain is 1 or more".into()),
+        (Some(n), false) => n,
+        (None, true) => 0,
+        (Some(_), true) => return Err("give chain or bounced, not both".into()),
+        (None, false) => return Err("give chain (1 and up) or bounced".into()),
+    };
+    let Some((slot, user)) = *lock(&LOCAL) else {
+        return Err("no local player with a unit".into());
+    };
+    let tick = TICKS.load(Ordering::Relaxed);
+    let a = lock(&MEDALS).test(slot, Some(user), tick, chain, p.bounced);
+    let view = lock(&MEDALS).view();
+    lock(&STATE).medals = view;
+    Ok(agent_proto::superbounce::MedalTest {
+        player: slot,
+        chain: a.chain,
+        medals: a.medals.iter().map(|m| m.id().to_owned()).collect(),
+        line: chain::highest(&a.medals).map(|m| m.line()),
+    })
 }
 
 /// Decides on or off from the game now. Going off clears the state.
@@ -682,9 +847,14 @@ fn decide(o: &hooks::Obs) {
         let guest = o.guest();
         on_now(&*guest)
     };
+    // The bots practise bounces instead of fighting while it is on
+    // (docs/game/bots.md, "Practising bounces").
+    bots::set_practice(on);
     if ACTIVE.swap(on, Ordering::Relaxed) && !on {
         *lock(&STATE) = State::EMPTY;
         *lock(&TRACKER) = Tracker::new();
+        *lock(&MEDALS) = Medals::empty();
+        *lock(&LOCAL) = None;
     }
 }
 
@@ -697,10 +867,10 @@ fn on_tick(o: &hooks::Obs) {
     if !ACTIVE.load(Ordering::Relaxed) {
         return;
     }
-    let (live, key) = {
+    let (live, key, players) = {
         let guest = o.guest();
         let m: &dyn GuestMemory = &*guest;
-        (read_live(m), scan_key(m))
+        (read_live(m), scan_key(m), chain::read_players(m))
     };
     let map = key.as_ref().map(|k| k.map.clone());
     let view = key.map(request_scan);
@@ -746,6 +916,17 @@ fn on_tick(o: &hooks::Obs) {
         ),
         _ => None,
     };
+    *lock(&LOCAL) = players
+        .iter()
+        .filter(|p| p.tick.is_some())
+        .filter_map(|p| Some((p.slot, p.user?)))
+        .min_by_key(|(_, user)| *user);
+    let medals = {
+        let tick = live.tick.unwrap_or_else(|| TICKS.load(Ordering::Relaxed));
+        let mut m = lock(&MEDALS);
+        m.step(tick, &players, &spots);
+        m.view()
+    };
     *lock(&STATE) = State {
         active: true,
         word: live.word,
@@ -765,6 +946,7 @@ fn on_tick(o: &hooks::Obs) {
         last_landing: step.last_landing,
         still_ticks: step.still_ticks,
         standing_fits,
+        medals,
     };
 }
 
@@ -989,6 +1171,7 @@ mod tests {
             charge: Some(Charge {
                 phase: ChargePhase::Primed,
                 fill: 0.5,
+                lost: None,
             }),
             still_ticks: 19,
             verb: Some(Verb::WalkOutToStand),
@@ -1034,6 +1217,53 @@ mod tests {
             (wire::LandingResult::TooSlow, 6753, [0.5, 0.5, -3.0])
         );
         assert_eq!(r.standing_fits, Some(false));
+        assert_eq!(r.lost_reason, None);
+    }
+
+    #[test]
+    fn the_agent_reply_says_why_the_charge_went_while_lost_and_after() {
+        use agent_proto::superbounce as wire;
+        let lost = Lost {
+            reason: LostReason::StoodStill,
+            tick: 7000,
+        };
+        let s = State {
+            active: true,
+            charge: Some(Charge {
+                phase: ChargePhase::Lost,
+                fill: 0.0,
+                lost: Some(lost),
+            }),
+            verb: Some(Verb::ChargeAgain(lost)),
+            ..State::EMPTY
+        };
+        let r = reply(&s);
+        assert_eq!(r.lost_reason, Some(wire::LostReason::StoodStill));
+        assert_eq!(r.verb, Some(wire::Verb::ChargeAgain));
+        // After the lost second the charge is hidden; the verb keeps it.
+        let after = State {
+            charge: None,
+            verb: Some(Verb::ChargeAgain(Lost {
+                reason: LostReason::Crouched,
+                ..lost
+            })),
+            ..s.clone()
+        };
+        assert_eq!(reply(&after).lost_reason, Some(wire::LostReason::Crouched));
+        let unknown = State {
+            verb: Some(Verb::ChargeAgain(Lost {
+                reason: LostReason::Unknown,
+                ..lost
+            })),
+            ..after.clone()
+        };
+        assert_eq!(reply(&unknown).lost_reason, Some(wire::LostReason::Unknown));
+        let warned = State {
+            verb: Some(Verb::KeepMoving),
+            ..State::EMPTY
+        };
+        let r = reply(&warned);
+        assert_eq!((r.verb, r.lost_reason), (Some(wire::Verb::KeepMoving), None));
     }
 
     #[test]

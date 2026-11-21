@@ -173,7 +173,11 @@ impl AgentGlue {
         agent::sim::calls::lock(&calls)
             .set_spawn_enrollment(crate::actor_net::creature::spawn_enrollment);
         match registry.add(&agent::sim::calls::CallsFeature(calls.clone())) {
-            Ok(true) => sim.set_calls(calls),
+            Ok(true) => {
+                // The superbounce verifier's trials teleport through it too.
+                crate::superbounce_verify::set_calls(calls.clone());
+                sim.set_calls(calls)
+            }
             Ok(false) => eprintln!(
                 "agent: agent-calls switched off by H2_FEATURES; sim teleports, give and spawn are off"
             ),
@@ -293,6 +297,24 @@ impl AgentGlue {
                     .expect("superbounce.assist_test serialises"))
             },
         );
+        // A bounce at a chain count for the first local player, as a real
+        // one shows (superbounce_chain.rs, docs/game/superbounce.md,
+        // "Medals").
+        agent.add_game_method(
+            agent_proto::superbounce::MEDAL_TEST,
+            Access::Act,
+            |params, _ctx| {
+                let p: agent_proto::superbounce::MedalTestParams =
+                    serde_json::from_value(params)
+                        .map_err(|e| RpcError::new(code::INVALID_PARAMS, e.to_string()))?;
+                let r = crate::superbounce_mode::medal_test(&p)
+                    .map_err(|why| RpcError::new(code::INVALID_PARAMS, why))?;
+                Ok(serde_json::to_value(r).expect("superbounce.medal_test serialises"))
+            },
+        );
+        // Trials of the spots in the game (superbounce_verify.rs,
+        // docs/game/superbounce.md, "Verifying spots").
+        crate::superbounce_verify::install(&agent);
         // HaloScript state: the threads and globals of the running scenario.
         agent::hs_state::install(&agent);
         // On the game thread: the sampler's main target.

@@ -183,6 +183,26 @@ pub enum Kind {
 /// engine font 6).
 pub const NAVPOINT_FONT: Font = Font::Hud;
 
+/// The UTF-16 units of a notification the game keeps: the insert copies 63
+/// (E `0x0024cbee`, `push 3Fh`). A [`Kind::Message`] text longer than
+/// this is refused by the prompt check and by the runtime's
+/// `Handle::notify`.
+pub const MESSAGE_UNITS: usize = 63;
+
+/// Why `text` cannot be a notification, if it cannot: more than
+/// [`MESSAGE_UNITS`] UTF-16 units, or a line break (a notification is one
+/// line).
+pub fn message_fault(text: &str) -> Option<String> {
+    let units = text.encode_utf16().count();
+    if units > MESSAGE_UNITS {
+        Some(format!("{units} characters, over {MESSAGE_UNITS}"))
+    } else if text.contains(['\n', '\r']) {
+        Some("more than one line".into())
+    } else {
+        None
+    }
+}
+
 impl Kind {
     /// The name the JSON and the findings use.
     pub fn name(&self) -> &'static str {

@@ -223,6 +223,12 @@ pub(crate) fn register_core_film(
             .add(&variant_page::MoreRow)
             .map_err(|e| anyhow::anyhow!("variant options row: {e}"))?;
     }
+    // The game type list's Tweakers row, after Territories, and its variant
+    // lists: Superbounce and the other tweaked-rules variants
+    // (docs/game/community-gametypes.md "Tweakers").
+    features
+        .add(&crate::tweakers::Tweakers)
+        .map_err(|e| anyhow::anyhow!("tweakers: {e}"))?;
     features.add(&hud::Hud).map_err(|e| anyhow::anyhow!("hud: {e}"))?;
     features
         .add(&crate::loaded_map::LoadedMap)
@@ -340,10 +346,12 @@ pub(crate) fn register_core_film(
     crate::hud_kit::install(features).context("installing the HUD kit")?;
     crate::superbounce_hud::install(features, i.settings.clone())
         .context("installing the superbounce HUD")?;
-    // Hold X while falling to steer onto a bounce strip
+    // Hold X while falling to steer onto a bounce strip, opt in by the
+    // superbounce.fall_assist setting
     // (docs/game/superbounce.md, "Hold X: the fall assist"). Its input tap
     // goes in with the XAPI input taps (register_late).
-    crate::superbounce_assist::install(features).context("installing the superbounce assist")?;
+    crate::superbounce_assist::install(features, i.settings.clone())
+        .context("installing the superbounce assist")?;
     // Bots (docs/game/bots.md): phantom peers in a session this console
     // hosts. Idle with none.
     let playing_film = film.is_some();

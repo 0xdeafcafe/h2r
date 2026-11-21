@@ -55,20 +55,25 @@ pub struct Ext {
     pub team_size: u8,
 }
 
+impl Ext {
+    /// The game's own rules, as a constant ([`Ext::default`]).
+    pub const RETAIL: Ext = Ext {
+        gravity: 100,
+        damage: 100,
+        shield: 100,
+        health: 100,
+        speed: 100,
+        unlimited_grenades: false,
+        superbounce: false,
+        primary: 0,
+        secondary: 0,
+        team_size: 0,
+    };
+}
+
 impl Default for Ext {
     fn default() -> Self {
-        Self {
-            gravity: 100,
-            damage: 100,
-            shield: 100,
-            health: 100,
-            speed: 100,
-            unlimited_grenades: false,
-            superbounce: false,
-            primary: 0,
-            secondary: 0,
-            team_size: 0,
-        }
+        Self::RETAIL
     }
 }
 

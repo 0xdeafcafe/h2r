@@ -30,21 +30,26 @@
 //!    through the scripted training slot and the string lookup
 //!    ([`write_training`], [`text`]); the navpoint through the game's
 //!    navpoint list at a scenario point of ours ([`install_point`],
-//!    [`write_navpoint`]). Notifications are not sent (decoding 6).
+//!    [`write_navpoint`]); a notification ([`Handle::notify`]) through the
+//!    game's insert, a guest call at the top of the next tick
+//!    ([`NOTIFY`], [`stage_notes`]).
 //!
 //! The draw hooks are `context_only` and read one shared table, so they
 //! run on the render thread.
 
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock, RwLockReadGuard};
 
+use engine::entry::{EntryFuture, GuestCall, Ret};
 use engine::handle::DatumHandle;
 use engine::memory::{GuestMemory, MemFault};
 use engine::points;
 use engine::tags::{GroupTag, tag_get_checked};
 use hooks::{BuildError, Builder, Flow};
 use hud_kit_core::Mode;
-use hud_kit_core::model::{Describe, Hud, Kind, Style, Value, Values};
+use hud_kit_core::model::{
+    Describe, Hud, Kind, MESSAGE_UNITS, Style, Value, Values, message_fault,
+};
 use hud_kit_core::records::{self, Compiled, WidgetKind};
 
 use crate::h1_particle_physics::fault;
@@ -115,6 +120,25 @@ pub const SCENARIO_POINTS: u32 = 0x1e4;
 pub const POINT_LEN: u32 = 0x38;
 pub const POINT_AT: u32 = 0x24;
 
+/// The notification insert (E `0x0024cbee`): EAX the local user, the
+/// UTF-16 text's address its one stack argument (`ret 4`); it copies 63
+/// units into a slot of the user's list (docs/game/hud-kit.md,
+/// "Messages").
+pub const NOTIFY: u32 = 0x0024_cbee;
+/// Local users the game keeps HUD state for.
+pub const USERS: u32 = 4;
+/// Our guest memory for the texts of a tick's notifications: one slot
+/// each of [`NOTE_LEN`] bytes.
+pub const NOTES_LEN: u32 = 0x1000;
+/// One text's slot: [`MESSAGE_UNITS`] units and the zero.
+pub const NOTE_LEN: u32 = (MESSAGE_UNITS as u32 + 1) * 2;
+/// The notifications sent at one tick at most; more wait for the next.
+pub const NOTES_PER_TICK: usize = (NOTES_LEN / NOTE_LEN) as usize;
+
+/// The dedicated lobby's feature, whose tick hook shares the first group
+/// (`host_lobby`).
+const HOST_LOBBY: &str = "host-lobby";
+
 /// The kit's string ids (`ui_kit::ids`): the training text's.
 pub const IDS: Family = family("hud kit");
 pub const TRAINING_TEXT_ID: u32 = IDS.id(0);
@@ -129,6 +153,17 @@ struct Registered {
 }
 
 static REGISTRY: RwLock<Vec<Registered>> = RwLock::new(Vec::new());
+/// Notifications waiting for the next tick's top.
+static NOTES: Mutex<Vec<Note>> = Mutex::new(Vec::new());
+/// Set while the tick the notifications' hook runs again is running.
+static NOTES_REENTRY: AtomicBool = AtomicBool::new(false);
+
+/// A notification for a local user, sent at the next tick.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Note {
+    pub user: u32,
+    pub text: String,
+}
 static TRAINING_TEXT: Mutex<String> = Mutex::new(String::new());
 
 fn read<T>(l: &RwLock<T>) -> RwLockReadGuard<'_, T> {
@@ -172,6 +207,23 @@ impl Handle {
             x.values = values;
         }
     }
+    /// Queues `text` as a notification for local user `user`, one line of
+    /// the game's list, as a retail pickup or medal line is. Sent at the
+    /// top of the next tick through the game's insert ([`NOTIFY`]); two
+    /// calls are two lines. Refused (false, and logged) for a user over
+    /// [`USERS`], an empty text, or one [`message_fault`] refuses (over 63
+    /// units, more than one line).
+    pub fn notify(&self, user: u32, text: &str) -> bool {
+        if let Err(why) = note_fits(user, text) {
+            eprintln!("hud kit: notification {text:?} for user {user} not sent: {why}");
+            return false;
+        }
+        lock(&NOTES).push(Note {
+            user,
+            text: text.to_owned(),
+        });
+        true
+    }
     /// The world point the HUD's navpoint is over, if it shows.
     pub fn navpoint(&self, at: Option<[f32; 3]>) {
         let mut r = REGISTRY.write().unwrap_or_else(|e| e.into_inner());
@@ -179,6 +231,69 @@ impl Handle {
             x.nav = at;
         }
     }
+}
+
+/// Why a notification for `user` with `text` is refused, if it is.
+pub fn note_fits(user: u32, text: &str) -> Result<(), String> {
+    if user >= USERS {
+        return Err(format!("no local user {user}"));
+    }
+    if text.is_empty() {
+        return Err("no text".into());
+    }
+    match message_fault(text) {
+        Some(why) => Err(why),
+        None => Ok(()),
+    }
+}
+
+/// The queued notifications, oldest first, at most [`NOTES_PER_TICK`]
+/// of them; the rest stay queued.
+pub fn take_notes() -> Vec<Note> {
+    let mut q = lock(&NOTES);
+    let n = q.len().min(NOTES_PER_TICK);
+    q.drain(..n).collect()
+}
+
+/// Writes each note's text, UTF-16 and zero ended, into its slot of
+/// `region` (`(start, len)`), and returns the insert's call for each:
+/// EAX the user, the slot's address the argument.
+pub fn stage_notes(
+    mem: &mut dyn GuestMemory,
+    region: (u32, u32),
+    notes: &[Note],
+) -> Result<Vec<GuestCall>, MemFault> {
+    let slots = (region.1 / NOTE_LEN) as usize;
+    let mut calls = Vec::new();
+    for (i, n) in notes.iter().take(slots).enumerate() {
+        let at = region.0 + i as u32 * NOTE_LEN;
+        mem.write(at, &utf16(&n.text, NOTE_LEN as usize / 2))?;
+        calls.push(notify_call(n.user, at));
+    }
+    Ok(calls)
+}
+
+/// The insert's call for `user` with the text at `at`.
+pub fn notify_call(user: u32, at: u32) -> GuestCall {
+    GuestCall::new(NOTIFY).eax(user).args([at])
+}
+
+/// Makes the calls, then runs the tick itself (the hook's chain again,
+/// which passes the notifications' hook by [`NOTES_REENTRY`]).
+async fn send_notes(
+    cx: engine::entry::Cx,
+    region: (u32, u32),
+    notes: Vec<Note>,
+) -> Result<Ret, engine::entry::EntryError> {
+    let calls = cx.write(|m| stage_notes(m, region, &notes))?;
+    for call in calls {
+        cx.call(call).await?;
+    }
+    NOTES_REENTRY.store(true, Ordering::SeqCst);
+    let r = cx.call(GuestCall::new(points::GAME_TICK.base)).await;
+    NOTES_REENTRY.store(false, Ordering::SeqCst);
+    r?;
+    Ok(Ret::new(0, 0))
 }
 
 /// HUD `hud`'s value for element `id`.
@@ -927,7 +1042,9 @@ impl hooks::Feature for HudKit {
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
         let start = b.guest_alloc(REGION_LEN, runtime::guest::Permissions::RW)?;
         let points = b.guest_alloc(POINTS_LEN, runtime::guest::Permissions::RW)?;
+        let notes = b.guest_alloc(NOTES_LEN, runtime::guest::Permissions::RW)?;
         let (region, points_region) = ((start, REGION_LEN), (points, POINTS_LEN));
+        let notes_region = (notes, NOTES_LEN);
         REGION_START.store(start, Ordering::Relaxed);
         REGION_END.store(start + REGION_LEN, Ordering::Relaxed);
         // What the roots held lives in guest memory; the draw table is
@@ -957,6 +1074,30 @@ impl hooks::Feature for HudKit {
             .after_feature(crate::h1_hud_text::FEATURE)
             .after_feature(crate::skulls_custom::FEATURE)
             .after_feature(crate::touch_glue::FEATURE);
+        // Notifications at the top of the tick, as our skulls' messages
+        // are sent (`skulls_custom`): the insert, then the tick itself.
+        // Inside the agent's calls and our skulls' (each runs the tick
+        // again, and this hook passes on its own re-entry), and the map
+        // select's and the dedicated lobby's, which share the first
+        // group.
+        b.raw()
+            .before(&points::GAME_TICK, "hud kit: notifications", move |c| {
+                if NOTES_REENTRY.load(Ordering::SeqCst) {
+                    return Ok(Flow::Continue);
+                }
+                let notes = take_notes();
+                if notes.is_empty() {
+                    return Ok(Flow::Continue);
+                }
+                c.answer_async(move |cx| -> EntryFuture {
+                    Box::pin(send_notes(cx, notes_region, notes))
+                })
+            })
+            .first()
+            .after_feature(agent::sim::calls::FEATURE)
+            .after_feature(crate::skulls_custom::FEATURE)
+            .after_feature(crate::map_select::FEATURE)
+            .after_feature(HOST_LOBBY);
         // The widget hooks share their points with `h1_hud_text`'s, and the
         // two never answer the same widget: the kit answers only a widget
         // inside its own memory ([`in_region`], then its draw table), and

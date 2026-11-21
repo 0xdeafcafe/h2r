@@ -133,8 +133,11 @@ pub struct Scene {
     pub primed: bool,
     pub phase: Option<Phase>,
     pub landing: Option<Landing>,
-    /// The edge of the strip the assist would steer onto.
+    /// The edge of the strip the assist would steer onto (only with the
+    /// assist on).
     pub target: Option<[Vec3; 2]>,
+    /// The player has turned the fall assist on (`superbounce.fall_assist`).
+    pub assist: bool,
     /// Seconds on a steady clock, for the chevrons' flow.
     pub seconds: f32,
 }
@@ -162,7 +165,8 @@ pub mod contract {
             out: [s.out[0], s.out[1]],
             lip: s
                 .lip
-                .edges().iter()
+                .edges()
+                .iter()
                 .copied()
                 .filter(|e| *e != [[0.0; 3]; 2])
                 .collect(),
@@ -509,8 +513,17 @@ fn crouch_figure(
     }
 }
 
-fn landing_figure(out: &mut Vec<Callout>, l: &Landing, at: Vec3, look: &Look) {
-    let (edges, width) = match l.verdict {
+/// How a landing is drawn: in the slot, one the assist can bring in, or
+/// a miss. Without the assist nothing brings it in: off the slot is a miss.
+pub fn course(verdict: Verdict, assist: bool) -> Verdict {
+    match verdict {
+        Verdict::Fixable if !assist => Verdict::Miss,
+        v => v,
+    }
+}
+
+fn landing_figure(out: &mut Vec<Callout>, l: &Landing, at: Vec3, assist: bool, look: &Look) {
+    let (edges, width) = match course(l.verdict, assist) {
         Verdict::OnSlot => (ring(l.at, CAPSULE_RADIUS, false), 3.0),
         Verdict::Fixable => (ring(l.at, CAPSULE_RADIUS, true), 2.0),
         Verdict::Miss => (cross(l.at, CAPSULE_RADIUS), 3.0),
@@ -594,7 +607,7 @@ pub fn figures(items: &[Item], scene: &Scene, look: &Look) -> Vec<Callout> {
         && scene.falling
         && let Some(l) = &scene.landing
     {
-        landing_figure(&mut out, l, scene.at, look);
+        landing_figure(&mut out, l, scene.at, scene.assist, look);
     }
     out
 }
@@ -634,7 +647,12 @@ pub fn frame(guest: &dyn GuestMemory, s: &State, spots: &[Spot]) -> Vec<Callout>
     } else {
         None
     };
-    let target = body.as_ref().and_then(|b| assist::pick(spots, b));
+    // Without the fall assist nothing is steered onto, so nothing is a target.
+    let on = assist::opted_in();
+    let target = body
+        .as_ref()
+        .filter(|_| on)
+        .and_then(|b| assist::pick(spots, b));
     let items: Vec<Item> = nearest(spots, at, MAX_LINES)
         .into_iter()
         .map(|sp| match sp.kind {
@@ -650,6 +668,7 @@ pub fn frame(guest: &dyn GuestMemory, s: &State, spots: &[Spot]) -> Vec<Callout>
         phase: contract::phase(s),
         landing: contract::landing(s),
         target: target.as_ref().map(|(sp, _)| sp.edge),
+        assist: on,
         seconds: seconds(),
     };
     let mut out = figures(&items, &scene, &look);
@@ -660,6 +679,7 @@ pub fn frame(guest: &dyn GuestMemory, s: &State, spots: &[Spot]) -> Vec<Callout>
             true,
             target.as_ref().map(|(sp, reach)| (*sp, reach)),
             assist::assisting(),
+            on,
             &look,
         ));
     }
@@ -690,6 +710,7 @@ mod tests {
             phase: None,
             landing: None,
             target: None,
+            assist: true,
             seconds: 0.0,
         }
     }
@@ -974,6 +995,20 @@ mod tests {
             &LOOK,
         );
         assert_eq!(fix[0].edges.len(), RING_SEGMENTS / 2);
+        // Without the fall assist nothing brings it in: a miss, the cross.
+        let alone = figures(
+            &[],
+            &Scene {
+                landing: Some(landing(Verdict::Fixable)),
+                assist: false,
+                ..falling
+            },
+            &LOOK,
+        );
+        assert_eq!(alone[0].edges.len(), 2);
+        assert_eq!(course(Verdict::Fixable, false), Verdict::Miss);
+        assert_eq!(course(Verdict::OnSlot, false), Verdict::OnSlot);
+        assert_eq!(course(Verdict::Fixable, true), Verdict::Fixable);
         let miss = figures(
             &[],
             &Scene {

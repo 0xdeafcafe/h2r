@@ -588,3 +588,95 @@ fn a_sword_uses_the_trigger_to_lunge_and_b_to_slash_up_close() {
         assert!(pressed);
     }
 }
+
+// ---- the start-of-match warm-up (mind::warmup) ----
+
+#[test]
+fn a_warm_up_is_two_to_four_seconds_stable_for_a_name_and_varied_across_names() {
+    use super::warmup::{WARMUP_MAX_TICKS, WARMUP_MIN_TICKS, warmup_ticks};
+    let names = ["Clanker", "Sprocket", "Rivet", "Gasket", "Widget", "Ratchet"];
+    let ticks: Vec<u32> = names
+        .iter()
+        .map(|n| warmup_ticks(crate::name_profile::NameProfile::for_name(n).seed))
+        .collect();
+    for (n, t) in names.iter().zip(&ticks) {
+        assert!((WARMUP_MIN_TICKS..=WARMUP_MAX_TICKS).contains(t), "{n}: {t}");
+        let again = warmup_ticks(crate::name_profile::NameProfile::for_name(n).seed);
+        assert_eq!(*t, again, "{n} is the same every match");
+    }
+    let mut distinct = ticks.clone();
+    distinct.sort_unstable();
+    distinct.dedup();
+    assert!(distinct.len() >= 3, "{ticks:?}");
+    assert_eq!(WARMUP_MIN_TICKS, 60);
+    assert_eq!(WARMUP_MAX_TICKS, 120);
+}
+
+#[test]
+fn a_warm_up_holds_until_its_tick_and_damage_ends_it() {
+    use super::warmup::Warmup;
+    let mut w = Warmup::Due;
+    assert!(w.holding(100, 60, false));
+    assert_eq!(w.left(130), Some(30));
+    assert!(w.holding(159, 60, false));
+    assert!(!w.holding(160, 60, false));
+    assert_eq!(w, Warmup::Over);
+    // It never starts again in that mind (a respawn).
+    assert!(!w.holding(500, 60, false));
+    let mut hurt = Warmup::Due;
+    assert!(hurt.holding(0, 60, false));
+    assert!(!hurt.holding(5, 60, true), "shot: over at once");
+    assert!(!Warmup::default().holding(0, 60, false), "a mind not made for a match has none");
+}
+
+#[test]
+fn a_bot_in_its_warm_up_does_not_shoot_and_fires_once_it_is_over() {
+    let warm = super::warmup::warmup_ticks(3);
+    let mut m = Mind::new(Skill::Legendary, 3);
+    m.warmup = super::warmup::Warmup::Due;
+    let me = Me {
+        shield: 1.0,
+        health: 1.0,
+        ..bot(Some(holding(Trigger::Automatic, rounds(36, 108))))
+    };
+    let mut first = None;
+    for t in 0..warm + 90 {
+        let pad = step(&mut m, me, vec![enemy(1, [6.0, 0.0, 0.0])], false, t);
+        let attacking = pad.right_trigger > 0.0
+            || pad.left_trigger > 0.0
+            || pad.buttons.contains(MELEE);
+        if t < warm {
+            assert!(!attacking, "tick {t} of a {warm}-tick warm-up");
+            assert!(!matches!(m.doing, Doing::Fight(_)));
+        } else if attacking && first.is_none() {
+            first = Some(t);
+        }
+    }
+    assert!(first.is_some(), "it fights after the warm-up");
+}
+
+#[test]
+fn a_bot_shot_in_its_warm_up_fights_back_at_once() {
+    let warm = super::warmup::warmup_ticks(3);
+    let mut m = Mind::new(Skill::Legendary, 3);
+    m.warmup = super::warmup::Warmup::Due;
+    let fresh = Me {
+        shield: 1.0,
+        health: 1.0,
+        ..bot(Some(holding(Trigger::Automatic, rounds(36, 108))))
+    };
+    let hit = Me {
+        shield: 0.6,
+        ..fresh
+    };
+    let mut first = None;
+    for t in 0..warm {
+        let me = if t < 5 { fresh } else { hit };
+        let pad = step(&mut m, me, vec![enemy(1, [6.0, 0.0, 0.0])], false, t);
+        if pad.right_trigger > 0.0 && first.is_none() {
+            first = Some(t);
+        }
+    }
+    let first = first.expect("it fired before the warm-up would have ended");
+    assert!(first >= 5 && first < warm, "{first}");
+}

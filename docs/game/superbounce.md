@@ -3,8 +3,9 @@
 Status: Reference, retail research with traces, except [Spots in the
 geometry](#spots-in-the-geometry), which is the design of our scanner
 (`crates/live/superbounce`, `h2 superbounce scan`), and [Medals](#medals),
-a design whose recording, Live and site parts are built and whose chain
-and HUD line in the game are not.
+whose rule, HUD line and agent API are built and not yet run in a game,
+and whose recording in the film and Live, and the site's medals, are
+built.
 
 What the retail engine does when a player superbounces: what is
 established, what is measured, and what is still open. The research is a
@@ -589,15 +590,20 @@ for tuning these rules against a real map.
 
 ## The superbounce game type
 
-A built-in Slayer variant, Superbounce, for practising: Bounce Practice's
+A built-in variant, Superbounce, for practising: Bounce Practice's
 rules (no score or time limit, 3 s respawn, no suicide penalty,
 overshields, damage resistance, a magnum, nothing on the map) plus a HUD
-and lines over the map. The mode is on when the active variant is the
-built-in Superbounce (told by its name,
-`crates/extensions/game/src/community_variants.rs` has no field for the
-flag), when the variant's extension block has the superbounce flag (bit 2
-of `+0x10f`, [game-options.md](game-options.md)), or with
-`H2_SUPERBOUNCE=1` ([switches](../runtime/switches.md)). An agent can
+and lines over the map. It is listed under **Tweakers**, the last row of
+the game type list (after Territories), and not under Slayer; underneath
+it is a Slayer variant ([community-gametypes.md](community-gametypes.md#tweakers)).
+Its entry in `crates/extensions/game/src/community_variants.rs` is
+`Category::Tweakers(SUPERBOUNCE_EXT)`, and `crate::tweakers` writes that
+extension block into its built-in record, so a game on it and a saved
+copy of it carry the flag. The mode is on when the variant's extension
+block has the superbounce flag (bit 2 of `+0x10f`,
+[game-options.md](game-options.md)), when the active variant's name is
+the built-in Superbounce's (a fallback for a game whose block did not
+arrive), or with `H2_SUPERBOUNCE=1` ([switches](../runtime/switches.md)). An agent can
 force it on or off in any game with `superbounce.set`
 ([agent-api.md](../runtime/agent-api.md#superbounce-the-superbounce-game-type)). It is
 `crates/extensions/game/src/superbounce_mode.rs`.
@@ -616,12 +622,20 @@ publishes that with the nearest bounce spot; the HUD, the lines and
 all read it.
 
 **Spots.** The first tick on a map and structure BSP starts a scan of the
-BSP's collision geometry on a background thread (`superbounce::scan_map`,
-"Spots in the geometry"); the result is kept per map name, BSP and the map
-file's header checksum, so an override with the same name is scanned
-again, and a scan still running when the map is left is not started
-twice. The feature is presentation-only (a recorded film's hook digest
-ignores it) and snapshot-stateless: nothing it holds needs saving. The nearest
+BSP's collision geometry on a background thread (`superbounce::scan_in`
+over the map's context, `superbounce::map_context`: its starting
+locations and proven places, "Spots in the geometry"); the result is kept
+per map name, BSP and the map file's header checksum, so an override with
+the same name is scanned again, and a scan still running when the map is
+left is not started twice. The map's verified file ("Verifying spots") is
+applied to the result, and again whenever the file changes: a `proven`
+spot scores 1, a `failed` one is kept for `superbounce.verify` but hidden
+from the HUD, the lines and the overlay. The feature is presentation-only (a recorded film's hook digest
+ignores it) and snapshot-stateless: nothing it holds needs saving.
+
+**The bots.** While the mode is on the bots fight no one and practise
+bounces instead, spread over the map's sites, proven ones first
+([bots.md](bots.md#practising-bounces)). The nearest
 bounce spot is the one with the nearest edge.
 
 **The HUD.** Drawn by Halo 2's own HUD through the HUD kit
@@ -649,10 +663,14 @@ the checks").
 **The tutorial.** The first time the mode is on, four steps show in the
 game's training box, two centred lines each:
 
-1. Crouch under a cyan crouch spot, then stand up.
+1. Crouch, walk in under a lip, let go, then walk out.
 2. You are primed. Do not crouch again.
-3. Find a strip. Green is a standing jump. Red needs a big drop.
-4. Land on the strip. Hold (X) while falling.
+3. Find a strip. Its post is the height to fall from. No post: just jump.
+4. Jump or fall onto the strip. Fall Assist (Controls) can steer.
+
+No step asks for a button: the landing is the player's own, and the
+last step names the opt-in [fall assist](#hold-x-the-fall-assist) once,
+by its row.
 
 Priming moves step 1 to 2, a bounce spot within 8 m moves 2 to 3, a
 bounce landing or 20 s moves 3 to 4, and a bounce or 15 s closes 4
@@ -685,8 +703,9 @@ and [Landings](#landings) describe.
 centred, shadowed labels with a pulse, on the spots they say something
 about (`crates/extensions/game/src/superbounce_prompts.rs`):
 
-- Airborne and falling toward a strip the assist can steer onto (its
-  pick), `Hold X` (the X button's glyph) floats 0.3 units above the
+- With the [fall assist](#hold-x-the-fall-assist) on, airborne and
+  falling toward a strip it can steer onto (its pick), `Hold X` (the X
+  button's glyph) floats 0.3 units above the
   strip's stand point. It grows as the player nears: 1x at 6 units and
   more, 3x at 0.5 and less, linear between (`label_scale`). A guide runs
   along the floor from where the player lands if nothing is done to the
@@ -694,6 +713,10 @@ about (`crates/extensions/game/src/superbounce_prompts.rs`):
   ([Landings](#landings)).
 - Once X is held and the assist is steering, the label reads `Guiding`
   and stops pulsing.
+- With the assist off (the default) nothing is said in the air and no
+  strip is anyone's target: the landing is the player's, and what the
+  map shows of it is the bounce's own (the landing ring and the speed
+  bar, [Landings](#landings)).
 - On the ground, within 1.5 units of a strip whose fall is at most 0.05 (a
   standing jump does it), `Jump` is drawn at the take-off spot, 0.2 units
   back from the stand point against the drift (`takeoff`), with a small
@@ -714,16 +737,25 @@ formatted.
 
 ### Hold X: the fall assist
 
-Holding X in the air steers the player onto a bounce strip, so the landing
-is on the strip, moving slowly along its drift, the way every traced bounce
-came in. It works on input, not physics: the assist replaces the left stick
+An opt-in help: with the player's **Fall Assist** setting on
+(`superbounce.fall_assist`, off by default, a row at the end of the
+Controls list that a press turns on or off; `crates/extensions/game/src/setting_defs.rs`,
+`crates/extensions/game/src/video_screen.rs`), holding X in the air
+steers the player onto a bounce strip, so the landing is on the strip,
+moving slowly along its drift, the way every traced bounce came in. Off,
+the tap never reads X, nothing steers, and nothing on the map or the HUD
+asks for X. The setting is read live (`follow_setting`); the
+`superbounce-assist` feature in `H2_FEATURES` stays the kill switch, which
+leaves the tap out whatever the setting says. It works on input, not
+physics: the assist replaces the left stick
 the guest reads and takes X out of it, and writes nothing to the world. It
 is `crates/extensions/game/src/superbounce_assist.rs`; `superbounce.assist`
 and `superbounce.assist_test`
 ([agent-api.md](../runtime/agent-api.md#superbounce-the-superbounce-game-type))
 show it and hold the button without a pad.
 
-**When it applies.** The mode is on, the first local player's X is held
+**When it applies.** The mode is on, the setting is on, the first local
+player's X is held
 (pad X, keyboard E by default; the `BUTTON` constant), the player is
 airborne and falling (vertical speed at most 0.5 units/s), and a bounce spot
 passes the reach cone:
@@ -757,11 +789,14 @@ until the player lets go, so a landing or a strip going out of reach does
 not hand the game a fresh press. With no strip in reach, X and the stick
 pass through unchanged.
 
-**The prompt.** The assist's pick is also what the world prompts are
-drawn from, whether or not X is held: the window reads the player's body
-and runs `pick` on each frame, so `HOLD X` appears on the strip before the
-button is pressed, and turns to `GUIDING` once the tap reports it is
-engaged (`assisting`; [the prompts](#the-superbounce-game-type)).
+**The prompt.** With the setting on, the assist's pick is also what the
+world prompts are drawn from, whether or not X is held: the window reads
+the player's body and runs `pick` on each frame, so `Hold X` appears on
+the strip before the button is pressed, and turns to `Guiding` once the
+tap reports it is engaged (`assisting`; [the prompts](#the-superbounce-game-type)).
+Off, there is no pick: no prompt in the air, no strip drawn as the
+target, and a predicted landing the assist could have brought in is drawn
+as the miss it is (`superbounce_world::course`).
 
 **Where it sits.** An input tap at `XInputGetState`
 (`AssistTap`, installed by `register_late` before the agent's tap), so
@@ -830,7 +865,8 @@ the crouch lets go at the band's way out, 6 cm from where the body
 rested in the measured corner (**Trace**, the note). So "how charged" is
 two things the engine does have:
 
-- **How far through the recipe.** `near` (crouched, the crouch request
+- **How far through the recipe** (crouch, walk in, let go, walk out:
+  one phase a step). `near` (crouched, the crouch request
   set, within 1.5 of a crouch spot's stand point), `under` (crouched with
   crouch held and the standing capsule does not fit), `held` (the crouch
   button is up and the request, unit flags bit 23, is still set: the
@@ -845,10 +881,33 @@ two things the engine does have:
   request is set is `lost`, as is one whose word leaves −3. `lost` shows
   for 30 ticks.
 
-`superbounce_mode`'s state carries it as `charge` (the phase and the
-fill: 0, 1/3, 2/3, then the charge left, 0 while lost), `still_ticks`,
-`verb` (`LetGoOfCrouch` while `under`, `WalkOutToStand` while `held`) and
-`standing_fits`. `superbounce.state` returns them, and `world.object`'s
+**Why it went.** The tracker gives each loss a reason, read on the tick
+the charge goes (`superbounce_charge::LostReason`):
+
+| Reason | When |
+|---|---|
+| `crouched` | the crouch request is set |
+| `stood_still` | the word left −3 after 30 still ticks or more (`STOOD_STILL_TICKS`): the body slept. 30 is under the 38 to 40 measured, so a sleep a few ticks early still reads as one |
+| `unknown` | the word left −3 for another reason: a respawn, a vehicle, the pair gone, or a sleep the still count missed |
+
+A landing is not a reason. Nothing measured has a landing use the
+charge up: the word stays −3 after a bounce until the body sleeps (the
+note), and a landing that does not bounce is filed as a landing, not a
+loss.
+
+**The warning and the new charge.** From 19 still ticks while primed
+(`WARN_STILL_TICKS`, half of 38, where the fill is 0.5) the verb is
+`KeepMoving`. For 150 ticks after a loss (`AGAIN_TICKS`: the `lost`
+second and four more), while the phase is `lost` or hidden, the verb is
+`ChargeAgain`; a crouch step (`near`, `under`, `held`) takes the line
+from it.
+
+`superbounce_mode`'s state carries it as `charge` (the phase, the fill:
+0, 1/3, 2/3, then the charge left, 0 while lost; and the loss, its
+reason and tick, while lost), `still_ticks`, `verb` (`LetGoOfCrouch`
+while `under`, `WalkOutToStand` while `held`, `KeepMoving`, and
+`ChargeAgain` with the loss) and `standing_fits`. `superbounce.state`
+returns them, the reason as `lost_reason`, and `world.object`'s
 `physics` block has `standing_fits` for bipeds.
 
 Two inputs are not the engine's own:
@@ -925,8 +984,10 @@ disc's maps: 7 to 12 a map, 3 on a map whose strips are far from its
 lips (an estimate from the note's table; `h2 superbounce scan <map>
 --json` counts them).
 
-Which `likely` spots prime is a game run's to say. A lab pass walks
-each kept spot (below), and one that primes becomes a row in `PROVEN`.
+Which `likely` spots prime is a game run's to say: `superbounce.verify`
+tries each kept spot in the game and writes the map's verified file
+([Verifying spots](#verifying-spots)), which marks the spots that primed
+`proven` and the ones that never did `failed`.
 
 ### Crouch spots in the world
 
@@ -980,8 +1041,8 @@ The figures are `crates/extensions/game/src/superbounce_world.rs`'s.
 - **On course.** While primed, airborne and moving down, the landing the
   state predicts (`landing`) is drawn where it is: a ring of the capsule's
   radius when it is inside the slot, the ring broken into every other
-  segment when the assist can still bring it in (`Hold X`), and a cross
-  when it cannot. 0.35 to its side, across the line from the player, a
+  segment when the [fall assist](#hold-x-the-fall-assist) is on and can
+  still bring it in, and a cross when it cannot (or is off). 0.35 to its side, across the line from the player, a
   0.5-high post fills from the floor with the touchdown speed over `need`
   (`speed_fill`), full at `need`.
   The state is the mode's `landing` (`superbounce_assist::predict`),
@@ -1050,46 +1111,163 @@ Each of these is a lab run through the agent API
   `havok.agents` until the pair goes: the fill reaches 0 on that tick,
   within 2. Then creep at 0.02, 0.05 and 0.1 units/s for the speed
   limit.
-- **Each kept crouch spot.** `sim.state.set` to 0.3 out along `out`,
-  facing in; `input.pad` crouch held and the stick in, crouch released,
-  then the stick out; read the request bit and the word. A spot that
-  holds the request and turns the word is proven. The measured corner
-  was not reached by scripted sticks, only by the recorded input, so a
-  miss here is not proof a spot fails: try three approach angles.
+- **Each kept crouch spot, and each strip.** `superbounce.verify`
+  ([Verifying spots](#verifying-spots)).
 - **The landing report.** The recorded jump with the word at −3, at 0,
   from a lower take-off and 0.3 to the side: `bounce`, `not primed`,
-  `too slow` and `missed` in turn.
+  `too slow` and `missed` in turn. `superbounce.verify {"kind":"drop"}`
+  with `prime` `set` and `none` gives the same verdicts from a fall.
 
 No game was run for this section.
 
+## Verifying spots
+
+`superbounce.verify` tries the loaded map's scanned spots in the running
+game and says which work
+([agent-api.md](../runtime/agent-api.md#superbounce-the-superbounce-game-type)).
+It is `crates/extensions/game/src/superbounce_verify.rs`: the plan in
+`plan.rs`, a trial tick by tick in `trial.rs`, the verdicts in
+`summary.rs`.
+
+**A batch.** One call plans a batch of one kind (`crouch`, `drop` or
+`route`) over the scan's spots of that kind, best score first (the order
+`dry_run` lists, which `spots` indexes count in; failed spots are left out
+unless named or `max_spots` is given), or over explicit `points`. An
+agent ticker then runs the trials one after another on one seat, a tick
+at a time, because a batch runs far longer than a deferred answer may
+wait. `superbounce.verify_status` reports progress and, at the end, a
+verdict and one line a spot; `superbounce.verify_cancel` stops it. A
+batch needs the mode on and its scan ready (`superbounce.set
+{"on":true}`, then `superbounce.state`'s `scan.status`), except over
+explicit points. A new map, or the game ending, fails a running batch.
+
+**The seat.** `player.0` (the default) is driven through the first
+controller's pad: the fall assist's input tap replaces the whole pad
+while a trial runs, so it needs the `superbounce-assist` feature. A
+brain-driven bot (by name, handle or its `player.<n>`) is driven by
+holding its pad (`bots::phantom::Phantoms::hold_pad`): its brain's own
+pad is ignored until the trial lets go. Trials start by teleport (the
+game's own, through the agent's calls queue) and clear or set the level
+pair word directly (`live_telemetry::havok_agents::set_pair_word`); they
+do not use snapshots, which `state.save` refuses in a game that is not
+quiescent. A teleport keeps the pair word and the velocity, so each
+trial clears the word after it lands and settles before it moves.
+
+**Crouch trials** follow the recipe: crouch, walk in, let go, walk out.
+Each starts outside the lip on the approach side: `distance` out from
+`stand` against the way in, which is the way out (`out`) reversed and
+turned by `turn` degrees, moved by `offset`, facing in. The default grid
+is turns 0, 25 and −25 by distances 0.3 and 0.6. Then:
+
+1. settle `settle_ticks` (20) with the word written 0;
+2. press crouch and stand still until the crouch is down (at least 6
+   ticks, at most 20);
+3. crouch-walk in at 0.6 of full stick toward a point 0.06 past `stand`,
+   until within 0.08 of it (at most 60 ticks);
+4. hold crouch there `hold_ticks` (15), pushing in gently;
+5. let go, still pushing in, for 6 ticks; the crouch request still set
+   then is `forced`;
+6. walk out along `out` at full stick for `out_ticks` (30).
+
+The word reading −3 from step 5 on primes the trial and ends it. A trial
+records whether it crouched first, whether the standing capsule failed to
+fit at some tick (`under`, the mode's capsule test), `forced`, how close
+it got to `stand`, and the ticks from letting go to the prime and where.
+A trial that did not prime fails as `not_under` (never within 0.2 of
+`stand`), `not_crouched`, `not_forced` or `forced_no_word`.
+
+**Drop trials** fall onto a strip with the word set. Each is a point in
+the slot, `across` the midline toward the drift (default −0.05 to 0.15
+in 0.05 steps) and `along` it (default 0), and a `height` over the
+strip's stand height (default 1.5, 2.5 and 3.5). The seat is teleported
+onto the point, settles with the word written (`prime`: `set` −3, `none`
+0, `keep` left alone), is lifted straight up, and falls; the word is
+written again each tick there is a pair. Contact is the first tick the
+vertical speed is back over −0.5 after falling faster than −1; the speed
+in is the tick before's, the speed out the best of the contact tick and
+the three after. The landing is classified as the HUD's are
+(`superbounce_charge::classify`): `bounce` (out over 8 units/s),
+`not_primed`, `missed`, `too_slow` or `no_bounce`; `no_touchdown` when
+it never lands within `fall_ticks` (120). `prime` `none` is the control:
+a strip that launches with it is not a superbounce.
+
+**Route trials** order a bot's whole bounce route (`bots.bounce_to`) to a
+point `ROUTE_RISE` (6) units straight up from each strip's stand, or to
+`to`, `repeat` times (3), and watch it to its end (`route_ticks`, 3600).
+A route works when it ends `done` with a touchdown that launched; the
+trial carries the route's log, its touchdown and where it stopped.
+Routes write nothing to the verified file.
+
+**The verdict.** A spot one trial worked for is `proven`; one whose
+trials all ran and none worked is `failed`; else `untried` (the batch
+ended first, or only the setup failed: a refused teleport, the seat
+gone). The best crouch trial is the quickest prime, the best drop the
+biggest launch. Each spot's line reads like `crouch #3 (-10.91, 0.72,
+-1.16): primed 4/9, best offset (0.06, -0.03) yaw -121 from 0.30 out;
+failed: forced_no_word 5`.
+
+**The verified file.** A batch of the scan's spots that ends (not
+cancelled) merges its proven and failed spots into
+`<data>/bots/<map>.verified` (`superbounce::verified`; written by
+`bots::spots::store_verified`):
+
+```text
+# superbounce verified v1
+crouch proven -10.910 0.720 -1.160 dx=0.060 dy=-0.030 yaw=-121.0 trials=9 ok=4
+bounce failed -10.620 3.880 -3.190 dx=0.000 dy=0.000 trials=15 ok=0 best=1.71
+```
+
+A line is the kind, the verdict and the spot's `stand` as the scan gave
+it, then `key=value` fields: `dx`, `dy` (a crouch's working start, a
+drop's landing point, from `stand`), `yaw` (the working way in, degrees),
+`height` (the working drop height), `trials`, `ok` and `best` (the
+biggest launch seen). An entry is about the spot of its kind within 0.3
+of its point sideways and 0.5 up or down. The scan's readers apply it:
+the mode's spots (failed ones hidden, "The superbounce game type"),
+`superbounce.spots` (`status`), and the bots, which route by proven spots
+first, never by failed ones, start a walking prime where the working
+trial started and along its way in, and aim a drop at the working
+landing point from the working height ([bots.md](bots.md)). A person can
+edit the file; a later batch replaces the entries it tried.
+
+No game has run a batch yet: the defaults (the grid, the speeds, the
+tick counts) are first guesses to tune on the lab.
+
 ## Medals
 
-Built: the table, the events, the film's records, Live and the site
-(`live_proto::film::events::medals`, `live-server`, `web/src/state/derive.ts`).
-Not built: the chain in the game, the `Bounced` trigger and the HUD line.
-Seven medals: **Superbounce** for a bounce; **Double Bounce**, **Triple
-Bounce**, **Quad Bounce**, **Chain Bounce** and **Bouncetacular** for two
-to six bounces with no ground between them; and **Bounced** for a death
-falling out of or through the map while trying one. They are awarded to
-every player in the game, bots included, while the mode is on. The player sees a medal as Halo 2 shows its own, a line of the
-notification list with a medal glyph ([hud-kit.md](hud-kit.md), "The
-medals"); the film and Live count them.
+Seven medals: **Superbounce** for every bounce; **Double Bounce**,
+**Triple Bounce**, **Quad Bounce**, **Chain Bounce** and
+**Bouncetacular** for the second to the sixth bounce with no ground
+between them; and **Bounced**, for a fall out of the map during a
+bounce. They are awarded to every player in the game, bots included,
+while the mode is on. The player sees a medal as Halo 2 shows its own, a
+line of the notification list with a medal glyph ([hud-kit.md](hud-kit.md),
+"The medals"); the film and Live count them. No announcer: the medals
+are silent.
+
+Code: the game's `crates/extensions/game/src/superbounce_chain.rs` (the chain, the
+table, the reads), stepped from `superbounce_mode`'s tick; tests in
+`superbounce_chain_tests.rs`.
+The record and the counts: `live_proto::film::events::medals`, the
+`Superbounce` and `Bounced` events in `live_proto::game`, `live-server`,
+and the site (`web/src/state/derive.ts`), in [Recording](#recording).
 
 ### The rule
 
 The mode watches every player that has a biped, each tick: the unit, its
 position and velocity, the airborne bit and the level pair's word, the
 fields `superbounce_charge::Tick` reads for the first local player
-([the state](#the-superbounce-game-type)). Sixteen pair reads a tick at
-most, only while the mode is on.
+([the state](#the-superbounce-game-type)); `superbounce_chain::read_players`.
+Sixteen pair reads a tick at most, only while the mode is on.
 
-- **A touchdown** is the one [Landings](#landings) uses: the tick
-  before was airborne and falling at 1 unit/s or more, and this tick
-  has stopped falling (over −0.5), launched, or landed. Here it counts
-  anywhere on the map, by a strip or not.
+- **A touchdown** is the one [Landings](#landings) uses
+  (`superbounce_charge::touchdown`): the tick before was airborne and
+  falling at 1 unit/s or more, and this tick has stopped falling (over
+  −0.5), launched, or landed. Here it counts anywhere on the map, by a
+  strip or not.
 - **A bounce** is a touchdown the landing classifier files as `bounce`
   (within 0.5 of a strip, out at over 8 units/s,
-  `superbounce_charge::classify`), with the word at −3 on the tick
+  `superbounce_charge::strip_landing`), with the word at −3 on the tick
   before. Every measured bounce had the word ([the touchdown
   tick](#the-touchdown-tick-trace-stepped): 0 of 4 without it), and the
   test keeps an explosion or a lift beside a strip from counting.
@@ -1099,10 +1277,11 @@ most, only while the mode is on.
   - a touchdown that is not a bounce (a plain landing, or a caught
     one, which leaves the airborne bit set);
   - a tick with the airborne bit clear, from the third tick after the
-    bounce on (a soft landing at the top of the flight is no touchdown);
+    bounce on (`CLEAR_FROM`; a soft landing at the top of the flight is
+    no touchdown);
   - the player's unit changing or going (a death, a respawn, a
-    vehicle), or its origin moving more than 3 units in a tick (a
-    teleporter, `sim.state.set`);
+    vehicle), or its origin moving more than 3 units in a tick
+    (`TELEPORT`: a teleporter, `sim.state.set`);
   - the mode going off, or the game ending.
 
 So "right into" the next bounce means the next thing the player's feet
@@ -1118,36 +1297,56 @@ the ground is the better test.
 Medals are given as the count is reached, as the game gives its
 multi-kills:
 
-| Chain count | Medals |
-|---|---|
-| 1 | Superbounce |
-| 2 | Superbounce, Double Bounce |
-| 3 | Superbounce, Triple Bounce |
-| 4 | Superbounce, Quad Bounce |
-| 5 | Superbounce, Chain Bounce |
-| 6 | Superbounce, Bouncetacular |
-| 7 and over | Superbounce |
+| Chain count | Medals | Id |
+|---|---|---|
+| 1 | Superbounce | `superbounce` |
+| 2 | Superbounce, Double Bounce | `double-bounce` |
+| 3 | Superbounce, Triple Bounce | `triple-bounce` |
+| 4 | Superbounce, Quad Bounce | `quad-bounce` |
+| 5 | Superbounce, Chain Bounce | `chain-bounce` |
+| 6 | Superbounce, Bouncetacular | `bouncetacular` |
+| 7 and over | Superbounce | |
 
 Superbounce is every bounce, so its count is the player's bounces. A
-chain gives each of the other five once: a chain of eight is eight
-Superbounces and one each of Double, Triple, Quad and Chain Bounce and
-Bouncetacular. The table is one function, `bounce_medals(chain)`, in
-`crates/live/live-proto/src/film/events/medals.rs`, used by the HUD, the
-film and the agent API; the site has a copy in `web/src/state/derive.ts`
-(`bounceMedals`), as it has of the kill medals. The ids are
-`superbounce`, `double-bounce`, `triple-bounce`, `quad-bounce`,
-`chain-bounce`, `bouncetacular` and `bounced` (`BOUNCE_MEDALS`).
+chain gives each of the other five once, as the count passes it: a
+chain of eight is eight Superbounces and one each of the five tiers.
+The table is one function, `bounce_medals(chain)`. Its canonical home is
+`crates/live/live-proto/src/film/events/medals.rs`, used by the film and
+Live; the site has a copy in `web/src/state/derive.ts`, as it has of the
+kill medals. The game, which does not depend on Live, has its own copy
+in `superbounce_chain::bounce_medals`, kept to the same ids
+(`medals_by_id`), for the HUD and the agent API. The live and site
+lists of the seven ids are `BOUNCE_MEDALS` (`medals.rs`, `derive.ts`).
 
-**Bounced** is one medal per death: the player died falling out of or
-through the map while trying a bounce. The mode decides what an attempt
-is; the record is a `Bounced` event beside the death's `PlayerKilled`.
+**Bounced** (`bounced`) is not on the chain's table: it is its own
+event, `Event::Bounced`. It is earned when, for a player who was
+attempting a bounce, the unit goes (the player's unit reads none) or is
+replaced by another (a death and a respawn on one tick), and on the
+tick before that:
 
-The chain is a module of its own beside
-`crates/extensions/game/src/superbounce_charge.rs`: a `Chain` per player
-slot stepped with that player's tick, with no guest access of its own,
-so its tests are lists of ticks. It is not in a
-snapshot: after a state load or a Theater seek a chain in flight starts
-again at 1.
+- the unit was airborne, and
+- falling at 1 unit/s or more (`TOUCHDOWN_VZ`, the touchdown's own
+  test), and
+- the chain was live, or the word was −3 (primed: the player was going
+  for a bounce).
+
+So the window is one tick: the last tick the unit was read, which must
+be a primed or chained fall. A fall out of the map is a death in the
+air, with no touchdown before it; a death on the ground, a death
+climbing off a bounce, or a death of an unprimed player falling earns
+none. The award's `chain` is the live chain's count, 0 if there was
+none, and the chain ends. What killed the player is not read: a primed
+player shot dead in a fall earns it too, as does one who drops off a
+ledge while primed (supposed: that falling out of the map kills the
+unit and clears the player's unit before the next tick, rather than
+leaving a body in the air for some ticks). A vehicle entered in a
+primed fall reads as a new unit and earns it as well; the mode's
+strips are floors, where a vehicle mid-fall is rare.
+
+The chain is pure and has no guest access of its own: a `Chain` per
+player slot stepped with that player's tick (`Medals::step`), so its
+tests are lists of ticks. It is not in a snapshot: after a state load
+or a Theater seek a chain in flight starts again at 1.
 
 ### What is known about a second bounce
 
@@ -1172,10 +1371,12 @@ A chain needs a bounce with no crouch between it and the last one.
 
 ### On the HUD
 
-One notification per bounce for a local player: the line of the highest
-medal that bounce earned (`Superbounce!`, `Double bounce!`, `Triple
-bounce!`, `Quad bounce!`, `Chain bounce!`, `Bouncetacular!`) behind a medal glyph of the HUD font, queued
-through the game's own insert. Halo 2 shows a multi-kill the same way,
+One notification per award for a local player, to that player's view:
+the line of the highest medal the award earned (`Superbounce!`, `Double
+bounce!`, `Triple bounce!`, `Quad bounce!`, `Chain bounce!`,
+`Bouncetacular!`, `Bounced!`) behind its medal glyph (U+E2A0 to U+E2A6,
+new art in the two HUD message fonts), queued through the game's own
+insert (`Handle::notify`). Halo 2 shows a multi-kill the same way,
 to the earner only and through the same routine, so the line's font,
 colour, place and fade are the game's. No sound. A bot's medals and
 another console's players' are recorded and not shown. The glyphs, the
@@ -1189,7 +1390,8 @@ the medals are worked out from the count wherever they are shown, as
 kill medals are worked out from kills.
 
 - **The events.** `Superbounce`, with `tick`, `player` (the slot) and
-  `chain` (1 and up), and `Bounced`, with `tick` and `player`: game events
+  `chain` (1 and up), and `Bounced`, with `tick`, `player` and the `chain`
+  it ended (0 if none): game events
   beside `PlayerKilled` (`live_proto::game`, with their validation: a
   player of the game, a chain of at least 1). The mode sends them for
   every player it watches through the telemetry session that sends the
@@ -1236,10 +1438,10 @@ kill medals are worked out from kills.
   art, `web/public/art/ART.md`), or the game's own medal from the
   owner's disc where the server has game art
   ([web-viewer.md](../live/web-viewer.md), `medalKey`). The disc has no
-  bounce medal, so `medalKey` gives none for the seven ids, and their
-  pack art is drawn from the new medal glyphs of the HUD fonts. Until an
-  id's files land (`PACK_MEDALS` in `web/src/lib/art.ts`), its badge is
-  the medal's name (ART.md, "Pending: the superbounce medals").
+  bounce medal, so `medalKey` gives none for the seven ids; the pack's
+  seven are drawn from the HUD glyphs' pixels (`scripts/superbounce-medals.py`
+  makes the glyphs; the site's files are their nearest-neighbour upscale)
+  and listed in `PACK_MEDALS` (`web/src/lib/art.ts`).
 - **Theater.** A film played in the game runs the simulation again,
   and the mode with it when the film's variant turns it on, so the
   lines show as they did (supposed: a mode forced on by
@@ -1251,17 +1453,17 @@ kill medals are worked out from kills.
 ### The agent API
 
 `superbounce.state` ([agent-api.md](../runtime/agent-api.md#superbounce-the-superbounce-game-type))
-gains `medals`:
+has `medals`:
 
 | Field | Meaning |
 |---|---|
-| `players` | a row for each player that has bounced this game: `player` (the slot), `chain` (the count of its last chain), `live` (whether the next bounce adds to it) and `counts` (each medal id's total this game) |
-| `recent` | the last 8 bounces, oldest first: `player`, `tick`, `chain` and `medals` (the ids that bounce earned) |
+| `players` | a row for each player slot with a chain or a medal this game: `player` (the slot), `chain` (the count of its last chain), `live` (whether the next bounce adds to it) and `counts` (each medal id's total this game) |
+| `recent` | the last 8 awards, oldest first: `player`, `tick`, `chain` and `medals` (the ids the award earned, lowest first) |
 
-`superbounce.medal_test {"chain": N}` (access: act) files a bounce at
-that count for the first local player after the chain's rule: the HUD
-line and `medals` as a real bounce gives them, and nothing sent or
-recorded. It is how a run checks the line without five bounces in a
+`superbounce.medal_test {"chain": N}` or `{"bounced": true}` (access:
+act) files a bounce at that count, or a Bounced, for the first local
+player with a unit, after the chain's rule: the HUD line and `medals`
+as a real one gives them, and nothing sent to the film or Live. It is how a run checks the line without five bounces in a
 row, as `superbounce.assist_test` holds X without a pad.
 
 ### Checking the medals on the lab
@@ -1284,8 +1486,13 @@ Lab runs through the agent API at 30 frames a second, as
 - **Host and guest.** A guest's bounce read on both consoles: the
   host's `medals` has it at the same tick, or the record and the
   guest's HUD differ and by how much.
-- **The line.** `superbounce.medal_test` at 1, 2, 3 and 5 with
-  `render.frame`, against `h2 hud preview superbounce`'s `bounced` and
-  `medal-` states.
+- **Bounced.** A primed jump off the map's edge: `recent` gets a
+  `bounced` award at the tick the unit went, and `world.object` on the
+  player's unit over the fall says whether the unit clears on the death
+  tick or the body stays read for some ticks.
+- **The line.** `superbounce.medal_test` at 1 to 7 and with `bounced`,
+  with `render.frame`, against `h2 hud preview superbounce`'s `bounced`
+  and `medal-` states: the glyph in its own colours, the line's place
+  and fade.
 
 No game was run for this section.
