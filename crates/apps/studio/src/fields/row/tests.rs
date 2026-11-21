@@ -480,5 +480,5 @@ fn section_rules_use_the_definitions_titles() {
         .insert("unit.obje".into(), "Object".into());
     assert_eq!(section_title(&layout, "unit.obje"), "Object");
     assert_eq!(section_title(&layout, "unit"), "Unit");
-    assert_eq!(section_title(&layout, "unit.weapon_hud"), "Weapon hud");
+    assert_eq!(section_title(&layout, "unit.weapon_hud"), "Weapon HUD");
 }

@@ -670,6 +670,8 @@ impl hooks::Feature for LobbyMode {
                     Ok(Flow::Continue)
                 },
             )
+            // The bots' own leave runs first; clearing the mode touches none of their state.
+            .after_feature("bots")
             .optional();
 
         b.snapshot(hooks::SnapshotPolicy::section_forbid_while(

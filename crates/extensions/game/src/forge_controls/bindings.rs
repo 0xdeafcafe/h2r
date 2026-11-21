@@ -203,7 +203,7 @@ pub const BINDINGS: &[Binding] = &[
     ),
     row(
         Does::Act(Gesture::ObjectsOrProperties),
-        "Object menu, or properties",
+        "Objects or properties",
         Pad::Tap(B::West),
         &[Key::Objects],
         "F",
@@ -300,12 +300,10 @@ pub fn controls() -> Vec<(String, String, String)> {
         .collect()
 }
 
-/// Pairs of controls the Controls page shows on one row, as
-/// docs/game/forge-editing.md's table does: up and down, undo and redo.
-pub const PAIRS: &[(Does, Does)] = &[
-    (Does::Hold(Held::Rise), Does::Hold(Held::Fall)),
-    (act(Action::Undo), act(Action::Redo)),
-];
+/// Pairs of controls the Controls page shows on one row: up and down.
+/// Undo and redo keep a row each; their pad names together are wider than
+/// the column.
+pub const PAIRS: &[(Does, Does)] = &[(Does::Hold(Held::Rise), Does::Hold(Held::Fall))];
 
 /// The Controls page's rows, `(what, pad, keys)`: the table in its order,
 /// each of [`PAIRS`] on its first control's row ("Up; down", "RB; LB",
@@ -509,11 +507,8 @@ mod tests {
             );
         }
         assert!(page.contains(&("Up; down".into(), "RB; LB".into(), "E; Q".into())));
-        assert!(page.contains(&(
-            "Undo; redo".into(),
-            "D-pad Left; Hold D-pad Left".into(),
-            "Cmd+Z; Shift+Cmd+Z".into()
-        )));
+        assert!(page.contains(&("Undo".into(), "D-pad Left".into(), "Cmd+Z".into())));
+        assert!(page.contains(&("Redo".into(), "Hold D-pad Left".into(), "Shift+Cmd+Z".into())));
     }
 
     #[test]

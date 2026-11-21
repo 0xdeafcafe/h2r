@@ -147,7 +147,8 @@ fn layout_and_content_in_every_state() {
         for (name, state) in states {
             let s = page.spec(&state);
             assert_eq!(s.name, kind.screen());
-            assert!(spec::check_fallback(&s).is_empty(), "{kind:?}/{name}");
+            let issues = spec::check_fallback(&s);
+            assert!(issues.is_empty(), "{kind:?}/{name}: {issues:?}");
             let v = from.view(&s, &name).unwrap();
             let found = content::check(&s, &v, from.source());
             assert!(found.is_empty(), "{kind:?}/{name}: {found:?}");

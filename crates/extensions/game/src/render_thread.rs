@@ -297,6 +297,16 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
         "the Game Setup list's Firefight row on the game thread",
     ),
     (
+        "lobby-mode",
+        "*",
+        "Game Setup's mode rows, the lobby header and the start refusal: UI and lobby state on the game thread",
+    ),
+    (
+        "forge-screens",
+        "*",
+        "opens the Forge screens from the UI update and adds GAME MENU's Forge rows, UI on the game thread",
+    ),
+    (
         "game-setup-help",
         "SQUAD_SETTINGS_UPDATE",
         "the Game Setup screen's per-frame update (picture and description), UI on the game thread",

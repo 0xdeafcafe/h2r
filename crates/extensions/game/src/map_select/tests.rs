@@ -128,7 +128,9 @@ fn strings_have_ids_in_the_family_one_a_map() {
     let cat = sample();
     let s = cat.strings();
     let n = cat.all().count();
-    assert_eq!(s.len(), 3 + 4 + n);
+    // Three titles, a name per category (Halo 2, the map pack, Halo 1,
+    // mods, Firefight) and one per map.
+    assert_eq!(s.len(), 3 + Category::ALL.len() + n);
     assert!(s.iter().all(|(id, _)| IDS.owns(*id)), "{s:?}");
     let mut ids: Vec<u32> = s.iter().map(|(i, _)| *i).collect();
     ids.sort();

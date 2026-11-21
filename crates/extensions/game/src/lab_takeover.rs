@@ -492,6 +492,8 @@ impl Feature for Driver {
             .after_feature("live-join-link")
             // So does a linked Theater film page, which also goes first.
             .after_feature("theater-link")
+            // And a Forge screen opening or closing.
+            .after_feature("forge-screens")
             .optional();
         Ok(())
     }
