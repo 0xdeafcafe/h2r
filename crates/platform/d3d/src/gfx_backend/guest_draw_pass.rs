@@ -85,6 +85,41 @@ impl GfxBackend {
             })
     }
 
+    /// Validate logical names against the original 1x store before
+    /// retaining incoming colours and complete depth/stencil images.
+    pub fn freeze_frame_inputs(
+        &mut self,
+        frame: &ReplayFrame,
+        targets: &HashMap<TargetRef, SurfaceId>,
+        names: &[TargetRef],
+    ) -> Result<HashMap<TargetRef, super::FrozenTarget>, String> {
+        if names.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let presented = targets
+            .get(&frame.presented)
+            .ok_or("missing present target for the input grid")?;
+        let scale = self.scales.get(presented).copied().unwrap_or(1);
+        let physical = names
+            .iter()
+            .map(|&name| {
+                let &id = targets
+                    .get(&name)
+                    .ok_or_else(|| format!("missing incoming attachment {name:?}"))?;
+                let desc = frame
+                    .desc(name)
+                    .ok_or_else(|| format!("unknown incoming attachment {name:?}"))?;
+                if !self.scene_target_matches(id, desc, scale) {
+                    return Err(format!(
+                        "incoming attachment {name:?} differs from the recorded grid"
+                    ));
+                }
+                Ok((name, id))
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        self.freeze_scene_targets(&physical)
+    }
+
     pub(crate) fn read_scene_target(
         &mut self,
         target: SurfaceId,
@@ -171,6 +206,11 @@ impl<'a> GuestDrawPass<'a> {
                 frame.private_target_refusal()
             }
         {
+            if frame.target_seeds_sealed()
+                && let Err(detail) = frame.frozen_target_seeds()
+            {
+                return Err(format!("{cause}: {detail}"));
+            }
             return Err(cause.into());
         }
         gpu.prune_scene_uploads();
@@ -221,6 +261,12 @@ impl<'a> GuestDrawPass<'a> {
                         let surface = pass.surface(*target)?;
                         pass.gpu.write_scene_target(surface, desc, bytes, scale)?;
                     }
+                }
+            }
+            if let Ok(inputs) = frame.frozen_target_seeds() {
+                for (name, input) in inputs {
+                    let target = pass.surface(*name)?;
+                    pass.gpu.restore_scene_target(target, input)?;
                 }
             }
         }

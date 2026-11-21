@@ -77,6 +77,7 @@
 //! awake at render scale 1 too (frame buffers at 1x, shadow maps at 2x).
 
 pub mod private_scene;
+mod scene_inputs;
 mod scene_targets;
 pub use scene_targets::ScaledScenePass;
 mod single;

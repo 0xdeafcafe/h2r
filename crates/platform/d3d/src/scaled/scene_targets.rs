@@ -209,6 +209,16 @@ impl<'a> ScaledScenePass<'a> {
         Ok(pass)
     }
 
+    /// The legacy shadow handoff has resolved any guest-size inputs. The
+    /// first graph op has not yet run, so these are exactly its inputs.
+    pub fn freeze_inputs(
+        &mut self,
+        names: &[TargetRef],
+    ) -> Result<HashMap<TargetRef, crate::gfx_backend::FrozenTarget>, String> {
+        self.backend
+            .freeze_view_inputs(self.frame, self.targets, names)
+    }
+
     pub fn apply(&mut self, op: &ReplayOp) -> Result<(), String> {
         let scale = self.backend.scale;
         self.commands

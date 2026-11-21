@@ -54,6 +54,11 @@ impl<'a> MixedPrivatePass<'a> {
             ));
         }
         if let Some(reason) = frame.private_target_refusal() {
+            if frame.target_seeds_sealed()
+                && let Err(detail) = frame.frozen_target_seeds()
+            {
+                return Err(format!("{reason}: {detail}"));
+            }
             return Err(reason.into());
         }
         let colour = frame
@@ -107,6 +112,12 @@ impl<'a> MixedPrivatePass<'a> {
                 TargetSeed::Upload { desc, bytes } => {
                     pass.backend.write_scene_target(surface, desc, bytes, 1)?;
                 }
+            }
+        }
+        if let Ok(inputs) = frame.frozen_target_seeds() {
+            for (name, input) in inputs {
+                let id = pass.backend.image(pass.surface(*name)?);
+                pass.backend.view.restore_scene_target(id, input)?;
             }
         }
         Ok(pass)

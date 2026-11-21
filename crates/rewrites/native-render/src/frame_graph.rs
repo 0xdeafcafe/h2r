@@ -5,6 +5,8 @@
 //! pass. Display and capture use the same recording path and separate
 //! attachments. Only display hands its final target to the presenter.
 
+mod inputs;
+pub use inputs::{freeze_display_inputs, freeze_scaled_inputs};
 mod lighting;
 mod private;
 pub use lighting::{E3Report, PassWork};
@@ -84,9 +86,9 @@ pub struct CapturedFrame {
     pub report: FrameReport,
 }
 
-/// `render.frame`'s logical pass boundaries. Build them only when a
-/// recorder is armed. Ordinary frames simply stream their ops to the
-/// encoder, whose pending draw list merges adjacent draws.
+/// Logical pass cuts shared by input preservation and armed observers.
+/// Recording streams ops to the encoder, whose pending list merges
+/// adjacent draws on compatible attachments.
 fn pass_rows(frame: &ReplayFrame) -> Vec<PassRow> {
     let mut rows = Vec::new();
     let mut current: Option<PassRow> = None;
@@ -265,6 +267,9 @@ pub fn draw_display_on(
     targets: &std::collections::HashMap<TargetRef, gfx::surface::SurfaceId>,
 ) -> Result<(FrameReport, Outputs<d3d::gfx_backend::HostTexture>), String> {
     let before = backend.batch_stats();
+    // Failure belongs to private replay. The live graph still owns its
+    // original attachments and can complete this display.
+    let _ = freeze_display_inputs(backend, replay, targets);
     let mut pass = GuestDrawPass::on_existing(backend, replay, targets)?;
     pass.set_lighting(lighting);
     let e3 = record(&mut pass, replay, false, lighting, observer)?;
@@ -296,6 +301,7 @@ pub fn draw_scaled_display_on(
     let lighting = backend.lighting();
     let before = backend.view().batch_stats();
     let mut pass = ScaledScenePass::new(backend, replay, targets)?;
+    let _ = inputs::freeze_native_scaled_inputs(&mut pass, replay);
     let e3 = record(&mut pass, replay, false, lighting, observer)?;
     let (after, outputs) = pass.present(replay.flags, replay.gamma.as_deref())?;
     Ok((

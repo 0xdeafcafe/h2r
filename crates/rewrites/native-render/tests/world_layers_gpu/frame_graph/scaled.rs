@@ -433,3 +433,135 @@ fn four_x_partial_shadow_write_preserves_depth_and_stencil_across_both_owners() 
         "the original offscreen depth survives both partial writes"
     );
 }
+
+#[test]
+fn four_x_private_draw_restores_inherited_main_and_auxiliary_grids() {
+    let _guard = CAPTURE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let Ok(ctx) = GfxContext::headless() else {
+        return;
+    };
+    let mut display = scaled(&ctx, 4, true);
+    let main = display.create_surface(FORMAT, SIZE, SIZE, false).unwrap();
+    let side = SIZE / 2;
+    let aux = display.create_texture_target(FORMAT, side, side).unwrap();
+    // The earlier displayed image has finer detail than one guest texel.
+    // A seed made by downsampling the displayed colour loses that detail.
+    let physical = display.view_surface(&main).unwrap();
+    let extent = SIZE * 4;
+    let desc = gfx::TextureDesc::new(FORMAT, gfx::texture::TextureKind::D2, extent, extent, 1, 1);
+    let mut stripes = Vec::with_capacity((extent * extent * 4) as usize);
+    for _ in 0..extent {
+        for x in 0..extent {
+            let gray = if x % 2 == 0 { 64 } else { 192 };
+            stripes.extend([gray, gray, gray, 255]);
+        }
+    }
+    assert!(
+        display
+            .view_mut()
+            .write_surface(physical, &desc, &stripes)
+            .unwrap()
+    );
+    display
+        .clear(
+            aux,
+            None,
+            Clear {
+                color: Some([0., 1., 0., 1.]),
+                ..Clear::NONE
+            },
+        )
+        .unwrap();
+
+    let mut frame = replay();
+    frame.depth = None;
+    frame.aux.push(AuxTarget {
+        width: side,
+        height: side,
+        ..frame.colour.unwrap()
+    });
+    let small = TargetRef::Aux(0);
+    op(
+        &mut frame,
+        Slot::AfterLights,
+        ReplayOp::Copy {
+            from: small,
+            to: MAIN,
+        },
+    );
+    let scene = sealed();
+    let targets = HashMap::from([(MAIN, main), (small, aux)]);
+    assert!(frame.private_target_refusal().is_some());
+    draw_scaled_display_on(&mut display, &scene, &frame, None, &targets).unwrap();
+    let retained: HashMap<_, _> = frame
+        .frozen_target_seeds()
+        .unwrap()
+        .iter()
+        .map(|(target, image)| (*target, image.size()))
+        .collect();
+    assert_eq!(
+        retained,
+        HashMap::from([(MAIN, [extent; 2]), (small, [side; 2])])
+    );
+
+    let expected = display.view_mut().read_color(physical).unwrap().0;
+    assert_eq!(&expected[..4], &[0, 255, 0, 255]);
+    let outside = (side * 4 * 4) as usize;
+    assert_eq!(
+        &expected[outside..outside + 8],
+        &[64, 64, 64, 255, 192, 192, 192, 255]
+    );
+
+    // A second submission of the same sealed scene and two subsequent
+    // surface releases must not replace either input version.
+    display
+        .clear(
+            aux,
+            None,
+            Clear {
+                color: Some([1., 0., 1., 1.]),
+                ..Clear::NONE
+            },
+        )
+        .unwrap();
+    display
+        .clear(
+            main,
+            None,
+            Clear {
+                color: Some([1., 1., 1., 1.]),
+                ..Clear::NONE
+            },
+        )
+        .unwrap();
+    draw_scaled_display_on(&mut display, &scene, &frame, None, &targets).unwrap();
+    display.destroy_surface(aux).unwrap();
+    display.destroy_surface(main).unwrap();
+
+    let mut private = GfxBackend::new(ctx);
+    for lighting in [Lighting::Retail, Lighting::E3] {
+        let captured = draw_private(&mut private, &scene, &frame, 4, lighting).unwrap();
+        assert_eq!(captured.size, [extent; 2]);
+        assert_eq!(captured.rgba, expected);
+        assert!(private.last_presented().is_none());
+    }
+}
+
+#[test]
+fn original_two_copy_frame_with_divergent_history_declines_only_private_replay() {
+    use native_render::frame_graph::freeze_scaled_inputs;
+    let Ok(ctx) = GfxContext::headless() else {
+        return;
+    };
+    let mut display = scaled(&ctx, 4, false);
+    let colour = display.create_surface(FORMAT, SIZE, SIZE, false).unwrap();
+    let mut frame = replay();
+    frame.depth = None;
+    let targets = HashMap::from([(MAIN, colour)]);
+    let error = freeze_scaled_inputs(&mut display, &frame, &targets).unwrap_err();
+    assert!(error.contains("separate legacy"));
+    assert!(frame.frozen_target_seeds().is_err());
+    assert!(frame.private_target_refusal().is_some());
+    display.present(colour, 0).unwrap();
+    assert_eq!(display.stats().view_frames, 1);
+}
