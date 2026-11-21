@@ -42,6 +42,10 @@ fn signature(sig: Sig) -> Vec<u8> {
 
 fn hook_digest(plan: &hooks::Plan, installed: &hooks::Installed) -> String {
     let placed = installed.placed.iter().copied().collect::<BTreeSet<_>>();
+    let presentation = plan.features.iter().filter(|f| f.presentation_only)
+        .map(|f| f.id).collect::<BTreeSet<_>>();
+    let presentation_pages = plan.allocs.iter().filter(|a| a.presentation_only)
+        .map(|a| a.addr).collect::<BTreeSet<_>>();
     let mut bytes = Vec::new();
     for global in [
         &points::GAME_ENGINE,
@@ -56,12 +60,12 @@ fn hook_digest(plan: &hooks::Plan, installed: &hooks::Installed) -> String {
     for chain in plan.chains.values().filter(|c| placed.contains(&c.addr)) {
         for hook in chain
             .hooks()
-            .filter(|h| installed.off_reason(h.feature).is_none())
+            .filter(|h| !presentation.contains(h.feature) && installed.off_reason(h.feature).is_none())
         {
             let row = (
                 "hook",
                 chain.addr,
-                chain.shadow.filter(|addr| placed.contains(addr)),
+                chain.shadow.filter(|addr| placed.contains(addr) && !presentation_pages.contains(addr)),
                 signature(chain.point.sig),
                 hook.feature,
                 hook.kind().as_str(),
@@ -84,7 +88,7 @@ fn hook_digest(plan: &hooks::Plan, installed: &hooks::Installed) -> String {
             }
         }
     }
-    for entry in plan.entries.iter().filter(|e| placed.contains(&e.addr)) {
+    for entry in plan.entries.iter().filter(|e| placed.contains(&e.addr) && !presentation.contains(e.feature)) {
         serde_json::to_writer(&mut bytes, &("entry", entry.addr, entry.feature))
             .expect("fixed guest entry signature");
         bytes.push(b'\n');
@@ -92,7 +96,7 @@ fn hook_digest(plan: &hooks::Plan, installed: &hooks::Installed) -> String {
     for alloc in plan
         .allocs
         .iter()
-        .filter(|a| installed.off_reason(a.feature).is_none())
+        .filter(|a| !a.presentation_only && installed.off_reason(a.feature).is_none())
     {
         let row = (
             "allocation",
@@ -193,6 +197,37 @@ mod tests {
             digest(&[], &[0x1000, 0x2000]),
             digest(&[], &[0x2000, 0x1000])
         );
+    }
+
+    #[test]
+    fn theater_presentation_leaves_recorded_dispatch_addresses_and_digest_unchanged() {
+        let plan = |with_camera| {
+            let mut registry = hooks::Registry::new(hooks::Switches::defaults());
+            let fixture = hooks::FnFeature {
+                manifest: hooks::Manifest::new("render-aspect", "Recorded simulation fixture"),
+                build: |b: &mut hooks::Builder| {
+                    b.guest_alloc(8, runtime::guest::Permissions::RW)?;
+                    b.raw().before(&points::UI_HUD_DRAW, "HUD observer", |_| Ok(hooks::Flow::Continue));
+                    b.raw().after(&points::GAME_TICK, "recorded tick observer", |_| Ok(()));
+                    Ok(())
+                },
+            };
+            registry.add(&fixture).unwrap();
+            if with_camera {
+                registry.add(&super::super::camera::RenderHooks(Default::default())).unwrap();
+            }
+            let plan = registry.build(&hooks::Base).unwrap();
+            let mut installed = hooks::Installed::default();
+            installed.placed.extend(plan.chains.values().flat_map(|chain|
+                std::iter::once(chain.addr).chain(chain.shadow)));
+            (plan, installed)
+        };
+        let (recording, recorded) = plan(false);
+        let (player, playback) = plan(true);
+        assert_eq!(recording.allocs, player.allocs.iter().copied()
+            .filter(|alloc| !alloc.presentation_only).collect::<Vec<_>>());
+        assert!(player.chains[&points::UI_HUD_DRAW.base].shadow.is_some());
+        assert_eq!(hook_digest(&recording, &recorded), hook_digest(&player, &playback));
     }
 
     #[test]

@@ -161,6 +161,23 @@ impl<F: ?Sized> Link<F> {
 type Observers = Vec<Arc<Link<crate::ObserveFn>>>;
 
 impl Plan {
+    /// An older film keyframe restores the recorder's guest mappings.
+    /// Recreate the player's private pages after the saved RAM hash is checked.
+    pub fn restore_presentation_pages(&self, rt: &Runtime, installed: &Installed) -> Result<(), InstallError> {
+        let mut guest = rt.memory();
+        for a in self.allocs.iter().filter(|a| a.presentation_only && installed.off_reason(a.feature).is_none()) {
+            let len = (a.len + 0xfff) & !0xfff;
+            if guest.mappings().iter().any(|m| m.virtual_start == a.addr && m.len == len && m.permissions == a.perms) {
+                continue;
+            }
+            guest.map_zeroed(a.addr, len, a.perms).map_err(|e| InstallError::Map {
+                addr: a.addr,
+                error: format!("{e:?}"),
+            })?;
+        }
+        Ok(())
+    }
+
     /// Installs every chain, or nothing when an address is occupied.
     /// Resolves originals before taking the dispatch write lock.
     pub fn install(&self, rt: &Runtime) -> Result<Installed, InstallError> {

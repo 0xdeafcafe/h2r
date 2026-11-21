@@ -2106,7 +2106,8 @@ directly on its own `--socket` (`H2_AGENT`, else the cache's `theater.sock`).
 | `theater.seek` | `{"tick":900}`, optionally `"clip_marks":[300,null]`, `"source":"boot"` or `"source":"keyframe"` | restores a frame or starts a fresh child, then fast-forwards to the target, carrying camera and timeline state. Forcing a keyframe requires a compatible frame at or before the target |
 | `theater.seek` | `{"cancel":true}` | returns to the tick the active seek left and holds there. An optional `tick` is ignored. If no seek is active, returns the current state |
 | `theater.step` | `{"ticks":1}` | accepts a positive number of ticks while paused and outside a seek. Returns the current state, runs the requested ticks, and holds at the new tick. Read state again to get the completed tick |
-| `theater.camera` | `{"mode":"orbit","player":"<name>","look":[0.2,-0.1],"zoom":-1}` or `{"mode":"first_person","seat":3}` | selects the view and returns transport state; an absolute film seat is 0 to 15 |
+| `theater.camera` | `{"mode":"orbit","seat":3,"look":[0.2,-0.1],"zoom":-1,"fov":85}` | selects the view and returns transport state. An absolute film seat is 0 to 15 |
+| `theater.hud` | `{"game":false,"bar":true}` | changes game HUD and Theater bar visibility and returns transport state. Omitted fields keep their values |
 | `theater.keyframes` | `{}` | seek inventory `{film, sidecar, ring, capture_points, ring_bytes, ring_cap, sidecar_bytes}`; lists contain tick numbers |
 | `theater.measurements` | `{}` | timings, keyframe attempts and page counts from the instrumented recorder or playback child |
 | `theater.verify` | `{"from":1,"to":900,"ring":true}`, all optional | replays in an isolated, unpaced player. Ring verification first records reference hashes in a linear pass, compares every successful marked capture, and returns `{ticks, digests_checked, arena_hashes_checked, ram_hashes_checked, first_divergence}` |
@@ -2132,25 +2133,30 @@ The active player's transport remains usable. A clean run returns
 `first_divergence: null`. A mismatch returns its tick and reason.
 
 The rendered player starts at the clip's first tick and loops at its end.
-Its overlay uses the player's agent socket for transport and `cheat.set
-{"name":"hide_hud","value":true}` for the HUD. A paused player accepts HUD
-and camera changes and applies them to the next rendered frame.
+Its overlay uses the player's agent socket for transport, camera and HUD
+controls. HUD and camera changes apply to the next rendered frame.
 
-Rendered host playback starts in `free`; its other modes are `orbit`,
-`follow`, `first-person` and `default`. In a playerless version 2 or 3
-host film, `default` uses the first available player's eye position.
-`orbit`, `follow` and `first-person` accept a player name or an absolute
-film seat; with neither, they use the first spawned player. `look` adjusts
-yaw and pitch in radians for `free` and `orbit`. In `free`, `movement`
-adjusts strafe, forward and rise in world units. In `orbit`, `zoom` changes
-the radius in world units. Local playback starts in `default` and shows
-the whole retail frame; version 3 also accepts `first-person` with a local
-player's name or seat to select a drawn viewport. Headless playback
-(`--render-every 0`) accepts only `default`.
+Both picture paths use the same rig. Rendered local playback starts in
+`default` with the whole retail frame. Host playback starts in `free`;
+`default` on a playerless film uses the first available player's eye.
+Use `orbit`, `follow` or `first-person` with a player name or film seat
+to select a subject. On rendered films, first person selects the recorded
+viewport. If the subject has no viewport, state reports `camera: "follow"`
+and `camera_fallback: "no-recorded-viewport"` until one is drawn.
+On playerless films, first person uses the unit's eye.
+
+`look` adjusts yaw and pitch in radians in free and orbit modes. In free
+mode, `movement` adjusts strafe, forward and rise in world units. In orbit
+mode, `zoom` adjusts the radius in world units. `fov` sets the horizontal
+field of view at 4:3 in degrees (20 to 140). Omitting it keeps the current
+lens. Headless playback (`--render-every 0`) accepts only `default`.
+Playerless playback has no game HUD.
 
 Transport state carries `id`, `tick`, `length_ticks`, `paused`, `speed`, `speed_reached`,
-`seeking`, `camera`, optional `camera_player` and `camera_seat`, and
-discovered kill marker ticks in `kills`, alongside the usual `at` stamp.
+`seeking`, effective `camera`, optional `camera_player` and `camera_seat`,
+`hud`, `bar` and `camera_pose`. The pose has `position`, `yaw`, `pitch`,
+`fov` and `radius` once there is a view. State also carries discovered kill
+marker ticks in `kills` and the usual `at` stamp.
 Tick zero is boot. `speed` is the requested multiplier. `speed_reached`
 is completed ticks per wall second divided by the film's tick rate and
 capped at the requested speed. It is null before a half-second sample

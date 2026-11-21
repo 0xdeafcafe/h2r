@@ -1,7 +1,8 @@
 //! A playerless host has no retail director or D3D views. Draw an independent
 //! desktop view from its re-simulated player datums, posed objects and mounted
 //! map. No observer texture, camera or device is visible to the guest.
-use super::{FilmCamera, Mode, Session};
+use super::{FilmCamera, Mode, Session, camera::ObserverEye};
+use crate::spectator_view::horizontal_fov;
 use crate::native_map::{self, NativeMap};
 use crate::native_world_glue::{self as world_glue, Raw, ReadMemory};
 use crate::telemetry::layout;
@@ -85,6 +86,9 @@ impl Session {
         output: HostView,
         vfs: Arc<Mutex<vfs::Vfs>>,
     ) -> anyhow::Result<()> {
+        if let Mode::Replay(_, replay) = &self.lock().mode {
+            replay.camera.set_playerless();
+        }
         let target = OffscreenTarget::new(
             &output.gfx.device,
             output.dimensions().raster,
@@ -166,6 +170,7 @@ struct Eye {
     seat: u8,
     unit: u32,
     weapons: [u32; 4],
+    facing: [f32; 3],
     camera: RenderCamera,
 }
 
@@ -276,11 +281,11 @@ impl Frame {
             .ok()
             .flatten()
             .ok_or("no posed camera marker or usable biped collision height")?;
+        let facing = body.forward(g).map_err(|_| "unit facing unreadable")?;
         let up = if forward[2].abs() < 0.9999 {
             [0., 0., 1.]
         } else {
             // Keep a usable basis at straight up/down, facing with the body.
-            let facing = body.forward(g).map_err(|_| "unit facing unreadable")?;
             [-forward[2] * facing[0], -forward[2] * facing[1], 0.]
         };
         let weapons = std::array::from_fn(|i| {
@@ -291,6 +296,7 @@ impl Frame {
             seat,
             unit: unit.raw(),
             weapons,
+            facing,
             camera: RenderCamera {
                 position,
                 forward,
@@ -471,42 +477,51 @@ impl MountedView {
                 }
             }
             if let Some((_, Some(scene))) = &mut self.map {
-                camera.host_seats(&frame.eyes.iter().map(|e| e.seat).collect::<Vec<_>>());
-                let eyes = frame
-                    .eyes
-                    .iter()
-                    .map(|e| (e.seat, e.camera.position, e.camera.forward))
-                    .collect::<Vec<_>>();
-                if let Some((seat, position, forward, first_person)) = camera.host_pose(&eyes) {
-                    let eye = frame.eyes.iter().find(|e| e.seat == seat);
-                    let lens = eye
-                        .map(|e| e.camera)
-                        .or(scene.previous_view.filter(|_| !first_person));
-                    if let Some(lens) = lens {
-                        let up = if first_person {
-                            lens.up
-                        } else if forward[2].abs() > 0.9999 {
-                            [1., 0., 0.]
-                        } else {
-                            [0., 0., 1.]
-                        };
-                        let view = RenderCamera {
-                            position,
-                            forward,
-                            up,
-                            ..lens
-                        };
-                        scene.previous_view = Some(view);
-                        let view = observer_lens(view, dimensions.display);
-                        scene.models(gfx, &frame.objects);
-                        visible = Some((scene, view, eye.filter(|_| first_person), &frame.objects));
-                    }
+                let eyes = frame.eyes.iter().map(|e| ObserverEye {
+                    seat: e.seat,
+                    position: e.camera.position,
+                    aim: e.camera.forward,
+                    facing: e.facing,
+                    fov: horizontal_fov(e.camera.fov),
+                });
+                if let Some(rig) = camera.host_pose(eyes) {
+                    let eye = rig.hide_subject.and_then(|seat| frame.eyes.iter().find(|e| e.seat == seat));
+                    let lens = eye.or_else(|| frame.eyes.first()).map(|e| e.camera)
+                        .or(scene.previous_view)
+                        .unwrap_or(RenderCamera {
+                            position: rig.position,
+                            forward: rig.forward,
+                            up: [0., 0., 1.],
+                            fov: rig.fov,
+                            projection_xy: None,
+                            viewport: [0, 0, 480, 640],
+                            near: 0.03,
+                            far: 4096.,
+                        });
+                    let up = if eye.is_some() {
+                        lens.up
+                    } else if rig.forward[2].abs() > 0.9999 {
+                        [1., 0., 0.]
+                    } else {
+                        [0., 0., 1.]
+                    };
+                    let view = RenderCamera {
+                        position: rig.position,
+                        forward: rig.forward,
+                        up,
+                        fov: rig.fov,
+                        ..lens
+                    };
+                    scene.previous_view = Some(view);
+                    let view = observer_lens(view, dimensions.display);
+                    scene.models(gfx, &frame.objects);
+                    visible = Some((scene, view, eye, &frame.objects));
                 }
             } else {
-                camera.host_seats(&[])
+                let _ = camera.host_pose(std::iter::empty());
             }
         } else {
-            camera.host_seats(&[])
+            let _ = camera.host_pose(std::iter::empty());
         }
         // A map transition or lost first-person subject clears the last POV.
         let blank = visible.is_none();

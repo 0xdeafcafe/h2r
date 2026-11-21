@@ -1227,6 +1227,9 @@ fn run_configured(
         eprintln!("movies: off (--no-bink: the original player runs)");
         None
     };
+    if let Some(camera) = film.as_ref().and_then(|film| film.camera_render_hooks()) {
+        features.add(&camera).map_err(anyhow::Error::msg)?;
+    }
     // Part of a machine snapshot's build key (snapshot_glue.rs).
     let switch_spec = features.switches().spec();
     let plan = features.build(&hooks::Base).map_err(|conflicts| {
@@ -1441,7 +1444,9 @@ fn run_configured(
     {
         let shelf = shelf.as_ref().context("film keyframe requires a snapshot build key")?;
         let mut machine = snap_host.machine(&mut m, &plan, &rebuilders, shelf, d3d_diag::presents());
-        f.restore_keyframe(frame, &mut machine, agent.as_ref())?
+        let slices = f.restore_keyframe(frame, &mut machine, agent.as_ref())?;
+        plan.restore_presentation_pages(&loaded.runtime, &installed)?;
+        slices
     } else {
         0
     };
@@ -1486,6 +1491,7 @@ fn run_configured(
                             &mut m, &plan, &rebuilders, shelf, d3d_diag::presents(),
                         );
                         if let Some((restored, idle)) = f.try_warm_seek(target, &mut machine, agent.as_ref()) {
+                            plan.restore_presentation_pages(&loaded.runtime, &installed)?;
                             next_slice = restored;
                             film_slices = restored;
                             audio_idle = idle;

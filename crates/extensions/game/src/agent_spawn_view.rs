@@ -111,7 +111,7 @@ impl SpawnViews {
                             let drawn = draw_world_view(call, scratch, |m, _| {
                                 (GuestMemory::u32(m, points::SCENARIO.base).ok()
                                     == Some(view.scenario))
-                                .then_some(view.pose)
+                                .then_some((view.pose, None))
                             });
                             if drawn {
                                 // Completion stamp only. The render thread reads the selected
@@ -123,7 +123,7 @@ impl SpawnViews {
                     Ok(Flow::Continue)
                 },
             )
-            .after_feature("theater-film")
+            .after_feature("theater-camera")
             .context_only();
         let views = self.clone();
         b.raw().observe_before(

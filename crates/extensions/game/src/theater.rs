@@ -7,9 +7,9 @@ mod compatibility;
 mod host_view;
 #[cfg(feature = "gpu")]
 pub use host_view::HostView;
-pub use camera::FilmCamera;
+pub use camera::{FilmCamera, RenderHooks};
 pub mod bot_tape;
-mod legacy_camera;
+mod rig;
 mod controls;
 mod prepare;
 mod metadata;
@@ -38,7 +38,7 @@ mod video_menu;
 mod verify;
 pub use verify::VerificationMode;
 use anyhow::{Context, Result, bail, ensure};
-use legacy_camera::ReplayCamera;
+use rig::ReplayCamera;
 pub use controls::library_methods;
 pub use controls::{playable_entry, playback_images};
 use film::{
@@ -77,21 +77,35 @@ pub struct Replay {
 }
 
 /// View and timeline state carried across an exact replay restart.
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default)]
 pub struct Presentation {
     camera: ReplayCamera,
     /// A failed warm check follows the viewer through cold restarts.
     #[serde(default)]
     warm_disabled: bool,
-    /// Tick the viewer left on the last requested seek, including a jump to boot.
-    #[serde(default)]
-    camera_seat: Option<u8>,
+    hud: bool,
+    bar: bool,
     kills: BTreeSet<u64>,
     pub clip_marks: [Option<u64>; 2],
     /// The launcher can prepare the disk on the next cold seek. The child
     /// always selects its RAM snapshot using its own mounted build key.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub snapshot_build: Option<(String, String)>,
+}
+
+impl Default for Presentation {
+    fn default() -> Self {
+        Self {
+            camera: ReplayCamera::default(),
+            warm_disabled: false,
+            snapshot_build: None,
+            hud: true,
+            bar: true,
+            kills: BTreeSet::new(),
+            clip_marks: [None; 2],
+        }
+    }
 }
 
 struct Recording {
@@ -378,12 +392,12 @@ impl Session {
             Mode::Replay(_, opts) => opts.presentation.clone(),
             Mode::Record(_) => Presentation::default(),
         };
-        if !matches!(&mode, Mode::Replay(_, opts) if opts.render_every != 0) {
-            presentation.camera.mode = agent_proto::theater::CameraMode::Default;
-        }
         if let Mode::Replay(_, opts) = &mode {
-            if header.version >= 2 && header.meta.source == Source::Local && presentation.camera_seat.is_none() {
-                presentation.camera.mode = agent_proto::theater::CameraMode::Default;
+            if !presentation.camera.initialized {
+                if opts.render_every != 0 && header.meta.source == Source::Host {
+                    presentation.camera.mode = agent_proto::theater::CameraMode::Free;
+                }
+                presentation.camera.initialized = true;
             }
             opts.camera.restore(&presentation);
         }
@@ -933,9 +947,6 @@ impl hooks::Feature for Observer {
                 std::thread::sleep(std::time::Duration::from_millis(10));
             }
         }).after_feature("live-telemetry");
-        if !self.0.has_engine_track() {
-            legacy_camera::install(b, &self.0)?;
-        }
         // V3 already dispatches PLAYER_KILLED when its recorded telemetry
         // profile enables events. An additional observer shares that dispatch.
         if (!self.0.has_engine_track() && self.0.replaying())

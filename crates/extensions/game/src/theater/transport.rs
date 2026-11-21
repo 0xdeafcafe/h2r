@@ -186,9 +186,7 @@ impl State {
         };
         let seek = self.seek.as_ref().expect("restart has a seek request");
         let mut presentation = self.presentation.clone();
-        if self.header.version >= 2 {
-            replay.camera.save(&mut presentation);
-        }
+        replay.camera.save(&mut presentation);
         let request = Restart {
             target,
             from_tick: Some(seek.from_tick),
