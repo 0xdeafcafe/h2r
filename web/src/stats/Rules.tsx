@@ -2,7 +2,9 @@
 // "Workbench"). Write a script, check it as you type (the server compiles
 // and verifies it), read its budget and capabilities, step a scenario over
 // the fake game, and save it when signed in. The pure half is
-// ../lib/rules.ts; the draft lives in localStorage.
+// ../lib/rules.ts (the editor's, ../lib/rulesIde.ts); the editor is
+// RulesEditor (Monaco, loaded on first use); the draft lives in
+// localStorage.
 
 import { For, Index, Show, createEffect, createResource, createSignal, on, onCleanup } from "solid-js";
 import { A, useSearchParams } from "@solidjs/router";
@@ -14,11 +16,13 @@ import { Crumbs, Panel, Tabs, Title } from "./Layout";
 import { shortHash } from "../admin/content";
 import {
   EVENT_TYPES, MAX_TICKS, TICKS_PER_SECOND, checkRules, defaultScenario, eventFields, fetchBuiltins, fetchScript,
-  fetchScripts, formatCall, formatVars, gutter, loadDraft, meter, meterText, newEvent, nextSlot, offsetOf,
-  problemPlace, runFailed, runRules, saveDraft, saveRules, scenarioProblems, tabKey, tickTime, traceLines,
+  fetchScripts, formatCall, formatVars, loadDraft, meter, meterText, newEvent, nextSlot,
+  problemPlace, runFailed, runRules, saveDraft, saveRules, scenarioProblems, tickTime, traceLines,
   type CheckResult, type EventField, type EventType, type Problem, type RunFailed, type ScenarioDraft,
   type ScenarioEvent, type Trace,
 } from "../lib/rules";
+import { fetchMenuCompletions, insertMenus, type InsertItem, type InsertMenu, type InsertMenuId } from "../lib/rulesIde";
+import RulesEditor, { type RulesEditorApi } from "./RulesEditor";
 import "../styles/rules.css";
 
 const CRUMB: [string, string] = ["Game Types", statsPath("/rules")];
@@ -44,8 +48,8 @@ on kill(victim, killer) {
 
 /** How long typing pauses before a check. */
 const CHECK_DELAY_MS = 450;
-/** The editor's line height in px (rules.css). */
-const LINE_PX = 16;
+/** The Insert menus before (or without) the completion route's lists. */
+const STATIC_MENUS = insertMenus(null, null);
 
 const storage = (): Storage | null => {
   try { return globalThis.localStorage ?? null; } catch { return null; }
@@ -295,9 +299,12 @@ export default function RulesPage() {
   const [runErr, setRunErr] = createSignal<string | null>(null);
   const [saveMsg, setSaveMsg] = createSignal<string | null>(null);
   const [saving, setSaving] = createSignal(false);
-  let editor: HTMLTextAreaElement | undefined;
-  let gutterEl: HTMLPreElement | undefined;
+  /** The built-in shown read-only until "Use as start". */
+  const [locked, setLocked] = createSignal<string | null>(null);
+  const [menuId, setMenuId] = createSignal<InsertMenuId | null>(null);
+  let editor: RulesEditorApi | undefined;
   let picker: HTMLDialogElement | undefined;
+  let inserter: HTMLDialogElement | undefined;
 
   createEffect(on([source, scenario], ([s, d]) => saveDraft(storage(), { source: s, scenario: d })));
 
@@ -324,31 +331,38 @@ export default function RulesPage() {
   }));
   onCleanup(() => { clearTimeout(timer); inflight?.abort(); });
 
+  // An error's place: back to the Script tab (the editor is only hidden
+  // on the others), then select its marker once the box is shown.
   function jumpTo(p: Problem) {
-    if (!editor) return;
     if (tab() !== "edit") setSp({ tab: undefined });
-    const at = offsetOf(source(), p.line, p.col);
-    editor.focus();
-    editor.setSelectionRange(at, Math.min(source().length, at + 1));
-    editor.scrollTop = Math.max(0, (p.line - 4) * LINE_PX);
+    setTimeout(() => editor?.reveal(p), 0);
   }
 
-  function onKey(e: KeyboardEvent & { currentTarget: HTMLTextAreaElement }) {
-    if (e.key !== "Tab" || e.altKey || e.ctrlKey || e.metaKey) return;
-    e.preventDefault();
-    const ta = e.currentTarget;
-    const edit = tabKey(ta.value, ta.selectionStart, ta.selectionEnd, e.shiftKey);
-    ta.value = edit.value;
-    ta.setSelectionRange(edit.start, edit.end);
-    setSource(edit.value);
-  }
-
-  function replace(text: string) {
-    if (source() !== text && source().trim() && source() !== STARTER && !confirm("Replace the script in the editor?")) return;
+  /** Puts a script in the editor; a built-in's name opens it read-only. */
+  function replace(text: string, builtin: string | null = null) {
+    if (source() !== text && source().trim() && source() !== STARTER && !locked() && !confirm("Replace the script in the editor?")) return;
     setSource(text);
+    setLocked(builtin);
     setTrace(null);
     picker?.close();
     if (tab() === "mine") setSp({ tab: undefined });
+  }
+
+  // The Insert menus: the completion route's events and API over the
+  // page's own lists.
+  const [routeMenus] = createResource(
+    () => live.server().api,
+    async (api) => { const r = await fetchMenuCompletions(api); return insertMenus(r.top, r.body); },
+  );
+  const menus = (): InsertMenu[] => routeMenus.latest ?? STATIC_MENUS;
+  const menu = (): InsertMenu | undefined => menus().find((m) => m.id === menuId());
+  function openMenu(id: InsertMenuId) {
+    setMenuId(id);
+    inserter?.showModal();
+  }
+  function insertItem(it: InsertItem) {
+    inserter?.close();
+    editor?.insert(it.snippet);
   }
 
   const [builtins] = createResource(() => live.server().api, (api) => fetchBuiltins(api).catch(() => []));
@@ -412,7 +426,7 @@ export default function RulesPage() {
               <button class="s-btn" onClick={() => picker?.showModal()}>Start from...</button>
               <button class="s-btn" onClick={() => { clearTimeout(timer); void runCheck(); }} disabled={checking()}>Check</button>
               <Show when={identity.me()} fallback={<A href="/dash/signup">Sign in to save</A>}>
-                <button class="s-btn" onClick={() => void save()} disabled={saving() || !check()?.ok}>Save</button>
+                <button class="s-btn" onClick={() => void save()} disabled={saving() || !!locked() || !check()?.ok}>Save</button>
               </Show>
               <span class="s-rules-status">
                 <Show when={check()} fallback={checking() ? "checking..." : ""}>
@@ -427,17 +441,29 @@ export default function RulesPage() {
             <Show when={checkErr()}>{(e) => <p class="s-pad s-rules-bad">Check failed: {e()}</p>}</Show>
             <Show when={saveMsg()}>{(m) => <p class="s-pad s-rules-note">{m()}</p>}</Show>
 
-            <div class="s-rules-editor" hidden={tab() !== "edit"}>
-              <pre class="s-rules-gutter" ref={gutterEl} aria-hidden="true">{gutter(source())}</pre>
-              <textarea
-                ref={editor}
-                class="s-rules-text"
-                spellcheck={false}
-                aria-label="Script source"
+            <div class="s-rules-editwrap" hidden={tab() !== "edit"}>
+              <Show when={locked()}>
+                {(name) => (
+                  <div class="s-rules-locked">
+                    <span>The built-in <b>{name()}</b> is read-only.</span>
+                    <button class="s-btn" onClick={() => { setLocked(null); editor?.focus(); }}>Use as start</button>
+                  </div>
+                )}
+              </Show>
+              <div class="s-toolbar s-rules-insert" role="toolbar" aria-label="Insert">
+                <span class="s-rules-insert-label">Insert</span>
+                <For each={menus()}>
+                  {(m) => <button class="s-btn" disabled={!!locked()} onClick={() => openMenu(m.id)}>{m.label}...</button>}
+                </For>
+                <span class="s-rules-keys">Shift+Alt+F formats · F12 goes to a definition · Shift+F12 finds references · Ctrl (Cmd)+Shift+O outlines</span>
+              </div>
+              <RulesEditor
                 value={source()}
-                onInput={(e) => setSource(e.currentTarget.value)}
-                onKeyDown={onKey}
-                onScroll={(e) => { if (gutterEl) gutterEl.scrollTop = e.currentTarget.scrollTop; }}
+                onChange={(v) => setSource(v)}
+                readOnly={!!locked()}
+                problems={errors()}
+                api={live.server().api}
+                onReady={(api) => { editor = api; }}
               />
             </div>
             <Show when={tab() === "edit"}>
@@ -509,7 +535,7 @@ export default function RulesPage() {
           <ul class="s-rules-picks">
             <li><button onClick={() => replace(STARTER)}><b>Blank game type</b><small>a kill-scoring starter</small></button></li>
             <For each={builtins() ?? []}>
-              {(b) => <li><button onClick={() => replace(b.source)}><b>{b.name}</b><small>built-in · engine {b.engine}</small></button></li>}
+              {(b) => <li><button onClick={() => replace(b.source, b.name)}><b>{b.name}</b><small>built-in · engine {b.engine} · opens read-only</small></button></li>}
             </For>
             <Show when={identity.me()}>
               <For each={mine() ?? []}>
@@ -519,6 +545,32 @@ export default function RulesPage() {
           </ul>
         </div>
         <footer><button class="s-btn" onClick={() => picker?.close()}>Cancel</button></footer>
+      </dialog>
+
+      <dialog ref={inserter} class="s-rules-dialog s-rules-insert-dialog" aria-labelledby="s-rules-insert-title" onClick={(e) => { if (e.target === e.currentTarget) inserter?.close(); }}>
+        <h3 id="s-rules-insert-title">Insert: {menu()?.label ?? ""}</h3>
+        <div class="s-rules-dialog-body">
+          <For each={menu()?.groups ?? []}>
+            {(g) => (
+              <section class="s-rules-insert-group">
+                <h4>{g.title} <small>{g.words}</small></h4>
+                <ul class="s-rules-picks">
+                  <For each={g.items}>
+                    {(it) => (
+                      <li>
+                        <button onClick={() => insertItem(it)}>
+                          <b><code>{it.label}</code></b>
+                          <small><code>{it.detail}</code>{it.words ? ` · ${it.words}` : ""}</small>
+                        </button>
+                      </li>
+                    )}
+                  </For>
+                </ul>
+              </section>
+            )}
+          </For>
+        </div>
+        <footer><button class="s-btn" onClick={() => inserter?.close()}>Cancel</button></footer>
       </dialog>
     </>
   );

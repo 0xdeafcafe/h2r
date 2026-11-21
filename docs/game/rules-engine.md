@@ -917,7 +917,29 @@ editor exists. The browser runs no compiler: Live's
   handler's worst case, slots per scope against their limits, IR bytes
   against 64 KiB, the declared capabilities in the lobby's words, and
   every unhostable entry the script calls. The page checks 450 ms after
-  typing stops; an error's place moves the caret to it.
+  typing stops; each error with a place is a marker in the editor, and
+  its place in the list below selects it.
+- **Editor.** The script box is Monaco (`web/src/stats/RulesEditor.tsx`),
+  loaded by a dynamic import on this page only, so it is a chunk of its
+  own: the core editor (`monaco-editor/esm/vs/editor/edcore.main`, no
+  bundled languages) and its one editor worker. `stats/rulesMonaco.ts`
+  registers the `h2rules` language: a Monarch grammar from the lexer's
+  tokens and the parser's words (comments, keywords, `on` and its event,
+  scoped `var`, `for each`, `team n`, `text n`, literals), brackets,
+  auto-closing pairs, indentation and folding, and a dark theme from the
+  stats site's colours. Completion, hover, signature help, go to
+  definition (F12), find references (Shift+F12), the outline
+  (Ctrl/Cmd+Shift+O), semantic tokens and Format Document (Shift+Alt+F)
+  ask Live's `POST /v1/rules/ide` (`{source, op, line, character}`,
+  0-based line, UTF-16 character; LSP field names back) and
+  `GET /v1/rules/ide/legend`; each op waits for typing to pause, a newer
+  request cancels the older one, and answers are kept per model version
+  (`web/src/lib/rulesIde.ts`, the pure half). A built-in opens read-only
+  until **Use as start**. The **Insert** buttons above the editor open a
+  picker each (Declarations, Events, Actions and reads by capability in
+  the lobby's words, Control) whose rows insert a snippet at the caret;
+  the events and the API come from the completion route at a blank
+  top-level line and a blank statement, over a list the page keeps.
 - **Run.** `workbench::run` steps a scenario (seated players, variant
   fields, options, seed, round time, and a list of events by tick) over
   `fake::FakeGame`. Each tick: the queue is flushed, the tick's events
