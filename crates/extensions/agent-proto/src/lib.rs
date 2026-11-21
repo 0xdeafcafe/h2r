@@ -27,6 +27,7 @@ mod render;
 pub mod shadow;
 pub mod sim;
 pub mod state;
+pub mod takeover;
 pub mod test_maps;
 pub mod theater;
 pub mod trace;

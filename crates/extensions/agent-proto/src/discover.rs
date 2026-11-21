@@ -7,8 +7,8 @@
 //! its file behind).
 //!
 //! `H2_AGENT=off` (or `0`, `none`, `false`, `no`) switches the default
-//! socket off ([`is_off`]); `H2_AGENT=<path>` names the socket as before
-//! and is not published here.
+//! socket off ([`is_off`]). A windowed macOS game with a named endpoint
+//! also uses its per-process socket so the lab can discover it.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;

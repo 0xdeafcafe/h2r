@@ -242,6 +242,32 @@ impl AgentGlue {
         self.agent.set_plan(lines);
     }
 
+    /// Windowed macOS games advertise an enabled agent to the lab even when
+    /// the player uses a custom endpoint.
+    pub fn configure_takeover(
+        &mut self,
+        features: &mut hooks::Registry,
+        window: bool,
+        accepts_player_input: bool,
+    ) -> Result<()> {
+        crate::lab_takeover::add_info(&self.agent, window);
+        if window && accepts_player_input {
+            crate::lab_takeover::install(features, &self.agent)?;
+        }
+        if cfg!(target_os = "macos")
+            && window
+            && !self._listeners.is_empty()
+            && let Some(endpoint) = discoverable_socket().map(Endpoint::Unix)
+            && !self._listeners.iter().any(|s| s.endpoint() == endpoint)
+        {
+            match listen(&endpoint, &self.agent) {
+                Ok(listener) => self._listeners.push(listener),
+                Err(e) => eprintln!("agent: lab discovery: {e:#}"),
+            }
+        }
+        Ok(())
+    }
+
     /// Between slices: answer what's queued.
     pub fn after_slice(&self, rt: &runtime::Runtime, presents: u64) {
         let mut reader = agent::GuestReader::new(|| rt.memory());
@@ -340,6 +366,7 @@ pub fn faults_json(c: &runtime::fault_census::FaultCounts, features: u32, top: u
 
 /// The host methods (module docs).
 pub fn add_host_methods(agent: &agent::Agent) {
+    crate::lab_takeover::add_info(agent, false);
     agent.add_game_method(agent_proto::sim::method::BOT_STATS, Access::Read, |v, _| {
         crate::sim_bots::stats(v, bots::phantom::global())
     });
