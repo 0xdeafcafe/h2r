@@ -29,7 +29,7 @@ pub const MAP_OUTLINE_STORED: &str = "MapOutlineStored";
 
 /// The game event types a player's console may append in a batch; the
 /// server writes `GameStarted` (from `POST /v1/games`) and `GameFrame`.
-pub const CLIENT_GAME_EVENTS: [&str; 8] = [
+pub const CLIENT_GAME_EVENTS: [&str; 10] = [
     PLAYER_JOINED,
     PLAYER_LEFT,
     PLAYER_KILLED,
