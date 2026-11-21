@@ -138,8 +138,9 @@ pub enum NavKind {
     Strip,
 }
 
-/// The next thing to do: the nearest crouch spot while not primed, the
-/// nearest strip while primed.
+/// The next thing to do: the nearest crouch spot while not primed; while
+/// primed the chosen strip ([`nav_target`], and the predicted landing's
+/// strip while falling: `superbounce_mode`).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct NavTarget {
     /// The spot's stand point, world units.
@@ -147,6 +148,9 @@ pub struct NavTarget {
     pub kind: NavKind,
     /// From the player's origin to `at`, world units.
     pub distance: f32,
+    /// A strip's `fall`, the drop to come from (world units): what the
+    /// navpoint's number says over a strip. 0 for a crouch spot.
+    pub fall: f32,
 }
 
 /// Whether a predicted landing is on the slot.
@@ -172,6 +176,36 @@ pub struct Predicted {
     pub speed: f32,
     /// The touchdown speed the strip needs ([`need_of`]).
     pub need: f32,
+    /// The strip: its edge (the crease line), stand point, slot width
+    /// ([`width_of`]) and fall.
+    pub edge: [Vec3; 2],
+    pub stand: Vec3,
+    pub width: f32,
+    pub fall: f32,
+}
+
+impl Predicted {
+    /// How far the landing is outside the slot, horizontally: 0 inside it.
+    pub fn miss(&self) -> f32 {
+        (segment_distance_xy(self.edge, [self.at[0], self.at[1]]) - self.width / 2.0).max(0.0)
+    }
+
+    /// The lock (docs/game/superbounce.md, "Lock-on"): the landing is in
+    /// the slot and fast enough to sink onto it.
+    pub fn locked(&self) -> bool {
+        self.verdict == Course::OnSlot && self.speed >= self.need
+    }
+
+    /// The point of the crease nearest the landing.
+    pub fn crease_point(&self) -> Vec3 {
+        let [a, b] = self.edge;
+        let t = segment_t_xy(self.edge, [self.at[0], self.at[1]]);
+        [
+            a[0] + t * (b[0] - a[0]),
+            a[1] + t * (b[1] - a[1]),
+            a[2] + t * (b[2] - a[2]),
+        ]
+    }
 }
 
 /// What a landing by a strip came to, by its first failed test.
@@ -225,17 +259,27 @@ pub fn need_of(spot: &Spot) -> f32 {
     (STANDING_JUMP_SPEED * STANDING_JUMP_SPEED + 2.0 * GRAVITY * fall).sqrt()
 }
 
-/// The horizontal distance from `xy` to a strip's edge segment.
-pub fn edge_distance_xy(spot: &Spot, xy: [f32; 2]) -> f32 {
-    let [a, b] = spot.edge;
+/// Where along `edge` (0 to 1) the point nearest `xy` is, horizontally.
+fn segment_t_xy([a, b]: [Vec3; 2], xy: [f32; 2]) -> f32 {
     let (ex, ey) = (b[0] - a[0], b[1] - a[1]);
     let len2 = ex * ex + ey * ey;
-    let t = if len2 > 0.0 {
+    if len2 > 0.0 {
         (((xy[0] - a[0]) * ex + (xy[1] - a[1]) * ey) / len2).clamp(0.0, 1.0)
     } else {
         0.0
-    };
-    (a[0] + t * ex - xy[0]).hypot(a[1] + t * ey - xy[1])
+    }
+}
+
+/// The horizontal distance from `xy` to the segment `edge`.
+fn segment_distance_xy(edge: [Vec3; 2], xy: [f32; 2]) -> f32 {
+    let [a, b] = edge;
+    let t = segment_t_xy(edge, xy);
+    (a[0] + t * (b[0] - a[0]) - xy[0]).hypot(a[1] + t * (b[1] - a[1]) - xy[1])
+}
+
+/// The horizontal distance from `xy` to a strip's edge segment.
+pub fn edge_distance_xy(spot: &Spot, xy: [f32; 2]) -> f32 {
+    segment_distance_xy(spot.edge, xy)
 }
 
 /// How far `xy` is outside a strip's slot, horizontally: 0 inside it.
@@ -271,11 +315,25 @@ pub fn nearest_stand(spots: &[Spot], kind: Kind, at: Vec3) -> Option<(&Spot, f32
         .min_by(|a, b| a.1.total_cmp(&b.1))
 }
 
-/// The navpoint's target for a player at `at`: the nearest strip while
-/// `primed`, else the nearest crouch spot.
+/// Whether feet at height `feet` are high enough to fall onto `strip`: it
+/// needs no fall (a standing jump), or they are at least its fall above its
+/// stand point, less [`HIGH_SLACK`].
+pub fn high_enough(feet: f32, strip: &Spot) -> bool {
+    strip.fall <= crate::superbounce_prompts::FLAT_FALL
+        || feet - strip.stand[2] >= strip.fall - HIGH_SLACK
+}
+
+/// [`high_enough`] forgives this much (world units): a floor a hair under
+/// the fall still makes it, as the fall is worked from a need with margin.
+pub const HIGH_SLACK: f32 = 0.05;
+
+/// The navpoint's target for a player at `at`. While `primed`, the chosen
+/// strip: the nearest strip whose fall the player's floor is high enough
+/// for ([`high_enough`]), else the nearest strip; the world's landing and
+/// take-off marks are on the same one (`superbounce_world`). Not primed,
+/// the nearest crouch spot.
 pub fn nav_target(spots: &[Spot], at: Vec3, primed: bool) -> Option<NavTarget> {
-    let kind = if primed { Kind::Bounce } else { Kind::Crouch };
-    nearest_stand(spots, kind, at).map(|(s, distance)| NavTarget {
+    let target = |s: &Spot, distance| NavTarget {
         at: s.stand,
         kind: if primed {
             NavKind::Strip
@@ -283,7 +341,32 @@ pub fn nav_target(spots: &[Spot], at: Vec3, primed: bool) -> Option<NavTarget> {
             NavKind::Crouch
         },
         distance,
-    })
+        fall: if primed { s.fall } else { 0.0 },
+    };
+    if !primed {
+        return nearest_stand(spots, Kind::Crouch, at).map(|(s, d)| target(s, d));
+    }
+    let nearest = |reachable: bool| {
+        spots
+            .iter()
+            .filter(|s| s.kind == Kind::Bounce && (!reachable || high_enough(at[2], s)))
+            .map(|s| (s, distance(s.stand, at)))
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+    };
+    nearest(true)
+        .or_else(|| nearest(false))
+        .map(|(s, d)| target(s, d))
+}
+
+/// The navpoint's target for a player falling onto `landing`'s strip:
+/// that strip, so the navpoint, the world's marks and the lock agree.
+pub fn nav_to_landing(landing: &Predicted, at: Vec3) -> NavTarget {
+    NavTarget {
+        at: landing.stand,
+        kind: NavKind::Strip,
+        distance: distance(landing.stand, at),
+        fall: landing.fall,
+    }
 }
 
 /// A landing's result, by the first failed test: `bounce` when the
@@ -856,6 +939,64 @@ mod tests {
         // No position, or no spot of the kind: no target.
         assert_eq!(t.step(&Tick::default(), &spots).nav_target, None);
         assert_eq!(nav_target(&spots[..1], at, true), None);
+    }
+
+    /// Primed, the navpoint is over the nearest strip the player's floor
+    /// is high enough for, with its fall; with none high enough, the
+    /// nearest strip.
+    #[test]
+    fn the_primed_navpoint_prefers_a_strip_the_floor_can_fall_onto() {
+        let spots = vec![
+            // Near, but its fall is 2 and the floor is 1 above it.
+            spot(Kind::Bounce, [1.0, 0.0, -1.0], 2.0),
+            // Further, 3 below with a fall of 1.
+            spot(Kind::Bounce, [6.0, 0.0, -3.0], 1.0),
+        ];
+        let n = nav_target(&spots, [0.0; 3], true).unwrap();
+        assert_eq!((n.at, n.fall), ([6.0, 0.0, -3.0], 1.0));
+        // From lower down neither is high enough: the nearest.
+        let n = nav_target(&spots, [0.0, 0.0, -2.5], true).unwrap();
+        assert_eq!((n.at, n.fall), ([1.0, 0.0, -1.0], 2.0));
+        // A crouch spot's fall is 0.
+        let crouch = nav_target(&self::spots(), [0.0; 3], false).unwrap();
+        assert_eq!(crouch.fall, 0.0);
+        let at = |z| spot(Kind::Bounce, [0.0, 0.0, z], 1.0);
+        assert!(high_enough(0.0, &at(-0.96)));
+        assert!(!high_enough(0.0, &at(-0.9)));
+        assert!(high_enough(-5.0, &spot(Kind::Bounce, [0.0; 3], 0.0)));
+    }
+
+    fn predicted(at: Vec3, verdict: Course, speed: f32) -> Predicted {
+        Predicted {
+            at,
+            verdict,
+            speed,
+            need: 5.0,
+            edge: [[0.0, -1.0, 0.0], [0.0, 1.0, 0.0]],
+            stand: [0.0; 3],
+            width: 0.2,
+            fall: 1.0,
+        }
+    }
+
+    /// The lock is in the slot and fast enough; the miss is the distance
+    /// outside the slot; the crease point is the edge's nearest.
+    #[test]
+    fn a_landing_locks_in_the_slot_at_its_need() {
+        let on = predicted([0.05, 0.5, 0.0], Course::OnSlot, 6.0);
+        assert!(on.locked());
+        assert_eq!(on.miss(), 0.0);
+        assert_eq!(on.crease_point(), [0.0, 0.5, 0.0]);
+        assert!(!predicted([0.05, 0.5, 0.0], Course::OnSlot, 4.0).locked());
+        let off = predicted([0.6, 3.0, 0.0], Course::Miss, 6.0);
+        assert!(!off.locked());
+        // Past the end: the crease's end point.
+        assert_eq!(off.crease_point(), [0.0, 1.0, 0.0]);
+        assert!((off.miss() - (0.6f32.hypot(2.0) - 0.1)).abs() < 1e-5);
+        // Falling onto it, the navpoint is that strip with its fall.
+        let n = nav_to_landing(&on, [0.0, 0.0, 3.0]);
+        assert_eq!((n.at, n.kind, n.fall), ([0.0; 3], NavKind::Strip, 1.0));
+        assert!((n.distance - 3.0).abs() < 1e-6);
     }
 
     #[test]

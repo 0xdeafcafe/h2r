@@ -213,7 +213,7 @@ fn the_synthetic_sheet_draws_and_passes() {
         [Check::Glyphs]
     );
     let states = Superbounce.states().len();
-    assert_eq!(states, 24);
+    assert_eq!(states, 26);
     assert_eq!(r.shots.len(), states * 3);
     let (sheet, tiles) = preview::sheet(&r.shots, 3);
     assert_eq!((sheet.width, sheet.height), (3 * 320, states as u32 * 240));
@@ -400,8 +400,8 @@ fn the_json_rectangles_are_the_compiled_bytes() {
     let states = Superbounce.states().len();
     assert_eq!(
         compared,
-        4 * states,
-        "the pill's two parts, the charge meter and the icon in every state"
+        5 * states,
+        "the pill's two parts, the charge meter, the arming bar and the icon in every state"
     );
 }
 
@@ -732,8 +732,43 @@ fn the_charge_meter_is_the_strips_end_under_the_pill() {
     assert!(full("primed-full").drawn);
     assert_eq!(full("primed-draining").fill, Some(0.25));
     assert_eq!(full("primed-still-warning").fill, Some(superbounce::LOW_CHARGE));
-    assert_eq!(full("near").fill, Some(superbounce::FILL_NEAR));
-    assert_eq!(full("held").fill, Some(superbounce::FILL_HELD));
+    // The recipe is the arming bar's: the strip shows primed and lost.
+    assert!(!full("near").drawn && !full("held").drawn);
+    assert!(full("lost").drawn);
+}
+
+/// The arming bar is the scoreboard's `bomb_defusal`, uncropped (its
+/// `hud_input1` the fill), where retail draws it: centred 110 under the
+/// frame's centre; drawn in the recipe's states at their fills.
+#[test]
+fn the_arming_bar_is_assaults_where_retail_draws_it() {
+    let mut src = synthetic();
+    let hud = superbounce::hud();
+    let t = src.templates(&hud);
+    let c = compile(&hud, &t).unwrap();
+    let w = c.widget(superbounce::ARM).unwrap();
+    assert_eq!((w.crop, w.ramp), (None, None));
+    assert_eq!(w.input(0.5), 0.5);
+    let r = check::hud(&mut src, &Superbounce, &[Mode::Full]).unwrap();
+    let arm = |state: &str| {
+        r.shots
+            .iter()
+            .find(|s| s.state == state)
+            .unwrap()
+            .element(superbounce::ARM)
+            .unwrap()
+            .clone()
+    };
+    let frame = Frame::for_mode(Mode::Full);
+    let centre = frame.anchor_point(4).unwrap();
+    let rect = arm("held").rect.unwrap();
+    assert_eq!([rect.width(), rect.height()], [140.0, 13.0]);
+    assert_eq!(rect.x0 + rect.width() / 2.0, centre[0]);
+    assert_eq!(rect.y0 + rect.height() / 2.0, centre[1] + 110.0);
+    assert!(arm("held").drawn && arm("near").drawn && arm("primed-ending").drawn);
+    assert_eq!(arm("under").fill, Some(superbounce::FILL_UNDER));
+    assert_eq!(arm("held").fill, Some(superbounce::FILL_HELD));
+    assert!(!arm("not-primed").drawn && !arm("primed-full").drawn);
 }
 
 /// The step verbs, the warning and the new-charge hint go on the prompt

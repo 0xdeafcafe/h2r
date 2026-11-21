@@ -189,7 +189,11 @@ fn raised(p: Vec3) -> Vec3 {
     [p[0], p[1], p[2] + LABEL_RAISE]
 }
 
-/// The prompts for one frame. `target` is the assist's pick (the strip a
+/// The prompts for one frame. `superbounce_world::frame` asks for them
+/// only in the air: on the ground its floor marks say where to jump from
+/// and land (docs/game/superbounce.md, "Floor marks"), and the ground
+/// prompts here are the rule table's (`prompt_for`), not drawn by the
+/// mode. `target` is the assist's pick (the strip a
 /// falling player can be steered onto, and where the player would land
 /// otherwise); `engaged` is whether the assist is steering, and `assist`
 /// whether the player has it on. Airborne there is at most the one for the
@@ -231,8 +235,8 @@ pub fn callouts(
         let scale = label_scale(distance3(body.position, spot.stand));
         let land = [reach.landing[0], reach.landing[1], spot.stand[2]];
         out.push(Callout {
-            // The way to go on the floor; the landing itself is drawn by
-            // the world figures (superbounce_world, "On course").
+            // The way to go on the floor; the landing itself is the
+            // world's lock-on (superbounce_world, "Lock-on").
             edges: vec![[land, spot.stand]],
             anchor: raised(spot.stand),
             color: look.colour,

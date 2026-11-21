@@ -139,10 +139,15 @@ pub struct State {
     /// The recipe's step for the HUD's prompt line, while `under` or
     /// `held`.
     pub verb: Option<Verb>,
-    /// The navpoint's target: the nearest crouch spot while not primed,
-    /// the nearest strip while primed. `None` without a position or a spot
-    /// of that kind.
+    /// The navpoint's target: the nearest crouch spot while not primed;
+    /// while primed the chosen strip (`superbounce_charge::nav_target`),
+    /// and while falling onto a strip that strip
+    /// (`superbounce_charge::nav_to_landing`). `None` without a position
+    /// or a spot of that kind.
     pub nav_target: Option<NavTarget>,
+    /// Where to jump from for the chosen strip, while primed and on the
+    /// ground (`superbounce_world::takeoff`); `None` when none is found.
+    pub takeoff: Option<Vec3>,
     /// The landing the assist predicts, while airborne and falling toward
     /// a strip.
     pub landing: Option<Predicted>,
@@ -177,6 +182,7 @@ impl State {
         charge: None,
         verb: None,
         nav_target: None,
+        takeoff: None,
         landing: None,
         last_landing: None,
         still_ticks: 0,
@@ -310,7 +316,9 @@ pub fn reply(s: &State) -> agent_proto::superbounce::State {
                 NavKind::Strip => wire::NavKind::Strip,
             },
             distance: f64::from(n.distance),
+            fall: f64::from(n.fall),
         }),
+        takeoff: s.takeoff.map(v3),
         landing: s.landing.map(|p| wire::Predicted {
             at: v3(p.at),
             verdict: match p.verdict {
@@ -320,6 +328,8 @@ pub fn reply(s: &State) -> agent_proto::superbounce::State {
             },
             speed: f64::from(p.speed),
             need: f64::from(p.need),
+            miss: f64::from(p.miss()),
+            locked: p.locked(),
         }),
         last_landing: s.last_landing.map(|l| wire::Landing {
             result: match l.result {
@@ -916,6 +926,26 @@ fn on_tick(o: &hooks::Obs) {
         ),
         _ => None,
     };
+    // Falling onto a strip, that strip is the target: the navpoint, the
+    // world's marks and the lock agree. A crouch while primed keeps the
+    // tracker's crouch spot.
+    let nav_target = match (&landing, step.nav_target, live.position) {
+        (Some(l), Some(n), Some(p)) if n.kind == NavKind::Strip => {
+            Some(crate::superbounce_charge::nav_to_landing(l, p))
+        }
+        _ => step.nav_target,
+    };
+    let takeoff = match (nav_target, live.position) {
+        (Some(n), Some(p)) if n.kind == NavKind::Strip && !live.airborne => spots
+            .iter()
+            .find(|s| s.kind == Kind::Bounce && s.stand == n.at)
+            .and_then(|s| {
+                crate::superbounce_world::takeoff(s.stand, s.fall, s.drift, p, |xy, top| {
+                    room.floor_at(xy, top)
+                })
+            }),
+        _ => None,
+    };
     *lock(&LOCAL) = players
         .iter()
         .filter(|p| p.tick.is_some())
@@ -948,7 +978,8 @@ fn on_tick(o: &hooks::Obs) {
         yaw: live.yaw,
         charge: step.charge,
         verb: step.verb,
-        nav_target: step.nav_target,
+        nav_target,
+        takeoff,
         landing,
         last_landing: step.last_landing,
         still_ticks: step.still_ticks,
@@ -1010,8 +1041,12 @@ pub use gpu::register;
 
 #[cfg(feature = "gpu")]
 mod gpu {
+    use std::time::Instant;
+
     use super::*;
-    use crate::world_lines::{ImageMarks, WorldLine, WorldLineSource};
+    use crate::superbounce_prompts::Callout;
+    use crate::superbounce_world::{LockMarks, lock_callouts};
+    use crate::world_lines::{ImageMarks, ImageValidity, WorldLine, WorldLineSource};
 
     /// Draws the spot lines while the mode is on.
     pub struct Lines;
@@ -1029,27 +1064,54 @@ mod gpu {
             let s = state();
             let spots = current_spots();
             let callouts = crate::superbounce_world::frame(guest, &s, &spots);
-            (!callouts.is_empty()).then(|| Arc::new(Sample { callouts }) as Arc<dyn ImageMarks>)
+            // The lock-on eases by the wall clock between this tick's
+            // capture and the next (docs/game/superbounce.md, "Lock-on").
+            let lock = LockMarks::capture(guest, &s, Instant::now());
+            (!callouts.is_empty() || lock.is_some())
+                .then(|| Arc::new(Sample { callouts, lock }) as Arc<dyn ImageMarks>)
         }
     }
 
     #[derive(Debug)]
     struct Sample {
-        callouts: Vec<crate::superbounce_prompts::Callout>,
+        callouts: Vec<Callout>,
+        lock: Option<LockMarks>,
+    }
+
+    fn draw(callouts: &[Callout], visitor: &mut dyn FnMut(WorldLine<'_>)) {
+        for c in callouts {
+            visitor(WorldLine {
+                edges: &c.edges,
+                anchor: c.anchor,
+                color: c.color,
+                dashed: false,
+                label: c.label.as_deref(),
+                style: c.style,
+            });
+        }
     }
 
     impl ImageMarks for Sample {
+        /// The marks, and the lock-on where its ease ends.
         fn lines(&self, visitor: &mut dyn FnMut(WorldLine<'_>)) {
-            for c in &self.callouts {
-                visitor(WorldLine {
-                    edges: &c.edges,
-                    anchor: c.anchor,
-                    color: c.color,
-                    dashed: false,
-                    label: c.label.as_deref(),
-                    style: c.style,
-                });
+            draw(&self.callouts, visitor);
+            if let Some(l) = &self.lock {
+                draw(&lock_callouts(&l.ease.to, &l.look), visitor);
             }
+        }
+
+        /// The marks, and the lock-on as it is at the present's time.
+        fn visit(
+            &self,
+            now: &dyn Fn() -> Instant,
+            visitor: &mut dyn FnMut(WorldLine<'_>),
+        ) -> Option<ImageValidity> {
+            let validity = self.validity(now)?;
+            draw(&self.callouts, visitor);
+            if let Some(l) = &self.lock {
+                draw(&l.callouts(now()), visitor);
+            }
+            Some(validity)
         }
     }
 }
@@ -1194,12 +1256,18 @@ mod tests {
                 at: [1.0, 2.0, 3.0],
                 kind: NavKind::Strip,
                 distance: 4.0,
+                fall: 1.0,
             }),
+            takeoff: Some([1.0, 0.5, 4.0]),
             landing: Some(Predicted {
                 at: [1.0, 2.0, -3.0],
                 verdict: Course::Fixable,
                 speed: 5.5,
                 need: 4.0,
+                edge: [[0.0, 2.0, -3.0], [2.0, 2.0, -3.0]],
+                stand: [1.0, 2.0, -3.0],
+                width: 0.2,
+                fall: 1.0,
             }),
             last_landing: Some(Landing {
                 result: LandingResult::TooSlow,
@@ -1218,13 +1286,14 @@ mod tests {
         assert_eq!(r.verb, Some(wire::Verb::WalkOutToStand));
         let n = r.nav_target.unwrap();
         assert_eq!(
-            (n.at, n.kind, n.distance),
-            ([1.0, 2.0, 3.0], wire::NavKind::Strip, 4.0)
+            (n.at, n.kind, n.distance, n.fall),
+            ([1.0, 2.0, 3.0], wire::NavKind::Strip, 4.0, 1.0)
         );
+        assert_eq!(r.takeoff, Some([1.0, 0.5, 4.0]));
         let p = r.landing.unwrap();
         assert_eq!(
-            (p.verdict, p.speed, p.need),
-            (wire::Course::Fixable, 5.5, 4.0)
+            (p.verdict, p.speed, p.need, p.miss, p.locked),
+            (wire::Course::Fixable, 5.5, 4.0, 0.0, false)
         );
         let l = r.last_landing.unwrap();
         assert_eq!(

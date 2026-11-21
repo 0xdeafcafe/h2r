@@ -7,17 +7,22 @@
 //!   where a pill's count sits: lit while primed, inactive while not, dim
 //!   while the map is scanned, hidden on a map with no strips;
 //! - the charge meter under the pill, the energy sword's battery strip
-//!   cropped to the pill's width: how far the player is through the
-//!   recipe, then how long the charge has left;
+//!   cropped to the pill's width: how long the charge has left;
+//! - the arming bar, Assault's own (`ui\hud\scoreboard`'s
+//!   `bomb_defusal`, red, low in the middle): how far the player is
+//!   through the recipe, with the primed ending, the run out when the
+//!   player leaves early and the blink when a charge is lost, moved on
+//!   wall time (`crate::motion`; [`ArmTrack`]);
 //! - the recipe's verbs on the game's prompt line, the bound button drawn
 //!   by the game;
-//! - the results (primed, lost, each landing on a strip that did not
-//!   bounce) and the medals (a bounce's medal glyph and line, as a retail
+//! - the results ("Charging..." as the arming bar comes up, "Primed!",
+//!   lost, each landing on a strip that did not bounce) and the medals (a bounce's medal glyph and line, as a retail
 //!   multi-kill's) in the game's notification list;
 //! - a navpoint over the next thing to do, the nearest crouch spot while
-//!   not primed and the nearest strip while primed, the game's arrow
-//!   pointing down at it and its waypoint marker above, the distance in
-//!   whole metres over them;
+//!   not primed and the chosen strip while primed, the game's arrow
+//!   pointing down at it and its waypoint marker above, a number in whole
+//!   metres over them: the distance to a crouch spot, the drop onto a
+//!   strip;
 //! - the tutorial in the game's training box, and its step machine
 //!   ([`Tutorial`]).
 //!
@@ -27,9 +32,10 @@
 //! labels in the world and in the agent API.
 
 use crate::model::{
-    self, Art, Describe, Element, Font, Hud, Justify, Kind, Origin, PILL_BODY, PillPart, Place,
-    Pulse, Style, Value, Values,
+    self, Anchor, Art, Describe, Element, Font, Hud, HudRef, Justify, Kind, Origin, PILL_BODY,
+    PillPart, Place, Pulse, Style, Value, Values,
 };
+use crate::motion::Motion;
 
 pub const NAME: &str = "superbounce";
 
@@ -37,6 +43,7 @@ pub const PILL: &str = "sb.pill";
 pub const PILL_END: &str = "sb.pill.end";
 pub const PILL_ICON: &str = "sb.pill.icon";
 pub const CHARGE: &str = "sb.charge";
+pub const ARM: &str = "sb.arm";
 pub const PROMPT: &str = "sb.prompt";
 pub const MESSAGE: &str = "sb.message";
 pub const MEDAL: &str = "sb.medal";
@@ -50,8 +57,10 @@ pub const TUTORIAL: &str = "sb.tutorial";
 pub const ICON_TEXT: &str = "^";
 /// The widest navpoint number: whole metres under 1000.
 pub const DISTANCE_LONGEST: &str = "999";
-/// The distance the preview's navpoints show.
+/// The distance the preview's crouch-spot navpoints show.
 pub const SAMPLE_DISTANCE_M: f32 = 12.0;
+/// The drop the preview's strip navpoints show.
+pub const SAMPLE_DROP_M: f32 = 3.0;
 
 /// The charge meter's width: the strip's last columns, as wide as the
 /// pill ([`PILL_BODY`] and [`model::PILL_END`]).
@@ -63,11 +72,25 @@ pub const CHARGE_DOWN: i16 = 21;
 /// timer's warning record. Half: 19 still ticks of the 38 a body has
 /// before it sleeps, where the prompt line warns ([`PROMPT_KEEP_MOVING`]).
 pub const LOW_CHARGE: f32 = 0.5;
-/// The fill of each recipe step before the word is -3
-/// (docs/game/hud-kit.md, "The charge meter").
+/// The arming bar's fill at each recipe step before the word is -3
+/// (docs/game/hud-kit.md, "The arming bar").
 pub const FILL_NEAR: f32 = 0.0;
 pub const FILL_UNDER: f32 = 1.0 / 3.0;
 pub const FILL_HELD: f32 = 2.0 / 3.0;
+
+/// The arming bar's art: Assault's bomb arming meter, the retail widget's
+/// bitmap (`ui\hud\bitmaps\new_hud\bomb_meter`), red shader
+/// (`ui\hud\shaders\bomb_defusal_meter`) and sequences, by its name
+/// in the scoreboard `nhdt` (V: `zanzibar.map`).
+pub const ARM_HUD: &str = "ui\\hud\\scoreboard";
+pub const ARM_WIDGET: &str = "bomb_defusal";
+/// The retail widget's place: centre, 110 down fullscreen, 27 in split
+/// screen, registered at its centre (V).
+pub const ARM_FULL: (i16, i16) = (0, 110);
+pub const ARM_SPLIT: (i16, i16) = (0, 27);
+/// The game's word D bit that shows the retail bar: Assault arming (V:
+/// the widget's only show bit). Ours hides while it is set.
+pub const ASSAULT_ARMING_D: u16 = 0x400;
 
 /// The default crouch button's glyph, the left stick click (U+E110,
 /// docs/input/button-icons.md).
@@ -84,8 +107,10 @@ pub const PROMPT_CHARGE_AGAIN: &str = "Find a crouch spot to charge again";
 /// The prompt line's widest verb: the most characters.
 pub const PROMPT_LONGEST: &str = PROMPT_CHARGE_AGAIN;
 
-/// The notifications.
-pub const MESSAGE_PRIMED: &str = "Primed";
+/// The notifications. Charging and primed are Assault's pair's shape
+/// ("Bomb is arming..." and "Bomb armed!", `multiplayer_globals`).
+pub const MESSAGE_CHARGING: &str = "Charging...";
+pub const MESSAGE_PRIMED: &str = "Primed!";
 pub const MESSAGE_LOST: &str = "Charge lost";
 pub const MESSAGE_LOST_STOOD_STILL: &str = "Charge lost: you stood still";
 pub const MESSAGE_LOST_CROUCHED: &str = "Charge lost: you crouched";
@@ -199,7 +224,7 @@ impl Medal {
 pub const TUTORIAL_TEXT: [&str; 4] = [
     "Crouch, walk in under a lip,\nlet go, then walk out.",
     "You are primed.\nDo not crouch again.",
-    "Find a strip. Its post is the height\nto fall from. No post: just jump.",
+    "Follow the navpoint. Jump from the\nJump mark onto the Land mark.",
     "Jump or fall onto the strip.\nFall Assist (Controls) can steer.",
 ];
 
@@ -277,7 +302,7 @@ pub enum Lost {
 pub enum Target {
     /// The nearest crouch spot's stand point (not primed).
     Crouch,
-    /// The nearest strip's stand point (primed).
+    /// The chosen strip's stand point (primed): its number is the drop.
     Strip,
 }
 
@@ -295,6 +320,8 @@ pub enum Landed {
 /// A notification.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Note {
+    /// The arming bar came up: a recipe step began.
+    Charging,
     Primed,
     ChargeLost(Lost),
     Landed(Landed),
@@ -303,6 +330,7 @@ pub enum Note {
 impl Note {
     pub fn text(self) -> String {
         match self {
+            Note::Charging => MESSAGE_CHARGING.into(),
             Note::Primed => MESSAGE_PRIMED.into(),
             Note::ChargeLost(Lost::StoodStill) => MESSAGE_LOST_STOOD_STILL.into(),
             Note::ChargeLost(Lost::Crouched) => MESSAGE_LOST_CROUCHED.into(),
@@ -315,16 +343,79 @@ impl Note {
     }
 }
 
+/// The arming bar's target and how it gets there: a fill and its
+/// [`Motion`], from [`arm_for`] or [`ArmTrack`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Arm {
+    pub fill: f32,
+    pub motion: Motion,
+}
+
+/// The arming bar for a charge phase, one tick on its own: each recipe
+/// step's fill, eased to; primed, the ending; lost, the blink; no charge,
+/// none. [`ArmTrack`] adds the run out, which needs the tick before.
+pub fn arm_for(phase: Option<Phase>) -> Option<Arm> {
+    let arm = |fill, motion| Some(Arm { fill, motion });
+    match phase? {
+        Phase::Near => arm(FILL_NEAR, Motion::Ease),
+        Phase::Under => arm(FILL_UNDER, Motion::Ease),
+        Phase::Held => arm(FILL_HELD, Motion::Ease),
+        Phase::Primed => arm(1.0, Motion::Ending),
+        Phase::Lost => arm(0.0, Motion::Blink),
+    }
+}
+
+/// The arming bar from tick to tick. A phase gives [`arm_for`]'s bar; no
+/// charge after a recipe step is leaving early, the run out; no charge
+/// after the ending, the blink or the run out keeps that bar, which hides
+/// itself on its curve. The bar's motion is the runtime's to play on wall
+/// time; this is per tick only.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ArmTrack {
+    last: Option<Arm>,
+}
+
+impl ArmTrack {
+    /// The bar for this tick's phase.
+    pub fn update(&mut self, phase: Option<Phase>) -> Option<Arm> {
+        let arm = match (arm_for(phase), self.last) {
+            (Some(a), _) => Some(a),
+            (
+                None,
+                Some(Arm {
+                    motion: Motion::Ease | Motion::None,
+                    ..
+                }),
+            ) => Some(Arm {
+                fill: 0.0,
+                motion: Motion::RunOut,
+            }),
+            (None, last) => last,
+        };
+        self.last = arm;
+        arm
+    }
+
+    /// The mode went off: nothing to run out.
+    pub fn clear(&mut self) {
+        self.last = None;
+    }
+}
+
 /// What the HUD shows.
 #[derive(Clone, Debug, PartialEq)]
 pub struct View {
     pub primed: bool,
     pub scan: Scan,
-    /// The charge meter; `None` hides it.
+    /// The charge: the strip under the pill shows it primed and lost;
+    /// `None` hides it.
     pub charge: Option<Charge>,
+    /// The arming bar; `None` hides it.
+    pub arm: Option<Arm>,
     /// The prompt line's verb; `None` leaves the line to the game.
     pub verb: Option<Verb>,
-    /// The navpoint's target and the metres to it; `None` without one.
+    /// The navpoint's target and its number in metres: the distance to a
+    /// crouch spot, the drop onto a strip; `None` without one.
     pub nav: Option<(Target, f32)>,
     /// The latest notification and the tick it was raised at: a new tick
     /// queues it once.
@@ -342,6 +433,7 @@ impl View {
             primed: false,
             scan: Scan::Ready,
             charge: None,
+            arm: None,
             verb: None,
             nav: None,
             note: None,
@@ -351,7 +443,7 @@ impl View {
     }
 }
 
-/// A distance as the navpoint shows it: whole metres, as the game's
+/// A distance or drop as the navpoint shows it: whole metres, as the game's
 /// counts are whole (the count fonts have no `.`), clamped to
 /// [`DISTANCE_LONGEST`].
 pub fn distance_text(m: f32) -> String {
@@ -393,6 +485,19 @@ pub fn hud() -> Hud {
                     ..Place::in_grenade_row(Origin::NextGrenadePill)
                 },
             ),
+            // Assault's arming bar, where retail draws it; it gives way to
+            // retail's own in an Assault game.
+            Element::meter(
+                ARM,
+                Art::Widget {
+                    hud: HudRef::Named(ARM_HUD),
+                    name: ARM_WIDGET,
+                },
+                Place::new(Anchor::Centre, ARM_FULL)
+                    .split(ARM_SPLIT, ARM_SPLIT)
+                    .registered([0.5, 0.5]),
+            )
+            .hidden_on_d(ASSAULT_ARMING_D),
             // Centred where a pill's count is, as the counts are.
             Element::text(
                 PILL_ICON,
@@ -450,6 +555,9 @@ pub fn values(v: &View) -> Values {
         Scan::Ready => Some(Style::Inactive),
     };
     let charge = v.charge.filter(|_| ready);
+    // The strip under the pill is the charge's time left: primed, and the
+    // empty strip of a loss. The recipe is the arming bar's.
+    let strip = charge.filter(|c| matches!(c.phase, Phase::Primed | Phase::Lost));
     // The icon flashes while the charge is about to go, and in the held
     // step (the next is to walk out).
     let icon_style = |style: Style| match charge {
@@ -470,8 +578,15 @@ pub fn values(v: &View) -> Values {
     out.set(PILL_END, p);
     out.set(
         CHARGE,
-        match charge {
+        match strip {
             Some(c) => Value::fill(c.fill.clamp(0.0, 1.0)),
+            None => Value::hidden(),
+        },
+    );
+    out.set(
+        ARM,
+        match v.arm.filter(|_| ready) {
+            Some(a) => Value::fill(a.fill.clamp(0.0, 1.0)).moving(a.motion),
             None => Value::hidden(),
         },
     );
@@ -523,13 +638,14 @@ pub fn values(v: &View) -> Values {
 /// The preview's states, by name, as [`View`]s.
 pub fn views() -> Vec<(&'static str, View)> {
     let crouch = |m| Some((Target::Crouch, m));
-    let strip = Some((Target::Strip, SAMPLE_DISTANCE_M));
+    let strip = Some((Target::Strip, SAMPLE_DROP_M));
     let not_primed = View {
         nav: crouch(SAMPLE_DISTANCE_M),
         ..View::idle()
     };
     let step = |phase, fill, verb| View {
         charge: Some(Charge { phase, fill }),
+        arm: arm_for(Some(phase)),
         verb: Some(verb),
         nav: crouch(1.0),
         ..View::idle()
@@ -552,6 +668,7 @@ pub fn views() -> Vec<(&'static str, View)> {
             phase: Phase::Lost,
             fill: 0.0,
         }),
+        arm: arm_for(Some(Phase::Lost)),
         verb: Some(Verb::ChargeAgain(why)),
         note: Some((Note::ChargeLost(why), tick)),
         ..not_primed.clone()
@@ -570,9 +687,32 @@ pub fn views() -> Vec<(&'static str, View)> {
     };
     vec![
         ("not-primed", not_primed.clone()),
-        ("near", step(Phase::Near, FILL_NEAR, Verb::HoldAndWalkUnder)),
+        (
+            "near",
+            View {
+                note: Some((Note::Charging, 1)),
+                ..step(Phase::Near, FILL_NEAR, Verb::HoldAndWalkUnder)
+            },
+        ),
         ("under", step(Phase::Under, FILL_UNDER, Verb::LetGoOfCrouch)),
         ("held", step(Phase::Held, FILL_HELD, Verb::WalkOutToStand)),
+        (
+            "primed-ending",
+            View {
+                arm: arm_for(Some(Phase::Primed)),
+                ..full.clone()
+            },
+        ),
+        (
+            "left-early",
+            View {
+                arm: Some(Arm {
+                    fill: 0.0,
+                    motion: Motion::RunOut,
+                }),
+                ..not_primed.clone()
+            },
+        ),
         ("primed-full", full.clone()),
         ("primed-draining", primed(0.25)),
         (
@@ -774,13 +914,14 @@ mod tests {
         assert_eq!(style("not-primed", NAVPOINT), Some(Style::Normal));
         assert_eq!(style("scanning", NAVPOINT), None);
         assert_eq!(style("no-strips", NAVPOINT), None);
-        assert_eq!(state("primed-full").get(NAVPOINT).unwrap().text, "12");
+        assert_eq!(state("primed-full").get(NAVPOINT).unwrap().text, "3");
         assert_eq!(state("under").get(NAVPOINT).unwrap().text, "1");
         assert_eq!(state("primed-full").get(PILL_ICON).unwrap().text, ICON_TEXT);
     }
 
-    /// The meter's fill by phase (docs/game/hud-kit.md, "The charge
-    /// meter"), the icon's two flashes, and the verbs on the prompt line.
+    /// The strip's fill by phase (docs/game/hud-kit.md, "The charge
+    /// meter"): primed and lost only, the recipe being the arming bar's;
+    /// the icon's two flashes, and the verbs on the prompt line.
     #[test]
     fn the_charge_meter_and_the_prompts_follow_the_recipe() {
         let fill = |s: &str| {
@@ -789,9 +930,9 @@ mod tests {
             c.shown.then_some(c.fill)
         };
         assert_eq!(fill("not-primed"), None);
-        assert_eq!(fill("near"), Some(0.0));
-        assert_eq!(fill("under"), Some(1.0 / 3.0));
-        assert_eq!(fill("held"), Some(2.0 / 3.0));
+        assert_eq!(fill("near"), None);
+        assert_eq!(fill("under"), None);
+        assert_eq!(fill("held"), None);
         assert_eq!(fill("primed-full"), Some(1.0));
         assert_eq!(fill("primed-draining"), Some(0.25));
         assert_eq!(fill("lost"), Some(0.0));
@@ -841,6 +982,9 @@ mod tests {
             m.shown.then(|| (m.text.clone(), m.since_tick))
         };
         assert_eq!(msg("primed-full"), Some((MESSAGE_PRIMED.into(), 1)));
+        assert_eq!(msg("near"), Some((MESSAGE_CHARGING.into(), 1)));
+        assert_eq!(Note::Charging.text(), "Charging...");
+        assert_eq!(Note::Primed.text(), "Primed!");
         assert_eq!(msg("lost"), Some((MESSAGE_LOST.into(), 2)));
         assert_eq!(
             msg("lost-stood-still"),
@@ -859,7 +1003,11 @@ mod tests {
         }
         assert_eq!(msg("bounced"), None);
         assert_eq!(msg("missed"), Some((MESSAGE_MISSED.into(), 4)));
-        assert_eq!(msg("near"), None);
+        assert_eq!(msg("under"), None);
+        for m in [MESSAGE_CHARGING, MESSAGE_PRIMED] {
+            assert!(crate::model::message_fault(m).is_none(), "{m}");
+            assert!(m.len() <= MESSAGE_LONGEST.len(), "{m}");
+        }
         for (n, t) in [
             (Landed::NotPrimed, MESSAGE_NOT_PRIMED),
             (Landed::TooSlow, MESSAGE_TOO_SLOW),
@@ -917,7 +1065,7 @@ mod tests {
         assert_eq!(
             ids,
             [
-                PILL, PILL_END, CHARGE, PILL_ICON, PROMPT, MESSAGE, MEDAL, NAVPOINT, TUTORIAL
+                PILL, PILL_END, CHARGE, ARM, PILL_ICON, PROMPT, MESSAGE, MEDAL, NAVPOINT, TUTORIAL
             ]
         );
         for (name, v) in Superbounce.states() {
@@ -957,6 +1105,8 @@ mod tests {
                 "near",
                 "under",
                 "held",
+                "primed-ending",
+                "left-early",
                 "primed-full",
                 "primed-draining",
                 "primed-still-warning",
@@ -985,6 +1135,92 @@ mod tests {
             assert_eq!(t.shown, name.starts_with("tutorial"), "{name}");
         }
         assert!(Superbounce.multiplayer_only().is_some());
+    }
+
+    /// The arming bar: Assault's widget where retail draws it, giving way
+    /// to retail's; the recipe's fills eased to, the ending primed, the
+    /// run out on leaving, the blink on a loss; hidden elsewhere.
+    #[test]
+    fn the_arming_bar_shows_the_recipe() {
+        let h = hud();
+        let e = h.element(ARM).unwrap();
+        assert_eq!(
+            e.kind,
+            Kind::Meter {
+                art: Art::Widget {
+                    hud: HudRef::Named("ui\\hud\\scoreboard"),
+                    name: "bomb_defusal",
+                },
+            }
+        );
+        assert_eq!(e.at.anchor, Anchor::Centre);
+        assert_eq!(
+            (e.at.full, e.at.half, e.at.quarter),
+            ((0, 110), Some((0, 27)), Some((0, 27)))
+        );
+        assert_eq!(e.at.registration, [0.5, 0.5]);
+        assert_eq!(e.hide_when_d, 0x400);
+        let arm = |s: &str| {
+            let v = state(s);
+            let a = v.get(ARM).unwrap();
+            a.shown.then_some((a.fill, a.motion))
+        };
+        assert_eq!(arm("near"), Some((0.0, Motion::Ease)));
+        assert_eq!(arm("under"), Some((1.0 / 3.0, Motion::Ease)));
+        assert_eq!(arm("held"), Some((2.0 / 3.0, Motion::Ease)));
+        assert_eq!(arm("primed-ending"), Some((1.0, Motion::Ending)));
+        assert_eq!(arm("left-early"), Some((0.0, Motion::RunOut)));
+        for s in ["lost", "lost-stood-still", "lost-crouched"] {
+            assert_eq!(arm(s), Some((0.0, Motion::Blink)), "{s}");
+        }
+        for s in [
+            "not-primed",
+            "primed-full",
+            "scanning",
+            "no-strips",
+            "tutorial-2",
+        ] {
+            assert_eq!(arm(s), None, "{s}");
+        }
+    }
+
+    /// Tick to tick: a step eases, leaving a step runs out, the ending and
+    /// the blink keep their bar (they hide themselves), a new charge starts
+    /// again.
+    #[test]
+    fn the_arm_track_runs_out_only_after_a_step() {
+        let mut t = ArmTrack::default();
+        let m = |a: Option<Arm>| a.map(|a| (a.fill, a.motion));
+        assert_eq!(m(t.update(None)), None);
+        assert_eq!(m(t.update(Some(Phase::Near))), Some((0.0, Motion::Ease)));
+        assert_eq!(
+            m(t.update(Some(Phase::Under))),
+            Some((FILL_UNDER, Motion::Ease))
+        );
+        assert_eq!(m(t.update(None)), Some((0.0, Motion::RunOut)), "left early");
+        assert_eq!(
+            m(t.update(None)),
+            Some((0.0, Motion::RunOut)),
+            "the same run out"
+        );
+        assert_eq!(
+            m(t.update(Some(Phase::Held))),
+            Some((FILL_HELD, Motion::Ease))
+        );
+        assert_eq!(
+            m(t.update(Some(Phase::Primed))),
+            Some((1.0, Motion::Ending))
+        );
+        assert_eq!(m(t.update(None)), Some((1.0, Motion::Ending)), "no run out");
+        assert_eq!(m(t.update(Some(Phase::Lost))), Some((0.0, Motion::Blink)));
+        assert_eq!(
+            m(t.update(None)),
+            Some((0.0, Motion::Blink)),
+            "the loss's blink"
+        );
+        assert_eq!(m(t.update(Some(Phase::Near))), Some((0.0, Motion::Ease)));
+        t.clear();
+        assert_eq!(m(t.update(None)), None);
     }
 
     fn watch(primed: bool, strip_m: Option<f32>, bounced: bool) -> Option<Watch> {

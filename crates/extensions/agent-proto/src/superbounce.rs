@@ -128,10 +128,17 @@ pub struct State {
     /// `charge_again`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lost_reason: Option<LostReason>,
-    /// The navpoint's target: the nearest crouch spot while not primed,
-    /// the nearest strip while primed.
+    /// The navpoint's target: the nearest crouch spot while not primed;
+    /// while primed the chosen strip (the nearest one the player's floor
+    /// is high enough for, else the nearest; falling, the predicted
+    /// landing's).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nav_target: Option<NavTarget>,
+    /// Where to jump from for the chosen strip, while primed: the floor
+    /// mark's place (docs/game/superbounce.md, "Floor marks"); absent
+    /// when none is found.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub takeoff: Option<[f64; 3]>,
     /// The landing the assist predicts, while airborne and falling toward
     /// a strip.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -291,6 +298,10 @@ pub struct NavTarget {
     pub kind: NavKind,
     /// From the player's origin, world units.
     pub distance: f64,
+    /// A strip's fall (world units), the drop the navpoint's number
+    /// gives in metres; 0 for a crouch spot.
+    #[serde(default)]
+    pub fall: f64,
 }
 
 /// Whether a predicted landing is on the slot.
@@ -315,6 +326,12 @@ pub struct Predicted {
     pub speed: f64,
     /// The touchdown speed the strip needs, units/s.
     pub need: f64,
+    /// How far the landing is outside the slot, world units (0 inside).
+    #[serde(default)]
+    pub miss: f64,
+    /// In the slot and at least `need`: the lock-on is red.
+    #[serde(default)]
+    pub locked: bool,
 }
 
 /// What a landing by a strip came to, by its first failed test.
@@ -905,12 +922,16 @@ mod tests {
                 at: [1.0, 2.0, 3.0],
                 kind: NavKind::Crouch,
                 distance: 2.5,
+                fall: 0.0,
             }),
+            takeoff: None,
             landing: Some(Predicted {
                 at: [1.0, 2.0, -3.0],
                 verdict: Course::OnSlot,
                 speed: 5.5,
                 need: 4.0,
+                miss: 0.0,
+                locked: true,
             }),
             last_landing: Some(Landing {
                 result: LandingResult::NotPrimed,
@@ -952,6 +973,8 @@ mod tests {
         assert_eq!(v["lost_reason"], "stood_still");
         assert_eq!(v["nav_target"]["kind"], "crouch");
         assert_eq!(v["landing"]["verdict"], "on_slot");
+        assert_eq!(v["landing"]["locked"], true);
+        assert_eq!(v["nav_target"]["fall"], 0.0);
         assert_eq!(v["last_landing"]["result"], "not_primed");
         assert_eq!(v["standing_fits"], false);
         let bare = serde_json::to_value(State::default()).unwrap();
@@ -960,6 +983,7 @@ mod tests {
             "verb",
             "lost_reason",
             "nav_target",
+            "takeoff",
             "landing",
             "last_landing",
             "standing_fits",
