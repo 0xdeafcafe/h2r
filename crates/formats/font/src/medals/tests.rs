@@ -86,7 +86,7 @@ fn the_medals_take_the_retail_medals_place() {
     let raw = font_with_medal(art::SIZE);
     let font = Font::parse(&raw).unwrap();
     let add = replacements(&font);
-    assert_eq!(add.len(), 4);
+    assert_eq!(add.len(), MEDALS.len());
     for r in &add {
         assert_eq!((r.width, r.height), (24, 24));
         assert_eq!((r.advance, r.x_offset, r.y_offset), (25, 0, Some(18)));
@@ -150,7 +150,7 @@ fn the_disc_message_fonts_take_the_medals() {
             assert!(!has_glyph(&font, unit), "{}: U+{unit:04X} taken", e.path);
         }
         let add = replacements(&font);
-        assert_eq!(add.len(), 4, "{}", e.path);
+        assert_eq!(add.len(), MEDALS.len(), "{}", e.path);
         let out = crate::patch::apply(&raw, &add).unwrap();
         let f = Font::parse(&out).unwrap();
         f.validate().unwrap();

@@ -10,7 +10,7 @@
 //! adds the Mods list's state marks (`font::mod_marks`: U+2605 new,
 //! U+2713 installed, U+2193 downloading), drawn in code the same way, and
 //! to the two HUD message fonts the superbounce medals (`font::medals`,
-//! U+E2A0..U+E2A3; docs/game/hud-kit.md, "The medals").
+//! U+E2A0..U+E2A6; docs/game/hud-kit.md, "The medals").
 
 /// Adds the gear to every font file.
 pub struct GearRewrite;

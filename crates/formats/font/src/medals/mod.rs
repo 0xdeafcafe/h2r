@@ -1,5 +1,5 @@
 //! The superbounce medal glyphs (docs/game/hud-kit.md, "The medals"):
-//! four medals of our own, added to the HUD message fonts at spare
+//! seven medals of our own, added to the HUD message fonts at spare
 //! private-use code points so a notification line can start with one, as
 //! a retail multi-kill line starts with its medal.
 //!
@@ -15,21 +15,30 @@ pub mod art;
 use crate::Font;
 use crate::patch::Replacement;
 
-/// U+E2A0: Superbounce, a bounce.
+/// U+E2A0: Superbounce, every bounce.
 pub const SUPERBOUNCE: u16 = 0xe2a0;
 /// U+E2A1: Double Bounce, the second bounce of a chain.
 pub const DOUBLE_BOUNCE: u16 = 0xe2a1;
 /// U+E2A2: Triple Bounce, the third.
 pub const TRIPLE_BOUNCE: u16 = 0xe2a2;
-/// U+E2A3: Chain Bounce, the fifth.
-pub const CHAIN_BOUNCE: u16 = 0xe2a3;
+/// U+E2A3: Quad Bounce, the fourth.
+pub const QUAD_BOUNCE: u16 = 0xe2a3;
+/// U+E2A4: Chain Bounce, the fifth.
+pub const CHAIN_BOUNCE: u16 = 0xe2a4;
+/// U+E2A5: Bouncetacular, the sixth.
+pub const BOUNCETACULAR: u16 = 0xe2a5;
+/// U+E2A6: Bounced, a fall out of the map during a bounce.
+pub const BOUNCED: u16 = 0xe2a6;
 
-/// Every medal and its picture, in tier order.
-pub const MEDALS: [(u16, &[u16; 576]); 4] = [
+/// Every medal and its picture: the chain's tiers in order, then Bounced.
+pub const MEDALS: [(u16, &[u16; 576]); 7] = [
     (SUPERBOUNCE, &art::SUPERBOUNCE),
     (DOUBLE_BOUNCE, &art::DOUBLE_BOUNCE),
     (TRIPLE_BOUNCE, &art::TRIPLE_BOUNCE),
+    (QUAD_BOUNCE, &art::QUAD_BOUNCE),
     (CHAIN_BOUNCE, &art::CHAIN_BOUNCE),
+    (BOUNCETACULAR, &art::BOUNCETACULAR),
+    (BOUNCED, &art::BOUNCED),
 ];
 
 /// The fonts that get the medals: the two HUD message fonts, the ones the

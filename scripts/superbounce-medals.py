@@ -32,35 +32,55 @@ MEDALS = [
     (0xE2A0, "SUPERBOUNCE", "Superbounce!"),
     (0xE2A1, "DOUBLE_BOUNCE", "Double bounce!"),
     (0xE2A2, "TRIPLE_BOUNCE", "Triple bounce!"),
-    (0xE2A3, "CHAIN_BOUNCE", "Chain bounce!"),
+    (0xE2A3, "QUAD_BOUNCE", "Quad bounce!"),
+    (0xE2A4, "CHAIN_BOUNCE", "Chain bounce!"),
+    (0xE2A5, "BOUNCETACULAR", "Bouncetacular!"),
+    (0xE2A6, "BOUNCED", "Bounced!"),
 ]
 
-# Palettes, 0..1 RGB: the disc from its top to its bottom (the retail discs
-# are lighter low down), and the chevrons' face, top to bottom, and edge.
-PALETTES = {
-    # Bronze, a green chevron.
+# Each medal: the disc from its top to its bottom (the retail discs are
+# lighter low down), the chevrons' face (top to bottom) and edge, the
+# strip's colour, the chevrons as rows top first (a count of chevrons in
+# each row: the tier, as a multi-kill disc counts its stars), and for the
+# top tier a spiked rim. `BOUNCED` is a fall through a broken strip.
+STYLE = {
+    # Slate blue, one pale chevron.
     "SUPERBOUNCE": dict(
-        top=(0.80, 0.50, 0.24), bottom=(0.98, 0.76, 0.48),
-        face=((0.60, 1.0, 0.45), (0.12, 0.62, 0.16)), edge=(0.03, 0.24, 0.05),
-        strip=(0.42, 0.22, 0.08)),
+        top=(0.42, 0.54, 0.72), bottom=(0.72, 0.82, 0.94),
+        face=((0.92, 1.0, 1.0), (0.40, 0.84, 0.98)), edge=(0.04, 0.18, 0.36),
+        strip=(0.22, 0.30, 0.46), rows=[1]),
     # Gold, blue chevrons (beside the Double Kill's gold and blue).
     "DOUBLE_BOUNCE": dict(
         top=(1.0, 0.86, 0.42), bottom=(1.0, 1.0, 0.70),
         face=((0.42, 0.58, 1.0), (0.14, 0.22, 0.78)), edge=(0.04, 0.06, 0.36),
-        strip=(0.66, 0.46, 0.10)),
+        strip=(0.66, 0.46, 0.10), rows=[1, 1]),
     # Steel, teal chevrons.
     "TRIPLE_BOUNCE": dict(
         top=(0.55, 0.66, 0.72), bottom=(0.80, 0.88, 0.90),
         face=((0.40, 1.0, 0.90), (0.0, 0.62, 0.60)), edge=(0.0, 0.20, 0.24),
-        strip=(0.26, 0.34, 0.40)),
-    # Silver-lavender with a gold spiked rim, purple chevrons.
+        strip=(0.26, 0.34, 0.40), rows=[1, 1, 1]),
+    # Bronze, green chevrons.
+    "QUAD_BOUNCE": dict(
+        top=(0.80, 0.50, 0.24), bottom=(0.98, 0.76, 0.48),
+        face=((0.60, 1.0, 0.45), (0.12, 0.62, 0.16)), edge=(0.03, 0.24, 0.05),
+        strip=(0.42, 0.22, 0.08), rows=[2, 2]),
+    # Lavender, purple chevrons.
     "CHAIN_BOUNCE": dict(
         top=(0.80, 0.78, 0.92), bottom=(0.97, 0.97, 1.0),
         face=((0.90, 0.58, 1.0), (0.46, 0.14, 0.74)), edge=(0.18, 0.03, 0.32),
-        strip=(0.46, 0.42, 0.62), rim=((1.0, 0.88, 0.48), (0.72, 0.44, 0.12))),
+        strip=(0.46, 0.42, 0.62), rows=[1, 2, 2]),
+    # Pale gold in a spiked gold rim, red chevrons.
+    "BOUNCETACULAR": dict(
+        top=(1.0, 0.92, 0.66), bottom=(1.0, 1.0, 0.90),
+        face=((1.0, 0.62, 0.30), (0.80, 0.10, 0.06)), edge=(0.32, 0.02, 0.0),
+        strip=(0.70, 0.52, 0.20), rows=[2, 2, 2],
+        rim=((1.0, 0.88, 0.48), (0.72, 0.44, 0.12))),
+    # Maroon, a yellow chevron falling through a broken strip.
+    "BOUNCED": dict(
+        top=(0.50, 0.12, 0.12), bottom=(0.86, 0.36, 0.28),
+        face=((1.0, 0.94, 0.45), (0.98, 0.58, 0.08)), edge=(0.30, 0.10, 0.0),
+        strip=(0.24, 0.04, 0.04), rows=[], fall=True),
 }
-
-CHEVRONS = {"SUPERBOUNCE": 1, "DOUBLE_BOUNCE": 2, "TRIPLE_BOUNCE": 3, "CHAIN_BOUNCE": 3}
 
 
 def mix(a, b, t):
@@ -72,8 +92,9 @@ def clamp(v):
 
 
 def chevron_dist(x, y, cx, tip, half_w, height, thick):
-    """Signed distance (<0 inside) to a ^ chevron: two strokes from the
-    bottom corners up to the tip at (cx, tip)."""
+    """Signed distance (<0 inside) to a chevron: two strokes from the
+    corners at `tip + height` to the tip at (cx, tip). A negative height
+    points it down."""
     def seg(ax, ay, bx, by):
         px, py = x - ax, y - ay
         dx, dy = bx - ax, by - ay
@@ -85,40 +106,50 @@ def chevron_dist(x, y, cx, tip, half_w, height, thick):
     return d - thick / 2
 
 
-def chevrons(n, disc_r):
-    """(tip y, half width, height, thickness) of each chevron, top first,
-    in pixels from the top of the picture, fitted between the disc's top
-    and its strip."""
-    c = SIZE / 2
-    top = c - disc_r * 0.74
-    bottom = strip(disc_r)[0] - 1.3
-    k = disc_r / 11.95
-    if n == 1:
-        h, th, hw = 5.6 * k, 3.4 * k, 6.4 * k
-    elif n == 2:
-        h, th, hw = 4.0 * k, 2.5 * k, 6.0 * k
-    else:
-        h, th, hw = 2.9 * k, 1.8 * k, 5.6 * k
-    # The strokes reach th/2 above the tip and about th below the base.
-    span = bottom - top - th / 2 - h - th * 0.8
-    gap = span / (n - 1) if n > 1 else 0
-    first = top + th / 2 + (span - gap * (n - 1)) / 2 if n == 1 else top + th / 2
-    return [(first + i * gap, hw, h, th) for i in range(n)]
-
-
 def strip(disc_r):
     """(top y, height, half width) of the strip across the lower disc."""
     return (SIZE / 2 + disc_r * 0.46, max(1.5, disc_r * 0.15), disc_r * 0.6)
 
 
+def chevrons(rows, disc_r):
+    """(centre x, tip y, half width, height, thickness) of each chevron,
+    fitted between the disc's top and its strip: rows top first, each
+    row's chevrons side by side."""
+    if not rows:
+        return []
+    c = SIZE / 2
+    k = disc_r / 11.95
+    top = c - disc_r * 0.74
+    bottom = strip(disc_r)[0] - 1.3
+    n, cols = len(rows), max(rows)
+    if cols == 1:
+        h, th, hw = {1: (5.6, 3.4, 6.4), 2: (4.0, 2.5, 6.0)}.get(n, (2.9, 1.8, 5.6))
+    elif n == 2:
+        h, th, hw = 3.2, 2.0, 3.3
+    else:
+        h, th, hw = 2.6, 1.7, 3.0
+    h, th, hw = h * k, th * k, hw * k
+    # The strokes reach th/2 above the tip and about th below the base.
+    span = bottom - top - th / 2 - h - th * 0.8
+    gap = span / (n - 1) if n > 1 else 0
+    first = top + th / 2 + (span / 2 if n == 1 else 0)
+    pitch = 2 * hw + th + 2.0 * k
+    out = []
+    for i, m in enumerate(rows):
+        y = first + i * gap
+        for j in range(m):
+            out.append((c + (j - (m - 1) / 2) * pitch, y, hw, h, th))
+    return out
+
+
 def sample(name, x, y):
     """Straight RGBA (0..1) of the picture at (x, y), in pixels."""
-    p = PALETTES[name]
+    p = STYLE[name]
     cx = cy = SIZE / 2
     dx, dy = x - cx, y - cy
     r = math.hypot(dx, dy)
     ang = math.atan2(dy, dx)
-    frame = name == "CHAIN_BOUNCE"
+    frame = "rim" in p
     disc_r = 9.6 if frame else 11.95
     col = None
     # The spiked rim: twelve points between the disc and the edge.
@@ -132,39 +163,46 @@ def sample(name, x, y):
             # A dark seam where the rim meets the disc.
             if r < disc_r + 0.6:
                 col = mix(col, (0.2, 0.12, 0.05), 0.55)
-    if r <= disc_r:
-        t = clamp((y - (cy - disc_r)) / (2 * disc_r))
-        col = mix(p["top"], p["bottom"], t ** 1.3)
-        edge = disc_r - r
-        # Light from the upper left on the rim, shade on the lower right.
-        lit = -(dx + dy) / (math.sqrt(2) * max(r, 1e-6))
-        if edge < 1.3:
-            if lit > 0:
-                col = mix(col, (1.0, 1.0, 1.0), clamp(lit) * 0.85)
-            else:
-                col = mix(col, mix(p["top"], (0, 0, 0), 0.35), clamp(-lit) * 0.6)
-        # The strip: a sunk bar across the lower disc, lit on its lower lip.
-        strip_y, strip_h, strip_w = strip(disc_r)
-        if abs(dx) <= strip_w and strip_y <= y <= strip_y + strip_h:
+    if r > disc_r:
+        return (*col, 1.0) if col else (0.0, 0.0, 0.0, 0.0)
+    t = clamp((y - (cy - disc_r)) / (2 * disc_r))
+    col = mix(p["top"], p["bottom"], t ** 1.3)
+    # Light from the upper left on the rim, shade on the lower right.
+    lit = -(dx + dy) / (math.sqrt(2) * max(r, 1e-6))
+    if disc_r - r < 1.3:
+        if lit > 0:
+            col = mix(col, (1.0, 1.0, 1.0), clamp(lit) * 0.85)
+        else:
+            col = mix(col, mix(p["top"], (0, 0, 0), 0.35), clamp(-lit) * 0.6)
+    shade = mix(p["top"], (0, 0, 0), 0.4)
+    if p.get("fall"):
+        # The strip across the middle, broken at the centre, and a chevron
+        # pointing down below the break.
+        sy, sh, sw = cy + 2.4, 2.0, disc_r * 0.7
+        if abs(dx) <= sw and sy <= y <= sy + sh and abs(dx) >= 4.2 + (y - sy) * 0.8:
             col = p["strip"]
-            if y > strip_y + strip_h - 0.6:
+            if y < sy + 0.6:
+                col = mix(p["strip"], p["bottom"], 0.6)
+        marks = [(cx, cy + 7.6, 5.8, -8.0, 3.0)]
+    else:
+        sy, sh, sw = strip(disc_r)
+        if abs(dx) <= sw and sy <= y <= sy + sh:
+            col = p["strip"]
+            if y > sy + sh - 0.6:
                 col = mix(p["strip"], p["bottom"], 0.7)
-        marks = chevrons(CHEVRONS[name], disc_r)
-        top = 0.0
-        # Drop shadow of the chevrons on the disc (down and to the right).
-        for (tip, hw, h, th) in marks:
-            if chevron_dist(x - 0.6, y - 0.8, cx, top + tip, hw, h, th) < 0:
-                col = mix(col, mix(p["top"], (0, 0, 0), 0.4), 0.25)
-        for (tip, hw, h, th) in marks:
-            d = chevron_dist(x, y, cx, top + tip, hw, h, th)
-            if d < 0:
-                tt = clamp((y - (top + tip - th / 2)) / (h + th))
-                face = mix(p["face"][0], p["face"][1], tt)
-                if d > -min(0.75, th * 0.3):
-                    face = mix(face, p["edge"], 0.8)
-                col = face
-    if col is None:
-        return (0.0, 0.0, 0.0, 0.0)
+        marks = chevrons(p["rows"], disc_r)
+    # Drop shadow of the chevrons on the disc (down and to the right).
+    for (mx, tip, hw, h, th) in marks:
+        if chevron_dist(x - 0.6, y - 0.8, mx, tip, hw, h, th) < 0:
+            col = mix(col, shade, 0.25)
+    for (mx, tip, hw, h, th) in marks:
+        d = chevron_dist(x, y, mx, tip, hw, h, th)
+        if d < 0:
+            lo, hi = min(tip, tip + h) - th / 2, max(tip, tip + h) + th / 2
+            face = mix(p["face"][0], p["face"][1], clamp((y - lo) / (hi - lo)))
+            if d > -min(0.75, th * 0.3):
+                face = mix(face, p["edge"], 0.8)
+            col = face
     return (*col, 1.0)
 
 
@@ -269,12 +307,17 @@ def preview(out_dir, pics, h2, disc):
                 ours = Image.new("RGBA", (SIZE + words.width, max(SIZE, words.height)), (0, 0, 0, 0))
                 ours.alpha_composite(im, (0, 0))
                 ours.alpha_composite(words, (SIZE, 0))
-                retail = {
-                    "SUPERBOUNCE": " Killing Spree!",
-                    "DOUBLE_BOUNCE": " Double Kill!",
-                    "TRIPLE_BOUNCE": " Triple Kill!",
-                    "CHAIN_BOUNCE": " Killing Frenzy!",
+                # A retail medal line of the same tier, its glyph and words.
+                glyph, words_r = {
+                    "SUPERBOUNCE": (0xE033, "Killing Spree!"),
+                    "DOUBLE_BOUNCE": (0xE038, "Double Kill!"),
+                    "TRIPLE_BOUNCE": (0xE039, "Triple Kill!"),
+                    "QUAD_BOUNCE": (0xE040, "Overkill!"),
+                    "CHAIN_BOUNCE": (0xE041, "Killtacular!"),
+                    "BOUNCETACULAR": (0xE042, "Killtrocity!"),
+                    "BOUNCED": (0xE043, "Killimanjaro!"),
                 }[name]
+                retail = chr(glyph) + " " + words_r
                 b = os.path.join(tmp, "retail.png")
                 h2_line(h2, disc, font, retail, b)
                 ret = Image.open(b).convert("RGBA")
