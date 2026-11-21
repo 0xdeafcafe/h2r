@@ -386,6 +386,65 @@ fn tag_fields_describe_root_and_nested_registry_fields() {
     );
 }
 
+/// `tag.choices` lists what the pick dialog lists: an enum's named
+/// values, every bit of switches with what is on, a reference's tags (no
+/// cap unless asked, `kind` and `query` narrowing them) and an unnamed
+/// value's views. A field with nothing to pick is refused.
+#[test]
+fn tag_choices_lists_the_pick_dialogs_choices() {
+    use crate::app::tag_tests;
+    let t = Temp::new("tag-choices");
+    let (mut app, ..) = tag_tests::app(&t.0);
+    let mut api = Api::new();
+    let weap = format!("{:#010x}", tag_tests::weap_id().0);
+    let mut choices = |p: Value| call(&mut api, &mut app, m::TAG_CHOICES, p);
+
+    let mode = choices(json!({"tag": weap, "path": "mode"}));
+    assert_eq!(
+        mode["values"],
+        json!([{"value": 0, "name": "Off"}, {"value": 1, "name": "On"}, {"value": 2, "name": "Auto"}])
+    );
+    let narrowed = choices(json!({"tag": weap, "path": "mode", "query": "au"}));
+    assert_eq!(narrowed["values"], json!([{"value": 2, "name": "Auto"}]));
+
+    let flags = choices(json!({"tag": weap, "path": "flags"}));
+    let bits = flags["bits"].as_array().unwrap();
+    assert_eq!(bits.len(), 16, "every bit of the word");
+    assert_eq!(bits[0], json!({"bit": 0, "name": "loud", "label": "Loud", "on": true}));
+    assert_eq!(bits[1]["on"], false);
+    assert_eq!(bits[5], json!({"bit": 5, "name": null, "label": "Bit 5", "on": false}));
+
+    let item = choices(json!({"tag": weap, "path": "parts[0].item"}));
+    assert_eq!(item["kinds"], json!([{"group": "itmc", "name": "itmc"}]));
+    assert_eq!(item["tags"][0]["name"], "objects\\test\\kit");
+    assert_eq!(item["tags"].as_array().unwrap().len(), 1);
+    assert_eq!(item["truncated"], false);
+    let none = choices(json!({"tag": weap, "path": "parts[0].item", "limit": 0}));
+    assert_eq!((none["tags"].as_array().unwrap().len(), none["truncated"].as_bool()), (0, Some(true)));
+    let missed = choices(json!({"tag": weap, "path": "parts[0].item", "query": "blaster"}));
+    assert!(missed["tags"].as_array().unwrap().is_empty());
+    let other = choices(json!({"tag": weap, "path": "parts[0].item", "kind": "weap"}));
+    assert!(other["tags"].as_array().unwrap().is_empty());
+
+    assert_eq!(
+        code_of(api.call(&mut app, m::TAG_CHOICES, json!({"tag": weap, "path": "speed"}))),
+        code::INVALID_PARAMS
+    );
+    assert_eq!(
+        code_of(api.call(&mut app, m::TAG_CHOICES, json!({"tag": weap, "path": "parts[0].item", "kind": "toolong"}))),
+        code::INVALID_PARAMS
+    );
+
+    let t = Temp::new("tag-choices-partial");
+    let (mut app, ..) = tag_tests::app_partial(&t.0);
+    let gap = call(&mut api, &mut app, m::TAG_CHOICES, json!({"tag": weap, "path": "+0x6"}));
+    assert_eq!(
+        gap["views"],
+        json!([{"id": "whole_number", "name": "Whole number"}, {"id": "hex", "name": "Hex"}])
+    );
+    assert_eq!(gap["shown"], "whole_number");
+}
+
 #[test]
 fn tag_view_folds_unnamed_fields_and_opens_them_on_request() {
     use crate::app::tag_tests;

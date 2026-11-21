@@ -149,11 +149,13 @@ fn row<'a>(
 ) -> Row<'a> {
     let a = at + f.offset;
     let width = f.kind.width();
-    let edited = match (doc.read(tag, a, width), doc.read_source(tag, a, width)) {
+    let now = doc.read(tag, a, width);
+    let edited = match (&now, doc.read_source(tag, a, width)) {
         (Some(now), Some(file)) => now.as_slice() != file,
         (Some(_), None) => doc.is_changed(tag),
         _ => false,
     };
+    let word = |at: usize, n: usize| now.as_deref().map_or(0, |b| le(&b[at..at + n]));
     let scene = matches!(f.kind, Kind::Block(_)) && doc.scene_block(tag, a).is_some();
     let read_only = reason(&f.kind, scene, refusal);
     let (effect, why) = tag_sync::effect(doc, tag, a, f);
@@ -186,6 +188,16 @@ fn row<'a>(
                 .map_or(0, |b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]));
             (None, Some(bytes(n)))
         }
+        Kind::Enum { bytes: n, values } => (
+            None,
+            Some(choice_text(values, word(0, usize::from(*n)) as u32)),
+        ),
+        Kind::Flags { bytes: n, bits } => {
+            let n = usize::from(*n);
+            (None, Some(switches_text(bits, word(0, n), 8 * n as u32)))
+        }
+        Kind::TagRef { .. } => (None, Some(reference_text(doc, word(4, 4) as u32))),
+        Kind::Datum { .. } => (None, Some(reference_text(doc, word(0, 4) as u32))),
         _ => (None, None),
     };
     Row {
@@ -321,6 +333,81 @@ pub fn unit_words(u: Unit) -> &'static str {
         Unit::Pixels => "pixels",
         Unit::Count => "count",
         Unit::Index => "index",
+    }
+}
+
+/// Little-endian bytes as a number.
+pub(crate) fn le(b: &[u8]) -> u64 {
+    b.iter().rev().fold(0, |v, x| v << 8 | u64::from(*x))
+}
+
+/// Whether an enum value or flag bit name names something.
+pub fn is_name(name: &str) -> bool {
+    !name.is_empty() && name != "_"
+}
+
+/// What a choice row shows: the value's name in words, or `Value 7 (not
+/// named)`.
+pub fn choice_text(values: &[String], v: u32) -> String {
+    match values.get(v as usize).filter(|n| is_name(n)) {
+        Some(name) => words(name),
+        None => format!("Value {v} (not named)"),
+    }
+}
+
+/// A bit as the panel names it: its name in words, or `Bit 7`.
+pub fn bit_text(bits: &[String], bit: u32) -> String {
+    match bits.get(bit as usize).filter(|n| is_name(n)) {
+        Some(name) => words(name),
+        None => format!("Bit {bit}"),
+    }
+}
+
+/// What a switches row shows: how many named switches are on, and which
+/// (`2 of 9 on: Loud, Quiet`); an unnamed bit that is set is listed by
+/// number. With no names, the count is of every bit.
+pub fn switches_text(bits: &[String], v: u64, width: u32) -> String {
+    let named_bits = (0..width).filter(|&b| bits.get(b as usize).is_some_and(|n| is_name(n)));
+    let total = match named_bits.clone().count() {
+        0 => width as usize,
+        n => n,
+    };
+    let on: Vec<u32> = (0..width).filter(|b| v >> b & 1 == 1).collect();
+    let counted = if named_bits.clone().count() == 0 {
+        on.len()
+    } else {
+        named_bits.filter(|b| v >> b & 1 == 1).count()
+    };
+    let mut out = format!("{counted} of {total} on");
+    if !on.is_empty() {
+        let names: Vec<String> = on.iter().map(|&b| bit_text(bits, b)).collect();
+        out.push_str(": ");
+        out.push_str(&names.join(", "));
+    }
+    out
+}
+
+/// A tag kind in words: the group's `title=`, else its code.
+pub fn kind_words(doc: &TagDoc, group: map::FourCC) -> String {
+    match doc.registry().group(group).and_then(|l| l.title.as_ref()) {
+        Some(tags::registry::Title::Text(t)) => t.clone(),
+        _ => tags::defs::fourcc_text(group),
+    }
+}
+
+/// What a tag reference row shows: the kind and the last segment of the
+/// tag's path (`Model  blaster`), `No tag`, or the datum of a tag the map
+/// lacks.
+pub fn reference_text(doc: &TagDoc, id: u32) -> String {
+    if id == u32::MAX {
+        return "No tag".to_owned();
+    }
+    match doc.tag(TagId(id)) {
+        Some(t) => {
+            let last = t.name.rsplit('\\').next().unwrap_or(&t.name);
+            format!("{}  {last}", kind_words(doc, t.group))
+        }
+        None => format!("Missing tag {id:#010x}"),
     }
 }
 

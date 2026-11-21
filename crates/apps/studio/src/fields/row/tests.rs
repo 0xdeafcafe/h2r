@@ -359,3 +359,55 @@ fn a_partly_named_weapon_puts_its_gap_in_the_group() {
     assert_eq!(gap, [("Value at +0x6", "+0x6")]);
     assert_eq!(summary(group.iter().map(|r| r.field)), "1 value");
 }
+
+/// Choices, switches and references say what they hold on their line: the
+/// value's name, how many switches are on, the tag's kind and name.
+#[test]
+fn choice_switch_and_reference_rows_summarise_their_value() {
+    let t = crate::play::testing::Temp::new("field-rows-summaries");
+    let (app, _, _) = tag_tests::app(&t.0);
+    let weap = tag_tests::weap_id();
+    let layout = app.tags.layout(weap).unwrap().clone();
+    let root = rows(
+        &app.tags,
+        weap,
+        tag_tests::WEAP,
+        &layout,
+        &context(Link::Off),
+    );
+    let shown = |path: &str| {
+        root.iter()
+            .find(|r| r.path == path)
+            .unwrap()
+            .summary
+            .clone()
+    };
+    assert_eq!(shown("mode").as_deref(), Some("Auto"));
+    assert_eq!(shown("flags").as_deref(), Some("1 of 2 on: Loud"));
+    let Kind::Block(part) = &layout.fields[3].kind else {
+        panic!("parts is a list")
+    };
+    let first = rows(&app.tags, weap, tag_tests::PARTS, part, &context(Link::Off));
+    assert_eq!(first[0].summary.as_deref(), Some("itmc  kit"));
+    let second = rows(
+        &app.tags,
+        weap,
+        tag_tests::PARTS + part.size,
+        part,
+        &context(Link::Off),
+    );
+    assert_eq!(second[0].summary.as_deref(), Some("No tag"));
+
+    let names: Vec<String> = ["off", "_", "on"].map(String::from).into();
+    assert_eq!(choice_text(&names, 2), "On");
+    assert_eq!(choice_text(&names, 1), "Value 1 (not named)");
+    assert_eq!(choice_text(&names, 7), "Value 7 (not named)");
+    assert_eq!(switches_text(&names, 0, 8), "0 of 2 on");
+    assert_eq!(switches_text(&names, 0b110, 8), "1 of 2 on: Bit 1, On");
+    assert_eq!(switches_text(&[], 0b1001, 4), "2 of 4 on: Bit 0, Bit 3");
+    assert_eq!(reference_text(&app.tags, u32::MAX), "No tag");
+    assert_eq!(
+        reference_text(&app.tags, 0x7777_0000),
+        "Missing tag 0x77770000"
+    );
+}

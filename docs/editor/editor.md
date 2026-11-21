@@ -1334,14 +1334,24 @@ in `App::tag_fields`; without a choice it reads as its bits suggest
 Tags tool. A field named by the navigation (`nav.go`, `tag.view`) is
 focused in the Tags tool as in the inspector.
 
-Numbers drag. Enums and flag masks without labelled options edit numerically.
-Named enum values appear in a combo. Named flags have checkboxes (unnamed bits that
-are set show as `bit N`); colours pick; angles show degrees; bounds drag
-as a pair; string IDs are text; tag references and datums pick from the
-map's tags of the allowed groups (and their child groups) with a button
-to show the tag; blocks are tree nodes labelled with their size (`2
+Numbers drag. Choices, tag references and **Show as** open the pick
+dialog (`fields::picker`): a modal with a search box, the list (never
+capped; clipped as it scrolls) and Cancel, each pick one undo step. A
+choice's row shows its value's name (`Value 7 (not named)` when none
+names it); the dialog lists the named values and **Enter a number...**
+sets any value the field's width holds. A switches row shows `1 of 2 on:
+Loud` and opens to the named bits as checkboxes in two columns, then the
+rest folded as **Unnamed bits**, each `Bit N` (shown directly when no
+bit is named). A tag reference or datum shows the kind and the tag's last
+path segment (`Model  blaster`; the whole path on hover), with **Open**
+and **Change...**; the dialog lists **No tag**, then every tag of the
+allowed groups (and their child groups), searched by words of
+`group:name` as the tag tree is, with a `Kind` row when several kinds are
+allowed. Colours pick; angles show degrees; bounds drag as a pair;
+string IDs are text; blocks are tree nodes labelled with their size (`2
 items`, `2 items, room for 4`) and hold an element picker and Add,
 Duplicate and Remove (disabled with the reason as tooltip); data is hex.
+`tag.choices` returns the dialog's lists.
 
 `app/tag_api.rs` is the same editor as plain functions, for scripts and
 the agent API: `read_tag(doc, tag)` (the fields as JSON by name),
@@ -1373,9 +1383,13 @@ cache browsed read-only and selected from Maps; resources and lookups),
 `api::tests::tags_browse_a_shared_cache_and_round_trip_through_a_bundle`,
 `fields::row::tests` (labels, type words, read-only sentences, paths, a
 changed row's file value, chips only with a game, the Unnamed fields
-group's order, summary and open rules), `fields::tests` (Show as keys and
-the settings' ini section),
+group's order, summary and open rules; choice, switches and reference
+summaries), `fields::tests` (Show as keys and the settings' ini section),
+`fields::picker::tests` (named values and search, every bit, typed
+numbers, a 5,000-tag invented map listed with no cap),
 `api::tests::tag_view_folds_unnamed_fields_and_opens_them_on_request`,
+`api::tests::tag_choices_lists_the_pick_dialogs_choices`,
+`headless::tests::the_pick_dialog_sets_choices_references_and_unnamed_bits`,
 `headless::tests::the_unnamed_fields_group_folds_and_opens_on_focus_and_change`,
 `headless::tests::the_tags_tool_edits_a_field_through_its_widgets`,
 which clicks the tree and a flag through the test-engine hooks, and

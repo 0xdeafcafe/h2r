@@ -19,6 +19,7 @@ use crate::App;
 use crate::app::tag_api;
 use crate::app::{Action, BlockOp, NavAction, TagAction, ToolKind};
 use crate::fields as panel;
+use crate::fields::picker;
 use crate::play::issues::IssueIndex;
 
 /// The registry's provider.
@@ -248,6 +249,98 @@ fn show_as(
     Ok((panel::show_as_key(group, &prefix, f.offset), chosen))
 }
 
+const CHOICES: MethodDef = def(
+    m::TAG_CHOICES,
+    "What the field panel's pick dialog lists for a field (fields::picker): an enum's named values (`values`); a switches field's bits, named or not, and whether each is on (`bits`); a tag reference's kinds and every tag it takes, with no cap (`kinds`, `tags`); or how an unnamed value can be shown (`views`, `shown`). `query` narrows values and tags as the dialog's search box does (words of the name, or of group:name); `kind` (a group code) narrows tags as the dialog's Kind row does; `limit` cuts the tags and sets `truncated`",
+    r#"{"tag":"string|integer","path":"string (a tag.set path)","query?":"string","kind?":"string (a group code)","limit?":"integer"}"#,
+    r#"{"values?":"[{value,name}]","bits?":"[{bit,name,label,on}]","kinds?":"[{group,name}]","tags?":"[{id,group,name}]","truncated?":"boolean","views?":"[{id,name}]","shown?":"string"}"#,
+    r#"{"tag":"itmc","path":"+0xa"}"#,
+);
+
+fn choices(app: &mut App, p: &P) -> Reply {
+    let tag = resolve(app, p)?;
+    let path = p.str("path")?;
+    let query = p.opt_str("query")?.unwrap_or_default();
+    let limit = p.opt_usize("limit")?;
+    let kind = match p.opt_str("kind")? {
+        None => None,
+        Some(k) => Some(
+            tags::defs::parse_fourcc(k)
+                .ok_or_else(|| err(code::INVALID_PARAMS, format!("kind: {k} is not a group code")))?,
+        ),
+    };
+    let doc = app.shown_tags();
+    let (at, _, f) = tag_api::resolve(doc, tag, path)
+        .map_err(|e| err(code::INVALID_PARAMS, format!("{path}: {e}")))?;
+    let a = at + f.offset;
+    let now = doc.read(tag, a, f.kind.width()).unwrap_or_default();
+    let word = |n: usize| now.iter().take(n).rev().fold(0u64, |v, x| v << 8 | u64::from(*x));
+    match &f.kind {
+        Kind::Enum { values, .. } => {
+            let listed: Vec<Value> = picker::values(values, query)
+                .into_iter()
+                .map(|c| json!({ "value": c.value, "name": c.name }))
+                .collect();
+            Ok(json!({ "values": listed }))
+        }
+        Kind::Flags { bytes, bits } => {
+            let n = usize::from(*bytes);
+            let v = word(n);
+            let listed: Vec<Value> = picker::bits(bits, 8 * n as u32)
+                .into_iter()
+                .map(|b| {
+                    let on = v >> b.bit & 1 == 1;
+                    json!({ "bit": b.bit, "name": b.name, "label": b.label, "on": on })
+                })
+                .collect();
+            Ok(json!({ "bits": listed }))
+        }
+        Kind::TagRef { groups } | Kind::Datum { groups } => {
+            let kinds: Vec<Value> = picker::kinds(doc, groups)
+                .into_iter()
+                .map(|g| {
+                    let name = panel::row::kind_words(doc, g);
+                    json!({ "group": tags::defs::fourcc_text(g), "name": name })
+                })
+                .collect();
+            let all = picker::tags(doc, groups, kind, query);
+            let shown = limit.unwrap_or(all.len()).min(all.len());
+            let listed: Vec<Value> = all[..shown]
+                .iter()
+                .map(|t| {
+                    json!({
+                        "id": format!("{:#010x}", t.id.0),
+                        "group": tags::defs::fourcc_text(t.group),
+                        "name": t.name,
+                    })
+                })
+                .collect();
+            Ok(json!({ "kinds": kinds, "tags": listed, "truncated": shown < all.len() }))
+        }
+        Kind::Unknown { len } => {
+            let group = doc.tag(tag).map_or(FourCC(*b"????"), |t| t.group);
+            let named = tag_api::named_path(doc, tag, path)
+                .map_err(|e| err(code::INVALID_PARAMS, e))?;
+            let prefix = named.rsplit_once('.').map_or(String::new(), |(e, _)| format!("{e}."));
+            let kept = panel::show_as_key(group, &prefix, f.offset);
+            let v = word(4) as u32;
+            let listed: Vec<Value> = picker::views(*len)
+                .into_iter()
+                .map(|to| json!({ "id": to.id(), "name": to.words() }))
+                .collect();
+            let shown = panel::shown_as(&app.tag_fields, &kept, &f, v).id();
+            Ok(json!({ "views": listed, "shown": shown }))
+        }
+        other => Err(err(
+            code::INVALID_PARAMS,
+            format!(
+                "{path}: a {} field has no choices",
+                panel::row::type_words(other).to_ascii_lowercase()
+            ),
+        )),
+    }
+}
+
 const CHAIN: MethodDef = MethodDef {
     name: m::TAG_CHAIN,
     summary: "The inspector's tag tree for a placement or tag, including in-memory tag edits",
@@ -311,6 +404,7 @@ impl Provider for TagFields {
             CHAIN,
             FIELDS,
             VIEW,
+            CHOICES,
             block_def(
                 m::TAG_BLOCK_ADD,
                 "Add an element to a tag block (path from the root, `parts` or `parts[0].bones`), where the block has room in its source; refused with the reason otherwise",
@@ -334,6 +428,7 @@ impl Provider for TagFields {
         match method {
             m::TAG_FIELDS => return Some(fields(app, &p)),
             m::TAG_VIEW => return Some(view(app, &p)),
+            m::TAG_CHOICES => return Some(choices(app, &p)),
             m::TAG_CHAIN => return Some(chain(app, &p)),
             _ => {}
         }

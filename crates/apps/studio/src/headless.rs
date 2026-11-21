@@ -1088,7 +1088,8 @@ mod tests {
         h.step(&mut app, &click("objects\\test\\blaster")).unwrap();
         h.frames(&mut app, 2).unwrap();
         assert_eq!(app.tags.selected, Some(tag_tests::weap_id()));
-        h.step(&mut app, &click("quiet##b1")).unwrap();
+        h.step(&mut app, &click("Flags")).unwrap();
+        h.step(&mut app, &click("Quiet##b1")).unwrap();
         h.frames(&mut app, 2).unwrap();
         let flags = app
             .tags
@@ -1104,7 +1105,7 @@ mod tests {
         assert_eq!((flags.label.as_str(), flags.edited), ("Flags", true));
         let parts = drawn.iter().find(|d| d.path == "parts").unwrap();
         assert_eq!(parts.summary.as_deref(), Some("2 items"));
-        h.step(&mut app, &Step::Hover("loud##b0".into())).unwrap();
+        h.step(&mut app, &Step::Hover("Loud##b0".into())).unwrap();
         h.frames(&mut app, 2).unwrap();
         assert_eq!(
             h.studio
@@ -1131,6 +1132,99 @@ mod tests {
             .copied()
             .collect();
         assert!(distinct.len() > 8);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The pick dialog through its widgets: an enum value, a number
+    /// outside the names, a reference's No tag and then a tag, and an
+    /// unnamed bit. Each pick is one undo step, and the dialog lists what
+    /// `tag.choices` returns. Skipped without a wgpu adapter.
+    #[test]
+    fn the_pick_dialog_sets_choices_references_and_unnamed_bits() {
+        use crate::app::tag_tests;
+        use crate::script::{Button, Step};
+        use studio_proto::method as m;
+        let Some((_turn, mut h)) = headless() else {
+            return;
+        };
+        let dir = std::env::temp_dir().join(format!("h2-editor-pick-ui-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (mut app, ..) = tag_tests::app(&dir);
+        h.frames(&mut app, 4).unwrap();
+        let click = |t: &str| Step::Click(t.into(), Button::Left);
+        h.step(&mut app, &click("weap  (1)")).unwrap();
+        h.frames(&mut app, 2).unwrap();
+        h.step(&mut app, &click("objects\\test\\blaster")).unwrap();
+        h.frames(&mut app, 2).unwrap();
+        let weap = tag_tests::weap_id();
+        let id = format!("{:#010x}", weap.0);
+        let mut api = crate::api::Api::new();
+        let names = |v: &serde_json::Value, list: &str| -> Vec<String> {
+            v[list]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|x| x["name"].as_str().unwrap().to_owned())
+                .collect()
+        };
+        let bytes_at = |app: &App, at: u32, n: u32| app.tags.read(weap, at, n).unwrap();
+
+        // An enum: its named values, one picked.
+        h.step(&mut app, &click("Auto##choose")).unwrap();
+        let mode = api
+            .call(&mut app, m::TAG_CHOICES, serde_json::json!({"tag": id, "path": "mode"}))
+            .unwrap();
+        assert_eq!(h.studio.tags.panel.listed, names(&mode, "values"));
+        assert_eq!(h.studio.tags.panel.listed, ["Off", "On", "Auto"]);
+        h.step(&mut app, &click("On##pick-1")).unwrap();
+        assert_eq!(bytes_at(&app, tag_tests::WEAP + 6, 2), [1, 0]);
+        assert!(h.studio.tags.panel.listed.is_empty(), "the dialog closed");
+
+        // A number no name has.
+        h.step(&mut app, &click("On##choose")).unwrap();
+        h.step(&mut app, &click("Enter a number...##pick-number")).unwrap();
+        h.step(&mut app, &Step::Type("9".into())).unwrap();
+        h.step(&mut app, &Step::Key(dear_imgui_rs::Key::Enter, 1)).unwrap();
+        h.frames(&mut app, 2).unwrap();
+        assert_eq!(bytes_at(&app, tag_tests::WEAP + 6, 2), [9, 0]);
+        let drawn = &h.studio.tags.panel.drawn;
+        let mode_row = drawn.iter().find(|d| d.path == "mode").unwrap();
+        assert_eq!(mode_row.summary.as_deref(), Some("Value 9 (not named)"));
+
+        // A reference in the list's first element: No tag, then the kit
+        // again.
+        h.step(&mut app, &click("Parts")).unwrap();
+        h.step(&mut app, &click("Change...##change")).unwrap();
+        let item = api
+            .call(&mut app, m::TAG_CHOICES, serde_json::json!({"tag": id, "path": "parts[0].item"}))
+            .unwrap();
+        assert_eq!(h.studio.tags.panel.listed, names(&item, "tags"));
+        assert_eq!(h.studio.tags.panel.listed, ["objects\\test\\kit"]);
+        h.step(&mut app, &click("No tag##pick-none")).unwrap();
+        let none = bytes_at(&app, tag_tests::PARTS, 8);
+        assert_eq!(none[..4], map::FourCC(*b"itmc").as_u32().to_le_bytes(), "No tag keeps the kind");
+        assert_eq!(none[4..], u32::MAX.to_le_bytes());
+        h.step(&mut app, &click("Change...##change")).unwrap();
+        h.step(&mut app, &click("objects\\test\\kit##pick-t0")).unwrap();
+        assert_eq!(bytes_at(&app, tag_tests::PARTS + 4, 4), fixture::id(3).0.to_le_bytes());
+
+        // An unnamed bit, in the folded group.
+        h.step(&mut app, &click("Flags")).unwrap();
+        h.step(&mut app, &click("Unnamed bits")).unwrap();
+        h.step(&mut app, &click("Bit 5##b5")).unwrap();
+        assert_eq!(bytes_at(&app, tag_tests::WEAP + 4, 2), [0x21, 0]);
+        let drawn = &h.studio.tags.panel.drawn;
+        let flags = drawn.iter().find(|d| d.path == "flags").unwrap();
+        assert_eq!(flags.summary.as_deref(), Some("1 of 2 on: Loud, Bit 5"));
+
+        // One undo step each.
+        app.dispatch(Action::Undo);
+        assert_eq!(bytes_at(&app, tag_tests::WEAP + 4, 2), [1, 0]);
+        app.dispatch(Action::Undo);
+        assert_eq!(bytes_at(&app, tag_tests::PARTS + 4, 4), u32::MAX.to_le_bytes());
+        app.dispatch(Action::Undo);
+        app.dispatch(Action::Undo);
+        assert_eq!(bytes_at(&app, tag_tests::WEAP + 6, 2), [1, 0]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

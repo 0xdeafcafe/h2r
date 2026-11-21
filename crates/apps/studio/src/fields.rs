@@ -6,15 +6,19 @@
 //! [`Action::Tag`] commands; it never writes itself. It draws the rows of
 //! [`row::rows`], one line each: an edited dot, the label in words, the
 //! widget, the unit and, with a game connected, when a change takes
-//! effect. `tag.fields` returns the same rows. Numbers drag; enums
-//! are combos; flags are checkboxes; colours pick; angles show degrees;
-//! bounds drag as a pair; string IDs edit as text (any string the map
-//! has); tag references pick from the map's tags of the allowed groups
-//! and click through; blocks list their elements with add, remove and
-//! duplicate; data shows (and edits) as hex. Counts, addresses and
-//! resource pointers are shown, never edited. Fields nothing names are
+//! effect. `tag.fields` returns the same rows. Numbers drag; an enum
+//! shows its value's name and opens the pick dialog ([`picker`]);
+//! switches show how many are on and open to checkboxes, the unnamed bits
+//! folded; colours pick; angles show degrees; bounds drag as a pair;
+//! string IDs edit as text (any string the map has); a tag reference
+//! shows its kind and name, with **Open** and **Change...** (the dialog,
+//! every tag of the allowed kinds); blocks list their elements with add,
+//! remove and duplicate; data shows (and edits) as hex. Counts, addresses
+//! and resource pointers are shown, never edited. Fields nothing names are
 //! labelled by type and offset and shown as their value suggests (a
-//! float, an integer or hex), with a context menu to view them otherwise.
+//! float, an integer or hex), with **Show as** (the dialog) to view them
+//! otherwise.
+pub mod picker;
 pub mod row;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -168,8 +172,11 @@ pub struct PanelState {
     auto_opened: HashSet<(TagId, u32)>,
     /// Text being typed into string ID and data fields, by address.
     text: HashMap<(TagId, u32), String>,
-    /// The tag picker's filter.
-    picker: String,
+    /// The pick dialog, while open.
+    pick: Option<picker::Open>,
+    /// The labels the pick dialog lists this frame (every one, clipped or
+    /// not): what `tag.choices` returns.
+    pub listed: Vec<String>,
     /// Why the last typed value was not taken.
     pub problem: Option<String>,
     focus_target: Option<(TagId, u32)>,
@@ -248,8 +255,6 @@ const GAP: f32 = 8.0;
 const SHOW_AS: &str = "Show as";
 /// Bytes of a data reference shown and editable as hex.
 const DATA_SHOWN: u32 = 4096;
-/// Tags a picker lists at most.
-const PICKS: usize = 400;
 
 /// Draw the element at `path` (per step, a block field's offset and the
 /// element index) of `tag`'s root: every field, editable where the tag
@@ -359,6 +364,7 @@ pub(crate) fn panel_with_marks(
     };
     let _id = ui.push_id(tag.0 as usize);
     cx.element(at, &layout);
+    picker::draw(ui, doc, st, actions);
 }
 
 struct Cx<'a, 'm> {
@@ -684,13 +690,14 @@ impl Cx<'_, '_> {
         match &f.kind {
             Kind::Block(child) => return self.block(at, layout, r, child),
             Kind::Data => return self.data(at, layout, r, &b),
+            Kind::Flags { bytes, bits } => return self.flags(at, layout, r, &b, *bytes, bits),
             _ => {}
         }
         self.label(at, layout, r);
-        let can_follow = self.trail.is_some() && matches!(f.kind, Kind::TagRef { .. } | Kind::Datum { .. });
-        let off = ui.begin_disabled_with_cond(r.read_only.is_some() && !can_follow);
-        // Switches put the unit and chip after their word, above the bits.
-        let mut tailed = false;
+        // A reference's Open works on a read-only tag; its Change says why
+        // it does not.
+        let is_ref = matches!(f.kind, Kind::TagRef { .. } | Kind::Datum { .. });
+        let off = ui.begin_disabled_with_cond(r.read_only.is_some() && !is_ref);
         match &f.kind {
             Kind::Int {
                 bytes,
@@ -726,86 +733,16 @@ impl Cx<'_, '_> {
                 self.after();
             }
             Kind::Float { count, hint } => self.float(a, f, &b, *count, *hint),
-            Kind::Enum { bytes, values } | Kind::Flags { bytes, bits: values }
-                if values.iter().all(|s| s.is_empty() || s == "_") =>
-            {
-                let n = usize::from(*bytes);
-                let max = (1i64 << (8 * n)) - 1;
-                let mut value = le(&b, 0, n) as i64;
-                if Drag::<i64, _>::new("##v")
-                    .range(0, max)
-                    .build(ui, &mut value)
-                {
-                    let encoded = value.clamp(0, max).to_le_bytes();
-                    self.write(a, encoded[..n].to_vec(), &f.name);
-                }
-                self.after();
-            }
-            Kind::Enum { bytes, values } => {
-                let n = usize::from(*bytes);
-                let v = le(&b, 0, n) as u32;
-                let label = values
-                    .get(v as usize)
-                    .filter(|s| !s.is_empty() && s.as_str() != "_")
-                    .map_or_else(|| v.to_string(), |s| format!("{v}: {s}"));
-                if let Some(_c) = ui.begin_combo("##v", label) {
-                    for (i, name) in values.iter().enumerate() {
-                        if name.is_empty() || name == "_" {
-                            continue;
-                        }
-                        let i = i as u32;
-                        if ui.selectable_config(format!("{i}: {name}")).selected(i == v).build()
-                            && i != v
-                        {
-                            self.write(a, i.to_le_bytes()[..n].to_vec(), &f.name);
-                        }
-                    }
-                }
-            }
-            Kind::Flags { bytes, bits } => {
-                let n = *bytes as usize;
-                let v = le(&b, 0, n);
-                ui.text_disabled(format!("{v:#0w$x}", w = 2 + 2 * n));
-                self.hover(at, layout, r);
-                self.tail(r);
-                tailed = true;
-                for bit in 0..(8 * n) {
-                    let named = bits.get(bit).filter(|s| s.as_str() != "_");
-                    let on = v >> bit & 1 == 1;
-                    if named.is_none() && !on {
-                        continue;
-                    }
-                    let text = match named {
-                        Some(s) => format!("{s}##b{bit}"),
-                        None => format!("bit {bit}##b{bit}"),
-                    };
-                    ui.dummy([LABEL - ui.cursor_pos()[0] + 8.0, 0.0]);
-                    ui.same_line_with_pos(LABEL + 8.0);
-                    let mut on2 = on;
-                    if ui.checkbox(text, &mut on2) {
-                        let nv = v ^ (1 << bit);
-                        self.write(a, nv.to_le_bytes()[..n].to_vec(), &f.name);
-                    }
-                    self.hover(at, layout, r);
+            Kind::Enum { .. } => {
+                let width = (ui.content_region_avail()[0] - self.trailing).max(60.0);
+                let shown = r.summary.as_deref().unwrap_or_default();
+                if ui.button_with_size(format!("{shown}##choose"), [width, 0.0]) {
+                    self.open_picker(r, picker::What::Choice);
                 }
             }
             Kind::StringId => self.string_id(a, f, &b),
-            Kind::TagRef { groups } => {
-                let group = FourCC::from_u32(le(&b, 0, 4) as u32);
-                let id = le(&b, 4, 4) as u32;
-                if let Some((g, chosen)) = self.picker(f, groups, id) {
-                    let g = g.or((group.as_u32() != u32::MAX).then_some(group));
-                    let mut out = g.map_or(u32::MAX, FourCC::as_u32).to_le_bytes().to_vec();
-                    out.extend_from_slice(&chosen.to_le_bytes());
-                    self.write(a, out, &f.name);
-                }
-            }
-            Kind::Datum { groups } => {
-                let id = le(&b, 0, 4) as u32;
-                if let Some((_, chosen)) = self.picker(f, groups, id) {
-                    self.write(a, chosen.to_le_bytes().to_vec(), &f.name);
-                }
-            }
+            Kind::TagRef { groups } => self.reference(r, groups, le(&b, 4, 4) as u32),
+            Kind::Datum { groups } => self.reference(r, groups, le(&b, 0, 4) as u32),
             Kind::Word => {
                 let mut v = le(&b, 0, 4) as u64;
                 if Drag::<u64, _>::new("##v")
@@ -826,13 +763,114 @@ impl Cx<'_, '_> {
             Kind::Pad { .. } => {
                 ui.text_disabled(hex(&b));
             }
-            Kind::Unknown { len } => self.unknown(a, f, &b, *len),
-            Kind::Block(_) | Kind::Data => unreachable!(),
+            Kind::Unknown { len } => self.unknown(r, &b, *len),
+            Kind::Block(_) | Kind::Data | Kind::Flags { .. } => unreachable!(),
         }
-        if !tailed {
+        self.hover(at, layout, r);
+        off.end();
+        self.tail(r);
+    }
+
+    /// Open the pick dialog for the row's field.
+    fn open_picker(&mut self, r: &Row, what: picker::What) {
+        let group = self.doc.tag(self.tag).map_or(FourCC(*b"????"), |t| t.group);
+        let kept = show_as_key(group, &self.prefix, r.field.offset);
+        self.st.pick = Some(picker::Open::new(self.tag, r.address, r.field, &r.label, kept, what));
+    }
+
+    /// A switches row: how many are on; open, the named bits as
+    /// checkboxes in two columns, then the rest folded as Unnamed bits
+    /// (shown directly when none is named).
+    fn flags(
+        &mut self,
+        at: u32,
+        layout: &Arc<Layout>,
+        r: &Row,
+        b: &[u8],
+        bytes: u8,
+        names: &[String],
+    ) {
+        let ui = self.ui;
+        let Some(_node) = self.node(at, layout, r, format!("flg{:x}", r.address)) else {
+            return;
+        };
+        let n = usize::from(bytes);
+        let v = le(b, 0, n);
+        let all = picker::bits(names, 8 * n as u32);
+        let (named, rest): (Vec<&picker::Bit>, Vec<&picker::Bit>) =
+            all.iter().partition(|bit| bit.name.is_some());
+        let _off = ui.begin_disabled_with_cond(r.read_only.is_some());
+        if named.is_empty() {
+            return self.bit_columns(at, layout, r, n, v, &rest);
+        }
+        self.bit_columns(at, layout, r, n, v, &named);
+        let open = ui
+            .tree_node_config(format!("ubits{:x}", r.address))
+            .label("Unnamed bits")
+            .push();
+        let set = rest.iter().filter(|bit| v >> bit.bit & 1 == 1).count();
+        ui.same_line_with_pos(LABEL);
+        ui.text_disabled(format!("{set} of {} on", rest.len()));
+        if open.is_some() {
+            self.bit_columns(at, layout, r, n, v, &rest);
+        }
+    }
+
+    /// Bits as checkboxes, two to a line; a click flips one, one undo step.
+    fn bit_columns(
+        &mut self,
+        at: u32,
+        layout: &Arc<Layout>,
+        r: &Row,
+        n: usize,
+        v: u64,
+        list: &[&picker::Bit],
+    ) {
+        let ui = self.ui;
+        let x = ui.cursor_pos()[0];
+        let half = (ui.content_region_avail()[0] * 0.5).max(120.0);
+        for (i, bit) in list.iter().enumerate() {
+            if i % 2 == 1 {
+                ui.same_line_with_pos(x + half);
+            }
+            let mut on = v >> bit.bit & 1 == 1;
+            if ui.checkbox(format!("{}##b{}", bit.label, bit.bit), &mut on) {
+                let flipped = v ^ (1 << bit.bit);
+                self.write(r.address, flipped.to_le_bytes()[..n].to_vec(), &r.field.name);
+                self.actions.push(Action::Tag(TagAction::Seal));
+            }
             self.hover(at, layout, r);
-            off.end();
-            self.tail(r);
+        }
+    }
+
+    /// A tag reference: its kind and name (the full path on hover), then
+    /// **Open** and **Change...** (the pick dialog).
+    fn reference(&mut self, r: &Row, groups: &[FourCC], id: u32) {
+        let ui = self.ui;
+        let doc = self.doc;
+        ui.text(r.summary.as_deref().unwrap_or_default());
+        if ui.is_item_hovered() {
+            let mut tip = doc.tag_label(id);
+            if !groups.is_empty() {
+                let kinds: Vec<String> = groups.iter().map(|g| row::kind_words(doc, *g)).collect();
+                tip.push_str(&format!("\nTakes: {}", kinds.join(", ")));
+            }
+            ui.set_item_tooltip(tip);
+        }
+        ui.same_line();
+        let target = doc.tag(TagId(id)).map(|t| t.id);
+        {
+            let _off = ui.begin_disabled_with_cond(target.is_none());
+            if ui.small_button("Open##open")
+                && let Some(tag) = target
+            {
+                self.actions.push(reference_action(self.trail, &self.prefix, &r.field.name, tag));
+            }
+        }
+        ui.same_line();
+        let _off = ui.begin_disabled_with_cond(r.read_only.is_some());
+        if ui.small_button("Change...##change") {
+            self.open_picker(r, picker::What::Reference);
         }
     }
 
@@ -878,8 +916,9 @@ impl Cx<'_, '_> {
         self.after();
     }
 
-    fn unknown(&mut self, a: u32, f: &Field, b: &[u8], len: u32) {
+    fn unknown(&mut self, r: &Row, b: &[u8], len: u32) {
         let ui = self.ui;
+        let (a, f) = (r.address, r.field);
         let v = le(b, 0, len as usize) as u32;
         let group = self.doc.tag(self.tag).map_or(FourCC(*b"????"), |t| t.group);
         let key = show_as_key(group, &self.prefix, f.offset);
@@ -922,26 +961,12 @@ impl Cx<'_, '_> {
         self.after();
         ui.same_line();
         if ui.small_button(SHOW_AS) {
-            ui.open_popup("##show-as");
+            self.open_picker(r, picker::What::ShowAs);
         }
         if ui.is_item_hovered() {
             ui.set_item_tooltip(
                 "How to show this value: kept for this field of every tag of the kind",
             );
-        }
-        if let Some(_p) = ui.begin_popup("##show-as") {
-            for to in View::ALL {
-                if (to != View::Float || len == 4)
-                    && ui
-                        .selectable_config(to.words())
-                        .selected(view == to)
-                        .build()
-                {
-                    let mut settings = self.st.settings.clone();
-                    settings.show_as.insert(key.clone(), to);
-                    self.st.set_settings(settings);
-                }
-            }
         }
     }
 
@@ -981,65 +1006,6 @@ impl Cx<'_, '_> {
             // Follow the field (undo, another element) while not typing.
             self.st.text.insert((self.tag, a), current);
         }
-    }
-
-    /// A tag picker: the current tag, a list of the map's tags of the
-    /// allowed groups, and a button to show the tag. Returns the picked
-    /// tag's group (none for "none") and datum.
-    fn picker(&mut self, f: &Field, groups: &[FourCC], id: u32) -> Option<(Option<FourCC>, u32)> {
-        let ui = self.ui;
-        let doc = self.doc;
-        let mut out = None;
-        let width = ui.content_region_avail()[0] - 32.0 - self.trailing;
-        ui.set_next_item_width(width.max(60.0));
-        let combo = ui.begin_disabled_with_cond(!self.editable && self.trail.is_some());
-        if let Some(_c) = ui.begin_combo("##v", doc.tag_label(id)) {
-            ui.set_next_item_width(-1.0);
-            ui.input_text("##filter", &mut self.st.picker).build();
-            let filter = self.st.picker.to_ascii_lowercase();
-            if ui
-                .selectable_config("none")
-                .selected(id == u32::MAX)
-                .build()
-            {
-                out = Some((None, u32::MAX));
-            }
-            let mut shown = 0;
-            for t in doc.tags() {
-                if !doc.fits(t.group, groups) {
-                    continue;
-                }
-                let label = format!("{}: {}", group_text(t.group), t.name);
-                if !filter.is_empty() && !label.to_ascii_lowercase().contains(&filter) {
-                    continue;
-                }
-                shown += 1;
-                if shown > PICKS {
-                    ui.text_disabled("... type to narrow the list");
-                    break;
-                }
-                if ui.selectable_config(&label).selected(t.id.0 == id).build() {
-                    out = Some((Some(t.group), t.id.0));
-                }
-            }
-        }
-        if !groups.is_empty() && ui.is_item_hovered() {
-            let g: Vec<String> = groups.iter().map(|g| group_text(*g)).collect();
-            ui.set_item_tooltip(format!("{}: {}", f.name, g.join(", ")));
-        }
-        combo.end();
-        ui.same_line();
-        let target = doc.tag(TagId(id)).map(|t| t.id);
-        let _go = ui.begin_disabled_with_cond(target.is_none());
-        if ui.small_button(format!("{}##go", icon::FOCUS))
-            && let Some(tag) = target
-        {
-            self.actions.push(reference_action(self.trail, &self.prefix, &f.name, tag));
-        }
-        if ui.is_item_hovered() {
-            ui.set_item_tooltip("Show this tag");
-        }
-        out
     }
 
     fn block(&mut self, at: u32, layout: &Arc<Layout>, r: &Row, child: &Arc<Layout>) {
@@ -1349,6 +1315,20 @@ mod tests {
             View::Int,
             "decimal needs four bytes"
         );
+    }
+
+    /// Choices, references and Show as open the pick dialog: the panel
+    /// draws no combo.
+    #[test]
+    fn the_panel_has_no_combos() {
+        let combo = concat!("begin", "_combo");
+        for (file, text) in [
+            ("fields.rs", include_str!("fields.rs")),
+            ("fields/picker.rs", include_str!("fields/picker.rs")),
+            ("fields/row.rs", include_str!("fields/row.rs")),
+        ] {
+            assert!(!text.contains(combo), "{file} draws a combo");
+        }
     }
 
     #[test]

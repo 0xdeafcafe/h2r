@@ -78,6 +78,7 @@ What goes through actions, from both sides:
 | Any tag's field or block | `Tag(TagAction)` built by `app::tag_api::{set_field, block}` | the Tags tool | `tag.set`, `tag.block.*` |
 | Inspect tag fields | read the registry layout | Tags panel and inspector | `tag.fields {tag, path?, unnamed?}` |
 | Show unnamed fields, Show as, focus a field | `App::tag_fields` (`fields::Settings`), `Navigate(Go)` | the Tags tool's **Show unnamed fields** and **Show as** | `tag.view` |
+| What a field's pick dialog lists | `fields::picker::{values, bits, kinds, tags, views}` | the field panel's pick dialog | `tag.choices {tag, path, query?, kind?, limit?}` |
 | Move and turn a placement | `MovePlacement` (one step); `GestureSet {position, ypr}`, `GestureScale`, `EndGesture` (a drag: one step, a multi-selection riding along) | the viewport gizmo dispatches the gesture actions every frame of a drag | `scenario.move` |
 | Add, duplicate, delete | `Add`, `DuplicateEntry`, `DeleteEntry` | outliner, toolbar, keys | `scenario.add`, `.duplicate`, `.delete`, `tag.block.*` |
 | Select, frame | `Select`, `FocusSelected`, `FrameAll` | Scene, viewport, keys | `scenario.select`, `view.camera` |
@@ -231,8 +232,11 @@ Notes on some:
     the row shows, null with no game connected; `live: {kind, text}`, a
     changed field's `mismatch` or `refused` mark with a game connected;
   - `path`, the `tag.set` path from the root by field names
-    (`parts[1].value`, also for an offset path); `summary` (`2 items`,
-    `16 bytes`) for a list or data;
+    (`parts[1].value`, also for an offset path); `summary`, what the row
+    shows on its line: `2 items` or `16 bytes` for a list or data, the
+    value's name for a choice (`Value 7 (not named)` when none names
+    it), `2 of 9 on: Loud, Quiet` for switches, and the kind and last
+    path segment for a tag reference (`No tag` when it is empty);
   - `choices: [{value, name}]` for a choice, `bits: [{bit, name}]` for
     switches, `groups` for a tag reference, `count` and `capacity` for a
     list, and `show_as` (`decimal`, `whole_number` or `hex`) for an
@@ -259,6 +263,19 @@ Notes on some:
   without icons. The panel shows a tag's root and has no search yet, so
   `path` is always empty, `search` null and `changed` false, and those
   params are refused.
+- **Pick lists.** `tag.choices {tag, path, query?, kind?, limit?}`
+  returns what the field panel's pick dialog lists for the field at
+  `path` (`fields::picker`). A choice gives `{values: [{value, name}]}`,
+  its named values. Switches give `{bits: [{bit, name, label, on}]}`,
+  every bit of the word, `name` null for a bit nothing names. A tag
+  reference gives `{kinds: [{group, name}], tags: [{id, group, name}],
+  truncated}`: the kinds of the map's tags it takes, and every such tag
+  with no cap. `kind`, a group code, narrows the tags as the dialog's
+  Kind row does; `limit` cuts them and sets `truncated`. An unnamed value
+  gives `{views: [{id, name}], shown}`, the **Show as** choices and the
+  one in use. `query` narrows values and tags as the dialog's search box
+  does: every word in the name, or in `group:name` for a tag. Any other
+  field is refused with `INVALID_PARAMS`.
 - **Scenario tree.** `tag.tree {"root":"scenario","depth":2}` reads the
   open scenario and returns `{root, unreachable, incomplete, truncated}`.
   The root's children are Structure (BSPs with their lightmaps), Skies,
