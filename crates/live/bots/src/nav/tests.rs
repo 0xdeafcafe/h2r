@@ -1081,6 +1081,47 @@ fn a_detour_around_a_gap_never_shortcuts_over_it() {
                 "cutting the gap at ({x}, {y}): {path:?}"
             );
         }
+    }
+}
+
+#[test]
+fn a_path_over_a_drop_goes_to_its_edge_then_down() {
+    let high = Poly::new(vec![
+        [0.0, 0.0, 1.2],
+        [4.0, 0.0, 1.2],
+        [4.0, 4.0, 1.2],
+        [0.0, 4.0, 1.2],
+    ]);
+    let low = Poly::new(vec![
+        [4.0, 0.0, 0.0],
+        [8.0, 0.0, 0.0],
+        [8.0, 4.0, 0.0],
+        [4.0, 4.0, 0.0],
+    ]);
+    let m = NavMesh::new(
+        vec![high, low],
+        vec![Edge {
+            from: 0,
+            to: 1,
+            a: [4.0, 0.0, 1.2],
+            b: [4.0, 4.0, 1.2],
+            kind: Kind::Drop,
+        }],
+    );
+    let path = m.path([1.0, 2.0, 1.2], [7.0, 2.0, 0.0]).unwrap();
+    assert_eq!(path.len(), 2, "{path:?}");
+    // First the edge point, on foot; then the floor below, stepping off.
+    assert_eq!(path[0].kind, Kind::Walk);
+    assert!((path[0].at[0] - 4.0).abs() < 1e-4, "{path:?}");
+    assert!((path[0].at[2] - 1.2).abs() < 1e-4, "{path:?}");
+    assert_eq!(
+        path[1],
+        Waypoint {
+            at: [7.0, 2.0, 0.0],
+            kind: Kind::Drop,
+        }
+    );
+}
 
 #[test]
 fn a_route_follows_the_floor_corridor_to_its_own_tolerance() {
@@ -1178,43 +1219,6 @@ fn a_route_jump_hits_a_ledge_on_the_descending_arc() {
 }
 
 #[test]
-fn a_path_over_a_drop_goes_to_its_edge_then_down() {
-    let high = Poly::new(vec![
-        [0.0, 0.0, 1.2],
-        [4.0, 0.0, 1.2],
-        [4.0, 4.0, 1.2],
-        [0.0, 4.0, 1.2],
-    ]);
-    let low = Poly::new(vec![
-        [4.0, 0.0, 0.0],
-        [8.0, 0.0, 0.0],
-        [8.0, 4.0, 0.0],
-        [4.0, 4.0, 0.0],
-    ]);
-    let m = NavMesh::new(
-        vec![high, low],
-        vec![Edge {
-            from: 0,
-            to: 1,
-            a: [4.0, 0.0, 1.2],
-            b: [4.0, 4.0, 1.2],
-            kind: Kind::Drop,
-        }],
-    );
-    let path = m.path([1.0, 2.0, 1.2], [7.0, 2.0, 0.0]).unwrap();
-    assert_eq!(path.len(), 2, "{path:?}");
-    // First the edge point, on foot; then the floor below, stepping off.
-    assert_eq!(path[0].kind, Kind::Walk);
-    assert!((path[0].at[0] - 4.0).abs() < 1e-4, "{path:?}");
-    assert!((path[0].at[2] - 1.2).abs() < 1e-4, "{path:?}");
-    assert_eq!(
-        path[1],
-        Waypoint {
-            at: [7.0, 2.0, 0.0],
-            kind: Kind::Drop,
-        }
-    );
-
 fn a_route_jump_requires_standing_clearance_along_its_arc() {
     let floor = floor_quad(-2.0, 0.0, 0.0, 4.0, 2.0);
     let roof = floor_quad(-2.0, 0.0, 0.8, 4.0, 2.0);
