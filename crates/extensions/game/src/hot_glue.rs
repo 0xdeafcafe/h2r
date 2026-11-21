@@ -23,12 +23,13 @@ pub fn install(
     rt: &Arc<runtime::Runtime>,
     maps: Option<MapLocator>,
     watch: bool,
+    replaying: bool,
 ) {
     #[cfg(feature = "gpu")]
     install_overrides(agent, watch);
     #[cfg(not(feature = "gpu"))]
     let _ = watch;
-    install_edits(agent, rt, maps);
+    install_edits(agent, rt, maps, replaying);
 }
 
 #[cfg(feature = "gpu")]
@@ -56,9 +57,15 @@ fn install_overrides(agent: &agent::Agent, watch: bool) {
 }
 
 /// `edit.*` over the runtime's memory.
-fn install_edits(agent: &agent::Agent, rt: &Arc<runtime::Runtime>, maps: Option<MapLocator>) {
+fn install_edits(
+    agent: &agent::Agent,
+    rt: &Arc<runtime::Runtime>,
+    maps: Option<MapLocator>,
+    replaying: bool,
+) {
     let mut editor = hot_tags::Editor::new();
-    if let Some(locate) = maps {
+    let maps = maps.map(Arc::new);
+    if let Some(locate) = maps.clone() {
         editor = editor.with_names(Box::new(move |g| names(g, &locate)));
     }
     let rt = Arc::clone(rt);
@@ -66,6 +73,9 @@ fn install_edits(agent: &agent::Agent, rt: &Arc<runtime::Runtime>, maps: Option<
         agent,
         editor,
         Arc::new(move |f: &mut dyn FnMut(&mut runtime::Guest)| f(&mut rt.memory())),
+        |g| crate::agent_glue::session_view(g),
+        move |name| Some(maps.as_ref()?(name)?.path.display().to_string()),
+        replaying,
     );
 }
 

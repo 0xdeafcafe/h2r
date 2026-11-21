@@ -78,6 +78,8 @@ pub type GameMethod = Box<dyn FnMut(Value, &mut GameCtx<'_>) -> Result<Value, Rp
 pub struct GameCtx<'a> {
     /// The connection owning this request and any input it queues.
     pub conn: ConnId,
+    pub(crate) epoch: u64,
+    pub(crate) live_session: Option<fn(&dyn engine::GuestMemory) -> bool>,
     /// The game at this boundary ([`Reader::with_guest`] for guest memory).
     pub reader: &'a mut dyn Reader,
     /// The stamp of this boundary.
@@ -967,6 +969,8 @@ impl State {
             } else {
                 let mut ctx = GameCtx {
                     conn: d.conn,
+                    epoch: self.live_epoch,
+                    live_session: self.live_session,
                     reader: &mut *reader,
                     at: at.clone(),
                     host: &mut self.host,
@@ -1115,6 +1119,8 @@ impl State {
             let (_, f) = self.game_methods.get_mut(m)?;
             let mut ctx = GameCtx {
                 conn,
+                epoch: self.live_epoch,
+                live_session: self.live_session,
                 reader,
                 at,
                 host: &mut self.host,

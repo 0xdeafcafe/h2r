@@ -342,6 +342,9 @@ pub fn encode(
             if s.len() != 2 * width(kind) as usize {
                 return Err(format!("{what}: needs {} hex digits", 2 * width(kind)));
             }
+            if !s.bytes().all(|b| b.is_ascii_hexdigit()) {
+                return Err(format!("{what}: bad hex"));
+            }
             (0..s.len())
                 .step_by(2)
                 .map(|i| {
