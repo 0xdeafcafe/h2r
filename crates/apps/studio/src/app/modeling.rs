@@ -10,7 +10,8 @@ use scenario_edit::{BspPatch, GeometryChanges, RawPatch};
 
 /// Why a save with geometry edits is refused while the session switch is
 /// off.
-pub const UNVERIFIED_REFUSAL: &str = "geometry writes are unverified: turn on Edit > Allow unverified geometry writes to save them";
+pub const UNVERIFIED_REFUSAL: &str =
+    "geometry writes are unverified: turn on Edit > Allow unverified geometry writes to save them";
 
 /// The Modeling tool's state.
 #[derive(Default)]
@@ -55,7 +56,10 @@ impl App {
 
     /// The open map's structure targets, and a render model's sections
     /// when `model` names one.
-    pub fn modeling_targets(&mut self, model: Option<map::TagId>) -> Result<Vec<TargetInfo>, String> {
+    pub fn modeling_targets(
+        &mut self,
+        model: Option<map::TagId>,
+    ) -> Result<Vec<TargetInfo>, String> {
         let source = self.session.source().cloned().ok_or("no map is open")?;
         let mut map = source.open().map_err(|e| e.to_string())?;
         let Some(model) = model else {
@@ -120,7 +124,11 @@ impl App {
             t.id(),
             info.verts,
             info.faces,
-            if info.local { "" } else { " (in a shared cache: read only)" }
+            if info.local {
+                ""
+            } else {
+                " (in a shared cache: read only)"
+            }
         ));
         Ok(())
     }
@@ -140,6 +148,18 @@ impl App {
         if !self.session.is_open() {
             return;
         }
+        let c = self.geometry_changes();
+        let r = self.session.set_geometry_changes(c);
+        self.ok_or_log(r);
+    }
+
+    /// Why a save would be refused for the geometry edits now, if it would.
+    pub fn geometry_save_refusal(&self) -> Option<String> {
+        self.geometry_changes().refusal
+    }
+
+    /// What [`Self::push_geometry_changes`] hands the save.
+    fn geometry_changes(&self) -> GeometryChanges {
         let g = &self.modeling.session;
         let mut c = GeometryChanges::default();
         if g.has_changes() {
@@ -172,8 +192,7 @@ impl App {
                 c.refusal = Some(UNVERIFIED_REFUSAL.to_owned());
             }
         }
-        let r = self.session.set_geometry_changes(c);
-        self.ok_or_log(r);
+        c
     }
 
     /// A revision that changes with every geometry edit, undo or redo
