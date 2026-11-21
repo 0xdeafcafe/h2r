@@ -1,6 +1,6 @@
 //! Against synthetic guest memory: a tag index at the engine's globals,
-//! a shader (`shad`), a bitmap (`bitm`) and a scenario (`scnr`, no
-//! definition), laid out by the definitions' own offsets. No game data.
+//! a shader (`shad`), a bitmap (`bitm`) and a scenario (`scnr`), laid
+//! out by the definitions' own offsets. No game data.
 
 use super::*;
 use runtime::guest::Permissions;
@@ -329,6 +329,8 @@ fn names_select_tags() {
 #[test]
 fn a_tag_without_a_definition_takes_raw_fields() {
     let mut g = level();
+    // `scnr` has a definition; an invented group at its slot has none.
+    entry(&mut g, 0, b"zzzz", SCNR, META, 0x100);
     let mut ed = Editor::new();
     let s = sel("0xe0000000");
     let v = ed.get(&g, &s, "+0x10:f32").unwrap();
@@ -600,7 +602,10 @@ fn bsp_switch_revalidates_surviving_tag_allocations_and_write_history() {
     // The shader datum survives, but its allocation moved.
     entry(&mut g, 1, b"shad", SHAD, META + 0x7000, 0x54);
     g.set_u32(engine::points::TAG_INDEX.base, 0).unwrap();
-    assert_eq!(ed.at_epoch(&g, 2, 1).unwrap_err().kind, ErrorKind::Unavailable);
+    assert_eq!(
+        ed.at_epoch(&g, 2, 1).unwrap_err().kind,
+        ErrorKind::Unavailable
+    );
     g.set_u32(engine::points::TAG_INDEX.base, HEADER).unwrap();
     ed.at_epoch(&g, 2, 1).unwrap();
     let journal = ed.changes(&g);
