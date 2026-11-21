@@ -87,6 +87,7 @@ impl ToolKind {
 pub(crate) struct SelectionRevision {
     world: u64,
     primary: Option<(BlockKind, usize)>,
+    volume: Option<usize>,
     navigation: u64,
 }
 
@@ -184,6 +185,8 @@ pub enum Action {
         ypr: Option<[f32; 3]>,
     },
     Select(Option<(BlockKind, usize)>),
+    /// Select a trigger volume by index (clearing the placements), or none.
+    SelectVolume(Option<usize>),
     Navigate(NavAction),
     /// Open the Map workspace on the palette's tag or placement.
     GoTo(Selection),
@@ -882,6 +885,15 @@ impl App {
             Action::Select(sel) => {
                 let before = self.nav_location();
                 self.session.select(sel);
+                self.record_placement_selection(before);
+            }
+            Action::SelectVolume(index) => {
+                let count = self.session.volumes().map_or(0, |v| v.triggers.len());
+                if let Some(i) = index.filter(|&i| i >= count) {
+                    return self.error(format!("no trigger volume {i} (the map has {count})"));
+                }
+                let before = self.nav_location();
+                self.session.select_volume(index);
                 self.record_placement_selection(before);
             }
             Action::ToggleSelect(e) => {

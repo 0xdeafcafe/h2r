@@ -1,6 +1,6 @@
 # h2-editor polish: what is wrong, the design, and the slices
 
-Status: P1 to P7, P12, P18, G1 to G3, G5, G6, the editor camera modes and player move in G7, G8 and G9 are implemented. Trigger and kill volume marks depend on P8. The remaining slices describe the design.
+Status: P1 to P8, P12, P18, G1 to G3, G5, G6, the editor camera modes and player move in G7, G8 and G9 are implemented. P8's layouts rest on this repository's readers and writers; the engine's own volume readers are not disassembled. The remaining slices describe the design.
 Code: `crates/apps/studio/src` (the window: `ui.rs`, `ui/`, `play.rs`, `viewport.rs`, `theme.rs`), `crates/tools/scenario-edit/src` (the scene and its renderer). Tests: named per slice.
 Switch: none.
 
@@ -40,7 +40,7 @@ during the read, so nothing here comes from the socket API.
 
 | # | Problem | Where |
 |---|---|---|
-| R22 | Scene handles eleven scenario placement blocks. Trigger volumes, kill triggers, BSP-switch volumes, decals and portals have no Scene overlay. | `crates/tools/scenario-edit/src/layout.rs:12` (`BlockKind`) |
+| R22 | Scene handles eleven scenario placement blocks and the trigger volumes. Decals and portals have no Scene overlay. | `crates/tools/scenario-edit/src/layout.rs:12` (`BlockKind`) |
 | R23 | Collision is not drawn. The parsers exist (`Bsp::decode_structure`, `Collision::decode`, `PhysicsModel::decode` in `crates/formats/tags/src/collision.rs`) and no editor code calls them. Picking uses render triangles, so a wall with collision and no render geometry cannot be seen, clicked or measured. | `crates/tools/scenario-edit/src/geometry.rs:880` (`surface`) |
 | R24 | Instanced geometry has no collision reader anywhere in the tree; `crates/formats/tags/src/structure.rs` reads instance definitions for drawing only. | `crates/formats/tags/src/structure.rs:185` |
 
@@ -303,8 +303,7 @@ holds (`play::presence`):
 | an unlinked live object | `{object}` for the selected salted handle |
 | a tag from the tag tree | `{object}` for every live object made from it, up to 64 |
 | the aim candidate | `{object}` in the candidate style |
-
-Trigger and kill volume marks depend on P8 making those entries selectable.
+| a trigger volume | `{box}` at its corner, forward, up and full size (`presence::volume_box`); a volume with a parent object sends none |
 
 The window overlay draws wire boxes and crosses over the finished game
 frame. A genuine frame carries the camera and object bounds that
@@ -548,8 +547,8 @@ owns the list; `view.layers {set?}` reads and sets it; presets
 | Gameplay | Netgame flags | netgame flags | `layout.rs` | a pennant by flag type and team, the type as a label; flags of one type and index joined as an outline (hills, territories) |
 | Gameplay | Netgame equipment | netgame equipment | `layout.rs` | the item's model with its respawn time as a label |
 | Volumes | Trigger volumes | the scenario's trigger volume block | `scenario_edit::volumes` | a translucent oriented box with wire edges and its name |
-| Volumes | Kill volumes | the kill trigger block, which names trigger volumes | `scenario_edit::volumes` | the same box in the kill colour, hatched |
-| Volumes | BSP switches | the BSP-switch block | `scenario_edit::volumes` | the box with "from to" as its label |
+| Volumes | Kill volumes | the kill trigger block, which names trigger volumes | `scenario_edit::volumes` | the same box in the kill colour |
+| Volumes | BSP switches | the BSP-switch block | `scenario_edit::volumes` | the box with "BSP from to to" in its label |
 | Collision | Level collision | the structure's collision BSP | `scenario_edit::collision_view` | surfaces as translucent faces with wire edges |
 | Collision | Collision only | level collision surfaces with no drawn surface over them | `collision_view::classify` | solid red hatch: the invisible walls |
 | Collision | Instance collision | instanced geometry's collision | a new reader in `tags::structure` | as level collision |
@@ -584,10 +583,16 @@ hidden parts at a quarter strength. It replaces the single-purpose
 text projected by the camera, culled by distance.
 
 **Picking.** A visible overlay shape is pickable: a box by ray against
-its oriented box, a collision surface by ray against its polygon. A
-pick selects it (`Selection::Volume`, `Selection::Surface`), the Scene
-tab highlights its row, and the inspector shows its fields. Hidden
-layers are never picked.
+its oriented box (`volumes::Frame::hit`; a ray that starts inside a box
+does not pick it), a collision surface by ray against its polygon. A
+placement under the cursor wins over a box, since placements sit inside
+volumes. A volume pick selects it in place of the placements
+(`Session::select_volume`, `Action::SelectVolume`), the Scene tab's
+Volumes group highlights its row, and the inspector shows its box and
+what names it. A surface pick (`Selection::Surface`) follows with P10.
+Hidden layers are never picked. A box is one selection whatever its
+kinds: kill triggers and BSP switches name trigger volumes, so the
+selection is the trigger volume's index.
 
 ### Editing volumes and barriers
 
@@ -708,7 +713,8 @@ when built. The game's methods for the link follow in their own table.
 | `tag.refs` | `{tag}` | `[{to, via, found: field \| scan}]` |
 | `view.layers` | `{set?: {name: bool}, preset?, xray?}` | every layer: `name`, `group`, `on`, `count` |
 | `view.lighting` | `{mode?}` | the mode |
-| `volume.list` | `{kind?}` | `[{kind, index, name, origin, forward, up, size, named_by}]` |
+| `volume.list` | `{kind?}` | `{volumes: [{index, name, label, kinds, origin, forward, up, size, center, parent, world, named_by}], kill_triggers, bsp_switches, selected, error}` (built) |
+| `volume.select` | `{index?, focus?}` | `{selected}` (built) |
 | `volume.set`, `volume.add`, `volume.remove` | as `scenario.set` and its kin | the volume; refusals name the holder |
 | `collision.surfaces` | `{bsp?, class?, limit?}` | counts by class, and surfaces with `plane`, `flags`, `material`, `class`, `ring` |
 | `collision.at` | `{ray \| point}` | the surface hit and its class |
@@ -758,7 +764,7 @@ under 2,500, L more.
 | P5 | **`scnr.txt` and BSP-region tags** | M | P4 | `crates/formats/tags/src/defs/scnr.txt`, `app/tag_doc.rs` | the registry's own tiling test passes for `scnr`; blocks owned by `layout::BLOCKS` are read-only in the panel; fixture BSP and lightmap edits save at their own file offsets and undo; opt-in disc test: every disc scenario walks through the definition |
 | P6 | **Layers and the overlay pass** | M | nothing | `crates/tools/scenario-edit/src/layers.rs`, `render.rs`, `scene.rs`, `viewport.rs`, `ui.rs`, `api/view.rs` | `view.layers` toggles change `view.snapshot`'s pixels on the fixture; a hidden layer is not picked; the Halo 1 overlay is a layer and its menu item still works; X-ray draws a box behind a wall at reduced strength (pixel test, skipped without an adapter) |
 | P7 | **Spawn and netgame layers**: facing arrows, team tint, flag-type pennants and labels, joined outlines | S | P6 | `geometry.rs`, `layers.rs`, `theme.rs` | glyph geometry tests: an arrow points along the facing; two flags of one type and index make one outline; colours come from the theme's layer tokens |
-| P8 | **Trigger, kill and BSP-switch volumes: see and pick** | M | P6 | `scenario-edit/src/volumes.rs`, `layout.rs`, `scenario.rs`, `api/scenario.rs` (`volume.list`) | research first: the volume's size field and the kill trigger element, from the retail readers with `h2 disasm`, recorded in scenario-editor.md with labels. Fixture with two volumes and a kill trigger: `volume.list` gives frames and sizes; a ray through a box picks it; the kill box is in the Kill layer |
+| P8 | **Trigger, kill and BSP-switch volumes: see and pick** (implemented) | M | P6 | `scenario-edit/src/volumes.rs`, `scenario.rs`, `layers.rs`, `session.rs`, `fixture.rs` (`fixture_with_volumes`); studio `viewport.rs`, `viewport/mirror.rs`, `ui.rs`, `ui/inspector.rs`, `play/presence.rs`, `api/scenario.rs` (`volume.list`, `volume.select`) | the layouts are recorded in scenario-editor.md, "Trigger volumes, kill triggers and BSP switches", labelled S from this repository's writers and the game-side volume view; the retail readers are not disassembled. `volumes::tests` (box frame, ray pick, holders, the fixture read, pick and frame through `Session`), `api::tests::volume_list_and_select_read_the_invented_volumes` (frames and sizes, the kill box in the Kill layer, layer counts and snapshot pixels), `headless::tests::a_click_on_a_volume_selects_it`, `presence::tests::a_selected_volume_is_marked_as_its_box` |
 | P9 | **Edit volumes** | M | P8 | `layout.rs` (`BLOCKS`), `edit.rs`, `session.rs`, `ui/inspector.rs`, `viewport.rs` | move, turn and resize through the gizmo are one undo step each; the saved map differs only in the volume's bytes and the checksum; removing a volume a kill trigger names is refused by name; Make a kill volume adds both entries and undoes as one step |
 | P10 | **Level collision and the Collision only layer** | M | P6 | `scenario-edit/src/collision_view.rs`, `geometry.rs`, `api/view.rs` (`collision.*`) | invented room with one wall that has no render face: `classify` puts that wall alone in Collision only; a render face 1 mm off its plane still covers it; `collision.at` on the wall returns its class; triangulated rings equal `Bsp::surface_ring` |
 | P11 | **Object and instance collision** | M | P10 | `crates/formats/tags/src/structure.rs` (instance collision reader), `collision_view.rs` | research first: the instance definition's collision block, labelled in structure-bsp.md. Fixture object with a `coll` box and a `phmo` sphere: both drawn at the placement's transform; an invented instance's collision reads back |
@@ -872,8 +878,12 @@ The tests use invented data.
 - **Code**: `TagDoc::scan_refs` scans the readable range owned by the
   tag. A known layout can also follow block pointers into the document's
   other readable ranges.
-- **S**: the trigger volume's size field and the kill trigger element's
-  layout. Verified by P8's read of the retail volume test.
+- **S**: the trigger volume's frame and size fields, its parent object
+  field and the kill trigger element's layout
+  ([scenario-editor.md](scenario-editor.md), "Trigger volumes, kill
+  triggers and BSP switches"). They rest on this repository's writers and
+  the game-side volume view. Verified by a read of the retail volume test
+  with `h2 disasm`.
 - **S**: the engine tests a trigger volume against the scenario's bytes
   each time, so a poke shows at once. Verified in a run by moving a
   volume with `edit.set` and reading the script result.

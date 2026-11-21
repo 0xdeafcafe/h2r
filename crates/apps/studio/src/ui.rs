@@ -820,6 +820,7 @@ impl Studio {
                         }
                     }
                 }
+                volume_outliner(ui, session, &filter, actions);
         });
                 if place.is_some() {
                     self.viewport.placing = place;
@@ -1155,7 +1156,13 @@ impl Studio {
 pub(crate) fn dispatch_actions(app: &mut App, actions: Vec<Action>) {
     for a in actions {
         if app.tool == ToolKind::Tags
-            && matches!(a, Action::Select(_) | Action::SelectMany(_) | Action::ToggleSelect(_))
+            && matches!(
+                a,
+                Action::Select(_)
+                    | Action::SelectMany(_)
+                    | Action::ToggleSelect(_)
+                    | Action::SelectVolume(_)
+            )
         {
             app.dispatch(Action::SetTool(ToolKind::Scenario));
         }
@@ -1275,6 +1282,54 @@ fn package_row(
     };
     if st.row(ui, gpu, group, &row) {
         actions.push(Action::OpenPackageEntry(key.clone()));
+    }
+}
+
+/// The outliner's Volumes group: every trigger volume, with what names it.
+fn volume_outliner(
+    ui: &Ui,
+    session: &scenario_edit::Session,
+    filter: &str,
+    actions: &mut Vec<Action>,
+) {
+    let Some(volumes) = session.volumes() else {
+        return;
+    };
+    let total = volumes.triggers.len();
+    let shown: Vec<usize> = (0..total)
+        .filter(|&i| outliner::matches(filter, "Volumes", &volumes.caption(i), i))
+        .collect();
+    if total == 0 || (!filter.is_empty() && shown.is_empty()) {
+        return;
+    }
+    let count = if filter.is_empty() {
+        total.to_string()
+    } else {
+        format!("{} of {total}", shown.len())
+    };
+    let mut node = ui
+        .tree_node_config("block-volumes")
+        .label(format!("{}  Volumes  ({count})", icon::BOX))
+        .span_avail_width(true);
+    if !filter.is_empty() {
+        node = node.opened(true, Condition::Always);
+    }
+    let Some(_node) = node.push() else {
+        return;
+    };
+    let selected = session.selected_volume();
+    for i in shown {
+        let clicked = ui
+            .selectable_config(format!("{}###volume-{i}", volumes.caption(i)))
+            .selected(selected == Some(i))
+            .allow_double_click(true)
+            .build();
+        if clicked {
+            actions.push(Action::SelectVolume(Some(i)));
+            if ui.is_mouse_double_clicked(dear_imgui_rs::MouseButton::Left) {
+                actions.push(Action::FocusSelected);
+            }
+        }
     }
 }
 

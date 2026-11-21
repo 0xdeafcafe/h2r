@@ -218,6 +218,13 @@ pub fn parse_call(words: &[String]) -> Result<(String, Value), String> {
         "delete" => (m::SCENARIO_DELETE, entry(a, name)?),
         "duplicate" => (m::SCENARIO_DUPLICATE, entry(a, name)?),
         "select" => (m::SCENARIO_SELECT, entry(a, name)?),
+        "volumes" => (
+            m::VOLUME_LIST,
+            match a {
+                Some(kind) => json!({ "kind": kind }),
+                None => Value::Null,
+            },
+        ),
         "variants" => (m::VARIANT_LIST, Value::Null),
         "variant" => (m::VARIANT_GET, Value::Null),
         "setting" => {
@@ -303,8 +310,8 @@ pub fn parse_call(words: &[String]) -> Result<(String, Value), String> {
         "status" | "methods" | "maps" | "docs" | "blocks" | "variants" | "variant"
         | "playlists" | "screens" | "widgets" | "render-stats" => 1,
         "log" | "source" | "open" | "save" | "diff" | "undo" | "redo" | "tag" | "refs"
-        | "objects" | "object" | "delete" | "duplicate" | "select" | "playlist" | "screen"
-        | "press" | "render-ui" | "snapshot" | "huds" | "hud" | "render-hud" => 2,
+        | "objects" | "object" | "delete" | "duplicate" | "select" | "volumes" | "playlist"
+        | "screen" | "press" | "render-ui" | "snapshot" | "huds" | "hud" | "render-hud" => 2,
         _ => words.len(),
     };
     max(used)?;

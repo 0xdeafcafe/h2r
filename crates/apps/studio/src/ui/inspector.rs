@@ -138,8 +138,70 @@ pub(super) fn tag_field_marks<'a>(
     }
 }
 
+/// The selected trigger volume: its frame, size and what names it, read
+/// only.
+fn volume(ui: &Ui, fonts: &theme::Fonts, app: &mut App, index: usize) {
+    let Some(volumes) = app.session.volumes() else {
+        return;
+    };
+    let v = &volumes.triggers[index];
+    let f = ui.push_font(fonts.title);
+    ui.text(format!("{}  {}", icon::BOX, volumes.label(index)));
+    f.pop();
+    let kinds: Vec<&str> = volumes
+        .kinds(index)
+        .into_iter()
+        .map(|k| scenario_edit::layers::LayerId::Volume(k).label())
+        .collect();
+    ui.text_disabled(format!("Trigger volume #{index}   {}", kinds.join(", ")));
+    let mut frame = false;
+    if v.in_world() {
+        frame = ui.button(format!("{} Frame", icon::FOCUS));
+    } else {
+        ui.text_wrapped(
+            "Its frame is relative to a placed object, which only a running game places, \
+             so it is not drawn.",
+        );
+    }
+    let xyz = |p: [f32; 3]| format!("{:.3}, {:.3}, {:.3}", p[0], p[1], p[2]);
+    theme::section(ui, "Box");
+    for (label, value) in [
+        ("Origin (corner)", xyz(v.frame.origin)),
+        ("Forward", xyz(v.frame.forward)),
+        ("Up", xyz(v.frame.up)),
+        ("Size", xyz(v.frame.size)),
+    ] {
+        ui.label_text(label, value);
+    }
+    if let Some(parent) = v.parent {
+        ui.label_text("Parent object name", parent.to_string());
+    }
+    theme::section(ui, "Named by");
+    let holders = volumes.holders(index);
+    if holders.is_empty() {
+        ui.text_disabled("Nothing names it by index.");
+    }
+    for h in holders {
+        ui.bullet_text(match h {
+            scenario_edit::volumes::Holder::Kill(i) => format!("Kill trigger #{i}"),
+            scenario_edit::volumes::Holder::BspSwitch { index, from, to } => {
+                format!("BSP switch #{index}, BSP {from} to {to}")
+            }
+        });
+    }
+    ui.spacing();
+    ui.text_disabled("Volumes are read only.");
+    if frame {
+        app.dispatch(Action::FocusSelected);
+    }
+}
+
 /// Draw the inspector for the selection and apply its edits.
 pub fn draw(ui: &Ui, fonts: &theme::Fonts, app: &mut App, state: &mut InspectorState) {
+    if let Some(index) = app.session.selected_volume() {
+        volume(ui, fonts, app, index);
+        return;
+    }
     let location = app.nav_location();
     let (kind, index) = match location.selection() {
         Some(Selection::Placement(kind, index)) => (kind, index),
