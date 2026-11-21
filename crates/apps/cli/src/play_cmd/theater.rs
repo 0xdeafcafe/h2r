@@ -131,6 +131,7 @@ impl shell::Controller for Controller {
             shell::Key::Right => Key::Right,
             shell::Key::Up => Key::Up,
             shell::Key::Down => Key::Down,
+            shell::Key::Step => Key::Step,
             shell::Key::Slower => Key::Slower,
             shell::Key::Faster => Key::Faster,
             shell::Key::Hide => Key::Hide,

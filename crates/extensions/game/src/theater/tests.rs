@@ -1,4 +1,5 @@
 mod pad_inputs;
+mod transport;
 
 use super::*;
 use agent_proto::theater as api;
@@ -40,7 +41,8 @@ fn theater_replays_checkpoints_reports_first_divergence_and_registers_controls()
                 render_every,
                 speed: 1.,
                 seek_tick: 0,
-                from_tick: 0,
+                from_tick: None,
+                seek_source: None,
                 paused_at_target: false,
                 presentation: Presentation::default(),
                 restart: dir.join("restart"),
@@ -224,7 +226,8 @@ fn sealed_film_reinstalls_the_recorders_telemetry_and_impact_hook_chains() {
                     render_every: 0,
                     speed: 1.,
                     seek_tick: 0,
-                    from_tick: 0,
+                    from_tick: None,
+                    seek_source: None,
                     paused_at_target: false,
                     presentation: Presentation::default(),
                     restart: dir.join("restart"),
@@ -433,7 +436,8 @@ fn seek_restores_machine_and_replays_only_the_remaining_ticks() {
         render_every: 0,
         speed: 1.,
         seek_tick: 31,
-        from_tick: 0,
+        from_tick: None,
+        seek_source: None,
         paused_at_target: true,
         presentation: Presentation::default(),
         restart: dir.join("restart"),
@@ -489,13 +493,14 @@ fn state_reports_the_seek_route_and_restore_cost_and_lists_keyframes() {
     record.checkpoint(&guest);
     record.finish(40, true).unwrap();
 
-    let open = |seek_tick| {
+    let open = |seek_tick, seek_source| {
         Session::open(None, Some(Replay {
             path: file.clone(),
             render_every: 0,
             speed: 1.,
             seek_tick,
-            from_tick: 0,
+            from_tick: None,
+            seek_source,
             paused_at_target: false,
             presentation: Presentation::default(),
             restart: dir.join("restart"),
@@ -531,7 +536,7 @@ fn state_reports_the_seek_route_and_restore_cost_and_lists_keyframes() {
     assert!(capture["elapsed_ms"].is_u64());
 
     // A cold seek to tick 31 routes through the film's keyframe at tick 30.
-    let player = open(31);
+    let player = open(31, Some(api::SeekRoute::Keyframe));
     player.add_methods(&a);
     let seek = call(api::STATE, json!({}))["result"]["seek"].clone();
     assert_eq!(seek["target"], 31);
@@ -580,7 +585,7 @@ fn state_reports_the_seek_route_and_restore_cost_and_lists_keyframes() {
     assert_eq!(jump["source"], "boot");
 
     // A target before every stored keyframe replays from boot.
-    let booted = open(20);
+    let booted = open(20, None);
     booted.add_methods(&a);
     assert!(booted.take_keyframe().is_none());
     let seek = call(api::STATE, json!({}))["result"]["seek"].clone();
@@ -589,7 +594,12 @@ fn state_reports_the_seek_route_and_restore_cost_and_lists_keyframes() {
     assert!(seek["restore_ms"].is_null());
 
     // Playing from the start reports no jump.
-    let linear = open(0);
+    let forced_boot = open(31, Some(api::SeekRoute::Boot));
+    assert!(forced_boot.take_keyframe().is_none());
+    forced_boot.add_methods(&a);
+    assert_eq!(call(api::STATE, json!({}))["result"]["seek"]["source"], "boot");
+
+    let linear = open(0, None);
     linear.add_methods(&a);
     assert!(call(api::STATE, json!({}))["result"]["seek"].is_null());
     std::fs::remove_dir_all(dir).unwrap();

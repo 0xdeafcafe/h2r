@@ -9,7 +9,18 @@ pub const SEEK: &str = "theater.seek";
 pub const CAMERA: &str = "theater.camera";
 pub const KEYFRAMES: &str = "theater.keyframes";
 pub const MEASUREMENTS: &str = "theater.measurements";
-pub const METHODS: [&str; 8] = [PLAY, STATE, PAUSE, SPEED, SEEK, CAMERA, KEYFRAMES, MEASUREMENTS];
+pub const STEP: &str = "theater.step";
+pub const METHODS: [&str; 9] = [
+    PLAY,
+    STATE,
+    PAUSE,
+    SPEED,
+    SEEK,
+    CAMERA,
+    KEYFRAMES,
+    MEASUREMENTS,
+    STEP,
+];
 
 /// Host wall-clock timings and write-watch counts for an instrumented run.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -54,13 +65,33 @@ pub struct Play {
 pub struct Speed {
     pub speed: f64,
 }
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Seek {
-    pub tick: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tick: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cancel: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<SeekRoute>,
     /// The overlay's in and out ticks, preserved across the seek.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub clip_marks: Option<[Option<u64>; 2]>,
+}
+
+/// A cold route callers can force. A missing route uses the best available
+/// keyframe, then boot.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SeekRoute {
+    Boot,
+    Keyframe,
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Step {
+    pub ticks: u64,
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -122,6 +153,8 @@ pub struct State {
     pub length_ticks: u64,
     pub paused: bool,
     pub speed: f64,
+    #[serde(default)]
+    pub speed_reached: Option<f64>,
     pub seeking: bool,
     pub camera: CameraMode,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -148,4 +181,49 @@ pub struct Keyframes {
     pub ring_bytes: u64,
     pub ring_cap: u64,
     pub sidecar_bytes: u64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn theater_seek_and_step_params_round_trip() {
+        for wire in [
+            json!({"tick":0}),
+            json!({"tick":300,"source":"boot","clip_marks":[10,null]}),
+            json!({"tick":300,"source":"keyframe"}),
+            json!({"cancel":true}),
+            json!({"tick":42,"cancel":true}),
+        ] {
+            let seek: Seek = serde_json::from_value(wire.clone()).unwrap();
+            assert_eq!(serde_json::to_value(seek).unwrap(), wire);
+        }
+        assert!(serde_json::from_value::<Seek>(json!({"tick":1,"source":"ring"})).is_err());
+        let wire = json!({"ticks":1});
+        let step: Step = serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!(serde_json::to_value(step).unwrap(), wire);
+    }
+
+    #[test]
+    fn theater_state_round_trips_with_progress_and_reached_speed() {
+        let mut wire = json!({
+            "id":"fixture", "tick":30, "length_ticks":200, "paused":false,
+            "speed":4.0, "seeking":false, "camera":"default", "kills":[]
+        });
+        let old: State = serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!(old.seek, None);
+        assert_eq!(old.speed_reached, None);
+
+        wire["speed_reached"] = json!(2.25);
+        wire["seek"] = json!({
+            "target":30, "from_tick":120, "source":"keyframe", "warm":false,
+            "remaining_ticks":0, "restore_ms":85
+        });
+        let current: State = serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!(current.speed_reached, Some(2.25));
+        assert_eq!(current.seek.unwrap().restore_ms, Some(85));
+        assert_eq!(serde_json::to_value(current).unwrap(), wire);
+    }
 }

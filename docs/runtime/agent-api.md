@@ -2021,9 +2021,11 @@ directly on its own `--socket` (`H2_AGENT`, else the cache's `theater.sock`).
 |---|---|---|
 | `theater.play` | `{"id":"film-id","range":[300,900]}` to open, `{}` to resume; omit `range` for the whole film | `{id, starting:true}` on launch, otherwise transport state |
 | `theater.state` | `{}` | transport state, or `{id:null}` with no player |
-| `theater.pause` | `{}` | holds guest execution and reports state |
+| `theater.pause` | `{}` | holds playback and reports state. During a seek it arranges a hold at the destination |
 | `theater.speed` | `{"speed":0.5}` | sets host pacing from 0.25 to 4 times realtime |
-| `theater.seek` | `{"tick":900}`, optionally `"clip_marks":[300,null]` | restarts the player and fast-forwards to the target, carrying camera and timeline state; direct socket clients reconnect after the restart |
+| `theater.seek` | `{"tick":900}`, optionally `"clip_marks":[300,null]`, `"source":"boot"` or `"source":"keyframe"` | restarts the player and fast-forwards to the target, carrying camera and timeline state. Forcing a keyframe requires a compatible frame at or before the target |
+| `theater.seek` | `{"cancel":true}` | returns to the tick the active seek left and holds there. An optional `tick` is ignored. If no seek is active, returns the current state |
+| `theater.step` | `{"ticks":1}` | accepts a positive number of ticks while paused and outside a seek. Returns the current state, runs the requested ticks, and holds at the new tick. Read state again to get the completed tick |
 | `theater.camera` | `{"mode":"orbit","player":"<name>","look":[0.2,-0.1],"zoom":-1}` or `{"mode":"first_person","seat":3}` | selects the view and returns transport state; an absolute film seat is 0 to 15 |
 | `theater.keyframes` | `{}` | seek inventory `{film, sidecar, ring, capture_points, ring_bytes, ring_cap, sidecar_bytes}`; lists contain tick numbers |
 | `theater.measurements` | `{}` | timings, keyframe attempts and page counts from the instrumented recorder or playback child |
@@ -2045,16 +2047,24 @@ the whole retail frame; version 3 also accepts `first-person` with a local
 player's name or seat to select a drawn viewport. Headless playback
 (`--render-every 0`) accepts only `default`.
 
-Transport state carries `id`, `tick`, `length_ticks`, `paused`, `speed`,
+Transport state carries `id`, `tick`, `length_ticks`, `paused`, `speed`, `speed_reached`,
 `seeking`, `camera`, optional `camera_player` and `camera_seat`, and
 discovered kill marker ticks in `kills`, alongside the usual `at` stamp.
-Tick zero is boot. A paused seek holds at its target until play. The HLE
+Tick zero is boot. `speed` is the requested multiplier. `speed_reached`
+is completed ticks per wall second divided by the film's tick rate and
+capped at the requested speed. It is null before a half-second sample
+or during a seek or step, and zero while held. A paused seek holds at
+its target until play. The HLE
 compares the recorded call index and game-thread hash samples during
 fast-forward ([theater.md](../game/theater.md)).
 
 The `seek` object records `target`, `from_tick`, `source`, `warm`,
-`remaining_ticks` and `restore_ms`. It remains available at the target,
-with zero ticks left. Linear playback starts with `seek: null`. The
+`remaining_ticks` and `restore_ms`. `seeking` is true while a restart
+is pending or the child is catching up. A replacement target keeps the
+original departure tick. Direct socket clients reconnect after the
+restart and can then read progress or cancel. The seek object remains
+available at the target with zero ticks left. Linear playback starts
+with `seek: null`. The
 cold player reports `source: "keyframe"` for a compatible embedded
 keyframe or `"boot"` for replay from startup, with `warm: false`.
 `restore_ms` times loading the snapshot into the machine and checking
@@ -2086,7 +2096,8 @@ own socket when the run uses the Theater measurement switch
 ```sh
 h2 agent theater.state '{}' --socket "$film_run/play.sock"
 h2 agent theater.pause '{}' --socket "$film_run/play.sock"
-h2 agent theater.seek '{"tick":30}' --socket "$film_run/play.sock"
+h2 agent theater.seek '{"tick":30,"source":"boot"}' --socket "$film_run/play.sock"
+h2 agent theater.step '{"ticks":1}' --socket "$film_run/play.sock"
 h2 agent theater.play '{}' --socket "$film_run/play.sock"
 ```
 

@@ -12,6 +12,7 @@ pub(crate) fn key(code: KeyCode) -> Option<Key> {
         KeyCode::ArrowRight => Key::Right,
         KeyCode::ArrowUp => Key::Up,
         KeyCode::ArrowDown => Key::Down,
+        KeyCode::Period => Key::Step,
         KeyCode::BracketLeft => Key::Slower,
         KeyCode::BracketRight => Key::Faster,
         KeyCode::KeyH => Key::Hide,
@@ -64,6 +65,13 @@ impl Renderer {
         area: Viewport,
     ) {
         self.timeline = None;
+        // A cold seek can reach the transport before the child publishes
+        // a guest frame. The progress overlay can use the window itself.
+        let area = if area.is_empty() {
+            Viewport { x: 0, y: 0, width: size.0, height: size.1 }
+        } else {
+            area
+        };
         if area.is_empty() {
             return;
         }

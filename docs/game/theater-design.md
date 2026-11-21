@@ -110,7 +110,7 @@ The same container also holds the film: the inputs (tag 1) and digests
 | Machine snapshots: guest RAM, kernel, D3D, audio, XAPI, feature sections, a RAM hash | Built, tested on synthetic machines | [snapshots.md](../runtime/snapshots.md) |
 | The player: an isolated child process per film; a seek ends the child and starts another | Built | `crates/apps/cli/src/theater_cmd.rs` (`run`, the restart loop) |
 | A film without a usable keyframe plays from boot | Built | `EngineReplay::open` in `crates/extensions/game/src/theater/replay.rs` (`ImageMatch::FromBoot`) |
-| Transport over the agent API: `theater.play`, `state`, `pause`, `speed`, `seek`, `camera` | Built | `crates/extensions/agent-proto/src/theater.rs` |
+| Transport over the agent API: `theater.play`, `state`, `pause`, `speed`, `seek`, `step`, `keyframes`, `camera` | Built | `crates/extensions/agent-proto/src/theater.rs` |
 | Cameras: a view replaced in the guest's renderer with a private random seed; a separate GPU view for a playerless host film | Built | `crates/extensions/game/src/theater/legacy_camera.rs` (`Seeds`), `host_view.rs` |
 | The film selector and film page in the game's own menus | Built | [theater.md](theater.md#in-game-theater) |
 | Compatibility: XBE digest, guest image contract, `h2-sim/1`, the hook digest | Built | `crates/extensions/game/src/theater/compatibility.rs` (`hook_digest`), [film-format.md](film-format.md#determinism-and-verification) |
@@ -538,7 +538,7 @@ Existing methods keep their parameters.
 | Method | Parameters | Result |
 |---|---|---|
 | `theater.state` | `{}` | adds `speed_reached`, `compatibility` (`playable`, `unavailable`), `seek` (`{target, from_tick, source: "ring" \| "keyframe" \| "sidecar" \| "boot", warm, remaining_ticks, restore_ms}` or null), `verified_through` (the last tick whose digest matched), `divergence` (`{tick, kind}` or null), `camera_pose` (`{position, yaw, pitch, fov, radius}`), `hud`, `bar` |
-| `theater.seek` | `{tick, cancel?: true, source?: "boot" \| "keyframe"}` | transport state; `source` forces a route for tests |
+| `theater.seek` | `{tick, source?: "boot" \| "keyframe"}` or `{cancel: true}` | transport state. A forced route selects boot or a compatible embedded keyframe. Cancel returns to the departure tick and holds |
 | `theater.step` | `{ticks: 1}` | runs that many ticks and holds |
 | `theater.keyframes` | `{}` | `{film: [tick], sidecar: [tick], ring: [tick], capture_points: [tick], ring_bytes, ring_cap, sidecar_bytes}` |
 | `theater.verify` | `{from?, to?, ring?: true}` | replays the range unrendered in a second player and returns `{ticks, digests_checked, arena_hashes_checked, ram_hashes_checked, first_divergence}`; `ring` takes and restores a ring entry at every capture point on the way |
