@@ -9,6 +9,8 @@ license.workspace = true
 runtime.workspace = true
 hooks = { path = "../../hooking/hooks", default-features = false }
 engine = { path = "../../rewrites/engine" }
+# The extension records `hash_sim` folds into the arena hash.
+sim-ext.workspace = true
 
 [dev-dependencies]
 xapi = { path = "../../platform/xapi" }

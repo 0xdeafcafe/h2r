@@ -125,7 +125,7 @@ An `Op` is one of the editor's own commands or a Forge one:
 | Tag field | set a field by tag key and path | `edit.batch`'s write, with a digest of the prior typed value in `was` |
 | Mesh | a `MeshOp` on a target | modeling.md, "Operations" |
 | Bitmap | a `BitmapOp` (strokes, fills, adjusts) | modeling.md, "Texture editing" |
-| Forge | emitter, volume, barrier, link, logic node, squad, nav setting, body | this page |
+| Forge | emitter, volume, barrier, link, label, logic node, squad, nav setting, body | this page; labels in [rules-engine.md](rules-engine.md) "Forge labels" |
 
 Tags are named by group and path, resolved through the map's tag index
 when the document is applied. A Mesh op holds coordinates the author
@@ -140,6 +140,9 @@ SHA-256 of its canonical form with the entire `expect` block omitted.
 Use `ForgeDoc::from_bytes` to read the 8 MiB
 bounded format and `ForgeDoc::canonical_json` to write it. The saved
 file is `<data>/forge/<name>.h2forge`. A draft can omit `expect`.
+The `format` is 1, or 2 when an op sets or clears a label; validation
+refuses the other number, so a document has one spelling and every
+document without labels keeps its identity.
 
 A **recipe** brings tags into the map by reference:
 
@@ -555,7 +558,7 @@ sink.
 | Tag headroom is small on multiplayer maps | monitor bodies and AI may not fit; one map has none | F3 measures it; the cut order; a body recipe names its cost up front |
 | Host-made objects may not replicate, by group | more of F15 falls to Forge's mirrors | F3 measures; synchronous is built first and needs none of it |
 | The synchronous protocol may not hold a multiplayer map | F5 cannot ship; F15 moves ahead of it and AI waits for puppets | F3, before F5 is built |
-| `SimExt` is not built | no emitters, triggers or logic | F7 builds the blob with its first user |
+| `SimExt` has no user | no emitters, triggers or logic | the blob is built and tested on synthetic memory (`crates/rewrites/sim-ext`; sim-rewrite.md, "The `SimExt` blob"); F7 gives `FORGE` its first record and proves it on a running game |
 | The modeling crates are design | geometry and paint cannot start | block-out needs only `collision-build`; the rest follows modeling's own slices |
 | A game that loads a map with added tags is unproven on retail bases | every recipe | map-builder.md, "Not verified"; F10's first run is one transplanted scenery tag |
 | Materialise time grows with a document | long holds on Rebuild | cache by op-prefix hash; measure in F2 |

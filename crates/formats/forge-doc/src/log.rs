@@ -3,8 +3,8 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    Edit, ForgeDoc, Limits, MAX_DOC_BYTES, Op, OpId, Refusal, Result, Sha256,
-    validate::{CountBefore, Counts, author, op},
+    Edit, ForgeDoc, Limits, MAX_DOC_BYTES, Op, Refusal, Result, Sha256,
+    validate::{Counts, author, op},
     wire,
 };
 
@@ -300,6 +300,7 @@ fn fold_document(
     if !active.iter().map(|(op, _)| *op).eq(doc.ops.iter()) {
         result.ops = active.into_iter().map(|(op, _)| op.clone()).collect();
         result.expect = None;
+        result.format = result.required_format();
         crate::links::check(&result.ops, &limits.base_counts)?;
     }
     wire::measure(&result, "document bytes", MAX_DOC_BYTES)?;
@@ -346,6 +347,7 @@ pub fn inverse(op: &Op, before: &Before<'_>) -> Result<Op> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::OpId;
     use crate::Placement;
 
     #[test]

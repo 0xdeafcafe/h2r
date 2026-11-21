@@ -43,6 +43,7 @@ workspace_library(
     deps = [
         "//crates/hooking/hooks:hooks",
         "//crates/rewrites/engine:engine",
+        "//crates/rewrites/sim-ext:sim-ext",
         "//crates/runtime/lifted:lifted",
         "//crates/runtime/runtime:runtime",
     ],
@@ -61,6 +62,7 @@ workspace_test(
     deps = [
         "//crates/hooking/hooks:hooks",
         "//crates/rewrites/engine:engine",
+        "//crates/rewrites/sim-ext:sim-ext",
         "//crates/runtime/lifted:lifted",
         "//crates/runtime/runtime:runtime",
     ],
