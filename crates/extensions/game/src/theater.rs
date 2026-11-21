@@ -7,9 +7,9 @@ mod compatibility;
 mod host_view;
 #[cfg(feature = "gpu")]
 pub use host_view::HostView;
-pub use camera::FilmCamera;
+pub use camera::{FilmCamera, RenderHooks};
 pub mod bot_tape;
-mod legacy_camera;
+mod rig;
 mod controls;
 mod metadata;
 mod unified;
@@ -23,7 +23,7 @@ mod replay;
 mod local_pads;
 mod video_menu;
 use anyhow::{Context, Result, bail, ensure};
-use legacy_camera::ReplayCamera;
+use rig::ReplayCamera;
 pub use controls::library_methods;
 pub use controls::{playable_entry, playback_images};
 use film::{
@@ -55,13 +55,26 @@ pub struct Replay {
 }
 
 /// View and timeline state carried across an exact replay restart.
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default)]
 pub struct Presentation {
     camera: ReplayCamera,
-    #[serde(default)]
-    camera_seat: Option<u8>,
+    hud: bool,
+    bar: bool,
     kills: BTreeSet<u64>,
     pub clip_marks: [Option<u64>; 2],
+}
+
+impl Default for Presentation {
+    fn default() -> Self {
+        Self {
+            camera: ReplayCamera::default(),
+            hud: true,
+            bar: true,
+            kills: BTreeSet::new(),
+            clip_marks: [None; 2],
+        }
+    }
 }
 
 struct Recording {
@@ -310,12 +323,12 @@ impl Session {
             Mode::Replay(_, opts) => opts.presentation.clone(),
             Mode::Record(_) => Presentation::default(),
         };
-        if !matches!(&mode, Mode::Replay(_, opts) if opts.render_every != 0) {
-            presentation.camera.mode = agent_proto::theater::CameraMode::Default;
-        }
         if let Mode::Replay(_, opts) = &mode {
-            if header.version >= 2 && header.meta.source == Source::Local && presentation.camera_seat.is_none() {
-                presentation.camera.mode = agent_proto::theater::CameraMode::Default;
+            if !presentation.camera.initialized {
+                if opts.render_every != 0 && header.meta.source == Source::Host {
+                    presentation.camera.mode = agent_proto::theater::CameraMode::Free;
+                }
+                presentation.camera.initialized = true;
             }
             opts.camera.restore(&presentation);
         }
@@ -442,7 +455,7 @@ impl Session {
                 }
                 if let Some(target) = s.restart {
                     let mut presentation = s.presentation.clone();
-                    if s.header.version >= 2 { r.camera.save(&mut presentation); }
+                    r.camera.save(&mut presentation);
                     std::fs::write(
                         &r.restart,
                         serde_json::to_vec(&(target, s.speed, s.paused, &presentation))?,
@@ -799,9 +812,6 @@ impl hooks::Feature for Observer {
                 std::thread::sleep(std::time::Duration::from_millis(10));
             }
         }).after_feature("live-telemetry");
-        if !self.0.has_engine_track() {
-            legacy_camera::install(b, &self.0)?;
-        }
         // V3 already dispatches PLAYER_KILLED when its recorded telemetry
         // profile enables events. An additional observer shares that dispatch.
         if (!self.0.has_engine_track() && self.0.replaying())

@@ -18,7 +18,7 @@ pub const ARENA_START: u32 = 0xa0e8_1000;
 pub const ARENA_END: u32 = 0xa0fd_0000;
 const PAGE: u32 = 0x1000;
 
-/// A bump allocator over [`ARENA_START`]..[`ARENA_END`], page-granular.
+/// A two-ended bump allocator over [`ARENA_START`]..[`ARENA_END`], page-granular.
 /// Allocation is pure (an address is handed out); mapping happens at
 /// install.
 #[derive(Clone, Debug)]
@@ -48,15 +48,41 @@ impl Arena {
         self.next = end;
         Some(at)
     }
-    /// Bytes handed out so far.
+    /// Reserve a page without moving the simulation's low-end allocations.
+    pub(crate) fn alloc_high(&mut self, len: u32) -> Option<u32> {
+        let len = len.max(1).checked_add(PAGE - 1)? & !(PAGE - 1);
+        let at = self.end.checked_sub(len)?;
+        if at < self.next {
+            return None;
+        }
+        self.end = at;
+        Some(at)
+    }
+
+    /// Bytes handed out from both ends.
     pub fn used(&self) -> u32 {
-        self.next - ARENA_START
+        self.next - ARENA_START + (ARENA_END - self.end)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn presentation_pages_leave_low_addresses_unchanged() {
+        let mut arena = Arena::default();
+        assert_eq!(arena.alloc_high(8), Some(ARENA_END - PAGE));
+        assert_eq!(arena.alloc(4), Some(ARENA_START));
+        assert_eq!(arena.alloc_high(0x1001), Some(ARENA_END - 3 * PAGE));
+        assert_eq!(arena.used(), 4 * PAGE);
+        assert_eq!(arena.alloc_high(ARENA_END - ARENA_START - 3 * PAGE), None);
+        assert_eq!(
+            arena.alloc(ARENA_END - ARENA_START - 4 * PAGE),
+            Some(ARENA_START + PAGE)
+        );
+        assert_eq!(arena.alloc_high(1), None);
+    }
 
     #[test]
     fn allocations_are_whole_pages_and_stop_at_the_end() {

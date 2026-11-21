@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 use agent_proto::theater::{self as api, CameraMode};
-use debug_menu::{Line, Tone, sources::method::CHEAT_SET};
+use debug_menu::{Line, Tone};
 use input::host::{HostButton, HostButtons, HostPadId, HostPadState};
 use input::{GatedPad, PadGate};
 use serde::Deserialize;
@@ -78,6 +78,9 @@ struct AgentState {
     camera_player: Option<String>,
     #[serde(default)]
     camera_seat: Option<u8>,
+    camera_fallback: Option<api::CameraFallback>,
+    hud: Option<bool>,
+    bar: Option<bool>,
     #[serde(default)]
     kills: Option<Vec<u64>>,
     #[serde(default)]
@@ -93,8 +96,8 @@ pub(super) struct Track {
     pub speed: usize,
     pub players: Vec<Player>,
     pub camera: CameraMode,
+    camera_fallback: Option<api::CameraFallback>,
     source: Source,
-    local_viewports: bool,
     tick_rate: u64,
     pub selected_player: usize,
     pub hud: bool,
@@ -119,9 +122,9 @@ impl Track {
             } else {
                 CameraMode::Default
             },
+            camera_fallback: None,
             source: entry.film.source,
             tick_rate: entry.film.tick_rate(),
-            local_viewports: entry.film.version.is_some_and(|v| v >= 3),
             selected_player: 0,
             hud: true,
             visible: true,
@@ -158,8 +161,7 @@ impl Track {
     fn cameras(&self) -> &'static [(CameraMode, &'static str)] {
         match self.source {
             Source::Host => &CAMERAS,
-            Source::Local if self.local_viewports => &LOCAL_CAMERAS,
-            Source::Local => &LOCAL_CAMERAS[..1],
+            Source::Local => &LOCAL_CAMERAS,
             Source::Archive => &[],
         }
     }
@@ -174,6 +176,7 @@ impl Track {
             .position(|(mode, _)| *mode == self.camera)
             .map_or(0, |i| (i + 1) % available.len());
         self.camera = available[next].0;
+        self.camera_fallback = None;
     }
 
     fn camera_target(&self) -> Option<&Player> {
@@ -220,7 +223,8 @@ impl Track {
             self.players = players;
         }
         if let Some(camera) = s.camera {
-            self.camera = camera;
+            self.camera_fallback = s.camera_fallback;
+            self.camera = if s.camera_fallback.is_some() { CameraMode::FirstPerson } else { camera };
             let selected = s
                 .camera_seat
                 .and_then(|seat| self.players.iter().position(|p| p.seat == Some(seat)))
@@ -231,6 +235,12 @@ impl Track {
             if let Some(index) = selected {
                 self.selected_player = index;
             }
+        }
+        if let Some(hud) = s.hud {
+            self.hud = hud;
+        }
+        if let Some(bar) = s.bar {
+            self.visible = bar;
         }
         if let Some(kills) = s.kills {
             self.kills.extend(kills);
@@ -292,7 +302,11 @@ impl Track {
         let mut top_right = vec![line("Camera", Tone::Title)];
         for &(mode, label) in self.cameras() {
             top_right.push(line(
-                label,
+                if mode == CameraMode::FirstPerson && self.camera_fallback.is_some() {
+                    "Follow (no viewport)"
+                } else {
+                    label
+                },
                 if self.camera == mode {
                     Tone::Selected
                 } else {
@@ -380,8 +394,11 @@ const CAMERAS: [(CameraMode, &str); 4] = [
     (CameraMode::FirstPerson, "First person"),
 ];
 
-const LOCAL_CAMERAS: [(CameraMode, &str); 2] = [
+const LOCAL_CAMERAS: [(CameraMode, &str); 5] = [
     (CameraMode::Default, "Recorded view"),
+    (CameraMode::Free, "Fly"),
+    (CameraMode::Orbit, "Orbit"),
+    (CameraMode::Follow, "Follow"),
     (CameraMode::FirstPerson, "First person"),
 ];
 
@@ -414,7 +431,7 @@ enum Request {
     Pause,
     Seek,
     Speed(usize),
-    Hud(bool),
+    Hud,
     Camera,
 }
 
@@ -550,9 +567,9 @@ impl Session {
                     track.speed = speed;
                 }
             }
-            (Request::Hud(hud), Ok(_)) => {
-                if let Some(track) = &mut self.track {
-                    track.hud = hud;
+            (Request::Hud, Ok(value)) => {
+                if let (Some(track), Ok(state)) = (&mut self.track, serde_json::from_value(value)) {
+                    track.read(state);
                 }
             }
             (_, Err(error)) => self.notice = Some(error),
@@ -575,7 +592,6 @@ impl Session {
     pub fn control(&mut self, c: Control) {
         let Some(track) = &mut self.track else { return };
         match c {
-            Control::Hide => track.visible = !track.visible,
             Control::Leave => self.leave_requested = true,
             _ if !self.ready => {}
             Control::Pause => {
@@ -616,14 +632,14 @@ impl Session {
                     CameraMode::Orbit | CameraMode::Follow | CameraMode::FirstPerson
                 );
             }
-            Control::Hud => {
-                if !self.pending.values().any(|r| matches!(r, Request::Hud(_))) {
-                    let hud = !track.hud;
-                    self.send(
-                        CHEAT_SET,
-                        json!({"name": "hide_hud", "value": !hud}),
-                        Request::Hud(hud),
-                    );
+            Control::Hide | Control::Hud => {
+                if !self.pending.values().any(|r| matches!(r, Request::Hud)) {
+                    let params = if c == Control::Hide {
+                        json!({"bar": !track.visible})
+                    } else {
+                        json!({"game": !track.hud})
+                    };
+                    self.send(api::HUD, params, Request::Hud);
                 }
             }
             Control::Mark => {
@@ -1035,15 +1051,11 @@ mod tests {
         }
         track.source = Source::Local;
         track.camera = CameraMode::Default;
-        track.cycle_camera();
-        assert_eq!(track.camera, CameraMode::Default);
-        assert_eq!(
-            track.view(None).top_right[1],
-            line("Recorded view", Tone::Selected)
-        );
-        track.local_viewports = true;
-        track.cycle_camera();
-        assert_eq!(track.camera, CameraMode::FirstPerson);
+        assert_eq!(track.view(None).top_right[1], line("Recorded view", Tone::Selected));
+        for &(mode, _) in &LOCAL_CAMERAS[1..] {
+            track.cycle_camera();
+            assert_eq!(track.camera, mode);
+        }
         track.cycle_camera();
         assert_eq!(track.camera, CameraMode::Default);
     }
@@ -1068,11 +1080,16 @@ mod tests {
         let agent = Agent::new();
         let (calls, received) = std::sync::mpsc::channel();
         agent.add_method(api::STATE, Access::Read, |_| Ok(json!({"tick": 60})));
-        for method in [api::PAUSE, api::SPEED, api::SEEK, api::CAMERA, CHEAT_SET] {
+        for method in [api::PAUSE, api::SPEED, api::SEEK, api::CAMERA, api::HUD] {
             let calls = calls.clone();
             agent.add_method(method, Access::Act, move |params| {
+                let result = if method == api::HUD {
+                    json!({"hud": params["game"], "bar": params["bar"]})
+                } else {
+                    json!({"paused": true})
+                };
                 calls.send((method, params)).unwrap();
-                Ok(json!({"paused": true}))
+                Ok(result)
             });
         }
         let path = std::env::temp_dir().join(format!("h2t-{}.sock", live_proto::sign::random_id()));
@@ -1127,7 +1144,7 @@ mod tests {
                 (api::PAUSE, json!({})),
                 (api::SPEED, json!({"speed": 2.0})),
                 (api::SEEK, json!({"tick": 210, "clip_marks": [null, null]})),
-                (CHEAT_SET, json!({"name": "hide_hud", "value": true})),
+                (api::HUD, json!({"game": false})),
             ]
         );
         assert!(!session.track.as_ref().unwrap().hud);

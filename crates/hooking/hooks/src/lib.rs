@@ -68,6 +68,7 @@ pub struct Manifest {
     /// On unless switched off.
     pub default_on: bool,
     pub doc: &'static str,
+    pub(crate) presentation_only: bool,
 }
 
 impl Manifest {
@@ -77,12 +78,20 @@ impl Manifest {
             title,
             default_on: true,
             doc: "",
+            presentation_only: false,
         }
     }
     pub fn off_by_default(mut self) -> Self {
         self.default_on = false;
         self
     }
+    /// Private render state may be installed on a film player alone. Give
+    /// it arena addresses that leave the recording's simulation plan intact.
+    pub fn presentation_only(mut self) -> Self {
+        self.presentation_only = true;
+        self
+    }
+
     pub fn doc(mut self, doc: &'static str) -> Self {
         self.doc = doc;
         self
@@ -363,6 +372,7 @@ pub struct Alloc {
     pub addr: u32,
     pub len: u32,
     pub perms: Permissions,
+    pub presentation_only: bool,
 }
 
 /// Collects every feature's declarations. See the crate docs.
@@ -411,6 +421,7 @@ impl Registry {
         }
         let mut b = Builder {
             feature: m.id,
+            presentation_only: m.presentation_only,
             hooks: Vec::new(),
             arena: self.arena.clone(),
             allocs: Vec::new(),
@@ -488,6 +499,7 @@ impl Registry {
 /// What a feature declares through. See [`Feature::build`].
 pub struct Builder<'r> {
     feature: &'static str,
+    presentation_only: bool,
     hooks: Vec<Hook>,
     arena: Arena,
     allocs: Vec<Alloc>,
@@ -535,15 +547,17 @@ impl<'r> Builder<'r> {
     /// Guest memory for this feature, from the one reserved range, mapped
     /// (zeroed) at install. Page-granular.
     pub fn guest_alloc(&mut self, len: u32, perms: Permissions) -> Result<u32, BuildError> {
-        let addr = self
-            .arena
-            .alloc(len)
-            .ok_or_else(|| BuildError(format!("guest arena full ({len:#x} bytes)")))?;
+        let addr = if self.presentation_only {
+            self.arena.alloc_high(len)
+        } else {
+            self.arena.alloc(len)
+        }.ok_or_else(|| BuildError(format!("guest arena full ({len:#x} bytes)")))?;
         self.allocs.push(Alloc {
             feature: self.feature,
             addr,
             len,
             perms,
+            presentation_only: self.presentation_only,
         });
         Ok(addr)
     }

@@ -61,6 +61,7 @@ pub struct FeatureState {
     pub id: &'static str,
     pub title: &'static str,
     pub off: Option<String>,
+    pub presentation_only: bool,
 }
 
 impl FeatureState {
@@ -69,6 +70,7 @@ impl FeatureState {
             id: m.id,
             title: m.title,
             off,
+            presentation_only: m.presentation_only,
         }
     }
 }
@@ -354,6 +356,8 @@ pub(crate) fn build(
     for (addr, h) in placed {
         by_addr.entry(addr).or_default().push(h);
     }
+    let presentation = features.iter().filter(|f| f.presentation_only)
+        .map(|f| f.id).collect::<BTreeSet<_>>();
     let mut chains = BTreeMap::new();
     let mut warnings = Vec::new();
     for (addr, hooks) in by_addr {
@@ -421,7 +425,10 @@ pub(crate) fn build(
             ));
         }
         if chain.needs_shadow() {
-            match arena.alloc(4) {
+            let presentation_only = chain.after.iter().chain(&chain.observe_after)
+                .all(|h| presentation.contains(h.feature));
+            let shadow = if presentation_only { arena.alloc_high(4) } else { arena.alloc(4) };
+            match shadow {
                 Some(s) => {
                     chain.shadow = Some(s);
                     allocs.push(Alloc {
@@ -429,6 +436,7 @@ pub(crate) fn build(
                         addr: s,
                         len: 0x1000,
                         perms: runtime::guest::Permissions::RX,
+                        presentation_only,
                     });
                 }
                 None => notes.push(format!("{}: guest arena full", point.name)),
@@ -437,6 +445,8 @@ pub(crate) fn build(
         chains.insert(addr, chain);
     }
     if conflicts.is_empty() {
+        // Mapping order also determines physical placement in guest RAM.
+        allocs.sort_by_key(|a| a.presentation_only);
         Ok(Plan {
             features,
             chains,

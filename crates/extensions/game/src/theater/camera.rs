@@ -1,123 +1,260 @@
-//! A local film already renders each player's director, weapon and HUD. Select
-//! the completed viewport at presentation, after the engine's final draw.
+//! One camera rig drives the independent observer and the guest's render view.
 use std::sync::{Arc, Mutex};
 
-use super::{Mode, Session};
-use engine::GuestMemory;
+use agent_proto::theater::{self as api, CameraMode};
+use engine::{GuestMemory, points, render_loop::views::VIEW_STRIDE};
+use hooks::{Builder, Flow};
+
+use super::{Mode, Presentation, Session, rig::ReplayCamera};
+use crate::spectator_view::{Pose, draw_world_view, put_fov, retail_view, vertical_fov};
 
 #[derive(Default)]
 struct Views {
-    requested: Option<u8>,
-    rig: super::ReplayCamera,
+    rig: ReplayCamera,
     revision: u64,
-    last_seat: Option<u8>,
+    subject: Option<u8>,
+    crop_seat: Option<u8>,
     drawing: [Option<[u32; 4]>; 16],
     available: u16,
-    host: bool,
+    playerless: bool,
+    hide_hud: bool,
+}
+
+impl Views {
+    fn has_viewport(&self) -> bool {
+        self.rig.seat.map_or(self.available != 0, |seat| {
+            self.available & (1 << seat) != 0
+        })
+    }
+
+    fn mode(&self) -> CameraMode {
+        self.rig.effective(self.playerless, self.has_viewport())
+    }
 }
 
 #[derive(Default, Clone)]
 pub struct FilmCamera(Arc<Mutex<Views>>);
 
+#[derive(Debug, PartialEq)]
+pub(super) struct CameraState {
+    pub mode: CameraMode,
+    pub seat: Option<u8>,
+    pub player: Option<String>,
+    pub pose: Option<api::CameraPose>,
+    pub fallback: Option<api::CameraFallback>,
+}
+
 impl FilmCamera {
-    /// The absolute player slot, independent of pad port or local user index.
-    pub fn requested_seat(&self) -> Option<u8> {
-        self.0.lock().unwrap_or_else(|e| e.into_inner()).requested
+    fn lock(&self) -> std::sync::MutexGuard<'_, Views> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    pub fn host_seats(&self, seats: &[u8]) {
-        let mut views = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        views.host = true;
-        views.available = seats
-            .iter()
-            .filter(|&&seat| seat < 16)
-            .fold(0, |mask, &seat| mask | (1u16 << seat));
+    pub(super) fn playerless(&self) -> bool {
+        self.lock().playerless
     }
 
-    pub(super) fn restore(&self, presentation: &super::Presentation) {
-        let mut v = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        v.requested = presentation.camera_seat.filter(|s| *s < 16);
+    #[cfg(feature = "gpu")]
+    pub(super) fn set_playerless(&self) {
+        self.lock().playerless = true;
+    }
+
+    pub(super) fn state(&self) -> CameraState {
+        let v = self.lock();
+        CameraState {
+            mode: v.mode(),
+            seat: v.rig.seat.or(v.subject),
+            player: v.rig.player.clone(),
+            pose: v.rig.reported_pose(),
+            fallback: v.rig.fallback(v.playerless, v.has_viewport()),
+        }
+    }
+
+    pub(super) fn restore(&self, presentation: &Presentation) {
+        let mut v = self.lock();
         v.rig = presentation.camera.clone();
+        v.rig.seat = v.rig.seat.filter(|s| *s < 16);
+        v.hide_hud = !presentation.hud;
     }
 
-    pub(super) fn save(&self, presentation: &mut super::Presentation) {
-        let v = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        presentation.camera_seat = v.requested;
+    pub(super) fn save(&self, presentation: &mut Presentation) {
+        let v = self.lock();
         presentation.camera = v.rig.clone();
+        presentation.hud = !v.hide_hud;
+    }
+
+    pub(super) fn set_hud(&self, visible: bool) {
+        let mut v = self.lock();
+        v.hide_hud = !visible;
+        v.revision = v.revision.wrapping_add(1);
     }
 
     pub fn revision(&self) -> u64 {
-        self.0.lock().unwrap_or_else(|e| e.into_inner()).revision
+        self.lock().revision
     }
 
-    pub fn host_pose(
-        &self,
-        eyes: &[(u8, [f32; 3], [f32; 3])],
-    ) -> Option<(u8, [f32; 3], [f32; 3], bool)> {
-        let mut v = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        let subject = match v.requested {
-            Some(seat) => eyes.iter().find(|e| e.0 == seat),
-            None => eyes.first(),
-        };
-        let Some(&(seat, eye, aim)) = subject else {
-            let (position, forward) = v.rig.saved_view()?;
-            return Some((
-                v.requested.or(v.last_seat).unwrap_or(0),
-                position,
-                forward,
-                false,
-            ));
-        };
-        v.last_seat = Some(seat);
-        let (position, forward, first_person) = v.rig.host_pose(eye, aim)?;
-        Some((seat, position, forward, first_person))
+    pub(super) fn has_seat(&self, seat: u8) -> bool {
+        seat < 16 && self.lock().available & (1 << seat) != 0
     }
 
     pub(super) fn control(
         &self,
-        request: agent_proto::theater::Camera,
+        request: api::Camera,
         seat: Option<u8>,
     ) -> Result<(), &'static str> {
-        let mut v = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        if seat.is_some_and(|s| s >= 16 || v.available & (1 << s) == 0) {
-            return Err("that seat has no camera view in the current frame");
-        }
-        v.rig.control(request)?;
-        v.requested = seat;
+        let mut v = self.lock();
+        v.rig.control(request, seat)?;
+        v.subject = None;
         v.revision = v.revision.wrapping_add(1);
         Ok(())
     }
 
-    fn drawn(&self, seat: u16, rect: [u32; 4]) {
-        let mut views = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(slot) = views.drawing.get_mut(usize::from(seat)) {
-            *slot = Some(rect);
+    #[cfg(any(test, feature = "gpu"))]
+    /// Publish one playerless camera from the same rig used for guest draws.
+    pub(super) fn host_pose(
+        &self,
+        eyes: impl Iterator<Item = ObserverEye> + Clone,
+    ) -> Option<ObserverView> {
+        let mut v = self.lock();
+        v.playerless = true;
+        v.available = eyes.clone().fold(0, |mask, eye| mask | (1 << eye.seat));
+        let subject = match v.rig.seat {
+            Some(seat) => eyes.clone().find(|e| e.seat == seat),
+            None => eyes.clone().next(),
+        };
+        v.subject = subject.map(|e| e.seat);
+        let eye = subject.and_then(|eye| Some((Pose::looking(eye.position, eye.aim)?, eye.fov)));
+        let body = subject.and_then(|eye| Pose::looking(eye.position, eye.facing));
+        let mode = v.rig.mode;
+        let first_person = matches!(mode, CameraMode::Default | CameraMode::FirstPerson);
+        let lens = first_person.then_some(eye).flatten();
+        let pose = v.rig.resolve(mode, body, lens)?;
+        Some(ObserverView {
+            position: pose.position,
+            forward: subject
+                .filter(|_| first_person)
+                .map_or_else(|| pose.axes().0, |eye| eye.aim),
+            fov: vertical_fov(v.rig.reported_pose()?.fov),
+            hide_subject: v.subject.filter(|_| first_person),
+        })
+    }
+
+    fn guest_pose(&self, guest: &runtime::Guest, views: &[u32]) -> Option<(Pose, Option<f32>)> {
+        let mut v = self.lock();
+        v.drawing.fill(None);
+        let viewports = views.iter().filter_map(|&view| {
+            let (seat, _) = local_view(guest, view)?;
+            Some((seat, view))
+        });
+        v.available = viewports
+            .clone()
+            .fold(0, |mask, (seat, _)| mask | (1 << seat));
+        let selected = match v.rig.seat {
+            Some(wanted) => viewports.clone().find(|&(seat, _)| seat == wanted),
+            None => viewports.clone().next(),
+        };
+        let mode = v.mode();
+        v.crop_seat = selected
+            .filter(|_| mode == CameraMode::FirstPerson)
+            .map(|(seat, _)| seat);
+        let primary = views.first().copied();
+        let template = selected.map(|(_, view)| view).or(primary);
+        let retail = template.and_then(|view| retail_view(guest, view));
+        if matches!(mode, CameraMode::Default | CameraMode::FirstPerson) {
+            v.subject = selected.map(|(seat, _)| seat);
+            if let Some(retail) = retail {
+                v.rig.use_view(retail);
+            }
+            return None;
+        }
+        let body = if mode == CameraMode::Free && v.rig.pose.is_some() {
+            None
+        } else {
+            let subject = subject(guest, v.rig.seat, v.rig.player.as_deref());
+            v.subject = subject.map(|(seat, _)| seat);
+            subject.map(|(_, pose)| pose)
+        };
+        let pose = v.rig.resolve(mode, body, retail)?;
+        Some((pose, Some(v.rig.reported_pose()?.fov)))
+    }
+
+    fn drawn(&self, seat: u8, rect: [u32; 4]) {
+        self.lock().drawing[usize::from(seat)] = Some(rect);
+    }
+
+    /// Absolute back-buffer pixels, left/top/width/height. A removed
+    /// split-screen player must never inherit another player's image.
+    pub fn present_crop(&self) -> Option<[u32; 4]> {
+        let mut v = self.lock();
+        let presented = std::mem::take(&mut v.drawing);
+        v.crop_seat.and_then(|seat| presented[usize::from(seat)])
+    }
+
+    fn viewport_fov(&self, seat: Option<u8>) -> Option<f32> {
+        let v = self.lock();
+        match v.mode() {
+            CameraMode::Default => v.rig.fov,
+            CameraMode::FirstPerson if seat.is_some() && seat == v.crop_seat => v.rig.fov,
+            _ => None,
         }
     }
 
-    /// Absolute back-buffer pixels, left/top/width/height. Only views actually
-    /// drawn in this frame are eligible: a removed split-screen player must
-    /// never inherit another player's image.
-    pub fn present_crop(&self) -> Option<[u32; 4]> {
-        let mut views = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        if views.host {
-            return None;
-        }
-        let presented = std::mem::take(&mut views.drawing);
-        views.available = presented.iter().enumerate().fold(0, |mask, (i, rect)| {
-            if rect.is_some() {
-                mask | (1 << i)
-            } else {
-                mask
-            }
-        });
-        views
-            .requested
-            .and_then(|seat| presented[usize::from(seat)])
+    fn alters_render(&self) -> bool {
+        let v = self.lock();
+        v.hide_hud
+            || v.rig.fov.is_some()
+            || matches!(
+                v.mode(),
+                CameraMode::Free | CameraMode::Follow | CameraMode::Orbit
+            )
     }
 }
 
-pub(super) fn install(b: &mut hooks::Builder, session: &Session) {
+#[cfg(any(test, feature = "gpu"))]
+#[derive(Clone, Copy)]
+pub(super) struct ObserverEye {
+    pub seat: u8,
+    pub position: [f32; 3],
+    pub aim: [f32; 3],
+    pub facing: [f32; 3],
+    pub fov: f32,
+}
+
+#[cfg(any(test, feature = "gpu"))]
+pub(super) struct ObserverView {
+    pub position: [f32; 3],
+    pub forward: [f32; 3],
+    pub fov: f32,
+    pub hide_subject: Option<u8>,
+}
+
+fn subject(guest: &runtime::Guest, seat: Option<u8>, name: Option<&str>) -> Option<(u8, Pose)> {
+    let players = live_telemetry::players(guest).ok()?;
+    players.iter().find_map(|player| {
+        let slot = u8::try_from(player.datum & 0xffff).ok()?;
+        if seat.is_some_and(|seat| seat != slot)
+            || seat.is_none() && name.is_some_and(|name| name != player.player.name)
+        {
+            return None;
+        }
+        let unit = live_telemetry::object(guest, player.unit).ok()??;
+        if unit.vitality.is_some_and(|(body, _)| body <= 0.0) {
+            return None;
+        }
+        let mut position = unit.pos.map(|v| v as f32);
+        let crouch = unit.motion.crouch.unwrap_or_default() as f32;
+        position[2] += if unit.vehicle.is_some() {
+            0.85
+        } else {
+            0.64 - 0.22 * crouch
+        };
+        Some((
+            slot,
+            Pose::looking(position, unit.forward.map(|v| v as f32))?,
+        ))
+    })
+}
+
+pub(super) fn install(b: &mut Builder, session: &Session) {
     let state = session.lock();
     if state.header.version < 3 || state.header.meta.source != film::Source::Local {
         return;
@@ -126,25 +263,23 @@ pub(super) fn install(b: &mut hooks::Builder, session: &Session) {
         Mode::Replay(_, replay) => Some(replay.camera.clone()),
         Mode::Record(_) => None,
     };
-    // Install the same observer on the recording. The extra dispatch must
-    // occur in both schedules even though only playback publishes a viewport.
+    // Keep the recorded dispatch plan intact for existing films.
     b.raw().observe_before(
-        &engine::points::RENDER_GAME_VIEW,
+        &points::RENDER_GAME_VIEW,
         "film player viewport",
         move |o| {
             let Some(camera) = &camera else { return };
             let Some(view) = o.arg_u32("view") else {
                 return;
             };
-            let guest = o.guest();
-            if let Some((seat, rect)) = local_view(&*guest, view) {
+            if let Some((seat, rect)) = local_view(&*o.guest(), view) {
                 camera.drawn(seat, rect);
             }
         },
     );
 }
 
-fn local_view(m: &dyn GuestMemory, view: u32) -> Option<(u16, [u32; 4])> {
+fn local_view(m: &dyn GuestMemory, view: u32) -> Option<(u8, [u32; 4])> {
     if m.u32(view).ok()? != 0 {
         return None;
     }
@@ -153,80 +288,207 @@ fn local_view(m: &dyn GuestMemory, view: u32) -> Option<(u16, [u32; 4])> {
         .ok()?
         .player
         .index();
-    // render_game_view's first camera is at +0xc. Its viewport is four
-    // signed shorts, top/left/bottom/right (render_loop::occlusion::guest).
+    let seat = u8::try_from(player).ok().filter(|&seat| seat < 16)?;
+    // The view's first camera has signed short edges in top/left/bottom/right order.
     let mut raw = [0; 8];
     m.read(view.checked_add(0x0c + 0x30)?, &mut raw).ok()?;
     let edge = |at: usize| u32::try_from(i16::from_le_bytes([raw[at], raw[at + 1]])).ok();
     let (top, left, bottom, right) = (edge(0)?, edge(2)?, edge(4)?, edge(6)?);
-    (right > left && bottom > top).then(|| (player, [left, top, right - left, bottom - top]))
+    (right > left && bottom > top).then(|| (seat, [left, top, right - left, bottom - top]))
+}
+
+/// Appended after simulation features so its private allocation cannot move
+/// any addresses carried by a film. This feature is presentation-only.
+pub(super) const FEATURE: &str = "theater-camera";
+
+pub struct RenderHooks(pub(super) FilmCamera);
+
+impl Session {
+    pub fn camera_render_hooks(&self) -> Option<RenderHooks> {
+        let state = self.lock();
+        let Mode::Replay(_, replay) = &state.mode else {
+            return None;
+        };
+        (replay.render_every != 0 && !replay.camera.playerless())
+            .then(|| RenderHooks(replay.camera.clone()))
+    }
+}
+
+impl hooks::Feature for RenderHooks {
+    fn manifest(&self) -> hooks::Manifest {
+        hooks::Manifest::new(FEATURE, "Theater presentation")
+            .doc("docs/game/theater.md")
+            .presentation_only()
+    }
+
+    fn build(&self, b: &mut Builder) -> Result<(), hooks::BuildError> {
+        b.snapshot(hooks::SnapshotPolicy::Stateless);
+        let scratch = b.guest_alloc(2 * VIEW_STRIDE, runtime::guest::Permissions::RW)?;
+        let camera = self.0.clone();
+        b.raw()
+            .before(&points::RENDER_VIEWS, "draw Theater camera", move |call| {
+                draw_world_view(call, scratch, |guest, views| {
+                    camera.guest_pose(guest, views)
+                });
+                Ok(Flow::Continue)
+            })
+            .context_only();
+
+        let camera = self.0.clone();
+        b.raw()
+            .before(
+                &points::RENDER_GAME_VIEW,
+                "Theater viewport lens",
+                move |call| {
+                    let arg = call.cpu.esp.wrapping_add(4);
+                    let mut guest = call.ctx.memory();
+                    if let Ok(view) = guest.u32(arg)
+                        && guest.u32(view).ok() == Some(0)
+                    {
+                        let slot = local_view(&*guest, view);
+                        if let Some((seat, rect)) = slot {
+                            camera.drawn(seat, rect);
+                        }
+                        if let Some(fov) = camera.viewport_fov(slot.map(|(seat, _)| seat)) {
+                            let mut copy = [0; VIEW_STRIDE as usize];
+                            if guest.read(view, &mut copy).is_ok() {
+                                put_fov(&mut copy, vertical_fov(fov));
+                                let private = scratch + VIEW_STRIDE;
+                                if guest.write(private, &copy).is_ok() {
+                                    let _ = guest.set_u32(arg, private);
+                                }
+                            }
+                        }
+                    }
+                    Ok(Flow::Continue)
+                },
+            )
+            .context_only()
+            .after_feature("coop-look-prediction");
+
+        let camera = self.0.clone();
+        // Hold the game's HUD flag only for the duration of its draw.
+        let hud_flag = Arc::new(Mutex::new(None));
+        let saved_flag = hud_flag.clone();
+        b.raw()
+            .before(&points::UI_HUD_DRAW, "hide Theater HUD", move |call| {
+                if camera.lock().hide_hud {
+                    let mut guest = call.ctx.memory();
+                    if let Some(addr) = guest
+                        .u32(crate::cheats::HUD_GLOBALS)
+                        .ok()
+                        .filter(|&base| base != 0)
+                        .and_then(|base| base.checked_add(crate::cheats::HUD_SHOWN))
+                        && let Ok(shown) = guest.u8(addr)
+                        && guest.set_u8(addr, 0).is_ok()
+                    {
+                        *saved_flag.lock().unwrap_or_else(|e| e.into_inner()) = Some((addr, shown));
+                    }
+                }
+                Ok(Flow::Continue)
+            })
+            .after_feature("render-aspect")
+            .after_feature("native-hud")
+            .optional();
+        b.raw()
+            .after(&points::UI_HUD_DRAW, "restore game HUD flag", move |call| {
+                if let Some((addr, shown)) =
+                    hud_flag.lock().unwrap_or_else(|e| e.into_inner()).take()
+                {
+                    let _ = call.ctx.memory().set_u8(addr, shown);
+                }
+                Ok(())
+            })
+            .optional();
+
+        let seeds = Arc::new(Mutex::new(Seeds::default()));
+        let frame_seeds = seeds.clone();
+        let camera = self.0.clone();
+        b.raw()
+            .before(
+                &points::RENDER_FRAME,
+                "enter Theater render RNG",
+                move |call| {
+                    let mut guest = call.ctx.memory();
+                    if camera.alters_render()
+                        && sim_bridge::sim_frame::frame_kind(
+                            &sim_bridge::sim_frame::Addrs::HALO2,
+                            &*guest,
+                        ) == sim_bridge::sim_frame::FrameKind::World
+                    {
+                        frame_seeds
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .enter(&mut *guest);
+                    }
+                    Ok(Flow::Continue)
+                },
+            )
+            .after_feature(crate::bot_glue::ID);
+        b.raw()
+            .after(
+                &points::RENDER_FRAME,
+                "restore Theater sim RNG",
+                move |call| {
+                    let mut guest = call.ctx.memory();
+                    seeds
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .leave(&mut *guest);
+                    Ok(())
+                },
+            )
+            .after_feature(crate::bot_glue::ID);
+        Ok(())
+    }
+}
+
+#[derive(Default)]
+struct Seeds {
+    restore: Option<(u32, [u8; 8])>,
+    private: Option<[u8; 8]>,
+}
+
+impl Seeds {
+    fn enter(&mut self, guest: &mut dyn GuestMemory) {
+        if self.restore.is_some() {
+            return;
+        }
+        let Ok(addr) = guest.u32(crate::sim_glue::RANDOM_SEED_PTR) else {
+            return;
+        };
+        if addr == 0 {
+            return;
+        }
+        let mut original = [0; 8];
+        if guest.read(addr, &mut original).is_ok()
+            && guest
+                .write(addr, self.private.as_ref().unwrap_or(&original))
+                .is_ok()
+        {
+            self.restore = Some((addr, original));
+        }
+    }
+
+    fn leave(&mut self, guest: &mut dyn GuestMemory) {
+        let Some((addr, original)) = self.restore.take() else {
+            return;
+        };
+        let mut advanced = [0; 8];
+        if guest.read(addr, &mut advanced).is_ok() {
+            self.private = Some(advanced);
+        }
+        let _ = guest.write(addr, &original);
+    }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use agent_proto::theater::{Camera, CameraMode};
-    fn request(mode: CameraMode, seat: Option<u8>) -> Camera {
-        Camera {
-            mode,
-            seat,
-            player: None,
-            look: [0.; 2],
-            movement: [0.; 3],
-            zoom: 0.,
-        }
-    }
-    #[test]
-    fn selection_follows_a_player_only_while_their_view_is_presented() {
-        let camera = FilmCamera::default();
-        let rect = [0, 240, 640, 240];
-        camera.drawn(7, rect);
-        assert_eq!(camera.present_crop(), None);
-        assert!(
-            camera
-                .control(request(CameraMode::FirstPerson, Some(0)), Some(0))
-                .is_err()
-        );
-        camera
-            .control(request(CameraMode::FirstPerson, Some(7)), Some(7))
-            .unwrap();
-        camera.drawn(7, rect);
-        assert_eq!(camera.present_crop(), Some(rect));
-        assert_eq!(camera.present_crop(), None);
-        assert!(
-            camera
-                .control(request(CameraMode::FirstPerson, Some(7)), Some(7))
-                .is_err()
-        );
-        camera.host_seats(&[3, 5]);
-        camera
-            .control(request(CameraMode::FirstPerson, Some(3)), Some(3))
-            .unwrap();
-        assert_eq!(camera.present_crop(), None);
-        assert_eq!(camera.requested_seat(), Some(3));
-    }
-    #[test]
-    fn host_seek_restores_free_pose_and_first_person_requires_a_live_eye() {
-        let camera = FilmCamera::default();
-        let eyes = [(5, [12., 5., 1.5], [1., 0., 0.])];
-        camera.host_seats(&[5]);
-        camera
-            .control(request(CameraMode::FirstPerson, Some(5)), Some(5))
-            .unwrap();
-        assert_eq!(
-            camera.host_pose(&eyes),
-            Some((5, eyes[0].1, eyes[0].2, true))
-        );
-        assert!(camera.host_pose(&[]).is_none());
-        let mut fly = request(CameraMode::Free, Some(5));
-        fly.movement[1] = 2.;
-        camera.control(fly, Some(5)).unwrap();
-        let view = camera.host_pose(&eyes).unwrap();
-        assert_eq!(view, (5, [14., 5., 1.5], [1., 0., 0.], false));
-        let mut saved = super::super::Presentation::default();
-        camera.save(&mut saved);
-        let reopened = FilmCamera::default();
-        reopened.restore(&saved);
-        assert_eq!(reopened.host_pose(&[]), Some(view));
-    }
+pub(super) fn with_render_seeds(
+    guest: &mut runtime::Guest,
+    draw: impl FnOnce(&mut runtime::Guest),
+) {
+    let mut seeds = Seeds::default();
+    seeds.enter(guest);
+    draw(guest);
+    seeds.leave(guest);
 }

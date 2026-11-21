@@ -111,17 +111,37 @@ fn theater_replays_checkpoints_reports_first_divergence_and_registers_controls()
         Mode::Replay(_, replay) => replay.camera.clone(),
         Mode::Record(_) => unreachable!(),
     };
-    camera.host_seats(&[4, 7]);
-    let chosen = call(api::CAMERA, json!({"mode":"first_person", "seat":7}));
+    let eyes = [4, 7].map(|seat| camera::ObserverEye {
+        seat,
+        position: [8., 1., 2.],
+        aim: [1., 0., 0.],
+        facing: [1., 0., 0.],
+        fov: 85.,
+    });
+    camera.host_pose(eyes.into_iter()).unwrap();
+    let chosen = call(api::CAMERA, json!({"mode":"first_person", "seat":7, "fov":82}));
     assert_eq!(chosen["result"]["camera"], "first-person");
     assert_eq!(chosen["result"]["camera_seat"], 7);
-    assert_eq!(camera.requested_seat(), Some(7));
+    assert_eq!(chosen["result"]["camera_pose"]["fov"], 82.);
     assert!(call(api::CAMERA, json!({"mode":"first-person","seat":3}))["error"].is_object());
     assert_eq!(call(api::CAMERA, json!({"mode":"orbit","seat":4,"zoom":2}))["result"]["camera"], "orbit");
     assert_eq!(call(api::CAMERA, json!({"mode":"default"}))["result"]["camera"], "default");
-    rendered.lock().header.meta.source = Source::Local;
-    assert!(call(api::CAMERA, json!({"mode":"orbit"}))["error"].is_object());
-    assert_eq!(call(api::CAMERA, json!({"mode":"first-person","seat":7}))["result"]["camera_seat"], 7);
+    assert!(call(api::CAMERA, json!({"mode":"orbit","fov":180}))["error"].is_object());
+    let hud = call(api::HUD, json!({"game":false,"bar":false}));
+    assert_eq!(hud["result"]["hud"], false);
+    assert_eq!(hud["result"]["bar"], false);
+    let bar = call(api::HUD, json!({"bar":true}));
+    assert_eq!(bar["result"]["hud"], false);
+    assert_eq!(bar["result"]["bar"], true);
+
+    let local = open(facts(), 1).unwrap().unwrap();
+    local.lock().header.meta.source = Source::Local;
+    local.add_methods(&a);
+    assert_eq!(call(api::CAMERA, json!({"mode":"orbit"}))["result"]["camera"], "orbit");
+    let remote = call(api::CAMERA, json!({"mode":"first-person","seat":7}));
+    assert_eq!(remote["result"]["camera_seat"], 7);
+    assert_eq!(remote["result"]["camera"], "follow");
+    assert_eq!(remote["result"]["camera_fallback"], "no-recorded-viewport");
     player.add_methods(&a);
     for _ in 0..30 {
         player.checkpoint(&g);
@@ -615,3 +635,115 @@ fn malformed_viewer_observations_leave_a_seekable_film_and_count_at_seal() {
 }
 
 mod medal_recording;
+
+#[test]
+fn camera_rig_survives_the_seek_presentation_round_trip() {
+    let camera = FilmCamera::default();
+    let eyes = [camera::ObserverEye {
+        seat: 5,
+        position: [12., 5., 1.5],
+        aim: [1., 0., 0.],
+        facing: [0., 1., 0.],
+        fov: 70.,
+    }];
+    camera.control(api::Camera { mode: api::CameraMode::FirstPerson, ..Default::default() }, Some(5)).unwrap();
+    let first = camera.host_pose(eyes.into_iter()).unwrap();
+    assert_eq!(first.position, eyes[0].position);
+    assert_eq!(first.forward, eyes[0].aim);
+    assert_eq!(first.hide_subject, Some(5));
+    camera.control(api::Camera {
+        mode: api::CameraMode::Orbit,
+        fov: Some(91.),
+        look: [0.2, -0.28],
+        zoom: 3.,
+        ..Default::default()
+    }, Some(5)).unwrap();
+    camera.host_pose(eyes.into_iter()).unwrap();
+    camera.control(api::Camera {
+        mode: api::CameraMode::Free,
+        movement: [1., 2., 3.],
+        ..Default::default()
+    }, Some(5)).unwrap();
+    camera.set_hud(false);
+    let before = camera.state();
+    let view = before.pose.unwrap();
+    assert_eq!(view.fov, 91.);
+    assert_eq!(view.radius, 7.);
+    let mut carried = Presentation { bar: false, ..Default::default() };
+    camera.save(&mut carried);
+
+    // The CLI passes this same wire state to the child after a seek request.
+    let wire = serde_json::to_vec(&(90u64, 0.5, true, carried)).unwrap();
+    let (tick, speed, paused, carried): (u64, f64, bool, Presentation) =
+        serde_json::from_slice(&wire).unwrap();
+    assert_eq!((tick, speed, paused), (90, 0.5, true));
+    assert!(!carried.hud && !carried.bar);
+    let reopened = FilmCamera::default();
+    reopened.restore(&carried);
+    assert_eq!(reopened.state(), before);
+    let next = reopened.host_pose(std::iter::empty()).unwrap();
+    assert_eq!(next.position, view.position);
+    assert_eq!(next.fov, crate::spectator_view::vertical_fov(91.));
+}
+
+#[test]
+fn camera_motion_and_private_render_rng_leave_synthetic_replay_digests_unchanged() {
+    let dir = std::env::temp_dir().join(format!("film-camera-{}", live_proto::sign::random_id()));
+    std::fs::create_dir(&dir).unwrap();
+    let path = dir.join("synthetic.h2film");
+    let opts = options(&dir);
+    let rec = Session::open(Some(path.clone()), None, host_facts(), b"xbe", &opts)
+        .unwrap().unwrap();
+    let mut guest = arena();
+    const SEED: u32 = 0x800000;
+    let pointer = crate::sim_glue::RANDOM_SEED_PTR;
+    guest.map_zeroed(pointer & !4095, 4096, Permissions::RW).unwrap();
+    guest.set_u32(pointer, SEED).unwrap();
+    for tick in 1..=60 {
+        guest.set_u32(SEED, tick).unwrap();
+        rec.checkpoint(&guest);
+    }
+    rec.finish(90, true).unwrap();
+
+    for moving_camera in [false, true] {
+        let camera = FilmCamera::default();
+        let player = Session::open(None, Some(Replay {
+            path: path.clone(),
+            render_every: 1,
+            speed: 1.,
+            seek_tick: 0,
+            paused_at_target: false,
+            presentation: Presentation::default(),
+            restart: dir.join("restart"),
+            camera: camera.clone(),
+            window_closed: None,
+        }), host_facts(), b"xbe", &opts).unwrap().unwrap();
+        let eyes = [camera::ObserverEye {
+            seat: 0, position: [1., 2., 3.], aim: [1., 0., 0.],
+            facing: [1., 0., 0.], fov: 70.,
+        }];
+        camera.host_pose(eyes.into_iter()).unwrap();
+        let initial_pose = camera.state().pose;
+        for tick in 1..=60 {
+            guest.set_u32(SEED, tick).unwrap();
+            if moving_camera {
+                camera.control(api::Camera {
+                    mode: api::CameraMode::Free,
+                    movement: [0.1, 0.2, 0.],
+                    look: [0.01, 0.],
+                    ..Default::default()
+                }, None).unwrap();
+                camera.host_pose(eyes.into_iter()).unwrap();
+                camera::with_render_seeds(&mut guest, |draw| {
+                    draw.set_u32(SEED, 0xfeed).unwrap();
+                    draw.set_u32(SEED + 4, 0xbeef).unwrap();
+                });
+            }
+            player.checkpoint(&guest);
+        }
+        assert_eq!(camera.state().pose != initial_pose, moving_camera);
+        player.finish(90, true).unwrap();
+        assert!(player.lock().complete);
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}

@@ -27,6 +27,11 @@ impl Pose {
             })
     }
 
+    pub(crate) fn rotate(&mut self, look: [f32; 2]) {
+        self.yaw = (self.yaw + look[0]).rem_euclid(std::f32::consts::TAU);
+        self.pitch = (self.pitch + look[1]).clamp(-PITCH_LIMIT, PITCH_LIMIT);
+    }
+
     pub(crate) fn axes(self) -> ([f32; 3], [f32; 3]) {
         let (sy, cy) = self.yaw.sin_cos();
         let (sp, cp) = self.pitch.sin_cos();
@@ -56,7 +61,7 @@ pub(crate) fn blank_view() -> [u8; VIEW_STRIDE as usize] {
     let mut record = [0u8; VIEW_STRIDE as usize];
     record[8..12].copy_from_slice(&u32::MAX.to_le_bytes());
     let screen = [0i16, 0, 480, 640];
-    let fov = 2.0 * ((35.0f32.to_radians()).tan() / (640.0 / 480.0)).atan();
+    let fov = vertical_fov(70.0);
     for at in [0x0c, 0x80] {
         record[at + 0x28..at + 0x2c].copy_from_slice(&fov.to_le_bytes());
         record[at + 0x2c..at + 0x30].copy_from_slice(&1.0f32.to_le_bytes());
@@ -80,11 +85,34 @@ fn clip_distances(guest: &dyn GuestMemory) -> [f32; 2] {
     }
 }
 
+pub(crate) fn vertical_fov(horizontal_degrees: f32) -> f32 {
+    2.0 * ((horizontal_degrees.to_radians() * 0.5).tan() * 0.75).atan()
+}
+
+pub(crate) fn horizontal_fov(vertical_radians: f32) -> f32 {
+    (2.0 * ((vertical_radians * 0.5).tan() / 0.75).atan()).to_degrees()
+}
+
+pub(crate) fn put_fov(record: &mut [u8; VIEW_STRIDE as usize], vertical: f32) {
+    for at in [0x0c, 0x80] {
+        record[at + 0x28..at + 0x2c].copy_from_slice(&vertical.to_le_bytes());
+    }
+}
+
+/// Retail cameras carry a vertical lens and the complete view basis.
+pub(crate) fn retail_view(guest: &dyn GuestMemory, view: u32) -> Option<(Pose, f32)> {
+    view.checked_add(VIEW_STRIDE)?;
+    let camera = view + 0x0c;
+    let pose = Pose::looking(guest.vec3(camera).ok()?, guest.vec3(camera + 0x0c).ok()?)?;
+    let fov = guest.f32(camera + 0x28).ok()?;
+    (0.0 < fov && fov < std::f32::consts::PI).then_some((pose, horizontal_fov(fov)))
+}
+
 /// Replaces the world renderer's argument with a private guest allocation.
 pub(crate) fn draw_world_view(
     call: &mut hooks::Call<'_>,
     scratch: u32,
-    resolve: impl FnOnce(&runtime::Guest, Option<Pose>) -> Option<Pose>,
+    resolve: impl FnOnce(&runtime::Guest, &[u32]) -> Option<(Pose, Option<f32>)>,
 ) -> bool {
     let drawn = replace_world_view(
         &mut *call.ctx.memory(),
@@ -104,33 +132,42 @@ fn replace_world_view<M: GuestMemory>(
     esp: u32,
     count: u32,
     scratch: u32,
-    resolve: impl FnOnce(&M, Option<Pose>) -> Option<Pose>,
+    resolve: impl FnOnce(&M, &[u32]) -> Option<(Pose, Option<f32>)>,
 ) -> bool {
     if guest.u32(esp).ok() != Some(WORLD_VIEW_RETURN) {
         return false;
     }
     let arg = esp.wrapping_add(12);
-    let template = guest.u32(arg).ok().filter(|&addr| {
-        addr != 0
-            && count > 0
-            && guest.u32(addr).ok() == Some(0)
-            && guest.u32(addr.wrapping_add(4)).ok() == Some(0)
-    });
-    let retail = template.and_then(|addr| {
-        Pose::looking(
-            guest.vec3(addr.wrapping_add(0x0c)).ok()?,
-            guest.vec3(addr.wrapping_add(0x18)).ok()?,
-        )
-    });
-    let Some(pose) = resolve(guest, retail) else {
+    let mut views = [0; 4];
+    let mut len = 0;
+    if let Ok(base) = guest.u32(arg) {
+        for i in 0..count.min(views.len() as u32) {
+            let Some(view) = base.checked_add(i * VIEW_STRIDE) else { break };
+            if base != 0 && guest.u32(view).ok() == Some(0) {
+                views[len] = view;
+                len += 1;
+            }
+        }
+    }
+    let Some((pose, fov)) = resolve(guest, &views[..len]) else {
         return false;
     };
     let mut record = [0; VIEW_STRIDE as usize];
-    if template.is_none_or(|addr| guest.read(addr, &mut record).is_err()) {
+    if views[..len].first().is_none_or(|&addr| guest.read(addr, &mut record).is_err()) {
         record = blank_view();
     }
     record[8..12].copy_from_slice(&u32::MAX.to_le_bytes());
+    // A replacement view occupies the full presentation, even in split screen.
+    if count > 1 {
+        let blank = blank_view();
+        for at in [0x0c, 0x80] {
+            record[at + 0x30..at + 0x40].copy_from_slice(&blank[at + 0x30..at + 0x40]);
+        }
+    }
     put_view(&mut record, pose, clip_distances(guest));
+    if let Some(fov) = fov {
+        put_fov(&mut record, vertical_fov(fov));
+    }
     guest.write(scratch, &record).is_ok() && guest.set_u32(arg, scratch).is_ok()
 }
 
@@ -159,7 +196,7 @@ mod tests {
             pitch: 0.0,
         };
         assert!(replace_world_view(&mut guest, STACK, 1, SCRATCH, |_, _| {
-            Some(pose)
+            Some((pose, None))
         }));
         assert_eq!(guest.u32(STACK + 12).unwrap(), SCRATCH);
         assert_eq!(guest.u32(SCRATCH + 8).unwrap(), u32::MAX);
@@ -178,7 +215,7 @@ mod tests {
             STACK,
             1,
             SCRATCH,
-            |_, _| Some(pose)
+            |_, _| Some((pose, None))
         ));
         assert_eq!(guest.u32(STACK + 12).unwrap(), ORIGINAL);
     }

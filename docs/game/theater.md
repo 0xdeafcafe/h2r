@@ -304,10 +304,12 @@ Rendered host playback opens in **Fly cam**. Local playback opens in the
 recorded retail view. **Orbit** circles the selected
 player and **Follow** looks over their shoulder. **First person** uses
 a selected local player's recorded viewport or the replayed host unit's
-position and aim. A playerless host has no recorded first-person weapon
+position and aim. A rendered film follows the selected player when they
+have no recorded viewport. A playerless host has no recorded first-person weapon
 view or local HUD. Roster controls
 cycle round the available players. The **Default** camera restores the
 full local frame or selects the first available player in a version 3 host film.
+The camera, its field of view and HUD visibility carry across a seek.
 
 | Action | Controller | Keyboard and mouse |
 |---|---|---|

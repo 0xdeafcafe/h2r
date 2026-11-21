@@ -26,62 +26,36 @@ impl State {
         {
             return Err(RpcError::new(code::INVALID_PARAMS, "invalid camera target"));
         }
-        let Some(engine) = &self.engine else {
-            if request.seat.is_some() {
-                return Err(unavailable("legacy camera requires a player name"));
+        let roster = self.engine.iter().flat_map(|engine| {
+            engine.track.descriptor.roster.iter().map(|p| (p.seat, p.name.as_str()))
+                .chain(engine.track.summary.players.iter().map(|p| (p.seat, p.name.as_str())))
+        });
+        let mut roster_seats = 0u16;
+        let mut named_seats = BTreeSet::new();
+        for (seat, name) in roster.filter(|(seat, _)| *seat < 16) {
+            roster_seats |= 1 << seat;
+            if request.player.as_deref() == Some(name) {
+                named_seats.insert(seat);
             }
-            self.presentation
-                .camera
-                .control(request)
-                .map_err(|e| RpcError::new(code::INVALID_PARAMS, e))?;
-            return Ok(());
+        }
+        let seat = if request.player.is_some() && roster_seats != 0 {
+            match request.seat {
+                Some(seat) if named_seats.contains(&seat) => Some(seat),
+                Some(_) => return Err(unavailable("player and seat do not match the recorded roster")),
+                None if named_seats.len() == 1 => named_seats.first().copied(),
+                None => return Err(unavailable("select a recorded player seat")),
+            }
+        } else {
+            request.seat
         };
-        let local = self.header.meta.source == Source::Local;
-        if local
-            && request.mode != Default
-            && !(self.header.version >= 3 && request.mode == FirstPerson)
+        if self.header.meta.source == Source::Host
+            && self.engine.is_some()
+            && seat.is_some_and(|seat| roster_seats & (1 << seat) == 0 && !replay.camera.has_seat(seat))
         {
-            return Err(unavailable(
-                "local playback provides the recorded retail viewports",
-            ));
+            return Err(unavailable("that seat is absent from the film roster and current view"));
         }
-        let seat = match request.player.as_deref() {
-            Some(name) => {
-                let seats: BTreeSet<_> = engine
-                    .track
-                    .descriptor
-                    .roster
-                    .iter()
-                    .filter(|p| p.name == name)
-                    .map(|p| p.seat)
-                    .chain(
-                        engine
-                            .track
-                            .summary
-                            .players
-                            .iter()
-                            .filter(|p| p.name == name)
-                            .map(|p| p.seat),
-                    )
-                    .collect();
-                match request.seat {
-                    Some(seat) if seats.contains(&seat) => Some(seat),
-                    Some(_) => {
-                        return Err(unavailable(
-                            "player and seat do not match the recorded roster",
-                        ));
-                    }
-                    None if seats.len() == 1 => seats.first().copied(),
-                    None => return Err(unavailable("select a recorded player seat")),
-                }
-            }
-            None => request.seat,
-        };
-        if local && request.mode == FirstPerson && seat.is_none() {
-            return Err(unavailable("select a local player viewport"));
-        }
-        replay.camera.control(request, seat).map_err(unavailable)?;
-        replay.camera.save(&mut self.presentation);
+        replay.camera.control(request, seat)
+            .map_err(|e| RpcError::new(code::INVALID_PARAMS, e))?;
         Ok(())
     }
 }
@@ -163,6 +137,17 @@ impl Session {
                             }
                             s.restart = Some(p.tick);
                         }
+                        api::HUD => {
+                            let p = params::<api::Hud>(p)?;
+                            let Mode::Replay(_, replay) = &s.mode else { unreachable!() };
+                            if let Some(visible) = p.game {
+                                replay.camera.set_hud(visible);
+                                s.presentation.hud = visible;
+                            }
+                            if let Some(visible) = p.bar {
+                                s.presentation.bar = visible;
+                            }
+                        }
                         api::CAMERA => {
                             let p = params::<api::Camera>(p)?;
                             s.camera_request(p)?;
@@ -172,7 +157,7 @@ impl Session {
                     let Mode::Replay(_, replay) = &s.mode else {
                         unreachable!()
                     };
-                    let seat = replay.camera.requested_seat();
+                    let camera = replay.camera.state();
                     Ok(serde_json::json!(api::State {
                         id: s.header.meta.id.clone(),
                         tick: s.tick,
@@ -180,9 +165,13 @@ impl Session {
                         paused: s.paused,
                         speed: s.speed,
                         seeking: s.seeking.is_some() || s.restart.is_some(),
-                        camera_seat: seat,
-                        camera: s.presentation.camera.mode,
-                        camera_player: s.presentation.camera.player.clone(),
+                        camera_seat: camera.seat,
+                        camera: camera.mode,
+                        camera_player: camera.player,
+                        camera_pose: camera.pose,
+                        camera_fallback: camera.fallback,
+                        hud: s.presentation.hud,
+                        bar: s.presentation.bar,
                         kills: s.presentation.kills.iter().copied().collect(),
                     }))
                 },
