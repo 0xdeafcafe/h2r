@@ -69,6 +69,8 @@ connection to hold `session.claim`.
 | `input.route.status` | read | [Routes](#routes) |
 | `state.save`, `load`, `list`, `drop`, `fork` | act (`list` read) | [`state`](#state-machine-snapshots) |
 | `bots.stats` | read | [Bot combat](#bot-combat) |
+| `bots.bounce_to` | act | [Bounce routes](#bounce-routes) |
+| `bots.bounce_status`, `superbounce.spots` | read | [Bounce routes](#bounce-routes) |
 | `sim.*` | read or act | [`sim`](#sim-simulated-players-and-direct-state) |
 | `forge.status`, `forge.doc`, `forge.log`, `forge.propose`, `forge.input` | read or act | [Local Forge session](#local-forge-session) |
 | `forge.capacity`, `forge.probe` | read, act | [Forge probes](#forge-probes) |
@@ -2263,6 +2265,49 @@ the shot had no sampled visible target distance. Each row includes
 `damage_code`, `weapon`, `range`, `shots`, `hits` and their ratio
 `accuracy`. One shot can earn one hit credit. An empty list means the
 host has no registered shots to report for that seat.
+
+## Bounce routes
+
+A brain-driven bot can be sent somewhere by way of a superbounce
+([bots.md](../game/bots.md#superbounce-routes), docs/game/superbounce.md).
+There was no method that sent a bot to a point, so this is its own.
+
+`bots.bounce_to {bot, to, mode?}` asks a bot for a route to `to`
+(`[x, y, z]`, world units). `bot` is a `handle` from `bots.stats`, a
+gamertag (any case) or a `player.<n>` id. It must be a brain seat: a
+script or a recording takes no orders (`INVALID_PARAMS`). `mode` is
+`help` (default: a bounce only where it gets the bot there when walking
+cannot, or much sooner, else the plain walk) or `fun` (the highest launch
+within reach, then on to `to`). The bot starts from where it stands: put it
+at `x` first with `sim.state.set` (its `pos`), then ask. The reply
+is `{bot, handle, mode, to}`; the route is planned at the bot's next
+sample.
+
+`bots.bounce_status {bot}` reads it back: `state` (`none`, `queued`,
+`running`, `done`, `failed`), `to`, `mode`, `why` (`helps`, `fun`, or
+`plain` when no bounce helped), `steps` (`walk_crouched`, `prime`, `walk`,
+`bounce`, `fly`, `nav`), `step` (the index it is on), `primed` (the level
+pair word is at -3, so a landing bounces), `primed_read` (read from the
+game, or assumed after the crouch and stand-up because it could not be)
+and, for a failed route, `error`: `timeout`, `no_map`, `no_path`,
+`goal_off_mesh`, `path_lost`, `prime_failed`, `pair_lost`, `no_bounce` or
+`enemy`. While a route runs the bot fights and picks up nothing.
+
+`superbounce.spots {map?, kind?}` lists the spots the bots know for a map
+(default the loaded one): `map`, `scanned` (the nav worker has made or
+read a scan; the measured spots are listed regardless) and `spots`, the
+measured ones first, then the scan best first. Each has `kind` (`bounce`
+or `crouch`; `kind` in the request filters), `source` (`measured` or
+`scan`), `edge` (two points), `stand`, `fall`, `launch`, `drift` and
+`score`.
+
+```sh
+# a bot standing at x, sent to y over a ledge, bouncing on the way
+h2 agent sim.state.set '{"player":2,"pos":[-12.0,3.0,-3.2]}'
+h2 agent bots.bounce_to '{"bot":"Clanker","to":[-10.6,9.0,2.4],"mode":"fun"}'
+h2 agent bots.bounce_status '{"bot":"Clanker"}'
+h2 agent superbounce.spots '{"map":"ascension","kind":"crouch"}'
+```
 
 ## `sim`: simulated players and direct state
 

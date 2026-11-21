@@ -355,6 +355,11 @@ pub trait Source: Send {
     fn build_with(&mut self, _threads: crate::vis::Threads) -> Result<Vec<MapData>, String> {
         self.build()
     }
+    /// The map's superbounce and forced-crouch spots
+    /// ([`crate::spots`]); `None` for a source that does not scan.
+    fn spots(&mut self) -> Option<Result<Vec<superbounce::Spot>, String>> {
+        None
+    }
 }
 
 /// A readable, seekable map stream.
@@ -450,6 +455,32 @@ impl Source for Region {
         let mut map = map::Map::from_region(r, self.base, self.len).map_err(|e| e.to_string())?;
         build_map_with(&mut map, threads)
     }
+
+    fn spots(&mut self) -> Option<Result<Vec<superbounce::Spot>, String>> {
+        Some((|| {
+            let r = match self.reader.take() {
+                Some(r) => r,
+                None => (self.open)().map_err(|e| e.to_string())?,
+            };
+            let mut map = map::Map::from_region(r, self.base, self.len).map_err(|e| e.to_string())?;
+            let bsps = bsp_count(&mut map)?;
+            crate::spots::scan(&mut map, bsps)
+        })())
+    }
+}
+
+/// How many structure BSPs the scenario lists.
+fn bsp_count<R: Read + Seek>(map: &mut map::Map<R>) -> Result<usize, String> {
+    use tags::geometry::TagView;
+    let e = |e: &dyn std::fmt::Display| e.to_string();
+    let scenario = map.scenario().ok_or("no scenario")?.clone();
+    let location = scenario.location.ok_or("the scenario has no payload")?;
+    let bytes = map.read_tag_bytes(scenario.id).map_err(|x| e(&x))?;
+    let view = TagView::new(&bytes, location.address);
+    Ok(view
+        .block(view.at(0, 0x218).map_err(|x| e(&x))?, 0x210, 0x44)
+        .map_err(|x| e(&x))?
+        .len())
 }
 
 /// The maps still to look at, in order.
@@ -788,6 +819,7 @@ impl Worker {
             status = found;
         }
         if !status.stale() && !self.force {
+            self.keep_spots(src.as_mut(), &header.name, header.fingerprint);
             drop(src);
             match crate::vis::status(&self.dir, &header.name) {
                 crate::vis::Status::Fresh => sum.fresh += 1,
@@ -801,6 +833,7 @@ impl Worker {
         if let Some(bsps) = self.shared_dir().zip(digest).and_then(|(dir, key)| {
             shared_cache::restore_nav(dir, key, &self.dir, &header.name, stamp)
         }) {
+            self.keep_spots(src.as_mut(), &header.name, header.fingerprint);
             drop(src);
             (self.log)(&format!(
                 "bots: restored the nav mesh for {} from the shared cache in {:.1} s",
@@ -835,6 +868,7 @@ impl Worker {
                     t.elapsed().as_secs_f32()
                 ));
                 self.publish_build(&header.name, d, generation);
+                self.keep_spots(src.as_mut(), &header.name, header.fingerprint);
                 sum.built.push(header.name.clone());
                 if let Some((dir, key)) = self.shared_dir().zip(digest) {
                     shared_cache::save_nav(dir, key, stamp, &bsps);
@@ -851,6 +885,30 @@ impl Worker {
 }
 
 impl Worker {
+    /// The map's superbounce spots: read from the file beside its nav
+    /// data when that is the scan the map and scanner are at, else
+    /// scanned and saved ([`crate::spots`]). Published either way.
+    fn keep_spots(&mut self, src: &mut dyn Source, name: &str, fingerprint: u64) {
+        let stamp = crate::spots::stamp(fingerprint);
+        if !self.force
+            && let Some(found) = crate::spots::read(&self.dir, name, stamp)
+        {
+            crate::spots::publish(name, found);
+            return;
+        }
+        match src.spots() {
+            None => {}
+            Some(Ok(found)) => {
+                if let Err(e) = crate::spots::write(&self.dir, name, stamp, &found) {
+                    (self.log)(&format!("bots: spots for {name} not saved: {e}"));
+                }
+                (self.log)(&format!("bots: {name}: {} superbounce spots", found.len()));
+                crate::spots::publish(name, found);
+            }
+            Some(Err(e)) => (self.log)(&format!("bots: spots for {name} not scanned: {e}")),
+        }
+    }
+
     fn publish_build(&mut self, name: &str, data: &MapData, generation: Option<u64>) {
         (self.on_built)(name, data);
         if let Some(generation) = generation

@@ -22,6 +22,7 @@ use crate::tactics::{self, Shot, Style, Tactics};
 
 pub(crate) mod feel;
 mod look;
+mod order;
 pub(crate) mod pad;
 mod route;
 #[cfg(test)]
@@ -31,6 +32,7 @@ use feel::{Rng, reached};
 pub use look::AimTrace;
 use look::{Hand, angle_error};
 use pad::{Buttons, Feet, Fidget, Tap};
+pub use order::OrderView;
 pub use route::{RouteMotion, RoutePad};
 
 /// How good a bot is (docs/game/bots.md, section 3.4).
@@ -304,6 +306,19 @@ pub struct Mind {
     pub glitches: crate::glitches::Glitches,
     /// This map's super bounce spots (crate::glitches::spots).
     pub bounces: Vec<crate::glitches::Bounce>,
+    /// This map's measured and scanned spots (crate::spots): what bounce
+    /// routes plan with.
+    pub known: crate::spots::Known,
+    /// The level pair word of the bot's player, when the host reads it
+    /// ([`crate::set_pair_reader`]); `None` otherwise.
+    pub pair_word: Option<u32>,
+    /// A bounce route asked for and not yet planned (`mind::order`).
+    asked: Option<order::Asked>,
+    /// The bounce route under way.
+    order: Option<order::Ordered>,
+    /// How the last one ended.
+    ended: Option<order::Ended>,
+    route_pad: RoutePad,
     show_off: crate::glitches::ShowOff,
     stunt: Option<Stunt>,
 }
@@ -428,6 +443,12 @@ impl Mind {
             vehicles: Default::default(),
             glitches: crate::glitches::Glitches::Off,
             bounces: Vec::new(),
+            known: Default::default(),
+            pair_word: None,
+            asked: None,
+            order: None,
+            ended: None,
+            route_pad: RoutePad::default(),
             show_off: crate::glitches::ShowOff::new(seed ^ 0x5b0_0ce),
             stunt: None,
         }
@@ -511,6 +532,7 @@ impl Mind {
         self.paired_pistol.reset();
         self.show_off.reset();
         self.stunt = None;
+        self.cancel_order();
         self.vehicles.reset();
         self.tick = None;
     }
@@ -632,6 +654,10 @@ impl Mind {
             );
         }
 
+        // A bounce route plays the whole pad (mind::order).
+        if let Some(pad) = self.order_pad(p, me, map, seen) {
+            return pad;
+        }
         let eye = up(me.position, EYE);
         let facing = angles(me.aim);
         let behavior = self.decisions.behavior();
@@ -1702,6 +1728,17 @@ impl Mind {
     /// A show-off (crate::glitches): a super bounce at a spot of this
     /// map's within [`BOUNCE_REACH`], else a crouch jump.
     fn pick_stunt(&mut self, at: Vec3, tick: u32) -> Option<Stunt> {
+        // With a crouch spot to prime at, a bounce is a route: prime,
+        // then the spot (an unprimed landing does not bounce).
+        let near = |s: &crate::spots::Site| s.standing() && dist_xy(s.bounce.stand, at) < BOUNCE_REACH;
+        if !self.known.crouches.is_empty() && self.known.sites.iter().any(near) {
+            self.asked = Some(order::Asked {
+                to: at,
+                mode: crate::bounce_route::Mode::Fun,
+                show_off: true,
+            });
+            return None;
+        }
         let spot = self
             .bounces
             .iter()

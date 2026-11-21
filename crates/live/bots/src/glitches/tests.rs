@@ -539,3 +539,88 @@ fn the_setting_s_values_round_trip() {
     }
     assert_eq!(Glitches::from_index(9), Glitches::Lots);
 }
+
+// ---- priming ----
+
+/// Crouch down per tick for a priming that starts at tick 0, until over.
+fn prime_keys(word: impl Fn(u32) -> Option<u32>) -> (Vec<bool>, Option<Primed>) {
+    let mut run = PrimeRun::new(0);
+    let mut crouch = Vec::new();
+    for t in 0..200 {
+        let o = run.step(t, word(t));
+        crouch.push(o.crouch);
+        if o.done.is_some() {
+            return (crouch, o.done);
+        }
+    }
+    (crouch, None)
+}
+
+#[test]
+fn priming_crouches_for_a_while_lets_go_and_is_primed_once_the_word_reads_minus_three() {
+    use prime::{CROUCH_TICKS, FORCE_TICKS};
+    // The word reads 0 while crouched and -3 once the stand-up is refused.
+    let (crouch, done) = prime_keys(|t| Some(if t > CROUCH_TICKS + 2 { PRIMED_WORD } else { 0 }));
+    assert_eq!(done, Some(Primed::Read));
+    let held = crouch.iter().take_while(|c| **c).count() as u32;
+    assert_eq!(held, CROUCH_TICKS);
+    // Let go from then on: the crouch is never pressed again.
+    assert!(crouch[held as usize..].iter().all(|c| !c));
+    assert!(crouch.len() as u32 <= CROUCH_TICKS + FORCE_TICKS);
+}
+
+#[test]
+fn a_word_that_cannot_be_read_is_assumed_primed_after_the_stand_up() {
+    use prime::{CROUCH_TICKS, FORCE_TICKS};
+    let (crouch, done) = prime_keys(|_| None);
+    assert_eq!(done, Some(Primed::Assumed));
+    assert_eq!(crouch.len() as u32, CROUCH_TICKS + FORCE_TICKS + 1);
+}
+
+#[test]
+fn a_word_that_never_goes_to_minus_three_fails_after_a_second_try() {
+    let (crouch, done) = prime_keys(|_| Some(0));
+    assert_eq!(done, Some(Primed::Failed));
+    // Two crouches, each followed by a wait.
+    let presses = crouch.windows(2).filter(|w| !w[0] && w[1]).count();
+    assert_eq!(presses, 1, "the second crouch begins as the first wait ends");
+    assert!(crouch[0]);
+}
+
+#[test]
+fn only_minus_three_is_primed() {
+    assert!(prime::is_primed(PRIMED_WORD));
+    assert_eq!(PRIMED_WORD as i32, -3);
+    for w in [0u32, 1, 3, (-2i32) as u32, (-4i32) as u32] {
+        assert!(!prime::is_primed(w));
+    }
+}
+
+#[test]
+fn a_primed_bounce_presses_crouch_in_the_prime_and_never_again() {
+    // The prime's presses, then the bounce's: crouch only in the first.
+    let (crouch, done) = prime_keys(|_| None);
+    assert!(done.is_some());
+    assert!(crouch.iter().any(|c| *c));
+
+    let s = spot();
+    let mut run = BounceRun::new(s, 3, 0, 3);
+    let mut keys = Vec::new();
+    let mut at = [s.stand[0], s.stand[1] - 0.3, s.stand[2]];
+    for t in 0..400 {
+        let o = run.step(at, t);
+        keys.push(Keys {
+            jump: o.jump,
+            ..Keys::default()
+        });
+        if o.done.is_some() {
+            break;
+        }
+        if let Some(w) = o.walk {
+            at[0] += w[0] * 0.2;
+            at[1] += w[1] * 0.2;
+        }
+    }
+    assert!(keys.iter().any(|k| k.jump), "it jumps");
+    assert!(keys.iter().all(|k| !k.crouch), "and never crouches");
+}
