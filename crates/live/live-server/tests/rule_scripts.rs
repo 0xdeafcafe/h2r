@@ -134,6 +134,123 @@ async fn builtins_are_listed_with_their_source() {
     assert_eq!(slayer["source"], rules::builtin::SLAYER);
 }
 
+const IDE_SRC: &str = "rules \"T\" 1\ncarrier slayer\noption points: int 1..5 = 1\non kill(victim, killer) {\n    score(killer, points)\n    \n}\n";
+
+async fn ide(h: &Harness, body: Value) -> Value {
+    let r = post(h, "/v1/rules/ide", body, &[]).await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.error());
+    r.json()
+}
+
+#[tokio::test]
+async fn ide_answers_each_op_in_lsp_shapes() {
+    let h = harness().await;
+    let src = IDE_SRC;
+
+    let v = ide(&h, json!({"source": src, "op": "complete", "line": 5, "character": 4})).await;
+    let items = v.as_array().expect("an array of items");
+    let score = items.iter().find(|i| i["label"] == "score").expect("score");
+    assert_eq!(score["kind"], 3);
+    assert_eq!(score["insertTextFormat"], 2);
+    assert_eq!(score["insertText"], "score(${1:player}, ${2:int})");
+    assert_eq!(score["documentation"]["kind"], "markdown");
+    assert!(score["detail"].as_str().unwrap().starts_with("score("));
+    assert!(items.iter().any(|i| i["label"] == "victim"));
+
+    let v = ide(&h, json!({"source": src, "op": "hover", "line": 4, "character": 6})).await;
+    assert_eq!(v["contents"]["kind"], "markdown");
+    assert!(v["contents"]["value"].as_str().unwrap().contains("score(player, int)"));
+    assert_eq!(v["range"]["start"], json!({"line": 4, "character": 4}));
+    assert_eq!(v["range"]["end"], json!({"line": 4, "character": 9}));
+    let v = ide(&h, json!({"source": src, "op": "hover", "line": 5, "character": 0})).await;
+    assert!(v.is_null());
+
+    let v = ide(&h, json!({"source": src, "op": "signature", "line": 4, "character": 18})).await;
+    assert_eq!(v["signatures"][0]["label"], "score(player, int)");
+    assert_eq!(v["signatures"][0]["parameters"], json!([{"label": "player"}, {"label": "int"}]));
+    assert_eq!(v["activeSignature"], 0);
+    assert_eq!(v["activeParameter"], 1);
+
+    let v = ide(&h, json!({"source": src, "op": "definition", "line": 4, "character": 20})).await;
+    assert_eq!(
+        v,
+        json!([{"range": {"start": {"line": 2, "character": 7}, "end": {"line": 2, "character": 13}}}])
+    );
+    let v = ide(&h, json!({"source": src, "op": "references", "line": 4, "character": 11})).await;
+    let lines: Vec<u64> = v
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|l| l["range"]["start"]["line"].as_u64().unwrap())
+        .collect();
+    assert_eq!(lines, [3, 4]);
+
+    let v = ide(&h, json!({"source": src, "op": "tokens"})).await;
+    assert_eq!(v["legend"], json!(rules::ide::LEGEND));
+    assert_eq!(
+        v["data"][0],
+        json!({"line": 0, "start": 0, "length": 5, "type": 0, "typeName": "keyword"})
+    );
+
+    let v = ide(&h, json!({"source": src, "op": "symbols"})).await;
+    let names: Vec<&str> = v.as_array().unwrap().iter().map(|s| s["name"].as_str().unwrap()).collect();
+    assert_eq!(names, ["T", "points", "on kill"]);
+    assert!(v[2].get("selectionRange").is_some());
+
+    let messy = "rules \"T\" 1\ncarrier slayer\non kill(v,k){score(k,1)}\n";
+    let v = ide(&h, json!({"source": messy, "op": "format"})).await;
+    assert_eq!(
+        v,
+        json!({"text": "rules \"T\" 1\ncarrier slayer\non kill(v, k) {\n    score(k, 1)\n}\n"})
+    );
+    // Source that does not parse is not formatted.
+    let v = ide(&h, json!({"source": "rules \"T\" 1\non tick {\n", "op": "format"})).await;
+    assert!(v["error"].as_str().unwrap().starts_with("3:1:"), "{v}");
+    assert_eq!(v["line"], 3);
+    assert!(v.get("text").is_none());
+
+    let v = ide(&h, json!({"source": BROKEN, "op": "diagnostics"})).await;
+    assert_eq!(v[0]["severity"], 1);
+    assert_eq!(v[0]["range"]["start"]["line"], 3);
+
+    // The place is required where an op reads one; an unknown op and an
+    // unknown field are refused.
+    for bad in [
+        json!({"source": src, "op": "hover"}),
+        json!({"source": src, "op": "rename", "line": 0, "character": 0}),
+        json!({"source": src, "op": "tokens", "extra": 1}),
+        json!({"op": "tokens"}),
+    ] {
+        let r = post(&h, "/v1/rules/ide", bad.clone(), &[]).await;
+        assert_eq!(r.status, StatusCode::BAD_REQUEST, "{bad}: {}", r.error());
+    }
+    let big = "x".repeat(live_proto::rules::MAX_SOURCE + 1);
+    let r = post(&h, "/v1/rules/ide", json!({"source": big, "op": "tokens"}), &[]).await;
+    assert_eq!(r.status, StatusCode::PAYLOAD_TOO_LARGE);
+
+    let r = h.call(Method::GET, "/v1/rules/ide/legend", &[], "").await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert_eq!(r.json(), json!({"legend": rules::ide::LEGEND}));
+}
+
+#[tokio::test]
+async fn ide_requests_are_rate_limited_apart_from_checks() {
+    let h = harness().await;
+    let mut limited = false;
+    for _ in 0..(live_server::rule_scripts::RATE.1 + 5) {
+        let r = post(&h, "/v1/rules/ide", json!({"source": "x", "op": "tokens"}), &[]).await;
+        if r.status == StatusCode::TOO_MANY_REQUESTS {
+            limited = true;
+            break;
+        }
+        assert_eq!(r.status, StatusCode::OK);
+    }
+    assert!(limited, "the burst runs out");
+    // A check still has its own bucket.
+    let r = post(&h, "/v1/rules/check", json!({"source": "x"}), &[]).await;
+    assert_eq!(r.status, StatusCode::OK);
+}
+
 #[tokio::test]
 async fn checks_are_rate_limited_per_client() {
     let h = harness().await;

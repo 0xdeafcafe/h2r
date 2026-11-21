@@ -4,7 +4,10 @@
 // the fake game, and save it when signed in. The pure half is
 // ../lib/rules.ts (the editor's, ../lib/rulesIde.ts); the editor is
 // RulesEditor (Monaco, loaded on first use); the draft lives in
-// localStorage.
+// localStorage. "Make a game variant" turns a checked script into a
+// game variant (../lib/variants.ts): a file to download, or published to
+// Live when signed in; My Game Types lists yours. `?script=<hash>` opens
+// a saved or built-in script read-only (the variant page links here).
 
 import { For, Index, Show, createEffect, createResource, createSignal, on, onCleanup } from "solid-js";
 import { A, useSearchParams } from "@solidjs/router";
@@ -14,24 +17,35 @@ import { statsPath } from "../routes";
 import { HOME_CRUMB } from "./modes";
 import { Crumbs, Panel, Tabs, Title } from "./Layout";
 import { shortHash } from "../admin/content";
+import { issueToken } from "../admin/token";
+import { usDate } from "./fmt";
 import {
-  EVENT_TYPES, MAX_TICKS, TICKS_PER_SECOND, checkRules, defaultScenario, eventFields, fetchBuiltins, fetchScript,
+  EVENT_TYPES, MAX_TICKS, TICKS_PER_SECOND, carrierOf, checkRules, defaultScenario, eventFields, fetchBuiltins, fetchScript,
   fetchScripts, formatCall, formatVars, loadDraft, meter, meterText, newEvent, nextSlot,
   problemPlace, runFailed, runRules, saveDraft, saveRules, scenarioProblems, tickTime, traceLines,
   type CheckResult, type EventField, type EventType, type Problem, type RunFailed, type ScenarioDraft,
-  type ScenarioEvent, type Trace,
+  type ScenarioEvent, type ScriptOption, type Trace,
 } from "../lib/rules";
+import {
+  VARIANT_DESCRIPTION_MAX, VARIANT_NAME_MAX, coerceOption, coerceOptions, defaultOptions, deleteVariant, descriptionProblem,
+  downloadBundle, fetchVariants, makeBundle, nameProblem, notFound, publishFromScript, publishVariant, variantHref,
+  type OptionValue, type OptionValues, type ScriptRef, type Variant, type Visibility,
+} from "../lib/variants";
 import { fetchMenuCompletions, insertMenus, type InsertItem, type InsertMenu, type InsertMenuId } from "../lib/rulesIde";
 import RulesEditor, { type RulesEditorApi } from "./RulesEditor";
 import "../styles/rules.css";
 
 const CRUMB: [string, string] = ["Game Types", statsPath("/rules")];
-type Tab = "edit" | "test" | "mine";
+type Tab = "edit" | "test" | "mine" | "types";
 const TABS: Array<{ id: Tab; label: string }> = [
   { id: "edit", label: "Script" },
   { id: "test", label: "Test" },
   { id: "mine", label: "My Scripts" },
+  { id: "types", label: "My Game Types" },
 ];
+/** A script shown read-only until "Use as start": a built-in, or a saved
+ *  one opened from a link. */
+interface Lock { name: string; kind: "built-in" | "saved" }
 
 /** What a new draft starts as. */
 export const STARTER = `rules "My Game Type" 1
@@ -285,9 +299,29 @@ function TraceView(props: { trace: Trace }) {
   );
 }
 
+/** One declared option's input in the variant dialog. */
+function OptionInput(props: { option: ScriptOption; value: OptionValue | undefined; onChange: (v: OptionValue) => void }) {
+  const o = () => props.option;
+  return (
+    <label class="s-rules-row" title={o().description ?? undefined}>
+      <span>{o().label}</span>
+      {o().kind === "bool"
+        ? <input type="checkbox" checked={props.value === true} onChange={(e) => props.onChange(e.currentTarget.checked)} />
+        : o().kind === "enum"
+          ? (
+            <select value={typeof props.value === "string" ? props.value : ""} onChange={(e) => props.onChange(e.currentTarget.value)}>
+              <For each={o().values}>{(v) => <option value={v}>{v}</option>}</For>
+            </select>
+          )
+          : <input type="number" min={o().lo} max={o().hi} step={1} value={typeof props.value === "number" ? props.value : ""} onChange={(e) => props.onChange(e.currentTarget.value)} />}
+      <small class="s-rules-muted">{o().kind === "int" ? `${o().lo} to ${o().hi}` : o().description ?? ""}</small>
+    </label>
+  );
+}
+
 export default function RulesPage() {
   const [sp, setSp] = useSearchParams();
-  const tab = (): Tab => (sp.tab === "test" || sp.tab === "mine" ? sp.tab : "edit");
+  const tab = (): Tab => (sp.tab === "test" || sp.tab === "mine" || sp.tab === "types" ? sp.tab : "edit");
   const first = loadDraft(storage(), STARTER);
   const [source, setSource] = createSignal(first.source);
   const [scenario, setScenario] = createSignal<ScenarioDraft>(first.scenario);
@@ -299,12 +333,17 @@ export default function RulesPage() {
   const [runErr, setRunErr] = createSignal<string | null>(null);
   const [saveMsg, setSaveMsg] = createSignal<string | null>(null);
   const [saving, setSaving] = createSignal(false);
-  /** The built-in shown read-only until "Use as start". */
-  const [locked, setLocked] = createSignal<string | null>(null);
+  /** The script shown read-only until "Use as start". */
+  const [locked, setLocked] = createSignal<Lock | null>(null);
+  /** Hashes this page has seen saved on the server (opened or saved here),
+   *  beside the built-ins and your own: a variant names those by hash. */
+  const [onServer, setOnServer] = createSignal<ReadonlySet<string>>(new Set());
+  const markOnServer = (hash: string | null | undefined) => { if (hash) setOnServer((s) => new Set([...s, hash])); };
   const [menuId, setMenuId] = createSignal<InsertMenuId | null>(null);
   let editor: RulesEditorApi | undefined;
   let picker: HTMLDialogElement | undefined;
   let inserter: HTMLDialogElement | undefined;
+  let maker: HTMLDialogElement | undefined;
 
   createEffect(on([source, scenario], ([s, d]) => saveDraft(storage(), { source: s, scenario: d })));
 
@@ -338,14 +377,16 @@ export default function RulesPage() {
     setTimeout(() => editor?.reveal(p), 0);
   }
 
-  /** Puts a script in the editor; a built-in's name opens it read-only. */
-  function replace(text: string, builtin: string | null = null) {
-    if (source() !== text && source().trim() && source() !== STARTER && !locked() && !confirm("Replace the script in the editor?")) return;
+  /** Puts a script in the editor; a lock opens it read-only. Whether it
+   *  did (the replace can be refused). */
+  function replace(text: string, lock: Lock | null = null): boolean {
+    if (source() !== text && source().trim() && source() !== STARTER && !locked() && !confirm("Replace the script in the editor?")) return false;
     setSource(text);
-    setLocked(builtin);
+    setLocked(lock);
     setTrace(null);
     picker?.close();
-    if (tab() === "mine") setSp({ tab: undefined });
+    if (tab() === "mine" || tab() === "types") setSp({ tab: undefined });
+    return true;
   }
 
   // The Insert menus: the completion route's events and API over the
@@ -374,11 +415,42 @@ export default function RulesPage() {
   async function openSaved(hash: string) {
     try {
       const s = await fetchScript(live.server().api, hash);
-      if (s) replace(s.source);
+      if (s && replace(s.source)) markOnServer(s.hash);
     } catch (e) {
       setSaveMsg(`couldn't open it: ${(e as Error).message}`);
     }
   }
+
+  /** A script by hash, read-only: a saved one, else a built-in. */
+  async function openLinked(hash: string) {
+    const api = live.server().api;
+    try {
+      const s = await fetchScript(api, hash).catch((e: unknown) => { if (notFound(e)) return null; throw e; });
+      if (s) {
+        if (replace(s.source, { name: s.name, kind: "saved" })) markOnServer(s.hash);
+        return;
+      }
+      const b = (await fetchBuiltins(api)).find((x) => x.hash === hash);
+      if (b) replace(b.source, { name: b.name, kind: "built-in" });
+      else setSaveMsg(`No script on this server has the hash ${shortHash(hash)}.`);
+    } catch (e) {
+      setSaveMsg(`couldn't open it: ${(e as Error).message}`);
+    }
+  }
+  createEffect(on([() => sp.script, () => live.server().api], ([hash]) => {
+    if (typeof hash !== "string" || !/^[0-9a-f]{64}$/.test(hash)) return;
+    setSp({ script: undefined }, { replace: true });
+    void openLinked(hash);
+  }));
+
+  /** Whether the checked script is on the server, so a variant can name it
+   *  by hash rather than send its source. */
+  const savedHash = (): string | null => {
+    const h = check()?.ok ? check()?.hash ?? null : null;
+    if (!h) return null;
+    const known = onServer().has(h) || (builtins() ?? []).some((b) => b.hash === h) || (mine() ?? []).some((s) => s.hash === h);
+    return known ? h : null;
+  };
 
   async function run() {
     const problems = scenarioProblems(scenario());
@@ -395,12 +467,104 @@ export default function RulesPage() {
     setSaveMsg(null);
     try {
       const r = await saveRules(live.server().api, wk.id, me, source());
+      markOnServer(r.script?.hash);
       setSaveMsg(r.saved ? `Saved as ${shortHash(r.script?.hash ?? "")}.` : `Already saved as ${shortHash(r.script?.hash ?? "")}${r.script?.gamertag ? ` by ${r.script.gamertag}` : ""}.`);
       void refetchMine();
     } catch (e) {
       setSaveMsg(`couldn't save: ${(e as Error).message}`);
     } finally {
       setSaving(false);
+    }
+  }
+
+  // ---------- game variants ----------
+
+  const [vName, setVName] = createSignal("");
+  const [vDesc, setVDesc] = createSignal("");
+  const [vVis, setVVis] = createSignal<Visibility>("public");
+  const [vOpts, setVOpts] = createSignal<OptionValues>({});
+  const [vBusy, setVBusy] = createSignal(false);
+  const [vMsg, setVMsg] = createSignal<string | null>(null);
+  const [vMade, setVMade] = createSignal<Variant | null>(null);
+  // A check that lists no options (none declared, or a server before the
+  // check listed them) shows no inputs and sends `options: {}`: the server
+  // fills the defaults.
+  const declared = (): ScriptOption[] => check()?.options ?? [];
+  const carrier = () => check()?.carrier ?? carrierOf(source());
+  const nameErr = () => nameProblem(vName());
+  const descErr = () => descriptionProblem(vDesc());
+  const variantOk = () => !!check()?.ok && !!check()?.hash && !nameErr() && !descErr();
+
+  function openMaker() {
+    const c = check();
+    if (!c?.ok) return;
+    setVName((c.name ?? "").trim().slice(0, VARIANT_NAME_MAX).trim());
+    setVDesc("");
+    setVOpts(defaultOptions(c.options));
+    setVMsg(null);
+    setVMade(null);
+    maker?.showModal();
+  }
+
+  /** The script as a variant names it: its hash when the server has it,
+   *  else its source. */
+  const scriptRef = (): ScriptRef => {
+    const h = savedHash();
+    return h ? { script_hash: h } : { source: source() };
+  };
+  const variantRequest = () => ({ name: vName(), description: vDesc(), options: coerceOptions(declared(), vOpts()) });
+
+  async function downloadVariant() {
+    if (!variantOk()) return;
+    setVBusy(true);
+    setVMsg(null);
+    try {
+      const r = await makeBundle(live.server().api, scriptRef(), variantRequest());
+      downloadBundle(r.bundle, r.file_name);
+    } catch (e) {
+      setVMsg(`couldn't make the file: ${(e as Error).message}`);
+    } finally {
+      setVBusy(false);
+    }
+  }
+
+  // Your variants, unlisted ones too: the list is read with your token.
+  const [myTypes, { refetch: refetchTypes }] = createResource(
+    () => { const me = identity.me(), wk = live.wellKnown(); return me && wk ? [live.server().api, me, wk.id] as const : null; },
+    async ([api, me, aud]) => fetchVariants(api, me.xuid, await issueToken(me, aud, "read")),
+  );
+
+  async function publish() {
+    const me = identity.me(), wk = live.wellKnown();
+    if (!me || !wk || !variantOk()) return;
+    setVBusy(true);
+    setVMsg(null);
+    try {
+      const api = live.server().api, ref = scriptRef(), req = variantRequest();
+      const v = "script_hash" in ref
+        ? await publishFromScript(api, wk.id, me, { script_hash: ref.script_hash, ...req, visibility: vVis() })
+        : await publishVariant(api, wk.id, me, (await makeBundle(api, ref, req)).bundle, vVis());
+      setVMade(v);
+      void refetchTypes();
+    } catch (e) {
+      setVMsg(`couldn't publish it: ${(e as Error).message}`);
+    } finally {
+      setVBusy(false);
+    }
+  }
+
+  const [deleting, setDeleting] = createSignal<string | null>(null);
+  async function removeType(v: Variant) {
+    const me = identity.me(), wk = live.wellKnown();
+    if (!me || !wk || !confirm(`Delete the game variant "${v.name}"? Its link stops working.`)) return;
+    setDeleting(v.id);
+    try {
+      await deleteVariant(live.server().api, wk.id, me, v.id);
+      void refetchTypes();
+    } catch (e) {
+      setSaveMsg(`couldn't delete it: ${(e as Error).message}`);
+    } finally {
+      setDeleting(null);
     }
   }
 
@@ -428,6 +592,7 @@ export default function RulesPage() {
               <Show when={identity.me()} fallback={<A href="/dash/signup">Sign in to save</A>}>
                 <button class="s-btn" onClick={() => void save()} disabled={saving() || !!locked() || !check()?.ok}>Save</button>
               </Show>
+              <button class="s-btn" onClick={() => openMaker()} disabled={!check()?.ok || !check()?.hash}>Make a game variant</button>
               <span class="s-rules-status">
                 <Show when={check()} fallback={checking() ? "checking..." : ""}>
                   {(c) => (
@@ -443,9 +608,9 @@ export default function RulesPage() {
 
             <div class="s-rules-editwrap" hidden={tab() !== "edit"}>
               <Show when={locked()}>
-                {(name) => (
+                {(l) => (
                   <div class="s-rules-locked">
-                    <span>The built-in <b>{name()}</b> is read-only.</span>
+                    <span>{l().kind === "built-in" ? "The built-in" : "The script"} <b>{l().name}</b> is read-only.</span>
                     <button class="s-btn" onClick={() => { setLocked(null); editor?.focus(); }}>Use as start</button>
                   </div>
                 )}
@@ -525,9 +690,78 @@ export default function RulesPage() {
                 </Show>
               </Show>
             </Show>
+
+            <Show when={tab() === "types"}>
+              <Show when={identity.me()} fallback={<p class="s-pad">Sign in to publish game variants and see yours here. <A href="/dash/signup">Sign up</A></p>}>
+                <Show when={!myTypes.loading} fallback={<p class="s-pad s-rules-muted">Loading...</p>}>
+                  <Show when={!myTypes.error} fallback={<p class="s-pad s-rules-bad">Couldn't load your game variants.</p>}>
+                    <Show when={(myTypes() ?? []).length} fallback={<p class="s-pad s-rules-muted">No game variants yet. Check a script, then use Make a game variant.</p>}>
+                      <table class="s-grid">
+                        <thead><tr><th>Name</th><th>Game type</th><th>Script</th><th>Visibility</th><th>Created</th><th /></tr></thead>
+                        <tbody>
+                          <For each={myTypes() ?? []}>
+                            {(v) => (
+                              <tr>
+                                <td><A href={variantHref(v.id)}>{v.name}</A></td>
+                                <td>{v.game_type}</td>
+                                <td>{v.script_name ?? <span class="s-rules-muted">none</span>}</td>
+                                <td>{v.visibility === "unlisted" ? "Unlisted" : "Public"}</td>
+                                <td>{usDate(v.created)}</td>
+                                <td><button class="s-btn" onClick={() => void removeType(v)} disabled={deleting() === v.id}>Delete</button></td>
+                              </tr>
+                            )}
+                          </For>
+                        </tbody>
+                      </table>
+                    </Show>
+                  </Show>
+                </Show>
+              </Show>
+            </Show>
           </div>
         </div>
       </div>
+
+      <dialog ref={maker} class="s-rules-dialog s-rules-variant-dialog" aria-labelledby="s-rules-variant-title" onClick={(e) => { if (e.target === e.currentTarget) maker?.close(); }}>
+        <h3 id="s-rules-variant-title">Make a game variant</h3>
+        <form class="s-rules-dialog-body s-rules-variant-form" onSubmit={(e) => e.preventDefault()}>
+          <p class="s-rules-note">
+            Script: <b>{check()?.name ?? "untitled"}</b> · Base game type: <b>{carrier()?.label ?? "unknown"}</b>
+          </p>
+          <label class="s-rules-row">
+            <span>Name</span>
+            <input type="text" maxLength={VARIANT_NAME_MAX} value={vName()} onInput={(e) => setVName(e.currentTarget.value)} aria-invalid={!!nameErr()} />
+          </label>
+          <Show when={nameErr()}>{(m) => <p class="s-rules-bad s-rules-hint">{m()}</p>}</Show>
+          <label class="s-rules-row">
+            <span>Description</span>
+            <textarea rows={3} maxLength={VARIANT_DESCRIPTION_MAX} value={vDesc()} onInput={(e) => setVDesc(e.currentTarget.value)} aria-invalid={!!descErr()} />
+          </label>
+          <Show when={descErr()}>{(m) => <p class="s-rules-bad s-rules-hint">{m()}</p>}</Show>
+          <Show when={identity.me()}>
+            <label class="s-rules-row">
+              <span>Visibility</span>
+              <select value={vVis()} onChange={(e) => setVVis(e.currentTarget.value === "unlisted" ? "unlisted" : "public")}>
+                <option value="public">Public: on your player page</option>
+                <option value="unlisted">Unlisted: only by its link</option>
+              </select>
+            </label>
+          </Show>
+          <Show when={declared().length} fallback={<p class="s-rules-muted s-rules-hint">The script declares no options.</p>}>
+            <h4>Options</h4>
+            <For each={declared()}>{(o) => <OptionInput option={o} value={vOpts()[o.name]} onChange={(v) => setVOpts((m) => ({ ...m, [o.name]: coerceOption(o, v) }))} />}</For>
+          </Show>
+          <Show when={vMsg()}>{(m) => <p class="s-rules-bad s-rules-hint">{m()}</p>}</Show>
+          <Show when={vMade()}>{(v) => <p class="s-rules-good s-rules-hint">Published: <A href={variantHref(v().id)}>{v().name}</A></p>}</Show>
+        </form>
+        <footer class="s-rules-variant-foot">
+          <button class="s-btn" onClick={() => void downloadVariant()} disabled={vBusy() || !variantOk()}>Download .h2variant</button>
+          <Show when={identity.me()} fallback={<A href="/dash/signup">Sign in to publish</A>}>
+            <button class="s-btn" onClick={() => void publish()} disabled={vBusy() || !variantOk() || !live.wellKnown()}>Publish</button>
+          </Show>
+          <button class="s-btn" onClick={() => maker?.close()}>Close</button>
+        </footer>
+      </dialog>
 
       <dialog ref={picker} class="s-rules-dialog" aria-labelledby="s-rules-pick-title" onClick={(e) => { if (e.target === e.currentTarget) picker?.close(); }}>
         <h3 id="s-rules-pick-title">Start from</h3>
@@ -535,7 +769,7 @@ export default function RulesPage() {
           <ul class="s-rules-picks">
             <li><button onClick={() => replace(STARTER)}><b>Blank game type</b><small>a kill-scoring starter</small></button></li>
             <For each={builtins() ?? []}>
-              {(b) => <li><button onClick={() => replace(b.source, b.name)}><b>{b.name}</b><small>built-in · engine {b.engine} · opens read-only</small></button></li>}
+              {(b) => <li><button onClick={() => replace(b.source, { name: b.name, kind: "built-in" })}><b>{b.name}</b><small>built-in · engine {b.engine} · opens read-only</small></button></li>}
             </For>
             <Show when={identity.me()}>
               <For each={mine() ?? []}>

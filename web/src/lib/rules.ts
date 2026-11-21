@@ -44,6 +44,21 @@ export interface CheckReport {
   capabilities: CapLine[];
   unhostable: string[];
 }
+/** An option a script declares (`option kill_points: int 1..5 = 1 ...`),
+ *  as the check lists it when the server sends them. */
+export interface ScriptOption {
+  name: string;
+  label: string;
+  description: string | null;
+  kind: "int" | "bool" | "enum";
+  lo: number;
+  hi: number;
+  default: number | boolean | string;
+  /** An enum's value names. */
+  values: string[];
+}
+/** The retail game type a script rides on (its `carrier` line). */
+export interface Carrier { name: string; engine: number; label: string }
 export interface CheckResult {
   ok: boolean;
   hash: string | null;
@@ -51,6 +66,58 @@ export interface CheckResult {
   version: number | null;
   errors: Problem[];
   report: CheckReport | null;
+  /** The declared options (the check sends them when it is ok and the
+   *  script has some); empty otherwise. */
+  options: ScriptOption[];
+  /** The carrier, when the server's check names it. */
+  carrier: Carrier | null;
+}
+
+/** The carriers, by their `carrier` keyword, with the retail engine index
+ *  (rules::caps). */
+export const CARRIERS: ReadonlyArray<Carrier> = [
+  { name: "ctf", engine: 1, label: "Capture the Flag" },
+  { name: "slayer", engine: 2, label: "Slayer" },
+  { name: "oddball", engine: 3, label: "Oddball" },
+  { name: "king", engine: 4, label: "King of the Hill" },
+  { name: "juggernaut", engine: 7, label: "Juggernaut" },
+  { name: "territories", engine: 8, label: "Territories" },
+  { name: "assault", engine: 9, label: "Assault" },
+];
+
+/** A carrier from its keyword or engine index. */
+export function carrierFor(v: string | number): Carrier | null {
+  return CARRIERS.find((c) => (typeof v === "number" ? c.engine === v : c.name === v.trim().toLowerCase())) ?? null;
+}
+
+/** The carrier a script's header names, read off its `carrier` line. */
+export function carrierOf(source: string): Carrier | null {
+  const m = /^\s*carrier\s+([a-z_]+)/m.exec(source);
+  return m ? carrierFor(m[1]!) : null;
+}
+
+function parseCarrier(v: unknown): Carrier | null {
+  if (typeof v === "string" || typeof v === "number") return carrierFor(v);
+  const c = obj(v);
+  if (typeof c.engine === "number") return carrierFor(c.engine);
+  if (typeof c.name === "string") return carrierFor(c.name);
+  return null;
+}
+
+/** The options of a check, read defensively: an unknown kind is dropped. */
+export function parseOptions(v: unknown): ScriptOption[] {
+  const out: ScriptOption[] = [];
+  for (const o of arr(v).map(obj)) {
+    const name = str(o.name), kind = o.kind;
+    if (!name || (kind !== "int" && kind !== "bool" && kind !== "enum")) continue;
+    const values = strs(o.values);
+    const lo = num(o.lo), hi = typeof o.hi === "number" ? o.hi : kind === "enum" ? Math.max(0, values.length - 1) : lo;
+    const dflt = kind === "bool" ? o.default === true
+      : kind === "enum" ? (typeof o.default === "string" ? o.default : values[num(o.default)] ?? values[0] ?? "")
+      : typeof o.default === "number" ? o.default : lo;
+    out.push({ name, label: str(o.label) || name, description: optStr(o.description), kind, lo, hi, default: dflt, values });
+  }
+  return out;
 }
 
 export function parseProblems(v: unknown): Problem[] {
@@ -84,6 +151,8 @@ export function parseCheck(body: unknown): CheckResult {
     version: typeof b.version === "number" ? b.version : null,
     errors: parseProblems(b.errors),
     report: parseReport(b.report),
+    options: parseOptions(b.options ?? obj(b.report).options),
+    carrier: parseCarrier(b.carrier ?? obj(b.report).carrier),
   };
 }
 

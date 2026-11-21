@@ -11,6 +11,7 @@
 pub mod builtin;
 pub mod caps;
 pub mod fake;
+pub mod ide;
 pub mod ir;
 pub mod lang;
 pub mod scenario;

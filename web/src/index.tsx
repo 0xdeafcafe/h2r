@@ -30,6 +30,7 @@ const parts = {
   ranks: () => import("./stats/Ranks"),
   mods: () => import("./stats/Mods"),
   rules: () => import("./stats/Rules"),
+  variant: () => import("./stats/Variant"),
   admin: () => import("./admin/Admin"),
   signin: () => import("./signin/SignIn"),
   liveAdmin: () => import("./deck/AdminPage"),
@@ -55,6 +56,7 @@ const Mods = lazy(parts.mods);
 const ModPackPage = lazy(() => parts.mods().then((m) => ({ default: m.ModPackPage })));
 const ModPage = lazy(() => parts.mods().then((m) => ({ default: m.ModPage })));
 const Rules = lazy(parts.rules);
+const Variant = lazy(parts.variant);
 const Admin = lazy(parts.admin);
 const SignIn = lazy(parts.signin);
 const LiveAdmin = lazy(parts.liveAdmin);
@@ -131,6 +133,7 @@ render(
         <Route path="/mods/packs/:id" component={ModPackPage} />
         <Route path="/mods/:id" component={ModPage} />
         <Route path="/rules" component={Rules} />
+        <Route path="/variants/:id" component={Variant} />
         <Route path="/events" component={Events} />
         <Route path="/admin" component={Admin} />
         <Route path="*404" component={NotFound} />

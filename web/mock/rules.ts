@@ -8,6 +8,8 @@
 // - `POST /v1/rules/run`: each listed event "runs" when the script has an
 //   `on <event>` handler, and a kill calls score() as Slayer does.
 // - `GET /v1/rules/builtin`: Slayer, read from the rules crate.
+// - The check also lists the script's int and bool options and its
+//   carrier, as the server's may.
 // - `POST /v1/rules` (a `content.write` token), `GET /v1/rules/{hash}`,
 //   `GET /v1/rules?author=`: kept in memory.
 // - `POST /v1/rules/ide` and `GET /v1/rules/ide/legend`: the editor's
@@ -73,6 +75,34 @@ function slayer(): string {
 
 const sha = (s: string) => createHash("sha256").update(s).digest("hex");
 
+/** The built-ins `GET /v1/rules/builtin` lists (mock/variants.ts reads
+ *  them too). */
+export function builtinScripts(): Array<{ name: string; engine: number; source: string; hash: string }> {
+  const source = slayer();
+  return [{ name: "Slayer", engine: 2, source, hash: sha(source) }];
+}
+
+const CARRIER_ENGINES: Record<string, number> = { ctf: 1, slayer: 2, oddball: 3, king: 4, juggernaut: 7, territories: 8, assault: 9 };
+
+/** The `option` lines of a script's text, as the check lists them (ints
+ *  and bools; the mock reads no enums). */
+export function optionsOf(source: string) {
+  const out: Array<{ name: string; label: string; description: string | null; kind: "int" | "bool"; lo: number; hi: number; default: number | boolean }> = [];
+  for (const m of source.matchAll(/^\s*option\s+([A-Za-z_]\w*)\s*:\s*(?:int\s+(-?\d+)\.\.(-?\d+)|(bool))\s*=\s*(\S+)\s+"([^"]*)"(?:\s+"([^"]*)")?/gm)) {
+    const name = m[1]!, label = m[6] || name, description = m[7] ?? null;
+    if (m[4]) out.push({ name, label, description, kind: "bool", lo: 0, hi: 1, default: m[5] === "true" });
+    else out.push({ name, label, description, kind: "int", lo: Number(m[2]), hi: Number(m[3]), default: Number(m[5]) });
+  }
+  return out;
+}
+
+/** The carrier a script's text names: its keyword and engine index. */
+export function carrierOfSource(source: string): { name: string; engine: number } | null {
+  const name = /^\s*carrier\s+([a-z_]+)/m.exec(source)?.[1];
+  const engine = name ? CARRIER_ENGINES[name] : undefined;
+  return name && engine !== undefined ? { name, engine } : null;
+}
+
 /** The handlers a script's text declares: `kill`, `timer(next)`. */
 export function handlersOf(source: string): string[] {
   return [...source.matchAll(/^\s*on\s+([a-z_]+)(?:\s*\(([^)]*)\))?/gm)].map((m) => (m[1] === "timer" ? `timer(${(m[2] ?? "").trim()})` : m[1]!));
@@ -103,6 +133,8 @@ export function mockCheck(source: string) {
     name: head![1],
     version: Number(head![2]),
     errors: worst <= 20_000 ? [] : [{ line: 0, col: 0, message: `the worst tick costs ${worst} ops, over the budget of 20000` }],
+    options: optionsOf(source),
+    carrier: carrierOfSource(source),
     report: {
       worst_tick_ops: worst,
       budget: 20_000,
@@ -395,10 +427,7 @@ export class MockRules {
       const t = mockRun(b.source, (b.scenario ?? {}) as Record<string, unknown>);
       return t ? ok(t) : fail(400, "invalid", `scenario: a scenario runs at most ${MAX_TICKS} ticks`);
     }
-    if (path === "/v1/rules/builtin" && req.method === "GET") {
-      const source = slayer();
-      return ok({ items: [{ name: "Slayer", engine: 2, source, hash: sha(source) }] });
-    }
+    if (path === "/v1/rules/builtin" && req.method === "GET") return ok({ items: builtinScripts() });
     if (path === "/v1/rules" && req.method === "GET") {
       const author = u.searchParams.get("author")?.trim();
       if (!author) return fail(400, "invalid", "?author= (a gamertag or xuid) is required");

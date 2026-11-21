@@ -225,6 +225,13 @@ pub struct Live {
     /// Workbench checks and runs per client address
     /// ([`crate::rule_scripts::RATE`]).
     pub(crate) rules_rate: RateLimiter,
+    /// Published game variants (docs/live/live-api.md, "Game variants").
+    pub(crate) variants: Arc<crate::game_variants::Variants>,
+    /// Holds a variant's checks and its append together.
+    pub(crate) variant_writes: tokio::sync::Mutex<()>,
+    /// Editor requests (`POST /v1/rules/ide`) per client address, at the
+    /// same rate in a bucket of their own.
+    pub(crate) rules_ide_rate: RateLimiter,
     /// Each account's own cloud saves (docs/live/live-cloud-saves.md).
     pub(crate) cloud: crate::cloud_saves::CloudSaves,
     /// Unix seconds the native service started.
@@ -293,6 +300,7 @@ fn may_write(author: &Author, stream: &str, kind: &str) -> bool {
         || stream.starts_with("bans-")
         || stream.starts_with("mutes-")
         || stream.starts_with(live_proto::rules::STREAM_PREFIX)
+        || stream.starts_with(live_proto::game_variants::STREAM_PREFIX)
         || kind == live_proto::rank::CHANGED
         || live_proto::arbitration::KINDS.contains(&kind)
         || live_proto::bots::KINDS.contains(&kind)
@@ -301,6 +309,7 @@ fn may_write(author: &Author, stream: &str, kind: &str) -> bool {
         || live_proto::bans::KINDS.contains(&kind)
         || live_proto::mutes::KINDS.contains(&kind)
         || live_proto::rules::KINDS.contains(&kind)
+        || live_proto::game_variants::KINDS.contains(&kind)
         || matches!(kind, crate::invites::GRANTED | crate::invites::GRANT_REVOKED)
     {
         return false;
@@ -560,6 +569,8 @@ impl Live {
         dispatcher.subscribe(mutes.clone());
         let rules = Arc::new(crate::rule_scripts::Rules::default());
         dispatcher.subscribe(rules.clone());
+        let variants = Arc::new(crate::game_variants::Variants::default());
+        dispatcher.subscribe(variants.clone());
         let stats = Arc::new(crate::stats::Stats::with_model(model.clone()));
         dispatcher.subscribe(stats.clone());
         let usage = Arc::new(match timers {
@@ -624,6 +635,9 @@ impl Live {
             rules,
             rules_writes: Default::default(),
             rules_rate: RateLimiter::new(crate::rule_scripts::RATE.0, crate::rule_scripts::RATE.1),
+            variants,
+            variant_writes: Default::default(),
+            rules_ide_rate: RateLimiter::new(crate::rule_scripts::RATE.0, crate::rule_scripts::RATE.1),
             cloud: Default::default(),
             #[cfg(feature = "native")]
             started_at: now(),

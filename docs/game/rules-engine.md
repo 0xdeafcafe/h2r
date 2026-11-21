@@ -118,7 +118,7 @@ uses them all:
 The block's CRC covers these bytes, and the table is the one layout for
 Firefight ([firefight.md](firefight.md#live)) and scripts. A carrier
 that copies the record keeps the reference with no new field: saved
-variants, `.h2variant` files (`variants::portable`), cloud saves, the
+variants, `.h2variant` files of either version (`variants::portable`), cloud saves, the
 `0x130`-byte variant in a `0x37c`-byte hopper slot
 (`crates/live/live-proto/src/hopper`) and the web hopper builder
 (`web/src/admin/HopperBuilder.tsx`).
@@ -148,6 +148,17 @@ from the script, which stays on Live under its hash.
 A script's own options are limited to the 32 bits; the compiler refuses
 more. Retail's settings (score and time limits, lives, the per-engine
 type area) stay where they are and a script reads them by name.
+
+**A game variant file carries the script whole.** A version-2
+`.h2variant` ([variants.md](../editor/variants.md#portable-files)) is a
+whole game variant: its record carries the prefix that names the script,
+and the file carries the script that prefix names, as its IR blob
+(base64) and, when it was made from source, the source. Reading one
+checks that the IR hashes to the file's hash, that the hash starts with
+the record's prefix, that `rules::verify::load` takes the IR and that
+its carrier is the record's engine; a record with mode 2 and no script
+is refused. So a variant file plays with no server, and Live keeps game
+variants as these files ([live-api.md](../live/live-api.md#game-variants)).
 
 **To other machines: the Live session.** The wire codec drops the spare
 bytes (`0x7cc50`/`0x7d520`, **E**, game-options.md "How a variant reaches
@@ -199,13 +210,31 @@ A new index is not possible without rewriting four retail paths:
 On the host, in a script game, the `rules` feature answers each of the
 carrier engine's rule-making callbacks itself: a `before` hook on the
 callback's entry runs the script's handler for that event in place of
-the lifted body ("The host runtime"). No guest memory is patched. Which
-callbacks those are per engine is part of each port; the one on record
-is Slayer's kill callback, vtable slot `+0x78`, which `PLAYER_KILLED`
-(`0x15ce70`) calls last (**E**, firefight.md "Guest boundary"). How much
-each engine's client-side display depends on its own vtable rather than
-on replicated state is not traced ("Not verified"); it decides how much
-display work each port carries.
+the lifted body ("The host runtime"). No guest memory is patched.
+
+The engine table `0x55e4d0[index]` holds one static object per engine,
+and the object's `+0` is its vtable: CTF and Assault `0x459d18`, Slayer
+`0x45c6d8`, Oddball `0x45c7a8`, KotH `0x45c878`, Juggernaut `0x453d38`,
+Territories `0x45c948`, 51 slots each. Every slot is thiscall (ECX the
+object, stack arguments the callee pops). The slots that make rules
+(**E**, [notes/2026-11-21-engine-vtables.md](../engine/notes/2026-11-21-engine-vtables.md)):
+
+| Slot | Called from | What it does | Named points |
+|---|---|---|---|
+| `+0x78` kill callback | last in `PLAYER_KILLED` (`0x15d6a4`): attacker, victim, flag, kind; `ret 0x10` | Slayer's and Juggernaut's kill scoring; Oddball, KotH and CTF post events only; Territories does nothing | `SLAYER_KILL` `0x2bc000`, `JUGGERNAUT_KILL` `0x1922a0` |
+| `+0x48` per tick | `ENGINE_UPDATE` `0x15c150` (`0x15c2dc`), no arguments | Oddball, KotH and Territories score from it; Slayer's is the shared empty `ret` | `ODDBALL_TICK`, `KOTH_TICK`, `TERRITORIES_TICK`, `JUGGERNAUT_TICK`, `CTF_TICK` |
+| `+0x3c` per player | `ENGINE_UPDATE` (`0x15c247`), the player | CTF and Assault capture from it (`0x242e00`); Slayer's and Territories' are empty | none |
+| `+0x54`, `+0x58`, `+0x5c`, `+0x60` | objective registered, unregistered, picked up, dropped (`0x15e050`, `0x15e130`, `0x15e250`, `0x15e460`) | the objective engines' own handling | none |
+| `+0x6c` | `PLAYER_KILLED` and the spawn-location code: two teams | true when they are enemies; Juggernaut has its own | none |
+| `+0x8c` trait query | per player in `ENGINE_UPDATE` (`0x15b28e`): player, trait | true when the variant gives the player the trait | `ENGINE_TRAIT_QUERY` `0x24dda0` (Slayer's, and every other engine's fallback) |
+
+The round resolution `0x15b3a0`, the lives checks and `PLAYER_SPAWN`
+make no slot call. A Slayer carrier's tick has no body of its own to
+answer, since its `+0x48` and `+0x3c` are bodies every engine shares; its
+per-tick handlers answer at `ENGINE_UPDATE`. How much each engine's
+client-side display depends on its own vtable rather than on replicated
+state is not traced ("Not verified"); slot `+0x9c` gives the replicated
+engine-globals entity's type (Slayer 0 to Juggernaut 5).
 
 **A record with no mode.** On a host with the `rules` feature on, a
 record whose block has mode 0 (all zero, or extras only), on an engine
@@ -302,8 +331,9 @@ Firefight sits inside.
 This differs from "Order" in one way, for every handler: a call is made
 at the next tick boundary, not inside the event. `PLAYER_KILLED` is
 opaque, so a hook there can only observe; the carrier's kill callback
-(Slayer's vtable slot `+0x78`) has no named point; and the per-tick
-group runs after `GAME_TICK`, not in place of `0x15c150`. So a score
+(`SLAYER_KILL` and the engines' other named slots, "Which engine index a
+script rides") has no hook in the feature yet; and the per-tick group
+runs after `GAME_TICK`, not in place of `ENGINE_UPDATE`. So a score
 lands one boundary after the kill, a read in the same handler does not
 see it, and the lifted carrier's own kill scoring still runs beside a
 script's. A mode 2 script on a lifted carrier is therefore not a parity
@@ -764,14 +794,14 @@ Actions:
 | lives | player `+0x1ac` and `PLAYER_ENTITY_DIRTY` `0xa7840`; gates `PLAYER_OUT_OF_LIVES` `0x15db30`, `PLAYER_RESPAWN_READY` `0x15dd40` | named | core |
 | `respawn(p)` | `PLAYER_SPAWN` `0x14f2e0` | named | core |
 | traits for the match: gravity, damage, shield, health | `variant_ext` hooks (`crates/extensions/game/src/variant_ext.rs`) | named | `game.traits` |
-| traits per player; movement speed | the engine's trait query `0x24dda0` (vtable `+0x114`) has no direct call site; speed has no reader found (game-options.md "Not built") | untraced | `player.traits` |
+| traits per player; movement speed | answer `ENGINE_TRAIT_QUERY` `0x24dda0` (vtable `+0x8c`; every engine's own `+0x8c` falls back to it); speed has no reader found (game-options.md "Not built") | named point | `player.traits` |
 | `set_team(p, t)` | no entry known; the field is player `+0xc0` | untraced | `player.team` |
 | `set_loadout` | starting-weapon routine `0x19eda0` | traced | `player.weapons` |
 | `create(tag, at)`, `delete(o)` | `OBJECT_DELETE` `0xb8540`; creation as Forge's ([forge.md](forge.md)) | named; traced | `objects.create`, `objects.delete` |
 | `register_objective(o, team)`, unregister, picked up, dropped | `0x15e050`, `0x15e130`, `0x15e250`, `0x15e460` | traced | core |
 | `spawn_objective(tag, at, team)`: create an objective at a placement and register it | as the CTF and Assault flag spawn `0x2422d0` and Oddball's `0x2bc1f0` do | traced | core |
 | `reset_objective(o)`: return an objective to where it spawned | the lifted engines' return path is not traced | untraced | core |
-| `role_traits(p, on)`: the carrier engine's role traits from the variant's type area (ball or flag carrier, the Juggernaut and its bit of the role mask `[0x510c9c]+0`) | the trait query `0x24dda0` has no direct call site | untraced | core |
+| `role_traits(p, on)`: the carrier engine's role traits from the variant's type area (ball or flag carrier, the Juggernaut and its bit of the role mask `[0x510c9c]+0`) | each engine's trait query, vtable `+0x8c` (Juggernaut `0x1926c0`; the shared `ENGINE_TRAIT_QUERY` `0x24dda0`); which traits each role answers is not read | traced | core |
 | barriers and other map changes | create and delete at labels, as above; a barrier is a labelled placement (forge-features.md "Invisible barriers") | not built | `objects.create`, `objects.delete` |
 | `place_squad(s, class, n, label)` from the palette with its team, `hunt(s)`, erase | `AI_SQUAD_PLACE` `0x201520`, `AI_SET_TEAM` `0x275b60`, `AI_SET_ORDERS` `0x275cb0`, `AI_ERASE` `0x2736c0`, through `actor_net::squads::SquadEntry` (firefight.md "Guest boundary") | named; game runs R1, R2 pending | `ai.squads` |
 | `spawn_areas(team, label, n)`: which starting locations are live | answer a hook on `PLAYER_SPAWN_LOCATION` `0x14ef00` (picks from `scnr+0x100`) with labelled locations only; how the routine weighs locations is not traced | named point; untraced rule | `player.spawn` |
@@ -801,15 +831,11 @@ VM built-ins reach no engine entry (status **VM-only**):
 | `random(n)` | the VM generator's next draw modulo `n`; 0, with no draw, when `n` is at most 0 |
 | `grant(p, cap, budget n, palette "x")`, `revoke(p, cap)`, `granted(p, cap)` | a player's powers, records in `RulesExt` ("Roles, powers and capabilities") |
 
-The engine update `0x15c150` and the post-game step `0x15ca10` are
-traced (live-gamestate.md) and are where the lifted engines do their
-per-tick work; they are not API entries.
-
-Two layouts of the engine vtables are on record and not reconciled:
-bots.md section 3.7 gives `0x45c6d8` (Slayer) and `0x453d38`
-(Juggernaut), the base of firefight.md's kill callback at `+0x78`;
-game-options.md gives `0x45c650` and `0x453cb0`, `0x88` lower, with the
-trait query at `+0x114`. Each port reads its engine's vtable again.
+The engine update `ENGINE_UPDATE` (`0x15c150`) and the post-game step
+`0x15ca10` are traced (live-gamestate.md) and are where the lifted
+engines do their per-tick work; they are not API entries. The engines'
+vtables and their rule-making slots are in "Which engine index a script
+rides".
 
 ## Roles, powers and capabilities
 
@@ -975,6 +1001,99 @@ Tooling:
   - `h2 rules caps` lists the capabilities and the API entries with their
     status; `h2 rules builtin [name]` lists the built-in scripts or
     prints one.
+  - `h2 rules lsp` is a language server on stdin and stdout
+    (`crates/apps/cli/src/rules_lsp.rs`, over `lsp-server`). It keeps
+    each open document whole (full sync), publishes diagnostics on open
+    and change, and answers completion, hover, signature help,
+    definition, references, `semanticTokens/full`, document symbols and
+    formatting from `rules::ide`.
+- **Language intelligence**: `rules::ide` (`crates/formats/rules/src/ide/`)
+  is pure over source text, and the language server, Live's
+  `POST /v1/rules/ide` and the web editor share it. Positions are LSP's:
+  a 0-based line and a UTF-16 `character`. The lexer and the parser
+  recover (`lex::lex_tolerant`, `parse::parse_recovering`): a bad
+  character is skipped, a bad statement is skipped to the end of its
+  line, a bad declaration to the next line that starts one, and a block
+  left open ends at the next declaration. Every feature works from what
+  parsed.
+  - `diagnostics`: every syntax error; when the source parses, the
+    compiler's first error, a verifier refusal, the tick budget and the
+    IR size (the last three on the first line); a warning for a `let`, a
+    set member or a `fn` never used; and a note at each call of an
+    entry no host can make yet, naming its status.
+  - `complete` reads the tokens before the place: declarations and
+    their snippets at the start of a top-level line; event names, with
+    their arguments as a snippet, after `on`; carriers after `carrier`;
+    capabilities on a `requires` line and as the second argument of
+    `grant`, `revoke` and `granted`; types after `:`; after a `.`, the
+    `variant` fields, an enum's variants, a table row's columns, or a
+    player's, team's or object's variables and built-in fields; labels
+    after `labelled`, palettes after `palette`, and sets after `each`
+    and in `count`, `first` and `pick`. In a body it offers the locals
+    in scope, the script's globals, options, tables, enums and
+    functions, every API entry and language built-in as a snippet, and
+    the statements. Each item's documentation is the hover text.
+  - `hover`: a name's declaration and type; an API entry's signature,
+    whether it reads or acts (and whether it is queued), the capability
+    it needs in the lobby's words, and its status in plain words; an
+    event's arguments; a `variant` field, a built-in field, a carrier, a
+    capability, a type or a keyword.
+  - `signature_help` for API entries, language built-ins, a script's
+    functions and an `on` handler's arguments, with the argument the
+    place is in.
+  - `definition` and `references` for locals, arguments, parameters,
+    variables, options, enums and their variants, tables and columns,
+    functions, palettes and labels (a label's first use is its
+    definition).
+  - `semantic_tokens` classifies every comment, literal, keyword, name
+    and operator by the legend `ide::LEGEND`: keyword, event, function,
+    api, variable, parameter, enum, enumMember, type, number, string,
+    comment, operator, label, capability. A dotted capability is one
+    token.
+  - `symbols` is the outline: the header, then each declaration and
+    handler, with an enum's variants and a table's columns as children.
+  - `format` lays a script that parses out canonically: four-space
+    indents by bracket depth, one statement per line (a block's braces
+    and `;` break lines), one space around operators and after commas
+    and colons, at most one blank line in a row, comments where they
+    are. It moves line breaks only where the grammar ignores them and
+    refuses its own output if a script that compiled would compile to
+    another blob. Every built-in formats to itself on a second pass and
+    to the same blob.
+- **Editors**: point a generic LSP client at `h2 rules lsp` for files
+  ending `.rules`.
+  - VS Code: an extension that starts the server, or a generic LSP
+    client extension, with the command `h2`, the arguments
+    `["rules", "lsp"]` and the document selector `{"pattern":
+    "**/*.rules"}`. The custom token types (`api`, `label`,
+    `capability`) take colours from `semanticTokenColorCustomizations`.
+  - Helix, in `languages.toml`:
+
+    ```toml
+    [language-server.h2-rules]
+    command = "h2"
+    args = ["rules", "lsp"]
+
+    [[language]]
+    name = "h2-rules"
+    scope = "source.h2rules"
+    file-types = ["rules"]
+    comment-token = "//"
+    indent = { tab-width = 4, unit = "    " }
+    language-servers = ["h2-rules"]
+    ```
+
+  - Neovim (0.11 or later):
+
+    ```lua
+    vim.filetype.add({ extension = { rules = "h2rules" } })
+    vim.lsp.config("h2_rules", {
+      cmd = { "h2", "rules", "lsp" },
+      filetypes = { "h2rules" },
+      root_markers = { ".git" },
+    })
+    vim.lsp.enable("h2_rules")
+    ```
 - **Scenario tests**: a scenario is JSON read by `rules::scenario`:
   `seed`, `options` (bits; the blob's defaults when absent), `players`
   (`slot`, `team`, `alive`, `score`, `lives`), `teams`,
@@ -1040,9 +1159,27 @@ editor exists. The browser runs no compiler: Live's
   down is no change), a warning was raised or the script stopped. The run stops at a script error, after the tick
   that calls `end_round`, or past 4,000,000 ops, and the same input gives
   the same trace.
+- **Editor.** `POST /v1/rules/ide` answers one editor request (complete,
+  hover, signature, definition, references, tokens, symbols, format or
+  diagnostics) from `rules::ide`, in LSP's field names, so the page's
+  editor needs no language server of its own ("Language intelligence"
+  under "Tooling").
 - **Save.** A signed-in account saves a script that checks clean; Live
   keeps its source under the IR hash and compiles it again to serve the
   blob.
+- **Game variants.** **Make a game variant** turns the current script
+  into a game variant: a name, a description, a visibility and a value
+  for each option the script declares (the check report lists them),
+  over the stock record of the script's carrier engine
+  (`hopper::variant::VariantRecord::stock`). The record's block gets mode
+  2, the IR's hash prefix and the options packed in declaration order
+  (`game_variants::pack_options`). **Download** asks Live's
+  `POST /v1/variants/bundle` for the `.h2variant` file and works signed
+  out; **Publish** posts it to the account's game variants
+  ([live-api.md](../live/live-api.md#game-variants)). The **My Game
+  Types** tab lists them beside My Scripts, and a player's page lists
+  their public ones; each has a page (`statsPath("/variants/:id")`) with
+  its settings, its script (opened read-only here) and the file.
 - **Drafts.** The page keeps the source and the scenario in
   `localStorage`, and starts from a blank starter, a built-in
   (`builtin::ALL`) or one of the player's saved scripts.
@@ -1107,7 +1244,16 @@ keep their records, byte for byte: each has no mode and runs its
 engine's built-in script once the port has passed parity ("A record with
 no mode"). Its settings are already option values in the record. Rules
 that were honour rules ([community-gametypes.md](community-gametypes.md),
-Zombies' team switch) become script variants of their own.
+Zombies' team switch) become script variants of their own. To travel as
+a game variant file, a record is ported with `variants::portable::port`
+(`h2 variants port`, [variants.md](../editor/variants.md#portable-files)):
+`PortScript::Builtin` attaches its engine's built-in script with the
+script's default option values (the built-ins read the retail settings
+from the record by name, so nothing else is packed) and sets mode 2 with
+the script's prefix; `PortScript::Keep` leaves it with no mode. The
+retail built-ins port from the disc (`--all-builtins`); the community
+variants are built by the game at boot (`community_variants.rs` is in
+the game crate) and are not ported by the tool.
 
 **Until a port passes.** A no-mode record on an engine whose port has
 not passed parity plays the lifted engine, on every kind of session.
@@ -1290,10 +1436,13 @@ the ReachVariantTool importer follows phase 10.
   engine event, or the client's own engine vtable. This is the largest
   unknown; it decides the display half of every port and of every new
   mode.
-- **Answering a carrier engine's callbacks.** Which callbacks make
-  rules, per engine; whether each can be answered at its entry with an
-  async body; and whether doing so leaves the replicated globals entity
-  consistent. Only Slayer's kill callback is on record.
+- **Answering a carrier engine's callbacks.** The slots that make rules
+  are on record ("Which engine index a script rides"); whether each can
+  be answered at its entry with an async body, and whether doing so
+  leaves the replicated globals entity consistent, is not. Of the
+  Slayer kill callback's arguments, the flag's meaning (when
+  `PLAYER_KILLED` sets it) and the kind's are not read, nor the
+  CTF and Assault capture path's slot at `0x242741`.
 - **Queued calls.** Whether object creation, deletion and teleports are
   legal inside each callback is not traced. A port that needs one in the
   same tick as retail fails parity there.

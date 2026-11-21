@@ -34,6 +34,7 @@ import PlayerFilms from "../theater/PlayerFilms";
 import { hms, longDate, num, ratio, usDate, usDateTime } from "./fmt";
 import { parseCommendations, type Commendations } from "../admin/bans";
 import { STATS_ROOT, gameHref, statsPath } from "../routes";
+import { fetchVariants, variantHref, type Variant } from "../lib/variants";
 
 function useAccount() {
   const params = useParams<{ tag: string }>();
@@ -187,6 +188,7 @@ export function ServiceRecordPage() {
               ]} />
               <RecentGames player={a().gamertag} games={hist().slice(0, 12).map((h) => h.game)} title="Recent h2 live Games" empty="Their first chapter is still ahead." />
               <PlayedWith account={a()} />
+              <Show when={!a().bot}><GameTypesPanel account={a()} /></Show>
               <Show when={!a().bot}><PlayerSocial account={a()} /></Show>
               <PeopleFinder />
             </aside>
@@ -251,6 +253,32 @@ export function ServiceRecordPage() {
         );
       }}
     </PlayerFrame>
+  );
+}
+
+/** The game variants they've published (GET /v1/variants?author=), the
+ *  public ones; hidden when there are none or the server has no route. */
+function GameTypesPanel(props: { account: AccountState }) {
+  const [list, setList] = createSignal<Variant[]>([]);
+  createEffect(on(() => [props.account.xuid, live.server().api] as const, ([xuid, api]) => {
+    setList([]);
+    fetchVariants(api, xuid).then((items) => { if (props.account.xuid === xuid) setList(items.filter((v) => v.visibility === "public")); }, () => {});
+  }));
+  return (
+    <Show when={list().length}>
+      <Panel title="Game Types" sub="game variants they've published">
+        <ul class="s-mini-list">
+          <For each={list()}>
+            {(v) => (
+              <li>
+                <A href={variantHref(v.id)}>{v.name}</A>
+                <span class="s-dim">{v.game_type}{v.script_name ? ` · scripted: ${v.script_name}` : ""} · {usDate(v.created)}</span>
+              </li>
+            )}
+          </For>
+        </ul>
+      </Panel>
+    </Show>
   );
 }
 
