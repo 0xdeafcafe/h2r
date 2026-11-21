@@ -955,8 +955,8 @@ h2 agent render.parity '{"arm": true}'
   `layer_plan_items` and the plan's outcomes by layer,
   `layer_plan_<layer>_taken` and `layer_plan_<layer>_refused_<cause>`
   (`render_bridge::native_layers`; framescene.md, slice 4); a later slice adds
-  `scene_held_draws`). With `frame-scene.sink` in
-  `H2_FEATURES` (framescene.md, slice 6), the device's scene sink files
+  `scene_held_draws`). With the [scene sink](../graphics/framescene.md#slice-6-the-renderer-owns-game-view-frames)
+  enabled, the device files
   each guest D3D op by the frame's slot (`opaque`, `after_opaque`,
   `after_lights`, `transparents`, `after_post`, `overlay`, `outside`)
   for both the original renderer and the frame owner. `carried` describes
@@ -994,7 +994,12 @@ h2 agent render.parity '{"arm": true}'
   `failed` counts failed presentations across the interval. `stage_drops`
   includes guest-side and worker-side stage drops. For game frames,
   `unresident` counts omitted instances and `unknown_residency` counts
-  frames without a complete observation. `read_surface`, `read_depth`,
+  frames without a complete observation. `palette_views` counts game-view
+  entries sampled for native map-palette residency. `palette_pending_frames`
+  counts game frames where a view entered with a known incomplete palette.
+  `palette_unknown_frames` counts game frames where a view lacked a valid
+  palette observation or game work had no recorded view entry. Each frame
+  retains observations from every split view. `read_surface`, `read_depth`,
   `read_mirror` and `read_pixel_count` count guest requests in game views.
   `flare_queries` counts original game-view reports installed by the
   owner. `unmatched_flare_frames` counts owned frames where that number
