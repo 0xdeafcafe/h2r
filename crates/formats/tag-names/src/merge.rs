@@ -324,6 +324,8 @@ impl Walk<'_> {
             size: layout.size,
             align: layout.align,
             fields: out,
+            title: layout.title.clone(),
+            section_titles: layout.section_titles.clone(),
         }
     }
 
@@ -435,6 +437,8 @@ impl Walk<'_> {
             size,
             align: 4,
             fields: out,
+            title: None,
+            section_titles: Default::default(),
         }
     }
 
@@ -596,6 +600,9 @@ fn gap(start: u32, end: u32) -> Row {
         meaning: String::new(),
         applies: None,
         doc: None,
+        label: None,
+        unit: None,
+        axes: Vec::new(),
     }
 }
 

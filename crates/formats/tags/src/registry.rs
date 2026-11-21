@@ -20,6 +20,7 @@
 //! fields are marked ([`Field::named`] false) so names can grow.
 //!
 //! Field names, descriptions and their evidence come from the checked-in definitions.
+pub use crate::defs::{Title, Unit};
 use crate::defs::{self, Defs, Kind as DefKind, StructDef};
 use crate::schema::{self, Schema};
 use map::FourCC;
@@ -48,6 +49,12 @@ pub struct Layout {
     pub size: u32,
     pub align: u32,
     pub fields: Vec<Field>,
+    /// The definition's `title=`: the kind in words for a group, or the
+    /// element field that titles each element of a block.
+    pub title: Option<Title>,
+    /// The `title="..."` of each embedded struct, by [`Field::section`]
+    /// path (`unit.obje`). A struct without one is not listed.
+    pub section_titles: BTreeMap<String, String>,
 }
 
 /// One field of a [`Layout`].
@@ -68,7 +75,16 @@ pub struct Field {
     pub meaning: String,
     /// Editor description from the definition.
     pub doc: Option<String>,
+    /// When a live write shows: the field's own `applies=`, else the
+    /// nearest one declared on the `block`, `struct` or `group` line above
+    /// it, else `None`.
     pub applies: Option<&'static str>,
+    /// The definition's `label="..."`, when the derived label is wrong.
+    pub label: Option<String>,
+    /// The definition's `unit=` of a numeric field.
+    pub unit: Option<Unit>,
+    /// The definition's `axes=`: one component letter per array element.
+    pub axes: Vec<String>,
 }
 
 /// A field's type, as an editor shows it.
@@ -222,7 +238,13 @@ impl Coverage {
 impl Layout {
     /// Flatten one text definition without supplying a pointer schema.
     pub fn from_definition(definition: &StructDef) -> Self {
-        merge(&definition.name, Some(definition), None, &mut Vec::new())
+        merge(
+            &definition.name,
+            Some(definition),
+            None,
+            None,
+            &mut Vec::new(),
+        )
     }
 
     /// The field at `offset` exactly.
@@ -300,6 +322,7 @@ impl Registry {
                 &name,
                 defs.groups.get(&g),
                 schema.groups.get(&g),
+                None,
                 &mut r.conflicts,
             );
             r.groups.insert(g, Arc::new(layout));
@@ -330,6 +353,15 @@ struct Leaf<'a> {
     def: &'a defs::FieldDef,
     doc: Option<String>,
     meaning: String,
+    /// The field's `applies=`, else the nearest declared above it.
+    applies: Option<&'static str>,
+}
+
+/// What [`flatten`] collects.
+#[derive(Default)]
+struct Flat<'a> {
+    leaves: Vec<Leaf<'a>>,
+    titles: BTreeMap<String, String>,
 }
 
 fn evidence(context: &str, leaf: &str) -> String {
@@ -339,14 +371,18 @@ fn evidence(context: &str, leaf: &str) -> String {
     }
 }
 
+/// `inherit` is the `applies=` declared above `s` (its embedding line and
+/// whatever encloses that); `s`'s own header is nearer to its fields.
 fn flatten<'a>(
     s: &'a StructDef,
     base: u32,
     section: &str,
     context: Option<&str>,
     context_evidence: &str,
-    out: &mut Vec<Leaf<'a>>,
+    inherit: Option<&'static str>,
+    out: &mut Flat<'a>,
 ) {
+    let here = s.applies.or(inherit);
     for f in &s.fields {
         let doc = match (context, f.doc.as_deref()) {
             (Some(outer), Some(inner)) => Some(format!("{outer} {inner}")),
@@ -363,9 +399,21 @@ fn flatten<'a>(
             } else {
                 context_evidence.to_owned()
             };
-            flatten(sub, base + f.offset, &sec, doc.as_deref(), &note, out);
+            if let Some(Title::Text(t)) = &sub.title {
+                out.titles.insert(sec.clone(), t.clone());
+            }
+            flatten(
+                sub,
+                base + f.offset,
+                &sec,
+                doc.as_deref(),
+                &note,
+                f.applies.or(here),
+                out,
+            );
         } else {
-            out.push(Leaf {
+            out.leaves.push(Leaf {
+                applies: f.applies.or(here),
                 at: base + f.offset,
                 section: section.to_owned(),
                 def: f,
@@ -397,17 +445,24 @@ fn is_data(s: &schema::Struct) -> bool {
     s.size == 1 && s.fields.is_empty()
 }
 
-fn hint(name: &str, meaning: &str, count: u32) -> Hint {
+/// How to show a float array. A field with a `unit=` is shown by it, not
+/// by a guess from its name: only `degrees` and `degrees_per_second` make
+/// an angle.
+fn hint(name: &str, meaning: &str, count: u32, unit: Option<Unit>) -> Hint {
     let n = name.to_ascii_lowercase();
     let m = meaning.to_ascii_lowercase();
     if count == 3 && (n.contains("colour") || n.contains("color")) {
         Hint::Colour
-    } else if n.contains("angle")
-        || n.contains("field_of_view")
-        || n.ends_with("_yaw")
-        || n.ends_with("_pitch")
-        || m.contains("radians")
-    {
+    } else if match unit {
+        Some(u) => u.is_angle(),
+        None => {
+            n.contains("angle")
+                || n.contains("field_of_view")
+                || n.ends_with("_yaw")
+                || n.ends_with("_pitch")
+                || m.contains("radians")
+        }
+    } {
         Hint::Angle
     } else if count == 2 && (n.contains("bounds") || n.ends_with("_range")) {
         Hint::Bounds
@@ -422,6 +477,7 @@ fn merge(
     name: &str,
     def: Option<&StructDef>,
     schema: Option<&schema::Struct>,
+    inherit: Option<&'static str>,
     conflicts: &mut Vec<String>,
 ) -> Layout {
     let def = def.filter(|d| schema.is_none_or(|s| s.size == d.size));
@@ -434,11 +490,13 @@ fn merge(
     let sfields = schema.map_or(&empty, |s| &s.fields);
     let mut fields: Vec<Field> = Vec::new();
     let mut unknown_docs = Vec::new();
+    let mut section_titles = BTreeMap::new();
 
     if let Some(d) = def {
-        let mut leaves = Vec::new();
-        flatten(d, 0, "", None, "", &mut leaves);
-        for leaf in leaves {
+        let mut flat = Flat::default();
+        flatten(d, 0, "", None, "", inherit, &mut flat);
+        section_titles = flat.titles;
+        for leaf in flat.leaves {
             let f = leaf.def;
             let (lo, hi) = (leaf.at, leaf.at + f.kind.width());
             if matches!(f.kind, DefKind::Unknown { .. }) {
@@ -474,7 +532,7 @@ fn merge(
                 },
                 DefKind::Float { count } => Kind::Float {
                     count: *count,
-                    hint: hint(&f.name, &f.meaning, *count),
+                    hint: hint(&f.name, &f.meaning, *count, f.unit),
                 },
                 DefKind::Enum { bytes, values } => Kind::Enum {
                     bytes: *bytes,
@@ -505,6 +563,7 @@ fn merge(
                         &format!("{name}.{}", f.name),
                         Some(sub),
                         child,
+                        leaf.applies,
                         conflicts,
                     )))
                 }
@@ -524,7 +583,10 @@ fn merge(
                 kind,
                 meaning: leaf.meaning,
                 doc: leaf.doc,
-                applies: f.applies,
+                applies: leaf.applies,
+                label: f.label.clone(),
+                unit: f.unit,
+                axes: f.axes.clone(),
             });
         }
     }
@@ -542,6 +604,7 @@ fn merge(
                 &format!("{name}+{o:#x}"),
                 None,
                 Some(c),
+                None,
                 conflicts,
             ))),
             schema::Field::TagRef => Kind::TagRef { groups: Vec::new() },
@@ -564,6 +627,9 @@ fn merge(
                 meaning: String::new(),
                 doc: None,
                 applies: None,
+                label: None,
+                unit: None,
+                axes: Vec::new(),
             },
         );
     }
@@ -605,6 +671,8 @@ fn merge(
         size,
         align,
         fields: out,
+        title: def.and_then(|d| d.title.clone()),
+        section_titles,
     }
 }
 
@@ -635,6 +703,9 @@ fn fill(out: &mut Vec<Field>, mut lo: u32, hi: u32) {
             meaning: String::new(),
             doc: None,
             applies: None,
+            label: None,
+            unit: None,
+            axes: Vec::new(),
         });
         lo += len;
     }
