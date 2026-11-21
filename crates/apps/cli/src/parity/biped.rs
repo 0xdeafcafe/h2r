@@ -106,7 +106,7 @@ impl Case {
             format!("proj:{}", bullet.name)
         };
         let meta = tags::object::Metadata::read(&mut self.h2)?;
-        let materials = h1objects::base::global_materials(&mut self.h2, &meta);
+        let materials = h1objects::base::global_materials(&mut self.h2, &meta).map_err(|e| anyhow::anyhow!(e))?;
         let snapshot = format!("parity-target-{}", std::process::id());
         self.call(agent_proto::state::method::SAVE, json!({"name":snapshot}))?;
         let trials = (|| -> Result<()> {
