@@ -54,6 +54,7 @@ connection to hold `session.claim`.
 | `live.join.open`, `live.join.status` | act, read | [Live session links](#live-session-links) |
 | `live.matchmaking.trace` | read | [Matchmaking transitions](#matchmaking-transitions) |
 | `host.metrics`, `host.memory`, `host.audit`, `host.perf` | read | [`host`](#host-the-process-and-its-lobby) |
+| `host.memory.history`, `heap`, `gpu`, `diff`, `postmortem` | read | [Finding a leak after the fact](#finding-a-leak-after-the-fact) |
 | `host.lobby.open`, `close`, `start` | act | [`host.lobby`](#hostlobby) |
 | `host.lobby.state` | read | [`host.lobby`](#hostlobby) |
 | `ui.screen`, `ui.campaign`, `ui.audit`, `ui.stack`, `ui.lobby.players`, `ui.browser.filters`, `ui.attract` | read | [`ui`](#ui-what-the-menus-show) |
@@ -1265,6 +1266,89 @@ connection thread so the game can continue ticking. A write failure returns
 | `samples` | Last 60 samples, oldest first, as `[milliseconds_since_watchdog_start, bytes]` |
 | `probes` | Named subsystem counts, including pending requests, socket reply buffers and queued pad steps |
 | `reports` | Recent report paths on the game host |
+
+### Finding a leak after the fact
+
+Every watched process (`h2 play`, `run`, `serve`, `h2 lab host` and
+`h2-editor`) keeps evidence that outlives it
+(`crates/platform/mem-watch/src/recorder.rs`):
+
+- **Flight recorder.** Every 10 s the process appends one JSON line to
+  `mem-<pid>.ndjson` in its report directory (`H2_MEM_REPORT_DIR`, else
+  `logs/mem/` under the data directory). A row holds `t_ms` (watchdog
+  uptime), `unix_ms`, `footprint_bytes`, `soft`, `probes`, `tags` (live
+  Rust heap bytes per scope tag), `stacks` (sampled stacks, when
+  sampling is on), `gpu` (the census below), `level`, `tick`,
+  `agent_connections` and `agent_calls`. Each line is written straight
+  to the file, so a kill loses at most a torn final line, which readers
+  skip. Segments rotate hourly or at 8 MiB, seven per process. An orderly
+  exit appends a `{"closed_cleanly":true}` footer.
+- **Recovery.** A starting recorder checks the directory for streams
+  whose owner lock is free. A stream without the footer, or whose last
+  row is over the soft limit, moves to `reports/mem-<pid>-<nanos>/` and
+  the process logs `memory recorder: recovered pid N (...)`. A clean
+  stream is deleted. Recorders and preserved streams share a 512 MiB
+  budget per directory. When it is full, a new process runs without a
+  recorder and logs where to move the evidence from.
+- **Heap tags.** `h2` and `h2-editor` allocate through
+  `mem_watch::TaggedAllocator`. A one-word trailer on each allocation
+  names the scope tag current on the allocating thread, so a free on
+  any thread credits the same tag. Scope guards
+  (`let _scope = mem_watch::scope("assets.bitmap");`) sit at the
+  suspects: asset and bitmap loads, pipeline creation, the native world
+  pass, agent requests and replies, trace and input recording, the perf
+  sampler and the editor's map loads and frames. Allocations outside a
+  guard count as `unscoped`. The counts are requested bytes; foreign
+  heaps (the GPU driver, C libraries) show only in the OS footprint.
+- **Sampled stacks.** With `H2_MEM_SAMPLE` set to a mean interval such
+  as `1M`, the allocator records the stack of a Poisson-sampled
+  allocation and keeps it until the allocation is freed. Large
+  allocations are proportionally more likely to be sampled. Unset, no
+  stack is captured.
+- **GPU census.** Each renderer registers its wgpu device. The census is
+  wgpu's `generate_report` counts of live user-held resources
+  (`wgpu.texture_count`, `wgpu.buffer_count` and the rest), HAL byte
+  counters on Vulkan and D3D12, Metal's `currentAllocatedSize` on macOS
+  as `metal.current_allocated_bytes`, and the renderer cache probes
+  (`gfx.*`, `native.*`).
+
+All five methods run on the connection thread, one at a time per process;
+a second concurrent call is `UNAVAILABLE`.
+
+| Method | Params | Result |
+|---|---|---|
+| `host.memory.history` | `{"since_ms"?}` | `{"records":[row],"next_since_ms"}`: up to 24 rows or 512 KiB from `since_ms`; call again with `next_since_ms` until it is `null` |
+| `host.memory.heap` | `{"top"?: 1..128, default 20}` | `{"sample_interval_bytes","dropped_samples","tags":{name:{"live_bytes","live_allocations"}},"stacks":[{"live_bytes","live_allocations","frames":[{"ip","symbol"}]}]}`; `UNAVAILABLE` unless `H2_MEM_SAMPLE` was set at start |
+| `host.memory.gpu` | `{}` | the census, `{name: value}`; names ending `_bytes` are bytes, the rest counts |
+| `host.memory.diff` | `{"from_ms"}` | `{"from_ms","to_ms","footprint_delta","growers":[change]}` from the row at or before `from_ms` to the newest; `UNAVAILABLE` outside the retained history |
+| `host.memory.postmortem` | `{"pid"?}` | the newest dead process's evidence in this process's report directory: `{"pid","file","diff","reports","report"}` |
+
+A `change` is `{"category","name","unit","before","after","delta"}`.
+`category` is `tag`, `stack`, `gpu` or `probe`; `unit` is `bytes` or
+`count`. Growers are ranked by `delta` within each unit, bytes first.
+Categories overlap (a texture's bytes can show in a tag, a stack and the
+GPU census), so never add them together.
+
+A postmortem prefers the newest dead flight recorder, then falls back to
+watchdog and lab reports (`mem-<pid>-*.json`, `lab-host.json`) for a
+process that died before its first row. `report` carries the newest
+matching report's identifying fields; the full report, with `vmmap` and
+`footprint` output, stays at its path in `reports`.
+
+Offline, with no game running:
+
+```sh
+h2 mem postmortem                 # newest dead process in logs/mem/
+h2 mem postmortem --pid 4242
+h2 mem postmortem ~/saved/mem-4242.ndjson
+h2 agent postmortem --pid 4242    # the same, through the agent CLI
+```
+
+For a lab job, `h2 lab mem <id>` fetches the job's `mem/` directory and
+prints the largest growers ([lab.md](lab.md#memory-limits-and-reports)). A typical hunt:
+read `host.memory` for the growth rate, `host.memory.diff` from a time
+before the climb to name the growing tag or GPU count, then restart with
+`H2_MEM_SAMPLE=1M` and read `host.memory.heap` for the stacks inside it.
 
 ### `host.audit`
 

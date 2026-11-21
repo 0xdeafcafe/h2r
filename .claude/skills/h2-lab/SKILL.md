@@ -165,6 +165,12 @@ The default destination is `$RUSH_KEEP/lab` when set, otherwise `./lab`.
 - `frames.csv` contains per-present frame stats when stats are enabled
   and the run has reached the measurement window.
 - `profile/` contains profile output when the run collects it.
+- `mem/` holds the game's memory reports and flight recorder. A job
+  stopped for memory, or a game that failed, also has a `postmortem`
+  summary in `meta.json`. `h2 lab mem --host "$lab_host" "$lab_id"`
+  fetches only `mem/` and prints the largest growers. Add
+  `--env H2_MEM_SAMPLE=1M` to a run to record allocation stacks. See
+  [Finding a leak after the fact](../../../docs/runtime/agent-api.md#finding-a-leak-after-the-fact).
 
 If the job fails, use its state and the last relevant section of the
 logs to tell a build failure from a runtime failure. Keep the fetched

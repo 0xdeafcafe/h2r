@@ -292,6 +292,16 @@ side. The game's watchdog writes its reports in the same `mem/` directory.
 Both `h2 lab fetch <id>` and `h2 lab run --name "Memory check" --wait --to DIR` bring that directory
 back with the rest of the run, including on failure.
 
+To investigate a finished job, run `h2 lab mem <id> [--to DIR]`. The host
+sends the job's `mem/` directory. The driver computes the footprint change
+and prints up to twenty growing counters, heap tags and sampled stacks from
+the fetched files. The default destination matches `fetch`. The
+`postmortem` field in `meta.json` carries the same summary for a game that
+exits abnormally, a job stopped under memory pressure or a run the host
+finds interrupted on restart. If the process died before producing evidence,
+the field records why attribution is unavailable.
+See [Finding a leak after the fact](agent-api.md#finding-a-leak-after-the-fact).
+
 ## Driving a run: the agent API
 
 Every run's game opens its agent API socket
