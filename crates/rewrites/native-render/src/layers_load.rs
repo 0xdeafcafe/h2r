@@ -11,12 +11,13 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
+use frame_scene::{ItemKey, LayerItem, LayerOwner, LayerPass};
 use map::{Map, TagId};
-use tags::material::Material;
+use tags::material::{EngineInputs, Material};
 
 use crate::fog_gpu::{self, FogProgram, FogWords};
 use crate::gpu::Image;
-use crate::layer_pass::{self, Instance};
+use crate::layer_pass::{self, Instance, LayerRefusal, Materials};
 use crate::look::{self, Stage};
 use crate::object_lighting::ShaderValues;
 use crate::program;
@@ -28,6 +29,45 @@ use crate::world::{LightmapKey, Owner, World};
 pub const PER_DRAW: &str = "per-draw inputs";
 
 pub type Part = ((Owner, u8), (u32, u32, Option<LightmapKey>, u16));
+
+/// The plan's view of the load's resolved shaders: each material as the
+/// load resolved it, with its instance. A per-draw resolution is refused
+/// with [`PER_DRAW`]: the compiled programs hold the load's.
+pub struct Resolved<'a>(pub &'a LayersView);
+
+impl Materials for Resolved<'_> {
+    fn material(
+        &mut self,
+        shader: u32,
+        inputs: Option<&EngineInputs>,
+    ) -> Result<Arc<Material>, String> {
+        if inputs.is_some() {
+            return Err(PER_DRAW.to_owned());
+        }
+        self.0
+            .materials
+            .get(&shader)
+            .cloned()
+            .ok_or_else(|| "not a world material".to_owned())
+    }
+
+    fn instance(&mut self, shader: u32) -> Result<Arc<Instance>, String> {
+        self.0
+            .instances
+            .get(&shader)
+            .cloned()
+            .ok_or_else(|| "not a world material".to_owned())
+    }
+}
+
+/// A plan refusal's cause as the hosts count it: the plan's name, with a
+/// per-draw resolution ([`PER_DRAW`]) apart from a missing material.
+pub fn refusal_name(r: &LayerRefusal) -> &'static str {
+    match r {
+        LayerRefusal::Material(why) if why == PER_DRAW => "per_draw",
+        r => r.name(),
+    }
+}
 
 /// One layer of one loaded world: what compiled and the parts that draw.
 #[derive(Default)]
@@ -54,6 +94,10 @@ pub struct LayersView {
     /// Each world material's shader, resolved with its own inputs.
     pub materials: HashMap<u32, Arc<Material>>,
     pub instances: HashMap<u32, Arc<Instance>>,
+    /// Why the world materials that did not resolve did not (the shader
+    /// tags not reading at all, or one material's), with how many: they
+    /// have no layer passes to compile.
+    pub unresolved: BTreeMap<String, usize>,
 }
 
 /// Compiles every world material's passes of the layers the stage takes
@@ -105,18 +149,26 @@ pub fn load_with<R: std::io::Read + std::io::Seek>(
             eprintln!(
                 "native-layers: the shader tags do not read ({e}); the D3D path draws layers 1, 5, 7, 8 and 20"
             );
+            out.unresolved.insert(
+                format!("the shader tags do not read ({e})"),
+                materials.len(),
+            );
             return out;
         }
     };
     let mut resolved: HashMap<u16, Arc<Material>> = HashMap::new();
     for &m in &materials {
         let Some(&shader) = shaders.get(usize::from(m)) else {
+            *out.unresolved.entry("no shader".to_owned()).or_default() += 1;
             continue;
         };
-        let Ok(material) = lib.material(shader, None) else {
-            continue;
+        let material = match lib.material(shader, None) {
+            Ok(material) => Arc::new(material),
+            Err(e) => {
+                *out.unresolved.entry(e.to_string()).or_default() += 1;
+                continue;
+            }
         };
-        let material = Arc::new(material);
         if let Ok(instance) = lib.shader(shader) {
             out.instances.insert(
                 shader.0,
@@ -245,6 +297,183 @@ fn compile<R: std::io::Read + std::io::Seek>(
     Ok(out)
 }
 
+/// What a host with no game (the editor) draws of one loaded layer
+/// ([`plan_without_game`]).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct StaticLayer {
+    /// The materials whose passes of the layer compiled.
+    pub compiled: usize,
+    /// Those the plan takes as static draws with fog off: what the host
+    /// draws.
+    pub drawn: BTreeSet<u16>,
+    /// The parts of the drawn materials, in the world's draw order.
+    pub parts: Vec<Part>,
+    /// Why each other material with passes of the layer does not draw,
+    /// as `cause: detail`, with how many materials: the load's refusals
+    /// as `program`, the plan's by [`refusal_name`], `animated` and
+    /// `fog`.
+    pub refused: BTreeMap<String, usize>,
+}
+
+/// Plans `layer` of `view` with no game: each material whose passes
+/// compiled, as a structure item (its plan does not depend on the part:
+/// a cluster's and a placement's items draw with no lighting), through
+/// [`layer_pass::plan_item`] with the game-free layer inputs
+/// (`scene_extract::layout::layer_inputs::without_game` at `time`). A
+/// material draws when the plan takes it, its draw is static (what the
+/// compiled programs hold: no animation, no per-draw resolution) and its
+/// own fog words leave fog off, as the game-free run state has no fog.
+/// Every other material is named with its cause; nothing is drawn with
+/// an input, a constant or a fog the host does not give.
+pub fn plan_without_game(
+    view: &LayersView,
+    shaders: &[TagId],
+    layer: u8,
+    time: f64,
+) -> StaticLayer {
+    let Some(data) = view.layers.get(&layer) else {
+        return StaticLayer::default();
+    };
+    let mut out = StaticLayer {
+        compiled: data.programs.len(),
+        ..Default::default()
+    };
+    for (why, &n) in &data.refused {
+        *out.refused.entry(format!("program: {why}")).or_default() += n;
+    }
+    let pass = LayerPass {
+        layer,
+        // The game-free pass holds no stencil.
+        stencil_off: true,
+        texaccum: false,
+        items: 0..0,
+        remainder: 0,
+        inputs: scene_extract::layout::layer_inputs::without_game(time),
+    };
+    let compiled: BTreeSet<u16> = data.programs.keys().copied().collect();
+    for m in compiled {
+        let Some(&shader) = shaders.get(usize::from(m)) else {
+            *out.refused
+                .entry("material: no shader".to_owned())
+                .or_default() += 1;
+            continue;
+        };
+        let item = LayerItem {
+            slot: 0,
+            key: ItemKey {
+                record: 0,
+                shader: shader.0,
+                section: 0,
+                part: 0,
+                implementation: 0,
+            },
+            owner: LayerOwner::Cluster(0),
+            model: u32::MAX,
+            rows: 0..0,
+            lighting: None,
+        };
+        let fogged = data
+            .words
+            .get(&m)
+            .is_some_and(|w| w.enable.is_some_and(|e| e != 0));
+        let why = match layer_pass::plan_item(&pass, &item, &mut Resolved(view)) {
+            Err(r) => format!("{}: {r:?}", refusal_name(&r)),
+            Ok(d) if !layer_pass::is_static(&d) => {
+                "animated: a pass animates a constant the compiled programs hold".to_owned()
+            }
+            Ok(_) if fogged => {
+                "fog: the material enables fog, which the game-free run state does not give"
+                    .to_owned()
+            }
+            Ok(_) => {
+                out.drawn.insert(m);
+                continue;
+            }
+        };
+        *out.refused.entry(why).or_default() += 1;
+    }
+    out.parts = data
+        .parts
+        .iter()
+        .filter(|&&(_, (_, _, _, m))| out.drawn.contains(&m))
+        .copied()
+        .collect();
+    out
+}
+
+/// Each material's fog unit and colour, as a layer set's uniforms take
+/// them ([`fog_gpu::FogSet::prepare`]).
+pub type Fogs = HashMap<u16, (shaders::psh::fog::Fog, [f32; 4])>;
+
+/// A game-free layer on the GPU ([`upload_static`]).
+pub struct StaticSet {
+    pub set: fog_gpu::FogSet,
+    /// The parts the set draws, in the world's draw order.
+    pub selected: Vec<(Owner, u8)>,
+    /// Fog off for every drawn material: the game-free run state has no
+    /// fog, and [`plan_without_game`] refused the materials whose own
+    /// words enable it.
+    pub fogs: Fogs,
+}
+
+/// Uploads the materials [`plan_without_game`] draws of `layer` and
+/// selects the parts the set binds (a part whose images did not upload is
+/// left out: `FogSet::draw` stops at a part it cannot draw). `None` when
+/// none binds.
+#[allow(clippy::too_many_arguments)]
+pub fn upload_static(
+    view: &LayersView,
+    layer: u8,
+    plan: &StaticLayer,
+    images: &StageImages,
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    world: &World,
+    lightmap: &mut dyn FnMut(LightmapKey) -> Option<Image>,
+) -> Option<StaticSet> {
+    let data = view.layers.get(&layer)?;
+    if plan.parts.is_empty() {
+        return None;
+    }
+    let programs = data
+        .programs
+        .iter()
+        .filter(|(m, _)| plan.drawn.contains(m))
+        .map(|(&m, p)| (m, p.clone()))
+        .collect();
+    let set = fog_gpu::FogSet::new(
+        device,
+        queue,
+        world,
+        plan.parts.clone(),
+        programs,
+        &mut |s| match s {
+            Stage::Bitmap { bitmap, image } => images.get(&(bitmap, image)).cloned(),
+            _ => None,
+        },
+        lightmap,
+    );
+    let selected: Vec<(Owner, u8)> = plan
+        .parts
+        .iter()
+        .map(|&(k, _)| k)
+        .filter(|&(owner, part)| set.draws_part(owner, part))
+        .collect();
+    if selected.is_empty() {
+        return None;
+    }
+    let fogs = plan
+        .drawn
+        .iter()
+        .map(|&m| (m, (shaders::psh::fog::Fog::OFF, [0.0; 4])))
+        .collect();
+    Some(StaticSet {
+        set,
+        selected,
+        fogs,
+    })
+}
+
 /// Builds the layers resources on the BSP loader's device.
 pub fn upload_layers(
     view: &mut LayersView,
@@ -273,4 +502,66 @@ pub fn upload_layers(
         sets.push((layer, set));
     }
     sets
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_plan_reads_only_what_the_load_resolved() {
+        let view = LayersView::default();
+        let mut resolved = Resolved(&view);
+        assert_eq!(
+            resolved.material(7, None).unwrap_err(),
+            "not a world material"
+        );
+        assert_eq!(
+            resolved
+                .material(7, Some(&EngineInputs::default()))
+                .unwrap_err(),
+            PER_DRAW
+        );
+        assert!(resolved.instance(7).is_err());
+    }
+
+    #[test]
+    fn a_per_draw_refusal_counts_apart_from_a_missing_material() {
+        assert_eq!(
+            refusal_name(&LayerRefusal::Material(PER_DRAW.to_owned())),
+            "per_draw"
+        );
+        assert_eq!(
+            refusal_name(&LayerRefusal::Material("not a world material".to_owned())),
+            "material"
+        );
+        assert_eq!(refusal_name(&LayerRefusal::NoPass), "no_pass");
+    }
+
+    /// The load's refusals carry into the game-free plan as `program`,
+    /// and a layer the load did not keep plans nothing.
+    #[test]
+    fn a_game_free_plan_names_what_the_load_refused() {
+        let mut view = LayersView::default();
+        let mut data = LayerData::default();
+        data.refused.insert(
+            "vertex program reads c[6].x, which the view does not give".to_owned(),
+            2,
+        );
+        view.layers.insert(5, data);
+        let plan = plan_without_game(&view, &[], 5, 0.0);
+        assert_eq!(plan.compiled, 0);
+        assert!(plan.drawn.is_empty() && plan.parts.is_empty());
+        assert_eq!(
+            plan.refused,
+            BTreeMap::from([(
+                "program: vertex program reads c[6].x, which the view does not give".to_owned(),
+                2
+            )])
+        );
+        assert_eq!(
+            plan_without_game(&view, &[], 8, 0.0),
+            StaticLayer::default()
+        );
+    }
 }

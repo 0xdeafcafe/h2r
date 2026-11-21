@@ -34,11 +34,10 @@ use std::sync::Arc;
 
 use engine::memory::GuestMemory;
 use frame_scene::FrameScene;
-use native_render::layer_pass::{self, Instance, LayerRefusal, Materials};
+use native_render::layer_pass;
 use native_render::program::ViewInputs;
 use native_render::world::Owner;
 use render_bridge::native_layers::{Host, count};
-use tags::material::{EngineInputs, Material};
 
 use crate::native_fog_glue::{device_fog_words, fog_of};
 use crate::native_world_glue::{ReadMemory, Ready, State, current_ready, palettes_hold};
@@ -46,31 +45,9 @@ use crate::native_world_glue::{ReadMemory, Ready, State, current_ready, palettes
 // The load moved to native-render, so the editor loads the same layers
 // (docs/editor/polish-plan.md, P15).
 pub use native_render::layers_load::{LayerData, LayersView, load, upload_layers};
-use native_render::layers_load::PER_DRAW;
-
-/// The plan's view of the load's resolved shaders.
-struct Loaded<'a>(&'a LayersView);
-
-impl Materials for Loaded<'_> {
-    fn material(&mut self, shader: u32, inputs: Option<&EngineInputs>) -> Result<Arc<Material>, String> {
-        if inputs.is_some() {
-            return Err(PER_DRAW.to_owned());
-        }
-        self.0.materials.get(&shader).cloned().ok_or_else(|| "not a world material".to_owned())
-    }
-
-    fn instance(&mut self, shader: u32) -> Result<Arc<Instance>, String> {
-        self.0.instances.get(&shader).cloned().ok_or_else(|| "not a world material".to_owned())
-    }
-}
-
-/// A refusal's cause as `render.scene` counts it.
-fn cause(r: &LayerRefusal) -> &'static str {
-    match r {
-        LayerRefusal::Material(why) if why == PER_DRAW => "per_draw",
-        r => r.name(),
-    }
-}
+// The plan's view of the load's shaders and the refusal names, shared with
+// the editor's game-free plan.
+use native_render::layers_load::{Resolved as Loaded, refusal_name as cause};
 
 struct Glue<B: d3d::backend::Backend + Send + 'static> {
     device: d3d::abi::SharedDevice<B>,
@@ -257,26 +234,5 @@ impl d3d::ExternalPass for LayerViewPass {
         let Some(gpu) = guard.as_mut() else { return Some(Err("world geometry unavailable")) };
         let view = ViewInputs { constants: request.view_constants(t.copy, constants), guest_size: request.surface_size, size: t.size, z_scale: request.z_scale, w_clip: self.w_clip };
         Some(gpu.layer_draws(self.layer, &t.device, t.color_format, t.depth_format, t.size, &self.selected, &view, &self.fogs))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_per_draw_refusal_counts_apart_from_a_missing_material() {
-        assert_eq!(cause(&LayerRefusal::Material(PER_DRAW.to_owned())), "per_draw");
-        assert_eq!(cause(&LayerRefusal::Material("not a world material".to_owned())), "material");
-        assert_eq!(cause(&LayerRefusal::NoPass), "no_pass");
-    }
-
-    #[test]
-    fn the_plan_reads_only_what_the_load_resolved() {
-        let view = LayersView::default();
-        let mut loaded = Loaded(&view);
-        assert_eq!(loaded.material(7, None).unwrap_err(), "not a world material");
-        assert_eq!(loaded.material(7, Some(&EngineInputs::default())).unwrap_err(), PER_DRAW);
-        assert!(loaded.instance(7).is_err());
     }
 }

@@ -853,46 +853,47 @@ impl GpuWorld {
         target_size: (u32, u32),
         selected: &[(Owner, u8)],
     ) -> usize {
-        let Some(set) = self.fog.as_mut() else { return 0 };
-        set.pipelines(device, color_format, depth_format);
-        let set = &*set;
-        let has_stencil = depth_format.has_stencil_aspect();
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("native fog"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: color,
-                depth_slice: None,
-                resolve_target: None,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Load,
-                    store: wgpu::StoreOp::Store,
-                },
-            })],
-            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                view: depth,
-                depth_ops: Some(wgpu::Operations {
-                    load: wgpu::LoadOp::Load,
-                    store: wgpu::StoreOp::Store,
-                }),
-                stencil_ops: has_stencil.then_some(wgpu::Operations {
-                    load: wgpu::LoadOp::Load,
-                    store: wgpu::StoreOp::Store,
-                }),
-            }),
-            timestamp_writes: None,
-            occlusion_query_set: None,
-            multiview_mask: None,
-        });
-        // The programs carry the game's viewport in their constants: the
-        // pass covers the whole target, as the world's programs do. The
-        // buffer is the program vertices (the layer-3 programs' own):
-        // clusters' are their placed world positions, and a placement's
-        // unplaced local coordinates, which its rigid program places with
-        // its rows.
-        pass.set_viewport(0.0, 0.0, target_size.0 as f32, target_size.1 as f32, 0.0, 1.0);
-        pass.set_vertex_buffer(0, self.program_vertices.slice(..));
-        pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
-        set.draw(&mut pass, color_format, depth_format, selected)
+        let Self { fog, program_vertices, indices, .. } = self;
+        let Some(set) = fog.as_mut() else { return 0 };
+        encode_set(set, "native fog", program_vertices, indices, device, encoder, color, color_format, depth, depth_format, target_size, selected)
+    }
+
+    /// The uniforms of `layer`'s set for one view ([`FogSet::prepare`];
+    /// `fogs` the fog unit each material draws with), through the
+    /// submission's upload arena.
+    pub fn prepare_layer(
+        &mut self,
+        layer: u8,
+        uploads: &mut gfx::ring::EncoderUploads<'_>,
+        view: &ViewInputs,
+        fogs: &HashMap<u16, (shaders::psh::fog::Fog, [f32; 4])>,
+    ) {
+        if let Some(set) = self.layers.get(&layer) {
+            set.prepare(uploads, view, fogs);
+        }
+    }
+
+    /// Records one view's draws of `layer`'s selected parts in a pass of
+    /// their own over the target and its depth (loaded and kept), as
+    /// [`GpuWorld::encode_fog`] does layer 16's: for a host that owns its
+    /// passes (the editor). The uniforms are [`GpuWorld::prepare_layer`]'s.
+    /// Returns how many parts were drawn.
+    #[allow(clippy::too_many_arguments)]
+    pub fn encode_layer(
+        &mut self,
+        layer: u8,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        color: &wgpu::TextureView,
+        color_format: wgpu::TextureFormat,
+        depth: &wgpu::TextureView,
+        depth_format: wgpu::TextureFormat,
+        target_size: (u32, u32),
+        selected: &[(Owner, u8)],
+    ) -> usize {
+        let Self { layers, program_vertices, indices, .. } = self;
+        let Some(set) = layers.get_mut(&layer) else { return 0 };
+        encode_set(set, "native layer", program_vertices, indices, device, encoder, color, color_format, depth, depth_format, target_size, selected)
     }
     /// [`GpuWorld::prepare_fog`] and [`GpuWorld::encode_fog`] as packets for
     /// the D3D pass already open on these attachments, the uniforms as
@@ -1448,6 +1449,66 @@ impl GpuWorld {
         recorded
     }
 }
+
+/// One view's draws of `set`'s selected parts in a pass of their own over
+/// `color` and `depth` (loaded and kept): [`GpuWorld::encode_fog`] and
+/// [`GpuWorld::encode_layer`].
+#[allow(clippy::too_many_arguments)]
+fn encode_set(
+    set: &mut FogSet,
+    label: &str,
+    program_vertices: &wgpu::Buffer,
+    indices: &wgpu::Buffer,
+    device: &wgpu::Device,
+    encoder: &mut wgpu::CommandEncoder,
+    color: &wgpu::TextureView,
+    color_format: wgpu::TextureFormat,
+    depth: &wgpu::TextureView,
+    depth_format: wgpu::TextureFormat,
+    target_size: (u32, u32),
+    selected: &[(Owner, u8)],
+) -> usize {
+    set.pipelines(device, color_format, depth_format);
+    let set = &*set;
+    let has_stencil = depth_format.has_stencil_aspect();
+    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        label: Some(label),
+        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+            view: color,
+            depth_slice: None,
+            resolve_target: None,
+            ops: wgpu::Operations {
+                load: wgpu::LoadOp::Load,
+                store: wgpu::StoreOp::Store,
+            },
+        })],
+        depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+            view: depth,
+            depth_ops: Some(wgpu::Operations {
+                load: wgpu::LoadOp::Load,
+                store: wgpu::StoreOp::Store,
+            }),
+            stencil_ops: has_stencil.then_some(wgpu::Operations {
+                load: wgpu::LoadOp::Load,
+                store: wgpu::StoreOp::Store,
+            }),
+        }),
+        timestamp_writes: None,
+        occlusion_query_set: None,
+        multiview_mask: None,
+    });
+    // The programs carry the game's viewport in their constants: the
+    // pass covers the whole target, as the world's programs do. The
+    // buffer is the program vertices (the layer-3 programs' own):
+    // clusters' are their placed world positions, and a placement's
+    // unplaced local coordinates, which its rigid program places with
+    // its rows.
+    pass.set_viewport(0.0, 0.0, target_size.0 as f32, target_size.1 as f32, 0.0, 1.0);
+    pass.set_vertex_buffer(0, program_vertices.slice(..));
+    pass.set_index_buffer(indices.slice(..), wgpu::IndexFormat::Uint32);
+    set.draw(&mut pass, color_format, depth_format, selected)
+}
+
 
 /// Join adjacent complete triangle lists only while their render state is bound.
 fn append_triangles(

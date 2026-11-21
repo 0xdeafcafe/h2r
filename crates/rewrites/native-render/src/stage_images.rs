@@ -2,8 +2,8 @@
 //! decoded as its stage samples it, a palettized one (P8, P8 bump)
 //! expanded through the palette bound at its stage, once per image
 //! ([`StageDecoder`]). The game's glue gives it the device's palettes;
-//! the editor gives it the default palette at every stage but the
-//! lightmap's.
+//! the editor gives it none, so a palettized stage bitmap is refused
+//! there with its cause.
 
 use std::collections::{HashMap, HashSet};
 

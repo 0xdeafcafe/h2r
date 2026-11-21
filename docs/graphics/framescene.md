@@ -982,6 +982,17 @@ to the guest's draws (**Code**):
     layer's set cannot draw on) and `unread` (the layer's pass did not
     read); `layer_plan_asked`, `layer_plan_drawn` and `layer_plan_items`
     count the layer calls asked, those drawn natively and their items.
+  - **With no game** (the editor, `scenario_edit::native_view::NativeLayers`).
+    The same load, with the view constants a camera gives
+    (`layers_load::load_with` and `program::CAMERA_GIVEN`: a pass reading
+    another is refused, named with the register) and no stage palettes.
+    `layers_load::plan_without_game` plans each compiled material as one
+    structure item over `layer_inputs::without_game`, and draws it when
+    the plan takes it, its draw is static and its own fog words leave fog
+    off; every other material is counted by cause (`program`, the plan's
+    names, `animated`, `fog`). `layers_load::upload_static` uploads the
+    drawn materials, and `GpuWorld::prepare_layer` and `encode_layer`
+    draw them in a pass of their own.
   - **Tests** (synthetic). `every_view_input_reads_as_its_selector_computes_it`,
     `without_fog_or_a_view_the_selectors_fall_back` and
     `an_input_whose_words_do_not_read_is_not_given`
@@ -1001,9 +1012,10 @@ to the guest's draws (**Code**):
     `the_skip_takes_the_accepted_structure_items_up_to_the_first_it_cannot`;
     for the stage, `the_plans_outcomes_count_by_layer_and_cause`
     (`render_bridge::native_layers`),
-    `a_per_draw_refusal_counts_apart_from_a_missing_material` and
-    `the_plan_reads_only_what_the_load_resolved`
-    (`boot::native_layers_glue`).
+    `a_per_draw_refusal_counts_apart_from_a_missing_material`,
+    `the_plan_reads_only_what_the_load_resolved` and
+    `a_game_free_plan_names_what_the_load_refused`
+    (`native_render::layers_load`).
 - **Layer 3.** The decorators (build `0x0004de20`) are in the scene
   (`View::decorators`, each placement's draw with its instances'
   `v11..v15`), and the decorator stage draws a view's ready ones
