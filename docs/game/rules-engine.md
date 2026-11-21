@@ -10,7 +10,7 @@ record. The host runs the IR in a Rust VM whose state is `SimExt`
 extension state, and the VM changes the game only through named engine
 entries, so what it does replicates as ordinary game state. The seven
 lifted retail engines are the oracles the script ports are proven
-against, and are retired once nothing needs them. The rule that must
+against, and are retired once every port has passed. The rule that must
 hold: the same IR, options, seed and inputs give the same engine calls at
 the same ticks on every machine and platform.
 
@@ -29,8 +29,9 @@ points. No game data is in this page.
    dialect comes later.
 3. **All seven retail engines are ported to scripts**: Slayer, Oddball,
    Juggernaut, King of the Hill, Capture the Flag, Assault, Territories.
-   The lifted engines stay only for replaying old films and for System
-   Link until both are settled, then they are retired. Every retail
+   The lifted engines are retired once the ports pass: System Link runs
+   the built-in scripts, and films recorded on a lifted engine no longer
+   replay. Every retail
    built-in variant and every community variant becomes "engine script +
    option values".
 4. **Firefight, AI-driven modes and superbounce modes are scripts too.**
@@ -58,9 +59,9 @@ Non-goals:
   ReachVariantTool source text only.
 - A general-purpose language: no I/O, heap, floats or unbounded loops.
 
-Done means every multiplayer game on Live, local or on a dedicated host
-runs a rules script, and the lifted engines run only where "What stays
-lifted" says, until its retirement criteria hold.
+Done means every multiplayer game, on Live, System Link, local or on a
+dedicated host, runs a rules script, and no game reaches a lifted
+engine's rule callbacks.
 
 ## How it works
 
@@ -203,7 +204,9 @@ and copies an older build edited are script games with no byte changed.
 The host puts the built-in's hash in the session's `rules` field as for
 any script, and a film records which ran: its `simulation_hooks` SHA
 differs with the feature and it stores the blob. The rule covers Live,
-local and dedicated-host games; System Link is in "What stays lifted".
+local, dedicated-host and System Link games: the built-in scripts are
+compiled in, so a System Link game needs no blob and no session field.
+A System Link game cannot name any other script.
 
 ### The host runtime
 
@@ -641,24 +644,19 @@ no mode"). Its settings are already option values in the record. Rules
 that were honour rules ([community-gametypes.md](community-gametypes.md),
 Zombies' team switch) become script variants of their own.
 
-**What stays lifted, and why.**
+**Until a port passes.** A no-mode record on an engine whose port has
+not passed parity plays the lifted engine, on every kind of session.
 
-- **Old films.** A film replays only with the hook set and variant
-  bytes it was recorded with (`simulation_hooks`, film-format.md). A
-  film recorded on a lifted engine replays on the lifted engine.
-- **System Link.** The block is off there, because no Live session
-  carries it (game-options.md "How it reaches every player"), so a
-  System Link game cannot name a script. It plays the lifted engine
-  (decision 3). A record with no mode needs neither the block nor a
-  blob, so extending that rule to System Link is how this is settled.
-- **An engine whose port has not passed parity**, for a no-mode record.
+**Old films do not replay.** A film replays only with the hook set and
+variant bytes it was recorded with (`simulation_hooks`, film-format.md).
+A film recorded on a lifted engine is refused with that reason, named in
+the theater; it is never played on the script engine, where it would
+drift. No frozen build keeps them.
 
 **Retirement criteria**, all of them: every engine's port has passed
-parity, so no record with no mode runs lifted on Live; script games
-have been played on Live in every engine; System Link runs the built-in
-scripts or is decided to stay retail-only on a frozen build; films
-recorded on lifted engines are either converted, expired by policy, or
-served by a frozen player build. Then the lifted
+parity; script games have been played in every engine on Live and on
+System Link. Then the `rules` feature is always on, nothing dispatches
+a lifted engine's rule callbacks, and the lifted
 engines' hooks, observers and bot readers that parse per-engine globals
 (`crates/rewrites/engine/src/objectives.rs`,
 `crates/live/bots/src/objective.rs`) move to reading rules state.
@@ -795,7 +793,6 @@ the ReachVariantTool importer follows phase 10.
   "What a run settles") settle them for scripts too.
 - **Host migration.** Whether a session of ours moves hosts, and how
   `RulesExt` would reach the new one. There is no handler for it.
-- **System Link.** Whether the no-mode rule can extend to it.
 - **The ReachVariantTool importer.** What of Megalo's slots, object
   types and trigger kinds cannot map onto this API is not surveyed.
 - **The phased mode's name**, and VM time per tick with 16 players.
