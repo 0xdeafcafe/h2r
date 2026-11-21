@@ -614,8 +614,7 @@ impl Agent {
         AgentTap::new(input, inner)
     }
 
-    /// Where input logs (and captures) are written (default: the cache
-    /// directory, `agent_proto::cache_dir`).
+    /// Override the root for input logs, traces, flights and profile captures.
     pub fn set_dir(&self, dir: PathBuf) {
         input::lock(&self.lock().input).dir = Some(dir);
     }
@@ -1177,7 +1176,8 @@ impl State {
             });
         }
         if trace::is_method(m) {
-            let (at, dir) = (self.at(), self.dir());
+            let dir = input::lock(&self.input).output_dir();
+            let at = self.at();
             return Some(self.recorders.handle(m, p, at, &dir, &self.input));
         }
         if self.game_methods.contains_key(m) {
@@ -1228,6 +1228,14 @@ impl State {
             }));
         }
         Some(match m {
+            method::INPUT_LIST => {
+                let dir = input::lock(&self.input).output_dir();
+                crate::outputs::input_list(&dir)
+            }
+            method::INPUT_LOG_READ => {
+                let dir = input::lock(&self.input).output_dir();
+                params(p).and_then(|p| crate::outputs::input_read(&dir, p))
+            }
             method::STATUS => Ok(to_value(Status {
                 at: self.at(),
                 protocol: PROTOCOL,

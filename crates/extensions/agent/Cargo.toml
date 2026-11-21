@@ -38,6 +38,9 @@ snapshot = { path = "../../runtime/snapshot" }
 # render.compare reads and writes PNGs (src/compare.rs).
 png = "0.18"
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 # A synthetic lifted original for the shadow.* tests.
 lifted = { path = "../../runtime/lifted" }

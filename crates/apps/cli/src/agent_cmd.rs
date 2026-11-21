@@ -45,7 +45,7 @@ or a short form:
   step <ticks>           session.step
   wait <JSON until> [timeout_ms]
   record <name> [replace]  input.record: log every controller read to the
-                         cache directory's inputs/<name>.input
+                         agent output directory's inputs/<name>.input
   replay <name>          input.replay: answer controller reads from that log
   stop                   input.stop: end the recording (writing it) or replay
   sleep <ms>             (scripts only) wait before the next line
@@ -218,9 +218,8 @@ pub fn run(args: Vec<String>) -> Result<()> {
     let Some(first) = rest.first().cloned() else {
         bail!("{}", usage())
     };
-    // Reads a file; no game needed.
     if first == "flight" && rest.get(1).is_some_and(|w| w == "show") {
-        return crate::agent_flight::show(&rest[2..]);
+        return crate::agent_flight::show(&rest[2..], || connect(socket, timeout));
     }
     if first == "raw-diff" {
         return crate::agent_raw::diff_files(&rest[1..]);
@@ -232,17 +231,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
     if first == "games" {
         return games();
     }
-    let path = match socket {
-        Some(p) => p,
-        None => only_game().unwrap_or_else(agent_proto::default_socket),
-    };
-    let mut c = Client::connect(&path).with_context(|| {
-        format!(
-            "connecting to {}: is `h2 serve` (or a game with H2_AGENT) running?",
-            path.display()
-        )
-    })?;
-    c.set_timeout(timeout)?;
+    let mut c = connect(socket, timeout)?;
     match first.as_str() {
         "-" => script(&mut c),
         "ui-crawl" => crate::agent_ui_crawl::run(&mut c, &rest[1..], timeout),
@@ -274,6 +263,18 @@ pub fn run(args: Vec<String>) -> Result<()> {
             Ok(())
         }
     }
+}
+
+fn connect(socket: Option<PathBuf>, timeout: Option<Duration>) -> Result<Client> {
+    let path = socket.unwrap_or_else(|| only_game().unwrap_or_else(agent_proto::default_socket));
+    let client = Client::connect(&path).with_context(|| {
+        format!(
+            "connecting to {}: is `h2 serve` (or a game with H2_AGENT) running?",
+            path.display()
+        )
+    })?;
+    client.set_timeout(timeout)?;
+    Ok(client)
 }
 
 /// Whether `--xbox`'s next word is an address rather than a call.

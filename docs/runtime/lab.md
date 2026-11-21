@@ -106,7 +106,7 @@ The host keeps its files under `--root`, by default
 | `bin/h2` | stable LaunchAgent executable |
 | `logs/` | LaunchAgent stdout, stderr and explicit update log, with a current file and one rotated copy of up to 8 MiB each |
 | `auth/` | TLS identity and pairing state |
-| `runs/<id>/` | one job: `meta.json`, `build.log`, `run.log`, `frames.csv`, `profile/` |
+| `runs/<id>/` | one job: `meta.json`, `build.log`, `run.log`, `frames.csv`, `profile/`, `traces/`, `flights/`, `inputs/` |
 | `a/<id>.sock` | the run's game's agent API socket, removed when the run ends |
 | `takeover-declined-until` | the player's consent cool-down, kept across lab host restarts |
 | `recordings/<name>/` | `manifest.json` and `input.bin` |
@@ -240,6 +240,12 @@ and the frame stats report from the log: the last `frame stats:` line,
 the three worst frames and the `outcome:` line. `h2 lab fetch <id>` copies
 `runs/<id>` here as `<DIR>/<id>` (`--to DIR`; default `$RUSH_KEEP/lab`,
 else `./lab`) using an archive streamed over the lab connection.
+The host sets the game's [agent output root](switches.md#tools) to
+`runs/<id>`. The archive includes the game's `traces/` from `trace.start`,
+`flights/` from `flight.dump` and `inputs/` from `input.record`. Each job
+gets its own directories, so concurrent jobs can use the same file names.
+Use `trace.stop` and `input.stop` to finish writing before stopping the
+job or fetching its files.
 
 ## Player consent before a job
 
@@ -288,25 +294,30 @@ h2 lab agent --host laptop <id> <method|short form> [json-params] [--timeout S]
 h2 lab agent --host laptop 0007 wait '{"phase":"gameplay","map_ticks":30}' 600000 --timeout 700
 h2 lab agent --host laptop 0007 capture 600 --timeout 200
 h2 lab agent --host laptop 0007 session.status
+h2 lab agent --host laptop 0007 trace.list
+h2 lab agent --host laptop 0007 flight show crouch-bug.jsonl --field physics.crouch
+h2 lab agent --host laptop 0007 input.log.read '{"name":"fight","limit":4096}'
 h2 lab agent --host laptop 0007 - < script.txt        # an `h2 agent -` script
 ```
 
-Everything after the id is what follows `h2 agent` on a command line, passed
-through unchanged: the host runs the run's own `h2` (its image's, so a short
-form that branch knows is understood) as `h2 agent <call> --socket <the run's
-socket> --timeout S`. What the call printed to stdout and stderr comes back
-as is, and `h2 lab agent` exits with its exit code, so scripts and `expect`
-lines behave as with a local `h2 agent`. Nothing is special-cased: any
-method, short form, input recording (`record`, `replay`, `press`, ...),
-`capture`, `render`, `counters`, `state`, `sim`. `--timeout S` (default 300,
+Everything after the id is a call for `h2 agent`. The host runs the job's
+own `h2` as `h2 agent <call> --socket <the run's socket> --timeout S`.
+Stdout, stderr and the exit code come back to the driver, so scripts and
+`expect` lines behave as with a local `h2 agent`. `--timeout S` (default 300,
 at most 7200) is how long the call may take, and is the call's socket
 timeout; give a `capture` or a `wait` more than it needs. The host waits up
 to two minutes for a just-started game's socket to appear. The call is
 refused while the job is still building and once the run has ended.
 
-Not forwarded: `--socket`, `--xbox` (the run's socket is the only one), and
-`flight show` and `raw-diff`, which read files on the machine they run on
-(fetch the files and run those here).
+`flight show` takes a bare file name and always reads through the job's
+socket. Use `trace.list` to find file names and `input.list` to find
+recording names. A lab agent call can return up to 64 MiB of output.
+For larger files, fetch them or call
+[`trace.read`](agent-api.md#tick-traces-and-the-flight-recorder) or
+[`input.log.read`](agent-api.md#input-act-like-a-player) one page at a time.
+The game and lab host must both support artifact readback. The host
+reserves `--socket` and `--xbox` for routing. Use `raw-diff` locally on
+fetched files.
 
 ### `--serve` and `bench`
 
@@ -375,6 +386,21 @@ On the laptop: `h2 lab record --level 03a_oldmombasa --difficulty heroic
 runs (so the agent sees the run), else directly into the default root. A
 recording made elsewhere goes up with `h2 lab put FILE --as NAME --level
 MAP`; `h2 lab recordings` lists them.
+
+To use an agent recording from a lab job with `--replay`, finish the
+recording with `input.stop`, fetch the job, and upload its input log as a
+lab recording. Supply the recorded level and difficulty so replay boots
+with the same settings.
+
+```sh
+h2 lab fetch --host laptop 0007 --to ./lab
+h2 lab put --host laptop ./lab/0007/inputs/fight.input --as fight \
+    --level 03a_oldmombasa --difficulty heroic
+h2 lab run --host laptop --replay fight --frames 3000
+```
+
+For a replay from level boot, start the recording at the same point in
+boot so the game's read indices line up.
 
 A recording is a directory with a manifest, not a file:
 

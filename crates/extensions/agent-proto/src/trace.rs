@@ -23,6 +23,10 @@ pub mod method {
     pub const TRACE_STOP: &str = "trace.stop";
     /// The running (or last) trace's counts.
     pub const TRACE_STATUS: &str = "trace.status";
+    /// List saved trace and flight files.
+    pub const TRACE_LIST: &str = "trace.list";
+    /// Read a page of rows from a trace or flight file ([`super::TraceReadParams`]).
+    pub const TRACE_READ: &str = "trace.read";
     /// Keep the last N seconds of rows and input in memory
     /// ([`super::FlightParams`]).
     pub const FLIGHT_START: &str = "flight.start";
@@ -37,6 +41,8 @@ pub mod method {
         TRACE_START,
         TRACE_STOP,
         TRACE_STATUS,
+        TRACE_LIST,
+        TRACE_READ,
         FLIGHT_START,
         FLIGHT_DUMP,
         FLIGHT_STOP,
@@ -57,7 +63,7 @@ pub struct TraceParams {
     /// are); all of them when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fields: Option<Vec<String>>,
-    /// Where to write; the cache directory's `traces/trace-<ms>.jsonl`
+    /// Where to write; the output directory's `traces/trace-<ms>.jsonl`
     /// when absent. An existing file is replaced.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
@@ -88,10 +94,48 @@ impl FlightParams {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DumpParams {
-    /// Where to write; the cache directory's `flights/flight-<ms>.jsonl`
+    /// Where to write; the output directory's `flights/flight-<ms>.jsonl`
     /// when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
+}
+
+/// Whether a path is a single file name with no directory components.
+pub fn valid_file_name(name: &str) -> bool {
+    use std::{ffi::OsStr, path::Path};
+    !name.contains('\0') && Path::new(name).file_name() == Some(OsStr::new(name))
+}
+
+/// Which output directory holds a file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TraceKind {
+    Trace,
+    Flight,
+}
+
+/// `trace.read`. A byte cursor keeps later pages from rereading the file.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TraceReadParams {
+    pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<TraceKind>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from_tick: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to_tick: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offset: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<usize>,
+}
+
+/// Complete JSONL rows, with the cursor for the next page if any.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct TraceReadPage {
+    pub rows: Vec<String>,
+    pub next: Option<u64>,
 }
 
 /// `trace.start`, `trace.stop` and `trace.status`.

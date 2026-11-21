@@ -20,8 +20,8 @@ use serde_json::{Value, json};
 
 /// A fake `h2`: `build` makes an image directory; `play` logs its
 /// arguments and environment, writes frames to the CSV one per 50 ms until
-/// H2_BOOT_STOP_AT_PRESENT, writes the input recording, prints a frame stats
-/// report, and exits 143 on SIGTERM.
+/// H2_BOOT_STOP_AT_PRESENT, writes input and agent artifacts, prints a frame
+/// stats report, and exits 143 on SIGTERM.
 const FAKE_H2: &str = r#"#!/bin/sh
 cmd=$1; shift
 if [ "$cmd" = build ]; then
@@ -54,6 +54,7 @@ if [ "$cmd" = agent ]; then
     capture) printf '{"frames":%s,"fps":24.0,"budget_ms":33.3,"over_budget":1,"complete":true,"busy_ms":{"p50":8.0,"p95":12.5},"phases":{"cpu":{"mean":2.0},"render":{"mean":4.0},"pace":{"mean":9.0}},"csv":"a,b\\n1,2\\n"}\n' "$2";;
     render) echo '{"interp":0}';;
     counters) echo '{"draws":100}';;
+    flight) printf '%s\n' "$@";;
     socket) printf '%s\n' "$sock";;
     fail) echo '{"code":3,"message":"nope"}' >&2; exit 2;;
     -) while read -r line; do echo "script: $line"; done;;
@@ -62,8 +63,15 @@ if [ "$cmd" = agent ]; then
   exit 0
 fi
 echo "fake play $*"
-echo "env level=$H2_LEVEL opt=$H2_OPT replay=$H2_INPUT_REPLAY record=$H2_INPUT_RECORD profile=$H2_PROFILE from=$H2_FRAME_STATS_FROM home=$H2_LEAK scale=$H2_RENDER_SCALE pgo=$H2_PGO_OUT agent=$H2_AGENT"
 trap 'echo "got TERM"; exit 143' TERM
+if [ -n "$H2_AGENT_OUT" ]; then
+  mkdir -p "$H2_AGENT_OUT/traces" "$H2_AGENT_OUT/flights" "$H2_AGENT_OUT/inputs" || exit 1
+  run_id=${PWD##*/}
+  printf '{"tick":1,"ticks":1,"map":"%s","objects":{}}\n' "$run_id" > "$H2_AGENT_OUT/traces/trace.jsonl"
+  cp "$H2_AGENT_OUT/traces/trace.jsonl" "$H2_AGENT_OUT/flights/flight.jsonl"
+  printf '# h2 input log v1\n# run %s\n' "$run_id" > "$H2_AGENT_OUT/inputs/pads.input"
+fi
+echo "env level=$H2_LEVEL opt=$H2_OPT replay=$H2_INPUT_REPLAY record=$H2_INPUT_RECORD profile=$H2_PROFILE from=$H2_FRAME_STATS_FROM home=$H2_LEAK scale=$H2_RENDER_SCALE pgo=$H2_PGO_OUT agent=$H2_AGENT agent_out=$H2_AGENT_OUT"
 n=${H2_BOOT_STOP_AT_PRESENT:-${FAKE_FRAMES:-1000000}}
 [ -n "$H2_FRAME_STATS_CSV" ] && echo "frame,total_us" > "$H2_FRAME_STATS_CSV"
 [ -n "$H2_INPUT_RECORD" ] && echo "pad reads" > "$H2_INPUT_RECORD"
@@ -966,8 +974,10 @@ fn cached_serve_runs_share_an_image_and_stop_independently() {
         let log = wait_for_run_log(&lab.root, id);
         assert!(log.contains(&format!("--data {}", data.display())), "{log}");
         assert!(log.contains(&format!("agent={}", socket.display())), "{log}");
-        let profile = lab.root.join("runs").join(id).join("h2.profraw");
+        let run = lab.root.join("runs").join(id);
+        let profile = run.join("h2.profraw");
         assert!(log.contains(&format!("pgo={} ", profile.display())), "{log}");
+        assert!(log.contains(&format!("agent_out={}\n", run.display())), "{log}");
         let out = ok(&lab.local(&["agent", id, "socket"]));
         assert_eq!(out.trim_end(), socket.to_str().unwrap());
     }
@@ -1204,8 +1214,28 @@ fn lab_agent_forwards_calls_to_a_serve_runs_game_and_returns_exit_codes() {
         "script: status\nscript: count\n"
     );
 
-    // What isn't forwarded.
-    assert!(err(&lab.local(&["agent", &id, "flight", "show", "x"])).contains("reads files"));
+    // Flight show is forced through the job's socket before user options.
+    let out = ok(&lab.lan(&[
+        "agent",
+        &id,
+        "flight",
+        "show",
+        "flight.jsonl",
+        "--field",
+        "physics.crouch",
+    ]));
+    assert_eq!(
+        out.lines().collect::<Vec<_>>(),
+        [
+            "flight",
+            "show",
+            "--remote",
+            "flight.jsonl",
+            "--field",
+            "physics.crouch"
+        ]
+    );
+    assert!(err(&lab.local(&["agent", &id, "raw-diff", "x", "y"])).contains("reads files"));
     assert!(err(&lab.local(&["agent", "9999", "status"])).contains("no job 9999"));
     assert!(
         err(&lab.local(&["run", "--current", "--serve", "--frames", "5"])).contains("never stops")
@@ -1217,6 +1247,20 @@ fn lab_agent_forwards_calls_to_a_serve_runs_game_and_returns_exit_codes() {
     assert_eq!(w.status.code(), Some(1));
     assert!(!sock.exists(), "the host removes the socket after the run");
     assert!(err(&lab.local(&["agent", &id, "status"])).contains("is stopped"));
+
+    // The paired driver can fetch the files written by the game after the run ends.
+    let to = lab.dir.join("fetched");
+    ok(&lab.lan(&["fetch", &id, "--to", to.to_str().unwrap()]));
+    let fetched = to.join(&id);
+    for path in ["traces/trace.jsonl", "flights/flight.jsonl"] {
+        let row = json(&fs::read_to_string(fetched.join(path)).unwrap());
+        assert_eq!(row["tick"], 1);
+        assert_eq!(row["map"], id);
+    }
+    assert_eq!(
+        fs::read_to_string(fetched.join("inputs/pads.input")).unwrap(),
+        format!("# h2 input log v1\n# run {id}\n")
+    );
 }
 
 #[test]

@@ -62,6 +62,7 @@ dependencies = [
  "hot-render",
  "hot-tags",
  "input",
+ "libc",
  "lifted",
  "live-proto",
  "live-telemetry",

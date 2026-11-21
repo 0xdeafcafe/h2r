@@ -17,7 +17,8 @@ use serde::{Deserialize, Serialize};
 pub const VERSION: u32 = 1;
 
 /// Run-time environment a request may set. Paths the game writes (frame
-/// stats CSV, input recording, profile directory) are the host's to choose.
+/// stats CSV, input recording, profile and agent output directories) are
+/// the host's to choose.
 pub const RUN_ENV: &[&str] = &[
     "H2_FRAME_STATS",
     "H2_FRAME_STATS_FROM",
@@ -323,10 +324,9 @@ pub fn validate(r: &Request) -> Result<()> {
     }
 }
 
-/// What follows `h2 agent` in an `agent` request. Any call goes through
-/// (the host does not know the methods); what is refused is naming a
-/// different socket or console, which the run's own socket replaces, and
-/// the two forms that read files on the host instead of talking to a game.
+/// What follows `h2 agent` in an `agent` request. The host uses the run's
+/// socket for calls, including `flight show`, which reads a bare file name
+/// through the game's API. `raw-diff` only reads local files.
 pub fn check_agent_args(args: &[String]) -> Result<()> {
     ensure!(
         !args.is_empty() && args.len() <= 64,
@@ -346,10 +346,16 @@ pub fn check_agent_args(args: &[String]) -> Result<()> {
         );
     }
     ensure!(
-        !matches!(args[0].as_str(), "flight" | "raw-diff"),
+        args[0] != "raw-diff",
         "`h2 agent {}` reads files on the machine it runs on; the lab doesn't forward it",
         args[0]
     );
+    if let [domain, verb, show_args @ ..] = args
+        && domain == "flight"
+        && verb == "show"
+    {
+        crate::agent_flight::check_remote_show_args(show_args)?;
+    }
     Ok(())
 }
 
@@ -611,6 +617,7 @@ mod tests {
             "H2_INPUT_REPLAY",
             "H2_PROFILE",
             "H2_AGENT",
+            agent_proto::OUT_ENV,
             "PATH",
             "DYLD_INSERT_LIBRARIES",
             "H2_OPT",
@@ -692,19 +699,25 @@ mod tests {
     }
 
     #[test]
-    fn agent_calls_pass_through_but_not_sockets_or_file_readers() {
+    fn agent_calls_use_the_runs_socket() {
         let ok = r#"{"cmd":"agent","id":"0003","args":["capture","600"],"timeout":90}"#;
         assert!(run(ok).is_ok());
         assert!(
             run(r#"{"cmd":"agent","id":"0003","args":["session.wait","{\"until\":{\"phase\":\"gameplay\"}}"]}"#)
                 .is_ok()
         );
+        assert!(
+            run(r#"{"cmd":"agent","id":"0003","args":["flight","show","walk.jsonl","--field","physics.crouch"]}"#)
+                .is_ok()
+        );
+        assert!(run(r#"{"cmd":"agent","id":"0003","args":["flight","dump","walk.jsonl"]}"#).is_ok());
         for bad in [
             r#"{"cmd":"agent","id":"0003","args":[]}"#,
             r#"{"cmd":"agent","id":"../x","args":["status"]}"#,
             r#"{"cmd":"agent","id":"0003","args":["status","--socket","/tmp/x"]}"#,
             r#"{"cmd":"agent","id":"0003","args":["status","--xbox"]}"#,
             r#"{"cmd":"agent","id":"0003","args":["flight","show","/etc/passwd"]}"#,
+            r#"{"cmd":"agent","id":"0003","args":["flight","show","walk.jsonl","--field"]}"#,
             r#"{"cmd":"agent","id":"0003","args":["raw-diff","a","b"]}"#,
             r#"{"cmd":"agent","id":"0003","args":["status"],"timeout":0}"#,
             r#"{"cmd":"agent","id":"0003","args":["status"],"timeout":-1}"#,

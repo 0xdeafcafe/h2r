@@ -263,12 +263,7 @@ impl Sim {
                     .recording
                     .clone()
                     .ok_or_else(|| invalid("a recording source needs \"recording\": <log name>"))?;
-                if !agent_proto::valid_log_name(&name) {
-                    return Err(invalid(format!("{name}: not a log name")));
-                }
-                let path = agent_proto::cache_dir()
-                    .join("inputs")
-                    .join(format!("{name}.input"));
+                let path = crate::tap::log_path(&agent_proto::output_dir(), &name)?;
                 (PadSource::Recording { name, path }, None)
             }
             SourceKind::Brain => (PadSource::Brain, None),

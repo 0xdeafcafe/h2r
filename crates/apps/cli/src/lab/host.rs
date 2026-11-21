@@ -1197,14 +1197,14 @@ fn play_command(
         cmd.env("H2_PERF_FROM", "level");
     }
     cmd.envs(&run.env);
-    // Every run answers the agent API, for `h2 lab agent`. After the
-    // run's own variables, which can't name it (proto::RUN_ENV).
+    // The host owns the agent socket and the output root (proto::RUN_ENV).
     let sock = agent_socket_path(cfg, id);
     if let Some(dir) = sock.parent() {
         fs::create_dir_all(dir)?;
     }
     let _ = fs::remove_file(&sock);
-    cmd.env(agent_proto::ENV, &sock);
+    cmd.env(agent_proto::ENV, &sock)
+        .env(agent_proto::OUT_ENV, &run_dir);
     if let Some(l) = &level {
         cmd.arg("--level").arg(l);
         if let Some(d) = &difficulty {
@@ -1230,9 +1230,8 @@ pub fn agent_socket_path(cfg: &HostConfig, id: &str) -> PathBuf {
 }
 
 /// `agent`: runs `h2 agent ARGS --socket <the run's socket>` and answers
-/// with its exit code and output, so every `h2 agent` call works as it does
-/// on this machine and nothing is special-cased here. The `h2` is the
-/// run's own image's, so a short form that branch knows is understood.
+/// with its exit code and output. The run's own `h2` understands the short
+/// forms of its image. `flight show` always reads from the game's socket.
 fn agent_call(
     sh: &Arc<Shared>,
     id: &str,
@@ -1277,9 +1276,16 @@ fn agent_call(
         std::thread::sleep(Duration::from_millis(100));
     };
     let mut cmd = Command::new(&h2);
-    cmd.arg("agent")
-        .args(args)
-        .arg("--socket")
+    cmd.arg("agent");
+    if let [domain, verb, rest @ ..] = args
+        && domain == "flight"
+        && verb == "show"
+    {
+        cmd.args(["flight", "show", "--remote"]).args(rest);
+    } else {
+        cmd.args(args);
+    }
+    cmd.arg("--socket")
         .arg(&sock)
         .arg("--timeout")
         .arg(secs.to_string());

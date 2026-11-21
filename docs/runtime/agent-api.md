@@ -68,6 +68,7 @@ connection to hold `session.claim`.
 | `settings.list`, `settings.set`, `perf.overlay`, `cheat.list`, `cheat.set` | read or act | [Menu methods](#menu-methods-settings-perf-overlay-cheats) |
 | `theater.*` | read or act | [Theater transport](#theater-transport) |
 | `collision.stats` | read | [`collision`](#collision-the-native-collision-world) |
+| `input.list`, `input.log.read` | read | [Input logs](#input-act-like-a-player) |
 | `trace.*`, `flight.*` | read | [Tick traces and the flight recorder](#tick-traces-and-the-flight-recorder) |
 | `shadow.enable`, `shadow.disable`, `shadow.status` | act, act, read | [Shadow checks](#shadow-checks) |
 | `maps.load`, `maps.test.list`, `create`, `load`, `remove` | act, read, act, act, act | [Test maps](#test-maps) |
@@ -1634,10 +1635,20 @@ printf 'claim\npress start\nwait {"ticks":30}\ncapture 300\n' | h2 agent -
   `queued`, `done`, what is held), `open` ports, `tick`, and the recording
   or replay. It needs no claim while nobody holds control.
 - **`input.record {name, replace}`** logs every read (status, handle, the
-  22 bytes, the game tick) to the cache directory's `inputs/<name>.input`
-  in `xapi::tap`'s text format, the one `H2_INPUT_RECORD` writes; it is
-  written at `input.stop`, or when the game exits. Names are letters,
-  digits, `.`, `_`, `-`; an existing log is kept unless `replace` is true.
+  22 bytes, the game tick) to `inputs/<name>.input` under the
+  [agent output root](switches.md#tools). This is the `xapi::tap` text format
+  that `H2_INPUT_RECORD` writes. The log is saved at `input.stop` or when
+  the game exits. Names use 1 to 64 letters, digits, `.`, `_` or `-`
+  and may not start with a dot. An existing log is kept unless `replace`
+  is true. A [lab job](lab.md#runs) stores these logs in its run directory.
+- **`input.list`** returns `{names}`, the sorted names of saved input logs
+  without their `.input` suffix.
+- **`input.log.read {name, offset?, limit?}`** returns `{text, next}` from
+  a saved log. Use the same name as for `input.record`. The first offset
+  defaults to 0. Pass `next` as the offset for the next page and stop at
+  `null`. The limit is in bytes (default 16384, maximum 65536).
+  Concatenate the text pages to reconstruct the log. Both file methods
+  are read-only and require no claim.
 - **`input.replay {name}`** answers reads from a log read for read (keyed
   by read index, as `H2_INPUT_REPLAY`). `input.state` and `input.stop` give
   its counts: `reads` in the log, `replayed`, `matched` (same handle as
@@ -2455,13 +2466,21 @@ game or the client is busy. `trace.*` and `flight.*` take the rows inside
 the game, in the tick observer, before queued requests are served, so each
 tick gives exactly one row. Code: `crates/extensions/agent/src/trace.rs` (tests in
 `trace/tests.rs`), wire types and `show` in `crates/extensions/agent-proto/src/trace.rs`,
-CLI in `crates/apps/cli/src/agent_flight.rs`.
+CLI in `crates/apps/cli/src/agent_flight.rs`. File readback lives in
+`crates/extensions/agent/src/outputs.rs`.
+
+The game puts `traces/`, `flights/` and `inputs/` under the
+[agent output root](switches.md#tools), which defaults to its cache
+directory. For a [lab job](lab.md#runs), that root is `runs/<id>` and
+`h2 lab fetch` includes the files.
 
 ```sh
 h2 agent trace start player.0 physics,pos          # rows to traces/trace-<ms>.jsonl
 h2 agent trace stop                                # rows, bytes, first/last tick
 h2 agent flight start player.0 physics,pos,velocity 20
 h2 agent flight dump crouch-bug.jsonl              # flights/crouch-bug.jsonl
+h2 agent trace.list                                # saved trace and flight file names
+h2 agent flight show crouch-bug.jsonl --remote --field physics.crouch
 h2 agent flight show ~/Library/Caches/h2recomp/flights/crouch-bug.jsonl \
     --from 4100 --to 4160 --field physics.crouch --field physics.airborne --field input
 ```
@@ -2475,10 +2494,9 @@ h2 agent flight show ~/Library/Caches/h2recomp/flights/crouch-bug.jsonl \
   The world is read once a tick when either recorder runs, and not at all
   otherwise. A paused game writes no rows; each `session.step` tick does.
 - **`trace.start {objects, fields?, path?}`.** 1 to 64 ids. Streams rows to
-  `path` (a bare file name in the cache directory's `traces/`, since the
-  socket may be unauthenticated TCP; default `traces/trace-<ms>.jsonl`; an
-  existing file is replaced) through one buffered writer, flushed every 30
-  rows, at `trace.stop` and at exit: memory does not grow with length.
+  a bare file name in `traces/` (default `trace-<ms>.jsonl`).
+  An existing file is replaced. The writer flushes every 30 rows, at
+  `trace.stop` and at exit. Memory use stays constant with file length.
   `trace.stop` and `trace.status` give `rows`, `bytes`, `first_tick`,
   `last_tick`, `path` and `error` (a write failure ends the trace there).
   One trace at a time; the last one's counts stay for `trace.status`.
@@ -2490,16 +2508,29 @@ h2 agent flight show ~/Library/Caches/h2recomp/flights/crouch-bug.jsonl \
   left, right, raw}`, `raw` the 18 pad bytes in hex), at most 64 a tick
   (`input_dropped` counts the rest, as during a load). Without XAPI input
   there is no tap and rows have no `input`. `flight.dump {path?}` writes
-  the ring (default `flights/flight-<ms>.jsonl`) and keeps recording;
-  `flight.stop` drops it; `flight.status` gives `capacity`, `rows`,
-  `bytes`, `ticks` seen and the ring's tick range.
-- **Scrub.** `h2 agent flight show <file>` reads a trace or flight file
-  without a game: whole rows, or with `--field` one line per tick of each
-  object's dotted paths (`physics.crouch`) and `input`'s reads, between
-  `--from` and `--to` game ticks. It does not re-simulate; replaying a
-  stretch starts from a [snapshot](#state-machine-snapshots).
-- **Access.** Read-only (no claim), answered between slices too. Files are
-  written where asked, as `input.record`'s are.
+  the ring to a bare file name in `flights/` (default `flight-<ms>.jsonl`)
+  and keeps recording. `flight.stop` drops the ring. `flight.status` gives
+  `capacity`, `rows`, `bytes`, `ticks` seen and the ring's tick range.
+- **`trace.list`** returns `{traces, flights}`, with sorted file names
+  from each directory.
+- **`trace.read {path, kind?, from_tick?, to_tick?, offset?, limit?}`**
+  returns `{rows, next}`. Pass a bare file name. Set `kind` to `trace` or
+  `flight` to select a directory, or search `traces/` first and
+  `flights/` second by leaving it out. The tick bounds are inclusive.
+  Each row is a complete JSON line without its newline. The limit is in
+  rows (default 64, maximum 256), and file scanning is bounded per call.
+  Start at offset 0, then pass the returned byte cursor as `offset` until
+  `next` is `null`. Follow the cursor even after a short or empty page.
+  Read a finished trace or flight dump to keep the file stable across pages.
+- **Scrub.** `h2 agent flight show <file>` opens a local file when it exists.
+  A missing file or `--remote` reads through the game socket with
+  `trace.read`. Use `--kind trace|flight` to choose a socket directory.
+  The command prints whole rows or selected fields such as
+  `--field physics.crouch` and controller reads with `--field input`.
+  Use `--from` and `--to` to select game ticks. To re-simulate a stretch,
+  start from a [snapshot](#state-machine-snapshots).
+- **Access.** These methods require no claim and are answered between
+  slices as well as at tick boundaries.
 
 ## Shadow checks
 

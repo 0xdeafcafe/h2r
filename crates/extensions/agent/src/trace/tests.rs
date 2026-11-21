@@ -120,6 +120,10 @@ impl Rig {
     }
 }
 
+fn err_code(reply: Result<Value, Value>) -> i64 {
+    reply.unwrap_err()["code"].as_i64().unwrap()
+}
+
 fn rows(path: &str) -> Vec<TickRow> {
     std::fs::read_to_string(path)
         .unwrap()
@@ -230,7 +234,6 @@ fn a_trace_is_flushed_every_second_and_at_exit() {
 fn bad_trace_and_flight_requests_are_refused() {
     let dir = scratch("refuse");
     let mut r = Rig::new(&dir);
-    let err_code = |e: Result<Value, Value>| e.unwrap_err()["code"].as_i64().unwrap();
     for p in [
         json!({"objects": []}),
         json!({"objects": ["the chief"]}),
@@ -471,4 +474,129 @@ fn a_path_is_only_a_file_name_under_the_cache() {
         );
         assert!(e.is_err(), "{bad:?} was accepted");
     }
+}
+
+#[test]
+fn saved_trace_and_flight_rows_are_listed_and_read_in_pages() {
+    use std::fs;
+
+    let dir = scratch("read-pages");
+    let mut r = Rig::new(&dir);
+    fs::create_dir(dir.join("traces")).unwrap();
+    fs::create_dir(dir.join("flights")).unwrap();
+    let filtered = json!({"tick": 4, "padding": "x".repeat(256 << 10)}).to_string();
+    let middle = r#"{"tick":6,"ticks":2}"#;
+    let last = r#"{"tick":7,"ticks":3}"#;
+    fs::write(
+        dir.join("traces/fight.jsonl"),
+        format!("{filtered}\n{middle}\n{last}\npartial"),
+    )
+    .unwrap();
+    fs::write(dir.join("flights/fight.jsonl"), format!("{last}\n")).unwrap();
+    fs::write(dir.join("flights/other.jsonl"), format!("{last}\n")).unwrap();
+    fs::create_dir(dir.join("flights/directory")).unwrap();
+
+    // Reading stays open to a second connection while the first has control.
+    r.call(agent_proto::method::CLAIM, Value::Null).unwrap();
+    let (tx, rx) = sync_channel(1024);
+    r.c = r.a.connect(tx);
+    r.rx = rx;
+    assert_eq!(
+        r.call(method::TRACE_LIST, Value::Null).unwrap(),
+        json!({"traces": ["fight.jsonl"], "flights": ["fight.jsonl", "other.jsonl"]})
+    );
+    let mut request = json!({"path": "fight.jsonl", "from_tick": 6, "to_tick": 7, "limit": 1});
+    let first = r.call(method::TRACE_READ, request.clone()).unwrap();
+    assert_eq!(first, json!({"rows": [], "next": filtered.len() + 1}));
+    request["offset"] = first["next"].clone();
+    let second = r.call(method::TRACE_READ, request.clone()).unwrap();
+    assert_eq!(second["rows"], json!([middle]));
+    request["offset"] = second["next"].clone();
+    request["limit"] = json!(2);
+    assert_eq!(
+        r.call(method::TRACE_READ, request).unwrap(),
+        json!({"rows": [last], "next": null})
+    );
+    for params in [
+        json!({"path": "fight.jsonl", "kind": "flight"}),
+        json!({"path": "other.jsonl"}),
+    ] {
+        assert_eq!(
+            r.call(method::TRACE_READ, params).unwrap(),
+            json!({"rows": [last], "next": null})
+        );
+    }
+    for params in [
+        json!({"path": "../fight.jsonl"}),
+        json!({"path": "fight.jsonl/"}),
+        json!({"path": "fight.jsonl", "offset": 1}),
+        json!({"path": "fight.jsonl", "limit": 257}),
+    ] {
+        assert_eq!(err_code(r.call(method::TRACE_READ, params)), code::INVALID_PARAMS);
+    }
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn saved_input_logs_are_listed_and_returned_as_exact_text() {
+    use agent_proto::method::{INPUT_LIST, INPUT_LOG_READ};
+    use std::fs;
+
+    let dir = scratch("input-pages");
+    let mut r = Rig::new(&dir);
+    assert_eq!(r.call(INPUT_LIST, Value::Null).unwrap(), json!({"names": []}));
+    fs::create_dir(dir.join("inputs")).unwrap();
+    fs::write(dir.join("inputs/fight.input"), "# h2 input log v1\n").unwrap();
+    fs::write(dir.join("inputs/notes.txt"), "notes").unwrap();
+    fs::write(dir.join("inputs/.hidden.input"), "notes").unwrap();
+    assert_eq!(
+        r.call(INPUT_LIST, Value::Null).unwrap(),
+        json!({"names": ["fight"]})
+    );
+    let first = r.call(INPUT_LOG_READ, json!({"name": "fight", "limit": 5})).unwrap();
+    assert_eq!(first, json!({"text": "# h2 ", "next": 5}));
+    assert_eq!(
+        r.call(INPUT_LOG_READ, json!({"name": "fight", "offset": first["next"]})).unwrap(),
+        json!({"text": "input log v1\n", "next": null})
+    );
+    for params in [
+        json!({"name": "../fight"}),
+        json!({"name": "fight", "offset": 1000}),
+        json!({"name": "fight", "limit": 0}),
+    ] {
+        assert_eq!(err_code(r.call(INPUT_LOG_READ, params)), code::INVALID_PARAMS);
+    }
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn readback_refuses_links_outside_the_artifact_directories() {
+    use agent_proto::method::{INPUT_LIST, INPUT_LOG_READ};
+    use std::{fs, os::unix::fs::symlink};
+
+    let dir = scratch("read-links");
+    let mut r = Rig::new(&dir);
+    let private = dir.join("private");
+    fs::create_dir(&private).unwrap();
+    fs::write(private.join("secret.jsonl"), "{\"tick\":1}\n").unwrap();
+    fs::create_dir(dir.join("traces")).unwrap();
+    symlink(private.join("secret.jsonl"), dir.join("traces/link.jsonl")).unwrap();
+    symlink(&private, dir.join("flights")).unwrap();
+    fs::create_dir(dir.join("inputs")).unwrap();
+    symlink(private.join("secret.jsonl"), dir.join("inputs/link.input")).unwrap();
+
+    for path in ["link.jsonl", "secret.jsonl"] {
+        assert_eq!(
+            err_code(r.call(method::TRACE_READ, json!({"path": path}))),
+            code::UNAVAILABLE
+        );
+    }
+    assert_eq!(err_code(r.call(method::TRACE_LIST, Value::Null)), code::UNAVAILABLE);
+    assert_eq!(r.call(INPUT_LIST, Value::Null).unwrap(), json!({"names": []}));
+    assert_eq!(
+        err_code(r.call(INPUT_LOG_READ, json!({"name": "link"}))),
+        code::UNAVAILABLE
+    );
+    fs::remove_dir_all(dir).unwrap();
 }
