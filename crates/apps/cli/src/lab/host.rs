@@ -93,7 +93,7 @@ pub struct Meta {
     pub peak_footprint_bytes: Option<u64>,
     pub last_footprint_bytes: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    postmortem: Option<Summary>,
+    pub(super) postmortem: Option<Summary>,
     pub error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub skip_reason: Option<String>,
