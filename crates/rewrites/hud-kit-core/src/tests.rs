@@ -361,7 +361,7 @@ fn the_superbounce_hud_compiles_against_an_invented_row() {
     );
     assert_eq!(u32_at(icon, tf::STRING), 7, "the frag count's string");
     // The blocks the runtime appends: the records end to end.
-    assert_eq!(c.block(WidgetKind::Bitmap).len(), 3 * BITMAP_SIZE);
+    assert_eq!(c.block(WidgetKind::Bitmap).len(), 4 * BITMAP_SIZE);
     assert_eq!(c.block(WidgetKind::Text), icon.clone());
     // The widgets alone need no arrow; the preview's navpoint does.
     let mut no_arrows = t.clone();
