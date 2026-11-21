@@ -1,7 +1,7 @@
 # Rich editors: shaders, colours, curves, scripts, sounds and recordings
 
-Status: Design. Nothing here is built; each section names the format code it stands on and the gaps in it.
-Code: `crates/apps/studio/src/fields.rs` (the panel the rich views join), `crates/apps/studio/src/app/tag_doc.rs` (`TagDoc`, the only write path), `crates/formats/tags/src/shader.rs`, `crates/formats/tags/src/effects/function.rs`, `crates/formats/hs/src/source.rs`, `crates/tools/h1campaign/src/recordings.rs`, `crates/formats/tags/src/sound.rs`. Tests: none yet; each slice names its own.
+Status: Design, except "Data that changes length" and sound audition, which are built; each section names the format code it stands on and the gaps in it.
+Code: `crates/apps/studio/src/fields.rs` (the panel the rich views join), `crates/apps/studio/src/app/tag_doc.rs` (`TagDoc`, the only write path), `crates/formats/tags/src/shader.rs`, `crates/formats/tags/src/effects/function.rs`, `crates/formats/hs/src/source.rs`, `crates/tools/h1campaign/src/recordings.rs`, `crates/formats/tags/src/sound.rs`, `crates/apps/studio/src/app/audition.rs`. Tests: `app/tag_data_tests.rs` (X2), `app/audition_tests.rs` and `api/sound/tests.rs` (A1); each other slice names its own.
 Switch: none.
 
 A rich editor shows a tag, or part of one, as the thing it is: a material
@@ -40,7 +40,7 @@ A view reads and writes through three things only:
 - `TagDoc::read` and `TagDoc::write(TagWrite)` for fixed-length bytes,
   `TagAction::Seal` to end a drag as one undo step;
 - `TagDoc::block_op` for list changes, under `TagDoc::block_refusal`;
-- `TagDoc::resize_data` (new, slice X2) for a data reference whose length
+- `TagDoc::resize_data` (`TagAction::ResizeData`) for a data reference whose length
   changes.
 
 The Scripts and Recordings views edit the scenario tag, which
@@ -56,23 +56,27 @@ partial picture as if it were whole.
 
 ### Data that changes length
 
-The document writes data references in place at the same length and
-refuses any other length ([editor.md](editor.md), "The document").
-Function types, script strings and recording streams need other lengths.
-`TagDoc::resize_data` follows the rule grown blocks already use:
+`TagDoc::resize_data` (`crates/apps/studio/src/app/tag_doc.rs`) gives the
+data reference at a named `Kind::Data` field a payload of any length,
+as one undo step. It follows the rule grown blocks already use, treating
+the reference as a block of one-byte elements:
 
-- A shorter payload is written in place and the size field patched; the
-  tail stays as dead bytes.
+- A payload no longer than the source's, or than the room an earlier
+  growth made, is written in place and the size field patched; the tail
+  stays as dead bytes.
 - A longer payload gets a provisional address past the end of the
   metadata. On save it is appended through `MapEditor::append_metadata`
   and its `(size, address)` pair patched, carried in the save's change
-  list beside `scenario_edit::TagGrown`. The old bytes stay dead.
-- It is allowed only while **Edit > Allow growing full blocks** is on,
-  and is refused when the metadata does not end the file or the cache
-  size limit is reached, with the same sentences as block growth
+  list as a `scenario_edit::TagGrown` (`root` the pair, `count` the
+  length). The old bytes stay dead.
+- It is allowed only while **Edit > Allow growing full blocks** is on
+  (`DATA_GROWTH_REFUSAL`). That the metadata ends the file and the cache
+  size limit hold is checked by the save, as for block growth
   ([scenario-editor.md](scenario-editor.md) §6).
-- A data reference in a BSP region, in a tag with no data in the map, or
-  in a browsed map is refused with the tag's existing reason.
+- A data reference in a BSP region (`DATA_BSP_REFUSAL`), in a tag with
+  no data in the map, in a browsed map, or inside a grown block's
+  elements (`DATA_NESTED_GROWTH`) is refused. `TagDoc::data_refusal`
+  gives the reason without writing.
 
 With a game connected, a resized data reference has the `reload` effect.
 
@@ -375,8 +379,17 @@ codec tables from a verified `default.xbe` (`wma::VerifiedImage`). Gaps:
   (`crates/tools/h1-assets/src/sounds/convert.rs`, `mouth.rs`), and
   `defs/ugh_.txt` leaves the block unnamed: slice A2 names both in the
   definitions and adds `sound::Gestalt::mouth_curve`;
-- the editor has no audio output: slice A1 adds one on
-  `crates/platform/audio` (`output`, `sink`), the game's own path;
+- audition (slice A1, built): `crates/apps/studio/src/app/audition.rs`
+  decodes a permutation (`audio::adpcm`, or `wma` with tables from the
+  source's executable: the disc's `default.xbe`, or the one beside a loose
+  map, or `H2_XBE`) and plays it through `audio::output::DeviceSink` on an
+  audio thread of its own, the game's own sink. The device opens on the
+  first play; a machine without one gets the reason, not silence. The
+  **Sound** window (`ui/sound.rs`, floating until the tag view tabs of X1
+  exist) lists the permutations, draws the waveform, plays, stops and
+  plays from a click on the waveform. A permutation whose compression is
+  neither Xbox ADPCM nor a codec stream is refused by name. The mouth
+  track, the face preview and the curve's drawing are A2 to A4;
 - models draw in the rest pose only (`native_view` `rest_nodes`):
   slice M1 poses a model from `tags::anim_sample::AnimationClip::sample`;
 - a WMA sound without the executable is refused: `This sound needs the
@@ -496,8 +509,9 @@ already a planned namespace there, so poses use `anim.*`.
 | `script.source` | `{name?}` | `{source, links: [{span, kind, target}]}` |
 | `script.compile` | `{name, source, apply?}` | `{ok, errors: [{line, column, text}], nodes, new_strings, grows}`; with `apply`, one undo step |
 | `script.uses` | `{kind, name}` | the scripts that use an object name, volume, recording or tag |
-| `sound.read` | `{tag}` | pitch ranges and permutations with `{samples, seconds, codec, mouth: {ticks} or null, decodable, why}` |
-| `sound.play`, `sound.stop` | `{tag, permutation, at?}` | `{playing, seconds}`; the headless sink plays to nothing and still advances |
+| `sound.read` | `{tag, range?, permutation?, bins?}` | the header, every pitch range's permutations `{encoded_bytes, chunks}`, for one permutation `{channels, rate, frames, duration_ms, peaks}` or its `refusal`, and `playback`; slice A2 adds `mouth` |
+| `sound.play` | `{tag, range?, permutation?, from_ms?}` | `{playing, frames, rate, channels, duration_ms, from_ms, output}`; `output` is `headless` when `Audition::headless` is set (tests, the API's own examples), which plays to nothing in real time |
+| `sound.stop` | `{}` | `{stopped}` |
 | `sound.mouth` | `{tag, permutation}`, with `curve?` or `from_sound?: {gain, smoothing}` to write | `{ticks, curve}` (0 to 1 per tick) |
 | `anim.list`, `anim.pose` | `{tag}`; `{tag, animation, frame, overlay?: {name, weight}}` | names and frame counts; `{png}` of the posed model |
 | `recording.list` | none | `{recordings: [{name, ticks, control_version, played_by}]}` |

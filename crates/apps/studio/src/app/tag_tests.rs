@@ -98,7 +98,7 @@ fn app_on(t: &Path, src: Vec<u8>) -> (App, PathBuf, Vec<u8>) {
     app_with_registry(t, src, registry())
 }
 
-fn app_with_registry(
+pub(crate) fn app_with_registry(
     t: &Path,
     src: Vec<u8>,
     registry: &'static Registry,

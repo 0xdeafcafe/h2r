@@ -14,6 +14,7 @@ mod outliner;
 mod palette;
 mod play;
 mod playlists;
+mod sound;
 pub mod tags;
 mod ui_screens;
 mod hud;
@@ -72,6 +73,8 @@ pub struct Studio {
     pub tags: tags::TagsUi,
     /// The Maps list's pictures, and what each group drew.
     pub map_list: map_list::MapListUi,
+    /// The Sound window over the Tags tool's selected `snd!`.
+    sound: sound::SoundUi,
 }
 
 impl Studio {
@@ -103,6 +106,7 @@ impl Studio {
             play: play::PlayUi::default(),
             tags: tags::TagsUi::default(),
             map_list: map_list::MapListUi::default(),
+            sound: sound::SoundUi::default(),
         }
     }
 
@@ -158,6 +162,9 @@ impl Studio {
                 tags::hex(ui, app, &self.tags, &self.fonts, gpu, &mut self.map_list, &mut actions);
             });
         }
+        // The seam for sound audition until the tag view tabs exist
+        // (docs/editor/rich-editors.md, "One seam for every rich view").
+        sound::window(ui, app, &mut self.sound);
         if focus_game {
             ui.set_window_focus(Some("###game"));
         }
