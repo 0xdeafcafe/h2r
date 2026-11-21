@@ -2,7 +2,7 @@
 
 Status: Design. Slice AN0 (the agent API methods the probes need) is built; nothing else is.
 Code: `crates/extensions/agent/src/net.rs` (`net.replication`), `crates/extensions/agent/src/ai.rs` (`world.ai`). Planned: `crates/formats/host-log`, `crates/live/actor-net`, `crates/extensions/game/src/actor_net/`. Tests: each crate's own, on invented data.
-Switch: the `actor-net` feature of `H2_FEATURES` (off until probe P3 is seen in the game); it joins [switches.md](../runtime/switches.md) with the code.
+Switch: `agent-net` (the event counter behind `net.replication`), listed in [switches.md](../runtime/switches.md). The `actor-net` feature of `H2_FEATURES` (off until probe P3 is seen in the game) joins it with the code.
 
 AI actors in a network game: who runs them, what reaches the other
 machines, and what it costs. It serves three users: campaign co-op,
@@ -116,8 +116,8 @@ tick.
    `global::ACTORS`, the record `crates/extensions/agent/src/ai.rs`
    reads today).
 2. Diff against the last tick: new and removed actors, posture changes.
-3. Take dialogue lines from the hook on the engine's vocalization entry
-   (a research point, slice AN3).
+3. Take dialogue lines from an observer on the engine's dialogue queue
+   entry (`AI_DIALOGUE_ENQUEUE`, slice AN3).
 4. For each client, fill at most the channel's byte budget for this tick
    in the order: `Key` if owed, `Actor`, `Line`, `Posture`, `State`,
    `Digest`, then `Control` by the actor's distance to that client's
@@ -269,7 +269,7 @@ keeps mirrors, schedules and the capability mark.
 
 | Method | Access | Purpose |
 |---|---|---|
-| `net.replication` | read | the simulation world's mode, objects by kind with and without an entity, events queued by type since the last call, datagram and byte counters ([agent-api.md](../runtime/agent-api.md#netreplication)) |
+| `net.replication` | read | the simulation world's mode, objects by kind with and without an entity, cumulative events queued by type, cumulative datagram and byte counters ([agent-api.md](../runtime/agent-api.md#netreplication)) |
 | `world.ai` | read | the actor snapshot; also the two AI globals bytes `ai_update` gates on |
 | `actors.net` (slice AN8) | read | per client: channel bytes a second, keys and deltas sent, records dropped by the budget; on a client: puppets, records waiting, digest mismatches |
 
@@ -281,7 +281,7 @@ keeps mirrors, schedules and the capability mark.
 | `ai_update` | `0x1c83c0` (`AI_UPDATE`) | nothing is hooked; its gate is read |
 | AI globals | `[0x4f55d0]` (`AI_GLOBALS`): `+0` on, `+1` initialised | `world.ai`; Firefight's host sets `+0` |
 | Entity index | object body `+0xd4` | naming actors on the channel |
-| Vocalization entry | not traced | AN3 |
+| Dialogue queue entry | `0x20d0c0` (`AI_DIALOGUE_ENQUEUE`, [halo1/ai.md](../halo1/ai.md)) | AN3 observes it for `Line` |
 | Entity to object | not traced; `0xa5930` and `0xa5980` translate event references and are the place to start | AN4 |
 
 ## Probes
@@ -309,10 +309,10 @@ under a day, M one to three days, L a week.
 
 | # | Slice | Size | Needs | Files | Named tests | Acceptance |
 |---|---|---|---|---|---|---|
-| **AN0** | `net.replication`; `world.ai` reports the AI globals; the `SIM_EVENT_GENERATE` point and `AI_GLOBALS` global | S | nothing | `crates/extensions/agent/src/net.rs`, `crates/extensions/agent/src/ai.rs`, `crates/extensions/agent-proto/src/net.rs`, `crates/hooking/guest-layout/src/{points,global}.rs`, `crates/extensions/game/src/agent_glue.rs`, `crates/live/live-hle/src/traffic.rs` | `net::tests::{counts_objects_by_kind_with_and_without_an_entity, reports_the_world_mode_and_refuses_nothing_in_menus, event_counts_reset_when_read, unknown_event_types_land_in_other}`, `ai::tests::reports_the_ai_globals_bytes` | both methods answer over a fake guest; `session.methods` lists `net.replication` |
+| **AN0** | `net.replication`; `world.ai` reports the AI globals; the `SIM_EVENT_GENERATE` point and `AI_GLOBALS` global | S | nothing | `crates/extensions/agent/src/net.rs`, `crates/extensions/agent/src/ai.rs`, `crates/hooking/guest-layout/src/{points,global}.rs`, `crates/extensions/game/src/agent_glue.rs` | `net::tests::{counts_objects_by_kind_with_and_without_an_entity, reports_no_mode_and_no_objects_before_the_simulation_exists, a_local_game_is_not_distributed, event_counts_are_cumulative_and_named, unknown_event_types_land_in_other, traffic_is_passed_through, the_method_is_registered}`, `ai::tests::reports_the_ai_globals_bytes` | both methods answer over a fake guest; `session.methods` lists `net.replication` |
 | **AN1** | `host-log`: `Entry<Op>`, `Log::push`, `head`, `verify`, canonical bytes, `since(seq)` | S | nothing | `crates/formats/host-log/` | `chain_breaks_on_a_changed_entry`, `since_returns_the_tail`, `golden_head_for_three_entries`, `out_of_order_seq_is_refused` | golden head vector; a tampered entry fails `verify` |
 | **AN2** | `actor-net` wire: the seven records, quantisers, `encode`/`decode`, `Key` build and apply over a plain `ActorSet`, `Budget` | M | nothing | `crates/live/actor-net/src/{wire,set,budget}.rs` | `every_record_round_trips`, `key_then_deltas_equals_host_set`, `lost_packets_converge_after_the_next_key`, `budget_never_exceeds_its_bytes`, `line_survives_two_lost_packets_in_three`, `decode_never_panics_on_fuzz` | 10,000 seeded lossy runs converge within one `Key` period; no packet over the budget |
-| **AN3** | Host capture: `sim_state::ActorView`, the per-tick diff, per-client fill order, the vocalization point and hook | M | AN2 | `crates/rewrites/sim-state/src/actors.rs`, `crates/extensions/game/src/actor_net/host.rs`, `points.rs` | `diff_reports_new_removed_and_posture`, `nearest_actors_get_control_first`, `capture_leaves_the_arena_hash_unchanged`, `a_line_is_queued_once` | over a fake guest with a scripted actor pool, the packets decode to the pool; the arena hash is equal with the channel on and off |
+| **AN3** | Host capture: `sim_state::ActorView`, the per-tick diff, per-client fill order, the observer on `AI_DIALOGUE_ENQUEUE` | M | AN2 | `crates/rewrites/sim-state/src/actors.rs`, `crates/extensions/game/src/actor_net/host.rs`, `points.rs` | `diff_reports_new_removed_and_posture`, `nearest_actors_get_control_first`, `capture_leaves_the_arena_hash_unchanged`, `a_line_is_queued_once` | over a fake guest with a scripted actor pool, the packets decode to the pool; the arena hash is equal with the channel on and off |
 | **AN4** | Client puppets: the entity-to-object lookup (traced first), the puppet table, posture and control writes, the dialogue start | M | AN2; P3's answer for `Control` | `crates/extensions/game/src/actor_net/client.rs`, `points.rs` | `a_record_waits_for_its_entity_then_applies`, `an_unknown_entity_is_dropped_after_30_ticks`, `a_client_writes_no_damage_or_position`, `key_replaces_the_puppet_table` | over a fake guest, a `Key` and deltas produce the expected engine calls and no other write |
 | **AN5** | Transport: the tunnel frame kind, send on the host's post-tick, receive queue on clients, `Key` on join and on request | S | AN2 | `crates/live/live-hle/src/tunnel*.rs`, `crates/extensions/game/src/actor_net/link.rs` | `frames_of_another_kind_are_ignored`, `a_key_request_is_answered_once_a_second_at_most`, `no_tunnel_means_no_channel` | two fake peers over the simulated link (`crates/live/coop`'s) converge under loss and reorder |
 | **AN6** | Actor events: `SimEvent::ActorKilled {unit, character, killer, weapon}`, the film `Event` variant, the telemetry row | S | nothing | `crates/rewrites/sim-objects/src/events.rs`, `crates/live/live-proto/src/film/events.rs`, `crates/live/live-telemetry/` | `a_fatal_damage_to_an_actor_unit_is_one_actor_killed`, `a_player_death_is_not_an_actor_kill`, `actor_killed_round_trips_in_a_film` | on a fake guest, one fatal damage report on a unit with an actor yields exactly one event with the killer's player |
