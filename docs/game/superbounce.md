@@ -1,6 +1,8 @@
 # Superbounce
 
-Status: Reference. Retail research with traces; nothing here is our code.
+Status: Reference, retail research with traces, except [Spots in the
+geometry](#spots-in-the-geometry), which is the design of our scanner
+(`crates/live/superbounce`, `h2 superbounce scan`).
 
 What the retail engine does when a player superbounces: what is
 established, what is measured, and what is still open. The research is a
@@ -411,6 +413,102 @@ capsule's bottom touches both the crease at y 3.8 and the coplanar seam
 at y 4.0. The edges are shared: there is no crack. The "caught" landings
 rest on the ramp side of the crease.
 
+## Spots in the geometry
+
+`crates/live/superbounce` looks for places like the Ascension patch in a
+map's collision: slots a primed landing could launch out of, and low
+ceilings that force a crouch and so prime the pair word. It is a
+heuristic over the geometry, calibrated on the one traced spot, not a
+model of the solver. A spot it finds is a place to try, not a measured
+bounce; only a game run makes it an entry in
+`crates/live/bots/src/glitches/spots.rs`.
+
+```sh
+h2 superbounce scan ascension             # BSP 0 of the disc map, best first
+h2 superbounce scan path/to/map.map --bsp 1 --json
+```
+
+The input is every surface of the structure collision BSP and of each
+instanced geometry placement's collision BSP, in world space
+(`superbounce::map_polys`). A surface's polygon is its ring by the
+engine's walk, and its normal is its plane, negated when bit 15 of the
+plane word is set. Every surface is kept whatever its flags: two-sided,
+invisible, climbable and breakable surfaces all stop a biped. The
+capsule is `masterchief_mp`'s: radius 0.175, standing 0.725, crouched
+0.5. Polygons are bucketed on a 2-unit grid, so each test only meets
+its neighbours. Each kind is capped at 512 spots, best score first.
+
+### Bounce
+
+A bounce spot is two faces that make a slot under walkable floor, like
+the touchdown tick's pair (y 4.105 looking −y, y 3.939 looking
+`(0, 0.9993, 0.0372)`):
+
+- both near-vertical (`|nz| < 0.3`), normals opposed (dot below −0.95),
+  each in front of the other;
+- the gap between them, from one face's plane to the other's centroid,
+  between 0.02 and the capsule's diameter (0.35);
+- overlapping along the slot by at least 0.05, and at least 0.02 deep;
+- walkable floor (`nz > 0.7`) within the gap's half plus a radius of the
+  slot's centre line, at the slot's top or up to 0.3 above it (the
+  deepest touchdown penetration traced is 0.23).
+
+What it reports:
+
+- **edge**: the slot's centre line along its overlap, at the floor's
+  height.
+- **launch**: 479.8 × the sum of the two normals' z, so the Ascension
+  pair (0 and 0.0372) gives the 17.85 units/s the body gained on the
+  touchdown tick. The two impulses there are nearly equal, so what is
+  left is their upward part, which grows with the summed tilt. Slots
+  under 3 units/s are dropped; estimates are capped at 60 and scored
+  down past it, since the line is fitted to one 2.1° tilt.
+- **drift**: the more tilted face's horizontal normal, across the slot
+  (+y at Ascension, the way every traced bounce came in).
+- **stand**: on the floor behind the tilted face, 0.06 short of it (the
+  measured spot stands at y 3.88), origin 0.01 above the floor.
+- **fall**: how much further than a standing jump the player must fall.
+  The touchdown tick moves the capsule `v / 30` down, so over a tick's
+  start times half the landings sink at least `v / 60`. The capsule
+  first touches both of the slot's top edges `r − √(r² − (gap/2)²)` below
+  its top; the shallowest traced bounce sank 0.05 more than that. So the
+  landing needs `v = 60 × (depth of the slot's top below the floor +
+  first touch + 0.05)`, and `fall = (v² − 3²) / (2 × 4.15)`, at least 0.
+  3 units/s is a standing jump's landing ("lands at −3"); 4.15 units/s²
+  is the gravity that fits the recipe's jump, a 2.43 drop landing at 5.4.
+  The Ascension slot comes out at about 1 unit; the recipe drops 2.43.
+- **score**: 0.4, plus 0.3 × the overlap over a diameter (to 1), plus
+  0.3 × how far past −0.95 the normals oppose (to 1).
+
+Slots along one line (drift to 5°, position across to 5 cm, height to
+10 cm) that touch or overlap within 10 cm are merged into one spot, so a
+face split into pieces gives one edge.
+
+### Crouch
+
+A crouch spot is walkable floor under a face looking down (`nz < −0.3`)
+with crouched but not standing room. For each floor and ceiling pair the
+floor's outline is clipped to the ceiling's, then to where the clearance
+(linear over the ground, both being planes) is at least 0.5 and under
+0.725. The piece is kept when it is at least 0.01 in area and nothing
+else (a lower ceiling or a higher floor) lies between the two at its
+centre.
+
+- **stand**: inside, where the capsule's footprint fits (the piece
+  shrunk by the radius), origin 0.01 above the floor.
+- **edge**: the piece's longest edge made by the ceiling's outline or by
+  the clearance reaching standing height, with floor 0.1 beyond it and
+  nothing under standing height over that: where a player walks in
+  crouched and can't stand up. With no such edge it is the piece's
+  longest edge.
+- **score**: 0.4, plus 0.3 for that edge, plus 0.3 when the footprint
+  fits in one piece.
+
+Pieces that touch (bounds within 2 cm, floors within 0.15) are one spot.
+A spot needs the footprint to fit in one piece, or the pieces together
+to be a diameter wide and a footprint in area. `fall`, `launch` and
+`drift` are 0.
+
 ## Open
 
 - **The last 5 units/s.** The upward part of the two impulses on the
@@ -431,4 +529,9 @@ rest on the ramp side of the crease.
   lunge (body offset from the origin) bounces differently is not
   traced.
 - **Other bounce spots.** Only this patch was traced. Whether every
-  superbounce spot is a crease next to a seam is not checked.
+  superbounce spot is a crease next to a seam is not checked. The
+  [scan](#spots-in-the-geometry) finds candidates; none is traced. Whether
+  it finds the Ascension patch itself depends on the BSP holding the two
+  faces the solver reported under the floor
+  ([geometry](#the-geometry-code-from-the-map) lists a vertical face at
+  y 3.8, not 3.94), which isn't checked.
