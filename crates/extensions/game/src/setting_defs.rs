@@ -1221,8 +1221,10 @@ mod tests {
                 ("H2_VOICE_INCOMING_MUTED", "0"),
                 ("H2_VOICE_INPUT_VOLUME", "50"),
                 ("H2_VOICE_OUTPUT_VOLUME", "80"),
+                ("H2_THEATER_RING_MIB", "128"),
             ],
         );
+        assert_eq!(s.get(THEATER_RING_MIB.key), Some(Value::Int(128)));
         {
             use crate::voice_settings::*;
             let h = VoiceHandles::new(&s);
