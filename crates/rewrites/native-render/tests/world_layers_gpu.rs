@@ -666,3 +666,6 @@ fn resident_sections_upload_only_changed_constants_across_swaps() {
 
 #[path = "world_layers_gpu/frame_graph.rs"]
 mod frame_graph;
+
+#[path = "world_layers_gpu/sun_tiles.rs"]
+mod sun_tiles;
