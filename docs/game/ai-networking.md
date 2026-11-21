@@ -1,7 +1,7 @@
 # AI over the network
 
-Status: Design. Slice AN0 (the agent API methods the probes need) is built; nothing else is.
-Code: `crates/extensions/agent/src/net.rs` (`net.replication`), `crates/extensions/agent/src/ai.rs` (`world.ai`). Planned: `crates/formats/host-log`, `crates/live/actor-net`, `crates/extensions/game/src/actor_net/`. Tests: each crate's own, on invented data.
+Status: Partly built. The probe methods (AN0) and the standalone actor channel (AN2) are implemented. Host capture, client puppets and transport are planned.
+Code: `crates/extensions/agent/src/net.rs` (`net.replication`), `crates/extensions/agent/src/ai.rs` (`world.ai`), `crates/live/actor-net/src/wire.rs`, `set.rs` and `budget.rs` (actor channel). Tests: each crate's own, on invented data.
 Switch: `agent-net` (the event counter behind `net.replication`), listed in [switches.md](../runtime/switches.md). The `actor-net` feature of `H2_FEATURES` (off until probe P3 is seen in the game) joins it with the code.
 
 AI actors in a network game: who runs them, what reaches the other
@@ -82,19 +82,35 @@ packets (`crates/live/live-hle`, the tunnel the film side stream uses,
 [input-film.md](input-film.md), "The action side stream"). A System Link
 session has no tunnel and gets layer 1 only.
 
-| Record | When | Holds | Size (design) |
-|---|---|---|---|
-| `Key` | on join, on resync, every 150 ticks | every live actor: entity index, character class, squad, team, posture; the mode state blob (Firefight's wave, lives and counts) | 8 bytes an actor + blob |
-| `Actor` | an actor is made or removed | entity index, character class, squad, team | 8 bytes |
-| `Posture` | on change | entity index, posture id | 3 bytes |
-| `Control` | at most 10 a second per actor, only when probe P3 shows it is needed | entity index, throttle (2 × 5 bits), crouch, facing delta | 4 bytes |
-| `Line` | a dialogue line starts | entity index, vocalization id, tick | 6 bytes, sent in three consecutive packets |
-| `State` | the mode state changes | the mode's blob, whole | under 64 bytes |
-| `Digest` | every 30 ticks | host log head, mode state hash, actor count | 20 bytes |
+Version 1 begins with a version byte, a little-endian 32-bit host tick and an
+8-bit record count. Each record starts with a one-byte tag. Multibyte fields
+are little endian. A packet holds at most 64 records and 1000 bytes including
+its six-byte header.
 
-Actors are named by **entity index**, the number retail's replication
-already gives both sides (object body `+0xd4`, **E**), so the channel
-needs no id map of its own.
+| Record (tag) | When | Payload in wire order | Bytes including tag |
+|---|---|---|---:|
+| `Key` (0) | on join, resync and every 150 ticks | actor count (u8), actor rows, mode state length (u8), mode bytes | 3 + 10 per actor + mode bytes |
+| `Actor` (1) | creation, replacement or removal | action byte, then entity (remove, 0) or actor row (upsert, 1) | 6 or 12 |
+| `Posture` (2) | on change | entity, posture (u8, includes AI-only animation) | 6 |
+| `Control` (3) | up to 10/s per actor if P3 requires it | entity, packed control (u16) | 7 |
+| `Line` (4) | a line starts | entity, vocalization (u16), original tick (u32) | 11 |
+| `State` (5) | mode state changes | length (u8), whole mode blob | 2 + mode bytes |
+| `Digest` (6) | every 30 ticks | host log head (32 SHA-256 bytes), mode hash (u64), live actor count (u16) | 43 |
+
+An actor row carries the full replication entity index (u32, object body
+`+0xd4`, **E**), character class and squad (u16 each), team and posture
+(u8 each). The all-ones entity index is invalid. A key holds up to 32
+unique actors and the mode blob holds up to 63 bytes. `Control::quantize`
+packs forward and side throttle into bits 0–4 and 5–9, crouch into bit 10,
+and facing delta into bits 11–15. Each five-bit field maps codes 0–30 to
+31 equally spaced values across ±1 for throttle or ±π radians for facing.
+Code 15 means zero. Code 31 is reserved.
+
+`ActorSet::key` snapshots membership, posture and mode state in entity order.
+`Replica::apply` replaces that state on a key and applies each packet atomically.
+It ignores duplicate and older ticks using wrapping 32-bit ordering. A
+delivered key restores the live actor set and mode state after earlier packet loss. Dialogue playback uses the original
+(entity, vocalization, tick) to recognize repeated copies of a line.
 
 **3. The host log** (`crates/formats/host-log`). An ordered, hash-chained
 list of entries `{seq, tick, op, prev_hash}`, generic over the op. It is
@@ -153,13 +169,21 @@ relevance and period (**E**, notes). More actors therefore lower update
 rates before they raise the byte rate. The budget itself is unread;
 probe P4 measures the rate with 0, 8, 16 and 24 actors.
 
+One `actor_net::Budget` per client admits at most 1000 actor-channel bytes
+in any 30 consecutive simulation ticks, including packet headers. Tunnel
+framing is accounted separately. Call `Budget::schedule` each tick with the
+client's candidates, ordered nearest first among controls. The scheduler
+reserves the next two copies before admitting a dialogue line, so it
+appears in three consecutive packets. A host offers the current key when
+`Budget::key_due` is true and retries a requested resync key until sent.
+
 | Item | Per client | Host with 15 clients | Evidence |
 |---|---:|---:|---|
 | A 16-player match with no actors | measured by P4 | measured by P4 | [dedicated-host.md](../live/dedicated-host.md) assumes 1 Mbit/s for the whole match |
 | One moving actor's unit updates, about 20 bytes at 10 a second | 200 B/s | 3 KB/s | **S** |
 | 24 actors | 4.8 KB/s | 72 KB/s | **S** |
 | Their shots, grenades and projectiles | 2 KB/s | 30 KB/s | **S** |
-| Actor channel, cap | 1 KB/s | 15 KB/s | **Design**, enforced by `actor_net::Budget` |
+| Actor channel, cap | 1 KB/s | 15 KB/s | **Code**, `actor_net::Budget` |
 | Target for actors in all | 8 KB/s | 120 KB/s (0.96 Mbit/s) | **Design** |
 
 The target roughly doubles the egress dedicated-host.md assumes, so that
@@ -357,7 +381,7 @@ AN3, AN4 and AN5 follow AN2 in parallel. Probes P1 and P6 need only AN0
 - Who judges a client's shot at an actor, and with what lag.
 - That an actor on a team no player holds fights players under a
   multiplayer game engine.
-- The encoders' bit widths and the sender's per-client budget.
+- Retail's encoder bit widths and per-client send budget (P4).
 
 ## Related
 

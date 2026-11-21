@@ -4,6 +4,7 @@ Everything about Live and playing with other people: the wire types and server, 
 
 | Crate | What it is |
 |---|---|
+| [`actor-net`](actor-net/) | Actor presentation packets, snapshot recovery and per-client bandwidth scheduling. |
 | [`bots`](bots/) | Multiplayer bots (Clankers): the brain and phantom peers. |
 | [`cloud-saves`](cloud-saves/) | Cloud saves: merge at sign-in, push as the game writes. |
 | [`coop`](coop/) | Co-op over Live: the peer transport, pad schedule and tick hash exchange. |

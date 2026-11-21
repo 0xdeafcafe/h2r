@@ -130,6 +130,7 @@ the moves that put every crate in its domain's directory are in
 | `sim-core` | rewrites | Shared math, exact SSE-order lanes and float rules for the native simulation subsystems |  |  |
 | `sim-objects` | rewrites | The object update in Rust: typed views over the object pool, the definition table and the object kernels (docs/engine/sim-rewrite-objects.md) | [sim-rewrite-objects.md](engine/sim-rewrite-objects.md) |  |
 | `sim-state` | rewrites | Typed, read-only views of the simulation for theater, stats, Live and the agent API (docs/engine/sim-rewrite-objects.md section 8) | [sim-rewrite-objects.md](engine/sim-rewrite-objects.md) |  |
+| `actor-net` | live | Versioned actor presentation records and per-client scheduling for distributed games | [ai-networking.md](game/ai-networking.md) |  |
 | `bots` | live | Multiplayer bots (Clankers): the brain that turns what a bot sees into controller input, and the phantom peers that play through the host simulation (docs/game/bots.md) | [bots.md](game/bots.md) |  |
 | `cloud-saves` | live | Cloud saves on the Live service: merge an account's saved items into the local save storage at sign-in, and push changes as the game writes them (docs/live/live-cloud-saves.md) | [live-cloud-saves.md](live/live-cloud-saves.md) | in progress |
 | `coop` | live | Co-op over Live, phase 0: the peer transport, the two-port pad schedule and the per-tick hash exchange (docs/live/live-coop.md) | [live-coop.md](live/live-coop.md) | in progress |
