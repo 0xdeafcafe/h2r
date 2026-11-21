@@ -129,7 +129,7 @@ Settings not listed stay at the game type's default.
 | Bounce Practice | Slayer | no score or time limit; 3 s respawn; no suicide penalty; overshields; damage resistance; a magnum and no secondary weapon; nothing on the map; no grenades |
 | Glitch Hunt | Slayer | no score or time limit; 3 s respawn; no suicide penalty; overshields; damage resistance; energy sword and rocket launcher; no friendly fire |
 | Bumper Cars | Slayer | no starting weapon (one of our added choices) and no secondary; no grenades at start or on the map; nothing on the map; no pickups; Warthog and Ghost, no other vehicles or turrets; 25 points |
-| Superbounce | Slayer | Bounce Practice's rules, plus the superbounce HUD plate and spot lines ([superbounce.md](superbounce.md#the-superbounce-game-type)); the game's own list has no field for them, so the mode is keyed on the variant's name or the extension block's superbounce flag |
+| Superbounce | Slayer | Bounce Practice's rules, plus the superbounce HUD and spot lines ([superbounce.md](superbounce.md#the-superbounce-game-type)); the game's own list has no field for them, so the mode is keyed on the variant's name or the extension block's superbounce flag |
 
 Why these, and the sources:
 

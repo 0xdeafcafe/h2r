@@ -23,6 +23,7 @@ pub mod embedded;
 pub mod forge_overlay;
 pub mod fps;
 pub mod frame;
+pub mod hud_shapes;
 pub mod input_pump;
 #[cfg(not(any(target_os = "tvos", target_os = "ios")))]
 pub mod keymap;
@@ -39,6 +40,7 @@ pub mod scale;
 mod shell;
 #[cfg(target_os = "linux")]
 mod steam_keyboard;
+pub mod superbounce_hud;
 mod surface;
 pub mod watermark;
 pub mod worker;
@@ -133,6 +135,11 @@ pub struct AppConfig {
     /// (docs/runtime/app.md "Watermark"). F3 toggles it; F3 does not reach the
     /// guest while one is configured.
     pub watermark: Option<Watermark>,
+    /// The superbounce game type's HUD and tutorial cards
+    /// (docs/game/superbounce.md, "The superbounce game type"), drawn over
+    /// the game image whether or not the watermark is. F4 moves a showing
+    /// tutorial card on; it reaches the guest only while no card shows.
+    pub superbounce_hud: Option<superbounce_hud::Source>,
     /// The paired editor's leased plate and window focus requests.
     pub editor_link: Option<Arc<dyn EditorPlateSource>>,
     /// Our debug menu (docs/runtime/debug-menu.md), drawn over the game
@@ -174,6 +181,7 @@ impl Default for AppConfig {
             closer: None,
             banner: None,
             watermark: None,
+            superbounce_hud: None,
             editor_link: None,
             debug_menu: None,
             theater: None,

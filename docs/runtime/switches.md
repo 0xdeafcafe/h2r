@@ -26,7 +26,8 @@ An `impl.` name is an implementation switch
 | `H2_ICONS` | Prompt glyphs. `auto` follows the active device. `--icons` takes precedence ([button icons](../input/button-icons.md)). |
 | `H2_AUDIO_LATENCY_MS` | Starting audio playout target, 10 to 500 ms (`crates/extensions/game/src/dsound_glue.rs`). |
 | `H2_AIM_ASSIST` | aim-assist strength. Its Controls row appears on iOS and is editable from the main menu ([aim-assist.md](../game/aim-assist.md)) |
-| `H2_SUPERBOUNCE=1` | turns the [superbounce game type](../game/superbounce.md#the-superbounce-game-type) (HUD plate, spot lines, `superbounce.state`) on in any multiplayer or campaign game, not only the Superbounce variant. The `superbounce` feature (`H2_FEATURES`) switches the whole mode off |
+| `H2_SUPERBOUNCE=1` | turns the [superbounce game type](../game/superbounce.md#the-superbounce-game-type) (HUD, spot lines, `superbounce.state`) on in any multiplayer or campaign game, not only the Superbounce variant. The `superbounce` feature (`H2_FEATURES`) switches the whole mode off |
+| `H2_SUPERBOUNCE_TUTORIAL=1` | shows the [superbounce HUD's tutorial cards](../game/superbounce.md#the-superbounce-game-type) the next time the mode turns on, even when the `superbounce.tutorial_seen` setting says they have been seen |
 | `H2_PAD_MUTE` | DualSense mute button and LED. Locks the Mute Button row in Voice ([playstation-audio.md](../audio/playstation-audio.md)) |
 | `--aspect source\|4:3\|16:9` | Desktop presentation shape. Source (default) follows the drawable in Native resolution. The fixed shapes fit inside it ([app.md](app.md)). |
 | `H2_STEAM_KEYBOARD=0` | on Linux under Steam, keeps Steam's on-screen keyboard closed when the game's virtual keyboard gains focus after controller input ([host-keyboard.md](../input/host-keyboard.md#steams-on-screen-keyboard)) |

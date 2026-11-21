@@ -539,7 +539,7 @@ Ascension the band beside the lip is about 5 cm wide and 0.7 long.
 A built-in Slayer variant, Superbounce, for practising: Bounce Practice's
 rules (no score or time limit, 3 s respawn, no suicide penalty,
 overshields, damage resistance, a magnum, nothing on the map) plus a HUD
-plate and lines over the map. The mode is on when the active variant is the
+and lines over the map. The mode is on when the active variant is the
 built-in Superbounce (told by its name,
 `crates/extensions/game/src/community_variants.rs` has no field for the
 flag), when the variant's extension block has the superbounce flag (bit 2
@@ -552,10 +552,13 @@ force it on or off in any game with `superbounce.set`
 **State.** On or off is decided when a game starts and again every 30
 ticks (so a guest's late host block counts); off, a tick costs a counter
 and a flag. On, each tick reads the first local player's unit, its
-position and the word of its one pair against the level (pair `+0x0c`,
+position, whether its biped is airborne (biped flags bit 0, as
+`world.object`'s `physics.airborne` reads it), its vertical velocity, its
+aim as a yaw (the first-person camera looks along it) and the word of its
+one pair against the level (pair `+0x0c`,
 `live_telemetry::havok_agents::fixed_pair_word`, which checks handles and
 islands and decodes no collision-agent cache). A word of −3 is primed. It
-publishes that with the nearest bounce spot; the plate, the lines and
+publishes that with the nearest bounce spot; the HUD, the lines and
 `superbounce.state` ([agent-api.md](../runtime/agent-api.md#superbounce-the-superbounce-game-type))
 all read it.
 
@@ -568,21 +571,61 @@ twice. The feature is presentation-only (a recorded film's hook digest
 ignores it) and snapshot-stateless: nothing it holds needs saving. The nearest
 bounce spot is the one with the nearest edge.
 
-**The plate.** Two lines, top centre, drawn by the window's watermark
-renderer (`WatermarkRenderer::draw_plate`; F3 does not hide it):
+**The HUD.** A small glass panel at the right of the game image, a little
+over a fifth of the way down: translucent dark blue with clipped corners,
+thin cyan edges and a soft glow, all drawn in code
+(`crates/apps/app/src/superbounce_hud.rs`, on the shell's CPU rasteriser
+`crates/apps/app/src/hud_shapes.rs`). It shows whether or not the
+watermark does (F3 does not hide it), and also with `--no-watermark`.
 
-```text
-SUPERBOUNCE  PRIMED (-3)
-nearest spot 6.1 m  launch +17.9
+- **Primed.** A ring with an upward chevron, lit cyan and pulsing while
+  primed, with `PRIMED -3`; dim grey with `NOT PRIMED` otherwise.
+- **Launch.** A slanted gauge filled by the nearest spot's estimated
+  launch, 0 to 30 units/s (full past 30), ticked every 5, with the
+  number.
+- **The spot.** Its distance in metres (a world unit is 3.048 m), a small
+  arrow turned toward it from where the camera looks (none without an
+  aim, or standing on it), and the fall it needs, `drop 1.1` (world
+  units).
+- **The scan.** `scanning map...` with a spinner until the scan is done;
+  a failed scan says why, and a map without spots says so.
+- **The hint.** While primed and airborne, `HOLD X - guide onto strip`.
+
+The panel is drawn in design units, a pixel each at 720 lines: its height
+over 720, rounded to a whole number so the 8x8 letters stay sharp (1 at
+720p, 2 at 1080p and 1440p, 3 at 4K), and smaller if the panel would not
+fit the image's width. The image is redrawn only when what it shows
+changes: the inputs are rounded to what is printed, and the pulse and the
+spinner step at most 15 times a second.
+
+**The tutorial.** The first time the mode is on, four cards show under the
+panel, each a short text and a small diagram:
+
+1. Find a cyan line, a forced-crouch spot; walk in crouched, then stand up.
+2. The HUD lights up PRIMED: the collision is in its give-up state (−3);
+   crouching again loses it.
+3. Find a glowing strip: green means a standing jump is enough, red a big
+   drop.
+4. Jump or fall onto it, holding X to guide yourself on.
+
+Priming moves card 1 to 2, a bounce spot within 8 m moves 2 to 3, a bounce
+(the vertical speed passing 8 units/s upward) or 20 s moves 3 to 4, and a
+bounce or 15 s closes 4. F4 moves a card on (and reaches the game only
+while no card shows). Closing the last card sets the
+`superbounce.tutorial_seen` setting; setting it back to false
+(`h2 settings set superbounce.tutorial_seen false`) shows the cards again
+the next time the mode turns on, and `H2_SUPERBOUNCE_TUTORIAL=1`
+([switches](../runtime/switches.md)) shows them whatever it says.
+
+```sh
+h2 superbounce hud-preview --out /tmp/sb-hud              # every state
+h2 superbounce hud-preview --state primed --out /tmp/sb-hud
 ```
 
-- Primed: `SUPERBOUNCE  PRIMED (-3)`, then the nearest spot's distance in
-  metres (a world unit is 3.048 m) and its launch speed.
-- Not primed: `SUPERBOUNCE  not primed (word N)` with the word as a signed
-  number (`no pair` without one), then the distance and
-  `crouch-stand to prime`.
-- Until the scan is done the second line is `scanning map...`; a failed
-  scan says why.
+`hud-preview` draws the HUD with the window's code over a plain backdrop,
+one PNG a state at 1280x720 (and `primed` at 1920x1080 too): `scanning`,
+`not-primed`, `primed`, `primed-airborne` and `tutorial-1` to
+`tutorial-4`.
 
 **The lines.** Each spot is a world-space line (the window's world-line
 pass, no depth test):

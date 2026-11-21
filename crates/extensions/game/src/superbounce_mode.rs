@@ -1,7 +1,7 @@
 //! The superbounce game type (docs/game/superbounce.md, "The superbounce
-//! game type"): a HUD plate that says whether the local player's level
-//! pair is primed, lines over the map for the spots a primed landing
-//! launches from, and the `superbounce.state` agent method.
+//! game type"): a HUD that says whether the local player's level pair is
+//! primed, lines over the map for the spots a primed landing launches
+//! from, and the `superbounce.state` agent method.
 //!
 //! **When it is on.** The active variant carries the extension block's
 //! superbounce flag ([`variants::ext::Ext::superbounce`], through
@@ -10,13 +10,14 @@
 //! for the flag, so it is told by name), or `H2_SUPERBOUNCE=1` forces it.
 //!
 //! **Each tick** (a tick observer, only while on) it reads the first local
-//! player's unit, its position and the word of its one pair against the
-//! level (`live_telemetry::havok_agents::fixed_pair`, pair `+0x0c`;
-//! -3 is primed), asks for the loaded map's spots (a background scan, once
-//! per map and structure BSP, cached), finds the nearest bounce spot and
-//! publishes all of it as one [`State`]. The HUD plate
-//! ([`plate_lines`], drawn by `app`'s watermark renderer), the world lines
-//! ([`gpu::Lines`]) and the agent method ([`reply`]) read that state.
+//! player's unit, its position, whether it is airborne, its vertical
+//! velocity and aim, and the word of its one pair against the level
+//! (`live_telemetry::havok_agents::fixed_pair`, pair `+0x0c`; -3 is
+//! primed), asks for the loaded map's spots (a background scan, once per
+//! map and structure BSP, cached), finds the nearest bounce spot and
+//! publishes all of it as one [`State`]. The HUD (`app::superbounce_hud`,
+//! fed from [`hud_state`] by `h2 play`), the world lines ([`gpu::Lines`])
+//! and the agent method ([`reply`]) read that state.
 
 use std::collections::{HashMap, HashSet};
 use std::io::{Read, Seek};
@@ -192,6 +193,14 @@ pub struct State {
     pub map: Option<String>,
     pub bounce: usize,
     pub crouch: usize,
+    /// The biped is off the ground (biped flags bit 0, as `world.object`'s
+    /// `physics.airborne` reads it); false without a biped.
+    pub airborne: bool,
+    /// Vertical velocity, world units a second, up positive.
+    pub vz: Option<f32>,
+    /// The unit's aim as a yaw, radians from +X toward +Y. The first-person
+    /// camera looks along it.
+    pub yaw: Option<f32>,
 }
 
 impl State {
@@ -204,37 +213,47 @@ impl State {
         map: None,
         bounce: 0,
         crouch: 0,
+        airborne: false,
+        vz: None,
+        yaw: None,
     };
 
     pub fn primed(&self) -> bool {
         self.word.is_some_and(primed)
     }
+
+    /// Where the nearest spot is from where the player looks: radians
+    /// clockwise from straight ahead, in (-pi, pi] (a spot to the right is
+    /// positive, as an arrow on screen turns). None without a position, an
+    /// aim or a spot, or standing on it.
+    pub fn bearing(&self) -> Option<f32> {
+        bearing(self.position?, self.yaw?, self.nearest?.edge)
+    }
 }
 
-/// The plate's lines for `s`: how the pair stands, then the nearest spot.
-pub fn hud_lines(s: &State) -> Vec<String> {
-    let first = match s.word {
-        Some(w) if primed(w) => format!("SUPERBOUNCE  PRIMED ({PRIMED_WORD})"),
-        Some(w) => format!("SUPERBOUNCE  not primed (word {})", w as i32),
-        None => "SUPERBOUNCE  not primed (no pair)".into(),
+/// [`State::bearing`] for a player at `at` aiming along `yaw`, to the
+/// nearest point of `edge`, in the horizontal plane.
+pub fn bearing(at: Vec3, yaw: f32, edge: [Vec3; 2]) -> Option<f32> {
+    use std::f32::consts::{PI, TAU};
+    let [a, b] = edge;
+    let (ex, ey) = (b[0] - a[0], b[1] - a[1]);
+    let len2 = ex * ex + ey * ey;
+    let t = if len2 > 0.0 {
+        (((at[0] - a[0]) * ex + (at[1] - a[1]) * ey) / len2).clamp(0.0, 1.0)
+    } else {
+        0.0
     };
-    let second = match &s.scan {
-        ScanState::Scanning | ScanState::Idle if s.nearest.is_none() => "scanning map...".into(),
-        ScanState::Failed(why) => format!("no spots: {why}"),
-        _ => match s.nearest {
-            Some(n) if s.primed() => format!(
-                "nearest spot {:.1} m  launch +{:.1}",
-                n.distance * METRES_PER_UNIT,
-                n.launch
-            ),
-            Some(n) => format!(
-                "nearest spot {:.1} m  crouch-stand to prime",
-                n.distance * METRES_PER_UNIT
-            ),
-            None => "no bounce spots on this map".into(),
-        },
-    };
-    vec![first, second]
+    let (dx, dy) = (a[0] + t * ex - at[0], a[1] + t * ey - at[1]);
+    if dx.hypot(dy) < 0.05 || !yaw.is_finite() {
+        return None;
+    }
+    // World yaw turns from +X toward +Y, which is to the left (Z up).
+    let left = dy.atan2(dx) - yaw;
+    let mut cw = (-left).rem_euclid(TAU);
+    if cw > PI {
+        cw -= TAU;
+    }
+    Some(cw)
 }
 
 static STATE: Mutex<State> = Mutex::new(State::EMPTY);
@@ -254,14 +273,14 @@ pub fn active() -> bool {
     ACTIVE.load(Ordering::Relaxed)
 }
 
-/// The HUD plate's lines; empty while the mode is off. `app`'s watermark
-/// asks for them each refresh.
-pub fn plate_lines() -> Vec<String> {
+/// The state for the HUD: `None` while the mode is off (one atomic load
+/// then). The window asks each present.
+pub fn hud_state() -> Option<State> {
     if !active() {
-        return Vec::new();
+        return None;
     }
     let s = state();
-    if s.active { hud_lines(&s) } else { Vec::new() }
+    s.active.then_some(s)
 }
 
 /// `superbounce.state`'s result for `s`.
@@ -293,6 +312,9 @@ pub fn reply(s: &State) -> agent_proto::superbounce::State {
             bounce: s.bounce,
             crouch: s.crouch,
         },
+        airborne: s.position.map(|_| s.airborne),
+        vz: s.vz.map(f64::from),
+        yaw: s.yaw.map(f64::from),
     }
 }
 
@@ -499,11 +521,14 @@ fn on_now(m: &dyn GuestMemory) -> bool {
         || variant_name(m).is_some_and(|n| is_superbounce_name(&n))
 }
 
-/// The local player's word and position.
+/// The local player's word, position and motion.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 struct Live {
     word: Option<u32>,
     position: Option<Vec3>,
+    airborne: bool,
+    vz: Option<f32>,
+    yaw: Option<f32>,
 }
 
 fn read_live(m: &dyn GuestMemory) -> Live {
@@ -521,7 +546,29 @@ fn read_live(m: &dyn GuestMemory) -> Live {
     let word = live_telemetry::havok_agents::fixed_pair_word(m, u.unit)
         .ok()
         .flatten();
-    Live { word, position }
+    use live_telemetry::layout::{BIPED_FLAGS, BODY_VELOCITY, UNIT_AIM};
+    let f = |at: u32| {
+        m.u32(u.body.wrapping_add(at))
+            .ok()
+            .map(f32::from_bits)
+            .filter(|v| v.is_finite())
+    };
+    let vz = f(BODY_VELOCITY + 8);
+    let yaw = match (f(UNIT_AIM), f(UNIT_AIM + 4)) {
+        (Some(x), Some(y)) if x != 0.0 || y != 0.0 => Some(y.atan2(x)),
+        _ => None,
+    };
+    // Bit 0 of the biped flags, as `world.object` reads `physics.airborne`.
+    let airborne = u.kind == engine::view::objects::BIPED
+        && m.u16(u.body.wrapping_add(BIPED_FLAGS))
+            .is_ok_and(|flags| flags & 1 != 0);
+    Live {
+        word,
+        position,
+        airborne,
+        vz,
+        yaw,
+    }
 }
 
 /// The loaded map's cache header checksum (`+0x2d0` in the header the name
@@ -600,6 +647,9 @@ fn on_tick(o: &hooks::Obs) {
         map,
         bounce: count(Kind::Bounce),
         crouch: count(Kind::Crouch),
+        airborne: live.airborne,
+        vz: live.vz,
+        yaw: live.yaw,
     };
 }
 
@@ -610,7 +660,7 @@ pub struct SuperbounceMode;
 
 impl hooks::Feature for SuperbounceMode {
     fn manifest(&self) -> hooks::Manifest {
-        hooks::Manifest::new(FEATURE, "Superbounce game type: HUD plate and spot lines")
+        hooks::Manifest::new(FEATURE, "Superbounce game type: HUD and spot lines")
             .doc("docs/game/superbounce.md")
             // A tick observer and start and end observers only: a recorded
             // film's hook digest does not include it.
@@ -781,70 +831,35 @@ mod tests {
     }
 
     #[test]
-    fn the_plate_says_primed_and_the_launch() {
+    fn the_bearing_turns_clockwise_from_where_the_player_looks() {
+        use std::f32::consts::{FRAC_PI_2, PI};
+        let edge = |x: f32, y: f32| [[x, y - 1.0, 0.0], [x, y + 1.0, 0.0]];
+        let close = |a: Option<f32>, b: f32| a.is_some_and(|a| (a - b).abs() < 1e-4);
+        // Facing +X: a spot ahead, to the right (-Y), behind.
+        assert!(close(bearing([0.0; 3], 0.0, edge(5.0, 0.0)), 0.0));
+        let right = [[0.0, -5.0, 0.0], [0.0, -5.0, 0.0]];
+        assert!(close(bearing([0.0; 3], 0.0, right), FRAC_PI_2));
+        let behind = bearing([0.0; 3], 0.0, edge(-5.0, 0.0)).unwrap();
+        assert!((behind.abs() - PI).abs() < 1e-4);
+        // Facing +Y (yaw pi/2), a spot on +X is to the right.
+        assert!(close(
+            bearing([0.0; 3], FRAC_PI_2, edge(5.0, 0.0)),
+            FRAC_PI_2
+        ));
+        // The edge's nearest point, not its middle; height is ignored.
+        let long = [[2.0, 0.0, 9.0], [2.0, 50.0, 9.0]];
+        assert!(close(bearing([0.0; 3], 0.0, long), 0.0));
+        // On the spot, or without an aim, there is no arrow.
+        assert_eq!(bearing([5.0, 0.0, 0.0], 0.0, edge(5.0, 0.0)), None);
+        assert_eq!(bearing([0.0; 3], f32::NAN, edge(5.0, 0.0)), None);
         let s = State {
-            active: true,
-            word: Some(0xffff_fffd),
-            nearest: Some(near(2.0)),
-            scan: ScanState::Ready,
+            position: Some([-5.0, 0.0, 0.0]),
+            yaw: Some(0.0),
+            nearest: Some(near(5.0)),
             ..State::EMPTY
         };
-        assert_eq!(
-            hud_lines(&s),
-            ["SUPERBOUNCE  PRIMED (-3)", "nearest spot 6.1 m  launch +17.9"]
-        );
-    }
-
-    #[test]
-    fn the_plate_says_how_to_prime_when_not_primed() {
-        let s = State {
-            active: true,
-            word: Some(0),
-            nearest: Some(near(1.0)),
-            scan: ScanState::Ready,
-            ..State::EMPTY
-        };
-        assert_eq!(
-            hud_lines(&s),
-            [
-                "SUPERBOUNCE  not primed (word 0)",
-                "nearest spot 3.0 m  crouch-stand to prime"
-            ]
-        );
-        let none = State {
-            word: None,
-            nearest: None,
-            scan: ScanState::Ready,
-            ..s.clone()
-        };
-        assert_eq!(
-            hud_lines(&none),
-            [
-                "SUPERBOUNCE  not primed (no pair)",
-                "no bounce spots on this map"
-            ]
-        );
-        let other = State {
-            word: Some(5),
-            ..s
-        };
-        assert_eq!(hud_lines(&other)[0], "SUPERBOUNCE  not primed (word 5)");
-    }
-
-    #[test]
-    fn the_plate_says_scanning_and_failures() {
-        let s = State {
-            active: true,
-            word: Some(0),
-            scan: ScanState::Scanning,
-            ..State::EMPTY
-        };
-        assert_eq!(hud_lines(&s)[1], "scanning map...");
-        let f = State {
-            scan: ScanState::Failed("no collision".into()),
-            ..s
-        };
-        assert_eq!(hud_lines(&f)[1], "no spots: no collision");
+        assert!(close(s.bearing(), 0.0));
+        assert_eq!(State { yaw: None, ..s }.bearing(), None);
     }
 
     #[test]
@@ -883,6 +898,9 @@ mod tests {
             map: Some("ascension".into()),
             bounce: 3,
             crouch: 1,
+            airborne: true,
+            vz: Some(12.5),
+            yaw: Some(0.5),
         };
         let r = reply(&s);
         assert!(r.active && r.primed);
@@ -892,7 +910,10 @@ mod tests {
         assert_eq!(r.scan.status, "failed");
         assert_eq!(r.scan.error.as_deref(), Some("x"));
         assert_eq!((r.scan.bounce, r.scan.crouch), (3, 1));
+        assert_eq!(r.airborne, Some(true));
+        assert_eq!((r.vz, r.yaw), (Some(12.5), Some(0.5)));
         let idle = reply(&State::EMPTY);
+        assert_eq!((idle.airborne, idle.vz, idle.yaw), (None, None, None));
         assert_eq!(idle.scan.status, "idle");
         assert!(!idle.active && !idle.primed && idle.word.is_none());
     }

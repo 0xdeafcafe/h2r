@@ -898,6 +898,38 @@ pub static THEATER_RING_MIB: Def = Def {
     menu: None,
 };
 
+/// Whether the superbounce HUD's tutorial cards have been seen
+/// (docs/game/superbounce.md, "The superbounce game type"). The window
+/// sets it when the last card closes; `false` shows the cards again the
+/// next time the mode turns on, and `H2_SUPERBOUNCE_TUTORIAL=1` shows them
+/// whatever it says.
+pub static SUPERBOUNCE_TUTORIAL_SEEN: Def = Def {
+    key: "superbounce.tutorial_seen",
+    label: "Superbounce Tutorial Seen",
+    help: "The superbounce HUD's four tutorial cards have been shown to the end. \
+           Set it to false to see them again.",
+    kind: Kind::Bool,
+    default: Value::Bool(false),
+    env: None,
+    flag: None,
+    aliases: &[],
+    parse_env: None,
+    apply: Apply::Live,
+    scope: Scope::Host,
+    tier: Tier::Diagnostic,
+    menu: None,
+};
+
+/// `H2_SUPERBOUNCE_TUTORIAL=1` shows the superbounce tutorial cards even
+/// when [`SUPERBOUNCE_TUTORIAL_SEEN`] is set.
+pub const SUPERBOUNCE_TUTORIAL_ENV: &str = "H2_SUPERBOUNCE_TUTORIAL";
+
+/// Whether the superbounce tutorial shows this run: never seen, or forced
+/// by `env` (the value of [`SUPERBOUNCE_TUTORIAL_ENV`]).
+pub fn superbounce_tutorial_shows(seen: bool, env: Option<&str>) -> bool {
+    !seen || env.is_some_and(|v| v.trim() == "1")
+}
+
 /// Resolve the viewer's memory budget before the child mounts the film's private disk.
 pub fn theater_ring_mib(data: Option<&Path>) -> usize {
     let path = data.map(settings::path_in);
@@ -950,6 +982,7 @@ pub static ALL: &[&Def] = &[
     &HALO1_SANDBOX,
     &HALO1_ASSETS,
     &HALO1_HUD,
+    &SUPERBOUNCE_TUTORIAL_SEEN,
     // The campaign skulls, kept per profile (crate::skulls, docs/game/skulls.md).
     &crate::skulls::SKULLS[0],
     &crate::skulls::SKULLS[1],
@@ -1071,6 +1104,23 @@ mod tests {
             assert!(d.key.contains('.'), "{}", d.key);
             assert_eq!(d.check(d.default), Ok(d.default), "{}", d.key);
         }
+    }
+
+    #[test]
+    fn the_superbounce_tutorial_shows_until_seen_or_when_forced() {
+        assert!(superbounce_tutorial_shows(false, None));
+        assert!(!superbounce_tutorial_shows(true, None));
+        assert!(!superbounce_tutorial_shows(true, Some("0")));
+        assert!(superbounce_tutorial_shows(true, Some("1")));
+        let store = Store::defaults(ALL);
+        assert_eq!(
+            store.get(SUPERBOUNCE_TUTORIAL_SEEN.key),
+            Some(Value::Bool(false))
+        );
+        store
+            .set(SUPERBOUNCE_TUTORIAL_SEEN.key, Value::Bool(true))
+            .unwrap();
+        assert!(store.handle::<bool>(SUPERBOUNCE_TUTORIAL_SEEN.key).get());
     }
 
     #[test]

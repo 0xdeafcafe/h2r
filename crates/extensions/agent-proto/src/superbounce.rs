@@ -74,6 +74,19 @@ pub struct State {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nearest: Option<Nearest>,
     pub scan: Scan,
+    /// The local player's biped is off the ground (biped flags bit 0, as
+    /// `world.object`'s `physics.airborne` reads it); absent without a
+    /// biped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub airborne: Option<bool>,
+    /// The local player's vertical velocity, world units a second (up is
+    /// positive).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vz: Option<f64>,
+    /// The way the local player's unit aims, radians from +X toward +Y:
+    /// the first-person camera's yaw.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub yaw: Option<f64>,
 }
 
 // ---- superbounce.set ----
@@ -168,10 +181,16 @@ mod tests {
                 bounce: 4,
                 crouch: 2,
             },
+            airborne: Some(true),
+            vz: Some(-4.5),
+            yaw: None,
         };
         let v = serde_json::to_value(&s).unwrap();
         assert_eq!(v["word"], "fffffffd");
         assert!(v.get("nearest").is_none() && v["scan"].get("error").is_none());
+        assert_eq!(v["airborne"], true);
+        assert_eq!(v["vz"], -4.5);
+        assert!(v.get("yaw").is_none());
         assert_eq!(serde_json::from_value::<State>(v).unwrap(), s);
         assert_eq!(method::ALL, [method::STATE, method::SET, method::SPOTS]);
     }

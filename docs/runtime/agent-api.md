@@ -641,6 +641,9 @@ with `INVALID_PARAMS`) answers from the state the
 | `position` | the local player's position, world units |
 | `nearest` | the bounce spot nearest the player: `distance` to its edge, `launch` (units/s), `fall` (units) and its `edge` |
 | `scan` | `status` (`idle`, `scanning`, `ready`, `failed`), `map`, `error`, and the `bounce` and `crouch` spot counts |
+| `airborne` | the local player's biped is off the ground (biped flags bit 0, as `world.object`'s `physics.airborne`); absent without a player |
+| `vz` | the local player's vertical velocity, world units a second, up positive |
+| `yaw` | the way the local player's unit aims, radians from +X toward +Y: the first-person camera's yaw |
 
 ```sh
 printf '%s\n' 'superbounce.state' | h2 agent -
