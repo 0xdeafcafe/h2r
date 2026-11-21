@@ -759,10 +759,10 @@ pub fn fixture_with_textured_bsp() -> Vec<u8> {
     put(&mut b, file(material) + 0xc, id(6).0);
     put(&mut b, s + 0x9c, 1);
     put(&mut b, s + 0xa0, addr(cluster));
-    let (block, entries) = raw_block(&floor_resources());
-    assert!(TEX_BLOCK_FILE + block.len() <= TEX_BASE_FILE);
+    let (raw, entries) = raw_block(&floor_resources());
+    assert!(TEX_BLOCK_FILE + raw.len() <= TEX_BASE_FILE);
     assert!(table + 16 * entries.len() <= TEX_SBSP + TEX_SBSP_SIZE);
-    b[TEX_BLOCK_FILE..TEX_BLOCK_FILE + block.len()].copy_from_slice(&block);
+    b[TEX_BLOCK_FILE..TEX_BLOCK_FILE + raw.len()].copy_from_slice(&raw);
     let c = file(cluster);
     b[c..c + 2].copy_from_slice(&4u16.to_le_bytes()); // vertices
     b[c + 2..c + 4].copy_from_slice(&2u16.to_le_bytes()); // triangles
@@ -770,9 +770,9 @@ pub fn fixture_with_textured_bsp() -> Vec<u8> {
     b[c + 0xc..c + 0xe].copy_from_slice(&4u16.to_le_bytes());
     let info = c + 0x28;
     put(&mut b, info, TEX_BLOCK_FILE as u32);
-    put(&mut b, info + 4, block.len() as u32);
+    put(&mut b, info + 4, raw.len() as u32);
     put(&mut b, info + 8, 0x44);
-    put(&mut b, info + 0xc, (block.len() - 0x44 - 12) as u32);
+    put(&mut b, info + 0xc, (raw.len() - 0x44 - 12) as u32);
     put(&mut b, info + 0x10, entries.len() as u32);
     put(&mut b, info + 0x14, addr(table));
     put(&mut b, info + 0x18, id(4).0);

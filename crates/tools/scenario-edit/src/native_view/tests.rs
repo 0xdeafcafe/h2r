@@ -402,7 +402,7 @@ fn the_viewport_draws_the_level_through_the_native_world() {
         ..Camera::default()
     };
     let mut vp = crate::render::Viewport::new(&device);
-    let mut draw = |vp: &mut crate::render::Viewport| {
+    let draw = |vp: &mut crate::render::Viewport| {
         vp.render(&device, &queue, &camera, [64, 64]);
         read_centre(&device, &queue, vp.color_texture().unwrap())
     };
@@ -445,7 +445,7 @@ fn glyphs_test_depth_against_the_native_floor() {
     };
     let mut vp = crate::render::Viewport::new(&device);
     vp.set_native(&device, &queue, &loads);
-    let mut draw = |vp: &mut crate::render::Viewport, z: Option<f32>| {
+    let draw = |vp: &mut crate::render::Viewport, z: Option<f32>| {
         let markers: Vec<_> = z
             .map(|z| crate::geometry::Marker {
                 block: crate::layout::BlockKind::Weapons,
