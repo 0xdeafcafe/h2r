@@ -88,6 +88,8 @@ let viewerMode: (view: string | undefined, ok: boolean) => string;
 let keyIsForControl: (t: EventTarget | null) => boolean;
 let renderControls: (session: ReplaySession) => string;
 
+let renderFilmPage: (film: string, clip?: string) => string;
+let selectedServer: string;
 beforeAll(async () => {
   const ROUTER = `${import.meta.dir}/../node_modules/@solidjs/router/dist/index.jsx`;
   const babel = await import("@babel/core");
@@ -110,6 +112,20 @@ beforeAll(async () => {
   const { renderToString } = await import("solid-js/web");
   const { createComponent } = await import("solid-js");
   const { Router, Route } = await import(ROUTER);
+  const { GameView } = await import("../src/stats/Game");
+  const { live } = await import("../src/state/live");
+  selectedServer = live.server().base;
+  renderFilmPage = (film, clip) => {
+    const path = clip ? "/theater/:id/clip/:clip" : "/games/halo2/games/:id";
+    const url = (clip ? `/theater/${film}/clip/${clip}` : `/games/halo2/games/${film}`) + "?t=42";
+    return renderToString(() => createComponent(Router, { url, get children() {
+      return createComponent(Route, { path, component: () => createComponent(GameView, {
+        game: game({ game_id: film }),
+        clip: clip ? { id: clip, game: film, title: "Finish", by: "0000000000000002",
+          created_ms: 0, from_tick: 20, to_tick: 50 } : undefined,
+      }) });
+    } }));
+  };
   const mod = await import("../src/viewer/GameViewer");
   const { default: Transport } = await import("../src/viewer/Transport");
   viewerMode = mod.viewerMode;
@@ -130,6 +146,13 @@ beforeAll(async () => {
     },
   });
   render = (url, g, extra) => renderToString(() => page(url, g, extra));
+});
+
+test("film and clip pages offer the encoded Open in Halo 2 target", () => {
+  for (const clip of [undefined, "clip-7"]) {
+    const html = renderFilmPage("film_1", clip).replaceAll("&amp;", "&");
+    expect(html).toContain(`href="h2recomp://theater/film_1?server=${encodeURIComponent(selectedServer)}${clip ? "&clip=clip-7" : ""}&t=42">Open in Halo 2</a>`);
+  }
 });
 
 describe("the inline viewer", () => {

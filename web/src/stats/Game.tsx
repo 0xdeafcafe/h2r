@@ -36,6 +36,7 @@ import "../styles/stats-game.css";
 import { GAME_VIEWER_ID, STATS_ROOT, gameHref, statsPath, theaterHref } from "../routes";
 import { readClip, type Clip } from "../api/films";
 import type { HostFilm } from "../api/host-film";
+import { OpenFilmButton } from "../theater/OpenFilmButton";
 import { filmGame } from "../theater/filmGame";
 import { createFilmControls } from "../theater/FilmControls";
 import "../theater/theater.css";
@@ -144,7 +145,10 @@ function GameTitle(props: { game?: GameState; clip?: Clip; watch?: () => void })
   const href = () => theaterHref(props.game!.game_id).replace("#", `${at.search}#`);
   return (
     <Title class="s-title--bar" back={props.clip ? ["watch full film", theaterHref(props.clip.game)] : ["see all games", statsPath("/games")]}
-      right={
+      right={<>
+        <Show when={props.game?.status === "ended" && props.game}>
+          {(game) => <OpenFilmButton server={live.server().base} film={game().game_id} clip={props.clip?.id} search={at.search} />}
+        </Show>
         <Show when={!props.clip && props.game?.status === "ended"} fallback={
           <Show when={!props.clip && props.game?.status === "live" && props.game}>
             {(game) => <LiveGameJoin id={game().game_id} />}
@@ -156,7 +160,7 @@ function GameTitle(props: { game?: GameState; clip?: Clip; watch?: () => void })
             if (at.hash === `#${GAME_VIEWER_ID}`) document.getElementById(GAME_VIEWER_ID)?.scrollIntoView();
           }}>Watch in Theater</A>
         </Show>
-      }>
+      </>}>
       {props.clip?.title ?? "Game Details"}
     </Title>
   );

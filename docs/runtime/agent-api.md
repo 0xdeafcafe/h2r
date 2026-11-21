@@ -2869,6 +2869,8 @@ directly on its own `--socket` (`H2_AGENT`, else the cache's `theater.sock`).
 
 | Method | Parameters | Result |
 |---|---|---|
+| `theater.open` | `{"url":"h2recomp://theater/<film>?server=<encoded-origin>"}` | Opens the film detail page in the signed-in game and returns its `ui.screen`. Watch starts playback when pressed. Optional `clip`, `t`, `seat` and `camera` select the initial view. |
+| `theater.share` | `{"id":"film-id","visibility":"link"}`, optional `clip` is a clip ID or two tick bounds | Returns `{film,url}` after publication. Visibility accepts `private`, `link` or `public`. A participant shares the existing host film by link. |
 | `theater.play` | `{"id":"film-id","range":[300,900]}` to open, `{}` to resume; omit `range` for the whole film | `{id, starting:true}` on launch, otherwise transport state |
 | `theater.prepare` | `{"id":"film-id"}` on the library agent | starts a background Prepare replay and returns its progress. A duplicate request for an active job returns that job's progress. |
 | `theater.state` | `{}` | transport state, or `{id:null,active:false}` with no player |

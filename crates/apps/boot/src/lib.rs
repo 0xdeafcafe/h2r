@@ -671,6 +671,13 @@ fn run_configured(
             _live.clone(),
             open,
         )?;
+        // Resume queued uploads on sign-in, including a session which acquired
+        // its account in the game after launch.
+        let _ = theater.sync();
+        if let Some(recording) = &film {
+            let controller = theater.clone();
+            recording.sync_library(move || controller.sync());
+        }
         Some(theater)
     } else {
         None

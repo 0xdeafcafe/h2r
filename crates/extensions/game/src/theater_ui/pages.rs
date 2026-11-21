@@ -31,7 +31,7 @@ pub(super) const FILM_ROWS: usize = 40;
 pub(super) const BROWSE_ROWS: usize = OptionRow::ALL.len();
 const MAX_ROWS: usize = FILM_ROWS + BROWSE_ROWS + 1; // Also allow a retry row.
 const DETAIL_ROWS: u32 = ROWS + MAX_ROWS as u32;
-const DETAIL_ACTIONS: i16 = 4;
+const DETAIL_ACTIONS: i16 = 6;
 const TAB_PANEL: u32 = DETAIL_ROWS + DETAIL_ACTIONS as u32;
 const TAB_TEXTS: usize = 2 * Tab::ALL.len();
 const PANEL: u32 = TAB_PANEL + TAB_TEXTS as u32 + 2;
@@ -81,18 +81,33 @@ pub(super) enum Action {
     Prepare,
     Save,
     Delete,
+    Share,
+    CopyLink,
 }
 
 impl Action {
     fn for_entry(entry: &Entry) -> impl Iterator<Item = Self> {
-        [Self::Watch, Self::Prepare, Self::Save, Self::Delete]
-            .into_iter()
-            .filter(move |action| match action {
-                Self::Watch => entry.film.watch_unavailable().is_none(),
-                Self::Prepare => entry.can_prepare(),
-                Self::Save => entry.clip.is_none(),
-                Self::Delete => entry.clip.is_some() || entry.film.archive_id().is_none(),
-            })
+        [
+            Self::Watch,
+            Self::Prepare,
+            Self::Save,
+            Self::Delete,
+            Self::Share,
+            Self::CopyLink,
+        ]
+        .into_iter()
+        .filter(move |action| match action {
+            Self::Watch => entry.film.watch_unavailable().is_none(),
+            Self::Prepare => entry.can_prepare(),
+            Self::Save => entry.clip.is_none(),
+            Self::Share | Self::CopyLink => {
+                entry.film.source != super::adapter::Source::Archive
+                    && entry.film.version != Some(1)
+            }
+            Self::Delete => {
+                entry.clip.is_some() || entry.film.source != super::adapter::Source::Archive
+            }
+        })
     }
 
     pub(super) fn at(entry: &Entry, row: usize) -> Option<Self> {
@@ -152,10 +167,11 @@ impl Theater {
                     self.archive_action(Action::Watch, entry);
                     return false;
                 }
+                let view = state.view;
                 state.status = "Opening film...".into();
                 state.changed();
                 drop(state);
-                if let Err(error) = self.session().play(&entry) {
+                if let Err(error) = self.session().play(&entry, view) {
                     let mut state = self.state();
                     state.status = error;
                     state.changed();
@@ -174,12 +190,17 @@ impl Theater {
                 }
                 return false;
             }
+            Action::Share | Action::CopyLink => {
+                drop(state);
+                self.archive_action(action, entry);
+                return false;
+            }
             Action::Delete if !state.confirm_delete => {
                 state.confirm_delete = true;
                 state.status = "Press A again to delete".into();
             }
             Action::Save | Action::Delete => {
-                if (action == Action::Save && entry.film.archive_id().is_some())
+                if (entry.film.live_game_id.is_some() && entry.clip.is_none())
                     || entry.archive_clip.is_some()
                 {
                     drop(state);
@@ -330,6 +351,8 @@ fn detail_model(state: &super::State) -> Vec<RowSpec> {
             let label = match action {
                 Action::Watch => "Watch".into(),
                 Action::Prepare => prepare_label(state),
+                Action::Share => "Share".into(),
+                Action::CopyLink => "Copy Link".into(),
                 Action::Save if film.saved => "Unsave".into(),
                 Action::Save => "Save".into(),
                 Action::Delete if state.confirm_delete => "Confirm delete".into(),
@@ -639,6 +662,7 @@ pub(super) fn spec(theater: &Theater, list: bool) -> ScreenSpec {
             })
             .collect();
     } else {
+        s.scrolls = s.rows.len() > FILM_LAYOUT.visible as usize;
         s.panel = film_art().into_iter().map(|(p, size)| art(p, size)).collect();
         s.art.extend(
             state
@@ -987,6 +1011,9 @@ impl hooks::Feature for TextFeature {
 }
 
 pub(super) fn install(registry: &mut hooks::Registry, theater: Theater) -> anyhow::Result<()> {
+    registry
+        .add(&super::link::Driver(theater.clone()))
+        .map_err(anyhow::Error::msg)?;
     let texts = Arc::new(GuestTexts::default());
     texts.set(FILMS_TITLE, "THEATER");
     texts.set(DETAIL_TITLE, "Film");

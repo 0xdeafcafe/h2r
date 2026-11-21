@@ -47,9 +47,10 @@ define_class!(
 
         #[unsafe(method(openGameURL:withReply:))]
         fn open_url(&self, event: &NSAppleEventDescriptor, _reply: Option<&NSAppleEventDescriptor>) {
-            let result = event_link(event).and_then(|link| {
-                live_hle::join_link::submit(link, live_hle::join_link::Source::External)
-                    .map_err(anyhow::Error::msg)
+            let result = event_link(event).and_then(|link| match link {
+                GameLink::Join(link) => live_hle::join_link::submit(link, live_hle::join_link::Source::External)
+                    .map(|_| ()).map_err(anyhow::Error::msg),
+                GameLink::Theater(link) => { boot::theater_ui::external_link(link); Ok(()) }
             });
             if let Err(error) = result {
                 eprintln!("live: could not open game link: {error}");
@@ -58,7 +59,12 @@ define_class!(
     }
 );
 
-fn event_link(event: &NSAppleEventDescriptor) -> Result<live_proto::JoinLink> {
+enum GameLink {
+    Join(live_proto::JoinLink),
+    Theater(live_proto::theater_link::TheaterLink),
+}
+
+fn event_link(event: &NSAppleEventDescriptor) -> Result<GameLink> {
     // SAFETY: paramDescriptorForKeyword: takes an AEKeyword (UInt32) and
     // returns a nullable NSAppleEventDescriptor.
     let descriptor: Option<Retained<NSAppleEventDescriptor>> =
@@ -66,7 +72,12 @@ fn event_link(event: &NSAppleEventDescriptor) -> Result<live_proto::JoinLink> {
     let value = descriptor
         .and_then(|descriptor| descriptor.stringValue())
         .context("The link did not contain a URL.")?;
-    Ok(value.to_string().parse()?)
+    let raw = value.to_string();
+    if raw.starts_with("h2recomp://theater/") {
+        Ok(GameLink::Theater(raw.parse()?))
+    } else {
+        Ok(GameLink::Join(raw.parse()?))
+    }
 }
 
 fn alert(mtm: MainThreadMarker, title: &str, detail: &str) {
@@ -150,7 +161,11 @@ mod tests {
         set_url("h2recomp://other?session=8000000000001234");
         assert!(event_link(&event).is_err());
         set_url("h2recomp://join?server=https%3A%2F%2Flive.example&session=8000000000001234");
-        let link = event_link(&event).unwrap();
+        let GameLink::Join(link) = event_link(&event).unwrap() else {
+            panic!("expected join")
+        };
+        set_url("h2recomp://theater/game_1?server=https%3A%2F%2Flive.example");
+        assert!(matches!(event_link(&event).unwrap(), GameLink::Theater(_)));
         assert_eq!(link.session(), "8000000000001234");
         assert!(link.matches_server("https://live.example"));
     }

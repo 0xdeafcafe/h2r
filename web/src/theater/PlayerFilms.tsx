@@ -13,11 +13,13 @@ const tabs = [
   { id: "recent", label: "Recent" },
   { id: "saved", label: "Saved" },
   { id: "clips", label: "Clips" },
+  { id: "shared", label: "Shared" },
 ];
 
-type Tab = "recent" | "saved" | "clips";
+type Tab = "recent" | "saved" | "clips" | "shared";
 const noFilms: Record<Tab, string> = {
   recent: "No recent films.",
+  shared: "No shared films.",
   saved: "No saved films.",
   clips: "No clips yet.",
 };
@@ -31,7 +33,7 @@ type Loaded = { items: Card[] } | { error: string };
 
 export default function PlayerFilms(props: { xuid: string }) {
   const [params, setParams] = useSearchParams<{ tab?: string }>();
-  const tab = (): Tab => params.tab === "saved" || params.tab === "clips" ? params.tab : "recent";
+  const tab = (): Tab => params.tab === "saved" || params.tab === "clips" || params.tab === "shared" ? params.tab : "recent";
   const source = createMemo(() => ({
     api: live.server().api, player: props.xuid, reader: identity.me()?.xuid, ready: live.loadMode() !== "snapshot",
   }));
@@ -57,8 +59,8 @@ function Library(props: { player: string; api: string; tab: Tab; select: (id: st
 
   const reader = live.api().readToken;
   const [recent, refreshRecent] = createResource(
-    () => props.tab === "recent",
-    () => load(() => readFilms(props.api, reader, props.player, "recent"), (film) => ({ film })),
+    () => props.tab === "recent" || props.tab === "shared" ? props.tab : false,
+    (tab) => load(() => readFilms(props.api, reader, props.player, tab === "shared" ? "shared" : own() ? "library" : "recent"), (film) => ({ film })),
   );
   // On your Recent tab the Saved list also tells each button its state.
   const [saved, refreshSaved] = createResource(

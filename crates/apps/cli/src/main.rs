@@ -198,6 +198,7 @@ const USAGE: &str = "usage: h2 <command>
                           run a light host with the agent API
   host run --lease ID ... run a dedicated match for a Live lease
   host pack ...           run several leased matches in one container
+  theater open URL                 Open the linked film page in the game
   theater play FILM --render-every 0
                           replay a host film headlessly
   film stat FILE          report keyframes, capture points and tape usage
