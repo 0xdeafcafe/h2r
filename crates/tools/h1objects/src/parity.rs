@@ -339,6 +339,9 @@ mod tests {
         let mut cache = build_with_extra_tags(&Opts::default(), vec![spec]);
         let root = cache.data_at.last().copied().flatten().unwrap();
         let trigger = root + h1::WEAP_SIZE;
+        // An unset reference is a null id (all ones), not the zeroed field: the
+        // rifle has no HUD, and a zero id would name a tag the map lacks.
+        put(&mut cache.file, root + 0x480 + 0xc, h1map::TagId::NONE.0);
         put(&mut cache.file, root + 0x4fc, 1);
         put(
             &mut cache.file,
