@@ -686,6 +686,13 @@ points! { ALL;
     /// after `0x00043a40` selects the mode and its state. Stack `(list, unused)`,
     /// `ret 8`; the only native decal replacement point.
     DECAL_RENDER @ 0x0004_4040: [fn(list: stack 0, unused: stack 1) ret 8]; "docs/graphics/native-decals-research.md";
+    /// `render_decal_mode` (`0x0002c370`): one mode of the dynamic decals,
+    /// EAX the mode 0 to 6: the mode's state (`0x00043a40`), then
+    /// `DECAL_RENDER` per entry of `[0x00547f94]`. `render_scene_passes`
+    /// calls it seven times for view kinds 1 and 2; mode 1 (return
+    /// `0x0002c04d`) is the next call after `RENDER_DYNAMIC_LIGHTS`
+    /// returns, with no test between them.
+    RENDER_DECAL_MODE @ 0x0002_c370: [opaque]; "docs/graphics/native-decals-research.md";
     /// `render_dynamic_lights`: the visible lights, each gathered and drawn
     /// with `RENDER_LIGHT_PASSES` (`render_scene_passes` calls it after
     /// layer 7).

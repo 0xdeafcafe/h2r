@@ -809,6 +809,15 @@ commits. The three parts are built.
   name. With the additional casters' pair every layer keeps its
   handlers (`lights_walk_fallback_graph`). Drawing the shadow maps as
   one batch at the start of the view's stage is not built.
+  Once the light pass is over, the frame step reads the game view's
+  whole candidate set (`scene_extract::lights::candidates`,
+  `frame_scene::LightCandidate`; docs/graphics/e3-lighting.md) before
+  the decal mode 1 call (`0x0002c370`, `points::RENDER_DECAL_MODE`,
+  returning to `0x0002c04d`). That call is the next one after
+  `render_dynamic_lights` returns, with no test between them, so the
+  light list, records and selections are as the pass left them. The
+  hook is a context-only before, so `0x00031c80` keeps no after hook
+  and its chain runs on the pipelined render thread.
 - **First person and world layers 1, 5, 7, 8, 20.** At each of the
   scene's layer draws 1, 5, 7, 8 and 20 (`0x0002bcd0`; layer 20 returns
   to `0x0002c010`, after layer 8, on the scene's list into the view's

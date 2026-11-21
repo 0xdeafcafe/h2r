@@ -42,6 +42,10 @@ pub const ID: &str = "frame-scene";
 /// The game-time record's tick count (`[GAME_TIME] + 8`).
 const GAME_TIME_TICK: u32 = 8;
 
+/// The return address of `render_scene_passes`' decal mode 1 call
+/// (`0x0002c048`), the next call after `render_dynamic_lights` returns.
+const DECALS_AFTER_LIGHTS: u32 = 0x0002_c04d;
+
 /// Guest memory, read only.
 struct Ro<'a>(&'a dyn GuestMemory);
 
@@ -351,8 +355,9 @@ pub fn light(mem: &dyn GuestMemory, light: SceneLight, steps: &[LightStep]) {
     });
 }
 
-/// The main view's light pass is over. Fill the candidate data alongside
-/// the original draw steps, which already hold their final group indices.
+/// The main view's light pass is over (at the decal mode that follows
+/// it). Fill the candidate data alongside the original draw steps, which
+/// already hold their final group indices.
 fn light_candidates(mem: &dyn GuestMemory, fpu: engine::light_constants::Fpu) {
     with_step(|step| {
         let Some((scene, view)) = step.builder.open() else { return };
@@ -741,14 +746,24 @@ impl Feature for FrameSceneStep {
             })
             .after_feature(crate::render_timing::ID)
             .context_only();
+        // The light candidates once the light pass is over: before the
+        // decal mode 1 call, the next call after `render_dynamic_lights`
+        // returns, with nothing between them. A before there, not an
+        // after on the lights, keeps the lights' chain on the render
+        // thread. Render-timing's scene-call observer on the same point
+        // goes first, like at the layer draw.
         b.raw()
-            .observe_after(&points::RENDER_DYNAMIC_LIGHTS, "frame_scene_light_candidates", |o| {
+            .observe_before(&points::RENDER_DECAL_MODE, "frame_scene_light_candidates", |o| {
                 let g = o.guest();
+                if g.u32(o.cpu.esp).ok() != Some(DECALS_AFTER_LIGHTS) {
+                    return;
+                }
                 light_candidates(&*g, engine::light_constants::Fpu {
                     mxcsr: o.cpu.mxcsr,
                     x87_control: o.cpu.x87.control,
                 });
             })
+            .after_feature(crate::render_timing::ID)
             .context_only();
         // The view's post passes: `render_screen_effects`' two stack
         // bytes (`late`, `colour`). Its callees' calls are put in the

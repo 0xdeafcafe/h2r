@@ -35,6 +35,7 @@ fn the_native_renderers_points_are_discovered_functions() {
         &points::TRANSPARENT_POLYGON_ENTRY,
         &points::OBJECT_RENDER_SETUP,
         &points::RENDER_DYNAMIC_LIGHTS,
+        &points::RENDER_DECAL_MODE,
         &points::RENDER_LIGHT_PASSES,
         &points::LIGHT_GEOMETRY_DRAW,
         &points::LIGHT_RESTORE_TARGET,

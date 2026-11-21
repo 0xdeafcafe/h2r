@@ -42,8 +42,9 @@ The runtime decal array is initialized by `0x0017d220`, through `0x00043890`.
 The construction at `0x00180f87` obtains a dynamic geometry address from
 `0x000439d0`. The renderer is `0x00044040`, not either sorted-list handler.
 
-`0x0002c370` is the only caller of the state wrapper `0x00043a40` and supplies
-`0x00044040` as the callback to `0x00163cd0`. Its seven call sites in
+`0x0002c370` (`points::RENDER_DECAL_MODE`, EAX the mode) is the only
+caller of the state wrapper `0x00043a40` and supplies `0x00044040` as the
+callback to `0x00163cd0`. Its seven call sites in
 `render_scene_passes`, all for view kinds 1 and 2 only, place the modes here:
 
 ```text
