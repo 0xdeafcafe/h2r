@@ -639,6 +639,65 @@ pass, no depth test; the styles are described in
   nearest 3 bounce strips carry their launch label (`+17.9`) and only the
   nearest 2 crouch spots carry `crouch`.
 
+### Hold X: the fall assist
+
+Holding X in the air steers the player onto a bounce strip, so the landing
+is on the strip, moving slowly along its drift, the way every traced bounce
+came in. It works on input, not physics: the assist replaces the left stick
+the guest reads and takes X out of it, and writes nothing to the world. It
+is `crates/extensions/game/src/superbounce_assist.rs`; `superbounce.assist`
+and `superbounce.assist_test`
+([agent-api.md](../runtime/agent-api.md#superbounce-the-superbounce-game-type))
+show it and hold the button without a pad.
+
+**When it applies.** The mode is on, the first local player's X is held
+(pad X, keyboard E by default; the `BUTTON` constant), the player is
+airborne and falling (vertical speed at most 0.5 units/s), and a bounce spot
+passes the reach cone:
+
+- its stand point is below the player and within 3 units sideways;
+- the time to fall to its height is at most 3 s (`fall_time`, from the
+  height and vertical speed under gravity 4.15 units/s²);
+- the landing the player would have if the stick were let go (`predicted_landing`,
+  coasting for that time) is within what the stick can move in the time left:
+  half the air acceleration times the fall time squared, plus 0.4 units. The
+  cone is wider the longer the fall.
+
+Of the spots that pass, the one the coasting landing misses by least is
+steered onto.
+
+**The steer.** The aim is the stand point, 0.1 units back along the spot's
+drift, crossed at 0.8 units/s along the drift. A PD controller (`steer`,
+5 rad/s, damping 0.8) tracks the line that arrives there: the position the
+player would be at, the time left before touchdown, moving at the arrival
+velocity. It asks for a horizontal acceleration in world axes;
+`world_to_stick` turns it into the left stick in the aim's frame (forward is
+`(cos yaw, sin yaw)`, right `(sin yaw, -cos yaw)`) by dividing by the air
+acceleration (`AIR_ACCEL`, 3 units/s², an estimate of what a full stick
+does in the air) and cutting it back to the unit disc. Without a stick that
+strong the player misses; with one stronger the gains still land close
+(simulated at 0.7 to 1.4 times the estimate).
+
+**The button.** While the assist is engaged X reads as released, so the
+button does not reload or pick up. Once it has engaged, X stays released
+until the player lets go, so a landing or a strip going out of reach does
+not hand the game a fresh press. With no strip in reach, X and the stick
+pass through unchanged.
+
+**Where it sits.** An input tap at `XInputGetState`
+(`AssistTap`, installed by `register_late` before the agent's tap), so
+the agent's `input.pad` merges first and the assist sees that pad. With the
+mode off a pad read costs one atomic load. The tap changes the packet before
+the recording or replay tap under it sees it: a film or input log records
+the pad the guest got, and a replay overwrites the packet, so the assist
+never runs in a replay. The `superbounce-assist` feature has no guest hooks,
+so a film's hook digest does not include it, and it is snapshot-stateless:
+the swallowed-button latch and the test hold are momentary.
+
+The gains, the air acceleration and the stick's dead zone in the guest
+have not been measured in the game; they are the first thing to tune in a
+lab run.
+
 ## Open
 
 - **The last 5 units/s.** The upward part of the two impulses on the

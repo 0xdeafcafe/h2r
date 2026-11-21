@@ -39,6 +39,8 @@ connection to hold `session.claim`.
 | `havok.pair.set` | claim | [`havok.pair.set`](#havokpairset) |
 | `superbounce.state` | read | [`superbounce`](#superbounce-the-superbounce-game-type) |
 | `superbounce.set` | act | [`superbounce`](#superbounce-the-superbounce-game-type) |
+| `superbounce.assist` | read | [`superbounce`](#superbounce-the-superbounce-game-type) |
+| `superbounce.assist_test` | act | [`superbounce`](#superbounce-the-superbounce-game-type) |
 | `profile.counters`, `profile.capture`, `profile.fallbacks`, `profile.memory`, `profile.faults` | read | [`profile`](#profile-where-a-frame-goes) |
 | `profile.sample.start`, `profile.sample.stop` | act | [`profile`](#profile-where-a-frame-goes) |
 | `profile.sample.status` | read | [`profile`](#profile-where-a-frame-goes) |
@@ -656,6 +658,35 @@ carry `H2_SUPERBOUNCE`, turns the mode on.
 
 ```sh
 h2 agent superbounce.set '{"on":true}'
+```
+
+`superbounce.assist` (access: read; no parameters) says what the hold-X fall
+assist did at its last pad read
+([superbounce.md](../game/superbounce.md#hold-x-the-fall-assist);
+`crates/extensions/game/src/superbounce_assist.rs`).
+
+| Field | Meaning |
+|---|---|
+| `active` | the superbounce mode is on; the assist works only then |
+| `test_hold` | `superbounce.assist_test` is holding the button |
+| `engaged` | the assist steered the player at its last read |
+| `target` | the strip's stand point, world units |
+| `aim` | the point being aimed at, a little before the stand point along the drift (X, Y) |
+| `landing` | where the player lands if the stick is let go (X, Y) |
+| `fall_time` | seconds until touchdown at the strip's height |
+| `stick` | the left stick sent to the guest, `[x (right), y (forward)]`, -1 to 1 |
+
+The last five are absent while not engaged.
+
+`superbounce.assist_test {"hold": true|false}` (access: act) holds the
+assist's button as if it were pressed, so an agent can try the assist
+without a pad: with the mode on, a player in the air above a strip in reach
+is steered while it is `true`. The answer is `{"hold": bool}`. It holds
+until set `false`.
+
+```sh
+h2 agent superbounce.assist_test '{"hold":true}'
+h2 agent superbounce.assist
 ```
 
 ## `profile`: where a frame goes
