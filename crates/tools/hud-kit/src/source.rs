@@ -33,7 +33,7 @@ pub struct Colours {
     pub message: [u8; 4],
     /// The training text's (`0x001e70c3`'s pair of floats, blue 1).
     pub training: [u8; 4],
-    /// Each flash record's peak colour.
+    /// Each flash record's colour at its start (`hudg::Flash::start`).
     pub flash: [[u8; 4]; 4],
     /// Where each came from, and what was assumed.
     pub notes: Vec<String>,
@@ -164,10 +164,10 @@ fn disc_colours(iso: &Path, hudg: Option<&Hudg>) -> Colours {
         Some(h) => {
             c.prompt = hudg::rgba(h.prompt_colour);
             for (i, p) in Pulse::ALL.iter().enumerate() {
-                c.flash[i] = hudg::rgba(h.flash(*p).peak);
+                c.flash[i] = hudg::rgba(h.flash(*p).start());
             }
             c.notes
-                .push("prompt and flash colours: the map's hudg".into());
+                .push("prompt and flash colours: the map's hudg (a flash at its start)".into());
         }
         None => c
             .notes

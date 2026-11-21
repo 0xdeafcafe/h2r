@@ -9,7 +9,7 @@
 //! - [`source`], [`synthetic`]: the disc and the invented map the
 //!   preview draws from;
 //! - [`preview`]: the 640 by 480 picture, its JSON, the sheet;
-//! - [`check`]: the nine checks;
+//! - [`check`]: the ten checks;
 //! - [`huds`]: the HUDs the kit knows.
 //!
 //! The kit draws nothing itself in the game: the runtime (slice 3 on)

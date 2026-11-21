@@ -371,8 +371,40 @@ fn styles_change_the_text_colour() {
     assert_eq!(
         px("primed"),
         src.colours.flash(Pulse::Objective)[..3],
-        "the objective flash's peak"
+        "the objective flash at its start"
     );
+}
+
+/// A text in a transparent colour (a flash record with no alpha) puts no
+/// pixels down, and the drawn check says so; in an opaque one it passes.
+#[test]
+fn a_text_that_draws_no_pixels_is_a_finding() {
+    let c = case(
+        vec![Element::text(
+            "a",
+            Font::Hud,
+            Justify::Start,
+            "PRIMED -3",
+            bl(10, -150),
+        )],
+        &[(
+            "a",
+            Value::text("PRIMED -3").styled(Style::Flash(Pulse::Objective)),
+        )],
+    );
+    let mut src = synthetic();
+    let at = Pulse::ALL
+        .iter()
+        .position(|p| *p == Pulse::Objective)
+        .unwrap();
+    src.colours.flash[at] = [255, 255, 255, 0];
+    let r = check::hud(&mut src, &c, &[Mode::Full]).unwrap();
+    let drawn: Vec<_> = r.of(Check::Drawn).collect();
+    assert_eq!(drawn.len(), 1, "{:#?}", r.findings);
+    assert_eq!(drawn[0].elements, ["a"]);
+    assert_eq!(drawn[0].state.as_deref(), Some("s"));
+    let r = check::hud(&mut synthetic(), &c, &[Mode::Full]).unwrap();
+    assert!(r.of(Check::Drawn).next().is_none(), "{:#?}", r.findings);
 }
 
 /// A test HUD and its states.

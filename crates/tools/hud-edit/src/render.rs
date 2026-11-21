@@ -236,12 +236,11 @@ impl Fonts {
         let name = self.table.get(usize::try_from(index).ok()?)?;
         font::Font::parse(self.files.get(name)?).ok()
     }
-    /// Whether engine font `index` draws UTF-16 unit `unit`: an unmapped
-    /// unit reads record 0 (the engine draws that, normally a blank), so
-    /// only the space may map to it. `None`: no such font.
+    /// Whether engine font `index` has a glyph of its own for UTF-16 unit
+    /// `unit`, not the stand-in box it draws for a unit it lacks
+    /// ([`font::Font::has_glyph`]). `None`: no such font.
     pub fn has_glyph(&self, index: i16, unit: u16) -> Option<bool> {
-        let f = self.font(index)?;
-        Some(unit == u16::from(b' ') || f.glyph_index(unit) != 0)
+        Some(self.font(index)?.has_glyph(unit))
     }
     /// `text` in engine font `index`: its picture and the line height.
     pub fn render(&self, index: i16, text: &str, colour: [u8; 4]) -> Option<(font::Bitmap, i32)> {
@@ -666,7 +665,10 @@ fn draw_text<R: Read + Seek>(
             for y in 2..rh - 2 {
                 for x in 0..rw {
                     if x % FALLBACK_CHAR[0] as i32 != 6 {
-                        cover.set(x0 + x, y0 + y);
+                        // Opaque only as the glyphs are (`c[3] > 64`).
+                        if colour[3] > 64 {
+                            cover.set(x0 + x, y0 + y);
+                        }
                         canvas.blend(x0 + x, y0 + y, colour);
                     }
                 }

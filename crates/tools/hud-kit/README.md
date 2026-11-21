@@ -15,7 +15,7 @@ HUD elements of ours drawn by Halo 2's own HUD: a feature describes its HUD as k
 - `src/compile.rs`: elements to widget record bytes.
 - `src/source.rs`, `src/synthetic.rs`: the disc and the invented map the preview draws from.
 - `src/preview.rs`: the 640 by 480 preview, its PNG and JSON, and the sheet.
-- `src/check.rs`: the nine checks.
+- `src/check.rs`: the ten checks.
 - `src/huds/`: the HUDs the kit knows (superbounce).
 
 ## Tests

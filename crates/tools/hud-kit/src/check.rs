@@ -1,4 +1,4 @@
-//! The nine checks (docs/game/hud-kit.md, "The preview and the checks"),
+//! The ten checks (docs/game/hud-kit.md, "The preview and the checks"),
 //! over each state and screen mode of a HUD; each finding names the check,
 //! the elements and, where it has one, the state and mode.
 
@@ -41,10 +41,14 @@ pub enum Check {
     /// An element with no split-screen offset is hidden there, and the
     /// widgets of one HUD show in the same screen modes.
     Modes,
+    /// A text shown in a state, in a mode it shows in, puts opaque pixels
+    /// on the screen (a transparent colour or a missing shader draws
+    /// nothing).
+    Drawn,
 }
 
 impl Check {
-    pub const ALL: [Check; 9] = [
+    pub const ALL: [Check; 10] = [
         Check::Fit,
         Check::Glyphs,
         Check::Frame,
@@ -54,6 +58,7 @@ impl Check {
         Check::Templates,
         Check::Prompt,
         Check::Modes,
+        Check::Drawn,
     ];
     pub fn name(self) -> &'static str {
         match self {
@@ -66,6 +71,7 @@ impl Check {
             Check::Templates => "templates",
             Check::Prompt => "prompt",
             Check::Modes => "modes",
+            Check::Drawn => "drawn",
         }
     }
 }
@@ -468,6 +474,29 @@ fn per_shot(
                     }
                 }
             }
+        }
+        // Drawn: a text shown here puts opaque pixels down.
+        let is_text = matches!(e.kind, Kind::Text { .. }) || e.kind.is_channel();
+        let text = d
+            .text
+            .as_deref()
+            .filter(|t| t.chars().any(|c| !c.is_whitespace()));
+        if let Some(t) = text
+            && is_text
+            && d.shown
+            && e.at.offset(s.mode).is_some()
+            && (!d.drawn || d.cover.as_ref().is_none_or(Cover::is_empty))
+        {
+            let why = if d.notes.is_empty() {
+                String::new()
+            } else {
+                format!(" ({})", d.notes.join("; "))
+            };
+            r.push(f(
+                Check::Drawn,
+                vec![d.id.into()],
+                format!("{} shows {t:?} but draws no pixels{why}", d.id),
+            ));
         }
         // Prompt: in the modes the channel shows in.
         if e.kind.is_channel() && e.at.offset(s.mode).is_some() {

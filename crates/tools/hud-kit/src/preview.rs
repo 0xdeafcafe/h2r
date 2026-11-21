@@ -137,7 +137,8 @@ pub fn style_colour(base: [u8; 4], style: Style, colours: &Colours) -> [u8; 4] {
             base[2],
             (f32::from(base[3]) * DIM_ALPHA).round() as u8,
         ],
-        // The peak colour; the curve over `since_tick` is slice 4's.
+        // The record's colour at its start (`hudg::Flash::start`); the
+        // curve over `since_tick` is slice 4's.
         Style::Flash(p) => colours.flash(p),
     }
 }
@@ -230,7 +231,9 @@ fn blit(
             for y in 2..rh - 2 {
                 for x in 0..rw {
                     if x % FALLBACK_CHAR[0] as i32 != 6 {
-                        cover.set(x0 + x, y0 + y);
+                        if colour[3] > 64 {
+                            cover.set(x0 + x, y0 + y);
+                        }
                         canvas.blend(x0 + x, y0 + y, colour);
                     }
                 }

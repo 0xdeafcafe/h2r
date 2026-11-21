@@ -4,7 +4,7 @@
 use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
-use hud_kit::check::{self, Report};
+use hud_kit::check::{self, Check, Report};
 use hud_kit::preview::{self, mode_name, parse_mode};
 use hud_kit::{Describe, Source, huds};
 
@@ -18,7 +18,9 @@ const USAGE: &str = "usage: h2 hud preview list
 
 Draws a HUD of the kit over the retail player HUD at 640x480 and runs the
 kit's checks. preview writes <hud>-<state>-<mode>.png and .json for each
-state and mode asked (default: every state, fullscreen); sheet writes every
+state and mode asked (default: every state, fullscreen), and fails on a
+glyphs or drawn finding (a character the font lacks, a text that puts no
+pixels down), or, from the disc, a glyph check it could not run; sheet writes every
 HUD x state x mode, sheet.png, sheet.json and checks.json, and fails on a
 finding. The map (default lockout), its fonts and the XBE's colours come
 from the disc (--disc, else $H2_DISC); --synthetic draws an invented map
@@ -98,6 +100,13 @@ fn modes(o: &Opts) -> Result<Vec<hud_kit::Mode>> {
     }
 }
 
+/// The findings of `r` for `state` (all of them for `None`).
+fn of_state<'a>(r: &'a Report, state: Option<&'a str>) -> impl Iterator<Item = &'a check::Finding> {
+    r.findings
+        .iter()
+        .filter(move |f| state.is_none() || f.state.is_none() || f.state.as_deref() == state)
+}
+
 fn print_report(r: &Report, states: Option<&str>) {
     for n in &r.notes {
         println!("note: {n}");
@@ -105,11 +114,7 @@ fn print_report(r: &Report, states: Option<&str>) {
     for (c, why) in &r.skipped {
         println!("skipped {}: {why}", c.name());
     }
-    let shown: Vec<_> = r
-        .findings
-        .iter()
-        .filter(|f| states.is_none() || f.state.is_none() || f.state.as_deref() == states)
-        .collect();
+    let shown: Vec<_> = of_state(r, states).collect();
     for f in &shown {
         println!("{f}");
     }
@@ -179,6 +184,20 @@ fn preview_cmd(o: Opts) -> Result<()> {
         );
     }
     print_report(&r, want);
+    // A wrong picture fails the preview: a missing glyph draws the font's
+    // box, a text with no pixels is not there. The layout checks only
+    // print here; the sheet fails on every finding.
+    let fatal = of_state(&r, want)
+        .filter(|f| matches!(f.check, Check::Glyphs | Check::Drawn))
+        .count();
+    if fatal > 0 {
+        bail!("{fatal} glyphs or drawn finding(s)");
+    }
+    if !src.synthetic
+        && let Some((_, why)) = r.skipped.iter().find(|(c, _)| *c == Check::Glyphs)
+    {
+        bail!("the glyph check did not run on the disc: {why}");
+    }
     Ok(())
 }
 

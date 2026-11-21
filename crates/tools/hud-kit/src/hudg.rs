@@ -66,6 +66,27 @@ pub struct Hudg {
     pub arrow: Option<Arrow>,
 }
 
+/// Bit 0 of a flash record's flags: the flash runs from the peak colour
+/// to the rest colour, not the other way (E `0x0024d1aa`, help's
+/// `hudg +0xb6`; `h1_hud_text/flash.rs`).
+pub const FLASH_REVERSED: u16 = 1;
+
+impl Flash {
+    /// The colour the text shows at the flash's start, strength 0: the
+    /// rest colour, or the peak with [`FLASH_REVERSED`]. The engine's
+    /// help line draws `+0xa4` or `+0xa8` this way (E `0x0024d194`), and
+    /// its objective line only the rest colour `+0xcc` (E `0x0024d13e`).
+    /// A record's peak may be unset (all zero, alpha 0), so the peak
+    /// alone is no colour to draw a flashing text in.
+    pub fn start(&self) -> u32 {
+        if self.flags & FLASH_REVERSED != 0 {
+            self.peak
+        } else {
+            self.rest
+        }
+    }
+}
+
 impl Hudg {
     pub fn flash(&self, p: Pulse) -> &Flash {
         match p {
@@ -251,6 +272,24 @@ mod tests {
         let arrow = d.child("arrow_assets").unwrap();
         assert_eq!(arrow.size, 0x24);
         assert_eq!(arrow.field("sprite_sequence").unwrap().offset, 0x10);
+    }
+
+    /// A flash starts at its rest colour, or its peak when reversed: an
+    /// unset peak is not drawn.
+    #[test]
+    fn a_flash_starts_at_its_rest_colour() {
+        let f = Flash {
+            rest: 0xff20_40ff,
+            peak: 0,
+            ..Flash::default()
+        };
+        assert_eq!(f.start(), 0xff20_40ff);
+        let r = Flash {
+            flags: FLASH_REVERSED,
+            peak: 0xffff_ffff,
+            ..f
+        };
+        assert_eq!(r.start(), 0xffff_ffff);
     }
 
     #[test]

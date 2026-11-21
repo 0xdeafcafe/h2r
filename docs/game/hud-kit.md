@@ -449,7 +449,9 @@ word (S: what else the game sets).
 element's id, kind, rectangle, the rectangle it may take in any state
 (`reserved`: a text's at its `longest`), text, style, fill, angle, font,
 whether it is drawn and why not, and the findings of that state and
-mode; by default every state, fullscreen. `sheet` writes every HUD x
+mode; by default every state, fullscreen. `preview` fails on a glyphs
+or drawn finding, and, from the disc, when the glyph check could not
+run; its other findings are printed. `sheet` writes every HUD x
 state x mode, `sheet.png` (half-size tiles, a column per mode),
 `sheet.json` (where each tile is) and `checks.json`, and fails on a
 finding. `Source::disc` reads the map (default `lockout`), the fonts and
@@ -464,8 +466,13 @@ The preview's colours: the prompt's and the flash records' from the
 map's `hudg`; notifications' and the training text's from the XBE
 (`0x00468c84`, three floats, and `0x0045e518`, `0x0045e51c` with blue 1;
 S: the order); a kit text widget's is `hud_edit`'s stand-in until
-decoding 4. `Dim` halves the alpha, and `Flash` draws the record's peak
-colour; the flash's curve over `since_tick` is slice 4's. The training
+decoding 4. `Dim` halves the alpha, and `Flash` draws the record's
+colour at the flash's start (`hudg::Flash::start`): the rest colour, or
+the peak with flags bit 0, as the help line picks `+0xa4` or `+0xa8`
+(E `0x0024d194`); the objective line draws only its rest colour `+0xcc`
+(E `0x0024d13e`), and a record's peak may be unset, all zero. The
+engine takes each colour's alpha byte as it is (E `0x00131b20`). The
+flash's curve over `since_tick` is slice 4's. The training
 box's frame is a stand-in rectangle until decoding 3, and a pointer is
 turned within its sprite's rectangle.
 
@@ -475,7 +482,7 @@ the check, the elements and the state and mode:
 | Check | Rule |
 |---|---|
 | fit | every state's text of a text widget is no wider than its `longest`, and the `longest` stays inside the frame's width and meets no other element |
-| glyphs | every character of every `longest` and state text is in the element's font (a channel's in fonts 6 and 5) |
+| glyphs | every character of every `longest` and state text is in the element's font (a channel's in fonts 6 and 5): not record 0, not the record U+FFFF reads, and no copy of either's bitmap (`font::Font::has_glyph`; MSLCD-14 maps `.`, `-` and `~` to a copy of its box) |
 | frame | every rectangle, reserved or drawn, is inside the HUD frame and the screen; an element may sit `FRAME_SLACK` (1) pixel outside the frame, as the tracker and the shield meter do (x 47, the frame's left 48) |
 | retail | no widget element's opaque pixels meet a retail widget's at any `HudState` of the sheet (plain, overshield, plasma grenades, zoomed), and no widget element's rectangle meets the reserved rectangles (`PROMPT_LINE`, `TRAINING_BOX`, `H1_HEALTH`, `RETICLE`); the channels are the game's own text and are not checked against them |
 | own | no two elements of any registered HUDs overlap, by their rectangles and their pixels, texts included; two channels are the game's, one at a time, and are not compared |
@@ -483,6 +490,7 @@ the check, the elements and the state and mode:
 | templates | every `Art` and the text template resolve on the map (both sources; on every map of the disc in the disc test) |
 | prompt | a `Message`, `Prompt` or `Training` text, and its `longest`, has at most two lines and fits the frame's width (less the training box's margin) |
 | modes | an element with no half or quarter offset is not drawn there (the JSON says why), a text has no font there, and the widgets of one HUD show in the same modes, so a block is never drawn in part |
+| drawn | a text or channel shown in a state, in a mode it shows in, puts opaque pixels down (alpha over 64): a transparent colour or a missing shader is a finding |
 
 The synthetic source has no fonts, so it skips the glyph check and says
 so, and its retail check is against the flat boxes, not the disc's art.
