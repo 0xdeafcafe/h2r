@@ -615,6 +615,48 @@ points! { ALL;
     /// free-for-all too). The low byte of the fourth argument is the
     /// credited damage reporting type and modifier.
     PLAYER_KILLED @ 0x0015_ce70: [opaque]; "docs/live/live-gamestate.md";
+    /// The game engine's per-tick update, from `GAME_TICK` at `0x13803c`.
+    /// With an engine object it runs each player's engine work with the
+    /// engine's per-player slot `+0x3c`, then its per-tick slot `+0x48`,
+    /// then the engine's shared steps (`0x15c000` and on). No engine
+    /// object, nothing.
+    ENGINE_UPDATE @ 0x0015_c150: [fn() ret 0], Optional; "docs/engine/notes/2026-11-21-engine-vtables.md";
+    /// Slayer's kill callback, vtable `0x45c6d8` slot `+0x78`, which
+    /// `PLAYER_KILLED` calls last (`0x15d6a4`): thiscall with the engine
+    /// object, then that routine's attacker, victim and flag, and a kill
+    /// kind it works out. It is all of Slayer's kill scoring, through
+    /// `SCORE_ADD`: +1 to the attacker, or -1 when the flag is set (a
+    /// suicide only with type-area flag bit 1); -1 to the victim with bit
+    /// 2; a bonus to the attacker with bit 0. Nothing in a distributed
+    /// client (`[0x4e6948]+0xc` 4).
+    SLAYER_KILL @ 0x002b_c000: [fn(engine: ecx, attacker: stack 0, victim: stack 1, flag: stack 2, kind: stack 3) ret 16], Optional; "docs/engine/notes/2026-11-21-engine-vtables.md";
+    /// Juggernaut's kill callback, slot `+0x78` of vtable `0x453d38`, as
+    /// [`SLAYER_KILL`]: moves the Juggernaut role and scores through
+    /// `SCORE_ADD` (`0x19238c`, `0x1923db`).
+    JUGGERNAUT_KILL @ 0x0019_22a0: [fn(engine: ecx, attacker: stack 0, victim: stack 1, flag: stack 2, kind: stack 3) ret 16], Optional; "docs/engine/notes/2026-11-21-engine-vtables.md";
+    /// Oddball's per-tick slot `+0x48`: each ball's carrier scores through
+    /// `0x2bc990` and `0x2bce70`, which calls `SCORE_ADD`.
+    ODDBALL_TICK @ 0x002b_cbb0: [fn(engine: ecx) ret 0], Optional; "docs/engine/notes/2026-11-21-engine-vtables.md";
+    /// King of the Hill's per-tick slot `+0x48`; its hill scoring
+    /// `0x2beee0` (from `0x2bd729`) calls `SCORE_ADD`.
+    KOTH_TICK @ 0x002b_d680: [fn(engine: ecx) ret 0], Optional; "docs/engine/notes/2026-11-21-engine-vtables.md";
+    /// Territories' per-tick slot `+0x48`; it ends in a tail jump to its
+    /// scoring `0x2c0a90`, which calls `SCORE_ADD`.
+    TERRITORIES_TICK @ 0x002c_0230: [fn(engine: ecx) ret 0], Optional; "docs/engine/notes/2026-11-21-engine-vtables.md";
+    /// Juggernaut's per-tick slot `+0x48`.
+    JUGGERNAUT_TICK @ 0x0019_2530: [fn(engine: ecx) ret 0], Optional; "docs/engine/notes/2026-11-21-engine-vtables.md";
+    /// The per-tick slot `+0x48` that CTF and Assault share (vtable
+    /// `0x459d18`). Their capture scoring `0x242e00` runs from the
+    /// per-player slot `+0x3c` and from `0x242741`, not from here.
+    CTF_TICK @ 0x0024_0d70: [fn(engine: ecx) ret 0], Optional; "docs/engine/notes/2026-11-21-engine-vtables.md";
+    /// The base trait query: Slayer's slot `+0x8c`, and where every other
+    /// engine's `+0x8c` ends for the traits it does not answer itself
+    /// (Juggernaut `0x19273c`, CTF and Assault `0x242084`, Oddball
+    /// `0x2bcd03`, KotH `0x2bda4e`, Territories' `0x2c02e0` is a jump).
+    /// True when the variant gives `player` the trait: 1 active camo
+    /// (record flag bit 2), 2 extra damage (bit 12), 3 damage resistance
+    /// (bit 13). The slot is called at `0x15b28e`, `0x2404ad`, `0x2bc967`.
+    ENGINE_TRAIT_QUERY @ 0x0024_dda0: [fn(engine: ecx, player: stack 0, trait: stack 1) -> al ret 8], Optional; "docs/engine/notes/2026-11-21-engine-vtables.md";
     /// One weapon barrel fires: stdcall `(weapon object datum, barrel
     /// index)`. One call is one shot (likely).
     WEAPON_FIRE @ 0x0010_4150: [fn(weapon: stack 0, barrel: stack 1) ret 8], Optional; "docs/live/live-gamestate.md";
@@ -1624,6 +1666,11 @@ mod tests {
         assert_eq!(WEAPON_FIRE.class, Class::Optional);
         assert!(LOCALE_FIND.hot && !GAME_TICK.hot);
         assert!(PLAYER_KILLED.sig.is_opaque());
+        // The engine vtable slots are thiscall: the engine object in ECX.
+        assert_eq!(SLAYER_KILL.sig.arg("engine"), Some(Loc::Ecx));
+        assert_eq!(SLAYER_KILL.sig.arg("victim"), Some(Loc::Stack(1)));
+        assert!(matches!(SLAYER_KILL.sig, Sig::Fn { ret: None, pop: 16, .. }));
+        assert!(matches!(ENGINE_TRAIT_QUERY.sig, Sig::Fn { ret: Some(Loc::Al), pop: 8, .. }));
         assert_eq!(by_base(0x0013_7fe0).map(|p| p.name), Some("GAME_TICK"));
     }
 }
