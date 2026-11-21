@@ -1780,6 +1780,12 @@ and is not tallied. Turning the mode off ends a practice route
 attempts, bounces and reasons), so a game of practising bots is a live
 verifier too.
 
+Each bounce a practising bot makes is recorded by the game as a ghost
+run, and the best run of each spot is kept in `<map>.ghosts` beside the
+spots and verified files, proving the spot as it goes
+([superbounce.md](superbounce.md#ghost-runs)). Nothing in the bots crate
+records it: the game reads the bots' units each tick.
+
 #### Driving a player
 
 The same planner and route runner drive a seat with no brain of its own:

@@ -81,6 +81,11 @@ pub const PROMPT_KEEP_MOVING: &str = "Keep moving or lose the charge";
 /// After a loss: the loss's reason is its notification
 /// ([`Note::ChargeLost`]).
 pub const PROMPT_CHARGE_AGAIN: &str = "Find a crouch spot to charge again";
+/// Looking at a bounce spot that has a ghost run, and while one plays
+/// (`game::superbounce_ghost`): the button is d-pad up (U+E108), which no
+/// Halo 2 layout uses in a game.
+pub const PROMPT_SHOW_GHOST: &str = "Press \u{e108} to show ghost";
+pub const PROMPT_STOP_GHOST: &str = "Press \u{e108} to stop ghost";
 /// The prompt line's widest verb: the most characters.
 pub const PROMPT_LONGEST: &str = PROMPT_CHARGE_AGAIN;
 
@@ -247,6 +252,10 @@ pub enum Verb {
     KeepMoving,
     /// A few seconds after a loss, until a recipe step begins, with why.
     ChargeAgain(Lost),
+    /// Looking at a spot with a ghost run.
+    ShowGhost,
+    /// A ghost run is playing.
+    StopGhost,
 }
 
 impl Verb {
@@ -257,6 +266,8 @@ impl Verb {
             Verb::WalkOutToStand => PROMPT_HELD,
             Verb::KeepMoving => PROMPT_KEEP_MOVING,
             Verb::ChargeAgain(_) => PROMPT_CHARGE_AGAIN,
+            Verb::ShowGhost => PROMPT_SHOW_GHOST,
+            Verb::StopGhost => PROMPT_STOP_GHOST,
         }
     }
 }

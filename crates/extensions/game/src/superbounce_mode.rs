@@ -806,6 +806,7 @@ fn reset() {
     *lock(&TRACKER) = Tracker::new();
     *lock(&MEDALS) = Medals::empty();
     *lock(&LOCAL) = None;
+    crate::superbounce_ghost::reset();
 }
 
 /// `superbounce.medal_test`: files a bounce at chain count `chain` (or a
@@ -855,6 +856,7 @@ fn decide(o: &hooks::Obs) {
         *lock(&TRACKER) = Tracker::new();
         *lock(&MEDALS) = Medals::empty();
         *lock(&LOCAL) = None;
+        crate::superbounce_ghost::reset();
     }
 }
 
@@ -921,12 +923,19 @@ fn on_tick(o: &hooks::Obs) {
         .filter(|p| p.tick.is_some())
         .filter_map(|p| Some((p.slot, p.user?)))
         .min_by_key(|(_, user)| *user);
+    let tick = live.tick.unwrap_or_else(|| TICKS.load(Ordering::Relaxed));
     let (awards, medals) = {
-        let tick = live.tick.unwrap_or_else(|| TICKS.load(Ordering::Relaxed));
         let mut m = lock(&MEDALS);
         let awards = m.step(tick, &players, &spots);
         (awards, m.view())
     };
+    // The bots' and the verifier's bounces kept as ghost runs, and the
+    // ghost the player asks for (docs/game/superbounce.md, "Ghost runs").
+    {
+        let guest = o.guest();
+        let m: &dyn GuestMemory = &*guest;
+        crate::superbounce_ghost::tick(m, tick, &players, &awards, map.as_deref(), &spots);
+    }
     // The film and Live get each bounce and Bounced, as the kills.
     if !awards.is_empty()
         && let Some(t) = lock(&TELEMETRY).clone()
@@ -1018,6 +1027,7 @@ mod gpu {
 
     pub fn register(host: &mut crate::Host) {
         host.add_world_line_source(Arc::new(Lines));
+        crate::superbounce_ghost::register(host);
     }
 
     impl WorldLineSource for Lines {

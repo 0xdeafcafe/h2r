@@ -5,7 +5,7 @@ geometry](#spots-in-the-geometry), which is the design of our scanner
 (`crates/live/superbounce`, `h2 superbounce scan`), and [Medals](#medals),
 whose rule, HUD line and agent API are built and not yet run in a game,
 and whose recording in the film and Live, and the site's medals, are
-built.
+built, and [Ghost runs](#ghost-runs), built and not yet run in a game.
 
 What the retail engine does when a player superbounces: what is
 established, what is measured, and what is still open. The research is a
@@ -1302,6 +1302,111 @@ edit the file; a later batch replaces the entries it tried.
 
 No game has run a batch yet: the defaults (the grid, the speeds, the
 tick counts) are first guesses to tune on the lab.
+
+## Ghost runs
+
+A ghost run is a recorded run that bounced off a spot, replayed in the
+world when the player asks for it: an outline figure in the HUD's colour
+walks the run, the button the run pressed shows over where it pressed
+it, a dotted trail shows the path and a ring marks the touchdown. It is
+`crates/extensions/game/src/superbounce_ghost.rs`; the file format is
+`superbounce::ghost` (`crates/live/superbounce/src/ghost.rs`).
+
+**Recording.** The mode's tick hands every player's reads and the medal
+chain's awards to the recorder. It records the bots (phantoms; they
+practise bounces while the mode is on, [bots.md](bots.md#practising-bounces))
+and, while `superbounce.verify` runs, the local player's trials. Each
+such player has a track of its last minute of ticks: the origin, the
+aim's yaw, the vertical speed, the airborne bit, the level pair's word
+and the crouch request (unit flags bit 23). A teleport (more than 3
+units in a tick), a new unit or a gap in the ticks starts it again.
+When the chain files a bounce ([Medals](#medals)), the track follows the
+climb to its top (the first tick not rising, or 90 ticks) and makes the
+run:
+
+- it starts at the crouch that primed the word: the run of crouched
+  ticks that ends at most 300 ticks before the first primed tick (or on
+  it), else that first primed tick, with 30 ticks before it for the
+  approach;
+- it ends at the top of the bounce;
+- each tick is a frame: the origin, the facing, and flags for the
+  crouch request, the jump's take-off (off the ground at 1 unit/s up or
+  more, before the bounce), airborne and primed;
+- the spot is the strip within 0.5 of the touchdown origin, its `stand`.
+
+The inputs come from the unit, not the pad, so every seat is recorded
+the same way: the crouch request is the crouch the game acted on (a
+forced crouch keeps it), and the jump is the take-off it caused.
+
+**The best run of a spot** is kept in the map's ghosts file,
+`<map>.ghosts` in the bots directory beside the `.spots` and `.verified`
+files. A run that primed itself (a crouch before the touchdown) beats
+one whose word was set for it (a verifier's drop); then the shorter run
+wins; then the higher launch. A kept run also marks its spot proven in
+the verified file ([Verifying spots](#verifying-spots)), landing offset
+and launch with it, unless the spot is proven already. A ghosts file
+that cannot be read (another version, a damaged line) is named in the
+log and is not written over.
+
+The file is text, versioned by its first line:
+
+```text
+# superbounce ghosts v1
+ghost -10.620 3.880 -3.190 source=bot launch=12.31 touchdown=212 frames=230
+f -10.910 0.720 -1.160 -121.0 c
+f -10.905 0.718 -1.160 -120.5 ca
+```
+
+A `ghost` line gives the spot's `stand` (matched to a spot as a verified
+entry is, within 0.3 across and 0.5 up), `source` (`bot`, `verify` or
+`player`), `launch`, `touchdown` (the frame of the bounce tick) and how
+many `f` lines follow. A frame is x, y, z, the facing in degrees and its
+flags: `c` crouch, `j` jump, `a` airborne, `p` primed, `-` none. A run
+is at most 1800 frames.
+
+**Showing one.** The player looks at a spot that has a run: its `stand`
+within 15 units of the eye (0.62 over the origin), and within 6 degrees
+of the aim, or the angle a 0.4-unit mark spans when that is wider. The
+prompt line says "Press (d-pad up) to show ghost". The prompt line's
+recipe steps come first; the ghost's prompt replaces only "Hold (crouch)
+and walk under". A press plays the run once; a press while it plays
+stops it ("Press (d-pad up) to stop ghost"); a press after it ends plays
+it again. Leaving the map or the mode stops it.
+
+The button is d-pad up (`superbounce_ghost::BUTTON`, read by the fall
+assist's input tap): no Halo 2 layout gives the d-pad a game action, the
+fall assist is X, crouch the left stick, jump A, and the flashlight is
+kept free. Push-to-talk defaults to d-pad down. On the keyboard it is
+the up arrow.
+
+**Playback runs on the clock.** The frames are 1/30 s apart (the guest
+tick is 30 Hz at every display rate, [high-framerate.md](high-framerate.md)).
+The world-line source captures the run, its start time and the viewer
+with each image; each present asks for the pose at its own present time
+and gets the origin and facing interpolated between the two frames
+around it. At 60 or 120 frames a second each presented frame shows its
+own pose, at the recorded speed. The figure holds on its last frame for
+a second, then goes.
+
+**What is drawn**, all in the HUD's colour ([Crouch spots in the
+world](#crouch-spots-in-the-world)):
+
+- the figure, an outline flat to the viewer, as tall as the standing
+  capsule (as the crouched one while the run crouched), with a tick on
+  the floor the way it faces;
+- the glyph of each button the run pressed (A for the jump, the left
+  stick for crouch) over where it pressed it, for a second of playback;
+- the run's path as a dotted line, every second tick;
+- a ring the capsule's size where it touched down, pulsing.
+
+`superbounce.ghosts` lists the map's runs, the one looked at, the prompt
+and the playback; `superbounce.ghost_show` plays one by its index or
+stops it ([agent-api.md](../runtime/agent-api.md#superbounce-the-superbounce-game-type)).
+
+No game has recorded or shown a run yet. To check one on the lab: turn
+the mode on with bots practising, wait for `superbounce.ghosts`'s
+`recorded` to count one, then `superbounce.ghost_show {"spot": 0}` and
+read `playing` until `done`; the figure itself needs a windowed run.
 
 ## Medals
 

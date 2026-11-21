@@ -707,7 +707,9 @@ fn report_now(brief: bool) -> VerifyReport {
     }
 }
 
-fn running() -> bool {
+/// Whether a batch is running (its trials' bounces are recorded as ghost
+/// runs, `superbounce_ghost`).
+pub(crate) fn running() -> bool {
     lock(&JOB)
         .as_ref()
         .is_some_and(|j| j.state == JobState::Running)
