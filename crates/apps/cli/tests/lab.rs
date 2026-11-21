@@ -5,12 +5,18 @@
 #![cfg(unix)]
 
 use std::fs;
+use std::io::{BufRead, BufReader, Write};
 use std::os::unix::fs::PermissionsExt;
+use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use serde_json::Value;
+use agent_proto::takeover::{self, Decision, Operation};
+use serde_json::{Value, json};
 
 /// A fake `h2`: `build` makes an image directory; `play` logs its
 /// arguments and environment, writes frames to the CSV one per 50 ms until
@@ -129,6 +135,10 @@ impl Lab {
     }
 
     fn named(name: &str) -> Lab {
+        Lab::with_host_options(name, &[])
+    }
+
+    fn with_host_options(name: &str, options: &[&str]) -> Lab {
         let dir = scratch(name);
         let fake_h2 = dir.join("fake-h2");
         script(&fake_h2, FAKE_H2);
@@ -161,6 +171,8 @@ impl Lab {
         assert!(o.status.success());
         let socket = dir.join("s");
         let root = dir.join("root");
+        let host_home = dir.join("host-home");
+        fs::create_dir(&host_home).unwrap();
         let child = Command::new(env!("CARGO_BIN_EXE_h2"))
             .args(["lab", "host", "--listen", "127.0.0.1:0", "--root"])
             .arg(&root)
@@ -174,6 +186,9 @@ impl Lab {
             .arg(&fake_h2)
             .arg("--cargo")
             .arg(dir.join("fake-cargo"))
+            .args(options)
+            .env("HOME", &host_home)
+            .env("XDG_CACHE_HOME", &host_home)
             // The host's own H2_* never reach a run.
             .env("H2_LEAK", "leaked")
             .stderr(Stdio::null())
@@ -265,6 +280,190 @@ fn json(s: &str) -> Value {
         .next()
         .unwrap()
         .unwrap()
+}
+
+struct FakeGame {
+    socket: PathBuf,
+    window: Arc<AtomicBool>,
+    shutdown: Arc<AtomicBool>,
+    requests: Arc<Mutex<Vec<takeover::Request>>>,
+    worker: Option<JoinHandle<()>>,
+}
+
+impl FakeGame {
+    fn listen(lab: &Lab, window: bool, decision: Decision) -> Self {
+        // Lab jobs with explicit agent sockets advertise here. This fake
+        // answers the game API directly and never starts a game process.
+        let path = lab.root.join("a").join("fake.sock");
+        let listener = UnixListener::bind(&path).unwrap();
+        let window = Arc::new(AtomicBool::new(window));
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let worker = {
+            let (window, shutdown, requests) = (window.clone(), shutdown.clone(), requests.clone());
+            std::thread::spawn(move || {
+                for stream in listener.incoming() {
+                    if shutdown.load(Ordering::Acquire) {
+                        break;
+                    }
+                    let mut stream = stream.unwrap();
+                    stream.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+                    let mut line = String::new();
+                    if !matches!(BufReader::new(&stream).read_line(&mut line), Ok(n) if n > 0) {
+                        continue;
+                    }
+                    let request: agent_proto::Request = serde_json::from_str(&line).unwrap();
+                    let result = match request.method.as_str() {
+                        takeover::INFO => json!(takeover::Info {
+                            window: window.load(Ordering::Acquire),
+                            pid: None,
+                        }),
+                        takeover::REQUEST => {
+                            let params = serde_json::from_value(request.params).unwrap();
+                            requests.lock().unwrap().push(params);
+                            json!(takeover::Requested { id: 1 })
+                        }
+                        takeover::STATUS => {
+                            let params: takeover::StatusParams =
+                                serde_json::from_value(request.params).unwrap();
+                            assert_eq!(params.id, 1);
+                            json!(takeover::Status { decision })
+                        }
+                        method => panic!("unexpected game API method {method}"),
+                    };
+                    let _ = writeln!(
+                        stream,
+                        "{}",
+                        json!({ "jsonrpc": "2.0", "id": request.id, "result": result })
+                    );
+                }
+            })
+        };
+        Self {
+            socket: path,
+            window,
+            shutdown,
+            requests,
+            worker: Some(worker),
+        }
+    }
+
+    fn close_window(&self) {
+        self.window.store(false, Ordering::Release);
+    }
+}
+
+impl Drop for FakeGame {
+    fn drop(&mut self) {
+        self.shutdown.store(true, Ordering::Release);
+        let _ = UnixStream::connect(&self.socket); // Wake accept.
+        self.worker.take().unwrap().join().unwrap();
+        let _ = fs::remove_file(&self.socket);
+    }
+}
+
+fn start_fake_run(lab: &Lab) -> String {
+    let value = json(&ok(&lab.local(&["run", "--current", "--frames", "1"])));
+    value["id"].as_str().unwrap().to_owned()
+}
+
+fn wait_fake_job(lab: &Lab, id: &str) -> Value {
+    json(&ok(&lab.local(&["wait", id, "--timeout", "10"])))
+}
+
+#[test]
+fn takeover_allow_waits_for_the_game_window_to_close() {
+    let lab = Lab::named("allow");
+    let game = FakeGame::listen(&lab, true, Decision::Allowed);
+    let id = start_fake_run(&lab);
+    let deadline = Instant::now() + Duration::from_secs(8);
+    loop {
+        let state = json(&ok(&lab.local(&["status"])));
+        if state["active"]["state"] == "awaiting_quit" {
+            break;
+        }
+        assert!(Instant::now() < deadline, "no quit wait: {state}");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let before_quit = lab.local(&["wait", &id, "--timeout", "0"]);
+    assert_eq!(before_quit.status.code(), Some(3));
+    assert!(!lab.root.join("runs").join(&id).join("run.log").exists());
+    assert!(err(&lab.local(&["run", "--current", "--frames", "1"])).contains("busy"));
+
+    let requests = game.requests.lock().unwrap();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].requester, "Local lab");
+    assert_eq!(requests[0].operation, Operation::Run);
+    assert_eq!(requests[0].revision, "installed image");
+    assert_eq!(requests[0].timeout_seconds, 60);
+    assert!(requests[0].estimate_seconds > 0);
+    drop(requests);
+
+    game.close_window();
+    assert_eq!(wait_fake_job(&lab, &id)["job"]["state"], "done");
+}
+
+#[test]
+fn takeover_declines_a_build_and_suppresses_prompts_until_a_headless_run() {
+    let lab = Lab::named("decline");
+    let commit = git(&lab.repo, &["rev-parse", "HEAD"]);
+    // A cached build can complete during play because it doesn't compile.
+    assert_eq!(
+        json(&ok(&lab.local(&["build", "--rev", &commit, "--wait"])))["job"]["state"],
+        "done",
+    );
+    let cargo_before = fs::read(&lab.cargo_log).unwrap();
+    let game = FakeGame::listen(&lab, true, Decision::Declined);
+    assert_eq!(
+        json(&ok(&lab.local(&["build", "--rev", &commit, "--wait"])))["job"]["cached"],
+        true,
+    );
+    assert!(game.requests.lock().unwrap().is_empty());
+
+    let response = json(&ok(&lab.lan(&[
+        "build", "--rev", &commit, "--build-env", "H2_OPT=2", "--wait",
+    ])));
+    assert_eq!(response["finished"], true);
+    assert_eq!(response["job"]["state"], "skipped");
+    assert_eq!(response["job"]["skip_reason"], "declined by the player");
+    assert_eq!(response["job"]["error"], Value::Null);
+    {
+        let requests = game.requests.lock().unwrap();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].requester, "Lab 127.0.0.1");
+        assert_eq!(requests[0].operation, Operation::Build);
+        assert_eq!(requests[0].revision, &commit[..12]);
+        assert!(requests[0].estimate_seconds > 0);
+    }
+    assert_eq!(fs::read(&lab.cargo_log).unwrap(), cargo_before);
+    let id = start_fake_run(&lab);
+    assert_eq!(wait_fake_job(&lab, &id)["job"]["skip_reason"], "declined by the player");
+    assert_eq!(game.requests.lock().unwrap().len(), 1);
+
+    game.close_window();
+    let id = start_fake_run(&lab);
+    assert_eq!(wait_fake_job(&lab, &id)["job"]["state"], "done");
+    assert_eq!(game.requests.lock().unwrap().len(), 1);
+}
+
+#[test]
+fn takeover_without_an_answer_times_out_and_can_disable_the_cooldown() {
+    let lab = Lab::with_host_options("timeout", &[
+        "--takeover-timeout", "1", "--takeover-cooldown", "0",
+    ]);
+    let game = FakeGame::listen(&lab, true, Decision::Pending);
+    for _ in 0..2 {
+        let started = Instant::now();
+        let id = start_fake_run(&lab);
+        let response = wait_fake_job(&lab, &id);
+        assert_eq!(response["job"]["state"], "skipped");
+        assert_eq!(response["job"]["skip_reason"], "declined by the player");
+        assert!(started.elapsed() >= Duration::from_secs(1));
+        assert!(!lab.root.join("runs").join(id).join("run.log").exists());
+    }
+    let requests = game.requests.lock().unwrap();
+    assert_eq!(requests.len(), 2);
+    assert!(requests.iter().all(|r| r.timeout_seconds == 1));
 }
 
 #[test]

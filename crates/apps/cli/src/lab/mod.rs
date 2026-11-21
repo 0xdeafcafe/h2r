@@ -11,18 +11,21 @@ pub mod host;
 mod lan;
 pub mod proto;
 mod service;
+mod takeover;
 mod transfer;
 
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::time::Duration;
 
+use agent_proto::takeover::MAX_TIMEOUT_SECONDS;
 use anyhow::{Context, Result, bail, ensure};
 
 const USAGE: &str = "usage:
   h2 lab host [install] [--root DIR] [--socket PATH] [--repo DIR] [--disc ISO]
               [--h2 PATH] [--out DIR] [--data DIR] [--cargo PATH]
               [--listen IP:PORT] [--name NAME]
+              [--takeover-timeout SECONDS] [--takeover-cooldown SECONDS]
                           serve on the private Unix socket; --listen enables LAN
                           install starts an Aqua LaunchAgent with LAN enabled
                           (default 0.0.0.0:29422) and prints a pairing code
@@ -156,6 +159,7 @@ fn parse_host_config(
     let mut listen = None;
     let mut name = None;
     let mut local_only = false;
+    let mut takeover = takeover::Config::default();
     let mut it = args.iter();
     while let Some(a) = it.next() {
         let mut val = || {
@@ -185,6 +189,22 @@ fn parse_host_config(
                         .context("--name needs a Bonjour service name")?
                         .clone(),
                 )
+            }
+            "--takeover-timeout" => {
+                takeover.timeout_seconds = it
+                    .next()
+                    .context("--takeover-timeout needs seconds")?
+                    .parse()?;
+                ensure!(
+                    (1..=MAX_TIMEOUT_SECONDS).contains(&takeover.timeout_seconds),
+                    "--takeover-timeout must be from 1 to {MAX_TIMEOUT_SECONDS} seconds"
+                );
+            }
+            "--takeover-cooldown" => {
+                takeover.cooldown_seconds = it
+                    .next()
+                    .context("--takeover-cooldown needs seconds")?
+                    .parse()?;
             }
             "--local-only" => local_only = true,
             _ => bail!("unexpected {a}\n\n{USAGE}"),
@@ -231,6 +251,7 @@ fn parse_host_config(
         explicit_h2,
         managed: false,
         grace: Duration::from_secs(5),
+        takeover,
     })
 }
 

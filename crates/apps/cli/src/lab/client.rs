@@ -208,13 +208,13 @@ fn id_and_timeout(args: &[String]) -> Result<(String, Option<f64>)> {
     ))
 }
 
-/// Exit status for `wait`: 0 when the job finished well, 1 when it failed
-/// or was stopped, 3 when it is still going.
+/// Exit status for `wait`: 0 for completed and skipped jobs, 1 when
+/// a job failed or was stopped, 3 when it is still going.
 fn finished_ok(v: &Value) -> Result<()> {
     if v["finished"] != Value::Bool(true) {
         std::process::exit(3);
     }
-    if v["job"]["state"] != "done" {
+    if !matches!(v["job"]["state"].as_str(), Some("done" | "skipped")) {
         std::process::exit(1);
     }
     Ok(())
@@ -476,6 +476,9 @@ fn runs_cmd(r: &Remote, args: Vec<String>) -> Result<()> {
         );
         if let Some(e) = j["error"].as_str() {
             println!("    error: {e}");
+        }
+        if let Some(reason) = j["skip_reason"].as_str() {
+            println!("    {reason}");
         }
         for l in j["summary"].as_array().into_iter().flatten() {
             println!("    {}", l.as_str().unwrap_or(""));
@@ -797,7 +800,11 @@ fn bench_cmd(r: &Remote, args: Vec<String>) -> Result<()> {
     let (mut c, v) = launch(r, req.clone(), &src)?;
     let id = v["id"].as_str().context("no id in the answer")?.to_string();
     eprintln!("lab: bench job {id} started");
-    let measured = bench_measure(&mut c, &id, ticks, gameplay_timeout);
+    let measured = match bench_measure(&mut c, &id, ticks, gameplay_timeout) {
+        Ok(BenchOutcome::Skipped(v)) => return print(&v),
+        Ok(BenchOutcome::Captured(m)) => Ok(m),
+        Err(e) => Err(e),
+    };
     // Whatever happened, the game does not stay up.
     let _ = c.call(json!({"cmd": "stop", "id": id}));
     let ended = c.call(json!({"cmd": "wait", "id": id, "timeout": 60}));
@@ -842,14 +849,22 @@ struct Measured {
     counters: String,
 }
 
+enum BenchOutcome {
+    Captured(Measured),
+    Skipped(Value),
+}
+
 /// With the job started: waits for it to run, then for gameplay with
 /// `map_ticks >= 30`, then reads the capture, `render.stats` and
 /// `profile.counters`.
-fn bench_measure(c: &mut Conn, id: &str, ticks: u64, gameplay_timeout: f64) -> Result<Measured> {
+fn bench_measure(c: &mut Conn, id: &str, ticks: u64, gameplay_timeout: f64) -> Result<BenchOutcome> {
     // The build can take a long time; the game then has to boot.
     loop {
         let v = c.call(json!({"cmd": "wait", "id": id, "timeout": 0}))?;
         if v["finished"] == Value::Bool(true) {
+            if v["job"]["state"] == "skipped" {
+                return Ok(BenchOutcome::Skipped(v));
+            }
             bail!(
                 "the job ended before gameplay ({}{})",
                 v["job"]["state"].as_str().unwrap_or("?"),
@@ -895,11 +910,11 @@ fn bench_measure(c: &mut Conn, id: &str, ticks: u64, gameplay_timeout: f64) -> R
     );
     let render = call(c, &["render"], 60.0).context("render.stats")?;
     let counters = call(c, &["counters"], 60.0).context("profile.counters")?;
-    Ok(Measured {
+    Ok(BenchOutcome::Captured(Measured {
         capture,
         render,
         counters,
-    })
+    }))
 }
 
 /// One line for a `profile.capture` answer: fps, busy-time percentiles and

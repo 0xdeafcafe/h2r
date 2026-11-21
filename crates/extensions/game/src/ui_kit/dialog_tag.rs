@@ -538,10 +538,15 @@ pub async fn prepare(
 /// game's dialogs open (window kind [`DIALOG_WINDOW`]): the request in
 /// `d`'s page, handed to its loader.
 pub async fn open_over(cx: &Cx, d: &Registered, mask: u32) -> Result<(), EntryError> {
+    open_over_screen(cx, d, mask).await.map(|_| ())
+}
+
+/// As [`open_over`], returning the screen pointer, or zero on allocation
+/// failure.
+pub async fn open_over_screen(cx: &Cx, d: &Registered, mask: u32) -> Result<u32, EntryError> {
     let at = d.page + REQUEST_AT;
     cx.write(|m| m.write(at, &request(DIALOG_WINDOW, mask as u16, d.loader)))?;
-    cx.call(GuestCall::new(d.loader).args([at])).await?;
-    Ok(())
+    Ok(cx.call(GuestCall::new(d.loader).args([at])).await?.eax)
 }
 
 /// A screen's message entry (`0x22e957`, ECX the screen, stdcall, the

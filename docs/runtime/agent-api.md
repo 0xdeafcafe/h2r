@@ -24,6 +24,8 @@ connection to hold `session.claim`.
 | Method | Access | Section |
 |---|---|---|
 | `session.status`, `methods`, `claim`, `release`, `wait`, `subscribe` | read | [`session`](#session-what-is-running-and-its-clock) |
+| `session.takeover_info`, `takeover_status` | read | [Lab consent](#lab-consent) |
+| `session.request_takeover` | act | [Lab consent](#lab-consent) |
 | `live.subscribe`, `live.status`, `live.close` | read | [Live mirror](#live-mirror) |
 | `session.pause`, `resume`, `step` | claim | [Control](#control) |
 | `world.count`, `world.query`, `world.object` | read | [`world`](#world-what-is-in-the-level) |
@@ -127,10 +129,12 @@ printf 'claim\npause\nstep 30\ncount\nresume\n' | h2 agent -
 `h2 play` with `H2_AGENT` unset opens its own socket,
 `<cache>/h2recomp/agents/<pid>.sock` (`agent_proto::discover`; the
 directory is mode 0700, so only the user can connect; set in `boot`'s
-agent source from `Host::discoverable_agent`). A game started any other
-way (`h2 serve`, `h2 run`, the Xbox app) opens a socket only where
-`H2_AGENT` or `--socket` says. `H2_AGENT=off` keeps `h2 play` from
-opening one ([switches.md](switches.md)). A client lists the directory
+agent source from `Host::discoverable_agent`). A windowed macOS game with
+an enabled agent also listens at this per-process socket when it has a
+custom endpoint, so the [lab](lab.md) can find it. Both sockets serve the
+same agent. Headless games and the Xbox app use their configured endpoint.
+`H2_AGENT=off` keeps `h2 play` from opening sockets
+([switches.md](switches.md)). A client lists the directory
 and asks each socket `session.status` (`discover::scan`); a file nothing
 answers on, left by a game that was killed, is removed. `h2 agent games`
 prints each game's socket, pid, map and phase, and `h2 agent <call>` with
@@ -246,6 +250,9 @@ object count, byte rate and capture timings.
 | `session.claim`, `session.release` | none | take or give up control; closing the connection releases it |
 | `session.wait` | `{until, timeout_ticks?, timeout_ms?}` | `{at, ticks}` once every field of `until` holds |
 | `session.subscribe` | `{events: ["phase","map","bsp","pause"]}` | then `event` notifications: `phase {from,to}`, `map {from,to}`, `bsp {from,to}`, `paused`, `resumed {why: request, timeout or released}` |
+| `session.takeover_info` | none | `{window, pid}`, whether the game has a window and its process id |
+| `session.request_takeover` | `{requester, operation, revision, estimate_seconds, timeout_seconds}` | `{id}` for the consent prompt |
+| `session.takeover_status` | `{id}` | `{decision}` for the request |
 | `features.list` | none | `{at, plan}`: the feature plan text the game printed at start |
 
 `until` takes `tick`, `ticks` (more ticks than when the wait began),
@@ -263,6 +270,29 @@ h2 agent watch phase map          # events until interrupted
 `session.wait` replaces every "sleep and screenshot" loop. Switches do not
 change through `features.list`; live changes go through [`render.toggle`](#edit-and-hot-render-live-tag-and-shader-changes)
 and [`cheat.set`](#menu-methods-settings-perf-overlay-cheats).
+
+### Lab consent
+
+The lab uses `session.takeover_info` to distinguish a windowed game
+from a headless agent. Windowed player runs register
+`session.request_takeover` and `session.takeover_status`. Windowed
+replays and lockstep runs report the window without offering a prompt.
+The request
+uses the usual agent action access, so an unrelated connection holding
+control can block it. `operation` is `"build"` or `"run"`, `revision`
+names the branch, commit or installed image, and `estimate_seconds` is
+an estimate, with zero for an unknown duration. `timeout_seconds` is
+wall-clock time from acceptance, from 1 to 3600. The game shortens the
+requester and revision for display. A second request returns `BUSY`
+while a prompt is queued or open.
+
+The status result is `pending`, `allowed`, `declined`, `timed_out` or
+`unavailable` (the dialog failed to open). **Not now** and Back both
+decline. **Allow** grants consent for that request, after which the lab
+waits for the player to quit. The game leaves saving and quitting with
+the player. A request expires even if the UI is still loading. The game
+dismisses the expired dialog at the next UI update. The status method is
+read-only and answers `GONE` for an unknown or superseded id.
 
 ### Control
 

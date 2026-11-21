@@ -802,8 +802,8 @@ pub(crate) fn run_with_theater(
         }
         host.theater = theater;
         host.debug_menu = debug_menu;
-        // The agent socket where editors find it (docs/runtime/agent-api.md,
-        // "Finding a game"), unless H2_AGENT names one or is `off`.
+        // Default to the agent socket where editors and the lab find games
+        // (docs/runtime/agent-api.md, "Finding a game").
         host.discoverable_agent = true;
         host.embedded_live = live.local;
         host.perf_overlay = perf_overlay;

@@ -72,6 +72,7 @@ pub mod h1_hud_text;
 pub mod icons;
 pub mod join_link;
 pub mod keyboard_glue;
+pub mod lab_takeover;
 pub mod layout_glue;
 pub mod level_boot;
 pub mod list_class;

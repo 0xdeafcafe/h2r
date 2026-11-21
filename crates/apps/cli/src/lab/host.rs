@@ -14,6 +14,7 @@ use std::process::{Command, Stdio};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use agent_proto::takeover::{Operation, Request as TakeoverRequest};
 use anyhow::{Context, Result, anyhow, bail, ensure};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -21,7 +22,7 @@ use sha2::{Digest, Sha256};
 
 use super::proto::{self, BuildSpec, INPUT_FILE, Manifest, Request, RunReq};
 use super::transfer::Transfers;
-use super::{discovery, lan, service, transfer};
+use super::{discovery, lan, service, takeover, transfer};
 
 /// Where the host keeps everything, and what it runs.
 #[derive(Clone, Debug)]
@@ -43,6 +44,7 @@ pub struct HostConfig {
     pub explicit_h2: bool,
     /// SIGTERM to SIGKILL on stop.
     pub grace: Duration,
+    pub takeover: takeover::Config,
 }
 
 impl HostConfig {
@@ -58,7 +60,8 @@ pub struct Meta {
     pub id: String,
     /// `run` or `build`.
     pub kind: String,
-    /// queued, building, running, then done, failed or stopped.
+    /// queued, awaiting_consent, awaiting_quit, building, running, then
+    /// done, failed, stopped or skipped.
     pub state: String,
     pub request: Value,
     pub commit: Option<String>,
@@ -73,6 +76,8 @@ pub struct Meta {
     pub exit_code: Option<i32>,
     pub signal: Option<i32>,
     pub error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub skip_reason: Option<String>,
     /// The frame stats report lines from the log.
     pub summary: Vec<String>,
     pub notes: Vec<String>,
@@ -83,7 +88,7 @@ pub struct Meta {
 }
 
 fn is_final(state: &str) -> bool {
-    matches!(state, "done" | "failed" | "stopped")
+    matches!(state, "done" | "failed" | "stopped" | "skipped")
 }
 
 struct Active {
@@ -106,6 +111,7 @@ struct Shared {
     cv: Condvar,
     transfers: Transfers,
     checkout: Mutex<()>,
+    takeover: takeover::Gate,
 }
 
 /// A job ended because it was asked to stop.
@@ -143,6 +149,7 @@ pub fn serve(cfg: HostConfig) -> Result<()> {
         (Some(name), Some(addr)) => Some(discovery::advertise(name, addr.port())?),
         _ => None,
     };
+    let takeover = takeover::Gate::new(cfg.takeover, &cfg.root, &cfg.h2);
     let shared = Arc::new(Shared {
         cfg,
         listen_addr,
@@ -151,6 +158,7 @@ pub fn serve(cfg: HostConfig) -> Result<()> {
         cv: Condvar::new(),
         transfers: Transfers::default(),
         checkout: Mutex::new(()),
+        takeover,
     });
     recover(&shared);
     eprintln!(
@@ -175,7 +183,7 @@ pub fn serve(cfg: HostConfig) -> Result<()> {
         std::thread::spawn(move || {
             let timeout = Some(Duration::from_secs(120));
             if conn.set_read_timeout(timeout).is_ok() && conn.set_write_timeout(timeout).is_ok() {
-                let _ = connection(&sh, conn, |_| Ok(true));
+                let _ = connection(&sh, conn, "Local lab", |_| Ok(true));
             }
         });
     }
@@ -234,7 +242,10 @@ fn serve_lan(sh: Arc<Shared>, listener: TcpListener, authority: lan::Server) {
             let authenticated = authority.authenticate(conn);
             drop(reservation);
             if let Ok(Some(conn)) = authenticated {
-                let _ = connection(&sh, conn, |conn: &lan::Authenticated| conn.is_authorized());
+                let requester = format!("Lab {}", peer.ip().to_canonical());
+                let _ = connection(&sh, conn, &requester, |conn: &lan::Authenticated| {
+                    conn.is_authorized()
+                });
             }
         });
     }
@@ -342,6 +353,7 @@ pub(super) fn local_status(path: &Path) -> Result<Value> {
 fn connection<S: Read + Write>(
     sh: &Arc<Shared>,
     conn: S,
+    requester: &str,
     authorized: impl Fn(&S) -> Result<bool>,
 ) -> Result<()> {
     let mut conn = BufReader::new(conn);
@@ -386,7 +398,7 @@ fn connection<S: Read + Write>(
                 sync(sh, &mut conn, &branch, &commit, bytes, &authorized)?;
                 return Ok(());
             }
-            Request::Put { .. } => reply(conn.get_mut(), handle(sh, r))?,
+            Request::Put { .. } => reply(conn.get_mut(), handle(sh, r, requester))?,
             Request::Update => {
                 drop(transfer);
                 let staged = (|| {
@@ -413,7 +425,7 @@ fn connection<S: Read + Write>(
             }
             _ => {
                 drop(transfer);
-                reply(conn.get_mut(), handle(sh, r))?;
+                reply(conn.get_mut(), handle(sh, r, requester))?;
             }
         }
     }
@@ -501,7 +513,7 @@ fn sync<S: Read + Write>(
     reply(conn.get_mut(), result)
 }
 
-fn handle(sh: &Arc<Shared>, r: Request) -> Result<Value> {
+fn handle(sh: &Arc<Shared>, r: Request, requester: &str) -> Result<Value> {
     let cfg = &sh.cfg;
     match r {
         Request::Status => {
@@ -535,8 +547,8 @@ fn handle(sh: &Arc<Shared>, r: Request) -> Result<Value> {
             Ok(json!({ "known": known, "bases": bases }))
         }
         Request::Fetch { .. } | Request::Sync { .. } | Request::Update => unreachable!(),
-        Request::Run(run) => start(sh, Job::Run(run)),
-        Request::Build(b) => start(sh, Job::Build(b)),
+        Request::Run(run) => start(sh, Job::Run(run), requester),
+        Request::Build(b) => start(sh, Job::Build(b), requester),
         Request::Wait { id, timeout } => wait(sh, &id, timeout.map(Duration::from_secs_f64)),
         Request::Stop { id } => stop(sh, &id),
         Request::Agent {
@@ -618,7 +630,7 @@ impl Job {
     }
 }
 
-fn start(sh: &Arc<Shared>, job: Job) -> Result<Value> {
+fn start(sh: &Arc<Shared>, job: Job, requester: &str) -> Result<Value> {
     let cfg = &sh.cfg;
     // Everything that can be refused is refused before a job exists.
     let commit = match &job.spec().rev {
@@ -690,7 +702,8 @@ fn start(sh: &Arc<Shared>, job: Job) -> Result<Value> {
     drop(inner);
     let sh2 = Arc::clone(sh);
     let id2 = id.clone();
-    std::thread::spawn(move || execute(&sh2, &id2, job, commit, lock));
+    let requester = requester.to_owned();
+    std::thread::spawn(move || execute(&sh2, &id2, job, commit, &requester, lock));
     Ok(json!({ "id": id, "job": m }))
 }
 
@@ -792,12 +805,24 @@ struct Image {
     env: BTreeMap<String, String>,
 }
 
-fn execute(sh: &Arc<Shared>, id: &str, job: Job, commit: Option<String>, lock: File) {
+enum JobOutcome {
+    Finished(Option<std::process::ExitStatus>),
+    Skipped(&'static str),
+}
+
+fn execute(
+    sh: &Arc<Shared>,
+    id: &str,
+    job: Job,
+    commit: Option<String>,
+    requester: &str,
+    lock: File,
+) {
     let t = Instant::now();
-    let r = run_job(sh, id, &job, commit.as_deref());
-    let (state, error) = match &r {
-        Ok(Some(st)) if st.success() => ("done", None),
-        Ok(Some(st)) => (
+    let outcome = run_job(sh, id, &job, commit.as_deref(), requester);
+    let (state, error) = match &outcome {
+        Ok(JobOutcome::Finished(Some(st))) if st.success() => ("done", None),
+        Ok(JobOutcome::Finished(Some(st))) => (
             "failed",
             Some(match (st.code(), st.signal()) {
                 (Some(c), _) => format!("exit {c}"),
@@ -805,7 +830,8 @@ fn execute(sh: &Arc<Shared>, id: &str, job: Job, commit: Option<String>, lock: F
                 _ => "failed".into(),
             }),
         ),
-        Ok(None) => ("done", None),
+        Ok(JobOutcome::Finished(None)) => ("done", None),
+        Ok(JobOutcome::Skipped(_)) => ("skipped", None),
         Err(e) if e.is::<Stopped>() => ("stopped", None),
         Err(e) => ("failed", Some(format!("{e:#}"))),
     };
@@ -813,7 +839,11 @@ fn execute(sh: &Arc<Shared>, id: &str, job: Job, commit: Option<String>, lock: F
     let summary = fs::read_to_string(run_dir.join("run.log"))
         .map(|l| summarize(&l))
         .unwrap_or_default();
-    let status = r.as_ref().ok().copied().flatten();
+    let (status, skip_reason) = match outcome {
+        Ok(JobOutcome::Finished(status)) => (status, None),
+        Ok(JobOutcome::Skipped(reason)) => (None, Some(reason.to_owned())),
+        Err(_) => (None, None),
+    };
     // A stopped game exits through its SIGTERM handler or the signal.
     let state = if state == "failed" && sh.stop_requested(id) {
         "stopped"
@@ -826,6 +856,7 @@ fn execute(sh: &Arc<Shared>, id: &str, job: Job, commit: Option<String>, lock: F
     if let Some(m) = inner.jobs.get_mut(id) {
         m.state = state.into();
         m.error = error;
+        m.skip_reason = skip_reason;
         m.duration_s = Some(t.elapsed().as_secs_f64());
         m.exit_code = status.and_then(|s| s.code());
         m.signal = status.and_then(|s| s.signal());
@@ -840,29 +871,109 @@ fn execute(sh: &Arc<Shared>, id: &str, job: Job, commit: Option<String>, lock: F
     sh.cv.notify_all();
 }
 
-/// The build (when the job names a commit) and the run; `None` for a build
-/// job, else the game's exit status.
+/// A coarse estimate for the player. A run without a frame limit can
+/// continue until the driver stops it.
+fn takeover_request(
+    job: &Job,
+    commit: Option<&str>,
+    requester: &str,
+    builds_image: bool,
+    timeout_seconds: u32,
+) -> TakeoverRequest {
+    const BUILD_SECONDS: u32 = 20 * 60;
+    let build_seconds = if builds_image { BUILD_SECONDS } else { 0 };
+    let (operation, estimate_seconds) = match job {
+        Job::Build(_) => (Operation::Build, build_seconds),
+        Job::Run(run) => {
+            let frames = run
+                .env
+                .get("H2_BOOT_STOP_AT_PRESENT")
+                .and_then(|n| n.parse::<u64>().ok())
+                .or(run.frames);
+            let seconds = frames.map_or(0, |frames| {
+                let fps = run.args.windows(2).rev().find_map(|pair| {
+                    (pair[0] == "--fps").then_some(&pair[1])
+                });
+                let fps = fps
+                    .or_else(|| run.env.get("H2_FPS"))
+                    .and_then(|fps| fps.parse::<u64>().ok())
+                    .filter(|&fps| fps > 0)
+                    .unwrap_or(30);
+                let run_seconds = frames.div_ceil(fps).saturating_add(30);
+                u32::try_from(run_seconds).unwrap_or(u32::MAX).saturating_add(build_seconds)
+            });
+            (Operation::Run, seconds)
+        }
+    };
+    TakeoverRequest {
+        requester: requester.to_owned(),
+        operation,
+        revision: commit.map_or_else(
+            || "installed image".into(),
+            |sha| sha.chars().take(12).collect(),
+        ),
+        estimate_seconds,
+        timeout_seconds,
+    }
+}
+
+fn request_takeover(
+    sh: &Shared,
+    id: &str,
+    request: TakeoverRequest,
+) -> Result<Option<JobOutcome>> {
+    let outcome = sh.takeover.admit(
+        request,
+        |phase| sh.update(id, |m| m.state = phase.into()),
+        || sh.stop_requested(id),
+    );
+    match outcome {
+        _ if sh.stop_requested(id) => Err(Stopped.into()),
+        takeover::Outcome::Proceed => Ok(None),
+        takeover::Outcome::Skipped(reason) => Ok(Some(JobOutcome::Skipped(reason))),
+        takeover::Outcome::Stopped => Err(Stopped.into()),
+    }
+}
+
 fn run_job(
     sh: &Arc<Shared>,
     id: &str,
     job: &Job,
     commit: Option<&str>,
-) -> Result<Option<std::process::ExitStatus>> {
+    requester: &str,
+) -> Result<JobOutcome> {
     let cfg = &sh.cfg;
     let run_dir = cfg.dir("runs").join(id);
-    let image = match commit {
-        Some(c) => {
+    let planned = commit.map(|c| plan_image(cfg, job.spec(), c)).transpose()?;
+    let builds_image = planned.as_ref().is_some_and(|p| !p.cached);
+    let consent = |builds_image| {
+        request_takeover(
+            sh,
+            id,
+            takeover_request(job, commit, requester, builds_image, cfg.takeover.timeout_seconds),
+        )
+    };
+    if (builds_image || matches!(job, Job::Run(_))) && let Some(skipped) = consent(builds_image)? {
+        return Ok(skipped);
+    }
+    let image = match (commit, planned) {
+        (Some(c), Some(planned)) => {
             sh.update(id, |m| m.state = "building".into());
             let log = File::create(run_dir.join("build.log"))?;
-            ensure_image(sh, id, job.spec(), c, &log)?
+            ensure_image(sh, id, job.spec(), c, planned, &log)?
         }
-        None => Image {
+        _ => Image {
             h2: cfg.h2.clone(),
             out: cfg.out.clone(),
             env: BTreeMap::new(),
         },
     };
-    let Job::Run(run) = job else { return Ok(None) };
+    let Job::Run(run) = job else { return Ok(JobOutcome::Finished(None)) };
+    // A player can open the game during a long build. Ask before starting
+    // the run too if there was an uncached build in between.
+    if builds_image && let Some(skipped) = consent(false)? {
+        return Ok(skipped);
+    }
     let log = File::create(run_dir.join("run.log"))?;
     let cmd = play_command(cfg, id, run, &image, commit)?;
     let sock = agent_socket_path(cfg, id);
@@ -881,7 +992,7 @@ fn run_job(
             });
         }
     }
-    Ok(Some(st))
+    Ok(JobOutcome::Finished(Some(st)))
 }
 
 /// `h2 play` for `run` with `image`, its environment cleaned of the host's
@@ -1014,11 +1125,12 @@ fn agent_call(
         };
         ensure!(m.kind == "run", "job {id} is a {}, not a run", m.kind);
         match m.state.as_str() {
-            "queued" | "building" => bail!(
+            "queued" | "awaiting_consent" | "awaiting_quit" | "building" => bail!(
                 "job {id} is {} (h2 lab wait {id} --timeout 5, until it is running)",
                 m.state
             ),
             "running" => {}
+            "skipped" => bail!("run {id} was skipped: {}", m.skip_reason.as_deref().unwrap_or("?")),
             s => bail!("run {id} is {s}: its game has exited"),
         }
         let Some(sock) = m.agent_socket.as_deref().map(PathBuf::from) else {
@@ -1138,18 +1250,18 @@ pub fn run_direct(cfg: &HostConfig, run: &RunReq) -> Result<std::process::ExitSt
     Ok(st)
 }
 
-/// The image for `spec` at `commit`: from `images/<key>` when built before,
-/// else built there: a detached worktree of the commit (`src/<commit>`),
-/// `cargo build` of its `h2` into the shared `target/`, a copy of that `h2`,
-/// and `h2 build` with the build environment and a shared object cache.
-fn ensure_image(
-    sh: &Shared,
-    id: &str,
-    spec: &BuildSpec,
-    commit: &str,
-    log: &File,
-) -> Result<Image> {
-    let cfg = &sh.cfg;
+/// Resolve the cache key once so admission and the builder agree about
+/// whether a job will start an expensive compile.
+struct ImagePlan {
+    image: Image,
+    key: String,
+    dir: PathBuf,
+    features: Vec<String>,
+    pgo_hash: String,
+    cached: bool,
+}
+
+fn plan_image(cfg: &HostConfig, spec: &BuildSpec, commit: &str) -> Result<ImagePlan> {
     let mut env = spec.env.clone();
     let mut pgo_hash = String::new();
     if let Some(name) = proto::pgo_from(&spec.env)? {
@@ -1167,8 +1279,24 @@ fn ensure_image(
         out: Some(dir.join("out")),
         env,
     };
+    let cached = dir.join("ready").is_file();
+    Ok(ImagePlan { image, key, dir, features, pgo_hash, cached })
+}
+
+/// From the image cache when built before, else build a detached checkout
+/// with the requested features and shared object cache.
+fn ensure_image(
+    sh: &Shared,
+    id: &str,
+    spec: &BuildSpec,
+    commit: &str,
+    plan: ImagePlan,
+    log: &File,
+) -> Result<Image> {
+    let cfg = &sh.cfg;
+    let ImagePlan { image, key, dir, features, pgo_hash, cached } = plan;
     let mut w = log.try_clone()?;
-    if dir.join("ready").is_file() {
+    if cached {
         writeln!(w, "lab: image {key} for {commit} is built")?;
         sh.update(id, |m| {
             m.image = Some(key);

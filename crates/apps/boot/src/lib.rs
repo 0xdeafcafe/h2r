@@ -671,6 +671,10 @@ fn run_configured(
         s.add_bots()?;
     }
     let _telemetry = core.telemetry;
+    #[cfg(feature = "gpu")]
+    let observer_window = host.film_view.is_some();
+    #[cfg(not(feature = "gpu"))]
+    let observer_window = false;
     if let Some(f) = &film {
         #[cfg(feature = "gpu")]
         if let Some(view) = host.film_view.take() {
@@ -1018,7 +1022,16 @@ fn run_configured(
         render_hooks,
     )?;
     let mut harness = late.harness;
-    let agent = late.agent;
+    let mut agent = late.agent;
+    if let Some(a) = &mut agent {
+        a.configure_takeover(
+            &mut features,
+            !headless || observer_window,
+            !headless && opts.d3d && xa.is_some() && !replaying && !lockstep_on && !host_light
+                && sim_mode.is_none(),
+        )
+        .context("installing lab takeover consent")?;
+    }
     if let (Some(theater), Some(a)) = (&theater, &agent) {
         theater.connect(&a.agent);
     }

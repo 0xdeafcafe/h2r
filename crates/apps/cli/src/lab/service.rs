@@ -467,6 +467,15 @@ fn launch_args(cfg: &HostConfig) -> Result<Vec<String>> {
             args.extend(["--name".into(), name.clone()]);
         }
     }
+    let defaults = super::takeover::Config::default();
+    for (flag, value, default) in [
+        ("--takeover-timeout", cfg.takeover.timeout_seconds, defaults.timeout_seconds),
+        ("--takeover-cooldown", cfg.takeover.cooldown_seconds, defaults.cooldown_seconds),
+    ] {
+        if value != default {
+            args.extend([flag.into(), value.to_string()]);
+        }
+    }
     Ok(args)
 }
 
@@ -814,6 +823,7 @@ mod tests {
             data: "/game/saves".into(),
             cargo: "/opt/tool chain/cargo".into(),
             grace: Duration::from_secs(5),
+            takeover: super::super::takeover::Config::default(),
             lan: Some(lan::Listen {
                 addr: "0.0.0.0:29422".parse().unwrap(),
                 name: Some("A & B".into()),
