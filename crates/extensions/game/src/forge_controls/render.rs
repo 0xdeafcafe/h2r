@@ -116,7 +116,7 @@ pub fn camera_hooks(b: &mut Builder) -> Result<(), BuildError> {
             &points::GAME_TICK,
             "park the Forge monitor's biped",
             |call| {
-                let monitor = lock().monitor;
+                let monitor = lock().state.monitor;
                 if monitor || HIDDEN.load(Ordering::Relaxed) != u32::MAX {
                     let mut m = call.ctx.memory();
                     let admitted = monitor && crate::forge_map::admitted(&*m);
@@ -130,10 +130,10 @@ pub fn camera_hooks(b: &mut Builder) -> Result<(), BuildError> {
     let scratch = b.guest_alloc(VIEW_STRIDE, runtime::guest::Permissions::RW)?;
     b.raw()
         .before(&points::RENDER_VIEWS, "draw Forge monitor", move |call| {
-            if lock().active {
+            if lock().state.active {
                 draw_world_view(call, scratch, |guest, views| {
                     let mut state = lock();
-                    if !state.active {
+                    if !state.state.active {
                         return None;
                     }
                     let retail =
@@ -146,10 +146,10 @@ pub fn camera_hooks(b: &mut Builder) -> Result<(), BuildError> {
                                 pitch: p.pitch,
                             });
                     state.eye = retail;
-                    if !state.monitor {
+                    if !state.state.monitor {
                         return None;
                     }
-                    let c = state.camera.or(retail)?;
+                    let c = state.state.camera.or(retail)?;
                     Some((
                         Pose {
                             position: c.position,
@@ -170,7 +170,7 @@ pub fn camera_hooks(b: &mut Builder) -> Result<(), BuildError> {
             "hide parked Forge biped",
             |call| {
                 let hidden = HIDDEN.load(Ordering::Relaxed);
-                if hidden == u32::MAX || call.cpu.esi != vis::MAIN_VIS || !lock().monitor {
+                if hidden == u32::MAX || call.cpu.esi != vis::MAIN_VIS || !lock().state.monitor {
                     return Ok(Flow::Continue);
                 }
                 let mut mem = call.ctx.memory();
