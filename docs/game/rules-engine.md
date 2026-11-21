@@ -43,7 +43,9 @@ points. No game data is in this page.
 
 Goals: new modes without new Rust ("Payoff"); one engine to maintain and
 test headless instead of seven lifted ones behind vtables; scripts from
-players that are safe to run on a host we own.
+players that are safe to run on any machine: players' consoles host Live
+games and film viewers re-run the VM, so safety rests on the VM
+("Security and usability"), never on who owns the host.
 
 Non-goals:
 
@@ -70,7 +72,8 @@ RVT dialect (later) ──┘        (formats crate `rules`: Studio, cli, Live u
    variant record hx block: mode + hash prefix + option bits
    Live session: hx block (existing) + full hash; blob fetched by hash
                                           │
-   host only: verify again ─> VM, state in SimExt ─> named engine entries
+   host only: verify again ─> VM in the engine's own callbacks,
+                              state in SimExt ─> named engine entries
                                           │
                      ordinary game state, replicated as today
 ```
@@ -97,8 +100,7 @@ Three things travel: which script, its option values, and the blob.
 **Which script and its options: the variant record.** The `hx` block
 ([game-options.md](game-options.md#where-the-extension-lives),
 `variants::ext`) has 13 reserved bytes at `+0x11f..+0x12b`. The plan
-uses them all and keeps version 1, because `Ext::decode` does not read
-the reserved bytes (**Code**, `crates/formats/variants/src/ext.rs`):
+uses them all:
 
 | Offset | Size | Content |
 |---|---|---|
@@ -106,18 +108,39 @@ the reserved bytes (**Code**, `crates/formats/variants/src/ext.rs`):
 | `+0x120` | 8 | the first 8 bytes of the definition's SHA-256 (the rules IR, or Firefight's definition) |
 | `+0x128` | 4 | 32 bits of packed script option values, in the order the script declares them |
 
-The block's CRC covers these bytes. Because the block is in the record,
-the reference survives every carrier with no new field: saved variants,
-`.h2variant` files (`variants::portable`), cloud saves, Studio
-(`crates/apps/studio/src/ui/variants.rs`), the `0x130`-byte variant in a
-`0x37c`-byte hopper slot (`crates/live/live-proto/src/hopper`) and the
-web hopper builder (`web/src/admin/HopperBuilder.tsx`). A script's own
-options are limited to those 32 bits; the compiler refuses more.
-Retail's settings (score and time limits, lives, the per-engine type
-area) stay where they are and a script reads them by name.
-[firefight.md](firefight.md#live) plans a mode id and a hash prefix in
-two of the same bytes and `variants::ext` assigns none; this table is
-the one layout for both.
+The block's CRC covers these bytes, and the table is the one layout for
+Firefight ([firefight.md](firefight.md#live)) and scripts. A carrier
+that copies the record keeps the reference with no new field: saved
+variants, `.h2variant` files (`variants::portable`), cloud saves, the
+`0x130`-byte variant in a `0x37c`-byte hopper slot
+(`crates/live/live-proto/src/hopper`) and the web hopper builder
+(`web/src/admin/HopperBuilder.tsx`).
+
+An editor does not copy: it decodes the block to `variants::ext::Ext`
+and encodes it again, and `Ext::encode` writes the reserved bytes as
+zero and an all-zero block for default extras (**Code**,
+`crates/formats/variants/src/ext.rs`; the in-game page in
+`crates/extensions/game/src/variant_page.rs` and `VariantEditor::set_ext`
+in `crates/formats/variants/src/panel.rs` both write through it). So
+`Ext` carries the reference: a `script` field (mode, hash prefix, option
+bits) that `decode` reads and `encode` writes, with `is_default` false
+while the mode is not 0. A gravity edit keeps the script, and a script
+variant with no other extras still has a block. The version stays 1: a
+version 2 would make an older build ignore the extras too
+(`Why::Version`) and protect nothing, since an older editor encodes
+version 1 from its own struct.
+
+**An older build that edits a script variant drops the reference**, and
+no newer build can stop it: its `Ext` has no `script` field, so its
+`encode` zeroes the bytes. What is left is a valid record of the carrier
+engine with the edited extras. It plays as the carrier's game ("A record
+with no mode"), its script name and option rows are gone, and that build
+shows no warning. The copy cannot be repaired; the variant is made again
+from the script, which stays on Live under its hash.
+
+A script's own options are limited to the 32 bits; the compiler refuses
+more. Retail's settings (score and time limits, lives, the per-engine
+type area) stay where they are and a script reads them by name.
 
 **To other machines: the Live session.** The wire codec drops the spare
 bytes (`0x7cc50`/`0x7d520`, **E**, game-options.md "How a variant reaches
@@ -161,12 +184,26 @@ A new index is not possible without rewriting four retail paths:
   entity (types 0 to 5, **E**, [notes/ai-networking.md](notes/ai-networking.md))
   for whatever its HUD draws from it.
 
-On the host, in a game whose block says mode 2, the `rules` feature
-replaces the carrier engine's rule-making callbacks with ones that do
-nothing, and the VM makes the rules. Which vtable slots that is per
-engine is part of each port. How much each engine's client-side display
-depends on its own vtable rather than on replicated state is not traced
-("Not verified"); it decides how much display work each port carries.
+On the host, in a script game, the `rules` feature answers each of the
+carrier engine's rule-making callbacks itself: a `before` hook on the
+callback's entry runs the script's handler for that event in place of
+the lifted body ("The host runtime"). No guest memory is patched. Which
+callbacks those are per engine is part of each port; the one on record
+is Slayer's kill callback, vtable slot `+0x78`, which `PLAYER_KILLED`
+(`0x15ce70`) calls last (**E**, firefight.md "Guest boundary"). How much
+each engine's client-side display depends on its own vtable rather than
+on replicated state is not traced ("Not verified"); it decides how much
+display work each port carries.
+
+**A record with no mode.** On a host with the `rules` feature on, a
+record whose block has mode 0 (all zero, or extras only), on an engine
+whose port has passed parity, runs that engine's built-in script, chosen
+by engine index from a table compiled in. Saved variants, hopper slots
+and copies an older build edited are script games with no byte changed.
+The host puts the built-in's hash in the session's `rules` field as for
+any script, and a film records which ran: its `simulation_hooks` SHA
+differs with the feature and it stores the blob. The rule covers Live,
+local and dedicated-host games; System Link is in "What stays lifted".
 
 ### The host runtime
 
@@ -176,9 +213,13 @@ depends on its own vtable rather than on replicated state is not traced
 - an observer after a successful `GAME_ACTIVATE` (`0x18f000`) reads the
   block, finds the blob by hash, verifies it and starts the VM, or keeps
   a refusal with its reason;
-- a `before` on `GAME_TICK` makes the engine calls the last step queued;
-- an observer after `GAME_TICK` gathers the tick's events and reads, and
-  runs the VM step.
+- a `before` on each rule callback of the carrier engine, and on its
+  per-tick update, answers with an async body (as Firefight's
+  `GAME_TICK` hook does) that runs the handler and makes its engine
+  calls in place, through `engine::entry::Cx`;
+- an observer after `GAME_TICK` gathers the events no engine callback
+  reports (squads, actor kills, bounces) and runs their handlers;
+- a `before` on `GAME_TICK` makes the queued calls ("Order").
 
 All hooks are on game-thread points. The VM runs on the authoritative
 machine only (`GAME_ENGINE_AUTHORITATIVE`, `0x15b2f0`) and in a film's
@@ -327,6 +368,9 @@ on death(p) {
 ### Phases: attack and defend
 
 ```text
+option phase_time: int 60..600 = 180
+option capture_time: int 5..60 = 20
+
 global var phase: int = 0
 global var clock: timer
 
@@ -365,10 +409,10 @@ volume#4.entered ──> counter#7.start (limit 3) ──> message#9.fire
 
 A node's state is a global slot named by node id; a link is a call, in
 link-id order. The graph's budget rule (node visits a tick, the rest
-next tick, forge-features.md) lowers to a queue in slots, so the Forge
-step is this VM. Links that retail data expresses whole (a teleporter
-pair) stay retail data. A map's graph and the game type's script are two
-blobs in one VM; the game type's handlers run first.
+next tick, forge-features.md) lowers to a queue in slots. Links that
+retail data expresses whole (a teleporter pair) stay retail data. A
+map's graph and the game type's script are two blobs in one VM; the game
+type's handlers run first.
 
 ## The IR and the VM
 
@@ -382,21 +426,42 @@ arithmetic, compare, slot load and store, forward conditional jump,
 entry. There is no backward jump and no indirect jump, so termination is
 a property of the format, and the verifier needs no fixpoint.
 
-**Budget.** A VM step may execute 20,000 ops. The verifier computes each
-handler's worst case from the set bounds (16 players, 8 teams, 256
-labelled objects); a script whose worst tick fits is marked proven and
-the run-time check cannot fire. For any other script the count is
-enforced: going over is a **script error**. A script error stops the VM,
-ends the round through `GAME_END` with the outcome "script error", and
-is named in the log and the post-game report. It happens at the same op
-on every run, so a film replays it.
+**Budget.** A tick may execute 20,000 ops across all its handlers. The
+count is always enforced and nothing is marked proven: a handler's worst
+case follows from the set bounds (16 players, 8 teams, 256 labelled
+objects), but the engine decides how many kills or zone entries a tick
+holds. Events are not capped to make a proof, because a synchronous
+handler ("Order") moved to the next tick moves a score off the tick
+retail lands it on, and a dropped kill is a wrong score. One cap changes
+no retail rule: `on enter` and `on leave` together run at most 64 times
+a tick, the rest carried over in zone, then object order. The verifier
+reports a **worst-tick estimate** (each handler's worst case times one
+event per player, 64 zone events, every timer and `on tick`). Studio
+shows it and the allow-list requires it to fit; it assumes one kill,
+death or spawn per player a tick, which is not verified. Going over is a
+**script error**: it stops the VM, ends the round through `GAME_END`
+with the outcome "script error", and is named in the log and the
+post-game report. It happens at the same op on every run, so a film
+replays it.
 
-**Order.** One step runs, in this order: `init` or `round_start` when
-due; the tick's events in the engine's event order; expired timers in
-slot order; `on tick`. `for each` visits players by slot index, teams by
-index, objects by label then placement id. Engine calls are queued in
-program order and made before the next tick, as Firefight's are. Reads
-during a step see the state at the tick boundary, not the queue.
+**Order.** Handlers run where their event happens, so a script's calls
+land at the point in the tick where the lifted engine's did:
+
+| Handlers | Run | Their calls |
+|---|---|---|
+| `on kill`, and each event the carrier engine has a callback for (per port: death, spawn, pickup, drop, join, quit, round start and end) | synchronously, in place of that callback | made at once |
+| `on enter`, `on leave`, `on press`, `on timer` (slot order), then `on tick` | synchronously, in place of the carrier's per-tick update (`0x15c150`) | made at once |
+| `on squad_dead`, `on actor_kill`, `on bounce`; `on init` | after `GAME_TICK`, from what the tick's observers gathered; `init` after `GAME_ACTIVATE` | queued |
+
+An event the carrier has no callback for runs with the per-tick group.
+Some calls are queued from any handler and made in program order by the
+`before` on the next `GAME_TICK`: squad commands, which are host log
+entries that replicas and films apply at the tick boundary (firefight.md
+"The director"); and object creation, deletion and teleports, not known
+to be legal inside a damage or AI update (`AI_ERASE` only marks an actor
+the AI is updating, `0x2736fc`). A read sees every call made so far and
+no queued one. `for each` visits players by slot index, teams by index,
+objects by label then placement id.
 
 **Determinism.** The VM uses integers and fixed point only. Where the
 API must look at floats (a position against a zone), the test runs in
@@ -412,14 +477,18 @@ zero gives 0 and a trace warning.
 **Versioning.** A build that can host or join script games advertises
 `rules/1` in its presence capabilities, beside `variant-ext/1`
 (**Code**, `live_proto` capabilities in `crates/live/live-proto/src/lib.rs`).
-An older build is **refused** from a script game, where a build without
-`variant-ext/1` is only warned about. The difference: variant extras
-change a few scalars and the game stays the same game; a script changes
-who scores, who is on which team and when the round ends, and an older
-guest would show and predict the carrier engine's rules for the whole
-match. The IR version changes when ops change; the API version when an
-entry's meaning changes. A blob names both and a VM refuses what it does
-not know.
+An older build cannot host a script game. As a guest it is **warned
+about, not refused**. No guest on any build runs the script, so an older
+guest predicts exactly as a newer one does, from the same replicated
+state. What it lacks is display: the script's name, option labels and
+messages, the objective and HUD observers, and the blob fetch that
+brings them; it shows the carrier engine's labels. The warning is the
+mechanism that exists: the host's log names the guests lacking a
+capability (`variant_ext::session_guests`, `Hle::players_lacking`,
+game-options.md "How it reaches every player"). A refusal needs a join
+gate in the session and matchmaking path, and none is designed. The IR
+version changes when ops change; the API version when an entry's meaning
+changes. A blob names both and a VM refuses what it does not know.
 
 **Films.** The blob, the options and the seed are replay inputs, and the
 `rules` feature's hooks are part of `simulation_hooks`
@@ -442,10 +511,11 @@ Reads:
 | player and team score, kills, deaths | statborg, `E+0x304` (`game::STATBORG`, `PLAYER_STATS`, `TEAM_STATS`) | named |
 | players: present, alive, team, unit, lives | player datum (`guest-layout` `player.rs`; team `+0xc0`, lives `+0x1ac`) | named |
 | team play, score and time limits, type area | variant record `V` (`variants::record`, [live-gamestate.md](../live/live-gamestate.md)) | named |
-| round start tick | `E+0x70` (`ROUND_START_TICK`, likely) | named |
+| `round_time_left()`: the round start tick against the time limit | `E+0x70` (`ROUND_START_TICK`, likely) and `V` | named |
 | objects: tag, position, parent | object datum (`guest-layout` `object.rs`) | named |
-| objects by label | Forge labels | not built |
-| objective records (object, team, carrier) | `E+0xc18`, `E+0xc1c` (`engine::objectives`) | named |
+| objects by label; `zone.label`, `zone.id`, `o.number` | Forge labels | not built |
+| `is_objective(o)`; objective records (object, team, carrier) | `E+0xc18`, `E+0xc1c` (`engine::objectives`) | named |
+| zone tests: who is in a labelled zone, behind `on enter`, `on leave` and `ticks_held` | flag polygons and labelled volumes, in Rust under the float rules | not built |
 | netgame flags by type and team | `scnr+0x118` (`engine::objectives`); query `0x19ec40` | named; traced |
 | per-engine globals (`E+0xfc`): hill, bomb state, territories, Juggernaut mask | `engine::objectives`; `KOTH_GLOBALS` and its siblings in `global.rs` | named |
 | events of the tick | hooks on `PLAYER_KILLED` `0x15ce70`, `PLAYER_SPAWN` `0x14f2e0`; `SimRead::events` once sim-rewrite section 7 exists | named; not built |
@@ -460,36 +530,52 @@ Actions:
 | `score(p, n)` | `SCORE_ADD` `0x15b7c0` | named |
 | `end_round(winner)` | `GAME_END` `0x1389c0` ends the game; advancing a round and naming a winner are not traced (winner storage is not recovered, live-gamestate.md) | named; untraced |
 | lives | player `+0x1ac` and `PLAYER_ENTITY_DIRTY` `0xa7840`; gates `PLAYER_OUT_OF_LIVES` `0x15db30`, `PLAYER_RESPAWN_READY` `0x15dd40` | named |
-| respawn a player | `PLAYER_SPAWN` `0x14f2e0` | named |
+| `respawn(p)` | `PLAYER_SPAWN` `0x14f2e0` | named |
 | traits for the match: gravity, damage, shield, health | `variant_ext` hooks (`crates/extensions/game/src/variant_ext.rs`) | named |
 | traits per player; movement speed | the engine's trait query `0x24dda0` (vtable `+0x114`) has no direct call site; speed has no reader found (game-options.md "Not built") | untraced |
 | `set_team(p, t)` | no entry known; the field is player `+0xc0` | untraced |
 | `set_loadout` | starting-weapon routine `0x19eda0` | traced |
-| create and delete objects | `OBJECT_DELETE` `0xb8540`; creation as Forge's ([forge.md](forge.md)) | named; traced |
-| objective register, unregister, picked up, dropped | `0x15e050`, `0x15e130`, `0x15e250`, `0x15e460` | traced |
+| `create(tag, at)`, `delete(o)` | `OBJECT_DELETE` `0xb8540`; creation as Forge's ([forge.md](forge.md)) | named; traced |
+| `register_objective(o, team)`, unregister, picked up, dropped | `0x15e050`, `0x15e130`, `0x15e250`, `0x15e460` | traced |
 | barriers and other map changes | create and delete at labels, as above; a barrier is a labelled placement (forge-features.md "Invisible barriers") | not built |
-| squad: place from the palette at a label, team, orders, erase | `AI_SQUAD_PLACE` `0x201520`, `AI_SET_TEAM` `0x275b60`, `AI_SET_ORDERS` `0x275cb0`, `AI_ERASE` `0x2736c0`, through `actor_net::squads::SquadEntry` (firefight.md "Guest boundary") | named; game runs R1, R2 pending |
+| `place_squad(s, class, n, label)` from the palette with its team, `hunt(s)`, erase | `AI_SQUAD_PLACE` `0x201520`, `AI_SET_TEAM` `0x275b60`, `AI_SET_ORDERS` `0x275cb0`, `AI_ERASE` `0x2736c0`, through `actor_net::squads::SquadEntry` (firefight.md "Guest boundary") | named; game runs R1, R2 pending |
 | `spawn_areas(team, label, n)`: which starting locations are live | answer a hook on `PLAYER_SPAWN_LOCATION` `0x14ef00` (picks from `scnr+0x100`) with labelled locations only; how the routine weighs locations is not traced | named point; untraced rule |
 | loadout chosen at spawn | `set_loadout`, plus a picker screen of ours | traced; picker not built |
 | player body per team (Spartan, Elite) | `PLAYER_SPAWN` chooses the unit type; what it reads is not traced | untraced |
 | teleport, device power | Forge's sinks (forge-features.md) | not built |
-| HUD message, scoreboard text, announcer, waypoint | not traced; the replicated game engine event (type 7) is known only as a type | untraced |
+| `message(to, text)`, scoreboard text, announcer, waypoint | not traced; the replicated game engine event (type 7) is known only as a type | untraced |
+
+VM built-ins reach no engine entry (status **VM-only**):
+
+| Built-in | What it is |
+|---|---|
+| `count(set)`, `first(set)`, `len(table)`, `clamp(v, lo, hi)` | over a finite set or a constant table; `first` follows the `for each` order and gives `none` for an empty set |
+| `pick(set, n)` | `n` members drawn with the VM's generator |
+| `seconds(n)` | `n` times the tick rate, in ticks |
+| `ticks_held(zone, team)` | a counter the VM keeps per labelled zone and team over the zone test: ticks the team has held it alone |
+| `squad(n)`, `team n`, `text n` | constants: a kit squad slot, a team index, a string-table index |
 
 The engine update `0x15c150` and the post-game step `0x15ca10` are
 traced (live-gamestate.md) and are where the lifted engines do their
 per-tick work; they are not API entries.
 
-Two layouts of the engine vtables are on record. bots.md section 3.7
-gives the vtables as `0x45c6d8` (Slayer) and `0x453d38` (Juggernaut);
-game-options.md gives `0x45c650` and `0x453cb0` and puts the trait query
-at `+0x114` of those. The two differ by `0x88`. firefight.md's kill
-callback at `+0x78` uses the bots.md base. Each port reads its engine's
-vtable again before relying on a slot number.
+Two layouts of the engine vtables are on record and not reconciled:
+bots.md section 3.7 gives `0x45c6d8` (Slayer) and `0x453d38`
+(Juggernaut), the base of firefight.md's kill callback at `+0x78`;
+game-options.md gives `0x45c650` and `0x453cb0`, `0x88` lower, with the
+trait query at `+0x114`. Each port reads its engine's vtable again.
 
 ## Security and usability
 
-- **Host only.** A guest never executes a script and reaches the VM only
+- **The VM is the boundary.** A blob runs on whichever machine hosts,
+  often a player's, and wherever the film is replayed. The verified IR,
+  a VM in memory-safe Rust, the bounds below and an API with no I/O make
+  that safe. A guest never executes a script and reaches the VM only
   through its ordinary inputs.
+- **Allow-listed where results count.** Ranked hoppers and Live's stats
+  and ranks accept a game only when its script hash is on Live's
+  allow-list. A modified host can already report any score; a script
+  must not be a second way to do it.
 - **Verified twice**, at upload and at load, by the same code. Live
   stores only blobs that verify.
 - **Capability-limited.** The API table is the whole world: no file,
@@ -503,15 +589,15 @@ vtable again before relying on a slot number.
   only with typed arguments.
 - **Input rate.** `on press` fires at most 10 times a second per player;
   the rest are dropped the same way on every run.
-- **Clean failure.** A script error ends the round and never leaves the
-  engine mid-call.
+- **Clean failure.** A script error ends the round; the engine call in
+  progress returns first.
 
 Tooling:
 
 - **Studio**: a rules editor with errors as you type, the option table
-  as a form, and a budget meter (worst-case ops, slots, IR bytes) that
-  names the costliest handler. The blob carries an optional line table
-  for messages; the VM ignores it.
+  as a form, and a budget meter (worst-tick estimate, slots, IR bytes)
+  that names the costliest handler. The blob carries an optional line
+  table for messages; the VM ignores it.
 - **Scenario tests**: `h2 rules run` steps a script over a recorded
   event list with no game; `h2 sim` runs it in a headless match. Each
   built-in script has scenario tests beside its source.
@@ -536,20 +622,23 @@ All layout facts are **E** from bots.md section 3.7.
 **Parity method.** The lifted engine is the oracle. A headless match is
 recorded once (seed and per-seat inputs), then run twice from the same
 start: on the lifted engine, and on the script with the lifted engine's
-rule callbacks silenced. The two runs must agree on the statborg rows,
-the objective event stream the theater observer emits
-(`crates/extensions/game/src/theater/objectives.rs`), the end tick and
-the result, with the script's timeline one tick behind: the lifted
-engine acts inside the tick, the VM's calls are made at the start of the
-next. A port is proven per built-in variant of its engine, on at least
-three maps, with phantom seats filling the roster. The arena hash is not
-compared.
+rule callbacks answered by the script. Because the handlers make their
+calls where the lifted callbacks did, the bar is run parity as in
+[sim-rewrite.md](../engine/sim-rewrite.md#verification-ladder-every-phase-climbs-all-of-it):
+with `impl.sim.arena-hash` on, every `state_hashes_v1` row and arena
+block matches and `h2 sim diff` prints nothing, the `RulesExt` record
+left out because the lifted run has none. A port therefore writes its
+engine's globals (`E+0xfc`) as the lifted engine does; a block it cannot
+match is a named exclusion in the port's parity note, with the reason. A
+port is proven per built-in variant of its engine, on at least three
+maps, with phantom seats filling the roster.
 
 **Variants.** The 39 retail built-ins and the 14 community variants
 (thirteen classics and Superbounce, `community_variants::VARIANTS`)
-keep their records. Each gains mode 2 and its engine script's hash
-prefix in the block; its settings are already option values in the
-record. Rules that were honour rules ([community-gametypes.md](community-gametypes.md),
+keep their records, byte for byte: each has no mode and runs its
+engine's built-in script once the port has passed parity ("A record with
+no mode"). Its settings are already option values in the record. Rules
+that were honour rules ([community-gametypes.md](community-gametypes.md),
 Zombies' team switch) become script variants of their own.
 
 **What stays lifted, and why.**
@@ -559,13 +648,17 @@ Zombies' team switch) become script variants of their own.
   film recorded on a lifted engine replays on the lifted engine.
 - **System Link.** The block is off there, because no Live session
   carries it (game-options.md "How it reaches every player"), so a
-  System Link game cannot name a script and plays the lifted engine.
+  System Link game cannot name a script. It plays the lifted engine
+  (decision 3). A record with no mode needs neither the block nor a
+  blob, so extending that rule to System Link is how this is settled.
+- **An engine whose port has not passed parity**, for a no-mode record.
 
 **Retirement criteria**, all of them: every engine's port has passed
-parity; script games have been played on Live in every engine; System
-Link either carries the block or is decided to stay retail-only on a
-frozen build; films recorded on lifted engines are either converted,
-expired by policy, or served by a frozen player build. Then the lifted
+parity, so no record with no mode runs lifted on Live; script games
+have been played on Live in every engine; System Link runs the built-in
+scripts or is decided to stay retail-only on a frozen build; films
+recorded on lifted engines are either converted, expired by policy, or
+served by a frozen player build. Then the lifted
 engines' hooks, observers and bot readers that parse per-engine globals
 (`crates/rewrites/engine/src/objectives.rs`,
 `crates/live/bots/src/objective.rs`) move to reading rules state.
@@ -586,12 +679,11 @@ the same `Observed` sequence.
 
 **AI is commanded by squad.** A script places a squad from the kit's
 palette at a label, sets its team and orders, reads how many of its
-actors live, and hears `on squad_dead` and `on actor_kill`. These are the
-host actor entries Firefight uses ([ai-networking.md](ai-networking.md)).
-A script never runs per actor: actor brains stay the engine's, for the op
-budget and for determinism. Phantom bots ([bots.md](bots.md),
-`crates/live/bots`) are players like any other to a script; it does not
-drive their brains.
+actors live, and hears `on squad_dead` and `on actor_kill`: the host
+actor entries Firefight uses ([ai-networking.md](ai-networking.md)). A
+script never runs per actor; actor brains stay the engine's, for the op
+budget and for determinism. Phantom bots ([bots.md](bots.md)) are
+players like any other to a script.
 
 **Bounces are observed, not made.** Physics stays the engine's: Havok at
 an exact 30 Hz tick ([high-framerate.md](high-framerate.md)). A script
@@ -599,19 +691,17 @@ hears `on bounce(p, spot)`, reads the scanner's spots as zones, scores
 and times them, and sets traits. That makes Bounce Practice and a trick
 or parkour mode real scripts, and the superbounce flag (bit 2 of the
 block's flags) a script's own choice. The detector's rule is a traced
-signature, not the decoded launch rule, which superbounce.md lists as
-Open; a detector can miss or over-report until it is checked in play.
+signature, not the launch rule (Open in superbounce.md), so it can miss
+or over-report until it is checked in play.
 
 ## Payoff
 
-- **Race.** Halo 1's race track points are dropped at conversion because
-  Halo 2 has no race ([multiplayer.md](../halo1/multiplayer.md)); a Race
-  script with labelled checkpoints gives them a use.
+- **Race.** Halo 1's race track points are dropped at conversion
+  ([multiplayer.md](../halo1/multiplayer.md)); labelled checkpoints and
+  a Race script give them a use. So do **Halo 1's per-spawn game
+  types**: starting locations carry labels and a script filters on them.
 - **Infection** with a real team switch, **Gun Game**, and other modes
   that were honour rules.
-- **Halo 1's per-spawn game types**, dropped for want of a field
-  (multiplayer.md): starting locations carry labels and a script filters
-  on them.
 - **A phased attack-and-defend mode**, with the mechanics of Halo:
   Reach's Invasion and none of its assets or text. "Invasion" is Reach's
   name; ours is open (working name: Siege).
@@ -643,6 +733,12 @@ read it through `objects labelled`. Retail maps with no Forge document
 get labels from a built-in table per netgame flag type, so
 `objects labelled "ctf_flag_spawn"` works on every map.
 
+A label is a change of the document format: the format is one number
+(`forge_doc::FORMAT`, 1), the document's structs refuse unknown fields
+and `crates/formats/forge-doc/src/validate.rs` refuses any other number,
+so a labelled document takes the next number and an older build refuses
+it whole.
+
 ## Roadmap
 
 Each phase lands by itself and ends on its exit criteria.
@@ -673,15 +769,20 @@ the ReachVariantTool importer follows phase 10.
   engine event, or the client's own engine vtable. This is the largest
   unknown; it decides the display half of every port and of every new
   mode.
-- **The vtable layout.** The `0x88` difference between bots.md and
-  game-options.md is not reconciled.
-- **Silencing a carrier engine.** Which vtable slots make rules, per
-  engine, and whether replacing them on the host leaves the replicated
-  globals entity consistent.
-- **The one-tick lag.** The lifted engine scores inside `PLAYER_KILLED`;
-  the VM's score lands at the start of the next tick. Whether a retail
-  outcome depends on it (two kills on the limit in one tick, a kill on
-  the last tick) needs the parity runs.
+- **Answering a carrier engine's callbacks.** Which callbacks make
+  rules, per engine; whether each can be answered at its entry with an
+  async body; and whether doing so leaves the replicated globals entity
+  consistent. Only Slayer's kill callback is on record.
+- **Queued calls.** Whether object creation, deletion and teleports are
+  legal inside each callback is not traced. A port that needs one in the
+  same tick as retail fails parity there.
+- **A join gate and the allow-list.** Neither is designed: the session
+  and matchmaking path only lets a host log who lacks a capability, and
+  where Live keeps the allow-list and which routes consult it is open.
+- **The session's `rules` field** needs the shape checks the server runs
+  on `variant_ext` (`NewSession::validate`,
+  `crates/live/live-proto/src/session.rs`) in both homes: `live-server`
+  and the Cloudflare worker (`crates/live/live-worker`).
 - **Round end and the winner.** Only the game-end latch is known.
 - **`set_team`, per-player traits, movement speed, the body a player
   spawns in.** No entry is known.
@@ -694,8 +795,7 @@ the ReachVariantTool importer follows phase 10.
   "What a run settles") settle them for scripts too.
 - **Host migration.** Whether a session of ours moves hosts, and how
   `RulesExt` would reach the new one. There is no handler for it.
-- **System Link.** Whether it can carry the block and a hash; built-in
-  scripts would need no blob transfer.
+- **System Link.** Whether the no-mode rule can extend to it.
 - **The ReachVariantTool importer.** What of Megalo's slots, object
   types and trigger kinds cannot map onto this API is not surveyed.
 - **The phased mode's name**, and VM time per tick with 16 players.
@@ -703,27 +803,24 @@ the ReachVariantTool importer follows phase 10.
 ## Prior art
 
 - **Megalo.** Every Halo: Reach game type is a Megalo script, as are
-  Halo 4's and Halo 2: Anniversary's multiplayer. A script is triggers
-  of conditions and actions, run each tick or on events (init, pregame,
-  host migration, object death). Variables are fixed slots of five types
-  (number, object, player, team, timer) in four scopes (global, player,
-  object, team), each with a network priority; nesting is two levels; a
-  variant has about 20 KB.
+  Halo 4's and Halo 2: Anniversary's multiplayer: triggers of conditions
+  and actions, run each tick or on events. Variables are fixed slots of
+  five types (number, object, player, team, timer) in four scopes, each
+  with a network priority; nesting is two levels; a variant has about
+  20 KB.
   [Introduction to Megalo](https://github.com/XboxChaos/nitrogen/wiki/Introduction-to-Megalo),
   [MegaloEvolved](https://github.com/craftycodie/MegaloEvolved),
-  [the Reach editing kit](https://c20.reclaimers.net/hr/hr-ek/) (it
-  includes MegaloEdit).
+  [the Reach editing kit](https://c20.reclaimers.net/hr/hr-ek/).
 - **The ReachVariantTool dialect** has no expressions (`a = b + c` is
-  not valid), no parentheses, no `else` (`alt`, `altif`), `or` binding
-  before `and`, and no user-declared variables.
+  not valid), no parentheses, no `else`, `or` binding before `and`, and
+  no user-declared variables.
   [Syntax](https://davidjcobb.github.io/ReachVariantEditor/script/syntax.html),
   [if](https://davidjcobb.github.io/ReachVariantEditor/script/if.html).
 - **Project Reclaimer** brings Megalo to Halo 3: host-only execution,
   presses limited to 10 a second, the whole file validated before a
   round, labels up to 32 bytes, and the built-in modes kept with script
   layered on top. [Megalo in Project Reclaimer](https://projectreclaimer.dev/megalo).
-  This design takes the first four and replaces the built-in engines
-  instead.
+  This design takes the first four and replaces the built-in engines.
 
 No source derived from a leaked build is used.
 
