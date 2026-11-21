@@ -532,7 +532,7 @@ impl Mind {
         self.paired_pistol.reset();
         self.show_off.reset();
         self.stunt = None;
-        self.cancel_order();
+        self.cancel_order("died");
         self.vehicles.reset();
         self.tick = None;
     }
@@ -1729,15 +1729,30 @@ impl Mind {
     /// map's within [`BOUNCE_REACH`], else a crouch jump.
     fn pick_stunt(&mut self, at: Vec3, tick: u32) -> Option<Stunt> {
         // With a crouch spot to prime at, a bounce is a route: prime,
-        // then the spot (an unprimed landing does not bounce).
-        let near = |s: &crate::spots::Site| s.standing() && dist_xy(s.bounce.stand, at) < BOUNCE_REACH;
-        if !self.known.crouches.is_empty() && self.known.sites.iter().any(near) {
-            self.asked = Some(order::Asked {
-                to: at,
-                mode: crate::bounce_route::Mode::Fun,
-                show_off: true,
-            });
-            return None;
+        // then the spot (an unprimed landing does not bounce). The
+        // nearest site not given up on; the plan looks at that one only,
+        // so a map with hundreds of spots costs a show-off a few queries.
+        if !self.known.crouches.is_empty() {
+            let site = self
+                .known
+                .sites
+                .iter()
+                .filter(|s| {
+                    s.standing()
+                        && dist_xy(s.bounce.stand, at) < BOUNCE_REACH
+                        && !self.stuck.blocked(s.bounce.stand, tick)
+                })
+                .min_by(|a, b| dist_xy(a.bounce.stand, at).total_cmp(&dist_xy(b.bounce.stand, at)))
+                .copied();
+            if let Some(site) = site {
+                self.asked = Some(order::Asked {
+                    to: at,
+                    mode: crate::bounce_route::Mode::Fun,
+                    show_off: true,
+                    site: Some(site),
+                });
+                return None;
+            }
         }
         let spot = self
             .bounces

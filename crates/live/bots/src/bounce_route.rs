@@ -204,28 +204,38 @@ impl Candidate {
     }
 }
 
-fn candidate(ask: &Ask, known: &Known, walk: Walk, site: Site) -> Option<Candidate> {
-    if !site.standing() {
-        return None;
-    }
+/// The most path queries one plan makes, however many spots a map has.
+pub const MAX_QUERIES: u32 = 32;
+/// The crouch spots (nearest the start) and the sites (the likeliest)
+/// a plan looks at.
+pub const NEAR_CROUCHES: usize = 4;
+pub const NEAR_SITES: usize = 8;
+
+/// A crouch spot and the walk to it from the start, made once.
+struct Prime {
+    at: Vec3,
+    lead: f32,
+}
+
+fn candidate(
+    ask: &Ask,
+    primes: &[Prime],
+    walk: &dyn Fn(Vec3, Vec3) -> Option<f32>,
+    site: Site,
+) -> Option<Candidate> {
     let approach = site.bounce.from();
     let (crouch, lead) = if ask.primed {
         (None, walk(ask.from, approach)?)
     } else {
-        // The crouch spot that makes the whole way shortest.
-        let (c, l) = known
-            .crouches
-            .iter()
-            .filter_map(|&c| Some((c, walk(ask.from, c)? + walk(c, approach)?)))
-            .min_by(|a, b| a.1.total_cmp(&b.1))?;
-        (Some(c), l)
+        // The crouch spot nearest the bounce, by straight line: one
+        // path query a site.
+        let c = primes.iter().min_by(|a, b| {
+            dist_xy(a.at, approach).total_cmp(&dist_xy(b.at, approach))
+        })?;
+        (Some(c.at), c.lead + walk(c.at, approach)?)
     };
     // Flying toward the goal's height; for fun, as high as it gets.
-    let z = if ask.mode == Mode::Fun {
-        ask.to[2].min(site.bounce.stand[2] + site.launch * site.launch / (2.0 * GRAVITY) - CLEARANCE - 0.01)
-    } else {
-        ask.to[2]
-    };
+    let z = flight_z(ask, &site);
     let f = flight(&site, z)?;
     let land = landing(&site, &f, ask.to);
     let reaches = dist_xy(site.bounce.stand, ask.to) <= f.reach;
@@ -236,6 +246,16 @@ fn candidate(ask: &Ask, known: &Known, walk: Walk, site: Site) -> Option<Candida
         lead,
         tail,
     })
+}
+
+fn flight_z(ask: &Ask, site: &Site) -> f32 {
+    if ask.mode == Mode::Fun {
+        ask.to[2].min(
+            site.bounce.stand[2] + site.launch * site.launch / (2.0 * GRAVITY) - CLEARANCE - 0.01,
+        )
+    } else {
+        ask.to[2]
+    }
 }
 
 fn route(ask: &Ask, c: &Candidate, why: Why) -> Plan {
@@ -285,13 +305,66 @@ pub fn plan(ask: &Ask, known: &Known, walk: Walk) -> Plan {
         site: None,
         cost: None,
     };
-    let candidates = known
+    // Every path query goes through here: a map can have hundreds of
+    // spots and a plan is made inside one frame.
+    let used = std::cell::Cell::new(0u32);
+    let query = |a: Vec3, b: Vec3| -> Option<f32> {
+        if used.get() >= MAX_QUERIES {
+            return None;
+        }
+        used.set(used.get() + 1);
+        walk(a, b)
+    };
+    let plain_cost = (ask.mode == Mode::Help).then(|| query(ask.from, ask.to)).flatten();
+    // Nothing farther off than this (straight line) can be a route that
+    // pays: the walk it must beat, or the reach for fun.
+    let limit = match ask.mode {
+        Mode::Help => plain_cost.unwrap_or(FUN_REACH),
+        Mode::Fun => FUN_REACH,
+    };
+    let primes: Vec<Prime> = if ask.primed {
+        Vec::new()
+    } else {
+        let mut near: Vec<Vec3> = known
+            .crouches
+            .iter()
+            .copied()
+            .filter(|&c| dist_xy(ask.from, c) <= limit)
+            .collect();
+        near.sort_by(|a, b| dist_xy(ask.from, *a).total_cmp(&dist_xy(ask.from, *b)));
+        near.into_iter()
+            .take(NEAR_CROUCHES)
+            .filter_map(|at| Some(Prime { at, lead: query(ask.from, at)? }))
+            .collect()
+    };
+    if !ask.primed && primes.is_empty() {
+        return plain;
+    }
+    let mut sites: Vec<Site> = known
         .sites
         .iter()
-        .filter_map(|&s| candidate(ask, known, walk, s));
+        .copied()
+        .filter(|s| s.standing())
+        .filter(|s| dist_xy(ask.from, s.bounce.from()) <= limit)
+        .filter(|s| flight(s, flight_z(ask, s)).is_some())
+        .collect();
+    match ask.mode {
+        Mode::Help => sites.sort_by(|a, b| {
+            let d = |s: &Site| dist_xy(ask.from, s.bounce.stand) + dist_xy(s.bounce.stand, ask.to);
+            d(a).total_cmp(&d(b))
+        }),
+        Mode::Fun => sites.sort_by(|a, b| {
+            b.launch.total_cmp(&a.launch).then(
+                dist_xy(ask.from, a.bounce.stand).total_cmp(&dist_xy(ask.from, b.bounce.stand)),
+            )
+        }),
+    }
+    sites.truncate(NEAR_SITES);
+    let candidates = sites
+        .into_iter()
+        .filter_map(|s| candidate(ask, &primes, &query, s));
     match ask.mode {
         Mode::Help => {
-            let plain_cost = walk(ask.from, ask.to);
             let best = candidates
                 .filter(|c| plain_cost.is_none_or(|p| c.cost() + GAIN <= p))
                 .min_by(|a, b| a.cost().total_cmp(&b.cost()));

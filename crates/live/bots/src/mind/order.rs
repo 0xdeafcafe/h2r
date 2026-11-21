@@ -22,6 +22,8 @@ pub(super) struct Asked {
     pub to: Vec3,
     pub mode: Mode,
     pub show_off: bool,
+    /// A show-off's one site: the plan looks at no other.
+    pub site: Option<crate::spots::Site>,
 }
 
 /// A route under way.
@@ -30,6 +32,8 @@ pub(super) struct Ordered {
     run: OrderRun,
     to: Vec3,
     mode: Mode,
+    /// A show-off's site, to give up on when the route fails.
+    site: Option<Vec3>,
 }
 
 /// How the last route ended.
@@ -74,13 +78,31 @@ impl Mind {
             to,
             mode,
             show_off: false,
+            site: None,
         });
     }
 
-    /// Drops the route, asked or under way.
-    pub fn cancel_order(&mut self) {
-        self.order = None;
-        self.asked = None;
+    /// Drops the route, asked or under way, and records why (`died`,
+    /// `map_changed`) so [`Mind::order_view`] can say.
+    pub fn cancel_order(&mut self, why: &'static str) {
+        let asked = self.asked.take();
+        if let Some(o) = self.order.take() {
+            self.end_order(o, Err(why), 0);
+        } else if let Some(a) = asked {
+            self.ended = Some(Ended {
+                to: a.to,
+                mode: a.mode,
+                why: Why::Plain,
+                steps: Vec::new(),
+                result: Err(why),
+            });
+        }
+    }
+
+    /// A route is asked for or under way, so the host should read the
+    /// pair word ([`crate::set_pair_reader`]).
+    pub fn wants_pair(&self) -> bool {
+        self.asked.is_some() || self.order.is_some()
     }
 
     /// The pair word is at -3 now, as far as the route knows: the crouch
@@ -154,16 +176,16 @@ impl Mind {
         }
         let mut o = self.order.take()?;
         let Some(m) = map else {
-            self.end_order(o, Err("no_map"));
+            self.end_order(o, Err("no_map"), p.tick);
             return None;
         };
         if o.run.show_off && !seen.is_empty() {
-            self.end_order(o, Err("enemy"));
+            self.end_order(o, Err("enemy"), p.tick);
             return None;
         }
         let out = o.run.step(m, me.position, p.tick, self.pair_word);
         if let Some(result) = out.done {
-            self.end_order(o, result);
+            self.end_order(o, result, p.tick);
             return None;
         }
         self.order = Some(o);
@@ -191,7 +213,31 @@ impl Mind {
             primed,
             mode: a.mode,
         };
-        let plan = bounce_route::plan(&ask, &self.known, &walk);
+        let plan = match a.site {
+            // A show-off looks at its one site.
+            Some(site) => {
+                let one = crate::spots::Known {
+                    sites: vec![site],
+                    crouches: self.known.crouches.clone(),
+                };
+                bounce_route::plan(&ask, &one, &walk)
+            }
+            None => bounce_route::plan(&ask, &self.known, &walk),
+        };
+        if a.show_off && plan.site.is_none() {
+            // No route to show off: give the site up for a while.
+            if let Some(site) = a.site {
+                self.stuck.blacklist(site.bounce.stand, p.tick);
+            }
+            self.ended = Some(Ended {
+                to: a.to,
+                mode: a.mode,
+                why: plan.why,
+                steps: Vec::new(),
+                result: Err("no_route"),
+            });
+            return;
+        }
         let seed = u64::from(p.tick) ^ 0xb0_0c5;
         let mut run = OrderRun::new(plan, primed, p.tick, seed);
         run.show_off = a.show_off;
@@ -199,10 +245,16 @@ impl Mind {
             run,
             to: a.to,
             mode: a.mode,
+            site: a.site.map(|s| s.bounce.stand),
         });
     }
 
-    fn end_order(&mut self, o: Ordered, result: Result<(), &'static str>) {
+    fn end_order(&mut self, o: Ordered, result: Result<(), &'static str>, tick: u32) {
+        if result.is_err()
+            && let Some(stand) = o.site
+        {
+            self.stuck.blacklist(stand, tick);
+        }
         self.ended = Some(Ended {
             to: o.to,
             mode: o.mode,

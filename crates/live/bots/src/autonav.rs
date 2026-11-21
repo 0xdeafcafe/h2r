@@ -819,12 +819,13 @@ impl Worker {
             status = found;
         }
         if !status.stale() && !self.force {
-            self.keep_spots(src.as_mut(), &header.name, header.fingerprint);
-            drop(src);
             match crate::vis::status(&self.dir, &header.name) {
                 crate::vis::Status::Fresh => sum.fresh += 1,
                 vis => self.grids(&header.name, vis, sum, true, None),
             }
+            // After the mesh and its grids: the spots never delay them.
+            self.keep_spots(src.as_mut(), &header.name, header.fingerprint);
+            drop(src);
             return;
         }
         let t = Instant::now();
@@ -833,8 +834,6 @@ impl Worker {
         if let Some(bsps) = self.shared_dir().zip(digest).and_then(|(dir, key)| {
             shared_cache::restore_nav(dir, key, &self.dir, &header.name, stamp)
         }) {
-            self.keep_spots(src.as_mut(), &header.name, header.fingerprint);
-            drop(src);
             (self.log)(&format!(
                 "bots: restored the nav mesh for {} from the shared cache in {:.1} s",
                 header.name,
@@ -842,6 +841,8 @@ impl Worker {
             ));
             self.publish_build(&header.name, &bsps[0].data, generation);
             sum.built.push(header.name.clone());
+            self.keep_spots(src.as_mut(), &header.name, header.fingerprint);
+            drop(src);
             drop(nav_stage);
             let why = crate::vis::status(&self.dir, &header.name);
             self.grids(&header.name, why, sum, false, Some(bsps));
@@ -868,11 +869,11 @@ impl Worker {
                     t.elapsed().as_secs_f32()
                 ));
                 self.publish_build(&header.name, d, generation);
-                self.keep_spots(src.as_mut(), &header.name, header.fingerprint);
                 sum.built.push(header.name.clone());
                 if let Some((dir, key)) = self.shared_dir().zip(digest) {
                     shared_cache::save_nav(dir, key, stamp, &bsps);
                 }
+                self.keep_spots(src.as_mut(), &header.name, header.fingerprint);
                 drop(nav_stage);
                 self.grids(&header.name, crate::vis::Status::Missing, sum, false, None);
             }
@@ -896,16 +897,31 @@ impl Worker {
             crate::spots::publish(name, found);
             return;
         }
-        match src.spots() {
+        // The scanner `expect`s on geometry it did not find as it hoped:
+        // a panic must not take the nav thread with it.
+        let scan = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| src.spots()))
+            .unwrap_or_else(|_| Some(Err("the scan panicked".into())));
+        match scan {
             None => {}
             Some(Ok(found)) => {
-                if let Err(e) = crate::spots::write(&self.dir, name, stamp, &found) {
-                    (self.log)(&format!("bots: spots for {name} not saved: {e}"));
-                }
+                self.save_spots(name, stamp, &found);
                 (self.log)(&format!("bots: {name}: {} superbounce spots", found.len()));
                 crate::spots::publish(name, found);
             }
-            Some(Err(e)) => (self.log)(&format!("bots: spots for {name} not scanned: {e}")),
+            Some(Err(e)) => {
+                // An empty stamped file is the failure marker: the scan is
+                // not repeated on every launch, only when the scanner or
+                // the map changes ([`crate::spots::SCAN`]).
+                (self.log)(&format!("bots: spots for {name} not scanned: {e}"));
+                self.save_spots(name, stamp, &[]);
+                crate::spots::publish(name, Vec::new());
+            }
+        }
+    }
+
+    fn save_spots(&mut self, name: &str, stamp: Stamp, spots: &[superbounce::Spot]) {
+        if let Err(e) = crate::spots::write(&self.dir, name, stamp, spots) {
+            (self.log)(&format!("bots: spots for {name} not saved: {e}"));
         }
     }
 

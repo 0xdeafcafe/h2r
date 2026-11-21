@@ -94,6 +94,7 @@ fn a_show_off_route_is_given_up_at_the_sight_of_an_enemy_and_an_ordered_one_is_n
             to: [18.0, 0.0, 0.0],
             mode: Mode::Fun,
             show_off,
+            site: show_off.then(|| known().sites[0]),
         });
         mind.order_pad(&perception([0.0; 3], 1), Me::default(), Some(&m), &[]);
         assert_eq!(mind.order_view().state, "running");
@@ -107,11 +108,43 @@ fn a_show_off_route_is_given_up_at_the_sight_of_an_enemy_and_an_ordered_one_is_n
 }
 
 #[test]
-fn a_dead_bot_drops_its_order() {
+fn a_dead_bot_drops_its_order_and_says_why() {
+    let m = map();
     let mut mind = Mind::new(Skill::Normal, 1);
+    mind.known = known();
     mind.order_bounce([6.0, 0.0, 0.0], Mode::Help);
     mind.release(5);
-    assert_eq!(mind.order_view().state, "none");
+    let v = mind.order_view();
+    assert_eq!((v.state, v.error), ("failed", Some("died")));
+    // Under way too.
+    mind.order_bounce([18.0, 0.0, 0.0], Mode::Fun);
+    mind.order_pad(&perception([0.0; 3], 6), Me::default(), Some(&m), &[]);
+    assert_eq!(mind.order_view().state, "running");
+    mind.cancel_order("map_changed");
+    let v = mind.order_view();
+    assert_eq!((v.state, v.error), ("failed", Some("map_changed")));
+    // Nothing to cancel: the last result stands.
+    mind.release(9);
+    assert_eq!(mind.order_view().error, Some("map_changed"));
+}
+
+#[test]
+fn a_failed_show_off_gives_its_site_up() {
+    let m = map();
+    let mut mind = Mind::new(Skill::Normal, 1);
+    mind.known = known();
+    let site = known().sites[0];
+    mind.asked = Some(Asked {
+        to: [0.0; 3],
+        mode: Mode::Fun,
+        show_off: true,
+        site: Some(site),
+    });
+    mind.order_pad(&perception([0.0; 3], 1), Me::default(), Some(&m), &[]);
+    assert!(!mind.stuck.blocked(site.bounce.stand, 2));
+    let enemy = [Seen { id: 2, position: [5.0, 5.0, 0.0], team: 1 }];
+    mind.order_pad(&perception([0.0; 3], 2), Me::default(), Some(&m), &enemy);
+    assert!(mind.stuck.blocked(site.bounce.stand, 3));
 }
 
 #[test]

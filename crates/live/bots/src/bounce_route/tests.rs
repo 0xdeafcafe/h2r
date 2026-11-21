@@ -184,6 +184,44 @@ fn for_fun_the_highest_launch_within_reach_is_taken_even_on_the_flat() {
 }
 
 #[test]
+fn a_plan_makes_a_bounded_number_of_path_queries_however_many_spots_there_are() {
+    let sites: Vec<Site> = (0..400)
+        .map(|i| site(5.0 + (i % 40) as f32 * 0.5, (i / 40) as f32, 12.3))
+        .collect();
+    let crouches: Vec<Vec3> = (0..500).map(|i| [(i % 50) as f32 * 0.4, (i / 50) as f32, 0.0]).collect();
+    let k = Known { sites, crouches };
+    for mode in [Mode::Help, Mode::Fun] {
+        for primed in [false, true] {
+            let n = std::cell::Cell::new(0u32);
+            let walk = |a: Vec3, b: Vec3| {
+                n.set(n.get() + 1);
+                ledge_walk(a, b)
+            };
+            let p = plan(&ask([18.0, 0.0, 6.0], primed, mode), &k, &walk);
+            assert!(n.get() <= MAX_QUERIES, "{mode:?} primed {primed}: {} queries", n.get());
+            assert!(n.get() > 0);
+            assert!(p.steps.len() >= 1);
+        }
+    }
+}
+
+#[test]
+fn spots_farther_than_the_reach_cost_no_query() {
+    let k = Known {
+        sites: vec![site(900.0, 0.0, 12.3)],
+        crouches: vec![[800.0, 0.0, 0.0]],
+    };
+    let n = std::cell::Cell::new(0u32);
+    let walk = |a: Vec3, b: Vec3| {
+        n.set(n.get() + 1);
+        flat_walk(a, b)
+    };
+    let p = plan(&ask([20.0, 0.0, 0.0], false, Mode::Fun), &k, &walk);
+    assert_eq!(p.why, Why::Plain);
+    assert_eq!(n.get(), 0);
+}
+
+#[test]
 fn the_mode_names_round_trip() {
     for m in [Mode::Help, Mode::Fun] {
         assert_eq!(Mode::parse(m.name()), Some(m));

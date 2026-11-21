@@ -185,9 +185,7 @@ pub(crate) fn stats(
 /// -3 (docs/game/superbounce.md, "The pair word"). `None` when the unit
 /// has no single such pair.
 pub(crate) fn read_pair_word(m: &dyn engine::GuestMemory, unit: u32) -> Option<u32> {
-    use live_telemetry::havok_agents::{PAIR_WORD, fixed_pair};
-    let entry = fixed_pair(m, unit).ok()??;
-    m.u32(entry + PAIR_WORD).ok()
+    live_telemetry::havok_agents::fixed_pair_word(m, unit).ok().flatten()
 }
 
 /// Gives the bots the pair-word reader (once; idempotent).
