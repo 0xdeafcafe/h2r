@@ -10,7 +10,6 @@ use crate::camera::{Mat4, RenderCamera};
 use crate::cull::{CullStats, Frustum, IndirectSlot, SLOT_SIZE, cull, indirect_slots};
 use crate::fog_gpu::FogSet;
 use crate::light_gpu::{LightDraw, LightSet, LightTarget};
-use crate::light_look::LightStage;
 use crate::program::{MaterialUse, PipelineUse, ProgramSet, ViewInputs, WorldPipelines};
 use crate::world::{LightmapKey, Owner, World, WorldDraw, WorldVertex};
 
@@ -938,11 +937,9 @@ impl GpuWorld {
         scissor: [u32; 4],
         view: &ViewInputs,
         draws: &[LightDraw<'_>],
-        stage_image: &mut dyn FnMut(usize, LightStage) -> Option<Image>,
-        gel_image: &mut dyn FnMut(u32) -> Option<Image>,
     ) -> Result<gfx::external::ExternalDraws, &'static str> {
         self.lights.as_mut().ok_or("light passes unavailable")?.draws(
-            target, &self.program_vertices, &self.indices, view, scissor, draws, stage_image, gel_image,
+            target, &self.program_vertices, &self.indices, view, scissor, draws,
         )
     }
 
