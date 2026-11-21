@@ -163,6 +163,21 @@ pub enum Call {
     /// Make a weapon from `weapon` (a `weap` tag datum) and add it to
     /// `unit` with `unit_add_weapon`'s `mode`.
     Give { unit: u32, weapon: u32, mode: u32 },
+    /// Ask the retail animation selector for this biped and path of string IDs.
+    Animation {
+        unit: u32,
+        path: [u32; 4],
+        overlay: bool,
+    },
+    /// Launch a projectile in world space, or relative to a live target node.
+    Projectile {
+        tag: u32,
+        target: u32,
+        node: Option<u16>,
+        from: [f32; 3],
+        to: [f32; 3],
+        shield: Option<f32>,
+    },
     /// Make an object from `tag` at `pos`.
     Spawn {
         tag: u32,
@@ -566,6 +581,13 @@ impl TagRef {
 
 /// Finds tags in the loaded map by datum or name (`edit.*`'s rules).
 pub trait Tags: Send {
+    fn string_id(&mut self, _name: &str) -> Option<u32> {
+        None
+    }
+    fn string(&mut self, _id: u32) -> Option<String> {
+        None
+    }
+
     /// `tag` by datum, `group:name`, `name.group` or a bare name, which
     /// is looked for among the tags of `among` (any group when empty).
     fn find(&mut self, tag: &str, among: &[&str]) -> Result<TagRef, String>;
@@ -578,6 +600,30 @@ pub struct MapTags {
 }
 
 impl Tags for MapTags {
+    fn string_id(&mut self, name: &str) -> Option<u32> {
+        let mut out = None;
+        let ed = &mut self.editor;
+        (self.guest)(&mut |g| {
+            out = ed
+                .loaded_names(g)
+                .ok()
+                .and_then(|n| n.string_id(name))
+        });
+        out
+    }
+    fn string(&mut self, id: u32) -> Option<String> {
+        let mut out = None;
+        let ed = &mut self.editor;
+        (self.guest)(&mut |g| {
+            out = ed
+                .loaded_names(g)
+                .ok()
+                .and_then(|n| n.string(id))
+                .map(str::to_owned)
+        });
+        out
+    }
+
     fn find(&mut self, tag: &str, among: &[&str]) -> Result<TagRef, String> {
         let mut out = None;
         let ed = &mut self.editor;
@@ -726,6 +772,28 @@ async fn run_call(
     ticket: Option<u64>,
 ) -> Result<Outcome, EntryError> {
     match *call {
+        Call::Animation { unit, path, overlay } => {
+            crate::probe::animation::lookup(cx, scratch, unit, path, overlay).await
+        }
+        Call::Projectile { tag, target, node, from, to, shield } => {
+            let line = cx.read(|m| crate::probe::line(m, target, node, from, to))?;
+            let Some((pos, facing, body)) = line else {
+                return Ok(Err(unavailable("invalid target or node transform")));
+            };
+            if let Some(value) = shield {
+                cx.write(|m| body.set_shield(m, value))?;
+            }
+            let made = match spawn(cx, scratch, tag, pos, Some((facing, up_of(facing)))).await? {
+                Ok(made) => made,
+                Err(e) => return Ok(Err(e)),
+            };
+            let at = cx.read(|m| body_of(m, made).and_then(|b| b.position(m).ok()));
+            // The barrel calls this immediately after spawning. The projectile
+            // definition selects whether it needs a same-tick ballistic step.
+            cx.call(GuestCall::new(engine::points::BARREL_PROJECTILE.base).ecx(made))
+                .await?;
+            Ok(Ok(json!({ "object": hex(made), "pos": at })))
+        }
         Call::Teleport {
             player,
             pos,

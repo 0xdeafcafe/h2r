@@ -1440,3 +1440,60 @@ fn a_forge_batch_releases_its_own_objects_when_a_later_placement_fails() {
         .collect();
     assert_eq!(deleted, [0x1000_0002, 0x1000_0001]);
 }
+
+#[test]
+fn probe_animation_uses_the_units_graph_and_resolves_the_engine_selection() {
+    use engine::tags::{GroupTag, TAG_ENTRIES_GLOBAL, TAG_INDEX_GLOBAL};
+    let mut w = world();
+    let tag = 0x45670000;
+    let group = GroupTag::from_chars(*b"jmad").0;
+    w.g.put_u16(
+        UNIT_BODY + live_telemetry::layout::OBJECT_ANIMATION_MANAGER,
+        0x200,
+    )
+    .put_u32(
+        UNIT_BODY + 0x200 + live_telemetry::layout::MANAGER_GRAPH,
+        tag,
+    )
+    .put_u32(TAG_INDEX_GLOBAL, 0x6000)
+    .put_u32(TAG_ENTRIES_GLOBAL, 0x7000)
+    .put_u32(0x6000, 0x8000)
+    .put_u32(0x6004, 1)
+    .put_u32(0x6018, 1)
+    .put_u32(0x7000, group)
+    .put_u32(0x7004, tag)
+    .put_u32(0x7008, 0x9000)
+    .put_u32(0x8000, group)
+    .put_u32(0xa000, 77)
+    .put_u16(0xa014, 31);
+    let unit = w.unit;
+    let (out, calls, _) = one(
+        w,
+        Call::Animation {
+            unit,
+            path: [1, 2, 3, 4],
+            overlay: true,
+        },
+        |call, m| match call.target {
+            0x1dbc80 => {
+                assert_eq!(call.eax, Some(4));
+                assert_eq!(&call.args[..5], &[0x9000, SCRATCH, 1, 2, 3]);
+                for (i, value) in [0x0003ffff, 1, 2, 3].into_iter().enumerate() {
+                    m.set_u32(SCRATCH + 4 * i as u32, value).unwrap();
+                }
+                al(SCRATCH)
+            }
+            0x1daea0 => {
+                assert_eq!(call.edx, Some(0x9000));
+                al(0xa000)
+            }
+            _ => panic!("unexpected guest call"),
+        },
+    );
+    assert_eq!(calls.len(), 2);
+    let out = out.unwrap();
+    assert_eq!(out["index"], 3);
+    assert_eq!(out["frames"], 31);
+    assert_eq!(out["animation"], 77);
+    assert_eq!(out["selected"], json!([1, 2, 3]));
+}

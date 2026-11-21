@@ -367,6 +367,12 @@ impl Editor {
         Ok((e, name))
     }
 
+    pub fn loaded_names(&mut self, g: &Guest) -> Result<&Names> {
+        let idx = self.index(g)?;
+        self.names(g, &idx)
+            .ok_or_else(|| Error::unavailable("loaded map names unavailable"))
+    }
+
     /// The names of the tags `datums`, in order (from the loaded map's
     /// file): `None` for one the map does not name, and for all of them
     /// when there are no names (no source, no map loaded, or a file whose

@@ -176,6 +176,10 @@ impl AgentGlue {
             Err(e) => anyhow::bail!("agent-calls: {e}"),
         }
         agent::forge::install(&agent, sim.clone(), &agent::sim::hashes::HASHES);
+        let probes = agent::probe::Probes::default();
+        if registry.add(&probes).map_err(|e| anyhow::anyhow!("agent-probes: {e}"))? {
+            probes.install(&agent, &sim);
+        }
         agent::ai::install(&agent);
         // net.replication: the event counter is an observer of its own, so
         // H2_FEATURES can drop it and leave the method's other readings.

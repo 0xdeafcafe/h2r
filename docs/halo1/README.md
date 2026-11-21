@@ -20,6 +20,7 @@ Each doc's status line is the current word on how far its part got.
 | [campaign.md](campaign.md) | The plan for Halo 1's campaign: decisions, pipeline, order of work, the ten levels, importing | `h1campaign`, `cli::h1_import` |
 | [multiplayer.md](multiplayer.md) | The 13 multiplayer maps on Halo 2 base maps, the Halo 1 sandbox, packages with variants (`h2 h1 convert`) | `h1convert` |
 | [campaign-picker.md](campaign-picker.md) | How 1.0's menus list campaign levels, the campaign picker and per-campaign progress | `boot` |
+| [parity.md](parity.md) | Headless behavioural checks for Blood Gulch and a30 against the Halo 1 disc | `agent`, `h1objects`, `cli` |
 | [health.md](health.md) | Halo 1's health model: no body regeneration, health packs, the meter | `boot` |
 | [hud.md](hud.md) | Halo 1's HUD on converted maps | `boot` |
 
