@@ -1000,7 +1000,7 @@ fn run_configured(
         }
     }
     let local_forge =
-        features.switches().feature("forge", false) && !host_light && !replaying && !lockstep_on;
+        features.switches().feature("forge", true) && !host_light && !replaying && !lockstep_on;
     if local_forge
         && let Some(input) = &mut host.input
     {

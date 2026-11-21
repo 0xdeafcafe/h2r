@@ -16,7 +16,7 @@ An `impl.` name is an implementation switch
 | Switch | What |
 |---|---|
 | Every setting in `crates/extensions/game/src/setting_defs.rs` | the Settings menu's values; each has its env name there (`H2_FOV`, `H2_LIGHTING`, `H2_SINGLE_COPY`, `H2_PAD_*`, `H2_VOICE_*`, `H2_TOUCH_*`, `H2_STEAM_*`...) |
-| `H2_THEATER_RING_MIB` | Overrides the viewer’s `theater.ring_mib` setting for this launch. The [Theater ring](../game/theater-design.md#the-session-ring) defaults to 256 MiB. Set a persistent budget with `h2 settings set theater.ring_mib 128`. Zero disables ring capture. |
+| `H2_THEATER_RING_MIB` | Overrides the viewer’s `theater.ring_mib` setting for this launch. The [Theater ring](../game/theater-design.md#the-session-ring) defaults to 256 MiB. `H2_THEATER_RING=0` turns the ring and its warm restores off ([warm restore](../game/theater-design.md#warm-restore-and-its-fallback)); the CLI's `theater verify` and export set it explicitly. Set a persistent budget with `h2 settings set theater.ring_mib 128`. Zero disables ring capture. |
 | `H2_FPS`, `h2 play --fps` | Window presentation rate. Choose 30 (default), 60, 120 or uncapped. All four use real-time guest pacing in normal play. |
 | `h2 play --unpaced` | Disables the shell's guest pacing for throughput measurements. A fast host can simulate more than 30 ticks per wall second. |
 | `H2_RESOLUTION` | `native` (drawable aspect, up to a 3840 × 2160 pixel budget, the default) or a fixed `WxH`, each dimension 1–8192. Locks the Video screen's Resolution row. A headless GPU uses 640x480 for Native. |
@@ -37,12 +37,15 @@ An `impl.` name is an implementation switch
 | `H2_IMPORT_JOBS` | Parallel jobs for Halo 1 import (`crates/apps/cli/src/h1_import.rs`). |
 | `H2_CLOUD_SAVES=0` | Keep saves on this machine during Live play (`crates/apps/cli/src/play_cloud.rs`). |
 | `H2_LIVE_SERVER` | Service selected by `h2 play --live`. Use a URL or `off` ([app.md](app.md)). |
-| `forge` | Off by default. Enables the [local Forge session](../game/forge-design.md#the-ui) on offline multiplayer maps. D-pad Up or Tab toggles the monitor. |
+| `forge` | On by default; `-forge` turns it off. The [local Forge session](../game/forge-design.md#the-ui) on offline multiplayer maps. D-pad Up or Tab toggles the monitor. Light hosts, film replays and lockstep runs never have it. |
 | `ui-back` | on by default. B or Back returns to Game Setup from its nested selectors. `H2_FEATURES=-ui-back` restores the retail selector Back behavior ([Back navigation](../game/ui-screens.md#back-navigation)) |
 | `return-to-menu` | on in ordinary windowed runs. Shows the host loading picture on the return from a game ([level-boot.md](level-boot.md#returning-to-the-main-menu)) |
 | `impl.render.native=off` | turns off the native GPU renderer, every stage together ([native-renderer.md](../graphics/native-renderer.md)) |
-| `impl.render.interpolate`, `impl.render.reproject` | Opt-in host frames above 30 fps. Interpolate replays geometry with blended transforms. Reproject warps the world image for camera rotation. Both generate up to 60 frames per second ([high-framerate.md](../game/high-framerate.md)). |
-| `audio.hrtf`, `audio.distance_reverb` | headphone binaural filtering; extra distance reverb |
+| `impl.render.interpolate`, `impl.render.reproject` | Host frames above 30 fps; both generate up to 60 frames per second ([high-framerate.md](../game/high-framerate.md)). Interpolate, on by default, replays geometry with blended transforms; `-impl.render.interpolate` turns it off. Reproject, off by default, warps the world image for camera rotation and takes its place when set. At 30 fps neither acts. |
+| `audio.hrtf`, `audio.distance_reverb` | on by default: headphone binaural filtering; extra distance reverb. `audio.hrtf=off` and `audio.distance_reverb=off` turn them off ([audio.md](../audio/audio.md#headphones-3d)). |
+| `actor-net` | on; `-actor-net` stops capturing replicated AI actors and accepted dialogue after each distributed host tick ([AI over the network](../game/ai-networking.md#on-the-host-each-tick)) |
+| `firefight`, `firefight-row`, `firefight-options` | on; `-firefight` turns off the [Firefight](../game/firefight.md#the-host-runtime) director and host log (in each multiplayer game whose map carries the kit; any other map gets the refusal and its reason in `firefight.state`). `-firefight-row` removes the Game Setup row, `-firefight-options` the [Firefight Options...](../game/firefight.md#game-setup) page |
+| `impl.engine.datums`, `impl.engine.tags`, `impl.engine.locale` | on; `=off` turns off the Rust datum, tag and locale leaves, each group or one function (`impl.engine.tags.tag_get_checked=off`) |
 | `lobby-options=off` | keeps the retail Quick Options lines in the custom game lobby ([ui-builder.md](../game/ui-builder.md#the-pregame-lobbys-quick-options)) |
 
 ## Build and code generation
@@ -78,7 +81,7 @@ the final result through that directory.
 | `agent-edit-lifecycle` | Permits on-demand editor hooks for live object writes and map reloads. The first authorized write adopts the game. Opening the agent socket or displaying the pairing indicator leaves its hooks untouched. [Object edits](agent-api.md#object-edits) |
 | `H2_AGENT_OUT=DIR` | game-side root for `traces/`, `flights/` and `inputs/` ([agent-api.md](agent-api.md#tick-traces-and-the-flight-recorder)). Defaults to the game's cache directory when unset or empty. Lab sets it to the job's run directory. |
 | `agent-net` | the observer that counts replication events by type for `net.replication` ([agent-api.md](agent-api.md#netreplication)); `-agent-net` leaves the counts at zero |
-| `creature-probe` | off by default. `H2_FEATURES=creature-probe` registers the experimental slot-17 creature definition and selects its replication version for Live and System Link. Both peers use the same setting ([P7](../game/ai-networking.md#creature-slot-probe)) |
+| `creature-probe` | on by default; `-creature-probe` turns it off. Registers the slot-17 creature definition and selects its replication version for Live and System Link. A peer with a different version is refused as `replication_version_mismatch`, so both peers use the same setting ([P7](../game/ai-networking.md#creature-slot-probe)) |
 | `h2 host bundle --sim-stores DIR` | package verified shared resource stores; leased hosts select the bundle’s store directory ([dedicated-host-build.md](../live/dedicated-host-build.md#package-recorded-shared-resources)) |
 | `impl.sim.mapped-reads` | use eligible immutable file ranges as private guest pages on a light host; disable for the copy arm ([host-halving.md](../live/host-halving.md#halving-the-memory)) |
 | `H2_PACK_LINGER_S` | supervisor idle timeout in seconds, default 60; Live demand holds and cleanup last 60 seconds ([host-halving.md](../live/host-halving.md#warm-capacity-from-demand)) |
@@ -145,9 +148,6 @@ third column describes the remaining checks.
 
 | Switch | What | Waiting for |
 |---|---|---|
-| `H2_THEATER_RING=1` | Opts a film player into [warm restores and the rewind ring](../game/theater-design.md#warm-restore-and-its-fallback). Off by default. | keyframe cost measurements and film replay verification |
-| `actor-net` | Capture replicated AI actors and accepted dialogue after each distributed host tick ([AI over the network](../game/ai-networking.md#on-the-host-each-tick)) | P3 checks which presentation the client receives from retail |
-| `firefight` | off by default. Runs the [Firefight](../game/firefight.md#the-host-runtime) director and host log in each multiplayer game whose map carries the kit; any other map gets the refusal and its reason in `firefight.state`. With it a custom game's Game Setup gets a [Firefight Options...](../game/firefight.md#game-setup) row | the probe runs R1 to R4 ([firefight.md](../game/firefight.md#what-a-run-settles)) and FF4 seen in the game |
 | `H2_FLAT_RAM` | at build, the flat memory model: each guest access is one host instruction in the runtime's window, with a fixup to the helper (module feature 16; macOS and x86-64 Linux only); set it on the run too, or the image recompiles paged. At run time it also makes guest RAM aliasable from the start ([contract-thin-transfers-flat-ram.md](contract-thin-transfers-flat-ram.md), section 4.1, slice F3; [RUNTIME-CONTRACT.md](../../crates/recompiler/emit/RUNTIME-CONTRACT.md), "Flat RAM") | M4 of the contract doc |
 | `H2_EMIT_FLAT_RAM`, `H2_FLAT_WRITE_WATCH` (+ `H2_FLAT_STATS_OWNER`) | at build, the opt-in span image instead (`H2_FLAT_SPAN`); with it, `H2_FLAT_RAM` at run time turns the span path and its write watch on or off for that image (RUNTIME-CONTRACT.md, "Opt-in flat RAM and first-write faults") | M0 of the contract doc |
 | `H2_FLAT_STATS=1` | Records flat RAM protection statistics (`crates/runtime/runtime/src/flat/protection.rs`). | Flat RAM diagnostics |
@@ -158,11 +158,10 @@ third column describes the remaining checks.
 | `H2_DIRECT_GATE`, `H2_DIRECT_COUNT` | gate and count on the direct-call path; proven equivalent, untimed | a timing (they touch the `H2Direct` layout) |
 | `H2_VIEW_CHARGE=0` | the per-call charge path; view charging is the default (`crates/recompiler/emit/src/compile.rs`), for counting modules | an in-game comparison of both paths |
 | `impl.render.pipelined_frame` (+ `H2_PIPELINE_*` knobs) | render front-end one frame behind the sim on a worker ([pipelined-render.md](../graphics/pipelined-render.md)) | its documented next step |
-| `impl.render.interpolate`, `impl.render.reproject_ahead` | in-between frames by replay; reprojection carried past N | E1 played at 60 ([high-framerate.md](../game/high-framerate.md)) |
+| `impl.render.reproject`, `impl.render.reproject_ahead` | reprojection of the world image; carried past N | E1 played at 60 against the replay ([high-framerate.md](../game/high-framerate.md)) |
 | `host-light.tick-pacing`, `H2_HOST_TICK_PHASE_NS` | opt-in real-time light-host wake coalescing; the supervisor supplies the slot phase in nanoseconds | four-match tick p99, packet latency and paced hash parity ([host-halving.md](../live/host-halving.md#halving-the-cpu)) |
 | `host-light-native` | light hosts opt into native animation, collision and objects together; explicit `impl.sim.native` or leaf settings take precedence | Waterworks and Lockout hash parity and Waterworks median CPU saving ([host-halving.md](../live/host-halving.md#halving-the-cpu)) |
 | `impl.sim.native_*` (the individual ports are `crates/rewrites/engine/src/sim_physics`) | native simulation ports | a sim A/B |
 | `impl.sim.native.collision` | BSP point and location queries in Rust, with FP observers for vector and instance traces ([collision queries](../engine/collision-queries.md)) | per-map parity, cross-architecture bail counts and timing |
 | `impl.sim.native.objects` (`-impl.sim.native` turns it off with the other subsystems) | the object update in Rust, `crates/rewrites/engine/src/sim_objects` ([object-update.md](../engine/object-update.md)): the walks, the per-object updates, the type dispatchers, the wake leaves, function values with their imports, change colours, the damage update (with the tick's `Damage` and `Kill` events), the unit update's shell, movement, control, state, powered seats, timers, dialogue, team, camouflage and light with the unit animation state, the biped update and post-physics update, and the item, scenery, device, machine, crate, creature and projectile updates; the per-function ports at the points its bodies own stand down | run parity on the slices that add bodies ([sim-rewrite-objects.md](../engine/sim-rewrite-objects.md) section 12) |
-| `impl.engine.datums`, `impl.engine.tags` | Rust datum and tag leaves (`impl.engine.locale` is on) | a play-test |
 | `H2_SIGNIN_DIALOG` | the sign-in dialog window | a game run ([ui-builder.md](../game/ui-builder.md)) |

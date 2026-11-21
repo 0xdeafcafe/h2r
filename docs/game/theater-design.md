@@ -1,6 +1,6 @@
 # Theater: the full in-game player
 
-Status: Design. “What it builds on” describes the existing player. The session ring and warm restore are opt-in pending measurements on recorded films.
+Status: Design. “What it builds on” describes the existing player. The session ring and warm restore are on by default; keyframe cost measurements and film replay verification are pending.
 Code: `crates/extensions/game/src/theater.rs` (`Session`), `crates/extensions/game/src/theater/actions.rs` (the per-tick inputs), `crates/live/film/src/tape.rs` (the HLE tape), `crates/apps/cli/src/theater_cmd.rs` (the player process), `crates/live/film` (the container). Tests: `crates/extensions/game/src/theater/tests.rs`, `crates/live/film/src/tests.rs`.
 Switch: [Theater ring](../runtime/switches.md).
 
@@ -108,7 +108,7 @@ The same container also holds the film: the inputs (tag 1) and digests
 | The HLE tape: every host answer the guest received, on one call index | Built | `crates/live/film/src/tape.rs` (`Call`, `Playback::call`); `impl Tap for Session` in `theater.rs` |
 | Capture points every 150 ticks and local sidecar snapshots every sixth point | Recorder and player use the snapshot build key and recorded device boundaries | `crates/extensions/game/src/theater/record.rs`, `crates/live/film/src/sidecar.rs` |
 | Machine snapshots: guest RAM, kernel, D3D, audio, XAPI, feature sections, a RAM hash | Built, tested on synthetic machines | [snapshots.md](../runtime/snapshots.md) |
-| The player: an isolated child process per film with an opt-in warm rewind ring | Built | `crates/apps/cli/src/theater_cmd.rs` (`run`, the restart loop) |
+| The player: an isolated child process per film with a warm rewind ring | Built | `crates/apps/cli/src/theater_cmd.rs` (`run`, the restart loop) |
 | A film without a usable keyframe plays from boot | Built | `EngineReplay::open` in `crates/extensions/game/src/theater/replay.rs` (`ImageMatch::FromBoot`) |
 | Transport over the agent API: `theater.play`, `state`, `pause`, `speed`, `seek`, `step`, `keyframes`, `camera`, `hud` | Built | `crates/extensions/agent-proto/src/theater.rs` |
 | Cameras: a view replaced in the guest's renderer with a private random seed; a separate GPU view for a playerless host film | Built | `crates/extensions/game/src/theater/camera.rs` (`Seeds`), `host_view.rs` |
@@ -258,6 +258,9 @@ The ring holds machine keyframes for the stretch of film just watched.
   then reset the film cursors. A ring entry uses `Playback::resume_cursor`
   so a restore inside a call batch resumes at the next unread call.
 - **The ring is not in the film** and is dropped when the player leaves.
+- **The switch.** The ring is on by default; `H2_THEATER_RING=0` turns it
+  off (`setting_defs::theater_ring_cap`). `h2 theater verify` and the
+  export worker set it explicitly.
 
 The ring also gives the paused camera its picture where the guest draws
 the frame: when an entry covers the pause, the player runs from the held

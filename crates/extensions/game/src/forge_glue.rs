@@ -30,7 +30,7 @@ static CURRENT: Mutex<Weak<Mutex<Driver>>> = Mutex::new(Weak::new());
 static GENERATION: AtomicU64 = AtomicU64::new(0);
 
 pub fn requested() -> Result<bool, String> {
-    Ok(hooks::Switches::from_env()?.feature("forge", false))
+    Ok(hooks::Switches::from_env()?.feature("forge", true))
 }
 
 fn current() -> Option<Shared> {
@@ -180,7 +180,6 @@ struct Hooks(Shared);
 impl Feature for Hooks {
     fn manifest(&self) -> Manifest {
         Manifest::new("forge", "Local Forge monitor and Objects tool")
-            .off_by_default()
             .doc("docs/game/forge-design.md")
     }
 

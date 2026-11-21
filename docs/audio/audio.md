@@ -18,7 +18,7 @@ write on a Rust struct, and a software mixer renders the result.
 | `dsound` | `SoundBuffer` (Lock/Unlock, Play/Stop, loop region, position), `Stream` (packets), `MixIn` (an FX-send bus), `Listener`/`Source3d`/`Spatial`. |
 | `route` | Xbox mix bins folded to stereo (`dest`, `channel_of`); the table is below. |
 | `mixer` | `Mixer::render(&mut [f32])`: stereo f32 at the host rate. No device knowledge. |
-| `hrtf` | Opt-in binaural filtering for positioned mix-ins. |
+| `hrtf` | Binaural filtering for positioned mix-ins (on by default). |
 | `sink` | Device-independent output plumbing: lock-free SPSC `ring`, `AudioSink` trait, headless `NullSink`, `Pump`. |
 | `devices` | Picks an output device by name (the DualSense speaker); no device access. |
 | `fx`, `reverb` | Per-voice effects and the mixer's I3DL2 reverb; see "Voice effects". |
@@ -207,10 +207,10 @@ The default stereo mix uses a simple DirectSound panner.
 
 ### Headphones (3D)
 
-Launch with `H2_FEATURES=audio.hrtf=on` to enable binaural rendering for
-headphones. The switch defaults to off and is set at launch. Halo 2 never
-enabled the MCPX HRTF. With the switch off, the original panner produces
-bit-identical output.
+Binaural rendering for headphones is on by default. Launch with
+`H2_FEATURES=audio.hrtf=off` to turn it off; the switch is read at launch.
+Halo 2 never enabled the MCPX HRTF. With the switch off, the original
+panner produces bit-identical output.
 
 Each playing, positioned mix-in sums its stream sends to mono, then filters
 its dry stereo output using the source direction in the listener's frame.
@@ -235,17 +235,17 @@ HRIR files or game data.
 
 [brown-duda]: https://escholarship.org/uc/item/0cr9d23p
 
-### Optional distance reverb
+### Distance reverb
 
-`H2_FEATURES=audio.distance_reverb=on` enables extra depth for positioned
-voices. It uses the length of the listener-relative position in metres,
+Extra depth for positioned voices is on by default;
+`H2_FEATURES=audio.distance_reverb=off` turns it off. It uses the length of the listener-relative position in metres,
 before the DS3D min/max clamp. For distance `d`, the mixer adds
 `6 × d/(10+d)` dB to an existing room send and subtracts
 `12 × d/(10+d)` dB from the direct HF level. At ten metres this gives
 +3 dB wet and −6 dB at the HF reference. These are host tuning choices.
-The switch defaults off. Unpositioned streams keep their game mix. When
+Unpositioned streams keep their game mix. When
 a stream feeds a positioned mix-in, the cue applies there. Both switches can
-be enabled with `H2_FEATURES=audio.hrtf=on,audio.distance_reverb=on`.
+be turned off with `H2_FEATURES=audio.hrtf=off,audio.distance_reverb=off`.
 The direct HF filter runs before binaural rendering. Bin 10 feeds the room
 reverb through its own filter.
 

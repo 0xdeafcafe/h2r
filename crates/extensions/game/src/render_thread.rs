@@ -164,6 +164,17 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
     // Game-thread points: the simulation, the UI and the level start.
     ("actor-net", "*", "capture and dialogue share per-match state on the simulation thread"),
     (
+        "creature-probe",
+        "*",
+        "the creature replication slot's definition, scheduling and skips on the simulation thread",
+    ),
+    (
+        "forge",
+        "*",
+        "parks the monitor's biped and applies input on the game tick, and resets at the game's \
+         start and end; its two render hooks are context-only",
+    ),
+    (
         "firefight",
         "*",
         "the game's start and tick on the game thread: starts the mode, applies entries through \

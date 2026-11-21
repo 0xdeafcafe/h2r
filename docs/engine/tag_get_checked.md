@@ -2,7 +2,7 @@
 
 Status: Built. Code: `crates/hooking/guest-layout/src/tags.rs`, adapters in
 `crates/rewrites/engine/src/abi.rs`. Tests: `crates/rewrites/engine/tests/differential.rs`,
-`crates/rewrites/engine/tests/views.rs`. Switch: `impl.engine.tags` (off by default;
+`crates/rewrites/engine/tests/views.rs`. Switch: `impl.engine.tags` (on by default;
 [switches.md](../runtime/switches.md)).
 
 Recovered from `h2 disasm` of the retail XBE
