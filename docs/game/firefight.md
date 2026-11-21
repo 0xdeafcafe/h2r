@@ -1,7 +1,7 @@
 # Firefight
 
-Status: Design. Nothing here is built.
-Code (planned): `crates/formats/firefight` (the definition, the director), `crates/tools/firefight-kit` (the map kit), `crates/extensions/game/src/firefight/` (the host runtime, the HUD), `crates/live/live-proto/src/firefight.rs`. Tests: each crate's own, on invented data.
+Status: The definition format, validator and three built-in wave sets live in `crates/formats/firefight`.
+Code planned for the director in the same crate, the map kit in `crates/tools/firefight-kit`, the host runtime and HUD in `crates/extensions/game/src/firefight/`, and the Live wire types in `crates/live/live-proto/src/firefight.rs`. Tests use invented data.
 Switch: the `firefight` feature of `H2_FEATURES` (off until slice FF4 is seen in the game); it joins [switches.md](../runtime/switches.md) with the code.
 
 Firefight is a co-operative mode on multiplayer maps: up to 16 players on
@@ -50,13 +50,15 @@ end).
 
 ### The definition
 
-`firefight::Def` is a document in canonical JSON, hashed the way a Forge
-document is (`content`'s canonical form). It holds no game data: enemies
-are named by **class** (`grunt`, `elite`, `jackal`, `hunter`, ...) and
-the kit maps a class to a character on the machine.
+`firefight::Def` is a versioned document. `Def::canonical_json` uses
+`content`'s canonical form, as Forge does. `Def::id` is the SHA-256
+of those UTF-8 bytes, including `format`. Object key order and input
+whitespace can vary. Array order is part of the definition. Enemies are
+named by **class** (`grunt`, `elite`, `jackal`, `hunter`, ...) and the
+kit maps each class to a character on the machine.
 
 ```
-Def      { name, rounds: [Round], lives: Lives, caps: Caps, scoring: Scoring }
+Def      { format: 1, name, rounds: [Round], lives: Lives, caps: Caps, scoring: Scoring }
 Round    { waves: [Wave], skulls_on: [Skull] }
 Wave     { squads: [SquadSpec], boss: bool, gap_ticks }
 SquadSpec{ class, count: {per_player, min, max}, drop: Drop, weapon_tier }
@@ -65,9 +67,43 @@ Caps     { live_actors_by_players: [(players, actors)] }
 Scoring  { by_class, difficulty_multiplier, skull_multipliers, assist }
 ```
 
-`validate(&Def, &Limits)` refuses a definition whose worst wave exceeds
-the live actor cap of [ai-networking.md](ai-networking.md) ("CPU on the
-host") or names a class outside the kit's list.
+`Def::from_bytes(bytes, &Limits)` admits wire data. It checks the 64 KiB
+limit before parsing, bounds collections as it reads them, and refuses
+unknown fields and duplicate object keys. `validate(&Def, &Limits)`
+applies the same format and admission rules to an authored definition.
+`Limits` supplies the target kit's class list. Every named class must be
+in that list and every squad class must have a score entry. Canonical
+output and hashes depend on the definition alone.
+
+- A definition has 1 to 12 rounds, each with five waves and a boss on the
+  last wave. A wave has 1 to 16 squads and a gap of up to 9,000 ticks.
+  A squad has 1 to 32 actors. Its count at each player count is
+  `players * per_player` clamped to `min..=max`. Starting lives and
+  the round bonus each range from 0 to 1,000.
+- Cap tiers use ascending inclusive upper bounds on player count from
+  1 to 16. The last tier sets the largest supported lobby. Admission
+  checks the sum of each wave's squads at every supported player count
+  against the author cap. The author cap stays within the host budget
+  in [AI networking](ai-networking.md#cpu-on-the-host).
+- `"edge"` lets the director choose among the kit's edge zones.
+  `{"prefer_zone":n}` prefers zone `n` (0 through 11) when present
+  and unseen. Weapon tiers range from 0 to 3.
+- A round's `skulls_on` adds skulls to those already enabled. Each skull
+  appears at most once in the schedule. The JSON names are
+  `assassins`, `thunderstorm`, `famine`, `blind`, `ghost`, `catch`,
+  `mythic`, `angry` and `low_gravity`.
+- Class scores range from 1 to 1,000 points. The four difficulty
+  multipliers (`easy`, `normal`, `heroic`, `legendary`) and the optional
+  multiplier for each skull are integers in thousandths, from 1 to
+  2,000. An omitted skull multiplier is 1,000. The assist fraction is
+  0 to 1,000 thousandths.
+- The name is nonblank text of at most 128 UTF-8 bytes without control
+  characters. Class names start with a lowercase ASCII letter and use
+  lowercase ASCII letters, digits or underscores, up to 32 bytes. A
+  scoring table holds up to 32 classes.
+
+`firefight::builtin::definitions()` returns Holdout, Attrition and Last
+Stand. Each has three rounds and uses the stage-one kit's Elite class.
 
 ### The director
 
@@ -88,7 +124,8 @@ pub enum Command { PlaceSquad { slot, class, count, zone }, EraseSquad { slot },
   or under the cap for the current player count; the rest wait in a
   reserve and enter as others die.
 - **Where a squad enters.** The kit gives each map drop zones. The
-  director picks, with its seeded generator, among zones no player has
+  director honors an unseen preferred zone when specified. Otherwise
+  it picks, with its seeded generator, among zones no player has
   line of sight to (`zones_seen_by_players`, which the host fills from
   the engine's own visibility test) and prefers the one farthest from
   the players' centre.
