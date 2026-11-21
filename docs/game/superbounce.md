@@ -30,14 +30,18 @@ established).
   ceiling) is real. So is a crouch term that moves a mid-air biped by its
   height change. Neither was involved in any recorded bounce: all five
   were standing, 3.5 to 28 seconds after the last crouch. **Code**, **Trace**
-- A forced crouch does leave something behind, and the game's teleport
-  clears it. Played back from before two forced crouches, a player's
-  recorded input bounced 4 times in 4. From a teleport after the
-  crouches, the same walk and jump landed on the same spot at the same
-  speed 6 times and never bounced
-  ([playback](#the-forced-crouch-leaves-state-trace-lab-playback)). Every
-  crouch field reads normal again after the crouch, so the state is
-  somewhere not yet read. **Trace**, **Open** for where
+- A forced crouch leaves the player-vs-level collision pair's word (pair
+  `+0x0c`) at −3, and that word is what makes the landing bounce.
+  Standing up out of the forced crouch takes it from 0 to −3, and it
+  stays there until the pair is rebuilt, which a teleport does. Played
+  back with the player's recorded input from before the crouches, the
+  landing bounced 4 times in 4. From a teleport after them, the same
+  landing at the same place and speed never bounced (0 of 7). Setting the
+  word to −3 on a teleported body (`havok.pair.set`) made it bounce every
+  time the word held to the landing (3 of 3), at +12.3, the player's own
+  launch ([playback](#the-forced-crouch-leaves-state-trace-lab-playback),
+  [pair word](#the-pair-word-trace-lab-playback)). **Trace**; **Open** for
+  why a negative word launches
 
 ## Forced crouch (Code)
 
@@ -265,17 +269,81 @@ Also measured:
   about 30 all the time, crouched or not. Writing 0 to it (`world.poke`)
   just before the jump of run C didn't change the launch (+11.52, the
   same as A).
-- **Pausing the game mid-playback changes the outcome.** A
-  `session.pause` four ticks before the jump took the next landing off
-  the bounce. Read state from a playback well before the run-up, not
-  during it.
+- **A pause at an unpinned point can move the path.** One
+  `session.pause` placed by position in a script of reads took the next
+  landing off the bounce. A pause at a tick pinned with `session.wait
+  {until: {tick}}` didn't move the landing. Pin reads and writes to a tick
+  (`input.pad {at_tick}` for the steps, `session.wait` for the read).
 - `state.save` is refused on this build ("not quiescent", seven features
   not yet audited for snapshots), so every run starts from a teleport.
 
-**Open:** where the state is. The next check reads `world.raw`,
-`havok.contacts` and `havok.agents` at the same tick of a playback (a
-primed body) and of a B run (teleported), then writes the differing
-values across half at a time, to find which ones decide the bounce.
+### The pair word (Trace, lab playback)
+
+Measured 2026-11-21 through the lab on a build with `havok.pair.set`
+([agent-api.md](../runtime/agent-api.md#havokpairset)), same recording and
+playback as above. Scripts and results are in the lab session's keep
+directory, not in the repository.
+
+**Two readings at one tick.** `world.raw`, `havok.contacts` and
+`havok.agents`, taken at the same tick of the recording in a primed
+playback and in a teleported one, both with the player standing still at
+(−7.99, 2.49). The primed body bounced afterward and the teleported one
+didn't. Positions agreed to 0.05. Two differences stand out:
+
+- The body's rotation (motion `+0x30`, and the matrix at `+0x80`) is
+  identity in the primed body and a yaw in the teleported one: the
+  teleport turns the body, play doesn't. Setting it to identity after the
+  teleport didn't make a bounce (0 of 2).
+- `havok.agents` lists one pair against the level for the player. Its
+  `pair_word` is `fffffffd` (−3) in the primed body and `00000000` in the
+  teleported one. A negative word puts the pair in the mode that sets its
+  input threshold to −1000 instead of `world[+0x244] + word ×
+  world[+0x248]` ([havok-runtime.md](../engine/havok-runtime.md)).
+
+Copying every other differing word of the object, physics component,
+entity, motion and shape onto the teleported body at that tick (697
+words, pointers and handles left out) didn't make a bounce (0 of 4).
+
+**The word through a playback** (`havok.agents` every tick):
+
+| Recording tick | Crouch | Word |
+|---|---|---|
+| start | 0 | 0 |
+| 6127, first forced crouch | 1.0 | the pair is gone for two ticks, then back at 0 |
+| 6159, standing up in the corner | 0.83 | −3 |
+| 6441 to 6579, second forced crouch | 1.0, then 0.83 | gone, 0, then −3 again |
+| 6579 to 6754, walk, run-up, jump | 0 | −3 |
+| 6754, the bounce, +11.5 | 0 | −3 |
+
+In a teleported playback the word is 0 to the landing, then 1 for a tick
+on touchdown, then 0. No bounce.
+
+**Setting it.** A teleport to where the player stood still before the
+jump (recording tick 6684), then the recorded jump from there:
+
+| Word set to | Bounced | Launch |
+|---|---|---|
+| none (as teleported, 0) | 0 of 6 | — |
+| `00000000` (a write of the same value) | 0 of 1 | — |
+| `fffffffd` (−3), held to the landing | 3 of 3 | +12.31 to +12.45 |
+| `fffffffd`, gone by the end of the run | 0 of 1 | — |
+
+All of them landed at (−10.25, 4.04, −3.25) at −5.4 units/s, where the
+player's own bounce launched at +12.4. A body that stands still for a
+while after a teleport has no level pair to write (three runs of seven
+found none 20 ticks after the teleport), and a pair that is rebuilt
+comes back at 0.
+
+**Where −3 comes from** (Code, [havok-runtime.md](../engine/havok-runtime.md)).
+The word is the pair's tolerance level in the pair pass `FUN_00317950`.
+At 0 or more it widens when contact points fall outside the tolerance and
+narrows when they fit. −3 is the give-up value. `FUN_00316460` writes it
+when a point is still outside after widening (`0x00316755`,
+`0x00316958`), and from then on the pass runs that pair's agent at a
+tolerance of −1000. Nothing re-arms −3; only −2 goes back to 0. A capsule
+standing up into the corner's ceiling is deep in the geometry, which fits
+the give-up path. **Code** for the paths; **Trace** that it happens on
+standing up.
 
 ## The geometry (Code, from the map)
 
@@ -297,10 +365,15 @@ rest on the ramp side of the crease.
 
 ## Open
 
-- **What the forced crouch leaves behind.** It's on the body until a
-  teleport, and it's not the object, physics record, body, motion or
-  shape bytes read so far, nor the `+0x3a8` counter
-  ([playback](#the-forced-crouch-leaves-state-trace-lab-playback)).
+- **Why a pair at −3 launches.** At −3 the pair pass runs the agent at a
+  tolerance of −1000 ([pair word](#the-pair-word-trace-lab-playback)).
+  One reading is that the capsule then gets no early contact points from
+  the level and sinks 7 to 14 cm into the crease before the solver
+  pushes it out, but which contact points the agent keeps at −1000, and
+  what the virtual `+0x74` before the write does, aren't read.
+- **What drops the pair.** Entering a crouch and a long stand both
+  rebuild it at 0, which ends the effect. How long a stand it takes isn't
+  measured.
 - **60 frames a second.** The player reports no bounces at 60. That isn't
   measured here, and how a frame rate would reach the 30 Hz tick isn't
   known.

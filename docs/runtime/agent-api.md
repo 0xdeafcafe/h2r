@@ -36,6 +36,7 @@ connection to hold `session.claim`.
 | `world.raw` | read | [`world.raw`](#worldraw-an-objects-bytes-before-and-after) |
 | `world.poke` | claim | [`world.poke`](#worldpoke-replace-bytes-in-one-object-part) |
 | `havok.bodies`, `havok.agents`, `havok.contacts` | read | [`havok`](#havok-the-physics-world) |
+| `havok.pair.set` | claim | [`havok.pair.set`](#havokpairset) |
 | `profile.counters`, `profile.capture`, `profile.fallbacks`, `profile.memory`, `profile.faults` | read | [`profile`](#profile-where-a-frame-goes) |
 | `profile.sample.start`, `profile.sample.stop` | act | [`profile`](#profile-where-a-frame-goes) |
 | `profile.sample.status` | read | [`profile`](#profile-where-a-frame-goes) |
@@ -596,6 +597,25 @@ complete `key`, and record both agent bases to see replacements.
 Allocators can reuse an address between samples, and the raw dump
 contains pointers, unused slots and padding. A cached surface with an
 empty manifold is still a candidate in the query box.
+
+### `havok.pair.set`
+
+`havok.pair.set {object, entry, word}` (access: claim) overwrites one
+pair's word (pair `+0x0c`, [havok-runtime.md](../engine/havok-runtime.md))
+at a tick boundary. `entry` is the pair's `entry` from `havok.agents` for
+the same object and `word` is eight hex digits, as `pair_word` prints
+them. It writes only a pair `havok.agents` would list for that object at
+that tick; another `entry` is `GONE`, and so is an absent object or a
+player between lives. The reply has `object`, `entry`, `before` and
+`after`. It needs the same claim and host-write session as `world.poke`
+(`agent::havok::install_writes`; writer `set_pair_word` in
+`crates/live/live-telemetry/src/havok_agents.rs`). It exists to test
+whether the word a forced crouch leaves behind is what makes a superbounce
+([superbounce.md](../game/superbounce.md)).
+
+```sh
+printf '%s\n' claim 'havok.pair.set {"object":"player.0","entry":"7fbfa8d0","word":"fffffffd"}' | h2 agent -
+```
 
 ## `profile`: where a frame goes
 

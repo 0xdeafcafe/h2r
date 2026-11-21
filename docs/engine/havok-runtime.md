@@ -240,10 +240,25 @@ fixed islands.
   stored at `0x00278c6f`. A pair can exist without an agent (filter failure
   at `0x00278be6..0x00278bf5`, cleanup at `0x00278e0b`). Pair `+0x0c`
   receives 0 or −1 on the creation paths at `0x00278d0f..0x00278d34`.
-  One processing mode uses nonnegative values to set the input threshold
-  to `world[+0x244] + pair_word * world[+0x248]` and uses −1000 when negative
-  (`0x003179eb..0x00317a29`, `0x00317af1..0x00317b06`). It can increment
-  or decrement this word (`0x00317ab9`, `0x00317ac9`). The API preserves its bits.
+  It is the pair's tolerance level in the pair pass `FUN_00317950`, which
+  `FUN_00317d30` runs when `world[+0x23e]` is set (`0x00317d51..0x00317d5e`).
+  That pass sets the collision input's mode (`world[+0x254]+0x0c`) to 2 and
+  its tolerance (`+0x10`) before it calls the agent (vtable `+0x10`):
+  - Word 0 or more: tolerance `world[+0x244] + word * world[+0x248]`
+    (`0x003179eb..0x00317a29`). When a contact point lies outside it, the
+    word goes up by one (`0x00317ac9`) and `FUN_00316460` widens and runs
+    the agent again. When every point fits one level lower
+    (`FUN_003163c0`), the word goes down by one (`0x00317ab9`).
+  - Word negative: tolerance −1000.0 (`0x00317af1..0x00317b06`). A word of
+    −2 goes back to 0 once no point has a negative distance (against
+    `0x45DBD8`, 0.0; `0x00317b22..0x00317b67`). Nothing in the pass moves
+    −1 or −3.
+  - −3 is written in `FUN_00316460` when a point is still outside the
+    widened tolerance (`0x00316755`, `0x00316958`). Before it, a virtual
+    `+0x74` is called on the body that `FUN_00316460` picks by comparing
+    the two motions' `+0x7c`. After it, the agent runs again at −1000.
+    The pair keeps −3 until the pair is rebuilt.
+  The API preserves the word's bits. `havok.pair.set` overwrites it.
 - **Code.** Agent `+0x00` is the vtable, `+0x04` is the allocation size
   (u16), `+0x08` is the contact manager. The BV-tree factory stores all
   three at `0x002e9633..0x002e9644`. Destruction passes the size to the

@@ -1,15 +1,17 @@
 use std::collections::HashMap;
 
-use agent_proto::RpcError;
 use agent_proto::havok::{
-    AgentCache, Agents, AgentsParams, ChildCache, CollisionAgent, ConvexCache, Side, TreeCache,
+    AgentCache, Agents, AgentsParams, ChildCache, CollisionAgent, ConvexCache, PairSet,
+    PairSetParams, Side, TreeCache,
 };
+use agent_proto::{RpcError, code};
 use agent_proto::raw::to_hex;
 use live_telemetry::havok_agents as hk;
 use serde_json::Value;
 
 use super::{hex, ids, objects, params, read, resolve};
 use crate::exec::GameCtx;
+use crate::sim::SimHandle;
 
 pub(super) fn agents_method(v: Value, ctx: &mut GameCtx<'_>) -> Result<Value, RpcError> {
     let p: AgentsParams = params(v)?;
@@ -22,6 +24,52 @@ pub(super) fn agents_method(v: Value, ctx: &mut GameCtx<'_>) -> Result<Value, Rp
         agents: raw.into_iter().map(|a| pair(a, &ids)).collect(),
     };
     Ok(serde_json::to_value(answer).expect("collision agents serialise"))
+}
+
+fn hex_word(name: &str, v: &str) -> Result<u32, RpcError> {
+    if v.len() != 8 {
+        return Err(RpcError::new(
+            code::INVALID_PARAMS,
+            format!("{name} must be eight hex digits"),
+        ));
+    }
+    u32::from_str_radix(v, 16).map_err(|_| {
+        RpcError::new(code::INVALID_PARAMS, format!("{name} must be eight hex digits"))
+    })
+}
+
+pub(super) fn pair_set_method(
+    v: Value,
+    ctx: &mut GameCtx<'_>,
+    sim: &SimHandle,
+) -> Result<Value, RpcError> {
+    let p: PairSetParams = params(v)?;
+    let entry = hex_word("entry", &p.entry)?;
+    let word = hex_word("word", &p.word)?;
+    sim.writable_session(ctx)?;
+    let objects = objects(ctx)?;
+    let (datum, _) = resolve(&objects, &p.object)?;
+    let before = ctx.with_guest(|m| {
+        hk::set_pair_word(m, datum, entry, word).map_err(|e| {
+            RpcError::new(
+                code::UNAVAILABLE,
+                format!("the Havok world at {:08x} faulted", e.addr),
+            )
+        })
+    })?;
+    let before = before.ok_or_else(|| {
+        RpcError::new(
+            code::GONE,
+            format!("{} has no collision pair at {}", p.object, p.entry),
+        )
+    })?;
+    let answer = PairSet {
+        object: p.object,
+        entry: hex(entry),
+        before: hex(before),
+        after: hex(word),
+    };
+    Ok(serde_json::to_value(answer).expect("pair write serialises"))
 }
 
 fn cache(c: hk::Cache) -> AgentCache {
@@ -166,6 +214,21 @@ mod tests {
         let answer: Agents = serde_json::from_value(reply["result"].clone()).unwrap();
         assert_eq!(answer.object, "player.0");
         assert!(answer.agents.is_empty());
+    }
+
+    #[test]
+    fn pair_set_takes_eight_hex_digit_entry_and_word() {
+        assert_eq!(hex_word("word", "fffffffd").unwrap(), 0xffff_fffd);
+        for bad in ["", "fffd", "-0000003", "fffffffdd", "zzzzzzzz"] {
+            assert_eq!(
+                hex_word("word", bad).unwrap_err().code,
+                agent_proto::code::INVALID_PARAMS,
+                "{bad}"
+            );
+        }
+        assert!(
+            params::<PairSetParams>(json!({"object": "player.0", "entry": "7fbfa8d0"})).is_err()
+        );
     }
 
     #[test]
