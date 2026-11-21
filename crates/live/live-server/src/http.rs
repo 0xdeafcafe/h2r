@@ -743,7 +743,9 @@ async fn create_account(
     body: Result<Bytes, BytesRejection>,
 ) -> ApiResult<Response> {
     let device = crate::signins::device_of(&headers);
-    let created = live.create_account_on(&jws_body(body)?, device).await?;
+    let created = live
+        .register_account(&jws_body(body)?, device, bearer(&headers))
+        .await?;
     Ok(json(StatusCode::CREATED, &created))
 }
 
@@ -1004,6 +1006,24 @@ async fn send_out(socket: &mut WebSocket, o: Out) -> Result<bool, String> {
 }
 
 #[cfg(feature = "native")]
+async fn replay(
+    socket: &mut WebSocket,
+    session: &mut StreamSession,
+    opening: bool,
+) -> Result<bool, String> {
+    let head = session.head();
+    loop {
+        let (page, done) = session.replay_page(head, opening).await?;
+        if !send_all(socket, page).await? {
+            return Ok(false);
+        }
+        if done {
+            return Ok(true);
+        }
+    }
+}
+
+#[cfg(feature = "native")]
 /// Drives a [`StreamSession`] over axum's WebSocket: waits for the auth
 /// message when one is due, subscribes, lets the reader in, then follows
 /// the dispatcher's feed and the frame feeds. On a `--private` server the
@@ -1036,7 +1056,7 @@ async fn run_stream(
         _ => PackedFeed::All(live.packed().subscribe_all()),
     });
     let mut frames = (!filter.packed).then(|| live.frames());
-    if !send_all(&mut socket, session.open().await?).await? {
+    if !replay(&mut socket, &mut session, true).await? {
         return Ok(());
     }
     // The token's end: one timer, moved when a fresh token comes (not
@@ -1060,7 +1080,12 @@ async fn run_stream(
             event = feed.recv() => match event {
                 Ok(e) => session.on_event(&e).into_iter().collect(),
                 // Fell behind the feed: re-read from the store.
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => session.catch_up().await?,
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                    if !replay(&mut socket, &mut session, false).await? {
+                        return Ok(());
+                    }
+                    continue;
+                }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => return Ok(()),
             },
             frame = recv_frame(&mut frames) => match frame {

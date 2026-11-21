@@ -55,12 +55,51 @@ fn usage(cpu_ms: f64) -> Usage {
     }
 }
 
+#[cfg(unix)]
+#[test]
+fn container_entrypoint_keeps_lease_secrets_out_of_arguments() {
+    let script = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../deploy/host/entrypoint.sh"
+    ));
+    // Substitute the final executable so the actual entrypoint prints the
+    // arguments it would hand to the supervisor. No host is started.
+    let script = script.replace("exec /opt/h2/h2", r"exec printf '%s\n'");
+    let output = Command::new("sh")
+        .args(["-c", &script])
+        .env_clear()
+        .env("H2_LEASE", "test-lease")
+        .env("H2_LIVE", "https://live.example")
+        .env("H2_TOKEN", "private-lease-value")
+        .env("H2_DATA_URL", "https://data.example/private-test-url")
+        .env("H2_DATA_SHA", "example-sha")
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let args = String::from_utf8(output.stdout).unwrap();
+    assert_eq!(
+        args.lines().collect::<Vec<_>>(),
+        [
+            "host",
+            "run",
+            "--lease",
+            "test-lease",
+            "--live",
+            "https://live.example",
+            "--data-sha",
+            "example-sha",
+        ]
+    );
+}
+
 // -- Options --------------------------------------------------------------------
 
 #[test]
 fn options_default_to_five_matches_on_the_container_ports() {
     let opts = Options::parse_with(std::iter::empty::<String>(), |_| None).unwrap();
     assert_eq!(opts.max_matches, 5);
+    assert!(opts.control.ip().is_loopback());
+    assert!(opts.tunnel.ip().is_loopback());
     assert_eq!(opts.control.port(), host_pack::CONTROL_PORT);
     assert_eq!(opts.tunnel.port(), host_pack::TUNNEL_PORT);
     assert_eq!(opts.base_port, host_pack::BASE_PORT);

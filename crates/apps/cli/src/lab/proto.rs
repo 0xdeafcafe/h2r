@@ -241,11 +241,7 @@ pub fn parse(line: &str) -> Result<Request> {
 pub fn validate(r: &Request) -> Result<()> {
     match r {
         Request::Status | Request::Update | Request::Recordings | Request::Runs { .. } => Ok(()),
-        Request::Fetch { id } => {
-            check_name("id", id)?;
-            ensure!(id.bytes().all(|b| b.is_ascii_digit()), "invalid job id");
-            Ok(())
-        }
+        Request::Fetch { id } => check_job_id(id),
         Request::SyncBases { branch, commit } | Request::Sync { branch, commit, .. } => {
             check_rev(branch)?;
             check_commit(commit)?;
@@ -442,6 +438,12 @@ pub fn pgo_name(v: &str) -> Result<Option<&str>> {
 /// The PGO profile name `env`'s `H2_PGO` uses, if any.
 pub fn pgo_from(env: &BTreeMap<String, String>) -> Result<Option<&str>> {
     env.get("H2_PGO").map_or(Ok(None), |v| pgo_name(v))
+}
+
+pub(super) fn check_job_id(id: &str) -> Result<()> {
+    check_name("id", id)?;
+    ensure!(id.bytes().all(|b| b.is_ascii_digit()), "invalid job id");
+    Ok(())
 }
 
 /// One plain path component: letters, digits, `.`, `_`, `-`; not starting

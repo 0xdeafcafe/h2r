@@ -1,4 +1,5 @@
 import { Show, createEffect, createSignal, onCleanup, type JSX } from "solid-js";
+import { readModPhoto } from "../lib/maps";
 import { issueToken } from "../admin/token";
 import { identity } from "../state/identity";
 import { live } from "../state/live";
@@ -29,7 +30,7 @@ export function ModPhoto(props: { src: string; alt: string; fullSize?: boolean; 
       const token = await issueToken(me, wk.id, "read");
       const res = await fetch(src, { signal: controller.signal, headers: { authorization: `Bearer ${token}` } });
       if (!res.ok) throw new Error(res.statusText);
-      const blob = await res.blob();
+      const blob = await readModPhoto(res);
       if (controller.signal.aborted) return;
       blobUrl = URL.createObjectURL(blob);
       setLocal({ src, xuid: me.xuid, url: blobUrl });

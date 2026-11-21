@@ -2,7 +2,7 @@
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
-use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -120,6 +120,80 @@ pub(super) fn receive_archive(mut src: impl Read, mut dst: impl Write) -> Result
     }
 }
 
+/// Extract a numeric run into private staging with the platform tar's normal
+/// path protections. Publish regular files only, after checking the whole tree.
+pub(super) fn extract_run(archive: &Path, to: &Path, id: &str) -> Result<PathBuf> {
+    proto::check_job_id(id)?;
+    let stage = to.join(format!(".fetch-{}", live_proto::sign::random_id()));
+    fs::DirBuilder::new().mode(0o700).create(&stage)?;
+    let result = (|| {
+        let status = Command::new("tar")
+            .env("COPYFILE_DISABLE", "1")
+            .args(["--no-same-owner", "--no-same-permissions"])
+            .arg("-C")
+            .arg(&stage)
+            .arg("-xf")
+            .arg(archive)
+            .args(["--", id])
+            .status()
+            .context("extracting lab archive")?;
+        ensure!(
+            status.success(),
+            "extracting runs/{id} failed with {status}"
+        );
+        let run = PathBuf::from(id);
+        let mut pending = vec![run.clone()];
+        let mut dirs = Vec::new();
+        let mut files = Vec::new();
+        while let Some(dir) = pending.pop() {
+            let src = stage.join(&dir);
+            ensure!(
+                fs::symlink_metadata(&src)?.is_dir(),
+                "expected a run directory"
+            );
+            for item in fs::read_dir(src)? {
+                let item = item?;
+                let relative = dir.join(item.file_name());
+                let meta = fs::symlink_metadata(item.path())?;
+                if meta.is_dir() {
+                    pending.push(relative);
+                } else {
+                    ensure!(
+                        meta.is_file() && meta.nlink() == 1,
+                        "expected a regular run artifact"
+                    );
+                    files.push(relative);
+                }
+            }
+            dirs.push(dir);
+        }
+        for dir in dirs {
+            let path = to.join(dir);
+            match fs::create_dir(&path) {
+                Ok(()) => {}
+                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+                    ensure!(
+                        fs::symlink_metadata(path)?.is_dir(),
+                        "expected a destination directory"
+                    );
+                }
+                Err(e) => return Err(e.into()),
+            }
+        }
+        for file in files {
+            // Copy data alone into a private file. Rename replaces any old
+            // artifact without following its symlink or preserving archive modes.
+            let path = to.join(&file);
+            let mut out = TempFile::new(path.parent().expect("under the run directory"))?;
+            io::copy(&mut File::open(stage.join(file))?, &mut out.file)?;
+            fs::rename(&out.path, path)?;
+        }
+        Ok(to.join(run))
+    })();
+    let _ = fs::remove_dir_all(&stage);
+    result
+}
+
 pub(super) fn branch_refs(branch: &str) -> Result<(String, String)> {
     proto::check_rev(branch)?;
     let source = format!("refs/heads/{branch}");
@@ -220,6 +294,45 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use super::*;
+
+    #[test]
+    fn fetched_artifacts_stay_in_the_selected_run() {
+        let root = std::env::temp_dir().join(live_proto::sign::random_id());
+        let source = root.join("source");
+        let dest = root.join("dest");
+        fs::create_dir_all(source.join("0001")).unwrap();
+        fs::create_dir(&dest).unwrap();
+        fs::write(source.join("0001/meta.json"), "first").unwrap();
+        fs::write(source.join("other"), "sibling").unwrap();
+        let archive = root.join("artifacts.tar");
+        let pack = || {
+            assert!(
+                Command::new("tar")
+                    .arg("-cf")
+                    .arg(&archive)
+                    .arg("-C")
+                    .arg(&source)
+                    .args(["0001", "other"])
+                    .status()
+                    .unwrap()
+                    .success()
+            )
+        };
+        pack();
+        assert!(extract_run(&archive, &dest, "../outside").is_err());
+        let run = extract_run(&archive, &dest, "0001").unwrap();
+        assert_eq!(fs::read_to_string(run.join("meta.json")).unwrap(), "first");
+        assert!(!dest.join("other").exists());
+        fs::write(source.join("0001/meta.json"), "second").unwrap();
+        pack();
+        extract_run(&archive, &dest, "0001").unwrap();
+        assert_eq!(fs::read_to_string(run.join("meta.json")).unwrap(), "second");
+        std::os::unix::fs::symlink("meta.json", source.join("0001/link")).unwrap();
+        pack();
+        assert!(extract_run(&archive, &dest, "0001").is_err());
+        assert!(!run.join("link").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn restart_closes_admission_and_waits_for_every_transfer() {

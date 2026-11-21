@@ -585,7 +585,22 @@ async function simRun(admin: LocalAccount, other: LocalAccount) {
 
   // A title file, as an admin.
   if (adminTag) {
-    const admin = await createAccount(api, base, aud, adminTag);
+    // run.sh supplies the local test server's identity for reserved signup.
+    if (new URL(base).hostname !== "127.0.0.1") fail("admin signup", "expected local Worker");
+    const seed = process.env.H2_LIVE_SERVER_KEY;
+    if (!seed) throw new Error("missing local Worker identity");
+    const key = await importSeed(seed, wk.keys[0].x);
+    const admin = await createAccount(api, base, aud, adminTag, undefined, async (input, init) => {
+      if (typeof init?.body !== "string") throw new Error("missing signed signup");
+      const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(init.body));
+      const lxm = "accounts.reserve." + Buffer.from(digest).toString("hex");
+      const iat = Math.floor(Date.now() / 1000);
+      const token = await signCompact(key.privateKey, { alg: "EdDSA", kid: key.publicJwk.kid, typ: "JWT" },
+        canonicalJson({ iss: "server:" + aud, aud, iat, exp: iat + 60, jti: randomId(), lxm }));
+      const headers = new Headers(init?.headers);
+      headers.set("authorization", "Bearer " + token);
+      return fetch(input, { ...init, headers, redirect: "error" });
+    });
     const uri = api + "/admin/replay-archives/" + archiveGame;
     const info = await (await fetch(uri, {headers:{authorization:`Bearer ${await issueToken(admin, aud, "admin.read")}`}})).json();
     const verify = async (cursor: string | null) => {

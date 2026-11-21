@@ -280,10 +280,14 @@ impl TunnelHost {
         use live_proto::matchmaking::{PACK_ECHO_PATH, REGION_ECHO};
         let mut xuid = None;
         let mut echo = false;
-        // Tungstenite requires an HTTP error response even for a callback
-        // that always accepts the handshake.
         #[allow(clippy::result_large_err)]
         let on_request = |request: &Request, mut response: Response| -> Result<_, ErrorResponse> {
+            if request.headers().contains_key("origin") {
+                return Err(tungstenite::http::Response::builder()
+                    .status(403)
+                    .body(Some("private host tunnel".into()))
+                    .expect("static response"));
+            }
             if request.uri().path() == PACK_ECHO_PATH {
                 echo = true;
                 if request
@@ -904,12 +908,23 @@ mod tests {
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
         thread::scope(|scope| {
             let server = scope.spawn(|| {
+                let (stream, _) = listener.accept().unwrap();
+                assert!(host.serve(stream).is_err());
                 for _ in 0..2 {
                     let (stream, _) = listener.accept().unwrap();
                     host.serve(stream).unwrap();
                 }
             });
             let addr = listener.local_addr().unwrap();
+            let mut browser = format!("ws://{addr}{PACK_ECHO_PATH}")
+                .into_client_request()
+                .unwrap();
+            browser
+                .headers_mut()
+                .insert("origin", "https://example.test".parse().unwrap());
+            let denied = tungstenite::client(browser, TcpStream::connect(addr).unwrap());
+            assert!(matches!(denied, Err(tungstenite::HandshakeError::Failure(
+                tungstenite::Error::Http(response))) if response.status().as_u16() == 403));
             for text_frame in [true, false] {
                 let mut req = format!("ws://{addr}{PACK_ECHO_PATH}").into_client_request().unwrap();
                 req.headers_mut().insert("sec-websocket-protocol", REGION_ECHO.parse().unwrap());

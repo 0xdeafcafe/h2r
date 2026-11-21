@@ -84,19 +84,20 @@ class Sock implements SocketLike {
   send(d: string) { this.sent.push(d); }
 }
 
-function client(token: string | null) {
+function client(token: string | null, nextToken = () => token) {
+  const timers: Array<() => void> = [];
   const socks: Sock[] = [];
   const c = new StreamClient(
     {
       url: (from, auth) => `ws://x/v1/stream?from=${from ?? 0}${auth ? "&auth=1" : ""}`,
       connect: (u) => { const s = new Sock(u); socks.push(s); return s; },
-      auth: async () => token,
-      setTimer: () => 0,
+      auth: async () => nextToken(),
+      setTimer: (fn) => { timers.push(fn); return timers.length; },
       clearTimer: () => {},
     },
     { onEvent: () => {}, onFrame: () => {}, onCaughtUp: () => {} },
   );
-  return { c, socks };
+  return { c, socks, timers };
 }
 
 describe("the stream as the signed-in reader", () => {
@@ -107,6 +108,17 @@ describe("the stream as the signed-in reader", () => {
     expect(socks[0]!.url).toBe("ws://x/v1/stream?from=0&auth=1");
     socks[0]!.onopen?.({});
     expect(socks[0]!.sent.map((m) => JSON.parse(m))).toEqual([{ kind: "auth", token: "tok" }]);
+  });
+
+  test("renews the authenticated connection with a newly issued read token", async () => {
+    let issued = 0;
+    const { c, socks, timers } = client(null, () => String(++issued));
+    c.start();
+    await Bun.sleep(0);
+    socks[0]!.onopen?.({});
+    await timers[0]!();
+    expect(socks[0]!.sent.map(m => JSON.parse(m).token)).toEqual(["1", "2"]);
+    c.stop();
   });
 
   test("signed out: an anonymous socket, nothing sent", async () => {

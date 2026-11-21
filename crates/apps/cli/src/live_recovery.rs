@@ -88,6 +88,7 @@ pub(crate) fn recover_with_key(
     code: &str,
     key: KeyPair,
 ) -> Result<LocalAccount> {
+    client.check_credential_transport(&client.api)?;
     let body = RecoverBody {
         request: RecoverRequest::sign(&key, gamertag.as_str(), &client.discovery.id, now()),
         code: code.trim().to_string(),

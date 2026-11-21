@@ -248,7 +248,7 @@ R2 simulated locally by miniflare.
 | Title file, 2 MiB | 243 ms to publish and read back (too big for a SQLite row) |
 
 `run.sh` makes a fresh admin gamertag each run (`H2_LIVE_ADMINS`); the
-smoke test signs up as it to publish the title file.
+smoke test uses the local dev operator key to register it and publish the title file as that account.
 
 ## Slice 5 results
 

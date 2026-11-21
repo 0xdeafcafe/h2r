@@ -8,7 +8,7 @@
 //! session sits behind an async lock, since opening or catching up awaits
 //! the store and the runtime may hand in the next message meanwhile. The
 //! pump skips a session that is busy, and the session is caught up to the
-//! log ([`settle`]) before it is let go.
+//! log ([`replay`]) before it is let go.
 //!
 //! Nothing here runs on a timer: token expiry and the auth deadline are
 //! checked from the hub's alarm ([`Sockets::check`], due at
@@ -36,6 +36,8 @@ use tokio::sync::Mutex;
 
 /// How long a reader has to send its auth message (as on a machine).
 const AUTH_TIMEOUT_MS: f64 = 10_000.0;
+/// Worker sends queue without backpressure. Apply this limit at a page boundary.
+const REPLAY_SEND_BUDGET: usize = 4 * 1024 * 1024;
 
 /// What a socket keeps across hibernation.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -50,7 +52,7 @@ pub trait Socket: Clone {
     fn send_text(&self, text: &str) -> bool;
     fn send_binary(&self, bytes: &[u8]) -> bool;
     fn close(&self, code: u16, reason: String);
-    fn attach(&self, a: &Attachment);
+    fn attach(&self, a: &Attachment) -> bool;
     /// Its attachment, if it is a stream socket.
     fn attachment(&self) -> Option<Attachment>;
 }
@@ -86,16 +88,44 @@ pub fn send<S: Socket>(ws: &S, out: Vec<Out>) -> bool {
 /// Brings a session that was out of the pump's reach (busy across an
 /// await) level with the log, so that once it is let go, with no await
 /// between, the pump's next event is the next one it needs.
-async fn settle(session: &mut StreamSession, mut out: Vec<Out>) -> Result<Vec<Out>, String> {
-    while session.behind() {
-        out.extend(session.catch_up().await?);
+async fn replay<S: Socket>(
+    ws: &S,
+    session: &mut StreamSession,
+    mut opening: bool,
+    budget: usize,
+) -> bool {
+    // The Worker send API queues messages without backpressure. A reconnecting
+    // reader resumes after its last delivered event.
+    let mut sent = 0;
+    while opening || session.behind() {
+        let head = session.head();
+        loop {
+            let (page, done) = match session.replay_page(head, opening).await {
+                Ok(result) => result,
+                Err(e) => return send(ws, vec![Out::Close(1011, e)]),
+            };
+            sent += page
+                .iter()
+                .map(|message| match message {
+                    Out::Text(t) => t.len(),
+                    Out::Binary(b) => b.len(),
+                    Out::Close(_, _) => 0,
+                })
+                .sum::<usize>();
+            if !send(ws, page) {
+                return false;
+            }
+            if sent >= budget && (!done || session.behind()) {
+                ws.close(4413, "resume from the last delivered event".into());
+                return false;
+            }
+            if done {
+                break;
+            }
+        }
+        opening = false;
     }
-    Ok(out)
-}
-
-async fn open(session: &mut StreamSession) -> Result<Vec<Out>, String> {
-    let out = session.open().await?;
-    settle(session, out).await
+    true
 }
 
 struct Entry<S> {
@@ -125,11 +155,15 @@ impl<S> Default for Sockets<S> {
 
 impl<S: Socket> Sockets<S> {
     fn attach(&self, ws: &S, id: u64, session: &StreamSession) {
-        self.attached.set(self.attached.get() + 1);
-        ws.attach(&Attachment {
+        if ws.attach(&Attachment {
             id,
             resume: session.resume(),
-        });
+        }) {
+            self.attached.set(self.attached.get() + 1);
+        } else {
+            self.entries.borrow_mut().remove(&id);
+            ws.close(1009, "stream filter could not be saved".into());
+        }
     }
 
     /// Attachments written so far.
@@ -165,10 +199,7 @@ impl<S: Socket> Sockets<S> {
             },
         );
         if !guard.awaits_auth() {
-            let keep = match open(&mut guard).await {
-                Ok(out) => send(&ws, out),
-                Err(e) => send(&ws, vec![Out::Close(1011, e)]),
-            };
+            let keep = replay(&ws, &mut guard, true, REPLAY_SEND_BUDGET).await;
             if !keep {
                 self.entries.borrow_mut().remove(&id);
                 return;
@@ -192,6 +223,10 @@ impl<S: Socket> Sockets<S> {
             *last = (*last).max(live.position());
         }
         let mut session = StreamSession::resumed(live.clone(), resume);
+        if let Some(close) = session.expired(live_server::app::now()) {
+            send(ws, vec![close]);
+            return None;
+        }
         // A packed reader's game streams start again at keyframes.
         let rejoin = session.rejoin();
         if !send(ws, rejoin.into_iter().collect()) {
@@ -225,10 +260,7 @@ impl<S: Socket> Sockets<S> {
         let mut session = session.lock().await;
         let before = session.resume();
         let keep = match session.on_text(text) {
-            Ok(true) => match open(&mut session).await {
-                Ok(out) => send(&ws, out),
-                Err(e) => send(&ws, vec![Out::Close(1011, e)]),
-            },
+            Ok(true) => replay(&ws, &mut session, true, REPLAY_SEND_BUDGET).await,
             Ok(false) => true,
             Err(close) => send(&ws, vec![close]),
         };
@@ -310,10 +342,7 @@ impl<S: Socket> Sockets<S> {
             .collect();
         for (id, ws, session) in all {
             let mut session = session.lock().await;
-            let keep = match settle(&mut session, Vec::new()).await {
-                Ok(out) => send(&ws, out),
-                Err(e) => send(&ws, vec![Out::Close(1011, e)]),
-            };
+            let keep = replay(&ws, &mut session, false, REPLAY_SEND_BUDGET).await;
             if !keep {
                 self.entries.borrow_mut().remove(&id);
             }
@@ -362,8 +391,8 @@ impl Socket for worker::WebSocket {
     fn close(&self, code: u16, reason: String) {
         let _ = worker::WebSocket::close(self, Some(code), Some(reason));
     }
-    fn attach(&self, a: &Attachment) {
-        let _ = self.serialize_attachment(a);
+    fn attach(&self, a: &Attachment) -> bool {
+        self.serialize_attachment(a).is_ok()
     }
     fn attachment(&self) -> Option<Attachment> {
         self.deserialize_attachment().ok().flatten()
@@ -427,6 +456,7 @@ mod tests {
         sent: Vec<serde_json::Value>,
         closed: Option<u16>,
         attachment: Option<Attachment>,
+        reject_attachment: bool,
     }
 
     #[derive(Clone, Default)]
@@ -444,8 +474,13 @@ mod tests {
         fn close(&self, code: u16, _: String) {
             self.0.borrow_mut().closed = Some(code);
         }
-        fn attach(&self, a: &Attachment) {
-            self.0.borrow_mut().attachment = Some(a.clone());
+        fn attach(&self, a: &Attachment) -> bool {
+            let mut state = self.0.borrow_mut();
+            if state.reject_attachment {
+                return false;
+            }
+            state.attachment = Some(a.clone());
+            true
         }
         fn attachment(&self) -> Option<Attachment> {
             self.0.borrow().attachment.clone()
@@ -504,6 +539,53 @@ mod tests {
             str::to_string,
         );
         serde_json::json!({"kind": "auth", "token": token}).to_string()
+    }
+
+    #[tokio::test]
+    async fn replay_budget_closes_after_a_page_and_the_reader_can_resume() {
+        let server = server(false).await;
+        for name in ["Alpha", "Bravo", "Charlie", "Delta"] {
+            account(&server.live, name).await;
+        }
+        let reader = |from| {
+            StreamSession::new(
+                server.live.clone(),
+                StreamFilter {
+                    from: Some(from),
+                    ..StreamFilter::default()
+                },
+            )
+        };
+        let mut first = reader(0);
+        let ws = Fake::default();
+        assert!(!replay(&ws, &mut first, true, 1).await);
+        assert_eq!(ws.0.borrow().closed, Some(4413));
+        let cursor =
+            ws.0.borrow()
+                .sent
+                .iter()
+                .filter_map(|m| m["event"]["position"].as_u64())
+                .max()
+                .unwrap();
+        let mut second = reader(cursor);
+        let ws = Fake::default();
+        assert!(replay(&ws, &mut second, true, REPLAY_SEND_BUDGET).await);
+        assert_eq!(ws.kinds().last().map(String::as_str), Some("caught_up"));
+        assert_eq!(second.resume().last, Some(server.live.position()));
+    }
+
+    #[tokio::test]
+    async fn a_failed_attachment_releases_the_session() {
+        let server = server(true).await;
+        let sockets = Sockets::<Fake>::default();
+        let ws = Fake::default();
+        ws.0.borrow_mut().reject_attachment = true;
+        sockets
+            .accept(server.live.clone(), ws.clone(), StreamFilter::default())
+            .await;
+        assert_eq!(ws.0.borrow().closed, Some(1009));
+        assert_eq!(sockets.attached(), 0);
+        assert!(sockets.is_empty());
     }
 
     /// Two messages close together: the second used to find the session

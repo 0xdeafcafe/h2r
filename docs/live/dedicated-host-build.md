@@ -397,8 +397,9 @@ month-to-date spend and the configured cap.
 
 ### 9. Host process (owned by `dh-supervisor` and `dh-lobby`)
 
-`h2 host run --lease <id> --live <url> --token <t> --data-url <u> --data-sha <h> [--region r]`
-(`crates/apps/cli/src/host_cmd.rs`, `dh-supervisor`):
+`h2 host run --lease <id> --live <url> --data-sha <h> [--region r]`
+uses `H2_TOKEN` and `H2_DATA_URL` from the host environment
+(`crates/apps/cli/src/host_cmd.rs`, `dh-supervisor`).
 
 1. Provision the data (contract 7).
 2. Boot the light host: the same boot path as `h2 serve --system-link --host-light`, with no window and no local player.

@@ -26,8 +26,8 @@ use crate::store::{Query, RecordedEvent};
 /// WebSocket close code for a missing, bad or expired token.
 pub const CLOSE_UNAUTHORIZED: u16 = 4401;
 
-/// Events a catch-up reads at a time.
-const PAGE: usize = 500;
+/// Events a catch-up reads at a time. A row can carry the whole signed batch.
+const PAGE: usize = 8;
 
 /// What the reader asked for in the query string.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -142,7 +142,7 @@ pub struct Resume {
     /// waiting for its auth message, so nothing replayed yet).
     pub last: Option<u64>,
     pub viewer: Viewer,
-    /// A private server's token end (unix seconds): the socket closes then
+    /// An authenticated reader's token end (unix seconds): the socket closes then
     /// unless a fresh token comes.
     pub expires: Option<i64>,
 }
@@ -191,7 +191,10 @@ impl StreamSession {
     pub fn resumed(live: Arc<Live>, r: Resume) -> Self {
         let mut s = StreamSession::new(live, r.filter);
         s.viewer = r.viewer;
-        s.expires = r.expires;
+        // Older attachments kept the authenticated viewer without its deadline.
+        s.expires = r
+            .expires
+            .or_else(|| (r.viewer != Viewer::Anonymous).then_some(0));
         s.last = r.last;
         s
     }
@@ -216,7 +219,7 @@ impl StreamSession {
 
     /// Whether the reader is let in and caught up: it hears the feeds.
     pub fn is_open(&self) -> bool {
-        self.last.is_some()
+        self.last.is_some() && self.expired(crate::app::now()).is_none()
     }
 
     /// Whether the log has moved past where an open reader was brought
@@ -225,26 +228,13 @@ impl StreamSession {
         self.last.is_some_and(|last| last < self.live.position())
     }
 
-    /// When a private stream's token runs out (unix seconds, leeway
-    /// included); `None` for a public one.
+    /// When the reader's token runs out, including leeway. Anonymous readers have no deadline.
     pub fn deadline(&self) -> Option<i64> {
-        self.expires.map(|exp| exp + TOKEN_LEEWAY_S)
+        self.expires.map(|exp| exp.saturating_add(TOKEN_LEEWAY_S))
     }
 
-    /// Lets the reader in: replays from its `from` (default: the head) and
-    /// says `caught_up`; a packed reader also gets its games' frames since
-    /// their keyframes. Call once [`StreamSession::awaits_auth`] is false,
-    /// after subscribing to the feeds (so nothing falls between).
-    pub async fn open(&mut self) -> Result<Vec<Out>, String> {
-        let mut last = self.filter.from.unwrap_or_else(|| self.live.position());
-        let mut out = Vec::new();
-        self.read_after(&mut last, &mut out).await?;
-        self.last = Some(last);
-        out.push(Out::json(&StreamMessage::CaughtUp { position: last }));
-        if self.filter.packed {
-            out.extend(self.rejoin());
-        }
-        Ok(out)
+    pub fn head(&self) -> u64 {
+        self.live.position()
     }
 
     fn sees_event(&self, e: &RecordedEvent) -> bool {
@@ -252,53 +242,63 @@ impl StreamSession {
             || self.filter.stream.as_deref() == Some(e.body.stream.as_str())
     }
 
-    /// Every stored event after `last` that the filter keeps, then `last`
-    /// moved to at least the position the read model had reached.
-    async fn read_after(&self, last: &mut u64, out: &mut Vec<Out>) -> Result<(), String> {
-        let target = self.live.position();
-        loop {
+    /// Replay one page up to a fixed log head. Send each page before reading
+    /// the next. Only the final opening page announces catch-up.
+    pub async fn replay_page(
+        &mut self,
+        head: u64,
+        opening: bool,
+    ) -> Result<(Vec<Out>, bool), String> {
+        if self.awaits_auth() && self.expires.is_none() {
+            return Ok((vec![Self::auth_timed_out()], true));
+        }
+        let mut cursor = self.last.or(self.filter.from).unwrap_or(head);
+        let mut out = Vec::new();
+        if cursor < head {
             let batch = self
                 .live
                 .store()
-                .read(&self.filter.query(*last, PAGE))
+                .read(&self.filter.query(cursor, PAGE))
                 .await
                 .map_err(|e| e.to_string())?;
             for e in &batch {
-                // A hidden event is skipped, but the reader's place moves
-                // past it.
+                if e.position > head {
+                    break;
+                }
                 if self.sees_event(e)
                     && let Some(w) = self.live.wire_for(e, self.viewer)
                 {
                     out.push(Out::json(&StreamMessage::Event { event: Box::new(w) }));
                 }
-                *last = e.position;
+                cursor = e.position;
             }
-            if batch.len() < PAGE {
-                *last = (*last).max(target);
-                return Ok(());
+            if batch.len() < PAGE || batch.last().is_some_and(|e| e.position >= head) {
+                cursor = head;
             }
         }
+        if let Some(close) = self.expired(crate::app::now()) {
+            return Ok((vec![close], true));
+        }
+        self.last = Some(cursor);
+        let done = cursor >= head;
+        if done && opening {
+            out.push(Out::json(&StreamMessage::CaughtUp { position: cursor }));
+            if self.filter.packed {
+                out.extend(self.rejoin());
+            }
+        }
+        Ok((out, done))
     }
 
-    /// After the reader fell behind the feed: what it missed, from the
-    /// store.
-    pub async fn catch_up(&mut self) -> Result<Vec<Out>, String> {
-        let Some(mut last) = self.last else {
-            return Ok(Vec::new());
-        };
-        let mut out = Vec::new();
-        self.read_after(&mut last, &mut out).await?;
-        self.last = Some(last);
-        Ok(out)
-    }
-
-    /// A text message from the reader: its auth message, or on a private
-    /// stream a fresh token. `Ok(true)`: the reader was just let in, so
-    /// call [`StreamSession::open`]. `Err`: close with it.
+    /// A text message from the reader: its auth message or a fresh token. `Ok(true)`: the reader was just let in, so
+    /// start replay with [`StreamSession::replay_page`]. `Err`: close with it.
     pub fn on_text(&mut self, text: &str) -> Result<bool, Out> {
+        if text.len() > crate::http::MAX_WS_MESSAGE {
+            return Err(Out::Close(1009, "message too large".into()));
+        }
         let waiting = self.awaits_auth();
         if !waiting && self.expires.is_none() {
-            // Public streams ignore what clients send.
+            // An anonymous stream stays anonymous.
             return Ok(false);
         }
         let parsed = match serde_json::from_str::<ClientMessage>(text) {
@@ -311,20 +311,7 @@ impl StreamSession {
         match parsed {
             Ok((viewer, exp)) => {
                 self.viewer = viewer;
-                // A public server's reader keeps the socket past its token;
-                // a private one must send fresh tokens.
-                self.expires = (self.live.policy().private
-                    || self
-                        .filter
-                        .games
-                        .iter()
-                        .any(|id| crate::sim_runs::is_sim_id(id))
-                    || self
-                        .filter
-                        .stream
-                        .as_deref()
-                        .is_some_and(crate::sim_runs::is_sim_stream))
-                .then_some(exp);
+                self.expires = Some(exp);
                 Ok(waiting)
             }
             Err(e) => Err(Out::Close(CLOSE_UNAUTHORIZED, e.message)),
@@ -336,7 +323,7 @@ impl StreamSession {
         Out::Close(CLOSE_UNAUTHORIZED, "send an auth message first".into())
     }
 
-    /// `Some` when a private stream's token has run out at `now`.
+    /// The close to send when an authenticated reader's token has run out.
     pub fn expired(&self, now: i64) -> Option<Out> {
         self.deadline()
             .filter(|d| now >= *d)
@@ -345,6 +332,9 @@ impl StreamSession {
 
     /// A new event from the feed.
     pub fn on_event(&mut self, e: &RecordedEvent) -> Option<Out> {
+        if !self.is_open() {
+            return None;
+        }
         let last = self.last.as_mut()?;
         if e.position <= *last {
             return None;
@@ -520,7 +510,8 @@ mod tests {
         };
         let mut s = StreamSession::new(live.clone(), filter);
         assert!(!s.awaits_auth() && !s.is_open());
-        let out = s.open().await.unwrap();
+        let (out, done) = s.replay_page(head, true).await.unwrap();
+        assert!(done);
         let last = text(out.last().unwrap());
         assert_eq!(last["kind"], "caught_up");
         assert_eq!(last["position"], head);
@@ -550,10 +541,78 @@ mod tests {
         }
         let before = back.resume().last.unwrap();
         sign_up(&live, "Charlie").await;
-        let missed = back.catch_up().await.unwrap();
+        let (missed, _) = back.replay_page(back.head(), false).await.unwrap();
         assert!(!missed.is_empty());
         assert!(back.resume().last.unwrap() > before);
         assert!(!back.behind());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn replay_sends_bounded_pages_before_caught_up() {
+        let (live, dir) = live(false).await;
+        for name in ["One", "Two", "Three", "Four"] {
+            sign_up(&live, name).await;
+        }
+        let head = live.position();
+        assert!(head > PAGE as u64);
+        let mut reader = StreamSession::new(
+            live,
+            StreamFilter {
+                from: Some(0),
+                ..Default::default()
+            },
+        );
+        let mut prior = 0;
+        loop {
+            let (page, done) = reader.replay_page(head, true).await.unwrap();
+            assert!(page.len() <= PAGE + usize::from(done));
+            for msg in &page {
+                let value = text(msg);
+                if value["kind"] == "event" {
+                    let position = value["event"]["position"].as_u64().unwrap();
+                    assert!(position > prior);
+                    prior = position;
+                } else {
+                    assert!(done);
+                    assert_eq!(value["kind"], "caught_up");
+                    assert_eq!(value["position"], head);
+                }
+            }
+            if done {
+                break;
+            }
+        }
+        assert_eq!(reader.resume().last, Some(head));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn public_stream_expires_authenticated_viewers_including_older_attachments() {
+        let (live, dir) = live(false).await;
+        let token = live_proto::sign::issue_token(
+            &live.identity.key,
+            &live.identity.author(),
+            live.id(),
+            live_proto::lxm::READ,
+            crate::app::now(),
+        );
+        let mut reader = StreamSession::new(
+            live.clone(),
+            StreamFilter {
+                auth: true,
+                ..Default::default()
+            },
+        );
+        let auth = serde_json::json!({"kind": "auth", "token": token}).to_string();
+        assert_eq!(reader.on_text(&auth), Ok(true));
+        assert!(reader.deadline().is_some());
+        reader.replay_page(reader.head(), true).await.unwrap();
+        let mut legacy = reader.resume();
+        legacy.expires = None;
+        let stale = StreamSession::resumed(live, legacy);
+        assert!(!stale.is_open());
+        assert!(stale.expired(crate::app::now()).is_some());
         let _ = std::fs::remove_dir_all(dir);
     }
 

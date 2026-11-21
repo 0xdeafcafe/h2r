@@ -372,27 +372,19 @@ pub mod lxm {
 /// Whether a client may send a bearer token to `base_url`: always over
 /// HTTPS, over plain HTTP only to a loopback host (docs/live/live-security.md §6).
 pub fn bearer_allowed(base_url: &str) -> bool {
-    let lower = base_url.to_ascii_lowercase();
-    if lower.starts_with("https://") || lower.starts_with("wss://") {
-        return true;
-    }
-    let Some(rest) = lower
-        .strip_prefix("http://")
-        .or_else(|| lower.strip_prefix("ws://"))
-    else {
+    let Ok(url) = url::Url::parse(base_url) else {
         return false;
     };
-    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
-    let host_port = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
-    let host = if let Some(v6) = host_port.strip_prefix('[') {
-        v6.split_once(']').map_or("", |(h, _)| h)
-    } else {
-        host_port.split(':').next().unwrap_or("")
-    };
-    host == "localhost"
-        || host
-            .parse::<std::net::IpAddr>()
-            .is_ok_and(|ip| ip.is_loopback())
+    match url.scheme() {
+        "https" | "wss" => url.has_host(),
+        "http" | "ws" => match url.host() {
+            Some(url::Host::Domain(name)) => name == "localhost",
+            Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+            Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+            None => false,
+        },
+        _ => false,
+    }
 }
 
 /// One event as the API serves it (`/v1/events`, the stream). `stream`,
@@ -1012,6 +1004,8 @@ mod wire_tests {
             "http://localhost.evil.com",
             "http://127.0.0.1@evil.com",
             "http://[::2]",
+            r"http://remote.invalid\@localhost/",
+            "http://localhost:invalid",
             "ftp://localhost",
             "localhost",
         ] {
