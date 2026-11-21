@@ -16,7 +16,7 @@ Reference revision: `fd14ef3c46135e9422966c6a64cd926fb0bd23fb`.
 Method: a depth-one, blob-filtered checkout restricted to that directory,
 compared by root offset, block stride and element offset with the tag
 definitions and relocation schema. The retail directory contains 14 XML
-files. The comparison for these mappings covers ten existing group definitions. The scenario
+files. The comparison for these mappings covers 13 groups. The scenario
 definition is maintained separately.
 
 In a definition's evidence, `A Halo2Xbox <filename>` identifies an
@@ -31,6 +31,7 @@ path keeps that path and representation.
 ### Mapped declarations
 
 Counts are new names and authored descriptions, once at the declaration.
+The `DECR` count includes two shared mesh records also used by `PRTM`.
 Descriptions include those added to existing names and retained byte
 spans. The `itmc` example is based on its existing engine evidence.
 
@@ -49,15 +50,17 @@ spans. The `itmc` example is based on its existing engine evidence.
 | `wgit` | 12 | 12 |
 | `wigl` | 36 | 36 |
 | `itmc` (engine evidence only) | 0 | 1 |
-| Total | 374 | 461 |
+| `DECR` | 42 | 42 |
+| `PRTM` | 49 | 49 |
+| `hudg` | 126 | 126 |
+| Total | 591 | 678 |
 
 The retail reference supplies no separate plugin for the other object
 palettes, including scenery, weapons, equipment, machines, sound scenery
 and crates. Those groups inherit the mapped object layer. The vehicle
 also supplies the shared unit layer for bipeds. Of the local schema
 groups without a definition, `scnr` belongs to the scenario work.
-Retail plugins also exist for `DECR`, `PRTM` and `hudg`. The other
-groups have no plugin in this retail directory:
+The remaining groups have no plugin in this retail directory:
 `<fx>`, `adlg`, `bsdt`, `colo`, `gldf`, `mdlg`, `mulg`, `phys`,
 `sfx+`, `sncl`, `snmx`, `spk!`, `styl`, `weat`.
 
@@ -195,6 +198,26 @@ At root offsets `0, 24, 10c, 118, 120, 128, 130`, two numeric words do not estab
 | wigl | `root` 0x150 | unknown | tagref | No matching registry fixup |
 | wigl | `root` 0x160 | i16[4] | enum16 (multiple fields) | Retain existing field boundaries |
 | vrtx | root +0x0 | opaque 4 bytes | enum16 and a 2-byte unlabelled value | Vertex program builders write this field as one byte array. |
+
+#### HUD globals
+
+| Group | Path/offset | Ours | Reference | Reason |
+|---|---|---|---|---|
+| hudg | root +0x48, +0x50 | unknown bytes | tag references | The retail schema has no fixups for these font slots. |
+| hudg | root +0x84, +0x94, +0xc4 | unknown bytes | tag references | The retail schema has no fixups for these message resources. |
+| hudg | root +0xa4 | word | packed colour | The schema classifies this slot as a word and its relocation behaviour takes precedence. |
+| hudg | root +0x380, +0x390 | unknown bytes | tag references | The retail schema has no fixups for the results-screen image and checkpoint audio. |
+
+#### Decorator and particle models
+
+| Group and location | Kept | Reference | Reason |
+|---|---|---|---|
+| DECR root +0x30, PRTM root +0x98 | Eight opaque bytes | Block with a 4-byte entry | The registry has no block relocation at either address. |
+| DECR +0x38/+0x3c, PRTM +0xa0/+0xa4 | Raw resource address and its associated size | Signed offset and unsigned byte count | The schema pairs these fields for resource relocation. |
+| DECR resources (+0x48) and PRTM resources (+0xb0), element +0x04 and +0x06 | Two unsigned 16-bit fields | Two signed 16-bit fields | Engine reads in the shared `block_resource` definition in mode.txt give their offsets, sizes and sentinel. |
+| PRTM root +0x60 and +0x68 | Two opaque 8-byte regions (one 0x10 span) | Two tag references | Neither is a group/datum relocation in the schema. |
+| PRTM +0x78/+0x30 (emitter element) +0x00 | Eight opaque bytes | Tag reference | No tag relocation here in the PRTM schema. |
+| PRTM root +0x20, +0x30, +0x40, +0x50; emitter +0x08, +0x18, +0x28, +0x38, +0x48, +0x58, +0x68, +0x7c, +0x8c; at each record's +0, +2, +4, +6 | i16, i16, u16, i16 in the shared `property` | Four 16-bit enumerations | The established effect function uses signed inputs and a numeric modifier. Its data relocation at +8 agrees. |
 
 To repeat the comparison, set the directory for the ignored test as described in [switches.md](../../runtime/switches.md#tools) and run:
 
