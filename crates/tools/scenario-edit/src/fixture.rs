@@ -421,9 +421,30 @@ pub const OBJ_PHMO: usize = 0x1b00;
 pub const OBJ_PHMO_SIZE: usize = 0x300;
 /// The scenario's scenery palette (`scnr+0x58`, one 0x28 entry).
 pub const SCENERY_PALETTE_AT: usize = 0xa80;
-/// The model's two node names (invented string IDs): a root, and a child
-/// one unit above it.
-pub const NODE_NAMES: [u32; 2] = [0x0400_0101, 0x0500_0102];
+/// The model's two node names (invented string IDs: length in the top
+/// byte, index below): a root, and a child one unit above it. Both are in
+/// the string-ID table [`fixture_with_object_collision`] writes.
+pub const NODE_NAMES: [u32; 2] = [0x0400_0001, 0x0500_0002];
+/// The invented string-ID table, by index.
+const STRING_IDS: [&str; 3] = ["", "root", "child"];
+
+/// Write the string-ID table: the offsets at 0xc00, the NUL-separated
+/// strings at 0xc40.
+fn string_ids(b: &mut [u8], strings: &[&str]) {
+    let (index, data) = (0xc00, 0xc40);
+    let mut at = 0;
+    for (i, s) in strings.iter().enumerate() {
+        put(b, index + i * 4, at as u32);
+        b[data + at..data + at + s.len()].copy_from_slice(s.as_bytes());
+        b[data + at + s.len()] = 0;
+        at += s.len() + 1;
+    }
+    assert!(data + at <= INDEX);
+    put(b, 0x164, strings.len() as u32);
+    put(b, 0x168, at as u32);
+    put(b, 0x16c, index as u32);
+    put(b, 0x170, data as u32);
+}
 /// The `phmo` sphere: its radius and its centre in the root node's space.
 pub const SPHERE_RADIUS: f32 = 0.5;
 pub const SPHERE_CENTER: [f32; 3] = [0.0, 0.0, 0.5];
@@ -472,6 +493,7 @@ pub fn fixture_with_object_collision() -> Vec<u8> {
         b"objects\\test\\crate\0objects\\test\\crate_model\0objects\\test\\crate_coll\0objects\\test\\crate_phmo\0",
     );
     tag_names(&mut b, &names);
+    string_ids(&mut b, &STRING_IDS);
     let mut classes = CLASSES.to_vec();
     classes.extend([*b"scen", *b"hlmt", *b"coll", *b"phmo"]);
     let mut payloads = PAYLOADS.to_vec();
