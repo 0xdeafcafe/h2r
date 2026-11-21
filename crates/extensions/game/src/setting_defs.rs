@@ -994,6 +994,13 @@ pub static ALL: &[&Def] = &[
     &crate::clankers::AIM_STYLE,
     &crate::clankers::TAUNTS,
     &crate::clankers::GLITCHES,
+    // The Firefight page of a custom game's Game Setup
+    // (crate::firefight::options, docs/game/firefight.md).
+    &crate::firefight::options::ENABLED,
+    &crate::firefight::options::WAVE_SET,
+    &crate::firefight::options::DIFFICULTY,
+    &crate::firefight::options::LIVES,
+    &crate::firefight::options::SKULLS,
 ];
 
 /// Every setting of this run: [`ALL`], with the voice device settings

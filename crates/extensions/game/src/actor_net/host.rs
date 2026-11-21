@@ -2,7 +2,9 @@
 //! A transport peer owns its budget for the duration of its connection.
 
 use ::actor_net::wire::MAX_ACTORS;
-use ::actor_net::{Actor, ActorChange, ActorSet, Budget, BudgetError, Control, Packet, Record};
+use ::actor_net::{
+    Actor, ActorChange, ActorSet, Budget, BudgetError, Control, Packet, Record, SetError,
+};
 use engine::GuestMemory;
 use sim_state::ActorView;
 
@@ -103,6 +105,21 @@ impl Host {
             }
         }
         self.tick = Some(tick);
+        Ok(())
+    }
+
+    /// The mode state for this tick, as the Firefight HUD reads it
+    /// (`crate::firefight::hud`; empty when no mode runs): a `State` record
+    /// in this tick's changes when it differs from the last, and whole in
+    /// every key. Call after [`Host::capture`], which starts the tick's
+    /// changes afresh.
+    pub(super) fn set_mode(&mut self, blob: &[u8]) -> Result<(), SetError> {
+        if self.set.state() == blob {
+            return Ok(());
+        }
+        let record = Record::State(blob.to_vec());
+        self.set.apply(&record)?;
+        self.changes.push(record);
         Ok(())
     }
 

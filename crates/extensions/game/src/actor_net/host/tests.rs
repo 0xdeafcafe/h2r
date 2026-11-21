@@ -311,3 +311,28 @@ fn capture_32_actors_for_15_clients() {
         "AN3 capture budget exceeded: {us:.1} microseconds/tick"
     );
 }
+
+#[test]
+fn the_mode_state_is_one_record_when_it_changes_and_whole_in_every_key() {
+    let mut host = Host::default();
+    host.tick = Some(5);
+    assert_eq!(host.set_mode(&[]), Ok(()), "no mode, no record");
+    assert!(host.changes.is_empty());
+    host.set_mode(&[1, 2, 3]).unwrap();
+    assert!(matches!(host.changes.as_slice(), [Record::State(s)] if s == &[1, 2, 3]));
+    assert_eq!(host.set.state(), [1, 2, 3]);
+    host.changes.clear();
+    host.set_mode(&[1, 2, 3]).unwrap();
+    assert!(host.changes.is_empty(), "unchanged, nothing to send");
+    assert!(matches!(host.set.key(), Record::Key { state, .. } if state == [1, 2, 3]));
+    host.set_mode(&[]).unwrap();
+    assert!(matches!(host.changes.as_slice(), [Record::State(s)] if s.is_empty()));
+}
+
+#[test]
+fn a_mode_state_over_the_blob_limit_is_refused_and_changes_nothing() {
+    let mut host = Host::default();
+    assert!(host.set_mode(&[0; 200]).is_err());
+    assert!(host.changes.is_empty());
+    assert!(host.set.state().is_empty());
+}

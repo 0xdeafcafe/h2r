@@ -3,8 +3,9 @@
 Status: Partly built. The definition format, validator, three built-in wave
 sets, director (FF2), stage-one offline kit, probe recipe, the host
 runtime (FF4) with its `Game` over the guest bodies of the engine
-entries and the `firefight` feature that runs it, and the agent API
-(FF5) are implemented, tests only. "Guest boundary" lists the runs that
+entries and the `firefight` feature that runs it, the agent API
+(FF5), the Game Setup row and options page, and the HUD's mode blob and
+view (FF8, without the drawing) are implemented, tests only. "Guest boundary" lists the runs that
 settle what the disassembly leaves open. Retail play and the network probes await verification.
 Code: `crates/formats/firefight` defines and validates wave sets and holds
 the director (`src/director.rs`) and kill scoring (`src/scoring.rs`).
@@ -12,8 +13,9 @@ the director (`src/director.rs`) and kill scoring (`src/scoring.rs`).
 in `crates/apps/cli/src/firefight_cmd.rs`. The host runtime is
 `crates/extensions/game/src/firefight/` with the shared squad entry in
 `crates/extensions/game/src/actor_net/squads.rs`; the agent API's
-methods are `crates/extensions/agent/src/firefight.rs`. The slice table
-lists the planned HUD and Live code. Tests use invented data.
+methods are `crates/extensions/agent/src/firefight.rs`. The HUD is
+`firefight/hud.rs`, the Game Setup row and options page `firefight/options.rs`.
+The slice table lists the planned Live code. Tests use invented data.
 Switch: the `firefight` feature of `H2_FEATURES`, off by default until FF4 is seen in the game ([switches.md](../runtime/switches.md)).
 
 Firefight is a co-operative mode on multiplayer maps. One team holds
@@ -35,8 +37,9 @@ Evidence labels are those of [docs-style.md](../meta/docs-style.md).
 
 ## What the player gets
 
-- A **Firefight** row in Game Setup and in matchmaking: pick a map, a
-  wave set, a difficulty, lives and skulls.
+- A **Firefight Options...** row in a custom game's Game Setup, and a
+  Firefight entry in matchmaking (FF9): pick a map, a wave set, a
+  difficulty, the starting lives and whether rounds switch on skulls.
 - Waves arrive from the map's edges. Five waves make a round, three
   rounds a set; each round switches on another skull. A boss wave ends a
   round.
@@ -385,6 +388,75 @@ limits").
   hook per reader, which the AI-skull rows of [skulls.md](skulls.md#in-firefight)
   list.
 
+### Game Setup
+
+A custom game's Game Setup gets a **Firefight Options...** row after the
+Clankers row (`firefight/options.rs`, `ROW_ACTION` 13; the row is added
+the way [bots.md](bots.md)'s Clanker Options row is, to every list that
+has Change Map). It opens the Firefight page, a kit screen on Quick
+Options' dialog with five choice rows, each backed by a setting
+(`firefight.*`, in `setting_defs::ALL`): Firefight (on or off), Wave set
+(the three built-in definitions), Difficulty, Starting lives (the wave
+set's own, or 1 to 30) and Skulls (whether each round switches its skull
+on). A on a row opens the value picker over the page; left and right step
+as a shortcut. No row is an arrow row.
+
+`Options::read` reads the store when a game starts and the runtime plays
+that match: `Options::definition` is the wave set with the chosen starting
+pool and, with skulls off, no round skull; the difficulty goes to the
+director's settings, where it scales kill points. Firefight off in Game
+Setup leaves the mode idle with that reason in `firefight.state`. A
+choice the store cannot give refuses the mode with the setting named. The
+page and its row exist only where the `firefight` feature is on and a
+settings store is present.
+
+The choices are the host's. A client of a distributed session does not read
+its own page: the definition and difficulty reach it in the session data
+(FF9), and a definition other than a built-in one is not offered by the
+page.
+
+### The HUD
+
+The HUD shows the round and wave, a banner for the stage, the enemies left
+and the lives (`firefight/hud.rs`). All of it is a function of the **mode
+blob**, `hud::Mode`: the stage (warmup, spawning, fighting, cleanup,
+intermission, won, lost), the round and wave with their totals, whether
+the wave is a boss wave, the actors alive plus those still in the reserve
+while a wave is on, and the lives (the shared pool, or each player's own,
+up to eight players). It encodes to 12 bytes with a shared pool and at
+most 35 with eight players' own lives, inside the actor channel's 63-byte
+mode state.
+
+- **The host** builds the blob after each tick from the director and its
+  log (`Mode::of`; the outcome is the last `Finish` in the log) and
+  publishes it (`hud::slot`). The channel's capture sends it as a `State`
+  record when it changes and whole in every key
+  (`actor_net::host::Host::set_mode`).
+- **A distributed client** keeps the mode state it receives
+  (`actor_net::client::Client::mode_state`) and publishes it
+  (`hud::received`) at each tick boundary.
+- **Either machine** draws `hud::current(local_slot)`: the blob, decoded
+  and viewed by `view`, a pure function of the bytes and the roster slot.
+  A blob the build cannot read (wrong version, wrong length, a field out
+  of range) is an error, not a guess. `the_hud_reads_only_the_mode_blob`
+  plays a whole match and requires the client's view to equal the host's
+  at every tick.
+
+The layout is one fixed list of five elements (banner, round, wave,
+enemies, lives) in the HUD kit's terms (the kit's one layout per HUD, with its `Element`,
+`Place` and `Values`), and `hud::check` runs its rules over
+every state: the same elements in each, each text within its element's
+widest, HUD copy in capitals, digits and single spaces, no two elements
+overlapping and none off the screen in the whole, half and quarter screen
+modes.
+
+The kit's runtime is what draws an element on Halo 2's own HUD, and it is
+not built, so the view is published and checked but not drawn. When it is,
+`hud::LAYOUT` and `hud::view` register as the kit's `Hud` and `Values`,
+and the placements take the kit's retail rectangles. Replicas and films
+have no director and so no blob until the host log carries the mode state
+(AN7).
+
 ### Live
 
 - **Variant.** The Slayer record carries two of the variant extension's
@@ -498,7 +570,7 @@ are slices of [ai-networking.md](ai-networking.md); P numbers its probes.
 | **FF5** | Agent API: `firefight.state`, `firefight.command`, `firefight.kit`; `lives` and `score` on `sim.view`'s `player` root | S | FF4 | `crates/extensions/agent/src/firefight.rs`, `crates/extensions/agent-proto/src/firefight.rs`, `crates/extensions/agent/src/sim/state.rs`, [agent-api.md](../runtime/agent-api.md#firefight) | `state_reports_the_director`, `command_is_refused_on_a_client_and_in_playback`, `kit_reads_the_loaded_scenario`, `the_view_reports_each_players_lives`, `the_view_reports_each_players_score` | the methods answer over a fake game |
 | **FF6** | Stats: `Score` and `ActorKilled` to film events, the Live projection's Firefight summary, the web stats page | M | FF2, AN6 | `crates/live/live-proto/src/{film/events,firefight}.rs`, `crates/live/live-server/`, `crates/live/live-worker/`, `web/` | `a_scripted_match_projects_to_the_golden_summary`, `firefight_scores_do_not_touch_ranks`, the parity suite | both homes give the same summary |
 | **FF7** | Skulls: the host-only AI set, the round schedule, multipliers | S | FF4 | `crates/extensions/game/src/skulls_mp.rs`, `crates/formats/firefight/tests/skulls.rs` | `ai_skulls_apply_on_the_host_only`, `a_round_switches_its_skulls_on`, `multipliers_multiply` | skulls.md's table gains a Firefight column, each cell with a test |
-| **FF8** | HUD and screens: wave banner, enemies left, lives, the Game Setup row and its options page | M | FF2, AN4, AN5 | `crates/extensions/game/src/firefight/hud.rs`, `crates/extensions/game/src/ui_kit/` | `Page` tables for the options page; `the_hud_reads_only_the_mode_blob`; the kit's layout checks in every state | a client with only the mode blob draws the same HUD as the host |
+| **FF8** | HUD and screens: wave banner, enemies left, lives, the Game Setup row and its options page | M | FF2, AN4, AN5 | `crates/extensions/game/src/firefight/{hud,options}.rs`, `crates/extensions/game/src/ui_kit/` | `Page` tables for the options page (`the_options_page_steps_and_opens_pickers`); `the_hud_reads_only_the_mode_blob`; the kit's layout checks in every state (`every_state_passes_the_layout_checks`) | a client with only the mode blob draws the same HUD as the host |
 | **FF9** | Live: the variant bytes, `NewSession.firefight`, 1-to-4-player hopper entries, the lobby's local kit check | M | FF1 | `crates/formats/variants/src/ext.rs`, `crates/live/live-proto/`, `crates/live/live-server/`, `crates/live/live-worker/`, `crates/tools/hopper-edit/` | `the_mode_bytes_round_trip_and_leave_the_crc_valid`, `a_joiner_without_the_kit_map_is_refused_before_load`, `first_playlist_accepts_one_to_four_players`, `an_oversize_def_is_refused`, the parity suite | both homes offer 1 to 4 players and refuse unsupported sizes and missing local kits. A retail variant is unchanged |
 | **FF10** | Dedicated host: the Firefight host class and admission, the kit in the host's map set, the strip keeping AI data | S | FF3, FF4, P5 | `crates/apps/h2host/`, `crates/live/host-data/`, [dedicated-host.md](../live/dedicated-host.md) | `a_firefight_match_takes_a_whole_slot_class`, `strip_keeps_squads_and_sectors` | admission tests; the coordinator's host run in notes |
 | **FF11** | `h2 sim run` Firefight matches: Clankers as the players, a report with rounds, score and tick times. `host.metrics` reports `game_cpu_ms_per_tick_p99` over the last 30 steady gameplay seconds from per-tick game-thread CPU deltas | M | FF4 | `crates/live/sim-bench/`, `crates/extensions/game/src/host_metrics.rs`, [sim.md](../runtime/sim.md), [agent-api.md](../runtime/agent-api.md#hostmetrics) | `a_firefight_match_toml_parses`, `the_report_has_rounds_and_score`, `game_cpu_p99_uses_individual_tick_deltas` | a match file runs headless (coordinator) and feeds P5. The p99 comes from individual gameplay samples and resets between matches |
