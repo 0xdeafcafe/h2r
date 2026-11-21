@@ -255,12 +255,15 @@ pub fn glyphs(r: &mut Report, hud: &Hud, states: &[(&'static str, Values)], has:
     }
 }
 
-/// The text a channel may take: two lines, as wide as the frame less the
-/// box (the training box's margin; the prompt line runs from its start to
-/// the frame's right edge).
+/// The text a channel may take: two lines for a message or the training
+/// box, one for the prompt (the game's prompt line draws no line break, so
+/// a second line runs into the first), as wide as the frame less the box
+/// (the training box's margin; the prompt line runs from its start to the
+/// frame's right edge).
 fn prompt_fault(kind: &Kind, frame: &hud_edit::place::Frame, lines: &[[f32; 2]]) -> Option<String> {
-    if lines.len() > 2 {
-        return Some(format!("{} lines, at most 2", lines.len()));
+    let most = if matches!(kind, Kind::Prompt { .. }) { 1 } else { 2 };
+    if lines.len() > most {
+        return Some(format!("{} lines, at most {most}", lines.len()));
     }
     let limit = match kind {
         Kind::Training { .. } => f32::from(frame.right - frame.left) - 2.0 * TRAINING_PAD[0],

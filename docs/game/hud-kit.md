@@ -582,7 +582,7 @@ the check, the elements and the state and mode:
 | own | no two elements of any registered HUDs overlap, by their rectangles and their pixels, texts included; two channels are the game's, one at a time, and are not compared, nor is an element with the one it is `over` |
 | one layout | every state has a value for every element and for nothing else, and every element id is used once |
 | templates | every `Art` and the text template resolve on the map (both sources; on every map of the disc in the disc test) |
-| prompt | a `Message`, `Prompt` or `Training` text, and its `longest`, has at most two lines and fits the frame's width (less the training box's margin) |
+| prompt | a `Message` or `Training` text, and its `longest`, has at most two lines, a `Prompt` one (the game's prompt line draws no line break), and fits the frame's width (less the training box's margin) |
 | modes | an element with no half or quarter offset is not drawn there (the JSON says why), a text has no font there, and the widgets of one HUD show in the same modes, so a block is never drawn in part |
 | drawn | a text or channel shown in a state, in a mode it shows in, puts opaque pixels down (alpha over 64): a transparent colour or a missing shader is a finding |
 
@@ -748,7 +748,7 @@ its notification list:
 | `Prompt` | Let go of (crouch) | under |
 | `Prompt` | Walk out to stand up | held |
 | `Prompt` | Keep moving or lose the charge | primed and still for 19 ticks or more, the fill at half or under |
-| `Prompt` | the loss's message, then Find a crouch spot to charge again (two lines) | for 150 ticks after a loss, until a crouch step begins |
+| `Prompt` | the loss's message, then Find a crouch spot to charge again, on one line ("Charge lost: you stood still. Find a crouch spot to charge again") | for 150 ticks after a loss, until a crouch step begins |
 | `Message` | Primed | the word becomes −3 |
 | `Message` | Charge lost: you stood still / Charge lost: you crouched / Charge lost | lost, by its reason ([superbounce.md](superbounce.md), "Charge"): the body slept, a crouch, another reason |
 | `Message` | Superbounce, 12 m | a bounce, with the height gained at its top in whole metres |

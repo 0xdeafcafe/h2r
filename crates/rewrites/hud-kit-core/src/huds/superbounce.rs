@@ -77,16 +77,17 @@ pub const PROMPT_UNDER: &str = "Let go of \u{e110}";
 pub const PROMPT_HELD: &str = "Walk out to stand up";
 pub const PROMPT_KEEP_MOVING: &str = "Keep moving or lose the charge";
 pub const PROMPT_CHARGE_AGAIN: &str = "Find a crouch spot to charge again";
-/// The new-charge prompt with the loss's reason as its first line, the
+/// The new-charge prompt with the loss's reason as its first sentence, the
 /// reason's message ([`Note::ChargeLost`]): the game does not draw the
 /// kit's notifications yet (docs/game/hud-kit.md, "Message": decoding 6),
-/// so the prompt line tells it. Drop the first lines (back to
-/// [`PROMPT_CHARGE_AGAIN`]) when `Message` is sent.
+/// so the prompt line tells it. One line: the game's prompt draws no line
+/// break. Drop the first sentence (back to [`PROMPT_CHARGE_AGAIN`]) when
+/// `Message` is sent.
 pub const PROMPT_LOST_STOOD_STILL: &str =
-    "Charge lost: you stood still\nFind a crouch spot to charge again";
+    "Charge lost: you stood still. Find a crouch spot to charge again";
 pub const PROMPT_LOST_CROUCHED: &str =
-    "Charge lost: you crouched\nFind a crouch spot to charge again";
-pub const PROMPT_LOST: &str = "Charge lost\nFind a crouch spot to charge again";
+    "Charge lost: you crouched. Find a crouch spot to charge again";
+pub const PROMPT_LOST: &str = "Charge lost. Find a crouch spot to charge again";
 
 /// The notifications.
 pub const MESSAGE_PRIMED: &str = "Primed";
