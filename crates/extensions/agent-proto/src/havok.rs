@@ -167,12 +167,14 @@ pub struct AgentsParams {
 }
 
 /// `entry` is a pair's `entry` from `havok.agents` for the same object;
+/// without it, the object's one pair against a fixed body (the level).
 /// `word` is eight hex digits, as `pair_word` prints them.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PairSetParams {
     pub object: String,
-    pub entry: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entry: Option<String>,
     pub word: String,
 }
 
