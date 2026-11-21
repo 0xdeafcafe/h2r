@@ -7,6 +7,7 @@ use crate::{Error, Result};
 use map::{FourCC, Map, TagId};
 use std::collections::HashMap;
 use std::io::{Read, Seek};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// The `scnr` root is at least this long: the furthest block pair this crate
 /// reads is crates' palette at `+0x330`.
@@ -76,6 +77,18 @@ pub struct TagInfo {
     pub name: Option<String>,
 }
 
+// Layout identities also distinguish divergent edits to cloned scenarios.
+fn next_layout_rev() -> u64 {
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    NEXT.fetch_add(1, Ordering::Relaxed)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct LayoutChange {
+    before: u64,
+    after: u64,
+}
+
 /// One placement block.
 #[derive(Clone, Debug)]
 pub struct Block {
@@ -84,10 +97,28 @@ pub struct Block {
     pub address: u32,
     entries: Vec<Vec<u8>>,
     original: Vec<Vec<u8>>,
+    layout_rev: u64,
+    // unadd takes bytes, so it needs the parent of each consecutive append.
+    // A removal carries this trail in its undo receipt.
+    before_appends: Vec<u64>,
     /// The palette's tag references, when the block has a palette.
     pub palette: Vec<TagRef>,
 }
 impl Block {
+    /// Identity of the block's ordered placement slots. Zero names the source
+    /// layout. Field edits preserve it and undo restores the prior identity.
+    pub fn layout_rev(&self) -> u64 {
+        self.layout_rev
+    }
+    fn change_layout(&mut self, replay: Option<LayoutChange>) -> LayoutChange {
+        let before = self.layout_rev;
+        // Redo can reuse an identity only when it starts from its parent.
+        let after = replay
+            .filter(|change| change.before == before)
+            .map_or_else(next_layout_rev, |change| change.after);
+        self.layout_rev = after;
+        LayoutChange { before, after }
+    }
     pub fn len(&self) -> usize {
         self.entries.len()
     }
@@ -177,6 +208,8 @@ pub struct Removed {
     /// Object names repointed by the removal: (name index, old placement
     /// index).
     pub renamed: Vec<(usize, i16)>,
+    pub(crate) layout: LayoutChange,
+    before_appends: Vec<u64>,
 }
 
 /// The scenario object names block, kept so a removal can repoint names.
@@ -352,6 +385,8 @@ impl Scenario {
                 address: start,
                 original: entries.clone(),
                 entries,
+                layout_rev: 0,
+                before_appends: Vec::new(),
                 palette,
             });
         }
@@ -638,6 +673,15 @@ impl Scenario {
     /// Swap-remove an element: the last element moves into its slot and
     /// the count drops by one. Returns what [`Self::unremove`] needs.
     pub fn remove(&mut self, kind: BlockKind, index: usize) -> Result<Removed> {
+        self.remove_with_rev(kind, index, None)
+    }
+
+    pub(crate) fn remove_with_rev(
+        &mut self,
+        kind: BlockKind,
+        index: usize,
+        replay: Option<LayoutChange>,
+    ) -> Result<Removed> {
         if let Some(why) = self.remove_refusal(kind) {
             return Err(Error::Refused(why));
         }
@@ -648,6 +692,8 @@ impl Scenario {
         let last = block.len() - 1;
         let ty = block.def.object_type;
         let entry = block.entries.swap_remove(index);
+        let layout = block.change_layout(replay);
+        let before_appends = std::mem::take(&mut block.before_appends);
         // Names point at placements by (type, index): the removed one's
         // name now names nothing, the moved one's follows it.
         let mut renamed = Vec::new();
@@ -675,6 +721,8 @@ impl Scenario {
             index,
             entry,
             renamed,
+            layout,
+            before_appends,
         })
     }
 
@@ -701,6 +749,14 @@ impl Scenario {
             let moved = std::mem::replace(&mut block.entries[removed.index], removed.entry.clone());
             block.entries.push(moved);
         }
+        if block.layout_rev == removed.layout.after {
+            block.layout_rev = removed.layout.before;
+            block.before_appends.clone_from(&removed.before_appends);
+        } else {
+            // Applied to another layout, this insertion creates new slots.
+            block.layout_rev = next_layout_rev();
+            block.before_appends.clear();
+        }
         for &(n, p) in removed.renamed.iter().rev() {
             self.names.set_placement(n, p);
         }
@@ -724,6 +780,15 @@ impl Scenario {
     /// A block that grows past its source size is written as a new copy at
     /// the end of the metadata on save.
     pub fn add(&mut self, kind: BlockKind, entry: Vec<u8>) -> Result<usize> {
+        self.add_with_rev(kind, entry, None).map(|(index, _)| index)
+    }
+
+    pub(crate) fn add_with_rev(
+        &mut self,
+        kind: BlockKind,
+        entry: Vec<u8>,
+        replay: Option<LayoutChange>,
+    ) -> Result<(usize, LayoutChange)> {
         if let Some(why) = self.add_refusal(kind) {
             return Err(Error::Refused(why));
         }
@@ -732,7 +797,9 @@ impl Scenario {
             return Err(Error::Invalid("entry is not one element long"));
         }
         block.entries.push(entry);
-        Ok(block.len() - 1)
+        let layout = block.change_layout(replay);
+        block.before_appends.push(layout.before);
+        Ok((block.len() - 1, layout))
     }
 
     /// Undo [`Self::add`]: drop the last element, which must be `entry`.
@@ -742,6 +809,7 @@ impl Scenario {
             return Err(Error::Invalid("the added entry is no longer last"));
         }
         block.entries.pop();
+        block.layout_rev = block.before_appends.pop().unwrap_or_else(next_layout_rev);
         Ok(())
     }
 

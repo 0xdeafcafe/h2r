@@ -506,10 +506,13 @@ mod tests {
     use crate::app::Action;
     use scenario_edit::{BlockKind, fixture};
 
+    #[cfg(unix)]
     #[test]
     fn the_game_link_shows_in_every_tool() {
         use crate::ToolKind;
-        use crate::play::{Conn, Play};
+        use crate::play::Play;
+        use crate::play::testing::{Temp, fake};
+        use agent_proto::sim::SessionKind;
 
         let Some((_turn, mut h)) = headless() else {
             return;
@@ -545,7 +548,11 @@ mod tests {
             );
         }
 
-        h.studio.play.play.conn = Conn::Connected;
+        let temp = Temp::new("bar-link");
+        app.set_data_root(temp.0.join("data"));
+        app.dispatch(Action::OpenSource(temp.map("example")));
+        let game = fake::Game::start("bar-link", "example", SessionKind::Local);
+        fake::pair_for_view(&mut h.studio.play.play, &mut app, &game);
         h.frames(&mut app, 3).unwrap();
         assert!(!h.studio.play.play.live_edits);
         assert!(

@@ -1760,13 +1760,14 @@ is `$H2_RENDER_OVERRIDES`, else `render-overrides` in the cache directory.
 
 | Method | Access | Params | Does |
 |---|---|---|---|
-| `edit.map` | read | `{known_epoch?}` | `{at,name,file,checksum,scenario,epoch,session}` for the loaded map. File and checksum can be null. Session includes `writes` and a refusal reason when blocked. |
+| `edit.map` | read | `{known_epoch?}` | `{at,name,file,checksum,scenario,epoch,session}` for the loaded map. File and checksum can be null. Session includes `writes` and the refusal reason in `why`. A multiplayer host with an unknown peer count reports `writes:false` and `why:"multiplayer host peer count is unknown"`. |
 | `edit.tags` | read | `{group?, name?, limit?}` | the loaded map's tags: `tag`, `group`, `name`, `address`, `size`, `defined` |
-| `edit.get` | read | `{tag, group?, path?}` | a field by path (`postprocess[0].colors[1].color`), or an element's fields; `tag` is a datum or a name |
+| `edit.get` | read | `{tag, group?, path?, epoch?}` | a field by path (`postprocess[0].colors[1].color`), or an element's fields; `tag` is a datum or a name |
+| `edit.read` | read | `{epoch,at,len}` | Reads `len` bytes (1–524288) at numeric address `at` inside one loaded tag. Returns `{at,holds_bytes}` with lowercase hex bytes. |
 | `edit.batch` | act | `{writes,label?,epoch?,confirm_peers?}` | `{id,applied,changes}` at one boundary. Each batch has one journal entry with its ID, optional label and changed `fields`. |
 | `edit.set` | act | `{tag, group?, path, value, epoch?, confirm_peers?}` | writes the field now, journalled; returns the change |
 | `edit.changes` | read | none | the current epoch’s journal, including original `was_bytes`, `new_bytes` and current `holds` as hex |
-| `edit.revert` | act | `{id?,epoch?,confirm_peers?}` | restores a change or batch, or the whole journal in reverse order. Reports entries left alone when the game changed them. |
+| `edit.revert` | act | `{id?,epoch?,confirm_peers?}` | restores a change or batch, or the whole journal in reverse order. `reverted[]` gives `id,at,tag,path,value,holds_bytes` for each restored field. `dropped[]` gives `id,at,tag,path,why,holds_bytes` for each field left alone. Addresses are numeric. Observed bytes are hex, or null when the field belongs to another map. |
 | `render.overrides` | read | none | the override directory, what is loaded and how each fared |
 | `render.reload` | act | `{dir?}` | reads the directory again (`dir` moves it) |
 | `render.programs` | read | `{vertex?, limit?}` | the translated programs, by id |
@@ -1779,7 +1780,11 @@ external Live, film playback and unknown sessions refuse writes. A System Link
 host with remote peers requires `confirm_peers` equal to the current total peer
 count. A client can pass `known_epoch:null` to `edit.map` to include the loaded
 tag datums in `loaded`, then send its cached epoch to receive the table only
-after a cut. An optional `epoch` pins the write to the map reported by `edit.map`.
+after a cut. An epoch pins a write or field read to the map reported by `edit.map`.
+A BSP switch revalidates the journal against surviving tag allocations.
+A map load or state restore clears it. During reverse revert, a field changed
+by the game protects its whole byte range. Older overlapping fields stay as
+the game holds them and appear in `dropped`.
 
 Each batch write takes either `{tag,group?,path,value,was?}` with typed values,
 or `{at,value,was?}` with hex bytes. An address is a u32 or a `0x` string.

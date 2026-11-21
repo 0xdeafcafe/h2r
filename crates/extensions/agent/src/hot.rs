@@ -104,20 +104,22 @@ fn permit(s: SessionView, p: &Value, epoch: u64) -> Result<(), RpcError> {
             s.why.unwrap_or_default(),
         ));
     }
-    if p.get("epoch").is_some_and(|v| v.as_u64() != Some(epoch)) {
-        return Err(RpcError::new(
-            code::INVALID_REQUEST,
-            "the map epoch changed",
-        ));
-    }
+    check_epoch(p, epoch)?;
     if s.kind == agent_proto::sim::SessionKind::MpHost
-        && s.peers.unwrap_or(0) > 1
+        && s.peers.is_some_and(|n| n > 1)
         && p["confirm_peers"].as_u64() != s.peers.map(u64::from)
     {
         return Err(RpcError::new(
             code::INVALID_REQUEST,
             "confirm the current peer count for host-only edits",
         ));
+    }
+    Ok(())
+}
+
+fn check_epoch(p: &Value, epoch: u64) -> Result<(), RpcError> {
+    if p.get("epoch").is_some_and(|v| v.as_u64() != Some(epoch)) {
+        return Err(RpcError::new(code::INVALID_REQUEST, "the map epoch changed"));
     }
     Ok(())
 }
@@ -137,6 +139,8 @@ pub fn add_edit_methods(
             Some("Theater playback")
         } else if ctx.live_session.is_some_and(|probe| probe(g)) {
             Some("external Live session")
+        } else if s.kind == agent_proto::sim::SessionKind::MpHost && s.peers.is_none() {
+            Some("multiplayer host peer count is unknown")
         } else {
             None
         };
@@ -153,12 +157,12 @@ pub fn add_edit_methods(
     let mut cached_file = None;
     agent.add_game_method(method::EDIT_MAP, Access::Read, move |p, ctx| {
         let mut ed = ed.lock().unwrap_or_else(|e| e.into_inner());
-        ed.at_epoch(ctx.epoch);
         let (_, checksum) = ctx.reader.live_metadata();
         if cached_file.as_ref().is_none_or(|(epoch,_)| *epoch != ctx.epoch) {
             cached_file = Some((ctx.epoch,ctx.at.map.as_deref().and_then(&file)));
         }
         with(&g, |g| {
+            ed.at_epoch(g, ctx.epoch, ctx.map_epoch).map_err(edit_error)?;
             let idx = hot_tags::index::index(g).map_err(|e| RpcError::new(code::UNAVAILABLE, e))?;
             let mut reply = json!({"at":ctx.at,"name":ctx.at.map,"file":cached_file.as_ref().and_then(|(_,f)| f.as_ref()),
                 "checksum":checksum,"scenario":format!("{:#010x}",idx.scenario),"epoch":ctx.epoch,
@@ -173,8 +177,8 @@ pub fn add_edit_methods(
     let (ed, g, probe) = (lock(&editor), guest.clone(), session.clone());
     agent.add_game_method(method::EDIT_BATCH, Access::Act, move |p, ctx| {
         let mut ed = ed.lock().unwrap_or_else(|e| e.into_inner());
-        ed.at_epoch(ctx.epoch);
         with(&g, |g| {
+            ed.at_epoch(g, ctx.epoch, ctx.map_epoch).map_err(edit_error)?;
             permit(probe(g, ctx), &p, ctx.epoch)?;
             let writes = p["writes"]
                 .as_array()
@@ -191,6 +195,27 @@ pub fn add_edit_methods(
         })
     });
     let (ed, g) = (lock(&editor), Arc::clone(&guest));
+    agent.add_game_method(method::EDIT_READ, Access::Read, move |p, ctx| {
+        let o = object(&p)?;
+        if !o.contains_key("epoch") {
+            return Err(invalid("epoch: the epoch from edit.map"));
+        }
+        check_epoch(&p, ctx.epoch)?;
+        let number = |key: &str| {
+            o.get(key)
+                .and_then(Value::as_u64)
+                .and_then(|n| u32::try_from(n).ok())
+                .ok_or_else(|| invalid(format!("{key} must be a 32-bit unsigned integer")))
+        };
+        let (at, len) = (number("at")?, number("len")?);
+        let mut ed = ed.lock().unwrap_or_else(|e| e.into_inner());
+        with(&g, |g| {
+            ed.at_epoch(g, ctx.epoch, ctx.map_epoch)?;
+            ed.read(g, at, len)
+        })
+        .map_err(edit_error)
+    });
+    let (ed, g) = (lock(&editor), Arc::clone(&guest));
     agent.add_method(method::EDIT_TAGS, Access::Read, move |p| {
         let o = object(&p)?;
         let (group, name, limit) = (opt_str(o, "group")?, opt_str(o, "name")?, limit(o, 200)?);
@@ -198,12 +223,17 @@ pub fn add_edit_methods(
         with(&g, |g| ed.tags(g, group, name, limit)).map_err(edit_error)
     });
     let (ed, g) = (lock(&editor), Arc::clone(&guest));
-    agent.add_method(method::EDIT_GET, Access::Read, move |p| {
+    agent.add_game_method(method::EDIT_GET, Access::Read, move |p, ctx| {
+        check_epoch(&p, ctx.epoch)?;
         let o = object(&p)?;
         let sel = tag_sel(o)?;
         let path = opt_str(o, "path")?.unwrap_or("");
         let mut ed = ed.lock().unwrap_or_else(|e| e.into_inner());
-        with(&g, |g| ed.get(g, &sel, path)).map_err(edit_error)
+        with(&g, |g| {
+            ed.at_epoch(g, ctx.epoch, ctx.map_epoch)?;
+            ed.get(g, &sel, path)
+        })
+        .map_err(edit_error)
     });
     let (ed, g) = (lock(&editor), Arc::clone(&guest));
     let probe = session.clone();
@@ -215,8 +245,8 @@ pub fn add_edit_methods(
             .get("value")
             .ok_or_else(|| invalid("value: what to set it to"))?;
         let mut ed = ed.lock().unwrap_or_else(|e| e.into_inner());
-        ed.at_epoch(ctx.epoch);
         with(&g, |g| {
+            ed.at_epoch(g, ctx.epoch, ctx.map_epoch).map_err(edit_error)?;
             permit(probe(g, ctx), &p, ctx.epoch)?;
             ed.set(g, &sel, path, value).map_err(edit_error)
         })
@@ -224,8 +254,10 @@ pub fn add_edit_methods(
     let (ed, g) = (lock(&editor), Arc::clone(&guest));
     agent.add_game_method(method::EDIT_CHANGES, Access::Read, move |_, ctx| {
         let mut ed = ed.lock().unwrap_or_else(|e| e.into_inner());
-        ed.at_epoch(ctx.epoch);
-        Ok(with(&g, |g| ed.changes(g)))
+        with(&g, |g| {
+            ed.at_epoch(g, ctx.epoch, ctx.map_epoch).map_err(edit_error)?;
+            Ok(ed.changes(g))
+        })
     });
     let (ed, g) = (lock(&editor), guest);
     agent.add_game_method(method::EDIT_REVERT, Access::Act, move |p, ctx| {
@@ -238,8 +270,8 @@ pub fn add_edit_methods(
             ),
         };
         let mut ed = ed.lock().unwrap_or_else(|e| e.into_inner());
-        ed.at_epoch(ctx.epoch);
         with(&g, |g| {
+            ed.at_epoch(g, ctx.epoch, ctx.map_epoch).map_err(edit_error)?;
             permit(session(g, ctx), &p, ctx.epoch)?;
             ed.revert(g, id).map_err(edit_error)
         })

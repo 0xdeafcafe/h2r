@@ -828,6 +828,11 @@ impl Play {
                 self.conn = Conn::Lost(why);
                 self.retry = self.link.take().map(|l| l.endpoint.clone());
                 app.pairing.clear_mirror();
+                app.tags.live_datums = None;
+                self.live_edits = false;
+                self.edits = Edits::default();
+                self.baseline = None;
+                self.next_push = Instant::now();
                 self.controller = false;
             }
             Event::Poll(status) => {
@@ -878,6 +883,7 @@ impl Play {
             (Purpose::Map, result) => self.edit_map(app, result),
             (Purpose::Journal(epoch), result) => self.edit_journal(app, epoch, result),
             (Purpose::Revert { leave, epoch }, result) => self.reverted(app, leave, epoch, result),
+            (Purpose::Take { id, at }, result) => self.take_answer(app, id, at, result),
             (Purpose::Edit(id), result) => self.batch_answer(app, id, result),
             (Purpose::Teleport, Ok(_)) => app.info("moved the player"),
             (Purpose::Control(what), Ok(_)) => {

@@ -11,10 +11,12 @@ use serde_json::{Value, json};
 use super::*;
 use crate::{ConnId, GameStatus, Reader};
 
-struct Nothing;
-impl Reader for Nothing {
+#[derive(Default)]
+struct LevelStatus(GameStatus);
+
+impl Reader for LevelStatus {
     fn status(&mut self) -> GameStatus {
-        GameStatus::default()
+        self.0.clone()
     }
     fn objects(&mut self) -> Result<Vec<agent_proto::Object>, String> {
         Ok(vec![])
@@ -38,11 +40,15 @@ impl Client {
     }
 
     fn call(&self, m: &str, p: Value) -> Value {
+        self.call_at(m, p, &mut LevelStatus::default())
+    }
+
+    fn call_at(&self, m: &str, p: Value, level: &mut LevelStatus) -> Value {
         self.agent.submit(
             self.conn,
             &json!({"jsonrpc": "2.0", "id": 1, "method": m, "params": p}).to_string(),
         );
-        self.agent.between_slices(&mut Nothing, 0);
+        self.agent.between_slices(level, 0);
         serde_json::from_str(&self.rx.recv_timeout(Duration::from_secs(5)).unwrap()).unwrap()
     }
 
@@ -224,6 +230,141 @@ fn conditional_batch_validates_all_fields_and_reverts_one_id() {
         guest.lock().unwrap().u32(COLORS_AT + 4).unwrap(),
         0xff804020
     );
+}
+
+#[test]
+fn boundary_reads_return_current_bytes_and_reject_stale_epochs() {
+    let guest = Arc::new(Mutex::new(level()));
+    let g = guest.clone();
+    let agent = Agent::new();
+    add_edit_methods(
+        &agent,
+        Editor::new(),
+        Arc::new(move |f| f(&mut g.lock().unwrap())),
+        |_| SessionView::default(),
+        |_| None,
+        false,
+    );
+    let c = Client::new(&agent);
+    let map = c.ok(method::EDIT_MAP, Value::Null);
+    let epoch = map["epoch"].as_u64().unwrap();
+    let p = json!({"at": SHAD_AT, "len": 2, "epoch": epoch});
+    assert_eq!(c.ok(method::EDIT_READ, p.clone())["holds_bytes"], "0000");
+    guest.lock().unwrap().set_u16(SHAD_AT, 0x4321).unwrap();
+    assert_eq!(
+        c.ok(method::EDIT_READ, p),
+        json!({"at": SHAD_AT, "holds_bytes": "2143"})
+    );
+    for bad in [
+        json!({"at": SHAD_AT, "len": 0, "epoch": epoch}),
+        json!({"at": SHAD_AT - 1, "len": 2, "epoch": epoch}),
+        json!({"at": SHAD_AT, "len": 2}),
+    ] {
+        assert_eq!(
+            c.call(method::EDIT_READ, bad)["error"]["code"],
+            code::INVALID_PARAMS
+        );
+    }
+    let pp = tags::defs::Defs::builtin()
+        .group(map::FourCC(*b"shad"))
+        .unwrap()
+        .field("postprocess")
+        .unwrap()
+        .offset;
+    guest.lock().unwrap().set_u32(POST_AT, 0x7654).unwrap();
+    let path = format!("+{pp:#x}/0x10[0].+0:bytes[2]");
+    let field = json!({"tag": "0xe1110001", "path": path, "epoch": epoch});
+    let reply = c.ok(method::EDIT_GET, field.clone());
+    assert_eq!(reply["addr"], format!("{POST_AT:#010x}"));
+    assert_eq!(reply["value"], "5476");
+    agent.live_cut();
+    for (method, params) in [
+        (
+            method::EDIT_READ,
+            json!({"at": SHAD_AT, "len": 2, "epoch": epoch}),
+        ),
+        (method::EDIT_GET, field),
+    ] {
+        assert_eq!(
+            c.call(method, params)["error"]["code"],
+            code::INVALID_REQUEST
+        );
+    }
+}
+
+#[test]
+fn bsp_switch_keeps_the_journal_until_a_full_map_cut() {
+    let guest = Arc::new(Mutex::new(level()));
+    let agent = Agent::new();
+    add_edit_methods(
+        &agent,
+        Editor::new(),
+        Arc::new(move |f| f(&mut guest.lock().unwrap())),
+        |_| SessionView {
+            kind: agent_proto::sim::SessionKind::Local,
+            ..Default::default()
+        },
+        |_| None,
+        false,
+    );
+    let c = Client::new(&agent);
+    let mut level = LevelStatus(GameStatus {
+        map: Some("fixture".into()),
+        bsp: Some(0),
+        ..Default::default()
+    });
+    let map = c.call_at(method::EDIT_MAP, Value::Null, &mut level);
+    let write = json!({"at": SHAD_AT, "value": "41"});
+    let result = c.call_at(method::EDIT_BATCH, json!({"writes": [write]}), &mut level);
+    assert_eq!(result["result"]["applied"], 1);
+    level.0.bsp = Some(1);
+    let switched = c.call_at(method::EDIT_MAP, Value::Null, &mut level);
+    assert_ne!(map["result"]["epoch"], switched["result"]["epoch"]);
+    let changes = c.call_at(method::EDIT_CHANGES, Value::Null, &mut level);
+    assert_eq!(changes["result"]["changes"][0]["fields"][0]["live"], true);
+    agent.live_cut();
+    let changes = c.call_at(method::EDIT_CHANGES, Value::Null, &mut level);
+    assert_eq!(changes["result"]["changes"], json!([]));
+}
+
+#[test]
+fn multiplayer_host_with_unknown_peer_count_explains_and_refuses_writes() {
+    let guest = Arc::new(Mutex::new(level()));
+    let agent = Agent::new();
+    add_edit_methods(
+        &agent,
+        Editor::new(),
+        Arc::new(move |f| f(&mut guest.lock().unwrap())),
+        |_| SessionView {
+            kind: agent_proto::sim::SessionKind::MpHost,
+            peers: None,
+            ..Default::default()
+        },
+        |_| None,
+        false,
+    );
+    let c = Client::new(&agent);
+    let map = c.ok(method::EDIT_MAP, Value::Null);
+    assert_eq!(map["session"]["writes"], false);
+    assert_eq!(
+        map["session"]["why"],
+        "multiplayer host peer count is unknown"
+    );
+    for (m, params) in [
+        (
+            method::EDIT_SET,
+            json!({"tag":"0xe1110001","path":"+0:u8","value":7}),
+        ),
+        (
+            method::EDIT_BATCH,
+            json!({"writes": [{"at": SHAD_AT, "value": "07"}], "confirm_peers": 1}),
+        ),
+        (method::EDIT_REVERT, Value::Null),
+    ] {
+        let err = c.call(m, params);
+        assert_eq!(err["error"]["code"], code::INVALID_REQUEST);
+        assert_eq!(err["error"]["message"], map["session"]["why"]);
+    }
 }
 
 #[test]
