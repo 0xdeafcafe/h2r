@@ -1357,13 +1357,16 @@ Performance numbers come from the quiet laptop through `h2 lab`
 ([lab.md](../runtime/lab.md)). Local runs are for parity and smoke
 checks. Run each pair back to back, three times, and report medians.
 
-**A/B on the laptop** (every slice; `B` is the slice's branch):
+**A/B on the laptop.** Set `B` to the slice branch. The slice 6 owner arm
+uses the threaded, single-copy defaults of a fresh GPU run.
 
 ```sh
 for arm in off on; do
+  features="impl.render.native=$arm"
+  if [ "$arm" = on ]; then features="$features,frame-scene.sink"; fi
   h2 lab run --host laptop --branch "$B" --level 03a_oldmombasa --difficulty heroic \
     --frames 5000 --stats-from 3000 --build-env H2_OPT=2 --fresh-data \
-    --env H2_RENDER_SCALE=4 --env H2_FEATURES=impl.render.native=$arm \
+    --env H2_RENDER_SCALE=4 --env "H2_FEATURES=$features" \
     --wait --to "$RUSH_KEEP/lab/$B-$arm"
 done
 h2 lab runs --host laptop
@@ -1376,11 +1379,12 @@ p99 frame time, and the phases `cpu`, `render`, `decode`, `encode`,
 `submit`, `gpu-wait`, `render-wait`, `d3d`.
 
 **Counters on a serve** (the coordinator's `ab.sh`; `H` is the built
-`h2`, `IMG` its image directory, `F` empty or `impl.render.native=off`):
+`h2`, `IMG` its image directory, and `F` either
+`impl.render.native=on,frame-scene.sink` or `impl.render.native=off`):
 
 ```sh
 env H2_OPT=2 H2_BOOT_GFX=$TMPDIR/ab-gfx H2_BOOT_GFX_EVERY=never \
-    H2_LEVEL=03a_oldmombasa H2_RENDER_SCALE=4 ${F:+H2_FEATURES=$F} \
+    H2_LEVEL=03a_oldmombasa H2_RENDER_SCALE=4 H2_RENDER_THREAD=1 H2_SINGLE_COPY=1 H2_FEATURES="$F" \
     $H serve disc/halo2.iso --no-movies --socket $S --out $IMG &
 $H agent wait '{"phase":"gameplay"}' 600000 --socket $S --timeout 620
 $H agent capture 600 --socket $S --timeout 300 > capture.json
@@ -1388,6 +1392,10 @@ $H agent render.stats --socket $S > render-stats.json
 $H agent profile.counters --socket $S > counters.json
 $H agent render.scene --socket $S > scene.json          # from slice 1
 ```
+
+For the slice 6 owner arm, check `render.scene.counters` after gameplay
+starts. The completed window must contain game-view presents, each
+reported in `scene_window_owned`, with zero `scene_window_ordinary`.
 
 For the entry census (slice 4) add `frame-scene.census` to
 `H2_FEATURES` and read `.entries` of `render.scene`: per entry, its
@@ -1409,7 +1417,10 @@ from slice 2 `native_<stage>_{extract_ns,render_prepare_ns,scene_stages,scene_dr
 
 ```sh
 for arm in off on; do
-  env H2_OPT=2 H2_LEVEL=03a_oldmombasa H2_FEATURES=impl.render.native=$arm \
+  features="impl.render.native=$arm"
+  if [ "$arm" = on ]; then features="$features,frame-scene.sink"; fi
+  env H2_OPT=2 H2_LEVEL=03a_oldmombasa H2_FEATURES="$features" \
+      H2_RENDER_SCALE="${SCALE:?set SCALE to 1 or 4}" H2_RENDER_THREAD=1 H2_SINGLE_COPY=1 \
       H2_BOOT_GFX=$R/$arm H2_BOOT_GFX_EVERY=500 H2_BOOT_STOP_AT_PRESENT=5000 \
       H2_FRAME_STATS=1 H2_FRAME_STATS_FROM=3000 H2_FRAME_STATS_CSV=$R/$arm.csv \
       H2_LOCKSTEP=$R/$arm.lock \
