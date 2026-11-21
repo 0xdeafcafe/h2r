@@ -246,7 +246,7 @@ pub fn build_fast_for(xbe_bytes: &[u8], out: &Path, jobs: usize, arch: emit::com
     let r = clif::build_dylib(
         &owners,
         &dir,
-        Path::new(crate::H2ABI_H),
+        &crate::install_abi_header(&dir.join("src"))?,
         &[("h2boot_bridge.c", crate::BRIDGE), ("h2boot_bridge_x87.c", crate::BRIDGE_X87)],
         &lib,
         jobs,

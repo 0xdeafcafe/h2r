@@ -32,8 +32,21 @@ pub const BRIDGE_X87: &str = concat!(
     "#include \"h2gen.h\"\n",
     include_str!("../../../recompiler/emit/c/bridge_x87.c")
 );
-/// The runtime ABI header, copied next to the generated sources.
+/// The source checkout's runtime ABI header (used by tests).
 pub const H2ABI_H: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../runtime/runtime/include/h2abi.h");
+/// Install the ABI header that matches this executable, even when the
+/// source checkout it was built from is absent on the player's machine.
+#[cfg(feature = "desktop-runtime")]
+fn install_abi_header(dir: &Path) -> Result<PathBuf> {
+    const HEADER: &[u8] = include_bytes!("../../runtime/include/h2abi.h");
+    let path = dir.join("h2abi.h");
+    if std::fs::read(&path).ok().as_deref() != Some(HEADER) {
+        std::fs::create_dir_all(dir)?;
+        emit::output::replace(&path, HEADER)?;
+    }
+    Ok(path)
+}
+
 /// File name of the linked module inside the build directory.
 pub const DYLIB: &str = emit::compile::Arch::host().module_file_name();
 /// The host's target triple, which a film's image stamp records.
@@ -363,7 +376,7 @@ fn build_selected(
         w.resumes
     );
     drop(owners);
-    emit::compile::install_header(&src, Path::new(H2ABI_H)).map_err(anyhow::Error::msg)?;
+    install_abi_header(&src)?;
     let b = emit::compile::build(&src, out, arch, jobs).map_err(anyhow::Error::msg)?;
     eprintln!(
         "clang ({}): {} compiled, {} reused{}, {:.1}s keying (dependency scans, hashing, pins), {:.1}s compiling, {:.1}s archive, {:.1} MB of objects",
