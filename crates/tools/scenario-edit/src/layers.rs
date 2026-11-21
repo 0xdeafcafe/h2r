@@ -17,6 +17,12 @@ pub enum LayerId {
     NetgameItems,
     /// Trigger volumes drawn as each kind ([`crate::volumes`]).
     Volume(VolumeKind),
+    /// Every structure BSP's collision surfaces
+    /// ([`crate::collision_view`]).
+    LevelCollision,
+    /// The collision surfaces no drawn surface covers: the invisible
+    /// walls ([`crate::collision_view::classify`]).
+    CollisionOnly,
     Halo1,
     Live,
 }
@@ -35,6 +41,7 @@ impl LayerId {
         .chain(layout::BLOCKS.iter().map(|b| Self::Placement(b.kind)))
         .chain([Self::SpawnPoints, Self::Flags, Self::NetgameItems])
         .chain(VolumeKind::ALL.map(Self::Volume))
+        .chain([Self::LevelCollision, Self::CollisionOnly])
         .chain([Self::Halo1, Self::Live])
     }
 
@@ -67,6 +74,8 @@ impl LayerId {
                 VolumeKind::Kill => "kill_volumes",
                 VolumeKind::BspSwitch => "bsp_switches",
             },
+            Self::LevelCollision => "level_collision",
+            Self::CollisionOnly => "collision_only",
             Self::Halo1 => "halo1",
             Self::Live => "live",
         }
@@ -86,6 +95,8 @@ impl LayerId {
             Self::Volume(VolumeKind::Trigger) => "Trigger volumes",
             Self::Volume(VolumeKind::Kill) => "Kill volumes",
             Self::Volume(VolumeKind::BspSwitch) => "BSP switches",
+            Self::LevelCollision => "Level collision",
+            Self::CollisionOnly => "Collision only",
             Self::Halo1 => "Halo 1 overlay",
             Self::Live => "Live objects",
         }
@@ -106,6 +117,7 @@ impl LayerId {
             Self::Markers | Self::Placement(_) => "Placements",
             Self::SpawnPoints | Self::Flags | Self::NetgameItems => "Gameplay",
             Self::Volume(_) => "Volumes",
+            Self::LevelCollision | Self::CollisionOnly => "Collision",
             Self::Halo1 => "Reference",
             Self::Live => "Live",
         }
@@ -161,16 +173,31 @@ impl Preset {
                     | Volume(_)
             ),
             // Out of bounds is kill volumes and collision.
-            Self::Collision => matches!(id, Structure | Volume(VolumeKind::Kill)),
+            Self::Collision => matches!(
+                id,
+                Structure | Volume(VolumeKind::Kill) | LevelCollision | CollisionOnly
+            ),
             Self::Everything => true,
         }
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+/// The viewport's shown layers. Everything starts shown except the
+/// collision layers, which cover the picture: the Collision and
+/// Everything presets show them.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Layers {
     hidden: BTreeSet<LayerId>,
     pub xray: bool,
+}
+
+impl Default for Layers {
+    fn default() -> Self {
+        Self {
+            hidden: [LayerId::LevelCollision, LayerId::CollisionOnly].into(),
+            xray: false,
+        }
+    }
 }
 
 impl Layers {
@@ -214,12 +241,19 @@ mod tests {
         assert!(layers.visible(LayerId::Markers));
         assert!(!layers.visible(LayerId::Fog));
         assert!(layers.visible(LayerId::Volume(VolumeKind::Trigger)));
+        assert!(!layers.visible(LayerId::CollisionOnly));
         layers.apply(Preset::Collision);
+        assert!(layers.visible(LayerId::LevelCollision));
+        assert!(layers.visible(LayerId::CollisionOnly));
         assert!(layers.visible(LayerId::Structure));
         assert!(layers.visible(LayerId::Volume(VolumeKind::Kill)));
         assert!(!layers.visible(LayerId::Volume(VolumeKind::Trigger)));
         assert!(!layers.visible(LayerId::Objects));
         layers.apply(Preset::Everything);
-        assert_eq!(layers, Layers::default());
+        assert!(LayerId::all().all(|id| layers.visible(id)));
+        // The default hides only the collision layers.
+        let default = Layers::default();
+        let hidden: Vec<_> = LayerId::all().filter(|&id| !default.visible(id)).collect();
+        assert_eq!(hidden, [LayerId::LevelCollision, LayerId::CollisionOnly]);
     }
 }

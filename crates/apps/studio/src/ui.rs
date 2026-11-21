@@ -1165,6 +1165,7 @@ pub(crate) fn dispatch_actions(app: &mut App, actions: Vec<Action>) {
                     | Action::SelectMany(_)
                     | Action::ToggleSelect(_)
                     | Action::SelectVolume(_)
+                    | Action::SelectSurface(_)
             )
         {
             app.dispatch(Action::SetTool(ToolKind::Scenario));

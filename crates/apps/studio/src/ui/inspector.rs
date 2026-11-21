@@ -294,10 +294,64 @@ fn volume_box(
     (out, done)
 }
 
+/// The selected level collision surface, read only: its class, plane,
+/// raw flags, material and ring.
+fn surface(ui: &Ui, fonts: &theme::Fonts, app: &mut App) {
+    use scenario_edit::collision_view::SurfaceClass;
+    let Some(s) = app.session.selected_surface_data().cloned() else {
+        return;
+    };
+    let f = ui.push_font(fonts.title);
+    ui.text(format!(
+        "{}  {}",
+        icon::BOX,
+        crate::viewport::surface_label(&s)
+    ));
+    f.pop();
+    ui.text_disabled(match s.class {
+        SurfaceClass::Drawn => "Drawn: a render face covers it",
+        SurfaceClass::CollisionOnly => "Collision only: nothing drawn covers it",
+    });
+    if ui.button(format!("{} Frame", icon::FOCUS)) {
+        app.dispatch(Action::FocusSelected);
+    }
+    theme::section(ui, "Surface");
+    let p = s.plane;
+    for (label, value) in [
+        (
+            "Plane",
+            format!("{:.3}, {:.3}, {:.3}, d {:.3}", p[0], p[1], p[2], p[3]),
+        ),
+        ("Covered", format!("{:.0}%", s.covered * 100.0)),
+        ("Flags", format!("0x{:02x}", s.flags)),
+        (
+            "Breakable surface",
+            if s.breakable == 0xff {
+                "none".to_owned()
+            } else {
+                s.breakable.to_string()
+            },
+        ),
+        ("Material", s.material.to_string()),
+        ("Area", format!("{:.2}", s.area())),
+    ] {
+        ui.label_text(label, value);
+    }
+    ui.text_disabled("Bit 3 of the flags is breakable; what the others stop is not established.");
+    theme::section(ui, "Ring");
+    for (i, q) in s.ring.iter().enumerate() {
+        ui.text(format!("{i}: {:.3}, {:.3}, {:.3}", q[0], q[1], q[2]));
+    }
+}
+
 /// Draw the inspector for the selection and apply its edits.
 pub fn draw(ui: &Ui, fonts: &theme::Fonts, app: &mut App, state: &mut InspectorState) {
     if let Some(index) = app.session.selected_volume() {
         volume(ui, fonts, app, index);
+        return;
+    }
+    if app.session.selected_surface().is_some() {
+        surface(ui, fonts, app);
         return;
     }
     let location = app.nav_location();

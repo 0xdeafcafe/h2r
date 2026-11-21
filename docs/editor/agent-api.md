@@ -80,6 +80,7 @@ What goes through actions, from both sides:
 | Select, frame | `Select`, `FocusSelected`, `FrameAll` | Scene, viewport, keys | `scenario.select`, `view.camera` |
 | Select a trigger volume | `SelectVolume` (clears the placements; selecting a placement clears it), `FocusSelected` | a click on a box the viewport shows, the Scene tab's Volumes group, the inspector's Frame | `volume.select {index?, focus?}` |
 | Move, turn and resize a trigger volume | `SetVolumeFrame {index, frame, merge}` (one step, or one per merge run); `VolumeGesture(frame)`, `EndGesture` (a gizmo drag: one step) | the viewport gizmo (move, turn, and scale along each axis), the inspector's centre, size and facing | `volume.set` |
+| Select a level collision surface | `SelectSurface` (clears the placements and the volume), `FocusSelected` | a click on a surface a collision layer shows when nothing else is under the cursor | `collision.select {index?, focus?}`, `collision.at {..., select: true}` |
 | Add a trigger volume, make a kill volume, remove either | `AddVolume {frame, kill}` (with `kill`, the volume and a kill trigger naming it in one step), `RemoveVolume(kind, index)`; `Delete` on a selected volume | the Scene tab's Volumes menu, the inspector's Delete and a kill trigger's Remove, the Delete key | `volume.add`, `volume.remove` |
 | Set fly speed | `SetFlySpeed` | viewport toolbar, wheel while flying | `view.camera {fly_speed}` |
 | Show or hide viewport layers | `SetLayers`, `SetOverlay` | Show popover, Scene legend, View > Halo 1 overlay | `view.layers` |
@@ -175,6 +176,7 @@ before anything runs (`INVALID_PARAMS`). Indices are 0-based throughout
 | `tag` | `list {group, name, query, path, limit, homes}`, `browse {map}`, `resources {tag}`, `export {tag, out, dependencies, resources}`, `import {path, tag, skip_missing}`, `read {tag, depth, elements, hex}`, `fields {tag, path?}`, `tree {root?, depth?}`, `refs {tag, limit?}`, `follow {tag, ref}`, `set {tag, path, value}`, `block.add`, `block.remove`, `block.duplicate` |
 | `scenario` | `blocks`, `list {block}`, `get`, `set {block, index, field, value}`, `add {block, like, position}`, `move {block, index, position, ypr}`, `delete`, `duplicate`, `select` |
 | `volume` | `list {kind?}` (short form `volumes [kind]`), `select {index?, focus?}`, `set {index, origin?, center?, forward?, up?, size?}`, `add {kill?, center?, origin?, forward?, up?, size?}`, `remove {kind?, index}` |
+| `collision` | `surfaces {class?, bsp?, offset?, limit?}`, `at {origin, dir}` or `at {point, within?}` (with `select?`), `select {index?, focus?}` |
 | `variant` | `list`, `get`, `set {setting, value}`, `rename`, `copy`, `export`, `import`, `delete` |
 | `playlist` | `list` (with `unused` per playlist and the `templates`), `get {playlist}`, `set {playlist, title, description, template, clear}` (`template`: make the slot a playlist of that kind, or give a playlist another kind; `clear: true`: make it unused; [live-matchmaking.md §6.10](../live/live-matchmaking.md)), `entry {playlist, op, entry, to, weight}`, `entry_variant` |
 | `ui` | `palette {query, run?}`, `screens`, `pick {screen, state \| retail}`, `press {input}`, `widgets`, `render {out}` |
@@ -487,6 +489,22 @@ Notes on some:
   scripts, which name volumes by index. BSP switches are read only. The
   three blocks are the editor's own list (`scenario_edit::volumes::VolumeBlock`),
   not `map::scenario_layout` blocks, so `scenario.*` does not list them.
+- **Level collision.** `collision.surfaces` lists every surface of each
+  structure BSP's collision BSP (`scenario_edit::collision_view`) with
+  its plane (`[nx, ny, nz, d]`, the flip bit applied), raw `flags`
+  (`breakable` is bit 3; the other bits are not named), material, ring
+  and `class`: `collision_only` when no drawn triangle of the structure
+  or its instances lies on its plane (within 0.01 units, the normal
+  within about five degrees either way) over it, else `drawn`, with the
+  share `covered`. `{"class": "collision_only"}` lists the invisible
+  walls; `offset` and `limit` (200) page the list, `matching` counts it,
+  and `errors` names a BSP whose collision did not read.
+  `collision.at {origin, dir}` returns the first surface a ray meets and
+  `{point}` the one a point lies on (within `within`, 0.05 units), each
+  whatever layers are shown; `select` selects it. `collision.select
+  {index, focus}` selects a surface and frames it. Read only: the
+  barrier edits change collision. The Level collision and Collision only
+  layers start hidden; the Collision and Everything presets show them.
 - **Renders.** `ui.render` draws on the CPU (no GPU needed); `view.snapshot`
   renders the open map offscreen through the viewport's own renderer
   (wgpu, no window) and answers `NO_GPU` on a machine without an adapter.
@@ -661,7 +679,7 @@ identical profiles.
   example), `Api::call` (shape check, providers, built-ins),
   `Api::pump` (the window's between-frames answer).
 - `api/server.rs`: the socket. `api/{docs,scenario,tags,variants,playlists,ui_screens,view}.rs`:
-  the namespaces (`volume.*` is in `api/scenario.rs`). `api/seams.rs`: providers; `api/tag_fields.rs`,
+  the namespaces (`volume.*` is in `api/scenario.rs`, `collision.*` in `api/collision.rs`). `api/seams.rs`: providers; `api/tag_fields.rs`,
   `api/tag_io.rs` and `api/hud.rs` the Tags and HUD tools'.
 - `app/commands.rs`: the actions added for the API and the window
   (`SetField`, `EditSelection`, `MovePlacement`, `EditPlaylist`,
@@ -712,6 +730,12 @@ system temp directory):
   the kill trigger first, and `volume.add` with `kill` adds both entries
   and undoes as one step
   (`api::tests::volume_set_add_and_remove_edit_through_the_command_layer`);
+- `collision.surfaces` reads the invented structure BSP's room, all
+  collision only as nothing draws it, filtered and paged;
+  `collision.at` finds the far wall by ray and by point with the layers
+  hidden and selects it in place of the placements; `collision.select`
+  frames a surface; the collision layers start hidden and count the
+  surfaces (`api::tests::collision_surfaces_and_at_report_the_invented_rooms_walls`);
 - `view.stats` of an invented scene reports its BSP's lighting, its
   triangles by blend, its materials and its sky's sun and fog
   (`api::view::tests`);

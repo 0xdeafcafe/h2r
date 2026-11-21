@@ -187,6 +187,9 @@ pub enum Action {
     Select(Option<(BlockKind, usize)>),
     /// Select a trigger volume by index (clearing the placements), or none.
     SelectVolume(Option<usize>),
+    /// Select a level collision surface by index (clearing the placements
+    /// and the volume), or none. Read only.
+    SelectSurface(Option<usize>),
     /// The viewport gizmo's drag on the selected volume: its new box.
     /// Every one until [`Action::EndGesture`] is one undo step.
     VolumeGesture(scenario_edit::volumes::Frame),
@@ -914,6 +917,15 @@ impl App {
                 }
                 let before = self.nav_location();
                 self.session.select_volume(index);
+                self.record_placement_selection(before);
+            }
+            Action::SelectSurface(index) => {
+                let count = self.session.collision().map_or(0, |c| c.surfaces.len());
+                if let Some(i) = index.filter(|&i| i >= count) {
+                    return self.error(format!("no collision surface {i} (the map has {count})"));
+                }
+                let before = self.nav_location();
+                self.session.select_surface(index);
                 self.record_placement_selection(before);
             }
             Action::VolumeGesture(frame) => {

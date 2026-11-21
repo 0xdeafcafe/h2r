@@ -168,6 +168,11 @@ fn setup(api: &mut Api, app: &mut App, t: &Temp, name: &str) {
                 c(m::VOLUME_REMOVE, json!({"index": 1}));
             }
         }
+        m::COLLISION_SURFACES | m::COLLISION_AT | m::COLLISION_SELECT => {
+            let map = t.path("collision.map");
+            std::fs::write(&map, fixture::fixture_with_collision()).unwrap();
+            c(m::SOURCE_OPEN, json!({"path": map.display().to_string()}));
+        }
         m::DOC_CLOSE | m::PLAYLIST_LIST | m::PLAYLIST_GET | m::PLAYLIST_SET | m::PLAYLIST_ENTRY => {
             c(
                 m::DOC_OPEN,
@@ -930,6 +935,159 @@ fn volume_list_and_select_read_the_invented_volumes() {
     assert!(
         png_pixels(&out) != hidden,
         "the Kill layer alone draws the kill box"
+    );
+}
+
+/// P10: the invented structure BSP's room through `collision.*`. It has
+/// no render geometry, so all three surfaces are collision only;
+/// `collision.at` finds the far wall by ray and by point whatever layers
+/// are shown, and selecting it replaces the placements. The collision
+/// layers start hidden and count the surfaces.
+#[test]
+fn collision_surfaces_and_at_report_the_invented_rooms_walls() {
+    let t = Temp::new("collision");
+    let mut app = app(&t);
+    let mut api = Api::new();
+    let map = t.path("collision.map");
+    std::fs::write(&map, fixture::fixture_with_collision()).unwrap();
+    call(
+        &mut api,
+        &mut app,
+        m::SOURCE_OPEN,
+        json!({"path": map.display().to_string()}),
+    );
+    let all = call(&mut api, &mut app, m::COLLISION_SURFACES, Value::Null);
+    assert_eq!(all["bsps"].as_array().unwrap().len(), 1);
+    assert_eq!(all["counts"], json!({"drawn": 0, "collision_only": 3}));
+    assert_eq!(all["errors"], json!([]));
+    let rows = all["surfaces"].as_array().unwrap();
+    assert_eq!(rows.len(), 3);
+    assert_eq!(rows[2]["class"], "collision_only");
+    assert_eq!(rows[2]["breakable"], true);
+    assert_eq!(rows[2]["ring"].as_array().unwrap().len(), 4);
+    assert_eq!(rows[0]["breakable"], false);
+    let drawn = call(
+        &mut api,
+        &mut app,
+        m::COLLISION_SURFACES,
+        json!({"class": "drawn"}),
+    );
+    assert_eq!(drawn["matching"], 0);
+    let paged = call(
+        &mut api,
+        &mut app,
+        m::COLLISION_SURFACES,
+        json!({"offset": 1, "limit": 1}),
+    );
+    assert_eq!(paged["matching"], 3);
+    assert_eq!(paged["surfaces"][0]["index"], 1);
+    for bad in [
+        (m::COLLISION_SURFACES, json!({"class": "invisible"})),
+        (
+            m::COLLISION_AT,
+            json!({"origin": [0, 0, 0], "dir": [1, 0, 0], "point": [0, 0, 0]}),
+        ),
+        (m::COLLISION_AT, json!({"origin": [0, 0, 0]})),
+        (
+            m::COLLISION_AT,
+            json!({"origin": [0, 0, 0], "dir": [0, 0, 0]}),
+        ),
+        (m::COLLISION_SELECT, json!({"index": 3})),
+    ] {
+        assert_eq!(
+            code_of(api.call(&mut app, bad.0, bad.1.clone())),
+            code::INVALID_PARAMS,
+            "{}",
+            bad.1
+        );
+    }
+
+    // The far wall stands at x 210; the layers are hidden by default.
+    let ray = call(
+        &mut api,
+        &mut app,
+        m::COLLISION_AT,
+        json!({
+            "origin": [205, 205, 1], "dir": [2, 0, 0]
+        }),
+    );
+    assert_eq!(ray["surface"]["index"], 2);
+    assert_eq!(ray["surface"]["class"], "collision_only");
+    assert!((ray["distance"].as_f64().unwrap() - 5.0).abs() < 1e-4);
+    let point = call(
+        &mut api,
+        &mut app,
+        m::COLLISION_AT,
+        json!({"point": [209.98, 205, 1]}),
+    );
+    assert_eq!(point["surface"]["index"], 2);
+    let miss = call(
+        &mut api,
+        &mut app,
+        m::COLLISION_AT,
+        json!({"point": [205, 205, 2]}),
+    );
+    assert_eq!(miss["surface"], Value::Null);
+
+    call(
+        &mut api,
+        &mut app,
+        m::SCENARIO_SELECT,
+        json!({"block": "netgame_flags", "index": 0}),
+    );
+    let picked = call(
+        &mut api,
+        &mut app,
+        m::COLLISION_AT,
+        json!({
+            "origin": [205, 205, 1], "dir": [1, 0, 0], "select": true
+        }),
+    );
+    assert_eq!(picked["selected"], 2);
+    assert_eq!(app.session.selected(), None);
+    let cleared = call(&mut api, &mut app, m::COLLISION_SELECT, Value::Null);
+    assert_eq!(cleared["selected"], Value::Null);
+    let framed = call(
+        &mut api,
+        &mut app,
+        m::COLLISION_SELECT,
+        json!({"index": 0, "focus": true}),
+    );
+    assert_eq!(framed["selected"], 0);
+    let target = app.session.camera().target;
+    assert!(
+        (target[0] - 205.0).abs() < 1e-3 && (target[1] - 205.0).abs() < 1e-3,
+        "{target:?}"
+    );
+
+    let layers = call(&mut api, &mut app, m::VIEW_LAYERS, Value::Null);
+    let row = |name: &str| {
+        layers["layers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["name"] == name)
+            .unwrap()
+            .clone()
+    };
+    for (name, count) in [("level_collision", 3), ("collision_only", 3)] {
+        assert_eq!(row(name)["group"], "Collision", "{name}");
+        assert_eq!(row(name)["count"], count, "{name}");
+        assert_eq!(row(name)["on"], false, "{name}");
+    }
+    let shown = call(
+        &mut api,
+        &mut app,
+        m::VIEW_LAYERS,
+        json!({"preset": "collision"}),
+    );
+    assert!(
+        shown["layers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|r| r["group"] == "Collision")
+            .all(|r| r["on"] == true)
     );
 }
 

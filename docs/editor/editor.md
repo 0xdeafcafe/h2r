@@ -616,7 +616,7 @@ build), and keeps the last four maps' scenes so reopening one is instant.
   individual placement blocks, Halo 1 reference and live objects. Each
   row shows its colour and count. Art, Gameplay, Collision and Everything
   choose a set of layers in one click. Collision shows the level structure
-  for context. The viewport and `view.snapshot` share these settings.
+  for context, the kill volumes and the collision layers. The viewport and `view.snapshot` share these settings.
   Clicking skips hidden placement categories and hidden structure.
 - **Gameplay layers.** Spawn points have a team-coloured pawn and an
   arrow pointing along the spawn facing. Netgame flags have a team tint
@@ -646,6 +646,13 @@ build), and keeps the last four maps' scenes so reopening one is instant.
   a kill trigger's Remove drops just the kill trigger
   ([scenario-editor.md](scenario-editor.md), "Trigger volumes, kill
   triggers and BSP switches").
+- **Collision.** Level collision draws every surface of each structure
+  BSP's collision BSP as translucent faces with wire edges; Collision
+  only draws, in red, the surfaces no drawn triangle covers: the
+  invisible walls (`scenario_edit::collision_view::classify`). Both
+  start hidden. A click on a shown surface selects it when nothing else
+  is under the cursor, and the inspector shows its class, plane, raw
+  flags, material and ring, read only.
 - **Glyphs and labels.** Other placements without a model use a diamond
   in their block colour. Past 40 world units glyphs and their pick
   spheres grow with distance so the whole map stays readable. Gameplay

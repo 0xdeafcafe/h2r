@@ -21,6 +21,8 @@
 //! - [`volumes`]: the trigger volumes, kill triggers and BSP switches as
 //!   oriented boxes to draw, pick and edit (BSP switches read only), kept
 //!   as the editor's own block list beside [`layout`].
+//! - [`collision_view`]: the structure BSPs' collision surfaces, and which
+//!   of them nothing drawn covers (the invisible walls).
 //!
 //! Entries are removed in place (swap with the last, lower the count) and
 //! added in place up to the source size; a block that grows past it is
@@ -28,6 +30,7 @@
 //! docs/editor/scenario-editor.md §6. No game data is in this crate or its tests.
 #![forbid(unsafe_code)]
 
+pub mod collision_view;
 pub mod edit;
 /// An invented cache for tests and the editor's screenshots.
 #[doc(hidden)]

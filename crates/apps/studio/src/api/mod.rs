@@ -25,6 +25,7 @@ use studio_proto::{code, method as m};
 
 use crate::App;
 
+mod collision;
 mod docs;
 mod hud;
 mod mirror;
@@ -384,6 +385,27 @@ pub const METHODS: &[MethodDef] = &[
         r#"{"kind":"kill","index":0}"#,
     ),
     def(
+        m::COLLISION_SURFACES,
+        "The open map's level collision surfaces (each structure BSP's collision BSP): plane, raw flags, material, ring, and class, collision_only when no drawn triangle lies on the surface's plane over it (the invisible walls). Filter by class or BSP; offset and limit (200) page the list",
+        r#"{"class?":"drawn|collision_only","bsp?":"integer","offset?":"integer","limit?":"integer"}"#,
+        r#"{"bsps":"[string]","counts":"{drawn,collision_only}","matching":"integer","surfaces":"[{index,bsp,surface,class,plane,flags,breakable,breakable_surface,material,covered,area,center,ring}]","selected":"integer|null","errors":"[{bsp,error}]"}"#,
+        r#"{"class":"collision_only","limit":10}"#,
+    ),
+    def(
+        m::COLLISION_AT,
+        "The level collision surface a ray meets first (origin and dir) or the one a point lies on (within 0.05 units of its plane, over it), and its class, whatever layers are shown; select selects it (or clears the selection on a miss)",
+        r#"{"origin?":"[x,y,z]","dir?":"[x,y,z]","point?":"[x,y,z]","within?":"number","select?":"boolean"}"#,
+        r#"{"surface":"{index,bsp,surface,class,...}|null","distance":"number|null","selected":"integer|null"}"#,
+        r#"{"origin":[205,205,1],"dir":[1,0,0]}"#,
+    ),
+    def(
+        m::COLLISION_SELECT,
+        "Select a level collision surface by index (clearing the placements and the volume) and frame it with focus, or clear the selection. Read only",
+        r#"{"index?":"integer","focus?":"boolean"}"#,
+        r#"{"selected":"integer|null"}"#,
+        r#"{"index":0,"focus":true}"#,
+    ),
+    def(
         m::VARIANT_LIST,
         "The built-in and saved game variants, and the one open",
         "{}",
@@ -718,6 +740,7 @@ impl Api {
             "tag" => tags::call(app, method, &p),
             "scenario" => scenario::call(app, method, &p),
             "volume" => scenario::volume(app, method, &p),
+            "collision" => collision::call(app, method, &p),
             "variant" => variants::call(app, method, &p),
             "playlist" => playlists::call(app, method, &p),
             "ui" => ui_screens::call(app, method, &p),

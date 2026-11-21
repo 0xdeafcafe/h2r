@@ -412,6 +412,9 @@ impl ViewportView {
                     if let Some(volume) = app.session.pick_volume(&ray, &app.layers) {
                         actions.push(Action::SelectVolume(Some(volume)));
                         actions.push(Action::FocusSelected);
+                    } else if let Some(surface) = app.session.pick_surface(&ray, &app.layers) {
+                        actions.push(Action::SelectSurface(Some(surface)));
+                        actions.push(Action::FocusSelected);
                     } else if let Some(p) = app.session.surface_hit_visible(&ray, &app.layers) {
                         let to = camera::focus_point(app.session.camera(), p, 30.0);
                         self.camera.go_to(app.session.camera_mut(), to);
@@ -642,6 +645,12 @@ pub(crate) fn pick_action(
     {
         return Some(Action::SelectVolume(Some(volume)));
     }
+    // A shown collision surface is picked when nothing else is.
+    if hit.is_none()
+        && let Some(surface) = session.pick_surface(ray, layers)
+    {
+        return Some(Action::SelectSurface(Some(surface)));
+    }
     Some(Action::Select(hit))
 }
 
@@ -649,6 +658,9 @@ fn selection_label(app: &App) -> String {
     let n = app.session.selection().len();
     if let (Some(i), Some(v)) = (app.session.selected_volume(), app.session.volumes()) {
         return v.label(i);
+    }
+    if let Some(s) = app.session.selected_surface_data() {
+        return surface_label(s);
     }
     match (app.session.selected(), app.session.scenario()) {
         _ if n > 1 => format!("{n} placements"),
@@ -707,6 +719,57 @@ pub(crate) fn upload_placements(
     }
     vp.set_layer_overlay(device, LayerId::Flags, &[], &lines);
     upload_volumes(vp, device, app);
+    upload_collision(vp, device, app);
+}
+
+/// A collision surface as the status line and inspector name it.
+pub(crate) fn surface_label(s: &scenario_edit::collision_view::CollisionSurface) -> String {
+    format!("BSP {} collision surface {}", s.bsp, s.surface)
+}
+
+/// The level collision as two overlays: every surface under Level
+/// collision, the uncovered ones again under Collision only (in its own
+/// colour), each as translucent faces and wire edges, the selected
+/// surface's edges in the selection colour. A hidden layer uploads
+/// nothing, so a large map's collision costs nothing until it is shown.
+fn upload_collision(vp: &mut Viewport, device: &wgpu::Device, app: &App) {
+    use scenario_edit::collision_view::SurfaceClass;
+    let selected = app.session.selected_surface();
+    for (id, only) in [
+        (LayerId::LevelCollision, false),
+        (LayerId::CollisionOnly, true),
+    ] {
+        let (mut faces, mut lines) = (Vec::new(), Vec::new());
+        if let Some(c) = app.session.collision().filter(|_| app.layers.visible(id)) {
+            let color = crate::theme::layer_color(id);
+            for (i, s) in c.surfaces.iter().enumerate() {
+                if only && s.class != SurfaceClass::CollisionOnly {
+                    continue;
+                }
+                let n = s.normal();
+                let tris: Vec<geometry::Tri> = s
+                    .triangles()
+                    .into_iter()
+                    .map(|p| geometry::Tri { p, n })
+                    .collect();
+                faces.extend(render::overlay_vertices(&tris, color));
+                let edge = if selected == Some(i) {
+                    crate::theme::VOLUME_SELECTED
+                } else {
+                    color
+                };
+                for position in s.edges().into_iter().flatten() {
+                    lines.push(render::Vertex {
+                        position,
+                        center: position,
+                        normal: n,
+                        color: edge,
+                    });
+                }
+            }
+        }
+        vp.set_layer_overlay(device, id, &faces, &lines);
+    }
 }
 
 /// The trigger volumes as boxes, one overlay per kind a box is drawn as

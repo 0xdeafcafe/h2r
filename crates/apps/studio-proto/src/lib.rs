@@ -107,6 +107,9 @@ pub mod method {
     pub const VOLUME_SET: &str = "volume.set";
     pub const VOLUME_ADD: &str = "volume.add";
     pub const VOLUME_REMOVE: &str = "volume.remove";
+    pub const COLLISION_SURFACES: &str = "collision.surfaces";
+    pub const COLLISION_AT: &str = "collision.at";
+    pub const COLLISION_SELECT: &str = "collision.select";
     pub const NAV_STATUS: &str = "nav.status";
     pub const NAV_BACK: &str = "nav.back";
     pub const NAV_FORWARD: &str = "nav.forward";

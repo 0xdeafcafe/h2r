@@ -17,6 +17,7 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+mod collision;
 mod multi;
 mod volume_edit;
 pub use multi::FieldEdit;
@@ -39,6 +40,9 @@ struct Doc {
     world: Vec<Tri>,
     /// How many BSP sections failed to load.
     world_failed: usize,
+    /// The structure BSPs' collision surfaces, classified against the
+    /// drawn triangles ([`crate::collision_view`]).
+    collision: crate::collision_view::LevelCollision,
     /// The textured BSP and the placed objects' models, when the map's art
     /// could be read.
     scene: Option<Arc<Scene>>,
@@ -109,6 +113,10 @@ pub struct Session {
     /// The selected trigger volume, by index. Selecting a placement clears
     /// it and selecting one clears the placements.
     volume: Option<usize>,
+    /// The selected level collision surface, by index into
+    /// [`crate::collision_view::LevelCollision::surfaces`]. Cleared as the
+    /// volume is.
+    surface: Option<usize>,
     camera: Camera,
     markers: Vec<Marker>,
     /// Bumped whenever the markers or the selection change, so a viewport
@@ -150,6 +158,7 @@ impl Session {
             selected: None,
             extra: Vec::new(),
             volume: None,
+            surface: None,
             camera: Camera::default(),
             markers: Vec::new(),
             markers_rev: 0,
@@ -385,6 +394,7 @@ impl Session {
         self.doc = None;
         self.selected = None;
         self.volume = None;
+        self.surface = None;
         self.drag = None;
         self.gesture = None;
         self.camera = Camera::frame(&frame_bounds(&reference.world, &reference.markers));
@@ -417,6 +427,11 @@ impl Session {
         let lit = geometry::world_parts_lit(&mut map, &mut raw).unwrap_or_default();
         let world_failed = lit.failed;
         let world = geometry::opaque_triangles(&lit.parts);
+        let collision = crate::collision_view::LevelCollision::read(
+            &mut map,
+            &crate::collision_view::render_triangles(&lit.parts),
+        )
+        .unwrap_or_default();
         let markers = geometry::markers(&scenario);
         let scene = self.build_scenes.then(|| {
             self.scene_for(
@@ -459,12 +474,14 @@ impl Session {
             saved: Changes::default(),
             world,
             world_failed,
+            collision,
             scene,
             derived: false,
         });
         self.reference = None;
         self.selected = None;
         self.volume = None;
+        self.surface = None;
         self.drag = None;
         self.gesture = None;
         self.world_rev += 1;
@@ -478,6 +495,7 @@ impl Session {
         self.reference = None;
         self.selected = None;
         self.volume = None;
+        self.surface = None;
         self.drag = None;
         self.gesture = None;
         self.world_rev += 1;
@@ -617,6 +635,7 @@ impl Session {
     pub fn select(&mut self, selection: Option<(BlockKind, usize)>) {
         self.extra.clear();
         self.volume = None;
+        self.surface = None;
         if selection != self.selected
             && let Some(doc) = self.doc.as_mut()
         {
