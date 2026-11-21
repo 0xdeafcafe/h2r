@@ -115,21 +115,26 @@ The host keeps its files under `--root`, by default
 | `target/` | the cargo target directory those builds share |
 | `images/<key>/` | a built `h2` and its image (`out/`), per commit and build |
 | `obj-cache/` | `H2_OBJ_CACHE` for every image build |
-| `data/` | the data root runs use |
+| `data/` | persistent data at the default cap and the seed for private copies at higher caps |
+| `scratch/<id>/data` | temporary data for an isolated run |
 
 Host and install flags take the same paths. `--repo` sets the checkout
 and defaults to the one used to build the CLI. `--disc` defaults to
 `$H2_DISC`, then the checkout's `disc/halo2.iso`. `--h2` and `--out`
 select the binary and image for `--current` runs. They default to the
 host executable and the usual `h2 play` image directory. `--data` sets
-the data root and `--cargo` selects the cargo executable. Install saves
-the Terminal's `PATH` for the LaunchAgent's build tools.
+the persistent data root and `--cargo` selects the cargo executable.
+`--max-jobs N` caps active builds and runs together and defaults to 1.
+Install saves a custom cap in the LaunchAgent's arguments and saves the
+Terminal's `PATH` for the build tools. Changing an installed cap requires
+uninstalling and reinstalling the LaunchAgent.
 
 The local socket is `~/Library/Caches/h2recomp/lab.sock` (mode 0600),
 or a path set by `--socket` or the lab socket environment setting in
-[Switches](switches.md#tools). To stop a foreground host, stop its job
-first (`h2 lab stop <id>`), then press Ctrl-C. A host marks jobs it
-finds unfinished as failed on startup.
+[Switches](switches.md#tools). To stop a foreground host, stop each
+active job first (`h2 lab stop <id>`), then press Ctrl-C. During startup,
+the host waits for exclusive access to the lab root before marking any
+unfinished jobs failed.
 
 ## The agent's side
 
@@ -172,8 +177,8 @@ being the commit, the features and the build variables (`H2_OPT`,
 each once. The build variables are set again on every run of the image,
 since an `h2` whose `H2_OPT` or `H2_PGO` differs from its image's rebuilds
 it. A job's `meta.json` records its commit, image key, whether the image
-was cached and the build variables. `h2 lab status` shows a job `building`,
-then `running`.
+was cached and the build variables. `h2 lab status` shows jobs building
+an image as `building` and games as `running`.
 
 `H2_PGO=use:NAME` names a profile uploaded with
 `h2 lab put FILE --pgo --as NAME`.
@@ -205,8 +210,27 @@ network, no names with `/` or a leading `.`. The host also drops every
 same regardless of the host's environment. A paired driver can send
 source code for the host to build and run as the logged-in user.
 
-One job runs at a time. Another `run` or `build` is refused with the busy
-job's ID. `h2 lab wait <id> [--timeout S]` exits 0 when the job completes
+With a free slot, a run can start from a cached image even while another
+job builds. Only one job builds an image at a time. If another job needs
+a build, the host refuses it and names the job already building. When
+all slots are occupied, the host refuses new jobs and lists the active
+IDs. `h2 lab status` lists all active jobs in `jobs_active` and includes
+the first one in `active` for compatibility.
+
+With `--max-jobs` above 1, every run gets its own data root under
+`scratch/<id>/data`, removed when that run ends. The host copies the
+`--data` seed and follows symlinks so writes stay local to the run.
+macOS clones files where the filesystem supports it and copies them
+otherwise. `--fresh-data` starts with an empty root. Keep the scratch
+directory outside the seed. Before opening the game,
+the host verifies the image with `h2 build --check` so play cannot
+start by rebuilding a stale image. The run's binary must support this
+check, including when it comes from a cached commit. Point `--current`
+at a prebuilt image that passes the check with the host's `h2`.
+Instrumented runs (`H2_PGO=gen`) use `runs/<id>/h2.profraw` for their raw
+profile.
+
+`h2 lab wait <id> [--timeout S]` exits 0 when the job completes
 or is skipped, 1 when it fails or is stopped, and 3 when it is still
 going. `h2 lab stop <id>` stops a pending request or sends SIGTERM to
 the job's process group, then SIGKILL 5 s later.
@@ -224,8 +248,9 @@ Mac for a game window. It asks the game's [agent API](agent-api.md) on
 the per-process sockets under `~/Library/Caches/h2recomp/agents/` and
 on its own run sockets. It also checks the local process list for
 recognizable game launches, including the bundled macOS app.
-A headless serve leaves the Mac available for lab jobs. An open game
-window whose agent cannot show the prompt leaves the job skipped.
+A headless serve and jobs already running under this host leave the Mac
+available for new lab jobs. An open player game window whose agent cannot
+show the prompt leaves the job skipped.
 Service updates use the separate maintenance path.
 
 The game shows the requesting lab driver, the run or build, the commit or
@@ -324,11 +349,10 @@ or not the window is paced to 30 fps; the `fps` is the wall rate, which a
 paced run pins near 30. Add `-- --unpaced --no-vsync` to let the frame rate
 float. A failure (the job ends first, no gameplay in time, a call exits
 non-zero) stops the run and says so; its logs stay in `runs/<id>` for
-`h2 lab fetch`. Two invocations that differ in `--env` (or `--branch`, or
-`--build-env`) are an A/B: the host runs them one after the other, and the
-quiet machine is the point. A bench starts the level at its beginning, and
-two runs of one level drift apart over minutes (agent-api.md), so keep the
-window short and compare percentiles, not frames.
+`h2 lab fetch`. For an A/B, run the two invocations sequentially on a quiet
+host, varying `--env`, `--branch` or `--build-env`. A bench starts the level
+at its beginning, and two runs of one level drift apart over minutes
+(agent-api.md), so keep the window short and compare percentiles, not frames.
 
 Report both render resolution and LOD Distance with results above 480 lines.
 In offline runs at the default distance of 1x, higher resolutions also retain
@@ -361,7 +385,7 @@ A recording is a directory with a manifest, not a file:
 ```
 
 `commit` is the image's commit when the host built it (null for
-`--current`).
+`--current`). Wait for the recording job to finish before replaying it.
 
 ### What replay does and doesn't promise
 

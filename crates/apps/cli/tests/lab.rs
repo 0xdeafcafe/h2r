@@ -6,7 +6,7 @@
 
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{PermissionsExt, symlink};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
@@ -25,8 +25,15 @@ use serde_json::{Value, json};
 const FAKE_H2: &str = r#"#!/bin/sh
 cmd=$1; shift
 if [ "$cmd" = build ]; then
-  out=
-  while [ $# -gt 0 ]; do [ "$1" = --out ] && out=$2; shift; done
+  out=; check=
+  while [ $# -gt 0 ]; do
+    case "$1" in --out) out=$2; shift;; --check) check=1;; esac
+    shift
+  done
+  if [ "$check" = 1 ]; then
+    [ -n "$out" ] && [ -f "$out/libh2game.dylib" ] && exit 0
+    exit 3
+  fi
   mkdir -p "$out" && echo image > "$out/libh2game.dylib"
   echo "fake build opt=$H2_OPT objcache=$H2_OBJ_CACHE"
   exit 0
@@ -47,6 +54,7 @@ if [ "$cmd" = agent ]; then
     capture) printf '{"frames":%s,"fps":24.0,"budget_ms":33.3,"over_budget":1,"complete":true,"busy_ms":{"p50":8.0,"p95":12.5},"phases":{"cpu":{"mean":2.0},"render":{"mean":4.0},"pace":{"mean":9.0}},"csv":"a,b\\n1,2\\n"}\n' "$2";;
     render) echo '{"interp":0}';;
     counters) echo '{"draws":100}';;
+    socket) printf '%s\n' "$sock";;
     fail) echo '{"code":3,"message":"nope"}' >&2; exit 2;;
     -) while read -r line; do echo "script: $line"; done;;
     *) p=$(printf '%s' "$2" | sed 's/[\\"]/\\&/g'); printf '{"method":"%s","params":"%s"}\n' "$1" "$p";;
@@ -54,7 +62,7 @@ if [ "$cmd" = agent ]; then
   exit 0
 fi
 echo "fake play $*"
-echo "env level=$H2_LEVEL opt=$H2_OPT replay=$H2_INPUT_REPLAY record=$H2_INPUT_RECORD profile=$H2_PROFILE from=$H2_FRAME_STATS_FROM home=$H2_LEAK scale=$H2_RENDER_SCALE agent=$H2_AGENT"
+echo "env level=$H2_LEVEL opt=$H2_OPT replay=$H2_INPUT_REPLAY record=$H2_INPUT_RECORD profile=$H2_PROFILE from=$H2_FRAME_STATS_FROM home=$H2_LEAK scale=$H2_RENDER_SCALE pgo=$H2_PGO_OUT agent=$H2_AGENT"
 trap 'echo "got TERM"; exit 143' TERM
 n=${H2_BOOT_STOP_AT_PRESENT:-${FAKE_FRAMES:-1000000}}
 [ -n "$H2_FRAME_STATS_CSV" ] && echo "frame,total_us" > "$H2_FRAME_STATS_CSV"
@@ -143,11 +151,26 @@ impl Lab {
         let fake_h2 = dir.join("fake-h2");
         script(&fake_h2, FAKE_H2);
         let cargo_log = dir.join("cargo.log");
-        // A fake cargo: logs its call and "builds" h2 as the fake.
+        // The test can hold fake cargo after it logs the call and before
+        // it produces the binary. Bound the hold if the test panics.
         script(
             &dir.join("fake-cargo"),
             &format!(
-                "#!/bin/sh\necho \"$* in $(pwd)\" >> '{}'\nmkdir -p \"$CARGO_TARGET_DIR/release\"\ncp '{}' \"$CARGO_TARGET_DIR/release/h2\"\n",
+                r#"#!/bin/sh
+echo "$* in $(pwd)" >> '{}'
+gate="$(dirname "$0")/cargo.hold"
+waits=0
+while [ -f "$gate" ]; do
+  if [ "$waits" -ge 300 ]; then
+    echo "fake cargo gate timed out" >&2
+    exit 1
+  fi
+  waits=$((waits+1))
+  sleep 0.1
+done
+mkdir -p "$CARGO_TARGET_DIR/release"
+cp '{}' "$CARGO_TARGET_DIR/release/h2"
+"#,
                 cargo_log.display(),
                 fake_h2.display()
             ),
@@ -184,6 +207,8 @@ impl Lab {
             .arg(&disc)
             .arg("--h2")
             .arg(&fake_h2)
+            .arg("--out")
+            .arg(dir.join("current-image"))
             .arg("--cargo")
             .arg(dir.join("fake-cargo"))
             .args(options)
@@ -191,6 +216,8 @@ impl Lab {
             .env("XDG_CACHE_HOME", &host_home)
             // The host's own H2_* never reach a run.
             .env("H2_LEAK", "leaked")
+            // Bound fake play if a test panics before stopping its runs.
+            .env("FAKE_FRAMES", "1200")
             .stderr(Stdio::null())
             .spawn()
             .unwrap();
@@ -294,7 +321,10 @@ impl FakeGame {
     fn listen(lab: &Lab, window: bool, decision: Decision) -> Self {
         // Lab jobs with explicit agent sockets advertise here. This fake
         // answers the game API directly and never starts a game process.
-        let path = lab.root.join("a").join("fake.sock");
+        Self::at(lab.root.join("a").join("fake.sock"), window, decision)
+    }
+
+    fn at(path: PathBuf, window: bool, decision: Decision) -> Self {
         let listener = UnixListener::bind(&path).unwrap();
         let window = Arc::new(AtomicBool::new(window));
         let shutdown = Arc::new(AtomicBool::new(false));
@@ -548,7 +578,7 @@ fn a_lab_host_runs_waits_stops_fetches_and_builds_branches() {
             .contains("no recording nothing")
     );
 
-    // One at a time: a long run, a refused second, stop, then it's stopped.
+    // With the default cap, a second run is refused while the first is active.
     let v = json(&ok(&lab.local(&[
         "run",
         "--current",
@@ -560,6 +590,7 @@ fn a_lab_host_runs_waits_stops_fetches_and_builds_branches() {
     loop {
         let s = json(&ok(&lab.local(&["status"])));
         if s["active"]["state"] == "running" {
+            assert_eq!(s["jobs_active"], serde_json::json!([s["active"]]));
             break;
         }
         assert!(t.elapsed() < Duration::from_secs(10), "never running: {s}");
@@ -834,6 +865,12 @@ fn record_without_a_host_runs_directly() {
 /// socket; the fake `h2 agent` only checks that it is there. Returns the
 /// path and the listener to keep alive.
 fn open_agent_socket(root: &Path, id: &str) -> (PathBuf, std::os::unix::net::UnixListener) {
+    let path = wait_for_agent_socket_path(root, id);
+    let listener = UnixListener::bind(&path).unwrap();
+    (path, listener)
+}
+
+fn wait_for_agent_socket_path(root: &Path, id: &str) -> PathBuf {
     let meta = root.join("runs").join(id).join("meta.json");
     let t = Instant::now();
     loop {
@@ -842,8 +879,7 @@ fn open_agent_socket(root: &Path, id: &str) -> (PathBuf, std::os::unix::net::Uni
             if let Some(p) = v["agent_socket"].as_str() {
                 let p = PathBuf::from(p);
                 assert!(p.as_os_str().len() <= 100, "{p:?} is too long for SUN_LEN");
-                let l = std::os::unix::net::UnixListener::bind(&p).unwrap();
-                return (p, l);
+                return p;
             }
         }
         assert!(
@@ -852,6 +888,248 @@ fn open_agent_socket(root: &Path, id: &str) -> (PathBuf, std::os::unix::net::Uni
         );
         std::thread::sleep(Duration::from_millis(20));
     }
+}
+
+fn wait_for_run_log(root: &Path, id: &str) -> String {
+    let log = root.join("runs").join(id).join("run.log");
+    let t = Instant::now();
+    loop {
+        if let Ok(text) = fs::read_to_string(&log)
+            && text.contains("agent=")
+        {
+            return text;
+        }
+        assert!(t.elapsed() < Duration::from_secs(10), "no run.log for {id}");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn cached_serve_runs_share_an_image_and_stop_independently() {
+    let lab = Lab::with_host_options("m", &["--max-jobs", "2"]);
+    let seed = lab.root.join("data");
+    fs::write(seed.join("profile"), b"seed profile").unwrap();
+    let linked = lab.dir.join("linked-profile");
+    fs::write(&linked, b"linked profile").unwrap();
+    symlink(&linked, seed.join("linked-profile")).unwrap();
+
+    let built = json(&ok(&lab.local(&[
+        "build",
+        "--rev",
+        "HEAD",
+        "--build-env",
+        "H2_PGO=gen",
+        "--wait",
+    ])));
+    assert_eq!(built["job"]["state"], "done");
+    assert_eq!(built["job"]["cached"], false);
+    let image = built["job"]["image"].as_str().unwrap();
+
+    let args = [
+        "run",
+        "--rev",
+        "HEAD",
+        "--build-env",
+        "H2_PGO=gen",
+        "--level",
+        "ascension",
+        "--serve",
+    ];
+    let first = json(&ok(&lab.local(&args)));
+    let first = first["id"].as_str().unwrap();
+    let first_socket = wait_for_agent_socket_path(&lab.root, first);
+    let first_window = FakeGame::at(first_socket.clone(), true, Decision::Declined);
+    let second = json(&ok(&lab.local(&args)));
+    let second = second["id"].as_str().unwrap();
+    let (second_socket, _second_listener) = open_agent_socket(&lab.root, second);
+    assert_ne!(first_socket, second_socket);
+    let first_data = lab.root.join("scratch").join(first).join("data");
+    let second_data = lab.root.join("scratch").join(second).join("data");
+    assert_ne!(first_data, second_data);
+
+    let status = json(&ok(&lab.local(&["status"])));
+    let jobs = status["jobs_active"].as_array().unwrap();
+    assert_eq!(jobs.len(), 2, "{status}");
+    for (id, socket, data) in [
+        (first, &first_socket, &first_data),
+        (second, &second_socket, &second_data),
+    ] {
+        let job = jobs.iter().find(|job| job["id"] == id).unwrap();
+        assert_eq!(job["state"], "running");
+        assert_eq!(job["cached"], true);
+        assert_eq!(job["image"], image);
+        assert_eq!(fs::read(data.join("profile")).unwrap(), b"seed profile");
+        assert_eq!(
+            fs::read(data.join("linked-profile")).unwrap(),
+            b"linked profile"
+        );
+        let log = wait_for_run_log(&lab.root, id);
+        assert!(log.contains(&format!("--data {}", data.display())), "{log}");
+        assert!(log.contains(&format!("agent={}", socket.display())), "{log}");
+        let profile = lab.root.join("runs").join(id).join("h2.profraw");
+        assert!(log.contains(&format!("pgo={} ", profile.display())), "{log}");
+        let out = ok(&lab.local(&["agent", id, "socket"]));
+        assert_eq!(out.trim_end(), socket.to_str().unwrap());
+    }
+    assert!(first_window.requests.lock().unwrap().is_empty());
+    fs::write(first_data.join("profile"), b"changed").unwrap();
+    fs::write(first_data.join("linked-profile"), b"changed").unwrap();
+    assert_eq!(fs::read(seed.join("profile")).unwrap(), b"seed profile");
+    assert_eq!(
+        fs::read(second_data.join("profile")).unwrap(),
+        b"seed profile"
+    );
+    assert_eq!(fs::read(&linked).unwrap(), b"linked profile");
+    assert_eq!(
+        fs::read(second_data.join("linked-profile")).unwrap(),
+        b"linked profile"
+    );
+    assert_eq!(fs::read_to_string(&lab.cargo_log).unwrap().lines().count(), 1);
+    let busy = err(&lab.local(&args));
+    assert!(
+        busy.contains("busy:") && busy.contains(first) && busy.contains(second),
+        "{busy}"
+    );
+
+    drop(first_window);
+    ok(&lab.local(&["stop", first]));
+    let waited = lab.local(&["wait", first, "--timeout", "10"]);
+    assert_eq!(waited.status.code(), Some(1));
+    assert_eq!(
+        json(&String::from_utf8_lossy(&waited.stdout))["job"]["state"],
+        "stopped"
+    );
+    assert!(!first_socket.exists());
+    assert!(!first_data.exists());
+
+    let status = json(&ok(&lab.local(&["status"])));
+    let jobs = status["jobs_active"].as_array().unwrap();
+    assert_eq!(jobs.len(), 1, "{status}");
+    assert_eq!(jobs[0]["id"], second);
+    assert_eq!(jobs[0]["state"], "running");
+    assert!(second_data.is_dir());
+    let pending = lab.local(&["wait", second, "--timeout", "0.1"]);
+    assert_eq!(pending.status.code(), Some(3));
+    let out = ok(&lab.local(&["agent", second, "socket"]));
+    assert_eq!(out.trim_end(), second_socket.to_str().unwrap());
+
+    ok(&lab.local(&["stop", second]));
+    let waited = lab.local(&["wait", second, "--timeout", "10"]);
+    assert_eq!(waited.status.code(), Some(1));
+    assert_eq!(
+        json(&String::from_utf8_lossy(&waited.stdout))["job"]["state"],
+        "stopped"
+    );
+    assert!(!second_socket.exists());
+    assert!(!second_data.exists());
+}
+
+#[test]
+fn cached_runs_start_during_a_build_but_cache_misses_are_refused() {
+    let lab = Lab::with_host_options("c", &["--max-jobs", "2"]);
+    ok(&lab.local(&["build", "--rev", "HEAD", "--wait"]));
+    let gate = lab.dir.join("cargo.hold");
+    fs::write(&gate, b"").unwrap();
+    let build = json(&ok(&lab.local(&[
+        "build",
+        "--rev",
+        "HEAD",
+        "--build-env",
+        "H2_OPT=2",
+    ])));
+    let builder = build["id"].as_str().unwrap();
+    let started = Instant::now();
+    while fs::read_to_string(&lab.cargo_log).unwrap().lines().count() < 2 {
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "fake cargo did not reach its gate"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    let same_image = ["run", "--rev", "HEAD", "--build-env", "H2_OPT=2", "--serve"];
+    let another_image = ["build", "--rev", "HEAD", "--build-env", "H2_OPT=3"];
+    for args in [same_image.as_slice(), another_image.as_slice()] {
+        let busy = err(&lab.local(args));
+        assert!(
+            busy.contains(&format!("busy: job {builder} is building")),
+            "{busy}"
+        );
+    }
+
+    let cached = json(&ok(&lab.local(&[
+        "run",
+        "--rev",
+        "HEAD",
+        "--level",
+        "ascension",
+        "--serve",
+    ])));
+    let id = cached["id"].as_str().unwrap();
+    assert_eq!(cached["job"]["cached"], true);
+    wait_for_run_log(&lab.root, id);
+    let pending = lab.local(&["wait", builder, "--timeout", "0.1"]);
+    assert_eq!(pending.status.code(), Some(3));
+    assert_eq!(
+        json(&String::from_utf8_lossy(&pending.stdout))["job"]["state"],
+        "building"
+    );
+
+    fs::remove_file(gate).unwrap();
+    let done = json(&ok(&lab.local(&["wait", builder, "--timeout", "10"])));
+    assert_eq!(done["job"]["state"], "done");
+    assert_eq!(fs::read_to_string(&lab.cargo_log).unwrap().lines().count(), 2);
+    ok(&lab.local(&["stop", id]));
+    assert_eq!(
+        lab.local(&["wait", id, "--timeout", "10"]).status.code(),
+        Some(1)
+    );
+}
+
+#[test]
+fn multi_job_current_runs_require_a_ready_image_and_can_use_fresh_data() {
+    let lab = Lab::with_host_options("s", &["--max-jobs", "2"]);
+    let run = json(&ok(&lab.local(&["run", "--current", "--frames", "1"])));
+    let id = run["id"].as_str().unwrap();
+    let waited = lab.local(&["wait", id, "--timeout", "10"]);
+    assert_eq!(waited.status.code(), Some(1));
+    let result = json(&String::from_utf8_lossy(&waited.stdout));
+    assert_eq!(result["job"]["state"], "failed");
+    assert!(
+        result["job"]["error"]
+            .as_str()
+            .unwrap()
+            .contains("requires a current image verified by h2 build --check"),
+        "{result}"
+    );
+    let log = lab.root.join("runs").join(id).join("run.log");
+    assert!(
+        !fs::read_to_string(log)
+            .unwrap_or_default()
+            .contains("fake play")
+    );
+    let out = lab.dir.join("current-image");
+    assert!(!out.exists());
+    assert!(!lab.cargo_log.exists());
+
+    fs::create_dir(&out).unwrap();
+    fs::write(out.join("libh2game.dylib"), b"image").unwrap();
+    fs::write(lab.root.join("data/profile"), b"seed data").unwrap();
+    let run = json(&ok(&lab.local(&[
+        "run",
+        "--current",
+        "--serve",
+        "--fresh-data",
+    ])));
+    let id = run["id"].as_str().unwrap();
+    wait_for_run_log(&lab.root, id);
+    let data = lab.root.join("scratch").join(id).join("data");
+    assert!(fs::read_dir(data).unwrap().next().is_none());
+    ok(&lab.local(&["stop", id]));
+    assert_eq!(
+        lab.local(&["wait", id, "--timeout", "10"]).status.code(),
+        Some(1)
+    );
 }
 
 #[test]
@@ -867,16 +1145,7 @@ fn lab_agent_forwards_calls_to_a_serve_runs_game_and_returns_exit_codes() {
     let id = v["id"].as_str().unwrap().to_string();
     let (sock, _listener) = open_agent_socket(&lab.root, &id);
     // The game got the same path in H2_AGENT; no frame limit was set.
-    let t = Instant::now();
-    let log = lab.root.join("runs").join(&id).join("run.log");
-    while !fs::read_to_string(&log)
-        .unwrap_or_default()
-        .contains("agent=")
-    {
-        assert!(t.elapsed() < Duration::from_secs(10), "no run.log");
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    let text = fs::read_to_string(&log).unwrap();
+    let text = wait_for_run_log(&lab.root, &id);
     assert!(
         text.contains(&format!("agent={}", sock.display())),
         "{text}"

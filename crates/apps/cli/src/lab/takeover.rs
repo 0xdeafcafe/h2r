@@ -46,6 +46,7 @@ pub(super) struct Gate {
     current_h2: PathBuf,
     declined_until_file: PathBuf,
     declined_until: Mutex<u64>,
+    prompt: Mutex<()>,
 }
 
 impl Gate {
@@ -61,6 +62,7 @@ impl Gate {
             current_h2: current_h2.to_owned(),
             declined_until_file,
             declined_until: Mutex::new(declined_until),
+            prompt: Mutex::new(()),
         }
     }
 
@@ -69,7 +71,19 @@ impl Gate {
         mut request: takeover::Request,
         phase: impl Fn(&str),
         stopped: impl Fn() -> bool,
+        owns_game: impl Fn(Option<&Path>, Option<u32>) -> bool,
     ) -> Outcome {
+        // The game shows one prompt at a time. A queued job can still stop.
+        let _prompt = loop {
+            if stopped() {
+                return Outcome::Stopped;
+            }
+            match self.prompt.try_lock() {
+                Ok(guard) => break guard,
+                Err(std::sync::TryLockError::WouldBlock) => std::thread::sleep(POLL_INTERVAL),
+                Err(std::sync::TryLockError::Poisoned(error)) => break error.into_inner(),
+            }
+        };
         let timeout = Duration::from_secs(self.config.timeout_seconds.into());
         // Multiple windows may need consent. Bound the whole handoff even
         // if the player opens a different window after agreeing.
@@ -78,7 +92,7 @@ impl Gate {
             if stopped() {
                 return Outcome::Stopped;
             }
-            let games = match self.windows() {
+            let games = match self.windows(&owns_game) {
                 Ok(games) => games,
                 Err(error) => {
                     eprintln!("lab: checking for game windows: {error:#}");
@@ -128,7 +142,7 @@ impl Gate {
                 if stopped() {
                     return Outcome::Stopped;
                 }
-                match self.windows() {
+                match self.windows(&owns_game) {
                     Ok(games) if !games.iter().any(|candidate| game.same_as(candidate)) => break,
                     Ok(_) => {}
                     Err(error) => {
@@ -163,7 +177,10 @@ impl Gate {
         }
     }
 
-    fn windows(&self) -> Result<Vec<Game>> {
+    fn windows(
+        &self,
+        owns_game: &impl Fn(Option<&Path>, Option<u32>) -> bool,
+    ) -> Result<Vec<Game>> {
         let agents = discover::dir();
         let mut games = Vec::new();
         let mut known = BTreeSet::new();
@@ -185,13 +202,19 @@ impl Gate {
                 }
             };
             for path in paths {
+                let published_pid = published.then(|| discover::pid_of(&path)).flatten();
+                if owns_game(Some(&path), published_pid) {
+                    continue;
+                }
                 let remaining = deadline.saturating_duration_since(Instant::now());
                 ensure!(!remaining.is_zero(), "game agents did not answer in time");
-                let published_pid = published.then(|| discover::pid_of(&path)).flatten();
                 match probe(&path, remaining.min(discover::PROBE_TIMEOUT)) {
                     Probe::Active(info) => {
                         let pid = info.pid.or(published_pid);
-                        if pid.is_none_or(|pid| known.insert(pid)) && info.window {
+                        if !owns_game(Some(&path), pid)
+                            && pid.is_none_or(|pid| known.insert(pid))
+                            && info.window
+                        {
                             games.push(Game {
                                 socket: Some(path),
                                 pid,
@@ -219,6 +242,7 @@ impl Gate {
         // with the agent switched off. A known headless process is harmless.
         for (pid, kind) in processes {
             if kind == Process::Windowed
+                && !owns_game(None, Some(pid))
                 && !known.contains(&pid)
                 && !games.iter().any(|game| game.pid == Some(pid))
             {

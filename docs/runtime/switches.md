@@ -81,6 +81,7 @@ the final result through that directory.
 | `H2_STUDIO` | Editor agent socket path when `--socket` is absent (`crates/apps/studio-proto/src/lib.rs`, [editor API](../editor/agent-api.md)). |
 | `H2_FFMPEG` | Selects the local ffmpeg executable for movie conversion (`crates/formats/movies/src/install.rs`). |
 | `H2_LAB_HOST`, `H2_LAB_SOCKET` | default driving target and local lab socket ([lab.md](lab.md)) |
+| `h2 lab host [install] --max-jobs N` | active job cap, default 1 ([lab.md](lab.md#host-files-and-flags)) |
 | `h2 lab host [install] --takeover-timeout SECONDS` | player consent answer timeout, 1 to 3600 seconds, default 60 ([Player consent](lab.md#player-consent-before-a-job)) |
 | `h2 lab host [install] --takeover-cooldown SECONDS` | delay after a decline before asking again, default 1800 seconds, 0 lets every job ask ([Player consent](lab.md#player-consent-before-a-job)) |
 | `lab-takeover`, `lab-takeover-dialog` | the windowed game's consent driver and dialog. Turning either off makes consent unavailable while the game window is open ([Player consent](lab.md#player-consent-before-a-job)) |
