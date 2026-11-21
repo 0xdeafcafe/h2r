@@ -1453,6 +1453,8 @@ studio crate only draws them and turns input into actions.
     `app/tag_browse.rs` (browsing other maps, previews),
     `app/tag_tree.rs` (search and the tree), `app/tag_bundle.rs` (export
     and import), `app/shared_refs.rs` (where tags live) ([Tags](#tags)).
+  - `app/scripts.rs`, `ui/scripts.rs`, `api/scripts.rs`: the Scripts tab
+    of the Map tool, read only ([rich-editors.md](rich-editors.md#scripts)).
   - `app/convert.rs`: Convert to Halo 2 (the background build of a new
     map and its plain-words errors). `app/editing.rs`: multi-selection
     delete and duplicate, placing at the cursor, framing the selection.
@@ -1495,7 +1497,8 @@ last. The flags that set the scene up:
 | `--select <block>:<index>` | select a placement (`vehicles:0`, `netgameequipment:3`) |
 | `--focus` | frame the camera on the selection (F) |
 | `--camera <yaw>,<pitch>,<distance>` | orbit the camera (degrees, world units), after `--focus` |
-| `--tool scenario\|variants\|playlists\|ui-screens\|hud` | show that tool (`scenario` selects Map) |
+| `--tool scenario\|scripts\|variants\|playlists\|ui-screens\|hud` | show that tool (`scenario` selects Map; `scripts` its Scripts tab) |
+| `--hs-doc <file>` | name builtins in the Scripts tab from this script documentation listing ([rich-editors.md](rich-editors.md#scripts)) |
 | `--hud-map <map>`, `--hud-package <key>` | open a map of the source (or a package) in the HUD tool |
 | `--hud <nhdt>` | show that HUD (its full name, or its last part: `masterchief`) |
 | `--hud-widget <name>` | select that widget |

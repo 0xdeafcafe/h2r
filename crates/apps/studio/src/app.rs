@@ -17,6 +17,7 @@ mod navigation;
 pub mod map_cards;
 pub mod map_pack;
 pub mod modeling;
+pub mod scripts;
 pub mod shared_refs;
 pub mod tag_api;
 pub mod tag_browse;
@@ -32,6 +33,7 @@ pub use convert::{
 pub use h1convert::convert::Sandbox as ConvertSandbox;
 pub use library::{Compare, block_of, kind_of, markers as library_markers, tris as library_tris};
 pub use hud::HudTool;
+pub use scripts::{ScriptAction, ScriptsTool};
 pub use navigation::{NavAction, NavHistory, NavLocation};
 pub use tag_doc::{BlockOp, TagAction, TagDoc, TagWrite};
 pub use ui_screens::{Pick, UiScreens};
@@ -61,12 +63,16 @@ pub enum ToolKind {
     Hud,
     /// Every field of every tag of the open map (docs/editor/editor.md).
     Tags,
+    /// The open map's scripts as source, read only
+    /// (docs/editor/rich-editors.md, "Scripts").
+    Scripts,
 }
 
 impl ToolKind {
-    pub const ALL: [ToolKind; 6] = [
+    pub const ALL: [ToolKind; 7] = [
         ToolKind::Scenario,
         ToolKind::Tags,
+        ToolKind::Scripts,
         ToolKind::Variants,
         ToolKind::Playlists,
         ToolKind::UiScreens,
@@ -80,6 +86,7 @@ impl ToolKind {
             ToolKind::UiScreens => "UI Screens",
             ToolKind::Hud => "HUD",
             ToolKind::Tags => "Tags",
+            ToolKind::Scripts => "Scripts",
         }
     }
 }
@@ -329,6 +336,11 @@ pub enum Action {
         options: tag_bundle::ImportOptions,
     },
 
+    // Scripts.
+    /// A Scripts tool command: show a definition, follow a link, name
+    /// builtins from a documentation listing.
+    Script(ScriptAction),
+
     // Playlists.
     /// Open a `multiplayer_hopper.dat` (either form).
     OpenHopper(PathBuf),
@@ -492,6 +504,8 @@ pub struct App {
     pub ui_screens: UiScreens,
     /// The HUD tool.
     pub hud: HudTool,
+    /// The Scripts tool: the open map's scripts, read.
+    pub scripts: ScriptsTool,
     /// Pairing with a running game: what the agent API asks of it and what
     /// it publishes back (`crate::play::pair`).
     pub pairing: crate::play::pair::Bridge,
@@ -569,6 +583,7 @@ impl App {
             convert_sandbox: ConvertSandbox::Halo2,
             ui_screens: UiScreens::default(),
             hud: HudTool::default(),
+            scripts: ScriptsTool::default(),
             pairing: Default::default(),
             tags: TagDoc::default(),
             modeling: Default::default(),
@@ -651,7 +666,7 @@ impl App {
             ToolKind::Hud => self.hud.is_dirty(),
             // The tag editor's edits are the map's: the scenario session
             // saves them and its dirty mark counts them.
-            ToolKind::UiScreens | ToolKind::Tags => false,
+            ToolKind::UiScreens | ToolKind::Tags | ToolKind::Scripts => false,
         }
     }
     /// The action waiting on the unsaved-changes prompt, if any.
@@ -678,6 +693,7 @@ impl App {
             ToolKind::UiScreens => false,
             ToolKind::Hud => self.hud.session.as_ref().is_some_and(|s| s.can_undo()),
             ToolKind::Tags => self.tags.can_undo(),
+            ToolKind::Scripts => false,
         }
     }
     pub fn can_redo(&self) -> bool {
@@ -691,6 +707,7 @@ impl App {
             ToolKind::UiScreens => false,
             ToolKind::Hud => self.hud.session.as_ref().is_some_and(|s| s.can_redo()),
             ToolKind::Tags => self.tags.can_redo(),
+            ToolKind::Scripts => false,
         }
     }
     pub fn fly_speed(&self) -> f32 {
@@ -739,6 +756,7 @@ impl App {
                 format!("{} / {hud}", s.name)
             }),
             ToolKind::Tags => self.shown_map_name().map(str::to_owned),
+            ToolKind::Scripts => self.loaded.clone(),
         };
         // A browsed map is never dirty: the open map's mark is its own.
         let dirty = self.tool_dirty(self.tool)
@@ -814,14 +832,14 @@ impl App {
                 ToolKind::Variants => self.run(Action::SaveVariant),
                 ToolKind::Playlists => self.run(Action::SaveHopper),
                 ToolKind::Hud => self.error("save the HUD edits with Save as..."),
-                ToolKind::UiScreens | ToolKind::Tags => {}
+                ToolKind::UiScreens | ToolKind::Tags | ToolKind::Scripts => {}
             },
             Answer::SaveAs(path) => match tool {
                 ToolKind::Scenario => self.run(Action::SaveMapAs(path)),
                 ToolKind::Playlists => self.run(Action::SaveHopperAs(path)),
                 ToolKind::Variants => self.run(Action::SaveVariant),
                 ToolKind::Hud => self.run(Action::HudSaveAs(path)),
-                ToolKind::UiScreens | ToolKind::Tags => {}
+                ToolKind::UiScreens | ToolKind::Tags | ToolKind::Scripts => {}
             },
         }
         if self.tool_dirty(tool) {
@@ -848,7 +866,7 @@ impl App {
             }
             ToolKind::Playlists => self.hoppers.close(),
             ToolKind::Hud => self.hud = HudTool::default(),
-            ToolKind::UiScreens | ToolKind::Tags => {}
+            ToolKind::UiScreens | ToolKind::Tags | ToolKind::Scripts => {}
         }
     }
 
@@ -1097,6 +1115,7 @@ impl App {
             }
             Action::HudRefused(why) => self.error(why),
             Action::Tag(a) => self.run_tag(a),
+            Action::Script(a) => self.run_script(a),
             Action::InspectorTag(action) => {
                 self.sync_tags();
                 self.run_map_tag(action);
@@ -1207,7 +1226,7 @@ impl App {
                     self.hoppers.redo()
                 }
             }
-            ToolKind::UiScreens => false,
+            ToolKind::UiScreens | ToolKind::Scripts => false,
             ToolKind::Hud => self.hud_undo_redo(undo),
             ToolKind::Tags => {
                 self.sync_tags();
@@ -1243,6 +1262,7 @@ impl App {
             ToolKind::UiScreens => self.sync_ui_disc(),
             ToolKind::Hud => {}
             ToolKind::Tags => self.sync_tags(),
+            ToolKind::Scripts => self.sync_scripts(),
         }
     }
 
@@ -1581,6 +1601,7 @@ impl App {
                     ToolKind::UiScreens => self.sync_ui_disc(),
                     ToolKind::Scenario | ToolKind::Hud => {}
                     ToolKind::Tags => self.sync_tags(),
+                    ToolKind::Scripts => self.sync_scripts(),
                 }
             }
             Err(e) => self.error(format!("{}: {e:#}", path.display())),

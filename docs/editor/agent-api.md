@@ -118,7 +118,9 @@ construction.
 A `doc` param names one: `map` (the scenario tool's map), `tags` (the
 Tags tool's edits to the same map: their own undo stack; they save and
 diff with the map), `variant`, `playlists`, `ui`, `hud` (the HUD tool's
-map: its widget edits, with their own undo stack and save). Without one, a `doc.*` call means the tool shown.
+map: its widget edits, with their own undo stack and save), `scripts`
+(the Scripts tool's view of the open map: read only, never dirty;
+`doc.save` and `doc.save_as` refuse it). Without one, a `doc.*` call means the tool shown.
 `doc.list` says, for each, whether it is open, its name, dirty, and
 whether it can undo and redo.
 
@@ -187,6 +189,7 @@ before anything runs (`INVALID_PARAMS`). Indices are 0-based throughout
 | `pair` | `list`, `status`, `connect {socket?}`, `disconnect {leave?}`, `auto {enabled?}`, `play`, `stop`, `control {action, ticks?}`, `edit {enabled}` |
 | `mirror` | `status`, `objects {kind?, near?, limit?, at_tick?}`, `pick {from? \| ray?}`, `aim_select {enabled?}`, `camera {mode?, target?}`, `player {to, facing?}`, `pending`, `apply {what, at?, peers?}` |
 | `view` | `camera {yaw, pitch, distance, target, focus, all, fly_speed}`, `snapshot {out, size, camera}`, `stats`, `layers {set?, preset?, xray?}` |
+| `script` | `list {filter?}`, `source {name?}`, `follow {name?, link}`, `uses {kind, name}`, `builtins {filter?, unnamed?}`, `doc {path}` ([rich-editors.md](rich-editors.md#scripts)) |
 | `hud` | `list {map \| package}`, `read {hud, state}`, `set {hud, widget, field, value, merge}`, `move {hud, widget, x, y, mode, merge}`, `render {hud, state, out}`, `check {hud, state}`, `save_as {path}` |
 | `geometry` | `list {model?}`, `open {target}`, `close {target?}`, `read {target?}`, `check {target?}` |
 | `mesh` | `mode {mode}`, `select {ids, op \| all \| none \| invert}`, `transform {translate \| matrix, pivot?, merge?}`, `ops`, `apply {ops}`; each with `target?` |
@@ -198,6 +201,22 @@ before anything runs (`INVALID_PARAMS`). Indices are 0-based throughout
 
 Notes on some:
 
+- **Scripts.** Every `script.*` call reads the open map's script tables
+  with the source's `default.xbe`; without a map it is `NO_DOCUMENT`,
+  and without the executable it is `REFUSED` with the tool's sentence
+  and the paths it looked at. `script.source` shows the definition in
+  the Inspector and gives each link's byte span in `source`, its kind
+  (`script`, `global`, `object`, `volume`, `tag`), its `target` now
+  (`{script}`, `{global}`, `{block, index}`, `{volume}`, `{tag}`) or
+  `null` and `why`. `script.follow` does what a click on the link does
+  and is `REFUSED` with the same `why` for a link that goes nowhere.
+  `script.uses {kind: "recording"}` is `REFUSED` until recordings are
+  read. `script.builtins` gives each builtin's `name` and `from` (`map`,
+  `doc` or `null`), its `label` (the name or `#builtin:<index>`) and its
+  call form. `script.doc {path}` names builtins from the user's script
+  documentation listing, read from that path now and not stored
+  (`null` drops it); its `doc` says how many entries read, agreed with
+  the map's names, disagreed and named.
 - **Tags.** A `tag` param is an id (`"0xe1230045"` or a number), a full
   name, `name.group`, or a group alone when the map has one tag of it
   (`"scnr"`, `"matg"`).
@@ -640,6 +659,10 @@ the window and the API stay one path.
   `Action::BrowseTags`, `Action::TagExport` and `Action::TagImport`.
   `api/tags.rs` registers `TagGraph` for `tag.tree` and `tag.refs`.
   The tree and `tag.follow` share the reference reader with `tag.refs`.
+- **Scripts (rich editors H1).** `api/scripts.rs` registers `Scripts`
+  for `script.*`, over `app/scripts.rs`'s `Loaded`; `script.source`,
+  `script.follow` and `script.doc` are `Action::Script` through
+  `App::perform`.
 - **HUDs (studio-hud, landed).** `api/hud.rs`: `hud.list` opens a map of
   the source (or a package) in the HUD tool and lists its `nhdt` tags
   and who names them; `hud.read` shows one and gives its widgets
@@ -768,8 +791,8 @@ identical profiles.
   `Api::pump` (the window's between-frames answer).
 - `api/server.rs`: the socket. `api/{docs,scenario,tags,variants,playlists,ui_screens,view}.rs`:
   the namespaces (`volume.*` is in `api/scenario.rs`, `collision.*` in `api/collision.rs`). `api/seams.rs`: providers; `api/tag_fields.rs`,
-  `api/tag_io.rs`, `api/sound.rs` and `api/hud.rs` the Tags, sound and
-  HUD tools', `api/geometry.rs` the Modeling tool's.
+  `api/tag_io.rs`, `api/sound.rs`, `api/hud.rs` and `api/scripts.rs` the Tags,
+  sound, HUD and Scripts tools', `api/geometry.rs` the Modeling tool's.
 - `app/commands.rs`: the actions added for the API and the window
   (`SetField`, `EditSelection`, `MovePlacement`, `EditPlaylist`,
   `UndoIn`), `PlaylistEdit`, and `App::perform`. The viewport gizmo

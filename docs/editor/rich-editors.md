@@ -1,7 +1,7 @@
 # Rich editors: shaders, colours, curves, scripts, sounds and recordings
 
-Status: Design, except "Data that changes length" and sound audition, which are built; each section names the format code it stands on and the gaps in it.
-Code: `crates/apps/studio/src/fields.rs` (the panel the rich views join), `crates/apps/studio/src/app/tag_doc.rs` (`TagDoc`, the only write path), `crates/formats/tags/src/shader.rs`, `crates/formats/tags/src/effects/function.rs`, `crates/formats/hs/src/source.rs`, `crates/tools/h1campaign/src/recordings.rs`, `crates/formats/tags/src/sound.rs`, `crates/apps/studio/src/app/audition.rs`. Tests: `app/tag_data_tests.rs` (X2), `app/audition_tests.rs` and `api/sound/tests.rs` (A1); each other slice names its own.
+Status: Design, except "Data that changes length", sound audition (A1) and Scripts, read (H1), which are built; each section names the format code it stands on and the gaps in it.
+Code: `crates/apps/studio/src/fields.rs` (the panel the rich views join), `crates/apps/studio/src/app/tag_doc.rs` (`TagDoc`, the only write path), `crates/formats/tags/src/shader.rs`, `crates/formats/tags/src/effects/function.rs`, `crates/formats/hs/src/source.rs`, `crates/formats/hs/src/script_doc.rs`, `crates/apps/studio/src/app/scripts.rs`, `crates/apps/studio/src/ui/scripts.rs`, `crates/apps/studio/src/api/scripts.rs`, `crates/tools/h1campaign/src/recordings.rs`, `crates/formats/tags/src/sound.rs`, `crates/apps/studio/src/app/audition.rs`. Tests: `app/tag_data_tests.rs` (X2), `app/audition_tests.rs` and `api/sound/tests.rs` (A1), `app::scripts::tests`, `hs::script_doc::tests` and `hs::source::each_tests` (H1); each other slice names its own.
 Switch: none.
 
 A rich editor shows a tag, or part of one, as the thing it is: a material
@@ -266,24 +266,74 @@ and stays a viewer with a working preview.
 
 ### Scripts
 
-**What the user does.** With a map open, a **Scripts** tool tab lists the
-scenario's scripts (name, kind, return type) and globals, with a search
-over names and source. Selecting a script shows its source, decompiled.
-Names in the source are links: an object name selects the placement in
-Scene, a tag reference opens the tag, a script or global jumps to its
-definition. **Edit** makes the text editable; **Compile** checks it and
-lists errors with line, column and a sentence; a clean compile is one
-undo step in the scenario document.
+**What the user does.** With a map open, the Map tool's **Scripts** tab
+lists the scenario's globals (name, type) and scripts (name, kind,
+return type), with a search over names and source, and counts the free
+node slots against `hs::RETAIL_NODES`. Selecting one shows its source,
+decompiled, in the Inspector, with the definitions that use it under
+**Used by**. Names in the source are links: an object name selects its
+placement in Scene, a trigger volume name selects the volume, a tag the
+scripts reference opens in Tags, and a script or global shows its
+definition. A link that goes nowhere (no object of that name, two
+volumes with one name) is drawn in the warning colour and its tooltip
+says why; clicking it logs the same sentence. **Builtins** lists every
+builtin of the executable as its call form, `(name <short> <object>)`,
+with where the name comes from (below); an unnamed one is
+`(#builtin:<index> ...)`. **Script documentation** picks the listing
+builtin names may come from, with a file dialog, and says what it
+named. **Edit** and **Compile** (slice H3) are not built: the tab is read
+only.
 
 **The data.** `crates/formats/hs`: `Scenario::read` decodes the node
 table, string data, scripts, globals and tag references (`wire::Node`,
 `Script`, `Global`, `Reference`, each with `decode` and `encode`);
-`Scenario::decompile` prints Lisp-style source; `Catalog::from_xbe` reads
-the builtin table and value types from the game's executable;
+`Scenario::decompile` prints Lisp-style source and
+`Scenario::decompile_each` prints each global and script alone with the
+byte span of every atom and call name (`Token`); `Catalog::from_xbe`
+reads the builtin table and value types from the game's executable;
 `cast::castable` and `Scenario::validate` hold the type rules
 ([haloscript.md](../formats/haloscript.md)). The source is a
 reconstruction: comments, layout and the original file split are not in
 the map.
+
+**Where the tab reads from** (`app/scripts.rs`, `Loaded::read`). The
+tables come from the map the scenario session has open; they are read
+when the tab is first drawn for a map, or when an API call or **Scripts**
+needs them. The executable is the source's own `default.xbe`
+(`editor_core::MapSource::executable`): the root of a disc image, or for
+a folder of maps or a loose map the file beside it, then the one in the
+folder above (an extracted disc's `maps`), in any case. It is read at
+run time and never copied or committed. Without it the tab shows
+`Scripts need the game's executable to name functions and types.`
+followed by every place it looked, and nothing else; an executable that
+is not the supported one is refused in the same sentence.
+
+**Links** (`classify`, `Loaded::resolve`). A call's name is a script
+link when the call is a script call. A global atom names a scenario
+global (external globals are not links). A symbol literal of an object
+name type (`object_name` to `scenery_name`) is an object link, resolved
+by its text through the scenario's object names block
+(`scenario_edit::Names::name`) to the placement block whose object type
+the name holds. A symbol of the executable's `trigger_volume` type is a
+volume link, resolved by name among the trigger volumes. A symbol whose
+value is the id of a tag in the scripts' tag references is a tag link.
+Links are resolved against the session's scenario as it is now, so a
+removed placement shows as a link that goes nowhere. Other scenario
+names (AI, cutscene flags and camera points, starting profiles) are not
+links.
+
+**Builtin names** (`hs::Naming`). A builtin is named by the calls in
+the open map's scripts (`Catalog::observe`). For the others, the user
+may point the tab at a script documentation listing: the `hs_doc` text
+of the retail editing kit for Halo 2 on MCC, read from the user's own
+copy each time it is chosen or the map opens, never stored, logged or
+committed. An entry names a builtin only when the builtin's return type
+and parameter types, in order, are the entry's, and the pairing is
+unambiguous ([haloscript.md](../formats/haloscript.md), "Builtin names
+from a documentation listing"). Every other builtin stays
+`#builtin:<index>`; nothing guesses a name. The listing is chosen with
+**Choose...**, `h2-editor --hs-doc <file>` or `script.doc`. Projects
+built from leaked builds are not a source for any name.
 
 **What the compiler needs.** `hs::compile` (new) does not exist;
 `source::source_counts` only tokenises. It needs:
@@ -291,12 +341,12 @@ the map.
 | Need | Have | Gap |
 |---|---|---|
 | A parser for the decompiler's own output | the tokeniser | the tree builder, with positions for messages |
-| Function name to builtin index, with parameter and return types | `Catalog`: types and addresses for every builtin; names only for those some scenario calls (`Catalog::observe`), plus `h1campaign::scripts::identified` | a builtin no map names cannot be called by name. It is callable as `(#builtin:<index> ...)` and listed as such; nothing guesses a name |
+| Function name to builtin index, with parameter and return types | `Catalog`: types and addresses for every builtin; names for those some scenario calls (`Catalog::observe`), plus `h1campaign::scripts::identified`, plus those a documentation listing names by signature (`hs::Naming`) | a builtin nothing names cannot be called by name. It is callable as `(#builtin:<index> ...)` and listed as such; nothing guesses a name |
 | External global name to index | `Catalog::external_global_types` (types only) | names only as observed in scenarios, as for builtins |
 | Type checking and casts | `cast::castable`, the VM's `HsType` | inference of each node's type from its parent, as the engine's compiler does (**S**: the retail node types of every disc script are the check, below) |
 | Literal to node data, per value type | numbers, booleans, strings; script and global references; tag references through `script_tag_references` | names of scenario things (object names, trigger volumes, cutscene flags and camera points, starting profiles, AI) resolve through scenario blocks, and the AI blocks have no reader ([scenario-editor.md](scenario-editor.md) §6). A name the compiler cannot resolve from a block resolves only if this map's scripts already use it (the pair of type and token is harvested from the existing nodes); otherwise it is an error naming the type |
 | Node salts and links | `wire::Datum`, `Scenario::validate_graph` | the allocator: free slots first, then new slots |
-| The executable | `Catalog::from_xbe` | the editor does not open `default.xbe`; the Scripts tool reads it from the source's disc folder and refuses without it: `Scripts need the game's executable to name functions and types.` |
+| The executable | `Catalog::from_xbe`; the Scripts tab reads `default.xbe` from the source (`MapSource::executable`) and refuses without it | nothing |
 
 The compiler's acceptance is a round trip: for every script,
 `compile(decompile(s))` gives nodes equal to the source's in opcode,
@@ -506,9 +556,12 @@ already a planned namespace there, so poses use `anim.*`.
 | `shader.preview` | `{tag, shape?, object?, time?, size?}` | `{png, passes_drawn, refusals}` |
 | `shader.code` | `{tag, pass}` | `{vertex: {listing, wgsl, warnings}, pixel: {listing, wgsl, warnings}}` |
 | `script.list` | `{filter?}` | `{scripts: [{name, kind, type, nodes}], globals, free_nodes, node_limit}` |
-| `script.source` | `{name?}` | `{source, links: [{span, kind, target}]}` |
+| `script.source` | `{name?}` | `{name, item, kind, type, source, links: [{span, kind, name, target, why?}]}` |
+| `script.follow` | `{name?, link}` | `{kind, name, target, tool, log}`: what a click on the link does |
 | `script.compile` | `{name, source, apply?}` | `{ok, errors: [{line, column, text}], nodes, new_strings, grows}`; with `apply`, one undo step |
-| `script.uses` | `{kind, name}` | the scripts that use an object name, volume, recording or tag |
+| `script.uses` | `{kind, name}` | `{uses: [{name, item, count}]}`: the definitions that name a script, global, object name, volume or tag; `recording` is refused until slice K1 |
+| `script.builtins` | `{filter?, unnamed?}` | `{builtins: [{index, name, label, from, returns, parameters, own_arguments, call, usage}], named_by_map, named_by_doc, unnamed, doc}` |
+| `script.doc` | `{path}` | `{path, doc, log}`: names builtins from the listing at `path` (`null`: none) |
 | `sound.read` | `{tag, range?, permutation?, bins?}` | the header, every pitch range's permutations `{encoded_bytes, chunks}`, for one permutation `{channels, rate, frames, duration_ms, peaks}` or its `refusal`, and `playback`; slice A2 adds `mouth` |
 | `sound.play` | `{tag, range?, permutation?, from_ms?}` | `{playing, frames, rate, channels, duration_ms, from_ms, output}`; `output` is `headless` when `Audition::headless` is set (tests, the API's own examples), which plays to nothing in real time |
 | `sound.stop` | `{}` | `{stopped}` |
@@ -564,8 +617,11 @@ uses the built `render.dump`, `render.reload` and `render.overrides`.
   the disc are never committed, logged or used as fixtures.
 - Names for fields, builtins and parameters come from the engine, the
   disc or the permitted retail reference
-  ([notes/tag-field-names.md](notes/tag-field-names.md)). Projects built
-  from leaked builds are not a source for anything.
+  ([notes/tag-field-names.md](notes/tag-field-names.md)). A builtin's
+  name may also come from the retail editing kit's script documentation,
+  read from the user's copy at run time and accepted only where the
+  signature matches. Projects built from leaked builds are not a source
+  for anything.
 
 ## Slices
 

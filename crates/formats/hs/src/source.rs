@@ -4,6 +4,34 @@ use std::fmt::Write;
 
 pub const MAX_SOURCE_BYTES: usize = 64 * 1024 * 1024;
 
+/// One definition of a scenario: a global or a script, by its index in
+/// its table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum Item {
+    Global(usize),
+    Script(usize),
+}
+
+/// Where one node is in rendered source: an atom, or the function-name
+/// position of a call (`head`, with the call node's datum). Byte offsets
+/// into the source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Token {
+    pub start: usize,
+    pub end: usize,
+    pub datum: Datum,
+    pub head: bool,
+}
+
+/// One definition's source and the place of each node in it.
+#[derive(Debug, Clone)]
+pub struct ItemSource {
+    pub item: Item,
+    pub name: String,
+    pub source: String,
+    pub tokens: Vec<Token>,
+}
+
 #[derive(Debug, Clone)]
 pub struct Decompiled {
     pub source: String,
@@ -33,34 +61,16 @@ impl Scenario {
         } else {
             self.scripts.iter().collect()
         };
-        let mut out = Renderer {
-            scenario: self,
-            source: Output::new(bytes.min(MAX_SOURCE_BYTES)),
-            emitted: 0,
-            seen: BTreeSet::new(),
-            budget: self.nodes.len().saturating_mul(16).max(1024),
-        };
+        let mut out = self.renderer(bytes);
         if script.is_none() {
             for g in &self.globals {
-                out.source.push(&format!(
-                    "(global {} {}\n",
-                    symbol(catalog.type_name(g.value_type)?),
-                    symbol(g.name()?)
-                ))?;
+                out.source.push(&global_header(catalog, g)?)?;
                 out.expression(g.root)?;
                 out.source.push(")\n\n")?;
             }
         }
         for s in selected {
-            out.source.push(&format!(
-                "(script {}",
-                symbol(&catalog.script_kinds[s.kind as usize])
-            ))?;
-            if matches!(s.kind, 3 | 4) {
-                out.source
-                    .push(&format!(" {}", symbol(catalog.type_name(s.return_type)?)))?;
-            }
-            out.source.push(&format!(" {}\n", symbol(s.name()?)))?;
+            out.source.push(&script_header(catalog, s)?)?;
             out.expression(s.root)?;
             out.source.push(")\n\n")?;
         }
@@ -70,6 +80,71 @@ impl Scenario {
             unique_nodes: out.seen.len(),
         })
     }
+
+    /// Every global, then every script, each as its own source with the
+    /// place of every atom and call name in it. One validation for all.
+    pub fn decompile_each(&self, catalog: &Catalog) -> Result<Vec<ItemSource>> {
+        self.validate(catalog)?;
+        let items = (0..self.globals.len())
+            .map(Item::Global)
+            .chain((0..self.scripts.len()).map(Item::Script));
+        items
+            .map(|item| {
+                let mut out = self.renderer(MAX_SOURCE_BYTES);
+                let (header, root, name) = match item {
+                    Item::Global(i) => {
+                        let g = &self.globals[i];
+                        (global_header(catalog, g)?, g.root, g.name()?)
+                    }
+                    Item::Script(i) => {
+                        let s = &self.scripts[i];
+                        (script_header(catalog, s)?, s.root, s.name()?)
+                    }
+                };
+                out.source.push(&header)?;
+                out.expression(root)?;
+                out.source.push(")\n")?;
+                Ok(ItemSource {
+                    item,
+                    name: name.to_owned(),
+                    source: out.source.text,
+                    tokens: out.tokens,
+                })
+            })
+            .collect()
+    }
+
+    fn renderer(&self, bytes: usize) -> Renderer<'_> {
+        Renderer {
+            scenario: self,
+            source: Output::new(bytes.min(MAX_SOURCE_BYTES)),
+            emitted: 0,
+            seen: BTreeSet::new(),
+            budget: self.nodes.len().saturating_mul(16).max(1024),
+            tokens: Vec::new(),
+        }
+    }
+}
+
+fn global_header(catalog: &Catalog, g: &crate::Global) -> Result<String> {
+    Ok(format!(
+        "(global {} {}\n",
+        symbol(catalog.type_name(g.value_type)?),
+        symbol(g.name()?)
+    ))
+}
+
+fn script_header(catalog: &Catalog, s: &crate::Script) -> Result<String> {
+    let kind = catalog
+        .script_kinds
+        .get(s.kind as usize)
+        .ok_or_else(|| invalid("invalid script kind"))?;
+    let mut header = format!("(script {}", symbol(kind));
+    if matches!(s.kind, 3 | 4) {
+        header.push_str(&format!(" {}", symbol(catalog.type_name(s.return_type)?)));
+    }
+    header.push_str(&format!(" {}\n", symbol(s.name()?)));
+    Ok(header)
 }
 struct Output {
     text: String,
@@ -96,6 +171,7 @@ struct Renderer<'a> {
     emitted: usize,
     seen: BTreeSet<Datum>,
     budget: usize,
+    tokens: Vec<Token>,
 }
 enum Event {
     Expression(Datum, usize),
@@ -103,6 +179,14 @@ enum Event {
     Close,
 }
 impl Renderer<'_> {
+    fn mark(&mut self, start: usize, datum: Datum, head: bool) {
+        self.tokens.push(Token {
+            start,
+            end: self.source.text.len(),
+            datum,
+            head,
+        });
+    }
     fn count(&mut self, datum: Datum) -> Result<()> {
         self.emitted += 1;
         if self.emitted > self.budget {
@@ -137,14 +221,18 @@ impl Renderer<'_> {
                     self.count(datum)?;
                     let n = *self.scenario.node(datum)?;
                     if n.atom() {
+                        let start = self.source.text.len();
                         self.source.push(&self.atom(datum)?)?;
+                        self.mark(start, datum, false);
                     } else {
                         let head_datum = Datum(n.data);
                         let head = *self.scenario.node(head_datum)?;
                         self.count(head_datum)?;
                         self.source.push("(")?;
+                        let start = self.source.text.len();
                         self.source
                             .push(&symbol(self.scenario.string(head.string_offset)?))?;
+                        self.mark(start, datum, true);
                         stack.push(Event::Close);
                         stack.push(Event::Arguments(head.next, depth + 1));
                     }
@@ -359,5 +447,76 @@ mod budget_tests {
         out.push(")").unwrap();
         assert_eq!(out.text.len(), 4);
         assert!(out.push("\n").is_err());
+    }
+}
+
+#[cfg(test)]
+mod each_tests {
+    use crate::fixture::{Builtin, Exe, Tables};
+    use crate::{Expression, Item};
+
+    #[test]
+    fn each_definition_renders_alone_with_the_place_of_every_node() {
+        // Invented names at the value types the reader dispatches on.
+        let mut types: Vec<String> = (0..10).map(|i| format!("t{i}")).collect();
+        for (i, n) in [
+            (2, "function_name"),
+            (4, "void"),
+            (7, "short"),
+            (9, "string"),
+        ] {
+            types[i] = n.to_owned();
+        }
+        let catalog = Exe {
+            types,
+            builtins: vec![
+                Builtin::default(),
+                Builtin {
+                    returns: 4,
+                    parameters: vec![9, 7],
+                    ..Builtin::default()
+                },
+            ],
+            ..Exe::default()
+        }
+        .catalog();
+        let mut t = Tables::new();
+        let g = t.value(7, 4);
+        t.global_definition("count", 7, g);
+        let text = t.literal(9, "hi", 0);
+        let count = t.global(0, "count", 7);
+        let root = t.call(1, "invented_print", 4, &[text, count]);
+        t.script("main", 0, 4, root);
+        let s = t.scenario();
+        let each = s.decompile_each(&catalog).unwrap();
+        assert_eq!(
+            each.iter()
+                .map(|e| (e.item, e.name.as_str()))
+                .collect::<Vec<_>>(),
+            [(Item::Global(0), "count"), (Item::Script(0), "main")]
+        );
+        assert_eq!(each[0].source, "(global short count\n  4)\n");
+        let main = &each[1];
+        assert_eq!(
+            main.source,
+            "(script startup main\n  (invented_print \"hi\" count))\n"
+        );
+        let spans: Vec<_> = main
+            .tokens
+            .iter()
+            .map(|t| (&main.source[t.start..t.end], t.head))
+            .collect();
+        assert_eq!(
+            spans,
+            [
+                ("invented_print", true),
+                ("\"hi\"", false),
+                ("count", false)
+            ]
+        );
+        assert!(matches!(
+            s.expression(main.tokens[2].datum).unwrap(),
+            Expression::Global { name: "count", .. }
+        ));
     }
 }

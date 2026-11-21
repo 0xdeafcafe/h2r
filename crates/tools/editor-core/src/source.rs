@@ -222,6 +222,47 @@ impl MapSource {
         }
     }
 
+    /// The game's executable, `default.xbe`, for tools that read the
+    /// game's own tables from it (the Scripts tool,
+    /// docs/editor/rich-editors.md, "Scripts"): the disc image's root;
+    /// for a folder of maps or a loose map, the folder it is in, then the
+    /// one above (an extracted disc's `maps`). Read when asked, never
+    /// copied. The error names every place it looked. Returns where it
+    /// was read and its bytes.
+    pub fn executable(&self) -> Result<(String, Vec<u8>)> {
+        let dir = match self {
+            MapSource::Disc(d) => {
+                let mut iso = xiso::Xiso::open(BufReader::new(File::open(d.path())?))
+                    .with_context(|| format!("open {}", d.path().display()))?;
+                let entry = iso
+                    .find("default.xbe")
+                    .with_context(|| format!("no default.xbe in {}", d.path().display()))?;
+                return Ok((format!("{} (default.xbe)", d.path().display()), iso.read(&entry)?));
+            }
+            MapSource::Folder(dir) => Some(dir.as_path()),
+            MapSource::Loose(p) => p.parent(),
+        };
+        let dirs: Vec<&Path> = dir.into_iter().chain(dir.and_then(Path::parent)).collect();
+        for d in &dirs {
+            let found = std::fs::read_dir(d).ok().and_then(|entries| {
+                entries.flatten().map(|e| e.path()).find(|p| {
+                    p.is_file()
+                        && p.file_name()
+                            .is_some_and(|n| n.eq_ignore_ascii_case("default.xbe"))
+                })
+            });
+            if let Some(p) = found {
+                let bytes = std::fs::read(&p).with_context(|| format!("read {}", p.display()))?;
+                return Ok((p.display().to_string(), bytes));
+            }
+        }
+        let places: Vec<String> = dirs
+            .iter()
+            .map(|d| d.join("default.xbe").display().to_string())
+            .collect();
+        bail!("no default.xbe at {}", places.join(" or "))
+    }
+
     fn loose_file(&self, name: &str) -> Option<PathBuf> {
         let want = name.strip_suffix(".map").unwrap_or(name);
         let p = match self {
@@ -418,6 +459,27 @@ mod tests {
         std::fs::create_dir_all(&empty).unwrap();
         assert!(MapSource::open(&empty).is_err());
         std::fs::remove_dir_all(&empty).unwrap();
+    }
+
+    #[test]
+    fn the_executable_is_beside_the_maps_or_one_folder_up() {
+        let root = std::env::temp_dir().join(format!("h2-editor-xbe-{}", std::process::id()));
+        let maps = root.join("maps");
+        std::fs::create_dir_all(&maps).unwrap();
+        let map = maps.join("example.map");
+        std::fs::write(&map, b"x").unwrap();
+        let src = MapSource::Loose(map.clone());
+        let e = src.executable().unwrap_err().to_string();
+        assert!(e.contains(&maps.join("default.xbe").display().to_string()), "{e}");
+        assert!(e.contains(&root.join("default.xbe").display().to_string()), "{e}");
+        // An extracted disc: the executable is above `maps`, any case.
+        std::fs::write(root.join("DEFAULT.XBE"), b"invented").unwrap();
+        assert_eq!(src.executable().unwrap().1, b"invented");
+        assert_eq!(MapSource::Folder(maps.clone()).executable().unwrap().1, b"invented");
+        // One beside the maps wins.
+        std::fs::write(maps.join("default.xbe"), b"beside").unwrap();
+        assert_eq!(src.executable().unwrap().1, b"beside");
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
