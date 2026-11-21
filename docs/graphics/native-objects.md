@@ -68,10 +68,22 @@ skipping `0x0004d0b0` and its per-part shader and geometry preparation,
 including `0x0001bbf0` and
 `0x00016b90`, for committed runs.
 
-The activation hook starts an eager scan of the mounted map's object
-definitions. The worker decodes each distinct render model once,
-including all its sections, and queues its GPU upload during the load.
-A later spawn uses the same resident model. A scene that arrives before
+At map activation the loader reads every object palette in the mounted
+scenario, including entries with no placement. It loads those definitions
+first, followed by the remaining object tags. Definitions that share a
+render model share one upload. The render worker receives the device and
+queue to create that model's geometry buffers and material programs.
+This independent work needs no guest target and can start before the
+first frame. A later spawn uses the same resident model.
+
+The loader distinguishes pending definitions, explicit null model
+references, failures, partial native coverage and resident definitions.
+A resident definition has an uploaded model and a layer-3 material
+program for every drawn part and declared implementation across the
+model's sections. Material LODs with different base passes and parts
+outside the native object renderer's coverage keep the definition
+partial. Extraction checks the model's published upload status as well
+as the selected part's native coverage. A scene that arrives before
 its models or bindings are ready draws those objects on the guest.
 A map activation or snapshot reload changes the generation, so work for
 a previous load cannot suppress any of the new load's draws.
@@ -615,17 +627,12 @@ vertex and no matrix work on the CPU.
   registration tests); `render_thread`'s test checks the layer draw is
   render-thread safe with the world and objects on (see "Pipelined
   render").
-- **Boot glue** (`crates/extensions/game/src/native_objects_glue.rs`). Per map, a
-  worker with the map, its shared maps and the object tag context open;
-  definitions arrive one at a time from the feature and are loaded once;
-  a model is queued for upload before its definition is published, so a
-  pass that sees it finds it. Materials whose base map does not decode
-  leave the model and keep their D3D draws. The render thread uploads the
-  queue at the next pass. Log lines: `native-objects: <map>: definition
-  <datum>: D draws, N nodes, in T ms (L models native, R left to D3D)`, or
-  `... left to the D3D path (<why>)`; every 1,800 views
-  `native-objects: D of V layer-3 views drawn natively, O objects, I
-  object items skipped`.
+- **Boot glue** (`crates/extensions/game/src/native_objects_glue.rs`). The
+  map worker prioritizes palette definitions and decodes each distinct
+  model once. It queues an independent GPU asset upload as soon as the
+  geometry and materials are decoded. The planner checks upload completion
+  before accepting a part. The first-person loader uses the same upload
+  command when a view supplies a new model but has no native draws yet.
 - **Diagnostics.** Every layer-3 call of the observer ends in one counted
   `Stop`: first person (`[esp]` is `0x00040136`, left to D3D), wrong caller
   (`[esp]` is neither that nor `0x0002bed5`), no host, no camera, no map, no

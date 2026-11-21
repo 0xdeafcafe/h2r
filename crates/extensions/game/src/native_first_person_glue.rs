@@ -207,7 +207,13 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .is_empty();
-        if ranges == 0 && !pending {
+        if ranges == 0 {
+            if pending {
+                let models = Arc::downgrade(&gpu);
+                device.backend.upload_scene_assets(Box::new(move |device, queue| {
+                    if let Some(models) = models.upgrade() { drop(models.upload(device, queue)); }
+                }));
+            }
             return None;
         }
         let mut drawn = vec![false; items.len()];
@@ -220,11 +226,6 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             view: Some(entry.view),
             w_clip: entry.w_clip,
         });
-        if ranges == 0 {
-            // Upload new models; every guest item stays live.
-            device.request_external_pass(pass);
-            return None;
-        }
         let view = mem
             .u32(engine::render_loop::occlusion::guest::VIEW_INDEX)
             .unwrap_or(u32::MAX);
@@ -337,17 +338,16 @@ struct FirstPersonPass {
     w_clip: ([f32; 2], bool),
 }
 
-impl FirstPersonPass {
+impl Models {
     fn upload<'a>(
         &'a self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
     ) -> MutexGuard<'a, Option<LitObjects>> {
-        let mut guard = self.models.lit.lock().unwrap_or_else(|e| e.into_inner());
+        let mut guard = self.lit.lock().unwrap_or_else(|e| e.into_inner());
         let lit = guard.get_or_insert_with(|| LitObjects::new(device));
         for cpu in std::mem::take(
             &mut *self
-                .models
                 .pending
                 .lock()
                 .unwrap_or_else(|e| e.into_inner()),
@@ -360,6 +360,9 @@ impl FirstPersonPass {
         guard
     }
 
+}
+
+impl FirstPersonPass {
     /// The call's packets for the D3D render pass already open on these
     /// attachments, after any model upload still pending.
     fn packets(
@@ -368,7 +371,7 @@ impl FirstPersonPass {
         request: d3d::ExternalPassRequest,
     ) -> Result<d3d::backend::ExternalDraws, &'static str> {
         let constants = self.view.ok_or("first-person view constants unavailable")?;
-        let mut guard = self.upload(&target.device, &target.queue);
+        let mut guard = self.models.upload(&target.device, &target.queue);
         let lit = guard.as_mut().ok_or("planned first-person geometry unavailable")?;
         if !self
             .draws
@@ -415,12 +418,6 @@ impl d3d::ExternalPass for FirstPersonPass {
                 .any(|(_, draw)| !draw.state.color_writes.is_empty()),
             depth_stencil: self.draws.iter().any(|(_, draw)| draw.state.depth_write),
         }
-    }
-
-    /// A call with nothing to draw still uploads models for the next
-    /// (`Device::request_external_pass`).
-    fn encode(&mut self, target: d3d::ExternalTarget<'_>) {
-        drop(self.upload(target.device, target.queue));
     }
 
     /// The draws join the D3D render pass already open on the call's

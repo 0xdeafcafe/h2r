@@ -6,7 +6,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use engine::memory::GuestMemory;
 use render_bridge::native_map_work;
@@ -32,9 +32,13 @@ use native_render::program::ViewInputs;
 use crate::native_map::{self, NativeMap};
 use crate::native_world_glue::{Raw, StageDecoder, StageImages, StagePalettes, palettes_hold, scene_load_palettes};
 
+mod palette;
+pub(crate) use palette::{palette_counters, palette_ready};
+
 /// One distinct render-model tag, shared by its object definitions.
 struct CpuModel {
     mode: TagId,
+    assets: Arc<palette::GpuAssets>,
     lit: LitModelInput,
     normalization: Option<Arc<StaticLightTexture>>,
 }
@@ -65,14 +69,17 @@ impl PartRange {
 
 struct ModelCoverage {
     nodes: usize,
+    assets: Arc<palette::GpuAssets>,
+    all_parts: bool,
     parts: Vec<((u16, u8), SetPart)>,
     ranges: HashMap<(u16, u8), PartRange>,
 }
 
 #[derive(Default)]
 struct Models {
-    pending: Mutex<Vec<CpuModel>>,
-    upload_queued: AtomicBool,
+    palette: Arc<palette::Palette>,
+    /// Queued or executing uploads. While nonzero the guest only tries the GPU lock.
+    uploads: AtomicUsize,
     lit: Mutex<Option<LitObjects>>,
     /// Definition index to render-model datum, shared across definitions.
     index: Mutex<HashMap<u16, u32>>,
@@ -80,54 +87,35 @@ struct Models {
     palettes: Mutex<StagePalettes>,
 }
 
-struct UploadModels {
+/// The queued callback holds no guest surfaces. Cancellation leaves its
+/// model explicitly unavailable and releases the planner's nonblocking mode.
+struct Upload {
     models: Arc<Models>,
-    map_generation: u64,
+    cpu: Option<CpuModel>,
 }
 
-impl Drop for UploadModels {
-    fn drop(&mut self) {
-        self.models.upload_queued.store(false, Ordering::Release);
-    }
-}
-
-impl d3d::ExternalPass for UploadModels {
-    fn colour_only(&self) -> bool { true }
-
-    fn writes(&self) -> d3d::ExternalWrites {
-        d3d::ExternalWrites::default()
+impl Upload {
+    fn new(models: &Arc<Models>, cpu: CpuModel) -> Self {
+        models.uploads.fetch_add(1, Ordering::AcqRel);
+        Self { models: Arc::clone(models), cpu: Some(cpu) }
     }
 
-    fn encode(&mut self, target: d3d::ExternalTarget<'_>) {
-        if self.map_generation != native_map_work::generation() {
-            return;
-        }
-        let pending = std::mem::take(&mut *self.models.pending.lock().unwrap_or_else(|e| e.into_inner()));
-        if pending.is_empty() {
-            return;
-        }
+    fn record(mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
+        let cpu = self.cpu.take().expect("a model upload runs once");
         let mut lit = self.models.lit.lock().unwrap_or_else(|e| e.into_inner());
-        let lit = lit.get_or_insert_with(|| LitObjects::new(target.device));
-        for cpu in pending {
-            if let Some(texture) = &cpu.normalization {
-                lit.set_normalization(target.device, target.queue, texture);
-            }
-            lit.add_model(target.device, target.queue, cpu.mode.0, cpu.lit);
+        let lit = lit.get_or_insert_with(|| LitObjects::new(device));
+        if let Some(texture) = &cpu.normalization {
+            lit.set_normalization(device, queue, texture);
         }
+        cpu.assets.finish(lit.add_model(device, queue, cpu.mode.0, cpu.lit));
     }
 }
 
-fn queue_upload<B: d3d::backend::Backend>(
-    device: &d3d::abi::SharedDevice<B>, models: &Arc<Models>, map_generation: u64,
-) {
-    if models.pending.lock().unwrap_or_else(|e| e.into_inner()).is_empty()
-        || models.upload_queued.swap(true, Ordering::AcqRel)
-    {
-        return;
-    }
-    let pass = UploadModels { models: Arc::clone(models), map_generation };
-    if let Ok(mut device) = device.lock() {
-        device.request_external_pass(Box::new(pass));
+impl Drop for Upload {
+    fn drop(&mut self) {
+        if let Some(cpu) = self.cpu.as_ref() { cpu.assets.finish(false); }
+        self.models.palette.refresh();
+        self.models.uploads.fetch_sub(1, Ordering::AcqRel);
     }
 }
 
@@ -198,6 +186,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         }
         let generation = GENERATIONS.fetch_add(1, Ordering::Relaxed);
         let models = Arc::new(Models::default());
+        palette::activate(map_generation, &models.palette);
         let set = Arc::new(NativeSet { map: name.clone(), generation, ..NativeSet::default() });
         *state = Some(MapState {
             map_generation, generation, models: Arc::clone(&models), set: Arc::clone(&set),
@@ -206,9 +195,14 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
 
         let device = Arc::downgrade(&self.device);
         spawn_worker(name, map_generation, Arc::clone(&models), Arc::clone(&self.state), palettes, formats,
-            move |models| {
-                if let Some(device) = device.upgrade() {
-                    queue_upload(&device, models, map_generation);
+            move |models, cpu| {
+                let upload = Upload::new(models, cpu);
+                if let Some(device) = device.upgrade() && let Ok(mut d) = device.lock() {
+                    d.backend.upload_scene_assets(Box::new(move |device, queue| {
+                        if native_map_work::generation() == map_generation {
+                            upload.record(device, queue);
+                        }
+                    }));
                 }
             });
         Some((set, models, map_generation))
@@ -217,9 +211,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
 
 impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
     fn preload(&self, mem: &dyn GuestMemory) {
-        if let Some((_, models, generation)) = self.load(mem) {
-            queue_upload(&self.device, &models, generation);
-        }
+        let _ = self.load(mem);
     }
 
     fn draw_walk(
@@ -409,7 +401,7 @@ fn plan_walk<B: d3d::backend::Backend>(
     // A model upload holds the models for long: the run keeps its D3D
     // draws rather than wait. Otherwise the holder is a scene stage making
     // its packets on the render thread, which is short: wait for it.
-    let lit = if models.upload_queued.load(Ordering::Acquire) {
+    let lit = if models.uploads.load(Ordering::Acquire) != 0 {
         models.lit.try_lock().map_err(|_| ObjectWalk::Model)?
     } else {
         models.lit.lock().map_err(|_| ObjectWalk::Model)?
@@ -437,6 +429,7 @@ fn plan_walk<B: d3d::backend::Backend>(
             .ok_or(ObjectWalk::Inputs)?;
         // The model and part agree with the CPU loader's coverage. Only a
         // failed GPU lookup for that same model is a residency fallback.
+        if !cover.assets.uploaded() { return Err(ObjectWalk::Unresident); }
         let lit = lit.filter(|assets| assets.has(model)).ok_or(ObjectWalk::Unresident)?;
         let mut draw = lit.plan_part_of(model, scene, instance, scene_part, &entry.states).map_err(|why| {
             count_refusal(&why);
@@ -569,6 +562,7 @@ impl native_render::camera::GuestRead for Ro<'_> {
 /// Installs the host on the device (beside the world's).
 pub fn install<B: d3d::backend::Backend + Send + 'static>(device: &d3d::abi::SharedDevice<B>) {
     let switches = hooks::Switches::from_env().unwrap_or_default();
+    palette::clear();
     if !render_bridge::native_objects::on(&switches) {
         return;
     }
@@ -587,7 +581,7 @@ fn spawn_worker(
     state: Arc<Mutex<Option<MapState>>>,
     palettes: StagePalettes,
     formats: Option<StreamFormats>,
-    upload: impl Fn(&Arc<Models>) + Send + 'static,
+    upload: impl Fn(&Arc<Models>, CpuModel) + Send + 'static,
 ) {
     let launched = std::thread::Builder::new().name("native-objects load".into()).spawn(move || {
         let mut opened = match open(&name, palettes, formats) {
@@ -597,10 +591,25 @@ fn spawn_worker(
                 return;
             }
         };
-        let definitions: Vec<TagId> = opened.map.tags().iter()
-            .filter(|tag| tags::object::is_object_group(tag.group))
-            .map(|tag| tag.id)
-            .collect();
+        let manifest = (|| -> Result<Vec<TagId>, load::Error> {
+            let root = opened.map.scenario().and_then(|tag| tag.location).ok_or("scenario has no local root")?;
+            let bytes = opened.ctx.meta.slice(root.address, u64::from(root.size))?;
+            Ok(palette::manifest(&opened.ctx.meta, bytes, |id| opened.map.tag(id).ok().map(|tag| tag.group))?)
+        })();
+        let mut definitions = match manifest {
+            Ok(ids) => {
+                models.palette.start(&ids);
+                ids
+            }
+            Err(why) => {
+                eprintln!("native-objects: {name}: scenario palette unavailable ({why})");
+                Vec::new()
+            }
+        };
+        let prioritized: HashSet<_> = definitions.iter().copied().collect();
+        definitions.extend(opened.map.tags().iter()
+            .filter(|tag| tags::object::is_object_group(tag.group) && !prioritized.contains(&tag.id))
+            .map(|tag| tag.id));
         if definitions.is_empty() {
             native_map_work::map_stage_empty(map_generation, &name, native_map_work::Stage::Objects);
             return;
@@ -613,25 +622,32 @@ fn spawn_worker(
                 return;
             }
             let result = (|| -> Result<_, String> {
-                let model = opened.ctx.resolve_object(definition).map_err(|e| e.to_string())?
-                    .model.ok_or("the object has no model")?;
-                let mode = model.render_model.as_ref().ok_or("the model has no render model")?.id;
+                let Some(model) = opened.ctx.resolve_object(definition).map_err(|e| e.to_string())?.model else {
+                    return Ok(None);
+                };
+                if model.tag.layers.first().and_then(|r| r.tag_ref("render_model"))
+                    .is_some_and(|reference| reference.id == TagId::NULL) {
+                    return Ok(None);
+                }
+                let mode = model.render_model.as_ref().ok_or("the model has no valid render model")?.id;
                 let native = coverage.entry(mode).or_insert_with(|| {
                     let (cpu, cover) = load_model(&mut opened, mode).map_err(|e| e.to_string())?;
                     let cover = Arc::new(cover);
                     models.palettes.lock().unwrap_or_else(|e| e.into_inner()).clone_from(opened.decoder.used());
                     models.coverage.lock().unwrap_or_else(|e| e.into_inner()).insert(mode, Arc::clone(&cover));
-                    models.pending.lock().unwrap_or_else(|e| e.into_inner()).push(cpu);
-                    upload(&models);
+                    upload(&models, cpu);
                     Ok(cover)
                 }).as_ref().map_err(Clone::clone)?;
                 if model.node_count as usize != native.nodes {
                     return Err("model and render model disagree on the node count".into());
                 }
-                Ok((mode, Arc::clone(native)))
+                Ok(Some((mode, Arc::clone(native))))
             })();
             match result {
-                Ok((mode, native)) => {
+                Ok(None) => {
+                    models.palette.resolve(definition, palette::Definition::NoModel);
+                }
+                Ok(Some((mode, native))) => {
                     let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
                     let Some(s) = state.as_mut().filter(|s| {
                         publishes_to(s, &models) && s.map_generation == native_map_work::generation()
@@ -639,11 +655,15 @@ fn spawn_worker(
                     let index = definition.0 as u16;
                     models.index.lock().unwrap_or_else(|e| e.into_inner()).insert(index, mode.0);
                     let set = Arc::make_mut(&mut s.set);
+                    models.palette.resolve(definition, palette::Definition::Model {
+                        gpu: Arc::clone(&native.assets), all_parts: native.all_parts,
+                    });
                     set.definitions.insert(index, native.nodes);
                     set.parts.extend(native.parts.iter().map(|&((section, part), p)| ((index, section, part), p)));
                     loaded += 1;
                 }
                 Err(why) => {
+                    models.palette.resolve(definition, palette::Definition::Failed);
                     refused += 1;
                     if refused == 1 || hooks::native_verbose() {
                         eprintln!("native-objects: {name}: definition {:#010x} left to D3D ({why})", definition.0);
@@ -652,7 +672,6 @@ fn spawn_worker(
             }
         }
         eprintln!("native-objects: {name}: {loaded} definitions ready, {refused} left to D3D");
-        upload(&models);
     });
     if let Err(e) = launched {
         eprintln!("native-objects: could not start map loader ({e})");
@@ -750,8 +769,30 @@ fn load_model(o: &mut Opened, mode: TagId) -> Result<(CpuModel, ModelCoverage), 
             subpart_count: p.subpart_count,
         }))
     }).collect();
-    let cover = ModelCoverage { nodes: geo.nodes.len(), parts, ranges };
-    let cpu = CpuModel { mode, lit, normalization: o.normalization.clone().flatten() };
+    // A model with even one carried part is only partially covered. Check
+    // every drawable part against the implementation indices actually
+    // declared by its material, including sections the current view omits.
+    let built: HashMap<_, _> = parts.iter().copied().collect();
+    let required_masks: HashMap<_, _> = materials.iter().filter_map(|(&index, material)| {
+        let material = &material.material;
+        let base = native_render::object_program::object_layer3(material).ok()?;
+        // The native uploader compiles the base LOD. Another material LOD
+        // is covered only when it resolves to the same pass and inputs.
+        let same_passes = material.layers.iter().filter(|l| l.layer == look::LIGHTMAP_LAYER)
+            .all(|layer| layer.passes.as_slice() == std::slice::from_ref(base));
+        if !same_passes { return None; }
+        Some((index, palette::implementation_mask(base.implementations.iter().map(|imp| imp.index))?))
+    }).collect();
+    let all_parts = geo.sections.iter().enumerate().all(|(section, s)| {
+        s.geometry.parts.iter().enumerate().filter(|(_, p)| p.is_drawn()).all(|(index, p)| {
+            let have = u16::try_from(section).ok().zip(u8::try_from(index).ok())
+                .and_then(|key| built.get(&key));
+            have.zip(required_masks.get(&p.material)).is_some_and(|(have, &want)| have.implementations & want == want)
+        })
+    });
+    let assets = Arc::new(palette::GpuAssets::default());
+    let cover = ModelCoverage { nodes: geo.nodes.len(), assets: Arc::clone(&assets), all_parts, parts, ranges };
+    let cpu = CpuModel { mode, assets, lit, normalization: o.normalization.clone().flatten() };
     Ok((cpu, cover))
 }
 

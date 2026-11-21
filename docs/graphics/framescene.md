@@ -365,12 +365,23 @@ which sim mode cannot today.
   Every scene is drawn once, so present-indexed captures and "fps" keep
   today's meaning, and today's two-frames-in-flight bound stays.
 
-**Residency.** Loaders publish a resident set (an atomic bitset per
-model and material). Extraction reads it. Before slice 6 an instance
-whose model is not resident is left to the guest's own draw, as now.
-From slice 6 it is not drawn that frame and is counted
-(`scene_unresident`); loaders prefetch every model the scenario's
-palettes name at map load so that the count is zero after loading.
+**Residency.** At map activation the object loader reads the scenario's
+object palettes. It prioritizes those definitions in its tag scan and
+queues each distinct render model for GPU upload once. Each model's
+upload publishes its geometry and its immutable material implementation
+masks together. The object planner checks the published state before
+accepting a draw. The BSP loader uses the same target-independent worker
+command for its geometry, material programs and stage textures.
+
+`render.scene` samples palette readiness on each game-view entry and
+joins it to the completed original present. A ready palette covers all
+its renderable definitions, every drawable model part and the layer-3
+material implementations they require. A partial model, an invalid
+reference or a pending upload prevents a successful readiness gate.
+A declined object plan leaves the guest's packet available to the frame
+owner. The worker's `scene_unresident` counts actual missing instances
+in relinquished work. Palette readiness independently measures the
+native cache even when a carried packet can draw the object.
 
 **Before slice 6** the D3D backend is still in the frame, so its command
 queue is the order. A typed stage is one command in that queue

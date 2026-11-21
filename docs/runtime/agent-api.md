@@ -999,7 +999,15 @@ h2 agent render.parity '{"arm": true}'
   counts game frames where a view entered with a known incomplete palette.
   `palette_unknown_frames` counts game frames where a view lacked a valid
   palette observation or game work had no recorded view entry. Each frame
-  retains observations from every split view. `read_surface`, `read_depth`,
+  retains observations from every split view. The current map's
+  `scene_palette_definitions` counts distinct scenario object palette
+  definitions. Each is in one of `scene_palette_pending`,
+  `scene_palette_no_model` (an explicit null model reference),
+  `scene_palette_failed`, `scene_palette_partial` or
+  `scene_palette_resident`. Resident means every drawable model part
+  has its uploaded geometry and its layer-3 material implementations.
+  These gauges appear after a valid palette manifest is available.
+  `read_surface`, `read_depth`,
   `read_mirror` and `read_pixel_count` count guest requests in game views.
   `flare_queries` counts original game-view reports installed by the
   owner. `unmatched_flare_frames` counts owned frames where that number

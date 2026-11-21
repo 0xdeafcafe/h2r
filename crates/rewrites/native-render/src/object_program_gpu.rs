@@ -317,7 +317,7 @@ impl LitObjects {
     /// Uploads `input` as model `index`'s lit parts (replacing any); not
     /// when a program samples the normalization cube and it is not
     /// uploaded (the build refuses such a program without it).
-    pub fn add_model(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, index: u32, input: LitModelInput) {
+    pub fn add_model(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, index: u32, input: LitModelInput) -> bool {
         let mut layouts = HashMap::new();
         let buffers = input
             .buffers
@@ -342,10 +342,11 @@ impl LitObjects {
             })
             .collect();
         let Some(programs) = input.programs.into_iter().map(|p| self.program(device, queue, p)).collect::<Option<Vec<_>>>() else {
-            return;
+            return false;
         };
         let part_index = index_parts(&input.parts);
         self.models.insert(index, LitModel { programs, buffers, parts: input.parts, part_index });
+        true
     }
 
     fn program(&self, device: &wgpu::Device, queue: &wgpu::Queue, input: LitProgramInput) -> Option<LitProgram> {
