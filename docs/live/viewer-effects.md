@@ -279,11 +279,10 @@ that does not know them.
 
 ### Drawing them
 
-`FxWatch` (`web/src/viewer/fx.ts`, pure) is to effects what `EventFeed`
-is to damage: fed each sampled frame once, it returns the effects that
+The proposed `FxWatch` consumes each sampled frame once and returns the effects that
 started (`{ kind, at, dir?, colour, size, seed, born }`), having matched
 projectile ids, vitals, actions and teleporters as above. A seek observes
-quietly and starts nothing. `FxPool` (`web/src/viewer/fx3d.ts`) draws
+quietly and starts nothing. The proposed `FxPool` draws
 them.
 
 - **Three draw calls for everything:** one `InstancedMesh` of quads

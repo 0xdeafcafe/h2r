@@ -19,7 +19,7 @@ file plus the layer.
 
 - **Tags are never shared.** Every tag a retail map uses has its
   metadata in that map; no tag on the disc lacks local data (**V**,
-  `crates/formats/map/tests`, reported in
+  `crates/formats/map/src/tests.rs`, reported in
   [map-builder.md](../formats/map-builder.md)). The loader reads one tag
   index and one metadata region, the current map's
   ([map-format.md](../formats/map-format.md), "Index, root tags and

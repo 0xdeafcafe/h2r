@@ -1000,8 +1000,6 @@ the map. Use it when something on a HUD sits in the wrong place, such as
 a converted Halo 1 map's shield bar over its health bar or a grenade
 count spilling out of its box.
 
-![The HUD tool on Lockout: the Master Chief's HUD drawn at 640 by 480 with the HUD frame in green and the widgets outlined and the checks in the inspector](../images/editor/hud-masterchief.jpg)
-
 - **HUDs** (left):
   - **Map** (the menu at the top): the source's multiplayer maps and
     campaign levels, your packages and **Halo 1 sandbox variants**,

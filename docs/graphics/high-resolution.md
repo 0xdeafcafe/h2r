@@ -1,6 +1,6 @@
 # High resolution: 4K and arbitrary internal resolution
 
-Status: Implemented for independently sized horizontal and vertical raster grids.
+Status: Built. The renderer supports independently sized horizontal and vertical raster grids.
 Code: `crates/platform/gfx/src/raster.rs`, `crates/platform/d3d/src/scaled.rs`,
 `crates/platform/d3d/src/scaled/single.rs`, `crates/extensions/game/src/d3d_glue.rs`.
 Tests: `crates/platform/d3d/tests/render_scale.rs`, `crates/platform/gfx/src/raster.rs`,
@@ -14,6 +14,9 @@ together to preserve the display aspect. On a 5120x2880 Studio Display,
 Native renders at 3840x2160. Choosing **5120x2880** renders at full panel
 resolution. Both 3440x1440 and 5120x1440 fit within the budget at native size.
 Explicit sizes stay fixed on resize and support up to 8192 on each axis.
+The desktop shell redraws the latest frame to the resized drawable
+(`Shell::redraw`, `crates/apps/app/src/shell.rs`) while the game prepares
+its next frame.
 
 The guest still addresses a 640x480 frame. A scaled frame has a separate
 horizontal and vertical ratio. The physical rectangle in which the shell
@@ -64,7 +67,10 @@ occlusion query to the projected display column, preserving the footprint used
 for the expected count, and applies the lens to the reflection billboards.
 The exact reference draws both at the retail coordinates. The vertical field of view, depth, simulation
 camera and guest visibility records keep their retail values. Orthographic
-menu draws use a uniform fit inside each player's viewport. Corner HUD
+menu widgets use a uniform fit inside each player's viewport. The
+menu backdrop uses the scene's full viewport through its blur and dim
+passes. `crates/extensions/game/src/render_aspect.rs` restores the
+widget fit when the backdrop finishes. Corner HUD
 groups can use the fitted rectangle or the viewport edges. If the game already
 uses the Xbox widescreen HUD layout, its artwork receives only the remaining
 aspect correction. At 16:9 the Pinned layout retains the retail widescreen fit.

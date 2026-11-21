@@ -1,23 +1,20 @@
 # h2-editor polish: what is wrong, the design, and the slices
 
-Status: P1, P2, P4, P6 and P7 are implemented. The remaining slices describe the design.
+Status: Partly built. The layout, game link, tag tree, overlays, gameplay
+glyphs and conditional game edits are implemented. Volume and collision
+editing and a native renderer viewport are designs.
 Code: `crates/apps/studio/src` (the window: `ui.rs`, `ui/`, `play.rs`, `viewport.rs`, `theme.rs`), `crates/tools/scenario-edit/src` (the scene and its renderer). Tests: named per slice.
 Switch: none.
 
-This page lists what makes `h2-editor` hard to use, with the place in the
-code for each, and the design that fixes it: one layout, a game link that
-is always on screen, the scenario's tags as a tree, tag edits that reach
-the running game, overlays for the volumes and collision that the game
-does not draw, edits to those, and a viewport drawn by the native
-renderer. It ends with slices sized for one implementer each. It builds
-on two designs and does not restate them: the live stream and apply
-classes in [live-mirror.md](live-mirror.md), and the merged Map tool in
-[click-to-edit.md](click-to-edit.md). The rule that must hold: the editor
-stays one native window (Dear ImGui through `dear-imgui-rs`, wgpu), and
-every action it gains is also a method of its
-[agent API](agent-api.md).
-
-A finding below is deleted from this page by the slice that fixes it.
+The editor uses a Dear ImGui and wgpu window. The toolbar carries the
+game link (`crates/apps/studio/src/ui/bar.rs`), the scene has a scenario
+tag tree (`crates/apps/studio/src/app/tag_tree.rs`) and the viewport
+draws editor layers (`crates/tools/scenario-edit/src/layers.rs`).
+The paired edit path (`crates/apps/studio/src/play/tag_sync.rs`) uses
+conditional tag batches, undo and conflict choices. See
+[live-mirror.md](live-mirror.md) for the contract of those edits and
+[click-to-edit.md](click-to-edit.md) for the unified Map design.
+Editor actions have a corresponding [agent API](agent-api.md).
 
 ## What is wrong
 
@@ -409,7 +406,7 @@ It lands in three steps, each a better picture than the last.
      addresses, so `MapMemory` implements `GuestRead` over the open
      map's tag space (what `TagDoc::read` already serves). The
      renderer's modules that read only tag data run unchanged.
-   - **A static scene.** `crates/rewrites/scene-static` fills a
+   - **A static scene.** the proposed `scene-static` crate fills a
      `FrameScene` through `SceneBuilder` from the map and the editor's
      camera: one view, every cluster, an instance per placement in its
      bind pose, the lights the tags place. This is the reader
@@ -470,7 +467,7 @@ under 2,500, L more.
 | P2 | **The bar and the layout**: tool tabs; Maps, Scene as tabs of one column; per-tool window keys; icon toolbar with tooltips and step combos; status-bar hint slot; empty-state cards; `theme` tokens, `section`, type sizes | M | P1 | `ui.rs`, `ui/bar.rs`, `ui/map_list.rs`, `theme.rs`, `headless.rs` | `the_default_layout_places_every_window` (each tool's windows exist and none shares an ID); a saved layout with the three old IDs loads; `--do` scripts that click `Scenario` in the Tools list click the Map tab (the script step maps the old label); no colour literal outside `theme.rs` in `ui/` (a source test); the guide's screenshots are re-shot by `scripts/editor-screenshots.sh` |
 | P3 | **Save where it came from, and Go to anything** | S | P2 | `app.rs`, `app/commands.rs`, `ui/palette.rs`, `api/ui_screens.rs` (for `ui.palette`) | Cmd+S on an opened package rewrites it with no dialog; on a disc map opens the package form; `ui.palette "zan"` lists the map, its tags and matching placements in that order; Enter on a command dispatches its `Action` |
 | P4 | **The scenario tag tree** | M | nothing | `app/tag_tree.rs`, `app/tag_api/chain.rs` (`scan_refs`), `ui/tags.rs`, `api/tags.rs`, `crates/apps/studio-proto/src/lib.rs` | fixture scenario with a palette, a sky and a BSP: `tag.tree` lists them under their sections with placement counts; `scan_refs` on an invented tag with no layout finds a planted reference and rejects a pair whose group does not match the datum's tag; a tag only a UI tag names is under Not reachable; a 5,000-tag invented group draws every row (list clipper) |
-| P5 | **`scnr.txt` and BSP-region tags** | M | P4 | `crates/formats/tags/src/defs/scnr.txt`, `app/tag_doc.rs` | the registry's own tiling test passes for `scnr`; blocks owned by `layout::BLOCKS` are read-only in the panel; a fixture `sbsp` in its own region opens read-only; opt-in disc test: every disc scenario walks through the definition |
+| P5 | **`scnr.txt` and BSP-region tags** | M | P4 | a `scnr` field definition in the tag schema, `app/tag_doc.rs` | the registry's own tiling test passes for `scnr`; blocks owned by `layout::BLOCKS` are read-only in the panel; a fixture `sbsp` in its own region opens read-only; opt-in disc test: every disc scenario walks through the definition |
 | P6 | **Layers and the overlay pass** | M | nothing | `crates/tools/scenario-edit/src/layers.rs`, `render.rs`, `scene.rs`, `viewport.rs`, `ui.rs`, `api/view.rs` | `view.layers` toggles change `view.snapshot`'s pixels on the fixture; a hidden layer is not picked; the Halo 1 overlay is a layer and its menu item still works; X-ray draws a box behind a wall at reduced strength (pixel test, skipped without an adapter) |
 | P7 | **Spawn and netgame layers**: facing arrows, team tint, flag-type pennants and labels, joined outlines | S | P6 | `geometry.rs`, `layers.rs`, `theme.rs` | glyph geometry tests: an arrow points along the facing; two flags of one type and index make one outline; colours come from the theme's layer tokens |
 | P8 | **Trigger, kill and BSP-switch volumes: see and pick** | M | P6 | `scenario-edit/src/volumes.rs`, `layout.rs`, `scenario.rs`, `api/scenario.rs` (`volume.list`) | research first: the volume's size field and the kill trigger element, from the retail readers with `h2 disasm`, recorded in scenario-editor.md with labels. Fixture with two volumes and a kill trigger: `volume.list` gives frames and sizes; a ray through a box picks it; the kill box is in the Kill layer |
@@ -480,8 +477,8 @@ under 2,500, L more.
 | P12 | **Tag edits reach the game** (live-mirror M7): `edit.map`; `edit.batch` with `was` and the `at` form; the session check on every `edit.*` write; `tag_sync`; View and Edit; class badges; the Pending tab; leave and rejoin | L | P1 | `crates/extensions/agent-proto/src/hot.rs`, `crates/extensions/agent/src/hot.rs`, `crates/extensions/hot-tags/src/lib.rs`, `play/tag_sync.rs`, `play.rs`, `ui/play.rs`, `fields.rs`, `api/pair.rs`, `api/mirror.rs` | live-mirror.md's M7 row, plus: an `at` write outside every tag is refused; an edit that grows a block is listed under Reload and nothing is sent; a `MISMATCH` offers both choices and each leaves document and baseline equal; pairing with a non-empty journal lists it; `edit.set` in a co-op session is refused by the game |
 | P13 | **`applies` on fields** | S, repeatable | P12 | `crates/formats/tags/src/defs/*.txt`, `crates/formats/tags/src/defs.rs` | the parser reads `applies=frame\|use\|creation` with its evidence; hot-iteration.md's "What shows when" rows are the first entries; a field with none is `unknown` |
 | P14 | **Viewport step 1: the native world** | L | P6 | `crates/rewrites/native-render/src/load.rs` (the moved decodes), `scenario-edit/src/render.rs`, `scene.rs`, `geometry.rs`, `viewport.rs`, `api/view.rs` | the fixture map draws through `GpuWorld` into the viewport target (GPU test, skipped without an adapter); `view.stats` keeps its fields; the Lighting modes change the snapshot; picking returns the same placement and surface as before on the fixture; `scenario-edit` holds no world or model shader; the Theater host view still builds on the moved functions |
-| P15 | **Viewport step 2: the material passes** | L | P14 | `crates/rewrites/scene-static` (new), `native-render/src/program.rs`, `scenario-edit/src/render.rs` | the survey note first. `MapMemory` reads equal `TagDoc::read`; a static scene of the fixture has one view, its clusters and an instance per placement; an invented material with a translated pass draws its pass, one without falls back to step 1's look and is counted in `view.stats` |
-| P16 | **Add a barrier** | L | P10; modeling.md slices 8 and 11 | `crates/formats/collision-build`, `scenario-edit/src/session.rs`, `viewport.rs` | modeling.md slice 11's acceptance, plus: the new solid is in Collision only after the edit; undo removes it; a paired game lists it under Reload |
+| P15 | **Viewport step 2: the material passes** | L | P14 | the proposed `scene-static` crate (new), `native-render/src/program.rs`, `scenario-edit/src/render.rs` | the survey note first. `MapMemory` reads equal `TagDoc::read`; a static scene of the fixture has one view, its clusters and an instance per placement; an invented material with a translated pass draws its pass, one without falls back to step 1's look and is counted in `view.stats` |
+| P16 | **Add a barrier** | L | P10; modeling.md slices 8 and 11 | the proposed collision compiler, `scenario-edit/src/session.rs`, `viewport.rs` | modeling.md slice 11's acceptance, plus: the new solid is in Collision only after the edit; undo removes it; a paired game lists it under Reload |
 | P17 | **Remove, move and From render** | L | P16; modeling.md slice 13 | as P16 | slice 13's acceptance; refused on a retail map until the survey note exists, with that reason |
 
 P4, P6 and P12 need nothing from each other and can run side by side

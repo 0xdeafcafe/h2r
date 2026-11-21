@@ -187,8 +187,9 @@ described in [determinism](../graphics/high-resolution.md#determinism).
 
 Pinned keeps corner-anchored HUD groups near the edges of each player's
 viewport. Centered keeps those groups inside a centred 4:3 safe area.
-Both settings keep menus centred and preserve the proportions of their
-text and artwork.
+Both settings keep menu widgets centred and preserve their proportions.
+The scene backdrop fills the viewport. See
+[widescreen projection](../graphics/high-resolution.md#widescreen-projection).
 
 The frame rate applies at the window's next turn (`app::fps::FpsControl`).
 The render thread applies resolution and lighting at a frame boundary
@@ -201,8 +202,8 @@ used. Above 30, the frame rate redraws the newest game frame more often
 ([high-framerate.md](high-framerate.md)). Headless runs (`h2 run`) have none of it (`H2_LIGHTING=e3`
 works there as a variable).
 
-Code: the rows are `Def`s in `boot::setting_defs` with a `menu` naming
-the screen; `boot::video_screen::model` builds the screen as
+Code: the rows are `Def`s in `crates/extensions/game/src/setting_defs.rs` with a `menu` naming
+the screen; `game::video_screen::model` builds the screen as
 `ui::Screen::new("video").rows_from_settings(..)`, the Video Settings row as
 `ui::extend(List::Settings, 2)` and the speaker row as
 `ui::extend(List::Controls, 6)` ([Settings as a schema](#settings-as-a-schema));

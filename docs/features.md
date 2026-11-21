@@ -18,9 +18,10 @@ works, and its page says which part. **Design**: written up, not built.
 | --- | --- | --- | --- |
 | Recompiler | XBE analysis (about 18,700 functions), x86 to IR to C11, clang build with source and object caches | Built | [LIFTER](lifter/LIFTER.md), [cache](lifter/BUILD-CACHE.md) |
 | | Native x87 and SSE fast paths, inline guest RAM, direct calls (all on by default) | Built | [x87](lifter/x87-native.md), [memory](perf/guest-memory.md) |
+| | Cranelift fast start with an optimised clang build in the background | Built | [fast tier](lifter/cranelift-tier.md), [player](runtime/app.md) |
 | Runtime | Xbox kernel, XAPI, saves and storage replaced in Rust, on a deterministic logical clock with checkpoints | Built | [BOOT](runtime/BOOT.md), [storage](runtime/storage.md) |
 | | Direct3D 8 on wgpu (push buffer, NV2A shaders to WGSL), render thread, merged passes | Built | [d3d](graphics/d3d.md), [graphics](graphics/graphics.md) |
-| | DirectSound mixer, native WMA, Bink replacement (cutscenes skipped; optional MP4 conversion) | Built | [audio](audio/audio.md), [movies](audio/movies.md) |
+| | DirectSound mixer, native WMA, Bink playback with optional offline movie conversion | Built | [audio](audio/audio.md), [movies](audio/movies.md) |
 | Player | `h2 play`: window, sound, keyboard, mouse, pads; any level or map from the command line; `--follow` rebuilds as master moves | Built | [app](runtime/app.md), [levels](runtime/level-boot.md) |
 | Agent API | `h2 serve` runs the game headless with a JSON-RPC socket; `h2 agent` queries state, drives input, waits on conditions, saves and restores state, replays scenarios | Built | [agent API](runtime/agent-api.md) |
 | Sim and hosts | Headless simulation: Halo 2 matches without a window, bots on a host | Built | [sim](runtime/sim.md) |
@@ -31,7 +32,7 @@ works, and its page says which part. **Design**: written up, not built.
 | | Windows: the runtime and game module cross-build from a Mac; not run, no host app | Partly built | [windows](runtime/windows.md) |
 | | Xbox in Developer Mode (UWP app): runs on a Series X and presents frames while the title boots; pads and levels are not verified | Partly built | [xbox](runtime/xbox.md) |
 | Graphics | Native GPU renderer, on by default: world, objects, lights, shadows, transparents, decals, particles, fog, water, post, HUD and UI. Scene lists are built in Rust, the guest's opaque handlers are skipped, geometry is cached across frames, and anything it can't take falls back to D3D (`impl.render.native=off` turns it all off) | Built | [native renderer](graphics/native-renderer.md) |
-| | Render scale 1x to 6x (the Resolution row), one copy rendered at the scaled size | Built | [high-res](graphics/high-resolution.md) |
+| | Native and fixed resolutions, arbitrary display aspect, live resize and single-copy rendering in eligible sessions | Built | [high-res](graphics/high-resolution.md) |
 | | Pipelined frames: tick N+1 overlapping frame N (off by default, `impl.render.pipelined_frame`) | Built, off | [pipelined](graphics/pipelined-render.md) |
 | | E3 2003-style lighting: the Lighting row (sharper shadow maps, D3D path) | Built | [Lighting row](graphics/e3-lighting-setting.md) |
 | | 60 and 120 fps over the 30 Hz tick: the setting, determinism harness, interpolated replay and reprojection | Partly built | [high-framerate](game/high-framerate.md) |
@@ -44,8 +45,8 @@ works, and its page says which part. **Design**: written up, not built.
 | | New, edited and patched maps as packages | Built | [maps](game/maps.md) |
 | | More than one campaign: picker and per-campaign progress | Built | [campaigns](halo1/campaign-picker.md) |
 | | Halo 1 health model and meter | Built | [health](halo1/health.md) |
-| | Theater: `.h2film` films recorded by dedicated hosts, played back with the game's renderer and director cameras | Partly built | [theater](game/theater.md), [film format](game/film-format.md) |
-| | Forge | Design | [forge](game/forge.md), [design](game/forge-design.md) |
+| | Theater: `.h2film` recording, in-game library, director cameras and seek from compatible keyframes | Partly built | [theater](game/theater.md), [film format](game/film-format.md) |
+| | Forge document and edit log, plus local validation and package builds with `h2 forge`; in-game tools planned | Partly built | [forge](game/forge.md), [design](game/forge-design.md) |
 | Halo 1 | Halo 1 campaign levels convert offline into Halo 2 maps for the Halo 2 engine, with Halo 1 assets and a Halo 2 setting | Partly built | [campaign](halo1/campaign.md) |
 | | The 13 Halo 1 multiplayer maps convert to Halo 2 maps (collision, BSP, MOPP, objects, shaders) | Built | [h1 multiplayer](halo1/multiplayer.md) |
 | | Halo 1 maps, bitmaps, models and animations read and converted to Halo 2 tags | Built | [h1 format](halo1/map-format.md), [models](halo1/models.md) |
@@ -54,13 +55,14 @@ works, and its page says which part. **Design**: written up, not built.
 | | DualSense: speaker and mute button | Built | [PlayStation](audio/playstation-audio.md) |
 | | Steam Controller | Built | [Steam](input/steam-controller.md) |
 | Live | Service: accounts, friends, teams, invites, stats, title files, cloud saves, custom maps, a relay | Built | [live](live/live.md), [API](live/live-api.md) |
-| | In the game: sign-in, matchmaking, custom games browser | Built | [matchmaking](live/live-matchmaking.md), [custom games](live/live-custom-games.md) |
+| | In the game: sign-in, matchmaking, custom games browser with saved filters | Built | [matchmaking](live/live-matchmaking.md), [custom games](live/live-custom-games.md) |
 | | Co-op campaign over Live | Built | [co-op](live/live-coop.md) |
 | | Cloud saves: profiles, campaign progress, variants and settings follow the account | Built | [cloud saves](live/live-cloud-saves.md) |
 | | Web app: dashboard, stats site, live top-down map, replays, admin | Built | [web](../web/README.md), [web-app](live/web-app.md), [admin](live/live-admin.md), [art](live/live-art.md) |
 | | Hosting: Docker with Cloudflare Tunnel, SQLite and R2; or Cloudflare Workers | Built | [hosting](live/live-hosting.md), [Workers](live/live-worker.md) |
-| Editor | `h2-editor`: 3D viewport, placements, tags, game variants, playlists, UI screens, Halo 1 maps, with its own socket API | Built | [guide](editor/editor-guide.md), [API](editor/agent-api.md) |
-| Tools | Tag decoders (`h2 bitmap`, `sound`, `ui`, `hs`, ...), map builder, profiler, benchmarks | Built | [formats](README.md#data-formats-and-tags-formats), [perf](perf/profiling.md) |
+| Editor | `h2-editor`: 3D viewport, placements, tags, HUDs, variants, playlists, UI screens, Halo 1 maps and paired game editing with its own socket API | Built | [guide](editor/editor-guide.md), [API](editor/agent-api.md) |
+| Tools | `h2 lab`: remote builds and agent-driven play, input replay and profiling over SSH | Built | [lab](runtime/lab.md) |
+| | Tag decoders (`h2 bitmap`, `sound`, `ui`, `hs`, ...), map builder, profiler, benchmarks | Built | [formats](README.md#data-formats-and-tags-formats), [perf](perf/profiling.md) |
 
 ## Speed
 
@@ -148,7 +150,7 @@ No dates. Items move when they are measured, not when they are written down.
 **Later**
 
 - 60 and 120 fps over the 30 Hz tick in the game, and the rest of E3 lighting.
-- Theater and Forge.
+- Broader recording and sharing in Theater, in-game Forge tools, and Firefight with networked AI.
 - A Windows and Xbox host app.
 
 ## Not verified

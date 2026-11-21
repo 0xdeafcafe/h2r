@@ -99,10 +99,14 @@ CARGO_TARGET_DIR=$TMPDIR/app-play-target cargo build --release -p cli
 $TMPDIR/app-play-target/release/h2 play /abs/path/to/disc/halo2.iso
 ```
 
-Like `h2 run`, it picks the module by `--tier`: when `--out` (default
-`$TMPDIR/h2boot`) has no clang module, or one whose `.stamp` names another
-image, generator or module ABI (`boot::dylib_current`), `auto` runs the fast
-tier and builds clang's in the background. Flags: `--out DIR`, `--data DIR`, `--slices N` (unlimited by
+The default `--tier auto` uses a matching clang module from `--out`
+(default `$TMPDIR/h2boot`). When the module is missing or its build stamp
+differs, `crates/runtime/recomp/src/tier.rs` selects the Cranelift image
+and starts the clang build in the background. The window banner
+(`play_cmd::tier_banner`) reports when the full-speed build is ready
+or has failed. Restart to use the finished clang build.
+
+Flags: `--out DIR`, `--data DIR`, `--slices N` (unlimited by
 default), `--transfers N`, `--aspect 4:3|16:9|source` (default `source` for play), `--scaling
 fit|integer|stretch`, `--nearest`, `--fullscreen`, `--no-audio`,
 `--no-gamepads`, `--no-vsync`, `--unpaced`, `--fps 30|60|120|uncapped`,

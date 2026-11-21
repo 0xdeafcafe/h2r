@@ -77,7 +77,7 @@ its own.
 | **B. Host films** | Exact `.h2film` films recorded by dedicated hosts, played back in the game with its own renderer and director cameras | the [film format](film-format.md) and the in-game selector | implemented. Real-host verification pending |
 | **C. Live spectating** | A tier-B film streamed with a 30–120 s delay | section 4B | later |
 
-### Tier A: Web Theater (simple, now)
+### Tier A: Web Theater
 
 Web Theater reads timed pose and event records from a version 3 host film.
 The viewer fetches the chunks covering the requested time range. Older
@@ -244,10 +244,11 @@ h2 theater play "$film_run/match.h2film" --disc "$H2_DISC" --out "$H2_IMAGE" --s
 
 During either run the agent exposes the [Theater transport](../runtime/agent-api.md#theater-transport).
 Seek restarts the child at a compatible keyframe, or at boot when one is
-unavailable, and removes host pacing until the target. It compares hashes throughout. The
-coordinator should also seek backwards across a received packet while
-paused and resume. `h2 film stat FILE` lists embedded keyframes, recorded
-D3D barriers and per-stream tape counts, byte totals and operations. The
+unavailable, and removes host pacing until the target. It compares hashes
+throughout. The transport reports seek progress, supports cancellation
+and advances by a single paused tick (`crates/extensions/game/src/theater.rs`).
+`h2 film stat FILE` lists embedded keyframes, recorded D3D barriers and
+per-stream tape counts, byte totals and operations. The
 [measurement procedure](notes/theater-seek.md) uses both tools.
 
 At match end the host uploads the sealed recording under the lease's

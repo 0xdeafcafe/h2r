@@ -1,6 +1,6 @@
 # Theater: the full in-game player
 
-Status: Design. The parts under "What it builds on" are built; everything else on this page is not.
+Status: Partly built. Cold seek progress, cancellation and stepping are implemented. Sidecar keyframes and warm restore are designs.
 Code: `crates/extensions/game/src/theater.rs` (`Session`), `crates/extensions/game/src/theater/actions.rs` (the per-tick inputs), `crates/live/film/src/tape.rs` (the HLE tape), `crates/apps/cli/src/theater_cmd.rs` (the player process), `crates/live/film` (the container). Tests: `crates/extensions/game/src/theater/tests.rs`, `crates/live/film/src/tests.rs`.
 Switch: none.
 

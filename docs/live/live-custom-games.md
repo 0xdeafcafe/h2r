@@ -1,8 +1,7 @@
 # Custom games browser over Live
 
-Status: the server, HLE and boot pieces are in and synthetically tested.
-The owner has Live working in the game (2026-11-17); §7 is the in-game
-checklist.
+Status: Built. The Live browser and its filter controls have synthetic
+coverage. Section 7 lists the in-game acceptance checks.
 
 What it adds:
 

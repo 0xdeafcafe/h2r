@@ -1,6 +1,7 @@
 # Forge for Halo 2 multiplayer maps
 
-Status: Reference. Nothing of Forge is built.
+Status: Reference. See [Forge design](forge-design.md) for the local
+builder and the planned in-game tools.
 Code: none. The blocks below are read and written by `crates/tools/scenario-edit` ([scenario-editor.md](../editor/scenario-editor.md)).
 Switch: none.
 
