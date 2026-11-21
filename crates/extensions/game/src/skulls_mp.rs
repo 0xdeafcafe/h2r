@@ -30,7 +30,7 @@
 //! else, so a campaign never sees these hooks act (its own skull code runs
 //! there).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
@@ -342,6 +342,92 @@ pub fn restore_placement<M: Gm>(m: &mut M, placement: u32, old: [u16; 2]) -> boo
         .all(|(o, v)| m.set_u16(placement.wrapping_add(*o), v))
 }
 
+// ---- Firefight ----
+
+/// The engine's skull array: one byte per skull, 1 = on
+/// (docs/game/skulls.md "What the game does").
+pub const SKULL_ARRAY: u32 = 0x4f55dc;
+
+/// Skulls whose readers only the actors reach: Assassins, Thunderstorm,
+/// Famine (AI weapon drops), Ghost, Catch, Mythic and Angry. Every reader
+/// tests the campaign gate first, so these act in a Firefight match only
+/// where that gate is answered "on", and the host alone runs actors.
+pub const FIREFIGHT_AI_SKULLS: [usize; 7] = [2, 3, 4, 7, 9, 12, 13];
+
+/// Skulls that change what a machine draws or simulates without actors,
+/// through the multiplayer set above: Famine (placed weapons), Blind and
+/// Low Gravity.
+pub const FIREFIGHT_SHARED_SKULLS: [usize; 3] = [FAMINE, BLIND, crate::skulls_custom::LOW_GRAVITY];
+
+/// What a Firefight skull does on a machine.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FirefightScope {
+    /// The host's actors only: set in the skull array of the machine that
+    /// runs AI, and nowhere else.
+    HostAi,
+    /// Both: the actors' reader on the host (a drop's rounds) and the
+    /// multiplayer reader on every machine (a placed weapon's rounds).
+    HostAiAndShared(Reach),
+    /// The multiplayer path: Blind locally, Low Gravity for everyone.
+    Shared(Reach),
+}
+
+/// The engine's index of a Firefight skull (its discriminant).
+pub fn firefight_index(skull: ::firefight::Skull) -> usize {
+    skull as usize
+}
+
+/// Where `skull` takes effect in a Firefight match.
+pub fn firefight_scope(skull: ::firefight::Skull) -> FirefightScope {
+    use ::firefight::Skull as S;
+    match skull {
+        S::Assassins | S::Thunderstorm | S::Ghost | S::Catch | S::Mythic | S::Angry => {
+            FirefightScope::HostAi
+        }
+        S::Famine => FirefightScope::HostAiAndShared(Reach::Simulation),
+        S::Blind => FirefightScope::Shared(Reach::Local),
+        S::LowGravity => FirefightScope::Shared(Reach::Simulation),
+    }
+}
+
+/// The AI skulls (engine indices, ascending) a machine in `role` runs for
+/// the director's active set `on`: all of them on the machine that runs the
+/// actors, none on a guest, whose AI is the host's.
+pub fn firefight_ai(role: &Role, on: &BTreeSet<::firefight::Skull>) -> Vec<u8> {
+    if matches!(role, Role::Guest { .. }) {
+        return Vec::new();
+    }
+    let mut set: Vec<u8> = on
+        .iter()
+        .filter(|s| {
+            matches!(
+                firefight_scope(**s),
+                FirefightScope::HostAi | FirefightScope::HostAiAndShared(_)
+            )
+        })
+        .map(|s| firefight_index(*s) as u8)
+        .collect();
+    set.sort_unstable();
+    set
+}
+
+/// The player-scoped skulls (engine indices, ascending) of `on`: the ones
+/// the multiplayer path carries to every machine.
+pub fn firefight_shared(on: &BTreeSet<::firefight::Skull>) -> Vec<u8> {
+    let mut set: Vec<u8> = on
+        .iter()
+        .filter(|s| {
+            matches!(
+                firefight_scope(**s),
+                FirefightScope::Shared(_) | FirefightScope::HostAiAndShared(_)
+            )
+        })
+        .map(|s| firefight_index(*s) as u8)
+        .collect();
+    set.sort_unstable();
+    set
+}
+
 // ---- the shared state ----
 
 /// The multiplayer skulls of a run: the choice per profile (cached, so the
@@ -355,6 +441,9 @@ pub struct MpSkulls {
     profiles: Mutex<Vec<String>>,
     /// Bit `n`: skull `n` is on in this game.
     active: AtomicU32,
+    /// Bit `n`: a Firefight host runs AI skull `n` ([`firefight_ai`]). Not
+    /// part of a snapshot: the mode's own blob rebuilds it from the director.
+    ff_ai: AtomicU32,
     /// Each effect says the first time it acts in a game.
     said_blind: AtomicBool,
     said_famine: AtomicBool,
@@ -383,6 +472,7 @@ impl MpSkulls {
             choice: Mutex::new(choice),
             profiles: Mutex::new(Vec::new()),
             active: AtomicU32::new(0),
+            ff_ai: AtomicU32::new(0),
             said_blind: AtomicBool::new(false),
             said_famine: AtomicBool::new(false),
             famine: Mutex::new(Vec::new()),
@@ -438,6 +528,7 @@ impl MpSkulls {
     pub fn activate(&self, set: &[u8]) {
         let bits = set.iter().fold(0u32, |b, s| b | 1 << s);
         self.active.store(bits, Ordering::SeqCst);
+        self.ff_ai.store(0, Ordering::SeqCst);
         self.said_blind.store(false, Ordering::Relaxed);
         self.said_famine.store(false, Ordering::Relaxed);
         if let Some(t) = &self.telemetry {
@@ -446,6 +537,33 @@ impl MpSkulls {
     }
     pub fn active(&self, index: usize) -> bool {
         index < 32 && self.active.load(Ordering::SeqCst) & (1 << index) != 0
+    }
+    /// AI skull `index` runs on this machine: a Firefight host's AI set.
+    pub fn ff_ai_active(&self, index: usize) -> bool {
+        index < 32 && self.ff_ai.load(Ordering::SeqCst) & (1 << index) != 0
+    }
+    /// The Firefight director's skulls `on` for this machine's `role`: the
+    /// AI ones only on the machine that runs the actors, the player-scoped
+    /// ones joining the multiplayer set (a host's reach everyone through
+    /// the session data, as any multiplayer skull does). The game's start
+    /// ([`Self::activate`]) clears the AI set; call this after each `Skull`
+    /// command with the director's whole active set.
+    pub fn set_firefight(&self, role: &Role, on: &BTreeSet<::firefight::Skull>) {
+        let bits = |v: Vec<u8>| v.iter().fold(0u32, |b, s| b | 1 << s);
+        self.ff_ai
+            .store(bits(firefight_ai(role, on)), Ordering::SeqCst);
+        if !matches!(role, Role::Guest { .. }) {
+            self.active
+                .fetch_or(bits(firefight_shared(on)), Ordering::SeqCst);
+        }
+    }
+    /// Writes the engine's skull array for the Firefight AI set: 1 for each
+    /// AI skull on, 0 for each AI skull off, other bytes untouched (they
+    /// are the campaign's). `false` if the array could not be written.
+    pub fn write_firefight_array<M: Gm>(&self, m: &mut M) -> bool {
+        FIREFIGHT_AI_SKULLS
+            .iter()
+            .all(|&i| m.wr(SKULL_ARRAY + i as u32, &[u8::from(self.ff_ai_active(i))]))
     }
     /// The multiplayer start: work out the set for `role` and make it
     /// active. Call with no guest memory held (a guest may wait for the
@@ -578,9 +696,7 @@ impl hooks::Feature for SkullsMp {
     }
     fn build(&self, b: &mut hooks::Builder) -> Result<(), hooks::BuildError> {
         use hooks::Flow;
-        use hooks::points::{
-            FIRST_PERSON_RENDER, GAME_ACTIVATE, HUD_SHOWN, WEAPON_FROM_PLACEMENT,
-        };
+        use hooks::points::{FIRST_PERSON_RENDER, GAME_ACTIVATE, HUD_SHOWN, WEAPON_FROM_PLACEMENT};
         let s = Arc::clone(&self.0);
         b.raw()
             .before(&GAME_ACTIVATE, "the host's skulls", move |c| {
@@ -1127,5 +1243,94 @@ mod tests {
         // A Famine call between its hooks holds a snapshot off.
         b.famine.lock().unwrap().push((0x1000, [1, 2]));
         assert!(b.snapshot_live().is_some());
+    }
+
+    fn ff(skulls: &[::firefight::Skull]) -> BTreeSet<::firefight::Skull> {
+        skulls.iter().copied().collect()
+    }
+
+    #[test]
+    fn ai_skulls_apply_on_the_host_only() {
+        use ::firefight::Skull as S;
+        let on = ff(&[S::Mythic, S::Angry, S::Famine, S::Blind, S::LowGravity]);
+        for role in [Role::Alone, Role::Host { peers: 3 }] {
+            assert_eq!(firefight_ai(&role, &on), [4, 12, 13], "{role:?}");
+        }
+        assert!(firefight_ai(&Role::Guest { class: 2 }, &on).is_empty());
+        // Player-scoped skulls do not depend on the role.
+        assert_eq!(firefight_shared(&on), [4, 6, 16]);
+
+        let mp = MpSkulls::new(store(), None, None);
+        mp.activate(&[]);
+        mp.set_firefight(&Role::Host { peers: 2 }, &on);
+        assert!(mp.ff_ai_active(12) && mp.ff_ai_active(13) && mp.ff_ai_active(4));
+        assert!(!mp.ff_ai_active(2), "Assassins is not on");
+        assert!(mp.active(BLIND) && mp.active(FAMINE));
+        assert!(mp.active(crate::skulls_custom::LOW_GRAVITY));
+        // A guest applies no AI skull and adds nothing of its own: the
+        // host's player-scoped set reaches it through the session.
+        let guest = MpSkulls::new(store(), None, None);
+        guest.activate(&[]);
+        guest.set_firefight(&Role::Guest { class: 2 }, &on);
+        assert!(!(0..32).any(|i| guest.ff_ai_active(i) || guest.active(i)));
+        // The next game's start clears the AI set.
+        mp.activate(&[]);
+        assert!(!mp.ff_ai_active(12));
+    }
+
+    #[test]
+    fn the_skull_array_gets_exactly_the_hosts_ai_set() {
+        use ::firefight::Skull as S;
+        let mp = MpSkulls::new(store(), None, None);
+        mp.set_firefight(&Role::Host { peers: 2 }, &ff(&[S::Thunderstorm, S::Catch]));
+        let mut f = Fake::default();
+        // A campaign byte (Blind, 6) is not ours to touch.
+        f.wr(SKULL_ARRAY + 6, &[1]);
+        f.wr(SKULL_ARRAY + 12, &[1]);
+        assert!(mp.write_firefight_array(&mut f));
+        let bytes: Vec<_> = (0..15)
+            .map(|i| f.u8(SKULL_ARRAY + i).unwrap_or(0))
+            .collect();
+        assert_eq!(bytes, [0, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn every_firefight_skull_has_a_scope_and_an_engine_index() {
+        use ::firefight::Skull as S;
+        for (skull, index, scope) in [
+            (S::Assassins, 2, FirefightScope::HostAi),
+            (S::Thunderstorm, 3, FirefightScope::HostAi),
+            (
+                S::Famine,
+                4,
+                FirefightScope::HostAiAndShared(Reach::Simulation),
+            ),
+            (S::Blind, 6, FirefightScope::Shared(Reach::Local)),
+            (S::Ghost, 7, FirefightScope::HostAi),
+            (S::Catch, 9, FirefightScope::HostAi),
+            (S::Mythic, 12, FirefightScope::HostAi),
+            (S::Angry, 13, FirefightScope::HostAi),
+            (S::LowGravity, 16, FirefightScope::Shared(Reach::Simulation)),
+        ] {
+            assert_eq!(firefight_index(skull), index);
+            assert_eq!(firefight_scope(skull), scope);
+        }
+        // The AI list is exactly the skulls whose scope reaches actors.
+        let ai: Vec<usize> = [
+            S::Assassins,
+            S::Thunderstorm,
+            S::Famine,
+            S::Blind,
+            S::Ghost,
+            S::Catch,
+            S::Mythic,
+            S::Angry,
+            S::LowGravity,
+        ]
+        .into_iter()
+        .filter(|s| !matches!(firefight_scope(*s), FirefightScope::Shared(_)))
+        .map(firefight_index)
+        .collect();
+        assert_eq!(ai, FIREFIGHT_AI_SKULLS);
     }
 }
