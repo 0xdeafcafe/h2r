@@ -30,6 +30,11 @@ fn wire(s: &world::Stats) -> Stats {
                         .iter()
                         .map(|&b| (b.name().to_owned(), c.bails[b as usize]))
                         .collect(),
+                    mxcsr: c.mxcsr.iter().map(|(w, n)| (format!("{w:08x}"), *n)).collect(),
+                    x87_control: c.x87_control
+                        .iter()
+                        .map(|(w, n)| (format!("{w:04x}"), *n))
+                        .collect(),
                 }
             })
             .collect(),
@@ -38,6 +43,10 @@ fn wire(s: &world::Stats) -> Stats {
         flushes: s.flushes,
         bsps: s.bsps,
         bytes: s.bytes,
+        array_bytes: s.array_bytes,
+        budget_bytes: s.budget_bytes,
+        ring_fallbacks: s.ring_fallbacks,
+        cluster_budget_reads: s.cluster_budget_reads,
         precision: Precision {
             single: s.precision[0],
             reserved: s.precision[1],
@@ -54,21 +63,34 @@ mod tests {
     #[test]
     fn stats_name_every_entry_and_reason() {
         let mut s = world::Stats::default();
-        s.entries[Entry::VectorTest as usize].native = 7;
+        s.entries[Entry::PointToLeaf as usize].native = 7;
         s.entries[Entry::Location as usize].bails[Bail::Alias as usize] = 2;
+        s.entries[Entry::InstanceTrace as usize].mxcsr.insert(0x1fa0, 3);
+        s.entries[Entry::InstanceTrace as usize].x87_control.insert(0x037f, 3);
         s.decodes = 3;
+        s.bytes = 950;
+        s.array_bytes = 246;
+        s.budget_bytes = 8 << 20;
+        s.ring_fallbacks = 4;
+        s.cluster_budget_reads = 19;
+        s.entries[Entry::Location as usize].bails[Bail::Budget as usize] = 6;
         s.precision = [1, 0, 5, 0];
         let w = wire(&s);
         let names: Vec<&str> = w.entries.iter().map(|e| e.name.as_str()).collect();
         assert_eq!(
             names,
-            ["point_to_leaf", "location", "vector_test", "vector_context"]
+            ["point_to_leaf", "location", "vector_test", "vector_context", "instance_trace"]
         );
         assert_eq!(w.entries[0].addr, "0014a280");
-        assert_eq!(w.entries[2].native, 7);
+        assert_eq!(w.entries[0].native, 7);
         assert_eq!(w.entries[1].bails["alias"], 2);
         assert_eq!(w.entries[1].bails.len(), Bail::ALL.len());
         assert_eq!((w.decodes, w.precision.double), (3, 5));
+        assert_eq!(w.entries[1].bails["budget"], 6);
+        assert_eq!((w.bytes, w.array_bytes), (950, 246));
+        assert_eq!((w.budget_bytes, w.ring_fallbacks, w.cluster_budget_reads), (8 << 20, 4, 19));
+        assert_eq!(w.entries[4].mxcsr["00001fa0"], 3);
+        assert_eq!(w.entries[4].x87_control["037f"], 3);
     }
 
     #[test]

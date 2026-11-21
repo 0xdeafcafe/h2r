@@ -2027,15 +2027,30 @@ h2 agent theater.play '{}' --socket "$film_run/play.sock"
 
 ## `collision`: the native collision world
 
-Counters for the entries `impl.sim.native.collision` takes over. Contract
-and bail reasons: [collision-queries.md](../engine/collision-queries.md).
-This is a game method (`agent::collision::install`). The counters are
-process globals, so it reads no guest memory, and they stay zero while the
-switch is off.
+The collision switch enables counters for native entries A and B, and
+before-call observers for the lifted vector and instance traces C–E. The game
+method reads process counters at a tick boundary. The entry addresses and
+bail reasons are in [collision-queries.md](../engine/collision-queries.md).
 
 | Method | Access | Params and result |
 |---|---|---|
-| `collision.stats` | read | no params. `switch`; `entries`, one per entry in contract order, each with `name` (`point_to_leaf`, `location`, `vector_test`, `vector_context`), `addr` (8 hex digits), `native` (calls the kernel answered) and `bails` (calls left to the lifted code, by reason: `env`, `float`, `fault`, `data`, `depth`, `alias`); `decodes`, `decode_failures`, `flushes`; `bsps` and `bytes` held now; `precision`, the x87 precision control seen at the vector-test entries (`single`, `reserved`, `double`, `extended`) |
+| `collision.stats` | read | No parameters. Returns `switch`, `entries`, `decodes`, `decode_failures`, `flushes`, `bsps`, `bytes`, `array_bytes`, `budget_bytes`, `ring_fallbacks`, `cluster_budget_reads`, and `precision` (aggregate single, reserved, double and extended x87 calls at C and D). |
+
+Each row in `entries` gives the `name` and eight-digit guest `addr`, the
+count of `native` answers, and `bails` by reason. Two frequency maps count
+the control words at entry, including calls that fall back at the first
+environment check. Keys are lowercase hexadecimal strings with leading
+zeros: eight digits for `mxcsr` and four for `x87_control`. Each value is
+a call count. Each map counts its own register independently. For
+`vector_test`, `vector_context` and `instance_trace`, only the frequency
+maps accumulate. An image without an observed entry leaves its row empty.
+`array_bytes` counts the decoded BSP allocations and the packed cluster
+table. `bytes` adds the reserved space for BSP owners and address-index
+capacity. `budget_bytes` limits that total to 8 MiB per loaded map.
+`ring_fallbacks` counts transitions to scalar ring reads, and
+`cluster_budget_reads` counts lookups that need the live cluster word
+because the packed table would exceed the budget. Sample before and after
+a scenario and subtract the counters to isolate that run.
 
 ```sh
 h2 agent collision.stats

@@ -117,11 +117,11 @@ fn szp(v: u32) -> u32 {
     ((v >> 31) << 7) | (u32::from(v == 0) << 6) | (u32::from((v as u8).count_ones() % 2 == 0) << 2)
 }
 
-fn logic_flags(c: &mut CpuAbi, v: u32) {
+pub(super) fn logic_flags(c: &mut CpuAbi, v: u32) {
     flags(c, szp(v), STATUS & !0x10);
 }
 
-fn add_flags(c: &mut CpuAbi, a: u32, b: u32) {
+pub(super) fn add_flags(c: &mut CpuAbi, a: u32, b: u32) {
     let (r, carry) = a.overflowing_add(b);
     let overflow = (!(a ^ b) & (a ^ r)) >> 31;
     flags(
@@ -224,7 +224,7 @@ fn ret(g: &impl Memory, c: &mut CpuAbi, cleanup: u32) -> Result {
     }))
 }
 
-fn sub_flags(c: &mut CpuAbi, a: u32, b: u32, width: u32) {
+pub(super) fn sub_flags(c: &mut CpuAbi, a: u32, b: u32, width: u32) {
     let mask = u32::MAX >> (32 - width);
     let (a, b) = (a & mask, b & mask);
     let r = a.wrapping_sub(b) & mask;

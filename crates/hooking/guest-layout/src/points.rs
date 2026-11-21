@@ -322,6 +322,8 @@ points! { ALL;
     COLLISION_BSP_SEGMENT @ 0x001d_e6d0: [fn(query: stack 0, node: stack 1, lo: stack 2, hi: stack 3) -> al ret 16], Hot; "docs/perf/sim-budget.md";
     /// BSP vector test: one segment through a collision BSP into the result record.
     COLLISION_VECTOR_TEST @ 0x001d_e630: [fn(out: eax, flags: ecx, bsp: edx, limit: xmm0, breakable_count: stack 0, breakable_mask: stack 1, start: stack 2, delta: stack 3) -> al ret 16], Hot; "docs/engine/collision-queries.md";
+    /// The instanced-geometry trace in one cluster.
+    COLLISION_INSTANCE_TRACE @ 0x0024_4980: [fn(cluster: eax, start: esi, delta: edi, flags: stack 0, filter: stack 1, out: stack 2) -> al ret 12], Hot; "docs/engine/collision-queries.md";
     /// Location of a point in the structure BSP: leaf, cluster, BSP index.
     COLLISION_LOCATION @ 0x0011_bed0: [fn(point: edx, out: esi) ret 0], Hot; "docs/engine/collision-queries.md";
     SIM_COLLISION_QUERY @ 0x0016_97c0: [fn(flags: stack 0, start: stack 1, delta: stack 2, ignore_a: stack 3, ignore_b: stack 4, out: stack 5) -> al ret 24], Hot; "docs/perf/sim-budget.md";

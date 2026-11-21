@@ -3,24 +3,24 @@
 //! it, runs on the IR interpreter with nothing stubbed. Private XBE as the
 //! oracle, synthetic BSPs (`sim_collision::synth`).
 //!
-//! The adapters replace whole subtrees and keep only the contract's
-//! registers (docs/engine/collision-queries.md), so the comparison is
-//! final state: guest memory outside each entry's dead stack window, the
-//! callee-saved registers, `esp`, the return target, the result register,
-//! MXCSR, and the x87 control, tag and status words without the condition
-//! codes. A declined call must have written nothing. Each case runs the
-//! adapter cold (empty world) and warm (the BSP the cold run decoded),
-//! and the per-function ports for points and segments run as a third arm.
+//! A and B compare the entire CPU and memory including their saved stack
+//! words. C and D compare outside the vector clobbers and dead stack slots,
+//! including the return address, EFLAGS and live x87 registers. A decline
+//! must preserve every guest register and byte. Each case takes the adapter
+//! cold and warm, and compares the older per-function port where present.
 #![cfg(feature = "differential")]
 
 mod common;
+#[path = "sim_collision_differential/disc.rs"]
+mod disc;
 
 use engine::sim_collision::{self as adapter, CollisionWorld, layout};
 use engine::{points, sim_native as sim};
 use ir::interp::{self, Cpu};
 use lift::harness::HARNESS_EXIT;
-use runtime::{CpuAbi, GuestFault, TransferAbi};
+use runtime::{CpuAbi, GuestFault, TransferAbi, guest::{Access, FaultReason}};
 use sim_collision::synth::{self, Builder, Rng};
+use sim_collision::structure::{LeafTable, TableVersion};
 use sim_core::Epoch;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -40,6 +40,9 @@ const BSP: u32 = 0x0064_0000;
 #[derive(Clone)]
 struct Ram<'a> {
     image: &'a [u8],
+    /// A disc tag, borrowed at its original guest address. The sweep gives
+    /// the interpreter and adapter this same immutable mapping.
+    tag: Option<(u32, &'a [u8], TableVersion)>,
     overlay: BTreeMap<u32, u8>,
 }
 
@@ -48,12 +51,26 @@ impl Ram<'_> {
         self.overlay
             .get(&p)
             .copied()
-            .unwrap_or(self.image[p as usize])
+            .unwrap_or_else(|| self.image[p as usize])
     }
-    fn read(&self, a: u32, dst: &mut [u8]) {
+    fn read(&self, a: u32, dst: &mut [u8]) -> Result<(), GuestFault> {
+        if let Some((base, bytes, _)) = self.tag
+            && let Some(offset) = a.checked_sub(base)
+            && let Some(tail) = bytes.get(offset as usize..)
+            && let Some(source) = tail.get(..dst.len())
+        {
+            dst.copy_from_slice(source);
+            return Ok(());
+        }
+        if !dst.is_empty() && u64::from(a) + dst.len() as u64 > self.image.len() as u64 {
+            return Err(GuestFault {
+                addr: a, len: dst.len(), access: Access::Read, reason: FaultReason::Unmapped,
+            });
+        }
         for (i, byte) in dst.iter_mut().enumerate() {
             *byte = self.get(a + i as u32);
         }
+        Ok(())
     }
     fn store(&mut self, a: u32, data: &[u8]) {
         for (i, &byte) in data.iter().enumerate() {
@@ -68,36 +85,68 @@ impl Ram<'_> {
     fn float(&mut self, a: u32, v: f32) {
         self.word(a, v.to_bits());
     }
-    /// Addresses either side wrote, outside `[lo, hi)`.
-    fn touched<'b>(&'b self, other: &'b Ram<'_>, dead: (u32, u32)) -> BTreeSet<u32> {
+    /// Addresses either side wrote, including the return address even when
+    /// the entry uses both its own frame and its argument slots as scratch.
+    fn touched<'b>(&'b self, other: &'b Ram<'_>, sp: u32, dead: (u32, u32)) -> BTreeSet<u32> {
         self.overlay
             .keys()
             .chain(other.overlay.keys())
             .copied()
-            .filter(|&p| !(dead.0..dead.1).contains(&p))
+            .filter(|&p| p.wrapping_sub(sp) < 4 || !(dead.0..dead.1).contains(&p))
             .collect()
     }
 }
 
 impl sim::Memory for Ram<'_> {
     fn read_bytes(&self, a: u32, dst: &mut [u8], _align: u32) -> Result<(), GuestFault> {
-        self.read(a, dst);
-        Ok(())
+        self.read(a, dst)
     }
     fn write_bytes(&mut self, a: u32, data: &[u8], _align: u32) -> Result<(), GuestFault> {
+        if !data.is_empty() && u64::from(a) + data.len() as u64 > self.image.len() as u64 {
+            return Err(GuestFault {
+                addr: a, len: data.len(), access: Access::Write, reason: FaultReason::Protection,
+            });
+        }
         self.store(a, data);
         Ok(())
     }
 }
 
+impl adapter::CollisionMemory for Ram<'_> {
+    fn leaf_table(&mut self, count_addr: u32, leaves: u32, leaf: u32) -> Option<LeafTable> {
+        let (base, bytes, version) = self.tag?;
+        let offset = count_addr.checked_sub(base)? as usize;
+        let count = u32::from_le_bytes(bytes.get(offset..)?.get(..4)?.try_into().ok()?);
+        LeafTable::witnessed(leaves, count, leaf, |len| {
+            let offset = leaves.checked_sub(base)? as usize;
+            bytes.get(offset..)?.get(..len as usize)?;
+            Some(version)
+        })
+    }
+
+    fn physical_range(&self, addr: u32, len: u32) -> Option<u32> {
+        let end = u64::from(addr) + u64::from(len);
+        let in_tag = self.tag.is_some_and(|(base, bytes, _)| {
+            addr >= base && end <= u64::from(base) + bytes.len() as u64
+        });
+        (end <= self.image.len() as u64 || in_tag).then_some(addr)
+    }
+
+    fn writable(&self, addr: u32, len: u32) -> bool {
+        let end = u64::from(addr) + u64::from(len);
+        end <= self.image.len() as u64 && !self.tag.is_some_and(|(base, bytes, _)| {
+            u64::from(addr) < u64::from(base) + bytes.len() as u64 && u64::from(base) < end
+        })
+    }
+}
+
 impl interp::Memory for Ram<'_> {
     fn read(&mut self, a: u32, dst: &mut [u8]) -> Result<(), interp::MemFault> {
-        Ram::read(self, a, dst);
-        Ok(())
+        Ram::read(self, a, dst).map_err(|f| interp::MemFault { addr: f.addr, write: false })
     }
     fn write(&mut self, a: u32, data: &[u8]) -> Result<(), interp::MemFault> {
-        self.store(a, data);
-        Ok(())
+        sim::Memory::write_bytes(self, a, data, 1)
+            .map_err(|f| interp::MemFault { addr: f.addr, write: true })
     }
 }
 
@@ -127,7 +176,7 @@ fn ir_cpu(c: &CpuAbi) -> Cpu {
 
 /// The x87 status bits outside the declared clobbers: the exception
 /// flags, ES and TOP (not C0..C3).
-const STATUS_KEPT: u32 = 0x38ff;
+const STATUS_KEPT: u32 = 0xb8ff;
 
 /// One entry's comparison scope.
 #[derive(Clone, Copy)]
@@ -142,22 +191,22 @@ struct Entry {
 const POINT_TO_LEAF: Entry = Entry {
     point: &points::COLLISION_POINT_TO_LEAF,
     eax: u32::MAX,
-    dead: (0x40, 0),
+    dead: (0, 0),
 };
 const LOCATION_ENTRY: Entry = Entry {
     point: &points::COLLISION_LOCATION,
-    eax: 0,
-    dead: (0x40, 0),
+    eax: u32::MAX,
+    dead: (0, 0),
 };
 const VECTOR: Entry = Entry {
     point: &points::COLLISION_VECTOR_TEST,
     eax: 0xff,
-    dead: (layout::VECTOR_DEAD_BELOW, 4 + layout::VECTOR_ARGS),
+    dead: (layout::VECTOR_DEAD_BELOW, 8),
 };
 const CONTEXT_ENTRY: Entry = Entry {
     point: &points::COLLISION_BSP_SEGMENT,
     eax: 0xff,
-    dead: (layout::VECTOR_DEAD_BELOW, 4 + layout::VECTOR_ARGS),
+    dead: (layout::CONTEXT_DEAD_BELOW, 4 + layout::VECTOR_ARGS),
 };
 
 fn visible(e: &Entry, c: &Cpu) -> [u32; 11] {
@@ -260,6 +309,10 @@ fn entry_cpu(rng: &mut Rng, point: u32) -> CpuAbi {
     if rng.chance(16) {
         // A full x87 stack: the original's pushes would overflow.
         c.x87.tag = 0;
+    } else {
+        // A value below ST(0) must survive temporary loads into the two
+        // free physical slots above it, including when TOP wraps.
+        c.x87.tag &= !(3 << (2 * top));
     }
     c.x87.st = std::array::from_fn(|i| [(i + 1) as u8; 10]);
     c.xmm = std::array::from_fn(|i| {
@@ -287,7 +340,7 @@ fn check(
 ) -> bool {
     static EPOCH: Epoch = Epoch::new();
     let world = CollisionWorld::new(&EPOCH);
-    let dead = (STACK.wrapping_sub(e.dead.0), STACK.wrapping_add(e.dead.1));
+    let dead = (c.esp.wrapping_sub(e.dead.0), c.esp.wrapping_add(e.dead.1));
     let mut reference: Option<(Cpu, Ram<'_>)> = None;
     let guest = |oracle: &mut Oracle<'_>| {
         let mut gm = m.clone();
@@ -296,8 +349,20 @@ fn check(
         (gc, gm)
     };
     let compare = |label: &str, got: &Cpu, nm: &Ram<'_>, (gc, gm): &(Cpu, Ram<'_>)| {
-        assert_eq!(visible(e, got), visible(e, gc), "{case} {label}: registers");
-        for p in nm.touched(gm, dead) {
+        if e.dead == (0, 0) {
+            assert_eq!(got, gc, "{case} {label}: CPU");
+        } else {
+            assert_eq!(visible(e, got), visible(e, gc), "{case} {label}: registers");
+            assert_eq!(got.eflags, gc.eflags, "{case} {label}: EFLAGS");
+            assert_eq!(got.flags_valid, gc.flags_valid, "{case} {label}: defined flags");
+            assert_eq!(got.fs_base, gc.fs_base, "{case} {label}: FS");
+            for (slot, value) in gc.x87.st.iter().enumerate() {
+                if gc.x87.tag >> (2 * slot) & 3 != 3 {
+                    assert_eq!(&got.x87.st[slot], value, "{case} {label}: x87 slot {slot}");
+                }
+            }
+        }
+        for p in nm.touched(gm, c.esp, dead) {
             assert_eq!(nm.get(p), gm.get(p), "{case} {label}: byte at {p:#x}");
         }
     };
@@ -348,6 +413,7 @@ fn write_bsp(m: &mut Ram<'_>, b: &Builder) {
 fn fresh<'a>(image: &'a [u8]) -> Ram<'a> {
     let mut m = Ram {
         image,
+        tag: None,
         overlay: BTreeMap::new(),
     };
     m.word(STACK, HARNESS_EXIT);
