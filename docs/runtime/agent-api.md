@@ -39,6 +39,8 @@ connection to hold `session.claim`.
 | `havok.pair.set` | claim | [`havok.pair.set`](#havokpairset) |
 | `superbounce.state` | read | [`superbounce`](#superbounce-the-superbounce-game-type) |
 | `superbounce.set` | act | [`superbounce`](#superbounce-the-superbounce-game-type) |
+| `superbounce.assist` | read | [`superbounce`](#superbounce-the-superbounce-game-type) |
+| `superbounce.assist_test` | act | [`superbounce`](#superbounce-the-superbounce-game-type) |
 | `profile.counters`, `profile.capture`, `profile.fallbacks`, `profile.memory`, `profile.faults` | read | [`profile`](#profile-where-a-frame-goes) |
 | `profile.sample.start`, `profile.sample.stop` | act | [`profile`](#profile-where-a-frame-goes) |
 | `profile.sample.status` | read | [`profile`](#profile-where-a-frame-goes) |
@@ -656,6 +658,35 @@ carry `H2_SUPERBOUNCE`, turns the mode on.
 
 ```sh
 h2 agent superbounce.set '{"on":true}'
+```
+
+`superbounce.assist` (access: read; no parameters) says what the hold-X fall
+assist did at its last pad read
+([superbounce.md](../game/superbounce.md#hold-x-the-fall-assist);
+`crates/extensions/game/src/superbounce_assist.rs`).
+
+| Field | Meaning |
+|---|---|
+| `active` | the superbounce mode is on; the assist works only then |
+| `test_hold` | `superbounce.assist_test` is holding the button |
+| `engaged` | the assist steered the player at its last read |
+| `target` | the strip's stand point, world units |
+| `aim` | the point being aimed at, a little before the stand point along the drift (X, Y) |
+| `landing` | where the player lands if the stick is let go (X, Y) |
+| `fall_time` | seconds until touchdown at the strip's height |
+| `stick` | the left stick sent to the guest, `[x (right), y (forward)]`, -1 to 1 |
+
+The last five are absent while not engaged.
+
+`superbounce.assist_test {"hold": true|false}` (access: act) holds the
+assist's button as if it were pressed, so an agent can try the assist
+without a pad: with the mode on, a player in the air above a strip in reach
+is steered while it is `true`. The answer is `{"hold": bool}`. It holds
+until set `false`.
+
+```sh
+h2 agent superbounce.assist_test '{"hold":true}'
+h2 agent superbounce.assist
 ```
 
 ## `profile`: where a frame goes
@@ -2263,13 +2294,35 @@ The window still expires the plate and marks on wall time
 A windowed host registers a `WorldLineSource` with
 `Host::add_world_line_source` before boot. Each source provides an
 immutable sample of world-space edges, with an anchor, color, dash
-flag and optional label for each group. A sample can live as long as
+flag, optional label and style for each group. A sample can live as long as
 its image or carry its own lease. Only the editor sample contributes
 to `editor.marks` status. The superbounce game type is another source, and
 its sample stays image-lived (`crates/extensions/game/src/superbounce_mode.rs`;
 `crates/extensions/game/src/run_opts.rs`,
 `crates/extensions/game/src/world_lines.rs`,
 `crates/platform/gfx/src/world_lines.rs`).
+
+A group's `LineStyle` (`crates/platform/gfx/src/world_lines.rs`) sets
+how it is drawn; the default is a thin opaque line. A style has:
+
+- a core `width` in pixels at 1080p, scaled by the output height;
+- an `alpha`;
+- an optional `glow`, a wider low-opacity halo around the core;
+- an optional `pulse`, a period and depth read from the present
+  time, so brightness breathes between full and `1 - depth`;
+- an optional distance `fade`, full opacity up to its start and none
+  from its end, in world units from the camera;
+- optional `chevrons`, small arrowheads lying flat in the world along
+  each edge and pointing along a world direction. They flow along
+  the direction when their speed is not zero;
+- an optional floor `ribbon`, a translucent strip of a world width
+  along each edge, clipped at the near plane.
+
+The window draws every edge as an anti-aliased screen-space quad, with the
+core, halo and dashes in the fragment shader, and the ribbons, arrowheads
+and label pixels as triangles in the same vertex buffer. All of it is one
+pipeline and one draw per frame
+(`crates/apps/app/src/overlay/marks.rs`).
 
 Genuine guest images captured with samples carry their own per-view
 cameras and aspect factors. Repeated scanout keeps the same samples

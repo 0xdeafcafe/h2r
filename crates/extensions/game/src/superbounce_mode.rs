@@ -24,6 +24,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use engine::GuestMemory;
+use gfx::world_lines::{Chevrons, Fade, Glow, LineStyle, Pulse, Ribbon};
 use superbounce::{Kind, Spot, Vec3};
 
 /// The feature's name.
@@ -46,6 +47,16 @@ pub const DIM: f32 = 0.35;
 pub const FALL_RED: f32 = 3.0;
 /// A crouch spot's colour: always drawn bright.
 pub const CROUCH_COLOUR: [f32; 3] = [0.0, 0.85, 1.0];
+/// Bounce strips that carry their launch label: the nearest few.
+pub const BOUNCE_LABELS: usize = 3;
+/// Crouch spots that carry their label: the nearest few.
+pub const CROUCH_LABELS: usize = 2;
+/// World units (from the camera) where a line starts to fade, and where
+/// it is gone.
+pub const FADE_NEAR: f32 = 25.0;
+pub const FADE_FAR: f32 = 45.0;
+/// A bounce strip's floor ribbon is as wide as the strip's slot.
+pub const RIBBON_WIDTH: f32 = 0.2;
 
 // ---- pure rules ----
 
@@ -94,10 +105,65 @@ pub struct Line {
     pub anchor: Vec3,
     pub color: [f32; 3],
     pub dashed: bool,
-    pub label: String,
+    /// Only the nearest few spots of each kind carry one ([`lines`]).
+    pub label: Option<String>,
+    pub style: LineStyle,
 }
 
-/// How `spot` is drawn when the player is, or is not, `primed`.
+/// How a bounce strip looks: a bold core with a halo and a floor ribbon,
+/// pulsing and with its arrows flowing the way in while primed, still
+/// (and dimmed, by its colour) when not.
+pub fn bounce_style(drift: [f32; 2], primed: bool) -> LineStyle {
+    let chevrons = (drift[0].hypot(drift[1]) > 1e-3).then_some(Chevrons {
+        direction: [drift[0], drift[1], 0.0],
+        spacing: 0.5,
+        size: 0.18,
+        speed: if primed { 0.4 } else { 0.0 },
+    });
+    LineStyle {
+        width: 3.0,
+        alpha: 1.0,
+        glow: Some(Glow {
+            width: 4.0,
+            alpha: 0.35,
+        }),
+        pulse: primed.then_some(Pulse {
+            period: 1.2,
+            depth: 0.35,
+        }),
+        fade: Some(Fade {
+            start: FADE_NEAR,
+            end: FADE_FAR,
+        }),
+        chevrons,
+        ribbon: Some(Ribbon {
+            width: RIBBON_WIDTH,
+            alpha: 0.18,
+        }),
+    }
+}
+
+/// How a crouch spot looks: a thin dashed core with a soft halo, steady.
+pub fn crouch_style() -> LineStyle {
+    LineStyle {
+        width: 1.5,
+        alpha: 1.0,
+        glow: Some(Glow {
+            width: 3.0,
+            alpha: 0.25,
+        }),
+        pulse: None,
+        fade: Some(Fade {
+            start: FADE_NEAR,
+            end: FADE_FAR,
+        }),
+        chevrons: None,
+        ribbon: None,
+    }
+}
+
+/// How `spot` is drawn when the player is, or is not, `primed`. Its
+/// label is always set; [`lines`] drops the far ones.
 pub fn line_for(spot: &Spot, primed: bool) -> Line {
     let anchor = anchor(spot);
     match spot.kind {
@@ -106,14 +172,16 @@ pub fn line_for(spot: &Spot, primed: bool) -> Line {
             anchor,
             color: shade(fall_colour(spot.fall), primed),
             dashed: false,
-            label: format!("+{:.1}", spot.launch),
+            label: Some(format!("+{:.1}", spot.launch)),
+            style: bounce_style(spot.drift, primed),
         },
         Kind::Crouch => Line {
             edge: spot.edge,
             anchor,
             color: CROUCH_COLOUR,
             dashed: true,
-            label: "crouch".into(),
+            label: Some("crouch".into()),
+            style: crouch_style(),
         },
     }
 }
@@ -135,7 +203,8 @@ fn anchor(spot: &Spot) -> Vec3 {
 
 /// The lines for the `max` spots nearest `at` (by their edges' middle),
 /// nearest first. None without a position. Only the chosen spots get a
-/// styled line (and a label); the rest cost a distance.
+/// styled line; only the nearest [`BOUNCE_LABELS`] bounce strips and
+/// [`CROUCH_LABELS`] crouch spots keep a label. The rest cost a distance.
 pub fn lines(spots: &[Spot], at: Option<Vec3>, primed: bool, max: usize) -> Vec<Line> {
     let Some(at) = at else { return Vec::new() };
     if max == 0 {
@@ -151,8 +220,20 @@ pub fn lines(spots: &[Spot], at: Option<Vec3>, primed: bool, max: usize) -> Vec<
         near.truncate(max);
     }
     near.sort_by(by_distance);
+    let (mut bounces, mut crouches) = (0, 0);
     near.into_iter()
-        .map(|(_, s)| line_for(s, primed))
+        .map(|(_, s)| {
+            let mut line = line_for(s, primed);
+            let (seen, labelled) = match s.kind {
+                Kind::Bounce => (&mut bounces, BOUNCE_LABELS),
+                Kind::Crouch => (&mut crouches, CROUCH_LABELS),
+            };
+            if *seen >= labelled {
+                line.label = None;
+            }
+            *seen += 1;
+            line
+        })
         .collect()
 }
 
@@ -679,7 +760,8 @@ mod gpu {
                     anchor: l.anchor,
                     color: l.color,
                     dashed: l.dashed,
-                    label: Some(&l.label),
+                    label: l.label.as_deref(),
+                    style: l.style,
                 });
             }
         }
@@ -750,12 +832,68 @@ mod tests {
         let off = line_for(&bounce, false);
         assert_eq!(on.color, [0.0, 1.0, 0.0]);
         assert_eq!(off.color, [0.0, DIM, 0.0]);
-        assert_eq!(on.label, "+17.9");
+        assert_eq!(on.label.as_deref(), Some("+17.9"));
         let crouch = spot(Kind::Crouch, 0.0, 0.0, 0.0);
         assert_eq!(line_for(&crouch, true), line_for(&crouch, false));
         assert_eq!(line_for(&crouch, false).color, CROUCH_COLOUR);
-        assert_eq!(line_for(&crouch, false).label, "crouch");
+        assert_eq!(line_for(&crouch, false).label.as_deref(), Some("crouch"));
         assert_eq!(on.anchor, [0.0, 1.0, 0.0]);
+    }
+
+    #[test]
+    fn a_primed_strip_pulses_and_flows_and_an_unprimed_one_is_still() {
+        let mut bounce = spot(Kind::Bounce, 0.0, 0.0, 17.9);
+        bounce.drift = [0.0, 1.0];
+        let on = line_for(&bounce, true).style;
+        let off = line_for(&bounce, false).style;
+        assert!(on.pulse.is_some() && off.pulse.is_none());
+        assert!(on.chevrons.unwrap().speed > 0.0);
+        assert_eq!(off.chevrons.unwrap().speed, 0.0);
+        assert_eq!(on.chevrons.unwrap().direction, [0.0, 1.0, 0.0]);
+        assert_eq!(on.ribbon.unwrap().width, RIBBON_WIDTH);
+        assert_eq!(on.width, 3.0);
+        // No drift, no arrows.
+        bounce.drift = [0.0, 0.0];
+        assert!(line_for(&bounce, true).style.chevrons.is_none());
+    }
+
+    #[test]
+    fn crouch_spots_are_thin_steady_and_dashed_and_both_kinds_fade_out() {
+        let crouch = line_for(&spot(Kind::Crouch, 0.0, 0.0, 0.0), true);
+        assert!(crouch.dashed);
+        let s = crouch.style;
+        assert!(s.pulse.is_none() && s.chevrons.is_none() && s.ribbon.is_none());
+        assert!(s.glow.is_some() && s.width < 3.0);
+        let bounce = line_for(&spot(Kind::Bounce, 0.0, 0.0, 1.0), true).style;
+        for fade in [s.fade, bounce.fade] {
+            let fade = fade.unwrap();
+            assert_eq!((fade.start, fade.end), (25.0, 45.0));
+        }
+    }
+
+    #[test]
+    fn only_the_nearest_three_bounces_and_two_crouches_keep_labels() {
+        let mut spots = Vec::new();
+        for i in 0..6 {
+            spots.push(spot(Kind::Bounce, i as f32 * 2.0, 0.0, i as f32));
+            spots.push(spot(Kind::Crouch, i as f32 * 2.0 + 1.0, 0.0, 0.0));
+        }
+        let drawn = lines(&spots, Some([0.0, 1.0, 0.0]), true, 99);
+        let labelled = |crouch: bool| {
+            drawn
+                .iter()
+                .filter(|l| l.dashed == crouch && l.label.is_some())
+                .count()
+        };
+        assert_eq!(labelled(false), BOUNCE_LABELS);
+        assert_eq!(labelled(true), CROUCH_LABELS);
+        // The labelled ones are the nearest of their kind.
+        let first_unlabelled = drawn
+            .iter()
+            .position(|l| !l.dashed && l.label.is_none())
+            .unwrap();
+        assert!(drawn[..first_unlabelled].iter().filter(|l| !l.dashed).all(|l| l.label.is_some()));
+        assert_eq!(drawn.len(), 12);
     }
 
     #[test]
@@ -765,7 +903,7 @@ mod tests {
             .map(|i| spot(Kind::Bounce, i as f32 * 10.0, 0.0, i as f32))
             .collect();
         let drawn = lines(&spots, Some([0.0, 1.0, 0.0]), true, 3);
-        let labels: Vec<_> = drawn.iter().map(|l| l.label.as_str()).collect();
+        let labels: Vec<_> = drawn.iter().map(|l| l.label.as_deref().unwrap()).collect();
         assert_eq!(labels, ["+0.0", "+1.0", "+2.0"]);
         assert!(lines(&spots, None, true, 3).is_empty());
         assert_eq!(lines(&spots, Some([0.0; 3]), true, 99).len(), 10);

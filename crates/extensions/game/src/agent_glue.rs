@@ -255,6 +255,31 @@ impl AgentGlue {
                     .expect("superbounce.set serialises"))
             },
         );
+        // The superbounce fall assist (superbounce_assist.rs,
+        // docs/game/superbounce.md, "Hold X: the fall assist").
+        agent.add_game_method(
+            agent_proto::superbounce::ASSIST,
+            Access::Read,
+            |params, _ctx| {
+                crate::superbounce_assist::no_params(&params)
+                    .map_err(|why| RpcError::new(code::INVALID_PARAMS, why))?;
+                Ok(serde_json::to_value(crate::superbounce_assist::assist_reply())
+                    .expect("superbounce.assist serialises"))
+            },
+        );
+        // Holds the assist's button for an agent with no pad.
+        agent.add_game_method(
+            agent_proto::superbounce::ASSIST_TEST,
+            Access::Act,
+            |params, _ctx| {
+                let p: agent_proto::superbounce::AssistTestParams =
+                    serde_json::from_value(params)
+                        .map_err(|e| RpcError::new(code::INVALID_PARAMS, e.to_string()))?;
+                let hold = crate::superbounce_assist::set_test_hold(p.hold);
+                Ok(serde_json::to_value(agent_proto::superbounce::AssistTest { hold })
+                    .expect("superbounce.assist_test serialises"))
+            },
+        );
         // HaloScript state: the threads and globals of the running scenario.
         agent::hs_state::install(&agent);
         // On the game thread: the sampler's main target.

@@ -61,6 +61,7 @@ mod gpu {
                         dashed,
                         anchor: first[0],
                         label: None,
+                        style: Default::default(),
                     });
                 }
             });

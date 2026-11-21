@@ -427,6 +427,7 @@ not a measured bounce; only a game run makes it an entry in
 h2 superbounce scan ascension             # BSP 0 of the disc map, best first
 h2 superbounce scan path/to/map.map --bsp 1 --json
 h2 superbounce scan ascension --near -10.62,4.0,-3.4   # the polygons near a point
+h2 superbounce scan ascension --explain -10.91,0.72,-1.16  # crouch regions near a point, judged
 ```
 
 The input is every surface of the structure collision BSP and of each
@@ -519,20 +520,55 @@ which is support. A sample where the standing capsule hits and the
 crouched one doesn't is a forced crouch.
 
 Forced samples that neighbour each other (8-neighbours, floors within
-0.15) are one region. A region narrower than a diameter and longer than
-one is cut along its long axis into pieces at most a diameter long, so
-every stand point is within a capsule's width of its whole spot; at
-Ascension the band beside the lip is about 5 cm wide and 0.7 long.
+0.15) are one region. Most regions are no use to a player: hair-thin
+bands at the edges of low ledges and props, where only the crouched
+capsule's rounded top slips under (under a ledge 0.4 up, 0.157 to 0.17
+from its edge), and pockets inside props. A region is a spot only when:
 
-- **stand**: the sample nearest the piece's centre.
-- **edge**: across the largest group of samples that have standing room
-  the same way next door, between its two ends: where a player walks in
-  crouched and can't stand up. With no such samples it runs along the
-  piece's long axis.
-- **score**: 0.4, plus 0.3 for that edge, plus 0.3 × the samples over 4
-  (to 1).
+- **it is more than a speck**: at least 2 samples;
+- **it touches standing room**: some of its samples have a neighbour
+  where standing is clear (its exits);
+- **it is reachable**: walking clear samples from its exits reaches a
+  lattice cell with no sample that is open floor, walkable floor with no
+  walkable face (a prop's top) within 1.075 over it. A region walled in
+  and roofed, inside a prop, never does;
+- **it is wide enough to stand in**: at up to 24 of its exits, the band
+  is probed both ways along each lattice axis to where the crouch is no
+  longer forced (1 cm steps, then three halvings), and the narrower axis
+  is its width there; along one axis alone, a band's end would measure
+  its length. It must be at least 4 cm wide at one of them. The
+  Ascension lip's band measures 5 cm, its overhang; a diagonal band
+  measures up to √2 times its width.
+
+There is no length rule. On the map the measured corner is a pocket two
+samples (4 cm) long, between the lip's corner and a wall at x −11.10,
+0.18 from the axis.
+
+Then a spot within 1.5 of a better one is dropped, and the 30 best are
+kept.
+
+- **stand**: when a bounce spot's stand is within 15 (straight line, not
+  walking distance) of the region's centre, the region's sample nearest
+  the nearest such stand: the end you leave from to go and bounce. At
+  Ascension that is the prop's corner, where the player stood. Otherwise
+  the sample nearest the region's centre.
+- **edge**: across the largest group of exits that have standing room
+  the same way, between its two ends: where a player walks in crouched
+  and can't stand up.
+- **score**: 0.4, plus 0.2 × the widest band over 0.15 (to 1), plus
+  0.1 × the region's length along its principal axis (to 1), plus 0.3 × (1 − the distance to
+  that bounce stand over 15) when there is one. You prime, then go and
+  bounce, so a crouch spot near a strip ranks first.
 
 `fall`, `launch` and `drift` are 0.
+
+`--explain x,y,z[,r]` (`superbounce::explain`) prints every forced-crouch
+region with a sample within r (default 1.0) of the point, before the
+filters and through them: its sample count and bounds, the band width at
+each probed exit, its length, whether the walk reaches open floor and
+where (or why not), why it was dropped, the better spot that suppressed
+it, and its score. It is the tool for tuning these rules against a real
+map.
 
 ## The superbounce game type
 
@@ -585,16 +621,82 @@ nearest spot 6.1 m  launch +17.9
   scan says why.
 
 **The lines.** Each spot is a world-space line (the window's world-line
-pass, no depth test):
+pass, no depth test; the styles are described in
+[the agent API](../runtime/agent-api.md#drawing-world-space-lines-over-the-frame)):
 
 - A bounce spot's edge is coloured by the fall onto it: green for a
   standing jump (0), yellow at 1.5 world units, red at 3 and more (a hue
-  sweep, clamped). Its label is the launch speed, `+17.9`.
-- Bounce lines are dimmed to 35% while the player is not primed, so a
-  bright line means a landing there launches.
-- A forced-crouch spot is a dashed cyan line labelled `crouch`, always at
-  full brightness.
-- Only the 40 spots nearest the player are drawn.
+  sweep, clamped). It is a 3 px core with a soft halo, over a floor ribbon
+  as wide as the strip's slot (0.2). When the spot has a drift, small
+  chevrons on the floor point along it, the way to come in.
+- While the player is primed a bounce line pulses and its chevrons flow.
+  While not, it is dimmed to 35% and still, so a bright, moving line means
+  a landing there launches.
+- A forced-crouch spot is a thin dashed cyan line with a soft halo, steady
+  and at full brightness.
+- Both kinds fade out between 25 and 45 world units from the camera.
+- Only the 40 spots nearest the player are drawn. Of those, only the
+  nearest 3 bounce strips carry their launch label (`+17.9`) and only the
+  nearest 2 crouch spots carry `crouch`.
+
+### Hold X: the fall assist
+
+Holding X in the air steers the player onto a bounce strip, so the landing
+is on the strip, moving slowly along its drift, the way every traced bounce
+came in. It works on input, not physics: the assist replaces the left stick
+the guest reads and takes X out of it, and writes nothing to the world. It
+is `crates/extensions/game/src/superbounce_assist.rs`; `superbounce.assist`
+and `superbounce.assist_test`
+([agent-api.md](../runtime/agent-api.md#superbounce-the-superbounce-game-type))
+show it and hold the button without a pad.
+
+**When it applies.** The mode is on, the first local player's X is held
+(pad X, keyboard E by default; the `BUTTON` constant), the player is
+airborne and falling (vertical speed at most 0.5 units/s), and a bounce spot
+passes the reach cone:
+
+- its stand point is below the player and within 3 units sideways;
+- the time to fall to its height is at most 3 s (`fall_time`, from the
+  height and vertical speed under gravity 4.15 units/s²);
+- the landing the player would have if the stick were let go (`predicted_landing`,
+  coasting for that time) is within what the stick can move in the time left:
+  half the air acceleration times the fall time squared, plus 0.4 units. The
+  cone is wider the longer the fall.
+
+Of the spots that pass, the one the coasting landing misses by least is
+steered onto.
+
+**The steer.** The aim is the stand point, 0.1 units back along the spot's
+drift, crossed at 0.8 units/s along the drift. A PD controller (`steer`,
+5 rad/s, damping 0.8) tracks the line that arrives there: the position the
+player would be at, the time left before touchdown, moving at the arrival
+velocity. It asks for a horizontal acceleration in world axes;
+`world_to_stick` turns it into the left stick in the aim's frame (forward is
+`(cos yaw, sin yaw)`, right `(sin yaw, -cos yaw)`) by dividing by the air
+acceleration (`AIR_ACCEL`, 3 units/s², an estimate of what a full stick
+does in the air) and cutting it back to the unit disc. Without a stick that
+strong the player misses; with one stronger the gains still land close
+(simulated at 0.7 to 1.4 times the estimate).
+
+**The button.** While the assist is engaged X reads as released, so the
+button does not reload or pick up. Once it has engaged, X stays released
+until the player lets go, so a landing or a strip going out of reach does
+not hand the game a fresh press. With no strip in reach, X and the stick
+pass through unchanged.
+
+**Where it sits.** An input tap at `XInputGetState`
+(`AssistTap`, installed by `register_late` before the agent's tap), so
+the agent's `input.pad` merges first and the assist sees that pad. With the
+mode off a pad read costs one atomic load. The tap changes the packet before
+the recording or replay tap under it sees it: a film or input log records
+the pad the guest got, and a replay overwrites the packet, so the assist
+never runs in a replay. The `superbounce-assist` feature has no guest hooks,
+so a film's hook digest does not include it, and it is snapshot-stateless:
+the swallowed-button latch and the test hold are momentary.
+
+The gains, the air acceleration and the stick's dead zone in the guest
+have not been measured in the game; they are the first thing to tune in a
+lab run.
 
 ## Open
 
