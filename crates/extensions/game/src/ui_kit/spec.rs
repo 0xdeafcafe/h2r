@@ -284,6 +284,9 @@ pub struct ScreenSpec {
     /// The id `Open` rows and `list_class::loader_of` know it by.
     pub name: String,
     pub title: String,
+    /// The default transition or this page's override.
+    #[serde(skip_serializing_if = "crate::ui_kit::animation::TransitionStyle::is_default")]
+    pub animation: crate::ui_kit::animation::TransitionStyle,
     pub list: ListPlace,
     pub style: ValueStyle,
     pub rows: Vec<RowSpec>,
@@ -328,6 +331,7 @@ impl ScreenSpec {
         ScreenSpec {
             name: name.into(),
             title: title.into(),
+            animation: crate::ui_kit::animation::TransitionStyle::default(),
             list: ListPlace::Controls,
             style: ValueStyle::Column,
             rows: Vec::new(),

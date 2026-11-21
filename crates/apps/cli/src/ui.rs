@@ -20,7 +20,7 @@ use tags::ui::{
 };
 use tags::wire::StringId;
 
-const USAGE: &str = "usage: h2 ui <map-name-or-file> <screen tag> [--disc disc.iso]\n       h2 ui preview <screen|list> [--state NAME|all] [--focus N] [--press up,a,...] [--synthetic] [--disc disc.iso] [--out DIR]\n       h2 ui sheet [--synthetic] [--disc disc.iso] [--out DIR]\n       h2 ui --all <map-name-or-file|all> [--disc disc.iso]\n\nPrints the widget tree of a wgit screen: widget kinds, rectangles as\n[top left bottom right] in UI units (origin at the screen centre, Y up),\nbitmap tag paths and string IDs. Localized text is never printed.\nWith --all, decodes every wgit, wgtz, wigl and skin tag of the map (or of\nevery disc map with `all`) and runs the engine index cross-checks; prints\ncounts and exits non-zero on any failure, on a map without UI tags, or on a\nmap that does not hold exactly one wigl.";
+const USAGE: &str = "usage: h2 ui <map-name-or-file> <screen tag> [--disc disc.iso]\n       h2 ui preview <screen|list> [--state NAME|all] [--focus N] [--press up,a,...] [--animation all|in:TICK|out:TICK] [--synthetic] [--disc disc.iso] [--out DIR]\n       h2 ui sheet [--synthetic] [--disc disc.iso] [--out DIR]\n       h2 ui --all <map-name-or-file|all> [--disc disc.iso]\n\nPrints the widget tree of a wgit screen: widget kinds, rectangles as\n[top left bottom right] in UI units (origin at the screen centre, Y up),\nbitmap tag paths and string IDs. Localized text is never printed.\nWith --all, decodes every wgit, wgtz, wigl and skin tag of the map (or of\nevery disc map with `all`) and runs the engine index cross-checks; prints\ncounts and exits non-zero on any failure, on a map without UI tags, or on a\nmap that does not hold exactly one wigl.";
 
 pub(super) fn run(args: Vec<String>) -> Result<()> {
     match args.first().map(String::as_str) {
@@ -436,9 +436,14 @@ impl<'a> Printer<'a> {
     }
 }
 
-const PREVIEW_USAGE: &str = "usage: h2 ui preview <screen|list> [--state NAME|all] [--focus N] [--synthetic] [--disc disc.iso] [--out DIR]\n\nDraws one of our screens (boot::ui_kit::screens::NAMES) in its named\nstates (boot::ui_kit::screens::states; default all), or its sample with\nthe focus on row N, or stepped from --state (default its first) through
+const PREVIEW_USAGE: &str = "usage: h2 ui preview <screen|list> [--state NAME|all] [--focus N] [--press up,a,...] [--animation all|in:TICK|out:TICK] [--synthetic] [--disc disc.iso] [--out DIR]\n\nDraws one of our screens (boot::ui_kit::screens::NAMES) in its named\nstates (boot::ui_kit::screens::states; default all), or its sample with\nthe focus on row N, or stepped from --state (default its first) through
 the presses (up, down, left, right, a, b, x, y, start, back; each
-effect printed, the end state drawn as <state>-pressed), from the disc's tags, art and fonts (or, with\n--synthetic, from layout numbers and block text, no disc). Writes\n<screen>-<state>.png and <screen>-<state>.json (every widget's rect) into\nDIR (default $TMPDIR) and prints the kit's checks and the layout checks\n(boot::ui_kit::layout). Nothing is written into\nthe repository. docs/game/ui-builder.md.";
+effect printed, the end state drawn as <state>-pressed). --animation
+samples the opening or closing transition at a tick, or five frames with all.
+Draws from the disc's tags, art and fonts (or with --synthetic, from layout
+numbers and block text). Writes <screen>-<state>.png and .json into DIR
+(default $TMPDIR). Transition samples append their phase to the filenames.
+Prints the kit's layout checks for the resting view. docs/game/ui-builder.md.";
 
 const SHEET_USAGE: &str = "usage: h2 ui sheet [--synthetic] [--disc disc.iso] [--out DIR]\n\nEvery screen of ours in every state, as `h2 ui preview` draws them, and\nsheet.png with all of them on one page, into DIR (default\n$RUSH_KEEP/ui-builder). docs/game/ui-builder.md.";
 
@@ -449,6 +454,7 @@ struct DrawArgs {
     state: Option<String>,
     focus: Option<usize>,
     press: Option<String>,
+    animation: Option<Vec<boot::ui_kit::animation::Phase>>,
     synthetic: bool,
     disc: Option<PathBuf>,
     out: Option<PathBuf>,
@@ -462,6 +468,11 @@ fn draw_args(args: Vec<String>, usage: &str) -> Result<Option<DrawArgs>> {
             "--state" => d.state = Some(args.next().context("--state needs a name or all")?),
             "--focus" => d.focus = Some(args.next().context("--focus needs a row")?.parse()?),
             "--press" => d.press = Some(args.next().context("--press needs inputs: up,a,b")?),
+            "--animation" => {
+                d.animation = Some(animation_phases(
+                    &args.next().context("--animation needs all, in:TICK or out:TICK")?,
+                )?);
+            }
             "--synthetic" => d.synthetic = true,
             "--disc" => {
                 d.disc = Some(PathBuf::from(
@@ -483,6 +494,25 @@ fn draw_args(args: Vec<String>, usage: &str) -> Result<Option<DrawArgs>> {
         }
     }
     Ok(Some(d))
+}
+
+fn animation_phases(value: &str) -> Result<Vec<boot::ui_kit::animation::Phase>> {
+    use boot::ui_kit::animation::{Phase, SAMPLES};
+    if value == "all" {
+        return Ok(SAMPLES.to_vec());
+    }
+    let (direction, tick) = value
+        .split_once(':')
+        .context("--animation needs all, in:TICK or out:TICK")?;
+    let tick = tick
+        .parse()
+        .context("animation tick must be a nonnegative integer")?;
+    let phase = match direction {
+        "in" => Phase::In(tick),
+        "out" => Phase::Out(tick),
+        _ => bail!("animation direction must be in or out"),
+    };
+    Ok(vec![phase])
 }
 
 /// `h2 ui preview`: a screen of ours drawn offline in its states
@@ -560,7 +590,7 @@ fn preview(args: Vec<String>) -> Result<()> {
                 println!("{state}: check: {f}");
             }
         }
-        let (view, _) = from.draw(spec, state)?;
+        let view = from.view(spec, state)?;
         let r = boot::ui_kit::layout::check(
             &view,
             from.source(),
@@ -579,7 +609,15 @@ fn preview(args: Vec<String>) -> Result<()> {
             );
         }
     }
-    for (label, _) in preview::write_states(&from, &dir, &name, &states)? {
+    let written = if let Some(phases) = a.animation {
+        preview::write_animation_states(&from, &dir, &name, &states, &phases)?
+    } else {
+        preview::write_states(&from, &dir, &name, &states)?
+            .into_iter()
+            .map(|(label, _)| label)
+            .collect()
+    };
+    for label in written {
         let file = label.replace('/', "-");
         println!("wrote {}", dir.join(format!("{file}.png")).display());
     }
@@ -592,7 +630,7 @@ fn sheet(args: Vec<String>) -> Result<()> {
     let Some(a) = draw_args(args, SHEET_USAGE)? else {
         return Ok(());
     };
-    if a.name.is_some() || a.state.is_some() || a.focus.is_some() {
+    if a.name.is_some() || a.state.is_some() || a.focus.is_some() || a.animation.is_some() {
         bail!("{SHEET_USAGE}");
     }
     let dir = match a.out {
@@ -664,6 +702,48 @@ mod tests {
         assert!(out.join("signin-code-code-pressed.png").exists());
         assert!(run(args(&["--press", "up,jump"])).is_err());
         assert!(run(args(&["--state", "nope", "--press", "a"])).is_err());
+        let _ = std::fs::remove_dir_all(&out);
+    }
+
+    #[test]
+    fn preview_exports_reusable_transition_samples_for_playback() {
+        let out = std::env::temp_dir().join(format!("h2-ui-motion-{}", std::process::id()));
+        let args = |phase: &str| {
+            [
+                "preview",
+                boot::theater_ui::OVERLAY,
+                "--state",
+                "playing",
+                "--synthetic",
+                "--out",
+                out.to_str().unwrap(),
+                "--animation",
+                phase,
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .collect()
+        };
+        run(args("all")).unwrap();
+        let stem = |phase| format!("{}-playing-{phase}", boot::theater_ui::OVERLAY);
+        for phase in boot::ui_kit::animation::SAMPLES {
+            assert!(out.join(format!("{}.png", stem(phase))).is_file());
+        }
+        let opening = stem(boot::ui_kit::animation::Phase::In(6));
+        let json: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(out.join(format!("{opening}.json"))).unwrap())
+                .unwrap();
+        assert_eq!(json["animation"]["in"], 6);
+        assert!(
+            json["widgets"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|w| w["id"] == "transport.0"
+                    && w["alpha"].as_u64().is_some_and(|alpha| (1..255).contains(&alpha)))
+        );
+        assert!(run(args("in:2")).is_ok());
+        assert!(run(args("out:nope")).is_err());
         let _ = std::fs::remove_dir_all(&out);
     }
 

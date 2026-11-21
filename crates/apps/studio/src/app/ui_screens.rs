@@ -8,6 +8,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result, bail};
+use boot::ui_kit::animation::{AnimatedView, Phase};
 use boot::ui_kit::input::Input;
 use boot::ui_kit::layout::{self, Rules};
 use boot::ui_kit::page::Live;
@@ -60,6 +61,7 @@ pub struct UiScreens {
     disc_path: Option<PathBuf>,
     shot: Option<Shot>,
     rev: u64,
+    animation: Phase,
     /// The last press and what the page did with it.
     pub last: Option<String>,
     pub zoom: f32,
@@ -78,6 +80,7 @@ impl Default for UiScreens {
             disc_path: None,
             shot: None,
             rev: 0,
+            animation: Phase::Rest,
             last: None,
             zoom: 1.0,
             show_rects: true,
@@ -159,6 +162,7 @@ impl UiScreens {
             Pick::Retail(_) => self.live = None,
         }
         self.pick = Some(pick);
+        self.animation = Phase::Rest;
         self.last = None;
         self.redraw();
         Ok(())
@@ -183,6 +187,17 @@ impl UiScreens {
     /// The spec shown, for a native screen.
     pub fn spec(&self) -> Option<ScreenSpec> {
         self.live.as_ref().map(|l| l.spec())
+    }
+
+    pub fn animation(&self) -> Phase {
+        self.animation
+    }
+
+    pub fn set_animation(&mut self, phase: Phase) {
+        if self.animation != phase && self.live.is_some() {
+            self.animation = phase;
+            self.redraw();
+        }
     }
 
     fn redraw(&mut self) {
@@ -212,6 +227,7 @@ impl UiScreens {
     fn draw_native(&mut self, state: &str) -> Result<Shot> {
         let spec = self.spec().context("no page")?;
         let rev = self.rev;
+        let phase = self.animation;
         let disc = self.disc();
         let from = match disc {
             Some(d) => preview::From::Disc(d),
@@ -219,7 +235,6 @@ impl UiScreens {
         };
         let src = from.source();
         let view = from.view(&spec, state)?;
-        let canvas = preview::render_view(&view, src);
         let rules = Rules::for_spec(&spec);
         let mut findings = Vec::new();
         if let Some(d) = disc {
@@ -235,8 +250,15 @@ impl UiScreens {
             text: i.to_string(),
             ids: i.ids().into_iter().map(String::from).collect(),
         }));
+        let view = if phase == Phase::Rest {
+            view
+        } else {
+            let mut animated = AnimatedView::new(view, spec.animation, spec.dialog.is_some());
+            animated.seek(phase);
+            animated.into_view()
+        };
         Ok(Shot {
-            canvas,
+            canvas: preview::render_view(&view, src),
             view: Some(view),
             findings,
             skipped: report.skipped.iter().map(|s| s.to_string()).collect(),
@@ -273,6 +295,7 @@ impl UiScreens {
         view.widgets
             .iter()
             .rev()
+            .filter(|w| w.alpha != 0)
             .find(|w| {
                 let [x, y, wd, h] = w.pixels().map(|v| v as f32);
                 px[0] >= x && px[0] < x + wd && px[1] >= y && px[1] < y + h
@@ -305,12 +328,18 @@ impl UiScreens {
         }
         std::fs::create_dir_all(dir).with_context(|| dir.display().to_string())?;
         let stem = match self.pick.clone().context("nothing picked")? {
-            Pick::Native { screen, state } => match &self.last {
-                Some(_) => format!("{screen}-{state}-pressed"),
-                None => format!("{screen}-{state}"),
-            },
+            Pick::Native { screen, state } => {
+                let pressed = if self.last.is_some() { "-pressed" } else { "" };
+                let stem = format!("{screen}-{state}{pressed}");
+                if self.animation == Phase::Rest {
+                    stem
+                } else {
+                    format!("{stem}-{}", self.animation)
+                }
+            }
             Pick::Retail(tag) => tag.replace(['\\', '/'], "_"),
         };
+        let phase = self.animation;
         let mut written = Vec::new();
         let shot = self.shot().context("nothing drawn")?;
         let png = dir.join(format!("{stem}.png"));
@@ -318,7 +347,11 @@ impl UiScreens {
         written.push(png);
         if let Some(v) = &shot.view {
             let json = dir.join(format!("{stem}.json"));
-            std::fs::write(&json, serde_json::to_string_pretty(&v.json())?)?;
+            let mut data = v.json();
+            if phase != Phase::Rest {
+                data["animation"] = serde_json::to_value(phase)?;
+            }
+            std::fs::write(&json, serde_json::to_string_pretty(&data)?)?;
             written.push(json);
         }
         let from = match self.disc() {
@@ -376,6 +409,25 @@ mod tests {
         assert!(!shot.skipped.is_empty());
         assert!(s.select(native("skulls", "nope")).is_err());
         assert!(s.select(native("nope", "focus-0")).is_err());
+    }
+
+    #[test]
+    fn transition_samples_keep_the_resting_layout_findings() {
+        let mut s = UiScreens::default();
+        s.select(native("signin-code", "code")).unwrap();
+        let findings = s.shot().unwrap().findings.clone();
+        let title_alpha = |shot: &Shot| shot.view.as_ref().unwrap().widget("title").unwrap().alpha;
+
+        s.set_animation(Phase::In(6));
+        let moving = s.shot().unwrap();
+        assert_eq!(moving.findings, findings);
+        assert!(title_alpha(moving) < 255 && title_alpha(moving) > 0);
+        s.set_animation(Phase::Out(14));
+        assert_eq!(title_alpha(s.shot().unwrap()), 0);
+
+        s.select(native("signin-code", "code")).unwrap();
+        assert_eq!(s.animation(), Phase::Rest);
+        assert_eq!(title_alpha(s.shot().unwrap()), 255);
     }
 
     /// Pad presses step the page and redraw; the summary follows.

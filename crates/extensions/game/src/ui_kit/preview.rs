@@ -13,7 +13,7 @@
 //! - the description block; text with a drop shadow; button glyphs in
 //!   their own colours from the font.
 //!
-//! What it leaves out: animations (all at rest), the scroll of the track
+//! What it leaves out: the scroll of the track
 //! lines, the skulls page's picture, the dimming of unfocused rows (taken
 //! as 55%, not traced) and model scenes. Nothing is kept: the PNG goes
 //! where the caller says, never into the repository.
@@ -1547,6 +1547,20 @@ impl From<'_> {
         }
         Ok(view)
     }
+    /// The builder's reusable pose sampler for a page in a named state.
+    pub fn animated_view(
+        &self,
+        s: &ScreenSpec,
+        state: &str,
+    ) -> Result<crate::ui_kit::animation::AnimatedView> {
+        use crate::ui_kit::animation::AnimatedView;
+        Ok(AnimatedView::new(
+            self.view(s, state)?,
+            s.animation,
+            s.dialog.is_some(),
+        ))
+    }
+
     /// `s` in state `state`: its view and its picture.
     pub fn draw(&self, s: &ScreenSpec, state: &str) -> Result<(View, Canvas)> {
         let v = self.view(s, state)?;
@@ -1572,14 +1586,53 @@ pub fn write_states(
     for (state, s) in states {
         let (v, c) = from.draw(s, state)?;
         let stem = format!("{screen}-{state}");
-        c.write_png(&dir.join(format!("{stem}.png")))?;
-        std::fs::write(
-            dir.join(format!("{stem}.json")),
-            serde_json::to_string_pretty(&v.json())?,
-        )?;
+        write_frame(dir, &stem, &c, &v, None)?;
         out.push((format!("{screen}/{state}"), c));
     }
     Ok(out)
+}
+
+/// Writes PNG and JSON samples of named states at the requested points
+/// of their transitions. The page geometry is prepared once per state.
+pub fn write_animation_states(
+    from: &From<'_>,
+    dir: &Path,
+    screen: &str,
+    states: &[(String, ScreenSpec)],
+    phases: &[crate::ui_kit::animation::Phase],
+) -> Result<Vec<String>> {
+    std::fs::create_dir_all(dir).with_context(|| dir.display().to_string())?;
+    let mut out = Vec::new();
+    for (state, spec) in states {
+        let mut animated = from.animated_view(spec, state)?;
+        for &phase in phases {
+            let v = animated.seek(phase);
+            let c = render_view(v, from.source());
+            let stem = format!("{screen}-{state}-{phase}");
+            write_frame(dir, &stem, &c, v, Some(phase))?;
+            out.push(format!("{screen}/{state}-{phase}"));
+        }
+    }
+    Ok(out)
+}
+
+fn write_frame(
+    dir: &Path,
+    stem: &str,
+    canvas: &Canvas,
+    view: &View,
+    phase: Option<crate::ui_kit::animation::Phase>,
+) -> Result<()> {
+    canvas.write_png(&dir.join(format!("{stem}.png")))?;
+    let mut json = view.json();
+    if let Some(phase) = phase {
+        json["animation"] = serde_json::to_value(phase)?;
+    }
+    std::fs::write(
+        dir.join(format!("{stem}.json")),
+        serde_json::to_string_pretty(&json)?,
+    )?;
+    Ok(())
 }
 
 /// Every screen of [`crate::ui_kit::screens::NAMES`] in every state of

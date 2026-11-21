@@ -129,7 +129,7 @@ Commands (output only to a directory you name, never the repository):
 
 ```sh
 h2 ui preview list                                       # screens and their states
-h2 ui preview <screen> [--state NAME|all] [--focus N] [--synthetic] [--out DIR]
+h2 ui preview <screen> [--state NAME|all] [--focus N] [--animation PHASE] [--synthetic] [--out DIR]
 h2 ui sheet [--synthetic] [--out DIR]                    # every screen x state, and sheet.png
 ```
 
@@ -153,6 +153,34 @@ h2 ui sheet [--synthetic] [--out DIR]                    # every screen x state,
 
 Screens come in as `ScreenSpec`s, from their `Page` ("Behaviour"). A spec
 with `ScreenSpec::dialog` set is drawn as a modal ("The modal dialog").
+
+## Transitions
+
+The kit uses the retail pane, list and skin animation tracks. The pane's
+track moves and fades its panel art, title, description, footer and other
+text together. Rows and the selection bar use the list and skin tracks.
+Dialogs and pickers animate over the existing page, including their body,
+status and icons. `ListClass::animation` and `KitScreen::animation` set a
+page's preference. `TransitionStyle::Default` inherits the source tracks,
+`Off` disables the pane and list transitions, and `Retail { pane, rows }`
+selects one-based slots from the active map's interface tag. A zero slot
+disables that track. An unavailable override falls back to the source pane
+and list.
+
+`AnimatedView` captures the resting widget bounds and opacity once.
+`seek(Phase)` reuses those buffers and computes the same pose for the same
+tick. The builder samples a page slide and fade, staggered rows and
+selection, and a modal fade. These samples use representative timing.
+The game plays the native curves from the active map. Both paths move the
+text with the other widgets on its track.
+
+Use `--animation in:6`, `--animation rest`, `--animation out:4` or
+`--animation all` to append the sampled phase to each PNG and JSON name.
+For example, `h2 ui preview theater.playback --animation all --synthetic`
+writes both ends and middle samples of playback's transitions. The UI
+Screens tab in the editor offers the same fixed samples in its
+**Transition** selector. Layout and content checks use the resting pose,
+so a deliberate slide never produces a false overflow.
 
 ## The checks
 
@@ -215,9 +243,8 @@ same anchor under the same bracket (its list block's visible count), so
 rows running past it are retail's own composition. A "list longer than
 its frame" check would flag the game's screen, so there is none.
 `ListPlace::Moved` carries the layout's visible count, and both
-geometries (synthetic and disc) draw that many rows. The bracket plays its own animation from the level select (2, read off the disc,
-`skulls_menu::FRAME_ANIMATION`), so it slides out with the page and isn't
-left drawn over the screen coming back on B. The sheet's files are named
+geometries (synthetic and disc) draw that many rows. The bracket joins
+the pane's track, so it exits with the title and descriptions. The sheet's files are named
 by the preview's screen name, not the spec's: `skulls.h1` and `skulls`
 are both `skulls` specs, and the Halo 1 page's tiles overwrote the
 campaign page's.
@@ -916,7 +943,7 @@ A game run has to show:
 - draw order: our dialog on top of the screen beneath, and the footer widget keeping our legend (`0x2300cf` may refill it from the tag);
 - alpha 0 hiding a widget, and tint changes taking effect while the screen is up;
 - the backing's blend: whether `framing_center` and `dialog1`/`dialog2` draw as opaque as the preview shows;
-- transitions and animations (the preview draws everything at rest);
+- the native animation timing and the panel, rows and selection in both directions on the game shell and paused game;
 - input timing: key repeat, the opener-press guard, and the keyboard's return;
 - that the Controls constructor accepts a tag recipe whose list holds one item and whose pane has more text blocks than the Controls tag;
 - the "Not verified" items of the modal, picker, header and Game Setup sections above, through their game runs.

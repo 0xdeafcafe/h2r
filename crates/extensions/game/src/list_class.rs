@@ -52,6 +52,8 @@ use engine::view::ui::{self, Item, Screen, list_slot, screen_slot};
 use runtime::guest::Permissions;
 
 use crate::ui::{Chosen, List, Model};
+use crate::ui_kit::animation::TransitionStyle;
+use crate::ui_kit::{dialog::DialogBase, dialog_tag};
 
 /// The Controls list's row chosen, which the press record holds until we
 /// adopt the screen.
@@ -424,10 +426,8 @@ pub struct PictureSpec {
     pub at: [i16; 2],
     /// The widget's animation (a 1-based index into the `wigl` animation
     /// collections, docs/formats/ui.md "Animations and transitions"): what
-    /// its screen's in and out transitions play on it. Zero is none, and a
-    /// widget with none stays fully drawn while its screen animates out:
-    /// the skulls page's skull stayed over the difficulty screen's own
-    /// coming back in, on B.
+    /// its screen's in and out transitions play on it. Kit classes set this
+    /// from the pane's resolved animation when they build their widgets.
     pub animation: u16,
 }
 
@@ -699,17 +699,21 @@ pub const TAG_COPY_SIZE: u32 =
 const _: () = assert!(TAG_SOURCE + 4 <= TAG_COPY && TAG_COPY + TAG_COPY_SIZE <= 0x1000);
 const _: () = assert!(FRAME_BLOCK + BITMAP_BLOCK_SIZE <= TAG_SOURCE);
 
-/// Writes at `at` a copy of the retail screen tag at `retail` with one pane
-/// (its pane 0): the first list block moved to `layout.anchor` on skin
-/// `layout.skin`, and only the bitmaps left of `layout.bitmaps_left_of`.
-/// Text blocks and the rest are the retail ones. `None` when the tag has no
-/// pane (left as it is).
+/// Writes a copy of the retail screen's first pane and list at `at`.
+/// A layout picks the list skin, anchor, visible count and retained bitmaps.
+/// An animation override sets the pane and list tracks before construction.
+/// Returns `None` when there is no pane or applicable override.
 pub fn copy_tag(
     m: &mut dyn GuestMemory,
     retail: u32,
     at: u32,
-    layout: &ListLayout,
+    layout: Option<&ListLayout>,
+    style: TransitionStyle,
 ) -> Result<Option<u32>, MemFault> {
+    let tracks = dialog_tag::PaneTracks::for_style(m, style);
+    if layout.is_none() && tracks.is_none() {
+        return Ok(None);
+    }
     let (panes, pane_from) = (
         m.u32(retail + SCREEN_PANES)?,
         m.u32(retail + SCREEN_PANES + 4)?,
@@ -729,21 +733,32 @@ pub fn copy_tag(
     m.set_u32(at + SCREEN_PANES, 1)?;
     m.set_u32(at + SCREEN_PANES + 4, pane)?;
     copy(m, pane_from, pane, PANE_SIZE)?;
+    if let Some(tracks) = tracks {
+        m.set_u16(pane + dialog_tag::PANE_ANIMATION, tracks.pane)?;
+    }
     let (lists, list_from) = (
         m.u32(pane_from + PANE_LISTS)?,
         m.u32(pane_from + PANE_LISTS + 4)?,
     );
     if lists > 0 {
         copy(m, list_from, list, LIST_BLOCK_SIZE)?;
-        m.set_u16(list + LIST_SKIN, layout.skin as u16)?;
-        if layout.visible > 0 {
-            m.set_u16(list + LIST_VISIBLE, layout.visible as u16)?;
+        if let Some(tracks) = tracks {
+            m.set_u16(list + dialog_tag::LIST_ANIMATION, tracks.rows)?;
         }
-        m.set_u16(list + LIST_ANCHOR, layout.anchor[0] as u16)?;
-        m.set_u16(list + LIST_ANCHOR + 2, layout.anchor[1] as u16)?;
+        if let Some(layout) = layout {
+            m.set_u16(list + LIST_SKIN, layout.skin as u16)?;
+            if layout.visible > 0 {
+                m.set_u16(list + LIST_VISIBLE, layout.visible as u16)?;
+            }
+            m.set_u16(list + LIST_ANCHOR, layout.anchor[0] as u16)?;
+            m.set_u16(list + LIST_ANCHOR + 2, layout.anchor[1] as u16)?;
+        }
         m.set_u32(pane + PANE_LISTS, 1)?;
         m.set_u32(pane + PANE_LISTS + 4, list)?;
     }
+    let Some(layout) = layout else {
+        return Ok(Some(at));
+    };
     let (n, from) = (
         m.u32(pane_from + PANE_BITMAPS)?,
         m.u32(pane_from + PANE_BITMAPS + 4)?,
@@ -767,7 +782,8 @@ struct RegisteredLayout {
     screen: &'static str,
     screen_vtable: u32,
     list_vtable: u32,
-    list: ListLayout,
+    list: Option<ListLayout>,
+    style: TransitionStyle,
     scroll_arrows: Option<ScrollArrows>,
 }
 
@@ -803,12 +819,12 @@ pub fn served_tag(
     if retail == 0 {
         return Ok(None);
     }
-    let Some(layout) = LAYOUTS
+    let Some((layout, style)) = LAYOUTS
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .iter()
         .find(|layout| layout.screen_vtable == vtable)
-        .map(|layout| layout.list)
+        .map(|layout| (layout.list, layout.style))
     else {
         return Ok(None);
     };
@@ -816,7 +832,7 @@ pub fn served_tag(
     if m.u32(vtable + TAG_SOURCE)? == retail {
         return Ok(Some(at));
     }
-    let made = copy_tag(m, retail, at, &layout)?;
+    let made = copy_tag(m, retail, at, layout.as_ref(), style)?;
     if made.is_some() {
         m.set_u32(vtable + TAG_SOURCE, retail)?;
     }
@@ -879,8 +895,8 @@ pub struct TextBlock {
     pub font: i16,
     /// Red, green, blue.
     pub colour: [f32; 3],
-    /// The widget's animation, as [`PictureSpec::animation`]: zero leaves
-    /// the text fully drawn through its screen's out transition.
+    /// The widget's animation, as [`PictureSpec::animation`]. A kit class
+    /// uses the pane's resolved track when it builds the widget.
     pub animation: u16,
 }
 
@@ -1193,6 +1209,7 @@ pub struct ListClass {
     picture: Option<PictureSpec>,
     frame: Option<PictureSpec>,
     layout: Option<ListLayout>,
+    animation: TransitionStyle,
     scroll_arrows: Option<ScrollArrows>,
     action: Option<Action>,
     buttons: Option<Buttons>,
@@ -1227,6 +1244,7 @@ impl ListClass {
             picture: None,
             frame: None,
             layout: None,
+            animation: TransitionStyle::default(),
             scroll_arrows: None,
             action: None,
             buttons: None,
@@ -1246,6 +1264,16 @@ impl ListClass {
     pub fn lines(mut self) -> Self {
         self.lines = true;
         self
+    }
+    /// Choose the native pane and list tracks. Focus retains the list skin's
+    /// own animation.
+    pub fn animation(mut self, style: TransitionStyle) -> Self {
+        self.animation = style;
+        self
+    }
+
+    pub(crate) fn animation_style(&self) -> TransitionStyle {
+        self.animation
     }
     /// With a description text: the focused row's [`Rows::description`].
     pub fn description(mut self, block: TextBlock) -> Self {
@@ -1487,6 +1515,7 @@ pub async fn load(
     e: Entries,
     rows: Arc<dyn Rows>,
     name: &'static str,
+    style: TransitionStyle,
 ) -> Result<Ret, EntryError> {
     // The rows are counted with no guest memory held.
     let count = rows.count();
@@ -1498,7 +1527,7 @@ pub async fn load(
     // Unreadable (no game kind byte): the main menu's.
     let base = cx.read(|m| m.u8(UI_GAME_KIND).map_or(CONTROLS_SCREEN_ID, base_screen_id));
     if let Some(d) = crate::ui_kit::dialog_tag::by_vtable(e.screen_vtable) {
-        crate::ui_kit::dialog_tag::prepare(&cx, &d, base, name).await?;
+        dialog_tag::prepare(&cx, &d, base, name, style).await?;
     }
     let screen = cx
         .call(GuestCall::new(points::UI_ALLOC.base).args([ui::CONTROLS_SCREEN_SIZE]))
@@ -2010,7 +2039,7 @@ pub async fn setup_pane(
     description: Option<Description>,
     name: &'static str,
 ) -> Result<Ret, EntryError> {
-    setup_pane_footer(cx, title, None, description, name).await
+    setup_pane_footer(cx, title, None, description, name, TransitionStyle::Default).await
 }
 
 /// The screen's second built-in text widget, the button legend in the
@@ -2020,6 +2049,83 @@ pub async fn setup_pane(
 /// BACK" there, the glyphs U+E100 and U+E101.
 pub const FOOTER: u32 = 0x338;
 
+// The widget contains the zero-based collection index, with -1 for no
+// animation (docs/formats/ui.md "Animations and transitions").
+const WIDGET_ANIMATION: u32 = 0x68;
+const FIRST_CHILD: u32 = 0x14;
+const NEXT_SIBLING: u32 = 0x18;
+
+/// The raw index a shader bitmap's constructor copies without adjustment.
+pub(crate) fn widget_animation_index(m: &dyn GuestMemory, addr: u32) -> Result<u16, MemFault> {
+    m.u16(addr + WIDGET_ANIMATION)
+}
+
+fn widget_slot(m: &dyn GuestMemory, addr: u32) -> Result<u16, MemFault> {
+    Ok(widget_animation_index(m, addr)?.wrapping_add(1))
+}
+
+fn set_widget_slot(m: &mut dyn GuestMemory, addr: u32, slot: u16) -> Result<(), MemFault> {
+    m.set_u16(addr + WIDGET_ANIMATION, slot.wrapping_sub(1))
+}
+
+fn animate_widgets(
+    m: &mut dyn GuestMemory,
+    screen: Screen,
+    motion: dialog_tag::PaneTracks,
+) -> Result<(), MemFault> {
+    let list = screen.list().addr;
+    set_widget_slot(m, screen.addr, motion.pane)?;
+    set_widget_slot(m, list, motion.rows)?;
+    set_widget_slot(m, screen.header(), motion.pane)?;
+    set_widget_slot(m, screen.addr + FOOTER, motion.pane)?;
+    // The list's children keep the skin tracks that animate selection and
+    // scrolling. Walk only the pane's children, once when it is built.
+    let mut child = m.u32(screen.addr + FIRST_CHILD)?;
+    for _ in 0..256 {
+        if child == 0 {
+            break;
+        }
+        if child != list {
+            set_widget_slot(m, child, motion.pane)?;
+        }
+        child = m.u32(child + NEXT_SIBLING)?;
+    }
+    Ok(())
+}
+
+async fn pane_tracks(
+    cx: &Cx,
+    screen: Screen,
+    style: TransitionStyle,
+    name: &str,
+) -> Result<dialog_tag::PaneTracks, EntryError> {
+    let (pane, rows, override_tracks) = cx.read(|m| -> Result<_, MemFault> {
+        Ok((
+            widget_slot(m, screen.addr)?,
+            widget_slot(m, screen.list().addr)?,
+            dialog_tag::PaneTracks::for_style(m, style),
+        ))
+    })?;
+    if let Some(chosen) = override_tracks {
+        return Ok(chosen);
+    }
+    if matches!(style, TransitionStyle::Retail { .. }) {
+        eprintln!(
+            "{name}: requested animation slots are unavailable on this map, using the pane's tracks"
+        );
+    }
+    // A template without a transition borrows the current interface's
+    // large dialog tracks. The references belong to this map's wigl.
+    if pane == 0
+        && rows == 0
+        && let Some(tag) = dialog_tag::screen_tag(cx, DialogBase::Large.screen_id() as u32).await?
+        && let Some(track) = cx.read(|m| dialog_tag::tag_tracks(m, tag))?
+    {
+        return Ok(track);
+    }
+    Ok(dialog_tag::PaneTracks::inherited(pane, rows))
+}
+
 /// [`setup_pane`], then `footer` (a string id) on the footer legend.
 pub async fn setup_pane_footer(
     cx: Cx,
@@ -2027,6 +2133,7 @@ pub async fn setup_pane_footer(
     footer: Option<u32>,
     description: Option<Description>,
     name: &'static str,
+    style: TransitionStyle,
 ) -> Result<Ret, EntryError> {
     let screen = cx.entry().ecx;
     let arg = cx.arg(0)?;
@@ -2037,6 +2144,8 @@ pub async fn setup_pane_footer(
                 .args([arg]),
         )
         .await?;
+    let motion = pane_tracks(&cx, Screen::at(screen), style, name).await?;
+    cx.write(|m| animate_widgets(m, Screen::at(screen), motion))?;
     cx.call(
         GuestCall::new(points::TEXT_SET.base)
             .edi(Screen::at(screen).header())
@@ -2054,7 +2163,11 @@ pub async fn setup_pane_footer(
         .await?;
     }
     if let Some(d) = description {
-        cx.write(|m| m.write(d.at, &d.block.bytes()))?;
+        let block = TextBlock {
+            animation: motion.pane,
+            ..d.block
+        };
+        cx.write(|m| m.write(d.at, &block.bytes()))?;
         let widget = cx
             .call(
                 GuestCall::new(points::PANE_TEXT_ADD.base)
@@ -2074,6 +2187,10 @@ pub async fn setup_pane_footer(
                 cx.write(|m| set_pane_text_visible(m, widget, false))?;
             }
             if let Some(spec) = d.picture {
+                let spec = PictureSpec {
+                    animation: motion.pane,
+                    ..spec
+                };
                 add_picture(&cx, screen, &spec, d.picture_at, Some(&d.shown), name).await?;
                 if let (Some((picture, template)), Some(rows)) =
                     (d.shown.picture_block(screen), &d.rows)
@@ -2093,9 +2210,13 @@ pub async fn setup_pane_footer(
                 }
             }
             if let Some(spec) = d.frame {
+                let spec = PictureSpec {
+                    animation: motion.pane,
+                    ..spec
+                };
                 add_picture(&cx, screen, &spec, d.frame_at, None, name).await?;
             }
-            add_panel(&cx, screen, &d, name).await?;
+            add_panel(&cx, screen, &d, name, motion).await?;
         }
     }
     Ok(Ret::new(r.eax, 4))
@@ -2104,13 +2225,23 @@ pub async fn setup_pane_footer(
 /// The class's panel ([`ListClass::panel`]): its art as bitmap widgets
 /// (backings first), then each text block a text widget with its string
 /// set ([`Rows::panel_text`], the rows' texts written first).
-async fn add_panel(cx: &Cx, screen: u32, d: &Description, name: &str) -> Result<(), EntryError> {
+async fn add_panel(
+    cx: &Cx,
+    screen: u32,
+    d: &Description,
+    name: &str,
+    motion: dialog_tag::PaneTracks,
+) -> Result<(), EntryError> {
     if d.panel.art.is_empty() && d.panel.texts.is_empty() {
         return Ok(());
     }
     for (i, spec) in d.panel.art.iter().enumerate() {
         let at = d.panel_at + i as u32 * BITMAP_BLOCK_SIZE;
-        add_picture(cx, screen, spec, at, None, name).await?;
+        let spec = PictureSpec {
+            animation: motion.pane,
+            ..*spec
+        };
+        add_picture(cx, screen, &spec, at, None, name).await?;
     }
     if let Some(rows) = &d.rows {
         cx.write(|m| rows.write_texts(m))?;
@@ -2119,7 +2250,11 @@ async fn add_panel(cx: &Cx, screen: u32, d: &Description, name: &str) -> Result<
     let mut widgets = Vec::with_capacity(d.panel.texts.len());
     for (i, t) in d.panel.texts.iter().enumerate() {
         let at = texts_at + i as u32 * TEXT_BLOCK_SIZE;
-        cx.write(|m| m.write(at, &t.bytes()))?;
+        let block = TextBlock {
+            animation: motion.pane,
+            ..t.block
+        };
+        cx.write(|m| m.write(at, &PanelText { block, ..*t }.bytes()))?;
         let widget = cx
             .call(
                 GuestCall::new(points::PANE_TEXT_ADD.base)
@@ -2258,6 +2393,7 @@ impl hooks::Feature for ListClass {
         // and left other plans pointing at memory they never allocated.
         set_push_request(tables + PUSH_BLOCK);
         let name = self.id;
+        let animation = self.animation;
         let shown = self.description.map(|_| Arc::new(Shown::default()));
         // The loader needs every address, so the entries are made first and
         // the loader reads them from a cell filled at the end.
@@ -2267,7 +2403,7 @@ impl hooks::Feature for ListClass {
             let rows = Arc::clone(&rows);
             b.entry("loader", move |cx| -> EntryFuture {
                 let e = *cell.get().expect("entries are set at build");
-                Box::pin(load(cx, e, Arc::clone(&rows), name))
+                Box::pin(load(cx, e, Arc::clone(&rows), name, animation))
             })?
         };
         let lines = match self.lines.then(|| Lines::of(self.id)).flatten() {
@@ -2351,7 +2487,9 @@ impl hooks::Feature for ListClass {
             let (description, ready) = (description.clone(), pane_ready.clone());
             Box::pin(async move {
                 let screen = cx.entry().ecx;
-                let ret = setup_pane_footer(cx.clone(), title, footer, description, name).await?;
+                let ret =
+                    setup_pane_footer(cx.clone(), title, footer, description, name, animation)
+                        .await?;
                 if let Some(ready) = ready {
                     ready(cx, screen).await?;
                 }
@@ -2394,13 +2532,16 @@ impl hooks::Feature for ListClass {
         {
             let mut layouts = LAYOUTS.lock().unwrap_or_else(|e| e.into_inner());
             layouts.retain(|layout| layout.screen_vtable != e.screen_vtable);
-            layouts.extend(layout.map(|list| RegisteredLayout {
-                screen: self.screen,
-                screen_vtable: e.screen_vtable,
-                list_vtable: e.list_vtable,
-                list,
-                scroll_arrows: self.scroll_arrows,
-            }));
+            if layout.is_some() || animation != TransitionStyle::Default {
+                layouts.push(RegisteredLayout {
+                    screen: self.screen,
+                    screen_vtable: e.screen_vtable,
+                    list_vtable: e.list_vtable,
+                    list: layout,
+                    style: animation,
+                    scroll_arrows: self.scroll_arrows,
+                });
+            }
         }
         if let Some(layout) = layout {
             let extra = layout.extra_items();
@@ -2740,7 +2881,9 @@ mod tests {
             .put_u32(REQUEST + 8, 4);
         g.put_u32(STACK, 0xdead).put_u32(STACK + 4, REQUEST);
         let e = entries();
-        let f = move |cx| -> EntryFuture { Box::pin(load(cx, e, video_rows(), "test")) };
+        let f = move |cx| -> EntryFuture {
+            Box::pin(load(cx, e, video_rows(), "test", TransitionStyle::Default))
+        };
         let regs = Regs {
             esp: STACK,
             ..Default::default()
@@ -2814,7 +2957,9 @@ mod tests {
             g.put_u32(STACK, 0xdead).put_u32(STACK + 4, REQUEST);
             assert_eq!(ingame(&g), Ok(ingame_));
             let e = entries();
-            let f = move |cx| -> EntryFuture { Box::pin(load(cx, e, video_rows(), "test")) };
+            let f = move |cx| -> EntryFuture {
+                Box::pin(load(cx, e, video_rows(), "test", TransitionStyle::Default))
+            };
             let regs = Regs {
                 esp: STACK,
                 ..Default::default()
@@ -2922,7 +3067,15 @@ mod tests {
         let e = entries();
         let f = {
             let rows = Arc::clone(&rows);
-            move |cx| -> EntryFuture { Box::pin(load(cx, e, Arc::clone(&rows), picker::NAME)) }
+            move |cx| -> EntryFuture {
+                Box::pin(load(
+                    cx,
+                    e,
+                    Arc::clone(&rows),
+                    picker::NAME,
+                    TransitionStyle::Default,
+                ))
+            }
         };
         let regs = Regs {
             esp: STACK,
@@ -2969,7 +3122,15 @@ mod tests {
         let f = move |cx: Cx| -> EntryFuture {
             let ready = ready.clone();
             Box::pin(async move {
-                let ret = setup_pane_footer(cx.clone(), title, None, None, picker::NAME).await?;
+                let ret = setup_pane_footer(
+                    cx.clone(),
+                    title,
+                    None,
+                    None,
+                    picker::NAME,
+                    TransitionStyle::Default,
+                )
+                .await?;
                 ready(cx.clone(), SCREEN).await?;
                 // Rebuilding the pane must not jump back after a cursor move.
                 ready(cx, SCREEN).await?;
@@ -3170,7 +3331,15 @@ mod tests {
             .put_u32(REQUEST + 8, 4);
         g.put_u32(STACK, 0xdead).put_u32(STACK + 4, REQUEST);
         let e = entries();
-        let f = move |cx| -> EntryFuture { Box::pin(load(cx, e, Arc::new(Fifteen), "test")) };
+        let f = move |cx| -> EntryFuture {
+            Box::pin(load(
+                cx,
+                e,
+                Arc::new(Fifteen),
+                "test",
+                TransitionStyle::Default,
+            ))
+        };
         let regs = Regs {
             esp: STACK,
             ..Default::default()
@@ -3319,9 +3488,16 @@ mod tests {
         assert_eq!(fps.get(), 60);
     }
 
+    fn mock_pane(g: &mut FakeGuest) {
+        g.map(SCREEN, ui::CONTROLS_SCREEN_SIZE)
+            .put_u16(SCREEN + WIDGET_ANIMATION, 6)
+            .put_u16(SCREEN + ui::LIST + WIDGET_ANIMATION, 10);
+    }
+
     #[test]
     fn the_pane_set_up_runs_the_retail_one_then_sets_our_title() {
         let mut g = guest();
+        mock_pane(&mut g);
         g.put_u32(STACK + 4, 0x55);
         let f = |cx| -> EntryFuture { Box::pin(setup_pane(cx, 0x20ff_f077, None, "test")) };
         let regs = Regs {
@@ -3461,6 +3637,7 @@ mod tests {
     #[test]
     fn the_pane_set_up_adds_the_description_widget() {
         let mut g = guest();
+        mock_pane(&mut g);
         g.put_u32(STACK + 4, 0x55);
         let block = TextBlock {
             rect: [1, 2, 3, 4],
@@ -3513,7 +3690,11 @@ mod tests {
         );
         assert_eq!(
             run.guest.bytes(TABLES + DESCRIPTION_BLOCK, 0x2c).unwrap(),
-            block.bytes()
+            TextBlock {
+                animation: 7,
+                ..block
+            }
+            .bytes()
         );
         assert_eq!(shown.focus(SCREEN, Some(2)), Some(0x9000));
     }
@@ -3789,6 +3970,7 @@ mod tests {
     /// bitmap blocks, the second showing image 3 of a `bitm`.
     fn screen_tag() -> FakeGuest {
         let mut g = guest();
+        mock_pane(&mut g);
         g.map(ENTRIES, 0x100)
             .map(TAG, 0x100)
             .map(PANES, 0x200)
@@ -3903,7 +4085,15 @@ mod tests {
                     .args([TABLES + PICTURE_BLOCK]),
             ]
         );
-        let mut want = picture_block(&screen_tag(), 0x1234_0005, &spec()).unwrap();
+        let mut want = picture_block(
+            &screen_tag(),
+            0x1234_0005,
+            &PictureSpec {
+                animation: 7,
+                ..spec()
+            },
+        )
+        .unwrap();
         want[BITMAP_HANDLE..BITMAP_HANDLE + 4].copy_from_slice(&u32::MAX.to_le_bytes());
         assert_eq!(run.guest.bytes(TABLES + PICTURE_BLOCK, 0x38).unwrap(), want);
         assert_eq!(shown.picture_block(SCREEN), Some((0x9800, u32::MAX)));
@@ -3967,10 +4157,141 @@ mod tests {
                     .args([TABLES + FRAME_BLOCK]),
             ]
         );
-        let want = picture_block(&screen_tag(), 0x1234_0005, &frame).unwrap();
+        let want = picture_block(
+            &screen_tag(),
+            0x1234_0005,
+            &PictureSpec {
+                animation: 7,
+                ..frame
+            },
+        )
+        .unwrap();
         assert_eq!(run.guest.bytes(TABLES + FRAME_BLOCK, 0x38).unwrap(), want);
         // The picture keeps the tint, not the frame.
         assert_eq!(shown.picture(SCREEN), Some(0x9900));
+    }
+
+    #[test]
+    fn pane_setup_animates_art_and_text_together_and_preserves_item_focus() {
+        const BACKING: u32 = 0x0008_1000;
+        const LIST: u32 = SCREEN + ui::LIST;
+        const ITEM: u32 = LIST + ui::ITEMS;
+        for (style, pane, rows) in [
+            (TransitionStyle::Default, 7, 11),
+            (TransitionStyle::Off, 0, 0),
+            (TransitionStyle::Retail { pane: 2, rows: 15 }, 2, 15),
+            (TransitionStyle::Retail { pane: 2, rows: 20 }, 7, 11),
+        ] {
+            const SCENARIO: u32 = 0x00a0_0000;
+            const GLOBALS: u32 = 0x00a0_1000;
+            const INTERFACE: u32 = 0x00a0_2000;
+            const WGTZ: u32 = 0x00a0_3000;
+            const WIGL: u32 = 0x00a0_4000;
+
+            let mut g = screen_tag();
+            g.map(points::SCENARIO.base, 4)
+                .map(points::GLOBALS_TAG.base, 4)
+                .map(SCENARIO, 0x100)
+                .map(GLOBALS, 0x200)
+                .map(INTERFACE, 0x100)
+                .map(WGTZ, 0x100)
+                .map(WIGL, 0x200);
+            g.put_u32(points::SCENARIO.base, SCENARIO)
+                .put_u16(SCENARIO + 0x10, 2)
+                .put_u32(points::GLOBALS_TAG.base, GLOBALS)
+                .put_u32(GLOBALS + 0x110, 1)
+                .put_u32(GLOBALS + 0x114, INTERFACE)
+                .put_u32(INTERFACE + 0x84, 6)
+                .put_u32(ENTRIES + 6 * 0x10 + 8, WGTZ)
+                .put_u32(WGTZ + 4, 7)
+                .put_u32(ENTRIES + 7 * 0x10 + 8, WIGL)
+                .put_u32(WIGL + 0x120, 16);
+            g.put_u32(STACK + 4, 0x55)
+                .put_u32(SCREEN + FIRST_CHILD, BACKING)
+                .put_u32(BACKING + NEXT_SIBLING, LIST)
+                .put_u16(BACKING + WIDGET_ANIMATION, 3)
+                .put_u32(LIST + FIRST_CHILD, ITEM)
+                .put_u16(ITEM + WIDGET_ANIMATION, 13);
+            let block = TextBlock {
+                rect: [80, -60, 50, 60],
+                font: 1,
+                colour: [1.0; 3],
+                animation: 0,
+            };
+            let d = Description {
+                at: TABLES + DESCRIPTION_BLOCK,
+                block,
+                shown: Arc::default(),
+                picture: None,
+                picture_at: 0,
+                frame: None,
+                frame_at: 0,
+                panel: Panel {
+                    art: vec![PictureSpec {
+                        animation: 0,
+                        ..spec()
+                    }],
+                    texts: vec![PanelText {
+                        block,
+                        right: false,
+                        bias: 0,
+                    }],
+                },
+                panel_at: TABLES + PANEL_BLOCKS,
+                rows: None,
+            };
+            let f = move |cx| -> EntryFuture {
+                Box::pin(setup_pane_footer(
+                    cx,
+                    0x77,
+                    Some(0x78),
+                    Some(d.clone()),
+                    "test",
+                    style,
+                ))
+            };
+            let run = testing::run(
+                &f,
+                g,
+                Regs {
+                    esp: STACK,
+                    ecx: SCREEN,
+                    ..Default::default()
+                },
+                |c, mem| {
+                    let eax = match c.target {
+                        t if t == points::PANE_TEXT_ADD.base => {
+                            assert_eq!(mem.u16(c.args[1] + 4), Ok(pane), "text constructor");
+                            0x9000
+                        }
+                        t if t == points::SCREEN_TAG_BY_ID.base => 0x1234_0005,
+                        t if t == points::PANE_BITMAP_ADD.base => {
+                            assert_eq!(mem.u16(c.args[0] + 4), Ok(pane), "bitmap constructor");
+                            0x9800
+                        }
+                        _ => 0,
+                    };
+                    Regs {
+                        eax,
+                        ..Default::default()
+                    }
+                },
+            );
+            assert_eq!(run.result, Ok(Ret::new(0, 4)));
+            for widget in [SCREEN, SCREEN + ui::HEADER, SCREEN + FOOTER, BACKING] {
+                assert_eq!(
+                    widget_slot(&run.guest, widget),
+                    Ok(pane),
+                    "{style:?} at {widget:#x}"
+                );
+            }
+            assert_eq!(widget_slot(&run.guest, LIST), Ok(rows));
+            assert_eq!(
+                widget_slot(&run.guest, ITEM),
+                Ok(14),
+                "focus track preserved"
+            );
+        }
     }
 
     /// Row text tints the picture for the focused row when the focus moves,
@@ -4083,7 +4404,10 @@ mod tests {
             visible: 15,
             ..LAYOUT
         };
-        assert_eq!(copy_tag(&mut g, retail, at, &tall), Ok(Some(at)));
+        assert_eq!(
+            copy_tag(&mut g, retail, at, Some(&tall), TransitionStyle::Default),
+            Ok(Some(at))
+        );
         let pane = g.u32(at + 0x24).unwrap();
         let list = g.u32(pane + 0x10).unwrap();
         assert_eq!(g.u16(list + 6), Ok(15), "the rows the page has room for");
@@ -4116,7 +4440,10 @@ mod tests {
         let mut g = guest();
         let retail = controls_tag(&mut g);
         let at = TABLES + TAG_COPY;
-        assert_eq!(copy_tag(&mut g, retail, at, &LAYOUT), Ok(Some(at)));
+        assert_eq!(
+            copy_tag(&mut g, retail, at, Some(&LAYOUT), TransitionStyle::Default),
+            Ok(Some(at))
+        );
         // The root is the retail one but for its one pane.
         assert_eq!(g.u32(at), Ok(0x11));
         assert_eq!(g.u16(at + 4), Ok(39));
@@ -4142,6 +4469,29 @@ mod tests {
     }
 
     #[test]
+    fn an_animation_only_tag_copy_preserves_the_base_geometry() {
+        let mut g = guest();
+        let retail = controls_tag(&mut g);
+        let at = TABLES + TAG_COPY;
+        assert_eq!(
+            copy_tag(&mut g, retail, at, None, TransitionStyle::Off),
+            Ok(Some(at))
+        );
+        let source_pane = g.u32(retail + SCREEN_PANES + 4).unwrap();
+        let pane = g.u32(at + SCREEN_PANES + 4).unwrap();
+        let list = g.u32(pane + PANE_LISTS + 4).unwrap();
+        assert_eq!(g.u16(pane + dialog_tag::PANE_ANIMATION), Ok(0));
+        assert_eq!(g.u16(list + dialog_tag::LIST_ANIMATION), Ok(0));
+        assert_eq!(g.u16(list + LIST_SKIN), Ok(2));
+        assert_eq!(g.u16(list + LIST_ANCHOR).map(|x| x as i16), Ok(-254));
+        assert_eq!(g.u32(pane + PANE_BITMAPS), Ok(2));
+        assert_eq!(
+            g.u32(pane + PANE_BITMAPS + 4),
+            g.u32(source_pane + PANE_BITMAPS + 4)
+        );
+    }
+
+    #[test]
     fn only_screens_of_a_class_with_a_layout_get_the_copy_made_once() {
         let mut g = guest();
         let retail = controls_tag(&mut g);
@@ -4154,7 +4504,8 @@ mod tests {
             screen: "test",
             screen_vtable: TABLES,
             list_vtable: entries().list_vtable,
-            list: LAYOUT,
+            list: Some(LAYOUT),
+            style: TransitionStyle::Default,
             scroll_arrows: None,
         });
         assert!(has_layout(TABLES));

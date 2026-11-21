@@ -483,12 +483,14 @@ async fn add_emblem(
         .call(GuestCall::new(points::UI_LIST_SKIN.base).args([6]))
         .await?
         .eax;
-    let Some(block) = cx.read(|m| emblem_block(m, skin))? else {
+    let Some(mut block) = cx.read(|m| emblem_block(m, skin))? else {
         return Ok(());
     };
     let mut profile = [0; 16];
     profile[..8].copy_from_slice(&guest::bot_look(&name));
     cx.write(|m| {
+        let animation = list_class::widget_animation_index(m, screen)?;
+        block[4..6].copy_from_slice(&animation.to_le_bytes());
         m.write(d.page + BLOCK, &block)?;
         m.write(d.page + PROFILE, &profile)
     })?;

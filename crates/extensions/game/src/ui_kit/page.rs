@@ -167,6 +167,7 @@ impl Page for ListPage {
     fn spec(&self, focus: &Focus) -> ScreenSpec {
         ScreenSpec {
             focus: focus.0,
+            animation: self.class.animation_style(),
             ..(self.spec)()
         }
     }

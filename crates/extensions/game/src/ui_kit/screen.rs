@@ -28,6 +28,7 @@ use runtime::guest::Permissions;
 
 use crate::list_class::{Action, ListClass, ListLayout, LiveText, OnFree, Rows, TextBlock};
 use crate::ui::{Chosen, LABEL_SLOT, VALUE_SLOT};
+use crate::ui_kit::animation::TransitionStyle;
 use crate::ui_kit::dialog::{DialogBase, DialogSpec};
 use crate::ui_kit::ids::{self, Family};
 use crate::ui_kit::input::{Glyph, Input, OpenerGuard, Prompt};
@@ -278,6 +279,7 @@ pub struct KitScreen {
     row_help: Option<String>,
     rows: Vec<Row>,
     layout: Option<ListLayout>,
+    animation: TransitionStyle,
     style: ValueStyle,
     description: Option<TextBlock>,
     live_help: Option<LiveHelp>,
@@ -309,6 +311,7 @@ impl KitScreen {
             row_help: None,
             rows: Vec::new(),
             layout: None,
+            animation: TransitionStyle::default(),
             style: ValueStyle::Column,
             description: None,
             live_help: None,
@@ -334,6 +337,12 @@ impl KitScreen {
         self.style = style;
         self
     }
+    /// Use a page transition other than the template's native default.
+    pub fn animation(mut self, style: TransitionStyle) -> Self {
+        self.animation = style;
+        self
+    }
+
     /// A dialog of rows (docs/game/ui-builder.md "The Dialog kind"): the
     /// rows in `base`'s list, on its panel and header, opened over the
     /// screen beneath on the dialogs' window and closed by B, as the
@@ -600,6 +609,7 @@ impl KitScreen {
         );
         let mut c =
             ListClass::with_rows(self.feature, self.name, Arc::clone(self) as Arc<dyn Rows>)
+                .animation(self.animation)
                 .action(self.action())
                 .sideways()
                 .on_free(self.on_free());
@@ -744,6 +754,7 @@ impl Rows for KitScreen {
 impl Describe for KitScreen {
     fn spec(&self) -> ScreenSpec {
         let mut s = ScreenSpec::new(self.name, &self.title);
+        s.animation = self.animation;
         s.list = ListPlace::from(self.layout);
         s.style = self.style;
         s.rows = self
@@ -868,6 +879,15 @@ pub fn example() -> (KitScreen, Arc<AtomicUsize>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Each screen's texts are a feature of their own, so a second kit
+    /// screen in the game no longer fails the plan with DuplicateFeature.
+    #[test]
+    fn the_page_animation_override_is_in_its_authored_model() {
+        let (page, _) = example();
+        let page = page.animation(TransitionStyle::Off);
+        assert_eq!(Describe::spec(&page).animation, TransitionStyle::Off);
+    }
 
     /// Each screen's texts are a feature of their own, so a second kit
     /// screen in the game no longer fails the plan with DuplicateFeature.

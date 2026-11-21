@@ -7,6 +7,7 @@
 use dear_imgui_rs::{TextureId, Ui};
 use dear_imgui_wgpu::ExternalTextureId;
 
+use boot::ui_kit::animation::{Phase, SAMPLES};
 use boot::ui_kit::input::Input;
 
 use crate::app::{Action, App, Pick, UiScreens};
@@ -145,6 +146,9 @@ pub fn preview(ui: &Ui, app: &mut App, st: &mut UiScreensUi, gpu: &mut Gpu<'_>) 
     ui.checkbox("Title safe", &mut s.show_safe);
     ui.same_line();
     ui.checkbox("Reserved", &mut s.show_reserved);
+    if matches!(s.pick.as_ref(), Some(Pick::Native { .. })) {
+        transition_picker(ui, s);
+    }
     let (zoom, rects, safe, reserved) = (s.zoom, s.show_rects, s.show_safe, s.show_reserved);
     let hot: Vec<String> = st
         .hot
@@ -204,7 +208,7 @@ pub fn preview(ui: &Ui, app: &mut App, st: &mut UiScreensUi, gpu: &mut Gpu<'_>) 
         .flat_map(|f| f.ids.iter().map(String::as_str))
         .collect();
     if let Some(view) = &shot.view {
-        for w in &view.widgets {
+        for w in view.widgets.iter().filter(|w| w.alpha != 0) {
             let r = w.pixels();
             if hot.contains(&w.id) {
                 boxed(r, BAD, 3.0);
@@ -225,6 +229,28 @@ pub fn preview(ui: &Ui, app: &mut App, st: &mut UiScreensUi, gpu: &mut Gpu<'_>) 
         if let Some(id) = s.widget_at(px) {
             ui.tooltip_text(&id);
             st.hovered = Some(id);
+        }
+    }
+}
+
+fn transition_picker(ui: &Ui, s: &mut UiScreens) {
+    let label = |phase| match phase {
+        Phase::In(0) => "Before opening",
+        Phase::In(_) => "Opening",
+        Phase::Rest => "At rest",
+        Phase::Out(4) => "Closing",
+        Phase::Out(_) => "Closed",
+    };
+    ui.set_next_item_width(140.0);
+    if let Some(_combo) = ui.begin_combo("Transition", label(s.animation())) {
+        for phase in SAMPLES {
+            if ui
+                .selectable_config(label(phase))
+                .selected(s.animation() == phase)
+                .build()
+            {
+                s.set_animation(phase);
+            }
         }
     }
 }
@@ -316,7 +342,7 @@ pub fn inspector(
         f.pop();
     };
     let s = &mut app.ui_screens;
-    let native = matches!(s.pick, Some(Pick::Native { .. }));
+    let native = matches!(s.pick.as_ref(), Some(Pick::Native { .. }));
     if native {
         heading("Page");
         if let Some(sum) = s.summary() {
