@@ -203,6 +203,48 @@ fn a_host_write_lands_where_the_readers_read() {
     assert_eq!(pl.team(&game.g).unwrap(), 1);
 }
 
+/// The player record's lives: a count, null when unlimited, and there
+/// between lives too.
+#[test]
+fn the_view_reports_each_players_lives() {
+    let (h, mut game) = (Harness::new(), game());
+    let players = engine::view::players::array(&game.g).unwrap().unwrap();
+    for (i, lives) in [(0, 2u16), (1, 0xffff)] {
+        let p = players.get_absolute(&game.g, i).unwrap().unwrap();
+        game.g.put_u16(p.addr + super::state::PLAYER_LIVES, lives);
+    }
+    let v = h.ok(&mut game, method::VIEW, json!({"roots": ["player"]}));
+    assert_eq!(v["player"]["0"]["lives"], 2);
+    assert!(v["player"]["1"]["lives"].is_null(), "{v}");
+    assert!(v["player"]["1"].get("health").is_none(), "player 1 is between lives: {v}");
+    let p = players.get_absolute(&game.g, 1).unwrap().unwrap();
+    game.g.put_u16(p.addr + super::state::PLAYER_LIVES, 0);
+    let v = h.ok(&mut game, method::VIEW, json!({"roots": ["player"]}));
+    assert_eq!(v["player"]["1"]["lives"], 0);
+}
+
+/// The score is the game engine's stat row `+0x00`; null without a game
+/// engine.
+#[test]
+fn the_view_reports_each_players_score() {
+    const ENGINE: u32 = 0x8140_0000;
+    let (h, mut game) = (Harness::new(), game());
+    let v = h.ok(&mut game, method::VIEW, json!({"roots": ["player"]}));
+    assert!(v["player"]["0"]["score"].is_null(), "no game engine: {v}");
+    game.g.map(engine::points::GAME_ENGINE.base, 4);
+    game.g.put_u32(engine::points::GAME_ENGINE.base, ENGINE);
+    game.g.map(ENGINE, 0x1000);
+    let row = |i: u32| ENGINE + super::state::STAT_ROWS + super::state::STAT_ROW_SIZE * i;
+    game.g.put_u16(row(0), 150).put_u16(row(1), (-5i16) as u16);
+    let v = h.ok(&mut game, method::VIEW, json!({"roots": ["player"]}));
+    assert_eq!(v["player"]["0"]["score"], 150);
+    assert_eq!(v["player"]["1"]["score"], -5);
+    // An engine pointer of zero (the menu) is no game engine.
+    game.g.put_u32(engine::points::GAME_ENGINE.base, 0);
+    let v = h.ok(&mut game, method::VIEW, json!({"roots": ["player"]}));
+    assert!(v["player"]["0"]["score"].is_null(), "{v}");
+}
+
 #[test]
 fn co_op_and_client_sessions_refuse_writes_and_write_nothing() {
     let (h, mut game) = (Harness::new(), game());

@@ -79,6 +79,8 @@ connection to hold `session.claim`.
 | `sim.*` | read or act | [`sim`](#sim-simulated-players-and-direct-state) |
 | `forge.status`, `forge.doc`, `forge.log`, `forge.propose`, `forge.input` | read or act | [Local Forge session](#local-forge-session) |
 | `forge.capacity`, `forge.probe` | read, act | [Forge probes](#forge-probes) |
+| `firefight.state`, `firefight.kit` | read | [Firefight](#firefight) |
+| `firefight.command` | act | [Firefight](#firefight) |
 | `match.status`, `match.report`, `match.stop` | read, read, act | [Sim matches](#sim-matches) |
 | `debug.views`, `debug.view` | read, act | [World debug views](#world-debug-views) |
 | `settings.list`, `settings.set`, `perf.overlay`, `cheat.list`, `cheat.set` | read or act | [Menu methods](#menu-methods-settings-perf-overlay-cheats) |
@@ -94,7 +96,7 @@ connection to hold `session.claim`.
 
 A new method gets a row here and a section for its domain. The names
 live in `crates/extensions/agent-proto/src` (`method::ALL`, `hot::method::ALL`,
-`state::method::ALL`, `sim`, `forge`, `trace`, `theater`) and where the host adds
+`state::method::ALL`, `sim`, `forge`, `firefight`, `trace`, `theater`) and where the host adds
 them (`Agent::add_method`, `Agent::add_game_method`).
 
 ## Connecting
@@ -2744,12 +2746,21 @@ types are `agent_proto::sim::events`.
 
 **`sim.view`'s roots.** `at` (the stamp), `session`, `ui` (`ui.screen`'s
 answer, `null` without `H2_UI_WATCH=1`), `player` (by index: the `world`
-object plus `health`, `shield`, `grenades {frag, plasma}` and the held
-weapon's `ammo {loaded, reserve}`), `object` (every `world` object by id;
+object plus `lives` and `score`, and while the player has a unit
+`health`, `shield`, `grenades {frag, plasma}` and the held weapon's
+`ammo {loaded, reserve}`), `object` (every `world` object by id;
 only when asked for), `count` (by kind, `team` counting players per team,
 `total`), `sim` (simulated players by `<n>`, and `count`) and `input`
 (`input.state`). Pointers read straight off it: `/player/1/team`,
 `/object/<id>/occupied`, `/count/team/1`, `/sim/1/player`.
+
+`lives` is the player record's lives remaining (`+0x1ac`, an `i16` the
+engine writes; `null` while unlimited, -1). `score` is the player's row
+in the game engine's stat rows (`+0x308 + 0x1c * index`, its `+0x00`, the
+value `SCORE_ADD` changes), `null` without a game engine (the menu, a
+campaign). Both are there between lives
+(`crates/extensions/agent/src/sim/state.rs`, `lives` and `score`;
+[firefight.md](../game/firefight.md#guest-boundary)).
 
 **Expectations** are `h2 agent run`'s: `"<pointer> <op> [JSON]"` or
 `{"pointer", "op", "want"}`, ops `==` `!=` `<` `<=` `>` `>=` `contains`
@@ -3101,6 +3112,70 @@ ticks across peers and check the latch on both.
 the campaign AI extension. A missing AI-global pointer produces
 `null` for both, and a missing actor pool produces zero actors.
 Capacity, AI and kit reads require a gameplay tick.
+
+## Firefight
+
+The [Firefight](../game/firefight.md) runtime of the loaded map, read and
+driven at a tick boundary. `crates/extensions/agent/src/firefight.rs`
+checks the params and calls the game's runtime
+(`game::firefight::feature::AgentSource`, over
+`crates/extensions/game/src/firefight/runtime.rs`); the wire types are in
+`crates/extensions/agent-proto/src/firefight.rs`. The methods are always
+registered; with the `firefight` feature off
+([switches.md](switches.md)) `firefight.state` says so and
+`firefight.command` refuses.
+
+| Method and access | Parameters | Result |
+|---|---|---|
+| `firefight.state` (read) | `{}` or omitted | `{running, refused?, map?, role?, team?, director?, log?, errors}` |
+| `firefight.command` (act) | `{command?, director?: "hold" \| "run"}`, at least one | `{appended?: {seq, tick}, held, log}` |
+| `firefight.kit` (read) | `{}` or omitted | `{kit, slots, team?, zones: [{index, point, starts}], classes, characters, hunt_order?}` |
+
+**State.** `running` is false outside a multiplayer game, on a map
+without the kit, and with the feature off; `refused` names which (a map
+without the kit: "the map does not carry the Firefight kit"). `role` is
+`host` (the distributed server, a synchronous host, or a game with no
+session), `replica` (a synchronous peer, or a film's playback) or
+`client` (a distributed client). `team` is the actors' team. `director`,
+on the host only: `phase` (`warmup`, `spawning`, `fighting`, `cleanup`,
+`intermission`, `done`) with `phase_tick` for the timed ones, `round`
+and `wave` (zero-based), `reserve` (actors of the wave not yet placed),
+`pool`, `live_actors` against `cap`, `players`, `skulls` and `held`.
+`log` is the head (`seq`, `tick`, `hash` in hex) and `applied`, the last
+entry applied here. `errors` holds the latest 16 entries the engine
+refused, each with its `seq` (none for the AI switch), `tick` and
+`error`.
+
+**Command.** `command` is one director command in the host log's shape
+(externally tagged, snake_case): `place_squad {slot, class, count, zone,
+weapon_tier}`, `hunt {slot}`, `erase_squad {slot}`, `round {index}`,
+`wave {index}`, `skull {id, on}`, `lives {player?, pool}`, `score
+{player, points, reason: kill | assist}`, `respawn {player}` and `finish
+{outcome: won | lost}`. It is appended at the tick after the last one
+the runtime stepped, with the author `agent`, and applied before that
+tick like the director's own. `director: "hold"` stops the director
+stepping, so only appended commands reach the game; `"run"` starts it
+again. A director change applies before the command. Refusals:
+`UNAVAILABLE` when the mode does not run, `REFUSED` (11) on a client or
+a replica (only the host writes the log), `INVALID_PARAMS` for a command
+of another shape, a class or zone the kit lacks, and params with neither
+field. An engine refusal comes later, in `firefight.state`'s `errors`.
+
+**Kit.** Read from the loaded scenario on any machine: `slots` gives
+each of the sixteen slots' scenario squad index (`null` where the kit
+reserves none), `zones` each drop zone's scenario index, point and
+firing position count, `classes` each kit class's character palette row,
+`characters` the palette's rows, and `hunt_order` the `ff_hunt` order.
+A map without the kit answers `{"kit": false, ...}` with empty lists.
+The kit's version string is not read: the game has no reader for the
+loaded map's string IDs.
+
+```sh
+h2 agent firefight.kit
+h2 agent firefight.command '{"director":"hold"}'
+h2 agent firefight.command '{"command":{"erase_squad":{"slot":0}}}'
+h2 agent firefight.state
+```
 
 ## Sim matches
 

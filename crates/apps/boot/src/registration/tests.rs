@@ -17,7 +17,7 @@ use super::{AgentSource, CoreInputs, LateInputs, register_core_film, register_la
 use crate::lockstep_glue;
 
 /// Every switch that adds hooks, on (the native renderer is on by default).
-pub(crate) const ALL_ON: &str = "impl.engine=on,render-timing,actor-net";
+pub(crate) const ALL_ON: &str = "impl.engine=on,render-timing,actor-net,firefight";
 /// Added to [`ALL_ON`]: the native renderer (on by default) off.
 pub(crate) const NATIVE_OFF: &str = "impl.render.native=off";
 
