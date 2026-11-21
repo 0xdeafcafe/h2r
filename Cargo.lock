@@ -3581,6 +3581,7 @@ dependencies = [
  "flate2",
  "live-proto",
  "live-server",
+ "polling",
  "runtime",
  "serde",
  "serde_json",
