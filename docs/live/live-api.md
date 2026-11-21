@@ -1808,6 +1808,58 @@ built from it, and a mute holds both ways: neither player hears the other.
   with Unmute, and offers Mute or Unmute on other players' screens. The
   game reads the list at sign-in, so a change made there reaches it then.
 
+## Rules scripts
+
+Game-type scripts for the rules engine
+([rules-engine.md, "Workbench"](../game/rules-engine.md#workbench)). The
+server compiles, verifies and runs them with the `rules` crate, in both
+homes (`crates/live/live-server/src/rule_scripts.rs`, wire types in
+`crates/live/live-proto/src/rules.rs`).
+
+| endpoint | authentication | result |
+|---|---|---|
+| `POST /v1/rules/check` | none; rate-limited per client address | `{ok, hash, name, version, errors: [{line, col, message}], report}` |
+| `POST /v1/rules/run` | as check | a trace, or `{ok: false, errors}` when the script does not build |
+| `GET /v1/rules/builtin` | a read | `{items: [{name, engine, source, hash}]}` from `rules::builtin::ALL` |
+| `POST /v1/rules` | an account's token, `lxm: content.write` | 201 `{ok, saved: true, script}`; 200 `{saved: false, script}` when the hash is saved already |
+| `GET /v1/rules/{hash}` | a read | `{hash, name, version, author, gamertag, saved_at, position, source}` |
+| `GET /v1/rules/{hash}/ir` | a read | the IR blob (`application/octet-stream`, immutable), compiled again from the saved source |
+| `GET /v1/rules?author=` | a read | `{items: [...]}`, the author's scripts newest first; `author` is a gamertag or xuid |
+
+- Bodies are JSON with `source`, at most 256 KiB (413 over it). Check and
+  run share a bucket of 20 requests per client address, refilled at 2 a
+  second (`rule_scripts::RATE`); an empty bucket is 429.
+- `ok` on a check means the script compiled, verified, fits the 20,000-op
+  tick budget and the 64 KiB IR cap. `hash` is the IR's SHA-256, present
+  whenever it compiled. An error with line and column 0 is about the whole
+  script: a verifier refusal, the budget or the IR size.
+- `report` holds `worst_tick_ops` and `budget`, `fits`, `costliest`,
+  `handlers: [{event, worst_ops}]`, `slots: [{scope, used, limit}]` (global,
+  player, team, object), `ir_bytes` and `ir_limit`, `capabilities: [{name,
+  words, grantable, known}]` with the lobby's plain words, and
+  `unhostable`: the entries the script calls that no host can make yet.
+- A run's `scenario` is `{players: [{slot, team, lives}], teams, variant,
+  options, seed, round_time, ticks, start, timeline: [{tick, events}]}`.
+  An event is `{type, ...}` with the handler's event name: `kill {victim,
+  killer}`, `spawn`, `death`, `join`, `quit {player}`, `pickup`, `drop`,
+  `press`, `bounce`, `edit {player, object}`, `enter`, `leave {zone,
+  object}`, `squad_dead {squad}`, `actor_kill {killer, class}`,
+  `round_start`, `round_end`, `init`. `start` (default true) fires `init`
+  and `round_start` at tick 0; `ticks` is the last tick run, at most
+  36,000; a scenario lists at most 4,096 events. A bad scenario is 400.
+- The trace is `{ok, hash, options, ticks, last_tick, error, round_ended,
+  cut, ops, scores: [{slot, score}]}`. Each entry of `ticks` is a tick in
+  which something happened: `{tick, ran, calls: [{entry, args}], ops,
+  warnings, globals: [{name, value}], players: [{slot, team, alive, score,
+  lives, vars}], error}`. A run stops at a script error, after the tick
+  that calls `end_round`, or past 4,000,000 ops (`cut` says so), and keeps
+  at most 2,000 ticks.
+- A save writes a server-signed `RulesSaved` event (`{hash, name, version,
+  author, source}`) on `rules-<hash>`, expecting an empty stream, so a hash
+  is saved once and its first saver is its author. Only scripts that
+  verify are saved; an account saves at most 200. Nobody posts the event
+  by hand.
+
 ## Cloud saves
 
 Each account's own save storage ([live-cloud-saves.md](live-cloud-saves.md)):

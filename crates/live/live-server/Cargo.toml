@@ -10,6 +10,9 @@ publish = false
 live-proto.workspace = true
 # MapId, manifests and hashing for the content store (docs/game/maps.md §5).
 content.workspace = true
+# Game-type scripts: the workbench's check and run, and saving
+# (docs/game/rules-engine.md, "Workbench"). Pure Rust, no I/O.
+rules.workspace = true
 anyhow.workspace = true
 serde = { workspace = true, features = ["rc"] }
 serde_json = { workspace = true, features = ["raw_value"] }

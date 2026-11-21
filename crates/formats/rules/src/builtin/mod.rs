@@ -35,6 +35,26 @@ pub const RACE: &str = include_str!("race.rules");
 /// Bounce Practice: points for superbounces.
 pub const BOUNCE_PRACTICE: &str = include_str!("bounce_practice.rules");
 
+/// A built-in script: its name, the retail engine index it rides and its
+/// source.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Builtin {
+    pub name: &'static str,
+    pub engine: u8,
+    pub source: &'static str,
+}
+
+/// Every built-in script, by engine index.
+pub const ALL: &[Builtin] = &[
+    Builtin { name: "Capture the Flag", engine: 1, source: CTF },
+    Builtin { name: "Slayer", engine: 2, source: SLAYER },
+    Builtin { name: "Oddball", engine: 3, source: ODDBALL },
+    Builtin { name: "King of the Hill", engine: 4, source: KING },
+    Builtin { name: "Juggernaut", engine: 7, source: JUGGERNAUT },
+    Builtin { name: "Territories", engine: 8, source: TERRITORIES },
+    Builtin { name: "Assault", engine: 9, source: ASSAULT },
+];
+
 /// The built-in script source for a retail engine index, for the engines
 /// whose script exists.
 pub fn builtin(engine_index: u8) -> Option<&'static str> {
@@ -88,6 +108,10 @@ mod tests {
         // entries their headers name.
         let slayer = crate::lang::compile(SLAYER).unwrap();
         assert_eq!(crate::verify::unhostable(&slayer), None);
+        for b in ALL {
+            assert_eq!(builtin(b.engine), Some(b.source));
+            assert_eq!(crate::lang::compile(b.source).unwrap().header.name, b.name);
+        }
     }
 
     #[test]

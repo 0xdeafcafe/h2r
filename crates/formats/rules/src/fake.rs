@@ -13,6 +13,9 @@ pub struct FakePlayer {
     pub alive: bool,
     pub score: i32,
     pub lives: i32,
+    /// What `kills(p)` and `deaths(p)` read.
+    pub kills: i32,
+    pub deaths: i32,
 }
 
 /// A game held in tables. Actions it can model (score, team, lives,
@@ -52,10 +55,8 @@ impl FakeGame {
             g.players.insert(
                 slot,
                 FakePlayer {
-                    team: 0,
                     alive: true,
-                    score: 0,
-                    lives: 0,
+                    ..FakePlayer::default()
                 },
             );
         }
@@ -127,6 +128,8 @@ impl Game for FakeGame {
             id::ALIVE => p.is_some_and(|p| p.alive) as i32,
             id::TEAM_OF => p.map_or(-1, |p| p.team as i32),
             id::LIVES => p.map_or(0, |p| p.lives),
+            id::KILLS => p.map_or(0, |p| p.kills),
+            id::DEATHS => p.map_or(0, |p| p.deaths),
             id::ROUND_TIME_LEFT => self.round_time_left,
             id::SQUAD_ALIVE => match call.args.first() {
                 Some(Arg::Squad(s)) => self.squad_alive.get(*s as usize).copied().unwrap_or(0),

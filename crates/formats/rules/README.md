@@ -60,6 +60,16 @@ Gun Game, VIP, Siege, Race, Bounce Practice). Each script's header names
 the entries a host cannot make yet. `fake::FakeGame` is a table-backed
 `Game` that logs calls, for tests and `h2 rules run`; it also holds an
 objective registry, object teams, label numbers and `inside` answers.
+`builtin::ALL` lists each port with its name and engine index.
+
+## Workbench
+
+`workbench::check` compiles, verifies and measures a script (hash, errors
+with line and column, budget, slots, IR bytes, capabilities in plain
+words, unhostable entries). `workbench::run` steps a `Scenario` over
+`FakeGame` into a per-tick `Trace`, within 36,000 ticks, 4,096 events and
+4,000,000 ops. Live's `/v1/rules/check` and `/v1/rules/run` serve them to
+the web app ([Workbench](../../../docs/game/rules-engine.md#workbench)).
 
 ## Tests
 
