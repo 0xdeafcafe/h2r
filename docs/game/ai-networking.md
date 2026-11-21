@@ -1,8 +1,8 @@
 # AI over the network
 
-Status: Partly built. The probe methods (AN0) and the standalone actor channel (AN2) are implemented. Host capture, client puppets and transport are planned.
-Code: `crates/extensions/agent/src/net.rs` (`net.replication`), `crates/extensions/agent/src/ai.rs` (`world.ai`), `crates/live/actor-net/src/wire.rs`, `set.rs` and `budget.rs` (actor channel). Tests: each crate's own, on invented data.
-Switch: `agent-net` (the event counter behind `net.replication`), listed in [switches.md](../runtime/switches.md). The `actor-net` feature of `H2_FEATURES` (off until probe P3 is seen in the game) joins it with the code.
+Status: Partly built. The probe methods (AN0), actor channel (AN2) and distributed host capture (AN3) are implemented. Client puppets and transport are separate slices.
+Code: `crates/extensions/agent/src/net.rs` (`net.replication`), `crates/extensions/agent/src/ai.rs` (`world.ai`), `crates/live/actor-net/src/wire.rs`, `set.rs` and `budget.rs` (actor channel), `crates/extensions/game/src/actor_net/host.rs` (capture and per-client scheduling). Tests: each crate's own, on invented data.
+Switch: `agent-net` and `actor-net`, listed in [switches.md](../runtime/switches.md).
 
 AI actors in a network game: who runs them, what reaches the other
 machines, and what it costs. It serves three users: campaign co-op,
@@ -126,18 +126,36 @@ tick.
 
 ### On the host, each tick
 
-`crates/extensions/game/src/actor_net/host.rs`, after the game tick:
+Boot registers `game::actor_net::Capture`. Its tick observer reads only
+when the simulation world is a distributed server. A new match, a
+restored snapshot or a clock rewind starts a fresh capture and resets
+the connected peers’ budgets.
 
-1. Read the actor pool through `sim_state` (a new `ActorView` over
-   `global::ACTORS`, the record `crates/extensions/agent/src/ai.rs`
-   reads today).
-2. Diff against the last tick: new and removed actors, posture changes.
-3. Take dialogue lines from an observer on the engine's dialogue queue
-   entry (`AI_DIALOGUE_ENQUEUE`, slice AN3).
-4. For each client, fill at most the channel's byte budget for this tick
-   in the order: `Key` if owed, `Actor`, `Line`, `Posture`, `State`,
-   `Digest`, then `Control` by the actor's distance to that client's
-   player.
+1. `sim_state::visit_actors` resolves each salted actor/unit pair in both
+   directions. It skips player-controlled units and units without a
+   replication entity. The character is the map-local character tag slot.
+2. The actor's requested animation mode feeds its unit control update.
+   The posture byte identifies one of the eight modes the retail animation
+   selector handles. Capture checks the complete string ID against the
+   corresponding selector operand in the loaded image before emitting its
+   low byte. An unsupported or absent mode uses the default code `0xff`.
+   A crouch request toggles bit 4 of that code or of the selected mode
+   byte. This carries a cower transition even with movement controls off.
+3. `actor_net/host.rs` diffs the completed pool by full entity ID. Removals
+   precede upserts. A change confined to posture produces a `Posture`.
+   A pool read fault, duplicate entity or roster above the 32-actor wire
+   limit skips the tick and preserves the last complete pool.
+4. `actor_net/dialogue.rs` observes the named candidate on entry to
+   `AI_DIALOGUE_ENQUEUE` and queues it when the call succeeds. At tick end
+   the speaker's salted unit resolves to an entity. A line keeps its
+   original tick and enters each budget once, even if the engine queues
+   the same line twice that tick.
+5. The transport schedules against the completed capture for each peer.
+   A due or requested key contains the current actor set. Otherwise the
+   budget receives the membership and posture deltas. Lines are offered
+   on either path. Controls, when requested, follow distance to the
+   client's player with entity ID as the tie-breaker. The installed
+   observer leaves controls off pending P3.
 
 ### On a client, each tick
 
@@ -198,7 +216,7 @@ host class is priced.
 | A 16-seat match today | 20 to 29 | dedicated-host.md, "Cost and budget" |
 | A light match | 6 to 10 | dedicated-host.md, "Packed hosts" |
 | One actor (object, animation, physics, AI) | 0.3 to 0.6 | **S**; no census has an actor in it ([sim-attribution.md](../perf/sim-attribution.md), census B) |
-| The actor channel's capture, 32 actors, 15 clients | under 0.1 | **Design**; a bench in AN3 holds it |
+| The actor channel's capture, 32 actors, 15 clients | under 0.1 | **Design**; the ignored release benchmark `capture_32_actors_for_15_clients` checks this target |
 | Host target, p99 | 28 | **Design**: the pack's admission closes at 36 |
 
 Live actor caps by player count (**Design**, provisional until P5):

@@ -3,6 +3,27 @@
 Evidence for [ai-networking.md](../ai-networking.md) and
 [firefight.md](../firefight.md). Newest first.
 
+## 2026-11-21: host presentation inputs (static read)
+
+Commit: `28fd333f4`. To reproduce, use `h2 disasm <addr> <count>` on
+the owner's retail XBE at the entries below. Follow the actor's output
+into the unit control update and the dialogue candidate through its
+enqueue return.
+
+- `0x1f5f30` selects a requested animation mode. `0x1f6644` saves it at
+  actor `+0x7fc`. `0x1e43e7` copies it into the control record, and
+  `0xc6eae` stores it at unit `+0x14c`. The selector at `0x10eef0`
+  compares complete string IDs. The eight supported IDs have distinct
+  low bytes.
+- Cower also has a crouch request. `0x1ae031` sets actor `+0x449`.
+  `0x1f3dee` carries that through the movement state, and `0x1f3e0b`
+  sets bit 0 of the actor control flags at `+0x810`. The unit control
+  update copies the flags to unit `+0x148`.
+- `AI_DIALOGUE_ENQUEUE` at `0x20d0c0` accepts seven stack arguments.
+  The fourth points to a candidate holding a signed vocabulary index at
+  `+0` and a salted speaker unit at `+4`. The result in AL distinguishes
+  a successful enqueue or immediate line from a refusal.
+
 ## 2026-11-21: what retail's distributed replication carries (static read)
 
 Commit: `af668a58f`. Method: `h2 disasm <addr> <count>` on the owner's
@@ -102,11 +123,15 @@ retail skips AI on a distributed client and on nothing else: a
 distributed server, a synchronous server and a synchronous client all run
 it when the two bytes are set.
 
-**An object's entity.** Object body `+0xd4` is the entity index, set to
+### An object's entity
+
+Object body `+0xd4` is the entity index, set to
 -1 by object creation (`0xb7b40`, the store at `0xb7e78`) and written by
 each entity type's attach routine (the unit's at `0x9dea0`).
 
-**Scheduling.** The image's log formats for entity creations and updates
+### Scheduling
+
+The image's log formats for entity creations and updates
 carry a relevance and, for updates, a period. So the sender ranks
 entities per client and sends each at its own rate. The per-client byte
 budget behind that was not read.

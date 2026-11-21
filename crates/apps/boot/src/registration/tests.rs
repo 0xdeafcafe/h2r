@@ -13,7 +13,7 @@ use super::{AgentSource, CoreInputs, LateInputs, register_core, register_late_fo
 use crate::lockstep_glue;
 
 /// Every switch that adds hooks, on (the native renderer is on by default).
-pub(crate) const ALL_ON: &str = "impl.engine=on,render-timing";
+pub(crate) const ALL_ON: &str = "impl.engine=on,render-timing,actor-net";
 /// Added to [`ALL_ON`]: the native renderer (on by default) off.
 pub(crate) const NATIVE_OFF: &str = "impl.render.native=off";
 
@@ -203,6 +203,28 @@ fn a_desktop_player_registers_only_the_films_render_groups() {
             assert!(plan.chains.values().flat_map(|c| c.hooks()).all(|h| {
                 h.feature != "render-loop" && !h.feature.starts_with("native-")
             }));
+        }
+    }
+}
+
+#[test]
+fn actor_capture_is_opt_in_and_observes_the_host_tick_and_dialogue() {
+    for (switches, enabled) in [("", false), (ALL_ON, true)] {
+        let plan = plan(&Case::full(switches)).unwrap();
+        let mut hooks: Vec<_> = plan.chains.values().flat_map(|chain| {
+            chain.hooks().filter(|hook| hook.feature == "actor-net")
+                .map(move |hook| (chain.point.name, hook.kind().as_str()))
+        }).collect();
+        hooks.sort_unstable();
+        if enabled {
+            assert_eq!(hooks, [
+                ("AI_DIALOGUE_ENQUEUE", "observe_after"),
+                ("AI_DIALOGUE_ENQUEUE", "observe_before"),
+                ("GAME_ACTIVATE", "observe_after"),
+                ("GAME_TICK", "observe_after"),
+            ]);
+        } else {
+            assert!(hooks.is_empty());
         }
     }
 }

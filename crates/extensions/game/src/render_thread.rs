@@ -102,6 +102,7 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
         "the loading screen's cache copy on the game thread; steps it with guest calls",
     ),
     // Game-thread points: the simulation, the UI and the level start.
+    ("actor-net", "*", "capture and dialogue share per-match state on the simulation thread"),
     (
         "variant-vitality",
         "*",

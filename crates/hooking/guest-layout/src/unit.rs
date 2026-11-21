@@ -41,6 +41,9 @@ crate::layout! {
         DESIRED_LOOK desired_look @ 0x180: [f32; 3],
         /// likely: the looking vector.
         LOOK look @ 0x18c: [f32; 3],
+        /// Forward, left and up throttle from the unit control record
+        /// (`0x000c6dfc`, filled for actors at `0x001e4403`).
+        THROTTLE throttle @ 0x1b0: [f32; 3],
         /// The seat in the vehicle it rides (-1 none). Confirmed: the
         /// enter-vehicle routine (`0x000ea1f0`) stores it (`0x000ea405`).
         SEAT seat @ 0x1fc: i16,

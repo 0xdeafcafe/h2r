@@ -110,6 +110,9 @@ crate::layout! {
         /// Physics flags ([`physics_flags`]): the wake latch and its
         /// one-tick copy, the early-mover list, the component.
         PHYSICS_FLAGS physics_flags @ 0xc0: u8,
+        /// Full replication entity index, or all ones until attachment
+        /// (`0x000b7e78` initialises it, `0x0009dea0` attaches a unit).
+        ENTITY entity @ 0xd4: u32,
         /// Body vitality, 1.0 full. `object_get_health` (`0x002a1a20`)
         /// returns it, 0 instead while [`DEPLETED`] is set.
         HEALTH health @ 0xec: f32,

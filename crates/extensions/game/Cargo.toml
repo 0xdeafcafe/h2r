@@ -6,6 +6,7 @@ version.workspace = true
 license.workspace = true
 
 [dependencies]
+actor-net = { path = "../../live/actor-net" }
 # Build and load (docs/dev/crate-structure.md, S4).
 recomp = { path = "../../runtime/recomp" }
 h1-runtime = { path = "../h1-runtime" }
@@ -25,6 +26,7 @@ content.workspace = true
 # The controller-speaker sound index reads the player's map files (pad_speaker).
 tags.workspace = true
 hs.workspace = true
+sim-state.workspace = true
 coop = { path = "../../live/coop" }
 map.workspace = true
 # What the Halo 1 converters write and the Halo 1 hooks read (h1_*.rs);
@@ -104,6 +106,7 @@ perf = ["dep:perf"]
 test-maps = []
 
 [dev-dependencies]
+guest-layout = { path = "../../hooking/guest-layout" }
 # The fixture generated module, for hooks run through the real Runner.
 runtime-test-probe = { path = "../../runtime/runtime/test-probe" }
 
