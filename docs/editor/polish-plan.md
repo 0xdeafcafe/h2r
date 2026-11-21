@@ -223,7 +223,9 @@ pending list and the game's methods, and returns one step:
   relaunch of the editor's own game if the method is absent or the host
   refuses the file. A foreign game in either case leaves edits pending and
   gives the manual-load instruction. The editor checks the queued receipt
-  and waits up to 30 seconds for a new epoch with the copy's checksum.
+  and waits up to 30 seconds for the exact requested activation and copy
+  checksum. When the receipt or status omits the activation, it waits for a
+  changed epoch and the copy checksum.
   A reconnect checks the loaded copy before any further edits go out.
 - Sending edits to a game the editor did not start asks once per
   pairing ("Send your edits to this game?"), since F5 never turns Edit
@@ -359,10 +361,11 @@ the preview of an undone add, or respawns the object of an undone
 delete. No second undo log exists, and a step that touched a tag and a
 placement undoes in the game as it does here.
 
-The editor keeps the returned salted object ID for an unlinked preview.
+The editor uses a preview’s returned salted object ID for moves, marks
+and picking until a verified map change or a new binding supersedes it.
 A changed block layout keeps field writes out of shifted slots.
-A drag sends `world.object.set` at most once per push interval and
-once more when the gizmo is released. A game without `world.object.*`
+A drag sends at most one `world.object.set` per live object per push
+interval, plus its final frame when the gizmo is released. A game without `world.object.*`
 gets the `scnr` bytes alone and the pending list says objects move at
 their next creation.
 
@@ -818,9 +821,10 @@ The tests use invented data.
 - The link indicator and marks are presentation. They
   change no simulation state, hold a lease the editor must renew, and
   are gone when it stops.
-- The editor reaches the game only through methods `session.methods`
-  lists. A method the game lacks turns its feature off with the reason
-  shown; nothing is approximated by another call.
+- The control connection opens with `session.methods` for discovery and
+  `session.status` for its bootstrap status poll. Status polling continues
+  on that connection. Every other game call requires its advertised method.
+  A missing method disables its control and the link shows the reason.
 - The editor never reads the game's memory: live state comes from the
   stream, edits go through named methods.
 - Overlays draw only what the map's own data says. A class whose meaning

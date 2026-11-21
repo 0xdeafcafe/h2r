@@ -282,15 +282,18 @@ its first content. A field with none is `unknown`.
 
 **Placements.** In Edit, dragging a placement writes its scenario fields
 and moves its linked object with `world.object.set`. The editor sends at
-most one move per push interval during a drag, then sends the released
-frame. Deleting the placement deletes the live object. Undoing the delete
+most one move per object per push interval during a drag. The released
+frame follows its scenario field acknowledgement. Deleting the placement deletes the live object. Undoing the delete
 requests a respawn at the original loaded slot. **Respawn now** applies
-creation-time fields after the game acknowledges the scenario write.
+creation-time fields that differ from the last actual creation. A replacement
+uses the salted object ID. If it fails after deleting that object, a fresh
+stream observation of the empty slot allows an explicit retry by placement.
 
 An added placement requests a preview through `world.object.respawn`.
 The host reads creation fields from its loaded scenario. An index beyond
 that block needs a reload on this host. On success, the editor tracks the
-returned salted object ID even when the preview has no placement link.
+returned salted object ID, moves it to the document frame, and uses the
+receipt to mark and pick the preview even without a streamed placement link.
 Undoing the add deletes that preview. Pending gives the reason when a
 session, missing method or game refusal prevents an object edit. If the
 connection closes or times out before a spawn or delete is acknowledged,
@@ -307,8 +310,9 @@ the layout saved in that copy.
 Pending reload edits collect under one **Reload map** button.
 Like F5, it sends the game the path and checks the queued reply against the
 play copy. Before resuming field writes or restoring the player, the editor
-waits for `edit.map` to report a different epoch from the one before the
-request and the checksum saved in the copy. It keeps the destination through
+checks the saved checksum against `edit.map`. It waits for the requested
+`activation` in the public game tick stamp. When either counter is absent,
+it waits for an epoch different from the one before the request. It keeps the destination through
 a reconnect and retries the identity check for up to 30 seconds. A lost
 reply does not cause a second reload. If the host refuses to bind the file,
 the editor relaunches its own game or asks the user to load the saved map.
@@ -331,6 +335,10 @@ delete or respawn.
 **Take the game's value** reads the conflicted field at a game boundary in
 the paired epoch. A successful read updates the document and its baseline.
 A conditional overwrite sends the value seen in the conflict as `was`.
+Both choices require the tag path to resolve to the original address,
+including when the read returns. If a refusal identifies one field, its
+siblings can proceed. Otherwise the refused batch stays together until
+a member changes or the user explicitly retries it.
 
 On pairing, `edit.map` gives the loaded map's name, file and checksum.
 Map identity uses the same case-insensitive level name as the game link.

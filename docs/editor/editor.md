@@ -738,7 +738,8 @@ H2_AGENT=<cache>/h2recomp/editor-<pid>-<n>.sock H2_MAP_DIR=$TMPDIR/h2-editor-pla
 - **Spawn** offers the level's own spawn, the editor camera, the selected
   placement and **Where I was**. The last becomes the default once the
   stream supplies a local player on this map. After a reload the editor
-  checks the copy's checksum and new epoch and waits for gameplay and
+  checks the copy's checksum and the requested activation (a new epoch on
+  hosts without the activation counter), then waits for gameplay and
   at least 30 ticks before restoring position, yaw and pitch with `sim.state.set`.
 - **Game > Pause the game while I edit** pauses on editor window focus.
   It defaults to off. F5 resumes a paused game.

@@ -307,7 +307,8 @@ Notes on some:
   `{kind,text,target}` rows. The kinds are `waiting`, `reload`,
   `refused` and `mismatch`. Pass a row's `target` directly to `nav.go`
   to inspect the field, placement, tag or Pending tab. A refused player
-  move opens Pending and stays visible for the four-second viewport notice.
+  move has a target that opens Pending and stays active for up to four seconds.
+  A successful move or a change of scope clears the issue.
   A clear link reports
   an empty array. The pill shows the largest count. During reconnect, `link.elapsed_ms` counts from the drop.
 - **Playtest.** `pair.playtest {}` queues F5 and reports the step for the
@@ -344,7 +345,7 @@ Notes on some:
   together in one `edit.batch`, each with its expected `was` value. Tags use
   the `at` form with hex bytes. The optional `known_epoch` on `edit.map`
   refreshes the loaded datum table used to check reference targets. Undo and redo use the same check.
-  `mirror.pending` returns `pending` rows with `doc,tag,path,class,why`,
+  `mirror.pending` returns `pending` rows with `doc,path,class,why` and an optional `tag`,
   the game’s existing `journal` from `edit.changes`, and `leaving`.
   A placement block with a different layout revision from the loaded copy
   appears as one `Reload` row. Its fields stay out of the batch until undo,
@@ -352,7 +353,9 @@ Notes on some:
   `mirror.apply {what:"send"}` enters Edit. On MISMATCH, `take` and
   `overwrite` require the row’s numeric `at`. `take` reads the field at the
   current game boundary before applying the bytes to the document and baseline.
-  An unsuccessful read leaves the conflict pending. On rejoin, `adopt` takes
+  A failed read or a relocated field leaves the conflict pending. A row with
+  `resolvable:false` opens Pending and disables both resolutions. Take and
+  Overwrite require the tag's field path to resolve to the refused address. On rejoin, `adopt` takes
   the game's current bytes as the baseline and preserves the document.
   `revert` uses the game's reported restored and left-alone bytes as the
   baseline for the next send. A System Link host
@@ -391,7 +394,9 @@ Notes on some:
   `placement` is a linked `{block,index}` or null, and a miss returns null.
   The link uses the object's kind and placement index in the loaded block
   layout. If a structural edit changes that layout, the object stays
-  unlinked until undo or a reload restores matching slots.
+  unlinked until undo or a reload restores matching slots. For a preview, the
+  current map’s respawn receipt links its full salted ID to its document
+  placement, including after a swap-removal changes the row index.
   Picking over the socket leaves selection alone. Clicking in the viewport
   selects the linked placement or the live object and its available definition.
   `mirror.aim_select {enabled?}` returns `{enabled,candidate}`. The
