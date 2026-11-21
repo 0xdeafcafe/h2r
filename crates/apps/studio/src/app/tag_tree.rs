@@ -366,6 +366,15 @@ pub fn leaf(name: &str) -> &str {
     name.rsplit('\\').next().unwrap_or(name)
 }
 
+/// The scenario BSP index shared by a structure and its lightmap.
+pub(crate) fn bsp_label(tag: &TagEntry) -> Option<String> {
+    let bsp = tag.bsp?;
+    Some(match bsp.index {
+        Some(index) => format!("BSP {index}"),
+        None => format!("BSP at {:#x}", bsp.space.file_offset),
+    })
+}
+
 /// Every tag in `folder` and below, in the tree's order.
 pub fn under(folder: &Folder) -> Vec<usize> {
     let mut out = Vec::new();
@@ -393,6 +402,7 @@ mod tests {
             address: 0,
             size: 0,
             access: Access::Edit,
+            bsp: None,
             elsewhere: None,
         }
     }

@@ -96,7 +96,7 @@ impl TagDoc {
     pub(crate) fn scan_refs(&self, tag: TagId) -> Vec<Link> {
         let Some(t) = self
             .tag(tag)
-            .filter(|t| !matches!(t.access, Access::None(_)))
+            .filter(|t| t.bsp.is_none() && !matches!(t.access, Access::None(_)))
         else {
             return Vec::new();
         };
@@ -336,9 +336,9 @@ impl<'a> Walk<'a> {
                 let variant = variant.filter(|&v| v != 0 && v != u32::MAX).or(default);
                 self.element(t.group, t.address, layout, ("", ""), variant, &mut refs, 0);
 
-                // The scenario has a structural schema, but until it has a
-                // definition that walk covers only part of its references.
-                if t.group.0 == *b"scnr" && layout.coverage().named_fields == 0 {
+                // The scenario definition names only known fields. Keep
+                // scanning for references in the remaining bytes.
+                if t.group.0 == *b"scnr" {
                     let known: HashSet<_> = refs.iter().map(|r| r.datum_at).collect();
                     refs.extend(
                         doc.scan_refs(tag)

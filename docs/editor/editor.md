@@ -994,10 +994,11 @@ with `--nocapture`. The names grow as definitions do: a name added to
 
 ### The document
 
-`app/tag_doc.rs` (`TagDoc`) holds the open map's tags and its ordinary
-metadata, read once when the tool is first shown for a map
-(`App::sync_tags`, keyed by the session's map revision), with the edits
-as a byte overlay. Every edit is an undo step (a drag is one step: writes
+`app/tag_doc.rs` (`TagDoc`) holds the open map's tags, ordinary metadata
+and BSP regions. `App::sync_tags` loads them when the tool first opens
+for a map revision. The BSP buffers use file offsets as keys because
+their virtual addresses can overlap. Edits form a byte overlay on
+ordinary metadata. Every edit is an undo step (a drag is one step: writes
 merge by key until `TagAction::Seal`); each change hands every changed
 run to the session (`Session::set_tag_patches`), which keeps them on the
 scenario (`Scenario::set_tag_patches`) so `changes()` includes them: the
@@ -1011,8 +1012,8 @@ the refusal's text):
 | --- | --- |
 | Fields of any tag in the ordinary metadata whose group has a layout | Editable: fixed-length patches in place. |
 | Counts, addresses, raw pointers and sizes, BSP descriptors | Shown only: changing them by hand corrupts the map. Blocks change through add / remove / duplicate. |
-| The scenario tag | Read-only: its bytes belong to the Scenario tool (its placement edits would overlap). Shown as in the source. |
-| Tags in a structure BSP region (`sbsp`, `ltmp`) | Not shown yet: they have their own address space. |
+| The scenario tag | The field panel shows the source values through `scnr.txt`. The Scenario tool owns edits. Placement and palette blocks link to Scene. |
+| Tags in a structure BSP region (`sbsp`, `ltmp`) | Read-only hex from the tag's own region. The tree row identifies the BSP. |
 | Tags with no data in the map (shared-map tags) | Nothing to show here; the tree names the shared cache that has their data (`[in shared]`), and **Show it in ...** browses it there. |
 | Tags of a browsed map | Read-only: only the open map saves. |
 | A group with no layout, a tag shorter than its layout | Read-only (hex only without a layout). |

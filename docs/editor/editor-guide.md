@@ -1084,9 +1084,9 @@ masterchief`; add `--hud-widget <name>` to select a widget by its name.
 
 ## 9. Tags: every field of a tag
 
-**Tags** shows every tag of the open map and lets you change any field of
-it: a weapon's numbers, a projectile's flags, the tag a vehicle's weapon
-points at. Open a map in **Maps** first (a disc map, one of your
+**Tags** shows every tag of the open map. Editable fields include a
+weapon's numbers, a projectile's flags and a vehicle's weapon reference.
+Open a map in **Maps** first (a disc map, one of your
 packages, or a converted Halo 1 map), then select the **Tags** tab beside **Scene**.
 
 - **Which map** (the list at the top left) groups the source's maps by
@@ -1113,6 +1113,12 @@ packages, or a converted Halo 1 map), then select the **Tags** tab beside **Scen
   most likely (a decimal number, a whole number or hex). Right-click a
   grey field to see it another way. Hover a field for its type, where it
   is and what we know about it.
+- **Scenario** shows the source fields read-only. Expand a placement or
+  palette block and choose **Open … in Scene**. A placement link selects
+  the displayed placement if it exists. A palette link selects the
+  first placement that uses the displayed entry.
+- **Structure BSPs and lightmaps** open as read-only hex. Their rows
+  identify the BSP, and the byte offsets start at the selected payload.
 - **Data and bytes** (beside Log): the tag's data and resources first: each
   block of raw data inside the tag with its size, and each resource
   (pixels, model geometry, sound) with the map it is in (`local` for this

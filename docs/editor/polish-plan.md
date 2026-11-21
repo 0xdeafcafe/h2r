@@ -1,6 +1,6 @@
 # h2-editor polish: what is wrong, the design, and the slices
 
-Status: P1, P2, P3, P4, P6, P7 and P12 are implemented. The remaining slices, and the game link past its bar (G1 to G9), describe the design.
+Status: P1 to P7 and P12 are implemented. The remaining slices, and the game link past its bar (G1 to G9), describe the design.
 Code: `crates/apps/studio/src` (the window: `ui.rs`, `ui/`, `play.rs`, `viewport.rs`, `theme.rs`), `crates/tools/scenario-edit/src` (the scene and its renderer). Tests: named per slice.
 Switch: none.
 
@@ -35,14 +35,12 @@ during the read, so nothing here comes from the socket API.
 
 | # | Problem | Where |
 |---|---|---|
-| R18 | The scenario tag cannot be read. The registry has no `scnr` definition (`crates/formats/tags/src/defs` has no `scnr.txt`), so the tag shows no fields, and it is read-only because the Scenario tool owns its bytes. | `app/tag_doc.rs:270` to `app/tag_doc.rs:273` |
-| R20 | Structure BSP and lightmap tags cannot be opened: their data is in a BSP region the tag document does not read. | `app/tag_doc.rs:267`, `app/tag_doc.rs:39` |
 
 ### What cannot be seen or edited in the viewport
 
 | # | Problem | Where |
 |---|---|---|
-| R22 | The scene reads eleven scenario blocks, all placements. Trigger volumes, kill triggers, BSP-switch volumes, decals and portals are not read by the editor. | `crates/tools/scenario-edit/src/layout.rs:12` (`BlockKind`) |
+| R22 | Scene handles eleven scenario placement blocks. Trigger volumes, kill triggers, BSP-switch volumes, decals and portals have no Scene overlay. | `crates/tools/scenario-edit/src/layout.rs:12` (`BlockKind`) |
 | R23 | Collision is not drawn. The parsers exist (`Bsp::decode_structure`, `Collision::decode`, `PhysicsModel::decode` in `crates/formats/tags/src/collision.rs`) and no editor code calls them. Picking uses render triangles, so a wall with collision and no render geometry cannot be seen, clicked or measured. | `crates/tools/scenario-edit/src/geometry.rs:880` (`surface`) |
 | R24 | Instanced geometry has no collision reader anywhere in the tree; `crates/formats/tags/src/structure.rs` reads instance definitions for drawing only. | `crates/formats/tags/src/structure.rs:185` |
 
@@ -400,15 +398,12 @@ Not reachable from the scenario (n)
   placements that use that slot for the viewport outlines.
 - The scenario rows and the lists of tags use Dear ImGui's list
   clipper.
-- The scenario's own fields (R18) get a `scnr.txt` definition in
-  `crates/formats/tags/src/defs`, started with the fields this
-  repository already has evidence for (the skies, the palettes and
-  placement blocks of `layout.rs`, the trigger volumes, the BSP block)
-  and padding elsewhere. Blocks that `layout::BLOCKS` owns stay
-  read-only in the field panel with a link to the Scene tab.
-- BSP and lightmap tags (R20) open read-only: `TagDoc::load` maps each
-  BSP region the way `native_render::load::load_world` reads it, one
-  region per BSP, and the row says which BSP it belongs to.
+- The scenario fields in `crates/formats/tags/src/defs/scnr.txt` appear
+  read-only in the field panel. Placement and palette blocks link to
+  their Scene block, where the scenario session owns edits.
+- `TagDoc::load` keeps each BSP region's bytes in its own address space.
+  A structure BSP or lightmap row identifies its BSP and opens its
+  payload as read-only hex.
 
 Agent API: `tag.tree {root?: "scenario", depth?}` returns the same
 tree; `tag.refs {tag}` returns one tag's links with how each was found
@@ -786,9 +781,9 @@ The tests use invented data.
   map's own addresses (`crates/apps/studio/src/app/tag_doc.rs`); the
   game's tag index gives each tag's address and size from the same
   table (`crates/extensions/hot-tags/src/index.rs`).
-- **Code**: the registry has no `scnr` definition
-  (`crates/formats/tags/src/defs`), and the chain walker reads only
-  layout fields (`crates/apps/studio/src/app/tag_api/chain.rs`).
+- **Code**: `crates/formats/tags/src/defs/scnr.txt` names scenario fields
+  with evidence. The chain walker supplements layout references with a
+  scan of the scenario payload (`crates/apps/studio/src/app/tag_api/chain.rs`).
 - **Code**: trigger volumes are a scenario block with a frame of two
   directions and an origin, read by the Halo 1 converter
   (`crates/tools/h1convert/src/convert.rs`, `TRIGGER_VOLUMES`); the

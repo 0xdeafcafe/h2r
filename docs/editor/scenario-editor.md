@@ -104,6 +104,23 @@ exists with that group.
 rolls each with `collection_select`. Shown, not editable: the other bytes
 (game-type matching at `+0x04`, passed to `0x0015a090`) are not decoded.
 
+### Scenario tag inspection
+
+The Tags panel reads the `0x3e0`-byte root through
+`crates/formats/tags/src/defs/scnr.txt`. It shows the placement and
+palette fields above and the following labelled fields.
+
+| Root offset | Labelled fields | Evidence |
+|---|---|---|
+| `+0x8`, `+0x10` | Sky references and scenario type | `scenario_edit::scene::skies_in` and [UI formats](../formats/ui.md) |
+| `+0x48` | Object names, types and placement indices | `layout::OBJECT_NAMES` and §6 |
+| `+0xe8`, `+0xf0` | Light-fixture palette index, name index, position and light reference | `h1convert::convert::BASE_BLOCKS` |
+| `+0x108`, `+0x130` | Trigger volume name, directions, origin and extents. BSP-switch trigger volume, source and destination | `h1campaign::scenario` and `cli::live_geometry::bsp_switches` |
+| `+0x110` | Recording name, versions, ticks and stream | `h1campaign::cutscenes::recordings_block` |
+| `+0x1b0`–`+0x1c8`, `+0x238` | Script strings, definitions, globals, references and syntax nodes | [HaloScript layouts](../formats/haloscript.md) |
+| `+0x208`, `+0x210` | HUD message reference, BSP region descriptor and paired BSP and lightmap references | `h1campaign::scenario::FRESH_NULL_REFS` and [map formats](../formats/map-format.md#bsp-and-lightmap-metadata) |
+| `+0x250`, `+0x258`, `+0x378` | Background sound and sound environment palettes, decorator references | `h1convert::ambience` and `h1convert::convert::BASE_BLOCKS` |
+
 ## 3. Edit model
 
 - `Scenario::read` keeps each block's elements as raw bytes, plus a copy

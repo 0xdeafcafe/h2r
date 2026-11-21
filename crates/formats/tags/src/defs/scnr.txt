@@ -1,0 +1,405 @@
+# Scenario root size: tags/src/schema/layouts.txt; formats/tag-schema.md
+# ("The scenario from scratch"); h1campaign/src/scenario.rs (ROOT).
+# Offset-only structural fields come from tags/src/schema/layouts.txt.
+# Unknown spans preserve bytes whose meaning the readers do not establish.
+
+struct scnr_object_placement 0x24 align 4
+  0x0 i16 palette_index -- scenario-edit/src/layout.rs (OBJECT); scenario-editor.md §2
+  0x2 i16 name_index -- scenario-edit/src/layout.rs (OBJECT); scenario-editor.md §2
+  0x4 u32 placement_flags -- scenario-edit/src/layout.rs (OBJECT); scenario-editor.md §2
+  0x8 f32[3] position -- scenario-edit/src/layout.rs (OBJECT); scenario-editor.md §2
+  0x14 f32[3] rotation -- scenario-edit/src/layout.rs (OBJECT); scenario-editor.md §2 (yaw, pitch, roll in radians)
+  0x20 f32 scale -- scenario-edit/src/layout.rs (OBJECT); scenario-editor.md §2
+
+group scnr 0x3e0 align 4
+  0x0 unknown 0x8
+  0x8 block skies 0x8 align 4 -- scenario-edit/src/scene.rs (skies_in); h1convert/src/sky.rs
+    0x0 tagref sky groups=736b7920 -- h1convert/src/sky.rs (patch_scenario)
+  0x10 u16 scenario_type -- E 0x001482e8; formats/ui.md and game/src/menu_music.rs
+  0x12 unknown 0xe
+  0x20 block block_20 0x8 align 4
+    0x0 unknown 0x4
+    0x4 datum datum_4
+  0x28 unknown 0x20
+  0x48 block object_names 0x24 align 4 -- scenario-edit/src/layout.rs (OBJECT_NAMES); scenario-edit/src/scenario.rs
+    0x0 u8[32] name -- formats/ui.md (HS object name resolver); h1campaign/src/scenario.rs
+    0x20 i16 object_type -- scenario-edit/src/layout.rs (OBJECT_NAME_TYPE)
+    0x22 i16 placement_index -- scenario-edit/src/layout.rs (OBJECT_NAME_PLACEMENT)
+  0x50 block scenery 0x5c align 4 -- scenario-edit/src/layout.rs (BLOCKS); E object type table 0x00468630
+    0x0 struct placement scnr_object_placement
+    0x24 unknown 0x38
+  0x58 block scenery_palette 0x28 align 4 -- scenario-edit/src/layout.rs (BLOCKS and palette)
+    0x0 tagref object groups=scen -- scenario-edit/src/layout.rs; scenario-editor.md §2
+    0x8 unknown 0x20
+  0x60 block block_60 0x54 align 4
+    0x0 unknown 0x34
+    0x34 string string_34
+    0x38 unknown 0x1c
+  0x68 block block_68 0x28 align 4
+    0x0 tagref tagref_0
+    0x8 unknown 0x20
+  0x70 block vehicles 0x54 align 4 -- scenario-edit/src/layout.rs (BLOCKS); E object type table 0x00468630
+    0x0 struct placement scnr_object_placement
+    0x24 unknown 0x10
+    0x34 string string_34
+    0x38 unknown 0x1c
+  0x78 block vehicles_palette 0x28 align 4 -- scenario-edit/src/layout.rs (BLOCKS and palette)
+    0x0 tagref object groups=vehi -- scenario-edit/src/layout.rs; scenario-editor.md §2
+    0x8 unknown 0x20
+  0x80 block equipment 0x38 align 4 -- scenario-edit/src/layout.rs (BLOCKS); E object type table 0x00468630
+    0x0 struct placement scnr_object_placement
+    0x24 unknown 0x14
+  0x88 block equipment_palette 0x28 align 4 -- scenario-edit/src/layout.rs (BLOCKS and palette)
+    0x0 tagref object groups=eqip -- scenario-edit/src/layout.rs; scenario-editor.md §2
+    0x8 unknown 0x20
+  0x90 block weapons 0x54 align 4 -- scenario-edit/src/layout.rs (BLOCKS); E object type table 0x00468630
+    0x0 struct placement scnr_object_placement
+    0x24 unknown 0x30
+  0x98 block weapons_palette 0x28 align 4 -- scenario-edit/src/layout.rs (BLOCKS and palette)
+    0x0 tagref object groups=weap -- scenario-edit/src/layout.rs; scenario-editor.md §2
+    0x8 unknown 0x20
+  0xa0 block block_a0 0x28 align 4
+    0x0 unknown 0x28
+  0xa8 block machines 0x48 align 4 -- scenario-edit/src/layout.rs (BLOCKS); E object type table 0x00468630
+    0x0 struct placement scnr_object_placement
+    0x24 unknown 0x1c
+    0x40 block block_40 0x4 align 4
+      0x0 unknown 0x4
+  0xb0 block machines_palette 0x28 align 4 -- scenario-edit/src/layout.rs (BLOCKS and palette)
+    0x0 tagref object groups=mach -- scenario-edit/src/layout.rs; scenario-editor.md §2
+    0x8 unknown 0x20
+  0xb8 block block_b8 0x44 align 4
+    0x0 unknown 0x44
+  0xc0 block block_c0 0x28 align 4
+    0x0 tagref tagref_0
+    0x8 unknown 0x20
+  0xc8 unknown 0x10
+  0xd8 block sound_scenery 0x50 align 4 -- scenario-edit/src/layout.rs (BLOCKS); E object type table 0x00468630
+    0x0 struct placement scnr_object_placement
+    0x24 unknown 0x2c
+  0xe0 block sound_scenery_palette 0x28 align 4 -- scenario-edit/src/layout.rs (BLOCKS and palette)
+    0x0 tagref object groups=ssce -- scenario-edit/src/layout.rs; scenario-editor.md §2
+    0x8 unknown 0x20
+  0xe8 block light_fixtures 0x6c align 4 -- h1convert/src/convert.rs (BASE_BLOCKS); formats/effects.md
+    0x0 i16 palette_index -- h1convert/src/convert.rs
+    0x2 i16 name_index -- h1convert/src/convert.rs
+    0x4 unknown 0x4
+    0x8 f32[3] position -- h1convert/src/convert.rs
+    0x14 unknown 0x58
+  0xf0 block light_fixture_palette 0x28 align 4 -- h1convert/src/convert.rs (BASE_BLOCKS); formats/effects.md
+    0x0 tagref light groups=ligh -- h1convert/src/convert.rs
+    0x8 unknown 0x20
+  0xf8 block block_f8 0x44 align 4
+    0x0 unknown 0x28
+    0x28 tagref tagref_28
+    0x30 unknown 0x4
+    0x34 tagref tagref_34
+    0x3c unknown 0x8
+  0x100 block starting_locations 0x34 align 4 -- scenario-edit/src/layout.rs (BLOCKS)
+    0x0 f32[3] position -- scenario-edit/src/layout.rs; scenario-editor.md §2
+    0xc f32 facing -- scenario-edit/src/layout.rs; scenario-editor.md §2 (radians)
+    0x10 i16 team -- scenario-edit/src/layout.rs; scenario-editor.md §2
+    0x12 unknown 0x1a
+    0x2c i16 player_type -- scenario-edit/src/layout.rs; scenario-editor.md §2
+    0x2e unknown 0x6
+  0x108 block trigger_volumes 0x44 align 4 -- h1convert/src/convert.rs (TRIGGER_VOLUMES); h1campaign/src/scenario.rs
+    0x0 string name -- h1campaign/src/scenario.rs (writes trigger volume names)
+    0x4 unknown 0x4
+    0x8 string string_8
+    0xc f32[3] forward -- h1convert/src/convert.rs (volume frame); h1campaign/src/scenario.rs
+    0x18 f32[3] up -- h1convert/src/convert.rs (volume frame); h1campaign/src/scenario.rs
+    0x24 f32[3] origin -- h1convert/src/convert.rs (volume frame); h1campaign/src/scenario.rs
+    0x30 f32[3] extents -- h1campaign/src/scenario.rs (writes trigger volume extents)
+    0x3c unknown 0x8
+  0x110 block recorded_animations 0x34 align 4 -- h1campaign/src/cutscenes.rs (H2_RECORDINGS)
+    0x0 struct recording recorded_animation
+  0x118 block netgame_flags 0x20 align 4 -- scenario-edit/src/layout.rs (BLOCKS)
+    0x0 f32[3] position -- scenario-edit/src/layout.rs; scenario-editor.md §2
+    0xc f32 facing -- scenario-edit/src/layout.rs; scenario-editor.md §2 (radians)
+    0x10 u16 type -- scenario-edit/src/layout.rs; scenario-editor.md §2
+    0x12 u16 team -- scenario-edit/src/layout.rs; scenario-editor.md §2
+    0x14 i16 identifier -- scenario-edit/src/layout.rs; scenario-editor.md §2
+    0x16 unknown 0xa
+  0x120 block netgame_equipment 0x90 align 4 -- scenario-edit/src/layout.rs (BLOCKS)
+    0x0 u32 flags -- scenario-edit/src/layout.rs; scenario-editor.md §2
+    0x4 unknown 0xa
+    0xe i16 respawn_time -- scenario-edit/src/layout.rs; scenario-editor.md §2
+    0x10 i16 abandon_limit -- scenario-edit/src/layout.rs; scenario-editor.md §2
+    0x12 i16 respawn_mode -- scenario-edit/src/layout.rs; scenario-editor.md §2
+    0x14 u8 type -- scenario-edit/src/layout.rs; scenario-editor.md §2
+    0x15 unknown 0x2b
+    0x40 f32[3] position -- scenario-edit/src/layout.rs; scenario-editor.md §2
+    0x4c f32[3] orientation -- scenario-edit/src/layout.rs; scenario-editor.md §2 (radians)
+    0x58 tagref item groups=itmc|vehc|weap|eqip|vehi|scen|bloc|mach -- scenario-edit/src/layout.rs (ITEM_GROUPS)
+    0x60 unknown 0x30
+  0x128 block starting_equipment 0x9c align 4 -- scenario-edit/src/layout.rs (BLOCKS)
+    0x0 unknown 0x3c
+    0x3c tagref collection_1 -- scenario-edit/src/layout.rs; scenario-editor.md §2
+    0x44 tagref collection_2 -- scenario-edit/src/layout.rs; scenario-editor.md §2
+    0x4c tagref collection_3 -- scenario-edit/src/layout.rs; scenario-editor.md §2
+    0x54 tagref collection_4 -- scenario-edit/src/layout.rs; scenario-editor.md §2
+    0x5c tagref collection_5 -- scenario-edit/src/layout.rs; scenario-editor.md §2
+    0x64 unknown 0x38
+  0x130 block bsp_switches 0xe align 4 -- cli/src/live_geometry.rs (bsp_switches); h1campaign/src/scenario.rs
+    0x0 i16 trigger_volume -- cli/src/live_geometry.rs; h1campaign/src/scenario.rs
+    0x2 i16 source_bsp -- cli/src/live_geometry.rs; h1campaign/src/scenario.rs
+    0x4 i16 destination_bsp -- cli/src/live_geometry.rs; h1campaign/src/scenario.rs
+    0x6 unknown 0x8
+  0x138 block block_138 0x10 align 4
+    0x0 unknown 0x10
+  0x140 block block_140 0x8 align 4
+    0x0 tagref tagref_0
+  0x148 unknown 0x8
+  0x150 block block_150 0x8 align 4
+    0x0 tagref tagref_0
+  0x158 block block_158 0x24 align 4
+    0x0 unknown 0x24
+  0x160 block block_160 0x74 align 4
+    0x0 unknown 0x44
+    0x44 string string_44
+    0x48 block block_48 0x22 align 4
+      0x0 unknown 0x22
+    0x50 unknown 0x24
+  0x168 block block_168 0x38 align 4
+    0x0 unknown 0x28
+    0x28 block block_28 0xd align 4
+      0x0 word word_0
+      0x4 word word_4
+      0x8 word word_8
+      0xc unknown 0x1
+    0x30 data data_30 align 4
+  0x170 block block_170 0x18 align 4
+    0x0 string string_0
+    0x4 unknown 0x4
+    0x8 block block_8 0xc align 4
+      0x0 unknown 0x4
+      0x4 block block_4 0x8 align 4
+        0x0 unknown 0x8
+    0x10 block block_10 0x10 align 4
+      0x0 string string_0
+      0x4 unknown 0x4
+      0x8 block block_8 0x4 align 4
+        0x0 string string_0
+  0x178 block block_178 0x8 align 4
+    0x0 tagref tagref_0
+  0x180 unknown 0x30
+  0x1b0 data script_strings align 4 -- hs/src/scenario.rs; formats/haloscript.md
+  0x1b8 block scripts 0x28 align 4 -- hs/src/scenario.rs; formats/haloscript.md
+    0x0 u8[32] name -- hs/src/wire.rs
+    0x20 u16 kind -- hs/src/wire.rs
+    0x22 u16 return_type -- hs/src/wire.rs
+    0x24 word root_node -- hs/src/wire.rs; formats/haloscript.md
+  0x1c0 block script_globals 0x28 align 4 -- hs/src/scenario.rs; formats/haloscript.md
+    0x0 u8[32] name -- hs/src/wire.rs
+    0x20 u16 value_type -- hs/src/wire.rs
+    0x22 unknown 0x2
+    0x24 word root_node -- hs/src/wire.rs; formats/haloscript.md
+  0x1c8 block script_tag_references 0x8 align 4 -- hs/src/scenario.rs; formats/haloscript.md
+    0x0 tagref reference -- hs/src/wire.rs
+  0x1d0 unknown 0x8
+  0x1d8 block block_1d8 0x80 align 4
+    0x0 block block_0 0x30 align 4
+      0x0 unknown 0x20
+      0x20 block block_20 0x3c align 4
+        0x0 unknown 0x3c
+      0x28 unknown 0x8
+    0x8 unknown 0x78
+  0x1e0 block block_1e0 0x38 align 4
+    0x0 unknown 0x38
+  0x1e8 block block_1e8 0x40 align 4
+    0x0 unknown 0x40
+  0x1f0 block block_1f0 0x24 align 4
+    0x0 string string_0
+    0x4 rawsize rawsize_4 of=0x8
+    0x8 raw raw_8
+    0xc unknown 0x18
+  0x1f8 tagref tagref_1f8
+  0x200 tagref tagref_200
+  0x208 tagref hud_messages groups=686d7420 -- h1campaign/src/scenario.rs (FRESH_NULL_REFS); tags/src/schema/infer.rs (CONVERTER_GROUPS)
+  0x210 block structure_bsps 0x44 align 4 -- native-render/src/load.rs (scenario_bsps); map/src/reader.rs (resolve_bsps)
+    0x0 bsp region -- map/src/reader.rs (resolve_bsps); formats/map-format.md
+    0xc unknown 0x4
+    0x10 tagref structure_bsp groups=sbsp -- native-render/src/load.rs; formats/map-format.md
+    0x18 tagref lightmap groups=ltmp -- native-render/src/load.rs; formats/map-format.md
+    0x20 unknown 0x24
+  0x218 block block_218 0x18 align 4
+    0x0 block block_0 0x8 align 4
+      0x0 unknown 0x8
+    0x8 block block_8 0x8 align 4
+      0x0 unknown 0x8
+    0x10 block block_10 0x8 align 4
+      0x0 unknown 0x8
+  0x220 unknown 0x8
+  0x228 block block_228 0x8 align 4
+    0x0 datum datum_0
+    0x4 unknown 0x4
+  0x230 block block_230 0x2 align 4
+    0x0 unknown 0x2
+  0x238 block script_syntax_nodes 0x14 align 4 -- hs/src/scenario.rs; engine/src/hs_syntax.rs
+    0x0 u16 salt -- hs/src/wire.rs
+    0x2 u16 opcode -- hs/src/wire.rs
+    0x4 u16 value_type -- hs/src/wire.rs
+    0x6 u16 flags -- hs/src/wire.rs
+    0x8 u32 next_node -- hs/src/wire.rs
+    0xc u32 string_offset -- hs/src/wire.rs
+    0x10 u32 data -- hs/src/wire.rs
+  0x240 block block_240 0x7c align 4
+    0x0 unknown 0x54
+    0x54 block block_54 0x8 align 4
+      0x0 unknown 0x8
+    0x5c block block_5c 0x8 align 4
+      0x0 unknown 0x8
+    0x64 block block_64 0xc align 4
+      0x0 unknown 0x4
+      0x4 block block_4 0x8 align 4
+        0x0 unknown 0x8
+    0x6c block block_6c 0x4 align 4
+      0x0 unknown 0x4
+    0x74 block block_74 0x14 align 4
+      0x0 unknown 0xc
+      0xc block block_c 0x8 align 4
+        0x0 unknown 0x8
+  0x248 block block_248 0x30 align 4
+    0x0 unknown 0x28
+    0x28 block block_28 0x38 align 4
+      0x0 unknown 0x38
+  0x250 block background_sound_palette 0x64 align 4 -- h1convert/src/ambience.rs (write_palette)
+    0x0 u8[32] name -- h1convert/src/ambience.rs
+    0x20 tagref sound groups=lsnd -- h1convert/src/ambience.rs
+    0x28 tagref inside_sound groups=lsnd -- h1convert/src/ambience.rs
+    0x30 unknown 0x14
+    0x44 f32 cutoff_distance -- h1convert/src/ambience.rs
+    0x48 u32 scale_flags -- h1convert/src/ambience.rs
+    0x4c f32 interior_scale -- h1convert/src/ambience.rs
+    0x50 f32 portal_scale -- h1convert/src/ambience.rs
+    0x54 f32 exterior_scale -- h1convert/src/ambience.rs
+    0x58 f32 interpolation_speed -- h1convert/src/ambience.rs
+    0x5c unknown 0x8
+  0x258 block sound_environment_palette 0x48 align 4 -- h1convert/src/ambience.rs (write_palette)
+    0x0 u8[32] name -- h1convert/src/ambience.rs
+    0x20 tagref environment groups=snde -- h1convert/src/ambience.rs
+    0x28 f32 cutoff_distance -- h1convert/src/ambience.rs
+    0x2c f32 interpolation_speed -- h1convert/src/ambience.rs
+    0x30 unknown 0x18
+  0x260 block block_260 0x88 align 4
+    0x0 unknown 0x20
+    0x20 tagref tagref_20
+    0x28 unknown 0x60
+  0x268 unknown 0x28
+  0x290 block block_290 0x34 align 4
+    0x0 unknown 0x8
+    0x8 block block_8 0x4 align 4
+      0x0 unknown 0x4
+    0x10 block block_10 0x4 align 4
+      0x0 unknown 0x4
+    0x18 unknown 0x4
+    0x1c block block_1c 0xc align 4
+      0x0 unknown 0xc
+    0x24 block block_24 0x4 align 4
+      0x0 unknown 0x4
+    0x2c block block_2c 0x4 align 4
+      0x0 unknown 0x4
+  0x298 unknown 0x80
+  0x318 block block_318 0x60 align 4
+    0x0 unknown 0x48
+    0x48 block block_48 0x10 align 4
+      0x0 unknown 0x10
+    0x50 block block_50 0x30 align 4
+      0x0 string string_0
+      0x4 unknown 0x2c
+    0x58 block block_58 0x30 align 4
+      0x0 string string_0
+      0x4 unknown 0x2c
+  0x320 unknown 0x8
+  0x328 block crates 0x4c align 4 -- scenario-edit/src/layout.rs (BLOCKS); E object type table 0x00468630
+    0x0 struct placement scnr_object_placement
+    0x24 unknown 0x4
+    0x28 word word_28
+    0x2c unknown 0x8
+    0x34 string string_34
+    0x38 unknown 0x14
+  0x330 block crates_palette 0x28 align 4 -- scenario-edit/src/layout.rs (BLOCKS and palette)
+    0x0 tagref object groups=bloc -- scenario-edit/src/layout.rs; scenario-editor.md §2
+    0x8 unknown 0x20
+  0x338 tagref tagref_338
+  0x340 block block_340 0xf4 align 4
+    0x0 string string_0
+    0x4 unknown 0xcc
+    0xd0 tagref tagref_d0
+    0xd8 block block_d8 0x10 align 8
+      0x0 unknown 0x4
+      0x4 string string_4
+      0x8 string string_8
+      0xc unknown 0x4
+    0xe0 unknown 0x14
+  0x348 block block_348 0x10 align 4
+    0x0 string string_0
+    0x4 tagref tagref_4
+    0xc unknown 0x4
+  0x350 block block_350 0x84 align 4
+    0x0 unknown 0xc
+    0xc block block_c 0x1c align 4
+      0x0 unknown 0x1c
+    0x14 block block_14 0x10 align 4
+      0x0 unknown 0x10
+    0x1c unknown 0xc
+    0x28 tagref tagref_28
+    0x30 unknown 0x50
+    0x80 string string_80
+  0x358 tagref tagref_358
+  0x360 unknown 0x10
+  0x370 block block_370 0x28 align 4
+    0x0 tagref tagref_0
+    0x8 unknown 0x20
+  0x378 block decorators 0x8 align 4 -- h1convert/src/convert.rs (BASE_BLOCKS); tags/src/schema/layouts.txt
+    0x0 tagref decorator_set groups=DECR -- h1convert/src/convert.rs
+  0x380 block block_380 0x8 align 4
+    0x0 unknown 0x8
+  0x388 block block_388 0x10 align 4
+    0x0 unknown 0x8
+    0x8 block block_8 0xc align 4
+      0x0 unknown 0xc
+  0x390 block block_390 0x104 align 4
+    0x0 unknown 0x104
+  0x398 block block_398 0x18 align 4
+    0x0 tagref tagref_0
+    0x8 block block_8 0xb50 align 4
+      0x0 unknown 0x8
+      0x8 tagref tagref_8
+      0x10 unknown 0x9c
+      0xac rawsize rawsize_ac of=0x894
+      0xb0 unknown 0xec
+      0x19c raw raw_19c
+      0x1a0 unknown 0x30
+      0x1d0 word word_1d0
+      0x1d4 unknown 0x6c0
+      0x894 raw raw_894
+      0x898 unknown 0xe0
+      0x978 word word_978
+      0x97c unknown 0x1d4
+    0x10 block block_10 0xc64 align 4
+      0x0 rawsize rawsize_0 of=0x8cc
+      0x4 tagref tagref_4
+      0xc unknown 0x8c0
+      0x8cc raw raw_8cc
+      0x8d0 unknown 0xe4
+      0x9b4 word word_9b4
+      0x9b8 unknown 0x2ac
+  0x3a0 tagref tagref_3a0
+  0x3a8 unknown 0x8
+  0x3b0 block block_3b0 0x8 align 4
+    0x0 tagref tagref_0
+  0x3b8 tagref tagref_3b8
+  0x3c0 block block_3c0 0x18 align 4
+    0x0 string string_0
+    0x4 unknown 0x8
+    0xc data data_c align 4
+    0x14 unknown 0x4
+  0x3c8 unknown 0x8
+  0x3d0 block block_3d0 0x24 align 4
+    0x0 unknown 0x10
+    0x10 tagref tagref_10
+    0x18 string string_18
+    0x1c unknown 0x8
+  0x3d8 block block_3d8 0x4 align 4
+    0x0 datum datum_0
