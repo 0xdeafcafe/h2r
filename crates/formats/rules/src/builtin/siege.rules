@@ -1,0 +1,80 @@
+// Siege (working name): the phased attack-and-defend mode, with the
+// mechanics of Halo: Reach's Invasion and none of its assets or text.
+// Team 0 attacks, team 1 defends. Phases 0 and 1: hold the phase's zone
+// for the capture time and the map opens further (barriers numbered below
+// the phase are removed; spawn areas move up). Phase 2: a core appears;
+// carrying it into the goal wins. Each phase has its own clock; the
+// defenders win when one runs out. Respawns come in waves, and each team
+// has its own loadout.
+// docs/game/rules-engine.md, "Phases: attack and defend" and "Payoff".
+//
+// Entries a host cannot make yet (`verify::unhostable`):
+//   label_number        not built (Forge labels)
+//   label_of            not built (Forge labels)
+//   ticks_held          not built (zone tests)
+//   spawn_areas         untraced (the PLAYER_SPAWN_LOCATION rule)
+//   create              traced (Forge's creation)
+//   register_objective  traced (0x15e050)
+//   set_loadout         traced (0x19eda0)
+// Not covered: a body per team (Spartan or Elite) has no entry.
+rules "Siege" 1
+carrier slayer
+teams 2
+requires objects.create, objects.delete, player.spawn, player.weapons
+
+option phase_time: int 60..600 = 180 "Phase time" "Seconds the attackers have for each phase"
+option capture_time: int 5..60 = 20 "Capture time" "Seconds the attackers hold a zone to take it"
+option wave_seconds: int 3..15 = 8 "Respawn wave" "Seconds between respawn waves"
+
+table loadouts: (side: team, primary: tag, secondary: tag) = [
+    (team 0, "objects/weapons/rifle/battle_rifle/battle_rifle", "objects/weapons/pistol/magnum/magnum"),
+    (team 1, "objects/weapons/rifle/covenant_carbine/covenant_carbine", "objects/weapons/rifle/plasma_rifle/plasma_rifle"),
+]
+
+global var phase: int = 0
+global var clock: timer
+global var wave: timer
+
+fn open(n: int) {
+    phase = n
+    clock = seconds(phase_time)
+    for each objects labelled "barrier" b where b.number < n { delete(b) }
+    spawn_areas(team 0, labelled "attack", n)
+    spawn_areas(team 1, labelled "defend", n)
+    if n == 2 { create("objects/weapons/multiplayer/assault_bomb/assault_bomb", first(objects labelled "core")) }
+}
+
+on round_start {
+    open(0)
+    wave = seconds(wave_seconds)
+}
+
+on pickup(p, o) {
+    if phase == 2 and p.team == team 0 and not is_objective(o) { register_objective(o, team 0) }
+}
+
+on tick {
+    if phase < 2 {
+        let zone = first(objects labelled "zone" z where z.number == phase)
+        if zone != none and ticks_held(zone, team 0) >= seconds(capture_time) { open(phase + 1) }
+    }
+}
+
+on enter(zone, o) {
+    if phase == 2 and zone.label == labelled "goal" and is_objective(o) { end_round(team 0) }
+}
+
+on timer(clock) { end_round(team 1) }
+
+// Hold the dead until the wave: no lives, then a respawn for each.
+on death(p) { set_lives(p, 0) }
+
+on timer(wave) {
+    for each players p where not p.alive { respawn(p) }
+    wave = seconds(wave_seconds)
+}
+
+on spawn(p) {
+    let kit = loadouts[p.team]
+    set_loadout(p, kit.primary, kit.secondary)
+}

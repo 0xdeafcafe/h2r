@@ -53,15 +53,22 @@ not built) implements `vm::Game` over `engine::entry::Cx` and keeps
 ## Built-ins
 
 `builtin::builtin(engine_index)` returns the built-in source for a
-retail engine index. Slayer (`src/builtin/slayer.rules`) is the only one.
-`fake::FakeGame` is a table-backed `Game` that logs calls, for tests and
-`h2 rules run`.
+retail engine index: Slayer, Oddball, King of the Hill, Juggernaut,
+Territories, and one `ctf.rules` body serving CTF and Assault, each under
+its own header. `builtin::examples()` lists the payoff modes (Infection,
+Gun Game, VIP, Siege, Race, Bounce Practice). Each script's header names
+the entries a host cannot make yet. `fake::FakeGame` is a table-backed
+`Game` that logs calls, for tests and `h2 rules run`; it also holds an
+objective registry, object teams, label numbers and `inside` answers.
 
 ## Tests
 
 `cargo test -p rules` runs the following. The design page's Slayer,
 Infection and Holdout scripts compile, verify and run on `FakeGame`,
-with assertions on the calls they make. There is a refusal test for
+with assertions on the calls they make. `tests/engines.rs` checks every
+built-in and example: it compiles, verifies and fits a tick, its header
+lists exactly the unhostable entries it calls, and each engine port's
+core rule holds on `FakeGame`. There is a refusal test for
 each verifier rule. The codec round-trips and survives corruption, the
 blob hash is stable, a budget overflow stops at the same op on every
 run, and `pick` is deterministic. Grants are checked against the

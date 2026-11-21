@@ -284,7 +284,10 @@ read through its owner: `p.infected`, `t.captures`.
 completion.
 
 **Loops** are `for each` over a finite set only: `players`, `teams`,
-`objects labelled "x"`, each with an optional `where`. There is no
+`objectives` (the objective registry's objects, at most 8, by object
+handle) and `objects labelled "x"`, each with an optional `where`. A set
+passed to `count`, `first` or `pick` may name its member for the `where`
+(`count(players p where p.team == t)`). There is no
 `while`, no recursion, and functions are inlined, so every handler has a
 static worst-case op count, which the compiler prints.
 
@@ -295,7 +298,16 @@ label. A script never sees a datum index or an address.
 **Options** a script declares are the rows a variant editor shows for
 it: `option name: type range = default`, with a label and a description
 in the string table. `variant.<field>` reads a retail record field by
-its `variants::schema` name.
+name: `team_play`, `score_limit`, `time_limit`, `lives`,
+`respawn_time`, `friendly_fire`, `rounds`, `engine`, and the type-area
+fields the ports read (`caps::VARIANT_FIELDS`, which names each one's
+`record::SettingId` and offset): `oddball_ball_count`,
+`king_moving_hill`, `ctf_flag_type`, `ctf_reset_time`,
+`ctf_touch_return`, `ctf_flag_at_home`, `assault_arm_time`,
+`territories_count`, `territories_contest_time`. The meanings of
+`oddball_ball_count`, `ctf_reset_time`, `ctf_touch_return`,
+`ctf_flag_at_home` and `territories_contest_time` are inferred from the
+editor's page labels, not from a reader.
 
 ### Slayer
 
@@ -411,13 +423,17 @@ fn open(n: int) {
 on pickup(p, o) { if phase == 2 and not is_objective(o) { register_objective(o, team 0) } }
 on round_start { open(0) }
 on tick {
-    if phase < 2 and ticks_held(labelled "zone" phase, team 0) >= seconds(capture_time) { open(phase + 1) }
+    let zone = first(objects labelled "zone" z where z.number == phase)
+    if phase < 2 and ticks_held(zone, team 0) >= seconds(capture_time) { open(phase + 1) }
 }
 on enter(zone, o) {
     if phase == 2 and zone.label == "goal" and is_objective(o) { end_round(team 0) }
 }
 on timer(clock) { end_round(team 1) }
 ```
+
+The whole mode, with respawn waves and loadouts per team, is
+`crates/formats/rules/src/builtin/siege.rules`.
 
 ### A Forge graph is the same IR
 
@@ -558,7 +574,10 @@ Reads:
 | `round_time_left()`: the round start tick against the time limit | `E+0x70` (`ROUND_START_TICK`, likely) and `V` | named |
 | objects: tag, position, parent | object datum (`guest-layout` `object.rs`) | named |
 | objects by label; `zone.label`, `zone.id`, `o.number` | Forge labels | not built |
-| `is_objective(o)`; objective records (object, team, carrier) | `E+0xc18`, `E+0xc1c` (`engine::objectives`) | named |
+| `is_objective(o)`; objective records (object, team, carrier); `o.carrier` (`carrier_of`); `for each objectives` | `E+0xc18`, `E+0xc1c` (`engine::objectives`) | named |
+| `o.team` (`object_team`): an objective's team, or a flag placement's team through its designator | record `+4`; `E+0x10` (bots.md section 3.7) | traced |
+| `player_of(o)`: the player whose unit an object is | unit `+0x13c` (bots.md section 3.7) | traced |
+| `inside(p, zone)`: a living unit inside a labelled volume, a territory marker's capture volume, or a hill corner's hill | zone tests, as below | not built |
 | zone tests: who is in a labelled zone, behind `on enter`, `on leave` and `ticks_held` | flag polygons and labelled volumes, in Rust under the float rules | not built |
 | netgame flags by type and team | `scnr+0x118` (`engine::objectives`); query `0x19ec40` | named; traced |
 | per-engine globals (`E+0xfc`): hill, bomb state, territories, Juggernaut mask | `engine::objectives`; `KOTH_GLOBALS` and its siblings in `global.rs` | named |
@@ -581,6 +600,9 @@ Actions:
 | `set_loadout` | starting-weapon routine `0x19eda0` | traced | `player.weapons` |
 | `create(tag, at)`, `delete(o)` | `OBJECT_DELETE` `0xb8540`; creation as Forge's ([forge.md](forge.md)) | named; traced | `objects.create`, `objects.delete` |
 | `register_objective(o, team)`, unregister, picked up, dropped | `0x15e050`, `0x15e130`, `0x15e250`, `0x15e460` | traced | core |
+| `spawn_objective(tag, at, team)`: create an objective at a placement and register it | as the CTF and Assault flag spawn `0x2422d0` and Oddball's `0x2bc1f0` do | traced | core |
+| `reset_objective(o)`: return an objective to where it spawned | the lifted engines' return path is not traced | untraced | core |
+| `role_traits(p, on)`: the carrier engine's role traits from the variant's type area (ball or flag carrier, the Juggernaut and its bit of the role mask `[0x510c9c]+0`) | the trait query `0x24dda0` has no direct call site | untraced | core |
 | barriers and other map changes | create and delete at labels, as above; a barrier is a labelled placement (forge-features.md "Invisible barriers") | not built | `objects.create`, `objects.delete` |
 | `place_squad(s, class, n, label)` from the palette with its team, `hunt(s)`, erase | `AI_SQUAD_PLACE` `0x201520`, `AI_SET_TEAM` `0x275b60`, `AI_SET_ORDERS` `0x275cb0`, `AI_ERASE` `0x2736c0`, through `actor_net::squads::SquadEntry` (firefight.md "Guest boundary") | named; game runs R1, R2 pending | `ai.squads` |
 | `spawn_areas(team, label, n)`: which starting locations are live | answer a hook on `PLAYER_SPAWN_LOCATION` `0x14ef00` (picks from `scnr+0x100`) with labelled locations only; how the routine weighs locations is not traced | named point; untraced rule | `player.spawn` |
@@ -783,6 +805,33 @@ Tooling:
 
 All layout facts are **E** from bots.md section 3.7.
 
+**The scripts.** Every engine has a script in
+`crates/formats/rules/src/builtin/`, found by `builtin::builtin(engine
+index)`: `slayer.rules`, `oddball.rules`, `koth.rules`,
+`juggernaut.rules`, `territories.rules`, and `ctf.rules`, which serves
+CTF and Assault (`builtin/mod.rs` gives it a header per engine, and the
+script reads `variant.engine`). Each declares no capability: the
+objective entries and `role_traits` are `core`, since they do only what
+the retail engine does with the record's own settings. Each file's header
+names the entries a host cannot make yet and what the port does not
+reproduce; `tests/engines.rs` checks that list against the blob, and
+checks each engine's core rule over `fake::FakeGame` (Oddball: time held
+scores; Juggernaut: the killer takes the role; King: time on the hill
+scores, a contest stops it; CTF: a capture scores and the flag returns,
+by reset time and by touch; Assault: a bomb armed on the enemy plate
+scores; Territories: a territory held pays each interval). They run in
+tests only: no port has a parity run, and only Slayer's entries are all
+hostable.
+
+| Script | Waits on | Not reproduced |
+|---|---|---|
+| Slayer | nothing | |
+| Oddball | `spawn_objective`, `reset_objective`, `role_traits` | the Oddball globals; the reset delay is a script option |
+| King of the Hill | `label_number`, `inside` | the KotH globals; how the next hill is chosen (the script takes the next number); the type area's other King settings |
+| Juggernaut | `role_traits` | who takes the role after a suicide or a quit (the script draws one); whether the kill that takes the role scores |
+| CTF and Assault | `object_team`, `inside`, `spawn_objective`, `reset_objective`, `role_traits` | sudden death; the CTF and Assault globals; a team's second plate; detonation after arming |
+| Territories | `register_objective`, `inside` | the Territories globals; the marker's index as its registration team; a capture's decay; the score interval is a script option |
+
 **Parity method.** The lifted engine is the oracle. A headless match is
 recorded once (seed and per-seat inputs), then run twice from the same
 start: on the lifted engine, and on the script with the lifted engine's
@@ -854,6 +903,15 @@ signature, not the launch rule (Open in superbounce.md), so it can miss
 or over-report until it is checked in play.
 
 ## Payoff
+
+The modes below that have a script are examples in
+`crates/formats/rules/src/builtin/`, listed by `builtin::examples()`
+rather than by engine: `infection.rules`, `gun_game.rules`,
+`vip.rules`, `siege.rules`, `race.rules` and `bounce_practice.rules`.
+Each compiles, verifies and fits a tick (`tests/engines.rs`), and each
+header names the entries a host cannot make yet. VIP and Bounce
+Practice call none, but wait on the match edit log and the bounce
+detector. Prop Hunt has no script.
 
 - **Race.** Halo 1's race track points are dropped at conversion
   ([multiplayer.md](../halo1/multiplayer.md)); labelled checkpoints and

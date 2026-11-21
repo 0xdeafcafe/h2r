@@ -35,6 +35,8 @@ const FIELDS: &[(Ty, &str, u16)] = &[
     (Ty::Object, "number", caps::id::LABEL_NUMBER),
     (Ty::Object, "label", caps::id::LABEL_OF),
     (Ty::Object, "id", caps::id::ZONE_ID),
+    (Ty::Object, "carrier", caps::id::CARRIER_OF),
+    (Ty::Object, "team", caps::id::OBJECT_TEAM),
     (Ty::Squad, "alive", caps::id::SQUAD_ALIVE),
 ];
 
@@ -816,14 +818,19 @@ impl<'s> Cx<'s> {
                 base: SetBase::Labelled(self.label(l, set.pos)?),
                 pick: None,
             },
+            SetBaseExpr::Objectives => Set {
+                base: SetBase::Objectives,
+                pick: None,
+            },
             SetBaseExpr::Pick(inner, n) => {
-                if inner.filter.is_some() {
-                    return err(inner.pos, "pick takes a set with no where");
+                if inner.filter.is_some() || inner.binder.is_some() {
+                    return err(inner.pos, "pick takes a set with no name and no where");
                 }
                 let base = match &inner.base {
                     SetBaseExpr::Players => SetBase::Players,
                     SetBaseExpr::Teams => SetBase::Teams,
                     SetBaseExpr::Labelled(l) => SetBase::Labelled(self.label(l, inner.pos)?),
+                    SetBaseExpr::Objectives => SetBase::Objectives,
                     SetBaseExpr::Pick(..) => return err(inner.pos, "pick of a pick"),
                 };
                 let n = self.expect(f, n, Ty::Int)?;
@@ -839,7 +846,7 @@ impl<'s> Cx<'s> {
         match &set.base {
             SetBaseExpr::Players => Ty::Player,
             SetBaseExpr::Teams => Ty::Team,
-            SetBaseExpr::Labelled(_) => Ty::Object,
+            SetBaseExpr::Labelled(_) | SetBaseExpr::Objectives => Ty::Object,
             SetBaseExpr::Pick(inner, _) => Self::set_elem(inner),
         }
     }
@@ -1246,12 +1253,12 @@ impl<'s> Cx<'s> {
                 if name == "count" {
                     let acc = f.konst(Ty::Int, 0, pos)?;
                     let one = f.konst(Ty::Int, 1, pos)?;
-                    self.foreach(f, set, None, Body::Count { acc, one }, pos)?;
+                    self.foreach(f, set, set.binder.as_deref(), Body::Count { acc, one }, pos)?;
                     return Ok(Some((acc, Ty::Int)));
                 }
                 let acc = f.konst(elem, NONE, pos)?;
                 let none = f.konst(elem, NONE, pos)?;
-                self.foreach(f, set, None, Body::First { acc, none }, pos)?;
+                self.foreach(f, set, set.binder.as_deref(), Body::First { acc, none }, pos)?;
                 return Ok(Some((acc, elem)));
             }
             "pick" => return err(pos, "pick makes a set: use it in for each or count"),

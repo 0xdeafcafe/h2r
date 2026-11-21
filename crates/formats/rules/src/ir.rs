@@ -361,6 +361,9 @@ pub enum SetBase {
     Teams,
     /// Objects with the label-table entry's label, by placement id.
     Labelled(u16),
+    /// The objective registry's objects (`E+0xc1c`, at most 8), by object
+    /// handle.
+    Objectives,
 }
 
 impl SetBase {
@@ -368,7 +371,7 @@ impl SetBase {
         match self {
             SetBase::Players => Ty::Player,
             SetBase::Teams => Ty::Team,
-            SetBase::Labelled(_) => Ty::Object,
+            SetBase::Labelled(_) | SetBase::Objectives => Ty::Object,
         }
     }
 
@@ -378,6 +381,7 @@ impl SetBase {
             SetBase::Players => crate::ty::MAX_PLAYERS as u64,
             SetBase::Teams => crate::ty::MAX_TEAMS as u64,
             SetBase::Labelled(_) => crate::ty::MAX_LABELLED as u64,
+            SetBase::Objectives => crate::ty::MAX_OBJECTIVES as u64,
         }
     }
 }
@@ -878,6 +882,7 @@ impl Writer {
                         self.u8(2);
                         self.u16(l);
                     }
+                    SetBase::Objectives => self.u8(3),
                 }
                 self.opt_u8(set.pick);
                 self.u8(dst);
@@ -1116,6 +1121,7 @@ impl<'a> Reader<'a> {
                     0 => SetBase::Players,
                     1 => SetBase::Teams,
                     2 => SetBase::Labelled(self.u16(W)?),
+                    3 => SetBase::Objectives,
                     v => {
                         return Err(DecodeError::Invalid {
                             what: "a set",

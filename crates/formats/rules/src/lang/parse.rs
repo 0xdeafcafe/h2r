@@ -458,7 +458,12 @@ impl Parser<'_> {
             };
             let body = self.block()?;
             return Ok(Stmt::ForEach {
-                set: SetExpr { base, filter, pos },
+                set: SetExpr {
+                    base,
+                    binder: None,
+                    filter,
+                    pos,
+                },
                 binder,
                 body,
                 pos,
@@ -502,6 +507,9 @@ impl Parser<'_> {
             self.expect_word("labelled")?;
             return Ok(SetBaseExpr::Labelled(self.string()?));
         }
+        if self.eat_word("objectives") {
+            return Ok(SetBaseExpr::Objectives);
+        }
         if self.is_word("pick") && matches!(self.peek2().tok, Tok::Punct("(")) {
             self.bump();
             self.bump();
@@ -515,20 +523,28 @@ impl Parser<'_> {
         }
         Err(CompileError::at(
             pos,
-            "expected a set: players, teams, objects labelled \"x\" or pick(set, n)",
+            "expected a set: players, teams, objectives, objects labelled \"x\" or pick(set, n)",
         ))
     }
 
-    /// A set as a call argument: a base and an optional `where`.
+    /// A set as a call argument: a base, an optional member name and an
+    /// optional `where` (`count(players p where p.team == t)`).
     fn set_arg(&mut self) -> R<SetExpr> {
         let pos = self.pos();
         let base = self.set_base()?;
+        let named = matches!(&self.peek().tok, Tok::Ident(s) if !KEYWORDS.contains(&s.as_str()));
+        let binder = if named { Some(self.name()?) } else { None };
         let filter = if self.eat_word("where") {
             Some(self.expr()?)
         } else {
             None
         };
-        Ok(SetExpr { base, filter, pos })
+        Ok(SetExpr {
+            base,
+            binder,
+            filter,
+            pos,
+        })
     }
 
     pub fn expr(&mut self) -> R<Expr> {
@@ -719,7 +735,7 @@ impl Parser<'_> {
                         self.bump();
                         return Ok(at(ExprKind::Palette(self.string()?)));
                     }
-                    "players" | "teams" | "objects" => {
+                    "players" | "teams" | "objects" | "objectives" => {
                         return Err(CompileError::at(
                             pos,
                             "a set is only allowed in for each, count, first and pick",

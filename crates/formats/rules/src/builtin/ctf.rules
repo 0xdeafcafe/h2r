@@ -1,0 +1,142 @@
+// Capture the Flag (engine index 1) and Assault (engine index 9): one port
+// serves both, as one engine object does (0x459d18). `builtin/mod.rs`
+// puts the `rules` and `carrier` lines in front of this file, once per
+// engine; the script tells the two apart by `variant.engine`.
+// docs/game/rules-engine.md, "Porting the seven engines".
+//
+// CTF: each team's flag at its spawn (type 0, "ctf_flag_spawn"); an enemy
+// carries it to the team's return point (type 1, "ctf_flag_return") or,
+// with none, its own flag's spawn, for a point. Assault: each team carries
+// its bomb (type 2, "assault_bomb_spawn") to an enemy plate (type 3,
+// "assault_bomb_return") and arms it there for the arm time; the count
+// falls by three a tick off the plate, to -1 (bots.md 3.7). One flag or
+// one bomb (`variant.ctf_flag_type == 1`): one side defends, alternating
+// each round; a one-bomb game spawns the bomb at the neutral spawn.
+// Both: touch return, the reset timer for a dropped flag or bomb, carrier
+// traits.
+//
+// Entries a host cannot make yet (`verify::unhostable`):
+//   object_team      traced (record `+4`; a placement's designator)
+//   inside           not built (the return point and plate volumes)
+//   spawn_objective  traced (the flag spawn 0x2422d0)
+//   reset_objective  untraced
+//   role_traits      untraced
+// Not reproduced: sudden death (holding the time limit is not in the API);
+// the CTF and Assault globals (`[0x51ec80]`: per-team state bits `+0x170`,
+// timers `+0x1a0`, the defending team `+0x1f4`) are not written; a team's
+// second plate or return point is not used; a bomb scores when armed, not
+// when it detonates; retail takes the flag and bomb tags from the globals
+// tag's multiplayer block, this script names the paths; touching is read
+// from the pickup event.
+
+option flag_points: int 1..5 = 1 "Capture points" "Points for a capture or an armed bomb"
+
+team var spawn: object = none
+team var plate: object = none
+team var at_home: bool = true
+object var moved: bool = false
+object var away: int = 0
+object var arm: int = 0
+global var neutral: object = none
+global var defender: team = team 1
+
+fn claim_spawn(s: object) {
+    let t = s.team
+    if t == none { neutral = s } else if t.spawn == none { t.spawn = s }
+}
+
+fn claim_plate(s: object) {
+    let t = s.team
+    if t != none and t.plate == none { t.plate = s }
+}
+
+// Back to its spawn: by touch, by the reset timer, or after a score.
+fn home(o: object) {
+    reset_objective(o)
+    o.moved = false
+    o.away = 0
+    o.arm = 0
+    let f = o.team
+    f.at_home = true
+}
+
+on round_start {
+    if defender == team 0 { defender = team 1 } else { defender = team 0 }
+    neutral = none
+    for each teams t {
+        t.spawn = none
+        t.plate = none
+        t.at_home = true
+    }
+    let bomb = variant.engine == 9
+    let one = variant.ctf_flag_type == 1
+    if bomb {
+        for each objects labelled "assault_bomb_spawn" s { claim_spawn(s) }
+        for each objects labelled "assault_bomb_return" s { claim_plate(s) }
+    } else {
+        for each objects labelled "ctf_flag_spawn" s { claim_spawn(s) }
+        for each objects labelled "ctf_flag_return" s { claim_plate(s) }
+    }
+    if bomb and one and neutral != none {
+        spawn_objective("objects/weapons/multiplayer/assault_bomb/assault_bomb", neutral, none)
+    } else if bomb {
+        for each teams t where t.spawn != none and (not one or t != defender) {
+            spawn_objective("objects/weapons/multiplayer/assault_bomb/assault_bomb", t.spawn, t)
+        }
+    } else {
+        for each teams t where t.spawn != none and (not one or t == defender) {
+            spawn_objective("objects/weapons/multiplayer/flag/flag", t.spawn, t)
+        }
+    }
+}
+
+on pickup(p, o) {
+    if is_objective(o) {
+        let f = o.team
+        let bomb = variant.engine == 9
+        // A team touching its own flag, or an enemy's bomb, returns it.
+        if (not bomb and f == p.team) or (bomb and f != none and f != p.team) {
+            if variant.ctf_touch_return and o.moved { home(o) }
+        } else {
+            o.moved = true
+            o.away = 0
+            f.at_home = false
+            role_traits(p, true)
+        }
+    }
+}
+
+on drop(p, o) {
+    if is_objective(o) { role_traits(p, false) }
+}
+
+on tick {
+    let bomb = variant.engine == 9
+    let one = variant.ctf_flag_type == 1
+    for each objectives o {
+        let p = o.carrier
+        if p == none {
+            if o.moved and variant.ctf_reset_time > 0 {
+                o.away = o.away + 1
+                if o.away >= seconds(variant.ctf_reset_time) { home(o) }
+            }
+        } else if not bomb {
+            let mine = p.team
+            let back = (mine.plate != none and inside(p, mine.plate)) or (mine.plate == none and inside(p, mine.spawn))
+            if back and (not variant.ctf_flag_at_home or mine.at_home) {
+                score(p, flag_points)
+                role_traits(p, false)
+                home(o)
+            }
+        } else {
+            let mine = p.team
+            let on_plate = count(teams e where e != mine and e.plate != none and (not one or e == defender) and inside(p, e.plate)) > 0
+            if on_plate { o.arm = o.arm + 1 } else { o.arm = max(o.arm - 3, -1) }
+            if on_plate and o.arm >= seconds(variant.assault_arm_time) {
+                score(p, flag_points)
+                role_traits(p, false)
+                home(o)
+            }
+        }
+    }
+}
