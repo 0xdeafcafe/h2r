@@ -839,3 +839,174 @@ pub fn fixture_with_textured_bsp() -> Vec<u8> {
     put(&mut b, e + 0x1c, id(5).0);
     b
 }
+
+/// Where [`fixture_with_layered_bsp`]'s three extra tags are in the
+/// metadata (past the textured map's raw block and bitmaps in the file,
+/// so its metadata region grows to [`LAYERED_META_SIZE`]): the floor
+/// shader's template, its one pass and the pass's vertex shader.
+pub const LAYERED_STEM: usize = 0x2600;
+pub const LAYERED_SPAS: usize = 0x2700;
+pub const LAYERED_VRTX: usize = 0x2a00;
+pub const LAYERED_META_SIZE: usize = 0x2e00;
+/// The layer the floor's template draws a pass in: one of the world
+/// layers the editor draws after the base look.
+pub const LAYERED_LAYER: u8 = 5;
+/// The pass's colour (`A8R8G8B8`): its pixel shader's final combiner
+/// outputs the constant alone.
+pub const LAYERED_COLOR: u32 = 0xff00_ff00;
+
+/// [`fixture_with_textured_bsp`] with the floor's shader given a template
+/// (`id(10)`) that draws one pass (`id(11)`) in layer [`LAYERED_LAYER`]
+/// at the first level of detail, with one implementation: a vertex shader
+/// (`id(12)`) whose world classification places the vertex with the
+/// view's rows (`dp4 oPos, v0, c[0..3]`) and nothing else, a pixel shader
+/// whose final combiner outputs [`LAYERED_COLOR`], no textures, and its
+/// own states: no blending, depth written, nothing culled. The base map
+/// and lightmap are the textured map's, so the base look is unchanged.
+/// Everything is invented.
+pub fn fixture_with_layered_bsp() -> Vec<u8> {
+    use shaders::psh::bits::{CHAN_ALPHA, REG_C0, final_efg, inputs};
+    use shaders::vsh::encode::{Inst, Operand as O, program};
+    use shaders::vsh::{MacOp, OutReg};
+
+    let mut b = fixture_with_textured_bsp();
+    // The metadata region reaches the end of the file.
+    put(&mut b, 0x18, LAYERED_META_SIZE as u32);
+    put(&mut b, 0x1c, LAYERED_META_SIZE as u32);
+    assert!(META_FILE + LAYERED_META_SIZE <= FILE);
+    assert!(META_FILE + LAYERED_STEM >= TEX_PAGE_FILE + TEX_LOD_SIZE);
+    let mut names = NAMES.to_vec();
+    names.extend(
+        b"levels\\test\\floor\0levels\\test\\floor_lightmap\0levels\\test\\shaders\\floor\0levels\\test\\bitmaps\\floor\0levels\\test\\bitmaps\\floor_lightmap\0objects\\test\\spare_kit\0levels\\test\\shaders\\layered\0levels\\test\\shaders\\layered_pass\0levels\\test\\shaders\\layered_world\0",
+    );
+    tag_names(&mut b, &names);
+    let mut classes = CLASSES.to_vec();
+    classes.extend([
+        *b"sbsp", *b"ltmp", *b"shad", *b"bitm", *b"bitm", *b"itmc", *b"stem", *b"spas", *b"vrtx",
+    ]);
+    let mut payloads = PAYLOADS.to_vec();
+    payloads.extend([
+        (TEX_SBSP, TEX_SBSP_SIZE),
+        (TEX_LTMP, TEX_LTMP_SIZE),
+        (TEX_SHAD, 0x100),
+        (TEX_BASE, 0x100),
+        (TEX_PAGE, 0x100),
+        (TEX_SPARE_ITEM, 0x10),
+        (LAYERED_STEM, 0x100),
+        (LAYERED_SPAS, 0x300),
+        (LAYERED_VRTX, 0x200),
+    ]);
+    tag_index(&mut b, &classes, &payloads);
+    let file = |at: usize| META_FILE + at;
+    let addr = |at: usize| META + at as u32;
+    let half = |b: &mut [u8], at: usize, v: u16| b[at..at + 2].copy_from_slice(&v.to_le_bytes());
+    // An index range: start in the low 9 bits, count above.
+    let range = |start: u16, count: u16| start | count << 9;
+
+    // The shader names its template, in its root and its postprocess.
+    let h = file(TEX_SHAD);
+    put(&mut b, h, FourCC(*b"stem").as_u32());
+    put(&mut b, h + 4, id(10).0);
+    put(&mut b, file(TEX_SHAD + 0x60), id(10).0);
+
+    // The template: one level of detail whose layers 0 to 5 are listed,
+    // only layer 5 drawn, its one pass the spas with one binding row
+    // (no bindings).
+    let s = file(LAYERED_STEM);
+    for o in [0x40, 0x4c] {
+        put(&mut b, s + o, FourCC(*b"shad").as_u32());
+        put(&mut b, s + o + 4, u32::MAX);
+    }
+    let (post, lods, layers, passes, rows) = (
+        LAYERED_STEM + 0x60,
+        LAYERED_STEM + 0x90,
+        LAYERED_STEM + 0xa0,
+        LAYERED_STEM + 0xb0,
+        LAYERED_STEM + 0xc0,
+    );
+    put(&mut b, s + 0x58, 1);
+    put(&mut b, s + 0x5c, addr(post));
+    for (o, count, at) in [
+        (0, 1, lods),
+        (8, 6, layers),
+        (0x10, 1, passes),
+        (0x18, 1, rows),
+    ] {
+        put(&mut b, file(post) + o, count);
+        put(&mut b, file(post) + o + 4, addr(at));
+    }
+    half(&mut b, file(lods), range(0, 6));
+    put(&mut b, file(lods) + 2, 1 << LAYERED_LAYER);
+    half(
+        &mut b,
+        file(layers) + 2 * usize::from(LAYERED_LAYER),
+        range(0, 1),
+    );
+    put(&mut b, file(passes), FourCC(*b"spas").as_u32());
+    put(&mut b, file(passes) + 4, id(11).0);
+    half(&mut b, file(passes) + 8, range(0, 1));
+
+    // The pass: one implementation and its three render states.
+    let p = file(LAYERED_SPAS);
+    let (post, imp, states) = (
+        LAYERED_SPAS + 0x30,
+        LAYERED_SPAS + 0x90,
+        LAYERED_SPAS + 0x1d0,
+    );
+    put(&mut b, p + 0x1c, 1);
+    put(&mut b, p + 0x20, addr(post));
+    put(&mut b, file(post), 1);
+    put(&mut b, file(post) + 4, addr(imp));
+    put(&mut b, file(post) + 0x10, 3);
+    put(&mut b, file(post) + 0x14, addr(states));
+    let i = file(imp);
+    half(&mut b, i + 2, range(0, 3));
+    let constant = [LAYERED_COLOR; 8];
+    let pixel = shaders::PixelShaderDef {
+        final_inputs_abcd: inputs(0, 0, 0, REG_C0),
+        final_inputs_efg: final_efg(0, 0, REG_C0 | CHAN_ALPHA, 0),
+        constant0: constant,
+        final_constant0: LAYERED_COLOR,
+        ..Default::default()
+    }
+    .to_bytes();
+    b[i + 6..i + 6 + pixel.len()].copy_from_slice(&pixel);
+    put(&mut b, i + 0xfc, FourCC(*b"vrtx").as_u32());
+    put(&mut b, i + 0x100, id(12).0);
+    {
+        use gfx::state::{CullMode, RenderStateType as R};
+        let table = gfx::xdk::RenderStateTable::for_build(gfx::xdk::HALO2_BUILD);
+        let slot = |t: R| {
+            (0..=255u8)
+                .find(|&s| R::from_guest_index(&table, u32::from(s)) == Some(t))
+                .expect("a guest slot")
+        };
+        for (n, (t, v)) in [
+            (R::AlphaBlendEnable, 0),
+            (R::ZWriteEnable, 1),
+            (R::CullMode, CullMode::None.xbox_value()),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let at = file(states) + 5 * n;
+            b[at] = slot(t);
+            put(&mut b, at + 1, v);
+        }
+    }
+
+    // The vertex shader: one classification, the world's.
+    let v = file(LAYERED_VRTX);
+    let (classification, code_at) = (LAYERED_VRTX + 0x20, LAYERED_VRTX + 0x80);
+    let row = |c: u8, mask: u8| {
+        Inst::mac(MacOp::Dp4, Some(O::v(0)), Some(O::c(c)), None).to_out(false, OutReg::Pos, mask)
+    };
+    let code = program(&[row(0, 8), row(1, 4), row(2, 2), row(3, 1)]);
+    assert!(code_at + code.len() <= LAYERED_VRTX + 0x200);
+    put(&mut b, v + 4, 1);
+    put(&mut b, v + 8, addr(classification));
+    put(&mut b, file(classification) + 0xc, code.len() as u32);
+    put(&mut b, file(classification) + 0x10, addr(code_at));
+    b[file(code_at)..file(code_at) + code.len()].copy_from_slice(&code);
+    b
+}
