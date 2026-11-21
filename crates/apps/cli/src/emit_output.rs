@@ -14,6 +14,7 @@ pub fn location(path: &Path, allow_repo_output: bool) -> io::Result<PathBuf> {
     let mut resolved = PathBuf::new();
     for component in absolute.components() {
         match component {
+            Component::Prefix(prefix) => resolved.push(prefix.as_os_str()),
             Component::ParentDir => {
                 resolved.pop();
             }
@@ -85,7 +86,7 @@ impl OutputLock {
         Self::acquire_with(out, libc::LOCK_EX)
     }
 
-    /// Windows (compile-checked only: `h2 emit` runs on a Mac): std's
+    /// Windows uses std's
     /// exclusive `LockFileEx` lock on the same file. Windows has no
     /// `O_NOFOLLOW`; [`reject_symlinks`] still runs under the lock.
     #[cfg(windows)]
@@ -129,7 +130,7 @@ impl OutputLock {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use crate::emit_cache;
@@ -244,5 +245,29 @@ mod tests {
             .recv_timeout(Duration::from_secs(60))
             .expect("the lock was never released")
             .unwrap();
+    }
+}
+
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::*;
+
+    #[test]
+    fn a_new_output_resolves_from_the_drive_root() {
+        let temp = std::env::temp_dir().canonicalize().unwrap();
+        let out = temp.join(format!("h2-output-{}", std::process::id()));
+        assert_eq!(location(&out, true).unwrap(), out);
+        let lock = OutputLock::acquire(&out).unwrap();
+        let second = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(out.join(".h2-emit.lock"))
+            .unwrap();
+        assert!(matches!(second.try_lock(), Err(std::fs::TryLockError::WouldBlock)));
+        drop(lock);
+        second.try_lock().unwrap();
+        drop(second);
+        fs::remove_dir_all(out).unwrap();
     }
 }

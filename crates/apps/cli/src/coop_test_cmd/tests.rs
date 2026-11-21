@@ -7,7 +7,8 @@ fn args(s: &[&str]) -> Vec<String> {
 
 fn env(k: &str) -> Option<String> {
     match k {
-        "HOME" => Some("/Users/u".into()),
+        "HOME" => Some("/home/player".into()),
+        "LOCALAPPDATA" => Some(r"C:\Local".into()),
         "H2_DISC" => Some("/discs/halo2.iso".into()),
         _ => None,
     }
@@ -35,7 +36,11 @@ fn defaults_and_flags() {
     assert!(!o.auto && !o.fresh && !o.dry_run && !o.extras && !o.pad_on_guest);
     assert_eq!(
         o.root,
-        PathBuf::from("/Users/u/Library/Application Support/h2recomp/coop-test")
+        if cfg!(windows) {
+            PathBuf::from(r"C:\Local\h2recomp\coop-test")
+        } else {
+            PathBuf::from("/home/player/Library/Application Support/h2recomp/coop-test")
+        }
     );
     assert_eq!((o.port, o.server_port), (31000, 8075));
     let o = opts(&[

@@ -203,7 +203,8 @@ that, with a notice saying how to copy it; [live-hosting.md](live-hosting.md#fre
 The same service runs on Cloudflare Workers. The architecture and the
 deployment steps are in [live-worker.md](live-worker.md).
 
-Host data lives in `~/Library/Application Support/h2recomp/live`, beside
+Host data lives in `%LOCALAPPDATA%\h2recomp\live` on Windows and
+`~/Library/Application Support/h2recomp/live` on Unix, beside
 the movies directory and the VFS data root ([storage.md](../runtime/storage.md)):
 
 - `accounts.json` (mode 0600): one entry per account held here, `{xuid,

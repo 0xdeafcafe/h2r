@@ -2,7 +2,7 @@
 //! (docs/live/live.md §4.2, docs/live/live-security.md).
 //!
 //! Host data lives beside the other h2recomp data
-//! (`~/Library/Application Support/h2recomp/live`):
+//! (the `live` subdirectory in the platform application data directory):
 //!
 //! - `accounts.json` (0600): the accounts made or imported here, each with
 //!   its private key ([`crate::live_accounts`]). The game-side HLE reads
@@ -178,7 +178,7 @@ const USAGE: &str = "usage: h2 live <command> [options]
                           query the service; `h2 live q --help` lists what
 
 --server defaults to $H2_LIVE_SERVER or http://127.0.0.1:8074; --data to
-~/Library/Application Support/h2recomp/live/server.";
+the live/server directory in h2recomp application data.";
 
 pub fn run(args: Vec<String>) -> Result<()> {
     let Some((sub, rest)) = args.split_first() else {

@@ -27,7 +27,14 @@ use serde_json::{Map, Value};
 /// `h2 coop test` gives each game its own, so two games on one Mac never
 /// share `play-accounts.json`.
 pub(crate) fn live_dir() -> Result<PathBuf> {
-    live_dir_from(std::env::var_os(LIVE_DIR_ENV), std::env::var_os("HOME"))
+    live_dir_from(
+        std::env::var_os(LIVE_DIR_ENV),
+        vfs::default_data_root(
+            cfg!(windows),
+            std::env::var_os("HOME"),
+            std::env::var_os("LOCALAPPDATA"),
+        ),
+    )
 }
 
 /// The variable [`live_dir`] reads first.
@@ -35,15 +42,13 @@ pub(crate) const LIVE_DIR_ENV: &str = "H2_LIVE_DIR";
 
 fn live_dir_from(
     over: Option<std::ffi::OsString>,
-    home: Option<std::ffi::OsString>,
+    app_data: Option<PathBuf>,
 ) -> Result<PathBuf> {
     if let Some(dir) = over.filter(|d| !d.is_empty()) {
         return Ok(PathBuf::from(dir));
     }
-    let home = home
-        .filter(|h| !h.is_empty())
-        .context("HOME is not set; nowhere to keep live data")?;
-    Ok(PathBuf::from(home).join("Library/Application Support/h2recomp/live"))
+    let root = app_data.context("application data directory is unavailable; set H2_LIVE_DIR")?;
+    Ok(root.join("live"))
 }
 
 pub(crate) fn accounts_path() -> Result<PathBuf> {
@@ -304,12 +309,12 @@ mod tests {
     #[test]
     fn the_live_directory_is_h2_live_dir_when_set() {
         assert_eq!(
-            live_dir_from(Some("/x/live".into()), Some("/home/a".into())).unwrap(),
+            live_dir_from(Some("/x/live".into()), Some("/app/h2recomp".into())).unwrap(),
             PathBuf::from("/x/live")
         );
         assert_eq!(
-            live_dir_from(Some("".into()), Some("/home/a".into())).unwrap(),
-            PathBuf::from("/home/a/Library/Application Support/h2recomp/live")
+            live_dir_from(Some("".into()), Some("/app/h2recomp".into())).unwrap(),
+            PathBuf::from("/app/h2recomp/live")
         );
         assert!(live_dir_from(None, None).is_err());
     }
