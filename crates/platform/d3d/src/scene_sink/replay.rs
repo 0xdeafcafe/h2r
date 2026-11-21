@@ -70,9 +70,20 @@ pub enum ReplayOp {
     Copy { from: TargetRef, to: TargetRef },
     Upload { to: TargetRef, desc: TextureDesc, bytes: Arc<[u8]> },
     Sample { of: TargetRef, id: u32, how: ReplaySample },
+    /// The guest's object shadow (`0x00032350`) the following ops draw,
+    /// by its index in the scene's `object_shadows`; `None` after it.
+    /// Recorded where the shadow the hooks declare changes
+    /// ([`super::SceneSink::with_object_shadows`]). It draws nothing; E3
+    /// lighting reads it to put a sun tile in place of a shadow's mask.
+    ObjectShadow(Option<u32>),
 }
 
 impl ReplayOp {
+    /// Ops that only mark a place in the frame: replay applies nothing.
+    pub fn is_marker(&self) -> bool {
+        matches!(self, Self::ObjectShadow(_))
+    }
+
     fn map_targets(&mut self, map: impl Fn(TargetRef) -> TargetRef) {
         match self {
             Self::Stage(stage) => {
@@ -99,7 +110,7 @@ impl ReplayOp {
                 #[cfg(not(feature = "gpu"))]
                 let _ = textures;
             }
-            Self::BeginFlareQuery | Self::EndFlareQuery(_) => {}
+            Self::BeginFlareQuery | Self::EndFlareQuery(_) | Self::ObjectShadow(_) => {}
         }
     }
 }
@@ -217,6 +228,10 @@ pub(super) struct Recorder<S> {
     pub seq: u64,
     next_sample: u32,
     output: Box<dyn FnMut(ReplayFrame) + Send>,
+    /// Where the hooks declare the object shadow being drawn.
+    pub shadows: Option<super::ShadowSource>,
+    /// The object shadow the last marker declared this frame.
+    shadow: Option<u32>,
 }
 
 impl<S: Copy + Eq> Recorder<S> {
@@ -230,7 +245,23 @@ impl<S: Copy + Eq> Recorder<S> {
             seq: 0,
             next_sample: 0,
             output: Box::new(output),
+            shadows: None,
+            shadow: None,
         }
+    }
+
+    /// Appends `op`, after an [`ReplayOp::ObjectShadow`] marker when the
+    /// declared object shadow changed since the last op. Without a source
+    /// no marker is ever written.
+    pub fn push(&mut self, at: SlotAt, op: ReplayOp) {
+        if let Some(source) = self.shadows {
+            let now = source();
+            if now != self.shadow {
+                self.frame.ops.push((at, ReplayOp::ObjectShadow(now)));
+                self.shadow = now;
+            }
+        }
+        self.frame.ops.push((at, op));
     }
 
     pub fn target(&mut self, surface: S, surfaces: &[(S, AuxTarget)]) -> TargetRef {
@@ -286,7 +317,7 @@ impl<S: Copy + Eq> Recorder<S> {
 
     pub fn bind(&mut self, at: SlotAt, colour: TargetRef, depth: TargetRef) {
         if self.bound != Some((at, colour, depth)) {
-            self.frame.ops.push((at, ReplayOp::Bind { colour, depth }));
+            self.push(at, ReplayOp::Bind { colour, depth });
             self.bound = Some((at, colour, depth));
         }
     }
@@ -295,11 +326,12 @@ impl<S: Copy + Eq> Recorder<S> {
         let id = self.next_sample;
         self.next_sample += 1;
         let origin = Origin::sample(self.seq, Some(id), &how, view);
-        self.frame.ops.push((at, ReplayOp::Sample { of, id, how }));
+        self.push(at, ReplayOp::Sample { of, id, how });
         origin
     }
 
     pub fn finish(&mut self, present: TargetRef) {
+        self.shadow = None;
         let mut frame = std::mem::take(&mut self.frame);
         if frame.refusals.is_empty() {
             let mut end = super::seeds::final_contents(&frame);

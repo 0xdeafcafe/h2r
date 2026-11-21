@@ -48,6 +48,9 @@ pub type FlareTickets = Vec<(u64, u64)>;
 
 /// Where the frame step is, or `None` while the sink records nothing.
 pub type SlotSource = fn() -> Option<SlotAt>;
+/// The scene's object shadow the guest is drawing, by index into the
+/// sealed scene's `object_shadows`; `None` outside one.
+pub type ShadowSource = fn() -> Option<u32>;
 
 /// The source of a sink that never records.
 pub fn never() -> Option<SlotAt> {
@@ -110,6 +113,7 @@ pub struct SceneSink<B: Backend> {
     take_game_view: fn() -> bool,
     keep: bool,
     replay: Option<Recorder<B::Surface>>,
+    shadows: Option<ShadowSource>,
     presents: u64,
     guest_reference: Box<dyn Fn() -> bool + Send>,
     present_error: Option<Box<dyn FnMut(u64) + Send>>,
@@ -136,6 +140,7 @@ impl<B: Backend> SceneSink<B> {
             take_game_view: || false,
             keep: false,
             replay: None,
+            shadows: None,
             presents: 0,
             guest_reference: Box::new(|| false),
             present_error: None,
@@ -174,7 +179,9 @@ impl<B: Backend> SceneSink<B> {
     /// receiver gets ownership at the guest present. Only repeatable typed
     /// stages can replace guest draws while recording.
     pub fn with_replay(mut self, on_present: impl FnMut(ReplayFrame) + Send + 'static) -> Self {
-        self.replay = Some(Recorder::new(on_present));
+        let mut recorder = Recorder::new(on_present);
+        recorder.shadows = self.shadows;
+        self.replay = Some(recorder);
         self
     }
 
@@ -197,8 +204,18 @@ impl<B: Backend> SceneSink<B> {
 
     fn replay_op(&mut self, at: SlotAt, op: ReplayOp) {
         if let Some(replay) = &mut self.replay {
-            replay.frame.ops.push((at, op));
+            replay.push(at, op);
         }
+    }
+
+    /// Marks each object shadow's ops in the replay
+    /// ([`ReplayOp::ObjectShadow`]). The marks draw nothing.
+    pub fn with_object_shadows(mut self, shadow_at: ShadowSource) -> Self {
+        self.shadows = Some(shadow_at);
+        if let Some(replay) = &mut self.replay {
+            replay.shadows = Some(shadow_at);
+        }
+        self
     }
 
     /// Replay target identity remains physical until present identifies
@@ -372,7 +389,7 @@ impl<B: Backend> SceneSink<B> {
         } else {
             frame_scene::carried::CameraUse::Unknown
         };
-        replay.frame.ops.push((at, ReplayOp::Draw { draw, textures: inputs, camera }));
+        replay.push(at, ReplayOp::Draw { draw, textures: inputs, camera });
     }
 
     fn record_clear(&mut self, colour: B::Surface, depth: Option<B::Surface>, rects: bool) {

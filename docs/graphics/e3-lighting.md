@@ -242,12 +242,27 @@ One depth map per caster, in place of retail's object-shadow masks
 **Built: tiles, receivers, the cache and the casters**
 (`native_render::sun_tiles`, `native_render::sun_tiles_gpu`,
 `native_render::sun_casters`). The plan, the draws and the gather from
-the scene exist and are tested on invented scenes. The frame graph does
-not call them yet: it needs to know which replayed ops are each object
-shadow's mask chain, so that a caster with a tile can skip them, and a
-loaded model for each caster on the render thread. Until then the graph
-draws no sun tile, retail's mask chain draws every object shadow in both
-modes, and the sun counters are zero.
+the scene exist and are tested on invented scenes, and the replay marks
+each object shadow's ops. The frame graph does not call them yet: it
+needs a loaded model for each caster on the render thread. Until then
+the graph draws no sun tile, retail's mask chain draws every object
+shadow in both modes, and the sun counters are zero.
+
+- **The replay's marks.** The scene sink writes a
+  `ReplayOp::ObjectShadow(Some(index))` before the first op the guest
+  records inside an object shadow, and `ObjectShadow(None)` before the
+  first op after it (`SceneSink::with_object_shadows`,
+  `render_bridge::scene_step::object_shadow_at`). A shadow runs from its
+  `0x00032350` call to the end of its layer 11 (the `Site::Object` layer
+  end), or to the next shadow, the next light's passes or the scene's
+  seal. The index is the shadow's place in the scene's `object_shadows`.
+  The marks are written in both modes, since a capture picks its lighting
+  per frame, and they draw nothing: every replay pass treats them as
+  no-ops, and they do not cut the frame graph's pass rows. Tests:
+  `object_shadow_marks_wrap_each_shadows_ops_and_change_nothing_else`
+  (`crates/platform/d3d/tests/scene_sink.rs`) and
+  `object_shadow_marks_leave_the_retail_draw_and_its_passes_unchanged`
+  (`tests/world_layers_gpu/frame_graph.rs`).
 
 - **The scene's casters.** Each call to `0x00032350` the hook matches is
   an `ObjectShadow` of its view, with its caster's handle and ranked fade
