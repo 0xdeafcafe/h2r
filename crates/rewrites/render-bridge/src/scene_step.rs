@@ -17,7 +17,7 @@
 //! instead of reading the guest themselves, at the same points and from
 //! the same reads. Nothing here writes guest memory.
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Instant;
 
@@ -115,6 +115,10 @@ struct Step {
 
 static STEP: Mutex<Option<Step>> = Mutex::new(None);
 static PRESENT_READY: AtomicBool = AtomicBool::new(false);
+/// The object shadow being drawn: its index in the open scene's
+/// `object_shadows`, or [`NO_SHADOW`] ([`object_shadow_at`]).
+static SHADOW_AT: AtomicU32 = AtomicU32::new(NO_SHADOW);
+const NO_SHADOW: u32 = u32::MAX;
 static LAST: Mutex<Option<Arc<FrameScene>>> = Mutex::new(None);
 static SEALED: AtomicU64 = AtomicU64::new(0);
 static UNSEALED: AtomicU64 = AtomicU64::new(0);
@@ -187,6 +191,7 @@ fn begin_step(step: &mut Step, m: &Ro<'_>) {
     step.builder.begin(id(m));
     step.light_open = false;
     step.shadow_open = false;
+    SHADOW_AT.store(NO_SHADOW, Ordering::Relaxed);
 }
 
 /// `render_views`' entry: a new scene. `present` samples the image the
@@ -395,21 +400,46 @@ pub fn light_entry() {
         step.light_open = false;
         step.shadow_open = false;
     });
+    SHADOW_AT.store(NO_SHADOW, Ordering::Relaxed);
+}
+
+/// The object shadow whose guest ops are being recorded: its index in the
+/// open scene's `object_shadows`, from its `0x00032350` call until its
+/// layer 11 ends ([`object_shadow_end`]), the next shadow or light, or the
+/// scene's end. The scene sink marks each shadow's ops with it
+/// (`d3d::SceneSink::with_object_shadows`) so the frame graph can find
+/// them; the marks draw nothing (docs/graphics/e3-lighting.md, L5).
+pub fn object_shadow_at() -> Option<u32> {
+    let at = SHADOW_AT.load(Ordering::Relaxed);
+    (at != NO_SHADOW).then_some(at)
+}
+
+/// An object shadow's layer 11 (its receivers) ends: the ops after it are
+/// not the shadow's.
+pub fn object_shadow_end() {
+    SHADOW_AT.store(NO_SHADOW, Ordering::Relaxed);
 }
 
 /// An object shadow `0x00032350` of the open view begins, with its call's
 /// two arguments (`identity`) when the caller matched its caster entry;
 /// `None` ends the one before without a new one. Opens the view first
-/// when none is.
+/// when none is. A creature caster is marked: it takes the ground-shadow
+/// branch.
 pub fn object_shadow(mem: &dyn GuestMemory, identity: Option<[u32; 2]>) {
     with_step(|step| step.shadow_open = false);
+    SHADOW_AT.store(NO_SHADOW, Ordering::Relaxed);
     let Some(identity) = identity else { return };
     if view(mem).is_none() {
         return;
     }
+    let creature = scene_extract::layout::objects::kind(&Ro(mem), identity[0]) == Some(scene_extract::layout::objects::CREATURE);
     with_step(|step| {
         step.light_open = false;
-        step.shadow_open = step.builder.push_object_shadow(identity).is_ok();
+        let pushed = step.builder.push_object_shadow(identity, creature);
+        step.shadow_open = pushed.is_ok();
+        if let Ok(at) = pushed {
+            SHADOW_AT.store(at, Ordering::Relaxed);
+        }
         if !step.shadow_open {
             REFUSED.fetch_add(1, Ordering::Relaxed);
         }
@@ -637,6 +667,7 @@ pub fn open_identity() -> Option<(u64, SceneId)> {
 
 /// After `render_frame_and_present`: seal and publish the scene.
 pub fn seal() {
+    SHADOW_AT.store(NO_SHADOW, Ordering::Relaxed);
     let sealed = with_step(|step| {
         let id = step.builder.scene()?.id;
         if id.map_epoch != crate::native_map_work::generation() {
@@ -669,6 +700,7 @@ fn reset_timeline(why: Cut) {
         }
         step.builder.discard(why);
         step.tick = None;
+        SHADOW_AT.store(NO_SHADOW, Ordering::Relaxed);
         LAST.lock().unwrap_or_else(|e| e.into_inner()).take();
     });
     let observer = *OBSERVER.lock().unwrap_or_else(|e| e.into_inner());

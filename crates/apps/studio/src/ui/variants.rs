@@ -70,7 +70,7 @@ pub fn list(ui: &Ui, app: &App, st: &mut VariantsUi, fonts: &Fonts, actions: &mu
     ui.set_item_tooltip("A new variant of this game type with its defaults");
     ui.separator();
     let open = e.origin().cloned();
-    ui.child_window("##variant-list").build(ui, || {
+    theme::panel_body(ui, "##variant-list", || {
         heading(ui, fonts, "Saved");
         if e.saved().is_empty() {
             ui.text_disabled("No saved variants.");
@@ -167,7 +167,7 @@ pub fn settings(ui: &Ui, app: &App, st: &mut VariantsUi, fonts: &Fonts, actions:
     let defaults = e.schema().new_variant(ty);
     let disabled = ui.begin_disabled_with_cond(read_only);
     let only = st.only_page.take();
-    ui.child_window("##variant-pages").build(ui, || {
+    {
         for page in e.schema().pages_for(ty) {
             if let Some(only) = &only {
                 ui.set_next_item_open(page.title.contains(only.as_str()));
@@ -204,7 +204,7 @@ pub fn settings(ui: &Ui, app: &App, st: &mut VariantsUi, fonts: &Fonts, actions:
         if let Some(a) = more_options(ui, v) {
             actions.push(a);
         }
-    });
+    }
     disabled.end();
 }
 

@@ -399,6 +399,9 @@ fn rifle_layout() -> Layout {
         meaning: String::new(),
         doc: None,
         applies: None,
+        label: None,
+        unit: None,
+        axes: Vec::new(),
     };
     let barrel = Layout {
         name: "barrels".into(),
@@ -408,6 +411,8 @@ fn rifle_layout() -> Layout {
             field(0x4, "+0x4", Kind::Unknown { len: 4 }),
             field(0x8c, "projectile", Kind::TagRef { groups: vec![] }),
         ],
+        title: None,
+        section_titles: Default::default(),
     };
     Layout {
         name: "weap".into(),
@@ -425,6 +430,8 @@ fn rifle_layout() -> Layout {
             ),
             field(0x2d0, "barrels", Kind::Block(Arc::new(barrel))),
         ],
+        title: None,
+        section_titles: Default::default(),
     }
 }
 

@@ -67,9 +67,14 @@ impl PaletteUi {
 
         let mut picked = run.then_some(self.selected);
         let row_height = ui.text_line_height() + ui.text_line_height_with_spacing();
-        ui.child_window("##palette-results")
-            .size([width, row_height * theme::PALETTE_ROWS])
-            .build(ui, || {
+        theme::bounded_list(
+            ui,
+            "##palette-results",
+            width,
+            row_height,
+            results.entries.len(),
+            theme::PALETTE_ROWS,
+            || {
                 if results.entries.is_empty() {
                     ui.text_disabled("No results");
                     return;
@@ -103,7 +108,8 @@ impl PaletteUi {
                         ui.set_scroll_here_y(0.5);
                     }
                 }
-            });
+            },
+        );
 
         let counts = Kind::ALL
             .into_iter()

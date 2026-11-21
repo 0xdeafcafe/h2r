@@ -93,6 +93,63 @@ description. Use `\"` for a quotation mark and `\\` for a backslash.
 | `unknown <len> seen=...` | len | not understood; named `unknown_<offset>` |
 | `pad <len>` | len | zero in every retail instance and read by nothing found (the disc test checks the zero) |
 
+## Editor attributes
+
+Attributes the field panel reads. Each has a closed word list or a text
+check, and the parser refuses a word outside it with the line number
+(`defs/attrs.rs`). A unit or a timing written without evidence fails
+review, as a name does: the evidence goes in the line's meaning text.
+
+| Attribute | On | Value |
+|---|---|---|
+| `label="..."` | a field line | The label when the name derived from the field's name is wrong. |
+| `unit=<word>` | an integer or float field | One of `seconds`, `ticks`, `world_units`, `world_units_per_second`, `degrees`, `degrees_per_second`, `fraction`, `percent`, `pixels`, `count`, `index`. |
+| `axes=a\|b\|...` | an integer or float array | One word per component, as many as the array has. |
+| `title="..."` | a `group` or `struct` line | The kind in words (`Weapon`). |
+| `title=<field>` | a `block` line | The element's field whose value titles each element. It names a field with a value: not a block, data reference, struct, `unknown` or `pad`. |
+| `applies=frame\|use\|creation` | a field, `block`, `struct`, `group` line | When a live write shows. Inherited, below. |
+
+```text
+struct shared 0x8 title="Shared kind" applies=use
+  0x0 f32 rate unit=world_units_per_second label="Rate (fast)"
+group test 0x1c title="Test thing" applies=frame
+  0x0 struct inner shared
+  0x8 f32[3] offset axes=x|y|z unit=world_units
+  0x14 block parts 0x8 align 4 title=name applies=use
+    0x0 string name
+    0x4 f32 weight applies=creation
+```
+
+A `label` and a `title` are single-line text in our own words: not empty,
+no space at either end, no double space, no control character. They use
+the same `\"` and `\\` escapes as `doc=`. A group or struct line takes
+only `title=` and `applies=`. `label` is refused on `unknown`, `pad` and
+embedded `struct` lines; `unit` and `axes` on any other type; `title` on
+a field line that is not a `block`.
+
+`degrees` and `degrees_per_second` mean a value stored in radians and shown
+in degrees. A field with any `unit` is shown by it: the registry takes
+an angle from `degrees` and `degrees_per_second` only, not from a name
+that contains `angle`; a field with no `unit` keeps the name match
+(`registry::hint`).
+
+**`applies` is inherited.** `registry::Field::applies` is the field's own
+`applies=`, else the nearest one declared above it, nearest first:
+
+1. the `struct` or `group` line of the element the field is in;
+2. the `block` or `struct` line that embeds that element;
+3. the lines that enclose that line, by the same rule.
+
+A field's own value always wins. A field with no `applies` anywhere above
+it has `None`, which the editor reads as "not known". The evidence for an
+`applies` on a `group`, `struct` or `block` line goes in that line's
+meaning text, naming the reader that reads every field below it.
+
+In the registry (`tags::registry`), `Field` carries `label`, `unit`
+and `axes`; `Layout::title` holds a group's or a block's `title`; and
+`Layout::section_titles` maps the path of each embedded struct
+(`Field::section`) to its `title="..."`.
+
 `default=<value>` gives a fresh tag's value: an integer, floats
 `a,b,c`, an enum value name, flag names joined by `|`, or hex bytes for
 an unknown span. Without it the value is zero, null or empty.
@@ -172,12 +229,16 @@ Options:
 - `H2_DEFS_ANNOTATE=1` refreshes `seen=`.
 - `H2_DEFS_EXTRA=file.txt` checks a draft outside the source tree.
 
-Unit tests (`cargo test -p tags defs`) cover:
+Unit tests (`cargo test -p tags defs`, and `registry` for inheritance
+and the merged fields) cover:
 
 - decode/encode on an invented tag;
 - a fixup inside a plain field refused;
 - defaults, shared arrays, diff paths and builder trees;
-- gaps refused and the text form round-tripping;
+- gaps refused and the text form round-tripping, header attributes
+  included (`title`, `applies` on a `group` or `struct` line);
+- each editor attribute parsed, printed back byte for byte, and refused
+  with a wrong word or on the wrong type of field;
 - agreement with the schema;
 - every built-in definition's default record round-tripping.
 

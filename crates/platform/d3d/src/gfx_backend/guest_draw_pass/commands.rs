@@ -169,7 +169,7 @@ impl<B: SceneDevice> Commands<B> {
                     .ok_or("native flare counter unavailable")?;
                 self.outputs.tickets.push((*proxy, ticket));
             }
-            ReplayOp::BeginFlareQuery | ReplayOp::EndFlareQuery(_) => {}
+            ReplayOp::BeginFlareQuery | ReplayOp::EndFlareQuery(_) | ReplayOp::ObjectShadow(_) => {}
         }
         Ok(())
     }

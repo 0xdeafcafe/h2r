@@ -338,6 +338,58 @@ fn retail_and_e3_private_draws_of_one_sealed_tick_are_identical() {
     assert_eq!(backend.read_color(presented).unwrap().0, shown);
 }
 
+/// An object shadow's marks (`ReplayOp::ObjectShadow`) wrap its ops for
+/// E3's sun tiles. With E3 off they draw nothing: the same pixels, the
+/// same report and the same pass rows as the frame without them.
+#[test]
+fn object_shadow_marks_leave_the_retail_draw_and_its_passes_unchanged() {
+    let _guard = CAPTURE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(ctx) = test_gpu() else {
+        return;
+    };
+    let mut backend = GfxBackend::new(ctx);
+    let scene = sealed();
+    // The same ops, with or without the marks of shadows 0 and 1.
+    let build = |backend: &mut GfxBackend, marks: bool| {
+        let mut frame = replay();
+        let mark = |frame: &mut ReplayFrame, shadow| {
+            if marks {
+                op(frame, Slot::Opaque, ReplayOp::ObjectShadow(shadow));
+            }
+        };
+        op(&mut frame, Slot::Opaque, bind());
+        op(&mut frame, Slot::Opaque, clear());
+        mark(&mut frame, Some(0));
+        op(&mut frame, Slot::Opaque, guest_triangle(0.5, [0.0, 0.0, 1.0, 1.0], None));
+        op(&mut frame, Slot::Opaque, typed_triangle(backend, 2.0, [1.0, 0.0, 0.0, 1.0]));
+        mark(&mut frame, Some(1));
+        op(&mut frame, Slot::Opaque, guest_triangle(-0.5, [0.0, 1.0, 0.0, 1.0], None));
+        mark(&mut frame, None);
+        op(&mut frame, Slot::Opaque, guest_triangle(1.5, [1.0, 1.0, 0.0, 1.0], None));
+        frame
+    };
+    let plain = build(&mut backend, false);
+    let marked = build(&mut backend, true);
+    assert_eq!(marked.ops.len(), plain.ops.len() + 3);
+
+    let mut plain_rows = Observe::default();
+    let without =
+        draw_private_with_observer(&mut backend, &scene, &plain, 1, Lighting::Retail, Some(&mut plain_rows)).unwrap();
+    let mut marked_rows = Observe::default();
+    let with =
+        draw_private_with_observer(&mut backend, &scene, &marked, 1, Lighting::Retail, Some(&mut marked_rows)).unwrap();
+    assert!(without.report.draws > 0, "the frame drew");
+    assert_eq!(with.report, without.report);
+    assert_eq!((with.id, with.scene_hash, with.size), (without.id, without.scene_hash, without.size));
+    assert_eq!(with.rgba, without.rgba);
+    let attachments = |o: &Observe| o.rows.iter().map(|r| (r.colour, r.depth)).collect::<Vec<_>>();
+    assert_eq!(attachments(&marked_rows), attachments(&plain_rows));
+    let draws = |o: &Observe, f: &ReplayFrame| {
+        o.rows.iter().map(|r| f.ops[r.ops.clone()].iter().filter(|(_, op)| !op.is_marker()).count()).collect::<Vec<_>>()
+    };
+    assert_eq!(draws(&marked_rows, &marked), draws(&plain_rows, &plain));
+}
+
 #[test]
 fn private_draws_restore_inherited_colour_depth_and_stencil_before_blending() {
     use d3d::{Backend, DrawOutcome};

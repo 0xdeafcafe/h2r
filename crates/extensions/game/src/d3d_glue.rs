@@ -1837,9 +1837,12 @@ fn install_device<B: d3d::backend::Backend + Send + 'static>(
     let backend = backend.with_owner_probe(matches!(&worker, Some(SceneWorker::Display(_))));
     // The frame's carried part by slot (frame-scene.sink; docs/graphics/
     // framescene.md, slice 6): records only while the frame step declares
-    // a slot, and passes every call on.
+    // a slot, and passes every call on. Each object shadow's ops are
+    // marked with its scene index for E3's sun tiles; the marks draw
+    // nothing (docs/graphics/e3-lighting.md, L5).
     #[cfg(feature = "desktop-runtime")]
-    let backend = d3d::SceneSink::new(backend, render_bridge::carried_slots::slot);
+    let backend = d3d::SceneSink::new(backend, render_bridge::carried_slots::slot)
+        .with_object_shadows(render_bridge::scene_step::object_shadow_at);
     #[cfg(feature = "gpu")]
     let backend = {
         crate::scene_glue::set_present_window(window.as_ref());

@@ -95,6 +95,10 @@ fn pass_rows(frame: &ReplayFrame) -> Vec<PassRow> {
     let mut current: Option<PassRow> = None;
     let mut bound = None;
     for (i, (_, op)) in frame.ops.iter().enumerate() {
+        // An object shadow's mark draws nothing and does not cut a row.
+        if op.is_marker() {
+            continue;
+        }
         let attachments = match op {
             ReplayOp::Bind { colour, depth } => {
                 bound = Some((*colour, *depth));

@@ -402,12 +402,25 @@ impl SceneBuilder {
 
     /// Adds an object shadow to the open view, after its others; its
     /// index in the scene. Its groups follow ([`Self::push_shadow_group`]).
-    pub fn push_object_shadow(&mut self, identity: [u32; 2]) -> Result<u32, BuildError> {
+    pub fn push_object_shadow(&mut self, identity: [u32; 2], creature: bool) -> Result<u32, BuildError> {
         let (scene, open) = self.open_mut()?;
         let g = scene.shadow_groups.len() as u32;
         let index = scene.object_shadows.len() as u32;
-        scene.object_shadows.push(ObjectShadow { view: open as u32, identity, groups: g..g });
+        scene.object_shadows.push(ObjectShadow { view: open as u32, identity, groups: g..g, creature, weight_bits: None });
         Ok(index)
+    }
+
+    /// Records the light weight of the open view's last object shadow
+    /// ([`ObjectShadow::weight_bits`]).
+    pub fn set_shadow_weight(&mut self, weight: f32) -> Result<(), BuildError> {
+        let (scene, open) = self.open_mut()?;
+        match scene.object_shadows.last_mut() {
+            Some(o) if o.view as usize == open => {
+                o.weight_bits = Some(weight.to_bits());
+                Ok(())
+            }
+            _ => Err(BuildError::NoShadow),
+        }
     }
 
     /// Adds a gathered group to the open view's last object shadow, as
