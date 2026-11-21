@@ -77,6 +77,12 @@ pub struct LineStyle {
     pub fade: Option<Fade>,
     pub chevrons: Option<Chevrons>,
     pub ribbon: Option<Ribbon>,
+    /// Size of one font pixel of the label (1 is the 8x8 font as is).
+    pub label_scale: f32,
+    /// Centre the label on its anchor, with a drop shadow, and scale it
+    /// by the output height over 1080p (at least 1). Pulse and fade apply
+    /// to it too.
+    pub label_centered: bool,
 }
 
 impl Default for LineStyle {
@@ -89,6 +95,8 @@ impl Default for LineStyle {
             fade: None,
             chevrons: None,
             ribbon: None,
+            label_scale: 1.0,
+            label_centered: false,
         }
     }
 }

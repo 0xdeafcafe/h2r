@@ -457,6 +457,8 @@ impl Feature for Driver {
                     })
                 })
             })
+            // A pending Live join goes first; a linked film page waits a frame.
+            .after_feature("live-join-link")
             .optional();
         b.snapshot(hooks::SnapshotPolicy::Stateless);
         Ok(())
@@ -502,5 +504,30 @@ mod tests {
         assert!(labels.contains(&"Share") && labels.contains(&"Copy Link"));
         assert!(!theater.playing());
         assert_eq!(theater.state().view.unwrap().tick, Some(42));
+    }
+
+    /// All three run before UI_UPDATE; with no order between them the plan
+    /// refused and every boot with Theater and Live stopped at the plan.
+    #[test]
+    fn the_film_link_join_link_and_lab_consent_plan_together_at_ui_update() {
+        let live = live_hle::Hle::new(live_hle::LiveConfig {
+            enabled: true,
+            server_url: Some("https://live.example".into()),
+            ..Default::default()
+        })
+        .unwrap();
+        let mut features = hooks::Registry::new(hooks::Switches::defaults());
+        crate::join_link::install(&mut features, Some(live), false).unwrap();
+        crate::lab_takeover::install(&mut features, &agent::Agent::new()).unwrap();
+        features
+            .add(&super::Driver(crate::theater_ui::Theater::default()))
+            .unwrap();
+        let plan = features.build(&hooks::Base).unwrap().text();
+        assert!(
+            plan.contains("open a linked film page")
+                && plan.contains("process a Live join link")
+                && plan.contains("open or expire a lab request"),
+            "{plan}"
+        );
     }
 }
