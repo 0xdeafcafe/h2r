@@ -176,6 +176,9 @@ In the original version 1 layout:
   epoch, socket address, scheduler slice budget, feature switches, lobby
   settings and lease ID. Later header chunks supply the map, variant,
   roster and scores from the telemetry readers. Ticks count from boot.
+  The recorded feature switches preserve the
+  [replication admission](ai-networking.md#creature-entity) plan during
+  offline playback.
 - `DATA` records directories and SHA-256 digests under the guest's
   `disk/` and `metadata/`. Small files are embedded, up to 1 MiB each
   and 16 MiB total. For larger files, supply an unchanged initial copy

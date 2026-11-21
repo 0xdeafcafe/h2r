@@ -1,7 +1,7 @@
 # AI over the network
 
-Status: Design. AN0 supplies the probe API. AN11 establishes the static requirements for creature replication. P7 is pending.
-Code: `crates/extensions/agent/src/net.rs` (`net.replication`), `crates/extensions/agent/src/ai.rs` (`world.ai`). Planned: `crates/formats/host-log`, `crates/live/actor-net`, `crates/extensions/game/src/actor_net/`. Tests: each crate's own, on invented data.
+Status: Design. AN12 supplies the creature probe and replication-version gate. P7 is pending.
+Code: `crates/extensions/agent/src/net.rs` (`net.replication`), `crates/extensions/agent/src/ai.rs` (`world.ai`), `crates/extensions/game/src/actor_net/creature.rs` (slot 17), `crates/extensions/game/src/replication_admission.rs` (guest admission) and `crates/live/live-hle/src/qos.rs` (Live QoS). Planned: `crates/formats/host-log` and `crates/live/actor-net`. Tests: each crate's own, on invented data.
 Switch: `agent-net` (the event counter behind `net.replication`), listed in [switches.md](../runtime/switches.md). The `actor-net` feature of `H2_FEATURES` (off until probe P3 is seen in the game) joins it with the code.
 
 AI actors in a network game: who runs them, what reaches the other
@@ -156,16 +156,25 @@ the host's authoritative damage, position and death state.
 
 ### Creature entity
 
-**Design.** Every h2recomp machine installs the same definition at
-simulation initialisation, at slot 17 with an entity count of 18. Both
-ends use the existing five-bit type field. The host enrolls eligible
+The opt-in [creature probe](#creature-slot-probe) registers slot 17
+at simulation initialisation and sets the entity count to 18. Both peers
+use the existing five-bit type field. The host enrolls eligible
 creatures, including those created by `sim.spawn`. Creation and update
-relevance use extension-owned creature tuning. Stock tuning ends after
-type 16. The session check requires the same replication protocol version
-on Live and System Link, including on maps with zero creatures. An absent
-or different version gives a named incompatibility error before admission
-or entity traffic. Both the host and the joining machine check compatibility. The full definition uses
-a different protocol version from the probe's minimal definition.
+relevance use extension-owned creature tuning. Stock tuning ends at
+type 16.
+
+Both sides of a Live or System Link join require the same explicit
+replication version, even on maps with zero creatures. Version 1
+identifies the stock entity definitions, version 2 the probe and version 3
+is reserved for the full creature definition. A missing or unequal
+version raises `replication_version_mismatch` before membership.
+System Link discovery and Live QoS carry the version in the guest game
+description's version word. The join request carries it in the message
+header, and the host retains it in the request through deferred admission.
+The Live HLE also checks the version at QoS before returning the title's
+admission data.
+
+AN13's full definition carries these fields.
 
 | Record | Fields |
 |---|---|
@@ -369,60 +378,108 @@ and `CLIENT` are the two agent sockets of a System Link pair
 
 ### Creature slot probe
 
-AN12 supplies the slot-17 definition, host enrollment and creature
-scheduling needed for P7. The definition carries a local definition index
-and initial transform on creation and position on update.
-Run a control pair on h2recomp without that definition, then a candidate
-pair with the definition and the same replication version on both peers.
-Use the same two-player distributed Slayer setup for both. Each machine
-loads the same locally built map with a resolvable `crea` definition, no
-creature placements and a clear drop point high enough for the host to
-observe motion across several update periods. Fix the definition, drop
-coordinates and yaw across trials and keep the disc-specific values in
-the coordinator's private fixture.
+The probe's creation payload is 304 bits. It carries a 16-bit local
+definition index and nine binary32 coordinates for position, forward and
+up. Movement carries three binary32 position coordinates in 96 bits.
+The retail envelope adds its own framing and can attach the initial
+position delta. The scheduler gives creation
+a score of 1.0 and movement a score of 0.5, with a 200 ms minimum period
+per peer for movement.
 
-Use the following RPCs through `h2 agent --socket <path> <method> '<JSON>'`.
-The pair starts in gameplay, with the host and client on distinct sockets.
+Use two fresh pairs of h2recomp processes. Run both control peers with
+the probe disabled and both candidate peers with it enabled
+([switches](../runtime/switches.md)).
+Start the same two-player System Link Slayer game for each pair, with a
+local player on the host. Use the
+[System Link socket setup](../live/live.md#client-hle-sockets-and-system-link).
+Use the same locally built map with a resolvable `crea` definition, zero
+creature placements and a clear drop point high enough to observe motion
+across several update periods.
 
-1. On both, call `session.methods {}`, then
-   `session.wait {"until":{"phase":"gameplay","map_ticks":300},"timeout_ms":30000}`.
-   Call `net.replication {}` and require `dist-server` on the host and
-   `dist-client` on the client. Confirm the candidate reports the AN11
-   slot in `creature_type` on both peers and empty `creatures` arrays.
-2. On both, record `sim.objects {"kinds":["crea","bipd"]}` and
-   `net.replication {}`. Wait on the host with
-   `session.wait {"until":{"ticks":30},"timeout_ms":10000}`, then repeat
-   `net.replication {}` on both for an empty-window traffic baseline.
-   Treat an absent `objects.crea` count as zero.
-3. On the host, call `sim.spawn` with
-   `{"tag":"crea:<local definition>","pos":[x,y,z],"yaw":0}` using the
-   drop point, and save the returned `object` and `pos`. As soon as it
-   answers, call `net.replication {}` and
-   `sim.objects {"kinds":["crea","bipd"]}` on both. Then wait on the host
-   with `session.wait {"until":{"ticks":30},"timeout_ms":10000}` and take
-   the two reads on both again. Wait a further 120 ticks with
-   `session.wait {"until":{"ticks":120},"timeout_ms":10000}` and repeat
-   both reads. Use the returned spawn position and the later snapshots
-   to check that the replica follows the drop and settles at the host
-   position within the probe codec's precision.
-4. In the candidate, require `objects.crea.with_entity` and the client's
-   `objects.crea.objects` each to rise by one. Require the same `entity`
-   and AN11 `type` in both `creatures` arrays, with each `object`
-   matching its own peer's `sim.objects` row. The client's `updates`
-   must show at least one applied update. To check stock replication in
-   the candidate run, move the host's local biped on clear ground with
-   `sim.state.set {"player":"player.0","pos":[x,y,z]}`, wait another 30
-   ticks with the same RPC, and check `sim.objects {"kinds":["bipd"]}` on
-   the client for the new position. Use a normal host with a local
-   player for this check.
-5. Compare the control and candidate at the same tick intervals. Record
-   the count and position changes, and the host send and client receive
-   byte deltas divided by elapsed ticks at 30 Hz. Record aggregate
-   datagram bytes as such. Establish the creature's encoded sizes
-   separately with the probe's synthetic packets.
+Set `P7_HOST_SOCKET` and `P7_CLIENT_SOCKET` to the two Agent API
+endpoints. Set `P7_SPAWN` to the private fixture JSON
+`{"tag":"crea:<local definition>","pos":[x,y,z],"yaw":0}`
+and `P7_MOVE` to `{"player":"player.0","pos":[x,y,z]}` with a clear
+ground destination. Use the same two JSON objects in both runs.
+Set `P7_OUT` to a fresh output directory for each pair.
+
+```sh
+mkdir -p "$P7_OUT"
+
+p7_snapshot() {
+    h2 agent --socket "$P7_HOST_SOCKET" net.replication '{}' > "$P7_OUT/$1.host.net.json" &&
+    h2 agent --socket "$P7_CLIENT_SOCKET" net.replication '{}' > "$P7_OUT/$1.client.net.json" &&
+    h2 agent --socket "$P7_HOST_SOCKET" sim.objects '{"kinds":["crea","bipd"]}' > "$P7_OUT/$1.host.objects.json" &&
+    h2 agent --socket "$P7_CLIENT_SOCKET" sim.objects '{"kinds":["crea","bipd"]}' > "$P7_OUT/$1.client.objects.json"
+}
+
+p7_wait() {
+    h2 agent --socket "$P7_HOST_SOCKET" session.wait '{"until":{"ticks":'"$1"'},"timeout_ms":10000}'
+}
+
+p7_ready() {
+    h2 agent --socket "$1" session.methods '{}' &&
+    h2 agent --socket "$1" session.wait '{"until":{"phase":"gameplay","map_ticks":300},"timeout_ms":30000}'
+}
+
+p7_ready "$P7_HOST_SOCKET" && p7_ready "$P7_CLIENT_SOCKET"
+```
+
+Run these steps in order. Stop if a command fails or a required field is
+missing.
+
+1. Take the starting snapshot. Require `dist-server` on the host and
+   `dist-client` on the client. Both `creatures` arrays start empty.
+   Check that both `creature_type` fields are null for the control and
+   17 for the candidate.
+
+   ```sh
+   p7_snapshot start
+   ```
+
+2. Record an empty-window traffic baseline.
+
+   ```sh
+   p7_wait 30 && p7_snapshot empty
+   ```
+
+3. Spawn one creature and sample its movement through the drop.
+
+   ```sh
+   h2 agent --socket "$P7_HOST_SOCKET" sim.spawn "$P7_SPAWN" > "$P7_OUT/spawn.json" &&
+   p7_snapshot spawn &&
+   p7_wait 30 && p7_snapshot moved &&
+   p7_wait 120 && p7_snapshot settled
+   ```
+
+   In the control, the host has one new local creature and the client has
+   zero. In the candidate, the host's `objects.crea.with_entity` and the
+   client's `objects.crea.objects` each rise by one. An absent kind
+   counts as zero. Require one matching full `entity` value with
+   `type: 17` on each peer. Match each `object` to the corresponding
+   peer's `sim.objects` row and the host handle to `spawn.json`. Compare
+   handles as hexadecimal values. The host writes and the client applies
+   at least one movement update. The client position follows the drop
+   and settles at the host position within 0.001 world units on each axis.
+
+4. Move the host's biped and look for that movement among the client's
+   biped rows in both runs.
+
+   ```sh
+   h2 agent --socket "$P7_HOST_SOCKET" sim.state.set "$P7_MOVE" > "$P7_OUT/teleport.json" &&
+   p7_wait 30 && p7_snapshot player-moved
+   ```
+
+5. Compare the matching intervals on the two pairs. For each interval,
+   divide the host `traffic.sent_bytes` and client
+   `traffic.received_bytes` deltas by the respective elapsed
+   `at.map_ticks` and multiply by 30. Report aggregate datagram bytes
+   per second and the creature payload sizes from the synthetic codec
+   tests. Keep the spawn and settled snapshots as the identity and
+   movement evidence.
 
 The mixed-version check is a lobby test with synthetic peers in AN12.
-P7 uses matched pairs so no old peer receives a creature update.
+P7 uses matched pairs.
 
 ## Slices
 
@@ -443,7 +500,7 @@ under a day, M one to three days, L a week.
 | **AN9** | `mp-jip-probe`: lift the in-game join refusal on a distributed host behind a feature, log each stage | S | P1 | `crates/extensions/game/src/mp_jip_probe.rs` | `the_refusal_is_lifted_only_for_a_distributed_session_with_the_feature_on` | P6 can be run |
 | **AN10** | Distributed join in progress, built from P6's answer | M | AN9, P6 | decided by P6 | decided by P6 | a third fake peer joining gets a `Key` and equal puppet tables |
 | **AN11** | Static read of creature registration, registry and scheduling bounds, serializers, unknown-type receive and session admission | M | nothing | [notes/creature-entity.md](notes/creature-entity.md) | `entity_table_bounds_trace`, `entity_type_codec_trace`, `unknown_type_receive_trace` (static checks) | slot 17 fits the existing codec. The host needs a creature scheduling record. A stock client rejects the batch on creation and refuses later motion for the missing identity |
-| **AN12** | P7: slot-17 definition, host creature enrollment, separate creation and update tuning, replication-version admission and agent readout | M | AN11, AN0, P1 | planned `crates/extensions/game/src/actor_net/creature.rs`; `crates/hooking/guest-layout/src/points.rs`; `crates/live/live-hle/` and the guest session join check; `crates/extensions/agent/src/net.rs`; [agent-api.md](../runtime/agent-api.md#netreplication) | `probe_definition_uses_the_selected_slot`, `creature_scheduling_preserves_stock_tuning`, `probe_creation_and_position_round_trip`, `creature_entities_report_objects_and_updates`, `mixed_versions_are_refused_before_replication` | P7 shows one enrollment per spawn and a scheduled position update with stock player replication intact. Synthetic joins on Live and System Link refuse both directions of a mixed-version pair before membership. Direct, invited and deferred joins enforce the same check |
+| **AN12** | P7: slot-17 definition, host creature enrollment, separate creation and update tuning, replication-version admission and agent readout | M | AN11, AN0, P1 | `crates/extensions/game/src/actor_net/creature.rs`; `crates/hooking/guest-layout/src/points.rs`; `crates/live/live-hle/` and the guest session join check; `crates/extensions/agent/src/net.rs`; [agent-api.md](../runtime/agent-api.md#netreplication) | `probe_definition_uses_the_selected_slot`, `creature_scheduling_preserves_stock_tuning`, `probe_creation_and_position_round_trip`, `creature_entities_report_objects_and_updates`, `mixed_versions_are_refused_before_replication` | P7 shows one enrollment per spawn and a scheduled position update with stock player replication intact. Synthetic joins on Live and System Link refuse both directions of a mixed-version pair before membership. Direct, invited and deferred joins enforce the same check |
 | **AN13** | Creature entity: full creation, masked updates and removal, host authority, creature scheduling and bandwidth | L | AN12 admission tests and matched-pair P7 pass | planned `crates/extensions/game/src/actor_net/creature.rs` and `crates/extensions/game/src/actor_net/creature_wire.rs`; `crates/hooking/guest-layout/src/points.rs`; `crates/apps/boot/src/registration.rs` | `creature_create_update_delete_round_trip`, `a_creation_resolves_only_a_local_crea_tag`, `invalid_masks_and_truncated_packets_leave_state_unchanged`, `unknown_and_stale_entity_updates_are_rejected`, `retail_entities_keep_their_wire_encoding`, `only_the_host_advances_creature_behaviour`, `creature_updates_fit_the_sender_budget`, `the_full_definition_refuses_the_probe_version` | the full codec fits the baseline scratch and mask bounds, uses AN12's creature tuning, and covers lifecycle, loss and slot reuse with no stale writes. A 30-second synthetic stream at the design load fits 1 KB/s per peer with the stock entity budget preserved. Both transports use the same definition and version gate |
 
 AN0, AN1, AN2 and AN6 start at once and touch no existing behaviour.

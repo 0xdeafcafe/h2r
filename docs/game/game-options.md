@@ -354,7 +354,9 @@ guests"):
   host has it the moment it picks the entry; the rest is the custom-game
   path. The server's hopper model and the editor's hopper tool carry it
   untouched (both copy the record whole).
-- **Older builds**: they may join, with no refusal.
+- **Older builds** can join when they advertise the same
+  [replication version](ai-networking.md#creature-entity). Variant
+  support is a separate capability.
   - A new guest of an older host finds no `variant_ext` on the session and
     logs `variant options: none from the host: the host's build sends no
     variant options (an older build)`. An older host never applies a block,

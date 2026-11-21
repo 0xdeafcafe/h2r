@@ -71,6 +71,14 @@ crate::globals! { GLOBALS;
     /// dist-client; not the game mode's numbering, see `0x68da8`), the update number at `+0x28`, the out-of-sync latch
     /// byte at `+0x2c`.
     SIM_GLOBALS @ 0x004c_f77c; "docs/live/live-coop.md";
+    /// Pointer to the shared simulation entity and event type registry.
+    SIM_REPLICATION_REGISTRY @ 0x004c_f784; "docs/game/notes/creature-entity.md";
+    /// Generic object entity definition vtable. The probe inherits its object adapter.
+    SIM_OBJECT_ENTITY_VTABLE @ 0x0045_2030; "docs/game/notes/creature-entity.md";
+    /// Network time override enable byte, with the override milliseconds at +4.
+    SIM_NETWORK_TIME_OVERRIDE @ 0x0051_0548; "docs/game/notes/creature-entity.md";
+    /// GetTickCount's import cell pointing at the kernel's millisecond counter.
+    KERNEL_TICK_COUNT_IMPORT @ 0x0041_1690; "docs/runtime/xapi.md";
     /// The simulation's "ended" latch byte.
     SIM_ENDED @ 0x004c_f772; "docs/live/live-coop.md";
     /// The network life cycle's ready byte.

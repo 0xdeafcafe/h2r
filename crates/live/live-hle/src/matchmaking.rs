@@ -10,6 +10,7 @@ use live_proto::{
     hosts::{HostEndpoint, HostLease, HostState, ProviderKind, Transport},
     matchmaking::{Assignment, Candidate, Connectivity, Nat, Queue, RegionProbe, Sample, Ticket},
     optimatch::Query,
+    replication::IncompatibleVersion,
     session,
 };
 use serde::Deserialize;
@@ -44,6 +45,7 @@ pub(crate) fn config() -> Option<Connectivity> {
 #[derive(Clone)]
 pub(crate) enum Outcome {
     Host(Assignment),
+    Incompatible(IncompatibleVersion),
     Join {
         rows: Vec<session::Session>,
         frames_from_host: bool,
@@ -60,6 +62,22 @@ pub(crate) enum Step {
     RequeueDedicated,
     CheckDedicated(Box<DedicatedJoin>),
     Complete(Outcome),
+}
+
+impl Step {
+    /// A peer or dedicated host match can finish only with a ready,
+    /// compatible title description. A version refusal is terminal.
+    pub fn after_qos(
+        ready: Result<bool, IncompatibleVersion>,
+        retry: Self,
+        join: impl FnOnce() -> Outcome,
+    ) -> Self {
+        match ready {
+            Ok(true) => Self::Complete(join()),
+            Ok(false) => retry,
+            Err(reason) => Self::Complete(Outcome::Incompatible(reason)),
+        }
+    }
 }
 
 pub(crate) enum QueueAction {
@@ -592,6 +610,27 @@ mod tests {
         let now = Instant::now();
         assert_eq!(dedicated_deadline(now + Duration::from_secs(2), now), now + Duration::from_secs(65));
         assert_eq!(dedicated_deadline(now + Duration::from_secs(100), now), now + Duration::from_secs(100));
+    }
+
+    #[test]
+    fn a_queue_version_refusal_is_terminal_for_either_host_route() {
+        use live_proto::replication::{CREATURE_PROBE, STOCK};
+
+        for (local, peer) in [(STOCK, CREATURE_PROBE), (CREATURE_PROBE, STOCK)] {
+            let reason = IncompatibleVersion { local, peer: Some(peer) };
+            for retry in [Step::Retry(Vec::new()), Step::RequeueDedicated] {
+                let step = Step::after_qos(Err(reason), retry, || panic!("incompatible join"));
+                assert!(matches!(step, Step::Complete(Outcome::Incompatible(e)) if e == reason));
+            }
+        }
+        assert!(matches!(
+            Step::after_qos(Ok(false), Step::Retry(Vec::new()), || panic!("unready peer")),
+            Step::Retry(_),
+        ));
+        assert!(matches!(
+            Step::after_qos(Ok(false), Step::RequeueDedicated, || panic!("unready host")),
+            Step::RequeueDedicated,
+        ));
     }
 
     #[test]

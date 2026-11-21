@@ -402,11 +402,14 @@ fields it names are in that page's
 | `distributed` | true in modes 4 and 5 |
 | `objects` | per object tag group (`bipd`, `vehi`, `proj`, ...; `other` for a type outside the table): `{objects, with_entity}`, the live objects and how many have a replication entity (object body `+0xd4` is not -1) |
 | `entities` | the sum of `with_entity` |
+| `creature_type` | the registered creature probe slot, 17, or null when the definition is absent |
+| `creatures` | live bindings `[{entity, type, object, updates}]`. `entity` includes the generation, and `object` is the local salted handle in the format used by `sim.objects`. `updates` counts movement operations the host writes to peer replication batches or the client applies over this binding's lifetime |
 | `events` | `{total, by_type: [{type, name, count}]}`: replication events queued since the process started, by the engine's event type; types never seen are left out, and a type outside the table is counted under `other` with a null `type` |
 | `traffic` | `{sent, sent_bytes, received, received_bytes, largest}`: the title's datagrams since the process started (`live_hle::traffic`) |
 
-Every count is cumulative, so a rate is the difference of two calls
-divided by the ticks between their `at` stamps:
+Event and traffic counts accumulate over the process lifetime. Divide
+the difference between two calls by the ticks between their `at` stamps
+to get a rate:
 
 ```sh
 h2 agent net.replication > before.json
@@ -1974,7 +1977,9 @@ calls are queued.
 - **`sim.spawn`** makes an object as the netgame equipment spawn does
   (`0x15ab94..0x15abe6`): `placement_data_new` with no owner, the position
   at placement `+0x1c`, forward and up at `+0x28`/`+0x34`, then
-  `object_new`. Any object group `object_new` knows (`bipd vehi weap eqip
+  `object_new`. A distributed host with the
+  [creature probe](../game/ai-networking.md#creature-slot-probe) enrolls a
+  new creature after allocation. Any object group `object_new` knows (`bipd vehi weap eqip
   garb proj scen mach ctrl lifi ssce bloc crea`). A bare name is looked for
   among those groups; if it names tags in more than one, the answer asks for
   the group (`vehi:<tag name>`). The answer: `object`, `pos` (where it was

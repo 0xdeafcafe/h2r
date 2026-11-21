@@ -1219,6 +1219,14 @@ fn run_configured(
     let installed = plan
         .install(&loaded.runtime)
         .context("installing the feature plan")?;
+    if let Some(why) = installed.off_reason(replication_admission::FEATURE) {
+        bail!("replication admission needs its feature hooks: {why}");
+    }
+    if core.creature_probe
+        && let Some(why) = installed.off_reason(actor_net::creature::FEATURE)
+    {
+        bail!("creature probe needs its feature hooks: {why}");
+    }
     // After the plan: the keyboard bridge wraps whatever the plan put on
     // the UI pump (keyboard_glue::install_with_tape).
     #[cfg(feature = "desktop-runtime")]

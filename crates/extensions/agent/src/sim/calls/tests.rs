@@ -67,7 +67,7 @@ fn one(
     let f: Box<EntryFn> = Box::new(move |cx: Cx| -> EntryFuture {
         let (call, got) = (call.clone(), Arc::clone(&g2));
         Box::pin(async move {
-            let out = run(&cx, &call, SCRATCH).await?;
+            let out = run(&cx, &call, SCRATCH, None).await?;
             *got.lock().unwrap() = Some(out);
             Ok(Ret::new(0, 0))
         })
@@ -308,6 +308,36 @@ fn a_spawn_places_the_object_where_and_facing_as_asked() {
     );
     assert_eq!(calls[0].args, vec![0xe200_0002, u32::MAX, 0]);
     assert_eq!(out.unwrap()["object"], "00420003");
+}
+
+#[test]
+fn a_successful_spawn_can_enroll_the_new_object_before_the_tick() {
+    const ENROLL: u32 = 0x4000;
+    const MADE: u32 = 0x8123_0003;
+    let w = world();
+    let q = shared();
+    lock(&q).set_spawn_enrollment(|_, object| Some(GuestCall::new(ENROLL).args([object])));
+    let f = move |cx| -> EntryFuture {
+        let work = vec![(1, Call::Spawn {
+            tag: 0xe200_0002,
+            pos: [5.0, 6.0, 7.0],
+            facing: None,
+        })];
+        Box::pin(run_queued(cx, Arc::clone(&q), work, SCRATCH, Arc::default()))
+    };
+    let r = drive(&f, w.g, Regs::default(), |c, _| {
+        if c.target == addr::OBJECT_NEW {
+            al(MADE)
+        } else {
+            Regs::default()
+        }
+    });
+    assert_eq!(r.result, Ok(Ret::new(0, 0)));
+    let targets: Vec<_> = r.calls.iter().map(|call| call.target).collect();
+    assert_eq!(targets, [
+        addr::PLACEMENT_NEW, addr::OBJECT_NEW, ENROLL, engine::points::GAME_TICK.base,
+    ]);
+    assert_eq!(r.calls[2].args, [MADE]);
 }
 
 #[test]

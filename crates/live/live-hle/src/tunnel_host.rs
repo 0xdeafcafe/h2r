@@ -199,6 +199,7 @@ struct TunnelHost {
     listeners: qos::Listeners,
     pings: qos::Pings,
     asked: qos::Asked,
+    version: qos::Version,
 }
 
 impl TunnelHost {
@@ -228,6 +229,7 @@ impl TunnelHost {
             listeners: network.listeners.clone(),
             pings: network.pings.clone(),
             asked: network.asked.clone(),
+            version: network.version.clone(),
         });
         let worker = tunnel.clone();
         thread::Builder::new()
@@ -426,27 +428,14 @@ impl TunnelHost {
         if let Some(pong) = qos::answer_ping(input, ip, &self.pings) {
             return Some(Some(pong.to_vec()));
         }
-        if input.len() != 24 || &input[..8] != b"H2QOS001" {
-            return None;
-        }
-        let kid: [u8; 8] = input[16..24].try_into().unwrap();
-        Some(
-            qos::answer(&lock(&self.listeners), &kid).map(|(enabled, bandwidth, data)| {
-                lock(&self.asked).insert(ip, kid);
-                let mut reply = Vec::with_capacity(23 + data.len());
-                reply.extend_from_slice(b"H2QOR001");
-                reply.extend_from_slice(&input[8..16]);
-                reply.push(if enabled {
-                    3 | if data.is_empty() { 0 } else { 8 }
-                } else {
-                    7
-                });
-                reply.extend_from_slice(&bandwidth.to_le_bytes());
-                reply.extend_from_slice(&(data.len() as u16).to_le_bytes());
-                reply.extend_from_slice(&data);
-                reply
-            }),
-        )
+        let lookup = qos::decode_lookup(input)?;
+        Some(qos::answer_lookup(
+            &self.listeners,
+            &self.asked,
+            ip,
+            &lookup,
+            self.version.get(),
+        ))
     }
 
     fn recv_udp(
@@ -900,6 +889,7 @@ mod tests {
             address: SocketAddrV4::new(Ipv4Addr::LOCALHOST, BASE),
             bridge, bridge_address, peers: Mutex::default(), channels: Mutex::default(),
             listeners: Default::default(), pings: Default::default(), asked: Default::default(),
+            version: Default::default(),
         };
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
         thread::scope(|scope| {

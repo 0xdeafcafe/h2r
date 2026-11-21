@@ -88,6 +88,8 @@ pub mod status {
     /// gets (docs/live/live-boundary.md, game result 2, dialog 0x27).
     pub const ACCOUNT_REQUIRES_MANAGEMENT: u32 = 0x8015_1200;
     pub const BUFFER_TOO_SMALL: u32 = 0x8015_0001;
+    /// HLE's customer HRESULT for a terminal Live queue refusal.
+    pub const REPLICATION_VERSION_MISMATCH: u32 = 0xa015_5100;
     pub const MATCH_INVALID_SESSION: u32 = 0x8015_5100;
     pub const MATCH_INVALID_DATA_TYPE: u32 = 0x8015_5102;
     pub const MATCH_INVALID_SEARCH: u32 = 0x8015_5105;
@@ -250,6 +252,12 @@ impl Hle {
             .cloned()
     }
 
+    /// Fixes the version used by Live QoS admission. Boot calls this once
+    /// before starting the guest, with the version of its entity definitions.
+    pub fn set_replication_version(&self, version: u16) {
+        self.network.version.set(version);
+    }
+
     pub fn film_address(&self) -> SocketAddrV4 {
         self.network.config.address
     }
@@ -300,11 +308,12 @@ impl Hle {
         }
         let address = network.address;
         let accounts = config.accounts()?;
+        let version = qos::Version::default();
         let service = if config.enabled {
             config
                 .server_url
                 .as_ref()
-                .map(|url| client::Service::start(url.clone(), options))
+                .map(|url| client::Service::start(url.clone(), options, version.clone()))
                 .transpose()
                 .map_err(|_| ConfigError::Worker)?
         } else {
@@ -321,7 +330,7 @@ impl Hle {
                 config.clone(),
             )),
             config,
-            network: network::Network::new(network),
+            network: network::Network::new(network, version),
         }))
     }
     /// Preserve the dedicated lobby's configured session class, with no HTTP
@@ -344,7 +353,7 @@ impl Hle {
                 config.clone(),
             )),
             config,
-            network: network::Network::new(network),
+            network: network::Network::new(network, qos::Version::default()),
         }))
     }
     /// Reads the accounts file again (after [`account_setup::save`]), so a
@@ -513,7 +522,7 @@ impl Hle {
         }
         self.lock().frames_from_host(session_id)
     }
-    /// Map Pack availability and dedicated host progress for matchmaking.
+    /// Map Pack availability, host progress and replication refusals for matchmaking.
     pub fn matchmaking_status(&self) -> Option<String> {
         if let Some(value) = self.film_view(|v| v.status.clone()) {
             return value;

@@ -82,6 +82,7 @@ enum Task {
         search: Box<crate::matchmaking::Search>,
         intent: Intent,
     },
+    QueueIncompatible(String),
     Failed(u32),
 }
 enum Intent {
@@ -678,6 +679,7 @@ impl Sessions {
             .rev()
             .find_map(|task| match task {
                 Task::Queue { search, .. } => Some(search.status()),
+                Task::QueueIncompatible(reason) => Some(Some(reason.as_str())),
                 _ => None,
             })
             .flatten()
@@ -756,6 +758,12 @@ impl Sessions {
                     self.matchmaking = Some((assignment, std::time::Instant::now()));
                     Task::EmptySearch
                 }
+                Ok(Some(Outcome::Incompatible(error))) => {
+                    self.matchmaking = None;
+                    let reason = error.to_string();
+                    eprintln!("live: matchmaking: {reason}");
+                    Task::QueueIncompatible(reason)
+                }
                 Ok(Some(Outcome::Join {
                     rows,
                     frames_from_host,
@@ -803,6 +811,7 @@ impl Sessions {
         };
         let status = match task {
             Task::Pending { .. } | Task::HeldEmpty { .. } | Task::Queue { .. } => 0,
+            Task::QueueIncompatible(_) => REPLICATION_VERSION_MISMATCH,
             Task::Failed(e) => e,
             _ => TASK_SUCCESS,
         };
@@ -1840,6 +1849,36 @@ mod tests {
         assert!(ping_moved(Some(30), Some(36)));
         assert!(!ping_moved(Some(200), Some(215)), "under a tenth");
         assert!(ping_moved(Some(200), Some(225)));
+    }
+
+    #[test]
+    fn the_guest_queue_reports_its_terminal_replication_refusal() {
+        use live_proto::replication::{CREATURE_PROBE, IncompatibleVersion, STOCK};
+
+        let mut sessions = Sessions::default();
+        let reason = IncompatibleVersion {
+            local: STOCK,
+            peer: Some(CREATURE_PROBE),
+        }
+        .to_string();
+        let handle = 1;
+        sessions
+            .tasks
+            .insert(handle, Task::QueueIncompatible(reason.clone()));
+        let hle = crate::Hle::new(crate::LiveConfig::default()).unwrap();
+        let mut guest = Guest::new();
+        let mut storage = Storage::default();
+
+        for _ in 0..2 {
+            assert_eq!(
+                sessions.poll(handle, &mut guest, &mut storage, &hle).unwrap(),
+                Some(REPLICATION_VERSION_MISMATCH),
+            );
+            assert_eq!(sessions.matchmaking_status(None), Some(reason.as_str()));
+            assert!(sessions.match_join.is_none());
+        }
+        assert!(sessions.close(handle));
+        assert_eq!(sessions.matchmaking_status(None), None);
     }
 
     #[test]

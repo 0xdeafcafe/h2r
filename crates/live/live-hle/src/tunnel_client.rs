@@ -574,21 +574,21 @@ impl QosBridge {
     }
 
     fn poll(&mut self, wire: &mut impl Wire) -> io::Result<()> {
-        // One byte past the valid size detects a truncated/oversized request.
-        let mut buf = [0; 25];
+        // One byte past the valid size detects an oversized request.
+        let mut buf = [0; crate::qos::LOOKUP_REQUEST_LEN + 1];
         match self.socket.recv_from(&mut buf) {
-            Ok((24, addr)) if addr.ip().is_loopback() && &buf[..8] == b"H2QOS001" => {
-                self.pending
-                    .retain(|_, (_, at)| at.elapsed() < CONNECT_WAIT);
-                if self.pending.len() < 64 {
-                    self.pending
-                        .insert(buf[8..16].try_into().unwrap(), (addr, Instant::now()));
-                    wire.send(Message::binary(tunnel::encode(&Frame {
-                        kind: Kind::Datagram,
-                        port: 2,
-                        peer: 0,
-                        payload: buf[..24].to_vec(),
-                    })))?;
+            Ok((len, addr)) if addr.ip().is_loopback() => {
+                if let Some(lookup) = crate::qos::decode_lookup(&buf[..len]) {
+                    self.pending.retain(|_, (_, at)| at.elapsed() < CONNECT_WAIT);
+                    if self.pending.len() < 64 {
+                        self.pending.insert(lookup.nonce, (addr, Instant::now()));
+                        wire.send(Message::binary(tunnel::encode(&Frame {
+                            kind: Kind::Datagram,
+                            port: 2,
+                            peer: 0,
+                            payload: buf[..len].to_vec(),
+                        })))?;
+                    }
                 }
             }
             Ok(_) => {}
@@ -599,10 +599,9 @@ impl QosBridge {
     }
 
     fn reply(&mut self, payload: &[u8]) -> bool {
-        if payload.len() < 16 || &payload[..8] != b"H2QOR001" {
+        let Some(nonce) = crate::qos::reply_nonce(payload) else {
             return false;
-        }
-        let nonce: [u8; 8] = payload[8..16].try_into().unwrap();
+        };
         if let Some((addr, at)) = self.pending.remove(&nonce) {
             if at.elapsed() < CONNECT_WAIT {
                 let _ = self.socket.send_to(payload, addr);

@@ -360,7 +360,11 @@ impl SessionCache {
     }
 }
 impl Service {
-    pub fn start(base: String, options: ServerOptions) -> std::io::Result<Self> {
+    pub fn start(
+        base: String,
+        options: ServerOptions,
+        replication: crate::qos::Version,
+    ) -> std::io::Result<Self> {
         let (sender, receiver) = mpsc::sync_channel::<Command>(64);
         let metrics = Arc::new(Metrics::default());
         let counters = metrics.clone();
@@ -382,6 +386,7 @@ impl Service {
                     maps: options.maps.clone(),
                     addon_hoppers: hoppers_by_worker,
                     software: Software::from_options(&options),
+                    replication,
                     agent,
                     publisher: options.publisher,
                     connection: None,
@@ -638,6 +643,7 @@ struct Worker {
     maps: Option<Arc<crate::maps::MapGate>>,
     addon_hoppers: Arc<AtomicU32>,
     software: Software,
+    replication: crate::qos::Version,
     agent: ureq::Agent,
     connection: Option<Connection>,
     active: Option<Active>,
@@ -1222,18 +1228,17 @@ impl Worker {
         }
         let kid = crate::sessions::wire_id(session_id).ok_or(Error::Protocol)?;
         let address = std::net::SocketAddrV4::new(row.endpoint.addr, row.endpoint.port);
-        if self.map_ready(&row, true)
-            && crate::qos::query_why(address, kid, 1).is_ok_and(|r| !r.data.is_empty())
-        {
-            Ok(Step::Complete(Outcome::Join {
-                rows: vec![row],
-                frames_from_host,
-                dedicated: None,
-                tunnel: None,
-            }))
-        } else {
-            Ok(Step::Retry(Vec::new()))
+        let retry = Step::Retry(Vec::new());
+        if !self.map_ready(&row, true) {
+            return Ok(retry);
         }
+        let ready = crate::qos::ready_to_join(address, kid, self.replication.get());
+        Ok(Step::after_qos(ready, retry, || Outcome::Join {
+            rows: vec![row],
+            frames_from_host,
+            dedicated: None,
+            tunnel: None,
+        }))
     }
     fn join_dedicated(
         &self,
@@ -1259,21 +1264,20 @@ impl Worker {
         let qos_base = tunnel
             .as_ref()
             .map_or(join.route.address, |(_, handle)| handle.qos_base());
-        if !crate::qos::query_why(qos_base, kid, 1).is_ok_and(|r| !r.data.is_empty()) {
-            return Ok(Step::RequeueDedicated);
-        }
-
-        let mut row = join.row.clone();
-        join.route.apply(&mut row);
-        self.saw(std::slice::from_ref(&row));
-        Ok(Step::Complete(Outcome::Join {
-            rows: vec![row],
-            frames_from_host: join.frames_from_host,
-            dedicated: Some(DedicatedMatch {
-                hopper: join.hopper,
-                route: join.route.clone(),
-            }),
-            tunnel,
+        let ready = crate::qos::ready_to_join(qos_base, kid, self.replication.get());
+        Ok(Step::after_qos(ready, Step::RequeueDedicated, || {
+            let mut row = join.row.clone();
+            join.route.apply(&mut row);
+            self.saw(std::slice::from_ref(&row));
+            Outcome::Join {
+                rows: vec![row],
+                frames_from_host: join.frames_from_host,
+                dedicated: Some(DedicatedMatch {
+                    hopper: join.hopper,
+                    route: join.route.clone(),
+                }),
+                tunnel,
+            }
         }))
     }
     fn matches_request(

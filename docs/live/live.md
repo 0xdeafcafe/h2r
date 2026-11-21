@@ -1812,8 +1812,19 @@ a controller whose account changed cannot create a join for the new account.
 The game can then use its existing FindFromID, search-result parsing, key
 registration, XNADDR conversion, QoS and sockets. The host's exchange key is
 never published; the remote key is zero for the current unencrypted HLE
-transport. An embedded-server test follows this path through a successful QoS
-probe and a two-way guest UDP exchange, with no broadcast peers configured.
+transport. The HLE QoS request carries the joining console's replication
+version in its echoed nonce. The responder adds its own version after the
+length-delimited title data. Both sides require an explicit match and the
+responder withholds the title data and session key hint on a mismatch.
+The diagnostic is `replication_version_mismatch`. This check applies to
+direct and invited joins and the queue's peer and dedicated host checks,
+including the dedicated tunnel. A queue refusal fails the search task with
+`REPLICATION_VERSION_MISMATCH` and keeps the diagnostic on its matchmaking
+status. The guest join check also gates membership on both transports.
+[AI over the network](../game/ai-networking.md#creature-entity)
+
+An embedded-server test follows this path through a successful QoS probe and
+a two-way guest UDP exchange, with no broadcast peers configured.
 The full retail invite menu/confirmation sequence, cancellation timing and a
 complete custom game still need owner play testing. No game was built or run.
 

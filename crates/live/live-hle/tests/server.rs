@@ -2920,6 +2920,19 @@ fn udp_socket(w: &mut World) -> u32 {
 }
 #[test]
 fn invites_message_accept_find_and_join_exchange_datagrams_without_broadcast() {
+    let version = live_proto::replication::STOCK;
+    exercise_live_invite(version, version);
+}
+
+#[test]
+fn live_invites_refuse_both_mixed_replication_versions() {
+    use live_proto::replication::{CREATURE_PROBE, STOCK};
+
+    exercise_live_invite(STOCK, CREATURE_PROBE);
+    exercise_live_invite(CREATURE_PROBE, STOCK);
+}
+
+fn exercise_live_invite(host_version: u16, peer_version: u16) {
     let s = Server::new();
     let a = s.account("Host");
     let b = s.account("Joiner");
@@ -2941,6 +2954,8 @@ fn invites_message_accept_find_and_join_exchange_datagrams_without_broadcast() {
         Duration::from_secs(30),
         peer_port,
     );
+    host.hle.set_replication_version(host_version);
+    peer.hle.set_replication_version(peer_version);
     host.logon();
     peer.logon();
     let (lo, hi) = invite_host(&mut host);
@@ -3100,6 +3115,15 @@ fn invites_message_accept_find_and_join_exchange_datagrams_without_broadcast() {
     );
     let qos = peer.u32(OUT);
     assert_eq!(peer.u32(qos + 4), 0);
+    if host_version != peer_version {
+        // The invite reaches FindFromID, but QoS denies the session
+        // before the guest can obtain the title's admission data.
+        assert_eq!(peer.bytes(qos + 8, 1), vec![7]);
+        assert_eq!(peer.bytes(qos + 14, 2), vec![0, 0]);
+        assert_eq!(peer.u32(qos + 16), 0);
+        assert_eq!(peer.call("XNetQosRelease", &[qos]), 0);
+        return;
+    }
     assert_eq!(peer.bytes(qos + 8, 1), vec![0xb]);
     assert_eq!(peer.bytes(peer.u32(qos + 16), 15), b"synthetic-lobby");
     assert_eq!(peer.call("XNetQosRelease", &[qos]), 0);

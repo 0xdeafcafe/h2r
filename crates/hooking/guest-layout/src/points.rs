@@ -500,6 +500,30 @@ points! { ALL;
     /// refers to, their object handles, the payload's size and bytes, and
     /// a context word. A sixth register argument (EAX) is not read here.
     SIM_EVENT_GENERATE @ 0x000b_5a70: [fn(kind: stack 0, references: stack 1, objects: stack 2, size: stack 3, payload: stack 4, context: stack 5) ret 24], Optional; "docs/game/notes/ai-networking.md";
+    /// Populate the simulation registry and return the two occupied counts.
+    SIM_REGISTER_REPLICATION_TYPES @ 0x0008_2240: [fn(registry: eax, event_count: ecx, entity_count: stack 0) ret 4], Optional; "docs/game/notes/creature-entity.md";
+    /// Choose an entity type for an object's loaded definition tag.
+    SIM_OBJECT_ENTITY_TYPE @ 0x000b_5990: [fn(definition: eax, root: edx) -> eax ret 0], Optional; "docs/game/notes/creature-entity.md";
+    /// Enroll a host object and bind its new entity to it.
+    SIM_ENROLL_OBJECT @ 0x000a_7870: [fn(object: stack 0) ret 4], Optional; "docs/game/notes/creature-entity.md";
+    /// Collect and distribute the entity database's pending dirty masks.
+    SIM_ENTITY_COLLECT_UPDATES @ 0x0008_a090: [fn(database: stack 0) ret 4], Optional; "docs/game/notes/creature-entity.md";
+    /// Compute an entity creation's priority and payload size for a view.
+    SIM_ENTITY_CREATION_RELEVANCE @ 0x0008_a460: [fn(database: ecx, entity: stack 0, mask: stack 1, view: stack 2, priority: stack 3, bits: stack 4) ret 20], Optional; "docs/game/notes/creature-entity.md";
+    /// Compute update priority with optional distance and period outputs.
+    SIM_ENTITY_UPDATE_RELEVANCE @ 0x000a_bac0: [fn(distance: eax, record: stack 0, context: stack 1, period: stack 2) -> xmm0 ret 12], Optional; "docs/game/notes/creature-entity.md";
+    /// Append one entity update operation to a peer view's replication batch.
+    SIM_VIEW_WRITE_ENTITY_UPDATE @ 0x0009_89f0: [fn(stream: eax, slot: ecx, view: stack 0, context: stack 1, reserve: stack 2) -> al ret 12], Optional; "docs/game/notes/creature-entity.md";
+    /// The object entity adapter that creates and binds a local replica.
+    SIM_OBJECT_CREATE_REPLICA @ 0x000a_5a60: [fn(definition: ecx, record: stack 0, creation_size: stack 1, creation: stack 2, mask: stack 3, state_size: stack 4, state: stack 5) -> al ret 24], Optional; "docs/game/notes/creature-entity.md";
+    /// Initialize an object placement record from a local definition datum.
+    CREATURE_PROBE_PLACEMENT_NEW @ 0x000b_7930: [fn(placement: esi, definition: stack 0, owner: stack 1, source: stack 2) ret 12], Optional; "docs/game/notes/creature-entity.md";
+    /// Allocate and place an object from a placement record.
+    CREATURE_PROBE_OBJECT_NEW @ 0x000b_7b40: [fn(placement: stack 0) -> eax ret 4], Optional; "docs/game/notes/creature-entity.md";
+    /// Apply an object transform and update its placement in the world.
+    CREATURE_PROBE_OBJECT_POSITION @ 0x000b_75a0: [fn(position: eax, forward: ecx, up: edx, object: stack 0, a: stack 1, b: stack 2) ret 12], Optional; "docs/game/notes/creature-entity.md";
+    /// Select replica physics for an object at its initial placement.
+    CREATURE_PROBE_REPLICA_PHYSICS @ 0x000b_9b90: [fn(replica: edx, object: stack 0) ret 4], Optional; "docs/game/notes/creature-entity.md";
     SCRIPT_UPDATE @ 0x0020_9310: [opaque], Optional; "docs/engine/engine-map.md";
     EFFECT_PART_CREATE @ 0x0017_a8a0: [opaque], Optional; "docs/engine/engine-map.md";
     PARTICLE_SYSTEM_UPDATE @ 0x0024_7140: [opaque], Optional; "docs/engine/engine-map.md";
@@ -1132,7 +1156,17 @@ points! { ALL;
     /// The host's answer to a join request (session in EAX, request in
     /// EDI): 0 accepts, 3 refuses unless the session state (`S+0x741c`)
     /// is 5 (the lobby), 2 for an invite-only session, 4 when full.
-    SESSION_JOIN_CHECK @ 0x0006_2fe0: [fn(session: eax, request: edi) -> eax ret 0], Optional; "docs/live/live-coop.md";
+    SESSION_JOIN_CHECK @ 0x0006_2fe0: [fn(session: eax, request: edi) -> eax ret 0]; "docs/live/live-coop.md";
+    /// Build the shared game description sent in LAN discovery and Live QoS.
+    SESSION_DESCRIBE @ 0x0006_4d70: [fn(description: stack 0) -> al ret 4]; "docs/game/notes/creature-entity.md";
+    /// Validate a host description before connecting. The first failure reason
+    /// lives at context +0x104. Both the browser and accepted invites call it.
+    SESSION_CHECK_DESCRIPTION @ 0x0006_f2b0: [fn(description: esi, context: edi, players: stack 0) ret 4]; "docs/game/notes/creature-entity.md";
+    /// Encode message 8, including its 16-bit version word.
+    SESSION_WRITE_JOIN_REQUEST @ 0x000a_cc20: [fn(stream: stack 0, size: stack 1, message: stack 2) ret 12]; "docs/game/notes/creature-entity.md";
+    /// Dispatch decoded message 8 to its session before checking or queueing
+    /// the inner request.
+    SESSION_RECEIVE_JOIN_REQUEST @ 0x0009_4100: [fn(network: ecx, message: esi, peer: stack 0) ret 4]; "docs/game/notes/creature-entity.md";
     /// Sync-server: start sending the game state to a joining client's
     /// view (EAX): compress the block and queue the join and state pieces
     /// ahead of its updates. AL 1 when queued.

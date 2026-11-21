@@ -95,6 +95,8 @@ pub struct Core {
     pub health_on: bool,
     /// The bots are installed (their nav meshes may be built at boot).
     pub bots_on: bool,
+    /// The slot-17 probe was selected for this plan.
+    pub creature_probe: bool,
 }
 
 /// Registers everything from the telemetry hooks to the touch glue.
@@ -109,6 +111,21 @@ pub(crate) fn register_core_film(
     non_player: bool,
 ) -> anyhow::Result<Core> {
     let rt: &Runtime = i.rt;
+    let creature_probe = features
+        .add(&crate::actor_net::creature::CreatureProbe)
+        .map_err(|e| anyhow::anyhow!("creature-probe: {e}"))?;
+    let replication_version = live_proto::replication::local(creature_probe);
+    if film.as_ref().is_none_or(|film| film.uses_replication_admission()) {
+        let admission = features
+            .add(&crate::replication_admission::ReplicationAdmission::new(replication_version))
+            .map_err(|e| anyhow::anyhow!("replication admission: {e}"))?;
+        anyhow::ensure!(admission, "replication admission must be enabled");
+        if let Some(live) = &i.live {
+            live.set_replication_version(replication_version);
+        }
+    } else {
+        anyhow::ensure!(!creature_probe, "creature probe requires replication admission");
+    }
     let config = i.telemetry.unwrap_or_else(|error| {
         eprintln!("live telemetry transport disabled: {error}");
         telemetry::TelemetryConfig::default()
@@ -302,7 +319,16 @@ pub(crate) fn register_core_film(
     // look into player one's facing, and the layout from player one's
     // seat and weapon. Idle while no touch controls show.
     touch_glue::install(features).context("installing the touch glue")?;
-    Ok(Core { telemetry, ui_navigation, skulls_on, skulls_mp_on, skulls_custom_on, health_on, bots_on })
+    Ok(Core {
+        telemetry,
+        ui_navigation,
+        skulls_on,
+        skulls_mp_on,
+        skulls_custom_on,
+        health_on,
+        bots_on,
+        creature_probe,
+    })
 }
 
 /// The agent API's way in.

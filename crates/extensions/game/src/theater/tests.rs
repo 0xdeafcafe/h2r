@@ -212,6 +212,8 @@ fn sealed_film_reinstalls_the_recorders_telemetry_and_impact_hook_chains() {
         let header = Reader::open(&path).unwrap().header;
         assert_eq!(header.telemetry_hooks, Some(hooks));
         assert_eq!(header.render_hooks, Some(film::RenderHooks::Slim));
+        let switches = hooks::Switches::parse(&header.features).unwrap();
+        assert!(switches.feature(crate::replication_admission::FEATURE, false));
 
         // A desktop module provides every original, including functions
         // the host's image did not generate. Replay keeps the sealed plan.
@@ -239,6 +241,7 @@ fn sealed_film_reinstalls_the_recorders_telemetry_and_impact_hook_chains() {
             ..host_facts()
         }).unwrap().unwrap();
         assert_eq!(desktop.render_hooks(), film::RenderHooks::Slim);
+        assert!(desktop.uses_replication_admission());
         assert_eq!(captured, plan(&desktop, TelemetryConfig::playback()));
         let missing_damage = Facts {
             telemetry_hooks: TelemetryHooks {
