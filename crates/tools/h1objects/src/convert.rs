@@ -728,7 +728,7 @@ fn add_point_markers(model: &mut h1_assets::models::h1::Model, points: &[Powered
 pub const DIALOGUE_FIELD: &str = "udlg_ref_8c";
 
 /// A rebuilt unit's material effects (`obje +0x54`, `foot`).
-pub const FOOT_FIELD: &str = "unit.obje.foot_ref_54";
+pub const FOOT_FIELD: &str = "unit.obje.material_effects";
 
 /// How the [`Converter`] builds tags.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -2436,13 +2436,13 @@ impl<'a> Converter<'a> {
         let mut record =
             tags::defs::from_built(d, &root).map_err(|e| Error::Invalid(e.to_string()))?;
         for (at, field) in [
-            (0x1a0, "sound_ref_dc"),
-            (0x1b0, "sound_ref_e4"),
-            (0x1c0, "effect_ref_ec"),
-            (0x1d0, "effect_ref_f4"),
-            (0x1e0, "effect_ref_fc"),
-            (0x1f0, "effect_ref_104"),
-            (0x20c, "effect_ref_110"),
+            (0x1a0, "open"),
+            (0x1b0, "close"),
+            (0x1c0, "opened"),
+            (0x1d0, "closed"),
+            (0x1e0, "depowered"),
+            (0x1f0, "repowered"),
+            (0x20c, "delay_effect"),
         ] {
             let Some(id) = h1::reference(self.h1, bytes, at) else {
                 continue;
@@ -2591,9 +2591,9 @@ impl<'a> Converter<'a> {
         let points: Vec<_> = powered.into_iter().map(|p| p.point).collect();
         let weapons = self.unit_weapons(b, &mut rep)?;
         let mut references = Vec::new();
-        for (path, at) in [("snd_ref_284", 0x3b0), ("ref_28c", 0x3c0),
-                           ("foot_ref_294", 0x3d0), ("ref_29c", 0x3e0),
-                           ("unit.effe_ref_c4", 0x188), ("unit.ref_164", 0x288)] {
+        for (path, at) in [("suspension_sound", 0x3b0), ("crash_sound", 0x3c0),
+                           ("foot_ref_294", 0x3d0), ("special_effect", 0x3e0),
+                           ("unit.integrated_light_toggle", 0x188), ("unit.melee_damage", 0x288)] {
             let Some(id) = h1::reference(self.h1, b, at) else { continue };
             let t = self.h1_tag(id)?;
             let group = t.group.0.to_be_bytes();

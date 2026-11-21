@@ -96,9 +96,9 @@ fn text(x: &Record, field: &str, strings: &[Option<String>]) -> String {
 }
 
 fn word(x: &Record, field: &str) -> u32 {
-    match x.at(field) {
-        Some(Val::Bytes(b)) if b.len() == 4 => u32::from_le_bytes(b[..4].try_into().unwrap()),
-        v => panic!("{field}: {v:?}"),
+    match x.bytes(field, 4) {
+        Some(b) => u32::from_le_bytes(b[..4].try_into().unwrap()),
+        None => panic!("{field}: no 4 plain bytes"),
     }
 }
 
@@ -203,10 +203,10 @@ impl Entry {
     fn of(seat: &Record) -> Self {
         let f = |n| f32::from_bits(word(seat, n));
         Self {
-            radius: f("unknown_98"),
-            facing: f("unknown_9c"),
-            look: f("unknown_a0"),
-            near: f("unknown_a4"),
+            radius: f("entry_radius"),
+            facing: f("entry_marker_cone_angle"),
+            look: f("entry_marker_facing_angle"),
+            near: f("maximum_relative_velocity"),
         }
     }
 }
@@ -257,7 +257,7 @@ fn admitted(m: Frame, e: Entry, bounds: [[f32; 2]; 3], eye: f32, radius: f32) ->
 
 /// The standing eye height of a rider (`bipd +0x218`).
 fn eye_height(bipd: &Record) -> f32 {
-    f32::from_bits(word(bipd, "unknown_218"))
+    f32::from_bits(word(bipd, "standing_camera_height"))
 }
 
 #[test]
@@ -288,7 +288,7 @@ fn every_seat_admits_a_rider_at_its_entry() {
             if !seats.contains(&label.as_str()) {
                 continue;
             }
-            let m = fr[&text(x, "string_c", &strings)];
+            let m = fr[&text(x, "entry_marker_name", &strings)];
             let e = Entry::of(x);
             if label == "warthog_d" {
                 role_facing = Some(e.facing);
@@ -324,7 +324,7 @@ fn every_seat_admits_a_rider_at_its_entry() {
                 continue;
             }
             let label = text(x, "label", &[]);
-            let entry = text(x, "string_c", &[]);
+            let entry = text(x, "entry_marker_name", &[]);
             // An empty entry marker is the object's origin, facing its forward.
             let m = fr.get(&entry).copied().unwrap_or(Frame { at: [0.0; 3], forward: [1.0, 0.0, 0.0] });
             let e = Entry::of(x);

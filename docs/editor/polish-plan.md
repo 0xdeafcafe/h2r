@@ -512,8 +512,8 @@ offset labels.
 
 Assembly's retail Xbox plugins serve as a reference with permission
 from one of Assembly's creators, the owner of this repository. Each
-reference-sourced name is written in our naming style. Its evidence
-includes `A Halo2Xbox <filename>`, and its description is written here.
+reference-sourced name is written in our naming style, with no source
+label, and its description is written here.
 The [field-name research note](notes/tag-field-names.md) records the
 permission, coverage and layout disagreements.
 

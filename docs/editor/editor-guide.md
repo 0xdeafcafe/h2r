@@ -1151,9 +1151,8 @@ packages, or a converted Halo 1 map), then select the **Tags** tab beside **Scen
 
 Hover a tag field to read its description in the tooltip and the detail
 row. The editor includes these labels. An offset such as `+0x14` means
-the field has no established name. The evidence line identifies a retail
-reference with `A Halo2Xbox`, an engine reader with `E`, or a disc check
-with `V`. See [Field names](editor.md#field-names).
+the field has no established name. The evidence line, when there is one,
+identifies an engine reader with `E` or a disc check with `V`. See [Field names](editor.md#field-names).
 
 How to change things:
 

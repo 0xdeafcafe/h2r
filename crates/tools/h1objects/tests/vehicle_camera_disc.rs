@@ -90,9 +90,9 @@ fn text(x: &Record, field: &str, strings: &[Option<String>]) -> String {
 }
 
 fn word(x: &Record, field: &str) -> u32 {
-    match x.at(field) {
-        Some(Val::Bytes(b)) if b.len() == 4 => u32::from_le_bytes(b[..4].try_into().unwrap()),
-        v => panic!("{field}: {v:?}"),
+    match x.bytes(field, 4) {
+        Some(b) => u32::from_le_bytes(b[..4].try_into().unwrap()),
+        None => panic!("{field}: no 4 plain bytes"),
     }
 }
 
@@ -118,7 +118,7 @@ fn points(t: &Record) -> Vec<(Vec<f32>, Vec<f32>)> {
 /// The track a seat names (its first), if any.
 fn seat_track(seat: &Record) -> Option<TagId> {
     match seat.at(SEAT_CAMERA_TRACKS) {
-        Some(Val::Block(b)) => b.first().and_then(|x| reference(x, "ref_0")),
+        Some(Val::Block(b)) => b.first().and_then(|x| reference(x, "track")),
         v => panic!("{SEAT_CAMERA_TRACKS}: {v:?}"),
     }
 }

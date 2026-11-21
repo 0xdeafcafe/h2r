@@ -396,19 +396,20 @@ design use `theme::bounded_list`.
 ### Where names come from
 
 Names, descriptions, units, titles and effects live in
-`crates/formats/tags/src/defs/*.txt`, each with its evidence in the
-line's meaning text ([tag-definitions.md](../formats/tag-definitions.md),
+`crates/formats/tags/src/defs/*.txt`, with any evidence in the line's
+meaning text ([tag-definitions.md](../formats/tag-definitions.md),
 "Where the names come from"). The sources, in order of weight:
 
 1. **E**: the engine's reader, by guest address.
 2. **V**: a check on the owner's disc.
-3. **A Halo2Xbox `<file>`**, **A Halo2 `<file>`**: the retail Halo 2
-   Xbox plugin of Assembly, or the retail Halo 2 Vista plugin that
-   Assembly reads for an Xbox map when `Halo2Xbox` has none, read as a
-   reference under the permission and at the revision recorded in
-   [notes/tag-field-names.md](notes/tag-field-names.md). A name is our
-   own `snake_case` word and a description is our own sentence. No plugin
-   file, name list, option list or comment text is committed.
+3. **Assembly's retail layouts**: the retail Halo 2 Xbox plugins, or the
+   retail Halo 2 Vista plugin Assembly reads for an Xbox map when
+   `Halo2Xbox` has none, read as a reference under the permission and at
+   the revision recorded in [notes/tag-field-names.md](notes/tag-field-names.md).
+   A name is our own `snake_case` word and a description is our own
+   sentence. Neither the definition nor the editor labels a name with its
+   source. No plugin file, name list, option list or comment text is
+   committed.
 4. **D**: a choice made here.
 
 Projects built from leaked builds are not a source for anything.
@@ -428,9 +429,8 @@ A lane adds names to one group like this:
    disagreement in width, stride or type, and how many hints each other
    retail game gives.
 3. For each field whose offset and width agree, write the line in
-   `defs/<group>.txt`: our name, `doc="..."`, `unit=`, and `-- A
-   Halo2Xbox <file>` (or `A Halo2 <file>`) after any E or V evidence. Fields tile the span
-   they replace exactly. A disagreement keeps our layout and gets a row
+   `defs/<group>.txt`: our name, `doc="..."`, `unit=`, and any E or V
+   evidence. Fields tile the span they replace exactly. A disagreement keeps our layout and gets a row
    in the note's table.
 4. `cargo test -p tags defs registry` checks tiling, agreement with the
    schema and each attribute's words.
@@ -440,8 +440,10 @@ Evidence **Code**: the note's entry "the Halo 2 fallback folder and
 other retail games" finds the weapon, equipment, biped, scenery,
 machine, crate and damage plugins in Assembly's `Halo2` folder, which
 Assembly's engine table names as the retail Xbox build's fallback. A
-field a converter writes by its byte-valued path keeps its unknown
-name; the note counts those per group.
+field a converter writes is named like any other: the converter writes
+its raw words over the typed fields
+([tag-definitions.md](../formats/tag-definitions.md), "Raw bytes into
+typed fields"), so its output does not change.
 
 ### The editor's socket API
 

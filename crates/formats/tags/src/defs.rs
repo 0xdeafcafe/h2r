@@ -127,7 +127,7 @@ pub struct StructDef {
 
 impl FieldDef {
     /// A field whose type is known but whose role is not: by convention
-    /// its name ends in `_<offset in hex>` (`string_1c`, `foot_ref_54`).
+    /// its name ends in `_<offset in hex>` (`string_1c`, `phys_ref_18`).
     pub fn typed_only(&self) -> bool {
         self.name.ends_with(&format!("_{:x}", self.offset))
     }
@@ -142,11 +142,8 @@ pub struct FieldDef {
     pub name: String,
     /// Type.
     pub kind: Kind,
-    /// What it means and the evidence for the name (`E` engine code, `V`
-    /// checked on the retail disc, `D` a choice made here). The marker
-    /// `A Halo2Xbox <filename>` cites a layout observation in the named
-    /// retail Xbox plugin, `A Halo2 <filename>` in the retail plugin that
-    /// Assembly reads for an Xbox map when `Halo2Xbox` has none.
+    /// What it means, with any evidence for it (`E` engine code, `V`
+    /// checked on the retail disc, `D` a choice made here).
     pub meaning: String,
     /// Description shown by editors, in the definition author's own words.
     pub doc: Option<String>,

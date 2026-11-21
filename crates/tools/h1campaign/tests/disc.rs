@@ -2108,7 +2108,7 @@ fn a10_cryotubes_are_placed_and_built_from_their_definition() {
         };
         assert_eq!(r.at("unit.obje.object_type"), Some(&Val::Enum(1)));
         assert_eq!(r.at("vehicle_type"), Some(&Val::Enum(6)), "turret");
-        let Some(Val::Block(seats)) = r.at("block_1c8") else {
+        let Some(Val::Block(seats)) = r.at("seats") else {
             panic!()
         };
         assert_eq!(seats.len(), 1, "pinned {pinned}: one seat");
@@ -2117,7 +2117,7 @@ fn a10_cryotubes_are_placed_and_built_from_their_definition() {
             Some(&Val::String(Str::Text("c_turret_ap_d".into())))
         );
         assert_eq!(
-            seats[0].get("string_8"),
+            seats[0].get("seat_marker_name"),
             Some(&Val::String(Str::Text("driver".into())))
         );
         let model = key(r.at("unit.obje.model")).expect("a model");

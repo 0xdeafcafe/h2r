@@ -1,60 +1,60 @@
 # Model particles use the property curve from effe.txt. Their mesh and
 # vertex elements have the same strides and attributes as a decorator's.
 group PRTM 0xdc align 4
-  0x0 flags32 particle_flags doc="Switches that control the model particle." -- A Halo2Xbox PRTM.xml
-  0x4 enum32 orientation_mode doc="Selects how the particle mesh is oriented." -- A Halo2Xbox PRTM.xml
+  0x0 flags32 particle_flags doc="Switches that control the model particle."
+  0x4 enum32 orientation_mode doc="Selects how the particle mesh is oriented."
   0x8 unknown 0x10
-  0x18 tagref shader doc="Shader used to draw the model particle." -- A Halo2Xbox PRTM.xml
-  0x20 struct scale_x property doc="Property curve for mesh scale along the X axis." -- A Halo2Xbox PRTM.xml
-  0x30 struct scale_y property doc="Property curve for mesh scale along the Y axis." -- A Halo2Xbox PRTM.xml
-  0x40 struct scale_z property doc="Property curve for mesh scale along the Z axis." -- A Halo2Xbox PRTM.xml
-  0x50 struct rotation property doc="Controls the rotation of the particle mesh." -- A Halo2Xbox PRTM.xml
+  0x18 tagref shader doc="Shader used to draw the model particle."
+  0x20 struct scale_x property doc="Property curve for mesh scale along the X axis."
+  0x30 struct scale_y property doc="Property curve for mesh scale along the Y axis."
+  0x40 struct scale_z property doc="Property curve for mesh scale along the Z axis."
+  0x50 struct rotation property doc="Controls the rotation of the particle mesh."
   0x60 unknown 0x10
-  0x70 block attachment_locations 0x4 align 4 doc="Named attachment points for child particle systems." -- A Halo2Xbox PRTM.xml
-    0x0 string marker doc="Identifies the marker used by this attachment point." -- A Halo2Xbox PRTM.xml
-  0x78 block child_systems 0x38 align 4 doc="Particle systems attached to the model." -- A Halo2Xbox PRTM.xml
-    0x0 tagref particle doc="Selects the particle emitted by the child system." -- A Halo2Xbox PRTM.xml
-    0x8 i32 attachment_index doc="Selects an entry from the attachment locations." -- A Halo2Xbox PRTM.xml
-    0xc enum16 coordinate_space doc="Selects the coordinate space for the child system." -- A Halo2Xbox PRTM.xml
-    0xe enum16 environment_filter doc="Restricts the system to its selected environment." -- A Halo2Xbox PRTM.xml
-    0x10 enum16 disposition doc="Selects the disposition for the child system." -- A Halo2Xbox PRTM.xml
-    0x12 enum16 camera_filter doc="Selects the camera mode for the child system." -- A Halo2Xbox PRTM.xml
-    0x14 i16 sort_bias doc="Adjusts the draw order of the child system." -- A Halo2Xbox PRTM.xml
-    0x16 flags16 system_flags doc="Switches specific to the attached system." -- A Halo2Xbox PRTM.xml
-    0x18 f32 near_lod_distance doc="Distance for the near detail transition." -- A Halo2Xbox PRTM.xml
-    0x1c f32 near_fade_width doc="Width of the transition at the near detail threshold." -- A Halo2Xbox PRTM.xml
+  0x70 block attachment_locations 0x4 align 4 doc="Named attachment points for child particle systems."
+    0x0 string marker doc="Identifies the marker used by this attachment point."
+  0x78 block child_systems 0x38 align 4 doc="Particle systems attached to the model."
+    0x0 tagref particle doc="Selects the particle emitted by the child system."
+    0x8 i32 attachment_index doc="Selects an entry from the attachment locations."
+    0xc enum16 coordinate_space doc="Selects the coordinate space for the child system."
+    0xe enum16 environment_filter doc="Restricts the system to its selected environment."
+    0x10 enum16 disposition doc="Selects the disposition for the child system."
+    0x12 enum16 camera_filter doc="Selects the camera mode for the child system."
+    0x14 i16 sort_bias doc="Adjusts the draw order of the child system."
+    0x16 flags16 system_flags doc="Switches specific to the attached system."
+    0x18 f32 near_lod_distance doc="Distance for the near detail transition."
+    0x1c f32 near_fade_width doc="Width of the transition at the near detail threshold."
     0x20 unknown 0x4
-    0x24 f32 far_lod_distance doc="Distance for the far detail transition." -- A Halo2Xbox PRTM.xml
-    0x28 f32 far_fade_width doc="Width of the transition at the far detail threshold." -- A Halo2Xbox PRTM.xml
+    0x24 f32 far_lod_distance doc="Distance for the far detail transition."
+    0x28 f32 far_fade_width doc="Width of the transition at the far detail threshold."
     0x2c unknown 0x4
-    0x30 block emitters 0xb8 align 4 doc="Emitters belonging to the attached system." -- A Halo2Xbox PRTM.xml
+    0x30 block emitters 0xb8 align 4 doc="Emitters belonging to the attached system."
       0x0 unknown 0x8
-      0x8 struct emission_rate property doc="Controls how many particles the emitter produces per tick." -- A Halo2Xbox PRTM.xml
-      0x18 struct lifespan property doc="Controls particle lifetime in seconds." -- A Halo2Xbox PRTM.xml
-      0x28 struct launch_speed property doc="Controls the speed given to a new particle." -- A Halo2Xbox PRTM.xml
-      0x38 struct spin_rate property doc="Controls how rapidly a particle turns." -- A Halo2Xbox PRTM.xml
-      0x48 struct particle_size property doc="Controls the size of an emitted particle." -- A Halo2Xbox PRTM.xml
-      0x58 struct particle_tint property doc="Determines the colour applied to an emitted particle." -- A Halo2Xbox PRTM.xml
-      0x68 struct opacity property doc="Controls the alpha of an emitted particle." -- A Halo2Xbox PRTM.xml
-      0x78 enum32 emission_shape doc="Selects the emitter's spatial distribution." -- A Halo2Xbox PRTM.xml
-      0x7c struct emission_radius property doc="Sets the radius of the emission region." -- A Halo2Xbox PRTM.xml
-      0x8c struct emission_angle property doc="Sets the emitter's angular spread." -- A Halo2Xbox PRTM.xml
-      0x9c f32[3] position_offset doc="Displaces the emitter from its attachment point." -- A Halo2Xbox PRTM.xml
-      0xa8 f32[2] direction_angles doc="Sets the direction of emission relative to the attachment." -- A Halo2Xbox PRTM.xml
+      0x8 struct emission_rate property doc="Controls how many particles the emitter produces per tick."
+      0x18 struct lifespan property doc="Controls particle lifetime in seconds."
+      0x28 struct launch_speed property doc="Controls the speed given to a new particle."
+      0x38 struct spin_rate property doc="Controls how rapidly a particle turns."
+      0x48 struct particle_size property doc="Controls the size of an emitted particle."
+      0x58 struct particle_tint property doc="Determines the colour applied to an emitted particle."
+      0x68 struct opacity property doc="Controls the alpha of an emitted particle."
+      0x78 enum32 emission_shape doc="Selects the emitter's spatial distribution."
+      0x7c struct emission_radius property doc="Sets the radius of the emission region."
+      0x8c struct emission_angle property doc="Sets the emitter's angular spread."
+      0x9c f32[3] position_offset doc="Displaces the emitter from its attachment point."
+      0xa8 f32[2] direction_angles doc="Sets the direction of emission relative to the attachment."
       0xb0 unknown 0x8
-  0x80 block meshes 0x8 align 4 doc="Index ranges for the named particle meshes." -- A Halo2Xbox PRTM.xml
-    0x0 struct mesh indexed_mesh_part doc="Names the mesh and locates its indices." -- A Halo2Xbox PRTM.xml
-  0x88 block vertices 0x38 align 4 doc="Vertex attributes for the particle meshes." -- A Halo2Xbox PRTM.xml
-    0x0 struct vertex decorator_mesh_vertex doc="Geometry and texture coordinates at one vertex." -- A Halo2Xbox PRTM.xml
-  0x90 block indices 0x2 align 4 doc="Vertex indices shared by the particle meshes." -- A Halo2Xbox PRTM.xml
-    0x0 i16 vertex_index doc="Selects a mesh vertex." -- A Halo2Xbox PRTM.xml
+  0x80 block meshes 0x8 align 4 doc="Index ranges for the named particle meshes."
+    0x0 struct mesh indexed_mesh_part doc="Names the mesh and locates its indices."
+  0x88 block vertices 0x38 align 4 doc="Vertex attributes for the particle meshes."
+    0x0 struct vertex decorator_mesh_vertex doc="Geometry and texture coordinates at one vertex."
+  0x90 block indices 0x2 align 4 doc="Vertex indices shared by the particle meshes."
+    0x0 i16 vertex_index doc="Selects a mesh vertex."
   0x98 unknown 0x8
-  0xa0 raw block_raw doc="Locates the external geometry block in its resource file." -- A Halo2Xbox PRTM.xml
-  0xa4 rawsize block_size of=0xa0 doc="Length in bytes of the external geometry block." -- A Halo2Xbox PRTM.xml
-  0xa8 u32 section_struct_size doc="Length in bytes of the section records in the geometry block." -- A Halo2Xbox PRTM.xml
-  0xac u32 resource_area_size doc="Length in bytes of the geometry block's resource area." -- A Halo2Xbox PRTM.xml
-  0xb0 block resources 0x10 align 4 doc="Describes the sections of the external geometry data." -- A Halo2Xbox PRTM.xml
-    0x0 struct resource block_resource doc="Locates one resource within the geometry block." -- A Halo2Xbox PRTM.xml
-  0xb8 datum owner doc="Tag that owns the geometry block." -- A Halo2Xbox PRTM.xml
-  0xbc i16 runtime_block_offset doc="Relative location of the geometry section for this block." -- A Halo2Xbox PRTM.xml
+  0xa0 raw block_raw doc="Locates the external geometry block in its resource file."
+  0xa4 rawsize block_size of=0xa0 doc="Length in bytes of the external geometry block."
+  0xa8 u32 section_struct_size doc="Length in bytes of the section records in the geometry block."
+  0xac u32 resource_area_size doc="Length in bytes of the geometry block's resource area."
+  0xb0 block resources 0x10 align 4 doc="Describes the sections of the external geometry data."
+    0x0 struct resource block_resource doc="Locates one resource within the geometry block."
+  0xb8 datum owner doc="Tag that owns the geometry block."
+  0xbc i16 runtime_block_offset doc="Relative location of the geometry section for this block."
   0xbe unknown 0x1e
