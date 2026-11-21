@@ -15,15 +15,29 @@
 
 use std::path::{Path, PathBuf};
 
-/// Where the `h2` binary is: the one given, else `$H2_BIN`, else cargo's
-/// install directory (`~/.cargo/bin/h2`, where `cargo install` puts it),
-/// else `h2` on the `PATH`.
+/// Where the `h2` binary is: the one given, else `$H2_BIN`, else the `h2`
+/// beside the editor's own executable (a checkout's `target/<profile>/h2`
+/// after `cargo build -p cli --bin h2`), else cargo's install directory
+/// (`~/.cargo/bin/h2`, where `cargo install` puts it), else `h2` on the
+/// `PATH`, else the copy the lab host keeps (`docs/runtime/lab.md`).
 pub fn find_h2(given: Option<&Path>) -> Option<PathBuf> {
+    find_h2_from(given, std::env::current_exe().ok().as_deref())
+}
+
+/// [`find_h2`] with the editor's executable passed in.
+pub fn find_h2_from(given: Option<&Path>, exe: Option<&Path>) -> Option<PathBuf> {
     if let Some(p) = given.filter(|p| !p.as_os_str().is_empty()) {
         return Some(p.to_owned());
     }
     if let Some(p) = std::env::var_os("H2_BIN").filter(|v| !v.is_empty()) {
         return Some(PathBuf::from(p));
+    }
+    if let Some(p) = exe
+        .and_then(Path::parent)
+        .map(|d| d.join("h2"))
+        .filter(|p| p.is_file())
+    {
+        return Some(p);
     }
     let cargo_home = std::env::var_os("CARGO_HOME")
         .map(PathBuf::from)
@@ -33,11 +47,17 @@ pub fn find_h2(given: Option<&Path>) -> Option<PathBuf> {
     {
         return Some(p);
     }
-    std::env::var_os("PATH").and_then(|path| {
-        std::env::split_paths(&path)
-            .map(|d| d.join("h2"))
-            .find(|p| p.is_file())
-    })
+    std::env::var_os("PATH")
+        .and_then(|path| {
+            std::env::split_paths(&path)
+                .map(|d| d.join("h2"))
+                .find(|p| p.is_file())
+        })
+        .or_else(|| {
+            let home = PathBuf::from(std::env::var_os("HOME")?);
+            let lab = home.join("Library/Caches/h2recomp/lab/bin/h2");
+            lab.is_file().then_some(lab)
+        })
 }
 
 /// What to start.
@@ -170,6 +190,22 @@ fn is_socket(p: &Path) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn find_h2_takes_the_binary_beside_the_editor() {
+        let dir = std::env::temp_dir().join(format!("h2-find-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let h2 = dir.join("h2");
+        std::fs::write(&h2, b"").unwrap();
+        let exe = dir.join("h2-editor");
+        if std::env::var_os("H2_BIN").is_some_and(|v| !v.is_empty()) {
+            return; // $H2_BIN wins over the editor's directory
+        }
+        assert_eq!(super::find_h2_from(None, Some(&exe)), Some(h2.clone()));
+        let given = dir.join("named-h2");
+        assert_eq!(super::find_h2_from(Some(&given), Some(&exe)), Some(given));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     use super::*;
 
     #[test]

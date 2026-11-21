@@ -471,8 +471,10 @@ The quickest way: press **F5** (or **Play** in the **Game** tab beside the
 log). The game opens in its own window straight into the map, with your
 edits, saved or not; nothing is saved for it. Pick where you start under
 **Spawn**: the level's own spawn, under the editor camera, or at the
-selected placement. **Shift+F5** closes that game. Play needs `h2`
-installed (`~/.cargo/bin/h2`, or name it in the Game tab) and the disc.
+selected placement. **Shift+F5** closes that game. Play needs `h2` and the
+disc. Running the editor from a checkout with `cargo run`, build `h2` beside
+it with `cargo build --release -p cli --bin h2`; otherwise install it
+(`~/.cargo/bin/h2`) or name it in the Game tab.
 
 While the game runs, the editor stays paired with it:
 

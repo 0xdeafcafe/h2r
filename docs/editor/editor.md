@@ -670,8 +670,10 @@ H2_AGENT=<cache>/h2recomp/editor-<pid>-<n>.sock H2_MAP_DIR=$TMPDIR/h2-editor-pla
   h2 play <disc> --data <data root> --level <map> --title 'Halo 2 - <map> (h2-editor)'
 ```
 
-- `h2` is the panel's path, else `$H2_BIN`, else `~/.cargo/bin/h2`, else
-  `h2` on the `PATH` (`launch::find_h2`). The editor never builds it.
+- `h2` is the panel's path, else `$H2_BIN`, else the `h2` beside the
+  editor's executable (a checkout's `target/<profile>/h2`), else
+  `~/.cargo/bin/h2`, else `h2` on the `PATH`, else the lab host's copy
+  (`launch::find_h2`). The editor never builds it.
 - The disc is the open disc image, else `H2_DISC` or the repository's
   `disc/halo2.iso` (`editor_core::default_disc`). For a Map Pack map this
   is still the Halo 2 disc: `h2 play` installs the map pack itself from

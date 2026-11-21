@@ -411,10 +411,10 @@ impl Cx<'_> {
                 }
             }
             Kind::Word => {
-                let mut v = le(&b, 0, 4) as i64;
-                if Drag::<i64, _>::new("##v")
+                let mut v = le(&b, 0, 4) as u64;
+                if Drag::<u64, _>::new("##v")
                     .range(0, 0xffff_ffff)
-                    .display_format(fmt_i("0x%08llx"))
+                    .display_format(fmt_hex("0x%08llx"))
                     .build(ui, &mut v)
                 {
                     self.write(a, (v as u32).to_le_bytes().to_vec(), &f.name);
@@ -503,11 +503,11 @@ impl Cx<'_> {
                 }
             }
             View::Hex => {
-                let mut x = i64::from(v);
+                let mut x = u64::from(v);
                 let hexfmt = format!("0x%0{}llx", 2 * n);
-                if Drag::<i64, _>::new("##v")
-                    .range(0, (1i64 << (8 * n)) - 1)
-                    .display_format(fmt_i(hexfmt.as_str()))
+                if Drag::<u64, _>::new("##v")
+                    .range(0, (1u64 << (8 * n)) - 1)
+                    .display_format(fmt_hex(hexfmt.as_str()))
                     .build(ui, &mut x)
                 {
                     self.write(a, x.to_le_bytes()[..n].to_vec(), &f.name);
@@ -802,8 +802,9 @@ impl Cx<'_> {
 fn fmt_f(s: &str) -> NumericFormat<'_, f32> {
     NumericFormat::new(s).expect("a valid float format")
 }
-fn fmt_i(s: &str) -> NumericFormat<'_, i64> {
-    NumericFormat::new(s).expect("a valid integer format")
+/// Hex conversions are unsigned in C, so hex drags carry `u64`.
+fn fmt_hex(s: &str) -> NumericFormat<'_, u64> {
+    NumericFormat::new(s).expect("a valid hex format")
 }
 
 /// Bytes as space-separated hex.
@@ -833,6 +834,17 @@ pub fn parse_hex(s: &str) -> Option<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn every_display_format_the_inspector_uses_is_valid() {
+        super::fmt_hex("0x%08llx");
+        for n in 1..=4 {
+            super::fmt_hex(&format!("0x%0{}llx", 2 * n));
+        }
+        for f in ["%.2f deg", "%.4f"] {
+            super::fmt_f(f);
+        }
+    }
+
     use super::*;
 
     #[test]

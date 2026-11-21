@@ -148,12 +148,12 @@ impl PlayUi {
                 found
                     .as_ref()
                     .map(|f| format!("h2: {}", f.display()))
-                    .unwrap_or_else(|| "h2 binary (not found: ~/.cargo/bin/h2, $H2_BIN)".into()),
+                    .unwrap_or_else(|| "h2 binary (not found: $H2_BIN, beside the editor, ~/.cargo/bin/h2, PATH)".into()),
             )
             .build();
         if ui.is_item_hovered() {
             ui.tooltip_text(
-                "The h2 binary Play runs. Empty: $H2_BIN, else ~/.cargo/bin/h2, else h2 on the PATH.",
+                "The h2 binary Play runs. Empty: $H2_BIN, else the h2 beside the editor (target/<profile>/h2), else ~/.cargo/bin/h2, else h2 on the PATH.",
             );
         }
         if let Some(l) = &p.log_path {

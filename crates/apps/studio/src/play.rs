@@ -327,7 +327,7 @@ impl Play {
         let session = &app.session;
         let scenario = session.scenario().ok_or("open a map first")?;
         let h2 = launch::find_h2(Some(PathBuf::from(self.h2_path.trim())).as_deref())
-            .ok_or("no h2 binary: install it (cargo install --path crates/apps/cli) or name it in the Game panel")?;
+            .ok_or("no h2 binary: build it beside the editor (cargo build --release -p cli --bin h2), install it (cargo install --path crates/apps/cli), or name it in the Game panel")?;
         let disc = match app.source() {
             Some(editor_core::MapSource::Disc(d)) => Some(d.path().to_owned()),
             _ => editor_core::default_disc(None),
