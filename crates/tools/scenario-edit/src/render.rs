@@ -720,6 +720,12 @@ pub struct Viewport {
     overlays: BTreeMap<LayerId, OverlayGeometry>,
     layers: Layers,
     scene: Option<GpuScene>,
+    /// Each BSP of the open map on the native renderer
+    /// ([`crate::native_view`]). While there are any, they draw the level
+    /// (the scene's world and the grey world are not drawn) and the other
+    /// passes load their colour and depth.
+    native: Vec<crate::native_view::NativeWorld>,
+    lighting: crate::native_view::Lighting,
     target: Option<Target>,
 }
 
@@ -1133,6 +1139,8 @@ impl Viewport {
             overlays: BTreeMap::new(),
             layers: Layers::default(),
             scene: None,
+            native: Vec::new(),
+            lighting: crate::native_view::Lighting::default(),
             target: None,
         }
     }
@@ -1194,6 +1202,46 @@ impl Viewport {
             (buffer, v.len() as u32)
         })
     }
+    /// Draw the level through the native renderer: one world per load, in
+    /// the current Lighting mode. An empty list draws the scene's world
+    /// (or the grey one) again.
+    pub fn set_native(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        loads: &[crate::native_view::NativeLoad],
+    ) {
+        self.native = loads
+            .iter()
+            .map(|l| crate::native_view::NativeWorld::new(device, queue, l, self.lighting))
+            .collect();
+    }
+
+    /// The Lighting mode the native worlds draw in.
+    pub fn lighting(&self) -> crate::native_view::Lighting {
+        self.lighting
+    }
+
+    /// Change the Lighting mode: the worlds of `loads` are uploaded again
+    /// with that mode's images.
+    pub fn set_lighting(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        loads: &[crate::native_view::NativeLoad],
+        lighting: crate::native_view::Lighting,
+    ) {
+        if lighting != self.lighting || self.native.len() != loads.len() {
+            self.lighting = lighting;
+            self.set_native(device, queue, loads);
+        }
+    }
+
+    /// Whether the level draws through the native renderer.
+    pub fn has_native(&self) -> bool {
+        !self.native.is_empty()
+    }
+
     /// Draw the world as grey slope-shaded triangles (no scene).
     pub fn set_world(&mut self, device: &wgpu::Device, tris: &[Tri]) {
         self.world = Self::upload(device, &world_vertices(tris));
@@ -1582,8 +1630,60 @@ impl Viewport {
             }
         }
         let has_overlays = self.overlays.keys().any(|&id| self.layers.visible(id));
+        let native = self.layers.visible(LayerId::Structure) && !self.native.is_empty();
+        let gradient = show_sky && self.scene.is_some() && sky.is_none();
+        // The native world writes its own depth, so the gradient goes
+        // behind it in a pass of its own.
+        if native && gradient {
+            let color = color_attachment(background);
+            let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("scenario viewport gradient"),
+                color_attachments: &color,
+                depth_stencil_attachment: depth_attachment(
+                    wgpu::LoadOp::Clear(1.0),
+                    wgpu::StoreOp::Discard,
+                ),
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_bind_group(0, &self.bind, &[]);
+            pass.set_pipeline(&self.sky);
+            pass.draw(0..3, 0..1);
+        }
+        if native {
+            // What is behind the level goes first: the native worlds
+            // submit their own commands.
+            queue.submit([std::mem::replace(
+                &mut enc,
+                device.create_command_encoder(&Default::default()),
+            )
+            .finish()]);
+            let behind = sky.is_some() || gradient;
+            for (i, world) in self.native.iter_mut().enumerate() {
+                let clear = if i == 0 {
+                    crate::native_view::Clear {
+                        color: (!behind).then_some(CLEAR),
+                        depth: true,
+                    }
+                } else {
+                    crate::native_view::Clear::NONE
+                };
+                world.render(
+                    device,
+                    queue,
+                    &target.color_view,
+                    COLOR_FORMAT,
+                    &target.depth_view,
+                    DEPTH_FORMAT,
+                    target.size,
+                    camera,
+                    clear,
+                );
+            }
+        }
         {
-            let color = color_attachment(if sky.is_some() {
+            let color = color_attachment(if sky.is_some() || native {
                 wgpu::LoadOp::Load
             } else {
                 background
@@ -1592,7 +1692,11 @@ impl Viewport {
                 label: Some("scenario viewport"),
                 color_attachments: &color,
                 depth_stencil_attachment: depth_attachment(
-                    wgpu::LoadOp::Clear(1.0),
+                    if native {
+                        wgpu::LoadOp::Load
+                    } else {
+                        wgpu::LoadOp::Clear(1.0)
+                    },
                     if has_overlays {
                         wgpu::StoreOp::Store
                     } else {
@@ -1604,18 +1708,21 @@ impl Viewport {
                 multiview_mask: None,
             });
             pass.set_bind_group(0, &self.bind, &[]);
-            if show_sky && self.scene.is_some() && sky.is_none() {
+            if gradient && !native {
                 pass.set_pipeline(&self.sky);
                 pass.draw(0..3, 0..1);
             }
             // Solid and cut-out scene batches, then the glyphs, then the
             // see-through batches over them.
-            self.draw_scene(&mut pass, false);
+            self.draw_scene(&mut pass, false, native);
             pass.set_pipeline(&self.pipeline);
             for (id, geometry) in [
                 (LayerId::Structure, &self.world),
                 (LayerId::Markers, &self.markers),
             ] {
+                if native && id == LayerId::Structure {
+                    continue;
+                }
                 let Some((buffer, count)) = geometry.as_ref().filter(|_| self.layers.visible(id))
                 else {
                     continue;
@@ -1623,7 +1730,7 @@ impl Viewport {
                 pass.set_vertex_buffer(0, buffer.slice(..));
                 pass.draw(0..*count, 0..1);
             }
-            self.draw_scene(&mut pass, true);
+            self.draw_scene(&mut pass, true, native);
         }
         if has_overlays {
             let color = color_attachment(wgpu::LoadOp::Load);
@@ -1686,7 +1793,9 @@ impl Viewport {
     }
 
     /// The scene's batches: solid and cut-out ones, or the see-through ones.
-    fn draw_scene(&self, pass: &mut wgpu::RenderPass<'_>, translucent: bool) {
+    /// The world's are left out when the native renderer draws the level
+    /// (`native`).
+    fn draw_scene(&self, pass: &mut wgpu::RenderPass<'_>, translucent: bool, native: bool) {
         let Some(scene) = &self.scene else {
             return;
         };
@@ -1714,7 +1823,7 @@ impl Viewport {
         if let Some(world) = scene
             .world
             .as_ref()
-            .filter(|_| self.layers.visible(LayerId::Structure))
+            .filter(|_| !native && self.layers.visible(LayerId::Structure))
         {
             draw(world, &self.identity, 0..1);
         }

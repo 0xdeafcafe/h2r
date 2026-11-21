@@ -49,6 +49,10 @@ struct Doc {
     /// The textured BSP and the placed objects' models, when the map's art
     /// could be read.
     scene: Option<Arc<Scene>>,
+    /// Each BSP's world for the native renderer, read with the scene
+    /// ([`crate::native_view`]), and why any BSP did not load.
+    native: Arc<Vec<crate::native_view::NativeLoad>>,
+    native_errors: Vec<(usize, String)>,
     /// A new map (no disc base): `source.bytes` is its whole unedited file,
     /// and a package saved from it carries that file as its first layer.
     derived: bool,
@@ -445,6 +449,12 @@ impl Session {
                 &source, name, cache_key, &scenario, &markers, &lit, &mut map, &mut raw,
             )
         });
+        let (native, native_errors) = if self.build_scenes {
+            let mut files = crate::scene::resource_files(&source);
+            crate::native_view::read_all(&mut map, &mut files)
+        } else {
+            Default::default()
+        };
         self.camera = Camera::frame(&frame_bounds(&world, &markers));
         let art = match &scene {
             Some(s) => format!(
@@ -484,6 +494,8 @@ impl Session {
             collision,
             objects,
             scene,
+            native: Arc::new(native),
+            native_errors,
             derived: false,
         });
         self.reference = None;
@@ -551,6 +563,17 @@ impl Session {
             (None, Some(r)) => r.scene.as_ref(),
             (None, None) => None,
         }
+    }
+
+    /// The open map's BSPs for the native renderer (none for a reference
+    /// map, or when scenes are not built), shared with the viewport.
+    pub fn native_world(&self) -> Option<&Arc<Vec<crate::native_view::NativeLoad>>> {
+        self.doc.as_ref().map(|d| &d.native)
+    }
+
+    /// The BSPs whose native world did not load, by index, and why.
+    pub fn native_errors(&self) -> &[(usize, String)] {
+        self.doc.as_ref().map_or(&[], |d| &d.native_errors)
     }
 
     /// The cached scene of a map, else a new one (cached).

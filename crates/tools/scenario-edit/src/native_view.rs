@@ -251,6 +251,45 @@ impl NativeLoad {
     }
 }
 
+/// What [`NativeWorld::render`] clears before it draws: the colour to a
+/// colour, the depth to the far plane. The first world of a frame clears
+/// (the colour only when no sky is behind it); later ones load.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Clear {
+    pub color: Option<[f64; 3]>,
+    pub depth: bool,
+}
+
+impl Clear {
+    pub const NONE: Self = Self {
+        color: None,
+        depth: false,
+    };
+    pub const fn all(color: [f64; 3]) -> Self {
+        Self {
+            color: Some(color),
+            depth: true,
+        }
+    }
+}
+
+/// Every BSP of the scenario ([`NativeLoad::read`]), with why each one
+/// that did not load did not, by BSP index.
+pub fn read_all<R: Read + Seek>(
+    map: &mut Map<R>,
+    files: &mut ResourceFiles,
+) -> (Vec<NativeLoad>, Vec<(usize, String)>) {
+    let count = load::scenario_bsps(map).map_or(0, |b| b.len());
+    let (mut loads, mut errors) = (Vec::new(), Vec::new());
+    for index in 0..count {
+        match NativeLoad::read(map, files, index) {
+            Ok(l) => loads.push(l),
+            Err(e) => errors.push((index, e)),
+        }
+    }
+    (loads, errors)
+}
+
 /// A [`NativeLoad`] on the GPU in one Lighting mode.
 pub struct NativeWorld {
     gpu: GpuWorld,
@@ -283,9 +322,9 @@ impl NativeWorld {
         self.lighting
     }
 
-    /// Clear `color` to `clear` and `depth` to the far plane, then draw the
-    /// world seen by `camera` into the whole `size` target. Returns what
-    /// the frustum kept.
+    /// Clear what `clear` names (the colour to its colour, the depth to the
+    /// far plane), then draw the world seen by `camera` into the whole
+    /// `size` target. Returns what the frustum kept.
     #[allow(clippy::too_many_arguments)]
     pub fn render(
         &mut self,
@@ -297,40 +336,44 @@ impl NativeWorld {
         depth_format: wgpu::TextureFormat,
         size: [u32; 2],
         camera: &Camera,
-        clear: [f64; 3],
+        clear: Clear,
     ) -> CullStats {
         let view = render_camera(camera, size);
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("editor native world"),
         });
-        drop(encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("editor native world clear"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: color,
-                depth_slice: None,
-                resolve_target: None,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color {
-                        r: clear[0],
-                        g: clear[1],
-                        b: clear[2],
-                        a: 1.0,
+        if clear.color.is_some() || clear.depth {
+            drop(encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("editor native world clear"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: color,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: match clear.color {
+                            Some([r, g, b]) => wgpu::LoadOp::Clear(wgpu::Color { r, g, b, a: 1.0 }),
+                            None => wgpu::LoadOp::Load,
+                        },
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: depth,
+                    depth_ops: Some(wgpu::Operations {
+                        load: if clear.depth {
+                            wgpu::LoadOp::Clear(1.0)
+                        } else {
+                            wgpu::LoadOp::Load
+                        },
+                        store: wgpu::StoreOp::Store,
                     }),
-                    store: wgpu::StoreOp::Store,
-                },
-            })],
-            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                view: depth,
-                depth_ops: Some(wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(1.0),
-                    store: wgpu::StoreOp::Store,
+                    stencil_ops: None,
                 }),
-                stencil_ops: None,
-            }),
-            timestamp_writes: None,
-            occlusion_query_set: None,
-            multiview_mask: None,
-        }));
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            }));
+        }
         let arena = self.pool.begin();
         let stats = {
             let mut uploads = gfx::ring::EncoderUploads {

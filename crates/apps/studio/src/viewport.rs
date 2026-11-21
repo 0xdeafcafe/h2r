@@ -225,6 +225,10 @@ impl ViewportView {
                 Some(scene) => vp.set_scene(gpu.device, gpu.queue, scene),
                 None => vp.set_world(gpu.device, session.world().0),
             }
+            // The level itself through the native renderer, when its BSPs
+            // loaded (docs/editor/polish-plan.md, P14).
+            let native = session.native_world().map_or(&[][..], |n| n.as_slice());
+            vp.set_native(gpu.device, gpu.queue, native);
             self.world_rev = Some(session.world_rev());
         }
         let layers_changed = self.layers.as_ref() != Some(&app.layers);

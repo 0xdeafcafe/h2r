@@ -206,8 +206,18 @@ fn centre(
         crate::render::DEPTH_FORMAT,
         [64, 64],
         camera,
-        [0.0; 3],
+        Clear::all([0.0; 3]),
     );
+    (read_centre(device, queue, &color), stats)
+}
+
+/// The centre pixel of a 64 by 64 colour texture.
+fn read_centre(device: &wgpu::Device, queue: &wgpu::Queue, color: &wgpu::Texture) -> [u8; 4] {
+    let size = wgpu::Extent3d {
+        width: 64,
+        height: 64,
+        depth_or_array_layers: 1,
+    };
     let row = 256u32;
     let buf = device.create_buffer(&wgpu::BufferDescriptor {
         label: None,
@@ -233,7 +243,7 @@ fn centre(
     device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
     let data = buf.slice(..).get_mapped_range().unwrap();
     let at = (32 * row + 32 * 4) as usize;
-    ([data[at], data[at + 1], data[at + 2], data[at + 3]], stats)
+    [data[at], data[at + 1], data[at + 2], data[at + 3]]
 }
 
 /// An invented lit quad draws through `GpuWorld` into the viewport's
@@ -369,4 +379,48 @@ fn the_invented_map_draws_through_the_native_world() {
         game[0] < flat[0] && game[0] > game[2],
         "lit by the page: {game:?}"
     );
+}
+
+/// Step 1: the viewport draws the level through its native worlds, in
+/// the Lighting mode it is set to, and without them draws nothing of the
+/// level (this map has no scene and no grey world uploaded). Skipped
+/// without a wgpu adapter.
+#[test]
+fn the_viewport_draws_the_level_through_the_native_world() {
+    let Some((device, queue)) = device() else {
+        return;
+    };
+    let (mut map, mut files) = textured();
+    let (loads, errors) = read_all(&mut map, &mut files);
+    assert!(errors.is_empty(), "{errors:?}");
+    let half = crate::fixture::TEX_FLOOR / 2.0;
+    let camera = Camera {
+        target: [half, half, 0.0],
+        yaw: 0.0,
+        pitch: 1.3,
+        distance: 6.0,
+        ..Camera::default()
+    };
+    let mut vp = crate::render::Viewport::new(&device);
+    let mut draw = |vp: &mut crate::render::Viewport| {
+        vp.render(&device, &queue, &camera, [64, 64]);
+        read_centre(&device, &queue, vp.color_texture().unwrap())
+    };
+    let empty = draw(&mut vp);
+    vp.set_native(&device, &queue, &loads);
+    assert!(vp.has_native());
+    let game = draw(&mut vp);
+    assert!(game[0] > game[2] && game != empty, "the floor: {game:?}");
+    vp.set_lighting(&device, &queue, &loads, Lighting::LightmapOnly);
+    assert_eq!(vp.lighting(), Lighting::LightmapOnly);
+    let light = draw(&mut vp);
+    assert!(light[0].abs_diff(light[2]) < 4, "grey page: {light:?}");
+    let mut hidden = crate::layers::Layers::default();
+    hidden.set(crate::layers::LayerId::Structure, false);
+    vp.set_layers(&hidden);
+    assert_eq!(draw(&mut vp), empty, "the Structure layer hides it");
+    vp.set_layers(&crate::layers::Layers::default());
+    vp.set_native(&device, &queue, &[]);
+    assert!(!vp.has_native());
+    assert_eq!(draw(&mut vp), empty);
 }
