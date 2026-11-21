@@ -115,6 +115,7 @@ the final result through that directory.
 | `frame-scene.layers` | off; with the native renderer on, the scene's layers 1, 5, 7, 8 and 20 draw their clusters' and placements' static items from the scene's plan, the rest on the D3D path; outcomes in `render.scene` as `layer_plan_*` ([framescene.md](../graphics/framescene.md), slice 4) |
 | `frame-scene.sink` | off; with the native renderer on, the device's scene sink files each guest D3D op by the frame's slot, names side targets and counts readbacks; the D3D backend still draws everything. `render.scene` reports it as `carried` and `scene_carried_*`, `scene_readback*` ([framescene.md](../graphics/framescene.md), slice 6) |
 | `H2_PIPELINE_CACHE`, `H2_GFX_COMPILE_THREADS`, `H2_VERTEX_CACHE_MB`, `H2_SMOOTH_TEXT`, `H2_RENDER_OVERRIDES` | D3D pipeline cache and sibling native descriptor archive, D3D compile workers, vertex cache budget, glyph smoothing, hot render overrides |
+| `H2_PREWARM_PROGRAMS` | most D3D programs the pipeline cache prewarms at startup and at each map load, most recently seen first; unset or not a number: 1024 (`PREWARM_PROGRAMS`); `0` or `off`: none ([Persisted keys, prewarmed](../graphics/graphics.md)) |
 | `H2_LOCKSTEP*` | Lockstep settings |
 | `H2_INPUT_RECORD`, `H2_INPUT_REPLAY` | Record or replay the guest's input reads. A boot with either tap excludes editor object edits and map reloads. [Input](agent-api.md#input-act-like-a-player) |
 | `H2_FILM_OUT`, `H2_FILM_DIR` | Recording destination and film library location ([film format](../game/film-format.md)). |
