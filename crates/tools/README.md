@@ -12,6 +12,7 @@ The tools domain is offline work on game data: the Halo 1 readers and converters
 | [h1campaign](h1campaign/README.md) | Halo 1 campaign levels as Halo 2 v8 maps. |
 | [editor-core](editor-core/README.md) | The UI-free parts of `h2-editor` shared by its tools. |
 | [scenario-edit](scenario-edit/README.md) | The scenario placement editor: typed blocks, undo, patched `.map` output. |
+| [geometry-edit](geometry-edit/README.md) | The Modeling tool's targets, undo and in-place geometry writes. |
 | [hopper-edit](hopper-edit/README.md) | The playlist editor's UI-free logic. |
 | [hud-edit](hud-edit/README.md) | The HUD editor's UI-free logic. |
 | [mesh-edit](mesh-edit/README.md) | The modeling kernel: an editable radial-edge mesh, its operations and stable export. |

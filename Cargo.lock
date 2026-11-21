@@ -2418,6 +2418,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "geometry-edit"
+version = "0.1.0"
+dependencies = [
+ "editor-core",
+ "map",
+ "mesh-edit",
+ "scenario-edit",
+ "tags",
+]
+
+[[package]]
 name = "gethostname"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
