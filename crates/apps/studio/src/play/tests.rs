@@ -245,7 +245,11 @@ fn reloading_a_play_copy_uses_the_layout_at_save_time() {
     assert!(app.session.redo());
     assert!(app.session.redo());
     play.push_edits(&mut app);
-    assert!(app.pairing.pending.is_empty());
+    // The object rows for the old layout leave on the next object pass, as
+    // every frame runs one.
+    until(&mut play, &mut app, "nothing pending in the copy's layout", |_, a| {
+        a.pairing.pending.is_empty()
+    });
     assert!(game.calls("edit.batch").is_empty());
     play.apply_edits(&mut app, Apply::Send).unwrap();
     app.session
