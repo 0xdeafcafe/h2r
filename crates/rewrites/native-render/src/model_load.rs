@@ -15,7 +15,7 @@ use std::io::{Read, Seek};
 use map::{Map, TagId};
 use tags::geometry::RawSource;
 use tags::model::RenderModelGeometry;
-use tags::object::Context;
+use tags::object::{Context, ResolvedModel};
 
 use crate::load::{Error, PART_TRANSPARENT};
 use crate::model::{Model, ModelInput, ModelPartInput, ModelSectionInput, NodeMatrix};
@@ -130,6 +130,38 @@ pub fn load_object_model<R: Read + Seek>(
     let resolved = object.model.ok_or("the object has no model")?;
     let mode = resolved.render_model.as_ref().ok_or("the model has no render model")?.id;
     let geo = RenderModelGeometry::read(map, mode, raw)?;
+    object_model(geo, &resolved)
+}
+
+/// [`load_object_model`] on geometry already read: the render model `geo`
+/// of the definition whose `hlmt` is `resolved`, with that model's default
+/// variant.
+pub fn object_model(geo: RenderModelGeometry, resolved: &ResolvedModel) -> Result<LoadedModel, Error> {
+    let mode = resolved.render_model.as_ref().ok_or("the model has no render model")?.id;
+    let built = default_model(&geo, resolved)?;
+    let shaders = geo.materials.iter().map(|m| m.shader.id).collect();
+    Ok(LoadedModel {
+        mode,
+        model: built.model,
+        shaders,
+        geometry: geo,
+        sections: built.sections,
+        lod_sections: built.lod_sections,
+    })
+}
+
+/// A definition's model as [`object_model`] builds it, without its
+/// geometry or shaders.
+pub struct DefaultModel {
+    pub model: Model,
+    pub sections: Vec<usize>,
+    pub lod_sections: Vec<usize>,
+}
+
+/// The model of the definition whose `hlmt` is `resolved`, from its render
+/// model `geo`: the default variant's sections, refused as
+/// [`load_object_model`] refuses.
+pub fn default_model(geo: &RenderModelGeometry, resolved: &ResolvedModel) -> Result<DefaultModel, Error> {
     if resolved.node_count as usize != geo.nodes.len() {
         return Err(format!("hlmt has {} nodes, mode {}", resolved.node_count, geo.nodes.len()).into());
     }
@@ -188,12 +220,8 @@ pub fn load_object_model<R: Read + Seek>(
     if model.draws.is_empty() {
         return Err("nothing opaque to draw".into());
     }
-    let shaders = geo.materials.iter().map(|m| m.shader.id).collect();
-    Ok(LoadedModel {
-        mode,
+    Ok(DefaultModel {
         model,
-        shaders,
-        geometry: geo,
         sections,
         lod_sections,
     })

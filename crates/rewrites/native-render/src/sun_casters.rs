@@ -13,6 +13,8 @@
 //! matrices: every opaque part of the model as built (one permutation per
 //! region, the loader's LOD), positions and normals in world space.
 
+use std::sync::{Arc, Mutex};
+
 use frame_scene::{FrameScene, NodeMatrix, View};
 
 use crate::model::Model;
@@ -22,9 +24,45 @@ use crate::sun_tiles::{SunCaster, floats_hash};
 /// (`0x00032438`).
 pub const DRAW_THRESHOLD: f32 = 0.09;
 
-/// The loaded models, by render model tag datum.
+/// The loaded models, by object definition tag datum
+/// ([`frame_scene::Instance::definition`]): each definition's render
+/// model with its default variant's sections, as `crate::model_load`
+/// picks them. A render model is shared by definitions whose variants
+/// pick different sections, so the definition is the key.
 pub trait CasterModels {
-    fn model(&self, tag: u32) -> Option<&Model>;
+    fn model(&self, definition: u32) -> Option<&Model>;
+}
+
+/// The caster models one map's loader shares with the render thread.
+pub type SharedModels = Arc<dyn CasterModels + Send + Sync>;
+
+/// The current map's caster models with the map epoch they load for
+/// (`frame_scene::SceneId::map_epoch`).
+static MODELS: Mutex<Option<(u64, SharedModels)>> = Mutex::new(None);
+
+/// The game's object loader offers map `map_epoch`'s caster models to the
+/// render thread, or withdraws them (`None`). Only the frame graph's E3
+/// sun tiles read them ([`models_for`]); retail never does.
+pub fn set_models(map_epoch: u64, models: Option<SharedModels>) {
+    let mut slot = MODELS.lock().unwrap_or_else(|e| e.into_inner());
+    match models {
+        Some(m) => *slot = Some((map_epoch, m)),
+        // An older map's loader does not withdraw a newer map's models.
+        None => {
+            if slot.as_ref().is_some_and(|(epoch, _)| *epoch == map_epoch) {
+                *slot = None;
+            }
+        }
+    }
+}
+
+/// The caster models for a scene of map `map_epoch`; `None` until that
+/// map's objects have loaded, and for any other map's scene.
+pub fn models_for(map_epoch: u64) -> Option<SharedModels> {
+    let slot = MODELS.lock().unwrap_or_else(|e| e.into_inner());
+    slot.as_ref()
+        .filter(|(epoch, _)| *epoch == map_epoch)
+        .map(|(_, m)| Arc::clone(m))
 }
 
 /// Why an object shadow has no sun tile. It keeps retail's mask.
@@ -173,7 +211,9 @@ pub fn gather(scene: &FrameScene, view: u32, height: u32, models: &dyn CasterMod
             if nodes.is_empty() || !nodes.iter().all(NodeMatrix::is_finite) {
                 return Err(CasterRefusal::NoNodes);
             }
-            let loaded = models.model(instance.model).ok_or(CasterRefusal::NoModel)?;
+            let loaded = models
+                .model(instance.definition)
+                .ok_or(CasterRefusal::NoModel)?;
             let towards_light = shadow
                 .towards_light(scene)
                 .ok_or(CasterRefusal::NoDirection)?;
@@ -222,12 +262,12 @@ mod tests {
     struct Models(HashMap<u32, Model>);
 
     impl CasterModels for Models {
-        fn model(&self, tag: u32) -> Option<&Model> {
-            self.0.get(&tag)
+        fn model(&self, definition: u32) -> Option<&Model> {
+            self.0.get(&definition)
         }
     }
 
-    const MODEL: u32 = 0xe500_0001;
+    const DEFINITION: u32 = 0xe500_0001;
 
     /// One triangle on node 0, its normal up.
     fn triangle_model() -> Model {
@@ -291,8 +331,8 @@ mod tests {
         for &key in keys {
             b.push_instance(InstanceInput {
                 key: InstanceKey(key),
-                definition: 0,
-                model: MODEL,
+                definition: DEFINITION,
+                model: 0xe600_0002,
                 nodes: &nodes,
                 sphere: ([10.5, 0.5, 1.0], 1.0),
                 lighting: None,
@@ -321,7 +361,7 @@ mod tests {
 
     #[test]
     fn a_drawn_object_shadow_becomes_a_skinned_caster_with_its_light() {
-        let models = Models(HashMap::from([(MODEL, triangle_model())]));
+        let models = Models(HashMap::from([(DEFINITION, triangle_model())]));
         let s = shadow_scene(&[0x8001_0001], &[(0x8001_0001, false, Some(0.75))]);
         let got = gather(&s, 0, 480, &models);
         assert!(got.refused.is_empty(), "{:?}", got.refused);
@@ -346,7 +386,7 @@ mod tests {
 
     #[test]
     fn same_rows_hash_the_same_and_moved_rows_do_not() {
-        let models = Models(HashMap::from([(MODEL, triangle_model())]));
+        let models = Models(HashMap::from([(DEFINITION, triangle_model())]));
         let s = shadow_scene(&[1], &[(1, false, Some(0.75))]);
         let a = gather(&s, 0, 480, &models).admitted[0].caster.rows;
         assert_eq!(gather(&s, 0, 480, &models).admitted[0].caster.rows, a);
@@ -355,10 +395,25 @@ mod tests {
         assert_ne!(gather(&moved, 0, 480, &models).admitted[0].caster.rows, a);
     }
 
+    /// The render thread reads a map's caster models only for that map's
+    /// scenes, and an older map's loader cannot withdraw a newer map's.
+    #[test]
+    fn caster_models_serve_only_their_maps_scenes() {
+        let loaded: SharedModels =
+            Arc::new(Models(HashMap::from([(DEFINITION, triangle_model())])));
+        set_models(0x5ca1_0001, Some(loaded));
+        assert!(models_for(0x5ca1_0001).is_some_and(|m| m.model(DEFINITION).is_some()));
+        assert!(models_for(0x5ca1_0002).is_none());
+        set_models(0x5ca1_0000, None);
+        assert!(models_for(0x5ca1_0001).is_some());
+        set_models(0x5ca1_0001, None);
+        assert!(models_for(0x5ca1_0001).is_none());
+    }
+
     /// Each refused shadow names its cause and keeps retail's mask.
     #[test]
     fn every_other_object_shadow_is_refused_by_name() {
-        let models = Models(HashMap::from([(MODEL, triangle_model())]));
+        let models = Models(HashMap::from([(DEFINITION, triangle_model())]));
         let s = shadow_scene(
             &[1, 2],
             &[

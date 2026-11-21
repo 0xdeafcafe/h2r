@@ -242,11 +242,11 @@ One depth map per caster, in place of retail's object-shadow masks
 **Built: tiles, receivers, the cache and the casters**
 (`native_render::sun_tiles`, `native_render::sun_tiles_gpu`,
 `native_render::sun_casters`). The plan, the draws and the gather from
-the scene exist and are tested on invented scenes, and the replay marks
-each object shadow's ops. The frame graph does not call them yet: it
-needs a loaded model for each caster on the render thread. Until then
-the graph draws no sun tile, retail's mask chain draws every object
-shadow in both modes, and the sun counters are zero.
+the scene exist and are tested on invented scenes, the replay marks
+each object shadow's ops, and the casters' models reach the render
+thread. The frame graph does not call them yet. Until it does, the graph
+draws no sun tile, retail's mask chain draws every object shadow in both
+modes, and the sun counters are zero.
 
 - **The replay's marks.** The scene sink writes a
   `ReplayOp::ObjectShadow(Some(index))` before the first op the guest
@@ -274,6 +274,16 @@ shadow in both modes, and the sun counters are zero.
   `0x0003290a`; `h2 disasm 0x00032905 40`), the word the material inputs
   call the light's weight. `ObjectShadow::towards_light` is `c[41]`
   of layer 11's projection (**R**, `0x00048f85`).
+- **The models.** The game's object loader
+  (`crates/extensions/game/src/native_objects_glue.rs`, `CasterSet`)
+  builds each loaded definition's model with its default variant
+  (`model_load::default_model`, the rules `load_object_model` uses: one
+  section per region, the highest LOD, a run-time permutation refused)
+  from the geometry it reads for the native object path, and offers them
+  for the map's epoch (`sun_casters::set_models`). The render thread
+  reads them for a scene of that epoch only (`sun_casters::models_for`).
+  They are keyed by object definition, since definitions sharing a
+  render model can choose different regions. Retail never reads them.
 - **The gather.** `sun_casters::gather` admits an object shadow whose
   caster is an instance of the view with node matrices and a loaded
   model, with a direction and a weight above retail's 0.09. Its mesh is
