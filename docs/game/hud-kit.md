@@ -752,8 +752,7 @@ its notification list:
 
 (crouch) is U+E110, the left stick click's glyph, the default crouch
 button ([button-icons.md](../input/button-icons.md)), which the button
-swap redraws as the bound key's picture on the other input sets, as the
-tutorial's (X) is U+E102. A prompt of the game's own wins the line.
+swap redraws as the bound key's picture on the other input sets. A prompt of the game's own wins the line.
 The landing's result is `superbounce_mode`'s `last_landing`; the bounce
 message has no height until the state carries one ("Superbounce"
 alone).
@@ -852,15 +851,19 @@ diagrams: a retail training prompt has none.
 
 | Step | Text | Moves on when |
 |---|---|---|
-| 1 | Crouch under a cyan crouch spot, / then stand up. | primed |
+| 1 | Crouch under a crouch spot's lip, / then stand up. | primed |
 | 2 | You are primed. / Do not crouch again. | a bounce spot within 8 m |
-| 3 | Find a strip. Green is a standing jump. / Red needs a big drop. | a bounce, or 20 s |
-| 4 | Land on the strip. / Hold (X) while falling. | a bounce, or 15 s |
+| 3 | Find a strip. Its post is the height / to fall from. No post: just jump. | a bounce, or 20 s |
+| 4 | Jump or fall onto the strip. / Fall Assist (Controls) can steer. | a bounce, or 15 s |
+
+No step asks for a button: the fall assist is opt in
+([superbounce.md](superbounce.md#hold-x-the-fall-assist)), and step 4
+names its Controls row once.
 
 ```text
                  x 163                              x 477
           y 218  +----------------------------------+
-                 |  Crouch under a cyan crouch spot, |
+                 | Crouch under a crouch spot's lip, |
                  |          then stand up.           |
           y 262  +----------------------------------+
                           (HUD frame centre 320, 240)
@@ -868,8 +871,9 @@ diagrams: a retail training prompt has none.
 
 The box is the text's size plus 5 each side and 1 above and below, plus
 the frame art (S: decoding 3 gives its outer edge). The widest first
-line is 304 pixels in font 6 (V, measured as above), inside the frame's
-544. The element's `longest` is step 3, the most characters; which
+line of the earlier wording was 304 pixels in font 6 (V); the steps are
+no longer than it, inside the frame's 544. The element's `longest` is
+step 3, the widest line (its unit test checks that); which
 step is widest in font 6 is S until the disc's checks run. The tutorial
 is fullscreen only. The step machine is
 `hud_kit_core::huds::superbounce::Tutorial` (its thresholds);

@@ -647,10 +647,14 @@ the checks").
 **The tutorial.** The first time the mode is on, four steps show in the
 game's training box, two centred lines each:
 
-1. Crouch under a cyan crouch spot, then stand up.
+1. Crouch under a crouch spot's lip, then stand up.
 2. You are primed. Do not crouch again.
-3. Find a strip. Green is a standing jump. Red needs a big drop.
-4. Land on the strip. Hold (X) while falling.
+3. Find a strip. Its post is the height to fall from. No post: just jump.
+4. Jump or fall onto the strip. Fall Assist (Controls) can steer.
+
+No step asks for a button: the landing is the player's own, and the
+last step names the opt-in [fall assist](#hold-x-the-fall-assist) once,
+by its row.
 
 Priming moves step 1 to 2, a bounce spot within 8 m moves 2 to 3, a
 bounce landing or 20 s moves 3 to 4, and a bounce or 15 s closes 4
@@ -683,8 +687,9 @@ and [Landings](#landings) describe.
 centred, shadowed labels with a pulse, on the spots they say something
 about (`crates/extensions/game/src/superbounce_prompts.rs`):
 
-- Airborne and falling toward a strip the assist can steer onto (its
-  pick), `Hold X` (the X button's glyph) floats 0.3 units above the
+- With the [fall assist](#hold-x-the-fall-assist) on, airborne and
+  falling toward a strip it can steer onto (its pick), `Hold X` (the X
+  button's glyph) floats 0.3 units above the
   strip's stand point. It grows as the player nears: 1x at 6 units and
   more, 3x at 0.5 and less, linear between (`label_scale`). A guide runs
   along the floor from where the player lands if nothing is done to the
@@ -692,6 +697,10 @@ about (`crates/extensions/game/src/superbounce_prompts.rs`):
   ([Landings](#landings)).
 - Once X is held and the assist is steering, the label reads `Guiding`
   and stops pulsing.
+- With the assist off (the default) nothing is said in the air and no
+  strip is anyone's target: the landing is the player's, and what the
+  map shows of it is the bounce's own (the landing ring and the speed
+  bar, [Landings](#landings)).
 - On the ground, within 1.5 units of a strip whose fall is at most 0.05 (a
   standing jump does it), `Jump` is drawn at the take-off spot, 0.2 units
   back from the stand point against the drift (`takeoff`), with a small
@@ -712,16 +721,25 @@ formatted.
 
 ### Hold X: the fall assist
 
-Holding X in the air steers the player onto a bounce strip, so the landing
-is on the strip, moving slowly along its drift, the way every traced bounce
-came in. It works on input, not physics: the assist replaces the left stick
+An opt-in help: with the player's **Fall Assist** setting on
+(`superbounce.fall_assist`, off by default, a row at the end of the
+Controls list that a press turns on or off; `crates/extensions/game/src/setting_defs.rs`,
+`crates/extensions/game/src/video_screen.rs`), holding X in the air
+steers the player onto a bounce strip, so the landing is on the strip,
+moving slowly along its drift, the way every traced bounce came in. Off,
+the tap never reads X, nothing steers, and nothing on the map or the HUD
+asks for X. The setting is read live (`follow_setting`); the
+`superbounce-assist` feature in `H2_FEATURES` stays the kill switch, which
+leaves the tap out whatever the setting says. It works on input, not
+physics: the assist replaces the left stick
 the guest reads and takes X out of it, and writes nothing to the world. It
 is `crates/extensions/game/src/superbounce_assist.rs`; `superbounce.assist`
 and `superbounce.assist_test`
 ([agent-api.md](../runtime/agent-api.md#superbounce-the-superbounce-game-type))
 show it and hold the button without a pad.
 
-**When it applies.** The mode is on, the first local player's X is held
+**When it applies.** The mode is on, the setting is on, the first local
+player's X is held
 (pad X, keyboard E by default; the `BUTTON` constant), the player is
 airborne and falling (vertical speed at most 0.5 units/s), and a bounce spot
 passes the reach cone:
@@ -755,11 +773,14 @@ until the player lets go, so a landing or a strip going out of reach does
 not hand the game a fresh press. With no strip in reach, X and the stick
 pass through unchanged.
 
-**The prompt.** The assist's pick is also what the world prompts are
-drawn from, whether or not X is held: the window reads the player's body
-and runs `pick` on each frame, so `HOLD X` appears on the strip before the
-button is pressed, and turns to `GUIDING` once the tap reports it is
-engaged (`assisting`; [the prompts](#the-superbounce-game-type)).
+**The prompt.** With the setting on, the assist's pick is also what the
+world prompts are drawn from, whether or not X is held: the window reads
+the player's body and runs `pick` on each frame, so `Hold X` appears on
+the strip before the button is pressed, and turns to `Guiding` once the
+tap reports it is engaged (`assisting`; [the prompts](#the-superbounce-game-type)).
+Off, there is no pick: no prompt in the air, no strip drawn as the
+target, and a predicted landing the assist could have brought in is drawn
+as the miss it is (`superbounce_world::course`).
 
 **Where it sits.** An input tap at `XInputGetState`
 (`AssistTap`, installed by `register_late` before the agent's tap), so
@@ -978,8 +999,8 @@ The figures are `crates/extensions/game/src/superbounce_world.rs`'s.
 - **On course.** While primed, airborne and moving down, the landing the
   state predicts (`landing`) is drawn where it is: a ring of the capsule's
   radius when it is inside the slot, the ring broken into every other
-  segment when the assist can still bring it in (`Hold X`), and a cross
-  when it cannot. 0.35 to its side, across the line from the player, a
+  segment when the [fall assist](#hold-x-the-fall-assist) is on and can
+  still bring it in, and a cross when it cannot (or is off). 0.35 to its side, across the line from the player, a
   0.5-high post fills from the floor with the touchdown speed over `need`
   (`speed_fill`), full at `need`.
   The state is the mode's `landing` (`superbounce_assist::predict`),

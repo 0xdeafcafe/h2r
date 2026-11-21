@@ -20,7 +20,7 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use engine::memory::{GuestMemory, MemFault};
 use input::gamepad::{AnalogButton, Gamepad};
@@ -431,6 +431,8 @@ fn publish_crouch(held: Option<bool>) {
 }
 
 static ENABLED: AtomicBool = AtomicBool::new(false);
+/// The player has turned the assist on (`superbounce.fall_assist`).
+static OPTED_IN: AtomicBool = AtomicBool::new(false);
 static ENGAGED: AtomicBool = AtomicBool::new(false);
 static TEST_HOLD: AtomicBool = AtomicBool::new(false);
 static REPORT: Mutex<Report> = Mutex::new(Report::EMPTY);
@@ -442,6 +444,18 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 fn publish(r: Report) {
     ENGAGED.store(r.engaged, Ordering::Relaxed);
     *lock(&REPORT) = r;
+}
+
+/// Whether the player has turned the assist on: the
+/// `superbounce.fall_assist` setting, off by default. Off, X is never
+/// read, nothing steers, and nothing on the map or the HUD asks for X.
+pub fn opted_in() -> bool {
+    OPTED_IN.load(Ordering::Relaxed)
+}
+
+/// Sets what [`opted_in`] answers (the setting's live value).
+pub fn set_opted_in(on: bool) {
+    OPTED_IN.store(on, Ordering::Relaxed);
 }
 
 /// Whether the assist is steering the player now: the HUD can show it.
@@ -478,6 +492,7 @@ pub fn assist_reply() -> agent_proto::superbounce::Assist {
     let wide2 = |v: [f32; 2]| v.map(f64::from);
     agent_proto::superbounce::Assist {
         active: superbounce_mode::active(),
+        enabled: opted_in(),
         test_hold: TEST_HOLD.load(Ordering::Relaxed),
         engaged: r.engaged,
         target: r.target.map(wide),
@@ -594,7 +609,9 @@ impl AssistTap {
         // The charge's `held` phase: the crouch button of the player's own
         // layout, in the pad as the guest gets it.
         publish_crouch(button_down(&pad, crouch_button(memory)));
-        let held = pad.analog(BUTTON) >= PRESSED || TEST_HOLD.load(Ordering::Relaxed);
+        // Opt in: with the setting off the button is the game's.
+        let held =
+            opted_in() && (pad.analog(BUTTON) >= PRESSED || TEST_HOLD.load(Ordering::Relaxed));
         if !held && !self.latch.0 {
             self.release();
             return;
@@ -727,13 +744,32 @@ impl hooks::Feature for SuperbounceAssist {
 }
 
 /// Adds the feature to `registry`. Whether the tap is installed follows
-/// `H2_FEATURES`.
-pub fn install(registry: &mut hooks::Registry) -> anyhow::Result<()> {
+/// `H2_FEATURES` (the kill switch); whether it steers follows the
+/// `superbounce.fall_assist` setting in `settings`, read live (off without
+/// a store).
+pub fn install(
+    registry: &mut hooks::Registry,
+    settings: Option<Arc<settings::Store>>,
+) -> anyhow::Result<()> {
     let on = registry
         .add(&SuperbounceAssist)
         .map_err(|e| anyhow::anyhow!("superbounce assist: {e}"))?;
     ENABLED.store(on, Ordering::Relaxed);
+    set_opted_in(false);
+    if let Some(s) = &settings {
+        follow_setting(s);
+    }
     Ok(())
+}
+
+/// Makes [`opted_in`] follow the `superbounce.fall_assist` setting in
+/// `store`: its value now, then each change.
+pub fn follow_setting(store: &settings::Store) {
+    let key = crate::setting_defs::SUPERBOUNCE_FALL_ASSIST.key;
+    set_opted_in(store.handle::<bool>(key).get());
+    store.on_change(key, |v| {
+        set_opted_in(matches!(v, settings::Value::Bool(true)))
+    });
 }
 
 #[cfg(test)]
@@ -1055,6 +1091,25 @@ mod tests {
         let mut pad = pad_with(255);
         apply(&mut latch, &mut pad, true, Some(&p));
         assert_eq!(pad.analog(BUTTON), 0);
+    }
+
+    /// Off until the player turns it on, following the setting live; the
+    /// reply says which. One test: the switch is process-wide.
+    #[test]
+    fn the_assist_is_opt_in_follows_the_setting_and_the_reply_says_so() {
+        use crate::setting_defs::{ALL, SUPERBOUNCE_FALL_ASSIST};
+        let store = settings::Store::defaults(ALL);
+        follow_setting(&store);
+        assert!(!opted_in(), "off by default");
+        assert!(!assist_reply().enabled);
+        store
+            .set(SUPERBOUNCE_FALL_ASSIST.key, settings::Value::Bool(true))
+            .unwrap();
+        assert!(opted_in() && assist_reply().enabled);
+        store
+            .set(SUPERBOUNCE_FALL_ASSIST.key, settings::Value::Bool(false))
+            .unwrap();
+        assert!(!opted_in());
     }
 
     #[test]

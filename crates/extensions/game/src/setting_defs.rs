@@ -918,6 +918,31 @@ pub static SUPERBOUNCE_TUTORIAL_SEEN: Def = Def {
     menu: None,
 };
 
+/// The superbounce fall assist, opt in (docs/game/superbounce.md, "Hold X:
+/// the fall assist"): holding X in the air steers the player onto a
+/// strip. Off, nothing steers and nothing on the map or the HUD asks for
+/// X. Its row is on the Controls screen (`video_screen::model`);
+/// `superbounce_assist` reads it live.
+pub static SUPERBOUNCE_FALL_ASSIST: Def = Def {
+    key: "superbounce.fall_assist",
+    label: "Fall Assist",
+    help: "Superbounce: hold X while falling and the stick is steered so you \
+           land on the strip. Off by default.",
+    kind: Kind::Bool,
+    default: Value::Bool(false),
+    env: None,
+    flag: None,
+    aliases: &[],
+    parse_env: None,
+    apply: Apply::Live,
+    scope: Scope::Host,
+    tier: Tier::User,
+    menu: Some(Menu {
+        screen: "controls",
+        order: 70,
+    }),
+};
+
 /// `H2_SUPERBOUNCE_TUTORIAL=1` shows the superbounce tutorial steps even
 /// when [`SUPERBOUNCE_TUTORIAL_SEEN`] is set.
 pub const SUPERBOUNCE_TUTORIAL_ENV: &str = "H2_SUPERBOUNCE_TUTORIAL";
@@ -981,6 +1006,7 @@ pub static ALL: &[&Def] = &[
     &HALO1_ASSETS,
     &HALO1_HUD,
     &SUPERBOUNCE_TUTORIAL_SEEN,
+    &SUPERBOUNCE_FALL_ASSIST,
     // The campaign skulls, kept per profile (crate::skulls, docs/game/skulls.md).
     &crate::skulls::SKULLS[0],
     &crate::skulls::SKULLS[1],
@@ -1119,6 +1145,23 @@ mod tests {
             .set(SUPERBOUNCE_TUTORIAL_SEEN.key, Value::Bool(true))
             .unwrap();
         assert!(store.handle::<bool>(SUPERBOUNCE_TUTORIAL_SEEN.key).get());
+    }
+
+    #[test]
+    fn the_fall_assist_is_opt_in_with_a_controls_row() {
+        let store = Store::defaults(ALL);
+        assert_eq!(
+            store.get(SUPERBOUNCE_FALL_ASSIST.key),
+            Some(Value::Bool(false))
+        );
+        assert_eq!(
+            SUPERBOUNCE_FALL_ASSIST.menu.expect("a row").screen,
+            "controls"
+        );
+        store
+            .set(SUPERBOUNCE_FALL_ASSIST.key, Value::Bool(true))
+            .unwrap();
+        assert!(store.handle::<bool>(SUPERBOUNCE_FALL_ASSIST.key).get());
     }
 
     #[test]

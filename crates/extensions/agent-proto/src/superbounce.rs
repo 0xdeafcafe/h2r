@@ -332,6 +332,10 @@ pub const ASSIST_TEST: &str = "superbounce.assist_test";
 pub struct Assist {
     /// The superbounce mode is on (the assist only works with it on).
     pub active: bool,
+    /// The player has turned the assist on: the `superbounce.fall_assist`
+    /// setting (`settings.set` changes it). Off, it never steers.
+    #[serde(default)]
+    pub enabled: bool,
     /// `superbounce.assist_test` is holding the button.
     pub test_hold: bool,
     /// The assist steered the player at its last pad read.
@@ -454,6 +458,7 @@ mod tests {
         assert!(v.get("yaw").is_none());
         assert_eq!(serde_json::from_value::<State>(v).unwrap(), s);
         let a = Assist {
+            enabled: true,
             engaged: true,
             stick: Some([0.5, -1.0]),
             ..Assist::default()
@@ -461,6 +466,9 @@ mod tests {
         let v = serde_json::to_value(&a).unwrap();
         assert!(v.get("target").is_none() && v["stick"][1] == -1.0);
         assert_eq!(serde_json::from_value::<Assist>(v).unwrap(), a);
+        // A reply without the field reads as off.
+        let old = serde_json::json!({"active": true, "test_hold": false, "engaged": false});
+        assert!(!serde_json::from_value::<Assist>(old).unwrap().enabled);
         assert!(
             serde_json::from_value::<AssistTestParams>(serde_json::json!({"hold": true, "x": 1}))
                 .is_err()

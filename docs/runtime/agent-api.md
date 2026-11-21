@@ -701,6 +701,7 @@ assist did at its last pad read
 | Field | Meaning |
 |---|---|
 | `active` | the superbounce mode is on; the assist works only then |
+| `enabled` | the player's `superbounce.fall_assist` setting is on; the assist is opt in and never steers while it is off |
 | `test_hold` | `superbounce.assist_test` is holding the button |
 | `engaged` | the assist steered the player at its last read |
 | `target` | the strip's stand point, world units |
@@ -713,11 +714,13 @@ The last five are absent while not engaged.
 
 `superbounce.assist_test {"hold": true|false}` (access: act) holds the
 assist's button as if it were pressed, so an agent can try the assist
-without a pad: with the mode on, a player in the air above a strip in reach
-is steered while it is `true`. The answer is `{"hold": bool}`. It holds
-until set `false`.
+without a pad: with the mode and the setting on, a player in the air above
+a strip in reach is steered while it is `true`. The answer is
+`{"hold": bool}`. It holds until set `false`. The setting is turned on and
+off with `settings.set`, live.
 
 ```sh
+h2 agent settings.set '{"key":"superbounce.fall_assist","value":true}'
 h2 agent superbounce.assist_test '{"hold":true}'
 h2 agent superbounce.assist
 ```

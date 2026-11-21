@@ -67,7 +67,7 @@ pub const FILL_UNDER: f32 = 1.0 / 3.0;
 pub const FILL_HELD: f32 = 2.0 / 3.0;
 
 /// The default crouch button's glyph, the left stick click (U+E110,
-/// docs/input/button-icons.md), as the tutorial names X by its glyph.
+/// docs/input/button-icons.md).
 pub const CROUCH: &str = "\u{e110}";
 /// The prompt line's verbs, one a recipe step.
 pub const PROMPT_NEAR: &str = "Hold \u{e110} and walk under";
@@ -84,13 +84,14 @@ pub const MESSAGE_NO_BOUNCE: &str = "No bounce.";
 /// The widest notification: a bounce of three figures.
 pub const MESSAGE_LONGEST: &str = "Superbounce, 999 m";
 
-/// The four tutorial steps, two lines each (X is the font's button glyph,
-/// U+E102).
+/// The four tutorial steps, two lines each. The landing is the player's
+/// own: the last step names the opt-in fall assist once, by its Controls
+/// row, and no step asks for a button. The third is the widest.
 pub const TUTORIAL_TEXT: [&str; 4] = [
-    "Crouch under a cyan crouch spot,\nthen stand up.",
+    "Crouch under a crouch spot's lip,\nthen stand up.",
     "You are primed.\nDo not crouch again.",
-    "Find a strip. Green is a standing jump.\nRed needs a big drop.",
-    "Land on the strip.\nHold \u{e102} while falling.",
+    "Find a strip. Its post is the height\nto fall from. No post: just jump.",
+    "Jump or fall onto the strip.\nFall Assist (Controls) can steer.",
 ];
 
 /// The scan of the map for strips.
@@ -711,7 +712,16 @@ mod tests {
                 }
             }
         }
-        assert!(TUTORIAL_TEXT[3].contains('\u{e102}'));
+        // The tutorial asks for no button: the fall assist is opt in.
+        assert!(TUTORIAL_TEXT.iter().all(|t| !t.contains('\u{e102}')));
+        assert!(TUTORIAL_TEXT[3].contains("Fall Assist"));
+        // The layout is sized by the third step's text.
+        let widest = |t: &str| t.lines().map(str::len).max().unwrap_or(0);
+        assert!(
+            TUTORIAL_TEXT
+                .iter()
+                .all(|t| widest(t) <= widest(TUTORIAL_TEXT[2]))
+        );
     }
 
     #[test]

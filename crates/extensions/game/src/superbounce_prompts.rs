@@ -76,6 +76,8 @@ pub struct Cue {
     pub targeted: bool,
     /// The assist is steering now.
     pub engaged: bool,
+    /// The player has turned the fall assist on (`superbounce.fall_assist`).
+    pub assist: bool,
     /// The strip's fall, world units.
     pub fall: f32,
     /// Horizontal distance from the player to the strip's stand point.
@@ -84,13 +86,15 @@ pub struct Cue {
     pub takeoff_distance: f32,
 }
 
-/// What a strip says for `cue`. Nothing unless the player is primed.
+/// What a strip says for `cue`. Nothing unless the player is primed; in
+/// the air nothing unless the fall assist is on, as the landing is the
+/// player's own.
 pub fn prompt_for(cue: &Cue) -> Prompt {
     if !cue.primed {
         return Prompt::None;
     }
     if cue.airborne {
-        return match (cue.targeted, cue.engaged) {
+        return match (cue.assist && cue.targeted, cue.engaged) {
             (false, _) => Prompt::None,
             (true, false) => Prompt::HoldX,
             (true, true) => Prompt::Guiding,
@@ -187,8 +191,9 @@ fn raised(p: Vec3) -> Vec3 {
 
 /// The prompts for one frame. `target` is the assist's pick (the strip a
 /// falling player can be steered onto, and where the player would land
-/// otherwise); `engaged` is whether the assist is steering. Airborne there
-/// is at most the one for the target; on the ground, at most the nearest
+/// otherwise); `engaged` is whether the assist is steering, and `assist`
+/// whether the player has it on. Airborne there is at most the one for the
+/// target, and only with the assist on; on the ground, at most the nearest
 /// standing-jump strip and the nearest strip that needs a drop. All of
 /// them are in `look`'s colour and font.
 pub fn callouts(
@@ -197,6 +202,7 @@ pub fn callouts(
     primed: bool,
     target: Option<(&Spot, &Reach)>,
     engaged: bool,
+    assist: bool,
     look: &Look,
 ) -> Vec<Callout> {
     let mut out = Vec::new();
@@ -212,6 +218,7 @@ pub fn callouts(
             airborne: true,
             targeted: true,
             engaged,
+            assist,
             fall: spot.fall,
             stand_distance: horizontal(body.position, spot.stand),
             takeoff_distance: f32::INFINITY,
@@ -253,6 +260,7 @@ pub fn callouts(
             airborne: false,
             targeted: false,
             engaged,
+            assist,
             fall: s.fall,
             stand_distance: horizontal(body.position, s.stand),
             takeoff_distance: horizontal(body.position, takeoff(s)),
@@ -318,6 +326,7 @@ mod tests {
             airborne: false,
             targeted: false,
             engaged: false,
+            assist: true,
             fall: 0.0,
             stand_distance: 1.0,
             takeoff_distance: 0.8,
@@ -400,6 +409,26 @@ mod tests {
         );
         // A fall or a standing jump does not matter in the air.
         assert_eq!(prompt_for(&Cue { fall: 5.0, ..c }), Prompt::HoldX);
+    }
+
+    #[test]
+    fn without_the_fall_assist_nothing_is_said_in_the_air() {
+        let c = Cue {
+            airborne: true,
+            targeted: true,
+            assist: false,
+            ..cue()
+        };
+        assert_eq!(prompt_for(&c), Prompt::None);
+        assert_eq!(prompt_for(&Cue { engaged: true, ..c }), Prompt::None);
+        // On the ground the bounce's own prompts stay.
+        assert_eq!(
+            prompt_for(&Cue {
+                assist: false,
+                ..cue()
+            }),
+            Prompt::Jump
+        );
     }
 
     #[test]
@@ -486,7 +515,7 @@ mod tests {
             miss: 0.5,
         };
         let b = body([0.4, 0.2, 1.0], true);
-        let out = callouts(&[s], &b, true, Some((&s, &reach)), false, &LOOK);
+        let out = callouts(&[s], &b, true, Some((&s, &reach)), false, true, &LOOK);
         assert_eq!(out.len(), 1);
         let c = &out[0];
         // The X button's glyph, in the HUD's colour and font.
@@ -500,16 +529,19 @@ mod tests {
             glyphs: false,
             ..LOOK
         };
-        let l = &callouts(&[s], &b, true, Some((&s, &reach)), false, &letters)[0];
+        let l = &callouts(&[s], &b, true, Some((&s, &reach)), false, true, &letters)[0];
         assert_eq!(l.label.as_deref(), Some("Hold X"));
         // Engaged: steady.
-        let g = &callouts(&[s], &b, true, Some((&s, &reach)), true, &LOOK)[0];
+        let g = &callouts(&[s], &b, true, Some((&s, &reach)), true, true, &LOOK)[0];
         assert_eq!(g.label.as_deref(), Some("Guiding"));
         assert_eq!(g.color, LOOK.colour);
         assert!(g.style.pulse.is_none());
+        // The assist off: no Hold X, no Guiding.
+        assert!(callouts(&[s], &b, true, Some((&s, &reach)), false, false, &LOOK).is_empty());
+        assert!(callouts(&[s], &b, true, Some((&s, &reach)), true, false, &LOOK).is_empty());
         // No target, or not primed: nothing.
-        assert!(callouts(&[s], &b, true, None, false, &LOOK).is_empty());
-        assert!(callouts(&[s], &b, false, Some((&s, &reach)), false, &LOOK).is_empty());
+        assert!(callouts(&[s], &b, true, None, false, true, &LOOK).is_empty());
+        assert!(callouts(&[s], &b, false, Some((&s, &reach)), false, true, &LOOK).is_empty());
     }
 
     #[test]
@@ -525,6 +557,7 @@ mod tests {
             true,
             None,
             false,
+            true,
             &LOOK,
         );
         assert_eq!(out.len(), 2);
@@ -534,6 +567,17 @@ mod tests {
         assert_eq!(out[0].edges.len(), RING_SEGMENTS);
         assert_eq!(out[1].label.as_deref(), Some("Drop 3 m"));
         assert!(out.iter().all(|c| c.color == LOOK.colour));
+        // The same with the assist off.
+        let off = callouts(
+            &spots,
+            &body([0.0, 0.0, 0.0], false),
+            true,
+            None,
+            false,
+            false,
+            &LOOK,
+        );
+        assert_eq!(off, out);
         // On the take-off spot it flashes.
         let on = callouts(
             &spots,
@@ -541,12 +585,24 @@ mod tests {
             true,
             None,
             false,
+            true,
             &LOOK,
         );
         assert_eq!(on[0].label.as_deref(), Some("Jump now"));
         assert_eq!(on[0].style.label_scale, SCALE_MAX);
         // Not primed, or in the air with no target: none.
-        assert!(callouts(&spots, &body([0.0; 3], false), false, None, false, &LOOK).is_empty());
+        assert!(
+            callouts(
+                &spots,
+                &body([0.0; 3], false),
+                false,
+                None,
+                false,
+                true,
+                &LOOK
+            )
+            .is_empty()
+        );
         assert!(
             callouts(
                 &spots,
@@ -554,6 +610,7 @@ mod tests {
                 true,
                 None,
                 false,
+                true,
                 &LOOK
             )
             .is_empty()

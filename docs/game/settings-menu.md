@@ -16,7 +16,9 @@ simulation memory except through a hook that says so (the clamp global in
 - The Controls screen has rows for the controller speaker, the Steam
   Controller (speaker, trackpad aim, left trackpad) and, on iOS, the touch
   controls and Aim Assist ([playstation-audio.md](../audio/playstation-audio.md)
-  "In-game setting", [ios.md](../runtime/ios.md#controls)). On macOS,
+  "In-game setting", [ios.md](../runtime/ios.md#controls)), and last the
+  superbounce **Fall Assist**, Off until a press turns it on
+  ([superbounce.md](superbounce.md#hold-x-the-fall-assist)). On macOS,
   **Lightbar** sits next to **Controller Speaker**.
 - **Player Settings** in the campaign and multiplayer pause menus opens the
   native settings list, which includes **Video Settings** and **Voice**
