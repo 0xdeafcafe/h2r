@@ -186,7 +186,7 @@ fn call(app: &mut App, method: &str, p: &P) -> Reply {
         m::PAIR_STOP => enqueue(app, Request::Stop),
         m::PAIR_EDIT => {
             let enabled = p.bool("enabled")?;
-            if enabled && let Some(why) = need_window(app)?["edit_refusal"].as_str() {
+            if enabled && let Some(why) = need_window(app)?.0["edit_refusal"].as_str() {
                 return Err(err(code::REFUSED, why));
             }
             let mut result = enqueue(app, Request::Edit(enabled))?;

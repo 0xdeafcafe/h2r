@@ -17,6 +17,7 @@ pub mod link;
 pub mod pair;
 pub mod sync;
 pub mod tag_sync;
+mod edits;
 pub use edits::Apply;
 #[cfg(test)]
 pub(crate) mod testing;
@@ -36,6 +37,7 @@ use serde_json::{Value, json};
 
 use crate::app::{Action, App};
 use agent_proto::discover::MapMatch;
+use edits::Edits;
 use link::{Event, Link, Options, Purpose};
 use pair::{Finder, Notice, Request};
 use sync::Baseline;
@@ -1033,6 +1035,7 @@ pub fn ground(app: &App, p: Vec3) -> Vec3 {
 /// to the cursor".
 pub fn surface_at(app: &App, u: f32, v: f32, aspect: f32) -> Option<Vec3> {
     let ray = app.session.camera().ray(u, v, aspect);
-    let at = geometry::surface(app.session.world().0, &ray)?;
+    // A hidden structure is not a surface the cursor can land on.
+    let at = app.session.surface_hit_visible(&ray, &app.layers)?;
     Some([at[0], at[1], at[2] + LIFT])
 }
