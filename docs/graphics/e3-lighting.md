@@ -487,14 +487,15 @@ runs the game.
 Split screen and 120 fps are checked in L6 and L7 with the caps shared.
 
 **Measurements.** Numbers come from the lab laptop
-([lab.md](../runtime/lab.md)), as FrameScene's do; local runs are for
-pictures.
+([lab.md](../runtime/lab.md)). Both arms use the native game-frame
+owner. Its completed game-view counters in `render.scene` identify the
+frames the native graph presented. Local runs supply the pictures.
 
 ```sh
 for mode in retail e3; do
   h2 lab run --host laptop --branch "$B" --level 03a_oldmombasa --difficulty heroic \
     --frames 5000 --stats-from 3000 --build-env H2_OPT=2 --fresh-data \
-    --env H2_RENDER_SCALE=4 --env H2_LIGHTING=$mode \
+    --env H2_FEATURES=frame-scene.sink --env H2_RENDER_SCALE=4 --env H2_LIGHTING=$mode \
     --wait --to "$RUSH_KEEP/lab/$B-$mode"
 done
 ```
@@ -510,7 +511,7 @@ h2 agent render.frame '{"source":"private","arm":true}'
 e3=$(h2 agent render.capture "$(jq -nc --argjson t "$tick" '{tick:$t,lighting:"e3"}')")
 retail_path=$(printf '%s\n' "$retail" | jq -r '.path')
 e3_path=$(printf '%s\n' "$e3" | jq -r '.path')
-h2 agent frame compare "$retail_path" "$e3_path" --diff diff.png
+h2 agent render.compare "$(jq -nc --arg a "$retail_path" --arg b "$e3_path" '{a:$a,b:$b}')"
 h2 agent render.frame '{"source":"private"}'   # frame.private_frame.e3.passes
 h2 agent render.stats                        # private_frame.e3
 ```
