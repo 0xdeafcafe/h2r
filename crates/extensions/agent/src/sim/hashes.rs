@@ -84,10 +84,14 @@ impl HashLog {
 
     /// The rows from `p.from_tick` on, at most `p.max`.
     pub fn reply(&self, p: &HashesParams) -> HashesReply {
+        self.reply_through(p, u32::MAX)
+    }
+
+    pub(crate) fn reply_through(&self, p: &HashesParams, through: u32) -> HashesReply {
         let r = self.lock();
         let from = p.from_tick.unwrap_or(0);
         let max = p.max.unwrap_or(usize::MAX);
-        let mut matching = r.rows.iter().filter(|row| row.0 >= from);
+        let mut matching = r.rows.iter().filter(|row| (from..=through).contains(&row.0));
         let rows: Vec<HashRow> = matching
             .by_ref()
             .take(max)

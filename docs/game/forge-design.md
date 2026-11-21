@@ -1,6 +1,6 @@
 # Forge: the design
 
-Status: Design. Nothing here is built.
+Status: F3 probes are implemented. Forge editing and session modes are in design.
 Code: `crates/formats/forge-doc` (the document, ops, validation), `crates/tools/forge-build` (the materialiser), `crates/extensions/forge` (the session, the tools, the edit log), `crates/tools/asset-import` (glTF and FBX to tags), screens in `crates/extensions/game/src/ui_kit/`. Tests: each crate's own, on invented data.
 Switch: the `forge` feature of `H2_FEATURES` (off until slice F4 is seen in the game); it joins [switches.md](../runtime/switches.md) with the code.
 
@@ -537,13 +537,15 @@ over the guest. Out of scope: mesh, bitmap and Forge-family ops beyond
 their type names, which later slices fill.
 
 **F3 in detail.** Methods in `crates/extensions/agent` with their
-`agent-proto` types and fake-game tests. `forge.capacity` reads the two
-arena cursors scenario-editor.md section 6 names and the block counts.
-`forge.probe {what: "replication", group}` makes one object of the
-group on an `mp_host` and returns its id for the client's `sim.objects`
-to be asked for. `{what: "sync"}` reports the protocol and the hash
-series of a session started on a multiplayer map with no variant.
-`{what: "ai"}` reports the AI flag and the actor count.
+`agent-proto` types and fake-game tests. The [Forge probes](../runtime/agent-api.md#forge-probes) read the arena
+cursors, object pool, block counts and candidate kit tails.
+`forge.probe {what: "replication", group}` makes one object on an
+`mp_host` so the client can check for it through `sim.objects`.
+`{what: "sync"}` reports the protocol and tick hashes of a session
+started on a multiplayer map with no variant. `{what: "ai"}` reports
+AI flags and the actor count. `{what: "kit"}` gives a runtime census
+alongside the block counts for comparison with the base map. The
+[measurement procedure](notes/forge-probes.md) covers all four probes.
 
 ## Decisions
 

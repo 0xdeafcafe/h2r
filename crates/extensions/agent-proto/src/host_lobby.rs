@@ -8,6 +8,9 @@ pub struct OpenParams {
     pub map: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub variant: Option<String>,
+    /// Preserve the fresh System Link squad's synchronous, variant-free setup.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub synchronous: bool,
     pub max_players: u8,
     pub live: bool,
 }

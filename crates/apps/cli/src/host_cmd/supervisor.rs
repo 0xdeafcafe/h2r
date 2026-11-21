@@ -272,6 +272,7 @@ fn drive(
             .max(BOOT_POLL),
     ))?;
     let params = OpenParams {
+        synchronous: false,
         map: lease.map.clone(),
         variant: lease.variant.clone(),
         max_players: lease.max_players,

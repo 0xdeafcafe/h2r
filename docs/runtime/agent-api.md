@@ -59,6 +59,7 @@ connection to hold `session.claim`.
 | `state.save`, `load`, `list`, `drop`, `fork` | act (`list` read) | [`state`](#state-machine-snapshots) |
 | `bots.stats` | read | [Bot combat](#bot-combat) |
 | `sim.*` | read or act | [`sim`](#sim-simulated-players-and-direct-state) |
+| `forge.capacity`, `forge.probe` | read, act | [Forge probes](#forge-probes) |
 | `match.status`, `match.report`, `match.stop` | read, read, act | [Sim matches](#sim-matches) |
 | `settings.list`, `settings.set`, `perf.overlay`, `cheat.list`, `cheat.set` | read or act | [Menu methods](#menu-methods-settings-perf-overlay-cheats) |
 | `theater.*` | read or act | [Theater transport](#theater-transport) |
@@ -69,7 +70,7 @@ connection to hold `session.claim`.
 
 A new method gets a row here and a section for its domain. The names
 live in `crates/extensions/agent-proto/src` (`method::ALL`, `hot::method::ALL`,
-`state::method::ALL`, `sim`, `trace`, `theater`) and where the host adds
+`state::method::ALL`, `sim`, `forge`, `trace`, `theater`) and where the host adds
 them (`Agent::add_method`, `Agent::add_game_method`).
 
 ## Connecting
@@ -1114,7 +1115,11 @@ name matches two different saved or disc rulesets, open is
 `live` boolean selects System Link or a Live custom game; Live needs a
 working service identity that can publish sessions. Open waits for retail
 to publish the requested lobby parameters. Repeating the same open in
-pregame returns the existing lobby; close it before changing parameters.
+pregame returns the existing lobby. Close it before changing parameters.
+Set `"synchronous":true` with `"live":false` and omit `variant` for a
+variant-free System Link probe. Open checks that the fresh squad keeps
+protocol 1, engine index 0 and the difficulty sentinel for multiplayer
+after the map setter. The lobby uses retail's normal readiness and start calls.
 
 The phases are `menu`, `lobby`, `loading`, `playing` and `postgame`.
 Player slots are retail membership slots and can have gaps; split-screen
@@ -1974,6 +1979,61 @@ is the local embedded server (`h2 play --live-local`,
 `live_server::start_embedded`), which issues bot identities and accepts
 `bot: true` only for xuids it issued. Never point a sim run at the public
 Live server.
+
+## Forge probes
+
+The running game's agent registers these methods through
+`crates/extensions/agent/src/forge.rs`. The wire types are in
+`crates/extensions/agent-proto/src/forge.rs`. Results include the normal
+`at` stamp. See the [measurement procedure](../game/notes/forge-probes.md).
+
+| Method and access | Parameters | Result |
+|---|---|---|
+| `forge.capacity` (read) | `{}` or omitted | `tag_arena {low, high, headroom_bytes}`, `object_pool {used, limit}`, and `blocks` keyed by scenario block name |
+| `forge.probe` (act) | `{what:"replication", group, tag?, pos?}` | `{what, session, tag:{tag, group, name}, object, pos}` after the next tick |
+| `forge.probe` (act) | `{what:"sync", from_tick?, max?}` | `{what, session, scenario_type, variant_engine, desync, hashes}` |
+| `forge.probe` (act) | `{what:"ai"}` | `{what, enabled, active, actors}` |
+| `forge.probe` (act) | `{what:"kit"}` | `{what, blocks, objects_by_group, actors}` |
+
+**Capacity and kit.** `headroom_bytes` is the difference between the
+two physical arena cursors at the stamp's tick. It includes space
+that cache pools may need. Each block reports `count`, the known
+`limit` or `null`, and `kit_left`. The candidate spare count is
+the contiguous marked tail of a block. The markers are palette index
+`-1` for placements, placement index `-1` for object names, player
+type `-1` for starting locations, flag type `0xffff` for netgame flags
+and a null item datum for netgame equipment. A block without a known
+marker reports `null`. The kit probe adds a runtime object census by
+group and the live actor count for base-versus-kit comparisons. The
+candidates' behavior is measured in the game.
+
+**Replication.** The host must be in a ticking `mp_host` session. The
+group must be one that [`sim.spawn`](#the-games-own-functions-teleport-give-spawn)
+accepts. A tag may be a datum or name in that group. With the group alone,
+the probe uses its first valid loaded tag in index order. With `pos`
+omitted, it uses one world unit above the first eligible scenario
+starting location. Pass an explicit `pos` to control the spawn location.
+The probe queues a single `sim.spawn` engine call. The returned
+`object` is the host's salted handle in the same form as `sim.objects`.
+The client can enumerate that group through `sim.objects` immediately
+afterward. A refused or missing spawn leaves replication unmeasured.
+
+**Synchronous protocol.** `session` uses the same reader as
+`sim.session`. `scenario_type` is the loaded tag's kind (multiplayer
+is 1). `variant_engine` shows the engine in the active game options
+(none is 0). `desync` is the simulation world's desync latch. Fields
+whose backing globals are absent are `null`. The probe supplies the
+current multiplayer map's [`sim.hashes`](#framescene-checks-compare-capture-scene-parity-hashes)
+rows up to the sampled tick. `from_tick` is inclusive. `max` defaults
+to 4096 and accepts 1 to 4096. During pregame, or when the hash observer
+has no samples for the current map, `rows` is empty. Compare matching
+ticks across peers and check the latch on both.
+
+**AI.** `enabled` is the flag the engine's `ai` builtin sets and
+`ai_update` reads. `active` is the adjoining activity flag used by
+the campaign AI extension. A missing AI-global pointer produces
+`null` for both, and a missing actor pool produces zero actors.
+Capacity, AI and kit reads require a gameplay tick.
 
 ## Sim matches
 

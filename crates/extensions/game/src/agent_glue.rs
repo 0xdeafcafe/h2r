@@ -144,6 +144,7 @@ impl AgentGlue {
             ),
             Err(e) => anyhow::bail!("agent-calls: {e}"),
         }
+        agent::forge::install(&agent, sim.clone(), &agent::sim::hashes::HASHES);
         agent::ai::install(&agent);
         agent::havok::install(&agent);
         // The native collision world's counters (impl.sim.native.collision).

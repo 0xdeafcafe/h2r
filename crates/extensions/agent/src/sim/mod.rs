@@ -92,6 +92,36 @@ impl SimHandle {
         self.lock().host_write(ctx)
     }
 
+    pub(crate) fn session_view(&self, ctx: &mut GameCtx<'_>) -> SessionView {
+        self.lock().session(ctx)
+    }
+
+    pub(crate) fn replication_session(
+        &self,
+        ctx: &mut GameCtx<'_>,
+    ) -> Result<SessionView, RpcError> {
+        let session = self.writable_session(ctx)?;
+        if session.kind != SessionKind::MpHost {
+            let mut error = RpcError::new(
+                code::INVALID_REQUEST,
+                "replication requires an mp_host session",
+            );
+            error.data = Some(json!({ "session": session }));
+            return Err(error);
+        }
+        Ok(session)
+    }
+
+    pub(crate) fn replication_spawn(
+        &self,
+        params: SpawnParams,
+        session: SessionView,
+        group: String,
+        ctx: &mut GameCtx<'_>,
+    ) -> R {
+        self.lock().spawn_object(params, Some(session), Some(&group), ctx)
+    }
+
     /// Sets the session probe.
     pub fn set_probe(&self, probe: SessionProbe) {
         self.lock().probe = Some(probe);
@@ -485,40 +515,91 @@ impl Sim {
 
     fn spawn(&mut self, v: Value, ctx: &mut GameCtx<'_>) -> R {
         let p: SpawnParams = params(v)?;
+        self.spawn_object(p, None, None, ctx)
+    }
+
+    fn spawn_object(
+        &mut self,
+        p: SpawnParams,
+        session: Option<SessionView>,
+        group: Option<&str>,
+        ctx: &mut GameCtx<'_>,
+    ) -> R {
         if !p.pos.iter().all(|v| v.is_finite() && v.abs() < 1e6) {
             return Err(invalid("pos: three finite world coordinates"));
         }
         let facing = wire::facing_vector(p.yaw, None, None).map_err(invalid)?;
-        let session = self.host_write(ctx)?;
+        let session = match session {
+            Some(session) => session,
+            None => self.host_write(ctx)?,
+        };
         let q = self.calls()?;
-        let tag = self.find_tag(&p.tag, wire::OBJECT_GROUPS)?;
-        if !wire::OBJECT_GROUPS.contains(&tag.group.as_str()) {
+        let groups;
+        let among = match group {
+            Some(group) => {
+                groups = [group];
+                groups.as_slice()
+            }
+            None => wire::OBJECT_GROUPS,
+        };
+        let tag = self.find_tag(&p.tag, among)?;
+        if !among.contains(&tag.group.as_str()) {
             return Err(invalid(format!(
                 "{}: a {} tag; objects are {}",
                 p.tag,
                 tag.group,
-                wire::OBJECT_GROUPS.join(" ")
+                among.join(" ")
             )));
         }
+        let mp_scenario = if group.is_some() {
+            Some(ctx.with_guest(|m| {
+                guest_layout::global::SCENARIO
+                    .pointer(m)
+                    .map_err(|e| unavailable(format!("reading the scenario at {:#x}", e.addr)))?
+                    .ok_or_else(|| unavailable("no loaded scenario".into()))
+            })?)
+        } else {
+            None
+        };
         let ticket = calls::lock(&q)
             .submit(Call::Spawn {
                 tag: tag.datum,
                 pos: p.pos.map(|c| c as f32),
                 facing: facing.map(|v| v.map(|c| c as f32)),
+                mp_scenario,
             })
             .map_err(unavailable)?;
-        let session = serde_json::to_value(session).expect("serialises");
         ctx.defer(
             CALL_TICKS,
             Box::new(move |_: &mut GameCtx<'_>| {
                 let out = calls::lock(&q).take(ticket)?;
-                Some(out.map_err(unavailable).map(|made| {
-                    json!({
-                        "tag": tag.json(),
-                        "object": made["object"],
-                        "pos": made["pos"],
-                        "session": session,
-                    })
+                Some(out.map_err(unavailable).and_then(|made| {
+                    if mp_scenario.is_none() {
+                        return Ok(json!({
+                            "tag": tag.json(),
+                            "object": made["object"],
+                            "pos": made["pos"],
+                            "session": session,
+                        }));
+                    }
+                    #[derive(serde::Deserialize)]
+                    struct Made {
+                        object: String,
+                        pos: Option<[f32; 3]>,
+                    }
+                    let made: Made = serde_json::from_value(made)
+                        .map_err(|e| unavailable(format!("invalid spawn outcome: {e}")))?;
+                    let reply = agent_proto::forge::ProbeReply::Replication {
+                        session: session.clone(),
+                        tag: agent_proto::forge::ProbeTag {
+                            tag: format!("{:#010x}", tag.datum),
+                            group: tag.group.clone(),
+                            name: tag.name.clone(),
+                        },
+                        object: made.object,
+                        pos: made.pos,
+                    };
+                    Ok(serde_json::to_value(reply).expect("serialises"))
                 }))
             }),
         );

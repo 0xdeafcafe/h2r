@@ -892,7 +892,7 @@ fn spawn_makes_an_object_tag_at_a_point() {
     let calls = the_game_makes(&q, |_| {
         Ok(json!({"object": "00420003", "pos": [1.0, 2.0, 3.0]}))
     });
-    let super::calls::Call::Spawn { tag, pos, facing } = calls[0].clone() else {
+    let super::calls::Call::Spawn { tag, pos, facing, mp_scenario: None } = calls[0].clone() else {
         panic!("{calls:?}");
     };
     assert_eq!((tag, pos), (VEHI_TAG, [1.0, 2.0, 3.0]));

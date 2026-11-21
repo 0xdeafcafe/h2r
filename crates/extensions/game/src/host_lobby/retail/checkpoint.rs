@@ -24,6 +24,9 @@ impl Machine {
                 Variant::Named(v) => {
                     w.u8(1).raw(v.bytes());
                 }
+                Variant::Absent => {
+                    w.u8(2);
+                }
             }
             w.u8(match o.setup {
                 Setup::Created => 0,
@@ -82,6 +85,7 @@ impl Machine {
                     variant::VariantRecord::from_bytes(r.raw(variant::SIZE)?)
                         .ok_or_else(|| corrupt("variant bytes"))?,
                 )),
+                2 if version >= 2 && !live => Variant::Absent,
                 _ => return Err(corrupt("variant kind")),
             };
             let config = Config {
@@ -156,5 +160,31 @@ mod tests {
         old.drain(6..10);
         m.put_u32(0x8000 + super::super::INCARNATION, 12);
         assert_eq!(Machine::load(&old, &m).unwrap().save(), bytes);
+    }
+
+    #[test]
+    fn variant_free_squad_round_trips() {
+        let state = Machine {
+            owned: Some(Owned {
+                addr: 0x8000,
+                incarnation: 12,
+                config: Config {
+                    map: 99,
+                    variant: Variant::Absent,
+                    max_players: 2,
+                    live: false,
+                },
+                setup: Setup::Open,
+                applied_variant: None,
+                prior_live_id: None,
+                live_id: None,
+                closing: false,
+            }),
+        };
+        let bytes = state.save();
+        let m = engine::testing::FakeGuest::new();
+        let loaded = Machine::load(&bytes, &m).unwrap();
+        assert_eq!(loaded.owned.as_ref().unwrap().config.variant, Variant::Absent);
+        assert_eq!(loaded.save(), bytes);
     }
 }
