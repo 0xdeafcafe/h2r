@@ -1230,7 +1230,9 @@ records which game frames the native graph actually presents.
   scene to `d3d::threaded::owner`. The worker checks the original
   commands, resource bindings and device-local target eligibility before
   choosing a renderer. The game-view entry marks its Swap even when the
-  view contributes only an overlay or reuses the previous colour buffer.
+  view only clears or copies attachments, draws its overlay or reuses the
+  previous colour buffer. These frames can reach Swap before the first
+  layer that supplies a camera.
   The graph draws once into the live surfaces,
   exports sampled textures under their original handles, and installs
   flare query results under the tickets already held by the guest. An
