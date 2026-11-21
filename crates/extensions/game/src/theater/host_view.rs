@@ -259,7 +259,7 @@ impl Frame {
             address,
             index,
             source: crate::map_slots::active_file(g),
-            checksum: guest_layout::game::cache_checksum(g).unwrap_or_default(),
+            checksum: guest_layout::game::cache_checksum(&*g as &dyn engine::GuestMemory).unwrap_or_default(),
         };
         // While every player is respawning, continue rendering a detached
         // camera in the last map it actually saw. Never open a menu BSP for it.
