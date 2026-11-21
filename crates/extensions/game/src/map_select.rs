@@ -1318,6 +1318,12 @@ pub(crate) fn selected_category(id: u32) -> Option<Category> {
     Some(map.category())
 }
 
+/// The catalogue as boot read it and package installs since refreshed it
+/// (a lobby's map picker lists from it), or `None` before boot prepared it.
+pub fn current() -> Option<Arc<Catalogue>> {
+    Some(PREPARED.get()?.catalogue())
+}
+
 pub fn prepare(catalogue: Catalogue) -> Arc<Selection> {
     let sel = Arc::new(Selection::new(catalogue));
     let _ = PREPARED.set(Arc::clone(&sel));

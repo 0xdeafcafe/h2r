@@ -1785,8 +1785,10 @@ or the game's UI state without UI watch. All are read-only except
   check that the previous screen returns on the same window and slot. See the
   [pause Settings walkthrough](../game/settings-menu.md#to-check-in-game).
   `main_menu_theater` is present and true when Theater occupies the
-  row after Xbox Live. Lobby scripts use it to locate Split Screen and
-  System Link. `dialog` is the dialog up (the first screen on windows 0 to
+  row after Xbox Live, and `main_menu_rows` is the number of rows of ours
+  after it (Theater, Forge and Firefight, as their features are on). Lobby
+  scripts use them to locate Split Screen and System Link; the UI watch
+  line says the same with `, main menu rows N`. `dialog` is the dialog up (the first screen on windows 0 to
   4, any slot), or `null`: `{id, name, window, slot}`, with `name` the dialog's
   recognized name (`dialog_live_signin` for the account picker,
   `confirmation_dialog`, `error_dialog_ok`, ...; `boot::ui_watch::dialog_name`)

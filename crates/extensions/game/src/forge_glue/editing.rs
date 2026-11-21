@@ -80,6 +80,14 @@ impl Editor {
         }
     }
 
+    /// Loads the saved map `name` into the session as it opens (the Forge
+    /// lobby's choice). A refusal is the editor's notice.
+    pub fn load_draft(&mut self, tick: u32, name: String) {
+        if let Err(reason) = self.action(tick, Action::Load(name)) {
+            self.notice = Some((reason, tick));
+        }
+    }
+
     pub fn monitor(&self) -> bool {
         self.tool.monitor
     }

@@ -510,7 +510,9 @@ pub fn install(registry: &mut hooks::Registry, store: &Arc<Store>) -> anyhow::Re
     registry
         .add(&SetupRow { page: screen })
         .map_err(|e| anyhow::anyhow!("firefight row: {e}"))?;
-    Ok(())
+    // The main menu's FIREFIGHT lobby: it reads the page's choices and
+    // starts a game on a kit map.
+    super::lobby::install(registry, Arc::from(source(store)))
 }
 
 #[cfg(test)]

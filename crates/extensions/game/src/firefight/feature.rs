@@ -90,13 +90,24 @@ static SHARED: OnceLock<Arc<Shared>> = OnceLock::new();
 /// The feature.
 pub struct Firefight(pub Arc<Shared>);
 
+fn manifest() -> hooks::Manifest {
+    hooks::Manifest::new(
+        FEATURE,
+        "Firefight: the director and its host log on a kit map",
+    )
+    .doc("docs/game/firefight.md")
+}
+
+/// Whether the `firefight` feature is on under `switches`, by its
+/// manifest's default: the main menu's FIREFIGHT row shows with it.
+pub fn enabled(switches: &hooks::Switches) -> bool {
+    let m = manifest();
+    switches.feature(m.id, m.default_on)
+}
+
 impl hooks::Feature for Firefight {
     fn manifest(&self) -> hooks::Manifest {
-        hooks::Manifest::new(
-            FEATURE,
-            "Firefight: the director and its host log on a kit map",
-        )
-        .doc("docs/game/firefight.md")
+        manifest()
     }
 
     fn build(&self, b: &mut hooks::Builder) -> Result<(), hooks::BuildError> {

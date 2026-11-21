@@ -570,6 +570,16 @@ pub fn install(
         .as_ref()
         .is_some_and(|m| !m.rows(video_screen::VOICE_LIST).is_empty());
     let with_theater = theater.is_some();
+    // FORGE and FIREFIGHT follow THEATER while their features are on
+    // (Firefight's lobby also needs the settings store its options live in).
+    let with_forge = crate::forge_glue::enabled(registry.switches());
+    let with_firefight =
+        crate::firefight::feature::enabled(registry.switches()) && model.is_some();
+    let want_rows = theater_menu::Rows {
+        theater: with_theater,
+        forge: with_forge,
+        firefight: with_firefight,
+    };
     let live_menu = || custom_games::Menu {
         coop: custom_games::coop_row_enabled(),
     };
@@ -655,8 +665,8 @@ pub fn install(
             served.push((speaker_row::SMALL_AIM_ASSIST_ID, speaker_row::SMALL_AIM_ASSIST_TEXT));
         }
         served.extend(custom_games::strings());
-        if with_theater {
-            served.push((theater_menu::LABEL_ID, theater_menu::LABEL));
+        for entry in want_rows.entries() {
+            served.push((entry.label_id(), entry.label()));
         }
         served.extend(crate::lobby_status::STRINGS);
         if with_skulls {
@@ -683,7 +693,7 @@ pub fn install(
         alloc = live.2 + 0x100;
         theater_items = alloc;
         theater_press = theater_items + THEATER_ITEM_SPACE;
-        if with_theater {
+        if want_rows.any() {
             alloc = theater_press + 0x100;
         }
         ALLOC.store(alloc, Ordering::SeqCst);
@@ -741,7 +751,7 @@ pub fn install(
         .chain(
             [theater_menu::ROW_TEXT, theater_menu::ROW_CHOSEN]
                 .into_iter()
-                .filter(|_| with_theater),
+                .filter(|_| want_rows.any()),
         )
         .chain(skulls_hooks.into_iter().filter(|_| with_skulls))
         .collect();
@@ -750,7 +760,7 @@ pub fn install(
         .filter_map(|a| original(rt, a).map(|o| (a, o)))
         .collect();
     // Only grow the list when its label, action and extra widget can all be installed.
-    let with_theater = with_theater
+    let menu_rows = if want_rows.any()
         && [
             LIST_DATA_NEW,
             speaker_row::ADD_ITEMS,
@@ -758,7 +768,12 @@ pub fn install(
             theater_menu::ROW_CHOSEN,
         ]
         .iter()
-        .all(|a| originals.contains_key(a));
+        .all(|a| originals.contains_key(a))
+    {
+        want_rows
+    } else {
+        theater_menu::Rows::default()
+    };
     rt.edit_dispatch(|d| {
         // Layout table: original, then ours for bytes 4 to 6.
         if let Some(o) = originals.remove(&ACTION_TABLE_BUILD) {
@@ -799,7 +814,7 @@ pub fn install(
                     ctx.runtime().memory().set_u8(cpu.esi + video_screen::SETTINGS_THIRD_ITEM, 1)?;
                 }
                 let n = live_menu().count(name, n);
-                let n = if with_theater { theater_menu::count(name, n) } else { n };
+                let n = menu_rows.count(name, n);
                 // Edit Profile's Voice Chat row, while its hooks are on.
                 let n = crate::profile_voice_row::list_count(&model, name, n);
                 // The variant editor's categories get the multiplayer
@@ -1133,7 +1148,7 @@ pub fn install(
                             speaker_row::extra_slot(table, next, handler, EXTRA_BASE, EXTRA_SIZE, extra_items)
                         };
                         (0..extra_items).map(|i| slot + i * speaker_row::ITEM_SIZE).collect()
-                    } else if with_theater && vtable == theater_menu::VTABLE {
+                    } else if menu_rows.any() && vtable == theater_menu::VTABLE {
                         let mut g = theater_slots.lock().unwrap_or_else(|e| e.into_inner());
                         let (table, next) = &mut *g;
                         vec![speaker_row::extra_slot(table, next, handler, theater_items, THEATER_ITEM_SPACE, 1)]
@@ -1295,19 +1310,20 @@ pub fn install(
                 })
             });
         }
-        // The main menu draws Theater after Xbox Live. Shift the following
-        // rows back for the retail text call so they keep their localized labels.
-        if let (true, Some(o)) = (with_theater, originals.remove(&theater_menu::ROW_TEXT)) {
+        // The main menu draws our rows after Xbox Live: THEATER, then FORGE
+        // and FIREFIGHT. Shift the following rows back for the retail text
+        // call so they keep their localized labels.
+        if let (true, Some(o)) = (menu_rows.any(), originals.remove(&theater_menu::ROW_TEXT)) {
             let sh = alias(d, &mut next_shadow, &o, theater_menu::ROW_TEXT);
             d.register_override(theater_menu::ROW_TEXT, "theater:row-text", move |cpu, ctx, _| {
                 let rt = Arc::clone(ctx.runtime());
                 let mut mem = rt.memory();
                 let row = video_screen::text_row(&*mem, cpu.esp);
-                if row == Some(theater_menu::ROW) {
+                if let Some(entry) = row.and_then(|row| menu_rows.entry_at(row)) {
                     let item = mem.u32(cpu.esp + 4)?;
-                    return row_texts(cpu, ctx, &mut mem, item, vec![(0, theater_menu::LABEL_ID)]);
+                    return row_texts(cpu, ctx, &mut mem, item, vec![(0, entry.label_id())]);
                 }
-                if let Some(retail) = row.and_then(theater_menu::shifted_retail_row) {
+                if let Some(retail) = row.and_then(|row| menu_rows.shifted_retail_row(row)) {
                     let item = mem.u32(cpu.esp + 4)?;
                     let list = mem.u32(item + 0x10)?; // The item widget's parent.
                     let Some(handle) = crate::retail_rows::retail_handle(&*mem, list, retail) else {
@@ -1325,29 +1341,47 @@ pub fn install(
                 Ok(o.invoke(cpu, ctx, theater_menu::ROW_TEXT))
             });
         }
-        if let (true, Some(o), Some(theater)) =
-            (with_theater, originals.remove(&theater_menu::ROW_CHOSEN), theater)
-        {
+        if let (true, Some(o)) = (menu_rows.any(), originals.remove(&theater_menu::ROW_CHOSEN)) {
             let sh = alias(d, &mut next_shadow, &o, theater_menu::ROW_CHOSEN);
             d.register_override(theater_menu::ROW_CHOSEN, "theater:row-chosen", move |cpu, ctx, _| {
                 let rt = Arc::clone(ctx.runtime());
                 let mut mem = rt.memory();
                 let row = chosen_row(&*mem, cpu.esp);
-                if row == Some(theater_menu::ROW) {
+                if let Some((shown, entry)) =
+                    row.and_then(|row| menu_rows.entry_at(row).map(|entry| (row, entry)))
+                {
+                    // Each row opens the screen of ours of its name.
+                    let (screen, note) = match entry {
+                        theater_menu::Entry::Theater => {
+                            (crate::theater_ui::FILMS, "theater: opening Films")
+                        }
+                        theater_menu::Entry::Forge => {
+                            (crate::forge_lobby::SCREEN, "forge: opening the Forge lobby")
+                        }
+                        theater_menu::Entry::Firefight => (
+                            crate::firefight::lobby::SCREEN,
+                            "firefight: opening the Firefight lobby",
+                        ),
+                    };
                     let Some((mask, loader)) = video_screen::player_mask(&*mem, cpu.esp)
-                        .zip(crate::list_class::loader_of(crate::theater_ui::FILMS))
+                        .zip(crate::list_class::loader_of(screen))
                     else {
+                        eprintln!("main menu: {} has no screen in this run ({screen} is not installed)", entry.label());
                         return mem.ret(cpu, 8);
                     };
                     let controller = mask.trailing_zeros();
                     let player = crate::skulls_menu::profile_of(&*mem, controller);
-                    mem.set_u32(theater_menu::LAST_ROW, theater_menu::ROW as u32)?;
+                    mem.set_u32(theater_menu::LAST_ROW, shown as u32)?;
                     drop(mem);
-                    theater.open(controller, player);
-                    return open_screen(cpu, ctx, mask, loader, "theater: opening Films");
+                    if entry == theater_menu::Entry::Theater
+                        && let Some(theater) = &theater
+                    {
+                        theater.open(controller, player);
+                    }
+                    return open_screen(cpu, ctx, mask, loader, note);
                 }
                 if let Some((shown, retail)) = row
-                    .and_then(|row| theater_menu::shifted_retail_row(row).map(|retail| (row, retail)))
+                    .and_then(|row| menu_rows.shifted_retail_row(row).map(|retail| (row, retail)))
                 {
                     let Some(handle) = crate::retail_rows::retail_handle(&*mem, cpu.ecx, retail) else {
                         return mem.ret(cpu, 8);
@@ -1604,7 +1638,7 @@ pub fn install(
             .add(&rows)
             .map_err(|e| anyhow::anyhow!("settings rows: {e}"))?;
     }
-    theater_menu::set_installed(with_theater);
+    theater_menu::set_rows(menu_rows);
     if with_voice {
         // Its Voice Chat row on Edit Profile (crate::profile_voice_row):
         // the list grows and its panes move only with these hooks on.

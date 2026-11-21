@@ -392,17 +392,35 @@ column and A opens a picker over it; no row steps sideways through
 values.
 
 **Local session (F4).** With Forge enabled, start a local multiplayer
-game on an original map. Press D-pad Up or Tab to enter the monitor.
+game on an original map, from the FORGE lobby or the game's own. Press
+D-pad Up or Tab to enter the monitor.
 The play window draws the HUD and dialogs over the game. Start or
 Escape at the top opens Save, Save as and Load. A new draft takes the
 base map's name or the first free numbered filename. Save as creates
 another draft.
 
-**Forge lobby (F14 design).** **FORGE** on the main menu, below **THEATER**
-(`layout_glue.rs`). It opens the Forge lobby: the pregame lobby's skin
-with rows **Map**, **Forge map** (New, or a saved or downloaded one),
-**Players can edit** and **Start**. Published maps also appear under
-**Change Map > Forge** in Game Setup ([map-select.md](map-select.md)).
+**Forge lobby.** **FORGE** on the main menu, below **THEATER**
+(`layout_glue.rs`, `theater_ui::menu`), shows while the `forge` feature
+is on. It opens the Forge lobby (`forge_lobby.rs`): a kit screen on the
+pregame lobby's skin (`lobby_start.rs`) with rows **Map**, **Forge map**
+and **Start**, and a status line under them.
+
+- **Map**: A opens a picker of the original maps (the catalogue's Halo 2
+  category). The first is held until another is chosen. With none
+  installed the picker says so and Start is refused.
+- **Forge map**: A opens a picker of **New** and the drafts saved under
+  `<data>/forge` (`forge::saved_names`). A draft saved on another map is
+  refused when the session loads it, with the editor's notice.
+- **Start**: queues a local multiplayer game on the map through the
+  agent's guest calls, as the level boot starts one
+  ([level-boot.md](../runtime/level-boot.md)), so the session opens as it
+  does from the F4 path and D-pad Up or Tab enters the monitor. The chosen
+  draft is loaded as the session opens (`forge_glue::request_draft`). A
+  refusal, from the lobby or the game, is on the status line.
+
+The local lobby has no Live part. The F14 design adds **Players can edit**
+and the published maps, which also appear under **Change Map > Forge** in
+Game Setup ([map-select.md](map-select.md)).
 
 **In a session** there are three layers.
 

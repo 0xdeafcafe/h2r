@@ -28,6 +28,20 @@ type MapResult = Result<Opened, String>;
 
 static CURRENT: Mutex<Weak<Mutex<Driver>>> = Mutex::new(Weak::new());
 static GENERATION: AtomicU64 = AtomicU64::new(0);
+/// The saved map the next session loads as it opens: what the Forge
+/// lobby's Forge map row chose (`None`: a new map). A game's start does not
+/// clear it; the session that opens takes it.
+static DRAFT: Mutex<Option<String>> = Mutex::new(None);
+
+/// Asks the next session to load the saved map `name` as it opens, or none
+/// (a new map): the Forge lobby's Start ([`crate::forge_lobby`]).
+pub fn request_draft(name: Option<String>) {
+    *DRAFT.lock().unwrap_or_else(|e| e.into_inner()) = name;
+}
+
+fn take_draft() -> Option<String> {
+    DRAFT.lock().unwrap_or_else(|e| e.into_inner()).take()
+}
 
 pub fn requested() -> Result<bool, String> {
     Ok(hooks::Switches::from_env()?.feature("forge", true))
@@ -74,6 +88,8 @@ struct Driver {
     loaded: Option<Loaded>,
     opening: Option<Receiver<MapResult>>,
     editor: Option<Editor>,
+    /// The saved map the editor loads at its first tick.
+    draft: Option<String>,
     reason: String,
 }
 
@@ -81,6 +97,7 @@ impl Driver {
     fn reset(&mut self) {
         GENERATION.fetch_add(1, Ordering::AcqRel);
         self.editor = None;
+        self.draft = None;
         self.opening = None;
         self.loaded = None;
         self.reason = "Waiting for a local multiplayer map.".into();
@@ -138,6 +155,7 @@ impl Driver {
             self.opening = None;
             match result {
                 Ok(opened) => {
+                    self.draft = take_draft();
                     self.editor = Some(Editor::new(
                         opened,
                         &self.data,
@@ -163,6 +181,9 @@ impl Driver {
                 .flatten()
                 .and_then(|g| g.active_bsp(m).ok())
                 .and_then(|i| usize::try_from(i).ok());
+            if let Some(name) = self.draft.take() {
+                e.load_draft(tick, name);
+            }
             e.tick(tick, bsp);
         }
     }
@@ -175,12 +196,23 @@ impl Drop for Driver {
     }
 }
 
+fn manifest() -> Manifest {
+    Manifest::new("forge", "Local Forge monitor and Objects tool")
+        .doc("docs/game/forge-design.md")
+}
+
+/// Whether the `forge` feature is on under `switches`, by its manifest's
+/// default: the main menu's FORGE row shows with it.
+pub fn enabled(switches: &hooks::Switches) -> bool {
+    let m = manifest();
+    switches.feature(m.id, m.default_on)
+}
+
 struct Hooks(Shared);
 
 impl Feature for Hooks {
     fn manifest(&self) -> Manifest {
-        Manifest::new("forge", "Local Forge monitor and Objects tool")
-            .doc("docs/game/forge-design.md")
+        manifest()
     }
 
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
@@ -226,15 +258,7 @@ pub fn install(
     vfs: Option<Arc<Mutex<vfs::Vfs>>>,
     data: &Path,
 ) -> anyhow::Result<()> {
-    let calls = if let Some(sim) = agent.and_then(|a| a.sim.as_ref()) {
-        sim.calls().unwrap_or_else(calls::shared)
-    } else {
-        let calls = calls::shared();
-        registry
-            .add(&calls::CallsFeature(calls.clone()))
-            .map_err(anyhow::Error::msg)?;
-        calls
-    };
+    let calls = crate::lobby_start::install_queue(registry, agent)?;
     let driver = Arc::new(Mutex::new(Driver {
         calls,
         vfs,
@@ -242,6 +266,7 @@ pub fn install(
         loaded: None,
         opening: None,
         editor: None,
+        draft: None,
         reason: "Waiting for a local multiplayer map.".into(),
     }));
     if registry
@@ -249,6 +274,7 @@ pub fn install(
         .map_err(anyhow::Error::msg)?
     {
         controls::publish(false, false, false, None);
+        crate::forge_lobby::install(registry, data)?;
         *CURRENT.lock().unwrap_or_else(|e| e.into_inner()) = Arc::downgrade(&driver);
         if let Some(a) = agent {
             local::install(&a.agent, Backend(driver));
