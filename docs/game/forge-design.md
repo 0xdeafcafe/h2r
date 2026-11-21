@@ -427,7 +427,7 @@ sink.
 - An op is validated before any guest write: finite floats, positions
   inside the BSP's world bounds, a tag that exists with a group the
   block accepts, counts inside engine limits and the budget. A proposal
-  that fails changes nothing (forge.md 2.3).
+  that fails changes nothing.
 - No edit outside a Forge session; no Forge session on a hopper or
   ranked session; no edit in Theater.
 - The Forge step has a time budget a tick. Emitters and the graph skip
@@ -555,7 +555,7 @@ series of a session started on a multiplayer map with no variant.
 ## Related
 
 - [forge-features.md](forge-features.md): each feature in detail.
-- [forge.md](forge.md): retail evidence and the placement model.
+- [forge.md](forge.md): retail evidence.
 - [scenario-editor.md](../editor/scenario-editor.md),
   [modeling.md](../editor/modeling.md),
   [modeling-targets.md](../editor/modeling-targets.md),

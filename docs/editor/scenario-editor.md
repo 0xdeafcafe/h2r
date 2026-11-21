@@ -310,7 +310,7 @@ after Z:'s cache files are removed. The scenario editor never edits them.
 
 The cache dependency identities and the build string are passed through
 unchanged. Multiplayer peers must all load the same bytes; that is the
-variant-hash problem of forge.md §2.4.
+problem `MapId` solves ([maps.md](../game/maps.md) section 5).
 
 ## 6. Adding and removing entries
 
@@ -396,8 +396,9 @@ saves to memory, and re-reads the result with `map` (checksum valid),
 checksum, the patches and the block pair differ from the source. On the
 owner's disc 11 maps grew and waterworks was refused at the bound.
 
-The runtime alternative from forge.md §2.2 (patch blocks in guest memory
-after load) avoids rewriting the file and has the same memory question.
+Forge's kit ([forge-design.md](../game/forge-design.md), "The kit")
+reserves spare entries at build time for the same reason: a block cannot
+grow in guest memory after the load.
 
 ## 7. Open questions
 
