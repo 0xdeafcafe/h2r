@@ -28,6 +28,7 @@ connection to hold `session.claim`.
 | `session.pause`, `resume`, `step` | claim | [Control](#control) |
 | `world.count`, `world.query`, `world.object` | read | [`world`](#world-what-is-in-the-level) |
 | `world.ai` | read | [`world.ai`](#worldai) |
+| `net.replication` | read | [`net.replication`](#netreplication) |
 | `world.raw` | read | [`world.raw`](#worldraw-an-objects-bytes-before-and-after) |
 | `world.poke` | claim | [`world.poke`](#worldpoke-replace-bytes-in-one-object-part) |
 | `havok.bodies`, `havok.agents`, `havok.contacts` | read | [`havok`](#havok-the-physics-world) |
@@ -360,8 +361,11 @@ h2 agent object player.0
 
 ## `world.ai`
 
-`h2 agent world.ai` returns `{at, actors}` at one game boundary and takes
-no parameters (`crates/extensions/agent/src/ai.rs`). Each allocated actor has its
+`h2 agent world.ai` returns `{at, globals, actors}` at one game boundary and takes
+no parameters (`crates/extensions/agent/src/ai.rs`). `globals` is `{on, initialised}`,
+the two bytes of the AI globals (`[0x4f55d0]`, `+0` and `+1`) that
+`ai_update` (`0x1c83c0`) needs set before it runs any actor, or null
+before the globals exist. Each allocated actor has its
 salted AI `datum`, its `unit` ID (for `world.object`), character tag
 datum, team, scenario squad index, current behavior ID, its retail name
 when available (`behavior_name`), and combat status. A missing unit,
@@ -382,6 +386,41 @@ actor's selected perception record to the object datum used at
 `0x001b368a`; the fight behavior reads the same record at `0x001af0c2`.
 Compare it with the player's `unit` in `world.query` to see attention on
 the player. A remembered object can stay selected after contact is lost.
+
+## `net.replication`
+
+`h2 agent net.replication` takes no parameters and returns, at one game
+boundary, what the distributed simulation is replicating
+(`crates/extensions/agent/src/net.rs`). It is the measuring method for the
+probes of [ai-networking.md](../game/ai-networking.md); the types and
+fields it names are in that page's
+[notes](../game/notes/ai-networking.md).
+
+| Field | Meaning |
+|---|---|
+| `world_mode`, `mode` | the simulation world's mode (`[0x4cf77c]+8`) and its name: `none`, `local`, `sync-server`, `sync-client`, `dist-server`, `dist-client`; null before the simulation exists |
+| `distributed` | true in modes 4 and 5 |
+| `objects` | per object tag group (`bipd`, `vehi`, `proj`, ...; `other` for a type outside the table): `{objects, with_entity}`, the live objects and how many have a replication entity (object body `+0xd4` is not -1) |
+| `entities` | the sum of `with_entity` |
+| `events` | `{total, by_type: [{type, name, count}]}`: replication events queued since the process started, by the engine's event type; types never seen are left out, and a type outside the table is counted under `other` with a null `type` |
+| `traffic` | `{sent, sent_bytes, received, received_bytes, largest}`: the title's datagrams since the process started (`live_hle::traffic`) |
+
+Every count is cumulative, so a rate is the difference of two calls
+divided by the ticks between their `at` stamps:
+
+```sh
+h2 agent net.replication > before.json
+h2 agent wait '{"map_ticks":900}' 60000
+h2 agent net.replication > after.json
+```
+
+The event counts come from the `agent-net` feature, an observer on the
+engine's event entry (`SIM_EVENT_GENERATE`, `0xb5a70`);
+`H2_FEATURES=-agent-net` leaves them at zero and the rest of the answer
+unchanged. The engine calls that entry only in a distributed game. On a
+host and a client of one game, `objects` answers whether an object the
+host made reached the client: the host's `with_entity` rises and so does
+the client's `objects` for that group.
 
 ## `world.raw`: an object's bytes, before and after
 

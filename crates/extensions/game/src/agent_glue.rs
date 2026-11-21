@@ -145,6 +145,25 @@ impl AgentGlue {
             Err(e) => anyhow::bail!("agent-calls: {e}"),
         }
         agent::ai::install(&agent);
+        // net.replication: the event counter is an observer of its own, so
+        // H2_FEATURES can drop it and leave the method's other readings.
+        match registry.add(&agent::net::NetFeature) {
+            Ok(true) => {}
+            Ok(false) => eprintln!(
+                "agent: agent-net switched off by H2_FEATURES; net.replication counts no events"
+            ),
+            Err(e) => anyhow::bail!("agent-net: {e}"),
+        }
+        agent::net::install(&agent, || {
+            let t = live_hle::traffic::snapshot();
+            Some(agent::net::Traffic {
+                sent: t.sent,
+                sent_bytes: t.sent_bytes,
+                received: t.received,
+                received_bytes: t.received_bytes,
+                largest: t.largest,
+            })
+        });
         agent::havok::install(&agent);
         // The native collision world's counters (impl.sim.native.collision).
         agent::collision::install(&agent);

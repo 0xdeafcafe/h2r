@@ -51,6 +51,20 @@ fn sector_count(m: &dyn GuestMemory) -> Result<i32, MemFault> {
     if mesh == 0 { Ok(0) } else { m.i32(mesh) }
 }
 
+/// The two bytes `ai_update` (0x001c83c0) gates on: `on` is the script's
+/// `ai` switch (globals +0), `initialised` is set once AI is set up for the
+/// map (+1). `None` before the globals exist.
+fn globals(m: &dyn GuestMemory) -> Result<Option<Value>, MemFault> {
+    let g = m.u32(engine::points::AI_GLOBALS.base)?;
+    if g == 0 {
+        return Ok(None);
+    }
+    Ok(Some(json!({
+        "on": m.u8(g)? != 0,
+        "initialised": m.u8(g.wrapping_add(1))? != 0,
+    })))
+}
+
 fn snapshot(m: &dyn GuestMemory) -> Result<Vec<Value>, MemFault> {
     let Some(pool) = Datums::<Actor>::from_global(m, ACTORS)? else {
         return Ok(Vec::new());
@@ -111,12 +125,14 @@ pub fn install(agent: &Agent) {
                 "world.ai takes no parameters",
             ));
         }
-        let actors = ctx.with_guest(|m| {
-            snapshot(m).map_err(|e| {
-                RpcError::new(code::UNAVAILABLE, format!("reading AI at {:#x}", e.addr))
-            })
+        let (globals, actors) = ctx.with_guest(|m| {
+            globals(m)
+                .and_then(|g| Ok((g, snapshot(m)?)))
+                .map_err(|e| {
+                    RpcError::new(code::UNAVAILABLE, format!("reading AI at {:#x}", e.addr))
+                })
         })?;
-        Ok(json!({ "at": ctx.at, "actors": actors }))
+        Ok(json!({ "at": ctx.at, "globals": globals, "actors": actors }))
     });
 }
 
@@ -124,6 +140,21 @@ pub fn install(agent: &Agent) {
 mod tests {
     use super::*;
     use engine::{testing::FakeGuest, view::fake};
+
+    #[test]
+    fn reports_the_ai_globals_bytes() {
+        let mut m = FakeGuest::new();
+        m.put_u32(engine::points::AI_GLOBALS.base, 0);
+        assert!(globals(&m).unwrap().is_none());
+        m.put_u32(engine::points::AI_GLOBALS.base, 0x50000)
+            .put_u8(0x50000, 0)
+            .put_u8(0x50001, 1);
+        let g = globals(&m).unwrap().unwrap();
+        assert_eq!(g["on"], false);
+        assert_eq!(g["initialised"], true);
+        m.put_u8(0x50000, 1);
+        assert_eq!(globals(&m).unwrap().unwrap()["on"], true);
+    }
 
     #[test]
     fn reports_the_active_frame_and_only_a_current_in_range_sector() {
