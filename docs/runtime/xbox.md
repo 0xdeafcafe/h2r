@@ -155,7 +155,7 @@ What the check found, and what was done:
 
 - wgpu's GL backend imports `opengl32.dll` (`wgl*`) and two `gdi32`
   pixel-format calls. The shell's instance is DX12 only on Windows
-  (`app::embedded::host_surface::backends`), and the executable
+  (`gfx::GpuHost::WindowsApp`, `app::embedded::host_surface::GPU`), and the executable
   delay-loads both DLLs (`/DELAYLOAD`, `delayimp.lib`), so the loader
   never looks for them. The check skips delay-loaded imports.
 - Five imports remain outside `OneCoreUAP.lib`, all from Rust's std for

@@ -92,7 +92,7 @@ echo "build.sh: h2uwp.exe for x86_64-pc-windows-msvc (static CRT, app container)
 # The static CRT: an Xbox has no desktop vcruntime140.dll, and the Store
 # one (vcruntime140_app, a framework package) is not in the xwin splat.
 # /APPCONTAINER marks the executable for the UWP app container. wgpu's GL
-# backend (never used: app::embedded::host_surface::backends) imports
+# backend (never used: gfx::GpuHost::WindowsApp is DX12 alone) imports
 # opengl32.dll and two gdi32 pixel-format calls, which the console may not
 # have; delay-loading them keeps the loader from looking. /map writes the
 # linker map that names its functions for console profiles (nothing in

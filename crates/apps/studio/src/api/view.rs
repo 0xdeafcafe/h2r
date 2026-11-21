@@ -26,7 +26,7 @@ pub struct Gpu {
 
 impl Gpu {
     pub fn new() -> Result<Self> {
-        let instance = wgpu::Instance::default();
+        let instance = gfx::instance();
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::HighPerformance,
             ..Default::default()

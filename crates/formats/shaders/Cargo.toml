@@ -16,6 +16,8 @@ serde = { version = "1", features = ["derive"] }
 naga = { version = "30", features = ["wgsl-in", "msl-out"] }
 wgpu = { version = "30", default-features = false, features = ["std", "parking_lot", "metal", "vulkan", "wgsl"] }
 pollster = "1"
+# The tests' wgpu instance, with the backends per host (gfx::GpuHost).
+gfx = { path = "../../platform/gfx", default-features = false, features = ["gpu"] }
 # Corpus manifest check (tests/corpus.rs); `h2 extract-shaders` writes the corpus.
 sha2 = "0.10"
 # The glyph option is left out of persisted keys when unset (tests/psh.rs).

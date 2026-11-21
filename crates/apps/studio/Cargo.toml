@@ -18,6 +18,8 @@ dear-imgui-wgpu = "0.22"
 dear-imgui-winit = "0.22"
 dear-imguizmo = { version = "0.22", default-features = false }
 wgpu = "30"
+# The wgpu instance, with the backends per host (gfx::GpuHost).
+gfx = { path = "../../platform/gfx", default-features = false, features = ["gpu"] }
 winit = "0.30"
 pollster = "1"
 png = "0.18"

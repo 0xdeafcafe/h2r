@@ -284,7 +284,7 @@ impl ApplicationHandler for App {
             .expect("create window"),
         );
         let size = window.inner_size();
-        let instance = wgpu::Instance::default();
+        let instance = gfx::instance();
         let surface = instance.create_surface(window.clone()).expect("surface");
         let ctx = pollster::block_on(GfxContext::new(instance, Some(&surface))).expect("gpu");
         let presenter =

@@ -63,7 +63,7 @@ pub fn gpu() -> Option<Gpu> {
         return None;
     }
     pollster::block_on(async {
-        let instance = wgpu::Instance::default();
+        let instance = gfx::instance();
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions::default())
             .await
