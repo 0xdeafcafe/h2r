@@ -260,7 +260,7 @@ fn the_links_tool_starts_on_one_end_links_on_the_other_and_unlinks() {
         tool.update(&s, 7, press(Action::Properties)).unwrap(),
         Some(Command::Properties)
     );
-    // Back cancels a started link before it opens the menu.
+    // Back cancels a started link.
     tool.update(&s, 8, press(Action::Accept)).unwrap();
     assert!(tool.link_from.is_some());
     assert_eq!(tool.update(&s, 9, press(Action::Back)).unwrap(), None);

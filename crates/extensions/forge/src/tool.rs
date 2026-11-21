@@ -5,6 +5,11 @@ use forge_doc::OpId;
 
 /// Full stick deflection, in radians per second for look or object rotation.
 pub const TURN_RATE: f32 = 2.4;
+/// Full stick deflection while manipulating, in world units per second that
+/// a held object is pushed away or pulled in.
+pub const PUSH_RATE: f32 = 6.0;
+/// The nearest a held object is pulled in.
+pub const MIN_DISTANCE: f32 = 0.5;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Action {
@@ -21,6 +26,10 @@ pub enum Action {
     Down,
     /// Switch to the Links tool, or start or cancel a link there.
     Link,
+    /// Open the Tools picker.
+    Tools,
+    /// Open the Tool settings.
+    Settings,
 }
 
 impl Action {
@@ -39,6 +48,8 @@ impl Action {
             "up" => Self::Up,
             "down" => Self::Down,
             "link" => Self::Link,
+            "tools" => Self::Tools,
+            "settings" => Self::Settings,
             _ => return None,
         })
     }
@@ -69,6 +80,8 @@ pub enum Command {
     Palette,
     Properties,
     Menu,
+    Tools,
+    Settings,
     DialogUp,
     DialogDown,
     DialogAccept,
@@ -124,6 +137,14 @@ impl Tool {
     pub fn select(&mut self, index: usize) {
         self.cancel();
         self.placing = Some(index);
+    }
+
+    /// Chooses the tool: the Links tool, or the Objects tool.
+    pub fn set_links(&mut self, links: bool) {
+        if self.links != links {
+            self.clear_selection();
+            self.links = links;
+        }
     }
 
     pub fn set_rotation_step(&mut self, degrees: f32) {
@@ -228,6 +249,12 @@ impl Tool {
                 self.rotation[0] += input.look[0];
                 self.rotation[1] += input.look[1];
                 self.rotation[2] += input.roll;
+                // Manipulating: the left stick's forward axis pushes a held
+                // object away and pulls it in.
+                if self.held.is_some() {
+                    let push = input.movement[1] * PUSH_RATE * input.seconds.clamp(0., 0.1);
+                    self.distance = (self.distance + push).clamp(MIN_DISTANCE, 80.);
+                }
             } else {
                 camera.fly(input.movement, input.look, input.seconds.clamp(0., 0.1));
             }
@@ -267,7 +294,10 @@ impl Tool {
                 self.cancel();
                 None
             }
-            Some(A::Back) => Some(C::Menu),
+            // B with nothing held is nothing: the Forge menu is Start's.
+            Some(A::Back) => None,
+            Some(A::Tools) => Some(C::Tools),
+            Some(A::Settings) => Some(C::Settings),
             Some(A::Undo) => Some(C::Undo),
             Some(A::Redo) => Some(C::Redo),
             Some(A::Delete) => self.held.or(self.aimed).map(|id| C::Delete { id }),
@@ -349,7 +379,9 @@ impl Tool {
                 self.link_from = None;
                 None
             }
-            Some(A::Back) => Some(C::Menu),
+            Some(A::Back) => None,
+            Some(A::Tools) => Some(C::Tools),
+            Some(A::Settings) => Some(C::Settings),
             Some(A::Delete) if self.link_from.is_none() => {
                 let link = session.links_of(self.aimed_link?).last()?.id;
                 Some(C::Unlink { link })

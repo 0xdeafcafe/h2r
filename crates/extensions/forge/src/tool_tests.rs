@@ -121,3 +121,62 @@ fn modal_input_leaves_view_and_selection_alone_and_walls_block_aim() {
     assert_eq!(tool.camera, Some(eye()));
     assert_eq!(tool.held, None);
 }
+
+/// Halo 3's buttons on the tool: B with nothing held does nothing (the
+/// Forge menu is Start's), the Tools picker and the Tool settings are
+/// commands, and manipulating pushes a held object away and pulls it in.
+#[test]
+fn b_idle_is_nothing_tools_and_settings_open_and_manipulate_pushes() {
+    let mut session = session(2);
+    let mut world = Fake::default();
+    let mut tool = Tool::default();
+    tool.monitor = true;
+    tool.camera = Some(eye());
+    assert_eq!(tool.update(&session, 1, press(Action::Back)).unwrap(), None);
+    assert_eq!(
+        tool.update(&session, 2, press(Action::Tools)).unwrap(),
+        Some(Command::Tools)
+    );
+    assert_eq!(
+        tool.update(&session, 3, press(Action::Settings)).unwrap(),
+        Some(Command::Settings)
+    );
+    assert_eq!(Action::named("tools"), Some(Action::Tools));
+    assert_eq!(Action::named("settings"), Some(Action::Settings));
+    let frame = Frame {
+        position: [3., 0., 0.],
+        rotation: [0.; 3],
+    };
+    session.place(&mut world, 4, 0, frame).unwrap();
+    tool.update(&session, 5, press(Action::Accept)).unwrap();
+    assert!(tool.held.is_some());
+    let push = |forward: f32| Input {
+        rotating: true,
+        movement: [0., forward, 0.],
+        seconds: 0.1,
+        ..Default::default()
+    };
+    tool.update(&session, 6, push(1.)).unwrap();
+    let away = tool.ghost.unwrap().position[0];
+    assert!(away > 3.5, "pushed away: {away}");
+    for t in 7..40 {
+        tool.update(&session, t, push(-1.)).unwrap();
+    }
+    let near = tool.ghost.unwrap().position[0];
+    assert!(
+        near < 3. && near >= 0.5 - 1e-4,
+        "pulled in, no nearer than the floor: {near}"
+    );
+    // In the Links tool too, B with no link started is nothing.
+    tool.set_links(true);
+    assert!(tool.links);
+    assert_eq!(tool.held, None, "choosing a tool drops the preview");
+    assert_eq!(
+        tool.update(&session, 41, press(Action::Back)).unwrap(),
+        None
+    );
+    assert_eq!(
+        tool.update(&session, 42, press(Action::Tools)).unwrap(),
+        Some(Command::Tools)
+    );
+}
