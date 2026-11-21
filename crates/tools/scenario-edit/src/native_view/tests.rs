@@ -474,6 +474,7 @@ fn layer_1_is_refused_until_it_is_checked_against_the_game() {
         drawn: [0u16, 2].into_iter().collect(),
         parts: vec![((Owner::Cluster(0), 0), (0, 6, None, 0))],
         refused: BTreeMap::from([("animated: x".to_owned(), 1)]),
+        parts_refused: BTreeMap::new(),
     };
     let one = editor_plan(1, plan.clone());
     assert!(one.drawn.is_empty() && one.parts.is_empty());
