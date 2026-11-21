@@ -88,7 +88,8 @@ pub struct Opener {
 }
 
 impl Opener {
-    /// The main menu with Theater installed and the Xbox Live row selected.
+    /// The main menu with Theater installed (after System Link, above
+    /// Settings) and the Xbox Live row selected.
     pub const MAIN_MENU: Opener = Opener {
         name: "main-menu",
         tag: r"ui\screens\game_shell\main_menu_screen\main_menu",
@@ -96,9 +97,9 @@ impl Opener {
         rows: &[
             "Campaign",
             "Xbox Live",
-            crate::theater_ui::menu::LABEL,
             "Split Screen",
             "System Link",
+            crate::theater_ui::menu::LABEL,
             "Settings",
         ],
         focus: 1,
