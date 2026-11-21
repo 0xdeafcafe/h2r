@@ -334,7 +334,10 @@ impl hooks::Feature for StartHook {
                 }
                 Ok(Flow::Continue)
             })
-            .first();
+            .first()
+            // Halo 1's scope reset only clears its own vision states, so
+            // either order is right; this one names it.
+            .after_feature("h1-scope-zoom");
         Ok(())
     }
 }
