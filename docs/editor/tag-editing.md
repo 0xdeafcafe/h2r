@@ -1,6 +1,6 @@
 # Tag editing: the field panel in plain words
 
-Status: Design. T1 (effect words, `play::tag_sync::Effect`) and T2 (the row model, `fields::rows`, and the extended `tag.fields`) are built; the rest is not. "The built panel" describes the panel before T1, the code the slices replace.
+Status: Design. T1 (effect words, `play::tag_sync::Effect`), T2 (the row model, `fields::rows`, and the extended `tag.fields`) and T3 (the Unnamed fields group, **Show unnamed fields**, **Show as** and `tag.view`) are built; the rest is not. `tag.view` takes `tag`, `field`, `unnamed` and `show_as` and refuses `path`, `search` and `changed` until T5 and T7. "The built panel" describes the panel before T1, the code the slices replace.
 Code: `crates/apps/studio/src/fields.rs` (`panel_with_marks`), `crates/apps/studio/src/fields/row.rs` (`rows`), `crates/apps/studio/src/ui/tags.rs` (`fields`, `hex`), `crates/apps/studio/src/play/tag_sync.rs` (`effect`), `crates/apps/studio/src/api/tag_fields.rs`. Tests: `crates/apps/studio/src/app/tag_tests.rs`, `headless::tests::the_tags_tool_edits_a_field_through_its_widgets`.
 Switch: none.
 

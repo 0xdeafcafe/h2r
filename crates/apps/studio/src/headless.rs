@@ -1100,6 +1100,58 @@ mod tests {
         assert_eq!(speed["effect"]["id"], "not_known");
     }
 
+    /// Unnamed fields sit in a folded group under the named ones; focusing
+    /// one (`tag.view field`) opens it, and so does changing one after the
+    /// group was folded by hand. The drawn rows are `tag.view`'s.
+    #[test]
+    fn the_unnamed_fields_group_folds_and_opens_on_focus_and_change() {
+        use crate::app::tag_tests;
+        use crate::script::{Button, Step};
+        use studio_proto::method as m;
+        let Some((_turn, mut h)) = headless() else {
+            return;
+        };
+        let dir = std::env::temp_dir().join(format!("h2-editor-unnamed-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (mut app, ..) = tag_tests::app_partial(&dir);
+        h.frames(&mut app, 4).unwrap();
+        let click = |t: &str| Step::Click(t.into(), Button::Left);
+        h.step(&mut app, &click("weap  (1)")).unwrap();
+        h.frames(&mut app, 2).unwrap();
+        h.step(&mut app, &click("objects\\test\\blaster")).unwrap();
+        h.frames(&mut app, 2).unwrap();
+        let drawn = |h: &Headless| -> Vec<String> {
+            h.studio.tags.panel.drawn.iter().map(|d| d.path.clone()).collect()
+        };
+        assert!(h.scene.items.iter().any(|i| i.label == "Unnamed fields (1)"));
+        assert_eq!(drawn(&h), ["speed", "flags", "parts"], "folded");
+        let mut api = crate::api::Api::new();
+        let view = api.call(&mut app, m::TAG_VIEW, serde_json::json!({})).unwrap();
+        let rows: Vec<_> = view["rows"].as_array().unwrap().iter().map(|r| r["path"].clone()).collect();
+        assert_eq!(serde_json::json!(drawn(&h)), serde_json::json!(rows));
+
+        api.call(&mut app, m::TAG_VIEW, serde_json::json!({"field": "+0x6"}))
+            .unwrap();
+        h.frames(&mut app, 3).unwrap();
+        assert_eq!(drawn(&h), ["speed", "flags", "parts", "+0x6"], "open on focus");
+
+        h.step(&mut app, &click("Unnamed fields (1)")).unwrap();
+        h.frames(&mut app, 2).unwrap();
+        assert_eq!(drawn(&h), ["speed", "flags", "parts"], "folded by hand");
+        let weap = format!("{:#010x}", tag_tests::weap_id().0);
+        api.call(
+            &mut app,
+            m::TAG_SET,
+            serde_json::json!({"tag": weap, "path": "+0x6", "value": 5}),
+        )
+        .unwrap();
+        h.frames(&mut app, 3).unwrap();
+        assert_eq!(drawn(&h), ["speed", "flags", "parts", "+0x6"], "open on change");
+        let edited = h.studio.tags.panel.drawn.iter().find(|d| d.path == "+0x6").unwrap();
+        assert!(edited.edited);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// The Maps list's Map Pack group through its widgets: with nothing
     /// installed it says how to install it; with an (invented) install it
     /// lists the map by its record's name with the picture beside it, and

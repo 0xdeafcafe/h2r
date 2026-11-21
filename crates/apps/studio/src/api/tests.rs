@@ -387,6 +387,93 @@ fn tag_fields_describe_root_and_nested_registry_fields() {
 }
 
 #[test]
+fn tag_view_folds_unnamed_fields_and_opens_them_on_request() {
+    use crate::app::tag_tests;
+    let t = Temp::new("tag-view");
+    let (mut app, ..) = tag_tests::app_partial(&t.0);
+    let mut api = Api::new();
+    let weap = format!("{:#010x}", tag_tests::weap_id().0);
+
+    let folded = call(&mut api, &mut app, m::TAG_VIEW, json!({ "tag": weap }));
+    assert_eq!(app.tool, crate::ToolKind::Tags);
+    assert_eq!(app.shown_tags().selected, Some(tag_tests::weap_id()));
+    assert_eq!(folded["unnamed"], false);
+    assert_eq!(folded["unnamed_hidden"], 1);
+    let paths = |v: &Value| -> Vec<String> {
+        v["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["path"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    assert_eq!(paths(&folded), ["speed", "flags", "parts"]);
+    assert!(folded["header"][0].as_str().unwrap().starts_with("weap"));
+
+    let open = call(&mut api, &mut app, m::TAG_VIEW, json!({"unnamed": true}));
+    assert!(app.tag_fields.unnamed);
+    assert_eq!(open["unnamed_hidden"], 0);
+    assert_eq!(
+        open["rows"].as_array().unwrap().len(),
+        folded["rows"].as_array().unwrap().len() + 1,
+        "the toggle shows the hidden rows"
+    );
+    let gap = &open["rows"][3];
+    assert_eq!((gap["label"].as_str(), gap["path"].as_str()), (Some("Value at +0x6"), Some("+0x6")));
+    assert_eq!(gap["show_as"], "whole_number");
+    // tag.fields gives every row in the panel's order.
+    let every = call(&mut api, &mut app, m::TAG_FIELDS, json!({ "tag": weap }));
+    assert_eq!(every["fields"], open["rows"]);
+    let named = call(&mut api, &mut app, m::TAG_FIELDS, json!({ "tag": weap, "unnamed": false }));
+    assert_eq!(named["fields"].as_array().unwrap().len(), 3);
+
+    let hex = call(
+        &mut api,
+        &mut app,
+        m::TAG_VIEW,
+        json!({"show_as": {"path": "+0x6", "as": "hex"}}),
+    );
+    assert_eq!(hex["rows"][3]["show_as"], "hex");
+    assert_eq!(app.tag_fields.show_as.get("weap:+0x6"), Some(&crate::fields::View::Hex));
+    let guessed = call(
+        &mut api,
+        &mut app,
+        m::TAG_VIEW,
+        json!({"show_as": {"path": "+0x6", "as": null}}),
+    );
+    assert_eq!(guessed["rows"][3]["show_as"], "whole_number");
+    assert_eq!(
+        code_of(api.call(&mut app, m::TAG_VIEW, json!({"show_as": {"path": "speed", "as": "hex"}}))),
+        code::INVALID_PARAMS
+    );
+
+    // Focus on an unnamed field opens its group with the toggle off.
+    call(&mut api, &mut app, m::TAG_VIEW, json!({"unnamed": false}));
+    let focused = call(&mut api, &mut app, m::TAG_VIEW, json!({"field": "+0x6"}));
+    assert_eq!(focused["field"], "+0x6");
+    assert_eq!(focused["unnamed_hidden"], 0);
+    // A changed unnamed field opens it too.
+    call(&mut api, &mut app, m::TAG_VIEW, json!({"field": "speed"}));
+    assert_eq!(call(&mut api, &mut app, m::TAG_VIEW, json!({}))["unnamed_hidden"], 1);
+    call(&mut api, &mut app, m::TAG_SET, json!({"tag": weap, "path": "+0x6", "value": 5}));
+    let changed = call(&mut api, &mut app, m::TAG_VIEW, json!({}));
+    assert_eq!(changed["unnamed_hidden"], 0);
+    assert_eq!(changed["rows"][3]["edited"], true);
+    assert_eq!(
+        code_of(api.call(&mut app, m::TAG_VIEW, json!({"search": "speed"}))),
+        code::INVALID_PARAMS
+    );
+
+    // A tag nothing names shows its group open: every field is reachable.
+    let scenario = format!("{:#010x}", fixture::id(1).0);
+    let unnamed = call(&mut api, &mut app, m::TAG_VIEW, json!({ "tag": scenario }));
+    assert_eq!(unnamed["unnamed_hidden"], 0);
+    let rows = unnamed["rows"].as_array().unwrap();
+    assert!(!rows.is_empty());
+    assert!(rows.iter().all(|r| r["named"] == false && r["editable"] == false));
+}
+
+#[test]
 fn the_camera_api_reads_and_sets_fly_speed() {
     let temp = Temp::new("fly-speed");
     let mut app = app(&temp);

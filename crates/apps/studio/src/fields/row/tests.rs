@@ -234,3 +234,123 @@ fn summaries_count_items_and_room() {
     assert_eq!(bytes(1), "1 byte");
     assert_eq!(bytes(16), "16 bytes");
 }
+
+fn field(offset: u32, kind: Kind) -> Field {
+    Field {
+        offset,
+        name: format!("+{offset:#x}"),
+        section: String::new(),
+        named: false,
+        kind,
+        meaning: String::new(),
+        doc: None,
+        applies: None,
+    }
+}
+
+fn bare(f: &Field) -> Row<'_> {
+    Row {
+        field: f,
+        address: 0x100 + f.offset,
+        label: label(f),
+        type_words: type_words(&f.kind),
+        unit: None,
+        edited: false,
+        read_only: None,
+        effect: Effect::NotKnown,
+        why: "",
+        chip: None,
+        live: None,
+        path: f.name.clone(),
+        summary: None,
+        list: None,
+    }
+}
+
+#[test]
+fn the_unnamed_group_counts_what_it_holds_padding_last() {
+    use map::FourCC;
+    let fields = [
+        field(0x0, Kind::Unknown { len: 4 }),
+        field(0x4, Kind::Pad { len: 8 }),
+        field(
+            0xc,
+            Kind::TagRef {
+                groups: vec![FourCC(*b"itmc")],
+            },
+        ),
+        field(0x14, Kind::Unknown { len: 2 }),
+        field(0x16, Kind::Pad { len: 2 }),
+    ];
+    assert_eq!(
+        summary(&fields),
+        "1 tag reference, 2 values, 10 bytes of padding"
+    );
+    assert_eq!(summary(&fields[..1]), "1 value");
+    assert_eq!(group_label(5), "Unnamed fields (5)");
+    let labels: Vec<_> = fields.iter().map(label).collect();
+    assert_eq!(
+        labels,
+        [
+            "Value at +0x0",
+            "Padding, 8 bytes at +0x4",
+            "Tag reference at +0xc",
+            "Value at +0x14",
+            "Padding, 2 bytes at +0x16",
+        ]
+    );
+
+    let mut speed = field(0x18, Kind::Unknown { len: 4 });
+    speed.named = true;
+    speed.name = "speed".into();
+    let mut mixed: Vec<Row> = fields.iter().map(bare).collect();
+    mixed.insert(2, bare(&speed));
+    let (shown, group) = split(&mixed);
+    assert_eq!(shown.len(), 1);
+    let order: Vec<_> = group.iter().map(|r| r.field.offset).collect();
+    assert_eq!(
+        order,
+        [0x0, 0xc, 0x14, 0x4, 0x16],
+        "offset order, padding last"
+    );
+
+    // Folded unless the toggle, no names, a change, a mark or the focus.
+    assert!(!opens(&group, false, false, None));
+    assert!(opens(&group, true, false, None));
+    assert!(opens(&group, false, true, None));
+    assert!(opens(&group, false, false, Some(0x100 + 0x14)));
+    assert!(!opens(&group, false, false, Some(0x100 + 0x18)));
+    let mut changed = bare(&fields[3]);
+    changed.edited = true;
+    assert!(opens(&[&changed], false, false, None));
+    let mut marked = bare(&fields[0]);
+    marked.live = Some(Live {
+        kind: "refused",
+        text: "invented".into(),
+    });
+    assert!(opens(&[&marked], false, false, None));
+}
+
+#[test]
+fn a_partly_named_weapon_puts_its_gap_in_the_group() {
+    let t = crate::play::testing::Temp::new("field-rows-partial");
+    let (app, _, _) = tag_tests::app_partial(&t.0);
+    let weap = tag_tests::weap_id();
+    let layout = app.tags.layout(weap).unwrap().clone();
+    let all = rows(
+        &app.tags,
+        weap,
+        tag_tests::WEAP,
+        &layout,
+        &context(Link::Off),
+    );
+    let (shown, group) = split(&all);
+    let paths: Vec<_> = shown.iter().map(|r| r.path.as_str()).collect();
+    assert_eq!(paths, ["speed", "flags", "parts"]);
+    let gap: Vec<_> = group
+        .iter()
+        .map(|r| (r.label.as_str(), r.path.as_str()))
+        .collect();
+    assert_eq!(gap, [("Value at +0x6", "+0x6")]);
+    assert_eq!(summary(group.iter().map(|r| r.field)), "1 value");
+}

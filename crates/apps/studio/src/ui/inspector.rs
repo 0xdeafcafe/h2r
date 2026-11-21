@@ -571,6 +571,7 @@ fn tags(
     if let Some(action) = resolution {
         app.pairing.requests.push(Request::Apply(action));
     }
+    state.tag_panel.store(app);
     for action in actions {
         app.dispatch(tag_action(action));
     }

@@ -2,6 +2,8 @@
 //! read, with no UI calls. The panel draws these rows and `tag.fields`
 //! returns them, so the two never disagree (`docs/editor/tag-editing.md`,
 //! "One row model").
+use std::collections::BTreeMap;
+
 use map::TagId;
 use serde_json::{Value, json};
 use tags::registry::{Field, Hint, Kind, Layout};
@@ -18,6 +20,10 @@ use crate::play::tag_sync::{self, Effect};
 pub const EDITED_IN_SCENE: &str = "Edited in Scene.";
 /// Why padding is read-only.
 pub const PADDING: &str = "Padding: shown, not edited.";
+
+/// The line over the open Unnamed fields group of an element nothing
+/// names.
+pub const NO_NAMES: &str = "No field of this kind of tag has a name yet.";
 
 /// Words written in upper case in a derived label.
 const ACRONYMS: [&str; 7] = ["lod", "hud", "ai", "bsp", "id", "fov", "uv"];
@@ -313,6 +319,77 @@ fn bytes(n: u32) -> String {
         "1 byte".to_owned()
     } else {
         format!("{n} bytes")
+    }
+}
+
+/// An element's rows split as the panel draws them: the named rows, then
+/// the Unnamed fields group in offset order with padding last.
+pub fn split<'r, 'a>(rows: &'r [Row<'a>]) -> (Vec<&'r Row<'a>>, Vec<&'r Row<'a>>) {
+    let (named, mut unnamed): (Vec<_>, Vec<_>) = rows.iter().partition(|r| r.field.named);
+    unnamed.sort_by_key(|r| matches!(r.field.kind, Kind::Pad { .. }));
+    (named, unnamed)
+}
+
+/// The Unnamed fields group's row label.
+pub fn group_label(n: usize) -> String {
+    format!("Unnamed fields ({n})")
+}
+
+/// Whether an element's Unnamed fields group opens by itself: **Show
+/// unnamed fields** is on, nothing in the element has a name, or the group
+/// holds a changed field, a field with a mark, or the focused field
+/// (`focus`, an address).
+pub fn opens(unnamed: &[&Row], toggle: bool, no_names: bool, focus: Option<u32>) -> bool {
+    toggle
+        || no_names
+        || unnamed
+            .iter()
+            .any(|r| r.edited || r.live.is_some() || focus == Some(r.address))
+}
+
+/// What a group holds, counted by type in words (`1 tag reference, 8
+/// values`), padding last as its bytes.
+pub fn summary<'f>(fields: impl IntoIterator<Item = &'f Field>) -> String {
+    let mut counts: BTreeMap<u8, (u32, &'static str, &'static str)> = BTreeMap::new();
+    let mut padding = 0;
+    for f in fields {
+        if let Kind::Pad { len } = f.kind {
+            padding += len;
+            continue;
+        }
+        let (order, one, many) = noun(&f.kind);
+        counts.entry(order).or_insert((0, one, many)).0 += 1;
+    }
+    let mut parts: Vec<String> = counts
+        .into_values()
+        .map(|(n, one, many)| format!("{n} {}", if n == 1 { one } else { many }))
+        .collect();
+    if padding > 0 {
+        parts.push(format!("{} of padding", bytes(padding)));
+    }
+    parts.join(", ")
+}
+
+/// A kind's place in a summary and its noun, one and many.
+fn noun(kind: &Kind) -> (u8, &'static str, &'static str) {
+    match kind {
+        Kind::TagRef { .. } | Kind::Datum { .. } => (0, "tag reference", "tag references"),
+        Kind::Block(_) => (1, "list", "lists"),
+        Kind::Data => (2, "data reference", "data references"),
+        Kind::StringId => (3, "name", "names"),
+        Kind::Enum { .. } => (4, "choice", "choices"),
+        Kind::Flags { .. } => (5, "set of switches", "sets of switches"),
+        Kind::Int { .. } => (6, "whole number", "whole numbers"),
+        Kind::Float { hint, .. } => match hint {
+            Hint::Plain => (7, "decimal number", "decimal numbers"),
+            Hint::Angle => (8, "angle", "angles"),
+            Hint::Colour => (9, "colour", "colours"),
+            Hint::Bounds => (10, "range", "ranges"),
+        },
+        Kind::Unknown { .. } => (11, "value", "values"),
+        Kind::Raw | Kind::RawSize { .. } | Kind::Bsp | Kind::Word | Kind::Pad { .. } => {
+            (12, "internal value", "internal values")
+        }
     }
 }
 

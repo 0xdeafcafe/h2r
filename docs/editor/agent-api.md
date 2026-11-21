@@ -76,7 +76,8 @@ What goes through actions, from both sides:
 | Open a source, map, package, Halo 1 map | `OpenSource`, `SelectMap`, `OpenPackageEntry` | menus, Maps list | `source.open`, `doc.open` |
 | A placement's field | `EditSelection {field, edit, merge}` (every selected placement), `SetField {block, index, field, value, merge}` (one), `SealEdit` | the inspector dispatches `EditSelection` (a drag merges under one key, sealed when it ends) | `scenario.set`, `tag.set` |
 | Any tag's field or block | `Tag(TagAction)` built by `app::tag_api::{set_field, block}` | the Tags tool | `tag.set`, `tag.block.*` |
-| Inspect tag fields | read the registry layout | Tags panel and inspector | `tag.fields {tag, path?}` |
+| Inspect tag fields | read the registry layout | Tags panel and inspector | `tag.fields {tag, path?, unnamed?}` |
+| Show unnamed fields, Show as, focus a field | `App::tag_fields` (`fields::Settings`), `Navigate(Go)` | the Tags tool's **Show unnamed fields** and **Show as** | `tag.view` |
 | Move and turn a placement | `MovePlacement` (one step); `GestureSet {position, ypr}`, `GestureScale`, `EndGesture` (a drag: one step, a multi-selection riding along) | the viewport gizmo dispatches the gesture actions every frame of a drag | `scenario.move` |
 | Add, duplicate, delete | `Add`, `DuplicateEntry`, `DeleteEntry` | outliner, toolbar, keys | `scenario.add`, `.duplicate`, `.delete`, `tag.block.*` |
 | Select, frame | `Select`, `FocusSelected`, `FrameAll` | Scene, viewport, keys | `scenario.select`, `view.camera` |
@@ -208,11 +209,12 @@ Notes on some:
   the schema's structural view instead. The scenario tag's edits stay with
   the Scenario tool: `tag.set` paths `netgame_flags[0].position` and
   `tag.block.*` on `netgame_flags` run as the matching `scenario.*` calls.
-- **Field rows.** `tag.fields {tag, path?}` returns `{fields: [...]}` for the
-  root or a block element such as `parts[1]`. Offsets such as `+0x8[1]` also
-  select a block element. The rows are the field panel's
-  (`fields::rows`, [tag-editing.md](tag-editing.md)), so they equal what
-  the Tags tool and the inspector draw. Each row has `name`, `offset` in
+- **Field rows.** `tag.fields {tag, path?, unnamed?}` returns `{fields:
+  [...]}` for the root or a block element such as `parts[1]`. Offsets
+  such as `+0x8[1]` also select a block element. The rows are the field
+  panel's (`fields::rows`, [tag-editing.md](tag-editing.md)), in its
+  order: the named rows, then the Unnamed fields group's (padding last);
+  `unnamed: false` leaves those out. Each row has `name`, `offset` in
   bytes, `kind`, `size` in bytes, `value`, `description` (the
   definition's `doc` text, or null), `evidence` (its meaning text),
   `section`, and:
@@ -233,13 +235,30 @@ Notes on some:
     `16 bytes`) for a list or data;
   - `choices: [{value, name}]` for a choice, `bits: [{bit, name}]` for
     switches, `groups` for a tag reference, `count` and `capacity` for a
-    list.
+    list, and `show_as` (`decimal`, `whole_number` or `hex`) for an
+    unnamed value.
 
   An offset path in `tag.set` addresses the typed field that starts
   there. Its row gives the width accepted for an integer or enum value.
   A block's value is its element count. Scalar values follow
   `tag.read`. The rows use the open or browsed tag document and include
   its pending edits (`api/tag_fields.rs`).
+- **The field panel.** `tag.view {tag?, field?, unnamed?, show_as?}`
+  drives the Tags tool's panel and returns what it shows. `tag` selects
+  the tag in the Tags tool. `field`, a `tag.set` path, focuses that field
+  through the navigation (as `nav.go`), which opens its lists and its
+  Unnamed fields group. `unnamed` sets **Show unnamed fields**.
+  `show_as: {path, as}` sets how an unnamed value is shown (`decimal`,
+  `whole_number`, `hex`, or null for the guess from its bits), kept for
+  that field of every tag of the group and saved with the layout. With no
+  params it only reads. The result is `{tag, path, breadcrumbs, field,
+  search, changed, unnamed, rows, unnamed_hidden, header}`: `rows` are
+  the root's `tag.fields` rows the panel shows, `unnamed_hidden` the
+  unnamed rows in a folded group (`unnamed: true` adds them to `rows`),
+  `field` the focused path, and `header` the header's lines as drawn,
+  without icons. The panel shows a tag's root and has no search yet, so
+  `path` is always empty, `search` null and `changed` false, and those
+  params are refused.
 - **Scenario tree.** `tag.tree {"root":"scenario","depth":2}` reads the
   open scenario and returns `{root, unreachable, incomplete, truncated}`.
   The root's children are Structure (BSPs with their lightmaps), Skies,

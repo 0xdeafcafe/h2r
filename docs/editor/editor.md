@@ -84,7 +84,9 @@ the runtime's, `~/Library/Application Support/h2recomp/data` (`content::store::d
 Saved game variants (`U:`) and map packages (`maps/`) go there, so a run
 with the same `--data` finds them. The dock layout persists in
 `<default data root>/h2-editor.ini`, whatever `--data` says (View > Reset
-layout restores the default).
+layout restores the default). The file's `[Studio][Tags]` section, after
+Dear ImGui's own, keeps the field panel's **Show unnamed fields** and
+**Show as** choices (`fields::Settings`, written on quit by `main.rs`).
 
 ## The window
 
@@ -1298,6 +1300,21 @@ editor. Add or remove list items to change it.` for internal values
 (`tag_doc::STRUCTURAL`). `PanelState::drawn` keeps what the last frame
 drew, for tests.
 
+An element's named rows come first. Its unnamed ones (`named == false`,
+offset order, padding last as `Padding, 8 bytes at +0x18`) sit in one
+folded **Unnamed fields (N)** row whose summary counts them by type
+(`1 tag reference, 8 values`; `fields::row::summary`). The group opens by
+itself (`fields::row::opens`) when **Show unnamed fields** is on, when
+nothing in the element has a name (under the line `No field of this kind
+of tag has a name yet.`), on the focused field, and once when it holds a
+changed field or a field with a mark, so it can be folded again. An
+unnamed value has **Show as** (Decimal, Whole number, Hex), kept per
+group, element path and offset (`fields::show_as_key`, `weap:parts+0x8`)
+in `App::tag_fields`; without a choice it reads as its bits suggest
+(`fields::guess`). **Show unnamed fields** sits over the rows in the
+Tags tool. A field named by the navigation (`nav.go`, `tag.view`) is
+focused in the Tags tool as in the inspector.
+
 Numbers drag. Enums and flag masks without labelled options edit numerically.
 Named enum values appear in a combo. Named flags have checkboxes (unnamed bits that
 are set show as `bit N`); colours pick; angles show degrees; bounds drag
@@ -1336,7 +1353,11 @@ refused, growth only when allowed, exports kept out of Git; a shared
 cache browsed read-only and selected from Maps; resources and lookups),
 `api::tests::tags_browse_a_shared_cache_and_round_trip_through_a_bundle`,
 `fields::row::tests` (labels, type words, read-only sentences, paths, a
-changed row's file value, chips only with a game),
+changed row's file value, chips only with a game, the Unnamed fields
+group's order, summary and open rules), `fields::tests` (Show as keys and
+the settings' ini section),
+`api::tests::tag_view_folds_unnamed_fields_and_opens_them_on_request`,
+`headless::tests::the_unnamed_fields_group_folds_and_opens_on_focus_and_change`,
 `headless::tests::the_tags_tool_edits_a_field_through_its_widgets`,
 which clicks the tree and a flag through the test-engine hooks, and
 `headless::tests::tag_rows_match_tag_fields_and_chips_need_a_game`

@@ -17,7 +17,7 @@
 //! float, an integer or hex), with a context menu to view them otherwise.
 pub mod row;
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
 use dear_imgui_rs::{Drag, DragRange, NumericFormat, TreeNodeToken, Ui};
@@ -40,6 +40,98 @@ pub enum View {
     Float,
     Int,
     Hex,
+}
+
+impl View {
+    pub const ALL: [Self; 3] = [Self::Float, Self::Int, Self::Hex];
+
+    /// The id in `tag.view` and the saved layout.
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Float => "decimal",
+            Self::Int => "whole_number",
+            Self::Hex => "hex",
+        }
+    }
+
+    pub fn from_id(id: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|v| v.id() == id)
+    }
+
+    /// The picker's words.
+    pub fn words(self) -> &'static str {
+        match self {
+            Self::Float => "Decimal",
+            Self::Int => "Whole number",
+            Self::Hex => "Hex",
+        }
+    }
+}
+
+/// How the panel shows unnamed fields, kept in [`crate::App`] and saved
+/// with the layout (the `[Studio][Tags]` section of the editor's ini).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Settings {
+    /// **Show unnamed fields**: every Unnamed fields group open.
+    pub unnamed: bool,
+    /// `Show as` per group and offset ([`show_as_key`]).
+    pub show_as: BTreeMap<String, View>,
+}
+
+/// The ini section the settings are saved in, after Dear ImGui's own.
+const INI_SECTION: &str = "[Studio][Tags]";
+
+impl Settings {
+    /// The settings as an ini section.
+    pub fn ini(&self) -> String {
+        let mut out = format!("{INI_SECTION}\nShowUnnamed={}\n", u8::from(self.unnamed));
+        for (key, view) in &self.show_as {
+            out.push_str(&format!("ShowAs={key}={}\n", view.id()));
+        }
+        out
+    }
+
+    /// The settings in an ini text (defaults where it has none). Dear
+    /// ImGui skips the section, having no handler for it.
+    pub fn from_ini(text: &str) -> Self {
+        let mut out = Self::default();
+        let mut inside = false;
+        for line in text.lines().map(str::trim) {
+            if line.starts_with('[') {
+                inside = line == INI_SECTION;
+                continue;
+            }
+            if !inside {
+                continue;
+            }
+            if let Some(v) = line.strip_prefix("ShowUnnamed=") {
+                out.unnamed = v == "1";
+            } else if let Some(v) = line.strip_prefix("ShowAs=")
+                && let Some((key, id)) = v.rsplit_once('=')
+                && let Some(view) = View::from_id(id)
+            {
+                out.show_as.insert(key.to_owned(), view);
+            }
+        }
+        out
+    }
+}
+
+/// The key a `Show as` choice is kept by: the tag's group, the element's
+/// path without indices and the offset (`weap:parts+0x8`), so it holds for
+/// every tag of the group and every element of a list.
+pub fn show_as_key(group: FourCC, prefix: &str, offset: u32) -> String {
+    let mut shape = String::new();
+    let mut depth = 0;
+    for c in prefix.trim_end_matches('.').chars() {
+        match c {
+            '[' => depth += 1,
+            ']' => depth -= 1,
+            _ if depth == 0 => shape.push(c),
+            _ => {}
+        }
+    }
+    format!("{}:{shape}+{offset:#x}", group_text(group))
 }
 
 /// The field under the mouse, for the hex pane and the status line.
@@ -67,14 +159,17 @@ pub struct PanelState {
     /// The element the mouse was last in: its address and layout (the hex
     /// pane shows it).
     pub focus: Option<(TagId, u32, Arc<Layout>)>,
-    /// How unnamed spans are shown, by address (else guessed).
-    views: HashMap<(TagId, u32), View>,
+    /// The settings drawn with ([`PanelState::follow`]); a change waits
+    /// for [`PanelState::store`].
+    pub settings: Settings,
+    settings_changed: bool,
+    /// Unnamed fields groups opened for a changed or marked field, by
+    /// element address, so a person can fold them again.
+    auto_opened: HashSet<(TagId, u32)>,
     /// Text being typed into string ID and data fields, by address.
     text: HashMap<(TagId, u32), String>,
     /// The tag picker's filter.
     picker: String,
-    /// Show padding fields.
-    pub show_pad: bool,
     /// Why the last typed value was not taken.
     pub problem: Option<String>,
     focus_target: Option<(TagId, u32)>,
@@ -87,13 +182,32 @@ pub struct PanelState {
 }
 
 impl PanelState {
-    /// Draw for the open map's game link and its marks.
+    /// Draw for the open map's game link and its marks, with the saved
+    /// settings.
     pub fn follow(&mut self, app: &App) {
+        if !self.settings_changed {
+            self.settings = app.tag_fields.clone();
+        }
         self.link = Link::of(app);
         self.issues = match (self.link, &app.pairing.link) {
             (Link::Off, _) | (_, None) => None,
             (_, Some(link)) => Some(link.issues.clone()),
         };
+    }
+
+    /// Keep a settings change the panel made (call after drawing).
+    pub fn store(&mut self, app: &mut App) {
+        if std::mem::take(&mut self.settings_changed) {
+            app.tag_fields = self.settings.clone();
+        }
+    }
+
+    /// Change the settings from a control drawn outside the panel.
+    pub fn set_settings(&mut self, settings: Settings) {
+        if settings != self.settings {
+            self.settings = settings;
+            self.settings_changed = true;
+        }
     }
 
     /// The context a row of the element with `prefix` is built in.
@@ -130,6 +244,8 @@ const LABEL: f32 = 210.0;
 const DOT: f32 = 12.0;
 /// Space between a widget and its unit or chip, in points.
 const GAP: f32 = 8.0;
+/// The button that picks how an unnamed value is shown.
+const SHOW_AS: &str = "Show as";
 /// Bytes of a data reference shown and editable as hex.
 const DATA_SHOWN: u32 = 4096;
 /// Tags a picker lists at most.
@@ -303,6 +419,18 @@ fn group_text(g: FourCC) -> String {
     tags::defs::fourcc_text(g)
 }
 
+/// How an unnamed value is shown: the kept choice for `key`
+/// ([`show_as_key`]), else as its bits suggest. Decimal needs four bytes.
+pub fn shown_as(settings: &Settings, key: &str, f: &Field, v: u32) -> View {
+    let len = f.kind.width();
+    match settings.show_as.get(key).copied() {
+        Some(View::Float) if len != 4 => View::Int,
+        Some(view) => view,
+        None if len == 4 => guess(v),
+        None => View::Int,
+    }
+}
+
 /// The guessed view of an unnamed word: a float when its bits read as an
 /// ordinary float (or zero), an integer when small, else hex.
 pub fn guess(v: u32) -> View {
@@ -363,27 +491,71 @@ impl Cx<'_, '_> {
             layout,
             &self.st.context(&self.prefix),
         );
+        let (named, unnamed) = row::split(&shown);
         let mut section = String::new();
-        for r in &shown {
-            let f = r.field;
-            let focused = self.st.focus_target == Some((self.tag, r.address));
-            if matches!(f.kind, Kind::Pad { .. }) && !self.st.show_pad && !focused {
-                continue;
-            }
-            if f.section != section {
-                section = f.section.clone();
+        for r in &named {
+            if r.field.section != section {
+                section = r.field.section.clone();
                 if !section.is_empty() {
                     ui.separator_with_text(&section);
                 }
             }
-            let _id = ui.push_id(f.offset as usize);
-            self.st.drawn.push(r.drawn());
-            self.field(at, layout, r);
-            (self.mark_field)(self.tag, r.address);
-            if focused {
-                ui.set_scroll_here_y(0.5);
-                self.st.clear_field_focus();
-            }
+            self.draw_row(at, layout, r);
+        }
+        if !unnamed.is_empty() {
+            self.unnamed(at, layout, &unnamed, named.is_empty());
+        }
+    }
+
+    fn draw_row(&mut self, at: u32, layout: &Arc<Layout>, r: &Row) {
+        let ui = self.ui;
+        let focused = self.st.focus_target == Some((self.tag, r.address));
+        let _id = ui.push_id(r.field.offset as usize);
+        self.st.drawn.push(r.drawn());
+        self.field(at, layout, r);
+        (self.mark_field)(self.tag, r.address);
+        if focused {
+            ui.set_scroll_here_y(0.5);
+            self.st.clear_field_focus();
+        }
+    }
+
+    /// The element's Unnamed fields group: folded, with what it holds,
+    /// unless [`row::opens`] says otherwise. A changed or marked field
+    /// opens it once, so it can be folded again.
+    fn unnamed(&mut self, at: u32, layout: &Arc<Layout>, group: &[&Row], no_names: bool) {
+        let ui = self.ui;
+        if no_names {
+            ui.text_disabled(row::NO_NAMES);
+        }
+        let key = (self.tag, at);
+        let focus = self
+            .st
+            .focus_target
+            .filter(|(tag, _)| *tag == self.tag)
+            .map(|(_, a)| a);
+        let marked = group.iter().any(|r| r.edited || r.live.is_some());
+        // The toggle, an element nothing names and a focus open it every
+        // frame (row::opens with the marks left out).
+        let forced = row::opens(&[], self.st.settings.unnamed, no_names, None)
+            || group.iter().any(|r| focus == Some(r.address));
+        if forced || (marked && !self.st.auto_opened.contains(&key)) {
+            ui.set_next_item_open(true);
+        }
+        if marked {
+            self.st.auto_opened.insert(key);
+        } else {
+            self.st.auto_opened.remove(&key);
+        }
+        let node = ui
+            .tree_node_config(format!("unnamed{at:x}"))
+            .label(row::group_label(group.len()))
+            .push();
+        ui.same_line_with_pos(LABEL);
+        ui.text_disabled(row::summary(group.iter().map(|r| r.field)));
+        let Some(_node) = node else { return };
+        for r in group {
+            self.draw_row(at, layout, r);
         }
     }
 
@@ -427,7 +599,12 @@ impl Cx<'_, '_> {
         let ui = self.ui;
         let unit = r.unit.map_or(0.0, |u| ui.calc_text_size(u)[0] + GAP);
         let chip = r.chip.map_or(0.0, |c| ui.calc_text_size(c)[0] + 18.0 + GAP);
-        unit + chip
+        let show_as = if matches!(r.field.kind, Kind::Unknown { .. }) {
+            ui.calc_text_size(SHOW_AS)[0] + 2.0 * ui.clone_style().frame_padding()[0] + GAP
+        } else {
+            0.0
+        };
+        unit + chip + show_as
     }
 
     /// After the widget, on its line: the unit, then the chip.
@@ -704,15 +881,12 @@ impl Cx<'_, '_> {
     fn unknown(&mut self, a: u32, f: &Field, b: &[u8], len: u32) {
         let ui = self.ui;
         let v = le(b, 0, len as usize) as u32;
-        let view = self
-            .st
-            .views
-            .get(&(self.tag, a))
-            .copied()
-            .unwrap_or(if len == 4 { guess(v) } else { View::Int });
+        let group = self.doc.tag(self.tag).map_or(FourCC(*b"????"), |t| t.group);
+        let key = show_as_key(group, &self.prefix, f.offset);
+        let view = shown_as(&self.st.settings, &key, f, v);
         let n = len as usize;
         match view {
-            View::Float if len == 4 => {
+            View::Float => {
                 let mut x = f32::from_bits(v);
                 if Drag::<f32, _>::new("##v")
                     .speed(0.01)
@@ -733,7 +907,7 @@ impl Cx<'_, '_> {
                     self.write(a, x.to_le_bytes()[..n].to_vec(), &f.name);
                 }
             }
-            _ => {
+            View::Int => {
                 let mut x = sign(u64::from(v), n);
                 let lim = 1i64 << (8 * n - 1);
                 if Drag::<i64, _>::new("##v")
@@ -746,17 +920,26 @@ impl Cx<'_, '_> {
             }
         }
         self.after();
-        if let Some(_p) = ui.begin_popup_context_item() {
-            ui.text_disabled("Show as");
-            for (label, to) in [
-                ("float", View::Float),
-                ("integer", View::Int),
-                ("hex", View::Hex),
-            ] {
+        ui.same_line();
+        if ui.small_button(SHOW_AS) {
+            ui.open_popup("##show-as");
+        }
+        if ui.is_item_hovered() {
+            ui.set_item_tooltip(
+                "How to show this value: kept for this field of every tag of the kind",
+            );
+        }
+        if let Some(_p) = ui.begin_popup("##show-as") {
+            for to in View::ALL {
                 if (to != View::Float || len == 4)
-                    && ui.selectable_config(label).selected(view == to).build()
+                    && ui
+                        .selectable_config(to.words())
+                        .selected(view == to)
+                        .build()
                 {
-                    self.st.views.insert((self.tag, a), to);
+                    let mut settings = self.st.settings.clone();
+                    settings.show_as.insert(key.clone(), to);
+                    self.st.set_settings(settings);
                 }
             }
         }
@@ -1100,6 +1283,69 @@ mod tests {
         assert_eq!(guess(7), View::Int);
         assert_eq!(guess((-3i32) as u32), View::Int);
         assert_eq!(guess(0x8123_4567), View::Hex);
+    }
+
+    #[test]
+    fn show_as_is_kept_per_group_and_offset_and_saved_with_the_layout() {
+        let weap = FourCC(*b"weap");
+        assert_eq!(show_as_key(weap, "", 0x6), "weap:+0x6");
+        assert_eq!(show_as_key(weap, "parts[1].", 0x4), "weap:parts+0x4");
+        assert_eq!(
+            show_as_key(weap, "parts[0].bones[12].", 0x4),
+            show_as_key(weap, "parts[3].bones[0].", 0x4)
+        );
+        let mut settings = Settings {
+            unnamed: true,
+            ..Settings::default()
+        };
+        settings
+            .show_as
+            .insert(show_as_key(weap, "", 0x6), View::Hex);
+        settings
+            .show_as
+            .insert(show_as_key(weap, "parts[0].", 0x8), View::Float);
+        let ini = format!(
+            "[Window][Tags]\nPos=0,0\n\n{}[Docking][Data]\n",
+            settings.ini()
+        );
+        assert_eq!(Settings::from_ini(&ini), settings);
+        assert_eq!(
+            Settings::from_ini("[Window][Tags]\nPos=0,0\n"),
+            Settings::default()
+        );
+        for view in View::ALL {
+            assert_eq!(View::from_id(view.id()), Some(view));
+        }
+
+        let word = Field {
+            offset: 0x6,
+            name: "+0x6".into(),
+            section: String::new(),
+            named: false,
+            kind: Kind::Unknown { len: 4 },
+            meaning: String::new(),
+            doc: None,
+            applies: None,
+        };
+        let key = show_as_key(weap, "", 0x6);
+        assert_eq!(shown_as(&settings, &key, &word, 7), View::Hex);
+        assert_eq!(
+            shown_as(&Settings::default(), &key, &word, 1.5f32.to_bits()),
+            View::Float
+        );
+        let half = Field {
+            kind: Kind::Unknown { len: 2 },
+            ..word
+        };
+        let decimal = Settings {
+            show_as: [(key.clone(), View::Float)].into(),
+            ..Settings::default()
+        };
+        assert_eq!(
+            shown_as(&decimal, &key, &half, 7),
+            View::Int,
+            "decimal needs four bytes"
+        );
     }
 
     #[test]

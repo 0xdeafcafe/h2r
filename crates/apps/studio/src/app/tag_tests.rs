@@ -37,6 +37,38 @@ group weap 0x10
     })
 }
 
+/// [`registry`] with the weapon's `mode` left unnamed: the two bytes at
+/// `+0x6` fall in its Unnamed fields group.
+pub(crate) fn partial_registry() -> &'static Registry {
+    static R: std::sync::OnceLock<Registry> = std::sync::OnceLock::new();
+    R.get_or_init(|| {
+        let schema = tags::schema::Schema::parse(
+            "group scnr 0x10 align 4\ngroup weap 0x10 align 4\n  0x8 block 0xc align 4\n    0x0 tagref\n",
+        )
+        .unwrap();
+        let mut defs = tags::defs::Defs::default();
+        defs.parse_into(
+            "test",
+            "\
+group weap 0x10
+  0x0 f32 speed
+  0x4 flags16 flags bits=loud|quiet
+  0x8 block parts 0xc align 4
+    0x0 tagref item groups=itmc
+    0x8 u32 value
+",
+        )
+        .unwrap();
+        Registry::build(&schema, &defs)
+    })
+}
+
+/// An app with the invented map open in the Tags tool, over
+/// [`partial_registry`].
+pub(crate) fn app_partial(t: &Path) -> (App, PathBuf, Vec<u8>) {
+    app_with_registry(t, map(), partial_registry())
+}
+
 pub(crate) const WEAP: u32 = META + 0x1100;
 pub(crate) const PARTS: u32 = WEAP + 0x10;
 pub(crate) fn weap_id() -> TagId {

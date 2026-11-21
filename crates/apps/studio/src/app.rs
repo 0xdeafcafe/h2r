@@ -490,6 +490,9 @@ pub struct App {
     pub pairing: crate::play::pair::Bridge,
     /// The tag editor's document over the open map.
     pub tags: TagDoc,
+    /// How the field panel shows unnamed fields, saved with the layout
+    /// (`fields::Settings`).
+    pub tag_fields: crate::fields::Settings,
     /// The selected tag's shared-map line, for the tag and revision.
     tag_homes: std::cell::RefCell<Option<(map::TagId, u64, Option<String>, Option<String>)>>,
     /// Another map of the source shown read-only in the Tags tool (a
@@ -560,6 +563,7 @@ impl App {
             hud: HudTool::default(),
             pairing: Default::default(),
             tags: TagDoc::default(),
+            tag_fields: Default::default(),
             tag_homes: Default::default(),
             tag_browse: None,
             nav: NavHistory::default(),
