@@ -10,12 +10,20 @@
 // - `GET /v1/rules/builtin`: Slayer, read from the rules crate.
 // - `POST /v1/rules` (a `content.write` token), `GET /v1/rules/{hash}`,
 //   `GET /v1/rules?author=`: kept in memory.
+// - `POST /v1/rules/ide` and `GET /v1/rules/ide/legend`: the editor's
+//   completions, hovers, signatures, definitions, references, tokens,
+//   outline and format, canned from the page's own word lists
+//   (src/lib/rulesIde.ts) and a few regexes (`mockIde`).
 
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { parseJws } from "../src/state/verify";
 import type { Reply } from "./admin";
 import type { World } from "./world";
+import {
+  API_ENTRIES, CAP_WORDS, CONSTANTS, CONTROL, EVENTS, KEYWORDS, SETS, TYPES, WORD_OPS, apiSignature, apiSnippet,
+  eventLabelOf, eventSnippet, type IdeOp,
+} from "../src/lib/rulesIde";
 
 const ok = (body: unknown, status = 200): Reply => ({ status, body });
 const fail = (status: number, error: string, message: string): Reply => ({ status, body: { error, message } });
@@ -150,6 +158,206 @@ export function mockRun(source: string, scenario: Record<string, unknown>) {
   };
 }
 
+// ---------- the editor's IDE route ----------
+
+/** The mock's token legend. */
+export const MOCK_LEGEND = ["keyword", "function", "variable", "parameter", "property", "type", "enumMember", "event", "string", "number", "comment", "operator", "namespace"];
+const IDE_OPS: ReadonlySet<string> = new Set(["complete", "hover", "signature", "definition", "references", "tokens", "symbols", "format"]);
+const RESERVED: ReadonlySet<string> = new Set<string>([...KEYWORDS, ...CONTROL, ...WORD_OPS, ...CONSTANTS]);
+const TYPE_NAMES: ReadonlySet<string> = new Set<string>(TYPES);
+const SET_NAMES: ReadonlySet<string> = new Set<string>([...SETS, "variant"]);
+const API_NAMES: ReadonlySet<string> = new Set(API_ENTRIES.map((e) => e.name));
+
+interface Range { start: { line: number; character: number }; end: { line: number; character: number } }
+const span = (line: number, start: number, endLine: number, end: number): Range =>
+  ({ start: { line, character: start }, end: { line: endLine, character: end } });
+
+/** The identifier at a position, and where it sits on its line. */
+function wordAt(lines: string[], line: number, character: number): { word: string; start: number; end: number } | null {
+  const text = lines[line] ?? "";
+  for (const m of text.matchAll(/[A-Za-z_]\w*/g)) {
+    const start = m.index ?? 0, end = start + m[0].length;
+    if (character >= start && character <= end) return { word: m[0], start, end };
+  }
+  return null;
+}
+
+const DECLARES = /^\s*(?:fn|option|enum|table|let|(?:global|player|team|object)\s+var)\s+([A-Za-z_]\w*)/;
+
+/** Where a name is declared: by fn, option, enum, table, let or var. */
+function declarationOf(lines: string[], name: string): Range | null {
+  for (let i = 0; i < lines.length; i++) {
+    const text = lines[i] ?? "";
+    const m = DECLARES.exec(text);
+    if (m && m[1] === name) {
+      const at = m[0].length - name.length;
+      return span(i, at, i, at + name.length);
+    }
+  }
+  return null;
+}
+
+function hoverText(name: string): string | null {
+  const e = API_ENTRIES.find((x) => x.name === name);
+  if (e) {
+    const what = e.cap ? `Needs \`requires ${e.cap}\`: ${CAP_WORDS[e.cap] ?? ""}.` : e.kind === "read" ? "A read." : e.kind === "builtin" ? "Built into the VM." : "Core: needs no capability.";
+    return "```h2rules\n" + apiSignature(e) + "\n```\n" + what;
+  }
+  const ev = EVENTS.find((x) => x.name === name);
+  if (ev) return "```h2rules\n" + eventLabelOf(ev) + "\n```\n" + ev.words;
+  if (RESERVED.has(name)) return `\`${name}\`: a keyword.`;
+  if (TYPE_NAMES.has(name)) return `\`${name}\`: a type.`;
+  return null;
+}
+
+function mockTokens(lines: string[]) {
+  const data: Array<{ line: number; start: number; length: number; type: string }> = [];
+  lines.forEach((text, line) => {
+    const cut = text.indexOf("//");
+    const code = cut >= 0 ? text.slice(0, cut) : text;
+    let afterOn = false;
+    for (const m of code.matchAll(/"(?:[^"\\]|\\.)*"|\d+(?:\.\d+)?|[A-Za-z_]\w*/g)) {
+      const t = m[0], start = m.index ?? 0;
+      const type = t.startsWith("\"") ? "string"
+        : /^\d/.test(t) ? "number"
+        : afterOn ? "event"
+        : RESERVED.has(t) ? "keyword"
+        : TYPE_NAMES.has(t) ? "type"
+        : API_NAMES.has(t) ? "function"
+        : SET_NAMES.has(t) ? "namespace"
+        : null;
+      afterOn = t === "on";
+      if (type) data.push({ line, start, length: t.length, type });
+    }
+    if (cut >= 0) data.push({ line, start: cut, length: text.length - cut, type: "comment" });
+  });
+  return { legend: MOCK_LEGEND, data };
+}
+
+const SYMBOLS: ReadonlyArray<[RegExp, number]> = [
+  [/^\s*on\s+([a-z_]+)/, 24],
+  [/^\s*fn\s+([A-Za-z_]\w*)/, 12],
+  [/^\s*(?:global|player|team|object)\s+var\s+([A-Za-z_]\w*)/, 13],
+  [/^\s*option\s+([A-Za-z_]\w*)/, 7],
+  [/^\s*enum\s+([A-Za-z_]\w*)/, 10],
+  [/^\s*table\s+([A-Za-z_]\w*)/, 23],
+  [/^\s*palette\s+"([^"]*)"/, 18],
+];
+
+/** The outline: each declaration and handler, a block to its closing brace. */
+function mockSymbols(lines: string[]) {
+  const out: Array<{ name: string; kind: number; range: Range; selectionRange: Range }> = [];
+  lines.forEach((text, line) => {
+    for (const [re, kind] of SYMBOLS) {
+      const m = re.exec(text);
+      if (!m) continue;
+      const name = m[1] ?? "";
+      const indent = text.match(/^\s*/)?.[0].length ?? 0;
+      let end = line;
+      if (/[{[]\s*$/.test(text)) {
+        for (let j = line + 1; j < lines.length; j++) {
+          const l = lines[j] ?? "";
+          if (/^\s*[}\]]/.test(l) && (l.match(/^\s*/)?.[0].length ?? 0) === indent) { end = j; break; }
+        }
+      }
+      const at = Math.max(0, text.indexOf(name, indent));
+      out.push({
+        name: kind === 24 ? `on ${name}` : name,
+        kind,
+        range: span(line, 0, end, (lines[end] ?? "").length),
+        selectionRange: span(line, at, line, at + name.length),
+      });
+      break;
+    }
+  });
+  return out;
+}
+
+/** The call whose argument list holds the caret, and which argument. */
+function callAt(before: string): { name: string; arg: number } | null {
+  let depth = 0, commas = 0;
+  for (let i = before.length - 1; i >= 0; i--) {
+    const c = before[i];
+    if (c === ")") depth++;
+    else if (c === "(") {
+      if (depth === 0) return { name: /([A-Za-z_]\w*)\s*$/.exec(before.slice(0, i))?.[1] ?? "", arg: commas };
+      depth--;
+    } else if (c === "," && depth === 0) commas++;
+  }
+  return null;
+}
+
+/** Each line indented four spaces a brace deep, trailing space dropped. */
+function mockFormat(lines: string[]): string {
+  let depth = 0;
+  const out = lines.map((raw) => {
+    const t = raw.replace(/\t/g, "    ").trim();
+    const closes = /^[}\]]/.test(t);
+    const l = t ? "    ".repeat(Math.max(0, depth - (closes ? 1 : 0))) + t : "";
+    depth = Math.max(0, depth + (t.match(/[{[]/g)?.length ?? 0) - (t.match(/[}\]]/g)?.length ?? 0));
+    return l;
+  });
+  return out.join("\n").replace(/\n*$/, "\n");
+}
+
+/** `POST /v1/rules/ide`'s answer, canned from the word lists. */
+export function mockIde(source: string, op: IdeOp, line: number, character: number): unknown {
+  const lines = source.split("\n");
+  switch (op) {
+    case "complete": {
+      const text = lines[line] ?? "";
+      if (/variant\.\w*$/.test(text.slice(0, character))) {
+        return ["team_play", "score_limit", "time_limit", "lives", "respawn_time", "friendly_fire", "rounds", "engine"]
+          .map((f) => ({ label: f, kind: 10, detail: "variant field" }));
+      }
+      const words = [...RESERVED, ...TYPES, ...SETS].map((k) => ({ label: k, kind: 14 }));
+      const events = EVENTS.map((e) => ({
+        label: eventLabelOf(e), kind: 23, detail: eventLabelOf(e), documentation: { kind: "markdown", value: e.words },
+        insertText: eventSnippet(e), insertTextFormat: 2,
+      }));
+      const api = API_ENTRIES.map((e) => ({
+        label: e.name, kind: 3, detail: apiSignature(e),
+        documentation: { kind: "markdown", value: e.cap ? `needs \`requires ${e.cap}\`: ${CAP_WORDS[e.cap] ?? ""}` : "core" },
+        insertText: apiSnippet(e), insertTextFormat: 2,
+      }));
+      // An indented line is a statement and gets calls; a top-level one gets handlers.
+      return /^\s/.test(text) ? [...words, ...api] : [...words, ...events];
+    }
+    case "hover": {
+      const w = wordAt(lines, line, character);
+      const text = w ? hoverText(w.word) : null;
+      return w && text ? { contents: { kind: "markdown", value: text }, range: span(line, w.start, line, w.end) } : null;
+    }
+    case "signature": {
+      const call = callAt((lines[line] ?? "").slice(0, character));
+      const e = call ? API_ENTRIES.find((x) => x.name === call.name) : undefined;
+      if (!call || !e) return null;
+      return {
+        signatures: [{ label: apiSignature(e), documentation: { kind: "markdown", value: e.cap ? `needs requires ${e.cap}` : "core" }, parameters: e.args.map((label) => ({ label })) }],
+        activeSignature: 0,
+        activeParameter: call.arg,
+      };
+    }
+    case "definition": {
+      const w = wordAt(lines, line, character);
+      const d = w ? declarationOf(lines, w.word) : null;
+      return d ? [{ range: d }] : [];
+    }
+    case "references": {
+      const w = wordAt(lines, line, character);
+      if (!w) return [];
+      const re = new RegExp(`\\b${w.word}\\b`, "g");
+      return lines.flatMap((text, i) => [...text.matchAll(re)].map((m) => ({ range: span(i, m.index ?? 0, i, (m.index ?? 0) + w.word.length) })));
+    }
+    case "tokens": return mockTokens(lines);
+    case "symbols": return mockSymbols(lines);
+    case "format": {
+      const bad = mockCheck(source).errors.find((e) => e.line > 0 && /[{}]/.test(e.message));
+      return bad ? { error: `line ${bad.line}: ${bad.message}` } : { text: mockFormat(lines) };
+    }
+  }
+}
+
 interface Saved { hash: string; name: string; version: number; author: string; gamertag: string; saved_at: string; position: number; source: string }
 
 const summary = (s: Saved) => ({ hash: s.hash, name: s.name, version: s.version, author: s.author, gamertag: s.gamertag, saved_at: s.saved_at, position: s.position });
@@ -165,6 +373,16 @@ export class MockRules {
     const body = async (): Promise<Record<string, unknown> | null> => {
       try { const b = await req.json(); return b && typeof b === "object" ? b as Record<string, unknown> : null; } catch { return null; }
     };
+    if (path === "/v1/rules/ide/legend" && req.method === "GET") return ok({ legend: MOCK_LEGEND });
+    if (path === "/v1/rules/ide" && req.method === "POST") {
+      const b = await body();
+      if (typeof b?.source !== "string") return fail(400, "invalid", "body: missing field `source`");
+      if (b.source.length > MAX_SOURCE) return fail(413, "too_large", `a script's source is at most ${MAX_SOURCE} bytes`);
+      if (typeof b.op !== "string" || !IDE_OPS.has(b.op)) return fail(400, "invalid", "body: op is one of complete, hover, signature, definition, references, tokens, symbols, format");
+      const line = typeof b.line === "number" ? Math.max(0, Math.floor(b.line)) : 0;
+      const character = typeof b.character === "number" ? Math.max(0, Math.floor(b.character)) : 0;
+      return ok(mockIde(b.source, b.op as IdeOp, line, character));
+    }
     if (path === "/v1/rules/check" && req.method === "POST") {
       const b = await body();
       if (typeof b?.source !== "string") return fail(400, "invalid", "body: missing field `source`");
