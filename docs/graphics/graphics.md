@@ -492,7 +492,10 @@ persisted through wgpu. What is done instead:
   (a target switch, a readback, a present): by then a worker has usually
   finished, or is part way. A pipeline no worker has started is built by
   the encoding thread itself, so nothing waits on a queue. Draw-time misses
-  go ahead of prewarming.
+  go ahead of prewarming, and so does a prewarmed pipeline a draw needs
+  before a worker has reached it: `Renderer::record` queues it again at
+  draw priority, once (`Compiler::submit` queues nothing for a value
+  already waiting at that priority or built).
 - **Never skipped.** A draw is never dropped or deferred while its pipeline
   compiles: draws feed render-to-texture, readbacks and visibility counts
   the game reads back, so a missing draw could change the guest's own
@@ -526,7 +529,19 @@ persisted through wgpu. What is done instead:
     the main menu (`MENU_MAP`); when a map loads it prewarms that map's.
     Each scope takes the most recently seen programs first, at most
     `PREWARM_PROGRAMS` (1024; `H2_PREWARM_PROGRAMS`, `0` or `off` for
-    none), and a new scope replaces what is left of the last.
+    none), and a new scope replaces what is left of the last, on the
+    prewarm thread and on the compile workers: `Renderer::drop_prewarms`
+    takes the renderer's queued prewarms back (`Compiler::prewarm` tags
+    each with its renderer, so another renderer's stay). The menu a boot
+    publishes after the startup scope went out is not a new scope; the
+    menu after a level is (`next_scope` in `nv2a.rs`). A scope's programs
+    that are registered already have their recorded pipelines queued
+    again, so a dropped prewarm is redone when its map comes back. A
+    dropped pipeline stays in the cache unbuilt: a draw that needs it
+    queues it at draw priority. Left queued, a level's thousands of
+    guessed pipelines compiled ahead of the menu's, and the menu's draws
+    built theirs on the drawing thread meanwhile
+    ([pipeline-cache.md](notes/pipeline-cache.md#2026-11-21-the-main-menu-after-a-level-at-5-to-12-fps)).
   - *Paced.* One thread translates the batch and makes each program's
     module, at most `PREWARM_BACKLOG` (16) ahead of registration. Each
     present (`ShaderProvider::maintain`) registers at most
@@ -534,7 +549,8 @@ persisted through wgpu. What is done instead:
     workers. A draw that needs a program the thread has not delivered
     translates it on the spot and the thread skips it; nothing waits on
     the thread. Registered programs keep their module, which later
-    pipelines of the same program are built from; nothing else is held.
+    pipelines of the same program are built from, and their recorded
+    pipeline keys, which a later scope queues again.
     The thread's and the translator's allocations are tagged
     `render.prewarm` and `render.translate` in mem-watch.
 

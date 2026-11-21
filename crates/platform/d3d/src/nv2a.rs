@@ -293,14 +293,58 @@ struct Warm {
     skip: std::sync::Arc<std::sync::Mutex<FxHashSet<u64>>>,
     /// Recorded programs not registered yet, by cache id.
     keys: HashMap<u64, ProgramKey>,
-    /// Recorded pipelines by program cache id, built once it is registered.
+    /// Recorded pipelines by program cache id, queued once it is
+    /// registered and again when a later scope takes it in.
     pipelines: HashMap<u64, Vec<StoredPipeline>>,
+    /// Registered programs with recorded pipelines: cache id to shader id.
+    registered: HashMap<u64, ShaderId>,
     /// Where each recorded program drew ([`pipeline_store::select`]).
     seen: Vec<Seen>,
     /// Most programs per scope ([`pipeline_store::prewarm_cap`]).
     cap: usize,
     /// The maps the current batch was drawn from.
     scope: Vec<Option<String>>,
+    /// The map the provider last followed (`None`: none yet), which the
+    /// scope was made for.
+    followed: Option<String>,
+}
+
+/// The scope to prewarm when the game loads `map`, or `None` to keep the
+/// current one: the map the scope was made for again, or the first map of
+/// a run when the startup scope already holds it (the main menu a boot
+/// shows first). Any other map, the menu after a level included, starts a
+/// scope of its own.
+fn next_scope(
+    scope: &[Option<String>],
+    followed: Option<&str>,
+    map: &str,
+) -> Option<Vec<Option<String>>> {
+    if followed == Some(map) {
+        return None;
+    }
+    if followed.is_none() && scope.iter().any(|s| s.as_deref() == Some(map)) {
+        return None;
+    }
+    Some(vec![Some(map.to_owned())])
+}
+
+/// A scope's programs ([`pipeline_store::select`]) split by what each
+/// needs: those registered already have their recorded pipelines queued
+/// again (a scope change dropped any still queued), the rest go to the
+/// prewarm thread. Selection order is kept.
+fn split_scope(
+    ids: Vec<u64>,
+    registered: &HashMap<u64, ShaderId>,
+) -> (Vec<(u64, ShaderId)>, Vec<u64>) {
+    let mut requeue = Vec::new();
+    let mut translate = Vec::new();
+    for id in ids {
+        match registered.get(&id) {
+            Some(&shader) => requeue.push((id, shader)),
+            None => translate.push(id),
+        }
+    }
+    (requeue, translate)
 }
 
 /// The prewarm thread: translates each batch's programs in order, making
@@ -433,41 +477,57 @@ impl Nv2aShaders {
             skip,
             keys: loaded.programs.into_iter().collect(),
             pipelines,
+            registered: HashMap::new(),
             seen: loaded.seen,
             cap,
             scope: Vec::new(),
+            followed: map.clone(),
         });
-        let mut scope = vec![None, Some(pipeline_store::MENU_MAP)];
-        if let Some(m) = map.as_deref()
+        let mut scope = vec![None, Some(pipeline_store::MENU_MAP.to_owned())];
+        if let Some(m) = map
             && m != pipeline_store::MENU_MAP
         {
             scope.push(Some(m));
         }
-        self.prewarm_scope(&scope);
+        self.prewarm_scope(ctx, renderer, scope, false);
     }
 
-    /// Sends the thread the programs seen on `maps` that are not
-    /// registered yet, newest first, at most the cap; the rest of the batch
-    /// it was on is dropped. Maps the current batch already covers (the
-    /// menu, published after the startup set went out) change nothing.
-    fn prewarm_scope(&mut self, maps: &[Option<&str>]) {
+    /// Makes `maps` the scope: the programs seen on them, newest first, at
+    /// most the cap. The prewarm thread is sent those not registered yet,
+    /// and drops the rest of the batch it was on; registered ones have
+    /// their recorded pipelines queued again. With `replace`, what is left
+    /// of the last scope's pipelines on the compile workers is dropped
+    /// first ([`gfx::Renderer::drop_prewarms`]): left queued, a level's
+    /// thousands of guesses compile ahead of the next map's, and that
+    /// map's draws build their pipelines on the drawing thread meanwhile.
+    fn prewarm_scope(
+        &mut self,
+        ctx: &gfx::GfxContext,
+        renderer: &mut gfx::Renderer,
+        maps: Vec<Option<String>>,
+        replace: bool,
+    ) {
         let Some(w) = self.warm.as_mut() else { return };
-        if maps
-            .iter()
-            .all(|m| w.scope.iter().any(|s| s.as_deref() == *m))
-        {
-            return;
+        if replace {
+            renderer.drop_prewarms();
         }
-        w.scope = maps.iter().map(|m| m.map(str::to_owned)).collect();
-        let ids = pipeline_store::select(&w.seen, maps, w.cap, |id| w.keys.contains_key(&id));
-        let batch: Vec<(u64, ProgramKey)> = ids
+        let refs: Vec<Option<&str>> = maps.iter().map(Option::as_deref).collect();
+        let ids = pipeline_store::select(&w.seen, &refs, w.cap, |id| {
+            w.keys.contains_key(&id) || w.registered.contains_key(&id)
+        });
+        w.scope = maps;
+        let (requeue, translate) = split_scope(ids, &w.registered);
+        for (id, shader) in requeue {
+            if let Some(stored) = w.pipelines.get(&id) {
+                self.stats.prewarmed_pipelines += prewarm_stored(ctx, renderer, shader, stored);
+            }
+        }
+        let batch: Vec<(u64, ProgramKey)> = translate
             .into_iter()
             .filter_map(|id| Some((id, w.keys.get(&id)?.clone())))
             .collect();
-        if batch.is_empty() {
-            return;
-        }
         w.waiting = batch.iter().map(|(id, _)| *id).collect();
+        // Sent even when empty: it stops the thread's last batch.
         if w.jobs.send(batch).is_err() {
             self.warm = None;
         }
@@ -475,8 +535,8 @@ impl Nv2aShaders {
 
     /// Follows the game's map ([`pipeline_store::set_map`]): programs that
     /// draw from now on are recorded as seen on it, and its recorded
-    /// programs are prewarmed.
-    fn follow_map(&mut self) {
+    /// programs are prewarmed in a scope of its own ([`next_scope`]).
+    fn follow_map(&mut self, ctx: &gfx::GfxContext, renderer: &mut gfx::Renderer) {
         if pipeline_store::map_generation() == self.map_generation {
             return;
         }
@@ -485,13 +545,18 @@ impl Nv2aShaders {
         let Some(p) = self.persist.as_mut() else { return };
         p.map = map.clone();
         p.epoch = p.epoch.wrapping_add(1).max(1);
-        if let Some(m) = map.as_deref() {
-            self.prewarm_scope(&[Some(m)]);
+        let (Some(m), Some(w)) = (map, self.warm.as_mut()) else { return };
+        let next = next_scope(&w.scope, w.followed.as_deref(), &m);
+        w.followed = Some(m);
+        if let Some(scope) = next {
+            self.prewarm_scope(ctx, renderer, scope, true);
         }
     }
 
     /// Registers at most `budget` programs the prewarm thread has
-    /// translated and queues their recorded pipelines. Never waits.
+    /// translated and queues their recorded pipelines. Never waits. The
+    /// provider keeps its side once every program is in: a later scope
+    /// still queues registered programs' pipelines again.
     fn install_warm(&mut self, ctx: &gfx::GfxContext, renderer: &mut gfx::Renderer, budget: usize) {
         let _scope = mem_watch::scope("render.prewarm");
         for _ in 0..budget {
@@ -507,7 +572,6 @@ impl Nv2aShaders {
             };
             warm.waiting.remove(&cache_id);
             warm.keys.remove(&cache_id);
-            let stored = warm.pipelines.remove(&cache_id).unwrap_or_default();
             if self.programs.contains_key(&key) {
                 continue;
             }
@@ -527,17 +591,15 @@ impl Nv2aShaders {
                 if let Some(p) = self.persist.as_mut() {
                     p.ids.insert(id, (cache_id, key.clone()));
                 }
-                self.stats.prewarmed_pipelines += prewarm_stored(ctx, renderer, id, stored);
+                if let Some(w) = self.warm.as_mut()
+                    && let Some(stored) = w.pipelines.get(&cache_id)
+                {
+                    w.registered.insert(cache_id, id);
+                    self.stats.prewarmed_pipelines += prewarm_stored(ctx, renderer, id, stored);
+                }
                 Compiled { id, dims, discards, warnings }
             });
             self.programs.insert(key, r);
-        }
-        // Every recorded program is in: the thread has nothing left to do.
-        if let Some(w) = &self.warm
-            && w.keys.is_empty()
-            && w.waiting.is_empty()
-        {
-            self.warm = None;
         }
     }
 
@@ -1084,7 +1146,6 @@ impl ShaderProvider for Nv2aShaders {
                 // Drawn before the prewarm thread got to it: translate it
                 // here, the thread skips it, and its recorded pipelines
                 // are queued once it is registered.
-                let mut stored = Vec::new();
                 if let (Some(w), Some(id)) = (self.warm.as_mut(), cache_id)
                     && w.keys.remove(&id).is_some()
                 {
@@ -1092,7 +1153,6 @@ impl ShaderProvider for Nv2aShaders {
                     if let Ok(mut skip) = w.skip.lock() {
                         skip.insert(id);
                     }
-                    stored = w.pipelines.remove(&id).unwrap_or_default();
                 }
                 let bindings = self
                     .bindings
@@ -1108,8 +1168,13 @@ impl ShaderProvider for Nv2aShaders {
                         if let (Some(p), Some(id)) = (self.persist.as_mut(), cache_id) {
                             p.ids.insert(c.id, (id, key.clone()));
                         }
-                        self.stats.prewarmed_pipelines +=
-                            prewarm_stored(ctx, renderer, c.id, stored);
+                        if let (Some(w), Some(id)) = (self.warm.as_mut(), cache_id)
+                            && let Some(stored) = w.pipelines.get(&id)
+                        {
+                            w.registered.insert(id, c.id);
+                            self.stats.prewarmed_pipelines +=
+                                prewarm_stored(ctx, renderer, c.id, stored);
+                        }
                     }
                     Err(_) => self.stats.failed += 1,
                 }
@@ -1194,7 +1259,7 @@ impl ShaderProvider for Nv2aShaders {
         if let Some(path) = self.cache_path.take() {
             self.open_cache(ctx, renderer, path);
         }
-        self.follow_map();
+        self.follow_map(ctx, renderer);
         self.install_warm(ctx, renderer, PREWARM_PER_PRESENT);
         self.hot_maintain(ctx, renderer);
         if let Some(p) = self.persist.as_mut() {
@@ -1766,17 +1831,20 @@ fn compile(
     Ok(Compiled { id, dims, discards, warnings })
 }
 
-/// Queues the recorded pipelines of a program now registered as `id`;
-/// returns how many were not built yet.
+/// Queues the recorded pipelines of a program registered as `id`; returns
+/// how many were queued (not built, being built or queued already).
 fn prewarm_stored(
     ctx: &gfx::GfxContext,
     renderer: &mut gfx::Renderer,
     id: ShaderId,
-    stored: Vec<StoredPipeline>,
+    stored: &[StoredPipeline],
 ) -> u64 {
     let mut queued = 0;
     for s in stored {
-        let k = gfx::pipeline::PipelineKey { shader: id, ..s.key };
+        let k = gfx::pipeline::PipelineKey {
+            shader: id,
+            ..s.key.clone()
+        };
         if renderer.prewarm(ctx, &k, s.count) {
             queued += 1;
         }
@@ -1845,6 +1913,45 @@ fn translate(key: &ProgramKey) -> Result<Translation, String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_map_change_scopes_its_own_programs_but_the_boot_menu_keeps_the_startup_set() {
+        use super::next_scope;
+        let menu = crate::pipeline_store::MENU_MAP;
+        let startup = vec![None, Some(menu.to_owned())];
+        // The boot's menu, published after the startup set went out.
+        assert_eq!(next_scope(&startup, None, menu), None);
+        // A level: a scope of its own.
+        assert_eq!(
+            next_scope(&startup, Some(menu), "ascension"),
+            Some(vec![Some("ascension".to_owned())])
+        );
+        let level = vec![Some("ascension".to_owned())];
+        assert_eq!(next_scope(&level, Some("ascension"), "ascension"), None);
+        // Back to the menu after the level: the menu's scope again.
+        assert_eq!(
+            next_scope(&level, Some("ascension"), menu),
+            Some(vec![Some(menu.to_owned())])
+        );
+        // Started on a level (its set is in the startup scope), the menu
+        // after it is still a new scope.
+        let started_on_level = vec![None, Some(menu.to_owned()), Some("ascension".to_owned())];
+        assert_eq!(
+            next_scope(&started_on_level, Some("ascension"), menu),
+            Some(vec![Some(menu.to_owned())])
+        );
+    }
+
+    #[test]
+    fn a_scope_requeues_registered_programs_and_translates_the_rest_in_order() {
+        use super::split_scope;
+        use gfx::pipeline::ShaderId;
+        let registered: std::collections::HashMap<u64, ShaderId> =
+            [(2, ShaderId(20)), (4, ShaderId(40))].into_iter().collect();
+        let (requeue, translate) = split_scope(vec![4, 1, 2, 3], &registered);
+        assert_eq!(requeue, vec![(4, ShaderId(40)), (2, ShaderId(20))]);
+        assert_eq!(translate, vec![1, 3]);
+    }
+
     #[test]
     fn stipple_only_applies_to_filled_polygon_primitives() {
         use super::stipple_eligible;

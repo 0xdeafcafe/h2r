@@ -48,6 +48,7 @@ mod editor_glue;
 pub mod fov_row;
 #[cfg(feature = "gpu")]
 pub mod render_aspect;
+pub mod game_menu;
 pub mod game_setup_help;
 pub mod h1_recordings;
 pub mod h1_conversation;

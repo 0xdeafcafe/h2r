@@ -52,6 +52,7 @@ connection to hold `session.claim`.
 | `edit.map`, `edit.tags`, `edit.get`, `edit.changes` | read | [`edit` and hot `render`](#edit-and-hot-render-live-tag-and-shader-changes) |
 | `edit.set`, `edit.batch`, `edit.revert` | act | [`edit` and hot `render`](#edit-and-hot-render-live-tag-and-shader-changes) |
 | `load.timeline` | read | [Load timeline](#load-timeline) |
+| `game.menu` | act | [Returning to the main menu](#returning-to-the-main-menu) |
 | `features.list` | read | [`session`](#session-what-is-running-and-its-clock) |
 | `live.join.open`, `live.join.status` | act, read | [Live session links](#live-session-links) |
 | `live.matchmaking.trace` | read | [Matchmaking transitions](#matchmaking-transitions) |
@@ -1191,6 +1192,29 @@ h2 agent wait '{"phase":"gameplay","map_ticks":30}' && h2 agent loads 1
   with what it has counted.
 - Seeks and cache hits are not counted (the kernel's file I/O counts bytes
   and the host time of each file call: `read_bytes` and `file_io_us`).
+
+## Returning to the main menu
+
+`game.menu` (act, no params) leaves the running campaign or multiplayer
+game for the main menu as the title's own departure does: at the next
+tick the agent's guest calls retire the network sessions
+(`LEAVE_SESSIONS`) and call `request_mainmenu(0)`, so the return-to-menu
+picture and the menu's load run as they do for a player
+([level-boot.md](level-boot.md#returning-to-the-main-menu)). Host method,
+`crates/extensions/game/src/game_menu.rs`; it needs the `agent-calls`
+feature.
+
+The answer comes once the calls are made: `{"from": <mode>, "queued":
+true, "calls": 2}`, where `from` is the game's options mode (1 campaign,
+2 multiplayer). At the menu, or with no game running, it is refused
+(`UNAVAILABLE`, "already at the main menu"). Wait for the menu with
+`session.wait`, then measure it:
+
+```sh
+h2 agent wait '{"phase":"gameplay","map_ticks":1800}' 120000
+h2 agent game.menu
+h2 agent wait '{"map":"mainmenu"}' 120000 && h2 agent loads 1
+```
 
 ## Live session links
 
