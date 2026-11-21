@@ -492,17 +492,9 @@ fn play_paths(play: &[String]) -> (Option<PathBuf>, PathBuf, Option<PathBuf>) {
 }
 
 fn default_cache() -> Result<PathBuf> {
-    let home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .context("HOME is not set")?;
-    Ok(if cfg!(target_os = "macos") {
-        home.join("Library/Caches/h2recomp/follow")
-    } else {
-        std::env::var_os("XDG_CACHE_HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| home.join(".cache"))
-            .join("h2recomp/follow")
-    })
+    Ok(host_dirs::cache()
+        .context("no cache directory: HOME is not set")?
+        .join("follow"))
 }
 
 /// Appends a line to `<cache>/logs/follow.log` and prints it.

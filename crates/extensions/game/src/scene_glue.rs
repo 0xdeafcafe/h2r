@@ -10,7 +10,6 @@
 //! (`d3d::scene_sink`, slice 6).
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
 
 use agent_proto::{
     SceneCarried, SceneEntries, SceneEntryRecord, SceneLateRecord, SceneOpCounts, ScenePostRecord, SceneReply, SceneSideTarget,
@@ -208,24 +207,8 @@ fn light_layers(scene: &FrameScene, view: &frame_scene::View) -> BTreeMap<String
     out
 }
 
-/// Windows uses the agent cache. Elsewhere: `$XDG_CACHE_HOME/h2recomp`, else
-/// `~/Library/Caches/h2recomp` on macOS and `~/.cache/h2recomp` elsewhere.
-fn cache_dir() -> PathBuf {
-    if cfg!(windows) {
-        return agent_proto::cache_dir();
-    }
-    if let Some(x) = std::env::var_os("XDG_CACHE_HOME") {
-        return PathBuf::from(x).join("h2recomp");
-    }
-    match std::env::var_os("HOME") {
-        Some(h) if cfg!(target_vendor = "apple") => PathBuf::from(h).join("Library/Caches/h2recomp"),
-        Some(h) => PathBuf::from(h).join(".cache/h2recomp"),
-        None => std::env::temp_dir().join("h2recomp"),
-    }
-}
-
 fn write_dump(scene: &FrameScene) -> Result<String, String> {
-    let dir = cache_dir().join("scenes");
+    let dir = agent_proto::cache_dir().join("scenes");
     std::fs::create_dir_all(&dir).map_err(|e| format!("creating {}: {e}", dir.display()))?;
     let path = dir.join(format!("scene-{}-{}.json", scene.id.frame, scene.id.tick));
     let json = serde_json::to_vec(scene).map_err(|e| format!("scene to JSON: {e}"))?;

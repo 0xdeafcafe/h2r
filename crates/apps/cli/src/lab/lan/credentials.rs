@@ -169,17 +169,10 @@ pub(super) fn stage_peer(host: &str, peer: &Peer) -> Result<PendingWrite> {
 }
 
 fn peer_dir() -> Result<PathBuf> {
-    let home = || std::env::var_os("HOME").map(PathBuf::from);
-    let config = if cfg!(target_os = "macos") {
-        home().map(|home| home.join("Library/Application Support"))
-    } else {
-        std::env::var_os("XDG_CONFIG_HOME")
-            .filter(|dir| !dir.is_empty())
-            .map(PathBuf::from)
-            .or_else(|| home().map(|home| home.join(".config")))
-    }
-    .context("finding the lab driver configuration directory")?;
-    Ok(config.join("h2recomp/lab/peers"))
+    Ok(host_dirs::config()
+        .context("finding the lab driver configuration directory")?
+        .join("lab")
+        .join("peers"))
 }
 
 pub(super) fn peer_path(dir: &Path, host: &str) -> PathBuf {

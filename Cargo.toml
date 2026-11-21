@@ -53,6 +53,7 @@ content = { path = "crates/formats/content" }
 forge = { path = "crates/extensions/forge" }
 forge-doc = { path = "crates/formats/forge-doc" }
 forge-build = { path = "crates/tools/forge-build" }
+host-dirs = { path = "crates/formats/host-dirs" }
 live-proto = { path = "crates/live/live-proto" }
 live-server = { path = "crates/live/live-server" }
 cloud-saves = { path = "crates/live/cloud-saves" }

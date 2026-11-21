@@ -26,6 +26,8 @@ hot-render = { path = "../hot-render", optional = true }
 # Pipeline and program keys are persisted (d3d::pipeline_store).
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", optional = true }
+# The cache directory the pipeline cache lives in (d3d::pipeline_store).
+host-dirs.workspace = true
 # Per-draw program-key lookups (nv2a::Nv2aShaders).
 rustc-hash = "2"
 # Guest words read straight into `u32` arrays (state::read_words_into).

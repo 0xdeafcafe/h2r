@@ -9,20 +9,9 @@ use crate::{cache, vis};
 
 use super::{write_atomic, write_bots};
 
+/// `bots` in the cache directory ([`host_dirs::cache`]).
 pub fn default_dir() -> Option<PathBuf> {
-    let absolute = |name: &str| {
-        std::env::var_os(name)
-            .map(PathBuf::from)
-            .filter(|p| p.is_absolute())
-    };
-    if cfg!(target_os = "macos") {
-        Some(absolute("HOME")?.join("Library/Caches/h2recomp/bots"))
-    } else if cfg!(windows) {
-        Some(absolute("LOCALAPPDATA")?.join("h2recomp/cache/bots"))
-    } else {
-        let base = absolute("XDG_CACHE_HOME").or_else(|| Some(absolute("HOME")?.join(".cache")))?;
-        Some(base.join("h2recomp/bots"))
-    }
+    Some(host_dirs::cache()?.join("bots"))
 }
 
 pub(super) fn nav_path(dir: &Path, key: Sha256) -> PathBuf {

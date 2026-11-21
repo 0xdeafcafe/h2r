@@ -125,18 +125,10 @@ pub fn run(args: Vec<String>) -> Result<()> {
     }
 }
 
-/// `~/Library/Caches/h2recomp` (macOS), else `$XDG_CACHE_HOME/h2recomp` or
-/// `~/.cache/h2recomp`: where the agent socket lives too.
+/// The cache directory the agent socket lives in too:
+/// [`agent_proto::cache_dir`].
 pub fn cache_dir() -> PathBuf {
-    let home = std::env::var_os("HOME").map(PathBuf::from);
-    let cache = if cfg!(target_os = "macos") {
-        home.map(|h| h.join("Library/Caches"))
-    } else {
-        std::env::var_os("XDG_CACHE_HOME")
-            .map(Into::into)
-            .or_else(|| home.map(|h| h.join(".cache")))
-    };
-    cache.unwrap_or_else(std::env::temp_dir).join("h2recomp")
+    agent_proto::cache_dir()
 }
 
 /// The host's socket: `$H2_LAB_SOCKET`, else `<cache>/lab.sock`.
