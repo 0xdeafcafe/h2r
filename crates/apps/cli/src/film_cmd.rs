@@ -46,7 +46,7 @@ pub fn stat(path: &Path) -> Result<String> {
     let ticks = header.meta.length_ticks;
     writeln!(out, "length_ticks: {ticks}")?;
 
-    let rows = match film::blam::keyframes(&mut reader)? {
+    let rows = match film::blam::embedded_keyframes(&mut reader)? {
         Some(list) => list
             .into_iter()
             .map(|key| {

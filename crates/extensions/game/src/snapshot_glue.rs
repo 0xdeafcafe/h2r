@@ -89,28 +89,23 @@ pub fn save_parts(
     header: Header,
     hash: &dyn Fn() -> lockstep::RamHash,
 ) -> Result<Vec<u8>, String> {
-    save_parts_observing(parts, header, hash, None, |_, _| {})
+    save_parts_into(parts, SnapshotWriter::new(header), hash, None, &SAVE_ORDER)
 }
 
-/// Reports each attempted section immediately, including a section which
-/// stopped the save. D3D's capture has guest-visible effects even if a
-/// later part prevents the recorder from publishing a complete keyframe.
-pub fn save_parts_observing(
+fn save_parts_into(
     parts: &mut [Box<dyn Part + '_>],
-    header: Header,
+    mut out: SnapshotWriter,
     hash: &dyn Fn() -> lockstep::RamHash,
     ram_base: Option<&snapshot::Base<'_>>,
-    mut attempted: impl FnMut(&str, bool),
+    order: &[&str],
 ) -> Result<Vec<u8>, String> {
     check_names(parts)?;
-    let mut out = SnapshotWriter::new(header);
-    for name in SAVE_ORDER {
+    for &name in order {
         if let Some(p) = parts.iter_mut().find(|p| p.name() == name) {
             let result = match ram_base {
                 Some(base) if name == "guest" => p.save_with_ram_base(&mut out, base),
                 _ => p.save(&mut out),
             };
-            attempted(name, result.is_ok());
             result.map_err(|e| format!("{name}: {e}"))?;
         }
     }
@@ -470,6 +465,37 @@ pub struct BootMachine<'a> {
 }
 
 impl BootMachine<'_> {
+    pub(crate) fn film_snapshot_writer(&self, tick: u64) -> SnapshotWriter {
+        SnapshotWriter::new(Header {
+            build: self.shelf.build().clone(),
+            name: format!("film-{tick}"),
+            tick,
+            presents: self.presents,
+            notes: vec![],
+        })
+    }
+
+    /// The recorded device operation at a film capture point. The caller
+    /// can drop the writer or continue into a full snapshot after success.
+    pub(crate) fn capture_film_device(
+        &mut self,
+        out: &mut SnapshotWriter,
+    ) -> Option<Result<(), String>> {
+        self.parts
+            .iter_mut()
+            .find(|part| part.name() == "d3d")
+            .map(|part| part.save(out))
+    }
+
+    pub(crate) fn save_after_film_device(
+        &mut self,
+        out: SnapshotWriter,
+        ram_base: Option<&snapshot::Base<'_>>,
+    ) -> Result<Vec<u8>, String> {
+        // D3D already ran and wrote back to guest RAM at the capture point.
+        save_parts_into(&mut self.parts, out, &*self.hash, ram_base, &SAVE_ORDER[1..])
+    }
+
     fn notes(at: &At) -> Vec<(String, String)> {
         let mut notes = vec![("agent_ticks".to_owned(), at.ticks.to_string())];
         let phase = serde_json::to_value(at.phase)

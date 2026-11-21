@@ -103,7 +103,7 @@ impl State {
             Some(api::SeekRoute::Boot) => api::SeekSource::Boot,
             _ => self.seek_source(target),
         };
-        if request.source == Some(api::SeekRoute::Keyframe) && source != api::SeekSource::Keyframe {
+        if request.source == Some(api::SeekRoute::Keyframe) && source == api::SeekSource::Boot {
             return Err(RpcError::new(
                 code::UNAVAILABLE,
                 "no compatible keyframe at or before target",

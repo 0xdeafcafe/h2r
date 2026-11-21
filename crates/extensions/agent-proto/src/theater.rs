@@ -2,6 +2,7 @@
 use serde::{Deserialize, Serialize};
 
 pub const PLAY: &str = "theater.play";
+pub const PREPARE: &str = "theater.prepare";
 pub const STATE: &str = "theater.state";
 pub const PAUSE: &str = "theater.pause";
 pub const SPEED: &str = "theater.speed";
@@ -59,6 +60,45 @@ pub struct Play {
     pub id: Option<String>,
     /// Optional clip bounds [start, end) when opening a library film.
     pub range: Option<[u64; 2]>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Prepare {
+    pub id: String,
+}
+
+/// Without an ID, state describes the playback transport.
+#[derive(Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StateParams {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PrepareState {
+    pub id: String,
+    pub tick: u64,
+    pub length_ticks: u64,
+    #[serde(flatten)]
+    pub status: PrepareStatus,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum PrepareStatus {
+    Idle,
+    Starting,
+    Running,
+    Complete,
+    Failed { error: String },
+}
+
+impl PrepareStatus {
+    pub fn active(&self) -> bool {
+        matches!(self, Self::Starting | Self::Running)
+    }
 }
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -168,8 +208,7 @@ pub struct State {
 }
 
 /// The recorded states the player can seek from, and the film's capture
-/// points. The session ring and sidecar keyframes do not exist yet: both
-/// lists are empty and the byte counts are zero.
+/// points. The session ring list is empty until warm restore is available.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct Keyframes {
     /// Ticks of the film's own machine keyframes, in order.
@@ -186,7 +225,7 @@ pub struct Keyframes {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
+    use serde_json::{from_value, json, to_value};
 
     #[test]
     fn theater_seek_and_step_params_round_trip() {
@@ -225,5 +264,34 @@ mod tests {
         assert_eq!(current.speed_reached, Some(2.25));
         assert_eq!(current.seek.unwrap().restore_ms, Some(85));
         assert_eq!(serde_json::to_value(current).unwrap(), wire);
+    }
+
+    #[test]
+    fn prepare_requests_and_state_round_trip() {
+        let params = json!({"id": "live:synthetic"});
+        assert_eq!(to_value(from_value::<Prepare>(params.clone()).unwrap()).unwrap(), params);
+        assert_eq!(to_value(from_value::<StateParams>(params.clone()).unwrap()).unwrap(), params);
+        assert_eq!(to_value(StateParams::default()).unwrap(), json!({}));
+        assert!(from_value::<Prepare>(json!({})).is_err());
+        assert!(from_value::<Prepare>(json!({"id": "a", "tick": 10})).is_err());
+
+        let states = [
+            (PrepareStatus::Idle, "idle"),
+            (PrepareStatus::Starting, "starting"),
+            (PrepareStatus::Running, "running"),
+            (PrepareStatus::Complete, "complete"),
+            (PrepareStatus::Failed { error: "synthetic divergence".into() }, "failed"),
+        ];
+        for (status, name) in states {
+            let state = PrepareState { id: "synthetic".into(), tick: 90, length_ticks: 900, status };
+            let wire = to_value(&state).unwrap();
+            assert_eq!(wire["status"], name);
+            if name == "failed" {
+                assert_eq!(wire["error"], "synthetic divergence");
+            } else {
+                assert!(wire.get("error").is_none());
+            }
+            assert_eq!(from_value::<PrepareState>(wire).unwrap(), state);
+        }
     }
 }

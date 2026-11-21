@@ -1,5 +1,7 @@
+mod capture_points;
 mod pad_inputs;
 mod transport;
+mod sidecar_restore;
 
 use super::*;
 use agent_proto::theater as api;
@@ -33,11 +35,13 @@ fn theater_replays_checkpoints_reports_first_divergence_and_registers_controls()
         rec.checkpoint(&g);
     }
     rec.finish(90, true).unwrap();
-    let open = |facts, render_every| {
+    let open = |facts, render_every, unpaced| {
         Session::open(
             None,
             Some(Replay {
                 path: file.clone(),
+                cache: None,
+                unpaced,
                 render_every,
                 speed: 1.,
                 seek_tick: 0,
@@ -57,10 +61,14 @@ fn theater_replays_checkpoints_reports_first_divergence_and_registers_controls()
     let wrong = open(
         Facts { stamp: "other image".into(), ..facts() },
         0,
+        false,
     );
     assert!(wrong.is_err_and(|e| e.to_string().contains("image stamp differs")));
-    let replay = || open(facts(), 0).unwrap().unwrap();
-    let matching = replay();
+    let replay = || open(facts(), 0, false).unwrap().unwrap();
+    let matching = open(facts(), 0, true).unwrap().unwrap();
+    assert!(matching.finish(0, true).is_err_and(|e| {
+        e.to_string().contains("playback stopped before the end")
+    }));
     for _ in 0..60 {
         matching.checkpoint(&g);
     }
@@ -108,7 +116,7 @@ fn theater_replays_checkpoints_reports_first_divergence_and_registers_controls()
         call(api::CAMERA, json!({"mode":"free"}))["error"]["message"],
         "playback has no rendered view"
     );
-    let rendered = open(facts(), 1).unwrap().unwrap();
+    let rendered = open(facts(), 1, false).unwrap().unwrap();
     rendered.add_methods(&a);
     let camera = match &rendered.lock().mode {
         Mode::Replay(_, replay) => replay.camera.clone(),
@@ -223,6 +231,8 @@ fn sealed_film_reinstalls_the_recorders_telemetry_and_impact_hook_chains() {
                 None,
                 Some(Replay {
                     path: path.clone(),
+                    cache: None,
+                    unpaced: false,
                     render_every: 0,
                     speed: 1.,
                     seek_tick: 0,
@@ -405,58 +415,6 @@ fn a_completed_host_match_is_listed_and_uploads_under_its_lease() {
 }
 
 #[test]
-fn seek_restores_machine_and_replays_only_the_remaining_ticks() {
-    let dir = std::env::temp_dir().join(format!("engine-seek-{}", live_proto::sign::random_id()));
-    std::fs::create_dir(&dir).unwrap();
-    let file = dir.join("game.h2film");
-    let opts = options(&dir);
-    let record = Session::open(Some(file.clone()), None, host_facts(), b"xbe", &opts)
-        .unwrap().unwrap();
-    let mut machine = crate::snapshot_glue::BootMachine {
-        parts: vec![],
-        checks: Box::new(Vec::new),
-        shelf: crate::snapshot_glue::Shelf::new(&dir, snapshot::BuildKey {
-            stamp: "fixture".into(),
-            switches: String::new(),
-        }),
-        hash: Box::new(|| lockstep::RamHash { total: 42, chunks: vec![42] }),
-        presents: 1,
-        rt: None,
-    };
-    let guest = arena();
-    for _ in 0..30 {
-        record.checkpoint(&guest);
-    }
-    record.try_keyframe(35, 0, &mut machine);
-    record.checkpoint(&guest);
-    record.finish(40, true).unwrap();
-
-    let replay = Session::open(None, Some(Replay {
-        path: file,
-        render_every: 0,
-        speed: 1.,
-        seek_tick: 31,
-        from_tick: None,
-        seek_source: None,
-        paused_at_target: true,
-        presentation: Presentation::default(),
-        restart: dir.join("restart"),
-        camera: Default::default(),
-                window_closed: None,
-    }), host_facts(), b"xbe", &opts).unwrap().unwrap();
-    let keyframe = replay.take_keyframe().unwrap();
-    assert_eq!(keyframe.tick, 30);
-    let start = replay.restore_keyframe(keyframe, &mut machine, None).unwrap();
-    assert_eq!(start, 35);
-    assert_eq!(replay.lock().tick, 30);
-    replay.checkpoint(&guest);
-    assert!(replay.lock().paused);
-    replay.finish(40, true).unwrap();
-    assert!(replay.lock().complete);
-    std::fs::remove_dir_all(dir).unwrap();
-}
-
-#[test]
 fn state_reports_the_seek_route_and_restore_cost_and_lists_keyframes() {
     let dir = std::env::temp_dir().join(format!("engine-seek-state-{}", live_proto::sign::random_id()));
     std::fs::create_dir(&dir).unwrap();
@@ -464,7 +422,6 @@ fn state_reports_the_seek_route_and_restore_cost_and_lists_keyframes() {
     let opts = options(&dir);
     let record = Session::open(Some(file.clone()), None, host_facts(), b"xbe", &opts)
         .unwrap().unwrap();
-    record.start_measurements(std::time::Instant::now(), None);
     let mut machine = crate::snapshot_glue::BootMachine {
         parts: vec![],
         checks: Box::new(Vec::new),
@@ -480,22 +437,43 @@ fn state_reports_the_seek_route_and_restore_cost_and_lists_keyframes() {
     for _ in 0..30 {
         record.checkpoint(&guest);
     }
+    let snapshot = crate::snapshot_glue::save_parts(
+        &mut machine.parts,
+        snapshot::Header {
+            build: machine.shelf.build().clone(),
+            name: "film-30".into(),
+            tick: 30,
+            presents: 1,
+            notes: vec![],
+        },
+        &*machine.hash,
+    ).unwrap();
     if let Mode::Record(rec) = &mut record.lock().mode {
-        // Synthetic marker at the keyframe boundary. The cold keyframe
-        // restore skips past it, as it does for a real recorded barrier.
-        rec.out.as_mut().unwrap().chunk(film::MARK, &Mark::D3dBarrier {
+        let out = rec.out.as_mut().unwrap();
+        out.chunk(film::MARK, &Mark::D3dBarrier {
             slices: 35,
             tick: 30,
             saved: true,
         }).unwrap();
+        rec.track.keyframe(out, &film::blam::Keyframe {
+            tick: 30,
+            slices: 35,
+            calls: 0,
+            lobby_boundary: 0,
+            snapshot,
+            disk_delta: Vec::new(),
+            ram_anchor: None,
+        }).unwrap();
     }
-    record.try_keyframe(35, 0, &mut machine);
     record.checkpoint(&guest);
     record.finish(40, true).unwrap();
 
+    let build = machine.shelf.build().clone();
     let open = |seek_tick, seek_source| {
-        Session::open(None, Some(Replay {
+        let player = Session::open(None, Some(Replay {
             path: file.clone(),
+            cache: None,
+            unpaced: false,
             render_every: 0,
             speed: 1.,
             seek_tick,
@@ -506,7 +484,9 @@ fn state_reports_the_seek_route_and_restore_cost_and_lists_keyframes() {
             restart: dir.join("restart"),
             camera: Default::default(),
             window_closed: None,
-        }), host_facts(), b"xbe", &opts).unwrap().unwrap()
+        }), host_facts(), b"xbe", &opts).unwrap().unwrap();
+        player.mount_sidecar(&dir, 0, &build, &dir).unwrap();
+        player
     };
     let a = agent::Agent::new();
     let (send, read) = std::sync::mpsc::sync_channel(32);
@@ -528,13 +508,6 @@ fn state_reports_the_seek_route_and_restore_cost_and_lists_keyframes() {
         a.poll_theater(&mut Empty);
         serde_json::from_str::<Value>(&read.try_recv().unwrap()).unwrap()
     };
-    record.add_methods(&a);
-    let capture = &call(api::MEASUREMENTS, json!({}))["result"]["captures"][0];
-    assert_eq!(capture["tick"], 30);
-    assert_eq!(capture["slices"], 35);
-    assert_eq!(capture["published"], true);
-    assert!(capture["elapsed_ms"].is_u64());
-
     // A cold seek to tick 31 routes through the film's keyframe at tick 30.
     let player = open(31, Some(api::SeekRoute::Keyframe));
     player.add_methods(&a);

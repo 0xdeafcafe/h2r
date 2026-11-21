@@ -2098,7 +2098,9 @@ directly on its own `--socket` (`H2_AGENT`, else the cache's `theater.sock`).
 | Method | Parameters | Result |
 |---|---|---|
 | `theater.play` | `{"id":"film-id","range":[300,900]}` to open, `{}` to resume; omit `range` for the whole film | `{id, starting:true}` on launch, otherwise transport state |
-| `theater.state` | `{}` | transport state, or `{id:null}` with no player |
+| `theater.prepare` | `{"id":"film-id"}` on the library agent | starts a background Prepare replay and returns its progress. A duplicate request for an active job returns that job's progress. |
+| `theater.state` | `{}` | transport state, or `{id:null,active:false}` with no player |
+| `theater.state` | `{"id":"film-id"}` on the library agent | Prepare progress for that ID |
 | `theater.pause` | `{}` | holds playback and reports state. During a seek it arranges a hold at the destination |
 | `theater.speed` | `{"speed":0.5}` | sets host pacing from 0.25 to 4 times realtime |
 | `theater.seek` | `{"tick":900}`, optionally `"clip_marks":[300,null]`, `"source":"boot"` or `"source":"keyframe"` | restarts the player and fast-forwards to the target, carrying camera and timeline state. Forcing a keyframe requires a compatible frame at or before the target |
@@ -2107,6 +2109,18 @@ directly on its own `--socket` (`H2_AGENT`, else the cache's `theater.sock`).
 | `theater.camera` | `{"mode":"orbit","player":"<name>","look":[0.2,-0.1],"zoom":-1}` or `{"mode":"first_person","seat":3}` | selects the view and returns transport state; an absolute film seat is 0 to 15 |
 | `theater.keyframes` | `{}` | seek inventory `{film, sidecar, ring, capture_points, ring_bytes, ring_cap, sidecar_bytes}`; lists contain tick numbers |
 | `theater.measurements` | `{}` | timings, keyframe attempts and page counts from the instrumented recorder or playback child |
+
+Prepare accepts a local library ID or `live:<game-id>` for a host film
+downloaded into the library. It replays the entire film from boot in an
+isolated process without a window or realtime pacing. Prepare progress is
+`{id,status,tick,length_ticks}`. The status is `idle` before a job starts,
+`starting` while it boots, `running` while it replays, `complete` after
+verified replay and sidecar finalization, or `failed` with an `error`
+message. The ticks count from boot. The film length becomes available
+after the worker resolves the library entry. The library agent keeps
+each job's final status for its lifetime and a new request can retry it.
+For a command-line Prepare with `--socket PATH`, use `theater.state {}`
+on that socket to read its transport tick directly.
 
 The rendered player starts at the clip's first tick and loops at its end.
 Its overlay uses the player's agent socket for transport and `cheat.set
@@ -2142,14 +2156,13 @@ is pending or the child is catching up. A replacement target keeps the
 original departure tick. Direct socket clients reconnect after the
 restart and can then read progress or cancel. The seek object remains
 available at the target with zero ticks left. Linear playback starts
-with `seek: null`. The
-cold player reports `source: "keyframe"` for a compatible embedded
-keyframe or `"boot"` for replay from startup, with `warm: false`.
+with `seek: null`. The cold player reports `source: "keyframe"` for a
+compatible embedded keyframe, `"sidecar"` for a local cache frame, or
+`"boot"` for replay from startup, with `warm: false`.
 `restore_ms` times loading the snapshot into the machine and checking
 its restored state. It is null before restore and on the boot route.
-The keyframe inventory lists embedded frames and all recorded D3D
-barrier ticks, including failed captures. The cold player returns empty
-ring and sidecar lists and zero for their byte fields.
+The keyframe inventory lists embedded and sidecar frames, the sidecar
+size, and all recorded D3D barrier ticks, including failed captures.
 
 `theater.measurements` is a read on the recorder's or playback child's
 own socket when the run uses the Theater measurement switch
@@ -2164,8 +2177,9 @@ own socket when the run uses the Theater measurement switch
   slice after boot or restore to the seek target. Both are null until
   a forward replay reaches its target.
 - `captures` with `{tick, slices, elapsed_ms, published, reason}`. The
-  recorder times the attempt through the write and gives the blocker
-  or error when it skips a frame. `page_windows` with
+  recorder times the capture point through writing the barrier and any
+  sidecar frame scheduled there. The reason field reports blockers and
+  capture errors. `page_windows` with
   `{seconds, from_tick, to_tick, pages}` counts distinct physical guest
   pages written in each 5 s and 30 s window of match ticks.
   `captures_omitted` and `page_windows_omitted` count entries older

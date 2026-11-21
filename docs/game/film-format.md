@@ -114,9 +114,9 @@ chunk. To draw a requested tick, load the chunks from `scene` through
 the chunk containing it and apply the sparse pose changes in order.
 The replay window is at most 16 chunks and 2048 ticks inclusive. Stats
 consumers skip pose records and can decode each event payload directly.
-`keyframes` contains ordered (completed tick, private `KEYF` envelope
-offset) pairs for in-engine seeks. The public directory discloses those
-positions. Only the private replay reader consumes the machine bytes.
+`keyframes` is empty on recorder output. In files with embedded machine
+snapshots it contains ordered (completed tick, private `KEYF` envelope
+offset) pairs. Only the private replay reader consumes the machine bytes.
 Live validates public ranges against physical envelopes before authorising
 access. The private index includes all envelopes through `CIDX`, then
 the footer identifies both directories. Version 1 and 2 files retain
@@ -322,11 +322,23 @@ to film consumers; applying those transitions twice would change the game.
 
 ## Keyframes and seeking
 
-The recorder attempts a full machine keyframe on a quiescent slice and then
-at 30-second intervals in guest tick time. A keyframe follows a flushed HLE
-batch. In v3 the final tick stays open for observations that arrive before
-the next game step or the closing scoreboard. The binary fields follow in
-this order.
+The recorder attempts a capture point every 150 completed ticks, between
+scheduler slices. At a quiescent point it performs the D3D capture, flushes
+the HLE call batch and writes a `d3d_barrier` mark. A local recorder saves a
+machine snapshot at every sixth point. A dedicated host only writes marks.
+During playback the same device work runs at each marked slice. The player
+can save a missing snapshot there while watching or preparing the film.
+
+Recorder and player share `film::sidecar::SidecarWriter`. Its local file is
+`<films>/cache/<film id>/<build id>.h2keys`, where `build id` is the snapshot
+store's FNV-64 ID. The `H2KEYS1!` file binds its indexed `KEYF` envelopes to
+the film ID, sealed header digest and complete snapshot build key. The
+directory records the matching film mark for each snapshot. On seek, the
+player restores the tape at this mark and decodes the input block containing
+the successor tick. A recorder binds the digest after sealing the film. Cross-machine transfers use the film file.
+The cache defaults to 4 GiB and evicts the least recently watched sidecars.
+
+A sidecar envelope and a legacy embedded `KEYF` use the same binary fields.
 
 ```text
 ULEB      last completed tick
@@ -473,8 +485,8 @@ and x86-64 Linux, an installed current Clang image with the same guest digest
 can replay across native targets. A full image contains every generated
 owner and may substitute for the host's coverage-pruned image. A slim
 candidate requires the same coverage fingerprint. Cross-target and
-slim-to-full playback initialise the disk and machine at boot and check the
-recorded inputs and hashes up to the requested tick. A fast-tier or external
+slim-to-full playback start at boot or from a sidecar made by the installed
+build, and check the recorded inputs and hashes up to the requested tick. A fast-tier or external
 host module needs its native image. Earlier files without a portable stamp
 keep their original image check.
 
@@ -488,7 +500,7 @@ rendered replay need independent comparisons on the same film.
 
 A kernel continuation, pending device work or host feature without
 serialisable state can prevent a keyframe. The reader can only seek using
-the snapshots the recording actually contains. [Machine snapshot policies](../runtime/snapshots.md)
+snapshots that passed capture at recorded boundaries. [Machine snapshot policies](../runtime/snapshots.md)
 and [sim determinism](../runtime/sim.md#8-determinism) describe these constraints.
 
 Live clip endpoints use the guest match clock. The in-game player translates
