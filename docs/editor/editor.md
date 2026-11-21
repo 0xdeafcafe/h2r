@@ -650,7 +650,9 @@ build), and keeps the last four maps' scenes so reopening one is instant.
   refused, and a part its pass does not take, draw the base look, and
   `view.stats` counts each by cause (`by_layer`, layer 3: `refused`,
   `parts_refused`). A part only layer 3 draws (no base map) counts in
-  the BSP's `draws` and is picked. A pass that leaves `CULLMODE` unset
+  the BSP's `draws` and is picked in the Game mode only: what is
+  picked and counted is what the mode shows
+  (`NativeLoad::triangles`, `NativeLoad::stats`). A pass that leaves `CULLMODE` unset
   culls as the D3D device's default (CCW;
   `layers_load::device_default_cull`). Flat, Lightmap only and Collision
   draw the base look alone.

@@ -146,12 +146,16 @@ fn draws_without_their_images_are_left_out() {
         .map(|m| (m, Image::solid([m as u8; 4])))
         .collect();
     let load = NativeLoad::new(TagId(7), w.clone(), base.clone(), HashMap::new());
-    assert_eq!(load.stats().draws, 1, "only the unlit draw with a base map");
-    assert_eq!(load.stats().untextured, 3);
+    assert_eq!(
+        load.stats(Lighting::Game).draws,
+        1,
+        "only the unlit draw with a base map"
+    );
+    assert_eq!(load.stats(Lighting::Game).untextured, 3);
     assert_eq!(load.world().draws[0].material, 2);
     let pages = HashMap::from([(PAGE, Image::solid([128; 4]))]);
     let load = NativeLoad::new(TagId(7), w, base, pages);
-    let s = load.stats();
+    let s = load.stats(Lighting::Game);
     assert_eq!(
         (s.draws, s.untextured, s.materials, s.lightmap_pages),
         (3, 1, 3, 1)
@@ -328,7 +332,7 @@ fn the_invented_textured_bsp_loads_with_its_images() {
     let load = NativeLoad::read(&mut map, &mut files, 0).unwrap();
     assert_eq!(load.bsp, id(4));
     assert_eq!(load.lightmap_error, None);
-    let s = load.stats();
+    let s = load.stats(Lighting::Game);
     assert_eq!(
         (
             s.draws,
@@ -436,9 +440,19 @@ fn the_game_mode_draws_layer_3_where_it_compiled() {
             .collect()
     };
     // Material 2 has no base map: only layer 3 draws it, and it picks.
-    let own: Vec<u16> = load.layer3_only().iter().map(|d| d.material).collect();
+    let own: Vec<u16> = load
+        .layer3_only(Lighting::Game)
+        .iter()
+        .map(|d| d.material)
+        .collect();
     assert_eq!(own, [2]);
-    assert_eq!(load.triangles().len(), 6, "three quads of two triangles");
+    assert_eq!(load.triangles(Lighting::Game).len(), 6, "three quads");
+    // The other modes draw the base look alone: what is picked and
+    // counted is what they show.
+    assert!(load.layer3_only(Lighting::Flat).is_empty());
+    assert_eq!(load.triangles(Lighting::Flat).len(), 4, "two quads");
+    assert_eq!(load.stats(Lighting::Flat).draws, 2);
+    assert_eq!(load.stats(Lighting::Game).draws, 3);
     let data = &load.layers().unwrap().layer3.data;
     assert_eq!(
         keys(Some(data)),
@@ -523,7 +537,11 @@ fn the_layered_floor_plans_its_pass() {
     use crate::fixture::LAYERED_LAYER;
     let (mut map, mut files) = layered();
     let load = NativeLoad::read(&mut map, &mut files, 0).unwrap();
-    assert_eq!(load.stats().draws, 1, "the base look is the textured map's");
+    assert_eq!(
+        load.stats(Lighting::Game).draws,
+        1,
+        "the base look is the textured map's"
+    );
     let layers = load.layers().expect("read from the map");
     assert!(layers.unresolved().is_empty(), "{layers:?}");
     for (&layer, plan) in layers.plans() {
@@ -822,7 +840,7 @@ fn picking_the_native_world_matches_the_editors_world() {
     assert_eq!(native.len(), 1, "{:?}", ed.native_errors());
     let ours = ed.world().0.to_vec();
     assert!(!ours.is_empty(), "the editor reads the floor too");
-    let theirs = native[0].triangles();
+    let theirs = native[0].triangles(Lighting::Game);
     assert_eq!(theirs.len(), 2);
     let f = crate::fixture::TEX_FLOOR;
     for (origin, dir) in [
