@@ -373,9 +373,18 @@ fn a_ceiling_with_standing_room_is_no_crouch_spot() {
     assert!(crouches(&scan(&room(0.8))).is_empty());
 }
 
+/// A ceiling too low to crouch under forces a crouch only in the thin band
+/// outside its edge where the crouched capsule's rounded top slips under:
+/// the edge more than `sqrt(r^2 - (r - 0.1)^2)` (0.158) from the axis. The
+/// Ascension lip is this case (its clearance is 0.39). Nothing is under it.
 #[test]
-fn a_ceiling_too_low_to_crouch_under_is_no_crouch_spot() {
-    assert!(crouches(&scan(&room(0.4))).is_empty());
+fn a_ceiling_too_low_to_crouch_under_forces_only_at_its_edge() {
+    for s in crouches(&scan(&room(0.4))) {
+        let [x, y, _] = s.stand;
+        let outside = x < 0.0 || x > 2.0 || y < 0.0 || y > 2.0;
+        let gap = (-x).max(x - 2.0).max(-y).max(y - 2.0);
+        assert!(outside && gap < RADIUS + 0.01, "{:?}", s.stand);
+    }
 }
 
 /// A collision BSP from face loops (outward counter-clockwise), with the
