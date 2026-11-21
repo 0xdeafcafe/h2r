@@ -1672,7 +1672,8 @@ where
         depth: Option<Self::Surface>,
         textures: [Option<&Self::Texture>; 4],
     ) -> RenderExtents {
-        self.inner.render_extents(color, depth, textures)
+        self.inner
+            .render_extents(color, depth, textures.map(|t| t.map(|a| &**a)))
     }
 
     fn read_display_surface(

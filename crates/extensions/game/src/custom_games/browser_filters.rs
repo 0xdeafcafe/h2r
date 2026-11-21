@@ -401,7 +401,7 @@ impl FilterPage {
             .map(|c| text_fit::line(&c.label, text_fit::ROW))
             .collect();
         let browser = Arc::clone(&self.browser);
-        let set = Arc::new(move |i| {
+        let set = Arc::new(move |i: usize| {
             let Some(choice) = choices.get(i) else {
                 return String::new();
             };
