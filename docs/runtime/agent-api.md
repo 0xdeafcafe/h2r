@@ -2015,8 +2015,24 @@ DirectSound (`crates/extensions/game/src/dsound_glue.rs`). The result has
 environment configured), and `voices`. Each playing buffer, queued
 unpaused stream and playing mix-in has a mixer `id`, `kind`, `volume_mb`
 and `distance_units` (listener-relative world units, null for an
-unpositioned voice). Match a stream's output `bin` to a mix-in's
-`input_bin` to find the positioned emitter.
+unpositioned voice). `sends_to` lists the ids of the playing mix-ins the
+voice's bins reach: a Halo stream in a submix names its emitter there. A
+submix's `input_bin` is a host bin (`0x100` and up), which only its own
+streams carry. The guest sees bin `0x1f` in their place
+([dsound.md](../audio/dsound.md#positioned-sound)).
+
+`spatial` is null for a 2D voice. For a positioned one it gives the
+DirectSound 3D terms the mixer applies against the listener:
+`position` as the game set it, `relative` to the listener, `min_distance`
+and `max_distance` (null when not finite), `rolloff` (listener times
+source), `distance_gain` and `cone_gain` (linear), their product `gain`,
+`pan` (left and right gains), `front` (the front crosstalk share) and
+`pitch` (the Doppler ratio). `applied_gain` is `direct_gain` times that
+`gain`: the level the voice's direct path leaves with, before bin volumes
+and pan. Halo's submixes have `FLT_MAX` distances and rolloff 0, so their
+`distance_gain` is 1. The game's distance attenuation is the gain on the
+stream's bin into the submix, so one emitter's level at a distance is that
+bin `gain` times the submix's `applied_gain`.
 
 `direct_gain` and `room_gain` are linear low-frequency gains including
 voice volume and headroom. `direct_hf_db` and `room_hf_db` give the

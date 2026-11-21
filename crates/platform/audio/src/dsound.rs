@@ -438,14 +438,16 @@ impl SoundBuffer {
 
 /// A mix-in (submix) voice: an Xbox buffer created with `DSBCAPS_MIXIN` or
 /// `DSBCAPS_FXIN` that carries no samples of its own. Everything other voices
-/// send to its `input_bin` (one of the FX send bins, see [`crate::route`]) is
-/// summed to mono and then mixed like a voice: its volume, its own mix bins
-/// and, for a 3D mix-in, the listener's panning and attenuation. Halo 2
-/// positions its sounds this way: each voice's stream feeds a 3D mix-in that
-/// the game moves with `SetPosition`.
+/// send to its `input_bin` (an FX send bin, or for a `DSBCAPS_MIXIN` submix a
+/// host bin of its own from [`crate::Mixer::add_submix`]; see
+/// [`crate::route`]) is summed to mono and then mixed like a voice: its
+/// volume, its own mix bins and, for a 3D mix-in, the listener's panning and
+/// attenuation. Halo 2 positions its sounds this way: each voice's stream
+/// feeds a 3D submix that the game moves with `SetPosition`.
 ///
-/// Like the hardware voice it stands for, a mix-in passes audio only while
-/// playing; input sent to a stopped mix-in is dropped.
+/// A mix-in passes audio only while playing; input sent to a stopped mix-in
+/// is dropped. The guest shim decides when that is (`docs/audio/dsound.md`,
+/// "Positioned sound").
 #[derive(Debug)]
 pub struct MixIn {
     pub(crate) input_bin: u32,
@@ -1153,22 +1155,9 @@ impl Listener {
         let left = (std::f64::consts::SQRT_2 * t.cos()).min(1.0) as f32;
         let right = (std::f64::consts::SQRT_2 * t.sin()).min(1.0) as f32;
 
-        let min = src.min_distance.max(1e-6);
-        let d = if dist.is_finite() {
-            dist.min(src.max_distance.max(min))
-        } else {
-            min
-        };
-        let rolloff = (self.rolloff_factor * src.rolloff_factor).max(0.0);
-        let distance_gain = if d <= min {
-            1.0
-        } else {
-            min / (min + rolloff * (d - min))
-        };
-
         let pitch = self.doppler(src, rel);
         let out = Spatial {
-            gain: distance_gain * cone_gain(src, rel),
+            gain: self.distance_gain(src, dist) * cone_gain(src, rel),
             left,
             right,
             front: front.clamp(0.0, 1.0),
@@ -1187,6 +1176,58 @@ impl Listener {
                 ..Spatial::DRY
             }
         }
+    }
+}
+
+/// The level terms of [`Listener::spatial`], one by one, for inspection
+/// (`audio.voices`, docs/runtime/agent-api.md).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Attenuation {
+    /// The source position relative to the listener, in world units (as
+    /// given, for a head-relative source).
+    pub relative: Vec3,
+    /// Its length, before the min/max clamp.
+    pub distance: f32,
+    /// The inverse-distance term, linear.
+    pub distance_gain: f32,
+    /// The cone term, linear.
+    pub cone_gain: f32,
+}
+
+impl Listener {
+    /// The DirectSound 3D distance term of [`Listener::spatial`]: unity up
+    /// to `min_distance`, then `min / (min + rolloff * (d - min))` with `d`
+    /// held at `max_distance` beyond it. A non-finite distance is unity.
+    fn distance_gain(&self, src: &Source3d, dist: f32) -> f32 {
+        let min = src.min_distance.max(1e-6);
+        let d = if dist.is_finite() {
+            dist.min(src.max_distance.max(min))
+        } else {
+            min
+        };
+        let rolloff = (self.rolloff_factor * src.rolloff_factor).max(0.0);
+        if d <= min {
+            1.0
+        } else {
+            min / (min + rolloff * (d - min))
+        }
+    }
+
+    /// The distance and cone terms [`Listener::spatial`] multiplies into
+    /// [`Spatial::gain`]; `None` for a 3D-disabled source.
+    pub fn attenuation(&self, src: &Source3d) -> Option<Attenuation> {
+        let relative = match src.mode {
+            Mode3d::Disabled => return None,
+            Mode3d::HeadRelative => src.position,
+            Mode3d::Normal => src.position.sub(self.position),
+        };
+        let distance = relative.len();
+        Some(Attenuation {
+            relative,
+            distance,
+            distance_gain: self.distance_gain(src, distance),
+            cone_gain: cone_gain(src, relative),
+        })
     }
 }
 
