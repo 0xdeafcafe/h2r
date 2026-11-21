@@ -1239,8 +1239,11 @@ records which game frames the native graph actually presents.
   On the first draw using an earlier frame's immutable snapshot, the
   worker pins the GPU textures behind its original proxy. A sealed draw
   can sample those images after the guest releases the proxy. Reference
-  and display versions retain their own resolutions. An older in-place
-  view has no frozen contents and makes the frame ineligible for replay.
+  and display versions retain their own resolutions. For a colour texture
+  that still views a live attachment, the worker checks its original
+  proxy and physical allocation. Each draw then samples its own copy of
+  that attachment, including writes from earlier in the same scene.
+  Releasing or recycling the source surface invalidates that binding.
   Where a private draw needs incoming pixels from earlier draws, the
   worker copies the required attachments before the first write. The
   copies retain the source GPU format, raster dimensions and all depth
