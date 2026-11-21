@@ -1,0 +1,441 @@
+//! The element model (docs/game/hud-kit.md, "The model"): a [`Hud`] is a
+//! name and a fixed list of [`Element`]s; a state of it is a [`Values`],
+//! one [`Value`] per element. One layout per HUD: a state never adds,
+//! removes or moves an element.
+
+use hud_edit::Mode;
+use hud_edit::place::Rect;
+
+use crate::rects;
+
+/// A HUD of ours.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Hud {
+    pub name: &'static str,
+    pub elements: Vec<Element>,
+}
+
+impl Hud {
+    pub fn element(&self, id: &str) -> Option<&Element> {
+        self.elements.iter().find(|e| e.id == id)
+    }
+
+    /// The model's own faults: an empty or repeated id.
+    pub fn problems(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        for (i, e) in self.elements.iter().enumerate() {
+            if e.id.is_empty() {
+                out.push(format!("element {i} has no id"));
+            }
+            if self.elements[..i].iter().any(|o| o.id == e.id) {
+                out.push(format!("{} is named twice", e.id));
+            }
+        }
+        out
+    }
+
+    /// Every [`Art`] the elements draw, once each.
+    pub fn arts(&self) -> Vec<Art> {
+        let mut out: Vec<Art> = Vec::new();
+        for a in self.elements.iter().filter_map(|e| e.kind.art()) {
+            if !out.contains(&a) {
+                out.push(a);
+            }
+        }
+        out
+    }
+
+    /// Whether any element is a text widget (and needs the text template).
+    pub fn has_text(&self) -> bool {
+        self.elements
+            .iter()
+            .any(|e| matches!(e.kind, Kind::Text { .. }))
+    }
+}
+
+/// One element: its id (unique in its HUD), what it is, where it sits.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Element {
+    pub id: &'static str,
+    pub kind: Kind,
+    /// For the channels ([`Kind::is_channel`]) only the screen modes it
+    /// has count: the game places them.
+    pub at: Place,
+}
+
+impl Element {
+    pub fn text(
+        id: &'static str,
+        font: Font,
+        justify: Justify,
+        longest: &'static str,
+        at: Place,
+    ) -> Self {
+        Element {
+            id,
+            kind: Kind::Text {
+                font,
+                justify,
+                longest,
+            },
+            at,
+        }
+    }
+    pub fn meter(id: &'static str, art: Art, at: Place) -> Self {
+        Element {
+            id,
+            kind: Kind::Meter { art },
+            at,
+        }
+    }
+    pub fn icon(id: &'static str, art: Art, at: Place) -> Self {
+        Element {
+            id,
+            kind: Kind::Icon { art },
+            at,
+        }
+    }
+    pub fn pointer(id: &'static str, art: Art, at: Place) -> Self {
+        Element {
+            id,
+            kind: Kind::Pointer { art },
+            at,
+        }
+    }
+    /// A channel element: [`Kind::Message`], [`Kind::Prompt`] or
+    /// [`Kind::Training`], fullscreen only ([`Place::GAME`]).
+    pub fn channel(id: &'static str, kind: Kind) -> Self {
+        debug_assert!(kind.is_channel());
+        Element {
+            id,
+            kind,
+            at: Place::GAME,
+        }
+    }
+}
+
+/// What an element is.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Kind {
+    /// A line in a HUD font. `longest` is the widest text any state gives it.
+    Text {
+        font: Font,
+        justify: Justify,
+        longest: &'static str,
+    },
+    /// A strip that fills from the left with [`Value::fill`], 0 to 1.
+    Meter { art: Art },
+    /// A sprite of a retail HUD bitmap.
+    Icon { art: Art },
+    /// An icon turned to [`Value::angle`] about its centre.
+    Pointer { art: Art },
+    /// A notification in the pickup list, top left, that fades (the
+    /// notification queue, `0x0024cbbf`).
+    Message { longest: &'static str },
+    /// The prompt line, top left (the user's prompt fields, while the game
+    /// shows no prompt of its own).
+    Prompt { longest: &'static str },
+    /// The framed box in the middle of the screen (the scripted training
+    /// text).
+    Training { longest: &'static str },
+}
+
+impl Kind {
+    /// The name the JSON and the findings use.
+    pub fn name(&self) -> &'static str {
+        match self {
+            Kind::Text { .. } => "text",
+            Kind::Meter { .. } => "meter",
+            Kind::Icon { .. } => "icon",
+            Kind::Pointer { .. } => "pointer",
+            Kind::Message { .. } => "message",
+            Kind::Prompt { .. } => "prompt",
+            Kind::Training { .. } => "training",
+        }
+    }
+    /// A channel into the message or training parts, not a widget.
+    pub fn is_channel(&self) -> bool {
+        matches!(
+            self,
+            Kind::Message { .. } | Kind::Prompt { .. } | Kind::Training { .. }
+        )
+    }
+    pub fn art(&self) -> Option<Art> {
+        match self {
+            Kind::Meter { art } | Kind::Icon { art } | Kind::Pointer { art } => Some(art.clone()),
+            _ => None,
+        }
+    }
+    pub fn longest(&self) -> Option<&'static str> {
+        match self {
+            Kind::Text { longest, .. }
+            | Kind::Message { longest }
+            | Kind::Prompt { longest }
+            | Kind::Training { longest } => Some(longest),
+            _ => None,
+        }
+    }
+}
+
+/// A widget's anchor: a corner of the view's HUD frame (E `0x001396c7`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Anchor {
+    TopRight = 0,
+    TopLeft = 1,
+    BottomLeft = 2,
+    BottomRight = 3,
+    Centre = 4,
+}
+
+/// Anchor and offsets in HUD pixels, per screen mode. `None` hides the
+/// element in that mode.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Place {
+    pub anchor: Anchor,
+    pub full: (i16, i16),
+    pub half: Option<(i16, i16)>,
+    pub quarter: Option<(i16, i16)>,
+    /// The point of the sprite (fractions of its size) put on the offset;
+    /// unused by texts, whose point is their top.
+    pub registration: [f32; 2],
+}
+
+impl Place {
+    /// The place the channels carry: the game places them, fullscreen
+    /// only (`Place::GAME.split((0, 0), (0, 0))` shows one in split screen).
+    pub const GAME: Place = Place::new(Anchor::TopLeft, (0, 0));
+
+    /// Fullscreen only, registered at the top left.
+    pub const fn new(anchor: Anchor, full: (i16, i16)) -> Self {
+        Place {
+            anchor,
+            full,
+            half: None,
+            quarter: None,
+            registration: [0.0, 0.0],
+        }
+    }
+    pub const fn registered(mut self, registration: [f32; 2]) -> Self {
+        self.registration = registration;
+        self
+    }
+    pub const fn split(mut self, half: (i16, i16), quarter: (i16, i16)) -> Self {
+        self.half = Some(half);
+        self.quarter = Some(quarter);
+        self
+    }
+    pub fn offset(&self, mode: Mode) -> Option<(i16, i16)> {
+        match mode {
+            Mode::Full => Some(self.full),
+            Mode::Half => self.half,
+            Mode::Quarter => self.quarter,
+        }
+    }
+
+    /// A place whose top-left corner is `height` plus `gap` pixels above
+    /// `r`'s top and in line with its left edge, from the bottom-left
+    /// anchor, fullscreen at 640 by 480 ([`rects`]): "above the motion
+    /// tracker" written once.
+    pub fn above(r: Rect, gap: i16, height: i16) -> Self {
+        let [x0, y0, ..] = r.pixels();
+        let [ax, ay] = rects::BOTTOM_LEFT;
+        Place::new(
+            Anchor::BottomLeft,
+            (x0 as i16 - ax, y0 as i16 - gap - height - ay),
+        )
+    }
+}
+
+/// A text widget's font (its font byte `+0x30`: 0 engine font 6, 1 engine
+/// font 8, E `0x0022a85b`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Font {
+    /// The HUD font, font id 6 (`conduit-13` on the disc).
+    Hud,
+    /// The count font, font id 8 (`MSLCD-14`).
+    Lcd,
+}
+
+impl Font {
+    /// The widget's font byte.
+    pub fn byte(self) -> i8 {
+        match self {
+            Font::Hud => 0,
+            Font::Lcd => 1,
+        }
+    }
+    /// The engine font (`font_table.txt` line).
+    pub fn engine(self) -> i16 {
+        hud_edit::layout::text_font(self.byte()).expect("0 and 1 name fonts")
+    }
+}
+
+/// A text's justification across its point (E `0x0022ac0b`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Justify {
+    Start = 0,
+    Centre = 1,
+    End = 2,
+}
+
+/// Retail art, by reference: never pixels.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Art {
+    /// The energy sword's battery strip and its meter shader.
+    StripMeter,
+    /// `hudg` `arrow_assets[0]`: the waypoint arrow's image, shader and
+    /// sequence.
+    WaypointArrow,
+    /// A retail widget's bitmap, shader and sequences, by its name string.
+    Widget { hud: HudRef, name: &'static str },
+}
+
+/// Which retail `nhdt` an [`Art::Widget`] is in.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum HudRef {
+    /// The player's, the `nhdt` the kit's widgets are added to.
+    Player,
+    /// An `nhdt` by tag name.
+    Named(&'static str),
+}
+
+/// How a text is coloured on top of the colour the game picks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum Style {
+    #[default]
+    Normal,
+    /// The game's alpha, scaled down.
+    Dim,
+    /// Run through a `hudg` flash record.
+    Flash(Pulse),
+}
+
+impl Style {
+    pub fn name(self) -> String {
+        match self {
+            Style::Normal => "normal".into(),
+            Style::Dim => "dim".into(),
+            Style::Flash(p) => format!("flash {}", p.name()),
+        }
+    }
+}
+
+/// The `hudg` flash records.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Pulse {
+    Help,
+    Objective,
+    TimeWarning,
+    TimeExpired,
+}
+
+impl Pulse {
+    pub const ALL: [Pulse; 4] = [
+        Pulse::Help,
+        Pulse::Objective,
+        Pulse::TimeWarning,
+        Pulse::TimeExpired,
+    ];
+    pub fn name(self) -> &'static str {
+        match self {
+            Pulse::Help => "help",
+            Pulse::Objective => "objective",
+            Pulse::TimeWarning => "time warning",
+            Pulse::TimeExpired => "time expired",
+        }
+    }
+}
+
+/// One element's state.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct Value {
+    pub shown: bool,
+    pub text: String,
+    /// A meter's fill, 0 to 1.
+    pub fill: f32,
+    /// A pointer's turn, radians clockwise from straight up.
+    pub angle: f32,
+    pub style: Style,
+    /// The tick the style started (a flash's phase).
+    pub since_tick: u32,
+}
+
+impl Value {
+    pub fn hidden() -> Self {
+        Value::default()
+    }
+    pub fn text(text: impl Into<String>) -> Self {
+        Value {
+            shown: true,
+            text: text.into(),
+            ..Value::default()
+        }
+    }
+    pub fn fill(fill: f32) -> Self {
+        Value {
+            shown: true,
+            fill,
+            ..Value::default()
+        }
+    }
+    pub fn angle(angle: f32) -> Self {
+        Value {
+            shown: true,
+            angle,
+            ..Value::default()
+        }
+    }
+    pub fn shown() -> Self {
+        Value {
+            shown: true,
+            ..Value::default()
+        }
+    }
+    pub fn styled(mut self, style: Style) -> Self {
+        self.style = style;
+        self
+    }
+}
+
+/// A state: per element its value.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct Values(pub Vec<(&'static str, Value)>);
+
+impl Values {
+    pub fn get(&self, id: &str) -> Option<&Value> {
+        self.0.iter().find(|(i, _)| *i == id).map(|(_, v)| v)
+    }
+    pub fn set(&mut self, id: &'static str, v: Value) {
+        match self.0.iter_mut().find(|(i, _)| *i == id) {
+            Some(slot) => slot.1 = v,
+            None => self.0.push((id, v)),
+        }
+    }
+
+    /// Where this state breaks the HUD's one layout: an element without a
+    /// value, a value for no element, an element valued twice.
+    pub fn layout_problems(&self, hud: &Hud) -> Vec<String> {
+        let mut out = Vec::new();
+        for e in &hud.elements {
+            match self.0.iter().filter(|(i, _)| *i == e.id).count() {
+                0 => out.push(format!("{} has no value", e.id)),
+                1 => {}
+                n => out.push(format!("{} has {n} values", e.id)),
+            }
+        }
+        for (id, _) in &self.0 {
+            if hud.element(id).is_none() {
+                out.push(format!("{id} is not an element of {}", hud.name));
+            }
+        }
+        out.dedup();
+        out
+    }
+}
+
+/// A HUD of ours and the named states its preview sheet draws.
+pub trait Describe {
+    fn hud(&self) -> Hud;
+    /// The named states the preview sheet draws.
+    fn states(&self) -> Vec<(&'static str, Values)>;
+}

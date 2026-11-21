@@ -1,0 +1,133 @@
+//! The kit on the owner's disc (`H2_DISC`, else `disc/halo2.iso`): the
+//! templates on every map, the retail rectangles where the HUD editor
+//! places the retail widgets, every registered HUD passing every check
+//! with nothing skipped, and the glyphs in fonts 6 and 8.
+
+use std::path::PathBuf;
+
+use hud_edit::Mode;
+use hud_edit::model::WidgetKind;
+use hud_edit::place::{self, Frame};
+use hud_kit::check;
+use hud_kit::{Source, huds, rects, templates};
+use scenario_edit::MapSource;
+
+fn iso() -> PathBuf {
+    std::env::var_os("H2_DISC")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../disc/halo2.iso")
+        })
+}
+
+/// The map the sheet is checked on (`hud_edit`'s disc test's).
+const MAP: &str = "lockout";
+
+/// Every map with a player HUD resolves every registered HUD's
+/// templates; the shared caches and the main menu have none and are
+/// skipped.
+#[test]
+#[ignore = "needs the owner's disc image (H2_DISC)"]
+fn templates_resolve_on_every_map() {
+    let iso = iso();
+    let maps = MapSource::disc_maps(&iso).unwrap();
+    let mut checked = 0;
+    for (name, _) in &maps {
+        if ["shared", "single_player_shared", "mainmenu"]
+            .iter()
+            .any(|s| name.eq_ignore_ascii_case(s))
+        {
+            continue;
+        }
+        let mut src = Source::disc(&iso, name).unwrap_or_else(|e| panic!("{name}: {e:#}"));
+        for d in huds::all() {
+            let hud = d.hud();
+            let t = src.templates(&hud);
+            assert_eq!(t.missing(&hud), Vec::<String>::new(), "{name}");
+        }
+        checked += 1;
+    }
+    assert!(checked > 10, "{checked} maps");
+}
+
+/// The rectangles of `rects` are where the HUD editor places the retail
+/// player HUD's tracker and shield meter, and the converter's health
+/// strip where `Place::above` puts it.
+#[test]
+#[ignore = "needs the owner's disc image (H2_DISC)"]
+fn the_retail_rectangles_match_the_editors_placement() {
+    let mut src = Source::disc(&iso(), MAP).unwrap();
+    let name = src.map.tag(src.player).unwrap().name.clone();
+    assert_eq!(name.as_deref(), Some(templates::PLAYER_HUD));
+    let hud = hud_edit::model::read(&mut src.map, src.player).unwrap();
+    // At the sheet's HUD state, so the retail check sees them.
+    let st = hud_kit::preview::retail_states(Mode::Full).remove(0);
+    let p = hud_edit::render::draw(&mut src.map, &mut src.art, src.fonts.as_ref(), &[&hud], &st);
+    let drawn: Vec<_> = p
+        .placed
+        .iter()
+        .filter(|w| w.drawn && w.key.kind == WidgetKind::Bitmap)
+        .collect();
+    assert!(
+        drawn
+            .iter()
+            .any(|w| w.rect.unwrap().pixels() == rects::TRACKER.pixels()),
+        "no drawn widget on the tracker: {:?}",
+        drawn
+            .iter()
+            .map(|w| (&w.name, w.rect.unwrap().pixels()))
+            .collect::<Vec<_>>()
+    );
+    let shield = hud
+        .widgets
+        .iter()
+        .find(|w| {
+            w.key.kind == WidgetKind::Bitmap && w.special() == hud_edit::layout::SPECIAL_SHIELD
+        })
+        .unwrap();
+    let r = p.placed.iter().find(|w| w.key == shield.key).unwrap();
+    assert!(r.drawn, "the shield meter draws at the sheet's state");
+    let r = r.rect.unwrap();
+    assert!(r.contains(&rects::SHIELD_BAND), "{r:?}");
+    assert_eq!([r.x0, r.y0], [rects::SHIELD_BAND.x0, rects::SHIELD_BAND.y0]);
+    let strip = hud_kit::Place::above(rects::SHIELD_BAND, 2, 8);
+    let pt = place::widget_point(&Frame::FULLSCREEN, strip.anchor as u16, strip.full).unwrap();
+    assert_eq!(
+        place::bitmap_rect(pt, [92.0, 8.0], [0.0, 0.0]),
+        rects::H1_HEALTH
+    );
+}
+
+/// Every registered HUD passes every check on the disc, nothing skipped,
+/// in every screen mode.
+#[test]
+#[ignore = "needs the owner's disc image (H2_DISC)"]
+fn every_hud_passes_every_check_on_the_disc() {
+    let mut src = Source::disc(&iso(), MAP).unwrap();
+    assert!(src.fonts.is_some(), "the disc's fonts");
+    let all = huds::all();
+    let ds: Vec<&dyn hud_kit::Describe> = all.iter().map(|d| d.as_ref()).collect();
+    let r = check::all(&mut src, &ds, &Mode::ALL).unwrap();
+    let text: Vec<String> = r.findings.iter().map(ToString::to_string).collect();
+    assert!(r.findings.is_empty(), "{text:#?}");
+    assert!(r.skipped.is_empty(), "{:?}", r.skipped);
+    assert!(!r.shots.is_empty());
+}
+
+/// The X button's glyph and every character the registered HUDs use are
+/// in fonts 6 and 8 (and 5, the split-screen message font).
+#[test]
+#[ignore = "needs the owner's disc image (H2_DISC)"]
+fn the_glyphs_are_in_the_fonts() {
+    let src = Source::disc(&iso(), MAP).unwrap();
+    let fonts = src.fonts.as_ref().expect("the disc's fonts");
+    for f in [5, 6, 8] {
+        assert_eq!(fonts.has_glyph(f, 0xe102), Some(true), "X in font {f}");
+    }
+    let mut r = check::Report::default();
+    for d in huds::all() {
+        check::glyphs(&mut r, &d.hud(), &d.states(), &|f, u| fonts.has_glyph(f, u));
+    }
+    let text: Vec<String> = r.findings.iter().map(ToString::to_string).collect();
+    assert!(text.is_empty(), "{text:#?}");
+}

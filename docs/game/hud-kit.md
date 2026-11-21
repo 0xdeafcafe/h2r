@@ -1,7 +1,7 @@
 # The HUD kit: HUD elements of ours, drawn by Halo 2's own HUD
 
-Status: Design. Nothing here is built; the superbounce HUD in `crates/apps/app/src/superbounce_hud.rs` is the host overlay this replaces.
-Code: `crates/tools/hud-kit` (the model, the compiler, the preview), `crates/extensions/game/src/hud_kit.rs` (the runtime), `crates/apps/cli/src/hud_cmd.rs` (`h2 hud`). Tests: `crates/tools/hud-kit/src/tests.rs`, `crates/tools/hud-kit/tests/disc.rs`.
+Status: In progress. Built: the model, the compiler, the preview and the checks (build plan slices 1 and 2), with the superbounce HUD as their first HUD. Not built: the runtime (slices 3 to 5); the game still shows the host overlay in `crates/apps/app/src/superbounce_hud.rs`, which slice 6 replaces.
+Code: `crates/tools/hud-kit` (the model, the compiler, the preview, the checks; the superbounce HUD in `src/huds/superbounce.rs` until slice 6), `crates/extensions/game/src/hud_kit.rs` (the runtime, not built), `crates/apps/cli/src/hud_cmd.rs` (`h2 hud`). Tests: `crates/tools/hud-kit/src/tests.rs`, `crates/tools/hud-kit/tests/disc.rs`.
 Switch: none (the runtime is the feature `hud-kit`).
 
 A feature of ours that wants something on the in-game HUD describes it as
@@ -301,6 +301,10 @@ pub enum Kind {
     Icon { art: Art },
     /// An icon turned to `Value::angle` about its centre.
     Pointer { art: Art },
+    /// The channels (below).
+    Message { longest: &'static str },
+    Prompt { longest: &'static str },
+    Training { longest: &'static str },
 }
 
 /// Anchor and offsets in HUD pixels, per screen mode. `None` hides the
@@ -319,6 +323,7 @@ pub enum Art {
     WaypointArrow,                    // hudg arrow_assets[0]
     Widget { hud: HudRef, name: &'static str }, // a retail widget's bitmap, shader and sequence, by its name string
 }
+pub enum HudRef { Player, Named(&'static str) } // the player's nhdt, or one by tag name
 pub enum Style { Normal, Dim, Flash(Pulse) }
 pub enum Pulse { Help, Objective, TimeWarning, TimeExpired } // the hudg records
 
@@ -332,15 +337,26 @@ pub trait Describe {
 }
 ```
 
-`compile(&Hud, &Templates) -> Compiled` turns the elements into widget
-records: a `[u8; 0x64]` per meter, icon and pointer and a `[u8; 0x54]`
-per text, with the element id of each. It builds them from the `nhdt`
+`compile(&Hud, &Templates) -> Result<Compiled>` turns the elements into
+widget records: `0x64` bytes per meter, icon and pointer and `0x54` per
+text, with the element id of each, bitmaps first and texts after, as the
+game draws them (E `0x0013a532`). It builds them from the `nhdt`
 definition (`tags::defs`), as `h1objects::h1hud` does. `Templates` holds
 what must come from the loaded map: for each `Art` the bitmap and shader
-datums and the sequences, and for text the shader of a retail text widget
-of the same `nhdt` (the grenade count: the first text widget whose first
-input is 20). The same `Compiled` bytes go to the game and to the
+datums and the sequences, and for text the shader and string ID of a
+retail text widget of the same `nhdt` (the grenade count: the first text
+widget whose first input is 20). The strip meter is found by the names
+`h1objects::health_hud` uses (`disintegrator_meter`, `ammo_meter`,
+sequence 0). The same `Compiled` bytes go to the game and to the
 preview, so what is checked offline is what the game is given.
+
+What the bytes leave to the runtime's hooks: the four show words are
+zero, so the retail gate (E `0x0013ac87`) never draws a kit widget on its
+own; every input is 0 ("zero"), and the input hook gives `hud_input1`;
+a text's string is the template's, and the string hook gives the text.
+A text hidden in a screen mode has the font byte -1 there, so the game's
+own text draw skips it (E `0x0022a85b`). A hidden mode keeps the
+fullscreen offset.
 
 Three more elements are not widgets. They are channels into the message
 and training parts, one text each:
@@ -352,6 +368,8 @@ and training parts, one text each:
 | `Training` | the framed box in the middle of the screen | the scripted training text (`+0x6c0`, `+0x6c4`) |
 
 Their texts are UTF-16 with the font's button glyphs or action tokens.
+A channel, like a widget, shows only in the screen modes its place has:
+`Element::channel` gives it `Place::GAME`, fullscreen only.
 
 ### The runtime (`crates/extensions/game/src/hud_kit.rs`)
 
@@ -411,39 +429,63 @@ draws a frame, in the game's own batches. No host texture, no upload.
 
 ```sh
 h2 hud preview list                                   # HUDs and their states
-h2 hud preview <hud> [--state NAME|all] [--mode full|half|quarter] [--map NAME] [--synthetic] [--out DIR]
-h2 hud sheet [--synthetic] [--out DIR]                # every HUD x state x mode, and sheet.png
+h2 hud preview <hud> [--state NAME|all] [--mode full|half|quarter|all] [--map NAME] [--disc ISO] [--synthetic] --out DIR
+h2 hud sheet [--map NAME] [--disc ISO] [--synthetic] --out DIR   # every HUD x state x mode, sheet.png
 ```
 
 `hud_kit::preview` draws on `hud_edit::render`'s 640 by 480 canvas: the
 player's retail `nhdt` at a `HudState` (so the tracker, the shield meter
 and the grenade panel are in the picture), then the compiled kit widgets
-through the same `hud_edit::render::draw`, then the channels: the prompt
-line and a notification at their points in font 6, and the training box
-around its text. Output is `<hud>-<state>-<mode>.png` and a `.json` with
-every element's id, kind, rectangle, text and style. A `DiscSource`
-reads the map, the fonts and the XBE's colour constants from the user's
-disc; a `SyntheticSource` uses flat boxes and a fixed-advance font, so
-`cargo test` draws the sheet without a disc. Output goes to a directory
-you name, never the repository.
+through the same draw, `hud_edit::render::draw_answered`, with the
+values given as the runtime's hooks give them (shown, fill, text,
+colour, turn), then the channels: the prompt line and a notification at
+their points in font 6 (5 in split screen), and the training box around
+its text. The player `nhdt` is the one a biped's HUD interfaces name,
+`ui\hud\masterchief` when the map has it. The retail HUD is drawn with
+the state gate on and word A `0x1000`, the retail shield meter's show
+word (S: what else the game sets).
+
+`preview` writes `<hud>-<state>-<mode>.png` and a `.json` with every
+element's id, kind, rectangle, the rectangle it may take in any state
+(`reserved`: a text's at its `longest`), text, style, fill, angle, font,
+whether it is drawn and why not, and the findings of that state and
+mode; by default every state, fullscreen. `sheet` writes every HUD x
+state x mode, `sheet.png` (half-size tiles, a column per mode),
+`sheet.json` (where each tile is) and `checks.json`, and fails on a
+finding. `Source::disc` reads the map (default `lockout`), the fonts and
+the XBE's colour constants from the user's disc (`--disc`, else
+`$H2_DISC`); `Source::synthetic` draws an invented map whose tracker,
+shield meter and frag count are flat boxes on the retail rectangles,
+with `hud_edit`'s fixed-advance stand-in font, so `cargo test` draws the
+sheet without a disc. Output goes to a directory you name outside the
+Git checkout; one inside it is refused.
+
+The preview's colours: the prompt's and the flash records' from the
+map's `hudg`; notifications' and the training text's from the XBE
+(`0x00468c84`, three floats, and `0x0045e518`, `0x0045e51c` with blue 1;
+S: the order); a kit text widget's is `hud_edit`'s stand-in until
+decoding 4. `Dim` halves the alpha, and `Flash` draws the record's peak
+colour; the flash's curve over `since_tick` is slice 4's. The training
+box's frame is a stand-in rectangle until decoding 3, and a pointer is
+turned within its sprite's rectangle.
 
 Checks, over each state and mode (`hud_kit::check`), each finding naming
-the element and the state:
+the check, the elements and the state and mode:
 
 | Check | Rule |
 |---|---|
-| fit | every text's `longest`, and every state's text, fits between its point and the next element or the frame edge |
-| glyphs | every character is in the element's font |
-| frame | every rectangle is inside the HUD frame and the screen |
-| retail | no element's opaque pixels meet a retail widget's at any `HudState` of the sheet (overshield, both grenades, zoomed, a weapon in each hand), nor the reserved rectangles (`PROMPT_LINE`, `TRAINING_BOX`, `H1_HEALTH`, the reticle) |
-| own | no two elements of any registered HUDs overlap, texts included |
-| one layout | every state has a value for every element and for nothing else |
-| templates | every `Art` and the text shader resolve on the map (disc only; on every map of the disc in the disc test) |
-| prompt | a `Prompt` or `Training` text has at most two lines and fits the frame's width less the box |
-| modes | an element with no half or quarter offset is hidden there, and says so in the JSON |
+| fit | every state's text of a text widget is no wider than its `longest`, and the `longest` stays inside the frame's width and meets no other element |
+| glyphs | every character of every `longest` and state text is in the element's font (a channel's in fonts 6 and 5) |
+| frame | every rectangle, reserved or drawn, is inside the HUD frame and the screen; an element may sit `FRAME_SLACK` (1) pixel outside the frame, as the tracker and the shield meter do (x 47, the frame's left 48) |
+| retail | no widget element's opaque pixels meet a retail widget's at any `HudState` of the sheet (plain, overshield, plasma grenades, zoomed), and no widget element's rectangle meets the reserved rectangles (`PROMPT_LINE`, `TRAINING_BOX`, `H1_HEALTH`, `RETICLE`); the channels are the game's own text and are not checked against them |
+| own | no two elements of any registered HUDs overlap, by their rectangles and their pixels, texts included; two channels are the game's, one at a time, and are not compared |
+| one layout | every state has a value for every element and for nothing else, and every element id is used once |
+| templates | every `Art` and the text template resolve on the map (both sources; on every map of the disc in the disc test) |
+| prompt | a `Message`, `Prompt` or `Training` text, and its `longest`, has at most two lines and fits the frame's width (less the training box's margin) |
+| modes | an element with no half or quarter offset is not drawn there (the JSON says why), a text has no font there, and the widgets of one HUD show in the same modes, so a block is never drawn in part |
 
-`hud_edit::checks` supplies the pixel tests. The art checks need pixels,
-so the synthetic source skips them and says so.
+The synthetic source has no fonts, so it skips the glyph check and says
+so, and its retail check is against the flat boxes, not the disc's art.
 
 The agent API gets one read method, `hud.kit`: the registered HUDs, and
 per element the id, kind, widget address, placed rectangle, text, fill
@@ -452,9 +494,16 @@ the preview's JSON, with `render.frame` for the pixels.
 
 ## The superbounce HUD on the kit
 
-`crates/extensions/game/src/superbounce_hud.rs` describes it and
-publishes a `Values` from `superbounce_mode`'s `State` each tick. It is
-shown to the first local player, fullscreen only.
+`crates/tools/hud-kit/src/huds/superbounce.rs` describes it: the
+elements, `values(&View)` (what the HUD shows of `superbounce_mode`'s
+state) and the preview's states. Slice 6 moves it beside the mode,
+publishing a `Values` from `State` each tick. It is shown to the first
+local player, fullscreen only.
+
+```sh
+h2 hud preview superbounce --state all --out DIR      # the disc's lockout
+h2 hud preview superbounce --state all --synthetic --out DIR
+```
 
 ### The block
 
@@ -464,27 +513,31 @@ HUD pixels; rectangles at 640 by 480 fullscreen.
 
 | Element | Kind | Offset | Rectangle | Disc assets |
 |---|---|---|---|---|
-| `sb.hint` | Text, `Hud`, start | (-1, -194) | x 47.., y 250..270 | font 6; the X glyph U+E102 |
-| `sb.status` | Text, `Hud`, start | (-1, -172) | x 47.., y 272..292 | font 6; the `hudg` help and objective flash records |
+| `sb.status` | Text, `Hud`, start | (-1, -172) | x 47.., y 272..293 | font 6; the `hudg` help and objective flash records |
 | `sb.pointer` | Pointer, registered at its centre | (7, -140) | centre (55, 304), within 16 by 16 (S) | `hudg` waypoint arrow image, shader and sequence |
-| `sb.distance` | Text, `Lcd`, end | (62, -148) | x ..110, y 296..312 | font 8 |
-| `sb.distance.unit` | Text, `Hud`, start | (65, -150) | x 113.., y 294..314 | font 6 |
-| `sb.drop.label` | Text, `Hud`, start | (86, -150) | x 134.., y 294..314 | font 6 |
-| `sb.drop` | Text, `Lcd`, start | (128, -148) | x 176.., y 296..312 | font 8 |
-| `sb.launch.meter` | Meter, registered top left | (-1, -124) | x 47..138, y 320..327 | the sword's battery strip and the legacy meter shader |
-| `sb.launch` | Text, `Lcd`, start | (97, -128) | x 145.., y 316..332 | font 8 |
+| `sb.distance` | Text, `Lcd`, end | (62, -148) | x ..110, y 296..313 | font 8 |
+| `sb.distance.unit` | Text, `Hud`, start | (65, -150) | x 113.., y 294..315 | font 6 |
+| `sb.drop.label` | Text, `Hud`, start | (86, -150) | x 134.., y 294..315 | font 6 |
+| `sb.drop` | Text, `Lcd`, start | (128, -148) | x 176.., y 296..313 | font 8 |
+| `sb.drop.unit` | Text, `Hud`, start | (175, -150) | x 223.., y 294..315 | font 6 |
+| `sb.launch.meter` | Meter, registered top left | (-1, -124) | x 47..139, y 320..328 | the sword's battery strip and the legacy meter shader |
+| `sb.launch` | Text, `Lcd`, start | (97, -128) | x 145.., y 316..333 | font 8 |
+| `sb.tutorial` | Training | the game's | the training box | font 6; the `hudg` training art |
 
 Words are in the HUD font and numbers in the count font, as the weapon
 panels do. The rows are 22 apart for a 21-pixel line. The block's bottom
-is y 332; the Halo 1 health strip starts at 336 and the shield band at
+is y 333; the Halo 1 health strip starts at 336 and the shield band at
 346. The x positions on the middle row are from measured widths ("17.9"
-is 44 wide) and are S until the `fit` check runs on the disc.
+is 44 wide; `sb.drop.unit` is 3 past a 44-wide drop) and are S until the
+`fit` check runs on the disc.
+
+There is no "Hold X" hint in the block: the hold-X and jump prompts are
+drawn in the world, on the strip.
 
 ### States
 
 Each drawing is the screen's bottom-left corner; one column is about 8
-HUD pixels. `(X)` is the X button's glyph, `>` the pointer, `#` the
-meter's fill.
+HUD pixels. `>` is the pointer, `#` the meter's fill.
 
 `scanning`: the status line pulses with the help record.
 
@@ -501,7 +554,7 @@ distance, the drop and the launch show at full strength.
 
 ```text
 y272  NOT PRIMED
-y294  >   12.4 m   DROP 1.1
+y294  >   12.4 m   DROP 3.4 m
 y320  [######------]  17.9
 y346  [=shield=========]
 y360  (    tracker     )
@@ -511,20 +564,19 @@ y360  (    tracker     )
 when the pair word becomes -3, then stays `Normal`.
 
 ```text
-y272  PRIMED
-y294  >   12.4 m   DROP 1.1
+y272  PRIMED -3
+y294  >   12.4 m   DROP 3.4 m
 y320  [######------]  17.9
 y346  [=shield=========]
 y360  (    tracker     )
 ```
 
-`primed-airborne`: the hint is added above; nothing else moves.
+`primed-airborne`: primed and falling; the same rows, nearer.
 
 ```text
-y250  Hold (X) to steer
-y272  PRIMED
-y294  >    3.1 m   DROP 0.4
-y320  [#########---]  24.6
+y272  PRIMED -3
+y294  >    3.1 m   DROP 1.2 m
+y320  [########----]  24.6
 y346  [=shield=========]
 y360  (    tracker     )
 ```
@@ -532,14 +584,16 @@ y360  (    tracker     )
 `no-strip` (the scan is done and the map has none, or the scan failed):
 the status alone, `Dim`: `NO STRIPS HERE` or `SCAN FAILED`.
 
+Each text above is one constant in `superbounce.rs`, so a wording
+change is one line.
+
 | Piece | Rule |
 |---|---|
-| Primed | `PRIMED` when the level pair's word is -3, else `NOT PRIMED`. The number -3 is in `superbounce.state`, not on the HUD |
+| Primed | `PRIMED -3` when the level pair's word is -3, else `NOT PRIMED` |
 | Launch | the meter is `gauge_fill`: the nearest strip's launch over 30 units a second, full past 30; the number is the launch to one decimal |
 | Distance | metres to the strip's nearest edge: one decimal under 100, whole above |
 | Direction | the pointer's angle is the bearing from the unit's aim yaw; hidden without an aim or standing on the strip |
-| Drop | the fall the strip needs, world units to one decimal |
-| Hint | shown while primed and airborne |
+| Drop | the fall the strip needs, in metres as the distance (`DROP_IN`), with its unit |
 | Scan | `SCANNING` until the scan is done; then the rows appear |
 
 ### The tutorial
@@ -568,10 +622,12 @@ diagrams: a retail training prompt has none.
 The box is the text's size plus 5 each side and 1 above and below, plus
 the frame art (S: decoding 3 gives its outer edge). The widest first
 line is 304 pixels in font 6 (V, measured as above), inside the frame's
-544. The step machine is `Tutorial` (its thresholds, F4, the
-`superbounce.tutorial_seen` setting and `H2_SUPERBOUNCE_TUTORIAL`),
-moved beside the HUD. A game training prompt of its own takes the box
-while it shows; the tutorial's step waits.
+544. The element's `longest` is step 3, the most characters; which
+step is widest in font 6 is S until the disc's checks run. The tutorial
+is fullscreen only, as the block. The step machine is `Tutorial` (its
+thresholds, F4, the `superbounce.tutorial_seen` setting and
+`H2_SUPERBOUNCE_TUTORIAL`), moved beside the HUD. A game training prompt
+of its own takes the box while it shows; the tutorial's step waits.
 
 ## Interfaces
 
@@ -641,6 +697,14 @@ agent API had no game to attach to, and a design page starts none.
 - The waypoint arrow's sprite: which sequence is the plain pointer, and
   its size.
 - The frame cost.
+- The preview on the disc: `tests/disc.rs` has not been run, so the
+  superbounce block's measured positions, the retail state words
+  (`RETAIL_WORDS`) and the XBE colour reads are unchecked there.
+- Where a notification is drawn against the first message line (the
+  preview puts it below the line's five-line box).
+- The sheet's retail states draw the player's `nhdt` alone: no weapon's
+  HUD is drawn with it, so the retail check does not see the weapon
+  panels or the reticle's art (the reticle is a reserved rectangle).
 
 ## Build plan
 
@@ -664,7 +728,11 @@ Each slice is code and tests only; the coordinator compiles and runs.
    break it; the JSON's rectangles equal the compiler's. Disc: every
    registered HUD passes every check with nothing skipped; the X glyph
    and every character used are in fonts 6 and 8.
-3. **The widget runtime.** `crates/extensions/game/src/hud_kit.rs`:
+3. **The widget runtime.** `crates/extensions/game/src/hud_kit.rs`.
+   The `extensions` domain may not use `tools`
+   (`scripts/crate-domains.toml`), so the model and the compiler the
+   runtime needs cannot stay in `crates/tools/hud-kit` as they are; where
+   they go is this slice's first step:
    install, gate, inputs, string; registration in `boot`; the
    `render_thread.rs` entries; `hud.kit` in the agent crate and
    `docs/runtime/agent-api.md`. Tests on `FlatMemory`: the root points at
