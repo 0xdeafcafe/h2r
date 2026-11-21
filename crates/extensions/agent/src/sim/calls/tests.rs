@@ -67,7 +67,7 @@ fn one(
     let f: Box<EntryFn> = Box::new(move |cx: Cx| -> EntryFuture {
         let (call, got) = (call.clone(), Arc::clone(&g2));
         Box::pin(async move {
-            let out = run(&cx, &call, SCRATCH).await?;
+            let out = run(&cx, &call, SCRATCH, None).await?;
             *got.lock().unwrap() = Some(out);
             Ok(Ret::new(0, 0))
         })
@@ -293,6 +293,7 @@ fn a_spawn_places_the_object_where_and_facing_as_asked() {
             tag: 0xe200_0002,
             pos: [5.0, 6.0, 7.0],
             facing: Some([0.0, 1.0, 0.0]),
+            mp_scenario: None,
         },
         |c, m| {
             if c.target == addr::OBJECT_NEW {
@@ -308,6 +309,36 @@ fn a_spawn_places_the_object_where_and_facing_as_asked() {
     );
     assert_eq!(calls[0].args, vec![0xe200_0002, u32::MAX, 0]);
     assert_eq!(out.unwrap()["object"], "00420003");
+}
+
+#[test]
+fn a_successful_spawn_can_enroll_the_new_object_before_the_tick() {
+    const ENROLL: u32 = 0x4000;
+    const MADE: u32 = 0x8123_0003;
+    let w = world();
+    let q = shared();
+    lock(&q).set_spawn_enrollment(|_, object| Some(GuestCall::new(ENROLL).args([object])));
+    let f = move |cx| -> EntryFuture {
+        let work = vec![(1, Call::Spawn {
+            tag: 0xe200_0002,
+            pos: [5.0, 6.0, 7.0],
+            facing: None,
+        })];
+        Box::pin(run_queued(cx, Arc::clone(&q), work, SCRATCH, Arc::default()))
+    };
+    let r = drive(&f, w.g, Regs::default(), |c, _| {
+        if c.target == addr::OBJECT_NEW {
+            al(MADE)
+        } else {
+            Regs::default()
+        }
+    });
+    assert_eq!(r.result, Ok(Ret::new(0, 0)));
+    let targets: Vec<_> = r.calls.iter().map(|call| call.target).collect();
+    assert_eq!(targets, [
+        addr::PLACEMENT_NEW, addr::OBJECT_NEW, ENROLL, engine::points::GAME_TICK.base,
+    ]);
+    assert_eq!(r.calls[2].args, [MADE]);
 }
 
 #[test]
@@ -443,4 +474,28 @@ fn a_queued_game_refuses_a_write_past_its_options_block() {
     let (out, calls, _) = one(world(), Call::QueueGame { steps }, |_, _| Regs::default());
     assert!(out.unwrap_err().contains("past the options block"));
     assert!(calls.is_empty());
+}
+
+#[test]
+fn a_replication_spawn_checks_the_host_and_scenario_when_the_call_runs() {
+    const SCENARIO: u32 = 0x8100_0000;
+    const WORLD: u32 = 0x8101_0000;
+    for (scenario, mode) in [(SCENARIO, 3), (SCENARIO + 0x1000, 4)] {
+        let mut w = world();
+        w.g.put_u32(guest_layout::global::SCENARIO.base, scenario)
+            .put_u32(guest_layout::global::SIM_GLOBALS.base, WORLD)
+            .put_u32(WORLD + 8, mode);
+        let (out, calls, _) = one(
+            w,
+            Call::Spawn {
+                tag: 0xa100_0001,
+                pos: [1.0, 2.0, 3.0],
+                facing: None,
+                mp_scenario: Some(SCENARIO),
+            },
+            |_, _| panic!("changed session must not enter the guest"),
+        );
+        assert!(out.unwrap_err().contains("host or scenario changed"));
+        assert!(calls.is_empty());
+    }
 }

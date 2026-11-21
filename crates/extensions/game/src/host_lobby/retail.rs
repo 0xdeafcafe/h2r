@@ -27,6 +27,7 @@ const CONTROLLER_COUNTDOWN: u32 = 0x0019_a78e;
 const MACHINE_LOAD_REQUEST: u32 = 0x0005_a220;
 /// Session `+0x4980` after the load request: the machines load the map.
 const STAGE_LOAD: u32 = 2;
+const WORLD_SYNC_SERVER: u32 = 2;
 
 pub(super) enum Progress {
     Done(Value),
@@ -132,6 +133,13 @@ fn no_network_squad(m: &dyn GuestMemory) -> Result<bool, RpcError> {
 }
 
 fn replicated_variant(m: &dyn GuestMemory, addr: u32, owner: &Owned) -> Result<bool, RpcError> {
+    if owner.config.variant == Variant::Absent {
+        // Engine 0 means no variant. A campaign difficulty would also
+        // select protocol 1, so check the independent difficulty field.
+        let engine = m.u32(addr + VARIANT + variant::ENGINE as u32).map_err(read_fault)?;
+        let difficulty = m.u16(addr + coop_probe::layout::DIFFICULTY).map_err(read_fault)?;
+        return Ok(engine == 0 && difficulty == coop_probe::NO_DIFFICULTY);
+    }
     let Some(expected) = &owner.applied_variant else {
         return Ok(false);
     };
@@ -268,6 +276,7 @@ pub struct Eligibility {
     pub map: u32,
     pub want_map: u32,
     pub protocol: u32,
+    pub want_protocol: u32,
     pub max: u32,
     pub want_max: u32,
     /// Session players, every one remote.
@@ -300,10 +309,10 @@ impl Eligibility {
                 self.map as i32, self.want_map
             ));
         }
-        if self.protocol != 2 {
+        if self.protocol != self.want_protocol {
             return Some(format!(
-                "the squad's protocol is {} (want 2, distributed)",
-                self.protocol as i32
+                "the squad's protocol is {} (want {}, {})",
+                self.protocol as i32, self.want_protocol, coop_probe::protocol_name(self.want_protocol)
             ));
         }
         if self.max != self.want_max {
@@ -372,6 +381,7 @@ fn phase(
     countdown: bool,
     mode: Option<u32>,
     world: Option<u32>,
+    host_world: u32,
     ended: bool,
 ) -> Result<Phase, RpcError> {
     if cycle == 4 || (cycle == 3 && mode == Some(level_boot::MODE_MULTIPLAYER) && ended) {
@@ -379,10 +389,10 @@ fn phase(
     }
     if cycle == 3 && mode == Some(level_boot::MODE_MULTIPLAYER) {
         return match world {
-            Some(session::WORLD_DIST_SERVER) => Ok(Phase::Playing),
+            Some(mode) if mode == host_world => Ok(Phase::Playing),
             None | Some(0) => Ok(Phase::Loading),
             _ => Err(unavailable(
-                "the active simulation is not the distributed server",
+                format!("the active simulation is not the {}", coop_probe::mode_name(host_world)),
             )),
         };
     }
@@ -485,9 +495,14 @@ impl Machine {
         } else {
             false
         };
-        let mut phase = phase(s.cycle, s.stage, s.countdown, mode, world, ended)?;
+        let host_world = if owner.config.protocol() == 1 {
+            WORLD_SYNC_SERVER
+        } else {
+            session::WORLD_DIST_SERVER
+        };
+        let mut phase = phase(s.cycle, s.stage, s.countdown, mode, world, host_world, ended)?;
         if phase == Phase::Playing {
-            // A distributed world exists while the host still waits for
+            // A server world exists while the host still waits for
             // remote simulation views. States 3 and 4 precede running (5).
             let sim = m.u32(SIM_GLOBALS).map_err(read_fault)?;
             if m.u32(sim + SIM_STATE).map_err(read_fault)? != 5 {
@@ -502,6 +517,7 @@ impl Machine {
             map: s.map,
             want_map: owner.config.map,
             protocol: s.protocol,
+            want_protocol: owner.config.protocol(),
             max: s.max,
             want_max: u32::from(owner.config.max_players),
             players: players.len(),
@@ -746,35 +762,49 @@ impl Machine {
             {
                 return Err(unavailable("retail refused the selected multiplayer map"));
             }
-            match &config.variant {
-                Variant::Stock(t) => {
-                    call(
-                        cx,
-                        GuestCall::new(level_boot::VARIANT_DEFAULTS)
-                            .args([scratch, t.list_index()]),
-                    )
-                    .await?;
-                }
-                Variant::Named(v) => cx
-                    .write(|m| m.write(scratch, v.bytes()))
-                    .map_err(read_fault)?,
-            }
-            if !settings.is_empty() {
-                let mut raw = [0; variant::SIZE];
-                cx.read(|m| m.read(scratch, &mut raw)).map_err(read_fault)?;
-                let v = level_boot::configured_variant(&raw, settings).map_err(unavailable)?;
-                cx.write(|m| m.write(scratch, &v.to_bytes()))
-                    .map_err(read_fault)?;
-            }
             let max = u32::from(config.max_players);
-            cx.write(|m| m.set_u32(scratch + variant::MAX_PLAYERS as u32, max))
-                .map_err(read_fault)?;
-            if call(cx, GuestCall::new(SET_VARIANT).args([scratch])).await? as u8 == 0 {
-                return Err(unavailable("retail refused the selected variant"));
+            if config.variant == Variant::Absent {
+                // A new squad starts synchronous (0x00059d58). Use the
+                // ordinary MP map setter and leave the variant untouched.
+                let remains_synchronous = cx.read(|m| {
+                    Ok::<_, RpcError>(m.u32(s.addr + PROTOCOL).map_err(read_fault)? == 1
+                        && replicated_variant(m, s.addr, owner)?)
+                })?;
+                if !remains_synchronous {
+                    return Err(unavailable("the multiplayer lobby did not retain a synchronous session with no variant"));
+                }
+            } else {
+                match &config.variant {
+                    Variant::Stock(t) => {
+                        call(
+                            cx,
+                            GuestCall::new(level_boot::VARIANT_DEFAULTS)
+                                .args([scratch, t.list_index()]),
+                        )
+                        .await?;
+                    }
+                    Variant::Named(v) => cx
+                        .write(|m| m.write(scratch, v.bytes()))
+                        .map_err(read_fault)?,
+                    Variant::Absent => unreachable!("handled above"),
+                }
+                if !settings.is_empty() {
+                    let mut raw = [0; variant::SIZE];
+                    cx.read(|m| m.read(scratch, &mut raw)).map_err(read_fault)?;
+                    let v = level_boot::configured_variant(&raw, settings).map_err(unavailable)?;
+                    cx.write(|m| m.write(scratch, &v.to_bytes()))
+                        .map_err(read_fault)?;
+                }
+                cx.write(|m| m.set_u32(scratch + variant::MAX_PLAYERS as u32, max))
+                    .map_err(read_fault)?;
+                if call(cx, GuestCall::new(SET_VARIANT).args([scratch])).await? as u8 == 0 {
+                    return Err(unavailable("retail refused the selected variant"));
+                }
+                let mut applied = Box::new([0; variant::SIZE]);
+                cx.read(|m| m.read(scratch, applied.as_mut()))
+                    .map_err(read_fault)?;
+                owner.applied_variant = Some(applied);
             }
-            let mut applied = Box::new([0; variant::SIZE]);
-            cx.read(|m| m.read(scratch, applied.as_mut()))
-                .map_err(read_fault)?;
             // Advertise the cap in the same tick as the variant. A remote
             // join on the next tick must see the requested number of seats.
             if cx
@@ -784,13 +814,12 @@ impl Machine {
             {
                 cx.write(|m| set_capacity(m, s.addr, max))?;
             }
-            owner.applied_variant = Some(applied);
             owner.setup = Setup::Applied;
             return Ok(SimOpen::Wait("checking replicated lobby parameters"));
         }
-        if s.map != config.map || s.protocol != 2 {
+        if s.map != config.map || s.protocol != config.protocol() {
             return Ok(SimOpen::Wait(
-                "waiting for the requested map and distributed protocol",
+                "waiting for the requested map and protocol",
             ));
         }
         if !cx.read(|m| replicated_variant(m, s.addr, owner))? {

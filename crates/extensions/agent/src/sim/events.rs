@@ -37,6 +37,7 @@ fn kind_of(e: &sim_state::SimEvent) -> EventKind {
         sim_state::SimEvent::ObjectDeleted { .. } => EventKind::Deleted,
         sim_state::SimEvent::Damage(_) => EventKind::Damage,
         sim_state::SimEvent::Kill(_) => EventKind::Kill,
+        sim_state::SimEvent::ActorKilled { .. } => EventKind::ActorKilled,
     }
 }
 
@@ -80,6 +81,14 @@ pub fn event(e: &sim_state::SimEvent) -> SimEvent {
             position: k.position,
             attacker_position: k.attacker_position,
         }),
+        sim_state::SimEvent::ActorKilled { unit, character, killer, weapon } => {
+            SimEvent::ActorKilled {
+                unit: handle(unit.raw()),
+                character: datum(character),
+                killer: datum(killer),
+                weapon,
+            }
+        }
     }
 }
 
@@ -137,6 +146,12 @@ mod tests {
             sim_state::SimEvent::ObjectDeleted { id: Datum(0x8003_0003), kind: 2, definition: Datum::NONE },
             sim_state::SimEvent::Damage(damage()),
             sim_state::SimEvent::Kill(kill()),
+            sim_state::SimEvent::ActorKilled {
+                unit: Datum(0x8004_0004),
+                character: Datum(0xe200_0004),
+                killer: Datum(0xe101_0001),
+                weapon: 0x4d,
+            },
         ]
     }
 
@@ -166,6 +181,14 @@ mod tests {
         assert_eq!(k["damage_type"], 13);
         assert_eq!(k["attacker_unit"], serde_json::Value::Null);
         assert_eq!(k["position"], serde_json::json!([4.0, 5.0, 6.0]));
+
+        assert_eq!(v["events"][3], serde_json::json!({
+            "type": "actor_killed",
+            "unit": "0x80040004",
+            "character": "0xe2000004",
+            "killer": "0xe1010001",
+            "weapon": 0x4d,
+        }));
 
         // The wire type reads back.
         let back: EventsReply = serde_json::from_value(v).unwrap();

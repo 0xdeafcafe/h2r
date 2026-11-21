@@ -77,6 +77,9 @@ impl Outcome {
                 "The host's privacy settings prevent joining this game.".into(),
             )),
             Ok(3) => Some(Err("This game is no longer available.".into())),
+            Ok(crate::replication_admission::JOIN_REASON_INCOMPATIBLE) => Some(Err(
+                "replication_version_mismatch: This game uses an incompatible version.".into(),
+            )),
             Ok(4..=6) => Some(Err("Halo 2 could not reach the host's lobby.".into())),
             Ok(_) => Some(Err("The host could not admit you to this game.".into())),
         };
@@ -131,6 +134,12 @@ mod tests {
             (0, None),
             (2, Some(Ok(()))),
             (7, Some(Err("This game is full.".into()))),
+            (
+                crate::replication_admission::JOIN_REASON_INCOMPATIBLE,
+                Some(Err(
+                    "replication_version_mismatch: This game uses an incompatible version.".into(),
+                )),
+            ),
             (
                 8,
                 Some(Err(

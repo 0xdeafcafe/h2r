@@ -92,6 +92,7 @@ serde_json.workspace = true
 perf = { path = "../../tools/perf", optional = true }
 # Test-map recipes built into packages (test_maps_recipes.rs).
 scenario-edit = { path = "../../tools/scenario-edit", optional = true }
+firefight-kit = { path = "../../tools/firefight-kit", optional = true }
 
 [features]
 default = ["gpu", "movie-playback", "local-io", "test-maps"]
@@ -102,7 +103,7 @@ local-io = ["desktop-runtime", "dep:voice", "dsound/playback", "game/local-io"]
 perf = ["dep:perf", "game/perf"]
 # maps.test.* on the agent: test maps built from recipes (test_maps.rs,
 # docs/game/test-maps.md). The scenario editor's crate pulls in wgpu.
-test-maps = ["game/test-maps", "dep:scenario-edit"]
+test-maps = ["game/test-maps", "dep:scenario-edit", "dep:firefight-kit"]
 
 [dev-dependencies]
 # The fixture generated module, for hooks run through the real Runner.

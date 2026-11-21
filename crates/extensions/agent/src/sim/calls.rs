@@ -152,6 +152,8 @@ pub enum Call {
         tag: u32,
         pos: [f32; 3],
         facing: Option<[f32; 3]>,
+        /// Forge's probe rechecks the distributed host and scenario at execution.
+        mp_scenario: Option<u32>,
     },
     /// Build game options with `steps` and queue them: a new game loads
     /// at the game's next transition.
@@ -171,10 +173,15 @@ const DONE_KEEP: usize = 64;
 pub struct Queue {
     /// [`CallsFeature`] is built: something will make the calls.
     armed: bool,
+    spawn_enrollment: Option<SpawnEnrollment>,
     next: u64,
     pending: Vec<(u64, Call)>,
     done: BTreeMap<u64, Outcome>,
 }
+
+/// Optional distributed enrollment for an object just made by `sim.spawn`.
+/// The game supplies the eligibility check and guest call.
+pub type SpawnEnrollment = fn(&dyn GuestMemory, u32) -> Option<GuestCall>;
 
 /// A [`Queue`] shared by the methods and the feature.
 pub type Shared = Arc<Mutex<Queue>>;
@@ -195,6 +202,10 @@ impl Queue {
 
     pub fn armed(&self) -> bool {
         self.armed
+    }
+
+    pub fn set_spawn_enrollment(&mut self, enroll: SpawnEnrollment) {
+        self.spawn_enrollment = Some(enroll);
     }
 
     /// Queues `call` for the next tick; its ticket.
@@ -351,7 +362,12 @@ fn hex(v: u32) -> String {
 
 /// Makes one call. A guest call that faults ends the tick's work
 /// (`EntryError`); a refusal is the outcome.
-pub async fn run(cx: &Cx, call: &Call, scratch: u32) -> Result<Outcome, EntryError> {
+async fn run(
+    cx: &Cx,
+    call: &Call,
+    scratch: u32,
+    spawn_enrollment: Option<SpawnEnrollment>,
+) -> Result<Outcome, EntryError> {
     match *call {
         Call::Teleport {
             player,
@@ -467,7 +483,30 @@ pub async fn run(cx: &Cx, call: &Call, scratch: u32) -> Result<Outcome, EntryErr
                 json!({ "object": hex(made), "unit": hex(unit), "mode": mode }),
             ))
         }
-        Call::Spawn { tag, pos, facing } => {
+        Call::Spawn {
+            tag,
+            pos,
+            facing,
+            mp_scenario,
+        } => {
+            if let Some(scenario) = mp_scenario {
+                let still_host = cx.read(|m| {
+                    use guest_layout::global;
+                    m.u32(global::SCENARIO.base) == Ok(scenario)
+                        && m.u32(global::SIM_GLOBALS.base)
+                            .ok()
+                            .filter(|&world| world != 0)
+                            .and_then(|world| world.checked_add(8))
+                            .and_then(|mode| m.u32(mode).ok())
+                            .map(agent_proto::sim::SessionKind::from_sim_mode)
+                            == Some(agent_proto::sim::SessionKind::MpHost)
+                });
+                if !still_host {
+                    return Ok(Err(
+                        "the replication probe's multiplayer host or scenario changed".into(),
+                    ));
+                }
+            }
             cx.call(
                 GuestCall::new(addr::PLACEMENT_NEW)
                     .esi(scratch)
@@ -490,6 +529,11 @@ pub async fn run(cx: &Cx, call: &Call, scratch: u32) -> Result<Outcome, EntryErr
                 return Ok(Err(format!(
                     "object_new (0xb7b40) refused to make tag {tag:#010x} there"
                 )));
+            }
+            if let Some(enroll) = spawn_enrollment
+                && let Some(call) = cx.read(|m| enroll(m, made))
+            {
+                cx.call(call).await?;
             }
             let at = cx.read(|m| body_of(m, made).and_then(|b| b.position(m).ok()));
             Ok(Ok(json!({ "object": hex(made), "pos": at })))
@@ -548,8 +592,9 @@ pub async fn run_queued(
     scratch: u32,
     reentry: Arc<AtomicBool>,
 ) -> Result<Ret, EntryError> {
+    let spawn_enrollment = lock(&queue).spawn_enrollment;
     for (ticket, call) in work {
-        let out = match run(&cx, &call, scratch).await {
+        let out = match run(&cx, &call, scratch, spawn_enrollment).await {
             Ok(out) => out,
             Err(e) => {
                 lock(&queue).finish(ticket, Err(format!("the game faulted: {e}")));

@@ -57,7 +57,7 @@ impl Recipes for Fake {
         let name = if base == "lockout" { name } else { format!("{name}-{base}") };
         Ok(Resolved { package_dir: format!("{PREFIX}{name}"), name, base })
     }
-    fn build(&self, _: &Value, _: Option<&str>, _: BaseMap, _: &Path) -> Result<Built, String> {
+    fn build(&self, _: &Value, _: Option<&str>, _: BaseMap, _: &Path, _: bool) -> Result<Built, String> {
         Err("the fake builds nothing".into())
     }
 }

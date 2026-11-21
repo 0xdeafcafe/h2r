@@ -30,6 +30,7 @@ pub mod optimatch;
 pub mod pack;
 pub mod rank;
 pub mod recovery;
+pub mod replication;
 pub mod reports;
 #[doc(hidden)]
 pub mod samples;

@@ -454,9 +454,9 @@ pub struct TagSet {
     /// its own old range) before small tags split them.
     pub largest_built_first: bool,
     /// Enforce [`max_metadata_size`] (default true), or the pinned source
-    /// map's own total if that is larger. Off only for offline round trips
-    /// that grow a map at the bound: the bound is the largest retail map of
-    /// the type, not a measured engine limit.
+    /// map's own total if that is larger. Offline sizing callers can inspect
+    /// the layout and enforce the bound before publishing. The bound is
+    /// the largest retail map of the type.
     pub check_tag_memory: bool,
     /// Enforce the engine's file size limit for the cache type (default
     /// true). Off for a caller that checks the built size itself, to say
@@ -644,6 +644,74 @@ impl TagSet {
     pub fn add_bsp(&mut self, bsp: TagId, lightmap: Option<TagId>) -> usize {
         self.bsps.push(BspSection { bsp, lightmap });
         self.bsps.len() - 1
+    }
+
+    /// Lay out new block trees above a pinned map's ordinary metadata. The
+    /// returned pairs are the root address and bytes allocated (including
+    /// alignment and children) for each tree, in order. An empty tree has
+    /// address zero. The caller installs the addresses in the owning tags.
+    /// Existing pinned tags, raw resources and BSP virtual ranges stay put.
+    /// Only fixups with known targets can be written before final layout.
+    pub fn append_pinned_blocks(&mut self, blocks: &[Block]) -> Result<Vec<(u32, usize)>> {
+        let pin = self
+            .pinned
+            .as_ref()
+            .ok_or(Error::Invalid("expected a pinned map"))?;
+        let mut base = pin
+            .metadata_base
+            .checked_add(pin.metadata_size)
+            .ok_or(Error::Limit)?;
+        for (address, bytes) in &pin.unowned {
+            let len = u32::try_from(bytes.len()).map_err(|_| Error::Limit)?;
+            base = base.max(address.checked_add(len).ok_or(Error::Limit)?);
+        }
+        let mut strings = self.strings.clone();
+        let mut lookup = HashMap::new();
+        let mut wanted = Vec::new();
+        for block in blocks {
+            block.visit(&mut |k| {
+                if let FixupKind::StringId(s) = k {
+                    wanted.push(s);
+                }
+            });
+        }
+        for name in wanted {
+            intern(&mut strings, &mut lookup, name)?;
+        }
+        let resolve = Resolve {
+            groups: self
+                .slots
+                .iter()
+                .filter_map(|s| s.tag.as_ref().map(|t| (t.id, t.group)))
+                .collect(),
+            strings: lookup,
+            raw: &[],
+            bsps: Vec::new(),
+        };
+        let mut region = Region::new(base, Vec::new());
+        let mut layout = Vec::with_capacity(blocks.len());
+        for block in blocks {
+            if block.bytes.is_empty() && block.fixups.is_empty() {
+                layout.push((0, 0));
+                continue;
+            }
+            let start = region.cursor;
+            let address = region.emit(block, &resolve)?;
+            layout.push((address, region.cursor - start));
+        }
+        if !region.deferred.is_empty() {
+            return Err(Error::Invalid("tag-offset fixup needs final tag layout"));
+        }
+        if !region.bytes.is_empty() {
+            self.pinned
+                .as_mut()
+                .expect("pinned")
+                .unowned
+                .push((base, region.bytes));
+        }
+        self.strings = strings;
+        self.strings_index = StringsIndex::default();
+        Ok(layout)
     }
 
     /// Build the map in memory.

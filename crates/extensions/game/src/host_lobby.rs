@@ -30,6 +30,7 @@ mod tests;
 enum Variant {
     Stock(sim_bench::config::GameType),
     Named(Box<VariantRecord>),
+    Absent,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -76,7 +77,14 @@ impl Config {
                 "ambiguous multiplayer map name; use its scenario path",
             ));
         }
-        let variant = variants.resolve(params.variant.as_deref())?;
+        let variant = if params.synchronous {
+            if params.live || params.variant.is_some() {
+                return Err(invalid("synchronous open requires System Link and no variant"));
+            }
+            Variant::Absent
+        } else {
+            variants.resolve(params.variant.as_deref())?
+        };
         if params.live && !has_live {
             return Err(unavailable("live requires a configured Live service"));
         }
@@ -86,6 +94,10 @@ impl Config {
             max_players: params.max_players,
             live: params.live,
         })
+    }
+
+    fn protocol(&self) -> u32 {
+        if self.variant == Variant::Absent { 1 } else { 2 }
     }
 
     fn class(&self) -> u32 {

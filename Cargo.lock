@@ -19,6 +19,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "366ffbaa4442f4684d91e2cd7c5ea7c4ed8add41959a31447066e279e432b618"
 
 [[package]]
+name = "actor-net"
+version = "0.1.0"
+
+[[package]]
 name = "addr2line"
 version = "0.27.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -643,6 +647,7 @@ dependencies = [
  "emit",
  "engine",
  "film",
+ "firefight-kit",
  "font",
  "frame-scene",
  "game",
@@ -979,6 +984,7 @@ dependencies = [
  "dsound",
  "emit",
  "film",
+ "firefight-kit",
  "flate2",
  "font",
  "forge-build",
@@ -2012,6 +2018,34 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1c66915cc5391097de7a2b0b972e8505aa33c0df401fd3a6811dbdb32881ba48"
 
 [[package]]
+name = "firefight"
+version = "0.1.0"
+dependencies = [
+ "content",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "firefight-kit"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bots",
+ "content",
+ "h1campaign",
+ "h1convert",
+ "hs",
+ "libm",
+ "map",
+ "pathfind",
+ "scenario-edit",
+ "serde",
+ "tags",
+]
+
+[[package]]
 name = "flate2"
 version = "1.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2254,6 +2288,7 @@ dependencies = [
 name = "game"
 version = "0.1.0"
 dependencies = [
+ "actor-net",
  "agent",
  "agent-proto",
  "anyhow",
@@ -2273,6 +2308,7 @@ dependencies = [
  "font",
  "frame-scene",
  "gfx",
+ "guest-layout",
  "h1-contract",
  "h1-runtime",
  "hooks",
@@ -2304,6 +2340,7 @@ dependencies = [
  "shaders",
  "sim-bench",
  "sim-bridge",
+ "sim-state",
  "snapshot",
  "tags",
  "timeline",
@@ -2854,6 +2891,16 @@ dependencies = [
  "vfs",
  "xiso",
  "zstd",
+]
+
+[[package]]
+name = "host-log"
+version = "0.1.0"
+dependencies = [
+ "content",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -3607,7 +3654,9 @@ checksum = "4744e383959f0db86ede514b809b1c53251889093803c05267acc7d4e7030d70"
 name = "live-hle"
 version = "0.1.0"
 dependencies = [
+ "actor-net",
  "content",
+ "coop",
  "film",
  "flate2",
  "live-proto",
@@ -3723,6 +3772,7 @@ dependencies = [
  "rustls",
  "serde",
  "serde_json",
+ "sim-objects",
  "tags",
  "time",
  "timeline",

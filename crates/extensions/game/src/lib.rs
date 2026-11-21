@@ -12,6 +12,7 @@ pub use live_hle::{HostPublisher, LiveConfig};
 pub use run_opts::{BetweenSlices, Host, RunOpts, RunReport, VfsReady};
 
 pub mod account_screen;
+pub mod actor_net;
 pub mod agent_frames;
 mod agent_spawn_view;
 mod spectator_view;
@@ -71,6 +72,7 @@ pub mod hud_swap;
 pub mod h1_hud_text;
 pub mod icons;
 pub mod join_link;
+pub mod replication_admission;
 pub mod keyboard_glue;
 pub mod lab_takeover;
 pub mod layout_glue;
@@ -214,3 +216,6 @@ pub mod xapi_glue;
 #[cfg(test)]
 pub mod string_ids;
 pub mod run_opts;
+
+#[path = "actor_net/link.rs"]
+pub mod actor_net_link;

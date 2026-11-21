@@ -16,6 +16,7 @@ fn validate_config_before_asking_retail() {
     let parse = |name: &str, variant: Option<&str>, max_players, live| {
         Config::parse(
             OpenParams {
+                synchronous: false,
                 map: name.to_owned(),
                 variant: variant.map(str::to_owned),
                 max_players,
@@ -70,6 +71,7 @@ fn a_map_name_shared_by_two_packages_requires_the_scenario_path() {
         sort: 0,
     }));
     let p = OpenParams {
+        synchronous: false,
         map: "arena".into(),
         variant: None,
         max_players: 2,
@@ -92,4 +94,25 @@ fn a_map_name_shared_by_two_packages_requires_the_scenario_path() {
     )
     .unwrap();
     assert_eq!((config.map, config.class()), (2, 2));
+}
+
+#[test]
+fn variant_free_setup_is_opt_in_and_system_link_only() {
+    let params = OpenParams {
+        map: "lockout".into(),
+        variant: None,
+        synchronous: true,
+        max_players: 2,
+        live: false,
+    };
+    let parse = |params| Config::parse(params, &maps(), &Variants::default(), true);
+    let config = parse(params.clone()).unwrap();
+    assert_eq!(config.variant, Variant::Absent);
+    assert_eq!(config.protocol(), 1);
+    for invalid in [
+        OpenParams { live: true, ..params.clone() },
+        OpenParams { variant: Some("slayer".into()), ..params },
+    ] {
+        assert_eq!(parse(invalid).unwrap_err().code, code::INVALID_PARAMS);
+    }
 }

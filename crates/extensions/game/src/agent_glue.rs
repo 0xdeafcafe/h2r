@@ -137,6 +137,8 @@ impl AgentGlue {
         // The game's own functions for sim (teleports, give, spawn): a
         // `before` on the tick that makes the calls queued for it.
         let calls = agent::sim::calls::shared();
+        agent::sim::calls::lock(&calls)
+            .set_spawn_enrollment(crate::actor_net::creature::spawn_enrollment);
         match registry.add(&agent::sim::calls::CallsFeature(calls.clone())) {
             Ok(true) => sim.set_calls(calls),
             Ok(false) => eprintln!(
@@ -144,7 +146,47 @@ impl AgentGlue {
             ),
             Err(e) => anyhow::bail!("agent-calls: {e}"),
         }
+        agent::forge::install(&agent, sim.clone(), &agent::sim::hashes::HASHES);
         agent::ai::install(&agent);
+        // net.replication: the event counter is an observer of its own, so
+        // H2_FEATURES can drop it and leave the method's other readings.
+        match registry.add(&agent::net::NetFeature) {
+            Ok(true) => {}
+            Ok(false) => eprintln!(
+                "agent: agent-net switched off by H2_FEATURES; net.replication counts no events"
+            ),
+            Err(e) => anyhow::bail!("agent-net: {e}"),
+        }
+        agent::net::install(
+            &agent,
+            || {
+                let t = live_hle::traffic::snapshot();
+                Some(agent::net::Traffic {
+                    sent: t.sent,
+                    sent_bytes: t.sent_bytes,
+                    received: t.received,
+                    received_bytes: t.received_bytes,
+                    largest: t.largest,
+                })
+            },
+            |m| {
+                use crate::actor_net::creature;
+                if !creature::registered(m) {
+                    return agent::net::CreatureReplication::default();
+                }
+                agent::net::CreatureReplication {
+                    slot: Some(creature::SLOT),
+                    entities: creature::snapshot(m)
+                        .into_iter()
+                        .map(|row| agent::net::CreatureEntity {
+                            entity: row.entity,
+                            object: row.object,
+                            updates: row.updates,
+                        })
+                        .collect(),
+                }
+            },
+        );
         agent::havok::install(&agent);
         // The native collision world's counters (impl.sim.native.collision).
         agent::collision::install(&agent);

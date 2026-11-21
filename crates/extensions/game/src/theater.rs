@@ -229,9 +229,8 @@ impl Session {
             address,
             live_service, telemetry_hooks, render_hooks,
         } = facts;
-        let switches = hooks::Switches::from_env()
-            .map_err(anyhow::Error::msg)?
-            .spec();
+        let switches = hooks::Switches::from_env().map_err(anyhow::Error::msg)?;
+        let admission = crate::replication_admission::FEATURE;
         let mut image = film::image::ImageMatch::Native;
         let (mut mode, header, speed, seeking, paused, capture_points) = if let Some(r) = replay {
             ensure!(record.is_none(), "cannot record and replay the same boot");
@@ -239,12 +238,18 @@ impl Session {
             let tape = Playback::load(Reader::open(&r.path)?)?;
             let capture_points = tape.capture_points();
             let mut h = tape.reader.header.clone();
+            let recorded = hooks::Switches::parse(&h.features).map_err(anyhow::Error::msg)?;
+            let switches = if recorded.feature(admission, false) {
+                switches.with(admission, true)
+            } else {
+                switches
+            };
             image = image_match(h.version, &h.meta.image_stamp, &h.runtime_stamp,
                 h.guest_image.as_ref(), &stamp, &h.xbe_sha256)?;
             ensure!(
                 h.xbe_sha256 == film::xbe_digest(xbe)
                     && h.title_id == title_id
-                    && h.features == switches
+                    && h.features == switches.spec()
                     && h.epoch_100ns == epoch
                     && h.transfers_per_slice == opts.transfers_per_slice,
                 "film boot facts differ"
@@ -302,7 +307,7 @@ impl Session {
                 telemetry_hooks: Some(telemetry_hooks),
                 render_hooks: Some(render_hooks),
                 live_service,
-                features: switches,
+                features: switches.with(admission, true).spec(),
                 transfers_per_slice: opts.transfers_per_slice,
                 meta: FilmMeta {
                     id: live_proto::sign::random_id(),
@@ -460,6 +465,13 @@ impl Session {
 
     pub fn telemetry_plan(&self) -> live_proto::film::TelemetryHooks {
         self.lock().header.telemetry_plan()
+    }
+
+    /// The original wire admission plan for this isolated recording or replay.
+    pub fn uses_replication_admission(&self) -> bool {
+        hooks::Switches::parse(&self.lock().header.features)
+            .expect("validated film feature switches")
+            .feature(crate::replication_admission::FEATURE, false)
     }
 
     fn checkpoint(&self, guest: &runtime::Guest) {

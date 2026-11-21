@@ -94,6 +94,7 @@ pub trait Recipes: Send + Sync + 'static {
         base: Option<&str>,
         source: BaseMap,
         data_root: &Path,
+        replace: bool,
     ) -> Result<Built, String>;
 }
 
@@ -237,19 +238,11 @@ fn build(
     paths: &Paths,
     cp: &CreateParams,
     r: &Resolved,
-    replace: bool,
 ) -> Result<(String, Value), String> {
-    let dir = paths.maps().join(&r.package_dir);
-    if dir.exists() {
-        if !replace {
-            return Err(format!("{} exists (replace: true rebuilds it)", dir.display()));
-        }
-        std::fs::remove_dir_all(&dir).map_err(|e| format!("removing {}: {e}", dir.display()))?;
-    }
     let source = base_source(&paths.disc, &r.base)?;
     let Built { map_id: id, report: built } = paths
         .recipes
-        .build(&cp.recipe, cp.base.as_deref(), source, &paths.data_root)?;
+        .build(&cp.recipe, cp.base.as_deref(), source, &paths.data_root, cp.replace)?;
     let report = report_path(&id);
     if let Some(parent) = report.parent() {
         let _ = std::fs::create_dir_all(parent);
@@ -480,12 +473,12 @@ pub fn install(
             );
         }
         let (p2, j2, vfs) = (p.clone(), j.clone(), v_create.clone());
-        let (r2, replace) = (r.clone(), cp.replace);
+        let r2 = r.clone();
         let cp2 = cp.clone();
         let spawned = std::thread::Builder::new()
             .name("test map build".into())
             .spawn(move || {
-                let out = build(&p2, &cp2, &r2, replace);
+                let out = build(&p2, &cp2, &r2);
                 if out.is_ok() {
                     publish(&p2, vfs.as_ref());
                 }

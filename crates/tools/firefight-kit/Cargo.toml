@@ -1,0 +1,20 @@
+[package]
+name = "firefight-kit"
+description = "Offline stage-one Firefight map kit"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+bots = { path = "../../live/bots" }
+content.workspace = true
+h1campaign = { path = "../h1campaign" }
+h1convert = { path = "../h1convert" }
+hs.workspace = true
+libm = "0.2"
+map.workspace = true
+pathfind = { path = "../../formats/pathfind" }
+scenario-edit = { path = "../scenario-edit", default-features = false }
+serde.workspace = true
+tags.workspace = true

@@ -93,7 +93,9 @@ function decodeWindow(bytes: Uint8Array, row: FilmSegment, poses: FilmPoses, gam
         if (isFilmEffect(e.kind)) {
           fx.push({kind: e.kind, data: d, age});
           changed = true;
-        } else if (["PlayerKilled", "ScoreChanged", "GameEnded"].includes(e.kind)) event(e.kind, d, at - age);
+        } else if (["PlayerKilled", "ActorKilled", "ScoreChanged", "GameEnded"].includes(e.kind)) {
+          event(e.kind, d, at - age);
+        }
       }
     }
     if (show && (changed || !frames.length || stamp === row.last)) {

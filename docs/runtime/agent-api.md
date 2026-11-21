@@ -30,6 +30,7 @@ connection to hold `session.claim`.
 | `session.pause`, `resume`, `step` | claim | [Control](#control) |
 | `world.count`, `world.query`, `world.object` | read | [`world`](#world-what-is-in-the-level) |
 | `world.ai` | read | [`world.ai`](#worldai) |
+| `net.replication` | read | [`net.replication`](#netreplication) |
 | `world.raw` | read | [`world.raw`](#worldraw-an-objects-bytes-before-and-after) |
 | `world.poke` | claim | [`world.poke`](#worldpoke-replace-bytes-in-one-object-part) |
 | `havok.bodies`, `havok.agents`, `havok.contacts` | read | [`havok`](#havok-the-physics-world) |
@@ -62,6 +63,7 @@ connection to hold `session.claim`.
 | `state.save`, `load`, `list`, `drop`, `fork` | act (`list` read) | [`state`](#state-machine-snapshots) |
 | `bots.stats` | read | [Bot combat](#bot-combat) |
 | `sim.*` | read or act | [`sim`](#sim-simulated-players-and-direct-state) |
+| `forge.capacity`, `forge.probe` | read, act | [Forge probes](#forge-probes) |
 | `match.status`, `match.report`, `match.stop` | read, read, act | [Sim matches](#sim-matches) |
 | `settings.list`, `settings.set`, `perf.overlay`, `cheat.list`, `cheat.set` | read or act | [Menu methods](#menu-methods-settings-perf-overlay-cheats) |
 | `theater.*` | read or act | [Theater transport](#theater-transport) |
@@ -72,7 +74,7 @@ connection to hold `session.claim`.
 
 A new method gets a row here and a section for its domain. The names
 live in `crates/extensions/agent-proto/src` (`method::ALL`, `hot::method::ALL`,
-`state::method::ALL`, `sim`, `trace`, `theater`) and where the host adds
+`state::method::ALL`, `sim`, `forge`, `trace`, `theater`) and where the host adds
 them (`Agent::add_method`, `Agent::add_game_method`).
 
 ## Connecting
@@ -391,8 +393,11 @@ h2 agent object player.0
 
 ## `world.ai`
 
-`h2 agent world.ai` returns `{at, actors}` at one game boundary and takes
-no parameters (`crates/extensions/agent/src/ai.rs`). Each allocated actor has its
+`h2 agent world.ai` returns `{at, globals, actors}` at one game boundary and takes
+no parameters (`crates/extensions/agent/src/ai.rs`). `globals` is `{on, initialised}`,
+the two bytes of the AI globals (`[0x4f55d0]`, `+0` and `+1`) that
+`ai_update` (`0x1c83c0`) needs set before it runs any actor, or null
+before the globals exist. Each allocated actor has its
 salted AI `datum`, its `unit` ID (for `world.object`), character tag
 datum, team, scenario squad index, current behavior ID, its retail name
 when available (`behavior_name`), and combat status. A missing unit,
@@ -413,6 +418,44 @@ actor's selected perception record to the object datum used at
 `0x001b368a`; the fight behavior reads the same record at `0x001af0c2`.
 Compare it with the player's `unit` in `world.query` to see attention on
 the player. A remembered object can stay selected after contact is lost.
+
+## `net.replication`
+
+`h2 agent net.replication` takes no parameters and returns, at one game
+boundary, what the distributed simulation is replicating
+(`crates/extensions/agent/src/net.rs`). It is the measuring method for the
+probes of [ai-networking.md](../game/ai-networking.md); the types and
+fields it names are in that page's
+[notes](../game/notes/ai-networking.md).
+
+| Field | Meaning |
+|---|---|
+| `world_mode`, `mode` | the simulation world's mode (`[0x4cf77c]+8`) and its name: `none`, `local`, `sync-server`, `sync-client`, `dist-server`, `dist-client`; null before the simulation exists |
+| `distributed` | true in modes 4 and 5 |
+| `objects` | per object tag group (`bipd`, `vehi`, `proj`, ...; `other` for a type outside the table): `{objects, with_entity}`, the live objects and how many have a replication entity (object body `+0xd4` is not -1) |
+| `entities` | the sum of `with_entity` |
+| `creature_type` | the registered creature probe slot, 17, or null when the definition is absent |
+| `creatures` | live bindings `[{entity, type, object, updates}]`. `entity` includes the generation, and `object` is the local salted handle in the format used by `sim.objects`. `updates` counts movement operations the host writes to peer replication batches or the client applies over this binding's lifetime |
+| `events` | `{total, by_type: [{type, name, count}]}`: replication events queued since the process started, by the engine's event type; types never seen are left out, and a type outside the table is counted under `other` with a null `type` |
+| `traffic` | `{sent, sent_bytes, received, received_bytes, largest}`: the title's datagrams since the process started (`live_hle::traffic`) |
+
+Event and traffic counts accumulate over the process lifetime. Divide
+the difference between two calls by the ticks between their `at` stamps
+to get a rate:
+
+```sh
+h2 agent net.replication > before.json
+h2 agent wait '{"map_ticks":900}' 60000
+h2 agent net.replication > after.json
+```
+
+The event counts come from the `agent-net` feature, an observer on the
+engine's event entry (`SIM_EVENT_GENERATE`, `0xb5a70`);
+`H2_FEATURES=-agent-net` leaves them at zero and the rest of the answer
+unchanged. The engine calls that entry only in a distributed game. On a
+host and a client of one game, `objects` answers whether an object the
+host made reached the client: the host's `with_entity` rises and so does
+the client's `objects` for that group.
 
 ## `world.raw`: an object's bytes, before and after
 
@@ -1203,7 +1246,11 @@ name matches two different saved or disc rulesets, open is
 `live` boolean selects System Link or a Live custom game; Live needs a
 working service identity that can publish sessions. Open waits for retail
 to publish the requested lobby parameters. Repeating the same open in
-pregame returns the existing lobby; close it before changing parameters.
+pregame returns the existing lobby. Close it before changing parameters.
+Set `"synchronous":true` with `"live":false` and omit `variant` for a
+variant-free System Link probe. Open checks that the fresh squad keeps
+protocol 1, engine index 0 and the difficulty sentinel for multiplayer
+after the map setter. The lobby uses retail's normal readiness and start calls.
 
 The phases are `menu`, `lobby`, `loading`, `playing` and `postgame`.
 Player slots are retail membership slots and can have gaps; split-screen
@@ -1828,7 +1875,7 @@ boundary while the game ticks. The wire types are `agent_proto::sim`.
 | `sim.expect` | read | `{checks}`: expectations judged against `sim.view`, at one tick |
 | `sim.session` | read | the session kind and whether writes are allowed |
 | `sim.objects` | read | `{kinds?, max?}`: every live object in slot order through the simulation's typed views, `{objects, truncated}` |
-| `sim.events` | read | `{kinds?}`: the last tick's simulation events in order (`deleted`, `damage`, `kill`), `{events}` |
+| `sim.events` | read | `{kinds?}`: the last tick's simulation events in order (`deleted`, `damage`, `kill`, `actor_killed`), `{events}` |
 
 **Brains.** For a brain-driven simulated player, `sim.player.add`,
 `sim.player.list` and the `sim` root of `sim.view` include `brain` when
@@ -1876,8 +1923,8 @@ The wire types are `agent_proto::sim::objects`.
 (`sim_state::events`, [sim-rewrite-objects.md](../engine/sim-rewrite-objects.md)
 section 8). The game answers at a tick boundary, so the events are the
 tick that just ran, in the order they happened. The buffer is emptied when
-each tick starts. `kinds` filters by type (`deleted`, `damage`, `kill`;
-another name is `INVALID_PARAMS`). Datums are `0x` and eight hex digits,
+each tick starts. `kinds` filters by type. An unknown name returns
+`INVALID_PARAMS`. Datums are `0x` and eight hex digits,
 or `null` for none. Each event has a `type`:
 
 - `deleted`: finalize deleted an object. `id`, `kind` (its tag group) and
@@ -1892,6 +1939,9 @@ or `null` for none. Each event has a `type`:
 - `kill`: the game credited a kill. `tick`, `attacker` and `victim` (player
   datums), `code`, `damage_type`, `modifier`, `victim_unit`,
   `attacker_unit`, `position` and `attacker_position`.
+- `actor_killed`: a damage report depleted an actor unit's body.
+  `unit` is the object datum, `character` the character tag datum,
+  `killer` the credited player datum, and `weapon` the packed damage code.
 
 Events are recorded only while `impl.sim.native.objects` is on; with it
 off the list is empty. The records and where they are read are in
@@ -2058,7 +2108,9 @@ calls are queued.
 - **`sim.spawn`** makes an object as the netgame equipment spawn does
   (`0x15ab94..0x15abe6`): `placement_data_new` with no owner, the position
   at placement `+0x1c`, forward and up at `+0x28`/`+0x34`, then
-  `object_new`. Any object group `object_new` knows (`bipd vehi weap eqip
+  `object_new`. A distributed host with the
+  [creature probe](../game/ai-networking.md#creature-slot-probe) enrolls a
+  new creature after allocation. Any object group `object_new` knows (`bipd vehi weap eqip
   garb proj scen mach ctrl lifi ssce bloc crea`). A bare name is looked for
   among those groups; if it names tags in more than one, the answer asks for
   the group (`vehi:<tag name>`). The answer: `object`, `pos` (where it was
@@ -2097,6 +2149,61 @@ is the local embedded server (`h2 play --live-local`,
 `live_server::start_embedded`), which issues bot identities and accepts
 `bot: true` only for xuids it issued. Never point a sim run at the public
 Live server.
+
+## Forge probes
+
+The running game's agent registers these methods through
+`crates/extensions/agent/src/forge.rs`. The wire types are in
+`crates/extensions/agent-proto/src/forge.rs`. Results include the normal
+`at` stamp. See the [measurement procedure](../game/notes/forge-probes.md).
+
+| Method and access | Parameters | Result |
+|---|---|---|
+| `forge.capacity` (read) | `{}` or omitted | `tag_arena {low, high, headroom_bytes}`, `object_pool {used, limit}`, and `blocks` keyed by scenario block name |
+| `forge.probe` (act) | `{what:"replication", group, tag?, pos?}` | `{what, session, tag:{tag, group, name}, object, pos}` after the next tick |
+| `forge.probe` (act) | `{what:"sync", from_tick?, max?}` | `{what, session, scenario_type, variant_engine, desync, hashes}` |
+| `forge.probe` (act) | `{what:"ai"}` | `{what, enabled, active, actors}` |
+| `forge.probe` (act) | `{what:"kit"}` | `{what, blocks, objects_by_group, actors}` |
+
+**Capacity and kit.** `headroom_bytes` is the difference between the
+two physical arena cursors at the stamp's tick. It includes space
+that cache pools may need. Each block reports `count`, the known
+`limit` or `null`, and `kit_left`. The candidate spare count is
+the contiguous marked tail of a block. The markers are palette index
+`-1` for placements, placement index `-1` for object names, player
+type `-1` for starting locations, flag type `0xffff` for netgame flags
+and a null item datum for netgame equipment. A block without a known
+marker reports `null`. The kit probe adds a runtime object census by
+group and the live actor count for base-versus-kit comparisons. The
+candidates' behavior is measured in the game.
+
+**Replication.** The host must be in a ticking `mp_host` session. The
+group must be one that [`sim.spawn`](#the-games-own-functions-teleport-give-spawn)
+accepts. A tag may be a datum or name in that group. With the group alone,
+the probe uses its first valid loaded tag in index order. With `pos`
+omitted, it uses one world unit above the first eligible scenario
+starting location. Pass an explicit `pos` to control the spawn location.
+The probe queues a single `sim.spawn` engine call. The returned
+`object` is the host's salted handle in the same form as `sim.objects`.
+The client can enumerate that group through `sim.objects` immediately
+afterward. A refused or missing spawn leaves replication unmeasured.
+
+**Synchronous protocol.** `session` uses the same reader as
+`sim.session`. `scenario_type` is the loaded tag's kind (multiplayer
+is 1). `variant_engine` shows the engine in the active game options
+(none is 0). `desync` is the simulation world's desync latch. Fields
+whose backing globals are absent are `null`. The probe supplies the
+current multiplayer map's [`sim.hashes`](#framescene-checks-compare-capture-scene-parity-hashes)
+rows up to the sampled tick. `from_tick` is inclusive. `max` defaults
+to 4096 and accepts 1 to 4096. During pregame, or when the hash observer
+has no samples for the current map, `rows` is empty. Compare matching
+ticks across peers and check the latch on both.
+
+**AI.** `enabled` is the flag the engine's `ai` builtin sets and
+`ai_update` reads. `active` is the adjoining activity flag used by
+the campaign AI extension. A missing AI-global pointer produces
+`null` for both, and a missing actor pool produces zero actors.
+Capacity, AI and kit reads require a gameplay tick.
 
 ## Sim matches
 

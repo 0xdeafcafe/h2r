@@ -626,7 +626,10 @@ impl Prefix {
                 after: start.unwrap_or(0),
                 types: game::CLIENT_GAME_EVENTS
                     .iter()
-                    .map(|k| k.to_string())
+                    .copied()
+                    // Public actor kills are absent from the private import rows.
+                    .filter(|&kind| kind != game::ACTOR_KILLED)
+                    .map(str::to_owned)
                     .collect(),
                 limit: 32,
                 ..Default::default()

@@ -448,6 +448,31 @@ impl Telemetry {
         self.submit(Work::End(Box::new(snapshot)))
     }
 
+    fn actor_killed(&self, guest: &runtime::Guest, report: u32, victim: u32) -> Result<(), String> {
+        use guest_layout::Datum;
+        use sim_objects::{SimEvent, damage};
+
+        let Some(SimEvent::ActorKilled { unit, character, killer, weapon }) =
+            damage::actor_killed(guest, report, Datum(victim))
+        else {
+            return Ok(());
+        };
+        if memory::cinematic(guest).unwrap_or(false) {
+            return Ok(());
+        }
+        let tick = match memory::game_tick(guest) {
+            Ok(tick) => tick,
+            Err(fault) => return self.missing_sample("actor_kill_clock", fault),
+        };
+        self.submit(Work::ActorKilled {
+            tick,
+            unit: unit.raw(),
+            character: character.get(),
+            owner: killer.get(),
+            weapon,
+        })
+    }
+
     fn kill(&self, guest: &runtime::Guest, esp: u32) -> Result<(), String> {
         use guest_layout::damage::{KillingDamage, killing_damage};
 
@@ -554,12 +579,12 @@ impl ::hooks::Feature for TelemetryFeature {
                         return;
                     };
                     t.protect(|| {
-                        let hit = memory::hit(&o.guest(), report, victim);
-                        match hit {
+                        let guest = o.guest();
+                        match memory::hit(&guest, report, victim) {
                             Ok(hit) => t.damaged(hit),
                             Err(_) => t.dropped_film_sample("damage"),
                         }
-                        Ok(())
+                        t.actor_killed(&guest, report, victim)
                     });
                 })
                 .optional();

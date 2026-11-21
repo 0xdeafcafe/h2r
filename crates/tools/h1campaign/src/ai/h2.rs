@@ -339,9 +339,25 @@ fn shared_block<'a>(
 }
 
 impl ScenarioAi {
+    /// Decode the scenario's AI through its ordinary metadata address space.
+    /// A pinned scenario can point to arrays outside its original tag payload.
+    pub fn read_map<R: std::io::Read + std::io::Seek>(map: &mut map::Map<R>) -> Result<Self> {
+        let root = map.scenario().and_then(|tag| tag.location).ok_or(map::Error::NoTagData)?;
+        if (root.size as usize) < layout::SCENARIO_MIN {
+            return Err(map::Error::Invalid("truncated scenario AI root").into());
+        }
+        let space = map.metadata_space().ok_or(map::Error::NoTagData)?;
+        let bytes = map.read_file_range(space.file_offset, u64::from(space.size))?;
+        let view = TagView::new(&bytes, space.virtual_base);
+        Self::read_root(&view, view.range(root.address, layout::SCENARIO_MIN as u64)?)
+    }
+
     /// Decodes the AI blocks of the scenario struct at the start of `v`.
     pub fn read(v: &TagView) -> Result<Self> {
-        let root = v.at(0, layout::SCENARIO_MIN)?;
+        Self::read_root(v, v.at(0, layout::SCENARIO_MIN)?)
+    }
+
+    fn read_root(v: &TagView, root: &[u8]) -> Result<Self> {
         let b = |l: (usize, usize)| v.block(root, l.0, l.1);
         let mut shared = std::collections::HashSet::new();
         let squads = b(layout::SQUADS)?
