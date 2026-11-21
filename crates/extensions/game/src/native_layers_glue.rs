@@ -112,17 +112,17 @@ pub fn load<R: std::io::Read + std::io::Seek>(
     lightmaps: &HashMap<LightmapKey, Image>,
     images: &mut StageImages,
     decoder: &mut StageDecoder,
-) -> Arc<LayersView> {
+) -> LayersView {
     let mut out = LayersView::default();
     let materials: Vec<u16> = world.draws.iter().map(|d| d.material).collect::<BTreeSet<_>>().into_iter().collect();
     if materials.is_empty() {
-        return Arc::new(out);
+        return out;
     }
     let mut lib = match tags::material::ShaderLibrary::read(map) {
         Ok(lib) => lib,
         Err(e) => {
             eprintln!("native-layers: the shader tags do not read ({e}); the D3D path draws layers 1, 5, 7, 8 and 20");
-            return Arc::new(out);
+            return out;
         }
     };
     let mut resolved: HashMap<u16, Arc<Material>> = HashMap::new();
@@ -185,7 +185,7 @@ pub fn load<R: std::io::Read + std::io::Seek>(
         }
         out.layers.insert(layer, data);
     }
-    Arc::new(out)
+    out
 }
 
 /// One material's passes of `layer`, compiled (with the rigid
@@ -222,23 +222,25 @@ fn compile<R: std::io::Read + std::io::Seek>(
     Ok(out)
 }
 
-/// Uploads each layer's set onto `gpu` (the world's `upload`, after the
-/// fog's).
+/// Builds the layers resources on the BSP loader's device.
 pub fn upload_layers(
-    view: &LayersView,
+    view: &mut LayersView,
     device: &wgpu::Device,
     queue: &wgpu::Queue,
-    gpu: &mut native_render::gpu::GpuWorld,
+    world: &World,
     stage_image: &mut dyn FnMut(Stage) -> Option<Image>,
     lightmap: &mut dyn FnMut(LightmapKey) -> Option<Image>,
-) {
-    for (&layer, data) in &view.layers {
+) -> Vec<(u8, fog_gpu::FogSet)> {
+    let mut sets = Vec::new();
+    for (&layer, data) in &mut view.layers {
         if data.programs.is_empty() {
             continue;
         }
-        let set = fog_gpu::FogSet::new(device, queue, gpu.world(), data.parts.clone(), data.programs.clone(), stage_image, lightmap);
-        gpu.set_layer(layer, set);
+        let set = fog_gpu::FogSet::new(device, queue, world, data.parts.clone(), data.programs.clone(), stage_image, lightmap);
+        data.part_set.retain(|&(owner, part), _| set.draws_part(owner, part));
+        sets.push((layer, set));
     }
+    sets
 }
 
 struct Glue<B: d3d::backend::Backend + Send + 'static> {
@@ -253,11 +255,11 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
             Arc::clone(current_ready(&state, mem)?)
         };
-        let view = ready.layers.clone()?;
+        let (view, palettes) = ready.layers.get()?;
         let data = view.layers.get(&l)?;
         let pass = scene.layer_passes.first()?;
         // The plan, from the scene alone.
-        let plan = layer_pass::plan(scene, pass, &mut Loaded(&view));
+        let plan = layer_pass::plan(scene, pass, &mut Loaded(view));
         let mut outcomes: BTreeMap<&'static str, u64> = BTreeMap::new();
         for (_, r) in &plan.refused {
             *outcomes.entry(cause(r)).or_default() += 1;
@@ -302,7 +304,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             report(&outcomes, 0);
             return None;
         }
-        if !palettes_hold(&ready.palettes, &|n| d.stage_palette(&read, n)) {
+        if !palettes_hold(palettes, &|n| d.stage_palette(&read, n)) {
             *outcomes.entry("palettes").or_default() += taken.len() as u64;
             report(&outcomes, 0);
             return None;
@@ -396,11 +398,11 @@ impl d3d::ExternalPass for LayerViewPass {
         self.w_clip = (clip.w_buffered == Some(true)).then_some((clip.range, clip.clamp));
     }
 
-    fn prepare_copy(&mut self, t: &d3d::ExternalTarget<'_>) -> Result<(), &'static str> {
+    fn prepare_copy(&mut self, _t: &d3d::ExternalTarget<'_>) -> Result<(), &'static str> {
         if self.view.is_none() || self.w_clip.is_none() {
             return Err("layer view constants or W-buffer clip unavailable");
         }
-        let mut guard = crate::native_world_glue::upload(&self.ready, t);
+        let mut guard = self.ready.gpu();
         let gpu = guard.as_mut().ok_or("world geometry unavailable")?;
         let set = gpu.layer(self.layer).ok_or("layer materials unavailable")?;
         if self.selected.iter().any(|&(owner, part)| !set.draws_part(owner, part)) {
@@ -422,7 +424,7 @@ impl d3d::ExternalPass for LayerViewPass {
         if self.w_clip.is_none() {
             return Some(Err("layer W-buffer clip unavailable"));
         }
-        let mut guard = crate::native_world_glue::upload_on(&self.ready, &t.device, &t.queue);
+        let mut guard = self.ready.gpu();
         let Some(gpu) = guard.as_mut() else { return Some(Err("world geometry unavailable")) };
         let view = ViewInputs { constants, guest_size: request.surface_size, size: t.size, z_scale: request.z_scale, w_clip: self.w_clip };
         Some(gpu.layer_draws(self.layer, &t.device, t.color_format, t.depth_format, t.size, &self.selected, &view, &self.fogs))

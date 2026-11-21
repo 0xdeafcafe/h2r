@@ -36,6 +36,9 @@ starts lowers itself.
 |---|---|---|
 | `bots-nav` and its build workers | `crates/extensions/game/src/bots_nav_auto.rs`, `bots::vis::Threads::background` | nav meshes and visibility grids requested for boot, lobby selection or play ([bots.md](../game/bots.md) section 10) |
 | `bots-map-data` | `crates/extensions/game/src/bot_glue.rs` (`load_map_data`) | releasing the retired mesh and reading the loaded map's `.bots` and `.vis` |
+| `native-world load` | `crates/extensions/game/src/native_world_glue.rs` | retiring BSP resources, reading and uploading world, lights, fog, water, scene layers and decorator looks |
+| `native-objects load`, `native-first-person load`, `native-lights models` | `crates/extensions/game/src/native_objects_glue.rs`, `native_first_person_load.rs`, `native_lights_glue/models.rs` | model geometry and materials for object, arm and light draws |
+| `native-decorators load` | `crates/extensions/game/src/native_decorators_glue.rs` | translating and uploading resident decorator materials |
 | `pad-speaker-index` | `crates/extensions/game/src/pad_speaker.rs` | the controller speaker's sound index |
 | `film-map-hash` | `crates/extensions/game/src/theater/metadata.rs` | the film's map digest |
 | `film-upload` | `crates/extensions/game/src/theater.rs` | a host film's upload |
@@ -58,10 +61,8 @@ a moment (a lowered holder would stall the game):
 - `gfx compile` (`crates/platform/gfx/src/compile.rs`) and `nv2a prewarm`
   (`crates/platform/d3d/src/nv2a.rs`): the render thread waits for a
   pipeline or program it needs.
-- The native renderer's per-map loaders (`native-world load`,
-  `native-objects load`, `native-first-person load`, `native-lights
-  models`, `native-post load`): the frame draws from them as soon as they
-  land, on D3D until then; one thread each.
+- The native screen-effects loader (`native-post load`) opens the
+  map's post effects. D3D draws them while the worker is active.
 - `h2-telemetry` (`crates/live/live-telemetry/src/pipeline.rs`): the game
   thread waits for queue room in `forward` and `settle`, and a worker that
   falls behind drops telemetry.

@@ -351,10 +351,9 @@ there is no hand-written look in between.
   observers (`after_feature`). One observer call per layer draw, nothing
   per draw. It runs on the pipelined render thread (context-only, nothing
   after the body). It touches the guest memory its context sees (item
-  masks, camera, active BSP, map name); the host's load state (a mutex
-  only `ask` takes; the loader is a host thread that opens the map
-  through the VFS's mutex and never touches guest memory); and the D3D
-  device's current targets, which the render owns while it is in flight.
+  masks, camera, active BSP, map name), the published host resources and
+  the D3D device's current targets. The loader opens the map through the
+  VFS and works from the map and the captured device palettes.
   The host drains previous commands, previews the list and confirms one
   batched reservation for the view before applying masks.
   Tests: `crates/rewrites/render-bridge/tests/native_world.rs` (the plan with
@@ -387,8 +386,13 @@ there is no hand-written look in between.
   left to D3D is native too. The lights' split clears by shader
   (`feature::native_lights`), so the lights take only the materials whose
   shader is native whole. Each layer-3 view then asks the device for a
-  `WorldPass` with the view's camera; the first pass uploads the world on
-  the render thread. Log lines per load: `native-world: N of M materials
+  `WorldPass` with the view's camera. The map worker uploads the world
+  on the backend's device and queue, then makes the light, fog, water,
+  scene-layer and decorator resources. Each ready stage transfers at
+  `RENDER_VIEWS` before the first view. A busy GPU world defers that
+  transfer until another frame. A BSP switch or revert opens a fresh
+  receiver and D3D draws its parts until the new stage is ready.
+  The old resources retire on the worker. Log lines per load: `native-world: N of M materials
   draw natively with their own programs (P of Q parts); K stay on the D3D
   path for R reasons`, one line per reason, most parts first; `native-world:
   <map> BSP at <addr>: N draws in B batches, P parts native, in S s`; and

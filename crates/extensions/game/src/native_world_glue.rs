@@ -8,9 +8,10 @@
 //!   the VFS, finds the scenario BSP whose tag data sits
 //!   at the active BSP's address, builds the world (`native_render::load`),
 //!   decodes each lightmap page, and translates each material's layer-3
-//!   pass. The GPU side is made on the render thread by the first pass.
+//!   pass. The same worker uploads its buffers and material programs.
 //!   Until it is ready, or when it fails, the D3D path draws the world.
-//! - **Per frame.** The camera and one external pass; the device records it
+//! - **Per frame.** Completed stages publish before the views. A view supplies
+//!   the camera and one external pass. The device records it
 //!   after the next drain, in order with the draws.
 //! - **Material programs.** Each part needs a translated layer-3 pass with decoded
 //!   stage bitmaps, the inputs of its vertex classification, and any
@@ -29,7 +30,7 @@
 //!   (`native_lights_glue::load`).
 
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock, mpsc};
 
 use engine::memory::GuestMemory;
 use render_bridge::native_map_work::{self, Stage as MapStage};
@@ -49,48 +50,38 @@ mod opaque_materials;
 
 type LayeredImages = HashMap<(TagId, u32), LayeredImage>;
 
-/// What the worker hands the render thread: the world and its images.
-pub struct CpuWorld {
-    pub world: World,
-    pub lightmaps: HashMap<LightmapKey, Image>,
-    /// Materials with their own programs, and their stages' images.
-    pub programs: HashMap<u16, MaterialProgram>,
-    pub stage_images: StageImages,
-    layered_images: LayeredImages,
-}
+#[path = "native_world_setup.rs"]
+mod setup;
+pub use setup::MapState;
+use setup::StageReady;
 
-/// One loaded world: CPU data until the first pass uploads it.
+/// One BSP's uploaded geometry. Each additional stage becomes visible at
+/// a later frame boundary once its worker-built resources are complete.
 #[cfg_attr(test, derive(Default))]
 pub struct Ready {
     opaque: opaque_materials::Library,
-    cpu: Mutex<Option<CpuWorld>>,
     gpu: Mutex<Option<GpuWorld>>,
+    pub(crate) upload_device: Option<(wgpu::Device, wgpu::Queue)>,
     /// The parts the native pass draws, with their shaders: what the skip
     /// clears.
     parts: Arc<PartSet>,
     part_bounds: HashMap<(Owner, u8), native_render::world::Aabb>,
-    /// How many of the load's materials draw natively, of how many the
-    /// world holds: the load's one summary line.
-    coverage: (usize, usize),
-    rejection_summary: Vec<(String, usize)>,
-    failed_sections: u32,
-    declared_materials: usize,
     /// The fog of this load (`native_fog_glue`): the compiled layer-16
     /// passes, their fog words and the parts the fog pass draws.
-    pub fog: Option<Arc<crate::native_fog_glue::FogView>>,
+    pub fog: OnceLock<(Arc<crate::native_fog_glue::FogView>, StagePalettes)>,
     /// The water edge blend of this load (`native_water_glue`): the
     /// compiled layer-6 passes, their supplies and the parts the water
     /// pass draws.
-    pub water: Option<Arc<crate::native_water_glue::WaterData>>,
+    pub water: OnceLock<(Arc<crate::native_water_glue::WaterData>, StagePalettes)>,
     /// The scene's layers 1, 5, 7, 8 and 20 of this load
     /// (`native_layers_glue`), when `frame-scene.layers` is placed.
-    pub layers: Option<Arc<crate::native_layers_glue::LayersView>>,
+    pub layers: OnceLock<(Arc<crate::native_layers_glue::LayersView>, StagePalettes)>,
     /// The model decorators' passes of this load (`native_decorators_glue`).
-    pub decorators: Option<Arc<crate::native_decorators_glue::DecoratorLooks>>,
+    pub decorators: OnceLock<Arc<crate::native_decorators_glue::DecoratorLooks>>,
     /// What the native lights draw over this world
     /// (`native_lights_glue`; `None` when the world has no native
     /// material).
-    pub lights: Option<Arc<crate::native_lights_glue::LightsWorld>>,
+    pub lights: OnceLock<Arc<crate::native_lights_glue::LightsWorld>>,
     /// The device palettes the load expanded palettized stage bitmaps
     /// through, at the stages it used them (the rest `None`): each ask
     /// checks they are still bound.
@@ -98,6 +89,10 @@ pub struct Ready {
 }
 
 impl Ready {
+    pub(crate) fn gpu(&self) -> std::sync::MutexGuard<'_, Option<GpuWorld>> {
+        self.gpu.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     /// Check the actual attachment formats before any scene stage can
     /// clear a guest mask. A busy GPU world leaves this draw on D3D.
     pub(crate) fn with_pipeline_target<B: d3d::Backend, T>(
@@ -118,25 +113,26 @@ pub struct BspKey {
     bsp: u32,
     index: u16,
     generation: u64,
+    bsp_generation: u64,
 }
 
-pub type State = Arc<Mutex<(Option<BspKey>, Load)>>;
+impl BspKey {
+    fn current(&self) -> bool {
+        self.generation == native_map_work::generation()
+            && self.bsp_generation == native_map_work::bsp_generation()
+    }
+}
+
+pub type State = Arc<Mutex<MapState>>;
 
 /// Match the guest's active BSP even if it changed before the next layer 3.
-pub fn current_ready<'a>(state: &'a (Option<BspKey>, Load), mem: &dyn GuestMemory) -> Option<&'a Arc<Ready>> {
-    let (Some(key), Load::Ready(ready)) = state else { return None };
-    (key.generation == native_map_work::generation()
+pub fn current_ready<'a>(state: &'a MapState, mem: &dyn GuestMemory) -> Option<&'a Arc<Ready>> {
+    let key = state.key.as_ref()?;
+    (key.current()
         && mem.u32(render_bridge::native_world::ACTIVE_BSP).ok() == Some(key.bsp)
         && active_bsp_index(mem) == Some(key.index)
         && crate::health::loaded_map_name(mem).ok().as_ref() == Some(&key.map))
-        .then_some(ready)
-}
-
-pub enum Load {
-    Idle,
-    Loading(Arc<()>),
-    Ready(Arc<Ready>),
-    Failed,
+        .then_some(state.ready.as_ref()?)
 }
 
 /// The host: the device and the current world.
@@ -167,82 +163,42 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         if !render_bridge::native_world::on(&self.switches) {
             return true;
         }
-        let key = BspKey { map, bsp, index, generation };
-        let job = Arc::new(());
-        {
-            let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
-            if st.0.as_ref() == Some(&key) {
+        let key = BspKey { map, bsp, index, generation, bsp_generation: native_map_work::bsp_generation() };
+        let (finished, pending) = mpsc::channel();
+        let retired = {
+            let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            if state.key.as_ref() == Some(&key) {
                 return true;
             }
-            *st = (Some(key.clone()), Load::Loading(Arc::clone(&job)));
-        }
-        // The palettes bound now, for the stage bitmaps that are
-        // palettized (P8, P8 bump): the D3D path samples them through
-        // the device's palette at their stage, which the load expands
-        // them through. Read with no other lock held.
-        let palettes = self.device.lock().ok().map(|d| scene_load_palettes(&d, mem)).unwrap_or_default();
-        let state = Arc::clone(&self.state);
-        let started = std::thread::Builder::new()
-            .name("native-world load".into())
-            .spawn(move || {
-                let t0 = std::time::Instant::now();
-                let out = load_ready(&key.map, key.bsp, key.index, palettes);
-                let mut st = state.lock().unwrap_or_else(|e| e.into_inner());
-                if !matches!(&st.1, Load::Loading(current) if Arc::ptr_eq(current, &job))
-                    || key.generation != native_map_work::generation()
-                {
-                    return;
-                }
-                st.1 = match out {
-                    Ok((r, bsp_count)) => {
-                        {
-                            // One guard, dropped before the print: two
-                            // `lock()`s in the macro's arguments both live
-                            // to the statement's end, and the second
-                            // waited on the first forever (with `state`
-                            // held, so the render thread's next ask hung).
-                            let (draws, batches) = {
-                            let cpu = r.cpu.lock().unwrap_or_else(|e| e.into_inner());
-                            cpu.as_ref().map_or((0, 0), |c| (c.world.draws.len(), c.world.batches.len()))
-                        };
-                        eprintln!(
-                            "native-world: {} BSP {} at {:#010x}: {} of {} materials native; {} draws in {} batches, {} parts, in {:.1} s; {} BSP material slots, {} geometry sections skipped; top material rejections: {:?}",
-                            key.map,
-                            key.index,
-                            key.bsp,
-                            r.coverage.0,
-                            r.coverage.1,
-                            draws,
-                            batches,
-                            r.parts.len(),
-                            t0.elapsed().as_secs_f32(),
-                            r.declared_materials,
-                            r.failed_sections,
-                            r.rejection_summary,
-                        );
-                        }
-                        let empty = [
-                            (r.parts.is_empty() && r.opaque.is_empty()).then_some(MapStage::World),
-                            r.lights.is_none().then_some(MapStage::Lights),
-                            r.fog.as_ref().filter(|fog| fog.part_set.is_empty()).map(|_| MapStage::Fog),
-                            r.water.as_ref().filter(|water| water.part_set.is_empty()).map(|_| MapStage::Water),
-                        ];
-                        let index = usize::from(key.index);
-                        native_map_work::bsp_loaded(key.generation, &key.map, index, bsp_count, empty);
-                        Load::Ready(Arc::new(r))
-                    }
-                    Err(e) => {
-                        eprintln!("native-world: {} BSP {} at {:#010x}: not loaded ({e}); the D3D path draws it", key.map, key.index, key.bsp);
-                        Load::Failed
-                    }
-                };
-            });
-        if started.is_err() {
-            let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
-            *st = (None, Load::Idle);
+            std::mem::replace(&mut *state, MapState::loading(key.clone(), pending))
+        };
+        let inputs = self.device.lock().ok().and_then(|d| {
+            Some((d.backend.upload_device()?, scene_load_palettes(&d, mem)))
+        });
+        let launched = background::spawn("native-world load", move || {
+            // Releasing all the previous BSP's resources can itself take a
+            // frame, including stages the guest never admitted.
+            {
+                let _retire = timeline::setup::Stage::World.worker();
+                drop(retired);
+            }
+            if let Some((device, palettes)) = inputs
+                && let Err(e) = load_ready(&key, device, palettes, &finished)
+                && key.current()
+            {
+                eprintln!("native-world: {} BSP {} at {:#010x}: not loaded ({e}); the D3D path draws it", key.map, key.index, key.bsp);
+            }
+        });
+        if let Err(error) = launched {
+            eprintln!("native-world: could not start map loader ({error})");
+            self.state.lock().unwrap_or_else(|e| e.into_inner()).key = None;
             return false;
         }
         true
+    }
+
+    fn begin_frame(&self) {
+        self.state.lock().unwrap_or_else(|e| e.into_inner()).publish();
     }
 
     fn use_resolved_scene(&self, _mem: &dyn GuestMemory, _bsp: u32) -> bool {
@@ -257,7 +213,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         }
         let state = self.state.lock().map_err(|_| "BSP loader unavailable")?;
         let ready = Arc::clone(current_ready(&state, mem).ok_or("BSP load pending")?);
-        let key = state.0.as_ref().ok_or("BSP load pending")?;
+        let key = state.key.as_ref().ok_or("BSP load pending")?;
         Ok(Box::new(OpaqueView {
             watch: self.watch,
             device: Arc::clone(&self.device),
@@ -499,7 +455,7 @@ impl<B: d3d::Backend + 'static> render_bridge::native_world::OpaqueDraw for Opaq
 
 /// Installs the world host and the other native stages on the device.
 pub fn install<B: d3d::backend::Backend + Send + 'static>(device: &d3d::abi::SharedDevice<B>, watch: runtime::WatchId) -> Option<Arc<dyn d3d::DrawAdmission>> {
-    let state: State = Arc::new(Mutex::new((None, Load::Idle)));
+    let state: State = Arc::default();
     let switches = hooks::Switches::from_env().unwrap_or_default();
     render_bridge::native_world::set_host(Arc::new(Glue {
         watch,
@@ -520,61 +476,6 @@ pub fn install<B: d3d::backend::Backend + Send + 'static>(device: &d3d::abi::Sha
     let shadows = crate::native_shadows_glue::install(device);
     crate::native_hud_glue::install(device);
     shadows
-}
-
-/// The world's GPU side, uploaded from its CPU side by the first pass that
-/// needs it (on the render thread). `None` inside when it was taken and
-/// is gone.
-pub fn upload<'a>(ready: &'a Ready, t: &d3d::ExternalTarget<'_>) -> std::sync::MutexGuard<'a, Option<GpuWorld>> {
-    upload_on(ready, t.device, t.queue)
-}
-
-/// [`upload`] on pinned attachments' device and queue (packet passes,
-/// `d3d::ExternalPass::record_draws`).
-pub fn upload_on<'a>(ready: &'a Ready, device: &wgpu::Device, queue: &wgpu::Queue) -> std::sync::MutexGuard<'a, Option<GpuWorld>> {
-    let mut gpu = ready.gpu.lock().unwrap_or_else(|e| e.into_inner());
-    if gpu.is_some() {
-        return gpu;
-    }
-    let Some(cpu) = ready.cpu.lock().unwrap_or_else(|e| e.into_inner()).take() else {
-        return gpu;
-    };
-    let CpuWorld {
-        world,
-        lightmaps,
-        programs,
-        stage_images,
-        layered_images,
-    } = cpu;
-    let mut stage = |s: Stage| match s {
-        Stage::Bitmap { bitmap, image } => stage_images.get(&(bitmap, image)).cloned(),
-        Stage::Empty | Stage::Lightmap | Stage::Engine(_) => None,
-    };
-    // Set even when empty: a batch without a program is never drawn with
-    // stage 1's.
-    let set = ProgramSet::with_layered(device, queue, &world, programs, &mut stage,
-        &mut |k| lightmaps.get(&k).cloned(), &layered_images);
-    eprintln!(
-        "native-world: {} materials draw with their own programs, {} of them their placements with their rigid programs",
-        set.len(),
-        set.rigid_len()
-    );
-    let mut g = GpuWorld::with_programs(device, queue, world, set);
-    // The fog set rides the same upload (`native_fog_glue`), after the
-    // world's images are in.
-    if let Some(fog) = ready.fog.as_ref().filter(|f| !f.programs.is_empty()) {
-        crate::native_fog_glue::upload_fog(fog, device, queue, &mut g, &mut stage, &mut |k| lightmaps.get(&k).cloned());
-    }
-    // The water set rides the same upload (`native_water_glue`).
-    if let Some(water) = ready.water.as_ref().filter(|w| !w.programs.is_empty()) {
-        crate::native_water_glue::upload_water(water, device, queue, &mut g, &mut stage, &mut |k| lightmaps.get(&k).cloned());
-    }
-    // The scene's layers ride it too (`native_layers_glue`).
-    if let Some(layers) = ready.layers.as_ref() {
-        crate::native_layers_glue::upload_layers(layers, device, queue, &mut g, &mut stage, &mut |k| lightmaps.get(&k).cloned());
-    }
-    *gpu = Some(g);
-    gpu
 }
 
 /// One view's world pass.
@@ -646,7 +547,7 @@ impl d3d::ExternalPass for WorldPass {
     }
 
     fn prepare_copy(&mut self, t: &d3d::ExternalTarget<'_>) -> Result<(), &'static str> {
-        let mut guard = upload(&self.ready, t);
+        let mut guard = self.ready.gpu();
         let gpu = guard.as_mut().ok_or("world geometry unavailable")?;
         if gpu.has_programs() && self.view.is_none() { return Err("world view constants unavailable"); }
         configure_world(gpu, t.depth_format, self.cull, &self.stencil);
@@ -666,7 +567,7 @@ impl d3d::ExternalPass for WorldPass {
     fn record_draws(
         &mut self, t: &d3d::backend::ExternalAttachments, request: d3d::ExternalPassRequest,
     ) -> Option<Result<d3d::backend::ExternalDraws, &'static str>> {
-        let mut guard = upload_on(&self.ready, &t.device, &t.queue);
+        let mut guard = self.ready.gpu();
         let Some(gpu) = guard.as_mut() else { return Some(Err("world geometry unavailable")) };
         if !gpu.has_programs() { return None; }
         let Some(constants) = self.view else { return Some(Err("world view constants unavailable")) };
@@ -684,7 +585,7 @@ impl d3d::ExternalPass for WorldPass {
     fn encode(&mut self, t: d3d::ExternalTarget<'_>) { self.record_ranges(t); }
 
     fn record_ranges(&mut self, mut t: d3d::ExternalTarget<'_>) -> usize {
-        let mut gpu = upload(&self.ready, &t);
+        let mut gpu = self.ready.gpu();
         let Some(gpu) = gpu.as_mut() else { return 0 };
         configure_world(gpu, t.depth_format, self.cull, &self.stencil);
         let selection = &self.selection;
@@ -838,14 +739,21 @@ fn active_scenario_bsp(addresses: &[Option<u32>], index: u16, bsp: u32) -> Optio
     (addresses.get(i).copied().flatten() == Some(bsp)).then_some(i)
 }
 
-fn load_ready(name: &str, bsp: u32, active: u16, palettes: StagePalettes) -> Result<(Ready, usize), load::Error> {
-    let (mut map, files) = crate::native_map::open(name)?;
+fn load_ready(
+    key: &BspKey, (device, queue): (wgpu::Device, wgpu::Queue), palettes: StagePalettes,
+    finished: &mpsc::Sender<StageReady>,
+) -> Result<(), load::Error> {
+    use timeline::setup::Stage as Setup;
+    let started = std::time::Instant::now();
+    let world_setup = Setup::World.worker();
+    if !key.current() { return Ok(()); }
+    let (mut map, files) = crate::native_map::open(&key.map)?;
     let bsps = load::scenario_bsps(&mut map)?;
     let addresses: Vec<Option<u32>> = bsps
         .iter()
         .map(|(id, _)| map.tag(*id).ok().and_then(|t| t.location).map(|l| l.address))
         .collect();
-    let index = active_scenario_bsp(&addresses, active, bsp).ok_or("the active BSP index is not a scenario BSP at the active BSP's address")?;
+    let index = active_scenario_bsp(&addresses, key.index, key.bsp).ok_or("the active BSP index is not a scenario BSP at the active BSP's address")?;
     let mut raw = Raw(files);
     let LoadedWorld {
         world,
@@ -857,6 +765,7 @@ fn load_ready(name: &str, bsp: u32, active: u16, palettes: StagePalettes) -> Res
         ..
     } = load::load_world(&mut map, &mut raw, index)?;
     let mut files = raw.0;
+    if !key.current() { return Ok(()); }
 
     // Lightmap pages through their palettes, with their mip chains.
     let mut lightmaps = HashMap::new();
@@ -873,18 +782,19 @@ fn load_ready(name: &str, bsp: u32, active: u16, palettes: StagePalettes) -> Res
                     _ => Err("the BSP lightmap tag is not a bitmap".into()),
                 }
             });
-        for key in page_keys {
+        for page_key in page_keys {
+            if !key.current() { return Ok(()); }
             let page = bitmap.as_ref().map_err(Clone::clone).and_then(|b| {
-                let image = b.images.get(usize::from(key.page)).ok_or("no such lightmap bitmap page")?;
-                let palette = lightmap_palettes.get(usize::from(key.palette)).ok_or("no such lightmap palette")?;
+                let image = b.images.get(usize::from(page_key.page)).ok_or("no such lightmap bitmap page")?;
+                let palette = lightmap_palettes.get(usize::from(page_key.palette)).ok_or("no such lightmap palette")?;
                 decode_lightmap(image, palette, &mut files, true)
             });
             match page {
                 Ok(page) => {
-                    lightmaps.insert(key, page);
+                    lightmaps.insert(page_key, page);
                 }
                 Err(why) => {
-                    rejected_pages.insert(key, why);
+                    rejected_pages.insert(page_key, why);
                 }
             }
         }
@@ -907,8 +817,9 @@ fn load_ready(name: &str, bsp: u32, active: u16, palettes: StagePalettes) -> Res
             ..Default::default()
         },
         None => material_programs(&mut map, &mut files, &shaders, &world, &page_ready, &mut decoder,
-            lightmap_bitmap.is_none(), &mut layered_images),
+            lightmap_bitmap.is_none(), &mut layered_images, key),
     };
+    if !key.current() { return Ok(()); }
     let native: HashSet<u16> = out.programs.keys().copied().collect();
     let prepared_parts = out.parts;
     let palettized = out.palettized;
@@ -937,56 +848,133 @@ fn load_ready(name: &str, bsp: u32, active: u16, palettes: StagePalettes) -> Res
             );
         }
     }
-    // The sorted geometry entries identify individual cluster parts and their full shader datums.
-    let lights = if !native.is_empty() {
-        crate::native_lights_glue::load(&mut map, &mut files, &shaders, &world, &accepts, &decoder.palettes)
-            .map(Arc::new)
-    } else {
-        None
+    if !key.current() { return Ok(()); }
+    // The later shader walks use part descriptors and placement rows. Keep
+    // those before filtering layer 3, without copying any vertex or index data.
+    let stage_world = World {
+        draws: world.draws.clone(),
+        batches: world.batches.clone(),
+        transparents: world.transparents.clone(),
+        placements: world.placements.clone(),
+        ..Default::default()
     };
-    // The screen effects are not the world's: `native_post_glue` loads
-    // them itself, with or without the native world.
-    // The fog (layer 16), over the whole world before its draws are kept:
-    // a material that stays on the D3D path for layer 3 may still fog
-    // natively.
-    let fog = Some(crate::native_fog_glue::load(&mut map, &mut files, &shaders, &world, &lightmaps, &mut stage_images, &mut decoder));
-    // The water edge blend (layer 6), over the world's transparent parts
-    // before its draws are kept.
-    let water = Some(crate::native_water_glue::load(&mut map, &mut files, &shaders, &world, &lightmaps, &mut stage_images, &mut decoder));
-    // The scene's layers 1, 5, 7, 8 and 20 from the plan, over the whole
-    // world, when their stage is placed.
-    let layers = render_bridge::native_layers::placed()
-        .then(|| crate::native_layers_glue::load(&mut map, &mut files, &shaders, &world, &lightmaps, &mut stage_images, &mut decoder));
-    // The model decorators' layer-3 passes, from the map's decorator sets.
-    let decorators = Some(crate::native_decorators_glue::load(&mut map, &mut files, &mut decoder));
-    // Draw only a native material's clusters, and its placements with its
-    // rigid program: the rest keeps its D3D draws.
     let opaque = opaque_materials::Library::load(&mut map, &shaders);
-    let coverage = (native.len(), world.materials().len());
+    let declared = world.materials().len();
     let world = keep_draws(world, &accepts);
     let parts = part_set(&world, &shaders);
     let part_bounds = world.draws.iter().map(|d| ((d.owner, d.part), d.bounds)).collect();
-    Ok((Ready {
-        opaque, part_bounds, coverage,
-        rejection_summary: top_rejections(&refused),
-        failed_sections,
-        declared_materials: shaders.len(),
-        cpu: Mutex::new(Some(CpuWorld {
-            world,
-            lightmaps,
-            programs,
-            stage_images,
-            layered_images,
-        })),
-        gpu: Mutex::new(None),
-        parts: Arc::new(parts),
-        fog,
-        water,
-        layers,
-        decorators,
-        lights,
-        palettes: decoder.used().clone(),
-    }, bsps.len()))
+    let empty_world = parts.is_empty() && opaque.is_empty();
+    let stage_bitmap = |images: &StageImages, stage: Stage| match stage {
+        Stage::Bitmap { bitmap, image } => images.get(&(bitmap, image)).cloned(),
+        _ => None,
+    };
+    let gpu = {
+        let set = ProgramSet::with_layered(&device, &queue, &world, programs, &mut |s| stage_bitmap(&stage_images, s),
+            &mut |k| lightmaps.get(&k).cloned(), &layered_images);
+        eprintln!(
+            "native-world: {} BSP {} at {:#010x}: {} of {} materials native; {} draws in {} batches, {} parts, in {:.1} s; {} BSP material slots, {} geometry sections skipped; top material rejections: {:?}",
+            key.map, key.index, key.bsp, native.len(), declared, world.draws.len(), world.batches.len(), parts.len(),
+            started.elapsed().as_secs_f32(), shaders.len(), failed_sections, top_rejections(&refused),
+        );
+        GpuWorld::with_programs(&device, &queue, world, set)
+    };
+    let send = |stage| {
+        if !key.current() { return false; }
+        // Flush writes on the producing queue before the first admitted draw.
+        queue.submit([]);
+        finished.send(stage).is_ok()
+    };
+    if !send(StageReady::World(Arc::new(Ready {
+        opaque, part_bounds, gpu: Mutex::new(Some(gpu)), parts: Arc::new(parts),
+        upload_device: Some((device.clone(), queue.clone())), palettes: decoder.used().clone(),
+        fog: OnceLock::new(), water: OnceLock::new(), layers: OnceLock::new(),
+        decorators: OnceLock::new(), lights: OnceLock::new(),
+    }))) { return Ok(()); }
+
+    drop(world_setup);
+
+    // Each result owns all of its GPU resources before it enters the mailbox.
+    // No map walk or upload takes a lock used by an admitted draw.
+    let empty_lights = {
+        let _setup = Setup::Lights.worker();
+        let lights = if native.is_empty() { None } else {
+            crate::native_lights_glue::load(&mut map, &mut files, &shaders, &stage_world, &accepts, &decoder.palettes)
+        };
+        if let Some(lights) = lights {
+            let lights = Arc::new(lights);
+            let set = lights.upload_engine_textures(&device, &queue);
+            if !send(StageReady::Lights(lights, Box::new(set))) {
+                return Ok(());
+            }
+            false
+        } else {
+            true
+        }
+    };
+    if !key.current() { return Ok(()); }
+
+    let empty_fog = {
+        let _setup = Setup::Fog.worker();
+        let mut fog = crate::native_fog_glue::load(
+            &mut map, &mut files, &shaders, &stage_world, &lightmaps, &mut stage_images, &mut decoder,
+        );
+        let mut empty = fog.part_set.is_empty();
+        if !empty {
+            let set = crate::native_fog_glue::upload_fog(&fog, &device, &queue, &stage_world,
+                &mut |s| stage_bitmap(&stage_images, s), &mut |k| lightmaps.get(&k).cloned());
+            fog.part_set.retain(|&(owner, part), _| set.draws_part(owner, part));
+            empty = fog.part_set.is_empty();
+            if !empty && !send(StageReady::Fog(Arc::new(fog), decoder.used().clone(), set)) {
+                return Ok(());
+            }
+        }
+        empty
+    };
+    if !key.current() { return Ok(()); }
+
+    let empty_water = {
+        let _setup = Setup::Water.worker();
+        let mut water = crate::native_water_glue::load(
+            &mut map, &mut files, &shaders, &stage_world, &lightmaps, &mut stage_images, &mut decoder,
+        );
+        let mut empty = water.part_set.is_empty();
+        if !empty {
+            let set = crate::native_water_glue::upload_water(&water, &device, &queue,
+                &mut |s| stage_bitmap(&stage_images, s), &mut |k| lightmaps.get(&k).cloned());
+            water.part_set.retain(|&(owner, part), _| set.draws_part(owner, part));
+            empty = water.part_set.is_empty();
+            if !empty && !send(StageReady::Water(Arc::new(water), decoder.used().clone(), Box::new(set))) {
+                return Ok(());
+            }
+        }
+        empty
+    };
+    if !key.current() { return Ok(()); }
+
+    if render_bridge::native_layers::placed() {
+        let _setup = Setup::Layers.worker();
+        let mut layers = crate::native_layers_glue::load(
+            &mut map, &mut files, &shaders, &stage_world, &lightmaps, &mut stage_images, &mut decoder,
+        );
+        let sets = crate::native_layers_glue::upload_layers(&mut layers, &device, &queue, &stage_world,
+            &mut |s| stage_bitmap(&stage_images, s), &mut |k| lightmaps.get(&k).cloned());
+        if !send(StageReady::Layers(Arc::new(layers), decoder.used().clone(), sets)) {
+            return Ok(());
+        }
+    }
+    if !key.current() { return Ok(()); }
+
+    let decorators = {
+        let _setup = Setup::Decorators.worker();
+        crate::native_decorators_glue::load(&mut map, &mut files, &mut decoder)
+    };
+    if key.current() && finished.send(StageReady::Decorators(decorators)).is_ok() {
+        native_map_work::bsp_loaded(key.generation, &key.map, index, bsps.len(), [
+            empty_world.then_some(MapStage::World), empty_lights.then_some(MapStage::Lights),
+            empty_fog.then_some(MapStage::Fog), empty_water.then_some(MapStage::Water),
+        ]);
+    }
+    Ok(())
 }
 
 pub fn decode_lightmap(
@@ -1132,6 +1120,7 @@ fn material_programs<R: std::io::Read + std::io::Seek>(
     decoder: &mut StageDecoder,
     no_lightmap_group: bool,
     layered: &mut LayeredImages,
+    key: &BspKey,
 ) -> Programs {
     let mut out = Programs::default();
     let Programs {
@@ -1161,6 +1150,7 @@ fn material_programs<R: std::io::Read + std::io::Seek>(
         .and_then(|loc| crate::native_lights_glue::matg_light_bitmaps(lib.metadata(), loc.address).0);
     let mut dimensions = HashMap::new();
     for m in materials {
+        if !key.current() { break; }
         let mut uses_palette = false;
         let Some(&shader) = shaders.get(usize::from(m)) else {
             refused.entry("no shader".into()).or_default().push(m);
