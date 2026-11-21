@@ -50,9 +50,9 @@ fn array(
     Ok((ptr, count))
 }
 
-/// Collect all the component's rigid-body handles, including multi-body objects.
-fn handles(m: &dyn GuestMemory, datum: u32) -> Result<HashSet<u32>, MemFault> {
-    let mut out = HashSet::new();
+/// Entities in the object's current physics component, in component order.
+pub fn object_entities(m: &dyn GuestMemory, datum: u32) -> Result<Vec<u32>, MemFault> {
+    let mut out = Vec::new();
     let Some(handle) = DatumHandle::from_raw(datum) else {
         return Ok(out);
     };
@@ -84,7 +84,7 @@ fn handles(m: &dyn GuestMemory, datum: u32) -> Result<HashSet<u32>, MemFault> {
         let entity = m.u32(entry + layout::COMPONENT_BODY_RIGID)?;
         if entity != 0 {
             span(entity, HANDLE_IN_ENTITY + 4)?;
-            out.insert(entity + HANDLE_IN_ENTITY);
+            out.push(entity);
         }
     }
     Ok(out)
@@ -150,7 +150,10 @@ pub fn agents(m: &dyn GuestMemory, datum: u32) -> Result<Vec<Pair>, MemFault> {
     if world == 0 {
         return Ok(out);
     }
-    let handles = handles(m, datum)?;
+    let handles: HashSet<_> = object_entities(m, datum)?
+        .into_iter()
+        .map(|entity| entity + HANDLE_IN_ENTITY)
+        .collect();
     if handles.is_empty() {
         return Ok(out);
     }
