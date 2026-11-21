@@ -195,6 +195,61 @@ pub enum Command { PlaceSquad { slot, class, count, zone, weapon_tier }, Hunt { 
   blob the actor channel sends as `State`. `Director::resume` continues
   from it.
 
+### The director as a rules script
+
+`firefight::script` (`crates/formats/firefight/src/script.rs`) compiles
+a definition to a rules blob that does what `Director` does, and runs it
+([rules-engine.md](rules-engine.md#firefight-ai-and-bounces)). The
+host runtime still runs the Rust director; the script is checked against
+it in tests.
+
+- `compile(&def)` builds the IR directly. The squads, waves, rounds
+  (each round's skull schedule), actor caps, class points, difficulty
+  and skull multipliers are constant tables. The director's state is
+  global and per-player script variables, and the loops over the 16
+  squad slots are unrolled. The blob depends only on the definition, so
+  its hash is stable. A definition with more than 256 squads is refused
+  by name, since a rules table holds 256 rows.
+- The difficulty and the skulls on from the start are script options
+  (`script::options`). The VM seeds its generator from the match seed
+  and the blob's hash; `script::match_seed` hands it a seed that starts
+  it where the director's generator starts, and `random(n)` draws as the
+  director does (SplitMix64, modulo `n`).
+- Kill points are formed exactly: the class points, the difficulty
+  multiplier and nine skull multipliers (1,000 for a skull that is off)
+  are multiplied in base-1,000 limbs and divided by 1,000^10 once.
+- `ScriptDirector::step` is the host side. It begins the VM's tick, fires
+  `on init` once, `on join` for each player present for the first time,
+  `on actor_kill` and `on actor_assist` for each kill, then the per-tick
+  group, and flushes the queue. Every director command is a queued call
+  (`place_squad_at`, `hunt`, `erase_squad` and the `ff_*` entries), so
+  the log keeps the director's order. Zones are the objects labelled
+  `ff_drop`, with placement id equal to the kit zone index.
+- `ScriptDirector::state` reads `director::State` back from the script's
+  variables and the VM generator. `ScriptDirector::resume` continues
+  from `RulesExt`.
+
+The parity tests (`crates/formats/firefight/tests/script.rs`) replay each
+scenario of the director's tests through both and compare commands and
+state tick by tick: the golden match, the empty pool, the lost match,
+unshared lives, assists, kill points at the multiplier limits, zone
+choice, 48 random matches over the quick built-in sets at every player
+count, the built-in sets as authored, starting skulls, unshared lives,
+zero gaps, zones all in sight and ties, duplicate and absent players,
+and a resumed state.
+
+Limits of the script against the director:
+
+- A worst-tick estimate that fits. The zone choice ranks the zones with
+  a nested `for each` over the labelled set, and the verifier bounds a
+  labelled set at 256 members, so `Report::fits` is false. The VM's run
+  time budget (20,000 ops a tick) holds for the kit's 6 to 12 zones.
+- Player slots of 16 and over, which the VM addresses as `none`: the
+  director would still score and register them.
+- Zone distances over 2^31 - 1, which the script reads clamped.
+- A tick with more than 128 commands, past the VM's queue: a script
+  error, where the director has no limit.
+
 ### The host runtime
 
 `game::firefight::host::Host` (`crates/extensions/game/src/firefight/host.rs`)

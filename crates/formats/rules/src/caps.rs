@@ -43,6 +43,7 @@ pub const CAPABILITIES: &[Capability] = &[
     cap("objects.move", "moves objects", false),
     cap("ai.squads", "places and commands AI", false),
     cap("hud.message", "shows messages", false),
+    cap("firefight.director", "runs Firefight rounds, waves, lives and scores", false),
     cap("forge.move", "lets players move objects during the match", true),
     cap("forge.delete", "lets players remove objects during the match", true),
     cap("forge.place", "lets players place objects during the match", true),
@@ -215,6 +216,18 @@ pub mod id {
     pub const SPAWN_OBJECTIVE: u16 = 43;
     pub const RESET_OBJECTIVE: u16 = 44;
     pub const ROLE_TRAITS: u16 = 45;
+    pub const NOW: u16 = 46;
+    pub const RANDOM: u16 = 47;
+    pub const ZONE_SEEN: u16 = 48;
+    pub const ZONE_DISTANCE: u16 = 49;
+    pub const PLACE_SQUAD_AT: u16 = 50;
+    pub const FF_ROUND: u16 = 51;
+    pub const FF_WAVE: u16 = 52;
+    pub const FF_SKULL: u16 = 53;
+    pub const FF_LIVES: u16 = 54;
+    pub const FF_SCORE: u16 = 55;
+    pub const FF_RESPAWN: u16 = 56;
+    pub const FF_FINISH: u16 = 57;
 }
 
 /// Every entry of [`API_VERSION`], indexed by number.
@@ -286,6 +299,25 @@ pub const ENTRIES: &[Entry] = &[
     // role mask `[0x510c9c]+0`). The trait query `0x24dda0` has no direct
     // call site.
     act(id::ROLE_TRAITS, "role_traits", &[Player, Bool], None, Now, Untraced),
+    // The tick the host began (`Vm::begin_tick`).
+    vm(id::NOW, "now", &[], Int),
+    // The VM generator's next draw modulo `n`; 0, with no draw, for n <= 0.
+    vm(id::RANDOM, "random", &[Int], Int),
+    // Firefight's drop zones, as the objects labelled `ff_drop` in kit
+    // order: the host's `firefight::director::ZoneSeen` per zone.
+    read(id::ZONE_SEEN, "zone_seen", &[Object], Bool, Named),
+    read(id::ZONE_DISTANCE, "zone_distance", &[Object], Int, Named),
+    // `firefight::Command::PlaceSquad`: a kit zone index and a weapon tier.
+    act(id::PLACE_SQUAD_AT, "place_squad_at", &[Squad, Class, Int, Int, Int], Some("ai.squads"), Queued, Named),
+    // The Firefight director's host log entries (`firefight::Command`),
+    // made at the tick boundary in program order with the squad entries.
+    act(id::FF_ROUND, "ff_round", &[Int], Some("firefight.director"), Queued, Named),
+    act(id::FF_WAVE, "ff_wave", &[Int], Some("firefight.director"), Queued, Named),
+    act(id::FF_SKULL, "ff_skull", &[Int, Bool], Some("firefight.director"), Queued, Named),
+    act(id::FF_LIVES, "ff_lives", &[Player, Int], Some("firefight.director"), Queued, Named),
+    act(id::FF_SCORE, "ff_score", &[Player, Int, Bool], Some("firefight.director"), Queued, Named),
+    act(id::FF_RESPAWN, "ff_respawn", &[Player], Some("firefight.director"), Queued, Named),
+    act(id::FF_FINISH, "ff_finish", &[Bool], Some("firefight.director"), Queued, Named),
 ];
 
 /// The entry numbered `id` in `api`.
