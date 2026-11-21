@@ -214,6 +214,7 @@ impl Recorder {
 
 impl InputTap for Recorder {
     fn read(&mut self, handle: u32, status: &mut u32, packet: &mut [u8; PACKET]) {
+        let _scope = mem_watch::scope("input.record");
         let tick = self.ticks.as_ref().map(|t| t.load(Ordering::Relaxed));
         let mut log = self.log.lock().unwrap_or_else(|e| e.into_inner());
         log.reads.push(Read {

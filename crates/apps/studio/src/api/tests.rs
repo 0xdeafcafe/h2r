@@ -385,6 +385,10 @@ fn every_method_in_methods_has_a_test() {
             (Some(_), Ok(v)) => panic!("{} is planned but answered {v}", d.name),
             // No renderer on this machine: the snapshot says so.
             (None, Err(e)) if d.name == m::VIEW_SNAPSHOT && e.code == code::NO_GPU => {}
+            // These reads need an active watchdog, recorded samples or sampling.
+            (None, Err(e))
+                if matches!(d.name, mem::HISTORY | mem::HEAP | mem::DIFF | mem::POSTMORTEM)
+                    && e.code == agent_proto::code::UNAVAILABLE => {}
             // The first frame has no paired or editor-launched game.
             (None, Err(e))
                 if matches!(

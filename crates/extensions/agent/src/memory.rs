@@ -66,26 +66,31 @@ impl Agent {
         mem_watch::register_probe("agent.socket_reply_bytes", || {
             REPLY_BYTES.load(Relaxed) as u64
         });
-        self.add_connection_read(method::HOST_MEMORY, |params| {
-            memory(
-                params,
-                || {
-                    let s = mem_watch::snapshot();
-                    MemoryResult {
-                        footprint_bytes: s.footprint_bytes,
-                        peak_bytes: s.peak_bytes,
-                        soft: s.soft,
-                        hard: s.hard,
-                        growth_bytes_per_min: s.growth_bytes_per_min,
-                        samples: s.samples,
-                        probes: s.probes,
-                        reports: s.reports,
-                    }
-                },
-                mem_watch::report,
-            )
-        });
+        self.add_connection_read(method::HOST_MEMORY, snapshot_reply);
+        for &name in agent_proto::memory_forensics::METHODS {
+            self.add_connection_read(name, move |p| crate::forensics::call(name, p));
+        }
     }
+}
+
+pub(crate) fn snapshot_reply(params: Value) -> Result<Value, RpcError> {
+    memory(
+        params,
+        || {
+            let s = mem_watch::snapshot();
+            MemoryResult {
+                footprint_bytes: s.footprint_bytes,
+                peak_bytes: s.peak_bytes,
+                soft: s.soft,
+                hard: s.hard,
+                growth_bytes_per_min: s.growth_bytes_per_min,
+                samples: s.samples,
+                probes: s.probes,
+                reports: s.reports,
+            }
+        },
+        mem_watch::report,
+    )
 }
 
 fn memory(

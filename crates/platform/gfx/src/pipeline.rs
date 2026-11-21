@@ -120,6 +120,7 @@ impl<V> PipelineCache<V> {
                 entry.into_mut()
             }
             EntryRef::Vacant(entry) => {
+                let _scope = mem_watch::scope("render.pipeline");
                 self.misses += 1;
                 let value = entry.insert(make(key));
                 self.entries.set(self.entries.get() + 1);
@@ -130,6 +131,7 @@ impl<V> PipelineCache<V> {
 
     /// Adds `value` for `key` (replacing any), without counting.
     pub fn insert(&mut self, key: PipelineKey, value: V) {
+        let _scope = mem_watch::scope("render.pipeline");
         self.map.insert(key, value);
         self.entries.set(self.map.len() as u64);
     }
@@ -205,6 +207,7 @@ pub fn create_render_pipeline(
     program: &ShaderProgram,
     label: &str,
 ) -> wgpu::RenderPipeline {
+    let _scope = mem_watch::scope("render.pipeline");
     let buffers: Vec<Option<wgpu::VertexBufferLayout<'_>>> =
         key.vertex_buffers.iter().map(|b| Some(b.as_wgpu())).collect();
     let targets = [Some(key.color_target.clone())];

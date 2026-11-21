@@ -63,6 +63,7 @@ or a short form:
   sample-status          profile.sample.status
   hostperf               host.perf: the newest host perf line
   hostmemory [report]    host.memory: footprint, peak, queue sizes and reports
+  postmortem [--pid N | FILE]  explain memory growth offline in a saved recording
   hostmetrics            host.metrics: tick cost, CPU and RSS
   hostaudit              host.audit: coverage and attribution so far
   ui                     ui.screen: the menu screen player one's input goes to (H2_UI_WATCH=1)
@@ -219,6 +220,9 @@ pub fn run(args: Vec<String>) -> Result<()> {
     let Some(first) = rest.first().cloned() else {
         bail!("{}", usage())
     };
+    if first == "postmortem" {
+        return crate::mem_cmd::run(&rest);
+    }
     // Reads a file; no game needed.
     if first == "flight" && rest.get(1).is_some_and(|w| w == "show") {
         return crate::agent_flight::show(&rest[2..]);

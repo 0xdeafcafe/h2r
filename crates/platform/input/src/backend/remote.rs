@@ -102,6 +102,7 @@ impl Remote {
 
     /// Replaces everything (the step being held too) with `steps`.
     pub fn replace(&self, steps: impl IntoIterator<Item = Step>) {
+        let _scope = mem_watch::scope("input.pad");
         let mut g = self.lock();
         g.current = None;
         g.queue = steps.into_iter().collect();
@@ -110,6 +111,7 @@ impl Remote {
 
     /// Queues `steps` after what is queued.
     pub fn append(&self, steps: impl IntoIterator<Item = Step>) {
+        let _scope = mem_watch::scope("input.pad");
         let mut g = self.lock();
         g.queue.extend(steps);
         g.publish_queue_size();

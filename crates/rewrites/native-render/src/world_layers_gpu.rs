@@ -361,6 +361,7 @@ impl IndexedPass {
         target: &ExternalAttachments,
         guest_size: (u32, u32),
     ) -> Option<ExternalDraws> {
+        let _scope = mem_watch::scope("native.world");
         // Both target copies retain the same geometry and material snapshot.
         let draw = &self.draw;
         let (width, height) = guest_size;

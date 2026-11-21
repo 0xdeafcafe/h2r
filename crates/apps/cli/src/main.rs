@@ -11,6 +11,9 @@ use anyhow::{Result, bail};
 #[cfg(feature = "desktop")]
 use xiso::Xiso;
 
+#[global_allocator]
+static ALLOCATOR: mem_watch::TaggedAllocator = mem_watch::TaggedAllocator;
+
 #[cfg(unix)]
 mod agent_cmd;
 #[cfg(unix)]
@@ -33,6 +36,7 @@ mod anim;
 #[cfg(feature = "desktop")]
 mod bitmap;
 mod boot_cmd;
+mod mem_cmd;
 #[cfg(feature = "desktop")]
 mod bots_drive;
 #[cfg(feature = "desktop")]
@@ -199,6 +203,7 @@ const USAGE: &str = "usage: h2 <command>
                           replay a host film headlessly
   film stat FILE          report keyframes, capture points and tape usage
   theater prepare FILM    verify a film headlessly and build its seek cache
+  mem postmortem [--pid N | FILE]  explain a recorded process memory increase
   sim <run|batch|compare> run or compare bot matches
   agent <call>            call a running game's agent API";
 
@@ -208,6 +213,7 @@ const USAGE: &str = "usage: h2 <command> [disc]
   build <disc> [--arch TARGET]  lift, emit and compile the whole XBE (docs/runtime/BOOT.md)
   run <disc>              build if needed, then boot it natively on the kernel HLE
   play <disc>             build if needed, then play it in a window (docs/runtime/app.md)
+  mem postmortem [--pid N | FILE]  explain a recorded process memory increase
   server-map strip|verify ORIGINAL.map SERVER.map
   serve <disc>            run headless with the agent API; --system-link [--host-light]
                           (docs/runtime/agent-api.md)
@@ -394,6 +400,7 @@ fn main() -> Result<()> {
         bail!("{USAGE}")
     };
     match cmd.as_str() {
+        "mem" => mem_cmd::run(&args.collect::<Vec<_>>()),
         "serve" => boot_cmd::run(&cmd, args.collect()),
         "sim" => sim_cmd::run(args.collect()),
         "host" => host_cmd::run(args.collect()),

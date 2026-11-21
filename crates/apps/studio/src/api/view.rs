@@ -21,6 +21,7 @@ use crate::app::Action;
 
 /// A wgpu device for offscreen renders, made on the first.
 pub struct Gpu {
+    _census: mem_watch::gpu::DeviceRegistration,
     device: wgpu::Device,
     queue: wgpu::Queue,
 }
@@ -35,7 +36,11 @@ impl Gpu {
         .map_err(|e| anyhow!("no wgpu adapter: {e}"))?;
         let (device, queue) = pollster::block_on(adapter.request_device(&Default::default()))
             .context("request a wgpu device")?;
-        Ok(Gpu { device, queue })
+        Ok(Gpu {
+            _census: mem_watch::gpu::DeviceRegistration::new(&instance, &adapter, &device),
+            device,
+            queue,
+        })
     }
 }
 

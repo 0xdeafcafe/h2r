@@ -88,6 +88,7 @@ impl ResourceFiles {
     /// Reads `size` bytes at map-relative `offset` of the selected file.
     /// Sizes above [`MAX_READ`] are rejected before allocating.
     pub fn read(&mut self, file: ResourceFile, offset: u32, size: u32) -> Result<Vec<u8>> {
+        let _scope = mem_watch::scope("assets.resource");
         let i = slot(file);
         if size > MAX_READ {
             return Err(Error::Invalid(format!(

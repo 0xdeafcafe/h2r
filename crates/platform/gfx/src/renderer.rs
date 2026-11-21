@@ -360,6 +360,7 @@ fn builtin_alpha_func(rs: &RenderState) -> f32 {
 
 /// Draws guest primitives through the state model.
 pub struct Renderer {
+    _census: mem_watch::gpu::DeviceRegistration,
     shaders: HashMap<ShaderId, ShaderProgram>,
     builtin_bgl: wgpu::BindGroupLayout,
     cache: PipelineCache<Arc<PendingPipeline>>,
@@ -568,6 +569,7 @@ fn builtin_group(
 impl Renderer {
     /// Creates the renderer and its built-in shader.
     pub fn new(ctx: &GfxContext) -> Self {
+        let census = ctx.watch_resources();
         let module = ctx
             .device
             .create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -610,6 +612,7 @@ impl Renderer {
             },
         );
         Self {
+            _census: census,
             shaders,
             builtin_bgl: bgl,
             cache: PipelineCache::new(),

@@ -18,6 +18,7 @@ const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 
 /// An offscreen studio.
 pub struct Headless {
+    _census: mem_watch::gpu::DeviceRegistration,
     device: wgpu::Device,
     queue: wgpu::Queue,
     renderer: WgpuRenderer,
@@ -49,6 +50,7 @@ impl Headless {
         .map_err(|e| anyhow!("no wgpu adapter: {e}"))?;
         let (device, queue) = pollster::block_on(adapter.request_device(&Default::default()))
             .context("request a wgpu device")?;
+        let census = mem_watch::gpu::DeviceRegistration::new(&instance, &adapter, &device);
         let (mut ctx, fonts) = crate::context(None);
         let io = ctx.io_mut();
         io.set_display_size(size);
@@ -79,6 +81,7 @@ impl Headless {
         // Screenshots want the camera where it was put, not gliding there.
         studio.viewport.camera.smooth = false;
         Ok(Self {
+            _census: census,
             device,
             queue,
             renderer,

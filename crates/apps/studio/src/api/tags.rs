@@ -218,6 +218,7 @@ fn with_tag<T>(
     hex: bool,
     f: impl FnOnce(&Tag, Option<(&Ctx, &Struct)>) -> T,
 ) -> Result<T, RpcError> {
+    let _scope = mem_watch::scope("assets.tag_load");
     let mut map = open_map(app)?;
     let tag = resolve(&map, &want.into())?.clone();
     let names = map

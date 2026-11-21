@@ -165,6 +165,7 @@ pub fn install(rt: &runtime::Runtime, path: Option<&std::path::Path>) -> anyhow:
 /// gets every completed call. For long runs.
 pub fn install_bounded(rt: &runtime::Runtime, path: Option<&std::path::Path>, limit: usize) -> anyhow::Result<Shared> {
     rt.memory().map_zeroed(SHADOW_BASE, 0x1000, Permissions::RX)?;
+    let _scope = mem_watch::scope("trace.kernel");
     let trace: Shared = Arc::new(Mutex::new(Trace {
         retained: KERNEL_CALLS.track(0),
         calls: Default::default(),
@@ -181,6 +182,7 @@ pub fn install_bounded(rt: &runtime::Runtime, path: Option<&std::path::Path>, li
             let t = Arc::clone(&trace);
             let (ordinal, name, words) = (imp.ordinal, imp.name, imp.stack_words);
             let Some(prev) = d.register_override(token, format!("trace:{name}"), move |cpu, ctx, _| {
+                let _scope = mem_watch::scope("trace.kernel");
                 let rt = Arc::clone(ctx.runtime());
                 let mut mem = rt.memory();
                 let ret_pc = mem.u32(cpu.esp)?;

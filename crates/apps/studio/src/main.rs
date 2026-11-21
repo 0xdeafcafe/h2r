@@ -15,6 +15,9 @@ use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Window, WindowId};
 
+#[global_allocator]
+static ALLOCATOR: mem_watch::TaggedAllocator = mem_watch::TaggedAllocator;
+
 const USAGE: &str = "usage: h2-editor call <call> [args] | h2-editor --serve [--socket PATH] [...]
        h2-editor [--socket PATH | --no-listen] [--disc <iso> | --map <file.map> | --folder <maps dir>] \
 [--halo1 <iso|maps dir>] [--mappack <iso|folder>] [--data <dir>] [--package <dir>[#H1|#H2]] [--halo1-map <map> [--convert h2|h1]] [--overlay on|off] [--tool scenario|tags|variants|playlists|ui-screens|hud] [--tags-map <map>] [--tag <group>:<path>] [--ui-screen <screen>/<state> [--ui-press up,a,...]] \
@@ -534,6 +537,7 @@ struct Runner {
 }
 
 struct Win {
+    _census: mem_watch::gpu::DeviceRegistration,
     window: Arc<Window>,
     surface: wgpu::Surface<'static>,
     config: wgpu::SurfaceConfiguration,
@@ -569,6 +573,7 @@ impl Win {
             ..Default::default()
         }))?;
         let (device, queue) = pollster::block_on(adapter.request_device(&Default::default()))?;
+        let census = mem_watch::gpu::DeviceRegistration::new(&instance, &adapter, &device);
         let caps = surface.get_capabilities(&adapter);
         let format = [
             wgpu::TextureFormat::Bgra8UnormSrgb,
@@ -603,6 +608,7 @@ impl Win {
         .map_err(imgui_err)?;
         renderer.set_gamma_mode(GammaMode::Auto);
         Ok(Self {
+            _census: census,
             window,
             surface,
             config,
@@ -625,6 +631,7 @@ impl Win {
     }
 
     fn redraw(&mut self, app: &mut App) -> Result<()> {
+        let _scope = mem_watch::scope("studio.render");
         let (frame, reconfigure) = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(f) => (f, false),
             wgpu::CurrentSurfaceTexture::Suboptimal(f) => (f, true),

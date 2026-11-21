@@ -22,6 +22,7 @@ pub mod forge;
 pub mod havok;
 pub mod host_lobby;
 pub mod host_memory;
+pub mod memory_forensics;
 pub mod hot;
 pub mod live;
 mod load;

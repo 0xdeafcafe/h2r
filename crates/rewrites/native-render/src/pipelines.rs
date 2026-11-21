@@ -38,6 +38,7 @@ pub fn start(path: Option<PathBuf>) {
 }
 
 fn run_archive(path: PathBuf, receive: mpsc::Receiver<Message>) {
+    let _scope = mem_watch::scope("render.pipeline");
     let (mut store, loaded) = PipelineStore::open::<u64>(&path);
     let mut recipes: HashMap<u64, HashSet<PipelineKey>> = HashMap::new();
     for item in loaded.pipelines {
@@ -109,9 +110,11 @@ impl Program {
         }
         // Queued jobs may outlive the map. They only retain this small key
         // until claimed; their device, modules and layouts belong to the map.
+        let _scope = mem_watch::scope("render.pipeline");
         let weak = Arc::downgrade(self);
         let recipe = key.clone();
         let pipeline = Pending::new(move || {
+            let _scope = mem_watch::scope("render.pipeline");
             let program = weak.upgrade()?;
             let _timer = timeline::setup::Stage::Pipelines.worker();
             let result = gfx::program::validated_resource(&program.device, || {
@@ -161,6 +164,7 @@ impl Pipelines {
 pub fn background<T: Send + Sync + 'static>(build: impl FnOnce() -> T + Send + 'static) -> Arc<Pending<T>> {
     let pending = Pending::new(move || {
         let _timer = timeline::setup::Stage::Pipelines.worker();
+        let _scope = mem_watch::scope("render.pipeline");
         build()
     });
     COMPILER.submit(&pending, Priority::Draw);

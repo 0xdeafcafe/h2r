@@ -27,6 +27,11 @@ impl Feature for LoadedMap {
         .doc("docs/runtime/level-boot.md")
     }
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
+        // The recorder samples these existing host-side publications. A game
+        // without an agent tick observer still publishes its loaded level.
+        mem_watch::register_game_context(|| {
+            (kernel::level::last_map(), agent::render::HOSTED.last_tick())
+        });
         // A read-only observer on the game-start point, like `hud`'s and
         // `health`'s; ordered after `hud`'s.
         b.game()

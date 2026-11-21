@@ -1,6 +1,6 @@
 //! The studio's socket: a local Unix socket only (never TCP), readable and
 //! writable by the user alone. One thread accepts; one per connection reads
-//! lines, queues each request and writes its answer. Nothing here touches
+//! lines, answers process-memory reads, and queues document calls. Nothing here touches
 //! the [`App`](crate::App): whoever owns it answers the queue
 //! ([`super::Api::pump`]), so a window answers between frames and the
 //! user sees each edit as it lands.
@@ -132,6 +132,8 @@ impl Drop for Listener {
 /// One connection: a line in, its answer out, in order.
 #[cfg(unix)]
 fn serve(conn: UnixStream, tx: mpsc::Sender<Incoming>) {
+    let _connection = mem_watch::agent_activity::connection();
+    let _scope = mem_watch::scope("agent.socket");
     let Ok(mut out) = conn.try_clone() else {
         return;
     };
@@ -152,24 +154,34 @@ fn serve(conn: UnixStream, tx: mpsc::Sender<Incoming>) {
                 RpcError::new(code::PARSE, format!("not a request: {e}")),
             )),
             Ok(request) => {
-                let (rtx, rrx) = mpsc::channel();
-                let _pending = PENDING_REQUESTS.track(1);
-                if tx
-                    .send(Incoming {
-                        request,
-                        reply: rtx,
+                mem_watch::agent_activity::served();
+                if agent::forensics::supports(&request.method) {
+                    let result = agent::forensics::call(&request.method, request.params);
+                    request.id.map(|id| match result {
+                        Ok(v) => Response::ok(id, v),
+                        Err(e) => Response::err(id, e),
                     })
-                    .is_err()
-                {
-                    return;
-                }
-                match rrx.recv() {
-                    Ok(r) => r,
-                    Err(_) => return,
+                } else {
+                    let (rtx, rrx) = mpsc::channel();
+                    let _pending = PENDING_REQUESTS.track(1);
+                    if tx
+                        .send(Incoming {
+                            request,
+                            reply: rtx,
+                        })
+                        .is_err()
+                    {
+                        return;
+                    }
+                    match rrx.recv() {
+                        Ok(r) => r,
+                        Err(_) => return,
+                    }
                 }
             }
         };
         if let Some(r) = reply {
+            let _scope = mem_watch::scope("agent.reply");
             let Ok(mut text) = serde_json::to_string(&r) else {
                 return;
             };

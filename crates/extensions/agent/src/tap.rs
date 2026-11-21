@@ -373,6 +373,7 @@ impl Input {
         if let Some(f) = &mut self.flight {
             if f.reads.len() < agent_proto::trace::InputRead::MAX_PER_TICK {
                 let port = self.ports.get(&handle).copied();
+                let _scope = mem_watch::scope("trace.record");
                 f.reads.push((port, handle, *status, *packet));
             } else {
                 f.dropped += 1;
@@ -548,6 +549,7 @@ pub(crate) const ANALOG: &[(&str, usize)] = &[
 
 /// `input.pad` steps as [`Remote`] steps.
 pub fn pad_steps(steps: &[PadStep]) -> Result<Vec<Step>, String> {
+    let _scope = mem_watch::scope("input.pad");
     steps
         .iter()
         .map(|s| {

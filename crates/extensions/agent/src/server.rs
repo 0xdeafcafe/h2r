@@ -216,6 +216,7 @@ pub(crate) enum Output {
 }
 
 fn serve<S: Stream>(stream: S, agent: Agent) {
+    let _scope = mem_watch::scope("agent.socket");
     let Ok(mut out) = stream.try_clone() else {
         return;
     };
@@ -224,6 +225,7 @@ fn serve<S: Stream>(stream: S, agent: Agent) {
     let _ = thread::Builder::new()
         .name(format!("agent-out-{conn}"))
         .spawn(move || {
+            let _scope = mem_watch::scope("agent.reply");
             for msg in rx {
                 let (line, upgrade) = match msg {
                     Output::Line(line) => (line, None),
@@ -250,6 +252,7 @@ fn serve<S: Stream>(stream: S, agent: Agent) {
     let _ = thread::Builder::new()
         .name(format!("agent-in-{conn}"))
         .spawn(move || {
+            let _scope = mem_watch::scope("agent.socket");
             let mut r = BufReader::new(stream);
             let mut line = String::new();
             loop {

@@ -137,6 +137,7 @@ impl Drop for Sampler {
 static SAMPLE_BYTES: mem_watch::Counter = mem_watch::Counter::new("perf.active_sampler_buffer_bytes");
 
 fn run(targets: Vec<ThreadTarget>, hz: u32, stop: &AtomicBool) -> RawProfile {
+    let _scope = mem_watch::scope("perf.sampler");
     let period = Duration::from_nanos(1_000_000_000 / hz as u64);
     let start = Instant::now();
     let mut out = RawProfile {

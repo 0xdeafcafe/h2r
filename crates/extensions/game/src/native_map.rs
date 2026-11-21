@@ -82,6 +82,7 @@ pub fn open_source_from_vfs(
     name: &str,
     slot_source: Option<&str>,
 ) -> Result<(NativeMap, ResourceFiles), Error> {
+    let _scope = mem_watch::scope("assets.tag_load");
     let (local, candidates, shared) = {
         let mut mounted = vfs.lock().unwrap_or_else(|e| e.into_inner());
         let mut candidates = Vec::new();

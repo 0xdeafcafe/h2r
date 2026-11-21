@@ -295,6 +295,7 @@ enum Output {
 }
 
 struct Conn {
+    _connection: mem_watch::Gauge,
     tx: Output,
     /// Once upgraded, both events and further requests are disabled.
     streaming: bool,
@@ -351,6 +352,7 @@ impl Agent {
         s.conns.insert(
             id,
             Conn {
+                _connection: mem_watch::agent_activity::connection(),
                 tx,
                 streaming: false,
                 events: BTreeSet::new(),
@@ -383,6 +385,7 @@ impl Agent {
     /// A line from a connection. Parse errors are answered at once;
     /// requests queue for the game thread.
     pub fn submit(&self, conn: ConnId, line: &str) {
+        let _scope = mem_watch::scope("agent.request");
         let line = line.trim();
         if line.is_empty() {
             return;
@@ -435,6 +438,7 @@ impl Agent {
                 }
                 let _job = InFlight(running);
                 drop(s);
+                mem_watch::agent_activity::served();
                 let result = read(r.params);
                 if let Some(id) = r.id {
                     let mut s = self.lock();
@@ -811,6 +815,7 @@ impl Agent {
 
 impl State {
     fn send(&mut self, conn: ConnId, r: Response) {
+        let _scope = mem_watch::scope("agent.reply");
         let line = serde_json::to_string(&r).expect("responses serialise");
         if let Some(c) = self.conns.get_mut(&conn) {
             Self::push(c, line);
@@ -832,6 +837,7 @@ impl State {
     }
 
     fn emit(&mut self, e: Event) {
+        let _scope = mem_watch::scope("agent.reply");
         let kind = e.kind();
         let line = serde_json::to_string(&Notification::event(e)).expect("events serialise");
         for c in self.conns.values_mut().filter(|c| c.events.contains(&kind)) {
@@ -1190,6 +1196,8 @@ impl State {
         req: Request,
         reader: &mut dyn Reader,
     ) -> Option<Result<Value, RpcError>> {
+        mem_watch::agent_activity::served();
+        let _scope = mem_watch::scope("agent.request");
         let m = req.method.as_str();
         if agent_proto::live::METHODS.contains(&m) {
             return self.live_method(conn, req, reader);

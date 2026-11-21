@@ -262,6 +262,7 @@ impl Recorders {
         if !self.active() {
             return;
         }
+        let _scope = mem_watch::scope("trace.record");
         let world = reader.objects();
         if let Some(t) = self.trace.as_mut().filter(|t| t.out.is_some()) {
             t.write(&t.sel.row(tick, &world));
@@ -296,6 +297,7 @@ impl Recorders {
         dir: &Path,
         input: &Mutex<Input>,
     ) -> Result<Value, RpcError> {
+        let _scope = mem_watch::scope("trace.record");
         match m {
             method::TRACE_START => {
                 let p: TraceParams = params(p)?;

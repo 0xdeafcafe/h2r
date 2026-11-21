@@ -8,7 +8,7 @@ license.workspace = true
 [features]
 default = ["gpu"]
 # Guest formats, texture decoding, state and vertex declarations are CPU-only.
-gpu = ["dep:wgpu", "dep:bytemuck", "dep:pollster", "dep:hashbrown", "dep:timeline"]
+gpu = ["dep:wgpu", "dep:bytemuck", "dep:pollster", "dep:hashbrown", "dep:timeline", "mem-watch/gpu"]
 
 [dependencies]
 mem-watch.workspace = true

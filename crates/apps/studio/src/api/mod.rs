@@ -19,7 +19,7 @@
 //! [`Action`]: crate::app::Action
 //! [`App::dispatch`]: crate::App::dispatch
 
-use agent_proto::{Request, Response, RpcError};
+use agent_proto::{Request, Response, RpcError, memory_forensics as mem};
 use serde_json::{Value, json};
 use studio_proto::{code, method as m};
 
@@ -103,6 +103,48 @@ const fn planned(
 
 /// Every method, in the order `session.methods` lists them.
 pub const METHODS: &[MethodDef] = &[
+    def(
+        agent_proto::method::HOST_MEMORY,
+        "Process footprint, limits, recent samples, probes and report files",
+        r#"{"report?":"boolean"}"#,
+        r#"{"footprint_bytes":"integer","peak_bytes":"integer","soft":"integer","hard":"integer","growth_bytes_per_min":"number","samples":"[[t_ms,bytes]]","probes":"object","reports":"[path]"}"#,
+        "null",
+    ),
+    def(
+        mem::HISTORY,
+        "Read a page of the editor's memory flight recorder",
+        r#"{"since_ms?":"integer"}"#,
+        r#"{"records":"[record]","next_since_ms":"integer|null"}"#,
+        "null",
+    ),
+    def(
+        mem::HEAP,
+        "Live allocation counts and bytes per tag, and top live sampled stacks",
+        r#"{"top?":"integer (1..128, default 20)"}"#,
+        r#"{"tags":"object","stacks":"[stack]","sample_interval_bytes":"integer","dropped_samples":"integer"}"#,
+        r#"{"top":20}"#,
+    ),
+    def(
+        mem::GPU,
+        "Live graphics resource counts, tracked bytes and driver totals",
+        "{}",
+        r#"{"metric name":"integer"}"#,
+        "null",
+    ),
+    def(
+        mem::DIFF,
+        "Rank memory growth between a recorded uptime and the latest record",
+        r#"{"from_ms":"integer"}"#,
+        r#"{"from_ms":"integer","to_ms":"integer","footprint_delta":"integer","growers":"[change]"}"#,
+        r#"{"from_ms":0}"#,
+    ),
+    def(
+        mem::POSTMORTEM,
+        "Explain a dead process's recording in the memory report directory",
+        r#"{"pid?":"integer"}"#,
+        r#"{"pid":"integer","file":"path","diff":"object","reports":"[path]","report":"object|null"}"#,
+        "null",
+    ),
     def(
         m::STATUS,
         "The editor: protocol, window or headless, the tool shown, the source and every document",
@@ -597,6 +639,7 @@ impl Api {
     /// Runs one call: checks its params against the method's shape, then
     /// asks the providers, then the built-in methods.
     pub fn call(&mut self, app: &mut App, method: &str, params: Value) -> Reply {
+        let _scope = mem_watch::scope("agent.request");
         let methods = self.methods();
         let Some(d) = methods.iter().find(|d| d.name == method) else {
             return Err(err(
@@ -625,6 +668,9 @@ impl Api {
             return Err(e);
         }
         check_params(d, &params)?;
+        if agent::forensics::supports(method) {
+            return agent::forensics::call(method, params);
+        }
         for p in &mut self.providers {
             if let Some(r) = p.call(app, method, &params) {
                 return r;
