@@ -668,8 +668,8 @@ impl Api {
             return Err(e);
         }
         check_params(d, &params)?;
-        if agent::forensics::supports(method) {
-            return agent::forensics::call(method, params);
+        if agent_proto::memory_serve::supports(method) {
+            return agent_proto::memory_serve::call(method, params);
         }
         for p in &mut self.providers {
             if let Some(r) = p.call(app, method, &params) {

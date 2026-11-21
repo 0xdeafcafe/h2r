@@ -155,8 +155,8 @@ fn serve(conn: UnixStream, tx: mpsc::Sender<Incoming>) {
             )),
             Ok(request) => {
                 mem_watch::agent_activity::served();
-                if agent::forensics::supports(&request.method) {
-                    let result = agent::forensics::call(&request.method, request.params);
+                if agent_proto::memory_serve::supports(&request.method) {
+                    let result = agent_proto::memory_serve::call(&request.method, request.params);
                     request.id.map(|id| match result {
                         Ok(v) => Response::ok(id, v),
                         Err(e) => Response::err(id, e),

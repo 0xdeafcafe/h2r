@@ -8,3 +8,8 @@ license.workspace = true
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
+# The host.memory handlers both socket servers share (src/memory_serve.rs).
+mem-watch = { workspace = true, optional = true }
+
+[features]
+serve-memory = ["dep:mem-watch"]
