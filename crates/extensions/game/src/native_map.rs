@@ -2,7 +2,7 @@
 
 use std::fs::File;
 use std::io::{BufReader, Cursor, Read, Seek};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
 
 use assets::{Region, ResourceFiles};
 use map::{Map, ResourceFile, TagId};
@@ -15,6 +15,34 @@ pub trait MapReader: Read + Seek + Send {}
 impl<R: Read + Seek + Send> MapReader for R {}
 
 pub type NativeMap = Map<Box<dyn MapReader>>;
+
+/// A queued GPU pass can hold the last reference to an old map after
+/// its replacement has started drawing. Its final release sends the
+/// resources here to be destroyed away from the render thread.
+pub(crate) type RetireQueue = mpsc::Sender<(timeline::setup::Stage, Box<dyn Send>)>;
+
+pub(crate) fn retire_queue() -> std::io::Result<RetireQueue> {
+    static QUEUE: Mutex<Option<RetireQueue>> = Mutex::new(None);
+    let mut queue = QUEUE.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(send) = queue.as_ref() {
+        return Ok(send.clone());
+    }
+    let (send, receive) = mpsc::channel::<(timeline::setup::Stage, Box<dyn Send>)>();
+    background::spawn("native-map retire", move || {
+        for (stage, payload) in receive {
+            let _timer = stage.worker();
+            drop(payload);
+        }
+    })?;
+    *queue = Some(send.clone());
+    Ok(send)
+}
+
+/// Call from Drop after detaching the payload's sender so the worker
+/// destroys the payload directly.
+pub(crate) fn retire<T: Default + Send + 'static>(send: RetireQueue, stage: timeline::setup::Stage, payload: &mut T) {
+    let _ = send.send((stage, Box::new(std::mem::take(payload))));
+}
 
 /// Resolve a live datum by its map tag index when the salt differs.
 pub fn tag_of(map: &NativeMap, datum: u32) -> Option<TagId> {

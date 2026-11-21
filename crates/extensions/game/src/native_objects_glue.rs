@@ -69,11 +69,20 @@ struct ModelCoverage {
 
 #[derive(Default)]
 struct Models {
+    retire: Option<native_map::RetireQueue>,
     lit: Mutex<Option<LitObjects>>,
     /// Definition index to render-model datum, shared across definitions.
     index: HashMap<u16, u32>,
     coverage: HashMap<TagId, ModelCoverage>,
     palettes: StagePalettes,
+}
+
+impl Drop for Models {
+    fn drop(&mut self) {
+        if let Some(send) = self.retire.take() {
+            native_map::retire(send, timeline::setup::Stage::Objects, self);
+        }
+    }
 }
 
 struct MapState {
@@ -544,6 +553,13 @@ fn load_objects(
     if generation != native_map_work::generation() {
         return;
     }
+    let retire = match native_map::retire_queue() {
+        Ok(queue) => queue,
+        Err(error) => {
+            eprintln!("native-objects: {name}: could not start resource retirement ({error})");
+            return;
+        }
+    };
     let mut opened = match open(name, palettes, formats) {
         Ok(o) => o,
         Err(e) => {
@@ -610,6 +626,7 @@ fn load_objects(
         queue.submit([]);
     }
     let models = Arc::new(Models {
+        retire: Some(retire),
         lit: Mutex::new(lit),
         coverage: coverage.into_iter().filter_map(|(mode, result)| Some((mode, result.ok()?))).collect(),
         index,
@@ -1023,6 +1040,23 @@ mod tests {
         assert_eq!(guest_texels((640, 480), (640, 480), (640, 480)), (640, 480), "1x");
         assert_eq!(guest_texels((1280, 960), (640, 480), (1280, 960)), (640, 480), "2x");
         assert_eq!(guest_texels((320, 240), (640, 480), (1280, 960)), (160, 120), "a smaller level, scaled");
+    }
+
+    #[test]
+    fn the_last_queued_run_retires_the_models_once() {
+        use std::sync::mpsc;
+        let (send, receive) = mpsc::channel();
+        let mut models = Models::default();
+        models.retire = Some(send);
+        let models = Arc::new(models);
+        let queued = Arc::clone(&models);
+        drop(models);
+        assert!(matches!(receive.try_recv(), Err(mpsc::TryRecvError::Empty)));
+        drop(queued);
+        let (stage, models) = receive.try_recv().unwrap();
+        assert!(matches!(stage, timeline::setup::Stage::Objects));
+        drop(models);
+        assert!(matches!(receive.try_recv(), Err(mpsc::TryRecvError::Disconnected)));
     }
 
     #[test]

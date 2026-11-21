@@ -59,7 +59,7 @@ use setup::StageReady;
 /// a later frame boundary once its worker-built resources are complete.
 #[derive(Default)]
 pub struct Ready {
-    retire: Option<mpsc::Sender<Box<Ready>>>,
+    retire: Option<crate::native_map::RetireQueue>,
     opaque: opaque_materials::Library,
     gpu: Mutex<Option<GpuWorld>>,
     pub(crate) upload_device: Option<(wgpu::Device, wgpu::Queue)>,
@@ -94,7 +94,7 @@ impl Drop for Ready {
         // Detach the sender first. The empty shell here and the worker's
         // payload both drop normally without queueing another retirement.
         if let Some(send) = self.retire.take() {
-            let _ = send.send(Box::new(std::mem::take(self)));
+            crate::native_map::retire(send, timeline::setup::Stage::World, self);
         }
     }
 }
@@ -759,7 +759,7 @@ fn load_ready(
     let started = std::time::Instant::now();
     let world_setup = Setup::World.worker();
     if !key.current() { return Ok(()); }
-    let retire = setup::retire_queue()?;
+    let retire = crate::native_map::retire_queue()?;
     let (mut map, files) = crate::native_map::open(&key.map)?;
     let bsps = load::scenario_bsps(&mut map)?;
     let addresses: Vec<Option<u32>> = bsps

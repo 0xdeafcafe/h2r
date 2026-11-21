@@ -75,7 +75,10 @@ uploads. It publishes the completed definition index and resident models
 together. The first swap after publication makes them eligible for
 native draws. Later spawns share those models. D3D draws each run until
 its models, bindings and target pipelines are ready. Map activation and
-snapshot reload invalidate the previous load's work.
+snapshot reload invalidate the previous load's work. A pass that already
+committed holds its models until recording ends. The last reference sends
+their GPU resources to the shared map retirement worker for destruction.
+First-person models use the same worker.
 
 #### Frame stats
 

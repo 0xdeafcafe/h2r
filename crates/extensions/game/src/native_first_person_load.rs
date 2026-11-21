@@ -5,7 +5,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::mpsc;
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use render_bridge::native_objects::{NativeSet, SetPart};
 use map::TagId;
@@ -34,8 +34,17 @@ struct CpuModel {
 
 #[derive(Default)]
 pub struct Models {
+    retire: OnceLock<native_map::RetireQueue>,
     pub lit: Mutex<Option<LitObjects>>,
     pub palettes: Mutex<StagePalettes>,
+}
+
+impl Drop for Models {
+    fn drop(&mut self) {
+        if let Some(send) = self.retire.take() {
+            native_map::retire(send, timeline::setup::Stage::Objects, self);
+        }
+    }
 }
 
 pub struct MapState {
@@ -76,6 +85,15 @@ pub fn spawn_worker(
             return;
         }
         let name = set.map.clone();
+        match native_map::retire_queue() {
+            Ok(queue) => {
+                let _ = models.retire.set(queue);
+            }
+            Err(error) => {
+                eprintln!("native-first-person: {name}: could not start resource retirement ({error})");
+                return;
+            }
+        }
         let (mut opened, mut uploads) = {
             let _timer = timeline::setup::Stage::Objects.worker();
             match open(&name, palettes, formats) {
