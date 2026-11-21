@@ -1212,7 +1212,8 @@ D3D reference with all native stages disabled.
   `scene_carried_frames`, `scene_carried_draws`, `scene_carried_ops`,
   `scene_side_target_frames`, `scene_readback` and
   `scene_readback_<kind>`. Over the census corpus these are the list
-  section 8.3's table must cover.
+  section 8.3's table must cover. The sink sees a pixel-count request
+  before the display worker decides which renderer supplies its result.
 - **Tests** (synthetic). `frame_scene::carried`:
   `a_game_view_runs_its_slots_in_order_and_the_overlay_follows`,
   `inside_a_view_the_slot_only_moves_forward_and_outside_it_does_not_move`,
@@ -1301,8 +1302,11 @@ D3D reference with all native stages disabled.
   resource lifetime machinery are retained through this gate.
 - **Gate.** Pixels on the gate corpus against `native=off` (which
   still selects the old stack) and by `render.parity`. Hashes.
-  `scene_readback`, `scene_dropped_*` and `scene_unresident` zero over
-  the census corpus after loading. One recording per draw at 4x
+  Every post-load game-view Swap requires zero reads of guest surfaces,
+  depth or mirrors, zero dropped stages and zero unresident instances.
+  The raw `scene_readback` includes flare requests. Each must have a
+  matching native result on that same Swap, leaving zero reads that
+  require the original renderer. One recording per draw at 4x
   (`command_buffers`, `passes`). The sim thread's frame time no longer
   includes `gpu-wait` or `render-wait`. Native at least 15% ahead of
   D3D at 4x on the gate corpus (**Estimate**; the number is set from
