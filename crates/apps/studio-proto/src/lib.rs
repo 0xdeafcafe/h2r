@@ -102,6 +102,8 @@ pub mod method {
     pub const SCENARIO_DELETE: &str = "scenario.delete";
     pub const SCENARIO_DUPLICATE: &str = "scenario.duplicate";
     pub const SCENARIO_SELECT: &str = "scenario.select";
+    pub const VOLUME_LIST: &str = "volume.list";
+    pub const VOLUME_SELECT: &str = "volume.select";
     pub const NAV_STATUS: &str = "nav.status";
     pub const NAV_BACK: &str = "nav.back";
     pub const NAV_FORWARD: &str = "nav.forward";

@@ -47,6 +47,12 @@ fn short_forms_name_their_methods_and_params() {
         (m::DOC_UNDO.into(), json!({"doc":"variant"}))
     );
     assert_eq!(c("undo"), (m::DOC_UNDO.into(), json!(null)));
+    assert_eq!(c("volumes"), (m::VOLUME_LIST.into(), json!(null)));
+    assert_eq!(
+        c("volumes kill"),
+        (m::VOLUME_LIST.into(), json!({"kind":"kill"}))
+    );
+    assert!(parse_call(&split("volumes kill extra").unwrap()).is_err());
     assert_eq!(c("huds ascension"), (m::HUD_LIST.into(), json!({"map":"ascension"})));
     assert_eq!(c("hud"), (m::HUD_READ.into(), json!(null)));
     assert_eq!(c("render-hud /tmp/h.png"), (m::HUD_RENDER.into(), json!({"out":"/tmp/h.png"})));

@@ -18,6 +18,8 @@
 //!   and picking, and an offscreen wgpu viewport (no UI toolkit).
 //! - [`scene`]: the map's art for the viewport: the BSP textured with each
 //!   shader's base map, and the placed objects' render models.
+//! - [`volumes`]: the trigger volumes, kill triggers and BSP switches as
+//!   oriented boxes to draw and pick (read only).
 //!
 //! Entries are removed in place (swap with the last, lower the count) and
 //! added in place up to the source size; a block that grows past it is
@@ -40,6 +42,7 @@ pub mod scenario;
 pub mod script;
 pub mod scene;
 pub mod session;
+pub mod volumes;
 #[cfg(test)]
 mod tests;
 
