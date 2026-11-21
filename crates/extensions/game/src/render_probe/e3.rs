@@ -13,6 +13,7 @@ pub(super) fn e3_report(frame: &FrameReport) -> Option<E3Report> {
     Some(E3Report {
         passes: [
             pass(E3PassName::Tiles, work.tiles),
+            pass(E3PassName::SunTiles, work.sun_tile_draws),
             pass(E3PassName::Sun, work.sun),
             pass(E3PassName::Marks, work.marks),
             pass(E3PassName::Lights, work.lights),
@@ -51,6 +52,10 @@ mod tests {
                 draws: 6,
                 gpu_ns: Some(34),
             },
+            sun_tile_draws: PassWork {
+                draws: 2,
+                gpu_ns: None,
+            },
             sun: PassWork::default(),
             marks: PassWork {
                 draws: 3,
@@ -73,6 +78,7 @@ mod tests {
             json!({
                 "passes": [
                     {"name":"e3.tiles", "draws":6, "gpu_ns":34},
+                    {"name":"e3.sun_tiles", "draws":2, "gpu_ns":null},
                     {"name":"e3.sun", "draws":0, "gpu_ns":null},
                     {"name":"e3.marks", "draws":3, "gpu_ns":null},
                     {"name":"e3.lights", "draws":4, "gpu_ns":17}

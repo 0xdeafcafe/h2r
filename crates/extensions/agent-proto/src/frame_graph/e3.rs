@@ -6,6 +6,8 @@ use serde::{Deserialize, Serialize};
 pub enum E3PassName {
     #[serde(rename = "e3.tiles")]
     Tiles,
+    #[serde(rename = "e3.sun_tiles")]
+    SunTiles,
     #[serde(rename = "e3.sun")]
     Sun,
     #[serde(rename = "e3.marks")]
@@ -26,7 +28,7 @@ pub struct E3Pass {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct E3Report {
-    pub passes: [E3Pass; 4],
+    pub passes: [E3Pass; 5],
     pub lights_lit: u32,
     pub lights_shadowed: u32,
     pub lights_over_cap: u32,

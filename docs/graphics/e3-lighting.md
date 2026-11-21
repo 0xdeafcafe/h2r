@@ -275,7 +275,7 @@ shadow in both modes, and the sun counters are zero.
   own lit faces. Receivers draw with `LessEqual` and no depth write over
   the frame's depth, through the same invariant vertex transform that
   laid it. A receiver is drawn once for each tile whose box it meets.
-- **Counted.** `E3Report::add_sun`: caster draws join `e3.tiles`,
+- **Counted.** `E3Report::add_sun`: caster draws are `e3.sun_tiles`,
   receivers are `e3.sun`, and `sun_tiles`, `sun_tiles_redrawn` and
   `atlas_halved` are the plan's.
 
@@ -471,13 +471,13 @@ On a replayable game view the render thread draws one sealed scene into a privat
 - `render.capture` takes `lighting: "retail" | "e3"`: the same sealed scene
   drawn in that mode into a private target, the setting untouched. A retail
   and an E3 capture of one tick go to `render.compare`.
-- `render.frame` reports four lighting stages under the completed E3
-  graph's `e3.passes`: `e3.tiles`, `e3.sun`, `e3.marks` and
+- `render.frame` reports five lighting stages under the completed E3
+  graph's `e3.passes`: `e3.tiles`, `e3.sun_tiles`, `e3.sun`, `e3.marks` and
   `e3.lights`. Each has its submitted draw count and an optional GPU
   time. `e3.tiles` counts the caster draws into tiles and `e3.marks` the
-  receivers compared with the Sharp edge. `e3.sun` counts the sun
-  receivers and the sun's caster draws join `e3.tiles`; game frames have
-  no sun casters yet, so it is zero there. `e3.lights` issues no draws
+  receivers compared with the Sharp edge. `e3.sun_tiles` counts
+  the caster draws into the sun's tiles and `e3.sun` their receivers;
+  game frames have no sun casters yet, so both are zero there. `e3.lights` issues no draws
   yet. No stage has a timestamp query yet, so `gpu_ns` is null.
 - `render.stats` and `render.scene` expose the E3 graph's per-draw
   counters under `display_frame.e3` and `private_frame.e3`:
