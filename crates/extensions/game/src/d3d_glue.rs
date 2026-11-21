@@ -1417,8 +1417,9 @@ pub fn install_for_profile<B: d3d::backend::Backend + Send + 'static>(
     let watch = subscribe_write_barrier(rt)?;
     #[cfg(feature = "gpu")]
     let shadow_admission = if profile == film::RenderHooks::Gpu {
-        if let Some(path) = d3d::pipeline_store::default_path() {
-            native_render::pipelines::open_archive(path.with_added_extension("native-v1"));
+        if hooks::switches::native_render_on(&hooks::Switches::from_env().unwrap_or_default()) {
+            let archive = d3d::pipeline_store::default_path().map(|path| path.with_added_extension("native-v1"));
+            native_render::pipelines::start(archive);
         }
         let shadows = crate::native_world_glue::install(&device, watch);
         crate::native_objects_glue::install(&device);

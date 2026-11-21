@@ -20,8 +20,11 @@ enum Message {
     Record(u64, PipelineKey),
 }
 
-/// Open the archive on its own worker. Installed by the GPU runtime only.
-pub fn open_archive(path: PathBuf) {
+/// Install the compile workers before the first draw. The disk archive is
+/// optional and only its worker opens or updates it.
+pub fn start(path: Option<PathBuf>) {
+    LazyLock::force(&COMPILER);
+    let Some(path) = path else { return };
     ARCHIVE.get_or_init(|| {
         let (send, receive) = mpsc::channel();
         match background::spawn("native pipeline archive", move || run_archive(path, receive)) {
