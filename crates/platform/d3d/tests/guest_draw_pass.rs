@@ -225,7 +225,7 @@ fn an_in_place_frame_retains_pixels_outside_its_scissor_and_releases_no_live_sur
 
 #[test]
 fn an_earlier_snapshot_survives_guest_release_and_replays_after_either_present_path() {
-    use d3d::threaded::owner::{Candidate, FrameOwner};
+    use d3d::threaded::owner::{Candidate, FrameOwner, Submission};
     use d3d::{Backend, SceneSink, ThreadedBackend};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
@@ -250,7 +250,7 @@ fn an_earlier_snapshot_survives_guest_release_and_replays_after_either_present_p
                     let frame = select.lock().unwrap().clone()?;
                     let draw = Arc::clone(&frame);
                     let count = Arc::clone(&count);
-                    Some(Candidate {
+                    Some(Submission::Native(Candidate {
                         frame,
                         eligible: Box::new(|_, _| true),
                         draw: Box::new(move |gpu: &mut GfxBackend, targets| {
@@ -260,7 +260,7 @@ fn an_earlier_snapshot_survives_guest_release_and_replays_after_either_present_p
                             count.fetch_add(1, Ordering::Relaxed);
                             Ok(result)
                         }),
-                    })
+                    }))
                 }),
                 declined: |_| {},
                 failed: |_| {},

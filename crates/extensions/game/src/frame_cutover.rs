@@ -5,7 +5,7 @@
 use std::sync::Arc;
 
 use d3d::scene_sink::ReplayFrame;
-use d3d::threaded::owner::{Candidate, FrameOwner};
+use d3d::threaded::owner::{Candidate, FrameOwner, Submission};
 use native_render::frame_graph;
 
 use crate::frame_owner::{Service, pair_for_present};
@@ -13,12 +13,8 @@ use crate::frame_owner::{Service, pair_for_present};
 mod scaled;
 pub use scaled::scaled_owner;
 
-fn inputs(present: u64) -> Option<(Arc<frame_scene::FrameScene>, Arc<ReplayFrame>)> {
-    // Parity needs a present from the guest path as its reference.
-    if crate::frame_parity::wanted(present) || crate::frame_parity::armed() {
-        return None;
-    }
-    pair_for_present(present)
+fn needs_reference(present: u64) -> bool {
+    crate::frame_parity::wanted(present) || crate::frame_parity::armed()
 }
 
 /// Seal at the game-view Swap so both sets of commands are available to
@@ -38,10 +34,16 @@ pub fn owner(lighting: Box<dyn Fn() -> d3d::Lighting + Send + Sync>) -> FrameOwn
     let lighting: Arc<dyn Fn() -> d3d::Lighting + Send + Sync> = lighting.into();
     FrameOwner {
         select: Box::new(move |present| {
-            let (scene, replay) = inputs(present)?;
+            let (scene, replay) = pair_for_present(present)?;
+            if needs_reference(present) {
+                return Some(Submission::Reference {
+                    frame: replay,
+                    freeze: frame_graph::freeze_display_inputs,
+                });
+            }
             let lighting = Arc::clone(&lighting);
             let to_check = Arc::clone(&replay);
-            Some(Candidate {
+            Some(Submission::Native(Candidate {
                 frame: Arc::clone(&replay),
                 eligible: Box::new(move |gpu: &d3d::GfxBackend, targets| gpu.matches_scene_targets(&to_check, targets)),
                 draw: Box::new(move |backend, targets| {
@@ -53,7 +55,7 @@ pub fn owner(lighting: Box<dyn Fn() -> d3d::Lighting + Send + Sync>) -> FrameOwn
                     probe.presented(&report);
                     Ok(outputs)
                 }),
-            })
+            }))
         }),
         declined: crate::render_probe::owner_declined,
         failed: crate::frame_cutover::failed,

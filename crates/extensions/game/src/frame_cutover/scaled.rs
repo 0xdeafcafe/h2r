@@ -2,7 +2,7 @@
 //! can draw into the same images that the scaled backend later resolves
 //! for a readback, retargets on a setting change, and uses for the menu.
 
-use d3d::threaded::owner::{Candidate, FrameOwner};
+use d3d::threaded::owner::{Candidate, FrameOwner, Submission};
 use d3d::{GfxBackend, ScaledBackend};
 use std::sync::Arc;
 
@@ -11,9 +11,15 @@ type Scaled = ScaledBackend<GfxBackend, GfxBackend>;
 pub fn scaled_owner() -> FrameOwner<Scaled> {
     FrameOwner {
         select: Box::new(move |present| {
-            let (scene, replay) = super::inputs(present)?;
+            let (scene, replay) = super::pair_for_present(present)?;
+            if super::needs_reference(present) {
+                return Some(Submission::Reference {
+                    frame: replay,
+                    freeze: native_render::frame_graph::freeze_scaled_inputs,
+                });
+            }
             let to_check = Arc::clone(&replay);
-            Some(Candidate {
+            Some(Submission::Native(Candidate {
                 frame: Arc::clone(&replay),
                 eligible: Box::new(move |backend: &Scaled, targets| {
                     backend.can_draw_scene(&to_check, targets)
@@ -32,7 +38,7 @@ pub fn scaled_owner() -> FrameOwner<Scaled> {
                     probe.presented(&report);
                     Ok(outputs)
                 }),
-            })
+            }))
         }),
         declined: crate::render_probe::owner_declined,
         failed: super::failed,

@@ -49,9 +49,19 @@ pub struct Candidate<B: Backend> {
     pub draw: DrawFrame<B>,
 }
 
+/// The parity reference needs the same input attachments as the private
+/// draw, then runs the untouched guest commands and ordinary Swap.
+pub enum Submission<B: Backend> {
+    Native(Candidate<B>),
+    Reference {
+        frame: Arc<ReplayFrame>,
+        freeze: fn(&mut B, &ReplayFrame, &HashMap<TargetRef, B::Surface>) -> Result<(), String>,
+    },
+}
+
 pub struct FrameOwner<B: Backend> {
     /// Called on the guest thread at Swap, after the scene sink sealed it.
-    pub select: Box<dyn FnMut(u64) -> Option<Candidate<B>> + Send>,
+    pub select: Box<dyn FnMut(u64) -> Option<Submission<B>> + Send>,
     /// Called on the worker when this present used the original commands.
     pub declined: fn(u64),
     /// Called if neither renderer successfully presented this frame.
@@ -102,7 +112,7 @@ pub(super) struct Present<B: Backend> {
     pub at: Instant,
     pub flags: u32,
     pub gamma: Option<Box<[u8; 768]>>,
-    pub candidate: Option<Candidate<B>>,
+    pub candidate: Option<Submission<B>>,
     pub declined: fn(u64),
     pub failed: fn(u64),
 }
@@ -340,29 +350,46 @@ impl<B: Backend> Worker<B> {
     pub(super) fn owner_present(&mut self, present: Present<B>) {
         let Present { n, surface, at, flags, gamma, candidate, declined, failed } = present;
         let transaction = self.transaction.replace(Transaction::new()).expect("owner installed");
-        let accepted = candidate.and_then(|candidate| {
-            let frame = &candidate.frame;
+        let accepted = candidate.and_then(|submission| {
             if self.shared.failed.load(Ordering::Acquire) {
                 return None;
             }
-            CANDIDATES.fetch_add(1, Ordering::Relaxed);
+            let (frame, native) = match &submission {
+                Submission::Native(candidate) => {
+                    CANDIDATES.fetch_add(1, Ordering::Relaxed);
+                    (&candidate.frame, true)
+                }
+                Submission::Reference { frame, .. } => (frame, false),
+            };
             if transaction.refused {
-                BARRIERS.fetch_add(1, Ordering::Relaxed);
+                if native { BARRIERS.fetch_add(1, Ordering::Relaxed); }
                 return None;
             }
             let matching_swap = frame.present == n && frame.flags == flags && frame.gamma == gamma;
             let Some(proxies) = matching_swap.then(|| target_map(frame, &transaction.commands, &self.scene_uploads, surface)).flatten() else {
-                MISMATCHES.fetch_add(1, Ordering::Relaxed);
+                if native { MISMATCHES.fetch_add(1, Ordering::Relaxed); }
                 return None;
             };
             let surfaces = proxies.targets.into_iter().map(|(key, id)| {
                 self.surfaces.get(&id).copied().map(|actual| (key, actual))
             }).collect::<Option<HashMap<_, _>>>();
-            let Some(surfaces) = surfaces.filter(|targets| (candidate.eligible)(&self.inner, targets)) else {
-                TARGET_REFUSALS.fetch_add(1, Ordering::Relaxed);
-                return None;
-            };
-            Some((candidate.frame, candidate.draw, surfaces, proxies.samples))
+            match submission {
+                Submission::Native(candidate) => {
+                    let Some(surfaces) = surfaces.filter(|t| (candidate.eligible)(&self.inner, t)) else {
+                        TARGET_REFUSALS.fetch_add(1, Ordering::Relaxed);
+                        return None;
+                    };
+                    Some((candidate.frame, candidate.draw, surfaces, proxies.samples))
+                }
+                Submission::Reference { frame, freeze } => {
+                    if let Some(targets) = surfaces {
+                        // A failed input copy disqualifies the private draw.
+                        // It never suppresses the original guest writes.
+                        let _ = freeze(&mut self.inner, &frame, &targets);
+                    }
+                    None
+                }
+            }
         });
 
         use crate::scene_sink::window::DisplayResult;

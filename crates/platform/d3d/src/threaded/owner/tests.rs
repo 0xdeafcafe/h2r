@@ -16,6 +16,7 @@ struct Pixels {
     surfaces: Vec<u8>,
     shown: Vec<u8>,
     clears: usize,
+    parity_inputs: Vec<u8>,
     hold_present: Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>,
 }
 
@@ -120,7 +121,7 @@ fn device(eligible: bool) -> (ThreadedBackend<Pixels>, Arc<AtomicUsize>, u32) {
             select: Box::new(move |n| {
                 let byte = u8::try_from(n).unwrap();
                 let count = Arc::clone(&count);
-                Some(Candidate {
+                Some(Submission::Native(Candidate {
                     frame: Arc::new(frame(n, byte)),
                     eligible: Box::new(move |_, _| eligible),
                     draw: Box::new(move |gpu: &mut Pixels, targets| {
@@ -130,7 +131,7 @@ fn device(eligible: bool) -> (ThreadedBackend<Pixels>, Arc<AtomicUsize>, u32) {
                         gpu.present(target, 0)?;
                         Ok(Outputs::default())
                     }),
-                })
+                }))
             }),
             declined: |_| {},
             failed: |_| {},
@@ -248,7 +249,7 @@ fn a_snapshot_keeps_its_value_and_guest_handle_across_native_or_legacy_present()
                     }));
                     replay.ops.extend(frame(n, 22).ops);
                     let count = count.clone();
-                    Some(Candidate {
+                    Some(Submission::Native(Candidate {
                         frame: Arc::new(replay),
                         eligible: Box::new(|_, _| true),
                         draw: Box::new(move |device: &mut Pixels, targets| {
@@ -263,7 +264,7 @@ fn a_snapshot_keeps_its_value_and_guest_handle_across_native_or_legacy_present()
                                 ..Default::default()
                             })
                         }),
-                    })
+                    }))
                 }),
                 declined: |_| {},
                 failed: |_| {},
@@ -300,7 +301,7 @@ fn previous_present_flare_reports_can_land_while_the_next_frame_is_retained() {
     let mut gpu = ThreadedBackend::new(inner).unwrap().with_frame_owner(FrameOwner {
         select: Box::new(move |n| {
             let count = Arc::clone(&count);
-            Some(Candidate {
+            Some(Submission::Native(Candidate {
                 frame: Arc::new(frame(n, 13)),
                 eligible: Box::new(|_, _| true),
                 draw: Box::new(move |gpu: &mut RecordingBackend, targets| {
@@ -310,7 +311,7 @@ fn previous_present_flare_reports_can_land_while_the_next_frame_is_retained() {
                     gpu.present(target, 0)?;
                     Ok(Outputs::default())
                 }),
-            })
+            }))
         }),
         declined: |_| {}, failed: |_| {}, stopped: || {},
     });
@@ -339,14 +340,14 @@ fn previous_present_flare_reports_can_land_while_the_next_frame_is_retained() {
 fn a_failed_native_write_faults_the_worker_without_replaying_into_the_same_target() {
     let (mut gpu, _, target) = device(true);
     gpu.frame_owner.as_mut().unwrap().select = Box::new(|n| {
-        Some(Candidate {
+        Some(Submission::Native(Candidate {
             frame: Arc::new(frame(n, 1)),
             eligible: Box::new(|_, _| true),
             draw: Box::new(|gpu, targets| {
                 gpu.clear(targets[&TargetRef::SceneColour], None, clear(42))?;
                 Err("synthetic submission failure".into())
             }),
-        })
+        }))
     });
     gpu.clear(target, None, clear(1)).unwrap();
     gpu.present(target, 0).unwrap();
@@ -363,4 +364,30 @@ fn a_failed_native_write_faults_the_worker_without_replaying_into_the_same_targe
     assert!(gpu.finish().unwrap_err().contains("synthetic submission failure"));
     drop(gpu);
     assert_eq!(observed.recv().unwrap(), (1, 42, Vec::new()));
+}
+
+#[test]
+fn a_reference_freezes_the_input_before_the_original_draw_or_refuses_after_a_read() {
+    let (mut gpu, _, target) = device(true);
+    gpu.clear(target, None, clear(1)).unwrap();
+    gpu.present(target, 0).unwrap();
+    gpu.frame_owner.as_mut().unwrap().select = Box::new(|n| {
+        Some(Submission::Reference {
+            frame: Arc::new(frame(n, n as u8)),
+            freeze: |gpu, _, targets| {
+                let target = targets[&TargetRef::SceneColour];
+                gpu.parity_inputs.push(gpu.surfaces[target as usize]);
+                // The guest reference must still render even if the requested
+                // attachment format cannot be copied to the private renderer.
+                Err("synthetic private-copy refusal".into())
+            },
+        })
+    });
+    gpu.clear(target, None, clear(2)).unwrap();
+    gpu.present(target, 0).unwrap();
+    gpu.clear(target, None, clear(3)).unwrap();
+    assert_eq!(value(&mut gpu, target), 3);
+    gpu.present(target, 0).unwrap();
+    assert_eq!(gpu.with_inner(|b| (b.parity_inputs.clone(), b.shown.clone())).unwrap(),
+               (vec![1], vec![1, 2, 3]));
 }

@@ -492,7 +492,7 @@ fn native_flare_reports_use_guest_pixels_and_a_private_capture_leaves_the_counte
 #[test]
 fn canonical_flare_tickets_and_mid_frame_reads_keep_their_original_proxy() {
     use d3d::scene_sink::{ReplayFrame, ReplayOp, SceneSink};
-    use d3d::threaded::owner::{Candidate, FrameOwner, Outputs};
+    use d3d::threaded::owner::{Candidate, FrameOwner, Submission, Outputs};
     use frame_scene::{Slot, SlotAt};
     use std::sync::{Arc, Mutex};
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -506,7 +506,7 @@ fn canonical_flare_tickets_and_mid_frame_reads_keep_their_original_proxy() {
             let frame = Arc::new(selected.lock().unwrap().take()?);
             let played = Arc::clone(&frame);
             let displayed = Arc::clone(&displayed);
-            Some(Candidate {
+            Some(Submission::Native(Candidate {
                 frame,
                 eligible: Box::new(|_, _| true),
                 draw: Box::new(move |gpu: &mut RecordingBackend, targets| {
@@ -524,7 +524,7 @@ fn canonical_flare_tickets_and_mid_frame_reads_keep_their_original_proxy() {
                     gpu.present(targets[&played.presented], 0)?;
                     Ok(outputs)
                 }),
-            })
+            }))
         }),
         declined: |_| {},
         failed: |_| {},
