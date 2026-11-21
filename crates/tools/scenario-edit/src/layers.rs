@@ -11,6 +11,9 @@ pub enum LayerId {
     Fog,
     Markers,
     Placement(BlockKind),
+    SpawnPoints,
+    Flags,
+    NetgameItems,
     Halo1,
     Live,
 }
@@ -18,10 +21,22 @@ pub enum LayerId {
 impl LayerId {
     /// Legend order. Every placement block has a row, even on an empty map.
     pub fn all() -> impl Iterator<Item = Self> {
-        [Self::Structure, Self::Sky, Self::Objects, Self::Fog, Self::Markers]
-            .into_iter()
-            .chain(layout::BLOCKS.iter().map(|b| Self::Placement(b.kind)))
-            .chain([Self::Halo1, Self::Live])
+        [
+            Self::Structure,
+            Self::Sky,
+            Self::Objects,
+            Self::Fog,
+            Self::Markers,
+        ]
+        .into_iter()
+        .chain(layout::BLOCKS.iter().map(|b| Self::Placement(b.kind)))
+        .chain([
+            Self::SpawnPoints,
+            Self::Flags,
+            Self::NetgameItems,
+            Self::Halo1,
+            Self::Live,
+        ])
     }
 
     pub fn id(self) -> &'static str {
@@ -45,6 +60,9 @@ impl LayerId {
                 NetgameEquipment => "netgame_equipment",
                 StartingEquipment => "starting_equipment",
             },
+            Self::SpawnPoints => "spawn_points",
+            Self::Flags => "flags",
+            Self::NetgameItems => "netgame_items",
             Self::Halo1 => "halo1",
             Self::Live => "live",
         }
@@ -58,8 +76,20 @@ impl LayerId {
             Self::Fog => "Fog",
             Self::Markers => "Placement markers",
             Self::Placement(kind) => layout::block(kind).label,
+            Self::SpawnPoints => "Spawn points",
+            Self::Flags => "Netgame flags",
+            Self::NetgameItems => "Netgame equipment",
             Self::Halo1 => "Halo 1 overlay",
             Self::Live => "Live objects",
+        }
+    }
+
+    pub fn gameplay(kind: BlockKind) -> Option<Self> {
+        match kind {
+            BlockKind::StartingLocations => Some(Self::SpawnPoints),
+            BlockKind::NetgameFlags => Some(Self::Flags),
+            BlockKind::NetgameEquipment => Some(Self::NetgameItems),
+            _ => None,
         }
     }
 
@@ -67,6 +97,7 @@ impl LayerId {
         match self {
             Self::Structure | Self::Sky | Self::Objects | Self::Fog => "World",
             Self::Markers | Self::Placement(_) => "Placements",
+            Self::SpawnPoints | Self::Flags | Self::NetgameItems => "Gameplay",
             Self::Halo1 => "Reference",
             Self::Live => "Live",
         }
@@ -105,8 +136,21 @@ impl Preset {
     fn shows(self, id: LayerId) -> bool {
         use LayerId::*;
         match self {
-            Self::Art => matches!(id, Structure | Sky | Objects | Fog | Placement(_)),
-            Self::Gameplay => matches!(id, Structure | Objects | Markers | Placement(_) | Live),
+            Self::Art => matches!(
+                id,
+                Structure | Sky | Objects | Fog | Placement(_) | NetgameItems
+            ),
+            Self::Gameplay => matches!(
+                id,
+                Structure
+                    | Objects
+                    | Markers
+                    | Placement(_)
+                    | Live
+                    | SpawnPoints
+                    | Flags
+                    | NetgameItems
+            ),
             Self::Collision => id == Structure,
             Self::Everything => true,
         }
@@ -126,6 +170,7 @@ impl Layers {
 
     pub fn placement(&self, kind: BlockKind) -> bool {
         self.visible(LayerId::Placement(kind))
+            && LayerId::gameplay(kind).is_none_or(|id| self.visible(id))
     }
 
     pub fn set(&mut self, id: LayerId, on: bool) {

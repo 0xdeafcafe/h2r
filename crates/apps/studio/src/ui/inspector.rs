@@ -5,9 +5,7 @@
 //!   a facing in degrees; scale (0 reads as 1).
 //! - The palette entry and the item reference as searchable combos.
 //! - Flags fields as a checkbox per bit.
-//! - A netgame flag's type by name where the community's enum names it
-//!   (`h1convert::placements::H2Flag`, not yet confirmed from engine
-//!   code), team 8 as neutral.
+//! - A netgame flag's type by its viewport label or raw value, and its team.
 //! - Netgame equipment's spawn settings under their own heading.
 //!
 //! With many selected, only the fields every one has are shown; a field
@@ -18,6 +16,7 @@ use std::hash::{Hash, Hasher};
 
 use dear_imgui_rs::{Drag, Ui};
 use map::TagId;
+use scenario_edit::geometry::flag_type_name;
 use scenario_edit::layout::{FieldDef, FieldType, Role};
 use scenario_edit::session::FieldEdit;
 use scenario_edit::{BlockKind, Scenario, TagRef, Value};
@@ -36,19 +35,6 @@ pub struct InspectorState {
     chain: Option<(u64, TagId, &'static str, Chain)>,
     tag_world: Option<u64>,
     focus: Option<(TagId, String)>,
-}
-
-/// Netgame flag types the community's enum names (see the module docs).
-pub fn flag_type_name(v: i64) -> Option<&'static str> {
-    Some(match v {
-        0 => "CTF flag spawn",
-        1 => "CTF flag return",
-        4 => "Oddball spawn",
-        7 => "Teleporter source",
-        8 => "Teleporter destination",
-        11..=16 => "Hill marker",
-        _ => return None,
-    })
 }
 
 /// A field's heading in the inspector.
@@ -519,20 +505,16 @@ fn field_row(
                 Some(n) => format!("{v}: {n}"),
                 None => v.to_string(),
             };
-            let options: Vec<(i64, String)> = (0..=16).map(|v| (v, text(v))).collect();
+            let options: Vec<(i64, String)> = (0..=18).map(|v| (v, text(v))).collect();
             let r = search_combo(ui, &id("flagtype"), &text(x), x, &options, state)
                 .map(|v| FieldEdit::Set(Value::Int(v)));
-            ui.set_item_tooltip(
-                "Names from the community's enum for Halo 2's netgame flags \
-                 (the disc agrees; not yet confirmed from engine code)",
-            );
+            ui.set_item_tooltip("Unidentified flag types are shown by their raw value.");
             r
         }
         (_, Value::Int(mut x)) => {
-            let text = match (f.name, kind) {
-                ("respawn time", _) => "respawn time (s)",
-                ("team", BlockKind::NetgameFlags) => "team / channel",
-                (n, _) => n,
+            let text = match f.name {
+                "respawn time" => "respawn time (s)",
+                name => name,
             };
             label(ui, f, text, mixed);
             ui.set_next_item_width(-1.0);
@@ -549,9 +531,10 @@ fn field_row(
                 .then_some(FieldEdit::Set(Value::Int(x)));
             match (f.name, kind) {
                 ("respawn time", _) => ui.set_item_tooltip("0: the collection's default"),
-                ("team", BlockKind::NetgameFlags) => ui.set_item_tooltip(
-                    "The team (8 is neutral); a teleporter's channel; a hill's number",
-                ),
+                ("team", BlockKind::NetgameFlags) => ui.set_item_tooltip("Team 8 is neutral."),
+                ("identifier", BlockKind::NetgameFlags) => {
+                    ui.set_item_tooltip("Teleporter channel or territory index.")
+                }
                 _ => {}
             }
             r
@@ -737,7 +720,8 @@ mod tests {
         assert_eq!(flag_type_name(0), Some("CTF flag spawn"));
         assert_eq!(flag_type_name(4), Some("Oddball spawn"));
         assert_eq!(flag_type_name(12), Some("Hill marker"));
-        assert_eq!(flag_type_name(2), None);
+        assert_eq!(flag_type_name(18), Some("Hill marker"));
+        assert_eq!(flag_type_name(19), None);
     }
 
     #[test]

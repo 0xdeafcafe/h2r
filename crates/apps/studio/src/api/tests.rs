@@ -344,6 +344,14 @@ fn view_layers_applies_overrides_atomically_and_shares_the_halo1_menu_switch() {
     assert!(app.overlay_shown());
 }
 
+fn png_pixels(path: &Path) -> Vec<u8> {
+    let file = std::io::BufReader::new(std::fs::File::open(path).unwrap());
+    let mut png = png::Decoder::new(file).read_info().unwrap();
+    let mut rgba = vec![0; png.output_buffer_size().unwrap()];
+    png.next_frame(&mut rgba).unwrap();
+    rgba
+}
+
 #[test]
 fn view_layers_changes_snapshot_pixels_on_the_fixture() {
     let t = Temp::new("view-layer-pixels");
@@ -361,20 +369,72 @@ fn view_layers_changes_snapshot_pixels_on_the_fixture() {
         Ok(_) => {}
         Err(e) => panic!("view.snapshot: {e}"),
     }
-    let pixels = || {
-        let file = std::io::BufReader::new(std::fs::File::open(&out).unwrap());
-        let mut png = png::Decoder::new(file).read_info().unwrap();
-        let mut rgba = vec![0; png.output_buffer_size().unwrap()];
-        png.next_frame(&mut rgba).unwrap();
-        rgba
-    };
-    let shown = pixels();
+    let shown = png_pixels(&out);
     call(&mut api, &mut app, m::VIEW_LAYERS, json!({"set": {"scenery": false}}));
     call(&mut api, &mut app, m::VIEW_SNAPSHOT, params.clone());
-    assert!(pixels() != shown, "hiding scenery must remove its glyph from the snapshot");
+    assert!(png_pixels(&out) != shown, "hiding scenery must remove its glyph from the snapshot");
     call(&mut api, &mut app, m::VIEW_LAYERS, json!({"set": {"scenery": true}}));
     call(&mut api, &mut app, m::VIEW_SNAPSHOT, params);
-    assert!(pixels() == shown, "showing scenery must restore the original pixels");
+    assert!(png_pixels(&out) == shown, "showing scenery must restore the original pixels");
+}
+
+#[test]
+fn view_layers_gameplay_legend_counts_survive_changes_of_preset() {
+    let t = Temp::new("view-gameplay-legend");
+    let mut app = app(&t);
+    let mut api = Api::new();
+    for (preset, enabled) in [
+        ("gameplay", [true, true, true]),
+        ("art", [false, false, true]),
+        ("collision", [false, false, false]),
+    ] {
+        let state = call(&mut api, &mut app, m::VIEW_LAYERS, json!({"preset": preset}));
+        let rows = state["layers"].as_array().unwrap();
+        for ((name, count), on) in [("spawn_points", 2), ("flags", 1), ("netgame_items", 1)]
+            .into_iter()
+            .zip(enabled)
+        {
+            let row = rows.iter().find(|r| r["name"] == name).unwrap();
+            assert_eq!(row["group"], "Gameplay", "{name}");
+            assert_eq!(row["count"], count, "{name}");
+            assert_eq!(row["on"], on, "{preset} / {name}");
+        }
+    }
+}
+
+#[test]
+fn view_layers_gameplay_switches_and_respawn_labels_change_snapshot_pixels() {
+    let t = Temp::new("view-gameplay-pixels");
+    let mut app = app(&t);
+    let mut api = Api::new();
+    let path = t.path("gameplay.png");
+    // All three kinds of placement are in frame. Keep the camera fixed so
+    // only the changed layer (or the edited respawn caption) affects pixels.
+    let params = json!({
+        "out": path, "size": [320, 240],
+        "camera": {"target": [1, 1, 1], "distance": 14, "yaw": 80, "pitch": 15}
+    });
+    call(&mut api, &mut app, m::VIEW_LAYERS, json!({"preset": "gameplay"}));
+    match api.call(&mut app, m::VIEW_SNAPSHOT, params.clone()) {
+        Err(e) if e.code == code::NO_GPU => return,
+        Err(e) => panic!("view.snapshot: {e}"),
+        Ok(_) => {}
+    }
+    let shown = png_pixels(&path);
+    for name in ["spawn_points", "flags", "netgame_items"] {
+        call(&mut api, &mut app, m::VIEW_LAYERS, json!({"set": {(name): false}}));
+        call(&mut api, &mut app, m::VIEW_SNAPSHOT, params.clone());
+        assert!(png_pixels(&path) != shown, "hiding {name} must change the picture");
+        call(&mut api, &mut app, m::VIEW_LAYERS, json!({"set": {(name): true}}));
+    }
+    call(&mut api, &mut app, m::VIEW_SNAPSHOT, params.clone());
+    assert!(png_pixels(&path) == shown, "showing all three layers must restore the picture");
+
+    call(&mut api, &mut app, m::SCENARIO_SET, json!({
+        "block": "netgame_equipment", "index": 0, "field": "respawn time", "value": 77
+    }));
+    call(&mut api, &mut app, m::VIEW_SNAPSHOT, params);
+    assert!(png_pixels(&path) != shown, "the equipment's new respawn time must appear in its caption");
 }
 
 #[test]

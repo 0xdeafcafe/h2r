@@ -301,6 +301,11 @@ Notes on some:
   Individual switches apply after the preset. An invalid name or value
   rejects the entire request. The window and `view.snapshot` share these
   settings.
+  The Gameplay rows are `spawn_points`, `flags` and `netgame_items`. Their
+  counts cover starting locations, netgame flags and netgame equipment,
+  respectively. Each uses its matching placement block switch as well.
+  Turn off `markers` to hide annotations, including the flag-type and
+  equipment respawn labels. The Art preset keeps equipment models visible.
 - **Renders.** `ui.render` draws on the CPU (no GPU needed); `view.snapshot`
   renders the open map offscreen through the viewport's own renderer
   (wgpu, no window) and answers `NO_GPU` on a machine without an adapter.

@@ -167,6 +167,9 @@ impl App {
                 || markers.iter().filter(|m| m.block == kind).count(),
                 |s| s.block(kind).len(),
             ),
+            LayerId::SpawnPoints => self.layer_count(LayerId::Placement(BlockKind::StartingLocations)),
+            LayerId::Flags => self.layer_count(LayerId::Placement(BlockKind::NetgameFlags)),
+            LayerId::NetgameItems => self.layer_count(LayerId::Placement(BlockKind::NetgameEquipment)),
             LayerId::Halo1 => self.compare().and_then(|c| c.view.as_ref().ok())
                 .map_or(0, |v| v.tris.len() + v.placements.len()),
             LayerId::Live => self.pairing.shown.as_ref()

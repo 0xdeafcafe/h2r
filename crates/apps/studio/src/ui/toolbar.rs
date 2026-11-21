@@ -104,19 +104,6 @@ pub(super) fn draw(
     if layers::show_button(ui, app, actions) {
         *hint = Some("Choose what the viewport shows".to_owned());
     }
-
-    if app.compare().is_some_and(|c| c.view.is_ok()) {
-        next_group(ui, right, 36.0);
-        if button(
-            ui,
-            hint,
-            icon::LAYERS,
-            "Halo 1 overlay",
-            app.overlay_shown(),
-        ) {
-            actions.push(Action::SetOverlay(!app.overlay_shown()));
-        }
-    }
 }
 
 fn next_group(ui: &Ui, right: f32, width: f32) {

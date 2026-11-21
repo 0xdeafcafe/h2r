@@ -188,6 +188,8 @@ pub fn snapshot(gpu: &Gpu, app: &mut App, p: &P) -> Reply {
         .ok_or_else(|| err(code::FAILED, "the viewport drew nothing"))?;
     let mut rgba = crate::headless::read_texture(&gpu.device, &gpu.queue, texture)
         .map_err(|e| err(code::FAILED, format!("{e:#}")))?;
+    let labels = crate::viewport::mirror::gameplay_labels(app);
+    crate::viewport::mirror::snapshot_labels(&mut rgba, size, &cam, &labels);
     live.snapshot(&mut rgba, size, &cam);
     crate::headless::write_png(&out, &rgba, texture.width(), texture.height())
         .map_err(|e| err(code::FAILED, format!("{e:#}")))?;

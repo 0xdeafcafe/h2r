@@ -79,6 +79,50 @@ pub const HIDDEN_WIDGET: [f32; 4] = [0.6, 0.6, 0.6, 0.5];
 pub const OTHER_HUD: [f32; 4] = [1.0, 0.75, 0.2, 0.5];
 pub const RESERVED_AREA: [f32; 4] = [1.0, 0.75, 0.2, 0.8];
 
+/// Authoring glyphs and live players share the same team swatches.
+const TEAM_COLORS: [[u8; 3]; 8] = [
+    [255, 110, 95],
+    [105, 175, 255],
+    [84, 215, 144],
+    [255, 193, 72],
+    [174, 144, 255],
+    [255, 156, 206],
+    [112, 217, 225],
+    [191, 155, 127],
+];
+pub(crate) const NEUTRAL_COLOR: [u8; 3] = [225, 230, 235];
+
+pub(crate) fn team_color(team: i64) -> [u8; 3] {
+    usize::try_from(team)
+        .ok()
+        .and_then(|i| TEAM_COLORS.get(i).copied())
+        .unwrap_or(NEUTRAL_COLOR)
+}
+
+pub(crate) fn placement_color(kind: scenario_edit::BlockKind, team: Option<i64>) -> [f32; 3] {
+    use scenario_edit::BlockKind::*;
+    if let Some(team) = team {
+        return team_color(team).map(|v| f32::from(v) / 255.0);
+    }
+    match kind {
+        Scenery => [0.55, 0.55, 0.45],
+        Vehicles => [0.2, 0.5, 1.0],
+        Equipment => [0.2, 0.9, 0.9],
+        Weapons => [1.0, 0.6, 0.1],
+        Machines => [0.6, 0.4, 0.9],
+        SoundScenery => [0.9, 0.9, 0.2],
+        Crates => [0.6, 0.35, 0.2],
+        StartingLocations => [0.2, 1.0, 0.3],
+        NetgameFlags => [1.0, 0.2, 0.6],
+        NetgameEquipment => [1.0, 0.25, 0.2],
+        StartingEquipment => [0.7, 0.7, 0.7],
+    }
+}
+
+/// At longer distances the gameplay glyph remains visible without its label.
+pub(crate) const LABEL_DISTANCE: f32 = 40.0;
+pub(crate) const LABEL_OFFSET: [f32; 2] = [7.0, -18.0];
+
 /// Colours shared by the viewport's layers and the Show legend.
 pub fn layer_color(id: scenario_edit::layers::LayerId) -> [f32; 3] {
     use scenario_edit::layers::LayerId;
@@ -88,7 +132,10 @@ pub fn layer_color(id: scenario_edit::layers::LayerId) -> [f32; 3] {
         LayerId::Objects => [0.9, 0.75, 0.5],
         LayerId::Fog => [0.65, 0.68, 0.75],
         LayerId::Markers => [0.85, 0.85, 0.85],
-        LayerId::Placement(kind) => scenario_edit::geometry::block_color(kind),
+        LayerId::Placement(kind) => placement_color(kind, None),
+        LayerId::SpawnPoints => placement_color(scenario_edit::BlockKind::StartingLocations, None),
+        LayerId::Flags => placement_color(scenario_edit::BlockKind::NetgameFlags, None),
+        LayerId::NetgameItems => placement_color(scenario_edit::BlockKind::NetgameEquipment, None),
         LayerId::Halo1 => [1.0, 0.55, 0.15],
         LayerId::Live => [0.42, 0.8, 0.55],
     }
@@ -423,5 +470,23 @@ pub fn block_icon(kind: scenario_edit::BlockKind) -> &'static str {
         NetgameFlags => icon::FLAG,
         NetgameEquipment => icon::ZAP,
         StartingEquipment => icon::KNIFE,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use scenario_edit::{BlockKind, layers::LayerId};
+
+    #[test]
+    fn gameplay_glyphs_take_their_layer_and_team_colours_from_the_theme() {
+        let kind = BlockKind::StartingLocations;
+        assert_eq!(placement_color(kind, None), layer_color(LayerId::SpawnPoints));
+        let red = TEAM_COLORS[0].map(|v| f32::from(v) / 255.0);
+        assert_eq!(placement_color(kind, Some(0)), red);
+        assert_ne!(placement_color(kind, Some(1)), red);
+        for team in [-1, 8, 900] {
+            assert_eq!(team_color(team), NEUTRAL_COLOR);
+        }
     }
 }

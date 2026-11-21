@@ -7,7 +7,7 @@
 //! depth buffer and any MSAA count, and a pipeline must match both. No UI
 //! toolkit is used here; `h2-editor` registers [`Viewport::ui_view`]
 //! with `dear-imgui-wgpu`.
-use crate::geometry::{Camera, Marker, Tri, Vec3, block_color, cross, marker_triangles, normalize};
+use crate::geometry::{Camera, Marker, Tri, Vec3, block_color, cross, marker_triangles_styled, normalize};
 use crate::layers::{LayerId, Layers};
 use crate::scene::{Atmosphere, Blend, Scene, SceneVertex, sun_tint};
 use map::TagId;
@@ -406,15 +406,15 @@ pub fn glyph_vertices(
     selected: &[(crate::BlockKind, usize)],
     modelled: impl Fn(&Marker) -> bool,
 ) -> Vec<Vertex> {
-    glyph_vertices_colored(markers, selected, modelled, |m| block_color(m.block))
+    glyph_vertices_styled(markers, selected, modelled, |m| (block_color(m.block), None))
 }
 
-/// Build the same glyphs with the caller's layer colours.
-pub fn glyph_vertices_colored(
+/// Build glyphs in their layer/team colours and with their authored flag types.
+pub fn glyph_vertices_styled(
     markers: &[Marker],
     selected: &[(crate::BlockKind, usize)],
     modelled: impl Fn(&Marker) -> bool,
-    color_of: impl Fn(&Marker) -> Vec3,
+    style: impl Fn(&Marker) -> (Vec3, Option<i64>),
 ) -> Vec<Vertex> {
     let mut out = Vec::new();
     for m in markers {
@@ -422,12 +422,13 @@ pub fn glyph_vertices_colored(
         if !is_sel && modelled(m) {
             continue;
         }
+        let (color, flag_type) = style(m);
         let mut m = *m;
         if is_sel {
             m.axes = m.axes.map(|a| crate::geometry::scale(a, 1.6));
         }
-        let color: Vec3 = if is_sel { [1.0; 3] } else { color_of(&m) };
-        for t in marker_triangles(&m) {
+        let color = if is_sel { [1.0; 3] } else { color };
+        for t in marker_triangles_styled(&m, flag_type) {
             let n = crate::geometry::normalize(crate::geometry::cross(
                 crate::geometry::sub(t[1], t[0]),
                 crate::geometry::sub(t[2], t[0]),
@@ -1371,28 +1372,28 @@ impl Viewport {
         selected: &[(crate::BlockKind, usize)],
         linked: &BTreeSet<(crate::BlockKind, usize)>,
     ) {
-        self.set_linked_placements_colored(device, scene, markers, selected, linked, |m| {
-            block_color(m.block)
+        self.set_linked_placements_styled(device, scene, markers, selected, linked, |m| {
+            (block_color(m.block), None)
         });
     }
 
-    /// Upload authoring glyphs in their layer colours and the placed models.
-    pub fn set_linked_placements_colored(
+    /// Upload authoring glyphs with the caller's team colours and flag types.
+    pub fn set_linked_placements_styled(
         &mut self,
         device: &wgpu::Device,
         scene: &Scene,
         markers: &[Marker],
         selected: &[(crate::BlockKind, usize)],
         linked: &BTreeSet<(crate::BlockKind, usize)>,
-        color_of: impl Fn(&Marker) -> Vec3,
+        style: impl Fn(&Marker) -> (Vec3, Option<i64>),
     ) {
         self.markers = Self::upload(
             device,
-            &glyph_vertices_colored(
+            &glyph_vertices_styled(
                 markers,
                 selected,
                 |m| !linked.contains(&(m.block, m.index)) && scene.model_of(m).is_some(),
-                color_of,
+                style,
             ),
         );
         if let Some(gpu) = &mut self.scene {

@@ -608,11 +608,19 @@ build), and keeps the last four maps' scenes so reopening one is instant.
   choose a set of layers in one click. Collision shows the level structure
   for context. The viewport and `view.snapshot` share these settings.
   Clicking skips hidden placement categories and hidden structure.
-- **Glyphs.** Placements without a model get a glyph in their block's
-  colour: a standing pawn with an arrow for player spawns, a pole and
-  pennant for netgame flags, a diamond for the rest. Past 40 units from
-  the eye glyphs grow with distance, so they stay readable when the whole
-  map is framed, and their pick spheres grow with them.
+- **Gameplay layers.** Spawn points have a team-coloured pawn and an
+  arrow pointing along the spawn facing. Netgame flags have a team tint
+  and a pennant for their type. The label gives the type and identifier,
+  using the raw type number for an unknown value. Hill and territory
+  markers of the same type and identifier are joined in placement order.
+  Two markers form a segment and three or more form a closed outline.
+  Netgame equipment shows its model when available and a respawn label.
+  The Gameplay switches and their corresponding placement blocks both
+  control visibility. The **Placement markers** switch controls glyphs and annotations.
+- **Glyphs and labels.** Other placements without a model use a diamond
+  in their block colour. Past 40 world units glyphs and their pick
+  spheres grow with distance so the whole map stays readable. Gameplay
+  labels are drawn within 40 units of the eye.
 - **Framing.** Frame (Home) frames the placements, padded, when there are
   a few, dropping the 4 % at each end of each axis (Lockout keeps a few
   far outside the level): distant scenery and sky geometry no longer

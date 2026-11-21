@@ -5,11 +5,12 @@ use std::collections::{BTreeSet, HashMap};
 use agent_proto::live::Object;
 use live_mirror::Sample;
 use map::TagId;
-use scenario_edit::geometry::{Camera, Vec3, add, cross, dot, scale, sub};
+use scenario_edit::geometry::{Camera, Gameplay, Vec3, add, cross, dot, scale, sub, transform};
+use scenario_edit::layers::LayerId;
 use scenario_edit::render::{Instance, object_light};
 use scenario_edit::{BlockKind, Session};
 
-use crate::App;
+use crate::{App, theme};
 
 #[derive(Clone, Copy)]
 struct Pose {
@@ -108,18 +109,66 @@ struct Player {
 
 type Color = [u8; 3];
 
-fn team_color(team: i16) -> Color {
-    match team {
-        0 => [255, 110, 95],
-        1 => [105, 175, 255],
-        2 => [84, 215, 144],
-        3 => [255, 193, 72],
-        4 => [174, 144, 255],
-        5 => [255, 156, 206],
-        6 => [112, 217, 225],
-        7 => [191, 155, 127],
-        _ => [225, 230, 235],
+pub(crate) struct Label {
+    position: Vec3,
+    text: String,
+    color: Color,
+}
+
+pub(crate) fn gameplay_labels(app: &App) -> Vec<Label> {
+    if !app.layers.visible(LayerId::Markers) {
+        return Vec::new();
     }
+    let scenario = app.session.scenario();
+    app.session
+        .markers()
+        .iter()
+        .filter(|m| app.layers.placement(m.block))
+        .filter_map(|marker| {
+            let game = Gameplay::of(scenario, marker);
+            let text = game.label()?;
+            let color = theme::placement_color(marker.block, game.team);
+            Some(Label {
+                position: marker.position,
+                text,
+                color: color.map(|c| (255.0 * c).round() as u8),
+            })
+        })
+        .collect()
+}
+
+fn projected_labels<'a>(
+    cam: &Camera,
+    [w, h]: [f32; 2],
+    labels: &'a [Label],
+) -> impl Iterator<Item = Mark<'a>> {
+    let eye = cam.eye();
+    let matrix = cam.view_proj(w / h);
+    labels.iter().filter_map(move |label| {
+        let delta = sub(label.position, eye);
+        if dot(delta, delta) > theme::LABEL_DISTANCE.powi(2) {
+            return None;
+        }
+        let [x, y, z] = label.position;
+        let [cx, cy, cz, cw] = transform(&matrix, [x, y, z, 1.0]);
+        if !(cw > 0.0 && (0.0..=cw).contains(&cz) && cx.abs() <= cw && cy.abs() <= cw) {
+            return None;
+        }
+        let [dx, dy] = theme::LABEL_OFFSET;
+        let at = [
+            (1.0 + cx / cw) * w * 0.5 + dx,
+            (1.0 - cy / cw) * h * 0.5 + dy,
+        ];
+        Some(Mark::Text(at, &label.text, label.color))
+    })
+}
+
+pub(crate) fn draw_labels(ui: &dear_imgui_rs::Ui, cam: &Camera, rect: [f32; 4], labels: &[Label]) {
+    draw_marks(ui, rect, projected_labels(cam, [rect[2], rect[3]], labels));
+}
+
+pub(crate) fn snapshot_labels(rgba: &mut [u8], size: [u32; 2], cam: &Camera, labels: &[Label]) {
+    paint_marks(rgba, size, projected_labels(cam, size.map(|n| n as f32), labels));
 }
 
 impl Scene {
@@ -183,7 +232,7 @@ impl Scene {
                     pos: pose.position,
                     aim: player.aim,
                     label,
-                    color: team_color(player.team),
+                    color: theme::team_color(i64::from(player.team)),
                     body: object.body,
                     shield: object.shield,
                 });
@@ -233,42 +282,54 @@ impl Scene {
     }
 
     pub(super) fn overlay(&self, ui: &dear_imgui_rs::Ui, cam: &Camera, rect: [f32; 4]) {
-        let [x, y, w, h] = rect;
-        let offset = |p: [f32; 2]| [x + p[0], y + p[1]];
-        let rgba = |[r, g, b]: Color| {
-            [
-                f32::from(r) / 255.0,
-                f32::from(g) / 255.0,
-                f32::from(b) / 255.0,
-                1.0,
-            ]
-        };
-        let list = ui.get_window_draw_list();
-        let _clip = list.push_clip_rect([x, y], [x + w, y + h], true);
-        for mark in self.annotations(cam, [w, h]) {
-            match mark {
-                Mark::Line(a, b, c, thickness) => {
-                    list.add_line(offset(a), offset(b), rgba(c))
-                        .thickness(thickness)
-                        .build();
-                }
-                Mark::Text(a, text, c) => {
-                    list.add_text(offset([a[0] + 1.0, a[1] + 1.0]), [0.0, 0.0, 0.0, 1.0], text);
-                    list.add_text(offset(a), rgba(c), text);
-                }
-            }
-        }
+        draw_marks(ui, rect, self.annotations(cam, [rect[2], rect[3]]));
     }
 
     pub(crate) fn snapshot(&self, rgba: &mut [u8], size: [u32; 2], cam: &Camera) {
-        let mut canvas = Pixels { rgba, size };
-        for mark in self.annotations(cam, size.map(|v| v as f32)) {
-            match mark {
-                Mark::Line(a, b, c, thickness) => canvas.line(a, b, thickness, c),
-                Mark::Text(a, text, c) => {
-                    canvas.text([a[0] + 1.0, a[1] + 1.0], text, [0; 3]);
-                    canvas.text(a, text, c);
-                }
+        paint_marks(rgba, size, self.annotations(cam, size.map(|n| n as f32)));
+    }
+}
+
+fn draw_marks<'a>(
+    ui: &dear_imgui_rs::Ui,
+    rect: [f32; 4],
+    marks: impl IntoIterator<Item = Mark<'a>>,
+) {
+    let [x, y, w, h] = rect;
+    let offset = |p: [f32; 2]| [x + p[0], y + p[1]];
+    let rgba = |[r, g, b]: Color| {
+        [
+            f32::from(r) / 255.0,
+            f32::from(g) / 255.0,
+            f32::from(b) / 255.0,
+            1.0,
+        ]
+    };
+    let list = ui.get_window_draw_list();
+    let _clip = list.push_clip_rect([x, y], [x + w, y + h], true);
+    for mark in marks {
+        match mark {
+            Mark::Line(a, b, c, thickness) => {
+                list.add_line(offset(a), offset(b), rgba(c))
+                    .thickness(thickness)
+                    .build();
+            }
+            Mark::Text(a, text, c) => {
+                list.add_text(offset([a[0] + 1.0, a[1] + 1.0]), [0.0, 0.0, 0.0, 1.0], text);
+                list.add_text(offset(a), rgba(c), text);
+            }
+        }
+    }
+}
+
+fn paint_marks<'a>(rgba: &mut [u8], size: [u32; 2], marks: impl IntoIterator<Item = Mark<'a>>) {
+    let mut canvas = Pixels { rgba, size };
+    for mark in marks {
+        match mark {
+            Mark::Line(a, b, c, thickness) => canvas.line(a, b, thickness, c),
+            Mark::Text(a, text, c) => {
+                canvas.text([a[0] + 1.0, a[1] + 1.0], text, [0; 3]);
+                canvas.text(a, text, c);
             }
         }
     }
@@ -379,6 +440,30 @@ mod tests {
     use agent_proto::live::Player as LivePlayer;
     use scenario_edit::Reference;
     use scenario_edit::geometry::Marker;
+
+    #[test]
+    fn gameplay_labels_are_culled_by_distance_and_viewport() {
+        let cam = Camera {
+            target: [0.0; 3],
+            yaw: 0.0,
+            pitch: 0.0,
+            distance: 10.0,
+            ..Default::default()
+        };
+        let label = |x, y, text: &str| Label {
+            position: [x, y, 0.0],
+            text: text.to_owned(),
+            color: [255; 3],
+        };
+        let labels = [
+            label(0.0, 0.0, "in view"),
+            label(-theme::LABEL_DISTANCE - 1.0, 0.0, "far"),
+            label(11.0, 0.0, "behind camera"),
+            label(0.0, 30.0, "offscreen"),
+        ];
+        let visible: Vec<_> = projected_labels(&cam, [256.0; 2], &labels).collect();
+        assert!(matches!(&visible[..], [Mark::Text(_, "in view", _)]));
+    }
 
     #[test]
     fn attached_weapon_uses_the_streamed_parent_and_placement_indices_are_per_block() {

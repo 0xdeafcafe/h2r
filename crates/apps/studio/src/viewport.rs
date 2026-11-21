@@ -104,6 +104,7 @@ pub struct ViewportView {
     linked: BTreeSet<(BlockKind, usize)>,
     overlay_rev: Option<u64>,
     layers: Option<Layers>,
+    labels: Vec<mirror::Label>,
     pub op: GizmoOp,
     /// Gizmo axes follow the placement (local) or the world.
     pub local: bool,
@@ -141,6 +142,7 @@ impl ViewportView {
             linked: BTreeSet::new(),
             overlay_rev: None,
             layers: None,
+            labels: Vec::new(),
             op: GizmoOp::Translate,
             local: false,
             snap: Snap::default(),
@@ -199,6 +201,7 @@ impl ViewportView {
             || self.linked != live.linked
         {
             upload_placements(vp, gpu.device, app, &live.linked);
+            self.labels = mirror::gameplay_labels(app);
             self.markers_rev = Some(session.markers_rev());
             self.linked.clone_from(&live.linked);
         }
@@ -247,6 +250,7 @@ impl ViewportView {
         ui.image(texture, size);
         let rect = [origin[0], origin[1], size[0], size[1]];
         self.shown = Some(rect);
+        mirror::draw_labels(ui, app.session.camera(), rect, &self.labels);
         live.overlay(ui, app.session.camera(), rect);
         let hovered = ui.is_item_hovered();
         self.hovered = hovered;
@@ -490,13 +494,46 @@ pub(crate) fn upload_placements(
 ) {
     let session = &app.session;
     let markers: Vec<_> = session.markers().iter().copied()
-        .filter(|m| app.layers.placement(m.block)).collect();
+        .filter(|m| app.layers.placement(m.block))
+        .collect();
     let selected = session.selection();
-    let color = |m: &geometry::Marker| crate::theme::layer_color(LayerId::Placement(m.block));
+    let gameplay = |m: &geometry::Marker| geometry::Gameplay::of(session.scenario(), m);
+    let style = |m: &geometry::Marker| {
+        let data = gameplay(m);
+        (crate::theme::placement_color(m.block, data.team), data.flag_type)
+    };
     match session.scene() {
-        Some(scene) => vp.set_linked_placements_colored(device, scene, &markers, &selected, linked, color),
-        None => vp.set_markers(device, &render::glyph_vertices_colored(&markers, &selected, |_| false, color)),
+        Some(scene) => vp.set_linked_placements_styled(
+            device, scene, &markers, &selected, linked, style,
+        ),
+        None => vp.set_markers(
+            device, &render::glyph_vertices_styled(&markers, &selected, |_| false, style),
+        ),
     }
+
+    let mut lines = Vec::new();
+    if app.layers.visible(LayerId::Markers) {
+        let color = crate::theme::layer_color(LayerId::Flags);
+        for outline in geometry::flag_outlines(&markers, gameplay) {
+            let mut segment = |a, b| {
+                for position in [a, b] {
+                    lines.push(render::Vertex {
+                        position,
+                        center: position,
+                        normal: [0.0, 0.0, 1.0],
+                        color,
+                    });
+                }
+            };
+            for edge in outline.windows(2) {
+                segment(edge[0], edge[1]);
+            }
+            if outline.len() > 2 {
+                segment(outline[outline.len() - 1], outline[0]);
+            }
+        }
+    }
+    vp.set_layer_overlay(device, LayerId::Flags, &[], &lines);
 }
 
 pub(crate) fn upload_overlays(vp: &mut Viewport, device: &wgpu::Device, app: &App) {
@@ -504,8 +541,11 @@ pub(crate) fn upload_overlays(vp: &mut Viewport, device: &wgpu::Device, app: &Ap
     if let Some(source) = app.compare().and_then(|c| c.view.as_ref().ok()) {
         let color = crate::theme::layer_color(LayerId::Halo1);
         tris = render::overlay_vertices(&crate::app::library_tris(source), color);
-        tris.extend(render::glyph_vertices_colored(
-            &crate::app::library_markers(source), &[], |_| false, |_| color,
+        tris.extend(render::glyph_vertices_styled(
+            &crate::app::library_markers(source),
+            &[],
+            |_| false,
+            |_| (color, None),
         ));
     }
     vp.set_layer_overlay(device, LayerId::Halo1, &tris, &[]);

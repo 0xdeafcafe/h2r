@@ -14,6 +14,9 @@ use std::path::Path;
 use tags::geometry::{RawSource, Section, TagView};
 use tags::structure::{Lightmap, LightmapGroup, LightmapRenderInfo, StructureRender};
 
+mod gameplay;
+pub use gameplay::{Gameplay, flag_outlines, flag_type_name};
+
 pub type Vec3 = [f32; 3];
 pub type Mat4 = [[f32; 4]; 4];
 
@@ -755,6 +758,12 @@ pub fn glyph_bounds(glyph: Glyph) -> (f32, f32) {
 
 /// A marker's triangles at native size, by its block's [`Glyph`].
 pub fn marker_triangles(m: &Marker) -> Vec<[Vec3; 3]> {
+    marker_triangles_styled(m, None)
+}
+
+/// The authored flag type chooses its pennant silhouette. Other placements
+/// keep their ordinary glyph.
+pub fn marker_triangles_styled(m: &Marker, flag_type: Option<i64>) -> Vec<[Vec3; 3]> {
     let [f, l, u] = m.axes;
     let at = |base: Vec3, v: Vec3, s: f32| add(base, scale(v, s));
     let mut out = Vec::new();
@@ -791,11 +800,28 @@ pub fn marker_triangles(m: &Marker) -> Vec<[Vec3; 3]> {
             let c = at(m.position, up, 0.8);
             bipyramid(c, up, 0.85, 0.85, f, l, 0.06);
             // Pennant along the facing at the top, both faces.
-            let top = at(m.position, up, 1.6);
-            let low = at(m.position, up, 1.05);
-            let tip = at(at(m.position, up, 1.32), f, 0.75);
-            out.push([top, low, tip]);
-            out.push([top, tip, low]);
+            // Trace the free edge of the pennant, bottom to top in its
+            // forward/up plane. The strip fans out from the middle of the pole.
+            let edge: &[[f32; 2]] = match flag_type {
+                Some(0) => &[[0.75, 1.05], [0.75, 1.60]], // rectangular flag
+                Some(1) => &[[0.75, 1.05], [0.42, 1.32], [0.75, 1.60]], // swallowtail
+                Some(2) => &[[0.48, 1.05], [0.75, 1.32], [0.48, 1.60]],
+                Some(3) => &[[0.75, 1.05], [0.75, 1.39], [0.48, 1.39], [0.48, 1.60]],
+                Some(4) => &[[0.45, 1.02], [0.72, 1.16], [0.72, 1.49], [0.45, 1.63]],
+                Some(7) => &[[0.75, 1.05]], // lower point for an entrance
+                Some(8) => &[[0.75, 1.60]], // upper point for an exit
+                Some(10) => &[[0.60, 1.00], [0.75, 1.60]],
+                Some(11..=18) => &[[0.75, 1.05], [0.40, 1.65]],
+                _ => &[[0.75, 1.32]],
+            };
+            let anchor = at(m.position, up, 1.32);
+            let mut previous = at(m.position, up, 1.05);
+            for &[forward, height] in edge.iter().chain(&[[0.0, 1.6]]) {
+                let next = at(at(m.position, up, height), f, forward);
+                out.push([anchor, previous, next]);
+                out.push([anchor, next, previous]);
+                previous = next;
+            }
         }
     }
     out
