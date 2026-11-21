@@ -2,8 +2,10 @@
 
 Status: Local Objects editing uses the Forge document, materialiser, runtime
 probes and monitor UI. Place, move, turn, delete, undo and redo apply to the
-running game's objects through live-mirror M8's object calls. Networked
-editing is planned.
+running game's objects through live-mirror M8's object calls. The Links
+tool joins teleporter flags on a channel, written to the running game's
+scenario, and machines into device groups, written when the map is
+materialised. Networked editing is planned.
 Code: `crates/formats/forge-doc` defines the document and log.
 `crates/tools/forge-build` materialises it. `crates/extensions/forge`
 owns the local session and Objects tool. The host is
@@ -49,7 +51,7 @@ grouped.
 | Make an object from a tag the map holds | Live | `sim.spawn` path: placement data, then `object_new` (**Code**, [agent-api.md](../runtime/agent-api.md), "What `sim.state.set` writes"). The pool is 2,048 objects (**E**, forge.md 1.2) |
 | Change a placement's fields; retarget a netgame equipment entry | Live, shows when the object is next made | read once at creation (**Code**, [hot-iteration.md](../graphics/hot-iteration.md), "What shows when") |
 | Add a placement, spawn point, netgame flag or equipment entry | Kit, else Rebuild | a block cannot grow in guest memory; the count can rise into spare entries the kit reserved (**S**: each reader takes the count from the root pair on every walk; [scenario-editor.md](../editor/scenario-editor.md) section 6 lists the readers) |
-| Teleporter pair and channel | Kit | netgame flags of the two teleporter types with a shared identifier (**Code**, [bots.md](bots.md) 3.2, "Traversal evidence") |
+| Teleporter pair and channel | Kit | netgame flags of the two teleporter types with a shared identifier (**Code**, [bots.md](bots.md) 3.2, "Traversal evidence"). A channel change on an existing flag is a field write (F6) |
 | Button to machine | Kit | a control and a machine in one device group (**S**: the device-group readers are not disassembled, scenario-editor.md section 7) |
 | Shader colours, effect and light colours, damage, rates of fire | Live | read at each draw or use (hot-iteration.md) |
 | Texture pixels, same size and format | Live for the picture | the D3D write barrier re-uploads changed bytes (hot-iteration.md); the saved form is a `BitmapOp` log |
@@ -550,7 +552,7 @@ and the game. Sizes as under Features.
 | **F3** | Probes: `forge.capacity`, `forge.probe` (replication of a host-made object by group, the synchronous protocol on a multiplayer map, the AI flag in multiplayer, kit entries inert) | S | nothing | each method answers over a fake game with a test; the coordinator's runs go in `docs/game/notes/forge-probes.md` |
 | **F4** | Local session, its edits applied to the live objects through M8's calls: the camera body, the `Hud` kind, Objects tool, palette and properties dialogs, save and load | L | F1, F2, live-mirror M8 | `Page` tables for each dialog; the `Hud` view passes the kit's checks in every state; over a fake game, place, move and delete produce the expected proposals and engine calls, undo restores, a stale object is a named refusal that leaves the document alone, a saved file folds to the same document |
 | **F5** | Synchronous mode: the log on the network, roles, holding, join in progress, the film record | M | F3's results, F4 | two fake peers and a host converge to one head under reordered proposals; a second hold is refused; a late joiner's document equals the host's; a film with entries replays to the same `ForgeExt` hash |
-| **F6** | Teleporters and retail links: the Links tool, channels, device groups | M | F4 | a linked pair writes two flags with one identifier on a fixture; the bots' generator finds the link; unlink restores the bytes |
+| **F6** | Teleporters and retail links: the Links tool, channels, device groups | M | F4 | a linked pair writes two flags with one identifier on a fixture; the bots' generator finds the link; unlink restores the bytes. **Built**, except the generator half: `bots::autonav`'s teleporter reader is private, so the test checks the bytes it reads (below) |
 | **F7** | `SimExt` and `ForgeExt`: volumes, the graph, emitters | L | F4; sim-rewrite's blob hooks | the blob round-trips and enters the hash; a graph fixture's outputs per tick match a table; one, two and eight workers give the same bits; an emitter fires on the scheduled ticks and stops at its limit |
 | **F8** | Barriers and block-out: the kit's generated tags, the Volumes and Shape tools' object tier | M | F2, modeling slice 8 | each generated `coll` passes `Bsp::validate` and random segment tests against brute force; a barrier's enable input switches it over a fake game |
 | **F9** | Nav: Forge objects as generator input, **Generate nav**, the overlay, problems | M | F4 | a fixture with a block-out ramp gains the sectors and link that make a ledge reachable; a spawn off the mesh is reported |
@@ -634,6 +636,42 @@ draft validates its base and builder and opens its folded document at a
 fresh log head. The local session ends on a map change. Multiplayer
 proposals, roles and film entries belong to F5.
 
+**F6 in detail.** `forge_doc::Forge` holds Forge-family edits: a
+`Link` and an `Unlink` naming the link op it ends. A teleporter link
+names a sender and a receiver netgame flag and a channel; a device link
+names two machines, lower endpoint first. An endpoint is a base entry by
+its base index or the entry an Add op made, so it survives later appends
+and swap-removes. The validator refuses a link to a missing or removed
+entry, the removal of a linked entry, a flag in two roles or on two
+channels, and a repeated link. `ForgeDoc::links` resolves the active
+links to final indices from the base counts.
+
+`forge-build` writes links after every placement edit. A teleporter
+link sets both flags' identifier (`+0x14`) to the channel and is refused
+by name when the sender is not type 7 or the receiver not type 8. Each
+group of linked machines becomes a new device group after the map's own
+(`scnr+0xa0`, stride `0x28`), and each member's position group (`+0x36`)
+names it. An unlinked entry keeps the bytes it would have had without the
+link (`crates/tools/forge-build/tests/links.rs`). The bots' generator
+pairs teleporters from those same bytes: type at `+0x10`, identifier at
+`+0x14` of `scnr+0x118`. Driving `bots::autonav::build_map` over the
+fixture needs a structure BSP the fixture does not have, or a public
+entry to the generator's flag reader.
+
+In a local session the Links tool (D-pad Right or L) aims at the map's
+teleporter flags and at placed machines. A starts a link on the first
+and makes it on the second; hold B removes the aimed thing's latest link;
+Y opens the LINK dialog with **Remove link**. A teleporter pair takes the
+channel either flag already has through a link, the sender's first, else
+the sender's own. The session writes each changed identifier into the
+loaded scenario through `ForgeStep::Channel`, after the batch's objects,
+and undo writes the previous one. Device links have no live write: the
+engine's device group setter is unproven, so they count as pending
+Rebuild edits in the HUD title and `forge.status`. Deleting a linked
+machine ends its links in the same undo step. The local session has no
+kit, so it cannot add teleporter flags; placing them is a Rebuild edit
+through the document's placement ops.
+
 ## Decisions
 
 The owner's choices, which the sections above follow.
@@ -685,7 +723,11 @@ The owner's choices, which the sections above follow.
   tag index.
 - That a player can be given a flying biped and steer it.
 - Projectile creation outside weapon fire: velocity, owner, kill credit.
-- Device groups driving machines in a multiplayer session.
+- Device groups driving machines in a multiplayer session, and whether
+  the position group is the field that makes a linked machine follow.
+- Whether the teleporter reader takes a channel written into the loaded
+  scenario at once, or only from the next round (netgame flag results are
+  cached per game, scenario-editor.md section 6).
 - Mirrors and puppets in a distributed session: that a client-made
   object the host did not replicate is left alone by the engine's
   replication, and the bandwidth of corrections and poses.
