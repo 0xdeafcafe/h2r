@@ -151,6 +151,11 @@ pub enum PortableError {
     ScriptPrefix,
     #[error("the script does not load: {0}")]
     ScriptRefused(String),
+    /// Over the VM's per-tick budget or the IR cap (`rules::fits`).
+    #[error("the script is too costly to run: {0}")]
+    ScriptCost(String),
+    #[error("the option values: {0}")]
+    Options(String),
     #[error("the record is engine {record}; the script rides engine {script}")]
     Carrier { record: i32, script: u8 },
     #[error("engine {0} has no built-in script")]
@@ -355,8 +360,9 @@ impl Bundle {
 
     /// [`Bundle::integrity`], and what we publish: a name and description
     /// that keep the name rules, a record the game keeps as it is and our
-    /// own rules allow ([`record::refused`]), and an extension block that
-    /// is ours or absent.
+    /// own rules allow ([`record::refused`]), an extension block that is
+    /// ours or absent, and a script that fits the VM's per-tick budget and
+    /// the IR cap (`rules::fits`).
     pub fn check(&self) -> Result<Checked, PortableError> {
         let c = self.integrity()?;
         check_name(&self.name)?;
@@ -366,6 +372,10 @@ impl Bundle {
         }
         if let Block::Ignored(why) = c.variant.ext_state() {
             return Err(PortableError::Block(why));
+        }
+        if let Some((_, ir)) = &c.script {
+            let report = rules::verify(ir).map_err(|e| PortableError::ScriptRefused(e.to_string()))?;
+            rules::fits(ir, &report).map_err(|e| PortableError::ScriptCost(e.to_string()))?;
         }
         Ok(c)
     }
@@ -381,13 +391,18 @@ pub struct Attach {
 }
 
 impl Attach {
-    /// Compiles and verifies `source` and attaches it with its IR.
+    /// Compiles and verifies `source`, refuses it over the budget
+    /// (`rules::ship`), and attaches it with its IR.
     pub fn from_source(source: &str) -> Result<Attach, PortableError> {
         if source.len() > MAX_SOURCE {
             return Err(PortableError::ScriptTooLarge("source"));
         }
-        let (ir, _) =
-            rules::build(source).map_err(|e| PortableError::ScriptRefused(e.to_string()))?;
+        let (ir, _) = rules::ship(source).map_err(|e| match e {
+            e @ (rules::BuildError::OverBudget { .. } | rules::BuildError::TooLarge { .. }) => {
+                PortableError::ScriptCost(e.to_string())
+            }
+            e => PortableError::ScriptRefused(e.to_string()),
+        })?;
         Ok(Attach {
             ir: ir.encode(),
             source: Some(source.to_string()),
@@ -469,6 +484,19 @@ pub fn port(
     description: Option<&str>,
     script: PortScript,
 ) -> Result<Bundle, PortableError> {
+    port_with_options(v, name, description, script, &[])
+}
+
+/// [`port`], with option values by name packed against the attached
+/// script's options (`rules::Ir::pack_options`); an option left out takes
+/// its default. Options with no script attached are refused.
+pub fn port_with_options(
+    v: &GameVariant,
+    name: Option<&str>,
+    description: Option<&str>,
+    script: PortScript,
+    options: &[(String, rules::ir::OptionValue)],
+) -> Result<Bundle, PortableError> {
     let name = name.map_or_else(|| v.name(), str::to_string);
     let attach = match script {
         PortScript::Keep => None,
@@ -486,6 +514,21 @@ pub fn port(
             options: None,
         }),
         PortScript::Source(src) => Some(Attach::from_source(&src)?),
+    };
+    let attach = match attach {
+        None if !options.is_empty() => {
+            return Err(PortableError::Options("no script is attached to take them".into()));
+        }
+        Some(mut a) if !options.is_empty() => {
+            let (ir, _) = rules::verify::load(&a.ir)
+                .map_err(|e| PortableError::ScriptRefused(e.to_string()))?;
+            let bits = ir
+                .pack_options(options)
+                .map_err(|e| PortableError::Options(e.to_string()))?;
+            a.options = Some(bits);
+            Some(a)
+        }
+        a => a,
     };
     Bundle::new(v, &name, description.unwrap_or(""), attach)
 }
@@ -802,6 +845,56 @@ mod tests {
         assert!(matches!(
             port(&slayer(), None, Some(&"d".repeat(151)), PortScript::Keep),
             Err(PortableError::Description(_))
+        ));
+    }
+
+    #[test]
+    fn options_pack_by_name_against_the_attached_script() {
+        use rules::ir::OptionValue;
+        let given = vec![
+            ("kill_points".to_string(), OptionValue::Int(3)),
+            ("suicide_costs".to_string(), OptionValue::Bool(false)),
+        ];
+        let b = port_with_options(&slayer(), Some("Triple"), Some("Three a kill"), PortScript::Builtin, &given)
+            .unwrap();
+        assert_eq!(b.name, "Triple");
+        assert_eq!(b.description, "Three a kill");
+        let ir = rules::Ir::decode(&slayer_ir()).unwrap();
+        let options = b.variant().unwrap().ext().script.options;
+        assert_eq!(options, ir.pack_options(&given).unwrap());
+        assert_ne!(options, ir.default_options());
+        assert!(b.check().is_ok());
+
+        let refused = |given: Vec<(String, OptionValue)>, script| {
+            port_with_options(&slayer(), None, None, script, &given).unwrap_err()
+        };
+        assert_eq!(
+            refused(vec![("kill_points".into(), OptionValue::Int(9))], PortScript::Builtin),
+            PortableError::Options("option \"kill_points\" takes 1..=5".into())
+        );
+        assert_eq!(
+            refused(vec![("nope".into(), OptionValue::Int(1))], PortScript::Builtin),
+            PortableError::Options("the script has no option \"nope\"".into())
+        );
+        assert!(matches!(
+            refused(vec![("kill_points".into(), OptionValue::Int(2))], PortScript::Keep),
+            PortableError::Options(_)
+        ));
+    }
+
+    #[test]
+    fn a_script_over_the_budget_is_not_published() {
+        let heavy = "rules \"Heavy\" 1\ncarrier slayer\nglobal var n: int = 0\n\
+                     on kill(v, k) { for each players a { for each players b { for each players c { n = n + 1 } } } }\n";
+        // From source or as a blob: a bundle passes `check`, which refuses it.
+        assert!(matches!(
+            port(&slayer(), None, None, PortScript::Source(heavy.into())),
+            Err(PortableError::ScriptCost(_))
+        ));
+        let ir = rules::compile(heavy).unwrap().encode();
+        assert!(matches!(
+            port(&slayer(), None, None, PortScript::Ir(ir)),
+            Err(PortableError::ScriptCost(_))
         ));
     }
 

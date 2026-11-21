@@ -8,11 +8,13 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
+use rules::ir::OptionValue;
 use variants::portable::{self, Bundle, PortScript};
 use variants::record::GameVariant;
 
-const USAGE: &str = "usage: h2 variants port <input>... [--script builtin|keep|<file.rules|file.rir>] [-o <dir>]
-       h2 variants port --all-builtins [disc] [--script builtin|keep] [-o <dir>]
+const USAGE: &str = "usage: h2 variants port <input>... [--script builtin|keep|<file.rules|file.rir>]
+                        [--name <name>] [--description <text>] [--option <key>=<value>]... [-o <dir>]
+       h2 variants port --all-builtins [disc] [--script builtin|keep] [--option <key>=<value>]... [-o <dir>]
   port writes one version-2 .h2variant per input, named by the variant's
   name, and prints each file's id (the SHA-256 of its canonical bytes) and
   path. An input is a raw 0x130-byte record, a saved-variant file (the
@@ -22,6 +24,11 @@ const USAGE: &str = "usage: h2 variants port <input>... [--script builtin|keep|<
   record's engine; keep leaves the variant unscripted, playing retail
   rules; a .rules file is compiled and travels with its source, a .rir
   blob travels alone. The same input and script give the same id.
+  --name and --description replace the variant's name and description;
+  they take one input. --option sets a script option by name (an int,
+  true or false, or an enum value's name), checked against the attached
+  script's options; it repeats, and an option left out takes its default.
+  keep attaches no script, so it takes no --option.
   --all-builtins writes every retail built-in variant. It needs the disc:
   the built-ins are read from mainmenu.map's goof tag. [disc] is an .iso;
   without it, $H2_DISC or the .iso in disc/. Community variants are added
@@ -51,6 +58,31 @@ struct Parsed {
     script: Option<String>,
     out: Option<PathBuf>,
     all_builtins: bool,
+    name: Option<String>,
+    description: Option<String>,
+    options: Vec<(String, String)>,
+}
+
+/// What every input is ported with besides its script.
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct Settings {
+    pub name: Option<String>,
+    pub description: Option<String>,
+    pub options: Vec<(String, OptionValue)>,
+}
+
+impl Parsed {
+    fn settings(&self) -> Settings {
+        Settings {
+            name: self.name.clone(),
+            description: self.description.clone(),
+            options: self
+                .options
+                .iter()
+                .map(|(k, v)| (k.clone(), OptionValue::parse(v)))
+                .collect(),
+        }
+    }
 }
 
 fn parse(words: &[String]) -> Result<Parsed> {
@@ -61,6 +93,18 @@ fn parse(words: &[String]) -> Result<Parsed> {
             "-o" | "--out" => p.out = Some(PathBuf::from(it.next().context("-o requires a directory")?)),
             "--script" => p.script = Some(it.next().context("--script requires a value")?.clone()),
             "--all-builtins" => p.all_builtins = true,
+            "--name" => p.name = Some(it.next().context("--name requires a name")?.clone()),
+            "--description" => {
+                p.description = Some(it.next().context("--description requires text")?.clone());
+            }
+            "--option" => {
+                let kv = it.next().context("--option requires <key>=<value>")?;
+                let (k, v) = kv
+                    .split_once('=')
+                    .filter(|(k, _)| !k.is_empty())
+                    .with_context(|| format!("--option takes <key>=<value>, not {kv:?}"))?;
+                p.options.push((k.to_string(), v.to_string()));
+            }
             "-h" | "--help" => bail!("{USAGE}"),
             f if !f.starts_with('-') => p.inputs.push(PathBuf::from(f)),
             _ => bail!("{USAGE}"),
@@ -68,6 +112,9 @@ fn parse(words: &[String]) -> Result<Parsed> {
     }
     if p.inputs.is_empty() && !p.all_builtins {
         bail!("{USAGE}");
+    }
+    if (p.name.is_some() || p.description.is_some()) && (p.all_builtins || p.inputs.len() > 1) {
+        bail!("--name and --description take one input");
     }
     Ok(p)
 }
@@ -92,15 +139,25 @@ fn script(arg: Option<&str>) -> Result<PortScript> {
     })
 }
 
-/// Ports one input's bytes: the bundle, or why not.
-pub fn port_bytes(bytes: &[u8], script: PortScript) -> Result<Bundle, portable::PortableError> {
+/// Ports one input's bytes: the bundle, or why not. The file's own
+/// description stays unless `with` replaces it.
+pub fn port_bytes(
+    bytes: &[u8],
+    script: PortScript,
+    with: &Settings,
+) -> Result<Bundle, portable::PortableError> {
     let (v, description) = portable::port_input(bytes)?;
-    portable::port(&v, None, description.as_deref(), script)
+    let description = with.description.clone().or(description);
+    portable::port_with_options(&v, with.name.as_deref(), description.as_deref(), script, &with.options)
 }
 
 /// Ports a variant that is already decoded (a retail built-in).
-pub fn port_variant(v: &GameVariant, script: PortScript) -> Result<Bundle, portable::PortableError> {
-    portable::port(v, None, None, script)
+pub fn port_variant(
+    v: &GameVariant,
+    script: PortScript,
+    with: &Settings,
+) -> Result<Bundle, portable::PortableError> {
+    portable::port_with_options(v, with.name.as_deref(), with.description.as_deref(), script, &with.options)
 }
 
 /// Writes `b` into `dir` under its name, avoiding names already written
@@ -125,16 +182,18 @@ fn write(dir: &Path, b: &Bundle, taken: &mut Vec<String>) -> Result<String> {
 pub fn port_text(
     inputs: &[(String, Vec<u8>)],
     script: &PortScript,
+    with: &Settings,
 ) -> Vec<(String, Result<Bundle, portable::PortableError>)> {
     inputs
         .iter()
-        .map(|(label, bytes)| (label.clone(), port_bytes(bytes, script.clone())))
+        .map(|(label, bytes)| (label.clone(), port_bytes(bytes, script.clone(), with)))
         .collect()
 }
 
 fn port_cmd(words: &[String]) -> Result<()> {
     let p = parse(words)?;
     let script = script(p.script.as_deref())?;
+    let with = p.settings();
     let dir = p.out.clone().unwrap_or_else(|| PathBuf::from("."));
     std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
     let mut taken = Vec::new();
@@ -142,7 +201,7 @@ fn port_cmd(words: &[String]) -> Result<()> {
     let mut results: Vec<(String, Result<Bundle, portable::PortableError>)> = Vec::new();
     if p.all_builtins {
         for (name, v) in retail_builtins(p.inputs.first().map(PathBuf::as_path))? {
-            results.push((name, port_variant(&v, script.clone())));
+            results.push((name, port_variant(&v, script.clone(), &with)));
         }
     } else {
         let mut inputs = Vec::new();
@@ -150,7 +209,7 @@ fn port_cmd(words: &[String]) -> Result<()> {
             let bytes = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
             inputs.push((path.display().to_string(), bytes));
         }
-        results = port_text(&inputs, &script);
+        results = port_text(&inputs, &script, &with);
     }
     for (label, result) in results {
         match result {
@@ -231,6 +290,60 @@ mod tests {
     }
 
     #[test]
+    fn parses_name_description_and_options() {
+        let p = parse(&[
+            "a.bin".into(),
+            "--name".into(),
+            "Big Hill".into(),
+            "--description".into(),
+            "One hill, more points".into(),
+            "--option".into(),
+            "hill_points=3".into(),
+            "--option".into(),
+            "moving=false".into(),
+        ])
+        .unwrap();
+        assert_eq!(p.name.as_deref(), Some("Big Hill"));
+        assert_eq!(p.description.as_deref(), Some("One hill, more points"));
+        assert_eq!(
+            p.settings().options,
+            [
+                ("hill_points".to_string(), OptionValue::Int(3)),
+                ("moving".to_string(), OptionValue::Bool(false)),
+            ]
+        );
+        assert!(parse(&words("a --option nokey")).is_err());
+        assert!(parse(&words("a --option =1")).is_err());
+        assert!(parse(&words("a b --name Two")).is_err());
+        assert!(parse(&words("--all-builtins --description x")).is_err());
+        assert!(parse(&words("--all-builtins --option a=1")).is_ok());
+    }
+
+    #[test]
+    fn options_are_checked_against_the_attached_script() {
+        let mut v = GameVariant::blank(GameType::Slayer);
+        v.set_name("Fists").unwrap();
+        let bytes = v.to_bytes().to_vec();
+        let with = Settings {
+            name: Some("Triple".into()),
+            description: Some("Three a kill".into()),
+            options: vec![("kill_points".into(), OptionValue::Int(3))],
+        };
+        let b = port_bytes(&bytes, PortScript::Builtin, &with).unwrap();
+        assert_eq!(b.name, "Triple");
+        assert_eq!(b.description, "Three a kill");
+        let plain = port_bytes(&bytes, PortScript::Builtin, &Settings::default()).unwrap();
+        assert_ne!(b.variant().unwrap().ext().script.options, plain.variant().unwrap().ext().script.options);
+        let bad = Settings {
+            options: vec![("hill_points".into(), OptionValue::Int(3))],
+            ..Settings::default()
+        };
+        let e = port_bytes(&bytes, PortScript::Builtin, &bad).unwrap_err();
+        assert_eq!(e.to_string(), "the option values: the script has no option \"hill_points\"");
+        assert!(port_bytes(&bytes, PortScript::Keep, &with).is_err());
+    }
+
+    #[test]
     fn ports_each_kind_of_input_the_same() {
         let v = king();
         let raw = v.to_bytes().to_vec();
@@ -243,18 +356,18 @@ mod tests {
             .enumerate()
             .map(|(i, b)| (format!("in{i}"), b))
             .collect();
-        let out = port_text(&inputs, &PortScript::Builtin);
+        let out = port_text(&inputs, &PortScript::Builtin, &Settings::default());
         let ids: Vec<String> = out.iter().map(|(_, r)| r.as_ref().unwrap().id()).collect();
         assert!(ids.iter().all(|i| *i == ids[0]), "{ids:?}");
         let b = out[0].1.as_ref().unwrap();
         assert_eq!(b.script.as_ref().unwrap().name, "King of the Hill");
         // Keep gives another file, with no script.
-        let kept = port_text(&inputs[..1], &PortScript::Keep);
+        let kept = port_text(&inputs[..1], &PortScript::Keep, &Settings::default());
         let k = kept[0].1.as_ref().unwrap();
         assert!(k.script.is_none());
         assert_ne!(k.id(), ids[0]);
         // A short file is refused by name.
-        let bad = port_text(&[("short".into(), vec![0; 4])], &PortScript::Builtin);
+        let bad = port_text(&[("short".into(), vec![0; 4])], &PortScript::Builtin, &Settings::default());
         assert_eq!(bad[0].1.as_ref().unwrap_err(), &portable::PortableError::Record);
     }
 
@@ -262,7 +375,7 @@ mod tests {
     fn writes_files_by_name_without_clobbering() {
         let dir = std::env::temp_dir().join(format!("h2-variants-port-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let b = port_variant(&king(), PortScript::Builtin).unwrap();
+        let b = port_variant(&king(), PortScript::Builtin, &Settings::default()).unwrap();
         let mut taken = Vec::new();
         let first = write(&dir, &b, &mut taken).unwrap();
         let second = write(&dir, &b, &mut taken).unwrap();
