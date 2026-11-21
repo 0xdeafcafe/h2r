@@ -115,7 +115,7 @@ pub fn builtin_label(flag_type: u16) -> Option<Label> {
 }
 
 /// The check that needs only the op.
-pub(crate) fn op(target: &Endpoint, label: Option<&Label>) -> Result<()> {
+pub(crate) fn check_op(target: &Endpoint, label: Option<&Label>) -> Result<()> {
     match *target {
         Endpoint::Base { index, .. } if index > i16::MAX as u32 => {
             return Err(Refusal::invalid("label", "entry index exceeds block limit"));

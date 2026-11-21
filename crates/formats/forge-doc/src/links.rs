@@ -153,7 +153,7 @@ fn invalid(what: &str, reason: impl Into<String>) -> Refusal {
 /// Checks that need only the op itself.
 pub(crate) fn op(edit: &Forge) -> Result<()> {
     let link = match edit {
-        Forge::Label { target, label } => return crate::labels::op(target, label.as_ref()),
+        Forge::Label { target, label } => return crate::labels::check_op(target, label.as_ref()),
         Forge::Unlink { link } if link.0 == 0 => {
             return Err(invalid("unlink", "want the ID of a link op"));
         }

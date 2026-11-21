@@ -3,8 +3,8 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    Edit, ForgeDoc, Limits, MAX_DOC_BYTES, Op, OpId, Refusal, Result, Sha256,
-    validate::{CountBefore, Counts, author, op},
+    Edit, ForgeDoc, Limits, MAX_DOC_BYTES, Op, Refusal, Result, Sha256,
+    validate::{Counts, author, op},
     wire,
 };
 
@@ -347,6 +347,7 @@ pub fn inverse(op: &Op, before: &Before<'_>) -> Result<Op> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::OpId;
     use crate::Placement;
 
     #[test]
