@@ -431,7 +431,8 @@ six at a time.
   with samples every tick, smoothing only adds lag. A sample marked as a
   cut, a respawn or a teleport (a jump past what its velocity explains)
   snaps instead.
-- **Live** keeps a small delay (100–150 ms, `FrameBuffer.delayTicks`) and
+- **Live** keeps a small delay (100–150 ms of game time at a real-time
+  stream's pace, `FrameBuffer.delayTicks`, scaled by `streamPace`) and
   extrapolates past the newest sample by velocity for at most 250 ms, then
   holds. Light smoothing stays for live corrections only.
 - **One-shots** play at their own tick: a shot's tracer leaves the muzzle
