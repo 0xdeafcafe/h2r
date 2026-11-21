@@ -439,14 +439,16 @@ page.
 
 ### The lobby
 
-Firefight is a mode of the custom game lobby ([forge-firefight-ui.md](forge-firefight-ui.md#the-lobbies)).
-Game Setup's first row, **Change Mode...** (`lobby_mode.rs`, action 14),
-opens a picker of Multiplayer, Forge and Firefight; Firefight is offered
-while the `firefight` feature is on and a settings store holds the
-choices. Picking it sets the page's Firefight choice on and closes Game
-Setup; the next open lists the Firefight rows. The lobby's header reads
-FIREFIGHT, and the variant panel shows the wave set, the difficulty and
-the starting lives in place of Quick Options' lines.
+Firefight is a tab of the party lobby's mode strip
+([party-lobby.md](party-lobby.md), [forge-firefight-ui.md](forge-firefight-ui.md#the-lobbies)),
+shown while the `firefight` feature is on and a settings store holds
+the choices, and dimmed with its reason while no kit map is installed.
+Selecting it sets the page's Firefight choice on and puts the lobby on
+a kit map; Game Setup then lists the Firefight rows, and the variant
+panel shows the wave set, the difficulty and the starting lives in
+place of Quick Options' lines. Until the strip's slice T3 lands, the
+mode is picked on Game Setup's first row, **Change Mode...**
+(`lobby_mode.rs`, action 14).
 
 | Row | A does |
 |---|---|
