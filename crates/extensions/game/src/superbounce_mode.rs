@@ -570,6 +570,19 @@ fn finish_scan(key: ScanKey, found: Result<Scanned, String>) {
                 key.map,
                 key.bsp
             );
+            // The bots' spots come from the nav worker's scan or its saved
+            // file; a run with neither (sim mode starts no worker, and a
+            // file from another scanner version is not read) would leave
+            // the practising bots with no spot to go to. This scan is the
+            // same scanner's, so it serves them until the worker's arrives.
+            if !bots::spots::has_scan(&key.map) {
+                eprintln!(
+                    "superbounce: {} spots on {} given to the bots (no nav scan)",
+                    spots.len(),
+                    key.map
+                );
+                bots::spots::publish(&key.map, spots.clone());
+            }
             let (spots, room) = (Arc::new(spots), Arc::new(room));
             s.cache.insert(key.clone(), (Arc::clone(&spots), Arc::clone(&room)));
             if here {
