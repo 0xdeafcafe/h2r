@@ -202,7 +202,7 @@ That read runs inside the `Vfs` lock, so every other file read waits for
 it. `Vfs::resolves_on_use` (`Backend::resolves_on_use`, forwarded by
 every wrapper) says whether a first look at a path would resolve a
 package; background readers skip such a map and leave the resolution to
-the game's own first open (the bots' nav scan, `boot::bots_nav_auto`,
+the game's own first open (the bots' on-demand nav lookup, `game::bots_nav_auto`,
 [bots.md](bots.md) section 10). Test: `resolves_on_use_is_true_only_before_a_packaged_maps_first_look`
 in `crates/runtime/vfs/tests/packages.rs`.
 

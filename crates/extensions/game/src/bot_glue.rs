@@ -335,6 +335,7 @@ fn load_map_data(seen: &Mutex<[u8; 32]>, dir: &std::path::Path, mem: &runtime::G
     if *last == raw {
         return;
     }
+    let _dispatch = timeline::setup::dispatch();
     *last = raw;
     let name = String::from_utf8_lossy(&raw[..end]).into_owned();
     let (generation, retired) = autonav::map_loaded(&name);
@@ -348,7 +349,8 @@ fn load_map_data(seen: &Mutex<[u8; 32]>, dir: &std::path::Path, mem: &runtime::G
     }
     let auto = autonav::handle().filter(|_| usage == MapUse::Build);
     if let Some(h) = auto {
-        h.want(&name);
+        let path = crate::map_slots::current_source(mem).and_then(|p| crate::map_slots::slot_file(&p));
+        h.want_source(&name, path);
     }
     let dir = dir.to_path_buf();
     let thread_name = name.clone();

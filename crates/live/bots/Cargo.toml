@@ -23,6 +23,7 @@ content.workspace = true
 # The game's nav worker runs parallel build phases as background work
 # (vis::Threads::background).
 background.workspace = true
+timeline = { path = "../../runtime/timeline" }
 
 [dev-dependencies]
 serde_json.workspace = true

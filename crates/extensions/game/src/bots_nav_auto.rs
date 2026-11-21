@@ -5,25 +5,12 @@
 //! threads, so the boot and a map
 //! load never wait for it, nor for the cores it uses.
 //!
-//! It scans retail maps as the VFS serves them, including explicit
-//! `H2_MAP_DIR` editor overrides. Generated offers open on demand so the
-//! background scan does not apply every installed patch at boot.
-//!
-//! - the disc's `maps\*.map`, opened as `D:\maps\<name>.map`;
-//! - the installed Map Pack's maps, `T:\$c\<offer>\*.map`.
-//!
-//! The level being booted (`H2_LEVEL`) goes first. When the game loads a
-//! map, `bot_glue` asks for it ([`bots::autonav::Handle::want`]): it is
-//! scanned again (a map installed since boot is found) and looked at next.
-//! If it was stale the bots walk straight until the build lands, then take
-//! the new mesh without a reload ([`bots::autonav::offer`]).
-//!
-//! The scans never resolve a map package: a packaged map nothing has
-//! opened yet is skipped ([`unresolved`]) until the game loads it, so the
-//! worker never holds the VFS for a read of a whole base map.
-//!
-//! The main menu and the shared resource maps are never scanned or built
-//! ([`bots::autonav::map_use`]).
+//! Work is requested when a map is booted, picked with Clankers on, or
+//! loaded. The worker sleeps between requests. It opens the named map as
+//! the VFS serves it, including Map Pack files and editor overrides.
+//! An unresolved package waits for the game's first open. Until a mesh
+//! arrives the bots walk toward known goals; the mesh is offered without
+//! reloading the map ([`bots::autonav::offer`]).
 //!
 //! `H2_BOTS_NAV_AUTO=0` turns it off; `h2 bots nav` still builds by hand.
 
@@ -39,32 +26,24 @@ type SharedVfs = Arc<Mutex<vfs::Vfs>>;
 /// the boot loads, if it knows.
 pub fn start(
     data_root: &Path,
-    disc: &Path,
     vfs: SharedVfs,
     first: Option<String>,
-    light: bool,
 ) -> Option<Handle> {
     let v = std::env::var(autonav::ENV).ok();
     start_with(
         autonav::enabled(v.as_deref()),
         data_root,
-        disc,
         vfs,
         first,
-        light,
     )
 }
 
-/// [`start`] with the switch given. `light`: the light-host profile,
-/// which scans only the booted map — reading every map on the disc at
-/// boot (its BSPs) would bring the whole image resident.
+/// [`start`] with the switch given.
 pub fn start_with(
     on: bool,
     data_root: &Path,
-    disc: &Path,
     vfs: SharedVfs,
     first: Option<String>,
-    light: bool,
 ) -> Option<Handle> {
     if !on {
         eprintln!(
@@ -73,44 +52,21 @@ pub fn start_with(
         );
         return None;
     }
-    let (disc, content) = (disc.to_path_buf(), content_root(data_root));
-    let scan_vfs = Arc::clone(&vfs);
-    let wanted = first.clone();
-    let scan = if light {
-        Box::new(move || scan_light(&scan_vfs, wanted.as_deref()))
-            as Box<dyn FnMut() -> Vec<Box<dyn Source>> + Send>
-    } else {
-        Box::new(move || scan(&disc, &content, &scan_vfs))
-            as Box<dyn FnMut() -> Vec<Box<dyn Source>> + Send>
-    };
-    let (worker, handle) = Worker::new(bots::cache::dir(data_root), scan);
+    let content = content_root(data_root);
+    let (worker, handle) = Worker::new(bots::cache::dir(data_root), Box::new(Vec::new));
     let worker = worker
         .shared_cache(autonav::shared_cache_dir())
-        .on_demand(move |name| {
-            if !played(name) {
-                return None;
-            }
-            // Content packages first, then the disc's own map of the name:
-            // a light host's scan holds only the booted map, so a later
-            // `want` finds the rest here.
-            let mut path = vfs
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .content_map_path(name);
-            if path.is_none() {
-                path = Some(format!("{}\\maps\\{name}.map", vfs::CDROM_DEVICE));
-            }
-            let path = path?;
-            vfs_source(&vfs, name, &path)
-        })
-        .first(first)
+        .on_demand(move |name, source| lookup(&vfs, &content, name, source))
         .stay(true)
         .background(true)
         .on_built(|name, d| {
-            if autonav::offer(name, d.clone(), true) {
+            if autonav::loaded().eq_ignore_ascii_case(name) && autonav::offer(name, d.clone(), None) {
                 eprintln!("bots: {name}: the new nav mesh is in use");
             }
         });
+    if let Some(first) = first {
+        handle.want(&first);
+    }
     let spawned = background::spawn("bots-nav", move || {
         worker.run();
     });
@@ -122,8 +78,7 @@ pub fn start_with(
     Some(handle)
 }
 
-/// Whether a bot ever plays the map `name`: the scans never open the main
-/// menu or the shared resource maps ([`autonav::map_use`]).
+/// Whether any bot plays this map (excluding the menu and shared maps).
 fn played(name: &str) -> bool {
     autonav::map_use(name, None) != autonav::MapUse::Never
 }
@@ -135,113 +90,57 @@ fn content_root(data_root: &Path) -> PathBuf {
         .join(vfs::CONTENT_DIR)
 }
 
-/// The light host's scan: only the booted map, through the VFS's own path
-/// — no walk of the image, no content enumeration, no other map's bytes.
-/// Maps loaded later arrive through [`Handle::want`], which the worker
-/// answers with the on-demand lookup.
-pub fn scan_light(vfs: &SharedVfs, first: Option<&str>) -> Vec<Box<dyn Source>> {
-    let Some(first) = first.filter(|f| played(f)) else {
-        return Vec::new();
-    };
-    let name = first.to_ascii_lowercase();
-    let path = format!("{}\\maps\\{name}.map", vfs::CDROM_DEVICE);
-    if unresolved(vfs, &path) {
-        return Vec::new();
+/// Find the one requested map. Installed physical Map Pack offers need
+/// no generated package registration. Look for their filename outside
+/// the VFS lock when the disc has no such map.
+fn lookup(vfs: &SharedVfs, content: &Path, name: &str, source: Option<&str>) -> Option<Box<dyn Source>> {
+    if !played(name) || name.contains(['/', '\\']) {
+        return None;
     }
-    vfs_source(vfs, &name, &path).into_iter().collect()
-}
-
-/// Disc and physically installed content. Generated package placeholders
-/// are opened through the worker's on-demand lookup.
-pub fn scan(disc: &Path, content: &Path, vfs: &SharedVfs) -> Vec<Box<dyn Source>> {
-    let mut out = Vec::new();
-    for name in disc_map_names(disc).into_iter().filter(|n| played(n)) {
-        let path = format!("{}\\maps\\{name}.map", vfs::CDROM_DEVICE);
-        if unresolved(vfs, &path) {
-            continue;
-        }
-        out.extend(vfs_source(vfs, &name, &path));
+    if let Some(path) = source {
+        return vfs_source(vfs, name, path);
     }
-    let mut dirs: Vec<_> = std::fs::read_dir(content)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .filter(|e| e.path().is_dir())
-        .collect();
-    dirs.sort_by_key(|e| e.file_name());
-    for d in dirs {
-        let mut maps: Vec<_> = std::fs::read_dir(d.path())
-            .into_iter()
-            .flatten()
-            .flatten()
-            .filter(|e| e.metadata().is_ok_and(|m| m.is_file() && m.len() != 0))
-            .map(|e| e.file_name().to_string_lossy().into_owned())
-            .filter(|n| n.to_ascii_lowercase().ends_with(".map"))
-            .collect();
-        maps.sort();
-        for file in maps {
-            let key = &file[..file.len() - ".map".len()];
-            if !played(key) {
-                continue;
-            }
-            let path = format!(
-                "{}\\TDATA\\{:08X}\\{}\\{}\\{file}",
-                vfs::DATA_DEVICE,
-                crate::new_maps::HALO2_TITLE,
-                vfs::CONTENT_DIR,
-                d.file_name().to_string_lossy()
-            );
-            if unresolved(vfs, &path) {
-                continue;
-            }
-            out.extend(vfs_source(vfs, key, &path));
+    let package = vfs.lock().unwrap_or_else(|e| e.into_inner()).content_map_path(name);
+    if let Some(path) = package {
+        return vfs_source(vfs, name, &path);
+    }
+    let disc = format!("{}\\maps\\{name}.map", vfs::CDROM_DEVICE);
+    if let Some(source) = vfs_source(vfs, name, &disc) {
+        return Some(source);
+    }
+    let filename = format!("{name}.map");
+    let mut offers: Vec<_> = std::fs::read_dir(content).ok()?.flatten().collect();
+    offers.sort_by_key(|offer| offer.file_name());
+    for offer in offers {
+        let Some(file) = std::fs::read_dir(offer.path()).ok().and_then(|files| {
+            files.flatten().find(|entry| entry.file_name().to_string_lossy().eq_ignore_ascii_case(&filename))
+        }) else { continue };
+        let path = format!(
+            "{}\\TDATA\\{:08X}\\{}\\{}\\{}",
+            vfs::DATA_DEVICE, crate::new_maps::HALO2_TITLE, vfs::CONTENT_DIR,
+            offer.file_name().to_string_lossy(), file.file_name().to_string_lossy(),
+        );
+        if let Some(source) = vfs_source(vfs, name, &path) {
+            return Some(source);
         }
     }
-    out
+    None
 }
 
-/// Whether `path` is a packaged map nothing has looked at yet: its first
-/// look reads the whole base map with the VFS held
-/// ([`vfs::Vfs::resolves_on_use`]), which would stall the game's own reads.
-/// The scans leave it to the game's first open; when the game loads it, the
-/// glue's [`Handle::want`] scans again and finds it resolved.
-fn unresolved(vfs: &SharedVfs, path: &str) -> bool {
-    vfs.lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .resolves_on_use(path)
-}
-
-/// The disc's `maps\*.map` names; none if the image does not read.
-fn disc_map_names(disc: &Path) -> Vec<String> {
-    let Ok(f) = std::fs::File::open(disc) else {
-        return Vec::new();
-    };
-    let Ok(mut iso) = xiso::Xiso::open(std::io::BufReader::new(f)) else {
-        return Vec::new();
-    };
-    let Ok(entries) = iso.entries() else {
-        return Vec::new();
-    };
-    entries
-        .iter()
-        .filter(|e| {
-            let p = e.path.to_ascii_lowercase();
-            !e.is_dir
-                && p.starts_with("/maps/")
-                && p.ends_with(".map")
-                && p.matches('/').count() == 2
-        })
-        .map(|e| {
-            let n = e.path.rsplit('/').next().unwrap_or(&e.path);
-            n[..n.len() - ".map".len()].to_owned()
-        })
-        .collect()
-}
-
-/// The map the VFS serves at `path`: its host region when it is one,
-/// else read through the VFS. `None` if it does not open.
+/// Pin the opened source, including an overlay and any alias in its
+/// header. Backends without a detached Unix reader use a host region or
+/// a chunked VFS handle. The worker leaves a cold package to the game.
 pub fn vfs_source(vfs: &SharedVfs, key: &str, path: &str) -> Option<Box<dyn Source>> {
     let mut v = vfs.lock().unwrap_or_else(|e| e.into_inner());
+    if v.resolves_on_use(path) {
+        return None;
+    }
+    #[cfg(unix)]
+    if let Some((reader, len)) = v.detached_map_reader(path) {
+        return Some(Box::new(Region::new(key, 0, len, Box::new(move || {
+            Ok(Box::new(std::io::BufReader::new(reader.clone())))
+        }))));
+    }
     if let Some(h) = v.host_file(path) {
         let file = h.path.clone();
         return Some(Box::new(Region::new(
@@ -389,10 +288,8 @@ mod tests {
         let h = start_with(
             false,
             &root,
-            &root.join("no.iso"),
             storage(&root),
             None,
-            false,
         );
         assert!(h.is_none());
         assert!(!root.join("bots").exists());
@@ -400,44 +297,21 @@ mod tests {
     }
 
     #[test]
-    fn the_scan_finds_content_maps_through_the_vfs() {
-        let root = tmp("scan");
+    fn only_the_requested_content_map_is_opened() {
+        let root = tmp("lookup");
         let vfs = storage(&root);
+        let content = content_root(&root);
         let bytes = put_package_map(&root, "4d53006400000401", "new_map");
         put_package_map(&root, "4d53006400000402", "other");
-        std::fs::write(
-            content_root(&root)
-                .join("4d53006400000402")
-                .join("patch.lvl"),
-            b"x",
-        )
-        .unwrap();
-        // No disc: the content maps only.
-        let mut found = scan(&root.join("no.iso"), &content_root(&root), &vfs);
-        let keys: Vec<&str> = found.iter().map(|s| s.key()).collect();
-        assert_eq!(keys, ["new_map", "other"]);
-        let h = found[0].header().unwrap();
-        assert_eq!(h, bytes[..autonav::MAP_HEADER_LEN]);
-        let parsed = autonav::MapHeader::parse(&h).unwrap();
-        assert_eq!(
-            (parsed.name.as_str(), parsed.multiplayer),
-            ("new_map", true)
-        );
-        std::fs::remove_dir_all(&root).unwrap();
-    }
-
-    #[test]
-    fn the_scans_never_open_the_menu_or_shared_maps() {
-        let root = tmp("ui");
-        let vfs = storage(&root);
-        put_package_map(&root, "4d53006400000401", "mainmenu");
-        put_package_map(&root, "4d53006400000401", "shared");
-        put_package_map(&root, "4d53006400000401", "lockout_remix");
-        let found = scan(&root.join("no.iso"), &content_root(&root), &vfs);
-        let keys: Vec<&str> = found.iter().map(|s| s.key()).collect();
-        assert_eq!(keys, ["lockout_remix"]);
-        assert!(scan_light(&vfs, Some("mainmenu")).is_empty());
-        assert!(scan_light(&vfs, Some("single_player_shared")).is_empty());
+        put_package_map(&root, "4d53006400000402", "mainmenu");
+        let mut src = lookup(&vfs, &content, "new_map", None).unwrap();
+        assert_eq!(src.header().unwrap(), bytes[..autonav::MAP_HEADER_LEN]);
+        let path = format!(r"{}\TDATA\{:08X}\$c\4d53006400000401\new_map.map",
+            vfs::DATA_DEVICE, crate::new_maps::HALO2_TITLE);
+        let mut alias = lookup(&vfs, &content, "different_stem", Some(&path)).unwrap();
+        assert_eq!(alias.header().unwrap(), bytes[..autonav::MAP_HEADER_LEN]);
+        assert!(lookup(&vfs, &content, "mainmenu", None).is_none());
+        assert!(lookup(&vfs, &content, "missing", None).is_none());
         std::fs::remove_dir_all(&root).unwrap();
     }
 

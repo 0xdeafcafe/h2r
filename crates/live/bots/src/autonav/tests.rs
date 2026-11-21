@@ -471,9 +471,17 @@ fn the_worker_never_wants_scans_or_builds_the_menu_and_shared_maps() {
     let (w, h) = Worker::new(dir.clone(), scan_of(Arc::clone(&list), Arc::clone(&builds)));
     h.want("mainmenu");
     h.want("Shared");
-    assert!(h.0.wants.lock().unwrap().names.is_empty());
+    assert!(h.0.wants.lock().unwrap().maps.is_empty());
     h.want("lockout");
-    assert_eq!(h.0.wants.lock().unwrap().names, ["lockout"]);
+    let source = r"D:\maps\other-stem.map";
+    h.want_source("LOCKOUT", Some(source.to_owned()));
+    h.want("lockout");
+    {
+        let wants = h.0.wants.lock().unwrap();
+        assert_eq!(wants.maps.len(), 1);
+        assert_eq!(wants.maps[0].name, "lockout");
+        assert_eq!(wants.maps[0].path.as_deref(), Some(source));
+    }
     // Even forced and of any kind (`h2 bots nav mainmenu --force`).
     let sum = w.force(true).any_kind(true).log(|_| {}).run();
     assert_eq!(*builds.lock().unwrap(), ["lockout"]);
@@ -570,17 +578,22 @@ fn a_wanted_map_installed_after_boot_is_built_while_the_worker_waits() {
 fn the_workers_data_wins_over_a_file_read_as_the_map_loads() {
     let mut l = Loaded::default();
     // Nothing loaded: nothing goes in.
-    assert!(!l.accept("lockout", true));
+    assert!(!l.accept("lockout", None));
     l.changed("lockout");
-    assert!(!l.accept("zanzibar", false));
-    assert!(!l.accept("zanzibar", true));
+    assert!(!l.accept("zanzibar", Some(l.generation)));
+    assert!(!l.accept("zanzibar", None));
     // The file first, then the worker's: both go in.
-    assert!(l.accept("lockout", false));
-    assert!(l.accept("Lockout", true));
+    assert!(l.accept("lockout", Some(l.generation)));
+    assert!(l.accept("Lockout", None));
     // A file read late does not replace what the worker built.
-    assert!(!l.accept("lockout", false));
-    assert!(l.accept("lockout", true));
+    assert!(!l.accept("lockout", Some(l.generation)));
+    assert!(l.accept("lockout", None));
     // The next map starts over.
     l.changed("zanzibar");
-    assert!(l.accept("zanzibar", false));
+    assert!(l.accept("zanzibar", Some(l.generation)));
+    let zanzibar = l.generation;
+    l.changed("lockout");
+    l.changed("zanzibar");
+    assert!(!l.accept("zanzibar", Some(zanzibar)), "late read from a previous visit");
+    assert!(l.accept("zanzibar", Some(l.generation)));
 }

@@ -12,9 +12,10 @@ use crate::nav::{Build, NavMesh};
 /// cache file loads.
 static CURRENT: std::sync::RwLock<Option<std::sync::Arc<MapData>>> = std::sync::RwLock::new(None);
 
-/// Sets the loaded map's data.
-pub fn set_current(d: Option<std::sync::Arc<MapData>>) {
-    *CURRENT.write().unwrap_or_else(|e| e.into_inner()) = d;
+/// Exchange the active pointer. Release the retired map outside any lock
+/// shared with a bot sampling a frame.
+pub(crate) fn replace_current(d: Option<std::sync::Arc<MapData>>) -> Option<std::sync::Arc<MapData>> {
+    std::mem::replace(&mut *CURRENT.write().unwrap_or_else(|e| e.into_inner()), d)
 }
 
 /// The loaded map's data.

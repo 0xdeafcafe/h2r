@@ -486,9 +486,15 @@ impl Queue {
     }
 }
 
+struct Request {
+    name: String,
+    /// Mounted source recorded by the active slot, when known.
+    path: Option<String>,
+}
+
 #[derive(Default)]
 struct Wants {
-    names: VecDeque<String>,
+    maps: VecDeque<Request>,
     stop: bool,
 }
 
@@ -507,12 +513,22 @@ impl Handle {
     /// being loaded, or one installed since. A map no bot plays
     /// ([`MapUse::Never`]) is ignored.
     pub fn want(&self, map: &str) {
+        self.want_source(map, None);
+    }
+
+    /// A loaded map carries its slot's actual source. A later menu hint
+    /// with just a short name must not displace that path.
+    pub fn want_source(&self, map: &str, path: Option<String>) {
         if map_use(map, None) == MapUse::Never {
             return;
         }
         let mut w = self.0.wants.lock().unwrap_or_else(|e| e.into_inner());
-        if !w.names.iter().any(|n| n.eq_ignore_ascii_case(map)) {
-            w.names.push_back(map.to_owned());
+        if let Some(queued) = w.maps.iter_mut().find(|r| r.name.eq_ignore_ascii_case(map)) {
+            if path.is_some() {
+                queued.path = path;
+            }
+        } else {
+            w.maps.push_back(Request { name: map.to_owned(), path });
         }
         self.0.wake.notify_all();
     }
@@ -535,7 +551,7 @@ pub struct Summary {
 }
 
 type Scan = Box<dyn FnMut() -> Vec<Box<dyn Source>> + Send>;
-type Lookup = Box<dyn FnMut(&str) -> Option<Box<dyn Source>> + Send>;
+type Lookup = Box<dyn FnMut(&str, Option<&str>) -> Option<Box<dyn Source>> + Send>;
 
 /// Builds the stale maps a scan finds; see the module docs.
 pub struct Worker {
@@ -584,7 +600,7 @@ impl Worker {
     /// Sources that should only be opened on request, outside the scan.
     pub fn on_demand(
         mut self,
-        lookup: impl FnMut(&str) -> Option<Box<dyn Source>> + Send + 'static,
+        lookup: impl FnMut(&str, Option<&str>) -> Option<Box<dyn Source>> + Send + 'static,
     ) -> Self {
         self.lookup = Some(Box::new(lookup));
         self
@@ -645,9 +661,9 @@ impl Worker {
         self
     }
 
-    fn take_wants(&self) -> (Vec<String>, bool) {
+    fn take_wants(&self) -> (Vec<Request>, bool) {
         let mut w = self.shared.wants.lock().unwrap_or_else(|e| e.into_inner());
-        (w.names.drain(..).collect(), w.stop)
+        (w.maps.drain(..).collect(), w.stop)
     }
 
     /// Runs: the pass over the scan, one summary line, then (with
@@ -676,16 +692,16 @@ impl Worker {
                 // since it was looked at.
                 for s in (self.scan)().into_iter().filter(|s| played(s.as_ref())) {
                     let key = s.key().to_ascii_lowercase();
-                    if s.key().eq_ignore_ascii_case(w) || seen.insert(key) {
+                    if s.key().eq_ignore_ascii_case(&w.name) || seen.insert(key) {
                         q.push(s);
                     }
                 }
-                if let Some(src) = self.lookup.as_mut().and_then(|lookup| lookup(w))
+                if let Some(src) = self.lookup.as_mut().and_then(|lookup| lookup(&w.name, w.path.as_deref()))
                     && played(src.as_ref())
                 {
                     q.push(src);
                 }
-                q.prioritise(w);
+                q.prioritise(&w.name);
             }
             if let Some(src) = q.pop() {
                 self.one(src, &mut sum);
@@ -710,7 +726,7 @@ impl Worker {
             drop(
                 self.shared
                     .wake
-                    .wait_while(w, |w| w.names.is_empty() && !w.stop)
+                    .wait_while(w, |w| w.maps.is_empty() && !w.stop)
                     .unwrap_or_else(|e| e.into_inner()),
             );
         }
@@ -748,6 +764,7 @@ impl Worker {
             return;
         }
         let t = Instant::now();
+        let nav_stage = timeline::setup::Stage::Nav.worker();
         let stamp = Stamp::now(header.fingerprint);
         let digest = self.shared_dir().and_then(|_| src.cache_digest());
         if let Some(bsps) = self.shared_dir().zip(digest).and_then(|(dir, key)| {
@@ -761,6 +778,7 @@ impl Worker {
             ));
             (self.on_built)(&header.name, &bsps[0].data);
             sum.built.push(header.name.clone());
+            drop(nav_stage);
             let why = crate::vis::status(&self.dir, &header.name);
             self.grids(&header.name, why, sum, false, Some(bsps));
             return;
@@ -790,6 +808,7 @@ impl Worker {
                 if let Some((dir, key)) = self.shared_dir().zip(digest) {
                     shared_cache::save_nav(dir, key, stamp, &bsps);
                 }
+                drop(nav_stage);
                 self.grids(&header.name, crate::vis::Status::Missing, sum, false, None);
             }
             Err(e) => {
@@ -821,11 +840,12 @@ impl Worker {
         count: bool,
         prepared: Option<Vec<crate::vis::GridInput>>,
     ) {
+        let _stage = timeline::setup::Stage::Visibility.worker();
         let t = Instant::now();
         let shared = Arc::clone(&self.shared);
         let stop = move || {
             let w = shared.wants.lock().unwrap_or_else(|e| e.into_inner());
-            !w.names.is_empty() || w.stop
+            w.stop || w.maps.iter().any(|r| !r.name.eq_ignore_ascii_case(map))
         };
         let cache = self.shared_dir();
         let result = match prepared {
@@ -898,6 +918,7 @@ pub fn summary_line(s: &Summary, secs: f32) -> String {
 pub struct Loaded {
     name: String,
     built: bool,
+    generation: u64,
 }
 
 impl Loaded {
@@ -905,20 +926,21 @@ impl Loaded {
     pub fn changed(&mut self, name: &str) {
         self.name = name.to_owned();
         self.built = false;
+        self.generation = self.generation.wrapping_add(1);
     }
 
-    /// Whether data for `map` (from the worker when `built`, else read from
-    /// its file) goes in now: only for the loaded map, and a file's never
-    /// over the worker's.
-    pub fn accept(&mut self, map: &str, built: bool) -> bool {
+    /// Accept a disk read only for the same load, and only until a build
+    /// for that map has published. Builders supply no read generation.
+    pub fn accept(&mut self, map: &str, read_generation: Option<u64>) -> bool {
         if self.name.is_empty() || !self.name.eq_ignore_ascii_case(map) {
             return false;
         }
-        if built {
-            self.built = true;
-            true
-        } else {
-            !self.built
+        match read_generation {
+            Some(generation) => !self.built && self.generation == generation,
+            None => {
+                self.built = true;
+                true
+            }
         }
     }
 }
@@ -926,14 +948,19 @@ impl Loaded {
 static LOADED: Mutex<Loaded> = Mutex::new(Loaded {
     name: String::new(),
     built: false,
+    generation: 0,
 });
 
-/// The game loaded `map` (empty: none): its data is cleared until offered.
-pub fn map_loaded(map: &str) {
+/// Clear the active map and return the load generation and retired data.
+/// The caller releases the retired allocations on its map-data worker.
+pub fn map_loaded(map: &str) -> (u64, Option<Arc<MapData>>) {
     let mut l = LOADED.lock().unwrap_or_else(|e| e.into_inner());
     l.changed(map);
+    let retired = cache::replace_current(None);
+    let generation = l.generation;
+    drop(l);
     crate::decisions::radio::map_loaded();
-    cache::set_current(None);
+    (generation, retired)
 }
 
 /// The loaded map's short name (empty: none).
@@ -947,26 +974,43 @@ pub(crate) fn loaded_change(previous: &str) -> Option<String> {
     (loaded.name != previous).then(|| loaded.name.clone())
 }
 
-/// Offers `map`'s data to the bots ([`cache::set_current`]); see
-/// [`Loaded::accept`]. Returns whether it went in.
-pub fn offer(map: &str, data: MapData, built: bool) -> bool {
+/// Publish a completed build, or a disk read for a particular map load.
+/// A late read from the first visit to A cannot replace data on A → B → A.
+pub fn offer(map: &str, data: MapData, read_generation: Option<u64>) -> bool {
     let mut l = LOADED.lock().unwrap_or_else(|e| e.into_inner());
-    if !l.accept(map, built) {
+    if !l.accept(map, read_generation) {
         return false;
     }
-    cache::set_current(Some(Arc::new(data)));
+    let retired = cache::replace_current(Some(Arc::new(data)));
+    drop(l);
+    drop(retired);
     true
 }
 
-/// Attaches `vis` to the loaded map's data, in place, when `map` is the
-/// loaded map and its walls are the ones `vis` was built from. Returns
-/// whether it went in.
+/// Attach a grid to the walls it was built from. Verifying its fingerprint
+/// walks every triangle, so take a shared reference and release the map
+/// lock before checking. Replacing the map retires that reference safely.
 pub fn offer_vis(map: &str, vis: Arc<crate::vis::Vis>) -> bool {
-    let l = LOADED.lock().unwrap_or_else(|e| e.into_inner());
-    if l.name.is_empty() || !l.name.eq_ignore_ascii_case(map) {
-        return false;
+    let mut loaded = LOADED.lock().unwrap_or_else(|e| e.into_inner());
+    loop {
+        if loaded.name.is_empty() || !loaded.name.eq_ignore_ascii_case(map) {
+            return false;
+        }
+        let Some(data) = cache::current() else { return false };
+        drop(loaded);
+        let fits = vis.fits(&data.walls);
+        loaded = LOADED.lock().unwrap_or_else(|e| e.into_inner());
+        if cache::current().as_ref().is_some_and(|active| Arc::ptr_eq(active, &data)) {
+            let installed = fits && data.walls.set_vis(vis);
+            drop(loaded);
+            return installed;
+        }
+        // A simultaneous file read or rebuild replaced the snapshot. Drop
+        // its keepalive outside the lock, then try the replacement's walls.
+        drop(loaded);
+        drop(data);
+        loaded = LOADED.lock().unwrap_or_else(|e| e.into_inner());
     }
-    cache::current().is_some_and(|d| vis.fits(&d.walls) && d.walls.set_vis(vis))
 }
 
 static HANDLE: std::sync::OnceLock<Handle> = std::sync::OnceLock::new();

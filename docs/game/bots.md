@@ -2516,6 +2516,13 @@ ran. They now join the lobby as a real peer does.
   counters + 1, kept equal every frame (a map load on the host is the
   phantom's too). The join line is `bots: phantom G joins (peer N, in the
   pregame lobby)`.
+- **Idle custom lobby.** The host compares the occupied peer and player
+  tables, session incarnation, local peer and team-play flag before
+  reconciling a settled roster. Changes to an effective profile or the
+  host's map status take effect on the next frame, including edits that
+  leave the membership revision alone. A pending join and a matchmaking
+  party follow their respective join checks. The host looks up player
+  datums only during a hosted game.
 - **Teams.** A phantom with no team asked for (the Clankers page's
   bots; a Clankermatch's come balanced) goes, in a team game, to the team
   with the fewest session players of red, blue and any other a player is
@@ -3973,15 +3980,13 @@ game checks.
      (`bots-map-data`). Until
      the data is ready, the bots can walk toward known goals. Host visual
      contacts require a loaded BSP.
-   - **Built for you** (`bots::autonav`, `boot::bots_nav_auto`). At boot a
-     worker thread (named `bots-nav`) looks at every map the game can
-     load, as the VFS serves it: the disc's `D:\maps\*.map` (so a package
-     or `H2_MAP_DIR` map in a disc map's place is what counts) and the
-     content packages' `T:\$c\<offer>\*.map` (the Map Pack, new maps,
-     converted Halo 1 maps). A multiplayer map whose `<map>.0.bots` is
-     missing, damaged, of an older format, built by another generator
-     version, or built from another map file is **stale** and is built;
-     the rest are left alone. The boot never waits for it.
+   - **Built for you** (`bots::autonav`, `game::bots_nav_auto`). One
+     worker (`bots-nav`) sleeps until a boot, a map selection with
+     Clankers on, or a map load requests a map. It looks up that map as
+     the VFS serves it, using the active cache slot's recorded path on
+     load. This includes disc overrides, installed Map Pack
+     files and generated content packages. It rebuilds stale multiplayer
+     meshes and grids and leaves other maps for their own requests.
      - **Background work.** The worker runs on `background::spawn` and
        splits collision probes, tactical place scoring and grid rows
        across `background::workers` lowered threads
@@ -3997,24 +4002,22 @@ game checks.
      - **Maps no bot plays.** `autonav::map_use` gives `Never` for
        `mainmenu`, `shared` and `single_player_shared` by name, and for a
        header of those kinds (`+0x140` 2, 3, 4); `LoadOnly` for campaign;
-       `Build` for multiplayer. The scans never open a `Never` map,
-       `Handle::want` ignores it, and the worker skips it even with
-       `--force` and any kind. When one loads, the glue reads the loaded
-       cache type (`0x547840`) and starts nothing: no thread, no build, no
-       log line. A campaign map loads a hand-built file if there is one
-       and logs nothing if not.
+       `Build` for multiplayer. `Handle::want` skips a `Never` map.
+       The frame hook checks the loaded cache type (`0x547840`) and
+       clears the previous map. Its worker releases the retired mesh,
+       including when returning to the menu. A campaign map loads a
+       hand-built file if there is one.
      - **Packaged maps.** A map a package serves resolves on its first
-       look, reading its whole base inside the VFS lock. The scans skip a
-       map not resolved yet (`Vfs::resolves_on_use`), so the worker never
-       holds the VFS for that; the game's own open resolves it, and the
-       glue's `want` at its load scans again and finds it
+       look, reading its whole base inside the VFS lock. The lookup checks
+       `Vfs::resolves_on_use` and defers a cold package until the game
+       opens it. On Unix the worker pins a detached reader for the mounted
+       disc, file, store or overlay and does its IO outside the VFS lock
        ([maps.md](maps.md) section 2).
      - **The fingerprint** is FNV-1a (64-bit) over the map's 2 KiB cache
        header, which holds its size, the tag index's offsets, its name and
        the XOR checksum of the rest (every map writer here recomputes it).
-       Reading it costs 2 KiB a map, so a boot with every file up to date
-       does almost nothing. A converted Halo 1 map's two sandbox
-       variants have separate cache identities.
+       Checking a requested mesh costs 2 KiB of source reads. A converted
+       Halo 1 map's two sandbox variants have separate cache identities.
      - **Shared cache.** The game and `h2 bots nav all` can restore
        completed files to a fresh data directory. `autonav::shared_cache`
        keys a nav bundle by SHA-256 of the whole source map and the nav
@@ -4031,13 +4034,14 @@ game checks.
        generator change what a map builds. The test
        `generator_output_is_pinned` records its output on a small scene
        with the version, so changing the output without the bump fails.
-     - **Order.** The level being booted (`H2_LEVEL`) first, then the scan
-       in order. When a map loads, the glue asks for it
-       (`Handle::want`): the worker scans again (a map installed since
-       boot is found), looks at that map next, and builds it if stale.
-       The bots walk straight until it lands, then take the new mesh
-       without a reload (`autonav::offer`; a file read as the map loaded
-       never replaces data the worker built after it).
+     - **Order.** A request (`Handle::want`) moves its map to the front.
+       A repeated request for a grid already under construction allows its
+       current pass to finish. The bots steer toward known goals until
+       their mesh arrives (`autonav::offer`). A disk read carries its load
+       generation so revisiting a map cannot publish a previous visit's
+       late read. The visibility worker verifies the wall fingerprint
+       outside the lock used by bot ticks and attaches the grid to the
+       matching mesh.
      - **Picked with Clankers on.** `bots::autonav::build_soon(map)` asks
        for a map the same way, from the Clankers page and the map pick
        (Clankers turned on, or a map picked with them on), so a stale
@@ -4074,11 +4078,11 @@ game checks.
      (the booted map first, one source per map); a pass building the
      stale multiplayer maps only, then nothing, then only an edited one;
      a map installed after boot built when wanted; the worker's data
-     winning over a late file read. `cargo test -p boot --lib
-     bots_nav_auto`: the scan finding content maps through the VFS, a
+     winning over a late file read. `cargo test -p game --lib
+     bots_nav_auto`: finding a requested content map through the VFS, a
      map read through the VFS in chunks, nothing started when off, the
-     scans never opening the menu or shared maps
-     (`the_scans_never_open_the_menu_or_shared_maps`). `map_use` and the
+     lookup skipping the menu
+     (`only_the_requested_content_map_is_opened`). `map_use` and the
      worker leaving those maps alone:
      `the_menu_and_shared_maps_are_never_used_and_multiplayer_is_built`,
      `the_worker_never_wants_scans_or_builds_the_menu_and_shared_maps`.
@@ -4175,11 +4179,9 @@ game checks.
      teammate never a target; a dead bot lets go of every input; grenades
      rare and spaced.
    - **Game run (the user), stages 2 and 3:**
-     1. Nothing to do first: the game builds the meshes itself. On the
-        first boot after this change the log says `bots: built the nav
-        mesh for <map> (...)` for each multiplayer map, then `bots: nav
-        meshes: N built, ...`; on the next boot only the summary, with
-        every map up to date.
+     1. Select a multiplayer map with Clankers on. A stale mesh produces
+        `bots: built the nav mesh for <map> (...)` or a shared-cache
+        restore. Selecting a map with current local files skips the build.
      2. `H2_BOTS=1 h2 play`, Split Screen, Slayer on Lockout. The log says
         `bots: lockout: N polygons, ...` when the map loads (not "no nav
         mesh"). If the map loads before its mesh is built, the log says
