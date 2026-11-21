@@ -86,7 +86,7 @@ fn merge_key(selection: &[(BlockKind, usize)], field: &str) -> u64 {
 }
 
 /// Draw the inspector for the selection and apply its edits.
-pub fn draw(ui: &Ui, bold: dear_imgui_rs::FontId, app: &mut App, state: &mut InspectorState) {
+pub fn draw(ui: &Ui, fonts: &theme::Fonts, app: &mut App, state: &mut InspectorState) {
     let location = app.nav_location();
     let (kind, index) = match location.selection() {
         Some(Selection::Placement(kind, index)) => (kind, index),
@@ -97,8 +97,12 @@ pub fn draw(ui: &Ui, bold: dear_imgui_rs::FontId, app: &mut App, state: &mut Ins
         None => {
             state.focus = None;
             state.tag_panel.clear_field_focus();
-            ui.text_disabled("Select a placement in the outliner or the viewport.");
-            ui.text_disabled("Ctrl/Cmd+click adds to the selection, Shift+click a run.");
+            let title = if app.session.is_open() {
+                "Click something in the level"
+            } else {
+                "Open a map to inspect it"
+            };
+            theme::empty_card(ui, fonts, title, || {});
             return;
         }
     };
@@ -106,7 +110,7 @@ pub fn draw(ui: &Ui, bold: dear_imgui_rs::FontId, app: &mut App, state: &mut Ins
     let Some(scenario) = app.session.scenario() else {
         return;
     };
-    let f = ui.push_font(bold);
+    let f = ui.push_font(fonts.title);
     if selection.len() == 1 {
         ui.text(format!(
             "{}  {}",
@@ -158,7 +162,7 @@ pub fn draw(ui: &Ui, bold: dear_imgui_rs::FontId, app: &mut App, state: &mut Ins
         let mixed = values.iter().any(|v| *v != first);
         let h = section(kind, f);
         if h != heading {
-            ui.separator_with_text(h);
+            theme::section(ui, h);
             heading = h;
         }
         let d = ui.begin_disabled_with_cond(!f.editable);
@@ -218,7 +222,7 @@ fn tags(
         return;
     };
     app.sync_tags();
-    ui.separator_with_text("Tags");
+    theme::section(ui, "Tags");
     let doc = &app.tags;
     if let Some(error) = &doc.error {
         ui.text_colored(theme::ERROR, error);
@@ -242,13 +246,13 @@ fn tags(
     let mut actions = Vec::new();
     breadcrumbs(ui, app, location, &mut actions);
     let undo = ui.begin_disabled_with_cond(!doc.can_undo());
-    if ui.small_button("Undo tag edit") {
+    if ui.button("Undo tag edit") {
         actions.push(Action::UndoIn(ToolKind::Tags));
     }
     undo.end();
     ui.same_line();
     let redo = ui.begin_disabled_with_cond(!doc.can_redo());
-    if ui.small_button("Redo tag edit") {
+    if ui.button("Redo tag edit") {
         actions.push(Action::RedoIn(ToolKind::Tags));
     }
     redo.end();

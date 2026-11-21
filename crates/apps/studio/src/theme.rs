@@ -2,14 +2,17 @@
 //! small rounding, roomy spacing) and the bundled fonts, Inter for text
 //! and a Lucide subset for icons (`assets/fonts`, OFL and ISC licensed).
 use dear_imgui_rs::{
-    Context, FontConfig, FontId, FontSource, StbTrueTypeFontData, Style, StyleColor, StyleVar, Ui,
+    ChildFlags, Context, FontConfig, FontId, FontSource, StbTrueTypeFontData, Style, StyleColor,
+    StyleVar, Ui,
 };
 
 use crate::play::LinkTone;
 
 /// Text size in logical points. Dear ImGui 1.92 rasterises at the
 /// framebuffer scale, so this stays crisp on HiDPI displays.
+pub const CAPTION_SIZE: f32 = 12.0;
 pub const FONT_SIZE: f32 = 15.0;
+pub const TITLE_SIZE: f32 = 18.0;
 
 pub(crate) static INTER_REGULAR: &[u8] = include_bytes!("../assets/fonts/Inter-Regular.ttf");
 static INTER_SEMIBOLD: &[u8] = include_bytes!("../assets/fonts/Inter-SemiBold.ttf");
@@ -22,6 +25,8 @@ pub struct Fonts {
     pub regular: FontId,
     /// Inter SemiBold with the icons, for headings.
     pub bold: FontId,
+    pub caption: FontId,
+    pub title: FontId,
 }
 
 fn source(bytes: &[u8], size: f32) -> FontSource<'static> {
@@ -45,7 +50,9 @@ pub fn load_fonts(ctx: &mut Context) -> Fonts {
     let atlas = ctx.font_atlas();
     let regular = atlas.add_font(&[source(INTER_REGULAR, FONT_SIZE), icons(FONT_SIZE)]);
     let bold = atlas.add_font(&[source(INTER_SEMIBOLD, FONT_SIZE), icons(FONT_SIZE)]);
-    Fonts { regular, bold }
+    let caption = atlas.add_font(&[source(INTER_REGULAR, CAPTION_SIZE), icons(CAPTION_SIZE)]);
+    let title = atlas.add_font(&[source(INTER_SEMIBOLD, TITLE_SIZE), icons(TITLE_SIZE)]);
+    Fonts { regular, bold, caption, title }
 }
 
 /// RGBA from 0..255 components.
@@ -55,6 +62,22 @@ const fn rgb(r: u8, g: u8, b: u8) -> [f32; 4] {
 const fn rgba(r: u8, g: u8, b: u8, a: f32) -> [f32; 4] {
     [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, a]
 }
+
+pub const BG: [f32; 4] = rgb(24, 25, 28);
+pub const PANEL: [f32; 4] = rgb(30, 31, 35);
+pub const RAISED: [f32; 4] = rgb(42, 44, 50);
+pub const TEXT: [f32; 4] = rgb(222, 224, 228);
+pub const STATUS_BG: [f32; 4] = rgb(19, 20, 23);
+pub const RULE: [f32; 4] = rgb(48, 50, 56);
+
+pub const HUD_WIDGET: [f32; 4] = [0.35, 0.8, 1.0, 0.45];
+pub const SCREEN_WIDGET: [f32; 4] = [0.35, 0.8, 1.0, 0.55];
+pub const WIDGET_FOCUS: [f32; 4] = [1.0, 1.0, 1.0, 0.95];
+pub const WIDGET_ERROR: [f32; 4] = [1.0, 0.3, 0.25, 1.0];
+pub const SAFE_FRAME: [f32; 4] = [0.4, 1.0, 0.45, 0.8];
+pub const HIDDEN_WIDGET: [f32; 4] = [0.6, 0.6, 0.6, 0.5];
+pub const OTHER_HUD: [f32; 4] = [1.0, 0.75, 0.2, 0.5];
+pub const RESERVED_AREA: [f32; 4] = [1.0, 0.75, 0.2, 0.8];
 
 /// The accent (selection, active tabs, gizmo-adjacent highlights).
 pub const ACCENT: [f32; 4] = rgb(56, 132, 230);
@@ -84,10 +107,6 @@ pub fn link_colour(tone: LinkTone) -> [f32; 4] {
         LinkTone::Warn => WARN,
         LinkTone::Error => ERROR,
     }
-}
-
-pub fn section(ui: &Ui, text: &str) {
-    ui.separator_with_text(text);
 }
 
 const PILL_PADDING: [f32; 2] = [17.0, 5.0];
@@ -228,30 +247,25 @@ pub fn apply(style: &mut Style) {
     style.set_docking_separator_size(3.0);
 
     // Colours: near-black panels, slightly lighter frames, one accent.
-    let bg = rgb(24, 25, 28);
-    let panel = rgb(30, 31, 35);
-    let frame = rgb(42, 44, 50);
     let frame_hover = rgb(52, 55, 62);
     let frame_active = rgb(62, 66, 75);
-    let border = rgb(48, 50, 56);
-    let text = rgb(222, 224, 228);
     let accent_dim = rgba(56, 132, 230, 0.55);
     let accent_soft = rgba(56, 132, 230, 0.30);
     use StyleColor as C;
     for (c, v) in [
-        (C::Text, text),
+        (C::Text, TEXT),
         (C::TextDisabled, rgb(105, 110, 120)),
-        (C::WindowBg, panel),
+        (C::WindowBg, PANEL),
         (C::ChildBg, rgba(0, 0, 0, 0.0)),
         (C::PopupBg, rgb(34, 35, 40)),
-        (C::Border, border),
+        (C::Border, RULE),
         (C::BorderShadow, rgba(0, 0, 0, 0.0)),
-        (C::FrameBg, frame),
+        (C::FrameBg, RAISED),
         (C::FrameBgHovered, frame_hover),
         (C::FrameBgActive, frame_active),
-        (C::TitleBg, bg),
-        (C::TitleBgActive, bg),
-        (C::TitleBgCollapsed, bg),
+        (C::TitleBg, BG),
+        (C::TitleBgActive, BG),
+        (C::TitleBgCollapsed, BG),
         (C::MenuBarBg, rgb(20, 21, 24)),
         (C::ScrollbarBg, rgba(0, 0, 0, 0.0)),
         (C::ScrollbarGrab, rgb(58, 61, 68)),
@@ -260,29 +274,29 @@ pub fn apply(style: &mut Style) {
         (C::CheckMark, ACCENT),
         (C::SliderGrab, ACCENT),
         (C::SliderGrabActive, rgb(90, 156, 240)),
-        (C::Button, frame),
+        (C::Button, RAISED),
         (C::ButtonHovered, frame_hover),
         (C::ButtonActive, accent_dim),
         (C::Header, accent_soft),
         (C::HeaderHovered, rgba(56, 132, 230, 0.40)),
         (C::HeaderActive, accent_dim),
-        (C::Separator, border),
+        (C::Separator, RULE),
         (C::SeparatorHovered, accent_dim),
         (C::SeparatorActive, ACCENT),
         (C::ResizeGrip, rgba(0, 0, 0, 0.0)),
         (C::ResizeGripHovered, accent_dim),
         (C::ResizeGripActive, ACCENT),
-        (C::Tab, bg),
+        (C::Tab, BG),
         (C::TabHovered, frame_hover),
-        (C::TabSelected, panel),
+        (C::TabSelected, PANEL),
         (C::TabSelectedOverline, ACCENT),
-        (C::TabDimmed, bg),
-        (C::TabDimmedSelected, panel),
+        (C::TabDimmed, BG),
+        (C::TabDimmedSelected, PANEL),
         (C::TabDimmedSelectedOverline, rgba(0, 0, 0, 0.0)),
         (C::DockingPreview, accent_dim),
-        (C::DockingEmptyBg, bg),
-        (C::TableHeaderBg, frame),
-        (C::TableBorderStrong, border),
+        (C::DockingEmptyBg, BG),
+        (C::TableHeaderBg, RAISED),
+        (C::TableBorderStrong, RULE),
         (C::TableBorderLight, rgb(38, 40, 45)),
         (C::TableRowBg, rgba(0, 0, 0, 0.0)),
         (C::TableRowBgAlt, rgba(255, 255, 255, 0.02)),
@@ -291,6 +305,47 @@ pub fn apply(style: &mut Style) {
         (C::ModalWindowDimBg, rgba(0, 0, 0, 0.55)),
     ] {
         style.set_color(c, v);
+    }
+}
+
+/// A labelled rule, shared by inspector and library sections.
+pub fn section(ui: &Ui, label: impl AsRef<str>) {
+    ui.separator_with_text(label.as_ref());
+}
+
+pub fn empty_card(ui: &Ui, fonts: &Fonts, title: &str, contents: impl FnOnce()) {
+    let [available_width, available_height] = ui.content_region_avail();
+    let width = (available_width - 16.0).clamp(1.0, 336.0);
+    let height = available_height.clamp(1.0, 106.0);
+    let start = ui.cursor_pos();
+    ui.set_cursor_pos([
+        start[0] + (available_width - width).max(0.0) * 0.5,
+        start[1] + (available_height - height).max(0.0) * 0.5,
+    ]);
+    let _bg = ui.push_style_color(StyleColor::ChildBg, RAISED);
+    let _padding = ui.push_style_var(StyleVar::WindowPadding([14.0, 12.0]));
+    ui.child_window("##empty-card")
+        .size([width, height])
+        .child_flags(ChildFlags::ALWAYS_USE_WINDOW_PADDING)
+        .build(ui, || {
+            {
+                let _font = ui.push_font(fonts.title);
+                ui.text_wrapped(title);
+            }
+            contents();
+        });
+}
+
+/// Keep long document names and log messages inside their assigned area.
+pub fn clipped_text(ui: &Ui, text: &str, color: [f32; 4], width: f32) {
+    if width <= 0.0 {
+        return;
+    }
+    let [x, y] = ui.cursor_screen_pos();
+    let draw = ui.get_window_draw_list();
+    {
+        let _clip = draw.push_clip_rect([x, y], [x + width, y + ui.text_line_height() + 8.0], true);
+        ui.text_colored(color, text);
     }
 }
 

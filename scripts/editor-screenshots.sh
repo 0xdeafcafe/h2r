@@ -119,7 +119,7 @@ detail() {
 
 # The layout's regions, numbered.
 regions=(
-  --callout 'win:##MainMenuBar=1' --callout 'win:###tools=2' --callout 'win:###outliner=3'
+  --callout 'win:##MainMenuBar=1' --callout 'win:##studio-bar=2' --callout 'win:###outliner=3'
   --callout 'win:###viewport=4' --callout 'win:###inspector=5' --callout 'win:###log=6'
   --callout 'win:##status-bar=7'
 )
@@ -137,7 +137,7 @@ render "$scratch/setup.png" --pick ascension --dialog package --do "click Save p
 # The first run: no disc found.
 shot first-run --no-disc --data empty
 # A disc open: its maps listed, none picked yet.
-detail maps-list --crop 'win:###tools'
+detail maps-list --crop 'win:###maps'
 # The window: a multiplayer map framed, nothing selected.
 shot window --pick ascension
 # The window's regions, numbered.
@@ -211,7 +211,7 @@ if [[ -f "$h1" ]]; then
   ln -s "$(cd "$(dirname "$h1")" && pwd)/$(basename "$h1")" "$scratch/disc/halo1.iso"
   h1=disc/halo1.iso
   # The Maps list's Packages and Halo 1 groups.
-  detail maps-groups --halo1 "$h1" --size 1600x2400 --do 'move win:###tools; wheel -8' --crop 'win:###tools'
+  detail maps-groups --halo1 "$h1" --size 1600x2400 --do 'move win:###maps; wheel -8' --crop 'win:###maps'
   # A Halo 1 map, read-only.
   shot halo1-map --halo1 "$h1" --halo1-map bloodgulch --select startinglocations:0 --focus --camera 40,35,40
   detail halo1-banner --halo1 "$h1" --halo1-map bloodgulch --crop 'win:###outliner' --crop-height 260
@@ -234,9 +234,9 @@ fi
 ## Game variants
 
 # The list, a built-in, and a copy.
-detail variants-list --tool variants --variant 3 --crop 'win:###outliner'
+detail variants-list --tool variants --variant 3 --crop 'win:###variants-list'
 shot variants-builtin --tool variants --variant 3
-detail variants-copy --tool variants --variant 3 --crop 'win:###viewport' --crop-height 110
+detail variants-copy --tool variants --variant 3 --crop 'win:###variants-settings' --crop-height 110
 shot variants-edit --tool variants --variant 3 --copy-variant "Swords Night"
 # Each settings page on its own.
 page() { detail "variants-page-$1" --tool variants --variant "$2" --page "$3" --crop "$3" --crop-height "$4"; }
@@ -258,36 +258,36 @@ detail variants-help --tool variants --variant 3 --do 'hover ##setting-2@-200,12
 # Two settings changed on a copy: the changes summary.
 changed=(--tool variants --variant 3 --copy-variant "Swords Night"
   --do 'click ##setting-2; click win:##Combo@60,80; click ##setting-17; click win:##Combo@60,14')
-detail variants-changes "${changed[@]}" --crop 'win:###inspector' --crop-height 330
+detail variants-changes "${changed[@]}" --crop 'win:###variants-inspector' --crop-height 330
 # Renamed, then saved: it joins the Saved list.
 detail variants-rename --tool variants --variant 3 --copy-variant "Swords Night" \
-  --do 'click ##variant-name; key end; key backspace*20; type Lockout Swords' --crop 'win:###viewport' --crop-height 110
-detail variants-saved "${changed[@]}" --do 'click Save' --crop 'win:###outliner' --crop-height 200
+  --do 'click ##variant-name; key end; key backspace*20; type Lockout Swords' --crop 'win:###variants-settings' --crop-height 110
+detail variants-saved "${changed[@]}" --do 'click Save' --crop 'win:###variants-list' --crop-height 200
 # Export's hover help, and pasting a portable variant.
 detail variants-export --tool variants --variant 3 --copy-variant "Swords Night" --do 'hover Export...' \
-  --crop 'win:###inspector' --crop 'win:##Tooltip' --crop-height 160
+  --crop 'win:###variants-inspector' --crop 'win:##Tooltip' --crop-height 160
 detail variants-import --tool variants --variant 3 --do 'click Paste a portable variant' \
-  --crop 'win:###inspector' --crop-height 470
+  --crop 'win:###variants-inspector' --crop-height 470
 
 ## Playlists
 
-detail hopper-list --tool playlists --hopper default --playlist 2 --crop 'win:###outliner'
+detail hopper-list --tool playlists --hopper default --playlist 2 --crop 'win:###playlists-list'
 shot hopper-playlist --hopper default --playlist 2
-detail hopper-entries --hopper default --playlist 2 --crop 'win:###viewport' --crop-height 372
+detail hopper-entries --hopper default --playlist 2 --crop 'win:###playlists-entries' --crop-height 372
 # The map and variant pickers open.
 detail hopper-map-picker --hopper default --playlist 2 --do 'click ##map#1' \
-  --crop 'win:###viewport' --crop 'win:##Combo' --crop-height 300
+  --crop 'win:###playlists-entries' --crop 'win:##Combo' --crop-height 300
 detail hopper-variant-picker --hopper default --playlist 2 --do 'click ##variant#0' \
-  --crop 'win:###viewport' --crop 'win:##Combo' --crop-height 300
+  --crop 'win:###playlists-entries' --crop 'win:##Combo' --crop-height 300
 # Edit hands the entry's variant to the variant tool as a copy.
-shot hopper-edit --hopper default --playlist 2 --do 'click ###viewport>Edit#0'
+shot hopper-edit --hopper default --playlist 2 --do 'click ###playlists-entries>Edit#0'
 # A preset, the raw fields, and a validation error.
 shot hopper-preset --hopper default --playlist 1 --preset 0
-detail hopper-preset-panel --hopper default --playlist 1 --preset 0 --crop 'win:###inspector' --crop-height 560
-detail hopper-raw --hopper default --playlist 2 --do 'click Advanced: raw fields; move win:###inspector; wheel -20' \
-  --crop 'win:###inspector'
+detail hopper-preset-panel --hopper default --playlist 1 --preset 0 --crop 'win:###playlists-inspector' --crop-height 560
+detail hopper-raw --hopper default --playlist 2 --do 'click Advanced: raw fields; move win:###playlists-inspector; wheel -20' \
+  --crop 'win:###playlists-inspector'
 detail hopper-error --hopper default --playlist 2 --do 'click ##hopper-title; key end; key backspace*40' \
-  --crop 'win:###viewport' --crop-height 430
+  --crop 'win:###playlists-entries' --crop-height 430
 detail hopper-file-menu --tool playlists --hopper default --playlist 2 --do 'click File; hover Save as' $(menu File)
 
 ## HUD

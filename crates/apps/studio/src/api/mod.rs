@@ -440,9 +440,9 @@ pub const METHODS: &[MethodDef] = &[
     ),
     def(
         m::VIEW_CAMERA,
-        "Read or set the viewport camera (degrees and world units), or frame a placement",
-        r#"{"yaw?":"number","pitch?":"number","distance?":"number","target?":"[x,y,z]","focus?":{"block":"string","index":"integer"},"all?":"boolean"}"#,
-        r#"{"yaw":"number","pitch":"number","distance":"number","target":"[x,y,z]"}"#,
+        "Read or set the viewport camera (degrees and world units), set fly speed, or frame a placement",
+        r#"{"yaw?":"number","pitch?":"number","distance?":"number","target?":"[x,y,z]","focus?":{"block":"string","index":"integer"},"all?":"boolean","fly_speed?":"number (0.5..1000 units/s)"}"#,
+        r#"{"yaw":"number","pitch":"number","distance":"number","target":"[x,y,z]","fly_speed":"number"}"#,
         r#"{"yaw":45,"pitch":30,"distance":40}"#,
     ),
     def(

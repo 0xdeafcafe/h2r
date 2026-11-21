@@ -118,6 +118,7 @@ pub struct ViewportView {
     /// The next left click in the viewport places a new entry of this
     /// block there (a copy of the entry, when given).
     pub placing: Option<(BlockKind, Option<usize>)>,
+    hovered: bool,
     /// Where the last frame showed the image: origin and size in points.
     shown: Option<[f32; 4]>,
 }
@@ -146,6 +147,7 @@ impl ViewportView {
             orbiting: false,
             panning: false,
             placing: None,
+            hovered: false,
             shown: None,
         }
     }
@@ -154,6 +156,10 @@ impl ViewportView {
     /// points), and its render target: the headless tests compare the two.
     pub fn shown(&self) -> Option<([f32; 4], &wgpu::Texture)> {
         Some((self.shown?, self.vp.as_ref()?.color_texture()?))
+    }
+
+    pub fn hovered(&self) -> bool {
+        self.hovered
     }
 
     /// Whether the camera has the mouse (keyboard shortcuts then fly).
@@ -229,6 +235,7 @@ impl ViewportView {
             (size[1] * scale[1]).round() as u32,
         ];
         let origin = ui.cursor_screen_pos();
+        self.hovered = false;
         let live = mirror::Scene::shown(app);
         let Some(texture) = self.prepare(gpu, app, &live, px) else {
             ui.text_disabled("The viewport could not create its render target.");
@@ -239,6 +246,7 @@ impl ViewportView {
         self.shown = Some(rect);
         live.overlay(ui, app.session.camera(), rect);
         let hovered = ui.is_item_hovered();
+        self.hovered = hovered;
         let aspect = size[0] / size[1].max(1.0);
 
         let (over_gizmo, using_gizmo) = self.gizmo(ui, app, origin, size, aspect);
@@ -306,7 +314,9 @@ impl ViewportView {
             fast: io.key_shift(),
             height: size[1],
         };
+        self.camera.speed = app.fly_speed();
         self.camera.update(app.session.camera_mut(), &input);
+        app.set_fly_speed(self.camera.speed);
         let ray = app.session.camera().ray(uv[0], uv[1], aspect);
 
         if self.placing.is_some() && ui.is_key_pressed(Key::Escape) {

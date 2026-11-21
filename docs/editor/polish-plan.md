@@ -1,6 +1,6 @@
 # h2-editor polish: what is wrong, the design, and the slices
 
-Status: P1 is implemented. The remaining slices describe the design.
+Status: P1 and P2 are implemented. The remaining slices describe the design.
 Code: `crates/apps/studio/src` (the window: `ui.rs`, `ui/`, `play.rs`, `viewport.rs`, `theme.rs`), `crates/tools/scenario-edit/src` (the scene and its renderer). Tests: named per slice.
 Switch: none.
 
@@ -29,16 +29,10 @@ during the read, so nothing here comes from the socket API.
 
 | # | Problem | Where |
 |---|---|---|
-| R1 | Tools and maps share one window. The **Tools** list (six rows) and the whole **Maps** browser (disc, map pack, packages, Halo 1, shared) sit in one panel that the default layout gives 38 % of the left column, so the map list scrolls in a slot about seven rows tall. | `ui.rs:672` (`tools_window`), headings at `ui.rs:682` and `ui.rs:698`, split at `ui.rs:67` |
-| R2 | Picking a tool swaps what three windows mean. The window with the ID `viewport` is titled Viewport, Settings, Entries, Preview, HUD or Fields; `outliner` and `inspector` change the same way. A user who docks "the inspector" somewhere finds a hex dump there in the Tags tool. | `ui.rs:576` to `ui.rs:664` (`variant_windows` through `tag_windows`) |
 | R3 | Scenario and Tags are two tools over one map. They have separate selections, a second map picker, and separate undo: the inspector's tag section carries its own **Undo tag edit** and **Redo tag edit** buttons because Cmd+Z goes to the active tool's stack. | `ui/tags.rs:62` (`map_picker`), `ui/inspector.rs:245` to `ui/inspector.rs:251`, `app.rs:585` (`can_undo`) |
-| R4 | The viewport toolbar is a row of small text buttons with the keys in their labels (`Move (W)`), followed by a line of dim help text that is cut off in a narrow window. Snap steps are behind a right-click that only a tooltip mentions. | `ui.rs:1213` (`viewport_toolbar`), `ui.rs:1278`, `ui.rs:1297`, `ui.rs:1314` |
 | R5 | Nothing chooses what the viewport shows. The View menu holds gizmo modes and snapping; the only show or hide switches are **Halo 1 overlay** and, in the Game panel, **Show live objects**. Markers, the sky, models and fog cannot be turned off. | `ui.rs:390` to `ui.rs:459`, `ui/play.rs` (`PlayUi::session`) |
 | R6 | Save is always "Save as". Cmd+S opens a file dialog every time for a map, and a package opened from the Maps list is saved through a different menu item with a form. | `ui.rs:189`, `ui.rs:316` to `ui.rs:335` |
-| R7 | Empty states do not say what to do next. With no source: "Pick a map to see it here." and "No map open." With no selection: two lines about click modifiers. No button opens a disc from the centre of the window. | `ui.rs:909`, `ui.rs:780`, `ui/inspector.rs:100` |
-| R8 | The status bar puts the last message and the counts in one colour family. The message repeats the last log line. Its background is a literal colour outside the theme. | `ui.rs:956` (`status_bar`), `ui.rs:968` |
 | R9 | No search across the app. Maps, tags and placements each have their own filter box, and commands are only in menus. | `ui.rs:784`, `ui/tags.rs:132` |
-| R10 | The look is flat: one font size for everything, 24 `small_button`s for primary actions, section headings that are bold text, marker colours set as literals in the scene crate. | `theme.rs:71` (`apply`), `crates/tools/scenario-edit/src/geometry.rs:698` |
 
 ### The game link
 
@@ -98,15 +92,16 @@ side panels' contents, never the regions.
 ```
 
 - **The bar** under the menu (`ui/bar.rs`) is fixed, 36 pt, and drawn in
-  every tool. Left: the tools as tabs (the Tools list of R1 goes away).
+  every tool. Left: the tools as tabs.
   Centre: the open document's name and its unsaved mark. Right: the
   game link (below).
 - **Left dock**: **Scene** (the outliner: placements, then Volumes and
   Collision groups), **Tags** (the scenario tag tree) and **Maps** as
   three tabs of one full-height column. Maps has the whole column when
   picked. The Map tool is click-to-edit.md's: `ToolKind::Tags` is a tab,
-  not a tool.
-- **Windows keep one meaning** (R2). Each tool has its own window keys
+  not a top-level tool. The Tags tree, fields and Data and bytes tab
+  live alongside the viewport and share the Map document.
+- **Windows keep one meaning**. Each tool has its own window keys
   (`variants-list`, `variants-settings`, ...), shown only in that tool
   and placed by the default layout in the same regions. The Scene,
   Viewport and Inspector windows are the Map tool's alone.
@@ -116,9 +111,9 @@ side panels' contents, never the regions.
   action and its key, in groups: gizmo (move, rotate, scale, axes),
   snapping (a toggle and a step combo each, no right-click), camera
   (frame all, frame selection, fly speed), **Show** (the layers popover)
-  and **Lighting**. The mouse help moves to the status bar's hint slot,
+  (P6) and **Lighting** (P14). Mouse help uses the status bar's hint slot,
   which changes with what the pointer is over.
-- **Empty states** (R7) are a centred card with the one action that
+- **Empty states** are a centred card with the one action that
   moves on: **Open a disc or map...** with no source, the map grid with
   a source and no map, "Click something in the level" with a map and no
   selection.

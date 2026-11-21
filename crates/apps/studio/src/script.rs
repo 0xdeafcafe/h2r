@@ -67,7 +67,14 @@ pub fn parse(text: &str) -> Result<Vec<Step>> {
         };
         out.push(match verb {
             "hover" => Step::Hover(need("a target")?),
-            "click" => Step::Click(need("a target")?, Button::Left),
+            "click" => {
+                let target = need("a target")?;
+                if let Some(offset) = legacy_scenario(&target) {
+                    Step::Click(format!("##studio-bar>###tool-Map{offset}"), Button::Left)
+                } else {
+                    Step::Click(target, Button::Left)
+                }
+            }
             "rclick" => Step::Click(need("a target")?, Button::Right),
             "dclick" => Step::Click(need("a target")?, Button::Double),
             "move" => Step::Move(need("a target")?),
@@ -89,6 +96,20 @@ pub fn parse(text: &str) -> Result<Vec<Step>> {
         });
     }
     Ok(out)
+}
+
+/// Old screenshots targeted a row of the Tools list. Match the old
+/// visible label and keep any offset so the script can aim at its tab.
+fn legacy_scenario(target: &str) -> Option<&str> {
+    let (widget, offset) = match target.rsplit_once('@') {
+        Some((widget, offset)) if point(offset).is_some() => (widget, &target[widget.len()..]),
+        _ => (target, ""),
+    };
+    let (window, label) = widget.split_once('>').unwrap_or(("", widget));
+    let label = label.strip_prefix(crate::theme::icon::MAP).unwrap_or(label);
+    let label = label.strip_suffix("#0").unwrap_or(label);
+    let label = label.trim().trim_end_matches([' ', '*']);
+    (matches!(window, "" | "Tools" | "tools" | "###tools") && label == "Scenario").then_some(offset)
 }
 
 fn key(name: &str) -> Result<dear_imgui_rs::Key> {
@@ -255,6 +276,22 @@ mod tests {
         assert!(s.find("Rotate").is_err());
         let u = s.union(&["File".into(), "win:inspector".into()]).unwrap();
         assert_eq!(u, [0.0, 0.0, 1400.0, 900.0]);
+    }
+
+    #[test]
+    fn old_scenario_clicks_target_the_map_workspace() {
+        let steps = parse("click ###tools>Scenario *@4,2; click Scenario").unwrap();
+        assert_eq!(
+            steps,
+            [
+                Step::Click("##studio-bar>###tool-Map@4,2".into(), Button::Left),
+                Step::Click("##studio-bar>###tool-Map".into(), Button::Left),
+            ],
+        );
+        assert_eq!(
+            parse("click ###viewport>Scenario").unwrap(),
+            [Step::Click("###viewport>Scenario".into(), Button::Left)],
+        );
     }
 
     #[test]

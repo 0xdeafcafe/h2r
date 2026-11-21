@@ -1,15 +1,39 @@
-//! Fixed bar below the menu. The game link occupies its right side.
+//! The fixed bar under the main menu: tool tabs on the left, the open
+//! document in the centre and the game link on the right.
 
 use dear_imgui_rs::{Condition, StyleColor, StyleVar, Ui, WindowFlags};
 
 use super::play::{PlayUi, link_icon};
-use crate::App;
+use crate::app::{Action, App, ToolKind};
+use crate::play::LinkView;
 use crate::play::pair::Request;
 use crate::theme::{self, Fonts, TransportIcon};
 
-pub fn draw(ui: &Ui, app: &mut App, play: &mut PlayUi, fonts: &Fonts) {
+const TABS: [(ToolKind, &str); 5] = [
+    (ToolKind::Scenario, "Map"),
+    (ToolKind::Variants, "Variants"),
+    (ToolKind::Playlists, "Playlists"),
+    (ToolKind::UiScreens, "UI"),
+    (ToolKind::Hud, "HUD"),
+];
+
+/// The window's padding at its left and right edges.
+const EDGE: f32 = 10.0;
+
+pub(super) fn is_map(tool: ToolKind) -> bool {
+    matches!(tool, ToolKind::Scenario | ToolKind::Tags)
+}
+
+pub(super) fn draw(
+    ui: &Ui,
+    app: &mut App,
+    play: &mut PlayUi,
+    fonts: &Fonts,
+    actions: &mut Vec<Action>,
+) {
     let vp = ui.main_viewport();
-    let (pos, size) = (vp.work_pos(), vp.work_size());
+    let pos = vp.work_pos();
+    let width = vp.work_size()[0];
     ui.set_next_window_viewport(vp.id());
     let flags = WindowFlags::NO_DECORATION
         | WindowFlags::NO_DOCKING
@@ -21,63 +45,102 @@ pub fn draw(ui: &Ui, app: &mut App, play: &mut PlayUi, fonts: &Fonts) {
         | WindowFlags::NO_NAV_FOCUS;
     let _rounding = ui.push_style_var(StyleVar::WindowRounding(0.0));
     let _border = ui.push_style_var(StyleVar::WindowBorderSize(0.0));
-    let _padding = ui.push_style_var(StyleVar::WindowPadding([10.0, 0.0]));
+    let _padding = ui.push_style_var(StyleVar::WindowPadding([EDGE, 0.0]));
     let _bg = ui.push_style_color(StyleColor::WindowBg, theme::BAR_BG);
     ui.window("##studio-bar")
         .flags(flags)
         .position(pos, Condition::Always)
-        .size([size[0], theme::BAR], Condition::Always)
+        .size([width, theme::BAR], Condition::Always)
         .build(|| {
             let _font = ui.push_font(fonts.regular);
+            // Every control sits on one row, centred in the bar's height.
+            let row = (theme::BAR - ui.frame_height()) * 0.5;
+            ui.set_cursor_pos([EDGE, row]);
+            for (index, (tool, name)) in TABS.into_iter().enumerate() {
+                if index > 0 {
+                    ui.same_line();
+                }
+                let active = app.tool == tool || (tool == ToolKind::Scenario && is_map(app.tool));
+                let dirty = app.tool_dirty(tool);
+                let label = format!("{name}{}###tool-{name}", if dirty { " *" } else { "" });
+                let _tone = active.then(|| ui.push_style_color(StyleColor::Button, theme::ACCENT));
+                if ui.button(label) && app.tool != tool {
+                    actions.push(Action::SetTool(tool));
+                }
+            }
+            let tabs_end = ui.item_rect_max()[0] - pos[0];
+
+            // The link keeps the right edge. The document name takes what
+            // is left between the tabs and the link.
             let view = play.play.link_view(app);
-            let can_edit = view.state.can_edit();
-            let buttons = [view.can_stop || view.can_play, view.can_pause, view.paused];
-            let extra_width = (theme::BAR_BUTTON + theme::BAR_SPACING)
-                * buttons.into_iter().filter(|&on| on).count() as f32
-                + if can_edit {
-                    theme::edit_switch_width(ui) + theme::BAR_SPACING
-                } else {
-                    0.0
-                };
-            let width = theme::pill_width(ui, link_icon(view.tone), &view.text) + extra_width;
-            let start = ui.cursor_pos();
-            ui.set_cursor_pos([
-                start[0] + (ui.content_region_avail()[0] - width).max(0.0),
-                (theme::BAR - ui.frame_height()) * 0.5,
-            ]);
-            play.bar_pill(ui, app, &view);
-            let same_line = || ui.same_line_with_spacing(0.0, theme::BAR_SPACING);
-            if view.can_stop {
-                same_line();
-                if theme::transport_button(ui, TransportIcon::Stop, "Stop (Shift+F5)") {
-                    play.play.request(Request::Stop);
-                }
-            } else if view.can_play {
-                same_line();
-                if theme::transport_button(ui, TransportIcon::Play, "Play (F5)") {
-                    play.play.request(Request::Play);
-                }
+            let link_start =
+                (width - EDGE - link_width(ui, &view)).max(tabs_end + theme::BAR_SPACING);
+            let document_end = link_start - 16.0;
+            if let Some(name) = app.document_caption()
+                && document_end > tabs_end + 24.0
+            {
+                let _font = ui.push_font(fonts.title);
+                let text_width = ui.calc_text_size(&name)[0];
+                let start = ((width - text_width) / 2.0)
+                    .min(document_end - text_width)
+                    .max(tabs_end + 16.0);
+                ui.set_cursor_pos([start, row]);
+                ui.align_text_to_frame_padding();
+                theme::clipped_text(ui, &name, theme::TEXT, document_end - start);
             }
-            if view.can_pause {
-                same_line();
-                let (icon, text, request) = if view.paused {
-                    (TransportIcon::Play, "Resume", Request::Resume)
-                } else {
-                    (TransportIcon::Pause, "Pause", Request::Pause)
-                };
-                if theme::transport_button(ui, icon, text) {
-                    play.play.request(request);
-                }
-            }
-            if view.paused {
-                same_line();
-                if theme::transport_button(ui, TransportIcon::Step, "Step") {
-                    play.step();
-                }
-            }
-            if can_edit {
-                same_line();
-                play.edit_switch(ui);
-            }
+
+            ui.set_cursor_pos([link_start, row]);
+            link(ui, app, play, &view);
         });
+}
+
+/// The width of the link pill and the controls that follow it.
+fn link_width(ui: &Ui, view: &LinkView) -> f32 {
+    let buttons = [view.can_stop || view.can_play, view.can_pause, view.paused];
+    let mut width = theme::pill_width(ui, link_icon(view.tone), &view.text)
+        + (theme::BAR_BUTTON + theme::BAR_SPACING)
+            * buttons.into_iter().filter(|&on| on).count() as f32;
+    if view.state.can_edit() {
+        width += theme::edit_switch_width(ui) + theme::BAR_SPACING;
+    }
+    width
+}
+
+/// The game link: the pill, then the transport buttons and the Edit
+/// switch when the link allows them.
+fn link(ui: &Ui, app: &mut App, play: &mut PlayUi, view: &LinkView) {
+    play.bar_pill(ui, app, view);
+    let same_line = || ui.same_line_with_spacing(0.0, theme::BAR_SPACING);
+    if view.can_stop {
+        same_line();
+        if theme::transport_button(ui, TransportIcon::Stop, "Stop (Shift+F5)") {
+            play.play.request(Request::Stop);
+        }
+    } else if view.can_play {
+        same_line();
+        if theme::transport_button(ui, TransportIcon::Play, "Play (F5)") {
+            play.play.request(Request::Play);
+        }
+    }
+    if view.can_pause {
+        same_line();
+        let (icon, text, request) = if view.paused {
+            (TransportIcon::Play, "Resume", Request::Resume)
+        } else {
+            (TransportIcon::Pause, "Pause", Request::Pause)
+        };
+        if theme::transport_button(ui, icon, text) {
+            play.play.request(request);
+        }
+    }
+    if view.paused {
+        same_line();
+        if theme::transport_button(ui, TransportIcon::Step, "Step") {
+            play.step();
+        }
+    }
+    if view.state.can_edit() {
+        same_line();
+        play.edit_switch(ui);
+    }
 }

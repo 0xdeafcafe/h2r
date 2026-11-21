@@ -225,6 +225,20 @@ fn setup(api: &mut Api, app: &mut App, t: &Temp, name: &str) {
 }
 
 #[test]
+fn the_camera_api_reads_and_sets_fly_speed() {
+    let temp = Temp::new("fly-speed");
+    let mut app = app(&temp);
+    let mut api = Api::new();
+    let initial = api.call(&mut app, m::VIEW_CAMERA, json!({})).unwrap();
+    assert_eq!(initial["fly_speed"], json!(crate::camera::DEFAULT_SPEED));
+    let response = api.call(&mut app, m::VIEW_CAMERA, json!({"fly_speed": 32})).unwrap();
+    assert_eq!(response["fly_speed"], json!(32.0));
+    let error = api.call(&mut app, m::VIEW_CAMERA, json!({"fly_speed": 0})).unwrap_err();
+    assert_eq!(error.code, code::INVALID_PARAMS);
+    assert_eq!(app.fly_speed(), 32.0);
+}
+
+#[test]
 fn every_method_in_methods_has_a_test() {
     // Each method runs its own example from the table on a fresh app:
     // built ones answer, planned ones answer NOT_YET with their lane.

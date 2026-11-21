@@ -35,12 +35,6 @@ use crate::viewport::Gpu;
 
 use super::map_list;
 
-const RECT: [f32; 4] = [0.35, 0.8, 1.0, 0.45];
-const SELECTED: [f32; 4] = [1.0, 1.0, 1.0, 0.95];
-const BAD: [f32; 4] = [1.0, 0.3, 0.25, 1.0];
-const FRAME: [f32; 4] = [0.4, 1.0, 0.45, 0.8];
-const HIDDEN: [f32; 4] = [0.6, 0.6, 0.6, 0.5];
-const OTHER: [f32; 4] = [1.0, 0.75, 0.2, 0.5];
 
 struct Texture {
     texture: wgpu::Texture,
@@ -246,7 +240,7 @@ pub fn preview(ui: &Ui, app: &mut App, st: &mut HudUi, fonts: &Fonts, gpu: &mut 
         dl.add_rect(at([r.x0, r.y0]), at([r.x1, r.y1]), c).thickness(t).build();
     };
     if frame {
-        boxed(shot.picture.frame.rect(), FRAME, 1.0);
+        boxed(shot.picture.frame.rect(), theme::SAFE_FRAME, 1.0);
     }
     let bad: Vec<(usize, WidgetKey)> = shot
         .findings
@@ -258,15 +252,15 @@ pub fn preview(ui: &Ui, app: &mut App, st: &mut HudUi, fonts: &Fonts, gpu: &mut 
         let Some(r) = p.rect else { continue };
         let id = (p.hud, p.key);
         if hot.contains(&id) {
-            boxed(r, BAD, 3.0);
+            boxed(r, theme::WIDGET_ERROR, 3.0);
         } else if p.hud == 0 && selected == Some(p.key) {
-            boxed(r, SELECTED, 2.0);
+            boxed(r, theme::WIDGET_FOCUS, 2.0);
         } else if bad.contains(&id) {
-            boxed(r, BAD, 1.5);
+            boxed(r, theme::WIDGET_ERROR, 1.5);
         } else if rects && !p.shown {
-            boxed(r, HIDDEN, 1.0);
+            boxed(r, theme::HIDDEN_WIDGET, 1.0);
         } else if rects {
-            boxed(r, if p.hud == 0 { RECT } else { OTHER }, 1.0);
+            boxed(r, if p.hud == 0 { theme::HUD_WIDGET } else { theme::OTHER_HUD }, 1.0);
         }
     }
     drop(clip);
@@ -628,7 +622,7 @@ fn properties(ui: &Ui, h: &mut HudTool, panel: &mut PanelState, key: WidgetKey, 
         })
         .collect();
     if !own.is_empty() {
-        ui.separator_with_text("HUD fields");
+        theme::section(ui, "HUD fields");
         for f in own {
             let _id = ui.push_id(f.key);
             ui.align_text_to_frame_padding();
@@ -641,7 +635,7 @@ fn properties(ui: &Ui, h: &mut HudTool, panel: &mut PanelState, key: WidgetKey, 
             }
         }
     }
-    ui.separator_with_text("Fields");
+    theme::section(ui, "Fields");
     let mut out = Vec::new();
     fields::panel(ui, &h.fields, hud_id, &path, panel, &mut out);
     for a in out {

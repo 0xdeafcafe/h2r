@@ -183,6 +183,7 @@ pub enum Action {
     DuplicateEntry(BlockKind, usize),
     FrameAll,
     FocusSelected,
+    SetFlySpeed(f32),
     SetAllowGrowth(bool),
     /// Show another tool.
     SetTool(ToolKind),
@@ -365,6 +366,7 @@ pub struct App {
     /// The file the edited map was last saved to.
     saved_path: Option<PathBuf>,
     pub tool: ToolKind,
+    fly_speed: f32,
     pub session: Session,
     /// The action held behind the unsaved-changes prompt, and the tool
     /// whose edits it would drop.
@@ -465,6 +467,7 @@ impl App {
             loaded: None,
             saved_path: None,
             tool: ToolKind::Scenario,
+            fly_speed: crate::camera::DEFAULT_SPEED,
             session: Session::new(),
             pending: None,
             variants: None,
@@ -602,6 +605,16 @@ impl App {
             ToolKind::Tags => self.tags.can_redo(),
         }
     }
+    pub fn fly_speed(&self) -> f32 {
+        self.fly_speed
+    }
+
+    pub(crate) fn set_fly_speed(&mut self, speed: f32) {
+        if speed.is_finite() {
+            self.fly_speed = speed.clamp(crate::camera::MIN_SPEED, crate::camera::MAX_SPEED);
+        }
+    }
+
     pub fn should_quit(&self) -> bool {
         self.quit
     }
@@ -613,9 +626,8 @@ impl App {
         self.log.last().map(|l| &l.status)
     }
 
-    /// The window title: what the active tool edits, a dirty mark, the
-    /// app.
-    pub fn title(&self) -> String {
+    /// The document name and its unsaved mark, shared by both title bars.
+    pub(crate) fn document_caption(&self) -> Option<String> {
         let what = match self.tool {
             ToolKind::Scenario => self.loaded.clone(),
             ToolKind::Variants => self
@@ -643,10 +655,14 @@ impl App {
         // A browsed map is never dirty: the open map's mark is its own.
         let dirty = self.tool_dirty(self.tool)
             || (self.tool == ToolKind::Tags && self.browsing().is_none() && self.session.is_dirty());
-        match what {
-            Some(name) => format!("{name}{} - h2-editor", if dirty { " *" } else { "" }),
-            None => "h2-editor".to_owned(),
-        }
+        what.map(|name| if dirty { format!("{name} *") } else { name })
+    }
+
+    pub fn title(&self) -> String {
+        self.document_caption().map_or_else(
+            || "h2-editor".to_owned(),
+            |name| format!("{name} - h2-editor"),
+        )
     }
 
     pub fn info(&mut self, msg: impl Into<String>) {
@@ -874,6 +890,7 @@ impl App {
             }
             Action::FrameAll => self.session.frame_all(),
             Action::FocusSelected => self.frame_selection(),
+            Action::SetFlySpeed(speed) => self.set_fly_speed(speed),
             Action::SetAllowGrowth(allow) => {
                 self.session.set_allow_growth(allow);
                 self.tags.allow_growth = allow;

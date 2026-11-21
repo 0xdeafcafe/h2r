@@ -222,7 +222,7 @@ pub fn entries(ui: &Ui, app: &mut App, fonts: &Fonts, actions: &mut Vec<Action>)
     let out = app.hoppers.edit_with(|hoppers, view| {
         let mut fr = Frame::default();
         let h = &mut hoppers[sel];
-        let f = ui.push_font(fonts.bold);
+        let f = ui.push_font(fonts.title);
         ui.text(format!("{}  Playlist {}", icon::LAYERS, sel + 1));
         f.pop();
         ui.same_line();
@@ -360,7 +360,7 @@ fn entries_table(
                 pick = Some((i, v));
             }
             ui.table_next_column();
-            if ui.small_button("Edit") {
+            if ui.button("Edit") {
                 actions.push(Action::EditEntryVariant(sel, i));
             }
             ui.set_item_tooltip("Edit in the variant tool: opens a copy of this variant there");
@@ -513,7 +513,7 @@ fn variant_picker(ui: &Ui, view: &EditView<'_>, r: &EditRecord) -> Option<GameVa
         if list.is_empty() {
             continue;
         }
-        ui.separator_with_text(title);
+        theme::section(ui, title);
         for (k, ch) in list.iter().enumerate() {
             if let Some(v) = choice_row(ui, ch, current.as_ref(), title, k) {
                 picked = Some(v);
@@ -791,23 +791,4 @@ fn advanced(ui: &Ui, h: &mut EditHopper, sel: usize, fr: &mut Frame) {
             fr.changed(ui, c, key(("raw-dword2", sel, i)));
         }
     }
-}
-
-/// The status bar's summary of the open file.
-pub fn summary(app: &App) -> String {
-    let Some(hoppers) = app.hoppers.hoppers() else {
-        return String::new();
-    };
-    let used = hoppers.iter().filter(|h| !h.records.is_empty()).count();
-    let entries: usize = hoppers.iter().map(|h| h.records.len()).sum();
-    let errors = app.hoppers.errors().len();
-    format!(
-        "{} {used} playlists in use   {entries} entries{}",
-        icon::LAYERS,
-        if errors > 0 {
-            format!("   {errors} errors")
-        } else {
-            String::new()
-        }
-    )
 }

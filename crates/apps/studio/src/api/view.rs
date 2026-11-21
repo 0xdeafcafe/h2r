@@ -69,6 +69,10 @@ fn apply_camera(c: &mut Camera, p: &P) -> Result<(), agent_proto::RpcError> {
 
 pub fn camera(app: &mut App, p: &P) -> Reply {
     super::scenario::open(app)?;
+    let speed = p.opt_f32("fly_speed")?;
+    if speed.is_some_and(|s| !(crate::camera::MIN_SPEED..=crate::camera::MAX_SPEED).contains(&s)) {
+        return Err(err(code::INVALID_PARAMS, "fly_speed: 0.5..1000 world units per second"));
+    }
     if let Some(f) = p.get("focus") {
         let q = P(f);
         let entry = q.entry(app)?;
@@ -82,7 +86,12 @@ pub fn camera(app: &mut App, p: &P) -> Reply {
             .map_err(super::scenario::refused)?;
     }
     apply_camera(app.session.camera_mut(), p)?;
-    Ok(camera_json(app.session.camera()))
+    if let Some(speed) = speed {
+        app.dispatch(Action::SetFlySpeed(speed));
+    }
+    let mut reply = camera_json(app.session.camera());
+    reply["fly_speed"] = json!(app.fly_speed());
+    Ok(reply)
 }
 
 pub fn snapshot(gpu: &Gpu, app: &mut App, p: &P) -> Reply {

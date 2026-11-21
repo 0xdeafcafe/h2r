@@ -9,7 +9,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
-use dear_imgui_rs::{TextureId, Ui};
+use dear_imgui_rs::{ChildFlags, StyleVar, TextureId, Ui};
 use dear_imgui_wgpu::ExternalTextureId;
 use editor_core::MapSource;
 use editor_core::halo1::H1Source;
@@ -18,7 +18,7 @@ use editor_core::map_groups::MapGroup;
 use crate::app::map_cards::{MapEntry, halo1_note, halo2_note};
 use crate::app::map_pack::Picture;
 use crate::app::{Action, App};
-use crate::theme::icon;
+use crate::theme::{self, Fonts, icon};
 use crate::viewport::Gpu;
 
 /// The thumbnail's height in points.
@@ -109,6 +109,16 @@ impl MapListUi {
 
     /// Draws one row. True when it was clicked while not selected.
     pub fn row(&mut self, ui: &Ui, gpu: &mut Gpu<'_>, group: Group, r: &Row<'_>) -> bool {
+        self.draw_row(ui, gpu, Some(group), r)
+    }
+
+    fn draw_row(
+        &mut self,
+        ui: &Ui,
+        gpu: &mut Gpu<'_>,
+        group: Option<Group>,
+        r: &Row<'_>,
+    ) -> bool {
         let thumb = r
             .picture
             .and_then(|p| self.texture(gpu, &r.key, p).map(|t| (t, p.width, p.height)));
@@ -120,7 +130,9 @@ impl MapListUi {
             }
             None => format!("{}  {}##{}", r.icon, r.label, r.key),
         };
-        self.record(group, r.label, thumb.is_some());
+        if let Some(group) = group {
+            self.record(group, r.label, thumb.is_some());
+        }
         let clicked = ui.selectable_config(label).selected(r.selected).build() && !r.selected;
         if ui.is_item_hovered() {
             ui.tooltip(|| {
@@ -256,10 +268,10 @@ pub fn section(ui: &Ui, last: &mut Option<MapGroup>, group: MapGroup) {
     }
     *last = Some(group);
     if group == MapGroup::SharedAndMenu {
-        ui.separator_with_text(format!("{}  {}", map_icon(group), group.label()));
+        theme::section(ui, format!("{}  {}", map_icon(group), group.label()));
         ui.text_disabled("Shared resources and menu screens");
     } else {
-        ui.separator_with_text(group.label());
+        theme::section(ui, group.label());
     }
 }
 
@@ -269,6 +281,57 @@ pub fn source_rows(
     st: &mut MapListUi,
     gpu: &mut Gpu<'_>,
     entries: &[MapEntry<'_>],
+    actions: &mut Vec<Action>,
+) {
+    draw_source_rows(ui, app, st, gpu, entries, false, actions);
+}
+
+pub(super) fn source_grid(
+    ui: &Ui,
+    app: &App,
+    st: &mut MapListUi,
+    gpu: &mut Gpu<'_>,
+    fonts: &Fonts,
+    actions: &mut Vec<Action>,
+) {
+    let mut entries = app.halo2_map_entries();
+    entries.extend(app.halo1_map_entries());
+    entries.retain(|e| e.group != MapGroup::SharedAndMenu);
+    if entries.is_empty() {
+        theme::empty_card(ui, fonts, "Pick a map from the Maps tab", || {});
+        return;
+    }
+
+    let _padding = ui.push_style_var(StyleVar::WindowPadding([16.0, 12.0]));
+    ui.child_window("##map-grid")
+        .child_flags(ChildFlags::ALWAYS_USE_WINDOW_PADDING)
+        .build(ui, || {
+            {
+                let _title = ui.push_font(fonts.title);
+                ui.text("Choose a map");
+            }
+            let columns = (ui.content_region_avail()[0] / 208.0).floor().clamp(1.0, 5.0);
+            for (i, group) in entries.chunk_by(|a, b| a.group == b.group && a.halo1 == b.halo1).enumerate() {
+                let name = group[0].group.label();
+                if group[0].halo1 {
+                    theme::section(ui, format!("Halo 1 · {name}"));
+                } else {
+                    theme::section(ui, name);
+                }
+                if let Some(_table) = ui.begin_table(format!("##map-grid-{i}"), columns as usize) {
+                    draw_source_rows(ui, app, st, gpu, group, true, actions);
+                }
+            }
+        });
+}
+
+fn draw_source_rows(
+    ui: &Ui,
+    app: &App,
+    st: &mut MapListUi,
+    gpu: &mut Gpu<'_>,
+    entries: &[MapEntry<'_>],
+    grid: bool,
     actions: &mut Vec<Action>,
 ) {
     let place_h2 = app.source().map(halo2_place).unwrap_or_default();
@@ -281,7 +344,11 @@ pub fn source_rows(
         let MapEntry {
             stem, label, group, card, halo1,
         } = *entry;
-        section(ui, &mut last, group);
+        if grid {
+            ui.table_next_column();
+        } else {
+            section(ui, &mut last, group);
+        }
         let (prefix, place, loaded, source_group) = if halo1 {
             ("h1", &place_h1, app.loaded_halo1(), Group::Halo1)
         } else {
@@ -314,7 +381,7 @@ pub fn source_rows(
         } else {
             source_group
         };
-        if st.row(ui, gpu, drawn, &row) {
+        if st.draw_row(ui, gpu, (!grid).then_some(drawn), &row) {
             actions.push(if halo1 {
                 Action::SelectHalo1Map(stem.to_owned())
             } else {

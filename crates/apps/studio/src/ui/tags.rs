@@ -101,7 +101,7 @@ fn map_picker(ui: &Ui, app: &App, actions: &mut Vec<Action>) {
     }
     if ui.is_item_hovered() {
         ui.tooltip_text(
-            "Whose tags to show: the map open in the Scenario tool (editable), or any other \
+            "Whose tags to show: the open map (editable), or any other \
              map of the source read-only, the shared caches among them",
         );
     }
@@ -115,7 +115,7 @@ pub fn tree(ui: &Ui, app: &App, st: &mut TagsUi, fonts: &Fonts, actions: &mut Ve
     if !doc.is_open() {
         ui.text_wrapped(match &doc.error {
             Some(e) => format!("The map's tags could not be read: {e}"),
-            None => "Open a map (Tools, Maps) to edit its tags, or pick a map above to browse \
+            None => "Open a map from the Maps tab to edit its tags, or pick a map above to browse \
                      its tags."
                 .to_owned(),
         });
@@ -253,7 +253,7 @@ pub fn fields(
         return;
     };
     let Some(t) = doc.tag(id) else { return };
-    let f = ui.push_font(fonts.bold);
+    let f = ui.push_font(fonts.title);
     ui.text(format!("{}  {}", group_text(t.group), t.name));
     f.pop();
     ui.text_disabled(format!(
@@ -325,7 +325,7 @@ fn io_bar(
 ) {
     let has_layout = app.shown_tags().layout(t.id).is_some();
     if has_layout {
-        if ui.small_button(format!("{} Export...##tag-export", icon::SAVE))
+        if ui.button(format!("{} Export...##tag-export", icon::SAVE))
             && let Some(out) = export_dialog(dialogs, t)
         {
             actions.push(Action::TagExport {
@@ -365,7 +365,7 @@ fn import_button(ui: &Ui, target: Option<TagId>, dialogs: bool, actions: &mut Ve
         Some(_) => format!("{} Import over this tag...##tag-import", icon::FOLDER_OPEN),
         None => format!("{} Import tags...##tag-import", icon::FOLDER_OPEN),
     };
-    if ui.small_button(label)
+    if ui.button(label)
         && let Some(path) = import_dialog(dialogs)
     {
         actions.push(Action::TagImport {
@@ -450,7 +450,7 @@ fn data(
             }
             Some(Err(e)) => ui.text_colored(theme::WARN, format!("{} {e}", icon::ALERT)),
             None => {
-                if ui.small_button(format!("{} Preview##tag-preview", icon::EYE)) {
+                if ui.button(format!("{} Preview##tag-preview", icon::EYE)) {
                     actions.push(Action::TagPreview(id));
                 }
             }

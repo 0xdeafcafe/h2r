@@ -15,13 +15,12 @@ the workspace's wgpu 30, `dear-imgui-winit` for the window,
 `dear-imguizmo` for the 3D gizmo, `rfd` for the system's file dialogs. No
 web views, no scripting. It runs unbundled, so it sets its own Dock icon
 (`app_icon::set_dock_icon`, [art/app-icon](../../art/app-icon/README.md)).
-It hosts six tools:
+It hosts five tools:
 
-- **Scenario**: the scenario editor (`crates/tools/scenario-edit`,
-  [scenario-editor.md](scenario-editor.md)): placements on a map, in a 3D
-  viewport, saved as a map package or a whole `.map`.
-- **Tags**: every field of every tag of the open map, labelled and
-  edited in place, saved with the map (below).
+- **Map** combines the scenario editor (`crates/tools/scenario-edit`,
+  [scenario-editor.md](scenario-editor.md)) and the tag editor. It edits
+  placements in a 3D viewport and tag fields in the inspector. Both save
+  to a map package or a whole `.map`.
 - **Game variants**: the game variant editor (`crates/formats/variants`,
   [variants.md](variants.md)).
 - **Playlists**: `multiplayer_hopper.dat`, the 16 matchmaking playlists
@@ -89,11 +88,10 @@ layout restores the default).
 
 ## The window
 
-![The editor window over Ascension with seven regions boxed and numbered in orange: 1 the menu bar, 2 Tools, 3 Outliner, 4 Viewport, 5 Inspector, 6 Log, 7 the status bar](../images/editor/layout-regions.jpg)
+![The editor window over Ascension with seven regions boxed and numbered in orange: 1 the menu bar, 2 tool bar, 3 Scene, 4 Viewport, 5 Inspector, 6 Log, 7 the status bar](../images/editor/layout-regions.jpg)
 
-*The panels: (1) main menu bar, (2) Tools, (3) outliner, (4) the centre
-window (the viewport here), (5) inspector, (6) log, (7) status bar. The
-boxes and numbers are drawn by the headless renderer's `--callout`.*
+*The headless renderer's `--callout` labels the menu bar, tool bar,
+Scene, viewport, inspector, Log and status bar.*
 
 - **Main menu**: File (open a disc or map, open a folder of maps, save the
   map as a new `.map`, save as or open a package, the variant and
@@ -102,18 +100,19 @@ boxes and numbers are drawn by the headless renderer's `--callout`.*
   selection, gizmo mode (move, rotate, scale) and local or world axes,
   grid and angle snapping, reset layout), and Game (Play, Stop, Pair,
   Unpair, Pause, Step, Resume and Edit).
-- **Game link** (bar below the menu, `ui/bar.rs`). The pill shows the
-  pairing and whether placement edits can reach the game. The controls
-  beside it provide Play or Stop, Pause or Resume, Step and the Edit
-  switch as they become available. The bar is visible in every tool.
-- **Tools** (left, top): the tools (Scenario, Tags, Game variants,
-  Playlists, UI Screens; a
-  `*` marks one with unsaved edits), then **Maps**: the opened source and
-  its maps. The outliner, centre and inspector windows show the active
-  tool: below for the scenario tool, then [Game variants](#game-variants)
-  and [Playlists](#playlists). Each tool's windows keep their dock slot
-  (`WindowKey::label` retitles a window without changing its ID).
-- **Outliner** (left, bottom, `ui/outliner.rs`): the placement blocks as
+- **The bar** (under the menu, `ui/bar.rs`), visible in every tool. Left:
+  the tools as tabs, Map, Variants, Playlists, UI and HUD. Middle: the
+  document name; a `*` marks unsaved edits. Right: the game link. Its
+  pill shows the pairing and whether placement edits can reach the game.
+  The controls beside it provide Play or Stop, Pause or Resume, Step and
+  the Edit switch as they become available. The link's width is measured
+  first, and the document name is clipped to what the tabs and the link
+  leave.
+- **Left dock**: Map has a full-height column with **Scene**, **Tags**
+  and **Maps** tabs above the bottom dock. Other tools have their own
+  windows in the left, centre and right regions (`ui/layout.rs`). The Map
+  windows keep the `outliner`, `viewport` and `inspector` IDs used by saved layouts.
+- **Scene** (`ui/outliner.rs`): the placement blocks as
   a tree, a filter (every word must match the block, the tag name or
   `#<index>`; blocks with no match hide, the rest open, with "x of y"
   counts), Duplicate and Delete. Click selects one entry, Cmd/Ctrl+click
@@ -131,16 +130,16 @@ boxes and numbers are drawn by the headless renderer's `--callout`.*
   placement, or the point of the level under the cursor). The camera
   (`camera.rs`, plain maths with unit tests): hold the right button to
   look and fly with WASD, Q down and E up, the wheel setting the fly
-  speed (shown in the status bar) and Shift four times faster; Alt+left
+  speed (also adjustable in the toolbar) and Shift four times faster. Alt+left
   drag orbits about the selection, else about the point of the level
   under the cursor; middle drag pans; the wheel dollies; F frames the
   selection to its size. Motion eases in and out by elapsed time, the
   same at any frame rate, and the camera glides to a new focus. The
   selection has an ImGuizmo gizmo: W moves, E rotates (facing-only
   placements turn about z), R scales (objects with a scale field); X
-  switches local and world axes. Grid and angle snapping (toolbar
-  toggles, right-click one for its step) apply to the gizmo and to
-  placing with the mouse. Other selected placements ride along with the
+  switches local and world axes. Toolbar icons show their shortcuts on
+  hover. Grid and angle snapping each have a toggle and an adjacent
+  step dropdown. They apply to the gizmo and to placing with the mouse. Other selected placements ride along with the
   primary's move and turn; one drag is one undo step.
 - **Inspector** (right, `ui/inspector.rs`): the selection's typed fields
   under Transform, Object, Spawn and Settings. Position is x, y, z;
@@ -166,11 +165,11 @@ boxes and numbers are drawn by the headless renderer's `--callout`.*
   any ancestor. **Back** and **Forward**, Alt+Left and Alt+Right, and the
   mouse's back and forward buttons step through tag and placement
   history. Returning to a field opens its block and scrolls to it.
-- **Game** and **Log** (under the centre window). Game shows the session,
-  player and advanced pairing controls. Log shows every action's result,
-  with errors in red.
-- **Status bar**: the last message, unsaved state, a summary of what is
-  open, the camera's fly speed, frame rate.
+- **Game** and **Log** (bottom). Game shows the session, player and
+  advanced pairing controls. Log shows every action's result, with
+  errors in red.
+- **Status bar**: the latest message, a hint for the viewport or toolbar
+  control under the pointer, and the frame rate.
 - **Unsaved changes**: anything that would drop a tool's unsaved edits
   asks first, naming the tool: another source or map (scenario), another,
   new or imported variant, or an entry's variant opened from a playlist
@@ -1323,7 +1322,7 @@ last. The flags that set the scene up:
 | Flag | Effect |
 | --- | --- |
 | `--pick <map>` | open this map in the scenario tool |
-| `--tool tags --tag <group>:<path>` | show a tag of the open map in the Tags tool |
+| `--tool tags --tag <group>:<path>` | focus the Map tool's Tags tab and show a tag of the open map |
 | `--tags-map <map>` | browse another map of the source in the Tags tool (`shared`, `single_player_shared`); `--tag` then picks one of its tags |
 | `--halo1 <iso\|dir>` | open a Halo 1 source (else `$H1_ISO`, `$H1_MAP_DIR`, `disc/halo1.iso`) |
 | `--mappack <iso\|dir>` | open the Map Pack (else `$H2_MAPPACK_ISO`, `mappack.iso` beside the disc, `disc/mappack.iso`) |
@@ -1334,7 +1333,7 @@ last. The flags that set the scene up:
 | `--select <block>:<index>` | select a placement (`vehicles:0`, `netgameequipment:3`) |
 | `--focus` | frame the camera on the selection (F) |
 | `--camera <yaw>,<pitch>,<distance>` | orbit the camera (degrees, world units), after `--focus` |
-| `--tool scenario\|variants\|playlists\|ui-screens\|hud` | show that tool |
+| `--tool scenario\|variants\|playlists\|ui-screens\|hud` | show that tool (`scenario` selects Map) |
 | `--hud-map <map>`, `--hud-package <key>` | open a map of the source (or a package) in the HUD tool |
 | `--hud <nhdt>` | show that HUD (its full name, or its last part: `masterchief`) |
 | `--hud-widget <name>` | select that widget |
@@ -1363,7 +1362,7 @@ the settled frames, and the written frame can be cropped and annotated:
 A target (`studio::script`) is a point `x,y`, a window `win:<name>`
 (`win:###inspector`, `win:##Menu`, `win:##Tooltip`, `win:##Combo`,
 `win:##Popup`), or a widget by label, `[<window>>]<label>[#n]` (`View`,
-`Rotate (E)`, `##setting-2`, `###viewport>Edit#0`), each optionally
+`Rotate (E)`, `##setting-2`, `###playlists-entries>Edit#0`), each optionally
 `@dx,dy` from its top left rather than its centre. Widgets are found by
 label through Dear ImGui's test-engine hooks (`studio::probe`; the
 `test-engine` feature of `dear-imgui-rs`): `ItemAdd` gives each item's
@@ -1371,7 +1370,8 @@ rectangle and window, `ItemInfo` its label. Combos never report a label,
 so the labels a script names are also hashed on each item's window ID
 stack and matched by ID. The hooks only record in headless renders. Set
 `H2_EDITOR_PROBE=1` to print every window and widget the last frame drew,
-to write a script against.
+to write a script against. A scripted click on the former Scenario row
+selects **Map**.
 
 ```
 h2-editor --disc disc/halo2.iso --pick ascension --select netgameequipment:0 \

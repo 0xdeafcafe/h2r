@@ -13,16 +13,6 @@ use crate::app::{Action, App, Pick, UiScreens};
 use crate::theme::{self, Fonts, icon};
 use crate::viewport::Gpu;
 
-/// Widget rectangles.
-const RECT: [f32; 4] = [0.35, 0.8, 1.0, 0.55];
-/// The hovered widget.
-const HOVER: [f32; 4] = [1.0, 1.0, 1.0, 0.95];
-/// Widgets a finding names.
-const BAD: [f32; 4] = [1.0, 0.3, 0.25, 1.0];
-/// The title-safe area.
-const SAFE: [f32; 4] = [0.4, 1.0, 0.45, 0.8];
-/// Reserved areas.
-const RESERVED: [f32; 4] = [1.0, 0.75, 0.2, 0.8];
 
 /// The pad as the inspector lays it out: rows of (input, label).
 const PAD: [&[(Input, &str)]; 3] = [
@@ -191,11 +181,11 @@ pub fn preview(ui: &Ui, app: &mut App, st: &mut UiScreensUi, gpu: &mut Gpu<'_>) 
     };
     if safe {
         let r = shot.rules.safe;
-        boxed(ui_rect(r.top, r.left, r.bottom, r.right), SAFE, 1.0);
+        boxed(ui_rect(r.top, r.left, r.bottom, r.right), theme::SAFE_FRAME, 1.0);
     }
     if reserved {
         for (_, r) in &shot.rules.reserved {
-            boxed(ui_rect(r.top, r.left, r.bottom, r.right), RESERVED, 1.5);
+            boxed(ui_rect(r.top, r.left, r.bottom, r.right), theme::RESERVED_AREA, 1.5);
         }
     }
     let bad: Vec<&str> = shot
@@ -207,14 +197,14 @@ pub fn preview(ui: &Ui, app: &mut App, st: &mut UiScreensUi, gpu: &mut Gpu<'_>) 
         for w in &view.widgets {
             let r = w.pixels();
             if hot.contains(&w.id) {
-                boxed(r, BAD, 3.0);
+                boxed(r, theme::WIDGET_ERROR, 3.0);
             } else if bad.contains(&w.id.as_str()) {
-                boxed(r, BAD, 1.5);
+                boxed(r, theme::WIDGET_ERROR, 1.5);
             } else if rects {
-                boxed(r, RECT, 1.0);
+                boxed(r, theme::SCREEN_WIDGET, 1.0);
             }
             if st.hovered.as_deref() == Some(w.id.as_str()) {
-                boxed(r, HOVER, 2.0);
+                boxed(r, theme::WIDGET_FOCUS, 2.0);
             }
         }
     }
