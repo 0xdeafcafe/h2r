@@ -297,6 +297,10 @@ impl Dialogs {
                     visible,
                 };
                 s.style = ValueStyle::Setting;
+                // Only Remove link takes A; an info row offers only Back.
+                if self.focus < info.len() {
+                    s.prompts.retain(|p| !p.glyphs.contains(&Glyph::A));
+                }
                 s
             }
             Parent::Menu { .. } => rows(
