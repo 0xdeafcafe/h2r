@@ -402,8 +402,8 @@ impl GuestMemory for Mem<'_> {
     }
 }
 
-/// The body of the local player on controller `port`.
-fn read_body(m: &dyn GuestMemory, port: u32) -> Option<Body> {
+/// The body of the local player on controller `port`, for the prompts too.
+pub(crate) fn read_body(m: &dyn GuestMemory, port: u32) -> Option<Body> {
     use crate::telemetry::layout;
     let unit = crate::skulls_custom::local_units(m)
         .ok()?

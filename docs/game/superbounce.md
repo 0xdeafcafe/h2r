@@ -639,6 +639,34 @@ pass, no depth test; the styles are described in
   nearest 3 bounce strips carry their launch label (`+17.9`) and only the
   nearest 2 crouch spots carry `crouch`.
 
+**The prompts.** While the player is primed, the window also draws big,
+centred, shadowed labels with a pulse, on the spots they say something
+about (`crates/extensions/game/src/superbounce_prompts.rs`):
+
+- Airborne and falling toward a strip the assist can steer onto (its
+  pick), `HOLD X` floats 0.3 units above the strip's stand point. It grows
+  as the player nears: 1x at 6 units and more, 3x at 0.5 and less, linear
+  between (`label_scale`). The strip itself is drawn bright, with a bold,
+  pulsing core. A guide runs along the floor from where the player lands if
+  nothing is done to the stand point, and a short post stands at that
+  landing.
+- Once X is held and the assist is steering, the label reads `GUIDING` in
+  green and stops pulsing.
+- On the ground, within 1.5 units of a strip whose fall is at most 0.05 (a
+  standing jump does it), `JUMP` is drawn at the take-off spot, 0.2 units
+  back from the stand point against the drift (`takeoff`), with a small
+  ring on the floor there. Within 0.1 units of the take-off spot it
+  flashes `JUMP NOW`. Only the nearest such strip gets one.
+- On the ground, within 3 units of a strip whose fall is more than 0.3,
+  `DROP >= 3.0 m` (the fall in metres) is drawn in orange over it, so the
+  player knows to come from above. Only the nearest gets one.
+
+`prompt_for` decides what a strip says from whether the player is primed,
+airborne, targeted and engaged, the strip's fall and the distances to its
+stand point and take-off spot. Strips more than a metre above or below the
+player on the ground are ignored. Only the labels that are drawn are
+formatted.
+
 ### Hold X: the fall assist
 
 Holding X in the air steers the player onto a bounce strip, so the landing
@@ -683,6 +711,12 @@ button does not reload or pick up. Once it has engaged, X stays released
 until the player lets go, so a landing or a strip going out of reach does
 not hand the game a fresh press. With no strip in reach, X and the stick
 pass through unchanged.
+
+**The prompt.** The assist's pick is also what the world prompts are
+drawn from, whether or not X is held: the window reads the player's body
+and runs `pick` on each frame, so `HOLD X` appears on the strip before the
+button is pressed, and turns to `GUIDING` once the tap reports it is
+engaged (`assisting`; [the prompts](#the-superbounce-game-type)).
 
 **Where it sits.** An input tap at `XInputGetState`
 (`AssistTap`, installed by `register_late` before the agent's tap), so
