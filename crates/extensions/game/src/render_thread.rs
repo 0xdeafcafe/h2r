@@ -108,6 +108,21 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
         "CACHE_COPY_STEP",
         "the loading screen's cache copy on the game thread; steps it with guest calls",
     ),
+    (
+        "coop-look-prediction",
+        "RENDER_GAME_VIEW",
+        "draws the pending guest look from prediction state the simulation's observers update (shared, and it writes it)",
+    ),
+    (
+        "coop-jip",
+        "SESSION_JOIN_CHECK",
+        "the session's join check on the game thread; reads live RAM through the runtime and answers with an async guest call",
+    ),
+    (
+        "coop-live",
+        "SESSION_JOINABLE",
+        "the session's joinable query on the game thread; reads live RAM through the runtime and shared co-op state",
+    ),
     // Game-thread points: the simulation, the UI and the level start.
     ("actor-net", "*", "capture and dialogue share per-match state on the simulation thread"),
     (
