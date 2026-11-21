@@ -31,6 +31,8 @@ mod hud_layout_disc;
 mod model_shaders_disc;
 #[path = "object_functions_disc.rs"]
 mod object_functions_disc;
+#[path = "parity_disc.rs"]
+mod parity_disc;
 #[path = "particles_disc.rs"]
 mod particles_disc;
 #[path = "ragdoll_disc.rs"]
