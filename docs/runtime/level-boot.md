@@ -110,7 +110,7 @@ loop can draw while the cache copy machine runs. A resident main-menu
 cache can go through teardown and activation between ordinary presents.
 
 On windowed runs, `game::return_to_menu` uses `OPTIONS_QUEUE` to ask
-the host to show **Returning to Main Menu…** when a campaign or a
+the host to show a black screen when a campaign or a
 multiplayer map queues the menu. The display uses a prebuilt picture
 through the [host shell](app.md). It can draw while the guest loads, and
 holds the picture through activation, the first ordinary menu render
@@ -122,7 +122,7 @@ keep their original dispatch boundaries.
 
 `h2 agent loads` measures the guest's transition, including file I/O,
 render waits and genuine guest presents. For a split-screen check, leave
-an active local match, then confirm that **Returning to Main Menu…**
+an active local match, then confirm that the black screen
 replaces the dimmed match and that `h2 agent ui` (`H2_UI_WATCH=1`)
 reports the menu after loading. The Mods list request and its answer run on Live workers. The
 guest still owns variant tag publication and authoritative party
