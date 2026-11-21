@@ -3032,14 +3032,19 @@ feature is enabled.
 
 | Method and access | Parameters | Result |
 |---|---|---|
-| `forge.status` (read) | `{}` or omitted | The local session, role, log head, budget, monitor camera, aimed and held IDs, screen and focus, pending call or file work, and last notice. An inactive session returns `{session:"inactive", reason}` |
+| `forge.status` (read) | `{}` or omitted | The local session, role, log head, budget, monitor camera, aimed and held IDs, screen and focus, pending call or file work, and last notice. Links fields: `tool` (`objects` or `links`), `aimed_link` and `link_from` (`{teleporter: flag}` or `{object: id}`), `teleporters` (`{flag, sender, channel, position}` with the channel the document gives), `links` (`{id, kind:"teleporter", sender, receiver, channel}` or `{id, kind:"device", machines, applies:"rebuild"}`, final indices) and `pending_rebuild`, the active device links. An inactive session returns `{session:"inactive", reason}` |
 | `forge.doc` (read) | `{}` or omitted | `{document}`, the folded Forge document including confirmed edits |
 | `forge.log` (read) | `{since?}` | `{entries}` in sequence order, starting strictly after `since` (default zero) |
 | `forge.input` (act) | `{action}` or `{movement?, look?, roll?, rotating?}` | `{queued:true}` when the current local session accepts one monitor input |
 | `forge.propose` (act) | `{op, was?}` | `{entry}` on acceptance, or a refusal with its reason |
 
 The input queue accepts `toggle`, `accept`, `back`, `delete`, `palette`,
-`properties`, `menu`, `undo`, `redo`, `up` and `down`. In player mode
+`properties`, `menu`, `undo`, `redo`, `up`, `down` and `link`. `link`
+switches to the Links tool; there `accept` starts a link on the aimed
+teleporter flag or placed machine and makes it on the second, `delete`
+removes the aimed thing's latest link, `properties` opens its LINK
+dialog, and `link` or `back` cancels a started link. `link` with nothing
+aimed returns to the Objects tool. In player mode
 only `toggle` enters the monitor. An open dialog takes `up`, `down`,
 `accept` and `back`. An analog request supplies one 1/30-second sample
 with at least one axis. Movement is [right, forward, up], look is [yaw,
@@ -3057,6 +3062,13 @@ undo and redo, run at the next tick through the `world.object.set` and
 no longer resolves by kind and salt is refused as `forge_object_gone`
 before any guest call. A block with no `world.object` kind (sound
 scenery) is refused as `forge_object_kind`.
+
+A teleporter link or unlink, or the undo of one, writes each changed
+flag's identifier into the loaded scenario at the same tick, after the
+batch's objects. The call checks the flag index against the scenario's
+count and its type (7 or 8) before any guest write. A device link reaches
+the game only through a rebuild and counts in `pending_rebuild`. Deleting
+a linked machine ends its links in the same undo step.
 
 ## Forge probes
 

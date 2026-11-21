@@ -199,7 +199,7 @@ pub(super) fn reserve(
     Ok((output.into_inner(), reserves))
 }
 
-fn read_entries<R: Read + Seek>(
+pub(super) fn read_entries<R: Read + Seek>(
     map: &mut Map<R>,
     address: u32,
     size: u32,
@@ -211,6 +211,6 @@ fn read_entries<R: Read + Seek>(
     Ok(map.read_file_range(offset, size.into())?)
 }
 
-fn word(bytes: &[u8]) -> u32 {
+pub(super) fn word(bytes: &[u8]) -> u32 {
     u32::from_le_bytes(bytes.try_into().expect("one scenario block word"))
 }

@@ -64,6 +64,7 @@ enum Staged {
     Make(TagKey, Frame),
     Move(ForgeTarget, Frame),
     Delete(ForgeTarget),
+    Channel(u32, i16),
 }
 
 /// A validated command can build a candidate document and log on a private
@@ -110,6 +111,7 @@ impl ForgeWorld {
                         },
                         Staged::Move(target, frame) => ForgeStep::Move { target, frame },
                         Staged::Delete(target) => ForgeStep::Delete { target },
+                        Staged::Channel(flag, channel) => ForgeStep::Channel { flag, channel },
                     })
                 })
                 .collect::<Result<Vec<_>, String>>()?;
@@ -174,6 +176,13 @@ impl World for ForgeWorld {
 
     fn respawn(&mut self, item: &PaletteItem, frame: Frame) -> Result<u32, String> {
         self.make(item, frame)
+    }
+
+    /// A teleporter link writes the flag's identifier in the loaded
+    /// scenario, after the batch's objects.
+    fn channel(&mut self, flag: u32, channel: i16) -> Result<(), String> {
+        self.steps.push(Staged::Channel(flag, channel));
+        Ok(())
     }
 }
 

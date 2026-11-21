@@ -155,7 +155,7 @@ fn document_header_and_references_refuse_invalid_values() {
     }];
     refuse(&doc, &limits, "import chassis");
 
-    for edit in [Edit::Mesh, Edit::Bitmap, Edit::Forge, Edit::Undo] {
+    for edit in [Edit::Mesh, Edit::Bitmap, Edit::Undo] {
         let mut doc = draft();
         let why = edit.unsupported();
         doc.ops.push(Op { id: OpId(1), edit });

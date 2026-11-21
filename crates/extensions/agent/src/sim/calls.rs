@@ -49,7 +49,9 @@
 //!   deletes the same way, forward and up from the frame's rotation, then
 //!   moves and deletes its live objects with the `world.object.set` and
 //!   `.delete` bodies. A refusal deletes the objects the batch
-//!   already made, newest first.
+//!   already made, newest first. Last it writes each teleporter channel
+//!   into the loaded scenario's netgame flag (its identifier, `+0x14`),
+//!   after checking the flag is a teleporter.
 //! - **Queue a game** is the level boot's sequence (docs/runtime/level-boot.md)
 //!   run from a tick: the host gives the steps ([`GameStep`]: the game's
 //!   option builders, our field writes, its options check and its queue,
@@ -173,6 +175,35 @@ pub enum ForgeStep {
     },
     /// `world.object.delete`.
     Delete { target: ForgeTarget },
+    /// Set the identifier of the loaded scenario's netgame flag `flag`, a
+    /// teleporter sender or receiver, to `channel`.
+    Channel { flag: u32, channel: i16 },
+}
+
+/// The guest address of the loaded scenario's netgame flag `flag`, checked
+/// to be a teleporter (type 7 or 8). The block and fields are
+/// `map::scenario_layout`'s.
+fn teleporter_flag(m: &dyn GuestMemory, scenario: u32, flag: u32) -> Result<u32, String> {
+    use map::scenario_layout::{BlockKind, block};
+    let def = block(BlockKind::NetgameFlags);
+    let fault = |e: engine::MemFault| format!("guest memory at {:#x} faulted", e.addr);
+    let count = m.u32(scenario + def.offset).map_err(fault)?;
+    let first = m.u32(scenario + def.offset + 4).map_err(fault)?;
+    if flag >= count {
+        return Err(format!("the scenario has no netgame flag {flag}"));
+    }
+    let at = first + flag * def.stride;
+    let kind = def.field("type").ok_or("netgame flags have no type")?.offset;
+    if !matches!(m.u16(at + kind).map_err(fault)?, 7 | 8) {
+        return Err(format!("netgame flag {flag} is not a teleporter"));
+    }
+    Ok(at)
+}
+
+fn teleporter_identifier() -> u32 {
+    map::scenario_layout::block(map::scenario_layout::BlockKind::NetgameFlags)
+        .field("identifier")
+        .map_or(0x14, |f| f.offset)
 }
 
 /// The forward and up axes of a Forge frame's yaw, pitch and roll.
@@ -919,6 +950,12 @@ async fn run_forge(
             ForgeStep::Make { frame, .. } => (None, Some(frame)),
             ForgeStep::Move { target, frame } => (Some(*target), Some(frame)),
             ForgeStep::Delete { target } => (Some(*target), None),
+            ForgeStep::Channel { flag, .. } => {
+                if let Err(e) = cx.read(|m| teleporter_flag(m, guard.scenario, *flag)) {
+                    return Ok(Err(super::invalid(e)));
+                }
+                (None, None)
+            }
         };
         match target {
             Some(ForgeTarget::Live(id)) => {
@@ -993,6 +1030,19 @@ async fn run_forge(
             if let ForgeTarget::Made { index, .. } = target {
                 deleted.push(index);
             }
+        }
+    }
+    // Checked above; only a guest change during the batch can refuse one.
+    for step in steps {
+        if let ForgeStep::Channel { flag, channel } = *step {
+            let at = match cx.read(|m| teleporter_flag(m, guard.scenario, flag)) {
+                Ok(at) => at,
+                Err(e) => {
+                    unwind_made(cx, &made, &deleted).await?;
+                    return Ok(Err(super::invalid(e)));
+                }
+            };
+            cx.write(|m| m.write(at + teleporter_identifier(), &channel.to_le_bytes()))?;
         }
     }
     Ok(Ok(json!({ "handles": made })))

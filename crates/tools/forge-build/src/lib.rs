@@ -1,9 +1,11 @@
-//! Materialise the F2 subset of a Forge document into a local map package.
+//! Materialise a Forge document's placement, tag-field and link edits into a
+//! local map package.
 //! The source maps are read-only. Scenario commands and tag patches go
 //! through scenario-edit's writer.
 #![forbid(unsafe_code)]
 
 mod kit;
+mod links;
 mod placement;
 mod tag_fields;
 
@@ -70,6 +72,8 @@ pub enum Error {
     SourceSize(String),
     #[error("forge_kit: {0}")]
     Kit(&'static str),
+    #[error("forge_links: {0}")]
+    Links(&'static str),
 }
 
 /// Bytes and manifest produced by the document. Saving is a separate action
@@ -173,7 +177,10 @@ pub fn build(
 
     let mut apply = placement::Materialiser::new(&mut session, &mut map);
     forge_doc::replay(doc, &limits, &mut apply)?;
-    let mut new_strings = apply.finish()?;
+    let placement::Finished {
+        strings: mut new_strings,
+        device_groups,
+    } = apply.finish()?;
     if !needs_kit {
         session.set_tag_strings(std::mem::take(&mut new_strings))?;
     }
@@ -182,7 +189,7 @@ pub fn build(
         .ok_or(scenario_edit::Error::Invalid("scenario is not open"))?;
     let mut output = Cursor::new(Vec::new());
     save::write_patched(&mut map, scenario, &mut output)?;
-    let mut output = output.into_inner();
+    let mut output = links::device_groups(output.into_inner(), &device_groups)?;
     let mut reserves = Vec::new();
     if needs_kit {
         // The writer places new string tables after the metadata. Finish

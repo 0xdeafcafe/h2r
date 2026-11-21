@@ -2,7 +2,7 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{BlockKind, Limits, MapId, Refusal, Result, Sha256, validate, wire};
+use crate::{BlockKind, Forge, Limits, MapId, Refusal, Result, Sha256, validate, wire};
 
 /// The `.h2forge` wire version.
 pub const FORMAT: u32 = content::forge::DOCUMENT_FORMAT;
@@ -173,7 +173,8 @@ pub enum Edit {
     Undo,
     Mesh,
     Bitmap,
-    Forge,
+    /// Links now; emitters, volumes and the graph in later slices.
+    Forge(Forge),
 }
 
 impl Edit {
@@ -181,7 +182,6 @@ impl Edit {
         let name = match self {
             Self::Mesh => "mesh",
             Self::Bitmap => "bitmap",
-            Self::Forge => "Forge",
             _ => return Refusal::invalid("document op", "undo belongs in the edit log"),
         };
         Refusal::Unsupported(name.into())
