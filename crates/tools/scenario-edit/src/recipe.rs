@@ -34,6 +34,7 @@ use crate::{Command, Error, MapSource, PackageForm, Result, SavedPackage, Scenar
 /// The recipes that ship with the repository, by name. Data only: names,
 /// tag path fragments and offsets.
 pub const BUILT_IN: &[(&str, &str)] = &[
+    ("firefight-probe", include_str!("../recipes/firefight-probe.toml")),
     ("empty-room", include_str!("../recipes/empty-room.toml")),
     ("spawn-grid", include_str!("../recipes/spawn-grid.toml")),
     ("weapon-range", include_str!("../recipes/weapon-range.toml")),
@@ -66,11 +67,20 @@ fn bad(why: impl Into<String>) -> Error {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Fidelity {
-    /// Everything the rig needs is a placement edit.
+    /// The builder supplies every part of the rig.
     Full,
     /// Part of it needs what placement edits can't make (new geometry,
     /// light fixtures); `note` says which part.
     Approximate,
+}
+
+/// Which offline builder provides the contents of a test map.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Builder {
+    #[default]
+    Placements,
+    FirefightProbe,
 }
 
 /// A recipe, as its TOML file or a JSON object reads.
@@ -86,6 +96,8 @@ pub struct Recipe {
     /// The base map: a disc map's file name without `.map`.
     pub base: String,
     pub fidelity: Fidelity,
+    #[serde(default)]
+    pub builder: Builder,
     /// What an approximate rig leaves out (required when approximate).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
@@ -365,6 +377,15 @@ impl Recipe {
         }
         if self.anchor.facing.is_some_and(|f| !f.is_finite()) {
             return Err(bad("anchor.facing: degrees"));
+        }
+        if self.builder == Builder::FirefightProbe
+            && (self.anchor != Anchor::default()
+                || self.clear != Clear::default()
+                || self.allow_growth
+                || !self.set.is_empty()
+                || !self.place.is_empty())
+        {
+            return Err(bad("firefight-probe chooses its zones and squad with the map kit; remove placement edits and anchors"));
         }
         self.clear.kinds()?;
         for (i, s) in self.set.iter().enumerate() {
@@ -828,6 +849,9 @@ fn len(s: &Session, k: BlockKind) -> usize {
 /// refused edit, saying which step.
 pub fn build(s: &mut Session, recipe: &Recipe) -> Result<Built> {
     recipe.validate()?;
+    if recipe.builder != Builder::Placements {
+        return Err(bad("the firefight-probe recipe requires the Firefight kit builder"));
+    }
     let sc = s.scenario().ok_or(Error::Save("no map is open"))?;
     let frame = anchor_frame(sc, &recipe.anchor)?;
     let tris: Vec<Tri> = s.world().0.to_vec();
@@ -932,11 +956,22 @@ pub fn build(s: &mut Session, recipe: &Recipe) -> Result<Built> {
 /// Opens `source` (the base map, `maps\<base>.map`), builds `recipe` and
 /// saves the result as package `recipe.package_dir()` under `data_root`'s
 /// `maps/`. An existing directory of that name is refused, as the editor
-/// refuses it; the caller removes an old build first.
+/// refuses it.
 pub fn build_package(
     source: MapSource,
     recipe: &Recipe,
     data_root: &Path,
+) -> Result<(Built, SavedPackage)> {
+    build_package_with_replace(source, recipe, data_root, false)
+}
+
+/// Save the rebuilt package over an earlier build when requested. The
+/// package store publishes the new manifest after its patch is complete.
+pub fn build_package_with_replace(
+    source: MapSource,
+    recipe: &Recipe,
+    data_root: &Path,
+    replace: bool,
 ) -> Result<(Built, SavedPackage)> {
     let mut s = Session::new();
     s.build_scenes = false;
@@ -949,7 +984,15 @@ pub fn build_package(
         dir: recipe.package_dir(),
         ..PackageForm::default()
     };
-    let saved = s.save_package(&form)?;
+    let saved = crate::package::save_package(
+        &s.maps_dir(),
+        &recipe.base,
+        s.source().ok_or(Error::Save("no map is open"))?,
+        s.scenario().ok_or(Error::Save("no map is open"))?,
+        &form,
+        replace.then_some(form.dir.as_str()),
+        false,
+    )?;
     Ok((built, saved))
 }
 

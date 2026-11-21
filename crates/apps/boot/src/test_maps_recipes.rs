@@ -1,5 +1,5 @@
 //! The recipes behind `maps.test.*`: `game::test_maps::Recipes` over the
-//! scenario editor's `recipe` module (docs/game/test-maps.md). `game` may
+//! scenario editor and the Firefight kit (docs/game/test-maps.md). `game` may
 //! not use `tools`, so the composition root supplies this.
 
 use std::path::Path;
@@ -7,10 +7,10 @@ use std::path::Path;
 use agent_proto::test_maps::RecipeInfo;
 use game::test_maps::{BaseMap, Built, Recipes, Resolved};
 use scenario_edit::MapSource;
-use scenario_edit::recipe::{self, Fidelity, Recipe};
+use scenario_edit::recipe::{self, Builder, Fidelity, Recipe};
 use serde_json::Value;
 
-/// The scenario editor's recipes.
+/// Placement and Firefight test maps built from local disc data.
 pub struct ScenarioRecipes;
 
 /// The recipe a `maps.test.create` names: a built-in by name or a whole
@@ -63,18 +63,40 @@ impl Recipes for ScenarioRecipes {
         base: Option<&str>,
         source: BaseMap,
         data_root: &Path,
+        replace: bool,
     ) -> Result<Built, String> {
         let r = recipe_of(recipe, base)?;
-        let source = match source.region {
-            None => MapSource::file(source.path),
-            region => MapSource::region(source.path, region),
-        };
-        let (built, saved) =
-            recipe::build_package(source, &r, data_root).map_err(|e| e.to_string())?;
-        Ok(Built {
-            map_id: saved.id.to_string(),
-            report: serde_json::to_value(&built).map_err(|e| e.to_string())?,
-        })
+        let source = MapSource::region(source.path, source.region);
+        match r.builder {
+            Builder::Placements => {
+                let (built, saved) = recipe::build_package_with_replace(source, &r, data_root, replace)
+                    .map_err(|e| e.to_string())?;
+                Ok(Built {
+                    map_id: saved.id.to_string(),
+                    report: serde_json::to_value(&built).map_err(|e| e.to_string())?,
+                })
+            }
+            Builder::FirefightProbe => {
+                let bytes = source.read_base().map_err(|e| e.to_string())?;
+                let saved = firefight_kit::build_package(
+                    &bytes,
+                    &r.base,
+                    firefight_kit::Mode::Probe,
+                    &content::store::maps_dir(data_root),
+                    &r.package_dir(),
+                    replace,
+                )
+                .map_err(|e| format!("{e:#}"))?;
+                Ok(Built {
+                    map_id: saved.id.to_string(),
+                    report: serde_json::json!({
+                        "recipe": r.name, "base": r.base, "fidelity": r.fidelity,
+                        "counts": {"squads": saved.squads, "zones": saved.zones},
+                        "costs": saved.costs, "expect": r.expect,
+                    }),
+                })
+            }
+        }
     }
 }
 

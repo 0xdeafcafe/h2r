@@ -709,23 +709,35 @@ impl Plan {
         &self,
         mut resolve: impl FnMut(&CharacterChoice) -> Option<TagId>,
     ) -> Result<ScenarioBlocks> {
-        let ai = &self.ai;
+        let palette = self
+            .characters
+            .iter()
+            .map(|c| resolve(c).ok_or_else(|| Error::Invalid(format!("no char {}", c.h2_character))))
+            .collect::<Result<Vec<_>>>()?;
+        Ok(self.ai.blocks_with_palette(&palette))
+    }
+}
+
+impl ScenarioAi {
+    /// Encode authored Halo 2 AI with its resolved character datums.
+    pub fn blocks(&self) -> ScenarioBlocks {
+        self.blocks_with_palette(&self.character_palette)
+    }
+
+    fn blocks_with_palette(&self, palette: &[TagId]) -> ScenarioBlocks {
+        let ai = self;
         let mut fields = Vec::new();
         let mut push = |(at, stride): (usize, usize), elements: Vec<Block>| {
             fields.push((at as u32, elements.len() as u32, array(elements, stride)));
         };
-
-        let chars = self
-            .characters
+        let chars = palette
             .iter()
-            .map(|c| {
-                let id = resolve(c)
-                    .ok_or_else(|| Error::Invalid(format!("no char {}", c.h2_character)))?;
-                let mut e = Block::zeroed(8);
+            .map(|&id| {
+                let mut e = Block::zeroed(l::CHARACTER_PALETTE.1);
                 e.tag_ref(0, id);
-                Ok(e)
+                e
             })
-            .collect::<Result<Vec<_>>>()?;
+            .collect();
         push(l::CHARACTER_PALETTE, chars);
 
         push(
@@ -898,6 +910,6 @@ impl Plan {
         child(&mut sd, l::POINT_SETS, sets);
         push(l::SCRIPTING_DATA, vec![sd]);
 
-        Ok(ScenarioBlocks { fields })
+        ScenarioBlocks { fields }
     }
 }

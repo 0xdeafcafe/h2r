@@ -1,7 +1,7 @@
 # Firefight
 
-Status: Design. Nothing here is built.
-Code (planned): `crates/formats/firefight` (the definition, the director), `crates/tools/firefight-kit` (the map kit), `crates/extensions/game/src/firefight/` (the host runtime, the HUD), `crates/live/live-proto/src/firefight.rs`. Tests: each crate's own, on invented data.
+Status: Partly built. The stage-one offline kit and its probe recipe are implemented. Retail play and the network probes await verification.
+Code: `crates/tools/firefight-kit` (the map kit), `crates/apps/cli/src/firefight_cmd.rs` (offline command). Tests: `cargo test -p firefight-kit --lib` on invented maps. The slice table lists the planned runtime and Live code.
 Switch: the `firefight` feature of `H2_FEATURES` (off until slice FF4 is seen in the game); it joins [switches.md](../runtime/switches.md) with the code.
 
 Firefight is a co-operative mode on multiplayer maps: up to 16 players on
@@ -133,6 +133,35 @@ the kit's version, so every machine that builds it gets the same id.
 | Squad slots | 16 empty squads the director fills (class, count and zone are set at place time) | the same writers |
 | Characters, stage 1 | `char` tags we author from a tuning table of ours, on bipeds and weapons the multiplayer map already has | Elites only; no tag is copied from another map |
 | Characters, stage 2 | `tags::schema::transplant` from the player's own campaign maps, with the sound gestalt merge | each class costs tag headroom; `validate` refuses a class that does not fit and the builder reports the cost |
+
+Stage 1 runs against a map on the configured disc or extracted disc tree:
+
+```sh
+h2 firefight kit coagulation
+h2 firefight kit coagulation --probe
+```
+
+The first command installs `<data>/maps/firefight-coagulation`. The second
+builds the `firefight-probe` recipe, which puts two Elites in one squad
+and adds a startup script that calls `ai_place` for it. The regular kit
+keeps its sixteen squads empty. The [test-map API](test-maps.md) can
+also create and list the probe on a running host.
+
+`firefight-kit/src/nav.rs` generates pathfinding for every structure BSP.
+It chooses 6–12 boundary sectors on a connected component accessible from
+player starts. A route to its middle must use shared sector edges with
+enough clearance for the bots' walk mesh. Each zone has an area and
+separated firing positions sampled off the player starts. The kit refuses
+maps without six suitable drops or without the required local tags.
+
+The pinned map writer keeps existing datums, BSP load addresses and raw
+resources in place. The scenario and each BSP point to their new arrays
+in ordinary tag memory. The package has one deterministic file patch,
+bound to the base hash. It carries the kit version in the map's string
+table, so the standard package `MapId` includes it through the patch hash.
+The cost report counts each part's bytes and compares the final growth
+in tag memory (including the index and page rounding) with the available
+space before anything is installed.
 
 Tag headroom on multiplayer maps is 0.1 to 1.5 MiB and one map has none
 (**S**, forge-design.md, "The kit"). The kit builder prints what each

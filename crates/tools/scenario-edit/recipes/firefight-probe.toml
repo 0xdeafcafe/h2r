@@ -1,0 +1,6 @@
+name = "firefight-probe"
+title = "Firefight probe"
+purpose = "One squad of two Elites on a multiplayer map for the AI networking probes."
+base = "coagulation"
+fidelity = "full"
+builder = "firefight-probe"

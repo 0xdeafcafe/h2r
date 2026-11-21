@@ -77,7 +77,9 @@ group char 0xec align 4
   0xd4 block patterns 0x10 align 4
     0x0 tagref weapon groups=weap
     0x8 block patterns 0x40 align 4
-      0x0 unknown 0x40
+      0x0 unknown 0x20
+      0x20 f32[2] burst_duration -- Seconds at AI_FIRE_BURST (h1_command_atoms/performance.rs).
+      0x28 unknown 0x18
   0xdc block grenades 0x3c align 4
     0x0 unknown 0x3c
   0xe4 block vehicles 0xb4 align 4

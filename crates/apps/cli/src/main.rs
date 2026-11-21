@@ -60,6 +60,8 @@ mod emit_cache;
 mod emit_output;
 #[cfg(feature = "desktop")]
 mod extract_shaders;
+#[cfg(feature = "desktop")]
+mod firefight_cmd;
 #[cfg(all(unix, feature = "desktop"))]
 mod follow;
 #[cfg(feature = "desktop")]
@@ -233,6 +235,8 @@ const USAGE: &str = "usage: h2 <command> [disc]
   ls                      files on the disc
   maps [disc.iso]         map headers and tag counts on the disc
   tags <map> [group]      tags in a disc map or local .map; optional --disc <iso>
+  firefight kit MAP [--probe]  build a Firefight package from a disc map
+                          (docs/game/firefight.md)
   map testbuild --out DIR builder load-test maps for H2_MAP_DIR (docs/formats/map-builder.md)
   testmap <map> <script> --out <new.map>  a test map: a JSON edit script over the
                           placements (docs/runtime/agent-api.md, phase 5)
@@ -413,6 +417,9 @@ fn desktop_command(cmd: String, mut args: impl Iterator<Item = String>) -> Resul
     }
     if cmd == "server-map" {
         return server_map::run(args.collect());
+    }
+    if cmd == "firefight" {
+        return firefight_cmd::run(args.collect());
     }
     if cmd == "map" {
         return map_testbuild::run(args.collect());
