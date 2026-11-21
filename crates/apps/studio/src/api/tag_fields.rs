@@ -11,12 +11,15 @@
 use map::TagId;
 use serde_json::{Value, json};
 use studio_proto::{code, method as m};
+use tags::registry::Layout;
 
 use super::scenario::refused;
 use super::{METHODS, MethodDef, P, Provider, Reply, def, err};
 use crate::App;
 use crate::app::tag_api;
 use crate::app::{Action, BlockOp};
+use crate::fields as panel;
+use crate::play::issues::IssueIndex;
 
 /// The registry's provider.
 #[derive(Default)]
@@ -41,37 +44,43 @@ const SET: MethodDef = MethodDef {
 
 const FIELDS: MethodDef = def(
     m::TAG_FIELDS,
-    "The inspector's field rows for a tag or one block element",
+    "The field panel's rows for a tag or one block element, as the Tags tool and the inspector draw them (fields::rows): the label in words, the type in words, the unit, whether the field is named, editable (else read_only says why), edited (file_value is the file's value), when a change takes effect, the chip the row shows (only with a game connected) and the tag.set path",
     r#"{"tag":"string|integer","path?":"string (block element, e.g. parts[0])"}"#,
-    r#"{"fields":"[{offset,name,kind,size,value,description}]"}"#,
+    r#"{"fields":"[{name,offset,kind,size,value,description,evidence,section,label,named,type,unit,editable,read_only,edited,file_value,effect:{id,text,why},chip,live:{kind,text}|null,path,summary,choices?:[{value,name}],bits?:[{bit,name}],groups?:[string],count?,capacity?}]"}"#,
     r#"{"tag":"itmc"}"#,
 );
 
 fn fields(app: &mut App, p: &P) -> Reply {
     let tag = resolve(app, p)?;
-    let doc = app.shown_tags();
     let path = p.opt_str("path")?.unwrap_or_default();
+    let doc = app.shown_tags();
     let (at, layout) = tag_api::field_element(doc, tag, path)
         .map_err(|reason| err(code::REFUSED, reason))?;
-    let rows: Vec<_> = layout
-        .fields
+    Ok(json!({ "fields": rows(app, tag, path, at, &layout) }))
+}
+
+/// The panel's rows of the element at `at` as JSON, for the open map's
+/// game link. `path` is the element's path from the root (empty for it).
+pub(super) fn rows(app: &App, tag: TagId, path: &str, at: u32, layout: &Layout) -> Vec<Value> {
+    let doc = app.shown_tags();
+    let link = panel::Link::of(app);
+    let issues = match (link, &app.pairing.link) {
+        (panel::Link::Off, _) | (_, None) => IssueIndex::empty(),
+        (_, Some(l)) => l.issues.as_ref(),
+    };
+    let prefix = match tag_api::named_path(doc, tag, path) {
+        Ok(p) if !p.is_empty() => format!("{p}."),
+        _ => String::new(),
+    };
+    let cx = panel::row::Context {
+        link,
+        issues,
+        prefix: &prefix,
+    };
+    panel::rows(doc, tag, at, layout, &cx)
         .iter()
-        .map(|f| {
-            // Ask for a block element by path. Listing the parent only reads
-            // its pair, even for a block with many elements.
-            let value = match &f.kind {
-                tags::registry::Kind::Block(child) => {
-                    json!(doc.block(tag, at + f.offset, child).map(|(count, _)| count))
-                }
-                _ => tag_api::value(doc, tag, at, f),
-            };
-            json!({
-                "name": f.name, "offset": f.offset, "kind": f.kind.label(),
-                "size": f.kind.width(), "value": value, "description": f.doc,
-            })
-        })
-        .collect();
-    Ok(json!({"fields": rows}))
+        .map(|r| r.json(doc, tag, at))
+        .collect()
 }
 
 const CHAIN: MethodDef = MethodDef {

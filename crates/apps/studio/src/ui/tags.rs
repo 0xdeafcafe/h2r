@@ -605,6 +605,7 @@ pub fn fields(
         inspector::issues(app)
     };
     let mut resolution = None;
+    st.panel.follow(app);
     ui.child_window("##fields").build(ui, || {
         fields::panel_with_marks(
             ui,

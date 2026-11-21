@@ -341,8 +341,22 @@ fn tag_fields_describe_root_and_nested_registry_fields() {
         respawn["description"],
         "Seconds before the item respawns when its placement has no override."
     );
+    // The panel's row model: words for people, the path for tag.set, and
+    // no effect chip with no game connected.
+    assert_eq!(respawn["label"], "Respawn time");
+    assert_eq!(respawn["type"], "Whole number");
+    assert_eq!(respawn["path"], "respawn_time");
+    assert_eq!(respawn["named"], true);
+    assert_eq!(respawn["edited"], false);
+    assert!(respawn["file_value"].is_null());
+    assert!(respawn["chip"].is_null());
+    assert!(respawn["live"].is_null());
+    assert_eq!(respawn["effect"]["id"], "not_known");
+    assert_eq!(respawn["effect"]["text"], "Not known; reload to be sure.");
     let entries = rows.iter().find(|f| f["name"] == "entries").unwrap();
     assert_eq!(entries["value"], 1);
+    assert_eq!((entries["count"].as_u64(), entries["type"].as_str()), (Some(1), Some("List")));
+    assert!(entries["summary"].as_str().unwrap().starts_with("1 item"));
     assert!(entries.get("description").unwrap().is_null());
 
     let nested = call(
@@ -354,6 +368,7 @@ fn tag_fields_describe_root_and_nested_registry_fields() {
     let weight = &nested["fields"][0];
     assert_eq!(weight["name"], "weight");
     assert_eq!(weight["value"], 1.5);
+    assert_eq!(weight["path"], "entries[0].weight");
     let via_offset = call(
         &mut api,
         &mut app,

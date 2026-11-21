@@ -534,6 +534,7 @@ fn tags(
     let mut actions = Vec::new();
     let mut resolution = None;
     let issues = issues(app);
+    state.tag_panel.follow(app);
     breadcrumbs(ui, app, location, &mut actions);
     let undo = ui.begin_disabled_with_cond(!doc.can_undo());
     if ui.button("Undo tag edit") {

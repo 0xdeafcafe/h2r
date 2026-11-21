@@ -210,9 +210,32 @@ Notes on some:
   `tag.block.*` on `netgame_flags` run as the matching `scenario.*` calls.
 - **Field rows.** `tag.fields {tag, path?}` returns `{fields: [...]}` for the
   root or a block element such as `parts[1]`. Offsets such as `+0x8[1]` also
-  select a block element. Each row has `name`, `offset` in bytes, `kind`,
-  `size` in bytes, `value`, and `description` (the definition's `doc` text,
-  or null). An offset path in `tag.set` addresses the typed field that starts
+  select a block element. The rows are the field panel's
+  (`fields::rows`, [tag-editing.md](tag-editing.md)), so they equal what
+  the Tags tool and the inspector draw. Each row has `name`, `offset` in
+  bytes, `kind`, `size` in bytes, `value`, `description` (the
+  definition's `doc` text, or null), `evidence` (its meaning text),
+  `section`, and:
+  - `label` (the name in words), `named`, `type` (the type in words:
+    `Whole number`, `Decimal number`, `Angle`, `Colour`, `Range`,
+    `Choice`, `Switches`, `Name`, `Tag reference`, `List`, `Bytes`,
+    `Internal value`, `Unnamed value`, `Padding`) and `unit` (or null);
+  - `editable`, and `read_only`, the reason as a sentence when not;
+  - `edited` (the value differs from the loaded file) and `file_value`
+    (the file's value when edited, else null);
+  - `effect: {id, text, why}` (an id of the effect table in
+    [live-mirror.md](live-mirror.md), "How an edit applies"), always
+    given; `chip`, the effect
+    the row shows, null with no game connected; `live: {kind, text}`, a
+    changed field's `mismatch` or `refused` mark with a game connected;
+  - `path`, the `tag.set` path from the root by field names
+    (`parts[1].value`, also for an offset path); `summary` (`2 items`,
+    `16 bytes`) for a list or data;
+  - `choices: [{value, name}]` for a choice, `bits: [{bit, name}]` for
+    switches, `groups` for a tag reference, `count` and `capacity` for a
+    list.
+
+  An offset path in `tag.set` addresses the typed field that starts
   there. Its row gives the width accepted for an integer or enum value.
   A block's value is its element count. Scalar values follow
   `tag.read`. The rows use the open or browsed tag document and include

@@ -1,7 +1,7 @@
 # Tag editing: the field panel in plain words
 
-Status: Design. T1 (effect words, `play::tag_sync::Effect`) is built; the rest is not, and "The built panel" describes the code the rest replaces.
-Code: `crates/apps/studio/src/fields.rs` (`panel_with_marks`), `crates/apps/studio/src/ui/tags.rs` (`fields`, `hex`), `crates/apps/studio/src/play/tag_sync.rs` (`class`), `crates/apps/studio/src/api/tag_fields.rs`. Tests: `crates/apps/studio/src/app/tag_tests.rs`, `headless::tests::the_tags_tool_edits_a_field_through_its_widgets`.
+Status: Design. T1 (effect words, `play::tag_sync::Effect`) and T2 (the row model, `fields::rows`, and the extended `tag.fields`) are built; the rest is not. "The built panel" describes the panel before T1, the code the slices replace.
+Code: `crates/apps/studio/src/fields.rs` (`panel_with_marks`), `crates/apps/studio/src/fields/row.rs` (`rows`), `crates/apps/studio/src/ui/tags.rs` (`fields`, `hex`), `crates/apps/studio/src/play/tag_sync.rs` (`effect`), `crates/apps/studio/src/api/tag_fields.rs`. Tests: `crates/apps/studio/src/app/tag_tests.rs`, `headless::tests::the_tags_tool_edits_a_field_through_its_widgets`.
 Switch: none.
 
 The field panel shows a tag as rows a person can read: a name in words, a

@@ -1278,12 +1278,33 @@ hovered field lit and edited bytes marked.
 `fields::panel(ui, &app.tags, tag, path, &mut PanelState, &mut actions)`
 draws the element at `path` (per step, a block field's offset and the
 element index; empty is the root) and pushes `Action::Tag` commands.
+
+The panel draws the rows of `fields::rows` (`fields/row.rs`), which makes
+no UI calls; `tag.fields` returns the same rows
+([tag-editing.md](tag-editing.md), "One row model"). A row is one line:
+a dot when the value differs from the loaded file, the label in words
+(the name with underscores as spaces, the first letter upper case, and
+`LOD`, `HUD`, `AI`, `BSP`, `ID`, `FOV` and `UV` upper case; an unnamed
+field by its type and offset, `Value at +0x14`), the widget, the unit
+(`degrees` for angles), and at the right edge when a change takes effect
+(`play::tag_sync::Effect`). That chip shows only with a game connected
+on the open map (`fields::Link`, set by `PanelState::follow`), never on
+a read-only row, and for a field whose effect is not known only once it
+is changed. The tooltip gives the type in words, the description, the
+read-only reason, the effect sentence with a game connected, and the
+evidence. A read-only row always has a sentence: the tag's refusal,
+`Edited in Scene.` for the scenario's placement lists, `Set by the
+editor. Add or remove list items to change it.` for internal values
+(`tag_doc::STRUCTURAL`). `PanelState::drawn` keeps what the last frame
+drew, for tests.
+
 Numbers drag. Enums and flag masks without labelled options edit numerically.
 Named enum values appear in a combo. Named flags have checkboxes (unnamed bits that
 are set show as `bit N`); colours pick; angles show degrees; bounds drag
 as a pair; string IDs are text; tag references and datums pick from the
 map's tags of the allowed groups (and their child groups) with a button
-to show the tag; blocks are tree nodes with an element picker and Add,
+to show the tag; blocks are tree nodes labelled with their size (`2
+items`, `2 items, room for 4`) and hold an element picker and Add,
 Duplicate and Remove (disabled with the reason as tooltip); data is hex.
 
 `app/tag_api.rs` is the same editor as plain functions, for scripts and
@@ -1314,9 +1335,13 @@ reference rolled back, missing tags refused or skipped, a stale layout
 refused, growth only when allowed, exports kept out of Git; a shared
 cache browsed read-only and selected from Maps; resources and lookups),
 `api::tests::tags_browse_a_shared_cache_and_round_trip_through_a_bundle`,
-and
+`fields::row::tests` (labels, type words, read-only sentences, paths, a
+changed row's file value, chips only with a game),
 `headless::tests::the_tags_tool_edits_a_field_through_its_widgets`,
-which clicks the tree and a flag through the test-engine hooks.
+which clicks the tree and a flag through the test-engine hooks, and
+`headless::tests::tag_rows_match_tag_fields_and_chips_need_a_game`
+(the drawn rows equal `tag.fields`, with no chip unpaired and the
+list's chip with the fake game viewing).
 
 ## UI Screens
 

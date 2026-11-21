@@ -53,9 +53,9 @@ pub const NESTED_GROWTH: &str = "the block lies in elements that were grown and 
 /// Why an element with child arrays is not duplicated.
 pub const SHARED_CHILDREN: &str = "the element has nonempty child blocks or data: a copy would \
      share those arrays with it";
-/// Why a structural field is shown only.
-pub const STRUCTURAL: &str = "a count, address or resource pointer: changing it by hand would \
-     corrupt the map (use the block's add / remove / duplicate)";
+/// Why a structural field is shown only: a count, address or resource
+/// pointer, which by hand would corrupt the map.
+pub const STRUCTURAL: &str = "Set by the editor. Add or remove list items to change it.";
 
 /// What may be done with a tag.
 #[derive(Clone, Debug, PartialEq, Eq)]

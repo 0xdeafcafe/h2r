@@ -21,7 +21,7 @@ pub enum Kind {
 }
 
 impl Kind {
-    fn name(self) -> &'static str {
+    pub(crate) fn name(self) -> &'static str {
         match self {
             Self::Waiting => "waiting",
             Self::Reload => "reload",

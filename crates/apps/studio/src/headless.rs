@@ -1004,13 +1004,14 @@ mod tests {
             .unwrap();
         assert_eq!(flags, [3, 0], "both flags set");
         assert!(app.tags.is_changed(tag_tests::weap_id()));
-        // The block lists its elements; the hex pane follows the mouse.
-        assert!(
-            h.scene
-                .items
-                .iter()
-                .any(|i| i.label.starts_with("parts  [2]"))
-        );
+        // One line per row: labels in words, the changed row dotted, the
+        // list's size beside its name. The hex pane follows the mouse.
+        assert!(h.scene.items.iter().any(|i| i.label == "Parts"));
+        let drawn = &h.studio.tags.panel.drawn;
+        let flags = drawn.iter().find(|d| d.path == "flags").unwrap();
+        assert_eq!((flags.label.as_str(), flags.edited), ("Flags", true));
+        let parts = drawn.iter().find(|d| d.path == "parts").unwrap();
+        assert_eq!(parts.summary.as_deref(), Some("2 items"));
         h.step(&mut app, &Step::Hover("loud##b0".into())).unwrap();
         h.frames(&mut app, 2).unwrap();
         assert_eq!(
@@ -1039,6 +1040,64 @@ mod tests {
             .collect();
         assert!(distinct.len() > 8);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The Tags tool draws exactly the rows `tag.fields` returns, and a row
+    /// shows when a change takes effect only with a game connected: none
+    /// unpaired; with the fake game viewing, the list's `After reload`.
+    #[cfg(unix)]
+    #[test]
+    fn tag_rows_match_tag_fields_and_chips_need_a_game() {
+        use crate::app::tag_tests;
+        use crate::play::Play;
+        use crate::play::testing::{Temp, fake};
+        use crate::script::{Button, Step};
+        use agent_proto::sim::SessionKind;
+        use studio_proto::method as m;
+        let Some((_turn, mut h)) = headless() else {
+            return;
+        };
+        let t = Temp::new("tag-rows-chips");
+        let (mut app, ..) = tag_tests::app(&t.0);
+        h.studio.play.play = Play::new();
+        h.frames(&mut app, 4).unwrap();
+        let click = |t: &str| Step::Click(t.into(), Button::Left);
+        h.step(&mut app, &click("weap  (1)")).unwrap();
+        h.frames(&mut app, 2).unwrap();
+        h.step(&mut app, &click("objects\\test\\blaster")).unwrap();
+        h.frames(&mut app, 2).unwrap();
+        let mut api = crate::api::Api::new();
+        let weap = format!("{:#010x}", tag_tests::weap_id().0);
+        let mut same_rows = |h: &Headless, app: &mut App| {
+            let fields = api
+                .call(app, m::TAG_FIELDS, serde_json::json!({ "tag": weap }))
+                .unwrap();
+            let rows = fields["fields"].as_array().unwrap().clone();
+            let drawn = &h.studio.tags.panel.drawn;
+            assert_eq!(drawn.len(), rows.len(), "one drawn row per tag.fields row");
+            for (d, r) in drawn.iter().zip(&rows) {
+                assert_eq!(r["path"], d.path.as_str());
+                assert_eq!(r["label"], d.label.as_str());
+                assert_eq!(r["edited"], d.edited);
+                assert_eq!(r["chip"], serde_json::json!(d.chip));
+                assert_eq!(r["summary"], serde_json::json!(d.summary));
+            }
+            rows
+        };
+        let unpaired = same_rows(&h, &mut app);
+        assert!(unpaired.iter().all(|r| r["chip"].is_null()), "no chip unpaired");
+        assert!(h.studio.tags.panel.drawn.iter().all(|d| d.chip.is_none()));
+
+        let game = fake::Game::start("tag-rows-chips", "example", SessionKind::Local);
+        fake::pair_for_view(&mut h.studio.play.play, &mut app, &game);
+        h.frames(&mut app, 3).unwrap();
+        assert_eq!(h.studio.tags.panel.link, crate::fields::Link::Viewing);
+        let viewing = same_rows(&h, &mut app);
+        let parts = viewing.iter().find(|r| r["path"] == "parts").unwrap();
+        assert_eq!(parts["chip"], "After reload");
+        let speed = viewing.iter().find(|r| r["path"] == "speed").unwrap();
+        assert!(speed["chip"].is_null(), "an unchanged not_known field has no chip");
+        assert_eq!(speed["effect"]["id"], "not_known");
     }
 
     /// The Maps list's Map Pack group through its widgets: with nothing
