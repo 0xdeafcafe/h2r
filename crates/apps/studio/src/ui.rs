@@ -42,6 +42,23 @@ const UNSAVED: &str = "Unsaved changes###unsaved";
 const SAVE_PACKAGE: &str = "Save as package###save-package";
 const OPEN_PACKAGE: &str = "Open package###open-package";
 
+/// A tab of the Map workspace's left dock node, in the order
+/// [`Studio::frame`] draws them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MapTab {
+    Maps = 0,
+    Scene = 1,
+    Tags = 2,
+    Scripts = 3,
+}
+
+impl MapTab {
+    /// Frames a tab is asked for before giving up (a collapsed or hidden
+    /// floating window never draws; asking forever would take focus from
+    /// every other window).
+    const TRIES: u8 = 4;
+}
+
 /// The studio UI.
 pub struct Studio {
     keys: Keys,
@@ -52,7 +69,8 @@ pub struct Studio {
     palette: palette::PaletteUi,
     reset_layout: bool,
     focus_game: bool,
-    settle_tabs: bool,
+    /// The Map tab asked to the front, with the frames left to ask.
+    want_tab: Option<(MapTab, u8)>,
     previous_tool: Option<ToolKind>,
     previous_map: Option<String>,
     hint: Option<String>,
@@ -93,7 +111,7 @@ impl Studio {
             palette: Default::default(),
             reset_layout: false,
             focus_game: false,
-            settle_tabs: false,
+            want_tab: None,
             previous_tool: None,
             previous_map: None,
             hint: None,
@@ -125,13 +143,13 @@ impl Studio {
             self.play.shortcuts(ui);
         }
         self.menu_bar(ui, app, &mut actions);
-        let focus_game = std::mem::take(&mut self.focus_game);
+        // Asked for by the frame before (once its tabs exist).
+        let focus_game = self.focus_game;
         bar::draw(ui, app, &mut self.play, &self.fonts, &mut actions);
-        // The frame after the layout is applied asks for the Map tabs again:
-        // Dear ImGui selects the last new tab of a node as its windows first
-        // dock, over any focus asked for in that first frame.
-        let settle = std::mem::take(&mut self.settle_tabs);
-        let reset = self.dockspace(ui) || settle;
+        let reset = self.dockspace(ui);
+        if !bar::is_map(app.tool) {
+            self.want_tab = None;
+        }
         self.hint = None;
         self.map_list.begin();
         match app.tool {
@@ -151,10 +169,34 @@ impl Studio {
                     && !focus_tags
                     && !focus_scripts
                     && (reset || (changed && self.previous_tool.is_some()) || opened);
-                self.maps_window(ui, app, gpu, focus_maps, &mut actions);
-                self.outliner_window(ui, app, focus_scene, &mut actions);
-                self.tags_window(ui, app, focus_tags, &mut actions);
-                self.scripts_window(ui, app, focus_scripts, &mut actions);
+                let asked = [
+                    (focus_maps, MapTab::Maps),
+                    (focus_scene, MapTab::Scene),
+                    (focus_tags, MapTab::Tags),
+                    (focus_scripts, MapTab::Scripts),
+                ]
+                .into_iter()
+                .find_map(|(focus, tab)| focus.then_some(tab));
+                if let Some(tab) = asked {
+                    self.want_tab = Some((tab, MapTab::TRIES));
+                }
+                // A focus request only reaches the dock's tab bar on the next
+                // frame, and only while nothing else takes focus after it:
+                // the windows that appear with a new layout take it, and Dear
+                // ImGui selects the last new tab of a node when its windows
+                // first dock. So the wanted tab is asked for every frame until
+                // it draws in a frame that did not apply a layout.
+                let want = self.want_tab.map(|(tab, _)| tab);
+                let shown = [
+                    self.maps_window(ui, app, gpu, want == Some(MapTab::Maps), &mut actions),
+                    self.outliner_window(ui, app, want == Some(MapTab::Scene), &mut actions),
+                    self.tags_window(ui, app, want == Some(MapTab::Tags), &mut actions),
+                    self.scripts_window(ui, app, want == Some(MapTab::Scripts), &mut actions),
+                ];
+                if let Some((tab, tries)) = self.want_tab {
+                    let done = shown[tab as usize] && !reset;
+                    self.want_tab = (!done && tries > 1).then_some((tab, tries - 1));
+                }
                 self.viewport_window(ui, app, gpu, &mut actions);
                 self.inspector_window(ui, app, &mut actions);
             }
@@ -176,7 +218,9 @@ impl Studio {
         // The seam for sound audition until the tag view tabs exist
         // (docs/editor/rich-editors.md, "One seam for every rich view").
         sound::window(ui, app, &mut self.sound);
-        if focus_game {
+        // After the Map tab: Game in the same frame would take its focus.
+        if focus_game && self.want_tab.is_none() {
+            self.focus_game = false;
             ui.set_window_focus(Some("###game"));
         }
         self.status_bar(ui, app);
@@ -512,7 +556,6 @@ impl Studio {
             // ImGui selects the last new tab when the windows first dock.
             // Select Game once both tabs have appeared in the default layout.
             self.focus_game = true;
-            self.settle_tabs = true;
         }
         fresh || apply == DockLayoutApply::Replace
     }
@@ -635,7 +678,7 @@ impl Studio {
         app: &mut App,
         focus: bool,
         actions: &mut Vec<Action>,
-    ) {
+    ) -> bool {
         app.sync_tags();
         let fonts = &self.fonts;
         let st = &mut self.tags;
@@ -650,7 +693,8 @@ impl Studio {
                 actions.push(Action::SetTool(ToolKind::Tags));
             }
             tags::tree(ui, app, st, fonts, actions);
-        });
+        })
+        .is_some()
     }
 
     fn scripts_window(
@@ -659,7 +703,7 @@ impl Studio {
         app: &mut App,
         focus: bool,
         actions: &mut Vec<Action>,
-    ) {
+    ) -> bool {
         let fonts = &self.fonts;
         let st = &mut self.scripts;
         let dialogs = self.dialogs;
@@ -678,7 +722,8 @@ impl Studio {
             // map opens and this tab is first drawn for it.
             app.sync_scripts();
             scripts::list(ui, app, st, fonts, dialogs, actions);
-        });
+        })
+        .is_some()
     }
 
     fn maps_window(
@@ -688,9 +733,9 @@ impl Studio {
         gpu: &mut Gpu<'_>,
         focus: bool,
         actions: &mut Vec<Action>,
-    ) {
+    ) -> bool {
         let mut list = std::mem::take(&mut self.map_list);
-        ui.window(&self.keys.maps).focused(focus).build(|| {
+        let drawn = ui.window(&self.keys.maps).focused(focus).build(|| {
             if ui.button(format!("{} Open...", icon::FOLDER_OPEN)) {
                 self.open_source_dialog(actions);
             }
@@ -717,6 +762,7 @@ impl Studio {
             map_list::source_rows(ui, app, &mut list, gpu, &shared, actions);
         });
         self.map_list = list;
+        drawn.is_some()
     }
 
     /// The user packages, converted variants and read-only Halo 1 maps.
@@ -760,7 +806,7 @@ impl Studio {
         app: &mut App,
         focus: bool,
         actions: &mut Vec<Action>,
-    ) {
+    ) -> bool {
         let window = ui.window(&self.keys.outliner)
             .flags(WindowFlags::NO_FOCUS_ON_APPEARING)
             .focused(focus);
@@ -891,7 +937,8 @@ impl Studio {
                 if place.is_some() {
                     self.viewport.placing = place;
                 }
-            });
+            })
+            .is_some()
     }
 
     fn viewport_window(

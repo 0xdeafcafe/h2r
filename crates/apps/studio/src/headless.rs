@@ -871,8 +871,8 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
-    /// The UI Screens tool through its widgets, as a user would: pick the
-    /// sign-in prompt's code page in the tree, press Up and A on the pad,
+    /// The UI Screens tool through its widgets, as a user would: filter the
+    /// tree to the sign-in prompt and pick its code page, press Up and A on the pad,
     /// hover the picture. The page steps, the picture is on screen, and the
     /// hovered widget's JSON is found. Skipped without a wgpu adapter.
     #[test]
@@ -886,8 +886,12 @@ mod tests {
         app.dispatch(Action::SetTool(ToolKind::UiScreens));
         h.frames(&mut app, 3).unwrap();
         let click = |t: &str| Step::Click(t.into(), Button::Left);
+        // Filter first: unfiltered, the sign-in screen sits far enough down
+        // the list that its states start at the panel's bottom edge, and a
+        // click at a row's middle lands below the panel.
         for step in [
-            click("signin-code"),
+            click("##ui-filter"),
+            Step::Type("signin-code".into()),
             click("code##ui-signin-code-code"),
             click("Up##pad-Up"),
             click("Right##pad-Right"),
