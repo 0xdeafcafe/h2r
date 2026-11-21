@@ -1,7 +1,7 @@
 # Forge editing: the monitor's controls, tools and properties
 
-Status: Partly built. Flying, pick up and drop, turning with a rotation step, hold to delete, undo and redo, the object menu, a Properties page with Heading and the Links tool exist. The Halo 3 button table, the settings, Coordinates, the spawn, goal and item properties, the browser, groups, prefabs and lights are design.
-Code: `crates/extensions/forge/src/tool.rs` (`Tool`, `Action`, `Input`, `Command`), `crates/extensions/forge/src/session.rs` (`Session`), `crates/extensions/game/src/forge_controls.rs` (pad, keyboard and agent input), `crates/extensions/game/src/forge_glue/editing.rs` (the host). Tests: `crates/extensions/forge/src/tool_tests.rs`, `link_tests.rs`, `tests.rs`.
+Status: Partly built. The Halo 3 button table, flying with thrust and fine movement, pick up and drop, manipulating a held object, rotation snap, hold to delete, undo and redo, the Tools picker with the Objects and Links tools, the object menu, a Properties page with Heading and Tool settings with Rotation snap exist. Movement snap, Axes, Coordinates, the spawn, goal and item properties, overlays, the browser, groups, prefabs and lights are design.
+Code: `crates/extensions/forge/src/tool.rs` (`Tool`, `Action`, `Input`, `Command`), `crates/extensions/forge/src/session.rs` (`Session`), `crates/extensions/game/src/forge_controls.rs` and `forge_controls/bindings.rs` (pad, keyboard and agent input; the bindings table), `crates/extensions/game/src/forge_screens/sheet.rs` (the menus' tables), `crates/extensions/game/src/forge_glue/editing.rs` (the host). Tests: `crates/extensions/forge/src/tool_tests.rs`, `link_tests.rs`, `tests.rs`; `forge_controls.rs`, `bindings.rs` and `forge_screens/tests.rs` in `crates/extensions/game/src`.
 Switch: `forge`, listed in [switches.md](../runtime/switches.md). No switch of its own.
 
 What a player can do as a monitor in a Forge session, and which button
@@ -59,10 +59,10 @@ objects that are guest truth, tool state that is presentation
 
 ## Controls
 
-One table binds every action: `forge_controls::bindings::BINDINGS`
-(slice U4). The pad gate, the keyboard map, the Controls page and the
-HUD's prompt all read it, so none can disagree. The host pad's bumpers
-are the game's Black and White buttons.
+One table binds every action: `forge_controls::bindings::BINDINGS`.
+The pad gate, the keyboard map, the Controls page and the HUD's prompt
+all read it, so none can disagree. The host pad's bumpers are the game's
+Black and White buttons.
 
 | Action | Controller | Keyboard and mouse |
 |---|---|---|
@@ -80,7 +80,6 @@ are the game's Black and White buttons.
 | Tools | D-pad Right | T |
 | Tool settings | D-pad Down | G |
 | Undo; redo | D-pad Left; hold for redo | Cmd+Z; Shift+Cmd+Z |
-| Overlays | Back | H |
 | Forge menu | Start | Escape with nothing held |
 
 - The first eleven rows are Halo 3's table (**C**), with B as cancel
@@ -89,18 +88,25 @@ are the game's Black and White buttons.
 - In the Links tool the same buttons mean the same things: A starts a
   link and makes it, X opens the Link question of the thing aimed at,
   hold Y removes its latest link, B cancels a started link.
-- While a screen is up the monitor takes no input but the screen's
-  (`forge_controls::publish`, `dialog`).
+- **Overlays** (Back, H) joins the table with the first overlay, the
+  nav overlay of F9.
+- Start, and Escape with nothing to cancel, are the game's: they open
+  its GAME MENU with the Forge rows in it. The table's Start row does
+  nothing of the session's (`Does::Game`).
+- While a screen is up, ours or the game's, the monitor takes no input:
+  the pad and the keys go to the game's UI (`forge_controls::State`,
+  `screen`).
+- Thrust triples flying while held; manipulating, it does not apply.
+- On the Controls page, up and down, and undo and redo, share a row each
+  (`bindings::PAIRS`), so the page fits the in-game list's sixteen lines.
 - `forge.input` takes each action by the name `Action::named` gives it
   ([agent-api.md](../runtime/agent-api.md), "Local Forge session").
-- The built pad gate differs from this table until U4: X is the object
-  menu, Y is Properties, B held deletes, RB held turns and the triggers
-  rise and fall (`forge_controls.rs`, `Gate::controls`, `sample`).
 
 ## Tools
 
 A tool decides what the reticle aims at and what A does. D-pad Right
-opens the Tools picker; the HUD names the tool in use.
+opens the Tools picker (`forge_screens::sheet::TOOLS`); the HUD names
+the tool in use.
 
 | Tool | Aims at | Slice |
 |---|---|---|
@@ -138,8 +144,9 @@ persist and each has a picker.
 - **Fine movement** scales flying, pushing and turning to a fifth.
   **Thrust** triples flying while held.
 - **Manipulate.** With RT held the left stick's forward and back change
-  the hold distance (`Tool`, `distance`) and its sideways axis rolls;
-  the right stick yaws and pitches.
+  the hold distance (`Tool`, `distance`, at `tool::PUSH_RATE`, no nearer
+  than `tool::MIN_DISTANCE`) and its sideways axis rolls; the right stick
+  yaws and pitches.
 - **Coordinates** is a screen opened from Properties: X, Y, Z, Yaw,
   Pitch and Roll, each with its value. A on a row opens the game's
   keyboard for a number. Left and right nudge the row by the snap in
@@ -158,7 +165,9 @@ persist and each has a picker.
 ## The object menu
 
 X with nothing aimed at. Groups first, then the group's objects; a
-group with nothing to offer on this map is absent.
+group with nothing to offer on this map is absent. The groups are
+`forge_screens::sheet::GROUPS`, in this table's order; every scenario
+block's objects have a group (`Group::of_block`).
 
 | Group | Lists | Made as | Slice |
 |---|---|---|---|
@@ -194,8 +203,9 @@ group with nothing to offer on this map is absent.
 ## Properties
 
 X on the thing aimed at or held. One list page whose rows come from a
-table by kind (`crates/extensions/game/src/ui_kit/forge/pages.rs`), so a slice adds rows and no
-screen. A value row opens a picker; an action row acts and closes.
+table by kind (`forge_screens::sheet::PROPERTIES`, read through
+`properties(group)`), so a slice adds rows and no screen. A value row
+opens a picker; an action row acts and closes.
 
 | Kind | Row | Writes | Class | Slice |
 |---|---|---|---|---|
@@ -221,9 +231,9 @@ screen. A value row opens a picker; an action row acts and closes.
   that does not simulate (scenery, a machine) already stays where it is
   put and may intersect anything: Reach's Fixed and Phased at once
   (**C**). The row matters only for kinds that do simulate.
-- The built page has Heading and Rotation step
-  (`ui_kit/forge/dialogs.rs`). Heading is Coordinates' Yaw, and
-  Rotation step is the Rotation snap setting.
+- The built page has Heading, for any object. Heading is Coordinates'
+  Yaw; the rotation step is the Rotation snap setting, on Tool settings
+  (`sheet::SETTINGS`).
 
 ## Selection, groups and prefabs
 
@@ -274,10 +284,14 @@ screen. A value row opens a picker; an action row acts and closes.
 ## Evidence
 
 - **Code** What is built: `tool.rs` (`Action`, `Tool`, the rotation
-  step and the pickup offset), `session.rs` (place, move, delete, link,
-  undo, redo, save, load), `forge_controls.rs` (the gate and `sample`).
+  step, the pickup offset and the push), `session.rs` (place, move,
+  delete, link, undo, redo, save, load), `forge_controls.rs` (the gate
+  and `sample`), `forge_controls/bindings.rs` (the table).
 - **Test** `tool_tests.rs`, `link_tests.rs` and `tests.rs` in
-  `crates/extensions/forge/src`.
+  `crates/extensions/forge/src`; `every_action_has_one_binding`,
+  `the_gate_follows_halo_3s_buttons` and
+  `the_controls_page_lists_the_bindings_table` in
+  `crates/extensions/game/src/forge_controls`.
 - **E** The netgame equipment entry and its spawner: [forge.md](forge.md)
   1.2 and [scenario-editor.md](../editor/scenario-editor.md) section 2.
 - **C** Every statement about Halo 3, Reach and Infinite:

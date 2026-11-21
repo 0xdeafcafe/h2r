@@ -9,7 +9,8 @@ materialised. Networked editing is planned.
 Code: `crates/formats/forge-doc` defines the document and log.
 `crates/tools/forge-build` materialises it. `crates/extensions/forge`
 owns the local session and its tools ([forge-editing.md](forge-editing.md)). The host is
-`crates/extensions/game/src/forge_glue.rs`, the pages are in
+`crates/extensions/game/src/forge_glue.rs`, the screens are in
+`crates/extensions/game/src/forge_screens.rs`, the HUD strip is in
 `crates/extensions/game/src/ui_kit/forge.rs`, and the game calls and API
 are in `crates/extensions/agent/src/forge`.
 Switch: `forge`, listed in [switches.md](../runtime/switches.md).
@@ -437,15 +438,14 @@ at, hold Y deletes, B cancels, RT held turns and pushes a held object,
 RB and LB rise and fall, LT thrusts. The whole table, with the keyboard,
 is in forge-editing.md, "Controls".
 
-Until slices U2 to U7 land, the built UI differs: **FORGE** is a main
-menu row that opens a kit lobby (`forge_lobby.rs`, `lobby_start.rs`)
-with rows Map, Forge map and Start; the HUD strip and the dialogs are
-painted by the play window's compositor
+The screens are the game's (`forge_screens`, slice U4). Until slices
+U2, U1, U3 and U7 land, the rest of the built UI differs: **FORGE** is a
+main menu row that opens a kit lobby (`forge_lobby.rs`,
+`lobby_start.rs`) with rows Map, Forge map and Start, and the HUD strip
+is painted by the play window's compositor
 (`crates/extensions/game/src/ui_kit/forge.rs`,
-`crates/apps/cli/src/play_cmd/forge.rs`); and the pad gate has the
-palette on X, Properties on Y and delete on a held B
-(`forge_controls.rs`). forge-firefight-ui.md's audit lists every
-difference.
+`crates/apps/cli/src/play_cmd/forge.rs`). forge-firefight-ui.md's audit
+lists every difference.
 
 Rules: every pending Rebuild edit shows the same count in the HUD and
 on the Forge menu; a refused proposal shows its reason as a HUD notice
@@ -541,7 +541,7 @@ and the game. Sizes as under Features.
 | **F1** | `forge-doc`: the document, placement and tag-field ops, canonical form and hash, validator with caps, fold of a log into a document, inverse ops | M | nothing | golden vectors for the hash; fold then unfold through inverses gives the start; every validator rule has a refusing case; a seeded fuzz of 10,000 random documents never panics; applying placement ops to a `scenario_edit::fixture` equals the same edits made through `Session` |
 | **F2** | `forge-build`: document to package, the `[[forge]]` layer, `MapId` format 2, `h2 forge build` and `check`, the kit's spare entries | M | F1 | two builds of one document are byte-equal; an empty document on a kit map differs from its base only in the kit's blocks; a stale base hash is a named error; `MapId` golden vectors, format 1 ids unchanged; the package resolves through `content::resolve` to the built map |
 | **F3** | Probes: `forge.capacity`, `forge.probe` (replication of a host-made object by group, the synchronous protocol on a multiplayer map, the AI flag in multiplayer, kit entries inert) | S | nothing | each method answers over a fake game with a test; the coordinator's runs go in `docs/game/notes/forge-probes.md` |
-| **F4** | Local session, its edits applied to the live objects through M8's calls: the camera body, the Objects tool, the object menu and Properties, save and load. **Built**, with its HUD and dialogs on the compositor until U3 and U4 | L | F1, F2, live-mirror M8 | `Page` tables for each dialog; the `Hud` view passes the kit's checks in every state; over a fake game, place, move and delete produce the expected proposals and engine calls, undo restores, a stale object is a named refusal that leaves the document alone, a saved file folds to the same document |
+| **F4** | Local session, its edits applied to the live objects through M8's calls: the camera body, the Objects tool, the object menu and Properties, save and load. **Built**, with its screens in the game (U4) and its HUD on the compositor until U3 | L | F1, F2, live-mirror M8 | `Page` tables for each dialog; the `Hud` view passes the kit's checks in every state; over a fake game, place, move and delete produce the expected proposals and engine calls, undo restores, a stale object is a named refusal that leaves the document alone, a saved file folds to the same document |
 | **F5** | Synchronous mode: the log on the network, roles, holding, join in progress, the film record | M | F3's results, F4 | two fake peers and a host converge to one head under reordered proposals; a second hold is refused; a late joiner's document equals the host's; a film with entries replays to the same `ForgeExt` hash |
 | **F6** | Teleporters and retail links: the Links tool, channels, device groups | M | F4 | a linked pair writes two flags with one identifier on a fixture; the bots' generator finds the link; unlink restores the bytes. **Built**, except the generator half: `bots::autonav`'s teleporter reader is private, so the test checks the bytes it reads (below) |
 | **F7** | `SimExt` and `ForgeExt`: volumes, the graph, emitters | L | F4; sim-rewrite's blob hooks | the blob round-trips and enters the hash; a graph fixture's outputs per tick match a table; one, two and eight workers give the same bits; an emitter fires on the scheduled ticks and stops at its limit |
