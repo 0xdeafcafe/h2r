@@ -278,7 +278,7 @@ million entries. JSON payloads are UTF-8.
 | `PDEV` | Sparse controller connection changes by input-pump ordinal, including port, generation and rumble capability. |
 | `NETR`, `RAND` | Batches of host boundary calls interleaved by a common call index with `PADR`, `TEXT`, `BTAP` and `VSIZ`. Records operation, arguments, thread, return/error and output slots. Socket delivery, send results and random draws retain their original ordering. |
 | `MARK` | Accepted lobby operations by executor boundary, D3D snapshot boundaries, bookmarks or the final mark with slice, tick and call count. |
-| `HASH` | Every 30 completed ticks, the arena digest if available and the HLE call cursor. Additional per-tick gameplay digests live in `INPT`. |
+| `HASH` | Every 30 completed ticks, the arena digest if available and the HLE call cursor. The arena digest folds in the `SimExt` records when there are any ([sim-rewrite.md](../engine/sim-rewrite.md), "The `SimExt` blob"). Additional per-tick gameplay digests live in `INPT`. |
 | `KEYF` | Scheduler-boundary snapshot and cursors, described below. |
 | `SUMM` | Menu JSON, up to 128 KiB. Contains level, game type, mode, variant name, match duration in ticks and player results including score and medal counts. Player turnover can produce multiple results for the same seat. |
 | `TIDX` | Tick directory for independently decodable input blocks and keyframes. |

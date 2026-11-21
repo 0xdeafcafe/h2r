@@ -789,6 +789,11 @@ impl State {
         self.sessions
             .set_variant_ext(ext, self.service.as_ref(), session.as_ref());
     }
+    pub fn set_session_rules(&mut self, rules: Option<String>) {
+        let session = self.session();
+        self.sessions
+            .set_rules(rules, self.service.as_ref(), session.as_ref());
+    }
     /// The bots in this console's hosted game, rostered for `session`
     /// (hex): that session is told of them, and every hosted session of
     /// its signed-in users, as players.

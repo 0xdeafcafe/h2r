@@ -2480,6 +2480,80 @@ fn guests_read_the_variant_options_their_host_advertises() {
         }
     );
 }
+/// A Live host's rules IR hash rides on its advertisement beside the variant
+/// options (docs/game/rules-engine.md, "Carrying a script"): a joined guest
+/// reads it at its own game start, and a host that sets none leaves it out.
+#[test]
+fn guests_read_the_rules_hash_their_host_advertises() {
+    use live_hle::HostRules;
+    let s = Server::new();
+    let a = s.account("Host");
+    let b = s.account("Guest");
+    let mut host = World::new(&s.embedded.url, &[&a]);
+    let mut guest = World::raw_network(
+        &s.embedded.url,
+        json!([b.json()]),
+        Duration::from_millis(100),
+        32000,
+    );
+    host.logon();
+    guest.logon();
+    let wait = Duration::from_secs(5);
+    assert_eq!(guest.hle.host_rules(wait), HostRules::NotJoined);
+    for (i, id) in [1, 2, 3, 5, 6, 7, 8].into_iter().enumerate() {
+        attr(&host, MATCH_ATTR + i as u32 * 16, id, 100 + u64::from(id));
+    }
+    assert_eq!(
+        host.call(
+            "XOnlineMatchSessionCreate",
+            &[1, 7, 0, 0, 7, MATCH_ATTR, 0, OUT]
+        ),
+        0
+    );
+    let create = host.u32(OUT);
+    assert_eq!(host.wait(create), TASK_SUCCESS);
+    let created = s
+        .events()
+        .into_iter()
+        .find(|e| e.kind == "SessionCreated")
+        .unwrap();
+    assert!(created.data["advertisement"].get("rules").is_none());
+    let cap = guest.call("XOnlineMatchSearchResultsLen", &[50, 7, MATCH_SPEC]);
+    let (_, table, count) = match_search(&mut guest, 1, 0, cap);
+    assert_eq!(count, 1);
+    let row = guest.u32(table);
+    assert_eq!(guest.call("XNetRegisterKey", &[row + 4, row + 0x30]), 0);
+    let session = live_proto::sign::hex(&host.hle.local_sessions()[0].id);
+    assert_eq!(
+        guest.hle.host_rules(wait),
+        HostRules::Known {
+            session: session.clone(),
+            rules: None,
+            refreshed: true
+        }
+    );
+    let hash = "5e".repeat(32);
+    host.hle.set_session_rules(Some(hash.clone()));
+    s.until(|| {
+        s.get_as_operator::<Page<live_proto::session::Session>>("/v1/sessions")
+            .items[0]
+            .advertisement
+            .rules
+            .is_some()
+    });
+    assert_eq!(
+        host.hle.local_sessions()[0].rules.as_deref(),
+        Some(hash.as_str())
+    );
+    assert_eq!(
+        guest.hle.host_rules(wait),
+        HostRules::Known {
+            session,
+            rules: Some(hash),
+            refreshed: true
+        }
+    );
+}
 /// Every presence set carries the console's build and capabilities
 /// (docs/game/game-options.md section 3, "Older builds"), and a host names
 /// the players whose build lacks one: here a guest on an older build.

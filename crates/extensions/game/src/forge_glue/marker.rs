@@ -142,13 +142,27 @@ mod tests {
     #[test]
     fn the_marker_is_where_the_gizmo_is_for_the_same_frame() {
         for frame in [frame(4.), frame(9.)] {
-            let axes = Axes::from_frame(frame, &camera()).unwrap();
+            let extent = forge::tool::Extent {
+                radius: 1.,
+                offset: [0.; 3],
+            };
+            let axes = Axes::from_frame(frame, extent, &camera()).unwrap();
             let marker = Marker::from_frame(frame, &camera(), [1, 2, 3]).unwrap();
             assert_eq!(marker.centre, axes.origin());
             assert_eq!(marker.centre, [320, 240], "straight ahead is the middle");
         }
         // Out of the view is out for both.
-        assert!(Axes::from_frame(frame(-4.), &camera()).is_none());
+        assert!(
+            Axes::from_frame(
+                frame(-4.),
+                forge::tool::Extent {
+                    radius: 1.,
+                    offset: [0.; 3]
+                },
+                &camera()
+            )
+            .is_none()
+        );
         assert!(Marker::from_frame(frame(-4.), &camera(), [0; 3]).is_none());
     }
 

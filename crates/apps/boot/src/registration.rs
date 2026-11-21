@@ -549,6 +549,12 @@ pub(crate) fn register_late_for_profile(
         .map_err(|e| anyhow::anyhow!("engine leaves: {e}"))?;
     features.add(&sim_bridge::sim_physics::NativePhysics)
         .map_err(|e| anyhow::anyhow!("simulation physics: {e}"))?;
+    // SimExt, the extension records saved with checkpoints and snapshots
+    // (docs/engine/sim-rewrite.md section 2). Always on; with no records it
+    // saves nothing and leaves the sim hash alone.
+    features
+        .add(&sim_bridge::sim_ext::SimExtFeature)
+        .map_err(|e| anyhow::anyhow!("sim ext: {e}"))?;
     // Render front-end time in the frame stats, when H2_FEATURES has
     // render-timing (off by default).
     features

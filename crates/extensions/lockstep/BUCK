@@ -41,6 +41,7 @@ workspace_library(
     deps = [
         "//crates/hooking/hooks:hooks",
         "//crates/rewrites/engine:engine",
+        "//crates/rewrites/sim-ext:sim-ext",
         "//crates/runtime/runtime:runtime",
     ],
 )
@@ -60,6 +61,7 @@ workspace_test(
         "//crates/platform/input:input",
         "//crates/platform/xapi:xapi",
         "//crates/rewrites/engine:engine",
+        "//crates/rewrites/sim-ext:sim-ext",
         "//crates/runtime/runtime:runtime",
     ],
 )
@@ -79,6 +81,7 @@ workspace_test(
         "//crates/platform/input:input",
         "//crates/platform/xapi:xapi",
         "//crates/rewrites/engine:engine",
+        "//crates/rewrites/sim-ext:sim-ext",
         "//crates/runtime/runtime:runtime",
         ":lockstep",
     ],

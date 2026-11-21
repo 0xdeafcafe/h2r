@@ -3945,6 +3945,7 @@ dependencies = [
  "hooks",
  "input",
  "runtime",
+ "sim-ext",
  "xapi",
 ]
 
@@ -5611,6 +5612,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "rules"
+version = "0.1.0"
+dependencies = [
+ "content",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "runtime"
 version = "0.1.0"
 dependencies = [
@@ -6300,6 +6309,7 @@ dependencies = [
  "hooks",
  "lifted",
  "runtime",
+ "sim-ext",
 ]
 
 [[package]]
@@ -6316,6 +6326,10 @@ dependencies = [
  "simd",
  "x87",
 ]
+
+[[package]]
+name = "sim-ext"
+version = "0.1.0"
 
 [[package]]
 name = "sim-objects"
