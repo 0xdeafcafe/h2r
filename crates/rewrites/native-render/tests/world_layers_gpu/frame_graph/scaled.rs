@@ -22,10 +22,11 @@ fn scaled(ctx: &GfxContext, scale: u32, single: bool) -> ScaledBackend<GfxBacken
 #[test]
 fn four_x_present_hands_the_menu_its_pixels_snapshot_and_guest_count() {
     let _guard = CAPTURE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let Ok(ctx) = GfxContext::headless() else {
+    let Some(ctx) = test_gpu() else {
         return;
     };
     if !ctx.caps.depth32_stencil8 {
+        eprintln!("FrameScene pixel check skipped: adapter lacks Depth32FloatStencil8");
         return;
     }
     let mut backend = scaled(&ctx, 4, true);
@@ -136,10 +137,11 @@ fn four_x_present_hands_the_menu_its_pixels_snapshot_and_guest_count() {
 #[test]
 fn four_x_mixed_grid_clear_and_upload_preserve_the_rest_of_the_frame() {
     let _guard = CAPTURE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let Ok(ctx) = GfxContext::headless() else {
+    let Some(ctx) = test_gpu() else {
         return;
     };
     if !ctx.caps.depth32_stencil8 {
+        eprintln!("FrameScene pixel check skipped: adapter lacks Depth32FloatStencil8");
         return;
     }
     let aux = TargetRef::Aux(0);
@@ -256,10 +258,11 @@ fn four_x_mixed_grid_clear_and_upload_preserve_the_rest_of_the_frame() {
 #[test]
 fn one_x_e3_wrapper_records_once_and_resumes_the_menu_with_a_live_view() {
     let _guard = CAPTURE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let Ok(ctx) = GfxContext::headless() else {
+    let Some(ctx) = test_gpu() else {
         return;
     };
     if !ctx.caps.depth32_stencil8 {
+        eprintln!("FrameScene pixel check skipped: adapter lacks Depth32FloatStencil8");
         return;
     }
     let mut backend = scaled(&ctx, 1, true);
@@ -338,10 +341,11 @@ fn one_x_e3_wrapper_records_once_and_resumes_the_menu_with_a_live_view() {
 #[test]
 fn four_x_partial_shadow_write_preserves_depth_and_stencil_across_both_owners() {
     let _guard = CAPTURE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let Ok(ctx) = GfxContext::headless() else {
+    let Some(ctx) = test_gpu() else {
         return;
     };
     if !ctx.caps.depth32_stencil8 {
+        eprintln!("FrameScene pixel check skipped: adapter lacks Depth32FloatStencil8");
         return;
     }
     let mut backend = scaled(&ctx, 4, true);
@@ -437,7 +441,7 @@ fn four_x_partial_shadow_write_preserves_depth_and_stencil_across_both_owners() 
 #[test]
 fn four_x_private_draw_restores_inherited_main_and_auxiliary_grids() {
     let _guard = CAPTURE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let Ok(ctx) = GfxContext::headless() else {
+    let Some(ctx) = test_gpu() else {
         return;
     };
     let mut display = scaled(&ctx, 4, true);
@@ -550,7 +554,7 @@ fn four_x_private_draw_restores_inherited_main_and_auxiliary_grids() {
 #[test]
 fn original_two_copy_frame_with_divergent_history_declines_only_private_replay() {
     use native_render::frame_graph::freeze_scaled_inputs;
-    let Ok(ctx) = GfxContext::headless() else {
+    let Some(ctx) = test_gpu() else {
         return;
     };
     let mut display = scaled(&ctx, 4, false);

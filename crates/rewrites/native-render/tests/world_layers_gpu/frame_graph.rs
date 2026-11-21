@@ -20,6 +20,16 @@ use std::sync::{Arc, Mutex};
 const MAIN: TargetRef = TargetRef::SceneColour;
 const Z: TargetRef = TargetRef::SceneDepth;
 
+fn test_gpu() -> Option<GfxContext> {
+    match GfxContext::headless() {
+        Ok(ctx) => Some(ctx),
+        Err(error) => {
+            eprintln!("FrameScene pixel check skipped: {error}");
+            None
+        }
+    }
+}
+
 fn sealed() -> Arc<FrameScene> {
     let mut builder = SceneBuilder::new(FreeList::new());
     builder.begin(SceneId {
@@ -134,7 +144,7 @@ impl PassObserver for Observe {
 #[test]
 fn typed_and_carried_draws_in_adjacent_slots_share_one_pass() {
     let _guard = CAPTURE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let Ok(ctx) = GfxContext::headless() else {
+    let Some(ctx) = test_gpu() else {
         return;
     };
     let mut backend = GfxBackend::new(ctx);
@@ -190,7 +200,7 @@ fn typed_and_carried_draws_in_adjacent_slots_share_one_pass() {
 #[test]
 fn carried_scene_colour_copy_samples_what_was_drawn_before_it() {
     let _guard = CAPTURE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let Ok(ctx) = GfxContext::headless() else {
+    let Some(ctx) = test_gpu() else {
         return;
     };
     let mut backend = GfxBackend::new(ctx);
@@ -276,7 +286,7 @@ fn carried_scene_colour_copy_samples_what_was_drawn_before_it() {
 #[test]
 fn retail_and_e3_private_draws_of_one_sealed_tick_are_identical() {
     let _guard = CAPTURE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let Ok(ctx) = GfxContext::headless() else {
+    let Some(ctx) = test_gpu() else {
         return;
     };
     let mut backend = GfxBackend::new(ctx);
@@ -325,7 +335,7 @@ fn private_draws_restore_inherited_colour_depth_and_stencil_before_blending() {
     use native_render::frame_graph::draw_display_on;
     use std::collections::HashMap;
     let _guard = CAPTURE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let Ok(ctx) = GfxContext::headless() else { return };
+    let Some(ctx) = test_gpu() else { return };
     let validation = ctx.device.push_error_scope(wgpu::ErrorFilter::Validation);
     let mut private = GfxBackend::new(ctx.clone());
     let mut display = GfxBackend::new(ctx);
@@ -403,7 +413,7 @@ fn private_receivers_restore_the_renderer_and_the_swap_reports_its_own_mode() {
         }
     }
 
-    let Ok(ctx) = GfxContext::headless() else {
+    let Some(ctx) = test_gpu() else {
         return;
     };
     let changes = Arc::new(Mutex::new(Vec::new()));
