@@ -2,7 +2,8 @@
 //! templates on every map (the preview's and the runtime's the same), the
 //! retail rectangles where the HUD editor places the retail widgets,
 //! every registered HUD passing every check with nothing skipped, and the
-//! glyphs in fonts 6 and 8.
+//! glyphs in fonts 5, 6 and 8 (the superbounce medals as the font rewrite
+//! adds them).
 
 use std::path::PathBuf;
 
@@ -170,6 +171,17 @@ fn the_glyphs_are_in_the_fonts() {
     let fonts = src.fonts.as_ref().expect("the disc's fonts");
     for f in [5, 6, 8] {
         assert_eq!(fonts.has_glyph(f, 0xe102), Some(true), "X in font {f}");
+    }
+    // The superbounce medals: new art the font rewrite adds to the two
+    // message fonts (`font::medals`), not retail glyphs.
+    for f in [5, 6] {
+        for (m, c) in hud_kit::huds::superbounce::MEDAL_GLYPHS {
+            assert_eq!(
+                fonts.has_glyph(f, c as u16),
+                Some(true),
+                "{m:?} in font {f}"
+            );
+        }
     }
     let mut r = check::Report::default();
     for d in huds::all() {

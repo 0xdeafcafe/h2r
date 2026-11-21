@@ -288,6 +288,7 @@ fn the_superbounce_hud_compiles_against_an_invented_row() {
         [
             superbounce::PROMPT,
             superbounce::MESSAGE,
+            superbounce::MEDAL,
             superbounce::NAVPOINT,
             superbounce::TUTORIAL
         ]
@@ -371,4 +372,16 @@ fn the_modes_are_the_widgets_three() {
     assert_eq!(Font::Lcd.engine(), 8);
     assert_eq!(records::ROOT_BITMAPS, 0x08);
     assert_eq!(records::ROOT_TEXTS, 0x10);
+}
+
+/// A notification is one line of at most 63 UTF-16 units: the game's
+/// insert copies 63.
+#[test]
+fn a_notification_is_one_line_of_at_most_63_units() {
+    assert_eq!(message_fault(&"a".repeat(MESSAGE_UNITS)), None);
+    assert!(message_fault(&"a".repeat(MESSAGE_UNITS + 1)).is_some());
+    // A private-use glyph is one unit.
+    let medal = format!("\u{e2a0}{}", "a".repeat(MESSAGE_UNITS - 1));
+    assert_eq!(message_fault(&medal), None);
+    assert!(message_fault("two\nlines").is_some());
 }

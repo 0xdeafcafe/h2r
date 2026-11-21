@@ -33,9 +33,20 @@ export function emblemArt(index: number, size: number): ArtImage {
   return image(`emblems/${EMBLEMS[((index % EMBLEMS.length) + EMBLEMS.length) % EMBLEMS.length]}`, size, 128);
 }
 
-/** Medal files are named after the medal ids. */
-export function medalArt(id: string, size: number): ArtImage {
-  return image(`medals/${id}`, size, 64);
+/** The medal ids the pack has files for (`medals/<id>.webp` and `@2x`):
+ *  the kill medals, and the superbounce medals drawn from the game's HUD
+ *  medal glyphs (ART.md, "Batch 07"). */
+export const PACK_MEDALS: ReadonlySet<string> = new Set([
+  "opening-act", "last-word", "payback", "twofer", "hat-trick", "full-house", "encore",
+  "hot-streak", "wildfire", "untouchable",
+  "superbounce", "double-bounce", "triple-bounce", "quad-bounce", "chain-bounce",
+  "bouncetacular", "bounced",
+]);
+
+/** Medal files are named after the medal ids; null for an id the pack
+ *  has no file for, which is shown by its name (MedalIcon). */
+export function medalArt(id: string, size: number): ArtImage | null {
+  return PACK_MEDALS.has(id) ? image(`medals/${id}`, size, 64) : null;
 }
 
 export function rankArt(name: string, size: number): ArtImage | null {

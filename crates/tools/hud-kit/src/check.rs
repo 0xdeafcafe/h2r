@@ -520,6 +520,16 @@ fn per_shot(
                 texts.push(("its text".to_owned(), t.clone()));
             }
             for (what, t) in texts {
+                // A notification is one line the game copies 63 units of.
+                if matches!(e.kind, Kind::Message { .. })
+                    && let Some(why) = crate::model::message_fault(&t)
+                {
+                    r.push(f(
+                        Check::Prompt,
+                        vec![d.id.into()],
+                        format!("{}: {what} is {why}", d.id),
+                    ));
+                }
                 if let Some(why) =
                     prompt_fault(&e.kind, &s.frame, &preview::line_sizes(fonts, font, &t))
                 {

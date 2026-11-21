@@ -211,6 +211,7 @@ pub mod steam_speaker;
 pub mod stopgaps;
 pub mod superbounce_assist;
 pub mod superbounce_capsule;
+pub mod superbounce_chain;
 pub mod superbounce_charge;
 pub mod superbounce_font;
 pub mod superbounce_hud;

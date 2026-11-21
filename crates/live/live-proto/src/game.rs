@@ -17,6 +17,10 @@ pub const ACTOR_KILLED: &str = "ActorKilled";
 pub const FIREFIGHT_SCORE: &str = "FirefightScore";
 /// A Firefight match's end ([`crate::firefight`]).
 pub const FIREFIGHT_ENDED: &str = "FirefightEnded";
+/// A player bounced off a superbounce crease (docs/game/superbounce.md, "Medals").
+pub const SUPERBOUNCE: &str = "Superbounce";
+/// A player died falling out of or through the map while trying a bounce.
+pub const BOUNCED: &str = "Bounced";
 pub const SCORE_CHANGED: &str = "ScoreChanged";
 pub const GAME_FRAME: &str = "GameFrame";
 pub const GAME_ENDED: &str = "GameEnded";
@@ -32,6 +36,8 @@ pub const CLIENT_GAME_EVENTS: [&str; 8] = [
     ACTOR_KILLED,
     FIREFIGHT_SCORE,
     FIREFIGHT_ENDED,
+    SUPERBOUNCE,
+    BOUNCED,
     SCORE_CHANGED,
     GAME_ENDED,
 ];
@@ -358,6 +364,33 @@ pub struct ActorKilled {
     /// Stable damage-source key from the killing blow.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub weapon: Option<String>,
+}
+
+/// A bounce off a superbounce crease, with the count of the chain it is in
+/// (docs/game/superbounce.md, "The rule"). The medals are worked out from
+/// `chain` wherever they are shown (`film::events::medals::bounce_medals`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Superbounce {
+    pub tick: u64,
+    /// The bouncing player's slot.
+    pub player: u32,
+    /// The bounce's place in its chain: 1 for a first bounce.
+    pub chain: u32,
+}
+
+/// A death falling out of or through the map while trying a bounce: the
+/// `bounced` medal. The superbounce mode decides what an attempt is
+/// (docs/game/superbounce.md, "Medals"); the death itself is the
+/// `PlayerKilled` beside it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Bounced {
+    pub tick: u64,
+    /// The player's slot.
+    pub player: u32,
+    /// The count of the chain the death ended, 0 if none was live. Absent
+    /// (0) from a host that sends no chain.
+    #[serde(default)]
+    pub chain: u32,
 }
 
 pub const KILL_KINDS: [&str; 4] = ["kill", "suicide", "betrayal", "world"];
@@ -1047,6 +1080,25 @@ pub struct KillRecord {
     pub at: String,
 }
 
+/// A bounce as `GET /v1/games/{id}` lists it: the event data plus where
+/// it is in the log.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BounceRecord {
+    #[serde(flatten)]
+    pub bounce: Superbounce,
+    pub position: u64,
+    pub at: String,
+}
+
+/// A bounce death as `GET /v1/games/{id}` lists it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BouncedRecord {
+    #[serde(flatten)]
+    pub bounced: Bounced,
+    pub position: u64,
+    pub at: String,
+}
+
 /// `GET /v1/games/{id}`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GameDetail {
@@ -1064,6 +1116,13 @@ pub struct GameDetail {
     pub scoreboard: Vec<PlayerScore>,
     /// The last 50, oldest first.
     pub kills: Vec<KillRecord>,
+    /// The last 100 superbounces, oldest first; empty in a game with none
+    /// and from servers before bounces.
+    #[serde(default)]
+    pub bounces: Vec<BounceRecord>,
+    /// The last 100 bounce deaths, oldest first.
+    #[serde(default)]
+    pub bounced: Vec<BouncedRecord>,
     pub winner: Option<Winner>,
     pub end_reason: Option<String>,
     pub position: u64,
@@ -1174,6 +1233,18 @@ pub fn validate(kind: &str, data: &Value, players: &[Player]) -> Result<(), Stri
         FIREFIGHT_SCORE => {
             let d: crate::firefight::FirefightScore = parse(data)?;
             d.validate()?;
+        }
+        SUPERBOUNCE => {
+            let d: Superbounce = parse(data)?;
+            if !known(d.player) {
+                return Err("player must be a player of the game".into());
+            }
+            if d.chain == 0 {
+                return Err("chain must be at least 1".into());
+            }
+        }
+        BOUNCED => {
+            let d: Bounced = parse(data)?;
             if !known(d.player) {
                 return Err("player must be a player of the game".into());
             }
@@ -2109,6 +2180,9 @@ mod tests {
                 GAME_ENDED,
                 json!({"tick": 99, "reason": "quit", "winner": null}),
             ),
+            (SUPERBOUNCE, json!({"tick": 9, "player": 1, "chain": 1})),
+            (SUPERBOUNCE, json!({"tick": 9, "player": 0, "chain": 7})),
+            (BOUNCED, json!({"tick": 9, "player": 1})),
         ] {
             assert_eq!(validate(kind, &data, &p), Ok(()), "{kind} {data}");
         }
@@ -2136,6 +2210,12 @@ mod tests {
                 GAME_ENDED,
                 json!({"tick": 9, "reason": "finished", "winner": {"player": 9}}),
             ),
+            (SUPERBOUNCE, json!({"tick": 9, "player": 5, "chain": 1})),
+            (SUPERBOUNCE, json!({"tick": 9, "player": 0, "chain": 0})),
+            (SUPERBOUNCE, json!({"tick": 9, "player": 0})),
+            (SUPERBOUNCE, json!({"player": 0, "chain": 1})),
+            (BOUNCED, json!({"tick": 9, "player": 5})),
+            (BOUNCED, json!({"tick": 9})),
             (GAME_STARTED, json!({})),
             (GAME_FRAME, json!({})),
         ] {

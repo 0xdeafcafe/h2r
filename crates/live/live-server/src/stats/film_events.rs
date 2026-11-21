@@ -34,6 +34,17 @@ fn imported_tick_events_produce_the_same_stats_as_live_telemetry() {
             {"index":2,"score":0,"kills":0,"deaths":0,"assists":1}],"teams":[{"team":0,"score":1}]}),
         ),
         (
+            40,
+            game::SUPERBOUNCE,
+            json!({"tick":GUEST_START+40,"player":0,"chain":1}),
+        ),
+        (
+            52,
+            game::SUPERBOUNCE,
+            json!({"tick":GUEST_START+52,"player":0,"chain":2}),
+        ),
+        (55, game::BOUNCED, json!({"tick":GUEST_START+55,"player":1})),
+        (
             60,
             game::PLAYER_KILLED,
             json!({"tick":GUEST_START+60,"kind":"suicide","victim":0,"killer":0}),
@@ -83,6 +94,23 @@ fn imported_tick_events_produce_the_same_stats_as_live_telemetry() {
         earned_at: GUEST_START + 31,
         medal: "opening-act".into()
     }));
+    // A bounce's medals and a bounce death's are highlights; the bounces
+    // themselves are stats records.
+    assert!(highlights.contains(&events::Event::Medal {
+        player: 0,
+        earned_at: GUEST_START + 52,
+        medal: "double-bounce".into()
+    }));
+    assert!(highlights.contains(&events::Event::Medal {
+        player: 1,
+        earned_at: GUEST_START + 55,
+        medal: "bounced".into()
+    }));
+    assert!(
+        !highlights
+            .iter()
+            .any(|e| matches!(e, events::Event::Superbounce(_) | events::Event::Bounced(_)))
+    );
     assert!(highlights.contains(&events::Event::ObjectiveScore {
         game_type: "CTF".into(),
         player: None,
@@ -94,5 +122,10 @@ fn imported_tick_events_produce_the_same_stats_as_live_telemetry() {
     assert_eq!(expected.totals.suicides, 1);
     assert_eq!(row(&expected, A).wins, 1);
     assert_eq!(row(&expected, B).deaths, 1);
+    assert_eq!((expected.totals.bounces, expected.totals.bounced), (2, 1));
+    assert_eq!(
+        (row(&expected, A).bounces, row(&expected, B).bounced),
+        (2, 1)
+    );
     assert_eq!(film.stats.summary_at(Some(7), T0 + 100), expected);
 }

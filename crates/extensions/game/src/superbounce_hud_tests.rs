@@ -3,12 +3,13 @@
 
 use hud_kit_core::huds::superbounce::{
     self as sb, CHARGE, LOW_CHARGE, Landed, Lost, MESSAGE, MESSAGE_LOST_CROUCHED,
-    MESSAGE_LOST_STOOD_STILL, NAVPOINT, Note, PILL, PILL_ICON, PROMPT, PROMPT_CHARGE_AGAIN,
+    MESSAGE_LOST_STOOD_STILL, Medal, NAVPOINT, Note, PILL, PILL_ICON, PROMPT, PROMPT_CHARGE_AGAIN,
     PROMPT_HELD, PROMPT_KEEP_MOVING, PROMPT_NEAR, PROMPT_UNDER, Phase, Scan, Target, Verb,
 };
 use hud_kit_core::model::{Pulse, Style};
 
 use super::*;
+use crate::superbounce_chain::Award;
 use crate::superbounce_charge::{SLEEP_TICKS, WARN_STILL_TICKS};
 use crate::superbounce_mode::{
     Charge, ChargePhase, Landing, LandingResult, LostReason, NavKind, NavTarget, Near, PRIMED_WORD,
@@ -193,12 +194,9 @@ fn a_loss_says_why_and_asks_for_a_new_charge() {
         let values = sb::values(&v);
         let m = values.get(MESSAGE).unwrap();
         assert_eq!((m.text.as_str(), m.since_tick), (text, 90));
-        // The reason on the prompt line too, while notifications are
-        // not drawn.
-        assert_eq!(
-            values.get(PROMPT).unwrap().text,
-            format!("{text}\n{PROMPT_CHARGE_AGAIN}")
-        );
+        // The reason is the notification's; the prompt line asks for a
+        // new charge.
+        assert_eq!(values.get(PROMPT).unwrap().text, PROMPT_CHARGE_AGAIN);
         assert_eq!(values.get(CHARGE).unwrap().fill, 0.0);
     }
 }
@@ -250,10 +248,20 @@ fn the_newer_of_the_loss_and_the_landing_is_the_note() {
     );
 }
 
+/// A landing that did not bounce is a message at its tick; a bounce's
+/// line is its medal, so it has none.
 #[test]
 fn a_landing_is_a_message_at_its_tick() {
+    let bounce = State {
+        last_landing: Some(Landing {
+            result: LandingResult::Bounce,
+            tick: 77,
+            at: [0.0; 3],
+        }),
+        ..ready()
+    };
+    assert_eq!(view(&bounce, None).note, None);
     for (result, landed) in [
-        (LandingResult::Bounce, Landed::Bounce { height_m: None }),
         (LandingResult::NotPrimed, Landed::NotPrimed),
         (LandingResult::Missed, Landed::Missed),
         (LandingResult::TooSlow, Landed::TooSlow),
@@ -297,6 +305,111 @@ fn the_tutorial_watches_primed_strips_and_new_bounces() {
     assert!(!watch(&s, Some(5)).bounced, "the same landing twice");
     s.last_landing.as_mut().unwrap().result = LandingResult::Missed;
     assert!(!watch(&s, None).bounced, "not a bounce");
+}
+
+fn award(seq: u64, user: Option<u8>, tick: u32, medals: Vec<Medal>) -> Award {
+    Award {
+        seq,
+        slot: user.unwrap_or(5),
+        user,
+        tick,
+        chain: 0,
+        medals,
+    }
+}
+
+/// The medal line is a local player's last award's highest medal; a
+/// bot's or a remote player's award is not shown.
+#[test]
+fn the_medal_is_the_last_local_awards_highest() {
+    let mut s = ready();
+    assert_eq!(view(&s, None).medal, None);
+    s.medals.recent = vec![
+        award(
+            1,
+            Some(0),
+            10,
+            vec![Medal::Superbounce, Medal::DoubleBounce],
+        ),
+        award(2, None, 12, vec![Medal::Superbounce, Medal::TripleBounce]),
+    ];
+    assert_eq!(view(&s, None).medal, Some((Medal::DoubleBounce, 10)));
+    let v = view(&s, None);
+    let m = sb::values(&v).get(sb::MEDAL).cloned().unwrap();
+    assert_eq!((m.text, m.since_tick), (Medal::DoubleBounce.line(), 10));
+}
+
+/// Each notification is sent once: primed on its rise, a loss and a
+/// landing that did not bounce by their ticks, each new local award's
+/// highest medal to its user. What the first state already held is not
+/// news, and the mode going off forgets all.
+#[test]
+fn each_notification_is_sent_once() {
+    let mut sent = Sent::default();
+    let mut s = ready();
+    s.last_landing = Some(Landing {
+        result: LandingResult::Missed,
+        tick: 3,
+        at: [0.0; 3],
+    });
+    s.medals.recent = vec![award(1, Some(0), 3, vec![Medal::Superbounce])];
+    assert!(sent.notes(Some(&s), None).is_empty(), "the first state");
+
+    s.word = Some(PRIMED_WORD as u32);
+    assert_eq!(sent.notes(Some(&s), None), vec![(0, Note::Primed.text())]);
+    assert!(sent.notes(Some(&s), None).is_empty(), "primed again");
+
+    let lost = mode::Lost {
+        reason: LostReason::Crouched,
+        tick: 20,
+    };
+    s.word = None;
+    assert_eq!(
+        sent.notes(Some(&s), Some(lost)),
+        vec![(0, MESSAGE_LOST_CROUCHED.to_string())]
+    );
+    assert!(sent.notes(Some(&s), Some(lost)).is_empty(), "the same loss");
+
+    s.last_landing = Some(Landing {
+        result: LandingResult::Bounce,
+        tick: 30,
+        at: [0.0; 3],
+    });
+    s.medals.recent.push(award(
+        2,
+        Some(1),
+        30,
+        vec![Medal::Superbounce, Medal::DoubleBounce],
+    ));
+    s.medals
+        .recent
+        .push(award(3, None, 30, vec![Medal::Superbounce]));
+    assert_eq!(
+        sent.notes(Some(&s), None),
+        vec![(1, Medal::DoubleBounce.line())],
+        "a bounce has no landing line; a bot's award is not sent"
+    );
+    assert!(sent.notes(Some(&s), None).is_empty());
+
+    s.last_landing = Some(Landing {
+        result: LandingResult::TooSlow,
+        tick: 40,
+        at: [0.0; 3],
+    });
+    assert_eq!(
+        sent.notes(Some(&s), None),
+        vec![(0, Note::Landed(Landed::TooSlow).text())]
+    );
+
+    // A new game: the awards count from 1 again.
+    s.medals.recent = vec![award(1, Some(0), 2, vec![Medal::Superbounce])];
+    assert_eq!(
+        sent.notes(Some(&s), None),
+        vec![(0, Medal::Superbounce.line())]
+    );
+
+    assert!(sent.notes(None, None).is_empty());
+    assert_eq!(sent, Sent::default());
 }
 
 #[test]

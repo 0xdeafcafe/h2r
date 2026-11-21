@@ -211,7 +211,10 @@ network player can have a complete consumed action without a local pad.
 The event envelope carries both the film observation time and, in subtype 1,
 the originating match clock. A late hit, medal or final scoreboard retains
 its original time. The game statistics projection consumes GameStarted,
-PlayerJoined, PlayerLeft, PlayerKilled, ScoreChanged and GameEnded.
+PlayerJoined, PlayerLeft, PlayerKilled, Superbounce, Bounced, ScoreChanged
+and GameEnded (`Record::decode_telemetry`); a reader passes over a kind it
+does not know, and `film::privacy` keeps a record it cannot decode private,
+so a film with bounces reads in an older reader as one without them.
 Highlights include actor kills, additional weapon fire, damage, assists,
 medals, item and vehicle transitions and objective changes. A highlight
 that duplicates a canonical event only contributes once to stats.
@@ -221,6 +224,17 @@ the character tag datum, credited player slot and damage-source key when
 available. It comes from the report that depleted an actor unit's body.
 It is public stats data, with no input, score or digest attached. Player
 kill totals and medals come from `PlayerKilled`.
+
+`Superbounce` carries the match tick, the player's slot and `chain`, the
+bounce's place in its chain (1 and up); `Bounced` carries the match tick,
+slot and ended chain's count (0 if none) of a death falling out of the map while trying a bounce
+([superbounce.md](superbounce.md#recording)). Both are public stats
+records, imported into the game's events like a kill. The Tracker writes,
+at the same tick, a `Medal` record for each medal the bounce earns
+(`film::events::medals::bounce_medals`: `superbounce`, then
+`double-bounce`, `triple-bounce`, `quad-bounce`, `chain-bounce` or
+`bouncetacular` at chain 2 to 6) or `bounced` for the death, and counts them
+in the summary's `medals` map. The film's version stays 3.
 
 ## Private machine data and earlier formats
 

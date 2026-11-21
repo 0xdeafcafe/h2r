@@ -1189,3 +1189,128 @@ async fn players_join_themselves_and_only_the_host_ends_the_game() {
         StatusCode::CREATED
     );
 }
+
+/// Superbounces and bounce deaths (docs/game/superbounce.md, "Recording"):
+/// only the host reports them, for players of the game with a chain of at
+/// least 1; the game serves them, a bot's included, and the stats summary
+/// counts them in the totals and in the rows of players with accounts.
+/// The Worker runs the same checks (live-worker's `sqlstore.rs`).
+#[tokio::test]
+async fn the_host_reports_bounces_and_the_game_and_stats_serve_them() {
+    let h = harness().await;
+    let host = h.create("Host").await;
+    let guest = h.create("Guest").await;
+    let id = h
+        .start_game(
+            &host,
+            json!({
+                "console": "Den", "map": "lockout", "mode": "multiplayer", "variant": "Slayer",
+                "team_play": false, "tick": 0, "kind": "custom",
+                "players": [
+                    {"index": 0, "name": "Host", "xuid": host.xuid, "team": 0, "local": true},
+                    {"index": 1, "name": "Guest", "xuid": guest.xuid, "team": 1},
+                    {"index": 2, "name": "Clanker 2", "team": 1, "local": true, "bot": true}
+                ]
+            }),
+        )
+        .await;
+    let bounce = |player: u32, chain: u32| {
+        (
+            "Superbounce",
+            json!({"tick": 40 + chain, "player": player, "chain": chain}),
+        )
+    };
+    // A guest reports no bounces, not even its own.
+    let r = h
+        .post_batch(&guest, &id, h.batch(&guest, &id, &[bounce(1, 1)]))
+        .await;
+    assert_eq!(
+        r.status,
+        StatusCode::FORBIDDEN,
+        "{}",
+        String::from_utf8_lossy(&r.body)
+    );
+    for bad in [
+        bounce(0, 0),
+        bounce(7, 1),
+        ("Bounced", json!({"tick": 50, "player": 7})),
+    ] {
+        let r = h.post_batch(&host, &id, h.batch(&host, &id, &[bad])).await;
+        assert_eq!(
+            r.status,
+            StatusCode::BAD_REQUEST,
+            "{}",
+            String::from_utf8_lossy(&r.body)
+        );
+    }
+    let events = h.batch(
+        &host,
+        &id,
+        &[
+            bounce(0, 1),
+            bounce(0, 2),
+            bounce(1, 1),
+            bounce(2, 1),
+            ("Bounced", json!({"tick": 60, "player": 2})),
+            ("Bounced", json!({"tick": 61, "player": 1})),
+            (
+                "GameEnded",
+                json!({"tick": 900, "reason": "finished", "winner": {"player": 0}}),
+            ),
+        ],
+    );
+    let r = h.post_batch(&host, &id, events).await;
+    assert_eq!(
+        r.status,
+        StatusCode::CREATED,
+        "{}",
+        String::from_utf8_lossy(&r.body)
+    );
+
+    let g = h.get(&format!("/v1/games/{id}")).await.json();
+    let bounces: Vec<(u64, u64)> = g["bounces"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|b| (b["player"].as_u64().unwrap(), b["chain"].as_u64().unwrap()))
+        .collect();
+    assert_eq!(bounces, [(0, 1), (0, 2), (1, 1), (2, 1)]);
+    assert!(g["bounces"][0]["position"].as_u64().is_some());
+    assert_eq!(g["bounces"][1]["tick"], 42);
+    let bounced: Vec<u64> = g["bounced"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|b| b["player"].as_u64().unwrap())
+        .collect();
+    assert_eq!(bounced, [2, 1]);
+
+    let v = h.get("/v1/stats/summary?window=all").await.json();
+    assert_eq!(v["totals"]["bounces"], 4, "the totals count everyone");
+    assert_eq!(v["totals"]["bounced"], 2);
+    let row = |x: &User| {
+        v["players"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["xuid"] == x.xuid.to_string())
+            .cloned()
+            .unwrap()
+    };
+    assert_eq!(
+        (row(&host)["bounces"].clone(), row(&host)["bounced"].clone()),
+        (json!(2), json!(0))
+    );
+    assert_eq!(
+        (
+            row(&guest)["bounces"].clone(),
+            row(&guest)["bounced"].clone()
+        ),
+        (json!(1), json!(1))
+    );
+    assert_eq!(
+        v["players"].as_array().unwrap().len(),
+        2,
+        "no row for the bot"
+    );
+}

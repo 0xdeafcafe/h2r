@@ -311,6 +311,39 @@ pub fn classify(
     }
 }
 
+/// Whether a body touches down this tick: airborne and falling at
+/// [`TOUCHDOWN_VZ`] or faster on the tick before (`was_airborne`,
+/// `was_vz`), and now stopped falling ([`LANDED_VZ`]), launched, or on
+/// the ground. Anywhere on the map; [`strip_landing`] says whether it was
+/// by a strip.
+pub fn touchdown(was_airborne: bool, was_vz: f32, airborne: bool, vz: f32) -> bool {
+    was_airborne && was_vz <= TOUCHDOWN_VZ && (vz >= LANDED_VZ || !airborne)
+}
+
+/// A touchdown's result by the nearest strip within [`LANDING_RADIUS`] of
+/// the origin on the tick before (`at`, with the word `word_before` and
+/// the vertical speed `vz_before` then), coming out at `vz`; `None` with no
+/// strip that near. The speed in counts the fall from `at` to the strip's
+/// stand height.
+pub fn strip_landing(
+    spots: &[Spot],
+    word_before: Option<u32>,
+    at: Vec3,
+    vz_before: f32,
+    vz: f32,
+) -> Option<LandingResult> {
+    let spot = spots
+        .iter()
+        .filter(|s| s.kind == Kind::Bounce)
+        .map(|s| (s, edge_distance(s, at)))
+        .filter(|(_, d)| *d <= LANDING_RADIUS)
+        .min_by(|a, b| a.1.total_cmp(&b.1))
+        .map(|(s, _)| s)?;
+    let height = (at[2] - spot.stand[2]).max(0.0);
+    let speed_in = (vz_before * vz_before + 2.0 * GRAVITY * height).sqrt();
+    Some(classify(spot, word_before, at, speed_in, vz))
+}
+
 // ---- the tracker ----
 
 /// What one tick reads of the local player.
@@ -472,21 +505,11 @@ impl Tracker {
             _ => None,
         };
         if let (Some(prev), Some((_, vz))) = (self.prev, now)
-            && prev.airborne
-            && prev.vz <= TOUCHDOWN_VZ
-            && (vz >= LANDED_VZ || !t.airborne)
-            && let Some(spot) = spots
-                .iter()
-                .filter(|s| s.kind == Kind::Bounce)
-                .map(|s| (s, edge_distance(s, prev.position)))
-                .filter(|(_, d)| *d <= LANDING_RADIUS)
-                .min_by(|a, b| a.1.total_cmp(&b.1))
-                .map(|(s, _)| s)
+            && touchdown(prev.airborne, prev.vz, t.airborne, vz)
+            && let Some(result) = strip_landing(spots, prev.word, prev.position, prev.vz, vz)
         {
-            let height = (prev.position[2] - spot.stand[2]).max(0.0);
-            let speed_in = (prev.vz * prev.vz + 2.0 * GRAVITY * height).sqrt();
             self.last_landing = Some(Landing {
-                result: classify(spot, prev.word, prev.position, speed_in, vz),
+                result,
                 tick: t.tick.unwrap_or(self.count),
                 at: prev.position,
             });

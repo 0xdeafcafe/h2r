@@ -1,6 +1,51 @@
-//! The medals Live awards from the ordered kills (web/src/state/derive.ts).
-//! Keep the counters and last scoring kill; no lifetime list of kills is needed.
+//! The medals Live awards from the ordered kills and bounces
+//! (web/src/state/derive.ts). Keep the counters and last scoring kill; no
+//! lifetime list of kills is needed.
 use std::collections::BTreeMap;
+
+/// A bounce off a superbounce crease: every bounce earns it.
+pub const SUPERBOUNCE: &str = "superbounce";
+/// The second bounce of a chain.
+pub const DOUBLE_BOUNCE: &str = "double-bounce";
+/// The third bounce of a chain.
+pub const TRIPLE_BOUNCE: &str = "triple-bounce";
+/// The fourth bounce of a chain.
+pub const QUAD_BOUNCE: &str = "quad-bounce";
+/// The fifth bounce of a chain.
+pub const CHAIN_BOUNCE: &str = "chain-bounce";
+/// The sixth bounce of a chain.
+pub const BOUNCETACULAR: &str = "bouncetacular";
+/// A death falling out of or through the map while trying a bounce (a
+/// `Bounced` event).
+pub const BOUNCED: &str = "bounced";
+/// The bounce medal ids: the chain's, lowest first, then `bounced`.
+pub const BOUNCE_MEDALS: [&str; 7] = [
+    SUPERBOUNCE,
+    DOUBLE_BOUNCE,
+    TRIPLE_BOUNCE,
+    QUAD_BOUNCE,
+    CHAIN_BOUNCE,
+    BOUNCETACULAR,
+    BOUNCED,
+];
+
+/// The medals a bounce earns at its place in a chain, lowest first, so the
+/// last is the one a HUD line shows (docs/game/superbounce.md, "The rule").
+/// Superbounce is every bounce; a chain gives each of the others once, at
+/// 2 to 6 bounces, and from the seventh on only Superbounce. A count of 0
+/// is no bounce. The site keeps a copy (`bounceMedals` in
+/// web/src/state/derive.ts).
+pub fn bounce_medals(chain: u32) -> &'static [&'static str] {
+    match chain {
+        0 => &[],
+        2 => &[SUPERBOUNCE, DOUBLE_BOUNCE],
+        3 => &[SUPERBOUNCE, TRIPLE_BOUNCE],
+        4 => &[SUPERBOUNCE, QUAD_BOUNCE],
+        5 => &[SUPERBOUNCE, CHAIN_BOUNCE],
+        6 => &[SUPERBOUNCE, BOUNCETACULAR],
+        _ => &[SUPERBOUNCE],
+    }
+}
 
 #[derive(Default)]
 struct Player {
@@ -80,6 +125,23 @@ impl Tally {
         }
     }
 
+    /// A bounce at `chain`: each medal of [`bounce_medals`], reported at
+    /// the bounce's tick as well as added to the menu totals.
+    pub fn bounce_with(&mut self, player: u32, chain: u32, mut report: impl FnMut(&'static str)) {
+        let p = self.players.entry(player).or_default();
+        for &medal in bounce_medals(chain) {
+            p.award(medal, &mut report);
+        }
+    }
+
+    /// A death falling out of the map while trying a bounce: `bounced`.
+    pub fn bounced_with(&mut self, player: u32, mut report: impl FnMut(&'static str)) {
+        self.players
+            .entry(player)
+            .or_default()
+            .award(BOUNCED, &mut report);
+    }
+
     /// The final medal is resolved only when the match ends.
     pub fn last_word(&self) -> Option<u32> {
         self.last.filter(|_| self.deaths > 1)
@@ -101,6 +163,61 @@ impl Tally {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bounce_medals_follow_the_chain_table() {
+        assert_eq!(bounce_medals(0), &[] as &[&str]);
+        assert_eq!(bounce_medals(1), [SUPERBOUNCE]);
+        assert_eq!(bounce_medals(2), [SUPERBOUNCE, DOUBLE_BOUNCE]);
+        assert_eq!(bounce_medals(3), [SUPERBOUNCE, TRIPLE_BOUNCE]);
+        assert_eq!(bounce_medals(4), [SUPERBOUNCE, QUAD_BOUNCE]);
+        assert_eq!(bounce_medals(5), [SUPERBOUNCE, CHAIN_BOUNCE]);
+        assert_eq!(bounce_medals(6), [SUPERBOUNCE, BOUNCETACULAR]);
+        for chain in [7, 8, 12, u32::MAX] {
+            assert_eq!(bounce_medals(chain), [SUPERBOUNCE], "{chain}");
+        }
+        assert_eq!(
+            BOUNCE_MEDALS,
+            [
+                "superbounce",
+                "double-bounce",
+                "triple-bounce",
+                "quad-bounce",
+                "chain-bounce",
+                "bouncetacular",
+                "bounced",
+            ]
+        );
+    }
+
+    /// A chain of eight is eight Superbounces and one of each of the
+    /// others; a bounce death is `bounced`.
+    #[test]
+    fn a_chain_of_eight_counts_each_chain_medal_once() {
+        let mut tally = Tally::default();
+        let mut reported = Vec::new();
+        for chain in 1..=8 {
+            tally.bounce_with(4, chain, |m| reported.push(m));
+        }
+        tally.bounce_with(4, 1, |m| reported.push(m));
+        tally.bounced_with(4, |m| reported.push(m));
+        assert_eq!(reported.iter().filter(|&&m| m == SUPERBOUNCE).count(), 9);
+        assert_eq!(reported.last(), Some(&BOUNCED));
+        assert_eq!(
+            tally.counts(4, true),
+            BTreeMap::from([
+                (SUPERBOUNCE.into(), 9),
+                (DOUBLE_BOUNCE.into(), 1),
+                (TRIPLE_BOUNCE.into(), 1),
+                (QUAD_BOUNCE.into(), 1),
+                (CHAIN_BOUNCE.into(), 1),
+                (BOUNCETACULAR.into(), 1),
+                (BOUNCED.into(), 1),
+            ])
+        );
+        // Bounces are no kills: no last-word, no opening act.
+        assert_eq!(tally.last_word(), None);
+    }
 
     #[test]
     fn death_resets_chain_and_revenge_follows_salted_participant() {

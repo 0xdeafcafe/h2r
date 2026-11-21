@@ -4,6 +4,8 @@
 //! Wire types only. A game method: `session.methods` lists it where the game
 //! registered it (`game::agent_glue`).
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 /// Method names.
@@ -30,10 +32,16 @@ pub mod method {
     /// Stops the batch and lets go of the seat ([`super::VerifyReport`]).
     pub const VERIFY_CANCEL: &str = super::VERIFY_CANCEL;
 
+    /// Files a bounce at a chain count for the first local player, as a
+    /// real one would show it ([`super::MedalTestParams`],
+    /// [`super::MedalTest`]).
+    pub const MEDAL_TEST: &str = super::MEDAL_TEST;
+
     pub const ALL: &[&str] = &[
         STATE,
         SET,
         SPOTS,
+        MEDAL_TEST,
         super::ASSIST,
         super::ASSIST_TEST,
         VERIFY,
@@ -136,6 +144,79 @@ pub struct State {
     /// the scan is ready.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub standing_fits: Option<bool>,
+    /// The medals this game, every player's (docs/game/superbounce.md,
+    /// "Medals").
+    #[serde(default)]
+    pub medals: Medals,
+}
+
+/// `superbounce.state`'s `medals`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Medals {
+    /// A row for each player that has earned a medal this game, by slot.
+    pub players: Vec<MedalPlayer>,
+    /// The last 8 awards, oldest first.
+    pub recent: Vec<MedalAward>,
+}
+
+/// One player's medals this game.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct MedalPlayer {
+    /// The player's slot.
+    pub player: u8,
+    /// The count of its last chain.
+    pub chain: u32,
+    /// Whether its next bounce adds to that chain.
+    pub live: bool,
+    /// Each medal id's total this game (`superbounce`, `double-bounce`,
+    /// `triple-bounce`, `quad-bounce`, `chain-bounce`, `bouncetacular`,
+    /// `bounced`).
+    pub counts: BTreeMap<String, u32>,
+}
+
+/// One award: a bounce, or a Bounced.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct MedalAward {
+    /// The player's slot.
+    pub player: u8,
+    /// The game tick.
+    pub tick: u32,
+    /// The chain's count: the bounce's, or for a Bounced the chain it was
+    /// in (0 if none).
+    pub chain: u32,
+    /// The ids the award earned, lowest first.
+    pub medals: Vec<String>,
+}
+
+// ---- superbounce.medal_test ----
+
+/// `superbounce.medal_test`: files a bounce at a chain count, or a
+/// Bounced, for the first local player, as the chain's rule gives it: the
+/// HUD line and `superbounce.state`'s `medals` as a real one gives them,
+/// nothing sent or recorded. An act.
+pub const MEDAL_TEST: &str = "superbounce.medal_test";
+
+/// `superbounce.medal_test`'s params: `chain` (1 and up) or `bounced`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MedalTestParams {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chain: Option<u32>,
+    #[serde(default)]
+    pub bounced: bool,
+}
+
+/// `superbounce.medal_test`'s result.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct MedalTest {
+    /// The first local player's slot.
+    pub player: u8,
+    pub chain: u32,
+    /// The ids filed, lowest first.
+    pub medals: Vec<String>,
+    /// The HUD's line: the highest medal's glyph and words.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line: Option<String>,
 }
 
 /// How far through priming the player is, or that the charge just went.
@@ -837,8 +918,35 @@ mod tests {
                 at: [1.0, 2.0, -3.0],
             }),
             standing_fits: Some(false),
+            medals: Medals {
+                players: vec![MedalPlayer {
+                    player: 5,
+                    chain: 2,
+                    live: true,
+                    counts: [
+                        ("superbounce".to_owned(), 2),
+                        ("double-bounce".to_owned(), 1),
+                    ]
+                    .into_iter()
+                    .collect(),
+                }],
+                recent: vec![MedalAward {
+                    player: 5,
+                    tick: 6800,
+                    chain: 2,
+                    medals: vec!["superbounce".into(), "double-bounce".into()],
+                }],
+            },
         };
         let v = serde_json::to_value(&s).unwrap();
+        assert_eq!(v["medals"]["players"][0]["counts"]["double-bounce"], 1);
+        assert_eq!(v["medals"]["players"][0]["live"], true);
+        assert_eq!(v["medals"]["recent"][0]["medals"][1], "double-bounce");
+        // An older reply without medals reads as none.
+        let mut old = v.clone();
+        old.as_object_mut().unwrap().remove("medals");
+        let back: State = serde_json::from_value(old).unwrap();
+        assert_eq!(back.medals, Medals::default());
         assert_eq!(v["charge"]["phase"], "held");
         assert_eq!(v["verb"], "walk_out_to_stand");
         assert_eq!(v["lost_reason"], "stood_still");
@@ -945,5 +1053,26 @@ mod tests {
         let v = serde_json::to_value(&r).unwrap();
         assert!(v.get("trials").is_none() && v.get("job").is_none());
         assert_eq!(serde_json::from_value::<VerifyReport>(v).unwrap(), r);
+    }
+
+    #[test]
+    fn medal_test_takes_a_chain_or_bounced() {
+        let p: MedalTestParams = serde_json::from_value(serde_json::json!({"chain": 5})).unwrap();
+        assert_eq!((p.chain, p.bounced), (Some(5), false));
+        let p: MedalTestParams =
+            serde_json::from_value(serde_json::json!({"bounced": true})).unwrap();
+        assert_eq!((p.chain, p.bounced), (None, true));
+        assert!(
+            serde_json::from_value::<MedalTestParams>(serde_json::json!({"chains": 5})).is_err()
+        );
+        assert!(method::ALL.contains(&MEDAL_TEST));
+        let r = MedalTest {
+            player: 0,
+            chain: 2,
+            medals: vec!["superbounce".into(), "double-bounce".into()],
+            line: Some("\u{e2a1} Double bounce!".into()),
+        };
+        let v = serde_json::to_value(&r).unwrap();
+        assert_eq!(v["medals"][1], "double-bounce");
     }
 }

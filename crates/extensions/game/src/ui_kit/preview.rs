@@ -86,10 +86,11 @@ impl Fonts {
         let mut files = HashMap::new();
         for name in &table {
             if !files.contains_key(name) {
-                // As the game opens it: with the bot mark and the Mods
-                // list's marks added (`bot_mark::GearRewrite`).
+                // As the game opens it: with the bot mark, the Mods
+                // list's marks and, in the message fonts, the superbounce
+                // medals added (`bot_mark::GearRewrite`).
                 let raw = read(&format!("/maps/fonts/{name}"))?;
-                let font = crate::bot_mark::GearRewrite::patch(&raw).unwrap_or(raw);
+                let font = crate::bot_mark::GearRewrite::patch(name, &raw).unwrap_or(raw);
                 files.insert(name.clone(), font);
             }
         }

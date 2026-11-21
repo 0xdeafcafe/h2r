@@ -2,9 +2,9 @@
 // runs inside Solid's `produce` in the app and on plain objects in tests.
 
 import type {
-  AccountCreated, AccountSummary, BotIssued, GameDetail, GameKindFields, GameEnded, GamePlayer, GameStarted, GameSummary, InviteGrant, KillKind,
+  AccountCreated, AccountSummary, BotIssued, BounceRecord, Bounced, BouncedRecord, GameDetail, GameKindFields, GameEnded, GamePlayer, GameStarted, GameSummary, InviteGrant, KillKind,
   KillRecord, PlayerJoined, PlayerKilled, PlayerLeft, PlayerScore, PresenceData, PresenceEntry, ScoreChanged,
-  WireEvent, Winner, Xuid, GameId,
+  Superbounce, WireEvent, Winner, Xuid, GameId,
 } from "../api/types";
 import { clankerAppearance, normalizeAppearance, type Appearance } from "../lib/gameart";
 import { normalizeSkulls } from "../lib/skulls";
@@ -42,6 +42,16 @@ export interface Kill {
   kind: KillKind;
   /** Victim position, when the event carried it. */
   pos: [number, number, number] | null;
+}
+
+/** A superbounce (`chain` 1 and up) or a death trying one (`chain` null),
+ *  from the `Superbounce` and `Bounced` events (docs/game/superbounce.md). */
+export interface Bounce {
+  position: number;
+  at: string;
+  tick: number;
+  player: number;
+  chain: number | null;
 }
 
 export interface GamePlayerState extends GamePlayer {
@@ -93,6 +103,8 @@ export interface GameState extends DedicatedHostFields {
   scores: Record<number, PlayerScore>;
   teams: Record<number, number>;
   kills: Kill[];
+  /** Bounces and bounce deaths, in log order (a bot's included). */
+  bounces: Bounce[];
   last_tick: number;
   first_position: number;
   /** Log positions of this game's events (for signature summaries). */
@@ -308,6 +320,7 @@ export function applyEvent(s: LiveState, ev: WireEvent): boolean {
         scores: {},
         teams: {},
         kills: [],
+        bounces: [],
         last_tick: d.tick ?? 0,
         first_position: ev.position,
         positions: [ev.position],
@@ -339,6 +352,18 @@ export function applyEvent(s: LiveState, ev: WireEvent): boolean {
       const d = ev.data as PlayerKilled;
       addKill(g, { ...d, position: ev.position, at: ev.at });
       g.last_tick = Math.max(g.last_tick, d.tick ?? 0);
+      break;
+    }
+    case "Superbounce": {
+      const g = gameFor(s, ev);
+      if (!g) break;
+      addBounce(g, { ...(ev.data as Superbounce), position: ev.position, at: ev.at });
+      break;
+    }
+    case "Bounced": {
+      const g = gameFor(s, ev);
+      if (!g) break;
+      addBounce(g, { ...(ev.data as Bounced), position: ev.position, at: ev.at });
       break;
     }
     case "ScoreChanged": {
@@ -479,6 +504,20 @@ function addKill(g: GameState, k: KillRecord) {
   // Snapshot kills count towards the game's signature summary too.
   if (kill.position > 0 && !g.positions.includes(kill.position)) g.positions.push(kill.position);
   g.last_tick = Math.max(g.last_tick, k.tick ?? 0);
+}
+
+/** Adds a bounce (a record with `chain`) or a bounce death (one without),
+ *  unless one at the same log position is already there. */
+function addBounce(g: GameState, b: BounceRecord | BouncedRecord) {
+  if (typeof b.tick !== "number" || typeof b.player !== "number") return;
+  if (b.position !== undefined && g.bounces.some((x) => x.position === b.position)) return;
+  const chain = "chain" in b && typeof b.chain === "number" ? b.chain : null;
+  const bounce: Bounce = { position: b.position ?? 0, at: b.at ?? "", tick: b.tick, player: b.player, chain };
+  let i = g.bounces.length;
+  while (i > 0 && g.bounces[i - 1]!.position > bounce.position && bounce.position > 0) i--;
+  g.bounces.splice(i, 0, bounce);
+  if (bounce.position > 0 && !g.positions.includes(bounce.position)) g.positions.push(bounce.position);
+  g.last_tick = Math.max(g.last_tick, b.tick);
 }
 
 function ensureAccount(s: LiveState, xuid: Xuid, at: string): AccountState {
@@ -675,6 +714,7 @@ export function applyGameSnapshot(s: LiveState, d: GameSummary | GameDetail) {
       scores: {},
       teams: {},
       kills: [],
+      bounces: [],
       last_tick: det.last_tick ?? det.tick ?? 0,
       first_position: 0,
       positions: [],
@@ -705,6 +745,8 @@ export function applyGameSnapshot(s: LiveState, d: GameSummary | GameDetail) {
   if (g.team_play) for (const p of Object.values(g.players)) g.teams[p.team] ??= 0;
   if (det.scoreboard) applyScores(g, det.scoreboard);
   for (const k of det.kills ?? []) addKill(g, k);
+  for (const b of det.bounces ?? []) addBounce(g, b);
+  for (const b of det.bounced ?? []) addBounce(g, b);
   // The snapshot may have brought the teams or the team flag.
   for (const k of g.kills) k.kind = settledKillKind(g, k);
 }

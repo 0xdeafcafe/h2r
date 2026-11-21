@@ -5,14 +5,17 @@
 //! tutorial's step machine and its `superbounce.tutorial_seen` setting.
 //!
 //! The HUD shows for the first local player while the mode is on; with
-//! the mode off every element is hidden.
+//! the mode off every element is hidden. Its notifications (primed, a
+//! loss's reason, a landing that did not bounce, and every local player's
+//! medals) are sent through the kit's `Handle::notify` once each
+//! ([`Sent::notes`]).
 
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Instant;
 
 use hud_kit_core::huds::superbounce::{
-    self as sb, Change, Charge, Landed, Lost, Note, Phase, Scan, Superbounce, Target, Tutorial,
-    Verb, View, Watch,
+    self as sb, Change, Charge, Landed, Lost, Medal, Note, Phase, Scan, Superbounce, Target,
+    Tutorial, Verb, View, Watch,
 };
 use hud_kit_core::model::Values;
 
@@ -37,8 +40,10 @@ pub const FEATURE: &str = "superbounce-hud";
 ///   metres (S: the contract's distance is in world units, as the state's
 ///   other distances are).
 /// - The note: the newer of the loss ([`mode::lost`]: why, at its tick)
-///   and the last landing's result at its tick ([`note`]). A bounce has
-///   no height (the state carries none).
+///   and the last landing's result at its tick ([`note`]); a bounce's
+///   line is its medal.
+/// - The medal: the last award of a local player, its highest medal at
+///   its tick ([`medal`]).
 pub fn view(s: &State, tutorial: Option<u8>) -> View {
     let scan = match &s.scan {
         ScanState::Ready if s.bounce + s.crouch == 0 => Scan::NoStrips,
@@ -80,8 +85,20 @@ pub fn view(s: &State, tutorial: Option<u8>) -> View {
         verb,
         nav,
         note: note(s, mode::lost(s)),
+        medal: medal(s),
         tutorial,
     }
+}
+
+/// The last medal award of a local player in `s`: its highest medal and
+/// its tick.
+pub fn medal(s: &State) -> Option<(Medal, u32)> {
+    s.medals
+        .recent
+        .iter()
+        .rev()
+        .filter(|a| a.user.is_some())
+        .find_map(|a| Some((crate::superbounce_chain::highest(&a.medals)?, a.tick)))
 }
 
 /// The HUD's name for a loss's reason.
@@ -95,22 +112,84 @@ fn lost(reason: mode::LostReason) -> Lost {
 
 /// The notification for `s` with the last loss `lost`: the loss's
 /// reason when it is newer than the last landing (or there is none),
-/// else the landing's result, each at its tick.
+/// else the landing's result, each at its tick. A bounce has none: its
+/// line is its medal.
 pub fn note(s: &State, lost: Option<mode::Lost>) -> Option<(Note, u32)> {
     let landing = s.last_landing.as_ref();
     if let Some(l) = lost.filter(|l| landing.is_none_or(|landing| l.tick > landing.tick)) {
         return Some((Note::ChargeLost(self::lost(l.reason)), l.tick));
     }
-    landing.map(|l| {
-        let landed = match &l.result {
-            mode::LandingResult::Bounce => Landed::Bounce { height_m: None },
-            mode::LandingResult::NotPrimed => Landed::NotPrimed,
-            mode::LandingResult::Missed => Landed::Missed,
-            mode::LandingResult::TooSlow => Landed::TooSlow,
-            mode::LandingResult::NoBounce => Landed::NoBounce,
+    landing.and_then(|l| Some((Note::Landed(landed(l.result)?), l.tick)))
+}
+
+/// A landing's notification; `None` for a bounce.
+fn landed(result: mode::LandingResult) -> Option<Landed> {
+    match result {
+        mode::LandingResult::Bounce => None,
+        mode::LandingResult::NotPrimed => Some(Landed::NotPrimed),
+        mode::LandingResult::Missed => Some(Landed::Missed),
+        mode::LandingResult::TooSlow => Some(Landed::TooSlow),
+        mode::LandingResult::NoBounce => Some(Landed::NoBounce),
+    }
+}
+
+/// What the HUD has sent, so each notification goes once.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Sent {
+    /// The state has been seen once: what it held then is not news.
+    seen: bool,
+    primed: bool,
+    lost: Option<u32>,
+    landing: Option<u32>,
+    /// The last medal award sent (`superbounce_chain::Award::seq`).
+    medal: u64,
+}
+
+impl Sent {
+    /// The notifications `s` has that were not sent yet, each a local
+    /// user and its line, in order: primed, a loss's reason, a landing
+    /// that did not bounce (each the first local player's, user 0), then
+    /// each new medal award of a local player, its highest medal's line,
+    /// to that player's user. `s` of `None` (the mode off) forgets all.
+    pub fn notes(&mut self, s: Option<&State>, lost: Option<mode::Lost>) -> Vec<(u32, String)> {
+        let Some(s) = s else {
+            *self = Sent::default();
+            return Vec::new();
         };
-        (Note::Landed(landed), l.tick)
-    })
+        let landing = s.last_landing.as_ref();
+        let last_seq = s.medals.recent.last().map_or(0, |a| a.seq);
+        // The medals start again at a new game.
+        if last_seq < self.medal {
+            self.medal = 0;
+        }
+        let mut out = Vec::new();
+        if self.seen {
+            if s.primed() && !self.primed {
+                out.push((0, Note::Primed.text()));
+            }
+            if let Some(l) = lost.filter(|l| Some(l.tick) != self.lost) {
+                out.push((0, Note::ChargeLost(self::lost(l.reason)).text()));
+            }
+            if let Some(l) = landing.filter(|l| Some(l.tick) != self.landing)
+                && let Some(n) = landed(l.result)
+            {
+                out.push((0, Note::Landed(n).text()));
+            }
+            for a in s.medals.recent.iter().filter(|a| a.seq > self.medal) {
+                if let (Some(user), Some(m)) =
+                    (a.user, crate::superbounce_chain::highest(&a.medals))
+                {
+                    out.push((u32::from(user), m.line()));
+                }
+            }
+        }
+        self.seen = true;
+        self.primed = s.primed();
+        self.lost = lost.map(|l| l.tick).or(self.lost);
+        self.landing = landing.map(|l| l.tick).or(self.landing);
+        self.medal = self.medal.max(last_seq);
+        out
+    }
 }
 
 /// What the tutorial watches in `s`: primed, metres to the nearest bounce
@@ -148,6 +227,7 @@ struct Hud {
     started: bool,
     start: Instant,
     settings: Option<Arc<settings::Store>>,
+    sent: Sent,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -158,10 +238,14 @@ impl Hud {
     fn tick(&mut self) {
         let Some(s) = mode::hud_state() else {
             self.lost = None;
+            self.sent.notes(None, None);
             self.handle.publish(hidden());
             self.handle.navpoint(None);
             return;
         };
+        for (user, text) in self.sent.notes(Some(&s), mode::lost(&s)) {
+            self.handle.notify(user, &text);
+        }
         self.lost = mode::lost(&s).or(self.lost);
         let now = self.start.elapsed().as_secs_f64();
         let mut w = watch(&s, self.seen_tick);
@@ -245,6 +329,7 @@ pub fn install(
         started: false,
         start: Instant::now(),
         settings,
+        sent: Sent::default(),
     };
     registry
         .add(&SuperbounceHud {

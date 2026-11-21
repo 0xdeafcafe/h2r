@@ -273,7 +273,7 @@ impl Fonts {
             let mut files = HashMap::new();
             for n in &table {
                 if let Some(b) = read(&format!("/maps/fonts/{n}")) {
-                    files.insert(n.clone(), b);
+                    files.insert(n.clone(), Self::as_served(n, b));
                 }
             }
             return Some(Fonts { table, files });
@@ -282,9 +282,18 @@ impl Fonts {
         let table = Self::table(&std::fs::read(dir.join("font_table.txt")).ok()?);
         let files = table
             .iter()
-            .filter_map(|n| Some((n.clone(), std::fs::read(dir.join(n)).ok()?)))
+            .filter_map(|n| {
+                let b = std::fs::read(dir.join(n)).ok()?;
+                Some((n.clone(), Self::as_served(n, b)))
+            })
             .collect();
         Some(Fonts { table, files })
+    }
+    /// Font file `name` as the game's font rewrite serves it: the message
+    /// fonts with the superbounce medals added (`font::medals`,
+    /// docs/game/hud-kit.md, "The medals").
+    fn as_served(name: &str, bytes: Vec<u8>) -> Vec<u8> {
+        font::medals::patch(name, &bytes).unwrap_or(bytes)
     }
     fn table(b: &[u8]) -> Vec<String> {
         String::from_utf8_lossy(b)
@@ -304,19 +313,37 @@ impl Fonts {
     pub fn has_glyph(&self, index: i16, unit: u16) -> Option<bool> {
         Some(self.font(index)?.has_glyph(unit))
     }
-    /// `text` in engine font `index`: its picture and the line height.
+    /// `text` in engine font `index`: its picture and the line height. A
+    /// glyph in colour (a medal) keeps its own colours and the rest takes
+    /// `colour`, as the game's font draw leaves them (S: that the engine
+    /// keeps a coloured glyph's colours; docs/game/hud-kit.md, "Not
+    /// verified"): a pixel whose own colour is not white is drawn in it.
     pub fn render(&self, index: i16, text: &str, colour: [u8; 4]) -> Option<(font::Bitmap, i32)> {
         let f = self.font(index)?;
         let units: Vec<u16> = text.encode_utf16().collect();
-        let b = font::render(
-            &f,
-            &units,
-            font::RenderOptions {
-                color: colour,
-                glyph_colors: false,
-            },
-        )
-        .ok()?;
+        let draw = |glyph_colors| {
+            font::render(
+                &f,
+                &units,
+                font::RenderOptions {
+                    color: colour,
+                    glyph_colors,
+                },
+            )
+            .ok()
+        };
+        let mut b = draw(false)?;
+        // Only a line with a private-use glyph can hold a coloured one.
+        if units.iter().any(|u| (0xe000..=0xe3ff).contains(u))
+            && let Some(own) = draw(true)
+            && own.rgba.len() == b.rgba.len()
+        {
+            for (t, o) in b.rgba.chunks_exact_mut(4).zip(own.rgba.chunks_exact(4)) {
+                if o[3] != 0 && o[..3] != [255, 255, 255] {
+                    t.copy_from_slice(o);
+                }
+            }
+        }
         Some((b, f.line_height()))
     }
 }

@@ -572,6 +572,14 @@ fn each_check_fires_on_a_hud_built_to_break_it() {
         case(vec![Element::icon("i", nope, bl(10, -150))], &[]),
         Check::Templates,
     );
+    // prompt: a notification over the game's 63 characters.
+    fires(
+        case(
+            vec![Element::channel("m", Kind::Message { longest: "a" })],
+            &[("m", Value::text("a".repeat(64)))],
+        ),
+        Check::Prompt,
+    );
     // prompt: three lines in the training box.
     fires(
         case(
@@ -762,8 +770,13 @@ fn the_prompt_and_message_carry_the_steps_and_landings() {
         assert_eq!(get(state, superbounce::MESSAGE).text, message);
         assert_eq!(
             get(state, superbounce::PROMPT).text,
-            format!("{message}\n{}", superbounce::PROMPT_CHARGE_AGAIN)
+            superbounce::PROMPT_CHARGE_AGAIN
         );
     }
-    assert!(get("bounced", superbounce::MESSAGE).text.starts_with("Superbounce"));
+    // A bounce's line is its medal, on the medal channel.
+    assert!(!get("bounced", superbounce::MESSAGE).shown);
+    assert_eq!(
+        get("bounced", superbounce::MEDAL).text,
+        superbounce::Medal::Superbounce.line()
+    );
 }

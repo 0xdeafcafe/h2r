@@ -18,6 +18,8 @@ draw host text, `hud-edit` and `h1objects` to read and write fonts, and
 - `src/patch.rs`, `src/mod_marks.rs`: patching a font file and the marks
   that identify one of ours.
 - `src/gear.rs`, `src/icons/`: the button and gear icon glyphs.
+- `src/medals/`: the superbounce medal glyphs; `art.rs` is the pictures,
+  written by `scripts/superbounce-medals.py`.
 
 ## Tests
 

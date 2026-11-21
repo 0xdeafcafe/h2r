@@ -8,20 +8,27 @@
 //! font draws which field") is not needed for it. The glyph is drawn in
 //! code (`font::gear`); nothing comes from the disc. The same rewrite
 //! adds the Mods list's state marks (`font::mod_marks`: U+2605 new,
-//! U+2713 installed, U+2193 downloading), drawn in code the same way.
+//! U+2713 installed, U+2193 downloading), drawn in code the same way, and
+//! to the two HUD message fonts the superbounce medals (`font::medals`,
+//! U+E2A0..U+E2A6; docs/game/hud-kit.md, "The medals").
 
 /// Adds the gear to every font file.
 pub struct GearRewrite;
 
 impl GearRewrite {
-    /// The font with the gear and the Mods list's marks
-    /// (`font::mod_marks`: new, installed, downloading) added, or `None` if
-    /// it is not a font or draws them all already.
-    pub fn patch(original: &[u8]) -> Option<Vec<u8>> {
+    /// The font file `name` (a bare name or its path) with the gear and
+    /// the Mods list's marks (`font::mod_marks`: new, installed,
+    /// downloading) added, and the superbounce medals for a message font
+    /// (`font::medals::wants_font`), or `None` if it is not a font or draws
+    /// them all already.
+    pub fn patch(name: &str, original: &[u8]) -> Option<Vec<u8>> {
         let font = font::Font::parse(original).ok()?;
         let mut add: Vec<font::patch::Replacement> =
             font::gear::replacement(&font).into_iter().collect();
         add.extend(font::mod_marks::replacements(&font));
+        if font::medals::wants_font(name) {
+            add.extend(font::medals::replacements(&font));
+        }
         if add.is_empty() {
             return None;
         }
@@ -37,7 +44,7 @@ impl vfs::Rewrite for GearRewrite {
         p.starts_with("maps\\fonts\\") && !p.ends_with(".txt")
     }
     fn rewrite(&mut self, path: &str, original: &[u8]) -> Option<Vec<u8>> {
-        let out = Self::patch(original);
+        let out = Self::patch(path, original);
         if out.is_none() {
             crate::log::note(&format!(
                 "bot mark: {path} left as it is (a bot's mark draws as a box there)"
@@ -90,6 +97,35 @@ mod tests {
         // A font that has it is left alone.
         assert_eq!(r.rewrite("maps\\fonts\\again", &out), None);
         assert_eq!(r.rewrite("maps\\fonts\\junk", b"not a font"), None);
+    }
+
+    /// The message fonts get the superbounce medals, placed as their own
+    /// Double Kill medal; other fonts do not.
+    #[test]
+    fn the_message_fonts_get_the_medals() {
+        let retail = font::patch::Replacement {
+            unit: font::medals::RETAIL_MEDAL,
+            width: 24,
+            height: 24,
+            advance: 25,
+            x_offset: 0,
+            y_offset: Some(18),
+            pixels: vec![0xfec7; 24 * 24],
+        };
+        let with_medal = font::patch::apply(&blank_font(), &[retail]).unwrap();
+        let mut r = GearRewrite;
+        let out = r.rewrite("maps\\fonts\\conduit-13", &with_medal).unwrap();
+        let f = font::Font::parse(&out).unwrap();
+        for (unit, _) in font::medals::MEDALS {
+            assert!(font::medals::has_glyph(&f, unit), "U+{unit:04X}");
+            let g = f.glyph(unit).unwrap();
+            assert_eq!((g.record.width, g.record.advance), (24, 25));
+        }
+        let other = r.rewrite("maps\\fonts\\conduit-16", &with_medal).unwrap();
+        let f = font::Font::parse(&other).unwrap();
+        for (unit, _) in font::medals::MEDALS {
+            assert!(!font::medals::has_glyph(&f, unit), "U+{unit:04X}");
+        }
     }
 
     #[test]

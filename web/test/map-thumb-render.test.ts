@@ -23,7 +23,7 @@ const game = (over: Partial<GameState>): GameState => ({
   game_id: "g1", console: null, host: null, map: "tower", map_id: null, mode: "multiplayer", kind: "custom",
   playlist: null, playlist_id: null, difficulty: null, online: null, skulls: [], variant: "King of the Hill",
   team_play: false, score_limit: null, time_limit_s: null, started_at: "2026-11-18T10:00:00Z", ended_at: "2026-11-18T10:10:00Z",
-  status: "ended", end_reason: "finished", winner: null, start_tick: 0, players: {}, scores: {}, teams: {}, kills: [],
+  status: "ended", end_reason: "finished", winner: null, start_tick: 0, players: {}, scores: {}, teams: {}, kills: [], bounces: [],
   last_tick: 0, first_position: 0, positions: [], ...over,
 });
 
