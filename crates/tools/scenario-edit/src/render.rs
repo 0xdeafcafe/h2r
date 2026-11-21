@@ -11,6 +11,9 @@ use crate::geometry::{Camera, Marker, Tri, Vec3, block_color, marker_triangles_s
 use crate::layers::{LayerId, Layers};
 use crate::scene::{Atmosphere, Blend, Scene, SceneVertex, sun_tint};
 use map::TagId;
+/// The section a native world draws for a cluster or a placement
+/// ([`Viewport::set_native_section`]).
+pub use native_render::world::Owner as SectionOwner;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::ops::Range;
 use wgpu::util::DeviceExt;
