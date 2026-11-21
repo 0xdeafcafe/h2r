@@ -122,7 +122,10 @@ pacing, slow frames and a CSV path. Use a gameplay wait before measuring
 and report the window and render configuration with the numbers.
 
 For frame or pass layout, use `frame` (the CLI arms and reads
-`render.frame`). This branch has no `render.frame_layout` RPC.
+`render.frame`). For where each draw lands on the display, with raster and
+texture coordinates (stretching, pillarbox and edge stripes), use
+`render.frame_layout {"arm":true,"max_draws":2000}`
+([agent-api.md](../../../docs/runtime/agent-api.md#renderframe_layout)).
 `render.scene` inspects the last sealed scene when a source is wired.
 Check `session.methods` for these views.
 
