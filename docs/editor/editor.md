@@ -637,7 +637,10 @@ build), and keeps the last four maps' scenes so reopening one is instant.
 - **World layers.** In the Game mode each BSP also draws the world
   layers 1, 5, 7, 8 and 20 with the materials' own translated passes
   (`native_view::NativeLayers`), in the game's order: layer 1 before the
-  base look, then 5, 8, 20 and 7 over it. They load as the game loads
+  base look, then 5, 8, 20 and 7 over it. Layer 1 is refused whole
+  (`native_view::LAYER_1_UNCHECKED`): the game draws it in a stencil mode
+  the editor's pass does not hold, and that has not been checked against
+  the game's picture. They load as the game loads
   them (`native_render::layers_load`) and each material is planned with
   no game (`layers_load::plan_without_game`: render time, no fog, no
   dynamic light). A material draws only when nothing it reads is left

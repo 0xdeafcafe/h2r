@@ -375,6 +375,32 @@ fn the_invented_bsps_layers_name_what_does_not_draw() {
     assert!(bare.layers().is_none());
 }
 
+/// Layer 1 is refused whole and named; the other layers keep their plan.
+#[test]
+fn layer_1_is_refused_until_it_is_checked_against_the_game() {
+    let plan = StaticLayer {
+        compiled: 3,
+        drawn: [0u16, 2].into_iter().collect(),
+        parts: vec![((Owner::Cluster(0), 0), (0, 6, None, 0))],
+        refused: BTreeMap::from([("animated: x".to_owned(), 1)]),
+    };
+    let one = editor_plan(1, plan.clone());
+    assert!(one.drawn.is_empty() && one.parts.is_empty());
+    assert_eq!(one.compiled, 3);
+    assert_eq!(
+        one.refused,
+        BTreeMap::from([
+            ("animated: x".to_owned(), 1),
+            (LAYER_1_UNCHECKED.to_owned(), 2)
+        ])
+    );
+    assert_eq!(editor_plan(5, plan.clone()), plan);
+    assert_eq!(
+        editor_plan(1, StaticLayer::default()),
+        StaticLayer::default()
+    );
+}
+
 /// The layers draw in the game's order around the base look: 1 before
 /// it, then 5, 8 and 20, then 7; each of the five once.
 #[test]

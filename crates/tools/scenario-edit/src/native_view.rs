@@ -298,11 +298,33 @@ impl NativeLoad {
 
 /// The layer drawn before the base look: the game draws layer 1 after the
 /// view's clear and before layer 3 (docs/graphics/render-loop.md, "Base
-/// layers").
+/// layers"). Its plan is refused ([`LAYER_1_UNCHECKED`]), so nothing of
+/// it is uploaded until it is checked.
 pub const LAYERS_BEFORE: [u8; 1] = [1];
 /// The layers drawn after it, in the game's order: 5, 8 and 20 with the
 /// base layers, then 7 at the start of the middle passes.
 pub const LAYERS_AFTER: [u8; 4] = [5, 8, 20, 7];
+
+/// Why the editor draws nothing of layer 1: the game draws it in a
+/// stencil mode, and the editor's stencil-free pass has not been checked
+/// against the game's picture (the game's own native path leaves layer 1
+/// to D3D while the stencil is on).
+pub const LAYER_1_UNCHECKED: &str = "layer 1: stencil mode not checked against the game";
+
+/// `plan` as the editor draws `layer`: layer 1's materials that would
+/// draw are refused with [`LAYER_1_UNCHECKED`]; the other layers' plans
+/// are kept.
+pub fn editor_plan(layer: u8, mut plan: StaticLayer) -> StaticLayer {
+    if layer == 1 && !plan.drawn.is_empty() {
+        *plan
+            .refused
+            .entry(LAYER_1_UNCHECKED.to_owned())
+            .or_default() += plan.drawn.len();
+        plan.drawn.clear();
+        plan.parts.clear();
+    }
+    plan
+}
 
 /// One BSP's world layers 1, 5, 7, 8 and 20 for the viewport (slice
 /// P15), on the CPU. Loaded as the game loads them
@@ -312,7 +334,8 @@ pub const LAYERS_AFTER: [u8; 4] = [5, 8, 20, 7];
 /// with the register) and no stage palettes (a palettized stage bitmap is
 /// refused, named). Each layer is planned with no game
 /// (`layers_load::plan_without_game` at render time 0: an animated pass
-/// is refused, so the time reaches no draw).
+/// is refused, so the time reaches no draw), and layer 1 is refused
+/// whole ([`editor_plan`]).
 pub struct NativeLayers {
     view: LayersView,
     /// The world's draws and placements before the base-map filter: a
@@ -353,7 +376,7 @@ impl NativeLayers {
             .into_iter()
             .map(|layer| {
                 let plan = layers_load::plan_without_game(&view, shaders, layer, 0.0);
-                (layer, plan)
+                (layer, editor_plan(layer, plan))
             })
             .collect();
         Self {

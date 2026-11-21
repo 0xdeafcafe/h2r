@@ -555,7 +555,8 @@ Notes on some:
   `compiled`, those `drawn` and their `parts`, and every other
   material's cause with how many, `refused`, as `cause: detail`:
   `program` for the load's refusals, such as a view constant the camera
-  does not give, then the plan's causes, `animated` and `fog`; they draw
+  does not give, then the plan's causes, `animated`, `fog`, and for
+  layer 1 `layer 1: stencil mode not checked against the game`; they draw
   in the `game` mode only), the `errors` of BSPs that
   did not load, and the placed `objects`: how many object tags have a
   native model (`models`), how many placements draw one (`placed`), and
