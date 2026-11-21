@@ -989,7 +989,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("h2-editor-tags-ui-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let (mut app, ..) = tag_tests::app(&dir);
-        h.frames(&mut app, 3).unwrap();
+        h.frames(&mut app, 4).unwrap();
         let click = |t: &str| Step::Click(t.into(), Button::Left);
         h.step(&mut app, &click("weap  (1)")).unwrap();
         h.frames(&mut app, 2).unwrap();

@@ -49,6 +49,7 @@ pub struct Studio {
     palette: palette::PaletteUi,
     reset_layout: bool,
     focus_game: bool,
+    settle_tabs: bool,
     previous_tool: Option<ToolKind>,
     previous_map: Option<String>,
     hint: Option<String>,
@@ -82,6 +83,7 @@ impl Studio {
             palette: Default::default(),
             reset_layout: false,
             focus_game: false,
+            settle_tabs: false,
             previous_tool: None,
             previous_map: None,
             hint: None,
@@ -111,7 +113,11 @@ impl Studio {
         self.menu_bar(ui, app, &mut actions);
         let focus_game = std::mem::take(&mut self.focus_game);
         bar::draw(ui, app, &mut self.play, &self.fonts, &mut actions);
-        let reset = self.dockspace(ui);
+        // The frame after the layout is applied asks for the Map tabs again:
+        // Dear ImGui selects the last new tab of a node as its windows first
+        // dock, over any focus asked for in that first frame.
+        let settle = std::mem::take(&mut self.settle_tabs);
+        let reset = self.dockspace(ui) || settle;
         self.hint = None;
         self.map_list.begin();
         match app.tool {
@@ -469,6 +475,7 @@ impl Studio {
             // ImGui selects the last new tab when the windows first dock.
             // Select Game once both tabs have appeared in the default layout.
             self.focus_game = true;
+            self.settle_tabs = true;
         }
         fresh || apply == DockLayoutApply::Replace
     }
