@@ -2,14 +2,17 @@
 //! geometry (docs/game/superbounce.md, "Spots in the geometry").
 //!
 //! A superbounce needs two things: the player's level pair word at -3
-//! (a forced crouch, [`Kind::Crouch`] spots), then a landing in a narrow
-//! slot between two near-vertical faces whose normals oppose and tilt a
-//! little up ([`Kind::Bounce`] spots). The scan is pure: it takes the
+//! (a forced crouch, [`Kind::Crouch`] spots), then a landing on a narrow
+//! strip of floor between two parallel floor edges, at least one a
+//! concave crease, that the capsule sinks onto at once ([`Kind::Bounce`]
+//! spots). The scan is pure: it takes the
 //! collision surfaces and returns spots. Reading them out of a `.map`
 //! is [`scan_map`].
 //!
 //! Coordinates are world units, Z up.
 
+mod bounce;
+mod crouch;
 mod geom;
 mod read;
 mod scan;
@@ -30,10 +33,11 @@ pub const CROUCHED: f32 = 0.5;
 /// What a spot is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Kind {
-    /// A slot a primed (word -3) landing launches out of.
+    /// A strip a primed (word -3) landing launches out of.
     Bounce,
-    /// A place a standing player is forced into a crouch (ceiling between
-    /// the crouched and standing capsule heights), which primes the word.
+    /// A place where the standing capsule hits the geometry and the
+    /// crouched one doesn't: a player there is forced into a crouch, which
+    /// primes the word.
     Crouch,
 }
 
@@ -41,21 +45,21 @@ pub enum Kind {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Spot {
     pub kind: Kind,
-    /// The line to draw: for a bounce, the slot's floor-level crease; for
-    /// a crouch spot, the edge of the low ceiling over walkable floor.
+    /// The line to draw: for a bounce, the strip's midline at floor
+    /// height; for a crouch spot, the side where standing becomes clear.
     pub edge: [Vec3; 2],
-    /// Where a player stands to use it: on the floor beside the slot, or
-    /// under the low ceiling. A unit's origin, standing.
+    /// Where a player stands to use it: on the strip, a little toward the
+    /// crease, or inside the forced-crouch place. A unit's origin.
     pub stand: Vec3,
     /// Bounce only: how far (world units) the player must fall onto the
-    /// slot for the landing to reach it (0 for a standing jump). Crouch
+    /// strip for the landing to reach it (0 for a standing jump). Crouch
     /// spots: 0.
     pub fall: f32,
     /// Bounce only: the estimated launch speed straight up (world units a
     /// second) for a primed landing after `fall`. Crouch spots: 0.
     pub launch: f32,
     /// A world direction (unit, X and Y) to drift along when landing on
-    /// it, across the slot; zero for none.
+    /// it, across the strip from the crease; zero for none.
     pub drift: [f32; 2],
     /// 0..1: how sure the scan is.
     pub score: f32,
@@ -73,8 +77,9 @@ pub struct Poly {
 /// its placed instanced geometry, already in world space).
 ///
 /// Bounce spots come first, then crouch spots, each kind best score first
-/// and at most 512 of it. A heuristic: the thresholds and the calibration
-/// against the one traced slot are in `scan.rs`.
+/// and at most 512 of it. A heuristic: the thresholds and their
+/// calibration against the two measured Ascension spots are in
+/// `bounce.rs` and `crouch.rs`.
 pub fn scan(polys: &[Poly]) -> Vec<Spot> {
     scan::scan(polys)
 }

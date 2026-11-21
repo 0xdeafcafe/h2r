@@ -93,14 +93,6 @@ pub(crate) fn area2(poly: &[V2]) -> f32 {
         * 0.5
 }
 
-pub(crate) fn centroid2(poly: &[V2]) -> V2 {
-    let n = poly.len().max(1) as f32;
-    let s = poly
-        .iter()
-        .fold([0.0, 0.0], |a, p| [a[0] + p[0], a[1] + p[1]]);
-    [s[0] / n, s[1] / n]
-}
-
 /// Inside a counter-clockwise convex polygon (edges included, `eps` slack).
 pub(crate) fn inside2(poly: &[V2], p: V2, eps: f32) -> bool {
     let n = poly.len();
@@ -111,65 +103,6 @@ pub(crate) fn inside2(poly: &[V2], p: V2, eps: f32) -> bool {
             let l = len2(e);
             l < 1e-9 || cross2(e, sub2(p, a)) / l >= -eps
         })
-}
-
-/// Distance from `p` to a counter-clockwise convex polygon, 0 inside.
-pub(crate) fn dist2_to_poly(poly: &[V2], p: V2) -> f32 {
-    if inside2(poly, p, 0.0) {
-        return 0.0;
-    }
-    let n = poly.len();
-    (0..n)
-        .map(|i| seg_dist2(poly[i], poly[(i + 1) % n], p))
-        .fold(f32::INFINITY, f32::min)
-}
-
-pub(crate) fn seg_dist2(a: V2, b: V2, p: V2) -> f32 {
-    let ab = sub2(b, a);
-    let l2 = dot2(ab, ab);
-    let t = if l2 > 0.0 {
-        (dot2(sub2(p, a), ab) / l2).clamp(0.0, 1.0)
-    } else {
-        0.0
-    };
-    len2(sub2(p, [a[0] + ab[0] * t, a[1] + ab[1] * t]))
-}
-
-/// A polygon vertex and the tag of the edge that starts at it.
-pub(crate) type Tagged<T> = Vec<(V2, T)>;
-
-/// Sutherland–Hodgman: keep the part of `poly` where `f(p) >= 0` (`f`
-/// linear). Edges along the cut get `tag`; kept edges keep theirs.
-pub(crate) fn clip<T: Copy>(poly: &Tagged<T>, f: impl Fn(V2) -> f32, tag: T) -> Tagged<T> {
-    let n = poly.len();
-    let mut out = Vec::with_capacity(n + 2);
-    for k in 0..n {
-        let (p, edge) = poly[k];
-        let q = poly[(k + 1) % n].0;
-        let (fp, fq) = (f(p), f(q));
-        let cut = || {
-            let t = fp / (fp - fq);
-            [p[0] + (q[0] - p[0]) * t, p[1] + (q[1] - p[1]) * t]
-        };
-        match (fp >= 0.0, fq >= 0.0) {
-            (true, true) => out.push((p, edge)),
-            (true, false) => {
-                out.push((p, edge));
-                out.push((cut(), tag));
-            }
-            (false, true) => out.push((cut(), edge)),
-            (false, false) => {}
-        }
-    }
-    out
-}
-
-/// The half-plane left of the directed line `a -> b` (inside of a
-/// counter-clockwise polygon's edge), moved `inset` further in.
-pub(crate) fn left_of(a: V2, b: V2, inset: f32) -> impl Fn(V2) -> f32 {
-    let e = sub2(b, a);
-    let l = len2(e).max(1e-9);
-    move |p| cross2(e, sub2(p, a)) / l - inset
 }
 
 /// A uniform grid of item indices over the ground plane.
@@ -230,4 +163,109 @@ impl Grid {
         out.sort_unstable();
         out.dedup();
     }
+}
+
+pub(crate) fn add(a: Vec3, b: Vec3) -> Vec3 {
+    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
+}
+pub(crate) fn scale(a: Vec3, s: f32) -> Vec3 {
+    [a[0] * s, a[1] * s, a[2] * s]
+}
+
+/// The unit normal of a polygon's own winding (Newell's method), so the
+/// inside test below doesn't depend on which way the ring runs.
+pub(crate) fn winding_normal(verts: &[Vec3]) -> Option<Vec3> {
+    let mut n = [0.0f32; 3];
+    for (i, a) in verts.iter().enumerate() {
+        let b = verts[(i + 1) % verts.len()];
+        n[0] += (a[1] - b[1]) * (a[2] + b[2]);
+        n[1] += (a[2] - b[2]) * (a[0] + b[0]);
+        n[2] += (a[0] - b[0]) * (a[1] + b[1]);
+    }
+    unit(n)
+}
+
+/// `p` (on the polygon's plane) inside a convex polygon wound
+/// counter-clockwise about `n`.
+fn inside3(verts: &[Vec3], n: Vec3, p: Vec3) -> bool {
+    (0..verts.len()).all(|i| {
+        let (a, b) = (verts[i], verts[(i + 1) % verts.len()]);
+        dot(cross(sub(b, a), sub(p, a)), n) >= -1e-6
+    })
+}
+
+/// The closest points of segments `p1 q1` and `p2 q2` (Ericson, Real-Time
+/// Collision Detection, 5.1.9).
+pub(crate) fn closest_seg_seg(p1: Vec3, q1: Vec3, p2: Vec3, q2: Vec3) -> (Vec3, Vec3) {
+    const EPS: f32 = 1e-12;
+    let (d1, d2, r) = (sub(q1, p1), sub(q2, p2), sub(p1, p2));
+    let (a, e, f) = (dot(d1, d1), dot(d2, d2), dot(d2, r));
+    let (s, t) = if a <= EPS && e <= EPS {
+        (0.0, 0.0)
+    } else if a <= EPS {
+        (0.0, (f / e).clamp(0.0, 1.0))
+    } else {
+        let c = dot(d1, r);
+        if e <= EPS {
+            ((-c / a).clamp(0.0, 1.0), 0.0)
+        } else {
+            let b = dot(d1, d2);
+            let denom = a * e - b * b;
+            let s = if denom > EPS {
+                ((b * f - c * e) / denom).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            let t = (b * s + f) / e;
+            if t < 0.0 {
+                ((-c / a).clamp(0.0, 1.0), 0.0)
+            } else if t > 1.0 {
+                (((b - c) / a).clamp(0.0, 1.0), 1.0)
+            } else {
+                (s, t)
+            }
+        }
+    };
+    (add(p1, scale(d1, s)), add(p2, scale(d2, t)))
+}
+
+/// The distance from segment `p0 p1` to a convex polygon, and the
+/// polygon's point nearest it.
+pub(crate) fn seg_poly(p0: Vec3, p1: Vec3, verts: &[Vec3]) -> (f32, Vec3) {
+    let mut best = (f32::INFINITY, verts[0]);
+    if let Some(n) = winding_normal(verts) {
+        let o = verts[0];
+        let (d0, d1) = (dot(n, sub(p0, o)), dot(n, sub(p1, o)));
+        if d0 * d1 <= 0.0 && d0 != d1 {
+            let x = add(p0, scale(sub(p1, p0), d0 / (d0 - d1)));
+            if inside3(verts, n, x) {
+                return (0.0, x);
+            }
+        }
+        for (p, d) in [(p0, d0), (p1, d1)] {
+            let q = sub(p, scale(n, d));
+            if d.abs() < best.0 && inside3(verts, n, q) {
+                best = (d.abs(), q);
+            }
+        }
+    }
+    for i in 0..verts.len() {
+        let (a, b) = (verts[i], verts[(i + 1) % verts.len()]);
+        let (c1, c2) = closest_seg_seg(p0, p1, a, b);
+        let d = len(sub(c1, c2));
+        if d < best.0 {
+            best = (d, c2);
+        }
+    }
+    best
+}
+
+/// The distance from point `p` to the infinite line through `a` and `b`.
+pub(crate) fn point_line(p: Vec3, a: Vec3, b: Vec3) -> f32 {
+    let d = sub(b, a);
+    let l = len(d);
+    if l < 1e-9 {
+        return len(sub(p, a));
+    }
+    len(cross(d, sub(p, a))) / l
 }

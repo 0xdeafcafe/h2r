@@ -258,7 +258,7 @@ const USAGE: &str = "usage: h2 <command> [disc]
   bitmap --all <map>      bulk decode check of every bitmap in a map
   collision <map> <tag>   summarise a coll/phmo tag; --obj FILE exports geometry
   collision --all <map|all>  validate every coll/phmo tag (all = every disc map)
-  superbounce scan <map>  bounce slots and forced-crouch ceilings in a map's
+  superbounce scan <map>  bounce strips and forced-crouch spots in a map's
                           collision; --bsp N, --json (docs/game/superbounce.md)
   bots nav <map|all>      build the bots' nav mesh and walls into <data>/bots
                           (docs/game/bots.md)

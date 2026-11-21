@@ -27,38 +27,12 @@ fn flat(x: [f32; 2], y: [f32; 2], z: f32, up: bool) -> Poly {
     )
 }
 
-/// The Ascension slot's shape (docs/game/superbounce.md, "The touchdown
-/// tick"): floor at z 0 on both sides, a slot 0.3 deep from y 0 to y
-/// `width`. The wall at y 0 looks +y and leans 2.1° up, `(0, 0.9993,
-/// 0.0372)`; the one at y `width` looks −y.
-fn slot(width: f32) -> Vec<Poly> {
-    let n = [0.0, 0.9993, 0.0372];
-    // The tilted plane through (x, 0, 0): 0.9993 y + 0.0372 z = 0.
-    let y_at = |z: f32| -n[2] * z / n[1];
-    vec![
-        flat([0.0, 2.0], [-1.0, 0.0], 0.0, true),
-        flat([0.0, 2.0], [width, width + 1.0], 0.0, true),
-        quad(
-            [
-                [0.0, 0.0, 0.0],
-                [0.0, y_at(-0.3), -0.3],
-                [2.0, y_at(-0.3), -0.3],
-                [2.0, 0.0, 0.0],
-            ],
-            n,
-        ),
-        quad(
-            [
-                [0.0, width, 0.0],
-                [2.0, width, 0.0],
-                [2.0, width, -0.3],
-                [0.0, width, -0.3],
-            ],
-            [0.0, -1.0, 0.0],
-        ),
-        // The slot's bottom: floor, but far below the top.
-        flat([0.0, 2.0], [y_at(-0.3), width], -0.3, true),
-    ]
+fn poly(verts: &[Vec3], normal: Vec3) -> Poly {
+    let l = (normal[0] * normal[0] + normal[1] * normal[1] + normal[2] * normal[2]).sqrt();
+    Poly {
+        verts: verts.to_vec(),
+        normal: normal.map(|v| v / l),
+    }
 }
 
 fn bounces(spots: &[Spot]) -> Vec<&Spot> {
@@ -67,88 +41,296 @@ fn bounces(spots: &[Spot]) -> Vec<&Spot> {
 fn crouches(spots: &[Spot]) -> Vec<&Spot> {
     spots.iter().filter(|s| s.kind == Kind::Crouch).collect()
 }
+fn dist(a: Vec3, b: Vec3) -> f32 {
+    ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
+}
+
+/// Ascension's ramp: normal `(0, 0.5433, 0.8396)`, z falls 0.647 a unit of
+/// y.
+const RAMP: Vec3 = [0.0, 0.5433, 0.8396];
+const RAMP_SLOPE: f32 = 0.5433 / 0.8396;
+
+/// The bounce patch on Ascension, from `h2 superbounce scan ascension
+/// --near -10.62,4.0,-3.4` (docs/game/superbounce.md, "The geometry"):
+/// floor at z −3.2 in two coplanar pieces meeting at a seam along y 4.0,
+/// the ramp meeting the floor's strip in a concave crease along y 3.8,
+/// and the slab's undersides, the face down from y 3.8 and a side wall
+/// below and beside it.
+fn ascension_patch(strip: f32) -> Vec<Poly> {
+    let (x0, x1) = (-11.10, -9.98);
+    let seam = 3.8 + strip;
+    vec![
+        flat([x0, x1], [3.8, seam], -3.2, true),
+        flat([x0, x1], [seam, 5.1], -3.2, true),
+        quad(
+            [
+                [x0, 0.4, -1.0],
+                [x1, 0.4, -1.0],
+                [x1, 3.8, -3.2],
+                [x0, 3.8, -3.2],
+            ],
+            RAMP,
+        ),
+        flat([x0, x1], [3.8, 5.1], -3.5, false),
+        quad(
+            [
+                [x0, 0.4, -1.36],
+                [x1, 0.4, -1.36],
+                [x1, 3.8, -3.56],
+                [x0, 3.8, -3.56],
+            ],
+            [0.0, -RAMP[1], -RAMP[2]],
+        ),
+        quad(
+            [
+                [x0, 3.8, -3.5],
+                [x1, 3.8, -3.5],
+                [x1, 3.8, -4.0],
+                [x0, 3.8, -4.0],
+            ],
+            [0.0, -1.0, 0.0],
+        ),
+        quad(
+            [
+                [x0, 3.8, -3.2],
+                [x0, 5.1, -3.2],
+                [x0, 5.1, -2.0],
+                [x0, 3.8, -2.0],
+            ],
+            [1.0, 0.0, 0.0],
+        ),
+    ]
+}
 
 #[test]
-fn a_17_cm_slot_with_the_ascension_tilt_is_one_bounce_spot() {
-    let spots = scan(&slot(0.17));
+fn the_ascension_crease_and_seam_are_the_measured_bounce_spot() {
+    let spots = scan(&ascension_patch(0.2));
     let b = bounces(&spots);
     assert_eq!(b.len(), 1, "{spots:?}");
     let s = b[0];
+    // crates/live/bots/src/glitches/spots.rs: the measured spot.
+    assert!(dist(s.stand, [-10.62, 3.88, -3.19]) < 0.1, "{:?}", s.stand);
+    // One-point calibration: this crease is the 17.85.
     assert!((s.launch - 17.85).abs() < 0.2, "launch {}", s.launch);
-    // Drift across the slot toward +y, along the tilted wall's normal: the
-    // way every traced bounce came in.
+    // From the crease toward the seam: +y, the way every traced bounce
+    // came in.
     assert!(
-        (s.drift[0]).abs() < 1e-3 && (s.drift[1] - 1.0).abs() < 1e-3,
+        s.drift[0].abs() < 1e-3 && (s.drift[1] - 1.0).abs() < 1e-3,
         "{:?}",
         s.drift
     );
-    // The crease runs along x at floor level over the slot's length.
-    let [a, e] = s.edge;
-    assert!((a[2]).abs() < 1e-3 && (e[2]).abs() < 1e-3, "{:?}", s.edge);
-    assert!(((a[0] - e[0]).abs() - 2.0).abs() < 1e-3, "{:?}", s.edge);
+    // The midline of the strip, at floor height, over its length.
+    for p in s.edge {
+        assert!(
+            (p[1] - 3.9).abs() < 1e-3 && (p[2] + 3.2).abs() < 1e-3,
+            "{:?}",
+            s.edge
+        );
+    }
     assert!(
-        a[1] > 0.0 && a[1] < 0.17 && (a[1] - e[1]).abs() < 1e-3,
+        ((s.edge[0][0] - s.edge[1][0]).abs() - 1.12).abs() < 1e-3,
         "{:?}",
         s.edge
     );
-    // Standing on the floor just short of the tilted wall, origin 1 cm up.
-    assert!(s.stand[1] < 0.0 && s.stand[1] > -0.1, "{:?}", s.stand);
-    assert!((s.stand[2] - 0.01).abs() < 1e-3, "{:?}", s.stand);
-    // Half the landings sink deep enough at about 4.1 units/s: about a
-    // metre of extra fall over a standing jump.
+    // Half the landings sink onto both edges and 4 cm more at about 4.3
+    // units/s: about a unit of extra fall over a standing jump.
     assert!(s.fall > 0.5 && s.fall < 1.5, "fall {}", s.fall);
-    assert!(s.score > 0.5 && s.score <= 1.0);
-    assert!(crouches(&spots).is_empty(), "{spots:?}");
+    assert!(s.score > 0.9 && s.score <= 1.0 + 1e-5, "{}", s.score);
 }
 
 #[test]
-fn a_gap_wider_than_the_capsule_is_no_bounce() {
-    assert!(bounces(&scan(&slot(0.5))).is_empty());
+fn a_strip_wider_than_the_capsule_is_no_bounce() {
+    assert!(bounces(&scan(&ascension_patch(0.5))).is_empty());
 }
 
 #[test]
-fn a_slot_with_no_upward_tilt_is_no_bounce() {
-    let mut polys = slot(0.17);
-    // Make the tilted wall vertical: nothing is left upward.
-    polys[2] = quad(
-        [
-            [0.0, 0.0, 0.0],
-            [0.0, 0.0, -0.3],
-            [2.0, 0.0, -0.3],
-            [2.0, 0.0, 0.0],
-        ],
-        [0.0, 1.0, 0.0],
+fn two_creases_are_a_v_groove_with_both_tilts() {
+    let polys = vec![
+        flat([0.0, 2.0], [0.0, 0.2], 0.0, true),
+        // Rising toward −y from y 0, and toward +y from y 0.2.
+        quad(
+            [
+                [0.0, -1.0, RAMP_SLOPE],
+                [2.0, -1.0, RAMP_SLOPE],
+                [2.0, 0.0, 0.0],
+                [0.0, 0.0, 0.0],
+            ],
+            RAMP,
+        ),
+        quad(
+            [
+                [0.0, 0.2, 0.0],
+                [2.0, 0.2, 0.0],
+                [2.0, 1.2, RAMP_SLOPE],
+                [0.0, 1.2, RAMP_SLOPE],
+            ],
+            [0.0, -RAMP[1], RAMP[2]],
+        ),
+    ];
+    let spots = scan(&polys);
+    let b = bounces(&spots);
+    assert_eq!(b.len(), 1, "{spots:?}");
+    assert!(
+        (b[0].launch - 2.0 * 17.85).abs() < 0.5,
+        "launch {}",
+        b[0].launch
     );
+    assert!((b[0].drift[1].abs() - 1.0).abs() < 1e-3, "{:?}", b[0].drift);
+    assert!(
+        b[0].score < 0.9,
+        "a V-groove isn't the traced shape: {}",
+        b[0].score
+    );
+}
+
+#[test]
+fn a_seam_on_a_ramp_beside_its_foot_is_a_bounce_spot() {
+    let up = [0.0, -RAMP[1], RAMP[2]];
+    let z = |y: f32| y * RAMP_SLOPE;
+    let polys = vec![
+        flat([0.0, 2.0], [-1.0, 0.0], 0.0, true),
+        quad(
+            [
+                [0.0, 0.0, 0.0],
+                [2.0, 0.0, 0.0],
+                [2.0, 0.15, z(0.15)],
+                [0.0, 0.15, z(0.15)],
+            ],
+            up,
+        ),
+        quad(
+            [
+                [0.0, 0.15, z(0.15)],
+                [2.0, 0.15, z(0.15)],
+                [2.0, 2.0, z(2.0)],
+                [0.0, 2.0, z(2.0)],
+            ],
+            up,
+        ),
+    ];
+    let spots = scan(&polys);
+    let b = bounces(&spots);
+    assert_eq!(b.len(), 1, "{spots:?}");
+    assert!((b[0].launch - 17.85).abs() < 0.2, "launch {}", b[0].launch);
+    assert!((b[0].drift[1] - 1.0).abs() < 1e-3, "{:?}", b[0].drift);
+    // The midline is on the ramp, halfway up the strip.
+    assert!((b[0].edge[0][1] - 0.075).abs() < 1e-3, "{:?}", b[0].edge);
+    assert!((b[0].edge[0][2] - z(0.075)).abs() < 1e-3, "{:?}", b[0].edge);
+}
+
+#[test]
+fn seams_alone_are_no_bounce() {
+    let polys = vec![
+        flat([0.0, 2.0], [-1.0, 0.0], 0.0, true),
+        flat([0.0, 2.0], [0.0, 0.2], 0.0, true),
+        flat([0.0, 2.0], [0.2, 1.0], 0.0, true),
+    ];
     assert!(bounces(&scan(&polys)).is_empty());
 }
 
 #[test]
-fn a_slot_split_into_pieces_is_still_one_spot() {
-    let mut polys = slot(0.17);
-    let n = polys[3].normal;
-    // The −y wall in two halves along x.
-    polys[3] = quad(
-        [
-            [0.0, 0.17, 0.0],
-            [1.0, 0.17, 0.0],
-            [1.0, 0.17, -0.3],
-            [0.0, 0.17, -0.3],
-        ],
-        n,
+fn a_convex_edge_beside_a_seam_is_no_bounce() {
+    let polys = vec![
+        // Falling away toward −y from y 0.
+        quad(
+            [
+                [0.0, -1.0, -RAMP_SLOPE],
+                [2.0, -1.0, -RAMP_SLOPE],
+                [2.0, 0.0, 0.0],
+                [0.0, 0.0, 0.0],
+            ],
+            [0.0, -RAMP[1], RAMP[2]],
+        ),
+        flat([0.0, 2.0], [0.0, 0.2], 0.0, true),
+        flat([0.0, 2.0], [0.2, 1.0], 0.0, true),
+    ];
+    assert!(bounces(&scan(&polys)).is_empty());
+}
+
+/// The forced-crouch corner on Ascension, from `--near -10.91,0.72,-1.16`:
+/// floor flat at z −1.0 to y 0.4, then the ramp; a prop box x −11.4..−11.0,
+/// y 0.11..0.61, z −1.31..−0.25 whose upper part overhangs its lower by
+/// 0.05 in y, with a 45° lip between (the faces toward the corner only).
+fn ascension_corner() -> Vec<Poly> {
+    let (x0, x1) = (-12.0, -10.0);
+    let ramp_z = -1.0 - 3.4 * RAMP_SLOPE;
+    let lip = [0.0, 0.7071, -0.7071];
+    vec![
+        flat([x0, x1], [-0.5, 0.4], -1.0, true),
+        quad(
+            [
+                [x0, 0.4, -1.0],
+                [x1, 0.4, -1.0],
+                [x1, 3.8, ramp_z],
+                [x0, 3.8, ramp_z],
+            ],
+            RAMP,
+        ),
+        // +x, the lower part and the overhanging upper part.
+        poly(
+            &[
+                [-11.0, 0.11, -1.31],
+                [-11.0, 0.56, -1.31],
+                [-11.0, 0.56, -0.73],
+                [-11.0, 0.11, -0.73],
+            ],
+            [1.0, 0.0, 0.0],
+        ),
+        poly(
+            &[
+                [-11.0, 0.11, -0.73],
+                [-11.0, 0.56, -0.73],
+                [-11.0, 0.61, -0.68],
+                [-11.0, 0.61, -0.25],
+                [-11.0, 0.11, -0.25],
+            ],
+            [1.0, 0.0, 0.0],
+        ),
+        // +y: lower at 0.56, the lip, upper at 0.61.
+        quad(
+            [
+                [-11.4, 0.56, -1.31],
+                [-11.0, 0.56, -1.31],
+                [-11.0, 0.56, -0.73],
+                [-11.4, 0.56, -0.73],
+            ],
+            [0.0, 1.0, 0.0],
+        ),
+        quad(
+            [
+                [-11.4, 0.56, -0.73],
+                [-11.0, 0.56, -0.73],
+                [-11.0, 0.61, -0.68],
+                [-11.4, 0.61, -0.68],
+            ],
+            lip,
+        ),
+        quad(
+            [
+                [-11.4, 0.61, -0.68],
+                [-11.0, 0.61, -0.68],
+                [-11.0, 0.61, -0.25],
+                [-11.4, 0.61, -0.25],
+            ],
+            [0.0, 1.0, 0.0],
+        ),
+    ]
+}
+
+#[test]
+fn the_ascension_prop_lip_is_the_measured_crouch_spot() {
+    let spots = scan(&ascension_corner());
+    let c = crouches(&spots);
+    let target = [-10.91, 0.72, -1.16];
+    assert!(
+        c.iter().any(|s| dist(s.stand, target) < 0.15),
+        "{:?}",
+        c.iter().map(|s| s.stand).collect::<Vec<_>>()
     );
-    polys.push(quad(
-        [
-            [1.0, 0.17, 0.0],
-            [2.0, 0.17, 0.0],
-            [2.0, 0.17, -0.3],
-            [1.0, 0.17, -0.3],
-        ],
-        n,
-    ));
-    let spots = scan(&polys);
-    let b = bounces(&spots);
-    assert_eq!(b.len(), 1, "{spots:?}");
-    assert!(((b[0].edge[0][0] - b[0].edge[1][0]).abs() - 2.0).abs() < 1e-3);
+    for s in &c {
+        assert_eq!((s.fall, s.launch, s.drift), (0.0, 0.0, [0.0, 0.0]));
+    }
+    assert!(bounces(&spots).is_empty(), "{spots:?}");
 }
 
 fn room(ceiling: f32) -> Vec<Poly> {
@@ -164,22 +346,25 @@ fn a_ceiling_at_crouch_height_is_a_crouch_spot() {
     let c = crouches(&spots);
     assert_eq!(c.len(), 1, "{spots:?}");
     let s = c[0];
-    // Stand inside, under the ceiling.
-    assert!((s.stand[0] - 1.0).abs() < 1e-3 && (s.stand[1] - 1.0).abs() < 1e-3);
-    assert!((s.stand[2] - 0.01).abs() < 1e-3);
-    // The edge is one of the ceiling's sides, on the floor.
+    // Stand in the middle, under the ceiling.
+    assert!(dist(s.stand, [1.0, 1.0, 0.01]) < 0.05, "{:?}", s.stand);
+    // The edge runs along one side, just outside the ceiling where the
+    // standing capsule still clips it, on the floor.
     let [a, b] = s.edge;
-    let on_side = |p: Vec3| {
-        (p[0].abs() < 1e-3
-            || (p[0] - 2.0).abs() < 1e-3
-            || p[1].abs() < 1e-3
-            || (p[1] - 2.0).abs() < 1e-3)
-            && p[2].abs() < 1e-3
+    let off_side = |p: Vec3| {
+        [
+            p[0].abs(),
+            (p[0] - 2.0).abs(),
+            p[1].abs(),
+            (p[1] - 2.0).abs(),
+        ]
+        .into_iter()
+        .fold(f32::INFINITY, f32::min)
     };
-    assert!(on_side(a) && on_side(b), "{:?}", s.edge);
-    assert!((((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2)).sqrt() - 2.0).abs() < 1e-3);
+    assert!(off_side(a) < 0.25 && off_side(b) < 0.25, "{:?}", s.edge);
+    assert!(a[2].abs() < 1e-3 && b[2].abs() < 1e-3, "{:?}", s.edge);
+    assert!(dist(a, b) > 2.0, "{:?}", s.edge);
     assert!((s.score - 1.0).abs() < 1e-5, "{}", s.score);
-    assert_eq!((s.fall, s.launch, s.drift), (0.0, 0.0, [0.0, 0.0]));
     assert!(bounces(&spots).is_empty());
 }
 
@@ -188,18 +373,18 @@ fn a_ceiling_with_standing_room_is_no_crouch_spot() {
     assert!(crouches(&scan(&room(0.8))).is_empty());
 }
 
+/// A ceiling too low to crouch under forces a crouch only in the thin band
+/// outside its edge where the crouched capsule's rounded top slips under:
+/// the edge more than `sqrt(r^2 - (r - 0.1)^2)` (0.158) from the axis. The
+/// Ascension lip is this case (its clearance is 0.39). Nothing is under it.
 #[test]
-fn a_ceiling_too_low_to_crouch_under_is_no_crouch_spot() {
-    assert!(crouches(&scan(&room(0.4))).is_empty());
-}
-
-#[test]
-fn a_gap_narrower_than_the_capsule_is_no_crouch_spot() {
-    let polys = vec![
-        flat([-2.0, 4.0], [-2.0, 4.0], 0.0, true),
-        flat([0.0, 2.0], [0.0, 0.2], 0.6, false),
-    ];
-    assert!(crouches(&scan(&polys)).is_empty());
+fn a_ceiling_too_low_to_crouch_under_forces_only_at_its_edge() {
+    for s in crouches(&scan(&room(0.4))) {
+        let [x, y, _] = s.stand;
+        let outside = x < 0.0 || x > 2.0 || y < 0.0 || y > 2.0;
+        let gap = (-x).max(x - 2.0).max(-y).max(y - 2.0);
+        assert!(outside && gap < RADIUS + 0.01, "{:?}", s.stand);
+    }
 }
 
 /// A collision BSP from face loops (outward counter-clockwise), with the

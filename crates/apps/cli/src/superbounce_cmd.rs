@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result, bail};
 use superbounce::{Kind, Spot};
 
-const USAGE: &str = "usage: h2 superbounce scan <map-name-or-file> [--bsp N] [--json] [--disc disc.iso]\n\nScans one structure BSP (default 0) of the map, with its instanced\ngeometry, for superbounce slots and forced-crouch ceilings, and prints\nthem best first: a heuristic over the collision geometry, not a game\nrun. --json prints them as a JSON array.";
+const USAGE: &str = "usage: h2 superbounce scan <map-name-or-file> [--bsp N] [--json] [--disc disc.iso] [--near x,y,z[,r]]\n\nScans one structure BSP (default 0) of the map, with its instanced\ngeometry, for superbounce slots and forced-crouch ceilings, and prints\nthem best first: a heuristic over the collision geometry, not a game\nrun. --json prints them as a JSON array. --near prints, instead, the\ncollision polygons with a vertex or centroid within r (default 0.6)\nof the point: what a scanned spot is checked against.";
 
 pub(super) fn run(args: Vec<String>) -> Result<()> {
     let mut args = args.into_iter();
@@ -19,6 +19,7 @@ pub(super) fn run(args: Vec<String>) -> Result<()> {
         Some(other) => bail!("unknown superbounce command {other}\n{USAGE}"),
     }
     let (mut positional, mut disc, mut bsp, mut json) = (Vec::new(), None, 0usize, false);
+    let mut near: Option<([f32; 3], f32)> = None;
     while let Some(a) = args.next() {
         match a.as_str() {
             "--bsp" => {
@@ -29,6 +30,7 @@ pub(super) fn run(args: Vec<String>) -> Result<()> {
                     .context("--bsp needs a number")?
             }
             "--json" => json = true,
+            "--near" => near = Some(parse_near(&args.next().context("--near needs x,y,z")?)?),
             "--disc" => {
                 disc = Some(PathBuf::from(
                     args.next().context("--disc needs an ISO path")?,
@@ -46,6 +48,15 @@ pub(super) fn run(args: Vec<String>) -> Result<()> {
         bail!("{USAGE}")
     };
     let mut map = crate::maps::load_map(name, disc)?;
+    if let Some((at, r)) = near {
+        let polys = superbounce::map_polys(&mut map, bsp)
+            .with_context(|| format!("reading BSP {bsp} of {name}"))?;
+        for p in polys.iter().filter(|p| poly_near(p, at, r)) {
+            let verts: Vec<_> = p.verts.iter().map(|&v| v3(v)).collect();
+            println!("normal {}  {}", n3(p.normal), verts.join(" "));
+        }
+        return Ok(());
+    }
     let spots = superbounce::scan_map(&mut map, bsp)
         .with_context(|| format!("scanning BSP {bsp} of {name}"))?;
     if json {
@@ -63,6 +74,35 @@ pub(super) fn run(args: Vec<String>) -> Result<()> {
         println!("{}", line(s));
     }
     Ok(())
+}
+
+fn parse_near(s: &str) -> Result<([f32; 3], f32)> {
+    let n: Vec<f32> = s
+        .split(',')
+        .map(|t| t.trim().parse::<f32>())
+        .collect::<Result<_, _>>()
+        .context("--near needs numbers: x,y,z[,r]")?;
+    match n.as_slice() {
+        [x, y, z] => Ok(([*x, *y, *z], 0.6)),
+        [x, y, z, r] => Ok(([*x, *y, *z], *r)),
+        _ => bail!("--near needs x,y,z or x,y,z,r"),
+    }
+}
+
+fn poly_near(p: &superbounce::Poly, at: [f32; 3], r: f32) -> bool {
+    let d = |v: [f32; 3]| {
+        ((v[0] - at[0]).powi(2) + (v[1] - at[1]).powi(2) + (v[2] - at[2]).powi(2)).sqrt()
+    };
+    if p.verts.is_empty() {
+        return false;
+    }
+    let k = p.verts.len() as f32;
+    let c = p.verts.iter().fold([0.0; 3], |a, v| [a[0] + v[0] / k, a[1] + v[1] / k, a[2] + v[2] / k]);
+    d(c) <= r || p.verts.iter().any(|&v| d(v) <= r)
+}
+
+fn n3(n: [f32; 3]) -> String {
+    format!("({:.4}, {:.4}, {:.4})", n[0], n[1], n[2])
 }
 
 fn kind(k: Kind) -> &'static str {
