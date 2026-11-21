@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 
 use crate::caps::{self, Entry, Kind, Order, VARIANT_FIELDS};
 use crate::ir::*;
-use crate::ty::{MAX_LABELLED, MAX_PLAYERS, MAX_SQUADS, MAX_TEAMS, NONE, Ty, fixed};
+use crate::ty::{MAX_LABELLED, MAX_OBJECTIVES, MAX_PLAYERS, MAX_SQUADS, MAX_TEAMS, NONE, Ty, fixed};
 use crate::verify::{self, Refusal};
 
 /// Ops one tick may execute across all its handlers.
@@ -67,6 +67,11 @@ pub trait Game {
     fn teams(&self) -> Vec<u8>;
     /// The objects with a Forge label. Order does not matter.
     fn labelled(&self, label: &str) -> Vec<Placed>;
+    /// The objects of the objective registry (`E+0xc1c`). Order does not
+    /// matter.
+    fn objectives(&self) -> Vec<u32> {
+        Vec::new()
+    }
     /// A retail record field by its [`VARIANT_FIELDS`] name.
     fn variant(&self, field: &str) -> i32;
     /// A read entry. The VM maps a value outside the result type to its
@@ -96,6 +101,12 @@ pub enum Input {
     Press(u8, u32),
     SquadDead(u8),
     ActorKill { killer: Option<u8>, class: String },
+    /// The assist of a kill, reported after its `ActorKill`.
+    ActorAssist {
+        killer: Option<u8>,
+        assist: Option<u8>,
+        class: String,
+    },
     Bounce(u8, u32),
     Edit(u8, u32),
     Join(u8),
@@ -118,6 +129,7 @@ impl Input {
             Input::Press(..) => Event::Press,
             Input::SquadDead(_) => Event::SquadDead,
             Input::ActorKill { .. } => Event::ActorKill,
+            Input::ActorAssist { .. } => Event::ActorAssist,
             Input::Bounce(..) => Event::Bounce,
             Input::Edit(..) => Event::Edit,
             Input::Join(_) => Event::Join,
@@ -828,16 +840,23 @@ impl Vm {
                 vec![o(*zone), o(*object)]
             }
             Input::SquadDead(s) => vec![if (*s as usize) < MAX_SQUADS { *s as i32 } else { 0 }],
-            Input::ActorKill { killer, class } => {
-                let c = self
-                    .ir
-                    .strings
-                    .iter()
-                    .position(|s| s == class)
-                    .map_or(NONE, |i| i as i32);
-                vec![op(*killer), c]
-            }
+            Input::ActorKill { killer, class } => vec![op(*killer), self.class(class)],
+            Input::ActorAssist {
+                killer,
+                assist,
+                class,
+            } => vec![op(*killer), op(*assist), self.class(class)],
         }
+    }
+
+    /// A class name as a string-table index; `none` for a class the script
+    /// never names.
+    fn class(&self, class: &str) -> i32 {
+        self.ir
+            .strings
+            .iter()
+            .position(|s| s == class)
+            .map_or(NONE, |i| i as i32)
     }
 
     fn run(&mut self, game: &mut dyn Game, handler: usize, args: &[i32]) -> Fired {
@@ -1187,6 +1206,15 @@ impl<'a> Run<'a> {
                     .take(MAX_LABELLED)
                     .collect()
             }
+            SetBase::Objectives => {
+                let mut list = game.objectives();
+                list.sort_unstable();
+                list.dedup();
+                list.into_iter()
+                    .filter_map(|o| i32::try_from(o).ok())
+                    .take(MAX_OBJECTIVES)
+                    .collect()
+            }
         }
     }
 
@@ -1202,6 +1230,14 @@ impl<'a> Run<'a> {
                             raw[0]
                         } else {
                             return Err(ErrorKind::Squad);
+                        }
+                    }
+                    caps::id::NOW => i32::try_from(self.ext.tick).unwrap_or(i32::MAX),
+                    caps::id::RANDOM => {
+                        if raw[0] > 0 {
+                            (splitmix64(&mut self.ext.rng) % raw[0] as u64) as i32
+                        } else {
+                            0
                         }
                     }
                     _ => 0,

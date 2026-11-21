@@ -67,6 +67,8 @@ agent-proto = { path = "../../extensions/agent-proto" }
 agent = { path = "../../extensions/agent", default-features = false }
 # h2 studio: the editor's agent API client (docs/editor/agent-api.md).
 studio-proto = { path = "../studio-proto", optional = true }
+# `h2 rules`: the scripted game types' tooling (docs/game/rules-engine.md).
+rules.workspace = true
 # Our settings (play --set, h2 settings).
 settings = { path = "../../formats/settings" }
 timeline = { path = "../../runtime/timeline" }
@@ -135,7 +137,7 @@ objc2-app-kit = { version = "0.3", default-features = false, features = ["std", 
 [features]
 default = ["desktop"]
 # The runtime commands, agent client, simulation and dedicated-host entry point.
-host = []
+host = ["boot/rules"]
 # dhat as the global allocator; writes dhat-heap.json when `h2` returns
 # from `main` (`-c build_mode.dhat=true` under Buck).
 dhat-heap = []

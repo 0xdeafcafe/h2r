@@ -1,0 +1,233 @@
+//! The rules workbench (docs/live/live-api.md "Rules scripts"): check,
+//! run and the built-ins are public and rate-limited; an account saves a
+//! script that verifies, once per hash; anyone reads it back, its IR and
+//! an author's list; a second server on the log reads the same. Run with
+//! the server's own timers and with none (the Worker's Durable Object).
+mod common;
+use axum::{http::Method, http::StatusCode};
+use common::*;
+use live_proto::lxm;
+use live_server::app::Timers;
+use live_server::store::{EventStore, MemoryStore};
+use serde_json::{Value, json};
+use std::sync::Arc;
+
+const BROKEN: &str = "rules \"Broken\" 1\ncarrier slayer\non kill(v, k) {\n    score(k, )\n}\n";
+
+async fn post(h: &Harness, path: &str, body: Value, headers: &[(&str, String)]) -> Resp {
+    let mut all = vec![("content-type", "application/json".to_string())];
+    all.extend(headers.iter().cloned());
+    h.call(Method::POST, path, &all, body.to_string()).await
+}
+
+#[tokio::test]
+async fn check_reports_the_hash_the_budget_and_errors_with_places() {
+    let h = harness().await;
+    let r = post(&h, "/v1/rules/check", json!({"source": rules::builtin::SLAYER}), &[]).await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.error());
+    let v = r.json();
+    assert_eq!(v["ok"], true);
+    assert_eq!(v["name"], "Slayer");
+    let want = rules::compile(rules::builtin::SLAYER).unwrap().id().to_string();
+    assert_eq!(v["hash"], want);
+    assert_eq!(v["report"]["handlers"][0]["event"], "kill");
+    assert!(v["report"]["worst_tick_ops"].as_u64().unwrap() > 0);
+    assert_eq!(v["report"]["budget"], 20_000);
+    assert_eq!(v["report"]["ir_limit"], 64 * 1024);
+    assert_eq!(v["report"]["slots"][0]["scope"], "global");
+    assert_eq!(v["report"]["capabilities"], json!([]));
+
+    let r = post(&h, "/v1/rules/check", json!({"source": BROKEN}), &[]).await;
+    assert_eq!(r.status, StatusCode::OK);
+    let v = r.json();
+    assert_eq!(v["ok"], false);
+    assert_eq!(v["errors"][0]["line"], 4);
+    assert!(v["report"].is_null());
+
+    let caps = "rules \"T\" 1\ncarrier slayer\nteams 2\nrequires player.team\non spawn(p) { set_team(p, team 1) }\n";
+    let v = post(&h, "/v1/rules/check", json!({"source": caps}), &[]).await.json();
+    assert_eq!(v["report"]["capabilities"][0]["name"], "player.team");
+    assert_eq!(v["report"]["capabilities"][0]["words"], "moves players between teams");
+    assert_eq!(v["report"]["unhostable"], json!(["set_team"]));
+
+    let big = "x".repeat(live_proto::rules::MAX_SOURCE + 1);
+    let r = post(&h, "/v1/rules/check", json!({"source": big}), &[]).await;
+    assert_eq!(r.status, StatusCode::PAYLOAD_TOO_LARGE, "{}", r.error());
+    let r = post(&h, "/v1/rules/check", json!({"src": "x"}), &[]).await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn run_traces_a_scenario_on_the_fake_game() {
+    let h = harness().await;
+    let scenario = json!({
+        "players": [{"slot": 0, "team": 0}, {"slot": 1, "team": 1}],
+        "seed": 7,
+        "round_time": 100,
+        "ticks": 30,
+        "timeline": [
+            {"tick": 3, "events": [{"type": "kill", "victim": 1, "killer": 0}]},
+            {"tick": 9, "events": [{"type": "kill", "victim": 0}, {"type": "spawn", "player": 1}]},
+        ],
+    });
+    let body = json!({"source": rules::builtin::SLAYER, "scenario": scenario});
+    let r = post(&h, "/v1/rules/run", body.clone(), &[]).await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.error());
+    let v = r.json();
+    assert_eq!(v["ok"], true);
+    let ticks: Vec<u64> = v["ticks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["tick"].as_u64().unwrap())
+        .collect();
+    assert_eq!(ticks, [3, 9]);
+    assert_eq!(v["ticks"][0]["ran"], json!(["kill"]));
+    assert_eq!(
+        v["ticks"][0]["calls"][0],
+        json!({"entry": "score", "args": ["player 0", "1"]})
+    );
+    assert_eq!(v["ticks"][1]["calls"][0]["args"], json!(["player 0", "-1"]));
+    assert_eq!(v["last_tick"], 30);
+    assert_eq!(v["scores"], json!([{"slot": 0, "score": 0}, {"slot": 1, "score": 0}]));
+    // The same request, the same trace.
+    assert_eq!(post(&h, "/v1/rules/run", body, &[]).await.json(), v);
+
+    let r = post(
+        &h,
+        "/v1/rules/run",
+        json!({"source": BROKEN, "scenario": {}}),
+        &[],
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert_eq!(r.json()["ok"], false);
+    assert_eq!(r.json()["errors"][0]["line"], 4);
+
+    for bad in [
+        json!({"ticks": 36_001}),
+        json!({"players": [{"slot": 16}]}),
+        json!({"ticks": 5, "timeline": [{"tick": 6, "events": [{"type": "round_end"}]}]}),
+        json!({"timeline": [{"tick": 1, "events": [{"type": "fly"}]}]}),
+    ] {
+        let r = post(
+            &h,
+            "/v1/rules/run",
+            json!({"source": rules::builtin::SLAYER, "scenario": bad}),
+            &[],
+        )
+        .await;
+        assert_eq!(r.status, StatusCode::BAD_REQUEST, "{bad}: {}", r.error());
+    }
+}
+
+#[tokio::test]
+async fn builtins_are_listed_with_their_source() {
+    let h = harness().await;
+    let r = h.get("/v1/rules/builtin").await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.error());
+    let v = r.json();
+    let items = v["items"].as_array().expect("items");
+    assert_eq!(items.len(), rules::builtin::ALL.len());
+    let slayer = items.iter().find(|i| i["name"] == "Slayer").expect("Slayer is listed");
+    assert_eq!(slayer["engine"], 2);
+    assert_eq!(slayer["source"], rules::builtin::SLAYER);
+}
+
+#[tokio::test]
+async fn checks_are_rate_limited_per_client() {
+    let h = harness().await;
+    let mut limited = false;
+    for _ in 0..(live_server::rule_scripts::RATE.1 + 5) {
+        let r = post(&h, "/v1/rules/check", json!({"source": "x"}), &[]).await;
+        if r.status == StatusCode::TOO_MANY_REQUESTS {
+            limited = true;
+            break;
+        }
+        assert_eq!(r.status, StatusCode::OK);
+    }
+    assert!(limited, "the burst runs out");
+}
+
+async fn save(h: &Harness, who: Option<&User>, source: &str) -> Resp {
+    let headers: Vec<_> = who
+        .map(|u| h.bearer(u, lxm::CONTENT_WRITE))
+        .into_iter()
+        .collect();
+    post(h, "/v1/rules", json!({"source": source}), &headers).await
+}
+
+async fn flow(timers: Timers) {
+    let store: Arc<dyn EventStore> = Arc::new(MemoryStore::new());
+    let h = start_with(store.clone(), live_server::Policy::default(), timers).await;
+    let me = h.create("Scripter").await;
+    let other = h.create("Other").await;
+    let hash = rules::compile(rules::builtin::SLAYER).unwrap().id().to_string();
+
+    assert_eq!(
+        save(&h, None, rules::builtin::SLAYER).await.status,
+        StatusCode::UNAUTHORIZED
+    );
+    let r = save(&h, Some(&me), BROKEN).await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST, "{}", r.error());
+
+    let r = save(&h, Some(&me), rules::builtin::SLAYER).await;
+    assert_eq!(r.status, StatusCode::CREATED, "{}", r.error());
+    let v = r.json();
+    assert_eq!(v["saved"], true);
+    assert_eq!(v["script"]["hash"], hash);
+    assert_eq!(v["script"]["gamertag"], "Scripter");
+    // The same hash again, by anyone, saves nothing.
+    let r = save(&h, Some(&other), rules::builtin::SLAYER).await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.error());
+    assert_eq!(r.json()["saved"], false);
+    assert_eq!(r.json()["script"]["gamertag"], "Scripter");
+
+    // Nobody posts the event by hand.
+    let forged = h.event(
+        &me,
+        &live_proto::rules::stream(&"ab".repeat(32)),
+        live_proto::rules::RULES_SAVED,
+        json!({"hash": "ab".repeat(32), "name": "X", "version": 1, "author": me.xuid, "source": ""}),
+    );
+    assert_eq!(h.post_event(&me, forged).await.status, StatusCode::FORBIDDEN);
+
+    for h in [&h, &start_with(store.clone(), live_server::Policy::default(), timers).await] {
+        let r = h.get(&format!("/v1/rules/{hash}")).await;
+        assert_eq!(r.status, StatusCode::OK, "{}", r.error());
+        assert_eq!(r.json()["source"], rules::builtin::SLAYER);
+        assert_eq!(r.json()["name"], "Slayer");
+
+        let r = h.get(&format!("/v1/rules/{hash}/ir")).await;
+        assert_eq!(r.status, StatusCode::OK);
+        assert_eq!(
+            r.body,
+            rules::compile(rules::builtin::SLAYER).unwrap().encode()
+        );
+
+        for author in ["Scripter".to_string(), me.xuid.to_string()] {
+            let r = h.get(&format!("/v1/rules?author={author}")).await;
+            assert_eq!(r.status, StatusCode::OK, "{}", r.error());
+            assert_eq!(r.json()["items"][0]["hash"], hash);
+        }
+        let r = h.get("/v1/rules?author=Other").await;
+        assert_eq!(r.json()["items"], json!([]));
+        assert_eq!(h.get("/v1/rules?author=Nobody").await.status, StatusCode::NOT_FOUND);
+        assert_eq!(h.get("/v1/rules").await.status, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            h.get(&format!("/v1/rules/{}", "cd".repeat(32))).await.status,
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(h.get("/v1/rules/nope").await.status, StatusCode::NOT_FOUND);
+    }
+}
+
+#[tokio::test]
+async fn saving_with_the_servers_own_timers() {
+    flow(Timers::Spawned).await;
+}
+
+#[tokio::test]
+async fn saving_with_no_timers() {
+    flow(Timers::Driven).await;
+}

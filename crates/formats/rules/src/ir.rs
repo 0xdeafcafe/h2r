@@ -203,10 +203,13 @@ pub enum Event {
     Join,
     Quit,
     RoundEnd,
+    /// A second player who damaged a killed actor in its last five
+    /// seconds (`firefight::director::Kill::assist`).
+    ActorAssist,
 }
 
 impl Event {
-    pub const ALL: [Event; 19] = [
+    pub const ALL: [Event; 20] = [
         Event::Init,
         Event::RoundStart,
         Event::Tick,
@@ -226,6 +229,7 @@ impl Event {
         Event::Join,
         Event::Quit,
         Event::RoundEnd,
+        Event::ActorAssist,
     ];
 
     pub fn code(self) -> u8 {
@@ -258,6 +262,7 @@ impl Event {
             Event::Join => "join",
             Event::Quit => "quit",
             Event::RoundEnd => "round_end",
+            Event::ActorAssist => "actor_assist",
         }
     }
 
@@ -277,6 +282,7 @@ impl Event {
             Event::Enter | Event::Leave => &[Ty::Object, Ty::Object],
             Event::SquadDead => &[Ty::Squad],
             Event::ActorKill => &[Ty::Player, Ty::Class],
+            Event::ActorAssist => &[Ty::Player, Ty::Player, Ty::Class],
             Event::Init | Event::RoundStart | Event::Tick | Event::Timer | Event::RoundEnd => &[],
         }
     }
@@ -297,7 +303,8 @@ impl Event {
             | Event::Edit
             | Event::Join
             | Event::Quit
-            | Event::ActorKill => 16,
+            | Event::ActorKill
+            | Event::ActorAssist => 16,
             Event::Enter | Event::Leave => 64,
             Event::SquadDead => 16,
             _ => 1,
@@ -361,6 +368,9 @@ pub enum SetBase {
     Teams,
     /// Objects with the label-table entry's label, by placement id.
     Labelled(u16),
+    /// The objective registry's objects (`E+0xc1c`, at most 8), by object
+    /// handle.
+    Objectives,
 }
 
 impl SetBase {
@@ -368,7 +378,7 @@ impl SetBase {
         match self {
             SetBase::Players => Ty::Player,
             SetBase::Teams => Ty::Team,
-            SetBase::Labelled(_) => Ty::Object,
+            SetBase::Labelled(_) | SetBase::Objectives => Ty::Object,
         }
     }
 
@@ -378,6 +388,7 @@ impl SetBase {
             SetBase::Players => crate::ty::MAX_PLAYERS as u64,
             SetBase::Teams => crate::ty::MAX_TEAMS as u64,
             SetBase::Labelled(_) => crate::ty::MAX_LABELLED as u64,
+            SetBase::Objectives => crate::ty::MAX_OBJECTIVES as u64,
         }
     }
 }
@@ -878,6 +889,7 @@ impl Writer {
                         self.u8(2);
                         self.u16(l);
                     }
+                    SetBase::Objectives => self.u8(3),
                 }
                 self.opt_u8(set.pick);
                 self.u8(dst);
@@ -1116,6 +1128,7 @@ impl<'a> Reader<'a> {
                     0 => SetBase::Players,
                     1 => SetBase::Teams,
                     2 => SetBase::Labelled(self.u16(W)?),
+                    3 => SetBase::Objectives,
                     v => {
                         return Err(DecodeError::Invalid {
                             what: "a set",

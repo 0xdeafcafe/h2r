@@ -12,6 +12,10 @@ forge-doc.workspace = true
 # The Firefight director and its host log (firefight/host.rs).
 firefight = { path = "../../formats/firefight" }
 host-log.workspace = true
+# Rules scripts: the verifier and VM the host runtime runs (rules/).
+rules = { workspace = true, optional = true }
+# The RULES record the rules runtime keeps in the SimExt blob.
+sim-ext.workspace = true
 guest-layout = { path = "../../hooking/guest-layout" }
 actor-net = { path = "../../live/actor-net" }
 # Build and load (docs/dev/crate-structure.md, S4).
@@ -106,7 +110,7 @@ serde_json.workspace = true
 perf = { path = "../../tools/perf", optional = true }
 
 [features]
-default = ["gpu", "movie-playback", "local-io", "test-maps"]
+default = ["gpu", "movie-playback", "local-io", "test-maps", "rules"]
 desktop-runtime = ["render-bridge/native-render", "recomp/desktop-runtime"]
 gpu = ["desktop-runtime", "gfx/gpu", "d3d/gpu", "agent/render-overrides", "dep:wgpu", "dep:native-render", "dep:shaders", "dep:hot-render"]
 movie-playback = ["desktop-runtime", "bink-hle/playback", "dep:movies"]
@@ -116,6 +120,9 @@ perf = ["dep:perf"]
 # docs/game/test-maps.md). The recipes come from the caller (`Recipes`);
 # boot supplies the scenario editor's.
 test-maps = []
+# The rules host runtime (src/rules/, docs/game/rules-engine.md): compiled
+# in; the `rules` entry of H2_FEATURES turns it on.
+rules = ["dep:rules"]
 
 [dev-dependencies]
 # The fixture generated module, for hooks run through the real Runner.

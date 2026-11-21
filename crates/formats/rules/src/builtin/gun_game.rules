@@ -1,0 +1,51 @@
+// Gun Game: every player climbs one weapon ladder, a rung for each kill;
+// the first past the top rung wins the round. The weapon progression the
+// variant editor cannot express (docs/game/community-gametypes.md).
+// docs/game/rules-engine.md, "Payoff".
+//
+// `give` is untraced, so the new weapon arrives at the player's next spawn
+// through `set_loadout`, not on the kill's tick.
+//
+// Entries a host cannot make yet (`verify::unhostable`):
+//   set_loadout      traced (0x19eda0)
+rules "Gun Game" 1
+carrier slayer
+requires player.weapons
+
+option suicide_demotes: bool = true "Suicide demotes" "A suicide sends the player down one rung"
+
+// Tag paths are checked against the map at load.
+table ladder: (weapon: tag) = [
+    ("objects/weapons/rifle/smg/smg"),
+    ("objects/weapons/rifle/battle_rifle/battle_rifle"),
+    ("objects/weapons/rifle/covenant_carbine/covenant_carbine"),
+    ("objects/weapons/rifle/plasma_rifle/plasma_rifle"),
+    ("objects/weapons/rifle/shotgun/shotgun"),
+    ("objects/weapons/rifle/sniper_rifle/sniper_rifle"),
+    ("objects/weapons/rifle/beam_rifle/beam_rifle"),
+    ("objects/weapons/support_low/brute_shot/brute_shot"),
+    ("objects/weapons/support_high/rocket_launcher/rocket_launcher"),
+    ("objects/weapons/pistol/needler/needler"),
+    ("objects/weapons/pistol/magnum/magnum"),
+    ("objects/weapons/melee/energy_blade/energy_blade"),
+]
+
+player var level: int = 0
+
+on round_start {
+    for each players p { p.level = 0 }
+}
+
+on spawn(p) {
+    set_loadout(p, ladder[min(p.level, len(ladder) - 1)].weapon, none)
+}
+
+on kill(victim, killer) {
+    if killer == none or killer == victim {
+        if suicide_demotes and victim.level > 0 { victim.level = victim.level - 1 }
+    } else if not (variant.team_play and killer.team == victim.team) {
+        killer.level = killer.level + 1
+        score(killer, 1)
+        if killer.level >= len(ladder) { end_round(killer.team) }
+    }
+}

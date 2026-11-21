@@ -91,6 +91,7 @@ connection to hold `session.claim`.
 | `forge.capacity`, `forge.probe` | read, act | [Forge probes](#forge-probes) |
 | `firefight.state`, `firefight.kit` | read | [Firefight](#firefight) |
 | `firefight.command` | act | [Firefight](#firefight) |
+| `rules.state` | read | [Rules scripts](#rules-scripts) |
 | `match.status`, `match.report`, `match.stop` | read, read, act | [Sim matches](#sim-matches) |
 | `debug.views`, `debug.view` | read, act | [World debug views](#world-debug-views) |
 | `settings.list`, `settings.set`, `perf.overlay`, `cheat.list`, `cheat.set` | read or act | [Menu methods](#menu-methods-settings-perf-overlay-cheats) |
@@ -106,7 +107,7 @@ connection to hold `session.claim`.
 
 A new method gets a row here and a section for its domain. The names
 live in `crates/extensions/agent-proto/src` (`method::ALL`, `hot::method::ALL`,
-`state::method::ALL`, `sim`, `forge`, `firefight`, `trace`, `theater`, `goto`) and where the host adds
+`state::method::ALL`, `sim`, `forge`, `firefight`, `rules`, `trace`, `theater`, `goto`) and where the host adds
 them (`Agent::add_method`, `Agent::add_game_method`).
 
 ## Connecting
@@ -3518,6 +3519,43 @@ h2 agent firefight.kit
 h2 agent firefight.command '{"director":"hold"}'
 h2 agent firefight.command '{"command":{"erase_squad":{"slot":0}}}'
 h2 agent firefight.state
+```
+
+## Rules scripts
+
+The [rules script](../game/rules-engine.md#the-host-runtime) of the game
+running now, read at a tick boundary. `crates/extensions/agent/src/rules.rs`
+checks the params and calls the game's runtime
+(`game::rules::feature::AgentSource`, over
+`crates/extensions/game/src/rules/runtime.rs`); the wire types are in
+`crates/extensions/agent-proto/src/rules.rs`. The method is registered in
+builds with the `rules` cargo feature; with the `rules` switch off
+([switches.md](switches.md)) it says so.
+
+| Method and access | Parameters | Result |
+|---|---|---|
+| `rules.state` (read) | `{}` or omitted | `{running, refused?, script?, version?, hash?, source?, carrier?, options?, authority?, stopped?, budget?, pending, errors}` |
+
+`running` is false with the switch off, outside a multiplayer game, for
+a record that names no script, on a machine that is not the game
+engine's authority, after the game's end, and for a refused script;
+`refused` says which, and for a refusal names what the script needs
+("the script calls set_team, whose engine entry is untraced", "no
+built-in script has hash prefix ..., and fetching a blob from Live is
+not built"). `hash` is the blob's SHA-256 in hex, or the record's
+16-digit prefix when no blob was found. While a script runs: `script`
+and `version` are its header's, `source` is `builtin` or `live`,
+`carrier` the engine index it rides, `options` the record's option bits,
+and `authority` what `GAME_ENGINE_AUTHORITATIVE` answered at the first
+tick boundary (absent before it). `stopped` names the script error that
+stopped the VM. `budget` is the VM's tick (`tick`), the ops it has used
+(`ops`) against `limit` (20,000), and the verifier's `worst_tick`
+estimate. `pending` counts the calls waiting for the next tick boundary.
+`errors` holds the latest 16 calls the engine refused, each with its
+`tick`, `call` (the entry's name) and `error`.
+
+```sh
+h2 agent rules.state
 ```
 
 ## Sim matches

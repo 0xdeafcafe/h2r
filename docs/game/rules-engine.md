@@ -1,8 +1,8 @@
 # Rules engine: scripted game types
 
-Status: Design, partly built: the `rules` formats crate runs on a fake game in tests only. Decisions by the user, 2026-11-21.
-Code: `crates/formats/rules` (language, verifier, IR codec, capabilities, VM). The plan adds a `rules` module in `crates/extensions/game/src`. Tests: `cargo test -p rules`.
-Switch: a `rules` feature of `H2_FEATURES`, added to [switches.md](../runtime/switches.md) when it is built.
+Status: Design, partly built: the `rules` formats crate runs on a fake game in tests and in the web workbench, and the host runtime on invented guest memory in tests only. Decisions by the user, 2026-11-21.
+Code: `crates/formats/rules` (language, verifier, IR codec, capabilities, VM); `crates/extensions/game/src/rules` (the host runtime). Tests: `cargo test -p rules`, `cargo test -p game rules::`.
+Switch: `rules` in `H2_FEATURES`, off by default ([switches.md](../runtime/switches.md)); the `rules` cargo feature of `game` and `boot` compiles it in.
 
 One scriptable engine runs every multiplayer game type. A game type is a
 script compiled to a small verified IR, plus option values in the variant
@@ -221,30 +221,108 @@ A System Link game cannot name any other script.
 
 ### The host runtime
 
-**Design.** The runtime follows Firefight's
-(`crates/extensions/game/src/firefight/`, [firefight.md](firefight.md#the-host-runtime)):
+**Code**, tests only (`crates/extensions/game/src/rules/`): `runtime`
+holds one game's script and implements `rules::vm::Game` over guest
+memory, `guest` the reads and engine calls behind the API entries, and
+`feature` the hooks. It follows Firefight's runtime
+(`crates/extensions/game/src/firefight/`, [firefight.md](firefight.md#the-host-runtime)).
+Boot registers the `rules` feature (`registration::register_core`), off
+unless `H2_FEATURES` names it, and its hooks are on game-thread points
+only (`render_thread::REFUSED`).
 
-- an observer after a successful `GAME_ACTIVATE` (`0x18f000`) reads the
-  block, finds the blob by hash, verifies it and starts the VM, or keeps
-  a refusal with its reason;
-- a `before` on each rule callback of the carrier engine, and on its
-  per-tick update, answers with an async body (as Firefight's
-  `GAME_TICK` hook does) that runs the handler and makes its engine
-  calls in place, through `engine::entry::Cx`;
-- an observer after `GAME_TICK` gathers the events no engine callback
-  reports (squads, actor kills, bounces) and runs their handlers;
-- a `before` on `GAME_TICK` makes the queued calls ("Order").
+**At the game's start**, an observer after a successful `GAME_ACTIVATE`
+(`0x18f000`) reads the active record's block (`G+0x13c+0x10c`) and engine
+index (`+0x44`):
 
-All hooks are on game-thread points. The VM runs on the authoritative
-machine only (`GAME_ENGINE_AUTHORITATIVE`, `0x15b2f0`) and in a film's
-replay, where it re-runs from the recorded inputs. Its variables, timers
-and generator state live in a `RulesExt` record in the `SimExt` blob
+| Record | What runs |
+|---|---|
+| mode 2 | the blob whose SHA-256 starts with the record's 8-byte prefix: a built-in (`rules::builtin`, compiled once at first use), else the fetch, which refuses by name ("fetching a blob from Live is not built"); a System Link game takes only a built-in |
+| mode 0 | the built-in of the record's engine when the engine is in `runtime::PORTED`, which is empty: nothing runs, and Slayer stays lifted until its port passes parity |
+| mode 1 | nothing: Firefight's own feature runs it |
+| any other | refused: "script mode `n` is unknown to this build" |
+
+The blob is loaded (`verify::load`) and refused, by name, when its hash
+does not start with the record's prefix, when it rides another engine
+than the record's, when it calls an entry no host can make
+(`verify::unhostable`), or when it needs what this runtime does not do
+yet (`runtime::host_refusal`): an event other than `init`, `kill`,
+`timer` and `tick`; a read other than the scores, kills, deaths,
+`alive`, `team_of`, `lives`, `round_time_left` and `is_objective`; an
+action other than `score`, `end_round`, `set_lives` and `respawn`; a
+variant field other than `team_play`, `score_limit`, `time_limit` and
+`lives`, whose record offsets are not traced; a `grant`; a Forge label.
+Then the VM starts with the record's option bits and seed 0 (as
+Firefight's, until the session carries one), `on init` runs, and its
+state becomes the `RULES` record. **A refused script is logged
+("refused, the game plays the carrier engine's own rules: ...") and kept
+with its reason for `rules.state`, and the game plays as the record's
+own engine.** Nothing runs with a call stubbed out.
+
+A Live host (`variant_ext::part`) puts the running blob's full hash on
+its session at every start (`Hle::set_session_rules`, none when no
+script runs, so a stale hash does not linger) and logs each guest whose
+presence lacks `rules/1` (`Hle::players_lacking`). `rules/1` is in this
+build's presence capabilities only while the feature is on
+(`live_glue::capabilities`).
+
+**Events and calls.** Every call a handler makes is kept and made by a
+`before` on the next `GAME_TICK`, which answers with an async body
+(`runtime::run_work`, the mechanism of Firefight's tick hook): the calls
+in the order made, then the VM's queued calls, then the tick, whose chain
+lets the hook pass. It sits inside Firefight's tick hook and the hooks
+Firefight sits inside.
+
+| Handlers | Run from | Their calls |
+|---|---|---|
+| `on kill` | an observer before `PLAYER_KILLED` (`0x15ce70`): the attacker and victim player datums at `[esp+4]` and `[esp+8]`, as live telemetry reads them | at the next tick boundary |
+| `on timer`, then `on tick` | an observer after `GAME_TICK` | at the next tick boundary |
+| `on init` | the start observer | at the first tick boundary |
+
+This differs from "Order" in one way, for every handler: a call is made
+at the next tick boundary, not inside the event. `PLAYER_KILLED` is
+opaque, so a hook there can only observe; the carrier's kill callback
+(Slayer's vtable slot `+0x78`) has no named point; and the per-tick
+group runs after `GAME_TICK`, not in place of `0x15c150`. So a score
+lands one boundary after the kill, a read in the same handler does not
+see it, and the lifted carrier's own kill scoring still runs beside a
+script's. A mode 2 script on a lifted carrier is therefore not a parity
+game; answering the carrier's callbacks in place ("Which engine index a
+script rides") is what makes one.
+
+The calls: `score(p, n)` is `SCORE_ADD` (`0x15b7c0`) with `n` in EAX,
+clamped to ±30,000, and the salted player datum; `set_lives(p, n)`
+writes player `+0x1ac` and marks the player entity's lives bit through
+`PLAYER_ENTITY_DIRTY` (`0xa7840`); `respawn` and `end_round` are
+Firefight's bodies (`firefight::guest::respawn`, `end_game`), and the
+winner is not passed, since naming one is not traced. A script error
+ends the round the same way. A call the engine refuses is kept, with its
+tick and entry name, in `rules.state`'s `errors`.
+
+**Authority.** The first tick boundary's body also calls
+`GAME_ENGINE_AUTHORITATIVE` (`0x15b2f0`). A machine it answers false for
+drops the script, its calls and its record ("this machine is not the
+game engine's authority"). A film's playback is not told apart: it runs
+the script where the replayed engine answers true.
+
+**State.** The `RULES` record (`sim_ext::RULES`) holds
+`RulesExt::encode`, set at the start, written after every run that
+changed it and removed after `GAME_END` and at the next start
 ([sim-rewrite.md](../engine/sim-rewrite.md#2-who-owns-state)), so
-checkpoints, snapshots, film keyframes and the sim hash carry them.
-`SimExt` is the first prerequisite ("Roadmap"). Its container, hooks and
-hash fold are built and tested on synthetic memory (`crates/rewrites/sim-ext`,
-`crates/rewrites/sim-bridge/src/sim_ext.rs`; sim-rewrite.md, "The `SimExt`
-blob"); `RULES` is registered and holds no VM state yet.
+checkpoints, snapshots, film keyframes and the sim hash carry it. Before
+each run the record is compared with the bytes last written: a
+checkpoint revert or a snapshot load that changed it resumes the VM from
+it (`Vm::resume`), and a record that is gone (a full restore) stops the
+script with a refusal. A snapshot is refused while calls wait for the
+next tick boundary.
+
+The tests (`crates/extensions/game/src/rules/runtime/tests.rs`) drive the
+runtime over invented guest memory with fake engine callees: the
+built-in Slayer starting from a record and setting the record, a kill
+making a `SCORE_ADD` call at the next boundary, a suicide's negative
+score, a machine that is not the authority, a refusal for an unknown
+hash and for System Link, refusals by entry and by event, another
+engine's record, a record with no mode, the record removed at the game's
+end, and a reverted record resuming the VM.
 
 ## The language
 
@@ -279,12 +357,16 @@ read through its owner: `p.infected`, `t.captures`.
 `on pickup(p, o)`, `on drop(p, o)`, `on enter(zone, o)`,
 `on leave(zone, o)`, `on press(p, o)`, `on timer(t)`,
 `on squad_dead(s)`, `on actor_kill(killer, class)`,
+`on actor_assist(killer, assist, class)` (after its kill),
 `on bounce(p, spot)`, `on edit(p, o)` (a granted power was used),
 `on join(p)`, `on quit(p)`, `on round_end`. A handler runs to
 completion.
 
 **Loops** are `for each` over a finite set only: `players`, `teams`,
-`objects labelled "x"`, each with an optional `where`. There is no
+`objectives` (the objective registry's objects, at most 8, by object
+handle) and `objects labelled "x"`, each with an optional `where`. A set
+passed to `count`, `first` or `pick` may name its member for the `where`
+(`count(players p where p.team == t)`). There is no
 `while`, no recursion, and functions are inlined, so every handler has a
 static worst-case op count, which the compiler prints.
 
@@ -295,7 +377,16 @@ label. A script never sees a datum index or an address.
 **Options** a script declares are the rows a variant editor shows for
 it: `option name: type range = default`, with a label and a description
 in the string table. `variant.<field>` reads a retail record field by
-its `variants::schema` name.
+name: `team_play`, `score_limit`, `time_limit`, `lives`,
+`respawn_time`, `friendly_fire`, `rounds`, `engine`, and the type-area
+fields the ports read (`caps::VARIANT_FIELDS`, which names each one's
+`record::SettingId` and offset): `oddball_ball_count`,
+`king_moving_hill`, `ctf_flag_type`, `ctf_reset_time`,
+`ctf_touch_return`, `ctf_flag_at_home`, `assault_arm_time`,
+`territories_count`, `territories_contest_time`. The meanings of
+`oddball_ball_count`, `ctf_reset_time`, `ctf_touch_return`,
+`ctf_flag_at_home` and `territories_contest_time` are inferred from the
+editor's page labels, not from a reader.
 
 ### Slayer
 
@@ -411,13 +502,17 @@ fn open(n: int) {
 on pickup(p, o) { if phase == 2 and not is_objective(o) { register_objective(o, team 0) } }
 on round_start { open(0) }
 on tick {
-    if phase < 2 and ticks_held(labelled "zone" phase, team 0) >= seconds(capture_time) { open(phase + 1) }
+    let zone = first(objects labelled "zone" z where z.number == phase)
+    if phase < 2 and ticks_held(zone, team 0) >= seconds(capture_time) { open(phase + 1) }
 }
 on enter(zone, o) {
     if phase == 2 and zone.label == "goal" and is_objective(o) { end_round(team 0) }
 }
 on timer(clock) { end_round(team 1) }
 ```
+
+The whole mode, with respawn waves and loadouts per team, is
+`crates/formats/rules/src/builtin/siege.rules`.
 
 ### A Forge graph is the same IR
 
@@ -490,7 +585,7 @@ land at the point in the tick where the lifted engine's did:
 |---|---|---|
 | `on kill`, and each event the carrier engine has a callback for (per port: death, spawn, pickup, drop, join, quit, round start and end) | synchronously, in place of that callback | made at once |
 | `on enter`, `on leave`, `on press`, `on timer` (slot order), then `on tick` | synchronously, in place of the carrier's per-tick update (`0x15c150`) | made at once |
-| `on squad_dead`, `on actor_kill`, `on bounce`; `on init` | after `GAME_TICK`, from what the tick's observers gathered; `init` after `GAME_ACTIVATE` | queued |
+| `on squad_dead`, `on actor_kill`, `on actor_assist`, `on bounce`; `on init` | after `GAME_TICK`, from what the tick's observers gathered; `init` after `GAME_ACTIVATE` | queued |
 
 An event the carrier has no callback for runs with the per-tick group.
 Some calls are queued from any handler and made in program order by the
@@ -517,8 +612,8 @@ zero gives 0 and a trace warning.
 **Versioning.** A build that can host or join script games advertises
 `rules/1` in its presence capabilities, beside `variant-ext/1`
 (**Code**, `live_proto::capability::RULES` in
-`crates/live/live-proto/src/lib.rs`; no build advertises it until the
-`rules` feature exists).
+`crates/live/live-proto/src/lib.rs`; a build advertises it while the
+`rules` feature is on, `live_glue::capabilities`).
 An older build cannot host a script game. As a guest it is **warned
 about, not refused**. No guest on any build runs the script, so an older
 guest predicts exactly as a newer one does, from the same replicated
@@ -558,12 +653,16 @@ Reads:
 | `round_time_left()`: the round start tick against the time limit | `E+0x70` (`ROUND_START_TICK`, likely) and `V` | named |
 | objects: tag, position, parent | object datum (`guest-layout` `object.rs`) | named |
 | objects by label; `zone.label`, `zone.id`, `o.number` | Forge labels | not built |
-| `is_objective(o)`; objective records (object, team, carrier) | `E+0xc18`, `E+0xc1c` (`engine::objectives`) | named |
+| `is_objective(o)`; objective records (object, team, carrier); `o.carrier` (`carrier_of`); `for each objectives` | `E+0xc18`, `E+0xc1c` (`engine::objectives`) | named |
+| `o.team` (`object_team`): an objective's team, or a flag placement's team through its designator | record `+4`; `E+0x10` (bots.md section 3.7) | traced |
+| `player_of(o)`: the player whose unit an object is | unit `+0x13c` (bots.md section 3.7) | traced |
+| `inside(p, zone)`: a living unit inside a labelled volume, a territory marker's capture volume, or a hill corner's hill | zone tests, as below | not built |
 | zone tests: who is in a labelled zone, behind `on enter`, `on leave` and `ticks_held` | flag polygons and labelled volumes, in Rust under the float rules | not built |
 | netgame flags by type and team | `scnr+0x118` (`engine::objectives`); query `0x19ec40` | named; traced |
 | per-engine globals (`E+0xfc`): hill, bomb state, territories, Juggernaut mask | `engine::objectives`; `KOTH_GLOBALS` and its siblings in `global.rs` | named |
 | events of the tick | hooks on `PLAYER_KILLED` `0x15ce70`, `PLAYER_SPAWN` `0x14f2e0`; `SimRead::events` once sim-rewrite section 7 exists | named; not built |
-| squads: actors alive, `on squad_dead`, `on actor_kill` | `actor_net::squads::count_by_squad` and the kill list Firefight's `Observed` carries (`crates/extensions/game/src/actor_net/squads.rs`, `crates/formats/firefight/src/director.rs`) | named |
+| squads: actors alive, `on squad_dead`, `on actor_kill`, `on actor_assist` | `actor_net::squads::count_by_squad` and the kill list Firefight's `Observed` carries (`crates/extensions/game/src/actor_net/squads.rs`, `crates/formats/firefight/src/director.rs`) | named |
+| `zone_seen(z)`, `zone_distance(z)`: Firefight's drop zones, the objects labelled `ff_drop` in kit order | the zone visibility and distance Firefight's `Observed` carries (`ZoneSeen`) | named |
 | `on bounce(p, spot)` | a detector of the traced signature: capsule below the floor, then +8 to +13 units/s upward the next tick ([superbounce.md](superbounce.md#summary), **Trace**); the launch rule itself is Open there | traced; detector not built |
 | bounce and crouch spots, as zones | the scanner's spots per map and BSP (`crates/live/superbounce`); candidates, none traced as a real bounce | named |
 
@@ -581,6 +680,9 @@ Actions:
 | `set_loadout` | starting-weapon routine `0x19eda0` | traced | `player.weapons` |
 | `create(tag, at)`, `delete(o)` | `OBJECT_DELETE` `0xb8540`; creation as Forge's ([forge.md](forge.md)) | named; traced | `objects.create`, `objects.delete` |
 | `register_objective(o, team)`, unregister, picked up, dropped | `0x15e050`, `0x15e130`, `0x15e250`, `0x15e460` | traced | core |
+| `spawn_objective(tag, at, team)`: create an objective at a placement and register it | as the CTF and Assault flag spawn `0x2422d0` and Oddball's `0x2bc1f0` do | traced | core |
+| `reset_objective(o)`: return an objective to where it spawned | the lifted engines' return path is not traced | untraced | core |
+| `role_traits(p, on)`: the carrier engine's role traits from the variant's type area (ball or flag carrier, the Juggernaut and its bit of the role mask `[0x510c9c]+0`) | the trait query `0x24dda0` has no direct call site | untraced | core |
 | barriers and other map changes | create and delete at labels, as above; a barrier is a labelled placement (forge-features.md "Invisible barriers") | not built | `objects.create`, `objects.delete` |
 | `place_squad(s, class, n, label)` from the palette with its team, `hunt(s)`, erase | `AI_SQUAD_PLACE` `0x201520`, `AI_SET_TEAM` `0x275b60`, `AI_SET_ORDERS` `0x275cb0`, `AI_ERASE` `0x2736c0`, through `actor_net::squads::SquadEntry` (firefight.md "Guest boundary") | named; game runs R1, R2 pending | `ai.squads` |
 | `spawn_areas(team, label, n)`: which starting locations are live | answer a hook on `PLAYER_SPAWN_LOCATION` `0x14ef00` (picks from `scnr+0x100`) with labelled locations only; how the routine weighs locations is not traced | named point; untraced rule | `player.spawn` |
@@ -593,6 +695,8 @@ Actions:
 | `camera(p, mode)`: first or third person | no entry known | untraced | `player.camera` |
 | teleport, device power | Forge's sinks (forge-features.md) | not built | `objects.move` |
 | `message(to, text)`, scoreboard text, announcer, waypoint | not traced; the replicated game engine event (type 7) is known only as a type | untraced | `hud.message` |
+| `place_squad_at(s, class, n, zone, tier)`: a squad at a kit zone index with a weapon tier | Firefight's `PlaceSquad` command, through the same squad entry | named | `ai.squads` |
+| `ff_round`, `ff_wave`, `ff_skull`, `ff_lives`, `ff_score`, `ff_respawn`, `ff_finish` | Firefight's host log entries (`firefight::Command`), queued with the squad commands so the log keeps program order | named | `firefight.director` |
 | `forge_move(o, at)`, `forge_delete(o)`, `forge_place(tag, at)`, `forge_scale(o, s)`: an edit through the Forge log | a `forge-doc` op, validated and host-stamped (`crates/formats/forge-doc`, `LogHead::stamp`); edit classes in "Roles, powers and capabilities" | named | `forge.move`, `forge.delete`, `forge.place`, `forge.scale` |
 
 VM built-ins reach no engine entry (status **VM-only**):
@@ -604,6 +708,8 @@ VM built-ins reach no engine entry (status **VM-only**):
 | `seconds(n)` | `n` times the tick rate, in ticks |
 | `ticks_held(zone, team)` | a counter the VM keeps per labelled zone and team over the zone test: ticks the team has held it alone |
 | `squad(n)`, `team n`, `text n` | constants: a kit squad slot, a team index, a string-table index |
+| `now()` | the tick the host began (`Vm::begin_tick`) |
+| `random(n)` | the VM generator's next draw modulo `n`; 0, with no draw, when `n` is at most 0 |
 | `grant(p, cap, budget n, palette "x")`, `revoke(p, cap)`, `granted(p, cap)` | a player's powers, records in `RulesExt` ("Roles, powers and capabilities") |
 
 The engine update `0x15c150` and the post-game step `0x15ca10` are
@@ -631,6 +737,7 @@ plain words each:
 | `objects.create`, `objects.delete`, `objects.move` | makes, removes and moves objects | no |
 | `ai.squads` | places and commands AI | no |
 | `hud.message` | shows messages | no |
+| `firefight.director` | runs Firefight rounds, waves, lives and scores | no |
 | `forge.move`, `forge.delete`, `forge.place`, `forge.scale` | lets players move, remove, place and resize objects during the match | yes |
 
 **Declared, then checked everywhere.** The header's `requires` list is
@@ -762,13 +869,72 @@ Tooling:
   as a form, and a budget meter (worst-tick estimate, slots, IR bytes)
   that names the costliest handler. The blob carries an optional line
   table for messages; the VM ignores it.
-- **Scenario tests**: `h2 rules run` steps a script over a recorded
-  event list with no game; `h2 sim` runs it in a headless match. Each
-  built-in script has scenario tests beside its source.
+- **Command line**: `h2 rules` is pure over its inputs and needs no
+  disc (`crates/apps/cli/src/rules_cmd.rs`).
+  - `h2 rules check <file.rules>` compiles and verifies. Errors print as
+    `file:line:col: message` and the exit status is 1. The report gives
+    the worst-tick estimate against the budget, the costliest handler,
+    the IR bytes, the slots by scope, the blob's id, what the script can
+    do in the words of `caps::CAPABILITIES`, and the entries a host
+    cannot make.
+  - `h2 rules build <file.rules> -o <out.rir>` writes the verified blob
+    and prints its SHA-256.
+  - `h2 rules run <file.rules> --scenario <scenario.json> [--trace]`
+    steps the script over a scenario on the fake game, printing the calls
+    made each tick (with `--trace`, each event and call), the final
+    scores and the result; a script error exits 1.
+  - `h2 rules caps` lists the capabilities and the API entries with their
+    status; `h2 rules builtin [name]` lists the built-in scripts or
+    prints one.
+- **Scenario tests**: a scenario is JSON read by `rules::scenario`:
+  `seed`, `options` (bits; the blob's defaults when absent), `players`
+  (`slot`, `team`, `alive`, `score`, `lives`), `teams`,
+  `round_time_left`, and `ticks`, each with `events` of `kill`
+  (`victim`, `killer`), `spawn`, `death`, `join`, `quit`, `enter` and
+  `leave` (`zone`, `object`), `press`, `pickup` and `drop` (`player`,
+  `object`), `squad_dead` and `round_end`. Tick 0 reports `init` and
+  `round_start` first; each tick ends with the per-tick group; queued
+  calls are made at the start of the next tick and after the last.
+  `h2 sim` runs a script in a headless match. Each built-in script has
+  scenario tests beside its source.
 - **Agent API**: `rules.state` (script, hash, refusal, budget use),
   `rules.vars`, `rules.trace` (handlers run and calls made per tick),
   `rules.step` and `rules.load` (swap a verified blob between rounds).
   They join [agent-api.md](../runtime/agent-api.md) when built.
+
+### Workbench
+
+**Code.** The web app's Game Types page (`statsPath("/rules")`,
+`web/src/stats/Rules.tsx`, its pure half in `web/src/lib/rules.ts`) is
+where a script is written, checked, tested and saved before Studio's
+editor exists. The browser runs no compiler: Live's
+[Rules scripts](../live/live-api.md#rules-scripts) routes call
+`rules::workbench` in both homes.
+
+- **Check.** `workbench::check` compiles, verifies and measures source:
+  the IR hash, errors with line and column (0 for a verifier refusal or
+  the budget), the worst-tick estimate against the 20,000-op budget, each
+  handler's worst case, slots per scope against their limits, IR bytes
+  against 64 KiB, the declared capabilities in the lobby's words, and
+  every unhostable entry the script calls. The page checks 450 ms after
+  typing stops; an error's place moves the caret to it.
+- **Run.** `workbench::run` steps a scenario (seated players, variant
+  fields, options, seed, round time, and a list of events by tick) over
+  `fake::FakeGame`. Each tick: the queue is flushed, the tick's events
+  fire in order, then `update` runs timers and `on tick`. A kill marks
+  its victim dead and counts a kill and a death, a spawn marks the player
+  alive, a join seats one and a quit removes one after its handler. The
+  trace keeps the ticks in which a handler other than `on tick` ran, a
+  call was made, a variable or player row changed (a timer counting
+  down is no change), a warning was raised or the script stopped. The run stops at a script error, after the tick
+  that calls `end_round`, or past 4,000,000 ops, and the same input gives
+  the same trace.
+- **Save.** A signed-in account saves a script that checks clean; Live
+  keeps its source under the IR hash and compiles it again to serve the
+  blob.
+- **Drafts.** The page keeps the source and the scenario in
+  `localStorage`, and starts from a blank starter, a built-in
+  (`builtin::ALL`) or one of the player's saved scripts.
 
 ## Porting the seven engines
 
@@ -782,6 +948,33 @@ Tooling:
 | Territories (8) | markers (flag type 10), capture volumes, owner and occupants, contest time, scoring by territories held | zone tests; markers registered by territory index |
 
 All layout facts are **E** from bots.md section 3.7.
+
+**The scripts.** Every engine has a script in
+`crates/formats/rules/src/builtin/`, found by `builtin::builtin(engine
+index)`: `slayer.rules`, `oddball.rules`, `koth.rules`,
+`juggernaut.rules`, `territories.rules`, and `ctf.rules`, which serves
+CTF and Assault (`builtin/mod.rs` gives it a header per engine, and the
+script reads `variant.engine`). Each declares no capability: the
+objective entries and `role_traits` are `core`, since they do only what
+the retail engine does with the record's own settings. Each file's header
+names the entries a host cannot make yet and what the port does not
+reproduce; `tests/engines.rs` checks that list against the blob, and
+checks each engine's core rule over `fake::FakeGame` (Oddball: time held
+scores; Juggernaut: the killer takes the role; King: time on the hill
+scores, a contest stops it; CTF: a capture scores and the flag returns,
+by reset time and by touch; Assault: a bomb armed on the enemy plate
+scores; Territories: a territory held pays each interval). They run in
+tests only: no port has a parity run, and only Slayer's entries are all
+hostable.
+
+| Script | Waits on | Not reproduced |
+|---|---|---|
+| Slayer | nothing | |
+| Oddball | `spawn_objective`, `reset_objective`, `role_traits` | the Oddball globals; the reset delay is a script option |
+| King of the Hill | `label_number`, `inside` | the KotH globals; how the next hill is chosen (the script takes the next number); the type area's other King settings |
+| Juggernaut | `role_traits` | who takes the role after a suicide or a quit (the script draws one); whether the kill that takes the role scores |
+| CTF and Assault | `object_team`, `inside`, `spawn_objective`, `reset_objective`, `role_traits` | sudden death; the CTF and Assault globals; a team's second plate; detonation after arming |
+| Territories | `register_objective`, `inside` | the Territories globals; the marker's index as its registration team; a capture's decay; the score interval is a script option |
 
 **Parity method.** The lifted engine is the oracle. A headless match is
 recorded once (seed and per-seat inputs), then run twice from the same
@@ -826,15 +1019,19 @@ engines' hooks, observers and bot readers that parse per-engine globals
 
 **Firefight is the first port.** `firefight::Director`
 (`crates/formats/firefight/src/director.rs`) and its scoring
-(`src/scoring.rs`) become one rules script: waves, rounds, lives, skulls
-and scoring. **Design:** the wave-set format stays the authoring format.
+(`src/scoring.rs`) compile to one rules script: waves, rounds, lives,
+skulls and scoring. The wave-set format stays the authoring format.
 `firefight::Def` is already validated, bounded and hashed, and the hopper
-tool offers definitions; a small front end compiles a `Def` to IR as the
-director script with the definition's rounds, caps and scores as constant
-tables. So a wave set is one blob with one hash, mode 1 folds into mode
-2, and the built-in sets need no rewrite by hand. The Rust director and
-its tests are the oracle: the script must give the same `Command` log for
-the same `Observed` sequence.
+tool offers definitions; `firefight::script::compile`
+(`crates/formats/firefight/src/script.rs`) builds the director script's
+IR from a `Def`, with the definition's squads, waves, rounds, caps,
+points and multipliers as constant tables. It builds IR, not source: the
+loops over the 16 squad slots unroll at build time and the blob depends
+on nothing but the definition, so a wave set is one blob with one hash,
+mode 1 folds into mode 2, and the built-in sets need no rewrite by hand.
+The Rust director and its tests are the oracle: for the same `Observed`
+sequence `firefight::ScriptDirector` gives the same `Command` log and the
+same director state ([firefight.md](firefight.md#the-director-as-a-rules-script)).
 
 **AI is commanded by squad.** A script places a squad from the kit's
 palette at a label, sets its team and orders, reads how many of its
@@ -854,6 +1051,15 @@ signature, not the launch rule (Open in superbounce.md), so it can miss
 or over-report until it is checked in play.
 
 ## Payoff
+
+The modes below that have a script are examples in
+`crates/formats/rules/src/builtin/`, listed by `builtin::examples()`
+rather than by engine: `infection.rules`, `gun_game.rules`,
+`vip.rules`, `siege.rules`, `race.rules` and `bounce_practice.rules`.
+Each compiles, verifies and fits a tick (`tests/engines.rs`), and each
+header names the entries a host cannot make yet. VIP and Bounce
+Practice call none, but wait on the match edit log and the bounce
+detector. Prop Hunt has no script.
 
 - **Race.** Halo 1's race track points are dropped at conversion
   ([multiplayer.md](../halo1/multiplayer.md)); labelled checkpoints and
@@ -947,7 +1153,7 @@ Each phase lands by itself and ends on its exit criteria.
 | 1 | `SimExt` side arena (forge-design.md slice F7; sim-rewrite.md section 2) | a test record survives checkpoint, revert, snapshot and a film keyframe, and changes the sim hash |
 | 2 | Forge labels | labels round-trip through the document and the edit log (built); the built-in flag-type table resolves on a disc map (`#[ignore]` test, not built) |
 | 3 | Language, verifier, IR, VM, host runtime, capabilities | the compiler and verifier pass their suites; a fuzzer finds no panic in the verifier or VM; a script scores a fake game through the `Game`-style trait; a call or grant outside `requires` is refused, and a blob naming an unknown capability is refused by that name |
-| 4 | Firefight port | every built-in definition, compiled to IR, gives the Rust director's `Command` log in the director's own tests; `firefight.state` reads the same from both |
+| 4 | Firefight port | every built-in definition, compiled to IR, gives the Rust director's `Command` log in the director's own tests; `firefight.state` reads the same from both. Built in tests: `crates/formats/firefight/tests/script.rs` compares commands and `State` tick by tick. Not built: the host runtime running the script, and `firefight.state` reading it |
 | 5 | Slayer port | parity on every retail Slayer built-in on three maps; a script Slayer game played on Live |
 | 6 | The other six ports, in the order Juggernaut, Oddball, King, CTF with Assault, Territories | parity per engine; the API rows each needs are named points |
 | 7 | AI squads for any script | a script outside Firefight places, orders and erases squads on a kit map; `on squad_dead` fires on the tick the count reaches 0 in a test over the fake squad entry |

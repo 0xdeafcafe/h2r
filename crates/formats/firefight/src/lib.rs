@@ -1,7 +1,8 @@
 //! Firefight definitions and admission rules for a one-team Slayer match.
 //!
 //! The definitions carry authored tuning and kit class names. The director
-//! turns a definition and what the host observes into host commands.
+//! turns a definition and what the host observes into host commands;
+//! [`script`] compiles a definition to a rules script that does the same.
 //! See [the design](../../../../docs/game/firefight.md).
 #![forbid(unsafe_code)]
 
@@ -9,6 +10,7 @@ pub mod builtin;
 mod def;
 pub mod director;
 pub mod scoring;
+pub mod script;
 mod validate;
 mod wire;
 
@@ -16,6 +18,7 @@ pub use content::Sha256;
 pub use def::*;
 pub use director::{Command, Director, Observed, Outcome, Settings};
 pub use scoring::ScoreReason;
+pub use script::{ScriptDirector, ScriptRefusal};
 pub use validate::{HOST_ACTOR_CAPS, Limits, validate};
 
 pub type Result<T> = std::result::Result<T, Refusal>;

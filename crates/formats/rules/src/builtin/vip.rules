@@ -1,0 +1,72 @@
+// VIP with powers: each team has a VIP who may place and move block-out
+// pieces during the match; the other players may delete vehicles. Killing
+// an enemy VIP scores more, and the role passes to a teammate.
+// docs/game/rules-engine.md, "Payoff" and "Roles, powers and capabilities".
+//
+// Entries a host cannot make yet (`verify::unhostable`): none. The grants
+// wait on the match edit log and the player's tool (roadmap phase 14).
+rules "VIP" 1
+carrier slayer
+teams 2
+requires forge.move, forge.delete, forge.place
+
+// The Forge kit's block-out pieces and the map's vehicles; tag paths are
+// checked against the map at load.
+palette "vip" = ["objects/forge/block_wall/block_wall", "objects/forge/block_ramp/block_ramp", "objects/forge/barrier/barrier"]
+palette "wrecker" = ["objects/vehicles/warthog/warthog", "objects/vehicles/ghost/ghost", "objects/vehicles/banshee/banshee"]
+
+enum Role { none, vip }
+
+option vip_points: int 1..5 = 3 "VIP points" "Points for killing an enemy VIP"
+
+player var role: Role = Role.none
+
+fn crown(p: player) {
+    p.role = Role.vip
+    grant(p, forge.place, budget 20, palette "vip")
+    grant(p, forge.move, budget 40, palette "vip")
+    revoke(p, forge.delete)
+}
+
+fn uncrown(p: player) {
+    p.role = Role.none
+    revoke(p, forge.place)
+    revoke(p, forge.move)
+}
+
+// The first teammate of `p` other than `p` takes the role.
+fn succeed(p: player) {
+    let heir = first(players q where q.team == p.team and q != p)
+    if heir != none { crown(heir) }
+}
+
+on round_start {
+    for each players p { uncrown(p) }
+    for each teams t {
+        let v = first(players p where p.team == t)
+        if v != none { crown(v) }
+    }
+}
+
+on spawn(p) {
+    if p.role != Role.vip { grant(p, forge.delete, budget 3, palette "wrecker") }
+}
+
+on kill(victim, killer) {
+    let enemy = killer != none and killer != victim and killer.team != victim.team
+    if victim.role == Role.vip {
+        uncrown(victim)
+        if enemy { score(killer, vip_points) }
+        succeed(victim)
+        if count(players p where p.team == victim.team and p.role == Role.vip) == 0 { crown(victim) }
+    } else if enemy {
+        score(killer, 1)
+    }
+}
+
+on quit(p) {
+    if p.role == Role.vip {
+        uncrown(p)
+        succeed(p)
+    }
+}

@@ -159,6 +159,9 @@ pub enum ExprKind {
 #[derive(Clone, Debug, PartialEq)]
 pub struct SetExpr {
     pub base: SetBaseExpr,
+    /// The member's name in a set argument (`count(players p where ...)`);
+    /// a `for each` names it in its own binder.
+    pub binder: Option<String>,
     pub filter: Option<Expr>,
     pub pos: Pos,
 }
@@ -168,5 +171,7 @@ pub enum SetBaseExpr {
     Players,
     Teams,
     Labelled(String),
+    /// The objective registry's records, by object handle.
+    Objectives,
     Pick(Box<SetExpr>, Box<Expr>),
 }

@@ -11,6 +11,8 @@ pub const MAX_TEAMS: usize = 8;
 pub const MAX_SQUADS: usize = 16;
 /// Labelled objects a set visits at most.
 pub const MAX_LABELLED: usize = 256;
+/// Objective records the engine holds at most (`E+0xc18`, bots.md 3.7).
+pub const MAX_OBJECTIVES: usize = 8;
 /// Enum types a script declares at most.
 pub const MAX_ENUMS: usize = 32;
 /// Variants of one enum at most.
