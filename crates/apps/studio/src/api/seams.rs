@@ -28,6 +28,9 @@
 //! - **studio-modeling** (the Modeling tool): `geometry.list`, `open`,
 //!   `close`, `read`, `check` and `mesh.mode`, `select`, `transform`,
 //!   `ops`, `apply` through `Action::Model` ([`super::geometry`]).
+//! - **Scripts** (the open map's scripts, read): `script.list`,
+//!   `script.source`, `script.follow`, `script.uses`, `script.builtins` and
+//!   `script.doc` through `Action::Script` ([`super::scripts`]).
 //! - **player models** and **customisation**: `model.*` and `custom.*`
 //!   are planned the same way (docs/editor/agent-api.md).
 //!
@@ -55,11 +58,15 @@ pub fn register(api: &mut Api) {
     api.register(Box::new(super::nav::Navigation));
     // The Tags tool's browsing (shared caches), resources and tag bundles.
     api.register(Box::new(super::tag_io::TagIo));
+    // Sound audition: decode, play and the waveform of a snd! tag.
+    api.register(Box::new(super::sound::Sound));
     api.register(Box::new(super::tags::TagGraph));
     // studio-hud: the HUD tool's HUDs, widgets, picture, checks and save.
     api.register(Box::new(super::hud::Hud));
     // studio-modeling: the Modeling tool's targets, meshes, edits and check.
     api.register(Box::new(super::geometry::Geometry));
+    // The Scripts tool: the open map's scripts read, links and builtins.
+    api.register(Box::new(super::scripts::Scripts));
     // pair.*: the window's pairing with a running game (play::pair).
     api.register(Box::new(super::pair::Pair));
     api.register(Box::new(super::mirror::Mirror));

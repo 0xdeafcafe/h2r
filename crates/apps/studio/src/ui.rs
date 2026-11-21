@@ -14,6 +14,8 @@ mod outliner;
 mod palette;
 mod play;
 mod playlists;
+mod sound;
+pub mod scripts;
 pub mod tags;
 mod ui_screens;
 mod hud;
@@ -70,8 +72,12 @@ pub struct Studio {
     pub play: play::PlayUi,
     /// The Tags tab's UI state, including its field panel.
     pub tags: tags::TagsUi,
+    /// The Scripts tab's searches.
+    pub scripts: scripts::ScriptsUi,
     /// The Maps list's pictures, and what each group drew.
     pub map_list: map_list::MapListUi,
+    /// The Sound window over the Tags tool's selected `snd!`.
+    sound: sound::SoundUi,
 }
 
 impl Studio {
@@ -102,7 +108,9 @@ impl Studio {
             modeling: modeling::ModelingPanel::default(),
             play: play::PlayUi::default(),
             tags: tags::TagsUi::default(),
+            scripts: scripts::ScriptsUi::default(),
             map_list: map_list::MapListUi::default(),
+            sound: sound::SoundUi::default(),
         }
     }
 
@@ -127,19 +135,26 @@ impl Studio {
         self.hint = None;
         self.map_list.begin();
         match app.tool {
-            ToolKind::Scenario | ToolKind::Tags => {
+            ToolKind::Scenario | ToolKind::Tags | ToolKind::Scripts => {
                 let changed = self.previous_tool != Some(app.tool);
                 let open = map_is_visible(app);
                 let map = app.loaded_map().or_else(|| app.loaded_halo1());
                 let opened = self.previous_tool.is_some() && self.previous_map.as_deref() != map;
                 let focus_tags = app.tool == ToolKind::Tags && (changed || reset);
+                let focus_scripts = app.tool == ToolKind::Scripts && (changed || reset);
                 let focus_scene = app.tool == ToolKind::Scenario
                     && open
-                    && (reset || opened || self.previous_tool == Some(ToolKind::Tags));
-                let focus_maps = !open && !focus_tags && (reset || (changed && self.previous_tool.is_some()) || opened);
+                    && (reset
+                        || opened
+                        || matches!(self.previous_tool, Some(ToolKind::Tags | ToolKind::Scripts)));
+                let focus_maps = !open
+                    && !focus_tags
+                    && !focus_scripts
+                    && (reset || (changed && self.previous_tool.is_some()) || opened);
                 self.maps_window(ui, app, gpu, focus_maps, &mut actions);
                 self.outliner_window(ui, app, focus_scene, &mut actions);
                 self.tags_window(ui, app, focus_tags, &mut actions);
+                self.scripts_window(ui, app, focus_scripts, &mut actions);
                 self.viewport_window(ui, app, gpu, &mut actions);
                 self.inspector_window(ui, app, &mut actions);
             }
@@ -158,6 +173,9 @@ impl Studio {
                 tags::hex(ui, app, &self.tags, &self.fonts, gpu, &mut self.map_list, &mut actions);
             });
         }
+        // The seam for sound audition until the tag view tabs exist
+        // (docs/editor/rich-editors.md, "One seam for every rich view").
+        sound::window(ui, app, &mut self.sound);
         if focus_game {
             ui.set_window_focus(Some("###game"));
         }
@@ -196,8 +214,10 @@ impl Studio {
         }
         if cmd && ui.is_key_pressed(Key::S) {
             match app.tool {
-                ToolKind::Scenario | ToolKind::Tags if shift => self.save_map_dialog(app, actions),
-                ToolKind::Scenario | ToolKind::Tags => {
+                ToolKind::Scenario | ToolKind::Tags | ToolKind::Scripts if shift => {
+                    self.save_map_dialog(app, actions)
+                }
+                ToolKind::Scenario | ToolKind::Tags | ToolKind::Scripts => {
                     actions.extend(MenuCommand::Save.item(app).action);
                 }
                 ToolKind::Variants => actions.push(Action::SaveVariant),
@@ -512,7 +532,7 @@ impl Studio {
                     actions.push(Action::HudSaveAs(p));
                 }
             }
-            ToolKind::Scenario | ToolKind::UiScreens | ToolKind::Tags => {}
+            ToolKind::Scenario | ToolKind::UiScreens | ToolKind::Tags | ToolKind::Scripts => {}
             ToolKind::Variants => {
                 menu_action(ui, app, MenuCommand::SaveVariant, Some(icon::SAVE), false, actions);
                 if ui.menu_item(format!("{} Import variant...", icon::PACKAGE_OPEN))
@@ -633,6 +653,34 @@ impl Studio {
         });
     }
 
+    fn scripts_window(
+        &mut self,
+        ui: &Ui,
+        app: &mut App,
+        focus: bool,
+        actions: &mut Vec<Action>,
+    ) {
+        let fonts = &self.fonts;
+        let st = &mut self.scripts;
+        let dialogs = self.dialogs;
+        let previous = self.previous_tool;
+        let window = ui.window(&self.keys.scripts)
+            .flags(WindowFlags::NO_FOCUS_ON_APPEARING)
+            .focused(focus);
+        window.build(|| {
+            if ui.is_window_focused()
+                && app.tool != ToolKind::Scripts
+                && previous == Some(app.tool)
+            {
+                actions.push(Action::SetTool(ToolKind::Scripts));
+            }
+            // Read only while the tab shows: the tables are read when a
+            // map opens and this tab is first drawn for it.
+            app.sync_scripts();
+            scripts::list(ui, app, st, fonts, dialogs, actions);
+        });
+    }
+
     fn maps_window(
         &mut self,
         ui: &Ui,
@@ -718,7 +766,7 @@ impl Studio {
             .focused(focus);
         window.build(|| {
             if ui.is_window_focused()
-                && app.tool == ToolKind::Tags
+                && matches!(app.tool, ToolKind::Tags | ToolKind::Scripts)
                 && self.previous_tool == Some(app.tool)
             {
                 actions.push(Action::SetTool(ToolKind::Scenario));
@@ -905,6 +953,10 @@ impl Studio {
                 tags::fields(ui, app, &mut self.tags, &self.fonts, self.dialogs, actions);
                 return;
             }
+            if app.tool == ToolKind::Scripts {
+                scripts::source(ui, app, &self.fonts, actions);
+                return;
+            }
             if let Some(view) = app.halo1_view() {
                 self.halo1_inspector(ui, app, view, actions);
                 return;
@@ -1024,6 +1076,7 @@ impl Studio {
                 ToolKind::UiScreens => "The UI screen".to_owned(),
                 ToolKind::Hud => "The HUD map".to_owned(),
                 ToolKind::Tags => "The map's tags".to_owned(),
+                ToolKind::Scripts => "The map's scripts".to_owned(),
             };
             ui.text(format!("{} {who} has unsaved edits.", icon::ALERT));
             ui.text_disabled(format!("Save them before {what}?"));
@@ -1067,7 +1120,7 @@ impl Studio {
                         answer = Some(Answer::SaveAs(p));
                     }
                 }
-                ToolKind::UiScreens | ToolKind::Tags => {}
+                ToolKind::UiScreens | ToolKind::Tags | ToolKind::Scripts => {}
             }
             ui.same_line();
             if ui.button("Discard") {

@@ -79,6 +79,8 @@ pub mod method {
 
     pub const TAG_LIST: &str = "tag.list";
     pub const TAG_FIELDS: &str = "tag.fields";
+    pub const TAG_VIEW: &str = "tag.view";
+    pub const TAG_CHOICES: &str = "tag.choices";
     pub const TAG_READ: &str = "tag.read";
     pub const TAG_TREE: &str = "tag.tree";
     pub const TAG_REFS: &str = "tag.refs";
@@ -92,6 +94,10 @@ pub mod method {
     pub const TAG_RESOURCES: &str = "tag.resources";
     pub const TAG_EXPORT: &str = "tag.export";
     pub const TAG_IMPORT: &str = "tag.import";
+
+    pub const SOUND_READ: &str = "sound.read";
+    pub const SOUND_PLAY: &str = "sound.play";
+    pub const SOUND_STOP: &str = "sound.stop";
 
     pub const SCENARIO_BLOCKS: &str = "scenario.blocks";
     pub const SCENARIO_LIST: &str = "scenario.list";
@@ -178,6 +184,14 @@ pub mod method {
     pub const MESH_TRANSFORM: &str = "mesh.transform";
     pub const MESH_OPS: &str = "mesh.ops";
     pub const MESH_APPLY: &str = "mesh.apply";
+
+    // The Scripts tool (docs/editor/rich-editors.md, "Scripts").
+    pub const SCRIPT_LIST: &str = "script.list";
+    pub const SCRIPT_SOURCE: &str = "script.source";
+    pub const SCRIPT_FOLLOW: &str = "script.follow";
+    pub const SCRIPT_USES: &str = "script.uses";
+    pub const SCRIPT_BUILTINS: &str = "script.builtins";
+    pub const SCRIPT_DOC: &str = "script.doc";
 
     // Planned namespaces: listed by `session.methods` with status
     // "planned"; a call answers NOT_YET until its lane registers it.

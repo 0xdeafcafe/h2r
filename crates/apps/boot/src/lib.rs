@@ -1158,7 +1158,13 @@ fn run_configured(
     if local_forge {
         // Also finds the guest-call queue the main menu's lobbies start
         // games through.
-        forge_glue::install(&mut features, agent.as_ref(), k.vfs(), &opts.data_root)?;
+        forge_glue::install(
+            &mut features,
+            agent.as_ref(),
+            k.vfs(),
+            &opts.data_root,
+            host.settings.clone(),
+        )?;
     } else if game::firefight::feature::enabled(features.switches()) {
         // The FIREFIGHT lobby's Start queues its game the same way.
         game::lobby_start::install_queue(&mut features, agent.as_ref())

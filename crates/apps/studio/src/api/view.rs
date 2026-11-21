@@ -260,7 +260,7 @@ pub fn native_stats(app: &App) -> Value {
         .unwrap_or_default()
         .iter()
         .map(|l| {
-            let s = l.stats();
+            let s = l.stats(app.lighting);
             json!({
                 "bsp": l.bsp.0,
                 "draws": s.draws,

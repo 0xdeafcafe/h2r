@@ -221,6 +221,9 @@ struct Inner {
     /// player profile has, by profile name, then key. A key a profile has
     /// no value for is absent, not the default.
     profiles: BTreeMap<String, BTreeMap<&'static str, Value>>,
+    /// Per-profile text set this run, by profile then key: read before the
+    /// file, so a store with no file keeps what was set.
+    texts: BTreeMap<String, BTreeMap<String, String>>,
 }
 
 /// Every setting of a run.
@@ -346,6 +349,7 @@ impl Store {
                 entries,
                 callbacks: Vec::new(),
                 profiles,
+                texts: BTreeMap::new(),
             }),
         };
         (store, problems)
@@ -527,6 +531,56 @@ impl Store {
             .file
             .as_deref()
             .and_then(|p| file::write_profile_value(p, profile, def, v).err()))
+    }
+
+    /// `profile`'s text value of `table.key`, for the few per-profile
+    /// values that are names (a [`Def`] holds a bool or a whole number).
+    /// What this run set, else the file's. `Ok(None)` when there is none;
+    /// an error when the file holds something that is not text. Nothing is
+    /// registered: any `table.key` may be asked for, and a file's other
+    /// keys are never touched.
+    pub fn profile_text(&self, profile: &str, key: &str) -> Result<Option<String>, String> {
+        file::split_key(key)?;
+        if let Some(t) = self
+            .lock()
+            .texts
+            .get(profile)
+            .and_then(|m| m.get(key))
+            .cloned()
+        {
+            return Ok(Some(t));
+        }
+        let Some(path) = self.file.as_deref() else {
+            return Ok(None);
+        };
+        match file::read_table(path)? {
+            Some(table) => file::profile_text(&table, profile, key),
+            None => Ok(None),
+        }
+    }
+
+    /// Sets `profile`'s text value of `table.key` and saves it, as
+    /// [`Store::profile_set`] does: `Ok(Some(why))` when the value holds
+    /// for this run but the file was not written.
+    pub fn profile_text_set(
+        &self,
+        profile: &str,
+        key: &str,
+        text: &str,
+    ) -> Result<Option<String>, SetError> {
+        if profile.is_empty() {
+            return Err(SetError::Invalid("a profile needs a name".into()));
+        }
+        file::split_key(key).map_err(SetError::Invalid)?;
+        self.lock()
+            .texts
+            .entry(profile.to_owned())
+            .or_default()
+            .insert(key.to_owned(), text.to_owned());
+        Ok(self
+            .file
+            .as_deref()
+            .and_then(|p| file::write_profile_text(p, profile, key, text).err()))
     }
 }
 
@@ -938,5 +992,48 @@ mod tests {
             Some(Value::Bool(true))
         );
         assert_eq!(s.profiles(), ["Chief"]);
+    }
+
+    #[test]
+    fn profile_text_is_kept_beside_the_numbers_and_never_clobbers_the_file() {
+        let path = tmp("profile-text");
+        std::fs::write(
+            &path,
+            "[profiles.Chief.forge]\nmonitor_model = \"invented\"\nother = 3\n",
+        )
+        .unwrap();
+        let (s, _) = load(&path, &[], &[]);
+        assert_eq!(
+            s.profile_text("Chief", "forge.monitor_model"),
+            Ok(Some("invented".into()))
+        );
+        assert_eq!(s.profile_text("Chief", "forge.monitor_variant"), Ok(None));
+        assert_eq!(s.profile_text("Nobody", "forge.monitor_model"), Ok(None));
+        assert!(s.profile_text("Chief", "forge.other").is_err());
+        assert!(s.profile_text("Chief", "nodot").is_err());
+        assert_eq!(
+            s.profile_text_set("Chief", "forge.monitor_variant", "red"),
+            Ok(None)
+        );
+        assert_eq!(
+            s.profile_text("Chief", "forge.monitor_variant"),
+            Ok(Some("red".into()))
+        );
+        let again = std::fs::read_to_string(&path).unwrap();
+        assert!(again.contains("monitor_model = \"invented\""), "{again}");
+        assert!(again.contains("other = 3"), "{again}");
+        assert!(again.contains("monitor_variant = \"red\""), "{again}");
+        assert!(matches!(
+            s.profile_text_set("", "forge.monitor_model", "x"),
+            Err(SetError::Invalid(_))
+        ));
+        // With no file the value still holds for the run.
+        let none = Store::defaults(&[]);
+        none.profile_text_set("Chief", "forge.monitor_model", "x")
+            .unwrap();
+        assert_eq!(
+            none.profile_text("Chief", "forge.monitor_model"),
+            Ok(Some("x".into()))
+        );
     }
 }

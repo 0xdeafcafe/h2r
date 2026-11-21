@@ -162,3 +162,7 @@ Then `devenv shell` and `buck2 run //platform/linux:play`. A Steam Machine or St
 - [native-renderer.md](docs/graphics/native-renderer.md): the GPU renderer
 - [live.md](docs/live/live.md): the Xbox Live replacement
 - [editor-guide.md](docs/editor/editor-guide.md) and [agent-api.md](docs/runtime/agent-api.md): the tools
+
+## Thanks
+
+Thanks to [Assembly](https://github.com/XboxChaos/Assembly) by XboxChaos for the tag layouts our tag field names are based on.

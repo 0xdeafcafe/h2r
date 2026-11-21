@@ -32,7 +32,7 @@ fn built(d: &StructDef, r: &Record) -> Result<Block> {
 /// offset between the bounding centre and acceleration scale.
 pub(crate) fn object_tuning(r: &mut Record, path: &str, object: &h1::Object) -> Result<()> {
     set(r, &format!("{path}.flags"), Val::Flags(u32::from(object.flags & 7)))?;
-    set(r, &format!("{path}.unknown_14"), Val::Bytes(object.acceleration_scale.to_le_bytes().to_vec()))
+    set(r, &format!("{path}.acceleration_scale"), Val::Bytes(object.acceleration_scale.to_le_bytes().to_vec()))
 }
 
 /// The `scen` root: the object header with Halo 1's bounding sphere, the
@@ -349,29 +349,29 @@ pub const ROLE_VEHICLE_TYPE: u32 = 6;
 /// Seat access parameters for H1 seats which have no authored entry
 /// constraints. The checks at 0xc9040 reject zero entry reach and angles.
 pub const TURRET_SEAT_ROLE: &[(&str, u32)] = &[
-    ("unknown_98", 0x3f80_0000),
-    ("unknown_9c", 0x4049_0fdb),
-    ("unknown_a0", 0x3f9c_61aa),
-    ("unknown_a4", 0x4000_0000),
-    ("unknown_ac", 0xffff_ffff),
+    ("entry_radius", 0x3f80_0000),
+    ("entry_marker_cone_angle", 0x4049_0fdb),
+    ("entry_marker_facing_angle", 0x3f9c_61aa),
+    ("maximum_relative_velocity", 0x4000_0000),
+    ("invisible_seat_region_index", 0xffff_ffff),
 ];
 
 /// Unassigned shape indices in the one physics element every vehicle has
 /// (`vehi +0x2f8`, `0x2a0`): four `-1` halves; the rest of a turret's is
 /// zero.
 pub const TURRET_PHYSICS_ROLE: &[(&str, u32)] = &[
-    ("unknown_18", 0xffff_0000),
-    ("unknown_20", 0xffff_0000),
-    ("unknown_28", 0xffff_0000),
-    ("unknown_30", 0xffff_0000),
+    ("shape_type_0", 0xffff_0000),
+    ("shape_type_1", 0xffff_0000),
+    ("shape_type_2", 0xffff_0000),
+    ("shape_type_3", 0xffff_0000),
 ];
 
 /// `vehi +0x1c8`, the seats block.
-pub const VEHI_SEATS: &str = "block_1c8";
+pub const VEHI_SEATS: &str = "seats";
 /// A seat's entry tests: `0x000c9040` admits a rider only within the
 /// distance at `+0x98` and the angles at `+0x9c` and `+0xa0`, and within
 /// the distance at `+0xa4` of the seat's marker; zero admits no one.
-pub const SEAT_ENTRY: &[&str] = &["unknown_98", "unknown_9c", "unknown_a0", "unknown_a4"];
+pub const SEAT_ENTRY: &[&str] = &["entry_radius", "entry_marker_cone_angle", "entry_marker_facing_angle", "maximum_relative_velocity"];
 /// A seat's entry-marker facing test, `+0x9c` (radians): `0x000c9040`
 /// admits a rider only when the angle between the entry marker's forward
 /// (its first axis) and the direction from the rider's eye to the marker
@@ -381,14 +381,14 @@ pub const SEAT_ENTRY: &[&str] = &["unknown_98", "unknown_9c", "unknown_a0", "unk
 /// 70 degrees); Halo 1's `driver enter` markers face the vehicle's forward,
 /// (1, 0, 0), so a rider square beside the door, 90 degrees off, was refused
 /// (`tests/vehicle_ground_disc.rs`). A rebuilt seat holds [`ANY_FACING`].
-pub const SEAT_ENTRY_FACING: &str = "unknown_9c";
+pub const SEAT_ENTRY_FACING: &str = "entry_marker_cone_angle";
 /// [`SEAT_ENTRY_FACING`] that admits a rider from any side: pi, as every
 /// retail turret seat holds ([`TURRET_SEAT_ROLE`]).
 pub const ANY_FACING: f32 = std::f32::consts::PI;
 /// A seat's flags ([`SEAT_DRIVER`]), `+0`.
-pub const SEAT_FLAGS: &str = "unknown_0";
+pub const SEAT_FLAGS: &str = "flags";
 /// `vehi +0x2f8`, the physics block (one element on every retail vehicle).
-pub const VEHI_PHYSICS: &str = "block_2f8";
+pub const VEHI_PHYSICS: &str = "phantom_shapes";
 /// The physics element's first shape when it is the wheels' phantom
 /// multisphere: its sphere count at `+0x6c` (V: the retail warthog 4,
 /// the scorpion 8, the ghost 0), the spheres from `+0x70`, `0x10` each
@@ -443,7 +443,7 @@ pub(crate) fn predicted_resources(
     for p in list {
         let (w, id) = p.word();
         let mut x = defs::default_record(e);
-        set(&mut x, "unknown_0", Val::Bytes(w.to_le_bytes().to_vec()))?;
+        set(&mut x, "type", Val::Bytes(w.to_le_bytes().to_vec()))?;
         set(&mut x, "tag", Val::Datum(defs::Target::Id(id)))?;
         out.push(x);
     }
@@ -545,17 +545,17 @@ pub struct SeatNames {
     /// whole label): `W-driver` is `warthog_d`, an unlisted label its
     /// lower-case, `-` to `_` form (a10's lifepod: `driver lifepod`).
     pub label: String,
-    /// `string_8`, the rider's marker, as the converted model names it
+    /// `seat_marker_name`, the rider's marker, as the converted model names it
     /// (Halo 1's name); empty when the model has no such marker.
     pub marker: String,
-    /// `string_c`, the entry marker: `<marker> enter` when the model has
+    /// `entry_marker_name`, the entry marker: `<marker> enter` when the model has
     /// one (V: Halo 2's seats hold `driver_enter` beside `driver`; Halo
     /// 1's models carry `driver enter`, `gunner enter`, `passenger
     /// enter`), else empty.
     pub enter_marker: String,
-    /// `string_60`, the camera marker, empty for none.
+    /// `camera_marker_name`, the camera marker, empty for none.
     pub camera_marker: String,
-    /// `block_74`, the seat's camera track: Halo 1's first ([`camera_track`],
+    /// `camera_tracks`, the seat's camera track: Halo 1's first ([`camera_track`],
     /// set by the converter), `None` for none. Without one the engine falls
     /// back to the globals' default unit track, whose points reach 3.9
     /// above the camera marker and 3.7 behind it: on a vehicle the camera
@@ -570,7 +570,7 @@ pub struct SeatNames {
 /// the retail warthog's and scorpion's driver seats
 /// (`tests/vehicle_camera_disc.rs`); the warthog driver's camera marker
 /// (`+0x60`) is empty, so its track's points are from the origin.
-pub const SEAT_CAMERA_TRACKS: &str = "block_74";
+pub const SEAT_CAMERA_TRACKS: &str = "camera_tracks";
 
 /// A Halo 2 camera track (`trak`) with Halo 1's control points: the
 /// same layout, each point's position as it is and its orientation in
@@ -662,27 +662,27 @@ pub fn seat_names(seat: &h1::Seat, markers: &[String]) -> SeatNames {
 /// Blood Gulch): the converted scorpion, written with 0 through converter
 /// version 75 (the role took 4-byte spans only), crept at 0.05 world
 /// units a second with the stick held forward; set to 2 it drove at 2.5.
-pub const VEHI_CONTROL: &str = "unknown_1f2";
+pub const VEHI_CONTROL: &str = "control";
 
 /// `vehi +0x2f0`, the friction points (wheels and treads: V, the
 /// warthog's four hold `left_front_tire` .. `right_back_tire`, the
 /// scorpion's twelve its suspension and tread markers).
-pub const VEHI_FRICTION: &str = "block_2f0";
+pub const VEHI_FRICTION: &str = "friction_points";
 /// `vehi +0x2e8`, the hover points (V: the ghost's three hold
 /// `back_antigrav`, `left_front_antigrav`, `right_front_antigrav`; the
 /// wraith's six, the spectre's four).
-pub const VEHI_HOVER: &str = "block_2e8";
+pub const VEHI_HOVER: &str = "anti_gravity_points";
 /// `vehi +0x268`, the engine gears (V: four on the warthog, two on the
 /// scorpion; none on hover vehicles, fliers or turrets).
-pub const VEHI_GEARS: &str = "block_268";
+pub const VEHI_GEARS: &str = "gears";
 /// A point's marker (`+0`, both point blocks) and the region whose
 /// destruction removes it (friction `+0x44`, hover `+0x34`). V: the
 /// warthog's `left_front_tire` with region `lf_wheel`, the ghost's
 /// `left_front_antigrav` with `l_wing`; the scorpion's regions are null.
-pub const FRICTION_MARKER: &str = "string_0";
-pub const FRICTION_REGION: &str = "string_44";
-pub const HOVER_MARKER: &str = "string_0";
-pub const HOVER_REGION: &str = "string_34";
+pub const FRICTION_MARKER: &str = "marker_name";
+pub const FRICTION_REGION: &str = "region_name";
+pub const HOVER_MARKER: &str = "marker_name";
+pub const HOVER_REGION: &str = "damage_source_region_name";
 
 /// `+0x48` of a friction point: the index of its region ([`FRICTION_REGION`])
 /// among the model's `hlmt` regions, low half; the high half 0, or
@@ -694,7 +694,7 @@ pub const HOVER_REGION: &str = "string_34";
 /// converted warthog then stood on its nose at spawn once its tires were
 /// out of its body (game runs of the 77 experiment), as if the front
 /// points held nothing up.
-pub const FRICTION_REGION_INDEX: &str = "unknown_48";
+pub const FRICTION_REGION_INDEX: &str = "region_index";
 
 /// A friction point's flags (`+4`) and the bit its steering wheels hold.
 /// V: on the retail warthog the two front points hold `0x26` and the two
@@ -702,7 +702,7 @@ pub const FRICTION_REGION_INDEX: &str = "unknown_48";
 /// bit 4 (a hand-brake wheel's). Taken as one majority over all four, as
 /// through converter version 75, every converted wheel held the back
 /// pair's word and none steered.
-pub const FRICTION_FLAGS: &str = "unknown_4";
+pub const FRICTION_FLAGS: &str = "flags";
 pub const FRICTION_STEERS: u32 = 1 << 2;
 
 /// A Halo 1 powered mass point as a Halo 2 point: the marker the converted
@@ -938,7 +938,7 @@ pub struct VehicleSpec<'a> {
 /// The loader at 0x205550 sets vtables, pointer arrays and child indices
 /// from +0x38. Each of the four inline shapes holds up to eight spheres.
 fn write_vehicle_phantom(record: &mut Record, points: &[Point]) -> Result<()> {
-    let mut write = |at: usize, bits: u32| set(record, &format!("unknown_{at:x}"), Val::Bytes(bits.to_le_bytes().to_vec()));
+    let mut write = |at: usize, bits: u32| set(record, &format!("@{at:#x}"), Val::Bytes(bits.to_le_bytes().to_vec()));
     if points.len() > 32 {
         return Err(Error::Invalid(format!("vehicle has {} wheel spheres; phantom capacity is 32", points.len())));
     }
@@ -990,7 +990,7 @@ fn write_ground_contacts(
     }
     let mut at = CONTACT_DATA;
     let mut word = |value: u32| {
-        let field = format!("unknown_{at:x}");
+        let field = format!("@{at:#x}");
         at += 4;
         set(record, &field, Val::Bytes(value.to_le_bytes().to_vec()))
     };
@@ -1074,7 +1074,7 @@ mod phantom_tests {
         }).collect();
         write_vehicle_phantom(&mut r, &points).unwrap();
         let word = |at| {
-            let Some(Val::Bytes(b)) = r.get(&format!("unknown_{at:x}")) else { panic!("phantom +{at:x}") };
+            let Some(b) = r.bytes(&format!("@{at:#x}"), 4) else { panic!("phantom +{at:x}") };
             u32::from_le_bytes(b.as_slice().try_into().unwrap())
         };
         assert_eq!((word(0x38), word(0x6c), word(0xfc)), (2, 8, 1));
@@ -1113,7 +1113,7 @@ pub(crate) fn vehicle_with_tuning(v: &VehicleSpec, flight: Option<[f32; 11]>) ->
     // Equal ranks avoid introducing a vehicle-class preference.
     // H1 0x394a1 stops attached vehicles. H2 0xe538c can instead push
     // a parented vehicle via its rider. Disable both additional impulses.
-    for field in ["unknown_244", "unknown_274", "unknown_278"] {
+    for field in ["vehicle_size", "seat_entrance_acceleration_scale", "seat_exit_acceleration_scale"] {
         set(&mut r, field, Val::Bytes(0u32.to_le_bytes().to_vec()))?;
     }
     // H1 0x394be writes the crouch bit in the same tick; H2 0xf045b
@@ -1133,10 +1133,10 @@ pub(crate) fn vehicle_with_tuning(v: &VehicleSpec, flight: Option<[f32; 11]>) ->
         // component (0x83ea2, 0x206f96). Gravity is a dimensionless
         // multiplier at 0x8399d. Scale depth so g/depth agrees.
         for (field, source, factor) in [
-            ("unknown_2b4", 0x24, 1.0 / GRAVITY_RATIO),
-            ("unknown_2b8", 0x28, 30.0),
-            ("unknown_2c0", 0x2c, 1.0),
-            ("unknown_2e0", 0x1c, 1.0),
+            ("ground_depth", 0x24, 1.0 / GRAVITY_RATIO),
+            ("ground_damp_factor", 0x28, 30.0),
+            ("ground_maximum_slope_0", 0x2c, 1.0),
+            ("gravity_scale", 0x1c, 1.0),
         ] {
             let value = f32::from_bits(crate::base::u32_at(physics, source)) * factor;
             set(&mut r, field, Val::Bytes(value.to_le_bytes().to_vec()))?;
@@ -1147,7 +1147,7 @@ pub(crate) fn vehicle_with_tuning(v: &VehicleSpec, flight: Option<[f32; 11]>) ->
         // the endpoint. H2 0x206fad divides by the difference. Adjacent
         // floats express the same step for every representable normal.
         let cutoff = if cutoff == full { full.next_up() } else { cutoff };
-        set(&mut r, "unknown_2c4", Val::Bytes(cutoff.to_le_bytes().to_vec()))?;
+        set(&mut r, "ground_maximum_slope_1", Val::Bytes(cutoff.to_le_bytes().to_vec()))?;
         crate::base::u32_at(physics, 0x68)
     } else {
         0
@@ -1208,7 +1208,7 @@ pub(crate) fn vehicle_with_tuning(v: &VehicleSpec, flight: Option<[f32; 11]>) ->
         for (i, word) in params.into_iter().enumerate() {
             set(
                 &mut phantom,
-                &format!("unknown_{:x}", DATA + i as u32 * 4),
+                &format!("@{:#x}", DATA + i as u32 * 4),
                 Val::Bytes(word.to_le_bytes().to_vec()),
             )?;
         }
@@ -1219,7 +1219,7 @@ pub(crate) fn vehicle_with_tuning(v: &VehicleSpec, flight: Option<[f32; 11]>) ->
         for (offset, value) in [(DATA, MAGIC), (DATA + 4, PASSIVE)] {
             set(
                 &mut phantom,
-                &format!("unknown_{offset:x}"),
+                &format!("@{offset:#x}"),
                 Val::Bytes(value.to_le_bytes().to_vec()),
             )?;
         }
@@ -1244,7 +1244,7 @@ pub(crate) fn vehicle_with_tuning(v: &VehicleSpec, flight: Option<[f32; 11]>) ->
         {
             set(
                 &mut phantom,
-                &format!("unknown_{:x}", POWER_DATA + 4 * i as u32),
+                &format!("@{:#x}", POWER_DATA + 4 * i as u32),
                 Val::Bytes(word.to_le_bytes().to_vec()),
             )?;
         }
@@ -1257,14 +1257,14 @@ pub(crate) fn vehicle_with_tuning(v: &VehicleSpec, flight: Option<[f32; 11]>) ->
     }
     // H1 cache speeds are in units/tick and accelerations in units/tick².
     for (path, at, scale) in [
-        ("unknown_1f4", 0x2f8, 30.0), ("unknown_1f8", 0x2fc, 30.0),
-        ("unknown_1fc", 0x300, 900.0), ("unknown_200", 0x304, 900.0),
-        ("unknown_204", 0x308, 1.0), ("unknown_208", 0x30c, 1.0),
-        ("unknown_20c", 0x310, 1.0), ("unknown_210", 0x314, 1.0),
-        ("unknown_214", 0x318, 30.0),
-        ("unknown_22c", 0x330, 30.0), ("unknown_230", 0x334, 30.0),
-        ("unknown_234", 0x338, 900.0), ("unknown_238", 0x33c, 900.0),
-        ("unknown_23c", 0x340, 30.0), ("unknown_240", 0x344, 30.0),
+        ("maximum_forward_speed", 0x2f8, 30.0), ("maximum_reverse_speed", 0x2fc, 30.0),
+        ("speed_acceleration", 0x300, 900.0), ("speed_deceleration", 0x304, 900.0),
+        ("maximum_left_turn", 0x308, 1.0), ("maximum_right_turn", 0x30c, 1.0),
+        ("wheel_circumference", 0x310, 1.0), ("turn_rate", 0x314, 1.0),
+        ("blur_speed", 0x318, 30.0),
+        ("maximum_left_slide", 0x330, 30.0), ("maximum_right_slide", 0x334, 30.0),
+        ("slide_acceleration", 0x338, 900.0), ("slide_deceleration", 0x33c, 900.0),
+        ("minimum_flipping_angular_velocity", 0x340, 30.0), ("maximum_flipping_angular_velocity", 0x344, 30.0),
     ] {
         if let Some(bytes) = v.source.get(at..at + 4) {
             let value = f32::from_le_bytes(bytes.try_into().expect("four bytes")) * scale;
@@ -1276,8 +1276,8 @@ pub(crate) fn vehicle_with_tuning(v: &VehicleSpec, flight: Option<[f32; 11]>) ->
     // H2 selects four directional cap/rate pairs at 0xf32f5/0xf3562.
     if v.vehicle_type == 4 {
         for (source, scale, paths) in [
-            (0x2f8, 30.0, ["unknown_1f8", "unknown_22c", "unknown_230"]),
-            (0x300, 900.0, ["unknown_200", "unknown_234", "unknown_238"]),
+            (0x2f8, 30.0, ["maximum_reverse_speed", "maximum_left_slide", "maximum_right_slide"]),
+            (0x300, 900.0, ["speed_deceleration", "slide_acceleration", "slide_deceleration"]),
         ] {
             if let Some(bytes) = v.source.get(source..source + 4) {
                 let value = f32::from_le_bytes(bytes.try_into().unwrap()) * scale;
@@ -1292,22 +1292,22 @@ pub(crate) fn vehicle_with_tuning(v: &VehicleSpec, flight: Option<[f32; 11]>) ->
         // (0x3988b..0x398d6). H2 normalizes it by +0x22c at 0xf1d5b.
         if let Some(bytes) = v.source.get(0x2f8..0x2fc) {
             let cap = f32::from_le_bytes(bytes.try_into().unwrap()) * 30.0;
-            set(&mut r, "unknown_22c", Val::Bytes(cap.to_le_bytes().to_vec()))?;
+            set(&mut r, "maximum_left_slide", Val::Bytes(cap.to_le_bytes().to_vec()))?;
         }
     }
     if let Some(flight) = flight {
         for (field, value) in [
-            "unknown_1f4",
-            "unknown_1f8",
-            "unknown_1fc",
-            "unknown_200",
-            "unknown_204",
-            "unknown_208",
-            "unknown_210",
-            "unknown_22c",
-            "unknown_230",
-            "unknown_234",
-            "unknown_238",
+            "maximum_forward_speed",
+            "maximum_reverse_speed",
+            "speed_acceleration",
+            "speed_deceleration",
+            "maximum_left_turn",
+            "maximum_right_turn",
+            "turn_rate",
+            "maximum_left_slide",
+            "maximum_right_slide",
+            "slide_acceleration",
+            "slide_deceleration",
         ]
         .into_iter()
         .zip(flight)
@@ -1384,7 +1384,7 @@ pub(crate) fn vehicle_with_tuning(v: &VehicleSpec, flight: Option<[f32; 11]>) ->
             SEAT_ENTRY_FACING,
             Val::Bytes(ANY_FACING.to_bits().to_le_bytes().to_vec()),
         )?;
-        for (path, bits) in ["unknown_68", "unknown_6c", "unknown_70", "unknown_88", "unknown_8c"]
+        for (path, bits) in ["pitch_auto_level", "pitch_range", "pitch_range+0x4", "yaw", "yaw+0x4"]
             .into_iter().zip(s.camera_angles) {
             set(&mut e, path, Val::Bytes(bits.to_le_bytes().to_vec()))?;
         }
@@ -1393,13 +1393,13 @@ pub(crate) fn vehicle_with_tuning(v: &VehicleSpec, flight: Option<[f32; 11]>) ->
         // `gunner`), the entry marker at +0xc (`driver_enter`) and the
         // camera marker at +0x60 (`banshee_d_camera`), each a marker of the
         // vehicle's model.
-        set(&mut e, "string_8", Val::text(&s.marker))?;
-        set(&mut e, "string_c", Val::text(&s.enter_marker))?;
-        set(&mut e, "string_60", Val::text(&s.camera_marker))?;
+        set(&mut e, "seat_marker_name", Val::text(&s.marker))?;
+        set(&mut e, "entry_marker_name", Val::text(&s.enter_marker))?;
+        set(&mut e, "camera_marker_name", Val::text(&s.camera_marker))?;
         if let Some(t) = s.camera_track {
             let td = seat_def.child(SEAT_CAMERA_TRACKS).expect("seat camera tracks");
             let mut x = defs::default_record(td);
-            set(&mut x, "ref_0", Val::tag(FourCC(*b"trak"), t))?;
+            set(&mut x, "track", Val::tag(FourCC(*b"trak"), t))?;
             set(&mut e, SEAT_CAMERA_TRACKS, Val::Block(vec![x]))?;
         }
         out.push(e);
@@ -1427,13 +1427,13 @@ pub(crate) fn vehicle_with_tuning(v: &VehicleSpec, flight: Option<[f32; 11]>) ->
                 // strength at 0x20655e. Preserve their independent gains.
                 let [strength, offset, height, damping, full, cutoff] = lift;
                 for (field, value) in [
-                    ("unknown_8", strength * GRAVITY_RATIO),
-                    ("unknown_c", offset),
-                    ("unknown_10", height),
-                    ("unknown_14", damping * 30.0 / GRAVITY_RATIO),
-                    ("unknown_18", full),
-                    ("unknown_1c", cutoff),
-                    ("unknown_20", p.sphere[3]),
+                    ("antigrav_strength", strength * GRAVITY_RATIO),
+                    ("antigrav_offset", offset),
+                    ("antigrav_height", height),
+                    ("antigrav_damp_factor", damping * 30.0 / GRAVITY_RATIO),
+                    ("antigrav_normal_k1", full),
+                    ("antigrav_normal_k0", cutoff),
+                    ("radius", p.sphere[3]),
                 ] {
                     set(&mut x, field, Val::Bytes(value.to_le_bytes().to_vec()))?;
                 }
@@ -1459,7 +1459,7 @@ pub(crate) fn vehicle_with_tuning(v: &VehicleSpec, flight: Option<[f32; 11]>) ->
                 }
                 set(
                     &mut x,
-                    "unknown_c",
+                    "radius",
                     Val::Bytes(p.sphere[3].to_le_bytes().to_vec()),
                 )?;
                 let index: u32 = if p.region_index >= 0 {
@@ -1495,7 +1495,7 @@ pub(crate) fn vehicle_with_tuning(v: &VehicleSpec, flight: Option<[f32; 11]>) ->
         set(&mut r, VEHI_GEARS, Val::Block(directions))?;
         if powered_groups == 2 {
             let mode = tags::object::direct_drive::H1_DIRECT_DRIVE.to_le_bytes();
-            set(&mut r, "unknown_260", Val::Bytes(mode.to_vec()))?;
+            set(&mut r, "engine_moment", Val::Bytes(mode.to_vec()))?;
         }
     }
     built(d, &r)
@@ -2219,39 +2219,39 @@ pub const BIPED_TYPE: u32 = 0;
 /// Shared unit tuning. The two sequences at +0x220 and +0x264 are
 /// contiguous on both discs (cyborg, crewman, marine, elite and grunt).
 pub const UNIT_WORDS: &[(&str, usize)] = &[
-    ("unit.unknown_bc", 0x17c), ("unit.unknown_c0", 0x180), // default team and motion sensor blip
-    ("unit.unknown_dc", 0x1e8), ("unit.unknown_e0", 0x1ec), ("unit.unknown_e4", 0x1f0),
-    ("unit.unknown_10c", 0x220), ("unit.unknown_110", 0x224),
-    ("unit.unknown_114", 0x228), ("unit.unknown_118", 0x22c),
-    ("unit.unknown_11c", 0x230), ("unit.unknown_120", 0x234),
-    ("unit.unknown_124", 0x238), ("unit.unknown_144", 0x264),
-    ("unit.unknown_148", 0x268), ("unit.unknown_14c", 0x26c),
-    ("unit.unknown_1b0", 0x2c0), ("unit.unknown_1b4", 0x2c4),
+    ("unit.flags", 0x17c), ("unit.default_team", 0x180), // default team and motion sensor blip
+    ("unit.pitch_auto_level", 0x1e8), ("unit.pitch_range", 0x1ec), ("unit.pitch_range+0x4", 0x1f0),
+    ("unit.hard_ping_threshold", 0x220), ("unit.hard_ping_interrupt_time", 0x224),
+    ("unit.hard_death_threshold", 0x228), ("unit.feign_death_threshold", 0x22c),
+    ("unit.feign_death_time", 0x230), ("unit.distance_of_evade_animation", 0x234),
+    ("unit.distance_of_dive_animation", 0x238), ("unit.aiming_velocity_maximum", 0x264),
+    ("unit.aiming_acceleration_maximum", 0x268), ("unit.casual_aiming_modifier", 0x26c),
+    ("unit.grenade_velocity", 0x2c0), ("unit.grenade_type", 0x2c4),
 ];
 
 /// Biped turning, landing, camera heights, ground slopes and their cached
 /// trigonometric values. The crewman's distinct cutoff and falloff angles
 /// distinguish the source fields (a30 and 05a_deltaapproach).
 pub const BIPED_WORDS: &[(&str, usize)] = &[
-    ("unknown_1ec", 0x2f0), ("unknown_1f4", 0x2f8),
-    ("unknown_1fc", 0x3d4), ("unknown_200", 0x3d8), ("unknown_204", 0x3dc),
-    ("unknown_208", 0x3e0), ("unknown_20c", 0x3e4),
-    ("unknown_218", 0x400), ("unknown_21c", 0x404), ("unknown_220", 0x408),
-    ("unknown_24c", 0x4c8), ("unknown_29c", 0x358), ("unknown_2a0", 0x35c),
-    ("unknown_2a4", 0x360), ("unknown_2a8", 0x368), ("unknown_2ac", 0x36c),
-    ("unknown_2b0", 0x364), ("unknown_2b4", 0x370), ("unknown_2b8", 0x4d0),
-    ("unknown_2bc", 0x4d4), ("unknown_2c0", 0x4d8), ("unknown_2c4", 0x4dc),
-    ("unknown_2c8", 0x4e0),
-    ("unknown_2cc", 0x324), ("unknown_2d0", 0x328), ("unknown_2d4", 0x32c),
-    ("unknown_2d8", 0x330), ("unknown_2dc", 0x334), ("unknown_2e0", 0x338),
-    ("unknown_2ec", 0x344), ("unknown_2f4", 0x34c),
+    ("moving_turning_speed", 0x2f0), ("stationary_turning_threshold", 0x2f8),
+    ("maximum_soft_landing_time", 0x3d4), ("maximum_hard_landing_time", 0x3d8), ("minimum_soft_landing_velocity", 0x3dc),
+    ("minimum_hard_landing_velocity", 0x3e0), ("maximum_hard_landing_velocity", 0x3e4),
+    ("standing_camera_height", 0x400), ("crouching_camera_height", 0x404), ("crouch_transition_time", 0x408),
+    ("cosine_stationary_turning_threshold", 0x4c8), ("maximum_slope_angle", 0x358), ("downhill_falloff_angle", 0x35c),
+    ("downhill_cutoff_angle", 0x360), ("uphill_falloff_angle", 0x368), ("uphill_cutoff_angle", 0x36c),
+    ("downhill_velocity_scale", 0x364), ("uphill_velocity_scale", 0x370), ("cosine_maximum_slope_angle", 0x4d0),
+    ("negative_sine_downhill_falloff_angle", 0x4d4), ("negative_sine_downhill_cutoff_angle", 0x4d8), ("sine_uphill_falloff_angle", 0x4dc),
+    ("sine_uphill_cutoff_angle", 0x4e0),
+    ("bank_angle", 0x324), ("bank_apply_time", 0x328), ("bank_decay_time", 0x32c),
+    ("pitch_ratio", 0x330), ("maximum_velocity", 0x334), ("maximum_sidestep_velocity", 0x338),
+    ("angular_velocity_maximum", 0x344), ("crouch_velocity_modifier", 0x34c),
 ];
 
 /// H1 caches these rates per tick. The c20 monitor and its 04b counterpart
 /// agree on all three flying accelerations after conversion to seconds.
 pub const BIPED_RATES: &[(&str, usize)] = &[
-    ("unknown_1f8", 0x3b4), ("unknown_250", 0x4cc), ("unknown_2e4", 0x33c),
-    ("unknown_2e8", 0x340), ("unknown_2f0", 0x348),
+    ("jump_velocity", 0x3b4), ("crouch_transition_velocity", 0x4cc), ("acceleration", 0x33c),
+    ("deceleration", 0x340), ("angular_acceleration_maximum", 0x348),
 ];
 
 /// `bipd +0x268`, `+0x26c`, `+0x270`: the standing and crouching
@@ -2259,7 +2259,7 @@ pub const BIPED_RATES: &[(&str, usize)] = &[
 /// Halo 1's). V: on every retail biped of the base with character shapes,
 /// the shapes below are these three's ([`biped_shapes`],
 /// `tests/unit_rebuild_disc.rs`).
-pub const BIPD_SIZE: [&str; 3] = ["unknown_268", "unknown_26c", "unknown_270"];
+pub const BIPD_SIZE: [&str; 3] = ["height_standing", "height_crouching", "radius"];
 /// `bipd +0x284`: spheres (`0x80` each), `bipd +0x28c`: pills (`0x50`
 /// each). E: the `bipd` post-process (`0x001c2390`, called from the tag
 /// load dispatch `0x0011c840` on `bipd +0x264`) walks `+0x284` at stride
@@ -2269,8 +2269,8 @@ pub const BIPD_SIZE: [&str; 3] = ["unknown_268", "unknown_26c", "unknown_270"];
 /// `0x001c2460` returns pill `i` (standing 0, crouching 1) as the
 /// character's shape, or sphere `i` of `+0x294` with no pills. Every one
 /// of those runtime words stays zero here.
-pub const BIPD_SPHERES: &str = "block_284";
-pub const BIPD_PILLS: &str = "block_28c";
+pub const BIPD_SPHERES: &str = "dead_sphere_shapes";
+pub const BIPD_PILLS: &str = "pill_shapes";
 /// The spheres' radii as multiples of the collision radius, each resting
 /// on the ground (centre one radius up). V: every retail biped of the base
 /// with character shapes holds these three.
@@ -2287,20 +2287,20 @@ pub fn biped_shapes(size: &h1::BipedSize) -> Result<Vec<(String, Val)>> {
     let w = |v: u32| Val::Bytes(v.to_le_bytes().to_vec());
     let f = |v: f32| w(v.to_bits());
     let header = |e: &mut Record| -> Result<()> {
-        set(e, "unknown_4", w(0x0000_ffff))?;
-        set(e, "unknown_1c", w(0xffff_0000))
+        set(e, "material_index", w(0x0000_ffff))?;
+        set(e, "mass_distribution_index", w(0xffff_0000))
     };
     let sphere_def = d.child(BIPD_SPHERES).expect("bipd spheres");
     let mut spheres = Vec::new();
     for k in SPHERE_SCALES {
         let mut e = defs::default_record(sphere_def);
         header(&mut e)?;
-        set(&mut e, "unknown_2c", f(k * r))?;
+        set(&mut e, "radius", f(k * r))?;
         // The transform: identity rotation rows, then the centre.
-        for at in ["unknown_40", "unknown_54", "unknown_68"] {
+        for at in ["rotation_i", "rotation_j+0x4", "rotation_k+0x8"] {
             set(&mut e, at, f(1.0))?;
         }
-        set(&mut e, "unknown_78", f(k * r))?;
+        set(&mut e, "translation+0x8", f(k * r))?;
         spheres.push(e);
     }
     let pill_def = d.child(BIPD_PILLS).expect("bipd pills");
@@ -2308,11 +2308,11 @@ pub fn biped_shapes(size: &h1::BipedSize) -> Result<Vec<(String, Val)>> {
     for h in [size.standing_height, size.crouching_height] {
         let mut e = defs::default_record(pill_def);
         header(&mut e)?;
-        set(&mut e, "unknown_2c", f(r))?;
-        set(&mut e, "unknown_38", f((h - r).max(r)))?;
-        set(&mut e, "unknown_3c", f(r))?;
-        set(&mut e, "unknown_48", f(r))?;
-        set(&mut e, "unknown_4c", f(r))?;
+        set(&mut e, "radius", f(r))?;
+        set(&mut e, "bottom+0x8", f((h - r).max(r)))?;
+        set(&mut e, "w_bottom", f(r))?;
+        set(&mut e, "top+0x8", f(r))?;
+        set(&mut e, "w_top", f(r))?;
         pills.push(e);
     }
     let mut out = vec![
@@ -2336,7 +2336,7 @@ pub fn usable_size(s: &h1::BipedSize) -> bool {
 
 /// `bipd +0x1a0`, the HUD interfaces (one `nhdt` reference each,
 /// [`crate::health_hud::UNIT_HUD_INTERFACES`]).
-pub const BIPD_HUD: &str = "unit.block_1a0";
+pub const BIPD_HUD: &str = "unit.hud_interfaces";
 /// Halo 1 resources converted for the unit.
 #[derive(Clone, Debug, Default)]
 pub struct BipedParts {
@@ -2379,9 +2379,9 @@ pub struct BipedParts {
 /// `+0x160` stays empty: the weapon's own marker (`right_hand_mc` on the
 /// Chief) is not on a Halo 1 weapon model.
 pub const UNIT_MARKERS: [(&str, &str); 3] = [
-    ("unit.string_d4", "head"),
-    ("unit.string_158", "right hand"),
-    ("unit.string_15c", "left hand"),
+    ("unit.camera_marker_name", "head"),
+    ("unit.right_hand_node", "right hand"),
+    ("unit.left_hand_node", "left hand"),
 ];
 
 /// The Halo 2 biped a Halo 1 biped takes its references from, by words in
@@ -2437,16 +2437,16 @@ pub fn biped(
     object_effects(b"bipd", &mut r, "unit.obje", &parts.attachments, parts.creation)?;
     object_functions(b"bipd", &mut r, "unit.obje", &parts.functions)?;
     for (path, group, target) in [
-        ("unit.effe_ref_c4", b"effe", parts.integrated_light),
-        ("ref_25c", b"effe", parts.blood),
-        ("unit.ref_164", b"jpt!", parts.melee),
+        ("unit.integrated_light_toggle", b"effe", parts.integrated_light),
+        ("area_damage_effect", b"effe", parts.blood),
+        ("unit.melee_damage", b"jpt!", parts.melee),
     ] {
         if let Some(id) = target {
             set(&mut r, path, Val::tag(FourCC(*group), id))?;
         }
     }
     for (path, field, group, ids) in [
-        ("unit.block_e8", "ref_0", b"trak", &parts.tracks),
+        ("unit.camera_tracks", "track", b"trak", &parts.tracks),
         ("unit.weapons", "weapon", b"weap", &parts.weapons),
     ] {
         let mut elements = Vec::new();
@@ -2458,14 +2458,14 @@ pub fn biped(
         set(&mut r, path, Val::Block(elements))?;
     }
     if let Some(mass) = parts.mass {
-        set(&mut r, "unknown_274", Val::Bytes(mass.to_le_bytes().to_vec()))?;
+        set(&mut r, "mass", Val::Bytes(mass.to_le_bytes().to_vec()))?;
     }
     if let Some(hud) = &parts.hud {
         let e = d.child(BIPD_HUD).expect("bipd HUD interfaces");
         let mut out = Vec::new();
         for id in hud {
             let mut x = defs::default_record(e);
-            set(&mut x, "ref_0", Val::tag(FourCC(*b"nhdt"), *id))?;
+            set(&mut x, "hud_interface", Val::tag(FourCC(*b"nhdt"), *id))?;
             out.push(x);
         }
         set(&mut r, BIPD_HUD, Val::Block(out))?;
@@ -2519,7 +2519,7 @@ pub fn biped(
     }
     if parts.sentinel {
         // Both retail aggressors use this biped and flying-controller flag pair.
-        set(&mut r, "unknown_1f0", Val::Bytes(0xe00u32.to_le_bytes().to_vec()))?;
+        set(&mut r, "flags", Val::Bytes(0xe00u32.to_le_bytes().to_vec()))?;
         set(&mut r, "unknown_264", Val::Bytes(0x13u32.to_le_bytes().to_vec()))?;
     }
     if let Some(size) = unit.size.filter(usable_size) {
@@ -2530,14 +2530,14 @@ pub fn biped(
     if let Some(size) = unit.size.filter(|s| !usable_size(s)) {
         // 0x1c2460 selects one of two spheres when the pill array is empty.
         let radius = if size.radius > 0.0 { size.radius } else { obj.bounding_radius };
-        let mut sphere = defs::default_record(d.child("block_294").expect("character sphere"));
-        for (path, word) in [("unknown_4", 0xffff_u32), ("unknown_1c", 0xffff_0000)] {
+        let mut sphere = defs::default_record(d.child("sphere_shapes").expect("character sphere"));
+        for (path, word) in [("material_index", 0xffff_u32), ("mass_distribution_index", 0xffff_0000)] {
             set(&mut sphere, path, Val::Bytes(word.to_le_bytes().to_vec()))?;
         }
         for (path, value) in [
-            ("unknown_2c", radius), ("unknown_40", 1.0), ("unknown_54", 1.0),
-            ("unknown_68", 1.0), ("unknown_70", obj.bounding_offset[0]),
-            ("unknown_74", obj.bounding_offset[1]), ("unknown_78", obj.bounding_offset[2]),
+            ("radius", radius), ("rotation_i", 1.0), ("rotation_j+0x4", 1.0),
+            ("rotation_k+0x8", 1.0), ("translation", obj.bounding_offset[0]),
+            ("translation+0x4", obj.bounding_offset[1]), ("translation+0x8", obj.bounding_offset[2]),
         ] {
             set(&mut sphere, path, Val::Bytes(value.to_le_bytes().to_vec()))?;
         }
@@ -2545,11 +2545,11 @@ pub fn biped(
         let mut probes = Vec::new();
         for scale in SPHERE_SCALES {
             let mut probe = sphere.clone();
-            set(&mut probe, "unknown_2c", Val::Bytes((scale * radius).to_le_bytes().to_vec()))?;
+            set(&mut probe, "radius", Val::Bytes((scale * radius).to_le_bytes().to_vec()))?;
             probes.push(probe);
         }
         set(&mut r, BIPD_SPHERES, Val::Block(probes))?;
-        set(&mut r, "block_294", Val::Block(vec![sphere.clone(), sphere]))?;
+        set(&mut r, "sphere_shapes", Val::Block(vec![sphere.clone(), sphere]))?;
     }
     built(d, &r)
 }
@@ -2677,7 +2677,7 @@ pub struct AttachmentSpec {
 }
 
 /// The attachment primary scale field (`obje +0x94` element `+0x10`).
-pub const ATTACHMENT_PRIMARY_SCALE: &str = "string_10";
+pub const ATTACHMENT_PRIMARY_SCALE: &str = "primary_scale";
 
 /// Sets `path.change_colors` (`obje +0xac`, `0x10` each) on a rebuilt
 /// record from `colours`, already in Halo 2's slots
@@ -2709,8 +2709,8 @@ pub fn object_change_colors(
         .child(&field)
         .ok_or_else(|| Error::Invalid(format!("{} {field}", String::from_utf8_lossy(group))))?;
     let pe = e
-        .child("block_0")
-        .ok_or_else(|| Error::Invalid(format!("{field}.block_0")))?;
+        .child("initial_permutations")
+        .ok_or_else(|| Error::Invalid(format!("{field}.initial_permutations")))?;
     let f = |v: f32| Val::Bytes(v.to_le_bytes().to_vec());
     let mut out = Vec::new();
     for c in colours {
@@ -2718,29 +2718,29 @@ pub fn object_change_colors(
         let mut perms = Vec::new();
         for p in &c.permutations {
             let mut y = defs::default_record(pe);
-            set(&mut y, "unknown_0", f(p.weight))?;
+            set(&mut y, "weight", f(p.weight))?;
             for (i, (lo, hi)) in p.lower.iter().zip(&p.upper).enumerate() {
-                set(&mut y, &format!("unknown_{:x}", 4 + 4 * i), f(*lo))?;
-                set(&mut y, &format!("unknown_{:x}", 0x10 + 4 * i), f(*hi))?;
+                set(&mut y, &format!("@{:#x}", 4 + 4 * i), f(*lo))?;
+                set(&mut y, &format!("@{:#x}", 0x10 + 4 * i), f(*hi))?;
             }
             perms.push(y);
         }
-        set(&mut x, "block_0", Val::Block(perms))?;
+        set(&mut x, "initial_permutations", Val::Block(perms))?;
         if let Some(source) = &c.function {
-            let child = e.child("block_8").ok_or_else(|| Error::Invalid(format!("{field}.block_8")))?;
+            let child = e.child("functions").ok_or_else(|| Error::Invalid(format!("{field}.functions")))?;
             let mut row = defs::default_record(child);
-            set(&mut row, "unknown_4", Val::Bytes(source.flags.to_le_bytes().to_vec()))?;
+            set(&mut row, "scale_flags", Val::Bytes(source.flags.to_le_bytes().to_vec()))?;
             for (k, (lo, hi)) in source.lower.iter().zip(source.upper).enumerate() {
-                set(&mut row, &format!("unknown_{:x}", 8 + 4*k), f(*lo))?;
-                set(&mut row, &format!("unknown_{:x}", 0x14 + 4*k), f(hi))?;
+                set(&mut row, &format!("@{:#x}", 8 + 4*k), f(*lo))?;
+                set(&mut row, &format!("@{:#x}", 0x14 + 4*k), f(hi))?;
             }
             if let Some(input) = source.scale {
-                set(&mut row, "string_24", Val::text(input))?;
+                set(&mut row, "scale_by", Val::text(input))?;
             }
             if let Some(input) = source.darken {
                 set(&mut row, "darken_by", Val::text(input))?;
             }
-            set(&mut x, "block_8", Val::Block(vec![row]))?;
+            set(&mut x, "functions", Val::Block(vec![row]))?;
         }
         out.push(x);
     }
@@ -2760,11 +2760,11 @@ pub fn object_functions(
     let mut out = Vec::new();
     for f in functions {
         let mut x = defs::default_record(e);
-        set(&mut x, "unknown_0", Val::Bytes(f.flags.to_le_bytes().to_vec()))?;
-        set(&mut x, "string_4", Val::text(&f.import))?;
+        set(&mut x, "flags", Val::Bytes(f.flags.to_le_bytes().to_vec()))?;
+        set(&mut x, "import_name", Val::text(&f.import))?;
         set(&mut x, "output", Val::text(&f.export))?;
-        set(&mut x, "string_c", Val::text(&f.turn_off_with))?;
-        set(&mut x, "data_14", Val::Data(f.data.clone()))?;
+        set(&mut x, "turn_off_with", Val::text(&f.turn_off_with))?;
+        set(&mut x, "default_function", Val::Data(f.data.clone()))?;
         out.push(x);
     }
     set(r, &format!("{path}.functions"), Val::Block(out))
@@ -2789,7 +2789,7 @@ pub fn object_effects(
         set(&mut x, "marker", Val::text(&a.marker))?;
         set(&mut x, "change_colour", Val::Int(a.change_colour.into()))?;
         set(&mut x, ATTACHMENT_PRIMARY_SCALE, Val::text(&a.primary_scale))?;
-        set(&mut x, "string_14", Val::text(&a.secondary_scale))?;
+        set(&mut x, "secondary_scale", Val::text(&a.secondary_scale))?;
         out.push(x);
     }
     set(r, &format!("{path}.attachments"), Val::Block(out))?;

@@ -420,7 +420,7 @@ pub fn draw(ui: &Ui, fonts: &theme::Fonts, app: &mut App, state: &mut InspectorS
     theme::link_badge(
         ui,
         crate::play::LinkTone::View,
-        crate::play::tag_sync::CREATION,
+        crate::play::tag_sync::Effect::NextSpawn.chip(),
     );
     ui.set_item_tooltip(
         "Creation fields apply when the object is next made. In Edit, live objects can also follow position and rotation.",
@@ -534,6 +534,7 @@ fn tags(
     let mut actions = Vec::new();
     let mut resolution = None;
     let issues = issues(app);
+    state.tag_panel.follow(app);
     breadcrumbs(ui, app, location, &mut actions);
     let undo = ui.begin_disabled_with_cond(!doc.can_undo());
     if ui.button("Undo tag edit") {
@@ -570,6 +571,7 @@ fn tags(
     if let Some(action) = resolution {
         app.pairing.requests.push(Request::Apply(action));
     }
+    state.tag_panel.store(app);
     for action in actions {
         app.dispatch(tag_action(action));
     }

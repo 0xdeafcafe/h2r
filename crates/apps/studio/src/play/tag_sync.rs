@@ -8,9 +8,93 @@ use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use tags::registry::{Field, Kind, Layout};
 
-pub const UNKNOWN: &str = "Poke, unknown";
-pub const CREATION: &str = "Poke, next creation";
-pub const RELOAD: &str = "Reload";
+/// When a change to a field takes effect in a running game
+/// (docs/editor/tag-editing.md, "When it takes effect"): an id for the
+/// API, a short chip for a row and a sentence for tooltips, details and
+/// the Pending tab.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum Effect {
+    /// The game reads the field each frame (`applies=frame`).
+    Now,
+    /// The game reads it the next time it uses it (`applies=use`).
+    NextUse,
+    /// The game copies it into an object when the object is made
+    /// (`applies=creation`).
+    NextSpawn,
+    /// The game reads it at map load: the change needs a reload.
+    Reload,
+    /// No definition says when the game reads it (no `applies`).
+    NotKnown,
+}
+
+impl Effect {
+    pub const ALL: [Self; 5] = [
+        Self::Now,
+        Self::NextUse,
+        Self::NextSpawn,
+        Self::Reload,
+        Self::NotKnown,
+    ];
+
+    /// The API's id (`mirror.pending`, `tag.fields`).
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Now => "now",
+            Self::NextUse => "next_use",
+            Self::NextSpawn => "next_spawn",
+            Self::Reload => "reload",
+            Self::NotKnown => "not_known",
+        }
+    }
+
+    /// The effect an id names.
+    pub fn from_id(id: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|e| e.id() == id)
+    }
+
+    /// The row's chip.
+    pub fn chip(self) -> &'static str {
+        match self {
+            Self::Now => "Now",
+            Self::NextUse => "Next use",
+            Self::NextSpawn => "Next spawn",
+            Self::Reload => "After reload",
+            Self::NotKnown => "Not known",
+        }
+    }
+
+    /// The sentence for tooltips, details and the Pending tab's headings
+    /// (a reload's reason follows it, apart).
+    pub fn sentence(self) -> &'static str {
+        match self {
+            Self::Now => "Applies now.",
+            Self::NextUse => "Applies the next time the game uses it.",
+            Self::NextSpawn => "Applies when the object next spawns.",
+            Self::Reload => "Applies after reload.",
+            Self::NotKnown => "Not known; reload to be sure.",
+        }
+    }
+
+    /// A pending row's effect (`effect`, its id).
+    pub fn of_row(row: &Value) -> Option<Self> {
+        row["effect"].as_str().and_then(Self::from_id)
+    }
+
+    /// Whether `row` waits for a reload.
+    pub fn is_reload(row: &Value) -> bool {
+        Self::of_row(row) == Some(Self::Reload)
+    }
+
+    /// The effect a definition's `applies` word gives.
+    pub fn of_applies(applies: Option<&str>) -> Self {
+        match applies {
+            Some("frame") => Self::Now,
+            Some("use") => Self::NextUse,
+            Some("creation") => Self::NextSpawn,
+            _ => Self::NotKnown,
+        }
+    }
+}
 
 #[derive(Default, Clone)]
 pub struct TagBaseline {
@@ -55,15 +139,30 @@ pub struct Write {
     pub at: u32,
     pub value: Vec<u8>,
     pub was: Vec<u8>,
-    pub class: &'static str,
+    pub effect: Effect,
 }
 
-pub fn row(doc: &str, tag: Value, path: &str, class: &str, why: &str) -> Value {
-    json!({"doc":doc,"tag":tag,"path":path,"class":class,"why":why})
+/// A pending row: what changed (`doc`, `tag`, `path`), when it takes
+/// effect (`effect`, the id, and `text`, its sentence) and why.
+pub fn row(doc: &str, tag: Value, path: &str, effect: Effect, why: &str) -> Value {
+    json!({
+        "doc": doc,
+        "tag": tag,
+        "path": path,
+        "effect": effect.id(),
+        "text": effect.sentence(),
+        "why": why,
+    })
 }
 
-pub fn class(doc: &TagDoc, tag: TagId, at: u32, field: &Field) -> (&'static str, &'static str) {
-    let reload = |why| (RELOAD, why);
+/// Sets `row`'s effect and its sentence.
+pub fn set_effect(row: &mut Value, effect: Effect) {
+    row["effect"] = json!(effect.id());
+    row["text"] = json!(effect.sentence());
+}
+
+pub fn effect(doc: &TagDoc, tag: TagId, at: u32, field: &Field) -> (Effect, &'static str) {
+    let reload = |why| (Effect::Reload, why);
     let Some(entry) = doc.tag(tag) else {
         return reload("tag is absent");
     };
@@ -100,12 +199,14 @@ pub fn class(doc: &TagDoc, tag: TagId, at: u32, field: &Field) -> (&'static str,
         }
         _ => {}
     }
-    match field.applies {
-        Some("frame") => ("Poke, each frame", "read on the next frame"),
-        Some("use") => ("Poke, next use", "read on the next use"),
-        Some("creation") => (CREATION, "read when the object is made"),
-        _ => (UNKNOWN, "when the game reads this field is unknown"),
-    }
+    let effect = Effect::of_applies(field.applies);
+    let why = match effect {
+        Effect::Now => "read on the next frame",
+        Effect::NextUse => "read on the next use",
+        Effect::NextSpawn => "read when the object is made",
+        Effect::Reload | Effect::NotKnown => "when the game reads this field is not known",
+    };
+    (effect, why)
 }
 
 /// Find a field in a tag's root or a reachable block. Resource payloads and
@@ -188,7 +289,7 @@ pub fn diff(base: &TagBaseline, doc: &TagDoc) -> (Vec<Write>, Vec<Value>) {
                 "tags",
                 Value::Null,
                 &format!("BSP region at file offset {:#x}", space.file_offset),
-                RELOAD,
+                Effect::Reload,
                 "geometry or collision is built at map load",
             ));
         }
@@ -216,7 +317,7 @@ pub fn diff(base: &TagBaseline, doc: &TagDoc) -> (Vec<Write>, Vec<Value>) {
                 "tags",
                 Value::Null,
                 label,
-                RELOAD,
+                Effect::Reload,
                 "the block layout changed",
             ));
         }
@@ -226,7 +327,13 @@ pub fn diff(base: &TagBaseline, doc: &TagDoc) -> (Vec<Write>, Vec<Value>) {
         .iter()
         .filter(|s| !base.strings.contains(s))
     {
-        rows.push(row("tags", Value::Null, string, RELOAD, "new map string"));
+        rows.push(row(
+            "tags",
+            Value::Null,
+            string,
+            Effect::Reload,
+            "new map string",
+        ));
     }
     for string in base
         .strings
@@ -237,7 +344,7 @@ pub fn diff(base: &TagBaseline, doc: &TagDoc) -> (Vec<Write>, Vec<Value>) {
             "tags",
             Value::Null,
             string,
-            RELOAD,
+            Effect::Reload,
             "remove string from the play copy",
         ));
     }
@@ -260,7 +367,7 @@ pub fn diff(base: &TagBaseline, doc: &TagDoc) -> (Vec<Write>, Vec<Value>) {
                 "tags",
                 Value::Null,
                 &format!("{at:#x}"),
-                RELOAD,
+                Effect::Reload,
                 "outside a loaded tag",
             ));
             continue;
@@ -274,7 +381,7 @@ pub fn diff(base: &TagBaseline, doc: &TagDoc) -> (Vec<Write>, Vec<Value>) {
                 "tags",
                 id,
                 &format!("{at:#x}"),
-                RELOAD,
+                Effect::Reload,
                 "resource or unlocated field",
             ));
             continue;
@@ -295,19 +402,21 @@ pub fn diff(base: &TagBaseline, doc: &TagDoc) -> (Vec<Write>, Vec<Value>) {
         if value == was {
             continue;
         }
-        let (class, why) = if covered > u64::from(entry.address) + u64::from(entry.size) {
-            (RELOAD, "the field extends outside its loaded tag")
+        let (when, why) = if covered > u64::from(entry.address) + u64::from(entry.size) {
+            (Effect::Reload, "the field extends outside its loaded tag")
         } else {
-            class(doc, entry.id, start, f)
+            effect(doc, entry.id, start, f)
         };
         let path = format!("{} · {} ({start:#x})", entry.name, f.name);
-        let mut pending = row("tags", id, &path, class, why);
+        let mut pending = row("tags", id, &path, when, why);
+        // What the Pending tab shows: the tag and the field, no address.
+        pending["label"] = json!(format!("{} · {}", entry.name, f.name));
         pending["at"] = json!(start);
         if crate::app::tag_api::field_focus(doc, entry.id, &nav_path).is_ok() {
             pending["target"] = json!({"tag": entry.id.0, "path": nav_path});
         }
         rows.push(pending);
-        if class != RELOAD {
+        if when != Effect::Reload {
             writes.push(Write {
                 tag: entry.id,
                 path,
@@ -315,7 +424,7 @@ pub fn diff(base: &TagBaseline, doc: &TagDoc) -> (Vec<Write>, Vec<Value>) {
                 at: start,
                 value,
                 was,
-                class,
+                effect: when,
             });
         }
     }
@@ -339,5 +448,77 @@ pub(crate) fn check_conflict_path(doc: &TagDoc, row: &Value) -> Result<(), &'sta
 impl Write {
     pub fn wire(&self) -> Value {
         json!({"at":self.at,"value":sync::hex(&self.value),"was":sync::hex(&self.was)})
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::tag_tests;
+
+    /// Each `applies` word and each reload rule gives its effect, with its
+    /// id, chip and sentence; no word names a transport.
+    #[test]
+    fn each_applies_word_and_reload_rule_gives_its_effect() {
+        for (word, id, chip, sentence) in [
+            (Some("frame"), "now", "Now", "Applies now."),
+            (
+                Some("use"),
+                "next_use",
+                "Next use",
+                "Applies the next time the game uses it.",
+            ),
+            (
+                Some("creation"),
+                "next_spawn",
+                "Next spawn",
+                "Applies when the object next spawns.",
+            ),
+            (
+                None,
+                "not_known",
+                "Not known",
+                "Not known; reload to be sure.",
+            ),
+        ] {
+            let e = Effect::of_applies(word);
+            assert_eq!((e.id(), e.chip(), e.sentence()), (id, chip, sentence));
+            assert_eq!(Effect::from_id(id), Some(e));
+        }
+        let reload = Effect::Reload;
+        assert_eq!(
+            (reload.id(), reload.chip(), reload.sentence()),
+            ("reload", "After reload", "Applies after reload.")
+        );
+
+        let t = crate::play::testing::Temp::new("tag-sync-effect");
+        let (app, _, _) = tag_tests::app(&t.0);
+        let weap = tag_tests::weap_id();
+        let layout = app.tags.layout(weap).unwrap();
+        let speed = layout.field_covering(0).unwrap();
+        assert_eq!(
+            effect(&app.tags, weap, tag_tests::WEAP, speed),
+            (
+                Effect::NotKnown,
+                "when the game reads this field is not known"
+            )
+        );
+        let parts = layout.field_covering(8).unwrap();
+        assert_eq!(
+            effect(&app.tags, weap, tag_tests::WEAP + 8, parts),
+            (
+                Effect::Reload,
+                "block layout or resource storage changes at map load"
+            )
+        );
+        assert_eq!(
+            effect(&app.tags, TagId(0x1234_5678), 0, speed),
+            (Effect::Reload, "tag is absent")
+        );
+        let pending = row("tags", Value::Null, "x", Effect::NextUse, "why");
+        assert_eq!(pending["effect"], "next_use");
+        assert_eq!(pending["text"], "Applies the next time the game uses it.");
+        assert!(pending.get("class").is_none());
+        assert_eq!(Effect::of_row(&pending), Some(Effect::NextUse));
     }
 }

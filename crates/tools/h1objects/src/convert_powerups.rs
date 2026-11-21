@@ -42,7 +42,7 @@ impl Converter<'_> {
         if let Some(id) = e.pickup_sound {
             let source = self.h1_tag(id)?;
             let sound = self.sound(source, &mut rep)?;
-            root.set("snd_ref_134", Val::tag(FourCC(*b"snd!"), sound))
+            root.set("pickup_sound", Val::tag(FourCC(*b"snd!"), sound))
                 .map_err(def_error)?;
         }
         let references = self.item_effect_refs(b, &mut rep)?;
@@ -93,7 +93,7 @@ fn equipment_values(e: &Equipment, b: &[u8], hlmt: Option<TagId>) -> Result<defs
             "item.obje.model",
             Val::tag(FourCC(*b"hlmt"), hlmt.unwrap_or(TagId::NULL)),
         ),
-        ("item.string_e0", Val::text(message)),
+        ("item.picked_up_message", Val::text(message)),
         ("powerup_type", Val::Int(e.powerup_type.into())),
         ("grenade_type", Val::Int(e.grenade_type.into())),
         ("powerup_time", Val::Float(time)),
@@ -146,7 +146,7 @@ mod tests {
             h1[H1_SORT_ORDER] = 13;
             let model = TagId(0xe174_0000);
             let record = equipment_values(&item, &h1, Some(model)).unwrap();
-            assert_eq!(record.at("item.string_e0"), Some(&Val::text(message)));
+            assert_eq!(record.at("item.picked_up_message"), Some(&Val::text(message)));
             let built = encode(&record).unwrap();
             assert_eq!(&built.bytes[..4], &[3, 0, 4, 0]);
             assert_eq!(built.bytes[0xc0], 13);

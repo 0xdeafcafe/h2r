@@ -1414,6 +1414,6 @@ fn placed_object_builders_keep_halo1_attachments() {
             Some(FourCC(*group)),
             "{name}"
         );
-        assert_eq!(text(att, "string_10"), scale, "{name}");
+        assert_eq!(text(att, "primary_scale"), scale, "{name}");
     }
 }

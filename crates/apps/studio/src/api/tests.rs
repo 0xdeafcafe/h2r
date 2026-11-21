@@ -158,6 +158,13 @@ fn setup(api: &mut Api, app: &mut App, t: &Temp, name: &str) {
                 json!({"block": "starting_locations", "index": 1}),
             );
         }
+        m::SOUND_READ | m::SOUND_PLAY | m::SOUND_STOP => {
+            // A map with a sound, played to the headless output.
+            let map = t.path("sound.map");
+            std::fs::write(&map, super::sound::tests::sound_map()).unwrap();
+            c(m::SOURCE_OPEN, json!({"path": map.display().to_string()}));
+            app.audition.headless = true;
+        }
         m::VOLUME_LIST | m::VOLUME_SELECT | m::VOLUME_SET | m::VOLUME_REMOVE | m::VOLUME_ADD => {
             let map = t.path("volumes.map");
             std::fs::write(&map, fixture::fixture_with_volumes()).unwrap();
@@ -167,6 +174,18 @@ fn setup(api: &mut Api, app: &mut App, t: &Temp, name: &str) {
                 c(m::VOLUME_REMOVE, json!({"kind": "kill", "index": 0}));
                 c(m::VOLUME_REMOVE, json!({"index": 1}));
             }
+        }
+        m::SCRIPT_LIST
+        | m::SCRIPT_SOURCE
+        | m::SCRIPT_FOLLOW
+        | m::SCRIPT_USES
+        | m::SCRIPT_BUILTINS
+        | m::SCRIPT_DOC => {
+            // The invented map with scripts and the invented executable.
+            let dir = t.path("scripts");
+            std::fs::create_dir_all(&dir).unwrap();
+            let map = crate::app::scripts::tests::scripted_source(&dir, true);
+            c(m::SOURCE_OPEN, json!({"path": map.display().to_string()}));
         }
         m::COLLISION_SURFACES | m::COLLISION_AT | m::COLLISION_SELECT | m::COLLISION_OBJECTS => {
             let map = t.path("collision.map");
@@ -363,8 +382,22 @@ fn tag_fields_describe_root_and_nested_registry_fields() {
         respawn["description"],
         "Seconds before the item respawns when its placement has no override."
     );
+    // The panel's row model: words for people, the path for tag.set, and
+    // no effect chip with no game connected.
+    assert_eq!(respawn["label"], "Respawn time");
+    assert_eq!(respawn["type"], "Whole number");
+    assert_eq!(respawn["path"], "respawn_time");
+    assert_eq!(respawn["named"], true);
+    assert_eq!(respawn["edited"], false);
+    assert!(respawn["file_value"].is_null());
+    assert!(respawn["chip"].is_null());
+    assert!(respawn["live"].is_null());
+    assert_eq!(respawn["effect"]["id"], "not_known");
+    assert_eq!(respawn["effect"]["text"], "Not known; reload to be sure.");
     let entries = rows.iter().find(|f| f["name"] == "entries").unwrap();
     assert_eq!(entries["value"], 1);
+    assert_eq!((entries["count"].as_u64(), entries["type"].as_str()), (Some(1), Some("List")));
+    assert!(entries["summary"].as_str().unwrap().starts_with("1 item"));
     assert!(entries.get("description").unwrap().is_null());
 
     let nested = call(
@@ -376,6 +409,7 @@ fn tag_fields_describe_root_and_nested_registry_fields() {
     let weight = &nested["fields"][0];
     assert_eq!(weight["name"], "weight");
     assert_eq!(weight["value"], 1.5);
+    assert_eq!(weight["path"], "entries[0].weight");
     let via_offset = call(
         &mut api,
         &mut app,
@@ -391,6 +425,152 @@ fn tag_fields_describe_root_and_nested_registry_fields() {
         )),
         code::REFUSED
     );
+}
+
+/// `tag.choices` lists what the pick dialog lists: an enum's named
+/// values, every bit of switches with what is on, a reference's tags (no
+/// cap unless asked, `kind` and `query` narrowing them) and an unnamed
+/// value's views. A field with nothing to pick is refused.
+#[test]
+fn tag_choices_lists_the_pick_dialogs_choices() {
+    use crate::app::tag_tests;
+    let t = Temp::new("tag-choices");
+    let (mut app, ..) = tag_tests::app(&t.0);
+    let mut api = Api::new();
+    let weap = format!("{:#010x}", tag_tests::weap_id().0);
+    let mut choices = |p: Value| call(&mut api, &mut app, m::TAG_CHOICES, p);
+
+    let mode = choices(json!({"tag": weap, "path": "mode"}));
+    assert_eq!(
+        mode["values"],
+        json!([{"value": 0, "name": "Off"}, {"value": 1, "name": "On"}, {"value": 2, "name": "Auto"}])
+    );
+    let narrowed = choices(json!({"tag": weap, "path": "mode", "query": "au"}));
+    assert_eq!(narrowed["values"], json!([{"value": 2, "name": "Auto"}]));
+
+    let flags = choices(json!({"tag": weap, "path": "flags"}));
+    let bits = flags["bits"].as_array().unwrap();
+    assert_eq!(bits.len(), 16, "every bit of the word");
+    assert_eq!(bits[0], json!({"bit": 0, "name": "loud", "label": "Loud", "on": true}));
+    assert_eq!(bits[1]["on"], false);
+    assert_eq!(bits[5], json!({"bit": 5, "name": null, "label": "Bit 5", "on": false}));
+
+    let item = choices(json!({"tag": weap, "path": "parts[0].item"}));
+    assert_eq!(item["kinds"], json!([{"group": "itmc", "name": "itmc"}]));
+    assert_eq!(item["tags"][0]["name"], "objects\\test\\kit");
+    assert_eq!(item["tags"].as_array().unwrap().len(), 1);
+    assert_eq!(item["truncated"], false);
+    let none = choices(json!({"tag": weap, "path": "parts[0].item", "limit": 0}));
+    assert_eq!((none["tags"].as_array().unwrap().len(), none["truncated"].as_bool()), (0, Some(true)));
+    let missed = choices(json!({"tag": weap, "path": "parts[0].item", "query": "blaster"}));
+    assert!(missed["tags"].as_array().unwrap().is_empty());
+    let other = choices(json!({"tag": weap, "path": "parts[0].item", "kind": "weap"}));
+    assert!(other["tags"].as_array().unwrap().is_empty());
+
+    assert_eq!(
+        code_of(api.call(&mut app, m::TAG_CHOICES, json!({"tag": weap, "path": "speed"}))),
+        code::INVALID_PARAMS
+    );
+    assert_eq!(
+        code_of(api.call(&mut app, m::TAG_CHOICES, json!({"tag": weap, "path": "parts[0].item", "kind": "toolong"}))),
+        code::INVALID_PARAMS
+    );
+
+    let t = Temp::new("tag-choices-partial");
+    let (mut app, ..) = tag_tests::app_partial(&t.0);
+    let gap = call(&mut api, &mut app, m::TAG_CHOICES, json!({"tag": weap, "path": "+0x6"}));
+    assert_eq!(
+        gap["views"],
+        json!([{"id": "whole_number", "name": "Whole number"}, {"id": "hex", "name": "Hex"}])
+    );
+    assert_eq!(gap["shown"], "whole_number");
+}
+
+#[test]
+fn tag_view_folds_unnamed_fields_and_opens_them_on_request() {
+    use crate::app::tag_tests;
+    let t = Temp::new("tag-view");
+    let (mut app, ..) = tag_tests::app_partial(&t.0);
+    let mut api = Api::new();
+    let weap = format!("{:#010x}", tag_tests::weap_id().0);
+
+    let folded = call(&mut api, &mut app, m::TAG_VIEW, json!({ "tag": weap }));
+    assert_eq!(app.tool, crate::ToolKind::Tags);
+    assert_eq!(app.shown_tags().selected, Some(tag_tests::weap_id()));
+    assert_eq!(folded["unnamed"], false);
+    assert_eq!(folded["unnamed_hidden"], 1);
+    let paths = |v: &Value| -> Vec<String> {
+        v["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["path"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    assert_eq!(paths(&folded), ["speed", "flags", "parts"]);
+    assert!(folded["header"][0].as_str().unwrap().starts_with("weap"));
+
+    let open = call(&mut api, &mut app, m::TAG_VIEW, json!({"unnamed": true}));
+    assert!(app.tag_fields.unnamed);
+    assert_eq!(open["unnamed_hidden"], 0);
+    assert_eq!(
+        open["rows"].as_array().unwrap().len(),
+        folded["rows"].as_array().unwrap().len() + 1,
+        "the toggle shows the hidden rows"
+    );
+    let gap = &open["rows"][3];
+    assert_eq!((gap["label"].as_str(), gap["path"].as_str()), (Some("Value at +0x6"), Some("+0x6")));
+    assert_eq!(gap["show_as"], "whole_number");
+    // tag.fields gives every row in the panel's order.
+    let every = call(&mut api, &mut app, m::TAG_FIELDS, json!({ "tag": weap }));
+    assert_eq!(every["fields"], open["rows"]);
+    let named = call(&mut api, &mut app, m::TAG_FIELDS, json!({ "tag": weap, "unnamed": false }));
+    assert_eq!(named["fields"].as_array().unwrap().len(), 3);
+
+    let hex = call(
+        &mut api,
+        &mut app,
+        m::TAG_VIEW,
+        json!({"show_as": {"path": "+0x6", "as": "hex"}}),
+    );
+    assert_eq!(hex["rows"][3]["show_as"], "hex");
+    assert_eq!(app.tag_fields.show_as.get("weap:+0x6"), Some(&crate::fields::View::Hex));
+    let guessed = call(
+        &mut api,
+        &mut app,
+        m::TAG_VIEW,
+        json!({"show_as": {"path": "+0x6", "as": null}}),
+    );
+    assert_eq!(guessed["rows"][3]["show_as"], "whole_number");
+    assert_eq!(
+        code_of(api.call(&mut app, m::TAG_VIEW, json!({"show_as": {"path": "speed", "as": "hex"}}))),
+        code::INVALID_PARAMS
+    );
+
+    // Focus on an unnamed field opens its group with the toggle off.
+    call(&mut api, &mut app, m::TAG_VIEW, json!({"unnamed": false}));
+    let focused = call(&mut api, &mut app, m::TAG_VIEW, json!({"field": "+0x6"}));
+    assert_eq!(focused["field"], "+0x6");
+    assert_eq!(focused["unnamed_hidden"], 0);
+    // A changed unnamed field opens it too.
+    call(&mut api, &mut app, m::TAG_VIEW, json!({"field": "speed"}));
+    assert_eq!(call(&mut api, &mut app, m::TAG_VIEW, json!({}))["unnamed_hidden"], 1);
+    call(&mut api, &mut app, m::TAG_SET, json!({"tag": weap, "path": "+0x6", "value": 5}));
+    let changed = call(&mut api, &mut app, m::TAG_VIEW, json!({}));
+    assert_eq!(changed["unnamed_hidden"], 0);
+    assert_eq!(changed["rows"][3]["edited"], true);
+    assert_eq!(
+        code_of(api.call(&mut app, m::TAG_VIEW, json!({"search": "speed"}))),
+        code::INVALID_PARAMS
+    );
+
+    // A tag nothing names shows its group open: every field is reachable.
+    let scenario = format!("{:#010x}", fixture::id(1).0);
+    let unnamed = call(&mut api, &mut app, m::TAG_VIEW, json!({ "tag": scenario }));
+    assert_eq!(unnamed["unnamed_hidden"], 0);
+    let rows = unnamed["rows"].as_array().unwrap();
+    assert!(!rows.is_empty());
+    assert!(rows.iter().all(|r| r["named"] == false && r["editable"] == false));
 }
 
 #[test]
@@ -626,7 +806,9 @@ mod paired_socket {
             assert_eq!(rows[0]["doc"], "tags");
             assert_eq!(rows[0]["at"], WEAP);
             assert!(rows[0]["path"].as_str().unwrap().contains("speed"));
-            assert!(rows[0]["class"].as_str().unwrap().starts_with("Poke"));
+            assert_eq!(rows[0]["effect"], "not_known");
+            assert_eq!(rows[0]["text"], "Not known; reload to be sure.");
+            assert!(rows[0].get("class").is_none());
             assert_eq!(
                 self.call(m::MIRROR_APPLY, json!({"what":"send"})),
                 json!({"queued":"send"})

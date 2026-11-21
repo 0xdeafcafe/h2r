@@ -3,27 +3,40 @@
 //! editor showing one widget's element).
 //!
 //! [`panel`] draws the element at a path from a tag's root and pushes
-//! [`Action::Tag`] commands; it never writes itself. Numbers drag; enums
-//! are combos; flags are checkboxes; colours pick; angles show degrees;
-//! bounds drag as a pair; string IDs edit as text (any string the map
-//! has); tag references pick from the map's tags of the allowed groups
-//! and click through; blocks list their elements with add, remove and
-//! duplicate; data shows (and edits) as hex. Counts, addresses and
-//! resource pointers are shown, never edited. Fields nothing names are
-//! labelled by offset and shown as their value suggests (a float, an
-//! integer or hex), with a context menu to view them otherwise.
-use std::collections::HashMap;
+//! [`Action::Tag`] commands; it never writes itself. It draws the rows of
+//! [`row::rows`], one line each: an edited dot, the label in words, the
+//! widget, the unit and, with a game connected, when a change takes
+//! effect. `tag.fields` returns the same rows. Numbers drag; an enum
+//! shows its value's name and opens the pick dialog ([`picker`]);
+//! switches show how many are on and open to checkboxes, the unnamed bits
+//! folded; colours pick; angles show degrees; bounds drag as a pair;
+//! string IDs edit as text (any string the map has); a tag reference
+//! shows its kind and name, with **Open** and **Change...** (the dialog,
+//! every tag of the allowed kinds); blocks list their elements with add,
+//! remove and duplicate; data shows (and edits) as hex. Counts, addresses
+//! and resource pointers are shown, never edited. Fields nothing names are
+//! labelled by type and offset and shown as their value suggests (a
+//! float, an integer or hex), with **Show as** (the dialog) to view them
+//! otherwise.
+pub mod picker;
+pub mod row;
+
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
-use dear_imgui_rs::{Drag, DragRange, NumericFormat, Ui};
+use dear_imgui_rs::{Drag, DragRange, NumericFormat, TreeNodeToken, Ui};
 use map::{FourCC, TagId};
 use scenario_edit::{Role, Scenario};
 use tags::registry::{Field, Hint, Kind, Layout};
 
+pub use row::{Drawn, Link, Row, rows};
+
+use crate::App;
 use crate::app::tag_api::FieldFocus;
-use crate::app::tag_doc::STRUCTURAL;
 use crate::app::{Action, BlockOp, NavAction, TagAction, TagDoc, TagWrite, ToolKind};
-use crate::theme::icon;
+use crate::play::issues::IssueIndex;
+use crate::play::{LinkTone, tag_sync::Effect};
+use crate::theme::{self, icon};
 
 /// How an unnamed span is shown.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -31,6 +44,98 @@ pub enum View {
     Float,
     Int,
     Hex,
+}
+
+impl View {
+    pub const ALL: [Self; 3] = [Self::Float, Self::Int, Self::Hex];
+
+    /// The id in `tag.view` and the saved layout.
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Float => "decimal",
+            Self::Int => "whole_number",
+            Self::Hex => "hex",
+        }
+    }
+
+    pub fn from_id(id: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|v| v.id() == id)
+    }
+
+    /// The picker's words.
+    pub fn words(self) -> &'static str {
+        match self {
+            Self::Float => "Decimal",
+            Self::Int => "Whole number",
+            Self::Hex => "Hex",
+        }
+    }
+}
+
+/// How the panel shows unnamed fields, kept in [`crate::App`] and saved
+/// with the layout (the `[Studio][Tags]` section of the editor's ini).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Settings {
+    /// **Show unnamed fields**: every Unnamed fields group open.
+    pub unnamed: bool,
+    /// `Show as` per group and offset ([`show_as_key`]).
+    pub show_as: BTreeMap<String, View>,
+}
+
+/// The ini section the settings are saved in, after Dear ImGui's own.
+const INI_SECTION: &str = "[Studio][Tags]";
+
+impl Settings {
+    /// The settings as an ini section.
+    pub fn ini(&self) -> String {
+        let mut out = format!("{INI_SECTION}\nShowUnnamed={}\n", u8::from(self.unnamed));
+        for (key, view) in &self.show_as {
+            out.push_str(&format!("ShowAs={key}={}\n", view.id()));
+        }
+        out
+    }
+
+    /// The settings in an ini text (defaults where it has none). Dear
+    /// ImGui skips the section, having no handler for it.
+    pub fn from_ini(text: &str) -> Self {
+        let mut out = Self::default();
+        let mut inside = false;
+        for line in text.lines().map(str::trim) {
+            if line.starts_with('[') {
+                inside = line == INI_SECTION;
+                continue;
+            }
+            if !inside {
+                continue;
+            }
+            if let Some(v) = line.strip_prefix("ShowUnnamed=") {
+                out.unnamed = v == "1";
+            } else if let Some(v) = line.strip_prefix("ShowAs=")
+                && let Some((key, id)) = v.rsplit_once('=')
+                && let Some(view) = View::from_id(id)
+            {
+                out.show_as.insert(key.to_owned(), view);
+            }
+        }
+        out
+    }
+}
+
+/// The key a `Show as` choice is kept by: the tag's group, the element's
+/// path without indices and the offset (`weap:parts+0x8`), so it holds for
+/// every tag of the group and every element of a list.
+pub fn show_as_key(group: FourCC, prefix: &str, offset: u32) -> String {
+    let mut shape = String::new();
+    let mut depth = 0;
+    for c in prefix.trim_end_matches('.').chars() {
+        match c {
+            '[' => depth += 1,
+            ']' => depth -= 1,
+            _ if depth == 0 => shape.push(c),
+            _ => {}
+        }
+    }
+    format!("{}:{shape}+{offset:#x}", group_text(group))
 }
 
 /// The field under the mouse, for the hex pane and the status line.
@@ -58,21 +163,69 @@ pub struct PanelState {
     /// The element the mouse was last in: its address and layout (the hex
     /// pane shows it).
     pub focus: Option<(TagId, u32, Arc<Layout>)>,
-    /// How unnamed spans are shown, by address (else guessed).
-    views: HashMap<(TagId, u32), View>,
+    /// The settings drawn with ([`PanelState::follow`]); a change waits
+    /// for [`PanelState::store`].
+    pub settings: Settings,
+    settings_changed: bool,
+    /// Unnamed fields groups opened for a changed or marked field, by
+    /// element address, so a person can fold them again.
+    auto_opened: HashSet<(TagId, u32)>,
     /// Text being typed into string ID and data fields, by address.
     text: HashMap<(TagId, u32), String>,
-    /// The tag picker's filter.
-    picker: String,
-    /// Show padding fields.
-    pub show_pad: bool,
+    /// The pick dialog, while open.
+    pick: Option<picker::Open>,
+    /// The labels the pick dialog lists this frame (every one, clipped or
+    /// not): what `tag.choices` returns.
+    pub listed: Vec<String>,
     /// Why the last typed value was not taken.
     pub problem: Option<String>,
     focus_target: Option<(TagId, u32)>,
     focus_blocks: Vec<u32>,
+    /// The game link the rows are drawn for ([`PanelState::follow`]).
+    pub link: Link,
+    issues: Option<Arc<IssueIndex>>,
+    /// The rows drawn this frame, in order (nested elements included).
+    pub drawn: Vec<Drawn>,
 }
 
 impl PanelState {
+    /// Draw for the open map's game link and its marks, with the saved
+    /// settings.
+    pub fn follow(&mut self, app: &App) {
+        if !self.settings_changed {
+            self.settings = app.tag_fields.clone();
+        }
+        self.link = Link::of(app);
+        self.issues = match (self.link, &app.pairing.link) {
+            (Link::Off, _) | (_, None) => None,
+            (_, Some(link)) => Some(link.issues.clone()),
+        };
+    }
+
+    /// Keep a settings change the panel made (call after drawing).
+    pub fn store(&mut self, app: &mut App) {
+        if std::mem::take(&mut self.settings_changed) {
+            app.tag_fields = self.settings.clone();
+        }
+    }
+
+    /// Change the settings from a control drawn outside the panel.
+    pub fn set_settings(&mut self, settings: Settings) {
+        if settings != self.settings {
+            self.settings = settings;
+            self.settings_changed = true;
+        }
+    }
+
+    /// The context a row of the element with `prefix` is built in.
+    fn context<'a>(&'a self, prefix: &'a str) -> row::Context<'a> {
+        row::Context {
+            link: self.link,
+            issues: self.issues.as_deref().unwrap_or(IssueIndex::empty()),
+            prefix,
+        }
+    }
+
     pub fn focus_field(&mut self, tag: TagId, focus: FieldFocus) {
         self.clear_field_focus();
         self.focus_target = Some((tag, focus.address));
@@ -94,10 +247,14 @@ impl PanelState {
 
 /// Width of the label column, in points.
 const LABEL: f32 = 210.0;
+/// Width of the edited dot's column, in points.
+const DOT: f32 = 12.0;
+/// Space between a widget and its unit or chip, in points.
+const GAP: f32 = 8.0;
+/// The button that picks how an unnamed value is shown.
+const SHOW_AS: &str = "Show as";
 /// Bytes of a data reference shown and editable as hex.
 const DATA_SHOWN: u32 = 4096;
-/// Tags a picker lists at most.
-const PICKS: usize = 400;
 
 /// Draw the element at `path` (per step, a block field's offset and the
 /// element index) of `tag`'s root: every field, editable where the tag
@@ -182,6 +339,7 @@ pub(crate) fn panel_with_marks(
     mark_field: &mut dyn FnMut(TagId, u32),
 ) {
     st.hovered = None;
+    st.drawn.clear();
     let Some((at, layout)) = doc.resolve(tag, path) else {
         ui.text_disabled("Nothing to show: the element is not in the map's metadata.");
         return;
@@ -202,9 +360,11 @@ pub(crate) fn panel_with_marks(
         scene,
         mark_field,
         prefix: String::new(),
+        trailing: 0.0,
     };
     let _id = ui.push_id(tag.0 as usize);
     cx.element(at, &layout);
+    picker::draw(ui, doc, st, actions);
 }
 
 struct Cx<'a, 'm> {
@@ -218,6 +378,8 @@ struct Cx<'a, 'm> {
     scene: Option<&'a Scenario>,
     prefix: String,
     mark_field: &'m mut dyn FnMut(TagId, u32),
+    /// Width kept after the current row's widget for its unit and chip.
+    trailing: f32,
 }
 
 fn key(address: u32) -> u64 {
@@ -263,6 +425,18 @@ fn group_text(g: FourCC) -> String {
     tags::defs::fourcc_text(g)
 }
 
+/// How an unnamed value is shown: the kept choice for `key`
+/// ([`show_as_key`]), else as its bits suggest. Decimal needs four bytes.
+pub fn shown_as(settings: &Settings, key: &str, f: &Field, v: u32) -> View {
+    let len = f.kind.width();
+    match settings.show_as.get(key).copied() {
+        Some(View::Float) if len != 4 => View::Int,
+        Some(view) => view,
+        None if len == 4 => guess(v),
+        None => View::Int,
+    }
+}
+
 /// The guessed view of an unnamed word: a float when its bits read as an
 /// ordinary float (or zero), an integer when small, else hex.
 pub fn guess(v: u32) -> View {
@@ -275,6 +449,30 @@ pub fn guess(v: u32) -> View {
         View::Int
     } else {
         View::Hex
+    }
+}
+
+impl<'a> Cx<'a, '_> {
+    /// A row whose widget is a tree node (a list, data): the dot, the
+    /// node labelled in words, then its summary, unit and chip.
+    fn node(
+        &mut self,
+        at: u32,
+        layout: &Arc<Layout>,
+        r: &Row,
+        id: String,
+    ) -> Option<TreeNodeToken<'a>> {
+        let ui = self.ui;
+        self.dot(r);
+        let node = ui.tree_node_config(id).label(&r.label).push();
+        self.hover(at, layout, r);
+        if let Some(summary) = &r.summary {
+            ui.same_line_with_pos(LABEL);
+            ui.text_disabled(summary);
+            self.hover(at, layout, r);
+        }
+        self.tail(r);
+        node
     }
 }
 
@@ -292,65 +490,175 @@ impl Cx<'_, '_> {
 
     fn element(&mut self, at: u32, layout: &Arc<Layout>) {
         let ui = self.ui;
+        let shown = row::rows(
+            self.doc,
+            self.tag,
+            at,
+            layout,
+            &self.st.context(&self.prefix),
+        );
+        let (named, unnamed) = row::split(&shown);
         let mut section = String::new();
-        for f in &layout.fields {
-            let focused = self.st.focus_target == Some((self.tag, at + f.offset));
-            if matches!(f.kind, Kind::Pad { .. }) && !self.st.show_pad && !focused {
-                continue;
-            }
-            if f.section != section {
-                section = f.section.clone();
+        for r in &named {
+            if r.field.section != section {
+                section = r.field.section.clone();
                 if !section.is_empty() {
                     ui.separator_with_text(&section);
                 }
             }
-            let _id = ui.push_id(f.offset as usize);
-            self.field(at, layout, f);
-            (self.mark_field)(self.tag, at + f.offset);
-            if focused {
-                ui.set_scroll_here_y(0.5);
-                self.st.clear_field_focus();
-            }
+            self.draw_row(at, layout, r);
+        }
+        if !unnamed.is_empty() {
+            self.unnamed(at, layout, &unnamed, named.is_empty());
         }
     }
 
-    fn label(&mut self, at: u32, layout: &Arc<Layout>, f: &Field) {
+    fn draw_row(&mut self, at: u32, layout: &Arc<Layout>, r: &Row) {
         let ui = self.ui;
-        if f.named {
-            ui.text(&f.name);
-        } else {
-            ui.text_disabled(&f.name);
+        let focused = self.st.focus_target == Some((self.tag, r.address));
+        let _id = ui.push_id(r.field.offset as usize);
+        self.st.drawn.push(r.drawn());
+        self.field(at, layout, r);
+        (self.mark_field)(self.tag, r.address);
+        if focused {
+            ui.set_scroll_here_y(0.5);
+            self.st.clear_field_focus();
         }
-        self.hover(at, layout, f);
-        if self.editable {
-            let (class, why) = crate::play::tag_sync::class(self.doc, self.tag, at + f.offset, f);
-            let tone = if class == crate::play::tag_sync::RELOAD {
-                crate::play::LinkTone::Warn
+    }
+
+    /// The element's Unnamed fields group: folded, with what it holds,
+    /// unless [`row::opens`] says otherwise. A changed or marked field
+    /// opens it once, so it can be folded again.
+    fn unnamed(&mut self, at: u32, layout: &Arc<Layout>, group: &[&Row], no_names: bool) {
+        let ui = self.ui;
+        if no_names {
+            ui.text_disabled(row::NO_NAMES);
+        }
+        let key = (self.tag, at);
+        let focus = self
+            .st
+            .focus_target
+            .filter(|(tag, _)| *tag == self.tag)
+            .map(|(_, a)| a);
+        let marked = group.iter().any(|r| r.edited || r.live.is_some());
+        // The toggle, an element nothing names and a focus open it every
+        // frame (row::opens with the marks left out).
+        let forced = row::opens(&[], self.st.settings.unnamed, no_names, None)
+            || group.iter().any(|r| focus == Some(r.address));
+        if forced || (marked && !self.st.auto_opened.contains(&key)) {
+            ui.set_next_item_open(true);
+        }
+        if marked {
+            self.st.auto_opened.insert(key);
+        } else {
+            self.st.auto_opened.remove(&key);
+        }
+        let node = ui
+            .tree_node_config(format!("unnamed{at:x}"))
+            .label(row::group_label(group.len()))
+            .push();
+        ui.same_line_with_pos(LABEL);
+        ui.text_disabled(row::summary(group.iter().map(|r| r.field)));
+        let Some(_node) = node else { return };
+        for r in group {
+            self.draw_row(at, layout, r);
+        }
+    }
+
+    /// The edited dot's column: a dot when the value differs from the file.
+    fn dot(&self, r: &Row) {
+        let ui = self.ui;
+        let x = ui.cursor_pos()[0];
+        if r.edited {
+            let [sx, sy] = ui.cursor_screen_pos();
+            ui.get_window_draw_list()
+                .add_circle(
+                    [sx + DOT * 0.4, sy + ui.frame_height() * 0.5],
+                    3.0,
+                    theme::ACCENT,
+                )
+                .filled(true)
+                .build();
+        }
+        ui.dummy([DOT, 0.0]);
+        ui.same_line_with_pos(x + DOT);
+    }
+
+    /// The row's lead: the dot and the label, then the widget's column at
+    /// the width the unit and chip leave.
+    fn label(&mut self, at: u32, layout: &Arc<Layout>, r: &Row) {
+        let ui = self.ui;
+        self.dot(r);
+        ui.align_text_to_frame_padding();
+        if r.field.named {
+            ui.text(&r.label);
+        } else {
+            ui.text_disabled(&r.label);
+        }
+        self.hover(at, layout, r);
+        ui.same_line_with_pos(LABEL);
+        self.trailing = self.tail_width(r);
+        ui.set_next_item_width(-self.trailing.max(1.0));
+    }
+
+    fn tail_width(&self, r: &Row) -> f32 {
+        let ui = self.ui;
+        let unit = r.unit.map_or(0.0, |u| ui.calc_text_size(u)[0] + GAP);
+        let chip = r.chip.map_or(0.0, |c| ui.calc_text_size(c)[0] + 18.0 + GAP);
+        let show_as = if matches!(r.field.kind, Kind::Unknown { .. }) {
+            ui.calc_text_size(SHOW_AS)[0] + 2.0 * ui.clone_style().frame_padding()[0] + GAP
+        } else {
+            0.0
+        };
+        unit + chip + show_as
+    }
+
+    /// After the widget, on its line: the unit, then the chip.
+    fn tail(&mut self, r: &Row) {
+        let ui = self.ui;
+        if let Some(unit) = r.unit {
+            ui.same_line();
+            ui.text_disabled(unit);
+        }
+        if let Some(chip) = r.chip {
+            ui.same_line();
+            let tone = if r.effect == Effect::Reload {
+                LinkTone::Warn
             } else {
-                crate::play::LinkTone::View
+                LinkTone::View
             };
-            crate::theme::link_badge(ui, tone, class);
+            theme::link_badge(ui, tone, chip);
             if ui.is_item_hovered() {
-                ui.tooltip_text(why);
+                ui.tooltip_text(format!("{} {}", r.effect.sentence(), r.why));
             }
         }
-        ui.same_line_with_pos(LABEL);
-        ui.set_next_item_width(-1.0);
+        self.trailing = 0.0;
     }
 
     /// Record the field as hovered when the last item is.
-    fn hover(&mut self, at: u32, layout: &Arc<Layout>, f: &Field) {
+    fn hover(&mut self, at: u32, layout: &Arc<Layout>, r: &Row) {
         let ui = self.ui;
         if !ui.is_item_hovered() {
             return;
         }
-        let mut tip = format!("{} at +{:#x}", f.kind.label(), f.offset);
+        let f = r.field;
+        let mut tip = format!("{} at +{:#x}", r.type_words, f.offset);
+        if let Some(unit) = r.unit {
+            tip.push_str(&format!(", in {unit}"));
+        }
         if !f.named {
-            tip.push_str("\nunnamed: labelled by its offset");
+            tip.push_str("\nNo definition names this field yet.");
         }
         if let Some(doc) = f.doc.as_deref().filter(|s| !s.is_empty()) {
             tip.push('\n');
             tip.push_str(doc);
+        }
+        if let Some(why) = r.read_only {
+            tip.push('\n');
+            tip.push_str(why);
+        }
+        if self.st.link.connected() {
+            tip.push_str(&format!("\n{} {}", r.effect.sentence(), r.why));
         }
         if !f.meaning.is_empty() {
             tip.push('\n');
@@ -358,7 +666,7 @@ impl Cx<'_, '_> {
         }
         ui.set_item_tooltip(tip);
         self.st.hovered = Some(Hovered {
-            address: at + f.offset,
+            address: r.address,
             len: f.kind.width(),
             offset: f.offset,
             name: f.name.clone(),
@@ -370,23 +678,26 @@ impl Cx<'_, '_> {
         self.st.focus = Some((self.tag, at, layout.clone()));
     }
 
-    fn field(&mut self, at: u32, layout: &Arc<Layout>, f: &Field) {
+    fn field(&mut self, at: u32, layout: &Arc<Layout>, r: &Row) {
         let ui = self.ui;
-        let a = at + f.offset;
+        let f = r.field;
+        let a = r.address;
         let w = f.kind.width();
         let Some(b) = self.doc.read(self.tag, a, w) else {
-            ui.text_disabled(format!("{}: outside the tag's address space", f.name));
+            ui.text_disabled(format!("{}: outside the tag's address space", r.label));
             return;
         };
         match &f.kind {
-            Kind::Block(child) => return self.block(at, layout, f, child),
-            Kind::Data => return self.data(at, layout, f, &b),
+            Kind::Block(child) => return self.block(at, layout, r, child),
+            Kind::Data => return self.data(at, layout, r, &b),
+            Kind::Flags { bytes, bits } => return self.flags(at, layout, r, &b, *bytes, bits),
             _ => {}
         }
-        self.label(at, layout, f);
-        let structural = f.kind.is_structural();
-        let can_follow = self.trail.is_some() && matches!(f.kind, Kind::TagRef { .. } | Kind::Datum { .. });
-        let _off = ui.begin_disabled_with_cond((!self.editable && !can_follow) || structural);
+        self.label(at, layout, r);
+        // A reference's Open works on a read-only tag; its Change says why
+        // it does not.
+        let is_ref = matches!(f.kind, Kind::TagRef { .. } | Kind::Datum { .. });
+        let off = ui.begin_disabled_with_cond(r.read_only.is_some() && !is_ref);
         match &f.kind {
             Kind::Int {
                 bytes,
@@ -422,83 +733,16 @@ impl Cx<'_, '_> {
                 self.after();
             }
             Kind::Float { count, hint } => self.float(a, f, &b, *count, *hint),
-            Kind::Enum { bytes, values } | Kind::Flags { bytes, bits: values }
-                if values.iter().all(|s| s.is_empty() || s == "_") =>
-            {
-                let n = usize::from(*bytes);
-                let max = (1i64 << (8 * n)) - 1;
-                let mut value = le(&b, 0, n) as i64;
-                if Drag::<i64, _>::new("##v")
-                    .range(0, max)
-                    .build(ui, &mut value)
-                {
-                    let encoded = value.clamp(0, max).to_le_bytes();
-                    self.write(a, encoded[..n].to_vec(), &f.name);
-                }
-                self.after();
-            }
-            Kind::Enum { bytes, values } => {
-                let n = usize::from(*bytes);
-                let v = le(&b, 0, n) as u32;
-                let label = values
-                    .get(v as usize)
-                    .filter(|s| !s.is_empty() && s.as_str() != "_")
-                    .map_or_else(|| v.to_string(), |s| format!("{v}: {s}"));
-                if let Some(_c) = ui.begin_combo("##v", label) {
-                    for (i, name) in values.iter().enumerate() {
-                        if name.is_empty() || name == "_" {
-                            continue;
-                        }
-                        let i = i as u32;
-                        if ui.selectable_config(format!("{i}: {name}")).selected(i == v).build()
-                            && i != v
-                        {
-                            self.write(a, i.to_le_bytes()[..n].to_vec(), &f.name);
-                        }
-                    }
-                }
-            }
-            Kind::Flags { bytes, bits } => {
-                let n = *bytes as usize;
-                let v = le(&b, 0, n);
-                ui.text_disabled(format!("{v:#0w$x}", w = 2 + 2 * n));
-                for bit in 0..(8 * n) {
-                    let named = bits.get(bit).filter(|s| s.as_str() != "_");
-                    let on = v >> bit & 1 == 1;
-                    if named.is_none() && !on {
-                        continue;
-                    }
-                    let text = match named {
-                        Some(s) => format!("{s}##b{bit}"),
-                        None => format!("bit {bit}##b{bit}"),
-                    };
-                    ui.dummy([LABEL - ui.cursor_pos()[0] + 8.0, 0.0]);
-                    ui.same_line_with_pos(LABEL + 8.0);
-                    let mut on2 = on;
-                    if ui.checkbox(text, &mut on2) {
-                        let nv = v ^ (1 << bit);
-                        self.write(a, nv.to_le_bytes()[..n].to_vec(), &f.name);
-                    }
-                    self.hover(at, layout, f);
+            Kind::Enum { .. } => {
+                let width = (ui.content_region_avail()[0] - self.trailing).max(60.0);
+                let shown = r.summary.as_deref().unwrap_or_default();
+                if ui.button_with_size(format!("{shown}##choose"), [width, 0.0]) {
+                    self.open_picker(r, picker::What::Choice);
                 }
             }
             Kind::StringId => self.string_id(a, f, &b),
-            Kind::TagRef { groups } => {
-                let group = FourCC::from_u32(le(&b, 0, 4) as u32);
-                let id = le(&b, 4, 4) as u32;
-                if let Some((g, chosen)) = self.picker(f, groups, id) {
-                    let g = g.or((group.as_u32() != u32::MAX).then_some(group));
-                    let mut out = g.map_or(u32::MAX, FourCC::as_u32).to_le_bytes().to_vec();
-                    out.extend_from_slice(&chosen.to_le_bytes());
-                    self.write(a, out, &f.name);
-                }
-            }
-            Kind::Datum { groups } => {
-                let id = le(&b, 0, 4) as u32;
-                if let Some((_, chosen)) = self.picker(f, groups, id) {
-                    self.write(a, chosen.to_le_bytes().to_vec(), &f.name);
-                }
-            }
+            Kind::TagRef { groups } => self.reference(r, groups, le(&b, 4, 4) as u32),
+            Kind::Datum { groups } => self.reference(r, groups, le(&b, 0, 4) as u32),
             Kind::Word => {
                 let mut v = le(&b, 0, 4) as u64;
                 if Drag::<u64, _>::new("##v")
@@ -515,17 +759,119 @@ impl Cx<'_, '_> {
                     .map(|i| format!("{:#010x}", le(&b, 4 * i, 4)))
                     .collect();
                 ui.text(words.join(" "));
-                if ui.is_item_hovered() {
-                    ui.set_item_tooltip(STRUCTURAL);
-                }
             }
             Kind::Pad { .. } => {
                 ui.text_disabled(hex(&b));
             }
-            Kind::Unknown { len } => self.unknown(a, f, &b, *len),
-            Kind::Block(_) | Kind::Data => unreachable!(),
+            Kind::Unknown { len } => self.unknown(r, &b, *len),
+            Kind::Block(_) | Kind::Data | Kind::Flags { .. } => unreachable!(),
         }
-        self.hover(at, layout, f);
+        self.hover(at, layout, r);
+        off.end();
+        self.tail(r);
+    }
+
+    /// Open the pick dialog for the row's field.
+    fn open_picker(&mut self, r: &Row, what: picker::What) {
+        let group = self.doc.tag(self.tag).map_or(FourCC(*b"????"), |t| t.group);
+        let kept = show_as_key(group, &self.prefix, r.field.offset);
+        self.st.pick = Some(picker::Open::new(self.tag, r.address, r.field, &r.label, kept, what));
+    }
+
+    /// A switches row: how many are on; open, the named bits as
+    /// checkboxes in two columns, then the rest folded as Unnamed bits
+    /// (shown directly when none is named).
+    fn flags(
+        &mut self,
+        at: u32,
+        layout: &Arc<Layout>,
+        r: &Row,
+        b: &[u8],
+        bytes: u8,
+        names: &[String],
+    ) {
+        let ui = self.ui;
+        let Some(_node) = self.node(at, layout, r, format!("flg{:x}", r.address)) else {
+            return;
+        };
+        let n = usize::from(bytes);
+        let v = le(b, 0, n);
+        let all = picker::bits(names, 8 * n as u32);
+        let (named, rest): (Vec<&picker::Bit>, Vec<&picker::Bit>) =
+            all.iter().partition(|bit| bit.name.is_some());
+        let _off = ui.begin_disabled_with_cond(r.read_only.is_some());
+        if named.is_empty() {
+            return self.bit_columns(at, layout, r, n, v, &rest);
+        }
+        self.bit_columns(at, layout, r, n, v, &named);
+        let open = ui
+            .tree_node_config(format!("ubits{:x}", r.address))
+            .label("Unnamed bits")
+            .push();
+        let set = rest.iter().filter(|bit| v >> bit.bit & 1 == 1).count();
+        ui.same_line_with_pos(LABEL);
+        ui.text_disabled(format!("{set} of {} on", rest.len()));
+        if open.is_some() {
+            self.bit_columns(at, layout, r, n, v, &rest);
+        }
+    }
+
+    /// Bits as checkboxes, two to a line; a click flips one, one undo step.
+    fn bit_columns(
+        &mut self,
+        at: u32,
+        layout: &Arc<Layout>,
+        r: &Row,
+        n: usize,
+        v: u64,
+        list: &[&picker::Bit],
+    ) {
+        let ui = self.ui;
+        let x = ui.cursor_pos()[0];
+        let half = (ui.content_region_avail()[0] * 0.5).max(120.0);
+        for (i, bit) in list.iter().enumerate() {
+            if i % 2 == 1 {
+                ui.same_line_with_pos(x + half);
+            }
+            let mut on = v >> bit.bit & 1 == 1;
+            if ui.checkbox(format!("{}##b{}", bit.label, bit.bit), &mut on) {
+                let flipped = v ^ (1 << bit.bit);
+                self.write(r.address, flipped.to_le_bytes()[..n].to_vec(), &r.field.name);
+                self.actions.push(Action::Tag(TagAction::Seal));
+            }
+            self.hover(at, layout, r);
+        }
+    }
+
+    /// A tag reference: its kind and name (the full path on hover), then
+    /// **Open** and **Change...** (the pick dialog).
+    fn reference(&mut self, r: &Row, groups: &[FourCC], id: u32) {
+        let ui = self.ui;
+        let doc = self.doc;
+        ui.text(r.summary.as_deref().unwrap_or_default());
+        if ui.is_item_hovered() {
+            let mut tip = doc.tag_label(id);
+            if !groups.is_empty() {
+                let kinds: Vec<String> = groups.iter().map(|g| row::kind_words(doc, *g)).collect();
+                tip.push_str(&format!("\nTakes: {}", kinds.join(", ")));
+            }
+            ui.set_item_tooltip(tip);
+        }
+        ui.same_line();
+        let target = doc.tag(TagId(id)).map(|t| t.id);
+        {
+            let _off = ui.begin_disabled_with_cond(target.is_none());
+            if ui.small_button("Open##open")
+                && let Some(tag) = target
+            {
+                self.actions.push(reference_action(self.trail, &self.prefix, &r.field.name, tag));
+            }
+        }
+        ui.same_line();
+        let _off = ui.begin_disabled_with_cond(r.read_only.is_some());
+        if ui.small_button("Change...##change") {
+            self.open_picker(r, picker::What::Reference);
+        }
     }
 
     fn float(&mut self, a: u32, f: &Field, b: &[u8], count: u32, hint: Hint) {
@@ -553,7 +899,7 @@ impl Cx<'_, '_> {
                 let mut d: Vec<f32> = v.iter().map(|x| x * deg).collect();
                 let ch = Drag::<f32, _>::new("##v")
                     .speed(0.5)
-                    .display_format(fmt_f("%.2f deg"))
+                    .display_format(fmt_f("%.2f"))
                     .build_array(ui, &mut d);
                 v = d.iter().map(|x| x / deg).collect();
                 ch
@@ -570,18 +916,16 @@ impl Cx<'_, '_> {
         self.after();
     }
 
-    fn unknown(&mut self, a: u32, f: &Field, b: &[u8], len: u32) {
+    fn unknown(&mut self, r: &Row, b: &[u8], len: u32) {
         let ui = self.ui;
+        let (a, f) = (r.address, r.field);
         let v = le(b, 0, len as usize) as u32;
-        let view = self
-            .st
-            .views
-            .get(&(self.tag, a))
-            .copied()
-            .unwrap_or(if len == 4 { guess(v) } else { View::Int });
+        let group = self.doc.tag(self.tag).map_or(FourCC(*b"????"), |t| t.group);
+        let key = show_as_key(group, &self.prefix, f.offset);
+        let view = shown_as(&self.st.settings, &key, f, v);
         let n = len as usize;
         match view {
-            View::Float if len == 4 => {
+            View::Float => {
                 let mut x = f32::from_bits(v);
                 if Drag::<f32, _>::new("##v")
                     .speed(0.01)
@@ -602,7 +946,7 @@ impl Cx<'_, '_> {
                     self.write(a, x.to_le_bytes()[..n].to_vec(), &f.name);
                 }
             }
-            _ => {
+            View::Int => {
                 let mut x = sign(u64::from(v), n);
                 let lim = 1i64 << (8 * n - 1);
                 if Drag::<i64, _>::new("##v")
@@ -615,19 +959,14 @@ impl Cx<'_, '_> {
             }
         }
         self.after();
-        if let Some(_p) = ui.begin_popup_context_item() {
-            ui.text_disabled("Show as");
-            for (label, to) in [
-                ("float", View::Float),
-                ("integer", View::Int),
-                ("hex", View::Hex),
-            ] {
-                if (to != View::Float || len == 4)
-                    && ui.selectable_config(label).selected(view == to).build()
-                {
-                    self.st.views.insert((self.tag, a), to);
-                }
-            }
+        ui.same_line();
+        if ui.small_button(SHOW_AS) {
+            self.open_picker(r, picker::What::ShowAs);
+        }
+        if ui.is_item_hovered() {
+            ui.set_item_tooltip(
+                "How to show this value: kept for this field of every tag of the kind",
+            );
         }
     }
 
@@ -669,96 +1008,28 @@ impl Cx<'_, '_> {
         }
     }
 
-    /// A tag picker: the current tag, a list of the map's tags of the
-    /// allowed groups, and a button to show the tag. Returns the picked
-    /// tag's group (none for "none") and datum.
-    fn picker(&mut self, f: &Field, groups: &[FourCC], id: u32) -> Option<(Option<FourCC>, u32)> {
+    fn block(&mut self, at: u32, layout: &Arc<Layout>, r: &Row, child: &Arc<Layout>) {
         let ui = self.ui;
-        let doc = self.doc;
-        let mut out = None;
-        let width = ui.content_region_avail()[0] - 32.0;
-        ui.set_next_item_width(width.max(60.0));
-        let combo = ui.begin_disabled_with_cond(!self.editable && self.trail.is_some());
-        if let Some(_c) = ui.begin_combo("##v", doc.tag_label(id)) {
-            ui.set_next_item_width(-1.0);
-            ui.input_text("##filter", &mut self.st.picker).build();
-            let filter = self.st.picker.to_ascii_lowercase();
-            if ui
-                .selectable_config("none")
-                .selected(id == u32::MAX)
-                .build()
-            {
-                out = Some((None, u32::MAX));
-            }
-            let mut shown = 0;
-            for t in doc.tags() {
-                if !doc.fits(t.group, groups) {
-                    continue;
-                }
-                let label = format!("{}: {}", group_text(t.group), t.name);
-                if !filter.is_empty() && !label.to_ascii_lowercase().contains(&filter) {
-                    continue;
-                }
-                shown += 1;
-                if shown > PICKS {
-                    ui.text_disabled("... type to narrow the list");
-                    break;
-                }
-                if ui.selectable_config(&label).selected(t.id.0 == id).build() {
-                    out = Some((Some(t.group), t.id.0));
-                }
-            }
-        }
-        if !groups.is_empty() && ui.is_item_hovered() {
-            let g: Vec<String> = groups.iter().map(|g| group_text(*g)).collect();
-            ui.set_item_tooltip(format!("{}: {}", f.name, g.join(", ")));
-        }
-        combo.end();
-        ui.same_line();
-        let target = doc.tag(TagId(id)).map(|t| t.id);
-        let _go = ui.begin_disabled_with_cond(target.is_none());
-        if ui.small_button(format!("{}##go", icon::FOCUS))
-            && let Some(tag) = target
-        {
-            self.actions.push(reference_action(self.trail, &self.prefix, &f.name, tag));
-        }
-        if ui.is_item_hovered() {
-            ui.set_item_tooltip("Show this tag");
-        }
-        out
-    }
-
-    fn block(&mut self, at: u32, layout: &Arc<Layout>, f: &Field, child: &Arc<Layout>) {
-        let ui = self.ui;
-        let pair = at + f.offset;
-        let Some((n, a)) = self.doc.block(self.tag, pair, child) else {
+        let f = r.field;
+        let pair = r.address;
+        let Some(row::List {
+            count: n,
+            address: a,
+            ..
+        }) = r.list
+        else {
             ui.text_disabled(format!(
                 "{}: its elements are outside the tag's address space",
-                f.name
+                r.label
             ));
             return;
         };
-        let cap = self.doc.capacity(self.tag, pair);
-        let mode = if self.editable { "Reload" } else { "Read-only" };
-        let header = format!(
-            "{}  · {mode}  [{n}]{}",
-            f.name,
-            if cap > n {
-                format!(" of {cap}")
-            } else {
-                String::new()
-            }
-        );
         if self.st.has_field_focus(self.tag) && self.st.focus_blocks.contains(&pair) {
             ui.set_next_item_open(true);
         }
-        let node = ui
-            .tree_node_config(format!("blk{pair:x}"))
-            .label(header)
-            .span_avail_width(true)
-            .push();
-        self.hover(at, layout, f);
-        let Some(_node) = node else { return };
+        let Some(_node) = self.node(at, layout, r, format!("blk{pair:x}")) else {
+            return;
+        };
         let i = self
             .st
             .index
@@ -848,13 +1119,13 @@ impl Cx<'_, '_> {
                 BlockOp::Remove(i),
             );
         }
+        // The header's summary says when the list is empty.
         if n == 0 {
-            ui.text_disabled("empty");
             return;
         }
         let _id = ui.push_id(i as usize);
         let prefix_len = self.prefix.len();
-        if self.trail.is_some() {
+        {
             use std::fmt::Write as _;
             let _ = write!(self.prefix, "{}[{i}].", f.name);
         }
@@ -862,19 +1133,14 @@ impl Cx<'_, '_> {
         self.prefix.truncate(prefix_len);
     }
 
-    fn data(&mut self, at: u32, layout: &Arc<Layout>, f: &Field, b: &[u8]) {
+    fn data(&mut self, at: u32, layout: &Arc<Layout>, r: &Row, b: &[u8]) {
         let ui = self.ui;
+        let f = r.field;
         let (n, a) = (le(b, 0, 4) as u32, le(b, 4, 4) as u32);
-        let mode = if self.editable { "Reload" } else { "Read-only" };
-        let node = ui
-            .tree_node_config(format!("dat{:x}", at + f.offset))
-            .label(format!("{}  · {mode}  ({n} bytes)", f.name))
-            .span_avail_width(true)
-            .push();
-        self.hover(at, layout, f);
-        let Some(_node) = node else { return };
+        let Some(_node) = self.node(at, layout, r, format!("dat{:x}", r.address)) else {
+            return;
+        };
         if n == 0 {
-            ui.text_disabled("empty");
             return;
         }
         let shown = n.min(DATA_SHOWN);
@@ -882,7 +1148,7 @@ impl Cx<'_, '_> {
             ui.text_disabled("its bytes are outside the tag's address space");
             return;
         };
-        let editable = self.editable && n <= DATA_SHOWN;
+        let editable = r.read_only.is_none() && n <= DATA_SHOWN;
         let current = hex_lines(&bytes);
         let text = self
             .st
@@ -969,7 +1235,7 @@ mod tests {
         for n in 1..=4 {
             super::fmt_hex(&format!("0x%0{}llx", 2 * n));
         }
-        for f in ["%.2f deg", "%.4f"] {
+        for f in ["%.2f", "%.4f"] {
             super::fmt_f(f);
         }
     }
@@ -983,6 +1249,86 @@ mod tests {
         assert_eq!(guess(7), View::Int);
         assert_eq!(guess((-3i32) as u32), View::Int);
         assert_eq!(guess(0x8123_4567), View::Hex);
+    }
+
+    #[test]
+    fn show_as_is_kept_per_group_and_offset_and_saved_with_the_layout() {
+        let weap = FourCC(*b"weap");
+        assert_eq!(show_as_key(weap, "", 0x6), "weap:+0x6");
+        assert_eq!(show_as_key(weap, "parts[1].", 0x4), "weap:parts+0x4");
+        assert_eq!(
+            show_as_key(weap, "parts[0].bones[12].", 0x4),
+            show_as_key(weap, "parts[3].bones[0].", 0x4)
+        );
+        let mut settings = Settings {
+            unnamed: true,
+            ..Settings::default()
+        };
+        settings
+            .show_as
+            .insert(show_as_key(weap, "", 0x6), View::Hex);
+        settings
+            .show_as
+            .insert(show_as_key(weap, "parts[0].", 0x8), View::Float);
+        let ini = format!(
+            "[Window][Tags]\nPos=0,0\n\n{}[Docking][Data]\n",
+            settings.ini()
+        );
+        assert_eq!(Settings::from_ini(&ini), settings);
+        assert_eq!(
+            Settings::from_ini("[Window][Tags]\nPos=0,0\n"),
+            Settings::default()
+        );
+        for view in View::ALL {
+            assert_eq!(View::from_id(view.id()), Some(view));
+        }
+
+        let word = Field {
+            offset: 0x6,
+            name: "+0x6".into(),
+            section: String::new(),
+            named: false,
+            kind: Kind::Unknown { len: 4 },
+            meaning: String::new(),
+            doc: None,
+            applies: None,
+            label: None,
+            unit: None,
+            axes: Vec::new(),
+        };
+        let key = show_as_key(weap, "", 0x6);
+        assert_eq!(shown_as(&settings, &key, &word, 7), View::Hex);
+        assert_eq!(
+            shown_as(&Settings::default(), &key, &word, 1.5f32.to_bits()),
+            View::Float
+        );
+        let half = Field {
+            kind: Kind::Unknown { len: 2 },
+            ..word
+        };
+        let decimal = Settings {
+            show_as: [(key.clone(), View::Float)].into(),
+            ..Settings::default()
+        };
+        assert_eq!(
+            shown_as(&decimal, &key, &half, 7),
+            View::Int,
+            "decimal needs four bytes"
+        );
+    }
+
+    /// Choices, references and Show as open the pick dialog: the panel
+    /// draws no combo.
+    #[test]
+    fn the_panel_has_no_combos() {
+        let combo = concat!("begin", "_combo");
+        for (file, text) in [
+            ("fields.rs", include_str!("fields.rs")),
+            ("fields/picker.rs", include_str!("fields/picker.rs")),
+            ("fields/row.rs", include_str!("fields/row.rs")),
+        ] {
+            assert!(!text.contains(combo), "{file} draws a combo");
+        }
     }
 
     #[test]

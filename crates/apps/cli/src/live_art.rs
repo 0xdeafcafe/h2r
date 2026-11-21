@@ -486,6 +486,11 @@ impl MapFile {
                 .is_some_and(|dir| dir.join(boot::new_maps::MARKER).is_file())
     }
 
+    /// The map's path on the disc (`/campaign/a10.map`), as [`Disc::read`] takes it.
+    pub(crate) fn path(&self) -> &str {
+        &self.entry.path
+    }
+
     pub(crate) fn name(&self) -> &str {
         let file = self
             .entry

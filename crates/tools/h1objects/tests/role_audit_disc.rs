@@ -110,8 +110,8 @@ const ALLOWED: &[Rule] = &[
 /// damage bounds were; docs/formats/tag-definitions.md). The suspects are
 /// listed; each is a bug until shown otherwise.
 const KNOWN: &[Rule] = &[
-    ("vehi", "block_1c8[]*", "value", "seat access thresholds used by the Halo 2 entry test"),
-    ("vehi", "block_2f8[]*", "value", "native vehicle phantom"),
+    ("vehi", "seats[]*", "value", "seat access thresholds used by the Halo 2 entry test"),
+    ("vehi", "phantom_shapes[]*", "value", "native vehicle phantom"),
 ];
 
 /// One field still holding a role's value or a retail reference.
@@ -267,6 +267,44 @@ fn values_at<'r>(r: &'r Record, path: &str) -> Vec<&'r Val> {
             .and_then(|i| e.get(i))
             .map_or_else(Vec::new, |x| values_at(x, rest)),
         _ => Vec::new(),
+    }
+}
+
+/// Whether a record holds `want` at `path` (indices as in [`values_at`]):
+/// raw bytes as [`Record::bytes`] reads them, so a role word written over a
+/// typed field is found; any other value by [`defs::same`].
+fn holds_at(r: &Record, path: &str, want: &Val) -> bool {
+    let Val::Bytes(b) = want else {
+        return values_at(r, path).iter().any(|v| defs::same(v, want));
+    };
+    match path.rsplit_once('.') {
+        None => r.bytes(path, b.len()).as_ref() == Some(b),
+        Some((parent, last)) => elements_at(r, parent)
+            .iter()
+            .any(|x| x.bytes(last, b.len()).as_ref() == Some(b)),
+    }
+}
+
+/// Every record (embedded struct or block element) at `path` in `r`;
+/// `[*]` takes every element.
+fn elements_at<'r>(r: &'r Record, path: &str) -> Vec<&'r Record> {
+    let (head, rest) = match path.split_once('.') {
+        Some((a, b)) => (a, Some(b)),
+        None => (path, None),
+    };
+    let (name, index) = match head.split_once('[') {
+        Some((n, i)) => (n, Some(i.trim_end_matches(']'))),
+        None => (head, None),
+    };
+    let here: Vec<&Record> = match (index, r.get(name)) {
+        (None, Some(Val::Struct(x))) => vec![x],
+        (Some("*"), Some(Val::Block(e))) => e.iter().collect(),
+        (Some(i), Some(Val::Block(e))) => i.parse::<usize>().ok().and_then(|i| e.get(i)).into_iter().collect(),
+        _ => Vec::new(),
+    };
+    match rest {
+        None => here,
+        Some(rest) => here.into_iter().flat_map(|x| elements_at(x, rest)).collect(),
     }
 }
 
@@ -451,10 +489,7 @@ fn audit(map: &str, h1: &H1Map, base: &Base, snap: &Snapshot) -> Vec<Leak> {
                 if empty(&f.value) || matches!(f.value, Val::Ref { .. } | Val::Datum(_)) {
                     continue;
                 }
-                if !values_at(r, &f.path)
-                    .iter()
-                    .any(|v| defs::same(v, &f.value))
-                {
+                if !holds_at(r, &f.path, &f.value) {
                     continue; // Halo 1's value replaced it.
                 }
                 let what = match &f.value {
@@ -652,8 +687,8 @@ fn every_role_leak_is_classified() {
 #[test]
 fn paths_normalise_and_rules_match_by_prefix() {
     assert_eq!(
-        normal("barrels[0].block_e4[12].ref_4"),
-        "barrels[].block_e4[].ref_4"
+        normal("barrels[0].firing_effects[12].firing_effect"),
+        "barrels[].firing_effects[].firing_effect"
     );
     assert_eq!(
         normal("events[*].particle_systems[*].lod"),
@@ -663,7 +698,7 @@ fn paths_normalise_and_rules_match_by_prefix() {
         map: "m".into(),
         group: "weap".into(),
         tag: "t".into(),
-        path: "barrels[].block_e4[].ref_4".into(),
+        path: "barrels[].firing_effects[].firing_effect".into(),
         what: "effe".into(),
         shown: String::new(),
     };

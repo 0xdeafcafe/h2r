@@ -467,7 +467,7 @@ fn shortcut(from: FourCC, to: FourCC, prefix: &str, field: &str) -> Option<&'sta
         (b"weap" | b"proj", b"effe") => "Effect",
         (b"weap" | b"proj", b"jpt!") => "Damage effect",
         (b"vehi" | b"bipd", b"weap") if prefix.starts_with("weapons[") => "Weapon",
-        (b"vehi", _) if prefix.starts_with("block_1c8[") => "Seat reference",
+        (b"vehi", _) if prefix.starts_with("seats[") => "Seat reference",
         _ => return None,
     })
 }

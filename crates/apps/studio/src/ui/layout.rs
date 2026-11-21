@@ -25,6 +25,7 @@ impl ToolWindows {
 pub(super) struct Keys {
     pub maps: WindowKey,
     pub tags: WindowKey,
+    pub scripts: WindowKey,
     pub outliner: WindowKey,
     pub viewport: WindowKey,
     pub inspector: WindowKey,
@@ -47,6 +48,7 @@ impl Keys {
         Self {
             maps: key("maps", icon::MAP, "Maps"),
             tags: key("tags", icon::BOX, "Tags"),
+            scripts: key("scripts", icon::FILE, "Scripts"),
             outliner: key("outliner", icon::TREE, "Scene"),
             viewport: key("viewport", icon::EYE, "Viewport"),
             inspector: key("inspector", icon::SLIDERS, "Inspector"),
@@ -91,7 +93,7 @@ impl Keys {
                 DockSplit::Left,
                 0.22,
                 DockLayout::tabs(
-                    [&self.outliner, &self.tags, &self.maps]
+                    [&self.outliner, &self.tags, &self.scripts, &self.maps]
                         .into_iter()
                         .chain(tools.map(|tool| &tool.list)),
                 ),
@@ -129,7 +131,7 @@ impl Keys {
         }
         seed(
             &self.outliner,
-            [&self.maps, &self.tags]
+            [&self.maps, &self.tags, &self.scripts]
                 .into_iter()
                 .chain(tools.map(|t| &t.list)),
         );

@@ -187,7 +187,7 @@ mod tests {
         let mut item = garbage(&object(), &source, Some(hlmt), &[], &[]).unwrap();
         crate::rebuild::object_effects(b"garb", &mut item, "item.obje", &a, None).unwrap();
         let r = defs::from_built(d, &built(d, &item).unwrap()).unwrap();
-        assert_eq!(r.at("item.unknown_114"), Some(&Val::Bytes(0.75f32.to_le_bytes().to_vec())));
+        assert_eq!(r.bytes("item.detonation_delay", 4), Some(0.75f32.to_le_bytes().to_vec()));
         assert_eq!(r.at("item.obje.object_type"), Some(&Val::Enum(GARBAGE_TYPE)));
         assert_eq!(r.at("item.obje.bounding_radius"), Some(&Val::Float(0.3)));
         assert!(names(r.at("item.obje.model"), hlmt));
