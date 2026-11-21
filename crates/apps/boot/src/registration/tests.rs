@@ -3,13 +3,17 @@
 //! A clash (two features hooking one point the same way with no order
 //! between them) makes boot refuse the plan and the game stop at launch.
 //! These tests call [`register_core`](super::register_core) and
-//! [`register_late`](super::register_late) with test inputs and build the
-//! plan, so the clash fails here.
+//! [`register_late`](super::register_late) with test inputs, add the
+//! registrations `run_hosted_with_live` makes between and after them (the
+//! Theater, the lab takeover, the host metrics, the light host's skips, the
+//! return to the menu, the render aspect, Forge) and build the plan, so the
+//! clash fails here. [`every_registration_site_in_boot_is_accounted_for`]
+//! fails when boot gains a registration this file does not know.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use super::{AgentSource, CoreInputs, LateInputs, register_core, register_late_for_profile};
+use super::{AgentSource, CoreInputs, LateInputs, register_core_film, register_late_for_profile};
 use crate::lockstep_glue;
 
 /// Every switch that adds hooks, on (the native renderer is on by default).
@@ -46,6 +50,21 @@ pub(crate) struct Case {
     /// Signed in to Live: co-op over Live's armed hooks (`coop-live`), as
     /// boot adds them when there is a Live HLE and no `H2_COOP_PROBE`.
     pub coop_live: bool,
+    /// The Theater page and film link, installed as boot's `Theater::install`
+    /// does (`theater-texts`, `theater-link`).
+    pub theater: bool,
+    /// Signed in to a Live service (a test Live HLE): the join link, the
+    /// browser, the map pack rotation and the rest of Live's registrations.
+    /// Boot's own co-op arming then comes from `register_late`, so
+    /// `coop_live` adds nothing.
+    pub live: bool,
+    /// The windowed game with player input: the lab takeover consent and
+    /// its dialog (`AgentGlue::configure_takeover`, needs `agent`).
+    pub takeover: bool,
+    /// The light host: the viewer skips, the native sim, `sim-frame`, no
+    /// window (so no drawing, takeover or return to the menu) and no
+    /// non-player Live features.
+    pub light: bool,
 }
 
 impl Case {
@@ -63,11 +82,15 @@ impl Case {
             lockstep: false,
             coop_probe: false,
             coop_live: false,
+            theater: false,
+            live: false,
+            takeover: false,
+            light: false,
         }
     }
 
     /// Everything a test can supply except the runs that exclude each other
-    /// (lockstep and the co-op probe).
+    /// (lockstep, the co-op probe and the light host).
     pub fn full(switches: &str) -> Case {
         Case {
             settings: true,
@@ -78,6 +101,9 @@ impl Case {
             telemetry: true,
             level: true,
             agent: true,
+            theater: true,
+            live: true,
+            takeover: true,
             ..Case::none(switches)
         }
     }
@@ -93,53 +119,111 @@ pub(crate) fn registry(case: &Case) -> hooks::Registry {
     registry_for_profile(case, super::compiled_render_hooks())
 }
 
+fn live_config() -> live_hle::LiveConfig {
+    live_hle::LiveConfig {
+        enabled: true,
+        server_url: Some("https://live.example".into()),
+        ..Default::default()
+    }
+}
+
+fn no_library(_: &Path) -> Result<Box<dyn crate::theater_ui::adapter::Library>, String> {
+    Err("no film library in a test".into())
+}
+
+/// A sink for the render aspect's layout, standing in for the device.
+#[cfg(feature = "gpu")]
+struct NoDevice;
+
+#[cfg(feature = "gpu")]
+impl crate::render_aspect::UiLayoutSink for NoDevice {
+    fn set_projection_factor(&self, _: f32) {}
+    fn set_fit(&self, _: &mut runtime::Guest, _: Option<d3d::backend::UiFit>) {}
+}
+
 fn registry_for_profile(case: &Case, profile: film::RenderHooks) -> hooks::Registry {
     let rt = Arc::new(runtime::Runtime::new(runtime::Guest::new(), runtime::Dispatch::default()));
     let settings = case
         .settings
         .then(|| Arc::new(settings::Store::defaults(crate::setting_defs::ALL)));
-    let mut features = hooks::Registry::new(hooks::Switches::parse(&case.switches).unwrap());
+    let mut features = hooks::Registry::new(super::profile_switches(
+        hooks::Switches::parse(&case.switches).unwrap(),
+        case.light,
+    ));
     let nowhere = Path::new("");
+    let live = case.live.then(|| live_hle::Hle::new(live_config()).unwrap());
+    // Boot's order: the Theater first, then the core registrations.
+    let theater = case.theater.then(|| {
+        let theater = crate::theater_ui::Theater::default();
+        theater
+            .install(
+                &mut features,
+                nowhere,
+                crate::theater::Installation::new(&[], Vec::new(), PathBuf::new()),
+                &live.as_ref().map(|_| live_config()).unwrap_or_default(),
+                live.clone(),
+                no_library,
+            )
+            .unwrap();
+        theater
+    });
     let telemetry = if case.telemetry {
         Ok(crate::telemetry::TelemetryConfig::file(std::env::temp_dir().join("h2-registration-test.telemetry")))
     } else {
         Ok(crate::telemetry::TelemetryConfig::default())
     };
-    register_core(
+    let core = register_core_film(
         &mut features,
         CoreInputs {
-            theater: None,
+            theater: theater.clone(),
             rt: &rt,
             telemetry,
             vfs: case.vfs.then(|| Arc::new(Mutex::new(vfs::Vfs::new()))),
             model: None,
             campaigns: None,
             settings: settings.clone(),
-            live: None,
+            live: live.clone(),
             data_root: nowhere,
             packages: nowhere,
             level: None,
             perf_level: case.level,
             bots: case.xapi,
         },
+        None,
+        case.light,
+        None,
     )
     .unwrap();
+    // The window's drawing device: the render aspect (a light host has none).
+    #[cfg(feature = "gpu")]
+    let windowed = case.drawing && !case.light;
+    #[cfg(feature = "gpu")]
+    if windowed {
+        crate::render_aspect::install(
+            &mut features,
+            Arc::new(|| (640, 480)),
+            Arc::new(|| 0),
+            Arc::new(NoDevice),
+        )
+        .unwrap();
+    }
     let lockstep = lockstep_glue::Config {
         trace: case.lockstep.then(|| PathBuf::from("h2-registration-test.lockstep")),
         ticks: true,
         record: None,
         replay: None,
     };
+    let lockstep_on = lockstep.enabled();
     let pipeline = super::pipeline_for(
         render_bridge::pipeline_render::PipelineRender::with(true, render_bridge::pipeline_render::Addrs::HALO2),
-        lockstep.enabled(),
-        false,
+        lockstep_on,
+        case.light,
     );
-    register_late_for_profile(
+    let mut late = register_late_for_profile(
         &mut features,
         LateInputs {
             #[cfg(feature = "gpu")]
-            view: case.drawing.then_some(&crate::d3d_glue::DrawingView { scale_stats: None }),
+            view: windowed.then_some(&crate::d3d_glue::DrawingView { scale_stats: None }),
             #[cfg(feature = "gpu")]
             fixed_lod: None,
             #[cfg(feature = "gpu")]
@@ -147,13 +231,13 @@ fn registry_for_profile(case: &Case, profile: film::RenderHooks) -> hooks::Regis
             rt: &rt,
             lockstep,
             agent: if case.agent { AgentSource::Local } else { AgentSource::None },
-            allow_bot_add: true,
+            allow_bot_add: !case.light || core.bots_on,
             xa: None,
             pipeline,
             coop_probe: case
                 .coop_probe
                 .then(|| crate::coop_probe::parse(|k| (k == "H2_COOP_PROBE").then(|| "1".to_owned())).unwrap().unwrap()),
-            live: None,
+            live: live.clone(),
             settings,
             map_gate: None,
             disc: nowhere,
@@ -163,9 +247,34 @@ fn registry_for_profile(case: &Case, profile: film::RenderHooks) -> hooks::Regis
     )
     .unwrap();
     // Boot's Live branch (registration.rs): the armed co-op hooks, unless
-    // the probe holds them.
-    if case.coop_live && !case.coop_probe {
+    // the probe holds them. With a Live HLE `register_late` made them.
+    if case.coop_live && !case.coop_probe && live.is_none() {
         crate::coop_probe::install_live(&rt, &mut features, nowhere).unwrap();
+    }
+    // What `run_hosted_with_live` adds after `register_late`, in its order.
+    if features.switches().feature("forge", false) && !case.light && !lockstep_on {
+        crate::forge_glue::install(&mut features, late.agent.as_ref(), None, nowhere).unwrap();
+    }
+    if let Some(a) = &mut late.agent {
+        a.configure_takeover(&mut features, case.takeover && !case.light, case.takeover && !case.light)
+            .unwrap();
+    }
+    if let (Some(theater), Some(a)) = (&theater, &late.agent) {
+        theater.connect(&a.agent);
+    }
+    if case.light {
+        features.add(&sim_bridge::sim_native::SimNative::new(&rt)).unwrap();
+    }
+    super::register_viewer_skips(&mut features, case.light).unwrap();
+    if case.light {
+        assert!(features.add(&sim_bridge::sim_frame::SimFrame::new(0)).unwrap(), "light host requires sim-frame");
+    }
+    if let Some(a) = &late.agent {
+        crate::host_metrics::install(&mut features, &a.agent, case.light).unwrap();
+    }
+    #[cfg(feature = "gpu")]
+    if windowed && !lockstep_on {
+        features.add(&crate::return_to_menu::ReturnToMenu(Arc::new(|_| {}))).unwrap();
     }
     features
 }
@@ -328,6 +437,94 @@ fn the_plan_builds_with_every_hook_switch_on() {
     assert_builds(&Case::full(ALL_ON));
     assert_builds(&Case::full(&format!("{ALL_ON},render-census")));
     assert_builds(&Case::full(&format!("{ALL_ON},{NATIVE_OFF}")));
+    // Forge is off by default; boot installs it with its switch on.
+    assert_builds(&Case::full(&format!("{ALL_ON},forge")));
+}
+
+/// The features `run_hosted_with_live` adds around `register_core` and
+/// `register_late`, present in the full case's plan.
+#[test]
+fn the_full_case_plans_every_feature_boot_adds_outside_the_registration_functions() {
+    let full = plan(&Case::full("")).unwrap();
+    let ids: Vec<_> = full.features.iter().map(|f| f.id).collect();
+    #[allow(unused_mut)]
+    let mut expected = vec![
+        // `Theater::install`, before the core registrations.
+        "theater-texts",
+        "theater-link",
+        // `join_link::install` with a Live HLE (in `register_core`).
+        "live-join-link",
+        // `AgentGlue::configure_takeover` with a window and player input.
+        "lab-takeover",
+        "lab-takeover-dialog",
+        // `host_metrics::install` with an agent.
+        "host-metrics",
+    ];
+    #[cfg(feature = "gpu")]
+    expected.extend([
+        // `render_aspect::install` with a drawing device.
+        "render-aspect",
+        // `return_to_menu::ReturnToMenu` on a window with no lockstep run.
+        crate::return_to_menu::ID,
+    ]);
+    let missing: Vec<_> = expected.iter().copied().filter(|id| !ids.contains(id)).collect();
+    assert!(missing.is_empty(), "the full case leaves out {missing:?}; planned: {ids:?}");
+
+    // The light host's registrations, and Forge with its switch.
+    let mut light = Case::full("");
+    light.light = true;
+    let light = plan(&light).unwrap();
+    assert!(light.features.iter().any(|f| f.id == sim_bridge::sim_frame::ID));
+    let forge = plan(&Case::full("forge")).unwrap();
+    assert!(forge.features.iter().any(|f| f.id == "forge"));
+}
+
+/// Where boot registers features outside `register_core` and
+/// `register_late` (`lib.rs`, `run_hosted_with_live`), with the plan test
+/// that covers each, or why none can. Boot's `&mut features` and
+/// `features.add(` sites are counted below: a new one fails the count, and
+/// the fix is a row here and, if a test can build it without a disc, a
+/// step in `registry_for_profile`.
+const BOOT_SITES: &[(&str, &str)] = &[
+    ("campaign_cache::configure", "not covered: its limit feature is private and only added when a map outgrows retail's cache slot"),
+    ("Theater::install", "Case::theater"),
+    ("register_core_film", "registry_for_profile (a film's session is not covered: it needs a recording)"),
+    ("render_aspect::install", "Case::drawing (gpu)"),
+    ("register_late_for_profile", "registry_for_profile"),
+    ("forge_glue::install", "the forge switch"),
+    ("AgentGlue::configure_takeover", "Case::takeover"),
+    ("dsound_glue::add_loop_agent_method", "not covered: needs the audio device (agent-audio)"),
+    ("register_viewer_skips", "Case::light"),
+    ("host_metrics::install", "Case::agent"),
+    ("host_lobby::install", "not covered: env-only (H2_HOST_LOBBY) and needs the run options"),
+    ("Sim::install_with_film", "not covered: needs a sim session"),
+    ("Attract::install", "not covered: its constructor is crate-private to game and needs the bink HLE"),
+    ("SimNative", "Case::light"),
+    ("SimFrame", "Case::light"),
+    ("ReturnToMenu", "Case::drawing (gpu)"),
+    ("host audit", "not covered: needs the generated module and the running stamp"),
+    ("theater::Observer", "not covered: needs a film session"),
+    ("film camera hooks", "not covered: needs a film session"),
+];
+
+/// Counts the registration call sites in boot's `lib.rs`.
+#[test]
+fn every_registration_site_in_boot_is_accounted_for() {
+    let source = include_str!("../lib.rs");
+    let code: String = source
+        .lines()
+        .map(|line| line.split("//").next().unwrap_or_default())
+        .flat_map(str::chars)
+        .filter(|c| !c.is_whitespace())
+        .collect();
+    let sites = code.matches("&mutfeatures").count() + code.matches("features.add(").count();
+    assert_eq!(
+        sites,
+        BOOT_SITES.len(),
+        "boot's lib.rs registers features at {sites} places and BOOT_SITES lists {}; \
+         add the new one to BOOT_SITES, and to registry_for_profile when a test can build it",
+        BOOT_SITES.len()
+    );
 }
 
 /// Each optional piece alone and in every combination, with the default
@@ -335,14 +532,20 @@ fn the_plan_builds_with_every_hook_switch_on() {
 /// (a settings store), bots and the Clankers page (XAPI), map slots and our
 /// skulls' map reads (a VFS), telemetry, the level boot, our cheats (an
 /// agent), the lockstep harness and the co-op probe.
+///
+/// The second group (the Theater, Live, the lab takeover and the light
+/// host) is crossed with that in two ways to keep the run short: all four
+/// off or all four on over every first-group combination, then every
+/// combination of the four over a few first-group bases.
 #[test]
 fn the_plan_builds_with_every_combination_of_optional_features() {
     let mut failures = Vec::new();
     let native_off = format!("{ALL_ON},{NATIVE_OFF}");
+    let forge = format!("{ALL_ON},forge");
     for switches in ["", ALL_ON, native_off.as_str()] {
         for bits in 0u32..(1 << 9) {
             let on = |n: u32| bits & (1 << n) != 0;
-            let case = Case {
+            let first = Case {
                 switches: switches.to_owned(),
                 settings: on(0),
                 #[cfg(feature = "gpu")]
@@ -355,13 +558,47 @@ fn the_plan_builds_with_every_combination_of_optional_features() {
                 lockstep: on(6),
                 coop_probe: on(7),
                 coop_live: on(8),
+                ..Case::none(switches)
             };
-            if let Err(e) = plan(&case) {
-                failures.push(e);
+            for second in [0u32, 0b0111] {
+                if let Err(e) = plan(&with_second_group(&first, second)) {
+                    failures.push(e);
+                }
+            }
+        }
+    }
+    // Every combination of the second group over the bases that matter:
+    // nothing else, everything a test can supply, and the probe's and
+    // lockstep's runs.
+    let bases = |switches: &str| {
+        let mut probe = Case::full(switches);
+        probe.coop_probe = true;
+        let mut lockstep = Case::full(switches);
+        lockstep.lockstep = true;
+        [Case::none(switches), Case::full(switches), probe, lockstep]
+    };
+    for switches in ["", ALL_ON, native_off.as_str(), forge.as_str()] {
+        for base in bases(switches) {
+            for second in 0u32..(1 << 4) {
+                if let Err(e) = plan(&with_second_group(&base, second)) {
+                    failures.push(e);
+                }
             }
         }
     }
     assert!(failures.is_empty(), "{} cases refused:\n{}", failures.len(), dedup(failures).join("\n"));
+}
+
+/// `case` with the second group's bits: the Theater, Live, the takeover and
+/// the light host.
+fn with_second_group(case: &Case, bits: u32) -> Case {
+    Case {
+        theater: bits & 1 != 0,
+        live: bits & 2 != 0,
+        takeover: bits & 4 != 0,
+        light: bits & 8 != 0,
+        ..case.clone()
+    }
 }
 
 /// The distinct first lines of the refusals, so one clash reads once.
