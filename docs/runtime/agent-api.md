@@ -44,6 +44,8 @@ connection to hold `session.claim`.
 | `superbounce.assist_test` | act | [`superbounce`](#superbounce-the-superbounce-game-type) |
 | `superbounce.verify`, `superbounce.verify_cancel` | act | [`superbounce`](#superbounce-the-superbounce-game-type) |
 | `superbounce.verify_status` | read | [`superbounce`](#superbounce-the-superbounce-game-type) |
+| `superbounce.ghosts` | read | [`superbounce`](#superbounce-the-superbounce-game-type) |
+| `superbounce.ghost_show` | act | [`superbounce`](#superbounce-the-superbounce-game-type) |
 | `profile.counters`, `profile.capture`, `profile.fallbacks`, `profile.memory`, `profile.faults` | read | [`profile`](#profile-where-a-frame-goes) |
 | `profile.sample.start`, `profile.sample.stop` | act | [`profile`](#profile-where-a-frame-goes) |
 | `profile.sample.status` | read | [`profile`](#profile-where-a-frame-goes) |
@@ -804,6 +806,37 @@ h2 agent superbounce.verify '{"kind":"crouch","dry_run":true}'
 h2 agent superbounce.verify '{"kind":"crouch","spots":[0,1,2],"trace":0}'
 h2 agent superbounce.verify_status '{"wait_ticks":290,"brief":true}'
 h2 agent superbounce.verify '{"kind":"drop","prime":"none","spots":[0]}'
+```
+
+`superbounce.ghosts` (access: read; no parameters) lists the loaded
+map's ghost runs: recorded runs that bounced off a spot, the best of
+each spot, kept in `<map>.ghosts` in the bots directory
+([superbounce.md](../game/superbounce.md#ghost-runs)). Wire types in
+`crates/extensions/agent-proto/src/superbounce.rs`; the game side is
+`crates/extensions/game/src/superbounce_ghost.rs`.
+
+| Field | Meaning |
+|---|---|
+| `active` | the mode is on |
+| `map` | the map the runs are for, once the mode has ticked on one |
+| `file` | the ghosts file's path, once there is a bots directory |
+| `error` | why the file could not be read (another version, a bad line); it is not written over then |
+| `ghosts` | each run: `index` (what `superbounce.ghost_show` takes), `at` (the spot's stand point), `landing` (the touchdown origin), `source` (`bot`, `verify` or `player`), `ticks` (30 a second), `launch` (units/s up out of the bounce), `crouch_primed` (it primed itself with a crouch), `presses` (`frame` and `button`, `crouch` or `jump`) |
+| `looked_at` | the run whose spot the first local player looks at |
+| `prompt` | the prompt line's ghost verb, as the HUD writes it (X's glyph, U+E102) |
+| `playing` | the playback: `index`, `seconds` since it started by the clock, the run's `tick` then (with the fraction to the next), the figure's `at`, and `done` once it holds on its last frame; absent when none plays |
+| `recorded` | runs kept (a new best for their spot) since the game started |
+
+`superbounce.ghost_show {spot?, stop?}` (access: act) plays run `spot`
+once from its start, or the run looked at without `spot`; `{"stop":
+true}` stops the playback. It answers `playing`, the `index` and the
+run's length in `ticks`. Refused while the mode is off, with no map, or
+for an index the map has no run at.
+
+```sh
+h2 agent superbounce.ghosts
+h2 agent superbounce.ghost_show '{"spot":0}'
+h2 agent superbounce.ghost_show '{"stop":true}'
 ```
 
 ## `profile`: where a frame goes

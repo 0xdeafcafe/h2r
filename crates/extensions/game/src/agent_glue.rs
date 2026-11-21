@@ -315,6 +315,9 @@ impl AgentGlue {
         // Trials of the spots in the game (superbounce_verify.rs,
         // docs/game/superbounce.md, "Verifying spots").
         crate::superbounce_verify::install(&agent);
+        // Ghost runs of the spots (superbounce_ghost.rs,
+        // docs/game/superbounce.md, "Ghost runs").
+        crate::superbounce_ghost::install(&agent);
         // Drive player.0 somewhere with the bots' route brain
         // (player_goto.rs, docs/runtime/agent-api.md, "player.goto").
         crate::player_goto::install(&agent);

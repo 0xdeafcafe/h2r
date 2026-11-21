@@ -214,6 +214,7 @@ pub mod superbounce_capsule;
 pub mod superbounce_chain;
 pub mod superbounce_charge;
 pub mod superbounce_font;
+pub mod superbounce_ghost;
 pub mod superbounce_hud;
 pub mod superbounce_prompts;
 pub mod superbounce_world;

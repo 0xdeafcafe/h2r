@@ -91,6 +91,8 @@ pub fn view(s: &State, tutorial: Option<u8>) -> View {
         }
         None => None,
     };
+    // A ghost run's prompt (superbounce_ghost.rs).
+    let verb = crate::superbounce_ghost::hud_verb(verb);
     let nav = s.nav_target.as_ref().map(|n| match &n.kind {
         mode::NavKind::Crouch => (Target::Crouch, n.distance * METRES_PER_UNIT),
         mode::NavKind::Strip => (Target::Strip, n.fall.max(0.0) * METRES_PER_UNIT),

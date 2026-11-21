@@ -14,6 +14,7 @@
 mod bounce;
 mod crouch;
 mod geom;
+pub mod ghost;
 mod read;
 mod scan;
 pub mod verified;
