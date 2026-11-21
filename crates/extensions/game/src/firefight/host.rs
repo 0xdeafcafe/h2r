@@ -23,6 +23,8 @@ use crate::actor_net::squads::{Placement, SquadEntry, SquadOp};
 pub const TEAMS: u8 = 8;
 /// Zone distances are reported in hundredths of a world unit.
 pub const DISTANCE_SCALE: f32 = 100.0;
+/// The author of an entry the operator appended ([`Host::append`]).
+pub const OPERATOR: &str = "agent";
 
 /// What this machine does with the host log.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -112,6 +114,10 @@ pub trait Game: SquadEntry {
     fn skull(&mut self, skull: Skull, on: bool) -> anyhow::Result<()>;
     /// End the game through the engine's own game end.
     fn end_game(&mut self, outcome: Outcome) -> anyhow::Result<()>;
+    /// The entry whose engine calls follow, before [`Host::pre_tick`]
+    /// applies it: a game that makes its calls later reports their errors
+    /// by sequence number.
+    fn begin_entry(&mut self, _seq: u32) {}
 }
 
 /// Why the mode does not start on this map.
@@ -176,6 +182,8 @@ pub struct Host {
     by_character: BTreeMap<u16, String>,
     team: u8,
     ai_checked: bool,
+    /// The director is not stepped (`firefight.command`'s hold).
+    held: bool,
 }
 
 impl Host {
@@ -220,6 +228,7 @@ impl Host {
             by_character,
             team,
             ai_checked: false,
+            held: false,
         })
     }
 
@@ -243,6 +252,52 @@ impl Host {
     /// The director's mode blob, on the host.
     pub fn state(&self) -> Option<&State> {
         self.director.as_ref().map(Director::state)
+    }
+
+    /// The director, on the host.
+    pub fn director(&self) -> Option<&Director> {
+        self.director.as_ref()
+    }
+
+    /// The sequence number of the last entry applied here.
+    pub fn applied(&self) -> u32 {
+        self.applied
+    }
+
+    pub fn kit(&self) -> &Kit {
+        &self.kit
+    }
+
+    /// Whether [`Host::post_tick`] leaves the director alone.
+    pub fn held(&self) -> bool {
+        self.held
+    }
+
+    /// Hold the director (only appended commands reach the game) or run it
+    /// again. Refused where no director runs.
+    pub fn set_held(&mut self, held: bool) -> anyhow::Result<()> {
+        anyhow::ensure!(self.director.is_some(), "only the host runs the director");
+        self.held = held;
+        Ok(())
+    }
+
+    /// Append one command of the operator's (the agent API's
+    /// `firefight.command`) on the host, to apply at `tick` or at the log
+    /// head's tick if that is later. Its entry carries [`OPERATOR`] as
+    /// the author, so the log tells it from the director's. Clients and
+    /// replicas refuse: the host writes the log.
+    pub fn append(&mut self, tick: u32, op: Command) -> anyhow::Result<Entry<Command>> {
+        anyhow::ensure!(self.role == Role::Host, "the host writes its own log");
+        let head = self.log.head();
+        let entry = Entry {
+            seq: head.next_seq()?,
+            tick: tick.max(head.tick),
+            author: Some(OPERATOR.to_string()),
+            op,
+            prev_hash: head.hash,
+        };
+        self.log.push(entry.clone())?;
+        Ok(entry)
     }
 
     /// Before the game tick: switch AI on if it is off, then apply every
@@ -269,6 +324,7 @@ impl Host {
             .collect();
         for entry in due {
             self.applied = entry.seq;
+            game.begin_entry(entry.seq);
             if let Err(error) = self.apply(&entry.op, game) {
                 errors.push(ApplyError {
                     seq: Some(entry.seq),
@@ -284,7 +340,7 @@ impl Host {
     /// shows and append its commands for the next tick. Returns how many
     /// entries were appended.
     pub fn post_tick(&mut self, tick: u32, game: &impl Game) -> Result<usize, host_log::Error> {
-        if self.director.is_none() {
+        if self.director.is_none() || self.held {
             return Ok(0);
         }
         let seen = observe(&self.kit, &self.by_character, game);

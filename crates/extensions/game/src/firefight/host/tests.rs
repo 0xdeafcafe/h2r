@@ -508,3 +508,54 @@ fn a_replica_fed_the_hosts_log_makes_the_same_engine_calls() {
     assert_eq!(replay.calls, expected_calls());
     assert_eq!(replica.head(), host.head());
 }
+
+#[test]
+fn an_operator_command_applies_at_its_tick_and_names_its_author() {
+    let mut game = FakeGame::new();
+    let mut host = start(Role::Host, &game);
+    host.set_held(true).unwrap();
+    let e = host.append(5, Command::Respawn { player: 0 }).unwrap();
+    assert_eq!((e.seq, e.tick), (1, 5));
+    assert_eq!(e.author.as_deref(), Some(OPERATOR));
+    // Never before the head's tick.
+    let late = host.append(2, Command::EraseSquad { slot: 0 }).unwrap();
+    assert_eq!((late.seq, late.tick), (2, 5));
+    assert!(host.pre_tick(4, &mut game).is_empty());
+    assert!(game.calls.is_empty());
+    assert!(host.pre_tick(5, &mut game).is_empty());
+    assert_eq!(
+        game.calls,
+        [Call::Respawn(0), Call::Squad(SquadOp::Erase { slot: 0 })]
+    );
+    assert_eq!(host.applied(), 2);
+}
+
+#[test]
+fn a_held_director_issues_nothing_until_it_runs_again() {
+    let mut game = FakeGame::new();
+    let mut host = start(Role::Host, &game);
+    host.set_held(true).unwrap();
+    for tick in 0..2000 {
+        run(&mut host, &mut game, tick);
+    }
+    assert_eq!(host.head().seq, 0, "a held director appends nothing");
+    assert!(!host.state().unwrap().started);
+    host.set_held(false).unwrap();
+    let mut appended = 0;
+    for tick in 2000..2100 {
+        assert!(host.pre_tick(tick, &mut game).is_empty());
+        appended += host.post_tick(tick, &game).unwrap();
+    }
+    assert!(appended > 0, "the director runs again");
+}
+
+#[test]
+fn only_the_host_takes_operator_commands_or_holds() {
+    let game = FakeGame::new();
+    for role in [Role::Replica, Role::Client] {
+        let mut host = start(role, &game);
+        assert!(host.append(1, Command::Finish { outcome: Outcome::Won }).is_err());
+        assert!(host.set_held(true).is_err());
+        assert_eq!(host.head().seq, 0);
+    }
+}
