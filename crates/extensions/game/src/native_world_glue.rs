@@ -925,7 +925,7 @@ fn load_ready(
     let empty_lights = {
         let _setup = Setup::Lights.worker();
         let lights = if native.is_empty() { None } else {
-            crate::native_lights_glue::load(&mut map, &mut files, &shaders, &stage_world, &accepts, &decoder.palettes)
+            crate::native_lights_glue::load(&mut map, &mut files, &shaders, &stage_world, &accepts, decoder.palettes())
         };
         if let Some(lights) = lights {
             let lights = Arc::new(lights);

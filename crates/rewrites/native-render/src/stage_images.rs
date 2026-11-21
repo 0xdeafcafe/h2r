@@ -43,6 +43,11 @@ pub struct StageDecoder {
 }
 
 impl StageDecoder {
+    /// The palettes bound at each stage when the load started.
+    pub fn palettes(&self) -> &StagePalettes {
+        &self.palettes
+    }
+
     pub fn new(palettes: StagePalettes) -> Self {
         Self {
             palettes,
