@@ -680,9 +680,10 @@ impl AssistTap {
         // layout, in the pad as the guest gets it.
         publish_crouch(button_down(&pad, crouch_button(memory)));
         // The ghost run's button (superbounce_ghost.rs).
+        crate::superbounce_ghost::publish_layout(memory);
         crate::superbounce_ghost::publish_button(button_down(
             &pad,
-            crate::superbounce_ghost::BUTTON,
+            crate::superbounce_ghost::current_button(),
         ));
         // Opt in: with the setting off the button is the game's.
         let held =

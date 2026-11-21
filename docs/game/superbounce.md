@@ -1454,10 +1454,16 @@ stops it ("Press (X) to stop ghost"); a press after it ends plays
 it again. Leaving the map or the mode stops it.
 
 The button is X (`superbounce_ghost::BUTTON`, read by the fall assist's
-input tap). The fall assist reads X only in the air, so a press counts
-only while the player is on the ground (`press_counts`); a press in the
-air is spent, not kept for the landing, and the two never clash. The
-flashlight is taken by the bounce view. On the keyboard it is X's key.
+input tap), except on the Bumper Jumper layout, where it is B
+(`BUTTON_BUMPER_JUMPER`): there X is the flashlight, which drives the
+[bounce view](#the-bounce-view). The tap reads the first local player's
+button-layout byte from the profile (`layout_glue`'s settings record,
+`+4`) every read (`publish_layout`, `button_for`); a layout it cannot
+read, or any other layout, is X. The prompt shows the chosen button's
+glyph: "Press (B) to show ghost" on Bumper Jumper. The fall assist reads X
+only in the air, so a press counts only while the player is on the ground
+(`press_counts`); a press in the air is spent, not kept for the landing,
+and the two never clash. On the keyboard it is X's key.
 
 **Playback runs on the clock.** The frames are 1/30 s apart (the guest
 tick is 30 Hz at every display rate, [high-framerate.md](high-framerate.md)).
@@ -1787,9 +1793,9 @@ moves the flashlight (Bumper Jumper puts it on X) moves the view with
 it. The press is read, never taken from the game: on a converted Halo 1
 map the light and the view come on together. A press let go within 8
 ticks (0.27 s) is a tap; held 8 ticks it is a hold until let go
-(`TAP_TICKS`). The ghost runs take X on the ground: on Default the two
-are apart; on Bumper Jumper the flashlight is X too, and a press there
-does both (Open: whether that layout needs one of them moved).
+(`TAP_TICKS`). The ghost runs take X on the ground, and B on Bumper
+Jumper, where the flashlight is X ([Ghost runs](#ghost-runs)), so a press
+never does both.
 
 **Behind a wall.** One sight line a spot, from the eye (0.62 over the
 feet) to 0.25 over the spot's stand point, against every collision

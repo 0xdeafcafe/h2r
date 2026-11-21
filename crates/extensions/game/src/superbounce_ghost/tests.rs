@@ -341,22 +341,22 @@ fn the_prompt_offers_the_ghost_and_then_to_stop_it() {
     assert_eq!(prompt(false, true), Some(GhostPrompt::Stop));
     assert_eq!(prompt(true, true), Some(GhostPrompt::Stop));
     let show = Some(GhostPrompt::Show);
-    assert_eq!(hud_verb_with(None, show), Some(Verb::ShowGhost));
+    assert_eq!(hud_verb_with(None, show, BUTTON), Some(Verb::ShowGhost));
     assert_eq!(
-        hud_verb_with(Some(Verb::HoldAndWalkUnder), show),
+        hud_verb_with(Some(Verb::HoldAndWalkUnder), show, BUTTON),
         Some(Verb::ShowGhost)
     );
     assert_eq!(
-        hud_verb_with(Some(Verb::HoldAndWalkUnder), None),
+        hud_verb_with(Some(Verb::HoldAndWalkUnder), None, BUTTON),
         Some(Verb::HoldAndWalkUnder)
     );
     // The recipe's own steps win.
     assert_eq!(
-        hud_verb_with(Some(Verb::LetGoOfCrouch), show),
+        hud_verb_with(Some(Verb::LetGoOfCrouch), show, BUTTON),
         Some(Verb::LetGoOfCrouch)
     );
     assert_eq!(
-        hud_verb_with(Some(Verb::KeepMoving), Some(GhostPrompt::Stop)),
+        hud_verb_with(Some(Verb::KeepMoving), Some(GhostPrompt::Stop), BUTTON),
         Some(Verb::KeepMoving)
     );
     let text = Verb::ShowGhost.text();
@@ -371,7 +371,60 @@ fn the_prompt_offers_the_ghost_and_then_to_stop_it() {
 }
 
 #[test]
+fn the_button_is_b_on_bumper_jumper_and_x_on_every_other_layout() {
+    use input::layouts::Layout;
+    for l in Layout::ALL {
+        let want = if l == Layout::BumperJumper {
+            BUTTON_BUMPER_JUMPER
+        } else {
+            BUTTON
+        };
+        assert_eq!(button_for(Some(l.preset())), want, "{l:?}");
+    }
+    // Unreadable or unknown: X.
+    assert_eq!(button_for(None), BUTTON);
+    assert_eq!(button_for(Some(200)), BUTTON);
+    // B is the action table's 1 and U+E101; X is 2 and U+E102.
+    assert_eq!(BUTTON_BUMPER_JUMPER, 1);
+    assert_eq!(
+        BUTTON_BUMPER_JUMPER_GLYPH as u32 - 0xe100,
+        u32::from(BUTTON_BUMPER_JUMPER)
+    );
+    assert_eq!(glyph_for(BUTTON), BUTTON_GLYPH);
+    assert_eq!(glyph_for(BUTTON_BUMPER_JUMPER), BUTTON_BUMPER_JUMPER_GLYPH);
+    // Neither button is the flashlight on its layout: Bumper Jumper's is X.
+    assert_eq!(
+        Layout::BumperJumper.button(input::layouts::Action::Flashlight),
+        input::layouts::Button::X
+    );
+}
+
+#[test]
+fn the_prompt_glyph_follows_the_button() {
+    for (button, glyph) in [
+        (BUTTON, BUTTON_GLYPH),
+        (BUTTON_BUMPER_JUMPER, BUTTON_BUMPER_JUMPER_GLYPH),
+    ] {
+        let show = hud_verb_with(None, Some(GhostPrompt::Show), button).unwrap();
+        let stop = hud_verb_with(None, Some(GhostPrompt::Stop), button).unwrap();
+        assert!(show.text().contains(glyph) && show.text().ends_with("to show ghost"));
+        assert!(stop.text().contains(glyph) && stop.text().ends_with("to stop ghost"));
+        assert_eq!(glyph_for(button), glyph);
+    }
+    // The recipe's steps still win on either button.
+    assert_eq!(
+        hud_verb_with(
+            Some(Verb::KeepMoving),
+            Some(GhostPrompt::Show),
+            BUTTON_BUMPER_JUMPER
+        ),
+        Some(Verb::KeepMoving)
+    );
+}
+
+#[test]
 fn a_press_counts_on_the_ground_and_not_in_the_air() {
+    // On either button: the rule does not look at which.
     assert!(press_counts(true, Some(false)));
     assert!(press_counts(true, None));
     assert!(

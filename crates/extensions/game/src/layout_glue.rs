@@ -66,8 +66,8 @@ const LIST_SELECT: u32 = 0x0024_c591;
 const SCREEN_REFRESH: u32 = 0x0022_f672;
 
 /// Per-player profile settings (`+4` layout byte) and the action tables.
-const SETTINGS_BASE: u32 = 0x0054_e9f4;
-const SETTINGS_STRIDE: u32 = 0xc70;
+pub(crate) const SETTINGS_BASE: u32 = 0x0054_e9f4;
+pub(crate) const SETTINGS_STRIDE: u32 = 0xc70;
 const TABLE_BASE: u32 = 0x0051_ea18;
 const TABLE_STRIDE: u32 = 0x1c;
 const TABLE_SLOTS: u32 = 8;

@@ -17,7 +17,7 @@
 //!
 //! **Showing.** The first local player looks at a spot that has a run
 //! ([`looked_at`]: in range and near the middle of the view), and the
-//! prompt line offers [`BUTTON`] ([`hud_verb`]). A press plays the run
+//! prompt line offers [`BUTTON`] (or [`BUTTON_BUMPER_JUMPER`]) ([`hud_verb`]). A press plays the run
 //! once; a press while it plays stops it; a press after it has ended plays
 //! it again. The playback runs on the clock, not on game ticks
 //! ([`pose_at`]): each image the window presents asks for the pose at its
@@ -49,13 +49,62 @@ use crate::superbounce_font::Look;
 /// The button that shows a ghost, as the action table numbers physical
 /// buttons (`superbounce_assist::button_down`): 2 is X. The fall assist
 /// reads X only in the air, so a press counts only on the ground
-/// ([`press_counts`]) and the two never clash. The flashlight is taken by
-/// the bounce view. On the keyboard it is X's key
-/// (`crates/platform/input/src/bindings.rs`).
+/// ([`press_counts`]) and the two never clash. On the keyboard it is X's
+/// key (`crates/platform/input/src/bindings.rs`). On Bumper Jumper X is
+/// the flashlight, which drives the bounce view, so that layout uses
+/// [`BUTTON_BUMPER_JUMPER`] ([`button_for`]).
 pub const BUTTON: u8 = 2;
 /// [`BUTTON`]'s glyph in the HUD font (docs/input/button-icons.md); the
 /// prompts in `hud_kit_core::huds::superbounce` write the same one.
 pub const BUTTON_GLYPH: char = '\u{e102}';
+/// The ghost button on the Bumper Jumper layout: B (1), on the ground.
+pub const BUTTON_BUMPER_JUMPER: u8 = 1;
+/// [`BUTTON_BUMPER_JUMPER`]'s glyph, B.
+pub const BUTTON_BUMPER_JUMPER_GLYPH: char = '\u{e101}';
+/// Where the player's profile keeps the button layout byte
+/// (`layout_glue`'s settings records, `+4`), for the first local player.
+const LAYOUT_BYTE: u32 = crate::layout_glue::SETTINGS_BASE
+    + crate::layout_glue::SETTINGS_STRIDE * crate::superbounce_assist::PORT
+    + 4;
+
+/// The ghost button for the layout stored as profile byte `preset`: B on
+/// Bumper Jumper, X on every other layout (and when it cannot be read).
+pub fn button_for(preset: Option<u8>) -> u8 {
+    match preset.and_then(input::layouts::Layout::from_preset) {
+        Some(input::layouts::Layout::BumperJumper) => BUTTON_BUMPER_JUMPER,
+        _ => BUTTON,
+    }
+}
+
+/// A ghost button's glyph.
+pub fn glyph_for(button: u8) -> char {
+    if button == BUTTON_BUMPER_JUMPER {
+        BUTTON_BUMPER_JUMPER_GLYPH
+    } else {
+        BUTTON_GLYPH
+    }
+}
+
+/// The ghost button now in force, set from the profile's layout by
+/// [`publish_layout`].
+static CURRENT_BUTTON: AtomicU8 = AtomicU8::new(BUTTON);
+
+/// The first local player's layout byte from guest memory, once a tick
+/// (the tap's read): picks [`button_for`]'s button for the press and the
+/// prompt. `None` (memory not readable) leaves X.
+pub fn publish_layout(memory: Option<&dyn xapi::GuestMemory>) {
+    let mut b = [0u8; 1];
+    let preset = match memory.map(|m| m.read(LAYOUT_BYTE, &mut b)) {
+        Some(Ok(())) => Some(b[0]),
+        _ => None,
+    };
+    CURRENT_BUTTON.store(button_for(preset), Ordering::Relaxed);
+}
+
+/// The ghost button in force.
+pub fn current_button() -> u8 {
+    CURRENT_BUTTON.load(Ordering::Relaxed)
+}
 /// The glyphs drawn where the run pressed a button: A for the jump, the
 /// left stick's click for crouch (the Default layout's).
 pub const JUMP_GLYPH: char = '\u{e100}';
@@ -365,10 +414,14 @@ pub fn prompt(looked: bool, playing: bool) -> Option<GhostPrompt> {
 /// The prompt line's verb with the ghost's prompt `ghost`: the recipe's
 /// verbs come first; the ghost's takes the line when there is none, or
 /// over the general "hold crouch and walk under".
-pub fn hud_verb_with(verb: Option<Verb>, ghost: Option<GhostPrompt>) -> Option<Verb> {
-    let g = ghost.map(|g| match g {
-        GhostPrompt::Show => Verb::ShowGhost,
-        GhostPrompt::Stop => Verb::StopGhost,
+/// `button` is the ghost button ([`button_for`]): the prompt shows its glyph.
+pub fn hud_verb_with(verb: Option<Verb>, ghost: Option<GhostPrompt>, button: u8) -> Option<Verb> {
+    let b = button == BUTTON_BUMPER_JUMPER;
+    let g = ghost.map(|g| match (g, b) {
+        (GhostPrompt::Show, false) => Verb::ShowGhost,
+        (GhostPrompt::Stop, false) => Verb::StopGhost,
+        (GhostPrompt::Show, true) => Verb::ShowGhostB,
+        (GhostPrompt::Stop, true) => Verb::StopGhostB,
     });
     match verb {
         None | Some(Verb::HoldAndWalkUnder) => g.or(verb),
@@ -378,7 +431,7 @@ pub fn hud_verb_with(verb: Option<Verb>, ghost: Option<GhostPrompt>) -> Option<V
 
 /// [`hud_verb_with`] with the prompt of the last tick: the HUD's hook.
 pub fn hud_verb(verb: Option<Verb>) -> Option<Verb> {
-    hud_verb_with(verb, current_prompt())
+    hud_verb_with(verb, current_prompt(), current_button())
 }
 
 // ---- playback ----
@@ -1157,7 +1210,8 @@ pub fn ghosts_reply() -> agent_proto::superbounce::Ghosts {
             .map(|(i, g)| run_reply(i, g))
             .collect(),
         looked_at: rt.and_then(|r| r.looked),
-        prompt: hud_verb_with(None, current_prompt()).map(|v| v.text().to_owned()),
+        prompt: hud_verb_with(None, current_prompt(), current_button())
+            .map(|v| v.text().to_owned()),
         playing,
         recorded: rt.map_or(0, |r| r.recorded),
     }

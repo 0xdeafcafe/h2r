@@ -106,9 +106,12 @@ pub const PROMPT_KEEP_MOVING: &str = "Keep moving or lose the charge";
 pub const PROMPT_CHARGE_AGAIN: &str = "Find a crouch spot to charge again";
 /// Looking at a bounce spot that has a ghost run, and while one plays
 /// (`game::superbounce_ghost`): the button is X (U+E102), pressed on the
-/// ground (the fall assist reads X in the air).
+/// ground (the fall assist reads X in the air); on Bumper Jumper, where X
+/// is the flashlight, it is B (U+E101), also on the ground.
 pub const PROMPT_SHOW_GHOST: &str = "Press \u{e102} to show ghost";
 pub const PROMPT_STOP_GHOST: &str = "Press \u{e102} to stop ghost";
+pub const PROMPT_SHOW_GHOST_B: &str = "Press \u{e101} to show ghost";
+pub const PROMPT_STOP_GHOST_B: &str = "Press \u{e101} to stop ghost";
 /// The prompt line's widest verb: the most characters.
 pub const PROMPT_LONGEST: &str = PROMPT_CHARGE_AGAIN;
 
@@ -281,6 +284,10 @@ pub enum Verb {
     ShowGhost,
     /// A ghost run is playing.
     StopGhost,
+    /// [`Verb::ShowGhost`] with B's glyph (the Bumper Jumper layout).
+    ShowGhostB,
+    /// [`Verb::StopGhost`] with B's glyph (the Bumper Jumper layout).
+    StopGhostB,
 }
 
 impl Verb {
@@ -293,6 +300,8 @@ impl Verb {
             Verb::ChargeAgain(_) => PROMPT_CHARGE_AGAIN,
             Verb::ShowGhost => PROMPT_SHOW_GHOST,
             Verb::StopGhost => PROMPT_STOP_GHOST,
+            Verb::ShowGhostB => PROMPT_SHOW_GHOST_B,
+            Verb::StopGhostB => PROMPT_STOP_GHOST_B,
         }
     }
 }
@@ -1026,6 +1035,23 @@ mod tests {
         ] {
             assert_eq!(Note::Landed(n).text(), t);
         }
+    }
+
+    /// The ghost prompts, either button, fit the prompt line's one line of
+    /// 63 units and differ only by the glyph.
+    #[test]
+    fn the_ghost_prompts_fit_the_line_with_either_button() {
+        for (x, b) in [
+            (PROMPT_SHOW_GHOST, PROMPT_SHOW_GHOST_B),
+            (PROMPT_STOP_GHOST, PROMPT_STOP_GHOST_B),
+        ] {
+            assert_eq!(x.replace('\u{e102}', "\u{e101}"), b);
+            assert!(!b.contains('\n'));
+            assert!(b.encode_utf16().count() <= crate::model::MESSAGE_UNITS);
+            assert!(b.chars().count() <= PROMPT_LONGEST.chars().count());
+        }
+        assert_eq!(Verb::ShowGhostB.text(), PROMPT_SHOW_GHOST_B);
+        assert_eq!(Verb::StopGhostB.text(), PROMPT_STOP_GHOST_B);
     }
 
     /// A medal is its glyph, a space and its words, each under the game's
