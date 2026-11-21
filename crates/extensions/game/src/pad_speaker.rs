@@ -16,6 +16,7 @@
 use std::collections::HashSet;
 use std::fs::File;
 use std::io::{BufReader, Read, Seek, SeekFrom};
+use std::path::PathBuf;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 
@@ -161,7 +162,9 @@ pub struct PadIndexer {
     index: SoundIndex,
     table: RouteTable,
     shared: [Option<HostFile>; 3],
-    done: HashSet<HostFile>,
+    // Private generations have distinct paths. The finished index keeps only
+    // fingerprints and this non-owning region key.
+    done: HashSet<(PathBuf, u64, u64)>,
 }
 
 impl PadIndexer {
@@ -184,7 +187,8 @@ impl PadIndexer {
     }
 
     fn add_map(&mut self, file: &HostFile, cache_slot: bool) -> Result<Option<PadRouter>, String> {
-        if file.len == 0 || !self.done.insert(file.clone()) {
+        let region = || (file.path.clone(), file.offset, file.len);
+        if file.len == 0 || !self.done.insert(region()) {
             return Ok(None);
         }
         let error = |e: std::io::Error| format!("{}: {e}", file.path.display());
@@ -200,7 +204,7 @@ impl PadIndexer {
                 .read_to_end(&mut header)
                 .map_err(error)?;
             if header.iter().all(|&b| b == 0) {
-                self.done.remove(file);
+                self.done.remove(&region());
                 return Ok(None);
             }
         }

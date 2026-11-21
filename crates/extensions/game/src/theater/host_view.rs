@@ -190,6 +190,7 @@ impl Session {
 struct Bsp {
     map: String,
     source: Option<String>,
+    checksum: u32,
     index: u16,
     address: u32,
 }
@@ -257,8 +258,8 @@ impl Frame {
             map,
             address,
             index,
-            source: crate::map_slots::current_source(g)
-                .and_then(|p| crate::map_slots::slot_file(&p)),
+            source: crate::map_slots::active_file(g),
+            checksum: guest_layout::game::cache_checksum(g).unwrap_or_default(),
         };
         // While every player is respawning, continue rendering a detached
         // camera in the last map it actually saw. Never open a menu BSP for it.

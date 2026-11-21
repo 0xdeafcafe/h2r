@@ -150,6 +150,7 @@ impl Drop for Temp {
 
 fn whole(path: &std::path::Path) -> HostFile {
     HostFile {
+        generation: None,
         path: path.to_path_buf(),
         offset: 0,
         len: std::fs::metadata(path).unwrap().len(),
@@ -296,6 +297,7 @@ fn maps_inside_a_disc_image_are_read_from_their_region() {
     let path = t.0.join("disc.iso");
     std::fs::write(&path, &image).unwrap();
     let region = |offset, len: usize| HostFile {
+        generation: None,
         path: path.clone(),
         offset,
         len: len as u64,

@@ -97,7 +97,7 @@ fn with<T>(w: &WithGuest, f: impl FnOnce(&mut Guest) -> T) -> T {
     out.expect("the guest function ran")
 }
 
-fn permit(s: SessionView, p: &Value, epoch: u64) -> Result<(), RpcError> {
+pub(crate) fn permit(s: SessionView, p: &Value, epoch: u64) -> Result<(), RpcError> {
     if !s.writes {
         return Err(RpcError::new(
             code::INVALID_REQUEST,
@@ -105,19 +105,21 @@ fn permit(s: SessionView, p: &Value, epoch: u64) -> Result<(), RpcError> {
         ));
     }
     check_epoch(p, epoch)?;
-    if s.kind == agent_proto::sim::SessionKind::MpHost
-        && s.peers.is_some_and(|n| n > 1)
-        && p["confirm_peers"].as_u64() != s.peers.map(u64::from)
-    {
-        return Err(RpcError::new(
-            code::INVALID_REQUEST,
-            "confirm the current peer count for host-only edits",
-        ));
+    if s.kind == agent_proto::sim::SessionKind::MpHost {
+        let peers = s.peers.ok_or_else(|| {
+            RpcError::new(code::INVALID_REQUEST, "the multiplayer peer count is unknown")
+        })?;
+        if peers > 1 && p["confirm_peers"].as_u64() != Some(u64::from(peers)) {
+            return Err(RpcError::new(
+                code::INVALID_REQUEST,
+                "confirm the current peer count for host-only edits",
+            ));
+        }
     }
     Ok(())
 }
 
-fn check_epoch(p: &Value, epoch: u64) -> Result<(), RpcError> {
+pub(crate) fn check_epoch(p: &Value, epoch: u64) -> Result<(), RpcError> {
     if p.get("epoch").is_some_and(|v| v.as_u64() != Some(epoch)) {
         return Err(RpcError::new(code::INVALID_REQUEST, "the map epoch changed"));
     }
@@ -130,7 +132,7 @@ pub fn add_edit_methods(
     editor: Editor,
     guest: WithGuest,
     session: impl Fn(&Guest) -> SessionView + Send + Sync + 'static,
-    file: impl Fn(&str) -> Option<String> + Send + 'static,
+    file: impl Fn(&Guest) -> Option<String> + Send + 'static,
     replaying: bool,
 ) {
     let session = Arc::new(move |g: &Guest, ctx: &crate::GameCtx<'_>| {
@@ -158,13 +160,13 @@ pub fn add_edit_methods(
     agent.add_game_method(method::EDIT_MAP, Access::Read, move |p, ctx| {
         let mut ed = ed.lock().unwrap_or_else(|e| e.into_inner());
         let (_, checksum) = ctx.reader.live_metadata();
-        if cached_file.as_ref().is_none_or(|(epoch,_)| *epoch != ctx.epoch) {
-            cached_file = Some((ctx.epoch,ctx.at.map.as_deref().and_then(&file)));
-        }
         with(&g, |g| {
             ed.at_epoch(g, ctx.epoch, ctx.map_epoch).map_err(edit_error)?;
+            if cached_file.as_ref().is_none_or(|(epoch, _)| *epoch != ctx.epoch) {
+                cached_file = Some((ctx.epoch, file(g)));
+            }
             let idx = hot_tags::index::index(g).map_err(|e| RpcError::new(code::UNAVAILABLE, e))?;
-            let mut reply = json!({"at":ctx.at,"name":ctx.at.map,"file":cached_file.as_ref().and_then(|(_,f)| f.as_ref()),
+            let mut reply = json!({"at":ctx.at,"name":ctx.at.map,"file":cached_file.as_ref().and_then(|(_, file)| file.as_ref()),
                 "checksum":checksum,"scenario":format!("{:#010x}",idx.scenario),"epoch":ctx.epoch,
                 "session":probe(g,ctx)});
             if p.get("known_epoch").is_some_and(|e| e.as_u64() != Some(ctx.epoch)) {

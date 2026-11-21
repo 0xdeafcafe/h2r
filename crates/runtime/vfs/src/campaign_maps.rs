@@ -157,6 +157,10 @@ impl<B: Backend> CampaignMapsBackend<B> {
 }
 
 impl<B: Backend> Backend for CampaignMapsBackend<B> {
+    fn snapshot_map_bindings(&self) -> std::result::Result<Vec<(String, String)>, crate::StateError> {
+        self.inner.snapshot_map_bindings()
+    }
+
     fn opened(&mut self, path: &str) {
         if let Some((stem, o)) = self.ours(path) {
             let host = o.host.clone();
@@ -281,6 +285,7 @@ impl<B: Backend> Backend for CampaignMapsBackend<B> {
         };
         let len = o.len;
         Some(HostFile {
+            generation: None,
             path: o.host.clone(),
             offset: 0,
             len,

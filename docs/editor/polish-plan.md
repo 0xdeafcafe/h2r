@@ -216,10 +216,10 @@ pending list and the game's methods, and returns one step:
 | paired, the open map | none, or pokes only | sends the pokes, resumes a paused game, raises the game window (`Resume`) |
 | paired, the open map | some need a reload | reloads the map from a new play copy, then puts the player back (`Reload`) |
 | paired, map identity blocked | any | reports the reason, including a checksum mismatch |
-| paired, another map, the editor's own game | any | the same reload, onto the open map |
-| paired, another map, a game the editor did not start | any | asks: **Load zanzibar in the game** (`map.reload {file}`) or **Open lockout here** |
+| paired, another map, the editor's own game | any | relaunches the game on the open map |
+| paired, another map, a game the editor did not start | any | offers to switch maps in the game or open the running map here |
 
-- A reload is `map.reload {file}` where the game lists it and a
+- A reload of the active map is `map.reload {file}` where the game lists it and a
   relaunch of the editor's own game if the method is absent or the host
   refuses the file. A foreign game in either case leaves edits pending and
   gives the manual-load instruction. The editor checks the queued receipt
@@ -227,6 +227,10 @@ pending list and the game's methods, and returns one step:
   checksum. When the receipt or status omits the activation, it waits for a
   changed epoch and the copy checksum.
   A reconnect checks the loaded copy before any further edits go out.
+- Film and input recording or playback exclude play-copy binding. Recording is
+  opt-in for `h2 play`. A bound play copy or an unlinked placement preview
+  prevents machine snapshots, rewind and film keyframes. External Live
+  sign-in after a successful binding requires restarting the game.
 - Sending edits to a game the editor did not start asks once per
   pairing ("Send your edits to this game?"), since F5 never turns Edit
   on by itself there.
@@ -350,7 +354,7 @@ Objects follow the document too (`play/objects.rs`):
 | a placement moved or turned | its `scnr` bytes (`edit.batch`) and, for its live object, `world.object.set` with the new frame |
 | a placement added | requests a preview with `world.object.respawn {placement}` for an unoccupied new slot. A host that only reads the loaded block refuses an appended slot. Pending shows the reason and the block needs Reload. |
 | a placement deleted | `world.object.delete` on its object; the entry is "still in the game's scenario until the map reloads" |
-| a placement field read at creation changed | the poke, then **Respawn now** (`world.object.respawn`) for the objects that exist |
+| a placement field read at creation changed | the poke, then **Respawn now** for supported, unattached occupants of unnamed palette entries with default creation fields. Other placements need a map reload |
 
 **Undo works across both, with one history.** The document is the
 truth for objects as it is for tags. `objects::diff` compares the
@@ -724,15 +728,18 @@ and `map.reload` rows are live-mirror.md's, with the shapes fixed here.
 | `editor.link` | read | `{editor, mode: view \| edit \| blocked, text?, ttl_ms?}` or `{clear: true}`. `text` is at most 64 characters; `ttl_ms` is 500 to 10000, default 3000 | `{shown, why?, expires_ms}`. `shown: false` with `why` on a host with no window |
 | `editor.focus` | act | none | `{focused, why?}`: a window focus request queued |
 | `editor.marks` | read | `{marks: [mark], ttl_ms?}`, at most 256, replacing the last set. A mark is `{object: "<8 hex>"}`, `{box: {origin, forward, up, size}}` or `{point: [x, y, z]}`, with `color: [r, g, b]`, `style?: selected \| candidate`, `label?` and reserved `xray?` | `{held, drawn, why?, refused: [{index, why}]}`. An object that is gone is refused by index; the rest hold |
-| `world.object.set` | act | `{id, pos?, forward?, up?}` | `{at, object}` after the next tick, through the engine's own move |
-| `world.object.delete` | act | `{id}` | `{at, deleted}` |
-| `world.object.respawn` | act | `{id}` or `{placement: {block, index}}` | `{at, old, object, linked}` |
-| `map.reload` | act | `{file?, confirm_peers?}` | `{queued, map}` or `{queued, map, file, checksum}` for a file override. A host that cannot bind the requested file returns `REFUSED` with its reason. |
+| `world.object.set` | act | `{id, pos?, forward?, up?, epoch?, confirm_peers?}` | `{at, object}` after the next tick, through the engine's own move |
+| `world.object.delete` | act | `{id, epoch?, confirm_peers?}` | `{at, deleted}` |
+| `world.object.respawn` | act | `{id, epoch?, confirm_peers?}` or `{placement: {block, index}, epoch?, confirm_peers?}` | `{at, old, object, linked}` |
+| `map.reload` | act | `{file?, confirm_peers?}` | `{queued, map, activation}`, with `file` and `checksum` for a play copy of the active map |
 
 `editor.link` and `editor.marks` hold leases and never
 write simulation state, so they are allowed in View and in every
 session the stream is. `world.object.*` and `map.reload` are host
-writes: `SessionKind::writes` and the tick boundary, as `sim.state.set`.
+writes subject to `SessionKind::writes` and the tick boundary, as `sim.state.set`.
+On System Link, `confirm_peers` counts every machine, including this host.
+A confirmed reload binds the play copy on this host alone. Each peer needs
+its own matching map file.
 
 ## Slices
 
@@ -773,7 +780,7 @@ crate's server with an invented game behind it, as `play::tests` use.
 | G1 | **The link looks after itself**: `auto::choose`, `Reconnecting` and `auto::Backoff`, the mode kept across a reconnect, the process check on a drop | S | P12 | `play/auto.rs`, `play.rs`, `play/pair.rs`, `ui/play.rs`, `api/pair.rs` | `choose` over invented finder lists gives rules 1 to 4; fake game: a dropped socket that returns inside the window comes back in the same mode with the baseline kept, a changed epoch comes back in View, a game gone from the list gives `NoGame`, 30 seconds of silence gives `Lost`; the backoff's delays are the table's |
 | G2 | **Play is one action**: `playtest::decide`, `Place`, **Where I was**, the two asks, **Pause the game while I edit**, `pair.playtest` | M | G1 | `play/playtest.rs`, `play.rs`, `play/launch.rs`, `ui/play.rs`, `ui/bar.rs`, `api/pair.rs` | `decide` returns each row of the table for an invented link; fake game: F5 with pokes pending sends one `edit.batch`, resumes and calls `editor.focus`; with a reload pending and `map.reload` listed it reloads and sends the recorded place once gameplay has run `SPAWN_AFTER_TICKS`; a foreign game is asked before any write; selection, camera and undo depth are equal before and after |
 | G3 | **The game shows the link**: `editor.link`, `editor.focus`, the plate in `h2 play` | S | nothing | `crates/extensions/agent-proto/src/editor.rs`, `crates/extensions/agent/src/editor.rs`, `crates/apps/app/src/overlay.rs`, `crates/apps/app/src/shell.rs`, `crates/apps/cli/src/play_cmd.rs` | the lease holds for `ttl_ms` and no longer on an invented clock; `clear` drops it; a host with no window answers `shown: false`; the plate's two lines are the mode's text and `text`; `session.methods` lists both where registered |
-| G4 | **The game moves and remakes objects**: `world.object.set`, `.delete`, `.respawn`, `map.reload` | M | nothing | `crates/extensions/agent-proto/src/sim/mod.rs`, `crates/extensions/agent/src/sim/calls.rs`, `crates/extensions/agent/src/sim/mod.rs` | on the fake guest of `sim/calls/tests.rs`: each call reaches its engine entry with the arguments the retail callers pass, in the tick's `before` hook; a gone id answers `GONE`; co-op and client sessions refuse before anything is queued; `respawn` deletes then makes from the scenario entry and reports `linked`; `map.reload` queues the running map through `Call::QueueGame` |
+| G4 | **The game moves and remakes objects**: `world.object.set`, `.delete`, `.respawn`, `map.reload` | M | nothing | `crates/extensions/agent-proto/src/sim/mod.rs`, `crates/extensions/agent/src/sim/calls.rs`, `crates/extensions/agent/src/sim/mod.rs` | on the fake guest of `sim/calls/tests.rs`: each call reaches its engine entry with the arguments the retail callers pass, in the tick's `before` hook; a gone id answers `GONE`; co-op and client sessions refuse before anything is queued; `respawn` creates the replacement from the scenario entry before deleting its occupant and reports `linked`; `map.reload` queues the running map through `Call::QueueGame` |
 | G5 | **The game draws marks**: `editor.marks`, the window overlay | M | G3 | `crates/extensions/agent/src/editor/scene.rs`, `crates/apps/app/src/overlay/marks.rs`, `crates/extensions/game/src/editor_glue.rs`, `crates/platform/d3d/src/present_camera.rs` | invented marks: the object box uses the world bounding sphere and object axes, and the explicit box has its frame's twelve edges. The lease expires, stale handles are refused by index, and more than 256 are refused. Queued and repeated guest images keep their own camera, bounds and per-view aspect. The overlay clips at the near plane and draws all edges at full strength without occlusion. A host without a camera for the presented frame answers `drawn: false`. |
 | G6 | **Selection both ways** (implemented): live objects pickable, aim select, `mirror.pick`, `mirror.aim_select`, marks from the selection | M | G1 | `play/select.rs`, `play/presence.rs`, `viewport.rs`, `viewport/mirror.rs`, `api/mirror.rs` | `aim_pick` on an invented sample picks the nearest object in front of an invented wall and none behind it; a candidate held for `AIM_DWELL` becomes the selection and a shorter one does not; fake game: selecting a placement with a live object sends one `editor.marks` with its handle, and again within the lease; a click on a live object with a placement link selects the placement |
 | G7 | **Shared camera** (editor modes and player moves implemented): Follow player, Player's eyes, Player here looking my way, `mirror.camera`, `mirror.player` | S | G6 | `play/presence.rs`, `camera.rs`, `ui/toolbar.rs`, `api/mirror.rs` | invented sample: Follow keeps its offset as the player moves, Eyes looks along the aim; fake game: `mirror.player {facing: true}` sends the camera's yaw and pitch |
@@ -891,9 +898,9 @@ The tests use invented data.
   the bar; addresses in `edit.batch`; the lease on everything the game
   shows for the editor; objects derived from the document by a diff;
   aim select by dwell.
-- **S**: the engine's object move re-clusters a placed object when
-  called from the tick's `before` hook as the teleport calls it.
-  Verified by G4's run.
+- **S**: whether the engine's object move re-clusters a placed object
+  when called from the tick's `before` hook. The G4 fake checks the call
+  and its arguments. The in-game cluster check is pending.
 
 ## Not verified
 

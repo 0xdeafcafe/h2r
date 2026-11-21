@@ -233,6 +233,52 @@ fn a_save_writes_the_parts_in_order_and_a_load_puts_them_back_in_order() {
 }
 
 #[test]
+fn a_v3_kernel_keyframe_is_refused_before_the_live_and_guest_parts_run() {
+    const STACK: u32 = 0x10000;
+    const SIZE: u32 = 0x10000;
+    let mut guest = runtime::Guest::new();
+    guest
+        .map_zeroed(STACK, SIZE, runtime::guest::Permissions::RW)
+        .unwrap();
+    let rt = runtime::Runtime::new(guest, runtime::Dispatch::default());
+    let kernel = kernel::Kernel::install(&rt, kernel::Config::default()).unwrap();
+    let cpu = runtime::CpuAbi {
+        esp: STACK + SIZE - 4,
+        ..runtime::CpuAbi::xbox_thread()
+    };
+    let mut machine = kernel::Machine::new(rt, kernel, cpu, STACK, STACK + SIZE).unwrap();
+    let rebuilders = kernel::snapshot::Rebuilders::new();
+    let w = World::new("kcore-version");
+    let mut parts = w.machine(0).parts;
+    parts.retain(|part| matches!(part.name(), "guest" | "livefilm"));
+    parts.push(Box::new(KernelPart {
+        m: &mut machine,
+        rebuilders: &rebuilders,
+        prepared: None,
+    }));
+    let mut out = SnapshotWriter::new(Header {
+        build: w.shelf.build().clone(),
+        name: "keyframe".into(),
+        tick: 1,
+        presents: 1,
+        notes: Vec::new(),
+    });
+    for name in ["guest", "livefilm"] {
+        out.section(Tag::new(name), 1, Codec::Stored, 99u64.to_le_bytes().to_vec())
+            .unwrap();
+    }
+    out.section(kernel::snapshot::KCORE, 3, Codec::Zstd, vec![0; 32])
+        .unwrap();
+    let bytes = out.finish().unwrap();
+    let snap = Snapshot::open(&bytes, w.shelf.build()).unwrap();
+    let error = load_parts_with_base(&mut parts, &snap, None, None).unwrap_err();
+    assert!(error.contains("kcore has version 3"), "{error}");
+    assert!(w.take_log().is_empty());
+    assert_eq!(w.value("livefilm").get(), 0);
+    assert_eq!(w.value("guest").get(), 0);
+}
+
+#[test]
 fn a_load_that_changes_ram_says_which_mib() {
     let w = World::new("hash");
     w.value("guest").set(5);

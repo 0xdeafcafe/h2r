@@ -51,11 +51,25 @@ impl ResourceFiles {
     /// Supplies the region backing a selector, checking that `base + length`
     /// neither overflows nor exceeds the host file.
     pub fn set(&mut self, file: ResourceFile, region: Region) -> Result<()> {
+        self.set_region(file, region, false)
+    }
+
+    /// Opens an editor generation while the caller still holds its pathname lease.
+    pub fn set_pinned(&mut self, file: ResourceFile, region: Region) -> Result<()> {
+        self.set_region(file, region, true)
+    }
+
+    fn set_region(&mut self, file: ResourceFile, region: Region, pin: bool) -> Result<()> {
         let end = region
             .base
             .checked_add(region.length)
             .ok_or_else(|| Error::Invalid("resource region wraps".into()))?;
-        let host = std::fs::metadata(&region.path)?.len();
+        let (host, reader) = if pin {
+            let reader = File::open(&region.path)?;
+            (reader.metadata()?.len(), Some(reader))
+        } else {
+            (std::fs::metadata(&region.path)?.len(), None)
+        };
         if end > host {
             return Err(Error::Invalid(format!(
                 "resource region {:#x}+{:#x} exceeds host file length {host:#x}",
@@ -63,7 +77,7 @@ impl ResourceFiles {
             )));
         }
         self.regions[slot(file)] = Some(region);
-        self.open[slot(file)] = None;
+        self.open[slot(file)] = reader;
         self.memory[slot(file)] = None;
         Ok(())
     }
@@ -180,6 +194,20 @@ mod tests {
             .is_err()
         );
         std::fs::remove_file(p).unwrap();
+    }
+
+    #[test]
+    fn only_a_pinned_resource_opens_before_the_path_is_replaced() {
+        let path = temp("opened", &[1, 2]);
+        let replacement = temp("replacement", &[3, 4]);
+        let mut files = ResourceFiles::new();
+        let region = Region { path: path.clone(), base: 0, length: 2 };
+        files.set_pinned(ResourceFile::Local, region.clone()).unwrap();
+        files.set(ResourceFile::Shared, region).unwrap();
+        std::fs::rename(replacement, &path).unwrap();
+        assert_eq!(files.read(ResourceFile::Local, 0, 2).unwrap(), [1, 2]);
+        assert_eq!(files.read(ResourceFile::Shared, 0, 2).unwrap(), [3, 4]);
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]

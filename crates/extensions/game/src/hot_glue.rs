@@ -9,10 +9,8 @@
 
 use std::sync::Arc;
 
-use crate::telemetry::MapFile;
-
-/// Finds a map's file by its short name.
-pub type MapLocator = Box<dyn Fn(&str) -> Option<MapFile> + Send + Sync>;
+/// Finds a map's host file by its active slot's VFS device path.
+pub type MapLocator = Box<dyn Fn(&runtime::Guest) -> Option<vfs::HostFile> + Send + Sync>;
 
 /// Adds the hot methods to `agent` and, with `watch`, loads and watches
 /// the override directory. Without (the debug menu's local agent, no
@@ -74,7 +72,9 @@ fn install_edits(
         editor,
         Arc::new(move |f: &mut dyn FnMut(&mut runtime::Guest)| f(&mut rt.memory())),
         |g| crate::agent_glue::session_view(g),
-        move |name| Some(maps.as_ref()?(name)?.path.display().to_string()),
+        move |g| {
+            Some(maps.as_ref()?(g)?.path.display().to_string())
+        },
         replaying,
     );
 }
@@ -98,11 +98,7 @@ pub fn map_tags(
 
 /// The names of the map loaded in `g`, from its file.
 fn names(g: &runtime::Guest, locate: &MapLocator) -> Option<hot_tags::Names> {
-    let name = crate::telemetry::loaded_map_name(g).ok()?;
-    if name.is_empty() {
-        return None;
-    }
-    let file = locate(&name)?;
+    let file = locate(g)?;
     let reader = std::fs::File::open(&file.path).ok()?;
     let map = map::Map::from_region(std::io::BufReader::new(reader), file.offset, file.len).ok()?;
     hot_tags::Names::from_map(&map)

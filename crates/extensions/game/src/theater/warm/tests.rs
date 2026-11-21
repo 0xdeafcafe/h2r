@@ -120,6 +120,7 @@ impl Drop for Fixture {
 
 fn host(rt: &Runtime) -> Host<'_> {
     Host {
+        editor_agent: None,
         rt,
         d3d: None,
         xapi: None,
@@ -167,6 +168,24 @@ fn restoring_a_watched_machine_twice_repeats_every_slice_digest() {
         assert_eq!(fixture.restore(&mut machine, 3).unwrap(), Some(3));
         assert_eq!(run(&mut machine, 8), expected);
     }
+}
+
+#[test]
+fn an_incompatible_kernel_section_skips_the_ring_ram_restore() {
+    let (fixture, mut machine) = Fixture::new();
+    let host = host(&fixture.rt);
+    let mut boot = host.machine(&mut machine, &fixture.plan, &fixture.rebuilders, &fixture.shelf, 0);
+    let mut sections = fixture.barrier(0);
+    snapshot::guest::save_layout(&mut sections, &fixture.rt.memory()).unwrap();
+    sections
+        .section(kernel::snapshot::KCORE, 3, snapshot::Codec::Stored, vec![])
+        .unwrap();
+    let bytes = sections.finish().unwrap();
+    let snap = Snapshot::open(&bytes, fixture.shelf.build()).unwrap();
+    let error = boot
+        .load_ring_sections(&snap, |_, _| panic!("RAM restore ran before kernel validation"))
+        .unwrap_err();
+    assert!(error.contains("kcore has version 3"), "{error}");
 }
 
 /// Record the tick stream, play it back, and capture the running machine at

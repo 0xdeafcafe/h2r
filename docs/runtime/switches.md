@@ -29,7 +29,7 @@ An `impl.` name is an implementation switch
 | `H2_PAD_MUTE` | DualSense mute button and LED. Locks the Mute Button row in Voice ([playstation-audio.md](../audio/playstation-audio.md)) |
 | `--aspect source\|4:3\|16:9` | Desktop presentation shape. Source (default) follows the drawable in Native resolution. The fixed shapes fit inside it ([app.md](app.md)). |
 | `H2_LEVEL`, `H2_DIFFICULTY` | boot straight into a level ([level-boot.md](level-boot.md)) |
-| `H2_MAP_DIR` | Whole-map override directory for local play and editor testing (`crates/extensions/game/src/map_override.rs`). |
+| `H2_MAP_DIR` | Startup directory for disc map overrides. The first lookup, including a directory listing, selects the source for each map. A paired editor can request a separate play copy. [Map overrides](storage.md#map-overrides) |
 | `H2_MAPPACK=0`, `H2_HALO1=0` | Skip automatic import of the adjacent Map Pack or Halo 1 disc ([map pack](../game/map-pack.md), [Halo 1](../halo1/campaign.md)). |
 | `H2_MAPPACK_ISO`, `H2_MAPPACK_DATA` | Editor Map Pack ISO override and installed Map Pack test-data root (`crates/tools/editor-core/src/mappack.rs`, `crates/apps/studio/src/app/map_pack_tests.rs`). |
 | `H2_IMPORT_JOBS` | Parallel jobs for Halo 1 import (`crates/apps/cli/src/h1_import.rs`). |
@@ -73,6 +73,7 @@ the final result through that directory.
 | `h2 lighting split <map> [--bsp N] [--light ID] [--disc ISO] --out DIR` | Offline [lightmap comparison](../graphics/dynamic-lighting.md#the-split-offline). BSP and sky light default to 0. IDs are zero-based. A number selects a light in scenario sky order among skies used by the BSP; `placed:N` selects scenario lamp placement N. The disc follows the usual map lookup. Use a new or empty directory outside Git and open its `index.html`. |
 | `h2 play --join URL`, `live-join-link` | open a [Live session link](../live/live-custom-games.md#join-in-halo-2) on the selected service during Live player runs. Film recording and playback disable joins. `H2_FEATURES=-live-join-link` disables game-side handling. |
 | `H2_AGENT`, `agent-calls` | the agent API socket ([agent-api.md](agent-api.md)): a path or `tcp://HOST:PORT`; unset, `h2 play` opens `<cache>/h2recomp/agents/<pid>.sock` for editors to find ("Finding a game"); on macOS, a windowed game also publishes that socket when using a custom endpoint; `off` (or `0`, `none`, `false`, `no`) keeps every socket closed; `-agent-calls` leaves out the agent's calls into the game (`sim` teleports, give and spawn, and `maps.test.load`, [test-maps.md](../game/test-maps.md)) |
+| `agent-edit-lifecycle` | Permits on-demand editor hooks for live object writes and map reloads. The first authorized write adopts the game. Opening the agent socket or displaying the pairing indicator leaves its hooks untouched. [Object edits](agent-api.md#object-edits) |
 | `agent-net` | the observer that counts replication events by type for `net.replication` ([agent-api.md](agent-api.md#netreplication)); `-agent-net` leaves the counts at zero |
 | `creature-probe` | off by default. `H2_FEATURES=creature-probe` registers the experimental slot-17 creature definition and selects its replication version for Live and System Link. Both peers use the same setting ([P7](../game/ai-networking.md#creature-slot-probe)) |
 | `h2 host bundle --sim-stores DIR` | package verified shared resource stores; leased hosts select the bundle’s store directory ([dedicated-host-build.md](../live/dedicated-host-build.md#package-recorded-shared-resources)) |
@@ -103,7 +104,8 @@ the final result through that directory.
 | `frame-scene.layers` | off; with the native renderer on, the scene's layers 1, 5, 7, 8 and 20 draw their clusters' and placements' static items from the scene's plan, the rest on the D3D path; outcomes in `render.scene` as `layer_plan_*` ([framescene.md](../graphics/framescene.md), slice 4) |
 | `frame-scene.sink` | off; with the native renderer on, the device's scene sink files each guest D3D op by the frame's slot, names side targets and counts readbacks; the D3D backend still draws everything. `render.scene` reports it as `carried` and `scene_carried_*`, `scene_readback*` ([framescene.md](../graphics/framescene.md), slice 6) |
 | `H2_PIPELINE_CACHE`, `H2_GFX_COMPILE_THREADS`, `H2_VERTEX_CACHE_MB`, `H2_SMOOTH_TEXT`, `H2_RENDER_OVERRIDES` | D3D pipeline cache and sibling native descriptor archive, D3D compile workers, vertex cache budget, glyph smoothing, hot render overrides |
-| `H2_LOCKSTEP*`, `H2_INPUT_RECORD`, `H2_INPUT_REPLAY` | lockstep and input recordings |
+| `H2_LOCKSTEP*` | Lockstep settings |
+| `H2_INPUT_RECORD`, `H2_INPUT_REPLAY` | Record or replay the guest's input reads. A boot with either tap excludes editor object edits and map reloads. [Input](agent-api.md#input-act-like-a-player) |
 | `H2_FILM_OUT`, `H2_FILM_DIR` | Recording destination and film library location ([film format](../game/film-format.md)). |
 | `H2_THEATER_MEASURE=1` | enables [Theater measurements](agent-api.md#theater-transport) on the recorder or player, including guest write-watch counts during recording |
 | `H2_TELEMETRY=0`, `H2_TELEMETRY_FILE` | Disable telemetry or write a local capture (`crates/live/live-telemetry/src/config.rs`). |

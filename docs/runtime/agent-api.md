@@ -29,6 +29,7 @@ connection to hold `session.claim`.
 | `live.subscribe`, `live.status`, `live.close` | read | [Live mirror](#live-mirror) |
 | `session.pause`, `resume`, `step` | claim | [Control](#control) |
 | `world.count`, `world.query`, `world.object` | read | [`world`](#world-what-is-in-the-level) |
+| `world.object.set`, `world.object.delete`, `world.object.respawn` | act | [Object edits](#object-edits) |
 | `world.ai` | read | [`world.ai`](#worldai) |
 | `net.replication` | read | [`net.replication`](#netreplication) |
 | `world.raw` | read | [`world.raw`](#worldraw-an-objects-bytes-before-and-after) |
@@ -75,6 +76,7 @@ connection to hold `session.claim`.
 | `collision.stats` | read | [`collision`](#collision-the-native-collision-world) |
 | `trace.*`, `flight.*` | read | [Tick traces and the flight recorder](#tick-traces-and-the-flight-recorder) |
 | `shadow.enable`, `shadow.disable`, `shadow.status` | act, act, read | [Shadow checks](#shadow-checks) |
+| `map.reload` | act | [Test maps](#test-maps) |
 | `maps.load`, `maps.test.list`, `create`, `load`, `remove` | act, read, act, act, act | [Test maps](#test-maps) |
 
 A new method gets a row here and a section for its domain. The names
@@ -160,7 +162,7 @@ refused; batches are not supported. Method names are `domain.verb`.
 **The stamp.** Every result carries `at` (`agent_proto::At`):
 
 ```json
-{"at": {"tick": 48211, "ticks": 52000, "map_ticks": 1900, "present": 96400,
+{"at": {"tick": 48211, "ticks": 52000, "activation": 3, "map_ticks": 1900, "present": 96400,
         "map": "<map>", "mode": "campaign", "bsp": 1,
         "phase": "gameplay", "paused": false, "boundary": "tick"}}
 ```
@@ -168,6 +170,13 @@ refused; batches are not supported. Method names are `domain.verb`.
 `tick` is the game's own count (absent when no game state is readable),
 `ticks` the agent's count since the game started (never resets),
 `map_ticks` ticks since the map loaded, `present` frames presented.
+After adoption, `activation` identifies the full game start the editor
+observes. A reload receipt reserves its own value. Only the successful
+start for that transition publishes it. A checkpoint revert, a restore
+or another start cannot satisfy the wait. `map_ticks` counts from the
+start and its first tick reports one. A machine snapshot saves and
+restores that count. Before adoption, `activation` is zero and
+`map_ticks` counts from the map name change.
 
 - **Phase.** `loading` (no tick for 500 ms: `agent::TICK_STALE`), `menu`
   (mode `main_menu`, always: its background runs `cinematic_start` too),
@@ -195,6 +204,7 @@ refused; batches are not supported. Method names are `domain.verb`.
 | 5 | `SHUTDOWN` | the server is stopping |
 | 6 | `INTERRUPTED` | a `session.step` ended early |
 | 7 | `BUSY` | `state.save` or `state.load` never found a quiescent boundary; `data.blockers` says what stayed live |
+| 11 | `REFUSED` (`agent_proto::sim::REFUSED`) | the running session, placement or map cannot support the requested edit |
 
 **Connections.** A client that half-closes (`nc -N`) still gets answers to
 what it sent. Closing releases control. Each connection queues at most
@@ -217,8 +227,8 @@ connection for control calls. The stream reads the game at tick boundaries.
 
 | Method | Params | Result |
 |---|---|---|
-| `live.subscribe` | `{layers: ["objects", "players"], every?, key_every?}` | `{at, stream, protocol: "h2-live-mirror/1", tick_rate, map: {name, checksum, epoch}, layers, refused}`. The stream id is numeric. An unavailable checksum is null. Each unsupported layer has a reason under `refused`. |
-| `live.status` | none | `{map: {name, checksum, epoch}, streams, capture_us: {p50, p99, budget}, shed}`. Stream fields are `stream`, `layers`, `every`, `frames`, `bytes`, `queue`, `dropped` and `skipped`. Frames and bytes count complete writes, including the length prefix. |
+| `live.subscribe` | `{layers: ["objects", "players"], every?, key_every?}` | `{at, stream, protocol: "h2-live-mirror/1", tick_rate, map: {name, checksum, epoch, activation}, layers, refused}`. The stream id is numeric. An unavailable checksum is null. Each unsupported layer has a reason under `refused`. |
+| `live.status` | none | `{map: {name, checksum, epoch, activation}, streams, capture_us: {p50, p99, budget}, shed}`. Stream fields are `stream`, `layers`, `every`, `frames`, `bytes`, `queue`, `dropped` and `skipped`. Frames and bytes count complete writes, including the length prefix. |
 | `live.close` | `{stream}` | `{closed: true}` if the stream existed. Disconnecting the binary socket also ends its subscription. |
 
 `every` samples one tick in 1–30 (default 1). `key_every` requests a
@@ -264,7 +274,7 @@ object count, byte rate and capture timings.
 | `features.list` | none | `{at, plan}`: the feature plan text the game printed at start |
 
 `until` takes `tick`, `ticks` (more ticks than when the wait began),
-`map_ticks`, `present`, `phase`, `map` and `paused`; all given must hold,
+`activation` (exact match), `map_ticks`, `present`, `phase`, `map` and `paused`; all given must hold,
 at least one is required. `wait` settles at tick boundaries (and between
 slices for wall-clock timeouts and while loading); a condition already true
 answers at once. `timeout_ms` defaults to 30 s, at most 600 s; the failure
@@ -1680,7 +1690,9 @@ printf 'claim\npress start\nwait {"ticks":30}\ncapture 300\n' | h2 agent -
   recorded), `handle_mismatches` (the runs have parted) and `past_end`
   (left live). One recording or replay at a time. A replay reproduces a
   run only from the same starting state: the same boot, or the same
-  [snapshot](#state-machine-snapshots).
+  [snapshot](#state-machine-snapshots). Recording and playback exclude
+  map reloads. A pending reload also prevents starting a recording or replay.
+  After the transition completes a new input log can start in the loaded map.
 
 #### `input.host`: the host controllers
 
@@ -1777,6 +1789,9 @@ the blockers in `data.blockers`. One sent while the game is paused runs at
 the end of the held tick's slice and the game holds again at the next tick.
 Calls other than `state.list` need control when another connection holds
 it. A snapshot is refused while `agent-calls` writes are queued.
+An editor-bound DVD file or an unlinked placement preview prevents
+machine snapshots, snapshot-based rewind and film keyframes. The host
+keeps neither the play copy nor preview ownership in a snapshot.
 
 ```sh
 h2 agent state save NAME [replace]
@@ -1821,6 +1836,18 @@ A BSP switch revalidates the journal against surviving tag allocations.
 A map load or state restore clears it. During reverse revert, a field changed
 by the game protects its whole byte range. Older overlapping fields stay as
 the game holds them and appear in `dropped`.
+
+`edit.map.file` and the telemetry map identity follow the **source path
+recorded by the active cache slot**. The host resolves a direct `T:` or
+`W:` path through the guest's mounted drive link. A DVD slot can carry a
+map with a different header name. An installed package with that header
+name cannot shadow the DVD source. For an editor copy, `file` names the
+immutable host generation for the current activation. When the slot
+cannot identify an ordinary map, the host looks up the cache name. Ask again after a
+reload before opening a path from an earlier reply.
+After the first successful file binding, external Live sign-in gives the
+reason “An editor map was loaded. Restart the game to sign in to Xbox
+Live.” This applies even after switching maps.
 
 Each batch write takes either `{tag,group?,path,value,was?}` with typed values,
 or `{at,value,was?}` with hex bytes. An address is a u32 or a `0x` string.
@@ -2307,6 +2334,74 @@ h2 agent sim give player.0 <weap tag name> reserve=108
 h2 agent sim spawn <vehi tag name> 'pos=[40,-80,2]' yaw=180
 ```
 
+### Object edits
+
+The first authorized object edit or `map.reload` adopts the game for
+editing and installs its lifecycle observers. Starting the agent,
+listing methods and pairing with the game leave the ordinary hooks in
+place. The host needs the agent tick and guest-call features. Film
+recording and playback, or a boot configured to record or replay input,
+exclude these object edits.
+
+These methods share the tick and session checks of `sim.state.set` and
+the peer-count confirmation of `edit.batch` (`confirm_peers` on a System
+Link host with other machines). An unknown multiplayer peer count or an
+external Live session refuses the request before queueing. Send the
+`epoch` from `edit.map` to pin a request to that edit session. At dispatch
+and again on the game thread before the engine call, a stale `epoch`
+returns `INVALID_REQUEST` with “the map epoch changed”, as for a tag
+edit. The hook also checks the cache identity, current session and peer
+count. A timed-out request loses its place in the queue.
+Object ids use the salted spelling from `world.object`. The hook checks
+the id at execution, so a removed object or reused slot returns
+`GONE`. Code: `crates/extensions/agent/src/sim/edits.rs` and
+`crates/extensions/agent/src/sim/calls.rs`.
+
+| Method | Params | Result after the tick |
+|---|---|---|
+| `world.object.set` | `{id, pos?, forward?, up?, epoch?, confirm_peers?}` | `{at, object}` with the moved object's id |
+| `world.object.delete` | `{id, epoch?, confirm_peers?}` | `{at, deleted}` with the deleted id |
+| `world.object.respawn` | `{id, epoch?, confirm_peers?}` or `{placement: {block, index}, epoch?, confirm_peers?}` | `{at, old, object, linked}` with the old id (null for an empty placement) and the new id |
+
+- **Set** passes the position pointer in EAX, forward in ECX and up in
+  EDX to `OBJECT_SET_POSITION` (`0xb75a0`), with `(datum, 0, 0)` on the
+  stack. The projectile step loads all three registers before its call
+  to `OBJECT_SET_TRANSFORM`. [Retail call sites](../../crates/rewrites/engine/src/sim_objects/projectile_step.rs#L114),
+  [register setup and call](../../crates/rewrites/engine/src/sim_objects/projectile_step.rs#L1767).
+  The orientation-only teleport uses a null position.
+  A position-only move leaves the orientation pointers null. A partial
+  turn reads the missing axis from the body and requires the resulting
+  axes to be perpendicular unit vectors.
+- **Delete** calls `OBJECT_DELETE` (`0xb8540`) with the datum, as the
+  starting-profile weapon refusal does in `sim.give`.
+- **Respawn** reads the entry's palette index, salted definition tag,
+  position and yaw/pitch/roll. It prepares and creates the replacement
+  with the ownerless `placement_data_new` and `object_new` sequence of
+  `sim.spawn`. Only then does it delete the old occupant. A creation
+  refusal leaves the old object in the game. The method accepts unnamed
+  records with zero placement flags, default scale and zero type-specific fields. Other creation fields
+  return `REFUSED` before deletion. The preview has `linked: false`.
+  The host keeps the preview's salted id and placement in memory. Another
+  respawn replaces it, including when addressed by the returned id. A
+  fresh multiplayer activation or a change of scenario clears the records.
+  A campaign checkpoint can restore an older preview on the same map.
+  The host keeps its placement history and refuses snapshots until the
+  scenario changes.
+  A held weapon or equipment item is absent from the world-object view,
+  so its salted id returns `GONE`. Selecting a placement with a held
+  or attached occupant returns `REFUSED`. Multiple occupants and previews
+  that cannot be identified after a checkpoint also return `REFUSED`.
+  Supported blocks are
+  `scenery`, `vehicles`, `weapons`, `equipment`, `machines`, `controls`,
+  `crates` and `creatures`. Unsupported blocks return `REFUSED` before deletion.
+  The placement and palette offsets and record stride come from
+  `tags::object::OBJECT_TYPES`. The entry fields and palette stride follow
+  `crates/tools/scenario-edit/src/layout.rs`. The guest reads are in
+  `crates/extensions/agent/src/sim/calls/placement.rs`.
+  The placement builder's index flow is known. Calling it with a full
+  scenario record requires its register and stack conventions.
+  [Placement index evidence](../live/live-telemetry.md)
+
 ### Phantom backend
 
 `boot::sim_bots::SimBots` implements `agent::sim::bots::Bots` over the
@@ -2783,6 +2878,51 @@ rigs: [test-maps.md](../game/test-maps.md). Host methods registered by
 | `maps.test.create` | act | `{recipe: <built-in name> \| <recipe object>, base?, replace?}` → `{name, state: "building", dir}` at once; the build runs on its own thread, then the offers are installed again. `base` builds on another disc map (`<recipe>-<base>`) |
 | `maps.test.load` | act | `{name}` → after the next tick, `{name, map {id, path}, check, queued, expect}`: a local Slayer game on the map is queued through the `agent-calls` feature (`Call::QueueGame`, the level boot's steps). Wait for it with `session.wait` or `h2 agent maps load` |
 | `maps.test.remove` | act | `{name}` → `{name, removed}` |
+
+`map.reload {}` queues the active campaign or multiplayer map again and
+returns `{queued, map, activation}` with the map name, the activation
+reserved for this request and the executor's tick stamp. It uses the
+[object edit session rules and hooks](#object-edits). Film and input
+recording or playback refuse both forms of reload.
+`Sim::reload_map` in `crates/extensions/agent/src/sim/edits.rs` copies the active options block into
+`Call::QueueGame`'s scratch. This preserves the scenario path, players,
+variant and difficulty. `OPTIONS_QUEUE` takes the scratch address in EAX
+and copies the block to the pending transition. See
+[level-boot.md](level-boot.md#addresses) for the active flag, block and
+entry. The answer confirms queueing. Pass its `activation` and `map` to
+`session.wait` together with `phase: "gameplay"` and `map_ticks: 1`.
+For a reply naming activation 4 on `lockout`, the wait is
+`{"until":{"activation":4,"map":"lockout","phase":"gameplay","map_ticks":1}}`.
+Use the returned value even when the file checksum stays the same.
+A checkpoint revert cannot publish a queued reload's activation.
+
+`map.reload {"file":"/absolute/path/<map>.map"}` loads a play copy for the
+active DVD map. Both the filename and the map name in its Xbox cache header
+must match the active name, ignoring ASCII case. A worker prepares a
+private generation and checks its cache type, slot capacity, tag index
+and retail payload checksum. A disconnect or timeout releases the preparation
+and the worker checks for cancellation between chunks. At the tick boundary
+the agent rechecks the session and active source, validates the pending
+options storage, reserves the DVD file and retires the old cache keys
+before calling the guest's options queue.
+The VFS publishes the copy when the guest accepts the transition. If the
+guest call is interrupted, the host checks the pending options before the
+loader uses them. Matching options publish the copy. Otherwise the host
+restores the retired keys. The result adds the requested `file` and the
+header's numeric `checksum`.
+After the activation wait, check that `live.status.map.checksum` or
+`edit.map.checksum` matches the returned checksum. Both reload forms accept `confirm_peers`
+on a System Link host. This total includes the host. Each peer needs its
+own matching file. A writable game with the agent enabled can accept a play
+copy even if it started without an override directory.
+
+A light host, a server-map mount, a scenario loaded from a content path,
+or a host without the editor map mount returns `REFUSED` with `data.why`.
+Film recording and external Live sign-in also exclude file binding.
+Recording in `h2 play` is opt-in. After a file binding succeeds, restart
+the game before signing in to external Live. Machine snapshots and
+snapshot-based rewind are unavailable while a play copy is bound.
+See [Map overrides](storage.md#map-overrides) and [Changed maps](cache-slots.md#changed-maps).
 
 ```sh
 h2 agent maps                          # recipes and test maps

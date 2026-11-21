@@ -716,8 +716,8 @@ struct Level {
     queued: bool,
 }
 
-/// Finds a map's file on the host (the VFS).
-pub type MapLocator = Box<dyn Fn(&str) -> Option<crate::telemetry::MapFile> + Send + Sync>;
+/// Finds a map's host file by the active slot's VFS device path.
+pub type MapLocator = Box<dyn Fn(&str, Option<&str>) -> Option<vfs::HostFile> + Send + Sync>;
 
 /// The run's state for our skulls.
 pub struct Custom {
@@ -725,6 +725,7 @@ pub struct Custom {
     telemetry: Option<Arc<crate::telemetry::Telemetry>>,
     maps: Option<MapLocator>,
     reveal: bool,
+    edited_mount: AtomicBool,
     level: Mutex<Level>,
     work: Mutex<Vec<Work>>,
     reentry: AtomicBool,
@@ -752,6 +753,7 @@ impl Custom {
             telemetry,
             maps,
             reveal,
+            edited_mount: AtomicBool::new(false),
             level: Mutex::default(),
             work: Mutex::default(),
             reentry: AtomicBool::new(false),
@@ -814,9 +816,9 @@ impl Custom {
 
     /// The skull weapon's tag datum for `map`, from its file's tag index,
     /// if the file's scenario is the loaded one.
-    fn skull_tag_for(&self, map: &str, scenario: u32) -> Result<u32, String> {
+    fn skull_tag_for(&self, map: &str, path: Option<&str>, scenario: u32) -> Result<u32, String> {
         let locate = self.maps.as_ref().ok_or("no map locator (no VFS)")?;
-        let file = locate(map).ok_or_else(|| format!("{map}.map not found on the host"))?;
+        let file = locate(map, path).ok_or_else(|| format!("{map} has no host file"))?;
         let reader =
             std::fs::File::open(&file.path).map_err(|e| format!("{}: {e}", file.path.display()))?;
         let parsed = map::Map::from_region(std::io::BufReader::new(reader), file.offset, file.len)
@@ -1075,6 +1077,8 @@ impl Custom {
             .filter_map(|u| Some((u.user, m.vec3(u.body.wrapping_add(0x64)).ok()?)))
             .collect();
         let profiles = skulls::profiles_or_default(&*mem).0;
+        let path = (new_level && self.edited_mount.load(Ordering::Acquire))
+            .then(|| crate::map_slots::active_file(&*mem)).flatten();
         drop(mem);
         if new_level {
             *level = Level {
@@ -1084,7 +1088,7 @@ impl Custom {
             };
             if let Some(spot) = level.spot {
                 level.uncollected = uncollected(&self.store, &profiles, spot.skull);
-                match self.skull_tag_for(&map, scenario) {
+                match self.skull_tag_for(&map, path.as_deref(), scenario) {
                     Ok(t) => level.tag = Some(t),
                     Err(why) => eprintln!(
                         "skulls: {} is hidden on {map} but cannot be placed: {why}",
@@ -1305,6 +1309,16 @@ pub fn install(
     telemetry: Option<Arc<crate::telemetry::Telemetry>>,
     maps: Option<MapLocator>,
 ) -> anyhow::Result<bool> {
+    install_for_maps(registry, store, telemetry, maps, None)
+}
+
+pub fn install_for_maps(
+    registry: &mut hooks::Registry,
+    store: Option<Arc<Store>>,
+    telemetry: Option<Arc<crate::telemetry::Telemetry>>,
+    maps: Option<MapLocator>,
+    sources: Option<&crate::loaded_map::EditorSources>,
+) -> anyhow::Result<bool> {
     let Some(store) = store else {
         eprintln!("skulls-custom: off: no settings store (a headless run)");
         return Ok(false);
@@ -1317,6 +1331,16 @@ pub fn install(
     if !added {
         eprintln!("skulls-custom: off: switched off (H2_FEATURES)");
         return Ok(false);
+    }
+    if let Some(sources) = sources {
+        let state = Arc::downgrade(&shared);
+        sources.on_change(move |_| {
+            if let Some(s) = state.upgrade() {
+                s.edited_mount.store(true, Ordering::Release);
+                *s.level.lock().unwrap_or_else(|e| e.into_inner()) = Level::default();
+                s.work.lock().unwrap_or_else(|e| e.into_inner()).clear();
+            }
+        });
     }
     if reveal {
         eprintln!(

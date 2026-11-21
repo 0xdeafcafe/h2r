@@ -280,6 +280,11 @@ the batch end. Recording follows the native edit handler, so a rejected
 paste or a modal stealing focus can cut a batch short. Playback supplies
 these edit commands using the recorded trampoline configuration in `BOOT`.
 
+Theater resolves the recorded cache path through the mounted DVD or
+title drive links. A title-content path also resolves against the title's
+data partition before the game links its drive. Without a recorded path,
+the lookup uses the package or DVD map name.
+See `crates/extensions/game/src/theater/metadata.rs` (`prepare_map`).
 A full map's digest covers every mounted byte, including applied header
 rewrites. Sparse dedicated-host map stores can supply only their recorded
 ranges. In that case `DESC.map.ranges` lists ordered (offset, length) pairs.

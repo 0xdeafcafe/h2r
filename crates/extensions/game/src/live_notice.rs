@@ -37,6 +37,9 @@ pub const DIALOG_MESSAGE: u32 = 0x814;
 pub const MESSAGE_UNITS: usize = 256;
 /// Shadow entry that runs the original fill (see the page list in lib.rs).
 const SHADOW: u32 = 0xa0ff_6000;
+/// Retail shows this message on its connection-error dialog after an editor
+/// map has been published on an external-service host.
+const EDITOR_MAP_MESSAGE: &str = "An editor map was loaded.\r\nRestart the game to sign in to Xbox Live.";
 /// The longest server URL shown before it is shortened.
 const URL_CHARS: usize = 40;
 
@@ -152,9 +155,25 @@ fn display_url(url: &str) -> String {
 /// cannot-connect error. Returns whether it wrote. Other dialogs are left
 /// alone.
 pub fn apply(guest: &mut Guest, dialog: u32, units: &[u16]) -> Result<bool, GuestFault> {
+    apply_for_map(guest, dialog, units, || false)
+}
+
+fn apply_for_map(
+    guest: &mut Guest,
+    dialog: u32,
+    units: &[u16],
+    editor_bound: impl FnOnce() -> bool,
+) -> Result<bool, GuestFault> {
     if guest.u32(dialog.wrapping_add(DIALOG_ERROR_ID))? != CANNOT_CONNECT_ERROR {
         return Ok(false);
     }
+    let editor_message: Vec<u16>;
+    let units: &[u16] = if editor_bound() {
+        editor_message = EDITOR_MAP_MESSAGE.encode_utf16().collect();
+        &editor_message
+    } else {
+        units
+    };
     // At most 255 units, always terminated: the next buffer is a button label.
     let len = units.iter().position(|&u| u == 0).unwrap_or(units.len());
     let units = units[..len.min(MESSAGE_UNITS - 1)].iter().chain(&[0]);
@@ -166,14 +185,33 @@ pub fn apply(guest: &mut Guest, dialog: u32, units: &[u16]) -> Result<bool, Gues
 /// Install for this boot's Live settings. Returns whether the hook went in.
 /// Must run after the generated module is registered.
 pub fn install(rt: &Runtime, config: &LiveConfig) -> anyhow::Result<bool> {
+    install_for_maps(rt, config, None)
+}
+
+/// An externally connected host can have a writable local editor mount.
+pub fn install_for_maps(
+    rt: &Runtime,
+    config: &LiveConfig,
+    editor_maps: Option<vfs::MapRebind>,
+) -> anyhow::Result<bool> {
     match Notice::for_config(config) {
-        Some(notice) => install_at(rt, &notice, DIALOG_TEXT_FILL, SHADOW),
+        Some(notice) => install_dialog(rt, &notice, DIALOG_TEXT_FILL, SHADOW, editor_maps),
         None => Ok(false),
     }
 }
 
 /// [`install`] at chosen addresses, for tests with a stand-in fill.
 pub fn install_at(rt: &Runtime, notice: &Notice, fill: u32, shadow: u32) -> anyhow::Result<bool> {
+    install_dialog(rt, notice, fill, shadow, None)
+}
+
+fn install_dialog(
+    rt: &Runtime,
+    notice: &Notice,
+    fill: u32,
+    shadow: u32,
+    editor_maps: Option<vfs::MapRebind>,
+) -> anyhow::Result<bool> {
     // Resolve before edit_dispatch: resolve_original takes the dispatch read
     // lock, which edit_dispatch holds for writing.
     let (Some(direct), Some(through_shadow)) =
@@ -187,7 +225,7 @@ pub fn install_at(rt: &Runtime, notice: &Notice, fill: u32, shadow: u32) -> anyh
         anyhow::bail!("live notice: {fill:#x} already has the override {name}");
     }
     rt.memory().map_zeroed(shadow, 0x1000, Permissions::RX)?;
-    let units: Arc<[u16]> = notice.units().into();
+    let message = Arc::new((notice.units(), editor_maps));
     rt.edit_dispatch(|d| {
         d.register_override(shadow, "live notice: original fill", move |cpu, ctx, _| {
             Ok(through_shadow.invoke(cpu, ctx, fill))
@@ -199,12 +237,15 @@ pub fn install_at(rt: &Runtime, notice: &Notice, fill: u32, shadow: u32) -> anyh
                 return Ok(direct.invoke(cpu, ctx, fill));
             };
             cpu.esp = cpu.esp.wrapping_add(4);
-            let units = Arc::clone(&units);
+            let message = Arc::clone(&message);
             let transfer = {
                 let rt = Arc::clone(ctx.runtime());
                 let mut mem = rt.memory();
                 ctx.call_guest(cpu, &mut mem, shadow, move |_, ctx| {
-                    if let Err(e) = apply(&mut ctx.memory(), dialog, &units) {
+                    let (units, editor_maps) = &*message;
+                    if let Err(e) = apply_for_map(&mut ctx.memory(), dialog, units, || {
+                        editor_maps.as_ref().is_some_and(vfs::MapRebind::has_ever_bound)
+                    }) {
                         eprintln!("live notice: dialog {dialog:#x} not patched: {e:?}");
                     }
                     Ok(TransferAbi::ret(return_pc))
@@ -422,6 +463,16 @@ mod tests {
                 .unwrap(),
             0xfeed_f00d
         );
+    }
+
+    #[test]
+    fn editor_map_refusal_names_the_restart_on_the_connection_dialog() {
+        let mut guest = guest_with_dialog(CANNOT_CONNECT_ERROR);
+        let configured = Notice::Unreachable("test.invalid".into()).units();
+        assert!(apply_for_map(&mut guest, DIALOG, &configured, || true).unwrap());
+        assert_eq!(String::from_utf16(&message(&guest)).unwrap(), EDITOR_MAP_MESSAGE);
+        assert!(apply_for_map(&mut guest, DIALOG, &configured, || false).unwrap());
+        assert_eq!(message(&guest), configured[..configured.len() - 1]);
     }
 
     #[test]

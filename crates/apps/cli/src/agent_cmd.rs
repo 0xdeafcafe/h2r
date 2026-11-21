@@ -283,6 +283,7 @@ fn looks_like_host(w: &str) -> bool {
         head.chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')
             && !agent_proto::method::ALL.contains(&w)
+            && !agent_proto::sim::method::EDITS.contains(&w)
             && !w.starts_with("input.")
             && !w.starts_with("profile.")
             && !w.starts_with("host.")
@@ -1049,6 +1050,9 @@ mod tests {
             "-",
             "watch",
         ] {
+            assert!(!looks_like_host(call), "{call}");
+        }
+        for call in agent_proto::sim::method::EDITS {
             assert!(!looks_like_host(call), "{call}");
         }
     }

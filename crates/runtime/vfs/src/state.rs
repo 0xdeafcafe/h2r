@@ -43,6 +43,10 @@ pub struct SavedFile {
 /// Why the VFS cannot be saved or loaded.
 #[derive(Debug, thiserror::Error)]
 pub enum StateError {
+    #[error("an editor map rebind is in progress")]
+    MapReloadBusy,
+    #[error("snapshots cannot reproduce the editor play copy at {0}")]
+    MapBinding(String),
     #[error("{0} is open for writing or deletion")]
     Writable(String),
     #[error("a delete is pending on {0} paths")]
@@ -56,8 +60,20 @@ pub enum StateError {
 }
 
 impl Vfs {
+    /// Machine snapshots identify the boot mounts, but cannot reproduce a
+    /// play copy published later (even with its DVD file already closed).
+    pub fn check_snapshot_maps(&self) -> Result<(), StateError> {
+        for mount in &self.mounts {
+            if let Some((path, _)) = mount.backend.snapshot_map_bindings()?.first() {
+                return Err(StateError::MapBinding(format!("{}\\{path}", mount.device)));
+            }
+        }
+        Ok(())
+    }
+
     /// The open objects, or why they cannot be saved.
     pub fn state(&self) -> Result<VfsState, StateError> {
+        self.check_snapshot_maps()?;
         let pending = self.pending.len() + self.cleanup_pending.len();
         if pending != 0 {
             return Err(StateError::DeletePending(pending));
@@ -101,6 +117,18 @@ impl Vfs {
     /// handle numbers. Every saved file is looked up first: on an error
     /// nothing has changed.
     pub fn restore_state(&mut self, state: &VfsState) -> Result<(), StateError> {
+        let apply = self.prepare_restore(state)?;
+        apply(self);
+        Ok(())
+    }
+
+    /// Resolve the saved objects on this mount before the machine writes guest RAM.
+    /// Apply the returned file table to this VFS at the same slice boundary.
+    pub fn prepare_restore(
+        &mut self,
+        state: &VfsState,
+    ) -> Result<impl FnOnce(&mut Vfs) + use<>, StateError> {
+        self.check_snapshot_maps()?;
         if state
             .handles
             .iter()
@@ -165,18 +193,21 @@ impl Vfs {
                 },
             ));
         }
-        let open: Vec<_> = self.handles.keys().copied().collect();
-        for handle in open {
-            let _ = self.close(Handle(handle));
-        }
-        for (id, file) in reopened {
-            if !file.directory {
-                self.mounts[file.mount].backend.opened(&file.path);
+        let handles = state.handles.iter().copied().collect();
+        let next_handle = state.next_handle;
+        Ok(move |vfs: &mut Vfs| {
+            let open: Vec<_> = vfs.handles.keys().copied().collect();
+            for handle in open {
+                let _ = vfs.close(Handle(handle));
             }
-            self.objects.insert(id, file);
-        }
-        self.handles = state.handles.iter().copied().collect();
-        self.next_handle = state.next_handle;
-        Ok(())
+            for (id, file) in reopened {
+                if !file.directory {
+                    vfs.mounts[file.mount].backend.opened(&file.path);
+                }
+                vfs.objects.insert(id, file);
+            }
+            vfs.handles = handles;
+            vfs.next_handle = next_handle;
+        })
     }
 }

@@ -321,7 +321,7 @@ impl World {
         self.rt.memory().read_bytes(p, &mut b, 1).unwrap();
         b
     }
-    fn begin(&mut self, slots: &[usize]) -> u32 {
+    fn prepare_logon(&mut self, slots: &[usize]) {
         assert_eq!(self.call("XNetStartup", &[0]), 0);
         assert_eq!(self.call("WSAStartup", &[2, DATA]), 0);
         assert_eq!(self.call("XOnlineStartup", &[0]), 0);
@@ -333,6 +333,9 @@ impl World {
             );
         }
         self.word(DATA + 0x4000, 2);
+    }
+    fn begin(&mut self, slots: &[usize]) -> u32 {
+        self.prepare_logon(slots);
         assert_eq!(
             self.call("XOnlineLogon", &[USERS, DATA + 0x4000, 1, 0, OUT]),
             0
@@ -417,6 +420,74 @@ fn motd() -> Vec<u8> {
     .unwrap()
 }
 #[test]
+fn external_logon_and_editor_reservation_exclude_each_other() {
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    let server = Server::new();
+    let account = server.account("Editor Test");
+    let mut w = World::new(&server.embedded.url, &[&account]);
+    let status = Arc::new(AtomicU32::new(OK));
+    let check = Arc::clone(&status);
+    w.hle.set_logon_map_check(Box::new(move || check.load(Ordering::Acquire)));
+
+    let task = w.begin(&[0]);
+    let reserve = || -> Result<(), String> { panic!("reserved during external logon") };
+    assert!(w.hle.with_editor_reservation(reserve).is_err());
+    assert_eq!(w.wait(task), CONNECTED);
+    assert!(w.hle.with_editor_reservation(reserve).is_err());
+    assert_eq!(w.call("XOnlineTaskClose", &[task]), OK);
+    w.hle.with_editor_reservation(|| {
+        status.store(TASK_BUSY, Ordering::Release);
+        Ok(())
+    }).unwrap();
+    w.prepare_logon(&[0]);
+    let args = [USERS, DATA + 0x4000, 1, 0, OUT];
+    w.word(OUT, u32::MAX);
+    assert_eq!(w.call("XOnlineLogon", &args), TASK_BUSY);
+    assert_eq!(w.u32(OUT), u32::MAX);
+
+    status.store(CANNOT_ACCESS_SERVICE, Ordering::Release);
+    for _ in 0..2 {
+        let task = w.begin(&[0]);
+        assert_eq!(w.wait(task), CANNOT_ACCESS_SERVICE);
+        assert_eq!(w.call("XOnlineTaskClose", &[task]), OK);
+    }
+    assert_eq!(server.events().iter().filter(|e| e.kind == types::SIGNED_IN).count(), 1);
+}
+
+#[test]
+fn an_unpolled_logon_failure_allows_a_bind_and_a_retry_shows_the_restart_reason() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let server = Server::new();
+    let unknown = synthetic_account();
+    let mut w = World::new(&server.embedded.url, &[&unknown]);
+    let bound = Arc::new(AtomicBool::new(false));
+    let check = Arc::clone(&bound);
+    w.hle.set_logon_map_check(Box::new(move || {
+        if check.load(Ordering::Acquire) {
+            CANNOT_ACCESS_SERVICE
+        } else {
+            OK
+        }
+    }));
+    let failed = w.begin(&[0]);
+    server.until(|| {
+        w.hle
+            .with_editor_reservation(|| {
+                bound.store(true, Ordering::Release);
+                Ok(())
+            })
+            .is_ok()
+    });
+    // Retail still owns the first handle and has never polled its completion.
+    let retry = w.begin(&[0]);
+    assert_eq!(w.wait(retry), CANNOT_ACCESS_SERVICE);
+    assert_eq!(w.wait(failed), INVALID_USER);
+    assert!(server.presence().is_empty());
+}
+
+#[test]
 fn logon_verifies_the_account_key_and_appends_signed_presence() {
     let server = Server::new();
     let account = server.account("Test Player");
@@ -464,6 +535,7 @@ fn unknown_account_and_wrong_or_missing_key_fail_as_invalid_user() {
         let mut w = World::new(&server.embedded.url, &[account]);
         let h = w.begin(&[0]);
         assert_eq!(w.wait(h), INVALID_USER);
+        assert!(w.hle.with_editor_reservation(|| Ok(())).is_ok());
         assert_eq!(w.call("XOnlineLogonTaskGetResults", &[h]), INVALID_USER);
         assert_eq!(w.call("XOnlineGetLogonUsers", &[]), 0);
     }
@@ -1018,6 +1090,10 @@ fn heartbeat_failure_reaches_the_persistent_connection_task() {
     assert_ne!(w.hle.server_status().last_error, 0);
     assert_eq!(w.call("XOnlineLogonTaskGetResults", &[h]), CONNECTION_LOST);
     assert_eq!(w.call("XOnlineGetLogonUsers", &[]), 0);
+    // Its HTTP worker can reannounce this account until retail closes the handle.
+    assert!(w.hle.with_editor_reservation(|| Ok(())).is_err());
+    assert_eq!(w.call("XOnlineTaskClose", &[h]), OK);
+    assert!(w.hle.with_editor_reservation(|| Ok(())).is_ok());
 }
 
 fn synthetic_account() -> Account {

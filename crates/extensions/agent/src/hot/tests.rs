@@ -172,6 +172,8 @@ fn conditional_batch_validates_all_fields_and_reverts_one_id() {
     let guest = Arc::new(Mutex::new(level()));
     let g = guest.clone();
     let agent = Agent::new();
+    let source = Arc::new(Mutex::new(None));
+    let current = Arc::clone(&source);
     add_edit_methods(
         &agent,
         Editor::new(),
@@ -180,7 +182,7 @@ fn conditional_batch_validates_all_fields_and_reverts_one_id() {
             kind: agent_proto::sim::SessionKind::Local,
             ..Default::default()
         },
-        |_| None,
+        move |_| current.lock().unwrap().clone(),
         false,
     );
     let c = Client::new(&agent);
@@ -192,7 +194,10 @@ fn conditional_batch_validates_all_fields_and_reverts_one_id() {
             .unwrap()
             .contains(&json!(0xe1110001u32))
     );
+    assert!(map["file"].is_null());
+    *source.lock().unwrap() = Some("served-fixture.map".into());
     let same = c.ok(method::EDIT_MAP, json!({"known_epoch": map["epoch"]}));
+    assert_eq!(same["file"], "served-fixture.map");
     assert!(same.get("loaded").is_none());
     let typed = json!({"tag":"0xe1110001","path":"postprocess[0].colors[1].color","was":0xff804020u32,"value":7});
     let raw = json!({"at":SHAD_AT,"was":"0000","value":"1122"});
@@ -364,6 +369,21 @@ fn multiplayer_host_with_unknown_peer_count_explains_and_refuses_writes() {
         let err = c.call(m, params);
         assert_eq!(err["error"]["code"], code::INVALID_REQUEST);
         assert_eq!(err["error"]["message"], map["session"]["why"]);
+    }
+}
+
+#[test]
+fn an_unknown_multiplayer_peer_count_refuses_even_a_confirmed_edit() {
+    let host = SessionView {
+        kind: agent_proto::sim::SessionKind::MpHost,
+        peers: None,
+        ..Default::default()
+    }
+    .settle();
+    for p in [json!({}), json!({"confirm_peers": 1})] {
+        let error = permit(host.clone(), &p, 0).unwrap_err();
+        assert_eq!(error.code, code::INVALID_REQUEST);
+        assert!(error.message.contains("peer count"));
     }
 }
 

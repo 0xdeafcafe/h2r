@@ -4,7 +4,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use agent_proto::sim::{SessionKind, SessionView, method};
+use agent_proto::sim::{REFUSED, SessionKind, SessionView, method};
 use agent_proto::{Kind, Object, code};
 use engine::GuestMemory;
 use engine::testing::FakeGuest;
@@ -16,6 +16,8 @@ use serde_json::{Value, json};
 
 use super::bots::{Bot, FakeBots, NotLanded, PadSource};
 use crate::{Agent, GameStatus, Reader};
+
+mod authorization;
 
 const PLAYERS_HDR: u32 = 0x8000_0000;
 const OBJECTS_HDR: u32 = 0x8010_0000;
@@ -49,6 +51,11 @@ impl Reader for Game {
 /// 1 between lives.
 fn game() -> Game {
     let mut g = FakeGuest::new();
+    use guest_layout::global::{CACHE_MAP_NAME, SCENARIO, SIM_GLOBALS, SQUAD_SESSION};
+    g.put(CACHE_MAP_NAME.base, b"lockout\0");
+    g.put_u32(SCENARIO.base, 0x8110_0000);
+    g.put_u32(SIM_GLOBALS.base, 0x8120_0000);
+    g.put_u32(SQUAD_SESSION.base, 0x8130_0000);
     for (global, hdr) in [
         (engine::points::PLAYERS.base, PLAYERS_HDR),
         (engine::points::OBJECTS.base, OBJECTS_HDR),
@@ -113,6 +120,7 @@ impl Harness {
             Box::new(bots.clone()),
             Some(Box::new(move |_| SessionView {
                 kind: *k.lock().unwrap(),
+                peers: Some(1),
                 ..Default::default()
             })),
         );
@@ -506,7 +514,7 @@ fn session_methods_lists_them() {
     let (h, mut game) = (Harness::new(), game());
     let m = h.ok(&mut game, agent_proto::method::METHODS, Value::Null);
     for name in method::ALL {
-        assert!(m.as_array().unwrap().contains(&json!(name)), "{name}");
+        assert_eq!(m.as_array().unwrap().contains(&json!(name)), !method::EDITS.contains(name), "{name}");
     }
 }
 
@@ -629,6 +637,11 @@ impl super::calls::Tags for FakeTags {
 /// A harness whose sim has the calls queue (armed, as the feature's build
 /// arms it) and the fake tags.
 fn with_calls() -> (Harness, super::calls::Shared) {
+    let (h, q, _) = with_calls_and_sim();
+    (h, q)
+}
+
+fn with_calls_and_sim() -> (Harness, super::calls::Shared, super::SimHandle) {
     let h = Harness::new();
     let agent = &h.agent;
     // The sim installed by Harness::new isn't reachable: install again
@@ -640,6 +653,7 @@ fn with_calls() -> (Harness, super::calls::Shared) {
             let k = Arc::clone(&h.kind);
             move |_| SessionView {
                 kind: *k.lock().unwrap(),
+                peers: Some(1),
                 ..Default::default()
             }
         })),
@@ -647,8 +661,9 @@ fn with_calls() -> (Harness, super::calls::Shared) {
     let q = super::calls::shared();
     super::calls::lock(&q).arm();
     sim.set_calls(Arc::clone(&q));
+    sim.install_world_edits(agent);
     sim.set_tags(Box::new(FakeTags));
-    (h, q)
+    (h, q, sim)
 }
 
 /// The feature's part at the next tick: takes the queued calls and
@@ -722,7 +737,7 @@ fn a_teleport_the_game_refuses_or_never_makes_is_an_error() {
         method::STATE_SET,
         json!({"player": "player.0", "facing": [0, 1, 0]}),
     );
-    the_game_makes(&q, |_| Err("no room".into()));
+    the_game_makes(&q, |_| Err(super::unavailable("no room".into())));
     h.agent.on_tick(&mut game);
     let r = h.reply();
     assert_eq!(r["error"]["code"], code::UNAVAILABLE, "{r}");
@@ -919,7 +934,7 @@ fn give_and_spawn_resolve_a_shared_name_among_their_groups() {
         method::GIVE,
         json!({"player": "player.0", "weapon": "objects\\weapons\\rifle\\battle_rifle\\battle_rifle"}),
     );
-    let calls = the_game_makes(&q, |_| Err("not this time".into()));
+    let calls = the_game_makes(&q, |_| Err(super::unavailable("not this time".into())));
     assert!(
         matches!(
             calls[0],
@@ -938,7 +953,7 @@ fn give_and_spawn_resolve_a_shared_name_among_their_groups() {
         method::SPAWN,
         json!({"tag": "objects\\vehicles\\warthog\\warthog", "pos": [0, 0, 0]}),
     );
-    let calls = the_game_makes(&q, |_| Err("not this time".into()));
+    let calls = the_game_makes(&q, |_| Err(super::unavailable("not this time".into())));
     assert!(
         matches!(calls[0], super::calls::Call::Spawn { tag: VEHI_TAG, .. }),
         "{calls:?}"
@@ -961,7 +976,7 @@ fn give_and_spawn_resolve_a_shared_name_among_their_groups() {
         method::SPAWN,
         json!({"tag": "vehi:objects\\vehicles\\warthog\\warthog", "pos": [0, 0, 0]}),
     );
-    let calls = the_game_makes(&q, |_| Err("not this time".into()));
+    let calls = the_game_makes(&q, |_| Err(super::unavailable("not this time".into())));
     assert!(matches!(
         calls[0],
         super::calls::Call::Spawn { tag: VEHI_TAG, .. }
@@ -1127,4 +1142,493 @@ fn sim_events_answers_the_tick_events_the_game_thread_recorded() {
     let e = h.err(&mut game, method::EVENTS, json!({"kinds": ["moon"]}));
     assert_eq!(e["code"], code::INVALID_PARAMS);
     damage::tick_starts();
+}
+
+fn edit_requests() -> [(&'static str, Value); 4] {
+    [
+        (method::OBJECT_SET, json!({"id":"vehicle.12340000","pos":[1,2,3]})),
+        (method::OBJECT_DELETE, json!({"id":"vehicle.12340000"})),
+        (method::OBJECT_RESPAWN, json!({"placement":{"block":"vehicles","index":0}})),
+        (method::MAP_RELOAD, json!({})),
+    ]
+}
+
+/// Run the production guest-call body over the harness guest, including the
+/// tick reentry. The following on_tick settles the socket reply.
+fn drive_edit_tick(
+    g: &mut Game,
+    q: &super::calls::Shared,
+    callee: impl FnMut(&engine::entry::GuestCall, &mut dyn GuestMemory) -> engine::entry::Regs,
+) -> Vec<engine::entry::GuestCall> {
+    use engine::entry::{Cx, EntryFn, EntryFuture, Regs, Ret};
+    use std::sync::atomic::AtomicBool;
+
+    const SCRATCH: u32 = 0x8130_0000;
+    g.g.map(SCRATCH, super::calls::SCRATCH_SIZE);
+    let work = super::calls::lock(q).drain();
+    assert_eq!(work.len(), 1);
+    let q = q.clone();
+    let f: Box<EntryFn> = Box::new(move |cx: Cx| -> EntryFuture {
+        Box::pin(super::calls::run_queued(
+            cx,
+            q.clone(),
+            work.clone(),
+            SCRATCH,
+            Arc::new(AtomicBool::new(false)),
+        ))
+    });
+    let r = engine::entry::testing::run(&*f, std::mem::take(&mut g.g), Regs::default(), callee);
+    assert_eq!(r.result, Ok(Ret::new(0, 0)));
+    assert_eq!(
+        r.calls.last().unwrap().target,
+        engine::points::GAME_TICK.base
+    );
+    g.g = r.guest;
+    r.calls
+}
+
+#[test]
+fn world_edits_gate_the_queue() {
+    let (h, q) = with_calls();
+    let mut g = game();
+    for (name, params) in edit_requests() {
+        h.send(name, params);
+        h.agent.between_slices(&mut g, 0);
+        assert_eq!(h.reply()["error"]["code"], code::UNAVAILABLE);
+    }
+    for kind in [SessionKind::CoopHost, SessionKind::CoopGuest, SessionKind::MpClient] {
+        *h.kind.lock().unwrap() = kind;
+        for (name, params) in edit_requests() {
+            assert_eq!(h.err(&mut g, name, params)["code"], code::INVALID_REQUEST);
+        }
+    }
+    *h.kind.lock().unwrap() = SessionKind::Local;
+    h.agent.set_live_session_probe(|_| true);
+    for (name, params) in edit_requests() {
+        assert_eq!(h.err(&mut g, name, params)["code"], REFUSED);
+    }
+    assert!(!super::calls::lock(&q).has_pending());
+}
+
+#[test]
+fn object_edits_check_the_callers_epoch_again_before_the_engine_call() {
+    for (name, mut params) in edit_requests().into_iter().take(3) {
+        let (h, q) = with_calls();
+        let mut g = game();
+        let status = h.ok(&mut g, agent_proto::live::STATUS, Value::Null);
+        let epoch = status["map"]["epoch"].as_u64().unwrap();
+        params["epoch"] = json!(epoch);
+        h.deferred(&mut g, name, params.clone());
+        h.agent.live_cut();
+        let calls = drive_edit_tick(&mut g, &q, |_, _| engine::entry::Regs::default());
+        assert_eq!(calls.len(), 1, "{name} must only reenter the tick");
+        h.agent.on_tick(&mut g);
+        let reply = h.reply();
+        assert_eq!(reply["error"]["code"], code::INVALID_REQUEST);
+        assert_eq!(reply["error"]["message"], "the map epoch changed");
+
+        let error = h.err(&mut g, name, params);
+        assert_eq!(error, reply["error"]);
+        assert!(!super::calls::lock(&q).has_pending());
+    }
+}
+
+#[test]
+fn confirmed_edits_recheck_the_salt_at_execution() {
+    let h = Harness::new();
+    let mut g = game();
+    let sim = super::install(
+        &h.agent,
+        Box::new(h.bots.clone()),
+        Some(Box::new(|_| SessionView {
+            kind: SessionKind::MpHost,
+            peers: Some(3),
+            ..Default::default()
+        })),
+    );
+    let q = super::calls::shared();
+    super::calls::lock(&q).arm();
+    sim.set_calls(q.clone());
+    sim.install_world_edits(&h.agent);
+    for (name, mut p) in edit_requests() {
+        p["confirm_peers"] = json!(2);
+        let e = h.err(&mut g, name, p);
+        assert!(e["message"].as_str().unwrap().contains("peer count"));
+    }
+    assert!(!super::calls::lock(&q).has_pending());
+    let pool = engine::view::objects::array(&g.g).unwrap().unwrap();
+    let slot = pool.get_absolute(&g.g, 1).unwrap().unwrap();
+    let salt = slot.salt(&g.g).unwrap();
+    let id = format!("weapon.{salt:04x}0001");
+    // A loose weapon is addressable by its world id.
+    Body::at(WEAPON_BODY).set_parent(&mut g.g, None).unwrap();
+    let epoch = h.ok(&mut g, agent_proto::live::STATUS, Value::Null)["map"]["epoch"].clone();
+    h.deferred(
+        &mut g,
+        method::OBJECT_SET,
+        json!({"id":id,"pos":[5,4,3],"confirm_peers":3,"epoch":epoch}),
+    );
+    let calls = drive_edit_tick(&mut g, &q, |_, _| engine::entry::Regs::default());
+    assert_eq!(calls[0].target, super::calls::addr::OBJECT_SET_POSITION);
+    h.agent.on_tick(&mut g);
+    let reply = h.reply();
+    let moved: agent_proto::sim::ObjectSetResult =
+        serde_json::from_value(reply["result"].clone()).unwrap();
+    assert_eq!(moved.object, id);
+    assert_eq!(moved.at.boundary, agent_proto::Boundary::Tick);
+
+    h.deferred(&mut g, method::OBJECT_DELETE, json!({"id":id,"confirm_peers":3}));
+    // Reuse the weapon slot after accepting the request and before the hook.
+    slot.set_salt(&mut g.g, salt.wrapping_add(1)).unwrap();
+    let calls = drive_edit_tick(&mut g, &q, |_, _| engine::entry::Regs::default());
+    assert_eq!(calls.len(), 1, "only the game tick");
+    h.agent.on_tick(&mut g);
+    assert_eq!(h.reply()["error"]["code"], code::GONE);
+}
+
+#[test]
+fn only_an_authorized_world_write_adopts_the_game() {
+    let (h, q, sim) = with_calls_and_sim();
+    let installs = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let count = installs.clone();
+    sim.on_first_edit(&h.agent, move |_| {
+        count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Ok(())
+    });
+    let mut g = game();
+    h.ok(&mut g, agent_proto::method::METHODS, Value::Null);
+    h.err(&mut g, method::OBJECT_DELETE, json!({"id": "bad"}));
+    assert_eq!(installs.load(std::sync::atomic::Ordering::Relaxed), 0);
+    for _ in 0..2 {
+        h.deferred(&mut g, method::OBJECT_DELETE, json!({"id": "weapon.11220001"}));
+        assert_eq!(installs.load(std::sync::atomic::Ordering::Relaxed), 1);
+        the_game_makes(&q, |_| Ok(json!({})));
+        h.agent.on_tick(&mut g);
+        h.reply();
+    }
+}
+
+#[test]
+fn input_logs_and_editor_reloads_exclude_each_other() {
+    let (_, q) = with_calls();
+    let mut input = crate::Input::default();
+    let name = "fixture";
+    let path = std::path::PathBuf::from("fixture.input");
+    input.record(name, path.clone()).unwrap();
+    assert!(input.allow_reload(&q).unwrap_err().contains("recording"));
+    input.stop().unwrap();
+    input.allow_reload(&q).unwrap();
+    let pending = super::calls::hold_reload(&q, Box::new(|_| Ok(()))).unwrap();
+    assert!(input.record(name, path.clone()).unwrap_err().contains("reload"));
+    assert!(input.replay(name, path.clone(), xapi::tap::InputLog { reads: Vec::new() })
+        .unwrap_err().contains("reload"));
+    drop(pending);
+    input.record(name, path).unwrap();
+}
+
+#[test]
+fn reload_queues_the_active_options() {
+    use super::calls::OPTIONS_SIZE;
+    use guest_layout::game::{GameGlobals, MODE_CAMPAIGN, MODE_MULTIPLAYER, OPTIONS};
+
+    let mut g = game();
+    let h = Harness::new();
+    let methods = h.ok(&mut g, agent_proto::method::METHODS, Value::Null);
+    assert!(!methods.as_array().unwrap().contains(&json!(method::MAP_RELOAD)));
+    let (h, q) = with_calls();
+    let methods = h.ok(&mut g, agent_proto::method::METHODS, Value::Null);
+    for name in method::EDITS {
+        assert!(methods.as_array().unwrap().contains(&json!(name)));
+    }
+
+    let base = 0x8140_0000;
+    g.g.put_u32(engine::points::GAME_GLOBALS.base, base);
+    g.g.map(base, GameGlobals::SIZE);
+    let e = h.err(&mut g, method::MAP_RELOAD, json!({}));
+    assert_eq!(e["code"], REFUSED);
+    g.g.put_u8(base + GameGlobals::MAP_ACTIVE.offset, 1);
+    g.g.put_u8(super::calls::OPTIONS_PENDING, 0);
+    let mut previous = 0;
+    for mode in [MODE_CAMPAIGN, MODE_MULTIPLAYER] {
+        g.g.map(super::calls::PENDING_OPTIONS, OPTIONS_SIZE);
+        g.g.put_u8(super::calls::OPTIONS_PENDING, 0);
+        let mut options = vec![0x5a; OPTIONS_SIZE as usize];
+        options[..4].copy_from_slice(&mode.to_le_bytes());
+        g.g.put(base + OPTIONS, &options);
+        let e = h.err(&mut g, method::MAP_RELOAD, json!({"file":"preview.map"}));
+        assert_eq!(e["code"], REFUSED);
+        assert!(!super::calls::lock(&q).has_pending());
+        h.deferred(&mut g, method::MAP_RELOAD, json!({}));
+        let calls = drive_edit_tick(&mut g, &q, |call, m| {
+            if call.target == engine::points::OPTIONS_QUEUE.base {
+                assert!(call.args.is_empty());
+                assert_eq!(m.bytes(call.eax.unwrap(), options.len()).unwrap(), options);
+                m.write(super::calls::PENDING_OPTIONS, &options).unwrap();
+                m.write(super::calls::OPTIONS_PENDING, &[1]).unwrap();
+            }
+            engine::entry::Regs::default()
+        });
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].target, engine::points::OPTIONS_QUEUE.base);
+        h.agent.on_tick(&mut g);
+        let reply = h.reply();
+        let result: agent_proto::sim::MapReloadResult =
+            serde_json::from_value(reply["result"].clone()).unwrap();
+        assert!(result.queued);
+        assert!(result.activation > previous);
+        previous = result.activation;
+        assert_eq!(Some(result.map), g.status().map);
+        assert_eq!((result.file, result.checksum), (None, None));
+    }
+}
+
+fn reload_fixture() -> (Game, u32, std::path::PathBuf) {
+    use guest_layout::game::{GameGlobals, MODE_MULTIPLAYER, OPTIONS};
+
+    let mut g = game();
+    let base = 0x8140_0000;
+    let options = base + OPTIONS;
+    g.g.put_u32(engine::points::GAME_GLOBALS.base, base);
+    g.g.map(base, GameGlobals::SIZE);
+    g.g.put_u8(base + GameGlobals::MAP_ACTIVE.offset, 1);
+    g.g.put_u8(super::calls::OPTIONS_PENDING, 0);
+    g.g.put_u32(options, MODE_MULTIPLAYER);
+    g.g.put(options + 0x1c, br"levels\fixture\scenario");
+    g.g.map(super::calls::PENDING_OPTIONS, super::calls::OPTIONS_SIZE);
+    let file = std::env::temp_dir().join("reload").join("Lockout.MAP");
+    (g, options, file)
+}
+
+fn finished_preparation(
+    result: Result<super::PreparedMapReload, String>,
+) -> std::sync::mpsc::Receiver<Result<super::PreparedMapReload, String>> {
+    let (send, recv) = std::sync::mpsc::channel();
+    send.send(result).unwrap();
+    recv
+}
+
+#[test]
+fn file_reload_binds_between_options_queue_and_the_tick() {
+    let (h, q, sim) = with_calls_and_sim();
+    let (mut g, options, file) = reload_fixture();
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let prepared = events.clone();
+    let expected_file = file.clone();
+    sim.set_map_rebind(Box::new(move |map, scenario, path, _| {
+        assert_eq!(map, "lockout");
+        assert_eq!(scenario, r"levels\fixture\scenario");
+        assert_eq!(path, expected_file.as_path());
+        prepared.lock().unwrap().push("prepare");
+        let committed = prepared.clone();
+        let binding = super::PreparedMapReload::new(0x1234, move || {
+            committed.lock().unwrap().push("reserve");
+            Ok(super::ReservedMapReload::new(
+                move || committed.lock().unwrap().push("commit"),
+                || panic!("a successful reload was rolled back"),
+            ))
+        });
+        Ok(finished_preparation(Ok(binding)))
+    }));
+    h.deferred(&mut g, method::MAP_RELOAD, json!({ "file": file }));
+    assert_eq!(*events.lock().unwrap(), ["prepare"]);
+    let second = h.err(&mut g, method::MAP_RELOAD, json!({}));
+    assert_eq!(second["code"], REFUSED);
+    let calls = drive_edit_tick(&mut g, &q, |c, m| {
+        if c.target == engine::points::OPTIONS_QUEUE.base {
+            let size = super::calls::OPTIONS_SIZE as usize;
+            assert_eq!(
+                m.bytes(c.eax.unwrap(), size).unwrap(),
+                m.bytes(options, size).unwrap()
+            );
+            let bytes = m.bytes(c.eax.unwrap(), size).unwrap();
+            m.write(super::calls::PENDING_OPTIONS, &bytes).unwrap();
+            m.write(super::calls::OPTIONS_PENDING, &[1]).unwrap();
+            events.lock().unwrap().push("queue");
+        } else {
+            events.lock().unwrap().push("tick");
+        }
+        engine::entry::Regs::default()
+    });
+    assert_eq!(calls.len(), 2);
+    assert_eq!(
+        *events.lock().unwrap(),
+        ["prepare", "reserve", "queue", "commit", "tick"]
+    );
+    h.agent.on_tick(&mut g);
+    let result = &h.reply()["result"];
+    assert_eq!(result["queued"], true);
+    assert_eq!(result["map"], "lockout");
+    assert_eq!(result["file"], json!(file));
+    assert_eq!(result["checksum"], 0x1234);
+    // The real main loop has not consumed the first request yet.
+    h.deferred(&mut g, method::MAP_RELOAD, json!({}));
+    let calls = drive_edit_tick(&mut g, &q, |_, _| engine::entry::Regs::default());
+    assert_eq!(calls.len(), 1, "only the tick");
+    h.agent.on_tick(&mut g);
+    assert_eq!(h.reply()["error"]["code"], REFUSED);
+}
+
+#[test]
+fn file_reload_refuses_wrong_names_unreadable_maps_and_read_only_hosts() {
+    let (h, q, sim) = with_calls_and_sim();
+    let (mut g, _, file) = reload_fixture();
+    let error = h.err(&mut g, method::MAP_RELOAD, json!({ "file": file }));
+    assert!(error["data"]["why"].as_str().unwrap().contains("mount"));
+    sim.set_map_rebind(Box::new(|_, _, path, _| {
+        assert_eq!(path.file_name().unwrap(), "Lockout.MAP");
+        Ok(finished_preparation(Err("invalid fixture map header".into())))
+    }));
+    let error = h.err(&mut g, method::MAP_RELOAD, json!({ "file": file.with_file_name("other.map") }));
+    assert_eq!(error["code"], REFUSED);
+    assert!(error["data"]["why"].as_str().unwrap().contains("named lockout.map"));
+    h.deferred(&mut g, method::MAP_RELOAD, json!({ "file": file }));
+    h.agent.on_tick(&mut g);
+    let error = &h.reply()["error"];
+    assert_eq!(error["code"], REFUSED);
+    assert_eq!(error["data"]["why"], "invalid fixture map header");
+    sim.install_reload_refusal(&h.agent, "map reload is disabled during playback");
+    let error = h.err(&mut g, method::MAP_RELOAD, json!({}));
+    assert_eq!(error["code"], REFUSED);
+    assert!(error["data"]["why"].as_str().unwrap().contains("playback"));
+    assert!(!super::calls::lock(&q).has_pending());
+}
+
+#[test]
+fn changed_options_or_failed_reservation_refuse_before_the_guest_queue() {
+    let (h, q, sim) = with_calls_and_sim();
+    let (mut g, options, file) = reload_fixture();
+    sim.set_map_rebind(Box::new(|_, _, _, _| {
+        let binding = super::PreparedMapReload::new(7, || {
+            Err("the scenario cache slot changed".into())
+        });
+        Ok(finished_preparation(Ok(binding)))
+    }));
+    h.deferred(&mut g, method::MAP_RELOAD, json!({ "file": file }));
+    h.agent.on_tick(&mut g);
+    g.g.put(options + 0x1c, b"other scenario\0");
+    let calls = drive_edit_tick(&mut g, &q, |_, _| engine::entry::Regs::default());
+    assert_eq!(calls.len(), 1, "only the tick");
+    h.agent.on_tick(&mut g);
+    let error = &h.reply()["error"];
+    assert_eq!(error["code"], REFUSED);
+    assert!(
+        error["data"]["why"].as_str().unwrap().contains("options changed")
+    );
+
+    h.deferred(&mut g, method::MAP_RELOAD, json!({ "file": file }));
+    h.agent.on_tick(&mut g);
+    let calls = drive_edit_tick(&mut g, &q, |call, m| {
+        assert_eq!(call.target, engine::points::GAME_TICK.base);
+        assert_eq!(m.u8(super::calls::OPTIONS_PENDING).unwrap(), 0);
+        engine::entry::Regs::default()
+    });
+    assert_eq!(calls.len(), 1);
+    h.agent.on_tick(&mut g);
+    let error = &h.reply()["error"];
+    assert_eq!(error["code"], REFUSED);
+    assert_eq!(error["data"]["why"], "the scenario cache slot changed");
+}
+
+#[test]
+fn file_preparation_waits_off_the_tick_and_rechecks_the_session() {
+    let (h, q, sim) = with_calls_and_sim();
+    let (mut g, _, file) = reload_fixture();
+    let (send, recv) = std::sync::mpsc::channel();
+    let recv = Mutex::new(Some(recv));
+    sim.set_map_rebind(Box::new(move |_, _, _, _| Ok(recv.lock().unwrap().take().unwrap())));
+    h.deferred(&mut g, method::MAP_RELOAD, json!({ "file": file }));
+    for _ in 0..=super::CALL_TICKS {
+        h.agent.on_tick(&mut g);
+        assert!(!super::calls::lock(&q).has_pending());
+    }
+    assert!(h.rx.try_recv().is_err());
+    *h.kind.lock().unwrap() = SessionKind::MpClient;
+    send.send(Ok(super::PreparedMapReload::new(31, || panic!("a client reserved the source")))).unwrap();
+    h.agent.on_tick(&mut g);
+    let calls = drive_edit_tick(&mut g, &q, |call, _| {
+        assert_eq!(call.target, engine::points::GAME_TICK.base);
+        engine::entry::Regs::default()
+    });
+    assert_eq!(calls.len(), 1);
+    h.agent.on_tick(&mut g);
+    assert_eq!(h.reply()["error"]["code"], REFUSED);
+}
+
+#[test]
+fn timed_out_file_preparation_revokes_the_worker_and_releases_the_game_ticket() {
+    let (h, q, sim) = with_calls_and_sim();
+    let (mut g, _, file) = reload_fixture();
+    let (send, recv) = std::sync::mpsc::channel();
+    let recv = Mutex::new(Some(recv));
+    let (token, pending) = std::sync::mpsc::channel();
+    sim.set_map_rebind(Box::new(move |_, _, _, cancelled| {
+        token.send(cancelled).unwrap();
+        Ok(recv.lock().unwrap().take().unwrap())
+    }));
+    h.deferred(&mut g, method::MAP_RELOAD, json!({ "file": file }));
+    let cancelled = pending.try_recv().unwrap();
+    assert!(!cancelled.load(std::sync::atomic::Ordering::Acquire));
+    h.agent.expire_deferred_for_test(h.conn);
+    h.agent.on_tick(&mut g);
+    assert!(cancelled.load(std::sync::atomic::Ordering::Acquire));
+    assert_eq!(h.reply()["error"]["code"], code::TIMEOUT);
+    assert!(send.send(Err("worker finished after timeout".into())).is_err());
+    assert!(super::calls::lock(&q).live().is_none());
+    assert!(!super::calls::lock(&q).has_pending());
+}
+
+#[test]
+fn playback_without_guest_calls_does_not_advertise_reload() {
+    let h = Harness::new();
+    let sim = super::install(&h.agent, Box::new(h.bots.clone()), None);
+    sim.install_reload_refusal(&h.agent, "map reload is disabled during playback");
+    let methods = h.ok(&mut game(), agent_proto::method::METHODS, Value::Null);
+    assert!(!methods.as_array().unwrap().contains(&json!(method::MAP_RELOAD)));
+}
+
+#[test]
+fn timed_out_edits_make_no_guest_calls_when_the_hook_resumes() {
+    use engine::entry::{Cx, EntryFuture, Regs, Step, poll};
+    use std::sync::atomic::AtomicBool;
+
+    let (h, q) = with_calls();
+    let (mut g, _, _) = reload_fixture();
+    for (name, params) in edit_requests() {
+        h.send(name, params);
+    }
+    h.agent.on_tick(&mut g);
+    assert!(h.rx.try_recv().is_err());
+    assert!(super::calls::lock(&q).has_pending());
+    for _ in 0..super::CALL_TICKS {
+        h.agent.on_tick(&mut g);
+    }
+    for _ in edit_requests() {
+        assert_eq!(h.reply()["error"]["code"], code::TIMEOUT);
+    }
+    let work = super::calls::lock(&q).drain();
+    assert!(work.is_empty());
+    let cx = Cx::new(Mutex::new(g.g), Regs::default());
+    let mut resumed: EntryFuture = Box::pin(super::calls::run_queued(
+        cx.clone(),
+        q,
+        work,
+        0x8130_0000,
+        Arc::new(AtomicBool::new(false)),
+    ));
+    let Step::Call(call) = poll(&mut resumed, &cx) else {
+        panic!("expected the game tick")
+    };
+    assert_eq!(call.target, engine::points::GAME_TICK.base);
+    engine::entry::resume(&cx, Regs::default());
+    assert!(matches!(poll(&mut resumed, &cx), Step::Done(Ok(_))));
+}
+
+#[test]
+fn shutdown_answers_deferred_edits_and_cancels_their_tickets() {
+    let (h, q) = with_calls();
+    let mut g = game();
+    h.deferred(&mut g, method::OBJECT_DELETE, json!({"id": "vehicle.12340000"}));
+    h.agent.shutdown();
+    assert_eq!(h.reply()["error"]["code"], code::SHUTDOWN);
+    assert!(super::calls::lock(&q).live().is_none());
 }

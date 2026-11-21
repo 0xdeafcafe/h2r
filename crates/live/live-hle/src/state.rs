@@ -159,6 +159,7 @@ pub(crate) struct State {
     tasks: BTreeMap<u32, Task>,
     qos: BTreeSet<u32>,
     logon: Option<u32>,
+    pub(crate) logon_map_check: Option<crate::LogonMapCheck>,
     services: BTreeSet<u32>,
     service: Option<Service>,
     menu: crate::ui::Menu,
@@ -223,6 +224,7 @@ impl State {
             tasks: BTreeMap::new(),
             qos: BTreeSet::new(),
             logon: None,
+            logon_map_check: None,
             services: BTreeSet::new(),
             service,
             menu: crate::ui::Menu::default(),
@@ -469,11 +471,36 @@ impl State {
         self.service.as_ref().is_some_and(|service| service.machine)
     }
 
+    pub(crate) fn logon_blocks_editor_map(&self) -> bool {
+        let Some(handle) = self.logon else { return false };
+        let Some(Task::Logon { pending, status, session: Some(session), .. }) = self.tasks.get(&handle)
+        else {
+            return false;
+        };
+        if session.status() != 0 {
+            // The worker installed the account before publishing CONNECTED.
+            // Even after CONNECTION_LOST its heartbeat can reannounce the
+            // account. Closing the logon cancels that worker session.
+            return true;
+        }
+        *status == 0
+            && (pending.as_ref().is_some_and(|p| !p.failed())
+                || self.signin.as_ref().is_some_and(|s| s.handle == handle && !s.cancelled()))
+    }
+
+    fn logon_map_status(&self) -> u32 {
+        self.logon_map_check.as_ref().map_or(OK, |check| check())
+    }
+
     // Retail need not visit the controller sign-in screen on a playerless
     // host. Queue machine logon before the first retail advertisement.
     fn machine_logon(&mut self, m: &mut Guest) -> Result<u32> {
         if self.logon.is_some() {
             return Ok(OK);
+        }
+        let status = self.logon_map_status();
+        if status != OK {
+            return Ok(status);
         }
         let Some(handle) = self.storage.alloc(m, 8) else {
             return Ok(OUT_OF_MEMORY);
@@ -1740,7 +1767,10 @@ impl State {
             Logon => {
                 work_event(a[3])?;
                 writable(m, a[4], 4)?;
-                if !self.machine() && self.logon.is_some() {
+                if !self.machine()
+                    && self.logon.is_some()
+                    && self.logon_map_status() != CANNOT_ACCESS_SERVICE
+                {
                     return Ok(TASK_BUSY);
                 }
                 if a[2] > 16 {
@@ -1797,6 +1827,20 @@ impl State {
                 let services = (0..a[2])
                     .map(|i| m.u32(a[1] + i * 4))
                     .collect::<std::result::Result<BTreeSet<_>, _>>()?;
+                match self.logon_map_status() {
+                    OK => {}
+                    CANNOT_ACCESS_SERVICE => {
+                        // Retail maps this task result to the cannot-connect dialog.
+                        // A refused task owns no service session or signed-in user.
+                        return self.task(m, a[4], Task::Logon {
+                            users,
+                            pending: None,
+                            session: None,
+                            status: CANNOT_ACCESS_SERVICE,
+                        });
+                    }
+                    busy => return Ok(busy),
+                }
                 let Some(handle) = self.storage.alloc(m, 8) else {
                     return Ok(OUT_OF_MEMORY);
                 };

@@ -72,7 +72,8 @@ impl State {
             live::STATUS => {
                 let mut status = self.live.status();
                 let (_, checksum) = reader.live_metadata();
-                status["map"] = json!({"name": self.game.map, "checksum": checksum, "epoch": self.live_epoch});
+                status["map"] = json!({"name": self.game.map, "checksum": checksum,
+                    "epoch": self.live_epoch, "activation": self.activation});
                 Some(Ok(status))
             }
             live::CLOSE => Some(
@@ -148,7 +149,8 @@ impl State {
                 )
             })?;
         let result = json!({"at": at, "stream": conn, "protocol": live::PROTOCOL, "tick_rate": tick_rate,
-            "map": {"name": self.game.map, "checksum": checksum, "epoch": self.live_epoch},
+            "map": {"name": self.game.map, "checksum": checksum, "epoch": self.live_epoch,
+                "activation": self.activation},
             "layers": layers.names(), "refused": refused});
         let line = serde_json::to_string(&Response::ok(id, result)).expect("subscribe serialises");
         if tx

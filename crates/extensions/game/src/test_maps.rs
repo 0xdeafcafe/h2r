@@ -374,15 +374,13 @@ fn queue_load(
              installed",
         )
     })?;
-    let ticket = calls::lock(&q)
-        .submit(Call::QueueGame { steps })
-        .map_err(unavailable)?;
+    let ticket = calls::submit(&q, Call::QueueGame { steps }).map_err(unavailable)?;
     eprintln!("maps: queueing {name} ({}, map {:#x})", listed.path, listed.id);
     ctx.defer(
         CALL_TICKS,
         Box::new(move |_: &mut GameCtx<'_>| {
-            let out = calls::lock(&q).take(ticket)?;
-            Some(out.map_err(unavailable).map(|v| {
+            let out = ticket.outcome()?;
+            Some(out.map(|v| {
                 json!(LoadResult {
                     name: name.clone(),
                     map: listed.clone(),

@@ -25,6 +25,8 @@
 
 pub mod bots;
 pub mod calls;
+mod edits;
+pub use edits::{MapRebind, PreparedMapReload, ReservedMapReload};
 pub mod events;
 pub mod hashes;
 pub mod objects;
@@ -51,6 +53,17 @@ use calls::{Call, Tags};
 /// Reads the session kind from guest memory: the host's (boot reads the
 /// simulation mode and the squad session as `coop_probe` does).
 pub type SessionProbe = Box<dyn FnMut(&dyn GuestMemory) -> SessionView + Send>;
+type SharedProbe = Arc<Mutex<Option<SessionProbe>>>;
+
+fn read_session(probe: &SharedProbe, guest: &dyn GuestMemory) -> SessionView {
+    probe
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_mut()
+        .map(|probe| probe(guest))
+        .unwrap_or_default()
+        .settle()
+}
 
 /// One simulated player.
 struct Entry {
@@ -65,11 +78,13 @@ struct Entry {
 /// The simulated players and the backends.
 pub struct Sim {
     bots: Box<dyn Bots>,
-    probe: Option<SessionProbe>,
+    probe: SharedProbe,
     players: BTreeMap<u32, Entry>,
     next: u32,
     /// The game's own functions, once the host installs them.
     calls: Option<calls::Shared>,
+    map_rebind: Option<MapRebind>,
+    adopt_editor: Option<Box<dyn Fn() -> Result<(), String> + Send>>,
     /// Tag names for `sim.give` and `sim.spawn`.
     tags: Option<Box<dyn Tags>>,
 }
@@ -124,7 +139,7 @@ impl SimHandle {
 
     /// Sets the session probe.
     pub fn set_probe(&self, probe: SessionProbe) {
-        self.lock().probe = Some(probe);
+        *self.lock().probe.lock().unwrap_or_else(|e| e.into_inner()) = Some(probe);
     }
 
     /// The queue [`calls::CallsFeature`] empties at each tick: teleports,
@@ -149,10 +164,12 @@ impl SimHandle {
 pub fn install(agent: &Agent, bots: Box<dyn Bots>, probe: Option<SessionProbe>) -> SimHandle {
     let h = SimHandle(Arc::new(Mutex::new(Sim {
         bots,
-        probe,
+        probe: Arc::new(Mutex::new(probe)),
         players: BTreeMap::new(),
         next: 1,
         calls: None,
+        map_rebind: None,
+        adopt_editor: None,
         tags: None,
     })));
     let add = |name: &str, access: Access, f: fn(&mut Sim, Value, &mut GameCtx<'_>) -> R| {
@@ -202,16 +219,9 @@ fn sim_number(id: &str) -> Option<u32> {
 
 impl Sim {
     fn session(&mut self, ctx: &mut GameCtx<'_>) -> SessionView {
-        let Some(probe) = self.probe.as_mut() else {
-            return SessionView {
-                kind: SessionKind::Unknown,
-                ..Default::default()
-            }
-            .settle();
-        };
         let mut v = None;
-        ctx.reader.with_guest(&mut |m| v = Some(probe(m)));
-        v.unwrap_or_default().settle()
+        ctx.reader.with_guest(&mut |m| v = Some(read_session(&self.probe, m)));
+        v.unwrap_or_else(|| SessionView::default().settle())
     }
 
     fn entry(&self, id: &str) -> Result<(u32, &Entry), RpcError> {
@@ -388,13 +398,15 @@ impl Sim {
             state::player_handle(m, index)
         })?;
         let mut wrote = ctx.with_guest(|m| state::apply(m, index, &p))?;
-        let ticket = calls::lock(&q)
-            .submit(Call::Teleport {
+        let ticket = calls::submit(
+            &q,
+            Call::Teleport {
                 player: handle,
                 pos: p.pos.map(|v| v.map(|c| c as f32)),
                 facing: facing.map(|v| v.map(|c| c as f32)),
-            })
-            .map_err(unavailable)?;
+            },
+        )
+        .map_err(unavailable)?;
         if p.pos.is_some() {
             wrote.push("pos");
         }
@@ -405,8 +417,8 @@ impl Sim {
         ctx.defer(
             TELEPORT_TICKS,
             Box::new(move |_: &mut GameCtx<'_>| {
-                let out = calls::lock(&q).take(ticket)?;
-                Some(out.map_err(unavailable).map(|t| {
+                let out = ticket.outcome()?;
+                Some(out.map(|t| {
                     json!({
                         "player": format!("player.{index}"),
                         "wrote": wrote,
@@ -480,19 +492,21 @@ impl Sim {
         } else {
             calls::addr::MODE_REPLACE
         };
-        let ticket = calls::lock(&q)
-            .submit(Call::Give {
+        let ticket = calls::submit(
+            &q,
+            Call::Give {
                 unit,
                 weapon: tag.datum,
                 mode,
-            })
-            .map_err(unavailable)?;
+            },
+        )
+        .map_err(unavailable)?;
         let (ammo, session) = (p.ammo, serde_json::to_value(session).expect("serialises"));
         ctx.defer(
             CALL_TICKS,
             Box::new(move |ctx: &mut GameCtx<'_>| {
-                let out = calls::lock(&q).take(ticket)?;
-                Some(out.map_err(unavailable).and_then(|made| {
+                let out = ticket.outcome()?;
+                Some(out.and_then(|made| {
                     let object = made["object"].as_str().unwrap_or_default().to_owned();
                     let datum = u32::from_str_radix(&object, 16).unwrap_or(u32::MAX);
                     if let Some(a) = ammo {
@@ -561,19 +575,21 @@ impl Sim {
         } else {
             None
         };
-        let ticket = calls::lock(&q)
-            .submit(Call::Spawn {
+        let ticket = calls::submit(
+            &q,
+            Call::Spawn {
                 tag: tag.datum,
                 pos: p.pos.map(|c| c as f32),
                 facing: facing.map(|v| v.map(|c| c as f32)),
                 mp_scenario,
-            })
-            .map_err(unavailable)?;
+            },
+        )
+        .map_err(unavailable)?;
         ctx.defer(
             CALL_TICKS,
             Box::new(move |_: &mut GameCtx<'_>| {
-                let out = calls::lock(&q).take(ticket)?;
-                Some(out.map_err(unavailable).and_then(|made| {
+                let out = ticket.outcome()?;
+                Some(out.and_then(|made| {
                     if mp_scenario.is_none() {
                         return Ok(json!({
                             "tag": tag.json(),

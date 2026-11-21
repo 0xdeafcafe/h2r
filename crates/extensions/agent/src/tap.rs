@@ -20,7 +20,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, Weak};
 use std::time::{Duration, Instant};
 
 use agent_proto::{
@@ -74,6 +74,7 @@ pub struct Input {
     /// The same, for the recorder's tick stamps.
     ticks: Arc<AtomicU64>,
     mode: Mode,
+    editor_calls: Weak<Mutex<crate::sim::calls::Queue>>,
     /// Each controller port's steps.
     pads: [Remote; PORTS as usize],
     /// The first read of a guarded menu press can cancel the steps if
@@ -272,7 +273,24 @@ impl Input {
         Ok(())
     }
 
+    /// Input logs contain pad reads, with no record of an editor map change.
+    pub(crate) fn allow_reload(&mut self, queue: &crate::sim::calls::Shared) -> Result<(), String> {
+        self.check_mode()?;
+        self.editor_calls = Arc::downgrade(queue);
+        Ok(())
+    }
+
     fn must_be_live(&self) -> Result<(), String> {
+        if self.editor_calls.upgrade().is_some_and(|queue| {
+            crate::sim::calls::lock(&queue).blocks_input_log()
+        }) {
+            return Err("an editor map reload is in progress".into());
+        }
+
+        self.check_mode()
+    }
+
+    fn check_mode(&self) -> Result<(), String> {
         match &self.mode {
             Mode::Live => Ok(()),
             Mode::Recording { name, .. } => {

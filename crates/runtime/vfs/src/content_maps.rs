@@ -157,6 +157,7 @@ impl Served {
             Data::File { path, file, .. } => Reader::File(
                 FileSource::new(file)?,
                 HostFile {
+                    generation: None,
                     path,
                     offset: 0,
                     len,
@@ -188,9 +189,9 @@ impl Served {
                     && crate::map_override::matching_server_copy(&mut file, size, len, &header)
                 {
                     if let Some(mapping) = crate::disc::map_read_only(&file) {
-                        served.reader = Reader::Mapped(mapping, HostFile { path, offset: 0, len }, file);
+                        served.reader = Reader::Mapped(mapping, HostFile { generation: None, path, offset: 0, len }, file);
                     } else {
-                        served.reader = Reader::File(FileSource::new(file)?, HostFile { path, offset: 0, len });
+                        served.reader = Reader::File(FileSource::new(file)?, HostFile { generation: None, path, offset: 0, len });
                     }
                 } else {
                     eprintln!("map packages: {}: server copy header or length differs", path.display());

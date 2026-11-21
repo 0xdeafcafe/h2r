@@ -219,6 +219,10 @@ impl Joined {
     }
 }
 
+/// Read-only admission check installed for an external service with an editor
+/// mount. A published editor map refuses sign-in until process exit.
+pub type LogonMapCheck = Box<dyn Fn() -> u32 + Send>;
+
 pub struct Hle {
     offline_film: bool,
     service_taped: std::sync::OnceLock<bool>,
@@ -413,6 +417,26 @@ impl Hle {
     fn lock(&self) -> std::sync::MutexGuard<'_, state::State> {
         self.state.lock().unwrap_or_else(|e| e.into_inner())
     }
+
+    pub fn set_logon_map_check(&self, check: LogonMapCheck) {
+        self.lock().logon_map_check = Some(check);
+    }
+
+    /// Serialize the start of a DVD reservation with external logon. The
+    /// caller reserves its DVD source here, without acquiring guest memory.
+    pub fn with_editor_reservation<T>(
+        &self,
+        reserve: impl FnOnce() -> Result<T, String>,
+    ) -> Result<T, String> {
+        let state = self.lock();
+        if state.logon_blocks_editor_map() {
+            return Err("Sign out of Xbox Live before loading an editor map.".into());
+        }
+        let result = reserve();
+        drop(state);
+        result
+    }
+
     /// Telemetry can call this after the server assigns a game ID; no I/O or
     /// guest memory access occurs on the caller's thread. None returns to online.
     pub fn set_game_id(&self, id: Option<&str>) -> Result<(), u32> {
