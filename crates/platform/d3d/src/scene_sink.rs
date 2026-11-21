@@ -253,6 +253,8 @@ impl<B: Backend> SceneSink<B> {
     }
 
     pub fn inner_mut(&mut self) -> &mut B {
+        // The caller can destroy and recreate a surface behind the sink.
+        if let Some(replay) = &mut self.replay { replay.forget_view_identities(); }
         self.untracked_write();
         &mut self.inner
     }
@@ -341,8 +343,21 @@ impl<B: Backend> SceneSink<B> {
                     replay.frame.refuse("unavailable_frozen_sample");
                     None
                 }
-                Some(Origin::Sample { seq, immutable: false, .. }) if *seq != replay.seq => {
-                    replay.frame.refuse("previous_in_place_view");
+                Some(Origin::Sample { seq, immutable: false, view, .. }) if *seq != replay.seq => {
+                    let Some(surface) = view.as_ref().and_then(|id| replay.view_surface(id)) else {
+                        replay.frame.refuse("released_in_place_source");
+                        return None;
+                    };
+                    #[cfg(feature = "gpu")]
+                    if let Some(Origin::Sample { frozen, .. }) = &texture.origin
+                        && let Some(binding) = frozen.get_or_init(|| self.inner.retain_scene_sample(&texture.inner))
+                    {
+                        let target = replay.target(surface, &self.surfaces);
+                        return Some(ReplayTexture::Live { target, binding: binding.clone() });
+                    }
+                    #[cfg(not(feature = "gpu"))]
+                    let _ = surface;
+                    replay.frame.refuse("unavailable_in_place_binding");
                     None
                 }
                 _ => {
@@ -373,12 +388,19 @@ impl<B: Backend> SceneSink<B> {
 
     fn sample_texture(&mut self, inner: B::Texture, surface: B::Surface, how: TargetSample, kind: impl FnOnce() -> ReplaySample) -> SinkTexture<B::Texture> {
         self.record_sample(surface, how);
-        let origin = if let Some(at) = self.at() && self.replay.is_some() {
-            let of = self.replay_target(surface);
-            Some(self.replay.as_mut().expect("recording replay").sample(at, of, kind()))
-        } else {
-            self.replay.as_ref().map(|replay| Origin::sample(replay.seq, None, &kind()))
-        };
+        let at = self.at();
+        let origin = self.replay.as_mut().map(|replay| {
+            let how = kind();
+            let view = (matches!(how, ReplaySample::InPlace)
+                && self.surfaces.iter().any(|(s, desc)| *s == surface && !desc.depth))
+                .then(|| replay.view_identity(surface));
+            if let Some(at) = at {
+                let of = replay.target(surface, &self.surfaces);
+                replay.sample(at, of, how, view)
+            } else {
+                Origin::sample(replay.seq, None, &how, view)
+            }
+        });
         SinkTexture { inner, origin }
     }
 
@@ -422,7 +444,7 @@ impl<B: Backend> SceneSink<B> {
             });
         }
         if self.collect_census {
-            census::record(&self.frame);
+            census::record(&self.frame, self.presents, self.present_window.as_deref());
         } else {
             census::skip();
         }

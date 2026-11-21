@@ -64,12 +64,16 @@ impl ReplayFrame {
 
     /// Fresh display targets must also reproduce every guest-visible count.
     pub fn display_target_refusal(&self) -> Option<&'static str> {
+        #[cfg(feature = "gpu")]
+        if !self.live_bindings_validated() { return Some("unvalidated_in_place_binding"); }
         self.read_refusal(&[(self.ops.len(), self.presented)], true, false, &self.copied_aspects())
     }
 
     /// Whether a pass snapshot through the first `end` commands can read
     /// all of `colour` without pixels inherited from another frame.
     pub fn private_read_refusal(&self, end: usize, colour: TargetRef) -> Option<&'static str> {
+        #[cfg(feature = "gpu")]
+        if !self.live_bindings_validated() { return Some("unvalidated_in_place_binding"); }
         self.read_refusal(&[(end, colour)], false, false, &self.copied_aspects())
     }
 
@@ -159,6 +163,8 @@ impl ReplayFrame {
                         // before it changes a live attachment.
                         #[cfg(feature = "gpu")]
                         ReplayTexture::Frozen(_) => true,
+                        #[cfg(feature = "gpu")]
+                        ReplayTexture::Live { target, .. } => self.desc(*target).is_some_and(|d| !d.depth) && state.has(*target, COLOUR),
                         ReplayTexture::Placeholder(_) => false,
                         ReplayTexture::Sample(id) => samples.get(id).is_some_and(|(defined, live)| {
                             live.map_or(*defined, |(target, mask)| state.has(target, mask))

@@ -17,6 +17,11 @@ pub enum ReplayTexture {
     Sample(u32),
     #[cfg(feature = "gpu")]
     Frozen(super::FrozenSample),
+    /// A previous frame created a view of this still-live attachment. The
+    /// original binding establishes identity only. Replay reads its own
+    /// attachment at this draw's position in the command stream.
+    #[cfg(feature = "gpu")]
+    Live { target: TargetRef, binding: super::FrozenSample },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -86,7 +91,15 @@ impl ReplayOp {
             }
             Self::Upload { to, .. } => *to = map(*to),
             Self::Sample { of, .. } => *of = map(*of),
-            Self::Draw { .. } | Self::BeginFlareQuery | Self::EndFlareQuery(_) => {}
+            Self::Draw { textures, .. } => {
+                #[cfg(feature = "gpu")]
+                for texture in textures.iter_mut().flatten() {
+                    if let ReplayTexture::Live { target, .. } = texture { *target = map(*target); }
+                }
+                #[cfg(not(feature = "gpu"))]
+                let _ = textures;
+            }
+            Self::BeginFlareQuery | Self::EndFlareQuery(_) => {}
         }
     }
 }
@@ -109,6 +122,10 @@ pub struct ReplayFrame {
     /// first write of this present. The cell belongs to this sealed frame.
     #[cfg(feature = "gpu")]
     pub target_snapshots: super::TargetSnapshots,
+    /// Set by the display worker after it validates every inherited live
+    /// view against this transaction's actual surface and texture.
+    #[cfg(feature = "gpu")]
+    pub checked_live_inputs: LiveInputValidation,
     pub ops: Vec<(SlotAt, ReplayOp)>,
     pub aux: Vec<AuxTarget>,
     pub colour: Option<AuxTarget>,
@@ -127,6 +144,8 @@ impl Default for ReplayFrame {
             initial: Vec::new(),
             #[cfg(feature = "gpu")]
             target_snapshots: Default::default(),
+            #[cfg(feature = "gpu")]
+            checked_live_inputs: Default::default(),
             ops: Vec::new(),
             aux: Vec::new(),
             colour: None,
@@ -137,7 +156,34 @@ impl Default for ReplayFrame {
     }
 }
 
+#[cfg(feature = "gpu")]
+#[derive(Debug, Default)]
+pub struct LiveInputValidation(std::sync::atomic::AtomicBool);
+
 impl ReplayFrame {
+    #[cfg(feature = "gpu")]
+    pub fn live_bindings(&self) -> impl Iterator<Item = (TargetRef, &super::FrozenSample)> {
+        self.ops.iter().filter_map(|(_, op)| match op {
+            ReplayOp::Draw { textures, .. } => Some(textures.iter().flatten()),
+            _ => None,
+        }).flatten().filter_map(|texture| match texture {
+            ReplayTexture::Live { target, binding } => Some((*target, binding)),
+            _ => None,
+        })
+    }
+
+    /// The display worker confirmed all guest bindings still alias the
+    /// selected physical images before it submitted this frame's writes.
+    #[cfg(feature = "gpu")]
+    pub(crate) fn validate_live_bindings(&self) {
+        self.checked_live_inputs.0.store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    #[cfg(feature = "gpu")]
+    pub fn live_bindings_validated(&self) -> bool {
+        self.checked_live_inputs.0.load(std::sync::atomic::Ordering::Acquire) || self.live_bindings().next().is_none()
+    }
+
     pub fn has_game_view(&self) -> bool {
         self.entered_game_view || self.ops.iter().any(|(at, _)| at.slot.in_game_view())
     }
@@ -163,6 +209,9 @@ pub(super) struct Recorder<S> {
     // Physical handles can be destroyed and recycled before present. Ops
     // retain the number of the resource, independently of its live handle.
     live: Vec<(S, u16)>,
+    // Allocation identities only for surfaces with an in-place view. Guest
+    // texture handles may outlive the surface handle or cross many presents.
+    views: Vec<(S, Arc<()>)>,
     seeds: Vec<(S, super::TargetSeed)>,
     bound: Option<(SlotAt, TargetRef, TargetRef)>,
     pub seq: u64,
@@ -175,6 +224,7 @@ impl<S: Copy + Eq> Recorder<S> {
         Self {
             frame: ReplayFrame::default(),
             live: Vec::new(),
+            views: Vec::new(),
             seeds: Vec::new(),
             bound: None,
             seq: 0,
@@ -203,7 +253,25 @@ impl<S: Copy + Eq> Recorder<S> {
         TargetRef::Aux(id)
     }
 
+    pub fn view_identity(&mut self, surface: S) -> Arc<()> {
+        if let Some((_, identity)) = self.views.iter().find(|(s, _)| *s == surface) {
+            return Arc::clone(identity);
+        }
+        let identity = Arc::new(());
+        self.views.push((surface, Arc::clone(&identity)));
+        identity
+    }
+
+    pub fn view_surface(&self, identity: &Arc<()>) -> Option<S> {
+        self.views.iter().find(|(_, id)| Arc::ptr_eq(id, identity)).map(|(s, _)| *s)
+    }
+
+    pub fn forget_view_identities(&mut self) {
+        self.views.clear();
+    }
+
     pub fn destroy(&mut self, surface: S) {
+        self.views.retain(|(s, _)| *s != surface);
         self.seeds.retain(|(s, _)| *s != surface);
         self.live.retain(|(s, _)| *s != surface);
     }
@@ -223,10 +291,10 @@ impl<S: Copy + Eq> Recorder<S> {
         }
     }
 
-    pub fn sample(&mut self, at: SlotAt, of: TargetRef, how: ReplaySample) -> Origin {
+    pub fn sample(&mut self, at: SlotAt, of: TargetRef, how: ReplaySample, view: Option<Arc<()>>) -> Origin {
         let id = self.next_sample;
         self.next_sample += 1;
-        let origin = Origin::sample(self.seq, Some(id), &how);
+        let origin = Origin::sample(self.seq, Some(id), &how, view);
         self.frame.ops.push((at, ReplayOp::Sample { of, id, how }));
         origin
     }
@@ -291,15 +359,16 @@ pub(super) enum Origin {
         seq: u64,
         id: Option<u32>,
         immutable: bool,
+        view: Option<Arc<()>>,
         #[cfg(feature = "gpu")]
         frozen: std::sync::OnceLock<Option<super::FrozenSample>>,
     },
 }
 
 impl Origin {
-    pub fn sample(seq: u64, id: Option<u32>, how: &ReplaySample) -> Self {
+    pub fn sample(seq: u64, id: Option<u32>, how: &ReplaySample, view: Option<Arc<()>>) -> Self {
         Self::Sample {
-            seq, id,
+            seq, id, view,
             immutable: !matches!(how, ReplaySample::InPlace),
             #[cfg(feature = "gpu")]
             frozen: Default::default(),
@@ -312,4 +381,22 @@ impl Origin {
 pub struct SinkTexture<T> {
     pub(super) inner: T,
     pub(super) origin: Option<Origin>,
+}
+
+#[cfg(test)]
+mod allocation_tests {
+    use super::Recorder;
+
+    #[test]
+    fn recycled_surface_handle_cannot_reidentify_an_older_view() {
+        let mut recorder = Recorder::new(|_| {});
+        let first = recorder.view_identity(3);
+        assert_eq!(recorder.view_surface(&first), Some(3));
+        recorder.destroy(3);
+        let second = recorder.view_identity(3);
+        assert_eq!(recorder.view_surface(&first), None);
+        assert_eq!(recorder.view_surface(&second), Some(3));
+        recorder.forget_view_identities();
+        assert_eq!(recorder.view_surface(&second), None);
+    }
 }

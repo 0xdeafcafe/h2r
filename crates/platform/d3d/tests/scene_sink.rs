@@ -185,7 +185,7 @@ fn replay_retains_the_sample_version_draw_bindings_and_distinct_copy_targets() {
     sink.clear(shown, Some(depth), Clear::all([1.0; 4])).unwrap();
     sink.draw(shown, Some(depth), &draw, [Some(&live), None, None, None]).unwrap();
     sink.present(shown, 0).unwrap();
-    assert_eq!(frames.lock().unwrap().last().unwrap().refusals, ["previous_in_place_view"]);
+    assert_eq!(frames.lock().unwrap().last().unwrap().refusals, ["unavailable_in_place_binding"]);
 }
 
 #[test]
@@ -427,4 +427,58 @@ fn an_opaque_full_target_rhw_strip_defines_colour_only_when_it_covers_every_samp
         assert_eq!([w, h], [W * scale, H * scale]);
         assert!(pixels.chunks_exact(4).all(|p| p == [0x5f, 0x15, 0xf0, 0xe0]));
     }
+}
+
+#[cfg(feature = "gpu")]
+#[test]
+fn inherited_in_place_bindings_name_the_live_surface_and_read_it_at_the_draw() {
+    use d3d::scene_sink::{ReplayFrame, ReplayOp, ReplayTexture};
+    use d3d::{Backend, ThreadedBackend};
+    use gfx::{Clear, D3DFormat};
+    use std::sync::{Arc, Mutex};
+
+    let (mut device, mut memory) = create(RecordingBackend::new(), UploadPolicy::Always);
+    set_states(&mut device, &mut memory);
+    quad(&mut device, &mut memory, 0xff42_6503);
+    let mut draw = device.backend.draws()[0].clone();
+    draw.state.render.color_write = gfx::state::ColorWriteMask::ALL;
+    let mut original = RecordingBackend::new();
+    original.sample_surfaces = true;
+    let frames = Arc::new(Mutex::new(Vec::new()));
+    let keep = Arc::clone(&frames);
+    let mut sink = SceneSink::new(ThreadedBackend::new(original).unwrap(), || {
+        Some(SlotAt { slot: Slot::Opaque, view: 0 })
+    }).with_replay(move |frame| keep.lock().unwrap().push(frame));
+    let side = sink.create_texture_target(D3DFormat::LinA8R8G8B8, W, H).unwrap();
+    let main = sink.create_texture_target(D3DFormat::LinA8R8G8B8, W, H).unwrap();
+    sink.draw(side, None, &draw, [None, None, None, None]).unwrap();
+    let old_view = sink.surface_texture(side).unwrap().unwrap();
+    sink.present(main, 0).unwrap();
+
+    let take = || -> ReplayFrame { frames.lock().unwrap().pop().unwrap() };
+    let _ = take();
+    for cleared in [false, true] {
+        sink.clear(main, None, Clear::all([0.4, 0.3, 0.7, 1.0])).unwrap();
+        if cleared { sink.clear(side, None, Clear::all([0.1, 0.9, 0.2, 1.0])).unwrap(); }
+        sink.draw(main, None, &draw, [Some(&old_view), None, None, None]).unwrap();
+        sink.present(main, 0).unwrap();
+        let frame = take();
+        assert!(frame.refusals.is_empty());
+        let target = frame.ops.iter().find_map(|(_, op)| match op {
+            ReplayOp::Draw { textures, .. } => match &textures[0] {
+                Some(ReplayTexture::Live { target, .. }) => Some(*target), _ => None,
+            },
+            _ => None,
+        }).unwrap();
+        assert!(matches!(target, TargetRef::Aux(_)));
+        assert_eq!(frame.live_bindings().count(), 1);
+        let final_read = (frame.ops.len(), frame.presented);
+        let required = if cleared { vec![] } else { vec![(target, 15)] };
+        assert_eq!(frame.private_seed_requirements(&[final_read]), Some(required));
+        assert_eq!(frame.private_target_refusal(), Some("unvalidated_in_place_binding"));
+    }
+    sink.destroy_surface(side).unwrap();
+    sink.draw(main, None, &draw, [Some(&old_view), None, None, None]).unwrap();
+    sink.present(main, 0).unwrap();
+    assert_eq!(take().refusals, ["released_in_place_source"]);
 }
