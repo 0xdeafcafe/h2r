@@ -122,3 +122,39 @@ fn report_contains_provenance_limits_full_series_and_probes() {
     assert_eq!(watch.snapshot(60).samples[0], (40000, 20));
     fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn a_recorder_row_carries_context_activity_tags_and_the_soft_limit() {
+    let watch = Watch {
+        since: Instant::now(),
+        limits: Limits {
+            soft: 512,
+            hard: 1024,
+        },
+        history: Mutex::default(),
+        dir: std::env::temp_dir(),
+        commit: None,
+        reports: Mutex::default(),
+    };
+    register_game_context(|| (Some("fixture_map".into()), Some(90)));
+    let connection = agent_activity::connection();
+    agent_activity::served();
+    let row = current_record(&watch);
+    assert_eq!(row.pid, std::process::id());
+    assert_eq!(row.soft, 512);
+    assert_eq!(row.level.as_deref(), Some("fixture_map"));
+    assert_eq!(row.tick, Some(90));
+    assert!(row.agent_connections >= 1);
+    assert!(row.agent_calls >= 1);
+    assert_eq!(
+        row.probes.get(agent_activity::CONNECTIONS_PROBE),
+        Some(&row.agent_connections)
+    );
+    // The always-on tags exist even when nothing was allocated in a scope.
+    assert!(row.tags.contains_key("unscoped"));
+    assert!(row.stacks.is_empty(), "sampling is off in tests");
+    drop(connection);
+    // Without a recorder in this process, live reads say so.
+    assert!(history_page(None, 1, 1024).is_err());
+    assert!(diff_since(0).is_err());
+}

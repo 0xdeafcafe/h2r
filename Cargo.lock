@@ -352,6 +352,7 @@ version = "0.1.0"
 dependencies = [
  "gfx",
  "map",
+ "mem-watch",
  "png",
  "tags",
  "thiserror 2.0.21",
@@ -3938,9 +3939,12 @@ dependencies = [
 name = "mem-watch"
 version = "0.1.0"
 dependencies = [
+ "backtrace",
  "libc",
+ "objc2-metal 0.3.2",
  "serde",
  "serde_json",
+ "wgpu",
  "windows-sys 0.61.2",
 ]
 

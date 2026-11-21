@@ -1,13 +1,20 @@
 //! A process-local watchdog shared by h2, the editor and the lab daemon.
+//! Forensics for explaining a leak afterwards: docs/runtime/agent-api.md
+//! ("Finding a leak after the fact").
+pub mod agent_activity;
 mod diagnostics;
 mod gauge;
+pub mod gpu;
+pub mod heap;
 mod limits;
+pub mod recorder;
 mod sample;
 #[cfg(test)]
 mod tests;
 
 pub use diagnostics::diagnostics;
 pub use gauge::{Counter, Gauge};
+pub use heap::{Scope, TaggedAllocator, scope};
 pub use limits::parse_size;
 #[cfg(target_os = "macos")]
 pub use sample::process_rusage;
@@ -19,16 +26,23 @@ use std::collections::{BTreeMap, VecDeque};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{LazyLock, Mutex, Once, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 pub const MEMORY_LIMIT_EXIT: i32 = 86;
 const PERIOD: Duration = Duration::from_secs(2);
+/// One flight-recorder row per period.
+const RECORD_PERIOD: Duration = Duration::from_secs(10);
 type Probes = BTreeMap<&'static str, Box<dyn Fn() -> u64 + Send + Sync>>;
+type GameContext = Box<dyn Fn() -> (Option<String>, Option<u64>) + Send + Sync>;
 static PROBES: LazyLock<Mutex<Probes>> = LazyLock::new(Mutex::default);
+static GAME_CONTEXT: OnceLock<GameContext> = OnceLock::new();
 static WATCH: OnceLock<Watch> = OnceLock::new();
+static RECORDER: Mutex<Option<recorder::Recorder>> = Mutex::new(None);
+// Set before a hard-limit exit so the exit hook leaves the stream unclean.
+static ABNORMAL: AtomicBool = AtomicBool::new(false);
 static START: Once = Once::new();
 static SERIAL: AtomicU64 = AtomicU64::new(0);
 // One client can request OS diagnostics at a time. Automatic hard reports
@@ -38,6 +52,25 @@ static MANUAL: Mutex<()> = Mutex::new(());
 /// Register once at startup. Reads should only load a counter, with no I/O.
 pub fn register_probe(name: &'static str, read: impl Fn() -> u64 + Send + Sync + 'static) {
     PROBES.lock().unwrap().insert(name, Box::new(read));
+}
+
+/// Every registered probe's current value.
+pub fn probe_values() -> BTreeMap<String, u64> {
+    PROBES
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(&name, read)| (name.to_owned(), read()))
+        .collect()
+}
+
+/// The loaded map and last ended tick, for each flight-recorder row. The
+/// first registration wins. The read runs on the recorder thread every
+/// ten seconds, so it should only copy published values.
+pub fn register_game_context(
+    read: impl Fn() -> (Option<String>, Option<u64>) + Send + Sync + 'static,
+) {
+    let _ = GAME_CONTEXT.set(Box::new(read));
 }
 
 #[derive(Default, Clone, Debug, Serialize, Deserialize)]
@@ -80,8 +113,7 @@ impl Watch {
                 ..Snapshot::default()
             }
         };
-        snapshot.probes = PROBES.lock().unwrap().iter()
-            .map(|(&name, read)| (name.to_owned(), read())).collect();
+        snapshot.probes = probe_values();
         snapshot.reports = self.reports.lock().unwrap().iter().cloned().collect();
         snapshot
     }
@@ -100,6 +132,7 @@ pub fn report_dir(data_dir: &Path) -> PathBuf {
 /// Idempotent, including when play enters the common run path.
 pub fn start(data_dir: &Path, commit: Option<&str>) {
     START.call_once(|| {
+        heap::init_from_env();
         let watch = WATCH.get_or_init(|| Watch {
             since: Instant::now(), dir: report_dir(data_dir),
             limits: Limits::from_env(), commit: commit.filter(|s| !s.is_empty() && *s != "unknown")
@@ -108,7 +141,113 @@ pub fn start(data_dir: &Path, commit: Option<&str>) {
         });
         thread::Builder::new().name("memory-watch".into()).spawn(move || monitor(watch))
             .expect("starting process memory watchdog");
+        // Evidence is optional: a process that cannot record still runs.
+        let _ = thread::Builder::new().name("memory-recorder".into())
+            .spawn(move || record(watch))
+            .inspect_err(|e| eprintln!("memory recorder: could not start: {e}"));
+        #[cfg(unix)]
+        {
+            // SAFETY: registers a plain extern "C" function with no arguments.
+            unsafe { libc::atexit(close_recorder) };
+        }
     });
+}
+
+/// Mark an orderly exit in the stream. A process that dies without this
+/// footer is reported as unclean by the next recorder in the same directory.
+#[cfg(unix)]
+extern "C" fn close_recorder() {
+    if ABNORMAL.load(Ordering::Relaxed) {
+        return;
+    }
+    // Never wait at exit: a busy recorder leaves an unclean stream instead.
+    if let Ok(mut recorder) = RECORDER.try_lock()
+        && let Some(recorder) = recorder.as_mut()
+    {
+        let _ = recorder.close();
+    }
+}
+
+fn record(watch: &'static Watch) {
+    let recorder = match recorder::Recorder::open(&watch.dir) {
+        Ok(recorder) => recorder,
+        Err(e) => {
+            eprintln!("memory recorder: {e}; no flight recording in {}", watch.dir.display());
+            return;
+        }
+    };
+    *RECORDER.lock().unwrap_or_else(|e| e.into_inner()) = Some(recorder);
+    let mut failed = false;
+    loop {
+        // Collect outside the lock; readers hold it while paging files.
+        let row = current_record(watch);
+        let result = match RECORDER.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+            Some(recorder) => recorder.append(&row),
+            None => return,
+        };
+        if let Err(e) = &result && !failed {
+            eprintln!("memory recorder: {e}");
+        }
+        failed = result.is_err();
+        thread::sleep(RECORD_PERIOD);
+    }
+}
+
+fn current_record(watch: &Watch) -> recorder::Record {
+    let pid = std::process::id();
+    let footprint_bytes = footprint(pid)
+        .or_else(|| watch.history.lock().unwrap().samples.back().map(|s| s.1))
+        .unwrap_or(0);
+    let probes = probe_values();
+    let (tags, stacks) = heap::totals();
+    let (level, tick) = GAME_CONTEXT.get().map_or((None, None), |read| read());
+    recorder::Record {
+        pid,
+        t_ms: watch.elapsed_ms(),
+        unix_ms: SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis()
+            as u64,
+        footprint_bytes,
+        soft: watch.limits.soft,
+        agent_connections: probes.get(agent_activity::CONNECTIONS_PROBE).copied().unwrap_or(0),
+        agent_calls: probes.get(agent_activity::CALLS_PROBE).copied().unwrap_or(0),
+        probes,
+        tags,
+        gpu: gpu::census(),
+        stacks,
+        level,
+        tick,
+    }
+}
+
+fn with_recorder<T>(read: impl FnOnce(&recorder::Recorder) -> io::Result<T>) -> io::Result<T> {
+    let recorder = RECORDER.lock().unwrap_or_else(|e| e.into_inner());
+    let recorder = recorder.as_ref().ok_or_else(|| {
+        io::Error::other("the memory flight recorder is not running in this process")
+    })?;
+    read(recorder)
+}
+
+/// A chronological page of this process's recorded rows from `since_ms`
+/// (watcher uptime), at most `limit` rows and `byte_limit` encoded bytes.
+pub fn history_page(
+    since_ms: Option<u64>,
+    limit: usize,
+    byte_limit: usize,
+) -> io::Result<Vec<recorder::Record>> {
+    with_recorder(|r| r.history_page(since_ms, limit, byte_limit))
+}
+
+/// Growth from the row at or before `from_ms` to the newest row.
+pub fn diff_since(from_ms: u64) -> io::Result<recorder::Diff> {
+    with_recorder(|r| r.diff_since(from_ms))
+}
+
+/// Where this process writes reports and recordings.
+pub fn active_report_dir() -> io::Result<PathBuf> {
+    WATCH
+        .get()
+        .map(|watch| watch.dir.clone())
+        .ok_or_else(|| io::Error::other("watchdog has not started"))
 }
 
 fn monitor(watch: &'static Watch) {
@@ -125,6 +264,7 @@ fn monitor(watch: &'static Watch) {
         if let Some(trigger) = trigger {
             let bytes = sample.unwrap();
             if trigger == Trigger::Hard {
+                ABNORMAL.store(true, Ordering::Relaxed);
                 match write_report(watch, trigger.label()) {
                     Ok(path) => eprintln!("memory limit: {bytes} over {}; report {}", watch.limits.hard, path.display()),
                     Err(e) => eprintln!("memory limit: {bytes} over {}; report failed in {}: {e}", watch.limits.hard, watch.dir.display()),
