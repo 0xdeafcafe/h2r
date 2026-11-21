@@ -1,4 +1,5 @@
 use super::*;
+use crate::ui_kit::spec::Describe as _;
 use crate::lobby_start::STATUS_CHARS;
 use crate::ui_kit::input::Input::{self, *};
 use crate::ui_kit::page::{ListEffect, ListPage, Page, described, named, run};

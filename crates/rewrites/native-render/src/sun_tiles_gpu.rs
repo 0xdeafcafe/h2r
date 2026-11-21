@@ -823,22 +823,24 @@ impl ReceiverPass {
         colour: &wgpu::TextureView,
         depth: &wgpu::TextureView,
     ) {
-        let kept = wgpu::Operations {
-            load: wgpu::LoadOp::Load,
-            store: wgpu::StoreOp::Store,
-        };
+        fn kept<V>() -> wgpu::Operations<V> {
+            wgpu::Operations {
+                load: wgpu::LoadOp::Load,
+                store: wgpu::StoreOp::Store,
+            }
+        }
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("sun shadow receivers"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view: colour,
                 depth_slice: None,
                 resolve_target: None,
-                ops: kept,
+                ops: kept(),
             })],
             depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                 view: depth,
-                depth_ops: Some(kept),
-                stencil_ops: self.stencil.then_some(kept),
+                depth_ops: Some(kept()),
+                stencil_ops: self.stencil.then(kept),
             }),
             timestamp_writes: None,
             occlusion_query_set: None,

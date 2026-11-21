@@ -164,7 +164,7 @@ pub enum ResourceKind {
 }
 
 /// One 16-byte block resource entry (E `0x00223c70`, see structure-bsp.md).
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BlockResource {
     /// Byte 0 (E `0x00223cc4`..`0x00223ccd`: only 0, 1 and 2 are handled).
     pub kind: ResourceKind,
