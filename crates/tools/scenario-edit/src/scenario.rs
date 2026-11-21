@@ -3,7 +3,6 @@
 //! only the bytes of the field they name, and [`Scenario::patches`] turns
 //! the difference from the source into fixed-size tag patches.
 use crate::layout::{self, BlockDef, BlockKind, FieldDef, FieldType, Role};
-use crate::volumes::{self, Volumes};
 use crate::{Error, Result};
 use map::{FourCC, Map, TagId};
 use std::collections::HashMap;
@@ -280,8 +279,6 @@ pub struct Scenario {
     pub blocks: Vec<Block>,
     /// Scenario object names (edited only by removals).
     pub names: Names,
-    /// Trigger volumes and what names them (read only).
-    pub volumes: Volumes,
     pub tags: HashMap<TagId, TagInfo>,
     /// Patches to other tags' bytes (the tag editor's field edits, kept
     /// outside this tag): `(ordinary metadata virtual address, bytes)`,
@@ -353,9 +350,7 @@ impl Scenario {
             let at = map.file_offset(address, size)?;
             Ok(map.read_file_range(at, size.into())?)
         };
-        let mut scenario = Self::decode(id, loc.address, &bytes, tags, &mut fetch)?;
-        scenario.volumes.resolve_names(map.strings());
-        Ok(scenario)
+        Self::decode(id, loc.address, &bytes, tags, &mut fetch)
     }
 
     /// Decode from a payload whose first byte is at virtual `address`.
@@ -431,19 +426,6 @@ impl Scenario {
             original: names_entries.clone(),
             entries: names_entries,
         };
-        // The volumes are only drawn: a block that does not read leaves
-        // them empty with the reason, and the placements still open.
-        let (t, k, w) = (
-            volumes::TRIGGER_VOLUMES,
-            volumes::KILL_TRIGGERS,
-            volumes::BSP_SWITCHES,
-        );
-        let volumes = match (elements(t.0, t.1), elements(k.0, k.1), elements(w.0, w.1)) {
-            (Ok((_, triggers)), Ok((_, kills)), Ok((_, switches))) => {
-                Volumes::from_rows(&triggers, &kills, &switches)
-            }
-            (Err(e), _, _) | (_, Err(e), _) | (_, _, Err(e)) => Volumes::failed(e.to_string()),
-        };
         // Blocks this editor writes must not overlap each other, or one
         // patch would change another block's element.
         let mut spans: Vec<(u64, u64)> = blocks
@@ -470,7 +452,6 @@ impl Scenario {
             size,
             blocks,
             names,
-            volumes,
             tags,
             tag_patches: Vec::new(),
             bsp_patches: Vec::new(),

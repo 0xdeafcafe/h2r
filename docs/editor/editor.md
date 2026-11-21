@@ -628,15 +628,6 @@ build), and keeps the last four maps' scenes so reopening one is instant.
   Netgame equipment shows its model when available and a respawn label.
   The Gameplay switches and their corresponding placement blocks both
   control visibility. The **Placement markers** switch controls glyphs and annotations.
-- **Volumes.** Trigger volumes are translucent boxes with wire edges and
-  a caption with the name and what names the volume (`· kill`, `· BSP 0
-  to 1`), in three layers: Trigger volumes (all of them), Kill volumes
-  and BSP switches (the volumes a kill trigger or a BSP switch names), in
-  the colour of the most specific one shown (`scenario_edit::volumes`,
-  `theme::volume_color`). A click on a box selects it when no placement is
-  under the cursor; the Scene tab's Volumes group lists them, and the
-  inspector shows the box, its parent and what names it, read only. A
-  volume with a parent object is listed and not drawn.
 - **Glyphs and labels.** Other placements without a model use a diamond
   in their block colour. Past 40 world units glyphs and their pick
   spheres grow with distance so the whole map stays readable. Gameplay

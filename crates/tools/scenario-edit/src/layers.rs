@@ -1,7 +1,6 @@
 //! Viewport visibility shared by the renderer, picking, the editor and its API.
 use std::collections::BTreeSet;
 
-use crate::volumes::VolumeKind;
 use crate::{BlockKind, layout};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -15,8 +14,6 @@ pub enum LayerId {
     SpawnPoints,
     Flags,
     NetgameItems,
-    /// Trigger volumes drawn as each kind ([`crate::volumes`]).
-    Volume(VolumeKind),
     Halo1,
     Live,
 }
@@ -33,9 +30,13 @@ impl LayerId {
         ]
         .into_iter()
         .chain(layout::BLOCKS.iter().map(|b| Self::Placement(b.kind)))
-        .chain([Self::SpawnPoints, Self::Flags, Self::NetgameItems])
-        .chain(VolumeKind::ALL.map(Self::Volume))
-        .chain([Self::Halo1, Self::Live])
+        .chain([
+            Self::SpawnPoints,
+            Self::Flags,
+            Self::NetgameItems,
+            Self::Halo1,
+            Self::Live,
+        ])
     }
 
     pub fn id(self) -> &'static str {
@@ -62,11 +63,6 @@ impl LayerId {
             Self::SpawnPoints => "spawn_points",
             Self::Flags => "flags",
             Self::NetgameItems => "netgame_items",
-            Self::Volume(kind) => match kind {
-                VolumeKind::Trigger => "trigger_volumes",
-                VolumeKind::Kill => "kill_volumes",
-                VolumeKind::BspSwitch => "bsp_switches",
-            },
             Self::Halo1 => "halo1",
             Self::Live => "live",
         }
@@ -83,9 +79,6 @@ impl LayerId {
             Self::SpawnPoints => "Spawn points",
             Self::Flags => "Netgame flags",
             Self::NetgameItems => "Netgame equipment",
-            Self::Volume(VolumeKind::Trigger) => "Trigger volumes",
-            Self::Volume(VolumeKind::Kill) => "Kill volumes",
-            Self::Volume(VolumeKind::BspSwitch) => "BSP switches",
             Self::Halo1 => "Halo 1 overlay",
             Self::Live => "Live objects",
         }
@@ -105,7 +98,6 @@ impl LayerId {
             Self::Structure | Self::Sky | Self::Objects | Self::Fog => "World",
             Self::Markers | Self::Placement(_) => "Placements",
             Self::SpawnPoints | Self::Flags | Self::NetgameItems => "Gameplay",
-            Self::Volume(_) => "Volumes",
             Self::Halo1 => "Reference",
             Self::Live => "Live",
         }
@@ -158,10 +150,8 @@ impl Preset {
                     | SpawnPoints
                     | Flags
                     | NetgameItems
-                    | Volume(_)
             ),
-            // Out of bounds is kill volumes and collision.
-            Self::Collision => matches!(id, Structure | Volume(VolumeKind::Kill)),
+            Self::Collision => id == Structure,
             Self::Everything => true,
         }
     }
@@ -208,16 +198,12 @@ mod tests {
         layers.set(LayerId::Placement(BlockKind::Weapons), false);
         layers.apply(Preset::Art);
         assert!(layers.placement(BlockKind::Weapons));
-        assert!(!layers.visible(LayerId::Volume(VolumeKind::Kill)));
         assert!(!layers.visible(LayerId::Markers));
         layers.apply(Preset::Gameplay);
         assert!(layers.visible(LayerId::Markers));
         assert!(!layers.visible(LayerId::Fog));
-        assert!(layers.visible(LayerId::Volume(VolumeKind::Trigger)));
         layers.apply(Preset::Collision);
         assert!(layers.visible(LayerId::Structure));
-        assert!(layers.visible(LayerId::Volume(VolumeKind::Kill)));
-        assert!(!layers.visible(LayerId::Volume(VolumeKind::Trigger)));
         assert!(!layers.visible(LayerId::Objects));
         layers.apply(Preset::Everything);
         assert_eq!(layers, Layers::default());

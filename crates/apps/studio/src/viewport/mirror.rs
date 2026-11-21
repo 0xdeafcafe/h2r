@@ -304,50 +304,22 @@ pub(crate) struct Label {
 }
 
 pub(crate) fn gameplay_labels(app: &App) -> Vec<Label> {
-    let mut labels = volume_labels(app);
     if !app.layers.visible(LayerId::Markers) {
-        return labels;
+        return Vec::new();
     }
     let scenario = app.session.scenario();
-    labels.extend(
-        app.session
-            .markers()
-            .iter()
-            .filter(|m| app.layers.placement(m.block))
-            .filter_map(|marker| {
-                let game = Gameplay::of(scenario, marker);
-                let text = game.label()?;
-                let color = theme::placement_color(marker.block, game.team);
-                Some(Label {
-                    position: marker.position,
-                    text,
-                    color: color.map(|c| (255.0 * c).round() as u8),
-                })
-            }),
-    );
-    labels
-}
-
-/// A caption at each drawn volume's centre (its name, then what names
-/// it), in the colour of its most specific visible kind.
-fn volume_labels(app: &App) -> Vec<Label> {
-    let Some(volumes) = app.session.volumes() else {
-        return Vec::new();
-    };
-    volumes
-        .triggers
+    app.session
+        .markers()
         .iter()
-        .enumerate()
-        .filter(|(_, v)| v.in_world())
-        .filter_map(|(i, v)| {
-            let kind = volumes
-                .kinds(i)
-                .into_iter()
-                .find(|&k| app.layers.visible(LayerId::Volume(k)))?;
+        .filter(|m| app.layers.placement(m.block))
+        .filter_map(|marker| {
+            let game = Gameplay::of(scenario, marker);
+            let text = game.label()?;
+            let color = theme::placement_color(marker.block, game.team);
             Some(Label {
-                position: v.frame.center()?,
-                text: volumes.caption(i),
-                color: theme::volume_color(kind).map(|c| (255.0 * c).round() as u8),
+                position: marker.position,
+                text,
+                color: color.map(|c| (255.0 * c).round() as u8),
             })
         })
         .collect()

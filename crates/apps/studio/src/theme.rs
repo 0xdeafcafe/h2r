@@ -140,24 +140,10 @@ pub fn layer_color(id: scenario_edit::layers::LayerId) -> [f32; 3] {
         LayerId::SpawnPoints => placement_color(scenario_edit::BlockKind::StartingLocations, None),
         LayerId::Flags => placement_color(scenario_edit::BlockKind::NetgameFlags, None),
         LayerId::NetgameItems => placement_color(scenario_edit::BlockKind::NetgameEquipment, None),
-        LayerId::Volume(kind) => volume_color(kind),
         LayerId::Halo1 => [1.0, 0.55, 0.15],
         LayerId::Live => [0.42, 0.8, 0.55],
     }
 }
-
-/// A trigger volume box's colour as each of its kinds.
-pub fn volume_color(kind: scenario_edit::volumes::VolumeKind) -> [f32; 3] {
-    use scenario_edit::volumes::VolumeKind;
-    match kind {
-        VolumeKind::Trigger => [0.6, 0.85, 0.25],
-        VolumeKind::Kill => [0.95, 0.2, 0.2],
-        VolumeKind::BspSwitch => [0.35, 0.55, 1.0],
-    }
-}
-
-/// The edges of the selected volume.
-pub const VOLUME_SELECTED: [f32; 3] = [1.0, 1.0, 1.0];
 
 /// The accent (selection, active tabs, gizmo-adjacent highlights).
 pub const ACCENT: [f32; 4] = rgb(56, 132, 230);

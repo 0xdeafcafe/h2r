@@ -6,7 +6,7 @@ use studio_proto::{code, method as m};
 use super::{MethodDef, P, Provider, Reply, def, err, params::block_name, scenario, tag_fields};
 use crate::app::{Action, App, NavAction, Selection, ToolKind, tag_api};
 
-const STATUS: &str = r#"{"selected":"{block,index}|{tag}|null","volume":"integer|null","tag":"string|null","path":"string|null","breadcrumbs":"[placement or tag]","can_back":"boolean","can_forward":"boolean"}"#;
+const STATUS: &str = r#"{"selected":"{block,index}|{tag}|null","tag":"string|null","path":"string|null","breadcrumbs":"[placement or tag]","can_back":"boolean","can_forward":"boolean"}"#;
 
 pub struct Navigation;
 
@@ -125,7 +125,6 @@ fn status(app: &App) -> Value {
     }));
     json!({
         "selected": selection_json(selected),
-        "volume": app.session.selected_volume(),
         "tag": location.tag().map(scenario::tag_id),
         "path": location.path,
         "breadcrumbs": breadcrumbs,

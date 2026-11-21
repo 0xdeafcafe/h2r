@@ -78,7 +78,6 @@ What goes through actions, from both sides:
 | Move and turn a placement | `MovePlacement` (one step); `GestureSet {position, ypr}`, `GestureScale`, `EndGesture` (a drag: one step, a multi-selection riding along) | the viewport gizmo dispatches the gesture actions every frame of a drag | `scenario.move` |
 | Add, duplicate, delete | `Add`, `DuplicateEntry`, `DeleteEntry` | outliner, toolbar, keys | `scenario.add`, `.duplicate`, `.delete`, `tag.block.*` |
 | Select, frame | `Select`, `FocusSelected`, `FrameAll` | Scene, viewport, keys | `scenario.select`, `view.camera` |
-| Select a trigger volume | `SelectVolume` (clears the placements; selecting a placement clears it), `FocusSelected` | a click on a box the viewport shows, the Scene tab's Volumes group, the inspector's Frame | `volume.select {index?, focus?}` |
 | Set fly speed | `SetFlySpeed` | viewport toolbar, wheel while flying | `view.camera {fly_speed}` |
 | Show or hide viewport layers | `SetLayers`, `SetOverlay` | Show popover, Scene legend, View > Halo 1 overlay | `view.layers` |
 | Navigate tag fields | `Navigate` | inspector links and breadcrumbs | `nav.go`, `nav.back`, `nav.forward` |
@@ -172,7 +171,6 @@ before anything runs (`INVALID_PARAMS`). Indices are 0-based throughout
 | `doc` | `list`, `open {map \| path \| package \| variant \| playlists}`, `save`, `save_as {path}`, `diff`, `undo`, `redo`, `close` |
 | `tag` | `list {group, name, query, path, limit, homes}`, `browse {map}`, `resources {tag}`, `export {tag, out, dependencies, resources}`, `import {path, tag, skip_missing}`, `read {tag, depth, elements, hex}`, `fields {tag, path?}`, `tree {root?, depth?}`, `refs {tag, limit?}`, `follow {tag, ref}`, `set {tag, path, value}`, `block.add`, `block.remove`, `block.duplicate` |
 | `scenario` | `blocks`, `list {block}`, `get`, `set {block, index, field, value}`, `add {block, like, position}`, `move {block, index, position, ypr}`, `delete`, `duplicate`, `select` |
-| `volume` | `list {kind?}` (short form `volumes [kind]`), `select {index?, focus?}` |
 | `variant` | `list`, `get`, `set {setting, value}`, `rename`, `copy`, `export`, `import`, `delete` |
 | `playlist` | `list` (with `unused` per playlist and the `templates`), `get {playlist}`, `set {playlist, title, description, template, clear}` (`template`: make the slot a playlist of that kind, or give a playlist another kind; `clear: true`: make it unused; [live-matchmaking.md §6.10](../live/live-matchmaking.md)), `entry {playlist, op, entry, to, weight}`, `entry_variant` |
 | `ui` | `palette {query, run?}`, `screens`, `pick {screen, state \| retail}`, `press {input}`, `widgets`, `render {out}` |
@@ -255,8 +253,7 @@ Notes on some:
   `nav.go {"panel":"pending"}` opens the Pending tab. These are also the
   target forms returned for placement and panel issues. `nav.status`,
   `nav.back` and `nav.forward` take no params. All `nav.*` methods
-  return `{selected, volume, tag, path, breadcrumbs, can_back, can_forward}`.
-  `volume` is the selected trigger volume's index, or null.
+  return `{selected, tag, path, breadcrumbs, can_back, can_forward}`.
   `selected` is a placement `{block,index}`, a tag `{tag}` or null.
   `tag` and `path` identify the focused tag and field, or are null.
   Breadcrumbs begin with the placement when selected, followed by tags
@@ -447,26 +444,6 @@ Notes on some:
   respectively. Each uses its matching placement block switch as well.
   Turn off `markers` to hide annotations, including the flag-type and
   equipment respawn labels. The Art preset keeps equipment models visible.
-  The Volumes rows are `trigger_volumes`, `kill_volumes` and
-  `bsp_switches`. Every trigger volume is in the first; the other two
-  count the distinct volumes a kill trigger or a BSP switch names. The
-  Gameplay preset shows all three and the Collision preset shows
-  `kill_volumes`.
-- **Trigger volumes.** `volume.list {}` returns `{volumes, kill_triggers,
-  bsp_switches, selected, error}`. Each volume has its `index` in the
-  scenario's trigger volume block, `name` (the string ID's text, or null),
-  `label`, `kinds` (what it is drawn as, most specific first: `kill`,
-  `bsp_switch`, `trigger`), the box as `origin` (a corner), `forward`,
-  `up` and full `size` along forward, left and up, its `center`,
-  `parent` (an object name index, or null) and `world`, and `named_by`:
-  `[{kind: "kill", index}]` and `[{kind: "bsp_switch", index, from, to}]`.
-  A volume with a parent object has `world: false` and a null `center`:
-  its frame is relative to an object only a running game places, so the
-  viewport does not draw or pick it. `{"kind": "kill"}` keeps the
-  volumes with that kind. `error` says why the volume blocks did not read;
-  the placements still open. `volume.select {"index": 1, "focus": true}`
-  selects a volume, clears the placements and frames the box;
-  `volume.select {}` clears it. The volumes are read only.
 - **Renders.** `ui.render` draws on the CPU (no GPU needed); `view.snapshot`
   renders the open map offscreen through the viewport's own renderer
   (wgpu, no window) and answers `NO_GPU` on a machine without an adapter.
@@ -641,7 +618,7 @@ identical profiles.
   example), `Api::call` (shape check, providers, built-ins),
   `Api::pump` (the window's between-frames answer).
 - `api/server.rs`: the socket. `api/{docs,scenario,tags,variants,playlists,ui_screens,view}.rs`:
-  the namespaces (`volume.*` is in `api/scenario.rs`). `api/seams.rs`: providers; `api/tag_fields.rs`,
+  the namespaces. `api/seams.rs`: providers; `api/tag_fields.rs`,
   `api/tag_io.rs` and `api/hud.rs` the Tags and HUD tools'.
 - `app/commands.rs`: the actions added for the API and the window
   (`SetField`, `EditSelection`, `MovePlacement`, `EditPlaylist`,
@@ -681,12 +658,6 @@ system temp directory):
 - a registered provider answers a planned method;
 - `view.layers` validates changes atomically, shares the Halo 1 menu switch,
   and changes the invented map’s snapshot pixels on a machine with a GPU;
-- `volume.list` reads the invented map's two volumes, kill trigger and BSP
-  switch, `volume.select` replaces the placements and frames the box, and
-  the volume layers count the boxes and change the snapshot's pixels
-  (`api::tests::volume_list_and_select_read_the_invented_volumes`); a
-  click in the headless window selects a volume
-  (`headless::tests::a_click_on_a_volume_selects_it`);
 - `view.stats` of an invented scene reports its BSP's lighting, its
   triangles by blend, its materials and its sky's sun and fog
   (`api::view::tests`);

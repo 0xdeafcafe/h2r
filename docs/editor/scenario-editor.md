@@ -115,30 +115,11 @@ palette fields above and the following labelled fields.
 | `+0x8`, `+0x10` | Sky references and scenario type | `scenario_edit::scene::skies_in` and [UI formats](../formats/ui.md) |
 | `+0x48` | Object names, types and placement indices | `layout::OBJECT_NAMES` and §6 |
 | `+0xe8`, `+0xf0` | Light-fixture palette index, name index, position and light reference | `h1convert::convert::BASE_BLOCKS` |
-| `+0x108`, `+0x130`, `+0x230` | Trigger volume name, parent object, directions, origin and extents. BSP-switch trigger volume, source and destination. Kill trigger volume | below, "Trigger volumes, kill triggers and BSP switches" |
+| `+0x108`, `+0x130` | Trigger volume name, directions, origin and extents. BSP-switch trigger volume, source and destination | `h1campaign::scenario` and `cli::live_geometry::bsp_switches` |
 | `+0x110` | Recording name, versions, ticks and stream | `h1campaign::cutscenes::recordings_block` |
 | `+0x1b0`–`+0x1c8`, `+0x238` | Script strings, definitions, globals, references and syntax nodes | [HaloScript layouts](../formats/haloscript.md) |
 | `+0x208`, `+0x210` | HUD message reference, BSP region descriptor and paired BSP and lightmap references | `h1campaign::scenario::FRESH_NULL_REFS` and [map formats](../formats/map-format.md#bsp-and-lightmap-metadata) |
 | `+0x250`, `+0x258`, `+0x378` | Background sound and sound environment palettes, decorator references | `h1convert::ambience` and `h1convert::convert::BASE_BLOCKS` |
-
-### Trigger volumes, kill triggers and BSP switches
-
-`scenario_edit::volumes` reads three root blocks to draw and pick them.
-They are not edited yet.
-
-| Block | Stride | Field | Meaning | Evidence |
-|---|---|---|---|---|
-| `+0x108` trigger volumes | `0x44` | `+0x0` | name, a string ID | S: `h1campaign::scenario` writes the names the converted scripts look up |
-| | | `+0x4` | parent object name index, i16, -1 for none | S: the game-side volume view (`agent::debug_views::debug_static`) draws a volume as world space only with -1 here |
-| | | `+0xc`, `+0x18` | forward and up | S: `h1convert::convert` and `h1campaign::scenario` write Halo 1's frame there |
-| | | `+0x24` | origin, a corner of the box | S: as above; `debug_static::box_edges` |
-| | | `+0x30` | full lengths along forward, left (up × forward) and up | S: as above |
-| `+0x230` kill triggers | `0x2` | `+0x0` | trigger volume index, i16 | S: `h1campaign::scenario` (indices of the level's own volumes); `debug_static` |
-| `+0x130` BSP switches | `0xe` | `+0x0`, `+0x2`, `+0x4` | trigger volume, source BSP, destination BSP, i16 each | S: `cli::live_geometry::bsp_switches`, `h1campaign::scenario` |
-
-The engine's own readers of these blocks have not been disassembled, so
-every row is S. A volume with a parent object keeps its frame relative to
-that object; the editor lists it and does not draw it.
 
 ## 3. Edit model
 
@@ -447,10 +428,6 @@ grow in guest memory after the load.
   respawn mode 0 and 1 are not decoded.
 - The AI, device-group and trigger-volume readers have not been checked
   for placement indices (§6, S).
-- The trigger volume, kill trigger and BSP switch layouts rest on this
-  repository's writers and the game-side volume view, not on the
-  engine's readers (§2, "Trigger volumes, kill triggers and BSP
-  switches").
 - The engine's real headroom for a larger `+0x1c`, and whether the pool
   that loses it degrades (§6). Until then growth is off by default.
 - A campaign checkpoint saved before an edit holds runtime placement

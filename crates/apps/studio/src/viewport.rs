@@ -14,7 +14,6 @@ use dear_imgui_wgpu::{ExternalTextureId, WgpuRenderer};
 use dear_imguizmo::{GuizmoExt, Mode, Operation};
 use scenario_edit::layers::{LayerId, Layers};
 use scenario_edit::render::{self, Viewport};
-use scenario_edit::volumes::VolumeKind;
 use scenario_edit::{BlockKind, Session, geometry};
 
 use crate::app::{Action, App};
@@ -385,10 +384,7 @@ impl ViewportView {
                     actions.push(Action::FocusSelected);
                 }
                 None => {
-                    if let Some(volume) = app.session.pick_volume(&ray, &app.layers) {
-                        actions.push(Action::SelectVolume(Some(volume)));
-                        actions.push(Action::FocusSelected);
-                    } else if let Some(p) = app.session.surface_hit_visible(&ray, &app.layers) {
+                    if let Some(p) = app.session.surface_hit_visible(&ray, &app.layers) {
                         let to = camera::focus_point(app.session.camera(), p, 30.0);
                         self.camera.go_to(app.session.camera_mut(), to);
                     }
@@ -562,15 +558,10 @@ pub(crate) fn pick_action(
 ) -> Option<Action> {
     let hit = session.pick_visible_linked(ray, layers, linked);
     if extend {
-        return hit.map(Action::ToggleSelect);
+        hit.map(Action::ToggleSelect)
+    } else {
+        Some(Action::Select(hit))
     }
-    // Placements sit inside volumes, so a placement under the cursor wins.
-    if hit.is_none()
-        && let Some(volume) = session.pick_volume(ray, layers)
-    {
-        return Some(Action::SelectVolume(Some(volume)));
-    }
-    Some(Action::Select(hit))
 }
 
 fn selection_label(app: &App) -> String {
@@ -631,44 +622,6 @@ pub(crate) fn upload_placements(
         }
     }
     vp.set_layer_overlay(device, LayerId::Flags, &[], &lines);
-    upload_volumes(vp, device, app);
-}
-
-/// The trigger volumes as boxes, one overlay per kind a box is drawn as
-/// (translucent faces and wire edges), the selected box's edges in the
-/// selection colour. Parented volumes are left out: their frame is
-/// relative to an object only a running game places.
-fn upload_volumes(vp: &mut Viewport, device: &wgpu::Device, app: &App) {
-    let empty = scenario_edit::volumes::Volumes::default();
-    let volumes = app.session.volumes().unwrap_or(&empty);
-    let selected = app.session.selected_volume();
-    for kind in VolumeKind::ALL {
-        let (mut faces, mut lines) = (Vec::new(), Vec::new());
-        let color = crate::theme::volume_color(kind);
-        for (i, volume) in volumes.triggers.iter().enumerate() {
-            if !volume.in_world() || !volumes.kinds(i).contains(&kind) {
-                continue;
-            }
-            let (Some(tris), Some(edges)) = (volume.frame.faces(), volume.frame.edges()) else {
-                continue;
-            };
-            faces.extend(render::overlay_vertices(&tris, color));
-            let edge = if selected == Some(i) {
-                crate::theme::VOLUME_SELECTED
-            } else {
-                color
-            };
-            for position in edges.into_iter().flatten() {
-                lines.push(render::Vertex {
-                    position,
-                    center: position,
-                    normal: [0.0, 0.0, 1.0],
-                    color: edge,
-                });
-            }
-        }
-        vp.set_layer_overlay(device, LayerId::Volume(kind), &faces, &lines);
-    }
 }
 
 pub(crate) fn upload_overlays(vp: &mut Viewport, device: &wgpu::Device, app: &App) {

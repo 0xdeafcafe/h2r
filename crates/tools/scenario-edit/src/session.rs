@@ -10,7 +10,6 @@ use crate::package::{self, PackageForm, SavedPackage};
 use crate::save::{self, MapSource};
 use crate::scenario::{Changes, Scenario, Value};
 use crate::scene::{Scene, SceneBuilder};
-use crate::volumes::{VolumeKind, Volumes};
 use crate::{Error, Result};
 use map::TagId;
 use std::collections::BTreeSet;
@@ -104,9 +103,6 @@ pub struct Session {
     selected: Option<(BlockKind, usize)>,
     /// The rest of a multi-selection ([`multi`]), beside [`Self::selected`].
     extra: Vec<(BlockKind, usize)>,
-    /// The selected trigger volume, by index. Selecting a placement clears
-    /// it and selecting one clears the placements.
-    volume: Option<usize>,
     camera: Camera,
     markers: Vec<Marker>,
     /// Bumped whenever the markers or the selection change, so a viewport
@@ -147,7 +143,6 @@ impl Session {
             status: "Open a .map file, or a disc image to pick a map from it.".into(),
             selected: None,
             extra: Vec::new(),
-            volume: None,
             camera: Camera::default(),
             markers: Vec::new(),
             markers_rev: 0,
@@ -382,7 +377,6 @@ impl Session {
     pub fn open_reference(&mut self, reference: Reference) {
         self.doc = None;
         self.selected = None;
-        self.volume = None;
         self.drag = None;
         self.gesture = None;
         self.camera = Camera::frame(&frame_bounds(&reference.world, &reference.markers));
@@ -462,7 +456,6 @@ impl Session {
         });
         self.reference = None;
         self.selected = None;
-        self.volume = None;
         self.drag = None;
         self.gesture = None;
         self.world_rev += 1;
@@ -475,7 +468,6 @@ impl Session {
         self.doc = None;
         self.reference = None;
         self.selected = None;
-        self.volume = None;
         self.drag = None;
         self.gesture = None;
         self.world_rev += 1;
@@ -614,7 +606,6 @@ impl Session {
     }
     pub fn select(&mut self, selection: Option<(BlockKind, usize)>) {
         self.extra.clear();
-        self.volume = None;
         if selection != self.selected
             && let Some(doc) = self.doc.as_mut()
         {
@@ -622,30 +613,6 @@ impl Session {
         }
         self.selected = selection;
         self.markers_rev += 1;
-    }
-
-    /// The open map's trigger volumes.
-    pub fn volumes(&self) -> Option<&Volumes> {
-        self.scenario().map(|s| &s.volumes)
-    }
-
-    /// The selected trigger volume's index.
-    pub fn selected_volume(&self) -> Option<usize> {
-        self.volume
-            .filter(|&i| self.volumes().is_some_and(|v| i < v.triggers.len()))
-    }
-
-    /// Select a trigger volume (clearing the placements), or none.
-    pub fn select_volume(&mut self, index: Option<usize>) {
-        self.select(None);
-        self.volume = index;
-        self.markers_rev += 1;
-    }
-
-    /// The nearest visible world-space trigger volume a camera ray enters.
-    pub fn pick_volume(&self, ray: &Ray, layers: &Layers) -> Option<usize> {
-        let shown = |kind: VolumeKind| layers.visible(LayerId::Volume(kind));
-        self.volumes()?.pick(ray, shown).map(|(_, i)| i)
     }
 
     /// The placement under a camera ray, if any.
