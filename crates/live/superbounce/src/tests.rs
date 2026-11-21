@@ -356,8 +356,105 @@ fn the_ascension_lip_alone_is_still_a_crouch_spot() {
         "{:?}",
         c[0].stand
     );
-    assert!(c[0].score < 0.65, "{}", c[0].score);
+    // No bounce strip near: 0.4, plus about 0.07 for a 5 cm band and 0.07
+    // for its length, well under the 0.3 a strip nearby adds.
+    assert!(c[0].score < 0.7, "{}", c[0].score);
     assert!(bounces(&spots).is_empty(), "{spots:?}");
+}
+
+/// The corner as it is on the map, from every surface `--near` printed
+/// there: the floor flat at z −1.0 to y 0.4, then the ramp, both from the
+/// wall at x −11.10 to the ramp's side at x −9.98; the wall, faces at
+/// x −11.10 looking +x and x −11.30 looking −x; the prop box set into it
+/// with its lip; the ramp's side face; and the bounce patch below.
+fn ascension_corner_as_on_the_map() -> Vec<Poly> {
+    let (x0, x1) = (-11.10, -9.98);
+    let ramp_z = -1.0 - 3.4 * RAMP_SLOPE;
+    let mut polys = vec![
+        flat([x0, x1], [-0.5, 0.4], -1.0, true),
+        quad(
+            [
+                [x0, 0.4, -1.0],
+                [x1, 0.4, -1.0],
+                [x1, 3.8, ramp_z],
+                [x0, 3.8, ramp_z],
+            ],
+            RAMP,
+        ),
+        quad(
+            [
+                [x0, -0.5, -3.6],
+                [x0, 3.8, -3.6],
+                [x0, 3.8, 0.5],
+                [x0, -0.5, 0.5],
+            ],
+            [1.0, 0.0, 0.0],
+        ),
+        quad(
+            [
+                [-11.30, -0.5, -3.6],
+                [-11.30, -0.5, 0.5],
+                [-11.30, 3.8, 0.5],
+                [-11.30, 3.8, -3.6],
+            ],
+            [-1.0, 0.0, 0.0],
+        ),
+        // The ramp's side, 0.36 deep under its edge at x −9.98.
+        quad(
+            [
+                [x1, 0.4, -1.0],
+                [x1, 3.8, ramp_z],
+                [x1, 3.8, ramp_z - 0.36],
+                [x1, 0.4, -1.36],
+            ],
+            [1.0, 0.0, 0.0],
+        ),
+    ];
+    // The prop's faces (as in `ascension_corner`, past its floor and ramp)
+    // and its top.
+    polys.extend(ascension_corner().into_iter().skip(2));
+    polys.push(flat([-11.4, -11.0], [0.11, 0.61], -0.25, true));
+    let mut patch = ascension_patch(0.2);
+    patch.remove(2);
+    polys.extend(patch);
+    polys
+}
+
+#[test]
+fn the_ascension_corner_against_its_wall_is_the_measured_crouch_spot() {
+    // The wall 0.18 from the measured axis leaves only the pocket between
+    // it and the lip's corner: two lattice samples, 4 cm long, its band
+    // 5 cm across. No length rule may drop it.
+    let polys = ascension_corner_as_on_the_map();
+    let spots = scan(&polys);
+    let c = crouches(&spots);
+    let target = [-10.91, 0.72, -1.16];
+    assert!(
+        c.iter().any(|s| dist(s.stand, target) < 0.15),
+        "{:?}",
+        explain(&polys, target, 1.0)
+    );
+    // --explain sees it, kept.
+    let near = explain(&polys, target, 0.2);
+    assert!(near.iter().any(|r| r.kept), "{near:?}");
+    assert_eq!(bounces(&spots).len(), 1, "{spots:?}");
+}
+
+#[test]
+fn explain_says_why_a_region_is_dropped() {
+    // The thin band under a 0.4 ledge: a region, with its widths, dropped.
+    let polys = room(0.4);
+    let regions = explain(&polys, [2.16, 1.0, 0.0], 0.1);
+    assert!(!regions.is_empty());
+    for r in &regions {
+        assert!(!r.kept && r.spot.is_none(), "{r:?}");
+        let why = r.rejected.as_deref().unwrap_or("");
+        assert!(
+            why.starts_with("band too thin") || why.contains("speck"),
+            "{why}"
+        );
+    }
+    assert!(regions.iter().any(|r| !r.widths.is_empty() && r.reachable));
 }
 
 #[test]

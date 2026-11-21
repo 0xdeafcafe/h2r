@@ -427,6 +427,7 @@ not a measured bounce; only a game run makes it an entry in
 h2 superbounce scan ascension             # BSP 0 of the disc map, best first
 h2 superbounce scan path/to/map.map --bsp 1 --json
 h2 superbounce scan ascension --near -10.62,4.0,-3.4   # the polygons near a point
+h2 superbounce scan ascension --explain -10.91,0.72,-1.16  # crouch regions near a point, judged
 ```
 
 The input is every surface of the structure collision BSP and of each
@@ -524,6 +525,7 @@ bands at the edges of low ledges and props, where only the crouched
 capsule's rounded top slips under (under a ledge 0.4 up, 0.157 to 0.17
 from its edge), and pockets inside props. A region is a spot only when:
 
+- **it is more than a speck**: at least 2 samples;
 - **it touches standing room**: some of its samples have a neighbour
   where standing is clear (its exits);
 - **it is reachable**: walking clear samples from its exits reaches a
@@ -531,12 +533,16 @@ from its edge), and pockets inside props. A region is a spot only when:
   walkable face (a prop's top) within 1.075 over it. A region walled in
   and roofed, inside a prop, never does;
 - **it is wide enough to stand in**: at up to 24 of its exits, the band
-  is probed across, out to where standing is clear and back in to where
-  the crouch is no longer forced (1 cm steps, then three halvings). It
-  must be at least 4 cm wide at two or more of them. The Ascension lip's
-  band measures 5 cm, its overhang; probing along a lattice axis
-  overstates a diagonal band by up to √2;
-- **its wide part is at least 0.25 long** along its principal axis.
+  is probed both ways along each lattice axis to where the crouch is no
+  longer forced (1 cm steps, then three halvings), and the narrower axis
+  is its width there; along one axis alone, a band's end would measure
+  its length. It must be at least 4 cm wide at one of them. The
+  Ascension lip's band measures 5 cm, its overhang; a diagonal band
+  measures up to √2 times its width.
+
+There is no length rule. On the map the measured corner is a pocket two
+samples (4 cm) long, between the lip's corner and a wall at x −11.10,
+0.18 from the axis.
 
 Then a spot within 1.5 of a better one is dropped, and the 30 best are
 kept.
@@ -550,11 +556,19 @@ kept.
   the same way, between its two ends: where a player walks in crouched
   and can't stand up.
 - **score**: 0.4, plus 0.2 × the widest band over 0.15 (to 1), plus
-  0.1 × the wide part's length (to 1), plus 0.3 × (1 − the distance to
+  0.1 × the region's length along its principal axis (to 1), plus 0.3 × (1 − the distance to
   that bounce stand over 15) when there is one. You prime, then go and
   bounce, so a crouch spot near a strip ranks first.
 
 `fall`, `launch` and `drift` are 0.
+
+`--explain x,y,z[,r]` (`superbounce::explain`) prints every forced-crouch
+region with a sample within r (default 1.0) of the point, before the
+filters and through them: its sample count and bounds, the band width at
+each probed exit, its length, whether the walk reaches open floor and
+where (or why not), why it was dropped, the better spot that suppressed
+it, and its score. It is the tool for tuning these rules against a real
+map.
 
 ## The superbounce game type
 

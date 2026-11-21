@@ -15,7 +15,7 @@ use crate::geom::{
     Grid, V2, area2, dot2, inside2, len, len2, plane_z, seg_poly, sub, sub2, xy_ccw,
 };
 use crate::scan::{Face, ORIGIN_LIFT, WALKABLE, grid_of};
-use crate::{CROUCHED, Kind, RADIUS, STANDING, Spot, Vec3};
+use crate::{CROUCHED, CrouchRegion, Kind, RADIUS, STANDING, Spot, Vec3};
 
 /// Spacing (world units) of the candidate origins, on a world-aligned
 /// lattice. Under the Ascension lip the forced-crouch band is 5 cm wide,
@@ -37,8 +37,8 @@ const MAX_SAMPLES: usize = 8_000_000;
 /// where only the crouched capsule's rounded top slips under, are 1 to 2
 /// cm (a ledge at 0.4: 0.157 to 0.17 from its edge).
 const MIN_WIDTH: f32 = 0.04;
-/// Its wide part is at least this long along the edge.
-const MIN_LENGTH: f32 = 0.25;
+/// A region is at least this many samples: one alone is a speck.
+const MIN_SAMPLES: usize = 2;
 /// Band widths are probed this far each way at most.
 const PROBE_MAX: f32 = 0.3;
 /// Coarse probe step, then three halvings (to 1.25 mm).
@@ -170,18 +170,26 @@ impl Scene<'_> {
         PROBE_MAX
     }
 
-    /// The forced band's width at exit sample `s`, across its exit `d`:
-    /// out to where standing is clear, plus back in to where the crouch
-    /// is no longer forced.
-    fn band_width(&self, s: &Sample, d: (i32, i32)) -> f32 {
-        let d = [d.0 as f32, d.1 as f32];
-        let out = self.probe(s, d, |(stand, _)| !stand);
-        let back = self.probe(s, [-d[0], -d[1]], |(stand, crouch)| !(stand && !crouch));
-        out + back
+    /// The forced band's width at sample `s`: across it each way to where
+    /// the crouch is no longer forced, along each lattice axis, and the
+    /// narrower of the two. One axis alone would measure a band's length
+    /// at its ends, where the way out runs along it; the narrower axis is
+    /// at most √2 times the true width.
+    fn band_width(&self, s: &Sample) -> f32 {
+        let free = |(stand, crouch): (bool, bool)| !(stand && !crouch);
+        let across = |d: V2| self.probe(s, d, free) + self.probe(s, [-d[0], -d[1]], free);
+        across([1.0, 0.0]).min(across([0.0, 1.0]))
     }
 }
 
 pub(crate) fn crouches(faces: &[Face], bounces: &[Spot]) -> Vec<Spot> {
+    let (scene, samples) = sample(faces);
+    let mut found = regions(&scene, &samples, bounces);
+    select(&mut found)
+}
+
+/// The scene, and every candidate origin tested.
+fn sample<'a>(faces: &'a [Face<'a>]) -> (Scene<'a>, Vec<Sample>) {
     let floors: Vec<usize> = (0..faces.len())
         .filter(|&i| faces[i].poly.normal[2] > WALKABLE)
         .collect();
@@ -237,23 +245,54 @@ pub(crate) fn crouches(faces: &[Face], bounces: &[Spot]) -> Vec<Spot> {
             break;
         }
     }
-    keep_best(regions(&scene, &samples, bounces))
+    (scene, samples)
+}
+
+/// One forced-crouch region with how the filters judged it.
+pub(crate) struct Candidate {
+    pub report: CrouchRegion,
+    /// Its samples' origins.
+    pub origins: Vec<Vec3>,
 }
 
 /// Best score first, dropping any within [`SUPPRESS`] of a better one, at
-/// most [`MAX_CROUCH`].
-fn keep_best(mut spots: Vec<Spot>) -> Vec<Spot> {
-    spots.sort_by(|a, b| b.score.total_cmp(&a.score));
+/// most [`MAX_CROUCH`]; each candidate's report says which.
+fn select(found: &mut [Candidate]) -> Vec<Spot> {
+    let mut order: Vec<usize> = (0..found.len())
+        .filter(|&i| found[i].report.spot.is_some())
+        .collect();
+    let score = |i: usize| found[i].report.spot.map_or(0.0, |s| s.score);
+    order.sort_by(|&a, &b| score(b).total_cmp(&score(a)));
     let mut kept: Vec<Spot> = Vec::new();
-    for s in spots {
+    for i in order {
+        let s = found[i].report.spot.expect("filtered on spot");
+        let r = &mut found[i].report;
         if kept.len() == MAX_CROUCH {
-            break;
-        }
-        if kept.iter().all(|k| len(sub(k.stand, s.stand)) >= SUPPRESS) {
+            r.rejected = Some(format!("not among the {MAX_CROUCH} best"));
+        } else if let Some(k) = kept.iter().find(|k| len(sub(k.stand, s.stand)) < SUPPRESS) {
+            r.suppressed_by = Some(k.stand);
+            r.rejected = Some(format!(
+                "within {SUPPRESS} of a better spot (score {:.2})",
+                k.score
+            ));
+        } else {
+            r.kept = true;
             kept.push(s);
         }
     }
     kept
+}
+
+/// Every forced-crouch region with a sample within `r` of `at`, judged.
+pub(crate) fn explain(faces: &[Face], bounces: &[Spot], at: Vec3, r: f32) -> Vec<CrouchRegion> {
+    let (scene, samples) = sample(faces);
+    let mut found = regions(&scene, &samples, bounces);
+    select(&mut found);
+    found
+        .into_iter()
+        .filter(|c| c.origins.iter().any(|&o| len(sub(o, at)) <= r))
+        .map(|c| c.report)
+        .collect()
 }
 
 /// Lattice cells whose origin could put a capsule within reach of `o`
@@ -336,11 +375,23 @@ fn capsule_hits(faces: &[Face], near: &[u32], origin: Vec3, height: f32) -> bool
     })
 }
 
+/// How the walk out of a region to open floor ended.
+enum Reach {
+    /// At a cell with no sample that is open floor, after this many clear
+    /// samples.
+    Open(V2, usize),
+    /// Every clear sample walked (this many), none next to open floor.
+    Enclosed(usize),
+    /// The walk passed [`MAX_FLOOD`]: counted reachable.
+    Capped,
+}
+
 /// Forced samples that neighbour each other (8-neighbours on one floor)
-/// are one region. A region is a spot when it touches floor where
-/// standing is clear, that floor reaches open floor (not the inside of a
-/// prop), and its band is wide and long enough to stand in.
-fn regions(scene: &Scene, samples: &[Sample], bounces: &[Spot]) -> Vec<Spot> {
+/// are one region. A region is a spot when it is more than a speck,
+/// touches floor where standing is clear, that floor reaches open floor
+/// (not the inside of a prop), and its band is wide enough to stand in
+/// somewhere across its edge.
+fn regions(scene: &Scene, samples: &[Sample], bounces: &[Spot]) -> Vec<Candidate> {
     let mut cells: HashMap<(i32, i32), Vec<usize>> = HashMap::new();
     for (i, s) in samples.iter().enumerate() {
         cells.entry(s.ij).or_default().push(i);
@@ -391,19 +442,20 @@ fn regions(scene: &Scene, samples: &[Sample], bounces: &[Spot]) -> Vec<Spot> {
     };
     // Walk clear samples from `start` (4-neighbours, one floor) until a
     // cell with no sample that is open floor: reachable on foot.
-    let reaches_open = |start: Vec<usize>| -> bool {
+    let reaches_open = |start: Vec<usize>| -> Reach {
         let mut seen: HashSet<usize> = start.iter().copied().collect();
         let mut queue: VecDeque<usize> = start.into_iter().collect();
         while let Some(i) = queue.pop_front() {
             if seen.len() > MAX_FLOOD {
-                return true;
+                return Reach::Capped;
             }
             let s = &samples[i];
             for (di, dj) in SIDES {
                 let mut there = neighbour(i, di, dj).peekable();
                 if there.peek().is_none() {
-                    if scene.open_floor(at((s.ij.0 + di, s.ij.1 + dj)), s.floor_z) {
-                        return true;
+                    let p = at((s.ij.0 + di, s.ij.1 + dj));
+                    if scene.open_floor(p, s.floor_z) {
+                        return Reach::Open(p, seen.len());
                     }
                     continue;
                 }
@@ -414,49 +466,100 @@ fn regions(scene: &Scene, samples: &[Sample], bounces: &[Spot]) -> Vec<Spot> {
                 }
             }
         }
-        false
+        Reach::Enclosed(seen.len())
     };
     let mut out = Vec::new();
     for members in groups.into_values() {
-        let exits: Vec<(usize, (i32, i32))> = members
-            .iter()
-            .filter_map(|&i| exit(i).map(|d| (i, d)))
-            .collect();
-        if exits.is_empty() {
-            continue;
-        }
-        let doors: Vec<usize> = exits
-            .iter()
-            .flat_map(|&(i, (di, dj))| neighbour(i, di, dj).filter(|&k| !samples[k].stand_hit))
-            .collect();
-        if !reaches_open(doors) {
-            continue;
-        }
-        // The band's width across its edge at up to MAX_PROBED exits.
-        let stride = exits.len().div_ceil(MAX_PROBED);
-        let mut wide = Vec::new();
-        let mut widest = 0.0f32;
-        for &(i, d) in exits.iter().step_by(stride) {
-            let w = scene.band_width(&samples[i], d);
-            widest = widest.max(w);
-            if w >= MIN_WIDTH {
-                wide.push(i);
-            }
-        }
-        let pts: Vec<V2> = wide.iter().map(|&i| at(samples[i].ij)).collect();
+        let origins: Vec<Vec3> = members.iter().map(|&i| samples[i].origin).collect();
+        let (min, max) = origins.iter().fold(
+            ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]),
+            |(lo, hi), o| {
+                (
+                    std::array::from_fn(|k| lo[k].min(o[k])),
+                    std::array::from_fn(|k| hi[k].max(o[k])),
+                )
+            },
+        );
+        let pts: Vec<V2> = members.iter().map(|&i| at(samples[i].ij)).collect();
         let (axis, _) = axes(&pts);
         let (a0, a1) = pts
             .iter()
             .fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), &p| {
                 (lo.min(dot2(p, axis)), hi.max(dot2(p, axis)))
             });
-        let length = a1 - a0;
-        if wide.len() < 2 || length < MIN_LENGTH {
-            continue;
+        let length = (a1 - a0).max(0.0);
+        let mut report = CrouchRegion {
+            samples: members.len(),
+            min,
+            max,
+            widths: Vec::new(),
+            length,
+            reachable: false,
+            reach: String::new(),
+            rejected: None,
+            spot: None,
+            suppressed_by: None,
+            kept: false,
+        };
+        let exits: Vec<(usize, (i32, i32))> = members
+            .iter()
+            .filter_map(|&i| exit(i).map(|d| (i, d)))
+            .collect();
+        let verdict = (|| {
+            if members.len() < MIN_SAMPLES {
+                return Err(format!("{} sample: a speck", members.len()));
+            }
+            if exits.is_empty() {
+                report.reach = "no sample has standing room next door".into();
+                return Err("no exits".into());
+            }
+            let doors: Vec<usize> = exits
+                .iter()
+                .flat_map(|&(i, (di, dj))| neighbour(i, di, dj).filter(|&k| !samples[k].stand_hit))
+                .collect();
+            match reaches_open(doors) {
+                Reach::Open(p, n) => {
+                    report.reachable = true;
+                    report.reach = format!(
+                        "reaches open floor at ({:.2}, {:.2}) after {n} clear samples",
+                        p[0], p[1]
+                    );
+                }
+                Reach::Capped => {
+                    report.reachable = true;
+                    report.reach =
+                        format!("walk passed {MAX_FLOOD} clear samples: counted reachable");
+                }
+                Reach::Enclosed(n) => {
+                    report.reach = format!(
+                        "enclosed: {n} clear samples, none next to open floor (or all under a walkable face within {COVER:.3})"
+                    );
+                    return Err("enclosed".into());
+                }
+            }
+            // The band's width across its edge at up to MAX_PROBED exits.
+            let stride = exits.len().div_ceil(MAX_PROBED);
+            let mut widest = 0.0f32;
+            for &(i, d) in exits.iter().step_by(stride) {
+                let w = scene.band_width(&samples[i]);
+                widest = widest.max(w);
+                report.widths.push((samples[i].origin, [d.0, d.1], w));
+            }
+            if widest < MIN_WIDTH {
+                return Err(format!(
+                    "band too thin: widest {:.3} across its edge, under {MIN_WIDTH}",
+                    widest
+                ));
+            }
+            Ok(spot(
+                samples, &members, &exits, axis, widest, length, bounces,
+            ))
+        })();
+        match verdict {
+            Ok(s) => report.spot = Some(s),
+            Err(why) => report.rejected = Some(why),
         }
-        out.push(spot(
-            samples, &members, &exits, axis, widest, length, bounces,
-        ));
+        out.push(Candidate { report, origins });
     }
     out
 }
