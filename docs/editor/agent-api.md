@@ -81,7 +81,8 @@ What goes through actions, from both sides:
 | Show or hide viewport layers | `SetLayers`, `SetOverlay` | Show popover, Scene legend, View > Halo 1 overlay | `view.layers` |
 | Navigate tag fields | `Navigate` | inspector links and breadcrumbs | `nav.go`, `nav.back`, `nav.forward` |
 | Undo, redo | `Undo`, `Redo` (the tool shown), `UndoIn(tool)`, `RedoIn(tool)` | Edit menu, keys | `doc.undo`, `doc.redo` |
-| Save | `SaveMapAs`, `SaveVariant`, `SaveHopper(As)`, `ExportVariant` | File menu, prompt | `doc.save`, `doc.save_as` |
+| Save | `Save`, `SaveMapAs`, `SaveVariant`, `SaveHopper(As)`, `ExportVariant` | File menu, shortcuts, prompt | `doc.save`, `doc.save_as` |
+| Go to anything | `GoTo` for tags and placements, existing map-open and menu actions for the other entries | Edit menu, Cmd/Ctrl+P | `ui.palette {query, run?}` |
 | Variant edits | `OpenVariant`, `NewVariant`, `CopyBuiltin`, `SetVariantName`, `SetSetting`, `ImportVariant*`, `DeleteVariant` | the variant tool | `doc.open`, `variant.*` |
 | Playlist edits | `EditPlaylist(PlaylistEdit)`, `SetEntryVariant` | the title and description fields, the table's row buttons, weights, Add, the unused slot's "Make a … playlist" buttons and "Remove playlist" apply the same `PlaylistEdit`s | `playlist.set`, `playlist.entry`, `playlist.entry_variant` |
 | UI screens | `UiPick`, `UiPress` | the UI Screens tool | `ui.pick`, `ui.press` |
@@ -109,13 +110,14 @@ map: its widget edits, with their own undo stack and save). Without one, a `doc.
 `doc.list` says, for each, whether it is open, its name, dirty, and
 whether it can undo and redo.
 
-Saving never writes where it wasn't told: `doc.save_as` takes a path;
-`doc.save` writes a variant to its save storage under the data root, a
-playlist file to its own path, and a map only to the file it was last
-saved as. A map is never saved over its source, and never into a Git
-checkout (`REFUSED`): what is patched from the user's disc stays out of
-repositories. Renders (`ui.render`, `view.snapshot`) default to
-`studio/` in the cache directory and refuse a path in a Git checkout too.
+`doc.save_as` takes a path. `doc.save` writes a variant to its save
+storage under the data root or a playlist file to its own path. For a
+map, `App::save_target` chooses the open package or the last standalone
+output. For a base map it opens the package form and returns
+`{saved: false, package_form: {name, dir}}`. The API keeps map outputs outside Git
+checkouts and uses a destination separate from the base source. Renders
+(`ui.render`, `view.snapshot`) default to `studio/` in the cache directory
+and refuse paths in Git checkouts.
 
 `doc.diff` is what a save would write against the document as opened.
 For a map, each patched run of bytes with its address, the block, entry
@@ -132,6 +134,18 @@ name, using file names while the cards load or when a card is missing.
 `map_pack` and `packages` entries also report `group` (`map_pack`,
 `packages` or `halo1_sandbox`) and use display-name order within each
 group. `maps` remains the array of Halo 2 file stems in source order.
+
+## Go to anything
+
+`ui.palette {query}` returns `{entries, totals}` from `app::commands::palette`.
+Entries are `{kind, label, detail}` in the order shown by Cmd/Ctrl+P:
+`map`, `tag`, `placement`, then `command`. Each kind has at most 20
+entries. `totals` counts all matches by kind before that cap. Each word
+of the query must match and case is ignored.
+
+Pass `run` with a zero-based index into the displayed entries to run the
+action and return its index as `ran`. An out-of-range index returns
+`INVALID_PARAMS`. Actions that would discard edits return `UNSAVED`.
 
 ## Methods
 
@@ -151,7 +165,7 @@ before anything runs (`INVALID_PARAMS`). Indices are 0-based throughout
 | `scenario` | `blocks`, `list {block}`, `get`, `set {block, index, field, value}`, `add {block, like, position}`, `move {block, index, position, ypr}`, `delete`, `duplicate`, `select` |
 | `variant` | `list`, `get`, `set {setting, value}`, `rename`, `copy`, `export`, `import`, `delete` |
 | `playlist` | `list` (with `unused` per playlist and the `templates`), `get {playlist}`, `set {playlist, title, description, template, clear}` (`template`: make the slot a playlist of that kind, or give a playlist another kind; `clear: true`: make it unused; [live-matchmaking.md §6.10](../live/live-matchmaking.md)), `entry {playlist, op, entry, to, weight}`, `entry_variant` |
-| `ui` | `screens`, `pick {screen, state \| retail}`, `press {input}`, `widgets`, `render {out}` |
+| `ui` | `palette {query, run?}`, `screens`, `pick {screen, state \| retail}`, `press {input}`, `widgets`, `render {out}` |
 | `pair` | `list`, `status`, `connect {socket?}`, `disconnect {leave?}`, `auto {enabled?}`, `play`, `stop`, `control {action, ticks?}`, `edit {enabled}` |
 | `mirror` | `status`, `objects {kind?, near?, limit?, at_tick?}`, `pending`, `apply {what, at?, peers?}` |
 | `view` | `camera {yaw, pitch, distance, target, focus, all, fly_speed}`, `snapshot {out, size, camera}`, `stats`, `layers {set?, preset?, xray?}` |

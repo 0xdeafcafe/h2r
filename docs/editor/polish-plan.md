@@ -1,6 +1,6 @@
 # h2-editor polish: what is wrong, the design, and the slices
 
-Status: P1, P2, P4, P6, P7 and P12 are implemented. The remaining slices, and the game link past its bar (G1 to G9), describe the design.
+Status: P1, P2, P3, P4, P6, P7 and P12 are implemented. The remaining slices, and the game link past its bar (G1 to G9), describe the design.
 Code: `crates/apps/studio/src` (the window: `ui.rs`, `ui/`, `play.rs`, `viewport.rs`, `theme.rs`), `crates/tools/scenario-edit/src` (the scene and its renderer). Tests: named per slice.
 Switch: none.
 
@@ -30,8 +30,6 @@ during the read, so nothing here comes from the socket API.
 | # | Problem | Where |
 |---|---|---|
 | R3 | Scenario and Tags are two tools over one map. They have separate selections, a second map picker, and separate undo: the inspector's tag section carries its own **Undo tag edit** and **Redo tag edit** buttons because Cmd+Z goes to the active tool's stack. | `ui/tags.rs:62` (`map_picker`), `ui/inspector.rs:245` to `ui/inspector.rs:251`, `app.rs:585` (`can_undo`) |
-| R6 | Save is always "Save as". Cmd+S opens a file dialog every time for a map, and a package opened from the Maps list is saved through a different menu item with a form. | `ui.rs:189`, `ui.rs:316` to `ui.rs:335` |
-| R9 | No search across the app. Maps, tags and placements each have their own filter box, and commands are only in menus. | `ui.rs:784`, `ui/tags.rs:132` |
 
 ### Tags and the scenario
 
@@ -106,13 +104,14 @@ side panels' contents, never the regions.
   moves on: **Open a disc or map...** with no source, the map grid with
   a source and no map, "Click something in the level" with a map and no
   selection.
-- **Save** (R6): Cmd+S saves to where the document came from when that
-  is a package or a file the editor wrote; a disc map or a read-only
-  source goes to **Save as package...** with the name filled in.
-  Shift+Cmd+S is Save as.
-- **Go to anything** (Cmd+P, `ui/palette.rs`): one box over maps, tags
-  (`tag_tree::search`), placements (`outliner::matches`) and commands
-  (the `Action`s the menus hold). Enter runs or selects.
+- **Save** uses `App::save_target`. Cmd+S writes the open package or the
+  map's last standalone output. An editable map from a source opens
+  **Save as package...** with the name filled in. Shift+Cmd+S opens
+  **Save as...** for a standalone map file.
+- **Go to anything** (Cmd+P, `ui/palette.rs`) searches maps, tags
+  (`tag_tree::search`), placements (`commands::placement_matches`) and
+  menu actions in that order. Up and Down move the selection, Enter
+  runs it and Esc closes the popup.
 - **One undo** for the Map tool is click-to-edit.md's journal (slice
   C4); the inspector's own undo buttons (R3) go with it.
 
@@ -654,7 +653,7 @@ when built. The game's methods for the link follow in their own table.
 | `volume.set`, `volume.add`, `volume.remove` | as `scenario.set` and its kin | the volume; refusals name the holder |
 | `collision.surfaces` | `{bsp?, class?, limit?}` | counts by class, and surfaces with `plane`, `flags`, `material`, `class`, `ring` |
 | `collision.at` | `{ray \| point}` | the surface hit and its class |
-| `ui.palette` | `{query}` | what Cmd+P lists for the query |
+| `ui.palette` | `{query, run?}` | visible entries and per-kind totals, optionally runs the entry at index `run` |
 
 `view.snapshot` draws the layers that are on, so a check can look at the
 overlays in a picture.
@@ -692,7 +691,7 @@ under 2,500, L more.
 |---|---|---|---|---|---|
 | P1 | **The game link in the bar** | S | nothing | `play.rs`, `ui/bar.rs`, `ui/play.rs`, `api/pair.rs` | below |
 | P2 | **The bar and the layout**: tool tabs; Maps, Scene as tabs of one column; per-tool window keys; icon toolbar with tooltips and step combos; status-bar hint slot; empty-state cards; `theme` tokens, `section`, type sizes | M | P1 | `ui.rs`, `ui/bar.rs`, `ui/map_list.rs`, `theme.rs`, `headless.rs` | `the_default_layout_places_every_window` (each tool's windows exist and none shares an ID); a saved layout with the three old IDs loads; `--do` scripts that click `Scenario` in the Tools list click the Map tab (the script step maps the old label); no colour literal outside `theme.rs` in `ui/` (a source test); the guide's screenshots are re-shot by `scripts/editor-screenshots.sh` |
-| P3 | **Save where it came from, and Go to anything** | S | P2 | `app.rs`, `app/commands.rs`, `ui/palette.rs`, `api/ui_screens.rs` (for `ui.palette`) | Cmd+S on an opened package rewrites it with no dialog; on a disc map opens the package form; `ui.palette "zan"` lists the map, its tags and matching placements in that order; Enter on a command dispatches its `Action` |
+| P3 | **Save where it came from, and Go to anything** | S | P2 | `app.rs`, `app/commands.rs`, `ui/palette.rs`, `api/ui_screens.rs` (for `ui.palette`) | Cmd+S on an opened package rewrites it with no dialog; on a disc map opens the package form; `ui.palette` with the query `"blast"` lists the invented map, its tag and matching placements in that order; Enter on a command dispatches its `Action` |
 | P4 | **The scenario tag tree** | M | nothing | `app/tag_tree.rs`, `app/tag_api/chain.rs` (`scan_refs`), `ui/tags.rs`, `api/tags.rs`, `crates/apps/studio-proto/src/lib.rs` | fixture scenario with a palette, a sky and a BSP: `tag.tree` lists them under their sections with placement counts; `scan_refs` on an invented tag with no layout finds a planted reference and rejects a pair whose group does not match the datum's tag; a tag only a UI tag names is under Not reachable; a 5,000-tag invented group draws every row (list clipper) |
 | P5 | **`scnr.txt` and BSP-region tags** | M | P4 | `crates/formats/tags/src/defs/scnr.txt`, `app/tag_doc.rs` | the registry's own tiling test passes for `scnr`; blocks owned by `layout::BLOCKS` are read-only in the panel; a fixture `sbsp` in its own region opens read-only; opt-in disc test: every disc scenario walks through the definition |
 | P6 | **Layers and the overlay pass** | M | nothing | `crates/tools/scenario-edit/src/layers.rs`, `render.rs`, `scene.rs`, `viewport.rs`, `ui.rs`, `api/view.rs` | `view.layers` toggles change `view.snapshot`'s pixels on the fixture; a hidden layer is not picked; the Halo 1 overlay is a layer and its menu item still works; X-ray draws a box behind a wall at reduced strength (pixel test, skipped without an adapter) |

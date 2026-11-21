@@ -98,6 +98,55 @@ pub fn save_package(
     replace: Option<&str>,
     derived: bool,
 ) -> Result<SavedPackage> {
+    write(
+        maps,
+        map,
+        source,
+        scenario,
+        form,
+        Replace::FromForm(replace),
+        derived,
+    )
+}
+
+pub(crate) fn rewrite_package(
+    maps: &Path,
+    map: &str,
+    source: &MapSource,
+    scenario: &Scenario,
+    existing: &content::Package,
+    derived: bool,
+) -> Result<SavedPackage> {
+    let form = PackageForm {
+        name: existing.manifest.package.name.clone(),
+        dir: existing.dir_name().to_owned(),
+        ..PackageForm::default()
+    };
+    write(
+        maps,
+        map,
+        source,
+        scenario,
+        &form,
+        Replace::Keep(existing),
+        derived,
+    )
+}
+
+enum Replace<'a> {
+    FromForm(Option<&'a str>),
+    Keep(&'a content::Package),
+}
+
+fn write(
+    maps: &Path,
+    map: &str,
+    source: &MapSource,
+    scenario: &Scenario,
+    form: &PackageForm,
+    replace: Replace<'_>,
+    derived: bool,
+) -> Result<SavedPackage> {
     let name = form.name.trim();
     if name.is_empty() {
         return Err(bad("the package needs a name"));
@@ -158,13 +207,26 @@ pub fn save_package(
     if let Some((n, b)) = &image {
         files.push((n, b));
     }
-    let dir = store::write_package(
-        maps,
-        &form.dir,
-        &manifest,
-        &files,
-        replace == Some(form.dir.as_str()),
-    )?;
+    let mut kept = Vec::new();
+    let can_replace = match replace {
+        Replace::FromForm(dir) => dir == Some(form.dir.as_str()),
+        Replace::Keep(existing) => {
+            manifest.package = existing.manifest.package.clone();
+            manifest.list = existing.manifest.list.clone();
+            manifest.packs = existing.manifest.packs.clone();
+            let packs = existing.manifest.packs.iter().map(|layer| &layer.file);
+            for file in packs.chain(&existing.manifest.package.image) {
+                let relative = content::manifest::relative(file).map_err(|e| bad(e.to_string()))?;
+                let path = existing.dir.join(relative);
+                let bytes =
+                    std::fs::read(&path).map_err(|e| bad(format!("{}: {e}", path.display())))?;
+                kept.push((file, bytes));
+            }
+            true
+        }
+    };
+    files.extend(kept.iter().map(|(name, bytes)| (name.as_str(), bytes.as_slice())));
+    let dir = store::write_package(maps, &form.dir, &manifest, &files, can_replace)?;
     if form.activate {
         store::set_active(maps, map, Some(&form.dir))?;
     }

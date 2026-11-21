@@ -10,6 +10,7 @@ mod layers;
 pub mod map_list;
 pub mod map_pack;
 mod outliner;
+mod palette;
 mod play;
 mod playlists;
 pub mod tags;
@@ -28,7 +29,8 @@ use editor_core::map_groups::MapGroup;
 use scenario_edit::BlockKind;
 
 use crate::app::map_cards::MapEntry;
-use crate::app::{Action, Answer, App, NavAction, ToolKind};
+use crate::app::commands::MenuCommand;
+use crate::app::{Action, Answer, App, NavAction, SaveTarget, ToolKind};
 use crate::theme::{self, Fonts, icon};
 use crate::viewport::{GizmoOp, Gpu, ViewportView};
 use layout::Keys;
@@ -44,6 +46,7 @@ pub struct Studio {
     fonts: Fonts,
     pub viewport: ViewportView,
     show_open_package: bool,
+    palette: palette::PaletteUi,
     reset_layout: bool,
     focus_game: bool,
     previous_tool: Option<ToolKind>,
@@ -76,6 +79,7 @@ impl Studio {
             fonts,
             viewport: ViewportView::new(),
             show_open_package: false,
+            palette: Default::default(),
             reset_layout: false,
             focus_game: false,
             previous_tool: None,
@@ -101,7 +105,9 @@ impl Studio {
         self.play.update(app);
         let mut actions = Vec::new();
         self.shortcuts(ui, app, &mut actions);
-        self.play.shortcuts(ui);
+        if !self.palette.is_open(ui) {
+            self.play.shortcuts(ui);
+        }
         self.menu_bar(ui, app, &mut actions);
         let focus_game = std::mem::take(&mut self.focus_game);
         bar::draw(ui, app, &mut self.play, &self.fonts, &mut actions);
@@ -145,6 +151,7 @@ impl Studio {
         }
         self.status_bar(ui, app);
         self.modals(ui, app, &mut actions);
+        actions.extend(self.palette.draw(ui, app));
         for a in actions {
             if app.tool == ToolKind::Tags
                 && matches!(a, Action::Select(_) | Action::SelectMany(_) | Action::ToggleSelect(_))
@@ -156,11 +163,22 @@ impl Studio {
     }
 
     fn shortcuts(&mut self, ui: &Ui, app: &App, actions: &mut Vec<Action>) {
+        if self.palette.is_open(ui) {
+            return;
+        }
         let io = ui.io();
+        let cmd = io.key_ctrl() || io.key_super();
+        if cmd && ui.is_key_pressed(Key::P)
+            && app.pending().is_none()
+            && app.package_form.is_none()
+            && !ui.is_popup_open(OPEN_PACKAGE)
+        {
+            self.palette.open();
+            return;
+        }
         if io.want_text_input() {
             return;
         }
-        let cmd = io.key_ctrl() || io.key_super();
         let shift = io.key_shift();
         if cmd && ui.is_key_pressed(Key::Z) {
             actions.push(if shift { Action::Redo } else { Action::Undo });
@@ -173,10 +191,19 @@ impl Studio {
         }
         if cmd && ui.is_key_pressed(Key::S) {
             match app.tool {
-                ToolKind::Scenario | ToolKind::Tags => self.save_map_dialog(app, actions),
+                ToolKind::Scenario | ToolKind::Tags if shift => self.save_map_dialog(app, actions),
+                ToolKind::Scenario | ToolKind::Tags => {
+                    actions.extend(MenuCommand::Save.item(app).action);
+                }
                 ToolKind::Variants => actions.push(Action::SaveVariant),
                 ToolKind::Playlists if app.hoppers.is_open() => {
-                    playlists::save(app, self.dialogs, actions)
+                    if shift {
+                        if let Some(path) = playlists::save_dialog(self.dialogs, app) {
+                            actions.push(Action::SaveHopperAs(path));
+                        }
+                    } else {
+                        playlists::save(app, self.dialogs, actions);
+                    }
                 }
                 ToolKind::Hud => {
                     if let Some(p) = hud::save_dialog(self.dialogs, app) {
@@ -293,13 +320,11 @@ impl Studio {
             ui.separator();
             self.tool_file_menu(ui, app, actions);
             ui.separator();
+            let map_tool = bar::is_map(app.tool);
+            menu_action(ui, app, MenuCommand::Save, Some(icon::SAVE), false, actions);
             if ui.menu_item_enabled_selected_with_shortcut(
-                format!("{} Save map as...", icon::SAVE),
-                if matches!(app.tool, ToolKind::Scenario | ToolKind::Tags) {
-                    "Cmd+S"
-                } else {
-                    ""
-                },
+                "Save as...",
+                if map_tool { "Shift+Cmd+S" } else { "" },
                 false,
                 open,
             ) {
@@ -320,71 +345,34 @@ impl Studio {
                 self.show_open_package = true;
             }
             ui.separator();
-            if ui.menu_item_with_shortcut("Quit", "Cmd+Q") {
-                actions.push(Action::Quit);
-            }
+            menu_action(ui, app, MenuCommand::Quit, None, false, actions);
         }
         if let Some(_m) = ui.begin_menu("Edit") {
-            if ui.menu_item_enabled_selected_with_shortcut(
-                format!("{} Undo", icon::UNDO),
-                "Cmd+Z",
-                false,
-                app.can_undo(),
-            ) {
-                actions.push(Action::Undo);
-            }
-            if ui.menu_item_enabled_selected_with_shortcut(
-                format!("{} Redo", icon::REDO),
-                "Shift+Cmd+Z",
-                false,
-                app.can_redo(),
-            ) {
-                actions.push(Action::Redo);
+            if ui.menu_item_with_shortcut("Go to anything...", "Cmd+P") {
+                self.palette.open();
             }
             ui.separator();
-            let sel = app.tool == ToolKind::Scenario && app.session.selected().is_some();
-            if ui.menu_item_enabled_selected_with_shortcut(
-                format!("{} Duplicate", icon::COPY),
-                "Cmd+D",
-                false,
-                sel,
-            ) {
-                actions.push(Action::Duplicate);
-            }
-            if ui.menu_item_enabled_selected_with_shortcut(
-                format!("{} Delete", icon::TRASH),
-                "Del",
-                false,
-                sel,
-            ) {
-                actions.push(Action::Delete);
-            }
+            menu_action(ui, app, MenuCommand::Undo, Some(icon::UNDO), false, actions);
+            menu_action(ui, app, MenuCommand::Redo, Some(icon::REDO), false, actions);
             ui.separator();
-            let grow = app.session.allow_growth();
-            if ui.menu_item_enabled_selected_no_shortcut("Allow growing full blocks", grow, open) {
-                actions.push(Action::SetAllowGrowth(!grow));
-            }
+            menu_action(ui, app, MenuCommand::Duplicate, Some(icon::COPY), false, actions);
+            menu_action(ui, app, MenuCommand::Delete, Some(icon::TRASH), false, actions);
+            ui.separator();
+            menu_action(
+                ui,
+                app,
+                MenuCommand::AllowGrowth,
+                None,
+                app.session.allow_growth(),
+                actions,
+            );
             if ui.is_item_hovered() {
                 ui.tooltip_text(scenario_edit::GROWTH_REFUSAL);
             }
         }
         if let Some(_m) = ui.begin_menu("View") {
-            if ui.menu_item_enabled_selected_with_shortcut(
-                format!("{} Frame map", icon::MAXIMIZE),
-                "Home",
-                false,
-                open,
-            ) {
-                actions.push(Action::FrameAll);
-            }
-            if ui.menu_item_enabled_selected_with_shortcut(
-                format!("{} Focus selection", icon::FOCUS),
-                "F",
-                false,
-                app.session.selected().is_some(),
-            ) {
-                actions.push(Action::FocusSelected);
-            }
+            menu_action(ui, app, MenuCommand::FrameAll, Some(icon::MAXIMIZE), false, actions);
+            menu_action(ui, app, MenuCommand::FocusSelected, Some(icon::FOCUS), false, actions);
             ui.separator();
             if ui.menu_item_enabled_selected_with_shortcut(
                 format!("{} Move gizmo", icon::MOVE),
@@ -425,13 +413,7 @@ impl Studio {
             if ui.menu_item_enabled_selected_no_shortcut("Snap angles", snap.angle, true) {
                 snap.angle = !snap.angle;
             }
-            if ui.menu_item_enabled_selected_no_shortcut(
-                "Halo 1 overlay",
-                app.overlay_shown(),
-                app.compare().is_some_and(|c| c.view.is_ok()),
-            ) {
-                actions.push(Action::SetOverlay(!app.overlay_shown()));
-            }
+            menu_action(ui, app, MenuCommand::Overlay, None, app.overlay_shown(), actions);
             ui.separator();
             if ui.menu_item("Reset layout") {
                 self.reset_layout = true;
@@ -515,16 +497,7 @@ impl Studio {
             }
             ToolKind::Scenario | ToolKind::UiScreens | ToolKind::Tags => {}
             ToolKind::Variants => {
-                let e = app.variants.as_ref();
-                let can_save = e.is_some_and(|e| e.is_dirty() && !e.is_read_only());
-                if ui.menu_item_enabled_selected_with_shortcut(
-                    format!("{} Save variant", icon::SAVE),
-                    "Cmd+S",
-                    false,
-                    can_save,
-                ) {
-                    actions.push(Action::SaveVariant);
-                }
+                menu_action(ui, app, MenuCommand::SaveVariant, Some(icon::SAVE), false, actions);
                 if ui.menu_item(format!("{} Import variant...", icon::PACKAGE_OPEN))
                     && let Some(p) = variants::import_dialog(self.dialogs)
                 {
@@ -532,28 +505,26 @@ impl Studio {
                 }
             }
             ToolKind::Playlists => {
-                if ui.menu_item(format!("{} New playlist file", icon::PLUS)) {
-                    actions.push(Action::NewHopper);
-                }
-                if ui.menu_item("New from the default lineup") {
-                    actions.push(Action::NewDefaultHopper);
-                }
+                menu_action(ui, app, MenuCommand::NewPlaylist, Some(icon::PLUS), false, actions);
+                menu_action(ui, app, MenuCommand::DefaultPlaylist, None, false, actions);
                 if ui.menu_item(format!("{} Open playlist file...", icon::FOLDER_OPEN))
                     && let Some(p) = playlists::open_dialog(self.dialogs)
                 {
                     actions.push(Action::OpenHopper(p));
                 }
                 let open = app.hoppers.is_open();
+                let save = MenuCommand::SavePlaylist.item(app);
                 if ui.menu_item_enabled_selected_with_shortcut(
-                    format!("{} Save playlist file", icon::SAVE),
-                    "Cmd+S",
+                    format!("{} {}", icon::SAVE, save.label),
+                    save.shortcut,
                     false,
                     open,
                 ) {
                     playlists::save(app, self.dialogs, actions);
                 }
-                if ui.menu_item_enabled_selected_no_shortcut(
+                if ui.menu_item_enabled_selected_with_shortcut(
                     "Save playlist file as...",
+                    "Shift+Cmd+S",
                     false,
                     open,
                 ) && let Some(p) = playlists::save_dialog(self.dialogs, app)
@@ -1012,7 +983,10 @@ impl Studio {
         {
             let what = match app.pending() {
                 Some(Action::Quit) => "quitting",
-                Some(Action::SelectMap(_)) => "opening another map",
+                Some(Action::SelectMap(_) | Action::OpenMapPack(_) | Action::SelectHalo1Map(_)) => {
+                    "opening another map"
+                }
+                Some(Action::OpenPackageEntry(_)) => "opening another package",
                 Some(Action::OpenSource(_)) => "opening another source",
                 Some(Action::OpenHopper(_)) => "opening another playlist file",
                 Some(Action::NewHopper | Action::NewDefaultHopper) => {
@@ -1036,7 +1010,11 @@ impl Studio {
             let mut answer = None;
             match tool {
                 ToolKind::Scenario => {
-                    if ui.button(format!("{} Save as...", icon::SAVE))
+                    if matches!(app.save_target(), SaveTarget::File(_) | SaveTarget::Package(_)) {
+                        if ui.button(format!("{} Save", icon::SAVE)) {
+                            answer = Some(Answer::Save);
+                        }
+                    } else if ui.button(format!("{} Save as...", icon::SAVE))
                         && let Some(p) = self.save_path_dialog(app)
                     {
                         answer = Some(Answer::SaveAs(p));
@@ -1169,6 +1147,29 @@ impl Studio {
                 ui.close_current_popup();
             }
         }
+    }
+}
+
+fn menu_action(
+    ui: &Ui,
+    app: &App,
+    command: MenuCommand,
+    icon: Option<&str>,
+    selected: bool,
+    actions: &mut Vec<Action>,
+) {
+    let item = command.item(app);
+    let label = match icon {
+        Some(icon) => format!("{icon} {}", item.label),
+        None => item.label.to_owned(),
+    };
+    if ui.menu_item_enabled_selected_with_shortcut(
+        label,
+        item.shortcut,
+        selected,
+        item.action.is_some(),
+    ) {
+        actions.extend(item.action);
     }
 }
 

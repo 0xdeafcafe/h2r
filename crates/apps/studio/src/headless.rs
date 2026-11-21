@@ -898,6 +898,80 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    #[test]
+    fn enter_in_go_to_anything_dispatches_the_selected_command() {
+        use dear_imgui_rs::Key;
+
+        let Some((_turn, mut h)) = headless() else {
+            return;
+        };
+        let t = crate::app::map_cards_tests::Temp::new("palette-ui");
+        let map = t.0.join("example.map");
+        std::fs::write(&map, fixture::fixture()).unwrap();
+        let mut app = App::new();
+        app.set_data_root(t.0.join("data"));
+        app.dispatch(Action::OpenSource(map));
+        for x in [7.0, 9.0] {
+            app.dispatch(Action::MovePlacement {
+                block: BlockKind::NetgameFlags,
+                index: 0,
+                position: [x, 3.0, 3.0],
+                ypr: None,
+            });
+        }
+        app.dispatch(Action::Undo);
+        assert!(app.can_undo() && app.can_redo());
+        h.frames(&mut app, 3).unwrap();
+
+        h.ctx.io_mut().add_key_event(Key::ModCtrl, true);
+        h.step(&mut app, &Step::Key(Key::P, 1)).unwrap();
+        h.ctx.io_mut().add_key_event(Key::ModCtrl, false);
+        h.frames(&mut app, 2).unwrap();
+        h.scene.find("win:###palette").unwrap();
+        h.step(&mut app, &Step::Type("cmd+z".into())).unwrap();
+        // Undo is first and Redo is second. Run Redo using the keyboard.
+        h.step(&mut app, &Step::Key(Key::DownArrow, 1)).unwrap();
+        h.step(&mut app, &Step::Key(Key::Enter, 1)).unwrap();
+        h.frames(&mut app, 2).unwrap();
+        assert!(!app.can_redo());
+        assert!(h.scene.find("win:###palette").is_err());
+    }
+
+    #[test]
+    fn cmd_s_rewrites_an_open_package_without_a_dialog() {
+        use dear_imgui_rs::Key;
+
+        let Some((_turn, mut h)) = headless() else {
+            return;
+        };
+        let t = crate::app::map_cards_tests::Temp::new("save-package-ui");
+        let map = t.0.join("example.map");
+        std::fs::write(&map, fixture::fixture()).unwrap();
+        let mut app = App::new();
+        app.set_data_root(t.0.join("data"));
+        app.dispatch(Action::OpenSource(map));
+        app.dispatch(Action::SavePackage(app.session.form_defaults()));
+        app.dispatch(Action::SelectMap("example".into()));
+        app.dispatch(Action::OpenPackageEntry("example-edit".into()));
+        let manifest = app.session.maps_dir().join("example-edit/manifest.toml");
+        let first = std::fs::read(&manifest).unwrap();
+        app.dispatch(Action::MovePlacement {
+            block: BlockKind::NetgameFlags,
+            index: 0,
+            position: [7.0, 3.0, 3.0],
+            ypr: None,
+        });
+        assert!(app.is_dirty());
+        h.frames(&mut app, 3).unwrap();
+
+        h.ctx.io_mut().add_key_event(Key::ModCtrl, true);
+        h.step(&mut app, &Step::Key(Key::S, 1)).unwrap();
+        h.ctx.io_mut().add_key_event(Key::ModCtrl, false);
+        assert!(app.package_form.is_none());
+        assert!(!app.is_dirty());
+        assert_ne!(std::fs::read(manifest).unwrap(), first);
+    }
+
     /// The Tags tool through its widgets: open the weapon group in the
     /// tree, pick the weapon, tick a flag and pick an enum value in the
     /// field panel. The edits land in the document, as undo steps, and

@@ -124,6 +124,7 @@ pub mod method {
     pub const PLAYLIST_ENTRY: &str = "playlist.entry";
     pub const PLAYLIST_ENTRY_VARIANT: &str = "playlist.entry_variant";
 
+    pub const UI_PALETTE: &str = "ui.palette";
     pub const UI_SCREENS: &str = "ui.screens";
     pub const UI_PICK: &str = "ui.pick";
     pub const UI_PRESS: &str = "ui.press";

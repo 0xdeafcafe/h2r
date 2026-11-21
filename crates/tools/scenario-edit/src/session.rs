@@ -209,19 +209,52 @@ impl Session {
             doc.package.as_deref(),
             doc.derived,
         )?;
+        self.record_package_save(&saved, &form.dir, form.activate);
+        Ok(saved)
+    }
+
+    /// Rewrite the open package's map patch and keep its other contents.
+    pub fn rewrite_package(&mut self) -> Result<SavedPackage> {
+        let maps = self.maps_dir();
+        let doc = self.doc.as_ref().ok_or(Error::Save("no map is open"))?;
+        let dir = doc
+            .package
+            .clone()
+            .ok_or(Error::Save("no package is open"))?;
+        let existing = self
+            .packages()
+            .into_iter()
+            .find(|p| p.dir_name() == dir)
+            .filter(|p| p.manifest.variants.is_empty())
+            .ok_or_else(|| {
+                Error::Package(format!("no writable package {dir} in {}", maps.display()))
+            })?;
+        let saved = package::rewrite_package(
+            &maps,
+            &doc.name,
+            &doc.source,
+            &doc.scenario,
+            &existing,
+            doc.derived,
+        )?;
+        self.record_package_save(&saved, &dir, false);
+        Ok(saved)
+    }
+
+    fn record_package_save(&mut self, saved: &SavedPackage, dir: &str, activate: bool) {
+        let doc = self.doc.as_mut().expect("a package save needs an open map");
         doc.saved = doc.scenario.changes();
-        doc.package = Some(form.dir.clone());
+        doc.package = Some(dir.to_owned());
         doc.history.seal();
-        self.last_package = Some((form.dir.clone(), saved.id));
+        self.last_package = Some((dir.to_owned(), saved.id));
         self.status = format!(
             "saved package {} ({} {} bytes{}), MapId {}",
             saved.dir.display(),
             saved.format.extension().to_ascii_uppercase(),
             saved.patch_len,
-            if form.activate { ", active" } else { "" },
+            if activate { ", active" } else { "" },
             saved.id
         );
-        Ok(saved)
     }
 
     /// The packages for the open map under [`Self::maps_dir`].
