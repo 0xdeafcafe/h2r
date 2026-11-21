@@ -236,6 +236,7 @@ pub(crate) fn spots(raw: serde_json::Value) -> Result<serde_json::Value, agent_p
             status: l.spot.status.name().into(),
             out: l.spot.out,
             lip: l.spot.lip.edges().to_vec(),
+            shape: l.spot.shape.name().into(),
         })
         .collect();
     let out = Spots {

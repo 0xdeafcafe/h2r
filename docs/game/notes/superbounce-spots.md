@@ -4,6 +4,55 @@ Evidence for [superbounce.md](../superbounce.md), "Charge, crouch spots and land
 
 Newest first.
 
+## 2026-11-21: Zanzibar's window, played
+
+The user played Zanzibar's window bounce on the lab, read 2026-11-21:
+lab job 0043, input recording `zanzibar-window` (on the laptop), on the
+`sb4-next` build at `70bc527ad`. The coordinator polled
+`superbounce.state` and `world.object` about every 12 ticks into a log
+(columns: tick, Havok position, Havok velocity, air or ground, primed,
+charge phase, `standing_fits`, last landing); the log is in the lab
+session's keep directory (`zanz_watch.txt`), not in the repository. To
+reproduce, replay the recording on the lab and poll the same two
+methods. The polygons are from `h2 superbounce scan zanzibar --near`.
+
+The recipe as the user gave it: in the base facing the beach, the right
+inner window furthest back, break the glass, crouch under the broken
+glass on the left side of the shard, let go, turn right, press jump,
+fall onto a crack.
+
+| Ticks | Where | Phase | What happened |
+|---|---|---|---|
+| 5338 to 5456 | (5.22, −26.285, 5.11), the sill (poly x 5.20 to 5.40, y −26.10 to −27.10, z 5.10) | `under`, then `held` | crouched under the shard |
+| 5470 to 5484 | jumping from the sill | `primed` from about 5484 | the word turned −3 on the jump, still forced crouched |
+| 5505 to 5546 | falling past (4.69, −26.52, 3.12) at −4.49 units/s, on the ground at (4.80, −25.89, 2.11) | `primed` | a small pop: z 2.32 with vz −0.02 between, before landing |
+| 5818 to 5904 | the sill again | `under`, `held` | the second crouch |
+| 5917 to 5971 | falling straight at (4.876, −26.748) from z 4.54 to 0.44, −5.34 units/s | `primed` | through the floor at the crease, then dead (position 0 at 5986) |
+| 7565 to 7659 | (8.07, −3.01, 4.51), walked out to (8.10, −2.55) | `under`, `held`, then none | no prime |
+| 8016 to 8071 | the same place, walked out to (8.48, −2.83) | `under`, `held`, `primed` at 8071 | primed on the walk out |
+| 8555 to 8655 | the same place, walked out to (8.23, −2.75) | `under`, `held`, `primed` at 8655 | primed on the walk out |
+
+- **The window's lip is the broken glass.** No structure or instanced
+  geometry polygon makes a forced crouch at the sill; the glass is an
+  object, and its broken shard's collision is not known offline.
+- **The word turned on the jump at the window**, not on a walk out: the
+  phase was `held` until the jump and `primed` on the first reading
+  after it.
+- **The crack is one concave crease.** The floor below is z 2.10 (poly
+  x 1.8 to 6.0, y −22.2 to −26.7) meeting a 17.6° ramp, normal (0,
+  0.3033, 0.9529), rising south from y −26.70 to −27.64 (z 2.40). There
+  is no second joint within a capsule's diameter, so the slot rule
+  rejected it; the scan's nearest bounce spot was its index 8 at (0.0,
+  −27.47, 2.36).
+- **The first try's pop was small**, about the 5.2 units/s the single
+  crease calibration gives. The second try, 5 cm on the ramp side of the
+  crease, fell through the floor.
+- **The second prime place** at (8.07, −3.01, 4.51) read `near` on the
+  way in, so the scan had a crouch spot within 1.5 of it. It primed on
+  2 walk outs of 3, within 0.5 of the rest point. The landmark is not
+  named. The log is coarse (one reading about every 12 ticks), so the
+  tick each word turned is good to about 12.
+
 ## What the crouch filter would keep
 
 Read 2026-11-21 with the installed `h2` (built from `origin/master` at

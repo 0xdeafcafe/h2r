@@ -104,6 +104,30 @@ impl Lip {
     }
 }
 
+/// What shape of floor a bounce spot is.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum Shape {
+    /// A strip between two parallel floor joints, at least one a concave
+    /// crease (the traced Ascension shape). Crouch spots are `Slot` too.
+    #[default]
+    Slot,
+    /// One concave crease between two walkable floors (a flat floor at the
+    /// foot of a ramp): a candidate for a game run to try, with a launch
+    /// estimate from its own dihedral (docs/game/superbounce.md, "Bounce",
+    /// "Single creases").
+    Crease,
+}
+
+impl Shape {
+    /// `slot` or `crease`, as `--json` and the agent API write it.
+    pub fn name(self) -> &'static str {
+        match self {
+            Shape::Slot => "slot",
+            Shape::Crease => "crease",
+        }
+    }
+}
+
 /// One spot.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Spot {
@@ -146,42 +170,82 @@ pub struct Spot {
     /// Crouch: the edges the standing capsule hits at `stand`. Bounce
     /// spots: empty.
     pub lip: Lip,
+    /// Bounce: a two-joint slot or a single crease. Crouch spots: `Slot`.
+    pub shape: Shape,
 }
 
 /// A measured place where a forced crouch primed the pair word: a unit's
 /// origin, crouched.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Prime {
     /// The map's short name, as its `.map` file and header name it.
     pub map: &'static str,
     pub at: Vec3,
+    /// The way out (unit, X and Y) a spot made from this place alone
+    /// carries; zero for none.
+    pub out: [f32; 2],
+    /// What a player must know that the geometry doesn't say.
+    pub note: &'static str,
     /// Where it was measured.
     pub source: &'static str,
 }
 
 /// Every measured priming place. A crouch region with a sample within
 /// [`PROVEN_NEAR`] of one is kept whatever the other rules say, ranks
-/// first, and is [`Status::Proven`] (docs/game/superbounce.md, "Crouch
-/// spots: the stricter rule").
-pub static PROVEN: &[Prime] = &[Prime {
-    map: "ascension",
-    // Where the body rested in the corner beside the prop's lip; it stood
-    // up 6 cm out, at the band's way out.
-    at: [-10.91, 0.72, -1.16],
-    source: "docs/game/superbounce.md, \"The pair word\"; \
-             docs/game/notes/superbounce-spots.md",
-}];
+/// first, and is [`Status::Proven`]. A place no region is near (its lip
+/// is an object the scan doesn't read) becomes a proven crouch spot of
+/// its own, standing at `at` (docs/game/superbounce.md, "Crouch spots:
+/// the stricter rule").
+pub static PROVEN: &[Prime] = &[
+    Prime {
+        map: "ascension",
+        // Where the body rested in the corner beside the prop's lip; it
+        // stood up 6 cm out, at the band's way out.
+        at: [-10.91, 0.72, -1.16],
+        out: [0.0, 0.0],
+        note: "",
+        source: "docs/game/superbounce.md, \"The pair word\"; \
+                 docs/game/notes/superbounce-spots.md",
+    },
+    Prime {
+        map: "zanzibar",
+        // The window sill (z 5.10) of the base's rear right inner window
+        // facing the beach, under the shard of broken glass left of the
+        // gap. The glass is an object, not structure: the scan sees no
+        // lip here.
+        at: [5.22, -26.285, 5.11],
+        // The way the jump went, both tries.
+        out: [-0.69, -0.72],
+        note: "break the glass first; crouch under the shard on its left, \
+               let go, turn right and jump: the word turns on the jump",
+        source: "docs/game/notes/superbounce-spots.md, \"Zanzibar's window, \
+                 played\" (lab job 0043, recording zanzibar-window)",
+    },
+    Prime {
+        map: "zanzibar",
+        // Where the body rested crouched, the same run's third place: the
+        // mode's phase read `near` on the way in, so the scan has a crouch
+        // spot within 1.5 of it.
+        at: [8.07, -3.01, 4.51],
+        // From the rest to where the word turned, both primed tries.
+        out: [0.80, 0.60],
+        note: "crouch in, let go, walk out (+y, then +x): the word turns \
+               on the walk out, 2 tries of 3",
+        source: "docs/game/notes/superbounce-spots.md, \"Zanzibar's window, \
+                 played\" (lab job 0043, the same log)",
+    },
+];
 
 /// A crouch region with a sample this close (world units) to a
 /// [`PROVEN`] place is that place.
 pub const PROVEN_NEAR: f32 = 0.3;
 
 /// The [`PROVEN`] places on `map` (its short name, any case).
-pub fn proven(map: &str) -> Vec<Vec3> {
+pub fn proven(map: &str) -> Vec<Prime> {
     PROVEN
         .iter()
         .filter(|p| !map.is_empty() && p.map.eq_ignore_ascii_case(map))
-        .map(|p| p.at)
+        .copied()
         .collect()
 }
 
@@ -192,7 +256,7 @@ pub struct Context {
     /// scanned polygons' bounds count. None: the in-play rule is off.
     pub spawns: Vec<Vec3>,
     /// Measured priming places ([`proven`]).
-    pub proven: Vec<Vec3>,
+    pub proven: Vec<Prime>,
 }
 
 /// One collision polygon: its vertices in winding order, and its plane's
@@ -206,11 +270,12 @@ pub struct Poly {
 /// Every spot in a set of collision polygons (a map's structure BSP plus
 /// its placed instanced geometry, already in world space).
 ///
-/// Bounce spots come first (at most 512), then crouch spots (at most 12,
-/// by the stricter rules), each kind best score first. With no
-/// [`Context`]: no starting locations and no proven places. A heuristic: the thresholds and their
-/// calibration against the two measured Ascension spots are in
-/// `bounce.rs` and `crouch.rs`.
+/// Bounce spots come first (slots and single creases together, at most
+/// 512), then crouch spots (at most 12, by the stricter rules), each kind
+/// best score first. With no [`Context`]: no starting locations and no
+/// proven places. A heuristic: the thresholds and their calibration
+/// against the two measured Ascension spots are in `bounce.rs` and
+/// `crouch.rs`.
 pub fn scan(polys: &[Poly]) -> Vec<Spot> {
     scan::scan(polys, &Context::default())
 }
@@ -219,6 +284,34 @@ pub fn scan(polys: &[Poly]) -> Vec<Spot> {
 /// locations and its measured priming places.
 pub fn scan_in(polys: &[Poly], ctx: &Context) -> Vec<Spot> {
     scan::scan(polys, ctx)
+}
+
+/// One concave floor joint near a point, as the bounce search judged it
+/// for a single-crease candidate (`--explain`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct CreaseNote {
+    /// The joint, at floor height.
+    pub edge: [Vec3; 2],
+    /// The angle between the two floors, degrees.
+    pub dihedral: f32,
+    /// The crease spot it makes on its own, before merging along its line.
+    pub spot: Option<Spot>,
+    /// Why it makes none.
+    pub rejected: Option<String>,
+}
+
+/// The bounce side of `--explain` near a point: every concave joint
+/// judged as a single crease, and the bounce spots (slots and creases, as
+/// [`scan`] returns them) whose edge is within the radius.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct BounceExplain {
+    pub creases: Vec<CreaseNote>,
+    pub spots: Vec<Spot>,
+}
+
+/// [`BounceExplain`] for the joints and spots within `r` of `at`.
+pub fn explain_bounces(polys: &[Poly], at: Vec3, r: f32) -> BounceExplain {
+    scan::explain_bounces(polys, at, r)
 }
 
 /// One crouch rule's verdict on a region (`--explain`).

@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result, bail};
 use superbounce::{Kind, Spot};
 
-const USAGE: &str = "usage: h2 superbounce scan <map-name-or-file> [--bsp N] [--json] [--disc disc.iso] [--near x,y,z[,r]] [--explain x,y,z[,r]]\n\nScans one structure BSP (default 0) of the map, with its instanced\ngeometry, for superbounce slots and forced-crouch ceilings, and prints\nthem best first: a heuristic over the collision geometry, not a game\nrun. --json prints them as a JSON array. --near prints, instead, the\ncollision polygons with a vertex or centroid within r (default 0.6)\nof the point: what a scanned spot is checked against. --explain prints,\ninstead, every forced-crouch region with a sample within r (default 1.0)\nof the point, how each filter judged it and each crouch rule's verdict\n(in play, by a strip, spread out, proven, stand at the way out).";
+const USAGE: &str = "usage: h2 superbounce scan <map-name-or-file> [--bsp N] [--json] [--disc disc.iso] [--near x,y,z[,r]] [--explain x,y,z[,r]]\n\nScans one structure BSP (default 0) of the map, with its instanced\ngeometry, for superbounce slots and forced-crouch ceilings, and prints\nthem best first: a heuristic over the collision geometry, not a game\nrun. --json prints them as a JSON array. --near prints, instead, the\ncollision polygons with a vertex or centroid within r (default 0.6)\nof the point: what a scanned spot is checked against. --explain prints,\ninstead, every forced-crouch region with a sample within r (default 1.0)\nof the point, how each filter judged it and each crouch rule's verdict\n(in play, by a strip, spread out, proven, stand at the way out), then\nevery concave floor crease within r judged as a single-crease bounce\ncandidate, and the bounce spots there.";
 
 pub(super) fn run(args: Vec<String>) -> Result<()> {
     let mut args = args.into_iter();
@@ -85,7 +85,7 @@ pub(super) fn run(args: Vec<String>) -> Result<()> {
             } else {
                 ctx.proven
                     .iter()
-                    .map(|&p| v3(p))
+                    .map(|p| v3(p.at))
                     .collect::<Vec<_>>()
                     .join(" ")
             }
@@ -93,6 +93,12 @@ pub(super) fn run(args: Vec<String>) -> Result<()> {
         for (i, region) in regions.iter().enumerate() {
             print!("{}", explain_text(i, region));
         }
+        let polys = superbounce::map_polys(&mut map, bsp)
+            .with_context(|| format!("reading BSP {bsp} of {name}"))?;
+        print!(
+            "{}",
+            bounce_text(&superbounce::explain_bounces(&polys, at, r), r)
+        );
         return Ok(());
     }
     let spots = superbounce::scan_map(&mut map, bsp)
@@ -126,6 +132,38 @@ fn parse_point(s: &str, default_r: f32) -> Result<([f32; 3], f32)> {
         [x, y, z, r] => Ok(([*x, *y, *z], *r)),
         _ => bail!("needs x,y,z or x,y,z,r"),
     }
+}
+
+/// The bounce side of `--explain`: each concave crease near the point as a
+/// single-crease candidate, then the bounce spots there.
+fn bounce_text(b: &superbounce::BounceExplain, r: f32) -> String {
+    let mut out = format!(
+        "{} concave creases within {r}, judged as single creases\n",
+        b.creases.len()
+    );
+    for c in &b.creases {
+        out += &format!(
+            "crease {} to {}, {:.1} degrees: ",
+            v3(c.edge[0]),
+            v3(c.edge[1]),
+            c.dihedral
+        );
+        out += &match (&c.spot, &c.rejected) {
+            (Some(s), _) => format!(
+                "a candidate, launch {:.1}, score {:.2}, stand {}\n",
+                s.launch,
+                s.score,
+                v3(s.stand)
+            ),
+            (None, Some(why)) => format!("none: {why}\n"),
+            (None, None) => "none\n".to_string(),
+        };
+    }
+    out += &format!("{} bounce spots within {r}\n", b.spots.len());
+    for s in &b.spots {
+        out += &format!("  {}\n", line(s));
+    }
+    out
 }
 
 /// One region of `--explain`: what it is, then each filter's finding.
@@ -232,8 +270,15 @@ fn line(s: &Spot) -> String {
     match s.kind {
         Kind::Bounce => {
             out += &format!(
-                "  launch {:.1}  fall {:.2}  need {:.1}  width {:.3}  drift ({:.2}, {:.2})",
-                s.launch, s.fall, s.need, s.width, s.drift[0], s.drift[1]
+                "  {}  {}  launch {:.1}  fall {:.2}  need {:.1}  width {:.3}  drift ({:.2}, {:.2})",
+                s.shape.name(),
+                s.status.name(),
+                s.launch,
+                s.fall,
+                s.need,
+                s.width,
+                s.drift[0],
+                s.drift[1]
             )
         }
         Kind::Crouch => {
@@ -264,6 +309,7 @@ fn to_json(s: &Spot) -> serde_json::Value {
         "status": s.status.name(),
         "out": s.out,
         "lip": s.lip.edges(),
+        "shape": s.shape.name(),
     })
 }
 
@@ -370,5 +416,46 @@ mod tests {
             "{t}"
         );
         assert!(t.trim_end().ends_with("dropped: no exits"), "{t}");
+    }
+
+    #[test]
+    fn explain_judges_each_crease_and_names_the_shape() {
+        let crease = Spot {
+            shape: superbounce::Shape::Crease,
+            launch: 5.2,
+            ..spot(Kind::Bounce)
+        };
+        let b = superbounce::BounceExplain {
+            creases: vec![
+                superbounce::CreaseNote {
+                    edge: [[1.8, -26.7, 2.1], [6.0, -26.7, 2.1]],
+                    dihedral: 17.6,
+                    spot: Some(crease),
+                    rejected: None,
+                },
+                superbounce::CreaseNote {
+                    edge: [[0.0; 3], [1.0, 0.0, 0.0]],
+                    dihedral: 5.0,
+                    spot: None,
+                    rejected: Some("launch 0.4 units/s, under 3".into()),
+                },
+            ],
+            spots: vec![crease],
+        };
+        let t = bounce_text(&b, 1.0);
+        assert!(t.starts_with("2 concave creases within 1"), "{t}");
+        assert!(
+            t.contains("(6.00, -26.70, 2.10), 17.6 degrees: a candidate, launch 5.2"),
+            "{t}"
+        );
+        assert!(t.contains("5.0 degrees: none: launch 0.4"), "{t}");
+        assert!(t.contains("1 bounce spots within 1\n  bounce"), "{t}");
+        assert!(
+            line(&crease).contains("crease  likely"),
+            "{}",
+            line(&crease)
+        );
+        assert_eq!(to_json(&crease)["shape"], "crease");
+        assert_eq!(to_json(&spot(Kind::Bounce))["shape"], "slot");
     }
 }

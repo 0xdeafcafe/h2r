@@ -341,6 +341,14 @@ pub struct SpotRecord {
     /// `stand`, at their own height. Bounce: empty.
     #[serde(default)]
     pub lip: Vec<[[f32; 3]; 2]>,
+    /// Bounce: `slot` (two joints) or `crease` (one concave crease, a
+    /// candidate for the verifier). Crouch: `slot`.
+    #[serde(default = "slot")]
+    pub shape: String,
+}
+
+fn slot() -> String {
+    "slot".into()
 }
 
 fn likely() -> String {

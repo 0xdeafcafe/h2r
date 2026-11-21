@@ -19,8 +19,8 @@ use crate::geom::{
 };
 use crate::scan::{Face, ORIGIN_LIFT, Rules, WALKABLE, grid_of};
 use crate::{
-    CROUCHED, CrouchRegion, Kind, Lip, MAX_LIP, PROVEN_NEAR, RADIUS, STANDING, Spot, Status, Vec3,
-    Verdict,
+    CROUCHED, CrouchRegion, Kind, Lip, MAX_LIP, PROVEN_NEAR, Prime, RADIUS, STANDING, Spot, Status,
+    Vec3, Verdict,
 };
 
 /// Spacing (world units) of the candidate origins, on a world-aligned
@@ -338,7 +338,7 @@ struct Judged {
 /// spots in play, those by a strip best first, spread out and capped;
 /// then, while fewer than [`MIN_KEPT`] are kept, the nearest a strip of
 /// the rest. Each candidate's report gets every rule's verdict.
-fn select(found: &mut [Candidate], bounces: &[Spot], rules: &Rules) -> Vec<Spot> {
+fn select(found: &mut Vec<Candidate>, bounces: &[Spot], rules: &Rules) -> Vec<Spot> {
     let mut judged = Vec::new();
     for (i, c) in found.iter().enumerate() {
         let Some(s) = c.report.spot else {
@@ -347,8 +347,8 @@ fn select(found: &mut [Candidate], bounces: &[Spot], rules: &Rules) -> Vec<Spot>
         let proven = rules
             .proven
             .iter()
-            .copied()
-            .find(|p| c.origins.iter().any(|o| len(sub(*o, *p)) <= PROVEN_NEAR));
+            .map(|p| p.at)
+            .find(|&p| c.origins.iter().any(|o| len(sub(*o, p)) <= PROVEN_NEAR));
         let in_play = match rules.lowest {
             None => Verdict {
                 rule: "in play",
@@ -415,6 +415,18 @@ fn select(found: &mut [Candidate], bounces: &[Spot], rules: &Rules) -> Vec<Spot>
             note: "proven: not cut".into(),
         });
         kept.push(s);
+    }
+    // A measured place no region is near (its lip is an object, not the
+    // structure): a proven spot of its own, standing where it was
+    // measured.
+    let unmatched: Vec<Prime> = rules
+        .proven
+        .iter()
+        .filter(|p| !judged.iter().any(|k| k.proven == Some(p.at)))
+        .copied()
+        .collect();
+    for p in &unmatched {
+        kept.push(measured_spot(p));
     }
 
     // Spread out and capped: `try_keep` keeps a spot unless the cap is
@@ -554,7 +566,75 @@ fn select(found: &mut [Candidate], bounces: &[Spot], rules: &Rules) -> Vec<Spot>
         };
         r.rules = vec![k.in_play, k.strip, spread, proven, stand];
     }
+    for p in &unmatched {
+        found.push(measured_region(p));
+    }
     kept
+}
+
+/// Half the length of a measured spot's edge, across its way out.
+const MEASURED_EDGE: f32 = 0.2;
+
+/// A [`PROVEN`](crate::PROVEN) place with no region: a crouch spot at
+/// `at`, its edge a short line across its way out on the floor.
+fn measured_spot(p: &Prime) -> Spot {
+    let out = if p.out == [0.0, 0.0] {
+        [1.0, 0.0]
+    } else {
+        p.out
+    };
+    let across = [-out[1], out[0]];
+    let floor = p.at[2] - ORIGIN_LIFT;
+    let end = |k: f32| {
+        [
+            p.at[0] + across[0] * MEASURED_EDGE * k,
+            p.at[1] + across[1] * MEASURED_EDGE * k,
+            floor,
+        ]
+    };
+    Spot {
+        kind: Kind::Crouch,
+        edge: [end(-1.0), end(1.0)],
+        stand: p.at,
+        score: 1.0,
+        status: Status::Proven,
+        out: p.out,
+        ..Spot::default()
+    }
+}
+
+/// What `--explain` says of a measured place with no region.
+fn measured_region(p: &Prime) -> Candidate {
+    let note = if p.note.is_empty() {
+        String::new()
+    } else {
+        format!(": {}", p.note)
+    };
+    Candidate {
+        report: CrouchRegion {
+            samples: 0,
+            min: p.at,
+            max: p.at,
+            widths: Vec::new(),
+            length: 0.0,
+            reachable: true,
+            reach: "not walked: a measured place".into(),
+            rejected: None,
+            spot: Some(measured_spot(p)),
+            suppressed_by: None,
+            kept: true,
+            rules: vec![Verdict {
+                rule: "proven",
+                pass: true,
+                note: format!(
+                    "proven: measured at {}, where the geometry shows no forced crouch (the lip is an object the scan doesn't read); kept as measured{note}",
+                    v3(p.at)
+                ),
+            }],
+            status: Status::Proven,
+        },
+        origins: vec![p.at],
+    }
 }
 
 fn v3(p: Vec3) -> String {
