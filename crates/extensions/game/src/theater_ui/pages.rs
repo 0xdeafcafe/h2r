@@ -247,20 +247,21 @@ fn empty_help(state: &super::State) -> String {
     }) {
         return text_fit::paragraph(error, 280, 5);
     }
-    match state.load {
-        Load::Loading => "Reading films...",
+    let message = match state.load {
+        Load::Loading => return "Reading films...".into(),
         Load::Ready(_) if state.selector.map.is_some() || state.selector.game_type.is_some() => {
-            "No matching films\nChoose All in Map or Game type."
+            ["No matching films", "Choose All in Map or Game type."]
         }
         Load::Ready(_) => match state.tab {
-            Tab::Recent => "No recent films\nPlay a game to record a film.",
-            Tab::Saved => "No saved films\nOpen a film in Recent and choose Save.",
-            Tab::Clips => {
-                "No clips\nWhile watching a film, press X to mark the start and end of a clip."
-            }
+            Tab::Recent => ["No recent films", "Play a game to record a film."],
+            Tab::Saved => ["No saved films", "Open a film in Recent and choose Save."],
+            Tab::Clips => [
+                "No clips",
+                "While watching a film, press X to mark the start and end of a clip.",
+            ],
         },
-    }
-    .into()
+    };
+    crate::ui_kit::text::join_sentences(message)
 }
 
 fn films_model(state: &super::State, entries: &[Entry]) -> Vec<RowSpec> {

@@ -125,25 +125,38 @@ fn browser_tabs_list_picture_details_and_footer_have_room() {
 }
 
 #[test]
-fn empty_library_explains_the_next_action_on_every_control() {
+fn empty_library_title_and_hint_have_a_visible_separator() {
     let mut sample = live(FILMS).unwrap();
     for (state, help) in [
-        ("empty", "No recent films\nPlay a game to record a film."),
+        ("empty", "No recent films. Play a game to record a film."),
         (
             "empty-saved",
-            "No saved films\nOpen a film in Recent and choose Save.",
+            "No saved films. Open a film in Recent and choose Save.",
         ),
         (
             "empty-clips",
-            "No clips\nWhile watching a film, press X to mark the start and end of a clip.",
+            "No clips. While watching a film, press X to mark the start and end of a clip.",
         ),
         (
             "no-matches",
-            "No matching films\nChoose All in Map or Game type.",
+            "No matching films. Choose All in Map or Game type.",
         ),
-        ("loading", "Reading films..."),
     ] {
         assert!(sample.go(state));
+        assert!(sample.spec().texts.iter().any(|t| t.text == help), "{state}");
+    }
+}
+
+#[test]
+fn empty_library_explains_the_next_action_on_every_control() {
+    let mut sample = live(FILMS).unwrap();
+    for state in ["empty", "empty-saved", "empty-clips", "no-matches", "loading"] {
+        assert!(sample.go(state));
+        let help = sample.spec().texts.last().unwrap().text.clone();
+        assert!(!help.is_empty());
+        if state == "loading" {
+            assert_eq!(help, "Reading films...");
+        }
         for i in 0..BROWSE_ROWS {
             let spec = sample.spec();
             assert_eq!(spec.rows.len(), BROWSE_ROWS);
