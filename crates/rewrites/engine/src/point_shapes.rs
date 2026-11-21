@@ -91,6 +91,9 @@ pub static DECLARED: &[(&Point, &[Check])] = &[
     (&points::MAP_SCREEN_FREE, &[]),
     (&points::PLAYER_PICKUP_SCAN, &[]),
     (&points::LOBBY_MODE_SET, &[]),
+    // A vtable slot body (0x45c948 +0x48) right after the previous
+    // function's tail jump at 0x2c022b; it opens with push ecx.
+    (&points::TERRITORIES_TICK, &[]),
     // Sites that are calls.
     (&points::OBJECT_RECORD_APPEND, &[DirectCall]),
     (&points::TRANSPARENT_GEOMETRY_ENTRY, &[DirectCall]),
