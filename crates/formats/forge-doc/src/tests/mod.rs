@@ -184,3 +184,25 @@ fn portable_references_and_recipes_round_trip_in_order() {
     doc.recipes.swap(0, 1);
     assert_ne!(doc.id().unwrap(), h);
 }
+
+#[test]
+fn expectations_do_not_change_document_or_log_identity() {
+    let mut doc = draft();
+    doc.ops.push(scale());
+    let id = doc.id().unwrap();
+    let genesis = LogHead::genesis(&doc).unwrap();
+    let original_file = doc.canonical_json().unwrap();
+
+    for byte in [1, 2] {
+        doc.expect = Some(Expected {
+            map_id: MapId([byte; 32]),
+            geometry: Sha256([byte; 32]),
+        });
+        assert_ne!(doc.canonical_json().unwrap(), original_file);
+        assert_eq!(doc.id().unwrap(), id);
+        assert_eq!(LogHead::genesis(&doc).unwrap(), genesis);
+        let (after, head) = fold_from(&doc, genesis, &[], &Limits::default()).unwrap();
+        assert_eq!(after, doc);
+        assert_eq!(head, genesis);
+    }
+}

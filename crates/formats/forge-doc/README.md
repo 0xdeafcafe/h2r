@@ -18,7 +18,8 @@ replay parity on its invented cache.
   `ForgeDoc::canonical_json` and hash with `ForgeDoc::id`. Format 1
   stores floats as eight lowercase hexadecimal digits of their
   IEEE 754 bits. It uses externally tagged snake-case ops and values.
-  A draft can omit `expect`.
+  A draft can omit `expect`. The identity hashes the canonical form with
+  the entire `expect` block omitted.
 - `validate` checks the document and its ops without a map. Pass exact
   base counts, a placement-add limit, BSP bounds and builder versions
   through `Limits` when they are available. The map-backed `Apply`

@@ -235,11 +235,10 @@ fn fold_document(
             head
         }
         checkpoint => {
-            let json = wire::canonical(doc, "document bytes", MAX_DOC_BYTES)?;
             let head = LogHead {
                 seq: 0,
                 tick: 0,
-                hash: Sha256::of(json.as_bytes()),
+                hash: doc.id_validated()?,
             };
             if checkpoint.is_some_and(|checkpoint| checkpoint != head) {
                 return Err(chain_error(0, "starting document or tick differs"));

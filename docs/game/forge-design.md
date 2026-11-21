@@ -126,8 +126,9 @@ the disc produces nothing, and on a machine with it produces the map.
 
 The file is canonical JSON through `content::canonicalize`, the
 integer-only implementation of RFC 8785. Floats are eight lowercase
-hexadecimal digits of their `f32` bits. The SHA-256 of the canonical
-file is its identity. Use `ForgeDoc::from_bytes` to read the 8 MiB
+hexadecimal digits of their `f32` bits. The document's identity is the
+SHA-256 of its canonical form with the entire `expect` block omitted.
+Use `ForgeDoc::from_bytes` to read the 8 MiB
 bounded format and `ForgeDoc::canonical_json` to write it. The saved
 file is `<data>/forge/<name>.h2forge`. A draft can omit `expect`.
 
@@ -159,8 +160,9 @@ changed, then the package writer (`scenario_edit::package`).
   (transplanted tags, patched geometry), so it is never uploaded. Its
   manifest has one `[[forge]]` layer naming the document's hash, and
   `content::MapId` gains a `forge` list in its canonical form (manifest
-  format 2). Two machines have the same map when they have the same
-  base, sources, document and builder.
+  format 2). Format 2 hashes the base map's SHA-256 and the Forge
+  document's identity. Build and load compare `expect.map_id`, when
+  present, with that computed ID and name a mismatch.
 - **Rebuild in a session.** The host announces a rebuild in the log.
   Every machine materialises the document as of that log position, the
   session saves each player's position and body, the map loads again
@@ -550,6 +552,10 @@ variants are reserved for later slices. The
 [crate README](../../crates/formats/forge-doc/README.md) describes the
 wire caps and API.
 
+**F2 in detail.** The package's format 2 identity is derived from the
+base map hash and the Forge document hash. `expect.map_id` is checked
+against that identity at build and load. A difference is a named error.
+
 **F3 in detail.** Methods in `crates/extensions/agent` with their
 `agent-proto` types and fake-game tests. `forge.capacity` reads the two
 arena cursors scenario-editor.md section 6 names and the block counts.
@@ -572,7 +578,10 @@ The owner's choices, which the sections above follow.
    F13), then full vertex editing in game (F16).
 4. **Monitor bodies.** Forge sessions only. They are not player models
    in ordinary matches.
-5. **forge.md** is the retail reference only; the design is here.
+5. **forge.md** is the retail reference only. The design is here.
+6. **Forge identity.** The document hash omits the entire `expect`
+   block. Format 2 uses the base map hash and document hash.
+   `expect.map_id` checks the resulting ID at build and load.
 
 ## Evidence
 

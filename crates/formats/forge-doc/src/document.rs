@@ -53,9 +53,21 @@ impl ForgeDoc {
         wire::canonical(self, "document bytes", MAX_DOC_BYTES)
     }
 
-    /// SHA-256 of the canonical file bytes.
+    /// SHA-256 of the canonical document content, omitting `expect`.
     pub fn id(&self) -> Result<Sha256> {
-        Ok(Sha256::of(self.canonical_json()?.as_bytes()))
+        crate::validate::document(self, &Limits::default())?;
+        self.id_validated()
+    }
+
+    pub(crate) fn id_validated(&self) -> Result<Sha256> {
+        wire::measure(self, "document bytes", MAX_DOC_BYTES)?;
+        let mut value = serde_json::to_value(self).map_err(wire::json_error)?;
+        if let serde_json::Value::Object(fields) = &mut value {
+            fields.remove("expect");
+        }
+        let json = content::canonicalize(&value)
+            .map_err(|error| Refusal::invalid("canonical JSON", error.to_string()))?;
+        Ok(Sha256::of(json.as_bytes()))
     }
 }
 
