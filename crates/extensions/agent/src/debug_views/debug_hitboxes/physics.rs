@@ -206,7 +206,7 @@ fn body_indices(
     Some(result)
 }
 
-// The motion's four xyz columns, docs/engine/havok-runtime.md, "Motions".
+// The motion's four xyz columns, docs/engine/havok-runtime.md, "Motion".
 // Transform shapes use the same four vec4 layout.
 fn frame(guest: &dyn GuestMemory, addr: u32) -> Option<NodeMatrix> {
     let mut m = NodeMatrix::default();
