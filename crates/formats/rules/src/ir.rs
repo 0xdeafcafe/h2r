@@ -203,10 +203,13 @@ pub enum Event {
     Join,
     Quit,
     RoundEnd,
+    /// A second player who damaged a killed actor in its last five
+    /// seconds (`firefight::director::Kill::assist`).
+    ActorAssist,
 }
 
 impl Event {
-    pub const ALL: [Event; 19] = [
+    pub const ALL: [Event; 20] = [
         Event::Init,
         Event::RoundStart,
         Event::Tick,
@@ -226,6 +229,7 @@ impl Event {
         Event::Join,
         Event::Quit,
         Event::RoundEnd,
+        Event::ActorAssist,
     ];
 
     pub fn code(self) -> u8 {
@@ -258,6 +262,7 @@ impl Event {
             Event::Join => "join",
             Event::Quit => "quit",
             Event::RoundEnd => "round_end",
+            Event::ActorAssist => "actor_assist",
         }
     }
 
@@ -277,6 +282,7 @@ impl Event {
             Event::Enter | Event::Leave => &[Ty::Object, Ty::Object],
             Event::SquadDead => &[Ty::Squad],
             Event::ActorKill => &[Ty::Player, Ty::Class],
+            Event::ActorAssist => &[Ty::Player, Ty::Player, Ty::Class],
             Event::Init | Event::RoundStart | Event::Tick | Event::Timer | Event::RoundEnd => &[],
         }
     }
@@ -297,7 +303,8 @@ impl Event {
             | Event::Edit
             | Event::Join
             | Event::Quit
-            | Event::ActorKill => 16,
+            | Event::ActorKill
+            | Event::ActorAssist => 16,
             Event::Enter | Event::Leave => 64,
             Event::SquadDead => 16,
             _ => 1,

@@ -55,7 +55,10 @@ not built) implements `vm::Game` over `engine::entry::Cx` and keeps
 `builtin::builtin(engine_index)` returns the built-in source for a
 retail engine index. Slayer (`src/builtin/slayer.rules`) is the only one.
 `fake::FakeGame` is a table-backed `Game` that logs calls, for tests and
-`h2 rules run`.
+`h2 rules run`. The Firefight director script is built outside this crate,
+by `firefight::script` from a wave-set definition; the `firefight.director`
+entries, `place_squad_at`, the zone reads, `now`, `random` and
+`on actor_assist` are what it calls and answers.
 
 ## Tests
 
@@ -64,7 +67,8 @@ Infection and Holdout scripts compile, verify and run on `FakeGame`,
 with assertions on the calls they make. There is a refusal test for
 each verifier rule. The codec round-trips and survives corruption, the
 blob hash is stable, a budget overflow stops at the same op on every
-run, and `pick` is deterministic. Grants are checked against the
+run, and `pick` is deterministic. `tests/firefight_entries.rs` covers
+`now`, `random`, the queued `ff_*` entries and `on actor_assist`. Grants are checked against the
 declaration, the palette and the budget, and `RulesExt` round-trips and
 resumes. All inputs are invented.
 
