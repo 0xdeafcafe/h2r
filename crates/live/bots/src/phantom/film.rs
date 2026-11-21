@@ -58,6 +58,7 @@ impl Phantoms {
                     crate::pad_source::Recorded::new(Vec::new()),
                 ))),
                 generation: 0,
+                source_reset_due: false,
                 made: *made,
                 buttons: buttons.restore()?,
                 uplink: action::Uplink::new(info.identity.xuid),

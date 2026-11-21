@@ -360,7 +360,7 @@ impl Phantoms {
                     .then_some((books.list[i].info.handle, state, None)));
             }
             if state.sample.is_some() && state.sample != Some((unit, tick.wrapping_sub(1))) {
-                books.list[i].reset_input();
+                books.list[i].invalidate_input();
                 state = books.list[i].buttons;
             }
             let time = m.u32(engine::points::GAME_TIME.base)?;
@@ -374,9 +374,12 @@ impl Phantoms {
                 _ => guest::match_opening_fading(m, tick, rate)?,
             };
             books.opening_fade = Some((tick, match_fading));
-            let gated = match_fading || guest::phantom_spawn_fading(m, player_addr, rate)?;
+            let retiring = !books.thinker.ready_for_game();
+            let gated = retiring || match_fading || guest::phantom_spawn_fading(m, player_addr, rate)?;
             let mode = books.thinker.mode();
-            let pad = if let Some(report) = books.list[i].uplink.report_at(tick) {
+            let pad = if retiring {
+                HostPadState::default()
+            } else if let Some(report) = books.list[i].uplink.report_at(tick) {
                 report
             } else {
                 // Keep observing and planning while the pad is gated
@@ -510,6 +513,7 @@ fn seat_at(m: &dyn GuestMemory, slot: u32) -> Result<Option<SlotSeat>, MemFault>
 impl super::Phantom {
     /// The whole sample at this phantom's own gather ([`think::Mode::Serial`]).
     fn serial_pad(&mut self, m: &dyn GuestMemory, tick: u32) -> Report {
+        self.reset_source_if_due();
         let mut source = lock_source(&self.source);
         let pad = source.pad(&Frame {
             frame: self.samples,
@@ -567,7 +571,7 @@ impl Books {
                 if p.buttons.sample.is_some()
                     && p.buttons.sample != Some((seat.unit, tick.wrapping_sub(1)))
                 {
-                    p.reset_input();
+                    p.invalidate_input();
                 }
                 order.push((at, j));
             }
@@ -576,6 +580,7 @@ impl Books {
                 .iter()
                 .map(|&(_, j)| {
                     let p = &mut self.list[j];
+                    p.reset_source_if_due();
                     let frame = p.samples;
                     p.samples = p.samples.saturating_add(1);
                     frame

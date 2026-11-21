@@ -118,6 +118,7 @@ struct Phantom {
     source: Source,
     /// Bumped by every input reset, so a think from before it is dropped.
     generation: u64,
+    source_reset_due: bool,
     /// Its peer is in the host's session.
     made: bool,
     buttons: action::GatherState,
@@ -131,12 +132,20 @@ struct Phantom {
 }
 
 impl Phantom {
-    fn reset_input(&mut self) {
+    /// A render-frame transition can interrupt a worker in this source's
+    /// think method. Reset the owned stream now, the source at its next gather.
+    fn invalidate_input(&mut self) {
         self.buttons = Default::default();
         self.uplink.clear();
         self.shot_range = None;
         self.generation = self.generation.wrapping_add(1);
-        lock_source(&self.source).reset_input();
+        self.source_reset_due = true;
+    }
+
+    fn reset_source_if_due(&mut self) {
+        if std::mem::take(&mut self.source_reset_due) {
+            lock_source(&self.source).reset_input();
+        }
     }
 }
 
@@ -276,6 +285,7 @@ impl Phantoms {
             },
             source: std::sync::Arc::new(Mutex::new(source)),
             generation: 0,
+            source_reset_due: false,
             made: false,
             buttons: Default::default(),
             uplink,
@@ -377,7 +387,7 @@ impl Phantoms {
                 if phantom.info.state == State::Joined {
                     phantom.info.state = State::Pending;
                 }
-                phantom.reset_input();
+                phantom.invalidate_input();
                 self.changed();
             }
         }
@@ -410,7 +420,10 @@ impl Phantoms {
 
     // Waiting for a worker to finish must leave the other seats free to gather.
     fn source(&self, handle: PhantomHandle) -> Option<Source> {
-        let books = self.lock();
+        let mut books = self.lock();
+        if !books.thinker.ready_for_game() {
+            return None;
+        }
         let seat = books.list.iter().find(|p| p.info.handle == handle)?;
         Some(Arc::clone(&seat.source))
     }
@@ -581,11 +594,11 @@ impl Phantoms {
             b.batch = None;
             if b.hosted_game.is_some() {
                 for p in &mut b.list {
-                    p.reset_input();
+                    p.invalidate_input();
                 }
             }
             // Pipelined thinks for the game that ended say nothing more.
-            b.thinker.settle();
+            b.thinker.end_game();
         }
         b.hosted_game = hosted_game;
 
@@ -700,7 +713,7 @@ impl Phantoms {
                 }
                 None => {
                     p.made = false;
-                    p.reset_input();
+                    p.invalidate_input();
                     log.push(format!(
                         "bots: phantom {} is no longer in the session: it joins again",
                         p.info.identity.gamertag
