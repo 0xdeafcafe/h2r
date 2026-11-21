@@ -14,6 +14,7 @@ pub mod chunk;
 pub mod film;
 pub mod firefight;
 pub mod game;
+pub mod game_variants;
 pub mod hopper;
 pub mod host_pack;
 pub mod hosts; // dh-lease

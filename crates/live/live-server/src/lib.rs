@@ -76,6 +76,7 @@ pub mod relay;
 pub mod reports;
 mod replay_archive;
 pub mod rule_scripts;
+pub mod game_variants;
 pub mod rt;
 pub mod screenshot_classifier;
 mod sessions;
