@@ -1227,7 +1227,7 @@ A fault while reading weapons leaves the bot playing without the weapons
 layer (`Me::arms` is `None`); it never blinds it.
 
 **Handling.** What kind of gun a weapon is comes from fields of its
-`weap` tag other docs already traced; nothing new was traced for it
+`weap` tag and its first barrel's projectile
 (`arms::WeaponDef::profile`, `arms::Profile`):
 
 | Field | Where | Confidence | From |
@@ -1239,13 +1239,15 @@ layer (`Me::arms` is `None`); it never blinds it.
 | projectiles per shot | barrel `+0x6a` (`i16`) | field order from data, value pattern on retail | [halo1/objects.md](../halo1/objects.md) |
 | projectile | barrel `+0x8c` (tag reference, datum at `+0x90`) | field order from data, value pattern on retail | [halo1/objects.md](../halo1/objects.md); the bot accepts it only when the entry's group is `proj` |
 | projectile speed | `proj+0x17c` (`f32`, world units a second) | confirmed (engine) | `live-telemetry` (`0xf8487`) |
+| projectile reach | `proj+0x16c` air damage range end, `proj+0xe0` maximum travel (`f32`, world units) | engine and disc | `0xfc016` copies the air endpoint into the live projectile. Blood Gulch's converted shotgun carries Halo 1's endpoint, 3, below its 40-unit travel limit. Coagulation's shotgun has 8 in both fields. |
 
 The first trigger and the first barrel speak for the weapon. A fault
 reading any of them leaves the gun weapon-blind (as before), not unread.
 The **role** (`arms::Role`) follows: two zoom levels a **sniper**; once
 per pull with a projectile under 100 a second a **blast** weapon (rocket
-launcher, fuel rod, brute shot); once per pull with 4 or more
-projectiles a **scatter** gun (shotgun); once per pull otherwise
+launcher, fuel rod, brute shot); 4 or more projectiles per shot a
+**scatter** gun (shotgun), including converted tags with a held trigger;
+once per pull otherwise
 **precise** (magnum, battle rifle, carbine); held or charged **spray**
 (SMG, plasma rifle, needler, plasma pistol); no trigger but aim assist a
 **blade** (energy sword). The Zanzibar flag, ball and bomb each have a trigger. Each role has a band it is best at and a range
@@ -4766,9 +4768,14 @@ The checks for live play are in §11 and §13. Clankers use phantom peers
      rifle is good to its reach (kept within half and one and a half
      times its role's band end) and fires to 1.6 times that. An identified
      SMG closes to its effective band, capped at 9 units, before firing. A
-     sniper or splash weapon keeps its role's. A sword's lunge is its
-     reach (1 to 3; 1.5 unread), and it swings at that. The weapons
-     decision, the movement's band and the fire range all use this.
+     sniper or splash weapon starts with its role's range. The first
+     barrel's projectile caps all firearm ranges at the nearer positive
+     value of its air damage endpoint and maximum travel. With both
+     fields unset, the role and aim assist decide. The movement band
+     shortens when the projectile requires a closer shot. The aim point
+     needs a clear line from the bot's eye, including for the off hand
+     and a passenger using a carried gun. A sword's lunge uses its aim
+     assist reach (1 to 3, or 1.5 when unread), and it swings at that.
    - **Using both guns** (`arms::plan`, Normal and up, out of a fight).
      Two short guns or two long ones: a gun of the other kind within 15
      is taken, the worse of the two dropped for it (switching first when

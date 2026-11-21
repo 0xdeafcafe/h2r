@@ -1,7 +1,7 @@
 //! Weapon skill beyond the trigger (docs/game/bots.md, "Built: weapon
 //! skill"): how far each gun is good to ([`reach`], from its role and its
-//! tag's aim assist reach), the noob combo and the melee finish
-//! ([`Combo`]), and the left hand when dual wielding ([`LeftHand`]).
+//! tag's aim assist and projectile reach), the noob combo and the melee
+//! finish ([`Combo`]), and the left hand when dual wielding ([`LeftHand`]).
 //!
 //! Pure and deterministic, time in game ticks (30 a second). The mind
 //! feeds [`Combo::step`] every tick of a fight and applies what it says on
@@ -40,26 +40,25 @@ pub(crate) fn pickup_bias(personality: Option<crate::decisions::Personality>, ro
 /// What `p` is good at. The role's band ([`Role::band`]) and fire range
 /// ([`Role::fire_range`]), refined by the tag's aim assist reach
 /// (`cone_range`, `pull_range`; `weap +0x20c`, `+0x214`) where Bungie set
-/// one: aim assist stops where a gun stops being worth firing, so a
-/// magnum's band ends sooner than a battle rifle's and an SMG's sooner
-/// than a plasma rifle's. Snipers and splash weapons keep their role's
-/// (their reach is the scope's); a blade's lunge is its reach.
+/// one. Snipers and splash weapons start with their role's range. A
+/// blade's lunge uses its aim assist reach. The projectile's damage reach
+/// caps both the firing range and the band.
 pub fn reach(p: &Profile) -> Reach {
     let role = p.role();
     let (lo, hi) = role.band();
     let (flo, fhi) = role.fire_range();
     let r = p.cone_range.max(p.pull_range);
-    // A confirmed SMG is a short-range automatic. Its magnetism can
-    // reach beyond the distance where sustained fire is worth the rounds.
-    if p.dual == Some(crate::arms::DualGun::Smg) {
-        let far = if r > 0.0 { r.clamp(4.5, 9.0) } else { 9.0 };
-        return Reach {
-            band: (lo, far),
-            fire: (0.0, far),
-            lunge: 0.0,
-        };
-    }
-    match role {
+    let mut reach = match role {
+        // A confirmed SMG is a short-range automatic. Its magnetism can
+        // reach beyond the distance where sustained fire is worth the rounds.
+        _ if p.dual == Some(crate::arms::DualGun::Smg) => {
+            let far = if r > 0.0 { r.clamp(4.5, 9.0) } else { 9.0 };
+            Reach {
+                band: (lo, far),
+                fire: (0.0, far),
+                lunge: 0.0,
+            }
+        }
         Role::Blade => {
             let lunge = if r > 0.0 {
                 r.clamp(LUNGE_LIMITS.0, LUNGE_LIMITS.1)
@@ -87,7 +86,13 @@ pub fn reach(p: &Profile) -> Reach {
             fire: (flo, fhi),
             lunge: 0.0,
         },
+    };
+    if p.damage_reach > 0.0 && p.damage_reach < reach.fire.1 {
+        reach.fire.1 = p.damage_reach;
+        let far = reach.band.1.min(p.damage_reach / FIRE_PAST_BAND);
+        reach.band = (reach.band.0.min(far), far);
     }
+    reach
 }
 
 /// How far `d` is outside `band`, relative to it: 0 inside.

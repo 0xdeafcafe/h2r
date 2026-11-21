@@ -715,6 +715,7 @@ dependencies = [
  "background",
  "content",
  "engine",
+ "h1map",
  "host-dirs",
  "input",
  "live-proto",

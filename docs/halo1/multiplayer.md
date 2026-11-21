@@ -238,6 +238,16 @@ variants (**Built**)" below for how the choice is made at game start.
   (the `h2` variant of each package), keyed by `base.map`. The hook is
   idle in the Halo 1 sandbox, which places Halo 1's assault rifle.
 
+## Bot shotgun range (Built)
+
+The Halo 1 sandbox carries over the first barrel's projectile damage
+range. Blood Gulch's shotgun has a 3-unit air damage endpoint, 15-unit aim
+assist and 40-unit projectile travel. The bot uses the 3-unit endpoint to
+limit its shots. The Halo 2 sandbox uses Coagulation's shotgun, with an
+8-unit endpoint. Blood Gulch's assault rifle has a 15-unit air damage
+endpoint. The ignored `weapon_range_disc` test reads both discs and both
+installed sandboxes through the live bot's weapon profile reader.
+
 ## Placements plan (**Built** as `h1convert::placements`)
 
 `plan_map` turns a Halo 1 map's multiplayer parts into Halo 2 sandbox
