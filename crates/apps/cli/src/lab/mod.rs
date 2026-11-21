@@ -5,6 +5,7 @@
 //! and owns a lab root. Clients speak [`proto`]'s JSON lines over paired TLS
 //! on the LAN or a private Unix socket on the host itself.
 
+mod build_cache;
 mod client;
 mod discovery;
 pub mod host;
@@ -24,6 +25,7 @@ use anyhow::{Context, Result, bail, ensure};
 const USAGE: &str = "usage:
   h2 lab host [install] [--root DIR] [--socket PATH] [--repo DIR] [--disc ISO]
               [--h2 PATH] [--out DIR] [--data DIR] [--cargo PATH]
+              [--obj-cache-limit SIZE] [--target-limit SIZE]
               [--listen IP:PORT] [--name NAME]
               [--takeover-timeout SECONDS] [--takeover-cooldown SECONDS]
                           serve on the private Unix socket; --listen enables LAN
@@ -34,18 +36,18 @@ const USAGE: &str = "usage:
   h2 lab host pair-code | unpair [--root DIR]
                           issue a fresh code or revoke the paired driver
   h2 lab pair HOST CODE   pair with a Bonjour name, IP, or IP:port
-  h2 lab record --level MAP [--difficulty D] [--name NAME] [-- play flags]
+  h2 lab record --name TEXT --level MAP [--difficulty D] [--record KEY] [-- play flags]
                           play with your input recorded into recordings/NAME
                           (through the host when it runs, else directly)
 
   h2 lab <command> --host NAME|IP[:PORT]|local [--socket PATH for local]
     status                the host, its checkout and the job running
     update                pull, build and restart an idle installed host
-    run [--level MAP] [--difficulty D] [--frames N] [--stats-from N] [--no-stats]
+    run --name TEXT [--level MAP] [--difficulty D] [--frames N] [--stats-from N] [--no-stats]
         [--replay NAME | --record NAME] [--perf] [--env KEY=VALUE]...
         [--branch NAME | --rev REV | --current] [--no-sync] [--feature F]...
         [--build-env KEY=VALUE]... [--fresh-data] [--note TEXT]
-        [--serve] [--wait [--to DIR]] [-- play flags]
+        [--mem-limit SIZE] [--serve] [--wait [--to DIR]] [-- play flags]
                           start a run (building its image first unless cached);
                           prints the job id; --wait waits and fetches it;
                           --serve: no frame limit, driven by `agent` until `stop`
@@ -53,7 +55,7 @@ const USAGE: &str = "usage:
                           one `h2 agent` call against that run's game, run on the
                           host; its output and exit code come back unchanged
                           (`-` reads a script from stdin)
-    bench --level MAP [--difficulty D] [--scale N] [--ticks N] [--env KEY=VALUE]...
+    bench --name TEXT --level MAP [--difficulty D] [--scale N] [--ticks N] [--env KEY=VALUE]...
           [--branch NAME | --rev REV | --current] [--no-sync] [--feature F]...
           [--build-env KEY=VALUE]... [--timeout S] [--to DIR] [-- play flags]
                           a --serve run: wait for gameplay, capture N ticks (600),
@@ -156,6 +158,8 @@ fn parse_host_config(
     let mut out = None;
     let mut data = None;
     let mut cargo = None;
+    let mut obj_cache_limit = build_cache::DEFAULT_OBJECT_LIMIT;
+    let mut target_limit = build_cache::DEFAULT_TARGET_LIMIT;
     let mut listen = None;
     let mut name = None;
     let mut local_only = false;
@@ -176,6 +180,15 @@ fn parse_host_config(
             "--out" => out = Some(val()?),
             "--data" => data = Some(val()?),
             "--cargo" => cargo = Some(val()?),
+            "--obj-cache-limit" | "--target-limit" => {
+                let size = it.next().with_context(|| format!("{a} needs a size"))?;
+                let bytes = mem_watch::parse_size(size).map_err(anyhow::Error::msg)?;
+                if a == "--obj-cache-limit" {
+                    obj_cache_limit = bytes;
+                } else {
+                    target_limit = bytes;
+                }
+            }
             "--listen" => {
                 listen = Some(
                     it.next()
@@ -247,6 +260,8 @@ fn parse_host_config(
         h2: abs(h2.map_or_else(std::env::current_exe, Ok)?)?,
         out: out.map(abs).transpose()?,
         cargo: cargo.unwrap_or_else(|| "cargo".into()),
+        obj_cache_limit,
+        target_limit,
         lan: listen.map(|addr| lan::Listen { addr, name }),
         explicit_h2,
         managed: false,

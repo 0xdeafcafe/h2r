@@ -6,6 +6,7 @@ version.workspace = true
 license.workspace = true
 
 [dependencies]
+mem-watch.workspace = true
 timeline = { path = "../../runtime/timeline" }
 runtime.workspace = true
 kernel = { path = "../../runtime/kernel" }

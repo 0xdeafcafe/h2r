@@ -22,6 +22,12 @@ use studio_proto::code;
 /// script line); longer closes the connection.
 const MAX_LINE: u64 = 16 << 20;
 
+#[cfg(unix)]
+static PENDING_REQUESTS: mem_watch::Counter =
+    mem_watch::Counter::new("studio.agent.pending_requests");
+#[cfg(unix)]
+static REPLY_BYTES: mem_watch::Counter = mem_watch::Counter::new("studio.agent.reply_buffer_bytes");
+
 /// One request waiting for the app, and where its answer goes.
 pub struct Incoming {
     pub request: Request,
@@ -147,6 +153,7 @@ fn serve(conn: UnixStream, tx: mpsc::Sender<Incoming>) {
             )),
             Ok(request) => {
                 let (rtx, rrx) = mpsc::channel();
+                let _pending = PENDING_REQUESTS.track(1);
                 if tx
                     .send(Incoming {
                         request,
@@ -167,6 +174,7 @@ fn serve(conn: UnixStream, tx: mpsc::Sender<Incoming>) {
                 return;
             };
             text.push('\n');
+            let _reply_buffer = REPLY_BYTES.track(text.capacity() as u64);
             if out.write_all(text.as_bytes()).is_err() {
                 return;
             }

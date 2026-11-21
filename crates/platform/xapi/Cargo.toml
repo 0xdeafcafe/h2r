@@ -6,6 +6,7 @@ license.workspace = true
 description = "Guest XAPI service replacements for Halo 2"
 
 [dependencies]
+mem-watch.workspace = true
 input = { path = "../input", default-features = false }
 runtime.workspace = true
 vfs = { path = "../../runtime/vfs" }

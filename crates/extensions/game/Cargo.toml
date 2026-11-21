@@ -6,6 +6,7 @@ version.workspace = true
 license.workspace = true
 
 [dependencies]
+mem-watch.workspace = true
 forge.workspace = true
 forge-doc.workspace = true
 guest-layout = { path = "../../hooking/guest-layout" }

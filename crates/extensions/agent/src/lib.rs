@@ -64,6 +64,7 @@ pub mod hot;
 pub mod lightbar;
 mod live;
 mod loads;
+mod memory;
 pub mod menu;
 pub mod net;
 pub mod raw;

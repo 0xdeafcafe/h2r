@@ -21,6 +21,7 @@ pub mod expect;
 pub mod forge;
 pub mod havok;
 pub mod host_lobby;
+pub mod host_memory;
 pub mod hot;
 pub mod live;
 mod load;
@@ -172,6 +173,8 @@ pub mod method {
     pub const HOST_PERF: &str = "host.perf";
     /// Recent tick cost and process resource use.
     pub const HOST_METRICS: &str = "host.metrics";
+    /// Process footprint, recent samples, registered counters and saved reports.
+    pub const HOST_MEMORY: &str = "host.memory";
     pub const HOST_PEER_RTTS: &str = "host.peer_rtts";
     pub const HOST_AUDIT: &str = "host.audit";
     pub const HOST_LOBBY_OPEN: &str = "host.lobby.open";

@@ -110,7 +110,11 @@ pub(crate) struct Tick {
     pub map: Option<String>,
 }
 
+static TRACE_WRITER_BYTES: mem_watch::Counter = mem_watch::Counter::new("trace.writer_buffer_bytes");
+static FLIGHT_ROW_BYTES: mem_watch::Counter = mem_watch::Counter::new("trace.flight_row_bytes");
+
 struct Trace {
+    writer_bytes: mem_watch::Gauge,
     sel: Selection,
     path: PathBuf,
     /// `None` once stopped (or failed).
@@ -148,10 +152,12 @@ impl Trace {
     fn fail(&mut self, e: std::io::Error) {
         self.error = Some(format!("writing {}: {e}", self.path.display()));
         self.out = None;
+        self.writer_bytes.set(0);
     }
 
     /// Flushes and closes the file.
     fn stop(&mut self) {
+        self.writer_bytes.set(0);
         if let Some(mut out) = self.out.take()
             && let Err(e) = out.flush()
         {
@@ -176,6 +182,7 @@ impl Trace {
 }
 
 struct Flight {
+    row_bytes: mem_watch::Gauge,
     sel: Selection,
     seconds: u32,
     capacity: usize,
@@ -199,6 +206,7 @@ impl Flight {
                 self.bytes -= old.len();
             }
         }
+        self.row_bytes.set(self.bytes as u64);
     }
 
     fn status(&self, at: At, active: bool) -> FlightStatus {
@@ -305,10 +313,12 @@ impl Recorders {
                         format!("creating {}: {e}", path.display()),
                     )
                 })?;
+                let out = BufWriter::with_capacity(64 << 10, file);
                 let t = Trace {
+                    writer_bytes: TRACE_WRITER_BYTES.track(out.capacity() as u64),
                     sel,
                     path,
-                    out: Some(BufWriter::with_capacity(64 << 10, file)),
+                    out: Some(out),
                     rows: 0,
                     bytes: 0,
                     first_tick: None,
@@ -350,6 +360,7 @@ impl Recorders {
                 let sel = Selection::new(p.objects, p.fields)?;
                 let capacity = (seconds * TICKS_PER_SECOND) as usize;
                 let f = Flight {
+                    row_bytes: FLIGHT_ROW_BYTES.track(0),
                     sel,
                     seconds,
                     capacity,

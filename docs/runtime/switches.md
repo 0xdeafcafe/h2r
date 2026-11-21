@@ -82,6 +82,14 @@ the final result through that directory.
 | `MALLOC_ARENA_MAX`, `MALLOC_TRIM_THRESHOLD_` | Linux glibc host lease defaults of 2 arenas and 131072 bytes; explicit allocator settings take precedence ([host-halving.md](../live/host-halving.md#halving-the-memory)) |
 | `H2_STUDIO` | Editor agent socket path when `--socket` is absent (`crates/apps/studio-proto/src/lib.rs`, [editor API](../editor/agent-api.md)). |
 | `H2_FFMPEG` | Selects the local ffmpeg executable for movie conversion (`crates/formats/movies/src/install.rs`). |
+| `H2_WINDOW_TITLE` | Overrides the window title prefix for `h2 play`. The title shows the prefix and the running binary’s short commit hash. Unset or empty uses the usual game title and frame rate. |
+| `H2_LAB_JOB_ID`, `H2_LAB_JOB_NAME` | Memory report metadata supplied by the lab to its game child. These identify the run (for example, `0007`) and its label. |
+| `H2_MEM_SOFT` | Process footprint at which the game, editor or lab host writes a memory report. Defaults to 8 GiB. Sizes accept binary units such as `12G`. Zero disables both the soft limit and sustained-growth alerts. |
+| `H2_MEM_HARD` | Process footprint at which the watchdog writes a report and exits. Defaults to the lesser of 16 GiB and 40% of physical RAM. Zero disables the hard limit. |
+| `H2_MEM_REPORT_DIR` | Directory for watchdog JSON reports. Defaults to `logs/mem/` under the selected h2 data directory. |
+| `h2 lab run --mem-limit SIZE` | Cap on the game child's footprint, 12 GiB by default. [Memory limits and reports](lab.md#memory-limits-and-reports) |
+| `h2 lab host [install] --obj-cache-limit SIZE` | Size budget for the lab's shared object cache after each build attempt, 8 GiB by default. The host prunes the least recently used entries first. Zero retains no entries. |
+| `h2 lab host [install] --target-limit SIZE` | Size budget for the shared Cargo target directory, 32 GiB by default. The host clears an oversized target after the build. Zero retains no Cargo outputs. |
 | `H2_LAB_HOST`, `H2_LAB_SOCKET` | default driving target and local lab socket ([lab.md](lab.md)) |
 | `h2 lab host [install] --takeover-timeout SECONDS` | player consent answer timeout, 1 to 3600 seconds, default 60 ([Player consent](lab.md#player-consent-before-a-job)) |
 | `h2 lab host [install] --takeover-cooldown SECONDS` | delay after a decline before asking again, default 1800 seconds, 0 lets every job ask ([Player consent](lab.md#player-consent-before-a-job)) |

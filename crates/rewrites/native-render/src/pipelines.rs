@@ -77,7 +77,10 @@ fn fingerprint(source: &str, shader: &ShaderProgram, label: &str) -> u64 {
     hash
 }
 
+static NATIVE_PIPELINES: mem_watch::Counter = mem_watch::Counter::new("native.pipeline_cache_entries");
+
 struct Entry {
+    _count: mem_watch::Gauge,
     pipeline: Arc<PendingPipeline>,
     priority: Priority,
 }
@@ -120,7 +123,7 @@ impl Program {
             result
         });
         COMPILER.submit(&pipeline, priority);
-        entries.insert(key.clone(), Entry { pipeline: Arc::clone(&pipeline), priority });
+        entries.insert(key.clone(), Entry { _count: NATIVE_PIPELINES.track(1), pipeline: Arc::clone(&pipeline), priority });
         pipeline
     }
 }

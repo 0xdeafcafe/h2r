@@ -646,6 +646,11 @@ pub(crate) fn run_with_theater(
             _ => bail!("unexpected {a}\n\n{USAGE}"),
         }
     }
+    #[cfg(unix)]
+    if let (Ok(id), Ok(name)) = (std::env::var("H2_LAB_JOB_ID"), std::env::var("H2_LAB_JOB_NAME")) {
+        config.title = crate::lab::proto::window_title(&id, &name, app::BuildInfo::baked().sha);
+        config.status_in_title = false;
+    }
     live.check()?;
     if live.join.is_some()
         && (film_out.is_some() || std::env::var_os("H2_FILM_OUT").is_some_and(|p| !p.is_empty()))
@@ -765,6 +770,7 @@ pub(crate) fn run_with_theater(
     let closer = app::Closer::new();
     config.closer = Some(closer.clone());
     let interrupted = watch_signals(closer);
+    crate::boot_cmd::start_memory_watch(&opts.data_root);
     // After the signal mask is set, so the reader thread inherits it.
     #[cfg(unix)]
     if let Some(path) = follow_status {

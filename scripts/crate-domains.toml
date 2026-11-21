@@ -39,7 +39,7 @@ about = "Platform HLE: the Xbox's devices and libraries on the host (Direct3D 8,
 uses = ["formats", "runtime"]
 crates = [
     "assets", "audio", "bink-hle", "d3d", "dsound", "gfx", "hot-render",
-    "input", "voice", "wma", "xapi",
+    "input", "mem-watch", "voice", "wma", "xapi",
 ]
 
 [hooking]

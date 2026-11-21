@@ -859,7 +859,7 @@ size -m "$H2_IMAGE/libh2game.dylib" | grep -E '__text|__h2_fix'
 Fixups per tick are `profile.memory`'s `fixups` on the agent API
 (docs/runtime/agent-api.md).
 
-**M5. Frames.** `h2 lab bench --host laptop --branch <slice> --level
+**M5. Frames.** `h2 lab bench --name "Transfer benchmark" --host laptop --branch <slice> --level
 03a_oldmombasa --scale 4` as in lab.md "`--serve` and `bench`", against
 the same command on master, serial and pipelined.
 

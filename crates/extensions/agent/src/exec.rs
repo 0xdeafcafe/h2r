@@ -206,7 +206,7 @@ struct State {
     live_session: Option<fn(&dyn engine::GuestMemory) -> bool>,
     lobby_tape: Option<Arc<dyn LobbyTape>>,
     lobby_boundary: u64,
-    pending: VecDeque<(ConnId, Request)>,
+    pending: VecDeque<Queued>,
     waits: Vec<Waiting>,
     conns: BTreeMap<ConnId, Conn>,
     next_conn: ConnId,
@@ -265,6 +265,12 @@ struct State {
     deferred: Vec<Deferred>,
     /// Names `world.*` results' tags ([`Agent::set_tag_names`]).
     tag_names: Option<Mutex<Box<dyn TagNames>>>,
+}
+
+struct Queued {
+    conn: ConnId,
+    request: Request,
+    _count: crate::memory::PendingRequest,
 }
 
 /// A `profile.capture` waiting for its window to pass.
@@ -445,7 +451,11 @@ impl Agent {
                 }
                 return;
             }
-            Ok(r) => s.pending.push_back((conn, r)),
+            Ok(r) => s.pending.push_back(Queued {
+                conn,
+                request: r,
+                _count: crate::memory::PendingRequest::new(),
+            }),
             Err(resp) => s.send(conn, resp),
         }
         drop(s);
@@ -606,7 +616,7 @@ impl Agent {
         s.shutdown = true;
         s.paused = None;
         s.stepping = None;
-        for (conn, r) in std::mem::take(&mut s.pending) {
+        for Queued { conn, request: r, .. } in std::mem::take(&mut s.pending) {
             if let Some(id) = r.id {
                 s.send(
                     conn,
@@ -813,7 +823,7 @@ impl State {
         if c.streaming { return; }
         c.dead |= match &c.tx {
             Output::Local(tx) => tx.try_send(line).is_err(),
-            Output::Socket(tx) => tx.try_send(crate::server::Output::Line(line)).is_err(),
+            Output::Socket(tx) => tx.try_send(crate::server::Output::Line(line.into())).is_err(),
         };
     }
 
@@ -1002,7 +1012,7 @@ impl State {
         let busy: BTreeSet<ConnId> = self
             .pending
             .iter()
-            .map(|(c, _)| *c)
+            .map(|q| q.conn)
             .chain(self.waits.iter().map(|w| w.conn))
             .chain(self.capture.as_ref().map(|c| c.conn))
             .chain(self.snap_jobs.iter().map(|j| j.conn()))
@@ -1015,7 +1025,7 @@ impl State {
             .map(|(id, _)| *id)
             .collect();
         if !dead.is_empty() {
-            self.pending.retain(|(c, _)| !dead.contains(c));
+            self.pending.retain(|q| !dead.contains(&q.conn));
             self.waits.retain(|w| !dead.contains(&w.conn));
             self.snap_jobs.retain(|j| !dead.contains(&j.conn()));
             self.deferred.retain(|d| !dead.contains(&d.conn));
@@ -1045,17 +1055,19 @@ impl State {
     fn serve(&mut self, reader: &mut dyn Reader, where_: Where) {
         let defer_world = where_ == Where::Slice && self.ticking();
         let mut keep = VecDeque::new();
-        while let Some((conn, req)) = self.pending.pop_front() {
+        while let Some(queued) = self.pending.pop_front() {
+            let conn = queued.conn;
+            let req = &queued.request;
             if self.conns.get(&conn).is_none_or(|c| c.streaming) { continue; }
             if defer_world
                 && (req.method.starts_with("world.") || matches!(req.method.as_str(), agent_proto::live::SUBSCRIBE | agent_proto::live::STATUS)
                     || self.game_methods.contains_key(&req.method))
             {
-                keep.push_back((conn, req));
+                keep.push_back(queued);
                 continue;
             }
             let id = req.id.clone();
-            let out = self.handle(conn, req, reader);
+            let out = self.handle(conn, queued.request, reader);
             if let (Some(id), Some(out)) = (id, out) {
                 let r = match out {
                     Ok(v) => Response::ok(id, v),

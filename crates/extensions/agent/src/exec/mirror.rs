@@ -152,7 +152,7 @@ impl State {
             "layers": layers.names(), "refused": refused});
         let line = serde_json::to_string(&Response::ok(id, result)).expect("subscribe serialises");
         if tx
-            .try_send(crate::server::Output::Upgrade { line, frames })
+            .try_send(crate::server::Output::Upgrade { line: line.into(), frames })
             .is_err()
         {
             self.live.close(conn);

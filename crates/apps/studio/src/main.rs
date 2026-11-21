@@ -293,6 +293,11 @@ fn main() -> Result<()> {
         return studio_proto::cli::run("h2-editor call", std::env::args().skip(2).collect());
     }
     let args = args()?;
+    let data = args
+        .data
+        .clone()
+        .unwrap_or_else(content::store::default_data_root);
+    mem_watch::start(&data, option_env!("H2_BUILD_SHA"));
     let mut app = App::new();
     if let Some(d) = &args.data {
         app.set_data_root(d.clone());

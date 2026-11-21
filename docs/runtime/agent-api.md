@@ -10,8 +10,9 @@ menus show, how to put the game in a state and act in it. It replaces
 screenshots, pasted logs and environment variables read at launch. The
 command-line client is `h2 agent`. The editor connects to the same endpoint.
 
-The rule that must hold: every answer is read at one tick boundary on the
-game's thread, and says which moment it describes (the `at` stamp).
+Reads of game state run on the game's thread at a boundary. The `at`
+stamp identifies that moment. Independent host reads such as `host.memory`
+use their own sample clock and carry the game stamp at reply time.
 
 ## Method index
 
@@ -52,7 +53,7 @@ connection to hold `session.claim`.
 | `features.list` | read | [`session`](#session-what-is-running-and-its-clock) |
 | `live.join.open`, `live.join.status` | act, read | [Live session links](#live-session-links) |
 | `live.matchmaking.trace` | read | [Matchmaking transitions](#matchmaking-transitions) |
-| `host.metrics`, `host.audit`, `host.perf` | read | [`host`](#host-the-process-and-its-lobby) |
+| `host.metrics`, `host.memory`, `host.audit`, `host.perf` | read | [`host`](#host-the-process-and-its-lobby) |
 | `host.lobby.open`, `close`, `start` | act | [`host.lobby`](#hostlobby) |
 | `host.lobby.state` | read | [`host.lobby`](#hostlobby) |
 | `ui.screen`, `ui.campaign`, `ui.audit`, `ui.stack`, `ui.lobby.players`, `ui.browser.filters`, `ui.attract` | read | [`ui`](#ui-what-the-menus-show) |
@@ -1247,6 +1248,23 @@ A platform counter that is unavailable is `null`. Compare active
 gameplay windows after loading; a stale sample can survive a gap in ticks.
 The CPU fields exclude sleeping; the wall field shows the pace the host
 sustained.
+
+### `host.memory`
+
+`h2 agent hostmemory` reads the process watchdog. `h2 agent hostmemory report`
+sends `{"report":true}`, collects a diagnostic report on the game host, and
+returns its path as the last item in `reports`. Collection runs on the
+connection thread so the game can continue ticking. A write failure returns
+`UNAVAILABLE`. An ordinary read takes no parameters and creates no file.
+
+| Field | Meaning |
+|---|---|
+| `footprint_bytes`, `peak_bytes` | Latest physical footprint and highest footprint sampled by the watchdog, in bytes |
+| `soft`, `hard` | Process limits in bytes. A zero disables that limit. |
+| `growth_bytes_per_min` | Estimated footprint change per minute |
+| `samples` | Last 60 samples, oldest first, as `[milliseconds_since_watchdog_start, bytes]` |
+| `probes` | Named subsystem counts, including pending requests, socket reply buffers and queued pad steps |
+| `reports` | Recent report paths on the game host |
 
 ### `host.audit`
 
@@ -2836,7 +2854,7 @@ agents do not.
   directory (`agent_proto::cache_dir`), never in the repository.
 - Methods a method table names but this build does not register (an
   `input.*` method without XAPI input, `audio.voices` without
-  DirectSound, `host.*` without the light host) are absent from
+  DirectSound, `host.lobby.*` without the light host) are absent from
   `session.methods`.
 
 ## Evidence

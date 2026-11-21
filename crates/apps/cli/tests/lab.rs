@@ -27,7 +27,8 @@ cmd=$1; shift
 if [ "$cmd" = build ]; then
   out=
   while [ $# -gt 0 ]; do [ "$1" = --out ] && out=$2; shift; done
-  mkdir -p "$out" && echo image > "$out/libh2game.dylib"
+  case "$(uname -s):$(uname -m)" in Linux:x86_64) lib=libh2game.so;; *) lib=libh2game.dylib;; esac
+  mkdir -p "$out" && echo image > "$out/$lib"
   echo "fake build opt=$H2_OPT objcache=$H2_OBJ_CACHE"
   exit 0
 fi
@@ -54,6 +55,7 @@ if [ "$cmd" = agent ]; then
   exit 0
 fi
 echo "fake play $*"
+echo "lab job id=$H2_LAB_JOB_ID name=$H2_LAB_JOB_NAME"
 echo "env level=$H2_LEVEL opt=$H2_OPT replay=$H2_INPUT_REPLAY record=$H2_INPUT_RECORD profile=$H2_PROFILE from=$H2_FRAME_STATS_FROM home=$H2_LEAK scale=$H2_RENDER_SCALE agent=$H2_AGENT"
 trap 'echo "got TERM"; exit 143' TERM
 n=${H2_BOOT_STOP_AT_PRESENT:-${FAKE_FRAMES:-1000000}}
@@ -139,6 +141,10 @@ impl Lab {
     }
 
     fn with_host_options(name: &str, options: &[&str]) -> Lab {
+        Lab::with_setup(name, options, |_, _| {})
+    }
+
+    fn with_setup(name: &str, options: &[&str], setup: impl FnOnce(&Path, &Path)) -> Lab {
         let dir = scratch(name);
         let fake_h2 = dir.join("fake-h2");
         script(&fake_h2, FAKE_H2);
@@ -171,6 +177,7 @@ impl Lab {
         assert!(o.status.success());
         let socket = dir.join("s");
         let root = dir.join("root");
+        setup(&root, &repo);
         let host_home = dir.join("host-home");
         fs::create_dir(&host_home).unwrap();
         let child = Command::new(env!("CARGO_BIN_EXE_h2"))
@@ -363,7 +370,7 @@ impl Drop for FakeGame {
 }
 
 fn start_fake_run(lab: &Lab) -> String {
-    let value = json(&ok(&lab.local(&["run", "--current", "--frames", "1"])));
+    let value = json(&ok(&lab.local(&["run", "--name", "Synthetic job", "--current", "--frames", "1"])));
     value["id"].as_str().unwrap().to_owned()
 }
 
@@ -388,7 +395,12 @@ fn takeover_allow_waits_for_the_game_window_to_close() {
     let before_quit = lab.local(&["wait", &id, "--timeout", "0"]);
     assert_eq!(before_quit.status.code(), Some(3));
     assert!(!lab.root.join("runs").join(&id).join("run.log").exists());
-    assert!(err(&lab.local(&["run", "--current", "--frames", "1"])).contains("busy"));
+    let second = start_fake_run(&lab);
+    assert_eq!(json(&ok(&lab.local(&["status"])))["queued"], json!([second]));
+    ok(&lab.local(&["stop", &second]));
+    let stopped = lab.local(&["wait", &second, "--timeout", "0"]);
+    assert_eq!(stopped.status.code(), Some(1));
+    assert_eq!(json(&String::from_utf8_lossy(&stopped.stdout))["job"]["state"], "stopped");
 
     let requests = game.requests.lock().unwrap();
     assert_eq!(requests.len(), 1);
@@ -481,6 +493,8 @@ fn a_lab_host_runs_waits_stops_fetches_and_builds_branches() {
     let to = lab.dir.join("fetched");
     let out = ok(&lab.local(&[
         "run",
+        "--name",
+        "Synthetic job",
         "--current",
         "--level",
         "03a_oldmombasa",
@@ -510,9 +524,14 @@ fn a_lab_host_runs_waits_stops_fetches_and_builds_branches() {
     );
     let run = to.join(&id);
     assert!(out.trim_end().ends_with(run.to_str().unwrap()), "{out}");
+    let meta: Value = serde_json::from_slice(&fs::read(run.join("meta.json")).unwrap()).unwrap();
+    assert_eq!(meta["name"], "Synthetic job");
+    assert_eq!(meta["request"]["name"], meta["name"]);
     let csv = fs::read_to_string(run.join("frames.csv")).unwrap();
     assert_eq!(csv.lines().count(), 4, "{csv}");
     let log = fs::read_to_string(run.join("run.log")).unwrap();
+    assert!(log.contains(&format!("lab job id={id} name=Synthetic job")), "{log}");
+    assert!(log.contains(&format!("--title h2 · lab {id} · Synthetic job ·")), "{log}");
     assert!(
         log.contains("--level 03a_oldmombasa --difficulty heroic --no-audio --fps 60"),
         "{log}"
@@ -535,22 +554,24 @@ fn a_lab_host_runs_waits_stops_fetches_and_builds_branches() {
 
     // Refusals: host-owned variables, paths out of the root, unknown flags.
     assert!(
-        err(&lab.local(&["run", "--current", "--env", "H2_FRAME_STATS_CSV=/tmp/x"]))
+        err(&lab.local(&["run", "--name", "Synthetic job", "--current", "--env", "H2_FRAME_STATS_CSV=/tmp/x"]))
             .contains("not a run variable")
     );
-    assert!(err(&lab.local(&["run", "--current", "--replay", "../../x"])).contains("must be 1-64"));
+    assert!(err(&lab.local(&["run", "--name", "Synthetic job", "--current", "--replay", "../../x"])).contains("must be 1-64"));
     assert!(
-        err(&lab.local(&["run", "--current", "--", "--out", "/tmp"]))
+        err(&lab.local(&["run", "--name", "Synthetic job", "--current", "--", "--out", "/tmp"]))
             .contains("not one the lab passes")
     );
     assert!(
-        err(&lab.local(&["run", "--current", "--replay", "nothing"]))
+        err(&lab.local(&["run", "--name", "Synthetic job", "--current", "--replay", "nothing"]))
             .contains("no recording nothing")
     );
 
-    // One at a time: a long run, a refused second, stop, then it's stopped.
+    // One at a time: a long run, a queued second, and a stop.
     let v = json(&ok(&lab.local(&[
         "run",
+        "--name",
+        "Synthetic job",
         "--current",
         "--level",
         "ascension",
@@ -565,11 +586,8 @@ fn a_lab_host_runs_waits_stops_fetches_and_builds_branches() {
         assert!(t.elapsed() < Duration::from_secs(10), "never running: {s}");
         std::thread::sleep(Duration::from_millis(50));
     }
-    let busy = err(&lab.local(&["run", "--current", "--level", "ascension"]));
-    assert!(
-        busy.contains(&format!("busy: job {long} is running")),
-        "{busy}"
-    );
+    let next = start_fake_run(&lab);
+    assert_eq!(json(&ok(&lab.local(&["status"])))["queued"], json!([next]));
     // A commit the host doesn't have can be synced while the game runs.
     let commit = git(
         &lab.dev,
@@ -603,9 +621,13 @@ fn a_lab_host_runs_waits_stops_fetches_and_builds_branches() {
     assert!(log.contains("got TERM"), "{log}");
     assert!(err(&lab.local(&["stop", &long])).contains("not running (stopped)"));
 
+    assert_eq!(wait_fake_job(&lab, &next)["job"]["state"], "done");
+
     // Record, then replay the recording (level from its manifest), over the LAN transport.
     let v = json(&ok(&lab.lan(&[
         "run",
+        "--name",
+        "Synthetic job",
         "--current",
         "--level",
         "03a_oldmombasa",
@@ -626,6 +648,8 @@ fn a_lab_host_runs_waits_stops_fetches_and_builds_branches() {
     assert!(lab.root.join("recordings/fight/input.bin").is_file());
     let v = json(&ok(&lab.lan(&[
         "run",
+        "--name",
+        "Synthetic job",
         "--current",
         "--replay",
         "fight",
@@ -649,7 +673,7 @@ fn a_lab_host_runs_waits_stops_fetches_and_builds_branches() {
     );
     // Recording names are not reused.
     assert!(
-        err(&lab.local(&["run", "--current", "--level", "x", "--record", "fight"]))
+        err(&lab.local(&["run", "--name", "Synthetic job", "--current", "--level", "x", "--record", "fight"]))
             .contains("exists")
     );
 
@@ -679,6 +703,8 @@ fn a_lab_host_runs_waits_stops_fetches_and_builds_branches() {
     let head = git(&lab.dev, &["rev-parse", "HEAD"]);
     let v = json(&ok(&lab.lan(&[
         "run",
+        "--name",
+        "Synthetic job",
         "--level",
         "ascension",
         "--frames",
@@ -713,12 +739,14 @@ fn a_lab_host_runs_waits_stops_fetches_and_builds_branches() {
             .contains("opt=2"),
         "the build env is set on the run too"
     );
-    assert!(lab.root.join("src").join(&head).join("README").is_file());
+    assert!(lab.root.join("src/current/README").is_file());
     let cargo = fs::read_to_string(&lab.cargo_log).unwrap();
     assert_eq!(cargo.lines().count(), 1);
     assert!(cargo.contains("build --release -p cli --bin h2"), "{cargo}");
     let v = json(&ok(&lab.lan(&[
         "run",
+        "--name",
+        "Synthetic job",
         "--level",
         "ascension",
         "--frames",
@@ -768,6 +796,91 @@ fn a_lab_host_runs_waits_stops_fetches_and_builds_branches() {
         ]))
         .contains("no PGO profile")
     );
+}
+
+#[test]
+fn a_running_job_pins_the_image_and_queued_branches_share_one_checkout() {
+    let lab = Lab::named("fifo");
+    let first = git(&lab.repo, &["rev-parse", "HEAD"]);
+    git(&lab.repo, &["update-ref", "refs/remotes/origin/master", &first]);
+    let active = json(&ok(&lab.local(&["run", "--name", "Synthetic job", "--rev", "HEAD"])));
+    let run_id = active["id"].as_str().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while json(&ok(&lab.local(&["status"])))["active"]["state"] != "running" {
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    let stamp = lab.root.join("image/image.json");
+    let checkout = lab.root.join("src/current");
+    let keep = checkout.join("untracked-sentinel");
+    fs::write(&keep, b"keep").unwrap();
+    git(&lab.repo, &["commit", "-q", "--allow-empty", "-m", "second"]);
+    let second = git(&lab.repo, &["rev-parse", "HEAD"]);
+    git(&lab.repo, &["update-ref", "refs/remotes/origin/master", &second]);
+    let b = json(&ok(&lab.local(&["build", "--rev", "origin/master"])));
+    assert_eq!(b["job"]["commit"], second);
+    git(&lab.repo, &["update-ref", "refs/remotes/origin/master", &first]);
+    let a = json(&ok(&lab.local(&["build", "--rev", "origin/master"])));
+    assert_eq!(a["job"]["commit"], first);
+    let status = json(&ok(&lab.local(&["status"])));
+    assert_eq!(status["active"]["id"], run_id);
+    assert_eq!(status["queued"], json!([b["id"], a["id"]]));
+    let stamped: Value = serde_json::from_slice(&fs::read(&stamp).unwrap()).unwrap();
+    assert_eq!(stamped["commit"], first);
+    assert_eq!(git(&checkout, &["rev-parse", "HEAD"]), first);
+    ok(&lab.local(&["stop", run_id]));
+    for v in [&b, &a] {
+        let result = wait_fake_job(&lab, v["id"].as_str().unwrap());
+        assert_eq!(result["job"]["state"], "done", "{result}");
+        assert_eq!(result["job"]["cached"], false);
+    }
+    let stamped: Value = serde_json::from_slice(&fs::read(&stamp).unwrap()).unwrap();
+    assert_eq!(stamped["commit"], first);
+    assert_eq!(git(&checkout, &["rev-parse", "HEAD"]), first);
+    assert!(keep.is_file());
+    assert_eq!(fs::read_dir(lab.root.join("src")).unwrap().count(), 1);
+    assert_eq!(fs::read_to_string(&lab.cargo_log).unwrap().lines().count(), 3);
+    assert_eq!(json(&ok(&lab.local(&["build", "--rev", &first, "--wait"])))["job"]["cached"], true);
+    // A partial replacement cannot reuse a missing or damaged stamp.
+    fs::write(&stamp, b"{").unwrap();
+    assert_eq!(json(&ok(&lab.local(&["build", "--rev", &first, "--wait"])))["job"]["cached"], false);
+}
+
+#[test]
+fn host_migration_removes_only_the_legacy_build_directories() {
+    let lab = Lab::with_setup("migrate", &[], |root, repo| {
+        let commit = git(repo, &["rev-parse", "HEAD"]);
+        let src = root.join("src");
+        fs::create_dir_all(&src).unwrap();
+        git(repo, &["worktree", "add", "-q", "--detach", src.join(commit).to_str().unwrap(), "HEAD"]);
+        for dir in ["images/a123456789abcdef", "images/other", "src/other",
+                    "runs/0001", "recordings/demo"] {
+            let path = root.join(dir);
+            fs::create_dir_all(&path).unwrap();
+            fs::write(path.join("sentinel"), b"keep").unwrap();
+        }
+        std::os::unix::fs::symlink(root.join("recordings"), root.join("images/0123456789abcdef")).unwrap();
+    });
+    let old = lab.root.join("src").join(git(&lab.repo, &["rev-parse", "HEAD"]));
+    assert!(!old.exists());
+    assert!(!git(&lab.repo, &["worktree", "list", "--porcelain"]).contains(old.to_str().unwrap()));
+    assert!(!lab.root.join("images/a123456789abcdef").exists());
+    for dir in ["images/other", "src/other", "runs/0001", "recordings/demo"] {
+        assert!(lab.root.join(dir).join("sentinel").is_file());
+    }
+    assert!(lab.root.join("images/0123456789abcdef").is_symlink());
+}
+
+#[test]
+fn the_build_caches_can_be_capped_independently_of_the_published_image() {
+    let lab = Lab::with_host_options("caps", &["--obj-cache-limit", "0", "--target-limit", "0"]);
+    let obj = lab.root.join("obj-cache");
+    fs::create_dir_all(&obj).unwrap();
+    fs::write(obj.join("unused.o"), b"old").unwrap();
+    assert_eq!(json(&ok(&lab.local(&["build", "--rev", "HEAD", "--wait"])))["job"]["cached"], false);
+    assert!(!obj.join("unused.o").exists());
+    assert_eq!(fs::read_dir(lab.root.join("target")).unwrap().count(), 0);
+    assert_eq!(json(&ok(&lab.local(&["build", "--rev", "HEAD", "--wait"])))["job"]["cached"], true);
 }
 
 #[test]
@@ -859,6 +972,8 @@ fn lab_agent_forwards_calls_to_a_serve_runs_game_and_returns_exit_codes() {
     let lab = Lab::named("g");
     let v = json(&ok(&lab.local(&[
         "run",
+        "--name",
+        "Synthetic job",
         "--current",
         "--level",
         "ascension",
@@ -939,7 +1054,7 @@ fn lab_agent_forwards_calls_to_a_serve_runs_game_and_returns_exit_codes() {
     assert!(err(&lab.local(&["agent", &id, "flight", "show", "x"])).contains("reads files"));
     assert!(err(&lab.local(&["agent", "9999", "status"])).contains("no job 9999"));
     assert!(
-        err(&lab.local(&["run", "--current", "--serve", "--frames", "5"])).contains("never stops")
+        err(&lab.local(&["run", "--name", "Synthetic job", "--current", "--serve", "--frames", "5"])).contains("never stops")
     );
 
     // Stopping the run ends it, removes the socket, and calls are refused.
@@ -964,6 +1079,8 @@ fn lab_bench_measures_a_level_and_saves_the_answers_for_an_ab() {
         };
         let args = [
             "bench",
+            "--name",
+            "Synthetic job",
             "--current",
             "--level",
             "03a_oldmombasa",
@@ -1012,5 +1129,39 @@ fn lab_bench_measures_a_level_and_saves_the_answers_for_an_ab() {
     assert_eq!(runs.matches("run stopped").count(), 2, "{runs}");
     assert_ne!(dirs[0], dirs[1]);
     // Needs a level; a build that fails to start is reported, not hung on.
-    assert!(err(&lab.local(&["bench", "--current"])).contains("needs --level"));
+    assert!(err(&lab.local(&["bench", "--name", "Synthetic job", "--current"])).contains("needs --level"));
+}
+
+#[test]
+fn watchdog_exit_fetches_the_game_report_with_the_failed_run() {
+    let lab = Lab::named("memreport");
+    // A synthetic game leaves a report exactly where the host requested.
+    script(
+        &lab.dir.join("fake-h2"),
+        &format!(
+            "#!/bin/sh\nmkdir -p \"$H2_MEM_REPORT_DIR\"\necho '{{\"trigger\":\"hard\"}}' > \"$H2_MEM_REPORT_DIR/game.json\"\nexit {}\n",
+            mem_watch::MEMORY_LIMIT_EXIT
+        ),
+    );
+    let dest = lab.dir.join("results");
+    let out = lab.local(&[
+        "run",
+        "--name",
+        "Synthetic job",
+        "--current",
+        "--mem-limit",
+        "13G",
+        "--wait",
+        "--to",
+        dest.to_str().unwrap(),
+    ]);
+    assert_eq!(out.status.code(), Some(1));
+    let answer = json(&String::from_utf8(out.stdout).unwrap());
+    let job = &answer["job"];
+    assert_eq!(job["state"], "failed");
+    assert_eq!(job["exit_code"], mem_watch::MEMORY_LIMIT_EXIT);
+    assert!(job["error"].as_str().unwrap().contains("memory limit"));
+    assert_eq!(job["request"]["mem_limit"], 13_u64 << 30);
+    let path = dest.join(job["id"].as_str().unwrap()).join("mem/game.json");
+    assert_eq!(json(&fs::read_to_string(path).unwrap())["trigger"], "hard");
 }

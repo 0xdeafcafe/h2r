@@ -467,6 +467,14 @@ fn launch_args(cfg: &HostConfig) -> Result<Vec<String>> {
             args.extend(["--name".into(), name.clone()]);
         }
     }
+    for (flag, value, default) in [
+        ("--target-limit", cfg.target_limit, super::build_cache::DEFAULT_TARGET_LIMIT),
+        ("--obj-cache-limit", cfg.obj_cache_limit, super::build_cache::DEFAULT_OBJECT_LIMIT),
+    ] {
+        if value != default {
+            args.extend([flag.into(), value.to_string()]);
+        }
+    }
     let defaults = super::takeover::Config::default();
     for (flag, value, default) in [
         ("--takeover-timeout", cfg.takeover.timeout_seconds, defaults.timeout_seconds),
@@ -549,7 +557,8 @@ pub(super) fn stage_update(cfg: &HostConfig) -> Result<()> {
         .env("GIT_TERMINAL_PROMPT", "0");
     run_update_step(cfg, git, &mut log, "git pull")?;
 
-    let mut cargo = Command::new(&cfg.cargo);
+    let mut cargo = crate::follow::niced(&cfg.cargo);
+    cargo.env("CARGO_BUILD_JOBS", super::build_cache::workers().to_string());
     cargo
         .args(["build", "--release", "-p", "cli", "--bin", "h2"])
         .env("CARGO_TARGET_DIR", cfg.repo.join("target"));
@@ -822,6 +831,8 @@ mod tests {
             out: Some("/game/out".into()),
             data: "/game/saves".into(),
             cargo: "/opt/tool chain/cargo".into(),
+            obj_cache_limit: super::super::build_cache::DEFAULT_OBJECT_LIMIT,
+            target_limit: super::super::build_cache::DEFAULT_TARGET_LIMIT,
             grace: Duration::from_secs(5),
             takeover: super::super::takeover::Config::default(),
             lan: Some(lan::Listen {

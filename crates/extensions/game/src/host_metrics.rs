@@ -162,6 +162,7 @@ pub fn install(
     agent: &agent::Agent,
     host_light: bool,
 ) -> anyhow::Result<()> {
+    agent.install_host_memory();
     let shared = Arc::new(Sampler {
         ticks: AtomicU64::new(0),
         host_light,

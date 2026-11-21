@@ -434,6 +434,7 @@ fn without_an_input_tap_flight_rows_have_no_input() {
 fn the_flight_ring_is_bounded_by_bytes_too() {
     let sel = Selection::new(vec!["player.0".into()], None).unwrap();
     let mut f = Flight {
+        row_bytes: FLIGHT_ROW_BYTES.track(0),
         sel: sel.clone(),
         seconds: 10,
         capacity: 300,
@@ -452,6 +453,7 @@ fn the_flight_ring_is_bounded_by_bytes_too() {
         };
         f.push(&sel.row(&tick, &g.objects()));
     }
+    assert_eq!(f.row_bytes.get(), f.bytes as u64);
     assert!(f.bytes <= 1000, "{}", f.bytes);
     assert_eq!(f.bytes, f.ring.iter().map(|r| r.1.len()).sum::<usize>());
     assert!(f.ring.len() < 50 && !f.ring.is_empty());

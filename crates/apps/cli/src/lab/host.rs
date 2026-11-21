@@ -2,7 +2,9 @@
 //! time (a build, or a run that may build first), each in `runs/<id>/` with
 //! its log and metadata. See docs/runtime/lab.md.
 
-use std::collections::{BTreeMap, HashMap};
+mod memory;
+
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::fs::{self, File, OpenOptions, TryLockError};
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpListener};
@@ -22,7 +24,7 @@ use sha2::{Digest, Sha256};
 
 use super::proto::{self, BuildSpec, INPUT_FILE, Manifest, Request, RunReq};
 use super::transfer::Transfers;
-use super::{discovery, lan, service, takeover, transfer};
+use super::{build_cache, discovery, lan, service, takeover, transfer};
 
 /// Where the host keeps everything, and what it runs.
 #[derive(Clone, Debug)]
@@ -39,6 +41,8 @@ pub struct HostConfig {
     /// The data root runs share (default: `<root>/data`).
     pub data: PathBuf,
     pub cargo: PathBuf,
+    pub obj_cache_limit: u64,
+    pub target_limit: u64,
     pub lan: Option<lan::Listen>,
     pub managed: bool,
     pub explicit_h2: bool,
@@ -58,6 +62,8 @@ impl HostConfig {
 #[serde(default)]
 pub struct Meta {
     pub id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     /// `run` or `build`.
     pub kind: String,
     /// queued, awaiting_consent, awaiting_quit, building, running, then
@@ -65,7 +71,7 @@ pub struct Meta {
     pub state: String,
     pub request: Value,
     pub commit: Option<String>,
-    /// Image cache key (`images/<key>`), for builds by commit.
+    /// The build key stamped in `image/image.json`.
     pub image: Option<String>,
     /// The image was already built.
     pub cached: Option<bool>,
@@ -75,6 +81,8 @@ pub struct Meta {
     pub duration_s: Option<f64>,
     pub exit_code: Option<i32>,
     pub signal: Option<i32>,
+    pub peak_footprint_bytes: Option<u64>,
+    pub last_footprint_bytes: Option<u64>,
     pub error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub skip_reason: Option<String>,
@@ -94,12 +102,16 @@ fn is_final(state: &str) -> bool {
 struct Active {
     id: String,
     pgid: Option<i32>,
+    memory_wake: Option<std::sync::mpsc::Sender<memory::Event>>,
     stop: bool,
 }
 
 #[derive(Default)]
 struct Inner {
     active: Option<Active>,
+    queue: VecDeque<Pending>,
+    /// Held from admission of the first job until the FIFO is empty.
+    activity: Option<File>,
     jobs: HashMap<String, Meta>,
 }
 
@@ -132,11 +144,12 @@ fn now() -> u64 {
 
 /// Serves the private socket and, when configured, the paired LAN listener.
 pub fn serve(cfg: HostConfig) -> Result<()> {
-    for d in ["runs", "recordings", "pgo", "images", "src", "scratch", "a"] {
+    for d in ["runs", "recordings", "pgo", "scratch", "a"] {
         fs::create_dir_all(cfg.dir(d))
             .with_context(|| format!("creating {}", cfg.dir(d).display()))?;
     }
     fs::create_dir_all(&cfg.data)?;
+    mem_watch::start(&cfg.data, Some(app::BuildInfo::baked().sha));
     let lan = cfg.lan.as_ref().map(open_lan).transpose()?;
     let authority = lan
         .as_ref()
@@ -160,7 +173,21 @@ pub fn serve(cfg: HostConfig) -> Result<()> {
         checkout: Mutex::new(()),
         takeover,
     });
-    recover(&shared);
+    // Install/update may hold the activity lock across starting this service.
+    // Verify an interrupted host has no children still writing job logs.
+    {
+        let lock = open_activity_lock(&shared.cfg.root)?;
+        lock.lock()?;
+        let unfinished: Vec<_> = disk_metas(&shared.cfg)
+            .into_iter()
+            .filter(|m| !is_final(&m.state))
+            .collect();
+        for job in &unfinished {
+            build_cache::check_abandoned(&shared.cfg.dir("runs").join(&job.id))?;
+        }
+        build_cache::migrate(&shared.cfg)?;
+        recover(&shared, unfinished);
+    }
     eprintln!(
         "lab: listening on {} (root {}, repo {}, disc {})",
         shared.cfg.socket.display(),
@@ -251,7 +278,7 @@ fn serve_lan(sh: Arc<Shared>, listener: TcpListener, authority: lan::Server) {
     }
 }
 
-fn try_activity_lock(root: &Path) -> Result<Option<File>> {
+fn open_activity_lock(root: &Path) -> Result<File> {
     fs::create_dir_all(root)?;
     let lock = OpenOptions::new()
         .read(true)
@@ -261,6 +288,11 @@ fn try_activity_lock(root: &Path) -> Result<Option<File>> {
         .mode(0o600)
         .custom_flags(libc::O_NOFOLLOW)
         .open(root.join("activity.lock"))?;
+    Ok(lock)
+}
+
+fn try_activity_lock(root: &Path) -> Result<Option<File>> {
+    let lock = open_activity_lock(root)?;
     match lock.try_lock() {
         Ok(()) => Ok(Some(lock)),
         Err(TryLockError::WouldBlock) => Ok(None),
@@ -313,14 +345,11 @@ pub fn bind(path: &Path) -> Result<UnixListener> {
 }
 
 /// Jobs a previous host left unfinished are failed: nothing watches them now.
-fn recover(sh: &Shared) {
-    for m in disk_metas(&sh.cfg) {
-        if !is_final(&m.state) {
-            let mut m = m;
-            m.state = "failed".into();
-            m.error = Some("the host stopped while this job ran".into());
-            let _ = write_meta(&sh.cfg, &m);
-        }
+fn recover(sh: &Shared, unfinished: Vec<Meta>) {
+    for mut job in unfinished {
+        job.state = "failed".into();
+        job.error = Some("the host stopped while this job was pending or running".into());
+        let _ = write_meta(&sh.cfg, &job);
     }
 }
 
@@ -517,6 +546,8 @@ fn handle(sh: &Arc<Shared>, r: Request, requester: &str) -> Result<Value> {
     let cfg = &sh.cfg;
     match r {
         Request::Status => {
+            let memory = mem_watch::snapshot();
+            let pressure = mem_watch::pressure();
             let inner = sh.inner.lock().unwrap();
             let active = inner.active.as_ref().and_then(|a| inner.jobs.get(&a.id));
             Ok(json!({
@@ -524,6 +555,9 @@ fn handle(sh: &Arc<Shared>, r: Request, requester: &str) -> Result<Value> {
                 "build_version": env!("CARGO_PKG_VERSION"),
                 "build_commit": app::BuildInfo::baked().sha,
                 "pid": std::process::id(),
+                "footprint_bytes": memory.footprint_bytes,
+                "peak_footprint_bytes": memory.peak_bytes,
+                "memory_pressure": pressure,
                 "listen": sh.listen_addr,
                 "name": sh.service_name,
                 "root": cfg.root,
@@ -531,6 +565,7 @@ fn handle(sh: &Arc<Shared>, r: Request, requester: &str) -> Result<Value> {
                 "disc": cfg.disc,
                 "h2": cfg.h2,
                 "active": active,
+                "queued": inner.queue.iter().map(|p| &p.id).collect::<Vec<_>>(),
             }))
         }
         Request::SyncBases { branch, commit } => {
@@ -616,6 +651,13 @@ fn handle(sh: &Arc<Shared>, r: Request, requester: &str) -> Result<Value> {
     }
 }
 
+struct Pending {
+    id: String,
+    job: Job,
+    commit: Option<String>,
+    requester: String,
+}
+
 enum Job {
     Run(RunReq),
     Build(BuildSpec),
@@ -667,23 +709,27 @@ fn start(sh: &Arc<Shared>, job: Job, requester: &str) -> Result<Value> {
         );
     }
     let mut inner = sh.inner.lock().unwrap();
-    if let Some(a) = &inner.active {
-        let state = inner.jobs.get(&a.id).map_or("busy", |m| m.state.as_str());
-        bail!(
-            "busy: job {} is {state}; one job at a time (h2 lab wait {0} or h2 lab stop {0})",
-            a.id
+    if let Job::Run(run) = &job && let Some(name) = &run.record {
+        ensure!(
+            !inner.jobs.values().any(|m| !is_final(&m.state) && m.request["record"].as_str() == Some(name.as_str())),
+            "recording {name} already has a pending job"
         );
     }
-    let lock = activity_lock(&cfg.root)?;
+    let lock = if inner.activity.is_none() {
+        Some(activity_lock(&cfg.root)?)
+    } else {
+        None
+    };
     let id = next_id(cfg, &inner);
     fs::create_dir_all(cfg.dir("runs").join(&id))?;
-    let (kind, request) = match &job {
-        Job::Run(r) => ("run", serde_json::to_value(r)?),
-        Job::Build(b) => ("build", serde_json::to_value(b)?),
+    let (kind, name, request) = match &job {
+        Job::Run(r) => ("run", Some(r.name.clone()), serde_json::to_value(r)?),
+        Job::Build(b) => ("build", None, serde_json::to_value(b)?),
     };
     let m = Meta {
         id: id.clone(),
         kind: kind.into(),
+        name,
         state: "queued".into(),
         request,
         commit: commit.clone(),
@@ -694,17 +740,43 @@ fn start(sh: &Arc<Shared>, job: Job, requester: &str) -> Result<Value> {
     };
     write_meta(cfg, &m)?;
     inner.jobs.insert(id.clone(), m.clone());
-    inner.active = Some(Active {
+    inner.queue.push_back(Pending {
         id: id.clone(),
-        pgid: None,
-        stop: false,
+        job,
+        commit,
+        requester: requester.to_owned(),
     });
+    if let Some(lock) = lock {
+        inner.activity = Some(lock);
+        let sh = Arc::clone(sh);
+        std::thread::spawn(move || drain_queue(&sh));
+    }
     drop(inner);
-    let sh2 = Arc::clone(sh);
-    let id2 = id.clone();
-    let requester = requester.to_owned();
-    std::thread::spawn(move || execute(&sh2, &id2, job, commit, &requester, lock));
+    sh.cv.notify_all();
     Ok(json!({ "id": id, "job": m }))
+}
+
+fn drain_queue(sh: &Arc<Shared>) {
+    loop {
+        let mut inner = sh.inner.lock().unwrap();
+        if inner.queue.is_empty() {
+            inner.activity = None;
+            return;
+        }
+        if mem_watch::pressure() == Some(true) {
+            drop(sh.cv.wait_timeout(inner, Duration::from_secs(2)).unwrap());
+            continue;
+        }
+        let pending = inner.queue.pop_front().unwrap();
+        inner.active = Some(Active {
+            id: pending.id.clone(),
+            pgid: None,
+            stop: false,
+            memory_wake: None,
+        });
+        drop(inner);
+        execute(sh, &pending.id, pending.job, pending.commit, &pending.requester);
+    }
 }
 
 fn next_id(cfg: &HostConfig, inner: &Inner) -> String {
@@ -752,31 +824,25 @@ impl Shared {
     /// Runs one step of job `id` in its own process group, so stop reaches
     /// what it starts (cargo's rustc, the game's helpers) too.
     fn step(&self, id: &str, mut cmd: Command, log: &File) -> Result<std::process::ExitStatus> {
-        if self.stop_requested(id) {
-            return Err(Stopped.into());
-        }
         cmd.stdin(Stdio::null())
             .stdout(log.try_clone()?)
             .stderr(log.try_clone()?)
             .process_group(0);
+        // Publish the process group before a stop can observe this spawn. A
+        // stop between steps must prevent the next child from starting at all.
+        let mut inner = self.inner.lock().unwrap();
+        let Some(active) = inner.active.as_mut().filter(|a| a.id == id && !a.stop) else {
+            return Err(Stopped.into());
+        };
         let mut child = cmd
             .spawn()
             .with_context(|| format!("starting {:?}", cmd.get_program()))?;
         let pgid = child.id() as i32;
-        let stop_now = {
-            let mut inner = self.inner.lock().unwrap();
-            match inner.active.as_mut() {
-                Some(a) if a.id == id => {
-                    a.pgid = Some(pgid);
-                    a.stop
-                }
-                _ => false,
-            }
-        };
-        if stop_now {
-            // SAFETY: signalling the group we just made.
-            unsafe { libc::kill(-pgid, libc::SIGTERM) };
+        active.pgid = Some(pgid);
+        if let Some(wake) = &active.memory_wake {
+            let _ = wake.send(memory::Event::Step);
         }
+        drop(inner);
         let status = child.wait()?;
         let stopped = {
             let mut inner = self.inner.lock().unwrap();
@@ -816,15 +882,19 @@ fn execute(
     job: Job,
     commit: Option<String>,
     requester: &str,
-    lock: File,
 ) {
     let t = Instant::now();
-    let outcome = run_job(sh, id, &job, commit.as_deref(), requester);
+    let (outcome, memory_error) = memory::supervise(sh, id, &job, || {
+        run_job(sh, id, &job, commit.as_deref(), requester)
+    });
     let (state, error) = match &outcome {
         Ok(JobOutcome::Finished(Some(st))) if st.success() => ("done", None),
         Ok(JobOutcome::Finished(Some(st))) => (
             "failed",
             Some(match (st.code(), st.signal()) {
+                (Some(mem_watch::MEMORY_LIMIT_EXIT), _) => {
+                    format!("memory limit: game watchdog exited; see runs/{id}/mem/")
+                }
                 (Some(c), _) => format!("exit {c}"),
                 (_, Some(s)) => format!("signal {s}"),
                 _ => "failed".into(),
@@ -836,8 +906,8 @@ fn execute(
         Err(e) => ("failed", Some(format!("{e:#}"))),
     };
     let run_dir = sh.cfg.dir("runs").join(id);
-    let summary = fs::read_to_string(run_dir.join("run.log"))
-        .map(|l| summarize(&l))
+    let summary = File::open(run_dir.join("run.log"))
+        .and_then(|log| summarize(BufReader::new(log)))
         .unwrap_or_default();
     let (status, skip_reason) = match outcome {
         Ok(JobOutcome::Finished(status)) => (status, None),
@@ -854,19 +924,20 @@ fn execute(
     let _ = fs::remove_file(agent_socket_path(&sh.cfg, id));
     let mut inner = sh.inner.lock().unwrap();
     if let Some(m) = inner.jobs.get_mut(id) {
-        m.state = state.into();
-        m.error = error;
+        m.state = if memory_error.is_some() { "failed" } else { state }.into();
+        m.error = memory_error.or(error);
         m.skip_reason = skip_reason;
         m.duration_s = Some(t.elapsed().as_secs_f64());
         m.exit_code = status.and_then(|s| s.code());
         m.signal = status.and_then(|s| s.signal());
         m.summary = summary;
-        let _ = write_meta(&sh.cfg, m);
+        if write_meta(&sh.cfg, m).is_ok() {
+            inner.jobs.remove(id);
+        }
     }
     if inner.active.as_ref().is_some_and(|a| a.id == id) {
         inner.active = None;
     }
-    drop(lock);
     drop(inner);
     sh.cv.notify_all();
 }
@@ -974,7 +1045,8 @@ fn run_job(
     if builds_image && let Some(skipped) = consent(false)? {
         return Ok(skipped);
     }
-    let log = File::create(run_dir.join("run.log"))?;
+    let mut log = File::create(run_dir.join("run.log"))?;
+    writeln!(log, "lab job {id} · {}", run.name)?;
     let cmd = play_command(cfg, id, run, &image, commit)?;
     let sock = agent_socket_path(cfg, id);
     sh.update(id, |m| {
@@ -1008,6 +1080,10 @@ fn play_command(
     let run_dir = cfg.dir("runs").join(id);
     let mut cmd = Command::new(&image.h2);
     cmd.arg("play").arg(&cfg.disc);
+    // Earlier revisions also accept this flag. A current game supplies its
+    // own baked SHA for --current, even when --h2 selects another binary.
+    let revision = commit.unwrap_or(if cfg.explicit_h2 { "unknown" } else { app::BuildInfo::baked().sha });
+    cmd.arg("--title").arg(proto::window_title(id, &run.name, revision));
     if let Some(out) = &image.out {
         cmd.arg("--out").arg(out);
     }
@@ -1049,7 +1125,7 @@ fn play_command(
     }
     if let Some(name) = &run.record {
         let dir = cfg.dir("recordings").join(name);
-        fs::create_dir_all(&dir)?;
+        fs::create_dir(&dir).with_context(|| format!("creating recording {name}"))?;
         let m = Manifest {
             name: name.clone(),
             level: level.clone(),
@@ -1075,7 +1151,10 @@ fn play_command(
         fs::create_dir_all(dir)?;
     }
     let _ = fs::remove_file(&sock);
-    cmd.env(agent_proto::ENV, &sock);
+    cmd.env("H2_LAB_JOB_ID", id)
+        .env("H2_LAB_JOB_NAME", &run.name)
+        .env(agent_proto::ENV, &sock)
+        .env("H2_MEM_REPORT_DIR", run_dir.join("mem"));
     if let Some(l) = &level {
         cmd.arg("--level").arg(l);
         if let Some(d) = &difficulty {
@@ -1229,6 +1308,8 @@ pub fn run_direct(cfg: &HostConfig, run: &RunReq) -> Result<std::process::ExitSt
         env: BTreeMap::new(),
     };
     let mut cmd = play_command(cfg, &id, run, &image, None)?;
+    let mut log = File::create(cfg.dir("runs").join(&id).join("run.log"))?;
+    writeln!(log, "lab job {id} · {}", run.name)?;
     let t = Instant::now();
     let st = cmd
         .status()
@@ -1236,6 +1317,7 @@ pub fn run_direct(cfg: &HostConfig, run: &RunReq) -> Result<std::process::ExitSt
     let m = Meta {
         id,
         kind: "run".into(),
+        name: Some(run.name.clone()),
         state: if st.success() { "done" } else { "failed" }.into(),
         request: serde_json::to_value(run)?,
         level: run.level.clone(),
@@ -1273,13 +1355,14 @@ fn plan_image(cfg: &HostConfig, spec: &BuildSpec, commit: &str) -> Result<ImageP
     features.sort();
     features.dedup();
     let key = image_key(commit, &features, &spec.env, &pgo_hash);
-    let dir = cfg.dir("images").join(&key);
+    let dir = cfg.dir("image");
+    build_cache::ensure_dir(&dir)?;
     let image = Image {
         h2: dir.join("h2"),
-        out: Some(dir.join("out")),
+        out: Some(dir.clone()),
         env,
     };
-    let cached = dir.join("ready").is_file();
+    let cached = build_cache::matches_stamp(&dir, &key)?;
     Ok(ImagePlan { image, key, dir, features, pgo_hash, cached })
 }
 
@@ -1308,62 +1391,61 @@ fn ensure_image(
         m.image = Some(key.clone());
         m.cached = Some(false);
     });
-    let src = cfg.dir("src").join(commit);
-    if !src.join(".git").exists() {
-        writeln!(w, "lab: worktree {} at {commit}", src.display())?;
-        let _ = fs::remove_dir_all(&src);
-        let _ = Command::new("git")
-            .arg("-C")
-            .arg(&cfg.repo)
-            .args(["worktree", "prune"])
-            .status();
-        let mut git = Command::new("git");
-        git.arg("-C")
-            .arg(&cfg.repo)
-            .args(["worktree", "add", "--detach"])
-            .arg(&src)
-            .arg(commit)
-            // The builds need no Git LFS pictures; never fetch them.
-            .env("GIT_LFS_SKIP_SMUDGE", "1");
-        let st = sh.step(id, git, log)?;
-        ensure!(st.success(), "git worktree add failed (build.log)");
+    let src = cfg.dir("src/current");
+    for cache in ["target", "obj-cache"] {
+        build_cache::ensure_dir(&cfg.dir(cache))?;
     }
-    writeln!(w, "lab: cargo build of h2 at {commit}")?;
-    let target = cfg.dir("target");
-    let mut cargo = Command::new(&cfg.cargo);
-    cargo.args(["build", "--release", "-p", "cli", "--bin", "h2"]);
-    if !features.is_empty() {
-        cargo.arg("--features").arg(features.join(","));
+    let stamp = dir.join("image.json");
+    if stamp.try_exists()? {
+        fs::remove_file(&stamp)?;
     }
-    cargo
-        .current_dir(&src)
-        .env("CARGO_TARGET_DIR", &target)
-        .envs(&image.env);
-    let st = sh.step(id, cargo, log)?;
-    ensure!(st.success(), "cargo build failed (build.log)");
-    fs::create_dir_all(&dir)?;
-    fs::copy(target.join("release/h2"), &image.h2).context("copying the built h2")?;
-    writeln!(w, "lab: h2 build into {}", dir.join("out").display())?;
-    let mut build = Command::new(&image.h2);
-    build
-        .arg("build")
-        .arg(&cfg.disc)
-        .arg("--out")
-        .arg(dir.join("out"));
-    for (k, _) in std::env::vars_os() {
-        if k.to_str().is_some_and(|k| k.starts_with("H2_")) {
-            build.env_remove(k);
+    let build = (|| -> Result<()> {
+        let git = build_cache::checkout_command(cfg, commit)?;
+        let status = sh.step(id, git, log)?;
+        ensure!(status.success(), "checking out {commit} failed (build.log)");
+
+        let jobs = build_cache::workers().to_string();
+        writeln!(w, "lab: cargo build at {commit}, {jobs} workers")?;
+        let target = cfg.dir("target");
+        let mut cargo = crate::follow::niced(&cfg.cargo);
+        cargo.args(["build", "--release", "-p", "cli", "--bin", "h2"]);
+        if !features.is_empty() {
+            cargo.arg("--features").arg(features.join(","));
         }
+        cargo
+            .current_dir(&src)
+            .env("CARGO_BUILD_JOBS", &jobs)
+            .env("CARGO_TARGET_DIR", &target)
+            .envs(&image.env);
+        let st = sh.step(id, cargo, log)?;
+        ensure!(st.success(), "cargo build failed (build.log)");
+        fs::copy(target.join("release/h2"), dir.join("h2.tmp")).context("copying the built h2")?;
+        fs::rename(dir.join("h2.tmp"), &image.h2)?;
+        writeln!(w, "lab: h2 build into {}", dir.display())?;
+        let mut build = crate::follow::niced(&image.h2);
+        build.arg("build").arg(&cfg.disc).arg("--out").arg(&dir).arg("--jobs").arg(&jobs);
+        for (k, _) in std::env::vars_os() {
+            if k.to_str().is_some_and(|k| k.starts_with("H2_")) {
+                build.env_remove(k);
+            }
+        }
+        build.envs(&image.env).env("H2_OBJ_CACHE", cfg.dir("obj-cache")).current_dir(&dir);
+        let st = sh.step(id, build, log)?;
+        ensure!(st.success(), "h2 build failed (build.log)");
+        Ok(())
+    })();
+    let prune = build_cache::prune(cfg, &mut w);
+    if let Err(err) = build {
+        if let Err(prune) = prune {
+            writeln!(w, "lab: cache cleanup failed: {prune:#}")?;
+        }
+        return Err(err);
     }
-    build
-        .envs(&image.env)
-        .env("H2_OBJ_CACHE", cfg.dir("obj-cache"))
-        .current_dir(&dir);
-    let st = sh.step(id, build, log)?;
-    ensure!(st.success(), "h2 build failed (build.log)");
-    let info = json!({ "commit": commit, "features": features, "env": spec.env, "pgo_sha256": pgo_hash, "built": now() });
-    fs::write(dir.join("image.json"), serde_json::to_vec_pretty(&info)?)?;
-    fs::write(dir.join("ready"), b"")?;
+    prune?;
+    let info = json!({ "key": key, "commit": commit, "features": features, "env": spec.env, "pgo_sha256": pgo_hash, "built": now() });
+    let tmp = dir.join("image.json.tmp");
+    fs::write(&tmp, serde_json::to_vec_pretty(&info)?)?;
+    fs::rename(tmp, stamp)?;
     Ok(image)
 }
 
@@ -1414,6 +1496,16 @@ fn wait(sh: &Shared, id: &str, timeout: Option<Duration>) -> Result<Value> {
 
 fn stop(sh: &Arc<Shared>, id: &str) -> Result<Value> {
     let mut inner = sh.inner.lock().unwrap();
+    if let Some(index) = inner.queue.iter().position(|pending| pending.id == id) {
+        let m = inner.jobs.get_mut(id).context("missing queued job")?;
+        let mut stopped = m.clone();
+        stopped.state = "stopped".into();
+        write_meta(&sh.cfg, &stopped)?;
+        inner.jobs.remove(id);
+        inner.queue.remove(index);
+        sh.cv.notify_all();
+        return Ok(json!({ "id": id, "stopping": true }));
+    }
     let Some(a) = inner.active.as_mut().filter(|a| a.id == id) else {
         let m = inner
             .jobs
@@ -1482,25 +1574,47 @@ pub fn read_manifest(dir: &Path) -> Result<Manifest> {
 
 /// The run's frame stats report from its log: the last `frame stats:` line
 /// and the three worst frames after it, plus the outcome line.
-pub fn summarize(log: &str) -> Vec<String> {
-    let lines: Vec<&str> = log.lines().collect();
+fn summarize(mut log: impl BufRead) -> io::Result<Vec<String>> {
+    // Logs may cover an entire soak run. Bound both the number of retained
+    // lines and a single line, including output without any newlines.
+    const LINE_LIMIT: u64 = 16 << 10;
     let mut out = Vec::new();
-    if let Some(i) = lines.iter().rposition(|l| l.starts_with("frame stats:")) {
-        out.push(lines[i].trim().to_string());
-        if let Some(w) = lines[i..].iter().position(|l| l.trim() == "worst frames:") {
-            out.extend(
-                lines[i + w + 1..]
-                    .iter()
-                    .take_while(|l| l.trim_start().starts_with('#'))
-                    .take(3)
-                    .map(|l| l.trim().to_string()),
-            );
+    let mut outcome = None;
+    let mut looking_for_worst = false;
+    let mut collecting_worst = false;
+    let mut line = Vec::new();
+    loop {
+        line.clear();
+        let n = (&mut log).take(LINE_LIMIT).read_until(b'\n', &mut line)?;
+        if n == 0 {
+            break;
+        }
+        if n as u64 == LINE_LIMIT && !line.ends_with(b"\n") {
+            log.skip_until(b'\n')?;
+            collecting_worst = false;
+            continue;
+        }
+        let Ok(text) = std::str::from_utf8(&line) else { continue };
+        if text.starts_with("outcome:") {
+            outcome = Some(text.trim().to_owned());
+        }
+        if text.starts_with("frame stats:") {
+            out.clear();
+            out.push(text.trim().to_owned());
+            looking_for_worst = true;
+            collecting_worst = false;
+        } else if looking_for_worst && text.trim() == "worst frames:" {
+            looking_for_worst = false;
+            collecting_worst = true;
+        } else if collecting_worst && text.trim_start().starts_with('#') {
+            out.push(text.trim().to_owned());
+            collecting_worst = out.len() < 4;
+        } else {
+            collecting_worst = false;
         }
     }
-    if let Some(l) = lines.iter().rev().find(|l| l.starts_with("outcome:")) {
-        out.push(l.trim().to_string());
-    }
-    out
+    out.extend(outcome);
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -1515,12 +1629,20 @@ mod tests {
             mean ms/frame: cpu 10.00\n  mean per frame: draws 900.0\n  worst frames:\n    \
             #1 80.2 ms: cpu 50.0\n    #2 60.1 ms: cpu 40.0\n    #3 55.0 ms: cpu 30.0\n    #4 54.0 ms: cpu 30.0\n\
             DbgPrint: x\noutcome: stopped at present 1200\n";
-        let s = summarize(log);
+        let s = summarize(log.as_bytes()).unwrap();
         assert_eq!(s.len(), 5, "{s:?}");
         assert!(s[0].starts_with("frame stats: 900 frames"));
         assert_eq!(s[3], "#3 55.0 ms: cpu 30.0");
         assert_eq!(s[4], "outcome: stopped at present 1200");
-        assert!(summarize("nothing here").is_empty());
+        assert!(summarize("nothing here".as_bytes()).unwrap().is_empty());
+    }
+
+    #[test]
+    fn oversized_log_lines_are_skipped_without_losing_later_reports() {
+        let mut log = b"frame stats: ".to_vec();
+        log.resize(1 << 20, b'x');
+        log.extend_from_slice(b"\nframe stats: small\noutcome: complete");
+        assert_eq!(summarize(log.as_slice()).unwrap(), ["frame stats: small", "outcome: complete"]);
     }
 
     #[test]

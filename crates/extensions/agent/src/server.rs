@@ -211,8 +211,8 @@ impl Drop for Server {
 }
 
 pub(crate) enum Output {
-    Line(String),
-    Upgrade { line: String, frames: crate::live::Frames },
+    Line(crate::memory::ReplyLine),
+    Upgrade { line: crate::memory::ReplyLine, frames: crate::live::Frames },
 }
 
 fn serve<S: Stream>(stream: S, agent: Agent) {
@@ -236,6 +236,7 @@ fn serve<S: Stream>(stream: S, agent: Agent) {
                 {
                     break;
                 }
+                drop(line);
                 if let Some(frames) = upgrade {
                     if out.write_timeout(crate::live::CLOSE_INTERVAL).is_ok() {
                         let _ = frames.write_to(&mut out);

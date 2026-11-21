@@ -64,8 +64,10 @@ pub use watermark::{BuildInfo, LiveStats, Watermark};
 /// Shell settings.
 #[derive(Clone, Debug)]
 pub struct AppConfig {
-    /// Window title (the shell appends status).
+    /// Window title.
     pub title: String,
+    /// Append live frame rates and guest status to the window title.
+    pub status_in_title: bool,
     /// Initial inner size in logical points.
     pub window_size: (u32, u32),
     /// Column `.0` of `.1` across the primary screen ([`tile::tile`]),
@@ -144,6 +146,7 @@ impl Default for AppConfig {
     fn default() -> Self {
         Self {
             title: "h2recomp".into(),
+            status_in_title: true,
             window_size: (1280, 960),
             tile: None,
             fullscreen: false,

@@ -62,7 +62,10 @@ pub struct Call {
     pub detail: String,
 }
 
+static KERNEL_CALLS: mem_watch::Counter = mem_watch::Counter::new("trace.kernel_call_entries");
+
 pub struct Trace {
+    retained: mem_watch::Gauge,
     /// The most recent calls in memory, oldest first (at most `limit`).
     pub calls: std::collections::VecDeque<Call>,
     /// Calls traced so far; the next call's `seq`.
@@ -99,6 +102,7 @@ impl Trace {
                 }
             }
         }
+        self.retained.set((self.calls.len() + self.evicted_open.len()) as u64);
         seq
     }
 
@@ -117,6 +121,7 @@ impl Trace {
             })
         };
         if let Some(c) = c {
+            self.retained.set((self.calls.len() + self.evicted_open.len()) as u64);
             self.write(&c);
         }
     }
@@ -161,6 +166,7 @@ pub fn install(rt: &runtime::Runtime, path: Option<&std::path::Path>) -> anyhow:
 pub fn install_bounded(rt: &runtime::Runtime, path: Option<&std::path::Path>, limit: usize) -> anyhow::Result<Shared> {
     rt.memory().map_zeroed(SHADOW_BASE, 0x1000, Permissions::RX)?;
     let trace: Shared = Arc::new(Mutex::new(Trace {
+        retained: KERNEL_CALLS.track(0),
         calls: Default::default(),
         total: 0,
         evicted_open: Default::default(),
@@ -279,7 +285,7 @@ mod tests {
     }
 
     fn bounded(limit: usize) -> Trace {
-        Trace { calls: Default::default(), total: 0, evicted_open: Default::default(), abandoned: 0, limit, out: None }
+        Trace { retained: KERNEL_CALLS.track(0), calls: Default::default(), total: 0, evicted_open: Default::default(), abandoned: 0, limit, out: None }
     }
 
     #[test]
