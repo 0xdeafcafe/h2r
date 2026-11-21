@@ -324,7 +324,7 @@ pub fn build() -> Result<Vec<u8>> {
     );
     let player = set.add_tag(hud_edit::model::NHDT, PLAYER, TagPayload::Built(player))?;
     // The scoreboard's arming bar: a 140 by 13 capsule whose blue rises
-    // left to right, centre (0, 110), (0, 27) in split screen, registered
+    // left to right, centre (0, 110), (0, 27) in split screen (retail's), registered
     // at its centre, as retail's (docs/game/hud-kit.md, "The arming bar").
     let bomb = bitmap(
         &mut set,

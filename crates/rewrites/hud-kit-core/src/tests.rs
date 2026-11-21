@@ -148,12 +148,16 @@ fn a_text_record_has_its_fields_at_the_draws_offsets() {
 
 /// An invented player `nhdt` with retail's grenade row: one 103-wide
 /// panel drawn by both pill widgets at (0, 0), the counts at (65, -1) and
-/// (12, -1); and the strip, 92 wide, its blue rising from column 13.
+/// (12, -1); the strip, 92 wide, its blue rising from column 13; and the
+/// scoreboard `nhdt` with Assault's arming bar, `bomb_defusal` (input
+/// `0x43`, shown on word D `0x400`, 140 by 13), the arming bar's art.
 struct Invented;
 
 const PANEL: u32 = 0xe000_0020;
 const STRIP: u32 = 0xe000_0021;
 const SHADER: u32 = 0xe000_0022;
+const SCOREBOARD: u32 = 0xe000_0023;
+const BOMB: u32 = 0xe000_0024;
 
 fn widget(
     kind: WidgetKind,
@@ -193,7 +197,24 @@ fn widget(
 }
 
 impl MapView for Invented {
-    fn nhdt(&mut self, _: TagId) -> Result<RawHud, String> {
+    fn nhdt(&mut self, id: TagId) -> Result<RawHud, String> {
+        if id.0 == SCOREBOARD {
+            let mut bar = widget(
+                WidgetKind::Bitmap,
+                superbounce::ARM_WIDGET,
+                0,
+                0x43,
+                superbounce::ARM_FULL,
+                BOMB,
+            );
+            // Shown on word D 0x400, not word A.
+            bar.bytes[bf::STATE..bf::STATE + 2].copy_from_slice(&[0, 0]);
+            bar.bytes[bf::STATE + 6..bf::STATE + 8].copy_from_slice(&0x400u16.to_le_bytes());
+            return Ok(RawHud {
+                name: superbounce::ARM_HUD.into(),
+                widgets: vec![bar],
+            });
+        }
         Ok(RawHud {
             name: "invented".into(),
             widgets: vec![
@@ -229,6 +250,7 @@ impl MapView for Invented {
         match id.0 {
             PANEL => Ok([103.0, 19.0]),
             STRIP => Ok([92.0, 8.0]),
+            BOMB => Ok([140.0, 13.0]),
             _ => Err(format!("{id} is not a bitmap")),
         }
     }
@@ -244,6 +266,7 @@ impl MapView for Invented {
         match name {
             templates::STRIP_BITMAP => Ok(TagId(STRIP)),
             templates::STRIP_SHADER => Ok(TagId(SHADER)),
+            superbounce::ARM_HUD => Ok(TagId(SCOREBOARD)),
             _ => Err(format!("no tag {name} in the map")),
         }
     }
@@ -280,6 +303,7 @@ fn the_superbounce_hud_compiles_against_an_invented_row() {
             (superbounce::PILL, WidgetKind::Bitmap),
             (superbounce::PILL_END, WidgetKind::Bitmap),
             (CHARGE, WidgetKind::Bitmap),
+            (superbounce::ARM, WidgetKind::Bitmap),
             (superbounce::PILL_ICON, WidgetKind::Text),
         ]
     );
@@ -303,6 +327,13 @@ fn the_superbounce_hud_compiles_against_an_invented_row() {
     assert_eq!(off(superbounce::PILL), (106, 0));
     assert_eq!(off(superbounce::PILL_END), (106 + PILL_BODY, 0));
     assert_eq!(off(CHARGE), (106, CHARGE_DOWN));
+    // The arming bar: the scoreboard's bomb_defusal, uncropped, centred
+    // where retail draws it fullscreen.
+    assert_eq!(off(superbounce::ARM), superbounce::ARM_FULL);
+    let arm = c.widget(superbounce::ARM).unwrap();
+    assert_eq!(u32_at(&arm.bytes, bf::BITMAP + 4), BOMB);
+    assert_eq!(u16_at(&arm.bytes, bf::ANCHOR), Anchor::Centre as u16);
+    assert_eq!((arm.crop, arm.ramp, arm.input(0.5)), (None, None, 0.5));
     let charge = c.widget(CHARGE).unwrap();
     assert_eq!(u32_at(&charge.bytes, bf::BITMAP + 4), STRIP);
     assert_eq!(charge.crop, Some([65.0 / 92.0, 1.0, 0.0, 1.0]));

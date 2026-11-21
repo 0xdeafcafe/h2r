@@ -84,10 +84,19 @@ pub const FILL_HELD: f32 = 2.0 / 3.0;
 /// in the scoreboard `nhdt` (V: `zanzibar.map`).
 pub const ARM_HUD: &str = "ui\\hud\\scoreboard";
 pub const ARM_WIDGET: &str = "bomb_defusal";
-/// The retail widget's place: centre, 110 down fullscreen, 27 in split
-/// screen, registered at its centre (V).
+/// Fullscreen, the retail widget's place: centre, 110 down, registered at
+/// its centre (V).
 pub const ARM_FULL: (i16, i16) = (0, 110);
-pub const ARM_SPLIT: (i16, i16) = (0, 27);
+/// The retail widget's split-screen place, 27 down (V): not ours.
+pub const RETAIL_ARM_SPLIT: (i16, i16) = (0, 27);
+/// Ours in split screen: 35 above the centre. Retail's 27 down puts the
+/// bar in the prompt line's box (the `retail` check), which our verbs
+/// fill while the bar is up, where retail's carrier has no prompt; under
+/// it the training box and the reticle take the rest of a 204-high frame.
+/// 35 up is clear of the prompt's first line (the frame's top plus 35, a
+/// line of font 5) and under the navpoint's arrow at its sample
+/// (docs/game/hud-kit.md, "The arming bar").
+pub const ARM_SPLIT: (i16, i16) = (0, -35);
 /// The game's word D bit that shows the retail bar: Assault arming (V:
 /// the widget's only show bit). Ours hides while it is set.
 pub const ASSAULT_ARMING_D: u16 = 0x400;
@@ -1193,7 +1202,7 @@ mod tests {
         assert_eq!(e.at.anchor, Anchor::Centre);
         assert_eq!(
             (e.at.full, e.at.half, e.at.quarter),
-            ((0, 110), Some((0, 27)), Some((0, 27)))
+            ((0, 110), Some((0, -35)), Some((0, -35)))
         );
         assert_eq!(e.at.registration, [0.5, 0.5]);
         assert_eq!(e.hide_when_d, 0x400);
