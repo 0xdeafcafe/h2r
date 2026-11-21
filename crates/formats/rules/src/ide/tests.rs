@@ -179,7 +179,8 @@ fn completion_follows_the_context() {
     assert!(score.documentation.value.contains("Status: named"));
 
     let top = "rules \"T\" 1\n\n";
-    let l = labels(&complete(top, p(1, 0)));
+    let items = complete(top, p(1, 0));
+    let l = labels(&items);
     assert!(l.contains(&"option") && l.contains(&"global var") && l.contains(&"on kill"), "{l:?}");
 
     let on = "rules \"T\" 1\non ";
@@ -190,9 +191,11 @@ fn completion_follows_the_context() {
 
     assert!(labels(&complete("rules \"T\" 1\ncarrier ", p(1, 8))).contains(&"slayer"));
     assert!(labels(&complete("rules \"T\" 1\nrequires ", p(1, 9))).contains(&"player.team"));
-    let forge = labels(&complete("rules \"T\" 1\nrequires forge.", p(1, 15)));
+    let forge_items = complete("rules \"T\" 1\nrequires forge.", p(1, 15));
+    let forge = labels(&forge_items);
     assert!(forge.contains(&"place") && !forge.contains(&"player.team"), "{forge:?}");
-    let types = labels(&complete("rules \"T\" 1\nenum Role { none, vip }\nplayer var role: \n", p(2, 17)));
+    let type_items = complete("rules \"T\" 1\nenum Role { none, vip }\nplayer var role: \n", p(2, 17));
+    let types = labels(&type_items);
     assert!(types.contains(&"int") && types.contains(&"Role"), "{types:?}");
     let members = "rules \"T\" 1\nenum Role { none, vip }\non tick {\n    let r = Role.\n}\n";
     assert_eq!(labels(&complete(members, p(3, 17))), ["none", "vip"]);

@@ -99,6 +99,7 @@ const T_ARG: &[&str] = &["t"];
 const S: &[&str] = &["s"];
 const KILLER_CLASS: &[&str] = &["killer", "class"];
 const P_SPOT: &[&str] = &["p", "spot"];
+const KILLER_ASSIST_CLASS: &[&str] = &["killer", "assist", "class"];
 
 /// An event's argument names, as the docs write them, and what fires it.
 pub(crate) fn event_info(ev: Event) -> (&'static [&'static str], &'static str) {
@@ -123,6 +124,10 @@ pub(crate) fn event_info(ev: Event) -> (&'static [&'static str], &'static str) {
         ),
         Event::SquadDead => (S, "A squad's last actor died."),
         Event::ActorKill => (KILLER_CLASS, "A player killed an AI actor of a kit class."),
+        Event::ActorAssist => (
+            KILLER_ASSIST_CLASS,
+            "A player assisted another's kill of an AI actor of a kit class.",
+        ),
         Event::Bounce => (P_SPOT, "A player superbounced."),
         Event::Edit => (P_O, "A player used a granted power."),
         Event::Join => (P, "A player joined."),
