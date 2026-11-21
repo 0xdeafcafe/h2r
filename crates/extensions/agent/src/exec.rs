@@ -79,6 +79,7 @@ pub struct GameCtx<'a> {
     /// The connection owning this request and any input it queues.
     pub conn: ConnId,
     pub(crate) epoch: u64,
+    pub(crate) map_epoch: u64,
     pub(crate) live_session: Option<fn(&dyn engine::GuestMemory) -> bool>,
     /// The game at this boundary ([`Reader::with_guest`] for guest memory).
     pub reader: &'a mut dyn Reader,
@@ -185,6 +186,8 @@ struct Shared {
 struct State {
     live: crate::live::Mirror,
     live_epoch: u64,
+    // The last epoch that replaced the map or restored its state.
+    map_epoch: u64,
     live_session: Option<fn(&dyn engine::GuestMemory) -> bool>,
     lobby_tape: Option<Arc<dyn LobbyTape>>,
     lobby_boundary: u64,
@@ -460,7 +463,9 @@ impl Agent {
 
     /// Same-map checkpoint restores need a key even if the game clock moves forward.
     pub(crate) fn live_cut(&self) {
-        self.lock().live_epoch += 1;
+        let mut s = self.lock();
+        s.live_epoch += 1;
+        s.map_epoch = s.live_epoch;
     }
 
     /// What a machine snapshot keeps of the game as the agent saw it
@@ -499,6 +504,7 @@ impl Agent {
         s.game.map = map;
         s.map_ticks = map_ticks;
         s.live_epoch += 1;
+        s.map_epoch = s.live_epoch;
         Ok(())
     }
 
@@ -803,10 +809,15 @@ impl State {
         let old = std::mem::replace(&mut self.game, reader.status());
         let map_changed = old.map != self.game.map;
         let bsp_changed = old.bsp != self.game.bsp;
-        if map_changed || bsp_changed
-            || old.tick.zip(self.game.tick).is_some_and(|(prev, tick)| tick < prev)
-        {
+        let rewound = old
+            .tick
+            .zip(self.game.tick)
+            .is_some_and(|(prev, tick)| tick < prev);
+        if map_changed || rewound || bsp_changed {
             self.live_epoch += 1;
+            if map_changed || rewound {
+                self.map_epoch = self.live_epoch;
+            }
         }
         if map_changed {
             self.map_ticks = 0;
@@ -970,6 +981,7 @@ impl State {
                 let mut ctx = GameCtx {
                     conn: d.conn,
                     epoch: self.live_epoch,
+                    map_epoch: self.map_epoch,
                     live_session: self.live_session,
                     reader: &mut *reader,
                     at: at.clone(),
@@ -1120,6 +1132,7 @@ impl State {
             let mut ctx = GameCtx {
                 conn,
                 epoch: self.live_epoch,
+                map_epoch: self.map_epoch,
                 live_session: self.live_session,
                 reader,
                 at,

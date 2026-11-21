@@ -58,11 +58,7 @@ impl Editor {
                     .as_ref()
                     .unwrap()
                     .iter()
-                    .find(|e| {
-                        e.address <= addr
-                            && end <= u64::from(e.address) + u64::from(e.size)
-                            && end <= 1u64 << 32
-                    })
+                    .find(|e| e.contains(addr, len))
                     .ok_or_else(|| {
                         Error::invalid(format!("{addr:#010x}..{end:#x} outside loaded tags"))
                     })?;
@@ -123,6 +119,8 @@ impl Editor {
                 id: self.next_id + 1,
                 scenario: idx.scenario,
                 tag: entry.datum,
+                tag_address: entry.address,
+                changed: false,
                 group: group_text(entry.group),
                 name: self
                     .names(g, &idx)

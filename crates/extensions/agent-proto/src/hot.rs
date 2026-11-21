@@ -9,13 +9,16 @@
 /// Method names.
 pub mod method {
     pub const EDIT_MAP: &str = "edit.map";
+    /// The current bytes inside one loaded tag: `{at, len, epoch}` →
+    /// `{at, holds_bytes}` (numeric address, bytes in hex).
+    pub const EDIT_READ: &str = "edit.read";
     pub const EDIT_BATCH: &str = "edit.batch";
     /// The loaded map's tags: `{"group"?: "shad", "name"?: "<substring>",
     /// "limit"?: 200}` → `{"scenario", "names", "total", "tags": [{"tag",
     /// "group", "name", "address", "size", "defined"}]}`.
     pub const EDIT_TAGS: &str = "edit.tags";
     /// A field by path, or an element's fields: `{"tag": "0xe1230045" |
-    /// "<name>", "group"?, "path"?: "postprocess[0].colors[1].color"}`.
+    /// "<name>", "group"?, "path"?: "postprocess[0].colors[1].color", "epoch"?}`.
     pub const EDIT_GET: &str = "edit.get";
     /// Writes a field, journalled: `{"tag", "group"?, "path", "value"}` →
     /// the change (`{"id", "old", "new", ...}`).
@@ -47,6 +50,7 @@ pub mod method {
     /// Every hot method.
     pub const ALL: &[&str] = &[
         EDIT_MAP,
+        EDIT_READ,
         EDIT_BATCH,
         EDIT_TAGS,
         EDIT_GET,
