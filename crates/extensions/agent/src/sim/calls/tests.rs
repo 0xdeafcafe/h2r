@@ -1441,6 +1441,37 @@ fn a_forge_batch_releases_its_own_objects_when_a_later_placement_fails() {
     assert_eq!(deleted, [0x1000_0002, 0x1000_0001]);
 }
 
+#[test]
+fn a_forge_channel_writes_only_a_teleporter_flag_identifier() {
+    let scenario = 0x8100_0000;
+    let flags = 0x8200_0000;
+    // Flag 1's identifier is the low half of the word at +0x14; the high
+    // half belongs to the next field and must survive.
+    for (kind, flag, written) in [(7, 1, true), (8, 1, true), (2, 1, false), (7, 2, false)] {
+        let mut w = world();
+        w.g.put_u32(guest_layout::global::SCENARIO.base, scenario)
+            .put_u32(scenario + 0x118, 2)
+            .put_u32(scenario + 0x11c, flags)
+            .put_u32(flags + 0x30, kind)
+            .put_u32(flags + 0x34, 0xabcd_0003);
+        let guard = crate::forge::local::Guard { scenario, generation: 0, admitted: |_, _| true };
+        let (out, calls, g) = one(
+            w,
+            Call::Forge { guard, steps: vec![ForgeStep::Channel { flag, channel: 9 }] },
+            |_, _| Regs::default(),
+        );
+        assert!(calls.is_empty());
+        if written {
+            assert_eq!(out.unwrap()["handles"], json!([]));
+            assert_eq!(g.u32(flags + 0x34).unwrap(), 0xabcd_0009);
+        } else {
+            let message = out.unwrap_err().message;
+            assert!(message.contains("not a teleporter") || message.contains("no netgame flag 2"), "{message}");
+            assert_eq!(g.u32(flags + 0x34).unwrap(), 0xabcd_0003);
+        }
+    }
+}
+
 /// The vehicle fixture inside an admitted local Forge session.
 fn forge_vehicle() -> (World, ObjectId, crate::forge::local::Guard) {
     let (mut w, id) = vehicle();

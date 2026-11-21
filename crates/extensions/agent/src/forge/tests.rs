@@ -819,3 +819,67 @@ fn local_agent_reads_the_session_and_reports_a_refused_proposal() {
     h.agent.on_tick(&mut game);
     assert_eq!(h.reply()["error"]["message"], "there is nothing to undo");
 }
+
+#[test]
+fn a_teleporter_link_stages_one_channel_write_after_the_objects() {
+    use ::forge::{BlockKind, Linkable, Session, Teleporter};
+    use calls::ForgeStep;
+    let limits = forge_doc::Limits {
+        world: Some(forge_doc::WorldBounds {
+            min: [-8.0; 3],
+            max: [8.0; 3],
+        }),
+        base_counts: [(BlockKind::NetgameFlags, 2)].into(),
+        ..Default::default()
+    };
+    let flag = |index, sender, channel| Teleporter {
+        index,
+        position: [index as f32; 3],
+        sender,
+        channel,
+    };
+    let session = Session::new(draft(), limits, vec![], 3)
+        .unwrap()
+        .with_teleporters(vec![flag(0, true, 4), flag(1, false, 6)])
+        .unwrap();
+    let q = calls::shared();
+    calls::lock(&q).arm();
+    let guard = local::Guard {
+        scenario: SCENARIO,
+        generation: 1,
+        admitted: |_, _| true,
+    };
+    let mut edit = stage(&session, &q, guard, |s, w| {
+        s.link(w, 5, Linkable::Teleporter(0), Linkable::Teleporter(1))
+            .map(|_| ())
+    });
+    let (steps, result) = answer(&q, &mut edit, Ok(json!({"handles":[]})));
+    assert_eq!(
+        steps,
+        [ForgeStep::Channel {
+            flag: 1,
+            channel: 4
+        }]
+    );
+    let (session, ()) = result.unwrap();
+    assert_eq!(
+        session
+            .teleporters()
+            .iter()
+            .map(|t| t.channel)
+            .collect::<Vec<_>>(),
+        [4, 4]
+    );
+    // A refused write leaves the document as it was.
+    let mut edit = stage(&session, &q, guard, |s, w| s.undo(w, 6));
+    let (_, result) = answer(
+        &q,
+        &mut edit,
+        Err(agent_proto::RpcError::new(
+            agent_proto::code::INVALID_REQUEST,
+            "netgame flag 1 is not a teleporter",
+        )),
+    );
+    assert!(result.unwrap_err().contains("not a teleporter"));
+    assert_eq!(session.document().ops.len(), 1);
+}
