@@ -334,6 +334,12 @@ pub(crate) fn register_core_film(
     // (docs/game/superbounce.md): idle unless the variant or
     // H2_SUPERBOUNCE asks for it.
     crate::superbounce_mode::install(features).context("installing the superbounce mode")?;
+    // HUD elements of ours drawn by the game's HUD (docs/game/hud-kit.md),
+    // and the superbounce HUD on it, fed from the mode's state; its
+    // tutorial's seen flag is a setting.
+    crate::hud_kit::install(features).context("installing the HUD kit")?;
+    crate::superbounce_hud::install(features, i.settings.clone())
+        .context("installing the superbounce HUD")?;
     // Hold X while falling to steer onto a bounce strip
     // (docs/game/superbounce.md, "Hold X: the fall assist"). Its input tap
     // goes in with the XAPI input taps (register_late).

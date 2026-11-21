@@ -8,6 +8,8 @@
 
 pub use hud_edit::place::{Frame, Rect, SCREEN};
 
+use crate::model::{Anchor, Place};
+
 const fn r(x0: f32, y0: f32, x1: f32, y1: f32) -> Rect {
     Rect { x0, y0, x1, y1 }
 }
@@ -69,10 +71,21 @@ pub const fn screen() -> Rect {
     r(0.0, 0.0, SCREEN[0], SCREEN[1])
 }
 
+/// A place whose top-left corner is `height` plus `gap` pixels above
+/// `r`'s top and in line with its left edge, from the bottom-left anchor,
+/// fullscreen at 640 by 480: "above the motion tracker" written once.
+pub fn above(r: Rect, gap: i16, height: i16) -> Place {
+    let [x0, y0, ..] = r.pixels();
+    let [ax, ay] = BOTTOM_LEFT;
+    Place::new(
+        Anchor::BottomLeft,
+        (x0 as i16 - ax, y0 as i16 - gap - height - ay),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::Place;
 
     #[test]
     fn the_band_and_strip_sit_above_the_tracker_and_apart() {
@@ -88,13 +101,13 @@ mod tests {
         assert_eq!(TRAINING_BOX.pixels(), [48, 218, 592, 262]);
     }
 
-    /// `Place::above` puts a strip's top-left corner its height and the
+    /// `above` puts a strip's top-left corner its height and the
     /// gap above the rectangle's top, in line with its left edge: the
     /// health strip, 8 high, 2 above the shield band, is the converter's
     /// (-1, -108).
     #[test]
     fn above_is_the_converters_health_strip() {
-        let p = Place::above(SHIELD_BAND, 2, 8);
+        let p = above(SHIELD_BAND, 2, 8);
         assert_eq!(p.full, (-1, -108));
         let pt =
             hud_edit::place::widget_point(&Frame::FULLSCREEN, p.anchor as u16, p.full).unwrap();

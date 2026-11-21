@@ -1,6 +1,5 @@
-//! The HUDs the kit knows, for `h2 hud preview` and `h2 hud sheet` and
-//! the checks. Each moves beside its feature when its runtime lands
-//! (docs/game/hud-kit.md, "Build plan").
+//! The HUDs the kit knows: the preview's (`h2 hud preview`, `h2 hud
+//! sheet`) and the checks' list, and what the game's runtime compiles.
 
 use crate::model::Describe;
 

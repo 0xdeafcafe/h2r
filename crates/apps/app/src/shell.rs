@@ -50,7 +50,6 @@ struct Gpu {
     editor: Option<EditorPlateRenderer>,
     marks: MarkRenderer,
     watermark: WatermarkRenderer,
-    superbounce: crate::superbounce_hud::Renderer,
     menu: MenuRenderer,
     theater: Option<theater_overlay::Renderer>,
     /// The adapter's backend, lower case (`metal`), for the watermark.
@@ -117,9 +116,6 @@ struct Shell {
     mark_frame_status: Option<MarkFrameStatus>,
     restart_requested: bool,
     watermark_text: Option<WatermarkText>,
-    /// F4's last press moved a superbounce tutorial card on, so its repeats
-    /// and release are not the guest's either.
-    f4_taken: bool,
     theater_view: theater_overlay::View,
     theater_refresh: Instant,
     theater_screenshot: Option<std::path::PathBuf>,
@@ -206,7 +202,6 @@ pub(crate) fn run(config: AppConfig, guest: GuestFn) -> anyhow::Result<ExitRepor
         mark_frame_status: None,
         restart_requested: false,
         watermark_text: None,
-        f4_taken: false,
         theater_view: theater_overlay::View::default(),
         theater_refresh: now,
         theater_screenshot: None,
@@ -360,7 +355,6 @@ impl Shell {
                 .map(|_| EditorPlateRenderer::new(&ctx.device)),
             marks: MarkRenderer::default(),
             watermark: WatermarkRenderer::new(&ctx.device),
-            superbounce: crate::superbounce_hud::Renderer::new(&ctx.device),
             menu: MenuRenderer::new(&ctx.device),
             theater: (self.config.theater.is_some() || self.config.forge.is_some())
                 .then(|| theater_overlay::Renderer::new(&ctx.device)),
@@ -497,32 +491,6 @@ impl Shell {
                     g.surface.config.format,
                     size,
                     viewport,
-                );
-            }
-        }
-        // The superbounce HUD shows with the watermark off too.
-        if !frame.as_ref().is_some_and(|f| f.loading)
-            && let Some(hud) = &self.config.superbounce_hud
-        {
-            let area = if viewport.is_empty() {
-                crate::scale::Viewport {
-                    x: 0,
-                    y: 0,
-                    width: size.0,
-                    height: size.1,
-                }
-            } else {
-                viewport
-            };
-            if let Some(f) = hud.frame(area) {
-                g.superbounce.draw(
-                    &g.ctx.device,
-                    &g.ctx.queue,
-                    &mut enc,
-                    &f,
-                    &view,
-                    g.surface.config.format,
-                    size,
                 );
             }
         }
@@ -883,24 +851,6 @@ impl ApplicationHandler<UserEvent> for Shell {
                     if down {
                         return;
                     }
-                }
-                // F4 moves a superbounce tutorial card on; the press and
-                // its release are then not the guest's.
-                if code == KeyCode::F4
-                    && let Some(hud) = &self.config.superbounce_hud
-                    && if down {
-                        (!event.repeat && hud.dismiss()) || (event.repeat && self.f4_taken)
-                    } else {
-                        std::mem::take(&mut self.f4_taken)
-                    }
-                {
-                    if down {
-                        self.f4_taken = true;
-                    }
-                    if let Some(g) = &self.gpu {
-                        g.window.request_redraw();
-                    }
-                    return;
                 }
                 if let Some(wm) = &self.config.watermark
                     && code == KeyCode::F3

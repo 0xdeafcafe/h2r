@@ -15,8 +15,8 @@
 //! (`live_telemetry::havok_agents::fixed_pair`, pair `+0x0c`; -3 is
 //! primed), asks for the loaded map's spots (a background scan, once per
 //! map and structure BSP, cached), finds the nearest bounce spot and
-//! publishes all of it as one [`State`]. The HUD (`app::superbounce_hud`,
-//! fed from [`hud_state`] by `h2 play`), the world lines ([`gpu::Lines`])
+//! publishes all of it as one [`State`]. The HUD ([`crate::superbounce_hud`],
+//! through [`hud_state`]), the world lines ([`gpu::Lines`])
 //! and the agent method ([`reply`]) read that state.
 //!
 //! **The charge, the next thing to do and the landings**

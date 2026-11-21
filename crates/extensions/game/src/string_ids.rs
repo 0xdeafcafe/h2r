@@ -14,7 +14,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use crate::{
-    campaign_menu, community_variants, coop_live, custom_games, layout_glue, skulls_menu,
+    campaign_menu, community_variants, coop_live, custom_games, hud_kit, layout_glue, skulls_menu,
     variant_options, video_screen,
 };
 
@@ -90,6 +90,11 @@ fn families() -> Vec<Family> {
                 .map(variant_options::label_id)
                 .collect(),
             claims: |id| variant_options::text(id).is_some(),
+        },
+        Family {
+            name: "hud kit",
+            ids: vec![hud_kit::TRAINING_TEXT_ID],
+            claims: hud_kit::owns,
         },
         Family {
             name: "co-op texts",

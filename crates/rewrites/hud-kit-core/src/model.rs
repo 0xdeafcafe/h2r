@@ -3,10 +3,7 @@
 //! one [`Value`] per element. One layout per HUD: a state never adds,
 //! removes or moves an element.
 
-use hud_edit::Mode;
-use hud_edit::place::Rect;
-
-use crate::rects;
+use crate::Mode;
 
 /// A HUD of ours.
 #[derive(Clone, Debug, PartialEq)]
@@ -42,6 +39,18 @@ impl Hud {
             Kind::Navpoint { .. } => Some(Art::NavpointArrow),
             _ => e.kind.art(),
         }) {
+            if !out.contains(&a) {
+                out.push(a);
+            }
+        }
+        out
+    }
+
+    /// The [`Art`] the widget elements draw, once each: what the runtime
+    /// compiles (the navpoint's arrow is the game's to draw).
+    pub fn widget_arts(&self) -> Vec<Art> {
+        let mut out: Vec<Art> = Vec::new();
+        for a in self.elements.iter().filter_map(|e| e.kind.art()) {
             if !out.contains(&a) {
                 out.push(a);
             }
@@ -307,19 +316,6 @@ impl Place {
             Mode::Quarter => self.quarter,
         }
     }
-
-    /// A place whose top-left corner is `height` plus `gap` pixels above
-    /// `r`'s top and in line with its left edge, from the bottom-left
-    /// anchor, fullscreen at 640 by 480 ([`rects`]): "above the motion
-    /// tracker" written once.
-    pub fn above(r: Rect, gap: i16, height: i16) -> Self {
-        let [x0, y0, ..] = r.pixels();
-        let [ax, ay] = rects::BOTTOM_LEFT;
-        Place::new(
-            Anchor::BottomLeft,
-            (x0 as i16 - ax, y0 as i16 - gap - height - ay),
-        )
-    }
 }
 
 /// A text widget's font (its font byte `+0x30`: 0 engine font 6, 1 engine
@@ -340,9 +336,13 @@ impl Font {
             Font::Lcd => 1,
         }
     }
-    /// The engine font (`font_table.txt` line).
+    /// The engine font (`font_table.txt` line): font byte 0 is engine
+    /// font 6, 1 is 8 (E `0x0022a85b`).
     pub fn engine(self) -> i16 {
-        hud_edit::layout::text_font(self.byte()).expect("0 and 1 name fonts")
+        match self {
+            Font::Hud => 6,
+            Font::Lcd => 8,
+        }
     }
 }
 
@@ -359,6 +359,11 @@ pub enum Justify {
 pub enum Art {
     /// The energy sword's battery strip and its meter shader.
     StripMeter,
+    /// The strip's last `n` columns: [`Art::StripMeter`]'s template with a
+    /// crop, and the blue ramp of those columns, so a fill of 0 to 1 lights
+    /// the cropped part from its left end to its right
+    /// (`templates::ArtTemplate::ramp`).
+    StripMeterEnd(u8),
     /// `hudg` `arrow_assets[0]`: the waypoint arrow's image, shader and
     /// sequence.
     WaypointArrow,
@@ -543,4 +548,11 @@ pub trait Describe {
     fn hud(&self) -> Hud;
     /// The named states the preview sheet draws.
     fn states(&self) -> Vec<(&'static str, Values)>;
+    /// The games the HUD is for: `Some(why)` when it is for multiplayer
+    /// maps only, and a campaign map's player HUD (which may lack what its
+    /// templates name, the grenade row of `ui\hud\masterchief` on
+    /// `00a_introduction`) is no failure of it.
+    fn multiplayer_only(&self) -> Option<&'static str> {
+        None
+    }
 }

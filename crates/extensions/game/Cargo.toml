@@ -74,6 +74,9 @@ live-hle = { path = "../../live/live-hle" }
 live-telemetry = { path = "../../live/live-telemetry" }
 # The superbounce game type's spot scan (superbounce_mode).
 superbounce = { path = "../../live/superbounce" }
+# The HUD kit's model, templates and record compiler (hud_kit,
+# superbounce_hud; docs/game/hud-kit.md).
+hud-kit-core.workspace = true
 live-proto.workspace = true
 input = { path = "../../platform/input", default-features = false }
 # Phantom bots (docs/game/bots.md).

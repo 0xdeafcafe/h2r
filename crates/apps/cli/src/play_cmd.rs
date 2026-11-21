@@ -790,7 +790,6 @@ pub(crate) fn run_with_theater(
     }
     #[cfg(not(unix))]
     let _ = follow_status;
-    config.superbounce_hud = Some(crate::superbounce_cmd::hud_source(&store));
     let watermark = watermark_on(no_watermark, std::env::var("H2_WATERMARK").ok().as_deref());
     if watermark {
         config.watermark = Some(play_watermark(render_thread(

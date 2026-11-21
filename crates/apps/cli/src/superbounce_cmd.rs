@@ -1,28 +1,23 @@
 //! `h2 superbounce scan`: the bounce slots and forced-crouch ceilings the
 //! `superbounce` crate finds in a map's collision (docs/game/superbounce.md,
-//! "Spots in the geometry"). `h2 superbounce hud-preview`: the superbounce
-//! HUD and its tutorial cards drawn offline, and the HUD's feed for
-//! `h2 play` (docs/game/superbounce.md, "The superbounce game type").
+//! "Spots in the geometry"). The superbounce HUD is previewed with
+//! `h2 hud preview superbounce` (docs/game/hud-kit.md).
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
 use superbounce::{Kind, Spot};
 
 const USAGE: &str = "usage: h2 superbounce scan <map-name-or-file> [--bsp N] [--json] [--disc disc.iso] [--near x,y,z[,r]] [--explain x,y,z[,r]]\n\nScans one structure BSP (default 0) of the map, with its instanced\ngeometry, for superbounce slots and forced-crouch ceilings, and prints\nthem best first: a heuristic over the collision geometry, not a game\nrun. --json prints them as a JSON array. --near prints, instead, the\ncollision polygons with a vertex or centroid within r (default 0.6)\nof the point: what a scanned spot is checked against. --explain prints,\ninstead, every forced-crouch region with a sample within r (default 1.0)\nof the point, how each filter judged it and each crouch rule's verdict\n(in play, by a strip, spread out, proven, stand at the way out).";
 
-const HUD_USAGE: &str = "usage: h2 superbounce hud-preview [--state NAME|all] [--out DIR]\n\nDraws the superbounce HUD and its tutorial cards over a plain backdrop,\nwith the code the game window uses, and writes one PNG a state\n(superbounce-hud-STATE-WxH.png, 1280x720; `primed` also at 1920x1080)\nto DIR (default the temporary directory). States: scanning, not-primed,\nprimed, primed-airborne, tutorial-1 to tutorial-4.";
-
 pub(super) fn run(args: Vec<String>) -> Result<()> {
     let mut args = args.into_iter();
     match args.next().as_deref() {
         Some("scan") => {}
-        Some("hud-preview") => return hud_preview(args.collect()),
         Some("-h" | "--help") | None => {
-            println!("{USAGE}\n\n{HUD_USAGE}");
+            println!("{USAGE}");
             return Ok(());
         }
-        Some(other) => bail!("unknown superbounce command {other}\n{USAGE}\n\n{HUD_USAGE}"),
+        Some(other) => bail!("unknown superbounce command {other}\n{USAGE}"),
     }
     let (mut positional, mut disc, mut bsp, mut json) = (Vec::new(), None, 0usize, false);
     let mut near: Option<([f32; 3], f32)> = None;
@@ -115,149 +110,6 @@ pub(super) fn run(args: Vec<String>) -> Result<()> {
     );
     for s in &spots {
         println!("{}", line(s));
-    }
-    Ok(())
-}
-
-// ---- the HUD ----
-
-use app::superbounce_hud as hud;
-use boot::superbounce_mode as mode;
-
-/// The HUD's view of the mode's state.
-pub(crate) fn hud_view(s: &mode::State) -> hud::View {
-    hud::View {
-        primed: s.primed(),
-        scan: match &s.scan {
-            mode::ScanState::Idle | mode::ScanState::Scanning => hud::Scan::Scanning,
-            mode::ScanState::Ready => hud::Scan::Ready,
-            mode::ScanState::Failed(why) => hud::Scan::Failed(why.clone()),
-        },
-        nearest: s.nearest.map(|n| hud::Nearest {
-            distance_m: n.distance * mode::METRES_PER_UNIT,
-            launch: n.launch,
-            fall: n.fall,
-        }),
-        bearing: s.bearing(),
-        airborne: s.airborne,
-        vz: s.vz,
-    }
-}
-
-/// `h2 play`'s superbounce HUD: the mode's state each present, and the
-/// tutorial cards unless `superbounce.tutorial_seen` is set (or
-/// `H2_SUPERBOUNCE_TUTORIAL=1` asks for them anyway), which the last card
-/// sets.
-pub(crate) fn hud_source(store: &Arc<settings::Store>) -> hud::Source {
-    use boot::setting_defs::{
-        SUPERBOUNCE_TUTORIAL_ENV, SUPERBOUNCE_TUTORIAL_SEEN, superbounce_tutorial_shows,
-    };
-    let key = SUPERBOUNCE_TUTORIAL_SEEN.key;
-    let seen = store.handle::<bool>(key).get();
-    let env = std::env::var(SUPERBOUNCE_TUTORIAL_ENV).ok();
-    let show = superbounce_tutorial_shows(seen, env.as_deref());
-    let store = Arc::clone(store);
-    hud::Source::new(|| mode::hud_state().map(|s| hud_view(&s))).with_tutorial(show, move || {
-        match store.set(key, settings::Value::Bool(true)) {
-            Ok(o) => {
-                if let Some(e) = o.not_saved {
-                    eprintln!("superbounce: the tutorial's seen flag was not saved: {e}");
-                }
-            }
-            Err(e) => eprintln!("superbounce: the tutorial's seen flag: {e}"),
-        }
-    })
-}
-
-/// One preview: its name, the view, the card showing and the animation
-/// time (seconds) it is drawn at.
-pub(crate) fn hud_states() -> Vec<(&'static str, hud::View, Option<u8>, f32)> {
-    let not_primed = hud::View {
-        primed: false,
-        scan: hud::Scan::Ready,
-        nearest: Some(hud::Nearest {
-            distance_m: 6.2,
-            launch: 17.9,
-            fall: 1.1,
-        }),
-        bearing: Some(0.6),
-        airborne: false,
-        vz: Some(0.0),
-    };
-    let primed = hud::View {
-        primed: true,
-        ..not_primed.clone()
-    };
-    let airborne = hud::View {
-        airborne: true,
-        vz: Some(-4.0),
-        ..primed.clone()
-    };
-    let scanning = hud::View {
-        scan: hud::Scan::Scanning,
-        nearest: None,
-        bearing: None,
-        ..not_primed.clone()
-    };
-    // 0.6 s: the primed pulse at its brightest.
-    vec![
-        ("scanning", scanning, None, 0.3),
-        ("not-primed", not_primed.clone(), None, 0.0),
-        ("primed", primed.clone(), None, 0.6),
-        ("primed-airborne", airborne.clone(), None, 0.6),
-        ("tutorial-1", not_primed, Some(1), 0.0),
-        ("tutorial-2", primed.clone(), Some(2), 0.6),
-        ("tutorial-3", primed, Some(3), 0.6),
-        ("tutorial-4", airborne, Some(4), 0.6),
-    ]
-}
-
-/// The sizes a state is drawn at.
-fn hud_sizes(state: &str) -> &'static [(u32, u32)] {
-    if state == "primed" {
-        &[(1280, 720), (1920, 1080)]
-    } else {
-        &[(1280, 720)]
-    }
-}
-
-fn hud_preview(args: Vec<String>) -> Result<()> {
-    let (mut want, mut out) = (None::<String>, None::<PathBuf>);
-    let mut args = args.into_iter();
-    while let Some(a) = args.next() {
-        match a.as_str() {
-            "--state" => want = Some(args.next().context("--state needs a name or all")?),
-            "--out" => {
-                out = Some(PathBuf::from(
-                    args.next().context("--out needs a directory")?,
-                ))
-            }
-            "-h" | "--help" => {
-                println!("{HUD_USAGE}");
-                return Ok(());
-            }
-            _ => bail!("unknown argument {a}\n{HUD_USAGE}"),
-        }
-    }
-    let mut states = hud_states();
-    if let Some(w) = want.as_deref().filter(|w| *w != "all") {
-        states.retain(|(n, ..)| *n == w);
-        if states.is_empty() {
-            let names: Vec<_> = hud_states().into_iter().map(|s| s.0).collect();
-            bail!("no HUD state {w:?}; one of {names:?} or all");
-        }
-    }
-    let dir = out.unwrap_or_else(std::env::temp_dir);
-    std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
-    for (name, view, card, t) in &states {
-        for &(w, h) in hud_sizes(name) {
-            let px = hud::preview(view, *card, *t, (w, h));
-            let mut png = Vec::new();
-            assets::png::write_rgba(&mut png, w, h, &px)?;
-            let path = dir.join(format!("superbounce-hud-{name}-{w}x{h}.png"));
-            std::fs::write(&path, &png).with_context(|| format!("writing {}", path.display()))?;
-            println!("{name}: {w}x{h} -> {}", path.display());
-        }
     }
     Ok(())
 }
@@ -445,65 +297,6 @@ mod tests {
         let c = line(&spot(Kind::Crouch));
         assert!(c.starts_with("crouch") && !c.contains("launch"), "{c}");
         assert!(c.contains("likely") && c.contains("lip 0"), "{c}");
-    }
-
-    #[test]
-    fn the_hud_sees_the_mode_in_metres_with_its_arrow() {
-        let s = mode::State {
-            active: true,
-            word: Some(0xffff_fffd),
-            position: Some([0.0; 3]),
-            nearest: Some(mode::Near {
-                distance: 2.0,
-                launch: 17.85,
-                fall: 1.1,
-                edge: [[5.0, -1.0, 0.0], [5.0, 1.0, 0.0]],
-            }),
-            scan: mode::ScanState::Ready,
-            airborne: true,
-            vz: Some(-3.0),
-            yaw: Some(0.0),
-            ..Default::default()
-        };
-        let v = hud_view(&s);
-        assert!(v.primed && v.airborne);
-        assert_eq!(v.scan, hud::Scan::Ready);
-        let n = v.nearest.unwrap();
-        assert!((n.distance_m - 6.096).abs() < 1e-4);
-        assert_eq!((n.launch, n.fall), (17.85, 1.1));
-        assert_eq!(v.bearing, Some(0.0));
-        assert_eq!(v.vz, Some(-3.0));
-        let idle = hud_view(&mode::State::default());
-        assert!(!idle.primed && idle.nearest.is_none() && idle.bearing.is_none());
-        assert_eq!(idle.scan, hud::Scan::Scanning);
-    }
-
-    #[test]
-    fn the_hud_preview_has_every_state_once() {
-        let names: Vec<_> = hud_states().into_iter().map(|s| s.0).collect();
-        assert_eq!(
-            names,
-            [
-                "scanning",
-                "not-primed",
-                "primed",
-                "primed-airborne",
-                "tutorial-1",
-                "tutorial-2",
-                "tutorial-3",
-                "tutorial-4"
-            ]
-        );
-        for (name, view, card, _) in hud_states() {
-            assert_eq!(
-                view.airborne && view.primed,
-                name.contains("airborne") || card == Some(4),
-                "{name}"
-            );
-            assert_eq!(card.is_some(), name.starts_with("tutorial"), "{name}");
-        }
-        assert_eq!(hud_sizes("primed"), [(1280, 720), (1920, 1080)]);
-        assert_eq!(hud_sizes("scanning"), [(1280, 720)]);
     }
 
     #[test]

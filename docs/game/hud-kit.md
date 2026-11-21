@@ -1,7 +1,7 @@
 # The HUD kit: HUD elements of ours, drawn by Halo 2's own HUD
 
-Status: In progress. Built: the model, the compiler, the preview and the checks (build plan slices 1 and 2), with the superbounce HUD as their first HUD. Not built: the runtime (slices 3 to 5); the game still shows the host overlay in `crates/apps/app/src/superbounce_hud.rs`, which slice 6 replaces. Designed, not built: the superbounce HUD's charge meter, its prompts and messages, and the navpoint's two targets.
-Code: `crates/tools/hud-kit` (the model, the compiler, the preview, the checks; the superbounce HUD in `src/huds/superbounce.rs` until slice 6), `crates/extensions/game/src/hud_kit.rs` (the runtime, not built), `crates/apps/cli/src/hud_cmd.rs` (`h2 hud`). Tests: `crates/tools/hud-kit/src/tests.rs`, `crates/tools/hud-kit/tests/disc.rs`.
+Status: In progress. Built: the model, the compiler, the preview and the checks, the widget runtime (install, gate, inputs, string, crop), the prompt, training and navpoint channels, and the superbounce HUD on them. Not built: the colour hook and the flash, the pointer's turn, notifications, the navpoint's number, and the `hud.kit` agent method (build plan). Nothing of the runtime has been run in a game ("Not verified").
+Code: `crates/rewrites/hud-kit-core` (the model, the HUDs, the templates, the record compiler), `crates/tools/hud-kit` (the preview, the checks), `crates/extensions/game/src/hud_kit.rs` (the runtime), `crates/extensions/game/src/superbounce_hud.rs` (the superbounce HUD's feed), `crates/apps/cli/src/hud_cmd.rs` (`h2 hud`). Tests: `crates/rewrites/hud-kit-core/src/tests.rs`, `crates/tools/hud-kit/src/tests.rs`, `crates/tools/hud-kit/tests/disc.rs`, `crates/extensions/game/src/hud_kit_tests.rs`, `crates/extensions/game/src/superbounce_hud_tests.rs`.
 Switch: none (the runtime is the feature `hud-kit`).
 
 A feature of ours that wants something on the in-game HUD describes it as
@@ -262,7 +262,7 @@ The kit names retail art by the widget that draws it, never by pixels.
 
 Three places were possible.
 
-| | Host overlay (`app::superbounce_hud`) | Host draws the disc's art and fonts | The game draws records of ours |
+| | A host overlay | Host draws the disc's art and fonts | The game draws records of ours |
 |---|---|---|---|
 | Fonts, shaders, colours | invented | ours to reimplement, shader by shader | the game's |
 | Hides with the HUD (pause, cinematics, death, Blind, Theater) | no | must be copied | yes (`0x0013939b`) |
@@ -279,9 +279,13 @@ HUD"). The second is used only offline, by the preview, where
 
 ## How it works
 
-### The model (`crates/tools/hud-kit`)
+### The model (`crates/rewrites/hud-kit-core`)
 
-A HUD of ours is a `Hud`: a name and a fixed list of elements. A state
+The model, the HUDs of ours, the template resolver and the record
+compiler are in `hud-kit-core` (`rewrites` domain, guest-free), which
+both the offline preview (`crates/tools/hud-kit`) and the game's runtime
+use; `hud_edit::Mode` is its `Mode`. A HUD of ours is a `Hud`: a name
+and a fixed list of elements. A state
 is a `Values`: per element its text, fill, angle, style and whether it
 shows. One layout per HUD: a state never adds, removes or moves an
 element (the UI kit's rule, for the same reasons: the runtime only
@@ -333,6 +337,7 @@ pub enum Origin { Anchor, NextGrenadePill, NextGrenadeCount }
 pub enum Font { Hud, Lcd }            // a text widget's font index 0 and 1
 pub enum Art {
     StripMeter,                       // the sword's battery strip and its shader
+    StripMeterEnd(u8),                // the strip's last n columns, cropped, with its blue ramp
     WaypointArrow,                    // hudg arrow_assets[0]
     NavpointArrow,                    // hudg arrow_assets[1], the navpoints' arrow
     GrenadePill(PillPart),            // a part of the player's frag pill (shown on word A 0x04 alone)
@@ -350,18 +355,27 @@ pub trait Describe {
     fn hud(&self) -> Hud;
     /// The named states the preview sheet draws.
     fn states(&self) -> Vec<(&'static str, Values)>;
+    /// Why the HUD is not drawn on a campaign map, if it is not.
+    fn multiplayer_only(&self) -> Option<&'static str> { None }
 }
 ```
 
-`compile(&Hud, &Templates) -> Result<Compiled>` turns the elements into
-widget records: `0x64` bytes per meter, icon and pointer and `0x54` per
-text, with the element id of each, bitmaps first and texts after, as the
-game draws them (E `0x0013a532`). It builds them from the `nhdt`
-definition (`tags::defs`), as `h1objects::h1hud` does. `Templates` holds
+`records::compile(&Hud, &Templates) -> Result<Compiled, Error>` turns
+the elements into widget records: `0x64` bytes per meter, icon and
+pointer and `0x54` per text, with the element id of each, bitmaps first
+and texts after, as the game draws them (E `0x0013a532`). It writes the
+fields at the offsets of the `nhdt` definition (`tags::defs`) that
+`hud_edit::layout` reads, and `hud-kit`'s tests read every compiled
+widget back through `hud_edit::model::Widget`. `Templates` holds
 what must come from the loaded map: for each `Art` the bitmap and shader
 datums and the sequences, and for text the shader and string ID of a
 retail text widget of the same `nhdt` (the grenade count: the first text
-widget whose first input is 20). The strip meter is found by the names
+widget whose first input is 20). `templates::resolve` reads the map
+through a `MapView`: `hud_kit::templates::EditView` over the HUD
+editor's model and renderer for the preview, and
+`hud_kit_core::map_file::MapFile` over the map file and its resources
+for the runtime; the disc test resolves both on every map and compares
+them. The strip meter is found by the names
 `h1objects::health_hud` uses (`disintegrator_meter`, `ammo_meter`,
 sequence 0). An element placed from the grenade row takes its anchor
 and offsets from the row's (`compile::placed`): the next pill or count
@@ -370,7 +384,12 @@ may carry a crop, `[u0, u1, v0, v1]` of its sprite: the part a
 `GrenadePill` part draws. The crop is not in the widget record; the
 `Compiled` widget carries it, the preview draws it
 (`hud_edit::render::Answers::crop`, `Sprite::cropped`) and the runtime
-narrows the quad's texture rectangle to it. The same `Compiled` bytes go
+narrows the quad's texture rectangle to it. A cropped meter's template
+also carries its blue ramp, `[b0, b1]` (`templates::ramp`): the blue of
+the crop's first column and of its last plus one column's step, read
+from the strip's middle row; `records::Widget::input(fill)` is
+`b0 + fill × (b1 − b0)`, the `hud_input1` the preview draws and the
+runtime gives. The same `Compiled` bytes go
 to the game and to the preview, so what is checked offline is what the
 game is given.
 
@@ -398,50 +417,85 @@ A channel, like a widget, shows only in the screen modes its place has:
 
 ### The runtime (`crates/extensions/game/src/hud_kit.rs`)
 
-A feature registers its `Hud` once and publishes a `Values` whenever its
-state changes (from its tick hook). The feature `hud-kit` does the rest:
+A feature registers its `Describe` once (`hud_kit::register`, which
+returns a `Handle`), then publishes a `Values` whenever its state changes
+(`Handle::publish`) and the world point of its navpoint
+(`Handle::navpoint`). The feature `hud-kit` does the rest:
 
-1. **Install**, before `GAME_ACTIVATE` and after `hud_swap`: for every
-   `nhdt` a `bipd`'s HUD interfaces name, resolve the `Templates`,
-   compile every registered `Hud`, copy the tag's two widget blocks into
-   memory from `Builder::guest_alloc` with the kit's records after them,
-   and point the root's two block fields at the copies. The retail
-   records are byte for byte the same and draw first. With no `Hud`
-   registered the tags are not touched.
-2. **Gate** (`HUD_WIDGET_GATE`, before): a widget whose address is in the
-   kit's memory is drawn when its `Value::shown` is set, its `Hud` is on
-   and the mode has an offset; the retail gate is skipped for it.
-3. **Inputs** (`HUD_WIDGET_INPUTS`, before): `hud_input1` is the
-   element's `fill`.
-4. **String** (`HUD_WIDGET_STRING`, before): the element's `text`.
-5. **Colour** (`HUD_TEXT_SETUP`, before, from the text widget's call):
-   `Dim` scales the alpha the game chose; `Flash` runs the colour through
-   the `hudg` record with `flash::strength` from `since_tick`. `Normal`
-   changes nothing.
-6. **Turn and crop** (`HUD_SHADER_QUAD`, before): a pointer's four
-   corners are turned about their centre by `angle`; a cropped widget's
-   texture rectangle (at EAX, E `0x0022a664`) is narrowed to its crop.
-7. **Channels.** `message` queues through the game's routine at the
-   tick, the way `skulls_custom.rs` does. `prompt` writes the prompt
-   fields in a hook on `HUD_INTERACTION_VISIBLE` when the game hides its
-   own, the way `h1_hud_text/prompts.rs` does. `training` writes the id
-   and the show byte, and a hook on the string lookup (`0x001a0180`, as
-   `community_variants.rs` hooks it) answers the kit's string ids
-   (family `hud-kit` in `ui_kit::ids`).
+1. **Install**, before `GAME_ACTIVATE` and after `hud_swap`: the loaded
+   map is opened through `native_map::open` (builds with the `gpu`
+   feature; others install nothing and say so), and for every `nhdt` a
+   `bipd`'s HUD interfaces name (`hud_kit_core::map_file::player_huds`)
+   the templates are resolved through `MapFile` and every registered HUD
+   is compiled. A HUD that is multiplayer only is not joined on another
+   map, and one with a template missing is not joined; both are logged
+   with the reason. `install_records` copies each root's two widget
+   blocks into the kit's memory (`Builder::guest_alloc`, `REGION_LEN`)
+   with the kit's records after them and points the root's two block
+   fields at the copies. The retail records are byte for byte the same
+   and draw first. What each root held is kept at the head of that
+   memory (`hud_kit::Header`), so the next install puts it back first
+   and leaves one copy, after a machine snapshot too; a root the game
+   reloaded is left alone. With no HUD registered nothing is touched.
+2. **Gate** (`HUD_WIDGET_GATE`, before, at the widget loop's two calls):
+   a widget in the kit's memory is drawn while its value is shown, in a
+   style the runtime draws, in a screen mode its place has (one local
+   view fullscreen, two half, more quarter: `player_globals +8`). The
+   retail gate is skipped for it; a retail widget costs two loads.
+3. **Inputs** (`HUD_WIDGET_INPUTS`, before): `hud_input1` is
+   `records::Widget::input(fill)`, the other three 0.
+4. **String** (`HUD_WIDGET_STRING`, before): the value's text, UTF-16, in
+   the element's engine font for the mode, and the four inputs copied to
+   the HUD material's (`0x004e6980`), as the text draw does.
+5. **Crop** (`HUD_WIDGET_SPRITE`, before): for a cropped widget the hook
+   picks the sprite as the game does (the mode's sequence, its first
+   sprite, the image's width and height) and narrows its bounds to the
+   crop (`hud_kit::narrow`). The crop is applied to the sprite's bounds,
+   not to the quad's corners at `HUD_SHADER_QUAD`, whose order is not
+   read (decoding 7).
+6. **Channels**, at the tick's end (`GAME_TICK`, after) and in the prompt
+   hook:
+   - `Prompt`: the first shown prompt text is written to the first local
+     player's prompt fields (`+0x220`, `+0x440`, `+0x444`, the fade
+     bytes `+0x44e`, `+0x44f`) in a hook on `HUD_INTERACTION_VISIBLE`, at
+     the interaction code's call, only while the game shows no prompt of
+     its own (`hud_kit::show_prompt`, as `h1_hud_text/prompts.rs` does).
+   - `Training`: the first shown training text is the kit's string id
+     (family `hud kit` in `ui_kit::ids`), set with the show byte in the
+     scripted training slot (`[0x0051e9c0] +0x6c0`, `+0x6c4`) unless the
+     game shows a scripted text of its own; the string lookup
+     (`0x001a0180`, `community_variants`' override) answers the id with
+     the text (`hud_kit::write_training`, `hud_kit::text`).
+   - `Navpoint`: at install the scenario's point block
+     (`[0x004e0350] +0x1e4`) is copied into the kit's second allocation
+     with one point after it, and the scenario points at the copy
+     (`hud_kit::install_point`, kept and put back as the widget blocks
+     are). Each tick that point is set to the HUD's navpoint and one slot
+     of the first local player's navpoint list is kept on it: the slot
+     already ours, else one the game skips, else the list's end, with the
+     end moved one on (`hud_kit::write_navpoint`). Without a point the
+     slot is skipped (kind 15). The game draws its own arrow and marker
+     there; the kit's number is not drawn.
+   - `Message`: not sent. Queuing a notification is a guest call to
+     `0x0024cbbf`, and its insert is not read (decoding 6).
 
-The draw hooks are `context_only` and read one shared snapshot of the
-published values, so they run on the render thread
-(`crates/extensions/game/src/render_thread.rs`); the tick hooks are
-listed there as refused. The feature is presentation-only and holds
-nothing a snapshot needs: its guest memory is rebuilt at each install.
+The styles the runtime draws are `Normal`, and `Flash` as `Normal`; a
+widget in `Dim` or `Inactive` is not drawn until the colour hook
+(slice 4). The draw hooks are `context_only` and read one shared table,
+so they run on the render thread
+(`crates/extensions/game/src/render_thread.rs`); the install and the tick
+are listed there as refused. The feature is presentation-only and
+snapshot-stateless: what the roots and the scenario held is in guest
+memory, and the draw table is rebuilt at each install (a snapshot loaded
+mid-game draws no kit widget until the next game starts).
 
 ### Anchoring next to retail art
 
 An element is placed in HUD pixels from an anchor, like the retail
 widget beside it. The crate has the retail rectangles as named
 constants, checked on the disc: `TRACKER`, `SHIELD_BAND`, `H1_HEALTH`,
-`PROMPT_LINE`, `TRAINING_BOX`. `Place::above(SHIELD_BAND, gap)` and the
-like give offsets from them, so "above the motion tracker" is written
+`PROMPT_LINE`, `TRAINING_BOX`. `rects::above(SHIELD_BAND, gap, height)`
+and the like give offsets from them, so "above the motion tracker" is written
 once and is right in each screen mode.
 
 ### Cost
@@ -468,8 +522,16 @@ colour, turn), then the channels: the prompt line and a notification at
 their points in font 6 (5 in split screen), and the training box around
 its text. The player `nhdt` is the one a biped's HUD interfaces name,
 `ui\hud\masterchief` when the map has it. The retail HUD is drawn with
-the state gate on and word A `0x1000`, the retail shield meter's show
-word (S: what else the game sets).
+the state gate on at the source's retail words (`source::retail_words`):
+word A `0x1000`, the retail shield meter's show word, plus the first
+show bit of the widget the HUD editor places on the tracker's rim
+(`rects::TRACKER`) that lets it through the gate (S: that the game sets
+that bit whenever it draws the tracker; decoding 5). A HUD with no
+widget there keeps `0x1000` alone. Every report notes which bit was
+taken. The preview draws a navpoint at its own sample point; in a split
+frame, whose stack would leave the frame's top at the sample, it moves
+the point down until the stack fits (S: that the game keeps a navpoint
+inside its waypoint area, the safe bounds less `hudg +0xec`..`+0xf8`).
 
 `preview` writes `<hud>-<state>-<mode>.png` and a `.json` with every
 element's id, kind, rectangle, the rectangle it may take in any state
@@ -531,10 +593,12 @@ the preview's JSON, with `render.frame` for the pixels.
 
 ## The superbounce HUD on the kit
 
-`crates/tools/hud-kit/src/huds/superbounce.rs` describes it: the
-elements, `values(&View)` (what the HUD shows of `superbounce_mode`'s
-state) and the preview's states. Slice 6 moves it beside the mode,
-publishing a `Values` from `State` each tick. It is shown to the first
+`crates/rewrites/hud-kit-core/src/huds/superbounce.rs` describes it:
+the elements, `View` (what the HUD shows of `superbounce_mode`'s state),
+`values(&View)`, the preview's states and the tutorial's step machine.
+It is multiplayer only (`Describe::multiplayer_only`): a campaign
+player HUD has no grenade row, and the disc test skips campaign maps for
+it by that reason. It is shown to the first
 local player. It is made only of things Halo 2 draws already: a grenade
 pill, a navpoint and the training box. Launch and drop are not on the
 HUD: they are on the strips' labels in the world and in the agent API.
@@ -602,8 +666,9 @@ icon is `Flash(TimeWarning)`, the timer's warning record.
 
 ### The charge meter
 
-Design, not built. `sb.charge` is a `Meter` under the pill: how far the
-player is through priming, then how long the charge has left.
+`sb.charge` is a `Meter` under the pill: how far the player is through
+priming, then how long the charge has left. The preview draws it in
+every state; the runtime is in "The runtime, for this HUD".
 
 **What a charge is.** The engine has no charge amount. The pair word is
 0 through the whole crouch and −3 from the first tick of the stand-up; it
@@ -674,7 +739,7 @@ its notification list:
 
 | Channel | Text | When |
 |---|---|---|
-| `Prompt` | Hold (crouch) and walk under | near, standing or crouched, not primed, within 1.5 of a crouch spot |
+| `Prompt` | Hold (crouch) and walk under | near, not primed, within 1.5 of a crouch spot |
 | `Prompt` | Let go of (crouch) | under |
 | `Prompt` | Walk out to stand up | held |
 | `Message` | Primed | the word becomes −3 |
@@ -682,15 +747,20 @@ its notification list:
 | `Message` | Superbounce, 12 m | a bounce, with the height gained at its top in whole metres |
 | `Message` | Not primed. / Missed the strip. / Too slow. / No bounce. | a landing within 0.5 of a strip that did not bounce, by its first failed test ([superbounce.md](superbounce.md), "Landings") |
 
-(crouch) is the action token the game replaces with the bound button
-(`0x0022d2ee`). A prompt of the game's own wins the line.
+(crouch) is U+E110, the left stick click's glyph, the default crouch
+button ([button-icons.md](../input/button-icons.md)), which the button
+swap redraws as the bound key's picture on the other input sets, as the
+tutorial's (X) is U+E102. A prompt of the game's own wins the line.
+The landing's result is `superbounce_mode`'s `last_landing`; the bounce
+message has no height until the state carries one ("Superbounce"
+alone).
 
 ### The navpoint
 
 `sb.navpoint` is a `Navpoint` channel over the next thing to do, in
 every screen mode: while not primed, the nearest crouch spot's stand
-point; while primed, the nearest strip's (Design, not built: the
-preview's states show the strip's alone). Halo 2 draws a navpoint in
+point; while primed, the nearest strip's (`superbounce_mode`'s
+`nav_target`). Halo 2 draws a navpoint in
 `0x0024e59f` (E, called per slot from `0x0024da7d`): it projects the
 point (`0x0002b400`, `0x0002b460`), clamps it into the waypoint area
 (`hudg` `waypoint_*_inset`, `+0xec`..`+0xf8`), then draws three HUD
@@ -727,63 +797,48 @@ centred 2 pixels above the marker (`NAVPOINT_NUMBER_GAP`), the texels
 times the notifications' colour (the same `0x0013927e`; S: that the HUD
 shader multiplies). The outline is not drawn (decoding 8). It is
 `Normal` over either target, and hidden while scanning and without a
-target. The built preview draws the strip's navpoint `Dim` while not
-primed, having no crouch target.
+target.
 
 ### States
 
-| State | Pill | Navpoint | Tutorial |
-|---|---|---|---|
-| `not-primed` | inactive | dim, "12" | |
-| `primed` | lit | lit, "12" | |
-| `scanning` | dim | hidden | |
-| `no-strips` | hidden | hidden | |
-| `tutorial-1` | inactive | dim | step 1 |
-| `tutorial-2`, `-3`, `-4` | lit | lit | steps 2 to 4 |
-
-The charge meter adds preview states (not built): `near`, `under`,
-`held`, `primed` at fill 1, `draining` at fill 0.25 with the icon's
-warning flash, and `lost`.
+| State | Pill and icon | Charge | Prompt, message | Navpoint | Tutorial |
+|---|---|---|---|---|---|
+| `not-primed` | inactive | hidden | | crouch spot, "12" | |
+| `near` | inactive | 0 | Hold (crouch) and walk under | crouch spot, "1" | |
+| `under` | inactive | 1/3 | Let go of (crouch) | crouch spot, "1" | |
+| `held` | inactive, icon `Flash(Help)` | 2/3 | Walk out to stand up | crouch spot, "1" | |
+| `primed-full` | lit | 1 | Primed | strip, "12" | |
+| `primed-draining` | lit, icon `Flash(TimeWarning)` | 0.25 | | strip, "12" | |
+| `lost` | inactive | 0 | Charge lost | crouch spot, "12" | |
+| `bounced` | lit | 1 | Superbounce, 12 m | strip, "12" | |
+| `missed` | lit | 0.8 | Missed the strip. | strip, "12" | |
+| `scanning` | dim | hidden | | hidden | |
+| `no-strips` | hidden | hidden | | hidden | |
+| `tutorial-1` | inactive | hidden | | crouch spot | step 1 |
+| `tutorial-2`, `-3`, `-4` | lit | 1 | Primed | strip | steps 2 to 4 |
 
 ### The runtime, for this HUD
 
-Three things slice 3 on has to settle; this is the plan, not built.
+`crates/extensions/game/src/superbounce_hud.rs` registers the HUD and
+feeds it each tick from `superbounce_mode`'s state through one adapter,
+`superbounce_hud::view`:
 
-1. **Where the shared code lives.** `crates/extensions/game` may not
-   depend on `crates/tools` (`scripts/crate-domains.toml`), so it cannot
-   use `crates/tools/hud-kit`. The model, the templates (`GrenadeRow`
-   included) and the compiler move to a crate the extensions may use
-   (a new crate in the `rewrites` domain), with the
-   map reads behind the `map` crate they already use; `hud-kit` keeps
-   the preview, the checks and the synthetic map and depends on it.
-2. **The pill joins the player's `nhdt`.** At install, for each player
-   `nhdt`, resolve the grenade row and compile: `sb.pill` and
-   `sb.pill.end` are two more bitmap records and `sb.pill.icon` one more
-   text record after the retail ones, the two bitmaps cropped at
-   `HUD_SHADER_QUAD` (the install step above), drawn by the game's own widget
-   loop. The look is the kit's hooks: the gate shows them; `Normal`
-   changes nothing; `Dim` scales the alpha the game chose for the quad
-   and the text (`HUD_SHADER_QUAD`, `HUD_TEXT_SETUP`); `Inactive` greys
-   them, which a colour hook alone cannot do for a bitmap: either a
-   grey constant in the shader quad's colour, or the retail unselected
-   pill's shader written into the record (S: which widget draws the
-   unselected pill is not read).
-3. **The navpoint goes through the game's list.** The navpoint draw
-   reads up to 4 slots of 12 bytes per user at `[0x005023f8] + user *
-   0x30` (E `0x0024da7d`..`0x0024db6e`: `+0` an `i16`, -1 ends the list;
-   `+2` its low four bits a kind, 15 skips the slot, 0 a scenario point
-   (`[0x004e0350] +0x1e4`, `0x38` each, the point at `+0x24`; S: a
-   scenario block), else an object;
-   `+4` a height added to the point; `+8` the object datum or the point
-   index). An object at the
-   strip's stand point (or a scenario point, if a free one can be
-   written) in a slot the game is not using gets the game's own arrow,
-   marker and placement, in every split screen. Slice 6 writes the slot
-   each tick from `State`; the kit's runtime adds the number by a text
-   draw at the projected point after `0x0024e59f` returns, and the
-   colour through the navpoint's opacity. If no slot is free (a gametype
-   uses all four), the kit draws the same three quads itself at the
-   projected point.
+| State (`superbounce_mode::State`) | View |
+|---|---|
+| `scan` | ready with spots, ready with none (`NoStrips`), failed, else scanning |
+| `charge` (phase, fill) | the charge, as it is |
+| `verb` | the prompt's verb; in the near phase, not primed and with no verb, "Hold (crouch) and walk under" |
+| `nav_target` (point, kind, distance) | the navpoint's target and distance, world units to metres; its point goes to `Handle::navpoint` |
+| `last_landing` (result, tick) | the landing's message at its tick, a bounce without its height |
+
+With the mode off every element is hidden. The tutorial's step machine
+watches primed, the nearest bounce spot in metres and a bounce landing
+newer than the last it saw (`superbounce_hud::watch`).
+
+What shows in the game: the pill and its icon while primed (`Inactive`
+not drawn), the charge meter through the recipe and the charge, the
+prompt verbs, the navpoint (the game's arrow and marker, no number) and
+the tutorial's training text. The notifications do not show.
 
 ### The tutorial
 
@@ -813,27 +868,27 @@ the frame art (S: decoding 3 gives its outer edge). The widest first
 line is 304 pixels in font 6 (V, measured as above), inside the frame's
 544. The element's `longest` is step 3, the most characters; which
 step is widest in font 6 is S until the disc's checks run. The tutorial
-is fullscreen only. The step machine is `Tutorial` (its
-thresholds, F4, the `superbounce.tutorial_seen` setting and
-`H2_SUPERBOUNCE_TUTORIAL`), moved beside the HUD. A game training prompt
-of its own takes the box while it shows; the tutorial's step waits.
+is fullscreen only. The step machine is
+`hud_kit_core::huds::superbounce::Tutorial` (its thresholds);
+`superbounce_hud` runs it and sets the `superbounce.tutorial_seen`
+setting when it closes (`H2_SUPERBOUNCE_TUTORIAL=1` shows it anyway). A
+game training prompt of its own takes the box while it shows; the
+tutorial's step waits.
 
 ## Interfaces
 
-- A feature calls `hud_kit::register(hud) -> Handle`, then
-  `Handle::publish(values)`, `Handle::message(user, text)`,
-  `Handle::prompt(user, Option<text>)` and
-  `Handle::training(Option<text>)`.
+- A feature calls `hud_kit::register(describe) -> Handle`, then
+  `Handle::publish(values)` and `Handle::navpoint(Option<point>)`. A
+  `Prompt` or `Training` element's shown text is the channel's text.
 - Guest points hooked: `HUD_WIDGET_GATE`, `HUD_WIDGET_INPUTS`,
-  `HUD_WIDGET_STRING`, `HUD_TEXT_SETUP`, `HUD_SHADER_QUAD`,
-  `HUD_INTERACTION_VISIBLE`, `GAME_ACTIVATE`, `GAME_TICK`, and the string
-  lookup `0x001a0180`. New research points: the training state
-  `0x0051e9c0` and its three fields, the notification routine
-  `0x0024cbbf`.
-- Guest memory written: the two block fields of each player `nhdt`
-  root, the kit's own allocation, a user's prompt fields, the training
-  id and show byte.
-- Agent API: `hud.kit`.
+  `HUD_WIDGET_STRING`, `HUD_WIDGET_SPRITE`, `HUD_INTERACTION_VISIBLE`,
+  `GAME_ACTIVATE`, `GAME_TICK`, and the string lookup `0x001a0180`
+  through `community_variants`' override.
+- Guest memory written: the two block fields of each player `nhdt` root,
+  the scenario's point block field, the kit's two allocations, the first
+  local player's prompt fields and navpoint list, the training id and
+  show byte.
+- Agent API: none yet (`hud.kit` is planned with slice 6's run checks).
 
 ## Rules and limits
 
@@ -866,6 +921,26 @@ agent API had no game to attach to, and a design page starts none.
 
 ## Not verified
 
+Unverified until the lab: none of the runtime has run in a game. In
+particular:
+
+- That the kit's copied widget blocks draw as the retail ones do, and
+  the kit's after them, on the D3D path and the native HUD pass.
+- The gate's, inputs', string's and sprite's return addresses as the
+  only calls the hooks answer, and that narrowing the sprite's bounds at
+  `HUD_WIDGET_SPRITE` narrows the quad (the quad's size taken from the
+  bounds times the image's size).
+- That `player_globals +8` is the count of local views the HUD's screen
+  mode follows.
+- That writing the prompt fields at `HUD_INTERACTION_VISIBLE`'s
+  interaction call shows the verb and hides it again when the kit stops,
+  and that U+E110 is redrawn as the bound crouch key.
+- The navpoint: that `[0x004e0350] +0x1e4` is the block a kind-0 slot
+  indexes, that a point appended to it harms nothing that walks the
+  block, that the list is not rebuilt over our slot each tick, and the
+  slot's `+0` and height.
+- That the template resolution at the match start (one map open, the
+  strip's image decoded) is fast enough there.
 - That the scripted training text draws in a multiplayer game, and what
   enables it (decoding 1).
 - That a kit text widget drawn through the grenade count's shader takes
@@ -906,10 +981,10 @@ agent API had no game to attach to, and a design page starts none.
 - That the (crouch) action token exists for the prompt line as the
   pickup prompt's (X) does.
 - The frame cost.
-- The preview on the disc: `tests/disc.rs` has not been run, so the
-  grenade row on lockout (it asserts the panel, (106, 0) and
-  (118, -1)), the retail state words
-  (`RETAIL_WORDS`) and the XBE colour reads are unchecked there.
+- The preview on the disc: the tracker's show bit `source::retail_words`
+  takes, that the game sets it, and that the moved navpoint sample is
+  why the split-screen checks passed (the failing findings were not
+  captured).
 - Where a notification is drawn against the first message line (the
   preview puts it below the line's five-line box).
 - The sheet's retail states draw the player's `nhdt` alone: no weapon's
@@ -920,70 +995,28 @@ agent API had no game to attach to, and a design page starts none.
 
 Each slice is code and tests only; the coordinator compiles and runs.
 
-1. **The model and compiler.** New crate `crates/tools/hud-kit`
-   (`Cargo.toml`, `BUCK`, `README.md`, a row in
-   `scripts/crate-domains.toml`; `scripts/crate-table.py` after):
-   `model.rs`, `compile.rs`, `templates.rs` (from a `map::Map`: the
-   player `nhdt`s, the text shader, each `Art`), `rects.rs` (the retail
-   rectangles), `hudg.rs` (the flash records, the message fields, the
-   training references, through `tags::defs`). Tests: a compiled widget
-   reads back through `hud_edit::model::Widget` with the anchor, offsets,
-   registration, font and inputs asked for; one layout per HUD; template
-   lookup on `hud-edit`'s fixture map. Disc (`#[ignore]`): templates
-   resolve on every map; the retail rectangles match `hud-edit`'s
-   placement of the retail widgets.
-2. **The preview and checks.** `preview.rs`, `check.rs`, the two
-   sources; `crates/apps/cli/src/hud_cmd.rs` and its line in `main.rs`.
-   Tests: the synthetic sheet draws; each check fires on a HUD built to
-   break it; the JSON's rectangles equal the compiler's. Disc: every
-   registered HUD passes every check with nothing skipped; the X glyph
-   and every character used are in fonts 6 and 8.
-3. **The widget runtime.** `crates/extensions/game/src/hud_kit.rs`.
-   The `extensions` domain may not use `tools`
-   (`scripts/crate-domains.toml`), so the model and the compiler the
-   runtime needs cannot stay in `crates/tools/hud-kit` as they are; where
-   they go is this slice's first step:
-   install, gate, inputs, string; registration in `boot`; the
-   `render_thread.rs` entries; `hud.kit` in the agent crate and
-   `docs/runtime/agent-api.md`. Tests on `FlatMemory`: the root points at
-   a copy whose head is the retail bytes; a retail widget's hooks pass
-   through; a kit widget's gate, input and string are the published
-   values; a second install leaves one copy. Verify on the disc and in a
-   run: the widget cap, the text shader's colour.
-4. **Styles and the pointer.** The colour hook and the flash (move
-   `strength` into `hud-kit` and have `h1_hud_text/flash.rs` call it);
-   the corner turn. Before coding, decoding 4 and 7. Tests: a `Dim`
-   text's alpha; a flash at the record's phases; four corners turned by
-   a quarter turn.
-5. **Channels.** The `hud-kit` string family in `ui_kit/ids.rs`, the
-   lookup hook, `message`, `prompt`, `training`; a fit scope for the
-   training draw in `points/render_aspect.rs` if decoding 1 shows it has
-   none. Before coding, decodings 1, 2 and 6. Tests on `FlatMemory`: the
-   prompt fields as `0x0024ca1d` leaves them; the game's own prompt is
-   not overwritten; the training id and byte set and cleared; the lookup
-   answers only the family's ids.
-6. **The superbounce HUD.**
-   `crates/extensions/game/src/superbounce_hud.rs` (the `Hud`, the
-   `Values` from `State`, the tutorial's step machine with its tests
-   moved from the shell). Delete
-   `crates/apps/app/src/superbounce_hud.rs`, `hud_shapes.rs`, their
-   uses in `shell.rs`, `lib.rs`, `play_cmd.rs` and
-   `superbounce_cmd.rs`'s `hud-preview` (it becomes
-   `h2 hud preview superbounce`). Rewrite "The HUD" and "The tutorial"
-   in [superbounce.md](superbounce.md) and the overlay paragraphs of
-   `docs/runtime/app.md`; add the glass panel to
-   `docs/game/notes/not-adopted.md`; the pill joins the player's `nhdt`
-   and the navpoint goes through the game's list ("The runtime, for this
-   HUD"). Tests: each `State` gives the documented values; the preview's
-   four states and four tutorial steps pass the checks. Verify in a run with `hud.kit` and `render.frame`
-   against the preview's JSON, at 4:3 and 16:9, Pinned and Centered.
-7. **Preview fidelity.** Decodings 3 and 5, so the preview draws the
+1. **The run checks.** `hud.kit` in the agent crate and
+   `docs/runtime/agent-api.md`: the registered HUDs, and per element the
+   id, kind, widget address, text, fill and whether the gate last drew
+   it. Then, on the lab Mac, each item of "Not verified" with `hud.kit`
+   and `render.frame` against the preview's JSON, at 4:3 and 16:9,
+   Pinned and Centered, fullscreen and split; the widget cap and the
+   text shader's colour.
+2. **Styles and the pointer.** The colour hook (`HUD_TEXT_SETUP`,
+   `HUD_SHADER_QUAD`) and the flash (move `strength` into
+   `hud-kit-core` and have `h1_hud_text/flash.rs` call it), so `Dim`,
+   `Inactive` and `Flash` draw; the corner turn. Before coding, decodings
+   4 and 7. Tests: a `Dim` text's alpha; a flash at the record's phases;
+   four corners turned by a quarter turn.
+3. **Messages and the navpoint's number.** The notification insert
+   (decoding 6) and a guest call to `0x0024cbbf` at the tick, as
+   `skulls_custom.rs` does; the number drawn at the projected point after
+   `0x0024e59f` returns (decoding 8). Tests on `FlatMemory`: a queued
+   message's entry; the number's place.
+4. **Preview fidelity.** Decodings 3 and 5, so the preview draws the
    training box's frame and a retail widget's own flash; `h2 hud
    compare` against a `render.frame` capture, as the UI builder's
    fidelity loop.
-
-Slices 1 and 2 need no game. Slice 6 can be written against slice 1's
-model while 3 to 5 are built.
 
 ## Related
 

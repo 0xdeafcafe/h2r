@@ -10,10 +10,11 @@ use hud_edit::render;
 use scenario_edit::MapSource;
 
 use crate::check::{self, Check};
+use crate::compile::AsHudEdit;
 use crate::huds::superbounce::{self, Superbounce};
 use crate::model::*;
 use crate::preview;
-use crate::templates::{self, Templates};
+use crate::templates;
 use crate::{Source, compile, hudg, synthetic};
 
 fn synthetic() -> Source {
@@ -161,7 +162,8 @@ fn templates_resolve_on_the_hud_editors_fixture_map() {
     };
     let hudg = hudg::read(&mut map).ok();
     assert!(hudg.is_none(), "the fixture has no hudg");
-    let t = Templates::resolve(&mut map, player, hudg.as_ref(), &hud);
+    let mut art = render::Art::new(assets::ResourceFiles::new());
+    let t = templates::resolve(&mut map, &mut art, player, hudg.as_ref(), &hud);
     let a = t.art(&meter).unwrap();
     assert_eq!(a.bitmap, bitmap);
     assert_eq!(a.sequences, [1, 1, 1]);
@@ -194,7 +196,7 @@ fn templates_resolve_on_the_hud_editors_fixture_map() {
         name: "t",
         elements: vec![Element::icon("i", nope.clone(), bl(0, -100))],
     };
-    let t = Templates::resolve(&mut map, player, None, &h2);
+    let t = templates::resolve(&mut map, &mut art, player, None, &h2);
     assert!(t.art(&nope).unwrap_err().contains("no bitmap widget nope"));
 }
 
@@ -210,10 +212,12 @@ fn the_synthetic_sheet_draws_and_passes() {
         r.skipped.iter().map(|s| s.0).collect::<Vec<_>>(),
         [Check::Glyphs]
     );
-    assert_eq!(r.shots.len(), 8 * 3);
+    let states = Superbounce.states().len();
+    assert_eq!(states, 15);
+    assert_eq!(r.shots.len(), states * 3);
     let (sheet, tiles) = preview::sheet(&r.shots, 3);
-    assert_eq!((sheet.width, sheet.height), (3 * 320, 8 * 240));
-    assert_eq!(tiles["tiles"].as_array().unwrap().len(), 24);
+    assert_eq!((sheet.width, sheet.height), (3 * 320, states as u32 * 240));
+    assert_eq!(tiles["tiles"].as_array().unwrap().len(), states * 3);
     let s = r
         .shots
         .iter()
@@ -292,9 +296,20 @@ fn the_synthetic_sheet_draws_and_passes() {
     };
     let d = half("tutorial-1").element(superbounce::TUTORIAL).unwrap();
     assert!(!d.drawn && d.hidden.as_deref() == Some("no half screen offset"));
-    let h = half("primed");
+    let h = half("primed-full");
     assert!(h.element(superbounce::PILL).unwrap().drawn);
+    assert!(h.element(superbounce::CHARGE).unwrap().drawn);
     assert!(h.element(superbounce::NAVPOINT).unwrap().drawn);
+    // In every split frame the navpoint's stack stays inside the frame
+    // (the sample is moved down, as the game keeps a navpoint in its
+    // waypoint area).
+    for s in r.shots.iter().filter(|s| s.mode != Mode::Full) {
+        let Some(n) = s.element(superbounce::NAVPOINT).filter(|d| d.drawn) else {
+            continue;
+        };
+        let nr = n.rect.unwrap();
+        assert!(nr.y0 >= f32::from(s.frame.top), "{} {:?}: {nr:?}", s.state, s.mode);
+    }
     // No strips: nothing but the retail HUD.
     let none = r
         .shots
@@ -382,7 +397,12 @@ fn the_json_rectangles_are_the_compiled_bytes() {
             compared += 1;
         }
     }
-    assert_eq!(compared, 3 * 8, "the pill's two parts and its icon in eight states");
+    let states = Superbounce.states().len();
+    assert_eq!(
+        compared,
+        4 * states,
+        "the pill's two parts, the charge meter and the icon in every state"
+    );
 }
 
 /// The pill is lit primed (its texels as they are, the icon in the kit
@@ -402,13 +422,13 @@ fn styles_change_the_pill() {
     let sat = |p: [u8; 3]| p.iter().max().unwrap() - p.iter().min().unwrap();
     // The pill's right end, clear of the icon.
     let pill = |state| px(state, superbounce::PILL_END, 2.0, 8.0);
-    let (lit, off, dim) = (pill("primed"), pill("not-primed"), pill("scanning"));
+    let (lit, off, dim) = (pill("primed-full"), pill("not-primed"), pill("scanning"));
     assert!(sat(off) * 2 < sat(lit), "greyed: {off:?} against {lit:?}");
     assert_ne!(dim, lit, "faded");
     let icon = |state| px(state, superbounce::PILL_ICON, 1.0, 4.0);
-    assert_eq!(icon("primed"), render::TEXT_COLOUR[..3]);
-    assert_ne!(icon("not-primed"), icon("primed"));
-    assert_ne!(icon("scanning"), icon("primed"));
+    assert_eq!(icon("primed-full"), render::TEXT_COLOUR[..3]);
+    assert_ne!(icon("not-primed"), icon("primed-full"));
+    assert_ne!(icon("scanning"), icon("primed-full"));
 }
 
 /// A text in a transparent colour (a flash record with no alpha) puts no
@@ -626,7 +646,7 @@ fn the_next_pill_is_cut_from_the_frag_pill() {
     // The frag pill's red rises with its x: the body starts at its x 0,
     // the end at its x 43 and rises to 49.
     let r = check::hud(&mut src, &Superbounce, &[Mode::Full]).unwrap();
-    let s = r.shots.iter().find(|s| s.state == "primed").unwrap();
+    let s = r.shots.iter().find(|s| s.state == "primed-full").unwrap();
     let red = |id, dx: f32| {
         let e = s.element(id).unwrap().rect.unwrap();
         let (x, y) = ((e.x0 + dx) as u32, (e.y0 + 8.0) as u32);
@@ -656,4 +676,80 @@ fn a_crop_is_its_part_of_the_frag_pill() {
     row.frag = [0.0, 50.0];
     assert_eq!(row.crop(PillPart::Body), [0.0, 20.0 / 103.0, 0.0, 1.0]);
     assert_eq!(row.crop(PillPart::End), [43.0 / 103.0, 50.0 / 103.0, 0.0, 1.0]);
+}
+
+/// The charge meter: the strip's last 27 columns, 2 pixels under the
+/// pill's bottom (21 under its top) and in line with its left edge, in
+/// every mode; the fill goes through the strip's blue ramp (the runtime's
+/// `hud_input1`), so a full meter shows every column and an empty one
+/// none; hidden when no charge is building.
+#[test]
+fn the_charge_meter_is_the_strips_end_under_the_pill() {
+    let mut src = synthetic();
+    let hud = superbounce::hud();
+    let t = src.templates(&hud);
+    let c = compile(&hud, &t).unwrap();
+    let w = c.widget(superbounce::CHARGE).unwrap();
+    let strip = 92.0;
+    assert_eq!(w.crop, Some([65.0 / strip, 1.0, 0.0, 1.0]));
+    // The synthetic strip's blue is 0 to column 13, then rises 1/78 a
+    // column: column 65's is 52/78 (rounded to a byte).
+    let [b0, b1] = w.ramp.unwrap();
+    assert!((b0 - 52.0 / 78.0).abs() < 0.01, "{b0}");
+    assert!(b1 > 1.0, "the last column's blue plus a step: {b1}");
+    assert_eq!(w.input(0.0), b0);
+    assert_eq!(w.input(1.0), b1);
+    let r = check::hud(&mut src, &Superbounce, &Mode::ALL).unwrap();
+    for s in &r.shots {
+        let pill = s.element(superbounce::PILL).unwrap().rect;
+        let charge = s.element(superbounce::CHARGE).unwrap();
+        let (Some(p), Some(m)) = (pill, charge.rect) else {
+            continue;
+        };
+        assert_eq!(
+            [m.x0, m.y0, m.width(), m.height()],
+            [p.x0, p.y0 + f32::from(superbounce::CHARGE_DOWN), 27.0, 8.0],
+            "{} {:?}",
+            s.state,
+            s.mode
+        );
+    }
+    let full = |state: &str| {
+        r.shots
+            .iter()
+            .find(|s| s.state == state && s.mode == Mode::Full)
+            .unwrap()
+            .element(superbounce::CHARGE)
+            .unwrap()
+            .clone()
+    };
+    assert!(!full("not-primed").drawn, "no charge building");
+    assert!(full("primed-full").drawn);
+    assert_eq!(full("primed-draining").fill, Some(0.25));
+    assert_eq!(full("near").fill, Some(superbounce::FILL_NEAR));
+    assert_eq!(full("held").fill, Some(superbounce::FILL_HELD));
+}
+
+/// The step verbs go on the prompt line and the landings in the message
+/// area, in the states that have them.
+#[test]
+fn the_prompt_and_message_carry_the_steps_and_landings() {
+    let states = Superbounce.states();
+    let get = |state: &str, id: &str| {
+        states
+            .iter()
+            .find(|(n, _)| *n == state)
+            .unwrap()
+            .1
+            .get(id)
+            .cloned()
+            .unwrap()
+    };
+    assert_eq!(get("near", superbounce::PROMPT).text, superbounce::PROMPT_NEAR);
+    assert_eq!(get("under", superbounce::PROMPT).text, superbounce::PROMPT_UNDER);
+    assert_eq!(get("held", superbounce::PROMPT).text, superbounce::PROMPT_HELD);
+    assert!(!get("primed-full", superbounce::PROMPT).shown);
+    assert_eq!(get("primed-full", superbounce::MESSAGE).text, superbounce::MESSAGE_PRIMED);
+    assert_eq!(get("lost", superbounce::MESSAGE).text, superbounce::MESSAGE_LOST);
+    assert!(get("bounced", superbounce::MESSAGE).text.starts_with("Superbounce"));
 }

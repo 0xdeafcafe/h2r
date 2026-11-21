@@ -9,7 +9,7 @@ use hud_edit::place::Rect;
 use hud_edit::render::{self, Cover};
 use serde_json::{Value as Json, json};
 
-use crate::compile::{self, Compiled};
+use crate::compile::{self, AsHudEdit, Compiled};
 use crate::model::{Describe, Hud, Kind, NAVPOINT_FONT, Values};
 use crate::preview::{self, MESSAGE_FONT, Shot, mode_name};
 use crate::rects::{self, FRAME_SLACK, RESERVED, TRAINING_PAD};
@@ -166,7 +166,7 @@ fn grown(r: Rect, by: f32) -> Rect {
 /// by widget name, in `mode`.
 fn retail_covers(src: &mut Source, map_hud: &hud_edit::Hud, mode: Mode) -> Vec<(String, Cover)> {
     let mut out: Vec<(String, Cover)> = Vec::new();
-    for st in preview::retail_states(mode) {
+    for st in preview::retail_states(mode, src.words) {
         let p = render::draw(
             &mut src.map,
             &mut src.art,
@@ -318,10 +318,11 @@ pub fn hud(src: &mut Source, d: &dyn Describe, modes: &[Mode]) -> Result<Report>
         r.notes
             .push("retail: against the synthetic map's flat boxes, not the disc's art".into());
     }
+    r.notes.push(src.words_note.clone());
     let retail = hud_edit::model::read(&mut src.map, src.player)?;
     for &mode in modes {
         let covers = retail_covers(src, &retail, mode);
-        let st = preview::retail_states(mode).remove(0);
+        let st = preview::retail_states(mode, src.words).remove(0);
         for (s, v) in &states {
             let shot = preview::shot(src, &hud, &compiled, s, v, &st)?;
             per_shot(&mut r, src, &hud, v, &shot, &covers);

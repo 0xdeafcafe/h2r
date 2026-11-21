@@ -622,61 +622,44 @@ twice. The feature is presentation-only (a recorded film's hook digest
 ignores it) and snapshot-stateless: nothing it holds needs saving. The nearest
 bounce spot is the one with the nearest edge.
 
-**The HUD.** A small glass panel at the right of the game image, a little
-over a fifth of the way down: translucent dark blue with clipped corners,
-thin cyan edges and a soft glow, all drawn in code
-(`crates/apps/app/src/superbounce_hud.rs`, on the shell's CPU rasteriser
-`crates/apps/app/src/hud_shapes.rs`). It shows whether or not the
-watermark does (F3 does not hide it), and also with `--no-watermark`.
-
-- **Primed.** A ring with an upward chevron, lit cyan and pulsing while
-  primed, with `PRIMED -3`; dim grey with `NOT PRIMED` otherwise.
-- **Launch.** A slanted gauge filled by the nearest spot's estimated
-  launch, 0 to 30 units/s (full past 30), ticked every 5, with the
-  number.
-- **The spot.** Its distance in metres (a world unit is 3.048 m), a small
-  arrow turned toward it from where the camera looks (none without an
-  aim, or standing on it), and the fall it needs, `drop 1.1` (world
-  units).
-- **The scan.** `scanning map...` with a spinner until the scan is done;
-  a failed scan says why, and a map without spots says so.
-- **The hint.** While primed and airborne, `HOLD X - guide onto strip`.
-
-The panel is drawn in design units, a pixel each at 720 lines: its height
-over 720, rounded to a whole number so the 8x8 letters stay sharp (1 at
-720p, 2 at 1080p and 1440p, 3 at 4K), and smaller if the panel would not
-fit the image's width. The image is redrawn only when what it shows
-changes: the inputs are rounded to what is printed, and the pulse and the
-spinner step at most 15 times a second.
-
-**The tutorial.** The first time the mode is on, four cards show under the
-panel, each a short text and a small diagram:
-
-1. Find a cyan line, a forced-crouch spot; walk in crouched, then stand up.
-2. The HUD lights up PRIMED: the collision is in its give-up state (−3);
-   crouching again loses it.
-3. Find a glowing strip: green means a standing jump is enough, red a big
-   drop.
-4. Jump or fall onto it, holding X to guide yourself on.
-
-Priming moves card 1 to 2, a bounce spot within 8 m moves 2 to 3, a bounce
-(the vertical speed passing 8 units/s upward) or 20 s moves 3 to 4, and a
-bounce or 15 s closes 4. F4 moves a card on (and reaches the game only
-while no card shows). Closing the last card sets the
-`superbounce.tutorial_seen` setting; setting it back to false
-(`h2 settings set superbounce.tutorial_seen false`) shows the cards again
-the next time the mode turns on, and `H2_SUPERBOUNCE_TUTORIAL=1`
-([switches](../runtime/switches.md)) shows them whatever it says.
+**The HUD.** Drawn by Halo 2's own HUD through the HUD kit
+([hud-kit.md](hud-kit.md), "The superbounce HUD on the kit"), for the
+first local player: a short grenade-style pill after the grenade row,
+lit while primed, with the `^` icon where a third count would be; under
+it a charge meter cut from the energy sword's battery strip, filled by
+the recipe's steps and then by the time the charge has left; the step's
+verb on the game's prompt line ("Hold (crouch) and walk under", "Let go
+of (crouch)", "Walk out to stand up"); and the game's navpoint over a
+crouch spot while not primed and over the nearest strip while primed.
+`crates/extensions/game/src/superbounce_hud.rs` registers it with the
+kit and feeds it each tick from the mode's state (`view`); with the mode
+off every element is hidden. Launch and drop are on the strips' labels
+in the world and in the agent API, not on the HUD.
 
 ```sh
-h2 superbounce hud-preview --out /tmp/sb-hud              # every state
-h2 superbounce hud-preview --state primed --out /tmp/sb-hud
+h2 hud preview superbounce --state all --mode all --out DIR
 ```
 
-`hud-preview` draws the HUD with the window's code over a plain backdrop,
-one PNG a state at 1280x720 (and `primed` at 1920x1080 too): `scanning`,
-`not-primed`, `primed`, `primed-airborne` and `tutorial-1` to
-`tutorial-4`.
+`h2 hud preview` draws it offline over the retail HUD, from the disc or
+the synthetic map, with the kit's checks (hud-kit.md, "The preview and
+the checks").
+
+**The tutorial.** The first time the mode is on, four steps show in the
+game's training box, two centred lines each:
+
+1. Crouch under a cyan crouch spot, then stand up.
+2. You are primed. Do not crouch again.
+3. Find a strip. Green is a standing jump. Red needs a big drop.
+4. Land on the strip. Hold (X) while falling.
+
+Priming moves step 1 to 2, a bounce spot within 8 m moves 2 to 3, a
+bounce landing or 20 s moves 3 to 4, and a bounce or 15 s closes 4
+(`hud_kit_core::huds::superbounce::Tutorial`). A training text of the
+game's own takes the box while it shows. Closing the last step sets the
+`superbounce.tutorial_seen` setting; setting it back to false
+(`h2 settings set superbounce.tutorial_seen false`) shows the steps again
+the next time the game starts, and `H2_SUPERBOUNCE_TUTORIAL=1`
+([switches](../runtime/switches.md)) shows them whatever it says.
 
 **The lines.** The spots are figures on the map, drawn by the window's
 world-line pass with no depth test (the styles are described in

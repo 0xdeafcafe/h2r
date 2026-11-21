@@ -4,19 +4,17 @@ HUD elements of ours drawn by Halo 2's own HUD: a feature describes its HUD as k
 
 ## Where it sits
 
-`tools` domain. Depends on `map`, `tags`, `assets`, `xiso`, `xbe`, `hud-edit`, `scenario-edit`, `h1map` and `h1-assets`. Used by `cli` (`h2 hud`).
+`tools` domain. Depends on `hud-kit-core` (the model, the HUDs, the template resolver and the record compiler, shared with the game's runtime), `map`, `tags`, `assets`, `xiso`, `xbe`, `hud-edit`, `scenario-edit`, `h1map` and `h1-assets`. Used by `cli` (`h2 hud`).
 
 ## Layout
 
-- `src/model.rs`: the `Hud`, its elements and their states.
-- `src/rects.rs`: the retail rectangles an element is placed beside.
+- `src/rects.rs`: the retail rectangles an element is placed beside, and `above`.
 - `src/hudg.rs`: the `hudg` fields the kit reads: flash records, message fields, training references, the waypoint arrows and marker.
-- `src/templates.rs`: what a compiled element takes from the loaded map, the grenade row included.
-- `src/compile.rs`: elements to widget record bytes.
-- `src/source.rs`, `src/synthetic.rs`: the disc and the invented map the preview draws from.
+- `src/templates.rs`: `hud_kit_core`'s resolver over the HUD editor's model and renderer, with the `hudg`'s arrows.
+- `src/compile.rs`: `hud_kit_core`'s compiled records as a `hud_edit` HUD, for the preview.
+- `src/source.rs`, `src/synthetic.rs`: the disc and the invented map the preview draws from, and the retail state words the sheet draws at.
 - `src/preview.rs`: the 640 by 480 preview, its PNG and JSON, and the sheet.
 - `src/check.rs`: the ten checks.
-- `src/huds/`: the HUDs the kit knows (superbounce).
 
 ## Tests
 

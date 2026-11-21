@@ -229,6 +229,14 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
     ("touch-glue", "GAME_TICK", AFTER),
     ("cheats", "GAME_TICK", AFTER),
     ("superbounce", "*", AFTER),
+    ("superbounce-hud", "*", AFTER),
+    (
+        "hud-kit",
+        "GAME_ACTIVATE",
+        "the match start on the game thread: reads the map file and joins the kit's widgets to \
+         the player HUD tags",
+    ),
+    ("hud-kit", "GAME_TICK", AFTER),
     ("layouts-value", "CONTROLS_ROW_TEXT", AFTER),
     ("controls-text", "CONTROLS_ROW_TEXT", AFTER),
     // Features the test's registry gained when it began calling boot's own
