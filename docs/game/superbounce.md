@@ -1184,7 +1184,7 @@ closes in.
 **Locked** is the landing's `locked`: in the slot and at least the
 touchdown speed the strip needs. Locked, the brackets and the landing
 mark are red (`RED`, 1.0, 0.275, 0.196) with `Locked` over them, and
-the weapon reticle is told the player is autoaimed (below). Red is the
+the reticle goes red (below). Red is the
 one colour of ours: the game's red reticle means "this will hit".
 
 **Wall clock, not frames.** The box and the lock are worked out per
@@ -1194,19 +1194,17 @@ was shown when the tick's box came), evaluated at each present's time
 (`ImageMarks::visit`'s `now`), so they move the same at 30, 60 or 120
 frames a second.
 
-**The reticle.** While the lock holds, the superbounce HUD feature
-answers the HUD's widget input call (`HUD_WIDGET_INPUTS`, `0x0013ad48`)
-for the first local player's retail bitmap widgets: after the game's
-own answer, any of the four inputs that reads input 18 is set to 1
-(`superbounce_hud::autoaim_entry`, `autoaim_exit`). Input 18 is the
-unit's "autoaimed" input by Assembly's `nhdt` list and the decoded
-neighbours (16 shield, 17 body, 20 and 21 grenades, 22 shield low,
-[health.md](../halo1/health.md)). S: that the retail reticle widgets
-read input 18 and that their shader turns them red on it; the
-retail reticles' input bytes and shaders have not been dumped. If they
-do not, the reticle stays as it is and the brackets alone go red. The
-player's aim-assist target (`touch_glue::on_target`) is not written:
-it is input to the simulation and the network.
+**The reticle.** Not built: the red reticle is to be drawn by the host
+over the game's, in screen space (`gfx::world_lines::HudMark`), while
+`superbounce_hud::reticle_lock_now` holds. The game's own reticle is not
+turned red through its widget inputs: that needs a hook after the HUD's
+widget input call (`HUD_WIDGET_INPUTS`, `0x0013ad48`), which takes the
+HUD off the pipelined render thread (`render_thread.rs`). The tested
+pieces of that route stay (`superbounce_hud::autoaim_entry`,
+`autoaim_exit`; input 18 is the unit's "autoaimed" input by Assembly's
+`nhdt` list). The player's aim-assist target
+(`touch_glue::on_target`) is not written: it is input to the simulation
+and the network.
 
 The colours are the game's: lines take the user's HUD colour, the
 three floats at `0x00468c84` (the human triple `0x0013927e` returns),

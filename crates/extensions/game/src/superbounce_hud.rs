@@ -270,6 +270,11 @@ pub const BITMAP_INPUTS_RETURN: u32 = 0x0013_a61c;
 /// The lock holds this tick: the reticle reads autoaimed.
 static LOCKED: AtomicBool = AtomicBool::new(false);
 
+/// Whether the lock holds as of the last tick: the red reticle shows.
+pub fn reticle_lock_now() -> bool {
+    LOCKED.load(Ordering::Relaxed)
+}
+
 /// Whether the lock holds in `s` (primed, in the air, falling onto the
 /// slot fast enough), the rule the world's red brackets follow.
 pub fn reticle_locked(s: &State) -> bool {
@@ -429,40 +434,10 @@ impl hooks::Feature for SuperbounceHud {
         let hud = Arc::clone(&self.hud);
         b.frame()
             .on_tick("superbounce hud: values", move |_| lock(&hud).tick());
-        // The red reticle while the lock holds: the game's own reticle
-        // widgets, through the input they read for autoaim. The kit's and
-        // `h1_hud_text`'s answers for their own widgets come first.
-        let pending: Arc<Mutex<Option<Autoaim>>> = Arc::default();
-        let at_entry = Arc::clone(&pending);
-        b.raw()
-            .before(
-                &points::HUD_WIDGET_INPUTS,
-                "superbounce hud: reticle autoaim in",
-                move |c| {
-                    let a =
-                        autoaim_entry(&*c.ctx.memory(), c.cpu.esp, LOCKED.load(Ordering::Relaxed))
-                            .map_err(crate::h1_particle_physics::fault)?;
-                    *lock(&at_entry) = a;
-                    Ok(Flow::Continue)
-                },
-            )
-            .context_only()
-            .after_feature(crate::hud_kit::FEATURE)
-            .after_feature(crate::h1_hud_text::FEATURE);
-        b.raw()
-            .after(
-                &points::HUD_WIDGET_INPUTS,
-                "superbounce hud: reticle autoaim out",
-                move |c| {
-                    let Some(a) = lock(&pending).take() else {
-                        return Ok(());
-                    };
-                    autoaim_exit(&mut *c.ctx.memory(), c.cpu.esp, a)
-                        .map_err(crate::h1_particle_physics::fault)?;
-                    Ok(())
-                },
-            )
-            .context_only();
+        // The red reticle while the lock holds is drawn by the host, not
+        // through the game's reticle inputs: an after hook on
+        // HUD_WIDGET_INPUTS would take the HUD off the pipelined render
+        // thread (render_thread.rs). [`reticle_lock_now`] is what it reads.
         Ok(())
     }
 }

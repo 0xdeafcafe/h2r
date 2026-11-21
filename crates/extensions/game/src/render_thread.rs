@@ -26,6 +26,11 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
         "the queued guest calls run at the end of the game tick; the render never meets it",
     ),
     (
+        "teabag",
+        "*",
+        "it watches the game's activate, tick and end, game-thread points; the render never meets them",
+    ),
+    (
         "sim-ext",
         "*",
         "checkpoint save, revert and restore are game-thread points; the render never meets them",
