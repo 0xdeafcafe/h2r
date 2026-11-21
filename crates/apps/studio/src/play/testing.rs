@@ -57,6 +57,11 @@ pub(crate) mod fake {
     pub(crate) const UNIT: u32 = 0x0010_0001;
     pub(crate) const SCNR: &str = "0xe1780003";
 
+    // The fixture starts at BSP 0 (epoch 1) and can advance to BSP 1.
+    fn fixture_epoch(ctx: &agent::GameCtx<'_>) -> u64 {
+        1 + u64::from(ctx.at.bsp.unwrap_or_default())
+    }
+
     struct World {
         map: String,
         tick: u64,
@@ -170,7 +175,7 @@ pub(crate) mod fake {
                     session.why = Some("external Live session".into());
                 }
                 Ok(
-                    json!({"name":loaded,"file":"invented.map","checksum":state.checksum,"epoch":ctx.epoch,
+                    json!({"name":loaded,"file":"invented.map","checksum":state.checksum,"epoch":fixture_epoch(ctx),
                     "scenario":SCNR,"session":session}),
                 )
             });
@@ -182,7 +187,7 @@ pub(crate) mod fake {
             let state = Arc::clone(&edits);
             agent.add_game_method("edit.read", Access::Read, move |params, ctx| {
                 let params = r(params);
-                if params["epoch"] != ctx.epoch {
+                if params["epoch"] != fixture_epoch(ctx) {
                     return Err(RpcError::new(code::INVALID_REQUEST, "map epoch changed"));
                 }
                 let at = params["at"].as_u64().unwrap();
@@ -195,7 +200,7 @@ pub(crate) mod fake {
             let state = Arc::clone(&edits);
             agent.add_game_method("edit.get", Access::Read, move |params, ctx| {
                 let params = r(params);
-                if params["epoch"] != ctx.epoch {
+                if params["epoch"] != fixture_epoch(ctx) {
                     return Err(RpcError::new(code::INVALID_REQUEST, "map epoch changed"));
                 }
                 let state = state.lock().unwrap();
@@ -233,7 +238,7 @@ pub(crate) mod fake {
                 kind.writes()
                     .map_err(|e| RpcError::new(code::INVALID_REQUEST, e))?;
                 let params = r(params);
-                if params["epoch"] != ctx.epoch {
+                if params["epoch"] != fixture_epoch(ctx) {
                     return Err(RpcError::new(code::INVALID_REQUEST, "map epoch changed"));
                 }
                 let writes = params["writes"].as_array().unwrap();
