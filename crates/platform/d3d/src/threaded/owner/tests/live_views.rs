@@ -74,7 +74,7 @@ fn exercise_source(adopt_producer: bool, source: Source) {
 
     // Produce the live view through both the original and adopted paths.
     let aux = TargetRef::Aux(0);
-    gpu.frame_owner.as_mut().unwrap().select = Box::new(move |n| {
+    gpu.frame_owner.as_mut().unwrap().select = Box::new(move |n, _| {
         let mut replay = frame(n, 81);
         let at = replay.ops[0].0;
         replay.aux.push(replay.colour.unwrap());
@@ -163,7 +163,7 @@ fn exercise_source(adopt_producer: bool, source: Source) {
     let replay = Arc::new(replay);
     let used = Arc::new(AtomicUsize::new(0));
     let native = Arc::clone(&used);
-    gpu.frame_owner.as_mut().unwrap().select = Box::new(move |_| {
+    gpu.frame_owner.as_mut().unwrap().select = Box::new(move |_, _| {
         let native = Arc::clone(&native);
         Some(Submission::Native(Candidate {
             frame: Arc::clone(&replay),

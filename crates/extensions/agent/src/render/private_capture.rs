@@ -204,6 +204,7 @@ impl Job {
                 pass: None,
                 lighting: Some(self.lighting),
                 scene_hash: Some(format!("{:016x}", scene.scene_hash())),
+                source: None,
             },
             file,
         )))

@@ -23,6 +23,7 @@ fn camera(left: i16) -> Camera {
         up: [0.0, 0.0, 1.0],
         viewport: [0, left, 60, left + 80],
         fov: 1.2,
+        projection_xy: None,
         near: 0.25,
         far: 120.0,
     }

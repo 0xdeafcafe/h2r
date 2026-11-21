@@ -451,7 +451,7 @@ fn previous_present_flare_reports_can_land_while_the_next_frame_is_retained() {
 #[test]
 fn a_failed_native_write_faults_the_worker_without_replaying_into_the_same_target() {
     let (mut gpu, _, target) = device(true);
-    gpu.frame_owner.as_mut().unwrap().select = Box::new(|n| {
+    gpu.frame_owner.as_mut().unwrap().select = Box::new(|n, _| {
         Some(Submission::Native(Candidate {
             frame: Arc::new(frame(n, 1)),
             before_original: None,
@@ -484,7 +484,7 @@ fn a_reference_freezes_the_input_before_the_original_draw_or_refuses_after_a_rea
     let (mut gpu, _, target) = device(true);
     gpu.clear(target, None, clear(1)).unwrap();
     gpu.present(target, 0).unwrap();
-    gpu.frame_owner.as_mut().unwrap().select = Box::new(|n| {
+    gpu.frame_owner.as_mut().unwrap().select = Box::new(|n, _| {
         Some(Submission::Reference {
             frame: Arc::new(frame(n, n as u8)),
             freeze: |gpu, _, targets| {
