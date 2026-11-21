@@ -34,13 +34,13 @@ type MapResult = Result<Opened, String>;
 
 static CURRENT: Mutex<Weak<Mutex<Driver>>> = Mutex::new(Weak::new());
 static GENERATION: AtomicU64 = AtomicU64::new(0);
-/// The saved map the next session loads as it opens: what the Forge
-/// lobby's Forge map row chose (`None`: a new map). A game's start does not
-/// clear it; the session that opens takes it.
+/// The saved map the next session loads as it opens, asked for by an agent
+/// (`None`: none asked). A game's start does not clear it; the session that
+/// opens takes it, else the lobby's Forge Map row's choice
+/// ([`crate::lobby_start::forge_map`]).
 static DRAFT: Mutex<Option<String>> = Mutex::new(None);
 
-/// Asks the next session to load the saved map `name` as it opens, or none
-/// (a new map): the Forge lobby's Start ([`crate::forge_lobby`]).
+/// Asks the next session to load the saved map `name` as it opens, or none.
 pub fn request_draft(name: Option<String>) {
     *DRAFT.lock().unwrap_or_else(|e| e.into_inner()) = name;
 }
@@ -75,13 +75,11 @@ pub fn gizmo() -> Option<gizmo::Axes> {
     gizmo::project(frame, extent)
 }
 
-/// A mouse click is delivered at the same game boundary as a controller press.
-pub fn click(row: usize) -> bool {
-    let Some(driver) = current() else {
-        return false;
-    };
-    let mut driver = driver.lock().unwrap_or_else(|e| e.into_inner());
-    driver.editor.as_mut().is_some_and(|e| e.click(row))
+/// A click on a compositor dialog's row. The Forge screens are the game's
+/// (`crate::forge_screens`), which take the mouse as the game does, so the
+/// compositor draws no dialog and no click is the session's.
+pub fn click(_row: usize) -> bool {
+    false
 }
 
 fn admitted(m: &dyn engine::GuestMemory, generation: u64) -> bool {
@@ -113,7 +111,8 @@ impl Driver {
         self.opening = None;
         self.loaded = None;
         self.reason = "Waiting for a local multiplayer map.".into();
-        controls::publish(false, false, false, None);
+        controls::publish(controls::State::default());
+        crate::forge_screens::publish(crate::forge_screens::Facts::default());
     }
 
     fn open(&mut self, loaded: &Loaded) -> Result<(), String> {
@@ -144,6 +143,12 @@ impl Driver {
             if !forge_map::admitted(m) {
                 return;
             }
+            // The monitor is a Forge lobby's (or the level boot's) only
+            // (docs/game/forge-firefight-ui.md, "The lobbies").
+            if !crate::lobby_start::forge_session() {
+                self.reason = "The lobby's mode is not Forge.".into();
+                return;
+            }
             let loaded = match Loaded::read(m, false) {
                 Ok(loaded) => loaded,
                 Err(reason) => {
@@ -167,7 +172,7 @@ impl Driver {
             self.opening = None;
             match result {
                 Ok(opened) => {
-                    self.draft = take_draft();
+                    self.draft = take_draft().or_else(crate::lobby_start::forge_map);
                     let mut editor =
                         Editor::new(opened, &self.data, loaded.scenario, self.calls.clone());
                     let tick = GameTime::current(m)
@@ -201,7 +206,7 @@ impl Driver {
             if let Some(name) = self.draft.take() {
                 e.load_draft(tick, name);
             }
-            e.tick(tick, bsp);
+            e.tick(tick, bsp, crate::forge_screens::ui_up(m));
         }
     }
 }
@@ -218,7 +223,7 @@ fn manifest() -> Manifest {
 }
 
 /// Whether the `forge` feature is on under `switches`, by its manifest's
-/// default: the main menu's FORGE row shows with it.
+/// default: the lobby offers the Forge mode with it.
 pub fn enabled(switches: &hooks::Switches) -> bool {
     let m = manifest();
     switches.feature(m.id, m.default_on)
@@ -325,8 +330,8 @@ pub fn install(
         .add(&Hooks(driver.clone()))
         .map_err(anyhow::Error::msg)?
     {
-        controls::publish(false, false, false, None);
-        crate::forge_lobby::install(registry, data)?;
+        controls::publish(controls::State::default());
+        crate::forge_screens::install(registry)?;
         *CURRENT.lock().unwrap_or_else(|e| e.into_inner()) = Arc::downgrade(&driver);
         if let Some(a) = agent {
             local::install(&a.agent, Backend(driver));

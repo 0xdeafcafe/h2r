@@ -1888,11 +1888,17 @@ fn install_device<B: d3d::backend::Backend + Send + 'static>(
     d3d::runtime_glue::map_device_memory(&mut rt.memory(), &cfg)?;
     let device = d3d::runtime_glue::shared(cfg, backend);
     #[cfg(feature = "desktop-runtime")]
-    render_bridge::carried_slots::set_drain(Arc::new(SinkDrain {
-        device: Arc::clone(&device),
-        #[cfg(feature = "gpu")]
-        window,
-    }));
+    {
+        let drain = Arc::new(SinkDrain {
+            device: Arc::clone(&device),
+            #[cfg(feature = "gpu")]
+            window,
+        });
+        // render.residual's producer boundaries drain the same device
+        // (render_bridge::residual_census::Drain).
+        render_bridge::residual_census::set_drain(drain.clone());
+        render_bridge::carried_slots::set_drain(drain);
+    }
     let watch = subscribe_write_barrier(rt)?;
     #[cfg(feature = "gpu")]
     let shadow_admission = if profile == film::RenderHooks::Gpu {
@@ -2023,6 +2029,32 @@ impl<B: d3d::backend::Backend + Send + 'static> render_bridge::carried_slots::Dr
         if let Ok(mut d) = self.device.lock() {
             let _ = d.sync_push_buffer(&mut Mem(mem));
         }
+    }
+}
+
+#[cfg(feature = "desktop-runtime")]
+impl<B: d3d::backend::Backend + Send + 'static> render_bridge::residual_census::Drain for SinkDrain<B> {
+    /// What the drain decoded, for the producer that was open while game
+    /// code wrote it.
+    fn drain(&self, mem: &mut dyn engine::memory::GuestMemory) -> render_bridge::residual_census::Tally {
+        let before = self.device.lock().map(|d| d.residual_tally()).unwrap_or_default();
+        render_bridge::carried_slots::Drain::drain(self, mem);
+        let after = self.device.lock().map(|d| d.residual_tally()).unwrap_or_default();
+        residual_tally(after.since(before))
+    }
+}
+
+/// [`d3d::residual::Tally`] as `render_bridge::residual_census` has it.
+#[cfg(feature = "desktop-runtime")]
+pub(crate) fn residual_tally(t: d3d::residual::Tally) -> render_bridge::residual_census::Tally {
+    render_bridge::residual_census::Tally {
+        draws: t.draws,
+        claimed: t.claimed,
+        residual: t.residual,
+        push_words: t.push_words,
+        state_words: t.state_words,
+        copies: t.copies,
+        uploads: t.uploads,
     }
 }
 

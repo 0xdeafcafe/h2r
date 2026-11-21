@@ -570,15 +570,10 @@ pub fn install(
         .as_ref()
         .is_some_and(|m| !m.rows(video_screen::VOICE_LIST).is_empty());
     let with_theater = theater.is_some();
-    // FORGE and FIREFIGHT follow THEATER while their features are on
-    // (Firefight's lobby also needs the settings store its options live in).
-    let with_forge = crate::forge_glue::enabled(registry.switches());
-    let with_firefight =
-        crate::firefight::feature::enabled(registry.switches()) && model.is_some();
+    // THEATER is the main menu's one row of ours; Forge and Firefight are
+    // lobby modes (`crate::lobby_mode`).
     let want_rows = theater_menu::Rows {
         theater: with_theater,
-        forge: with_forge,
-        firefight: with_firefight,
     };
     let live_menu = || custom_games::Menu {
         coop: custom_games::coop_row_enabled(),
@@ -665,8 +660,8 @@ pub fn install(
             served.push((speaker_row::SMALL_AIM_ASSIST_ID, speaker_row::SMALL_AIM_ASSIST_TEXT));
         }
         served.extend(custom_games::strings());
-        for entry in want_rows.entries() {
-            served.push((entry.label_id(), entry.label()));
+        if want_rows.theater {
+            served.push((theater_menu::LABEL_ID, theater_menu::LABEL));
         }
         served.extend(crate::lobby_status::STRINGS);
         if with_skulls {
@@ -813,8 +808,15 @@ pub fn install(
                     // Slot 19 reports a third item widget for our row.
                     ctx.runtime().memory().set_u8(cpu.esi + video_screen::SETTINGS_THIRD_ITEM, 1)?;
                 }
+                // The main menu or the Xbox Live menu built: the player has
+                // left any lobby, whose mode ends with it.
+                if name == theater_menu::LIST_NAME || name == custom_games::LIST_NAME {
+                    crate::lobby_start::clear();
+                }
                 let n = live_menu().count(name, n);
                 let n = menu_rows.count(name, n);
+                // GAME MENU's Forge rows, while a local Forge session runs.
+                let n = crate::forge_screens::game_menu_count(name, n);
                 // Edit Profile's Voice Chat row, while its hooks are on.
                 let n = crate::profile_voice_row::list_count(&model, name, n);
                 // The variant editor's categories get the multiplayer
@@ -1310,18 +1312,18 @@ pub fn install(
                 })
             });
         }
-        // The main menu draws our rows after Xbox Live: THEATER, then FORGE
-        // and FIREFIGHT. Shift the following rows back for the retail text
-        // call so they keep their localized labels.
+        // The main menu draws THEATER after System Link. Shift Settings,
+        // under it, back for the retail text call so it keeps its
+        // localized label.
         if let (true, Some(o)) = (menu_rows.any(), originals.remove(&theater_menu::ROW_TEXT)) {
             let sh = alias(d, &mut next_shadow, &o, theater_menu::ROW_TEXT);
             d.register_override(theater_menu::ROW_TEXT, "theater:row-text", move |cpu, ctx, _| {
                 let rt = Arc::clone(ctx.runtime());
                 let mut mem = rt.memory();
                 let row = video_screen::text_row(&*mem, cpu.esp);
-                if let Some(entry) = row.and_then(|row| menu_rows.entry_at(row)) {
+                if row.is_some_and(|row| menu_rows.is_theater(row)) {
                     let item = mem.u32(cpu.esp + 4)?;
-                    return row_texts(cpu, ctx, &mut mem, item, vec![(0, entry.label_id())]);
+                    return row_texts(cpu, ctx, &mut mem, item, vec![(0, theater_menu::LABEL_ID)]);
                 }
                 if let Some(retail) = row.and_then(|row| menu_rows.shifted_retail_row(row)) {
                     let item = mem.u32(cpu.esp + 4)?;
@@ -1347,38 +1349,22 @@ pub fn install(
                 let rt = Arc::clone(ctx.runtime());
                 let mut mem = rt.memory();
                 let row = chosen_row(&*mem, cpu.esp);
-                if let Some((shown, entry)) =
-                    row.and_then(|row| menu_rows.entry_at(row).map(|entry| (row, entry)))
-                {
-                    // Each row opens the screen of ours of its name.
-                    let (screen, note) = match entry {
-                        theater_menu::Entry::Theater => {
-                            (crate::theater_ui::FILMS, "theater: opening Films")
-                        }
-                        theater_menu::Entry::Forge => {
-                            (crate::forge_lobby::SCREEN, "forge: opening the Forge lobby")
-                        }
-                        theater_menu::Entry::Firefight => (
-                            crate::firefight::lobby::SCREEN,
-                            "firefight: opening the Firefight lobby",
-                        ),
-                    };
+                if let Some(shown) = row.filter(|&row| menu_rows.is_theater(row)) {
+                    let screen = crate::theater_ui::FILMS;
                     let Some((mask, loader)) = video_screen::player_mask(&*mem, cpu.esp)
                         .zip(crate::list_class::loader_of(screen))
                     else {
-                        eprintln!("main menu: {} has no screen in this run ({screen} is not installed)", entry.label());
+                        eprintln!("main menu: {} has no screen in this run ({screen} is not installed)", theater_menu::LABEL);
                         return mem.ret(cpu, 8);
                     };
                     let controller = mask.trailing_zeros();
                     let player = crate::skulls_menu::profile_of(&*mem, controller);
                     mem.set_u32(theater_menu::LAST_ROW, shown as u32)?;
                     drop(mem);
-                    if entry == theater_menu::Entry::Theater
-                        && let Some(theater) = &theater
-                    {
+                    if let Some(theater) = &theater {
                         theater.open(controller, player);
                     }
-                    return open_screen(cpu, ctx, mask, loader, note);
+                    return open_screen(cpu, ctx, mask, loader, "theater: opening Films");
                 }
                 if let Some((shown, retail)) = row
                     .and_then(|row| menu_rows.shifted_retail_row(row).map(|retail| (row, retail)))
@@ -1425,28 +1411,37 @@ pub fn install(
             });
         }
         // The visible Live menu rows, closer together than the skin's
-        // item height so they fit where retail's four do: the layout, then
-        // each row moved up to the pitch (`custom_games::repitch`). Every
-        // other list goes straight to the original.
+        // item height so they fit where retail's four do, and the main
+        // menu's six rows with Theater above the safe area's bottom: the
+        // layout, then each row moved up to the pitch
+        // (`custom_games::repitch`, which leaves rows already as close).
+        // Every other list goes straight to the original.
         if let Some(o) = originals.remove(&custom_games::LIST_LAYOUT) {
             let sh = alias(d, &mut next_shadow, &o, custom_games::LIST_LAYOUT);
             let told = Arc::new(AtomicBool::new(false));
+            let told_main = Arc::new(AtomicBool::new(false));
             d.register_override(custom_games::LIST_LAYOUT, "custom-games:row-pitch", move |cpu, ctx, _| {
                 let handler = cpu.esi;
-                let live = ctx.runtime().memory().u32(handler).ok() == Some(custom_games::HANDLER_VTABLE);
-                if !live {
+                let vtable = ctx.runtime().memory().u32(handler).ok();
+                let live = vtable == Some(custom_games::HANDLER_VTABLE);
+                let main = menu_rows.any() && vtable == Some(theater_menu::VTABLE);
+                if !live && !main {
                     return Ok(o.invoke(cpu, ctx, custom_games::LIST_LAYOUT));
                 }
-                let told = Arc::clone(&told);
+                let told = Arc::clone(if live { &told } else { &told_main });
                 call_then(cpu, ctx, sh, move |_, ctx| {
                     let mut mem = ctx.runtime().memory();
                     let rows = speaker_row::children(&*mem, handler).map_or(0, |c| c.len() as u32);
-                    let pitch = custom_games::pitch(rows);
-                    match custom_games::repitch(&mut *mem, handler, custom_games::HANDLER_VTABLE, pitch) {
+                    let (pitch, vtable, what) = if live {
+                        (custom_games::pitch(rows), custom_games::HANDLER_VTABLE, "xbox live menu")
+                    } else {
+                        (theater_menu::pitch(rows), theater_menu::VTABLE, "main menu")
+                    };
+                    match custom_games::repitch(&mut *mem, handler, vtable, pitch) {
                         Some(n) if n > 0 && !told.swap(true, Ordering::Relaxed) => {
-                            eprintln!("custom games: xbox live menu rows {pitch} apart ({rows} rows, {n} moved)")
+                            eprintln!("custom games: {what} rows {pitch} apart ({rows} rows, {n} moved)")
                         }
-                        None => eprintln!("custom games: the xbox live menu's rows could not be moved"),
+                        None => eprintln!("custom games: the {what}'s rows could not be moved"),
                         _ => {}
                     }
                     Ok(())

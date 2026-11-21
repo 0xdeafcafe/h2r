@@ -29,6 +29,10 @@ impl std::fmt::Debug for Overlay {
     }
 }
 
+/// The keys the Forge bindings table names
+/// (`boot::forge_controls::bindings::BINDINGS`), by the key that sends each.
+/// A key the session does not take (Escape with nothing to cancel) reaches
+/// the game.
 #[cfg(not(any(target_os = "tvos", target_os = "ios")))]
 pub(crate) fn key(code: winit::keyboard::KeyCode, command: bool, shift: bool) -> Option<Key> {
     use winit::keyboard::KeyCode as K;
@@ -43,14 +47,14 @@ pub(crate) fn key(code: winit::keyboard::KeyCode, command: bool, shift: bool) ->
         K::KeyD => Key::StrafeRight,
         K::KeyE => Key::Rise,
         K::KeyQ => Key::Fall,
-        K::KeyF => Key::Palette,
-        K::KeyR => Key::Properties,
-        K::KeyL => Key::Link,
+        K::ShiftLeft => Key::Thrust,
+        K::ControlLeft => Key::Fine,
+        K::KeyF => Key::Objects,
+        K::KeyT => Key::Tools,
+        K::KeyG => Key::Settings,
         K::Delete => Key::Delete,
-        K::Escape | K::Backspace => Key::Back,
+        K::Escape => Key::Back,
         K::Enter | K::NumpadEnter | K::Space => Key::Accept,
-        K::ArrowUp => Key::Up,
-        K::ArrowDown => Key::Down,
         _ => return None,
     })
 }
@@ -67,6 +71,9 @@ mod tests {
         assert_eq!(key(KeyCode::KeyQ, true, false), None);
         assert_eq!(key(KeyCode::KeyZ, true, false), Some(Key::Undo));
         assert_eq!(key(KeyCode::KeyZ, true, true), Some(Key::Redo));
-        assert_eq!(key(KeyCode::KeyL, false, false), Some(Key::Link));
+        assert_eq!(key(KeyCode::KeyF, false, false), Some(Key::Objects));
+        assert_eq!(key(KeyCode::KeyT, false, false), Some(Key::Tools));
+        assert_eq!(key(KeyCode::ShiftLeft, false, false), Some(Key::Thrust));
+        assert_eq!(key(KeyCode::Escape, false, false), Some(Key::Back));
     }
 }

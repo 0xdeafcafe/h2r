@@ -87,6 +87,10 @@ pub struct Pick {
     pub current: usize,
     /// What the setting does, on the right.
     pub description: String,
+    /// A line per value, shown on the right while it has the focus in
+    /// place of `description` (the object menu's object lines). Empty:
+    /// `description` for every value.
+    pub details: Vec<String>,
     /// What the picker opened over, for the preview.
     pub opener: Opener,
     /// Stores value `i`; what to log.
@@ -118,6 +122,7 @@ impl Pick {
             current: current.min(values.len().saturating_sub(1)),
             values,
             description: description.into(),
+            details: Vec::new(),
             opener: Opener::MAIN_MENU,
             set,
         }
@@ -125,6 +130,17 @@ impl Pick {
     pub fn over(mut self, opener: Opener) -> Pick {
         self.opener = opener;
         self
+    }
+    /// A line per value ([`Pick::details`]).
+    pub fn details(mut self, details: Vec<String>) -> Pick {
+        self.details = details;
+        self
+    }
+    /// What the right side says while value `i` has the focus.
+    pub fn line(&self, i: usize) -> &str {
+        self.details
+            .get(i)
+            .map_or(self.description.as_str(), String::as_str)
     }
 }
 
@@ -317,7 +333,7 @@ impl Picker {
         let p = current();
         let (title, description) = p
             .as_ref()
-            .map(|p| (p.title.as_str(), p.description.as_str()))
+            .map(|p| (p.title.as_str(), p.line(p.current)))
             .unwrap_or_default();
         self.texts.set(TITLE, title);
         self.texts.set(DESCRIPTION, description);
@@ -391,10 +407,12 @@ impl Rows for Picker {
         self.chosen.store(true, Ordering::SeqCst);
         Chosen::Act
     }
-    fn description(&self, _row: i16) -> Option<u32> {
+    fn description(&self, row: i16) -> Option<u32> {
         with_pick(|p| {
-            p.as_ref()
-                .map(|p| self.texts.set(DESCRIPTION, &p.description))
+            p.as_ref().map(|p| {
+                let line = usize::try_from(row).map_or(p.description.as_str(), |i| p.line(i));
+                self.texts.set(DESCRIPTION, line)
+            })
         })
     }
     fn write_texts(&self, m: &mut dyn GuestMemory) -> Result<(), MemFault> {
@@ -420,7 +438,16 @@ impl Describe for Picker {
             ("", &[][..], 0, "", Opener::MAIN_MENU),
             |p| (p.title.as_str(), p.values.as_slice(), p.current, p.description.as_str(), p.opener),
         );
-        picker_spec(self.name, self.base, title, values, focus, description, opener)
+        let mut s = picker_spec(self.name, self.base, title, values, focus, description, opener);
+        if let Some(p) = &pick {
+            for (i, row) in s.rows.iter_mut().enumerate() {
+                row.description = Some(p.line(i).to_string());
+            }
+            if let Some(d) = &mut s.dialog {
+                d.rows.clone_from(&s.rows);
+            }
+        }
+        s
     }
 }
 

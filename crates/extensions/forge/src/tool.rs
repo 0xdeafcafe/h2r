@@ -7,6 +7,12 @@ use forge_doc::OpId;
 
 /// Full stick deflection, in radians per second for look or object rotation.
 pub const TURN_RATE: f32 = 2.4;
+/// Full stick deflection while manipulating, in world units per second that
+/// a held or new object is pushed away or pulled in. It is never pushed past
+/// a nearer wall nor pulled nearer than [`Extent::near`].
+pub const PUSH_RATE: f32 = 6.0;
+/// The furthest an object is carried, in world units.
+pub const MAX_HOLD: f32 = 80.0;
 
 /// A new object is carried this many of its reaches ([`Extent::reach`])
 /// in front of the camera, as Halo 3's Forge holds an object: whole in
@@ -69,6 +75,10 @@ pub enum Action {
     Down,
     /// Switch to the Links tool, or start or cancel a link there.
     Link,
+    /// Open the Tools picker.
+    Tools,
+    /// Open the Tool settings.
+    Settings,
 }
 
 impl Action {
@@ -87,6 +97,8 @@ impl Action {
             "up" => Self::Up,
             "down" => Self::Down,
             "link" => Self::Link,
+            "tools" => Self::Tools,
+            "settings" => Self::Settings,
             _ => return None,
         })
     }
@@ -117,6 +129,8 @@ pub enum Command {
     Palette,
     Properties,
     Menu,
+    Tools,
+    Settings,
     DialogUp,
     DialogDown,
     DialogAccept,
@@ -147,6 +161,9 @@ pub struct Tool {
     /// Offset from the aim point along the camera's forward, right and up,
     /// so a held object turns with the view and keeps its place in it.
     offset: [f32; 3],
+    /// How far in front of the camera the object is carried: its
+    /// [`Extent::hold`] for a new one, where it was taken for a picked-up
+    /// one, then pushed and pulled.
     distance: f32,
 }
 
@@ -198,6 +215,15 @@ impl Tool {
     pub fn select(&mut self, index: usize) {
         self.cancel();
         self.placing = Some(index);
+        self.distance = self.extents.get(index).copied().unwrap_or_default().hold();
+    }
+
+    /// Chooses the tool: the Links tool, or the Objects tool.
+    pub fn set_links(&mut self, links: bool) {
+        if self.links != links {
+            self.clear_selection();
+            self.links = links;
+        }
     }
 
     pub fn set_rotation_step(&mut self, degrees: f32) {
@@ -299,15 +325,19 @@ impl Tool {
         let mut hit = None;
         if let Some(camera) = &mut self.camera {
             let turning = previewing && input.rotating;
+            // Manipulating: the left stick's forward axis pushes the object
+            // away and pulls it in.
+            let mut push = 0.;
             if turning {
                 self.rotation[0] += input.look[0];
                 self.rotation[1] += input.look[1];
                 self.rotation[2] += input.roll;
+                push = input.movement[1] * PUSH_RATE * input.seconds.clamp(0., 0.1);
             } else {
                 camera.fly(input.movement, input.look, input.seconds.clamp(0., 0.1));
             }
             let surface = surface(*camera).filter(|d| d.is_finite() && *d >= 0.);
-            let max_distance = surface.unwrap_or(80.).min(80.);
+            let max_distance = surface.unwrap_or(MAX_HOLD).min(MAX_HOLD);
             let forward = camera.forward();
             hit = session
                 .objects()
@@ -320,15 +350,18 @@ impl Tool {
             self.aimed = hit.map(|(id, _)| id);
             if previewing {
                 // A new object is carried at its hold distance and a
-                // picked-up one where it was taken, each pulled in to a
-                // nearer wall but never nearer than its own sphere allows,
-                // so it never fills the view.
-                let distance = if self.placing.is_some() {
-                    surface.map_or(extent.hold(), |s| s.min(extent.hold()))
-                } else {
-                    self.distance.min(max_distance)
+                // picked-up one where it was taken, each pushed and pulled
+                // from there, pulled in to a nearer wall but never nearer
+                // than its own sphere allows, so it never fills the view.
+                let near = extent.near();
+                let carried = |d: f32| d.min(max_distance).max(near);
+                // A push or pull moves it from where it shows, so pushing
+                // stops at the wall rather than building up behind it, and
+                // with no push a wall pulls it in only while it is there.
+                if push != 0. {
+                    self.distance = carried(carried(self.distance) + push);
                 }
-                .max(extent.near());
+                let distance = carried(self.distance);
                 let pos = camera.point(distance);
                 let offset = camera.to_world(self.offset);
                 let step = self.rotation_step.to_radians();
@@ -348,7 +381,10 @@ impl Tool {
                 self.cancel();
                 None
             }
-            Some(A::Back) => Some(C::Menu),
+            // B with nothing held is nothing: the Forge menu is Start's.
+            Some(A::Back) => None,
+            Some(A::Tools) => Some(C::Tools),
+            Some(A::Settings) => Some(C::Settings),
             Some(A::Undo) => Some(C::Undo),
             Some(A::Redo) => Some(C::Redo),
             Some(A::Delete) => self.held.or(self.aimed).map(|id| C::Delete { id }),
@@ -440,7 +476,9 @@ impl Tool {
                 self.link_from = None;
                 None
             }
-            Some(A::Back) => Some(C::Menu),
+            Some(A::Back) => None,
+            Some(A::Tools) => Some(C::Tools),
+            Some(A::Settings) => Some(C::Settings),
             Some(A::Delete) if self.link_from.is_none() => {
                 let link = session.links_of(self.aimed_link?).last()?.id;
                 Some(C::Unlink { link })

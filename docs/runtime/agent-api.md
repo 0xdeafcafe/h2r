@@ -51,6 +51,7 @@ connection to hold `session.claim`.
 | `render.compare`, `render.capture`, `render.scene`, `sim.hashes` | read | [FrameScene checks](#framescene-checks-compare-capture-scene-parity-hashes) |
 | `render.spawn_view` | act | [FrameScene checks](#framescene-checks-compare-capture-scene-parity-hashes) |
 | `render.parity` | act | [FrameScene checks](#framescene-checks-compare-capture-scene-parity-hashes) |
+| `render.residual` | read | [Residual D3D work](#renderresidual-residual-d3d-work) |
 | `render.overrides`, `render.programs` | read | [`edit` and hot `render`](#edit-and-hot-render-live-tag-and-shader-changes) |
 | `render.reload`, `render.dump`, `render.param`, `render.toggle` | act | [`edit` and hot `render`](#edit-and-hot-render-live-tag-and-shader-changes) |
 | `edit.map`, `edit.tags`, `edit.get`, `edit.changes` | read | [`edit` and hot `render`](#edit-and-hot-render-live-tag-and-shader-changes) |
@@ -779,6 +780,13 @@ h2 agent faults
   geometry snapshots and bot map changes.
   `setup_dispatch_stalled_frames` counts over-budget presents whose handoffs
   alone took more than 33⅓ ms.
+  `d3d_entries` counts guest D3D entry calls that ran, `d3d_residual_draws`
+  the guest draws `d3d` handed to its backend (what no native replacement
+  claimed) and `d3d_push_words` the push-buffer words it decoded. They are
+  always on: an integer add into the calling thread's frame, or one relaxed
+  load when frame stats are off
+  ([retire-d3d.md](../graphics/retire-d3d.md), slice R0;
+  [`render.residual`](#renderresidual-residual-d3d-work) breaks them down).
   For inactive map slots, `map_slot_vfs_wait_ns` times the render-frame hook
   acquiring the shared VFS and `map_slot_check_ns` times its checks for
   changed source files after acquisition. A slot check runs at most twice a
@@ -1461,6 +1469,99 @@ h2 agent render.parity '{"arm": true}'
   diff <(jq -c '.rows[]' off-hashes.json) <(jq -c '.rows[]' on-hashes.json) | head
   ```
 
+### `render.residual`: residual D3D work
+
+What the guest front-end still asks `d3d` to do, by caller and by
+producer, over a window of presents: the census every slice of
+[retire-d3d.md](../graphics/retire-d3d.md) gates on. Types in
+`crates/extensions/agent-proto/src/render.rs` (`ResidualParams`,
+`ResidualReply`), logic in `crates/extensions/agent/src/render/residual.rs`,
+the window and the producer registry in
+`crates/rewrites/render-bridge/src/residual_census.rs`, the adapter's
+watch in `crates/platform/d3d/src/residual.rs` and
+`crates/platform/d3d/src/runtime_glue.rs`, glue in boot's `scene_glue`
+and `d3d_glue`. Registered with the frame methods; answers
+`UNAVAILABLE` until the GPU renderer's scene glue has wired the census.
+
+```sh
+h2 agent residual 600                          # arm, wait, print with per_frame
+h2 agent render.residual '{"arm": {"frames": 900}}'
+h2 agent render.residual '{"top": 500}'        # the last finished window
+```
+
+| Method | Access | Params | Result |
+|---|---|---|---|
+| `render.residual` | read | `{arm?: {frames}, top?}`: `frames` 1 to 3600, `top` 1 to 500 (50) | `{state, window?, totals?, producers?, callers?, unattributed?, sites_full?, unbalanced?}` |
+
+- **Arming.** `{"arm": {"frames": N}}` starts a window at the next guest
+  `Swap` and ends it after N more; a new arming replaces one in progress.
+  `{}` reads. `state` is `idle`, `armed` (waiting or counting) or `done`.
+  The other fields are the last finished window's, so an armed answer can
+  carry the window before it. `h2 agent residual N [top K]` arms, polls
+  until a new window is done, and adds `per_frame`: each total over the
+  window's presents.
+- **`window`.** `{frames, game_frames, presents: [first, last], ticks:
+  [first, last], map, timing}`. `presents` are `Swap` ordinals since the
+  process started; `ticks` the last tick that had ended at each end
+  (`null` before the first). `game_frames` counts presents whose frame
+  entered a game view, through the `game_view` producer, so it is zero
+  without `frame-scene.census`. `timing` is true on a `render-timing` run.
+- **`totals`.** `draws` (guest draws `d3d` resolved, inline ones
+  included), `claimed` (of those, a native replacement committed: an
+  admission's recording or a post call's held originals), `residual`
+  (reached the backend: the growth of `d3d::device::backend_draws`, so it
+  equals the capture's backend draw count over the same window),
+  `entries` (D3D entry calls that ran), `push_words` (decoded),
+  `state_words` (render-state and texture-state words the deferred-state
+  commit applied), `clears`, `binds` (target, texture and palette binds),
+  `copies` (frame-buffer copies), `uploads` (texture uploads), `locks`
+  (`BlockOnResource`, `BlockOnTime`, `IsBusy`), `queries` (visibility
+  tests and results), `presents`, and `d3d_ms` (time in the adapter).
+- **`callers`**, at most `top`, by `residual`, then calls:
+  `{function, sites, entries, draws, inline_draws, residual, d3d_ms}`.
+  A caller is the analysed guest function holding the entry calls' return
+  addresses (read at `[esp]`), named as `profile.fallbacks` names one
+  (`recomp::fallback::function_at`), or the return address itself before
+  the analysis is built. `sites` lists the return addresses, `entries`
+  the calls by entry name, `draws` what the entries resolved themselves
+  and `inline_draws` what the drain at its entries decoded (words written
+  before the call, possibly by other code). At most 4096 return
+  addresses are kept; later ones count in `totals` only and
+  `sites_full` is true.
+- **`producers`**, at most `top`, by `residual`, then `entries`:
+  `{producer, status, slot, calls, draws, claimed, residual, entries,
+  push_words, state_words, clears, binds, copies, uploads, d3d_ms,
+  guest_ms}`. Only with `frame-scene.census` in `H2_FEATURES`, which
+  places an entry and an exit observer on each producer in
+  `residual_census::REGISTRY` (the views, the scene passes, the object
+  shadows, decals, the lights, the transparents, the post calls, the HUD,
+  the UI, the fade, the frame end and the loading screen) and on the layer
+  draw (`layer.<site>.<layer>`, as `render.scene`'s entry census names
+  them); without it `producers` is absent. Work goes to the innermost
+  open producer, so the rows sum to `totals`. Inside a render frame with
+  none open it is `unknown` (status `unknown`); outside every render
+  frame it is `outside_render`. At each boundary the device first decodes
+  the push buffer, so an inline draw is charged to the producer open when
+  its words were written. `status` is `native` or `d3d` from the
+  registry; `slot` is the carried slot the work lands in. `guest_ms` is
+  the producer's exclusive time less its D3D time, `null` without
+  `render-timing`; it ranks producers and is not a frame time.
+  `unbalanced` counts producer exits with nothing to end and producers
+  dropped unended.
+- **`unattributed`.** `{draws, entries}`: with producers, the `unknown`
+  row's; without, the inline draws, which no producer owns.
+- **Cost.** Unarmed, the adapter does one relaxed load per entry call.
+  Armed, it reads `[esp]`, copies the device's tally three times and
+  times the call; the census takes its own lock. The producer observers
+  exist only with `frame-scene.census` and drain only while a window is
+  armed. The always-on frame counters `d3d_entries`, `d3d_residual_draws`
+  and `d3d_push_words` are in [`profile`](#profile-where-a-frame-goes).
+- Tested in `crates/rewrites/render-bridge` (the window, caller rows,
+  producer charging, claimed and residual totals, `unknown`), in
+  `crates/extensions/agent` (ranking, grouping, params) and in `d3d`'s
+  draw rig (`tests/residual_tally.rs`: the drain and the entry's split
+  and the residual total against the backend's draws).
+
 ## Load timeline
 
 `load.timeline {"last": N}` is a core method (8 by default, 1 to 32 kept;
@@ -1787,11 +1888,11 @@ or the game's UI state without UI watch. All are read-only except
   screen 200. Press B or Back with `h2 agent press` (`input.pad`) to
   check that the previous screen returns on the same window and slot. See the
   [pause Settings walkthrough](../game/settings-menu.md#to-check-in-game).
-  `main_menu_theater` is present and true when Theater occupies the
-  row after Xbox Live, and `main_menu_rows` is the number of rows of ours
-  after it (Theater, Forge and Firefight, as their features are on). Lobby
-  scripts use them to locate Split Screen and System Link; the UI watch
-  line says the same with `, main menu rows N`. `dialog` is the dialog up (the first screen on windows 0 to
+  The main menu's one row of ours, Theater, follows System Link, so
+  Campaign, Xbox Live, Split Screen and System Link keep their retail rows
+  0 to 3 and lobby scripts press them there. `main_menu_theater` and
+  `main_menu_rows` (rows of ours between Xbox Live and Split Screen) are
+  absent; `agent_proto::sim::menu` still reads them from older logs. `dialog` is the dialog up (the first screen on windows 0 to
   4, any slot), or `null`: `{id, name, window, slot}`, with `name` the dialog's
   recognized name (`dialog_live_signin` for the account picker,
   `confirmation_dialog`, `error_dialog_ok`, ...; `boot::ui_watch::dialog_name`)
@@ -3080,17 +3181,26 @@ feature is enabled.
 | `forge.status.monitors` (read) | `{}` or omitted | `{monitors: [{seat, name, monitor, pose, look, drawn_as, peers_see, seen_ticks_ago}]}`. Offline it holds seat 0 once a session is open and is empty before. `pose` is `{position, yaw, pitch}` while the monitor camera exists. `drawn_as` is how the seat looks in its own view, always `hidden` with the reason; `peers_see` is what another machine draws |
 
 The input queue accepts `toggle`, `accept`, `back`, `delete`, `palette`,
-`properties`, `menu`, `undo`, `redo`, `up`, `down` and `link`. `link`
-switches to the Links tool; there `accept` starts a link on the aimed
-teleporter flag or placed machine and makes it on the second, `delete`
-removes the aimed thing's latest link, `properties` opens its LINK
-dialog, and `link` or `back` cancels a started link. `link` with nothing
-aimed returns to the Objects tool. In player mode
-only `toggle` enters the monitor. An open dialog takes `up`, `down`,
-`accept` and `back`. An analog request supplies one 1/30-second sample
+`properties`, `tools`, `settings`, `undo`, `redo` and `link`. `palette`
+opens the object menu and `properties` the aimed or held object's
+Properties, as X does by what is aimed at; `tools` opens the Tools
+picker and `settings` the Tool settings. `link` switches to the Links
+tool; there `accept` starts a link on the aimed teleporter flag or
+placed machine and makes it on the second, `delete` removes the aimed
+thing's latest link, `properties` opens its Link dialog, and `link` or
+`back` cancels a started link. `link` with nothing aimed returns to the
+Objects tool. `back` with nothing to cancel does nothing. In player mode
+only `toggle` enters the monitor. The screens are the game's: while one
+is up (ours or the game's), `forge.input` is refused with "A screen is
+up; drive it with ui.press." and the screen is driven with `ui.press`.
+`menu` is refused with "The Forge menu is the game's GAME MENU; open it
+with Start.". An analog request supplies one 1/30-second sample
 with at least one axis. Movement is [right, forward, up], look is [yaw,
 pitch] and roll turns a preview with `rotating:true`. Each axis is in
-[-1, 1]. Read `forge.status` for the resulting monitor and document state.
+[-1, 1]. Read `forge.status` for the resulting monitor and document
+state: it adds `fine` (fine movement on), `ui_up` (a screen is up) and
+`dirty` (edits not saved), and `screen` is the Forge screen of ours that
+is up, with its rows and focus.
 
 A proposal uses the [Forge document's](../game/forge-design.md#the-document)
 portable op and optional prior-value digest. The local host supplies the
@@ -3784,8 +3894,8 @@ tests), `crates/extensions/agent/src/trace/tests.rs`, `crates/extensions/agent/s
   `trace`/`flight` recorder against a running game.
 - `shadow.*` and `scripts/shadow-gate.sh` against the disc: the tests run
   over synthetic code and memory.
-- `render.compare`, `render.capture`, `render.scene`, `render.parity` and
-  `sim.hashes` against a running game.
+- `render.compare`, `render.capture`, `render.scene`, `render.parity`,
+  `render.residual` and `sim.hashes` against a running game.
 - `maps.test.*` against a running game: the build, the slot and the
   queued load ([test-maps.md](../game/test-maps.md#not-verified)).
 - Not provided: effect, projectile and particle counts; per-subsystem

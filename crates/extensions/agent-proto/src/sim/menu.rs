@@ -34,14 +34,19 @@ pub const COOP_ROW: u32 = 3;
 pub const CUSTOM_GAME_ROW: u32 = 4;
 pub const BROWSER_ROW: u32 = 5;
 /// Retail main menu rows: 0 Campaign, 1 Xbox Live,
-/// 2 Split Screen, 3 System Link, 4 Settings.
+/// 2 Split Screen, 3 System Link, 4 Settings. Theater, the one row of
+/// ours, follows System Link, so these rows keep their places.
 pub const MAIN_LIVE_ROW: u32 = 1;
 pub const MAIN_SPLIT_ROW: u32 = 2;
 pub const MAIN_SYSTEM_LINK_ROW: u32 = 3;
-/// The UI watch log marker for the players' screen when the main menu has Theater.
+/// The UI watch log marker for the players' screen when a main menu had
+/// Theater immediately after Xbox Live. The game does not write it while
+/// Theater follows System Link; it is read in the logs of a build that
+/// placed rows of ours above Split Screen.
 pub const MAIN_MENU_THEATER_MARKER: &str = ", main menu theater";
-/// The UI watch log marker for how many rows of ours the main menu has
-/// after Xbox Live (Theater, Forge, Firefight), followed by the count.
+/// The UI watch log marker for how many rows of ours a main menu had
+/// between Xbox Live and Split Screen, followed by the count (as
+/// [`MAIN_MENU_THEATER_MARKER`]: absent with Theater after System Link).
 pub const MAIN_MENU_ROWS_MARKER: &str = ", main menu rows ";
 
 /// The markers a log line carries for a main menu with `rows` rows of
@@ -93,11 +98,13 @@ pub struct Screen {
     pub mode: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub live_menu_row: Option<u32>,
-    /// The main menu has Theater immediately after Xbox Live.
+    /// The main menu has Theater immediately after Xbox Live (absent:
+    /// Theater follows System Link).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub main_menu_theater: bool,
-    /// How many rows of ours the main menu has after Xbox Live (0 from a
-    /// game that only says [`Screen::main_menu_theater`]).
+    /// How many rows of ours the main menu has between Xbox Live and
+    /// Split Screen (absent with none; 0 from a game that only says
+    /// [`Screen::main_menu_theater`]).
     #[serde(default, skip_serializing_if = "is_zero")]
     pub main_menu_rows: u32,
 }
@@ -155,8 +162,8 @@ pub enum Mode {
 }
 
 impl Mode {
-    /// This mode's display row, with `inserted` rows of ours (Theater,
-    /// Forge, Firefight) between Xbox Live and Split Screen.
+    /// This mode's display row, with `inserted` rows of ours between Xbox
+    /// Live and Split Screen (none while Theater follows System Link).
     pub fn row(self, inserted: u32) -> u32 {
         let retail = match self {
             Mode::Campaign => 0,

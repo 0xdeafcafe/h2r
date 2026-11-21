@@ -73,6 +73,19 @@ pub fn backend_draws() -> u64 {
     BACKEND_DRAWS.load(AtomicOrdering::Relaxed)
 }
 
+impl<B: Backend> Device<B> {
+    /// A guest draw reached the backend: [`BACKEND_DRAWS`], the device's
+    /// own count, and the always-on frame counter `d3d_residual_draws`
+    /// (one relaxed load when frame stats are off; a thread-local add
+    /// when they are on).
+    #[inline]
+    fn note_backend_draw(&mut self) {
+        BACKEND_DRAWS.fetch_add(1, AtomicOrdering::Relaxed);
+        self.stats.backend_draws += 1;
+        timeline::phase::count(timeline::phase::Counter::D3dResidualDraws, 1);
+    }
+}
+
 mod admission_scope;
 mod projection;
 #[cfg(feature = "gpu")]
@@ -493,6 +506,18 @@ pub struct Stats {
     /// Indexed draws whose index list came from the index cache (already
     /// scanned and rebased).
     pub index_cache_hits: u64,
+    /// Guest draws resolved (not a native producer's packets): what
+    /// `render.residual` calls `draws` ([`crate::residual::Tally`]).
+    pub resolved_draws: u64,
+    /// Of those, draws a native replacement committed in their place (an
+    /// admission's recording, or a post call's held originals).
+    pub claimed_draws: u64,
+    /// Draws this device handed to the backend: its share of
+    /// [`backend_draws`].
+    pub backend_draws: u64,
+    /// Render-state and texture-state words the deferred-state commit
+    /// applied from the guest's arrays.
+    pub state_words: u64,
 }
 
 /// What made the device write a render-to-texture level back to guest
@@ -1412,6 +1437,22 @@ impl<B: Backend> Device<B> {
     /// Configuration.
     pub fn config(&self) -> &DeviceConfig {
         &self.cfg
+    }
+
+    /// The running totals `render.residual` subtracts around an entry call
+    /// (docs/graphics/retire-d3d.md, slice R0): plain reads of [`Stats`].
+    #[inline]
+    pub fn residual_tally(&self) -> crate::residual::Tally {
+        let s = &self.stats;
+        crate::residual::Tally {
+            draws: s.resolved_draws,
+            claimed: s.claimed_draws,
+            residual: s.backend_draws,
+            push_words: s.push_words,
+            state_words: s.state_words,
+            copies: s.frame_snapshots,
+            uploads: s.texture_uploads,
+        }
     }
 
     /// Counters.
@@ -2692,7 +2733,7 @@ impl<B: Backend> Device<B> {
             let entry = p.draw.entry;
             let writes_color = p.draw.state.render.color_write.xbox_value() != 0;
             let (outcome, spare) = self.backend.draw_owned(p.color, p.depth, p.draw, textures);
-            BACKEND_DRAWS.fetch_add(1, AtomicOrdering::Relaxed);
+            self.note_backend_draw();
             self.recycle_streams(spare);
             self.stats.draws += 1;
             self.stats.inline_draws += u64::from(entry == "inline Begin/End");
@@ -2947,6 +2988,7 @@ impl<B: Backend> Device<B> {
                 self.present_cameras.color_written(target.surface);
             }
             self.stats.swallow_draws_dropped += plan.ranges as u64;
+            self.stats.claimed_draws += s.packets.len() as u64;
             self.stats.swallow_commits += 1;
             self.stats.external_passes += 1;
             for packet in s.packets {
@@ -3202,7 +3244,24 @@ impl<B: Backend> Device<B> {
     /// Executes queued words. With `stop_at_callback`, returns after the
     /// first push-buffer callback; without, a callback is an error (nothing
     /// could deliver it) and is left unconsumed.
+    ///
+    /// The words decoded go to the always-on frame counter
+    /// `d3d_push_words`, once per drain.
     fn drain(
+        &mut self,
+        mem: &mut dyn GuestMemory,
+        stop_at_callback: bool,
+    ) -> Result<Option<PushCallback>, D3dError> {
+        let before = self.stats.push_words;
+        let result = self.drain_words(mem, stop_at_callback);
+        let words = self.stats.push_words - before;
+        if words != 0 {
+            timeline::phase::count(timeline::phase::Counter::D3dPushWords, words);
+        }
+        result
+    }
+
+    fn drain_words(
         &mut self,
         mem: &mut dyn GuestMemory,
         stop_at_callback: bool,
@@ -3413,6 +3472,7 @@ impl<B: Backend> Device<B> {
         self.live("D3D_CommitState")?;
         self.sync_push_buffer(mem)?;
         self.refresh_pushed(mem)?;
+        self.stats.state_words += (RENDER_STATE_SLOTS + crate::layout::STAGES * crate::layout::STAGE_SLOTS) as u64;
         // `0x401013`: the commit keeps the bits it does not consume, the
         // vertex-format and binding bits (`0x70`) that `CDevice_SetStateVB`
         // (`0x401030`, native) reads, and the two top bits.
@@ -4762,6 +4822,7 @@ impl<B: Backend> Device<B> {
         const E: &str = "D3DDevice_Swap";
         let _t = timeline::span(timeline::Cat::D3d, timeline::Track::Host, "Swap");
         self.live(E)?;
+        crate::residual::present();
         self.sync_push_buffer(mem)?;
         if self.immediate.is_open() {
             return Err(D3dError::invalid(E, "Swap inside Begin/End"));
@@ -5442,6 +5503,8 @@ impl<B: Backend> Device<B> {
         prepared: Option<opaque_world::PacketInputs<'_>>,
     ) -> Result<(), D3dError> {
         let entry = parts.entry;
+        // A guest draw (a native producer's packet is not one).
+        self.stats.resolved_draws += u64::from(native.is_none());
         // Consume the candidate even when it proves empty, clipped or unresolved.
         let scoped = if native.is_none() {
             self.scoped_admission.take().filter(|(state, _)| !state.closed.load(AtomicOrdering::Acquire))
@@ -5721,6 +5784,7 @@ impl<B: Backend> Device<B> {
                 if self.backend.queue_external_draw(queued, textures) {
                     self.present_cameras.color_written(color);
                     self.mark_written(writes_depth);
+                    self.stats.claimed_draws += u64::from(native.is_none());
                     if let Some((_, committed)) = native.as_mut() { **committed = true; }
                     *streams = draw.streams;
                     return Ok(());
@@ -5736,6 +5800,7 @@ impl<B: Backend> Device<B> {
                     for &(_, surface) in &binding.colors { self.materialize_display_copy(surface)?; }
                     PreparedExternal { device: self, binding, recordings }.commit();
                     if let Some(p) = prepared { timeline::native::world_packet(p.material, None); }
+                    self.stats.claimed_draws += u64::from(native.is_none());
                     if let Some((_, committed)) = native.as_mut() { **committed = true; }
                     if let Some((scope, _)) = scoped { scope.committed.store(true, AtomicOrdering::Release); }
                     *streams = draw.streams;
@@ -5765,7 +5830,7 @@ impl<B: Backend> Device<B> {
         };
         let writes_color = draw.state.render.color_write.xbox_value() != 0;
         let (outcome, spare) = self.backend.draw_owned(color, depth, draw, textures);
-        BACKEND_DRAWS.fetch_add(1, AtomicOrdering::Relaxed);
+        self.note_backend_draw();
         if let Some(p) = prepared {
             timeline::native::world_packet(p.material, Some(fallback_reason));
         }

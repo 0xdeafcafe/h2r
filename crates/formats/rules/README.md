@@ -72,6 +72,11 @@ words, unhostable entries). `workbench::run` steps a `Scenario` over
 4,000,000 ops. Live's `/v1/rules/check` and `/v1/rules/run` serve them to
 the web app ([Workbench](../../../docs/game/rules-engine.md#workbench)).
 
+The Firefight director script is built outside this crate, by
+`firefight::script` from a wave-set definition; the `firefight.director`
+entries, `place_squad_at`, the zone reads, `now`, `random` and
+`on actor_assist` are what it calls and answers.
+
 ## Language intelligence
 
 `ide` is the editor tooling over source text, in LSP positions (0-based
@@ -96,7 +101,8 @@ lists exactly the unhostable entries it calls, and each engine port's
 core rule holds on `FakeGame`. There is a refusal test for
 each verifier rule. The codec round-trips and survives corruption, the
 blob hash is stable, a budget overflow stops at the same op on every
-run, and `pick` is deterministic. Grants are checked against the
+run, and `pick` is deterministic. `tests/firefight_entries.rs` covers
+`now`, `random`, the queued `ff_*` entries and `on actor_assist`. Grants are checked against the
 declaration, the palette and the budget, and `RulesExt` round-trips and
 resumes. The recovering lexer and parser report every error and agree
 with the strict ones on clean source. `ide`'s tests drive each feature on

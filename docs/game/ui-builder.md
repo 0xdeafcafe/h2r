@@ -72,12 +72,21 @@ backing, `framing_center` from screen 5, under its panel, so the screen
 beneath doesn't matter).
 
 The Forge monitor HUD has no list or focus. The compositor draws its
-widgets on a transparent surface with the preview renderer and disc fonts.
-Forge dialogs carry the HUD as their `underlay` and put a dark backing
-inside the retail panel so rows stay legible over bright scenery. A nested picker keeps the
-parent dialog beneath it with the selected row in focus. The preview pages
-are `forge.hud`, `forge.palette`, `forge.properties`, `forge.menu` and
-`forge.link` (`crates/extensions/game/src/ui_kit/forge.rs`).
+widgets on a transparent surface with the preview renderer and disc fonts;
+its preview pages are `forge.hud`, `forge.palette` and `forge.menu`
+(`crates/extensions/game/src/ui_kit/forge.rs`), until slice U7 removes
+them.
+
+The Forge screens are the game's: list classes of ours on the large
+dialog (the object menu, Tools, Link and the questions) and on the
+in-game Controller Settings host (Properties, Tool settings, Forge
+options, Controls), opened over the running world
+(`crates/extensions/game/src/forge_screens.rs`,
+[forge-firefight-ui.md](forge-firefight-ui.md), "The screens"). A value
+row opens `kit.picker.game` over them. Their preview pages are
+`forge.objects`, `forge.properties`, `forge.tools`, `forge.settings`,
+`forge.link`, `forge.question`, `forge.options` and `forge.controls`,
+drawn over the main menu, which stands in for the game.
 
 **Sign-in is a modal.** The sign-in
 prompt and its new-account gamertag and invite pages are `Over` dialogs,
@@ -357,8 +366,8 @@ row lit (`view_of`'s list). The preview draws that under the dialog. The
 openers:
 
 - `Opener::MAIN_MENU`: the main menu on the Xbox Live row (rows as
-  `ui_watch` reads them: Campaign, Xbox Live, Split Screen, System
-  Link, Settings).
+  the list hooks show them: Campaign, Xbox Live, Split Screen, System
+  Link, THEATER, Settings).
 - `Opener::XBOX_LIVE_MENU`: the Xbox Live menu (screen `0xba`, pane 0)
   on Quickmatch, with our five rows.
 

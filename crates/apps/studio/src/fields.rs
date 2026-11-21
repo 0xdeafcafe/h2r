@@ -24,7 +24,9 @@ pub mod row;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
-use dear_imgui_rs::{Drag, DragRange, NumericFormat, TreeNodeToken, Ui};
+use dear_imgui_rs::{
+    Condition, Drag, DragRange, ListClipper, NumericFormat, StyleColor, TreeNodeToken, Ui,
+};
 use map::{FourCC, TagId};
 use scenario_edit::{Role, Scenario};
 use tags::registry::{Field, Hint, Kind, Layout};
@@ -138,31 +140,43 @@ pub fn show_as_key(group: FourCC, prefix: &str, offset: u32) -> String {
     format!("{}:{shape}+{offset:#x}", group_text(group))
 }
 
-/// The field under the mouse, for the hex pane and the status line.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Hovered {
+/// The selected row, which the Data and bytes window details: its field
+/// and the element it is in. A click on a row selects it; the mouse
+/// moving does not change it.
+#[derive(Clone, Debug)]
+pub struct Selected {
+    pub tag: TagId,
+    /// The element's address and layout.
+    pub at: u32,
+    pub layout: Arc<Layout>,
+    /// The field's address.
     pub address: u32,
-    pub len: u32,
-    /// Offset in its element.
-    pub offset: u32,
-    pub name: String,
-    pub kind: String,
-    pub named: bool,
-    pub description: Option<String>,
-    pub meaning: String,
+    /// The element's `tag.set` path with its trailing dot (`parts[1].`).
+    pub prefix: String,
+}
+
+/// An element whose bytes the Data and bytes window shows.
+#[derive(Clone, Debug)]
+pub struct Element {
+    pub tag: TagId,
+    pub at: u32,
+    pub layout: Arc<Layout>,
 }
 
 /// The panel's UI state (one per place the panel is drawn).
 #[derive(Default)]
 pub struct PanelState {
-    /// The element shown per block, by the address of its `(count,
-    /// address)` pair.
+    /// The element open per list, by the address of its `(count,
+    /// address)` pair; a list with none open is not in it.
     index: HashMap<(TagId, u32), u32>,
-    /// The field under the mouse this frame.
-    pub hovered: Option<Hovered>,
-    /// The element the mouse was last in: its address and layout (the hex
-    /// pane shows it).
-    pub focus: Option<(TagId, u32, Arc<Layout>)>,
+    /// The selected row ([`Selected`]).
+    pub selected: Option<Selected>,
+    /// The element whose bytes are shown: the selected row's, or one
+    /// **Show bytes** named.
+    pub bytes: Option<Element>,
+    /// **Show bytes** was pressed: the Bytes section opens once (taken
+    /// by the window that draws it).
+    pub open_bytes: std::cell::Cell<bool>,
     /// The settings drawn with ([`PanelState::follow`]); a change waits
     /// for [`PanelState::store`].
     pub settings: Settings,
@@ -172,6 +186,10 @@ pub struct PanelState {
     auto_opened: HashSet<(TagId, u32)>,
     /// Text being typed into string ID and data fields, by address.
     text: HashMap<(TagId, u32), String>,
+    /// A long list's filter, by the address of its `(count, address)`.
+    filters: HashMap<(TagId, u32), String>,
+    /// Lists offer **Open alone** (the Tags tool, on the open map).
+    pub open_alone: bool,
     /// The pick dialog, while open.
     pick: Option<picker::Open>,
     /// The labels the pick dialog lists this frame (every one, clipped or
@@ -243,6 +261,14 @@ impl PanelState {
     pub fn has_field_focus(&self, tag: TagId) -> bool {
         self.focus_target.is_some_and(|(id, _)| id == tag)
     }
+
+    /// The selected row of `tag`, built as the panel draws it.
+    pub fn selected_row(&self, doc: &TagDoc, tag: TagId) -> Option<Row<'_>> {
+        let s = self.selected.as_ref().filter(|s| s.tag == tag)?;
+        row::rows(doc, tag, s.at, &s.layout, &self.context(&s.prefix))
+            .into_iter()
+            .find(|r| r.address == s.address)
+    }
 }
 
 /// Width of the label column, in points.
@@ -255,6 +281,8 @@ const GAP: f32 = 8.0;
 const SHOW_AS: &str = "Show as";
 /// Bytes of a data reference shown and editable as hex.
 const DATA_SHOWN: u32 = 4096;
+/// Elements a list has before it gets a filter box.
+const FILTER_AFTER: u32 = 12;
 
 /// Draw the element at `path` (per step, a block field's offset and the
 /// element index) of `tag`'s root: every field, editable where the tag
@@ -338,7 +366,6 @@ pub(crate) fn panel_with_marks(
     root: PanelRoot<'_>,
     mark_field: &mut dyn FnMut(TagId, u32),
 ) {
-    st.hovered = None;
     st.drawn.clear();
     let Some((at, layout)) = doc.resolve(tag, path) else {
         ui.text_disabled("Nothing to show: the element is not in the map's metadata.");
@@ -359,12 +386,33 @@ pub(crate) fn panel_with_marks(
         trail,
         scene,
         mark_field,
-        prefix: String::new(),
+        prefix: element_prefix(doc, tag, path),
         trailing: 0.0,
     };
     let _id = ui.push_id(tag.0 as usize);
     cx.element(at, &layout);
     picker::draw(ui, doc, st, actions);
+}
+
+/// The `tag.set` path of the element at `path` with its trailing dot
+/// (`parts[1].`); empty for the root.
+fn element_prefix(doc: &TagDoc, tag: TagId, path: &[(u32, u32)]) -> String {
+    let mut out = String::new();
+    let Some(mut layout) = doc.layout(tag).cloned() else {
+        return out;
+    };
+    for &(offset, index) in path {
+        let Some(f) = layout.field_at(offset) else {
+            break;
+        };
+        out.push_str(&format!("{}[{index}].", f.name));
+        let Kind::Block(child) = &f.kind else {
+            break;
+        };
+        let child = child.clone();
+        layout = child;
+    }
+    out
 }
 
 struct Cx<'a, 'm> {
@@ -503,7 +551,7 @@ impl Cx<'_, '_> {
             if r.field.section != section {
                 section = r.field.section.clone();
                 if !section.is_empty() {
-                    ui.separator_with_text(&section);
+                    ui.separator_with_text(row::section_title(layout, &section));
                 }
             }
             self.draw_row(at, layout, r);
@@ -590,11 +638,15 @@ impl Cx<'_, '_> {
         let ui = self.ui;
         self.dot(r);
         ui.align_text_to_frame_padding();
-        if r.field.named {
-            ui.text(&r.label);
-        } else {
-            ui.text_disabled(&r.label);
-        }
+        let width = (LABEL - ui.cursor_pos()[0] - GAP).max(1.0);
+        let dim = (!r.field.named).then(|| {
+            ui.push_style_color(StyleColor::Text, ui.style_color(StyleColor::TextDisabled))
+        });
+        ui.selectable_config(format!("{}##label", r.label))
+            .selected(self.is_selected(r))
+            .size([width, 0.0])
+            .build();
+        drop(dim);
         self.hover(at, layout, r);
         ui.same_line_with_pos(LABEL);
         self.trailing = self.tail_width(r);
@@ -622,20 +674,25 @@ impl Cx<'_, '_> {
         }
         if let Some(chip) = r.chip {
             ui.same_line();
-            let tone = if r.effect == Effect::Reload {
+            let warn = r.effect == Effect::Reload || r.sending == Some(row::Sending::NotSent);
+            let tone = if warn {
                 LinkTone::Warn
             } else {
                 LinkTone::View
             };
             theme::link_badge(ui, tone, chip);
             if ui.is_item_hovered() {
-                ui.tooltip_text(format!("{} {}", r.effect.sentence(), r.why));
+                match &r.live {
+                    Some(live) => ui.tooltip_text(&live.text),
+                    None => ui.tooltip_text(format!("{} {}", r.effect.sentence(), r.why)),
+                }
             }
         }
         self.trailing = 0.0;
     }
 
-    /// Record the field as hovered when the last item is.
+    /// The last item's tooltip when it is hovered; a click on it selects
+    /// the row.
     fn hover(&mut self, at: u32, layout: &Arc<Layout>, r: &Row) {
         let ui = self.ui;
         if !ui.is_item_hovered() {
@@ -665,17 +722,33 @@ impl Cx<'_, '_> {
             tip.push_str(&f.meaning);
         }
         ui.set_item_tooltip(tip);
-        self.st.hovered = Some(Hovered {
+        if ui.is_item_clicked() {
+            self.select(at, layout, r);
+        }
+    }
+
+    /// Select the row: the Data and bytes window details it and shows its
+    /// element's bytes.
+    fn select(&mut self, at: u32, layout: &Arc<Layout>, r: &Row) {
+        self.st.selected = Some(Selected {
+            tag: self.tag,
+            at,
+            layout: layout.clone(),
             address: r.address,
-            len: f.kind.width(),
-            offset: f.offset,
-            name: f.name.clone(),
-            kind: f.kind.label(),
-            named: f.named,
-            description: f.doc.clone(),
-            meaning: f.meaning.clone(),
+            prefix: self.prefix.clone(),
         });
-        self.st.focus = Some((self.tag, at, layout.clone()));
+        self.st.bytes = Some(Element {
+            tag: self.tag,
+            at,
+            layout: layout.clone(),
+        });
+    }
+
+    fn is_selected(&self, r: &Row) -> bool {
+        self.st
+            .selected
+            .as_ref()
+            .is_some_and(|s| s.tag == self.tag && s.address == r.address)
     }
 
     fn field(&mut self, at: u32, layout: &Arc<Layout>, r: &Row) {
@@ -1008,129 +1081,231 @@ impl Cx<'_, '_> {
         }
     }
 
+    /// A list: `Parts    2 items` with **Add**; open, one element's fields
+    /// directly, or a row per element (`1  scope`, clipped, with a filter
+    /// past [`FILTER_AFTER`]) of which one is open at a time. An empty list
+    /// is one line and does not open.
     fn block(&mut self, at: u32, layout: &Arc<Layout>, r: &Row, child: &Arc<Layout>) {
         let ui = self.ui;
-        let f = r.field;
         let pair = r.address;
-        let Some(row::List {
-            count: n,
-            address: a,
-            ..
-        }) = r.list
-        else {
+        let Some(list) = r.list else {
             ui.text_disabled(format!(
                 "{}: its elements are outside the tag's address space",
                 r.label
             ));
             return;
         };
-        if self.st.has_field_focus(self.tag) && self.st.focus_blocks.contains(&pair) {
+        let n = list.count;
+        let tag = self.tag;
+        let open = self.st.index.get(&(tag, pair)).copied().filter(|&i| i < n);
+        if n == 0 {
+            self.label(at, layout, r);
+            ui.text_disabled(r.summary.as_deref().unwrap_or_default());
+            self.hover(at, layout, r);
+            self.list_op(pair, child, n, &format!("{} Add##add", icon::PLUS), BlockOp::Add);
+            self.scene_button(at, r, open.unwrap_or(0));
+            self.tail(r);
+            return;
+        }
+        if self.st.has_field_focus(tag) && self.st.focus_blocks.contains(&pair) {
             ui.set_next_item_open(true);
         }
-        let Some(_node) = self.node(at, layout, r, format!("blk{pair:x}")) else {
+        let opened = self.node(at, layout, r, format!("blk{pair:x}"));
+        self.list_op(pair, child, n, &format!("{} Add##add", icon::PLUS), BlockOp::Add);
+        self.scene_button(at, r, open.unwrap_or(0));
+        let Some(_node) = opened else {
             return;
         };
-        let i = self
-            .st
-            .index
-            .get(&(self.tag, pair))
-            .copied()
-            .unwrap_or(0)
-            .min(n.saturating_sub(1));
-        // Element picker and the block's commands.
-        let mut shown = i as i32;
-        ui.set_next_item_width(110.0);
-        let i = if n > 0 && ui.input_int("element##idx", &mut shown) {
-            let shown = shown.clamp(0, n as i32 - 1) as u32;
-            self.st.index.insert((self.tag, pair), shown);
-            shown
+        if n == 1 {
+            self.element_ops(r, &list, child, 0, false);
+            return self.open_element(r, &list, child, 0);
+        }
+        let shown = if n > FILTER_AFTER {
+            let text = self.st.filters.entry((tag, pair)).or_default();
+            ui.set_next_item_width(-1.0);
+            ui.input_text(format!("##filter{pair:x}"), text)
+                .hint(format!("{} Filter {} by title", icon::SEARCH, r.label))
+                .build();
+            let filter = text.clone();
+            row::matching(self.doc, tag, &list, child, &filter)
         } else {
-            i
+            (0..n).collect()
         };
-        if let Some(scene) = self.scene.filter(|s| s.tag == self.tag && s.address == at)
-            && let Some(def) = self.doc.scene_block(self.tag, pair)
-        {
-            if n > 0 {
+        let split = open.and_then(|i| shown.iter().position(|&k| k == i));
+        let (above, below) = match split {
+            Some(k) => (&shown[..k], &shown[k + 1..]),
+            None => (&shown[..], &[][..]),
+        };
+        for i in ListClipper::new(above.len()).begin(ui).iter() {
+            self.element_row(r, &list, child, above[i], false);
+        }
+        if let Some(k) = split {
+            self.element_row(r, &list, child, shown[k], true);
+        }
+        for i in ListClipper::new(below.len()).begin(ui).iter() {
+            self.element_row(r, &list, child, below[i], false);
+        }
+    }
+
+    /// An element's row, `1  scope`, with its commands; open, its fields
+    /// below it. Opening one closes the one open before.
+    fn element_row(
+        &mut self,
+        r: &Row,
+        list: &row::List,
+        child: &Arc<Layout>,
+        i: u32,
+        open: bool,
+    ) {
+        let ui = self.ui;
+        let pair = r.address;
+        let title = row::element_title(self.doc, self.tag, list.address + i * child.size, child);
+        let expanded = ui
+            .tree_node_config(format!("el{pair:x}-{i}"))
+            .label(row::element_text(i, title.as_deref()))
+            .opened(open, Condition::Always)
+            .push();
+        if expanded.is_some() != open {
+            if expanded.is_some() {
+                self.st.index.insert((self.tag, pair), i);
+            } else {
+                self.st.index.remove(&(self.tag, pair));
+            }
+        }
+        self.element_ops(r, list, child, i, true);
+        if expanded.is_some() {
+            self.open_element(r, list, child, i);
+        }
+    }
+
+    /// An element's commands: **Open alone** (in the Tags tool), Duplicate,
+    /// Remove and **Show bytes**; on the row's line when `same_line`.
+    fn element_ops(
+        &mut self,
+        r: &Row,
+        list: &row::List,
+        child: &Arc<Layout>,
+        i: u32,
+        same_line: bool,
+    ) {
+        let ui = self.ui;
+        let pair = r.address;
+        let path = format!("{}{}[{i}]", self.prefix, r.field.name);
+        if self.st.open_alone && self.trail.is_none() {
+            if same_line {
                 ui.same_line();
             }
-            if ui.small_button(format!("Open {} in Scene", def.label)) {
-                let block = scene.block(def.kind);
-                let index = if f.offset == def.offset {
-                    let index = i as usize;
-                    (index < block.len()).then_some(index)
-                } else {
-                    def.role(Role::PaletteIndex).and_then(|field| {
-                        (0..block.len()).find(|&index| {
-                            scene
-                                .get(def.kind, index, field.name)
-                                .ok()
-                                .and_then(|value| value.as_int())
-                                == Some(i64::from(i))
-                        })
-                    })
-                };
-                self.actions.push(Action::SetTool(ToolKind::Scenario));
-                self.actions
-                    .push(Action::Select(index.map(|index| (def.kind, index))));
+            if ui.small_button(format!("Open alone##alone{i}")) {
+                self.actions.push(Action::Navigate(NavAction::Go {
+                    tag: self.tag,
+                    path: None,
+                    element: Some(path),
+                }));
             }
-        }
-        let tag = self.tag;
-        let op_button = |cx: &mut Cx, label: &str, op: BlockOp| {
-            let why = cx.doc.block_refusal(tag, pair, child, &op);
-            ui.same_line();
-            {
-                let _d = ui.begin_disabled_with_cond(why.is_some());
-                if ui.small_button(label) {
-                    cx.actions.push(Action::Tag(TagAction::Block {
-                        tag,
-                        pair,
-                        layout: child.clone(),
-                        op: op.clone(),
-                    }));
-                    if let BlockOp::Add | BlockOp::Duplicate(_) = op {
-                        cx.st.index.insert(
-                            (tag, pair),
-                            match op {
-                                BlockOp::Duplicate(i) => i + 1,
-                                _ => n,
-                            },
-                        );
-                    }
-                }
+            if ui.is_item_hovered() {
+                ui.set_item_tooltip("Show this element as the whole panel");
             }
-            if let Some(why) = why {
-                if ui.is_item_hovered_with_flags(
-                    dear_imgui_rs::ItemHoveredFlags::ALLOW_WHEN_DISABLED,
-                ) {
-                    ui.set_item_tooltip(why);
-                }
-            }
-        };
-        op_button(self, &format!("{} Add##add", icon::PLUS), BlockOp::Add);
-        if n > 0 {
-            op_button(
-                self,
-                &format!("{} Duplicate##dup", icon::COPY),
-                BlockOp::Duplicate(i),
-            );
-            op_button(
-                self,
-                &format!("{} Remove##rm", icon::TRASH),
-                BlockOp::Remove(i),
-            );
+        } else if !same_line {
+            ui.dummy([0.0, 0.0]);
         }
-        // The header's summary says when the list is empty.
-        if n == 0 {
-            return;
+        let n = list.count;
+        let duplicate = format!("{} Duplicate##dup{i}", icon::COPY);
+        self.list_op(pair, child, n, &duplicate, BlockOp::Duplicate(i));
+        let remove = format!("{} Remove##rm{i}", icon::TRASH);
+        self.list_op(pair, child, n, &remove, BlockOp::Remove(i));
+        ui.same_line();
+        if ui.small_button(format!("Show bytes##show-bytes{i}")) {
+            self.st.bytes = Some(Element {
+                tag: self.tag,
+                at: list.address + i * child.size,
+                layout: child.clone(),
+            });
+            self.st.open_bytes.set(true);
         }
-        let _id = ui.push_id(i as usize);
+        if ui.is_item_hovered() {
+            ui.set_item_tooltip("Show this element's bytes in Data and bytes");
+        }
+    }
+
+    /// The fields of element `i`, under its path.
+    fn open_element(&mut self, r: &Row, list: &row::List, child: &Arc<Layout>, i: u32) {
+        let _id = self.ui.push_id(i as usize);
         let prefix_len = self.prefix.len();
         {
             use std::fmt::Write as _;
-            let _ = write!(self.prefix, "{}[{i}].", f.name);
+            let _ = write!(self.prefix, "{}[{i}].", r.field.name);
         }
-        self.element(a + i * child.size, child);
+        self.element(list.address + i * child.size, child);
         self.prefix.truncate(prefix_len);
+    }
+
+    /// A list command on the current line, disabled with the reason as its
+    /// tooltip ([`TagDoc::block_refusal`]). Add and Duplicate open the new
+    /// element.
+    fn list_op(&mut self, pair: u32, child: &Arc<Layout>, n: u32, label: &str, op: BlockOp) {
+        let ui = self.ui;
+        let tag = self.tag;
+        let why = self.doc.block_refusal(tag, pair, child, &op);
+        ui.same_line();
+        {
+            let _d = ui.begin_disabled_with_cond(why.is_some());
+            if ui.small_button(label) {
+                self.actions.push(Action::Tag(TagAction::Block {
+                    tag,
+                    pair,
+                    layout: child.clone(),
+                    op: op.clone(),
+                }));
+                match op {
+                    BlockOp::Add => {
+                        self.st.index.insert((tag, pair), n);
+                    }
+                    BlockOp::Duplicate(i) => {
+                        self.st.index.insert((tag, pair), i + 1);
+                    }
+                    BlockOp::Remove(_) => {}
+                }
+            }
+        }
+        if let Some(why) = why
+            && ui.is_item_hovered_with_flags(dear_imgui_rs::ItemHoveredFlags::ALLOW_WHEN_DISABLED)
+        {
+            ui.set_item_tooltip(why);
+        }
+    }
+
+    /// **Open ... in Scene** on a scenario placement list (or palette) of
+    /// the scenario's root, selecting element `i`'s placement.
+    fn scene_button(&mut self, at: u32, r: &Row, i: u32) {
+        let ui = self.ui;
+        let f = r.field;
+        let Some(scene) = self.scene.filter(|s| s.tag == self.tag && s.address == at) else {
+            return;
+        };
+        let Some(def) = self.doc.scene_block(self.tag, r.address) else {
+            return;
+        };
+        ui.same_line();
+        if ui.small_button(format!("Open {} in Scene", def.label)) {
+            let block = scene.block(def.kind);
+            let index = if f.offset == def.offset {
+                let index = i as usize;
+                (index < block.len()).then_some(index)
+            } else {
+                def.role(Role::PaletteIndex).and_then(|field| {
+                    (0..block.len()).find(|&index| {
+                        scene
+                            .get(def.kind, index, field.name)
+                            .ok()
+                            .and_then(|value| value.as_int())
+                            == Some(i64::from(i))
+                    })
+                })
+            };
+            self.actions.push(Action::SetTool(ToolKind::Scenario));
+            self.actions
+                .push(Action::Select(index.map(|index| (def.kind, index))));
+        }
     }
 
     fn data(&mut self, at: u32, layout: &Arc<Layout>, r: &Row, b: &[u8]) {

@@ -1288,9 +1288,31 @@ step (`TagDoc::squash`) and saves with the map like any edit.
 sections with an **(open map)** marker for the Scenario tool's map),
 the **tag tree** (Scenario, All tags and Not reachable from the
 scenario, with edited and shared-cache marks), the **fields** of the selected tag with Export and
-Import, and **Data and bytes**: the tag's data and resources (with a
-bitmap preview), then the bytes of the element under the mouse with the
-hovered field lit and edited bytes marked.
+Import, and **Data and bytes** (`tags::hex`), which follows the selected
+row, never the mouse. A click on a row's label (or any of its widgets)
+selects it (`fields::PanelState::selected`). The window has three folding
+headers. **Field details** gives the label, description, type and unit,
+the value in the file with **Reset to file value** when it differs, when
+a change takes effect and why the field is read-only; under **Developer
+details** it gives the path for `tag.set`, the offset, address, bytes and
+evidence text. **Bytes**, folded until **Show bytes** on a list element
+opens it, gives the selected row's element (or that element) with the
+field lit and edited bytes marked. **Data and resources** gives the tag's
+data and resources, with a bitmap preview. `tag.bytes` and `tag.reset`
+are the window's bytes and its reset (`tag_api::{bytes_of, reset}`).
+
+The fields' header (`tags::header_top`; `tag.view` returns its lines)
+is the kind and name (`Weapon  blaster`: the group's `title=`, else its
+code), the tag's path with the unsaved count (`objects\test\blaster ·
+1 unsaved change`, `fields::row::unsaved`: the changed fields, as the
+dots mark them), notes for a browsed map, a BSP and a shared map, how a
+change reaches the game for a tag edited here (`tags::link_lines`: `Changes
+are saved with the map.`; viewing, `Changes wait in Pending until you
+turn Edit on.`; with Edit on, `Changes are sent as you make them.` and
+what an unmarked field means), and why the tag is read-only. The datum,
+address, size and the layout's coverage are under a folded **Developer
+details**. Section rules read the embedded struct's `title=`
+(`fields::row::section_title`).
 
 `fields.rs` is the field panel, reusable by any tool:
 `fields::panel(ui, &app.tags, tag, path, &mut PanelState, &mut actions)`
@@ -1309,7 +1331,10 @@ and `UV` upper case; an unnamed field by its type and offset, `Value at
 (`play::tag_sync::Effect`). That chip shows only with a game connected
 on the open map (`fields::Link`, set by `PanelState::follow`), never on
 a read-only row, and for a field whose effect is not known only once it
-is changed. The tooltip gives the type in words, the description, the
+is changed. A changed field's chip is its state in the game instead
+(`fields::row::Sending`): `Waiting` while viewing, `Not sent` with a
+refusal or a mismatch (the reason in the tooltip), `Waiting for reload`,
+else `Sent` with when the game reads it (`Sent · Not known`). The tooltip gives the type in words, the description, the
 read-only reason, the effect sentence with a game connected, and the
 evidence. A read-only row always has a sentence: the tag's refusal,
 `Edited in Scene.` for the scenario's placement lists, `Set by the
@@ -1346,10 +1371,25 @@ and **Change...**; the dialog lists **No tag**, then every tag of the
 allowed groups (and their child groups), searched by words of
 `group:name` as the tag tree is, with a `Kind` row when several kinds are
 allowed. Colours pick; angles show degrees; bounds drag as a pair;
-string IDs are text; blocks are tree nodes labelled with their size (`2
-items`, `2 items, room for 4`) and hold an element picker and Add,
-Duplicate and Remove (disabled with the reason as tooltip); data is hex.
-`tag.choices` returns the dialog's lists.
+string IDs are text; data is hex. `tag.choices` returns the dialog's
+lists.
+
+A list (block) row reads `Parts    2 items` (`2 items, room for 4`) with
+**Add**. An empty one is that one line and does not open. A list of one
+element shows its fields directly. A longer one shows a row per element,
+`1  scope` (`fields::row::element_text`), titled by the block's `title=`
+field, else by its first named name or tag reference, else the index
+alone (`fields::row::element_title`); one element is open at a time,
+below its row, the rows are clipped, and past 12 elements a filter box
+narrows them by their words (`fields::row::matching`). Each element has
+**Open alone**, Duplicate, Remove and **Show bytes**; Add, Duplicate and
+Remove are disabled with the reason as tooltip. **Open alone** (the Tags
+tool only) navigates to the element (`NavAction::Go` with `element`,
+kept in `NavLocation::element`, so Back returns to it): the panel shows
+it as the whole element (`fields::panel`'s `path`) under breadcrumbs,
+the tag then each list step (`Parts 1  scope`, `fields::row::breadcrumbs`),
+each a button back. `tag.elements` lists a list's element rows and
+`tag.view path` shows one alone.
 
 `app/tag_api.rs` is the same editor as plain functions, for scripts and
 the agent API: `read_tag(doc, tag)` (the fields as JSON by name),

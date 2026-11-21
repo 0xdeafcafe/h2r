@@ -17,7 +17,7 @@
 //! reaching it; a custom game's lobby sets 2, Live or not), and on it the
 //! list value's low 16 bits are the cursor's row (`0xe16d0000` on row 0,
 //! `0xe16f0002` on row 2 in that run). The rows are 0 Campaign, 1 Xbox
-//! Live, then Theater when installed, then Split Screen, System Link and
+//! Live, 2 Split Screen, 3 System Link, then Theater when installed, then
 //! Settings (`0x230827`).
 //!
 //! The path, as `h2 coop test --drive`'s host takes it

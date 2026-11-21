@@ -37,7 +37,7 @@ Evidence labels are those of [docs-style.md](../meta/docs-style.md).
 
 ## What the player gets
 
-- A **FIREFIGHT** entry on the main menu, below **THEATER** ([the
+- A Firefight mode in the custom game lobby ([the
   lobby](#the-lobby)), a **Firefight Options...** row in a custom game's
   Game Setup, and a Firefight entry in matchmaking (FF9): pick a map, a
   wave set, a difficulty, the starting lives and whether rounds switch on
@@ -194,6 +194,61 @@ pub enum Command { PlaceSquad { slot, class, count, zone, weapon_tier }, Hunt { 
   squad, slots, pool, players, active skulls, generator) is the mode
   blob the actor channel sends as `State`. `Director::resume` continues
   from it.
+
+### The director as a rules script
+
+`firefight::script` (`crates/formats/firefight/src/script.rs`) compiles
+a definition to a rules blob that does what `Director` does, and runs it
+([rules-engine.md](rules-engine.md#firefight-ai-and-bounces)). The
+host runtime still runs the Rust director; the script is checked against
+it in tests.
+
+- `compile(&def)` builds the IR directly. The squads, waves, rounds
+  (each round's skull schedule), actor caps, class points, difficulty
+  and skull multipliers are constant tables. The director's state is
+  global and per-player script variables, and the loops over the 16
+  squad slots are unrolled. The blob depends only on the definition, so
+  its hash is stable. A definition with more than 256 squads is refused
+  by name, since a rules table holds 256 rows.
+- The difficulty and the skulls on from the start are script options
+  (`script::options`). The VM seeds its generator from the match seed
+  and the blob's hash; `script::match_seed` hands it a seed that starts
+  it where the director's generator starts, and `random(n)` draws as the
+  director does (SplitMix64, modulo `n`).
+- Kill points are formed exactly: the class points, the difficulty
+  multiplier and nine skull multipliers (1,000 for a skull that is off)
+  are multiplied in base-1,000 limbs and divided by 1,000^10 once.
+- `ScriptDirector::step` is the host side. It begins the VM's tick, fires
+  `on init` once, `on join` for each player present for the first time,
+  `on actor_kill` and `on actor_assist` for each kill, then the per-tick
+  group, and flushes the queue. Every director command is a queued call
+  (`place_squad_at`, `hunt`, `erase_squad` and the `ff_*` entries), so
+  the log keeps the director's order. Zones are the objects labelled
+  `ff_drop`, with placement id equal to the kit zone index.
+- `ScriptDirector::state` reads `director::State` back from the script's
+  variables and the VM generator. `ScriptDirector::resume` continues
+  from `RulesExt`.
+
+The parity tests (`crates/formats/firefight/tests/script.rs`) replay each
+scenario of the director's tests through both and compare commands and
+state tick by tick: the golden match, the empty pool, the lost match,
+unshared lives, assists, kill points at the multiplier limits, zone
+choice, 48 random matches over the quick built-in sets at every player
+count, the built-in sets as authored, starting skulls, unshared lives,
+zero gaps, zones all in sight and ties, duplicate and absent players,
+and a resumed state.
+
+Limits of the script against the director:
+
+- A worst-tick estimate that fits. The zone choice ranks the zones with
+  a nested `for each` over the labelled set, and the verifier bounds a
+  labelled set at 256 members, so `Report::fits` is false. The VM's run
+  time budget (20,000 ops a tick) holds for the kit's 6 to 12 zones.
+- Player slots of 16 and over, which the VM addresses as `none`: the
+  director would still score and register them.
+- Zone distances over 2^31 - 1, which the script reads clamped.
+- A tick with more than 128 commands, past the VM's queue: a script
+  error, where the director has no limit.
 
 ### The host runtime
 
@@ -413,7 +468,9 @@ limits").
 A custom game's Game Setup gets a **Firefight Options...** row after the
 Clankers row (`firefight/options.rs`, `ROW_ACTION` 13; the row is added
 the way [bots.md](bots.md)'s Clanker Options row is, to every list that
-has Change Map). It opens the Firefight page, a kit screen on Quick
+has Change Map). In the lobby's Firefight mode the row follows Change
+Map, and in Forge mode it is hidden ([The lobby](#the-lobby)). It opens
+the Firefight page, a kit screen on Quick
 Options' dialog with five choice rows, each backed by a setting
 (`firefight.*`, in `setting_defs::ALL`): Firefight (on or off), Wave set
 (the three built-in definitions), Difficulty, Starting lives (the wave
@@ -437,22 +494,24 @@ page.
 
 ### The lobby
 
-**FIREFIGHT** on the main menu, below **THEATER** (`layout_glue.rs`,
-`theater_ui::menu`), shows while the `firefight` feature is on and a
-settings store holds the choices. It opens the Firefight lobby
-(`firefight/lobby.rs`): a kit screen on the pregame lobby's skin
-(`lobby_start.rs`) with a status line under three rows.
+Firefight is a mode of the custom game lobby ([forge-firefight-ui.md](forge-firefight-ui.md#the-lobbies)).
+Game Setup's first row, **Change Mode...** (`lobby_mode.rs`, action 14),
+opens a picker of Multiplayer, Forge and Firefight; Firefight is offered
+while the `firefight` feature is on and a settings store holds the
+choices. Picking it sets the page's Firefight choice on and closes Game
+Setup; the next open lists the Firefight rows. The lobby's header reads
+FIREFIGHT, and the variant panel shows the wave set, the difficulty and
+the starting lives in place of Quick Options' lines.
 
 | Row | A does |
 |---|---|
-| **Map** | Opens a picker of the installed maps that carry the kit, each by its base map's name. The catalogue lists a kit package as `Firefight – <map>` (what `firefight-kit` names it, `lobby_start::is_kit_map`); the probe's `Firefight Probe – <map>` is not offered. With none installed the picker's one entry says so, and its description says how to build one (`h2 firefight kit MAP`). |
-| **Options...** | Opens the Firefight page ([Game Setup](#game-setup)) over the lobby. |
-| **Start** | Queues a local custom game on the map through the agent's guest calls, as the level boot starts one ([level-boot.md](../runtime/level-boot.md)). The runtime then starts the mode from the page's choices, as on any kit map ([The host runtime](#the-host-runtime)). |
+| **Change Map** | Opens the map select's Firefight category ([map-select.md](map-select.md)): the installed maps that carry the kit. The catalogue lists a kit package as `Firefight – <map>` (what `firefight-kit` names it, `lobby_start::is_kit_map`); the probe's `Firefight Probe – <map>` is not offered. With none installed the retail map list opens, and the log says why. |
+| **Firefight Options...** | Opens the Firefight page ([Game Setup](#game-setup)), the row after Change Map. |
+| **Quick Options**, **Switch To** | As in a Multiplayer lobby. |
 
-Start is refused, with the reason on the status line, when no installed
-map carries the kit, when the options cannot be read, or when Firefight is
-off in them. The game's own refusal of the queued start (its options check)
-reaches the same line. The first kit map is held until another is chosen.
+The game type row is hidden: the runtime starts the mode from the page's
+choices on a kit map ([The host runtime](#the-host-runtime)), and the
+game itself starts as the lobby's Start Game starts any custom game.
 
 ### The HUD
 

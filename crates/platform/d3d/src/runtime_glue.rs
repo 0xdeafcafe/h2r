@@ -234,6 +234,15 @@ where
                     // itself runs again afterwards (see
                     // `deliver_push_callback`).
                     Ok(mut d) => {
+                        // `render.residual` (crate::residual): unarmed, one
+                        // relaxed load; armed, the caller and the device's
+                        // tallies around the drain and the entry.
+                        let mut watch = crate::residual::armed().then(|| {
+                            crate::residual::Watch::start(
+                                mem.read_u32(regs.esp).unwrap_or(0),
+                                d.residual_tally(),
+                            )
+                        });
                         // An armed swallow checks the entry's caller before
                         // the draws its drain executes.
                         let ret = d
@@ -247,8 +256,14 @@ where
                             })
                         })
                         .and_then(|()| d.drain_until_callback(&mut mem));
+                        if let Some(w) = &mut watch {
+                            w.drained(d.residual_tally());
+                        }
                         match drain {
                             Ok(Some(cb)) => {
+                                if let Some(w) = watch {
+                                    crate::residual::record(&w.finish(addr, name, d.residual_tally(), false));
+                                }
                                 drop(d);
                                 drop(guest);
                                 return deliver_push_callback(cpu, ctx, &dev, cb, addr);
@@ -258,6 +273,13 @@ where
                                 .and_then(|()| d.call_residual_entry(&e, &mut mem, &regs))
                             {
                                 Ok(o) => {
+                                    // Always on: an integer add in this
+                                    // thread's frame (one relaxed load and
+                                    // nothing else when frame stats are off).
+                                    timeline::phase::count(timeline::phase::Counter::D3dEntries, 1);
+                                    if let Some(w) = watch {
+                                        crate::residual::record(&w.finish(addr, name, d.residual_tally(), true));
+                                    }
                                     apply(cpu, o);
                                     let destroys = d.take_pending_destroys();
                                     let vblanks = d.take_pending_vblanks();

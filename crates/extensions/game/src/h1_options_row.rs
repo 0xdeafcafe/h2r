@@ -205,6 +205,45 @@ pub fn insert_row_ordered(
     Ok(order.len())
 }
 
+/// Gives the list at `list` exactly the rows `order` names, in slot order:
+/// datums added or deleted from the end until there are as many, then each
+/// one's action written. The new count. A Game Setup row of ours that hides
+/// a row (the lobby's mode, `crate::lobby_mode`) passes the list without it.
+pub fn rewrite_rows(m: &mut dyn GuestMemory, list: u32, order: &[i16]) -> Result<usize, String> {
+    let e = |e: engine::memory::MemFault| format!("{e:?}");
+    let array = engine::datum::DatumArray::at(m.u32(list.wrapping_add(SETUP_ROWS)).map_err(e)?);
+    let elems = |m: &dyn GuestMemory| -> Result<Vec<(i32, u32)>, String> {
+        let hw = array
+            .header_field(m, engine::datum::layout::HIGH_WATER)
+            .map_err(e)?;
+        let mut out = Vec::new();
+        for i in 0..hw.max(0) {
+            if let Some(elem) = array.get_absolute(m, i).map_err(e)? {
+                out.push((i, elem));
+            }
+        }
+        Ok(out)
+    };
+    let mut have = elems(&*m)?;
+    while have.len() < order.len() {
+        array.new_datum(m).map_err(e)?.ok_or("the list is full")?;
+        have = elems(&*m)?;
+    }
+    while have.len() > order.len() {
+        let (index, _) = have.pop().expect("more rows than wanted");
+        let handle = array
+            .handle_of(&*m, index)
+            .map_err(e)?
+            .ok_or_else(|| format!("row {index} has no handle"))?;
+        array.delete(m, handle).map_err(e)?;
+    }
+    for ((_, elem), a) in have.into_iter().zip(order) {
+        m.set_u16(elem.wrapping_add(SETUP_ACTION), *a as u16)
+            .map_err(e)?;
+    }
+    Ok(order.len())
+}
+
 /// The action of the row whose handle is `row` on the list at `list`.
 pub fn row_action(m: &dyn GuestMemory, list: u32, row: u32) -> Option<i16> {
     let array = engine::datum::DatumArray::at(m.u32(list.wrapping_add(SETUP_ROWS)).ok()?);
