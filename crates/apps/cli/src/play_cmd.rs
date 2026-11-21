@@ -22,7 +22,7 @@ const USAGE: &str = "usage:
           [--fps 30|60|120|uncapped] [--input-timeline FILE] [--frame-stats] [--no-watermark] [--no-mappack] [--no-halo1]
           [--movies DIR | --no-movies] [--film FILE]
           [--live | --live-server URL | --live-local | --offline] [--gamertag NAME] [--invite CODE]
-          [--signin-terminal]
+          [--join URL] [--signin-terminal]
           [--live-listen ADDR] [--live-tunnel [--live-tunnel-name NAME
            [--live-tunnel-url https://HOST]] [--no-tunnel-setup]]
           [--icons auto|xbox|xbox360|playstation|keyboard|remote]
@@ -55,11 +55,13 @@ A halo1.iso next to the disc is converted into --data on the way in (its
 campaign under Campaign, its multiplayer maps in the map list), again only
 when the disc or the converter changed; a warning never stops the game.
 --no-halo1 or H2_HALO1=0 skips it (docs/halo1/campaign.md).
-The intro, attract and credits movies play, with their sound, when `h2 movies`
-has installed them for this disc (in --movies DIR, by default the app data
-directory); otherwise, with --no-movies, or on a --level boot (unless --movies
-DIR is given), the game skips them. The log says which (`movies: playback
-(...)` or `movies: skip (...)`).
+The intro and credits play, with their sound, when `h2 movies` has installed
+them for this disc. An idle menu plays the attract movie from the same install.
+On a normal windowed boot with the default movie directory, a missing attract
+transcode is prepared from the disc using local ffmpeg when available.
+--movies DIR selects another install. --no-movies skips playback, as does
+a --level boot unless --movies DIR is given. During playback outside film
+sessions, an unavailable attract movie leaves the menu music playing.
 --fps (or H2_FPS) sets how often the window presents: 30, the default, is the
 game's own rate and today's behaviour; 60, 120 and uncapped only redraw the
 newest game frame more often for now, with no smoothing (the game itself
@@ -82,6 +84,8 @@ With no Live flag it plays offline and contacts nothing (--offline or
 --no-live says so explicitly). --live signs the game in to Xbox Live at
 https://live.forbes.red ($H2_LIVE_SERVER names another; off: offline);
 --live-server URL signs in to that service instead (docs/live/live.md).
+--join URL opens a Halo 2 session link and implies --live. The link must
+belong to your selected Live service.
 The account is one kept in accounts.json for that server; else --gamertag
 NAME, or the gamertag you last played as on another server (keeping its
 key), or one named after your user. A name new to the server is made
@@ -626,6 +630,12 @@ pub(crate) fn run_with_theater(
         }
     }
     live.check()?;
+    if live.join.is_some()
+        && (film_out.is_some() || std::env::var_os("H2_FILM_OUT").is_some_and(|p| !p.is_empty()))
+    {
+        bail!("Session links are unavailable while recording a film.");
+    }
+    let live_choice = live.play_choice(std::env::var("H2_LIVE_SERVER").ok().as_deref())?;
     // Our settings: flags (--fps, --set), then the environment, then
     // <data>/settings.toml, then each default. A bad value is reported and
     // the next source used.
@@ -709,7 +719,11 @@ pub(crate) fn run_with_theater(
     // Before the window: the session (and an embedded server) lives until
     // the game is over.
     // With no Live flag, offline (docs/live/live.md "Playing on Live").
-    let session = start_session(&mut live, &opts.disc)?;
+    let session = start_session(&mut live, &opts.disc, live_choice)?;
+    if let Some(link) = live.join.take() {
+        live_hle::join_link::submit(link, live_hle::join_link::Source::CommandLine)
+            .map_err(anyhow::Error::msg)?;
+    }
     // Signed in: the account's saves are merged into U: now, before the
     // game reads them, and pushed as the game writes
     // (docs/live/live-cloud-saves.md).
@@ -863,17 +877,21 @@ fn level_choice(
 fn start_session(
     live: &mut crate::play_live::LiveOpts,
     disc: &std::path::Path,
+    choice: crate::play_live::Choice,
 ) -> Result<Option<crate::play_live::Session>> {
-    use crate::play_live::{Choice, DEFAULT_LIVE_SERVER, choose};
-    let env = std::env::var("H2_LIVE_SERVER").ok();
-    match choose(live, env.as_deref(), DEFAULT_LIVE_SERVER) {
+    use crate::play_live::Choice;
+    match choice {
         Choice::Offline { why } => {
             if let Some(why) = why {
                 eprintln!("{why}");
             }
             Ok(None)
         }
-        Choice::Local => start_live(live, disc).map(Some),
+        Choice::Local => {
+            let session = start_live(live, disc)?;
+            live.check_join_server(&session.server)?;
+            Ok(Some(session))
+        }
         Choice::Server { url, from } => {
             let note = match from {
                 "--live" => " (the default service; --live-server URL names another)",

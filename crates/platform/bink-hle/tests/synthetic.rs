@@ -1,7 +1,7 @@
 //! Synthetic guest state: a few mapped pages, no XBE, no movie files.
 use bink_hle::{
-    BinkHle, Clock, HLE_RESERVED, Mode, MovieSource, MovieStream, Mp4Source, StreamInfo,
-    SyntheticDecoder, addr::*, register, register_skip, unregister,
+    BinkHle, Clock, HLE_RESERVED, Mode, MovieOpenError, MovieSource, MovieStream, Mp4Source,
+    StreamInfo, SyntheticDecoder, addr::*, register, register_skip, unregister,
 };
 use runtime::{
     CpuAbi, Dispatch, ExecCtx, Guest, Runner, Runtime, abi, exec::HARNESS_EXIT, guest::Permissions,
@@ -163,6 +163,11 @@ fn skip_mode_is_the_default_without_a_source() {
         (r[0].path.as_str(), r[0].flags, r[0].played),
         ("d:\\bink\\intro_60.bik", 0x1c6, false)
     );
+    assert_eq!(hle.prepare("intro_60"), Err(MovieOpenError::NoSource));
+    assert_eq!(
+        hle.last_request("INTRO_60").unwrap().failure,
+        Some(MovieOpenError::NoSource)
+    );
 }
 
 #[test]
@@ -200,6 +205,90 @@ fn source_that_cannot_open_is_a_clean_skip_through_bink_open() {
     assert_eq!((h, esp), (0, 0), "NULL handle, args popped");
     assert!(!hle.requests()[0].played);
     assert_eq!(hle.open_streams(), 0);
+}
+
+#[test]
+fn bink_open_takes_the_prepared_stream_and_picture_without_opening_again() {
+    struct CountingSource {
+        opens: AtomicU64,
+        decodes: Arc<AtomicU64>,
+    }
+    struct CountedMovie(Arc<AtomicU64>);
+    impl MovieSource for CountingSource {
+        fn open(&self, name: &str) -> Option<Box<dyn MovieStream>> {
+            if name != "attract_60" {
+                return None;
+            }
+            self.opens.fetch_add(1, Ordering::SeqCst);
+            Some(Box::new(CountedMovie(self.decodes.clone())))
+        }
+    }
+    impl MovieStream for CountedMovie {
+        fn info(&self) -> StreamInfo {
+            Fake { frames: 3 }.info()
+        }
+        fn decode(&mut self, index: u32, bgra: &mut [u8]) -> bool {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Fake { frames: 3 }.decode(index, bgra)
+        }
+    }
+
+    let source = Arc::new(CountingSource {
+        opens: AtomicU64::new(0),
+        decodes: Arc::new(AtomicU64::new(0)),
+    });
+    let (mut w, hle, _, _) = world(|c| BinkHle::with_clock(Some(source.clone()), c));
+    assert_eq!(hle.prepare("attract_60"), Ok(()));
+    assert_eq!(hle.prepare("D:\\Bink\\ATTRACT_60.BIK"), Ok(()));
+    assert_eq!(hle.open_streams(), 0);
+    assert_eq!(hle.arena(), None);
+    assert_eq!(hle.last_request("attract_60"), None);
+
+    w.put_str(SCRATCH, "d:\\bink\\attract_60.bik");
+    let handle = w.call(BINK_OPEN, &[SCRATCH, 0]).0;
+    assert_ne!(handle, 0);
+    let request = hle.last_request("ATTRACT_60").unwrap();
+    assert_eq!(request.sequence, 1);
+    assert!(request.request.played);
+    assert_eq!(request.failure, None);
+    assert_eq!(source.opens.load(Ordering::SeqCst), 1);
+
+    let dst = SCRATCH + 0x100;
+    let copy = [handle, dst, 16, 2, 0, 0, 3];
+    assert_eq!(w.call(BINK_COPY_TO_BUFFER, &copy), (1, 0));
+    assert_eq!(w.call(BINK_DO_FRAME, &[handle]), (0, 0));
+    assert_eq!(w.call(BINK_COPY_TO_BUFFER, &copy), (0, 0));
+    assert_eq!(w.bytes(dst, 4), [0, 0, 0, 0xff]);
+    assert_eq!(source.decodes.load(Ordering::SeqCst), 1);
+
+    w.call(BINK_CLOSE, &[handle]);
+    assert_eq!(hle.prepare("attract_60"), Ok(()));
+    hle.discard_prepared("d:/bink/attract_60.bik");
+    assert_ne!(w.call(BINK_OPEN, &[SCRATCH, 0]).0, 0);
+    assert_eq!(source.opens.load(Ordering::SeqCst), 3);
+    assert_eq!(hle.last_request("attract_60").unwrap().sequence, 2);
+}
+
+#[test]
+fn an_open_that_cannot_decode_its_first_frame_fails_preparation() {
+    struct Unreadable;
+    impl MovieSource for Unreadable {
+        fn open(&self, _name: &str) -> Option<Box<dyn MovieStream>> {
+            Some(Box::new(Self))
+        }
+    }
+    impl MovieStream for Unreadable {
+        fn info(&self) -> StreamInfo {
+            Fake { frames: 3 }.info()
+        }
+        fn decode(&mut self, _index: u32, _bgra: &mut [u8]) -> bool {
+            false
+        }
+    }
+    let hle = BinkHle::new(Some(Arc::new(Unreadable)));
+    assert_eq!(hle.prepare("attract_60"), Err(MovieOpenError::FirstFrame));
+    assert_eq!(hle.open_streams(), 0);
+    assert!(hle.requests().is_empty());
 }
 
 #[test]
@@ -831,15 +920,25 @@ fn mode_is_picked_from_what_is_installed() {
             names: vec!["intro_60".into()]
         }
     );
-    let (mut w, _, _, _) = world(|c| BinkHle::with_clock(partial.source(decoder.clone()), c));
+    let (mut w, hle, _, _) = world(|c| BinkHle::with_clock(partial.source(decoder.clone()), c));
+    assert_eq!(hle.prepare("attract_60"), Err(MovieOpenError::Unavailable));
     w.put_str(SCRATCH, "d:\\bink\\attract_60.bik");
     assert_eq!(w.call(BINK_OPEN, &[SCRATCH, 0]), (0, 0));
+    assert_eq!(
+        hle.last_request("attract_60").unwrap().failure,
+        Some(MovieOpenError::Unavailable)
+    );
     w.put_str(SCRATCH, "d:\\bink\\intro_60.bik");
     assert_ne!(w.call(BINK_OPEN, &[SCRATCH, 0]).0, 0);
     // The source alone honours the same list.
     let only = TranscodedSource::new(&dir, decoder.clone()).only(["INTRO_60"]);
     assert!(only.open("intro_60").is_some());
     assert!(only.open("attract_60").is_none());
+    std::fs::remove_file(dir.join("intro_60.mp4")).unwrap();
+    assert_eq!(
+        hle.prepare("intro_60"),
+        Err(MovieOpenError::MissingOrChangedOutput)
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 

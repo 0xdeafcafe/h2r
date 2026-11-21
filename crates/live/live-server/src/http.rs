@@ -10,7 +10,7 @@ use axum::body::Bytes;
 use axum::extract::rejection::BytesRejection;
 #[cfg(feature = "native")]
 use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{DefaultBodyLimit, Path, Query as Params, Request, State};
+use axum::extract::{DefaultBodyLimit, Path, Query as Params, RawQuery, Request, State};
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
@@ -299,6 +299,10 @@ fn api_router(live: Arc<Live>, facts: crate::status::SiteFacts) -> Router {
         .route("/.well-known/h2live.json", get(well_known))
         .route("/v1/accounts", get(list_accounts).post(create_account))
         .route(
+            "/v1/accounts/{gamertag}/invite-grant",
+            post(crate::invites::grant_invites).delete(crate::invites::revoke_grant),
+        )
+        .route(
             "/v1/accounts/{gamertag}/recover",
             post(crate::recovery::post_recover),
         )
@@ -350,6 +354,7 @@ fn api_router(live: Arc<Live>, facts: crate::status::SiteFacts) -> Router {
             "/v1/invites/{jti}/revoke",
             post(crate::invites::revoke_invite),
         )
+        .route("/v1/invites/mine", get(crate::invites::get_my_invites))
         .route("/v1/server", get(crate::status::get_server))
         .route("/v1/stats/summary", get(crate::stats::get_summary))
         .route("/v1/page-meta", get(page_meta))
@@ -398,6 +403,7 @@ fn api_router(live: Arc<Live>, facts: crate::status::SiteFacts) -> Router {
             get(crate::sessions::list).post(crate::sessions::create),
         )
         .route("/v1/matchmaking/queue", put(crate::matchmaking::queue))
+        .route("/v1/matchmaking/availability", get(crate::matchmaking::availability))
         .route("/v1/matchmaking/dedicated/{xuid}", put(crate::matchmaking::register))
         .route("/v1/coop/games", get(crate::sessions::coop_games))
         .route("/v1/sessions/{id}", get(crate::sessions::detail))
@@ -420,6 +426,7 @@ fn api_router(live: Arc<Live>, facts: crate::status::SiteFacts) -> Router {
         .route("/v1/games/bots/{xuid}", get(crate::bots::player_card))
         .route("/v1/games/bots", post(crate::bots::post_roster))
         .route("/v1/games/{id}", get(game))
+        .route("/v1/games/{id}/join", get(game_join))
         .route("/v1/games/{id}/frames", get(game_frames))
         .route("/v1/games/{id}/archive/{index}/{number}", get(crate::replay_archive::segment))
         .route("/v1/games/{id}/chunks", get(game_chunks))
@@ -513,7 +520,9 @@ pub fn router_with_site(live: Arc<Live>, site: &Site) -> Router {
     let _ = published;
     #[cfg(feature = "native")]
     let api = api.merge(crate::art::emblem_routes(site.game_art.clone()));
-    with_web(api, pages, site.web.as_deref()).layer(middleware::from_fn(crate::caching::layer))
+    with_web(api, pages.clone(), site.web.as_deref())
+        .layer(middleware::from_fn(crate::caching::layer))
+        .layer(middleware::from_fn_with_state(pages, count_api_request))
 }
 
 /// The built web app's files beside the API, `index.html` for any other
@@ -633,6 +642,15 @@ pub fn limit_read(live: &Live, ip: &str) -> Result<(), ApiError> {
 
 #[derive(Clone)]
 pub(crate) struct ClientIp(pub String);
+
+async fn count_api_request(State(live): Shared, req: Request, next: Next) -> Response {
+    let api = req.uri().path().starts_with("/v1/");
+    let response = next.run(req).await;
+    if api {
+        live.count_api_request(response.status().as_u16()).await;
+    }
+    response
+}
 
 async fn guard_request(State(live): Shared, mut req: Request, next: Next) -> Response {
     let peer = req
@@ -826,18 +844,40 @@ async fn get_file(
     State(live): Shared,
     headers: HeaderMap,
     Path((title, name)): Path<(String, String)>,
+    RawQuery(query): RawQuery,
 ) -> ApiResult<Response> {
     live.authorize_read(bearer(&headers))?;
     let (title, name) = title_path(&title, &name)?;
     let (meta, bytes) = live.file(title, &name).await?;
-    let etag = format!("\"{}\"", meta.sha256);
+    let full_rotation = query.as_deref().is_some_and(|query| {
+        query.split('&').any(|field| field == live_proto::hopper::FULL_HOPPER_QUERY)
+    });
+    let (hash, bytes) = if title == live_proto::HALO_2_TITLE_ID
+        && name == live_proto::hopper::HALO_2_HOPPER_FILE
+        && !full_rotation
+    {
+        match crate::default_hopper::compatibility_download(meta.sha256, bytes) {
+            Ok(file) => file,
+            Err(error) => {
+                eprintln!("live: could not project the hopper file: {error}");
+                return Ok((
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    axum::Json(ErrorBody::new(ErrorCode::Unavailable, "hopper rotation unavailable")),
+                )
+                    .into_response());
+            }
+        }
+    } else {
+        (meta.sha256, bytes)
+    };
+    let etag = format!("\"{hash}\"");
     let etag_value = HeaderValue::from_str(&etag).expect("hex is a valid header");
     let matches = headers
         .get(header::IF_NONE_MATCH)
         .and_then(|v| v.to_str().ok())
         .is_some_and(|v| {
             v.split(',')
-                .any(|t| t.trim() == etag || t.trim() == meta.sha256 || t.trim() == "*")
+                .any(|t| t.trim() == etag || t.trim() == hash || t.trim() == "*")
         });
     if matches {
         return Ok((StatusCode::NOT_MODIFIED, [(header::ETAG, etag_value)]).into_response());
@@ -1103,7 +1143,7 @@ async fn ping(State(live): Shared, headers: HeaderMap) -> ApiResult<Response> {
 }
 
 /// `POST /v1/invites`: with a signed `InviteCreated` event as the body, an
-/// admin account's invite ([`crate::invites::create`]); with no body, the
+/// permitted account's invite ([`crate::invites::create`]); with no body, the
 /// operator's (`?days=`).
 async fn create_invite(
     State(live): Shared,
@@ -1213,6 +1253,34 @@ async fn game(
     let viewer = live.read_viewer(bearer(&headers))?;
     live.check_game_shows(game_id(&id)?, viewer)?;
     Ok(json(StatusCode::OK, &live.game(game_id(&id)?)?))
+}
+
+/// A tiny, uncached lookup. A report and its lobby have independent visibility.
+async fn game_join(
+    State(live): Shared,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> ApiResult<Response> {
+    let (viewer, account) = live.read_viewer_account(bearer(&headers))?;
+    let state = live.model.read();
+    let game = state.games.get(game_id(&id)?)
+        .filter(|g| g.shows_to(viewer, |a, b| state.is_friends(a, b)))
+        .ok_or_else(|| not_found("no such game"))?;
+    let session = if game.ended.is_some() || game.started.game.sim.is_some() {
+        None
+    } else if let Some(coop) = &game.coop {
+        state.sessions.get(&coop.session_id)
+    } else {
+        game.started.game.session_id.as_ref()
+            .and_then(|id| state.sessions.get(id))
+            .filter(|s| s.host == game.started.host)
+    };
+    let id = session
+        .filter(|s| s.check_join_link(account, |a, b| state.is_friends(a, b)).is_ok())
+        .map(|s| &s.session_id);
+    let mut response = json(StatusCode::OK, &serde_json::json!({ "session_id": id }));
+    response.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("private, no-store"));
+    Ok(response)
 }
 
 async fn game_frames(

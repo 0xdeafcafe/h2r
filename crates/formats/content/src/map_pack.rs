@@ -29,6 +29,17 @@ pub fn is_map(map: &str) -> bool {
     MAPS.iter().any(|(m, _)| m.eq_ignore_ascii_case(map))
 }
 
+/// Whether a session's map name identifies a map from the pack. A session
+/// can report a scenario path, a filename or the map's display title.
+pub fn is_map_name(map: &str) -> bool {
+    let name = map.trim().rsplit(['/', '\\']).next().unwrap_or_default();
+    let stem = name
+        .rsplit_once('.')
+        .filter(|(_, ext)| ext.eq_ignore_ascii_case("map"))
+        .map_or(name, |(stem, _)| stem);
+    is_map(stem) || MAPS.iter().any(|(_, title)| title.eq_ignore_ascii_case(stem))
+}
+
 /// The name the game shows for map pack map `map` (`Relic` for `dune`).
 pub fn title(map: &str) -> Option<&'static str> {
     MAPS.iter()
@@ -56,5 +67,19 @@ mod tests {
         assert!(is_offer(0x4D53_0064, 0x4D53_0064_0000_03FF));
         assert!(!is_offer(0x4D53_0064, 0x4D53_0064_0000_0400));
         assert!(!is_offer(0x4D53_0064, 0x4D53_0065_0000_0101));
+    }
+
+    #[test]
+    fn session_names_accept_stems_paths_and_titles() {
+        for (stem, title) in MAPS {
+            assert!(is_map_name(stem));
+            assert!(is_map_name(&title.to_ascii_uppercase()));
+            assert!(is_map_name(&format!(" levels\\mp\\{stem}.MaP ")));
+            assert!(is_map_name(&format!("levels/mp/{stem}")));
+        }
+        for name in ["", "lockout", "turf.png", "turf/lockout.map", "turf/"] {
+            assert!(!is_map_name(name), "{name:?}");
+        }
+        assert!(!is_map("Relic"), "base file lookups still require the stem");
     }
 }

@@ -37,6 +37,7 @@ fn kill() -> game::PlayerKilled {
         victim: 1,
         killer: Some(0),
         weapon: Some("rifle".into()),
+        headshot: None,
         kind: "kill".into(),
         pos: None,
     }
@@ -244,6 +245,7 @@ async fn film_finishes_absent_partial_and_completed_games_exactly_once() {
             })
             .await
             .unwrap();
+        assert!(events[0].body.data.get("session_id").is_none());
         assert_eq!(
             events
                 .iter()

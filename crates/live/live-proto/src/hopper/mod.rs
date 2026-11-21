@@ -59,6 +59,14 @@ use std::io::{Read, Write};
 /// [`crate::HALO_2_TITLE_ID`]. Kept here (not `lib.rs`) so the module stands
 /// alone; `lib.rs` may re-export it.
 pub const HALO_2_HOPPER_FILE: &str = "multiplayer_hopper.dat";
+/// Opt in to the full rotation on the title-file route. A game client
+/// asks for this only when it can enforce the host's map policy locally.
+pub const FULL_HOPPER_QUERY: &str = "map_pack=1";
+
+/// A multiplayer level from the base Halo 2 disc.
+pub fn is_base_map(id: u32) -> bool {
+    defaults::RETAIL_MAPS.iter().any(|&(map, _)| map == id)
+}
 
 /// The size the game requires the payload to inflate to (0x162cc0).
 pub const INFLATED_SIZE: usize = 0x162cc0;
@@ -263,6 +271,43 @@ fn put_ascii(field: &mut [u8], s: &str, max: usize) -> Result<(), HopperError> {
     Ok(())
 }
 
+fn rotation_count(block: &[u8]) -> Result<usize, HopperError> {
+    if block.len() != BLOCK {
+        return Err(HopperError::Format("wrong hopper data block size"));
+    }
+    let count = le32(block, B_COUNT);
+    if count > MAX_RECORDS as u32 {
+        return Err(HopperError::Count(count));
+    }
+    Ok(count as usize)
+}
+
+/// Compacts one data block to the eligible map entries. Copies each
+/// surviving record whole, preserving its weight, variant and unknown bytes.
+pub fn retain_block_maps(
+    block: &mut [u8],
+    mut eligible: impl FnMut(u32) -> bool,
+) -> Result<bool, HopperError> {
+    let count = rotation_count(block)?;
+    let mut kept = 0;
+    for slot in 0..count {
+        let from = B_RECORDS + slot * RECORD;
+        if eligible(le32(block, from + R_ID)) {
+            if kept != slot {
+                let to = B_RECORDS + kept * RECORD;
+                block.copy_within(from..from + RECORD, to);
+            }
+            kept += 1;
+        }
+    }
+    if kept == count {
+        return Ok(false);
+    }
+    put_le32(block, B_COUNT, kept as u32);
+    block[B_RECORDS + kept * RECORD..B_RECORDS + count * RECORD].fill(0);
+    Ok(true)
+}
+
 impl HopperFile {
     /// Adopts an inflated image; it must be exactly
     /// [`INFLATED_SIZE`] bytes (the game checks nothing else).
@@ -349,6 +394,42 @@ impl HopperFile {
             return Err(crate::title_file::HeaderError::TooLarge(file.len(), MAX_FILE).into());
         }
         Ok(file)
+    }
+
+    /// Whether this active hopper has any entries outside the base disc.
+    pub fn contains_addon_maps(&self, i: usize) -> Result<bool, HopperError> {
+        if self.is_unused(i)? {
+            return Ok(false);
+        }
+        let start = self.block_at(i)?;
+        let block = &self.image[start..start + BLOCK];
+        let count = rotation_count(block)?;
+        Ok((0..count).any(|slot| !is_base_map(le32(block, B_RECORDS + slot * RECORD + R_ID))))
+    }
+
+    /// Produces a disc-only rotation for a client without a rotation hook.
+    /// Descriptor indices and playlist IDs stay stable. An imported slot
+    /// with no base-disc entry is absent from this compatibility file.
+    pub fn retain_base_maps(&mut self) -> Result<bool, HopperError> {
+        let mut changed = false;
+        for i in 0..HOPPERS {
+            if self.is_unused(i)? {
+                continue;
+            }
+            let at = self.block_at(i)?;
+            let block = &mut self.image[at..at + BLOCK];
+            if retain_block_maps(block, is_base_map)? {
+                let empty = le32(block, B_COUNT) == 0;
+                if empty {
+                    self.clear_hopper(i)?;
+                } else {
+                    let desc = self.descriptor_at(i)?;
+                    put_le32(&mut self.image, desc + D_STATUS, 0);
+                }
+                changed = true;
+            }
+        }
+        Ok(changed)
     }
 
     fn descriptor_at(&self, i: usize) -> Result<usize, HopperError> {
@@ -964,5 +1045,30 @@ mod tests {
         let mut truncated = HopperFile::blank().build();
         truncated.truncate(40);
         assert!(HopperFile::parse(&truncated).is_err());
+    }
+}
+
+#[cfg(test)]
+mod rotation_tests {
+    use super::*;
+
+    #[test]
+    fn retain_rotation_preserves_base_records_and_playlist_ids() {
+        let mut full = HopperFile::default_set();
+        let base = full.entry(0, 0).unwrap();
+        let mut addon = base.clone();
+        addon.map_id = 0x12_345;
+        addon.weight = 7;
+        full.set_entries(0, &[addon.clone(), base]).unwrap();
+        full.set_entries(1, &[addon]).unwrap();
+        let original = full.clone();
+        assert!(full.contains_addon_maps(0).unwrap());
+        assert!(full.retain_base_maps().unwrap());
+        assert_eq!(full.entry_count(0).unwrap(), 1);
+        assert_eq!(full.slot(0, 0).unwrap(), original.slot(0, 1).unwrap());
+        assert_eq!(full.descriptor(0).unwrap().playlist_id, original.descriptor(0).unwrap().playlist_id);
+        assert!(full.is_unused(1).unwrap());
+        assert!(!full.contains_addon_maps(0).unwrap());
+        assert!(!full.retain_base_maps().unwrap());
     }
 }

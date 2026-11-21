@@ -20,6 +20,8 @@ export interface UsageView {
   eventTypes: RankRow[];
   stored: RankRow[];
   storedTotal: number;
+  requests: { total: number | null; measuredFrom: Day | null; days: Day[]; daily: Series };
+  hasActivity: boolean;
 }
 
 export const zeroDay = (day: Day): UsageDay => ({
@@ -46,9 +48,18 @@ export function usageView(cur: UsageOverview, wide: UsageOverview | null, last: 
     const d = both ? delta(now, periods(both.map(f), range).before) : null;
     return { key, label, value: now, delta: d, trend: col(f), upIsGood: true, ...extra };
   };
+  const requestRows = rows.flatMap((row) => row.requests == null ? [] : [{ day: row.day, requests: row.requests }]);
   const stored = STORED_KINDS.map((k) => ({ key: k.key, label: k.label, value: cur.stored[k.key] }));
   return {
     days,
+    requests: {
+      total: cur.totals.requests ?? null,
+      measuredFrom: cur.request_count_from ?? null,
+      days: requestRows.map((row) => row.day),
+      daily: { key: "requests", label: "Live API requests", values: requestRows.map((row) => row.requests) },
+    },
+    hasActivity: cur.days.some((row) => uploadOf(row) || messagesOf(row) || row.events || row.games
+      || row.sessions_hosted || row.sign_ins || row.reports || row.active_accounts),
     upload: UPLOAD_KINDS.map((k) => ({ key: k.key, label: k.label, values: col((d) => d.up[k.key]) })),
     messages: MESSAGE_KINDS.map((k) => ({ key: k.key, label: k.label, values: col((d) => d.messages[k.key]) })),
     people: [

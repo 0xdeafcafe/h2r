@@ -40,6 +40,8 @@ use serde_json::{Map, Value, json};
 
 use crate::exec::{Access, Agent, DEFER_TICKS_MAX, GameCtx};
 
+pub mod clip;
+
 /// One draw, as the backend wrapper describes it.
 #[derive(Debug, Clone, Default)]
 pub struct DrawInfo {

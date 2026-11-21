@@ -44,16 +44,18 @@ h2 lab agent <id> <call>        --TLS-->  h2 agent <call> --socket a/<id>.sock
    h2 lab status --host laptop
    ```
 
-The host advertises `_h2lab._tcp` over Bonjour. The name defaults to the
-Mac's LocalHostName. The listener defaults to `0.0.0.0:29422`.
-`--listen IP:PORT` selects an address and port. A client can use an IP
-with the default port, or an explicit `IP:PORT`, in place of the Bonjour
-name. Use the same name or address for pairing and subsequent commands.
+The installed host listens on `0.0.0.0:29422` by default and advertises
+`_h2lab._tcp` over Bonjour. The name defaults to the Mac's LocalHostName.
+`--listen IP:PORT` selects an address and port. A client can also connect
+directly to a paired host by IP or `IP:PORT`. The host must present the
+TLS public key saved at pairing. An entry saved for that exact address
+takes precedence over pairings saved under other names.
 
 The code pins the host's TLS public key and authorizes a single pairing
 for ten minutes. Every LAN connection proves possession of the saved
-driver key inside TLS. The host rate-limits failed attempts. To issue
-another code, run `h2 lab host pair-code` on the laptop. A successful
+driver key inside TLS. The host caps pending handshakes per IP and
+rate-limits failed attempts. To issue another code, run
+`h2 lab host pair-code` on the laptop. A successful
 pairing replaces the previous driver. Run `h2 lab host unpair` on the
 laptop to revoke that key and any unused code. Host credentials live under
 `<root>/auth/` and the driving Mac stores its pinned peer under
@@ -73,21 +75,26 @@ command runs.
 
 `h2 lab host status` reports whether the service is installed, loaded and
 running, with its PID and build version when available. `h2 lab host
-uninstall` unloads the idle job and removes the plist. `h2 lab host` also
-runs in the foreground for a Terminal session. Use `--local-only` for a
-foreground host that only serves the private Unix socket.
+uninstall` revokes pairing, unloads the idle job and removes the plist.
+`h2 lab host` runs in the foreground for a Terminal session and serves
+the private Unix socket. Add `--listen IP:PORT` to enable LAN access for
+a foreground host, and use `h2 lab host pair-code` to issue a code. Pass
+the foreground host's `--root` to `pair-code` when using a custom root.
 
 The LaunchAgent runs a stable copy at `<root>/bin/h2`. Every 15 seconds
 while idle, it checks `<repo>/target/release/h2` in the installed checkout.
-It validates and atomically adopts a newer compatible build, then exits
-so launchd starts the copy. Ordinary game build jobs use a separate
-target directory. `h2 lab host update` on the laptop and `h2 lab update
---host laptop` on the driver run `git pull --ff-only` on the checkout's
+It validates and atomically adopts a newer compatible build when the
+executable's contents change, then exits so launchd starts the copy.
+Ordinary game build jobs use a separate target directory.
+`h2 lab host update` on the laptop and `h2 lab update --host laptop`
+on the driver run `git pull --ff-only` on the checkout's
 tracked branch and `cargo build --release -p cli --bin h2` into
 `<repo>/target`, then swap the stable copy and restart the service with
 launchctl. Both commands require a running, idle LaunchAgent. A build or
 run in progress blocks updates, and maintenance refuses new jobs until
-it finishes.
+it finishes. Automatic and explicit restarts finish in-flight fetches,
+uploads and branch syncs before restarting. The host closes stalled
+connections after two minutes without socket I/O progress.
 
 ### Host files and flags
 
@@ -97,7 +104,7 @@ The host keeps its files under `--root`, by default
 | Path | What |
 |---|---|
 | `bin/h2` | stable LaunchAgent executable |
-| `logs/` | LaunchAgent stdout, stderr and explicit update log |
+| `logs/` | LaunchAgent stdout, stderr and explicit update log, with a current file and one rotated copy of up to 8 MiB each |
 | `auth/` | TLS identity and pairing state |
 | `runs/<id>/` | one job: `meta.json`, `build.log`, `run.log`, `frames.csv`, `profile/` |
 | `a/<id>.sock` | the run's game's agent API socket, removed when the run ends |
@@ -150,7 +157,8 @@ A run (and `h2 lab build`) names what to build:
 - **`--rev REV`**: a commit or branch the laptop's checkout already has.
 - **`--current`**: no build: the host's own `h2` and image as they are.
 
-`h2 lab sync [--branch NAME]...` transfers branches without starting a run.
+`h2 lab sync [--branch NAME]...` transfers branches without starting a
+run. It can import a branch while a game job runs.
 
 For a commit, the host builds in a detached worktree at `src/<commit>`
 and leaves the laptop's main working tree alone. It builds `h2` with
@@ -289,6 +297,16 @@ non-zero) stops the run and says so; its logs stay in `runs/<id>` for
 quiet machine is the point. A bench starts the level at its beginning, and
 two runs of one level drift apart over minutes (agent-api.md), so keep the
 window short and compare percentiles, not frames.
+
+Report both render resolution and LOD Distance with results above 480 lines.
+In offline runs at the default distance of 1x, higher resolutions also retain
+more detailed geometry. Film and input-tape runs use a fixed geometry
+multiplier. [Readback and LOD policy](../graphics/high-resolution.md#determinism).
+For a comparison against timings taken with 480-line LOD choices, pass
+`--env H2_LOD_DISTANCE=retail` at each scale in an ordinary offline run.
+To measure the cost of retaining higher detail, keep the resolution fixed
+in two unrecorded offline runs and compare
+`--env H2_LOD_DISTANCE=retail` with `--env H2_LOD_DISTANCE=1`.
 
 ## Recordings
 

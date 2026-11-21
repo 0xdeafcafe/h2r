@@ -88,4 +88,12 @@ describe("sides of the site", () => {
     expect(crosses("/dash/players", "/")).toBe(false);
     expect(crosses("/games/halo2", "/games/halo2/players")).toBe(false);
   });
+
+  test("the route observer plays the veil only when the side changes", async () => {
+    const run = Bun.spawn([process.execPath, "--conditions=browser", `${import.meta.dir}/fixtures/dash-cross.ts`], {
+      stdout: "ignore", stderr: "pipe",
+    });
+    const [exitCode, stderr] = await Promise.all([run.exited, new Response(run.stderr).text()]);
+    if (exitCode !== 0) throw new Error(stderr);
+  });
 });

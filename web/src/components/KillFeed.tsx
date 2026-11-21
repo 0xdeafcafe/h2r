@@ -1,7 +1,7 @@
 import { For, Show, createMemo, onMount } from "solid-js";
 import type { GameState } from "../state/reducer";
 import { colourFor } from "../lib/game";
-import { killVerb } from "../lib/format";
+import { damageSourceName, killVerb } from "../lib/format";
 import { VerifyMark } from "./bits";
 import { killFeedRows, type FeedKill } from "./killFeedRows";
 
@@ -47,7 +47,11 @@ export default function KillFeed(props: { game: GameState; kills: FeedKill[]; li
                 >
                   <Name i={kill().killer} />{" "}<span class="kf-verb">{verb()}</span>{" "}<Name i={kill().victim} />
                 </Show>
-                <Show when={kill().weapon}><span class="kf-weapon">{kill().weapon}</span></Show>
+                <Show when={kill().weapon || kill().headshot}>
+                  <span class="kf-weapon">
+                    {[damageSourceName(kill().weapon ?? ""), kill().headshot && "Headshot"].filter(Boolean).join(" · ")}
+                  </span>
+                </Show>
                 <Show when={kill().position > 0}><VerifyMark position={kill().position} compact /></Show>
               </li>
             );

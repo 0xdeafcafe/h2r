@@ -5,11 +5,14 @@
 // recent games. The windowed numbers come from the server's summary
 // (`GET /v1/stats/summary`); the live parts from the live state.
 
-import { For, Show, createMemo, type JSX } from "solid-js";
+import { For, Index, Show, createMemo, type JSX } from "solid-js";
 import { A, useSearchParams } from "@solidjs/router";
 import { live } from "../state/live";
 import { identity } from "../state/identity";
 import { social } from "../state/social";
+import { dedicatedHostLabel } from "../lib/hosts";
+import { JoinLink } from "../components/JoinLink";
+import { canJoinSession, joinHref } from "../lib/join";
 import { useSessions } from "../state/sessions";
 import { useStatsSummary, type SummaryStatus } from "../state/statsSummary";
 import { endedGames, isCampaign, liveGames, type GameState } from "../state/reducer";
@@ -23,7 +26,7 @@ import {
 } from "../lib/statsHome";
 import { campaignLine, gametype, listed, mapName, pingText, seats, sortSessions, kind as sessionKind } from "../lib/sessions";
 import { SKULLS } from "../lib/skulls";
-import { titleCase } from "../lib/format";
+import { damageSourceName } from "../lib/format";
 import { now } from "../lib/now";
 import { useMotd } from "../state/motd";
 import { motdMessages } from "../lib/motd";
@@ -91,18 +94,19 @@ function LiveNow(props: { week: StatsSummary | null }) {
           <div class="s-grid-wrap s-open">
             <table class="s-grid">
               <caption class="sr-only">Open games looking for players</caption>
-              <thead><tr><th>Open Games</th><th>Map</th><th class="hide-s">Type</th><th class="num">Players</th></tr></thead>
+              <thead><tr><th>Open Games</th><th>Map</th><th class="hide-s">Type</th><th class="num">Players</th><th><span class="sr-only">Join game</span></th></tr></thead>
               <tbody>
-                <For each={open().slice(0, 5)}>
+                <Index each={open().slice(0, 5)}>
                   {(s) => (
                     <tr>
-                      <td><Who xuid={s.host_xuid} name={s.host_gamertag} /> <span class="s-dim">{gametype(s)}</span></td>
-                      <td><Show when={campaignLine(s, mapTitle)} fallback={<span class="s-who"><Show when={s.map}><MapPreview map={s.map!} mapId={s.map_id} /></Show>{mapName(s, mapTitle)}</span>}>{(c) => <span class="s-who">{c()}</span>}</Show></td>
-                      <td class="hide-s">{sessionKind(s)}</td>
-                      <td class="num">{seats(s).filled} of {seats(s).max}<Show when={pingText(s)}>{(p) => <span class="s-dim"> · {p()}</span>}</Show></td>
+                      <td><Show when={dedicatedHostLabel(s())} fallback={<Who xuid={s().host_xuid} name={s().host_gamertag} />}>{(label) => label()}</Show> <span class="s-dim">{gametype(s())}</span></td>
+                      <td><Show when={campaignLine(s(), mapTitle)} fallback={<span class="s-who"><Show when={s().map}><MapPreview map={s().map!} mapId={s().map_id} /></Show>{mapName(s(), mapTitle)}</span>}>{(c) => <span class="s-who">{c()}</span>}</Show></td>
+                      <td class="hide-s">{sessionKind(s())}</td>
+                      <td class="num">{seats(s()).filled} of {seats(s()).max}<Show when={pingText(s())}>{(p) => <span class="s-dim"> · {p()}</span>}</Show></td>
+                      <td><Show when={feed.status() === "ok" && canJoinSession(s(), identity.me()?.xuid) && joinHref(live.server().base, s().session_id)}>{(href) => <JoinLink href={href()} />}</Show></td>
                     </tr>
                   )}
-                </For>
+                </Index>
               </tbody>
             </table>
           </div>
@@ -205,7 +209,7 @@ function OfTheWeek(props: { sum: StatsSummary | null }) {
           <Panel title="Weapon of the Week" sub="most kills, last 7 days" class="s-week-box">
             <div class="s-week-body">
               <span class="s-week-art s-week-art--weapon"><WeaponIcon weapon={w().weapon} width={112} /></span>
-              <div><b>{titleCase(w().weapon)}</b><span>{num(w().kills)} kills</span><span class="s-dim">{weaponShare()}% of all kills</span></div>
+              <div><b>{damageSourceName(w().weapon)}</b><span>{num(w().kills)} kills</span><span class="s-dim">{weaponShare()}% of all kills</span></div>
             </div>
           </Panel>
         )}
@@ -555,10 +559,10 @@ export function HomeView(props: { win: StatsWindow; week: StatsSummary | null; w
                     </section>
                     <section class="s-sec">
                       <header><h3>Most Used Weapons</h3><small>kills</small></header>
-                      <Bars rows={weaponRows()} value={(w) => w.kills} name={(w) => titleCase(w.weapon)} unit="kills" empty={`No kills ${label()}.`}
-                        label={(w) => <span class="s-who"><WeaponIcon weapon={w.weapon} width={34} />{titleCase(w.weapon)}</span>} />
+                      <Bars rows={weaponRows()} value={(w) => w.kills} name={(w) => damageSourceName(w.weapon)} unit="kills" empty={`No weapon kills ${label()}.`}
+                        label={(w) => <span class="s-who"><WeaponIcon weapon={w.weapon} width={34} />{damageSourceName(w.weapon)}</span>} />
                       <Show when={weaponRows().length}>
-                        <p class="s-sec-foot">{shares(s().weapons, (w) => w.kills, 1).map((x) => `${titleCase(x.row.weapon)}: ${x.pct}% of kills`)[0]}</p>
+                        <p class="s-sec-foot">{shares(s().weapons, (w) => w.kills, 1).map((x) => `${damageSourceName(x.row.weapon)}: ${x.pct}% of weapon kills`)[0]}</p>
                       </Show>
                     </section>
                   </div>

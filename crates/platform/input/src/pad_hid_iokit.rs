@@ -1,5 +1,5 @@
 //! The thin macOS half of [`super`]: an `IOHIDManager` matching Sony's
-//! DualSense product IDs, opened with `kIOHIDOptionsTypeNone` so the device
+//! DualSense or DualShock 4 product IDs, opened with `kIOHIDOptionsTypeNone` so the device
 //! is shared with GameController.framework and gilrs (which also open it
 //! unseized), input reports collected through the manager's callback on this
 //! thread's run loop, and output reports sent with `IOHIDDeviceSetReport`.
@@ -21,7 +21,7 @@ use objc2_io_kit::{
     kIOHIDProductIDKey, kIOHIDTransportKey, kIOHIDVendorIDKey, kIOReturnSuccess,
 };
 
-use crate::dualsense::{DUALSENSE_PIDS, SONY_VID, Transport};
+use crate::dualsense::{SONY_VID, Transport};
 
 /// What the callbacks write; boxed so its address stays put.
 #[derive(Default)]
@@ -112,11 +112,11 @@ fn run_loop_for(seconds: f64) {
     CFRunLoop::run_in_mode(unsafe { kCFRunLoopDefaultMode }, seconds, true);
 }
 
-/// The first DualSense, or `None`.
-pub(super) fn open() -> Option<Box<dyn super::HidPad>> {
+/// The first controller from the requested PlayStation family.
+pub(super) fn open(product_ids: &[u16]) -> Option<Box<dyn super::HidPad>> {
     let manager = IOHIDManager::new(None, kIOHIDOptionsTypeNone);
     let matchers = CFArray::from_retained_objects(
-        &DUALSENSE_PIDS
+        &product_ids
             .iter()
             .map(|&p| matcher(p))
             .collect::<Vec<_>>(),
@@ -177,7 +177,7 @@ impl super::HidPad for Pad {
             if self.inbox.removed {
                 return Err(io::Error::new(
                     io::ErrorKind::NotConnected,
-                    "DualSense removed",
+                    "PlayStation controller removed",
                 ));
             }
             let left = timeout.saturating_sub(start.elapsed());

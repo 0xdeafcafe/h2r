@@ -1,7 +1,9 @@
 //! Edge caching for a whole, immutable public TICK selected by LiveHub.
 //! The Cache API stores a bounded 200 under a distinct internal URL. Only
 //! this module reconstructs the original 206, including its file-relative
-//! Content-Range. Mutable visibility and authenticated reads stay with the hub.
+//! Content-Range. Mutable visibility and authenticated reads stay with the
+//! hub: a request that bears a token never hits the cache and its answer is
+//! never stored, so a cache key holds no auth.
 use axum::http::{HeaderMap, HeaderValue, Method, Request, StatusCode, header};
 use live_proto::film::{
     MAX_UPLOAD_BYTES,
@@ -302,6 +304,19 @@ mod tests {
         let mut req = request(&url);
         *req.method_mut() = Method::POST;
         assert!(Candidate::request(&req, None).is_none());
+    }
+
+    /// A request that bears a token bypasses the cache outright: with no
+    /// candidate there is no lookup and no store, so a shared entry is
+    /// never served to it nor written from its answer.
+    #[test]
+    fn a_request_with_a_token_never_touches_the_shared_cache() {
+        for name in [header::AUTHORIZATION, header::PROXY_AUTHORIZATION] {
+            let mut req = request(&url());
+            req.headers_mut()
+                .insert(name, HeaderValue::from_static("Bearer tok"));
+            assert!(Candidate::request(&req, None).is_none());
+        }
     }
 
     #[test]

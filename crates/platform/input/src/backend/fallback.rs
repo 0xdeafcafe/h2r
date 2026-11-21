@@ -5,6 +5,7 @@ use crate::HostBackend;
 use crate::backend::keyboard::KeyboardMouse;
 use crate::gamepad::{Gamepad, Rumble};
 use crate::host::{ConvertConfig, HostPad, HostPadId, HostPadState};
+use crate::lightbar::Rgb;
 use crate::report::DeviceInfo;
 
 /// One persistent virtual pad plus the remaining physical controllers.
@@ -18,6 +19,7 @@ pub struct KeyboardFallback {
     ids: HashMap<HostPadId, HostPadId>,
     next_id: u64,
     rumble: Rumble,
+    lightbar: Option<Rgb>,
     previous_pad: Gamepad,
     keyboard_activity: u64,
 }
@@ -36,6 +38,7 @@ impl KeyboardFallback {
             ids: HashMap::new(),
             next_id: 1,
             rumble: Rumble::default(),
+            lightbar: None,
             previous_pad: Gamepad::default(),
             keyboard_activity: 0,
         }
@@ -81,11 +84,19 @@ impl HostBackend for KeyboardFallback {
             if let Some(backend) = &mut self.physical {
                 if let Some(old) = self.primary {
                     backend.set_rumble(old, Rumble::default());
+                    if self.lightbar.is_some() {
+                        backend.set_lightbar(old, None);
+                    }
                 }
                 if let Some(pad) = &primary
                     && pad.supports_rumble
                 {
                     backend.set_rumble(pad.id, self.rumble);
+                }
+                // A promoted pad may still have its previous port's colour.
+                // Give it port zero's colour even if that port never changed.
+                if let Some(pad) = &primary {
+                    backend.set_lightbar(pad.id, self.lightbar);
                 }
             }
             self.primary = new_id;
@@ -170,6 +181,21 @@ impl HostBackend for KeyboardFallback {
             && let Some((host, _)) = self.ids.iter().find(|(_, mapped)| **mapped == id)
         {
             backend.set_rumble(*host, rumble);
+        }
+    }
+
+    fn set_lightbar(&mut self, id: HostPadId, rgb: Option<Rgb>) {
+        let host = if id == HostPadId(0) {
+            self.lightbar = rgb;
+            self.primary
+        } else {
+            self.ids
+                .iter()
+                .find(|(host, mapped)| Some(**host) != self.primary && **mapped == id)
+                .map(|(&host, _)| host)
+        };
+        if let (Some(backend), Some(host)) = (&mut self.physical, host) {
+            backend.set_lightbar(host, rgb);
         }
     }
 

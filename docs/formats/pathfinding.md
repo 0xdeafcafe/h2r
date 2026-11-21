@@ -155,6 +155,10 @@ Design, kept simple so the engine's lookups have nothing unusual to meet:
    `ffff` for every placement; checksum `sbsp+08`; one zeroed user-hints
    element; no object refs or compiled hints.
 
+`generate_with_surfaces` also passes valid collision rings in BSP order
+to callers that need the non-walkable geometry. The bots' cache builder
+uses the same ring to make wall triangles.
+
 `build::element` turns the result into a `map::build::Block` of `0x74`
 bytes with a `Block` fixup per table; a caller writes
 `sbsp.block(0xc4, 1, element)` ([map-builder.md](map-builder.md)). It

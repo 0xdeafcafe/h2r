@@ -97,6 +97,7 @@ pub(crate) struct Kill {
     pub tick: u64,
     pub attacker: Option<u32>,
     pub victim: u32,
+    pub source: Option<crate::layout::KillSource>,
     pub object: Option<ObjectState>,
     /// A HaloScript cinematic was playing: the kill is not counted.
     pub cinematic: bool,
@@ -473,10 +474,11 @@ pub(crate) fn apply(session: &mut Session, work: Work) -> Option<Box<Snapshot>> 
                 tick,
                 attacker,
                 victim,
+                source,
                 object,
                 cinematic,
             } = *kill;
-            session.kill(tick, attacker, victim, object, cinematic);
+            session.kill(tick, attacker, victim, source, object, cinematic);
         }
         Work::Forward(_) | Work::FinishSim(_) => unreachable!("handled by the worker"),
         Work::End(snapshot) => {
@@ -621,6 +623,7 @@ mod tests {
             tick,
             attacker: None,
             victim: 0,
+            source: None,
             object: None,
             cinematic: false,
         }))

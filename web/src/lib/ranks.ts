@@ -140,6 +140,7 @@ export interface PlaylistInfo {
   size: string | null;
   /** The game types its entries carry, in file order, once each. */
   games: string[];
+  hasMapPackMaps?: boolean;
 }
 
 /** `GET /v1/hoppers/clankers`: the descriptor indices marked clanker. */
@@ -188,6 +189,7 @@ function hopperToPlaylist(h: unknown, marked: ReadonlySet<number>): PlaylistInfo
     group: marked.has(index) ? "clanker" : type === 2 || type === 4 || type === 5 ? "ranked" : "unranked",
     size: sizeText(type, o.ranges),
     games,
+    ...(o.has_map_pack_maps === true ? { hasMapPackMaps: true } : {}),
   };
 }
 

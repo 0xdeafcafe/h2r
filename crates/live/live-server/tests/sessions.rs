@@ -481,6 +481,7 @@ async fn optimatch_searches_filter_by_playlist_window_and_room() {
         lowest: Some(8),
         highest: Some(14),
         party: Some(2),
+        has_map_pack: false,
     };
     let page = h.get(&optimatch_path(&duo, 50)).await.json();
     assert_eq!(names(page.clone()), ["nearest", "near"]);
@@ -507,6 +508,7 @@ async fn optimatch_searches_filter_by_playlist_window_and_room() {
         lowest: None,
         highest: None,
         party: None,
+        has_map_pack: false,
     };
     assert_eq!(
         names(h.get(&optimatch_path(&browser, 50)).await.json()),

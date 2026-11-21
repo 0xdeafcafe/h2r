@@ -2,7 +2,7 @@
 
 Status: Built. Video, Voice, pause Settings and the extra Controls rows use native game screens driven by `settings::Def`s.
 Code: `crates/extensions/game/src/video_screen.rs`, `crates/extensions/game/src/pause_menu.rs`, `crates/extensions/game/src/voice_settings.rs`, `crates/extensions/game/src/profile_voice_row.rs`, `crates/extensions/game/src/fov_row.rs`, `crates/extensions/game/src/setting_defs.rs`, `crates/formats/settings`, `crates/apps/cli/src/settings_cmd.rs`. Tests: in those files.
-Switch: one variable per setting, in `setting_defs.rs` and listed in [switches.md](../runtime/switches.md).
+Switch: see [switches.md](../runtime/switches.md).
 
 The screens are the game's own list class with our rows, so they look native and
 take pad navigation for free. They are not a host overlay. The rule that
@@ -16,7 +16,8 @@ simulation memory except through a hook that says so (the clamp global in
 - The Controls screen has rows for the controller speaker, the Steam
   Controller (speaker, trackpad aim, left trackpad) and, on iOS, the touch
   controls and Aim Assist ([playstation-audio.md](../audio/playstation-audio.md)
-  "In-game setting", [ios.md](../runtime/ios.md#controls)).
+  "In-game setting", [ios.md](../runtime/ios.md#controls)). On macOS,
+  **Lightbar** sits next to **Controller Speaker**.
 - **Settings** in the campaign and multiplayer pause menus opens a list
   containing **Video**, **Voice** and the native controller or player
   settings ("Pause menu").
@@ -142,11 +143,10 @@ A host-side file, not the guest profile.
 
 ## Settings and switches
 
-Not every switch is a setting. A setting has a `Def` in
-`boot::setting_defs`, which names its file key, its variable and its flag.
-Each setting has its variable there, and the variables are listed once, in
-[switches.md](../runtime/switches.md). Developer-only variables (`H2_BOOT_*`,
-`H2_PERF*`, `H2_PROFILE*`, `H2_FAULT*`, scripted input and the like) are
+A setting has a `Def` in `boot::setting_defs` with its file key and any
+variable or flag overrides. See [switches.md](../runtime/switches.md).
+Developer-only variables (`H2_BOOT_*`, `H2_PERF*`, `H2_PROFILE*`,
+`H2_FAULT*`, scripted input and the like) are
 not settings and have no file key. Build-time switches change the generated
 C and its cache key ([BUILD-CACHE.md](../lifter/BUILD-CACHE.md)), so they are
 not offered as rows.
@@ -375,11 +375,18 @@ named at `0x45b8b0`, six rows, and gives each datum a value word at `+2`,
 six string ids; row chosen (`0x2b4a4d`) switches on it (the press
 record's player at `[[esp+4]] + 4`, the row's handle at `[[esp+8]]`) and
 does nothing for any other value. The shared count and row hooks append
-Controller Speaker (value 6) and, on iOS, a read-only Aim Assist row
-(value 7). It reads **Aim Assist: Change in Main Menu**. Change the value
-under the main menu's Controls, with the other touch options. Campaign
-applies the setting at map load. The local touch player in multiplayer
-uses the setting during play.
+Controller Speaker (value 6), a read-only Aim Assist row (value 7) on
+iOS, and Lightbar (value 8) on macOS. **Aim Assist: Change in Main Menu**
+directs the player to the other touch options on the main menu's Controls
+screen. Campaign applies aim assist at map load. The local touch player
+in multiplayer uses the setting during play.
+
+On macOS, **Lightbar: Team** matches each PlayStation pad to its local
+player's team colour in a team game or their primary armour colour in
+menus, free-for-all and campaign. Press A to choose **Off** and restore
+the controller's default colour. Both Controls screens use the same
+host setting, `controls.lightbar` in `settings.toml`, which defaults to
+`true` and applies during play (`setting_defs::PAD_LIGHTBAR`).
 
 ### How our rows are added
 
@@ -431,7 +438,9 @@ native controller/player settings routes, and B and Back restoring the
 Settings list at the same row. It also covers live Video and Voice
 changes. `game::video_screen::tests` checks the five display options,
 Mute Button in Voice and Aim Assist on the iOS Controls list.
-`game::speaker_row::tests` checks the read-only iOS Aim Assist row.
+`game::speaker_row::tests` checks the read-only iOS Aim Assist row and the
+pause Lightbar row. `game::layout_glue::tests` checks Lightbar's default,
+the Controls row and persistence.
 
 ### To check in game
 

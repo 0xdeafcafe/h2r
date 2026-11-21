@@ -617,6 +617,7 @@ mod tests {
             assert!(run(&j).is_err(), "{k} must be refused");
         }
         assert!(run(r#"{"cmd":"run","env":{"H2_FRAME_STATS_FROM":"300"}}"#).is_ok());
+        assert!(run(r#"{"cmd":"run","env":{"H2_RENDER_SCALE":"4","H2_LOD_DISTANCE":"retail"}}"#).is_ok());
         assert!(run(r#"{"cmd":"run","env":{"H2_FPS":"6\n0"}}"#).is_err());
     }
 

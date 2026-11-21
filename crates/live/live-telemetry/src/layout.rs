@@ -550,7 +550,7 @@ pub const REPORT_SHIELD: u32 = 0x48; // likely: f32, fraction of shield vitality
 /// multiplayer kill-feed list (Project Cartographer's
 /// `e_damage_reporting_type`), not checked against the executable.
 pub const fn damage_reporting_type(code: u8) -> (&'static str, Option<&'static str>) {
-    match code & 0x3f {
+    match guest_layout::damage::reporting_type(code) {
         0 => ("guardians", None),
         1 => ("fall", None),
         2 => ("collision", None),
@@ -583,6 +583,50 @@ pub const fn damage_reporting_type(code: u8) -> (&'static str, Option<&'static s
         41 => ("teleporter", None),
         _ => ("unknown", None),
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct KillSource {
+    pub name: &'static str,
+    pub headshot: Option<bool>,
+}
+
+/// Weapon or environmental cause and headshot from the depleting damage
+/// report (or the fourth argument of a direct PLAYER_KILLED call).
+/// The game groups a collision credited against another player, or damage
+/// with modifier 3, as a splatter (docs/live/live-gamestate.md, section 7).
+pub(crate) fn kill_source(code: u8, killed_other: bool) -> Option<KillSource> {
+    use guest_layout::damage::{modifier, reporting_type};
+
+    let (kind, weapon) = damage_reporting_type(code);
+    if kind == "unknown" {
+        return None;
+    }
+    let modifier = modifier(code);
+    let source = match reporting_type(code) {
+        _ if modifier == 3 => "splatter",
+        2 if killed_other => "splatter",
+        18 => "disintegrator",
+        21 => "frag_grenade",
+        22 => "plasma_grenade",
+        27 => "human_turret",
+        28 => "plasma_turret",
+        29 => "banshee",
+        30 => "ghost",
+        31 => "mongoose",
+        32 => "scorpion",
+        33 => "spectre",
+        34 => "spectre_turret",
+        35 => "warthog",
+        36 => "warthog_turret",
+        37 => "wraith",
+        38 => "tank",
+        39 => "sentinel_beam",
+        40 => "sentinel_rpg",
+        _ => weapon.unwrap_or(kind),
+    };
+    let weapon = matches!(reporting_type(code), 5..=40) && modifier != 3;
+    Some(KillSource { name: source, headshot: weapon.then_some(modifier == 1) })
 }
 
 /// likely (Project Cartographer's `e_unit_grenade_type`): grenade type
@@ -628,5 +672,39 @@ pub const fn variant_name(index: i32) -> Option<&'static str> {
         8 => Some("Territories"),
         9 => Some("Assault"),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod kill_source_tests {
+    use super::{KillSource, kill_source};
+
+    #[test]
+    fn credited_sources_keep_grenades_melee_vehicles_and_the_world_distinct() {
+        for (source, modifier, other, name, headshot) in [
+            (10, 1, true, "battle_rifle", Some(true)),
+            (10, 0, true, "battle_rifle", Some(false)),
+            (3, 0, true, "melee", None),
+            (3, 2, true, "melee", None), // assassination
+            (20, 2, true, "energy_blade", Some(false)),
+            (21, 0, false, "frag_grenade", Some(false)), // own grenade
+            (22, 2, true, "plasma_grenade", Some(false)), // stick
+            (27, 0, true, "human_turret", Some(false)),
+            (36, 0, true, "warthog_turret", Some(false)),
+            (30, 0, true, "ghost", Some(false)),
+            (30, 3, true, "splatter", None),
+            (2, 1, true, "splatter", None),
+            (2, 0, false, "collision", None),
+            (1, 1, false, "fall", None),
+            (0, 0, false, "guardians", None),
+            (4, 0, true, "explosion", None),
+            (41, 0, false, "teleporter", None),
+        ] {
+            assert_eq!(
+                kill_source(source | (modifier << 6), other),
+                Some(KillSource { name, headshot }),
+            );
+        }
+        assert_eq!(kill_source(0xff, true), None);
     }
 }

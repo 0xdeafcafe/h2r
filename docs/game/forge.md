@@ -3,6 +3,10 @@
 Status: Design. Nothing is built: no code, no hooks, no file format. This page says what Halo 3's Forge is, what retail Halo 2 already has
 that a Forge could sit on, and a phased plan with a small first slice.
 
+The architecture, features, UI and slice plan of the full Forge are in
+[forge-design.md](forge-design.md), which cites this page for the retail
+evidence.
+
 No game data is in this page. Addresses are guest virtual addresses of the
 retail XBE (the build in [haloscript.md](../formats/haloscript.md)), offsets are
 `scnr` offsets, and counts are measurements over the owner's disc. No tag

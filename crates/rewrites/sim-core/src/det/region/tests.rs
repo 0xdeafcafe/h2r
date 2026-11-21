@@ -1,0 +1,241 @@
+use super::{checked_env, checked_inputs};
+
+#[test]
+fn guest_guards_inspect_bits() {
+    assert!(checked_env(0x1fa0));
+    for unsupported in [0x1f80, 0x1fe0, 0x9fa0, 0x3fa0, 0x1f20] {
+        assert!(!checked_env(unsupported), "mxcsr {unsupported:#x}");
+    }
+    assert!(checked_inputs(&[
+        0,
+        0x8000_0000,
+        f32::MIN_POSITIVE.to_bits(),
+        f32::MAX.to_bits()
+    ]));
+    for declined in [
+        1,
+        0x807f_ffff,
+        0x7f80_0000,
+        0xff80_0000,
+        0x7f80_0001,
+        0xffc0_1234,
+    ] {
+        assert!(!checked_inputs(&[0, declined]));
+    }
+}
+
+#[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
+mod native {
+    use super::super::{checked, host};
+    use crate::det::Chain;
+    use std::cmp::Ordering;
+    use x87::abi as fp;
+
+    #[test]
+    fn each_hardware_exception_discards_an_otherwise_good_result() {
+        // Use the underlying operations, bypassing the boundary-value
+        // check: the status sample itself must detect the exceptional work.
+        // All results are dead before the closure returns.
+        for (dividend, divisor) in [
+            (0.0, 0.0),               // invalid
+            (1.0, 0.0),               // divide by zero
+            (f32::MAX, 0.5),          // overflow
+            (f32::MIN_POSITIVE, 3.0), // underflow
+        ] {
+            let result = checked(|_| {
+                host::div32(dividend, divisor);
+                Some(19)
+            });
+            assert_eq!(result, None);
+        }
+        assert_eq!(checked(|r| Some(r.div(1.0, 3.0))), Some(1.0 / 3.0));
+    }
+
+    #[test]
+    fn status_is_scoped_across_declines_nested_calls_and_unwind() {
+        struct Reset(host::Word);
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                host::write(self.0);
+            }
+        }
+        let _reset = Reset(host::read());
+        // Set the incoming exceptions. Clean work in a region still succeeds.
+        let incoming = host::read() | host::REJECT;
+        host::write(incoming);
+        assert_eq!(
+            checked(|r| Some(r.mul(-0.0, 2.0).to_bits())),
+            Some((-0.0f32).to_bits())
+        );
+        assert_eq!(host::read(), incoming);
+        assert_eq!(
+            checked(|_| {
+                host::div32(1.0, 0.0);
+                assert_eq!(checked::<()>(|_| panic!("nested kernel ran")), None);
+                Some(0)
+            }),
+            None
+        );
+        assert_eq!(host::read(), incoming);
+        let panic = std::panic::catch_unwind(|| checked::<()>(|_| panic!("unwind")));
+        assert!(panic.is_err());
+        assert_eq!(host::read(), incoming);
+    }
+
+    #[test]
+    fn exact_subnormals_and_tininess_boundary_decline_on_both_hosts() {
+        for factor in [0.5, 1.0] {
+            assert_eq!(checked(|r| Some(r.mul(f32::MIN_POSITIVE, factor))), None);
+        }
+        let denormal = f32::from_bits(1);
+        assert_eq!(checked(|r| Some(r.add(1.0, denormal))), None);
+        assert_eq!(
+            checked(|r| Some(Chain::load(r, 0x027f, denormal)?.store())),
+            None
+        );
+        let above = f32::from_bits(f32::MIN_POSITIVE.to_bits() + 1);
+        assert_eq!(checked(|r| Some(r.mul(above, 1.0))), Some(above));
+    }
+
+    // FLD, FADD, FSUB, FMUL, FDIV, FCHS. Reading each store without
+    // popping also exposes the value held *before* the guest binary32 store.
+    fn oracle(control: u16, input: [f32; 5]) -> (f64, u32, i32) {
+        let [a, b, c, d, e] = input;
+        let mut state = fp::X87Abi {
+            control,
+            tag: 0xffff,
+            ..Default::default()
+        };
+        fp::ld_f32(&mut state, a.to_bits());
+        for (op, operand) in [
+            (fp::arith_op::ADD, b),
+            (fp::arith_op::SUB, c),
+            (fp::arith_op::MUL, d),
+            (fp::arith_op::DIV, e),
+        ] {
+            fp::arith(
+                &mut state,
+                op,
+                0,
+                fp::src_kind::F32,
+                operand.to_bits().into(),
+            );
+        }
+        fp::unary(&mut state, fp::unary_op::CHS);
+        (
+            f64::from_bits(fp::st_f64(&state, 0).1.value),
+            fp::st_f32(&state, 0).1.value,
+            fp::st_i32(&state, 0).1.value,
+        )
+    }
+
+    #[test]
+    fn single_and_double_chains_match_x87_before_and_after_store() {
+        let mut seed = 7u32;
+        let mut operand = || {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            let exponent = 125 + ((seed >> 24) % 5);
+            f32::from_bits((seed & 0x807f_ffff) | (exponent << 23))
+        };
+        let edges = [
+            [1.0, 2.0f32.powi(-24), 1.0, 1.0, 1.0],
+            [0.0, -0.0, 0.0, 1.0, 1.0],
+            [0.0, 1.0, 0.0, 1.0, 3.0],
+            [0.0, 5.0, 0.0, 1.0, 2.0],
+            [7.0, 0.0, 0.0, 1.0, 2.0],
+        ];
+        for input in edges
+            .into_iter()
+            .chain((0..1024).map(|_| std::array::from_fn(|_| operand())))
+        {
+            for control in [0x007f, 0x027f] {
+                let (wide, store, integer) = oracle(control, input);
+                let actual = checked(|r| {
+                    let load = |x| Chain::load(r, control, x);
+                    let [a, b, c, d, e] = input;
+                    let result = -(((load(a)? + load(b)? - load(c)?) * load(d)?) / load(e)?);
+                    let stored = result.store();
+                    Some((
+                        stored.to_bits(),
+                        result.integer()?,
+                        result.compare(load(stored)?)?,
+                    ))
+                });
+                assert_eq!(
+                    actual,
+                    Some((
+                        store,
+                        integer,
+                        wide.partial_cmp(&f64::from(f32::from_bits(store))).unwrap()
+                    )),
+                    "control {control:#x}, inputs {input:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn square_root_rounds_at_the_x87_working_precision() {
+        for control in [0x007f, 0x027f] {
+            for value in [-0.0f32, 0.0, 2.0, 3.0, 4.0, f32::MAX] {
+                let mut state = fp::X87Abi {
+                    control,
+                    tag: 0xffff,
+                    ..Default::default()
+                };
+                fp::ld_f32(&mut state, value.to_bits());
+                fp::unary(&mut state, fp::unary_op::SQRT);
+                let wide = f64::from_bits(fp::st_f64(&state, 0).1.value);
+                let single = fp::st_f32(&state, 0).1.value;
+                assert_eq!(
+                    checked(|r| {
+                        let root = Chain::load(r, control, value)?.sqrt();
+                        let stored = root.store();
+                        Some((
+                            stored.to_bits(),
+                            root.compare(Chain::load(r, control, stored)?)?,
+                        ))
+                    }),
+                    Some((
+                        single,
+                        wide.partial_cmp(&f64::from(f32::from_bits(single)))
+                            .unwrap()
+                    ))
+                );
+            }
+            assert_eq!(
+                checked(|r| Some(Chain::load(r, control, -1.0)?.sqrt().store())),
+                None
+            );
+        }
+    }
+
+    #[test]
+    fn unsupported_modes_inputs_and_integer_overflow_decline() {
+        for control in [0x037f, 0x017f, 0x0a7f, 0x027e] {
+            assert_eq!(
+                checked(|r| Some(Chain::load(r, control, 1.0)?.store())),
+                None
+            );
+        }
+        assert_eq!(
+            checked(|r| Some(Chain::load(r, 0x027f, f32::INFINITY)?.store())),
+            None
+        );
+        assert_eq!(
+            checked(|r| Chain::load(r, 0x027f, 2_147_483_648.0)?.integer()),
+            None
+        );
+        assert_eq!(
+            checked(|r| Chain::load(r, 0x027f, -2_147_483_648.0)?.integer()),
+            Some(i32::MIN)
+        );
+        assert_eq!(
+            checked(|r| {
+                let half = Chain::load(r, 0x007f, 0.5)?;
+                half.compare(-half)
+            }),
+            Some(Ordering::Greater)
+        );
+    }
+}

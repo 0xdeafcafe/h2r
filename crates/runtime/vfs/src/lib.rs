@@ -370,6 +370,7 @@ impl Vfs {
     /// Quick-format one mounted device (`\Device\Harddisk0\PartitionN`, exact name). For XAPI's
     /// cache volumes, which retail formats from raw sectors; here the backend empties itself.
     /// Fails with `SharingViolation`, changing nothing, while any file object on the volume is open.
+    /// Any other failure also changes nothing: a failed format leaves the volume as it was.
     /// Symbolic links are left alone.
     pub fn format_device(&mut self, device: &str) -> Result<()> {
         let device = path::object_name(device)?;

@@ -85,9 +85,11 @@ fn pixel_uniform_bytes_match_the_gpu_layout_on_reuse() {
         }
         set(&mut u.lod_bias);
         set(&mut u.depth);
-        set(&mut u.depth_range);
+        let [lo, hi, _, _] = vector(next);
+        u.depth_range = [lo, hi];
+        u.stipple_scale = PixelUniforms::stipple_grid((153, 117), (372 + seed, 63 + seed));
         u.stipple = std::array::from_fn(|i| 0xff80_0000 | ((i as u32 + seed) * 333));
-        // Independent field order, matching the original WGSL layout.
+        // Independent field order, matching the WGSL layout.
         let mut expected = Vec::new();
         expected.extend_from_slice(&u.c0);
         expected.extend_from_slice(&u.c1);
@@ -104,7 +106,8 @@ fn pixel_uniform_bytes_match_the_gpu_layout_on_reuse() {
             expected.push(row.map(f32::from_bits));
         }
         expected.push(u.depth);
-        expected.push(u.depth_range);
+        let packed = [((372 + seed) << 16) | 153, ((63 + seed) << 16) | 117];
+        expected.push([lo, hi, f32::from_bits(packed[0]), f32::from_bits(packed[1])]);
         u.write_bytes(&mut out);
         assert_eq!(out.as_slice(), bytes(&expected));
         assert_eq!(out.as_slice(), u.to_bytes());

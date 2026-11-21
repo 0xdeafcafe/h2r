@@ -21,6 +21,9 @@ use std::{
 };
 use url::Url;
 
+pub(crate) const BASE_MAPS_LOCAL: &str = "Base maps only. Install the Map Pack.";
+pub(crate) const BASE_MAPS_PARTY: &str = "Base maps only. A player needs the Map Pack.";
+
 pub(crate) fn config() -> Option<Connectivity> {
     static CONFIG: OnceLock<Option<Connectivity>> = OnceLock::new();
     *CONFIG.get_or_init(|| {
@@ -292,6 +295,7 @@ pub(crate) struct Search {
     pending: Option<Pending>,
     dedicated: Option<Box<DedicatedJoin>>,
     waiting: Option<Assignment>,
+    addon_hopper: bool,
     status: Option<String>,
     // Once a lease has been seen, a missing queue route must not induce
     // the title to host by falling back to a legacy empty search.
@@ -316,6 +320,7 @@ impl Search {
             },
         )?;
         let now = Instant::now();
+        let addon_hopper = service.addon_hopper(ticket.hopper);
         Ok(Self {
             ticket,
             legacy: MatchRequest::Search {
@@ -328,6 +333,7 @@ impl Search {
             pending: Some(pending),
             dedicated: None,
             waiting: None,
+            addon_hopper,
             status: None,
             saw_lease: false,
             after: now,
@@ -336,6 +342,10 @@ impl Search {
     }
 
     pub fn status(&self) -> Option<&str> {
+        self.host_status().or_else(|| (self.addon_hopper && !self.ticket.has_map_pack).then_some(BASE_MAPS_LOCAL))
+    }
+
+    pub fn host_status(&self) -> Option<&str> {
         self.status.as_deref()
     }
 
@@ -487,6 +497,7 @@ mod tests {
             host: HOST,
             dedicated: true,
             members: vec![ME],
+            has_map_pack: false,
             teams: BTreeMap::new(),
             rtt_ms: BTreeMap::new(),
             host_lease: Some(LEASE.into()),

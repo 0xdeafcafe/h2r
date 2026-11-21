@@ -5,10 +5,9 @@
 // the accounts, signed as the browser's admin account; a refetch keeps the
 // last answer on screen, dimmed, rather than blanking it.
 
-import { Show, createEffect, createMemo, createSignal, on, type JSX } from "solid-js";
+import { Show, createEffect, createMemo, createSignal, on, onCleanup, type JSX } from "solid-js";
 import { A } from "@solidjs/router";
 import { DeckPage, Panel, Presets } from "./Deck";
-import { dayOf } from "./chart";
 import { USAGE_SORTS, usageView } from "./usageView";
 import UsageBoard from "./UsageBoard";
 import { fetchUsage, fetchUsageAccounts, type AccountSort, type AccountsPage, type UsageOverview } from "../admin/usage";
@@ -34,11 +33,22 @@ export default function UsagePage() {
   const [error, setError] = createSignal<string | null>(null);
   const admin = adminState.isMeAdmin;
   let seq = 0;
+  let loadedScope = "";
+  onCleanup(() => { seq++; });
 
   createEffect(on(() => [range(), sort(), admin(), identity.me()?.xuid, live.wellKnown()?.id, live.server().base] as const, async () => {
     const me = identity.me(), wk = live.wellKnown();
-    if (admin() !== true || !me || !wk) return;
     const n = ++seq, r = range(), s = sort(), api = live.server().api;
+    const scope = admin() === true && me && wk ? JSON.stringify([me.xuid, wk.id, api]) : "";
+    if (scope !== loadedScope) {
+      loadedScope = scope;
+      setData(null);
+      setError(null);
+    }
+    if (!scope || !me || !wk) {
+      setBusy(false);
+      return;
+    }
     setBusy(true);
     try {
       const [cur, wide, accounts] = await Promise.all([
@@ -56,7 +66,7 @@ export default function UsagePage() {
 
   const view = createMemo(() => {
     const d = data();
-    return d ? usageView(d.cur, d.wide, d.cur.to || dayOf(Date.now()), d.range) : null;
+    return d ? usageView(d.cur, d.wide, d.cur.to, d.range) : null;
   });
 
   const gate = (title: string, body: JSX.Element) => <Panel title={title}><p class="dk-note">{body}</p></Panel>;
@@ -64,7 +74,7 @@ export default function UsagePage() {
     <DeckPage
       trail={[["dashboard", "/"], ["server", "/dash/server"], ["live admin", LIVE_ADMIN], ["usage"]]}
       title="usage"
-      back="/dash/server"
+      back={LIVE_ADMIN}
       filters={<Show when={admin() === true}>
         <Presets label="range" options={USAGE_RANGES} value={range()} onPick={setRange} />
         <Presets label="top accounts by" options={USAGE_SORTS} value={sort()} onPick={setSort} />
@@ -79,7 +89,11 @@ export default function UsagePage() {
             <Show when={view()} fallback={<Show when={!error()}><p class="dk-span-12 dk-state" role="status">Reading usage…</p></Show>}>
               {(v) => (
                 <div class="dk-span-12 dk-grid dk-subgrid" classList={{ "dk-stale": busy() }}>
+                  <p class="dk-span-12 dk-note">Server usage from {data()!.cur.from} to {data()!.cur.to} (UTC). The current day is in progress.</p>
                   <UsageBoard view={v()} range={data()!.range} accounts={data()!.accounts.items}
+                    showRequestAccounting
+                    savesStorageMeasured={data()!.cur.saves_storage_measured === true}
+                    accountSavesStorageMeasured={data()!.accounts.saves_storage_measured === true}
                     accountsNote={`${data()!.accounts.items.length} of ${data()!.accounts.total}, last ${data()!.range} days`} sort={data()!.sort} />
                 </div>
               )}

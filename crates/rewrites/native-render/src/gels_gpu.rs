@@ -513,7 +513,9 @@ impl Producer {
         let mut vb = vec![0; VertexUniforms::SIZE];
         vu.write_bytes(&mut vb);
         let mut pb = vec![0; PixelUniforms::SIZE];
-        frame.pixel.write_bytes(&mut pb);
+        let mut pixel = frame.pixel;
+        pixel.stipple_scale = PixelUniforms::stipple_grid(guest_size, size);
+        pixel.write_bytes(&mut pb);
         (vb, pb)
     }
 

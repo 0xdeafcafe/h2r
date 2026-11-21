@@ -507,6 +507,8 @@ struct Inner {
     difficulty: u8,
     role: Role,
     session: Option<coop_probe::Session>,
+    #[serde(skip)]
+    live_network: bool,
     /// Friends invited from the screen, by gamertag, oldest first.
     invited: Vec<String>,
     /// The friends screen's rows, as of its opening.
@@ -536,6 +538,7 @@ pub trait Live: Send + Sync {
     fn guest_ping(&self) -> Option<u16>;
     /// Host: the round trip its co-op session advertises.
     fn set_coop_ping(&self, ms: Option<u16>);
+    fn sync_squad_slots(&self, slots: live_hle::SessionSlots);
 }
 
 impl Live for live_hle::Hle {
@@ -557,9 +560,38 @@ impl Live for live_hle::Hle {
     fn guest_ping(&self) -> Option<u16> {
         live_hle::Hle::guest_ping(self, PING_FRESH)
     }
+    fn sync_squad_slots(&self, slots: live_hle::SessionSlots) {
+        live_hle::Hle::sync_squad_slots(self, slots)
+    }
     fn set_coop_ping(&self, ms: Option<u16>) {
         live_hle::Hle::set_coop_ping(self, ms)
     }
+}
+
+/// Seats a new console could take in the active Live squad, bounded
+/// by both player slots and peer slots (each console needs a peer).
+fn squad_slots(s: coop_probe::Session, coop_limit: Option<u32>) -> Option<live_hle::SessionSlots> {
+    if !s.live()
+        || !s.is_host()
+        || s.class == 0
+        || s.local_peer >= coop_probe::CEILING
+        || !(1..=coop_probe::CEILING).contains(&s.max_players)
+        || s.players == 0
+        || s.players > s.max_players
+        || !(1..=coop_probe::CEILING).contains(&s.max_peers)
+        || s.peers == 0
+        || s.peers > s.max_peers
+    {
+        return None;
+    }
+    let limit = coop_limit.unwrap_or(coop_probe::CEILING);
+    let open_players = s.max_players.min(limit).saturating_sub(s.players);
+    let open_peers = s.max_peers.min(limit).saturating_sub(s.peers);
+    Some(live_hle::SessionSlots {
+        public_filled: s.players,
+        public_open: open_players.min(open_peers),
+        ..Default::default()
+    })
 }
 
 /// Ping (docs/live/live-coop.md, "Ping"): the guest pings the host's QoS
@@ -723,7 +755,12 @@ impl Lobby {
     }
     /// The squad session as the tick last read it.
     pub fn observe(&self, s: Option<coop_probe::Session>) {
-        self.lock().session = s.filter(coop_probe::Session::live);
+        self.observe_network(s, false);
+    }
+    fn observe_network(&self, s: Option<coop_probe::Session>, live_network: bool) {
+        let mut inner = self.lock();
+        inner.session = s.filter(coop_probe::Session::live);
+        inner.live_network = live_network;
     }
     /// The signed-in profiles as the tick last read them.
     pub fn set_profiles(&self, p: Vec<String>) {
@@ -1090,7 +1127,17 @@ impl Lobby {
             self.sync_retail();
         }
         let Some(live) = &self.live else { return };
-        let ms = match self.role() {
+        let (role, squad) = {
+            let inner = self.lock();
+            (
+                inner.role.clone(),
+                inner.session.filter(|_| inner.live_network),
+            )
+        };
+        let coop_limit = (role == Role::Host).then(|| self.max_players());
+        let slots = squad.and_then(|s| squad_slots(s, coop_limit));
+        live.sync_squad_slots(slots.unwrap_or_default());
+        let ms = match role {
             Role::Idle => None,
             Role::Host => {
                 let ms = live.guest_ping();
@@ -1584,7 +1631,16 @@ impl hooks::Feature for CoopScreens {
         let lobby = Arc::clone(&self.lobby);
         b.frame().on_tick("co-op texts and lobby", move |o| {
             let mut g = o.guest();
-            lobby.observe(coop_probe::read_session(&*g));
+            let squad = coop_probe::read_session(&*g);
+            // The network class is distinct from the squad parameter class.
+            let live_network = squad.is_some_and(|s| {
+                crate::layout_glue::Gm::u32(
+                    &*g,
+                    s.addr
+                        .wrapping_add(crate::variant_ext::SESSION_NETWORK_CLASS),
+                ) == Some(2)
+            });
+            lobby.observe_network(squad, live_network);
             if let Some(film) = &lobby.film {
                 film.pump(&lobby);
             }

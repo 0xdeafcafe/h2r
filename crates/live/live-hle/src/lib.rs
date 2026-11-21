@@ -12,6 +12,8 @@ mod feedback;
 mod film_service;
 pub mod films;
 mod invites;
+pub mod join_resolver;
+pub mod join_link;
 pub mod maps;
 pub mod mods;
 mod messages;
@@ -523,12 +525,21 @@ impl Hle {
         }
         self.lock().frames_from_host(session_id)
     }
-    /// Dedicated host progress for the retail matchmaking lobby line.
+    /// Map Pack availability and dedicated host progress for matchmaking.
     pub fn matchmaking_status(&self) -> Option<String> {
         if let Some(value) = self.film_view(|v| v.status.clone()) {
             return value;
         }
         self.lock().matchmaking_status().map(str::to_owned)
+    }
+    /// The mounted console has the original Multiplayer Map Pack installed.
+    pub fn has_map_pack(&self) -> bool {
+        self.lock().has_map_pack()
+    }
+    /// Only a queue assignment for this console's hosted lobby may use an
+    /// add-on entry in the guest's weighted map picker.
+    pub fn allow_hopper_addons(&self, hopper: u32) -> bool {
+        self.lock().allow_hopper_addons(hopper)
     }
     /// The clanker hoppers the server served last (docs/game/bots.md §8):
     /// the playlists the Clankermatch row lists and OptiMatch does not.
@@ -931,6 +942,12 @@ impl Hle {
             .unwrap_or_else(|e| e.into_inner())
             .set_auto(crate::auto::Auto::from_values(invite, accept_from));
     }
+    /// Publish the active host squad's actual capacity for lobbies whose
+    /// title advertisement omits the slot counts.
+    pub fn sync_squad_slots(&self, slots: SessionSlots) {
+        self.lock().sync_squad_slots(slots);
+    }
+
     /// The signed-in player on controller `controller`, 0 for none.
     pub fn user(&self, controller: usize) -> u64 {
         if self.offline_film && self.film_service_taped() {

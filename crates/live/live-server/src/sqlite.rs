@@ -429,10 +429,12 @@ impl EventStore for SqliteStore {
                         .execute(&mut *tx)
                         .await?;
                 }
-                sqlx::query(sql::PRUNE_USAGE)
-                    .bind(&keep_from)
-                    .execute(&mut *tx)
-                    .await?;
+                if !keep_from.is_empty() {
+                    sqlx::query(sql::PRUNE_USAGE)
+                        .bind(&keep_from)
+                        .execute(&mut *tx)
+                        .await?;
+                }
                 Ok(())
             })
         })

@@ -78,6 +78,12 @@ The playerless Theater observer has the whole BSP and object array. It
 uses the same Hor+ lens for projection and its own frustum test on both.
 See [the host film view](../game/film-format.md#choosing-a-players-view).
 
+In offline play with the default LOD Distance, timings above 480 lines include the cost
+of retaining more detailed models and structure geometry. To compare raster
+cost at different resolutions with the original detail choices, select
+**Retail** at every resolution. Record both settings with the timings.
+[Lab benchmarks](../runtime/lab.md#--serve-and-bench).
+
 ## Single-copy readbacks
 
 The policy is selected at launch (`d3d_glue::single_copy`,
@@ -206,7 +212,6 @@ logged once. A draw that writes depth into a guest-size target with the
 scaled depth buffer bound is drawn again into the view's depth through a
 scaled colour surface of the depth's size (`proxy_depth_draws`). Guest bytes
 written into a scaled depth surface reach the view through `fill_from`.
-Stipple is indexed by host pixel in the view.
 
 This differs from the render thread, where a disagreement stops the run,
 because there the disagreeing backend is the one the guest observes.
@@ -300,9 +305,13 @@ Three details:
   pixel are smaller by the scale, so the slope term shrinks. That is the
   correct behaviour for a bias per sample step, but decals tuned at 480p need
   a test.
-- **Stipple.** The pattern is indexed by pixel position ([d3d.md](d3d.md),
-  `SetStipple`). The view must index it by guest pixel (`floor(position /
-  scale)`), or the pattern becomes finer than retail.
+- **Stipple.** The translated fragment shader maps each host pixel to the
+  guest framebuffer cell bounded by the same rounded edges as a scissor.
+  It uses the guest and host dimensions of the bound target on each axis.
+  A host pixel centre exactly on a guest edge takes the preceding cell's
+  mask bit. The mask stays anchored to the framebuffer's top left when
+  the viewport or scissor moves. See `SetStipple` in [d3d.md](d3d.md)
+  for the row and bit order.
 
 ### Subpixel snapping and cracks
 
@@ -699,12 +708,12 @@ adapter exists.
 
 - `crates/platform/d3d/tests/render_scale.rs` (headless wgpu): the guest sees the same
   answers at every scale; the view's frame box-filtered equals the reference
-  except on geometry edges; only frame-sized surfaces scale; scales outside 1
+  except on geometry edges; only frame-sized surfaces scale; legacy scale overrides outside 1
   to 6 are rejected; frame-sized targets, small targets with the scaled depth
   buffer, depth-level fills, the depth buffer as a texture and colour over
   depth memory match the reference downsampled; the scale and the lighting
-  change at a frame boundary; the E3 shadow-map tests; the `single_copy_*`
-  tests.
+  change at a frame boundary; the stipple mask stays aligned in exact
+  and single-copy mode; the E3 shadow-map and `single_copy_*` tests.
 - `fractional_per_axis_surfaces_keep_fullscreen_edges_and_guest_answers`,
   `fractional_clears_and_scissors_tile_the_same_texels` and
   `fractional_feedback_preserves_patterned_guest_cells_and_snapshot_lifetime`
@@ -718,8 +727,7 @@ adapter exists.
 - `crates/platform/d3d/tests/gpu_depth_alias.rs`, `external_pass.rs`: depth aliases and
   external passes through `ScaledBackend`.
 
-Whole-frame retail capture replay and guest-pixel stipple indexing still
-lack test coverage.
+Whole-frame retail capture replay still lacks test coverage.
 
 ## Prior art
 

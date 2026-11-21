@@ -12,6 +12,7 @@
 // endpoints and the screen falls back to what discovery says.
 
 import { ApiError } from "../api/http";
+import type { InviteGrant } from "../api/types";
 import type { LocalAccount } from "../state/account";
 import { eventBody, signEvent } from "../state/sign";
 import { issueToken, randomId } from "./token";
@@ -19,6 +20,8 @@ import { DASH_PLAYERS, LIVE_ADMIN, STATS_ROOT, statsPath } from "../routes";
 
 export const ADMIN_READ = "admin.read";
 export const INVITES_WRITE = "invites.write";
+export const INVITES_READ = "invites.read";
+export const INVITE_GRANTS_WRITE = "invite-grants.write";
 export const INVITE_STREAM = "invites";
 /** The longest an admin's invite may last (the server's MAX_DAYS). */
 export const INVITE_MAX_DAYS = 30;
@@ -59,7 +62,7 @@ export interface AdminEntry { gamertag: string; source: "configured" | "granted"
 
 export interface AdminStatus extends ServerFacts {
   started_at: string | null;
-  uptime_s: number;
+  uptime_s: number | null;
   public: { url: string | null; tunnel: TunnelKind | null };
   game_art: GameArtFacts;
   admins: AdminEntry[];
@@ -111,10 +114,11 @@ export function parseAdminStatus(body: unknown): AdminStatus {
   const log = obj(o.log);
   const inv = obj(o.invites);
   const tunnel = pub.tunnel === "quick" || pub.tunnel === "named" || pub.tunnel === "proxy" ? pub.tunnel : null;
+  const uptime = o.uptime_s;
   return {
     ...parseServerFacts(body),
     started_at: str(o.started_at),
-    uptime_s: num(o.uptime_s),
+    uptime_s: typeof uptime === "number" && Number.isFinite(uptime) && uptime >= 0 ? uptime : null,
     public: { url: str(pub.url) ?? str(o.url), tunnel },
     game_art: {
       present: art.present === true,
@@ -199,11 +203,15 @@ export async function fetchServerFacts(api: string, fetchFn: typeof fetch = fetc
   return parseServerFacts(await r.json());
 }
 
-export async function adminGet(api: string, path: string, aud: string, me: LocalAccount, fetchFn: typeof fetch): Promise<unknown> {
-  const token = await issueToken(me, aud, ADMIN_READ);
+async function signedGet(api: string, path: string, aud: string, me: LocalAccount, method: string, fetchFn: typeof fetch): Promise<unknown> {
+  const token = await issueToken(me, aud, method);
   const r = await fetchFn(`${api}${path}`, { headers: { accept: "application/json", authorization: `Bearer ${token}` } });
   if (!r.ok) return fail(r);
   return r.json();
+}
+
+export function adminGet(api: string, path: string, aud: string, me: LocalAccount, fetchFn: typeof fetch): Promise<unknown> {
+  return signedGet(api, path, aud, me, ADMIN_READ, fetchFn);
 }
 
 export async function fetchAdminStatus(api: string, aud: string, me: LocalAccount, fetchFn: typeof fetch = fetch): Promise<AdminStatus> {
@@ -212,6 +220,25 @@ export async function fetchAdminStatus(api: string, aud: string, me: LocalAccoun
 
 export async function fetchInvites(api: string, aud: string, me: LocalAccount, fetchFn: typeof fetch = fetch): Promise<InviteItem[]> {
   return parseInvites(await adminGet(api, "/invites", aud, me, fetchFn));
+}
+
+export async function fetchMyInvites(api: string, aud: string, me: LocalAccount, fetchFn: typeof fetch = fetch): Promise<InviteItem[]> {
+  return parseInvites(await signedGet(api, "/invites/mine", aud, me, INVITES_READ, fetchFn));
+}
+
+export async function writeInviteGrant(
+  api: string, aud: string, me: LocalAccount, tag: string,
+  grant: InviteGrant | null, fetchFn: typeof fetch = fetch,
+): Promise<void> {
+  const token = await issueToken(me, aud, INVITE_GRANTS_WRITE);
+  const headers: Record<string, string> = { authorization: `Bearer ${token}` };
+  if (grant) headers["content-type"] = "application/json";
+  const r = await fetchFn(`${api}/accounts/${encodeURIComponent(tag)}/invite-grant`, {
+    method: grant ? "POST" : "DELETE",
+    headers,
+    body: grant ? JSON.stringify(grant) : undefined,
+  });
+  if (!r.ok) await fail(r);
 }
 
 /** A custom code's rules (the server's): 4 to 32 printable ASCII

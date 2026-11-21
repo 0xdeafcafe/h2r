@@ -59,6 +59,9 @@ pub struct Query {
     /// more). Sessions without room for it are skipped.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub party: Option<u32>,
+    /// Console capability supplied by Live HLE alongside the retail query.
+    #[serde(default)]
+    pub has_map_pack: bool,
 }
 
 fn int(v: &AttributeValue) -> Option<i64> {
@@ -93,6 +96,7 @@ impl Query {
             lowest: optional(&params[2])?,
             highest: optional(&params[3])?,
             party,
+            has_map_pack: false,
         })
     }
 
@@ -208,6 +212,18 @@ mod tests {
             .map(|(k, v)| (*k, AttributeValue::Integer(*v as u64)))
             .collect()
     }
+    #[test]
+    fn query_map_pack_capability_is_optional_and_boolean() {
+        let mut wire = serde_json::json!({"hopper": 1, "average": 14});
+        assert!(!serde_json::from_value::<Query>(wire.clone()).unwrap().has_map_pack);
+        wire["has_map_pack"] = serde_json::json!(true);
+        let query = serde_json::from_value::<Query>(wire.clone()).unwrap();
+        assert!(query.has_map_pack);
+        assert!(!Query::from_params(&query.to_params()).unwrap().has_map_pack);
+        wire["has_map_pack"] = serde_json::json!(1);
+        assert!(serde_json::from_value::<Query>(wire).is_err());
+    }
+
     fn ranked(lowest: i64, highest: i64, party: u32) -> Query {
         Query {
             hopper: 3,
@@ -215,6 +231,7 @@ mod tests {
             lowest: Some(lowest),
             highest: Some(highest),
             party: Some(party),
+            has_map_pack: false,
         }
     }
 
@@ -239,7 +256,8 @@ mod tests {
                 average: 0,
                 lowest: None,
                 highest: None,
-                party: None
+                party: None,
+                has_map_pack: false,
             })
         );
         assert_eq!(Query::from_params(&params[..11]), None);
@@ -303,6 +321,7 @@ mod tests {
             lowest: None,
             highest: None,
             party: None,
+            has_map_pack: false,
         };
         assert!(browser.matches(&coop));
         assert!(browser.matches(&session(&[(1, -1)])));

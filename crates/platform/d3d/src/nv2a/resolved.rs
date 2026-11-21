@@ -33,11 +33,12 @@ pub fn resolve(
     let words = words.to_vec();
     let render = &draw.state.render;
     let (c0, c1) = def.embedded_constants();
+    let scale: crate::scaled::RenderScale = scale.into();
     let mut vu = VertexUniforms {
         surface: [draw.target.width as f32, draw.target.height as f32],
         // Same full scale as gfx's built-in shader.
         z_max: gfx::renderer::d3dz_max(draw.target.depth_format),
-        shift: scale.into().shift(),
+        shift: scale.shift(),
         ui_transform: draw.ui_fit.map_or([1.0, 1.0, 0.0, 0.0], |fit| fit.transform),
         ..VertexUniforms::default()
     };
@@ -64,6 +65,8 @@ pub fn resolve(
         ..PixelUniforms::default()
     };
     pu.stipple = draw.hw.stipple_pattern;
+    let guest = (draw.target.width, draw.target.height);
+    pu.stipple_scale = PixelUniforms::stipple_grid(guest, scale.size(guest.0, guest.1));
     let w_buffer = key.pixel_options.w_buffer;
     if w_clipped(&key.vertex, draw) {
         vu.w_clip = Some(w_clip_range(&draw.hw, vu.z_max));
@@ -93,7 +96,7 @@ pub fn resolve(
         );
         pu.depth = [vu.z_max, units, slope, if integer { 1.0 } else { 0.0 }];
         let [lo, hi] = vu.w_clip.unwrap_or([0.0, vu.z_max]);
-        pu.depth_range = [lo, hi, 0.0, 0.0];
+        pu.depth_range = [lo, hi];
     }
     pu.lod_bias = std::array::from_fn(|n| {
         let bias = draw.state.stages[n].mip_lod_bias;

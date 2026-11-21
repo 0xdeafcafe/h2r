@@ -169,11 +169,10 @@ under its `weapon` node, in the roster's colour: the glb's `COLOR_0` gives
 each vertex a primary weight (R, the player's colour) and a secondary one
 (G, a darker shade), and a model without it is tinted all over. Each glb is
 fetched once and cloned per player; team mates share the coloured mesh
-(`viewer/players3d.ts`). It is life size up close and grows as the camera
-backs away, up to the size capsules are drawn at. Without models (the mock
-by default, an older extraction) players stay capsules. Either way a faint
-ray from the head shows the aim (level along the yaw when the frame has
-none), the label names the weapon, and each frame's shots draw a muzzle
+(`viewer/players3d.ts`). A small, life-size capsule stands in for the
+model while it loads or when there is no model. The follow camera uses the
+same distance in both cases. A faint ray from the head shows the aim
+(level along the yaw when the frame has none), the label names the weapon, and each frame's shots draw a muzzle
 flash and up to three tracers along the aim that fade in 150 ms
 (`map/shots.ts`), from the weapon's `muzzle` node or from chest height. The
 2D maps draw a short aim line from each dot and a fading line for each
@@ -236,7 +235,7 @@ optional; a frame without them draws as before.
   grenade action still animates the throw. Reduced motion hides the trails.
   Recordings without projectile samples still show the throw animation,
   muzzle flashes and fast shot effects. Host-film objects use their own
-  playback path.
+  playback path. [Recorded Lockout grenade trajectories](notes/grenade-trajectories.md)
 - *Vehicles.* All of them are drawn; one nobody is in is darker (3D) or a
   faint grey outline (2D) and has no label. Once the frames carry
   vehicles the level's own copies (`vehi` placements and multiplayer
@@ -303,9 +302,11 @@ node for is drawn from `models.objects.<kind>` when the server has that
 glb, else as a box. A map glb's `asset.extras.features` lists teleporters
 (with `links` between them) and gravity lifts (`map/features.ts`): the 3D
 view stands a ring at each teleporter in its role's colour, arcs each link
-through the air with an arrowhead where it arrives, and draws each lift as
-a translucent column with an arrow along its push
-(`viewer/features3d.ts`); the 2D maps draw rings, dashed curves and a disc
+through the air with an arrowhead where it arrives, and marks each lift
+with a faint ring and a short arrow along its up axis
+(`viewer/features3d.ts`). The lift's placement in the map art supplies
+its pose until a matching machine or moved-object sample supplies its
+position and up axis. The 2D maps draw rings, dashed curves and a disc
 with chevrons, reading the extras from the head of the glb (a streamed read
 that stops after the JSON, never the meshes). Both have a "Lifts &
 teleporters" button when the map has any.

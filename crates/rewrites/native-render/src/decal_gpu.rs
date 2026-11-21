@@ -482,7 +482,7 @@ fn draw_uniforms(
             },
             if integer_depth { 1.0 } else { 0.0 },
         ];
-        pu.depth_range = [clip.range[0], clip.range[1], 0.0, 0.0];
+        pu.depth_range = clip.range;
     }
     (vu, pu)
 }

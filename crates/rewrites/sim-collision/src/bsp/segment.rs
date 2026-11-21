@@ -7,9 +7,7 @@
 //! 40-byte context and the result record R. Here the walk runs over the
 //! decoded arrays with the same tests in the same order, and the context
 //! and R updates are returned in [`Outcome`] for the adapter to write.
-use super::{
-    BAD_CHILD, BAD_PLANE, Bsp, LEAF, MAX_DEPTH, NONE, Node, RingEdge, above, non_negative,
-};
+use super::{BAD_CHILD, BAD_PLANE, Bsp, LEAF, MAX_DEPTH, NONE, Node, above, non_negative};
 use crate::Bail;
 use crate::mem::GuestRead;
 use sim_core::det::{self, Fp};
@@ -111,12 +109,15 @@ struct Walk<'a, G> {
     q: &'a Segment,
     g: &'a G,
     fp: Fp,
+    // A tree reaches each internal node at most once, including tail descents.
+    nodes_left: usize,
     out: Outcome,
 }
 
 impl Bsp {
     /// Walk `q` from `node` over `[t0, t1]`, as `0x1de6d0` called with
-    /// that context. `g` is read only for the breakable mask words.
+    /// that context. The live reads are breakable-mask words and, in a
+    /// budget-limited world, the surface ring’s edges and vertices.
     pub fn vector_test(
         &self,
         g: &impl GuestRead,
@@ -133,6 +134,7 @@ impl Bsp {
             q,
             g,
             fp: Fp::new(),
+            nodes_left: self.nodes.len(),
             out: Outcome {
                 prev_leaf: q.prev_leaf,
                 prev_kind: q.prev_kind,
@@ -180,6 +182,7 @@ impl<G: GuestRead> Walk<'_, G> {
         let mut t0 = t0;
         let mut child = node;
         while child & LEAF == 0 {
+            self.nodes_left = self.nodes_left.checked_sub(1).ok_or(Bail::Data)?;
             let n = *self.node(child)?;
             let [nx, ny, nz, w] = n.plane;
             let fp = &mut self.fp;
@@ -368,25 +371,26 @@ impl<G: GuestRead> Walk<'_, G> {
                 return Ok(false);
             }
         }
-        let ring: &[RingEdge] = self.bsp.surface_ring(&surface)?;
         let fp = &mut self.fp;
-        for e in ring {
-            let (au, av) = (e.a[ua], e.a[va]);
-            let (bu, bv) = (e.b[ua], e.b[va]);
-            let pu = fp.sub(u, au);
-            let pv = fp.sub(v, av);
-            let ev = fp.sub(bv, av);
-            let eu = fp.sub(bu, au);
-            let left = fp.mul(ev, pu);
-            let right = fp.mul(pv, eu);
-            let cross = fp.sub(left, right);
-            if !fp.exact() {
-                return Err(Bail::Float);
+        self.bsp.with_surface_ring(self.g, s, &surface, |ring| {
+            for e in ring {
+                let (au, av) = (e.a[ua], e.a[va]);
+                let (bu, bv) = (e.b[ua], e.b[va]);
+                let pu = fp.sub(u, au);
+                let pv = fp.sub(v, av);
+                let ev = fp.sub(bv, av);
+                let eu = fp.sub(bu, au);
+                let left = fp.mul(ev, pu);
+                let right = fp.mul(pv, eu);
+                let cross = fp.sub(left, right);
+                if !fp.exact() {
+                    return Err(Bail::Float);
+                }
+                if above(cross, 0) {
+                    return Ok(false);
+                }
             }
-            if above(cross, 0) {
-                return Ok(false);
-            }
-        }
-        Ok(true)
+            Ok(true)
+        })
     }
 }

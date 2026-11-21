@@ -1,5 +1,8 @@
 <p align="center">
-  <img src="docs/images/readme/header.webp" alt="Ascension, Delta Approach and Old Mombasa at 4x render scale, blended into one banner" width="100%">
+  <picture>
+    <source media="(min-resolution: 2dppx)" srcset="docs/images/readme/header@2x.webp">
+    <img src="docs/images/readme/header.webp" alt="A panorama of Old Mombasa, Delta Approach and Ascension" width="100%">
+  </picture>
 </p>
 
 # h2recomp
@@ -9,10 +12,10 @@ Halo 2, the original Xbox one, recompiled to native code and running on a Mac, a
 The retail executable comes off your own disc, all 18,700-odd functions of it get lifted to C, and clang builds the lot into a native library. A Rust runtime runs that library in place of the Xbox, with the kernel, Direct3D and DirectSound swapped out underneath it and a native GPU renderer drawing the frame. Then I kept going: Xbox Live is back, there are bots, and Halo 1's maps run in the Halo 2 engine.
 
 <p align="center">
-  <img src="docs/images/readme/montage.webp" alt="Old Mombasa, Delta Approach and Ascension at 4x render scale, crossfading" width="100%">
+  <img src="docs/images/readme/gameplay.webp" alt="Looping gameplay footage with slow camera pans through Old Mombasa, Delta Approach and Ascension" width="100%">
 </p>
 
-No game data lives in this repo. The only screenshots are the docs' own, rendered from my disc by [scripts/readme-screenshots.sh](scripts/readme-screenshots.sh) and kept in Git LFS. You'll need your own legally obtained copy of the game.
+You'll need your own legally obtained copy of the game. The documentation images and gameplay footage are rendered from my disc by scripts and kept in Git LFS. [How the README media is made](CONTRIBUTING.md#readme-media).
 
 h2recomp was created under Microsoft's "[Game Content Usage Rules](https://www.xbox.com/en-US/developers/rules)" using assets from Halo 2 and Halo: Combat Evolved, and it is not endorsed by or affiliated with Microsoft. Halo © Microsoft Corporation. This is a free, non-commercial fan project.
 
@@ -41,6 +44,11 @@ h2 play disc/halo2.iso --level 03a_oldmombasa   # straight into a level, no menu
 ```
 
 The first run builds the game library into `$TMPDIR/h2boot`, which is slow. Every run after that reuses it. WASD and the mouse move and look, Enter is A, Escape is Start and Cmd+F goes fullscreen. `--follow` keeps you on the latest master, building each new commit in the background. Every flag is in [docs/runtime/app.md](docs/runtime/app.md).
+
+On macOS, run `just mac-install iso=disc/halo2.iso` after installing the CLI
+to open **Join in Halo 2** links from the Live website. It installs
+`~/Applications/Halo 2.app` and remembers where your disc is. Run the
+recipe again after updating the CLI or moving the disc.
 
 ## How fast
 

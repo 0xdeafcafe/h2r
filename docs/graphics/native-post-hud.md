@@ -243,7 +243,10 @@ stencil operations and reference, fill, winding, clip, colour writes and
 blend from the live draw. Point or wireframe fill requires the matching
 device feature. The 1× and display copies have separate clip transforms
 and the display uses the existing glyph shader option when enabled.
-Native UI uses the live textures, including the glyph cache.
+Native UI uses the live textures, including the glyph cache. The guest lays
+out the string before `native_hud::ui::screen_quad` reads the corners, so a
+leading glyph quad with zero alpha keeps its draw position and the next glyph
+uses the guest's pen advance and kerning.
 Ordered native packets can join the same GPU pass as adjacent compatible
 draws.
 

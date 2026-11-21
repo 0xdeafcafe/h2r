@@ -216,15 +216,20 @@ async fn check_signed_sources(version: u8) {
         first.headers["cache-control"],
         "public, max-age=31536000, immutable"
     );
+    assert_eq!(first.headers["vary"], "Authorization");
+    // A stray `auth` query mark changes nothing; the Authorization header
+    // alone says who reads.
+    let stray = h.get(&format!("{url}?auth=1")).await;
     assert_eq!(
-        h.get(&format!("{url}?auth=1")).await.headers["cache-control"],
-        "private, no-store"
+        stray.headers["cache-control"],
+        "public, max-age=31536000, immutable"
     );
     let authenticated = h
         .call(Method::GET, &url, &[h.bearer(&boss, "read")], Body::empty())
         .await;
     assert_eq!(authenticated.status, StatusCode::OK);
     assert_eq!(authenticated.headers["cache-control"], "private, no-store");
+    assert_eq!(authenticated.headers["vary"], "Authorization");
     live_proto::archive::verify(&frames[..2], &first.body).unwrap();
     let second = h.get(&format!("/v1/games/{id}/archive/{digest}/1")).await;
     live_proto::archive::verify(

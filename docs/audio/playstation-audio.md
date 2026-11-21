@@ -360,10 +360,10 @@ Headless runs (`h2 run`) never add the row.
 - `mute_pressed(Transport, report)`: the mute bit, or `None` for a short or
   foreign report.
 - `MicMute`: one press toggles, as on a PS5; `led()` is solid while muted.
-- `output_report(Transport, OutputRequest { mute_led, speaker }, seq)`:
+- `output_report(Transport, OutputRequest { mute_led, speaker, lightbar }, seq)`:
   USB 0x02 or Bluetooth 0x31 with the CRC. Setting the LED also sets the
   hardware mic mute, as Linux does. Fields left `None` keep their
-  valid-flag bits clear, so rumble, lightbar and player LEDs are untouched.
+  valid-flag bits clear. Mute and speaker reports leave the lightbar alone.
 
 `input::pad_hid` opens the pad over raw HID, next to the gamepad backends:
 
@@ -390,6 +390,37 @@ Headless runs (`h2 run`) never add the row.
 
 If macOS refuses the open (`kIOReturnNotPermitted`, Input Monitoring), the
 thread keeps retrying and input is unaffected.
+
+## Player colour lightbars
+
+**Lightbar** on the macOS Controls screen defaults to **Team**. Each
+DualShock 4 or DualSense follows the player on its Xbox controller port.
+The game samples up to four times a second. In a team match the assigned
+team selects an RGB entry in the loaded map's multiplayer globals
+(`mulg`). In free-for-all, campaign and menus the signed-in profile's
+primary armour index selects an RGB entry in the loaded map's globals
+(`matg`). `crates/extensions/game/src/pad_lightbar.rs` reads both palettes
+from guest memory.
+
+The macOS input backend sets `GCDeviceLight.color` on the same
+`GCController` that supplies input for the port. This keeps identical
+controllers distinct and follows port changes when the keyboard shares
+player one. When the setting is Off, a seat loses its colour, or the
+game closes, the backend restores the controller colour it captured
+before the first override. Use the [agent API](../runtime/agent-api.md#inputlightbar-playstation-controller-colours)
+to inspect or override the desired colour with or without a pad.
+[Apple GameController light documentation](https://developer.apple.com/documentation/gamecontroller/gccontroller/light)
+
+The raw HID layer can also open a shared DualShock 4 connection
+(`054c:05c4` or `054c:09cc`) with `pad_hid::iokit_ds4_opener`.
+`dualsense::ds4_lightbar_report` builds a USB 0x05 or Bluetooth 0x11 report
+with the lightbar flag and RGB. Bluetooth reports include a CRC. The
+DualSense report builder accepts RGB with the lightbar flag in its
+common output block. Both builders leave the rumble flags clear.
+[Linux hid-playstation](https://github.com/torvalds/linux/blob/master/drivers/hid/hid-playstation.c),
+[Linux hid-sony](https://github.com/torvalds/linux/blob/v5.15/drivers/hid/hid-sony.c),
+[SDL PS4](https://github.com/libsdl-org/SDL/blob/release-3.2.x/src/joystick/hidapi/SDL_hidapi_ps4.c),
+[SDL PS5](https://github.com/libsdl-org/SDL/blob/release-3.2.x/src/joystick/hidapi/SDL_hidapi_ps5.c)
 
 ## Microphone as the Communicator (design, not built)
 

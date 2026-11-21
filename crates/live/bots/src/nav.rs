@@ -25,10 +25,13 @@
 
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::cell::Cell;
+use std::ops::Range;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use tags::pathfinding::PathfindingData;
 
 use crate::los::Walls;
+use crate::vis::Threads;
 
 mod search;
 mod traversal;
@@ -133,46 +136,91 @@ pub(crate) fn standing_clear(walls: &Walls, floor: V3) -> bool {
     )
 }
 
-fn jump_clear(walls: &Walls, a: V3, b: V3, crouch: bool) -> bool {
-    // Sample a feet arc and sweep vertical slices of the capsule at the
-    // centre and shoulders. Crouching lifts the feet during the ascent.
-    let side = sub(b, a);
-    let line = [side[1], -side[0], 0.0];
-    let shoulder = scale(line, 0.16 / len(line).max(1e-6));
-    let at = |t: f32| {
-        let p = add(a, scale(side, t));
-        let rise = 1.44 * t * (1.0 - t);
-        add(p, [0.0, 0.0, rise])
-    };
-    let height = |step| {
-        if crouch && step >= 2 {
-            CROUCHED
-        } else {
-            STANDING
-        }
-    };
-    for side in [scale(shoulder, -1.0), [0.0; 3], shoulder] {
-        for i in 1..=12 {
-            let lo = add(side, at((i - 1) as f32 / 12.0));
-            let hi = add(side, at(i as f32 / 12.0));
-            let low = [0.0, 0.0, 0.025];
-            if !walls.clear(add(hi, low), add(hi, [0.0, 0.0, height(i)])) {
-                return false;
-            }
-            for h in [0.025, 0.28, 1.0] {
-                let offset = |n| [0.0, 0.0, if h == 1.0 { height(n) } else { h }];
-                // Adjacent samples share their endpoints. Count contact
-                // there too, so a wall at a sample cannot fall between rays.
-                if walls
-                    .hit(add(lo, offset(i - 1)), add(hi, offset(i)))
-                    .is_some()
-                {
-                    return false;
-                }
-            }
-        }
+const JUMP_STEPS: usize = 12;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum JumpSweep {
+    Clear,
+    PostureBlocked,
+    BothBlocked,
+}
+
+struct JumpArc {
+    centers: [V3; JUMP_STEPS + 1],
+    shoulder: V3,
+}
+
+impl JumpArc {
+    fn new(a: V3, b: V3) -> Self {
+        let side = sub(b, a);
+        let line = [side[1], -side[0], 0.0];
+        let shoulder = scale(line, 0.16 / len(line).max(1e-6));
+        let centers = std::array::from_fn(|i| {
+            let t = i as f32 / JUMP_STEPS as f32;
+            let p = add(a, scale(side, t));
+            add(p, [0.0, 0.0, 1.44 * t * (1.0 - t)])
+        });
+        Self { centers, shoulder }
     }
-    true
+
+    fn sweep(&self, walls: &Walls, crouch: bool, common_clear: &mut usize) -> JumpSweep {
+        // Sweep the same samples for the centre and both shoulders.
+        // Crouching changes only the headroom and crown rays after step 1.
+        let height = |step| {
+            if crouch && step >= 2 { CROUCHED } else { STANDING }
+        };
+        let shoulders = [scale(self.shoulder, -1.0), [0.0; 3], self.shoulder];
+        for (lateral, side) in shoulders.into_iter().enumerate() {
+            let mut lo = add(side, self.centers[0]);
+            for i in 1..=JUMP_STEPS {
+                let hi = add(side, self.centers[i]);
+                let low = [0.0, 0.0, 0.025];
+                let crown = [0.0, 0.0, height(i)];
+                let blocked = if i == 1 {
+                    JumpSweep::BothBlocked
+                } else {
+                    JumpSweep::PostureBlocked
+                };
+                if !walls.clear(add(hi, low), add(hi, crown)) {
+                    return blocked;
+                }
+                let sample = lateral * JUMP_STEPS + i;
+                if sample > *common_clear {
+                    // Adjacent samples share their endpoints, so use closed
+                    // rays there too, just as for the crown sweep below.
+                    for offset in [low, [0.0, 0.0, 0.28]] {
+                        if walls.any_hit(add(lo, offset), add(hi, offset)) {
+                            return JumpSweep::BothBlocked;
+                        }
+                    }
+                    *common_clear = sample;
+                }
+                if walls.any_hit(add(lo, [0.0, 0.0, height(i - 1)]), add(hi, crown)) {
+                    return blocked;
+                }
+                lo = hi;
+            }
+        }
+        JumpSweep::Clear
+    }
+
+    fn kind(&self, walls: &Walls, try_standing: bool) -> Option<Kind> {
+        let mut common_clear = 0;
+        if try_standing {
+            match self.sweep(walls, false, &mut common_clear) {
+                JumpSweep::Clear => return Some(Kind::Jump),
+                JumpSweep::BothBlocked => return None,
+                JumpSweep::PostureBlocked => {}
+            }
+        }
+        (self.sweep(walls, true, &mut common_clear) == JumpSweep::Clear).then_some(Kind::CrouchJump)
+    }
+}
+
+#[cfg(test)]
+fn jump_clear(walls: &Walls, a: V3, b: V3, crouch: bool) -> bool {
+    let mut common_clear = 0;
+    JumpArc::new(a, b).sweep(walls, crouch, &mut common_clear) == JumpSweep::Clear
 }
 
 fn sub(a: V3, b: V3) -> V3 {
@@ -321,15 +369,59 @@ fn cell(v: f32) -> i32 {
     (v / CELL).floor() as i32
 }
 
+/// Computes short ranges on the build's workers and merges results in
+/// input order. Chunk scheduling keeps a dense patch of expensive collision
+/// probes from holding up the rest of the build on one thread.
+pub(crate) fn ordered_build_chunks<T: Send>(
+    len: usize,
+    chunk_len: usize,
+    threads: Threads,
+    build: impl Fn(Range<usize>) -> T + Sync,
+) -> Vec<T> {
+    let count = len.div_ceil(chunk_len);
+    let workers = count.min(threads.count.max(1));
+    let range = |i: usize| i * chunk_len..((i + 1) * chunk_len).min(len);
+    if workers <= 1 {
+        return (0..count).map(|i| build(range(i))).collect();
+    }
+    let next = AtomicUsize::new(0);
+    let work = || {
+        if threads.background {
+            background::lower_current();
+        }
+        let mut results = Vec::new();
+        loop {
+            let i = next.fetch_add(1, Ordering::Relaxed);
+            if i >= count {
+                break;
+            }
+            results.push((i, build(range(i))));
+        }
+        results
+    };
+    let mut results: Vec<_> = std::thread::scope(|scope| {
+        let jobs: Vec<_> = (0..workers).map(|_| scope.spawn(&work)).collect();
+        jobs.into_iter()
+            .flat_map(|job| job.join().expect("nav build worker panicked"))
+            .collect()
+    });
+    results.sort_unstable_by_key(|&(i, _)| i);
+    results.into_iter().map(|(_, result)| result).collect()
+}
+
+fn is_shortcut(kind: Kind) -> bool {
+    matches!(kind, Kind::Teleporter | Kind::Lift | Kind::Elevator)
+}
+
 impl NavMesh {
     /// The mesh over `polys` with `edges`; builds the lookups.
     pub fn new(polys: Vec<Poly>, edges: Vec<Edge>) -> Self {
-        let mut out = vec![Vec::new(); polys.len()];
-        for (i, e) in edges.iter().enumerate() {
-            if let Some(o) = out.get_mut(e.from as usize) {
-                o.push(i as u32);
-            }
-        }
+        let mut mesh = Self::with_polys(polys);
+        mesh.set_edges(edges);
+        mesh
+    }
+
+    fn with_polys(polys: Vec<Poly>) -> Self {
         let mut grid: FxHashMap<(i32, i32), Vec<u32>> = FxHashMap::default();
         for (i, p) in polys.iter().enumerate() {
             let (mut lo, mut hi) = ([f32::MAX; 2], [f32::MIN; 2]);
@@ -345,13 +437,27 @@ impl NavMesh {
                 }
             }
         }
+        Self {
+            polys,
+            grid,
+            ..Self::default()
+        }
+    }
+
+    fn set_edges(&mut self, edges: Vec<Edge>) {
+        let mut out = vec![Vec::new(); self.polys.len()];
+        for (i, e) in edges.iter().enumerate() {
+            if let Some(o) = out.get_mut(e.from as usize) {
+                o.push(i as u32);
+            }
+        }
         let linked: FxHashSet<(Key, Key)> = edges
             .iter()
             .filter(|e| e.kind == Kind::Walk)
             .map(|e| pair(key(e.a), key(e.b)))
             .collect();
         let mut corners = FxHashSet::default();
-        for p in &polys {
+        for p in &self.polys {
             let n = p.verts.len();
             for i in 0..n {
                 let (u, v) = (key(p.verts[i]), key(p.verts[(i + 1) % n]));
@@ -361,16 +467,22 @@ impl NavMesh {
                 }
             }
         }
-        let shortcuts = edges
-            .iter()
-            .any(|e| matches!(e.kind, Kind::Teleporter | Kind::Lift | Kind::Elevator));
-        NavMesh {
-            polys,
-            edges,
-            out,
-            grid,
-            corners,
-            shortcuts,
+        self.shortcuts = edges.iter().any(|e| is_shortcut(e.kind));
+        self.edges = edges;
+        self.out = out;
+        self.corners = corners;
+    }
+
+    /// Adds scenario shortcuts without rebuilding the polygon lookup or
+    /// boundary corners, which depend on the walk links.
+    pub(crate) fn append_shortcuts(&mut self, edges: Vec<Edge>) {
+        for edge in edges {
+            debug_assert!(is_shortcut(edge.kind));
+            if let Some(out) = self.out.get_mut(edge.from as usize) {
+                out.push(self.edges.len() as u32);
+            }
+            self.edges.push(edge);
+            self.shortcuts = true;
         }
     }
 
@@ -512,80 +624,94 @@ impl NavMesh {
     /// collision surface), with walk links where two share an edge, and
     /// the step, drop and jump links of `b`.
     pub fn from_pathfinding(pf: &PathfindingData, b: &Build) -> Self {
-        Self::from_collision(pf, b, &Walls::default())
+        Self::from_collision(
+            pf,
+            b,
+            &Walls::default(),
+            Threads { count: 1, background: false },
+        )
     }
 
-    pub(crate) fn from_collision(pf: &PathfindingData, b: &Build, walls: &Walls) -> Self {
+    pub(crate) fn from_collision(
+        pf: &PathfindingData,
+        b: &Build,
+        walls: &Walls,
+        threads: Threads,
+    ) -> Self {
+        const CHUNK: usize = 128;
+        let (polys, standing): (Vec<_>, Vec<_>) =
+            ordered_build_chunks(pf.sectors.len(), CHUNK, threads, |range| {
+                range
+                    .map(|k| {
+                        let s = &pf.sectors[k];
+                        let mut verts = Vec::new();
+                        let mut l = s.first_link as usize;
+                        for _ in 0..pf.links.len() {
+                            let Some(link) = pf.links.get(l) else { break };
+                            let left = usize::from(link.left_sector) == k;
+                            let v = if left { link.vertex1 } else { link.vertex2 };
+                            verts.push(pf.vertices.get(usize::from(v)).copied().unwrap_or_default());
+                            l = usize::from(if left { link.forward_link } else { link.reverse_link });
+                            if l == s.first_link as usize {
+                                break;
+                            }
+                        }
+                        let poly = Poly::new(verts);
+                        let clear = standing_clear(walls, poly.center);
+                        (poly, clear)
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .into_iter()
+            .flatten()
+            .unzip();
+        let mut mesh = Self::with_polys(polys);
         let none = u16::MAX;
-        let mut polys = Vec::with_capacity(pf.sectors.len());
-        for (k, s) in pf.sectors.iter().enumerate() {
-            let mut verts = Vec::new();
-            let mut l = s.first_link as usize;
-            for _ in 0..pf.links.len() {
-                let Some(link) = pf.links.get(l) else { break };
-                let left = usize::from(link.left_sector) == k;
-                let v = if left { link.vertex1 } else { link.vertex2 };
-                verts.push(pf.vertices.get(usize::from(v)).copied().unwrap_or_default());
-                l = usize::from(if left {
-                    link.forward_link
-                } else {
-                    link.reverse_link
-                });
-                if l == s.first_link as usize {
-                    break;
-                }
-            }
-            polys.push(Poly::new(verts));
-        }
-        let standing: Vec<_> = polys
-            .iter()
-            .map(|p| standing_clear(walls, p.center))
-            .collect();
-        let mut edges = Vec::new();
-        let mut boundary = Vec::new();
-        for link in &pf.links {
-            let (a, b2) = (
-                pf.vertices[usize::from(link.vertex1)],
-                pf.vertices[usize::from(link.vertex2)],
-            );
-            match (link.left_sector, link.right_sector) {
-                (l, r) if l != none && r != none => {
-                    if !standing[usize::from(l)]
-                        || !standing[usize::from(r)]
-                        || !standing_clear(walls, mid(a, b2))
-                    {
+        let chunks = ordered_build_chunks(pf.links.len(), CHUNK, threads, |range| {
+            let mut shared = Vec::new();
+            let mut boundary = Vec::new();
+            for link in &pf.links[range] {
+                let (a, end) = (
+                    pf.vertices[usize::from(link.vertex1)],
+                    pf.vertices[usize::from(link.vertex2)],
+                );
+                let from = match (link.left_sector, link.right_sector) {
+                    (l, r) if l != none && r != none => {
+                        if standing[usize::from(l)]
+                            && standing[usize::from(r)]
+                            && standing_clear(walls, mid(a, end))
+                        {
+                            for (from, to) in [(l, r), (r, l)] {
+                                shared.push(Edge {
+                                    from: from.into(),
+                                    to: to.into(),
+                                    a,
+                                    b: end,
+                                    kind: Kind::Walk,
+                                });
+                            }
+                        }
                         continue;
                     }
-                    edges.push(Edge {
-                        from: l.into(),
-                        to: r.into(),
-                        a,
-                        b: b2,
-                        kind: Kind::Walk,
-                    });
-                    edges.push(Edge {
-                        from: r.into(),
-                        to: l.into(),
-                        a,
-                        b: b2,
-                        kind: Kind::Walk,
-                    });
+                    (l, _) if l != none => u32::from(l),
+                    (_, r) if r != none => u32::from(r),
+                    _ => continue,
+                };
+                if standing[from as usize]
+                    && let Some(edge) = mesh.cross_link(from, a, end, b, walls)
+                    && standing[edge.to as usize]
+                {
+                    boundary.push(edge);
                 }
-                (l, _) if l != none => boundary.push((u32::from(l), a, b2)),
-                (_, r) if r != none => boundary.push((u32::from(r), a, b2)),
-                _ => {}
             }
-        }
-        let base = NavMesh::new(polys, Vec::new());
-        for (from, a, e) in boundary {
-            if standing[from as usize]
-                && let Some(edge) = base.cross_link(from, a, e, b, walls)
-                && standing[edge.to as usize]
-            {
-                edges.push(edge);
-            }
-        }
-        NavMesh::new(base.polys, edges)
+            (shared, boundary)
+        });
+        // Shared links precede boundary links in the file. The order within
+        // each group is the order of the original collision links.
+        let mut edges: Vec<_> = chunks.iter().flat_map(|(walk, _)| walk).copied().collect();
+        edges.extend(chunks.into_iter().flat_map(|(_, boundary)| boundary));
+        mesh.set_edges(edges);
+        mesh
     }
 
     /// What lies past the boundary edge `a`-`e` of polygon `from`.
@@ -635,15 +761,16 @@ impl NavMesh {
             if -dz > b.max_drop {
                 continue;
             }
-            if dz <= b.max_jump_up && jump_clear(walls, takeoff, landing, false) {
-                return Some(edge(to, Kind::Jump));
-            }
-            if jump_clear(walls, takeoff, landing, true) {
-                return Some(Edge {
-                    a: takeoff,
-                    b: landing,
-                    ..edge(to, Kind::CrouchJump)
-                });
+            match JumpArc::new(takeoff, landing).kind(walls, dz <= b.max_jump_up) {
+                Some(Kind::CrouchJump) => {
+                    return Some(Edge {
+                        a: takeoff,
+                        b: landing,
+                        ..edge(to, Kind::CrouchJump)
+                    });
+                }
+                Some(kind) => return Some(edge(to, kind)),
+                None => {}
             }
         }
         None

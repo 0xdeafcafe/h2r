@@ -157,11 +157,12 @@ pub(super) fn uniforms(
 ) -> (VertexUniforms, PixelUniforms) {
     let (c0, c1) = def.embedded_constants();
     let render = &draw.state.render;
+    let scale: crate::scaled::RenderScale = scale.into();
     let mut vu = VertexUniforms {
         surface: [draw.target.width as f32, draw.target.height as f32],
         // Same full scale as gfx's built-in shader.
         z_max: gfx::renderer::d3dz_max(draw.target.depth_format),
-        shift: scale.into().shift(),
+        shift: scale.shift(),
         ui_transform: draw.ui_fit.map_or([1.0, 1.0, 0.0, 0.0], |fit| fit.transform),
         ..VertexUniforms::default()
     };
@@ -188,6 +189,8 @@ pub(super) fn uniforms(
         ..PixelUniforms::default()
     };
     pu.stipple = draw.hw.stipple_pattern;
+    let guest = (draw.target.width, draw.target.height);
+    pu.stipple_scale = PixelUniforms::stipple_grid(guest, scale.size(guest.0, guest.1));
     let w_buffer = key.pixel_options.w_buffer;
     if w_clipped(&key.vertex, draw) {
         vu.w_clip = Some(w_clip_range(&draw.hw, vu.z_max));
@@ -217,7 +220,7 @@ pub(super) fn uniforms(
         );
         pu.depth = [vu.z_max, units, slope, if integer { 1.0 } else { 0.0 }];
         let [lo, hi] = vu.w_clip.unwrap_or([0.0, vu.z_max]);
-        pu.depth_range = [lo, hi, 0.0, 0.0];
+        pu.depth_range = [lo, hi];
     }
     pu.lod_bias = std::array::from_fn(|n| {
         let bias = draw.state.stages[n].mip_lod_bias;
@@ -356,6 +359,13 @@ mod tests {
         assert_eq!(reference.pixel.alpha_ref[0], 91.0);
         assert_eq!(reference.pixel.fog_color, [0.0, 0.0, 1.0, 1.0]);
         assert_eq!(reference.pixel.stipple, [0xa5a5a5a5; 32]);
+        let guest = (draw.target.width, draw.target.height);
+        assert_eq!(reference.pixel.stipple_scale, PixelUniforms::stipple_grid(guest, guest));
+        assert_eq!(display.pixel.stipple_scale, PixelUniforms::stipple_grid(guest, (2 * guest.0, 2 * guest.1)));
+        let host = (guest.0 * 3 / 2, guest.1 * 3 / 4);
+        let raster = crate::scaled::RenderScale::between(guest, host).unwrap();
+        let uneven = NativeDrawProgram::resolve_ui(&draw, present, caps, FetchMode::Cpu, raster).unwrap();
+        assert_eq!(uneven.pixel.stipple_scale, PixelUniforms::stipple_grid(guest, host));
         assert_eq!(reference.key.0.pixel_options.alpha_test, Some(alpha_func(CompareFunc::Greater)));
         assert!(reference.key.0.pixel_options.stipple);
         assert!(reference.key.0.pixel_options.flat_shading);
