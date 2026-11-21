@@ -748,12 +748,9 @@ mod tests {
     }
 
     /// `theme::panel_body` and `theme::bounded_list` are the only callers of
-    /// `child_window` in `ui.rs` and `ui/`. `ui/tags.rs` and `fields.rs`
-    /// are allowed until slice T2 of docs/editor/tag-editing.md moves them
-    /// onto the helpers; then this list is empty.
+    /// `child_window` in `ui.rs`, `ui/`, `fields.rs` and `fields/`.
     #[test]
     fn child_windows_come_from_the_panel_helpers() {
-        const UNTIL_T2: [&str; 2] = ["tags.rs", "fields.rs"];
         fn check(file: &Path) {
             if file.is_dir() {
                 for entry in file.read_dir().unwrap() {
@@ -762,10 +759,6 @@ mod tests {
                 return;
             }
             if file.extension().and_then(|e| e.to_str()) != Some("rs") {
-                return;
-            }
-            let name = file.file_name().and_then(|n| n.to_str()).unwrap();
-            if UNTIL_T2.contains(&name) {
                 return;
             }
             let source = std::fs::read_to_string(file).unwrap();
@@ -782,6 +775,8 @@ mod tests {
         let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         check(&src.join("ui.rs"));
         check(&src.join("ui"));
+        check(&src.join("fields.rs"));
+        check(&src.join("fields"));
     }
 
     /// At 1000 by 420 every tool draws no child window but a panel body or
@@ -806,8 +801,8 @@ mod tests {
         app.set_data_root(dir.join("data"));
         app.dispatch(Action::OpenSource(map));
         // The ids of `theme::panel_body` and `theme::bounded_list` callers
-        // (and the empty card), plus the tags tool's own until T2.
-        const ALLOWED: [&str; 10] = [
+        // (and the empty card).
+        const ALLOWED: [&str; 9] = [
             "##outliner-body",
             "##h1-outliner-body",
             "##log-lines",
@@ -816,7 +811,6 @@ mod tests {
             "##playlist-list",
             "##palette-results",
             "##empty-card",
-            "##fields",
             "##bsp-bytes",
         ];
         for tool in [
@@ -1096,7 +1090,8 @@ mod tests {
         h.step(&mut app, &click("objects\\test\\blaster")).unwrap();
         h.frames(&mut app, 2).unwrap();
         assert_eq!(app.tags.selected, Some(tag_tests::weap_id()));
-        h.step(&mut app, &click("quiet##b1")).unwrap();
+        h.step(&mut app, &click("Flags")).unwrap();
+        h.step(&mut app, &click("Quiet##b1")).unwrap();
         h.frames(&mut app, 2).unwrap();
         let flags = app
             .tags
@@ -1104,14 +1099,15 @@ mod tests {
             .unwrap();
         assert_eq!(flags, [3, 0], "both flags set");
         assert!(app.tags.is_changed(tag_tests::weap_id()));
-        // The block lists its elements; the hex pane follows the mouse.
-        assert!(
-            h.scene
-                .items
-                .iter()
-                .any(|i| i.label.starts_with("parts  [2]"))
-        );
-        h.step(&mut app, &Step::Hover("loud##b0".into())).unwrap();
+        // One line per row: labels in words, the changed row dotted, the
+        // list's size beside its name. The hex pane follows the mouse.
+        assert!(h.scene.items.iter().any(|i| i.label == "Parts"));
+        let drawn = &h.studio.tags.panel.drawn;
+        let flags = drawn.iter().find(|d| d.path == "flags").unwrap();
+        assert_eq!((flags.label.as_str(), flags.edited), ("Flags", true));
+        let parts = drawn.iter().find(|d| d.path == "parts").unwrap();
+        assert_eq!(parts.summary.as_deref(), Some("2 items"));
+        h.step(&mut app, &Step::Hover("Loud##b0".into())).unwrap();
         h.frames(&mut app, 2).unwrap();
         assert_eq!(
             h.studio
@@ -1138,6 +1134,209 @@ mod tests {
             .copied()
             .collect();
         assert!(distinct.len() > 8);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The pick dialog through its widgets: an enum value, a number
+    /// outside the names, a reference's No tag and then a tag, and an
+    /// unnamed bit. Each pick is one undo step, and the dialog lists what
+    /// `tag.choices` returns. Skipped without a wgpu adapter.
+    #[test]
+    fn the_pick_dialog_sets_choices_references_and_unnamed_bits() {
+        use crate::app::tag_tests;
+        use crate::script::{Button, Step};
+        use studio_proto::method as m;
+        let Some((_turn, mut h)) = headless() else {
+            return;
+        };
+        let dir = std::env::temp_dir().join(format!("h2-editor-pick-ui-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (mut app, ..) = tag_tests::app(&dir);
+        h.frames(&mut app, 4).unwrap();
+        let click = |t: &str| Step::Click(t.into(), Button::Left);
+        h.step(&mut app, &click("weap  (1)")).unwrap();
+        h.frames(&mut app, 2).unwrap();
+        h.step(&mut app, &click("objects\\test\\blaster")).unwrap();
+        h.frames(&mut app, 2).unwrap();
+        let weap = tag_tests::weap_id();
+        let id = format!("{:#010x}", weap.0);
+        let mut api = crate::api::Api::new();
+        let names = |v: &serde_json::Value, list: &str| -> Vec<String> {
+            v[list]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|x| x["name"].as_str().unwrap().to_owned())
+                .collect()
+        };
+        let bytes_at = |app: &App, at: u32, n: u32| app.tags.read(weap, at, n).unwrap();
+
+        // An enum: its named values, one picked.
+        h.step(&mut app, &click("Auto##choose")).unwrap();
+        let mode = api
+            .call(&mut app, m::TAG_CHOICES, serde_json::json!({"tag": id, "path": "mode"}))
+            .unwrap();
+        assert_eq!(h.studio.tags.panel.listed, names(&mode, "values"));
+        assert_eq!(h.studio.tags.panel.listed, ["Off", "On", "Auto"]);
+        h.step(&mut app, &click("On##pick-1")).unwrap();
+        assert_eq!(bytes_at(&app, tag_tests::WEAP + 6, 2), [1, 0]);
+        assert!(h.studio.tags.panel.listed.is_empty(), "the dialog closed");
+
+        // A number no name has.
+        h.step(&mut app, &click("On##choose")).unwrap();
+        h.step(&mut app, &click("Enter a number...##pick-number")).unwrap();
+        h.step(&mut app, &Step::Type("9".into())).unwrap();
+        h.step(&mut app, &Step::Key(dear_imgui_rs::Key::Enter, 1)).unwrap();
+        h.frames(&mut app, 2).unwrap();
+        assert_eq!(bytes_at(&app, tag_tests::WEAP + 6, 2), [9, 0]);
+        let drawn = &h.studio.tags.panel.drawn;
+        let mode_row = drawn.iter().find(|d| d.path == "mode").unwrap();
+        assert_eq!(mode_row.summary.as_deref(), Some("Value 9 (not named)"));
+
+        // A reference in the list's first element: No tag, then the kit
+        // again.
+        h.step(&mut app, &click("Parts")).unwrap();
+        h.step(&mut app, &click("Change...##change")).unwrap();
+        let item = api
+            .call(&mut app, m::TAG_CHOICES, serde_json::json!({"tag": id, "path": "parts[0].item"}))
+            .unwrap();
+        assert_eq!(h.studio.tags.panel.listed, names(&item, "tags"));
+        assert_eq!(h.studio.tags.panel.listed, ["objects\\test\\kit"]);
+        h.step(&mut app, &click("No tag##pick-none")).unwrap();
+        let none = bytes_at(&app, tag_tests::PARTS, 8);
+        assert_eq!(none[..4], map::FourCC(*b"itmc").as_u32().to_le_bytes(), "No tag keeps the kind");
+        assert_eq!(none[4..], u32::MAX.to_le_bytes());
+        h.step(&mut app, &click("Change...##change")).unwrap();
+        h.step(&mut app, &click("objects\\test\\kit##pick-t0")).unwrap();
+        assert_eq!(bytes_at(&app, tag_tests::PARTS + 4, 4), fixture::id(3).0.to_le_bytes());
+
+        // An unnamed bit, in the folded group.
+        h.step(&mut app, &click("Flags")).unwrap();
+        h.step(&mut app, &click("Unnamed bits")).unwrap();
+        h.step(&mut app, &click("Bit 5##b5")).unwrap();
+        assert_eq!(bytes_at(&app, tag_tests::WEAP + 4, 2), [0x21, 0]);
+        let drawn = &h.studio.tags.panel.drawn;
+        let flags = drawn.iter().find(|d| d.path == "flags").unwrap();
+        assert_eq!(flags.summary.as_deref(), Some("1 of 2 on: Loud, Bit 5"));
+
+        // One undo step each.
+        app.dispatch(Action::Undo);
+        assert_eq!(bytes_at(&app, tag_tests::WEAP + 4, 2), [1, 0]);
+        app.dispatch(Action::Undo);
+        assert_eq!(bytes_at(&app, tag_tests::PARTS + 4, 4), u32::MAX.to_le_bytes());
+        app.dispatch(Action::Undo);
+        app.dispatch(Action::Undo);
+        assert_eq!(bytes_at(&app, tag_tests::WEAP + 6, 2), [1, 0]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The Tags tool draws exactly the rows `tag.fields` returns, and a row
+    /// shows when a change takes effect only with a game connected: none
+    /// unpaired; with the fake game viewing, the list's `After reload`.
+    #[cfg(unix)]
+    #[test]
+    fn tag_rows_match_tag_fields_and_chips_need_a_game() {
+        use crate::app::tag_tests;
+        use crate::play::Play;
+        use crate::play::testing::{Temp, fake};
+        use crate::script::{Button, Step};
+        use agent_proto::sim::SessionKind;
+        use studio_proto::method as m;
+        let Some((_turn, mut h)) = headless() else {
+            return;
+        };
+        let t = Temp::new("tag-rows-chips");
+        let (mut app, ..) = tag_tests::app(&t.0);
+        h.studio.play.play = Play::new();
+        h.frames(&mut app, 4).unwrap();
+        let click = |t: &str| Step::Click(t.into(), Button::Left);
+        h.step(&mut app, &click("weap  (1)")).unwrap();
+        h.frames(&mut app, 2).unwrap();
+        h.step(&mut app, &click("objects\\test\\blaster")).unwrap();
+        h.frames(&mut app, 2).unwrap();
+        let mut api = crate::api::Api::new();
+        let weap = format!("{:#010x}", tag_tests::weap_id().0);
+        let mut same_rows = |h: &Headless, app: &mut App| {
+            let fields = api
+                .call(app, m::TAG_FIELDS, serde_json::json!({ "tag": weap }))
+                .unwrap();
+            let rows = fields["fields"].as_array().unwrap().clone();
+            let drawn = &h.studio.tags.panel.drawn;
+            assert_eq!(drawn.len(), rows.len(), "one drawn row per tag.fields row");
+            for (d, r) in drawn.iter().zip(&rows) {
+                assert_eq!(r["path"], d.path.as_str());
+                assert_eq!(r["label"], d.label.as_str());
+                assert_eq!(r["edited"], d.edited);
+                assert_eq!(r["chip"], serde_json::json!(d.chip));
+                assert_eq!(r["summary"], serde_json::json!(d.summary));
+            }
+            rows
+        };
+        let unpaired = same_rows(&h, &mut app);
+        assert!(unpaired.iter().all(|r| r["chip"].is_null()), "no chip unpaired");
+        assert!(h.studio.tags.panel.drawn.iter().all(|d| d.chip.is_none()));
+
+        let game = fake::Game::start("tag-rows-chips", "example", SessionKind::Local);
+        fake::pair_for_view(&mut h.studio.play.play, &mut app, &game);
+        h.frames(&mut app, 3).unwrap();
+        assert_eq!(h.studio.tags.panel.link, crate::fields::Link::Viewing);
+        let viewing = same_rows(&h, &mut app);
+        let parts = viewing.iter().find(|r| r["path"] == "parts").unwrap();
+        assert_eq!(parts["chip"], "After reload");
+        let speed = viewing.iter().find(|r| r["path"] == "speed").unwrap();
+        assert!(speed["chip"].is_null(), "an unchanged not_known field has no chip");
+        assert_eq!(speed["effect"]["id"], "not_known");
+    }
+
+    /// Unnamed fields sit in a folded group under the named ones; focusing
+    /// one (`tag.view field`) opens it, and so does changing one after the
+    /// group was folded by hand. The drawn rows are `tag.view`'s.
+    #[test]
+    fn the_unnamed_fields_group_folds_and_opens_on_focus_and_change() {
+        use crate::app::tag_tests;
+        use crate::script::{Button, Step};
+        use studio_proto::method as m;
+        let Some((_turn, mut h)) = headless() else {
+            return;
+        };
+        let dir = std::env::temp_dir().join(format!("h2-editor-unnamed-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (mut app, ..) = tag_tests::app_partial(&dir);
+        h.frames(&mut app, 4).unwrap();
+        let click = |t: &str| Step::Click(t.into(), Button::Left);
+        h.step(&mut app, &click("weap  (1)")).unwrap();
+        h.frames(&mut app, 2).unwrap();
+        h.step(&mut app, &click("objects\\test\\blaster")).unwrap();
+        h.frames(&mut app, 2).unwrap();
+        let drawn = |h: &Headless| -> Vec<String> {
+            h.studio.tags.panel.drawn.iter().map(|d| d.path.clone()).collect()
+        };
+        assert!(h.scene.items.iter().any(|i| i.label == "Unnamed fields (1)"));
+        assert_eq!(drawn(&h), ["speed", "flags", "parts"], "folded");
+        let mut api = crate::api::Api::new();
+        let view = api.call(&mut app, m::TAG_VIEW, serde_json::json!({})).unwrap();
+        let rows: Vec<_> = view["rows"].as_array().unwrap().iter().map(|r| r["path"].clone()).collect();
+        assert_eq!(serde_json::json!(drawn(&h)), serde_json::json!(rows));
+
+        api.call(&mut app, m::TAG_VIEW, serde_json::json!({"field": "+0x6"}))
+            .unwrap();
+        h.frames(&mut app, 3).unwrap();
+        assert_eq!(drawn(&h), ["speed", "flags", "parts", "+0x6"], "open on focus");
+
+        h.step(&mut app, &click("Unnamed fields (1)")).unwrap();
+        h.frames(&mut app, 2).unwrap();
+        assert_eq!(drawn(&h), ["speed", "flags", "parts"], "folded by hand");
+        let weap = format!("{:#010x}", tag_tests::weap_id().0);
+        api.call(
+            &mut app,
+            m::TAG_SET,
+            serde_json::json!({"tag": weap, "path": "+0x6", "value": 5}),
+        )
+        .unwrap();
+        h.frames(&mut app, 3).unwrap();
+        assert_eq!(drawn(&h), ["speed", "flags", "parts", "+0x6"], "open on change");
+        let edited = h.studio.tags.panel.drawn.iter().find(|d| d.path == "+0x6").unwrap();
+        assert!(edited.edited);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

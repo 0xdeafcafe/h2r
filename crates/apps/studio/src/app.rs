@@ -513,6 +513,9 @@ pub struct App {
     pub tags: TagDoc,
     /// The Modeling tool: the open map's geometry session.
     pub modeling: modeling::Modeling,
+    /// How the field panel shows unnamed fields, saved with the layout
+    /// (`fields::Settings`).
+    pub tag_fields: crate::fields::Settings,
     /// The selected tag's shared-map line, for the tag and revision.
     tag_homes: std::cell::RefCell<Option<(map::TagId, u64, Option<String>, Option<String>)>>,
     /// Another map of the source shown read-only in the Tags tool (a
@@ -587,6 +590,7 @@ impl App {
             pairing: Default::default(),
             tags: TagDoc::default(),
             modeling: Default::default(),
+            tag_fields: Default::default(),
             tag_homes: Default::default(),
             tag_browse: None,
             nav: NavHistory::default(),

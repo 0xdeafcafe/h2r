@@ -312,6 +312,9 @@ fn main() -> Result<()> {
         app.set_data_root(d.clone());
     }
     app.scripts.doc_path = args.hs_doc.clone();
+    // The field panel's settings live in the layout's file (`shutdown`).
+    app.tag_fields =
+        studio::fields::Settings::from_ini(&std::fs::read_to_string(ini_path()).unwrap_or_default());
     app.refresh_packages();
     let disc = editor_core::default_disc(args.source.clone()).filter(|_| !args.no_disc);
     // The Map Pack: --mappack, else $H2_MAPPACK_ISO, else mappack.iso beside
@@ -709,8 +712,18 @@ impl Win {
         Ok(())
     }
 
-    fn shutdown(&mut self) {
-        let _ = self.ctx.save_ini_settings_to_disk(ini_path());
+    /// Save the layout, with the field panel's settings after Dear
+    /// ImGui's own sections (`fields::Settings`).
+    fn shutdown(&mut self, app: &App) {
+        let mut ini = String::new();
+        self.ctx.save_ini_settings(&mut ini);
+        if !ini.is_empty() && !ini.ends_with('\n') {
+            ini.push('\n');
+        }
+        ini.push_str(&app.tag_fields.ini());
+        if let Err(e) = std::fs::write(ini_path(), ini) {
+            eprintln!("h2-editor: the layout was not saved: {e}");
+        }
         let _ = self.ctx.end_frame();
         if let Err(e) = self.renderer.shutdown(&mut self.ctx) {
             eprintln!("renderer shutdown: {e}");
@@ -762,7 +775,7 @@ impl ApplicationHandler for Runner {
             _ => {}
         }
         if self.app.should_quit() {
-            win.shutdown();
+            win.shutdown(&self.app);
             event_loop.exit();
         }
     }

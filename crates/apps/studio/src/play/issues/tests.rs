@@ -97,9 +97,9 @@ fn the_link_summarizes_the_largest_count_and_pending_is_navigable() {
     let (mut app, _, _) = tag_tests::app(&t.0);
     let play = Play::new();
     *app.pairing.pending = vec![
-        tag_sync::row("scenario", json!(tag_tests::weap_id().0), "Weapons", tag_sync::RELOAD, "layout changed"),
-        tag_sync::row("tags", Value::Null, "second", tag_sync::RELOAD, "new map string"),
-        tag_sync::row("tags", Value::Null, "third", tag_sync::CREATION, "next creation"),
+        tag_sync::row("scenario", json!(tag_tests::weap_id().0), "Weapons", tag_sync::Effect::Reload, "layout changed"),
+        tag_sync::row("tags", Value::Null, "second", tag_sync::Effect::Reload, "new map string"),
+        tag_sync::row("tags", Value::Null, "third", tag_sync::Effect::NextSpawn, "next creation"),
     ];
     play.publish(&mut app);
     let link = app.pairing.link.as_ref().unwrap();
@@ -120,7 +120,7 @@ fn unchanged_frames_share_the_issue_index_and_edits_invalidate_it() {
     let path = "parts[1].value";
     let at = tag_api::field_focus(&app.tags, tag, path).unwrap().address;
     let mut row = json!({
-        "doc": "tags", "class": tag_sync::CREATION, "at": at, "conflict": true,
+        "doc": "tags", "effect": tag_sync::Effect::NextSpawn.id(), "at": at, "conflict": true,
         "target": {"tag": tag.0, "path": path}, "why": "different field bytes"
     });
     app.pairing.pending.push(row.clone());
@@ -150,12 +150,12 @@ fn unchanged_frames_share_the_issue_index_and_edits_invalidate_it() {
 }
 
 #[test]
-fn pending_class_order_and_playtest_follow_row_replacements() {
+fn pending_effect_order_and_playtest_follow_row_replacements() {
     use crate::play::playtest::Changes;
 
     let mut pending = Pending::default();
-    let changed = json!({"doc":"scenario", "class":tag_sync::RELOAD});
-    let preview = json!({"doc":"object", "class":tag_sync::CREATION});
+    let changed = json!({"doc":"scenario", "effect":tag_sync::Effect::Reload.id()});
+    let preview = json!({"doc":"object", "effect":tag_sync::Effect::NextSpawn.id()});
     pending.extend([changed.clone(), preview.clone()]);
     assert_eq!(pending.playtest_changes(), Changes::Reload);
     assert_eq!(pending.sorted().collect::<Vec<_>>(), [&preview, &changed]);

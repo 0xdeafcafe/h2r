@@ -80,10 +80,17 @@ fn element(doc: &TagDoc, tag: TagId, at: u32, l: &Layout) -> Value {
 
 /// One field's value as JSON.
 pub fn value(doc: &TagDoc, tag: TagId, at: u32, f: &Field) -> Value {
+    match doc.read(tag, at + f.offset, f.kind.width()) {
+        Some(b) => value_of(doc, tag, at, f, &b),
+        None => Value::Null,
+    }
+}
+
+/// A field's value as JSON from its bytes `b` (the edited bytes, or the
+/// file's for `file_value`). Blocks and data follow their pair in the
+/// edited tag.
+pub fn value_of(doc: &TagDoc, tag: TagId, at: u32, f: &Field, b: &[u8]) -> Value {
     let a = at + f.offset;
-    let Some(b) = doc.read(tag, a, f.kind.width()) else {
-        return Value::Null;
-    };
     let many = |v: Vec<Value>| {
         if v.len() == 1 {
             v.into_iter().next().unwrap()
@@ -112,13 +119,13 @@ pub fn value(doc: &TagDoc, tag: TagId, at: u32, f: &Field) -> Value {
                 .collect(),
         ),
         Kind::Enum { values, .. } => {
-            let v = le(&b);
+            let v = le(b);
             values
                 .get(v as usize)
                 .map_or_else(|| json!(v), |s| json!(s))
         }
         Kind::Flags { bits, .. } => {
-            let v = le(&b);
+            let v = le(b);
             Value::Array(
                 (0..8 * b.len())
                     .filter(|i| v >> i & 1 == 1)
@@ -130,7 +137,7 @@ pub fn value(doc: &TagDoc, tag: TagId, at: u32, f: &Field) -> Value {
             )
         }
         Kind::StringId => {
-            let v = le(&b) as u32;
+            let v = le(b) as u32;
             match doc.string(v) {
                 Some(s) => json!(s),
                 None if v == u32::MAX => Value::Null,
@@ -138,7 +145,7 @@ pub fn value(doc: &TagDoc, tag: TagId, at: u32, f: &Field) -> Value {
             }
         }
         Kind::TagRef { .. } => tag_json(doc, le(&b[4..]) as u32),
-        Kind::Datum { .. } => tag_json(doc, le(&b) as u32),
+        Kind::Datum { .. } => tag_json(doc, le(b) as u32),
         Kind::Block(child) => match doc.block(tag, a, child) {
             Some((n, start)) => Value::Array(
                 (0..n.min(ELEMENTS))
@@ -154,8 +161,8 @@ pub fn value(doc: &TagDoc, tag: TagId, at: u32, f: &Field) -> Value {
                 _ => json!(""),
             }
         }
-        Kind::Raw | Kind::RawSize { .. } | Kind::Word | Kind::Unknown { .. } => json!(le(&b)),
-        Kind::Bsp => json!(crate::fields::hex(&b)),
+        Kind::Raw | Kind::RawSize { .. } | Kind::Word | Kind::Unknown { .. } => json!(le(b)),
+        Kind::Bsp => json!(crate::fields::hex(b)),
         Kind::Pad { .. } => Value::Null,
     }
 }
@@ -179,6 +186,36 @@ fn find<'a>(l: &'a Layout, name: &str) -> Option<&'a Field> {
         return l.field_at(o);
     }
     l.fields.iter().find(|f| f.name == name)
+}
+
+/// A path with every step by its field's name, as the panel writes it
+/// (`+0x0[1]` becomes `parts[1]`).
+pub(crate) fn named_path(doc: &TagDoc, tag: TagId, path: &str) -> Result<String, String> {
+    if path.is_empty() {
+        return Ok(String::new());
+    }
+    let mut layout = doc.layout(tag).ok_or("no layout for this group")?.clone();
+    let mut out = Vec::new();
+    for part in path.split('.') {
+        let (name, index) = step(part)?;
+        let f = find(&layout, name)
+            .ok_or_else(|| format!("no field {name:?} in {}", layout.name))?;
+        let child = match (index, &f.kind) {
+            (Some(i), Kind::Block(child)) => {
+                out.push(format!("{}[{i}]", f.name));
+                Some(child.clone())
+            }
+            (Some(_), _) => return Err(format!("{name} is not a block")),
+            (None, _) => {
+                out.push(f.name.clone());
+                None
+            }
+        };
+        if let Some(child) = child {
+            layout = child;
+        }
+    }
+    Ok(out.join("."))
 }
 
 /// The root or a block element selected for the inspector's field rows.
@@ -445,7 +482,7 @@ pub fn set_field(doc: &TagDoc, tag: TagId, path: &str, v: &Value) -> Result<TagA
         }
         k => {
             return Err(format!(
-                "{} ({}) is structural: {}",
+                "{} ({}) is structural. {}",
                 f.name,
                 k.label(),
                 super::tag_doc::STRUCTURAL

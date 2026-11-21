@@ -1,7 +1,7 @@
 # Tag editing: the field panel in plain words
 
-Status: Design. Nothing here is built; "The built panel" describes the code this design replaces.
-Code: `crates/apps/studio/src/fields.rs` (`panel_with_marks`), `crates/apps/studio/src/ui/tags.rs` (`fields`, `hex`), `crates/apps/studio/src/play/tag_sync.rs` (`class`), `crates/apps/studio/src/api/tag_fields.rs`. Tests: `crates/apps/studio/src/app/tag_tests.rs`, `headless::tests::the_tags_tool_edits_a_field_through_its_widgets`.
+Status: Design. T1 (effect words, `play::tag_sync::Effect`), T2 (the row model, `fields::rows`, and the extended `tag.fields`), T3 (the Unnamed fields group, **Show unnamed fields**, **Show as** and `tag.view`), T4 (`label=`, `unit=`, `title=`, `axes=` and section titles in the definitions) and T6 (the pick dialog, `fields::picker`, the switches summary and unnamed bits, and `tag.choices`) are built; the rest is not. The switches' hex word waits for the details pane (T8). `tag.view` takes `tag`, `field`, `unnamed` and `show_as` and refuses `path`, `search` and `changed` until T5 and T7. "The built panel" describes the panel before T1, the code the slices replace.
+Code: `crates/apps/studio/src/fields.rs` (`panel_with_marks`), `crates/apps/studio/src/fields/row.rs` (`rows`), `crates/apps/studio/src/ui/tags.rs` (`fields`, `hex`), `crates/apps/studio/src/play/tag_sync.rs` (`effect`), `crates/apps/studio/src/api/tag_fields.rs`. Tests: `crates/apps/studio/src/app/tag_tests.rs`, `headless::tests::the_tags_tool_edits_a_field_through_its_widgets`.
 Switch: none.
 
 The field panel shows a tag as rows a person can read: a name in words, a
@@ -379,7 +379,7 @@ lists them):
 | UI Screens outliner, `ui_screens::tree` | `##ui-retail` takes what is left under the Our screens tree; its filter sits between the two lists | 2, 3 | one filter at the top, both lists under folding headers, no child |
 | HUD outliner, `hud::tree` | `##hud-list` is a third of what is left, clamped to 48 to 220 points; `##hud-widgets` takes the rest | 2 | HUDs and Widgets as folding headers in the body; a filter over both |
 | Scene outliner, `Studio::outliner_window` | `scene-layers` (`layers::section`) is half of what is left; `##outliner-tree` takes the rest; the filter sits under Layers | 2, 3 | filter and the Duplicate and Delete row pinned; Layers a folding header in the body, drawn at its content height; no tree child |
-| Tags fields, `tags::fields` | `##fields` takes what is left under a header of up to nine lines | 2 | the header scrolls with the rows; only the filter row is pinned |
+| Tags fields, `tags::fields` | fixed: no child; the header scrolls with the rows in the window | | when the filter row lands (T7), it is the only pinned row, over a `theme::panel_body` |
 | Tags tree, `tags::tree` | no child, but the tag filter is inside All tags, under the scenario tree, and Not reachable from the scenario is last | 3 | the filter at the top over all three sections; each section a folding header |
 | Data and bytes, `tags::hex` | up to 200 resource rows and a full-width bitmap preview come before the bytes | 3 | Field details first, then Bytes, then Data and resources, each a folding header |
 | Pending, `PlayUi::pending_window` | Send, Reload map and Respawn now come after every pending row | 3 | the buttons first, then the rows |

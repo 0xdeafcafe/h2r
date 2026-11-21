@@ -141,7 +141,7 @@ fn appended_slot_refused_by_the_loaded_block_stays_pending_for_reload() {
         })
     });
     assert_eq!(game.calls(OBJECT_RESPAWN).len(), 1);
-    assert!(app.pairing.pending.iter().any(|row| row["class"] == tag_sync::RELOAD));
+    assert!(app.pairing.pending.iter().any(tag_sync::Effect::is_reload));
     assert!(game.calls(OBJECT_DELETE).is_empty());
     app.dispatch(Action::Undo);
     barrier(&mut play, &mut app);
@@ -149,7 +149,7 @@ fn appended_slot_refused_by_the_loaded_block_stays_pending_for_reload() {
 }
 
 #[test]
-fn a_game_without_object_set_keeps_the_field_poke_and_explains_the_object() {
+fn a_game_without_object_set_keeps_the_field_write_and_explains_the_object() {
     let (_t, game, mut app, mut play) = object_pair("object-no-set", SessionKind::Local, false);
     assert!(!play.has_method(OBJECT_SET));
     // A trap installed after session.methods catches even an unadvertised call.
@@ -161,7 +161,7 @@ fn a_game_without_object_set_keeps_the_field_poke_and_explains_the_object() {
     });
     enable(&mut play, &mut app);
     move_weapon(&mut app, [14., 15., 16.]);
-    until(&mut play, &mut app, "poke with unavailable live move", |p, a| {
+    until(&mut play, &mut app, "a field write with unavailable live move", |p, a| {
         game.calls("edit.batch").len() == 1 && p.edits.sent.is_none()
             && a.pairing.pending.iter().any(|row| {
                 row["why"].as_str().is_some_and(|why| why.contains(OBJECT_SET))
@@ -370,7 +370,7 @@ fn a_timed_out_preview_stays_pending_across_document_undo() {
     game.fail_next_object_edit(agent_proto::code::TIMEOUT, "preview reply timed out");
     app.session.add_entry(WEAPONS, None).unwrap();
     until(&mut play, &mut app, "preview outcome unknown", |_, a| {
-        a.pairing.pending.iter().any(|r| r["doc"] == "object" && r["class"] == tag_sync::RELOAD)
+        a.pairing.pending.iter().any(|r| r["doc"] == "object" && tag_sync::Effect::is_reload(r))
     });
     assert_eq!(game.calls(OBJECT_RESPAWN).len(), 1);
     app.dispatch(Action::Undo);
@@ -378,7 +378,7 @@ fn a_timed_out_preview_stays_pending_across_document_undo() {
     play.update_objects(&mut app, Instant::now() + PUSH_EVERY);
     barrier(&mut play, &mut app);
     assert!(app.pairing.pending.iter().any(|r| {
-        r["doc"] == "object" && r["class"] == tag_sync::RELOAD && r["unknown"] == true
+        r["doc"] == "object" && tag_sync::Effect::is_reload(r) && r["unknown"] == true
     }));
     let decision = playtest::decide(
         &play.link_view(&app).state, None, &app.pairing.pending, false, true, true,

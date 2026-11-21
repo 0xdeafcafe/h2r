@@ -76,7 +76,9 @@ What goes through actions, from both sides:
 | Open a source, map, package, Halo 1 map | `OpenSource`, `SelectMap`, `OpenPackageEntry` | menus, Maps list | `source.open`, `doc.open` |
 | A placement's field | `EditSelection {field, edit, merge}` (every selected placement), `SetField {block, index, field, value, merge}` (one), `SealEdit` | the inspector dispatches `EditSelection` (a drag merges under one key, sealed when it ends) | `scenario.set`, `tag.set` |
 | Any tag's field or block | `Tag(TagAction)` built by `app::tag_api::{set_field, block}` | the Tags tool | `tag.set`, `tag.block.*` |
-| Inspect tag fields | read the registry layout | Tags panel and inspector | `tag.fields {tag, path?}` |
+| Inspect tag fields | read the registry layout | Tags panel and inspector | `tag.fields {tag, path?, unnamed?}` |
+| Show unnamed fields, Show as, focus a field | `App::tag_fields` (`fields::Settings`), `Navigate(Go)` | the Tags tool's **Show unnamed fields** and **Show as** | `tag.view` |
+| What a field's pick dialog lists | `fields::picker::{values, bits, kinds, tags, views}` | the field panel's pick dialog | `tag.choices {tag, path, query?, kind?, limit?}` |
 | Move and turn a placement | `MovePlacement` (one step); `GestureSet {position, ypr}`, `GestureScale`, `EndGesture` (a drag: one step, a multi-selection riding along) | the viewport gizmo dispatches the gesture actions every frame of a drag | `scenario.move` |
 | Add, duplicate, delete | `Add`, `DuplicateEntry`, `DeleteEntry` | outliner, toolbar, keys | `scenario.add`, `.duplicate`, `.delete`, `tag.block.*` |
 | Select, frame | `Select`, `FocusSelected`, `FrameAll` | Scene, viewport, keys | `scenario.select`, `view.camera` |
@@ -230,15 +232,72 @@ Notes on some:
   the schema's structural view instead. The scenario tag's edits stay with
   the Scenario tool: `tag.set` paths `netgame_flags[0].position` and
   `tag.block.*` on `netgame_flags` run as the matching `scenario.*` calls.
-- **Field rows.** `tag.fields {tag, path?}` returns `{fields: [...]}` for the
-  root or a block element such as `parts[1]`. Offsets such as `+0x8[1]` also
-  select a block element. Each row has `name`, `offset` in bytes, `kind`,
-  `size` in bytes, `value`, and `description` (the definition's `doc` text,
-  or null). An offset path in `tag.set` addresses the typed field that starts
+- **Field rows.** `tag.fields {tag, path?, unnamed?}` returns `{fields:
+  [...]}` for the root or a block element such as `parts[1]`. Offsets
+  such as `+0x8[1]` also select a block element. The rows are the field
+  panel's (`fields::rows`, [tag-editing.md](tag-editing.md)), in its
+  order: the named rows, then the Unnamed fields group's (padding last);
+  `unnamed: false` leaves those out. Each row has `name`, `offset` in
+  bytes, `kind`, `size` in bytes, `value`, `description` (the
+  definition's `doc` text, or null), `evidence` (its meaning text),
+  `section`, and:
+  - `label` (the name in words), `named`, `type` (the type in words:
+    `Whole number`, `Decimal number`, `Angle`, `Colour`, `Range`,
+    `Choice`, `Switches`, `Name`, `Tag reference`, `List`, `Bytes`,
+    `Internal value`, `Unnamed value`, `Padding`) and `unit` (or null);
+  - `editable`, and `read_only`, the reason as a sentence when not;
+  - `edited` (the value differs from the loaded file) and `file_value`
+    (the file's value when edited, else null);
+  - `effect: {id, text, why}` (an id of the effect table in
+    [live-mirror.md](live-mirror.md), "How an edit applies"), always
+    given; `chip`, the effect
+    the row shows, null with no game connected; `live: {kind, text}`, a
+    changed field's `mismatch` or `refused` mark with a game connected;
+  - `path`, the `tag.set` path from the root by field names
+    (`parts[1].value`, also for an offset path); `summary`, what the row
+    shows on its line: `2 items` or `16 bytes` for a list or data, the
+    value's name for a choice (`Value 7 (not named)` when none names
+    it), `2 of 9 on: Loud, Quiet` for switches, and the kind and last
+    path segment for a tag reference (`No tag` when it is empty);
+  - `choices: [{value, name}]` for a choice, `bits: [{bit, name}]` for
+    switches, `groups` for a tag reference, `count` and `capacity` for a
+    list, and `show_as` (`decimal`, `whole_number` or `hex`) for an
+    unnamed value.
+
+  An offset path in `tag.set` addresses the typed field that starts
   there. Its row gives the width accepted for an integer or enum value.
   A block's value is its element count. Scalar values follow
   `tag.read`. The rows use the open or browsed tag document and include
   its pending edits (`api/tag_fields.rs`).
+- **The field panel.** `tag.view {tag?, field?, unnamed?, show_as?}`
+  drives the Tags tool's panel and returns what it shows. `tag` selects
+  the tag in the Tags tool. `field`, a `tag.set` path, focuses that field
+  through the navigation (as `nav.go`), which opens its lists and its
+  Unnamed fields group. `unnamed` sets **Show unnamed fields**.
+  `show_as: {path, as}` sets how an unnamed value is shown (`decimal`,
+  `whole_number`, `hex`, or null for the guess from its bits), kept for
+  that field of every tag of the group and saved with the layout. With no
+  params it only reads. The result is `{tag, path, breadcrumbs, field,
+  search, changed, unnamed, rows, unnamed_hidden, header}`: `rows` are
+  the root's `tag.fields` rows the panel shows, `unnamed_hidden` the
+  unnamed rows in a folded group (`unnamed: true` adds them to `rows`),
+  `field` the focused path, and `header` the header's lines as drawn,
+  without icons. The panel shows a tag's root and has no search yet, so
+  `path` is always empty, `search` null and `changed` false, and those
+  params are refused.
+- **Pick lists.** `tag.choices {tag, path, query?, kind?, limit?}`
+  returns what the field panel's pick dialog lists for the field at
+  `path` (`fields::picker`). A choice gives `{values: [{value, name}]}`,
+  its named values. Switches give `{bits: [{bit, name, label, on}]}`,
+  every bit of the word, `name` null for a bit nothing names. A tag
+  reference gives `{kinds: [{group, name}], tags: [{id, group, name}],
+  truncated}`: the kinds of the map's tags it takes, and every such tag
+  with no cap. `kind`, a group code, narrows the tags as the dialog's
+  Kind row does; `limit` cuts them and sets `truncated`. An unnamed value
+  gives `{views: [{id, name}], shown}`, the **Show as** choices and the
+  one in use. `query` narrows values and tags as the dialog's search box
+  does: every word in the name, or in `group:name` for a tag. Any other
+  field is refused with `INVALID_PARAMS`.
 - **Scenario tree.** `tag.tree {"root":"scenario","depth":2}` reads the
   open scenario and returns `{root, unreachable, incomplete, truncated}`.
   The root's children are Structure (BSPs with their lightmaps), Skies,
@@ -395,7 +454,9 @@ Notes on some:
   together in one `edit.batch`, each with its expected `was` value. Tags use
   the `at` form with hex bytes. The optional `known_epoch` on `edit.map`
   refreshes the loaded datum table used to check reference targets. Undo and redo use the same check.
-  `mirror.pending` returns `pending` rows with `doc,path,class,why` and an optional `tag`,
+  `mirror.pending` returns `pending` rows with `doc,path,effect,text,why` and an optional
+  `tag` and `label`: `effect` is when the change takes effect (`now`, `next_use`,
+  `next_spawn`, `reload` or `not_known`, `play::tag_sync::Effect`) and `text` its sentence,
   the game’s existing `journal` from `edit.changes`, and `leaving`.
   A placement block with a different layout revision from the loaded copy
   appears as one `Reload` row. Its fields stay out of the batch until undo,

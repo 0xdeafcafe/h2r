@@ -198,7 +198,7 @@ fn a_moved_placement_is_written_to_the_games_scenario() {
 }
 
 #[test]
-fn replacing_a_placement_only_pokes_other_blocks() {
+fn replacing_a_placement_only_sends_other_blocks() {
     let (_t, game, mut app, mut play) = paired("replace-slot", "example", SessionKind::Local);
     let kind = BlockKind::Weapons;
     app.session.remove_entry(kind, 0).unwrap();
@@ -208,7 +208,7 @@ fn replacing_a_placement_only_pokes_other_blocks() {
     play.apply_edits(&mut app, Apply::Send).unwrap();
     until(&mut play, &mut app, "one flag write", |p, a| {
         p.edits.sent.is_none() && !game.calls("edit.batch").is_empty()
-            && a.pairing.pending.iter().all(|row| row["class"] == "Reload")
+            && a.pairing.pending.iter().all(tag_sync::Effect::is_reload)
     });
     let calls = game.calls("edit.batch");
     assert_eq!(calls.len(), 1);
@@ -829,7 +829,7 @@ fn a_grown_tag_block_stays_under_reload() {
         op: crate::app::BlockOp::Add,
     }));
     play.push_edits(&mut app);
-    assert!(app.pairing.pending.iter().any(|r| r["class"] == "Reload"));
+    assert!(app.pairing.pending.iter().any(tag_sync::Effect::is_reload));
     assert!(play.edits.sent.is_none());
     assert!(game.calls("edit.batch").is_empty());
 }
@@ -1251,13 +1251,13 @@ fn playtest_decides_each_link_and_reload_route() {
     let view = LinkState::Viewing { map: Some("fixture".into()), phase: None, tick: None };
     let found = LinkState::Found { map: None, matches: MapMatch::Unknown };
     let other = LinkState::OtherMap { game: "other".into(), open: "fixture".into() };
-    let reload = [json!({"class": "Reload"})];
-    let poke = [json!({"class": "Poke"})];
-    assert_eq!(decide(&LinkState::NoGame, None, &poke, false, false, false), Step::Launch);
+    let reload = [json!({"effect": "reload"})];
+    let send = [json!({"effect": "now"})];
+    assert_eq!(decide(&LinkState::NoGame, None, &send, false, false, false), Step::Launch);
     assert_eq!(decide(&found, None, &[], false, false, false), Step::Pair);
     assert_eq!(decide(&view, None, &[], false, false, false), Step::Resume);
-    assert_eq!(decide(&view, None, &poke, false, true, false), Step::Resume);
-    assert_eq!(decide(&view, None, &poke, false, false, true), Step::Ask { ask: Ask::Send });
+    assert_eq!(decide(&view, None, &send, false, true, false), Step::Resume);
+    assert_eq!(decide(&view, None, &send, false, false, true), Step::Ask { ask: Ask::Send });
     assert_eq!(decide(&view, None, &reload, true, false, true), Step::Reload(Reload::Method));
     assert_eq!(decide(&other, None, &[], true, false, false), Step::Reload(Reload::Relaunch));
     assert_eq!(decide(&other, None, &[], false, false, true), Step::Ask { ask: Ask::Load });
@@ -1548,8 +1548,8 @@ pub(super) mod object_edits;
 fn playtest_reloads_for_failed_object_edits_and_resumes_for_receipts() {
     use playtest::{Ask, Reload, Step, decide};
     let view = LinkState::Viewing { map: Some("example".into()), phase: None, tick: None };
-    for class in [tag_sync::RELOAD, tag_sync::CREATION] {
-        let mut row = json!({"doc":"object", "class":class});
+    for effect in [tag_sync::Effect::Reload, tag_sync::Effect::NextSpawn] {
+        let mut row = json!({"doc":"object", "effect":effect.id()});
         let step = |row: &Value, consent| decide(&view, None, std::slice::from_ref(row), false, consent, true);
         assert_eq!(step(&row, false), Step::Resume);
         row["refused"] = json!(true);

@@ -84,7 +84,9 @@ the runtime's, `~/Library/Application Support/h2recomp/data` (`content::store::d
 Saved game variants (`U:`) and map packages (`maps/`) go there, so a run
 with the same `--data` finds them. The dock layout persists in
 `<default data root>/h2-editor.ini`, whatever `--data` says (View > Reset
-layout restores the default).
+layout restores the default). The file's `[Studio][Tags]` section, after
+Dear ImGui's own, keeps the field panel's **Show unnamed fields** and
+**Show as** choices (`fields::Settings`, written on quit by `main.rs`).
 
 ## The window
 
@@ -668,7 +670,9 @@ build), and keeps the last four maps' scenes so reopening one is instant.
   refused, and a part its pass does not take, draw the base look, and
   `view.stats` counts each by cause (`by_layer`, layer 3: `refused`,
   `parts_refused`). A part only layer 3 draws (no base map) counts in
-  the BSP's `draws` and is picked. A pass that leaves `CULLMODE` unset
+  the BSP's `draws` and is picked in the Game mode only: what is
+  picked and counted is what the mode shows
+  (`NativeLoad::triangles`, `NativeLoad::stats`). A pass that leaves `CULLMODE` unset
   culls as the D3D device's default (CCW;
   `layers_load::device_default_cull`). Flat, Lightmap only and Collision
   draw the base look alone.
@@ -1294,13 +1298,60 @@ hovered field lit and edited bytes marked.
 `fields::panel(ui, &app.tags, tag, path, &mut PanelState, &mut actions)`
 draws the element at `path` (per step, a block field's offset and the
 element index; empty is the root) and pushes `Action::Tag` commands.
-Numbers drag. Enums and flag masks without labelled options edit numerically.
-Named enum values appear in a combo. Named flags have checkboxes (unnamed bits that
-are set show as `bit N`); colours pick; angles show degrees; bounds drag
-as a pair; string IDs are text; tag references and datums pick from the
-map's tags of the allowed groups (and their child groups) with a button
-to show the tag; blocks are tree nodes with an element picker and Add,
+
+The panel draws the rows of `fields::rows` (`fields/row.rs`), which makes
+no UI calls; `tag.fields` returns the same rows
+([tag-editing.md](tag-editing.md), "One row model"). A row is one line:
+a dot when the value differs from the loaded file, the label in words
+(the definition's `label=`, else the name with underscores as spaces,
+the first letter upper case, and `LOD`, `HUD`, `AI`, `BSP`, `ID`, `FOV`
+and `UV` upper case; an unnamed field by its type and offset, `Value at
++0x14`), the widget, the unit (the definition's `unit=` in words,
+`world units`; else `degrees` for an angle), and at the right edge when a change takes effect
+(`play::tag_sync::Effect`). That chip shows only with a game connected
+on the open map (`fields::Link`, set by `PanelState::follow`), never on
+a read-only row, and for a field whose effect is not known only once it
+is changed. The tooltip gives the type in words, the description, the
+read-only reason, the effect sentence with a game connected, and the
+evidence. A read-only row always has a sentence: the tag's refusal,
+`Edited in Scene.` for the scenario's placement lists, `Set by the
+editor. Add or remove list items to change it.` for internal values
+(`tag_doc::STRUCTURAL`). `PanelState::drawn` keeps what the last frame
+drew, for tests.
+
+An element's named rows come first. Its unnamed ones (`named == false`,
+offset order, padding last as `Padding, 8 bytes at +0x18`) sit in one
+folded **Unnamed fields (N)** row whose summary counts them by type
+(`1 tag reference, 8 values`; `fields::row::summary`). The group opens by
+itself (`fields::row::opens`) when **Show unnamed fields** is on, when
+nothing in the element has a name (under the line `No field of this kind
+of tag has a name yet.`), on the focused field, and once when it holds a
+changed field or a field with a mark, so it can be folded again. An
+unnamed value has **Show as** (Decimal, Whole number, Hex), kept per
+group, element path and offset (`fields::show_as_key`, `weap:parts+0x8`)
+in `App::tag_fields`; without a choice it reads as its bits suggest
+(`fields::guess`). **Show unnamed fields** sits over the rows in the
+Tags tool. A field named by the navigation (`nav.go`, `tag.view`) is
+focused in the Tags tool as in the inspector.
+
+Numbers drag. Choices, tag references and **Show as** open the pick
+dialog (`fields::picker`): a modal with a search box, the list (never
+capped; clipped as it scrolls) and Cancel, each pick one undo step. A
+choice's row shows its value's name (`Value 7 (not named)` when none
+names it); the dialog lists the named values and **Enter a number...**
+sets any value the field's width holds. A switches row shows `1 of 2 on:
+Loud` and opens to the named bits as checkboxes in two columns, then the
+rest folded as **Unnamed bits**, each `Bit N` (shown directly when no
+bit is named). A tag reference or datum shows the kind and the tag's last
+path segment (`Model  blaster`; the whole path on hover), with **Open**
+and **Change...**; the dialog lists **No tag**, then every tag of the
+allowed groups (and their child groups), searched by words of
+`group:name` as the tag tree is, with a `Kind` row when several kinds are
+allowed. Colours pick; angles show degrees; bounds drag as a pair;
+string IDs are text; blocks are tree nodes labelled with their size (`2
+items`, `2 items, room for 4`) and hold an element picker and Add,
 Duplicate and Remove (disabled with the reason as tooltip); data is hex.
+`tag.choices` returns the dialog's lists.
 
 `app/tag_api.rs` is the same editor as plain functions, for scripts and
 the agent API: `read_tag(doc, tag)` (the fields as JSON by name),
@@ -1330,9 +1381,21 @@ reference rolled back, missing tags refused or skipped, a stale layout
 refused, growth only when allowed, exports kept out of Git; a shared
 cache browsed read-only and selected from Maps; resources and lookups),
 `api::tests::tags_browse_a_shared_cache_and_round_trip_through_a_bundle`,
-and
+`fields::row::tests` (labels, type words, read-only sentences, paths, a
+changed row's file value, chips only with a game, the Unnamed fields
+group's order, summary and open rules; choice, switches and reference
+summaries), `fields::tests` (Show as keys and the settings' ini section),
+`fields::picker::tests` (named values and search, every bit, typed
+numbers, a 5,000-tag invented map listed with no cap),
+`api::tests::tag_view_folds_unnamed_fields_and_opens_them_on_request`,
+`api::tests::tag_choices_lists_the_pick_dialogs_choices`,
+`headless::tests::the_pick_dialog_sets_choices_references_and_unnamed_bits`,
+`headless::tests::the_unnamed_fields_group_folds_and_opens_on_focus_and_change`,
 `headless::tests::the_tags_tool_edits_a_field_through_its_widgets`,
-which clicks the tree and a flag through the test-engine hooks.
+which clicks the tree and a flag through the test-engine hooks, and
+`headless::tests::tag_rows_match_tag_fields_and_chips_need_a_game`
+(the drawn rows equal `tag.fields`, with no chip unpaired and the
+list's chip with the fake game viewing).
 
 ## UI Screens
 

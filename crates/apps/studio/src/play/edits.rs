@@ -5,7 +5,7 @@ use crate::app::{TagAction, TagWrite};
 use agent_proto::{RpcError, hot::method as hot, sim::SessionView};
 use map::TagId;
 use scenario_edit::layout::BLOCKS;
-use tag_sync::{CREATION, RELOAD, TagBaseline};
+use tag_sync::{Effect, TagBaseline};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Apply {
@@ -482,7 +482,7 @@ impl Play {
                 "scenario",
                 tag.clone(),
                 &format!("{b:?}"),
-                RELOAD,
+                Effect::Reload,
                 "placement layout changed",
             );
             row["target"] = json!({"panel": "pending"});
@@ -498,7 +498,7 @@ impl Play {
                 "scenario",
                 tag.clone(),
                 &w.path,
-                if absent { RELOAD } else { CREATION },
+                if absent { Effect::Reload } else { Effect::NextSpawn },
                 if absent {
                     "reference target is absent from the loaded metadata"
                 } else {
@@ -516,7 +516,7 @@ impl Play {
                 let mut stale = c.clone();
                 stale["why"] = json!(why);
                 stale["resolvable"] = json!(false);
-                stale["class"] = json!(RELOAD);
+                tag_sync::set_effect(&mut stale, Effect::Reload);
                 stale["target"] = json!({"panel": "pending"});
                 pending.push(stale);
                 continue;
@@ -610,13 +610,13 @@ impl Play {
                         c["path"] = json!(w.path);
                         c["tag"] = json!(w.tag.0);
                         c["doc"] = json!("tags");
-                        c["class"] = json!(w.class);
+                        tag_sync::set_effect(c, w.effect);
                         // The conflict belongs to the field that was sent. Pending may
                         // already describe a different field at the same address.
                         c["target"] = json!({"tag": w.tag.0, "path": w.nav_path});
                     } else {
                         c["doc"] = json!("scenario");
-                        c["class"] = json!(CREATION);
+                        tag_sync::set_effect(c, Effect::NextSpawn);
                         if let Some(w) = batch.placements.iter().find(|w| c["path"] == w.path.as_str()) {
                             c["target"] = json!({"block": crate::api::block_name(w.block), "index": w.index});
                             c["field"] = json!(w.field);

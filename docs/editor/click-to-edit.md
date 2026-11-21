@@ -139,9 +139,9 @@ change:
   journal; `"doc": "tags"` stays as a name for the same document, so
   existing scripts keep working.
 - **Live apply.** With a paired game in Edit, each edit goes to the game
-  by its apply class (live-mirror.md, "How an edit applies"): the same
-  badges, the same pending list, the same session rules. A unique copy is
-  class Reload: it adds tags.
+  by its effect (live-mirror.md, "How an edit applies"): the same
+  chips, the same pending list, the same session rules. A unique copy
+  takes effect after a reload: it adds tags.
 
 The scenario tag keeps one owner. Its placement blocks are the Scenario
 commands'; its other fields show in the inspector read-only until a
