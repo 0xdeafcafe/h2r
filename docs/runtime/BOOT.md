@@ -97,7 +97,7 @@ calls come from memory and are complete.
 | `input: Option<input::InputManager>` | a headless keyboard pad | `xapi_glue::register_with` |
 | `keyboard: Option<KeyboardMouse>` | that pad | what `H2_BOOT_INPUT` presses |
 | `trace_limit: Option<usize>` | every call in memory | `trace::install_bounded`: the last N calls, and at most N older ones still open (calls that never return, such as thread exits, age out), stay in memory; the TSV still gets every completed call |
-| `between_slices: Option<BetweenSlices>` | nothing | called after every slice, input pump and audio advance with the kernel; `false` ends the run with outcome `HostStop` (the output is halted as on any end) |
+| `between_slices: Option<BetweenSlices>` | nothing | receives the kernel after the slice’s input and audio service, and after an audio-only idle advance before the scheduler retries. Returning `false` ends the run with `HostStop` |
 
 `Host` has more fields (`film_out`, `host_light`, `host_bots`, `settings`,
 `level`, `debug_menu`, `theater`, `on_vfs` and others); each is documented on

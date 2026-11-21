@@ -4,12 +4,12 @@ Status: Partly built. The setting, the determinism harness, the interpolated rep
 Code: `crates/extensions/lockstep`, `crates/platform/xapi/src/tap.rs`, `crates/apps/app/src/fps.rs`, `crates/platform/d3d/src/interp/`, `crates/extensions/game/src/d3d_glue.rs`, `crates/extensions/game/src/lockstep_glue.rs`. Tests: sections 6 to 8.
 Switch: `H2_FPS`, `impl.render.interpolate`, `impl.render.reproject`, `impl.render.reproject_ahead`, `H2_LOCKSTEP*`, `H2_INPUT_RECORD`, `H2_INPUT_REPLAY`, listed in [switches.md](../runtime/switches.md).
 
-The rule: **the guest tick stays 30 Hz, and 60 or 120 fps interpolates the picture.** Super bounces are a physics and collision quirk of the 30 Hz tick, so the simulation stays bit-identical to 30 Hz play and only what is drawn runs faster. Every community attempt that raised the tick lost super bounces; the ones that kept a 30 Hz tick and interpolated the picture kept them ([notes/high-framerate.md](notes/high-framerate.md) has the record). The planned home of 60 and 120 is the frame-scene renderer ([framescene.md](../graphics/framescene.md)); the rule carries over to it.
+The rule: **the guest tick stays 30 Hz at every display rate.** Super bounces are a physics and collision quirk of the 30 Hz tick, so the simulation stays bit-identical to 30 Hz play and only what is drawn runs faster. Every community attempt that raised the tick lost super bounces; the ones that kept a 30 Hz tick and interpolated the picture kept them ([notes/high-framerate.md](notes/high-framerate.md) has the record). The planned home of 60 and 120 is the frame-scene renderer ([framescene.md](../graphics/framescene.md)); the rule carries over to it.
 
 In short:
 
 - **The guest is untouched.** Same 60 Hz logical vblanks, same two-vblank frame interval, same one tick per frame, same input polls. No guest code, guest global or guest timing changes.
-- **The in-between frames are made on the host.** Every guest frame is a list of resolved draws that hold no guest pointers ([d3d.md](../graphics/d3d.md), "Draws"). The host keeps the last two guest frames and draws the newest one at the display's rate, with camera and object matrices blended between the two ticks. The guest never sees these frames.
+- **The in-between frames are made on the host.** Every guest frame is a list of resolved draws that hold no guest pointers ([d3d.md](../graphics/d3d.md), "Draws"). With interpolated replay enabled, the host keeps the last two guest frames and blends camera and object matrices between the two ticks. By default the window repeats the newest frame. The guest never sees these frames.
 - **The proof is the guest's own state.** The same input recording gives the same guest-memory hash at every present and every tick with the mode off, at 60 and at 120 (section 6).
 
 The mode only helps once a level holds a steady 30 fps ([gameplay-budget.md](../perf/notes/gameplay-budget.md)); below that the pacer rebases and the game plays in slow motion.
@@ -104,8 +104,10 @@ Three things to take from this:
   33.3 ms of logical time and 2 vblanks ([gameplay-budget.md](../perf/notes/gameplay-budget.md)).
 - **Wall time is outside.** `app::pacing::Pacer` and `kernel::pacer::Pacer`
   only sleep the host so guest time doesn't run ahead of real time. They
-  never change the schedule ("schedule, history and guest state are the same
-  paced or not"). A slow host plays in slow motion.
+  use the kernel counter in 100 ns units. In windowed play the shell checks
+  it after each slice and each audio-only idle advance, including at
+  Uncapped. A slow host can fall below 30 ticks per wall second.
+  `h2 play --unpaced` explicitly removes the wall-clock limit for profiling.
 - **Presentation never blocks the guest.** Swap goes through the present
   hook into a 3-slot mailbox; the window shows the newest frame
   ([app.md](../runtime/app.md), "Presentation"). The render thread is the
@@ -486,12 +488,12 @@ h2 lockstep $TMPDIR/a.trace $TMPDIR/b.trace   # exit 0 identical, 1 differ
 
 ### The setting
 
-`H2_FPS=30|60|120|uncapped`, or `h2 play --fps`, sets `AppConfig::fps` (`app::fps::FpsTarget`). With neither, the Video screen's Frame Rate row decides (saved as `[graphics] fps` in `<data>/settings.toml`; [settings-menu.md](settings-menu.md), "Video screen"). A press there applies at the window's next turn: `app::fps::FpsControl` carries it, the `DisplaySchedule` is retargeted and, to or from uncapped, the surface's vsync is configured again (`app::fps::follow`). It reaches only the window:
+`H2_FPS=30|60|120|uncapped`, or `h2 play --fps`, sets `AppConfig::fps` (`app::fps::FpsTarget`). With neither, the Video screen's Frame Rate row decides (saved as `[graphics] fps` in `<data>/settings.toml`; [settings-menu.md](settings-menu.md), "Video screen"). A press there applies at the window's next turn: `app::fps::FpsControl` carries it, the `DisplaySchedule` is retargeted and, to or from uncapped, the surface's vsync is configured again (`app::fps::follow`). The window and any enabled render-thread replay read the setting.
 
 | setting | window |
 |---|---|
 | `30` (default) | a redraw per guest present; the code path is the plain one |
-| `60`, `120` | also redraws on its own `DisplaySchedule` at that rate (late redraws skip slots, never burst); `vsync` as set |
+| `60`, `120` | samples the newest picture on its own `DisplaySchedule` at that rate, skipping late slots, with `vsync` as set |
 | `uncapped` | redraws every event-loop turn, vsync off |
 
 Between guest presents a redraw shows the newest guest frame again, so **above 30 nothing looks smoother** unless the replay is switched on (`impl.render.interpolate` or `impl.render.reproject`, sections 7 and 8), which publishes in-between frames for those redraws to show. `app::fps::alpha` is the same fraction on the window's side, tested but not used; the replay computes its own (`d3d::interp::pacing::alpha`) on the render thread, from the frames' arrivals.
@@ -500,7 +502,8 @@ Between guest presents a redraw shows the newest guest frame again, so **above 3
 
 - `cargo test -p lockstep`: the hash sees any changed word and a swap of two, names the changed MiB; traces round-trip through text; compare finds the first divergence and truncation; the clock counts as guest state. On the toy guest (`lockstep::synthetic`: a generated tick handler, a game-time record, an `XINPUT_STATE` input and a crouched-landing-on-a-seam "super bounce"): equal inputs give equal traces; a replay reproduces the recording whatever the live pad does; releasing crouch on the landing read diverges exactly at that tick and loses the bounce; changing an ignored packet byte is still caught; the observer refuses a wrapped tick.
 - `cargo test -p xapi`: the tap's log holds exactly the bytes the guest got, replay gives them back over a different live pad, and a recorded failure status comes back as the call's error.
-- `cargo test -p app`: `H2_FPS` parsing and its default; 30 is never due on the schedule; 60 and 120 redraw 60 and 120 times a second on the fake clock; a late window skips slots; alpha. `crates/apps/app/tests/fps_lockstep.rs` runs the toy guest through the shell's triple buffer with a presenter on the fake clock at all four settings: every guest frame reaches the screen, redraws per guest frame are 1, 2, 4 and over 30, and the guest's trace is identical at every setting. A control shows the check catches a guest that ran one extra tick.
+- `crates/apps/app/tests/fps_lockstep.rs` replays the same input at all four display rates. On a fake wall clock each guest frame costs 16.67 ms of work plus the sleep requested by the shell pacer. The checks require 30 ticks in each wall second, identical guest traces, and 30, 60 or 120 window draws per second (every event-loop turn at Uncapped). Explicitly unpaced play takes only the simulated work time.
+- `crates/apps/boot/src/idle_audio.rs` checks that a pending sound advances the kernel clock by one quantum and that the host sees each new deadline before another slice can run.
 - `cargo test -p boot --lib lockstep`: the toy guest through boot's wiring writes traces that compare identical, or diverge at the changed tick.
 
 ### Next

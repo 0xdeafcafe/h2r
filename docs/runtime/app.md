@@ -172,7 +172,7 @@ How it is wired (all through `boot::run_hosted` and `boot::Host`, docs/runtime/B
    combined with the first GameController pad) through
    `xapi_glue::register_with`; `xapi::service_input` runs after every slice,
    as in the headless run.
-5. **Run loop**: after each slice, `host.tick(kernel.clock().counter())`
+5. **Run loop**: after each slice or audio-only idle advance, `host.tick(kernel.clock().counter())`
    paces guest time to the wall clock and blocks while paused; on a close it
    returns `Stop`, the run ends as `HostStop`, prints its usual report, and
    the guest thread returns (`shutdown_timeout` is 10 s for the report).
@@ -487,31 +487,25 @@ surface, clearing the rest to black.
 - **Display rate** (`AppConfig::fps`, `H2_FPS=30|60|120|uncapped`, `h2 play
   --fps`, the Video screen's Frame Rate row, `graphics.fps` in
   `settings::Store`; `fps.rs`): at 30, the default, the window redraws when the guest
-  presents, as it always has. At 60 and 120 it also redraws on its own
-  `DisplaySchedule`; uncapped redraws every event-loop turn with vsync off.
-  Nothing reaches the guest, and until host replay exists
-  ([high-framerate.md](../game/high-framerate.md)) the extra redraws show the
-  newest guest frame again: no smoother picture yet.
+  presents. At 60 and 120 the window samples the mailbox on its
+  `DisplaySchedule`. Uncapped redraws every event-loop turn with vsync off.
+  Extra redraws repeat the newest picture unless the render thread supplies
+  an in-between frame. [Host replay and reprojection](../game/high-framerate.md).
 - Surface format: the first non-sRGB format (`Bgra8Unorm` on Metal). The Xbox
   pipeline is gamma-encoded throughout, so no conversion happens anywhere.
 
 ## Pacing
 
-The kernel HLE's clock is logical (`kernel::Clock`): 100 ns ticks that only
-move when every guest thread is waiting (the scheduler jumps to the next
-timer deadline) or when the host calls `Kernel::advance_time`. Guest compute
-costs no guest time. Halo 2 creates its device with `PresentationInterval =
-0x80000000` (immediate), so Swap does not wait for vblank either; the game
-paces itself on timers and the performance counter.
+The kernel counts guest work in 100 ns units and advances to logical
+deadlines when threads are idle. Its periodic vblank source runs at 60 Hz.
+A normal gameplay frame spans two vblanks, about 33.3 ms.
 
-`Pacer` (`pacing.rs`) holds guest time to wall time from the outside:
-between chunks, guest ahead of wall by more than `max_lead` (2 ms) sleeps the
-difference; guest behind by more than `max_lag` (100 ms) rebases, so a slow
-host plays in slow motion instead of fast-forwarding to catch up later. A
-pause resets the origin. `PacePolicy::Unpaced` never sleeps (traces,
-benchmarks). This needs no kernel change; if chunk granularity proves too
-coarse, the clean fix is a kernel hook called before each idle
-`advance_to(deadline)`, where the pacer would sleep until that deadline.
+The shell's `Pacer` compares elapsed kernel time with elapsed wall time
+after each scheduler slice and each audio-only idle advance. A lead over
+2 ms makes the guest thread sleep for the difference. A lag over 100 ms
+or a pause rebases the clocks. All four Frame Rate choices use the same
+policy. The explicit benchmark option `--unpaced` selects
+`PacePolicy::Unpaced` and skips these sleeps.
 
 `VBlank` is the refresh arithmetic in guest ticks (`NTSC` 60000/1001 Hz,
 `HZ60`, `PAL50`): `count_at(ticks)`, `time_of(n)`, `next_after(ticks)`. The

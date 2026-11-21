@@ -10,6 +10,7 @@
 
 pub use game::*;
 mod controller_lights;
+mod idle_audio;
 // maps.test.*: test maps from recipes (docs/game/test-maps.md).
 pub mod registration;
 #[cfg(feature = "test-maps")]
@@ -1601,9 +1602,19 @@ fn run_configured(
         if matches!(outcome, kernel::RunOutcome::Deadlock { .. })
             && let Some(a) = &ds
         {
-            match dsound_glue::wake_idle(a, &k, &loaded.runtime, &mut audio_idle) {
-                Ok(true) => continue,
-                Ok(false) => {}
+            match idle_audio::wake(
+                a,
+                &k,
+                &loaded.runtime,
+                &mut audio_idle,
+                host.between_slices.as_mut(),
+            ) {
+                Ok(idle_audio::Next::Retry) => continue,
+                Ok(idle_audio::Next::HostStop) => {
+                    host_stop = true;
+                    break;
+                }
+                Ok(idle_audio::Next::Deadlock) => {}
                 Err(e) => audio_errors.push(format!("slice {slice}: {e}")),
             }
         }
