@@ -484,8 +484,10 @@ Press **F5**, click the Play button beside the game link, or choose
 of the open map with your edits. The Game tab's **Spawn** picker lets
 you start at the level's own spawn, under the editor camera or at the
 selected placement. Press **Shift+F5** or click Stop to close that
-game. Play needs the disc and `h2` installed (`~/.cargo/bin/h2`, or set
-the path under **Advanced** in the Game tab).
+game. Play needs the disc and `h2`. Running the editor from a checkout with
+`cargo run`, build `h2` beside it with `cargo build --release -p cli --bin
+h2`; otherwise install it (`~/.cargo/bin/h2`) or set the path under
+**Advanced** in the Game tab.
 
 While the game runs, the editor stays paired with it:
 

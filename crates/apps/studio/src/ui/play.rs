@@ -336,7 +336,7 @@ impl PlayUi {
             ))
             .build();
         ui.set_item_tooltip(
-            "The h2 binary Play runs. Empty uses $H2_BIN, ~/.cargo/bin/h2, or h2 on the PATH.",
+            "The h2 binary Play runs. Empty uses $H2_BIN, the h2 beside the editor (target/<profile>/h2), ~/.cargo/bin/h2, h2 on the PATH, or the lab host's copy.",
         );
         if let Some(log) = &p.log_path {
             ui.text_wrapped(format!("Launch log: {}", log.display()));
