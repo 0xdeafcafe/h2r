@@ -1,6 +1,6 @@
 # h2-editor polish: what is wrong, the design, and the slices
 
-Status: P1 to P7, P12, P18, G3 and G5 are implemented. The remaining slices describe the design.
+Status: P1 to P7, P12, P18 and G1, G3 and G5 are implemented. The remaining slices describe the design.
 Code: `crates/apps/studio/src` (the window: `ui.rs`, `ui/`, `play.rs`, `viewport.rs`, `theme.rs`), `crates/tools/scenario-edit/src` (the scene and its renderer). Tests: named per slice.
 Switch: none.
 

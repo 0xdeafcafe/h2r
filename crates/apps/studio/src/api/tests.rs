@@ -430,7 +430,7 @@ fn pair_status_carries_link_view() {
     fake::pair_for_view(&mut play, &mut app, &game);
     let status = call(&mut api, &mut app, m::PAIR_STATUS, Value::Null);
     assert_eq!(status["state"], "connected");
-    assert_eq!(status["link"]["state"], "viewing");
+    assert_eq!(status["link"]["state"], "blocked");
     assert_eq!(status["link"]["text"], play.link_view(&app).text);
 }
 

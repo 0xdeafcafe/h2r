@@ -732,7 +732,7 @@ H2_AGENT=<cache>/h2recomp/editor-<pid>-<n>.sock H2_MAP_DIR=$TMPDIR/h2-editor-pla
   the socket because `h2 play` may build its image first.
 
 **Pair** attaches to a running game: one it found, or a path typed (or
-`tcp://HOST:PORT`). `play::pair::Finder` looks every two seconds on its
+`tcp://HOST:PORT`). `play::pair::Finder` looks every second on its
 own thread: the agents directory (`agent_proto::discover`, where `h2 play`
 opens `<pid>.sock` unless `H2_AGENT` is set; leftover sockets nothing
 answers on are removed) and the sockets **Find** lists (`$H2_AGENT`, the
@@ -741,8 +741,8 @@ Play puts its own). Each is asked `session.status`. Click the game link
 pill to pair with the single discovered game or choose from the list
 when several are running. The list shows each game's map and phase.
 It also offers **Unpair** and **Auto-pair**. Auto-pair defaults to on and
-pairs with a sole game once per socket (`Play::auto_tried`), so Unpair
-sticks. An empty path in Game > Advanced pairs with the default socket.
+chooses the editor's own game, the sole game, or the only game on the open
+map (`play::auto::choose`). Unpair skips that socket until it leaves discovery. An empty path in Game > Advanced pairs with the default socket.
 The game is taken to hold the map as the editor shows it at that moment.
 
 `Play::link_view` supplies the pill in the bar and the Game panel, and
@@ -753,6 +753,7 @@ the `link` in `pair.status`.
 | No game | Play is available when a map is open. |
 | `Halo 2 is running <map>` | Click to pair. |
 | Connecting… | Click for **Cancel**. |
+| Reconnecting… | The game is still present. Click for **Cancel**. A matching epoch and checksum keep the edit mode and baselines. |
 | `Viewing <map> · <phase>` | The editor reads the running game in View mode. |
 | `Editing <map> live` | The Edit switch is on and tag and placement edits can reach the game. The viewport frame and the inspector's Live pill are green. |
 | Edits stay here | The Edit switch is on and the game is blocking writes. Hover for the reason. The frame and Live pill are amber. |

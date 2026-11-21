@@ -131,7 +131,7 @@ impl PlayUi {
         };
 
         match &view.state {
-            LinkState::Connecting if ui.button("Cancel") => {
+            LinkState::Connecting | LinkState::Reconnecting { .. } if ui.button("Cancel") => {
                 self.play.request(Request::Unpair);
                 ui.close_current_popup();
             }
@@ -195,7 +195,7 @@ impl PlayUi {
             ui.close_current_popup();
         }
         ui.checkbox("Auto-pair", &mut app.pairing.auto_pair);
-        ui.set_item_tooltip("Pairs in View mode when exactly one game is running, once per game.");
+        ui.set_item_tooltip("Pairs in View mode with the only game running or the only game on the open map.");
     }
 
     pub fn edit_switch(&mut self, ui: &Ui, view: &LinkView) {

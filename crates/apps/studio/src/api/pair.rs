@@ -50,7 +50,7 @@ const METHODS: &[MethodDef] = &[
         m::PAIR_STATUS,
         "The socket connection, game status, edit permissions and auto-pair setting, with the game link pill's state, label and tooltip. Needs the window",
         "{}",
-        r#"{"state":"off|connecting|connected|lost","why":"string|null","socket":"string|null","map":"string|null","phase":"string|null","paused":"boolean|null","tick":"integer|null","matches":"same|different|unknown","open_map":"string|null","live_edits":"boolean","edits_blocked":"string|null","auto_pair":"boolean","games":"integer","link":{"state":"no_game|found|connecting|viewing|editing|blocked|other_map|lost","text":"string","why":"string|null"}}"#,
+        r#"{"state":"off|connecting|reconnecting|connected|lost","why":"string|null","socket":"string|null","map":"string|null","phase":"string|null","paused":"boolean|null","tick":"integer|null","matches":"same|different|unknown","open_map":"string|null","live_edits":"boolean","edits_blocked":"string|null","auto_pair":"boolean","games":"integer","link":{"state":"no_game|found|connecting|reconnecting|viewing|editing|blocked|other_map|lost","text":"string","why":"string|null"}}"#,
         "null",
     ),
     def(
@@ -69,7 +69,7 @@ const METHODS: &[MethodDef] = &[
     ),
     def(
         m::PAIR_AUTO,
-        "Read, or with `enabled` set, the auto-pair setting: pair by itself with the one game running, once per game. On by default",
+        "Read, or with `enabled` set, the auto-pair setting: prefer its own game, the only game, or the unique matching map. On by default",
         r#"{"enabled?":"boolean"}"#,
         r#"{"auto_pair":"boolean"}"#,
         r#"{"enabled":false}"#,

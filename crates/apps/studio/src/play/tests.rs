@@ -353,13 +353,13 @@ fn pause_step_and_resume_hold_control_only_while_needed() {
 }
 
 #[test]
-fn a_game_that_goes_away_is_lost() {
+fn a_game_that_goes_away_returns_to_no_game() {
     let (_t, game, mut app, mut play) = paired("lost", "example", SessionKind::Local);
     drop(game);
     until(&mut play, &mut app, "the loss", |p, _| {
-        matches!(p.conn, Conn::Lost(_))
+        p.conn == Conn::Off
     });
-    assert_eq!(play.link_view(&app).text, "Game lost");
+    assert_eq!(play.link_view(&app).state, LinkState::NoGame);
 }
 
 #[test]
@@ -704,7 +704,7 @@ fn a_running_game_is_offered_with_its_map_and_pairs_on_request() {
     assert_eq!(play.link_view(&app).text, "Halo 2 is running example");
     // Auto-pair is off: it waits for the button.
     assert_eq!(play.conn, Conn::Off);
-    assert_eq!(play.auto_target(false), None);
+    assert_eq!(play.auto_target(false, app.loaded_map()), None);
     play.request(Request::Pair(Endpoint::Unix(game.path.clone())));
     until(&mut play, &mut app, "the pairing", |p, _| {
         p.is_paired() && p.edits.journal_ready
@@ -768,7 +768,7 @@ fn the_one_running_game_is_paired_on_its_own_once() {
         }
     }
     assert_eq!(play.conn, Conn::Off);
-    assert_eq!(play.auto_target(true), None);
+    assert_eq!(play.auto_target(true, app.loaded_map()), None);
     assert!(play.notice(&app).is_some(), "still offered by hand");
 }
 
@@ -776,12 +776,12 @@ fn the_one_running_game_is_paired_on_its_own_once() {
 fn several_games_are_not_paired_for_the_user() {
     let t = Temp::new("many");
     let a = Game::start("many-a", "example", SessionKind::Local);
-    let b = Game::start("many-b", "zanzibar", SessionKind::Local);
+    let b = Game::start("many-b", "example", SessionKind::Local);
     let mut app = editor(&t);
     let mut play = Play::new();
     play.finder = finder_for(&[&a, &b]);
     until(&mut play, &mut app, "both to be found", |p, _| p.finder.running().len() == 2);
-    assert_eq!(play.auto_target(true), None);
+    assert_eq!(play.auto_target(true, app.loaded_map()), None);
     let n = play.notice(&app).unwrap();
     assert_eq!(n.socket, None);
     assert!(n.text.starts_with("2 "), "{}", n.text);
@@ -937,7 +937,11 @@ fn the_link_view_names_every_state() {
     play.request(Request::Edit(true));
     play.update(&mut app);
     check(&play, &app, "blocked", LinkTone::Warn);
-    drop(coop);
+    play.finder = finder_for(&[&coop]);
+    until(&mut play, &mut app, "listed game", |p, _| !p.finder.running().is_empty());
+    play.on_event(&mut app, Event::Lost("socket closed".into()));
+    check(&play, &app, "reconnecting", LinkTone::Notice);
+    play.reconnect(&mut app, Instant::now() + Duration::from_secs(30));
     until(&mut play, &mut app, "the loss", |p, _| {
         matches!(p.conn, Conn::Lost(_))
     });
@@ -953,4 +957,69 @@ fn blocked_names_the_reason() {
     assert_eq!(view.state, LinkState::Blocked { why: why.into() });
     assert_eq!(view.why.as_deref(), Some(why));
     assert_eq!(view.text, "Edits stay here: co-op session");
+}
+
+#[test]
+fn reconnect_delays_double_then_stop_at_thirty_seconds() {
+    let start = Instant::now();
+    let mut clock = auto::Backoff::new(start);
+    let mut at = start;
+    for ms in [250, 500, 1000, 2000, 2000, 2000] {
+        at += Duration::from_millis(ms);
+        assert!(!clock.due(at - Duration::from_millis(1)));
+        assert!(clock.due(at));
+    }
+    let end = start + Duration::from_secs(30);
+    assert!(clock.expired(end));
+    assert!(!clock.due(end));
+}
+
+#[test]
+fn discovery_prefers_the_child_then_the_unique_matching_map() {
+    let (_t, game, mut app, mut play) = paired("choose", "example", SessionKind::Local);
+    let found = agent_proto::discover::Found {
+        path: game.path.clone(),
+        pid: None,
+        status: play.status.clone(),
+        note: None,
+    };
+    let mut other = found.clone();
+    other.path = "other.sock".into();
+    other.status.as_mut().unwrap().at.map = Some("other".into());
+    let open = Some("example");
+    let skipped = HashSet::new();
+    assert_eq!(auto::choose(&[&found, &other], open, None, &skipped), Some(found.path.clone()));
+    assert_eq!(auto::choose(&[&found, &other], open, Some(&other.endpoint()), &skipped), Some(other.path));
+    assert_eq!(auto::choose(&[&found], None, None, &skipped), Some(found.path.clone()));
+    play.unpair(&mut app);
+    assert_eq!(auto::choose(&[&found], open, None, &play.auto_tried), None);
+    play.update(&mut app); // The socket left the list.
+    assert_eq!(auto::choose(&[&found], open, None, &play.auto_tried), Some(found.path));
+}
+
+#[test]
+fn reconnect_keeps_acknowledged_edits_only_for_the_same_identity() {
+    let (_t, game, mut app, mut play) = paired("reconnect", "example", SessionKind::Local);
+    play.finder = finder_for(&[&game]);
+    play.apply_edits(&mut app, Apply::Send).unwrap();
+    move_flag(&mut app, [4., 3., 2.]);
+    until(&mut play, &mut app, "acknowledged edit", |p, a| {
+        !p.finder.running().is_empty() && !game.calls("edit.batch").is_empty()
+            && p.edits.sent.is_none() && a.pairing.pending.is_empty()
+    });
+    let baseline = play.baseline.clone();
+    for changed in [false, true] {
+        play.on_event(&mut app, Event::Lost("dropped".into()));
+        assert!(matches!(play.link_view(&app).state, LinkState::Reconnecting { .. }));
+        if changed {
+            game.bsp.fetch_add(1, Ordering::Relaxed);
+        }
+        play.reconnect(&mut app, Instant::now() + Duration::from_secs(1));
+        until(&mut play, &mut app, "verified reconnect", |p, _| p.is_paired() && p.edits.journal_ready);
+        play.push_edits(&mut app);
+        assert_eq!(play.live_edits, !changed);
+        assert_eq!(play.baseline == baseline, !changed);
+        assert_eq!(app.pairing.pending.is_empty(), !changed);
+        assert_eq!(game.calls("edit.batch").len(), 1);
+    }
 }

@@ -511,14 +511,13 @@ While the game runs, the editor stays paired with it:
 
 A game you started yourself is found without any setup. `h2 play` opens
 an agent socket of its own (in the `agents` folder of the h2recomp cache;
-`H2_AGENT=off` closes it), and the editor looks for those every couple of
-seconds:
+`H2_AGENT=off` closes it), and the editor looks for those every second:
 
 - With one game running, the pill says "Halo 2 is running" with the
   map name. Click it to pair. If the game is on another map, click
   the pill and choose **Open** with the game's map name to switch maps.
 - **Auto-pair** in the pill's popover is on by default. It pairs with
-  a sole running game once per socket. To disconnect, click the pill
+  the only running game or the only game on the open map. To disconnect, click the pill
   and choose **Unpair**.
 - With several games, open the pill's list and choose **Pair** beside
   the map and phase you want.
@@ -533,7 +532,9 @@ when each edit takes effect, resolve a conflict, or reload the play copy
 for structural edits. If a co-op session or
 another restriction prevents writes, the pill says "Edits stay here"
 and the frame and **Live** pill turn amber. Hover the pill for the
-reason. If the connection drops, open the pill and use **Pair again**.
+reason. If the connection drops while the game is still present, the editor
+retries for 30 seconds. Click **Cancel** to stay unpaired or **Pair again**
+after the retry window ends.
 
 An agent drives the same with `pair.list`, `pair.status`, `pair.connect`,
 `pair.disconnect`, `pair.auto`, `pair.play`, `pair.stop`, `pair.control`

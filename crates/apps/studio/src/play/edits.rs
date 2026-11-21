@@ -54,6 +54,23 @@ pub(super) struct Edits {
     created: Vec<sync::Write>,
 }
 
+impl Edits {
+    pub(super) fn interrupted_write(&self) -> bool {
+        self.sent.is_some() || self.reverting || self.restore_after_batch
+    }
+
+    pub(super) fn transport_lost(&mut self) {
+        self.map_requested = false;
+        self.journal_requested = false;
+        self.reverting = false;
+        self.taking = None;
+        self.sent = None;
+        self.last_diff = None;
+        self.respawn = false;
+        self.reload = false;
+    }
+}
+
 type Reply = Result<Value, RpcError>;
 
 impl Play {
@@ -109,7 +126,13 @@ impl Play {
             self.launch_baseline = Some((base, tags));
             self.launched_copy = self.endpoint().cloned().map(|ep| (ep, world, sum));
         }
-        let changed = self.edits.epoch != epoch
+        let reconnecting = matches!(self.conn, Conn::Reconnecting { .. });
+        if reconnecting {
+            self.conn = Conn::Connected;
+            self.retry = None;
+        }
+        let changed = (reconnecting && (epoch.is_none() || checksum.is_none()))
+            || self.edits.epoch != epoch
             || self.edits.checksum != checksum
             || (self.edits.name != name
                 && MapMatch::of(self.edits.name.as_deref(), name.as_deref()) != MapMatch::Same)
@@ -142,7 +165,8 @@ impl Play {
         if changed {
             app.sync_tags();
             app.tags.live_datums = None;
-            if self.edits.epoch.is_some() {
+            if reconnecting || self.edits.epoch.is_some() {
+                self.edits.own_start = false;
                 self.live_edits = false;
             }
             self.edits.epoch = epoch;

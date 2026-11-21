@@ -12,6 +12,7 @@
 //! teleport moves. The UI (`ui::play`) only draws it and
 //! calls its methods; tests drive it against the agent crate's server.
 
+pub mod auto;
 pub mod launch;
 pub mod link;
 pub mod pair;
@@ -85,6 +86,7 @@ pub enum Conn {
     Off,
     Connecting,
     Connected,
+    Reconnecting { backoff: auto::Backoff, why: String },
     Lost(String),
 }
 
@@ -97,6 +99,7 @@ pub enum LinkState {
         matches: MapMatch,
     },
     Connecting,
+    Reconnecting { since: Instant },
     Viewing {
         map: Option<String>,
         phase: Option<Phase>,
@@ -126,6 +129,7 @@ impl LinkState {
             Self::NoGame => "no_game",
             Self::Found { .. } => "found",
             Self::Connecting => "connecting",
+            Self::Reconnecting { .. } => "reconnecting",
             Self::Viewing { .. } => "viewing",
             Self::Editing { .. } => "editing",
             Self::Blocked { .. } => "blocked",
@@ -285,7 +289,7 @@ impl Play {
     }
 
     pub fn endpoint(&self) -> Option<&Endpoint> {
-        self.link.as_ref().map(|l| &l.endpoint)
+        self.link.as_ref().map(|l| &l.endpoint).or(self.retry.as_ref())
     }
     pub fn is_paired(&self) -> bool {
         self.conn == Conn::Connected
@@ -320,6 +324,12 @@ impl Play {
                 Tone::Notice,
                 "Connecting...".into(),
                 None,
+            ),
+            Conn::Reconnecting { backoff, why } => (
+                State::Reconnecting { since: backoff.since },
+                Tone::Notice,
+                "Reconnecting...".into(),
+                Some(why.clone()),
             ),
             Conn::Lost(why) => (
                 State::Lost { why: why.clone() },
@@ -396,7 +406,7 @@ impl Play {
             tone,
             text,
             why,
-            can_play: app.loaded_map().is_some() && self.conn != Conn::Connecting,
+            can_play: app.loaded_map().is_some() && !matches!(self.conn, Conn::Connecting | Conn::Reconnecting { .. }),
             can_stop: self.child.is_some(),
             can_pause,
             paused,
@@ -445,7 +455,7 @@ impl Play {
     /// The running games the editor is not paired with, as one notice:
     /// none while paired or connecting.
     pub fn notice(&self, app: &App) -> Option<Notice> {
-        if matches!(self.conn, Conn::Connected | Conn::Connecting) {
+        if matches!(self.conn, Conn::Connected | Conn::Connecting | Conn::Reconnecting { .. }) {
             return None;
         }
         pair::notice(&self.finder.running(), app.loaded_map())
@@ -462,7 +472,9 @@ impl Play {
         if let Endpoint::Unix(p) = &endpoint {
             self.auto_tried.insert(p.clone());
         }
+        let own = self.child_endpoint.as_ref() == Some(&endpoint);
         self.start(app, endpoint, Options::default());
+        self.edits.own_start = own;
         self.baseline = None;
         app.info(format!(
             "pairing with the game at {}",
@@ -496,18 +508,13 @@ impl Play {
 
     /// Drop the pairing (the game keeps running; our control is released).
     pub fn unpair(&mut self, app: &mut App) {
+        if let Some(Endpoint::Unix(path)) = self.endpoint() {
+            self.auto_tried.insert(path.clone());
+        }
         if self.link.take().is_some() {
             app.info("unpaired from the game");
         }
-        app.pairing.clear_mirror();
-        self.conn = Conn::Off;
-        self.baseline = None;
-        app.tags.live_datums = None;
-        self.edits = Edits::default();
-        self.retry = None;
-        self.live_edits = false;
-        self.controller = false;
-        self.paused = false;
+        self.disconnect(app);
     }
 
     /// Start the game on the open map with the editor's bytes, paired.
@@ -632,6 +639,7 @@ impl Play {
     pub fn stop_game(&mut self, app: &mut App) {
         if let Some(mut c) = self.child.take() {
             self.launched_copy = None;
+            self.child_endpoint = None;
             if matches!(c.try_wait(), Ok(None)) {
                 let _ = c.kill();
                 app.info("stopped the game");
@@ -657,6 +665,10 @@ impl Play {
     /// to send.
     pub fn update(&mut self, app: &mut App) {
         self.finder.poll();
+        self.auto_tried.retain(|path| {
+            self.finder.games.iter().any(|g| &g.path == path)
+                || self.child_endpoint.as_ref() == Some(&Endpoint::Unix(path.clone()))
+        });
         self.take_requests(app);
         self.auto_pair(app);
         if let Some(c) = &mut self.child
@@ -669,16 +681,15 @@ impl Play {
                     .map(|p| format!("; its log: {}", p.display()))
                     .unwrap_or_default()
             ));
+            let paired_child = self.endpoint() == self.child_endpoint.as_ref();
             self.child = None;
+            self.child_endpoint = None;
             self.launched_copy = None;
-            self.link = None;
-            app.pairing.clear_mirror();
-            self.retry = None;
-            self.conn = Conn::Off;
-            self.paused = false;
-            self.live_edits = false;
-            self.controller = false;
+            if paired_child {
+                self.disconnect(app);
+            }
         }
+        self.reconnect(app, Instant::now());
         let events = self.link.as_ref().map(Link::drain).unwrap_or_default();
         for e in events {
             self.on_event(app, e);
@@ -697,7 +708,7 @@ impl Play {
             }
         }
         self.maybe_spawn(app);
-        if Instant::now() >= self.next_push {
+        if !matches!(self.conn, Conn::Reconnecting { .. }) && Instant::now() >= self.next_push {
             self.next_push = Instant::now() + PUSH_EVERY;
             self.push_edits(app);
         }
@@ -743,33 +754,61 @@ impl Play {
         }
     }
 
-    /// The socket auto-pair would take now: the one running game, when
-    /// nothing is paired, the setting is on, and it has not been paired
-    /// with before.
-    pub fn auto_target(&self, on: bool) -> Option<PathBuf> {
-        if !on || self.child.is_some() || matches!(self.conn, Conn::Connected | Conn::Connecting) {
+    pub fn auto_target(&self, on: bool, open: Option<&str>) -> Option<PathBuf> {
+        if !on || !matches!(self.conn, Conn::Off | Conn::Lost(_)) {
             return None;
         }
-        match self.finder.running().as_slice() {
-            [g] if !self.auto_tried.contains(&g.path) => Some(g.path.clone()),
-            _ => None,
-        }
+        auto::choose(&self.finder.running(), open, self.child_endpoint.as_ref(), &self.auto_tried)
     }
 
     fn auto_pair(&mut self, app: &mut App) {
-        let Some(path) = self.auto_target(app.pairing.auto_pair) else {
+        if let Some(path) = self.auto_target(app.pairing.auto_pair, app.loaded_map()) {
+            self.pair(app, Endpoint::Unix(path));
+        }
+    }
+
+    fn listed(&self) -> bool {
+        self.retry.as_ref().is_some_and(|ep| {
+            Some(ep) == self.child_endpoint.as_ref()
+                || self.finder.games.iter().any(|g| &g.endpoint() == ep)
+        })
+    }
+
+    fn disconnect(&mut self, app: &mut App) {
+        self.link = None;
+        self.retry = None;
+        self.conn = Conn::Off;
+        self.status = None;
+        self.session = None;
+        self.baseline = None;
+        self.edits = Edits::default();
+        self.controller = false;
+        self.paused = false;
+        self.live_edits = false;
+        self.pending_spawn = None;
+        self.reload.clear();
+        app.tags.live_datums = None;
+        app.pairing.clear_mirror();
+    }
+
+    fn reconnect(&mut self, app: &mut App, now: Instant) {
+        if !matches!(self.conn, Conn::Reconnecting { .. }) {
             return;
-        };
-        let map = self
-            .finder
-            .running()
-            .first()
-            .and_then(|g| g.map().map(str::to_owned));
-        app.info(format!(
-            "found Halo 2 running {}: pairing with it (turn off Auto-pair in the game link)",
-            map.as_deref().unwrap_or("with no map yet")
-        ));
-        self.pair(app, Endpoint::Unix(path));
+        }
+        if !self.listed() {
+            app.info("the paired game exited");
+            self.disconnect(app);
+            return;
+        }
+        let Conn::Reconnecting { backoff, why } = &mut self.conn else { return };
+        if backoff.expired(now) {
+            self.link = None;
+            app.error(format!("game link: {why}"));
+            self.conn = Conn::Lost(why.clone());
+            self.live_edits = false;
+        } else if self.link.is_none() && backoff.due(now) {
+            self.link = self.retry.clone().map(|ep| Link::open(ep, Options::default()));
+        }
     }
 
     /// What `pair.status` and `pair.list` answer, read each frame.
@@ -778,6 +817,7 @@ impl Play {
             Conn::Off => ("off", None),
             Conn::Connecting => ("connecting", None),
             Conn::Connected => ("connected", None),
+            Conn::Reconnecting { why, .. } => ("reconnecting", Some(why.clone())),
             Conn::Lost(w) => ("lost", Some(w.clone())),
         };
         let at = self.status.as_ref().map(|s| &s.at);
@@ -815,7 +855,9 @@ impl Play {
     fn on_event(&mut self, app: &mut App, e: Event) {
         match e {
             Event::Connected => {
-                self.conn = Conn::Connected;
+                if !matches!(self.conn, Conn::Reconnecting { .. }) {
+                    self.conn = Conn::Connected;
+                }
                 self.call(method::METHODS, Value::Null, Purpose::Capabilities);
                 app.pairing.mirror = self.endpoint().cloned().map(live_mirror::Stream::open);
                 app.info(format!(
@@ -824,16 +866,39 @@ impl Play {
                 ));
             }
             Event::Lost(why) => {
-                app.error(format!("game link: {why}"));
-                self.conn = Conn::Lost(why);
-                self.retry = self.link.take().map(|l| l.endpoint.clone());
-                app.pairing.clear_mirror();
-                app.tags.live_datums = None;
-                self.live_edits = false;
-                self.edits = Edits::default();
-                self.baseline = None;
-                self.next_push = Instant::now();
+                self.retry = self.link.take().map(|l| l.endpoint.clone()).or(self.retry.take());
                 self.controller = false;
+                self.paused = false;
+                self.status = None;
+                self.session = None;
+                app.pairing.drop_stream();
+                app.tags.live_datums = None;
+                if self.edits.interrupted_write() {
+                    // The last write may have reached the game. Re-read its journal before
+                    // offering edits or a restore on this connection again.
+                    self.live_edits = false;
+                    self.edits = Edits::default();
+                    self.baseline = None;
+                    app.pairing.leaving = false;
+                    app.pairing.journal.clear();
+                    app.info("game link interrupted a write; checking the game journal");
+                }
+                self.next_push = Instant::now();
+                self.edits.transport_lost();
+                if let Conn::Reconnecting { why: last, .. } = &mut self.conn {
+                    *last = why;
+                } else if self.listed() {
+                    self.conn = Conn::Reconnecting {
+                        backoff: auto::Backoff::new(Instant::now()),
+                        why,
+                    };
+                } else if self.conn == Conn::Connecting {
+                    app.error(format!("game link: {why}"));
+                    self.conn = Conn::Lost(why);
+                } else {
+                    app.info("the paired game exited");
+                    self.disconnect(app);
+                }
             }
             Event::Poll(status) => {
                 if let Ok(s) = serde_json::from_value::<Status>(status) {

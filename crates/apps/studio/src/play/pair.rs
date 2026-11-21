@@ -21,7 +21,7 @@ use serde_json::Value;
 use super::{LinkState, LinkView, launch};
 
 /// How often the finder looks again.
-pub const SCAN_EVERY: Duration = Duration::from_secs(2);
+pub const SCAN_EVERY: Duration = Duration::from_secs(1);
 
 /// What a scan does: the games it found.
 pub type ScanFn = Arc<dyn Fn() -> Vec<Found> + Send + Sync>;
@@ -192,7 +192,7 @@ pub enum Request {
 impl Request {
     pub fn refusal(&self, link: &LinkView) -> Option<&'static str> {
         match self {
-            Self::Play if link.state == LinkState::Connecting => {
+            Self::Play if matches!(link.state, LinkState::Connecting | LinkState::Reconnecting { .. }) => {
                 Some("wait for the game link to connect or cancel it")
             }
             Self::Play if !link.can_play => Some("open a map first"),
@@ -261,11 +261,15 @@ impl Bridge {
         self.pending.clear();
         self.journal.clear();
         self.leaving = false;
+        self.play_copy = None;
+        self.drop_stream();
+    }
+
+    pub(super) fn drop_stream(&mut self) {
         self.mirror = None;
         self.shown = None;
         self.counters = None;
         self.stream_map = Value::Null;
-        self.play_copy = None;
     }
 
     /// Only resolve definition handles and world-space coordinates against

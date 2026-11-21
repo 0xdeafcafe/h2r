@@ -294,7 +294,7 @@ Notes on some:
   `pair.auto {enabled}` reads or sets auto-pair, on by default.
   The `link` object in `pair.status` contains `state`, the pill's
   `text` and its `why` tooltip (string or null). Its states are
-  `no_game`, `found`, `connecting`, `viewing`, `editing`, `blocked`,
+  `no_game`, `found`, `connecting`, `reconnecting`, `viewing`, `editing`, `blocked`,
   `other_map` and `lost`. The top-level `state` continues to report the
   socket connection.
 - **Game controls.** `pair.play` starts the open map. `pair.stop` stops

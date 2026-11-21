@@ -177,6 +177,10 @@ fn run(
             Ok(call) => {
                 let result = c.call(&call.method, call.params);
                 let broke = matches!(&result, Err(e) if lost(e));
+                if broke {
+                    let _ = events.send(Event::Lost(result.unwrap_err().to_string()));
+                    return;
+                }
                 let _ = events.send(Event::Answer {
                     purpose: call.purpose,
                     method: call.method,
@@ -188,10 +192,6 @@ fn run(
                         ),
                     }),
                 });
-                if broke {
-                    let _ = events.send(Event::Lost("the game closed the connection".into()));
-                    return;
-                }
             }
             Err(RecvTimeoutError::Disconnected) => return,
             Err(RecvTimeoutError::Timeout) => {
