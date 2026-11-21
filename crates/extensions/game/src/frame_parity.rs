@@ -461,6 +461,52 @@ mod tests {
         assert_eq!(result["size"], json!([8, 4]), "{json}");
         assert_eq!(result["differing"], 0, "{json}");
         assert_eq!(result["max_channel"], 0, "{json}");
+
+        // Both explicit lighting requests can still redraw the same
+        // source after the guest destroys every original surface.
+        sink.destroy_surface(src).unwrap();
+        sink.destroy_surface(dst).unwrap();
+        sink.inner_mut().finish().unwrap();
+        check_lighting_overrides();
+    }
+
+    fn check_lighting_overrides() {
+        use agent::render::{CAPTURE, private_graph};
+        use agent_proto::{CaptureLighting, FrameCaptureParams};
+        use std::time::{Duration, Instant};
+
+        let capture = |lighting, tick| {
+            let params = FrameCaptureParams { lighting: Some(lighting), tick, pass: None };
+            let seq = CAPTURE.arm(&params, &std::env::temp_dir()).unwrap();
+            let deadline = Instant::now() + Duration::from_secs(15);
+            let reply = loop {
+                if let Some(done) = CAPTURE.finish(seq) {
+                    break done.expect("private capture of the sealed inputs");
+                }
+                assert!(Instant::now() < deadline, "private capture timed out");
+                std::thread::sleep(Duration::from_millis(5));
+            };
+            let path = std::path::Path::new(&reply.path);
+            let image = agent::compare::read_png(path);
+            std::fs::remove_file(path).unwrap();
+            (reply, image.unwrap())
+        };
+        let (retail, a) = capture(CaptureLighting::Retail, None);
+        let (e3, b) = capture(CaptureLighting::E3, Some(retail.tick));
+        assert_eq!(retail.present, 1);
+        assert_eq!((retail.tick, retail.present, &retail.scene_hash), (e3.tick, e3.present, &e3.scene_hash));
+        assert!(e3.scene_hash.is_some());
+        assert_ne!(retail.path, e3.path);
+        assert_eq!(retail.lighting, Some(CaptureLighting::Retail));
+        assert_eq!(e3.lighting, Some(CaptureLighting::E3));
+        assert_eq!(a.pixels, [0, 255, 255, 255].repeat(32));
+        assert_eq!(compare(&a, &b, false).unwrap().0.max_channel, 0);
+
+        let graph = private_graph::last_stats().expect("completed private graph");
+        assert_eq!(graph.present, e3.present);
+        assert_eq!(Some(graph.scene_hash), e3.scene_hash);
+        assert_eq!(graph.lighting, CaptureLighting::E3);
+        assert!(graph.e3.unwrap().passes.iter().all(|p| p.draws == 0 && p.gpu_ns.is_none()));
     }
 
     #[test]
