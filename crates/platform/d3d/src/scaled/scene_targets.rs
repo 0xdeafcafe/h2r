@@ -209,7 +209,7 @@ impl<'a> ScaledScenePass<'a> {
                     && !v.stale_stencil
                 {
                     let (from, to) = (v.depth, pass.backend.guest(*s));
-                    pass.backend.view.resize(from, to)?;
+                    <GfxBackend as ScaleView<GfxBackend>>::resize(&mut pass.backend.view, from, to)?;
                 }
             }
         }
@@ -277,7 +277,7 @@ impl<'a> ScaledScenePass<'a> {
                     && let Some(v) = self.backend.view_surface(&s)
                 {
                     let guest = self.backend.guest(s);
-                    self.backend.view.resize(guest, v)?;
+                    <GfxBackend as ScaleView<GfxBackend>>::resize(&mut self.backend.view, guest, v)?;
                 }
                 self.backend.shadow_stale(&s.reference);
             }

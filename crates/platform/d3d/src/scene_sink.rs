@@ -605,7 +605,7 @@ impl<B: Backend> Backend for SceneSink<B> {
         depth: Option<Self::Surface>,
         textures: [Option<&Self::Texture>; 4],
     ) -> RenderExtents {
-        self.inner.render_extents(color, depth, textures)
+        self.inner.render_extents(color, depth, textures.map(|t| t.map(|t| &t.inner)))
     }
     fn read_display_surface(
         &mut self,
