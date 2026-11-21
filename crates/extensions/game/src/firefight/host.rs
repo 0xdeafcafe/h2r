@@ -14,7 +14,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use ::firefight::director::{Kill, PlayerSeen, SQUAD_SLOTS, State, ZoneSeen};
-use ::firefight::{Command, Def, Director, Limits, Observed, Outcome, Settings, Skull};
+use ::firefight::{
+    Command, Def, Director, Limits, Observed, Outcome, ScoreReason, Settings, Skull,
+};
 use host_log::{Entry, Log, LogHead, Sha256};
 
 use crate::actor_net::squads::{Placement, SquadEntry, SquadOp};
@@ -170,6 +172,33 @@ impl std::fmt::Display for ApplyError {
     }
 }
 
+/// One `Score` command as the host's director credited it, with the class
+/// of the actor a kill was for (docs/game/firefight.md, "Scoring and
+/// stats"). The host reports each to Live and the film.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Credit {
+    /// The tick the director stepped on.
+    pub tick: u32,
+    pub player: u8,
+    pub points: u32,
+    pub reason: ScoreReason,
+    /// The class killed, on a kill the director scored by class.
+    pub class: Option<String>,
+}
+
+/// How a match ended, as the host's director said so.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Ended {
+    pub tick: u32,
+    /// The definition's name.
+    pub set: String,
+    pub outcome: Outcome,
+    /// Rounds whose last wave was cleared.
+    pub rounds_cleared: u32,
+    /// Respawns the director has issued.
+    pub lives_used: u32,
+}
+
 /// One match on one machine.
 pub struct Host {
     role: Role,
@@ -184,6 +213,14 @@ pub struct Host {
     ai_checked: bool,
     /// The director is not stepped (`firefight.command`'s hold).
     held: bool,
+    /// Scores credited since the last [`Host::take_credits`].
+    credits: Vec<Credit>,
+    /// The result, once the director has issued `Finish`.
+    ended: Option<Ended>,
+    /// The director has finished the match (once).
+    finished: bool,
+    /// Respawn commands the director has issued.
+    respawns: u32,
 }
 
 impl Host {
@@ -229,6 +266,10 @@ impl Host {
             team,
             ai_checked: false,
             held: false,
+            credits: Vec::new(),
+            ended: None,
+            finished: false,
+            respawns: 0,
         })
     }
 
@@ -348,6 +389,25 @@ impl Host {
             return Ok(0);
         };
         let commands = director.step(tick, &seen);
+        let (set, round, rounds) = (
+            director.def().name.clone(),
+            u32::from(director.state().round),
+            director.def().rounds.len() as u32,
+        );
+        let by_class = &director.def().scoring.by_class;
+        self.credits.extend(credits(tick, &seen, &commands, |class| {
+            by_class.contains_key(class)
+        }));
+        self.respawns += commands
+            .iter()
+            .filter(|op| matches!(op, Command::Respawn { .. }))
+            .count() as u32;
+        if !self.finished
+            && let Some(ended) = result(tick, set, round, rounds, self.respawns, &commands)
+        {
+            self.finished = true;
+            self.ended = Some(ended);
+        }
         let at = tick.saturating_add(1);
         let appended = commands.len();
         for op in commands {
@@ -361,6 +421,17 @@ impl Host {
             })?;
         }
         Ok(appended)
+    }
+
+    /// The scores credited since the last call, in the order the director
+    /// issued them.
+    pub fn take_credits(&mut self) -> Vec<Credit> {
+        std::mem::take(&mut self.credits)
+    }
+
+    /// The match's result, once, when the director has finished it.
+    pub fn take_ended(&mut self) -> Option<Ended> {
+        self.ended.take()
     }
 
     /// Take an entry from the host (a synchronous peer, a client's digest)
@@ -427,6 +498,84 @@ impl Host {
             Command::Finish { outcome } => game.end_game(*outcome),
         }
     }
+}
+
+/// The `Score` commands of one step, each with the class it was for. The
+/// director scores each seen kill that has a killer and a scored class, in
+/// order, then that kill's assist; a score it cannot pair with a kill is
+/// kept without a class, so no points are lost.
+fn credits(
+    tick: u32,
+    seen: &Observed,
+    commands: &[Command],
+    scored: impl Fn(&str) -> bool,
+) -> Vec<Credit> {
+    let mut scores: std::collections::VecDeque<(u8, u32, ScoreReason)> = commands
+        .iter()
+        .filter_map(|op| match op {
+            Command::Score {
+                player,
+                points,
+                reason,
+            } => Some((*player, *points, *reason)),
+            _ => None,
+        })
+        .collect();
+    let mut out = Vec::new();
+    let mut credit = |(player, points, reason): (u8, u32, ScoreReason), class: Option<String>| {
+        out.push(Credit {
+            tick,
+            player,
+            points,
+            reason,
+            class,
+        });
+    };
+    for kill in &seen.kills {
+        let Some(killer) = kill.killer.filter(|_| scored(&kill.class)) else {
+            continue;
+        };
+        if scores
+            .front()
+            .is_some_and(|s| s.2 == ScoreReason::Kill && s.0 == killer)
+        {
+            credit(scores.pop_front().expect("fronted"), Some(kill.class.clone()));
+        }
+        if let Some(assist) = kill.assist.filter(|&assist| assist != killer)
+            && scores
+                .front()
+                .is_some_and(|s| s.2 == ScoreReason::Assist && s.0 == assist)
+        {
+            credit(scores.pop_front().expect("fronted"), None);
+        }
+    }
+    for rest in scores {
+        credit(rest, None);
+    }
+    out
+}
+
+/// The result a step's `Finish` makes: a won match cleared every round, a
+/// lost one the rounds before the one it was in.
+fn result(
+    tick: u32,
+    set: String,
+    round: u32,
+    rounds: u32,
+    respawns: u32,
+    commands: &[Command],
+) -> Option<Ended> {
+    let outcome = commands.iter().find_map(|op| match op {
+        Command::Finish { outcome } => Some(*outcome),
+        _ => None,
+    })?;
+    Some(Ended {
+        tick,
+        set,
+        outcome,
+        rounds_cleared: if outcome == Outcome::Won { rounds } else { round },
+        lives_used: respawns,
+    })
 }
 
 fn squad(game: &mut impl Game, op: SquadOp) -> anyhow::Result<()> {

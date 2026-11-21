@@ -22,7 +22,7 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use ::firefight::director::SQUAD_SLOTS;
-use ::firefight::{Command, Def, Difficulty, Outcome, Settings, Skull, builtin};
+use ::firefight::{Command, Outcome, Settings, Skull};
 use agent_proto::firefight as wire;
 use engine::entry::{Cx, EntryError, GuestCall, Ret};
 use engine::{GuestMemory, MemFault, points};
@@ -30,16 +30,12 @@ use sim_state::SimEvent;
 
 use super::guest::{self, KitLayout};
 use super::host::{AiGlobals, Game, Host, KillSeen, Kit, PlayerView, Role};
+use super::hud;
+use super::options::{self, Options};
 use crate::actor_net::squads::{SquadEntry, SquadOp};
 
 /// The match seed until the session data carries one (FF9).
 pub const SEED: u64 = 0;
-/// The difficulty until Game Setup offers one (FF8).
-pub const DIFFICULTY: Difficulty = Difficulty::Normal;
-/// The definition until the session data names one (FF9): Holdout.
-pub fn definition() -> Def {
-    builtin::definitions()[0].clone()
-}
 
 /// How often the sight pass runs, in ticks.
 pub const SIGHT_EVERY: u32 = 15;
@@ -60,6 +56,46 @@ const BODY_DEPLETED: u16 = 1 << 2;
 /// `skulls_mp`'s Firefight set and skull array.
 pub type SkullSink =
     dyn Fn(&BTreeSet<Skull>, &mut dyn GuestMemory) -> anyhow::Result<()> + Send + Sync;
+
+/// What the host reports of a match as it plays: each credited score and
+/// the result (docs/game/firefight.md, "Scoring and stats"). In the game it
+/// goes to Live telemetry, which records it in the game stream and the film.
+pub enum Report {
+    Score(live_proto::firefight::FirefightScore),
+    Ended(live_proto::firefight::FirefightEnded),
+}
+
+pub type ReportSink = dyn Fn(Report) + Send + Sync;
+
+/// A credit as the wire names it.
+fn score_report(credit: super::host::Credit) -> live_proto::firefight::FirefightScore {
+    live_proto::firefight::FirefightScore {
+        tick: u64::from(credit.tick),
+        player: u32::from(credit.player),
+        points: credit.points,
+        reason: match credit.reason {
+            ::firefight::ScoreReason::Kill => "kill",
+            ::firefight::ScoreReason::Assist => "assist",
+        }
+        .into(),
+        class: credit.class,
+    }
+}
+
+/// A result as the wire names it. The set's name is cut to the wire's 32.
+fn ended_report(ended: super::host::Ended) -> live_proto::firefight::FirefightEnded {
+    live_proto::firefight::FirefightEnded {
+        tick: u64::from(ended.tick),
+        set: ended.set.chars().take(32).collect(),
+        outcome: match ended.outcome {
+            Outcome::Won => "won",
+            Outcome::Lost => "lost",
+        }
+        .into(),
+        rounds_cleared: ended.rounds_cleared,
+        lives_used: ended.lives_used,
+    }
+}
 
 /// One engine call an entry needs, made in the tick's async body.
 #[derive(Clone, Debug, PartialEq)]
@@ -324,6 +360,8 @@ pub struct Match {
     players: u8,
     skulls: BTreeSet<Skull>,
     assists: Assists,
+    /// The HUD's mode blob could not be made, and the runtime said so.
+    hud_failed: bool,
 }
 
 impl Match {
@@ -345,6 +383,10 @@ pub struct Runtime {
     pub status: Status,
     errors: VecDeque<wire::Refusal>,
     sink: Box<SkullSink>,
+    /// What Game Setup chose, read when a game starts.
+    options: Box<options::Source>,
+    /// Where scores and the result go.
+    reports: Box<ReportSink>,
 }
 
 /// The loaded map's name, from the cache header copy.
@@ -375,7 +417,21 @@ impl Runtime {
             status: Status::Idle("no game has started"),
             errors: VecDeque::new(),
             sink,
+            // Without a settings store (a headless run with none) the match
+            // is the settings' defaults: Holdout, Normal, skulls on.
+            options: Box::new(|| Ok(Options::default())),
+            reports: Box::new(|_| {}),
         }
+    }
+
+    /// Where the host's scores and result go (`Report`).
+    pub fn set_reports(&mut self, reports: Box<ReportSink>) {
+        self.reports = reports;
+    }
+
+    /// Where the match's choices come from (`options::source`).
+    pub fn set_options(&mut self, options: Box<options::Source>) {
+        self.options = options;
     }
 
     fn error(&mut self, seq: Option<u32>, tick: u32, error: impl std::fmt::Display) {
@@ -407,11 +463,26 @@ impl Runtime {
     /// A game started. Returns the line to log.
     pub fn start(&mut self, m: &mut dyn GuestMemory, film: bool) -> String {
         self.errors.clear();
+        hud::slot().set(None);
         if bots::guest::game_mode(&*m) != Some(MODE_MULTIPLAYER) {
             self.status = Status::Idle("not a multiplayer game");
             return "firefight: idle: not a multiplayer game".into();
         }
         let map = map_name(&*m);
+        let chosen = match (self.options)().and_then(|o| o.definition().map(|d| (o, d))) {
+            Ok(chosen) => chosen,
+            Err(why) => {
+                let why = format!("reading Game Setup's Firefight choices: {why}");
+                let line = format!("firefight: off on {map}: {why}");
+                self.status = Status::Refused { map, why };
+                return line;
+            }
+        };
+        let (options, definition) = chosen;
+        if !options.enabled {
+            self.status = Status::Idle("Firefight is off in Game Setup");
+            return "firefight: idle: Firefight is off in Game Setup".into();
+        }
         let kit = match guest::read_kit(&*m) {
             Ok(kit) => kit,
             Err(e) => {
@@ -427,10 +498,10 @@ impl Runtime {
             let game = GuestGame::new(m, kit.as_ref(), &[], &mut skulls, &*self.sink);
             Host::start(
                 role,
-                definition(),
+                definition,
                 Settings {
                     seed: SEED,
-                    difficulty: DIFFICULTY,
+                    difficulty: options.difficulty,
                     skulls: BTreeSet::new(),
                 },
                 &game,
@@ -454,6 +525,7 @@ impl Runtime {
                     players: 0,
                     skulls,
                     assists: Assists::default(),
+                    hud_failed: false,
                 }));
                 line
             }
@@ -566,8 +638,32 @@ impl Runtime {
             *players = g.players().len().min(usize::from(u8::MAX)) as u8;
             host.post_tick(tick, &g)
         };
+        for credit in host.take_credits() {
+            (self.reports)(Report::Score(score_report(credit)));
+        }
+        if let Some(ended) = host.take_ended() {
+            (self.reports)(Report::Ended(ended_report(ended)));
+        }
+        // The HUD's mode blob, for the actor channel and the local draw.
+        let mut announce = None;
+        match mode_blob(&game.host, game.players) {
+            Some(Ok(blob)) => {
+                game.hud_failed = false;
+                hud::slot().set(Some(blob));
+            }
+            Some(Err(e)) => {
+                hud::slot().set(None);
+                if !std::mem::replace(&mut game.hud_failed, true) {
+                    announce = Some(format!("the HUD's mode blob: {e}"));
+                }
+            }
+            None => {}
+        }
         if let Err(e) = result {
             self.error(None, tick, format!("the director's entries: {e}"));
+        }
+        if let Some(line) = announce {
+            self.error(None, tick, line);
         }
     }
 
@@ -663,6 +759,17 @@ impl Runtime {
             log: log(&game.host),
         })
     }
+}
+
+/// The HUD's mode blob for the director on this machine (`hud`); none where
+/// no director runs. The outcome is the last `Finish` in the host log.
+fn mode_blob(host: &Host, players: u8) -> Option<Result<Vec<u8>, hud::Error>> {
+    let director = host.director()?;
+    let finished = host.log().since(0).iter().rev().find_map(|e| match e.op {
+        Command::Finish { outcome } => Some(outcome),
+        _ => None,
+    });
+    Some(hud::Mode::of(director, players, finished).map(|m| m.encode()))
 }
 
 /// `firefight.kit`, from the loaded scenario.

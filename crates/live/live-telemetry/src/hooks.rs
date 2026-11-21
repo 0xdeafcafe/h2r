@@ -148,6 +148,19 @@ impl Telemetry {
         self.configure(move |s| s.set_campaign_custom_skulls(skulls));
     }
 
+    /// A Firefight `Score` command as the host's director credited it, at
+    /// the guest's `tick`. Live records it as a public game event and the
+    /// film as an `ObjectiveScore` of game type `firefight`; with no game
+    /// running it is dropped.
+    pub fn firefight_score(&self, score: live_proto::firefight::FirefightScore) {
+        self.configure(move |s| s.firefight_score(score));
+    }
+
+    /// A Firefight match's result, sent before the game ends.
+    pub fn firefight_ended(&self, end: live_proto::firefight::FirefightEnded) {
+        self.configure(move |s| s.firefight_ended(end));
+    }
+
     /// A setting for the session, after everything already queued. Once
     /// telemetry has failed there is no session to set.
     pub(crate) fn configure(&self, f: impl FnOnce(&mut Session) + Send + 'static) {

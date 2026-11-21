@@ -532,3 +532,112 @@ fn the_kit_reply_reads_the_scenario() {
     let (m, _) = guest(false, 1);
     assert_eq!(kit_reply(&m).unwrap(), wire::Kit::default());
 }
+
+#[test]
+fn game_setup_can_turn_the_mode_off() {
+    let (it, _) = shared(false);
+    it.lock().set_options(Box::new(|| {
+        Ok(Options {
+            enabled: false,
+            ..Options::default()
+        })
+    }));
+    let (mut m, _) = guest(true, 1);
+    assert_eq!(
+        it.lock().start(&mut m, false),
+        "firefight: idle: Firefight is off in Game Setup"
+    );
+    let state = it.lock().state();
+    assert!(!state.running);
+    assert_eq!(
+        state.refused.as_deref(),
+        Some("Firefight is off in Game Setup")
+    );
+    assert!(it.lock().pre_tick(&mut m).is_none());
+}
+
+/// The wave set, the lives and the difficulty Game Setup chose are the
+/// match the director starts from.
+#[test]
+fn the_pages_choices_start_the_match() {
+    let (it, _) = shared(false);
+    it.lock().set_options(Box::new(|| {
+        Ok(Options {
+            wave_set: 2,
+            lives: Some(3),
+            difficulty: ::firefight::Difficulty::Legendary,
+            ..Options::default()
+        })
+    }));
+    let (mut m, _) = guest(true, 1);
+    it.lock().start(&mut m, false);
+    let state = it.lock().state();
+    let director = state.director.expect("the director runs");
+    assert_eq!(director.pool, 3, "the page's pool");
+    assert_eq!(director.cap, 24, "Last Stand's cap for one player");
+}
+
+/// With nothing chosen the match is the settings' defaults: Holdout.
+#[test]
+fn a_run_with_no_page_plays_the_defaults() {
+    let (it, _) = shared(false);
+    let (mut m, _) = guest(true, 1);
+    it.lock().start(&mut m, false);
+    let director = it.lock().state().director.expect("the director runs");
+    assert_eq!(director.pool, 12, "Holdout's pool");
+    assert_eq!(director.cap, 12);
+}
+
+#[test]
+fn a_choice_the_store_cannot_give_refuses_the_mode_by_name() {
+    let (it, _) = shared(false);
+    it.lock().set_options(Box::new(|| {
+        Err("firefight.waveset is None, not a choice".into())
+    }));
+    let (mut m, _) = guest(true, 1);
+    let line = it.lock().start(&mut m, false);
+    assert_eq!(
+        line,
+        "firefight: off on firefight-probe: reading Game Setup's Firefight choices: \
+         firefight.waveset is None, not a choice"
+    );
+    assert!(!it.lock().state().running);
+}
+
+/// The HUD's blob comes from the host's director and its log, and says so
+/// when the host's log has finished the game; a replica has no director and
+/// so no blob.
+#[test]
+fn the_hud_blob_comes_from_the_hosts_director_and_log() {
+    let (it, _) = shared(false);
+    let (mut m, _) = guest(true, 1);
+    it.lock().start(&mut m, false);
+    it.lock().post_tick(&mut m, &[]);
+    let mode = {
+        let rt = it.lock();
+        let game = rt.running().unwrap();
+        let blob = mode_blob(&game.host, game.players).unwrap().unwrap();
+        hud::Mode::decode(&blob).unwrap()
+    };
+    assert_eq!(mode.stage, hud::Stage::Warmup);
+    assert_eq!((mode.round, mode.rounds, mode.waves), (0, 3, 5));
+    assert_eq!(mode.lives, hud::Lives::Shared(12));
+    it.lock()
+        .command(wire_command(
+            json!({"command": {"finish": {"outcome": "won"}}}),
+        ))
+        .unwrap();
+    let won = {
+        let rt = it.lock();
+        let game = rt.running().unwrap();
+        mode_blob(&game.host, game.players).unwrap().unwrap()
+    };
+    assert_eq!(hud::Mode::decode(&won).unwrap().stage, hud::Stage::Won);
+
+    let (replica, _) = shared(true);
+    let (mut m, _) = guest(true, 1);
+    replica.lock().start(&mut m, true);
+    let rt = replica.lock();
+    let game = rt.running().unwrap();
+    assert!(mode_blob(&game.host, game.players).is_none());
+}

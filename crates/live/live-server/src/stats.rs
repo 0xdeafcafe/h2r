@@ -17,6 +17,12 @@
 //! per-player row (a rostered bot's xuid included), and a kill with a bot
 //! on either side counts in the totals but in nobody's row: not the human's
 //! kills or spree, nor their deaths. The game record keeps them all.
+//!
+//! Firefight (docs/game/firefight.md, "Scoring and stats") is its own
+//! section of the summary, [`firefight::Summary`], folded from the host's
+//! `FirefightScore` and `FirefightEnded`. It is not multiplayer's kills and
+//! deaths, and no rank reads it. The Worker composes this same projection,
+//! so both homes give the same summary.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, Mutex, RwLock};
@@ -25,6 +31,7 @@ use axum::extract::{Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
 use live_proto::Xuid;
+use live_proto::firefight::{self, FirefightEnded, FirefightScore};
 use live_proto::game::{self, GameEnded, GameStarted, Winner};
 use live_proto::sign::{format_time, parse_time};
 use serde::Serialize;
@@ -144,6 +151,117 @@ struct MapAgg {
     kills: u64,
 }
 
+/// One player's Firefight numbers.
+#[derive(Debug, Clone, Default)]
+struct FfPlayer {
+    name: String,
+    named_at: i64,
+    score: u64,
+    kills: u64,
+    assists: u64,
+    games: u64,
+}
+
+/// Firefight over a span of time.
+#[derive(Debug, Clone, Default)]
+struct FfAgg {
+    games: u64,
+    won: u64,
+    rounds_cleared: u64,
+    lives_used: u64,
+    score: u64,
+    /// Wave set -> (games, won, rounds cleared).
+    sets: BTreeMap<String, (u64, u64, u64)>,
+    classes: BTreeMap<String, u64>,
+    players: HashMap<Xuid, FfPlayer>,
+}
+
+impl FfAgg {
+    fn add(&mut self, o: &FfAgg) {
+        self.games += o.games;
+        self.won += o.won;
+        self.rounds_cleared += o.rounds_cleared;
+        self.lives_used += o.lives_used;
+        self.score += o.score;
+        for (k, v) in &o.sets {
+            let e = self.sets.entry(k.clone()).or_default();
+            *e = (e.0 + v.0, e.1 + v.1, e.2 + v.2);
+        }
+        for (k, n) in &o.classes {
+            *self.classes.entry(k.clone()).or_default() += n;
+        }
+        for (x, p) in &o.players {
+            let e = self.players.entry(*x).or_default();
+            if p.named_at >= e.named_at {
+                e.name = p.name.clone();
+                e.named_at = p.named_at;
+            }
+            e.score += p.score;
+            e.kills += p.kills;
+            e.assists += p.assists;
+            e.games += p.games;
+        }
+    }
+
+    fn player(&mut self, x: Xuid, name: &str, at: i64) -> &mut FfPlayer {
+        let p = self.players.entry(x).or_default();
+        if at >= p.named_at {
+            p.name = name.to_string();
+            p.named_at = at;
+        }
+        p
+    }
+
+    fn summary(&self) -> firefight::Summary {
+        let mut sets: Vec<firefight::SetRow> = self
+            .sets
+            .iter()
+            .map(|(set, (games, won, rounds))| firefight::SetRow {
+                set: set.clone(),
+                games: *games,
+                won: *won,
+                rounds_cleared: *rounds,
+            })
+            .collect();
+        sets.sort_by(|a, b| b.games.cmp(&a.games).then_with(|| a.set.cmp(&b.set)));
+        sets.truncate(firefight::MAX_ROWS);
+        let mut kills_by_class: Vec<firefight::ClassRow> = self
+            .classes
+            .iter()
+            .map(|(class, kills)| firefight::ClassRow {
+                class: class.clone(),
+                kills: *kills,
+            })
+            .collect();
+        kills_by_class.sort_by(|a, b| b.kills.cmp(&a.kills).then_with(|| a.class.cmp(&b.class)));
+        kills_by_class.truncate(firefight::MAX_ROWS);
+        let mut players: Vec<firefight::PlayerRow> = self
+            .players
+            .iter()
+            .map(|(x, p)| firefight::PlayerRow {
+                xuid: x.to_string(),
+                name: p.name.clone(),
+                score: p.score,
+                kills: p.kills,
+                assists: p.assists,
+                games: p.games,
+            })
+            .collect();
+        players.sort_by(|a, b| b.score.cmp(&a.score).then_with(|| a.xuid.cmp(&b.xuid)));
+        players.truncate(firefight::MAX_ROWS);
+        firefight::Summary {
+            games: self.games,
+            won: self.won,
+            rounds_cleared: self.rounds_cleared,
+            lives_used: self.lives_used,
+            score: self.score,
+            sets,
+            kills_by_class,
+            players,
+        }
+    }
+}
+
 /// Everything about one day (or all time).
 #[derive(Debug, Clone, Default)]
 struct Bucket {
@@ -154,11 +272,13 @@ struct Bucket {
     weapons: HashMap<String, u64>,
     playlists: HashMap<String, u64>,
     skulls: BTreeMap<u8, u64>,
+    firefight: FfAgg,
 }
 
 impl Bucket {
     fn add(&mut self, o: &Bucket) {
         self.totals.add(&o.totals);
+        self.firefight.add(&o.firefight);
         for (x, p) in &o.players {
             self.players.entry(*x).or_default().add(p);
         }
@@ -226,6 +346,8 @@ struct LiveGame {
     xuids: BTreeSet<Xuid>,
     /// Current scoring run per slot.
     spree: HashMap<u32, u64>,
+    /// The Firefight result was counted (a repeat counts nothing).
+    firefight_ended: bool,
 }
 
 /// The account a player's stats go to: none for a bot.
@@ -319,6 +441,18 @@ impl Inner {
                 };
                 self.killed(id, &k, at);
             }
+            game::FIREFIGHT_SCORE => {
+                let Some(d) = data::<FirefightScore>(e) else {
+                    return;
+                };
+                self.firefight_scored(id, &d, at);
+            }
+            game::FIREFIGHT_ENDED => {
+                let Some(d) = data::<FirefightEnded>(e) else {
+                    return;
+                };
+                self.firefight_ended(id, &d, at);
+            }
             game::GAME_ENDED => {
                 let Some(d) = data::<GameEnded>(e) else {
                     return;
@@ -359,6 +493,7 @@ impl Inner {
                 .collect(),
             xuids: ng.players.iter().filter_map(account).collect(),
             spree: HashMap::new(),
+            firefight_ended: false,
         };
         let coop = campaign && (ng.players.len() > 1 || ng.online == Some(true));
         let players: Vec<(Xuid, String)> = ng
@@ -408,6 +543,74 @@ impl Inner {
         self.hour(at, |h| h.add(&delta));
         // A GameStarted for a game already known (it should not happen) starts it over.
         self.games.insert(s.game_id.clone(), g);
+    }
+
+    /// A credited score. Totals and classes count everyone; a player's row
+    /// is for an account, never a bot (the module doc).
+    fn firefight_scored(&mut self, id: &str, d: &FirefightScore, at: i64) {
+        let Some(g) = self.games.get(id) else {
+            return;
+        };
+        let who = g
+            .slots
+            .get(&d.player)
+            .filter(|_| !g.bots.contains(&d.player))
+            .and_then(|s| Some((s.0?, s.1.clone())));
+        let points = u64::from(d.points);
+        let kill = d.reason == "kill";
+        self.bump(at, |b| {
+            let f = &mut b.firefight;
+            f.score += points;
+            if let Some(class) = d.class.as_ref().filter(|_| kill) {
+                *f.classes.entry(class.clone()).or_default() += 1;
+            }
+            if let Some((x, name)) = &who {
+                let p = f.player(*x, name, at);
+                p.score += points;
+                if kill {
+                    p.kills += 1;
+                } else {
+                    p.assists += 1;
+                }
+            }
+        });
+    }
+
+    /// A match's result: counted once, for every account that played it.
+    fn firefight_ended(&mut self, id: &str, d: &FirefightEnded, at: i64) {
+        let Some(g) = self.games.get_mut(id) else {
+            return;
+        };
+        if std::mem::replace(&mut g.firefight_ended, true) {
+            return;
+        }
+        let names: Vec<(Xuid, String)> = g
+            .xuids
+            .iter()
+            .map(|x| {
+                let name = g
+                    .slots
+                    .values()
+                    .find(|s| s.0 == Some(*x))
+                    .map_or_else(String::new, |s| s.1.clone());
+                (*x, name)
+            })
+            .collect();
+        let won = d.outcome == "won";
+        self.bump(at, |b| {
+            let f = &mut b.firefight;
+            f.games += 1;
+            f.won += won as u64;
+            f.rounds_cleared += u64::from(d.rounds_cleared);
+            f.lives_used += u64::from(d.lives_used);
+            let set = f.sets.entry(d.set.clone()).or_default();
+            set.0 += 1;
+            set.1 += won as u64;
+            set.2 += u64::from(d.rounds_cleared);
+            for (x, name) in &names {
+                f.player(*x, name, at).games += 1;
+            }
+        });
     }
 
     fn killed(&mut self, id: &str, k: &game::PlayerKilled, at: i64) {
@@ -622,6 +825,7 @@ impl Inner {
                 })
                 .collect(),
             activity,
+            firefight: merged.firefight.summary(),
         }
     }
 }
@@ -713,6 +917,8 @@ pub struct Summary {
     /// Hours in the window (at most [`KEEP_DAYS`] back) with any games or
     /// kills: games started and multiplayer kills.
     pub activity: Vec<Activity>,
+    /// Firefight's matches, kills and scores ([`firefight::Summary`]).
+    pub firefight: firefight::Summary,
 }
 
 /// A cached answer: the log position and hour it was made at, and it.
@@ -784,7 +990,12 @@ impl Stats {
         };
         if !matches!(
             b.kind.as_str(),
-            game::GAME_STARTED | game::PLAYER_JOINED | game::PLAYER_KILLED | game::GAME_ENDED
+            game::GAME_STARTED
+                | game::PLAYER_JOINED
+                | game::PLAYER_KILLED
+                | game::FIREFIGHT_SCORE
+                | game::FIREFIGHT_ENDED
+                | game::GAME_ENDED
         ) {
             return Vec::new();
         }
@@ -994,6 +1205,51 @@ mod tests {
         assert_eq!((s.activity[0].games, s.activity[0].kills), (1, 5));
         assert_eq!(s.last_24h, s.totals);
         assert_eq!(s.all_time, s.totals);
+    }
+
+    const FIREFIGHT_EVENTS: &str = include_str!("../tests/fixtures/firefight-events.json");
+    const FIREFIGHT_GOLDEN: &str = include_str!("../tests/fixtures/firefight-summary.json");
+
+    /// The scripted Firefight match: Host (an account), a Clanker and the
+    /// events the fixture holds, then `GameEnded`.
+    fn firefight_match(log: &mut Log, game: &str, at: i64) {
+        log.start(
+            game,
+            json!({"players": [
+                {"index": 0, "name": "Host", "xuid": A, "team": 0},
+                {"index": 1, "name": "Clanker 1", "team": 0, "bot": true},
+            ]}),
+            at,
+        );
+        for e in serde_json::from_str::<Vec<Value>>(FIREFIGHT_EVENTS).unwrap() {
+            log.push(game, e["kind"].as_str().unwrap(), e["data"].clone(), at + 1);
+        }
+        log.end(game, "finished", json!({"player": 0}), at + 2);
+    }
+
+    #[test]
+    fn a_scripted_match_projects_to_the_golden_summary() {
+        let mut log = Log::new();
+        firefight_match(&mut log, "ff", T0);
+        let golden: Value = serde_json::from_str(&FIREFIGHT_GOLDEN.replace("$HOST", A)).unwrap();
+        let s = log.stats.summary_at(None, T0 + 100);
+        assert_eq!(serde_json::to_value(&s.firefight).unwrap(), golden);
+        // A repeated result counts nothing more, and a match that never
+        // reports one gives the summary nothing to count.
+        let mut again = Log::new();
+        firefight_match(&mut again, "ff", T0);
+        again.push(
+            "ff",
+            "FirefightEnded",
+            json!({"tick": 801, "set": "Holdout", "outcome": "lost", "rounds_cleared": 9, "lives_used": 9}),
+            T0 + 3,
+        );
+        assert_eq!(again.stats.summary_at(None, T0 + 100).firefight, s.firefight);
+        // The window reads the same fold.
+        assert_eq!(log.stats.summary_at(Some(1), T0 + 100).firefight, s.firefight);
+        // Firefight is not multiplayer's kills or deaths.
+        assert_eq!((s.totals.kills, s.totals.deaths), (0, 0));
+        assert_eq!(row(&s, A).kills, 0);
     }
 
     #[test]

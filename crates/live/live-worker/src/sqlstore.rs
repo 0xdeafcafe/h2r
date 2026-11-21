@@ -993,6 +993,124 @@ mod tests {
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
+    /// The Firefight summary on the Worker's composition, as on a machine
+    /// (live-server's `tests/stats.rs`, docs/game/firefight.md "Scoring and
+    /// stats"): the same fixture events give the same golden summary, and
+    /// the same match moves nobody's rank.
+    #[tokio::test]
+    async fn the_firefight_summary_is_the_same_on_the_worker() {
+        use axum::{body::Body, http::Request};
+        use http_body_util::BodyExt;
+        use live_proto::sign::{
+            AccountRequest, EventBody, KeyPair, format_unix, issue_token, parse_time, sign_batch,
+        };
+        use live_proto::{Xuid, lxm};
+        use live_server::{Live, Policy, ServerIdentity, app::Timers};
+        use tower::ServiceExt;
+
+        let path = temp_db("firefight");
+        let store = SqlStore::open(Sqlite(pool(&path).await)).await.unwrap();
+        let identity = ServerIdentity::open(path.parent().unwrap(), Some("live.test")).unwrap();
+        let live = Live::start_with(Arc::new(store), identity, Policy::default(), Timers::Driven)
+            .await
+            .unwrap();
+        let call = |method: &'static str, uri: String, auth: Option<String>, body: String| {
+            let live = live.clone();
+            async move {
+                let mut req = Request::builder().method(method).uri(uri);
+                if let Some(a) = auth {
+                    req = req.header("authorization", format!("Bearer {a}"));
+                }
+                let r = live_server::http::router(live)
+                    .oneshot(req.body(Body::from(body)).unwrap())
+                    .await
+                    .unwrap();
+                let status = r.status().as_u16();
+                let body = r.into_body().collect().await.unwrap().to_bytes();
+                (
+                    status,
+                    serde_json::from_slice::<Value>(&body).unwrap_or(Value::Null),
+                )
+            }
+        };
+        let now = live_server::app::now;
+        let key = KeyPair::generate();
+        let (status, created) = call(
+            "POST",
+            "/v1/accounts".into(),
+            None,
+            AccountRequest::sign(&key, "Host", None, "live.test", now()),
+        )
+        .await;
+        assert_eq!(status, 201, "{created}");
+        let xuid = Xuid::parse(created["xuid"].as_str().unwrap()).unwrap();
+        let author = created["id"].as_str().unwrap().to_string();
+        let token = || issue_token(&key, &author, "live.test", lxm::GAMES_WRITE, now());
+        let game = serde_json::json!({
+            "console": "Den", "map": "lockout", "mode": "multiplayer", "variant": "Firefight",
+            "team_play": false, "tick": 0, "kind": "custom",
+            "players": [
+                {"index": 0, "name": "Host", "xuid": xuid, "team": 0, "local": true},
+                {"index": 1, "name": "Clanker 1", "team": 0, "local": true, "bot": true}
+            ]
+        });
+        let (status, started) =
+            call("POST", "/v1/games".into(), Some(token()), game.to_string()).await;
+        assert_eq!(status, 201, "{started}");
+        let id = started["game_id"].as_str().unwrap().to_string();
+        let at = parse_time(&format_unix(now())).unwrap();
+        let mut events: Vec<(String, Value)> = serde_json::from_str::<Vec<Value>>(include_str!(
+            "../../live-server/tests/fixtures/firefight-events.json"
+        ))
+        .unwrap()
+        .into_iter()
+        .map(|e| (e["kind"].as_str().unwrap().to_string(), e["data"].clone()))
+        .collect();
+        events.push((
+            "GameEnded".into(),
+            serde_json::json!({"tick": 900, "reason": "finished", "winner": {"player": 0}}),
+        ));
+        let bodies: Vec<EventBody> = events
+            .into_iter()
+            .map(|(kind, data)| {
+                EventBody::new(&key, &author, &format!("game-{id}"), &kind, data, at)
+            })
+            .collect();
+        let (status, body) = call(
+            "POST",
+            format!("/v1/games/{id}/events"),
+            Some(token()),
+            sign_batch(&key, &bodies),
+        )
+        .await;
+        assert_eq!(status, 201, "{body}");
+
+        let (_, v) = call(
+            "GET",
+            "/v1/stats/summary?window=all".into(),
+            None,
+            String::new(),
+        )
+        .await;
+        let golden: Value = serde_json::from_str(
+            &include_str!("../../live-server/tests/fixtures/firefight-summary.json")
+                .replace("$HOST", &xuid.to_string()),
+        )
+        .unwrap();
+        assert_eq!(v["firefight"], golden);
+        assert_eq!(v["totals"]["kills"], 0);
+        let (status, ranks) = call(
+            "GET",
+            "/v1/accounts/Host/ranks".into(),
+            None,
+            String::new(),
+        )
+        .await;
+        assert_eq!(status, 200, "{ranks}");
+        assert_eq!(ranks["ranks"], serde_json::json!({}));
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
     /// Bot accounts on the Worker's composition, as on a machine
     /// (live-server's `tests/bots.rs`, docs/game/bots.md §9.5): a roster
     /// for the host's session issues bot accounts that read by gamertag

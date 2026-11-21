@@ -90,7 +90,15 @@ impl Feature for Capture {
             state.last_tick = Some(tick);
             // Probe P3 decides whether the client's walk cycle needs controls.
             match state.host.capture(&*memory, tick, false, &lines) {
-                Ok(()) => after_capture(&*memory, tick, &state.host),
+                Ok(()) => {
+                    // The Firefight HUD's mode blob rides the channel; empty
+                    // when no mode runs.
+                    let mode = crate::firefight::hud::slot().get().unwrap_or_default();
+                    if let Err(error) = state.host.set_mode(&mode) {
+                        eprintln!("actor-net: mode state at tick {tick}: {error}");
+                    }
+                    after_capture(&*memory, tick, &state.host)
+                }
                 Err(error) => eprintln!("actor-net: host capture at tick {tick}: {error}"),
             }
         });

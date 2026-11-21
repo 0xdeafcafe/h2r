@@ -836,6 +836,7 @@ actions sets text 2 to our description and the picture to our image:
 | Row | Picture | Description |
 |---|---|---|
 | Clanker Options... | image 1, the roster no retail row uses | `clankers::ROW_HELP`, a slot of the page's (`KitScreen::row_help`) |
+| Firefight Options... | image 6, Switch To: Custom Game's | `firefight::options::ROW_HELP`, a slot of the page's (`KitScreen::row_help`) |
 | Halo 1 Options... | image 2, Quick Options' own | `h1_options::ROW_HELP` (`ROW_HELP_ID`, served with the other Halo 1 strings) |
 
 Texts 3 and 4 stay empty, as retail leaves them for a row with no value.
