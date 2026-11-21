@@ -12,16 +12,21 @@ use std::sync::Mutex;
 #[test]
 fn perception_and_motor_delay_add_once_to_first_sight_reaction() {
     let skill = Skill::Legendary;
-    let mut immediate = Brain::new(skill, 11).with_tuning(Tuning {
-        perception_ticks: Some(0),
-        motor_ticks: Some(0),
-        button_sigma_ms: Some(0.0),
-        ..Default::default()
-    });
-    let mut human = Brain::new(skill, 11).with_tuning(Tuning {
-        button_sigma_ms: Some(0.0),
-        ..Default::default()
-    });
+    // The reaction is measured from first sight: no warm-up before it.
+    let mut immediate = Brain::new(skill, 11)
+        .with_tuning(Tuning {
+            perception_ticks: Some(0),
+            motor_ticks: Some(0),
+            button_sigma_ms: Some(0.0),
+            ..Default::default()
+        })
+        .without_warmup();
+    let mut human = Brain::new(skill, 11)
+        .with_tuning(Tuning {
+            button_sigma_ms: Some(0.0),
+            ..Default::default()
+        })
+        .without_warmup();
     let limits = human.tuning().unwrap().input_limits(skill);
     let (fast_board, slow_board) = (Mutex::new(Radio::default()), Mutex::new(Radio::default()));
     let mut fast_fire = None;

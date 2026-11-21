@@ -1013,6 +1013,7 @@ dependencies = [
  "host-data",
  "host-dirs",
  "hs",
+ "hud-kit",
  "iced-x86",
  "image",
  "input",
@@ -1055,6 +1056,7 @@ dependencies = [
  "toml",
  "tungstenite 0.26.2",
  "ureq",
+ "variants",
  "vfs",
  "viewer",
  "voice",
@@ -2392,6 +2394,7 @@ dependencies = [
  "hot-render",
  "hot-tags",
  "hs",
+ "hud-kit-core",
  "iced-x86",
  "input",
  "kernel",
@@ -3103,11 +3106,39 @@ dependencies = [
  "h1-assets",
  "h1map",
  "hud-edit",
+ "hud-kit-core",
  "map",
  "png",
  "scenario-edit",
  "tags",
  "xiso",
+]
+
+[[package]]
+name = "hud-kit"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "assets",
+ "h1-assets",
+ "h1map",
+ "hud-edit",
+ "hud-kit-core",
+ "map",
+ "scenario-edit",
+ "serde_json",
+ "tags",
+ "xbe",
+ "xiso",
+]
+
+[[package]]
+name = "hud-kit-core"
+version = "0.1.0"
+dependencies = [
+ "assets",
+ "map",
+ "tags",
 ]
 
 [[package]]
@@ -3855,6 +3886,7 @@ dependencies = [
  "tower-http",
  "tungstenite 0.26.2",
  "ureq",
+ "variants",
  "wasm-bindgen-futures",
  "web-time",
  "webp",
@@ -7620,6 +7652,7 @@ dependencies = [
  "content",
  "iced-x86",
  "map",
+ "rules",
  "serde",
  "serde_json",
  "tags",

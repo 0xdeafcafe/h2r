@@ -453,6 +453,17 @@ meet the default scheduling policy's 3 GiB per vCPU minimum.
 [Scheduling policies](https://developers.cloudflare.com/containers/configuration/scheduling-policy/) ·
 [Custom instance constraints](https://developers.cloudflare.com/changelog/post/2026-09-29-remove-disk-to-memory-ratio/)
 
+Both applications run one image from the account's Cloudflare registry,
+`h2-live-host`, tagged with a hash of what `deploy/host/Dockerfile`
+copies: the Dockerfile, the entrypoint and the binaries `deploy/host/build.sh` stages.
+`crates/live/live-worker/deploy.sh` computes the tag and checks the
+registry. A tag the registry holds is deployed as it is, so a deploy
+needs Docker only when the host binaries change; then it builds and
+pushes the image first (`wrangler containers build --push`) and stops
+with a named error if Docker is not running. The generated config names
+`registry.cloudflare.com/<account>/h2-live-host:<tag>` in place of the
+Dockerfile. [Image management](https://developers.cloudflare.com/containers/platform-details/image-management/)
+
 | Worker setting | Purpose |
 |---|---|
 | `LIVE_MAX_HOSTS` | Shared lease cap across both classes. The default is 4. Operators may select 0–4 or a measured fleet step (16, 64, 256, 1,024). Deployment calculates a separate container limit for each class. [Fleet caps](host-halving.md#caps) |
@@ -591,10 +602,11 @@ its own Durable Objects (so its own log), bucket and key:
 without the route (to copy the log into before the switch), `production`
 with it (the switch). Both need `--yes-production`.
 
-Every environment declares the dedicated host containers, built from
-`deploy/host/Dockerfile` with the image `deploy/host/build.sh` stages. Until
-the image is staged, `deploy.sh --no-hosts` (with the environment name)
-omits the container applications and sets the lease cap to zero. For a host
+Every environment declares the dedicated host containers. They run the
+registry image `h2-live-host` at the tag in `deploy/host/image-tag`
+([Dedicated host containers](#dedicated-host-containers)).
+`deploy.sh --no-hosts` (with the environment name) omits the container
+applications and sets the lease cap to zero. For a host
 deployment, edit the environment's variables in `wrangler.toml`.
 `python3 crates/live/live-worker/host_capacity.py` prints the effective
 config, including each application's container limit. The deploy script
@@ -611,8 +623,14 @@ passes this config to Wrangler and removes its temporary copy on exit.
 3. **Wasm.** `worker-build --release` into `crates/live/live-worker/build`.
 4. **Sign-in.** `wrangler whoami`; if you are not signed in, it stops and
    says to run `bunx wrangler@4 login`.
-5. **Bucket.** It creates the environment's R2 bucket if it is missing.
-6. **Key.** It asks for the key only if the Worker has no
+5. **Host image.** With the binaries `deploy/host/build.sh` stages, the
+   tag is their hash: a tag the registry lacks is built and pushed (this
+   needs Docker; without it the script stops and says so) and written to
+   `deploy/host/image-tag`, which you commit. Without them, as in CI, it
+   deploys the committed tag and stops if the registry lacks it. Skipped
+   when the environment's lease cap is zero.
+6. **Bucket.** It creates the environment's R2 bucket if it is missing.
+7. **Key.** It asks for the key only if the Worker has no
    `H2_LIVE_SERVER_KEY` secret:
    - **staging:** it makes a fresh one;
    - **cutover and production:** it reads `$H2_LIVE_KEY_FILE`, or asks for
@@ -622,11 +640,23 @@ passes this config to Wrangler and removes its temporary copy on exit.
 
    The key goes to `wrangler secret put` on stdin, after the deploy (the
    Worker has to exist to hold it). It is never printed.
-7. **Deploy.** `wrangler deploy --env <env>`.
-8. **Health.** `/healthz` and the discovery document's id.
+8. **Deploy.** `wrangler deploy --env <env>`; its failure stops the script.
+9. **Health.** `/healthz` and the discovery document's id.
 
 `--dry-run` builds and bundles without signing in or uploading.
 `--skip-build` deploys what `build/` and `web/dist` already hold.
+
+### Deploy from CI
+
+`.github/workflows/live-deploy.yml` runs `deploy.sh production
+--yes-production` on each push to master, and on demand. It never builds
+the host image, which holds the disc-compiled module; it deploys the tag
+in `deploy/host/image-tag`, so a deploy that pushed a new image locally is
+followed by committing that file. The job reads two repository secrets:
+`CLOUDFLARE_API_TOKEN` (a token with Workers Scripts, Workers Routes,
+Containers and R2 edit, and Account Settings read) and
+`CLOUDFLARE_ACCOUNT_ID`. Without the token it skips and deploys nothing.
+The server key and the host-data secrets stay on the Worker.
 
 ### Staging
 

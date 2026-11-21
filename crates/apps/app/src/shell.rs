@@ -432,6 +432,8 @@ impl Shell {
         let now = Instant::now();
         let mut overlay_expires = None;
         let mut mark_status = MarkFrameStatus::Waiting;
+        let probing = gfx::world_lines::probe::PRESENTED.armed();
+        let mut anchors = Vec::new();
         if let Some(frame) = &frame {
             if frame.loading {
                 mark_status = MarkFrameStatus::Loading;
@@ -440,7 +442,17 @@ impl Shell {
                 if let Some(marks) = frame.marks.marks() {
                     g.marks.begin();
                     let shown = marks.visit(now, &mut |cameras, mark| {
+                        if probing && anchors.len() < gfx::world_lines::probe::ANCHORS {
+                            anchors.push(crate::overlay::marks::anchor_pixels(
+                                cameras,
+                                viewport,
+                                mark.anchor,
+                            ));
+                        }
                         g.marks.push(&mark, cameras, viewport, g.surface.size());
+                    });
+                    marks.visit_hud(now, &mut |mark| {
+                        g.marks.push_hud(&mark, viewport, g.surface.size());
                     });
                     overlay_expires = shown.expires;
                     drawn_generation = shown.editor_generation;
@@ -454,6 +466,14 @@ impl Shell {
                 }
                 mark_status = frame.marks.status(drawn_generation);
             }
+        }
+        if probing {
+            crate::overlay::marks::record_probe(
+                frame.as_ref().map(|f| &f.marks),
+                frame.as_ref().is_some_and(|f| f.loading),
+                anchors,
+                now,
+            );
         }
         if frame.as_ref().is_some_and(|f| f.loading) {
             self.watermark_text = None;
@@ -487,24 +507,6 @@ impl Shell {
                     &g.ctx.queue,
                     &mut enc,
                     &t.panels,
-                    &view,
-                    g.surface.config.format,
-                    size,
-                    viewport,
-                );
-            }
-        }
-        // The game mode's plate (superbounce) shows with the watermark off too.
-        if !frame.as_ref().is_some_and(|f| f.loading)
-            && let Some(wm) = &self.config.watermark
-        {
-            let lines = wm.plate();
-            if !lines.is_empty() {
-                g.watermark.draw_plate(
-                    &g.ctx.device,
-                    &g.ctx.queue,
-                    &mut enc,
-                    &lines,
                     &view,
                     g.surface.config.format,
                     size,

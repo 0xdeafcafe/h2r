@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 pub use gfx::world_lines::ImageSamples;
-use gfx::world_lines::{Fade, LineStyle, Pulse, ShownMarks, WorldLine};
+use gfx::world_lines::{Fade, HudMark, LineStyle, Pulse, ShownMarks, TextLayout, WorldLine};
 
 use crate::scale::Viewport;
 
@@ -17,11 +17,23 @@ pub struct MarkCamera {
 
 pub type MarkCameras = [Option<MarkCamera>; 4];
 
+/// Which camera a frame's marks are projected with.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum MarkCameraSource {
+    /// The genuine image's own cameras: its tick's.
+    Tick,
+    /// An in-between frame the host made at `fraction`. `shifted`: some
+    /// view was drawn with another camera than the marks' image, and the
+    /// cameras here were moved onto it (`d3d::interp::marks`).
+    Made { fraction: f32, shifted: bool },
+}
+
 /// All sources on an image use its per-view cameras.
 #[derive(Debug)]
 pub struct ProjectedMarks {
     pub cameras: MarkCameras,
     pub samples: Arc<ImageSamples>,
+    pub source: MarkCameraSource,
 }
 
 impl ProjectedMarks {
@@ -33,6 +45,29 @@ impl ProjectedMarks {
         self.samples
             .visit(&|| now, &mut |line| visitor(&self.cameras, line))
     }
+
+    /// The samples' HUD-space marks ([`HudMark`]), after the world lines.
+    pub(crate) fn visit_hud(&self, now: Instant, visitor: &mut dyn FnMut(HudMark<'_>)) {
+        self.samples.visit_hud(&|| now, visitor);
+    }
+}
+
+/// The guest image is 640 by 480 guest pixels however large it is drawn.
+const GUEST_SIZE: [f32; 2] = [640.0, 480.0];
+
+/// The window pixel of a HUD-space point (guest pixels of the 640 by 480
+/// image) in the image's `area`.
+fn hud_pixel(area: Viewport, [x, y]: [f32; 2]) -> [f32; 2] {
+    [
+        area.x as f32 + x * area.width as f32 / GUEST_SIZE[0],
+        area.y as f32 + y * area.height as f32 / GUEST_SIZE[1],
+    ]
+}
+
+/// Window pixels in one guest pixel of height: what HUD widths and font
+/// pixels scale by.
+fn hud_scale(area: Viewport) -> f32 {
+    area.height as f32 / GUEST_SIZE[1]
 }
 
 /// Presentation metadata, independent of the link plate.
@@ -60,6 +95,17 @@ impl FrameMarks {
         match self {
             Self::Guest(sample) | Self::Synthetic(sample) => sample.as_deref(),
             Self::Raw | Self::GuestWithoutWorldView => None,
+        }
+    }
+
+    /// What the `render.marks` probe calls this frame.
+    pub(crate) fn probe_kind(&self) -> gfx::world_lines::probe::Kind {
+        use gfx::world_lines::probe::Kind;
+        match self {
+            Self::Guest(_) => Kind::Guest,
+            Self::GuestWithoutWorldView => Kind::GuestWithoutWorldView,
+            Self::Synthetic(_) => Kind::Synthetic,
+            Self::Raw => Kind::Raw,
         }
     }
 
@@ -97,6 +143,48 @@ fn pixels(camera: &MarkCamera, area: Viewport, [x, y, _, w]: [f32; 4]) -> Option
     ])
 }
 
+/// Where the window drew a frame: one [`gfx::world_lines::probe::Presented`]
+/// for the `render.marks` probe, while it is armed. `anchors` are the
+/// groups' anchors in window pixels through the first view's camera.
+pub(crate) fn record_probe(
+    marks: Option<&FrameMarks>,
+    loading: bool,
+    anchors: Vec<Option<[f32; 2]>>,
+    at: Instant,
+) {
+    use gfx::world_lines::probe::{Kind, PRESENTED, Presented};
+    if !PRESENTED.armed() {
+        return;
+    }
+    let (fraction, shifted) = match marks.and_then(FrameMarks::marks).map(|m| m.source) {
+        Some(MarkCameraSource::Made { fraction, shifted }) => (Some(fraction), shifted),
+        _ => (None, false),
+    };
+    let kind = match marks {
+        _ if loading => Kind::Loading,
+        Some(m) => m.probe_kind(),
+        None => Kind::Raw,
+    };
+    PRESENTED.record(Presented {
+        seq: 0,
+        at,
+        kind,
+        fraction,
+        shifted,
+        anchors,
+    });
+}
+
+/// `anchor` in window pixels through the first usable view of `cameras`;
+/// `None` off screen or behind it (the `render.marks` probe).
+pub(crate) fn anchor_pixels(
+    cameras: &MarkCameras,
+    area: Viewport,
+    anchor: [f32; 3],
+) -> Option<[f32; 2]> {
+    project_point(cameras.iter().flatten().next()?, area, anchor)
+}
+
 fn project_point(camera: &MarkCamera, area: Viewport, point: [f32; 3]) -> Option<[f32; 2]> {
     let point = clip(camera, point);
     if !planes(point)
@@ -108,17 +196,8 @@ fn project_point(camera: &MarkCamera, area: Viewport, point: [f32; 3]) -> Option
     pixels(camera, area, point)
 }
 
-/// Clip a segment in homogeneous coordinates before dividing by w.
-fn project_segment(
-    camera: &MarkCamera,
-    area: Viewport,
-    edge: [[f32; 3]; 2],
-) -> Option<[[f32; 2]; 2]> {
-    project_segment_depth(camera, area, edge).map(|(points, _)| points)
-}
-
-/// [`project_segment`] with each end's clip w, the distance along the
-/// view axis in world units.
+/// Clip a segment in homogeneous coordinates before dividing by w, with
+/// each end's clip w, the distance along the view axis in world units.
 fn project_segment_depth(
     camera: &MarkCamera,
     area: Viewport,
@@ -223,12 +302,83 @@ fn label_glyph_scale(style: &LineStyle, pixel_scale: f32) -> f32 {
 
 /// The top-left pixel of a label of `chars` glyphs at `point`: just below
 /// and right of it, or centred on it.
-fn label_origin([x, y]: [f32; 2], chars: usize, glyph: f32, centered: bool) -> [f32; 2] {
+fn label_origin(point: [f32; 2], chars: usize, glyph: f32, centered: bool) -> [f32; 2] {
+    text_origin(point, [chars as f32 * 8.0 * glyph, 8.0 * glyph], centered)
+}
+
+/// The top-left pixel of a label `size` pixels wide and tall at `point`:
+/// just below and right of it, or centred on it.
+fn text_origin([x, y]: [f32; 2], [width, height]: [f32; 2], centered: bool) -> [f32; 2] {
     if centered {
-        [x - chars as f32 * 8.0 * glyph * 0.5, y - 4.0 * glyph]
+        [x - width * 0.5, y - height * 0.5]
     } else {
         [x.ceil() + 5.0, y.ceil() + 5.0]
     }
+}
+
+/// The HUD is drawn for this many lines: a disc font's pixel is a HUD
+/// pixel at `label_scale` [`HUD_FACE_SCALE`].
+const HUD_LINES: f32 = 480.0;
+/// The `label_scale` at which a HUD-font label is the HUD's own size.
+const HUD_FACE_SCALE: f32 = 2.0;
+
+/// Output pixels in one font pixel of a HUD-font label: the output height
+/// over the HUD's, times the style's scale over [`HUD_FACE_SCALE`].
+fn hud_font_pixel(style: &LineStyle, output_height: u32) -> f32 {
+    style.label_scale.max(0.25) / HUD_FACE_SCALE * output_height as f32 / HUD_LINES
+}
+
+/// One glyph of a HUD-font label on screen: its pixel rectangle (left,
+/// top, right, bottom), its atlas rectangle in 0..1, and whether it keeps
+/// its own colours.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct GlyphQuad {
+    rect: [f32; 4],
+    uv: [f32; 4],
+    coloured: bool,
+}
+
+/// The quads of a laid-out label with its top-left at `origin` (rounded
+/// to a whole pixel) and `pixel` output pixels a font pixel, for an atlas
+/// `atlas` texels in size. Glyphs whose left edge is past `right` are
+/// dropped.
+fn glyph_quads(
+    layout: &TextLayout,
+    atlas: [u32; 2],
+    origin: [f32; 2],
+    pixel: f32,
+    right: f32,
+) -> Vec<GlyphQuad> {
+    let (ox, oy) = (origin[0].round(), origin[1].round());
+    let (aw, ah) = (atlas[0].max(1) as f32, atlas[1].max(1) as f32);
+    layout
+        .glyphs
+        .iter()
+        .filter_map(|p| {
+            let g = &p.glyph;
+            let left = ox + p.x as f32 * pixel;
+            if left > right {
+                return None;
+            }
+            let top = oy + p.y as f32 * pixel;
+            let [tx, ty] = [g.atlas[0] as f32, g.atlas[1] as f32];
+            Some(GlyphQuad {
+                rect: [
+                    left,
+                    top,
+                    left + f32::from(g.width) * pixel,
+                    top + f32::from(g.height) * pixel,
+                ],
+                uv: [
+                    tx / aw,
+                    ty / ah,
+                    (tx + f32::from(g.width)) / aw,
+                    (ty + f32::from(g.height)) / ah,
+                ],
+                coloured: g.coloured,
+            })
+        })
+        .collect()
 }
 
 /// The most arrowheads along one edge.
@@ -324,7 +474,7 @@ fn clip_near(polygon: &[[f32; 4]]) -> Vec<[f32; 4]> {
 mod renderer {
     use font8x8::UnicodeFonts;
 
-    use gfx::world_lines::Chevrons;
+    use gfx::world_lines::{Chevrons, LabelFace, LabelFont};
 
     use super::*;
 
@@ -334,11 +484,19 @@ mod renderer {
     /// A shape's half-width for a flat fill: the whole quad is core.
     const FILL: f32 = 1.0e4;
 
+    /// A shape's core half-width that marks a textured glyph quad: its
+    /// `local` is then the atlas coordinate.
+    const GLYPH: f32 = -1.0;
+
     /// Triangles, one buffer, one draw. Every vertex carries its own
     /// coverage shape: `shape` is (core half-width, outer half-width,
     /// dash period, glow opacity), all in pixels, and `local` the
-    /// pixel's (along, across) place on its line.
+    /// pixel's (along, across) place on its line. A HUD-font glyph has a
+    /// negative core and samples the font atlas at `local`, its colour
+    /// times the vertex's.
     const SHADER: &str = r#"
+@group(0) @binding(0) var atlas: texture_2d<f32>;
+@group(0) @binding(1) var atlas_sampler: sampler;
 struct Out {
     @builtin(position) position: vec4<f32>,
     @location(0) color: vec4<f32>,
@@ -356,6 +514,10 @@ fn vs(
 }
 @fragment
 fn fs(in: Out) -> @location(0) vec4<f32> {
+    if in.shape.x < 0.0 {
+        let t = textureSampleLevel(atlas, atlas_sampler, in.local, 0.0);
+        return vec4<f32>(in.color.rgb * t.rgb, in.color.a * t.a);
+    }
     if in.shape.z > 0.0 && fract(in.local.x / in.shape.z) > 5.0 / 9.0 {
         discard;
     }
@@ -384,6 +546,21 @@ fn fs(in: Out) -> @location(0) vec4<f32> {
         dash: f32,
     }
 
+    /// The bind group layout, pipeline layout and sampler of the font
+    /// atlas, and a blank atlas for frames without a HUD font.
+    struct Binding {
+        bgl: wgpu::BindGroupLayout,
+        layout: wgpu::PipelineLayout,
+        sampler: wgpu::Sampler,
+        blank: wgpu::BindGroup,
+    }
+
+    /// The uploaded atlas of one [`LabelFont`] generation.
+    struct Atlas {
+        generation: u64,
+        bind: wgpu::BindGroup,
+    }
+
     #[derive(Default)]
     pub(crate) struct MarkRenderer {
         pipelines: Vec<(wgpu::TextureFormat, wgpu::RenderPipeline)>,
@@ -391,6 +568,71 @@ fn fs(in: Out) -> @location(0) vec4<f32> {
         buffer: Option<wgpu::Buffer>,
         seconds: f32,
         started: Option<Instant>,
+        /// The HUD font for this frame's [`LabelFace::Hud`] labels.
+        font: Option<Arc<LabelFont>>,
+        binding: Option<Binding>,
+        atlas: Option<Atlas>,
+    }
+
+    fn atlas_texture(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        (width, height): (u32, u32),
+        rgba: &[u8],
+    ) -> wgpu::TextureView {
+        let size = wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        };
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("mark font atlas"),
+            size,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            rgba,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(width * 4),
+                rows_per_image: Some(height),
+            },
+            size,
+        );
+        texture.create_view(&Default::default())
+    }
+
+    fn atlas_bind(
+        device: &wgpu::Device,
+        binding: &wgpu::BindGroupLayout,
+        sampler: &wgpu::Sampler,
+        view: &wgpu::TextureView,
+    ) -> wgpu::BindGroup {
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("mark font atlas"),
+            layout: binding,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(sampler),
+                },
+            ],
+        })
     }
 
     impl MarkRenderer {
@@ -402,6 +644,7 @@ fn fs(in: Out) -> @location(0) vec4<f32> {
                 .get_or_insert_with(Instant::now)
                 .elapsed()
                 .as_secs_f32();
+            self.font = gfx::world_lines::hud_font();
         }
 
         pub(crate) fn push(
@@ -442,7 +685,9 @@ fn fs(in: Out) -> @location(0) vec4<f32> {
                             &pen,
                         );
                     }
-                    self.stroke(camera, area, size, edge, &pen);
+                    if style.stroke {
+                        self.stroke(camera, area, size, edge, &pen);
+                    }
                     if let Some(chevrons) = style.chevrons {
                         self.chevrons(camera, area, size, edge, chevrons, &pen);
                     }
@@ -453,13 +698,131 @@ fn fs(in: Out) -> @location(0) vec4<f32> {
                     if fade > 0.0
                         && let Some(point) = project_point(camera, area, mark.anchor)
                     {
-                        let a = fade * pulse_factor(style.pulse, self.seconds);
+                        let a = style.alpha.clamp(0.0, 1.0)
+                            * fade
+                            * pulse_factor(style.pulse, self.seconds);
                         let color = [mark.color[0], mark.color[1], mark.color[2], a];
-                        let glyph = label_glyph_scale(&style, scale);
-                        self.label(label, point, color, glyph, style.label_centered, size, camera, area);
+                        // A HUD-face label without a HUD font loaded is drawn in
+                        // the 8x8 font; its source notes that (LabelFace::Hud).
+                        let font = match style.label_face {
+                            LabelFace::Hud => self.font.clone(),
+                            LabelFace::Debug => None,
+                        };
+                        if let Some(font) = font {
+                            let pixel = hud_font_pixel(&style, size.1);
+                            self.hud_label(
+                                &font,
+                                label,
+                                point,
+                                color,
+                                pixel,
+                                style.label_centered,
+                                size,
+                                camera,
+                                area,
+                            );
+                        } else {
+                            let glyph = label_glyph_scale(&style, scale);
+                            self.label(label, point, color, glyph, style.label_centered, size, camera, area);
+                        }
                     }
                 }
             }
+        }
+
+        /// One HUD-space mark ([`HudMark`]) in the image's `area`: its
+        /// guest pixels scaled with the image, as the guest's own HUD is.
+        pub(crate) fn push_hud(&mut self, mark: &HudMark<'_>, area: Viewport, size: (u32, u32)) {
+            let scale = hud_scale(area);
+            match *mark {
+                HudMark::Path {
+                    points,
+                    closed,
+                    width,
+                    dashed,
+                    color,
+                    alpha,
+                } => {
+                    if points.len() < 2 {
+                        return;
+                    }
+                    let half = (width * scale * 0.5).max(0.5);
+                    let pen = Pen {
+                        color,
+                        alpha: alpha.clamp(0.0, 1.0),
+                        fade: None,
+                        half,
+                        outer: half + 0.75,
+                        glow_alpha: 0.0,
+                        dash: if dashed { 6.0 * scale.max(1.0) } else { 0.0 },
+                    };
+                    let px: Vec<[f32; 2]> = points.iter().map(|&p| hud_pixel(area, p)).collect();
+                    let n = px.len();
+                    let segments = if closed { n } else { n - 1 };
+                    let mut along = 0.0;
+                    for i in 0..segments {
+                        let (a, b) = (px[i], px[(i + 1) % n]);
+                        self.stroke_pixels([a, b], along, &pen, size);
+                        along += (b[0] - a[0]).hypot(b[1] - a[1]);
+                    }
+                }
+                HudMark::Fill {
+                    points,
+                    color,
+                    alpha,
+                } => {
+                    if points.len() < 3 {
+                        return;
+                    }
+                    let c = [color[0], color[1], color[2], alpha.clamp(0.0, 1.0)];
+                    let shape = [FILL, FILL, 0.0, 0.0];
+                    let first = hud_pixel(area, points[0]);
+                    for w in points[1..].windows(2) {
+                        for p in [first, hud_pixel(area, w[0]), hud_pixel(area, w[1])] {
+                            self.vertex(p, c, [0.0, 0.0], shape, size);
+                        }
+                    }
+                }
+                HudMark::Text {
+                    at,
+                    text,
+                    color,
+                    alpha,
+                    pixel,
+                    centered,
+                } => {
+                    let point = hud_pixel(area, at);
+                    let c = [color[0], color[1], color[2], alpha.clamp(0.0, 1.0)];
+                    let px = pixel * scale;
+                    // The whole image: text is clipped at its right and bottom.
+                    let whole = MarkCamera {
+                        view_projection: [[0.0; 4]; 4],
+                        viewport: [0.0, 0.0, 1.0, 1.0],
+                    };
+                    if let Some(font) = self.font.clone() {
+                        self.hud_label(&font, text, point, c, px, centered, size, &whole, area);
+                    } else {
+                        self.label(text, point, c, px, centered, size, &whole, area);
+                    }
+                }
+            }
+        }
+
+        /// A window-pixel segment as an anti-aliased quad, its dashes
+        /// counted from `along` pixels into its path.
+        fn stroke_pixels(&mut self, line: [[f32; 2]; 2], along: f32, pen: &Pen, size: (u32, u32)) {
+            let Some(quad) = strip_quad(line, pen.outer, pen.half) else {
+                return;
+            };
+            let shape = [pen.half, pen.outer, pen.dash, pen.glow_alpha];
+            let color = [pen.color[0], pen.color[1], pen.color[2], pen.alpha];
+            self.quad(
+                std::array::from_fn(|i| {
+                    let (pos, local) = quad[i];
+                    ((pos, [local[0] + along, local[1]]), color, shape)
+                }),
+                size,
+            );
         }
 
         fn vertex(
@@ -626,6 +989,62 @@ fn fs(in: Out) -> @location(0) vec4<f32> {
             self.glyphs(&text, [x, y], color, glyph, right, size);
         }
 
+        /// A label in the disc's HUD font: one textured quad a glyph, with a
+        /// drop shadow when centred. Button glyphs keep their colours.
+        #[allow(clippy::too_many_arguments)]
+        fn hud_label(
+            &mut self,
+            font: &LabelFont,
+            label: &str,
+            point: [f32; 2],
+            color: [f32; 4],
+            pixel: f32,
+            centered: bool,
+            size: (u32, u32),
+            camera: &MarkCamera,
+            area: Viewport,
+        ) {
+            let [_, _, bottom, right] = camera.viewport;
+            let right = area.x as f32 + right * area.width as f32;
+            let bottom = area.y as f32 + bottom * area.height as f32;
+            let layout = font.layout(label);
+            let box_size = [
+                layout.width as f32 * pixel,
+                font.line_height() as f32 * pixel,
+            ];
+            let [x, y] = text_origin(point, box_size, centered);
+            if y + box_size[1] > bottom {
+                return;
+            }
+            let mut glyphs = |at: [f32; 2], color: [f32; 4], shadow: bool| {
+                for q in glyph_quads(&layout, font.size, at, pixel, right) {
+                    let tint = if q.coloured && !shadow {
+                        [1.0, 1.0, 1.0, color[3]]
+                    } else {
+                        color
+                    };
+                    let shape = [GLYPH, 0.0, 0.0, 0.0];
+                    let [l, t, r, b] = q.rect;
+                    let [u0, v0, u1, v1] = q.uv;
+                    let corner = |pos, uv| ((pos, uv), tint, shape);
+                    self.quad(
+                        [
+                            corner([l, t], [u0, v0]),
+                            corner([l, b], [u0, v1]),
+                            corner([r, b], [u1, v1]),
+                            corner([r, t], [u1, v0]),
+                        ],
+                        size,
+                    );
+                }
+            };
+            if centered {
+                let off = pixel.max(1.0);
+                glyphs([x + off, y + off], [0.0, 0.0, 0.0, color[3] * 0.7], true);
+            }
+            glyphs([x, y], color, false);
+        }
+
         /// The text's lit font pixels as runs of `glyph`-pixel squares.
         fn glyphs(
             &mut self,
@@ -691,9 +1110,10 @@ fn fs(in: Out) -> @location(0) vec4<f32> {
                 label: Some("editor marks"),
                 source: wgpu::ShaderSource::Wgsl(SHADER.into()),
             });
+            let layout = &self.binding(device).layout;
             let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("editor marks"),
-                layout: None,
+                layout: Some(layout),
                 vertex: wgpu::VertexState {
                     module: &shader,
                     entry_point: Some("vs"),
@@ -729,6 +1149,85 @@ fn fs(in: Out) -> @location(0) vec4<f32> {
             pipeline
         }
 
+        /// The atlas binding, made on first use with a 1x1 blank atlas.
+        fn binding(&mut self, device: &wgpu::Device) -> &Binding {
+            self.binding.get_or_insert_with(|| {
+                let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                    label: Some("mark font atlas"),
+                    entries: &[
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 0,
+                            visibility: wgpu::ShaderStages::FRAGMENT,
+                            ty: wgpu::BindingType::Texture {
+                                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                                view_dimension: wgpu::TextureViewDimension::D2,
+                                multisampled: false,
+                            },
+                            count: None,
+                        },
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 1,
+                            visibility: wgpu::ShaderStages::FRAGMENT,
+                            ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                            count: None,
+                        },
+                    ],
+                });
+                let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                    label: Some("editor marks"),
+                    bind_group_layouts: &[Some(&bgl)],
+                    immediate_size: 0,
+                });
+                // Linear: labels are scaled to the output, rarely by a whole number.
+                let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+                    label: Some("mark font atlas"),
+                    mag_filter: wgpu::FilterMode::Linear,
+                    min_filter: wgpu::FilterMode::Linear,
+                    ..Default::default()
+                });
+                // wgpu clears a new texture: the blank atlas is transparent.
+                let blank = device.create_texture(&wgpu::TextureDescriptor {
+                    label: Some("mark blank atlas"),
+                    size: wgpu::Extent3d {
+                        width: 1,
+                        height: 1,
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: wgpu::TextureFormat::Rgba8Unorm,
+                    usage: wgpu::TextureUsages::TEXTURE_BINDING,
+                    view_formats: &[],
+                });
+                let blank = atlas_bind(device, &bgl, &sampler, &blank.create_view(&Default::default()));
+                Binding {
+                    bgl,
+                    layout,
+                    sampler,
+                    blank,
+                }
+            })
+        }
+
+        /// The bind group for this frame: the HUD font's atlas, uploaded
+        /// when its generation changes, or the blank one.
+        fn bind_group(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) -> wgpu::BindGroup {
+            self.binding(device);
+            let Some(font) = self.font.clone() else {
+                return self.binding.as_ref().expect("atlas binding").blank.clone();
+            };
+            if self.atlas.as_ref().is_none_or(|a| a.generation != font.generation) {
+                let view = atlas_texture(device, queue, (font.size[0], font.size[1]), &font.rgba);
+                let binding = self.binding.as_ref().expect("atlas binding");
+                self.atlas = Some(Atlas {
+                    generation: font.generation,
+                    bind: atlas_bind(device, &binding.bgl, &binding.sampler, &view),
+                });
+            }
+            self.atlas.as_ref().expect("uploaded atlas").bind.clone()
+        }
+
         pub(crate) fn draw(
             &mut self,
             device: &wgpu::Device,
@@ -754,6 +1253,7 @@ fn fs(in: Out) -> @location(0) vec4<f32> {
                 }));
             }
             let pipeline = self.pipeline(device, format);
+            let bind = self.bind_group(device, queue);
             let buffer = self.buffer.as_ref().expect("editor vertex buffer");
             queue.write_buffer(buffer, 0, &self.vertices);
             let count = (bytes / STRIDE) as u32;
@@ -774,6 +1274,7 @@ fn fs(in: Out) -> @location(0) vec4<f32> {
                 multiview_mask: None,
             });
             pass.set_pipeline(&pipeline);
+            pass.set_bind_group(0, &bind, &[]);
             pass.set_vertex_buffer(0, buffer.slice(..));
             pass.draw(0..count, 0..1);
         }
@@ -814,14 +1315,29 @@ mod tests {
     }
 
     #[test]
-    fn marks_clip_segments_at_the_near_plane() {
-        let points = project_segment(&CAMERA, AREA, [[0.5, 0.0, 0.0], [0.5, 0.0, -2.0]]).unwrap();
-        assert_eq!(points, [[215.0, 60.0], [202.5, 60.0]]);
+    fn the_probe_reads_anchors_through_the_first_view_and_names_the_frame() {
+        let cameras = [None, Some(CAMERA), None, None];
+        assert_eq!(
+            anchor_pixels(&cameras, AREA, [0.0, 0.0, -3.0]),
+            Some([190.0, 60.0])
+        );
+        assert_eq!(anchor_pixels(&cameras, AREA, [0.0, 0.0, 3.0]), None, "behind");
+        assert_eq!(anchor_pixels(&[None; 4], AREA, [0.0, 0.0, -3.0]), None);
+        use gfx::world_lines::probe::Kind;
+        assert_eq!(FrameMarks::Synthetic(None).probe_kind(), Kind::Synthetic);
+        assert_eq!(FrameMarks::Guest(None).probe_kind(), Kind::Guest);
+        assert_eq!(FrameMarks::Raw.probe_kind(), Kind::Raw);
+        assert_eq!(
+            FrameMarks::GuestWithoutWorldView.probe_kind().name(),
+            "no_world_view"
+        );
     }
 
     #[test]
     fn marks_drop_segments_behind_the_camera() {
-        assert!(project_segment(&CAMERA, AREA, [[0.0, 0.0, 1.0], [0.0, 1.0, 2.0]]).is_none());
+        assert!(
+            project_segment_depth(&CAMERA, AREA, [[0.0, 0.0, 1.0], [0.0, 1.0, 2.0]]).is_none()
+        );
     }
 
     #[test]
@@ -831,6 +1347,21 @@ mod tests {
         assert_eq!(points, [[215.0, 60.0], [202.5, 60.0]]);
         // Clipped at the near plane (w = 1), the far end is at w = 2.
         assert!((depth[0] - 1.0).abs() < 1e-4 && (depth[1] - 2.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn hud_points_scale_with_the_guest_image() {
+        // The image drawn at 1280 by 960 from (40, 10).
+        let area = Viewport {
+            x: 40,
+            y: 10,
+            width: 1280,
+            height: 960,
+        };
+        assert_eq!(hud_pixel(area, [0.0, 0.0]), [40.0, 10.0]);
+        assert_eq!(hud_pixel(area, [640.0, 480.0]), [1320.0, 970.0]);
+        assert_eq!(hud_pixel(area, [88.5, 401.5]), [217.0, 813.0]);
+        assert_eq!(hud_scale(area), 2.0);
     }
 
     #[test]
@@ -980,6 +1511,71 @@ mod tests {
         // Six 8-pixel glyphs at 2x are 96 wide and 16 tall: centred on the anchor.
         assert_eq!(label_origin([100.0, 50.0], 6, 2.0, true), [52.0, 42.0]);
         assert_eq!(label_origin([100.2, 50.0], 6, 1.0, false), [106.0, 55.0]);
+    }
+
+    #[test]
+    fn a_hud_label_box_is_centred_or_hangs_off_its_anchor() {
+        assert_eq!(text_origin([100.0, 50.0], [40.0, 20.0], true), [80.0, 40.0]);
+        assert_eq!(text_origin([100.2, 50.0], [40.0, 20.0], false), [106.0, 55.0]);
+    }
+
+    #[test]
+    fn a_hud_font_pixel_is_a_hud_pixel_at_scale_two() {
+        let at = |scale| LineStyle {
+            label_scale: scale,
+            label_face: gfx::world_lines::LabelFace::Hud,
+            ..LineStyle::default()
+        };
+        // 480 lines to 1080: 2.25 output pixels a HUD pixel.
+        assert_eq!(hud_font_pixel(&at(2.0), 1080), 2.25);
+        assert_eq!(hud_font_pixel(&at(1.0), 960), 1.0);
+        assert_eq!(hud_font_pixel(&at(3.0), 480), 1.5);
+        // A scale of nothing still draws something.
+        assert!(hud_font_pixel(&at(0.0), 1080) > 0.0);
+    }
+
+    fn hud_font() -> gfx::world_lines::LabelFont {
+        use gfx::world_lines::{GlyphPixels, LabelFont};
+        let glyph = |unit: u16, width: u16, coloured: bool| GlyphPixels {
+            unit,
+            advance: width as i16 + 1,
+            x_offset: 0,
+            y_offset: 12,
+            width,
+            height: 12,
+            rgba: vec![255; usize::from(width) * 12 * 4],
+            coloured,
+        };
+        LabelFont::build(
+            "test",
+            12,
+            4,
+            vec![glyph(u16::from(b'H'), 8, false), glyph(0xe102, 16, true)],
+            Vec::new(),
+        )
+    }
+
+    #[test]
+    fn glyph_quads_place_each_glyph_at_its_pen_scaled_with_its_atlas_box() {
+        let font = hud_font();
+        let layout = font.layout("H\u{e102}");
+        let quads = glyph_quads(&layout, font.size, [10.4, 20.6], 2.0, 1000.0);
+        assert_eq!(quads.len(), 2);
+        // Rounded to (10, 21); H is 8 by 12 font pixels at 2 pixels each.
+        assert_eq!(quads[0].rect, [10.0, 21.0, 26.0, 45.0]);
+        // The button glyph follows H's advance of 9, and keeps its colours.
+        assert_eq!(quads[1].rect, [28.0, 21.0, 60.0, 45.0]);
+        assert!(quads[1].coloured && !quads[0].coloured);
+        for (q, unit) in quads.iter().zip([u16::from(b'H'), 0xe102]) {
+            let g = font.glyph(unit).unwrap();
+            let [w, h] = [font.size[0] as f32, font.size[1] as f32];
+            assert_eq!(q.uv[0] * w, g.atlas[0] as f32);
+            assert_eq!(q.uv[1] * h, g.atlas[1] as f32);
+            assert!(((q.uv[2] - q.uv[0]) * w - f32::from(g.width)).abs() < 1e-3);
+            assert!(((q.uv[3] - q.uv[1]) * h - f32::from(g.height)).abs() < 1e-3);
+        }
+        // A glyph that starts past the viewport's right edge is dropped.
+        assert_eq!(glyph_quads(&layout, font.size, [0.0, 0.0], 2.0, 10.0).len(), 1);
     }
 
     #[test]

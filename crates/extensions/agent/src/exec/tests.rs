@@ -1693,3 +1693,24 @@ fn camera_layer_carries_the_sealed_scene_views_sorted_by_key() {
     // Sorted, and the second view under key 0 dropped rather than sent twice.
     assert_eq!(world.cameras, [views[1].clone(), views[0].clone()]);
 }
+
+#[test]
+fn a_ticker_runs_once_a_tick_with_the_game_at_the_boundary_and_never_between_slices() {
+    let a = Agent::new();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let log = Arc::clone(&seen);
+    a.add_ticker("test", move |ctx| {
+        log.lock().unwrap().push((ctx.at.ticks, ctx.conn, ctx.at.boundary));
+    });
+    let mut g = level();
+    a.on_tick(&mut g);
+    a.between_slices(&mut g, 1);
+    a.on_tick(&mut g);
+    let seen = seen.lock().unwrap().clone();
+    assert_eq!(seen.len(), 2, "{seen:?}");
+    assert_eq!((seen[0].0, seen[1].0), (1, 2));
+    assert!(seen.iter().all(|s| s.1 == TICKER_CONN && s.2 == Boundary::Tick));
+    // The same name replaces it.
+    a.add_ticker("test", |_| {});
+    a.on_tick(&mut g);
+}

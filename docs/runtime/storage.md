@@ -36,7 +36,8 @@ What lives where:
   `H2_DATA` names another), the movie transcodes `movies/`
   (`movies::install::app_movies_dir`), Live accounts `live/` (`H2_LIVE_DIR` names
   another), `coop-test/` (`h2 coop test`), and the root
-  `Config::for_title` uses.
+  `Config::for_title` uses. Under the data root, `game-variants/` is the
+  game-variant store ([rules-engine.md](../game/rules-engine.md#live-game-variants-in-the-game)).
 - Cache: the agent socket and its `inputs/` and `captures/`
   (`agent_proto::cache_dir`), the pipeline cache
   (`d3d::pipeline_store`), `snapshots/` (`H2_SNAPSHOTS` names another), the

@@ -34,7 +34,7 @@ Nothing on this page was established by running the game.
    `register_core` and `register_late`
    (`crates/apps/boot/src/registration.rs`).
 2. `Registry::add` asks the feature's `Manifest` (`id`, `title`,
-   `default_on`, `doc`), checks its switch, and runs `Feature::build`
+   `default_on`, `always_on`, `doc`), checks its switch, and runs `Feature::build`
    against a `Builder`. A switched-off feature declares nothing. A feature
    whose `build` fails is left out with the reason.
 3. `Registry::build(&dyn ImageAddrs)` calls `plan::build`
@@ -176,7 +176,10 @@ RAM; a feature that says nothing is `Unaudited` and blocks machine snapshots
 
 Read from `H2_FEATURES` (`crates/hooking/hooks/src/switches.rs`): a comma-separated
 list of `id` (on), `-id` (off) or `id=on|off`. A feature is on unless its
-manifest says `off_by_default` or the list switches it. An `impl.<name>`
+manifest says `off_by_default` or the list switches it. A feature whose
+manifest says `always_on` is how the game works and has no switch:
+`Registry::add` refuses `-id` or `id=off` for it by name, and boot stops
+with the reason (the party lobby, `game::lobby_mode`). An `impl.<name>`
 entry switches an implementation: `Switches::implementation(name, default)`
 falls back from `impl.engine.tags.<name>` to `impl.engine.tags`, then
 `impl.engine`. The native renderer's one switch, `impl.render.native`, is

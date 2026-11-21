@@ -39,6 +39,7 @@ emit = { path = "crates/recompiler/emit" }
 clif = { path = "crates/recompiler/clif" }
 simd = { path = "crates/recompiler/simd" }
 sim-core = { path = "crates/rewrites/sim-core" }
+hud-kit-core = { path = "crates/rewrites/hud-kit-core" }
 sim-anim = { path = "crates/rewrites/sim-anim" }
 sim-collision = { path = "crates/rewrites/sim-collision" }
 sim-objects = { path = "crates/rewrites/sim-objects" }

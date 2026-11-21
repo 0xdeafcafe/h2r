@@ -107,15 +107,20 @@ impl Store for SimExtStore {
     }
 }
 
-/// Fetches a blob that is not built in, by the hash prefix the record
-/// carries. In the game it is [`no_fetch`] until the Live blob store and
-/// its fetch exist.
+/// Fetches a blob that is neither built in nor on this machine, by the
+/// hash prefix the record carries. In the game it is
+/// [`crate::game_variants::GameScripts::fetched`]: the outcome of the Live
+/// fetch the start hook made with no guest memory held, so it never waits.
 pub type Fetch = dyn Fn([u8; 8]) -> Result<Vec<u8>, String> + Send + Sync;
 
-/// The fetch the game has now: none, refused by name.
+/// The blob on this machine (the game-variant store) whose SHA-256 starts
+/// with the prefix, if any.
+pub type LocalScripts = dyn Fn([u8; 8]) -> Option<Vec<u8>> + Send + Sync;
+
+/// No fetch: refused by name.
 pub fn no_fetch(prefix: [u8; 8]) -> Result<Vec<u8>, String> {
     Err(format!(
-        "no built-in script has hash prefix {}, and fetching a blob from Live is not built",
+        "no built-in or stored script has hash prefix {}, and this runtime has no Live client to fetch it",
         hex(&prefix)
     ))
 }
@@ -158,6 +163,8 @@ pub fn builtins() -> &'static [Builtin] {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Source {
     Builtin,
+    /// The game-variant store on this machine.
+    Local,
     Live,
 }
 
@@ -165,6 +172,7 @@ impl Source {
     pub fn name(self) -> &'static str {
         match self {
             Source::Builtin => "builtin",
+            Source::Local => "local",
             Source::Live => "live",
         }
     }
@@ -425,6 +433,7 @@ pub struct Runtime {
     pub status: Status,
     errors: VecDeque<wire::Refusal>,
     store: Box<dyn Store>,
+    local: Box<LocalScripts>,
     fetch: Box<Fetch>,
 }
 
@@ -467,13 +476,23 @@ impl Runtime {
             status: Status::Idle("no game has started"),
             errors: VecDeque::new(),
             store,
+            local: Box::new(|_: [u8; 8]| None),
             fetch,
         }
     }
 
-    /// The runtime the game uses: the process's `SimExt` blob, no fetch.
-    pub fn in_game() -> Self {
-        Self::new(Box::new(SimExtStore), Box::new(no_fetch))
+    /// The same runtime with `local` for the blobs on this machine.
+    pub fn with_local(mut self, local: Box<LocalScripts>) -> Self {
+        self.local = local;
+        self
+    }
+
+    /// The runtime the game uses: the process's `SimExt` blob, and the
+    /// game-variant store and Live through `scripts`.
+    pub fn in_game(scripts: std::sync::Arc<crate::game_variants::GameScripts>) -> Self {
+        let (l, f) = (std::sync::Arc::clone(&scripts), scripts);
+        Self::new(Box::new(SimExtStore), Box::new(move |p: [u8; 8]| f.fetched(p)))
+            .with_local(Box::new(move |p: [u8; 8]| l.local(p)))
     }
 
     fn error(&mut self, tick: u32, call: &str, error: impl std::fmt::Display) {
@@ -526,11 +545,14 @@ impl Runtime {
                 let builtin = builtins().iter().find(|b| b.id.0[..8] == script.prefix);
                 match builtin {
                     Some(b) => Ok((b.blob.clone(), Source::Builtin)),
-                    None if system_link => Err(format!(
-                        "a System Link game runs only the built-in scripts, and none has hash prefix {}",
-                        hex(&script.prefix)
-                    )),
-                    None => (self.fetch)(script.prefix).map(|blob| (blob, Source::Live)),
+                    None => match (self.local)(script.prefix) {
+                        Some(blob) => Ok((blob, Source::Local)),
+                        None if system_link => Err(format!(
+                            "a System Link game runs only the scripts on this machine (built in or in its game-variant store), and none has hash prefix {}",
+                            hex(&script.prefix)
+                        )),
+                        None => (self.fetch)(script.prefix).map(|blob| (blob, Source::Live)),
+                    },
                 }
             }
             Mode::None => {

@@ -8,7 +8,8 @@ When the game's virtual keyboard is focused, host typing edits it directly.
 Printable BMP characters insert, Backspace deletes, Enter runs Done, and Escape
 runs Cancel/Back. Arrows keep their existing pad bindings, so they navigate the
 on-screen keyboard. Outside this screen all keyboard pad bindings behave as
-before. Cmd shortcuts and the F3/F5/F6 host controls remain available.
+before. Cmd shortcuts and the F3/F5/F6 host controls remain available, and
+F4 while a superbounce tutorial card shows.
 
 Backquote (`` ` ``) opens and closes the debug menu (docs/runtime/debug-menu.md). It is bound to nothing in the default table. While the menu is open the arrows, Enter, Space, Escape and Backspace drive it, and other keys are swallowed.
 

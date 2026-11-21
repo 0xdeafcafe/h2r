@@ -26,6 +26,11 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
         "the queued guest calls run at the end of the game tick; the render never meets it",
     ),
     (
+        "teabag",
+        "*",
+        "it watches the game's activate, tick and end, game-thread points; the render never meets them",
+    ),
+    (
         "sim-ext",
         "*",
         "checkpoint save, revert and restore are game-thread points; the render never meets them",
@@ -258,6 +263,14 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
     ("touch-glue", "GAME_TICK", AFTER),
     ("cheats", "GAME_TICK", AFTER),
     ("superbounce", "*", AFTER),
+    ("superbounce-hud", "*", AFTER),
+    (
+        "hud-kit",
+        "GAME_ACTIVATE",
+        "the match start on the game thread: reads the map file and joins the kit's widgets to \
+         the player HUD tags",
+    ),
+    ("hud-kit", "GAME_TICK", AFTER),
     ("layouts-value", "CONTROLS_ROW_TEXT", AFTER),
     ("controls-text", "CONTROLS_ROW_TEXT", AFTER),
     // Features the test's registry gained when it began calling boot's own
@@ -278,6 +291,7 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
     ("hud", "GAME_ACTIVATE", AFTER),
     ("loaded_map", "GAME_ACTIVATE", AFTER),
     ("variant-ext-live", "GAME_ACTIVATE", AFTER),
+    ("game-variants", "GAME_ACTIVATE", AFTER),
     (
         "live-telemetry",
         "*",
@@ -300,14 +314,15 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
         "the Game Setup list's row, a UI event on the game thread",
     ),
     (
+        "tweakers",
+        "*",
+        "the game type list's row and its variant lists, UI events and a per-frame screen \
+         update on the game thread",
+    ),
+    (
         "firefight-row",
         "*",
         "the Game Setup list's Firefight row on the game thread",
-    ),
-    (
-        "lobby-mode",
-        "*",
-        "Game Setup's mode rows, the lobby header and the start refusal: UI and lobby state on the game thread",
     ),
     (
         "forge-screens",
@@ -333,6 +348,12 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
         "ui-back",
         "UI_CHANNEL_FREE",
         "removes the freed dialog from host navigation state on the game thread",
+    ),
+    (
+        "party-lobby",
+        "*",
+        "the party lobby's UI (its Game Setup rows, mode strip, bumpers, start refusal and \
+         leave) on the game thread, through guest calls and a game-thread reentry guard",
     ),
     (
         "lobby-options",

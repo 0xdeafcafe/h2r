@@ -1,6 +1,6 @@
 //! A typed stats record in a TICK event payload (subtype 1). The surrounding
-//! envelope supplies the film tick. The six original Live event bodies retain
-//! their match-clock ticks, including across a campaign revert.
+//! envelope supplies the film tick. The Live event bodies retain their
+//! match-clock ticks, including across a campaign revert.
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 
 use crate::game;
 pub mod ballistics;
-mod medals;
+pub mod medals;
 pub mod objective;
 
 /// The upper bound applies to a single uncompressed event, before serde.
@@ -28,6 +28,15 @@ pub enum Event {
     FirefightEnded(crate::firefight::FirefightEnded),
     ScoreChanged(game::ScoreChanged),
     GameEnded(game::GameEnded),
+    /// A bounce off a superbounce crease. The Tracker follows it with a
+    /// `Medal` for each medal of its chain count.
+    Superbounce(game::Superbounce),
+    /// A death falling out of the map while trying a bounce. The Tracker
+    /// follows it with a `bounced` `Medal`.
+    Bounced(game::Bounced),
+    /// A teabag (docs/game/teabag.md). Both players lose the chance of an
+    /// `incel` `Medal`, which the Tracker writes at `GameEnded`.
+    Teabag(game::Teabag),
     /// The scoreboard reports the count. It does not identify which victim.
     Assist {
         player: u32,
@@ -95,6 +104,9 @@ impl Event {
             Self::PlayerKilled(e) => Some((game::PLAYER_KILLED, json!(e))),
             Self::ScoreChanged(e) => Some((game::SCORE_CHANGED, json!(e))),
             Self::GameEnded(e) => Some((game::GAME_ENDED, json!(e))),
+            Self::Superbounce(e) => Some((game::SUPERBOUNCE, json!(e))),
+            Self::Bounced(e) => Some((game::BOUNCED, json!(e))),
+            Self::Teabag(e) => Some((game::TEABAG, json!(e))),
             _ => None,
         }
     }
@@ -125,7 +137,10 @@ impl Record {
     }
 
     /// Inspect the bounded JSON envelope and borrow its raw data. Live only
-    /// materialises its six game records. A new
+    /// materialises its game records: the six of the first films, then
+    /// `Superbounce`, `Bounced` and `Teabag`. A reader without a kind
+    /// passes over it.
+    /// A new
     /// presentation or highlight kind can therefore arrive before a server
     /// update, and a busy firefight allocates no hit or shot payloads here.
     pub fn decode_telemetry(bytes: &[u8]) -> Result<Option<(u64, &'static str, Value)>, String> {
@@ -152,6 +167,9 @@ impl Record {
             game::PLAYER_KILLED => Event::PlayerKilled(body(row.data)?),
             game::SCORE_CHANGED => Event::ScoreChanged(body(row.data)?),
             game::GAME_ENDED => Event::GameEnded(body(row.data)?),
+            game::SUPERBOUNCE => Event::Superbounce(body(row.data)?),
+            game::BOUNCED => Event::Bounced(body(row.data)?),
+            game::TEABAG => Event::Teabag(body(row.data)?),
             _ => return Ok(None),
         };
         Ok(event.telemetry().map(|(kind, data)| (row.tick, kind, data)))
@@ -163,6 +181,8 @@ impl Record {
 #[derive(Default)]
 pub struct Tracker {
     medals: medals::Tally,
+    /// Who completes the game without a teabag, by generation.
+    incel: medals::Incel,
     participants: BTreeMap<u32, super::PlayerSummary>,
     ended: bool,
     // The same slot may hold a different participant after a leave.
@@ -191,6 +211,7 @@ impl Tracker {
     fn join(&mut self, player: &game::Player) -> Result<(), String> {
         let seat = u8::try_from(player.index).map_err(|_| "film player seat exceeds 255")?;
         let generation = self.generation(player.index);
+        self.incel.joined(generation);
         self.participants.insert(
             generation,
             super::PlayerSummary {
@@ -288,6 +309,7 @@ impl Tracker {
                 fallback_tick
             }
             Event::PlayerKilled(kill) => {
+                self.incel.killed();
                 let victim = self.generation(kill.victim);
                 let killer = kill
                     .killer
@@ -320,6 +342,34 @@ impl Tracker {
                 e.tick
             }
             Event::FirefightEnded(e) => e.tick,
+            Event::Superbounce(bounce) => {
+                let player = self.generation(bounce.player);
+                self.medals.bounce_with(player, bounce.chain, |medal| {
+                    extra.push(Event::Medal {
+                        player: bounce.player,
+                        earned_at: bounce.tick,
+                        medal: medal.into(),
+                    });
+                });
+                bounce.tick
+            }
+            Event::Bounced(death) => {
+                let player = self.generation(death.player);
+                self.medals.bounced_with(player, |medal| {
+                    extra.push(Event::Medal {
+                        player: death.player,
+                        earned_at: death.tick,
+                        medal: medal.into(),
+                    });
+                });
+                death.tick
+            }
+            Event::Teabag(bag) => {
+                let giver = self.generation(bag.player);
+                let victim = self.generation(bag.victim);
+                self.incel.teabag(giver, victim);
+                bag.tick
+            }
             Event::ScoreChanged(e) => {
                 self.score_changes(
                     &e.players,
@@ -329,7 +379,7 @@ impl Tracker {
                 e.tick
             }
             Event::GameEnded(e) => {
-                self.ended = true;
+                let first = !std::mem::replace(&mut self.ended, true);
                 self.score_changes(&e.players, &[], &mut extra);
                 if let Some((player, earned_at)) = self
                     .last_scoring
@@ -339,6 +389,27 @@ impl Tracker {
                         player,
                         earned_at,
                         medal: "last-word".into(),
+                    });
+                }
+                // Everyone still in the game who completed it without a
+                // teabag, in slot order (docs/game/teabag.md, "The medal").
+                let incel: Vec<(u32, u32)> = self
+                    .generations
+                    .iter()
+                    .filter(|&(_, g)| {
+                        first
+                            && self.participants.contains_key(g)
+                            && self.incel.earns(*g, &e.reason)
+                    })
+                    .map(|(&slot, &g)| (slot, g))
+                    .collect();
+                for (slot, generation) in incel {
+                    self.medals.incel_with(generation, |medal| {
+                        extra.push(Event::Medal {
+                            player: slot,
+                            earned_at: e.tick,
+                            medal: medal.into(),
+                        });
                     });
                 }
                 e.tick
@@ -732,6 +803,287 @@ mod tests {
             BTreeMap::from([("opening-act".into(), 1), ("twofer".into(), 1)])
         );
         assert_eq!(rows[2].name, "Opponent");
+    }
+
+    /// A bounce is a stats record, then one `Medal` per medal of its chain
+    /// count at the bounce's tick, and the summary's map counts them. A
+    /// bounce death is a record and a `bounced` medal.
+    #[test]
+    fn a_superbounce_records_its_medals_and_round_trips() {
+        use crate::film::PlayerSummary;
+        let mut tracker = Tracker::default();
+        tracker
+            .event(
+                game::GAME_STARTED,
+                &json!({"host":"h","game_id":"g","map":"lockout","mode":"multiplayer",
+                    "team_play":false,"players":[{"index":3,"name":"Ada","team":0}]}),
+                0,
+            )
+            .unwrap();
+        let mut medals = Vec::new();
+        let chains = [
+            (40, 1),
+            (70, 2),
+            (95, 3),
+            (120, 4),
+            (150, 5),
+            (180, 6),
+            (210, 7),
+            (400, 1),
+        ];
+        for (tick, chain) in chains {
+            let records = tracker
+                .event(
+                    game::SUPERBOUNCE,
+                    &json!({"tick":tick,"player":3,"chain":chain}),
+                    tick + 9,
+                )
+                .unwrap();
+            assert!(records.iter().all(|r| r.tick == tick));
+            assert_eq!(
+                records[0].event,
+                Event::Superbounce(game::Superbounce {
+                    tick,
+                    player: 3,
+                    chain
+                })
+            );
+            for r in &records {
+                assert_eq!(Record::decode(&r.encode().unwrap()).unwrap(), *r);
+                match &r.event {
+                    Event::Medal {
+                        player,
+                        earned_at,
+                        medal,
+                    } => {
+                        assert_eq!((*player, *earned_at), (3, tick));
+                        medals.push((chain, medal.clone()));
+                    }
+                    Event::Superbounce(_) => {}
+                    other => panic!("unexpected {other:?}"),
+                }
+            }
+        }
+        let ids = |chain| {
+            medals
+                .iter()
+                .filter(|(c, _)| *c == chain)
+                .map(|(_, m)| m.as_str())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(ids(2), ["superbounce", "double-bounce"]);
+        assert_eq!(ids(4), ["superbounce", "quad-bounce"]);
+        assert_eq!(ids(5), ["superbounce", "chain-bounce"]);
+        assert_eq!(ids(6), ["superbounce", "bouncetacular"]);
+        assert_eq!(ids(7), ["superbounce"]);
+
+        let death = tracker
+            .event(
+                game::BOUNCED,
+                &json!({"tick":450,"player":3,"chain":0}),
+                460,
+            )
+            .unwrap();
+        assert_eq!(
+            death,
+            [
+                Record {
+                    tick: 450,
+                    event: Event::Bounced(game::Bounced {
+                        tick: 450,
+                        player: 3,
+                        chain: 0,
+                    }),
+                },
+                Record {
+                    tick: 450,
+                    event: Event::Medal {
+                        player: 3,
+                        earned_at: 450,
+                        medal: "bounced".into()
+                    },
+                },
+            ]
+        );
+        let mut rows = vec![PlayerSummary {
+            seat: 3,
+            name: "Ada".into(),
+            ..Default::default()
+        }];
+        tracker.summary_medals(&mut rows);
+        assert_eq!(
+            rows[0].medals,
+            BTreeMap::from([
+                ("superbounce".into(), 8),
+                ("double-bounce".into(), 1),
+                ("triple-bounce".into(), 1),
+                ("quad-bounce".into(), 1),
+                ("chain-bounce".into(), 1),
+                ("bouncetacular".into(), 1),
+                ("bounced".into(), 1),
+            ])
+        );
+
+        // The stats reader takes the bounce and the death, and passes over
+        // their medals.
+        let bounce = Record {
+            tick: 70,
+            event: Event::Superbounce(game::Superbounce {
+                tick: 70,
+                player: 3,
+                chain: 2,
+            }),
+        };
+        let wire: Value = serde_json::from_slice(&bounce.encode().unwrap()).unwrap();
+        assert_eq!(
+            wire,
+            json!({"tick":70,"kind":"Superbounce","data":{"tick":70,"player":3,"chain":2}})
+        );
+        assert_eq!(
+            Record::decode_telemetry(&bounce.encode().unwrap()).unwrap(),
+            Some((
+                70,
+                game::SUPERBOUNCE,
+                json!({"tick":70,"player":3,"chain":2})
+            ))
+        );
+        assert_eq!(
+            Record::decode_telemetry(&death[0].encode().unwrap()).unwrap(),
+            Some((450, game::BOUNCED, json!({"tick":450,"player":3,"chain":0})))
+        );
+        assert_eq!(
+            Record::decode_telemetry(&death[1].encode().unwrap()).unwrap(),
+            None
+        );
+        assert!(
+            Record::decode_telemetry(br#"{"tick":9,"kind":"Superbounce","data":{"player":1}}"#)
+                .is_err()
+        );
+    }
+
+    /// Incel at the game's end (docs/game/teabag.md, "The medal"): one
+    /// `Medal` at `GameEnded`'s tick for each player who was in the game
+    /// before its first death, is still in it, and was on neither side of a
+    /// `Teabag`; a bot counts. A teabag is a stats record.
+    #[test]
+    fn incel_goes_to_who_completed_the_game_without_a_teabag() {
+        use crate::film::PlayerSummary;
+        let started = json!({"host":"h","game_id":"g","map":"lockout","mode":"multiplayer",
+            "team_play":false,"players":[
+                {"index":0,"name":"Ada","team":0},{"index":1,"name":"Ben","team":0},
+                {"index":2,"name":"Cy","team":0},{"index":3,"name":"Clanker 3","team":0,"bot":true}]});
+        let play = |reason: &str| {
+            let mut tracker = Tracker::default();
+            tracker.event(game::GAME_STARTED, &started, 0).unwrap();
+            // Before anyone dies: on time.
+            tracker
+                .event(
+                    game::PLAYER_JOINED,
+                    &json!({"player":{"index":4,"name":"Di","team":0}}),
+                    5,
+                )
+                .unwrap();
+            tracker
+                .event(
+                    game::PLAYER_KILLED,
+                    &json!({"tick":10,"killer":0,"victim":1,"kind":"kill"}),
+                    10,
+                )
+                .unwrap();
+            // After the first death: late.
+            tracker
+                .event(
+                    game::PLAYER_JOINED,
+                    &json!({"player":{"index":5,"name":"Eve","team":0}}),
+                    12,
+                )
+                .unwrap();
+            let bag = tracker
+                .event(game::TEABAG, &json!({"tick":40,"player":0,"victim":1}), 41)
+                .unwrap();
+            assert_eq!(
+                bag,
+                [Record {
+                    tick: 40,
+                    event: Event::Teabag(game::Teabag {
+                        tick: 40,
+                        player: 0,
+                        victim: 1
+                    })
+                }]
+            );
+            tracker
+                .event(game::PLAYER_LEFT, &json!({"index":2}), 50)
+                .unwrap();
+            let end = tracker
+                .event(
+                    game::GAME_ENDED,
+                    &json!({"tick":900,"reason":reason,"players":[]}),
+                    900,
+                )
+                .unwrap();
+            (tracker, end, bag)
+        };
+        let (tracker, end, bag) = play("finished");
+        let incel: Vec<_> = end
+            .iter()
+            .filter_map(|r| match &r.event {
+                Event::Medal {
+                    player,
+                    earned_at,
+                    medal,
+                } if medal == medals::INCEL => Some((*player, *earned_at, r.tick)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(incel, [(3, 900, 900), (4, 900, 900)]);
+        let mut rows: Vec<_> = [
+            (0, "Ada"),
+            (1, "Ben"),
+            (3, "Clanker 3"),
+            (4, "Di"),
+            (5, "Eve"),
+        ]
+        .into_iter()
+        .map(|(seat, name)| PlayerSummary {
+            seat,
+            name: name.into(),
+            ..Default::default()
+        })
+        .collect();
+        tracker.summary_medals(&mut rows);
+        let has = |name: &str| {
+            rows.iter()
+                .find(|r| r.name == name)
+                .is_some_and(|r| r.medals.contains_key(medals::INCEL))
+        };
+        assert!(has("Clanker 3") && has("Di"));
+        assert!(!has("Ada") && !has("Ben") && !has("Eve"));
+
+        // A game that did not finish gives none.
+        for reason in ["quit", "lost"] {
+            let (_, end, _) = play(reason);
+            assert!(
+                !end.iter().any(
+                    |r| matches!(&r.event, Event::Medal { medal, .. } if medal == medals::INCEL)
+                ),
+                "{reason}"
+            );
+        }
+
+        // The stats reader takes the teabag and passes over the medal.
+        assert_eq!(
+            Record::decode_telemetry(&bag[0].encode().unwrap()).unwrap(),
+            Some((40, game::TEABAG, json!({"tick":40,"player":0,"victim":1})))
+        );
+        let medal = end
+            .iter()
+            .find(|r| matches!(r.event, Event::Medal { .. }))
+            .unwrap();
+        assert_eq!(
+            Record::decode_telemetry(&medal.encode().unwrap()).unwrap(),
+            None
+        );
     }
 
     #[test]

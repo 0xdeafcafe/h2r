@@ -131,6 +131,11 @@ pub(crate) enum Reply {
     Mods(crate::mods::ModPage),
     /// The served hopper file's clanker hoppers (docs/game/bots.md §8).
     ClankerHoppers(live_proto::hopper::clankers::ClankerHoppers),
+    /// A rules IR blob as the server sent it, or why there is none
+    /// (`NotFound` kept apart from the other refusals).
+    RulesIr(Result<Vec<u8>, crate::game_variants::FetchError>),
+    /// The first signed-in account's Live game variants.
+    GameVariants(Vec<crate::game_variants::LiveVariant>),
     /// Where content is fetched from (the API base) and the map gate that
     /// installs it, for a download on a thread of its own.
     Content {
@@ -328,6 +333,10 @@ enum Work {
     /// `GET /v1/hoppers/clankers` (docs/game/bots.md §8), as the first
     /// account signed in on this console.
     ClankerHoppers,
+    /// `GET /v1/rules/{hash}/ir`, as the first account signed in.
+    RulesIr(String),
+    /// `GET /v1/variants?author=<xuid>`, the first signed-in account's.
+    GameVariants,
     Wake,
 }
 /// Called on the worker with a command's result, once it has one.
@@ -586,6 +595,14 @@ impl Service {
     /// signed in on this console.
     pub fn read_presence(&self, s: &Session) -> Result<Pending, u32> {
         self.submit(s, Work::ReadPresence)
+    }
+    /// A rules IR blob by its full hash (`GET /v1/rules/{hash}/ir`).
+    pub fn rules_ir(&self, s: &Session, hash: String) -> Result<Pending, u32> {
+        self.submit(s, Work::RulesIr(hash))
+    }
+    /// The first signed-in account's game variants (`GET /v1/variants`).
+    pub fn game_variants(&self, s: &Session) -> Result<Pending, u32> {
+        self.submit(s, Work::GameVariants)
     }
     /// A page of the mod repository; `then` gets it on the worker.
     pub fn mods(
@@ -2204,6 +2221,39 @@ impl Worker {
                 self.team_json::<live_proto::hopper::clankers::ClankerHoppers>(user, path)
                     .map(Reply::ClankerHoppers)
                     .map_err(Error::result)
+            }
+            Work::RulesIr(hash) => {
+                use crate::game_variants::{FetchError, MAX_IR, ir_path};
+                let active = self
+                    .active
+                    .as_ref()
+                    .filter(|a| a.session.id == c.session.id)
+                    .ok_or(NO_SESSION)?;
+                let user = active.users.values().next().ok_or(NO_USER)?;
+                let path = ir_path(hash);
+                Ok(Reply::RulesIr(
+                    match self.retried(|| self.request("GET", &path, user, lxm::READ), None, MAX_IR) {
+                        Ok(bytes) => Ok(bytes),
+                        Err(Error::Status(404)) => Err(FetchError::NotFound),
+                        Err(e) => Err(FetchError::Server(e.describe())),
+                    },
+                ))
+            }
+            Work::GameVariants => {
+                use crate::game_variants::{MAX_LIST, VariantList, list_path};
+                let active = self
+                    .active
+                    .as_ref()
+                    .filter(|a| a.session.id == c.session.id)
+                    .ok_or(NO_SESSION)?;
+                let user = active.users.values().next().ok_or(NO_USER)?;
+                let path = list_path(Xuid(user.xuid));
+                let bytes = self
+                    .retried(|| self.request("GET", &path, user, lxm::READ), None, MAX_LIST)
+                    .map_err(Error::result)?;
+                serde_json::from_slice::<VariantList>(&bytes)
+                    .map(|l| Reply::GameVariants(l.items))
+                    .map_err(|_| Error::Protocol.result())
             }
             Work::ContentApi => {
                 self.active

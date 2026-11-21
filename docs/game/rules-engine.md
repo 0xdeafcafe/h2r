@@ -118,7 +118,7 @@ uses them all:
 The block's CRC covers these bytes, and the table is the one layout for
 Firefight ([firefight.md](firefight.md#live)) and scripts. A carrier
 that copies the record keeps the reference with no new field: saved
-variants, `.h2variant` files (`variants::portable`), cloud saves, the
+variants, `.h2variant` files of either version (`variants::portable`), cloud saves, the
 `0x130`-byte variant in a `0x37c`-byte hopper slot
 (`crates/live/live-proto/src/hopper`) and the web hopper builder
 (`web/src/admin/HopperBuilder.tsx`).
@@ -148,6 +148,17 @@ from the script, which stays on Live under its hash.
 A script's own options are limited to the 32 bits; the compiler refuses
 more. Retail's settings (score and time limits, lives, the per-engine
 type area) stay where they are and a script reads them by name.
+
+**A game variant file carries the script whole.** A version-2
+`.h2variant` ([variants.md](../editor/variants.md#portable-files)) is a
+whole game variant: its record carries the prefix that names the script,
+and the file carries the script that prefix names, as its IR blob
+(base64) and, when it was made from source, the source. Reading one
+checks that the IR hashes to the file's hash, that the hash starts with
+the record's prefix, that `rules::verify::load` takes the IR and that
+its carrier is the record's engine; a record with mode 2 and no script
+is refused. So a variant file plays with no server, and Live keeps game
+variants as these files ([live-api.md](../live/live-api.md#game-variants)).
 
 **To other machines: the Live session.** The wire codec drops the spare
 bytes (`0x7cc50`/`0x7d520`, **E**, game-options.md "How a variant reaches
@@ -199,13 +210,31 @@ A new index is not possible without rewriting four retail paths:
 On the host, in a script game, the `rules` feature answers each of the
 carrier engine's rule-making callbacks itself: a `before` hook on the
 callback's entry runs the script's handler for that event in place of
-the lifted body ("The host runtime"). No guest memory is patched. Which
-callbacks those are per engine is part of each port; the one on record
-is Slayer's kill callback, vtable slot `+0x78`, which `PLAYER_KILLED`
-(`0x15ce70`) calls last (**E**, firefight.md "Guest boundary"). How much
-each engine's client-side display depends on its own vtable rather than
-on replicated state is not traced ("Not verified"); it decides how much
-display work each port carries.
+the lifted body ("The host runtime"). No guest memory is patched.
+
+The engine table `0x55e4d0[index]` holds one static object per engine,
+and the object's `+0` is its vtable: CTF and Assault `0x459d18`, Slayer
+`0x45c6d8`, Oddball `0x45c7a8`, KotH `0x45c878`, Juggernaut `0x453d38`,
+Territories `0x45c948`, 51 slots each. Every slot is thiscall (ECX the
+object, stack arguments the callee pops). The slots that make rules
+(**E**, [notes/2026-11-21-engine-vtables.md](../engine/notes/2026-11-21-engine-vtables.md)):
+
+| Slot | Called from | What it does | Named points |
+|---|---|---|---|
+| `+0x78` kill callback | last in `PLAYER_KILLED` (`0x15d6a4`): attacker, victim, flag, kind; `ret 0x10` | Slayer's and Juggernaut's kill scoring; Oddball, KotH and CTF post events only; Territories does nothing | `SLAYER_KILL` `0x2bc000`, `JUGGERNAUT_KILL` `0x1922a0` |
+| `+0x48` per tick | `ENGINE_UPDATE` `0x15c150` (`0x15c2dc`), no arguments | Oddball, KotH and Territories score from it; Slayer's is the shared empty `ret` | `ODDBALL_TICK`, `KOTH_TICK`, `TERRITORIES_TICK`, `JUGGERNAUT_TICK`, `CTF_TICK` |
+| `+0x3c` per player | `ENGINE_UPDATE` (`0x15c247`), the player | CTF and Assault capture from it (`0x242e00`); Slayer's and Territories' are empty | none |
+| `+0x54`, `+0x58`, `+0x5c`, `+0x60` | objective registered, unregistered, picked up, dropped (`0x15e050`, `0x15e130`, `0x15e250`, `0x15e460`) | the objective engines' own handling | none |
+| `+0x6c` | `PLAYER_KILLED` and the spawn-location code: two teams | true when they are enemies; Juggernaut has its own | none |
+| `+0x8c` trait query | per player in `ENGINE_UPDATE` (`0x15b28e`): player, trait | true when the variant gives the player the trait | `ENGINE_TRAIT_QUERY` `0x24dda0` (Slayer's, and every other engine's fallback) |
+
+The round resolution `0x15b3a0`, the lives checks and `PLAYER_SPAWN`
+make no slot call. A Slayer carrier's tick has no body of its own to
+answer, since its `+0x48` and `+0x3c` are bodies every engine shares; its
+per-tick handlers answer at `ENGINE_UPDATE`. How much each engine's
+client-side display depends on its own vtable rather than on replicated
+state is not traced ("Not verified"); slot `+0x9c` gives the replicated
+engine-globals entity's type (Slayer 0 to Juggernaut 5).
 
 **A record with no mode.** On a host with the `rules` feature on, a
 record whose block has mode 0 (all zero, or extras only), on an engine
@@ -217,7 +246,9 @@ any script, and a film records which ran: its `simulation_hooks` SHA
 differs with the feature and it stores the blob. The rule covers Live,
 local, dedicated-host and System Link games: the built-in scripts are
 compiled in, so a System Link game needs no blob and no session field.
-A System Link game cannot name any other script.
+A System Link game runs any other script only when its blob is on the
+host's disk, in the game-variant store ("Live game variants in the
+game"); it never fetches one.
 
 ### The host runtime
 
@@ -236,10 +267,29 @@ index (`+0x44`):
 
 | Record | What runs |
 |---|---|
-| mode 2 | the blob whose SHA-256 starts with the record's 8-byte prefix: a built-in (`rules::builtin`, compiled once at first use), else the fetch, which refuses by name ("fetching a blob from Live is not built"); a System Link game takes only a built-in |
+| mode 2 | the blob whose SHA-256 starts with the record's 8-byte prefix: a built-in (`rules::builtin`, compiled once at first use), else the game-variant store's (source `local`), else Live's by the full hash a store bundle names for the prefix (below); a System Link game takes a built-in or the store's, never Live's |
 | mode 0 | the built-in of the record's engine when the engine is in `runtime::PORTED`, which is empty: nothing runs, and Slayer stays lifted until its port passes parity |
 | mode 1 | nothing: Firefight's own feature runs it |
 | any other | refused: "script mode `n` is unknown to this build" |
+
+**Fetching a blob.** A blob that is neither built in nor in the store
+comes from Live, `GET /v1/rules/{hash}/ir`, by the full 64-digit hash:
+the record carries only the prefix, so the full hash is the one a store
+bundle names for it (a Live variant's bundle names its script by hash).
+The start observer fetches it first, with no guest memory held, only on
+a Live host or a game alone (`feature::to_fetch`,
+`GameScripts::prefetch`), through `Hle::fetch_rules_ir` with a wait of
+`game_variants::START_WAIT` (1.5 s, the wait a guest's start gives its
+host's options). The blob must hash to the full hash; it is then kept in
+the store (`scripts/<hash>.ir`) and the runtime loads it from there, so
+its source reads `local`. The runtime never waits on the network: its
+fetch only reads the prefetch's outcome (`GameScripts::fetched`). Each
+failure refuses the script by name: no bundle names the prefix's full
+hash ("its full hash is not known"), the server's silence ("did not
+answer within 1500 ms"), its 404 ("has no such script"), a blob of
+another hash ("hashes to"), and the load's refusals below. A Live guest
+does not fetch: the host runs the script, and the guest's runtime is
+dropped at the authority check.
 
 The blob is loaded (`verify::load`) and refused, by name, when its hash
 does not start with the record's prefix, when it rides another engine
@@ -281,8 +331,9 @@ Firefight sits inside.
 This differs from "Order" in one way, for every handler: a call is made
 at the next tick boundary, not inside the event. `PLAYER_KILLED` is
 opaque, so a hook there can only observe; the carrier's kill callback
-(Slayer's vtable slot `+0x78`) has no named point; and the per-tick
-group runs after `GAME_TICK`, not in place of `0x15c150`. So a score
+(`SLAYER_KILL` and the engines' other named slots, "Which engine index a
+script rides") has no hook in the feature yet; and the per-tick group
+runs after `GAME_TICK`, not in place of `ENGINE_UPDATE`. So a score
 lands one boundary after the kill, a read in the same handler does not
 see it, and the lifted carrier's own kill scoring still runs beside a
 script's. A mode 2 script on a lifted carrier is therefore not a parity
@@ -322,7 +373,81 @@ making a `SCORE_ADD` call at the next boundary, a suicide's negative
 score, a machine that is not the authority, a refusal for an unknown
 hash and for System Link, refusals by entry and by event, another
 engine's record, a record with no mode, the record removed at the game's
-end, and a reverted record resuming the VM.
+end, a reverted record resuming the VM, a stored script running with no
+Live client and on System Link, a Live variant's script fetched by its
+full hash and run, and each fetch failure refused by name.
+
+### Live game variants in the game
+
+A game variant is a self-contained bundle: a `.h2variant` version 2 file
+(`variants::portable`: name, description, author, engine, the 0x130-byte
+record with its `hx` block, and the script it names: its name, full hash
+and IR). The
+game keeps a store of them, `<data>/game-variants`
+(`crates/extensions/game/src/game_variants/`, **Code**, tests only):
+
+| Path | What |
+|---|---|
+| `*.h2variant` | bundles the player put there |
+| `live/<id>.h2variant` | the signed-in player's Live variants |
+| `live/<id>.pending.json` | a Live variant whose script's IR is not here yet: the server's variant record, with the script's full hash |
+| `ported/<key>.h2variant` | saved variants ported at boot |
+| `scripts/<hash>.ir` | rules blobs fetched from Live, by full hash |
+
+The store keeps one entry per bundle id (`Bundle::id`, the SHA-256 of
+the file's canonical form), and its scripts by full hash with an index by
+the record's 8-byte prefix (`store::Store`). Every bundle must hold to the
+format when read (`Bundle::integrity`); a file that fails is left out
+with a line. A pending Live variant is not a bundle and is not listed in
+the game; its full hash is in the prefix index, so a host can still fetch
+the script, and once the IR is here (a refresh, or a fetched script found
+at the next open) it is written as its bundle and the pending file goes.
+
+- **In the variant list.** At each load of the main menu's tags the
+  store's variants join the built-ins after the community variants
+  (community-gametypes.md, "The merged block"), named "<name> U+E007".
+  Each entry's pairs are its record's settings, and at `GAME_ACTIVATE`,
+  before the game copies the options, a variant built from one of these
+  entries gets its bundle's block written into the options' record
+  (`inject::apply_block`, feature `game-variants`, ahead of the options'
+  transport to guests). So choosing one in Custom Games makes the game a
+  script game of that script, and its extras apply.
+- **From Live.** The variant list's load starts a refresh on a thread of
+  its own (`game_variants::refresh_live`): `GET /v1/variants?author=<xuid>`
+  as the first signed-in account (`Hle::my_game_variants`, 5 s), then each
+  script the store lacks by full hash (`Hle::fetch_rules_ir`), each
+  variant saved as its bundle with its IR (pending while its script's
+  fetch fails). The next load lists them, and
+  a later game, offline or on System Link, finds the script on disk.
+  Offline or signed out, a line says why and the store keeps what it had.
+- **Porting.** At boot, on a thread of its own, every saved variant under
+  `UDATA\4D530064` (`variants::save::SaveStore`) not yet ported becomes
+  a bundle under `ported/` (`variants::portable::port`), keyed by the
+  SHA-256 of its record and
+  signature, so an edited save ports again and the rest are skipped. The
+  saves are only read. `variants.port.script` decides the script:
+  `keep` (the record as it is, its engine's lifted rules) or `builtin`
+  (the engine's built-in script named in the block and carried). A save
+  whose record already names a script is refused by name: its IR is not
+  in the save. One line per run gives the counts ported, skipped and
+  refused, with each refusal's name and reason. The retail built-ins and
+  the community variants are already in the list, so they are not ported
+  at boot; `port::port_builtins` ports them on request.
+- **Guests** never need the script: the host runs it. A guest with the
+  bundle shows its name and description from the list like any other
+  built-in.
+
+The full hash for a prefix comes from the store's bundles, built-ins
+first; the host puts the running blob's full hash on its session
+(`Hle::set_session_rules`) as for any script.
+
+The tests (`crates/extensions/game/src/game_variants/tests.rs`) cover the
+bundle's checks, the store's folders and prefix index, porting a fake
+save directory once (and again after an edit) without touching it, the
+merged block of retail, community and store entries with their ids and
+the 101-built-in limit, the names and descriptions served, the block put
+on a started game, and the Live refresh saving each variant with its
+script.
 
 ## The language
 
@@ -675,14 +800,14 @@ Actions:
 | lives | player `+0x1ac` and `PLAYER_ENTITY_DIRTY` `0xa7840`; gates `PLAYER_OUT_OF_LIVES` `0x15db30`, `PLAYER_RESPAWN_READY` `0x15dd40` | named | core |
 | `respawn(p)` | `PLAYER_SPAWN` `0x14f2e0` | named | core |
 | traits for the match: gravity, damage, shield, health | `variant_ext` hooks (`crates/extensions/game/src/variant_ext.rs`) | named | `game.traits` |
-| traits per player; movement speed | the engine's trait query `0x24dda0` (vtable `+0x114`) has no direct call site; speed has no reader found (game-options.md "Not built") | untraced | `player.traits` |
+| traits per player; movement speed | answer `ENGINE_TRAIT_QUERY` `0x24dda0` (vtable `+0x8c`; every engine's own `+0x8c` falls back to it); speed has no reader found (game-options.md "Not built") | named point | `player.traits` |
 | `set_team(p, t)` | no entry known; the field is player `+0xc0` | untraced | `player.team` |
 | `set_loadout` | starting-weapon routine `0x19eda0` | traced | `player.weapons` |
 | `create(tag, at)`, `delete(o)` | `OBJECT_DELETE` `0xb8540`; creation as Forge's ([forge.md](forge.md)) | named; traced | `objects.create`, `objects.delete` |
 | `register_objective(o, team)`, unregister, picked up, dropped | `0x15e050`, `0x15e130`, `0x15e250`, `0x15e460` | traced | core |
 | `spawn_objective(tag, at, team)`: create an objective at a placement and register it | as the CTF and Assault flag spawn `0x2422d0` and Oddball's `0x2bc1f0` do | traced | core |
 | `reset_objective(o)`: return an objective to where it spawned | the lifted engines' return path is not traced | untraced | core |
-| `role_traits(p, on)`: the carrier engine's role traits from the variant's type area (ball or flag carrier, the Juggernaut and its bit of the role mask `[0x510c9c]+0`) | the trait query `0x24dda0` has no direct call site | untraced | core |
+| `role_traits(p, on)`: the carrier engine's role traits from the variant's type area (ball or flag carrier, the Juggernaut and its bit of the role mask `[0x510c9c]+0`) | each engine's trait query, vtable `+0x8c` (Juggernaut `0x1926c0`; the shared `ENGINE_TRAIT_QUERY` `0x24dda0`); which traits each role answers is not read | traced | core |
 | barriers and other map changes | create and delete at labels, as above; a barrier is a labelled placement (forge-features.md "Invisible barriers") | not built | `objects.create`, `objects.delete` |
 | `place_squad(s, class, n, label)` from the palette with its team, `hunt(s)`, erase | `AI_SQUAD_PLACE` `0x201520`, `AI_SET_TEAM` `0x275b60`, `AI_SET_ORDERS` `0x275cb0`, `AI_ERASE` `0x2736c0`, through `actor_net::squads::SquadEntry` (firefight.md "Guest boundary") | named; game runs R1, R2 pending | `ai.squads` |
 | `spawn_areas(team, label, n)`: which starting locations are live | answer a hook on `PLAYER_SPAWN_LOCATION` `0x14ef00` (picks from `scnr+0x100`) with labelled locations only; how the routine weighs locations is not traced | named point; untraced rule | `player.spawn` |
@@ -712,15 +837,11 @@ VM built-ins reach no engine entry (status **VM-only**):
 | `random(n)` | the VM generator's next draw modulo `n`; 0, with no draw, when `n` is at most 0 |
 | `grant(p, cap, budget n, palette "x")`, `revoke(p, cap)`, `granted(p, cap)` | a player's powers, records in `RulesExt` ("Roles, powers and capabilities") |
 
-The engine update `0x15c150` and the post-game step `0x15ca10` are
-traced (live-gamestate.md) and are where the lifted engines do their
-per-tick work; they are not API entries.
-
-Two layouts of the engine vtables are on record and not reconciled:
-bots.md section 3.7 gives `0x45c6d8` (Slayer) and `0x453d38`
-(Juggernaut), the base of firefight.md's kill callback at `+0x78`;
-game-options.md gives `0x45c650` and `0x453cb0`, `0x88` lower, with the
-trait query at `+0x114`. Each port reads its engine's vtable again.
+The engine update `ENGINE_UPDATE` (`0x15c150`) and the post-game step
+`0x15ca10` are traced (live-gamestate.md) and are where the lifted
+engines do their per-tick work; they are not API entries. The engines'
+vtables and their rule-making slots are in "Which engine index a script
+rides".
 
 ## Roles, powers and capabilities
 
@@ -998,11 +1119,18 @@ Tooling:
 ### Workbench
 
 **Code.** The web app's Game Types page (`statsPath("/rules")`,
-`web/src/stats/Rules.tsx`, its pure half in `web/src/lib/rules.ts`) is
-where a script is written, checked, tested and saved before Studio's
-editor exists. The browser runs no compiler: Live's
-[Rules scripts](../live/live-api.md#rules-scripts) routes call
-`rules::workbench` in both homes.
+`web/src/stats/Rules.tsx`, its test half in `web/src/stats/RulesTest.tsx`,
+its pure half in `web/src/lib/rules.ts`) is where a script is written,
+checked, tested and saved before Studio's editor exists. The browser runs
+no compiler: Live's [Rules scripts](../live/live-api.md#rules-scripts)
+routes call `rules::workbench` in both homes.
+
+The **Workbench** tab is one screen. The editor is on the left with the
+check beside it (Problems, Budget, Capabilities); under them the test
+scenario sits beside the results of running it. Under 1100 px the parts
+stack in that order. The page's other tabs are **My Scripts** and **My
+Game Types**. The layout, its states and its copy are described in
+[web-app.md, "Game type scripts"](../live/web-app.md#game-type-scripts).
 
 - **Check.** `workbench::check` compiles, verifies and measures source:
   the IR hash, errors with line and column (0 for a verifier refusal or
@@ -1010,8 +1138,10 @@ editor exists. The browser runs no compiler: Live's
   handler's worst case, slots per scope against their limits, IR bytes
   against 64 KiB, the declared capabilities in the lobby's words, and
   every unhostable entry the script calls. The page checks 450 ms after
-  typing stops; each error with a place is a marker in the editor, and
-  its place in the list below selects it.
+  typing stops and has no Check button; each error with a place is a
+  marker in the editor, and its place in the Problems list selects it. A
+  check the server refuses (a source over 256 KiB) is listed as a problem
+  of the whole script.
 - **Editor.** The script box is Monaco (`web/src/stats/RulesEditor.tsx`),
   loaded by a dynamic import on this page only, so it is a chunk of its
   own: the core editor (`monaco-editor/esm/vs/editor/edcore.main`, no
@@ -1043,7 +1173,12 @@ editor exists. The browser runs no compiler: Live's
   call was made, a variable or player row changed (a timer counting
   down is no change), a warning was raised or the script stopped. The run stops at a script error, after the tick
   that calls `end_round`, or past 4,000,000 ops, and the same input gives
-  the same trace.
+  the same trace. The page runs the scenario by itself, 350 ms after the
+  checked script's hash or the scenario changes, and shows the trace as
+  final standings and a timeline (`rules.ts`, `timeline` and
+  `standings`): each tick the scenario put an event in or the trace
+  kept, with the event as a sentence, the handlers that ran, their
+  calls, and each score, team, lives count or variable that changed.
 - **Editor.** `POST /v1/rules/ide` answers one editor request (complete,
   hover, signature, definition, references, tokens, symbols, format or
   diagnostics) from `rules::ide`, in LSP's field names, so the page's
@@ -1052,6 +1187,19 @@ editor exists. The browser runs no compiler: Live's
 - **Save.** A signed-in account saves a script that checks clean; Live
   keeps its source under the IR hash and compiles it again to serve the
   blob.
+- **Game variants.** **Make a game variant** turns the current script
+  into a game variant: a name, a description, a visibility and a value
+  for each option the script declares (the check report lists them),
+  over the stock record of the script's carrier engine
+  (`hopper::variant::VariantRecord::stock`). The record's block gets mode
+  2, the IR's hash prefix and the options packed in declaration order
+  (`game_variants::pack_options`). **Download** asks Live's
+  `POST /v1/variants/bundle` for the `.h2variant` file and works signed
+  out; **Publish** posts it to the account's game variants
+  ([live-api.md](../live/live-api.md#game-variants)). The **My Game
+  Types** tab lists them beside My Scripts, and a player's page lists
+  their public ones; each has a page (`statsPath("/variants/:id")`) with
+  its settings, its script (opened read-only here) and the file.
 - **Drafts.** The page keeps the source and the scenario in
   `localStorage`, and starts from a blank starter, a built-in
   (`builtin::ALL`) or one of the player's saved scripts.
@@ -1116,7 +1264,16 @@ keep their records, byte for byte: each has no mode and runs its
 engine's built-in script once the port has passed parity ("A record with
 no mode"). Its settings are already option values in the record. Rules
 that were honour rules ([community-gametypes.md](community-gametypes.md),
-Zombies' team switch) become script variants of their own.
+Zombies' team switch) become script variants of their own. To travel as
+a game variant file, a record is ported with `variants::portable::port`
+(`h2 variants port`, [variants.md](../editor/variants.md#portable-files)):
+`PortScript::Builtin` attaches its engine's built-in script with the
+script's default option values (the built-ins read the retail settings
+from the record by name, so nothing else is packed) and sets mode 2 with
+the script's prefix; `PortScript::Keep` leaves it with no mode. The
+retail built-ins port from the disc (`--all-builtins`); the community
+variants are built by the game at boot (`community_variants.rs` is in
+the game crate) and are not ported by the tool.
 
 **Until a port passes.** A no-mode record on an engine whose port has
 not passed parity plays the lifted engine, on every kind of session.
@@ -1299,10 +1456,13 @@ the ReachVariantTool importer follows phase 10.
   engine event, or the client's own engine vtable. This is the largest
   unknown; it decides the display half of every port and of every new
   mode.
-- **Answering a carrier engine's callbacks.** Which callbacks make
-  rules, per engine; whether each can be answered at its entry with an
-  async body; and whether doing so leaves the replicated globals entity
-  consistent. Only Slayer's kill callback is on record.
+- **Answering a carrier engine's callbacks.** The slots that make rules
+  are on record ("Which engine index a script rides"); whether each can
+  be answered at its entry with an async body, and whether doing so
+  leaves the replicated globals entity consistent, is not. Of the
+  Slayer kill callback's arguments, the flag's meaning (when
+  `PLAYER_KILLED` sets it) and the kind's are not read, nor the
+  CTF and Assault capture path's slot at `0x242741`.
 - **Queued calls.** Whether object creation, deletion and teleports are
   legal inside each callback is not traced. A port that needs one in the
   same tick as retail fails parity there.

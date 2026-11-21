@@ -296,8 +296,9 @@ pub const ENTRIES: &[Entry] = &[
     act(id::RESET_OBJECTIVE, "reset_objective", &[Object], None, Queued, Untraced),
     // Apply (or clear) the carrier engine's role traits from the variant's
     // type area: ball or flag carrier, the Juggernaut (with its bit of the
-    // role mask `[0x510c9c]+0`). The trait query `0x24dda0` has no direct
-    // call site.
+    // role mask `[0x510c9c]+0`). Each engine answers traits through its
+    // vtable slot `+0x8c` (docs/engine/notes/2026-11-21-engine-vtables.md);
+    // which traits each role gets is not read.
     act(id::ROLE_TRAITS, "role_traits", &[Player, Bool], None, Now, Untraced),
     // The tick the host began (`Vm::begin_tick`).
     vm(id::NOW, "now", &[], Int),

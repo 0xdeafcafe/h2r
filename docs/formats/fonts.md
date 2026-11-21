@@ -87,6 +87,11 @@ uses which id was not traced.
 
 Record 0 is a blank space on the Latin fonts. A character-map entry of 0 means
 "no glyph" and the engine draws record 0 (nothing in the font says otherwise).
+Some fonts also map characters they lack to a record of their own holding a
+copy of their stand-in box: MSLCD-14 draws the same box for `.`, `-` and `~`
+(D, `h2 font MSLCD-14 '1.2'`). `Font::has_glyph` (`crates/formats/font/src/lib.rs`)
+counts a unit as missing if it reads record 0 (the space excepted), the record
+U+FFFF reads, or a non-empty bitmap equal to either.
 63 records in `arial-13` (and some in the other fonts) are placeholders for the engine's
 private-use range with width 0, `data_len` 0 and a bogus shared offset; they
 have no pixels and are accepted.

@@ -9,7 +9,7 @@ import { live } from "../state/live";
 import { identity } from "../state/identity";
 import { accountByGamertag, type AccountState, type GameState } from "../state/reducer";
 import {
-  MEDALS, OUTCOME_WORDS, RANKS, campaignHistory, countMedals, gameHistory, gameMedals, nextRankAt, ordinal, playedWith, rankIndex,
+  MEDALS, OUTCOME_WORDS, RANKS, campaignHistory, countMedals, gameAwards, gameHistory, isBounceMedal, nextRankAt, ordinal, playedWith, rankIndex,
   serviceRecord, serviceTag, type CampaignRow, type HistoryRow, type MedalId, type ServiceRecord,
 } from "../state/derive";
 import type { GameMode } from "../state/reducer";
@@ -34,6 +34,7 @@ import PlayerFilms from "../theater/PlayerFilms";
 import { hms, longDate, num, ratio, usDate, usDateTime } from "./fmt";
 import { parseCommendations, type Commendations } from "../admin/bans";
 import { STATS_ROOT, gameHref, statsPath } from "../routes";
+import { fetchVariants, variantHref, type Variant } from "../lib/variants";
 
 function useAccount() {
   const params = useParams<{ tag: string }>();
@@ -187,6 +188,7 @@ export function ServiceRecordPage() {
               ]} />
               <RecentGames player={a().gamertag} games={hist().slice(0, 12).map((h) => h.game)} title="Recent h2 live Games" empty="Their first chapter is still ahead." />
               <PlayedWith account={a()} />
+              <Show when={!a().bot}><GameTypesPanel account={a()} /></Show>
               <Show when={!a().bot}><PlayerSocial account={a()} /></Show>
               <PeopleFinder />
             </aside>
@@ -235,7 +237,7 @@ export function ServiceRecordPage() {
                 <header>Recent Medals</header>
                 <div class="s-achieve-body">
                   <dl class="s-facts">
-                    <div><dt>Earned</dt><dd>{rec().medals.size} of {MEDALS.length}</dd></div>
+                    <div><dt>Earned</dt><dd>{rec().medals.size} of {medalsOn(rec()).length}</dd></div>
                     <div><dt>Medal Count</dt><dd><Derived>{num(medalTotal())}</Derived></dd></div>
                     <div><dt>[ <A href={`${base()}/career`}>see the medal chest</A> ]</dt><dd /></div>
                   </dl>
@@ -251,6 +253,32 @@ export function ServiceRecordPage() {
         );
       }}
     </PlayerFrame>
+  );
+}
+
+/** The game variants they've published (GET /v1/variants?author=), the
+ *  public ones; hidden when there are none or the server has no route. */
+function GameTypesPanel(props: { account: AccountState }) {
+  const [list, setList] = createSignal<Variant[]>([]);
+  createEffect(on(() => [props.account.xuid, live.server().api] as const, ([xuid, api]) => {
+    setList([]);
+    fetchVariants(api, xuid).then((items) => { if (props.account.xuid === xuid) setList(items.filter((v) => v.visibility === "public")); }, () => {});
+  }));
+  return (
+    <Show when={list().length}>
+      <Panel title="Game Types" sub="game variants they've published">
+        <ul class="s-mini-list">
+          <For each={list()}>
+            {(v) => (
+              <li>
+                <A href={variantHref(v.id)}>{v.name}</A>
+                <span class="s-dim">{v.game_type}{v.script_name ? ` · scripted: ${v.script_name}` : ""} · {usDate(v.created)}</span>
+              </li>
+            )}
+          </For>
+        </ul>
+      </Panel>
+    </Show>
   );
 }
 
@@ -417,7 +445,7 @@ export function HistoryPage() {
 
 function Preview(props: { row: HistoryRow; gamertag: string }) {
   const g = () => props.row.game;
-  const medals = createMemo(() => [...countMedals(gameMedals(g().kills), new Set(props.row.slots)).entries()].sort((a, b) => b[1] - a[1]));
+  const medals = createMemo(() => [...countMedals(gameAwards(g()), new Set(props.row.slots)).entries()].sort((a, b) => b[1] - a[1]));
   const victim = createMemo(() => {
     const m = new Map<number, number>();
     for (const k of g().kills) if (k.killer !== null && props.row.slots.includes(k.killer) && k.kind === "kill") m.set(k.victim, (m.get(k.victim) ?? 0) + 1);
@@ -462,8 +490,12 @@ const CHEST: MedalId[][] = [
   ["opening-act", "last-word", "payback"],
   ["twofer", "hat-trick", "full-house", "encore"],
   ["hot-streak", "wildfire", "untouchable"],
+  ["superbounce", "double-bounce", "triple-bounce", "quad-bounce", "chain-bounce", "bouncetacular", "bounced"],
 ];
 const MEDAL = Object.fromEntries(MEDALS.map((m) => [m.id, m]));
+const hasBounceMedals = (rec: ServiceRecord) => [...rec.medals.keys()].some(isBounceMedal);
+/** The medals a record can show: the bounce medals once it has one. */
+const medalsOn = (rec: ServiceRecord) => (hasBounceMedals(rec) ? MEDALS : MEDALS.filter((m) => !isBounceMedal(m.id)));
 const perGame = (n: number, games: number) => (games ? n / games : 0).toFixed(3);
 
 export function MedalChest(props: { rec: ServiceRecord; versus?: ServiceRecord | null }) {
@@ -476,7 +508,7 @@ export function MedalChest(props: { rec: ServiceRecord; versus?: ServiceRecord |
   return (
     <div class="s-chest">
       <div class="s-chest-cap">Medal Count (count per game){props.versus ? " - Player with better per game ratio highlighted" : ""}</div>
-      <For each={CHEST}>
+      <For each={CHEST.filter((group) => !group.every(isBounceMedal) || hasBounceMedals(props.rec) || (props.versus && hasBounceMedals(props.versus)))}>
         {(group) => (
           <div class="s-chest-group">
             <For each={group}>

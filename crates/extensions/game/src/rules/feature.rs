@@ -58,10 +58,25 @@ impl Shared {
 
 static SHARED: OnceLock<Arc<Shared>> = OnceLock::new();
 
-/// The feature. `hle`: the Live client, for the session's `rules` field.
+/// The feature. `hle`: the Live client, for the session's `rules` field;
+/// `scripts`: the game-variant store and the Live fetch behind the runtime.
 pub struct Rules {
     pub shared: Arc<Shared>,
     pub hle: Option<Arc<live_hle::Hle>>,
+    pub scripts: Arc<crate::game_variants::GameScripts>,
+}
+
+/// The record's script prefix when its blob is neither built in nor on
+/// this machine: the one a host's start must fetch first.
+pub fn to_fetch(m: &dyn GuestMemory, scripts: &crate::game_variants::GameScripts) -> Option<[u8; 8]> {
+    let block = super::guest::block(m).ok().flatten()?;
+    let script = variants::ext::Ext::in_effect(&block).script;
+    if script.mode != variants::ext::Mode::Rules {
+        return None;
+    }
+    let p = script.prefix;
+    let built = runtime::builtins().iter().any(|b| b.id.0[..8] == p);
+    (!built && scripts.local(p).is_none()).then_some(p)
 }
 
 fn manifest() -> hooks::Manifest {
@@ -110,7 +125,28 @@ impl hooks::Feature for Rules {
         use std::sync::atomic::Ordering;
         let s = Arc::clone(&self.shared);
         let hle = self.hle.clone();
+        let scripts = Arc::clone(&self.scripts);
         b.game().on_start("start the game's rules script", move |o| {
+            // A host (or a game alone) whose record names a script that is
+            // not on this machine fetches it from Live first, with no guest
+            // memory held and a bounded wait; the start below then finds it
+            // in the store or refuses with the fetch's reason.
+            let fetch = {
+                let mem = o.guest();
+                let m: &dyn GuestMemory = &*mem;
+                let read = ReadGm(m);
+                let session = crate::coop_probe::read_session(&read);
+                let class = session
+                    .as_ref()
+                    .and_then(|s| read.u32(s.addr.wrapping_add(variant_ext::SESSION_NETWORK_CLASS)));
+                let part = variant_ext::part(session.as_ref().zip(class));
+                matches!(part, Part::Alone | Part::LiveHost)
+                    .then(|| to_fetch(m, &scripts))
+                    .flatten()
+            };
+            if let Some(p) = fetch {
+                scripts.prefetch(p, crate::game_variants::START_WAIT);
+            }
             let mem = o.guest();
             let m: &dyn GuestMemory = &*mem;
             let read = ReadGm(m);
@@ -215,11 +251,13 @@ pub fn install(
     registry: &mut hooks::Registry,
     hle: Option<Arc<live_hle::Hle>>,
 ) -> anyhow::Result<bool> {
-    let shared = Arc::new(Shared::new(Runtime::in_game()));
+    let scripts = Arc::new(crate::game_variants::GameScripts::in_game(hle.clone()));
+    let shared = Arc::new(Shared::new(Runtime::in_game(Arc::clone(&scripts))));
     let added = registry
         .add(&Rules {
             shared: Arc::clone(&shared),
             hle,
+            scripts,
         })
         .map_err(|e| anyhow::anyhow!("{FEATURE}: {e}"))?;
     if !added {

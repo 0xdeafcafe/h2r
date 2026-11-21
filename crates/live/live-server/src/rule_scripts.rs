@@ -191,6 +191,10 @@ pub struct CheckView {
     version: Option<u16>,
     errors: Vec<WireProblem>,
     report: Option<WireReport>,
+    /// The options the script declares, when it checks clean
+    /// ([`crate::game_variants::option_views`]).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    options: Vec<crate::game_variants::OptionView>,
 }
 
 fn check_view(c: workbench::Check) -> CheckView {
@@ -200,6 +204,7 @@ fn check_view(c: workbench::Check) -> CheckView {
         name: c.name,
         version: c.version,
         errors: c.errors.into_iter().map(Into::into).collect(),
+        options: Vec::new(),
         report: c.report.map(|r| WireReport {
             worst_tick_ops: r.worst_tick_ops,
             budget: r.budget,
@@ -607,7 +612,7 @@ fn summary(live: &Live, k: &Kept) -> ScriptSummary {
 
 impl Live {
     /// Charges a public workbench request to the client's bucket.
-    fn limit_workbench(&self, ip: &str) -> ApiResult<()> {
+    pub(crate) fn limit_workbench(&self, ip: &str) -> ApiResult<()> {
         if self.rules_rate.allow(ip) {
             Ok(())
         } else {
@@ -732,7 +737,13 @@ async fn post_check(
 ) -> ApiResult<Response> {
     live.limit_workbench(&ip)?;
     let b = source_of(body)?;
-    Ok(crate::http::json(StatusCode::OK, &check_view(workbench::check(&b.source))))
+    let mut view = check_view(workbench::check(&b.source));
+    if view.ok
+        && let Ok(ir) = rules::compile(&b.source)
+    {
+        view.options = crate::game_variants::option_views(&ir);
+    }
+    Ok(crate::http::json(StatusCode::OK, &view))
 }
 
 async fn post_run(

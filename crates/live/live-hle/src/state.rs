@@ -1281,6 +1281,31 @@ impl State {
     }
     /// Asks the server for everyone's presence; the request, when one
     /// could be sent (signed in to a server).
+    /// A rules IR blob by hash, as the first account signed in
+    /// ([`crate::Hle::fetch_rules_ir`]). Never waits.
+    pub fn rules_ir(
+        &self,
+        hash: &str,
+    ) -> std::result::Result<crate::client::Pending, crate::game_variants::FetchError> {
+        use crate::game_variants::FetchError;
+        let service = self.service.as_ref().ok_or(FetchError::Offline)?;
+        let session = self.session().ok_or(FetchError::NotSignedIn)?;
+        service
+            .rules_ir(&session, hash.to_owned())
+            .map_err(|_| FetchError::Busy)
+    }
+    /// The first signed-in account's Live game variants
+    /// ([`crate::Hle::my_game_variants`]). Never waits.
+    pub fn game_variants(
+        &self,
+    ) -> std::result::Result<crate::client::Pending, crate::game_variants::FetchError> {
+        use crate::game_variants::FetchError;
+        let service = self.service.as_ref().ok_or(FetchError::Offline)?;
+        let session = self.session().ok_or(FetchError::NotSignedIn)?;
+        service
+            .game_variants(&session)
+            .map_err(|_| FetchError::Busy)
+    }
     pub fn read_presence(&self) -> Option<crate::client::Pending> {
         let service = self.service.as_ref()?;
         let session = self.session()?;

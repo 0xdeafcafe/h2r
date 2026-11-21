@@ -4,7 +4,7 @@
 // (people you've played with). Everything here is pure and marked as
 // derived in the UI.
 
-import type { GameMode, GameState, Kill, LiveState, Standing } from "./reducer";
+import type { Bounce, GameMode, GameState, Kill, LiveState, Standing } from "./reducer";
 import { gamesFor, isWinner, standings, teamStandings } from "./reducer";
 import { gameSeconds } from "./length";
 import { mapGroupKey } from "../lib/maps";
@@ -21,7 +21,15 @@ export const PAYBACK_WINDOW_TICKS = 10 * TICKS;
 export type MedalId =
   | "opening-act" | "last-word" | "payback"
   | "twofer" | "hat-trick" | "full-house" | "encore"
-  | "hot-streak" | "wildfire" | "untouchable";
+  | "hot-streak" | "wildfire" | "untouchable"
+  | BounceMedalId
+  | "incel";
+
+/** The superbounce medals (docs/game/superbounce.md, "Medals"), from a
+ *  game's bounces and bounce deaths rather than its kills. */
+export type BounceMedalId =
+  | "superbounce" | "double-bounce" | "triple-bounce" | "quad-bounce" | "chain-bounce" | "bouncetacular"
+  | "bounced";
 
 export interface MedalDef { id: MedalId; name: string; blurb: string; tier: 0 | 1 | 2 | 3 }
 
@@ -37,7 +45,20 @@ export const MEDALS: MedalDef[] = [
   { id: "hot-streak", name: "Hot Streak", blurb: "5 knockouts without being knocked out", tier: 1 },
   { id: "wildfire", name: "Wildfire", blurb: "10 knockouts without being knocked out", tier: 2 },
   { id: "untouchable", name: "Untouchable", blurb: "15 knockouts without being knocked out", tier: 3 },
+  { id: "superbounce", name: "Superbounce", blurb: "Bounced off a superbounce crease", tier: 0 },
+  { id: "double-bounce", name: "Double Bounce", blurb: "2 bounces with no ground between", tier: 0 },
+  { id: "triple-bounce", name: "Triple Bounce", blurb: "3 bounces with no ground between", tier: 1 },
+  { id: "quad-bounce", name: "Quad Bounce", blurb: "4 bounces with no ground between", tier: 2 },
+  { id: "chain-bounce", name: "Chain Bounce", blurb: "5 bounces with no ground between", tier: 2 },
+  { id: "bouncetacular", name: "Bouncetacular", blurb: "6 bounces with no ground between", tier: 3 },
+  { id: "bounced", name: "Bounced", blurb: "Fell out of the map trying a bounce", tier: 0 },
+  { id: "incel", name: "Incel", blurb: "Completed a game without teabagging or getting teabagged", tier: 1 },
 ];
+/** The bounce medals, in table order. */
+export const BOUNCE_MEDALS: BounceMedalId[] = [
+  "superbounce", "double-bounce", "triple-bounce", "quad-bounce", "chain-bounce", "bouncetacular", "bounced",
+];
+export const isBounceMedal = (id: MedalId): id is BounceMedalId => (BOUNCE_MEDALS as MedalId[]).includes(id);
 export const MEDAL_BY_ID = Object.fromEntries(MEDALS.map((m) => [m.id, m])) as Record<MedalId, MedalDef>;
 
 export interface MedalAward { medal: MedalId; slot: number; tick: number }
@@ -84,6 +105,55 @@ export function gameMedals(kills: readonly Kill[]): MedalAward[] {
     if (k === last && sorted.length > 1) out.push({ medal: "last-word", slot: s, tick: k.tick });
   }
   return out;
+}
+
+/** The medals a bounce earns at its place in a chain, lowest first: a copy
+ *  of `bounce_medals` in crates/live/live-proto/src/film/events/medals.rs.
+ *  Superbounce is every bounce; a chain gives each of the others once, at 2
+ *  to 6 bounces, and from the seventh on only Superbounce. */
+export function bounceMedals(chain: number): BounceMedalId[] {
+  if (!(chain >= 1)) return [];
+  const step: Record<number, BounceMedalId> = {
+    2: "double-bounce", 3: "triple-bounce", 4: "quad-bounce", 5: "chain-bounce", 6: "bouncetacular",
+  };
+  const extra = step[chain];
+  return extra ? ["superbounce", extra] : ["superbounce"];
+}
+
+/** Bounce medals for every slot in one game, from its bounces in log order:
+ *  `bounceMedals` of each bounce's chain, and `bounced` for each bounce death. */
+export function gameBounceMedals(bounces: readonly Bounce[]): MedalAward[] {
+  const sorted = [...bounces].sort((a, b) => a.tick - b.tick || a.position - b.position);
+  const out: MedalAward[] = [];
+  for (const b of sorted) {
+    const ids: BounceMedalId[] = b.chain === null ? ["bounced"] : bounceMedals(b.chain);
+    for (const medal of ids) out.push({ medal, slot: b.player, tick: b.tick });
+  }
+  return out;
+}
+
+/** The fields `gameIncel` reads; a game without them has no `incel`. */
+type IncelFields = Partial<Pick<GameState, "players" | "teabags" | "status" | "end_reason" | "last_tick">>;
+
+/** `incel` at the game's end, a copy of `Incel` in
+ *  crates/live/live-proto/src/film/events/medals.rs (docs/game/teabag.md,
+ *  "The medal"): once to every player still in a game that finished, who
+ *  joined before its first kill (`late`) and was on neither side of a
+ *  teabag. Bots count. */
+export function gameIncel(g: IncelFields): MedalAward[] {
+  if (g.status !== "ended" || g.end_reason !== "finished" || !g.players) return [];
+  const bagged = new Set<number>();
+  for (const t of g.teabags ?? []) { bagged.add(t.player); bagged.add(t.victim); }
+  return Object.values(g.players)
+    .filter((p) => !p.left && !p.late && !bagged.has(p.index))
+    .sort((a, b) => a.index - b.index)
+    .map((p) => ({ medal: "incel" as const, slot: p.index, tick: g.last_tick ?? 0 }));
+}
+
+/** Every medal of a game: the kills', the bounces' and `incel`. `kills`
+ *  narrows the kills (a career leaves out those with a bot on either side). */
+export function gameAwards(g: Pick<GameState, "kills" | "bounces"> & IncelFields, kills: readonly Kill[] = g.kills): MedalAward[] {
+  return [...gameMedals(kills), ...gameBounceMedals(g.bounces ?? []), ...gameIncel(g)];
 }
 
 /** Longest run of scoring kills without dying, per slot. */
@@ -325,7 +395,8 @@ export function serviceRecord(s: LiveState, xuid: Xuid, only?: (g: GameState) =>
     if (!rec.lastPlayed || g.started_at > rec.lastPlayed) rec.lastPlayed = g.started_at;
     weapons.push(weaponBreakdown(kills, slots));
     against.push(weaponsAgainst(kills, slots));
-    for (const [m, n] of countMedals(gameMedals(kills), slots)) rec.medals.set(m, (rec.medals.get(m) ?? 0) + n);
+    // A player's own bounces are theirs alone; no bot is on the other side.
+    for (const [m, n] of countMedals(gameAwards(g, kills), slots)) rec.medals.set(m, (rec.medals.get(m) ?? 0) + n);
     rec.killsSeen += kills.filter((k) => k.killer !== null && slots.has(k.killer)).length;
   }
   rec.weapons = mergeWeapons(weapons);

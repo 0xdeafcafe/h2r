@@ -45,3 +45,11 @@ class HostCapacityTests(unittest.TestCase):
                                          {"HostRoom": 2, "LargeHostRoom": 2})
                     self.assertIn("r2_buckets", section)
                     self.assertIn("durable_objects", section)
+
+    def test_a_registry_image_replaces_the_dockerfile_everywhere(self):
+        image = "registry.cloudflare.com/account/h2-live-host:0123456789abcdef"
+        config = render(CONFIG, image=image)
+        for name, section in [("local", config), *config["env"].items()]:
+            with self.subTest(name=name):
+                self.assertEqual({app["image"] for app in section["containers"]}, {image})
+        self.assertNotIn(image, str(render(CONFIG, True, image)))

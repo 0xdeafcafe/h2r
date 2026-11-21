@@ -37,6 +37,9 @@ h1campaign = { path = "../../tools/h1campaign", optional = true }
 h1-assets = { path = "../../tools/h1-assets", optional = true }
 # Halo 1 objects for the Halo 1 sandbox (`h2 h1 convert --sandbox h1`).
 h1objects = { path = "../../tools/h1objects", optional = true }
+# `h2 hud preview` and `h2 hud sheet`: the HUD kit's preview and checks
+# (docs/game/hud-kit.md).
+hud-kit = { path = "../../tools/hud-kit", optional = true }
 movies = { workspace = true, optional = true }
 xbe = { workspace = true, optional = true }
 analyze = { workspace = true, optional = true }
@@ -66,6 +69,8 @@ agent = { path = "../../extensions/agent", default-features = false }
 studio-proto = { path = "../studio-proto", optional = true }
 # `h2 rules`: the scripted game types' tooling (docs/game/rules-engine.md).
 rules.workspace = true
+# `h2 variants port`: self-contained .h2variant files (variants_cmd.rs).
+variants = { path = "../../formats/variants" }
 # `h2 rules lsp`: the stdio language server over `rules::ide`.
 lsp-server.workspace = true
 lsp-types.workspace = true
@@ -166,6 +171,7 @@ desktop = [
     "dep:h1campaign",
     "dep:h1-assets",
     "dep:h1objects",
+    "dep:hud-kit",
     "dep:movies",
     "dep:xbe",
     "dep:analyze",

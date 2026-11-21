@@ -98,6 +98,9 @@ pub static DECLARED: &[(&Point, &[Check])] = &[
     (&points::WEAPON_UPDATE, &[]),
     // After a `jmp $` (eb fe).
     (&points::UI_ATTRACT_TIMER, &[Frame]),
+    // A vtable slot body (0x45c948 +0x48) right after the previous
+    // function's tail jump at 0x2c022b; it opens with push ecx.
+    (&points::TERRITORIES_TICK, &[]),
     // Sites that are calls.
     (&points::OBJECT_RECORD_APPEND, &[DirectCall]),
     (&points::TRANSPARENT_GEOMETRY_ENTRY, &[DirectCall]),

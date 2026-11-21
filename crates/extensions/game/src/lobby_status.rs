@@ -1,6 +1,8 @@
 //! The custom lobby's status line: the expired countdown while the host is
-//! bringing up its phantoms, and why a Forge lobby's Start Game is refused
-//! (`crate::lobby_mode::start_refused`).
+//! bringing up its phantoms, why a Forge lobby's Start Game is refused
+//! (`crate::lobby_mode::start_refused`), and the mode strip's reason line
+//! (`crate::lobby_tabs::notice_now`): why a bumper press did not move, for
+//! four seconds.
 
 use bots::{lobby, phantom};
 use engine::GuestMemory;
@@ -28,6 +30,11 @@ fn countdown_text(seconds: i32, setting_up: bool) -> Option<u32> {
 pub(crate) fn custom_game_text(m: &dyn GuestMemory, return_pc: u32, id: u32) -> Option<u32> {
     if return_pc != CUSTOM_STATUS_RETURN {
         return None;
+    }
+    // A bumper press toward a tab that is off, or a switch refused: its
+    // reason, over every other text, while it shows.
+    if let Some(reason) = crate::lobby_tabs::notice_now() {
+        return Some(reason.id());
     }
     // A Forge lobby with a member on another console: its start state is
     // held off ready, and the line says why in place of retail's text.

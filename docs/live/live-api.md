@@ -58,6 +58,9 @@ Event types so far (payload fields):
 | `game-<id>` | `ActorKilled` | `tick`, `unit` (salted unit object datum), `character?` (salted character tag datum), `killer?` (credited player slot), `weapon?` (damage-source key). Published by the host. |
 | `game-<id>` | `FirefightScore` | `tick`, `player` (credited roster slot), `points`, `reason` (`kill`/`assist`), `class?` (the kit class killed; on a kill only). Published by the host ([Firefight](../game/firefight.md#scoring-and-stats)). |
 | `game-<id>` | `FirefightEnded` | `tick`, `set` (the wave set's name), `outcome` (`won`/`lost`), `rounds_cleared`, `lives_used`. Published by the host, once, before `GameEnded`. |
+| `game-<id>` | `Superbounce` | `tick`, `player` (a slot of the game), `chain` (the bounce's place in its chain, 1 and up). Published by the host, for every player it watches, bots included ([superbounce.md](../game/superbounce.md#recording)). |
+| `game-<id>` | `Bounced` | `tick`, `player`, `chain` (the count of the chain it ended, 0 if none; absent reads as 0): a death falling out of or through the map while trying a bounce, beside its `PlayerKilled`. Published by the host. |
+| `game-<id>` | `Teabag` | `tick`, `player` (the crouching player's slot), `victim` (the slot of the player whose body it was; not `player`): a teabag. Published by the host, for every player it watches, bots included ([teabag.md](../game/teabag.md#recording)). |
 | `game-<id>` | `ScoreChanged` | `tick`, `players: [{index, score, kills, deaths, assists}]`, `teams?: [{team, score}]` |
 | `game-<id>` | `FrameChunk` | a stored chunk of the game's recorded frames ([Frame chunks](#frame-chunks)) |
 | `game-<id>` | `GameFrame` | a frame (below), recorded at 1 Hz for replays by servers before frame chunks |
@@ -387,7 +390,7 @@ the index once and fetches the one chunk whose window holds the tick.
 | `GET /v1/presence` | who is online now: `{xuid, gamertag, state, game_id?, activity?, since, build?, capabilities?}`; a player in a game or session the reader may not see shows no `game_id` and `activity: "In a game"` ([Co-op games](#co-op-games), "Presence") |
 | `GET /v1/coop/games?player=` | finished co-op campaign games, newest first ([Co-op games](#co-op-games), below) |
 | `GET /v1/games?state=live\|ended&map=&map_id=&skulls=` | game summaries: `{game_id, map, mode, kind, variant, playlist?, playlist_id?, difficulty?, online?, team_play, started_at, ended_at?, players, teams?, map_id?, skulls?}`; `map` keeps games on that base map, modded or not, `map_id` one exact map (`none`: games with no `map_id`), `skulls` (comma-separated indices, `4,6`) games that had every one of them on; without the co-op games the reader may not see ([Co-op games](#co-op-games)) |
-| `GET /v1/games/{id}` | summary plus scoreboard and the last 50 kills; 404, as for no game, for a co-op game the reader may not see ([Co-op games](#co-op-games)) |
+| `GET /v1/games/{id}` | summary plus scoreboard, the last 50 kills, and the last 100 superbounces (`bounces`: `tick`, `player`, `chain`, `position`, `at`) and bounce deaths (`bounced`: `tick`, `player`, `chain`, `position`, `at`), and the last 100 teabags (`teabags`: `tick`, `player`, `victim`, `position`, `at`), each oldest first and empty in a game with none; `joined_late`, the slots of players in the game who joined after its first kill (left out when none; [teabag.md](../game/teabag.md#the-medal)); 404, as for no game, for a co-op game the reader may not see ([Co-op games](#co-op-games)) |
 | `GET /v1/games/{id}/join` | `{session_id}` for the game's current reader. The value is null unless the running game's own custom lobby or linked co-op session is joinable. The game and lobby each follow their own visibility rules. Hidden games return 404 and responses are private and uncached. |
 | `GET /v1/games/{id}/chunks` | the game's [frame chunk](#frame-chunks) index: `{game_id, chunk_ticks, ended, items}`, `items` the `FrameChunk` data oldest first; empty for a game recorded before chunks |
 | `GET /v1/games/{id}/chunks/{tick}` | one chunk by its first tick, `application/x-h2-chunk`; checked against its index entry's hash. Anonymous reads are `public, max-age=31536000, immutable` (it is never rewritten) |
@@ -634,12 +637,14 @@ UTC days, today included) or `all`; anything else is 400.
 { "window": "7d", "from": "2026-11-10T00:00:00Z", "to": "2026-11-16T15:04:05Z", "position": 1042,
   "totals":   { "games": 41, "multiplayer": 33, "campaign": 8, "matchmaking": 20, "custom": 13,
                 "coop": 3, "kills": 1210, "deaths": 1302, "betrayals": 17, "suicides": 75,
-                "campaign_deaths": 40, "player_seconds": 302400, "legendary": 2 },
+                "campaign_deaths": 40, "player_seconds": 302400, "legendary": 2,
+                "bounces": 6, "bounced": 1, "teabags": 3 },
   "last_24h": { ...the same counts, over the last 24 hours },
   "all_time": { ...the same counts, over the whole log },
   "players":  [ { "xuid": "...", "name": "Sneaky Pete", "games": 9, "multiplayer": 8, "campaign": 1,
                   "wins": 5, "kills": 120, "deaths": 88, "betrayals": 1, "best_spree": 9,
-                  "seconds": 7200, "legendary": 1 } ],
+                  "seconds": 7200, "legendary": 1, "bounces": 4, "bounced": 0,
+                  "teabags_given": 1, "teabags_received": 2 } ],
   "maps":      [ { "map": "lockout", "map_id": "...?", "campaign": false, "games": 12, "kills": 480 } ],
   "weapons":   [ { "weapon": "battle_rifle", "kills": 310 } ],
   "playlists": [ { "playlist": "Team Slayer", "games": 14 } ],
@@ -675,6 +680,12 @@ game-only: no row of their own (a rostered bot's xuid included), and a
 knockout with a bot on either side counts in the totals, maps and weapons
 but in nobody's row: a human's kill of a bot is not a career kill, nor a
 death to a bot a career death. The game record keeps every one of them.
+`bounces` (`Superbounce` events) and `bounced` (`Bounced` events) count
+on the day they happened, every player's in the totals and an account's
+in its row; a bot's are in the totals and the game record only.
+`teabags` (`Teabag` events) count the same way, and an account's row has
+`teabags_given` (as the crouching player) and `teabags_received` (as the
+body's).
 A credited environmental death counts toward kills for the player and map.
 Weapon rankings omit falls, collisions, splatters, guardians, teleporters
 and explosions with no identified weapon.
@@ -1835,6 +1846,10 @@ homes (`crates/live/live-server/src/rule_scripts.rs`, wire types in
   tick budget and the 64 KiB IR cap. `hash` is the IR's SHA-256, present
   whenever it compiled. An error with line and column 0 is about the whole
   script: a verifier refusal, the budget or the IR size.
+- A check that is `ok` also lists the script's `options` (`[{name,
+  label, description, kind, lo, hi, default, values?}]`, omitted when it
+  declares none), for the game variant form ([Game
+  variants](#game-variants)).
 - `report` holds `worst_tick_ops` and `budget`, `fits`, `costliest`,
   `handlers: [{event, worst_ops}]`, `slots: [{scope, used, limit}]` (global,
   player, team, object), `ir_bytes` and `ir_limit`, `capabilities: [{name,
@@ -1888,6 +1903,72 @@ homes (`crates/live/live-server/src/rule_scripts.rs`, wire types in
   is saved once and its first saver is its author. Only scripts that
   verify are saved; an account saves at most 200. Nobody posts the event
   by hand.
+
+## Game variants
+
+Game variants players publish: what a player's page lists under Game
+Types. A game variant is a whole version-2 `.h2variant` file
+([variants.md, "Portable files"](../editor/variants.md#portable-files)):
+name, description, author, the 0x130-byte record and, when the record
+names a rules script, the script's IR and source. Both homes serve these
+routes (`crates/live/live-server/src/game_variants.rs`, wire types in
+`crates/live/live-proto/src/game_variants.rs`).
+
+| endpoint | authentication | result |
+|---|---|---|
+| `POST /v1/variants` | an account's token, `lxm: content.write` | 201 `Variant`; 200 when that file is published already |
+| `POST /v1/variants/from-script` | as above | 201 `Variant`, built from a script |
+| `POST /v1/variants/bundle` | none; rate-limited as `/v1/rules/check` | `{id, file_name, bundle}`: the file, unpublished |
+| `GET /v1/variants/{id}` | a read | `Variant` |
+| `GET /v1/variants?author=` | a read; a `read` bearer names the caller | `{items: [Variant]}`, newest first |
+| `GET /v1/variants/{id}/h2variant` | a read | the file (`application/json`, an attachment named after the variant) |
+| `DELETE /v1/variants/{id}` | `content.write`, its author or an admin | `{ok: true, id}` |
+
+- `Variant` is `{id, name, description, author: {xuid, gamertag}, engine,
+  game_type, record_hex, script_hash, script_name, visibility, created,
+  bundle_url, settings: [{label, value}]}`. `engine` is the record's
+  retail engine index and `game_type` our label of it; `script_hash` and
+  `script_name` are null for an unscripted variant; `created` is RFC 3339;
+  `bundle_url` is the file's path; `settings` is the record's settings in
+  words (each setting of its game type we have a name for, then the
+  extension options in one row).
+- `POST /v1/variants` takes `{bundle, visibility}`: the file as an object
+  or a string of it, version 1 or 2, and `public` or `unlisted` (default
+  public). It also takes `{name, description, record_hex, script_hash?,
+  visibility}`: `record_hex` is the record as 608 lowercase hex digits;
+  if its block names a rules script (mode 2), `script_hash` (64 hex) is
+  required, must start with the block's 8-byte prefix and must be a saved
+  script ([Rules scripts](#rules-scripts)) or a built-in, and the server
+  attaches that script's IR and source, keeping the record's option bits.
+- The server writes the author into the file and runs `Bundle::check`:
+  the record decodes and the game would keep it, the name and description
+  keep the name rules (1 to 31 characters, at most 150 for a
+  description), and a named script hashes to its hash, starts with the
+  prefix, verifies and rides the record's engine. A refusal is 400 with
+  the reason. The file's id is the SHA-256 of its canonical bytes, author
+  included, so the same file published again answers 200 with the same
+  variant, and the file from `/bundle` (which has no author) gets another
+  id once published.
+- `from-script` and `bundle` take `{script_hash | source, name,
+  description, visibility, options}`. The record is the stock record of
+  the script's carrier engine (`hopper::variant::VariantRecord::stock`),
+  named, with mode 2, the IR's prefix and `options` packed into the 32
+  option bits in declaration order. `options` maps an option's name to a
+  number, a bool or an enum value's name; one left out takes its default;
+  an unknown name or a value out of range is 400. A `script_hash` is a
+  saved script or a built-in; a `source` must verify. `POST
+  /v1/rules/check` lists a script's options for this form (`options:
+  [{name, label, description, kind, lo, hi, default, values?}]`, `kind`
+  `int`, `bool` or `enum`).
+- Lists show public variants, and unlisted ones only to their author (a
+  `read` bearer). Any variant, unlisted too, is readable by id.
+- A publish writes a server-signed `VariantPublished` event (`{id,
+  author, visibility, bundle}`, the file as canonical JSON) on
+  `variant-<id>`; a delete writes `VariantDeleted` (`{id, by}`) on the
+  same stream, and the variant is gone from every route until it is
+  published again. Each append expects the stream's next version. An
+  account keeps at most 200 variants (409 past it). Nobody posts these
+  events by hand.
 
 ## Cloud saves
 

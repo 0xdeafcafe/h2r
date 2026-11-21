@@ -54,6 +54,7 @@ waypoints, kills, scores, endings and new games.
 - `H2_MOCK_ACTION=0`: leave out the stances, speeds, actions and hits that every game's frames otherwise carry (`mock/action.ts`: players jump, crouch, throw grenades, swing, reload, and hit who they fire at), like a sender from before they existed.
 - `H2_MOCK_FURNITURE=0`: leave out each arena's furniture (`mock/fixtures.ts`): a lift platform that rides up and down and a walking thing with no node in the glb (both in the frames' `machines`), two pairs of teleporters with their links and a gravity lift (in the glb's extras).
 - `H2_MOCK_ADMIN=1`: make every account signed up in the browser an admin, so the dashboard's server screen shows "your server" and its invites, accounts and import screens, and the stats site shows the Halo admin area (`mock/admin.ts`).
+- `H2_MOCK_RULES=0`: answer every `/v1/rules` route with the 404 of a server from before the script tools, so the Game Types page shows its "no script tools" state (`mock/rules.ts`).
 - `H2_MOCK_HOPPER=1`: serve a stand-in playlist file (invented playlists, plain numbers) so the Halo admin's playlist builder has something to edit; without it that tab says nothing has been imported yet.
 - `H2_MOCK_CUSTOM_MAPS=0`, `H2_MOCK_STATS_ARCHIVE=0`, `H2_GAME_ART_URL`: described under "Custom maps" and "Server stats" below and "Game art" in [web-viewer.md](web-viewer.md).
 
@@ -241,6 +242,82 @@ and approve or remove it. Installation runs in the game. The mock serves
 invented pack metadata and member artwork.
 [Admin screenshot review](live-admin.md#screenshot-review)
 
+### Game variants
+
+A player's page lists the game variants they've published, the public
+ones, under **Game Types** (name, game type, "scripted: <script>" when
+it has one, date). Each links to its page (`statsPath("/variants/:id")`,
+`web/src/stats/Variant.tsx`): name, description, author, game type, the
+server's settings summary, the script with a link that opens it
+read-only in the workbench (`statsPath("/rules")?script=<hash>`), the
+`.h2variant` download and, for its author, Delete. The workbench's
+**Make a game variant** and **My Game Types** tab are in
+[rules-engine.md, "Workbench"](../game/rules-engine.md#workbench); the
+routes are [live-api.md, "Game variants"](live-api.md#game-variants),
+the pure half `web/src/lib/variants.ts`. The mock (`mock/variants.ts`)
+serves every route in memory and seeds two variants for Sneaky Pete.
+
+### Game type scripts
+
+The Game Types page (`statsPath("/rules")`, `web/src/stats/Rules.tsx`
+and `RulesTest.tsx`, the pure half `web/src/lib/rules.ts`) is the
+workbench for the rules engine's scripts; what the server does for it is
+in [rules-engine.md, "Workbench"](../game/rules-engine.md#workbench).
+The page has one row of tabs, **Workbench**, **My Scripts** and **My
+Game Types**, and no side menu. While it is shown the stats column is
+1240 px wide rather than 902 (`styles/rules.css`), and under 1100 px
+every part stacks.
+
+The Workbench tab, top to bottom:
+
+- **The bar.** Start from (a blank starter, a built-in or a saved
+  script), Save (a sign-in link when signed out), Make a game variant,
+  and the check's state: "Verifies", the script's name, its short hash
+  and "saved" when the server has it, or the number of problems. A
+  button that is off says why in its tooltip and in the line under the
+  bar ("Save and Make a game variant are off. Fix the 2 problems in the
+  script first."); the reasons are `saveBlocked`, `variantBlocked` and
+  `whyOff` in `rules.ts`.
+- **The script.** The Insert menus, the Monaco editor
+  (`stats/RulesEditor.tsx`) and its shortcut line. A read-only script
+  has a bar with **Use as start** above them.
+- **The check**, beside the script. **Problems** lists each error with
+  its place; choosing one selects it in the editor. **Budget** has the
+  meters and each handler's worst case, and **Capabilities** the
+  lobby's words. The page checks as you type.
+- **Test scenario.** How long to run, the round clock, the seed and
+  team play; the seated players (slot, team by colour name, lives); and
+  the events in time order. "Player 0 kills Player 1, Add kill" adds a
+  kill in one click and a menu adds any other event; a new event lands
+  a second after the last and lengthens the run when it is past its
+  end. Each event is a row that reads as a sentence, and its time is
+  typed as `0:02.50`, as seconds (`2.5`) or as ticks (`75t`)
+  (`parseTickTime`). Every field is black on white, as the site's other
+  fields are.
+- **Results**, beside the scenario. The scenario runs by itself when the
+  script or the scenario changes; **Run again** asks for it by hand.
+  The results are how the run ended, the final standings (team totals
+  with team play), and a timeline: for each moment its time, what
+  happened ("Player 0 killed Player 1"), the handlers that ran and
+  their calls, who scored and their new score, and any team, lives or
+  variable change. An event no handler answered says so. While the
+  script has problems the last results stay, dimmed, with the reason.
+  **Copy as text** copies the trace, a line a tick.
+
+A request that fails is put in words with whose fault it is
+(`explainFailure`): the server's ("The Live server had a problem (HTTP
+503). Your script isn't the cause; try again."), the connection's, the
+account's, or the script's (the server's own message). A rate-limited
+check asks again after three seconds. A server whose rules routes
+answer 404 gets one notice, "This Live server doesn't have the script
+tools yet", with **Ask the server again**; the draft is still kept in
+the browser, the editor completes plain words, and Save, Make a game
+variant and the run are off.
+
+Signed out, everything but Save, Publish and the two list tabs works.
+`?script=<hash>` opens a saved or built-in script read-only. The mock
+(`mock/rules.ts`) answers every route from a few text checks.
+
 ### Server stats
 
 The home's windowed numbers come from the server's
@@ -271,7 +348,22 @@ ids): Opening Act (first kill of a game), Last Word
 (last kill), Payback (kill your last killer within 10 s), Twofer / Hat
 Trick / Full House / Encore (2 / 3 / 4 / 5+ kills, each within 4 s of the
 last), Hot Streak / Wildfire / Untouchable (5 / 10 / 15 kills without
-dying). EXP is games completed plus two per win.
+dying). The superbounce medals come from a game's `Superbounce` and
+`Bounced` events (and the snapshot's `bounces` and `bounced`) rather than
+its kills, by `bounceMedals`, the site's copy of the game's table
+([superbounce.md](../game/superbounce.md#the-rule)): Superbounce for every
+bounce; Double / Triple / Quad / Chain Bounce and Bouncetacular once a chain,
+at 2 / 3 / 4 / 5 / 6 bounces; and Bounced for a death falling out of the map
+while trying one. Incel comes at a finished game's end to every player
+still in it who joined before its first kill and was on neither side of a
+`Teabag` (`gameIncel`, the site's copy of the rule,
+[teabag.md](../game/teabag.md#the-medal); `late` from a join after a
+kill, or the snapshot's `joined_late`). A game's record holds every
+player's, a bot's included; a career holds the player's own. The carnage report's medal chest and a
+player's medal chest list them only once a game or player has one. Their
+pictures are the game's HUD medal glyphs, upscaled (`public/art/ART.md`,
+"Batch 07"). A medal id the pack has no file for shows its name in a round
+badge (`MedalIcon`). EXP is games completed plus two per win.
 
 ### Sign up in the browser
 

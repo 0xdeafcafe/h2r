@@ -270,7 +270,7 @@ The table lists each option, whether the record can store it, and how it is offe
 | Lives above 99 | storable to 0x7fff | offer more steps |
 | Respawn above 30 s | storable to 0x7fff s | offer more steps |
 | Suicide and betrayal penalties beyond retail's | storable to 0x7fff s | offer more steps |
-| Damage multipliers beyond on/off | needs the extension (built) | the record has two booleans (flag bits 12, 13), read through the trait query `0x24dda0` (trait 2 extra damage, 3 resistance; the engines' vtables at `0x453cb0` and `0x45c650` hold it at `+0x114`) and per-engine overrides (`0x1926c0`). Ours scales the amount of each damage instance on a player instead ("Damage, shield and health" below) |
+| Damage multipliers beyond on/off | needs the extension (built) | the record has two booleans (flag bits 12, 13), read through the trait query, engine vtable slot `+0x8c` (`ENGINE_TRAIT_QUERY` `0x24dda0`, trait 2 extra damage, 3 resistance; Slayer's slot, and where each other engine's own query, Juggernaut's `0x1926c0` among them, falls back). Ours scales the amount of each damage instance on a player instead ("Damage, shield and health" below) |
 | Shield and health multipliers | needs the extension (built) | shields are a 0..2 choice (`+0x88`); ours scales the amount the shield and body steps take |
 | Player speed for everyone | needs the extension (not built) | only Juggernaut and ball carrier speed exist (i16 0..2); the movement scale is not traced |
 | Unlimited grenades | needs the extension (built) | only a starting on/off bit; the host keeps every player's unit at four or more of each type each tick (the unit's counts at `+0x23e`, as the Unlimited Grenades skull) |
@@ -297,7 +297,7 @@ variant):
 |---|---|---|
 | `+0x10c` | 2 | magic `hx` |
 | `+0x10e` | 1 | version (1) |
-| `+0x10f` | 1 | flags: bit 0 reserved, bit 1 unlimited grenades, bit 2 superbounce (the HUD plate and spot lines, [superbounce.md](superbounce.md#the-superbounce-game-type)) |
+| `+0x10f` | 1 | flags: bit 0 reserved, bit 1 unlimited grenades, bit 2 superbounce (the HUD and spot lines, [superbounce.md](superbounce.md#the-superbounce-game-type)) |
 | `+0x110` | 2 | gravity, percent (0 means 100; 10..400) |
 | `+0x112` | 2 | damage dealt, percent (0 means 100; 10..400, as the next three) |
 | `+0x114` | 2 | shield strength, percent |
@@ -575,9 +575,12 @@ string family supplies the labels and descriptions.
 - **Movement speed.** The Juggernaut's speed (`G+0x234`, record `+0xf8`,
   setting 96) has no reader a linear search finds; the likely route is the
   unit's movement code, not the variant.
-- **Damage through the engine's trait query** (`0x24dda0`, slot `+0x114` of
-  the engine vtables at `0x453cb0` and `0x45c650`): no direct call site, so
-  the scales hook the damage steps instead (`0xd9110`, `0xd8cb0`).
+- **Damage through the engine's trait query** (`ENGINE_TRAIT_QUERY`
+  `0x24dda0`, engine vtable slot `+0x8c`,
+  [notes](../engine/notes/2026-11-21-engine-vtables.md)): its callers
+  through the slot (`0x15b28e`, `0x2404ad`, `0x2bc967`) ask trait 1, active
+  camo; the reader of traits 2 and 3 is not found, so the scales hook the
+  damage steps instead (`0xd9110`, `0xd8cb0`).
 - **Weapons outside the globals list.** The extension's `+0x11a`/`+0x11c`
   ids need our table of tag paths, checked against each map's tags, and a
   hook on `0x19eda0` (stdcall: default tag, value byte, other weapon's tag;

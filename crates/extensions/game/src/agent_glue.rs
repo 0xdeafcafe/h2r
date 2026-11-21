@@ -173,7 +173,11 @@ impl AgentGlue {
         agent::sim::calls::lock(&calls)
             .set_spawn_enrollment(crate::actor_net::creature::spawn_enrollment);
         match registry.add(&agent::sim::calls::CallsFeature(calls.clone())) {
-            Ok(true) => sim.set_calls(calls),
+            Ok(true) => {
+                // The superbounce verifier's trials teleport through it too.
+                crate::superbounce_verify::set_calls(calls.clone());
+                sim.set_calls(calls)
+            }
             Ok(false) => eprintln!(
                 "agent: agent-calls switched off by H2_FEATURES; sim teleports, give and spawn are off"
             ),
@@ -242,6 +246,9 @@ impl AgentGlue {
         agent::collision::install(&agent);
         agent::raw::install(&agent, &sim);
         agent::havok::install_writes(&agent, &sim);
+        // `world.*`'s `physics.standing_fits`: the superbounce mode's
+        // capsule test, while it is on (docs/game/superbounce.md, "Charge").
+        agent.set_standing_fits(Box::new(crate::superbounce_mode::StandingFitsNow));
         // The superbounce game type's state, published each tick by
         // `superbounce_mode` (docs/game/superbounce.md).
         agent.add_game_method(
@@ -297,6 +304,33 @@ impl AgentGlue {
                     .expect("superbounce.assist_test serialises"))
             },
         );
+        // A bounce at a chain count for the first local player, as a real
+        // one shows (superbounce_chain.rs, docs/game/superbounce.md,
+        // "Medals").
+        agent.add_game_method(
+            agent_proto::superbounce::MEDAL_TEST,
+            Access::Act,
+            |params, _ctx| {
+                let p: agent_proto::superbounce::MedalTestParams =
+                    serde_json::from_value(params)
+                        .map_err(|e| RpcError::new(code::INVALID_PARAMS, e.to_string()))?;
+                let r = crate::superbounce_mode::medal_test(&p)
+                    .map_err(|why| RpcError::new(code::INVALID_PARAMS, why))?;
+                Ok(serde_json::to_value(r).expect("superbounce.medal_test serialises"))
+            },
+        );
+        // Trials of the spots in the game (superbounce_verify.rs,
+        // docs/game/superbounce.md, "Verifying spots").
+        crate::superbounce_verify::install(&agent);
+        // The bounce view on the flashlight and the tracker
+        // (superbounce_view.rs, docs/game/superbounce.md, "The bounce view").
+        crate::superbounce_view::install(&agent);
+        // Ghost runs of the spots (superbounce_ghost.rs,
+        // docs/game/superbounce.md, "Ghost runs").
+        crate::superbounce_ghost::install(&agent);
+        // Drive player.0 somewhere with the bots' route brain
+        // (player_goto.rs, docs/runtime/agent-api.md, "player.goto").
+        crate::player_goto::install(&agent);
         // HaloScript state: the threads and globals of the running scenario.
         agent::hs_state::install(&agent);
         // On the game thread: the sampler's main target.
@@ -724,6 +758,16 @@ pub fn add_host_methods(agent: &agent::Agent) {
         }
         ctx.read_guest(crate::lobby_quality::match_peer_rtts)?
     });
+    agent.add_game_method(method::UI_LOBBY_TABS, Access::Read, |params, ctx| {
+        if !params.is_null() && !params.as_object().is_some_and(|p| p.is_empty()) {
+            return Err(RpcError::new(
+                code::INVALID_PARAMS,
+                "ui.lobby.tabs takes no parameters",
+            ));
+        }
+        ctx.read_guest(crate::lobby_tabs::strip::inspect)?
+            .map_err(|why| RpcError::new(code::UNAVAILABLE, why))
+    });
     agent.add_game_method(method::UI_LOBBY_PLAYERS, Access::Read, |params, ctx| {
         if !params.is_null() && !params.as_object().is_some_and(|p| p.is_empty()) {
             return Err(RpcError::new(
@@ -1078,6 +1122,8 @@ mod tests {
             serde_json::from_str(&rx.recv_timeout(Duration::from_secs(5)).unwrap()).unwrap()
         };
         let r = call(method::UI_LOBBY_PLAYERS, json!({"unknown": true}));
+        assert_eq!(r["error"]["code"], code::INVALID_PARAMS, "{r}");
+        let r = call(method::UI_LOBBY_TABS, json!({"unknown": true}));
         assert_eq!(r["error"]["code"], code::INVALID_PARAMS, "{r}");
         let r = call(method::UI_BROWSER_FILTERS, json!({"kind": "coop"}));
         assert_eq!(r["error"]["code"], code::INVALID_PARAMS, "{r}");

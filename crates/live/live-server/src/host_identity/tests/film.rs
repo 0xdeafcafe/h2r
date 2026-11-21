@@ -60,6 +60,43 @@ fn fixture_observations(
     ended: bool,
     dropped: Option<&str>,
 ) -> Vec<u8> {
+    fixture_with(id, new, kills, started, hz, ended, dropped, false)
+}
+
+/// The two bounce rows a film of [`fixture_with`] with `bounces` holds
+/// before its kills, as the host sends them.
+fn bounce_rows() -> [(&'static str, Value); 2] {
+    [
+        (
+            game::SUPERBOUNCE,
+            json!(game::Superbounce {
+                tick: 20,
+                player: 0,
+                chain: 2
+            }),
+        ),
+        (
+            game::BOUNCED,
+            json!(game::Bounced {
+                tick: 30,
+                player: 1,
+                chain: 2,
+            }),
+        ),
+    ]
+}
+
+#[allow(clippy::too_many_arguments)]
+fn fixture_with(
+    id: &str,
+    new: Option<game::NewGame>,
+    kills: usize,
+    started: i64,
+    hz: u16,
+    ended: bool,
+    dropped: Option<&str>,
+    bounces: bool,
+) -> Vec<u8> {
     let front = range::Front {
         final_head: range::DATA_OFFSET,
         id: id.into(),
@@ -116,6 +153,50 @@ fn fixture_observations(
                 dedicated: Default::default(),
                 game,
             }),
+        );
+    }
+    if bounces {
+        // Each with the medal the film's Tracker writes after it, which the
+        // stats import passes over.
+        add(
+            20,
+            Event::Superbounce(game::Superbounce {
+                tick: 20,
+                player: 0,
+                chain: 2,
+            }),
+        );
+        add(
+            20,
+            Event::Medal {
+                player: 0,
+                earned_at: 20,
+                medal: "superbounce".into(),
+            },
+        );
+        add(
+            20,
+            Event::Medal {
+                player: 0,
+                earned_at: 20,
+                medal: "double-bounce".into(),
+            },
+        );
+        add(
+            30,
+            Event::Bounced(game::Bounced {
+                tick: 30,
+                player: 1,
+                chain: 2,
+            }),
+        );
+        add(
+            30,
+            Event::Medal {
+                player: 1,
+                earned_at: 30,
+                medal: "bounced".into(),
+            },
         );
     }
     for _ in 0..kills {
@@ -276,6 +357,65 @@ async fn film_finishes_absent_partial_and_completed_games_exactly_once() {
             &to_bytes(res.into_body(), 32).await.unwrap()[..],
             &film[..32]
         );
+    }
+}
+
+/// A film's bounces and bounce deaths are stats rows: they match the ones
+/// the host sent live (no discrepancy), and a game known only from its
+/// film gets them from the import. Their medals stay highlights.
+#[tokio::test]
+async fn film_bounces_match_live_ones_and_import_into_a_film_only_game() {
+    for live_first in [false, true] {
+        let live = live().await;
+        let lease = lease();
+        let id = &lease.id;
+        let token = assigned_lease(&live, &lease).await;
+        live.set_blobs(crate::blobs::Blobs {
+            private: crate::blobs::BlobStore::memory(),
+            public: None,
+        });
+        if live_first {
+            live.start_game(Some(&token), new_game()).await.unwrap();
+            let mut rows = bounce_rows().to_vec();
+            rows.extend([(game::PLAYER_KILLED, json!(kill())), end()]);
+            live.append_game_events(Some(&token), id, &batch(&live, &token, id, &rows))
+                .await
+                .unwrap();
+        }
+        let film = fixture_with(id, Some(new_game()), 1, now(), 30, true, None, true);
+        assert_eq!(
+            upload(&live, id, &token, film).await,
+            StatusCode::NO_CONTENT
+        );
+        let game = live.model.read().games[id].clone();
+        assert!(game.has_host_film, "{live_first}");
+        assert!(game.film_stats_discrepancy.is_none(), "{live_first}");
+        let detail = live.game(id).unwrap();
+        assert_eq!(
+            detail
+                .bounces
+                .iter()
+                .map(|b| b.bounce.clone())
+                .collect::<Vec<_>>(),
+            [game::Superbounce {
+                tick: 20,
+                player: 0,
+                chain: 2
+            }]
+        );
+        assert_eq!(
+            detail
+                .bounced
+                .iter()
+                .map(|b| b.bounced.clone())
+                .collect::<Vec<_>>(),
+            [game::Bounced {
+                tick: 30,
+                player: 1,
+                chain: 2,
+            }]
+        );
+        assert_eq!(detail.kills.len(), 1);
     }
 }
 

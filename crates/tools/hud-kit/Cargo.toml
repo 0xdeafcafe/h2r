@@ -1,0 +1,34 @@
+[package]
+name = "hud-kit"
+description = "HUD elements of ours drawn by Halo 2's own HUD: the element model, the compiler to nhdt widget records, the offline preview over the retail player HUD and its checks (docs/game/hud-kit.md)"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish = false
+
+[package.metadata.h2]
+doc = ["game/hud-kit.md"]
+status = "in progress"
+
+[dependencies]
+anyhow.workspace = true
+map.workspace = true
+tags.workspace = true
+assets.workspace = true
+xiso.workspace = true
+xbe.workspace = true
+serde_json.workspace = true
+# The model, the templates, the compiler and the HUDs, shared with the
+# game's runtime.
+hud-kit-core.workspace = true
+# The preview draws through the HUD editor's renderer and placement.
+hud-edit = { path = "../hud-edit" }
+scenario-edit = { path = "../scenario-edit" }
+# The synthetic source's invented map: its flat bitmaps go through the
+# Halo 1 bitmap converter, the one tool that writes a whole Halo 2 `bitm`.
+h1map = { path = "../h1map" }
+h1-assets = { path = "../h1-assets" }
+
+[dev-dependencies]
+# The HUD editor's invented test map, for the template lookup.
+hud-edit = { path = "../hud-edit", features = ["fixture"] }

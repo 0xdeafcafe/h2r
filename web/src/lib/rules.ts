@@ -1,9 +1,11 @@
 // The game type script workbench's pure half (docs/game/rules-engine.md,
 // "Workbench"; docs/live/live-api.md, "Rules scripts"): the server's check
-// and trace answers read defensively, the Test tab's scenario built into
-// the run request, the trace as lines, errors mapped onto the editor's
-// text, the editor's tab key, and the drafts kept in localStorage. The
-// server compiles and runs; nothing here knows the language.
+// and trace answers read defensively, the scenario built into the run
+// request, times as they are typed and shown, the trace as lines and as a
+// timeline with the final standings, errors mapped onto the editor's text,
+// failures put in words, why a button is off, the editor's tab key, and
+// the drafts kept in localStorage. The server compiles and runs; nothing
+// here knows the language.
 
 import { ApiError } from "../api/http";
 import type { LocalAccount } from "../state/account";
@@ -44,6 +46,21 @@ export interface CheckReport {
   capabilities: CapLine[];
   unhostable: string[];
 }
+/** An option a script declares (`option kill_points: int 1..5 = 1 ...`),
+ *  as the check lists it when the server sends them. */
+export interface ScriptOption {
+  name: string;
+  label: string;
+  description: string | null;
+  kind: "int" | "bool" | "enum";
+  lo: number;
+  hi: number;
+  default: number | boolean | string;
+  /** An enum's value names. */
+  values: string[];
+}
+/** The retail game type a script rides on (its `carrier` line). */
+export interface Carrier { name: string; engine: number; label: string }
 export interface CheckResult {
   ok: boolean;
   hash: string | null;
@@ -51,6 +68,58 @@ export interface CheckResult {
   version: number | null;
   errors: Problem[];
   report: CheckReport | null;
+  /** The declared options (the check sends them when it is ok and the
+   *  script has some); empty otherwise. */
+  options: ScriptOption[];
+  /** The carrier, when the server's check names it. */
+  carrier: Carrier | null;
+}
+
+/** The carriers, by their `carrier` keyword, with the retail engine index
+ *  (rules::caps). */
+export const CARRIERS: ReadonlyArray<Carrier> = [
+  { name: "ctf", engine: 1, label: "Capture the Flag" },
+  { name: "slayer", engine: 2, label: "Slayer" },
+  { name: "oddball", engine: 3, label: "Oddball" },
+  { name: "king", engine: 4, label: "King of the Hill" },
+  { name: "juggernaut", engine: 7, label: "Juggernaut" },
+  { name: "territories", engine: 8, label: "Territories" },
+  { name: "assault", engine: 9, label: "Assault" },
+];
+
+/** A carrier from its keyword or engine index. */
+export function carrierFor(v: string | number): Carrier | null {
+  return CARRIERS.find((c) => (typeof v === "number" ? c.engine === v : c.name === v.trim().toLowerCase())) ?? null;
+}
+
+/** The carrier a script's header names, read off its `carrier` line. */
+export function carrierOf(source: string): Carrier | null {
+  const m = /^\s*carrier\s+([a-z_]+)/m.exec(source);
+  return m ? carrierFor(m[1]!) : null;
+}
+
+function parseCarrier(v: unknown): Carrier | null {
+  if (typeof v === "string" || typeof v === "number") return carrierFor(v);
+  const c = obj(v);
+  if (typeof c.engine === "number") return carrierFor(c.engine);
+  if (typeof c.name === "string") return carrierFor(c.name);
+  return null;
+}
+
+/** The options of a check, read defensively: an unknown kind is dropped. */
+export function parseOptions(v: unknown): ScriptOption[] {
+  const out: ScriptOption[] = [];
+  for (const o of arr(v).map(obj)) {
+    const name = str(o.name), kind = o.kind;
+    if (!name || (kind !== "int" && kind !== "bool" && kind !== "enum")) continue;
+    const values = strs(o.values);
+    const lo = num(o.lo), hi = typeof o.hi === "number" ? o.hi : kind === "enum" ? Math.max(0, values.length - 1) : lo;
+    const dflt = kind === "bool" ? o.default === true
+      : kind === "enum" ? (typeof o.default === "string" ? o.default : values[num(o.default)] ?? values[0] ?? "")
+      : typeof o.default === "number" ? o.default : lo;
+    out.push({ name, label: str(o.label) || name, description: optStr(o.description), kind, lo, hi, default: dflt, values });
+  }
+  return out;
 }
 
 export function parseProblems(v: unknown): Problem[] {
@@ -84,6 +153,8 @@ export function parseCheck(body: unknown): CheckResult {
     version: typeof b.version === "number" ? b.version : null,
     errors: parseProblems(b.errors),
     report: parseReport(b.report),
+    options: parseOptions(b.options ?? obj(b.report).options),
+    carrier: parseCarrier(b.carrier ?? obj(b.report).carrier),
   };
 }
 
@@ -167,7 +238,7 @@ export type EventType =
   | "enter" | "leave" | "round_start" | "round_end";
 export type EventField = "player" | "victim" | "killer" | "object" | "zone";
 
-/** The events the Test tab offers, with the fields each one takes. */
+/** The events a scenario offers, with the fields each one takes. */
 export const EVENT_TYPES: ReadonlyArray<{ type: EventType; label: string; fields: EventField[] }> = [
   { type: "kill", label: "Kill", fields: ["victim", "killer"] },
   { type: "death", label: "Death", fields: ["player"] },
@@ -239,6 +310,59 @@ export function newEvent(type: EventType, tick: number, players: ScenarioPlayer[
 export function nextSlot(players: ScenarioPlayer[]): number | null {
   for (let s = 0; s < 16; s++) if (!players.some((p) => p.slot === s)) return s;
   return null;
+}
+
+/** The events in tick order, events of one tick in their listed order. */
+export function sortEvents(events: ScenarioEvent[]): ScenarioEvent[] {
+  return events.map((e, i) => ({ e, i })).sort((a, b) => a.e.tick - b.e.tick || a.i - b.i).map((x) => x.e);
+}
+
+/** Where the next event goes: a second after the last one. */
+export function nextEventTick(d: ScenarioDraft): number {
+  const last = d.events.reduce((m, e) => Math.max(m, e.tick), 0);
+  return Math.min(MAX_TICKS, last + TICKS_PER_SECOND);
+}
+
+/** The run long enough to reach `tick` with a second to spare. */
+const reaching = (d: ScenarioDraft, tick: number): number => (tick > d.ticks ? Math.min(MAX_TICKS, tick + TICKS_PER_SECOND) : d.ticks);
+
+/** A scenario with one more event, the list in tick order and the run
+ *  lengthened to reach it. */
+export function withEvent(d: ScenarioDraft, e: ScenarioEvent): ScenarioDraft {
+  const tick = Math.min(MAX_TICKS, Math.max(0, e.tick));
+  return { ...d, events: sortEvents([...d.events, { ...e, tick }]), ticks: reaching(d, tick) };
+}
+
+/** A scenario with event `i` moved to `tick`, likewise. */
+export function moveEvent(d: ScenarioDraft, i: number, tick: number): ScenarioDraft {
+  const at = Math.min(MAX_TICKS, Math.max(0, tick));
+  return { ...d, events: sortEvents(d.events.map((e, j) => (j === i ? { ...e, tick: at } : e))), ticks: reaching(d, at) };
+}
+
+/** A player as the page names one. */
+export const playerName = (slot: number): string => `Player ${slot}`;
+
+/** An event as a sentence: "Player 0 killed Player 1". */
+export function describeEvent(e: ScenarioEvent): string {
+  const who = playerName(e.player ?? 0), thing = `object ${e.object ?? 0}`;
+  switch (e.type) {
+    case "kill": {
+      const victim = playerName(e.victim ?? 0);
+      if (typeof e.killer !== "number") return `The world killed ${victim}`;
+      return e.killer === e.victim ? `${victim} killed themselves` : `${playerName(e.killer)} killed ${victim}`;
+    }
+    case "death": return `${who} died`;
+    case "spawn": return `${who} spawned`;
+    case "join": return `${who} joined`;
+    case "quit": return `${who} quit`;
+    case "press": return `${who} pressed ${thing}`;
+    case "pickup": return `${who} picked up ${thing}`;
+    case "drop": return `${who} dropped ${thing}`;
+    case "enter": return `Object ${e.object ?? 0} entered zone ${e.zone ?? 0}`;
+    case "leave": return `Object ${e.object ?? 0} left zone ${e.zone ?? 0}`;
+    case "round_start": return "The round started";
+    case "round_end": return "The round ended";
+  }
 }
 
 /** What is wrong with a scenario before it is sent, in words. */
@@ -387,6 +511,21 @@ export function tickTime(tick: number): string {
   return `${m}:${s.toFixed(2).padStart(5, "0")}`;
 }
 
+/** A time as it is typed, in ticks: "0:02.50", seconds ("2.5", "2.5s")
+ *  or ticks ("75t"); null when it reads as none of them. */
+export function parseTickTime(text: string): number | null {
+  const s = text.trim().toLowerCase();
+  let m = /^(\d+)\s*t(?:icks?)?$/.exec(s);
+  if (m) return Number(m[1]);
+  m = /^(\d+):(\d{1,2}(?:\.\d*)?)$/.exec(s);
+  if (m) {
+    const sec = Number(m[2]);
+    return sec < 60 ? Math.round((Number(m[1]) * 60 + sec) * TICKS_PER_SECOND) : null;
+  }
+  m = /^(\d+\.?\d*|\.\d+)\s*s?$/.exec(s);
+  return m ? Math.round(Number(m[1]) * TICKS_PER_SECOND) : null;
+}
+
 /** A call as the script would write it: `score(player 0, 1)`. */
 export const formatCall = (c: TraceCall): string => `${c.entry}(${c.args.join(", ")})`;
 
@@ -408,6 +547,187 @@ export function traceLines(t: Trace): string[] {
   else out.push(`ran to tick ${t.last_tick}`);
   if (t.cut) out.push(t.cut);
   return out;
+}
+
+// ---------- results ----------
+
+export interface ScoreChange { slot: number; delta: number; score: number }
+/** One moment of a run: what the scenario did, what the script did about
+ *  it, and what changed. */
+export interface TimelineRow {
+  tick: number;
+  /** The scenario's events at this tick, as sentences. */
+  happened: string[];
+  /** The handlers that ran. */
+  ran: string[];
+  /** The calls they made, as the script writes them. */
+  calls: string[];
+  scored: ScoreChange[];
+  /** Other changes: a team, lives, a variable. */
+  changes: string[];
+  warnings: string[];
+  error: string | null;
+}
+
+/** A run as a timeline: every tick the scenario put an event in or the
+ *  trace kept, up to where the run stopped. A score, team, lives count or
+ *  variable is listed in the tick it changed. */
+export function timeline(t: Trace, d: ScenarioDraft, teamLabel: (team: number) => string = (n) => `team ${n}`): TimelineRow[] {
+  const end = t.round_ended ?? t.last_tick;
+  const traced = new Map(t.ticks.map((k) => [k.tick, k]));
+  const events = sortEvents(d.events).filter((e) => e.tick <= end);
+  const ticks = [...new Set([...events.map((e) => e.tick), ...traced.keys()])].sort((a, b) => a - b);
+  const seen = new Map(d.players.map((p) => [p.slot, { score: 0, team: p.team, lives: p.lives }]));
+  const values = new Map<string, string>();
+  const changed = (key: string, value: string): boolean => {
+    if (values.get(key) === value) return false;
+    values.set(key, value);
+    return true;
+  };
+  return ticks.map((tick) => {
+    const k = traced.get(tick);
+    const row: TimelineRow = {
+      tick,
+      happened: events.filter((e) => e.tick === tick).map(describeEvent),
+      ran: k?.ran ?? [],
+      calls: (k?.calls ?? []).map(formatCall),
+      scored: [],
+      changes: [],
+      warnings: k?.warnings ?? [],
+      error: k?.error ?? null,
+    };
+    for (const g of k?.globals ?? []) if (changed(`g:${g.name}`, g.value)) row.changes.push(`${g.name} = ${g.value}`);
+    for (const p of k?.players ?? []) {
+      const was = seen.get(p.slot);
+      const name = playerName(p.slot);
+      if (p.score !== (was?.score ?? 0)) row.scored.push({ slot: p.slot, delta: p.score - (was?.score ?? 0), score: p.score });
+      if (was && p.team !== was.team) row.changes.push(`${name} moved to ${teamLabel(p.team)}`);
+      if (was && p.lives !== was.lives) row.changes.push(`${name} has ${p.lives} ${p.lives === 1 ? "life" : "lives"}`);
+      for (const v of p.vars) if (changed(`p${p.slot}:${v.name}`, v.value)) row.changes.push(`${name}: ${v.name} = ${v.value}`);
+      seen.set(p.slot, { score: p.score, team: p.team, lives: p.lives });
+    }
+    return row;
+  });
+}
+
+/** "+1", "-2". */
+export const signed = (n: number): string => (n > 0 ? `+${n}` : String(n));
+
+export interface Standing { place: number; slot: number; team: number; score: number }
+
+/** The final scores, best first; equal scores share a place. A player's
+ *  team is the last the trace gave, else the scenario's. */
+export function standings(t: Trace, d: ScenarioDraft): Standing[] {
+  const team = new Map(d.players.map((p) => [p.slot, p.team]));
+  for (const k of t.ticks) for (const p of k.players) team.set(p.slot, p.team);
+  const rows = [...t.scores].sort((a, b) => b.score - a.score || a.slot - b.slot);
+  return rows.map((s) => ({ place: 1 + rows.filter((o) => o.score > s.score).length, slot: s.slot, team: team.get(s.slot) ?? 0, score: s.score }));
+}
+
+/** The standings summed by team, best first. */
+export function teamStandings(rows: Standing[]): Array<{ place: number; team: number; score: number }> {
+  const sums = new Map<number, number>();
+  for (const r of rows) sums.set(r.team, (sums.get(r.team) ?? 0) + r.score);
+  const out = [...sums.entries()].map(([team, score]) => ({ team, score })).sort((a, b) => b.score - a.score || a.team - b.team);
+  return out.map((s) => ({ place: 1 + out.filter((o) => o.score > s.score).length, ...s }));
+}
+
+// ---------- failures and gates ----------
+
+/** Whose fault a failed request is. */
+export type Fault = "server" | "script" | "network" | "account";
+export interface Trouble {
+  fault: Fault;
+  /** What happened and what to do, as sentences. */
+  text: string;
+  /** The server has no rules routes at all. */
+  missing: boolean;
+  /** Whether asking again can help. */
+  retry: boolean;
+  /** The server didn't answer, or answered that it is broken. */
+  down: boolean;
+}
+
+export const TOOLS_MISSING = "This Live server doesn't have the script tools yet.";
+const TOOLS_DOWN = "The Live server isn't answering.";
+
+const sentence = (s: string): string => {
+  const t = s.trim();
+  if (!t) return "";
+  return t[0]!.toUpperCase() + t.slice(1) + (/[.!?]$/.test(t) ? "" : ".");
+};
+
+/** A failed request in words. `route` says the request was to a rules
+ *  route that every server with the script tools has (check, run, save,
+ *  the variant routes), so "not found" means the server lacks them; a
+ *  script opened by hash can be not found on any server. */
+export function explainFailure(e: unknown, route = true): Trouble {
+  if (!(e instanceof ApiError)) {
+    return { fault: "network", text: "Can't reach the Live server. Your script isn't the cause; check the connection and try again.", missing: false, retry: true, down: true };
+  }
+  const noRoute = e.status === 405 || e.status === 501 || (e.status === 404 && (route || /no such endpoint/i.test(e.message)));
+  if (noRoute) {
+    return { fault: "server", text: `${TOOLS_MISSING} You can still write here and your draft is kept, but checking, testing and saving need a newer server.`, missing: true, retry: false, down: false };
+  }
+  if (e.status === 404) return { fault: "script", text: `The server couldn't find it. ${sentence(e.message)}`, missing: false, retry: false, down: false };
+  if (e.status === 413) return { fault: "script", text: `The script is too long. A script is at most ${MAX_SOURCE / 1024} KB.`, missing: false, retry: false, down: false };
+  if (e.status === 429) return { fault: "server", text: "The server is limiting requests. Your script isn't the cause; wait a few seconds.", missing: false, retry: true, down: false };
+  if (e.status === 401 || e.status === 403) return { fault: "account", text: "The server didn't accept your sign-in. Sign out and back in, then try again.", missing: false, retry: false, down: false };
+  if (e.status >= 500) return { fault: "server", text: `The Live server had a problem (HTTP ${e.status}). Your script isn't the cause; try again.`, missing: false, retry: true, down: true };
+  return { fault: "script", text: `The server refused the request. ${sentence(e.message)}`, missing: false, retry: false, down: false };
+}
+
+/** A fault as the label before its words. */
+export const faultLabel = (f: Fault): string => ({ server: "Server", script: "Script", network: "Connection", account: "Account" })[f];
+
+/** Whether the server's script tools answer. */
+export type Tools = "unknown" | "ok" | "missing" | "down";
+
+/** What a failed check says about the tools; null when nothing. */
+export function toolsAfter(t: Trouble): Tools | null {
+  return t.missing ? "missing" : t.down ? "down" : null;
+}
+
+/** "1 problem", "3 problems". */
+export const problemCount = (n: number): string => `${n} ${n === 1 ? "problem" : "problems"}`;
+
+/** What the buttons depend on. */
+export interface Gate { tools: Tools; check: CheckResult | null; locked: boolean }
+
+function scriptBlock(g: Gate): string | null {
+  if (g.tools === "missing") return TOOLS_MISSING;
+  if (g.tools === "down") return TOOLS_DOWN;
+  if (!g.check) return "The script is still being checked.";
+  if (g.check.ok) return null;
+  return g.check.errors.length ? `Fix the ${problemCount(g.check.errors.length)} in the script first.` : "The script doesn't verify yet.";
+}
+
+/** Why Save is off; null when it is on. */
+export function saveBlocked(g: Gate): string | null {
+  if (g.tools === "missing") return TOOLS_MISSING;
+  if (g.locked) return "This script is read-only. Choose Use as start to make your own copy.";
+  return scriptBlock(g);
+}
+
+/** Why Make a game variant is off. */
+export function variantBlocked(g: Gate): string | null {
+  return scriptBlock(g) ?? (g.check?.hash ? null : "The check gave this script no hash.");
+}
+
+/** Why the scenario can't run. */
+export function runBlocked(g: Gate, problems: string[]): string | null {
+  return scriptBlock(g) ?? (problems.length ? `Fix the ${problemCount(problems.length)} in the scenario first.` : null);
+}
+
+/** The buttons that are off, those with one reason together: "Save and
+ *  Make a game variant are off." and the reason. */
+export function whyOff(buttons: Array<[label: string, reason: string | null]>): Array<{ what: string; reason: string }> {
+  const by = new Map<string, string[]>();
+  for (const [label, reason] of buttons) if (reason) by.set(reason, [...(by.get(reason) ?? []), label]);
+  return [...by.entries()].map(([reason, labels]) => ({
+    what: labels.length === 1 ? `${labels[0]} is off.` : `${labels.slice(0, -1).join(", ")} and ${labels[labels.length - 1]} are off.`,
+    reason,
+  }));
 }
 
 // ---------- drafts ----------
@@ -472,8 +792,8 @@ export async function checkRules(api: string, source: string, fetchFn: typeof fe
   return parseCheck(await answer(await postJson(fetchFn, `${api}/rules/check`, { source }, {}, signal)));
 }
 
-export async function runRules(api: string, source: string, scenario: ScenarioDraft, fetchFn: typeof fetch = fetch): Promise<Trace | RunFailed> {
-  return parseTrace(await answer(await postJson(fetchFn, `${api}/rules/run`, { source, scenario: buildScenario(scenario) })));
+export async function runRules(api: string, source: string, scenario: ScenarioDraft, fetchFn: typeof fetch = fetch, signal?: AbortSignal): Promise<Trace | RunFailed> {
+  return parseTrace(await answer(await postJson(fetchFn, `${api}/rules/run`, { source, scenario: buildScenario(scenario) }, {}, signal)));
 }
 
 export async function fetchBuiltins(api: string, fetchFn: typeof fetch = fetch): Promise<Builtin[]> {

@@ -1,6 +1,105 @@
-//! The medals Live awards from the ordered kills (web/src/state/derive.ts).
-//! Keep the counters and last scoring kill; no lifetime list of kills is needed.
-use std::collections::BTreeMap;
+//! The medals Live awards from the ordered kills, bounces and teabags
+//! (web/src/state/derive.ts). Keep the counters and last scoring kill; no
+//! lifetime list of kills is needed.
+use std::collections::{BTreeMap, BTreeSet};
+
+/// A bounce off a superbounce crease: every bounce earns it.
+pub const SUPERBOUNCE: &str = "superbounce";
+/// The second bounce of a chain.
+pub const DOUBLE_BOUNCE: &str = "double-bounce";
+/// The third bounce of a chain.
+pub const TRIPLE_BOUNCE: &str = "triple-bounce";
+/// The fourth bounce of a chain.
+pub const QUAD_BOUNCE: &str = "quad-bounce";
+/// The fifth bounce of a chain.
+pub const CHAIN_BOUNCE: &str = "chain-bounce";
+/// The sixth bounce of a chain.
+pub const BOUNCETACULAR: &str = "bouncetacular";
+/// A death falling out of or through the map while trying a bounce (a
+/// `Bounced` event).
+pub const BOUNCED: &str = "bounced";
+/// The bounce medal ids: the chain's, lowest first, then `bounced`.
+pub const BOUNCE_MEDALS: [&str; 7] = [
+    SUPERBOUNCE,
+    DOUBLE_BOUNCE,
+    TRIPLE_BOUNCE,
+    QUAD_BOUNCE,
+    CHAIN_BOUNCE,
+    BOUNCETACULAR,
+    BOUNCED,
+];
+
+/// Completed a game without teabagging or getting teabagged
+/// (docs/game/teabag.md, "The medal"): [`Incel`] says who.
+pub const INCEL: &str = "incel";
+
+/// Who earns [`INCEL`] at a game's end: every participant who completed
+/// the game and was in no `Teabag`, as the crouching player or as the
+/// one whose body it was. Completed is all three of:
+///
+/// - in the game before its first `PlayerKilled` (of any kind): on
+///   `GameStarted`'s roster, or joined before anyone died ([`Incel::joined`]
+///   after [`Incel::killed`] is late);
+/// - still in it at `GameEnded`: a participant who left is gone, and one
+///   who takes the seat after is a new participant (the caller's
+///   generations);
+/// - the game ended with reason `finished` (not `quit` or `lost`).
+///
+/// Bots count as players. The site keeps a copy (`gameIncel` in
+/// web/src/state/derive.ts). Participants are the caller's ids (the film's
+/// generations).
+#[derive(Default)]
+pub struct Incel {
+    killed: bool,
+    late: BTreeSet<u32>,
+    teabagged: BTreeSet<u32>,
+}
+
+impl Incel {
+    /// Participant `who` joined: late once anyone has died.
+    pub fn joined(&mut self, who: u32) {
+        if self.killed {
+            self.late.insert(who);
+        } else {
+            self.late.remove(&who);
+        }
+    }
+
+    /// A `PlayerKilled`: from now on a join is late.
+    pub fn killed(&mut self) {
+        self.killed = true;
+    }
+
+    /// A teabag: neither side earns the medal.
+    pub fn teabag(&mut self, giver: u32, victim: u32) {
+        self.teabagged.insert(giver);
+        self.teabagged.insert(victim);
+    }
+
+    /// Whether participant `who`, in the game at an end with `reason`,
+    /// earns the medal.
+    pub fn earns(&self, who: u32, reason: &str) -> bool {
+        reason == "finished" && !self.late.contains(&who) && !self.teabagged.contains(&who)
+    }
+}
+
+/// The medals a bounce earns at its place in a chain, lowest first, so the
+/// last is the one a HUD line shows (docs/game/superbounce.md, "The rule").
+/// Superbounce is every bounce; a chain gives each of the others once, at
+/// 2 to 6 bounces, and from the seventh on only Superbounce. A count of 0
+/// is no bounce. The site keeps a copy (`bounceMedals` in
+/// web/src/state/derive.ts).
+pub fn bounce_medals(chain: u32) -> &'static [&'static str] {
+    match chain {
+        0 => &[],
+        2 => &[SUPERBOUNCE, DOUBLE_BOUNCE],
+        3 => &[SUPERBOUNCE, TRIPLE_BOUNCE],
+        4 => &[SUPERBOUNCE, QUAD_BOUNCE],
+        5 => &[SUPERBOUNCE, CHAIN_BOUNCE],
+        6 => &[SUPERBOUNCE, BOUNCETACULAR],
+        _ => &[SUPERBOUNCE],
+    }
+}
 
 #[derive(Default)]
 struct Player {
@@ -80,6 +179,31 @@ impl Tally {
         }
     }
 
+    /// A bounce at `chain`: each medal of [`bounce_medals`], reported at
+    /// the bounce's tick as well as added to the menu totals.
+    pub fn bounce_with(&mut self, player: u32, chain: u32, mut report: impl FnMut(&'static str)) {
+        let p = self.players.entry(player).or_default();
+        for &medal in bounce_medals(chain) {
+            p.award(medal, &mut report);
+        }
+    }
+
+    /// A death falling out of the map while trying a bounce: `bounced`.
+    pub fn bounced_with(&mut self, player: u32, mut report: impl FnMut(&'static str)) {
+        self.players
+            .entry(player)
+            .or_default()
+            .award(BOUNCED, &mut report);
+    }
+
+    /// [`INCEL`], at the game's end ([`Incel::earns`]).
+    pub fn incel_with(&mut self, player: u32, mut report: impl FnMut(&'static str)) {
+        self.players
+            .entry(player)
+            .or_default()
+            .award(INCEL, &mut report);
+    }
+
     /// The final medal is resolved only when the match ends.
     pub fn last_word(&self) -> Option<u32> {
         self.last.filter(|_| self.deaths > 1)
@@ -101,6 +225,86 @@ impl Tally {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bounce_medals_follow_the_chain_table() {
+        assert_eq!(bounce_medals(0), &[] as &[&str]);
+        assert_eq!(bounce_medals(1), [SUPERBOUNCE]);
+        assert_eq!(bounce_medals(2), [SUPERBOUNCE, DOUBLE_BOUNCE]);
+        assert_eq!(bounce_medals(3), [SUPERBOUNCE, TRIPLE_BOUNCE]);
+        assert_eq!(bounce_medals(4), [SUPERBOUNCE, QUAD_BOUNCE]);
+        assert_eq!(bounce_medals(5), [SUPERBOUNCE, CHAIN_BOUNCE]);
+        assert_eq!(bounce_medals(6), [SUPERBOUNCE, BOUNCETACULAR]);
+        for chain in [7, 8, 12, u32::MAX] {
+            assert_eq!(bounce_medals(chain), [SUPERBOUNCE], "{chain}");
+        }
+        assert_eq!(
+            BOUNCE_MEDALS,
+            [
+                "superbounce",
+                "double-bounce",
+                "triple-bounce",
+                "quad-bounce",
+                "chain-bounce",
+                "bouncetacular",
+                "bounced",
+            ]
+        );
+    }
+
+    /// A chain of eight is eight Superbounces and one of each of the
+    /// others; a bounce death is `bounced`.
+    #[test]
+    fn a_chain_of_eight_counts_each_chain_medal_once() {
+        let mut tally = Tally::default();
+        let mut reported = Vec::new();
+        for chain in 1..=8 {
+            tally.bounce_with(4, chain, |m| reported.push(m));
+        }
+        tally.bounce_with(4, 1, |m| reported.push(m));
+        tally.bounced_with(4, |m| reported.push(m));
+        assert_eq!(reported.iter().filter(|&&m| m == SUPERBOUNCE).count(), 9);
+        assert_eq!(reported.last(), Some(&BOUNCED));
+        assert_eq!(
+            tally.counts(4, true),
+            BTreeMap::from([
+                (SUPERBOUNCE.into(), 9),
+                (DOUBLE_BOUNCE.into(), 1),
+                (TRIPLE_BOUNCE.into(), 1),
+                (QUAD_BOUNCE.into(), 1),
+                (CHAIN_BOUNCE.into(), 1),
+                (BOUNCETACULAR.into(), 1),
+                (BOUNCED.into(), 1),
+            ])
+        );
+        // Bounces are no kills: no last-word, no opening act.
+        assert_eq!(tally.last_word(), None);
+    }
+
+    /// Incel: a clean participant earns it; both sides of a teabag, a
+    /// late joiner and every player of a game that did not finish do not.
+    #[test]
+    fn incel_is_for_who_completed_the_game_without_a_teabag() {
+        let mut incel = Incel::default();
+        for who in [0, 1, 2, 3] {
+            incel.joined(who);
+        }
+        incel.teabag(1, 2);
+        incel.killed();
+        incel.joined(4);
+        assert!(incel.earns(0, "finished"));
+        assert!(incel.earns(3, "finished"));
+        assert!(!incel.earns(1, "finished"), "the giver");
+        assert!(!incel.earns(2, "finished"), "the receiver");
+        assert!(!incel.earns(4, "finished"), "joined after a death");
+        assert!(!incel.earns(0, "quit"));
+        assert!(!incel.earns(0, "lost"));
+        let mut tally = Tally::default();
+        let mut reported = Vec::new();
+        tally.incel_with(0, |m| reported.push(m));
+        assert_eq!(reported, [INCEL]);
+        assert_eq!(tally.counts(0, true), BTreeMap::from([(INCEL.into(), 1)]));
+    }
 
     #[test]
     fn death_resets_chain_and_revenge_follows_salted_participant() {
