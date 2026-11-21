@@ -2123,6 +2123,107 @@ fn sessions_two_guests_publish_find_parse_update_and_delete() {
         vec!["SessionCreated", "SessionUpdated", "SessionDeleted"]
     );
 }
+
+#[test]
+fn a_full_clankermatch_target_stays_advertised_until_the_guest_deletes_it() {
+    use live_proto::{optimatch::attr as attr_id, session::Session};
+
+    const HOPPER: u32 = 8;
+    const CAPACITY: u32 = 8;
+    const SQUAD_ID: u32 = MATCH_ID + 8;
+    const SQUAD_KEY: u32 = MATCH_KEY + 16;
+
+    let server = Server::new();
+    let account = server.account("Host");
+    let mut host = World::new(&server.embedded.url, &[&account]);
+    host.logon();
+    server.until(|| host.hle.clanker_hoppers().contains(HOPPER));
+
+    assert_eq!(
+        host.call("XOnlineMatchSessionCreate", &[1, 15, 0, 0, 0, 0, 0, OUT]),
+        OK
+    );
+    let squad = host.u32(OUT);
+    assert_eq!(host.wait(squad), TASK_SUCCESS);
+    assert_eq!(
+        host.call("XOnlineMatchSessionGetInfo", &[squad, SQUAD_ID, SQUAD_KEY]),
+        OK
+    );
+    assert_eq!(host.call("XNetRegisterKey", &[SQUAD_ID, SQUAD_KEY]), OK);
+    let squad_id: [u8; 8] = host.bytes(SQUAD_ID, 8).try_into().unwrap();
+
+    attr(&host, MATCH_ATTR, attr_id::HOPPER, u64::from(HOPPER));
+    attr(&host, MATCH_ATTR + 16, attr_id::OPEN, u64::from(CAPACITY - 1));
+    assert_eq!(
+        host.call(
+            "XOnlineMatchSessionCreate",
+            &[1, CAPACITY - 1, 0, 0, 2, MATCH_ATTR, 0, OUT]
+        ),
+        OK
+    );
+    let target = host.u32(OUT);
+    assert_eq!(host.wait(target), TASK_SUCCESS);
+    assert_eq!(
+        host.call("XOnlineMatchSessionGetInfo", &[target, MATCH_ID, MATCH_KEY]),
+        OK
+    );
+    assert_eq!(host.call("XNetRegisterKey", &[MATCH_ID, MATCH_KEY]), OK);
+    let target_id = sign::hex(&host.bytes(MATCH_ID, 8));
+    let (lo, hi) = (host.u32(MATCH_ID), host.u32(MATCH_ID + 4));
+
+    // Advertise a slot change for each phantom the guest seats.
+    for filled in 2..=CAPACITY {
+        let open = CAPACITY - filled;
+        attr(&host, MATCH_ATTR + 16, attr_id::OPEN, u64::from(open));
+        assert_eq!(
+            host.call(
+                "XOnlineMatchSessionUpdate",
+                &[lo, hi, filled, open, 0, 0, 1, MATCH_ATTR + 16, 0, OUT]
+            ),
+            OK
+        );
+        let update = host.u32(OUT);
+        assert_eq!(host.wait(update), TASK_SUCCESS, "filled={filled}");
+        assert_eq!(
+            host.hle.clanker_hosted().map(|(id, _)| id).as_deref(),
+            Some(target_id.as_str())
+        );
+    }
+    let page: Page<Session> = server.get_as_operator("/v1/sessions");
+    let full = page
+        .items
+        .iter()
+        .find(|row| row.session_id == target_id)
+        .unwrap();
+    assert_eq!(full.advertisement.slots.public_filled, CAPACITY);
+    assert_eq!(full.advertisement.slots.public_open, 0);
+
+    // Unregister consumes the still-registered target key. The independent
+    // advertisement remains until the guest's delete completes.
+    assert_eq!(host.call("XNetUnregisterKey", &[MATCH_ID]), OK);
+    assert_eq!(
+        host.call("XNetUnregisterKey", &[MATCH_ID]),
+        WSA_INVALID_ARGUMENT
+    );
+    assert_eq!(
+        host.hle.hosted_session().as_deref(),
+        Some(target_id.as_str())
+    );
+    assert_eq!(host.call("XOnlineMatchSessionDelete", &[lo, hi, 0, OUT]), OK);
+    let delete = host.u32(OUT);
+    assert_eq!(host.wait(delete), TASK_SUCCESS);
+    assert_eq!(host.hle.clanker_hosted(), None);
+
+    let local = host.hle.local_sessions();
+    assert_eq!(local.len(), 1);
+    assert_eq!(local[0].id, squad_id);
+    let page: Page<Session> = server.get_as_operator("/v1/sessions");
+    assert_eq!(page.items.len(), 1);
+    assert_eq!(page.items[0].session_id, sign::hex(&squad_id));
+    // The squad key survived the target's teardown.
+    assert_eq!(host.call("XNetUnregisterKey", &[SQUAD_ID]), OK);
+}
+
 /// A host's multiplayer skulls ride on its advertisement (docs/game/skulls.md
 /// "In multiplayer"): a guest that found and joined the session reads them
 /// at game start, asking the server again, so a change the host made after
