@@ -115,6 +115,11 @@ crate::globals! { GLOBALS;
     /// the pickup (`0x1df3e0`) and our campaign start; every reader gates
     /// on a campaign.
     SKULLS @ 0x004f_55dc; "docs/game/skulls.md";
+    /// Pointer to the AI globals: byte `+0` is "AI on" (the script's `ai`
+    /// switch), byte `+1` is set once AI is initialised for the map.
+    /// `ai_update` (`0x1c83c0`) needs both, and never runs on a
+    /// distributed client.
+    AI_GLOBALS @ 0x004f_55d0; "docs/game/notes/ai-networking.md";
     /// Pointer to the actor datum array (`0x888`-byte actors).
     ACTORS @ 0x004f_55f0; "docs/live/live-gamestate.md";
     /// likely: the four local player slots, one per controller, `0xc70`

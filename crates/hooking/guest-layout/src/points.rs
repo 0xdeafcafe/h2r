@@ -495,6 +495,11 @@ points! { ALL;
     /// The `mach` and `bloc` levels' function import (slot `+4c`).
     MACHINE_FUNCTION_IMPORT @ 0x0011_bd60: [fn(object: stack 0, name: stack 1, value: stack 2, active: stack 3) -> al ret 16], Hot; "docs/engine/object-update.md";
     AI_UPDATE @ 0x001c_83c0: [opaque], Optional; "docs/engine/engine-map.md";
+    /// Queue one replication event in a distributed game (world mode 4 or
+    /// 5; a no-op otherwise): the event type, the number of entities it
+    /// refers to, their object handles, the payload's size and bytes, and
+    /// a context word. A sixth register argument (EAX) is not read here.
+    SIM_EVENT_GENERATE @ 0x000b_5a70: [fn(kind: stack 0, references: stack 1, objects: stack 2, size: stack 3, payload: stack 4, context: stack 5) ret 24], Optional; "docs/game/notes/ai-networking.md";
     SCRIPT_UPDATE @ 0x0020_9310: [opaque], Optional; "docs/engine/engine-map.md";
     EFFECT_PART_CREATE @ 0x0017_a8a0: [opaque], Optional; "docs/engine/engine-map.md";
     PARTICLE_SYSTEM_UPDATE @ 0x0024_7140: [opaque], Optional; "docs/engine/engine-map.md";
