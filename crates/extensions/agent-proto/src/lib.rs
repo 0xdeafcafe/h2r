@@ -39,7 +39,6 @@ mod render;
 pub mod shadow;
 pub mod sim;
 pub mod state;
-pub mod superbounce;
 pub mod takeover;
 pub mod test_maps;
 pub mod theater;

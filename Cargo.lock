@@ -2391,6 +2391,7 @@ dependencies = [
  "sim-bridge",
  "sim-state",
  "snapshot",
+ "superbounce",
  "tags",
  "timeline",
  "toml",
