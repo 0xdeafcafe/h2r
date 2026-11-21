@@ -120,7 +120,7 @@ pub fn list(ui: &Ui, app: &mut App, fonts: &Fonts, dialogs: bool, actions: &mut 
     };
     let errors = app.hoppers.errors();
     let mut pick = None;
-    ui.child_window("##playlist-list").build(ui, || {
+    theme::panel_body(ui, "##playlist-list", || {
         for h in hoppers {
             let bad = errors
                 .iter()

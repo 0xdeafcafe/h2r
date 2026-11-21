@@ -107,7 +107,8 @@ Scene, viewport, inspector, Log and status bar.*
 - **Go to anything** (Cmd/Ctrl+P, `ui/palette.rs`) searches the Maps list,
   the open map's tags and placements, and available menu actions. Each
   word must match. Use Up or Down to move, Enter to open or run the
-  selection, and Esc to close.
+  selection, and Esc to close. The result list is as tall as its rows, up
+  to seven.
 - **The bar** (under the menu, `ui/bar.rs`), visible in every tool. Left:
   the tools as tabs, Map, Variants, Playlists, UI and HUD. Middle: the
   document name; a `*` marks unsaved edits. Right: the game link. Its
@@ -131,7 +132,24 @@ Scene, viewport, inspector, Log and status bar.*
   the mouse" (the next click in the viewport puts it where the cursor
   meets the level). A button is disabled, with the reason as its
   tooltip, when the editor refuses (scenario-editor.md §6). Double-click
-  an entry to frame the camera on it.
+  an entry to frame the camera on it. The filter and the Duplicate and
+  Delete row stay pinned at the top; **Layers** (a folding header) and the
+  tree scroll together in one body (`theme::panel_body`).
+- **Panels on short windows.** A panel scrolls as a whole: its lists
+  and trees draw into the one body, and two lists in a panel are two
+  folding headers. Only a panel with rows pinned above its list (the
+  filter and command row of the Scene, Variants and Playlists lists, the
+  Halo 1 outliner's banner) puts the list in a child, and
+  `theme::panel_body` gives it the height left under them, never less
+  than four lines. A list inside a dialog or popup, the command palette's
+  results, has a height from its rows, at most seven, and never over half
+  the viewport (`theme::bounded_list`). The helpers are the only callers
+  of `child_window` in `ui.rs` and `ui/`, apart from `ui/tags.rs` and
+  `fields.rs` (the check is `child_windows_come_from_the_panel_helpers` in
+  `headless.rs`); `every_panel_scrolls_as_a_whole_on_a_short_window` draws
+  each tool at 1000 by 420 and lists the child windows it finds. The
+  design is in [tag-editing.md](tag-editing.md), "Panels on short
+  windows".
 - **Viewport** (centre): the map's art, its sky and a marker per
   placement, drawn by `scenario_edit::render::Viewport` into an offscreen
   texture that ImGui shows as an image. Left click picks, Cmd/Ctrl+click

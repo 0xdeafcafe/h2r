@@ -19,12 +19,11 @@ pub(super) fn show_button(ui: &Ui, app: &App, actions: &mut Vec<Action>) -> bool
     hovered
 }
 
+/// The Layers header and, open, its controls at their own height, drawn
+/// into the panel's body.
 pub(super) fn section(ui: &Ui, app: &App, actions: &mut Vec<Action>) {
     if ui.collapsing_header("Layers", TreeNodeFlags::NONE) {
-        let height = (ui.content_region_avail()[1] * 0.5).max(ui.frame_height_with_spacing());
-        ui.child_window("scene-layers")
-            .size([0.0, height])
-            .build(ui, || controls(ui, app, actions));
+        controls(ui, app, actions);
     }
 }
 

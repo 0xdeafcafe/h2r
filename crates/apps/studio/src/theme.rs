@@ -16,7 +16,7 @@ pub const TITLE_SIZE: f32 = 18.0;
 
 /// The command palette's preferred width and visible result rows.
 pub const PALETTE_WIDTH: f32 = 560.0;
-pub const PALETTE_ROWS: f32 = 7.0;
+pub const PALETTE_ROWS: usize = 7;
 
 pub(crate) static INTER_REGULAR: &[u8] = include_bytes!("../assets/fonts/Inter-Regular.ttf");
 static INTER_SEMIBOLD: &[u8] = include_bytes!("../assets/fonts/Inter-SemiBold.ttf");
@@ -419,6 +419,44 @@ pub fn empty_card(ui: &Ui, fonts: &Fonts, title: &str, contents: impl FnOnce()) 
             }
             contents();
         });
+}
+
+/// The scrolling body of a panel that pins rows above it (a filter, a row
+/// of commands): one child that takes the height left under them, never
+/// less than four lines, so a short window scrolls the panel instead of
+/// squeezing the body. A panel with nothing pinned draws straight into its
+/// window and does not call this. docs/editor/editor.md, "Panels on short
+/// windows".
+pub fn panel_body(ui: &Ui, id: &str, body: impl FnOnce()) {
+    panel_body_with(ui, id, ChildFlags::NONE, body);
+}
+
+/// [`panel_body`] with child flags (a body that pads itself).
+pub fn panel_body_with(ui: &Ui, id: &str, flags: ChildFlags, body: impl FnOnce()) {
+    let height = ui
+        .content_region_avail()[1]
+        .max(ui.text_line_height_with_spacing() * 4.0);
+    ui.child_window(id)
+        .size([0.0, height])
+        .child_flags(flags)
+        .build(ui, body);
+}
+
+/// A list with a scroll of its own, in a dialog or popup: `rows` rows of
+/// `row_height`, at most `cap_rows`, and never more than half the
+/// viewport's height.
+pub fn bounded_list(
+    ui: &Ui,
+    id: &str,
+    width: f32,
+    row_height: f32,
+    rows: usize,
+    cap_rows: usize,
+    body: impl FnOnce(),
+) {
+    let ceiling = ui.main_viewport().work_size()[1] * 0.5;
+    let height = (row_height * rows.min(cap_rows).max(1) as f32).min(ceiling.max(row_height));
+    ui.child_window(id).size([width, height]).build(ui, body);
 }
 
 /// Keep long document names and log messages inside their assigned area.
