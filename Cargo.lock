@@ -90,6 +90,7 @@ dependencies = [
 name = "agent-proto"
 version = "0.1.0"
 dependencies = [
+ "host-dirs",
  "mem-watch",
  "serde",
  "serde_json",
@@ -714,6 +715,7 @@ dependencies = [
  "background",
  "content",
  "engine",
+ "host-dirs",
  "input",
  "live-proto",
  "map",
@@ -1006,6 +1008,7 @@ dependencies = [
  "h1map",
  "h1objects",
  "host-data",
+ "host-dirs",
  "hs",
  "iced-x86",
  "image",
@@ -1182,6 +1185,7 @@ dependencies = [
 name = "content"
 version = "0.1.0"
 dependencies = [
+ "host-dirs",
  "map",
  "png",
  "serde",
@@ -1616,6 +1620,7 @@ dependencies = [
  "bytemuck",
  "frame-scene",
  "gfx",
+ "host-dirs",
  "hot-render",
  "iced-x86",
  "ir",
@@ -2938,6 +2943,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "host-dirs"
+version = "0.1.0"
+
+[[package]]
 name = "host-log"
 version = "0.1.0"
 dependencies = [
@@ -4087,6 +4096,7 @@ dependencies = [
 name = "movies"
 version = "0.1.0"
 dependencies = [
+ "host-dirs",
  "serde",
  "serde_json",
  "xiso",
@@ -6364,6 +6374,7 @@ name = "snapshot"
 version = "0.1.0"
 dependencies = [
  "crc32fast",
+ "host-dirs",
  "lockstep",
  "runtime",
  "thiserror 2.0.21",
@@ -7522,6 +7533,7 @@ name = "vfs"
 version = "0.1.0"
 dependencies = [
  "content",
+ "host-dirs",
  "libc",
  "memmap2",
  "rustix 1.1.6",
@@ -8578,6 +8590,7 @@ name = "xtask"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "host-dirs",
  "serde_json",
 ]
 

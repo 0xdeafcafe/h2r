@@ -11,6 +11,8 @@ use anyhow::{Result, bail};
 #[cfg(feature = "desktop")]
 use xiso::Xiso;
 
+// mem-watch tags allocations, except under dhat, which needs the allocator.
+#[cfg(not(feature = "dhat-heap"))]
 #[global_allocator]
 static ALLOCATOR: mem_watch::TaggedAllocator = mem_watch::TaggedAllocator;
 
