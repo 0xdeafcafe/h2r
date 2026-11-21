@@ -1,6 +1,6 @@
 # AI over the network
 
-Status: Design. Slice AN0 (the agent API methods the probes need) is built; nothing else is.
+Status: Design. AN0 supplies the probe API. AN11 establishes the static requirements for creature replication. P7 is pending.
 Code: `crates/extensions/agent/src/net.rs` (`net.replication`), `crates/extensions/agent/src/ai.rs` (`world.ai`). Planned: `crates/formats/host-log`, `crates/live/actor-net`, `crates/extensions/game/src/actor_net/`. Tests: each crate's own, on invented data.
 Switch: `agent-net` (the event counter behind `net.replication`), listed in [switches.md](../runtime/switches.md). The `actor-net` feature of `H2_FEATURES` (off until probe P3 is seen in the game) joins it with the code.
 
@@ -13,16 +13,16 @@ machine reaches the same decision from the same state; in a distributed
 session only the host runs AI and a client never does.
 
 Evidence labels are those of [docs-style.md](../meta/docs-style.md).
-The static read behind the **E** rows is in
-[notes/ai-networking.md](notes/ai-networking.md).
+The retail reads behind the **E** rows cover [stock replication](notes/ai-networking.md)
+and [the creature slot](notes/creature-entity.md).
 
 ## Decisions
 
 - **System Link.** Distributed System Link games get host-run AI through
   entity and event replication. Dialogue and posture require the actor
   channel on the Live tunnel, so System Link omits them.
-- **Creatures.** h2recomp registers a creature entity type in one of the
-  16 unused slots in the retail entity table built at `0x82240`. Every
+- **Creatures.** h2recomp reserves entity type 17, the first of 15 unused
+  slots in the retail registry built at `0x82240`. Every
   h2recomp machine registers the same type, and the session check refuses
   mixed replication protocol versions before gameplay.
 
@@ -68,7 +68,7 @@ types. The ones an actor needs:
 | Posture and AI-only animation (berserk, flee, cower, sleep, alert) | nothing | **E** | actor channel |
 | Dialogue | nothing | **E** (no sound field or event) | actor channel |
 | Perception, targets, orders | nothing, and nothing needed: the host decides | **E** `0x1c83c0` | none |
-| Creatures (the `crea` object type) | creature entity in an unused retail slot | **E** retail has no creature type; **Design** extension | AN11 traces the slot, P7 probes it and AN13 builds the entity |
+| Creatures (the `crea` object type) | creature entity in an unused retail slot | **E** retail has no creature type; **Design** extension | slot 17 fits the creation codec. AN12 supplies creature scheduling, P7 exercises it and AN13 builds the full entity |
 
 So the host needs nothing new to *run* actors in a distributed game:
 `ai_update` returns early only when the network mode byte is 4, the
@@ -157,12 +157,14 @@ the host's authoritative damage, position and death state.
 ### Creature entity
 
 **Design.** Every h2recomp machine installs the same definition at
-simulation initialisation. AN11 selects the slot and establishes the
-encoder and decoder bounds. The session check requires the same
-replication protocol version on Live and System Link, including on maps
-with zero creatures. An absent or different version gives a named
-incompatibility error before admission or entity traffic. Both the host
-and the joining machine check compatibility. The full definition uses
+simulation initialisation, at slot 17 with an entity count of 18. Both
+ends use the existing five-bit type field. The host enrolls eligible
+creatures, including those created by `sim.spawn`. Creation and update
+relevance use extension-owned creature tuning. Stock tuning ends after
+type 16. The session check requires the same replication protocol version
+on Live and System Link, including on maps with zero creatures. An absent
+or different version gives a named incompatibility error before admission
+or entity traffic. Both the host and the joining machine check compatibility. The full definition uses
 a different protocol version from the probe's minimal definition.
 
 | Record | Fields |
@@ -174,18 +176,19 @@ a different protocol version from the probe's minimal definition.
 The host creates, simulates, damages and removes the creature. A client
 creates a replica from the locally resolved definition, applies the
 host's state and animates its body from that state. Perception, targets,
-dialogue and posture stay out of this entity. AN11 traces the shared
-object codecs and the creature creation and update entries. AN13 uses
+dialogue and posture stay out of this entity. The creature's object tick
+and post-physics callbacks leave simulation decisions to the host. AN13 uses
 the compatible codecs and pins the chosen masks, units, ranges and
 bit widths with synthetic vectors.
 
-**Risks.** A spare table pointer can sit beyond the encoder's type
-range or a reader's loop bound. A type index that aliases a sentinel or
-uses the wrong width can desynchronise packet decoding. An old decoder
-may discard the whole update or misread the next record, so the join
-check guards both transports. A client that runs creature behaviour can
-fight the host's updates. Too many relevant creatures can starve player
-and projectile updates in the shared sender budget.
+**Risks.** Using stock scheduler indexing for type 17 reads unrelated
+network settings. A stock receiver discards the entire replication batch
+on a slot-17 creation. A peer that assigns a different codec to slot 17
+can lose the next record boundary. Retail's build and join-message
+versions cover neither case. The replication version check guards both
+transports. A client that runs creature behaviour can fight the host's
+updates. Too many relevant creatures can starve player and projectile
+updates in the shared sender budget.
 
 ## Budgets
 
@@ -341,9 +344,9 @@ keeps mirrors, schedules and the capability mark.
 | `ai_update` | `0x1c83c0` (`AI_UPDATE`) | nothing is hooked; its gate is read |
 | AI globals | `[0x4f55d0]` (`AI_GLOBALS`): `+0` on, `+1` initialised | `world.ai`; Firefight's host sets `+0` |
 | Entity index | object body `+0xd4` | naming actors on the channel |
-| Replication type registration | `0x82240` | AN11 traces the table and its readers. AN12 and AN13 install the creature definition |
+| Replication type registration | `0x82240` | AN12 registers slot 17 and publishes the entity count before world setup. AN13 uses the same slot |
 | Dialogue queue entry | `0x20d0c0` (`AI_DIALOGUE_ENQUEUE`, [halo1/ai.md](../halo1/ai.md)) | AN3 observes it for `Line` |
-| Entity to object | not traced; `0xa5930` and `0xa5980` translate event references and are the place to start | AN4 |
+| Entity to object | `0xa58d0` checks the full entity identity and returns the local object handle or −1 | AN4 |
 
 ## Probes
 
@@ -366,8 +369,9 @@ and `CLIENT` are the two agent sockets of a System Link pair
 
 ### Creature slot probe
 
-AN12 supplies the minimal definition needed for P7. It carries a
-definition index and initial transform on creation and position on update.
+AN12 supplies the slot-17 definition, host enrollment and creature
+scheduling needed for P7. The definition carries a local definition index
+and initial transform on creation and position on update.
 Run a control pair on h2recomp without that definition, then a candidate
 pair with the definition and the same replication version on both peers.
 Use the same two-player distributed Slayer setup for both. Each machine
@@ -438,14 +442,14 @@ under a day, M one to three days, L a week.
 | **AN8** | `actors.net`, its doc section and `h2 agent` examples | S | AN3, AN4, AN5 | `crates/extensions/agent/src/actors.rs`, `agent-api.md` | `host_reports_per_client_rates`, `client_reports_puppets_and_waiting` | the method answers on a fake host and a fake client |
 | **AN9** | `mp-jip-probe`: lift the in-game join refusal on a distributed host behind a feature, log each stage | S | P1 | `crates/extensions/game/src/mp_jip_probe.rs` | `the_refusal_is_lifted_only_for_a_distributed_session_with_the_feature_on` | P6 can be run |
 | **AN10** | Distributed join in progress, built from P6's answer | M | AN9, P6 | decided by P6 | decided by P6 | a third fake peer joining gets a `Key` and equal puppet tables |
-| **AN11** | Static read of creature registration: the 16 spare slots, table walks and bounds, serializers and unknown-type receive path | M | nothing | [notes/ai-networking.md](notes/ai-networking.md#creature-slot-research) | `entity_table_bounds_trace`, `entity_type_codec_trace`, `unknown_type_receive_trace` (static checks) | the notes justify a usable slot and its registration contract, or identify the exact bound that blocks it. They show whether an unextended client rejects the update and at which check |
-| **AN12** | P7: minimal creature definition and registration, session version check, agent readout for the selected type and its live entities | M | AN11 identifies a usable slot, AN0, P1 | planned `crates/extensions/game/src/actor_net/creature.rs`; `crates/hooking/guest-layout/src/points.rs`; `crates/live/live-hle/` and the guest session join check; `crates/extensions/agent/src/net.rs`; [agent-api.md](../runtime/agent-api.md#netreplication) | `probe_definition_uses_the_selected_slot`, `probe_creation_and_position_round_trip`, `creature_entities_report_objects_and_updates`, `mixed_versions_are_refused_before_replication` | P7 shows creature creation and position updates on both peers with stock player replication intact. Synthetic Live and System Link joins refuse either direction of a mixed-version pair before entity traffic |
-| **AN13** | Creature entity: full creation, masked updates and removal, host authority, scheduling and bandwidth | L | AN12, P7 passes | planned `crates/extensions/game/src/actor_net/creature.rs` and `crates/extensions/game/src/actor_net/creature_wire.rs`; `crates/hooking/guest-layout/src/points.rs`; `crates/apps/boot/src/registration.rs` | `creature_create_update_delete_round_trip`, `a_creation_resolves_only_a_local_crea_tag`, `invalid_masks_and_truncated_packets_leave_state_unchanged`, `unknown_and_stale_entity_updates_are_rejected`, `retail_entities_keep_their_wire_encoding`, `only_the_host_advances_creature_behaviour`, `creature_updates_fit_the_sender_budget`, `the_full_definition_refuses_the_probe_version` | synthetic packets cover lifecycle, field bounds, loss and slot reuse with no stale writes. A 30-second synthetic stream at the design load fits 1 KB/s per peer with the stock entity budget preserved. Both transports use the same definition and version gate |
+| **AN11** | Static read of creature registration, registry and scheduling bounds, serializers, unknown-type receive and session admission | M | nothing | [notes/creature-entity.md](notes/creature-entity.md) | `entity_table_bounds_trace`, `entity_type_codec_trace`, `unknown_type_receive_trace` (static checks) | slot 17 fits the existing codec. The host needs a creature scheduling record. A stock client rejects the batch on creation and refuses later motion for the missing identity |
+| **AN12** | P7: slot-17 definition, host creature enrollment, separate creation and update tuning, replication-version admission and agent readout | M | AN11, AN0, P1 | planned `crates/extensions/game/src/actor_net/creature.rs`; `crates/hooking/guest-layout/src/points.rs`; `crates/live/live-hle/` and the guest session join check; `crates/extensions/agent/src/net.rs`; [agent-api.md](../runtime/agent-api.md#netreplication) | `probe_definition_uses_the_selected_slot`, `creature_scheduling_preserves_stock_tuning`, `probe_creation_and_position_round_trip`, `creature_entities_report_objects_and_updates`, `mixed_versions_are_refused_before_replication` | P7 shows one enrollment per spawn and a scheduled position update with stock player replication intact. Synthetic joins on Live and System Link refuse both directions of a mixed-version pair before membership. Direct, invited and deferred joins enforce the same check |
+| **AN13** | Creature entity: full creation, masked updates and removal, host authority, creature scheduling and bandwidth | L | AN12 admission tests and matched-pair P7 pass | planned `crates/extensions/game/src/actor_net/creature.rs` and `crates/extensions/game/src/actor_net/creature_wire.rs`; `crates/hooking/guest-layout/src/points.rs`; `crates/apps/boot/src/registration.rs` | `creature_create_update_delete_round_trip`, `a_creation_resolves_only_a_local_crea_tag`, `invalid_masks_and_truncated_packets_leave_state_unchanged`, `unknown_and_stale_entity_updates_are_rejected`, `retail_entities_keep_their_wire_encoding`, `only_the_host_advances_creature_behaviour`, `creature_updates_fit_the_sender_budget`, `the_full_definition_refuses_the_probe_version` | the full codec fits the baseline scratch and mask bounds, uses AN12's creature tuning, and covers lifecycle, loss and slot reuse with no stale writes. A 30-second synthetic stream at the design load fits 1 KB/s per peer with the stock entity budget preserved. Both transports use the same definition and version gate |
 
 AN0, AN1, AN2 and AN6 start at once and touch no existing behaviour.
 AN3, AN4 and AN5 follow AN2 in parallel. Probes P1 and P6 need only AN0
-(and AN9); P2 to P5 wait for the probe map. AN11 can start alongside AN2.
-Its result gates AN12 and P7 gates AN13.
+(and AN9); P2 to P5 wait for the probe map. AN12 uses the AN11 result.
+AN13 requires a passing P7.
 
 ## Rules and limits
 
@@ -472,8 +476,8 @@ Its result gates AN12 and P7 gates AN13.
 
 ## Not verified
 
-- Everything probes P1 to P7 ask, including the creature slot's
-  registration and decode bounds.
+- The runtime outcomes of P1 to P7, including scheduled creature motion
+  alongside stock player replication and the measured traffic delta.
 - That generated sectors are accepted by the engine and actors walk on
   them ([pathfinding.md](../formats/pathfinding.md)).
 - Who judges a client's shot at an actor, and with what lag.
