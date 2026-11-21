@@ -255,3 +255,20 @@ fn a_host_full_of_devices_fits_the_models_string_ids() {
     m.press(mic);
     assert_eq!(label(&m, m.texts(mic)[1].1), "in device number 0");
 }
+
+#[test]
+fn player_settings_and_the_forge_rows_share_the_multiplayer_row_text() {
+    // Both name their own rows at MP_MENU_ROW_TEXT; the plan needs an order
+    // between them or boot refuses it (video or voice on adds Settings).
+    let mut registry = hooks::Registry::new(hooks::Switches::defaults());
+    assert!(registry.add(&Settings(Mode::Multiplayer)).unwrap());
+    crate::forge_screens::install(&mut registry).unwrap();
+    let plan = registry.build(&hooks::Base).unwrap().text();
+    let line = plan
+        .lines()
+        .find(|l| l.contains(" MP_MENU_ROW_TEXT: "))
+        .unwrap_or_else(|| panic!("no MP_MENU_ROW_TEXT line\n{plan}"));
+    let settings = line.find("pause-mp-rows:").unwrap();
+    let forge = line.find("forge-screens:").unwrap();
+    assert!(settings < forge, "{line}");
+}
