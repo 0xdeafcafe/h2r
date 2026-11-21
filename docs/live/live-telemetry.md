@@ -489,6 +489,12 @@ The file contains one JSON object per line. Events use
 server `WireEvent` objects: they deliberately have no server positions, hash
 chain, or signatures.
 
+`ActorKilled` comes from the damage-report observer when a hit depletes
+a unit with a live actor link and no controlling player. The stream
+records its salted unit and character datums, the credited player's slot
+and the damage-source key when available. The same row goes into the
+public stats stream alongside the recording.
+
 ## Server ingest
 
 Starting `h2 play` with Live on (`--live`, `--live-server` or
@@ -542,8 +548,9 @@ were never created.
 - **The outbox.** Game starts and events are kept in order in a bounded
   outbox (4096) until the server has answered for them. A `GameStarted` is
   created with `POST /v1/games` when it reaches the front; the game's events
-  wait behind it. Past the bound the oldest `PlayerKilled` or
-  `ScoreChanged` is dropped; starts, ends, joins and leaves never are.
+  wait behind it. Past the bound the oldest `ActorKilled`,
+  `PlayerKilled` or `ScoreChanged` is dropped. Starts, ends, joins and
+  leaves stay queued.
 - **Answers.** A batch leaves the outbox only on its answer. Replies come in
   the order the server took the messages, a batch is always answered and a
   frame only when refused, so `appended` is the batch's, and a refusal is

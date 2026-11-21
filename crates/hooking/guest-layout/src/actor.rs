@@ -16,6 +16,14 @@ crate::record! {
         squad @ 0x30: u32,
         /// The character tag datum used by `0x001f6516`.
         character @ 0x54: Option<DatumHandle>,
+        // ai_combat_status takes the maximum of these (0x00276070).
+        combat_status @ 0x86: i16,
+        // 0x001a813d reads the top of four 64-byte behavior frames.
+        behavior_depth @ 0x190: i16,
+        // 0x0026c19d checks the cache before refreshing position and sector.
+        location_cached @ 0x278: u8,
+        sector @ 0x28c: i32,
+        focus @ 0x338: Option<DatumHandle>,
         /// Animation mode selected by `0x001f6644`. The actor's unit
         /// control update (`0x001e43e7`) hands this string ID to the unit.
         animation_mode @ 0x7fc: u32,

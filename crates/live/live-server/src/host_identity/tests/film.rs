@@ -198,7 +198,16 @@ async fn film_finishes_absent_partial_and_completed_games_exactly_once() {
         });
         if previous > 0 {
             live.start_game(Some(&token), new_game()).await.unwrap();
-            let mut rows = vec![(game::PLAYER_KILLED, json!(kill()))];
+            let mut rows = vec![
+                (game::ACTOR_KILLED, json!(game::ActorKilled {
+                    tick: 3,
+                    unit: 0x8001_0002,
+                    character: None,
+                    killer: Some(0),
+                    weapon: None,
+                })),
+                (game::PLAYER_KILLED, json!(kill())),
+            ];
             if previous == 2 {
                 rows.push(end());
             }
@@ -215,6 +224,7 @@ async fn film_finishes_absent_partial_and_completed_games_exactly_once() {
         }
         let game = live.model.read().games[id].clone();
         assert!(game.has_host_film && game.ended_by_host);
+        assert!(game.film_stats_discrepancy.is_none());
         assert_eq!(game.started.host, format!("host:{id}"));
         assert_eq!(game.started.game.session_id.as_deref(), Some(SESSION));
         assert_eq!(game.film_summary.unwrap().level, "lockout");

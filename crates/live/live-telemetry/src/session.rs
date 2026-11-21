@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use live_proto::game::{
-    Frame, FrameActor, FrameAnim, FrameHit, FrameItem, FrameMachine, FrameObject, FramePlayer,
+    ActorKilled, Frame, FrameActor, FrameAnim, FrameHit, FrameItem, FrameMachine, FrameObject, FramePlayer,
     FrameProjectile, FrameVehicle, GameEnded, MAX_FRAME_ACTORS, MAX_FRAME_HITS, MAX_FRAME_ITEMS,
     MAX_FRAME_MACHINES, MAX_FRAME_OBJECTS, MAX_FRAME_PROJECTILES, MAX_FRAME_SEAT, MAX_FRAME_SHIELD,
     MAX_FRAME_SHOTS, MAX_FRAME_SPEED, MAX_FRAME_VEHICLES, MAX_MACHINE_POSITIONS,
@@ -969,6 +969,36 @@ impl Session {
                 headshot: source.and_then(|s| s.headshot),
                 kind: kind.into(),
                 pos: object.map(|o| o.pos),
+            },
+        );
+    }
+
+    pub(crate) fn actor_killed(
+        &mut self,
+        tick: u64,
+        unit: u32,
+        character: Option<u32>,
+        owner: Option<u32>,
+        weapon: u8,
+    ) {
+        let Some(current) = self.current.as_mut().filter(|m| !m.ended && !m.cinematic) else {
+            return;
+        };
+        let killer = owner.and_then(|datum| {
+            current.players.iter().find(|p| p.datum == datum).map(|p| p.player.index)
+        });
+        let tick = current.clock(tick);
+        current.sent_tick = current.sent_tick.max(tick);
+        Self::event_to(
+            &mut self.output,
+            current.game_id.clone(),
+            live_proto::game::ACTOR_KILLED,
+            ActorKilled {
+                tick,
+                unit,
+                character,
+                killer,
+                weapon: layout::kill_source(weapon, owner.is_some()).map(|s| s.name.to_owned()),
             },
         );
     }
