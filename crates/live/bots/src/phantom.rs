@@ -449,6 +449,13 @@ impl Phantoms {
         lock_source(&self.source(handle)?).order_view()
     }
 
+    /// Holds phantom `handle`'s pad at `pad` (`None` lets go); `false` for
+    /// a source that cannot be held or a seat not there.
+    pub fn hold_pad(&self, handle: PhantomHandle, pad: Option<input::host::HostPadState>) -> bool {
+        self.source(handle)
+            .is_some_and(|s| lock_source(&s).hold_pad(pad))
+    }
+
     pub fn combat_stats(&self, handle: PhantomHandle) -> Option<crate::stats::CombatStats> {
         lock_source(&self.source(handle)?).combat_stats().cloned()
     }

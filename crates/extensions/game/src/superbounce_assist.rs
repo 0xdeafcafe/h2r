@@ -431,6 +431,8 @@ fn publish_crouch(held: Option<bool>) {
 }
 
 static ENABLED: AtomicBool = AtomicBool::new(false);
+/// The tap is in place ([`install_tap`] wrapped the controller reads).
+static TAPPED: AtomicBool = AtomicBool::new(false);
 static ENGAGED: AtomicBool = AtomicBool::new(false);
 static TEST_HOLD: AtomicBool = AtomicBool::new(false);
 static REPORT: Mutex<Report> = Mutex::new(Report::EMPTY);
@@ -445,6 +447,52 @@ fn publish(r: Report) {
 }
 
 /// Whether the assist is steering the player now: the HUD can show it.
+// ---- the verifier's pad ----
+
+/// A whole pad for the first controller, set by `superbounce.verify`'s
+/// trials on `player.0` (crates/extensions/game/src/superbounce_verify.rs):
+/// the left stick, the crouch button of the player's layout, and A.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct VerifyPad {
+    /// `[x (right), y (forward)]`, -1..1.
+    pub stick: [f32; 2],
+    pub crouch: bool,
+    pub jump: bool,
+}
+
+static VERIFY_PAD: Mutex<Option<VerifyPad>> = Mutex::new(None);
+
+/// Replaces the first controller's pad with `pad` at every read until
+/// called with `None`, whether the mode is on or not. `false` when there is
+/// no tap to do it (the `superbounce-assist` feature is off).
+pub fn set_verify_pad(pad: Option<VerifyPad>) -> bool {
+    *lock(&VERIFY_PAD) = pad;
+    TAPPED.load(Ordering::Relaxed)
+}
+
+/// Whether the tap is in place, so [`set_verify_pad`] reaches the game.
+pub fn tapped() -> bool {
+    TAPPED.load(Ordering::Relaxed)
+}
+
+/// `pad` with the verifier's pad in place of what the player pressed.
+pub fn verify_pad_into(pad: &mut Gamepad, v: &VerifyPad, crouch_button: u8) {
+    *pad = Gamepad::default();
+    let (x, y) = stick_raw(v.stick);
+    pad.thumb_lx = x;
+    pad.thumb_ly = y;
+    if v.jump {
+        pad.analog[AnalogButton::A.index()] = 255;
+    }
+    if v.crouch {
+        match crouch_button {
+            0..=7 => pad.analog[usize::from(crouch_button)] = 255,
+            8..=15 => pad.buttons.0 |= 1 << (crouch_button - 8),
+            _ => pad.buttons.0 |= 1 << (DEFAULT_CROUCH_BUTTON - 8),
+        }
+    }
+}
+
 pub fn assisting() -> bool {
     ENGAGED.load(Ordering::Relaxed)
 }
@@ -576,6 +624,24 @@ impl AssistTap {
         packet: &mut [u8; PACKET],
         memory: Option<&dyn xapi::GuestMemory>,
     ) {
+        // A verifier's trial owns the first pad whatever the mode.
+        if status == 0
+            && self.ports.get(&handle) == Some(&PORT)
+            && let Some(v) = *lock(&VERIFY_PAD)
+        {
+            let raw: &[u8; Gamepad::SIZE] = (&packet[4..])
+                .try_into()
+                .expect("a packet is a number and a gamepad");
+            let mut pad = Gamepad::from_bytes(raw);
+            let button = crouch_button(memory);
+            verify_pad_into(&mut pad, &v, button);
+            packet[4..].copy_from_slice(&pad.to_bytes());
+            publish_crouch(Some(v.crouch));
+            if self.live || self.latch.0 {
+                self.release();
+            }
+            return;
+        }
         // The cost of a game that is not a superbounce one.
         if !superbounce_mode::active() {
             if self.live || self.latch.0 {
@@ -697,6 +763,7 @@ pub fn install_tap<S: xapi::Storage>(xapi: Option<&Mutex<xapi::Xapi<S>>>) {
     let mut x = lock(x);
     let inner = x.take_input_tap();
     x.set_input_tap(Some(Box::new(AssistTap::new(inner))));
+    TAPPED.store(true, Ordering::Relaxed);
 }
 
 // ---- the feature ----

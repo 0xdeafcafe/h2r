@@ -2,7 +2,7 @@ use super::*;
 use crate::glitches::Bounce;
 use crate::mind::Skill;
 use crate::nav::{NavMesh, Poly};
-use crate::spots::{Known, Site};
+use crate::spots::{Crouch, Known, Site};
 
 fn map() -> MapData {
     let floor = Poly::new(vec![
@@ -30,8 +30,9 @@ fn known() -> Known {
             },
             launch: 12.3,
             fall: 0.0,
+            ..Site::default()
         }],
-        crouches: vec![[3.0, 0.0, 0.0]],
+        crouches: vec![Crouch::at([3.0, 0.0, 0.0])],
     }
 }
 

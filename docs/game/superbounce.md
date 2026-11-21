@@ -614,12 +614,20 @@ publishes that with the nearest bounce spot; the HUD, the lines and
 all read it.
 
 **Spots.** The first tick on a map and structure BSP starts a scan of the
-BSP's collision geometry on a background thread (`superbounce::scan_map`,
-"Spots in the geometry"); the result is kept per map name, BSP and the map
-file's header checksum, so an override with the same name is scanned
-again, and a scan still running when the map is left is not started
-twice. The feature is presentation-only (a recorded film's hook digest
-ignores it) and snapshot-stateless: nothing it holds needs saving. The nearest
+BSP's collision geometry on a background thread (`superbounce::scan_in`
+over the map's context, `superbounce::map_context`: its starting
+locations and proven places, "Spots in the geometry"); the result is kept
+per map name, BSP and the map file's header checksum, so an override with
+the same name is scanned again, and a scan still running when the map is
+left is not started twice. The map's verified file ("Verifying spots") is
+applied to the result, and again whenever the file changes: a `proven`
+spot scores 1, a `failed` one is kept for `superbounce.verify` but hidden
+from the HUD, the lines and the overlay. The feature is presentation-only (a recorded film's hook digest
+ignores it) and snapshot-stateless: nothing it holds needs saving.
+
+**The bots.** While the mode is on the bots fight no one and practise
+bounces instead, spread over the map's sites, proven ones first
+([bots.md](bots.md#practising-bounces)). The nearest
 bounce spot is the one with the nearest edge.
 
 **The HUD.** A small glass panel at the right of the game image, a little
@@ -845,7 +853,8 @@ the crouch lets go at the band's way out, 6 cm from where the body
 rested in the measured corner (**Trace**, the note). So "how charged" is
 two things the engine does have:
 
-- **How far through the recipe.** `near` (crouched, the crouch request
+- **How far through the recipe** (crouch, walk in, let go, walk out:
+  one phase a step). `near` (crouched, the crouch request
   set, within 1.5 of a crouch spot's stand point), `under` (crouched with
   crouch held and the standing capsule does not fit), `held` (the crouch
   button is up and the request, unit flags bit 23, is still set: the
@@ -940,8 +949,10 @@ disc's maps: 7 to 12 a map, 3 on a map whose strips are far from its
 lips (an estimate from the note's table; `h2 superbounce scan <map>
 --json` counts them).
 
-Which `likely` spots prime is a game run's to say. A lab pass walks
-each kept spot (below), and one that primes becomes a row in `PROVEN`.
+Which `likely` spots prime is a game run's to say: `superbounce.verify`
+tries each kept spot in the game and writes the map's verified file
+([Verifying spots](#verifying-spots)), which marks the spots that primed
+`proven` and the ones that never did `failed`.
 
 ### Crouch spots in the world
 
@@ -1065,14 +1076,124 @@ Each of these is a lab run through the agent API
   `havok.agents` until the pair goes: the fill reaches 0 on that tick,
   within 2. Then creep at 0.02, 0.05 and 0.1 units/s for the speed
   limit.
-- **Each kept crouch spot.** `sim.state.set` to 0.3 out along `out`,
-  facing in; `input.pad` crouch held and the stick in, crouch released,
-  then the stick out; read the request bit and the word. A spot that
-  holds the request and turns the word is proven. The measured corner
-  was not reached by scripted sticks, only by the recorded input, so a
-  miss here is not proof a spot fails: try three approach angles.
+- **Each kept crouch spot, and each strip.** `superbounce.verify`
+  ([Verifying spots](#verifying-spots)).
 - **The landing report.** The recorded jump with the word at −3, at 0,
   from a lower take-off and 0.3 to the side: `bounce`, `not primed`,
-  `too slow` and `missed` in turn.
+  `too slow` and `missed` in turn. `superbounce.verify {"kind":"drop"}`
+  with `prime` `set` and `none` gives the same verdicts from a fall.
 
 No game was run for this section.
+
+## Verifying spots
+
+`superbounce.verify` tries the loaded map's scanned spots in the running
+game and says which work
+([agent-api.md](../runtime/agent-api.md#superbounce-the-superbounce-game-type)).
+It is `crates/extensions/game/src/superbounce_verify.rs`: the plan in
+`plan.rs`, a trial tick by tick in `trial.rs`, the verdicts in
+`summary.rs`.
+
+**A batch.** One call plans a batch of one kind (`crouch`, `drop` or
+`route`) over the scan's spots of that kind, best score first (the order
+`dry_run` lists, which `spots` indexes count in; failed spots are left out
+unless named or `max_spots` is given), or over explicit `points`. An
+agent ticker then runs the trials one after another on one seat, a tick
+at a time, because a batch runs far longer than a deferred answer may
+wait. `superbounce.verify_status` reports progress and, at the end, a
+verdict and one line a spot; `superbounce.verify_cancel` stops it. A
+batch needs the mode on and its scan ready (`superbounce.set
+{"on":true}`, then `superbounce.state`'s `scan.status`), except over
+explicit points. A new map, or the game ending, fails a running batch.
+
+**The seat.** `player.0` (the default) is driven through the first
+controller's pad: the fall assist's input tap replaces the whole pad
+while a trial runs, so it needs the `superbounce-assist` feature. A
+brain-driven bot (by name, handle or its `player.<n>`) is driven by
+holding its pad (`bots::phantom::Phantoms::hold_pad`): its brain's own
+pad is ignored until the trial lets go. Trials start by teleport (the
+game's own, through the agent's calls queue) and clear or set the level
+pair word directly (`live_telemetry::havok_agents::set_pair_word`); they
+do not use snapshots, which `state.save` refuses in a game that is not
+quiescent. A teleport keeps the pair word and the velocity, so each
+trial clears the word after it lands and settles before it moves.
+
+**Crouch trials** follow the recipe: crouch, walk in, let go, walk out.
+Each starts outside the lip on the approach side: `distance` out from
+`stand` against the way in, which is the way out (`out`) reversed and
+turned by `turn` degrees, moved by `offset`, facing in. The default grid
+is turns 0, 25 and −25 by distances 0.3 and 0.6. Then:
+
+1. settle `settle_ticks` (20) with the word written 0;
+2. press crouch and stand still until the crouch is down (at least 6
+   ticks, at most 20);
+3. crouch-walk in at 0.6 of full stick toward a point 0.06 past `stand`,
+   until within 0.08 of it (at most 60 ticks);
+4. hold crouch there `hold_ticks` (15), pushing in gently;
+5. let go, still pushing in, for 6 ticks; the crouch request still set
+   then is `forced`;
+6. walk out along `out` at full stick for `out_ticks` (30).
+
+The word reading −3 from step 5 on primes the trial and ends it. A trial
+records whether it crouched first, whether the standing capsule failed to
+fit at some tick (`under`, the mode's capsule test), `forced`, how close
+it got to `stand`, and the ticks from letting go to the prime and where.
+A trial that did not prime fails as `not_under` (never within 0.2 of
+`stand`), `not_crouched`, `not_forced` or `forced_no_word`.
+
+**Drop trials** fall onto a strip with the word set. Each is a point in
+the slot, `across` the midline toward the drift (default −0.05 to 0.15
+in 0.05 steps) and `along` it (default 0), and a `height` over the
+strip's stand height (default 1.5, 2.5 and 3.5). The seat is teleported
+onto the point, settles with the word written (`prime`: `set` −3, `none`
+0, `keep` left alone), is lifted straight up, and falls; the word is
+written again each tick there is a pair. Contact is the first tick the
+vertical speed is back over −0.5 after falling faster than −1; the speed
+in is the tick before's, the speed out the best of the contact tick and
+the three after. The landing is classified as the HUD's are
+(`superbounce_charge::classify`): `bounce` (out over 8 units/s),
+`not_primed`, `missed`, `too_slow` or `no_bounce`; `no_touchdown` when
+it never lands within `fall_ticks` (120). `prime` `none` is the control:
+a strip that launches with it is not a superbounce.
+
+**Route trials** order a bot's whole bounce route (`bots.bounce_to`) to a
+point `ROUTE_RISE` (6) units straight up from each strip's stand, or to
+`to`, `repeat` times (3), and watch it to its end (`route_ticks`, 3600).
+A route works when it ends `done` with a touchdown that launched; the
+trial carries the route's log, its touchdown and where it stopped.
+Routes write nothing to the verified file.
+
+**The verdict.** A spot one trial worked for is `proven`; one whose
+trials all ran and none worked is `failed`; else `untried` (the batch
+ended first, or only the setup failed: a refused teleport, the seat
+gone). The best crouch trial is the quickest prime, the best drop the
+biggest launch. Each spot's line reads like `crouch #3 (-10.91, 0.72,
+-1.16): primed 4/9, best offset (0.06, -0.03) yaw -121 from 0.30 out;
+failed: forced_no_word 5`.
+
+**The verified file.** A batch of the scan's spots that ends (not
+cancelled) merges its proven and failed spots into
+`<data>/bots/<map>.verified` (`superbounce::verified`; written by
+`bots::spots::store_verified`):
+
+```text
+# superbounce verified v1
+crouch proven -10.910 0.720 -1.160 dx=0.060 dy=-0.030 yaw=-121.0 trials=9 ok=4
+bounce failed -10.620 3.880 -3.190 dx=0.000 dy=0.000 trials=15 ok=0 best=1.71
+```
+
+A line is the kind, the verdict and the spot's `stand` as the scan gave
+it, then `key=value` fields: `dx`, `dy` (a crouch's working start, a
+drop's landing point, from `stand`), `yaw` (the working way in, degrees),
+`height` (the working drop height), `trials`, `ok` and `best` (the
+biggest launch seen). An entry is about the spot of its kind within 0.3
+of its point sideways and 0.5 up or down. The scan's readers apply it:
+the mode's spots (failed ones hidden, "The superbounce game type"),
+`superbounce.spots` (`status`), and the bots, which route by proven spots
+first, never by failed ones, start a walking prime where the working
+trial started and along its way in, and aim a drop at the working
+landing point from the working height ([bots.md](bots.md)). A person can
+edit the file; a later batch replaces the entries it tried.
+
+No game has run a batch yet: the defaults (the grid, the speeds, the
+tick counts) are first guesses to tune on the lab.

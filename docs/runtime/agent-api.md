@@ -41,6 +41,8 @@ connection to hold `session.claim`.
 | `superbounce.set` | act | [`superbounce`](#superbounce-the-superbounce-game-type) |
 | `superbounce.assist` | read | [`superbounce`](#superbounce-the-superbounce-game-type) |
 | `superbounce.assist_test` | act | [`superbounce`](#superbounce-the-superbounce-game-type) |
+| `superbounce.verify`, `superbounce.verify_cancel` | act | [`superbounce`](#superbounce-the-superbounce-game-type) |
+| `superbounce.verify_status` | read | [`superbounce`](#superbounce-the-superbounce-game-type) |
 | `profile.counters`, `profile.capture`, `profile.fallbacks`, `profile.memory`, `profile.faults` | read | [`profile`](#profile-where-a-frame-goes) |
 | `profile.sample.start`, `profile.sample.stop` | act | [`profile`](#profile-where-a-frame-goes) |
 | `profile.sample.status` | read | [`profile`](#profile-where-a-frame-goes) |
@@ -720,6 +722,61 @@ until set `false`.
 ```sh
 h2 agent superbounce.assist_test '{"hold":true}'
 h2 agent superbounce.assist
+```
+
+`superbounce.verify {kind, ...}` (access: act) starts a batch of trials of
+the loaded map's spots in the game, run tick by tick on one seat by an
+agent ticker (`Agent::add_ticker`), and answers at once with the plan
+([superbounce.md](../game/superbounce.md#verifying-spots);
+`crates/extensions/game/src/superbounce_verify.rs`; wire types
+`agent_proto::superbounce::Verify*`). One batch runs at a time. It needs
+the mode on and its scan ready, except over explicit `points`; the
+`player.<n>` seat needs the `superbounce-assist` feature's pad tap, and
+every kind but `route` needs the `agent-calls` feature's teleport
+(`UNAVAILABLE` otherwise). Every param but `kind` is optional:
+
+| Param | Meaning |
+|---|---|
+| `kind` | `crouch` (crouch outside the lip, walk in, let go under it, walk out: does the word turn −3?), `drop` (a fall onto a strip with the word set: does it launch?) or `route` (a bot's whole `bots.bounce_to` route) |
+| `spots` | the scan's spots of that kind by index, best score first (the order `dry_run` lists); default the first `max_spots` (12) that have not failed |
+| `points` | explicit spots instead: `{stand, out?, edge?, drift?, width?, need?}`; never saved |
+| `seat` | `player.<n>` (default `player.0`, driven through the first controller's pad) or a brain-driven bot by gamertag, handle or `player.<n>` (driven by holding its pad); `route` needs a bot |
+| `turns`, `distances`, `offsets` | crouch: approach turns in degrees from straight in (default `[0,25,-25]`), starts outside the lip along it (default `[0.3,0.6]`), and X/Y offsets (default `[[0,0]]`) |
+| `across`, `along`, `heights` | drop: offsets across the slot toward the drift (default `[-0.05,0,0.05,0.1,0.15]`), along it (`[0]`), and heights over the strip (`[1.5,2.5,3.5]`) |
+| `prime` | drop: `set` (−3, default), `none` (0, the control) or `keep` |
+| `drift_stick` | drop: the stick along the drift while falling, 0 to 1 (default 0) |
+| `settle_ticks`, `hold_ticks`, `out_ticks`, `fall_ticks`, `route_ticks` | 20, 15, 30, 120, 3600 |
+| `to`, `mode`, `repeat` | route: the target (default 6 up from each strip's stand), `help` or `fun` (default), and the routes a spot (3) |
+| `trace` | keep the per-tick trace of this trial index (`phase`, `pos`, `vz`, `airborne`, `request`, `crouch_button`, `crouch`, `standing_fits`, `word`) |
+| `save` | write the map's verified file at the end (default true; never for `points` or `route`) |
+| `dry_run` | plan and list, run nothing |
+
+The answer is `{job, kind, seat, map, spots, trials, estimated_ticks,
+dry_run}`: each spot's `index`, `kind`, `stand`, `status` and `score`, and
+each trial's `spot`, `start`, `yaw`, `distance`, `offset` and `height`.
+
+`superbounce.verify_status {wait_ticks?, brief?}` (access: read) reports
+on the newest batch: `state` (`none`, `running`, `done`, `failed`,
+`cancelled`), `job`, `kind`, `seat`, `map`, `done` and `total` trials,
+`current` (the trial and its phase), `spots`, `results` (each spot's
+`trials`, `ok`, `status` `proven`, `failed` or `untried`, its `best`
+trial and `why` the others failed, by count), `trials` (left out with
+`brief`), `trace`, `lines` (one a spot), `saved` (the verified file
+written) and `error`. With `wait_ticks` (at most 290) it answers when the
+batch ends or that many ticks pass. A crouch trial carries
+`crouched_first`, `under`, `forced`, `primed_tick`, `primed_at` and
+`closest`; a drop `contact_tick`, `speed_in`, `vz_out`, `landed_at`,
+`word_before` and `landing`; a route `route`, `steps` and its
+touchdown. `superbounce.verify_cancel` (access: act; no params) stops the
+batch, lets go of the seat and answers with the report; a cancelled batch
+writes nothing.
+
+```sh
+h2 agent superbounce.set '{"on":true}'
+h2 agent superbounce.verify '{"kind":"crouch","dry_run":true}'
+h2 agent superbounce.verify '{"kind":"crouch","spots":[0,1,2],"trace":0}'
+h2 agent superbounce.verify_status '{"wait_ticks":290,"brief":true}'
+h2 agent superbounce.verify '{"kind":"drop","prime":"none","spots":[0]}'
 ```
 
 ## `profile`: where a frame goes
@@ -2661,13 +2718,23 @@ sample.
 `bots.bounce_status {bot}` reads it back: `state` (`none`, `queued`,
 `running`, `done`, `failed`), `to`, `mode`, `why` (`helps`, `fun`, or
 `plain` when no bounce helped), `steps` (`walk_crouched`, `prime`, `walk`,
-`bounce`, `fly`, `nav`), `step` (the index it is on), `primed` (the level
+`bounce`, `drop`, `fly`, `nav`), `step` (the index it is on), `phase` (the
+step's own: a prime's `start`, `in`, `release`, `out`; a drop's `line`,
+`run`, `air`), `tries` (the step's try, from 1), `primed` (the level
 pair word is at -3, so a landing bounces), `primed_read` (read from the
-game, or assumed after the crouch and stand-up because it could not be)
-and, for a failed route, `error`: `timeout`, `no_map`, `no_path`,
-`goal_off_mesh`, `path_lost`, `prime_failed`, `pair_lost`, `no_bounce`,
-`stalled`, `state` (an internal fault), `enemy`, `no_route`, `died` or
-`map_changed`. While a route runs the bot fights and picks up nothing.
+game, or assumed after the walk out because it could not be), `landing`
+(the last touchdown in a bounce or a drop: `tick`, `at`, `speed_in`,
+`vz_out`, `miss`, `result` `bounce`, `not_primed`, `missed`, `too_slow`
+or `no_bounce`), `log` (each step and phase change, `{tick, step, what,
+at}`, the last 64) and, for a failed route, `error`: `timeout`, `no_map`,
+`no_path`, `goal_off_mesh`, `path_lost`, `prime_failed`, `pair_lost`,
+`no_bounce`, `no_drop`, `stalled`, `state` (an internal fault), `enemy`,
+`no_route`, `practice_off`, `died` or `map_changed`. While a route runs
+the bot fights and picks up nothing. While the superbounce mode is on the
+bots practise bounces instead of fighting, and `practice` gives the tally:
+`state` (`idle`, `route`, `waiting`), `site`, `attempts`, `bounces` and
+`spots` (each site's `stand`, `attempts`, `bounces` and `why`, by count)
+([bots.md](../game/bots.md#practising-bounces)).
 
 `superbounce.spots {map?, kind?}` lists the spots the bots know for a map
 (default the loaded one): `map`, `scanned` (the nav worker has made or
@@ -2677,8 +2744,9 @@ or `crouch`; `kind` in the request filters), `source` (`measured` or
 `scan`), `edge` (two points), `stand`, `fall`, `launch`, `drift`,
 `score`, `width` (a slot's gap between its joints, a crouch band's
 widest), `need` (a slot's touchdown speed down, which `fall` is worked
-from), `status` (`proven` for a crouch spot at a measured priming place,
-else `likely`), `out` (a crouch spot's way out from `stand`, X and Y) and
+from), `status` (`proven` for a crouch spot at a measured priming place
+or one the map's verified file proved, `failed` for one it failed, else
+`likely`), `out` (a crouch spot's way out from `stand`, X and Y) and
 `lip` (a crouch spot's edges overhead at `stand`, up to 8).
 
 ```sh

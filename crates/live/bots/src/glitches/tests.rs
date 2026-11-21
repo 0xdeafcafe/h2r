@@ -625,3 +625,42 @@ fn a_primed_bounce_presses_crouch_in_the_prime_and_never_again() {
     assert!(keys.iter().any(|k| k.jump), "it jumps");
     assert!(keys.iter().all(|k| !k.crouch), "and never crouches");
 }
+
+#[test]
+fn a_walking_prime_starts_where_a_verified_trial_primed_and_else_out_along_the_way_out() {
+    use prime::{APPROACH_TURNS, Geo, START_OUT};
+    let g = Geo {
+        stand: [1.0, 2.0, 0.0],
+        out: [1.0, 0.0],
+        start: None,
+    };
+    // Straight in along the way out, then turned each way.
+    assert_eq!(g.way_in(1), [-1.0, 0.0]);
+    assert_eq!(g.start(1), [1.0 + START_OUT, 2.0]);
+    let w2 = g.way_in(2);
+    assert!((w2[1].atan2(w2[0]).to_degrees().abs() - (180.0 - APPROACH_TURNS[1])).abs() < 1e-3);
+    let v = Geo {
+        start: Some(([0.1, -0.2], Some(90.0))),
+        ..g
+    };
+    let s = v.start(1);
+    assert!((s[0] - 1.1).abs() < 1e-5 && (s[1] - 1.8).abs() < 1e-5);
+    let w = v.way_in(1);
+    assert!(w[0].abs() < 1e-6 && (w[1] - 1.0).abs() < 1e-6);
+    // Later tries go back to the angles.
+    assert_eq!(v.way_in(2), g.way_in(2));
+    let mut run = prime::PrimeRun::at(0, g);
+    assert_eq!((run.phase(), run.tries()), ("start", 1));
+    // Standing on the start: crouch first, standing still, then walk in
+    // crouched. Crouch, walk in, release, walk out.
+    let at = [1.0 + START_OUT, 2.0, 0.0];
+    let o = run.step_at(1, at, Some(0));
+    assert!(o.crouch && o.walk.is_none());
+    assert_eq!(run.phase(), "in");
+    for t in 2..1 + prime::CROUCH_FIRST {
+        let o = run.step_at(t, at, Some(0));
+        assert!(o.crouch && o.walk.is_none(), "tick {t}");
+    }
+    let o = run.step_at(1 + prime::CROUCH_FIRST, at, Some(0));
+    assert!(o.crouch && o.walk.is_some_and(|w| w[0] < 0.0));
+}

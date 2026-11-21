@@ -78,23 +78,26 @@ fn measured_spots_come_first_and_scans_follow_best_first() {
     assert_eq!(stands, vec![measured.stand[0], 60.0, 50.0]);
     assert_eq!(k.sites[0].bounce.source, measured.source);
     assert_eq!(k.sites[0].launch, MEASURED_LAUNCH);
-    assert_eq!(k.crouches, vec![[5.0, 5.0, 0.0]]);
+    assert_eq!(k.crouches.len(), 1);
+    assert_eq!((k.crouches[0].stand, k.crouches[0].out), ([5.0, 5.0, 0.0], [0.0, 1.0]));
+    assert!(k.sites[0].proven() && !k.sites[1].proven());
 }
 
 #[test]
 fn the_nearest_crouch_spot_is_by_straight_line() {
     let k = Known {
         sites: Vec::new(),
-        crouches: vec![[10.0, 0.0, 0.0], [2.0, 2.0, 0.0]],
+        crouches: vec![Crouch::at([10.0, 0.0, 0.0]), Crouch::at([2.0, 2.0, 0.0])],
     };
-    assert_eq!(k.nearest_crouch([0.0, 0.0, 0.0]), Some([2.0, 2.0, 0.0]));
+    assert_eq!(k.nearest_crouch([0.0, 0.0, 0.0]), Some(Crouch::at([2.0, 2.0, 0.0])));
     assert_eq!(Known::default().nearest_crouch([0.0; 3]), None);
 }
 
 #[test]
 fn the_spots_file_round_trips_and_refuses_damage() {
     let proven = Spot { status: superbounce::Status::Proven, ..crouch_spot([7.0, 8.0, 9.0]) };
-    let spots = vec![bounce_spot([1.0, 2.0, 3.0], 12.5, 0.7), crouch_spot([4.0, 5.0, 6.0]), proven];
+    let failed = Spot { status: superbounce::Status::Failed, ..bounce_spot([7.0, 8.0, 9.0], 9.0, 0.5) };
+    let spots = vec![bounce_spot([1.0, 2.0, 3.0], 12.5, 0.7), crouch_spot([4.0, 5.0, 6.0]), proven, failed];
     let stamp = Stamp::now(0xfeed);
     let b = to_bytes(&spots, stamp);
     assert_eq!(from_bytes(&b), Some((spots, stamp)));
@@ -143,4 +146,90 @@ fn the_listing_has_the_measured_spots_first_then_the_scan_best_first() {
     let l = listing("ascension");
     assert_eq!((l[0].kind, l[0].source, l[0].spot.score), ("bounce", "measured", 1.0));
     assert_eq!(l[0].spot.stand, SPOTS[0].stand);
+}
+
+fn entry(kind: Kind, status: Status, at: Vec3) -> Entry {
+    Entry {
+        kind,
+        status,
+        at,
+        trials: 4,
+        ok: u32::from(status == Status::Proven),
+        ..Entry::default()
+    }
+}
+
+#[test]
+fn verified_entries_prefer_what_worked_and_drop_what_failed() {
+    let measured = SPOTS[0];
+    let scan = [
+        bounce_spot([50.0, 0.0, 0.0], 10.0, 0.9),
+        bounce_spot([60.0, 0.0, 0.0], 15.0, 0.5),
+        bounce_spot([70.0, 0.0, 0.0], 15.0, 0.6),
+        crouch_spot([5.0, 5.0, 0.0]),
+        crouch_spot([9.0, 9.0, 0.0]),
+    ];
+    let ver = [
+        Entry {
+            offset: [0.0, 0.05],
+            height: Some(2.4),
+            best: 11.5,
+            ..entry(Kind::Bounce, Status::Proven, [60.0, 0.0, 0.0])
+        },
+        entry(Kind::Bounce, Status::Failed, [50.1, 0.0, 0.0]),
+        Entry {
+            offset: [0.02, -0.01],
+            yaw: Some(-121.0),
+            ..entry(Kind::Crouch, Status::Proven, [9.0, 9.0, 0.0])
+        },
+        entry(Kind::Crouch, Status::Failed, [5.0, 5.0, 0.0]),
+        // The measured spot, failed by a game run.
+        entry(Kind::Bounce, Status::Failed, measured.stand),
+    ];
+    let k = Known::merge_verified(vec![measured], &scan, &ver);
+    let stands: Vec<_> = k.sites.iter().map(|s| s.bounce.stand[0]).collect();
+    // The measured one failed; the proven scan first, then the rest best
+    // first; the failed scan gone.
+    assert_eq!(stands, vec![60.0, 70.0]);
+    let p = k.sites[0];
+    assert!(p.proven() && !p.standing());
+    assert_eq!(p.target(), [60.0, 0.05, 0.0]);
+    assert_eq!((p.drop_height(), p.launch), (2.4, 11.5));
+    assert_eq!(k.crouches.len(), 1);
+    assert_eq!(k.crouches[0].stand, [9.0, 9.0, 0.0]);
+    assert_eq!(k.crouches[0].start, Some(([0.02, -0.01], Some(-121.0))));
+    // With no verified file the measured spot is proven and first.
+    let k = Known::merge(vec![measured], &scan);
+    assert!(k.sites[0].proven() && k.sites[0].bounce.stand == measured.stand);
+}
+
+#[test]
+fn a_verified_file_is_stored_merged_read_back_and_bumps_the_generation() {
+    let dir = std::env::temp_dir().join(format!("h2-verified-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    set_verified_dir(dir.clone());
+    let map = "verified_test_map";
+    assert!(verified_for(map).is_empty());
+    let before = generation();
+    let path = store_verified(map, &[entry(Kind::Crouch, Status::Failed, [1.0, 2.0, 3.0])])
+        .unwrap()
+        .unwrap();
+    assert!(generation() > before);
+    assert!(path.ends_with(verified_file_name(map)));
+    store_verified(map, &[
+        entry(Kind::Crouch, Status::Proven, [1.1, 2.0, 3.0]),
+        entry(Kind::Bounce, Status::Failed, [4.0, 5.0, 6.0]),
+    ])
+    .unwrap();
+    let on_disk = read_verified(&dir, map).unwrap();
+    assert_eq!(on_disk.len(), 2);
+    assert_eq!(on_disk[0].status, Status::Proven);
+    assert_eq!(verified_for("VERIFIED_TEST_MAP").len(), 2);
+    // The listing carries the statuses.
+    publish(map, vec![crouch_spot([1.0, 2.0, 3.0]), bounce_spot([4.0, 5.0, 6.0], 10.0, 0.5)]);
+    let l = listing(map);
+    let st: Vec<_> = l.iter().map(|l| l.spot.status).collect();
+    assert_eq!(st, vec![Status::Proven, Status::Failed]);
+    assert!(Known::for_map(map).sites.is_empty());
+    std::fs::remove_dir_all(&dir).unwrap();
 }
