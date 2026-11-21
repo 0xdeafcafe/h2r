@@ -279,8 +279,9 @@ every session kind.
   draws it with) and against the level (`geometry::surface`); the
   nearest object in front of the level is the **aim candidate**. A
   candidate held for `AIM_DWELL` (0.6 s) becomes the editor's
-  selection. The candidate and the selection are both marked in the
-  game, so the player sees the cursor land and then take.
+  selection. The editor tracks the displayed pose between ticks, and a
+  stream cut restarts the hold even when the tick repeats. The candidate
+  and the selection are both marked in the game, so the player sees the cursor land and then take.
 - `mirror.pick {from: "aim"}` returns the candidate (`object`,
   `placement`, `tag`, `point`, `distance`) without selecting, and
   `{ray}` does the same for any ray.
@@ -293,6 +294,7 @@ holds (`play::presence`):
 |---|---|
 | a placement whose object is in the stream | `{object}`: the game draws that object's bounds and follows it |
 | a placement with no live object | `{box}` at the entry's frame and size |
+| an unlinked live object | `{object}` for the selected salted handle |
 | a tag from the tag tree | `{object}` for every live object made from it, up to 64 |
 | the aim candidate | `{object}` in the candidate style |
 

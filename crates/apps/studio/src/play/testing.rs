@@ -93,9 +93,10 @@ pub(crate) mod fake {
         fn live_capture(&mut self, layers: live::Layers, world: &mut live::World) -> bool {
             world.objects.clear();
             world.players.clear();
+            let local_unit = self.edits.lock().unwrap().replacement_unit.unwrap_or(UNIT);
             if layers.objects {
                 let unit = live::Object {
-                    id: UNIT,
+                    id: local_unit,
                     tag: Some(0x1234),
                     kind: 0,
                     position: PLAYER_AT,
@@ -124,7 +125,7 @@ pub(crate) mod fake {
                 world.players.push(live::Player {
                     index: 0,
                     name: "Tester".into(),
-                    unit: Some(UNIT),
+                    unit: Some(local_unit),
                     local_user: Some(0),
                     aim: [0.0, 1.0, 0.0],
                     ..Default::default()
@@ -140,6 +141,7 @@ pub(crate) mod fake {
         objects: object_game::Objects,
         pub(crate) checksum: u32,
         pub(crate) extra_object: Option<live::Object>,
+        pub(crate) replacement_unit: Option<u32>,
         map: Option<String>,
         // While the new tag index loads, edit.map is unavailable, then can still
         // report the former checksum at the new epoch for one poll.

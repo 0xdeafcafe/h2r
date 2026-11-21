@@ -14,7 +14,6 @@
 
 pub mod auto;
 pub(crate) mod display;
-pub(crate) mod display;
 pub mod issues;
 pub mod launch;
 pub mod link;
@@ -23,6 +22,7 @@ pub mod objects;
 pub mod playtest;
 pub(crate) mod presence;
 pub(crate) mod select;
+pub mod stream;
 pub mod sync;
 pub mod tag_sync;
 mod capabilities;
@@ -803,7 +803,12 @@ impl Play {
         }
         if let Some(stream) = &app.pairing.mirror {
             let previous_epoch = app.pairing.shown.as_ref().map(|sample| sample.epoch);
-            app.pairing.shown = stream.sample(app.pairing.latest || self.paused);
+            app.pairing.display.refresh(
+                stream.snapshot().as_deref(),
+                now,
+                app.pairing.latest || self.paused,
+                &mut app.pairing.shown,
+            );
             if let Some(sample) = &app.pairing.shown
                 && (previous_epoch != Some(sample.epoch) || now >= self.next_live_status)
             {

@@ -15,10 +15,13 @@ fn close_after_dequeue_discards_the_queued_move() {
     let (stop, stopping) = mpsc::channel();
     let (ack, done) = mpsc::channel();
     calls
-        .send(Call {
-            method: agent_proto::sim::method::STATE_SET.into(),
-            params: json!({"player":"player.0","pos":[1.0, 2.0, 3.0]}),
-            purpose: Purpose::Teleport,
+        .send(QueuedCall {
+            call: Call {
+                method: agent_proto::sim::method::STATE_SET.into(),
+                params: json!({"player":"player.0","pos":[1.0, 2.0, 3.0]}),
+                purpose: Purpose::Teleport,
+            },
+            player: None,
         })
         .unwrap();
 

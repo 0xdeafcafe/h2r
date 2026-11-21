@@ -7,11 +7,14 @@
 //! [`Event`]s that the UI drains once a frame ([`Link::drain`]).
 
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+use std::sync::{Arc, Weak};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use agent_proto::{CallError, Client, Endpoint, method};
 use serde_json::Value;
+
+use super::{presence::PlayerMove, stream::Stream};
 
 /// How often the idle link polls the game.
 pub const POLL: Duration = Duration::from_millis(250);
@@ -55,6 +58,28 @@ pub struct Call {
     pub purpose: Purpose,
 }
 
+#[derive(Debug)]
+struct QueuedCall {
+    call: Call,
+    /// A queued move cannot keep its stream alive after the editor unpairs.
+    player: Option<(Weak<Stream>, PlayerMove)>,
+}
+
+impl QueuedCall {
+    fn check_player(&self) -> Result<(), CallError> {
+        let Some((stream, request)) = &self.player else {
+            return Ok(());
+        };
+        stream
+            .upgrade()
+            .ok_or("the game stream closed before the move")
+            .and_then(|s| request.check_latest(&s))
+            .map_err(|why| {
+                CallError::Rpc(agent_proto::RpcError::new(agent_proto::sim::REFUSED, why))
+            })
+    }
+}
+
 /// What the link reports.
 #[derive(Clone, Debug)]
 pub enum Event {
@@ -94,7 +119,7 @@ impl Default for Options {
 /// The UI's end of a connection. Dropping it ends the thread.
 pub struct Link {
     pub endpoint: Endpoint,
-    calls: Sender<Call>,
+    calls: Sender<QueuedCall>,
     events: Receiver<Event>,
     stop: Sender<Close>,
 }
@@ -136,11 +161,30 @@ impl Link {
     }
 
     pub fn call(&self, method: &str, params: Value, purpose: Purpose) {
-        let _ = self.calls.send(Call {
+        let call = Call {
             method: method.to_owned(),
             params,
             purpose,
-        });
+        };
+        let _ = self.calls.send(QueuedCall { call, player: None });
+    }
+
+    pub(super) fn move_player(
+        &self,
+        request: PlayerMove,
+        stream: &Arc<Stream>,
+    ) -> Result<(), String> {
+        let call = Call {
+            method: agent_proto::sim::method::STATE_SET.into(),
+            params: request.state_set_params(),
+            purpose: Purpose::Teleport,
+        };
+        self.calls
+            .send(QueuedCall {
+                call,
+                player: Some((Arc::downgrade(stream), request)),
+            })
+            .map_err(|_| "the game link closed before the move".to_owned())
     }
 
     /// Discard queued work and release presentation leases on this connection.
@@ -196,7 +240,7 @@ fn connect(ep: &Endpoint, options: &Options, stop: &Receiver<Close>) -> Result<C
 fn run(
     ep: Endpoint,
     options: Options,
-    calls: Receiver<Call>,
+    calls: Receiver<QueuedCall>,
     events: Sender<Event>,
     stop: Receiver<Close>,
 ) {
@@ -213,8 +257,16 @@ fn run(
     loop {
         let wait = next_poll.saturating_duration_since(Instant::now());
         match next_work(&stop, || calls.recv_timeout(wait)) {
-            Work::Call(call) => {
-                let result = c.call(&call.method, call.params);
+            Work::Call(queued) => {
+                let checked = queued.check_player();
+                // Reading the exact sample can overlap an unpair. Give its
+                // close request priority again before entering the socket.
+                if let Ok(close) = stop.try_recv() {
+                    clear_leases(&mut c, close);
+                    return;
+                }
+                let call = queued.call;
+                let result = checked.and_then(|()| c.call(&call.method, call.params));
                 let broke = matches!(&result, Err(e) if lost(e));
                 if broke {
                     let _ = events.send(Event::Lost(result.unwrap_err().to_string()));
@@ -253,14 +305,14 @@ fn run(
 }
 
 enum Work {
-    Call(Call),
+    Call(QueuedCall),
     Poll,
     Close(Close),
 }
 
 fn next_work(
     stop: &Receiver<Close>,
-    receive: impl FnOnce() -> Result<Call, RecvTimeoutError>,
+    receive: impl FnOnce() -> Result<QueuedCall, RecvTimeoutError>,
 ) -> Work {
     if let Ok(close) = stop.try_recv() {
         return Work::Close(close);

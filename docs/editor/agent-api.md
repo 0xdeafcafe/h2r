@@ -396,11 +396,12 @@ Notes on some:
   selects the linked placement or the live object and its available definition.
   `mirror.aim_select {enabled?}` returns `{enabled,candidate}`. The
   candidate has the same shape as a pick. Holding the displayed aim on one
-  object for 0.6 seconds selects it.
+  object for 0.6 seconds selects it. A stream cut restarts the dwell timer.
   In View and Edit the paired window renews its selection and candidate
   marks once a second on the game's display. Unpairing clears the link
-  plate and marks. A dropped connection lets their three-second leases
-  expire. `pair.status.link.unavailable` reports
+  plate and marks. Pairing again to the same endpoint waits for the old
+  connection's clear before sending either lease. A dropped connection
+  lets the three-second leases expire. `pair.status.link.unavailable` reports
   missing presentation methods and the host's display refusal. While the
   game waits for a genuine frame, a `drawn: false` reply keeps the marks
   pending without a warning. Individual refused marks still report their
@@ -420,7 +421,8 @@ Notes on some:
   viewport pointer. T uses the cursor. Shift+T or `facing:true` also sends
   the camera's yaw and pitch. A missing destination, current player sample,
   permission or game method returns `REFUSED`, as does a pending reload or
-  a playtest transition.
+  a playtest transition. The control worker checks the latest exact sample
+  for the expected epoch and salted unit immediately before the game call.
 - **Viewport layers.** `view.layers {}` returns `{layers, xray}`. Each layer
   has a stable `name` for calls, a display `label`, a `group`, the visibility
   switch `on`, a `count` and its legend `color` (RGB, each channel 0 to 1).

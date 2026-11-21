@@ -69,7 +69,9 @@ impl Play {
         self.methods = Some(methods);
         if self.has_method(live::SUBSCRIBE) {
             if app.pairing.mirror.is_none() {
-                app.pairing.mirror = self.endpoint().cloned().map(live_mirror::Stream::open);
+                app.pairing.mirror = self.endpoint().cloned()
+                    .map(super::stream::Stream::open)
+                    .map(std::sync::Arc::new);
             }
         } else {
             app.pairing.drop_stream();

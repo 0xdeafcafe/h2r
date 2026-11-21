@@ -132,3 +132,68 @@ fn split_screen_camera_holds_its_target_across_a_missing_unit() {
         json!({"mode":"free","target":null})
     );
 }
+
+#[test]
+fn control_worker_refuses_a_move_after_a_queued_respawn() {
+    use crate::play::link::Purpose;
+    use agent_proto::hot::method::EDIT_GET;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let (_t, game, mut app, mut play) =
+        paired("worker-respawn", "example", sim::SessionKind::Local);
+    play.apply_edits(&mut app, Apply::Send).unwrap();
+
+    // Hold the first control reply across a stream update. The fake keeps
+    // capturing game ticks on the binary connection throughout.
+    let entered = Arc::new(AtomicBool::new(false));
+    let release = Arc::new(AtomicBool::new(false));
+    let holding = Arc::clone(&entered);
+    let finish = Arc::clone(&release);
+    game.agent
+        .add_game_method(EDIT_GET, agent::Access::Read, move |_, ctx| {
+            holding.store(true, Ordering::Release);
+            let finish = Arc::clone(&finish);
+            ctx.defer(
+                300,
+                Box::new(move |_| finish.load(Ordering::Acquire).then(|| Ok(json!({})))),
+            );
+            Ok(json!({}))
+        });
+    play.call(EDIT_GET, json!({}), Purpose::Other);
+    until(&mut play, &mut app, "control reply held", |_, a| {
+        entered.load(Ordering::Acquire) && a.pairing.player_scope.is_ok()
+    });
+    let request = PlayerMove::capture(&app, [1., 2., 3.], false).unwrap();
+    play.send_player_move(&app, request).unwrap();
+    let new_unit = 0x000f_0001;
+    game.edits.lock().unwrap().replacement_unit = Some(new_unit);
+    until(
+        &mut play,
+        &mut app,
+        "respawn on the binary stream",
+        |_, a| {
+            a.pairing
+                .mirror
+                .as_ref()
+                .and_then(|s| s.sample(true))
+                .is_some_and(|s| {
+                    s.players
+                        .iter()
+                        .any(|p| p.index == 0 && p.unit == Some(new_unit))
+                })
+        },
+    );
+    release.store(true, Ordering::Release);
+    until(
+        &mut play,
+        &mut app,
+        "refusal from the control worker",
+        |_, a| {
+            a.log()
+                .iter()
+                .any(|l| l.status.text() == "the local player's unit changed before the move")
+        },
+    );
+    assert!(game.calls(sim::method::STATE_SET).is_empty());
+}

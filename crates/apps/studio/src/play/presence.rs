@@ -127,6 +127,7 @@ struct MarkInputs {
     selection: crate::app::SelectionRevision,
     placement_geometry: Option<u64>,
     sample: Option<(u64, u64)>,
+    segment: Option<u64>,
     epoch: Option<u64>,
     matching: bool,
     live: Option<u32>,
@@ -243,6 +244,7 @@ impl Play {
             placement_geometry: matches!(self.presence.selection, Some(Selection::Placement(..)))
                 .then(|| app.session.markers_rev()),
             sample: sample.map(|s| (s.epoch, s.tick)),
+            segment: app.pairing.display.segment(),
             epoch: self.edits.epoch,
             matching,
             live: select::selected_object(app),

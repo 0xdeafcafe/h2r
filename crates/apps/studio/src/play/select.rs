@@ -81,7 +81,9 @@ pub(crate) struct LiveSelection {
     identity: Option<Identity>,
     pub(crate) bounds: std::cell::RefCell<crate::viewport::mirror::ModelBounds>,
     dwell: Dwell,
-    tick: Option<u64>,
+    // Display revision on the stream, exact tick for an injected sample.
+    displayed: Option<u64>,
+    segment: Option<u64>,
     marker_revision: u64,
     // A loose live object remains distinct from a tag selected in the tree.
     selected: Option<(u32, SelectionRevision)>,
@@ -310,7 +312,7 @@ pub(crate) fn set_enabled(app: &mut App, enabled: bool) {
     }
     let selection = &mut app.pairing.selection;
     selection.enabled = enabled;
-    selection.tick = None;
+    selection.displayed = None;
     selection.candidate = None;
     selection.dwell = Dwell::default();
     if enabled {
@@ -342,26 +344,33 @@ pub(crate) fn update(app: &mut App, now: Instant) {
     if !state.identity.as_ref().is_some_and(|id| id.matches) {
         return;
     }
-    let tick = sample.tick;
-    let fresh = state.tick != Some(tick) || state.marker_revision != app.session.markers_rev();
+    let segment = app.pairing.display.segment();
+    let displayed = Some(segment.map_or(sample.tick, |_| app.pairing.display.revision()));
+    let cut = state.segment != segment;
+    let fresh = cut || state.displayed != displayed;
+    let pick_changed = fresh || state.marker_revision != app.session.markers_rev();
     if let Some((id, rev)) = state.selected
         && (rev != app.selection_revision() || fresh && !sample.objects.iter().any(|o| o.id == id))
     {
         app.pairing.selection.selected = None;
     }
+    if cut {
+        app.pairing.selection.segment = segment;
+        app.pairing.selection.dwell = Dwell::default();
+    }
     if !app.pairing.selection.enabled || sample.stale {
         let state = &mut app.pairing.selection;
-        state.tick = (!sample.stale).then_some(tick);
+        state.displayed = displayed.filter(|_| !sample.stale);
         state.marker_revision = app.session.markers_rev();
         state.candidate = None;
         state.dwell = Dwell::default();
         return;
     }
-    if fresh {
+    if pick_changed {
         app.pairing.selection.marker_revision = app.session.markers_rev();
         let hit = from_aim(app);
         app.pairing.selection.candidate = hit;
-        app.pairing.selection.tick = Some(tick);
+        app.pairing.selection.displayed = displayed;
     }
     let state = &mut app.pairing.selection;
     let hit = state.candidate;
@@ -421,6 +430,81 @@ mod tests {
         });
         app.layers.set(scenario_edit::layers::LayerId::Live, true);
         (temp, app)
+    }
+
+    #[test]
+    fn dwell_observes_interpolated_misses_and_restarts_on_same_tick_cut() {
+        use agent_proto::live::{Frame, Header, Kind, Layers, Player, World};
+        let (_temp, mut app) = matching_app("dwell-discontinuity");
+        let start = Instant::now();
+        let time = |ms| start + Duration::from_millis(ms);
+        let unit = object(1, 100.0);
+        let world = |y| World {
+            objects: vec![
+                unit,
+                Object {
+                    position: [104.0, y, EYE_HEIGHT],
+                    velocity: [0.0, 4.0, 0.0],
+                    ..object(2, 104.0)
+                },
+            ],
+            players: vec![Player {
+                local_user: Some(0),
+                unit: Some(1),
+                aim: [1.0, 0.0, 0.0],
+                ..Default::default()
+            }],
+        };
+        let frame = |seq, tick, cut, w: &World| {
+            Frame::between(
+                Header {
+                    kind: Kind::Key,
+                    seq,
+                    tick,
+                    epoch: 1,
+                    paused: cut,
+                    cut,
+                },
+                Layers {
+                    objects: true,
+                    players: true,
+                },
+                None,
+                w,
+            )
+        };
+        let show = |store: &crate::play::stream::Captures, app: &mut App, ms| {
+            app.pairing.display.refresh(Some(store), time(ms), false, &mut app.pairing.shown);
+            update(app, time(ms));
+        };
+        let mut store = crate::play::stream::Captures::new(1.0).unwrap();
+        for (seq, y) in [(1, 0.0), (2, 4.0), (3, 8.0)] {
+            store
+                .apply(&frame(seq, seq, false, &world(y)), time((seq - 1) * 1000))
+                .unwrap();
+        }
+        app.pairing.selection.enabled = true;
+        show(&store, &mut app, 2000);
+        assert_eq!(app.pairing.shown.as_ref().unwrap().tick, 1);
+        assert_eq!(app.pairing.selection.candidate.unwrap().object, 2);
+        show(&store, &mut app, 2700);
+        assert_eq!(app.pairing.shown.as_ref().unwrap().tick, 1);
+        assert!(app.pairing.selection.candidate.is_none());
+        assert!(selected_object(&app).is_none());
+
+        store
+            .apply(&frame(4, 1, true, &world(0.0)), time(3000))
+            .unwrap();
+        show(&store, &mut app, 3000);
+        assert_eq!(app.pairing.selection.candidate.unwrap().object, 2);
+        store
+            .apply(&frame(5, 1, true, &world(0.0)), time(3500))
+            .unwrap();
+        show(&store, &mut app, 3500);
+        show(&store, &mut app, 3600);
+        assert!(selected_object(&app).is_none());
+        show(&store, &mut app, 4100);
+        assert_eq!(selected_object(&app), Some(2));
     }
 
     #[test]

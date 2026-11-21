@@ -231,6 +231,8 @@ fn streamed_bounds(triangles: impl IntoIterator<Item = [Vec3; 3]>) -> Option<Bou
 pub(super) struct SceneCache {
     scene: std::sync::Arc<Scene>,
     inputs: Option<(u64, u64, u64, Option<u32>, u32)>,
+    display_revision: Option<u64>,
+    // Unstamped samples (e.g. an injected headless scene) compare the wire records.
     objects: Vec<Object>,
     players: Vec<agent_proto::live::Player>,
 }
@@ -250,18 +252,24 @@ impl SceneCache {
                 crate::play::select::selected_object(app),
                 placement_mask(app),
             ));
-            if self.inputs != inputs
-                || !crate::play::display::same_records(sample, &self.objects, &self.players)
-            {
+            let display = &app.pairing.display;
+            let revision = display.segment().map(|_| display.revision());
+            let changed_records = self.display_revision != revision
+                || revision.is_none() && !crate::play::display::same_records(sample, &self.objects, &self.players);
+            if self.inputs != inputs || changed_records {
                 self.scene = std::sync::Arc::new(Scene::shown(app));
                 changed = true;
                 self.inputs = inputs;
-                self.objects.clone_from(&sample.objects);
-                self.players.clone_from(&sample.players);
+                self.display_revision = revision;
+                if revision.is_none() {
+                    self.objects.clone_from(&sample.objects);
+                    self.players.clone_from(&sample.players);
+                }
             }
         } else if self.inputs.take().is_some() {
             self.scene = Default::default();
             changed = true;
+            self.display_revision = None;
             self.objects.clear();
             self.players.clear();
         }

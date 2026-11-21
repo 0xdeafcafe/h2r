@@ -273,9 +273,10 @@ pub struct Bridge {
     pub journal: Vec<Value>,
     pub leaving: bool,
     /// One socket and its exact tick samples for the current pairing.
-    pub mirror: Option<live_mirror::Stream>,
+    pub mirror: Option<Arc<super::stream::Stream>>,
     /// The sample shown this editor frame, shared by the viewport and API.
     pub shown: Option<live_mirror::Sample>,
+    pub(crate) display: super::display::DisplayState,
     pub latest: bool,
     pub(crate) selection: super::select::LiveSelection,
     pub(crate) camera: super::presence::SharedCamera,
@@ -310,6 +311,7 @@ impl Default for Bridge {
             leaving: false,
             mirror: None,
             shown: None,
+            display: Default::default(),
             latest: false,
             selection: Default::default(),
             camera: Default::default(),
@@ -358,6 +360,7 @@ impl Bridge {
         self.set_player_scope(Err("waiting for the editor to pair in Edit mode"));
         self.mirror = None;
         self.shown = None;
+        self.display.clear();
         self.counters = None;
         self.stream_map = Value::Null;
     }

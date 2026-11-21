@@ -5,7 +5,7 @@ use scenario_edit::geometry::{Camera, Ray, Vec3, add, dot, scale, sub};
 use serde_json::json;
 
 use crate::App;
-use crate::play::{Play, link::Purpose, playtest::Waiting, select, surface_under_ray};
+use crate::play::{Play, playtest::Waiting, select, surface_under_ray};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum CameraMode {
@@ -128,11 +128,17 @@ impl Play {
                 index
             }
             None => {
-                sample
-                    .players
-                    .iter()
-                    .filter(|p| p.local_user.is_some())
-                    .min_by_key(|p| (p.local_user, p.index))
+                app.pairing
+                    .player()
+                    .map(|(player, _)| player)
+                    .filter(|player| player.local_user.is_some())
+                    .or_else(|| {
+                        sample
+                            .players
+                            .iter()
+                            .filter(|p| p.local_user.is_some())
+                            .min_by_key(|p| (p.local_user, p.index))
+                    })
                     .ok_or("the shared camera needs a local player")?
                     .index
             }
@@ -234,19 +240,16 @@ impl Play {
         request.check_unit(app, shown)?;
         // The UI can still be drawing an older tick when a respawn has
         // already arrived on the binary connection.
-        let exact = app
+        let stream = app
             .pairing
             .mirror
             .as_ref()
-            .and_then(|stream| stream.sample(true))
             .ok_or("waiting for the game's latest exact sample")?;
-        request.check_unit(app, &exact)?;
-        self.call(
-            sim::method::STATE_SET,
-            request.state_set_params(),
-            Purpose::Teleport,
-        );
-        Ok(())
+        request.check_latest(stream)?;
+        self.link
+            .as_ref()
+            .ok_or("the game link closed before the move")?
+            .move_player(request, stream)
     }
 
     pub(crate) fn player_here(&mut self, app: &mut App, pos: Vec3, facing: bool) {
@@ -279,14 +282,27 @@ impl PlayerMove {
     }
 
     fn check_unit(&self, app: &App, sample: &live_mirror::Sample) -> Result<(), &'static str> {
+        if app.session.world_rev() != self.scope.1 || !app.pairing.matches_sample(app, sample) {
+            return Err("the game or map changed before the move");
+        }
+        self.check_target(sample)
+    }
+
+    pub(in crate::play) fn check_latest(
+        &self,
+        stream: &crate::play::stream::Stream,
+    ) -> Result<(), &'static str> {
+        let exact = stream
+            .sample(true)
+            .ok_or("waiting for the game's latest exact sample")?;
+        self.check_target(&exact)
+    }
+
+    fn check_target(&self, sample: &live_mirror::Sample) -> Result<(), &'static str> {
         if sample.stale {
             return Err("the player sample is stale");
         }
-        let (_, world, epoch) = self.scope;
-        if app.session.world_rev() != world
-            || sample.epoch != epoch
-            || !app.pairing.matches_sample(app, sample)
-        {
+        if sample.epoch != self.scope.2 {
             return Err("the game or map changed before the move");
         }
         if !sample
@@ -302,7 +318,7 @@ impl PlayerMove {
 
     /// sim.state.set identifies the player by index. This is the wire boundary
     /// for an expected salted unit and epoch when the game supports those guards.
-    fn state_set_params(&self) -> serde_json::Value {
+    pub(in crate::play) fn state_set_params(&self) -> serde_json::Value {
         let mut params = json!({"player":format!("player.{}", self.player), "pos":self.pos});
         if let Some((yaw, pitch)) = self.facing {
             params["yaw"] = json!(yaw);
