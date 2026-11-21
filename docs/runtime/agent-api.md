@@ -565,7 +565,9 @@ h2 agent faults
   frame's duration. `setup_over_33ms_frames` counts presents more than 33⅓ ms
   apart while measured work overlaps that interval. Use the capture's phase
   breakdown to distinguish a blocked frame from work running alongside it.
-  `setup_dispatch_ns` times the foreground BSP and object-loader handoffs.
+  `setup_dispatch_ns` times foreground handoffs for BSP activation and
+  publication, object and light models, first-person models, resident decorator
+  geometry snapshots and bot map changes.
   `setup_dispatch_stalled_frames` counts over-budget presents whose handoffs
   alone took more than 33⅓ ms.
   `load.timeline` also sums these counters for the stall and settling periods.
