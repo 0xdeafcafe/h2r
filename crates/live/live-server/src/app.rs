@@ -229,6 +229,9 @@ pub struct Live {
     pub(crate) variants: Arc<crate::game_variants::Variants>,
     /// Holds a variant's checks and its append together.
     pub(crate) variant_writes: tokio::sync::Mutex<()>,
+    /// Editor requests (`POST /v1/rules/ide`) per client address, at the
+    /// same rate in a bucket of their own.
+    pub(crate) rules_ide_rate: RateLimiter,
     /// Each account's own cloud saves (docs/live/live-cloud-saves.md).
     pub(crate) cloud: crate::cloud_saves::CloudSaves,
     /// Unix seconds the native service started.
@@ -634,6 +637,7 @@ impl Live {
             rules_rate: RateLimiter::new(crate::rule_scripts::RATE.0, crate::rule_scripts::RATE.1),
             variants,
             variant_writes: Default::default(),
+            rules_ide_rate: RateLimiter::new(crate::rule_scripts::RATE.0, crate::rule_scripts::RATE.1),
             cloud: Default::default(),
             #[cfg(feature = "native")]
             started_at: now(),

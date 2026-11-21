@@ -1,4 +1,4 @@
-//! `h2 rules check|build|run|caps|builtin`: the rules language's tooling
+//! `h2 rules check|build|run|caps|builtin|lsp`: the rules language's tooling
 //! (docs/game/rules-engine.md, "Security and usability"). Every command is pure over its
 //! inputs: no game, no disc. The `*_text` functions build what a command
 //! prints, so tests read it without a process.
@@ -18,6 +18,7 @@ const USAGE: &str = "usage: h2 rules check <file.rules>
        h2 rules run <file.rules> --scenario <scenario.json> [--trace]
        h2 rules caps
        h2 rules builtin [name]
+       h2 rules lsp
   check compiles and verifies; errors print as file:line:col: message and
   the exit status is 1. The report gives the worst-tick estimate against
   the budget, the IR size, the slots, what the script can do, and any
@@ -27,7 +28,10 @@ const USAGE: &str = "usage: h2 rules check <file.rules>
   calls made each tick and the final scores (--trace adds each event and
   call).
   caps lists the capabilities and the engine API entries with their status.
-  builtin lists the built-in scripts, or prints one by name or engine index.";
+  builtin lists the built-in scripts, or prints one by name or engine index.
+  lsp serves the Language Server Protocol on stdin and stdout, for an
+  editor: diagnostics, completion, hover, signatures, definitions,
+  references, semantic tokens, the outline and formatting.";
 
 pub fn run(words: Vec<String>) -> Result<()> {
     let mut it = words.into_iter();
@@ -43,6 +47,7 @@ pub fn run(words: Vec<String>) -> Result<()> {
         "check" => check(&rest),
         "build" => build(&rest),
         "run" => run_scenario(&rest),
+        "lsp" => crate::rules_lsp::run(),
         "caps" => {
             print!("{}", caps_text());
             Ok(())

@@ -22,7 +22,7 @@ pub struct Token {
     pub nl: bool,
 }
 
-static PUNCT: [&str; 23] = [
+pub(crate) static PUNCT: [&str; 23] = [
     "..", "==", "!=", "<=", ">=", "{", "}", "(", ")", "[", "]", ",", ":", ";", ".", "=", "<", ">",
     "+", "-", "*", "/", "%",
 ];
@@ -31,6 +31,29 @@ static PUNCT: [&str; 23] = [
 const MAX_STR: usize = 256;
 
 pub fn lex(src: &str) -> Result<Vec<Token>, CompileError> {
+    lex_with(src, None)
+}
+
+/// Lexes on past errors, for the editor tooling (`crate::ide`): a bad
+/// character is skipped, an unterminated string ends at its line and a
+/// number out of range reads as 0. Every error is returned, in order.
+pub fn lex_tolerant(src: &str) -> (Vec<Token>, Vec<CompileError>) {
+    let mut errors = Vec::new();
+    let tokens = lex_with(src, Some(&mut errors)).unwrap_or_default();
+    (tokens, errors)
+}
+
+/// The lexer. With `errors`, an error is recorded there and lexing goes
+/// on; without, the first error is returned.
+fn lex_with(src: &str, mut errors: Option<&mut Vec<CompileError>>) -> Result<Vec<Token>, CompileError> {
+    macro_rules! fail {
+        ($e:expr) => {
+            match errors.as_mut() {
+                Some(list) => list.push($e),
+                None => return Err($e),
+            }
+        };
+    }
     let bytes = src.as_bytes();
     let mut out = Vec::new();
     let mut i = 0usize;
@@ -71,9 +94,13 @@ pub fn lex(src: &str) -> Result<Vec<Token>, CompileError> {
             while i < bytes.len() && bytes[i].is_ascii_digit() {
                 i += 1;
             }
-            let whole: i64 = src[start..i]
-                .parse()
-                .map_err(|_| CompileError::at(pos, "number too large"))?;
+            let whole: i64 = match src[start..i].parse() {
+                Ok(n) => n,
+                Err(_) => {
+                    fail!(CompileError::at(pos, "number too large"));
+                    0
+                }
+            };
             let fraction = bytes.get(i) == Some(&b'.')
                 && bytes.get(i + 1).is_some_and(|b| b.is_ascii_digit());
             if fraction {
@@ -84,44 +111,58 @@ pub fn lex(src: &str) -> Result<Vec<Token>, CompileError> {
                 }
                 let digits = &src[fs..i];
                 if digits.len() > 9 {
-                    return Err(CompileError::at(pos, "too many fraction digits"));
+                    fail!(CompileError::at(pos, "too many fraction digits"));
+                    Tok::Fixed(0)
+                } else {
+                    let frac: i64 = digits.parse().unwrap_or(0);
+                    let scale = 10i64.pow(digits.len() as u32);
+                    let value = whole
+                        .checked_mul(65536)
+                        .and_then(|w| w.checked_add((frac * 65536 + scale / 2) / scale))
+                        .filter(|v| *v <= i32::MAX as i64);
+                    match value {
+                        Some(v) => Tok::Fixed(v as i32),
+                        None => {
+                            fail!(CompileError::at(pos, "fixed value too large"));
+                            Tok::Fixed(0)
+                        }
+                    }
                 }
-                let frac: i64 = digits.parse().unwrap_or(0);
-                let scale = 10i64.pow(digits.len() as u32);
-                let value = whole
-                    .checked_mul(65536)
-                    .and_then(|w| w.checked_add((frac * 65536 + scale / 2) / scale))
-                    .filter(|v| *v <= i32::MAX as i64)
-                    .ok_or_else(|| CompileError::at(pos, "fixed value too large"))?;
-                Tok::Fixed(value as i32)
+            } else if whole > u32::MAX as i64 {
+                fail!(CompileError::at(pos, "number too large"));
+                Tok::Int(0)
             } else {
-                if whole > u32::MAX as i64 {
-                    return Err(CompileError::at(pos, "number too large"));
-                }
                 Tok::Int(whole)
             }
         } else if c == b'"' {
             i += 1;
             let mut s = String::new();
+            let mut long = false;
             loop {
                 let Some(&b) = bytes.get(i) else {
-                    return Err(CompileError::at(pos, "unterminated string"));
+                    fail!(CompileError::at(pos, "unterminated string"));
+                    break;
                 };
                 match b {
                     b'"' => {
                         i += 1;
                         break;
                     }
-                    b'\n' => return Err(CompileError::at(pos, "unterminated string")),
+                    b'\n' => {
+                        fail!(CompileError::at(pos, "unterminated string"));
+                        break;
+                    }
                     b'\\' => {
                         let esc = bytes.get(i + 1).copied();
                         match esc {
                             Some(b'"') => s.push('"'),
                             Some(b'\\') => s.push('\\'),
                             Some(b'n') => s.push('\n'),
-                            _ => return Err(CompileError::at(pos, "unknown escape in string")),
+                            _ => fail!(CompileError::at(pos, "unknown escape in string")),
                         }
-                        i += 2;
+                        // An escape of a line break or a multi-byte
+                        // character skips the backslash alone.
+                        i += if esc.is_some_and(|e| e.is_ascii() && e != b'\n') { 2 } else { 1 };
                     }
                     _ => {
                         // Copy one UTF-8 character.
@@ -129,13 +170,14 @@ pub fn lex(src: &str) -> Result<Vec<Token>, CompileError> {
                         let end = (i + ch_len).min(bytes.len());
                         match src.get(i..end) {
                             Some(ch) => s.push_str(ch),
-                            None => return Err(CompileError::at(pos, "invalid text in string")),
+                            None => fail!(CompileError::at(pos, "invalid text in string")),
                         }
                         i = end;
                     }
                 }
-                if s.len() > MAX_STR {
-                    return Err(CompileError::at(pos, "string longer than 256 bytes"));
+                if s.len() > MAX_STR && !long {
+                    long = true;
+                    fail!(CompileError::at(pos, "string longer than 256 bytes"));
                 }
             }
             Tok::Str(s)
@@ -148,7 +190,9 @@ pub fn lex(src: &str) -> Result<Vec<Token>, CompileError> {
                 }
                 None => {
                     let ch = rest.chars().next().unwrap_or('?');
-                    return Err(CompileError::at(pos, format!("unexpected character {ch:?}")));
+                    fail!(CompileError::at(pos, format!("unexpected character {ch:?}")));
+                    i += ch.len_utf8().max(1);
+                    continue;
                 }
             }
         };
@@ -212,5 +256,27 @@ mod tests {
         let e = lex("a\n  @").unwrap_err();
         assert_eq!((e.line, e.col), (2, 3));
         assert!(lex("\"open").is_err());
+    }
+
+    #[test]
+    fn tolerant_lexing_skips_errors_and_reports_each() {
+        let (toks, errors) = lex_tolerant("a @ b\n\"open\nc # 99999999999");
+        let kinds: Vec<Tok> = toks.into_iter().map(|t| t.tok).collect();
+        assert_eq!(
+            kinds,
+            vec![
+                Tok::Ident("a".into()),
+                Tok::Ident("b".into()),
+                Tok::Str("open".into()),
+                Tok::Ident("c".into()),
+                Tok::Int(0),
+                Tok::Eof
+            ]
+        );
+        let places: Vec<(u32, u32)> = errors.iter().map(|e| (e.line, e.col)).collect();
+        assert_eq!(places, vec![(1, 3), (2, 1), (3, 3), (3, 5)]);
+        // A clean source lexes the same both ways.
+        let src = "rules \"T\" 1\non kill(v, k) { score(k, 1.5) }";
+        assert_eq!(lex_tolerant(src), (lex(src).unwrap(), Vec::new()));
     }
 }

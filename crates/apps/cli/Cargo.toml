@@ -68,6 +68,9 @@ studio-proto = { path = "../studio-proto", optional = true }
 rules.workspace = true
 # `h2 variants port`: self-contained .h2variant files (variants_cmd.rs).
 variants = { path = "../../formats/variants" }
+# `h2 rules lsp`: the stdio language server over `rules::ide`.
+lsp-server.workspace = true
+lsp-types.workspace = true
 # Our settings (play --set, h2 settings).
 settings = { path = "../../formats/settings" }
 timeline = { path = "../../runtime/timeline" }

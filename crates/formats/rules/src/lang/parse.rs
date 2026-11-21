@@ -12,30 +12,113 @@ use crate::ir::Scope;
 /// Nesting deeper than this is refused, so no source can exhaust the stack.
 const MAX_DEPTH: u32 = 64;
 
-const KEYWORDS: &[&str] = &[
+pub(crate) const KEYWORDS: &[&str] = &[
     "rules", "carrier", "teams", "requires", "option", "palette", "enum", "global", "var",
     "table", "fn", "on", "if", "else", "for", "each", "where", "let", "and", "or", "not", "true",
     "false", "none", "labelled", "text", "budget",
 ];
 
 pub fn parse(tokens: &[Token]) -> Result<Script, CompileError> {
-    let mut p = Parser {
-        t: tokens,
-        at: 0,
-        depth: 0,
-    };
+    let mut p = Parser::new(tokens, false);
     p.script()
+}
+
+/// Parses on past errors, for the editor tooling (`crate::ide`). A bad
+/// statement is skipped to the end of its line, a bad declaration to the
+/// next line that starts one, and a block left open ends at the next
+/// declaration or the end of the file. The script holds everything that
+/// parsed; every error is returned, in order. A source with no errors
+/// parses as [`parse`] parses it.
+pub fn parse_recovering(tokens: &[Token]) -> (Script, Vec<CompileError>) {
+    let mut p = Parser::new(tokens, true);
+    let script = match p.script() {
+        Ok(s) => s,
+        // Recovery returns no error; this is the empty script.
+        Err(e) => {
+            p.errors.push(e);
+            Script {
+                name: String::new(),
+                version: 0,
+                pos: Pos { line: 1, col: 1 },
+                carrier: None,
+                teams: None,
+                requires: Vec::new(),
+                items: Vec::new(),
+            }
+        }
+    };
+    (script, p.errors)
 }
 
 struct Parser<'a> {
     t: &'a [Token],
     at: usize,
     depth: u32,
+    /// Record errors and go on instead of returning the first.
+    recover: bool,
+    errors: Vec<CompileError>,
 }
 
 type R<T> = Result<T, CompileError>;
 
-impl Parser<'_> {
+impl<'a> Parser<'a> {
+    fn new(t: &'a [Token], recover: bool) -> Parser<'a> {
+        Parser {
+            t,
+            at: 0,
+            depth: 0,
+            recover,
+            errors: Vec::new(),
+        }
+    }
+
+    fn at_eof(&self) -> bool {
+        self.peek().tok == Tok::Eof
+    }
+
+    /// Whether the next token starts a declaration or a header line.
+    fn is_item_start(&self) -> bool {
+        if self.scope_word().is_some() {
+            return true;
+        }
+        matches!(&self.peek().tok, Tok::Ident(s) if matches!(s.as_str(),
+            "rules" | "carrier" | "teams" | "requires" | "option" | "palette" | "enum" | "table" | "fn" | "on"))
+    }
+
+    /// Recovery from a bad declaration: on to the next line that starts
+    /// one outside braces, or the end.
+    fn sync_item(&mut self) {
+        let mut depth = 0u32;
+        while !self.at_eof() {
+            if depth == 0 && self.peek().nl && self.is_item_start() {
+                return;
+            }
+            if self.is_punct("{") {
+                depth += 1;
+            } else if self.is_punct("}") {
+                depth = depth.saturating_sub(1);
+            }
+            self.bump();
+        }
+    }
+
+    /// Recovery from a bad statement: on to the next line or the `}` that
+    /// ends the block, outside nested braces.
+    fn sync_stmt(&mut self) {
+        let mut depth = 0u32;
+        while !self.at_eof() {
+            if depth == 0 && (self.peek().nl || self.is_punct("}")) {
+                return;
+            }
+            if self.is_punct("{") {
+                depth += 1;
+            } else if self.is_punct("}") {
+                depth -= 1;
+            }
+            self.bump();
+        }
+    }
+
     fn peek(&self) -> &Token {
         &self.t[self.at.min(self.t.len() - 1)]
     }
@@ -185,144 +268,177 @@ impl Parser<'_> {
 
     fn script(&mut self) -> R<Script> {
         let pos = self.pos();
-        self.expect_word("rules")?;
-        let name = self.string()?;
-        let version = self.int()?;
-        self.end_of_line()?;
         let mut script = Script {
-            name,
-            version,
+            name: String::new(),
+            version: 0,
             pos,
             carrier: None,
             teams: None,
             requires: Vec::new(),
             items: Vec::new(),
         };
+        match self.header() {
+            Ok((name, version)) => {
+                script.name = name;
+                script.version = version;
+            }
+            Err(e) if self.recover => {
+                self.errors.push(e);
+                self.sync_item();
+            }
+            Err(e) => return Err(e),
+        }
         loop {
             while self.eat_punct(";") {}
-            let pos = self.pos();
-            if self.peek().tok == Tok::Eof {
+            if self.at_eof() {
                 break;
             }
-            if self.eat_word("carrier") {
-                if script.carrier.is_some() {
-                    return Err(CompileError::at(pos, "the carrier is named twice"));
-                }
-                script.carrier = Some((self.word()?, pos));
-            } else if self.eat_word("teams") {
-                if script.teams.is_some() {
-                    return Err(CompileError::at(pos, "teams is given twice"));
-                }
-                script.teams = Some((self.int()?, pos));
-            } else if self.eat_word("requires") {
-                loop {
-                    let at = self.pos();
-                    let mut cap = self.word()?;
-                    while self.eat_punct(".") {
-                        cap.push('.');
-                        cap.push_str(&self.word()?);
+            let (at, depth) = (self.at, self.depth);
+            match self.item(&mut script) {
+                Ok(()) => {}
+                Err(e) if self.recover => {
+                    self.errors.push(e);
+                    self.depth = depth;
+                    if self.at == at {
+                        self.bump();
                     }
-                    script.requires.push((cap, at));
-                    if !self.eat_punct(",") {
-                        break;
-                    }
+                    self.sync_item();
                 }
-            } else if self.eat_word("option") {
-                script.items.push(Item::Option(self.option(pos)?));
-            } else if self.eat_word("palette") {
-                let name = self.string()?;
-                self.expect_punct("=")?;
-                self.expect_punct("[")?;
-                let mut tags = Vec::new();
-                while !self.is_punct("]") {
-                    tags.push(self.string()?);
-                    if !self.eat_punct(",") {
-                        break;
-                    }
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(script)
+    }
+
+    /// `rules "name" version`.
+    fn header(&mut self) -> R<(String, i64)> {
+        self.expect_word("rules")?;
+        let name = self.string()?;
+        let version = self.int()?;
+        self.end_of_line()?;
+        Ok((name, version))
+    }
+
+    /// One header line, declaration or handler, to the end of its line.
+    fn item(&mut self, script: &mut Script) -> R<()> {
+        let pos = self.pos();
+        if self.eat_word("carrier") {
+            if script.carrier.is_some() {
+                return Err(CompileError::at(pos, "the carrier is named twice"));
+            }
+            script.carrier = Some((self.word()?, pos));
+        } else if self.eat_word("teams") {
+            if script.teams.is_some() {
+                return Err(CompileError::at(pos, "teams is given twice"));
+            }
+            script.teams = Some((self.int()?, pos));
+        } else if self.eat_word("requires") {
+            loop {
+                let at = self.pos();
+                let mut cap = self.word()?;
+                while self.eat_punct(".") {
+                    cap.push('.');
+                    cap.push_str(&self.word()?);
                 }
-                self.expect_punct("]")?;
-                script.items.push(Item::Palette { name, tags, pos });
-            } else if self.eat_word("enum") {
-                let name = self.name()?;
-                self.expect_punct("{")?;
-                let mut variants = Vec::new();
-                while !self.is_punct("}") {
-                    variants.push(self.word()?);
-                    if !self.eat_punct(",") && !self.peek().nl && !self.is_punct("}") {
-                        return Err(self.unexpected("`,` or `}`"));
-                    }
+                script.requires.push((cap, at));
+                if !self.eat_punct(",") {
+                    break;
                 }
-                self.expect_punct("}")?;
-                script.items.push(Item::Enum {
-                    name,
-                    variants,
-                    pos,
-                });
-            } else if let Some(scope) = self.scope_word() {
-                self.bump();
-                self.expect_word("var")?;
-                let name = self.name()?;
+            }
+        } else if self.eat_word("option") {
+            script.items.push(Item::Option(self.option(pos)?));
+        } else if self.eat_word("palette") {
+            let name = self.string()?;
+            self.expect_punct("=")?;
+            self.expect_punct("[")?;
+            let mut tags = Vec::new();
+            while !self.is_punct("]") {
+                tags.push(self.string()?);
+                if !self.eat_punct(",") {
+                    break;
+                }
+            }
+            self.expect_punct("]")?;
+            script.items.push(Item::Palette { name, tags, pos });
+        } else if self.eat_word("enum") {
+            let name = self.name()?;
+            self.expect_punct("{")?;
+            let mut variants = Vec::new();
+            while !self.is_punct("}") {
+                variants.push(self.word()?);
+                if !self.eat_punct(",") && !self.peek().nl && !self.is_punct("}") {
+                    return Err(self.unexpected("`,` or `}`"));
+                }
+            }
+            self.expect_punct("}")?;
+            script.items.push(Item::Enum {
+                name,
+                variants,
+                pos,
+            });
+        } else if let Some(scope) = self.scope_word() {
+            self.bump();
+            self.expect_word("var")?;
+            let name = self.name()?;
+            self.expect_punct(":")?;
+            let ty = self.ty()?;
+            let init = if self.eat_punct("=") {
+                Some(self.expr()?)
+            } else {
+                None
+            };
+            script.items.push(Item::Var {
+                scope,
+                name,
+                ty,
+                init,
+                pos,
+            });
+        } else if self.eat_word("table") {
+            script.items.push(self.table(pos)?);
+        } else if self.eat_word("fn") {
+            let name = self.name()?;
+            self.expect_punct("(")?;
+            let mut params = Vec::new();
+            while !self.is_punct(")") {
+                let n = self.name()?;
                 self.expect_punct(":")?;
-                let ty = self.ty()?;
-                let init = if self.eat_punct("=") {
-                    Some(self.expr()?)
-                } else {
-                    None
-                };
-                script.items.push(Item::Var {
-                    scope,
-                    name,
-                    ty,
-                    init,
-                    pos,
-                });
-            } else if self.eat_word("table") {
-                script.items.push(self.table(pos)?);
-            } else if self.eat_word("fn") {
-                let name = self.name()?;
-                self.expect_punct("(")?;
-                let mut params = Vec::new();
+                params.push((n, self.ty()?));
+                if !self.eat_punct(",") {
+                    break;
+                }
+            }
+            self.expect_punct(")")?;
+            let body = self.block()?;
+            script.items.push(Item::Fn(FnDecl {
+                name,
+                params,
+                body,
+                pos,
+            }));
+        } else if self.eat_word("on") {
+            let event = self.word()?;
+            let mut args = Vec::new();
+            if self.eat_punct("(") {
                 while !self.is_punct(")") {
-                    let n = self.name()?;
-                    self.expect_punct(":")?;
-                    params.push((n, self.ty()?));
+                    args.push(self.name()?);
                     if !self.eat_punct(",") {
                         break;
                     }
                 }
                 self.expect_punct(")")?;
-                let body = self.block()?;
-                script.items.push(Item::Fn(FnDecl {
-                    name,
-                    params,
-                    body,
-                    pos,
-                }));
-            } else if self.eat_word("on") {
-                let event = self.word()?;
-                let mut args = Vec::new();
-                if self.eat_punct("(") {
-                    while !self.is_punct(")") {
-                        args.push(self.name()?);
-                        if !self.eat_punct(",") {
-                            break;
-                        }
-                    }
-                    self.expect_punct(")")?;
-                }
-                let body = self.block()?;
-                script.items.push(Item::On {
-                    event,
-                    args,
-                    body,
-                    pos,
-                });
-            } else {
-                return Err(self.unexpected("a declaration or handler"));
             }
-            self.end_of_line()?;
+            let body = self.block()?;
+            script.items.push(Item::On {
+                event,
+                args,
+                body,
+                pos,
+            });
+        } else {
+            return Err(self.unexpected("a declaration or handler"));
         }
-        Ok(script)
+        self.end_of_line()
     }
 
     /// `global`, `player`, `team` or `object` followed by `var`.
@@ -427,10 +543,38 @@ impl Parser<'_> {
                 break;
             }
             if self.peek().tok == Tok::Eof {
-                return Err(self.unexpected("`}`"));
+                let e = self.unexpected("`}`");
+                if !self.recover {
+                    return Err(e);
+                }
+                self.errors.push(e);
+                break;
             }
-            out.push(self.stmt()?);
-            self.end_of_line()?;
+            // A block left open ends where the next declaration starts.
+            if self.recover && self.peek().nl && self.is_item_start() {
+                let e = self.unexpected("`}`");
+                self.errors.push(e);
+                break;
+            }
+            let (at, depth) = (self.at, self.depth);
+            let result = match self.stmt() {
+                Ok(s) => {
+                    out.push(s);
+                    self.end_of_line()
+                }
+                Err(e) => Err(e),
+            };
+            if let Err(e) = result {
+                if !self.recover {
+                    return Err(e);
+                }
+                self.errors.push(e);
+                self.depth = depth;
+                if self.at == at {
+                    self.bump();
+                }
+                self.sync_stmt();
+            }
         }
         self.leave();
         Ok(out)
@@ -783,11 +927,7 @@ mod tests {
 
     fn expr(src: &str) -> Expr {
         let toks = lex(src).unwrap();
-        let mut p = Parser {
-            t: &toks,
-            at: 0,
-            depth: 0,
-        };
+        let mut p = Parser::new(&toks, false);
         p.expr().unwrap()
     }
 
@@ -817,11 +957,7 @@ mod tests {
     fn deep_nesting_is_refused_not_overflowed() {
         let src = format!("{}1{}", "(".repeat(500), ")".repeat(500));
         let toks = lex(&src).unwrap();
-        let mut p = Parser {
-            t: &toks,
-            at: 0,
-            depth: 0,
-        };
+        let mut p = Parser::new(&toks, false);
         assert!(p.expr().is_err());
     }
 
@@ -837,4 +973,67 @@ mod tests {
         let e = parse(&toks).unwrap_err();
         assert_eq!(e.line, 2);
     }
+
+    fn recovering(src: &str) -> (Script, Vec<CompileError>) {
+        parse_recovering(&lex(src).unwrap())
+    }
+
+    #[test]
+    fn recovery_skips_a_bad_statement_and_keeps_the_rest() {
+        let src = "rules \"T\" 1\ncarrier slayer\non tick {\n    a = 1\n    b = \n    score(, )\n    c = 3\n}\non init { d = 4 }\n";
+        let (s, errors) = recovering(src);
+        // `b =` reads `score` from the next line as its value, then stops
+        // at `(`; the recovery skips the rest of line 6.
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert_eq!(errors[0].line, 6);
+        assert_eq!(s.items.len(), 2);
+        match &s.items[0] {
+            Item::On { body, .. } => assert_eq!(body.len(), 2),
+            other => panic!("{other:?}"),
+        }
+        let src = "rules \"T\" 1\ncarrier slayer\non tick {\n    score(, )\n    c = 3\n    d = )\n}\n";
+        let (s, errors) = recovering(src);
+        let lines: Vec<u32> = errors.iter().map(|e| e.line).collect();
+        assert_eq!(lines, vec![4, 6], "{errors:?}");
+        match &s.items[0] {
+            Item::On { body, .. } => assert_eq!(body.len(), 1),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn recovery_ends_an_open_block_at_the_next_declaration() {
+        let src = "rules \"T\" 1\ncarrier slayer\non tick {\n    a = 1\non spawn(p) { b = 2 }\nfn f( {\n}\noption o: int 1..2 = 1\n";
+        let (s, errors) = recovering(src);
+        let lines: Vec<u32> = errors.iter().map(|e| e.line).collect();
+        assert_eq!(lines, vec![5, 6], "{errors:?}");
+        let names: Vec<&str> = s
+            .items
+            .iter()
+            .map(|i| match i {
+                Item::On { event, .. } => event.as_str(),
+                Item::Option(o) => o.name.as_str(),
+                _ => "?",
+            })
+            .collect();
+        assert_eq!(names, vec!["tick", "spawn", "o"]);
+    }
+
+    #[test]
+    fn recovery_survives_a_bad_header_and_agrees_with_parse_on_clean_source() {
+        let (s, errors) = recovering("rules oops\ncarrier slayer\non init { }\n");
+        assert_eq!(errors.len(), 1);
+        assert_eq!(s.carrier.as_ref().map(|c| c.0.as_str()), Some("slayer"));
+        assert_eq!(s.items.len(), 1);
+        for b in crate::builtin::ALL {
+            let toks = lex(b.source).unwrap();
+            let (s, errors) = parse_recovering(&toks);
+            assert!(errors.is_empty(), "{}: {errors:?}", b.name);
+            assert_eq!(s, parse(&toks).unwrap());
+        }
+        // Garbage ends; it does not loop.
+        let (_, errors) = recovering("} } { ( on on fn fn ) [ ; ; option");
+        assert!(!errors.is_empty());
+    }
 }
+

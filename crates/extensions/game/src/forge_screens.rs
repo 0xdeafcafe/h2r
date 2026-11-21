@@ -603,7 +603,10 @@ impl Feature for Driver {
                         Ok(Ret::new(0, 8))
                     })
                 })
-            });
+            })
+            // Player Settings names its own row here too; each answers only
+            // for its own action words, so either order draws the same.
+            .after_feature("pause-mp-rows");
 
         b.raw()
             .before(&points::MP_MENU_ROW_CHOSEN, "press the Forge rows", |c| {
