@@ -12,7 +12,8 @@ the fog, the water and the post passes and the fog's and water's
 recording on the render thread are built; its section says what the
 replacements wait on. Slice 6 provides the carried census, private draws
 of sealed scenes and an opt-in display owner for eligible game views.
-Default ownership still depends on the corpus, parity and timing gates
+Paced display still queues guest-visible writes in order. Default ownership
+depends on the scheduling, corpus, parity and timing gates
 in [slice 6](#slice-6-the-renderer-owns-game-view-frames). Slices 7 to 10
 are planned.
 
@@ -355,15 +356,23 @@ which sim mode cannot today.
 | **window** | composites the newest published frame, as now (`app::frame`) | |
 | **loaders** | tags to GPU resources at map load and on demand; pipeline compile workers (`gfx`) | |
 
-**Hand-off.** A mailbox of sealed scenes with two modes:
+**Hand-off.** The private renderer uses the two mailbox modes below.
+They also define the hand-off required for display cutover.
 
 - *Paced* (play): the sim publishes and goes on. The render thread
   keeps the last two scenes it took. If the sim published more than one
   since, the older ones are dropped and counted (`scene_dropped`).
 - *Locked* (headless capture, `--unpaced`, lab runs with
   `H2_BOOT_STOP_AT_PRESENT`): publish blocks while two scenes wait.
-  Every scene is drawn once, so present-indexed captures and "fps" keep
-  today's meaning, and today's two-frames-in-flight bound stays.
+  The receiver takes every scene in order. The display must draw each
+  one once so present-indexed captures and lab frame rates retain
+  their meaning. A private draw runs when a capture or parity request
+  selects the scene.
+
+The opt-in display worker can still block the sim when two transactions
+wait. A skipped scene can have guest-visible writes to a side surface,
+a sampled texture, or a flare ticket. Its successor must preserve these
+results before the display worker can drop it.
 
 **Residency.** At map activation the object loader reads the scenario's
 object palettes. It prioritizes those definitions in its tag scan and
@@ -1262,8 +1271,9 @@ D3D reference with all native stages disabled.
   in order because later guest commands can reuse their surfaces, sampled
   textures and flare tickets. The window takes the newest finished picture
   from its triple buffer. Capture requests can pin a scene across two draws and
-  wake the renderer during pause. `render.frame` identifies the path
-  that presented and supports pass snapshots on private draws.
+  wake the renderer during pause. A display pass snapshot comes from the
+  renderer that presented that Swap, at the requested pass boundary.
+  A private draw has its own `render.frame` recorder.
   `render.stats` reports completed graph work. `render.parity` compares
   the guest present with a separate private draw of its inputs.
 - **Gate coverage.** `render.scene` includes the cumulative original
