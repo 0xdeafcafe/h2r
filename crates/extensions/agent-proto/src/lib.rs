@@ -138,6 +138,8 @@ pub mod method {
     pub const LIVE_JOIN_OPEN: &str = "live.join.open";
     /// The latest web join and its outcome, if any.
     pub const LIVE_JOIN_STATUS: &str = "live.join.status";
+    /// Guest matchmaking and session transitions, retained through teardown.
+    pub const LIVE_MATCHMAKING_TRACE: &str = "live.matchmaking.trace";
     /// Queue pad steps for a player ([`crate::PadParams`]).
     pub const INPUT_PAD: &str = "input.pad";
     /// Drop the queued steps and let go of everything.
