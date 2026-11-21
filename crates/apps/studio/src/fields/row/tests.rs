@@ -35,6 +35,8 @@ fn every_kind_has_its_type_words() {
         size: 4,
         align: 4,
         fields: Vec::new(),
+        title: None,
+        section_titles: Default::default(),
     }));
     for (kind, words) in [
         (
@@ -245,6 +247,9 @@ fn field(offset: u32, kind: Kind) -> Field {
         meaning: String::new(),
         doc: None,
         applies: None,
+        label: None,
+        unit: None,
+        axes: Vec::new(),
     }
 }
 

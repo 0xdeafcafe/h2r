@@ -1326,6 +1326,9 @@ mod tests {
             meaning: String::new(),
             doc: None,
             applies: None,
+            label: None,
+            unit: None,
+            axes: Vec::new(),
         };
         let key = show_as_key(weap, "", 0x6);
         assert_eq!(shown_as(&settings, &key, &word, 7), View::Hex);

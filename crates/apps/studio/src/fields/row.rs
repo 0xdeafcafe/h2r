@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 
 use map::TagId;
 use serde_json::{Value, json};
-use tags::registry::{Field, Hint, Kind, Layout};
+use tags::registry::{Field, Hint, Kind, Layout, Unit};
 
 use crate::App;
 use crate::app::TagDoc;
@@ -235,6 +235,9 @@ pub fn chip(link: Link, effect: Effect, edited: bool, read_only: bool) -> Option
 /// The label: a named field's name in words; an unnamed one by its type
 /// and offset (`Value at +0x14`, `Padding, 8 bytes at +0x18`).
 pub fn label(f: &Field) -> String {
+    if let Some(label) = f.label.as_ref().filter(|_| f.named) {
+        return label.clone();
+    }
     if f.named {
         return words(&f.name);
     }
@@ -290,13 +293,34 @@ pub fn type_words(kind: &Kind) -> &'static str {
     }
 }
 
-/// The unit word: angles are stored in radians and shown in degrees.
+/// The unit in words: the definition's `unit=`, else `degrees` for an
+/// angle (stored in radians, shown in degrees).
 pub fn unit(f: &Field) -> Option<&'static str> {
+    if let Some(u) = f.unit {
+        return Some(unit_words(u));
+    }
     match f.kind {
         Kind::Float {
             hint: Hint::Angle, ..
         } => Some("degrees"),
         _ => None,
+    }
+}
+
+/// A unit as the row writes it after the value.
+pub fn unit_words(u: Unit) -> &'static str {
+    match u {
+        Unit::Seconds => "seconds",
+        Unit::Ticks => "ticks",
+        Unit::WorldUnits => "world units",
+        Unit::WorldUnitsPerSecond => "world units per second",
+        Unit::Degrees => "degrees",
+        Unit::DegreesPerSecond => "degrees per second",
+        Unit::Fraction => "fraction",
+        Unit::Percent => "percent",
+        Unit::Pixels => "pixels",
+        Unit::Count => "count",
+        Unit::Index => "index",
     }
 }
 

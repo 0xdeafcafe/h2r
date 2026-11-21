@@ -1303,10 +1303,11 @@ The panel draws the rows of `fields::rows` (`fields/row.rs`), which makes
 no UI calls; `tag.fields` returns the same rows
 ([tag-editing.md](tag-editing.md), "One row model"). A row is one line:
 a dot when the value differs from the loaded file, the label in words
-(the name with underscores as spaces, the first letter upper case, and
-`LOD`, `HUD`, `AI`, `BSP`, `ID`, `FOV` and `UV` upper case; an unnamed
-field by its type and offset, `Value at +0x14`), the widget, the unit
-(`degrees` for angles), and at the right edge when a change takes effect
+(the definition's `label=`, else the name with underscores as spaces,
+the first letter upper case, and `LOD`, `HUD`, `AI`, `BSP`, `ID`, `FOV`
+and `UV` upper case; an unnamed field by its type and offset, `Value at
++0x14`), the widget, the unit (the definition's `unit=` in words,
+`world units`; else `degrees` for an angle), and at the right edge when a change takes effect
 (`play::tag_sync::Effect`). That chip shows only with a game connected
 on the open map (`fields::Link`, set by `PanelState::follow`), never on
 a read-only row, and for a field whose effect is not known only once it
