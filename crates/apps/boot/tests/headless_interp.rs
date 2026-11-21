@@ -25,6 +25,7 @@ fn the_headless_gpu_backend_runs_reprojection_and_reports_its_counters() {
         for k in [
             "H2_RENDER_THREAD",
             "H2_RENDER_SCALE",
+            "H2_RESOLUTION",
             "H2_LIGHTING",
             "H2_BOOT_GFX_LIGHTING_AB",
         ] {

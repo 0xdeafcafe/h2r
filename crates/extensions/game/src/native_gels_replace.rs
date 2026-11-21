@@ -150,6 +150,9 @@ impl Replacement {
         cache: Arc<native_render::gels_gpu::ResidentCache>,
     ) -> Result<Self, String> {
         let draw = snapshot.draw;
+        if draw.retail_constants.is_some() || draw.ui_fit.is_some() {
+            return Err("gel attachment copies need distinct vertex constants".into());
+        }
         if draw.primitive != PrimitiveType::TriangleStrip
             || draw.vertex_count != 4
             || draw.indices.is_some()

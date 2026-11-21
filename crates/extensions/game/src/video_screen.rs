@@ -1,7 +1,7 @@
 //! Video Settings opens from the main menu's Settings list and the pause
 //! menu's Player Settings. The screen uses the Controls layout for Field
-//! of View, Frame Rate, Resolution, Lighting and LOD Distance. See
-//! docs/game/settings-menu.md "Video screen" for the trace.
+//! of View, Frame Rate, Resolution, Lighting, HUD Position and LOD Distance.
+//! See docs/game/settings-menu.md "Video screen" for the trace.
 //!
 //! **The row.** The Settings list (screen id 19, list handler `0x2b1cca` at
 //! `screen + 0x614`, vtable `0x45b060`) builds its datum array named
@@ -34,8 +34,9 @@ use settings::Store;
 
 use crate::layout_glue::Gm;
 use crate::setting_defs::{
-    AIM_ASSIST, FOV, LOD_DISTANCE, PAD_LIGHTBAR, PAD_SPEAKER, STEAM_LEFT_PAD, STEAM_SENSITIVITY,
-    STEAM_SPEAKER, TOUCH_ACCEL, TOUCH_AUTO_FIRE, TOUCH_CROUCH, TOUCH_GYRO, TOUCH_LOOK,
+    AIM_ASSIST, FOV, HUD_POSITION, LOD_DISTANCE, PAD_LIGHTBAR, PAD_SPEAKER, RESOLUTION,
+    STEAM_LEFT_PAD, STEAM_SENSITIVITY, STEAM_SPEAKER, TOUCH_ACCEL, TOUCH_AUTO_FIRE, TOUCH_CROUCH,
+    TOUCH_GYRO, TOUCH_LOOK,
 };
 use crate::speaker_row;
 use crate::ui::{self, List, Model, Row, Screen};
@@ -125,14 +126,29 @@ pub const SETTINGS_ROW_TEXT: u32 = 0x002b_1d6e;
 pub const SETTINGS_ROW_CHOSEN: u32 = 0x002b_1da9;
 pub const SETTINGS_THIRD_ITEM: u32 = 0x220;
 
+#[path = "video_screen_resolution.rs"]
+pub(crate) mod resolution;
+
+use crate::run_opts::NativeSize;
+
 /// The model of our rows: the Video screen from the settings that name it,
 /// the Video row that opens it on the Settings list (left out when the
 /// screen has no rows), and the controller options on Controls.
 pub fn model(store: Arc<Store>, on: Switches) -> Result<Model, String> {
+    model_with_native_size(store, on, Arc::new(|| crate::setting_defs::GUEST_FRAME))
+}
+
+pub fn model_with_native_size(
+    store: Arc<Store>,
+    on: Switches,
+    native: NativeSize,
+) -> Result<Model, String> {
     let mut video = Screen::new(SCREEN).title("Video Settings");
     if on.video_screen {
         video = video
             .rows_from_settings(&store.defs())
+            .with_picker(RESOLUTION.key)
+            .with_picker(HUD_POSITION.key)
             .with_picker(LOD_DISTANCE.key);
     }
     if !on.fov_row {
@@ -182,6 +198,7 @@ pub fn model(store: Arc<Store>, on: Switches) -> Result<Model, String> {
         extensions,
         vec![MODEL_IDS, MORE_MODEL_IDS],
     )
+    .map(|m| m.with_native_size(native))
 }
 
 /// The Voice screen's id and list.
@@ -240,7 +257,7 @@ pub fn text_row<M: Gm>(m: &M, esp: u32) -> Option<i16> {
 mod tests {
     use super::*;
     use crate::layout_glue::{chosen_row, is_ours};
-    use crate::setting_defs::{ALL, FPS, LIGHTING, PAD_MUTE, RENDER_SCALE};
+    use crate::setting_defs::{ALL, FPS, LIGHTING, PAD_MUTE};
     use crate::ui::{Chosen, RowKind};
     use settings::Value;
     use std::collections::BTreeMap;
@@ -322,8 +339,9 @@ mod tests {
             [
                 RowKind::Setting(FOV.key),
                 RowKind::Setting(FPS.key),
-                RowKind::Setting(RENDER_SCALE.key),
+                RowKind::Setting(RESOLUTION.key),
                 RowKind::Setting(LIGHTING.key),
+                RowKind::Setting(HUD_POSITION.key),
                 RowKind::Setting(LOD_DISTANCE.key),
             ]
         );
@@ -336,7 +354,7 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(no_fov.rows(LIST).len(), 4);
+        assert_eq!(no_fov.rows(LIST).len(), 5);
         assert_eq!(m.count(List::Settings, SETTINGS_ROWS), 3);
         assert_eq!(m.count(List::Controls, 6), 11);
         // No Video screen: no Video row on Settings either.
@@ -528,10 +546,14 @@ mod tests {
         let m = all();
         assert_eq!(drawn(&m, LIST, 0), s("Field of View", "70"));
         assert_eq!(drawn(&m, LIST, 1), s("Frame Rate", "30"));
-        assert_eq!(drawn(&m, LIST, 2), s("Resolution", "640x480"));
+        assert_eq!(
+            m.line(m.row(LIST, 2).unwrap()),
+            "Resolution: Native (640x480)"
+        );
         assert_eq!(drawn(&m, LIST, 3), s("Lighting", "Retail"));
-        assert_eq!(drawn(&m, LIST, 4), s("LOD Distance", "1x"));
-        assert_eq!(drawn(&m, LIST, 5), None);
+        assert_eq!(drawn(&m, LIST, 4), s("HUD Position", "Pinned"));
+        assert_eq!(drawn(&m, LIST, 5), s("LOD Distance", "1x"));
+        assert_eq!(drawn(&m, LIST, 6), None);
         assert_eq!(drawn(&m, LIST, -1), None);
     }
 
@@ -559,12 +581,12 @@ mod tests {
         let store = Arc::new(Store::load(ALL, Some(&path), &|_| None, &[]).0);
         let fov = store.handle::<u32>(FOV.key);
         let fps = store.handle::<u32>(FPS.key);
-        let scale = store.handle::<u32>(RENDER_SCALE.key);
+        let resolution = store.handle::<settings::Resolution>(RESOLUTION.key);
         let mute = store.handle::<bool>(PAD_MUTE.key);
         let lighting = store.handle::<u32>(LIGHTING.key);
         // What the window, the view backend and the HID thread are told.
         let told = Arc::new(std::sync::Mutex::new(Vec::new()));
-        for key in [FPS.key, RENDER_SCALE.key, LIGHTING.key, PAD_MUTE.key] {
+        for key in [FPS.key, RESOLUTION.key, LIGHTING.key, PAD_MUTE.key] {
             let told = Arc::clone(&told);
             store.on_change(key, move |v| told.lock().unwrap().push((key, *v)));
         }
@@ -587,9 +609,20 @@ mod tests {
         );
         assert_eq!(drawn(&m, LIST, 0), s("Field of View", "75"));
         assert_eq!(fov.get(), 75, "applies at once");
-        press(&m, LIST, 2);
-        assert_eq!(drawn(&m, LIST, 2), s("Resolution", "1280x960"));
-        assert_eq!(scale.get(), 2, "applies at once");
+        use crate::ui_kit::picker;
+        assert_eq!(press(&m, LIST, 2), Chosen::Open(picker::NAME));
+        let pick = picker::current().unwrap();
+        assert_eq!(pick.values, ["Native (640x480)", "640x480"]);
+        assert_eq!(pick.current, 0);
+        (pick.set)(1);
+        assert_eq!(m.line(m.row(LIST, 2).unwrap()), "Resolution: 640x480");
+        assert_eq!(resolution.get(), settings::Resolution::Fixed(640, 480));
+        assert_eq!(press(&m, LIST, 4), Chosen::Open(picker::NAME));
+        let pick = picker::current().unwrap();
+        assert_eq!(pick.values, ["Centered", "Pinned"]);
+        assert_eq!(pick.current, 1);
+        (pick.set)(0);
+        assert_eq!(drawn(&m, LIST, 4), s("HUD Position", "Centered"));
         assert_eq!(press(&m, List::Settings, 2), Chosen::Open(SCREEN));
         assert_eq!(
             drawn(&m, List::Controls, 6),
@@ -634,7 +667,10 @@ mod tests {
                 (FPS.key, Value::Int(120)),
                 (FPS.key, Value::Int(0)),
                 (FPS.key, Value::Int(30)),
-                (RENDER_SCALE.key, Value::Int(2)),
+                (
+                    RESOLUTION.key,
+                    settings::Resolution::Fixed(640, 480).value()
+                ),
                 (LIGHTING.key, Value::Int(1)),
                 (PAD_MUTE.key, Value::Bool(false)),
             ]
@@ -647,7 +683,7 @@ mod tests {
         let t: toml::Table = std::fs::read_to_string(&path).unwrap().parse().unwrap();
         assert_eq!(t["graphics"]["fov"].as_integer(), Some(75));
         assert_eq!(t["graphics"]["fps"].as_integer(), Some(30));
-        assert_eq!(t["graphics"]["render_scale"].as_integer(), Some(2));
+        assert_eq!(t["graphics"]["resolution"].as_str(), Some("640x480"));
         assert_eq!(t["graphics"]["lighting"].as_str(), Some("e3"));
         assert_eq!(t["pad_speaker"]["enabled"].as_bool(), Some(true));
         assert_eq!(t["pad"]["mute_button"].as_bool(), Some(false));
@@ -655,8 +691,46 @@ mod tests {
         assert_eq!(t["steam_pad"]["sensitivity"].as_integer(), Some(6));
         assert_eq!(t["steam_pad"]["left_pad"].as_str(), Some("stick"));
         let next = Store::load(ALL, Some(&path), &|_| None, &[]).0;
-        assert_eq!(next.get(RENDER_SCALE.key), Some(Value::Int(2)));
+        assert_eq!(
+            next.get(RESOLUTION.key),
+            Some(settings::Resolution::Fixed(640, 480).value())
+        );
+        assert_eq!(next.get(HUD_POSITION.key), Some(Value::Int(0)));
         assert_eq!(next.get(LIGHTING.key), Some(Value::Int(1)));
+    }
+
+    #[test]
+    fn native_follows_a_resize_and_an_open_pick_keeps_its_values() {
+        use crate::ui_kit::picker;
+        let dims = Arc::new(std::sync::Mutex::new((5120, 2880)));
+        let read = Arc::clone(&dims);
+        let m = model_with_native_size(
+            Arc::new(Store::defaults(ALL)),
+            Switches::ALL,
+            Arc::new(move || *read.lock().unwrap()),
+        )
+        .unwrap();
+        let row = m.row(LIST, 2).unwrap();
+        let slot = m.texts(row)[1].1;
+        m.bind_resolution_slot(&[(slot, 0x8000)]);
+        let native = |w, h| resolution::label(settings::Resolution::Native, (w, h));
+        let studio = native(5120, 2880);
+        assert_eq!(m.resolution_write(), Some((0x8000, format!("{studio}\0").into_bytes())));
+        assert_eq!(m.line(row), format!("Resolution: {studio}"));
+        assert_eq!(m.press(row), Chosen::Open(picker::NAME));
+        let open = picker::current().unwrap();
+        *dims.lock().unwrap() = (2560, 1600);
+        assert_eq!(
+            m.resolution_write(),
+            Some((0x8000, b"Native (2560x1600)\0".to_vec()))
+        );
+        assert_eq!(m.line(row), "Resolution: Native (2560x1600)");
+        (open.set)(2);
+        assert_eq!(m.line(row), "Resolution: 1920x1080");
+        assert_eq!(m.press(row), Chosen::Open(picker::NAME));
+        let next = picker::current().unwrap();
+        assert_eq!(next.values[0], "Native (2560x1600)");
+        assert_eq!(next.values[next.current], "1920x1080");
     }
 
     #[test]
@@ -701,9 +775,9 @@ mod tests {
             "Video Settings",
             "Uncapped",
             "60",
-            "640x480",
-            "2560x1920",
-            "3840x2880",
+            "HUD Position",
+            "Centered",
+            "Pinned",
             "Off",
             "150",
             "30",

@@ -10,8 +10,8 @@
 //! *reference* renders at the guest's size and answers everything the guest
 //! can observe: surface and depth read-backs, pixel counts, draw outcomes,
 //! the judge and every capability question. The *view* renders the frame
-//! buffers and the depth buffer at an integer multiple of their size and is
-//! what is shown. Nothing the view does reaches the device, so the guest's
+//! buffers and the depth buffer on the horizontal and vertical grids of
+//! the selected output resolution. Nothing the view does reaches the device, so the guest's
 //! values are the 1x run's by construction.
 //!
 //! What the view keeps at scale: every surface made at the frame size (the
@@ -47,15 +47,14 @@
 //! A view failure never reaches the guest: it is counted and that frame is
 //! shown from the reference's image.
 //!
-//! **Changing the scale during a run.** [`ScaledBackend::follow_scale`]
-//! gives it a source of the wanted scale (the Video screen's Resolution
-//! setting), read at every present. A change is made at that frame
+//! **Changing the scale during a run.** [`ScaledBackend::follow_resolution`]
+//! reads the Video screen's requested raster at each present. A change is made at that frame
 //! boundary, on whichever thread presents (the render thread under
 //! [`crate::ThreadedBackend`]): every scaled surface is made again at the
 //! new scale and filled from the reference's, and the device's handles are
 //! mapped onto the new ones, so the guest and the device see nothing. At
-//! scale 1 the view sleeps: it draws nothing and each frame is the
-//! reference's ([`ScaleStats::reference_frames`]), so a run can start at
+//! 640x480 with a retail lens and retail lighting the view sleeps and
+//! presents the reference ([`ScaleStats::reference_frames`]), so a run can start at
 //! 1x and go up without a second backend's work until it does.
 //!
 //! **The Lighting row** ([`Lighting`], [`ScaledBackend::follow_lighting`],
@@ -78,6 +77,7 @@
 mod single;
 
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use gfx::state::{ColorWriteMask, DepthBufferMode, StencilOp};
 use gfx::texture::{DecodeOptions, DecodedTexture, TextureDesc};
@@ -87,9 +87,10 @@ use crate::backend::{Backend, DrawJudge, DrawOutcome, GuestLayoutKind, RectClear
 use crate::gfx_backend::{GfxBackend, HostTexture};
 
 pub use crate::{Lighting, MAX_SCALE};
+pub use gfx::renderer::RenderScale;
 
-/// `H2_RENDER_SCALE`: unset, empty or `1` is 1 (no view backend at all);
-/// `2`..=`6` render the frame at that multiple.
+/// Parse the legacy integer scale. The resolution setting resolves Native
+/// and explicit pixel dimensions before constructing the backend.
 pub fn render_scale_from(value: Option<&str>) -> Result<u32, String> {
     let Some(v) = value.map(str::trim).filter(|v| !v.is_empty()) else {
         return Ok(1);
@@ -147,6 +148,9 @@ pub fn view_for<V>(scale: u32, make: impl FnOnce() -> V) -> Option<V> {
 /// their guest size, and access to its reference `R`'s resources (the two
 /// are on one device).
 pub trait ScaleView<R: Backend>: Backend {
+    /// A nested reference in a lighting A/B also feeds a display image.
+    const REFERENCE_INCLUDES_DISPLAY: bool = false;
+
     /// A surface `scale` times `width x height`. Draws and clears into it
     /// keep taking guest-pixel rectangles; the backend scales them.
     fn create_scaled_surface(
@@ -155,7 +159,7 @@ pub trait ScaleView<R: Backend>: Backend {
         width: u32,
         height: u32,
         depth: bool,
-        scale: u32,
+        scale: RenderScale,
     ) -> Result<Self::Surface, String>;
     /// A render-to-texture colour target `scale` times `width x height`
     /// ([`Backend::create_texture_target`] at scale).
@@ -164,7 +168,7 @@ pub trait ScaleView<R: Backend>: Backend {
         format: D3DFormat,
         width: u32,
         height: u32,
-        scale: u32,
+        scale: RenderScale,
     ) -> Result<Self::Surface, String>;
     /// Single-copy operations (the nested lighting A/B uses exact copies).
     fn import_guest(&mut self, _reference: &R, _s: R::Surface) -> Result<Self::Surface, String> {
@@ -303,7 +307,11 @@ pub struct ScaleStats {
     pub reference_frames: u64,
     /// Scale changes made during the run.
     pub rescales: u64,
-    /// The scale in effect.
+    /// Requested physical dimensions of the 640x480 frame.
+    pub output: (u32, u32),
+    /// Physical compositor viewport sampled for this frame.
+    pub presentation: (u32, u32),
+    /// Nearest whole vertical factor for legacy reports.
     pub scale: u32,
     /// The factor shadow maps are made at in the view ([`shadow_scale`]; 1:
     /// at the guest's size, only in the reference).
@@ -366,7 +374,7 @@ pub struct ScaledBackend<R: Backend, V: ScaleView<R>> {
     reference: R,
     view: V,
     single_copy: bool,
-    scale: u32,
+    scale: RenderScale,
     /// The frame size: the first colour surface's (the back buffer).
     frame: Option<(u32, u32)>,
     /// Every scaled surface, in the order made: the colour ones serve
@@ -376,7 +384,11 @@ pub struct ScaledBackend<R: Backend, V: ScaleView<R>> {
     /// A scale change has mapped a handle the device holds onto another.
     remapped: bool,
     /// Where the wanted scale comes from ([`ScaledBackend::follow_scale`]).
-    follow: Option<Box<dyn Fn() -> u32 + Send>>,
+    follow: Option<Box<dyn Fn() -> RenderScale + Send>>,
+    presentation: Option<Box<dyn Fn((u32, u32)) -> (u32, u32) + Send>>,
+    /// Keep the accepted raster after a resize allocation/transfer failure.
+    /// The same request retries after a second without logging every present.
+    failed_target: Option<FailedTarget>,
     /// The view has recorded work not yet submitted.
     view_pending: bool,
     /// A view call failed since the last present.
@@ -404,6 +416,21 @@ struct ShadowLevel<R, V> {
     size: (u32, u32),
     format: D3DFormat,
     view: Option<ShadowView<V>>,
+}
+
+#[derive(Clone, Copy)]
+struct FailedTarget {
+    scale: RenderScale,
+    lighting: Lighting,
+    retry_at: Instant,
+}
+
+impl FailedTarget {
+    /// A fresh setting may be tried at the next present. Keep retrying the
+    /// same allocation at one-second intervals while the current image shows.
+    fn waiting(self, scale: RenderScale, lighting: Lighting, now: Instant) -> bool {
+        (self.scale, self.lighting) == (scale, lighting) && now < self.retry_at
+    }
 }
 
 /// The view's copy of a [`ShadowLevel`].
@@ -454,16 +481,22 @@ impl<R: Backend, V: ScaleView<R>> ScaledBackend<R, V> {
     }
 
     /// Select the exact 1x reference or single-copy policy at construction.
-    pub fn with_single_copy(reference: R, mut view: V, scale: u32, single_copy: bool) -> Result<Self, String> {
+    pub fn with_single_copy(reference: R, view: V, scale: u32, single_copy: bool) -> Result<Self, String> {
         if !(1..=MAX_SCALE).contains(&scale) {
             return Err(format!("render scale {scale} is not 1 to {MAX_SCALE}"));
         }
+        Self::with_resolution(reference, view, scale.into(), single_copy)
+    }
+
+    /// Select frame dimensions independently on each axis. All dimensions
+    /// above the Backend interface remain in guest pixels.
+    pub fn with_resolution(reference: R, mut view: V, scale: RenderScale, single_copy: bool) -> Result<Self, String> {
         view.stop_counting();
         let mut reference = reference;
         view.share_results(&mut reference);
         if single_copy {
             view.enable_surface_aliases(&mut reference);
-            if scale > 1 { view.move_counter(&mut reference, true); }
+            if scale != RenderScale::ONE { view.move_counter(&mut reference, true); }
         }
         Ok(Self {
             single_copy,
@@ -474,10 +507,14 @@ impl<R: Backend, V: ScaleView<R>> ScaledBackend<R, V> {
             scaled: Vec::new(),
             remapped: false,
             follow: None,
+            presentation: None,
+            failed_target: None,
             view_pending: false,
             frame_failed: false,
             stats: ScaleStats {
-                scale,
+                scale: scale.vertical_rounded(),
+                output: scale.size(640, 480),
+                presentation: scale.size(640, 480),
                 shadow_scale: 1,
                 ..ScaleStats::default()
             },
@@ -504,14 +541,35 @@ impl<R: Backend, V: ScaleView<R>> ScaledBackend<R, V> {
 
     /// The scale in effect.
     pub fn scale(&self) -> u32 {
-        self.scale
+        self.scale.vertical_rounded()
     }
+
+    /// Current display raster grid.
+    pub fn resolution(&self) -> RenderScale { self.scale }
 
     /// Reads the wanted scale from `wanted` at every present and changes to
     /// it there (module docs). Values outside 1 to [`MAX_SCALE`] are
     /// clamped.
     pub fn follow_scale(&mut self, wanted: impl Fn() -> u32 + Send + 'static) {
+        self.follow_resolution(move || wanted().clamp(1, MAX_SCALE).into());
+    }
+
+    /// Sample the wanted output at the same frame boundary as the lighting setting.
+    pub fn follow_resolution(&mut self, wanted: impl Fn() -> RenderScale + Send + 'static) {
         self.follow = Some(Box::new(wanted));
+    }
+
+    /// Sample the compositor's destination at each present. A forced aspect or
+    /// stretch can change the presentation while the 640×480 raster stays fixed.
+    pub fn follow_presentation(&mut self, viewport: impl Fn((u32, u32)) -> (u32, u32) + Send + 'static) {
+        self.presentation = Some(Box::new(viewport));
+        self.retarget(self.scale, self.lighting);
+    }
+
+    pub(super) fn anamorphic_guest_frame(&self) -> bool {
+        let (w, h) = self.stats.presentation;
+        self.presentation.is_some() && self.scale == RenderScale::ONE
+            && w != 0 && h != 0 && u64::from(w) * 3 != u64::from(h) * 4
     }
 
     /// The lighting in effect.
@@ -543,26 +601,32 @@ impl<R: Backend, V: ScaleView<R>> ScaledBackend<R, V> {
 
     /// The factor the view's shadow maps are at now ([`shadow_scale`]).
     fn shadow_factor(&self) -> u32 {
-        shadow_scale(self.scale, self.lighting)
+        shadow_scale(self.scale.vertical_rounded(), self.lighting)
     }
 
-    /// Whether the view draws: above render scale 1, or with scaled
-    /// shadow maps (E3 lighting, whose view runs at 1x too).
+    /// Whether frame-size display surfaces carry a distinct raster, E3
+    /// lighting, or an anamorphic presentation alongside the exact reference.
     fn awake(&self) -> bool {
-        self.scale > 1 || self.shadow_factor() > 1
+        self.scale != RenderScale::ONE || self.shadow_factor() > 1
+            || (!self.single_copy && self.anamorphic_guest_frame())
     }
 
     /// Takes the wanted scale and lighting at a frame boundary.
-    fn retarget(&mut self, scale: u32, lighting: Lighting) {
-        let scale = scale.clamp(1, MAX_SCALE);
+    fn retarget(&mut self, scale: RenderScale, lighting: Lighting) {
         let was_awake = self.awake();
+        let was_single = self.single();
+        let retry_wait = self.failed_target.is_some_and(|failed| failed.waiting(scale, lighting, Instant::now()));
+        if self.failed_target.is_some_and(|f| (f.scale, f.lighting) != (scale, lighting)) {
+            self.failed_target = None;
+        }
+        let (scale, lighting) = if retry_wait { (self.scale, self.lighting) } else { (scale, lighting) };
         // A scaled shadow can be the only up-to-date image in single-copy
         // mode. Preserve it before retiring or handing it to the exact path.
-        if self.single() && (scale == 1 || self.shadow_factor() != shadow_scale(scale, lighting)) {
+        if self.single() && (scale == RenderScale::ONE || self.shadow_factor() != shadow_scale(scale.vertical_rounded(), lighting)) {
             for shadow in &self.shadows {
                 if let Some(v) = &shadow.view && !v.stale_depth && !v.stale_stencil
                     && let Err(e) = self.view.resize(v.depth, shadow.guest.expect("imported shadow")) {
-                    eprintln!("d3d: keeping current scale and lighting: {e}");
+                    self.resize_failed(scale, lighting, e);
                     return;
                 }
             }
@@ -573,12 +637,20 @@ impl<R: Backend, V: ScaleView<R>> ScaledBackend<R, V> {
             self.view.set_hard_shadows(lighting == Lighting::E3);
         }
         let old = self.scale;
-        if scale != old {
-            self.rescale(scale);
+        if scale != old && let Err(e) = self.rescale(scale) {
+            self.resize_failed(scale, lighting, e);
+        } else if !retry_wait {
+            self.failed_target = None;
         }
-        // Woken by the lighting alone: the view's surfaces hold what they
-        // held when it went to sleep.
-        if self.scale == old && self.awake() && !was_awake {
+        self.stats.presentation = self.presentation.as_ref()
+            .map_or(self.stats.output, |viewport| viewport(self.stats.output));
+        if self.single() != was_single {
+            let to_display = self.single();
+            self.view.move_counter(&mut self.reference, to_display);
+        }
+        // A freshly allocated exact view or one waking from sleep starts
+        // with the reference's contents until the next draw overwrites them.
+        if self.awake() && ((!was_awake && self.scale == old) || (!self.single_copy && self.scale != old)) {
             if let Err(e) = self.view.submit_recorded() {
                 self.view_failed("submit", e);
             }
@@ -597,6 +669,17 @@ impl<R: Backend, V: ScaleView<R>> ScaledBackend<R, V> {
                 self.drop_shadow_view(i);
             }
         }
+    }
+
+    fn resize_failed(&mut self, scale: RenderScale, lighting: Lighting, error: String) {
+        if self.failed_target.is_none() {
+            eprintln!("d3d: keeping render resolution {} after resize to {scale} failed: {error}", self.scale);
+        }
+        self.failed_target = Some(FailedTarget {
+            scale,
+            lighting,
+            retry_at: Instant::now() + Duration::from_secs(1),
+        });
     }
 
     /// Fills every scaled surface from the reference's, each guest pixel
@@ -639,7 +722,7 @@ impl<R: Backend, V: ScaleView<R>> ScaledBackend<R, V> {
             self.drop_shadow_view(i);
             let (format, (w, h)) = (self.shadows[i].format, self.shadows[i].size);
             let proxy_format = D3DFormat::LinA8R8G8B8;
-            let depth = match self.view.create_scaled_surface(format, w, h, true, f) {
+            let depth = match self.view.create_scaled_surface(format, w, h, true, f.into()) {
                 Ok(d) => d,
                 Err(e) => {
                     self.view_failed("shadow map", e);
@@ -648,7 +731,7 @@ impl<R: Backend, V: ScaleView<R>> ScaledBackend<R, V> {
             };
             let proxy = match self
                 .view
-                .create_scaled_surface(proxy_format, w, h, false, f)
+                .create_scaled_surface(proxy_format, w, h, false, f.into())
             {
                 Ok(p) => p,
                 Err(e) => {
@@ -866,10 +949,9 @@ impl<R: Backend, V: ScaleView<R>> ScaledBackend<R, V> {
 
     /// Makes every scaled surface again at `scale` and fills it from the
     /// reference's. Nothing changes if one cannot be made.
-    fn rescale(&mut self, scale: u32) {
-        let scale = scale.clamp(1, MAX_SCALE);
+    fn rescale(&mut self, scale: RenderScale) -> Result<(), String> {
         if scale == self.scale {
-            return;
+            return Ok(());
         }
         let old = self.scale;
         if let Err(e) = self.view.submit_recorded() {
@@ -892,8 +974,7 @@ impl<R: Backend, V: ScaleView<R>> ScaledBackend<R, V> {
                     for v in made {
                         let _ = self.view.destroy_surface(v);
                     }
-                    eprintln!("d3d: render scale stays {old}: a {w}x{h} surface at {scale}x: {e}");
-                    return;
+                    return Err(format!("a {w}x{h} surface: {e}"));
                 }
             }
         }
@@ -902,27 +983,23 @@ impl<R: Backend, V: ScaleView<R>> ScaledBackend<R, V> {
         if self.single_copy {
             for (s, &new) in self.scaled.iter().zip(&made) {
                 let guest = s.guest.expect("imported 1x surface");
-                let from = if old > 1 { s.current } else { guest };
-                let to = if scale > 1 { new } else { guest };
+                let from = if old != RenderScale::ONE { s.current } else { guest };
+                let to = if scale != RenderScale::ONE { new } else { guest };
                 if let Err(e) = self.view.resize(from, to) {
                     for v in made.iter().copied() { let _ = self.view.destroy_surface(v); }
-                    eprintln!("d3d: render scale stays {old}: {e}");
-                    return;
+                    return Err(e);
                 }
-                if scale == 1 && self.lighting == Lighting::E3 {
+                if scale == RenderScale::ONE && self.lighting == Lighting::E3 {
                     if let Err(e) = self.view.resize(guest, new) {
                         for v in made.iter().copied() { let _ = self.view.destroy_surface(v); }
-                        eprintln!("d3d: render scale stays {old}: {e}");
-                        return;
+                        return Err(e);
                     }
                 }
             }
-            if (old == 1) != (scale == 1) {
-                self.view.move_counter(&mut self.reference, scale > 1);
-            }
         }
         self.scale = scale;
-        self.stats.scale = scale;
+        self.stats.scale = scale.vertical_rounded();
+        self.stats.output = scale.size(640, 480);
         self.stats.rescales += 1;
         self.remapped = true;
         for (i, v) in made.into_iter().enumerate() {
@@ -931,12 +1008,7 @@ impl<R: Backend, V: ScaleView<R>> ScaledBackend<R, V> {
                 self.view_failed("destroy", e);
             }
         }
-        // Waking or changing: the new surfaces start as the reference's
-        // image, each guest pixel repeated, until they are drawn again.
-        if self.awake() && !self.single_copy {
-            self.fill_scaled();
-        }
-        eprintln!("d3d: render scale {old}x -> {scale}x");
+        Ok(())
     }
 
     /// What the view did differently so far.
@@ -1331,10 +1403,15 @@ impl<R: Backend, V: ScaleView<R>> Backend for ScaledBackend<R, V> {
             return self.draw_single(color, depth, draw, textures);
         }
         self.before_shared_write(&color);
+        let reference_draw = if V::REFERENCE_INCLUDES_DISPLAY {
+            std::borrow::Cow::Borrowed(draw)
+        } else {
+            draw.for_reference()
+        };
         let out = self.reference.draw(
             color.reference,
             depth.map(|d| d.reference),
-            draw,
+            &reference_draw,
             textures.map(|t| t.map(|t| &t.reference)),
         )?;
         let drawn = out == DrawOutcome::Drawn;
@@ -1620,8 +1697,8 @@ impl<R: Backend, V: ScaleView<R>> Backend for ScaledBackend<R, V> {
             if src.size.0 > dst.size.0 || src.size.1 > dst.size.1 {
                 return Err("source rectangle exceeds destination surface".into());
             }
-            let scale = if d == self.guest(dst) { 1 } else { self.scale };
-            self.view.copy_scaled(s, d, (src.size.0 * scale, src.size.1 * scale))?;
+            let scale = if d == self.guest(dst) { RenderScale::ONE } else { self.scale };
+            self.view.copy_scaled(s, d, scale.size(src.size.0, src.size.1))?;
             return Ok(true);
         }
         self.before_shared_write(&dst);
@@ -2009,7 +2086,7 @@ impl<R: Backend, V: ScaleView<R>> Backend for ScaledBackend<R, V> {
         let whole = offset == 0
             && format == D3DFormat::LinD24S8
             && (desc.width, desc.height) == (width, height)
-            && desc.pitch == pitch
+            && desc.pitch == pitch && pitch == width * 4
             && desc.levels == 1
             && desc.kind == gfx::texture::TextureKind::D2
             && desc.format.layout() == gfx::format::Layout::Linear;
@@ -2018,18 +2095,20 @@ impl<R: Backend, V: ScaleView<R>> Backend for ScaledBackend<R, V> {
             .live(depth.view)
             .filter(|_| whole && self.view.defers_depth_aliases())
         {
+            let (w, h) = s.size(width, height);
+            // This whole-buffer view has one 32-bit word per physical pixel.
             let scaled = TextureDesc {
-                width: desc.width * s,
-                height: desc.height * s,
-                pitch: desc.pitch * s,
+                width: w,
+                height: h,
+                pitch: w * 4,
                 ..desc.clone()
             };
             match self.view.depth_alias_texture(
                 vd,
                 format,
-                width * s,
-                height * s,
-                pitch * s,
+                w,
+                h,
+                w * 4,
                 generation,
                 0,
                 &scaled,
@@ -2121,27 +2200,16 @@ impl<R: Backend, V: ScaleView<R>> Backend for ScaledBackend<R, V> {
     }
 }
 
-/// `bytes`, `width x height` texels of `bpp` bytes in tight rows, with each
-/// texel repeated into a `scale x scale` block.
-fn repeat_texels(bytes: &[u8], width: u32, height: u32, bpp: u32, scale: u32) -> Vec<u8> {
-    let (w, h, bpp, s) = (
-        width as usize,
-        height as usize,
-        bpp as usize,
-        scale as usize,
-    );
-    let mut out = Vec::with_capacity(bytes.len() * s * s);
-    for y in 0..h {
-        let row = &bytes[y * w * bpp..(y + 1) * w * bpp];
-        let start = out.len();
-        for texel in row.chunks_exact(bpp) {
-            for _ in 0..s {
-                out.extend_from_slice(texel);
-            }
-        }
-        let end = out.len();
-        for _ in 1..s {
-            out.extend_from_within(start..end);
+/// Nearest-neighbour refill for a CPU-readable depth format, in tight rows.
+fn resize_texels(bytes: &[u8], src: (u32, u32), dst: (u32, u32), bpp: u32) -> Vec<u8> {
+    let bpp = bpp as usize;
+    let mut out = Vec::with_capacity(dst.0 as usize * dst.1 as usize * bpp);
+    for y in 0..dst.1 {
+        let row = (u64::from(y) * u64::from(src.1) / u64::from(dst.1)) * u64::from(src.0);
+        for x in 0..dst.0 {
+            let col = u64::from(x) * u64::from(src.0) / u64::from(dst.0);
+            let i = (row + col) as usize * bpp;
+            out.extend_from_slice(&bytes[i..i + bpp]);
         }
     }
     out
@@ -2154,15 +2222,15 @@ impl ScaleView<GfxBackend> for GfxBackend {
         width: u32,
         height: u32,
         depth: bool,
-        scale: u32,
+        scale: RenderScale,
     ) -> Result<gfx::surface::SurfaceId, String> {
-        let (w, h) = (width.checked_mul(scale), height.checked_mul(scale));
-        let (Some(w), Some(h)) = (w, h) else {
-            return Err(format!("{width}x{height} at {scale}x overflows"));
-        };
+        let (w, h) = scale.size(width, height);
+        if w.max(h) > self.ctx.device.limits().max_texture_dimension_2d {
+            return Err(format!("{w}x{h} exceeds the device texture limit"));
+        }
         let s = self.create_surface(format, w, h, depth)?;
-        if scale > 1 {
-            self.scales.insert(s, scale);
+        if scale != RenderScale::ONE {
+            self.scales.insert(s, RenderScale::between((width, height), (w, h)).unwrap());
         }
         Ok(s)
     }
@@ -2172,15 +2240,15 @@ impl ScaleView<GfxBackend> for GfxBackend {
         format: D3DFormat,
         width: u32,
         height: u32,
-        scale: u32,
+        scale: RenderScale,
     ) -> Result<gfx::surface::SurfaceId, String> {
-        let (w, h) = (width.checked_mul(scale), height.checked_mul(scale));
-        let (Some(w), Some(h)) = (w, h) else {
-            return Err(format!("{width}x{height} at {scale}x overflows"));
-        };
+        let (w, h) = scale.size(width, height);
+        if w.max(h) > self.ctx.device.limits().max_texture_dimension_2d {
+            return Err(format!("{w}x{h} exceeds the device texture limit"));
+        }
         let s = self.create_texture_target(format, w, h)?;
-        if scale > 1 {
-            self.scales.insert(s, scale);
+        if scale != RenderScale::ONE {
+            self.scales.insert(s, RenderScale::between((width, height), (w, h)).unwrap());
         }
         Ok(s)
     }
@@ -2211,6 +2279,9 @@ impl ScaleView<GfxBackend> for GfxBackend {
     }
 
     fn move_counter(&mut self, reference: &mut GfxBackend, to_display: bool) {
+        if let Some(counter) = self.counter.as_mut() {
+            counter.clear_scratch();
+        }
         std::mem::swap(&mut self.counter, &mut reference.counter);
         self.count_samples = to_display;
     }
@@ -2261,13 +2332,6 @@ impl ScaleView<GfxBackend> for GfxBackend {
                 // Read the reference's words back, repeat each, and draw
                 // them into the scaled depth (a guest write's path).
                 let (sd, dd) = (*s.desc(), *d.desc());
-                let scale = dd.width / sd.width.max(1);
-                if scale == 0 || (sd.width * scale, sd.height * scale) != (dd.width, dd.height) {
-                    return Err(format!(
-                        "depth fill from {}x{} into {}x{}",
-                        sd.width, sd.height, dd.width, dd.height
-                    ));
-                }
                 let format = match sd.format {
                     D3DFormat::D24S8 | D3DFormat::LinD24S8 => D3DFormat::LinD24S8,
                     D3DFormat::D16 | D3DFormat::LinD16 => D3DFormat::LinD16,
@@ -2288,7 +2352,7 @@ impl ScaleView<GfxBackend> for GfxBackend {
                         Err(e) => return Err(e.to_string()),
                     };
                 reference.readbacks += 1;
-                let words = repeat_texels(&bytes, sd.width, sd.height, bpp, scale);
+                let words = resize_texels(&bytes, (sd.width, sd.height), (dd.width, dd.height), bpp);
                 let desc = TextureDesc::new(
                     format,
                     gfx::texture::TextureKind::D2,
@@ -2341,13 +2405,15 @@ impl ScaleView<GfxBackend> for GfxBackend {
 /// takes the inner reference's textures and pixels, as a view over a
 /// plain backend does, so the two views differ only where lighting does.
 impl ScaleView<ScaledBackend<GfxBackend, GfxBackend>> for GfxBackend {
+    const REFERENCE_INCLUDES_DISPLAY: bool = true;
+
     fn create_scaled_surface(
         &mut self,
         format: D3DFormat,
         width: u32,
         height: u32,
         depth: bool,
-        scale: u32,
+        scale: RenderScale,
     ) -> Result<gfx::surface::SurfaceId, String> {
         <Self as ScaleView<GfxBackend>>::create_scaled_surface(self, format, width, height, depth, scale)
     }
@@ -2357,7 +2423,7 @@ impl ScaleView<ScaledBackend<GfxBackend, GfxBackend>> for GfxBackend {
         format: D3DFormat,
         width: u32,
         height: u32,
-        scale: u32,
+        scale: RenderScale,
     ) -> Result<gfx::surface::SurfaceId, String> {
         <Self as ScaleView<GfxBackend>>::create_scaled_texture_target(self, format, width, height, scale)
     }
@@ -2423,8 +2489,16 @@ pub fn lighting_ab(
     if scale < 2 {
         return Err(format!("the lighting A/B draws at a render scale of 2 or more, not {scale}"));
     }
-    let inner = ScaledBackend::with_single_copy(reference, retail, scale, false)?;
-    let mut outer = ScaledBackend::with_single_copy(inner, e3, scale, false)?;
+    if scale > MAX_SCALE { return Err(format!("render scale exceeds {MAX_SCALE}")); }
+    lighting_ab_at_resolution(reference, retail, e3, scale.into())
+}
+
+/// Retail and E3 views share one physical output grid and an exact reference.
+pub fn lighting_ab_at_resolution(reference: GfxBackend, retail: GfxBackend, e3: GfxBackend,
+    scale: RenderScale) -> Result<LightingAb, String> {
+    if scale == RenderScale::ONE { return Err("the lighting A/B needs an active display view".into()); }
+    let inner = ScaledBackend::with_resolution(reference, retail, scale, false)?;
+    let mut outer = ScaledBackend::with_resolution(inner, e3, scale, false)?;
     outer.set_lighting(Lighting::E3);
     Ok(outer)
 }
@@ -2432,6 +2506,21 @@ pub fn lighting_ab(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn failed_resize_allows_a_different_pick_immediately() {
+        let scale = RenderScale::for_output(5120, 2880).unwrap();
+        let at = Instant::now();
+        let failed = FailedTarget {
+            scale,
+            lighting: Lighting::Retail,
+            retry_at: at + Duration::from_secs(1),
+        };
+        assert!(failed.waiting(scale, Lighting::Retail, at + Duration::from_millis(999)));
+        assert!(!failed.waiting(scale, Lighting::Retail, at + Duration::from_secs(1)));
+        assert!(!failed.waiting(RenderScale::ONE, Lighting::Retail, at));
+        assert!(!failed.waiting(scale, Lighting::E3, at));
+    }
 
     #[test]
     fn transactional_stages_require_live_frame_and_scaled_shadow_copies() {
@@ -2509,9 +2598,9 @@ mod tests {
     #[test]
     fn texels_repeat_into_blocks() {
         // 2x1 texels of 2 bytes at 3x: 6x3 texels.
-        let out = repeat_texels(&[1, 2, 3, 4], 2, 1, 2, 3);
+        let out = resize_texels(&[1, 2, 3, 4], (2, 1), (6, 3), 2);
         let row = [1, 2, 1, 2, 1, 2, 3, 4, 3, 4, 3, 4];
         assert_eq!(out, [row, row, row].concat());
-        assert_eq!(repeat_texels(&[9], 1, 1, 1, 1), [9]);
+        assert_eq!(resize_texels(&[9], (1, 1), (1, 1), 1), [9]);
     }
 }

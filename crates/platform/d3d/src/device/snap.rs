@@ -574,6 +574,9 @@ impl<B: Backend> Device<B> {
         if self.scoped_admission.as_ref().is_some_and(|(s, _)| !s.closed.load(AtomicOrdering::Acquire)) {
             why.push("a native draw is scoped to a guest call".into());
         }
+        if self.ui_fit.is_some() {
+            why.push("a fitted UI draw scope is active".into());
+        }
         if self.swallowing.is_some() {
             why.push("a swallow of planned draws is armed".into());
         }
@@ -743,6 +746,8 @@ impl<B: Backend> Device<B> {
             hw,
             // Quiesce.
             pending_external: _,
+            ui_fit: _, // Host render callback scope.
+            projection: _, // Derived from the current output and immutable GPU registers.
             admissions: _, // Host services, retained across guest loads.
             opaque_world_admission: _,
             opaque_targets: _,
@@ -924,6 +929,7 @@ impl<B: Backend> Device<B> {
         }
         self.check(&s)?;
         self.drop_host_caches()?;
+        self.ui_fit = None;
         self.scoped_admission = None;
         self.apply(s)
     }

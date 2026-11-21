@@ -323,6 +323,9 @@ pub struct LateInputs<'a> {
     /// The effective resolution source of the backend drawing this run.
     #[cfg(feature = "gpu")]
     pub view: Option<&'a crate::d3d_glue::DrawingView>,
+    /// Retail guest geometry, or a legacy film's recorded geometry.
+    #[cfg(feature = "gpu")]
+    pub fixed_lod: Option<f32>,
     pub rt: &'a Arc<Runtime>,
     pub lockstep: lockstep_glue::Config,
     pub agent: AgentSource,
@@ -446,6 +449,10 @@ pub(crate) fn register_late_for_profile(
 
         let view_scale = if let Some(view) = i.view {
             let lod = crate::lod_distance::LodDistance::new(i.settings.as_deref(), view.scale_stats.clone())?;
+            let lod = match i.fixed_lod {
+                Some(factor) => lod.with_fixed_multiplier(factor),
+                None => lod,
+            };
             features.add(&lod).map_err(|e| anyhow::anyhow!("LOD distance: {e}"))?;
             lod.view_scale()
         } else {

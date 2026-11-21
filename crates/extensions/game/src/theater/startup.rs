@@ -20,6 +20,10 @@ pub struct Startup {
     theater_menu: bool,
     keyboard: bool,
     render_thread: bool,
+    /// Whether guest D3D read real GPU surfaces. A GPU-capable executable
+    /// can also record a local game with the CPU headless backend.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    gpu_draws: Option<bool>,
     // Source name and whether the original Auto policy saw a physical pad.
     icons: Option<(String, bool)>,
     execution: Execution,
@@ -191,9 +195,29 @@ type Values = BTreeMap<String, String>;
 
 #[derive(Serialize, Deserialize)]
 struct Settings {
+    // Private guest-menu state, separate from raster size and fingerprints.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    video_menu: Option<VideoMenu>,
     values: Values,
     locked: Values,
     profiles: BTreeMap<String, Values>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct VideoMenu {
+    saved: String,
+    locked: Option<String>,
+}
+
+impl VideoMenu {
+    fn capture(store: &settings::Store) -> Self {
+        let def = &setting_defs::RESOLUTION;
+        let state = store.state(def.key).expect("registered Video setting");
+        Self {
+            saved: def.name(state.saved),
+            locked: state.locked.then(|| def.name(state.value)),
+        }
+    }
 }
 
 impl Settings {
@@ -227,10 +251,22 @@ impl Settings {
             })
             .collect();
         Self {
+            video_menu: None,
             values,
             locked,
             profiles,
         }
+    }
+
+    /// Earlier films used the same integral render scale for raster size
+    /// and visual geometry selection. Recover its startup geometry only.
+    fn legacy_lod_multiplier(&self) -> Option<f32> {
+        use crate::setting_defs::{GUEST_FRAME, LEGACY_SCALE, LOD_DISTANCE, lod_pixel_multiplier};
+
+        let effective = |key: &str| self.locked.get(key).or_else(|| self.values.get(key));
+        let size = LEGACY_SCALE.parse(effective(LEGACY_SCALE.key)?).ok()?;
+        let units = LOD_DISTANCE.parse(effective(LOD_DISTANCE.key)?).ok()?.as_int()?;
+        Some(lod_pixel_multiplier(size.size(GUEST_FRAME).1, units as u32))
     }
 
     // Only keys and value types from this build's schema may reach the private
@@ -240,6 +276,12 @@ impl Settings {
         let table_of = |values: &Values| -> Result<toml::Table> {
             let mut table = toml::Table::new();
             for (key, value) in values {
+                // Older films captured raster size for its effect on guest
+                // LOD. The viewer owns its display even for these films.
+                if key == setting_defs::LEGACY_SCALE.key {
+                    setting_defs::LEGACY_SCALE.parse(value).map_err(anyhow::Error::msg)?;
+                    continue;
+                }
                 let def = defs
                     .iter()
                     .find(|d| d.key == key.as_str() && d.scope != settings::Scope::Host)
@@ -256,6 +298,19 @@ impl Settings {
             Ok(table)
         };
         let mut table = table_of(&self.values)?;
+        let mut menu_flag = None;
+        if let Some(menu) = &self.video_menu {
+            ensure!(!mount_settings, "Video menu belongs to the guest UI");
+            let def = &setting_defs::RESOLUTION;
+            let saved = def.parse(&menu.saved).map_err(anyhow::Error::msg)?;
+            let (section, field) = def.table_key();
+            table.entry(section).or_insert_with(|| toml::Value::Table(toml::Table::new()))
+                .as_table_mut().context("invalid Video settings")?.insert(field.into(), def.to_toml(saved));
+            if let Some(locked) = &menu.locked {
+                def.parse(locked).map_err(anyhow::Error::msg)?;
+                menu_flag = Some(settings::Flag { key: def.key.into(), value: locked.clone(), flag: "film" });
+            }
+        }
         let mut profiles = toml::Table::new();
         for (name, values) in &self.profiles {
             profiles.insert(name.clone(), toml::Value::Table(table_of(values)?));
@@ -282,11 +337,13 @@ impl Settings {
         let flags = self
             .locked
             .iter()
+            .filter(|(key, _)| key.as_str() != setting_defs::LEGACY_SCALE.key)
             .map(|(key, value)| settings::Flag {
                 key: key.clone(),
                 value: value.clone(),
                 flag: "film",
             })
+            .chain(menu_flag)
             .collect::<Vec<_>>();
         let (store, errors) = settings::Store::load(&defs, Some(path), &|_| None, &flags);
         ensure!(errors.is_empty(), "invalid film settings: {errors:?}");
@@ -295,6 +352,32 @@ impl Settings {
 }
 
 impl Startup {
+    /// Select the guest backend for a local film played without a window.
+    /// Older desktop recordings retain the play window's settings store or
+    /// render-thread flag, but no separate flag for offscreen GPU capture.
+    pub fn local_gpu_draws(&self, hooks: Option<film::RenderHooks>) -> bool {
+        self.d3d && self.gpu_draws.unwrap_or_else(|| {
+            !matches!(hooks, Some(film::RenderHooks::Slim | film::RenderHooks::Desktop))
+                && (self.render_thread || self.host_settings.is_some())
+        })
+    }
+
+    /// Guest geometry from the startup of a film that recorded both the
+    /// legacy render scale and LOD Distance. Viewer raster size is separate.
+    pub fn legacy_lod_multiplier(&self) -> Option<f32> {
+        self.host_settings.as_ref().unwrap_or(&self.data_settings).legacy_lod_multiplier()
+    }
+
+    pub(super) fn tapes_video_menu<R: Read + Seek>(reader: &mut film::Reader<R>) -> Result<bool> {
+        #[derive(Deserialize)]
+        struct MenuSettings { video_menu: Option<VideoMenu> }
+        #[derive(Deserialize)]
+        struct MenuBoot { host_settings: Option<MenuSettings> }
+        let entry = reader.machine_section().unique(BOOT)?.clone();
+        let boot: MenuBoot = reader.read(&entry)?;
+        Ok(boot.host_settings.and_then(|settings| settings.video_menu).is_some())
+    }
+
     pub fn read<R: Read + Seek>(reader: &mut film::Reader<R>) -> Result<Option<Self>> {
         if reader.header.version == 1 {
             return Ok(None);
@@ -502,6 +585,12 @@ impl Session {
                     keyboard,
                     icons,
                     render_thread,
+                    gpu_draws: Some({
+                        #[cfg(feature = "gpu")]
+                        { opts.d3d && (host.gfx.is_some() || std::env::var_os("H2_BOOT_GFX").is_some()) }
+                        #[cfg(not(feature = "gpu"))]
+                        { false }
+                    }),
                     execution: Execution::capture()?,
                     movies: Values::new(),
                     xapi: opts.xapi,
@@ -510,7 +599,11 @@ impl Session {
                     dsound: opts.dsound,
                     bink: opts.bink,
                     data_settings: Settings::capture(&setting_defs::load(&opts.data_root, &[]).0),
-                    host_settings: host.settings.as_deref().map(Settings::capture),
+                    host_settings: host.settings.as_deref().map(|store| {
+                        let mut saved = Settings::capture(store);
+                        saved.video_menu = self.video_menu.get().map(|s| VideoMenu::capture(s));
+                        saved
+                    }),
                 },
             )
         };
@@ -549,6 +642,34 @@ mod tests {
     use super::*;
 
     #[test]
+    fn local_film_selects_its_recorded_gpu_readback_backend() {
+        use film::RenderHooks::{Gpu, Slim};
+        let data = serde_json::json!({ "values": {}, "locked": {}, "profiles": {} });
+        let mut wire = serde_json::json!({
+            "dedicated": false, "theater_menu": false, "keyboard": false, "render_thread": false,
+            "execution": {
+                "coop": crate::coop_live::film::Options::capture(), "old_glue": false, "trampoline": false,
+            },
+            "xapi": true, "stopgaps": true, "d3d": true, "dsound": true, "bink": false,
+            "data_settings": data.clone(),
+        });
+        let gpu = |wire: &serde_json::Value, hooks| {
+            serde_json::from_value::<Startup>(wire.clone()).unwrap().local_gpu_draws(hooks)
+        };
+        assert!(!gpu(&wire, Some(Gpu)), "legacy CPU run with GPU-capable hooks");
+        wire["host_settings"] = data;
+        assert!(gpu(&wire, Some(Gpu)), "legacy play-window recording");
+        assert!(!gpu(&wire, Some(Slim)));
+        wire["gpu_draws"] = false.into();
+        assert!(!gpu(&wire, Some(Gpu)), "an explicit CPU backend takes priority");
+        wire["host_settings"] = serde_json::Value::Null;
+        wire["gpu_draws"] = true.into();
+        assert!(gpu(&wire, Some(Gpu)), "offscreen GPU recording");
+        wire["d3d"] = false.into();
+        assert!(!gpu(&wire, Some(Gpu)));
+    }
+
+    #[test]
     fn pipeline_execution_options_restore_the_recorded_handback_and_legacy_defaults() {
         let mut wire = serde_json::json!({
             "coop": crate::coop_live::film::Options::capture(),
@@ -581,6 +702,60 @@ mod tests {
         );
         wire["pipeline_handback"]["refuse"] = serde_json::json!(vec![0; MAX_PIPELINE_REFUSALS + 1]);
         assert!(serde_json::from_value::<Execution>(wire).is_err());
+    }
+
+    #[test]
+    fn legacy_film_lod_uses_the_recorded_scale_without_locking_the_viewer_raster() {
+        let root = std::env::temp_dir().join(format!("film-lod-{}", live_proto::sign::random_id()));
+        std::fs::create_dir(&root).unwrap();
+        let mut film = Settings {
+            video_menu: None,
+            values: BTreeMap::from([("graphics.render_scale".into(), "2".into())]),
+            locked: BTreeMap::from([("graphics.render_scale".into(), "3".into())]),
+            profiles: BTreeMap::new(),
+        };
+        assert_eq!(film.legacy_lod_multiplier(), None, "predates LOD Distance");
+        film.values.insert("graphics.lod_distance".into(), "1.5".into());
+        assert_eq!(film.legacy_lod_multiplier(), Some(4.5));
+        let file = root.join("game.toml");
+        let restored = film.install(&file, true).unwrap();
+        let resolution = restored.state(setting_defs::RESOLUTION.key).unwrap();
+        assert!(!resolution.locked);
+        assert_eq!(resolution.value, settings::Resolution::Native.value());
+        let saved = std::fs::read_to_string(file).unwrap();
+        assert!(!saved.contains("render_scale"));
+        assert!(!saved.contains("resolution"));
+        assert!(saved.contains("lod_distance"));
+        film.locked.insert("graphics.render_scale".into(), "bad".into());
+        assert!(film.install(&root.join("bad.toml"), true).is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn video_menu_captures_only_the_local_guest_ui_choice_and_override() {
+        let root = std::env::temp_dir().join(format!("film-menu-{}", live_proto::sign::random_id()));
+        std::fs::create_dir(&root).unwrap();
+        for (i, locked) in [None, Some("native")].into_iter().enumerate() {
+            let original = root.join(format!("source-{i}.toml"));
+            std::fs::write(&original, "[graphics]\nresolution = '3440x1440'\n").unwrap();
+            let flags: Vec<_> = locked.into_iter().map(|v| settings::Flag {
+                key: setting_defs::RESOLUTION.key.into(), value: v.into(), flag: "film",
+            }).collect();
+            let (store, problems) = settings::Store::load(&setting_defs::defs(), Some(&original), &|_| None, &flags);
+            assert!(problems.is_empty());
+            let mut s = Settings::capture(&store);
+            assert!(serde_json::to_value(&s).unwrap().get("video_menu").is_none());
+            assert!(!s.values.contains_key(setting_defs::RESOLUTION.key));
+            s.video_menu = Some(VideoMenu::capture(&store));
+            let replay = s.install(&root.join(format!("guest-{i}.toml")), false).unwrap();
+            let key = setting_defs::RESOLUTION.key;
+            let (before, after) = (store.state(key).unwrap(), replay.state(key).unwrap());
+            assert_eq!((before.saved, before.shown, before.locked), (after.saved, after.shown, after.locked));
+            assert!(s.install(&root.join(format!("data-{i}.toml")), true).is_err());
+            s.video_menu.as_mut().unwrap().saved = "90000x800".into();
+            assert!(s.install(&root.join(format!("bad-{i}.toml")), false).is_err());
+        }
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

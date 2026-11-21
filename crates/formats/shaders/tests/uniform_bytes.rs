@@ -27,7 +27,9 @@ fn vertex_uniform_bytes_match_the_gpu_layout_on_reuse() {
         *v = vector(i as u32 + 1);
     }
     u.surface = [-0.0, 1024.0];
+    u.ui_transform = [0.75, 1.0, 80.0, 0.0];
     u.z_max = 65535.0;
+    u.shift = [0.375, 0.4375];
     let mut out = [0xa5; VertexUniforms::SIZE];
     for clip in [None, Some([-0.0, 100.0]), None] {
         for clamp in [false, true] {
@@ -36,11 +38,12 @@ fn vertex_uniform_bytes_match_the_gpu_layout_on_reuse() {
             let mut expected = Vec::new();
             expected.extend_from_slice(&u.constants);
             expected.extend_from_slice(&u.defaults);
-            expected.push([u.surface[0], u.surface[1], u.z_max, 0.0]);
+            expected.push([u.surface[0], u.surface[1], u.z_max, u.shift[0]]);
             expected.push(match clip {
-                Some([lo, hi]) => [lo, hi, 1.0, if clamp { 1.0 } else { 0.0 }],
-                None => [0.0; 4],
+                Some([lo, hi]) => [lo, hi, if clamp { 2.0 } else { 1.0 }, u.shift[1]],
+                None => [0.0, 0.0, 0.0, u.shift[1]],
             });
+            expected.push(u.ui_transform);
             u.write_bytes(&mut out);
             assert_eq!(out.as_slice(), bytes(&expected));
             assert_eq!(out.as_slice(), u.to_bytes());
@@ -84,7 +87,7 @@ fn pixel_uniform_bytes_match_the_gpu_layout_on_reuse() {
         set(&mut u.depth);
         let [lo, hi, _, _] = vector(next);
         u.depth_range = [lo, hi];
-        u.stipple_scale = [2.0 + seed as f32, 3.0 + seed as f32];
+        u.stipple_scale = PixelUniforms::stipple_grid((153, 117), (372 + seed, 63 + seed));
         u.stipple = std::array::from_fn(|i| 0xff80_0000 | ((i as u32 + seed) * 333));
         // Independent field order, matching the WGSL layout.
         let mut expected = Vec::new();
@@ -103,7 +106,8 @@ fn pixel_uniform_bytes_match_the_gpu_layout_on_reuse() {
             expected.push(row.map(f32::from_bits));
         }
         expected.push(u.depth);
-        expected.push([lo, hi, u.stipple_scale[0], u.stipple_scale[1]]);
+        let packed = [((372 + seed) << 16) | 153, ((63 + seed) << 16) | 117];
+        expected.push([lo, hi, f32::from_bits(packed[0]), f32::from_bits(packed[1])]);
         u.write_bytes(&mut out);
         assert_eq!(out.as_slice(), bytes(&expected));
         assert_eq!(out.as_slice(), u.to_bytes());

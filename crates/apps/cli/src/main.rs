@@ -1189,8 +1189,8 @@ fn run_emit(path: &Path, opts: &LiftOpts) -> Result<()> {
     if !reuse {
         emit_cache::invalidate(&out)?;
         let t = Instant::now();
-        let mut a = analyze::analyze(&x)?;
-        if x.certificate.title_id == 0x4d53_0064 && x.entry == 0x002d_0aee {
+        let (mut a, _) = boot::analyze_cached(&x, None)?;
+        if boot::has_retail_render_sites(&x) {
             a.expose_instructions(boot::scene_effect_instruction_entries());
         }
         println!("analyze: {:.3}s", t.elapsed().as_secs_f64());

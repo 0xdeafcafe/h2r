@@ -20,6 +20,8 @@
 //! }
 //! ```
 
+pub mod render_aspect;
+
 /// Vertical pixels per projection unit in the current retail view.
 pub const PIXEL_SCALE: u32 = 0x004b_9ed0;
 

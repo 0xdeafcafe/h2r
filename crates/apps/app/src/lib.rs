@@ -255,6 +255,7 @@ pub struct ExitReport {
 
 /// The guest thread's view of the host. `Send`; moved into the guest thread.
 pub struct GuestHost {
+    native_size: scale::NativeSize,
     gfx: GfxContext,
     sink: FrameSink,
     input: Option<InputManager>,
@@ -284,6 +285,7 @@ impl GuestHost {
         let mixer = Arc::new(Mutex::new(audio::Mixer::new(audio_out::FALLBACK_RATE)));
         let life = Lifecycle::new();
         Ok(Self {
+            native_size: scale::NativeSize::new(DisplayAspect::Source, Scaling::Fit, (0, 0)),
             gfx: ctx,
             sink,
             input: Some(input),
@@ -301,6 +303,24 @@ impl GuestHost {
             pace_stats: Arc::default(),
             _source: Some(source),
         })
+    }
+
+    /// Reads the native render extent in physical pixels. Explicit display
+    /// aspects fit inside the drawable. The handle follows window resizes
+    /// and can move to the render thread.
+    pub fn native_size(&self) -> impl Fn() -> (u32, u32) + Clone + Send + Sync + 'static + use<> {
+        let size = self.native_size.clone();
+        move || size.get()
+    }
+
+    /// Reads the extent the compositor gives a frame of the supplied raster
+    /// size. The camera uses its aspect even when the source is anamorphic.
+    /// A headless host displays the source at its own size.
+    pub fn display_size(
+        &self,
+    ) -> impl Fn((u32, u32)) -> (u32, u32) + Clone + Send + Sync + 'static + use<> {
+        let size = self.native_size.clone();
+        move |src| size.display_size(src)
     }
 
     /// The device every guest GPU object must live on: build

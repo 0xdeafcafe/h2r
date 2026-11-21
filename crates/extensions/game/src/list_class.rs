@@ -1089,6 +1089,15 @@ impl Rows for ModelRows {
             .map(|r| self.model.texts(r).to_vec())
             .unwrap_or_default()
     }
+    fn live_text(&self) -> LiveText {
+        if self.screen == crate::video_screen::SCREEN {
+            return LiveText {
+                writes: self.model.resolution_write().into_iter().collect(),
+                ..Default::default()
+            };
+        }
+        LiveText::default()
+    }
     fn press(&self, row: i16) -> Chosen {
         self.model
             .row(List::Screen(self.screen), row)
@@ -2787,9 +2796,9 @@ mod tests {
         assert_eq!(run.result, Ok(Ret::new(SCREEN, 4)));
         assert_eq!(Screen::at(SCREEN).vtable(&run.guest), Ok(TABLES));
         // While the constructor ran, the Controls rows' array was asked for
-        // the screen's five rows; any other array, and anything
+        // the screen's Video rows; any other array, and anything
         // after, as asked.
-        assert_eq!(*during.lock().unwrap(), Some((5, 7)));
+        assert_eq!(*during.lock().unwrap(), Some((video_rows().count() as u32, 7)));
         assert_eq!(array_count(crate::speaker_row::LIST_NAME, 7), 7);
     }
 

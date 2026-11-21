@@ -226,12 +226,20 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             return Err(ObjectWalk::State);
         }
         let draws = plan_walk(&models, &device, mem, scene, scene_view, first, run)?;
+        let texaccum = if draws.iter().any(|(_, draw)| draw.texaccum) {
+            if !device.samples_levels_in_place() {
+                return Err(ObjectWalk::Inputs);
+            }
+            Some(native_render::world_layers::Texaccum::read(&Ro(mem)).ok_or(ObjectWalk::Inputs)?)
+        } else {
+            None
+        };
         let ranges = draws.len();
         let view = mem.u32(engine::render_loop::occlusion::guest::VIEW_INDEX).unwrap_or(u32::MAX);
         let promise = d3d::ExternalPlan { stage: Stage::Objects, view, ranges, slots: Vec::new() };
         let batch = u64::from(device.swap_count()).wrapping_add(1);
         let pass = |draws: Vec<(u32, PlannedDraw)>| {
-            Box::new(ObjectsPass { models: Arc::clone(&models), draws, view: None, w_clip: None, run: batch })
+            Box::new(ObjectsPass { models: Arc::clone(&models), draws, texaccum, view: None, w_clip: None, run: batch })
         };
         drop(planning);
         // The load the run was planned against, held to the commit.
@@ -374,7 +382,6 @@ fn plan_walk<B: d3d::backend::Backend>(
     let mut checked_transition = false;
     let mut lit = models.lit.try_lock().map_err(|_| ObjectWalk::Model)?;
     let lit = lit.as_mut().ok_or(ObjectWalk::Model)?;
-    let guest = Ro(mem);
     let mut draws = Vec::with_capacity(run.len());
     for (slot, &item) in (first..).zip(run) {
         let (handle, part) = match item {
@@ -421,11 +428,6 @@ fn plan_walk<B: d3d::backend::Backend>(
         let fog = native_render::fog_gpu::FogWords::from_states(&pass.implementation.render_states)
             .resolve(&fog_words).ok_or(ObjectWalk::Inputs)?;
         set_fog(&mut draw, fog, specular).ok_or(ObjectWalk::Inputs)?;
-        if draw.texaccum && (!device.samples_levels_in_place()
-            || !native_render::object_nodes::texaccum_bound(&guest))
-        {
-            return Err(ObjectWalk::Inputs);
-        }
         draws.push((model, draw));
     }
     let (gpu, color, depth) = device.external_pipeline_target(&read).ok_or(ObjectWalk::Reservation)?;
@@ -911,6 +913,8 @@ struct ObjectsPass {
     models: Arc<Models>,
     /// The planned draws with their model index.
     draws: Vec<(u32, PlannedDraw)>,
+    /// Guest descriptor captured at the same boundary as the draws.
+    texaccum: Option<native_render::world_layers::Texaccum>,
     /// The view's constants, for the lit parts' programs.
     view: Option<[[f32; 4]; d3d::VIEW_CONSTANTS]>,
     /// The device's W-buffer clip at the pass (`d3d::DepthClip`), as the
@@ -936,11 +940,7 @@ impl d3d::ExternalPass for ObjectsPass {
     }
 
     fn sampled(&self) -> Vec<u32> {
-        if self.draws.iter().any(|(_, d)| d.texaccum) {
-            vec![native_render::object_program::TEXACCUM_HEADER]
-        } else {
-            Vec::new()
-        }
+        self.texaccum.iter().map(|target| target.texture).collect()
     }
 
     fn writes(&self) -> d3d::ExternalWrites {
@@ -969,10 +969,13 @@ impl ObjectsPass {
         &self, t: &d3d::backend::ExternalAttachments, request: d3d::ExternalPassRequest,
     ) -> Result<d3d::backend::ExternalDraws, &'static str> {
         let constants = self.view.ok_or("object view constants unavailable")?;
-        let texaccum = texaccum_level(&t.sampled, request.surface_size, t.size);
-        if self.draws.iter().any(|(_, d)| d.texaccum) && texaccum.is_none() {
-            return Err("object texture accumulation unavailable");
-        }
+        let texaccum = match self.texaccum {
+            Some(target) => {
+                let level = t.sampled.first().and_then(Option::as_ref).ok_or("object texture accumulation unavailable")?;
+                Some(Texaccum { view: &level.view, guest_size: target.size })
+            }
+            None => None,
+        };
         if let Some(accum) = &texaccum
             && (accum.view.texture() == t.color.texture() || accum.view.texture() == t.depth.texture())
         {
@@ -984,28 +987,14 @@ impl ObjectsPass {
             return Err("planned object geometry unavailable");
         }
         let view = ViewInputs {
-            constants,
+            constants: request.view_constants(t.copy, constants),
             guest_size: request.surface_size,
             size: t.size,
             z_scale: request.z_scale,
             w_clip: self.w_clip,
         };
-        lit.draws(&t.device, &t.queue, &t.uploads, t.color_format, t.depth_format, t.size, &view, &self.draws, texaccum)
+        lit.draws(&t.device, &t.queue, &t.uploads, t.color_format, t.depth_format, t.size, &view, request.projection_factor(t.copy), &self.draws, texaccum)
     }
-}
-
-/// The texture accumulation level the pass was given, with its size in
-/// guest texels (this copy's texels over the colour's scale).
-fn texaccum_level(sampled: &[Option<d3d::SampledLevel>], guest_size: (u32, u32), size: (u32, u32)) -> Option<Texaccum<'_>> {
-    let level = sampled.first()?.as_ref()?;
-    Some(Texaccum { view: &level.view, guest_size: guest_texels(level.size, guest_size, size) })
-}
-
-/// `texels` of a level in a copy whose colour target is `size` texels for
-/// `guest` guest pixels, in guest texels.
-fn guest_texels(texels: (u32, u32), guest: (u32, u32), size: (u32, u32)) -> (u32, u32) {
-    let scale = |t: u32, g: u32, s: u32| (u64::from(t) * u64::from(g) / u64::from(s.max(1))) as u32;
-    (scale(texels.0, guest.0, size.0), scale(texels.1, guest.1, size.1))
 }
 
 #[cfg(test)]
@@ -1022,6 +1011,7 @@ mod tests {
         let mut pass = ObjectsPass {
             models: Arc::new(Models::default()),
             draws: Vec::new(),
+            texaccum: None,
             view: None,
             w_clip: None,
             run: 0,
@@ -1033,13 +1023,6 @@ mod tests {
         let view = ViewInputs { constants, guest_size: (640, 480), size: (640, 480), z_scale: 16_777_215.0, w_clip: pass.w_clip };
         let u = native_render::program::frame_vertex(&Default::default(), &view);
         assert_eq!(u.w_clip, Some([256.0, 16_777_215.0]), "near at the device's 256, not 0");
-    }
-
-    #[test]
-    fn a_levels_texels_under_the_render_scale_are_its_guest_size() {
-        assert_eq!(guest_texels((640, 480), (640, 480), (640, 480)), (640, 480), "1x");
-        assert_eq!(guest_texels((1280, 960), (640, 480), (1280, 960)), (640, 480), "2x");
-        assert_eq!(guest_texels((320, 240), (640, 480), (1280, 960)), (160, 120), "a smaller level, scaled");
     }
 
     #[test]

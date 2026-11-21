@@ -258,15 +258,36 @@ fn child(opts: Options, work: &Path) -> Result<()> {
         r.map(|_| ())
     };
     let host_bots = film.header.host_bots;
+    let local_gpu = if film.header.meta.source == film::Source::Local {
+        let hooks = film.header.render_hooks;
+        let startup = boot::theater::Startup::read(&mut film)?.context("missing startup for local film")?;
+        Some(startup.local_gpu_draws(hooks))
+    } else {
+        None
+    };
     if opts.every == 0 {
-        return run(
-            boot::Host {
-                host_light: true,
-                host_bots,
-                ..Default::default()
-            },
-            None,
-        );
+        let host = boot::Host { host_light: true, host_bots, ..Default::default() };
+        if local_gpu == Some(true) {
+            #[cfg(not(feature = "desktop"))]
+            bail!("this local film requires an exact offscreen GPU reference; use a desktop build");
+            #[cfg(feature = "desktop")]
+            {
+                let retail: boot::run_opts::NativeSize = std::sync::Arc::new(|| boot::setting_defs::GUEST_FRAME);
+                // Keep the drawing hook plan, with the sole target and the lens fixed to retail.
+                let host = boot::Host {
+                    gfx: Some(boot::d3d_glue::offscreen_film_reference()?),
+                    gfx_view: Some(boot::run_opts::DisplayView {
+                        backend: None,
+                        native_size: retail.clone(),
+                        viewer_output: Some(retail),
+                        display_size: std::sync::Arc::new(|size| size),
+                    }),
+                    ..host
+                };
+                return run(host, None);
+            }
+        }
+        return run(host, None);
     }
     #[cfg(not(feature = "desktop"))]
     bail!("rendered film playback requires the desktop feature");
@@ -283,7 +304,9 @@ fn child(opts: Options, work: &Path) -> Result<()> {
         } else {
             opts.every
         };
-        let host_view = film.header.version >= 2 && film.header.meta.source == film::Source::Host;
+        // When the recorded guest used a headless device, the independent
+        // observer can present the match without changing that device's answers.
+        let observer = film.header.version >= 2 && local_gpu != Some(true);
         let mut meta = film_entry(film::LibraryEntry::read(&opts.film)?, &_stamp);
         let title = meta.map.clone();
         if let Ok(id) = std::env::var("H2_THEATER_FILM_ID") {
@@ -297,12 +320,14 @@ fn child(opts: Options, work: &Path) -> Result<()> {
             dir.clone(),
         )?;
         let (overlay, controller) = overlay(theater, dir.join("screenshots"));
+        let data = opts.data.unwrap_or_else(content::store::default_data_root);
         let config = app::AppConfig {
             title: format!("Theater — {}", title),
             audio: false,
             keyboard: false,
             gamepads: true,
             theater: Some(overlay),
+            aspect: app::DisplayAspect::Source,
             mouse_capture: false,
             keep_open_on_guest_exit: false,
             ..Default::default()
@@ -311,14 +336,21 @@ fn child(opts: Options, work: &Path) -> Result<()> {
             if let Some(input) = window.take_input() {
                 controller.attach_input(input);
             }
-            let (gfx, film_view) = if host_view {
-                // The authoritative guest keeps the light host's D3D profile.
-                // Its separately presented POV must not advance retail RNG.
+            let (store, problems) = boot::setting_defs::load(&data, &[]);
+            for p in problems {
+                eprintln!("theater: {p}");
+            }
+            let native: boot::run_opts::NativeSize = std::sync::Arc::new(window.native_size());
+            let raster = boot::d3d_glue::output_size(Some(&store), native.clone())?;
+            let (gfx, gfx_view, film_view) = if observer {
                 let mut sink = window.frame_sink();
                 (
                     None,
+                    None,
                     Some(boot::theater::HostView::new(
                         window.gfx_context(),
+                        raster,
+                        window.display_size(),
                         move |view, size| {
                             sink.submit_view(view, size, true)
                                 .map(|_| ())
@@ -329,9 +361,15 @@ fn child(opts: Options, work: &Path) -> Result<()> {
             } else {
                 let present = window
                     .frame_sink()
-                    .into_cropped_present_hook(publish_every, move || camera.present_crop());
+                    .into_guest_crop_present_hook(publish_every, boot::setting_defs::GUEST_FRAME, move || camera.present_crop());
                 (
-                    Some(d3d::GfxBackend::new(window.gfx_context()).on_present(present)),
+                    Some(d3d::GfxBackend::new(window.gfx_context())),
+                    Some(boot::run_opts::DisplayView {
+                        backend: Some(d3d::GfxBackend::new(window.gfx_context()).on_present(present)),
+                        native_size: native,
+                        viewer_output: Some(raster),
+                        display_size: std::sync::Arc::new(window.display_size()),
+                    }),
                     None,
                 )
             };
@@ -339,6 +377,7 @@ fn child(opts: Options, work: &Path) -> Result<()> {
             run(
                 boot::Host {
                     gfx,
+                    gfx_view,
                     film_view,
                     between_slices: Some(Box::new(move |_| !window.should_stop())),
                     host_light: true,

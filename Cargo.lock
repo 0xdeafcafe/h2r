@@ -5192,6 +5192,7 @@ dependencies = [
  "anyhow",
  "clif",
  "emit",
+ "guest-layout",
  "iced-x86",
  "ir",
  "libloading",

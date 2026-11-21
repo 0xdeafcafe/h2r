@@ -142,7 +142,10 @@ const STORE_COLOR: &str = r#"
 @compute @workgroup_size(8, 8)
 fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     if (id.x >= params.width || id.y >= params.height) { return; }
-    let c = to_bytes(textureLoad(src, id.xy * params.src_width, 0));
+    let guest = vec2u(params.width, params.height);
+    let host = vec2u(params.src_width, params.src_height);
+    let q = min((id.xy * host + guest / 2u) / guest, host - 1u);
+    let c = to_bytes(textureLoad(src, q, 0));
     mirror[word_index(params, id.x, id.y)] = pack(params, c);
 }
 "#;
@@ -156,7 +159,9 @@ const STORE_DEPTH: &str = r#"
 @compute @workgroup_size(8, 8)
 fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     if (id.x >= params.width || id.y >= params.height) { return; }
-    let q = id.xy * params.src_width;
+    let guest = vec2u(params.width, params.height);
+    let host = vec2u(params.src_width, params.src_height);
+    let q = min((id.xy * host + guest / 2u) / guest, host - 1u);
     var s = 0u;
     if (params.has_stencil != 0u) { s = textureLoad(stencil_tex, q, 0).r; }
     mirror[word_index(params, id.x, id.y)] = depth_word(textureLoad(depth_tex, q, 0), s);
@@ -229,13 +234,17 @@ const DEPTH_ALIAS: &str = r#"
 fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     let out_size = textureDimensions(out_tex);
     if (any(id.xy >= out_size)) { return; }
-    let out_scale = out_size.x / params.width;
-    let scale = textureDimensions(depth_tex).x / params.src_width;
-    let guest = id.xy / out_scale;
-    // The texel's word in the depth buffer's memory: linear rows of
-    // src_width words.
+    let dims = vec2u(params.width, params.height);
+    let guest = ((2u * id.xy + 1u) * dims - 1u) / (2u * out_size);
+    let left = (guest * out_size + dims / 2u) / dims;
+    let right = ((guest + 1u) * out_size + dims / 2u) / dims;
     let k = word_index(params, guest.x, guest.y);
-    let q = vec2u(k % params.src_width, k / params.src_width) * scale + (id.xy % out_scale) * scale / out_scale;
+    let addr = vec2u(k % params.src_width, k / params.src_width);
+    let src = vec2u(params.src_width, params.src_height);
+    let host = textureDimensions(depth_tex);
+    let lo = (addr * host + src / 2u) / src;
+    let hi = ((addr + 1u) * host + src / 2u) / src;
+    let q = min(lo + (2u * (id.xy - left) + 1u) * (hi - lo) / (2u * max(right - left, vec2u(1u))), host - 1u);
     var s = 0u;
     if (params.has_stencil != 0u) { s = textureLoad(stencil_tex, q, 0).r; }
     let w = depth_word(textureLoad(depth_tex, q, 0), s);
@@ -303,6 +312,9 @@ impl Params {
 /// Why a level cannot go through [`GuestWords`].
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum WordsError {
+    /// Empty guest or source extent.
+    #[error("zero-sized word surface")]
+    EmptyExtent,
     /// Not a 32-bit permutation format ([`WordFormat::of`]).
     #[error("{0:?} is not a 32-bit word format")]
     Format(D3DFormat),
@@ -365,6 +377,7 @@ fn words_end(size: (u32, u32), layout: WordLayout) -> u64 {
 }
 
 fn check_layout(size: (u32, u32), layout: WordLayout) -> Result<(), WordsError> {
+    if size.0 == 0 || size.1 == 0 { return Err(WordsError::EmptyExtent); }
     if layout.pitch_words == 0 && !(size.0.is_power_of_two() && size.1.is_power_of_two()) {
         return Err(WordsError::NotPowerOfTwo(size.0, size.1));
     }
@@ -459,10 +472,10 @@ impl GuestWords {
         mirror: &wgpu::Buffer,
         layout: WordLayout,
     ) -> Result<(), WordsError> {
-        self.store_color_scaled(ctx, encoder, src, format, size, mirror, layout, 1)
+        self.store_color_scaled(ctx, encoder, src, format, size, mirror, layout, 1u32)
     }
 
-    /// Encode one sample at each guest pixel position of a scaled surface.
+    /// Encode one sample for each guest pixel of the supplied logical region.
     #[allow(clippy::too_many_arguments)]
     pub fn store_color_scaled(
         &self,
@@ -473,7 +486,7 @@ impl GuestWords {
         size: (u32, u32),
         mirror: &wgpu::Buffer,
         layout: WordLayout,
-        scale: u32,
+        scale: impl Into<crate::raster::RenderScale>,
     ) -> Result<(), WordsError> {
         let wf = WordFormat::of(format).ok_or(WordsError::Format(format))?;
         check_layout(size, layout)?;
@@ -482,8 +495,10 @@ impl GuestWords {
         if need > have {
             return Err(WordsError::Bounds { need, have });
         }
+        let (src_width, src_height) = scale.into().size(size.0, size.1);
         let p = Params {
-            src_width: scale.max(1),
+            src_width,
+            src_height,
             perm: u32::from_le_bytes(wf.perm),
             opaque: wf.opaque as u32,
             ..Params::level(size, layout)
@@ -531,10 +546,10 @@ impl GuestWords {
         mirror: &wgpu::Buffer,
         layout: WordLayout,
     ) -> Result<(), WordsError> {
-        self.store_depth_scaled(ctx, encoder, depth, size, mirror, layout, 1)
+        self.store_depth_scaled(ctx, encoder, depth, size, mirror, layout, 1u32)
     }
 
-    /// Encode one sample at each guest pixel position of a scaled surface.
+    /// Encode one sample for each guest pixel of the supplied logical region.
     #[allow(clippy::too_many_arguments)]
     pub fn store_depth_scaled(
         &self,
@@ -544,7 +559,7 @@ impl GuestWords {
         size: (u32, u32),
         mirror: &wgpu::Buffer,
         layout: WordLayout,
-        scale: u32,
+        scale: impl Into<crate::raster::RenderScale>,
     ) -> Result<(), WordsError> {
         check_layout(size, layout)?;
         let have = mirror.size() / 4;
@@ -553,8 +568,10 @@ impl GuestWords {
             return Err(WordsError::Bounds { need, have });
         }
         let (depth_view, stencil_view, has_stencil) = Self::depth_views(ctx, depth)?;
+        let (src_width, src_height) = scale.into().size(size.0, size.1);
         let p = Params {
-            src_width: scale.max(1),
+            src_width,
+            src_height,
             has_stencil: has_stencil as u32,
             ..Params::level(size, layout)
         };
@@ -877,13 +894,23 @@ impl GuestWords {
         layout: WordLayout,
         flip: u32,
     ) -> Result<wgpu::Texture, WordsError> {
-        self.depth_alias_scaled(ctx, encoder, depth, format, size, layout, flip, 1)
+        self.depth_alias_at_extent(ctx, encoder, depth, format, size, layout, flip, (depth.width(), depth.height()))
+    }
+
+    /// Decode from an integer-sized backing, as used by the E3 shadow view.
+    #[allow(clippy::too_many_arguments)]
+    pub fn depth_alias_scaled(&self, ctx: &GfxContext, encoder: &mut wgpu::CommandEncoder,
+        depth: &wgpu::Texture, format: D3DFormat, size: (u32, u32), layout: WordLayout,
+        flip: u32, scale: u32) -> Result<wgpu::Texture, WordsError> {
+        let scale = scale.max(1);
+        self.depth_alias_at_extent(ctx, encoder, depth, format, size, layout, flip,
+            (depth.width() / scale, depth.height() / scale))
     }
 
     /// Decode guest word addresses while retaining the source texels within
     /// each word's scaled pixel block (including offset and swizzled aliases).
     #[allow(clippy::too_many_arguments)]
-    pub fn depth_alias_scaled(
+    pub fn depth_alias_at_extent(
         &self,
         ctx: &GfxContext,
         encoder: &mut wgpu::CommandEncoder,
@@ -892,11 +919,11 @@ impl GuestWords {
         size: (u32, u32),
         layout: WordLayout,
         flip: u32,
-        scale: u32,
+        guest: (u32, u32),
     ) -> Result<wgpu::Texture, WordsError> {
         let wf = WordFormat::of(format).ok_or(WordsError::Format(format))?;
         check_layout(size, layout)?;
-        let (dw, dh) = (depth.width() / scale.max(1), depth.height() / scale.max(1));
+        let (dw, dh) = guest;
         let have = dw as u64 * dh as u64;
         let need = words_end(size, layout);
         if need > have {
@@ -904,8 +931,9 @@ impl GuestWords {
         }
         let (depth_view, stencil_view, has_stencil) = Self::depth_views(ctx, depth)?;
         let max = ctx.device.limits().max_texture_dimension_2d;
-        let output_scale = scale.min(max / size.0.max(size.1).max(1)).max(1);
-        let (w, h) = (size.0.max(1) * output_scale, size.1.max(1) * output_scale);
+        let grid = crate::raster::RenderScale::between(guest, (depth.width(), depth.height())).ok_or(WordsError::EmptyExtent)?;
+        let (w, h) = grid.size(size.0, size.1);
+        let (w, h) = (w.min(max), h.min(max));
         let out = ctx.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("gfx depth alias"),
             size: wgpu::Extent3d {

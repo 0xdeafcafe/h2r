@@ -69,18 +69,24 @@ fn main() {
     println!("cargo:rustc-env=ANALYSIS_SOURCE_HASH={analysis:016x}");
     let unread = hash(&["../../recompiler/analyze/src"], &["rs"], &["src/fallback.rs"]);
     println!("cargo:rustc-env=UNREAD_SOURCE_HASH={unread:016x}");
+    // The hook catalog changes lifted owner boundaries on both tiers.
+    // Include the gate and inherited HUD return sites as well as the list.
+    let entry_sources = ["src/render_entries.rs", "../../hooking/guest-layout/src/points.rs",
+        "../../hooking/guest-layout/src/points/render_aspect.rs"];
     let generator = hash(
         &["../../formats/xbe/src", "../../recompiler/analyze/src", "../../recompiler/ir/src", "../../recompiler/lift/src", "../../recompiler/opt/src", "../../recompiler/emit/src", "../../recompiler/emit/c", "../../recompiler/x87/src", "../../runtime/runtime/include", "c"],
         &["rs", "c", "h"],
-        &[],
+        &entry_sources,
     );
     println!("cargo:rustc-env=GENERATOR_SOURCE_HASH={generator:016x}");
     // The fast tier's module (tier.rs): the generator's sources plus
     // crates/recompiler/clif and Cargo.lock (the Cranelift version).
+    let mut fast_sources = entry_sources.to_vec();
+    fast_sources.push("../../../Cargo.lock");
     let fast = hash(
         &["../../formats/xbe/src", "../../recompiler/analyze/src", "../../recompiler/ir/src", "../../recompiler/lift/src", "../../recompiler/opt/src", "../../recompiler/emit/src", "../../recompiler/emit/c", "../../recompiler/x87/src", "../../runtime/runtime/include", "c", "../../recompiler/clif/src", "../../recompiler/clif/c"],
         &["rs", "c", "h"],
-        &["../../../Cargo.lock"],
+        &fast_sources,
     );
     println!("cargo:rustc-env=FAST_TIER_SOURCE_HASH={fast:016x}");
 }

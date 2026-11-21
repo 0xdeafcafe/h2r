@@ -142,6 +142,8 @@ fn receiver() -> ResolvedDraw {
             height: 16,
         }),
         clip_rects: vec![],
+        retail_constants: None,
+        ui_fit: None,
         glyph_cache: 0,
         hw: Default::default(),
     }
@@ -191,13 +193,21 @@ fn layer11_uses_only_its_map_and_preserves_rgb_stencil_and_alpha_test() {
         queue: ctx.queue.clone(),
         caps: ctx.caps,
     }, false);
-    for (map, stencil, alpha_test, want) in [
-        (&light, 3, false, 255),
-        (&blocked, 3, false, 0),
-        (&light, 4, false, 64),
-        (&blocked, 3, true, 64),
+    // A locked retail-size single-copy window submits the display target.
+    // Both target policies can use a receiver drawn at its exact guest extent.
+    use d3d::TargetCopy::{Display, Reference};
+    for (map, stencil, alpha_test, want, copy) in [
+        (&light, 3, false, 255, Reference),
+        (&light, 3, false, 255, Display),
+        (&blocked, 3, false, 0, Reference),
+        (&light, 4, false, 64, Reference),
+        (&blocked, 3, true, 64, Reference),
     ] {
         let mut d = receiver();
+        // At the same raster size, the projected display scissor is x=5..7;
+        // the guest copy keeps x=2..6. Both regions cut the same triangle.
+        d.clip = Some(d3d::PixelRect { x: 2, y: 0, width: 4, height: 16 });
+        d.retail_constants = Some((d.shader.constants.clone(), 0.5));
         d.state.render.alpha_test_enable = alpha_test;
         d.state.render.alpha_func = CompareFunc::Greater;
         d.state.render.alpha_ref = 1;
@@ -222,14 +232,17 @@ fn layer11_uses_only_its_map_and_preserves_rgb_stencil_and_alpha_test() {
         )
         .unwrap();
         let (packets, _) = range.prepare(
-            &ctx.device, d3d::TargetCopy::Reference, (16, 16), target,
+            &ctx.device, copy, (16, 16), target,
             [Some(&fallback.view), None, None, None],
         ).unwrap();
         assert_eq!(packets.len(), 1);
         Renderer::encode_pass(&ctx, &mut enc, &surface.target(), Clear::NONE, &packets, None).unwrap();
         ctx.queue.submit([enc.finish()]);
         let px = surface.read_pixels(&ctx);
-        assert_eq!(&px[(2 * 16 + 2) * 4..][..4], [255, 0, 255, want]);
+        let alpha = |x| px[(2 * 16 + x) * 4 + 3];
+        assert_eq!(alpha(5usize), want, "inside both scissors");
+        let expected = if copy == Display { (64, want) } else { (want, 64) };
+        assert_eq!((alpha(2), alpha(6)), expected, "{copy:?}");
         assert_eq!(&px[(15 * 16 + 15) * 4..][..4], [255, 0, 255, 64]);
     }
 }
@@ -305,7 +318,7 @@ fn mixed_native_shadow_unshadowed_and_refused_d3d_lights_match_all_d3d() {
         let request = ExternalPassRequest {
             rect: (0, 0, 16, 16),
             surface_size: (16, 16),
-            z_scale: 16_777_215.0,
+            display_projection_factor: 1.0, z_scale: 16_777_215.0,
         };
         let mut captured = None;
         for (i, original) in [&lit, &lit, &gel, &dark, &lit].into_iter().enumerate() {

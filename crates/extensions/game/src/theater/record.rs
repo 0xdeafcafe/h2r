@@ -199,6 +199,11 @@ impl Session {
                 Ok(())
             };
             ready(machine)?;
+            if self.video_menu.get().is_some() && machine.rt.is_some_and(|rt|
+                super::video_menu::picker_in_stack(&rt.memory()))
+            {
+                anyhow::bail!("Video resolution picker is open");
+            }
             vfs::flush_pending_metadata();
             let disk_delta = disk.lock().unwrap_or_else(|e| e.into_inner()).capture()?;
             let header = snapshot::Header {

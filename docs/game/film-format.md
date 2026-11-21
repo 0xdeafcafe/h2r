@@ -132,16 +132,14 @@ scheduler boundaries, snapshots and the continuation data needed after a
 restore. It also covers cold replay when the first snapshot has yet to be
 taken. Absolute offsets preserve which calls preceded each snapshot.
 
-The private `BOOT` record includes the starting render scale and LOD Distance.
-Both settings have `View` scope because they affect the guest's visual record
-lists. The recorder captures saved values and locked overrides separately.
-Before launching a replay with `BOOT`, Theater removes the viewer's
-`H2_RENDER_SCALE` and `H2_LOD_DISTANCE` from the child process. It restores
-the film's values in the private data directory and reapplies recorded locks
-to the desktop settings store. An older `BOOT` without either key uses the
-schema default for that key. Local windowed playback uses a 1x GPU backend,
-so restoring a higher render-scale setting alone does not reproduce the
-recording's render target. [Startup settings](../../crates/extensions/game/src/theater/startup.rs).
+The private `BOOT` record preserves LOD Distance and other `View` settings,
+including their saved values and locks. Theater clears the viewer's LOD
+override before restoring them. Resolution has `Host` scope, so the viewer
+chooses the displayed raster. The recorded guest uses retail geometry for
+readbacks. Films that recorded both the legacy render scale and LOD Distance
+recover their original startup geometry multiplier. The private guest Video
+menu also retains its recorded choices during playback.
+[Startup settings](../../crates/extensions/game/src/theater/startup.rs).
 
 The private `INDX` is a JSON array in physical envelope order. Each row
 stores `tag` (four byte values), `offset` (u64) and `size` (u32).
@@ -247,17 +245,18 @@ million entries. JSON payloads are UTF-8.
 | Tag | Contents after decompression |
 | --- | --- |
 | `HEAD` | JSON machine header. The first has `version: 2`, film ID, source, generated image stamp, runtime source fingerprint, XBE SHA-256, title ID, epoch, UTC start in Unix milliseconds, feature switches, executor budget, network settings and lease and canonical game IDs when hosted. Later headers update the display metadata and boot-relative duration. |
-| `BOOT` | Effective boot options, settings, direct-level request and resolved simulation configuration. The frame pipeline records its frame prediction, RNG seed replay, deferred I/O and list of guest functions to hand back to the game thread. Older recordings use the pipeline defaults. |
+| `BOOT` | Effective boot options, settings, direct-level request and resolved simulation configuration. `gpu_draws` records whether guest D3D used GPU surfaces. The frame pipeline records its frame prediction, RNG seed replay, deferred I/O and list of guest functions to hand back to the game thread. Older recordings use the pipeline defaults. |
 | `MOVI` | Effective movie selection when Bink is enabled. Maps engine movie names to SHA-256 of the local transcodes. An empty map selects the skip path. |
 | `DATA` | Initial guest file manifest. Entries identify a directory, an embedded file or a file to obtain locally by path and SHA-256. Installed content and converted campaign files are identified by digest. |
 | `DESC` | Match header, including first match tick, mounted map identity and SHA-256, package/cache source if present, retail variant bytes, game type, mode, difficulty, skulls, seed and host identity. The initial roster uses absolute seats, names, optional XUIDs, teams, local/remote/phantom/bot kinds and available bot parameters. The bot kind remains readable in older descriptors. Current hosts use phantom seats for bots. Late arrivals have a join event. |
 | `INPT` | Binary block of consecutive completed ticks, including actions, events and post-tick hashes. |
 | `PADR` | Indexed local XInput calls. Records the actual guest result and returned state, including packet number. Covers menu input and reads between ticks. Phantom actions use `BTAP`. |
+| `VSIZ` | Physical width and height observed by the local guest when it draws the Resolution row or opens its picker. |
 | `TEXT` | Virtual keyboard edit at the focused guest keyboard, including profile-name entry. Uses the common call cursor and the UI thread ID. |
 | `BTAP` | Call-indexed results of the phantom bot action builder, including guest cold-animation requests. |
 | `BOTR` | Sparse bot roster changes at management boundaries. Current hosts record phantom seats. |
 | `PDEV` | Sparse controller connection changes by input-pump ordinal, including port, generation and rumble capability. |
-| `NETR`, `RAND` | Batches of host boundary calls interleaved by a common call index with `PADR`, `TEXT` and `BTAP`. Records operation, arguments, thread, return/error and output slots. Socket delivery, send results and random draws retain their original ordering. |
+| `NETR`, `RAND` | Batches of host boundary calls interleaved by a common call index with `PADR`, `TEXT`, `BTAP` and `VSIZ`. Records operation, arguments, thread, return/error and output slots. Socket delivery, send results and random draws retain their original ordering. |
 | `MARK` | Accepted lobby operations by executor boundary, D3D snapshot boundaries, bookmarks or the final mark with slice, tick and call count. |
 | `HASH` | Every 30 completed ticks, the arena digest if available and the HLE call cursor. Additional per-tick gameplay digests live in `INPT`. |
 | `KEYF` | Scheduler-boundary snapshot and cursors, described below. |
@@ -501,9 +500,29 @@ assumption that the saved clip endpoints refer directly to film ticks.
 
 ## Choosing a player's view
 
-In local playback the guest renders its original camera, first-person weapon
-and HUD. A v3 local film can display one split-screen viewport at its
-original aspect ratio. The slot is the player's seat in the film roster.
+In a local GPU recording the guest renders its original camera, first-person weapon
+and HUD. Its exact 640x480 reference provides guest readbacks, while
+the viewer chooses the window resolution. A v3 local film can display
+one split-screen viewport. Its guest-pixel edges map onto the displayed
+raster so the selection tracks resolution changes. The slot is the player's
+seat in the film roster.
+
+When playback reaches the Video screen, its Resolution row and picker
+reproduce the recording's choices and physical size, including window resizes
+during recording. The private boot settings preserve the guest row's initial
+selection and lock. Keyframes save completed resolution changes. The recorder
+defers a seek point while the Resolution picker is held on the Video screen. The
+playback window uses its own resolution throughout.
+Older films without this menu metadata cannot reproduce the dimensions of a
+recorded picker.
+
+For a local GPU recording, `--render-every 0` runs the reference offscreen
+in the desktop player. CPU recordings and playerless hosts retain their
+headless backend. Windowed playback of a local CPU recording uses the independent
+observer described below to show the match. When an older film lacks the backend field, Theater uses
+the recorded render hooks, window settings and render-thread flag. A legacy
+offscreen GPU recording with none of the window or thread evidence is
+indistinguishable from a CPU recording.
 
 ```sh
 h2 agent theater.camera '{"mode":"first_person","seat":0}'
@@ -515,8 +534,11 @@ a cinematic, death or vehicle camera the window shows the recorded frame.
 `theater.camera {"mode":"default"}` returns to the whole local frame.
 
 A playerless host has no local director, first-person weapon or HUD. For
-a rendered host film the desktop player opens a separate 960 × 540 GPU
-view of the running simulation. It uses the selected unit’s posed camera
+a rendered host film the desktop player opens a separate GPU view at the
+viewer's selected resolution. Native follows the physical drawable within the default 4K pixel budget, including
+a resize while paused. The presented aspect sets the observer's horizontal
+field of view. The BSP and posed objects use the same projection for drawing
+and culling. The observer uses the selected unit’s posed camera
 marker, aim and unzoomed field of view. When the marker is unavailable,
 it estimates eye height from the biped’s collision capsule and crouch state.
 The scene uses the active BSP with its base textures and lightmaps, and

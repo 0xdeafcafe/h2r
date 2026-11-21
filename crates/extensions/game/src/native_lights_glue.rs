@@ -1233,13 +1233,11 @@ fn intersect_scissor([x,y,w,h]: [u32;4], (vx,vy,vw,vh): (u32,u32,u32,u32)) -> [u
 }
 
 fn scale_scissor(rect: [u32;4], guest: (u32,u32), target: (u32,u32)) -> Option<[u32;4]> {
-    let scale = target.0.checked_div(guest.0)?;
-    if scale == 0 || guest.0.checked_mul(scale)? != target.0 || guest.1 == 0 ||
-        guest.1.checked_mul(scale)? != target.1 { return None; }
+    let scale = d3d::scaled::RenderScale::between(guest, target)?;
     let [x,y,w,h] = rect;
     if w == 0 || h == 0 { return Some([0;4]); }
     if x.checked_add(w)? > guest.0 || y.checked_add(h)? > guest.1 { return None; }
-    Some([x * scale, y * scale, w * scale, h * scale])
+    Some(scale.rect(x, y, w, h))
 }
 
 /// One admitted light draw, appended as packets to the D3D pass open on
@@ -1298,10 +1296,15 @@ impl RunPass {
         &self, t: &d3d::backend::ExternalAttachments, request: d3d::ExternalPassRequest,
     ) -> Result<d3d::backend::ExternalDraws, &'static str> {
         let guest_size = request.surface_size;
-        let scissor = scale_scissor(self.light.scissor, guest_size, t.size).ok_or("unsupported scissor scale")?;
+        let [x, y, width, height] = self.light.scissor;
+        let clip = d3d::PixelRect { x, y, width, height }.projected_x(
+            request.rect, request.projection_factor(t.copy),
+        );
+        let scissor = scale_scissor([clip.x, clip.y, clip.width, clip.height], guest_size, t.size)
+            .ok_or("unsupported scissor scale")?;
         let constants = self.view.ok_or("missing view constants")?;
         let clip = self.clip.filter(|c| c.w_buffered == Some(true)).ok_or("unknown W-buffer at issue")?;
-        let view = ViewInputs { constants, guest_size, size: t.size, z_scale: request.z_scale, w_clip: Some((clip.range, clip.clamp)) };
+        let view = ViewInputs { constants: request.view_constants(t.copy, constants), guest_size, size: t.size, z_scale: request.z_scale, w_clip: Some((clip.range, clip.clamp)) };
         let ready = &self.light.ready;
         let mut gpu = ready.gpu();
         let gpu = gpu.as_mut().ok_or("world upload failed")?;
@@ -1554,7 +1557,7 @@ mod tests {
         let clip = intersect_scissor([7, 4, 8, 10], (9, 2, 8, 9));
         assert_eq!(clip, [9, 4, 6, 7]);
         assert_eq!(scale_scissor(clip, (20, 15), (60, 45)), Some([27, 12, 18, 21]));
-        assert_eq!(scale_scissor(clip, (20, 15), (60, 40)), None);
+        assert_eq!(scale_scissor(clip, (20, 15), (60, 40)), Some([27, 11, 18, 18]));
         let empty = intersect_scissor([17, 0, 2, 9], (9, 2, 8, 9));
         assert_eq!(scale_scissor(empty, (20, 15), (40, 30)), Some([0; 4]));
     }

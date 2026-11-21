@@ -39,8 +39,8 @@ pub struct Uniforms {
     pub depth: Vec4,
     /// W-buffering: the clamp range of the stored w.
     pub depth_range: [f32; 2],
-    /// Host pixels per guest pixel on each axis, for the polygon stipple.
-    pub stipple_scale: [f32; 2],
+    /// Per-axis raster fractions for polygon stipple, packed by [`Self::stipple_grid`].
+    pub stipple_scale: [u32; 2],
 }
 
 impl Default for Uniforms {
@@ -61,14 +61,21 @@ impl Default for Uniforms {
             stipple: [0; 32],
             depth: [16_777_215.0, 0.0, 0.0, 1.0],
             depth_range: [0.0, 16_777_215.0],
-            stipple_scale: [1.0; 2],
+            stipple_scale: Self::stipple_grid((1, 1), (1, 1)),
         }
     }
 }
 
 impl Uniforms {
-    /// The uniform buffer bytes, laid out as the WGSL struct (std140-like:
-    /// every member here is a vec4 or an array of vec4).
+    /// Each 32-bit lane holds guest and host extents in its low and high
+    /// halves. Both fit in 16 bits for a GPU attachment. Keeping the exact
+    /// ratio lets the shader agree with CPU-rounded edges at half pixels.
+    pub fn stipple_grid(guest: (u32, u32), host: (u32, u32)) -> [u32; 2] {
+        let axis = |g: u32, h: u32| (h.clamp(1, 65535) << 16) | g.clamp(1, 65535);
+        [axis(guest.0, host.0), axis(guest.1, host.1)]
+    }
+
+    /// The uniform buffer bytes in WGSL member order and alignment.
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut out = vec![0; Self::SIZE];
         self.write_bytes(&mut out);
@@ -104,8 +111,11 @@ impl Uniforms {
         }
         let [lo, hi] = self.depth_range;
         let [sx, sy] = self.stipple_scale;
-        // In WGSL, depth_range.xy is the W clamp, and .zw is the stipple scale.
-        crate::common::uniform_vectors(out, &[self.depth, [lo, hi, sx, sy]]);
+        let tail = crate::common::uniform_vectors(out, std::slice::from_ref(&self.depth));
+        // The W clamp and the two integer stipple lanes share one 16-byte slot.
+        for (dst, word) in tail.as_chunks_mut::<4>().0.iter_mut().zip([lo.to_bits(), hi.to_bits(), sx, sy]) {
+            *dst = word.to_le_bytes();
+        }
     }
 }
 

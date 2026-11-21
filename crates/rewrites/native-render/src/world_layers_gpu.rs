@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 
 use d3d::backend::{
     ExternalAttachments, ExternalDraws, ExternalPass, ExternalPassRequest, ExternalTarget,
-    ExternalWrites, PixelRect, ResolvedDraw,
+    ExternalWrites, ResolvedDraw,
 };
 use d3d::nv2a::{NativeDrawKey, NativeDrawMaterial, NativeDrawShader};
 use gfx::compile::{Pending, PendingPipeline};
@@ -22,6 +22,7 @@ use gfx::vertex::PrimitiveType;
 use shaders::{psh::PixelUniforms, vsh::VertexUniforms};
 
 use crate::pipelines::{self, Pipelines};
+use crate::program::scaled_scissor;
 use crate::world_layers::{Geometry, Owner, Texaccum};
 
 const CACHE_BUDGET: u64 = 64 * 1024 * 1024;
@@ -354,16 +355,14 @@ impl IndexedPass {
         target: &ExternalAttachments,
         guest_size: (u32, u32),
     ) -> Option<ExternalDraws> {
+        // Both target copies retain the same geometry and material snapshot.
         let draw = &self.draw;
         let (width, height) = guest_size;
         if target.targets.0 == target.targets.1 {
             return None;
         }
-        let scale = target.size.0.checked_div(width)?;
-        if scale == 0
-            || width.checked_mul(scale)? != target.size.0
-            || height.checked_mul(scale)? != target.size.1
-            || (width, height) != (draw.target.width, draw.target.height)
+        let scale = d3d::scaled::RenderScale::between(guest_size, target.size)?;
+        if (width, height) != (draw.target.width, draw.target.height)
             || target.size
                 != (
                     target.depth.texture().width(),
@@ -547,14 +546,18 @@ impl IndexedPass {
             groups.push((views, textures.clone()));
         }
 
+        // Only the per-draw uniforms and scissors depend on the presentation
+        // lens and UI fit. Keep their copy out of the resident cache.
+        let copy = draw.for_copy(target.copy);
+        let draw = copy.as_ref();
         let clip = if draw.clip_rects.is_empty() {
             std::slice::from_ref(draw.clip.as_ref()?)
         } else {
             &draw.clip_rects
         };
-        let clip: Vec<PixelRect> = clip
+        let clip: Vec<ScissorRect> = clip
             .iter()
-            .map(|r| scaled_clip(r, scale, target.size))
+            .map(|r| scaled_scissor(&draw.display_rect(*r), scale, target.size))
             .collect::<Option<_>>()?;
         let streams = section.streams.clone();
         let indices = section.indices.clone();
@@ -574,9 +577,7 @@ impl IndexedPass {
         let offsets = params.offsets(0);
         let mut groups = vec![BoundGroup { index: 0, group: params.group, offsets: offsets.to_vec() }];
         groups.extend(textures.map(|group| BoundGroup::new(1, group)));
-        let mut clip = clip.into_iter().map(|r| ScissorRect {
-            x: r.x, y: r.y, width: r.width, height: r.height,
-        });
+        let mut clip = clip.into_iter();
         let first = RecordedDraw::prepared_indexed(
             &key, pipeline, streams, indices, index_count, groups, &state, target.size, clip.next()?,
         );
@@ -625,22 +626,6 @@ impl ExternalPass for IndexedPass {
     }
 }
 
-fn scaled_clip(rect: &PixelRect, scale: u32, extent: (u32, u32)) -> Option<PixelRect> {
-    let x = rect.x.checked_mul(scale)?;
-    let y = rect.y.checked_mul(scale)?;
-    let width = rect.width.checked_mul(scale)?.min(extent.0.checked_sub(x)?);
-    let height = rect
-        .height
-        .checked_mul(scale)?
-        .min(extent.1.checked_sub(y)?);
-    (width != 0 && height != 0).then_some(PixelRect {
-        x,
-        y,
-        width,
-        height,
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -679,21 +664,21 @@ mod tests {
 
     #[test]
     fn scaled_scissors_keep_the_same_guest_rectangle() {
-        let clip = PixelRect {
+        let clip = d3d::backend::PixelRect {
             x: 7,
             y: 5,
             width: 11,
             height: 9,
         };
         assert_eq!(
-            scaled_clip(&clip, 2, (32, 32)),
-            Some(PixelRect {
+            scaled_scissor(&clip, 2.into(), (32, 32)),
+            Some(ScissorRect {
                 x: 14,
                 y: 10,
                 width: 18,
                 height: 18
             })
         );
-        assert_eq!(scaled_clip(&clip, 2, (14, 32)), None);
+        assert_eq!(scaled_scissor(&clip, 2.into(), (14, 32)), None);
     }
 }

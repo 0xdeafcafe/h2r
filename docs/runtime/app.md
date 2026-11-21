@@ -103,7 +103,7 @@ Like `h2 run`, it picks the module by `--tier`: when `--out` (default
 `$TMPDIR/h2boot`) has no clang module, or one whose `.stamp` names another
 image, generator or module ABI (`boot::dylib_current`), `auto` runs the fast
 tier and builds clang's in the background. Flags: `--out DIR`, `--data DIR`, `--slices N` (unlimited by
-default), `--transfers N`, `--aspect 4:3|16:9|source`, `--scaling
+default), `--transfers N`, `--aspect 4:3|16:9|source` (default `source` for play), `--scaling
 fit|integer|stretch`, `--nearest`, `--fullscreen`, `--no-audio`,
 `--no-gamepads`, `--no-vsync`, `--unpaced`, `--fps 30|60|120|uncapped`,
 `--no-watermark`, `--no-mappack` (or `H2_MAPPACK=0`; a `mappack.iso` beside the
@@ -460,13 +460,16 @@ surface, clearing the rest to black.
 - **Ordering** comes from the single shared queue: the copy is submitted
   before the slot is published, and the window's read is submitted before
   the slot can return to the guest. No fences.
-- **Scaling** (`scale.rs`): the display aspect is a setting, not the
-  back-buffer shape. A 640x480 frame is 4:3 (`Standard`); Halo 2's widescreen
-  mode is anamorphic 640x480 shown at 16:9 (`Widescreen`); `Source` means
-  square pixels. `Fit` letterboxes or pillarboxes, `Integer` uses the largest
-  whole multiple of the frame height that fits, `Stretch` fills.
-- **Resize** reconfigures the surface and redraws; zero sizes (minimised) are
-  ignored.
+- **Scaling** (`scale.rs`). Play uses square output pixels by default.
+  Native follows the drawable up to the default 4K pixel budget.
+  `GuestHost::native_size` publishes the physical drawable size for Native and
+  `GuestHost::display_size` reports where a given raster is presented.
+  `--aspect 4:3` and `16:9` fit those shapes inside the window. `Fit`
+  adds bars as needed, `Integer` takes the largest whole multiple of
+  the frame height that fits, and `Stretch` fills the drawable.
+- **Resize** reconfigures the window surface immediately. The game reallocates
+  its Native raster after the drawable size holds steady for 150 ms. Minimizing
+  preserves the last nonzero size.
 - **Vsync**: `AutoVsync` (Fifo) by default, `AutoNoVsync` with
   `vsync: false`. This only affects the window; guest pacing is separate.
 - **Display rate** (`AppConfig::fps`, `H2_FPS=30|60|120|uncapped`, `h2 play

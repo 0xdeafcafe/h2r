@@ -15,6 +15,7 @@ pub struct LodDistance {
     scale_stats: Option<Arc<Mutex<ScaleStats>>>,
     distance: Option<settings::Setting<u32>>,
     startup_distance: u32,
+    fixed_multiplier: Option<f32>,
     /// Guest address published during registration for the native object walk.
     view_scale: OnceLock<ViewLodScale>,
 }
@@ -37,15 +38,22 @@ impl LodDistance {
             scale_stats,
             view_scale: OnceLock::new(),
             distance,
+            fixed_multiplier: None,
             startup_distance: value.as_int().expect("LOD Distance is a numeric choice") as u32,
         })
+    }
+
+    /// Keep protected geometry independent of the local display and settings.
+    pub fn with_fixed_multiplier(mut self, multiplier: f32) -> Self {
+        self.fixed_multiplier = Some(multiplier);
+        self
     }
 
     /// The active target at the last frame boundary. A plain GPU backend
     /// renders the guest frame at its original size.
     fn output_height(&self) -> u32 {
         self.scale_stats.as_ref().map_or(GUEST_FRAME.1, |s| {
-            s.lock().unwrap_or_else(|e| e.into_inner()).scale * GUEST_FRAME.1
+            s.lock().unwrap_or_else(|e| e.into_inner()).output.1
         })
     }
 
@@ -53,8 +61,11 @@ impl LodDistance {
         self.view_scale.get().copied()
     }
 
-    /// Sample the active target and settings at the view boundary.
+    /// Sample the geometry multiplier once at the view boundary.
     fn multiplier(&self) -> f32 {
+        if let Some(fixed) = self.fixed_multiplier {
+            return fixed;
+        }
         let distance = self
             .distance
             .as_ref()
@@ -147,23 +158,25 @@ mod tests {
     fn detail_follows_the_active_render_target_and_live_distance() {
         let store = settings::Store::defaults(crate::setting_defs::ALL);
         let stats = Arc::new(Mutex::new(ScaleStats {
-            scale: 1,
+            output: GUEST_FRAME,
             ..Default::default()
         }));
         let lod = LodDistance::new(Some(&store), Some(stats.clone())).unwrap();
         store
             .set(
-                crate::setting_defs::RENDER_SCALE.key,
-                settings::Value::Int(4),
+                crate::setting_defs::RESOLUTION.key,
+                settings::Resolution::Fixed(2560, 1600).value(),
             )
             .unwrap();
         assert_eq!(lod.multiplier(), 1.0);
-        stats.lock().unwrap().scale = 4;
-        assert_eq!(lod.multiplier(), 4.0);
+        let recorded = lod.clone().with_fixed_multiplier(2.5);
+        stats.lock().unwrap().output = (2560, 1600);
+        assert_eq!(lod.multiplier(), 1600.0 / 480.0);
         store
             .set(LOD_DISTANCE.key, LOD_DISTANCE.parse("1.5").unwrap())
             .unwrap();
-        assert_eq!(lod.multiplier(), 6.0);
+        assert_eq!(lod.multiplier(), 5.0);
+        assert_eq!(recorded.multiplier(), 2.5);
         store
             .set(LOD_DISTANCE.key, LOD_DISTANCE.parse("retail").unwrap())
             .unwrap();

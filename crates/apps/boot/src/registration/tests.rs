@@ -140,6 +140,8 @@ fn registry_for_profile(case: &Case, profile: film::RenderHooks) -> hooks::Regis
         LateInputs {
             #[cfg(feature = "gpu")]
             view: case.drawing.then_some(&crate::d3d_glue::DrawingView { scale_stats: None }),
+            #[cfg(feature = "gpu")]
+            fixed_lod: None,
             rt: &rt,
             lockstep,
             agent: if case.agent { AgentSource::Local } else { AgentSource::None },

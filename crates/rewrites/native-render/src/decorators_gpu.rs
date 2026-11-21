@@ -390,6 +390,7 @@ struct Out { @builtin(position) pos: vec4f, @location(0) c: vec4f }
             forward: [1.0, 0.0, 0.0],
             up: [0.0, 0.0, 1.0],
             fov: 1.0,
+            projection_xy: None,
             viewport: [0, 0, SIZE as i16, SIZE as i16],
             near: 0.1,
             far: 100.0,

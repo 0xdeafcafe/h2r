@@ -178,6 +178,8 @@ fn triangle(x: f32, color: [f32; 4], reference: u8, sample: bool) -> ResolvedDra
         clip_rects: Vec::new(),
         hw: Default::default(),
         textures: headers,
+        retail_constants: None,
+        ui_fit: None,
         glyph_cache: 0,
     }
 }
@@ -212,6 +214,14 @@ fn record_pass(
     textures: [Option<&d3d::gfx_backend::HostTexture>; 4],
     stage: timeline::native::Stage, pass: Box<dyn ExternalPass>,
 ) -> bool {
+    record_copy(backend, surfaces, textures, stage, TargetCopy::Reference, Arc::new(Mutex::new(pass)))
+}
+
+fn record_copy(
+    backend: &mut GfxBackend, surfaces: ExternalSurfaces<SurfaceId>,
+    textures: [Option<&d3d::gfx_backend::HostTexture>; 4],
+    stage: timeline::native::Stage, copy: TargetCopy, pass: d3d::backend::SharedReplacement,
+) -> bool {
     let sample = !surfaces.sampled.is_empty();
     let plan = ExternalPlan {
         stage,
@@ -232,7 +242,7 @@ fn record_pass(
     let request = ExternalPassRequest {
         rect: (0, 0, SIZE, SIZE),
         surface_size: (SIZE, SIZE),
-        z_scale: 16_777_215.0,
+        display_projection_factor: 1.0, z_scale: 16_777_215.0,
     };
     let Some(recordings) = backend
         .prepare_external(
@@ -240,8 +250,8 @@ fn record_pass(
             request,
             textures,
             &plan,
-            TargetCopy::Reference,
-            Arc::new(Mutex::new(pass)),
+            copy,
+            pass,
         )
         .unwrap()
     else {
@@ -428,7 +438,7 @@ fn queued_world_draws_choose_native_or_d3d_in_order_without_waiting() {
                     request: ExternalPassRequest {
                         rect: (0, 0, SIZE, SIZE),
                         surface_size: (SIZE, SIZE),
-                        z_scale: 16_777_215.0,
+                        display_projection_factor: 1.0, z_scale: 16_777_215.0,
                     },
                     plan: ExternalPlan {
                         stage: timeline::native::Stage::World,
@@ -526,6 +536,54 @@ fn uncached_world_geometry_shares_one_upload_and_one_pass() {
     };
     assert_eq!(pixel(4), [255, 0, 0, 255]);
     assert_eq!(pixel(20), [255, 255, 0, 255]);
+}
+
+#[test]
+fn resident_section_reuses_geometry_with_copy_specific_uniforms_and_scissors() {
+    use native_render::world_layers::{Geometry, Owner};
+    use timeline::native::Stage;
+
+    let _guard = CAPTURE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let Ok(ctx) = GfxContext::headless() else { return };
+    let mut backend = GfxBackend::new(ctx);
+    let color = backend.create_surface(FORMAT, SIZE, SIZE, false).unwrap();
+    let depth = backend.create_surface(DEPTH, SIZE, SIZE, true).unwrap();
+    let surfaces = ExternalSurfaces { color, depth, sampled: vec![], slots: vec![], slot_sizes: vec![] };
+    let cache = Arc::new(Cache::default());
+    let geometry = Geometry { owner: Owner::Cluster(3), record: 0, sorted_slot: 1,
+        part: 1, shader: 9, variant: 0, implementation: 1 };
+    let mut draw = triangle(2.0, [1.; 4], 1, false);
+    let words = program(&[
+        Inst::mac(MacOp::Mov, Some(Operand::v(0)), None, None).to_out(false, OutReg::Pos, 0xf),
+        Inst::mac(MacOp::Mov, Some(Operand::c(12)), None, None).to_out(false, OutReg::D0, 0xf).last(),
+    ]);
+    draw.shader.vertex = VertexProcessing::Program {
+        start: 0, microcode: Program::parse(&words).unwrap().instructions.iter()
+            .flat_map(|i| i.words).collect::<Vec<_>>().into(),
+    };
+    // Probe the two constant blocks through colour, independently of position.
+    Arc::make_mut(&mut draw.shader.constants)[12] = [0., 1., 0., 1.];
+    draw.retail_constants = Some((draw.shader.constants.clone(), 0.5));
+    Arc::make_mut(&mut draw.shader.constants)[12] = [1.; 4];
+    draw.clip = Some(PixelRect { x: 2, y: 0, width: 6, height: SIZE });
+    draw.state.render.depth_func = CompareFunc::Always;
+    // Both copies exercise the same resident pass after its pipeline is visible.
+    assert!(record(&mut backend, surfaces.clone(), &draw, [None; 4], &cache));
+    let pass = IndexedPass::for_section(&draw, cache, 1, None, (1, 4), geometry, 3).unwrap();
+    let pass: d3d::backend::SharedReplacement = Arc::new(Mutex::new(Box::new(pass)));
+    for copy in [TargetCopy::Reference, TargetCopy::Display, TargetCopy::Reference] {
+        backend.clear(color, Some(depth), Clear::all([0.; 4])).unwrap();
+        assert!(record_copy(&mut backend, surfaces.clone(), [None; 4], Stage::World, copy, pass.clone()));
+        let pixels = backend.read_color(color).unwrap().0;
+        let pixel = |x: usize| &pixels[4 * (3 * SIZE as usize + x)..][..4];
+        if copy == TargetCopy::Reference {
+            assert_eq!(pixel(5), &[0, 255, 0, 255]);
+            assert_eq!(pixel(10), &[0; 4]);
+        } else {
+            assert_eq!(pixel(5), &[0; 4]);
+            assert_eq!(pixel(10), &[255; 4]);
+        }
+    }
 }
 
 #[test]

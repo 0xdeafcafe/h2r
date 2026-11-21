@@ -1,6 +1,25 @@
 //! A producer boundary drain that leaves interrupt callbacks queued.
 use super::*;
 impl<B: Backend> Device<B> {
+    /// Finish work issued under the previous UI layout before changing the
+    /// placement on subsequent packets. A deferred guest callback keeps
+    /// the pending draw and falls back to the ordinary window transform.
+    pub fn set_ui_fit(
+        &mut self,
+        mem: &mut dyn GuestMemory,
+        fit: Option<crate::backend::UiFit>,
+    ) -> Result<(), D3dError> {
+        if self.ui_fit != fit {
+            // Draining still needs the old fit on any pending draws.
+            let drained = self.drain_admission_boundary(mem);
+            self.ui_fit = None;
+            if drained? {
+                self.ui_fit = fit;
+            }
+        }
+        Ok(())
+    }
+
     /// Drain only already-published commands. False means an interrupt
     /// callback must run first; it stays queued for the ordinary D3D entry.
     /// A caller must cancel its admission scope on false or error.

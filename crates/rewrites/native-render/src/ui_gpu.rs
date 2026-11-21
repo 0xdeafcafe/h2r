@@ -4,8 +4,9 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use d3d::backend::{ExternalAttachments, ExternalDraws, PixelRect, ResolvedDraw};
+use d3d::backend::{ExternalAttachments, ExternalDraws, ResolvedDraw};
 use d3d::nv2a::{NativeDrawKey, NativeDrawProgram, UiProgramError};
+use d3d::scaled::RenderScale;
 use gfx::compile::{Pending, PendingPipeline};
 use gfx::pipeline::{PipelineKey, ShaderId, ShaderProgram, TargetFormats, create_render_pipeline};
 use gfx::program::{ProgramBindings, StageDims, filterable, validated_resource};
@@ -14,8 +15,10 @@ use gfx::state::FillMode;
 use gfx::texture::TextureKind;
 use gfx::translate::Capabilities;
 use gfx::vertex::{HostPrimitive, PrimitiveType};
-use gfx::{BoundGroup, RecordedDraw, ScissorRect};
+use gfx::{BoundGroup, RecordedDraw};
 use shaders::{psh::PixelUniforms, vsh::VertexUniforms};
+
+use crate::program::scaled_scissor;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Refusal {
@@ -75,13 +78,16 @@ impl DeviceCache {
         draw: &ResolvedDraw,
     ) -> Result<ExternalDraws, Refusal> {
         let guest = (draw.target.width, draw.target.height);
-        let scale = target_scale(guest, target.size).ok_or(Refusal::Target)?;
+        let scale = RenderScale::between(guest, target.size).ok_or(Refusal::Target)?;
         let scissor = if draw.clip_rects.is_empty() {
             std::slice::from_ref(draw.clip.as_ref().ok_or(Refusal::Geometry)?)
         } else {
             &draw.clip_rects
         };
-        let mut clips = scissor.iter().map(|clip| scaled_clip(clip, scale, target.size));
+        let mut clips = scissor.iter().map(|&clip| {
+            let clip = draw.display_rect(clip);
+            scaled_scissor(&clip, scale, target.size)
+        });
         let first = clips.next().flatten().ok_or(Refusal::Geometry)?;
         let rest = clips.collect::<Option<Vec<_>>>().ok_or(Refusal::Geometry)?;
         let indices = indices(draw.primitive, draw.vertex_count, draw.indices.as_deref())
@@ -228,20 +234,6 @@ fn indices(primitive: PrimitiveType, vertex_count: u32, original: Option<&[u32]>
     (!indices.is_empty()).then_some(indices)
 }
 
-fn target_scale(guest: (u32, u32), host: (u32, u32)) -> Option<u32> {
-    let scale = host.0.checked_div(guest.0)?;
-    (scale > 0 && guest.1 > 0 && guest.0.checked_mul(scale)? == host.0
-        && guest.1.checked_mul(scale)? == host.1).then_some(scale)
-}
-
-fn scaled_clip(clip: &PixelRect, scale: u32, size: (u32, u32)) -> Option<ScissorRect> {
-    let x = clip.x.checked_mul(scale)?;
-    let y = clip.y.checked_mul(scale)?;
-    let width = clip.width.checked_mul(scale)?.min(size.0.checked_sub(x)?);
-    let height = clip.height.checked_mul(scale)?.min(size.1.checked_sub(y)?);
-    (width > 0 && height > 0).then_some(ScissorRect { x, y, width, height })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -258,10 +250,10 @@ mod tests {
     #[test]
     fn ui_copy_scissors_preserve_the_guest_pixels_and_clip_at_the_edge() {
         let guest = (640, 480);
-        assert_eq!(target_scale(guest, (1280, 960)), Some(2));
-        assert_eq!(target_scale(guest, (1280, 480)), None);
-        let clip = PixelRect { x: 631, y: 11, width: 13, height: 9 };
-        let result = scaled_clip(&clip, 2, (1280, 960)).unwrap();
-        assert_eq!((result.x, result.y, result.width, result.height), (1262, 22, 18, 18));
+        let host = (1440, 720);
+        let scale = RenderScale::between(guest, host).unwrap();
+        let clip = d3d::backend::PixelRect { x: 631, y: 11, width: 13, height: 9 };
+        let result = scaled_scissor(&clip, scale, host).unwrap();
+        assert_eq!((result.x, result.y, result.width, result.height), (1420, 17, 20, 13));
     }
 }

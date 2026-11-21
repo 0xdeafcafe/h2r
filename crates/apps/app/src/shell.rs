@@ -209,7 +209,7 @@ impl Shell {
             &ctx,
             surface,
             (size.width, size.height),
-            self.config.fps.vsync(self.config.vsync),
+            &self.config,
         )?;
         let info = ctx.adapter.get_info();
         eprintln!(
@@ -245,6 +245,7 @@ impl Shell {
         let (input, keyboard) = crate::build_input(&self.config);
         self.keyboard = keyboard.clone();
         let host = GuestHost {
+            native_size: surface.native_size.clone(),
             gfx: crate::share_context(&ctx),
             sink,
             input: Some(input),

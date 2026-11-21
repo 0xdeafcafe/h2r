@@ -21,6 +21,7 @@ pub use startup::Startup;
 pub use startup::configure_replay_child;
 mod replay;
 mod local_pads;
+mod video_menu;
 use anyhow::{Context, Result, bail, ensure};
 use legacy_camera::ReplayCamera;
 pub use controls::library_methods;
@@ -144,6 +145,7 @@ pub struct Session {
     version: u32,
     replaying: bool,
     state: Mutex<State>,
+    video_menu: std::sync::OnceLock<Arc<settings::Store>>,
     #[cfg(feature = "gpu")]
     view: std::sync::OnceLock<Mutex<host_view::MountedView>>,
     bots: Mutex<bot_tape::BotTape>,
@@ -319,6 +321,7 @@ impl Session {
         }
         Ok(Some(Arc::new(Self {
             version: header.version,
+            video_menu: Default::default(),
             replaying: matches!(&mode, Mode::Replay(_, _)),
             require_upload: matches!(&mode, Mode::Record(rec) if rec.upload.is_some())
                 && std::env::var("H2_HOST_ARCHIVE").as_deref() == Ok("film"),
@@ -762,10 +765,11 @@ impl hooks::Feature for Observer {
             actions::install(b, self.0.clone());
         }
         let session = self.0.clone();
-        b.snapshot(hooks::SnapshotPolicy::forbid_while(move || {
+        let live = move || {
             let state = session.lock();
             (!in_keyframe() && !state.complete && state.failure.is_none()).then(|| "film cursor is live".into())
-        }));
+        };
+        b.snapshot(video_menu::snapshot(self.0.video_menu.get(), live));
         let session = self.0.clone();
         let agent = self.1.clone();
         b.frame().on_tick("film checkpoint", move |o| {

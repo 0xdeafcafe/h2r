@@ -238,7 +238,6 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
     }
 
     fn ask(&self, mem: &mut dyn GuestMemory, bsp: u32, scene_view: &frame_scene::View, plan: &StencilPlan) -> Option<native_render::skip::Cleared> {
-        let camera = &scene_view.camera;
         let ready = {
             let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
             Arc::clone(current_ready(&state, mem)?)
@@ -297,7 +296,13 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         // The cull layer 3 starts in: what the passes that do not set
         // `CULLMODE` inherit (`native_render::look::WorldPass::inherits_cull`).
         let cull = d.cull_state(&ReadMemory(mem)).map(inherited_cull);
-        let frustum = GpuWorld::draw_frustum(&camera.view_projection(), true);
+        let target = d.external_ready(&ReadMemory(mem), false).ok()?;
+        // Admit the union of both lenses. Exact readback renders the retail
+        // projection, and hardware clips a submitted part outside either copy.
+        let admission_camera = native_render::camera::display_camera(
+            scene_view.camera, d.projection_factor_for_target(target.surface_size).min(1.),
+        );
+        let frustum = GpuWorld::draw_frustum(&admission_camera.view_projection(), true);
         let (masks, cleared, selected) = render_bridge::native_world::plan_parts(
             &render_bridge::native_world::Mem(mem), &ready.parts, |owner, part| {
                 ready.part_bounds.get(&(owner, part)).is_some_and(|b| frustum.may_see(b))
@@ -311,13 +316,13 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         let run = u64::from(d.swap_count()).wrapping_add(1);
         let selection = ready.with_pipeline_target(&d, mem, |gpu, device, color, depth| {
             configure_world(gpu, depth, cull, &stencil);
-            let selection = gpu.select_parts(&selected, camera)?;
+            let selection = gpu.select_parts(&selected, &admission_camera)?;
             gpu.prewarm_world(device, color, depth, &selection).then(|| Arc::new(selection))
         })?;
         let pass = || Box::new(WorldPass {
             selection: Arc::clone(&selection),
             ready: Arc::clone(&ready),
-            camera: *camera,
+            camera: scene_view.camera,
             view: None,
             w_clip: None,
             stencil: stencil.clone(),
@@ -589,7 +594,7 @@ impl d3d::ExternalPass for WorldPass {
             return Some(Err("world part or program binding unavailable"));
         }
         let view = ViewInputs {
-            constants, guest_size: request.surface_size, size: t.size, z_scale: request.z_scale, w_clip: self.w_clip,
+            constants: request.view_constants(t.copy, constants), guest_size: request.surface_size, size: t.size, z_scale: request.z_scale, w_clip: self.w_clip,
         };
         Some(gpu.selection_draws(t.color_format, t.depth_format, t.size, selection, &view))
     }
@@ -602,10 +607,11 @@ impl d3d::ExternalPass for WorldPass {
         configure_world(gpu, t.depth_format, self.cull, &self.stencil);
         let selection = &self.selection;
         let view = self.view.map(|constants| ViewInputs {
-            constants, guest_size: t.guest_size, size: t.size, z_scale: t.z_scale, w_clip: self.w_clip,
+            constants: t.view_constants(constants), guest_size: t.guest_size, size: t.size, z_scale: t.z_scale, w_clip: self.w_clip,
         });
         let depth = DepthRule { full_scale: t.z_scale, floor: true };
-        if !gpu.write_selection(&mut t.encoder_uploads(), selection, view.as_ref(), &self.camera, depth) {
+        let camera = native_render::camera::display_camera(self.camera, t.projection_factor());
+        if !gpu.write_selection(&mut t.encoder_uploads(), selection, view.as_ref(), &camera, depth) {
             return 0;
         }
         let [x, y, width, height] = t.viewport;

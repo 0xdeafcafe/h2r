@@ -1582,6 +1582,8 @@ mod tests {
             clip_rects: Vec::new(),
             hw,
             textures: [None; 4],
+            retail_constants: None,
+            ui_fit: None,
             glyph_cache: 0,
         }
     }
@@ -1686,7 +1688,7 @@ mod tests {
             depth: backend.create_surface(D3DFormat::LinD16, 8, 8, true).unwrap(),
             sampled: vec![], slots: vec![], slot_sizes: vec![],
         };
-        let request = d3d::ExternalPassRequest { rect: (0, 0, 8, 8), surface_size: (8, 8), z_scale: 65_535. };
+        let request = d3d::ExternalPassRequest { rect: (0, 0, 8, 8), surface_size: (8, 8), display_projection_factor: 1.0, z_scale: 65_535. };
         let plan = d3d::ExternalPlan { stage: timeline::native::Stage::Lights, view: 0, ranges: 1, slots: vec![] };
         let seen = Arc::new(Mutex::new(Vec::new()));
         let reads = backend.inner.waits().reads;

@@ -492,7 +492,7 @@ impl LitObjects {
     /// texture accumulation level's size when it samples one: what
     /// [`Self::draws`] uploads. `None` when the model is gone or `d`
     /// samples the level and there is none.
-    fn issued(&self, index: u32, d: &PlannedDraw, view: &ViewInputs, texaccum: Option<Texaccum<'_>>) -> Option<(VertexUniforms, PixelUniforms)> {
+    fn issued(&self, index: u32, d: &PlannedDraw, view: &ViewInputs, projection_factor: f32, texaccum: Option<Texaccum<'_>>) -> Option<(VertexUniforms, PixelUniforms)> {
         let pass = &self.models.get(&index)?.programs.get(d.program)?.pass;
         if d.texaccum && texaccum.is_none() {
             return None;
@@ -502,6 +502,8 @@ impl LitObjects {
         let mut pixel = frame_pixel(&d.pixel, view);
         if let Some(aux) = &d.aux_depth {
             with_aux_depth(&mut vertex, &mut pixel, aux);
+            // This per-part matrix replaced the view upload above.
+            d3d::device::widen_projection_rows(&mut vertex.constants[..4], projection_factor);
         }
         if let Some(t) = texaccum.filter(|_| d.texaccum) {
             texaccum_dimensions(&mut vertex, &pass.implementation, pass.texaccum, t.guest_size);
@@ -587,6 +589,7 @@ impl LitObjects {
         depth_format: wgpu::TextureFormat,
         target_size: (u32, u32),
         view: &ViewInputs,
+        projection_factor: f32,
         draws: &[(u32, PlannedDraw)],
         texaccum: Option<Texaccum<'_>>,
     ) -> Result<ExternalDraws, &'static str> {
@@ -595,7 +598,7 @@ impl LitObjects {
         }
         let mut issued: Vec<(&(u32, PlannedDraw), (VertexUniforms, PixelUniforms))> = Vec::with_capacity(draws.len());
         for d in draws {
-            let blocks = self.issued(d.0, &d.1, view, texaccum).ok_or("object draw inputs unavailable")?;
+            let blocks = self.issued(d.0, &d.1, view, projection_factor, texaccum).ok_or("object draw inputs unavailable")?;
             issued.push((d, blocks));
         }
         // Whether each draw found its pipeline and texture group resident.
@@ -1637,7 +1640,7 @@ mod tests {
             timeline::frame();
             assert!(objects.prewarm_draws(&ctx.device, color, depth, &[(7, draw.clone())]));
             let packets = objects.draws(&ctx.device, &ctx.queue, &arena, wgpu::TextureFormat::Rgba8Unorm,
-                wgpu::TextureFormat::Depth24PlusStencil8, view.size, &view, &[(7, draw)], None).unwrap();
+                wgpu::TextureFormat::Depth24PlusStencil8, view.size, &view, 1.0, &[(7, draw)], None).unwrap();
             arena.flush(&ctx.queue);
             ctx.device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
             assert_eq!((packets.ranges, packets.packets.len()), (1, 1));

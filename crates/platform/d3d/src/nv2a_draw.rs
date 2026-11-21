@@ -27,7 +27,7 @@ pub struct NativeDrawProgram {
 
 impl NativeDrawProgram {
     pub fn resolve(draw: &ResolvedDraw, present: [bool; 4], caps: Capabilities,
-        fetch: FetchMode, scale: u32) -> Result<Self, String> {
+        fetch: FetchMode, scale: impl Into<crate::scaled::RenderScale>) -> Result<Self, String> {
         let material = NativeDrawMaterial::resolve(draw, present, caps, fetch)?;
         let (vertex, pixel) = material.uniforms(draw, scale);
         Ok(Self { key: material.key, vertex, pixel, samplers: material.samplers, writes_depth: material.writes_depth })
@@ -94,7 +94,7 @@ impl NativeDrawMaterial {
         })
     }
 
-    pub fn uniforms(&self, draw: &ResolvedDraw, scale: u32) -> (VertexUniforms, PixelUniforms) {
+    pub fn uniforms(&self, draw: &ResolvedDraw, scale: impl Into<crate::scaled::RenderScale>) -> (VertexUniforms, PixelUniforms) {
         uniforms(&TABLE, draw, &self.key.0, &self.def, self.signs, scale)
     }
 }
@@ -107,7 +107,7 @@ impl NativeDrawProgram {
         present: [bool; 4],
         caps: Capabilities,
         fetch: FetchMode,
-        scale: u32,
+        scale: impl Into<crate::scaled::RenderScale>,
     ) -> Result<Self, UiProgramError> {
         static TABLE: std::sync::LazyLock<RenderStateTable> =
             std::sync::LazyLock::new(RenderStateTable::default);
@@ -132,7 +132,8 @@ impl NativeDrawProgram {
         if key.pixel_options.shadow.iter().any(Option::is_some) {
             return Err(UiProgramError::Texture);
         }
-        if scale > 1 {
+        let scale: crate::scaled::RenderScale = scale.into();
+        if scale.magnified() {
             key.pixel_options.glyph = draw.glyph_cache & 0xF;
         }
         let (vertex, pixel) = uniforms(&TABLE, draw, &key, &def, signs, scale);
@@ -152,15 +153,17 @@ pub(super) fn uniforms(
     key: &ProgramKey,
     def: &PixelShaderDef,
     signs: [u8; 4],
-    scale: u32,
+    scale: impl Into<crate::scaled::RenderScale>,
 ) -> (VertexUniforms, PixelUniforms) {
     let (c0, c1) = def.embedded_constants();
     let render = &draw.state.render;
+    let scale: crate::scaled::RenderScale = scale.into();
     let mut vu = VertexUniforms {
         surface: [draw.target.width as f32, draw.target.height as f32],
         // Same full scale as gfx's built-in shader.
         z_max: gfx::renderer::d3dz_max(draw.target.depth_format),
-        shift: gfx::renderer::window_shift(1, scale),
+        shift: scale.shift(),
+        ui_transform: draw.ui_fit.map_or([1.0, 1.0, 0.0, 0.0], |fit| fit.transform),
         ..VertexUniforms::default()
     };
     match key.vertex {
@@ -186,7 +189,8 @@ pub(super) fn uniforms(
         ..PixelUniforms::default()
     };
     pu.stipple = draw.hw.stipple_pattern;
-    pu.stipple_scale = [scale.max(1) as f32; 2];
+    let guest = (draw.target.width, draw.target.height);
+    pu.stipple_scale = PixelUniforms::stipple_grid(guest, scale.size(guest.0, guest.1));
     let w_buffer = key.pixel_options.w_buffer;
     if w_clipped(&key.vertex, draw) {
         vu.w_clip = Some(w_clip_range(&draw.hw, vu.z_max));
@@ -335,6 +339,8 @@ mod tests {
             },
             textures: [Some(glyph.header), None, None, None],
             texture_info: [Some(glyph), None, None, None],
+            retail_constants: None,
+            ui_fit: None,
             glyph_cache: 1,
         }
     }
@@ -345,16 +351,21 @@ mod tests {
         let caps = Capabilities::ALL;
         let present = [true, false, false, false];
         assert!(matches!(
-            NativeDrawProgram::resolve_ui(&draw, [false; 4], caps, FetchMode::Cpu, 1),
+            NativeDrawProgram::resolve_ui(&draw, [false; 4], caps, FetchMode::Cpu, 1u32),
             Err(UiProgramError::Texture)
         ));
-        let reference = NativeDrawProgram::resolve_ui(&draw, present, caps, FetchMode::Cpu, 1).unwrap();
-        let display = NativeDrawProgram::resolve_ui(&draw, present, caps, FetchMode::Cpu, 2).unwrap();
+        let reference = NativeDrawProgram::resolve_ui(&draw, present, caps, FetchMode::Cpu, 1u32).unwrap();
+        let display = NativeDrawProgram::resolve_ui(&draw, present, caps, FetchMode::Cpu, 2u32).unwrap();
         assert_eq!(reference.pixel.alpha_ref[0], 91.0);
         assert_eq!(reference.pixel.fog_color, [0.0, 0.0, 1.0, 1.0]);
         assert_eq!(reference.pixel.stipple, [0xa5a5a5a5; 32]);
-        assert_eq!(reference.pixel.stipple_scale, [1.0; 2]);
-        assert_eq!(display.pixel.stipple_scale, [2.0; 2]);
+        let guest = (draw.target.width, draw.target.height);
+        assert_eq!(reference.pixel.stipple_scale, PixelUniforms::stipple_grid(guest, guest));
+        assert_eq!(display.pixel.stipple_scale, PixelUniforms::stipple_grid(guest, (2 * guest.0, 2 * guest.1)));
+        let host = (guest.0 * 3 / 2, guest.1 * 3 / 4);
+        let raster = crate::scaled::RenderScale::between(guest, host).unwrap();
+        let uneven = NativeDrawProgram::resolve_ui(&draw, present, caps, FetchMode::Cpu, raster).unwrap();
+        assert_eq!(uneven.pixel.stipple_scale, PixelUniforms::stipple_grid(guest, host));
         assert_eq!(reference.key.0.pixel_options.alpha_test, Some(alpha_func(CompareFunc::Greater)));
         assert!(reference.key.0.pixel_options.stipple);
         assert!(reference.key.0.pixel_options.flat_shading);
@@ -374,7 +385,7 @@ mod tests {
         assert_eq!(depth.depth_write_enabled, Some(true));
         assert_eq!(depth.stencil.front.pass_op, wgpu::StencilOperation::Replace);
         assert!(draw.writes_depth_stencil());
-        let wire = NativeDrawProgram::resolve_ui(&draw, present, caps, FetchMode::Cpu, 1).unwrap();
+        let wire = NativeDrawProgram::resolve_ui(&draw, present, caps, FetchMode::Cpu, 1u32).unwrap();
         assert!(!wire.key.0.pixel_options.stipple);
     }
 }

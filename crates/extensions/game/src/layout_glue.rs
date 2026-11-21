@@ -687,6 +687,7 @@ pub fn install(
             alloc = theater_press + 0x100;
         }
         ALLOC.store(alloc, Ordering::SeqCst);
+        model.bind_resolution_slot(&addrs);
         let _ = STRING_ADDRS.set(addrs);
     }
     let mut shadow = SHADOW_BASE;
@@ -2344,7 +2345,7 @@ mod tests {
 
     #[test]
     fn choosing_the_rows_saves_settings_toml_under_the_data_root() {
-        use crate::setting_defs::{ALL, FPS, RENDER_SCALE};
+        use crate::setting_defs::{ALL, FPS, RESOLUTION};
         use crate::speaker_setting::SpeakerSetting;
         use settings::{Store, Value};
         // `h2 play`'s data root (`$TMPDIR/h2boot-data` by default) is where
@@ -2374,11 +2375,14 @@ mod tests {
         assert!(matches!(model.press(row), Chosen::Stepped(_)));
         assert!(!lightbar.get());
         assert_eq!(model.texts(row)[1].1, speaker_row::OFF_ID);
-        // On the Video screen each row steps and saves, keeping the rest.
-        for r in 0..3 {
+        // The FOV and FPS rows step. The Resolution row opens a picker.
+        for r in 0..2 {
             let row = model.row(video_screen::LIST, r).unwrap();
             assert!(matches!(model.press(row), Chosen::Stepped(_)));
         }
+        let row = model.row(video_screen::LIST, 2).unwrap();
+        assert_eq!(model.press(row), Chosen::Open(crate::ui_kit::picker::NAME));
+        (crate::ui_kit::picker::current().unwrap().set)(1);
         // A retail Controls row saves nothing new.
         let before = std::fs::read_to_string(&path).unwrap();
         assert_eq!(model.row(List::Controls, 5), None);
@@ -2390,7 +2394,10 @@ mod tests {
         assert_eq!(next.get(PAD_LIGHTBAR.key), Some(Value::Bool(false)));
         assert_eq!(next.get(FOV.key), Some(Value::Int(75)));
         assert_eq!(next.get(FPS.key), Some(Value::Int(60)));
-        assert_eq!(next.get(RENDER_SCALE.key), Some(Value::Int(2)));
+        assert_eq!(
+            next.get(RESOLUTION.key),
+            Some(settings::Resolution::Fixed(640, 480).value())
+        );
         let _ = std::fs::remove_dir_all(&data);
     }
 

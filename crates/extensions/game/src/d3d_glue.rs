@@ -33,6 +33,8 @@ pub struct Installed {
     pub view: Option<DrawingView>,
     /// The device, for machine snapshots (`crate::snapshot_glue`).
     pub snapshot: Arc<dyn DeviceSnapshot>,
+    #[cfg(feature = "gpu")]
+    pub ui_layout: Arc<dyn crate::render_aspect::UiLayoutSink>,
 }
 
 /// The installed GPU view. A plain backend draws at guest resolution. A
@@ -192,11 +194,53 @@ pub fn install_headless(
     rt: &runtime::Runtime,
     interp: Option<Interpolation>,
 ) -> anyhow::Result<Installed> {
-    install_headless_for_profile(rt, interp, crate::run_plan::compiled_render_hooks(), None)
+    install_headless_for_profile(rt, interp, crate::run_plan::compiled_render_hooks(), None, false)
 }
 
 #[cfg(feature = "gpu")]
-pub fn single_copy(store: Option<&settings::Store>) -> anyhow::Result<bool> {
+/// Boot selects the presenting backend after network and film registration.
+pub fn window_targets(
+    _store: &settings::Store,
+    native_size: crate::run_opts::NativeSize,
+    display_size: impl Fn((u32, u32)) -> (u32, u32) + Send + Sync + 'static,
+    reference: impl FnOnce() -> d3d::GfxBackend,
+    display: impl FnOnce() -> d3d::GfxBackend,
+) -> (d3d::GfxBackend, crate::run_opts::DisplayView) {
+    let (main, backend) = (reference(), Some(display()));
+    (main, crate::run_opts::DisplayView { backend, native_size, viewer_output: None, display_size: Arc::new(display_size) })
+}
+
+/// A locked retail target has no live raster edits. It can present directly
+/// when the run permits single-copy rendering.
+#[cfg(feature = "gpu")]
+pub fn locked_retail_target(store: Option<&settings::Store>) -> bool {
+    let Some(store) = store else { return false };
+    use crate::setting_defs::{GUEST_FRAME, LIGHTING, RESOLUTION, lighting_of};
+    let fixed = settings::Resolution::Fixed(GUEST_FRAME.0, GUEST_FRAME.1);
+    let locked = |key| store.state(key).is_some_and(|state| state.locked);
+    store.handle::<settings::Resolution>(RESOLUTION.key).get() == fixed
+        && locked(RESOLUTION.key)
+        && lighting_of(store.handle::<u32>(LIGHTING.key).get()) == d3d::Lighting::Retail
+        && locked(LIGHTING.key)
+}
+
+#[cfg(feature = "gpu")]
+mod output_size;
+#[cfg(feature = "gpu")]
+pub use output_size::output_size;
+
+#[cfg(feature = "gpu")]
+pub fn protected_readbacks(network: bool, film: bool, lockstep: bool) -> bool {
+    // XNet sockets and film taps are installed before entry. A match may
+    // start later on that same device; earlier retail pixels must already exist.
+    network || film || lockstep
+}
+
+#[cfg(feature = "gpu")]
+pub fn single_copy(store: Option<&settings::Store>, protected: bool) -> anyhow::Result<bool> {
+    if protected {
+        return Ok(false);
+    }
     let def = &crate::setting_defs::SINGLE_COPY;
     let value = match store {
         Some(store) => store.get(def.key).unwrap_or(def.default),
@@ -214,6 +258,7 @@ pub fn install_headless_for_profile(
     interp: Option<Interpolation>,
     profile: film::RenderHooks,
     settings: Option<&settings::Store>,
+    protected_readbacks: bool,
 ) -> anyhow::Result<Installed> {
     match std::env::var_os("H2_BOOT_GFX") {
         None => install_for_profile(rt, Headless::default(), None, profile),
@@ -228,7 +273,8 @@ pub fn install_headless_for_profile(
                     .filter(|&n| n > 0)
                     .unwrap_or(30),
             };
-            let scale = d3d::render_scale().map_err(anyhow::Error::msg)?;
+            let (width, height) = output_size(settings, Arc::new(|| crate::setting_defs::GUEST_FRAME))?();
+            let scale = d3d::scaled::RenderScale::for_output(width, height).map_err(anyhow::Error::msg)?;
             let lighting = d3d::scaled::lighting().map_err(anyhow::Error::msg)?;
             let ctx = gfx::GfxContext::headless()
                 .map_err(|e| anyhow::anyhow!("gfx headless context: {e}"))?;
@@ -336,7 +382,12 @@ pub fn install_headless_for_profile(
                 // guest; a retail view and an E3 view draw the same calls at
                 // `scale` (`d3d::LightingAb`). `frame-N-retail.png` and
                 // `frame-N-e3.png` are a pair from the same frame.
-                let scale = scale.max(2);
+                let (width, height) = if (width, height) == crate::setting_defs::GUEST_FRAME {
+                    (1280, 960)
+                } else {
+                    (width, height)
+                };
+                let scale = d3d::scaled::RenderScale::for_output(width, height).map_err(anyhow::Error::msg)?;
                 let reference = configure_gfx(
                     d3d::GfxBackend::new(share_context(&ctx)).on_present(shots("-1x", 0, None)),
                 );
@@ -411,9 +462,9 @@ pub fn install_headless_for_profile(
                     );
                 }
                 let mut b =
-                    d3d::lighting_ab(reference, retail, e3, scale).map_err(anyhow::Error::msg)?;
+                    d3d::scaled::lighting_ab_at_resolution(reference, retail, e3, scale).map_err(anyhow::Error::msg)?;
                 eprintln!(
-                    "d3d: lighting A/B at {scale}x (H2_BOOT_GFX_LIGHTING_AB): a retail and an E3 view of one run; the guest sees a 1x reference"
+                    "d3d: lighting A/B at {width}x{height} (H2_BOOT_GFX_LIGHTING_AB): a retail and an E3 view of one run; the guest sees a 1x reference"
                 );
                 let scale_stats = b.shared_stats();
                 let (retail_report, e3_report) =
@@ -442,7 +493,7 @@ pub fn install_headless_for_profile(
                 _ => 1,
             };
             agent::render::clip::CLIPS.set_writer(dir.canonicalize()?, max_slots);
-            if scale > 1 || lighting != d3d::Lighting::Retail {
+            if (width, height) != crate::setting_defs::GUEST_FRAME || lighting != d3d::Lighting::Retail {
                 // The display presents scaled frames. Exact reference captures
                 // use their own hook and swap count on the shared device.
                 let reference = configure_gfx(
@@ -455,12 +506,12 @@ pub fn install_headless_for_profile(
                         .on_present(shots("", shadow_shots, Some(Arc::clone(&between))))
                         .on_present_replay(replay),
                 );
-                let single = single_copy(settings)?;
+                let single = single_copy(settings, protected_readbacks)?;
                 let mut b =
-                    d3d::ScaledBackend::with_single_copy(reference, view, scale, single).map_err(anyhow::Error::msg)?;
+                    d3d::ScaledBackend::with_resolution(reference, view, scale, single).map_err(anyhow::Error::msg)?;
                 b.set_lighting(lighting);
                 eprintln!(
-                    "d3d: rendering at {scale}x (H2_RENDER_SCALE), {lighting:?} lighting (H2_LIGHTING); single copy {single}"
+                    "d3d: rendering at {width}x{height}, {lighting:?} lighting (H2_LIGHTING); single copy {single}"
                 );
                 let scale_stats = b.shared_stats();
                 let report = scale_report(&mut b);
@@ -476,7 +527,7 @@ pub fn install_headless_for_profile(
                     .on_present(shots("", shadow_shots, Some(Arc::clone(&between))))
                     .on_present_replay(replay),
             );
-            if interp.is_none() {
+            if !protected_readbacks && interp.is_none() {
                 crate::native_shadows_glue::configure_single(&mut backend);
             }
             // Backend work (shader preparation, encoding, uploads,
@@ -676,6 +727,14 @@ fn configure_gfx(mut backend: d3d::GfxBackend) -> d3d::GfxBackend {
     }
 }
 
+/// An offscreen retail GPU reference for local film verification. Its raster
+/// stays at the guest dimensions and it never presents to a window.
+#[cfg(feature = "gpu")]
+pub fn offscreen_film_reference() -> anyhow::Result<d3d::GfxBackend> {
+    let ctx = gfx::GfxContext::headless().map_err(|e| anyhow::anyhow!("offscreen film GPU: {e}"))?;
+    Ok(configure_gfx(d3d::GfxBackend::new(ctx)))
+}
+
 #[cfg(feature = "gpu")]
 /// Another handle to `ctx`'s device and queue, for a second backend on it.
 pub fn share_context(ctx: &gfx::GfxContext) -> gfx::GfxContext {
@@ -699,7 +758,7 @@ where
     let stats = b.shared_stats();
     Box::new(move || {
         let s = *stats.lock().unwrap_or_else(|e| e.into_inner());
-        format!("render scale {}: {s}", s.scale)
+        format!("render resolution {}x{}: {s}", s.output.0, s.output.1)
     })
 }
 
@@ -1521,6 +1580,8 @@ pub fn install_for_profile<B: d3d::backend::Backend + Send + 'static>(
     let vblank: Option<kernel::periodic::Handler> =
         Some(Box::new(d3d::vblank::clocked_vblanks(Arc::clone(&device))));
     let snapshot: Arc<dyn DeviceSnapshot> = device.clone();
+    #[cfg(feature = "gpu")]
+    let ui_layout = device.clone();
     let dev = device;
     let report = Box::new(move || {
         let mut d = dev.lock().unwrap();
@@ -1555,6 +1616,8 @@ pub fn install_for_profile<B: d3d::backend::Backend + Send + 'static>(
         format!("stats {:?}; last stop {:?}{ev}\n{draws}{extra}", d.stats(), d.last_stop())
     });
     Ok(Installed {
+        #[cfg(feature = "gpu")]
+        ui_layout,
         #[cfg(feature = "gpu")]
         view: None,
         vblank,
@@ -1877,6 +1940,28 @@ pub fn barrier_handler(
 mod tests {
     use super::*;
     use d3d::backend::Backend;
+
+    #[cfg(feature = "gpu")]
+    #[test]
+    fn readback_policy_covers_network_and_film_before_gameplay_starts() {
+        let store = settings::Store::defaults(crate::setting_defs::ALL);
+        // XNet is installed at boot for both LAN-only configurations (System
+        // Link) and signed-in ones. Joining a match later uses that device.
+        for (network, film, lockstep, single, label) in [
+            (true, false, false, false, "lobby before a System Link, Live, or co-op join"),
+            (false, true, false, false, "armed recorder or Theater replay"),
+            (false, false, true, false, "lockstep or input-tape playback"),
+            (true, true, false, false, "film of a network match"),
+            (false, false, false, true, "offline play"),
+        ] {
+            let protected = protected_readbacks(network, film, lockstep);
+            assert_eq!(single_copy(Some(&store), protected).unwrap(), single, "{label}");
+        }
+        let exact = settings::Flag::parse_set("graphics.single_copy=false").unwrap();
+        let (store, errors) = settings::Store::load(crate::setting_defs::ALL, None, &|_| None, &[exact]);
+        assert!(errors.is_empty());
+        assert!(!single_copy(Some(&store), false).unwrap());
+    }
 
     #[test]
     fn the_feature_arena_starts_after_the_device_pages() {

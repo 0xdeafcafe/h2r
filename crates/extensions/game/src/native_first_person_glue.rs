@@ -362,7 +362,7 @@ impl FirstPersonPass {
             return Err("planned first-person geometry unavailable");
         }
         let view = ViewInputs {
-            constants,
+            constants: request.view_constants(target.copy, constants),
             guest_size: request.surface_size,
             size: target.size,
             z_scale: request.z_scale,
@@ -376,6 +376,7 @@ impl FirstPersonPass {
             target.depth_format,
             target.size,
             &view,
+            request.projection_factor(target.copy),
             &self.draws,
             None,
         )

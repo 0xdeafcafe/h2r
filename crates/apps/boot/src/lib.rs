@@ -149,7 +149,9 @@ pub fn run_theater(
         ..LiveConfig::default()
     };
     let mut opts = opts.clone();
-    let sim = match theater::Startup::read(&mut reader)? {
+    let startup = theater::Startup::read(&mut reader)?;
+    let legacy_lod = startup.as_ref().and_then(theater::Startup::legacy_lod_multiplier);
+    let sim = match startup {
         Some(start) => start.restore(&mut opts, &mut host)?,
         None => {
             anyhow::ensure!(reader.header.meta.source == film::Source::Host,
@@ -157,7 +159,7 @@ pub fn run_theater(
             None
         }
     };
-    run_configured(xbe, image, &opts, host, (&lan, None), sim.map(|s| (s, None)), Some(replay))
+    run_configured(xbe, image, &opts, host, (&lan, None), sim.map(|s| (s, None)), Some((replay, legacy_lod)))
 }
 
 fn run_configured(
@@ -167,8 +169,11 @@ fn run_configured(
     mut host: Host,
     (live, publisher): (&LiveConfig, Option<HostPublisher>),
     sim: Option<(sim_glue::Sim, Option<telemetry::TelemetryConfig>)>,
-    replay: Option<theater::Replay>,
+    replay: Option<(theater::Replay, Option<f32>)>,
 ) -> Result<RunReport> {
+    let (replay, legacy_lod) = replay.unzip();
+    #[cfg(not(feature = "gpu"))]
+    let _ = legacy_lod;
     // H2_SIM and the CLI sim entry share the dedicated profile. The explicit
     // switch off supplies a stock headless control for the same roster.
     let (sim_mode, upload) = match sim {
@@ -187,7 +192,7 @@ fn run_configured(
     if host_audit::module_from_env().is_some() {
         anyhow::ensure!(host_light, "H2_HOST_MODULE requires the light host profile");
     }
-    if host.host_light {
+    if host.host_light && !replaying {
         anyhow::ensure!(live.enabled && sim_mode.is_none(),
             "--host-light serves the network lobby; unset H2_SIM");
         anyhow::ensure!(
@@ -196,9 +201,9 @@ fn run_configured(
         );
     }
     #[cfg(feature = "gpu")]
-    let host_graphics = (host.gfx.is_some() && !(replaying && render_every != 0))
-        || host.gfx_view.is_some()
-        || host.render_thread;
+    let rendered_replay = replaying && render_every != 0 && sim_mode.is_none() && host.gfx.is_some();
+    #[cfg(feature = "gpu")]
+    let host_graphics = !rendered_replay && (host.gfx.is_some() || host.gfx_view.is_some() || host.render_thread);
     #[cfg(not(feature = "gpu"))]
     let host_graphics = false;
     if host_light || sim_mode.is_some() {
@@ -362,7 +367,34 @@ fn run_configured(
         audit.is_none() || !switches.feature("render-census", false),
         "host audit and render-census both use the guest access trap"
     );
+    let lockstep_config = lockstep_glue::Config::from_env();
+    let lockstep_on = lockstep_config.enabled();
+    #[cfg(feature = "gpu")]
+    let protected_readbacks = d3d_glue::protected_readbacks(_live.is_some(), film.is_some(), lockstep_on);
     let mut features = hooks::Registry::new(registration::profile_switches(switches, host_light));
+    #[cfg(feature = "gpu")]
+    let native_size: run_opts::NativeSize = host.gfx_view.as_ref().map(|view| view.native_size.clone())
+        .unwrap_or_else(|| Arc::new(|| setting_defs::GUEST_FRAME));
+    #[cfg(not(feature = "gpu"))]
+    let native_size: run_opts::NativeSize = Arc::new(|| setting_defs::GUEST_FRAME);
+    #[cfg(feature = "gpu")]
+    let output_size = if opts.d3d && ((!host_light && sim_mode.is_none()) || rendered_replay)
+        && (host.gfx_view.is_some() || (host.gfx.is_none() && std::env::var_os("H2_BOOT_GFX").is_some()))
+    {
+        match host.gfx_view.as_ref().and_then(|v| v.viewer_output.clone()) {
+            Some(output) => Some(output),
+            None => Some(d3d_glue::output_size(host.settings.as_deref(), native_size.clone())?),
+        }
+    } else {
+        None
+    };
+    #[cfg(feature = "gpu")]
+    let mut display_size = host.gfx_view.as_ref().map(|view| Arc::clone(&view.display_size));
+    #[cfg(feature = "gpu")]
+    let mut active_size = output_size.as_ref().map(|output| {
+        let initial = output();
+        Arc::new(move || initial) as run_opts::NativeSize
+    });
     // Our text on the cannot-connect dialog when Live is off or its server
     // is unreachable (docs/live/live.md, "Client HLE: Live not set up").
     live_notice::install(&loaded.runtime, live).context("installing the Live notice")?;
@@ -528,10 +560,17 @@ fn run_configured(
     // The Video row on the Settings list opens our Video screen
     // (docs/game/settings-menu.md).
     let model = match host.settings.clone() {
-        Some(store) => Some(Arc::new(
-            video_screen::model(store, video_screen::Switches::PLATFORM)
-                .map_err(anyhow::Error::msg)?,
-        )),
+        Some(store) => {
+            // The guest draws the picker's labels. Replay those observations
+            // independently of the viewer's presentation size.
+            let menu_size = match &film {
+                Some(session) => session.video_menu_size(native_size, &store)?,
+                None => native_size,
+            };
+            Some(Arc::new(video_screen::model_with_native_size(
+                store, video_screen::Switches::PLATFORM, menu_size,
+            ).map_err(anyhow::Error::msg)?))
+        }
         None => None,
     };
     // More than one campaign (docs/halo1/campaign-picker.md): campaigns
@@ -718,7 +757,20 @@ fn run_configured(
     #[cfg(not(feature = "gpu"))]
     let headless = true;
     #[cfg(feature = "gpu")]
-    if opts.d3d && host.gfx_view.is_none() && interp.is_none() && let Some(b) = &mut host.gfx {
+    let single = opts.d3d && host.gfx_view.is_some()
+        && d3d_glue::single_copy(host.settings.as_deref(), protected_readbacks)?;
+    #[cfg(feature = "gpu")]
+    if single && d3d_glue::locked_retail_target(host.settings.as_deref())
+        && let Some(view) = &mut host.gfx_view && view.viewer_output.is_none()
+        && let Some(display) = view.backend.take()
+    {
+        host.gfx = Some(display.as_only_display());
+    }
+    #[cfg(feature = "gpu")]
+    // Match the paired reference path even when a film has no visible copy.
+    if !protected_readbacks && opts.d3d && host.gfx_view.as_ref().is_none_or(|view| view.backend.is_none())
+        && interp.is_none() && let Some(b) = &mut host.gfx
+    {
         native_shadows_glue::configure_single(b);
     }
     let render_hooks = film.as_ref()
@@ -726,23 +778,37 @@ fn run_configured(
     #[cfg(feature = "gpu")]
     let mut d3d_calls = match (opts.d3d, host.gfx.take()) {
         (false, _) => None,
-        (true, Some(b)) => Some(match host.gfx_view.take() {
-            Some((view, scale)) => {
-                let single = d3d_glue::single_copy(host.settings.as_deref())?;
-                let mut b = d3d::ScaledBackend::with_single_copy(b, view, scale, single).map_err(anyhow::Error::msg)?;
-                eprintln!("d3d: rendering at {scale}x; single copy {single}");
+        (true, Some(b)) => Some(match host.gfx_view.take().and_then(|view| view.backend) {
+            Some(view) => {
+                let output = output_size.expect("display view has an output size");
+                let (width, height) = output();
+                let scale = d3d::scaled::RenderScale::for_output(width, height).map_err(anyhow::Error::msg)?;
+                let mut b = d3d::ScaledBackend::with_resolution(b, view, scale, single).map_err(anyhow::Error::msg)?;
+                eprintln!("d3d: rendering at {width}x{height}; single copy {single}");
                 // The Video screen's Resolution row changes the scale at the
                 // next frame boundary (docs/graphics/high-resolution.md).
                 // The Lighting row (docs/graphics/e3-lighting-setting.md)
                 // changes the view's shadows there too.
+                b.follow_resolution(move || {
+                    let (width, height) = output();
+                    d3d::scaled::RenderScale::for_output(width, height)
+                        .expect("the resolution picker and drawable publish validated sizes")
+                });
                 if let Some(store) = &host.settings {
-                    let wanted = store.handle::<u32>(setting_defs::RENDER_SCALE.key);
-                    b.follow_scale(move || wanted.get());
                     let lighting = store.handle::<u32>(setting_defs::LIGHTING.key);
                     b.set_lighting(setting_defs::lighting_of(lighting.get()));
                     b.follow_lighting(move || setting_defs::lighting_of(lighting.get()));
                 }
+                // A failed resize keeps the previous grid. The lens follows the
+                // dimensions the render thread actually accepted at present.
+                if let Some(viewport) = display_size.take() {
+                    b.follow_presentation(move |src| viewport(src));
+                }
                 let scale_stats = b.shared_stats();
+                let stats = scale_stats.clone();
+                active_size = Some(Arc::new(move || {
+                    stats.lock().unwrap_or_else(|e| e.into_inner()).presentation
+                }));
                 let report = Some(d3d_glue::scale_report(&mut b));
                 let installed = if host.render_thread {
                     d3d_glue::install_threaded_for_profile(&loaded.runtime, b, report, interp, render_hooks)
@@ -762,7 +828,7 @@ fn run_configured(
         }),
         (true, None) if host_light => Some(d3d_glue::install_light_for_profile(&loaded.runtime, render_hooks)?),
         (true, None) => Some(d3d_glue::install_headless_for_profile(
-            &loaded.runtime, interp, render_hooks, host.settings.as_deref(),
+            &loaded.runtime, interp, render_hooks, host.settings.as_deref(), protected_readbacks,
         )?),
     };
     #[cfg(all(not(feature = "gpu"), feature = "desktop-runtime"))]
@@ -775,6 +841,29 @@ fn run_configured(
     }).transpose()?;
     #[cfg(not(feature = "desktop-runtime"))]
     let mut d3d_calls = Some(d3d_glue::install_light_for_profile(&loaded.runtime, render_hooks)?);
+    #[cfg(feature = "gpu")]
+    if let (Some(active_size), Some(device)) = (active_size, &d3d_calls) {
+        let projected_size: run_opts::NativeSize = Arc::new(move || {
+            let size = active_size();
+            display_size.as_ref().map_or(size, |display| display(size))
+        });
+        let hud: Arc<dyn Fn() -> u32 + Send + Sync> = match &host.settings {
+            Some(store) => {
+                let setting = store.handle::<u32>(setting_defs::HUD_POSITION.key);
+                Arc::new(move || setting.get())
+            }
+            None => {
+                let def = &setting_defs::HUD_POSITION;
+                let value = match std::env::var("H2_HUD_POSITION") {
+                    Ok(raw) => def.parse_env_text(&raw).map_err(anyhow::Error::msg)?,
+                    Err(_) => def.default,
+                };
+                let position = value.as_int().expect("HUD Position is a choice") as u32;
+                Arc::new(move || position)
+            }
+        };
+        render_aspect::install(&mut features, projected_size, hud, device.ui_layout.clone())?;
+    }
     // Vblanks on the 60 Hz logical clock (docs/graphics/d3d.md "Vertical blank"),
     // delivered as DPCs; the frame wait above is the clocked one.
     if let Some(handler) = d3d_calls.as_mut().and_then(|i| i.vblank.take()) {
@@ -881,8 +970,6 @@ fn run_configured(
     #[cfg(feature = "desktop-runtime")]
     let script = xapi_glue::InputScript::from_env();
     // H2_LOCKSTEP / H2_INPUT_RECORD / H2_INPUT_REPLAY (lockstep_glue.rs).
-    let lockstep_config = lockstep_glue::Config::from_env();
-    let lockstep_on = lockstep_config.enabled();
     // H2_AGENT=<socket>: the agent API (agent_glue.rs, docs/runtime/agent-api.md);
     // the debug menu talks to a local one with no socket.
     // With none set, a game that asks for it opens `<pid>.sock` in the agents
@@ -913,6 +1000,8 @@ fn run_configured(
         registration::LateInputs {
             #[cfg(feature = "gpu")]
             view: d3d_calls.as_ref().and_then(|d| d.view.as_ref()),
+            #[cfg(feature = "gpu")]
+            fixed_lod: protected_readbacks.then(|| legacy_lod.flatten().unwrap_or(1.0)),
             rt: &loaded.runtime,
             lockstep: lockstep_config,
             agent: agent_source,

@@ -117,9 +117,9 @@ impl Range {
             defer_uploads,
             ..
         } = &mut *gpu;
-        let draw = &self.draw;
+        let draw = self.draw.for_copy(copy);
+        let draw = draw.as_ref();
         if &ctx.device != device
-            || copy != d3d::TargetCopy::Reference
             || target.size != guest_size
             || target.size != (draw.target.width, draw.target.height)
             || (draw.state.render.stencil.enable
@@ -209,7 +209,8 @@ impl Range {
             )
         };
         let mut packets = Vec::with_capacity(rects.len());
-        for r in rects {
+        for &rect in rects {
+            let r = draw.display_rect(rect);
             d.scissor = Some(gfx::renderer::ScissorRect {
                 x: r.x,
                 y: r.y,

@@ -148,9 +148,10 @@ impl UiPass {
             return Err(Refusal::Target);
         }
         let mut gpu = self.gpu.lock().unwrap_or_else(|e| e.into_inner());
-        let mut total = gpu.prepare(target, &self.draw, self.frame)?;
+        let copy = self.draw.for_copy(target.copy);
+        let mut total = gpu.prepare(target, copy.as_ref(), self.frame)?;
         for sibling in self.siblings.iter() {
-            let mut draw = (*self.draw).clone();
+            let mut draw = (*copy).clone();
             draw.layout = sibling.layout.clone();
             draw.vertex_count = sibling.vertex_count;
             draw.streams = sibling.streams.clone();

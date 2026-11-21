@@ -509,7 +509,7 @@ impl d3d::ExternalPass for DecoratorPass {
             }
             return 0;
         };
-        let view = ViewInputs { constants, guest_size: t.guest_size, size: t.size, z_scale: t.z_scale, w_clip: self.w_clip };
+        let view = ViewInputs { constants: t.view_constants(constants), guest_size: t.guest_size, size: t.size, z_scale: t.z_scale, w_clip: self.w_clip };
         match self.record(t, &view) {
             Ok(n) => n,
             Err(why) => {

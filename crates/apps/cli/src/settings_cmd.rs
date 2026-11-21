@@ -28,14 +28,14 @@ other key; a variable set in this environment still wins at launch, and
 pub fn set_flag(text: &str) -> Result<Flag> {
     let flag = Flag::parse_set(text).map_err(anyhow::Error::msg)?;
     let def = find(&flag.key)?;
-    def.parse(&flag.value)
+    def.parse_key(&flag.key, &flag.value)
         .map_err(|e| anyhow::anyhow!("--set {}: {e}", def.key))?;
     Ok(flag)
 }
 
 fn find(key: &str) -> Result<&'static Def> {
     let all = defs();
-    match all.iter().find(|d| d.key == key) {
+    match all.iter().find(|d| d.accepts_key(key)) {
         Some(d) => Ok(*d),
         None => {
             let keys: Vec<&str> = all.iter().map(|d| d.key).collect();
@@ -116,7 +116,7 @@ fn set(
 ) -> Result<()> {
     let def = find(key)?;
     let v = def
-        .parse(text)
+        .parse_key(key, text)
         .map_err(|e| anyhow::anyhow!("{}: {e}", def.key))?;
     // The file only: what the environment says does not stop a save.
     let (store, problems) = Store::load(&defs(), Some(path), &|_| None, &[]);
@@ -207,9 +207,23 @@ mod tests {
             "graphics.fps             uncapped   Frame Rate (settings file)"
         ));
         assert!(list.contains("pad_speaker.enabled      true       Controller Speaker (default)"));
-        let get = run_with(&data, &["get", "graphics.render_scale"], &none).unwrap();
-        assert!(get.contains("values: a whole number from 1 to 6"), "{get}");
-        assert!(get.contains("environment: H2_RENDER_SCALE"));
+        let get = run_with(&data, &["get", "graphics.resolution"], &none).unwrap();
+        assert!(get.contains("values: native or WIDTHxHEIGHT"), "{get}");
+        assert!(get.contains("environment: H2_RESOLUTION"));
+    }
+
+    #[test]
+    fn old_scale_key_writes_a_real_size_and_is_valid_as_a_launch_flag() {
+        let data = tmp("legacy-size");
+        let none = |_: &str| None;
+        run_with(&data, &["set", "graphics.render_scale", "2"], &none).unwrap();
+        let table: toml::Table = std::fs::read_to_string(settings::path_in(&data))
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert_eq!(table["graphics"]["resolution"].as_str(), Some("1280x960"));
+        assert!(set_flag("graphics.render_scale=6").is_ok());
+        assert!(set_flag("graphics.render_scale=0").is_err());
     }
 
     #[test]

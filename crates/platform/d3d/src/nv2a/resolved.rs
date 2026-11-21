@@ -17,7 +17,7 @@ pub fn resolve(
     draw: &ResolvedDraw,
     present: [bool; 4],
     caps: gfx::translate::Capabilities,
-    scale: u32,
+    scale: impl Into<crate::scaled::RenderScale>,
 ) -> Result<ResolvedProgram, String> {
     let table = RenderStateTable::default();
     let KeyParts {
@@ -33,11 +33,13 @@ pub fn resolve(
     let words = words.to_vec();
     let render = &draw.state.render;
     let (c0, c1) = def.embedded_constants();
+    let scale: crate::scaled::RenderScale = scale.into();
     let mut vu = VertexUniforms {
         surface: [draw.target.width as f32, draw.target.height as f32],
         // Same full scale as gfx's built-in shader.
         z_max: gfx::renderer::d3dz_max(draw.target.depth_format),
-        shift: gfx::renderer::window_shift(1, scale),
+        shift: scale.shift(),
+        ui_transform: draw.ui_fit.map_or([1.0, 1.0, 0.0, 0.0], |fit| fit.transform),
         ..VertexUniforms::default()
     };
     match key.vertex {
@@ -63,7 +65,8 @@ pub fn resolve(
         ..PixelUniforms::default()
     };
     pu.stipple = draw.hw.stipple_pattern;
-    pu.stipple_scale = [scale.max(1) as f32; 2];
+    let guest = (draw.target.width, draw.target.height);
+    pu.stipple_scale = PixelUniforms::stipple_grid(guest, scale.size(guest.0, guest.1));
     let w_buffer = key.pixel_options.w_buffer;
     if w_clipped(&key.vertex, draw) {
         vu.w_clip = Some(w_clip_range(&draw.hw, vu.z_max));

@@ -78,11 +78,46 @@ fn draw(c: Block, mesh: u32, pretransformed: bool) -> ResolvedDraw {
             max_z: 1.0,
         },
         textures: [None; 4],
+        retail_constants: None,
+        ui_fit: None,
         glyph_cache: 0,
         clip: None,
         clip_rects: Vec::new(),
         hw: d3d::hw::HwState::default(),
     }
+}
+
+#[test]
+fn reference_uses_retail_lens_and_scissors_while_display_uses_its_own() {
+    let retail = world_block(&camera(3.0, 0.2));
+    let mut display = draw(retail, 3, false);
+    let guest = display.shader.constants.clone();
+    let factor = 0.5;
+    assert!(d3d::device::widen_projection_rows(
+        &mut Arc::make_mut(&mut display.shader.constants)[CAM..CAM+4], factor));
+    display.retail_constants = Some((guest.clone(), factor));
+    let scissor = d3d::PixelRect { x: 48, y: 20, width: 128, height: 44 };
+    let first = display.for_copy(d3d::TargetCopy::Reference);
+    assert!(Arc::ptr_eq(&first.shader.constants, &guest));
+    assert_eq!(first.display_rect(scissor), scissor);
+    let second = display.for_copy(d3d::TargetCopy::Display);
+    assert_eq!(second.shader.constants[CAM], guest[CAM].map(|v| v * factor));
+    assert_eq!(second.display_rect(scissor), d3d::PixelRect { x: 184, width: 64, ..scissor });
+    assert_eq!(second.display_rect(d3d::PixelRect { x: 0, width: 640, ..scissor }).width, 640);
+
+    let mut menu = draw(block(), 4, true);
+    menu.ui_fit = d3d::backend::UiFit::about((1920,1080), [320.,240.]);
+    assert_eq!(menu.for_reference().display_rect(scissor), scissor);
+    assert_eq!(menu.display_rect(scissor), d3d::PixelRect { x: 116, width: 96, ..scissor });
+
+    let mut probe = draw(block(), 4, true);
+    probe.hw.zpass_count_enable = true;
+    probe.ui_fit = Some(d3d::backend::UiFit::projected_sprite(1.0, -64.0));
+    assert!(probe.for_copy(d3d::TargetCopy::Reference).ui_fit.is_none());
+    let shown = probe.for_copy(d3d::TargetCopy::Display);
+    assert_eq!(shown.ui_fit, probe.ui_fit);
+    assert_eq!(shown.display_rect(scissor), scissor);
+
 }
 
 /// A camera at `x` along the world's x axis, turned `yaw`.
@@ -1551,6 +1586,32 @@ fn run_program(c: &Block, v: [f32; 3]) -> ([f32; 4], [f32; 4]) {
     let mut c = *c;
     let out = shaders::vsh::interp::run(&p, &inputs, &mut c);
     (out.get(OutReg::Pos), out.get(OutReg::T(0)))
+}
+
+#[test]
+fn hor_plus_clip_derived_lookup_samples_the_display_texel_drawn_by_the_world() {
+    // Synthetic program forwards its homogeneous clip position to the
+    // projective texture coordinates before its own viewport epilogue.
+    let mut retail = world_block(&build::projection(1.2, 4.0 / 3.0, 0.06, 1024.0));
+    retail[LOOKUP] = [0.5, 0.0, 0.0, 0.5];
+    retail[LOOKUP + 1] = [0.0, -0.5, 0.0, 0.5];
+    for (w, h) in [(1920, 1080), (3440, 1440), (5120, 1440)] {
+        let mut view = retail;
+        let factor = (4.0 / 3.0) / (w as f32 / h as f32);
+        assert!(d3d::device::widen_projection_rows(&mut view[CAM..CAM + 4], factor));
+        for point in [[0.3, 0.4, -5.0], [-4.1, 1.0, -4.0]] {
+            let (original, _) = run_program(&retail, point);
+            let (window, tex) = run_program(&view, point);
+            let same = |a: f32, b: f32| assert!((a - b).abs() < 0.001, "{a} != {b}");
+            same(window[0], 320.0 + (original[0] - 320.0) * factor);
+            same(window[1], original[1]);
+            if point[0] < 0.0 {
+                assert!(original[0] < 0.0 && window[0] > 0.0, "inside the wider lens");
+            }
+            same(tex[0] / tex[3] * w as f32, window[0] * (w as f32 / 640.0));
+            same(tex[1] / tex[3] * h as f32, window[1] * (h as f32 / 480.0));
+        }
+    }
 }
 
 #[test]
