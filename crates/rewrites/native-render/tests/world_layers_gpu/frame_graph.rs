@@ -90,10 +90,20 @@ fn guest_triangle(x: f32, colour: [f32; 4], texture: Option<u32>) -> ReplayOp {
     }
 }
 
-fn typed_triangle(x: f32, colour: [f32; 4]) -> ReplayOp {
+/// A typed opaque stage. Its pipeline builds on a worker, so the stage is
+/// first drawn outside the graph until the variant is admissible (as the
+/// parent rig's `record` does); the graph's pass then shares that cache.
+fn typed_triangle(backend: &mut GfxBackend, x: f32, colour: [f32; 4]) -> ReplayOp {
+    use d3d::Backend as _;
     let mut draw = triangle(x, colour, 1, false);
     draw.state.render.depth_func = gfx::state::CompareFunc::Always;
-    let pass = IndexedPass::new(&draw, Arc::new(Cache::default()), 1, None).unwrap();
+    let cache = Arc::new(Cache::default());
+    let color = backend.create_surface(FORMAT, SIZE, SIZE, false).unwrap();
+    let depth = backend.create_surface(DEPTH, SIZE, SIZE, true).unwrap();
+    let warm = ExternalSurfaces { color, depth, sampled: vec![], slots: vec![], slot_sizes: vec![] };
+    assert!(super::record(backend, warm, &draw, [None; 4], &cache), "the typed pipeline compiles");
+    backend.flush().unwrap();
+    let pass = IndexedPass::new(&draw, cache, 1, None).unwrap();
     ReplayOp::Stage(SceneStage {
         surfaces: ExternalSurfaces {
             color: MAIN,
@@ -153,12 +163,12 @@ fn typed_and_carried_draws_in_adjacent_slots_share_one_pass() {
     op(
         &mut frame,
         Slot::Opaque,
-        typed_triangle(2.0, [1.0, 0.0, 0.0, 1.0]),
+        typed_triangle(&mut backend, 2.0, [1.0, 0.0, 0.0, 1.0]),
     );
     op(
         &mut frame,
         Slot::Opaque,
-        typed_triangle(18.0, [0.0, 0.0, 1.0, 1.0]),
+        typed_triangle(&mut backend, 18.0, [0.0, 0.0, 1.0, 1.0]),
     );
     op(&mut frame, Slot::AfterOpaque, bind());
     op(
@@ -296,7 +306,7 @@ fn retail_and_e3_private_draws_of_one_sealed_tick_are_identical() {
     op(
         &mut frame,
         Slot::Opaque,
-        typed_triangle(2.0, [1.0, 0.0, 0.0, 1.0]),
+        typed_triangle(&mut backend, 2.0, [1.0, 0.0, 0.0, 1.0]),
     );
     let first = draw_private(&mut backend, &scene, &frame, 1, Lighting::Retail).unwrap();
     let second = draw_private(&mut backend, &scene, &frame, 1, Lighting::E3).unwrap();
