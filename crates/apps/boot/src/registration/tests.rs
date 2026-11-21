@@ -18,8 +18,9 @@ use crate::lockstep_glue;
 
 /// Every switch that adds hooks, on (the native renderer, the engine leaves,
 /// Forge, the actor capture, Firefight and the creature probe are on by
-/// default; only the diagnostics and `impl.engine=on` are spelled out).
-pub(crate) const ALL_ON: &str = "impl.engine=on,render-timing,actor-net,firefight";
+/// default; only the diagnostics, the rules scripts (off by default) and
+/// `impl.engine=on` are spelled out).
+pub(crate) const ALL_ON: &str = "impl.engine=on,render-timing,actor-net,firefight,rules";
 /// Added to [`ALL_ON`]: the native renderer (on by default) off.
 pub(crate) const NATIVE_OFF: &str = "impl.render.native=off";
 
@@ -506,6 +507,22 @@ fn the_plan_builds_with_every_hook_switch_on() {
     // Forge is on by default; `-forge` leaves it out.
     assert_builds(&Case::full(ALL_ON));
     assert_builds(&Case::full(&format!("{ALL_ON},-forge")));
+}
+
+/// The rules runtime is off by default, and `rules` puts it in the plan.
+#[cfg(feature = "rules")]
+#[test]
+fn the_rules_runtime_is_planned_only_when_named() {
+    let has = |switches: &str| {
+        plan(&Case::full(switches))
+            .unwrap()
+            .features
+            .iter()
+            .any(|f| f.id == crate::rules::feature::FEATURE)
+    };
+    assert!(!has(""));
+    assert!(has("rules"));
+    assert!(has(ALL_ON));
 }
 
 /// The features `run_hosted_with_live` adds around `register_core` and

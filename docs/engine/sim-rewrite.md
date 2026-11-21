@@ -138,8 +138,11 @@ registered in every run by `crates/apps/boot/src/registration.rs`),
 - **Records.** A feature registers a `sim_ext::Kind` (name, layout
   version, cap) and stores its record as bytes it encodes itself.
   `RULES` (`RulesExt`, 16 KiB) and `FORGE` (`ForgeExt`, 64 KiB) are
-  registered from the start and opaque until their owners land. The
-  container is at most 256 KiB.
+  registered from the start. `RULES` holds `rules::RulesExt::encode`,
+  which the rules host runtime sets at a script game's start and removes
+  at its end ([rules-engine.md](../game/rules-engine.md#the-host-runtime));
+  `FORGE` is opaque until its owner lands. The container is at most
+  256 KiB.
 - **Bytes.** No records is zero bytes. Otherwise `"SEXT"`, the format
   (`sim_ext::FORMAT`, 1), the record count, the records in name order
   (name, version, length, bytes) and a CRC-32 of all of it. The form is

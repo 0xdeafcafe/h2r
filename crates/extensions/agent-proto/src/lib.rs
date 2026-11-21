@@ -37,6 +37,7 @@ mod load;
 mod pad;
 pub mod probe;
 pub mod route;
+pub mod rules;
 pub mod raw;
 mod render;
 pub mod shadow;
