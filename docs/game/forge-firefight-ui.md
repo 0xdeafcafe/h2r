@@ -326,11 +326,11 @@ when the tool's state changes. One layout:
 | `forge.tool` | Text, `Font::Hud`, longest "VOLUMES" | top right, where a weapon's name line sits | the tool; capitals |
 | `forge.rebuild.pill`, `.count` | Icon and LCD Text | the grenade row's second place | pending Rebuild edits; hidden at 0 |
 
-- **The retail widgets are off in the monitor.** A monitor has no
-  shield, weapon or grenades. The kit's gate hook answers for the retail
-  widgets of a user whose HUD is in monitor mode
-  (`Handle::retail(false)`, slice K1), so only the motion tracker's
-  place is empty and ours remain. The grenade row's origins
+- **The retail widgets are off in the monitor, but the motion tracker.**
+  A monitor has no shield, weapon or grenades. The kit's gate hook
+  answers for the retail widgets of a user whose HUD is in monitor mode
+  (`Handle::retail(false)`, slice K1), except the motion tracker, which
+  stays drawn (decision 3). The grenade row's origins
   (`Origin::NextGrenadePill`) then resolve to the row's first place.
 - **Copy** is the game's form: sentence case, the button as the font's
   glyph, one line. The count is digits only, as the LCD font has no
@@ -377,8 +377,10 @@ state).
 - Each other monitor is a navpoint in its seat's colour, and a link's two
   ends are navpoints while the Links tool is up (slice K3 gives a HUD
   several points).
-- The axis lines are removed. Heading is read on the prompt line while
-  turning ("Heading 45").
+- The axis gizmo stays for precise turning (decision 2). It becomes a
+  HUD kit element drawn by the game's HUD; until then the compositor
+  draws it (`forge_glue/gizmo.rs`). Heading is also read on the prompt
+  line while turning ("Heading 45").
 
 ## The Firefight HUD
 
@@ -416,13 +418,13 @@ extend the HUD kit and sit before their first user.
 |---|---|---|---|---|
 | **U1** | Main menu: six rows, Extras, `ScreenBase::MainMenu`, `main.extras` | M | nothing | `h2 ui preview main.extras --state all` beside the `main-menu` opener; table tests `the_main_menu_never_has_more_than_six_rows`, `extras_lists_only_enabled_features`, `pitch_keeps_six_rows_above_the_footer`; `the_extras_menu_is_the_main_menu_with_other_rows` (every non-row widget at the opener's rectangle, art and font); the layout checks in every state; the disc test holds the fallback geometry |
 | **U2** | Lobbies: the mode, Game Setup rows, Forge Map picker, the Firefight map category, variant panel lines, header; delete the kit lobbies | M | U1 | `Page` tables for Game Setup in each mode (`forge_mode_lists_change_map_and_forge_map`, `firefight_mode_holds_the_setting_on`, `leaving_the_lobby_clears_the_mode`); `h2 ui preview kit.picker` in state `forge-map`; `lobby_options` tests for the panel lines; content checks (no colon values, no repeated spaces) |
-| **K1** | HUD kit: monitor mode (retail widgets gated off per user, grenade origins without the row) | S | the HUD kit on `master` | `hud_kit_tests`: a retail widget of a monitor user is not drawn and another user's is; `h2 hud preview forge --state all --mode all --synthetic` |
+| **K1** | HUD kit: monitor mode (retail widgets gated off per user, grenade origins without the row) | S | the HUD kit on `master` | `hud_kit_tests`: a retail widget of a monitor user is not drawn, the motion tracker is, and another user's widgets are; `h2 hud preview forge --state all --mode all --synthetic` |
 | **U3** | Forge HUD on the kit: `forge` HUD, feed from `forge_glue`, copy table | M | K1 | `h2 hud preview forge --state all`; the kit's checks (fit, glyphs, frame, retail, own, one layout, prompt, drawn) in every state and mode; table test `every_tool_state_has_one_prompt` over the states of `ui_kit/forge/pages.rs` |
 | **U4** | Forge screens in the game: object menu, Properties, Link, questions, GAME MENU rows, Controls page; input handover | L | nothing | `h2 ui preview forge.objects`, `forge.properties`, `forge.link`, `forge.question`, `forge.controls --state all --animation all`; `Page` tables carried over from `ui_kit/forge/tests.rs` plus `x_opens_objects_or_properties_by_aim`, `no_is_focused_on_every_question`; `list_class` runner test that a picker opens with its pick in a game; layout and content checks in every state; a disc test that each base resolves in `shared` |
 | **K2** | HUD kit: the `Banner` channel (the timed centred line) | S | the HUD kit on `master` | `FlatMemory` test of the text, start and duration fields; the prompt check extended to it; preview draws it at the routine's place |
 | **U5** | Firefight HUD on the kit | M | K2; kit `Message` | `h2 hud preview firefight --state all --mode all`; `the_hud_reads_only_the_mode_blob` unchanged; `every_stage_has_a_banner_or_none` table; the kit's checks replace `hud::check` |
 | **K3** | HUD kit: several navpoints for one HUD, the number drawn | S | the kit's navpoint number | `FlatMemory` test of n slots kept and released; preview with three points |
-| **U6** | Forge markers as navpoints; remove the gizmo and marker painters | S | K3, U3 | table test: held, aimed, linking and two monitors give the expected points; `h2 hud preview forge --state holding` |
+| **U6** | Forge markers as navpoints; the gizmo as a HUD kit element; remove the marker painter | S | K3, U3 | table test: held, aimed, linking and two monitors give the expected points; `h2 hud preview forge --state holding` |
 | **U7** | Remove the compositor path: `ScreenSpec::hud`, `Art::Solid`, the Forge painter in `play_cmd/forge.rs`, `forge.hud` and its sheet entries; update [ui-builder.md](ui-builder.md) "Screen kinds" and [forge-design.md](forge-design.md) "The UI" | S | U3, U4, U6 | `cargo check -p cli --no-default-features --features host`; the sheet has no `forge.hud`; `docs-check` |
 
 U1, U2 and U4 need neither kit change and can start at once. U3 and U5
@@ -458,10 +460,25 @@ against that branch.
   it; the HUD kit's `prompt` and `fit` checks hold the HUD.
 - One layout per screen and per HUD.
 - A screen or element with no retail counterpart is not built: it is
-  changed until it has one, or dropped (the axis lines).
+  changed until it has one, or dropped. The axis gizmo is the owner's
+  exception (decision 2).
 - A map whose interface lacks a base (Quick Options in a game) uses the
   base that is there (`error_dialog_large`, the Controller Settings
   host), never art of ours.
+
+## Decisions
+
+The owner's choices, which the sections above follow.
+
+1. **Buttons.** Halo 3's mapping: X opens the object menu, or
+   Properties with an object aimed at or held; hold Y deletes; B
+   cancels a hold and backs out. It is the default of the one bindings
+   table (`forge_controls::bindings::BINDINGS`).
+2. **The axis gizmo stays** for precise turning. It gets a HUD kit
+   version (slice U6) instead of being removed; no screen assumes it is
+   gone.
+3. **The motion tracker stays visible in monitor mode.** K1 gates every
+   other retail widget off for a monitor user.
 
 ## Evidence
 
