@@ -1180,8 +1180,11 @@ impl ServerSink {
                     eprintln!("sim: Live recording {id}");
                     return Ok(());
                 }
-                Err(e @ ureq::Error::Status(status, _)) if status < 500 && status != 429 => {
-                    return Err(format!("uploading sim report: {e}"));
+                Err(ureq::Error::Status(status, response)) if status < 500 && status != 429 => {
+                    let message = response
+                        .into_json::<ErrorBody>()
+                        .map_or_else(|_| format!("HTTP {status}"), |b| format!("HTTP {status}: {}", b.message));
+                    return Err(format!("uploading sim report to {url}: {message}"));
                 }
                 Err(e) => result = Err(format!("uploading sim report: {e}")),
             }
