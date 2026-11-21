@@ -95,12 +95,20 @@ pub(crate) fn app(t: &Path) -> (App, PathBuf, Vec<u8>) {
 }
 
 fn app_on(t: &Path, src: Vec<u8>) -> (App, PathBuf, Vec<u8>) {
+    app_with_registry(t, src, registry())
+}
+
+fn app_with_registry(
+    t: &Path,
+    src: Vec<u8>,
+    registry: &'static Registry,
+) -> (App, PathBuf, Vec<u8>) {
     let path = t.join("example.map");
     std::fs::write(&path, &src).unwrap();
     let mut app = App::new();
     app.set_data_root(t.join("data"));
     app.session.build_scenes = false;
-    app.tags = TagDoc::new(registry());
+    app.tags = TagDoc::new(registry);
     app.dispatch(Action::OpenSource(path.clone()));
     app.dispatch(Action::SetTool(ToolKind::Tags));
     (app, path, src)
@@ -175,8 +183,7 @@ fn scene_owned_scenario_blocks_are_read_only_in_the_panel() {
     assert!(shown["fields"]["weapons"][0]["position"].is_array());
 }
 
-#[test]
-fn bsp_and_lightmap_bytes_use_their_own_read_only_regions() {
+fn bsp_fixture() -> (Vec<u8>, [TagId; 3]) {
     use map::CacheType;
     use map::build::{Block, BspField, FixupKind, TagPayload, TagSet};
 
@@ -191,13 +198,22 @@ fn bsp_and_lightmap_bytes_use_their_own_read_only_regions() {
             TagPayload::Built(Block::zeroed(4)),
         )
         .unwrap();
-    let mut add = |group: FourCC, name: &str, byte: u8| {
-        let payload = TagPayload::Built(Block::new(vec![byte; 0x20]));
-        set.add_tag(group, name, payload).unwrap()
+    let mut add = |group, name, root| {
+        set.add_tag(FourCC(group), name, TagPayload::Built(root))
+            .unwrap()
     };
-    let first = add(FourCC(*b"sbsp"), "test\\first", 0x11);
-    let second = add(FourCC(*b"sbsp"), "test\\second", 0x22);
-    let lightmap = add(FourCC(*b"ltmp"), "test\\light", 0x33);
+    let bsp = |checksum, value| {
+        let mut root = Block::zeroed(0x23c);
+        let mut elements = Block::zeroed(2 * 0x18);
+        elements.put_f32(0xc, value).put_f32(0x24, value + 1.0);
+        root.put_u32(8, checksum).block(0x8c, 2, elements);
+        root
+    };
+    let first = add(*b"sbsp", "test\\first", bsp(0x11, 7.0));
+    let second = add(*b"sbsp", "test\\second", bsp(0x22, 17.0));
+    let mut light = Block::zeroed(0x104);
+    light.put_f32(0x34, 2.5);
+    let lightmap = add(*b"ltmp", "test\\light", light);
     let mut entries = Block::zeroed(2 * 0x44);
     let regions = [(first, None), (second, Some(lightmap))];
     for (i, (bsp, light)) in regions.into_iter().enumerate() {
@@ -221,34 +237,178 @@ fn bsp_and_lightmap_bytes_use_their_own_read_only_regions() {
         .unwrap();
 
     let (bytes, _) = set.build().unwrap();
+    (bytes, [first, second, lightmap])
+}
+
+#[test]
+fn bsp_and_lightmap_fields_save_at_their_own_file_offsets_and_undo() {
+    let t = Temp::new("bsp-edit");
+    let (bytes, [first, second, lightmap]) = bsp_fixture();
+    let (mut app, _, source) = app_with_registry(&t.0, bytes, Registry::builtin());
+
+    let a = app.tags.tag(first).unwrap();
+    let b = app.tags.tag(second).unwrap();
+    let light = app.tags.tag(lightmap).unwrap();
+    assert_eq!(a.address, b.address);
+    assert_ne!(
+        a.bsp.unwrap().space.file_offset,
+        b.bsp.unwrap().space.file_offset
+    );
+    assert_eq!(b.bsp.unwrap().space, light.bsp.unwrap().space);
+    for (entry, index) in [(a, 0), (b, 1), (light, 1)] {
+        assert_eq!(entry.access, Access::Edit);
+        assert_eq!(entry.bsp.unwrap().index, Some(index));
+        assert_eq!(
+            super::tag_tree::bsp_label(entry),
+            Some(format!("BSP {index}"))
+        );
+    }
+    let a_pair = a.address + 0x8c;
+    let b_pair = b.address + 0x8c;
+    let child = app.tags.pair(first, a_pair).unwrap().1;
+    assert_eq!(app.tags.pair(second, b_pair), Some((2, child)));
+    let radius = child + 0xc;
+    let at_a = a.bsp.unwrap().space.translate(radius, 4).unwrap() as usize;
+    let at_b = b.bsp.unwrap().space.translate(radius, 4).unwrap() as usize;
+    let at_light = light
+        .bsp
+        .unwrap()
+        .space
+        .translate(light.address + 0x34, 4)
+        .unwrap() as usize;
+    let value = |app: &App, id| {
+        read_tag(&app.tags, id).unwrap()["fields"]["weather_polyhedra"][0]["bounding_sphere_radius"]
+            .clone()
+    };
+    let period =
+        |app: &App| read_tag(&app.tags, lightmap).unwrap()["fields"]["cycle_period"].clone();
+    assert_eq!(value(&app, first), json!(7.0));
+    assert_eq!(value(&app, second), json!(17.0));
+    assert_eq!(period(&app), json!(2.5));
+
+    // The field panel's drag actions for the same address use the same merge key.
+    for (id, n) in [(first, 9.0f32), (second, 19.0)] {
+        app.dispatch(crate::fields::write_action(
+            id,
+            radius,
+            n.to_le_bytes().to_vec(),
+            "bounding_sphere_radius",
+        ));
+    }
+    let edit = set_field(&app.tags, lightmap, "cycle_period", &json!(4.0)).unwrap();
+    tag(&mut app, edit);
+    assert_eq!(value(&app, first), json!(9.0));
+    assert_eq!(value(&app, second), json!(19.0));
+    assert_eq!(period(&app), json!(4.0));
+    assert!(app.session.is_dirty());
+    assert!(
+        app.tags.is_changed(first) && app.tags.is_changed(second) && app.tags.is_changed(lightmap)
+    );
+    assert!(app.tags.patches().is_empty());
+    let (writes, pending) = crate::play::tag_sync::diff(&Default::default(), &app.tags);
+    assert!(writes.is_empty());
+    assert_eq!(pending.len(), 2);
+    assert!(
+        pending
+            .iter()
+            .all(|row| row["class"] == crate::play::tag_sync::RELOAD)
+    );
+
+    let out = t.0.join("out.map");
+    app.dispatch(Action::SaveMapAs(out.clone()));
+    assert!(!app.session.is_dirty(), "{:?}", app.log().last());
+    let saved = std::fs::read(&out).unwrap();
+    for (at, expected) in [
+        (at_a, 9.0f32.to_le_bytes()),
+        (at_b, 19.0f32.to_le_bytes()),
+        (at_light, 4.0f32.to_le_bytes()),
+    ] {
+        assert_eq!(saved[at..at + 4], expected);
+    }
+    for (lo, hi) in diff(&source, &saved) {
+        assert!(
+            [at_a, at_b, at_light, 0x2d0]
+                .into_iter()
+                .any(|at| lo >= at && hi <= at + 4),
+            "{lo:#x}..{hi:#x} changed"
+        );
+    }
+    let mut reread = map::Map::from_reader(std::io::Cursor::new(saved)).unwrap();
+    reread.validate_checksum().unwrap();
+    let mut doc = TagDoc::default();
+    doc.load(&mut reread).unwrap();
+    for (id, expected) in [(first, 9.0), (second, 19.0)] {
+        assert_eq!(
+            read_tag(&doc, id).unwrap()["fields"]["weather_polyhedra"][0]["bounding_sphere_radius"],
+            json!(expected)
+        );
+    }
+    assert_eq!(
+        read_tag(&doc, lightmap).unwrap()["fields"]["cycle_period"],
+        json!(4.0)
+    );
+
+    app.dispatch(Action::Undo);
+    assert_eq!(period(&app), json!(2.5));
+    app.dispatch(Action::Undo);
+    assert_eq!(value(&app, second), json!(17.0));
+    assert_eq!(value(&app, first), json!(9.0));
+    assert!(!app.tags.is_changed(second));
+    app.dispatch(Action::Undo);
+    assert_eq!(value(&app, first), json!(7.0));
+    assert!(app.tags.bsp_patches().is_empty());
+    assert!(app.session.is_dirty());
+    app.dispatch(Action::SaveMapAs(out.clone()));
+    assert_eq!(std::fs::read(&out).unwrap(), source);
+    app.dispatch(Action::Redo);
+    assert_eq!(value(&app, first), json!(9.0));
+    assert!(app.session.is_dirty());
+}
+
+#[test]
+fn bsp_block_operations_use_source_capacity_even_with_growth_enabled() {
+    let (bytes, [first, second, _]) = bsp_fixture();
     let mut map = map::Map::from_reader(std::io::Cursor::new(bytes)).unwrap();
     let mut doc = TagDoc::default();
     doc.load(&mut map).unwrap();
-    assert_eq!(
-        doc.tag(first).unwrap().address,
-        doc.tag(second).unwrap().address
-    );
-    for (id, i, byte) in [(first, 0, 0x11), (second, 1, 0x22), (lightmap, 1, 0x33)] {
-        let entry = doc.tag(id).unwrap();
-        assert_eq!(entry.bsp.unwrap().index, Some(i));
-        assert_eq!(super::tag_tree::bsp_label(entry), Some(format!("BSP {i}")));
-        assert_eq!(entry.access, Access::Read(tag_doc::IN_BSP));
-        let source = map.read_tag_bytes(id).unwrap();
-        assert_eq!(doc.bsp_bytes(id), Some(source.as_slice()));
-        assert!(doc.bsp_bytes(id).unwrap().iter().all(|&b| b == byte));
-        let address = entry.address;
+    doc.allow_growth = true;
+    let pair = doc.tag(first).unwrap().address + 0x8c;
+    let layout = doc.layout(first).unwrap().field_at(0x8c).unwrap();
+    let tags::registry::Kind::Block(child) = &layout.kind else {
+        panic!("expected block")
+    };
+    let child = child.clone();
+    for op in [BlockOp::Add, BlockOp::Duplicate(0)] {
         assert_eq!(
-            doc.write(TagWrite {
-                tag: id,
-                address,
-                bytes: vec![0],
-                label: "test".into(),
-                merge: None,
-            }),
-            Err(tag_doc::IN_BSP.into())
+            doc.block_refusal(first, pair, &child, &op),
+            Some(tag_doc::BSP_GROWTH_REFUSAL)
         );
-        assert!(!doc.is_changed(id));
     }
+    let original = read_tag(&doc, first).unwrap()["fields"]["weather_polyhedra"].clone();
+    doc.block_op(first, pair, &child, &BlockOp::Remove(1))
+        .unwrap();
+    doc.block_op(first, pair, &child, &BlockOp::Duplicate(0))
+        .unwrap();
+    assert_eq!(
+        read_tag(&doc, first).unwrap()["fields"]["weather_polyhedra"][1],
+        original[0]
+    );
+    doc.block_op(first, pair, &child, &BlockOp::Remove(0))
+        .unwrap();
+    doc.block_op(first, pair, &child, &BlockOp::Add).unwrap();
+    let fields = read_tag(&doc, first).unwrap()["fields"]["weather_polyhedra"].clone();
+    assert_eq!(fields[1]["bounding_sphere_radius"], json!(0.0));
+    assert_eq!(doc.pair(second, pair).unwrap().0, 2);
+    assert!(!doc.is_changed(second));
+    assert!(doc.grown().is_empty());
+    for _ in 0..4 {
+        doc.undo().unwrap();
+    }
+    assert_eq!(
+        read_tag(&doc, first).unwrap()["fields"]["weather_polyhedra"],
+        original
+    );
+    assert!(doc.bsp_patches().is_empty());
 }
 
 #[test]
@@ -369,7 +529,7 @@ fn blocks_change_within_the_elements_they_had() {
     let f = fields(&app);
     assert_eq!(f["parts"][1]["item"], json!(null));
     assert_eq!(f["parts"][1]["value"], json!(0));
-    assert_eq!(app.tags.capacity(WEAP + 8), 2);
+    assert_eq!(app.tags.capacity(weap_id(), WEAP + 8), 2);
     for _ in 0..4 {
         app.dispatch(Action::Undo);
     }
@@ -396,7 +556,7 @@ fn a_full_block_grows_when_allowed_and_saves_appended() {
     app.dispatch(Action::SetAllowGrowth(true));
     block(&mut app, BlockOp::Duplicate(1)).unwrap();
     // Room for twice the elements: the next add fits where they went.
-    assert_eq!(app.tags.capacity(WEAP + 8), 4);
+    assert_eq!(app.tags.capacity(weap_id(), WEAP + 8), 4);
     block(&mut app, BlockOp::Add).unwrap();
     set(&mut app, "parts[3].value", json!(5));
     let f = fields(&app);
@@ -478,13 +638,19 @@ fn a_string_the_map_lacks_is_added_and_saved() {
     };
     let id = (9 << 24) | n as u32;
     set_string(&mut app, WEAP + 0x2c, "brand_new");
-    assert_eq!(app.tags.read(WEAP + 0x2c, 4).unwrap(), id.to_le_bytes());
+    assert_eq!(
+        app.tags.read(weap_id(), WEAP + 0x2c, 4).unwrap(),
+        id.to_le_bytes()
+    );
     assert_eq!(app.tags.string(id), Some("brand_new"));
     assert_eq!(app.tags.string_id("brand_new"), Some(id));
     // The same text again is the same string.
     set_string(&mut app, WEAP + 0x30, "brand_new");
     assert_eq!(app.tags.new_strings(), ["brand_new"]);
-    assert_eq!(app.tags.read(WEAP + 0x30, 4).unwrap(), id.to_le_bytes());
+    assert_eq!(
+        app.tags.read(weap_id(), WEAP + 0x30, 4).unwrap(),
+        id.to_le_bytes()
+    );
     // Too long for its slot.
     set_string(&mut app, WEAP + 0x34, &"x".repeat(0x80));
     assert_eq!(app.tags.new_strings().len(), 1);

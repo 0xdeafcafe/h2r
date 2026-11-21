@@ -104,7 +104,13 @@ struct Capture<'a, 'r> {
 }
 
 impl Capture<'_, '_> {
-    fn element(&mut self, at: u32, l: &Layout, depth: usize) -> Result<Element, String> {
+    fn element(
+        &mut self,
+        tag: TagId,
+        at: u32,
+        l: &Layout,
+        depth: usize,
+    ) -> Result<Element, String> {
         if depth > DEPTH {
             return Err(format!("{}: blocks nest deeper than {DEPTH}", l.name));
         }
@@ -114,8 +120,8 @@ impl Capture<'_, '_> {
         }
         let bytes = self
             .doc
-            .read(at, l.size)
-            .ok_or_else(|| format!("{} at {at:#x} is outside the metadata", l.name))?;
+            .read(tag, at, l.size)
+            .ok_or_else(|| format!("{} at {at:#x} is outside the tag's address space", l.name))?;
         let mut fixups = Vec::new();
         for f in &l.fields {
             let o = f.offset as usize;
@@ -150,13 +156,15 @@ impl Capture<'_, '_> {
                     });
                 }
                 Kind::Block(child) => {
-                    let (n, a) = self
-                        .doc
-                        .block(at + f.offset, child)
-                        .ok_or_else(|| format!("{}: the block's elements are outside the metadata", f.name))?;
+                    let (n, a) = self.doc.block(tag, at + f.offset, child).ok_or_else(|| {
+                        format!(
+                            "{}: the block's elements are outside the tag's address space",
+                            f.name
+                        )
+                    })?;
                     let mut elements = Vec::with_capacity(n as usize);
                     for i in 0..n {
-                        elements.push(self.element(a + i * child.size, child, depth + 1)?);
+                        elements.push(self.element(tag, a + i * child.size, child, depth + 1)?);
                     }
                     fixups.push(Fixup::Block {
                         at: f.offset,
@@ -168,9 +176,9 @@ impl Capture<'_, '_> {
                     let data = if n == 0 {
                         Vec::new()
                     } else {
-                        self.doc
-                            .read(a, n)
-                            .ok_or_else(|| format!("{}: the data is outside the metadata", f.name))?
+                        self.doc.read(tag, a, n).ok_or_else(|| {
+                            format!("{}: the data is outside the tag's address space", f.name)
+                        })?
                     };
                     fixups.push(Fixup::Data {
                         at: f.offset,
@@ -292,7 +300,7 @@ pub fn export(
         }
         cap.refs.clear();
         let root = cap
-            .element(t.address, &layout, 0)
+            .element(id, t.address, &layout, 0)
             .map_err(|e| format!("{name}: {e}"))?;
         bundle.tags.push(BundleTag {
             group: tags::defs::fourcc_text(t.group),
@@ -383,8 +391,8 @@ impl Apply<'_> {
     fn resize(&mut self, tag: TagId, pair: u32, child: &Layout, want: u32) -> Result<(), String> {
         let (mut n, _) = self
             .doc
-            .block(pair, child)
-            .ok_or("the block's elements are outside the map's metadata")?;
+            .block(tag, pair, child)
+            .ok_or("the block's elements are outside the tag's address space")?;
         while n > want {
             self.doc.block_op(tag, pair, child, &BlockOp::Remove(n - 1))?;
             n -= 1;
@@ -434,8 +442,8 @@ impl Apply<'_> {
         }
         let now = self
             .doc
-            .read(at, l.size)
-            .ok_or_else(|| format!("{} at {at:#x} is outside the metadata", l.name))?;
+            .read(tag, at, l.size)
+            .ok_or_else(|| format!("{} at {at:#x} is outside the tag's address space", l.name))?;
         let mut out = e.bytes.clone();
         let mut strings: Vec<(u32, String, String)> = Vec::new();
         let mut kept_raw: Vec<u32> = Vec::new();
@@ -545,7 +553,7 @@ impl Apply<'_> {
                     let Some(Fixup::Data { bytes, .. }) = fix.get(&f.offset) else {
                         return Err(missing(&f.name));
                     };
-                    let (n, a) = self.doc.pair(at + f.offset).ok_or("unreadable")?;
+                    let (n, a) = self.doc.pair(tag, at + f.offset).ok_or("unreadable")?;
                     if n as usize != bytes.len() {
                         return Err(format!(
                             "{}: {} bytes in the bundle and {n} in the map (data keeps its length)",
@@ -553,7 +561,7 @@ impl Apply<'_> {
                             bytes.len()
                         ));
                     }
-                    if n > 0 && self.doc.read(a, n).as_deref() != Some(bytes.as_slice()) {
+                    if n > 0 && self.doc.read(tag, a, n).as_deref() != Some(bytes.as_slice()) {
                         self.doc.write(TagWrite {
                             tag,
                             address: a,
@@ -567,10 +575,9 @@ impl Apply<'_> {
                     let Some(Fixup::Block { elements, .. }) = fix.get(&f.offset) else {
                         return Err(missing(&f.name));
                     };
-                    let (n, a) = self
-                        .doc
-                        .block(at + f.offset, child)
-                        .ok_or_else(|| format!("{}: the block is outside the metadata", f.name))?;
+                    let (n, a) = self.doc.block(tag, at + f.offset, child).ok_or_else(|| {
+                        format!("{}: the block is outside the tag's address space", f.name)
+                    })?;
                     if n as usize != elements.len() {
                         return Err(format!("{}: the block did not take its elements", f.name));
                     }

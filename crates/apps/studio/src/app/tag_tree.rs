@@ -11,7 +11,7 @@ use scenario_edit::{BlockKind, Role, Scenario, geometry, layout::BLOCKS, scene};
 
 use super::{
     tag_api::{self, Node},
-    tag_doc::{Access, IN_BSP, TagDoc, TagEntry},
+    tag_doc::{TagDoc, TagEntry},
 };
 
 /// How the outliner arranges the tags.
@@ -72,25 +72,10 @@ pub struct ScenarioRoots {
     bsps: Vec<(TagId, Option<TagId>)>,
     skies: Vec<TagId>,
     globals: Option<TagId>,
-    region_refs: HashMap<TagId, tag_api::References>,
 }
 
 impl ScenarioRoots {
-    pub fn read<R: Read + Seek>(doc: &TagDoc, map: &mut Map<R>) -> Self {
-        let region_refs = doc
-            .tags()
-            .iter()
-            .filter(|tag| tag.access == Access::None(IN_BSP))
-            .map(|tag| {
-                let refs = tag_api::region_refs(doc, map, tag.id).unwrap_or_else(|_| {
-                    tag_api::References {
-                        incomplete: true,
-                        ..tag_api::References::default()
-                    }
-                });
-                (tag.id, refs)
-            })
-            .collect();
+    pub fn read<R: Read + Seek>(map: &mut Map<R>) -> Self {
         Self {
             bsps: geometry::scenario_bsp_lightmaps(map).unwrap_or_default(),
             skies: scene::scenario_skies(map),
@@ -98,7 +83,6 @@ impl ScenarioRoots {
                 .globals()
                 .map(|tag| tag.id)
                 .filter(|id| *id != TagId::NULL),
-            region_refs,
         }
     }
 }
@@ -277,13 +261,7 @@ pub fn scenario_tree(
         .filter(|id| *id != scenario.tag)
         .collect();
     while let Some(id) = todo.pop() {
-        let local;
-        let refs = if let Some(refs) = roots.region_refs.get(&id) {
-            refs
-        } else {
-            local = doc.tag_refs(id, None);
-            &local
-        };
+        let refs = doc.tag_refs(id, None);
         incomplete |= refs.incomplete;
         for link in &refs.links {
             if doc.tag(link.tag).is_some() && seen.insert(link.tag) {

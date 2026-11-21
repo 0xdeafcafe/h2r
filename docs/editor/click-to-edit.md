@@ -318,8 +318,8 @@ their tests.
   recorded counterpart is shown as none.
 - Override files hold values from the user's disc (`was`), so they are
   user output.
-- Tags in a structure BSP's region (`sbsp`, `ltmp`) are not in the
-  inspector until the Tags document shows them.
+- The field inspector edits structure BSP and lightmap tags (`sbsp`,
+  `ltmp`) in their own region. Their blocks use the original allocation.
 
 ## Evidence
 

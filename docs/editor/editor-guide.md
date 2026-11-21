@@ -1117,8 +1117,9 @@ packages, or a converted Halo 1 map), then select the **Tags** tab beside **Scen
   palette block and choose **Open … in Scene**. A placement link selects
   the displayed placement if it exists. A palette link selects the
   first placement that uses the displayed entry.
-- **Structure BSPs and lightmaps** open as read-only hex. Their rows
-  identify the BSP, and the byte offsets start at the selected payload.
+- **Structure BSPs and lightmaps** open in the field inspector. Their
+  rows identify the BSP. Field and block edits save to that BSP's
+  region, and blocks use their original capacity.
 - **Data and bytes** (beside Log): the tag's data and resources first: each
   block of raw data inside the tag with its size, and each resource
   (pixels, model geometry, sound) with the map it is in (`local` for this
@@ -1144,18 +1145,17 @@ How to change things:
   next to it jumps to that tag.
 - **Lists inside a tag (blocks)**: open the list, pick an element number,
   then edit its fields. **Add**, **Duplicate** and **Remove** change the
-  list. A list can't get longer than it was on the disc unless
-  **Edit > Allow growing full blocks** is on; then the longer list is
-  saved as a new copy at the end of the map's tag data. Hover a
-  greyed-out button for the reason. Other things in the map that point at
+  list. **Edit > Allow growing full blocks** lets lists in ordinary
+  tag data grow beyond their original size. Save writes the longer list
+  at the end of the map's tag data. Hover a greyed-out button for the
+  reason. Other things in the map that point at
   a list entry by its number are not updated when entries move.
 - **Data** (raw bytes inside a tag): edit the hex; the length must stay
   the same.
 
 Some things are shown but cannot be changed, with the reason shown:
-counts and addresses (use Add/Remove instead), the scenario tag (use the
-Scenario tool for what is placed on the map), and tags of the level's
-structure (not shown yet).
+counts and addresses (use Add/Remove to change a block) and scenario
+fields (use the Scenario tool for placements).
 
 Every change is an undo step (one drag is one step). **Save**,
 **Save as...** and **Save as package...** write your tag edits and

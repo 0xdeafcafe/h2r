@@ -403,7 +403,8 @@ Not reachable from the scenario (n)
   their Scene block, where the scenario session owns edits.
 - `TagDoc::load` keeps each BSP region's bytes in its own address space.
   A structure BSP or lightmap row identifies its BSP and opens its
-  payload as read-only hex.
+  fields for in-place editing with undo. Block operations use the
+  region's original allocation.
 
 Agent API: `tag.tree {root?: "scenario", depth?}` returns the same
 tree; `tag.refs {tag}` returns one tag's links with how each was found
@@ -443,7 +444,7 @@ before sending it; the class is shown as a badge on the field.
 | A reference to a tag the loaded map lacks (another map's, a shared cache's not loaded) | Reload | no datum to point at |
 | Raw resources: bitmap pixels, sound data, model and BSP geometry, lightmap pages | Reload | they are not in tag memory |
 | Collision and MOPP edits | Reload | Havok built its shapes at load |
-| Anything in a structure BSP region | Reload | the editor does not write there live |
+| Anything in a structure BSP region | Reload | the map loads BSP regions by section |
 
 **What blocks all of it.** Not paired; View mode; another map or
 another checksum in the game; a session that refuses writes
@@ -688,7 +689,7 @@ under 2,500, L more.
 | P2 | **The bar and the layout**: tool tabs; Maps, Scene as tabs of one column; per-tool window keys; icon toolbar with tooltips and step combos; status-bar hint slot; empty-state cards; `theme` tokens, `section`, type sizes | M | P1 | `ui.rs`, `ui/bar.rs`, `ui/map_list.rs`, `theme.rs`, `headless.rs` | `the_default_layout_places_every_window` (each tool's windows exist and none shares an ID); a saved layout with the three old IDs loads; `--do` scripts that click `Scenario` in the Tools list click the Map tab (the script step maps the old label); no colour literal outside `theme.rs` in `ui/` (a source test); the guide's screenshots are re-shot by `scripts/editor-screenshots.sh` |
 | P3 | **Save where it came from, and Go to anything** | S | P2 | `app.rs`, `app/commands.rs`, `ui/palette.rs`, `api/ui_screens.rs` (for `ui.palette`) | Cmd+S on an opened package rewrites it with no dialog; on a disc map opens the package form; `ui.palette` with the query `"blast"` lists the invented map, its tag and matching placements in that order; Enter on a command dispatches its `Action` |
 | P4 | **The scenario tag tree** | M | nothing | `app/tag_tree.rs`, `app/tag_api/chain.rs` (`scan_refs`), `ui/tags.rs`, `api/tags.rs`, `crates/apps/studio-proto/src/lib.rs` | fixture scenario with a palette, a sky and a BSP: `tag.tree` lists them under their sections with placement counts; `scan_refs` on an invented tag with no layout finds a planted reference and rejects a pair whose group does not match the datum's tag; a tag only a UI tag names is under Not reachable; a 5,000-tag invented group draws every row (list clipper) |
-| P5 | **`scnr.txt` and BSP-region tags** | M | P4 | `crates/formats/tags/src/defs/scnr.txt`, `app/tag_doc.rs` | the registry's own tiling test passes for `scnr`; blocks owned by `layout::BLOCKS` are read-only in the panel; a fixture `sbsp` in its own region opens read-only; opt-in disc test: every disc scenario walks through the definition |
+| P5 | **`scnr.txt` and BSP-region tags** | M | P4 | `crates/formats/tags/src/defs/scnr.txt`, `app/tag_doc.rs` | the registry's own tiling test passes for `scnr`; blocks owned by `layout::BLOCKS` are read-only in the panel; fixture BSP and lightmap edits save at their own file offsets and undo; opt-in disc test: every disc scenario walks through the definition |
 | P6 | **Layers and the overlay pass** | M | nothing | `crates/tools/scenario-edit/src/layers.rs`, `render.rs`, `scene.rs`, `viewport.rs`, `ui.rs`, `api/view.rs` | `view.layers` toggles change `view.snapshot`'s pixels on the fixture; a hidden layer is not picked; the Halo 1 overlay is a layer and its menu item still works; X-ray draws a box behind a wall at reduced strength (pixel test, skipped without an adapter) |
 | P7 | **Spawn and netgame layers**: facing arrows, team tint, flag-type pennants and labels, joined outlines | S | P6 | `geometry.rs`, `layers.rs`, `theme.rs` | glyph geometry tests: an arrow points along the facing; two flags of one type and index make one outline; colours come from the theme's layer tokens |
 | P8 | **Trigger, kill and BSP-switch volumes: see and pick** | M | P6 | `scenario-edit/src/volumes.rs`, `layout.rs`, `scenario.rs`, `api/scenario.rs` (`volume.list`) | research first: the volume's size field and the kill trigger element, from the retail readers with `h2 disasm`, recorded in scenario-editor.md with labels. Fixture with two volumes and a kill trigger: `volume.list` gives frames and sizes; a ray through a box picks it; the kill box is in the Kill layer |

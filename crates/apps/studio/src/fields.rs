@@ -51,16 +51,16 @@ pub struct Hovered {
 pub struct PanelState {
     /// The element shown per block, by the address of its `(count,
     /// address)` pair.
-    pub index: HashMap<u32, u32>,
+    index: HashMap<(TagId, u32), u32>,
     /// The field under the mouse this frame.
     pub hovered: Option<Hovered>,
     /// The element the mouse was last in: its address and layout (the hex
     /// pane shows it).
-    pub focus: Option<(u32, Arc<Layout>)>,
+    pub focus: Option<(TagId, u32, Arc<Layout>)>,
     /// How unnamed spans are shown, by address (else guessed).
-    pub views: HashMap<u32, View>,
+    views: HashMap<(TagId, u32), View>,
     /// Text being typed into string ID and data fields, by address.
-    text: HashMap<u32, String>,
+    text: HashMap<(TagId, u32), String>,
     /// The tag picker's filter.
     picker: String,
     /// Show padding fields.
@@ -76,7 +76,7 @@ impl PanelState {
         self.clear_field_focus();
         self.focus_target = Some((tag, focus.address));
         for (pair, index) in focus.blocks {
-            self.index.insert(pair, index);
+            self.index.insert((tag, pair), index);
             self.focus_blocks.push(pair);
         }
     }
@@ -188,6 +188,7 @@ fn panel_impl(
         scene: navigation.scene,
         prefix: String::new(),
     };
+    let _id = ui.push_id(tag.0 as usize);
     cx.element(at, &layout);
 }
 
@@ -351,15 +352,15 @@ impl Cx<'_> {
             named: f.named,
             meaning: f.meaning.clone(),
         });
-        self.st.focus = Some((at, layout.clone()));
+        self.st.focus = Some((self.tag, at, layout.clone()));
     }
 
     fn field(&mut self, at: u32, layout: &Arc<Layout>, f: &Field) {
         let ui = self.ui;
         let a = at + f.offset;
         let w = f.kind.width();
-        let Some(b) = self.doc.read(a, w) else {
-            ui.text_disabled(format!("{}: outside the metadata", f.name));
+        let Some(b) = self.doc.read(self.tag, a, w) else {
+            ui.text_disabled(format!("{}: outside the tag's address space", f.name));
             return;
         };
         match &f.kind {
@@ -536,12 +537,12 @@ impl Cx<'_> {
     fn unknown(&mut self, a: u32, f: &Field, b: &[u8], len: u32) {
         let ui = self.ui;
         let v = le(b, 0, len as usize) as u32;
-        let view =
-            self.st
-                .views
-                .get(&a)
-                .copied()
-                .unwrap_or(if len == 4 { guess(v) } else { View::Int });
+        let view = self
+            .st
+            .views
+            .get(&(self.tag, a))
+            .copied()
+            .unwrap_or(if len == 4 { guess(v) } else { View::Int });
         let n = len as usize;
         match view {
             View::Float if len == 4 => {
@@ -588,7 +589,7 @@ impl Cx<'_> {
                 if (to != View::Float || len == 4)
                     && ui.selectable_config(label).selected(view == to).build()
                 {
-                    self.st.views.insert(a, to);
+                    self.st.views.insert((self.tag, a), to);
                 }
             }
         }
@@ -602,7 +603,11 @@ impl Cx<'_> {
             None if v == u32::MAX => String::new(),
             None => format!("#{v:#010x}"),
         };
-        let text = self.st.text.entry(a).or_insert_with(|| current.clone());
+        let text = self
+            .st
+            .text
+            .entry((self.tag, a))
+            .or_insert_with(|| current.clone());
         let entered = ui.input_text("##v", text).enter_returns_true(true).build();
         let active = ui.is_item_active();
         let typed = text.clone();
@@ -621,10 +626,10 @@ impl Cx<'_> {
                     label: f.name.clone(),
                 }));
             }
-            self.st.text.remove(&a);
+            self.st.text.remove(&(self.tag, a));
         } else if !active {
             // Follow the field (undo, another element) while not typing.
-            self.st.text.insert(a, current);
+            self.st.text.insert((self.tag, a), current);
         }
     }
 
@@ -690,14 +695,14 @@ impl Cx<'_> {
     fn block(&mut self, at: u32, layout: &Arc<Layout>, f: &Field, child: &Arc<Layout>) {
         let ui = self.ui;
         let pair = at + f.offset;
-        let Some((n, a)) = self.doc.block(pair, child) else {
+        let Some((n, a)) = self.doc.block(self.tag, pair, child) else {
             ui.text_disabled(format!(
-                "{}: its elements are outside the map's metadata",
+                "{}: its elements are outside the tag's address space",
                 f.name
             ));
             return;
         };
-        let cap = self.doc.capacity(pair);
+        let cap = self.doc.capacity(self.tag, pair);
         let mode = if self.editable { "Reload" } else { "Read-only" };
         let header = format!(
             "{}  · {mode}  [{n}]{}",
@@ -721,7 +726,7 @@ impl Cx<'_> {
         let i = self
             .st
             .index
-            .get(&pair)
+            .get(&(self.tag, pair))
             .copied()
             .unwrap_or(0)
             .min(n.saturating_sub(1));
@@ -730,7 +735,7 @@ impl Cx<'_> {
         ui.set_next_item_width(110.0);
         let i = if n > 0 && ui.input_int("element##idx", &mut shown) {
             let shown = shown.clamp(0, n as i32 - 1) as u32;
-            self.st.index.insert(pair, shown);
+            self.st.index.insert((self.tag, pair), shown);
             shown
         } else {
             i
@@ -777,7 +782,7 @@ impl Cx<'_> {
                     }));
                     if let BlockOp::Add | BlockOp::Duplicate(_) = op {
                         cx.st.index.insert(
-                            pair,
+                            (tag, pair),
                             match op {
                                 BlockOp::Duplicate(i) => i + 1,
                                 _ => n,
@@ -837,13 +842,17 @@ impl Cx<'_> {
             return;
         }
         let shown = n.min(DATA_SHOWN);
-        let Some(bytes) = self.doc.read(a, shown) else {
-            ui.text_disabled("its bytes are outside the map's metadata");
+        let Some(bytes) = self.doc.read(self.tag, a, shown) else {
+            ui.text_disabled("its bytes are outside the tag's address space");
             return;
         };
         let editable = self.editable && n <= DATA_SHOWN;
         let current = hex_lines(&bytes);
-        let text = self.st.text.entry(a).or_insert_with(|| current.clone());
+        let text = self
+            .st
+            .text
+            .entry((self.tag, a))
+            .or_insert_with(|| current.clone());
         let lines = (shown as f32 / 16.0).ceil().clamp(2.0, 16.0);
         ui.input_text_multiline(
             "##hex",
@@ -860,7 +869,7 @@ impl Cx<'_> {
             ));
         }
         if done && editable {
-            let typed = self.st.text.remove(&a).unwrap_or_default();
+            let typed = self.st.text.remove(&(self.tag, a)).unwrap_or_default();
             match parse_hex(&typed) {
                 Some(new) if new.len() == bytes.len() => {
                     if new != bytes {
@@ -877,7 +886,7 @@ impl Cx<'_> {
                 }
             }
         } else if !active {
-            self.st.text.insert(a, current);
+            self.st.text.insert((self.tag, a), current);
         }
     }
 }

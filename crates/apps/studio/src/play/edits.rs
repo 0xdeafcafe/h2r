@@ -789,7 +789,7 @@ impl Play {
                 merge: None,
             };
             app.run_map_tag(TagAction::Write(write));
-            if app.tags.read(at, bytes.len() as u32).as_ref() != Some(&bytes) {
+            if app.tags.read_metadata(at, bytes.len() as u32).as_ref() != Some(&bytes) {
                 return Err("the document refused the game value".into());
             }
         }

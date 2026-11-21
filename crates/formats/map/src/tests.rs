@@ -297,6 +297,32 @@ fn bsps_can_reuse_virtual_addresses_without_aliasing_file_data() {
 }
 
 #[test]
+fn bsp_edits_are_bounded_to_a_resolved_region() {
+    let mut m = parse(fixture()).unwrap();
+    let loc = m.tag(id(2)).unwrap().location.unwrap();
+    let mut editor = m.edit();
+    let unknown = AddressSpace {
+        file_offset: loc.space.file_offset + 1,
+        ..loc.space
+    };
+    assert!(editor.patch_bsp(unknown, loc.address, &[1]).is_err());
+    assert!(
+        editor
+            .patch_bsp(loc.space, loc.space.virtual_base, &[1])
+            .is_err()
+    );
+    assert!(editor.patch_bsp(loc.space, BSP + 0x7f, &[1, 2]).is_err());
+    editor.patch_bsp(loc.space, loc.address, &[0xab]).unwrap();
+    assert!(editor.patch_bsp(loc.space, loc.address, &[0xcd]).is_err());
+
+    let mut out = Cursor::new(Vec::new());
+    editor.write_to(&mut out).unwrap();
+    let mut saved = parse(out.into_inner()).unwrap();
+    assert_eq!(saved.read_tag_bytes(id(2)).unwrap()[0], 0xab);
+    assert_eq!(saved.read_tag_bytes(id(3)).unwrap(), vec![0x66; 32]);
+}
+
+#[test]
 fn public_file_ranges_obey_declared_map_bounds_and_read_budget() {
     let raw = fixture();
     let mut container = vec![0xaa; 37];

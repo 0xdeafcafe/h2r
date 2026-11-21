@@ -5,7 +5,7 @@
 //! last tag (growing the ordinary metadata region in place, see
 //! [`MapEditor::append_metadata`]); nothing that exists moves. This is not a
 //! general tag-graph relocator.
-use crate::{Error, Map, Result, TagId, checksum::XorChecksum};
+use crate::{AddressSpace, Error, Map, Result, TagId, checksum::XorChecksum};
 use std::collections::BTreeMap;
 use std::io::{Read, Seek, SeekFrom, Write};
 
@@ -37,7 +37,8 @@ impl<R: Read + Seek> Map<R> {
     }
 }
 
-/// Edits refer to full salted tag IDs and offsets relative to each tag payload.
+/// Edits refer to full salted tag IDs and payload offsets, or to virtual
+/// addresses in ordinary metadata or a known BSP region.
 /// Writes stream from the source; they do not mutate it. A transaction rejects
 /// overlapping patches. Callers own field semantics (especially pointers).
 pub struct MapEditor<'a, R> {
@@ -110,6 +111,37 @@ impl<R: Read + Seek> MapEditor<'_, R> {
         }
         self.queue(at, bytes)
     }
+    /// Queue a fixed-length replacement at a virtual address in a resolved
+    /// structure BSP region. The region is part of the target because separate
+    /// BSPs can use the same virtual addresses. The region's header is protected.
+    pub fn patch_bsp(&mut self, space: AddressSpace, address: u32, bytes: &[u8]) -> Result<()> {
+        if bytes.len() > MAX_TABLE {
+            return Err(Error::Limit);
+        }
+        let size = u32::try_from(bytes.len()).map_err(|_| Error::Limit)?;
+        let at = space.translate(address, size)?;
+        let metadata = self.map.metadata_space();
+        let spaces = self
+            .map
+            .tags()
+            .iter()
+            .filter_map(|t| t.location.map(|l| l.space));
+        if Some(space) == metadata || !spaces.clone().any(|s| s == space) {
+            return Err(Error::Invalid("unrecognized BSP region"));
+        }
+        if at < 0x800 || at < space.file_offset + 16 {
+            return Err(Error::Invalid("tag edit overlaps a map or BSP header"));
+        }
+        let end = at + u64::from(size);
+        if spaces
+            .chain(metadata)
+            .any(|s| s != space && at < s.file_offset + u64::from(s.size) && s.file_offset < end)
+        {
+            return Err(Error::Invalid("BSP edit overlaps another tag region"));
+        }
+        self.queue(at, bytes)
+    }
+
     fn queue(&mut self, at: u64, bytes: &[u8]) -> Result<()> {
         if bytes.is_empty() {
             return Ok(());

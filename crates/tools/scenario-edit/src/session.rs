@@ -719,6 +719,14 @@ impl Session {
         doc.scenario.set_tag_patches(patches)
     }
 
+    /// Replace the tag editor's BSP region patches, which save with the
+    /// other tag edits and count toward [`Self::is_dirty`].
+    pub fn set_bsp_patches(&mut self, patches: Vec<crate::BspPatch>) -> Result<()> {
+        let doc = self.doc.as_mut().ok_or(Error::Save("no map is open"))?;
+        doc.scenario.set_bsp_patches(patches);
+        Ok(())
+    }
+
     /// Replace the string IDs the tag editor adds (see
     /// [`Scenario::set_tag_strings`]).
     pub fn set_tag_strings(&mut self, strings: Vec<String>) -> Result<()> {

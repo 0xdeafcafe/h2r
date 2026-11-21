@@ -156,6 +156,8 @@ pub struct Changes {
     /// the root count of a block that shrank or grew back within its source
     /// size.
     pub patches: Vec<(u32, Vec<u8>)>,
+    /// Fixed-size replacements in structure BSP regions.
+    pub bsp_patches: Vec<BspPatch>,
     /// Blocks that outgrew their source: written as a new copy appended to
     /// the metadata, then the root's `(count, address)` pointed at it.
     pub grown: Vec<Grown>,
@@ -168,10 +170,22 @@ pub struct Changes {
 impl Changes {
     pub fn is_empty(&self) -> bool {
         self.patches.is_empty()
+            && self.bsp_patches.is_empty()
             && self.grown.is_empty()
             && self.tag_grown.is_empty()
             && self.strings.is_empty()
     }
+}
+
+/// A fixed-size replacement inside a structure BSP region.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BspPatch {
+    /// The source region, whose file offset distinguishes BSPs at the same virtual address.
+    pub space: map::AddressSpace,
+    /// Starting virtual address in the region.
+    pub address: u32,
+    /// Replacement bytes, in file order.
+    pub bytes: Vec<u8>,
 }
 
 /// A block of a tag other than the scenario with more elements than its
@@ -256,6 +270,7 @@ pub struct Scenario {
     /// outside this tag): `(ordinary metadata virtual address, bytes)`,
     /// saved with the scenario's own. See [`Self::set_tag_patches`].
     tag_patches: Vec<(u32, Vec<u8>)>,
+    bsp_patches: Vec<BspPatch>,
     /// Other tags' grown blocks. See [`Self::set_tag_grown`].
     tag_grown: Vec<TagGrown>,
     /// New string IDs. See [`Self::set_tag_strings`].
@@ -424,6 +439,7 @@ impl Scenario {
             names,
             tags,
             tag_patches: Vec::new(),
+            bsp_patches: Vec::new(),
             tag_grown: Vec::new(),
             tag_strings: Vec::new(),
         })
@@ -560,6 +576,7 @@ impl Scenario {
     pub fn changes(&self) -> Changes {
         let mut out = Changes {
             patches: self.tag_patches.clone(),
+            bsp_patches: self.bsp_patches.clone(),
             tag_grown: self.tag_grown.clone(),
             strings: self.tag_strings.clone(),
             ..Changes::default()
@@ -620,6 +637,11 @@ impl Scenario {
     /// The patches to other tags' bytes.
     pub fn tag_patches(&self) -> &[(u32, Vec<u8>)] {
         &self.tag_patches
+    }
+
+    /// Replace the BSP region patches. Save checks the ranges against the source map.
+    pub fn set_bsp_patches(&mut self, patches: Vec<BspPatch>) {
+        self.bsp_patches = patches;
     }
 
     /// Replace the other tags' grown blocks (all of them, not a delta).

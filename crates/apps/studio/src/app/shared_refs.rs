@@ -76,11 +76,19 @@ pub fn raw_homes(doc: &TagDoc, id: TagId) -> Option<Homes> {
     let layout = doc.layout(id)?.clone();
     let mut homes = Homes::default();
     let mut budget = VISITS;
-    walk(doc, t.address, &layout, &mut homes, &mut budget, 0);
+    walk(doc, id, t.address, &layout, &mut homes, &mut budget, 0);
     Some(homes)
 }
 
-fn walk(doc: &TagDoc, at: u32, layout: &Layout, h: &mut Homes, budget: &mut usize, depth: usize) {
+fn walk(
+    doc: &TagDoc,
+    id: TagId,
+    at: u32,
+    layout: &Layout,
+    h: &mut Homes,
+    budget: &mut usize,
+    depth: usize,
+) {
     if depth > DEPTH {
         return;
     }
@@ -94,7 +102,9 @@ fn walk(doc: &TagDoc, at: u32, layout: &Layout, h: &mut Homes, budget: &mut usiz
         };
         match &f.kind {
             Kind::Raw => {
-                let Some(b) = doc.read(field, 4) else { continue };
+                let Some(b) = doc.read(id, field, 4) else {
+                    continue;
+                };
                 let v = u32::from_le_bytes(b[..4].try_into().unwrap());
                 // Zero is no resource (offset 0 is the cache header).
                 if v != 0
@@ -104,12 +114,14 @@ fn walk(doc: &TagDoc, at: u32, layout: &Layout, h: &mut Homes, budget: &mut usiz
                 }
             }
             Kind::Block(child) if child.size > 0 => {
-                let Some((n, a)) = doc.block(field, child) else { continue };
+                let Some((n, a)) = doc.block(id, field, child) else {
+                    continue;
+                };
                 for i in 0..n {
                     let Some(e) = i.checked_mul(child.size).and_then(|o| a.checked_add(o)) else {
                         break;
                     };
-                    walk(doc, e, child, h, budget, depth + 1);
+                    walk(doc, id, e, child, h, budget, depth + 1);
                     if *budget == 0 {
                         return;
                     }

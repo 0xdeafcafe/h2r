@@ -527,7 +527,14 @@ fn taking_reads_the_current_field_and_overwrite_checks_the_mismatch_value() {
             a.pairing.pending.is_empty() && p.edits.sent.is_none()
         });
         let expected = sync::hex(&(if take { 11f32 } else { 4.5f32 }).to_le_bytes());
-        assert_eq!(sync::hex(&app.tags.read(WEAP, 4).unwrap()), expected);
+        assert_eq!(
+            sync::hex(
+                &app.tags
+                    .read(crate::app::tag_tests::weap_id(), WEAP, 4)
+                    .unwrap()
+            ),
+            expected
+        );
         assert_eq!(
             game.edits.lock().unwrap().bytes[&WEAP.to_string()],
             expected
@@ -593,7 +600,12 @@ fn reverting_a_changed_field_uses_its_observed_bytes_on_the_next_send() {
             && a.log().iter().any(|l| l.status.text().contains("left those alone"))
     });
     assert_eq!(game.edits.lock().unwrap().bytes[&WEAP.to_string()], holds);
-    assert_eq!(app.tags.read(WEAP, 4).unwrap(), 4.5f32.to_le_bytes());
+    assert_eq!(
+        app.tags
+            .read(crate::app::tag_tests::weap_id(), WEAP, 4)
+            .unwrap(),
+        4.5f32.to_le_bytes()
+    );
 
     play.apply_edits(&mut app, Apply::Send).unwrap();
     until(&mut play, &mut app, "write against the observed bytes", |p, a| {

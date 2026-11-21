@@ -120,10 +120,12 @@ checkouts and uses a destination separate from the base source. Renders
 and refuse paths in Git checkouts.
 
 `doc.diff` is what a save would write against the document as opened.
-For a map, each patched run of bytes with its address, the block, entry
-and fields it holds (a removal's count word shows as `count`), and the
-blocks that grew; for playlists, which playlists changed and how; for a
-variant, its settings off the defaults.
+For a map it lists each patched run with its address and the blocks that
+grew. Placement patches identify the block, entry and fields. A
+removal's count word shows as `count`. BSP patches also carry a
+`bsp_region_offset`, the map-relative file offset of their region. For
+playlists it lists which playlists changed and how. For a variant it
+lists the settings that differ from the defaults.
 
 `source.maps` returns `map_entries` for the open Halo 2 source and
 `halo1_maps` for the read-only Halo 1 source. Each entry has the file
