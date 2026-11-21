@@ -324,6 +324,7 @@ mod management_tests {
         Discovery {
             sim_combat: false,
             ingest_frame_versions: Vec::new(),
+            ingest_frame_batch: false,
             id: "live.test".into(),
             api: "/v1".into(),
             keys: Vec::new(),

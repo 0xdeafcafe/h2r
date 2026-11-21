@@ -1,6 +1,6 @@
 //! `GET /v1/ingest`: the game's WebSocket (docs/live/live-api.md, Streams). The
-//! first message is `{kind: "auth", token}` with `games.write` for accounts
-//! or `telemetry.ingest` for a leased host. It then accepts
+//! first message is `{kind: "auth", token}` or `{kind: "auth_batched", token}`
+//! with `games.write` for accounts or `telemetry.ingest` for a leased host. It then accepts
 //! `frame`, private training `sim_combat`, `events` (one batch JWS) and `ping` messages, and binary
 //! messages of packed frames (docs/live/live-telemetry.md, Packed frames). Each `events`
 //! batch is answered with `appended` or `error`; frames are answered only
@@ -14,7 +14,7 @@
 use std::sync::Arc;
 
 use live_proto::sign::TOKEN_LEEWAY_S;
-use live_proto::{ClientMessage, ErrorCode, IngestReply, pack};
+use live_proto::{ClientMessage, ErrorCode, IngestReply, MAX_INGEST_BATCH_FRAMES, pack};
 use serde::{Deserialize, Serialize};
 
 use crate::app::{ApiError, Live};
@@ -34,6 +34,8 @@ pub struct IngestResume {
     /// `None` until the auth message.
     pub author: Option<String>,
     pub expires: i64,
+    #[serde(default)]
+    pub batch_frames: bool,
 }
 
 pub struct IngestSession {
@@ -41,6 +43,7 @@ pub struct IngestSession {
     /// Who the socket writes as, and its token's `exp`; `None` until the
     /// auth message.
     author: Option<(Publisher, i64)>,
+    batch_frames: bool,
     /// The packed frames' decoder. Not kept across a wake: a resumed
     /// socket's frames are refused until the sender's next keyframe, as
     /// after any gap.
@@ -52,6 +55,7 @@ impl IngestSession {
         IngestSession {
             live,
             author: None,
+            batch_frames: false,
             decoder: pack::Decoder::new(),
         }
     }
@@ -63,6 +67,7 @@ impl IngestSession {
             .as_deref()
             .and_then(Publisher::from_attachment)
             .map(|a| (a, r.expires));
+        s.batch_frames = r.batch_frames;
         s
     }
 
@@ -70,6 +75,7 @@ impl IngestSession {
         IngestResume {
             author: self.author.as_ref().map(|(a, _)| a.to_string()),
             expires: self.author.as_ref().map_or(0, |(_, e)| *e),
+            batch_frames: self.batch_frames,
         }
     }
 
@@ -110,7 +116,7 @@ impl IngestSession {
             return vec![out];
         }
         let message = serde_json::from_str::<ClientMessage>(text);
-        if let Ok(ClientMessage::Auth { token }) = &message {
+        if let Ok(ClientMessage::Auth { token } | ClientMessage::AuthBatched { token }) = &message {
             return match self.live.publisher(Some(token), TELEMETRY_INGEST) {
                 Ok((author, _, exp)) => {
                     if self.author.as_ref().is_some_and(|(old, _)| *old != author) {
@@ -119,6 +125,7 @@ impl IngestSession {
                         )))];
                     }
                     self.author = Some((author, exp));
+                    self.batch_frames = matches!(&message, Ok(ClientMessage::AuthBatched { .. }));
                     Vec::new()
                 }
                 Err(e) => vec![Out::Close(CLOSE_UNAUTHORIZED, e.message)],
@@ -129,7 +136,9 @@ impl IngestSession {
         };
         let live = &self.live;
         let reply = match message {
-            Ok(ClientMessage::Auth { .. }) => unreachable!("handled above"),
+            Ok(ClientMessage::Auth { .. } | ClientMessage::AuthBatched { .. }) => {
+                unreachable!("handled above")
+            }
             Ok(ClientMessage::Frame { frame }) => {
                 live.meter(
                     author.xuid(),
@@ -137,10 +146,13 @@ impl IngestSession {
                     text.len() as u64,
                 )
                 .await;
-                live.ingest_frame_with_machine_baseline(author, *frame, false)
+                return live
+                    .ingest_frame_from_socket(author, *frame, false, self.batch_frames)
                     .await
                     .err()
-                    .map(Err)
+                    .map(|e| self.frame_error(&e))
+                    .into_iter()
+                    .collect();
             }
             Ok(ClientMessage::SimCombat { game_id, sample }) => {
                 live.meter(author.xuid(), crate::usage::metric::UP_FRAMES, text.len() as u64).await;
@@ -185,6 +197,12 @@ impl IngestSession {
         let Some((author, _)) = &self.author else {
             return vec![Self::auth_timed_out()];
         };
+        if self.batch_frames && pack::records(bytes).nth(MAX_INGEST_BATCH_FRAMES).is_some() {
+            return vec![self.frame_error(&ApiError::new(
+                ErrorCode::TooLarge,
+                format!("frame: a batch carries at most {MAX_INGEST_BATCH_FRAMES} records"),
+            ))];
+        }
         self.live
             .meter(
                 author.xuid(),
@@ -198,16 +216,27 @@ impl IngestSession {
             let result = match decoded {
                 Ok(d) => self
                     .live
-                    .ingest_frame_with_machine_baseline(author, d.frame, d.machine_baseline)
+                    .ingest_frame_from_socket(author, d.frame, d.machine_baseline, self.batch_frames)
                     .await
                     .map(|_| ()),
                 Err(e) => Err(ApiError::new(ErrorCode::Invalid, format!("frame: {e}"))),
             };
             if let Err(e) = result {
-                out.push(json(&reply_error(&e)));
+                out.push(self.frame_error(&e));
             }
         }
         out
+    }
+
+    fn frame_error(&self, e: &ApiError) -> Out {
+        if self.batch_frames {
+            json(&IngestReply::FrameError {
+                error: e.code,
+                message: e.message.clone(),
+            })
+        } else {
+            json(&reply_error(e))
+        }
     }
 }
 
