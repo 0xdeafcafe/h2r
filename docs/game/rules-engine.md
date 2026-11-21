@@ -357,6 +357,7 @@ read through its owner: `p.infected`, `t.captures`.
 `on pickup(p, o)`, `on drop(p, o)`, `on enter(zone, o)`,
 `on leave(zone, o)`, `on press(p, o)`, `on timer(t)`,
 `on squad_dead(s)`, `on actor_kill(killer, class)`,
+`on actor_assist(killer, assist, class)` (after its kill),
 `on bounce(p, spot)`, `on edit(p, o)` (a granted power was used),
 `on join(p)`, `on quit(p)`, `on round_end`. A handler runs to
 completion.
@@ -584,7 +585,7 @@ land at the point in the tick where the lifted engine's did:
 |---|---|---|
 | `on kill`, and each event the carrier engine has a callback for (per port: death, spawn, pickup, drop, join, quit, round start and end) | synchronously, in place of that callback | made at once |
 | `on enter`, `on leave`, `on press`, `on timer` (slot order), then `on tick` | synchronously, in place of the carrier's per-tick update (`0x15c150`) | made at once |
-| `on squad_dead`, `on actor_kill`, `on bounce`; `on init` | after `GAME_TICK`, from what the tick's observers gathered; `init` after `GAME_ACTIVATE` | queued |
+| `on squad_dead`, `on actor_kill`, `on actor_assist`, `on bounce`; `on init` | after `GAME_TICK`, from what the tick's observers gathered; `init` after `GAME_ACTIVATE` | queued |
 
 An event the carrier has no callback for runs with the per-tick group.
 Some calls are queued from any handler and made in program order by the
@@ -660,7 +661,8 @@ Reads:
 | netgame flags by type and team | `scnr+0x118` (`engine::objectives`); query `0x19ec40` | named; traced |
 | per-engine globals (`E+0xfc`): hill, bomb state, territories, Juggernaut mask | `engine::objectives`; `KOTH_GLOBALS` and its siblings in `global.rs` | named |
 | events of the tick | hooks on `PLAYER_KILLED` `0x15ce70`, `PLAYER_SPAWN` `0x14f2e0`; `SimRead::events` once sim-rewrite section 7 exists | named; not built |
-| squads: actors alive, `on squad_dead`, `on actor_kill` | `actor_net::squads::count_by_squad` and the kill list Firefight's `Observed` carries (`crates/extensions/game/src/actor_net/squads.rs`, `crates/formats/firefight/src/director.rs`) | named |
+| squads: actors alive, `on squad_dead`, `on actor_kill`, `on actor_assist` | `actor_net::squads::count_by_squad` and the kill list Firefight's `Observed` carries (`crates/extensions/game/src/actor_net/squads.rs`, `crates/formats/firefight/src/director.rs`) | named |
+| `zone_seen(z)`, `zone_distance(z)`: Firefight's drop zones, the objects labelled `ff_drop` in kit order | the zone visibility and distance Firefight's `Observed` carries (`ZoneSeen`) | named |
 | `on bounce(p, spot)` | a detector of the traced signature: capsule below the floor, then +8 to +13 units/s upward the next tick ([superbounce.md](superbounce.md#summary), **Trace**); the launch rule itself is Open there | traced; detector not built |
 | bounce and crouch spots, as zones | the scanner's spots per map and BSP (`crates/live/superbounce`); candidates, none traced as a real bounce | named |
 
@@ -693,6 +695,8 @@ Actions:
 | `camera(p, mode)`: first or third person | no entry known | untraced | `player.camera` |
 | teleport, device power | Forge's sinks (forge-features.md) | not built | `objects.move` |
 | `message(to, text)`, scoreboard text, announcer, waypoint | not traced; the replicated game engine event (type 7) is known only as a type | untraced | `hud.message` |
+| `place_squad_at(s, class, n, zone, tier)`: a squad at a kit zone index with a weapon tier | Firefight's `PlaceSquad` command, through the same squad entry | named | `ai.squads` |
+| `ff_round`, `ff_wave`, `ff_skull`, `ff_lives`, `ff_score`, `ff_respawn`, `ff_finish` | Firefight's host log entries (`firefight::Command`), queued with the squad commands so the log keeps program order | named | `firefight.director` |
 | `forge_move(o, at)`, `forge_delete(o)`, `forge_place(tag, at)`, `forge_scale(o, s)`: an edit through the Forge log | a `forge-doc` op, validated and host-stamped (`crates/formats/forge-doc`, `LogHead::stamp`); edit classes in "Roles, powers and capabilities" | named | `forge.move`, `forge.delete`, `forge.place`, `forge.scale` |
 
 VM built-ins reach no engine entry (status **VM-only**):
@@ -704,6 +708,8 @@ VM built-ins reach no engine entry (status **VM-only**):
 | `seconds(n)` | `n` times the tick rate, in ticks |
 | `ticks_held(zone, team)` | a counter the VM keeps per labelled zone and team over the zone test: ticks the team has held it alone |
 | `squad(n)`, `team n`, `text n` | constants: a kit squad slot, a team index, a string-table index |
+| `now()` | the tick the host began (`Vm::begin_tick`) |
+| `random(n)` | the VM generator's next draw modulo `n`; 0, with no draw, when `n` is at most 0 |
 | `grant(p, cap, budget n, palette "x")`, `revoke(p, cap)`, `granted(p, cap)` | a player's powers, records in `RulesExt` ("Roles, powers and capabilities") |
 
 The engine update `0x15c150` and the post-game step `0x15ca10` are
@@ -731,6 +737,7 @@ plain words each:
 | `objects.create`, `objects.delete`, `objects.move` | makes, removes and moves objects | no |
 | `ai.squads` | places and commands AI | no |
 | `hud.message` | shows messages | no |
+| `firefight.director` | runs Firefight rounds, waves, lives and scores | no |
 | `forge.move`, `forge.delete`, `forge.place`, `forge.scale` | lets players move, remove, place and resize objects during the match | yes |
 
 **Declared, then checked everywhere.** The header's `requires` list is
@@ -1034,15 +1041,19 @@ engines' hooks, observers and bot readers that parse per-engine globals
 
 **Firefight is the first port.** `firefight::Director`
 (`crates/formats/firefight/src/director.rs`) and its scoring
-(`src/scoring.rs`) become one rules script: waves, rounds, lives, skulls
-and scoring. **Design:** the wave-set format stays the authoring format.
+(`src/scoring.rs`) compile to one rules script: waves, rounds, lives,
+skulls and scoring. The wave-set format stays the authoring format.
 `firefight::Def` is already validated, bounded and hashed, and the hopper
-tool offers definitions; a small front end compiles a `Def` to IR as the
-director script with the definition's rounds, caps and scores as constant
-tables. So a wave set is one blob with one hash, mode 1 folds into mode
-2, and the built-in sets need no rewrite by hand. The Rust director and
-its tests are the oracle: the script must give the same `Command` log for
-the same `Observed` sequence.
+tool offers definitions; `firefight::script::compile`
+(`crates/formats/firefight/src/script.rs`) builds the director script's
+IR from a `Def`, with the definition's squads, waves, rounds, caps,
+points and multipliers as constant tables. It builds IR, not source: the
+loops over the 16 squad slots unroll at build time and the blob depends
+on nothing but the definition, so a wave set is one blob with one hash,
+mode 1 folds into mode 2, and the built-in sets need no rewrite by hand.
+The Rust director and its tests are the oracle: for the same `Observed`
+sequence `firefight::ScriptDirector` gives the same `Command` log and the
+same director state ([firefight.md](firefight.md#the-director-as-a-rules-script)).
 
 **AI is commanded by squad.** A script places a squad from the kit's
 palette at a label, sets its team and orders, reads how many of its
@@ -1164,7 +1175,7 @@ Each phase lands by itself and ends on its exit criteria.
 | 1 | `SimExt` side arena (forge-design.md slice F7; sim-rewrite.md section 2) | a test record survives checkpoint, revert, snapshot and a film keyframe, and changes the sim hash |
 | 2 | Forge labels | labels round-trip through the document and the edit log (built); the built-in flag-type table resolves on a disc map (`#[ignore]` test, not built) |
 | 3 | Language, verifier, IR, VM, host runtime, capabilities | the compiler and verifier pass their suites; a fuzzer finds no panic in the verifier or VM; a script scores a fake game through the `Game`-style trait; a call or grant outside `requires` is refused, and a blob naming an unknown capability is refused by that name |
-| 4 | Firefight port | every built-in definition, compiled to IR, gives the Rust director's `Command` log in the director's own tests; `firefight.state` reads the same from both |
+| 4 | Firefight port | every built-in definition, compiled to IR, gives the Rust director's `Command` log in the director's own tests; `firefight.state` reads the same from both. Built in tests: `crates/formats/firefight/tests/script.rs` compares commands and `State` tick by tick. Not built: the host runtime running the script, and `firefight.state` reading it |
 | 5 | Slayer port | parity on every retail Slayer built-in on three maps; a script Slayer game played on Live |
 | 6 | The other six ports, in the order Juggernaut, Oddball, King, CTF with Assault, Territories | parity per engine; the API rows each needs are named points |
 | 7 | AI squads for any script | a script outside Firefight places, orders and erases squads on a kit map; `on squad_dead` fires on the tick the count reaches 0 in a test over the fake squad entry |
