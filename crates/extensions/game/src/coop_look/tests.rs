@@ -525,5 +525,5 @@ fn a_look_prediction_render_hook_runs_on_the_render_thread() {
     let plan = registry.build(&hooks::Base).unwrap();
     let chain = &plan.chains[&points::RENDER_GAME_VIEW.base];
     assert!(chain.hooks().any(|h| h.feature == "coop-look-prediction"));
-    assert!(chain.render_thread().is_ok(), "{:?}", chain.render_thread().err());
+    assert!(chain.render_thread().is_ok());
 }

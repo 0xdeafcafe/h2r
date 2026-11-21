@@ -142,6 +142,8 @@ impl State {
     }
 
     /// Draws `user`'s look as [`render_users`] does, on this state, and logs it.
+    /// The tests' reference for the published-copy path.
+    #[cfg(test)]
     fn render(
         &mut self,
         m: &mut dyn GuestMemory,
