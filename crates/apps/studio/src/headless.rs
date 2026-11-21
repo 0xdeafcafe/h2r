@@ -1183,6 +1183,12 @@ mod tests {
         app.dispatch(Action::OpenSource(map));
         app.dispatch(Action::Select(Some((BlockKind::Weapons, 0))));
         h.frames(&mut app, 4).unwrap();
+        // Coming back from the Tags tab brings the Scene tab to the front
+        // of the left dock, whichever tab the first frames left there.
+        app.dispatch(Action::SetTool(crate::ToolKind::Tags));
+        h.frames(&mut app, 2).unwrap();
+        app.dispatch(Action::SetTool(crate::ToolKind::Scenario));
+        h.frames(&mut app, 2).unwrap();
         // Look straight down on the kill box, far from every placement.
         let centre = app.session.volumes().unwrap().triggers[1]
             .frame
@@ -1203,12 +1209,21 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
         assert_eq!(app.session.selected_volume(), Some(1));
         assert_eq!(app.session.selected(), None);
+        // The pick opens the Volumes group and scrolls its row into view.
+        let scene: Vec<&str> = h
+            .scene
+            .items
+            .iter()
+            .filter(|i| i.window.contains("###outliner"))
+            .map(|i| i.label.as_str())
+            .collect();
         assert!(
-            h.scene
-                .items
-                .iter()
-                .any(|i| i.label.contains("Volumes  (2)")),
-            "the Scene tab lists the volumes"
+            scene.iter().any(|l| l.contains("Volumes  (2)")),
+            "the Scene tab lists the volumes: {scene:?}"
+        );
+        assert!(
+            scene.iter().any(|l| l.ends_with("###volume-1")),
+            "the Scene tab shows the picked volume's row: {scene:?}"
         );
         assert!(
             h.scene

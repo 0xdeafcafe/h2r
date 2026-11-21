@@ -55,6 +55,8 @@ pub struct Studio {
     hint: Option<String>,
     /// Log lines already seen (to scroll to new ones).
     log_seen: usize,
+    /// The trigger volume the Scene tab last brought into view.
+    volume_shown: Option<usize>,
     /// Native file dialogs. Off in headless renders and tests.
     pub dialogs: bool,
     pub variants: variants::VariantsUi,
@@ -88,6 +90,7 @@ impl Studio {
             previous_map: None,
             hint: None,
             log_seen: 0,
+            volume_shown: None,
             dialogs: true,
             variants: variants::VariantsUi::default(),
             playlists: playlists::PlaylistsUi::default(),
@@ -820,7 +823,7 @@ impl Studio {
                         }
                     }
                 }
-                volume_outliner(ui, session, &filter, actions);
+                volume_outliner(ui, session, &filter, &mut self.volume_shown, actions);
         });
                 if place.is_some() {
                     self.viewport.placing = place;
@@ -1285,13 +1288,20 @@ fn package_row(
     }
 }
 
-/// The outliner's Volumes group: every trigger volume, with what names it.
+/// The Scene tab's Volumes group: every trigger volume, with what names
+/// it. A newly selected volume (a viewport
+/// click, say) opens the group and scrolls its row into view;
+/// `shown_volume` keeps which one last did.
 fn volume_outliner(
     ui: &Ui,
     session: &scenario_edit::Session,
     filter: &str,
+    shown_volume: &mut Option<usize>,
     actions: &mut Vec<Action>,
 ) {
+    let selected = session.selected_volume();
+    let reveal = selected.is_some() && selected != *shown_volume;
+    *shown_volume = selected;
     let Some(volumes) = session.volumes() else {
         return;
     };
@@ -1311,19 +1321,21 @@ fn volume_outliner(
         .tree_node_config("block-volumes")
         .label(format!("{}  Volumes  ({count})", icon::BOX))
         .span_avail_width(true);
-    if !filter.is_empty() {
+    if !filter.is_empty() || reveal {
         node = node.opened(true, Condition::Always);
     }
     let Some(_node) = node.push() else {
         return;
     };
-    let selected = session.selected_volume();
     for i in shown {
         let clicked = ui
             .selectable_config(format!("{}###volume-{i}", volumes.caption(i)))
             .selected(selected == Some(i))
             .allow_double_click(true)
             .build();
+        if reveal && selected == Some(i) {
+            ui.set_scroll_here_y(0.5);
+        }
         if clicked {
             actions.push(Action::SelectVolume(Some(i)));
             if ui.is_mouse_double_clicked(dear_imgui_rs::MouseButton::Left) {
