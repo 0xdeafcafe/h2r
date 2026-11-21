@@ -738,6 +738,30 @@ impl Api {
         }
     }
 
+    /// One turn of `h2-editor --serve`: waits up to `wait` for a request,
+    /// answers every one queued, then runs the game link as the window does
+    /// between frames, so `pair.*` and `mirror.*` work with no window.
+    /// False once the socket's queue has closed.
+    pub fn serve_once(
+        &mut self,
+        app: &mut App,
+        play: &mut crate::play::Play,
+        rx: &std::sync::mpsc::Receiver<server::Incoming>,
+        wait: std::time::Duration,
+    ) -> bool {
+        use std::sync::mpsc::RecvTimeoutError;
+        match rx.recv_timeout(wait) {
+            Ok(inc) => {
+                inc.answer(self.handle(app, inc.request.clone()));
+                self.pump(app, rx);
+            }
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => return false,
+        }
+        play.update(app);
+        true
+    }
+
     /// Answers every request waiting on `rx`; returns how many.
     pub fn pump(
         &mut self,

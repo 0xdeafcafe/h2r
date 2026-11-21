@@ -131,9 +131,10 @@ impl DisplayState {
             self.binding_revision = self.binding_revision.wrapping_add(1);
         }
         if cut
-            || shown
-                .as_ref()
-                .is_none_or(|prior| !same_records(&next, &prior.objects, &prior.players))
+            || shown.as_ref().is_none_or(|prior| {
+                !same_records(&next, &prior.objects, &prior.players)
+                    || prior.cameras != next.cameras
+            })
         {
             self.revision = self.revision.wrapping_add(1);
         }
@@ -164,6 +165,7 @@ mod tests {
                 aim: [f32::from_bits(0x7fc0_4321); 3],
                 ..Default::default()
             }],
+            cameras: Vec::new(),
         };
         let frame = |seq, world: &World| {
             Frame::between(
@@ -178,6 +180,7 @@ mod tests {
                 Layers {
                     objects: true,
                     players: true,
+                    camera: false,
                 },
                 None,
                 world,
@@ -219,6 +222,7 @@ mod tests {
                 ..Default::default()
             }],
             players: vec![],
+            cameras: vec![],
         };
         let frame = Frame::between(
             Header {
@@ -232,6 +236,7 @@ mod tests {
             Layers {
                 objects: true,
                 players: true,
+                camera: false,
             },
             None,
             &world,
@@ -269,11 +274,12 @@ mod tests {
         let mut world = World {
             objects: vec![Object { id: 0x10001, kind: 2, placement: Some(1), ..Default::default() }],
             players: vec![Player { index: 0, ..Default::default() }],
+            cameras: vec![],
         };
         let mut observe = |seq, world: &World| {
             let f = Frame::between(
                 Header { seq, tick: seq, epoch: 1, paused: false, cut: false, kind: Kind::Key },
-                Layers { objects: true, players: true },
+                Layers { objects: true, players: true, camera: false },
                 None,
                 world,
             );

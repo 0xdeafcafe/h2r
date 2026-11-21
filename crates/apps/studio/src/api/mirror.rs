@@ -56,10 +56,17 @@ impl Provider for Mirror {
             ),
             def(
                 m::MIRROR_CAMERA,
-                "Read or set the editor viewport's camera mode for the local player",
-                r#"{"mode?":"free|follow|eyes","target?":"player.<index>"}"#,
-                r#"{"mode":"free|follow|eyes","target":"player.<index>|null"}"#,
+                "Read or set the editor viewport's camera mode: free, a local player's follow or eyes, or a game view's camera",
+                r#"{"mode?":"free|follow|eyes|game","target?":"player.<index>","view?":"game:<player>:<view>"}"#,
+                r#"{"mode":"free|follow|eyes|game","target":"player.<index>|null","view?":"game:<player>:<view>"}"#,
                 "{}",
+            ),
+            def(
+                m::MIRROR_CONTROL,
+                "Pause, step or resume the paired game; poll mirror.status store.tick for the frame each step sends",
+                r#"{"op":"pause|step|resume","ticks?":"integer"}"#,
+                r#"{"requested":"boolean","tick":"integer|null"}"#,
+                r#"{"op":"step","ticks":1}"#,
             ),
             def(
                 m::MIRROR_PLAYER,
@@ -88,6 +95,7 @@ impl Provider for Mirror {
             m::MIRROR_PICK => Some(pick(app, &P(params))),
             m::MIRROR_AIM_SELECT => Some(aim_select(app, &P(params))),
             m::MIRROR_CAMERA => Some(camera(app, &P(params))),
+            m::MIRROR_CONTROL => Some(control(app, &P(params))),
             m::MIRROR_PLAYER => {
                 let result = move_player(app, &P(params));
                 if let Err(error) = &result
@@ -108,11 +116,12 @@ impl Provider for Mirror {
 
 fn apply(app: &mut App, p: &P) -> Reply {
     use crate::play::{Apply, pair::Request};
-    let s = app
-        .pairing
-        .published
-        .as_ref()
-        .ok_or_else(|| err(code::REFUSED, "pairing needs the editor window"))?;
+    let s = app.pairing.published.as_ref().ok_or_else(|| {
+        err(
+            code::REFUSED,
+            "pairing needs the editor window or h2-editor --serve",
+        )
+    })?;
     if s["state"] != "connected" {
         return Err(err(code::REFUSED, "not paired"));
     }
@@ -318,11 +327,12 @@ fn camera(app: &mut App, p: &P) -> Reply {
         Some("free") => CameraMode::Free,
         Some("follow") => CameraMode::Follow,
         Some("eyes") => CameraMode::Eyes,
+        Some("game") => CameraMode::Game,
         None => app.pairing.camera.mode,
         Some(_) => {
             return Err(err(
                 code::INVALID_PARAMS,
-                "mode must be free, follow or eyes",
+                "mode must be free, follow, eyes or game",
             ));
         }
     };
@@ -330,11 +340,74 @@ fn camera(app: &mut App, p: &P) -> Reply {
         target.strip_prefix("player.").and_then(|s| s.parse::<u16>().ok())
             .ok_or_else(|| err(code::INVALID_PARAMS, "target must be player.<index>"))
     }).transpose()?;
-    if p.has("mode") || target.is_some() {
+    let view = p
+        .opt_str("view")?
+        .map(|name| {
+            agent_proto::live::View::key_of(name).ok_or_else(|| {
+                err(
+                    code::INVALID_PARAMS,
+                    "view must be <kind>:<player>:<view>, as game:0:0",
+                )
+            })
+        })
+        .transpose()?;
+    if view.is_some() && mode != CameraMode::Game {
+        return Err(err(code::INVALID_PARAMS, "view is for mode game"));
+    }
+    if mode == CameraMode::Game && (p.has("mode") || view.is_some()) {
+        if target.is_some() {
+            return Err(err(
+                code::INVALID_PARAMS,
+                "game mode takes a view, not a target",
+            ));
+        }
+        Play::set_game_camera(app, view).map_err(|why| err(code::REFUSED, why))?;
+    } else if p.has("mode") || target.is_some() {
         Play::set_camera_target(app, mode, target).map_err(|why| err(code::REFUSED, why))?;
     }
+    let mode = app.pairing.camera.mode;
     let target = Play::camera_target(app);
-    Ok(json!({"mode":mode.name(),"target":target.map(|index| format!("player.{index}"))}))
+    let mut out =
+        json!({"mode":mode.name(),"target":target.map(|index| format!("player.{index}"))});
+    if mode == CameraMode::Game {
+        let view = Play::camera_view(app).map(|key| {
+            agent_proto::live::View {
+                key,
+                ..Default::default()
+            }
+            .name()
+        });
+        out["view"] = json!(view);
+    }
+    Ok(out)
+}
+
+/// `pair.control`'s request, answered with the tick it starts from.
+fn control(app: &mut App, p: &P) -> Reply {
+    let req = match (p.str("op")?, p.get("ticks")) {
+        ("pause", None) => Request::Pause,
+        ("resume", None) => Request::Resume,
+        ("step", _) => {
+            let ticks = p.opt_u64("ticks")?.unwrap_or(1);
+            if !(1..=600).contains(&ticks) {
+                return Err(err(code::INVALID_PARAMS, "ticks must be between 1 and 600"));
+            }
+            Request::Step(ticks)
+        }
+        _ => {
+            return Err(err(
+                code::INVALID_PARAMS,
+                "op is pause, resume or step (with optional ticks)",
+            ));
+        }
+    };
+    let tick = app
+        .pairing
+        .mirror
+        .as_ref()
+        .map(|m| m.status(false)["tick"].clone());
+    super::pair::enqueue(app, req)?;
+    Ok(json!({"requested":true, "tick":tick.unwrap_or(Value::Null)}))
 }
 
 fn move_player(app: &mut App, p: &P) -> Reply {

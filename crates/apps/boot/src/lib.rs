@@ -1069,6 +1069,21 @@ fn run_configured(
     #[cfg(feature = "gpu")]
     let native_sources = k.vfs().map(|vfs| native_map::mount(vfs, map_rebind.clone()));
     let editor_link = host.editor_link.take();
+    // The live mirror's camera layer reads the sealed frame scene
+    // (docs/editor/live-mirror.md, "Cameras"): why this run seals none.
+    #[cfg(feature = "gpu")]
+    let scene_camera_off = if render_hooks != film::RenderHooks::Gpu
+        || !hooks::switches::native_render_on(features.switches())
+    {
+        Some("native rendering is off")
+    } else if !features
+        .switches()
+        .feature(render_bridge::scene_step::ID, true)
+    {
+        Some("frame scene capture is off")
+    } else {
+        None
+    };
     #[cfg(feature = "gpu")]
     let (world_line_present, debug_capture_unavailable) = {
         let sources = std::mem::take(&mut host.world_line_sources);
@@ -1426,6 +1441,14 @@ fn run_configured(
         anyhow::bail!("light host needs sim-frame: {why}");
     }
     if let Some(a) = &agent {
+        #[cfg(feature = "gpu")]
+        if let Some(why) = scene_camera_off.or_else(|| {
+            installed
+                .off_reason(render_bridge::scene_step::ID)
+                .map(|_| "frame scene capture is off")
+        }) {
+            a.agent.set_camera_unavailable(why);
+        }
         #[cfg(feature = "gpu")]
         let debug_capture_unavailable = debug_capture_unavailable.or_else(|| {
             installed

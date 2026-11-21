@@ -977,6 +977,17 @@ pub const FRAME_DISTANCE: f32 = 1.4;
 /// The sky's near plane, in its model's units ([`Camera::sky_view_proj`]).
 pub const SKY_NEAR: f32 = 0.05;
 
+/// A pose taken whole from elsewhere (a paired game's view camera): its
+/// eye, basis, up and clip planes, as the game's renderer drew with them.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Exact {
+    pub eye: Vec3,
+    pub forward: Vec3,
+    pub up: Vec3,
+    pub near: f32,
+    pub far: f32,
+}
+
 /// An orbit camera with a fly mode: it looks at `target` from `distance`
 /// along yaw and pitch; flying moves the target with the eye.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -986,6 +997,10 @@ pub struct Camera {
     pub pitch: f32,
     pub distance: f32,
     pub fov_y: f32,
+    /// While set, the eye, view and clip planes are this pose's, roll
+    /// included; whoever sets it keeps the orbit fields near it, so
+    /// clearing it does not jump.
+    pub exact: Option<Exact>,
 }
 impl Default for Camera {
     fn default() -> Self {
@@ -995,6 +1010,7 @@ impl Default for Camera {
             pitch: 0.6,
             distance: 30.0,
             fov_y: 60f32.to_radians(),
+            exact: None,
         }
     }
 }
@@ -1013,13 +1029,27 @@ impl Camera {
         c
     }
     pub fn forward(&self) -> Vec3 {
+        if let Some(exact) = &self.exact {
+            return normalize(exact.forward);
+        }
         let (sy, cy) = self.yaw.sin_cos();
         let (sp, cp) = self.pitch.sin_cos();
         // Looking down at the target from above when pitch > 0.
         [-cy * cp, -sy * cp, -sp]
     }
     pub fn eye(&self) -> Vec3 {
+        if let Some(exact) = &self.exact {
+            return exact.eye;
+        }
         sub(self.target, scale(self.forward(), self.distance))
+    }
+    /// Forward, right and up: right from forward and the world's up (z),
+    /// or the exact pose's up.
+    pub fn basis(&self) -> [Vec3; 3] {
+        let f = self.forward();
+        let up = self.exact.map_or([0.0, 0.0, 1.0], |e| e.up);
+        let r = normalize(cross(f, up));
+        [f, r, cross(r, f)]
     }
     pub fn orbit(&mut self, dx: f32, dy: f32) {
         self.yaw += dx;
@@ -1049,6 +1079,9 @@ impl Camera {
         );
     }
     fn near_far(&self) -> (f32, f32) {
+        if let Some(exact) = &self.exact {
+            return (exact.near, exact.far);
+        }
         (
             (self.distance * 0.01).max(0.05),
             self.distance * 4.0 + 2000.0,
@@ -1057,9 +1090,7 @@ impl Camera {
     /// Column-major view matrix (right-handed, looking down -z).
     pub fn view(&self) -> Mat4 {
         let eye = self.eye();
-        let f = self.forward();
-        let r = normalize(cross(f, [0.0, 0.0, 1.0]));
-        let u = cross(r, f);
+        let [f, r, u] = self.basis();
         [
             [r[0], u[0], -f[0], 0.0],
             [r[1], u[1], -f[1], 0.0],
@@ -1101,9 +1132,7 @@ impl Camera {
     }
     /// The ray through a viewport point given in 0..1 (x right, y down).
     pub fn ray(&self, u: f32, v: f32, aspect: f32) -> Ray {
-        let f = self.forward();
-        let r = normalize(cross(f, [0.0, 0.0, 1.0]));
-        let up = cross(r, f);
+        let [f, r, up] = self.basis();
         let t = (self.fov_y * 0.5).tan();
         let x = (2.0 * u - 1.0) * t * aspect;
         let y = (1.0 - 2.0 * v) * t;

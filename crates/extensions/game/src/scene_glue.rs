@@ -7,7 +7,8 @@
 //! census (`render_bridge::entry_census`) over the device's count of draws
 //! handed to the D3D backend; and with `frame-scene.sink`, the last
 //! frame's carried part as the device's scene sink filed it
-//! (`d3d::scene_sink`, slice 6).
+//! (`d3d::scene_sink`, slice 6). The live mirror's `camera` layer reads
+//! the same last sealed scene ([`install_cameras`]).
 
 use std::collections::BTreeMap;
 
@@ -22,6 +23,45 @@ use frame_scene::{CarriedSummary, FrameScene, OpCounts, Readback, Slot, ViewKind
 pub fn install() {
     agent::render::set_scene_source(source);
     render_bridge::entry_census::set_draw_counter(d3d::device::backend_draws);
+}
+
+/// The live mirror's `camera` layer (docs/editor/live-mirror.md,
+/// "Cameras"): each view of the last sealed scene and the objects it drew.
+/// The stream worker calls it; the sealed scene is a shared immutable
+/// value, so the game thread does nothing for it.
+pub fn install_cameras(agent: &agent::Agent) {
+    agent.set_camera_source(std::sync::Arc::new(cameras));
+}
+
+fn cameras(out: &mut Vec<agent_proto::live::View>) -> Result<(), String> {
+    if let Some(scene) = render_bridge::scene_step::last() {
+        out.extend(scene.views.iter().map(|v| live_view(&scene, v)));
+    }
+    Ok(())
+}
+
+fn live_view(scene: &FrameScene, v: &frame_scene::View) -> agent_proto::live::View {
+    // The order of agent_proto::live::VIEW_KINDS.
+    let kind = match v.key.kind {
+        ViewKind::Game => 0,
+        ViewKind::Cinematic => 1,
+        ViewKind::Alternate => 2,
+        ViewKind::FirstPerson => 3,
+    };
+    let c = &v.camera;
+    agent_proto::live::View {
+        key: agent_proto::live::view_key(kind, v.key.player, v.key.view),
+        scene_tick: scene.id.tick,
+        position: c.position,
+        forward: c.forward,
+        up: c.up,
+        fov: c.fov,
+        near: c.near,
+        far: c.far,
+        viewport: c.viewport,
+        cut: v.cut,
+        drawn: scene.instances_of(v).iter().map(|i| i.key.0).collect(),
+    }
 }
 
 /// The entry census, when it is on.
@@ -335,6 +375,62 @@ mod tests {
         InstanceInput, InstanceKey, ItemKey, LayerItem, LayerOwner, LayerPass, LightStep, LightTarget, NodeMatrix, PartFlags,
         RenderCamera, SceneBuilder, SceneId, SceneLight, Stamp, ViewKey, ViewKind,
     };
+
+    #[test]
+    fn the_camera_layer_takes_each_views_camera_and_drawn_handles() {
+        let mut b = SceneBuilder::default();
+        b.begin(SceneId {
+            map_epoch: 2,
+            frame: 9,
+            tick: 77,
+        });
+        let camera = RenderCamera {
+            position: [1.0, 2.0, 3.0],
+            forward: [0.0, 1.0, 0.0],
+            up: [0.0, 0.0, 1.0],
+            fov: 1.2,
+            projection_xy: None,
+            viewport: [0, 0, 480, 640],
+            near: 0.0625,
+            far: 1024.0,
+        };
+        b.open_view(
+            ViewKey {
+                kind: ViewKind::FirstPerson,
+                player: 1,
+                view: 2,
+            },
+            camera,
+        )
+        .unwrap();
+        let nodes = [NodeMatrix::IDENTITY];
+        for key in [0x0001_0005, 0x0002_0009] {
+            b.push_instance(InstanceInput {
+                key: InstanceKey(key),
+                definition: 1,
+                model: 2,
+                nodes: &nodes,
+                sphere: ([0.0; 3], 1.0),
+                lighting: None,
+                defaults: None,
+            })
+            .unwrap();
+        }
+        let scene = b.seal(Stamp::default()).unwrap();
+        let view = live_view(&scene, &scene.views[0]);
+        assert_eq!(view.name(), "first_person:1:2");
+        assert_eq!(view.scene_tick, 77);
+        assert_eq!(
+            (view.position, view.forward, view.up),
+            (camera.position, camera.forward, camera.up)
+        );
+        assert_eq!(
+            (view.fov, view.near, view.far, view.viewport),
+            (camera.fov, camera.near, camera.far, camera.viewport)
+        );
+        assert_eq!(view.cut, scene.views[0].cut);
+        assert_eq!(view.drawn, [0x0001_0005, 0x0002_0009]);
+    }
 
     #[test]
     fn a_scene_summarises_per_view() {

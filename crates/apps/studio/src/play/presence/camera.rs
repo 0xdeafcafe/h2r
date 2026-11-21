@@ -1,7 +1,7 @@
 //! Editor camera modes over the displayed game sample and scoped player moves.
 
-use agent_proto::sim;
-use scenario_edit::geometry::{Camera, Ray, Vec3, add, dot, scale, sub};
+use agent_proto::{live::View, sim};
+use scenario_edit::geometry::{Camera, Exact, Ray, Vec3, add, dot, normalize, scale, sub};
 use serde_json::json;
 
 use crate::App;
@@ -13,16 +13,19 @@ pub(crate) enum CameraMode {
     Free,
     Follow,
     Eyes,
+    /// A game view's camera from the stream's `camera` layer, exactly.
+    Game,
 }
 
 impl CameraMode {
-    pub(crate) const ALL: [Self; 3] = [Self::Free, Self::Follow, Self::Eyes];
+    pub(crate) const ALL: [Self; 4] = [Self::Free, Self::Follow, Self::Eyes, Self::Game];
 
     pub(crate) fn name(self) -> &'static str {
         match self {
             Self::Free => "free",
             Self::Follow => "follow",
             Self::Eyes => "eyes",
+            Self::Game => "game",
         }
     }
 
@@ -31,6 +34,7 @@ impl CameraMode {
             Self::Free => "Free",
             Self::Follow => "Follow player",
             Self::Eyes => "Player's eyes",
+            Self::Game => "Game camera",
         }
     }
 }
@@ -41,6 +45,10 @@ pub(crate) struct SharedCamera {
     /// Map revision and stream epoch whose coordinate system the camera uses.
     scope: Option<(u64, u64)>,
     target: Option<u16>,
+    /// The game view Game camera takes ([`View::key`]).
+    view: Option<u32>,
+    /// The editor's field of view before Game camera took the game's.
+    fov: Option<f32>,
     /// Establish the orbit offset on the first sample with this target's unit.
     entering: bool,
     /// The hovered ray in the document and camera pose used to draw the frame.
@@ -79,24 +87,153 @@ fn eyes(cam: &mut Camera, ray: Ray) {
     cam.target = add(ray.origin, scale(cam.forward(), cam.distance));
 }
 
+/// The game's view exactly. The orbit fields follow it, so leaving Game
+/// camera keeps the eye where the game's was.
+fn game_view(cam: &mut Camera, view: &View) {
+    cam.exact = None;
+    look_along(cam, view.forward);
+    cam.distance = 1.0;
+    cam.target = add(view.position, normalize(view.forward));
+    cam.fov_y = view.fov;
+    cam.exact = Some(Exact {
+        eye: view.position,
+        forward: view.forward,
+        up: view.up,
+        near: view.near,
+        far: view.far,
+    });
+}
+
+/// Why the paired stream carries no `camera` layer, when it does not.
+pub(crate) fn camera_refusal(app: &App) -> Option<String> {
+    let Some(stream) = app.pairing.mirror.as_ref() else {
+        return Some("not paired with a game".into());
+    };
+    let status = stream.status(false);
+    let Some(layers) = status["layers"].as_array() else {
+        return Some("waiting for the game's stream".into());
+    };
+    if layers.iter().any(|l| l == "camera") {
+        return None;
+    }
+    let why = status["refused"]["camera"]
+        .as_str()
+        .unwrap_or("the game's stream has no camera layer");
+    Some(format!("the game has no camera: {why}"))
+}
+
 impl Play {
     pub(crate) fn camera_target(app: &App) -> Option<u16> {
         app.pairing.camera.target
     }
 
-    pub(crate) fn set_camera_mode(app: &mut App, mode: CameraMode) -> Result<(), &'static str> {
+    pub(crate) fn set_camera_mode(app: &mut App, mode: CameraMode) -> Result<(), String> {
         Self::set_camera_target(app, mode, None)
+    }
+
+    /// The game view Game camera shows.
+    pub(crate) fn camera_view(app: &App) -> Option<u32> {
+        app.pairing.camera.view
+    }
+
+    /// Leave Game camera's exact pose and field of view, keeping the eye.
+    fn release_game_view(app: &mut App) {
+        let camera = &mut app.pairing.camera;
+        camera.view = None;
+        let fov = camera.fov.take();
+        let cam = app.session.camera_mut();
+        if cam.exact.take().is_some()
+            && let Some(fov) = fov
+        {
+            cam.fov_y = fov;
+        }
+    }
+
+    /// Take a game view's camera: `view`, the one already shown, or the
+    /// first game view the stream carries.
+    pub(crate) fn set_game_camera(app: &mut App, view: Option<u32>) -> Result<(), String> {
+        let sample = app
+            .pairing
+            .shown
+            .as_ref()
+            .ok_or("waiting for a game sample")?;
+        if !select::matching(app) {
+            return Err("open the streamed map to take its camera".into());
+        }
+        if let Some(why) = camera_refusal(app) {
+            return Err(why);
+        }
+        let scope = (app.session.world_rev(), sample.epoch);
+        let camera = &app.pairing.camera;
+        let current = camera
+            .view
+            .filter(|_| camera.mode == CameraMode::Game && camera.scope == Some(scope));
+        let key = match view.or(current) {
+            Some(key) if Some(key) == current => key,
+            Some(key) => {
+                if !sample.cameras.iter().any(|v| v.key == key) {
+                    let name = View {
+                        key,
+                        ..View::default()
+                    }
+                    .name();
+                    return Err(format!("the game drew no view {name}"));
+                }
+                key
+            }
+            None => {
+                sample
+                    .cameras
+                    .iter()
+                    .find(|v| v.is_game())
+                    .or(sample.cameras.first())
+                    .ok_or("the game has not drawn a view yet")?
+                    .key
+            }
+        };
+        if app.pairing.camera.mode != CameraMode::Game {
+            app.pairing.camera.fov = Some(app.session.camera().fov_y);
+        }
+        let camera = &mut app.pairing.camera;
+        camera.mode = CameraMode::Game;
+        camera.target = None;
+        camera.view = Some(key);
+        camera.scope = Some(scope);
+        camera.entering = false;
+        Self::track_game_view(app, key);
+        Ok(())
+    }
+
+    fn track_game_view(app: &mut App, key: u32) {
+        let Some(view) = app
+            .pairing
+            .shown
+            .as_ref()
+            .and_then(|s| s.cameras.iter().find(|v| v.key == key))
+            .cloned()
+        else {
+            // A view that is not drawn this frame holds the last pose.
+            return;
+        };
+        game_view(app.session.camera_mut(), &view);
     }
 
     pub(crate) fn set_camera_target(
         app: &mut App,
         mode: CameraMode,
         target: Option<u16>,
-    ) -> Result<(), &'static str> {
+    ) -> Result<(), String> {
+        if mode == CameraMode::Game {
+            if target.is_some() {
+                return Err("Game camera takes a view, not a player target".into());
+            }
+            return Self::set_game_camera(app, None);
+        }
         if mode == CameraMode::Free {
             if target.is_some() {
-                return Err("Free camera has no player target");
+                return Err("Free camera has no player target".into());
             }
+            Self::release_game_view(app);
             app.pairing.camera.mode = mode;
             app.pairing.camera.target = None;
             app.pairing.camera.scope = None;
@@ -108,7 +245,7 @@ impl Play {
             .as_ref()
             .ok_or("waiting for a game sample")?;
         if !select::matching(app) {
-            return Err("open the streamed map to follow its player");
+            return Err("open the streamed map to follow its player".into());
         }
         let scope = (app.session.world_rev(), sample.epoch);
         let camera = &app.pairing.camera;
@@ -123,7 +260,7 @@ impl Play {
                     .iter()
                     .any(|p| p.index == index && p.local_user.is_some())
                 {
-                    return Err("the shared camera needs a local player");
+                    return Err("the shared camera needs a local player".into());
                 }
                 index
             }
@@ -144,6 +281,7 @@ impl Play {
             }
         };
         let enter = camera.mode != mode || current != Some(index);
+        Self::release_game_view(app);
         let camera = &mut app.pairing.camera;
         camera.mode = mode;
         camera.target = Some(index);
@@ -169,7 +307,7 @@ impl Play {
                 };
                 eyes(app.session.camera_mut(), ray);
             }
-            CameraMode::Free => return,
+            CameraMode::Free | CameraMode::Game => return,
         }
         app.pairing.camera.entering = false;
     }
@@ -189,10 +327,13 @@ impl Play {
                 .as_u64()
                 .is_some_and(|e| e != epoch)
         {
+            Self::release_game_view(app);
             app.pairing.camera = SharedCamera::default();
             return;
         }
-        if let Some(index) = app.pairing.camera.target {
+        if let Some(key) = app.pairing.camera.view {
+            Self::track_game_view(app, key);
+        } else if let Some(index) = app.pairing.camera.target {
             Self::track_camera(app, index);
         }
     }
@@ -403,3 +544,6 @@ mod tests {
 
 #[cfg(all(test, unix))]
 mod move_and_target_tests;
+
+#[cfg(all(test, unix))]
+mod game_camera_tests;

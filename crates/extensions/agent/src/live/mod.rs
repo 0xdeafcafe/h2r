@@ -11,7 +11,7 @@ use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use agent_proto::live::{Frame, Header, Kind, Layers, World};
+use agent_proto::live::{Frame, Header, Kind, Layers, View, World};
 use serde_json::{Value, json};
 
 use crate::{ConnId, Reader};
@@ -20,6 +20,12 @@ const BUFFERS: usize = 2;
 const QUEUE: usize = 8;
 const SAMPLES: usize = 150;
 pub(crate) const CLOSE_INTERVAL: Duration = Duration::from_millis(200);
+
+/// Fills `out` with the views of the last sealed frame scene (none before
+/// the first). Called on the stream worker, never on the game thread: a
+/// sealed scene is an immutable shared value, so reading it costs the game
+/// nothing. An error leaves this capture with no cameras.
+pub type CameraSource = Arc<dyn Fn(&mut Vec<View>) -> Result<(), String> + Send + Sync>;
 
 #[derive(Default)]
 struct Counters {
@@ -37,6 +43,14 @@ pub(crate) struct Frames {
 }
 
 impl Frames {
+    /// The next queued frame, as the writer would take it.
+    #[cfg(test)]
+    pub(crate) fn next(&self, timeout: Duration) -> Option<Frame> {
+        let bytes = self.rx.recv_timeout(timeout).ok()?;
+        self.counts.queue.fetch_sub(1, Relaxed);
+        Frame::read(&mut bytes.as_slice()).ok()
+    }
+
     /// A write timeout lets live.close interrupt even a peer that stopped
     /// reading halfway through a frame. Keep the partial write's offset.
     pub fn write_to(self, w: &mut impl Write) -> io::Result<()> {
@@ -112,6 +126,26 @@ struct Sample {
     gap: u64,
     streams: Arc<Vec<Stream>>,
     world: World,
+    cameras: Option<CameraSource>,
+}
+
+impl Sample {
+    /// The worker owns the buffer now: add the views for streams that asked.
+    fn read_cameras(&mut self) {
+        self.world.cameras.clear();
+        let wanted = self.streams.iter().any(|s| {
+            s.layers.camera && s.due(self.at, self.only) && !s.counts.closed.load(Relaxed)
+        });
+        let Some(source) = self.cameras.as_ref().filter(|_| wanted) else {
+            return;
+        };
+        if source(&mut self.world.cameras).is_err() {
+            self.world.cameras.clear();
+        }
+        // Records are keyed: a duplicate key would make the frame unreadable.
+        self.world.cameras.sort_by_key(|v| v.key);
+        self.world.cameras.dedup_by_key(|v| v.key);
+    }
 }
 
 struct Pipeline {
@@ -135,7 +169,8 @@ impl Pipeline {
             .name("live-encode".into())
             .spawn(move || {
                 let mut encoders: BTreeMap<ConnId, Encoder> = BTreeMap::new();
-                for sample in rx {
+                for mut sample in rx {
+                    sample.read_cameras();
                     encoders.retain(|id, _| sample.streams.iter().any(|s| s.id == *id));
                     for s in sample.streams.iter() {
                         if s.due(sample.at, sample.only) && !s.counts.closed.load(Relaxed) {
@@ -227,6 +262,7 @@ pub(crate) struct Mirror {
     streams: Arc<Vec<Stream>>,
     pipeline: Option<Pipeline>,
     times: VecDeque<u64>,
+    cameras: Option<CameraSource>,
 }
 
 impl Mirror {
@@ -241,7 +277,11 @@ impl Mirror {
         every: u32,
         key_every: u32,
         clock: u64,
+        cameras: Option<CameraSource>,
     ) -> io::Result<Frames> {
+        if cameras.is_some() {
+            self.cameras = cameras;
+        }
         if self.pipeline.is_none() {
             self.pipeline = Some(Pipeline::new()?);
             self.times = VecDeque::with_capacity(SAMPLES);
@@ -290,6 +330,7 @@ impl Mirror {
         for stream in due.clone() {
             layers.objects |= stream.layers.objects;
             layers.players |= stream.layers.players;
+            layers.camera |= stream.layers.camera;
         }
         let start = Instant::now();
         let next = p.spare.take().or_else(|| p.free.try_recv().ok());
@@ -301,6 +342,7 @@ impl Mirror {
                     gap: p.gap,
                     streams: self.streams.clone(),
                     world,
+                    cameras: self.cameras.clone().filter(|_| layers.camera),
                 };
                 if let Err(err) = p.jobs.try_send(sample) {
                     p.spare = Some(match err {
@@ -395,11 +437,12 @@ mod tests {
                 1,
                 Layers {
                     objects: true,
-                    players: false,
+                    ..Layers::default()
                 },
                 1,
                 150,
                 0,
+                None,
             )
             .unwrap();
         let mut enc = Encoder::default();

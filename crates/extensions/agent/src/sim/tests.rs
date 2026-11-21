@@ -1078,7 +1078,7 @@ fn live_capture_matches_sim_objects_at_the_same_boundary() {
         .unwrap();
 
     let mut sample = World::default();
-    let layers = Layers { objects: true, players: true };
+    let layers = Layers { objects: true, players: true, camera: false };
     crate::live::capture::read(g, layers, &mut sample).unwrap();
     let reply: ObjectsReply =
         serde_json::from_value(h.ok(&mut game, method::OBJECTS, Value::Null)).unwrap();

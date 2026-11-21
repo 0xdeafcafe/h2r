@@ -2551,3 +2551,42 @@ fn the_maps_sun_and_fog_reach_the_shader_and_objects_take_the_floors_light() {
     assert_eq!(object_light([0.0, 1.0, 9.0]), [0.05, 1.0, 3.0]);
     assert_eq!(object_light([f32::NAN, 0.5, 0.5]), [1.0, 0.5, 0.5]);
 }
+
+#[test]
+fn an_exact_pose_sets_the_eye_basis_roll_and_clip_planes() {
+    use crate::geometry::{Exact, cross, dot, normalize, transform};
+    // Looking along +y with the camera rolled: up leans toward +x.
+    let up = normalize([0.3, 0.0, 1.0]);
+    let exact = Exact {
+        eye: [4.0, -2.0, 1.5],
+        forward: [0.0, 2.0, 0.0],
+        up,
+        near: 0.0625,
+        far: 900.0,
+    };
+    let cam = Camera {
+        exact: Some(exact),
+        ..Camera::default()
+    };
+    assert_eq!(cam.eye(), exact.eye);
+    assert_eq!(cam.forward(), [0.0, 1.0, 0.0]);
+    let [f, r, u] = cam.basis();
+    assert!(dot(u, up) > 0.999, "{u:?}");
+    assert_eq!(r, normalize(cross(f, up)));
+    let v = cam.view();
+    // The eye maps to the origin and a point ahead to -z.
+    let at = |p: [f32; 3]| transform(&v, [p[0], p[1], p[2], 1.0]);
+    for (got, want) in at(exact.eye).iter().zip([0.0, 0.0, 0.0, 1.0]) {
+        assert!((got - want).abs() < 1e-5);
+    }
+    assert!((at([4.0, 8.0, 1.5])[2] + 10.0).abs() < 1e-4);
+    // Depth 0 at the pose's near plane and 1 at its far one.
+    let p = cam.proj(1.5);
+    for (depth, want) in [(exact.near, 0.0), (exact.far, 1.0)] {
+        let clip = transform(&p, [0.0, 0.0, -depth, 1.0]);
+        assert!((clip[2] / clip[3] - want).abs() < 1e-4, "{depth}");
+    }
+    let ray = cam.ray(0.5, 0.5, 1.5);
+    assert_eq!(ray.origin, exact.eye);
+    assert!(dot(ray.dir, f) > 0.9999);
+}

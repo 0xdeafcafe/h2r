@@ -14,6 +14,7 @@ fn world(x: f32) -> World {
             ..Object::default()
         }],
         players: vec![],
+        cameras: vec![],
     }
 }
 
@@ -34,6 +35,7 @@ fn frame(seq: u64, tick: u64, epoch: u64, prev: Option<&World>, next: &World) ->
         Layers {
             objects: true,
             players: true,
+            camera: false,
         },
         prev,
         next,
@@ -146,4 +148,53 @@ fn half_turn_blends_through_an_orthonormal_quarter_turn() {
     assert!((a.forward[1].abs() - 1.0).abs() < 1e-5);
     assert!(dot(a.forward, a.up).abs() < 1e-5);
     assert!((dot(a.up, a.up) - 1.0).abs() < 1e-5);
+}
+
+#[test]
+fn cameras_come_from_the_left_capture_unblended() {
+    use agent_proto::live::View;
+    let camera = |x: f32| View {
+        key: 0,
+        position: [x, 0.0, 0.0],
+        forward: [1.0, 0.0, 0.0],
+        up: [0.0, 0.0, 1.0],
+        ..View::default()
+    };
+    let mut a = world(0.0);
+    a.cameras = vec![camera(1.0)];
+    let mut b = world(1.0);
+    b.cameras = vec![camera(9.0)];
+    let layers = Layers {
+        objects: true,
+        players: true,
+        camera: true,
+    };
+    let header = |seq, kind| Header {
+        kind,
+        seq,
+        tick: seq,
+        epoch: 1,
+        paused: false,
+        cut: false,
+    };
+    let mut store = Store::new(10.0, 1).unwrap();
+    let start = Instant::now();
+    store
+        .apply(
+            &Frame::between(header(1, Kind::Key), layers, None, &a),
+            start,
+        )
+        .unwrap();
+    let next = Frame::between(header(2, Kind::Delta), layers, Some(&a), &b);
+    store
+        .apply(&next, start + Duration::from_millis(100))
+        .unwrap();
+    // Two ticks behind the clock: tick 1.5, blended between ticks 1 and 2.
+    let shown = store
+        .sample(start + Duration::from_millis(250), false)
+        .unwrap();
+    assert_eq!(shown.tick, 1);
+    assert_eq!(shown.cameras, a.cameras);
+    assert_eq!(store.at_tick(2).unwrap().cameras, b.cameras);
+    assert_eq!(store.sample(start, true).unwrap().cameras, b.cameras);
 }

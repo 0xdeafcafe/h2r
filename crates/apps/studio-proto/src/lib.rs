@@ -150,6 +150,7 @@ pub mod method {
     pub const MIRROR_PICK: &str = "mirror.pick";
     pub const MIRROR_AIM_SELECT: &str = "mirror.aim_select";
     pub const MIRROR_CAMERA: &str = "mirror.camera";
+    pub const MIRROR_CONTROL: &str = "mirror.control";
     pub const MIRROR_PLAYER: &str = "mirror.player";
     pub const MIRROR_OBJECTS: &str = "mirror.objects";
 

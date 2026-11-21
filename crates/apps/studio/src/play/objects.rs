@@ -485,6 +485,7 @@ mod tests {
             epoch: 1,
             tick: 1,
             stale: false,
+            cameras: Vec::new(),
             players: Vec::new(),
             objects: (0u16..2)
                 .map(|slot| Object {

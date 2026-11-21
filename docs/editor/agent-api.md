@@ -29,8 +29,10 @@ Two ways to have an editor to talk to:
 - **Headless.** `h2-editor --serve [--socket PATH] [--data DIR] [--map
   file.map | --disc iso ...]` runs the same API with no window and no GPU
   session. Every start-up flag still applies (`--map`, `--pick`,
-  `--hopper`, ...), so a run can begin with a map open. It runs until
-  killed.
+  `--hopper`, ...), so a run can begin with a map open. Between requests
+  it runs the game link as the window does between frames, so it pairs,
+  auto-pairs with the one game running, and answers `pair.*` and
+  `mirror.*`. It runs until killed.
 
 The socket is `--socket`, else `$H2_STUDIO`, else `studio.sock` in the
 game's cache directory beside `agent.sock`. The editor accepts local AF_UNIX
@@ -91,7 +93,7 @@ What goes through actions, from both sides:
 | Playtest settings | `play::pair::Bridge` | Game menu and Game tab spawn picker | `pair.settings {spawn?, pause_while_editing?}` |
 | Live selection | `play::select` | click a live object, Aim select in the bar or Game menu | `mirror.pick`, `mirror.aim_select` |
 | Shared camera and player moves | `play::presence` | viewport camera menu, T and Shift+T | `mirror.camera`, `mirror.player` |
-| Game link | `play::pair::Request` | game link bar, Game menu and Game panel | `pair.connect`, `pair.disconnect`, `pair.auto`, `pair.play`, `pair.stop`, `pair.control`, `pair.edit` |
+| Game link | `play::pair::Request` | game link bar, Game menu and Game panel | `pair.connect`, `pair.disconnect`, `pair.auto`, `pair.play`, `pair.stop`, `pair.control`, `mirror.control`, `pair.edit` |
 
 The playlist fields apply their `PlaylistEdit`s inside the frame's
 `HopperSession::edit_with`, so a typing run stays one undo step (merged
@@ -293,10 +295,11 @@ Notes on some:
   open one (`matches`: `same`, `different`, `unknown`) and whether the
   editor is `paired` with it; a socket nothing answers on is removed from
   the agents directory. It works headless. `pair.status`, `pair.connect`
-  and `pair.disconnect` act on the window's pairing (`api/pair.rs`, through
-  `play::pair::Bridge` on the app), so they answer REFUSED with no window,
-  and `pair.connect` answers before the window has paired: poll
-  `pair.status` for `state: "connected"`. `pair.connect` with no `socket`
+  and `pair.disconnect` act on the editor's pairing (`api/pair.rs`, through
+  `play::pair::Bridge` on the app). The window runs it each frame and
+  `h2-editor --serve` between requests (`Api::serve_once`); an `Api` with
+  neither answers REFUSED. `pair.connect` answers before the editor has
+  paired: poll `pair.status` for `state: "connected"`. `pair.connect` with no `socket`
   takes the one game running, and is refused with none or several.
   `pair.auto {enabled}` reads or sets auto-pair, on by default.
   The `link` object in `pair.status` contains `state`, the pill's
@@ -333,8 +336,8 @@ Notes on some:
   `step` as `action`. Step requires a paused game and accepts `ticks`
   from 1 to 600 (default 1). `pair.edit {enabled}` sets the Edit switch
   on the pairing. A game that is already running pairs in View mode.
-  Play starts its own game in Edit mode. The four calls need the window,
-  queue a request on it and return `{"requested":true}`. Read
+  Play starts its own game in Edit mode. The four calls need the window
+  or `--serve`, queue a request on the pairing and return `{"requested":true}`. Read
   `pair.status` for the result in a later frame. A call that needs a
   game, an open map or a pause returns `REFUSED` when that requirement
   is missing. The pill's **Open** action uses the normal map selection
@@ -374,8 +377,9 @@ Notes on some:
   waits for an outstanding batch, reverts the journal, and disconnects on
   acknowledgement. Omitting `leave` opens the prompt in the window. Both `edit.set` and
   `edit.revert` enforce the same game-side session check as `edit.batch`.
-- **Live mirror.** The paired window reads the game's `objects` and
-  `players` stream. `mirror.status` reports the stream state, layers,
+- **Live mirror.** The paired editor reads the game's `objects`,
+  `players` and `camera` stream. `mirror.status.stream.refused.camera`
+  says why a game has no camera layer. `mirror.status` reports the stream state, layers,
   frame rate, presentation delay, dropped and skipped counts, and the
   store's latest, earliest retained and shown ticks. `mirror.objects`
   returns `{tick, objects, truncated}` for the viewport sample.
@@ -414,10 +418,18 @@ Notes on some:
   indices. A failed clear retries at the renewal interval. The game plate
   shows the largest link issue count, or `Aim select` when aim selection
   is on and the count is zero.
-- **Shared camera.** `mirror.camera {mode?,target?}` returns `{mode,target}`.
+- **Shared camera.** `mirror.camera {mode?,target?,view?}` returns
+  `{mode,target}`, with `view` in game mode.
   `free` releases the editor viewport, `follow` keeps the eye's orbit offset
-  as the local player moves, and `eyes` looks along the player's aim from
-  eye height. An explicit `player.<index>` keeps the camera on that local
+  as the local player moves, `eyes` looks along the player's aim from
+  eye height, and `game` takes a game view's camera from the `camera`
+  layer exactly (eye, basis with roll, vertical field of view, near and
+  far; the editor viewport's aspect). `view` names one as
+  `<kind>:<player>:<view>` (`game:0:0`, `first_person:0:0`); without it the
+  first `game` view is taken. A stream without the layer, a view the game
+  did not draw or a `target` in game mode is refused. Leaving game mode
+  keeps the eye and restores the editor's field of view. Every mode but
+  `game` draws each game view's frustum. An explicit `player.<index>` keeps the camera on that local
   player across samples. While its unit is missing, the viewport holds its
   pose and resumes following when the unit returns. A map change or unpair
   releases the camera. The free camera reports null. The viewport toolbar
@@ -429,6 +441,12 @@ Notes on some:
   permission or game method returns `REFUSED`, as does a pending reload or
   a playtest transition. The control worker checks the latest exact sample
   for the expected epoch and salted unit immediately before the game call.
+- **Mirror controls.** `mirror.control {op, ticks?}` pauses, steps or
+  resumes the paired game as `pair.control` does (`op` is `pause`,
+  `resume` or `step`; `ticks` 1 to 600) and returns
+  `{requested, tick}`, `tick` being the store's latest game tick before
+  the request. Each step sends one frame per tick, so after a step of `n`
+  ticks `mirror.status.store.tick` is `tick + n`.
 - **Viewport layers.** `view.layers {}` returns `{layers, xray}`. Each layer
   has a stable `name` for calls, a display `label`, a `group`, the visibility
   switch `on`, a `count` and its legend `color` (RGB, each channel 0 to 1).

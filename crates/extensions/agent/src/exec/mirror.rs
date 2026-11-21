@@ -18,7 +18,28 @@ impl Agent {
     pub fn set_live_session_probe(&self, probe: fn(&dyn engine::GuestMemory) -> bool) {
         self.lock().live_session = Some(probe);
     }
+
+    /// The `camera` layer's source: the views of the last sealed frame
+    /// scene (the game's scene glue). Without one, `live.subscribe` lists
+    /// `camera` under `refused`.
+    pub fn set_camera_source(&self, source: crate::live::CameraSource) {
+        self.lock().cameras = Some(source);
+    }
+
+    /// Why this run seals no frame scene (no window, native rendering or
+    /// the frame scene off). The first reason given is kept, and
+    /// `live.subscribe` refuses `camera` with it.
+    pub fn set_camera_unavailable(&self, why: impl Into<String>) {
+        let mut s = self.lock();
+        if s.camera_off.is_none() {
+            s.camera_off = Some(why.into());
+        }
+    }
 }
+
+/// Without a source the run draws no frame scene to take a camera from.
+pub(crate) const NO_CAMERA: &str =
+    "no sealed frame scene: this run does not draw with the native renderer";
 
 impl State {
     fn external_live_game(&self, reader: &mut dyn Reader) -> bool {
@@ -136,12 +157,18 @@ impl State {
                 "subscribe on a separate open connection",
             ));
         }
-        let (layers, refused) = Layers::negotiate(&p.layers);
+        let camera_refused = match (&self.camera_off, &self.cameras) {
+            (Some(why), _) => Some(why.as_str()),
+            (None, None) => Some(NO_CAMERA),
+            (None, Some(_)) => None,
+        };
+        let (layers, refused) = Layers::negotiate(&p.layers, camera_refused);
+        let cameras = self.cameras.clone().filter(|_| layers.camera);
         let (tick_rate, checksum) = reader.live_metadata();
         let at = self.at();
         let frames = self
             .live
-            .subscribe(conn, layers, p.every, p.key_every, self.ticks)
+            .subscribe(conn, layers, p.every, p.key_every, self.ticks, cameras)
             .map_err(|e| {
                 RpcError::new(
                     code::UNAVAILABLE,

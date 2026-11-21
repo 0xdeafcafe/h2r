@@ -160,6 +160,8 @@ pub(crate) mod fake {
         bytes_epoch: Option<u64>,
         pub(crate) placements: std::collections::HashMap<String, u32>,
         pub(crate) journal: Vec<Value>,
+        /// The sealed scene's views, once [`Game::scene`] gave the game one.
+        pub(crate) views: Vec<live::View>,
     }
     /// The agent server and the state observed at its synthetic game boundaries.
     pub(crate) struct Game {
@@ -437,6 +439,19 @@ pub(crate) mod fake {
                 Ok(json!({"held":marks.marks.len(), "drawn":window && !marks.marks.is_empty(),
                     "why":(!window).then_some("this host has no window"), "refused":[]}))
             });
+        }
+
+        /// A scene source with these views, as the native renderer's scene
+        /// glue registers one. Call before pairing: the subscription
+        /// negotiates the `camera` layer.
+        pub(crate) fn scene(&self, views: Vec<live::View>) {
+            self.edits.lock().unwrap().views = views;
+            let edits = Arc::clone(&self.edits);
+            self.agent
+                .set_camera_source(Arc::new(move |out: &mut Vec<live::View>| {
+                    out.extend(edits.lock().unwrap().views.iter().cloned());
+                    Ok::<(), String>(())
+                }));
         }
 
         pub(crate) fn calls(&self, name: &str) -> Vec<Value> {

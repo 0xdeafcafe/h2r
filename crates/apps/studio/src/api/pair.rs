@@ -48,14 +48,14 @@ const METHODS: &[MethodDef] = &[
     ),
     def(
         m::PAIR_STATUS,
-        "The socket connection, game status, edit permissions and auto-pair setting, with the game link pill's state, label and tooltip. Needs the window",
+        "The socket connection, game status, edit permissions and auto-pair setting, with the game link pill's state, label and tooltip. Needs the window or --serve",
         "{}",
         r#"{"state":"off|connecting|reconnecting|connected|lost","why":"string|null","socket":"string|null","map":"string|null","phase":"string|null","paused":"boolean|null","tick":"integer|null","matches":"same|different|unknown","open_map":"string|null","live_edits":"boolean","edits_blocked":"string|null","auto_pair":"boolean","games":"integer","ask":"send|load|null","prompt":"integer|null","playtest_busy":"boolean","link":{"state":"no_game|found|connecting|reconnecting|viewing|editing|blocked|other_map|lost","text":"string","why":"string|null","elapsed_ms?":"integer","unavailable?":"[string]","issues":"[{kind,text,target}]"}}"#,
         "null",
     ),
     def(
         m::PAIR_CONNECT,
-        "Pair with a game in View mode: the socket given (a path or tcp://HOST:PORT), else the one game running. Answers at once; poll pair.status for connected. Needs the window",
+        "Pair with a game in View mode: the socket given (a path or tcp://HOST:PORT), else the one game running. Answers at once; poll pair.status for connected. Needs the window or --serve",
         r#"{"socket?":"string"}"#,
         r#"{"requested":"string"}"#,
         r#"{"socket":"/tmp/h2-pair-example.sock"}"#,
@@ -76,7 +76,7 @@ const METHODS: &[MethodDef] = &[
     ),
     def(
         m::PAIR_PLAY,
-        "Play the open map from the editor. Needs the window",
+        "Play the open map from the editor. Needs the window or --serve",
         "{}",
         r#"{"requested":"boolean"}"#,
         "null",
@@ -97,7 +97,7 @@ const METHODS: &[MethodDef] = &[
     ),
     def(
         m::PAIR_STOP,
-        "Stop the game the editor started. Needs the window",
+        "Stop the game the editor started. Needs the window or --serve",
         "{}",
         r#"{"requested":"boolean"}"#,
         "null",
@@ -111,7 +111,7 @@ const METHODS: &[MethodDef] = &[
     ),
     def(
         m::PAIR_CONTROL,
-        "Pause, step or resume through the editor's game link. Needs the window",
+        "Pause, step or resume through the editor's game link. Needs the window or --serve",
         r#"{"action":"string","ticks?":"integer"}"#,
         r#"{"requested":"boolean"}"#,
         r#"{"action":"step","ticks":1}"#,
@@ -135,7 +135,7 @@ fn need_window(app: &App) -> Result<(&Value, &LinkView), RpcError> {
     app.pairing.published.as_ref().zip(app.pairing.link.as_deref()).ok_or_else(|| {
         err(
             code::REFUSED,
-            "pairing runs in the editor window: this editor has none (or has not drawn a frame yet)",
+            "pairing runs in the editor window or h2-editor --serve: this editor has neither (or has not run its game link yet)",
         )
     })
 }
@@ -327,7 +327,7 @@ fn call(app: &mut App, method: &str, p: &P) -> Reply {
     }
 }
 
-fn enqueue(app: &mut App, req: Request) -> Reply {
+pub(super) fn enqueue(app: &mut App, req: Request) -> Reply {
     let (_, link) = need_window(app)?;
     if let Some(why) = req.refusal(link) {
         return Err(err(code::REFUSED, why));

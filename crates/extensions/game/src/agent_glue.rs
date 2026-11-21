@@ -159,9 +159,13 @@ impl AgentGlue {
         }
         let agent = agent::Agent::new();
         add_host_methods(&agent);
-        // render.scene: the frame step's FrameScene (docs/graphics/framescene.md).
+        // render.scene: the frame step's FrameScene (docs/graphics/framescene.md),
+        // and the live mirror's camera layer from the same sealed scene.
         #[cfg(feature = "gpu")]
-        crate::scene_glue::install();
+        {
+            crate::scene_glue::install();
+            crate::scene_glue::install_cameras(&agent);
+        }
         let sim = install_sim(&agent, allow_bot_add);
         // The game's own functions for sim (teleports, give, spawn): a
         // `before` on the tick that makes the calls queued for it.

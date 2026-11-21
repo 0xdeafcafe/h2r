@@ -717,6 +717,7 @@ mod live_click_tests {
             tick: 1,
             epoch: 1,
             stale: false,
+            cameras: Vec::new(),
             players: vec![],
             objects: vec![Object {
                 id,

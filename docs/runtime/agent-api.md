@@ -244,14 +244,14 @@ connection for control calls. The stream reads the game at tick boundaries.
 
 | Method | Params | Result |
 |---|---|---|
-| `live.subscribe` | `{layers: ["objects", "players"], every?, key_every?}` | `{at, stream, protocol: "h2-live-mirror/1", tick_rate, map: {name, checksum, epoch, activation}, layers, refused}`. The stream id is numeric. An unavailable checksum is null. Each unsupported layer has a reason under `refused`. |
+| `live.subscribe` | `{layers: ["objects", "players", "camera"], every?, key_every?}` | `{at, stream, protocol: "h2-live-mirror/1", tick_rate, map: {name, checksum, epoch, activation}, layers, refused}`. The stream id is numeric. An unavailable checksum is null. Each unsupported layer has a reason under `refused`. |
 | `live.status` | none | `{map: {name, checksum, epoch, activation}, streams, capture_us: {p50, p99, budget}, shed}`. Stream fields are `stream`, `layers`, `every`, `frames`, `bytes`, `queue`, `dropped` and `skipped`. Frames and bytes count complete writes, including the length prefix. |
 | `live.close` | `{stream}` | `{closed: true}` if the stream existed. Disconnecting the binary socket also ends its subscription. |
 
 `every` samples one tick in 1–30 (default 1). `key_every` requests a
 full frame at least every specified number of game ticks (default 150).
 An empty accepted layer set yields header-only frames. The first frame and frames after a cut or a dropped sample are keys.
-Deltas identify records by salted object handle or player index and carry
+Deltas identify records by salted object handle, player index or view key and carry
 field masks and removals. A player joining or changing name requires a
 key. The length on each layer lets readers skip unknown layers. The
 binary layout and blocking decoder are in `agent_proto::live`. A frame
@@ -263,7 +263,23 @@ and a u32 byte length.
 Objects carry their definition, type, header flags, parent, transform,
 velocity, vitality and scenario placement index. A child's transform is
 relative to its parent, as in `sim.objects`. Players carry their name,
-team, unit, held weapon, aim and local user. The game thread fills reusable
+team, unit, held weapon, aim and local user.
+
+`camera` (layer id 7) carries each view of the last sealed frame scene
+(`frame_scene::View`; [framescene.md](../graphics/framescene.md)
+section 4). A view's key is `kind << 16 | player << 8 | view`, the kind
+indexing `game`, `cinematic`, `alternate`, `first_person`, which
+`agent_proto::live::View::name` writes as `render.scene` does
+(`game:0:0`). Each view has the scene's game tick, position, forward, up,
+vertical field of view in radians, near, far, the viewport (top, left,
+bottom, right in guest pixels), the cut flag and the salted handles of
+the objects it drew, in draw order. The stream worker reads the scene,
+not the game thread, so a camera can be a rendered frame behind the tick
+it travels with. The game's scene glue registers the source
+(`Agent::set_camera_source`, `scene_glue::install_cameras`). Without one,
+or when boot reports that this run seals no scene (native rendering or
+the frame scene off; `Agent::set_camera_unavailable`), `refused.camera`
+gives the reason. Before the first sealed scene the layer is empty. The game thread fills reusable
 buffers. A worker diffs and encodes them and each socket has a bounded
 writer queue. `skipped` counts missed captures and `dropped` counts
 frames lost on the way to the writer. Capture percentiles are in
