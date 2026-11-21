@@ -146,6 +146,7 @@ pub(crate) mod fake {
         pub(crate) loading: bool,
         former_checksum: Option<u32>,
         pub(crate) hold_reload_reply: bool,
+        pub(crate) indicator_failure: Option<&'static str>,
         pub(crate) teleport_map_ticks: u64,
         pub(crate) external_live: bool,
         pub(crate) peers: Option<u32>,
@@ -391,9 +392,13 @@ pub(crate) mod fake {
             use agent_proto::editor::{LinkParams, MarksParams, method};
 
             let calls = self.calls.clone();
+            let edits = self.edits.clone();
             self.agent.add_method(method::LINK, Access::Read, move |params| {
                 let link: LinkParams = serde_json::from_value(params.clone()).unwrap();
                 calls.lock().unwrap().push((method::LINK.into(), params));
+                if let Some(why) = edits.lock().unwrap().indicator_failure {
+                    return Err(RpcError::new(code::UNAVAILABLE, why));
+                }
                 let shown = window && link.clear != Some(true);
                 Ok(json!({"shown":shown, "expires_ms":if shown { 3000 } else { 0 },
                     "why":(!window).then_some("this host has no window")}))

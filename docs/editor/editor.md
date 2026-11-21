@@ -792,7 +792,10 @@ status, and a second connection for the binary live mirror.
 - **Edits sent live.** The editor compares changed tag and placement fields
   with the bytes it expects in the loaded map. Edit sends these fields in
   one conditional `edit.batch`. Undo and redo use the same path. A conflict
-  leaves the entire batch unapplied. In **Pending**, choose **Take the game's value**
+  leaves the entire batch unapplied. The inspector and tree mark refused
+  fields in red and conflicts in amber. The bar and the game's editor
+  plate show the largest issue count. Clicking the bar's count opens
+  **Pending**. On a conflicted field, choose **Take the game's value**
   to put the game's value in the document or **Overwrite** to send the
   document's value. The field badge shows when the game reads it.
   Moving or turning a placement also moves its linked live object. Deleting

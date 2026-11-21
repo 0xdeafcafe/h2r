@@ -248,7 +248,9 @@ Notes on some:
   a tag the inspector's selection and clears the placement selection.
   `nav.go {"tag":"hlmt","path":"render_model"}` focuses a tag and,
   optionally, one field by its registry path. It keeps the viewport
-  selection. Both resolve tags in the open map. `nav.status`,
+  selection. `nav.go {"block":"weapons","index":0}` selects a placement.
+  `nav.go {"panel":"pending"}` opens the Pending tab. These are also the
+  target forms returned for placement and panel issues. `nav.status`,
   `nav.back` and `nav.forward` take no params. All `nav.*` methods
   return `{selected, tag, path, breadcrumbs, can_back, can_forward}`.
   `selected` is a placement `{block,index}`, a tag `{tag}` or null.
@@ -301,7 +303,13 @@ Notes on some:
   `no_game`, `found`, `connecting`, `reconnecting`, `viewing`, `editing`, `blocked`,
   `other_map` and `lost`. The top-level `state` continues to report the
   socket connection. When a game omits an optional method, `link.unavailable`
-  lists the affected features and methods. During reconnect, `link.elapsed_ms` counts from the drop.
+  lists the affected features and methods. `link.issues` is an array of
+  `{kind,text,target}` rows. The kinds are `waiting`, `reload`,
+  `refused` and `mismatch`. Pass a row's `target` directly to `nav.go`
+  to inspect the field, placement, tag or Pending tab. A refused player
+  move opens Pending and stays visible for the four-second viewport notice.
+  A clear link reports
+  an empty array. The pill shows the largest count. During reconnect, `link.elapsed_ms` counts from the drop.
 - **Playtest.** `pair.playtest {}` queues F5 and reports the step for the
   window's published state: `launch`, `pair`, `resume`, `reload` or
   `ask`. A reload or launch using the saved player place includes
@@ -390,7 +398,10 @@ Notes on some:
   marks once a second on the game's display. Unpairing clears the link
   plate and marks. A dropped connection lets their three-second leases
   expire. `pair.status.link.unavailable` reports
-  missing presentation methods and the host's display refusal.
+  missing presentation methods and the host's display refusal. While the
+  game waits for a genuine frame, a `drawn: false` reply keeps the marks
+  pending without a warning. The game plate shows the largest link issue
+  count, or `Aim select` when aim selection is on and the count is zero.
 - **Shared camera.** `mirror.camera {mode?,target?}` returns `{mode,target}`.
   `free` releases the editor viewport, `follow` keeps the eye's orbit offset
   as the local player moves, and `eyes` looks along the player's aim from

@@ -4,7 +4,7 @@ use serde_json::{Value, json};
 use studio_proto::{code, method as m};
 
 use super::{MethodDef, P, Provider, Reply, def, err, params::block_name, scenario, tag_fields};
-use crate::app::{Action, App, NavAction, Selection, tag_api};
+use crate::app::{Action, App, NavAction, Selection, ToolKind, tag_api};
 
 const STATUS: &str = r#"{"selected":"{block,index}|{tag}|null","tag":"string|null","path":"string|null","breadcrumbs":"[placement or tag]","can_back":"boolean","can_forward":"boolean"}"#;
 
@@ -36,8 +36,8 @@ impl Provider for Navigation {
             ),
             def(
                 m::NAV_GO,
-                "Show a tag or field in the Scenario inspector and keep the viewport selection",
-                r#"{"tag":"string|integer","path?":"string"}"#,
+                "Show a tag or field, select a placement in the inspector, or open Pending",
+                r#"{"tag?":"string|integer","path?":"string","block?":"string","index?":"integer","panel?":"pending"}"#,
                 STATUS,
                 r#"{"tag":"itmc"}"#,
             ),
@@ -50,6 +50,9 @@ impl Provider for Navigation {
             m::NAV_STATUS => return Some(Ok(status(app))),
             m::NAV_BACK => Ok(NavAction::Back),
             m::NAV_FORWARD => Ok(NavAction::Forward),
+            m::NAV_GO if p.has("panel") || p.has("block") || p.has("index") => {
+                return Some(open_placement_or_panel(app, &p));
+            }
             m::NAV_GO => open_tag(app, &p).and_then(|tag| {
                 Ok(NavAction::Go {
                     tag,
@@ -61,9 +64,32 @@ impl Provider for Navigation {
         Some(action.and_then(|action| {
             app.perform(Action::Navigate(action), false)
                 .map_err(scenario::refused)?;
+            if method == m::NAV_GO {
+                app.dispatch(Action::SetTool(ToolKind::Scenario));
+            }
             Ok(status(app))
         }))
     }
+}
+
+fn open_placement_or_panel(app: &mut App, p: &P) -> Reply {
+    if p.has("panel") {
+        if p.str("panel")? != "pending"
+            || ["tag", "path", "block", "index"].iter().any(|key| p.has(key))
+        {
+            return Err(err(code::INVALID_PARAMS, "use panel: pending on its own"));
+        }
+        app.pairing.open_pending = true;
+    } else {
+        if p.has("tag") || p.has("path") {
+            return Err(err(code::INVALID_PARAMS, "choose a tag or a placement"));
+        }
+        let entry = p.entry(app)?;
+        app.perform(Action::Select(Some(entry)), false)
+            .map_err(scenario::refused)?;
+        app.dispatch(Action::SetTool(ToolKind::Scenario));
+    }
+    Ok(status(app))
 }
 
 pub(super) fn open_tag(app: &mut App, p: &P) -> Result<TagId, agent_proto::RpcError> {

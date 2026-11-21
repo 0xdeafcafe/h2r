@@ -12,6 +12,9 @@ use crate::app::tag_doc::{Access, TagDoc, TagEntry};
 use crate::app::tag_tree::{self, Arrange, Folder, Row, ScenarioRoots, ScenarioTree};
 use crate::app::{Action, App, NavAction, TagAction, tag_api};
 use crate::fields::{self, PanelState};
+use crate::play::issues::{Issue, Kind};
+use crate::play::pair::Request;
+use super::inspector;
 use crate::theme::{self, Fonts, icon};
 use crate::ui::map_list::{self, MapListUi};
 use crate::viewport::Gpu;
@@ -163,6 +166,7 @@ pub fn tree(ui: &Ui, app: &App, st: &mut TagsUi, fonts: &Fonts, actions: &mut Ve
         doc,
         browse,
         paired,
+        issues: if browse { &[] } else { inspector::issues(app) },
         selected: selected(app),
         edited_scenario: scenario.filter(|s| s.is_modified()).map(|s| s.tag),
     };
@@ -342,11 +346,12 @@ fn tag_rows(
             ListNames::GroupAndPath => format!("{}  {}", group_text(t.group), t.name),
         };
         let label = view.marked(t, &text, "");
-        if ui
-            .selectable_config(format!("{label}###tag-{:x}", t.id.0))
-            .selected(view.selected == Some(t.id))
-            .build()
-        {
+        let issue = inspector::row_issue(view.issues, |issue| issue.matches_tag(t.id, None));
+        if inspector::marked_row(ui, label, issue, |label| {
+            ui.selectable_config(format!("{label}###tag-{:x}", t.id.0))
+                .selected(view.selected == Some(t.id))
+                .build()
+        }) {
             view.select(t.id, None, actions);
         }
     });
@@ -356,6 +361,7 @@ struct RowView<'a> {
     doc: &'a TagDoc,
     browse: bool,
     paired: bool,
+    issues: &'a [Issue],
     selected: Option<TagId>,
     edited_scenario: Option<TagId>,
 }
@@ -368,9 +374,10 @@ impl RowView<'_> {
         } else {
             ""
         };
-        // The game receives placement writes. Edited tag metadata is
-        // still pending on this map while paired.
-        let live = if self.paired && edited {
+        let waiting = self.issues.iter().any(|issue| {
+            matches!(issue.kind, Kind::Waiting | Kind::Reload) && issue.matches_tag(t.id, None)
+        });
+        let live = if self.paired && waiting {
             "  [Pending]"
         } else {
             ""
@@ -473,17 +480,21 @@ fn scenario_rows(
         if row.cycle {
             label.push_str("  (cycle)");
         }
-        let shown = ui
-            .tree_node_config("##row")
-            .label(label)
-            .opened(*open, Condition::Always)
-            .no_tree_push_on_open(true)
-            .span_avail_width(true)
-            .leaf(row.children.is_empty())
-            .open_on_arrow(entry.is_some())
-            .selected(entry.is_some_and(|t| view.selected == Some(t.id)))
-            .push()
-            .is_some();
+        let issue = inspector::row_issue(view.issues, |issue| {
+            row.tag.is_some_and(|id| issue.matches_tag(id, None))
+        });
+        let shown = inspector::marked_row(ui, label, issue, |label| {
+            ui.tree_node_config("##row")
+                .label(label)
+                .opened(*open, Condition::Always)
+                .no_tree_push_on_open(true)
+                .span_avail_width(true)
+                .leaf(row.children.is_empty())
+                .open_on_arrow(entry.is_some())
+                .selected(entry.is_some_and(|t| view.selected == Some(t.id)))
+                .push()
+                .is_some()
+        });
         if !row.children.is_empty() && shown != *open {
             opened.insert(path.clone(), shown);
         }
@@ -493,7 +504,7 @@ fn scenario_rows(
         {
             view.select(t.id, row.placements.as_deref(), actions);
         }
-        if let Some(via) = &row.via {
+        if issue.is_none() && let Some(via) = &row.via {
             ui.set_item_tooltip(via);
         }
         if indent > 0.0 {
@@ -505,7 +516,7 @@ fn scenario_rows(
 /// The selected tag's fields, with export and import.
 pub fn fields(
     ui: &Ui,
-    app: &App,
+    app: &mut App,
     st: &mut TagsUi,
     fonts: &Fonts,
     dialogs: bool,
@@ -593,9 +604,27 @@ pub fn fields(
     } else {
         None
     };
+    let issues = if app.browsing().is_some() {
+        &[]
+    } else {
+        inspector::issues(app)
+    };
+    let mut resolution = None;
     ui.child_window("##fields").build(ui, || {
-        fields::tag_panel(ui, doc, id, scene, &mut st.panel, actions)
+        fields::panel_with_marks(
+            ui,
+            doc,
+            id,
+            &[],
+            &mut st.panel,
+            actions,
+            fields::PanelRoot::Tags(scene),
+            &mut inspector::tag_field_marks(ui, issues, &mut resolution),
+        );
     });
+    if let Some(action) = resolution {
+        app.pairing.requests.push(Request::Apply(action));
+    }
 }
 
 /// Export the tag (with what it references, with its resources) and
@@ -896,6 +925,7 @@ mod tests {
             doc: &doc,
             browse: true,
             paired: false,
+            issues: &[],
             selected: Some(doc.tags()[0].id),
             edited_scenario: None,
         };

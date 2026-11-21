@@ -13,6 +13,7 @@
 //! calls its methods; tests drive it against the agent crate's server.
 
 pub mod auto;
+pub mod issues;
 pub mod launch;
 pub mod link;
 pub mod pair;
@@ -24,6 +25,7 @@ pub mod sync;
 pub mod tag_sync;
 mod capabilities;
 mod edits;
+mod feedback;
 pub use edits::Apply;
 #[cfg(test)]
 pub(crate) mod testing;
@@ -174,6 +176,7 @@ pub struct LinkView {
     pub text: String,
     pub why: Option<String>,
     pub unavailable: Vec<String>,
+    pub issues: Vec<issues::Issue>,
     pub can_play: bool,
     pub playtest_busy: bool,
     pub can_stop: bool,
@@ -262,6 +265,7 @@ pub struct Play {
     /// Auto-pair attempts are forgotten when the socket leaves the finder.
     auto_tried: HashSet<PathBuf>,
     unpaired: auto::Unpaired,
+    feedback: feedback::Feedback,
     /// UI requests taken at the next update.
     queue: Vec<Request>,
 }
@@ -319,6 +323,7 @@ impl Play {
             finder: Finder::with_scan(std::sync::Arc::new(Vec::<agent_proto::discover::Found>::new)),
             auto_tried: HashSet::new(),
             unpaired: auto::Unpaired::default(),
+            feedback: feedback::Feedback::default(),
             queue: Vec::new(),
         }
     }
@@ -340,6 +345,11 @@ impl Play {
     /// The game's map, from the last poll.
     pub fn map(&self) -> Option<&str> {
         self.status.as_ref()?.at.map.as_deref()
+    }
+
+    /// Every panel in a frame reads the same issues and navigation targets.
+    pub(crate) fn displayed_link(&self, app: &App) -> std::sync::Arc<LinkView> {
+        app.pairing.link.clone().unwrap_or_else(|| self.link_view(app).into())
     }
 
     /// The state shared by the bar, the Game panel and `pair.status`.
@@ -446,7 +456,12 @@ impl Play {
         };
         let mut unavailable = self.unavailable_features();
         unavailable.extend(self.presence.reasons().map(str::to_owned));
-        LinkView {
+        let mut issues = issues::for_pending(app);
+        if let Some(why) = self.refused_move_at(Instant::now()) {
+            issues.push(issues::Issue::refused_move(why));
+        }
+        let mut view = LinkView {
+            issues,
             state,
             tone,
             text,
@@ -459,7 +474,12 @@ impl Play {
             can_stop: self.child.is_some(),
             can_pause,
             paused,
+        };
+        if let Some(summary) = view.issue_summary() {
+            view.text.push_str(" · ");
+            view.text.push_str(&summary);
         }
+        view
     }
 
     /// Leave a UI request for the next update.
@@ -744,7 +764,8 @@ impl Play {
     /// Once a frame: the link's news, the launched game's state, and edits
     /// to send.
     pub fn update(&mut self, app: &mut App) {
-        self.expire_reload(app, Instant::now());
+        let now = Instant::now();
+        self.expire_reload(app, now);
         if self.waiting != Waiting::Idle && self.play_world != app.session.world_rev() {
             self.cancel_reload();
         }
@@ -771,7 +792,7 @@ impl Play {
             self.child = None;
             self.child_gone(app);
         }
-        self.reconnect(app, Instant::now());
+        self.reconnect(app, now);
         let events = self.link.as_ref().map(Link::drain).unwrap_or_default();
         for e in events {
             self.on_event(app, e);
@@ -780,12 +801,12 @@ impl Play {
             let previous_epoch = app.pairing.shown.as_ref().map(|sample| sample.epoch);
             app.pairing.shown = stream.sample(app.pairing.latest || self.paused);
             if let Some(sample) = &app.pairing.shown
-                && (previous_epoch != Some(sample.epoch) || Instant::now() >= self.next_live_status)
+                && (previous_epoch != Some(sample.epoch) || now >= self.next_live_status)
             {
                 if app.pairing.stream_map.is_null() {
                     app.pairing.stream_map = stream.status(false)["map"].clone();
                 }
-                self.next_live_status = Instant::now() + Duration::from_secs(1);
+                self.next_live_status = now + Duration::from_secs(1);
                 if self.has_method(agent_proto::live::STATUS) {
                     self.call(agent_proto::live::STATUS, Value::Null, Purpose::LiveStatus);
                 }
@@ -801,8 +822,8 @@ impl Play {
             self.window_focus(app, true);
         }
         if !matches!(self.conn, Conn::Reconnecting { .. }) {
-            if Instant::now() >= self.next_push {
-                self.next_push = Instant::now() + PUSH_EVERY;
+            if now >= self.next_push {
+                self.next_push = now + PUSH_EVERY;
                 self.push_edits(app);
             } else if self.edits.document_changed(app) {
                 self.refresh_pending(app, false);
@@ -812,7 +833,6 @@ impl Play {
             .filter(|_| self.edits.world == Some(app.session.world_rev()))
             .map(|(_, base)| base);
         app.pairing.update_placement_layouts(&app.session, loaded);
-        let now = Instant::now();
         select::update(app, now);
         Self::update_shared_camera(app);
         self.update_objects(app, now);
@@ -866,9 +886,10 @@ impl Play {
                 Request::Step(ticks) => self.step(ticks),
                 Request::MovePlayer(request) => {
                     if let Err(why) = self.send_player_move(app, request) {
-                        app.error(why);
+                        self.game_refusal(app, why);
                     }
                 }
+                Request::PlayerMoveRefused(why) => self.game_refusal(app, why),
             }
         }
     }
@@ -1014,7 +1035,7 @@ impl Play {
             "playtest_busy": link.playtest_busy,
         });
         app.pairing.published = Some(published);
-        app.pairing.link = Some(link);
+        app.pairing.link = Some(link.into());
     }
 
     fn call(&self, method: &str, params: Value, purpose: Purpose) {
@@ -1024,18 +1045,22 @@ impl Play {
     }
 
     fn on_event(&mut self, app: &mut App, e: Event) {
+        let reconnecting = matches!(self.conn, Conn::Reconnecting { .. });
         match e {
             Event::Connected => {
-                if !matches!(self.conn, Conn::Reconnecting { .. }) {
+                if !reconnecting {
                     self.conn = Conn::Connected;
+                    app.info(format!(
+                        "paired with the game at {}",
+                        self.endpoint().map(ToString::to_string).unwrap_or_default()
+                    ));
                 }
                 self.call(method::METHODS, Value::Null, Purpose::Capabilities);
-                app.info(format!(
-                    "paired with the game at {}",
-                    self.endpoint().map(ToString::to_string).unwrap_or_default()
-                ));
             }
             Event::Lost(why) => {
+                if self.is_paired() {
+                    self.feedback.toast(format!("Game link dropped: {why}"), true, Instant::now());
+                }
                 self.objects.transport_lost();
                 if matches!(self.waiting, Waiting::Spawn(_)) {
                     app.error("game link closed before the player move was acknowledged");
@@ -1075,6 +1100,7 @@ impl Play {
                 if let Conn::Reconnecting { why: last, .. } = &mut self.conn {
                     *last = why;
                 } else if self.reconnectable() {
+                    app.info(format!("Game link interrupted: {why}"));
                     self.conn = Conn::Reconnecting {
                         backoff: auto::Backoff::new(Instant::now()),
                         why,
@@ -1108,6 +1134,10 @@ impl Play {
                 result,
             } => self.on_answer(app, purpose, &method, result),
         }
+        if reconnecting && self.is_paired() {
+            self.feedback.toast("Game link restored".into(), false, Instant::now());
+            app.info("Game link restored");
+        }
     }
 
     fn on_answer(
@@ -1117,6 +1147,7 @@ impl Play {
         method: &str,
         result: Result<Value, agent_proto::RpcError>,
     ) {
+        self.feedback.answer(&purpose, method, &result);
         match (purpose, result) {
             (Purpose::LiveStatus, result) => {
                 let stream_id = app.pairing.mirror.as_ref()
@@ -1153,6 +1184,10 @@ impl Play {
                 }
             }
             (Purpose::Teleport, Ok(_)) => app.info("moved the player"),
+            (Purpose::Teleport, Err(e)) => {
+                let why = e.data.as_ref().and_then(|d| d["why"].as_str()).unwrap_or(&e.message);
+                self.game_refusal(app, why);
+            }
             (Purpose::Control(what), Ok(_)) => {
                 match what {
                     "pause" => self.paused = true,
@@ -1163,6 +1198,7 @@ impl Play {
                 }
                 app.info(format!("game: {what}"));
             }
+            (Purpose::Other, _) if method == agent_proto::editor::method::MARKS => {}
             (_, Err(e)) => app.error(format!("{method}: {e}")),
             (Purpose::Other, Ok(v)) => app.info(format!("{method}: {v}")),
         }
@@ -1290,14 +1326,12 @@ impl Play {
 
     /// Move the player to `pos` (`sim.state.set`; refused by the game in a
     /// co-op or client session, and here first).
-    pub fn teleport(&self, app: &mut App, pos: Vec3) {
-        if let Err(why) = self.player_here(app, pos, false) {
-            app.error(why);
-        }
+    pub fn teleport(&mut self, app: &mut App, pos: Vec3) {
+        self.player_here(app, pos, false);
     }
 
     /// Move the player to the ground under the camera's focus.
-    pub fn teleport_to_camera(&self, app: &mut App) {
+    pub fn teleport_to_camera(&mut self, app: &mut App) {
         let p = ground(app, app.session.camera().target);
         self.teleport(app, p);
     }

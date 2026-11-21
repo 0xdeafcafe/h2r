@@ -110,7 +110,16 @@ pub fn panel(
     st: &mut PanelState,
     actions: &mut Vec<Action>,
 ) {
-    panel_impl(ui, doc, tag, path, st, actions, PanelNavigation::default());
+    panel_with_marks(
+        ui,
+        doc,
+        tag,
+        path,
+        st,
+        actions,
+        PanelRoot::Tags(None),
+        &mut |_, _| {},
+    );
 }
 
 /// The Tags panel can jump to Scene for the scenario it edits.
@@ -122,14 +131,15 @@ pub fn tag_panel(
     st: &mut PanelState,
     actions: &mut Vec<Action>,
 ) {
-    panel_impl(
+    panel_with_marks(
         ui,
         doc,
         tag,
         &[],
         st,
         actions,
-        PanelNavigation { trail: None, scene },
+        PanelRoot::Tags(scene),
+        &mut |_, _| {},
     );
 }
 
@@ -143,34 +153,33 @@ pub fn inspector_panel(
     st: &mut PanelState,
     actions: &mut Vec<Action>,
 ) {
-    panel_impl(
+    panel_with_marks(
         ui,
         doc,
         tag,
         &[],
         st,
         actions,
-        PanelNavigation {
-            trail: Some(trail),
-            scene: None,
-        },
+        PanelRoot::Inspector(trail),
+        &mut |_, _| {},
     );
 }
 
-#[derive(Default)]
-struct PanelNavigation<'a> {
-    trail: Option<&'a [TagId]>,
-    scene: Option<&'a Scenario>,
+pub(crate) enum PanelRoot<'a> {
+    Tags(Option<&'a Scenario>),
+    Inspector(&'a [TagId]),
 }
 
-fn panel_impl(
+/// The panel gives its caller each field address just after the widget is drawn.
+pub(crate) fn panel_with_marks(
     ui: &Ui,
     doc: &TagDoc,
     tag: TagId,
     path: &[(u32, u32)],
     st: &mut PanelState,
     actions: &mut Vec<Action>,
-    navigation: PanelNavigation<'_>,
+    root: PanelRoot<'_>,
+    mark_field: &mut dyn FnMut(TagId, u32),
 ) {
     st.hovered = None;
     let Some((at, layout)) = doc.resolve(tag, path) else {
@@ -178,6 +187,10 @@ fn panel_impl(
         return;
     };
     let editable = doc.refusal(tag).is_none();
+    let (trail, scene) = match root {
+        PanelRoot::Tags(scene) => (None, scene),
+        PanelRoot::Inspector(trail) => (Some(trail), None),
+    };
     let mut cx = Cx {
         ui,
         doc,
@@ -185,15 +198,16 @@ fn panel_impl(
         editable,
         st,
         actions,
-        trail: navigation.trail,
-        scene: navigation.scene,
+        trail,
+        scene,
+        mark_field,
         prefix: String::new(),
     };
     let _id = ui.push_id(tag.0 as usize);
     cx.element(at, &layout);
 }
 
-struct Cx<'a> {
+struct Cx<'a, 'm> {
     ui: &'a Ui,
     doc: &'a TagDoc,
     tag: TagId,
@@ -203,6 +217,7 @@ struct Cx<'a> {
     trail: Option<&'a [TagId]>,
     scene: Option<&'a Scenario>,
     prefix: String,
+    mark_field: &'m mut dyn FnMut(TagId, u32),
 }
 
 fn key(address: u32) -> u64 {
@@ -263,7 +278,7 @@ pub fn guess(v: u32) -> View {
     }
 }
 
-impl Cx<'_> {
+impl Cx<'_, '_> {
     fn write(&mut self, address: u32, bytes: Vec<u8>, label: &str) {
         self.actions.push(write_action(self.tag, address, bytes, label));
     }
@@ -291,6 +306,7 @@ impl Cx<'_> {
             }
             let _id = ui.push_id(f.offset as usize);
             self.field(at, layout, f);
+            (self.mark_field)(self.tag, at + f.offset);
             if focused {
                 ui.set_scroll_here_y(0.5);
                 self.st.clear_field_focus();

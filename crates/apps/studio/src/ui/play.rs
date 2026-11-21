@@ -1,5 +1,7 @@
 //! The Game panel and the controls shared with the bar and Game menu.
 
+mod toasts;
+
 use std::path::PathBuf;
 
 use agent_proto::Endpoint;
@@ -54,7 +56,7 @@ impl PlayUi {
         let Some(_menu) = ui.begin_menu("Game") else {
             return;
         };
-        let view = self.play.link_view(app);
+        let view = self.play.displayed_link(app);
         for (label, key, enabled, request) in [
             ("Play", "F5", view.can_play, Request::Play),
             ("Stop", "Shift+F5", view.can_stop, Request::Stop),
@@ -119,11 +121,11 @@ impl PlayUi {
         }
     }
 
-    pub fn bar_pill(&mut self, ui: &Ui, app: &mut App, view: &LinkView) {
+    pub fn bar_pill(&mut self, ui: &Ui, app: &mut App, view: &LinkView, clicked: bool) {
         let pick = self.play.picking_game();
         let open = std::mem::take(&mut self.open_link_popup) || (pick && !self.picking_game);
         self.picking_game = pick;
-        self.pill(ui, app, view, open);
+        self.link_popup(ui, app, view, open, clicked);
         if pick && !open && !ui.is_popup_open(LINK_POPUP) {
             self.play.cancel_picker();
         }
@@ -171,6 +173,10 @@ impl PlayUi {
         if let Some(why) = &view.why {
             ui.set_item_tooltip(why);
         }
+        self.link_popup(ui, app, view, open, clicked);
+    }
+
+    fn link_popup(&mut self, ui: &Ui, app: &mut App, view: &LinkView, open: bool, clicked: bool) {
         let pair_now = clicked
             && matches!(view.state, LinkState::Found { .. })
             && self.pair_offer(self.play.notice(app));
@@ -272,7 +278,7 @@ impl PlayUi {
 
     pub fn window(&mut self, ui: &Ui, app: &mut App, key: &WindowKey) {
         ui.window(key).build(|| {
-            let view = self.play.link_view(app);
+            let view = self.play.displayed_link(app);
             self.pill(ui, app, &view, false);
             theme::section(ui, "Session");
             self.session(ui, app, &view);
@@ -324,9 +330,6 @@ impl PlayUi {
             ui.checkbox("Latest (no interpolation)", &mut app.pairing.latest);
             if !p.reload.is_empty() {
                 ui.text_colored(theme::WARN, format!("Needs Play again: {:?}", p.reload));
-            }
-            if matches!(view.state, LinkState::Editing { .. }) {
-                ui.text_wrapped("Placement edits show when the game creates the object again.");
             }
         }
     }
@@ -407,7 +410,8 @@ impl PlayUi {
     /// T over the viewport teleports the player to the point under the cursor.
     pub fn overlay(&mut self, ui: &Ui, app: &mut App, rect: Option<[f32; 4]>) {
         let Some([x, y, w, h]) = rect else { return };
-        let view = self.play.link_view(app);
+        toasts::draw(ui, &self.play, [x, y, w, h]);
+        let view = self.play.displayed_link(app);
         if matches!(
             view.state,
             LinkState::Editing { .. } | LinkState::Blocked { .. }
@@ -438,12 +442,8 @@ impl PlayUi {
             && ui.is_key_pressed_with_repeat(Key::T, false)
         {
             match Play::cursor_destination(app) {
-                Some(q) => {
-                    if let Err(why) = self.play.player_here(app, q, ui.io().key_shift()) {
-                        app.error(why);
-                    }
-                }
-                None => app.error("no ground under the cursor to teleport to"),
+                Some(q) => self.play.player_here(app, q, ui.io().key_shift()),
+                None => self.play.game_refusal(app, "no ground under the cursor to teleport to"),
             }
         }
     }
@@ -463,7 +463,8 @@ impl PlayUi {
         use crate::play::Apply;
         let p = &mut self.play;
         let mut action = None;
-        ui.window(key).build(|| {
+        let focus = std::mem::take(&mut app.pairing.open_pending);
+        ui.window(key).focused(focus).build(|| {
             if !app.pairing.journal.is_empty() {
                 ui.separator_with_text("Already in the game");
                 for c in &app.pairing.journal {
@@ -484,6 +485,11 @@ impl PlayUi {
                 )) {
                     action = Some(Apply::Confirm(scope));
                 }
+            }
+            let move_refusal = p.refused_move_at(std::time::Instant::now());
+            if let Some(why) = move_refusal {
+                ui.separator_with_text("Player move refused");
+                ui.text_wrapped(why);
             }
             let mut rows: Vec<_> = app.pairing.pending.iter().collect();
             rows.sort_by(|a, b| a["class"].as_str().cmp(&b["class"].as_str()));
@@ -513,7 +519,9 @@ impl PlayUi {
                 }
             }
             if app.pairing.pending.is_empty() {
-                ui.text_disabled("No pending edits");
+                if move_refusal.is_none() {
+                    ui.text_disabled("No pending edits");
+                }
             } else {
                 if let Some(why) = p.edits_blocked(app) {
                     ui.text_wrapped(why);

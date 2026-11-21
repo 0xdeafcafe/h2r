@@ -184,10 +184,13 @@ impl Play {
         Ok(())
     }
 
-    pub(crate) fn player_here(&self, app: &App, pos: Vec3, facing: bool) -> Result<(), String> {
-        let request = PlayerMove::at(app, self.player_move_scope(app)?, pos, facing)?;
-        self.send_move(request);
-        Ok(())
+    pub(crate) fn player_here(&mut self, app: &mut App, pos: Vec3, facing: bool) {
+        let request = self.player_move_scope(app)
+            .and_then(|scope| PlayerMove::at(app, scope, pos, facing));
+        match request {
+            Ok(request) => self.send_move(request),
+            Err(why) => self.game_refusal(app, why),
+        }
     }
 
     fn send_move(&self, request: PlayerMove) {

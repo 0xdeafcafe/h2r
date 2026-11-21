@@ -211,6 +211,7 @@ pub enum Request {
     Resume,
     Step(u64),
     MovePlayer(super::presence::PlayerMove),
+    PlayerMoveRefused(String),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -255,6 +256,7 @@ pub struct Bridge {
     /// Pair on its own with the one game running, once per game. On by default.
     pub auto_pair: bool,
     pub pause_while_editing: bool,
+    pub open_pending: bool,
     pub spawn: Option<super::Spawn>,
     pub playtest: Option<super::playtest::Offer>,
     pub prompt: Option<super::playtest::Prompt>,
@@ -266,7 +268,7 @@ pub struct Bridge {
     /// frame (headless, there is no pairing).
     pub published: Option<Value>,
     /// The same game-link state the bar and Game panel read.
-    pub link: Option<LinkView>,
+    pub link: Option<Arc<LinkView>>,
     pub pending: Vec<Value>,
     pub journal: Vec<Value>,
     pub leaving: bool,
@@ -295,6 +297,7 @@ impl Default for Bridge {
         Bridge {
             auto_pair: true,
             pause_while_editing: false,
+            open_pending: false,
             spawn: None,
             playtest: None,
             prompt: None,

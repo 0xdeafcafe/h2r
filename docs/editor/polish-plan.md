@@ -1,6 +1,6 @@
 # h2-editor polish: what is wrong, the design, and the slices
 
-Status: P1 to P7, P12, P18, G1 to G3, G5, G6, the editor camera modes and player move in G7, and G8 are implemented. The remaining slices describe the design.
+Status: P1 to P7, P12, P18, G1 to G3, G5, G6, the editor camera modes and player move in G7, G8 and G9 are implemented. The remaining slices describe the design.
 Code: `crates/apps/studio/src` (the window: `ui.rs`, `ui/`, `play.rs`, `viewport.rs`, `theme.rs`), `crates/tools/scenario-edit/src` (the scene and its renderer). Tests: named per slice.
 Switch: none.
 
@@ -250,11 +250,13 @@ A paired editor sends `editor.link {editor, mode, text?, ttl_ms}` once
 a second. `h2 play` draws a small plate in a corner of the game window
 while the lease holds: "Editor · viewing", "Editor · editing live",
 "Editor · edits blocked", with `text` under it for the one line the
-editor wants seen there ("3 edits need a reload", "Aim select"). The
+editor wants seen there. The largest link issue count takes priority over
+"Aim select". The
 plate goes when the editor unpairs (`{clear: true}`), exits or stops
 answering (the lease runs out, 3 seconds by default). A game with no
 window (`h2 serve`) answers `{shown: false, why}` and the editor stops
-asking. The indicator is presentation: it is sent in View mode and in
+asking. A transient failure is logged once until the heartbeat succeeds
+and the next renewal retries it. The indicator is presentation: it is sent in View mode and in
 every session kind.
 
 #### Selection both ways
@@ -300,10 +302,12 @@ belong to its pixels. A synthetic interpolation frame holds the
 preceding genuine source's projection until the current source's
 endpoint. All edges show at full strength with no occlusion. Candidate
 edges are dashed, and `xray` is reserved with no effect. Colours are the
-theme's and travel as data. A host without a matching camera for the
-presented frame or without a window answers `{drawn: false, why}` and
-the Game panel says so once. Marks are presentation, sent in View
-mode and in every session kind.
+theme's and travel as data. A host waiting for a
+genuine frame answers `{drawn: false, why}` and the editor keeps
+renewing the marks quietly. A host with no window, or with no camera
+for its frames, says so in `why`; the Game panel shows it and the
+viewport raises one notice per failure. Marks are presentation, sent in
+View mode and in every session kind.
 
 #### Shared camera
 
@@ -372,7 +376,10 @@ their next creation.
 - **On the pill.** `LinkView::issues`, as above.
 - **In the game.** The indicator plate's second line.
 - `pair.status` carries `link.issues` as `[{kind, text, target}]`,
-  where `target` is the field, placement or tag to jump to.
+  where `target` opens the field, placement or tag through `nav.go`.
+  A deleted row or a block-wide issue opens Pending. The bar shows the
+  largest count on its second line. Ties favor refusals, then conflicts,
+  reloads and waiting edits.
 
 ### The scenario tag tree
 
@@ -677,9 +684,9 @@ when built. The game's methods for the link follow in their own table.
 
 | Method | Params | Result |
 |---|---|---|
-| `pair.status` | none | includes `link` with `{state, text, why}` from `LinkView` with `elapsed_ms` while reconnecting and `unavailable?` listing features missing from the host |
+| `pair.status` | none | includes `link` with `{state, text, why, issues: [{kind, text, target}]}` from `LinkView` with `elapsed_ms` while reconnecting and `unavailable?` listing features missing from the host |
 | `pair.edit` | `{enabled}` | queues the Edit switch change and returns `{requested}`. Read the mode in `pair.status`. |
-| `pair.status` | none | G9 adds `issues: [{kind, text, target}]` to `link` |
+| `nav.go` | `{tag, path?}`, `{block, index}` or `{panel: "pending"}` | opens the issue target from `pair.status.link.issues` |
 | `pair.settings` | `{spawn?, pause_while_editing?}` | reads or sets the spawn choice and pause on editor focus |
 | `pair.playtest` | `{confirm?: "send" \| "cancel" \| "load" \| "open", prompt?: integer}` | `{step: launch \| pair \| resume \| reload \| ask, ask?, prompt?, place?, why?, answer?}`. Echo the prompt ID with a choice to answer that ask. A manual reload carries `why`. Cancel and open carry `answer`. |
 | `mirror.pick` | `{from: "aim"}` or `{ray: {origin, dir}}` | the live object hit: `{object, placement, tag, point, distance}`, or `null` |

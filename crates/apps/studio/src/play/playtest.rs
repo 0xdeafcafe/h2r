@@ -376,6 +376,7 @@ impl Play {
                     if let Some(why) = self.edit_refusal(app) {
                         return Err(why);
                     }
+                    self.retry_refused_fields();
                     self.refresh_pending(app, true);
                     if self.edits.sent.is_none() {
                         return Err("resolve the pending edits before playing".into());

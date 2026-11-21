@@ -797,12 +797,15 @@ impl Studio {
                     let Some(_node) = node else { continue };
                     for &i in &shown {
                         let label = scenario.label(kind, i);
-                        if ui
-                            .selectable_config(format!("{label}##{kind:?}-{i}"))
-                            .selected(session.is_selected((kind, i)))
-                            .allow_double_click(true)
-                            .build()
-                        {
+                        let issue = inspector::row_issue(inspector::issues(app), |issue| {
+                            issue.matches_placement(kind, i, None)
+                        });
+                        if inspector::marked_row(ui, label, issue, |label| {
+                            ui.selectable_config(format!("{label}###{kind:?}-{i}"))
+                                .selected(session.is_selected((kind, i)))
+                                .allow_double_click(true)
+                                .build()
+                        }) {
                             actions.push(
                                 match outliner::click((kind, i), toggle, range, sel, &shown) {
                                     outliner::Click::One(e) => Action::Select(Some(e)),
@@ -871,7 +874,7 @@ impl Studio {
         // The closure borrows the whole shell, so the key is its own value.
         let key = self.keys.inspector.clone();
         ui.window(&key).build(|| {
-            let link = self.play.play.link_view(app);
+            let link = self.play.play.displayed_link(app);
             if matches!(
                 link.state,
                 crate::play::LinkState::Editing { .. } | crate::play::LinkState::Blocked { .. }

@@ -485,7 +485,7 @@ fn pair_status_carries_link_view() {
     assert_eq!(status["state"], "off");
     assert_eq!(
         status["link"],
-        json!({"state":"no_game", "text":"No game", "why":null})
+        json!({"state":"no_game", "text":"No game", "why":null, "issues":[]})
     );
     let game = fake::Game::start("api-link", "example", SessionKind::Local);
     fake::pair_for_view(&mut play, &mut app, &game);
@@ -2097,6 +2097,36 @@ mod mirror_presence {
     }
 
     #[test]
+    fn a_placement_issue_opens_its_row_after_picking_a_loose_live_object() {
+        use crate::play::select;
+
+        let t = Temp::new("presence-issue-nav");
+        let game = game("presence-issue-nav", WEAPON, None);
+        let (mut api, mut app, mut play) = (Api::new(), app(&t), Play::new());
+        connect(&mut api, &mut app, &mut play, &game);
+        let row = json!({"block":"netgame_flags", "index":0});
+        call(&mut api, &mut app, m::SCENARIO_MOVE, json!({
+            "block":"netgame_flags", "index":0, "position":[1., 2., 3.]
+        }));
+        game.edits.lock().unwrap().extra_object.as_mut().unwrap().placement = None;
+        fake::until(&mut play, &mut app, "loose weapon and pending flag edit", |_, a| {
+            select::from_aim(a).is_some_and(|hit| hit.object == WEAPON && hit.placement.is_none())
+                && a.pairing.pending.iter().any(|r| r["target"] == row)
+        });
+        let hit = select::from_aim(&app).unwrap();
+        select::apply(&mut app, hit, false);
+        assert_eq!(select::selected_object(&app), Some(WEAPON));
+        assert_eq!(app.selection(), Some(Selection::Tag(fixture::id(2))));
+
+        let status = call(&mut api, &mut app, m::PAIR_STATUS, Value::Null);
+        let issue = status["link"]["issues"].as_array().unwrap().iter()
+            .find(|issue| issue["target"] == row).unwrap();
+        let nav = call(&mut api, &mut app, m::NAV_GO, issue["target"].clone());
+        assert_eq!(nav["selected"], row);
+        assert_eq!(select::selected_object(&app), None);
+    }
+
+    #[test]
     fn placement_marks_renew_in_view_and_clear_on_unpair() {
         let t = Temp::new("presence-lease");
         let game = game("presence-lease", WEAPON, Some(true));
@@ -2185,9 +2215,24 @@ mod mirror_presence {
         let (mut api, mut app, mut play) = (Api::new(), app(&t), Play::new());
         connect(&mut api, &mut app, &mut play, &game);
         let move_here = json!({"to":[1.,2.,3.],"facing":true});
+        let refusal = api.call(&mut app, m::MIRROR_PLAYER, move_here.clone()).unwrap_err();
+        assert_eq!(refusal.code, code::REFUSED);
+        assert_eq!(refusal.message, "View mode");
+        let reports = |app: &App| {
+            app.log().iter().filter(|line| line.status.text() == "View mode").count()
+        };
+        play.update(&mut app);
+        assert_eq!(reports(&app), 1);
         assert_eq!(
-            code_of(api.call(&mut app, m::MIRROR_PLAYER, move_here.clone())),
-            code::REFUSED
+            call(&mut api, &mut app, m::PAIR_STATUS, Value::Null)["link"]["issues"],
+            json!([{"kind":"refused", "text":"View mode", "target":{"panel":"pending"}}])
+        );
+        assert!(app.pairing.pending.is_empty());
+        assert_eq!(
+            play.toasts(std::time::Instant::now())
+                .filter(|(why, problem)| *problem && *why == refusal.message.as_str())
+                .count(),
+            1
         );
         assert!(game.calls(sim::method::STATE_SET).is_empty());
 
@@ -2227,11 +2272,7 @@ mod mirror_presence {
             &mut play,
             &mut app,
             "the queued move refused in View",
-            |_, a| {
-                a.log()
-                    .iter()
-                    .any(|line| line.status.text().contains("View mode"))
-            },
+            |_, a| reports(a) == 2,
         );
         assert_eq!(game.calls(sim::method::STATE_SET).len(), 1);
     }

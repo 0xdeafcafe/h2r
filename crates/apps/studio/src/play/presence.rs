@@ -173,6 +173,24 @@ fn due(last: Option<Instant>, now: Instant) -> bool {
     last.is_none_or(|t| now.saturating_duration_since(t) >= RENEW)
 }
 
+/// A held mark can wait across menu or interpolated frames until the game
+/// presents a genuine world frame. An explicit rejection still takes priority.
+fn mark_problem(reply: &Value) -> Option<String> {
+    if let Some(mark) = reply["refused"].as_array().and_then(|marks| marks.first())
+        && let Some(why) = mark["why"].as_str()
+    {
+        return Some(format!("mark {}: {why}", mark["index"]));
+    }
+    if reply["drawn"] != false {
+        return None;
+    }
+    let why = reply["why"].as_str()?;
+    if why.starts_with("waiting") || why == "no camera for the presented frame" {
+        return None;
+    }
+    Some(why.to_owned())
+}
+
 impl Play {
     pub(super) fn update_presence(&mut self, app: &App, now: Instant) {
         if !self.is_paired() {
@@ -190,23 +208,15 @@ impl Play {
                 }
                 _ => editor::Mode::View,
             };
-            let reloads = app
-                .pairing
-                .pending
-                .iter()
-                .filter(|row| row["class"] == super::tag_sync::RELOAD)
-                .count();
-            let mut params =
-                json!({"editor":"h2-editor", "mode":mode, "ttl_ms":editor::LINK_TTL_MS});
-            if reloads > 0 {
-                params["text"] = json!(if reloads == 1 {
-                    "1 edit needs a reload".into()
-                } else {
-                    format!("{reloads} edits need a reload")
-                });
-            } else if app.pairing.selection.enabled {
-                params["text"] = json!("Aim select");
-            }
+            let text = app.pairing.link.as_ref().and_then(|link| link.issue_summary())
+                .or_else(|| app.pairing.selection.enabled.then(|| "Aim select".into()));
+            let params = json!(editor::LinkParams {
+                editor: Some("h2-editor".into()),
+                mode: Some(mode),
+                text,
+                ttl_ms: Some(editor::LINK_TTL_MS),
+                clear: None,
+            });
             self.call(editor::method::LINK, params, Purpose::Indicator);
             self.presence.link_sent = Some(now);
             self.presence.link_pending = true;
@@ -290,46 +300,44 @@ impl Play {
         purpose: Purpose,
         result: Result<Value, RpcError>,
     ) {
-        let (method, slot, why) = match purpose {
+        match purpose {
             Purpose::Indicator => {
                 self.presence.link_pending = false;
                 self.presence.no_indicator = matches!(&result, Ok(v) if v["shown"] == false);
                 let why = match result {
                     Ok(v) if v["shown"] == true => None,
-                    Ok(v) => Some(
-                        v["why"]
-                            .as_str()
-                            .unwrap_or("the host did not show the editor indicator")
-                            .to_owned(),
+                    Ok(v) if v["shown"] == false => Some(
+                        v["why"].as_str().unwrap_or("the host has no editor indicator").to_owned(),
                     ),
+                    Ok(_) => Some("missing shown in the indicator reply".into()),
                     Err(e) => Some(e.to_string()),
                 };
-                (editor::method::LINK, &mut self.presence.link_why, why)
+                let why = why.map(|reason| format!("{}: {reason}", editor::method::LINK));
+                // A transient error keeps the lease on its normal renewal schedule.
+                // Several failed renewals belong to one failure streak.
+                if (self.presence.link_why.is_none() || self.presence.no_indicator)
+                    && let Some(reason) = &why
+                {
+                    app.error(reason.clone());
+                }
+                self.presence.link_why = why;
             }
             Purpose::Marks => {
                 self.presence.marks_pending = false;
                 let why = match result {
                     Ok(_) if self.presence.sent.is_empty() => None,
-                    Ok(v) => v["why"].as_str().map(str::to_owned).or_else(|| {
-                        let first = v["refused"].as_array()?.first()?;
-                        Some(format!(
-                            "mark {}: {}",
-                            first["index"],
-                            first["why"].as_str()?
-                        ))
-                    }),
+                    Ok(v) => mark_problem(&v),
                     Err(e) => Some(e.to_string()),
                 };
-                (editor::method::MARKS, &mut self.presence.marks_why, why)
+                let why = why.map(|reason| format!("{}: {reason}", editor::method::MARKS));
+                if self.presence.marks_why != why {
+                    if let Some(reason) = &why {
+                        self.feedback.problem(app, reason.clone());
+                    }
+                    self.presence.marks_why = why;
+                }
             }
-            _ => return,
-        };
-        let why = why.map(|reason| format!("{method}: {reason}"));
-        if *slot != why {
-            if let Some(reason) = &why {
-                app.error(reason.clone());
-            }
-            *slot = why;
+            _ => {}
         }
     }
 
@@ -478,3 +486,6 @@ mod tests {
         assert!(state.link_sent.is_none() && state.link_why.is_none());
     }
 }
+
+#[cfg(all(test, unix))]
+mod indicator_tests;

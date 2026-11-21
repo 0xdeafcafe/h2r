@@ -44,6 +44,21 @@ pub(super) struct ReloadCopy {
 }
 
 impl ReloadCopy {
+    /// A queued copy is ready when edit.map sees its checksum at a new epoch.
+    fn reload_complete(
+        &self,
+        app: &App,
+        name: Option<&str>,
+        epoch: Option<u64>,
+        checksum: Option<u32>,
+    ) -> bool {
+        self.check_identity
+            && epoch.is_some_and(|epoch| epoch != self.before_epoch)
+            && checksum == Some(self.checksum)
+            && self.world == app.session.world_rev()
+            && pair::map_match(app, name) == MapMatch::Same
+    }
+
     fn acknowledged(&self, app: &App, reply: &Value) -> bool {
         let Some(file) = reply["file"].as_str().map(std::path::Path::new) else {
             return false;
@@ -79,6 +94,7 @@ pub(super) struct Edits {
     pub(super) sent: Option<Batch>,
     next: u64,
     conflicts: Vec<Value>,
+    refused: issues::Refusals,
     pub(super) created: Vec<sync::Write>,
 }
 
@@ -114,6 +130,11 @@ impl Play {
         } else {
             self.edits.loaded.as_ref().and(self.edits.epoch)
         }
+    }
+
+    pub(super) fn retry_refused_fields(&mut self) {
+        self.edits.refused = issues::Refusals::default();
+        self.edits.last_diff = None;
     }
 
     pub fn can_respawn(&self) -> bool {
@@ -164,11 +185,7 @@ impl Play {
         let checksum = v["checksum"].as_u64().and_then(|n| u32::try_from(n).ok());
         let name = v["name"].as_str().map(str::to_owned);
         if let Some(copy) = &self.reload_copy
-            && (!copy.check_identity
-                || epoch.is_none_or(|epoch| epoch == copy.before_epoch)
-                || checksum != Some(copy.checksum)
-                || copy.world != app.session.world_rev()
-                || pair::map_match(app, name.as_deref()) != MapMatch::Same)
+            && !copy.reload_complete(app, name.as_deref(), epoch, checksum)
         {
             // The new epoch and its tag index can become visible on different polls.
             self.session = None;
@@ -242,6 +259,7 @@ impl Play {
                 app.error("the map changed while leaving; choose how to leave the current map");
             }
             self.edits.conflicts.clear();
+            self.edits.refused = issues::Refusals::default();
             self.edits.created.clear();
             self.edits.confirmed = None;
             self.edits.journal_ready = false;
@@ -432,8 +450,12 @@ impl Play {
             sync::Diff::default()
         };
         self.reload = d.reload;
+        if self.edits.world != Some(app.session.world_rev()) {
+            self.edits.refused = issues::Refusals::default();
+            self.edits.conflicts.clear();
+        }
         let empty = TagBaseline::default();
-        let (tags, mut pending) = tag_sync::diff(
+        let (mut tags, mut pending) = tag_sync::diff(
             if base.is_some() {
                 &self.edits.tags
             } else {
@@ -443,13 +465,15 @@ impl Play {
         );
         let tag = json!(self.scenario_tag);
         for b in &self.reload {
-            pending.push(tag_sync::row(
+            let mut row = tag_sync::row(
                 "scenario",
                 tag.clone(),
                 &format!("{b:?}"),
                 RELOAD,
                 "placement layout changed",
-            ));
+            );
+            row["target"] = json!({"panel": "pending"});
+            pending.push(row);
         }
         d.writes.retain(|w| {
             let def = scenario_edit::layout::block(w.block).field(w.field);
@@ -457,7 +481,7 @@ impl Play {
                 && sync::unhex(&w.value)
                     .and_then(|b| Some(u32::from_le_bytes(b.get(4..8)?.try_into().ok()?)))
                     .is_some_and(|d| d != u32::MAX && !app.tags.resident(TagId(d)));
-            pending.push(tag_sync::row(
+            let mut row = tag_sync::row(
                 "scenario",
                 tag.clone(),
                 &w.path,
@@ -467,9 +491,13 @@ impl Play {
                 } else {
                     "shows when the object is made"
                 },
-            ));
+            );
+            row["target"] = json!({"block": crate::api::block_name(w.block), "index": w.index});
+            row["field"] = json!(w.field);
+            pending.push(row);
             !absent
         });
+        self.edits.refused.mark(&mut pending, &tags, &d.writes);
         for c in &self.edits.conflicts {
             let same = |r: &&mut Value| {
                 if r["at"].is_number() {
@@ -481,10 +509,24 @@ impl Play {
             if let Some(row) = pending.iter_mut().find(same) {
                 row["at"] = c["at"].clone();
                 row["conflict"] = json!(true);
-                row["why"] = json!("the game changed this");
+                row["why"] = c["why"].clone();
                 row["holds"] = c["holds_bytes"].clone();
             } else {
-                pending.push(c.clone());
+                let mut conflict = c.clone();
+                let target = &c["target"];
+                let placement_moved = target["block"].is_string()
+                    && crate::api::P(target).block().is_ok_and(|block| {
+                        !base.zip(scenario).is_some_and(|(b, s)| b.layout_matches(s, block))
+                    });
+                let field_moved = target["path"].as_str().is_some_and(|path| {
+                    crate::app::tag_api::lookup(&app.tags, &target["tag"])
+                        .and_then(|tag| crate::app::tag_api::field_focus(&app.tags, tag, path))
+                        .map_or(true, |focus| c["at"] != focus.address)
+                });
+                if placement_moved || field_moved {
+                    conflict["target"] = json!({"panel": "pending"});
+                }
+                pending.push(conflict);
             }
         }
         self.objects.publish(&mut pending);
@@ -494,6 +536,7 @@ impl Play {
         {
             return;
         }
+        self.edits.refused.exclude_unchanged(&mut tags, &mut d.writes);
         let mut writes: Vec<_> = tags.iter().map(tag_sync::Write::wire).collect();
         writes.extend(
             d.writes.iter().map(
@@ -559,13 +602,14 @@ impl Play {
             }
             Err(e) if e.code == agent_proto::code::MISMATCH => {
                 self.waiting = Waiting::Idle;
+                let message = e.message;
                 self.edits.conflicts = e
                     .data
                     .and_then(|d| d["fields"].as_array().cloned())
                     .unwrap_or_default();
                 for c in &mut self.edits.conflicts {
                     c["conflict"] = json!(true);
-                    c["why"] = json!("the game changed this");
+                    c["why"] = json!(message);
                     if let Some(w) = batch
                         .tags
                         .iter()
@@ -575,9 +619,16 @@ impl Play {
                         c["tag"] = json!(w.tag.0);
                         c["doc"] = json!("tags");
                         c["class"] = json!(w.class);
+                        if let Some(row) = app.pairing.pending.iter().find(|r| r["at"] == c["at"]) {
+                            c["target"] = row["target"].clone();
+                        }
                     } else {
                         c["doc"] = json!("scenario");
                         c["class"] = json!(CREATION);
+                        if let Some(w) = batch.placements.iter().find(|w| c["path"] == w.path.as_str()) {
+                            c["target"] = json!({"block": crate::api::block_name(w.block), "index": w.index});
+                            c["field"] = json!(w.field);
+                        }
                     }
                 }
                 if !playtest && self.edits.conflicts.is_empty() {
@@ -590,13 +641,13 @@ impl Play {
                 if !playtest {
                     self.live_edits = false;
                 }
-                app.error(format!(
-                    "edit.batch: {}",
-                    other
-                        .err()
-                        .map(|e| e.to_string())
-                        .unwrap_or_else(|| "incomplete acknowledgement".into())
-                ));
+                let why = other.err().map_or_else(
+                    || "incomplete acknowledgement".to_owned(),
+                    |e| e.data.as_ref().and_then(|data| data["why"].as_str())
+                        .map(str::to_owned).unwrap_or(e.message),
+                );
+                self.edits.refused.record(&batch.tags, &batch.placements, &why);
+                app.error(format!("edit.batch: {why}"));
             }
         }
         self.edits.last_diff = None;
@@ -658,6 +709,7 @@ impl Play {
                 }
                 self.edits.created.clear();
                 self.edits.conflicts.clear();
+                self.edits.refused = issues::Refusals::default();
                 self.edits.last_diff = None;
                 self.next_push = Instant::now();
                 app.pairing.journal.clear();
@@ -777,6 +829,7 @@ impl Play {
                 if let Some(why) = self.edit_refusal(app) {
                     return Err(why);
                 }
+                self.retry_refused_fields();
                 if let Some(copy) = &mut self.reload_copy {
                     copy.resume_edits = true;
                 }

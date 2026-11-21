@@ -541,7 +541,10 @@ an agent socket of its own (in the `agents` folder of the h2recomp cache;
 Pairing with an already-running game starts in View. Turn **Edit** on
 when you're ready to send tag and placement edits. Open **Pending** to see
 when each edit takes effect, resolve a conflict, or reload the play copy
-for structural edits. If a co-op session or
+for structural edits. A red mark on a field or tree row shows why a write
+was refused. An amber conflict offers **Take the game's value** and
+**Overwrite**. Click the count on the game link to open Pending. Failed
+game actions also appear in the viewport for four seconds. If a co-op session or
 another restriction prevents writes, the pill says "Edits stay here"
 and the frame and **Live** pill turn amber. Hover the pill for the
 reason. If the connection drops while the game is still present, the editor

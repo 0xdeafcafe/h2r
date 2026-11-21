@@ -25,6 +25,9 @@ use crate::app::tag_api::{self, Chain, Node};
 use crate::app::tag_doc::Access;
 use crate::app::{Action, App, NavAction, NavLocation, Selection, TagDoc, ToolKind};
 use crate::fields;
+use crate::play::issues::{Issue, Kind};
+use crate::play::pair::Request;
+use crate::play::{Apply, LinkTone};
 use crate::theme::{self, icon};
 
 /// Text typed into the searchable combos.
@@ -69,6 +72,80 @@ fn merge_key(selection: &[(BlockKind, usize)], field: &str) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     ("studio-inspector", selection, field).hash(&mut h);
     h.finish()
+}
+
+pub(crate) fn issues(app: &App) -> &[Issue] {
+    app.pairing
+        .link
+        .as_ref()
+        .map_or(&[], |link| link.issues.as_slice())
+}
+
+fn field_mark(kind: Kind) -> Option<(LinkTone, &'static str)> {
+    match kind {
+        Kind::Refused => Some((LinkTone::Error, "Refused")),
+        Kind::Mismatch => Some((LinkTone::Warn, "Changed in game")),
+        _ => None,
+    }
+}
+
+/// A row with several affected fields shows the most urgent field's mark.
+pub(crate) fn row_issue(issues: &[Issue], matches: impl Fn(&Issue) -> bool) -> Option<&Issue> {
+    issues
+        .iter()
+        .filter(|issue| field_mark(issue.kind).is_some() && matches(issue))
+        .max_by_key(|issue| issue.kind == Kind::Refused)
+}
+
+pub(super) fn marked_row<T>(
+    ui: &Ui,
+    label: String,
+    issue: Option<&Issue>,
+    draw: impl FnOnce(String) -> T,
+) -> T {
+    if let Some(issue) = issue
+        && let Some((tone, mark)) = field_mark(issue.kind)
+    {
+        let _colour =
+            ui.push_style_color(dear_imgui_rs::StyleColor::Text, theme::link_colour(tone));
+        let row = draw(format!("{label}  [{mark}]"));
+        ui.set_item_tooltip(&issue.text);
+        row
+    } else {
+        draw(label)
+    }
+}
+
+fn field_problem(ui: &Ui, issue: &Issue, resolution: &mut Option<Apply>) {
+    let Some((tone, mark)) = field_mark(issue.kind) else {
+        return;
+    };
+    theme::link_badge(ui, tone, mark);
+    ui.text_wrapped(&issue.text);
+    if issue.kind == Kind::Mismatch && let Some(at) = issue.at {
+        let _id = ui.push_id(at as usize);
+        if ui.small_button("Take the game's value") {
+            *resolution = Some(Apply::Take(at));
+        }
+        ui.same_line();
+        if ui.small_button("Overwrite") {
+            *resolution = Some(Apply::Overwrite(at));
+        }
+    }
+}
+
+pub(super) fn tag_field_marks<'a>(
+    ui: &'a Ui,
+    issues: &'a [Issue],
+    resolution: &'a mut Option<Apply>,
+) -> impl FnMut(TagId, u32) + 'a {
+    move |tag, at| {
+        for issue in issues.iter().filter(|issue| {
+            field_mark(issue.kind).is_some() && issue.matches_tag(tag, Some(at))
+        }) {
+            field_problem(ui, issue, resolution);
+        }
+    }
 }
 
 /// Draw the inspector for the selection and apply its edits.
@@ -141,9 +218,13 @@ pub fn draw(ui: &Ui, fonts: &theme::Fonts, app: &mut App, state: &mut InspectorS
         crate::play::LinkTone::View,
         crate::play::tag_sync::CREATION,
     );
-    ui.set_item_tooltip("Placement fields apply when the object is next created.");
+    ui.set_item_tooltip(
+        "Creation fields apply when the object is next made. In Edit, live objects can also follow position and rotation.",
+    );
     let fields = app.session.shared_fields();
     let mut edits: Vec<(&'static str, FieldEdit)> = Vec::new();
+    let issues = issues(app);
+    let mut resolution = None;
     let mut done = false;
     let mut heading = "";
     for f in fields {
@@ -163,6 +244,16 @@ pub fn draw(ui: &Ui, fonts: &theme::Fonts, app: &mut App, state: &mut InspectorS
         }
         done |= ui.is_item_deactivated_after_edit();
         d.end();
+        for issue in issues.iter().filter(|issue| field_mark(issue.kind).is_some()) {
+            if let Some(&(k, i)) = selection.iter().find(|&&(k, i)| {
+                issue.matches_placement(k, i, Some(f.name))
+            }) {
+                if selection.len() > 1 {
+                    ui.text_disabled(scenario.label(k, i));
+                }
+                field_problem(ui, issue, &mut resolution);
+            }
+        }
     }
     if selection.len() == 1
         && let Some(p) = &block.def.palette
@@ -173,6 +264,9 @@ pub fn draw(ui: &Ui, fonts: &theme::Fonts, app: &mut App, state: &mut InspectorS
             block.palette.len(),
             p.stride
         ));
+    }
+    if let Some(action) = resolution {
+        app.pairing.requests.push(Request::Apply(action));
     }
     // Through the command layer, as the agent API's edits.
     for (field, edit) in edits {
@@ -236,6 +330,8 @@ fn tags(
         state.focus = focus;
     }
     let mut actions = Vec::new();
+    let mut resolution = None;
+    let issues = issues(app);
     breadcrumbs(ui, app, location, &mut actions);
     let undo = ui.begin_disabled_with_cond(!doc.can_undo());
     if ui.button("Undo tag edit") {
@@ -260,11 +356,17 @@ fn tags(
             if state.tag_panel.has_field_focus(tag) {
                 ui.set_next_item_open(true);
             }
-            tag_node(ui, doc, node, &mut trail, &mut state.tag_panel, &mut actions);
+            tag_node(
+                ui, doc, node, &mut trail, &mut state.tag_panel, &mut actions, issues,
+                &mut resolution,
+            );
         }
         if chain.truncated {
             ui.text_disabled("Tag chain limited to the first references.");
         }
+    }
+    if let Some(action) = resolution {
+        app.pairing.requests.push(Request::Apply(action));
     }
     for action in actions {
         app.dispatch(tag_action(action));
@@ -322,6 +424,8 @@ fn tag_node(
     trail: &mut Vec<TagId>,
     panel: &mut fields::PanelState,
     actions: &mut Vec<Action>,
+    issues: &[Issue],
+    resolution: &mut Option<Apply>,
 ) {
     let _id = ui.push_id(node.via.as_str());
     let id = node.tag;
@@ -339,12 +443,15 @@ fn tag_node(
         Some(role) => format!("{role} · {label}"),
         None => label,
     };
-    let item = ui.tree_node_config(format!("tag{:08x}", id.0))
-        .label(label)
-        .default_open(node.via.is_empty())
-        .span_avail_width(true)
-        .push();
-    if !node.via.is_empty() && ui.is_item_hovered() {
+    let issue = row_issue(issues, |issue| issue.matches_tag(id, None));
+    let item = marked_row(ui, label, issue, |label| {
+        ui.tree_node_config(format!("tag{:08x}", id.0))
+            .label(label)
+            .default_open(node.via.is_empty())
+            .span_avail_width(true)
+            .push()
+    });
+    if issue.is_none() && !node.via.is_empty() && ui.is_item_hovered() {
         ui.set_item_tooltip(&node.via);
     }
     let Some(_node) = item else { return };
@@ -374,7 +481,16 @@ fn tag_node(
         if let Some(problem) = &panel.problem {
             ui.text_colored(theme::ERROR, problem);
         }
-        fields::inspector_panel(ui, doc, id, trail, panel, actions);
+        fields::panel_with_marks(
+            ui,
+            doc,
+            id,
+            &[],
+            panel,
+            actions,
+            fields::PanelRoot::Inspector(trail),
+            &mut tag_field_marks(ui, issues, resolution),
+        );
         if let Some(h) = &panel.hovered
             && let Some(doc) = h.description.as_deref().filter(|s| !s.is_empty())
         {
@@ -383,13 +499,13 @@ fn tag_node(
         }
     }
     for child in node.children.iter().filter(|child| child.shortcut.is_some()) {
-        tag_node(ui, doc, child, trail, panel, actions);
+        tag_node(ui, doc, child, trail, panel, actions, issues, resolution);
     }
     if node.children.iter().any(|child| child.shortcut.is_none())
         && let Some(_refs) = ui.tree_node("All references")
     {
         for child in node.children.iter().filter(|child| child.shortcut.is_none()) {
-            tag_node(ui, doc, child, trail, panel, actions);
+            tag_node(ui, doc, child, trail, panel, actions, issues, resolution);
         }
     }
     trail.pop();
@@ -695,6 +811,46 @@ fn search_combo<T: Copy + PartialEq>(
 mod tests {
     use super::*;
     use scenario_edit::layout;
+
+    #[test]
+    fn conflict_buttons_follow_the_selected_placement() {
+        let temp = crate::play::testing::Temp::new("inspector-conflict");
+        let mut app = App::new();
+        app.set_data_root(temp.0.join("data"));
+        app.dispatch(Action::OpenSource(temp.map("example")));
+        app.pairing.pending.push(serde_json::json!({
+            "target": {"block": "netgame_flags", "index": 0},
+            "field": "position", "at": 123, "conflict": true, "why": "the game changed the field"
+        }));
+        app.pairing.link = Some(crate::play::Play::new().link_view(&app).into());
+
+        let _turn = crate::headless::ONE_CONTEXT.lock().unwrap_or_else(|e| e.into_inner());
+        let (mut ctx, fonts) = crate::context(None);
+        ctx.font_atlas().try_claim_legacy_renderer().unwrap().build();
+        ctx.io_mut().set_display_size([600.0, 800.0]);
+        ctx.io_mut().set_delta_time(1.0 / 60.0);
+        let mut state = InspectorState::default();
+        for (kind, marked) in [
+            (BlockKind::NetgameFlags, true),
+            (BlockKind::StartingLocations, false),
+        ] {
+            app.dispatch(Action::Select(Some((kind, 0))));
+            let ui = ctx.frame();
+            crate::probe::begin();
+            ui.window("Placement inspector")
+                .size([580.0, 780.0], dear_imgui_rs::Condition::Always)
+                .build(|| draw(ui, &fonts, &mut app, &mut state));
+            let items = crate::probe::items();
+            for label in ["Take the game's value", "Overwrite"] {
+                assert_eq!(
+                    items.iter().any(|item| item.label == label),
+                    marked,
+                    "{kind:?} {label}"
+                );
+            }
+            let _ = ctx.render_legacy();
+        }
+    }
 
     #[test]
     fn angles_show_between_minus_and_plus_half_a_turn() {

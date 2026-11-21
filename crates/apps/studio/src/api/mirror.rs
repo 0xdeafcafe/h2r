@@ -88,7 +88,18 @@ impl Provider for Mirror {
             m::MIRROR_PICK => Some(pick(app, &P(params))),
             m::MIRROR_AIM_SELECT => Some(aim_select(app, &P(params))),
             m::MIRROR_CAMERA => Some(camera(app, &P(params))),
-            m::MIRROR_PLAYER => Some(move_player(app, &P(params))),
+            m::MIRROR_PLAYER => {
+                let result = move_player(app, &P(params));
+                if let Err(error) = &result
+                    && error.code == code::REFUSED
+                    && app.pairing.published.is_some()
+                {
+                    app.pairing
+                        .requests
+                        .push(Request::PlayerMoveRefused(error.message.clone()));
+                }
+                Some(result)
+            }
             m::MIRROR_OBJECTS => Some(objects(app, &P(params))),
             _ => None,
         }
