@@ -18,9 +18,18 @@
 //!    snapshot included.
 //! 2. **Gate** (`HUD_WIDGET_GATE`): a kit widget is drawn while its value
 //!    is shown, in a style the runtime draws ([`draws`]), in a screen mode
-//!    its place has.
+//!    its place has, and none of its element's `hide_when_d` bits is set
+//!    in the game's word D.
 //! 3. **Inputs** (`HUD_WIDGET_INPUTS`): `hud_input1` is
 //!    `records::Widget::input` of the value's fill.
+//!
+//! A value with a `motion` moves on wall time: [`Handle::publish`] stamps
+//! a changed one with the time and the fill it was showing
+//! (`motion::restamp`), and the gate and inputs read it at the
+//! milliseconds since (`motion::animate`), each drawn frame. The
+//! **effects** hook (`HUD_WIDGET_EFFECTS`) scales a kit widget's basis by
+//! `motion::scale_at` ([`scale_basis`]); until that hook has been seen for
+//! a kit widget ([`EFFECTS_SEEN`]) the ending is the plain one.
 //! 4. **String** (`HUD_WIDGET_STRING`): the value's text, in the
 //!    element's font.
 //! 5. **Crop** (`HUD_WIDGET_SPRITE`): a cropped widget's sprite bounds are
@@ -39,6 +48,7 @@
 
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock, RwLockReadGuard};
+use std::time::Instant;
 
 use engine::entry::{EntryFuture, GuestCall, Ret};
 use engine::handle::DatumHandle;
@@ -50,6 +60,7 @@ use hud_kit_core::Mode;
 use hud_kit_core::model::{
     Describe, Hud, Kind, MESSAGE_UNITS, Style, Value, Values, message_fault,
 };
+use hud_kit_core::motion::{self, Motion};
 use hud_kit_core::records::{self, Compiled, WidgetKind};
 
 use crate::h1_particle_physics::fault;
@@ -149,7 +160,74 @@ struct Registered {
     describe: Arc<dyn Describe + Send + Sync>,
     hud: Hud,
     values: Values,
+    /// When each moving value last changed ([`stamp_values`]).
+    stamps: Stamps,
     nav: Option<[f32; 3]>,
+}
+
+/// Per element, the wall time its value's motion started.
+pub type Stamps = Vec<(&'static str, Instant)>;
+
+/// Set once the effects hook has met a kit widget at the bitmap draw's
+/// call: the game calls it for a widget with an empty effects block, so
+/// the scale ([`scale_basis`]) applies. Until then a motion's ending is
+/// the plain one (`motion::shown_at` unscaled): a bar that would close
+/// with no scale to close it goes where the close would start.
+pub static EFFECTS_SEEN: AtomicBool = AtomicBool::new(false);
+
+fn scaled() -> bool {
+    EFFECTS_SEEN.load(Ordering::Relaxed)
+}
+
+/// Milliseconds from `then` to `now`.
+pub fn ms_since(then: Instant, now: Instant) -> f32 {
+    now.saturating_duration_since(then).as_secs_f32() * 1000.0
+}
+
+/// `new` against the values before it (`old`, stamped `stamps`), at
+/// `now`: a moving value that changed is stamped `now`, from the fill the
+/// old one showed then ([`motion::restamp`]); one that did not keeps its
+/// stamp and its `from`. A value with no motion is kept as given and
+/// carries no stamp.
+pub fn stamp_values(
+    old: &Values,
+    stamps: &[(&'static str, Instant)],
+    new: Values,
+    now: Instant,
+    scaled: bool,
+) -> (Values, Stamps) {
+    let mut out = Values::default();
+    let mut out_stamps = Stamps::new();
+    for (id, v) in new.0 {
+        if v.motion == Motion::None {
+            out.0.push((id, v));
+            continue;
+        }
+        let stamp = stamps.iter().find(|(i, _)| *i == id).map(|(_, t)| *t);
+        let before = old.get(id);
+        let prior = before.map(|o| (o, stamp.map_or(f32::INFINITY, |t| ms_since(t, now))));
+        match motion::restamp(prior, &v, scaled) {
+            Some(stamped) => {
+                out.0.push((id, stamped));
+                out_stamps.push((id, now));
+            }
+            None => {
+                let from = before.map_or(0.0, |o| o.from);
+                out.0.push((id, Value { from, ..v }));
+                out_stamps.push((id, stamp.unwrap_or(now)));
+            }
+        }
+    }
+    (out, out_stamps)
+}
+
+/// `v` as it draws at `now`, stamped `stamp`: on its motion's curve.
+pub fn animated(v: Value, stamp: Option<Instant>, now: Instant, scaled: bool) -> Value {
+    if v.motion == Motion::None {
+        return v;
+    }
+    let ms = stamp.map_or(f32::INFINITY, |t| ms_since(t, now));
+    motion::animate(&v, ms, scaled)
 }
 
 static REGISTRY: RwLock<Vec<Registered>> = RwLock::new(Vec::new());
@@ -194,17 +272,22 @@ pub fn register(describe: Arc<dyn Describe + Send + Sync>) -> Handle {
         describe,
         hud,
         values,
+        stamps: Stamps::new(),
         nav: None,
     });
     Handle(r.len() - 1)
 }
 
 impl Handle {
-    /// The values the hooks give from now on.
+    /// The values the hooks give from now on, a moving value that
+    /// changed stamped with the time ([`stamp_values`]).
     pub fn publish(&self, values: Values) {
+        let now = Instant::now();
         let mut r = REGISTRY.write().unwrap_or_else(|e| e.into_inner());
         if let Some(x) = r.get_mut(self.0) {
+            let (values, stamps) = stamp_values(&x.values, &x.stamps, values, now, scaled());
             x.values = values;
+            x.stamps = stamps;
         }
     }
     /// Queues `text` as a notification for local user `user`, one line of
@@ -296,9 +379,29 @@ async fn send_notes(
     Ok(Ret::new(0, 0))
 }
 
-/// HUD `hud`'s value for element `id`.
+/// HUD `hud`'s value for element `id`, as it draws now ([`animated`]).
 fn value(hud: usize, id: &str) -> Option<Value> {
-    read(&REGISTRY).get(hud)?.values.get(id).cloned()
+    let r = read(&REGISTRY);
+    let x = r.get(hud)?;
+    let v = x.values.get(id).cloned()?;
+    let stamp = x.stamps.iter().find(|(i, _)| *i == id).map(|(_, t)| *t);
+    Some(animated(v, stamp, Instant::now(), scaled()))
+}
+
+/// HUD `hud`'s element `id`'s scale now, wide and tall
+/// (`motion::scale_at`).
+fn scale(hud: usize, id: &str) -> [f32; 2] {
+    let r = read(&REGISTRY);
+    let Some(x) = r.get(hud) else {
+        return [1.0, 1.0];
+    };
+    let (Some(v), Some(stamp)) = (
+        x.values.get(id),
+        x.stamps.iter().find(|(i, _)| *i == id).map(|(_, t)| *t),
+    ) else {
+        return [1.0, 1.0];
+    };
+    motion::scale_at(v.motion, ms_since(stamp, Instant::now()))
 }
 
 /// The first shown text of a channel `want` picks, over the registered
@@ -355,6 +458,8 @@ pub struct KitWidget {
     pub modes: [bool; 3],
     /// A text's engine font in each screen mode (-1 hidden).
     pub font: [i16; 3],
+    /// Its element's `hide_when_d`: word D bits that hide it.
+    pub hide_d: u16,
 }
 
 /// The kit widgets installed, by address.
@@ -579,11 +684,9 @@ pub fn install_records(
             for (index, hud, c) in &j.huds {
                 for w in c.of(kind) {
                     mem.write(cursor, &w.bytes)?;
-                    let modes = hud
-                        .elements
-                        .iter()
-                        .find(|e| e.id == w.id)
-                        .map_or([false; 3], |e| Mode::ALL.map(|m| e.at.offset(m).is_some()));
+                    let element = hud.elements.iter().find(|e| e.id == w.id);
+                    let modes =
+                        element.map_or([false; 3], |e| Mode::ALL.map(|m| e.at.offset(m).is_some()));
                     table.widgets.push(KitWidget {
                         address: cursor,
                         hud: *index,
@@ -592,6 +695,7 @@ pub fn install_records(
                         widget: w.clone(),
                         modes,
                         font: font_of(w),
+                        hide_d: element.map_or(0, |e| e.hide_when_d),
                     });
                     cursor += w.bytes.len() as u32;
                     added += 1;
@@ -611,7 +715,8 @@ pub fn install_records(
 // ---- the draw hooks ----
 
 /// The gate's answer for the widget whose state is at `state` (EAX), when
-/// it is a kit widget.
+/// it is a kit widget: [`shown`], and hidden while the game's word D (the
+/// call's third stack argument) has a bit of the widget's `hide_d`.
 pub fn gate(
     mem: &dyn GuestMemory,
     sp: u32,
@@ -626,7 +731,51 @@ pub fn gate(
     let Some(w) = table.at(widget) else {
         return Ok(None);
     };
+    if w.hide_d != 0 && (mem.u32(sp + 12)? as u16) & w.hide_d != 0 {
+        return Ok(Some(false));
+    }
     Ok(Some(shown(w, values(w.hud, w.id).as_ref(), mode(mem)?)))
+}
+
+/// The effects call's return in the bitmap widget draw (E `0x0022b198`):
+/// the call `h1_hud_text::weapon`'s split-screen scale answers too.
+pub const EFFECTS_RETURN: u32 = 0x0022_b19d;
+/// The draw's basis factors, across and down, in its frame (EBP): what
+/// the effects then apply to (`h1_hud_text::weapon`'s `split_basis`
+/// writes the same two; S: `+0` across, `+0x34` down, as the x basis's x
+/// and the y basis's y).
+pub const BASIS: [u32; 2] = [0x00, 0x34];
+/// Where the draw's frame holds the widget.
+pub const FRAME_WIDGET: u32 = 0x78;
+
+/// At the effects call (`sp` at its return, `frame` the draw's EBP): a
+/// kit widget's basis factors times its `scale`, about its registration
+/// point. True for a kit widget at this call (the hook is seen), whatever
+/// its scale; a factor that is not a positive finite number is left.
+pub fn scale_basis(
+    mem: &mut dyn GuestMemory,
+    sp: u32,
+    frame: u32,
+    table: &Table,
+    scale: &dyn Fn(usize, &str) -> [f32; 2],
+) -> Result<bool, MemFault> {
+    if mem.u32(sp)? != EFFECTS_RETURN {
+        return Ok(false);
+    }
+    let widget = mem.u32(frame.wrapping_add(FRAME_WIDGET))?;
+    let Some(w) = table.at(widget).filter(|w| w.kind == WidgetKind::Bitmap) else {
+        return Ok(false);
+    };
+    let s = scale(w.hud, w.id);
+    if s != [1.0, 1.0] {
+        for (at, k) in BASIS.into_iter().zip(s) {
+            let f = mem.f32(frame + at)?;
+            if f.is_finite() && f > 0.0 && k.is_finite() {
+                mem.set_f32(frame + at, f * k.max(0.0))?;
+            }
+        }
+    }
+    Ok(true)
 }
 
 /// `hud_input1` for a kit widget: its value's fill through
@@ -1194,6 +1343,34 @@ impl hooks::Feature for HudKit {
                 .map_err(fault)?
                 {
                     return c.ret(16).map(Flow::Return);
+                }
+                Ok(Flow::Continue)
+            })
+            .context_only()
+            .after_feature(crate::h1_hud_text::FEATURE);
+        b.raw()
+            .before(&points::HUD_WIDGET_EFFECTS, "hud kit: scale", move |c| {
+                // Only the bitmap draw's call, and only a widget in
+                // the kit's memory: two loads for a retail one.
+                {
+                    let mem = c.ctx.memory();
+                    if mem.u32(c.cpu.esp)? != EFFECTS_RETURN
+                        || !in_region(mem.u32(c.cpu.ebp.wrapping_add(FRAME_WIDGET))?)
+                    {
+                        return Ok(Flow::Continue);
+                    }
+                }
+                let table = read(&TABLE);
+                let seen = scale_basis(
+                    &mut *c.ctx.memory(),
+                    c.cpu.esp,
+                    c.cpu.ebp,
+                    &table,
+                    &|h, id| scale(h, id),
+                )
+                .map_err(fault)?;
+                if seen {
+                    EFFECTS_SEEN.store(true, Ordering::Relaxed);
                 }
                 Ok(Flow::Continue)
             })

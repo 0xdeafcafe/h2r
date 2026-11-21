@@ -220,6 +220,123 @@ fn the_gate_answers_kit_widgets_only() {
     assert_eq!(gate(&m, SP, meter + 8, &t, &on).unwrap(), None);
 }
 
+/// A widget whose element gives way to word D bits is hidden while the
+/// game's word D (the gate's third stack argument) has one, and shown at
+/// its value otherwise; a widget without such bits ignores the word.
+#[test]
+fn the_gate_gives_way_to_word_d() {
+    let mut m = memory();
+    let (mut hud, c) = hud();
+    hud.elements[0] = hud.elements[0].clone().hidden_on_d(0x400);
+    let t = install(&mut m, &hud, &c);
+    let meter = t.widgets[0].address;
+    assert_eq!(t.widgets[0].hide_d, 0x400);
+    assert_eq!(t.widgets[1].hide_d, 0);
+    m.set_u32(SP, GATE_RETURNS[1]).unwrap();
+    let on = shown_values(1.0);
+    assert_eq!(gate(&m, SP, meter + 8, &t, &on).unwrap(), Some(true));
+    m.set_u32(SP + 12, 0x0401).unwrap();
+    assert_eq!(gate(&m, SP, meter + 8, &t, &on).unwrap(), Some(false));
+    m.set_u32(SP + 12, 0x0001).unwrap();
+    assert_eq!(gate(&m, SP, meter + 8, &t, &on).unwrap(), Some(true));
+    // The high half of the argument is not word D.
+    m.set_u32(SP + 12, 0x0400_0000).unwrap();
+    assert_eq!(gate(&m, SP, meter + 8, &t, &on).unwrap(), Some(true));
+    m.set_u32(SP + 12, 0x0400).unwrap();
+    let text = t.widgets[1].address;
+    assert_eq!(gate(&m, SP, text + 8, &t, &on).unwrap(), Some(true));
+}
+
+/// Publishing stamps a moving value that changed, from the fill it was
+/// showing; the same value again keeps its stamp; the draw hooks read it
+/// on its curve at the time since.
+#[test]
+fn a_moving_value_is_stamped_on_change_and_drawn_on_its_curve() {
+    use hud_kit_core::motion::{EASE_MS, ending};
+    use std::time::Duration;
+    let t0 = Instant::now();
+    let at = |ms: u64| t0 + Duration::from_millis(ms);
+    let eased = |fill| Values(vec![("m", Value::fill(fill).moving(Motion::Ease))]);
+    let (v1, s1) = stamp_values(&Values::default(), &[], eased(1.0 / 3.0), at(0), true);
+    assert_eq!(s1, vec![("m", at(0))]);
+    assert_eq!(v1.get("m").unwrap().from, 0.0);
+    // The same value a tick later: the stamp holds.
+    let (v2, s2) = stamp_values(&v1, &s1, eased(1.0 / 3.0), at(33), true);
+    assert_eq!((v2.clone(), s2.clone()), (v1.clone(), s1.clone()));
+    // Drawn half way through the ease: half way to 1/3.
+    let half = animated(v2.get("m").unwrap().clone(), Some(at(0)), at(100), true);
+    assert!((half.fill - 1.0 / 6.0).abs() < 1e-4, "{}", half.fill);
+    // On to 2/3 at the end of the ease: from 1/3, stamped then.
+    let (v3, s3) = stamp_values(&v2, &s2, eased(2.0 / 3.0), at(EASE_MS as u64), true);
+    assert_eq!(s3, vec![("m", at(EASE_MS as u64))]);
+    assert!((v3.get("m").unwrap().from - 1.0 / 3.0).abs() < 1e-6);
+    // The ending: hidden in its blink, scaled up in its swell.
+    let ending_v = Values(vec![("m", Value::fill(1.0).moving(Motion::Ending))]);
+    let (v4, s4) = stamp_values(&v3, &s3, ending_v, at(1000), true);
+    let e = v4.get("m").unwrap().clone();
+    let blink = ending::BLINK_START as u64 + 1000 + 10;
+    assert!(!animated(e.clone(), Some(s4[0].1), at(blink), true).shown);
+    assert!(animated(e.clone(), Some(s4[0].1), at(1000 + 500), true).shown);
+    assert!(
+        !animated(e, Some(s4[0].1), at(1000 + 500), false).shown,
+        "the plain ending without the scale"
+    );
+    // A value with no motion carries no stamp and is drawn as given.
+    let still = Values(vec![("m", Value::fill(0.4))]);
+    let (v5, s5) = stamp_values(&v4, &s4, still, at(2000), true);
+    assert!(s5.is_empty());
+    assert_eq!(
+        animated(v5.get("m").unwrap().clone(), None, at(9000), true).fill,
+        0.4
+    );
+}
+
+/// The effects hook scales a kit bitmap widget's two basis factors by
+/// its scale, at the bitmap draw's call only; a retail widget, another
+/// call, or a factor that is no positive number is left.
+#[test]
+fn the_effects_hook_scales_the_basis() {
+    let mut m = memory();
+    let (hud, c) = hud();
+    let t = install(&mut m, &hud, &c);
+    let frame = SP + 0x400;
+    let set = |m: &mut FlatMemory, widget: u32| {
+        m.set_u32(SP, EFFECTS_RETURN).unwrap();
+        m.set_u32(frame + FRAME_WIDGET, widget).unwrap();
+        m.set_f32(frame + BASIS[0], 1.0).unwrap();
+        m.set_f32(frame + BASIS[1], 0.5).unwrap();
+    };
+    let swell = |_: usize, _: &str| [1.12f32, 1.3];
+    let basis = |m: &FlatMemory| {
+        [
+            m.f32(frame + BASIS[0]).unwrap(),
+            m.f32(frame + BASIS[1]).unwrap(),
+        ]
+    };
+    set(&mut m, t.widgets[0].address);
+    assert!(scale_basis(&mut m, SP, frame, &t, &swell).unwrap());
+    assert_eq!(basis(&m), [1.12, 0.65]);
+    // Its own size: seen, nothing written.
+    set(&mut m, t.widgets[0].address);
+    assert!(scale_basis(&mut m, SP, frame, &t, &|_, _| [1.0, 1.0]).unwrap());
+    assert_eq!(basis(&m), [1.0, 0.5]);
+    // A retail widget, another call, a text.
+    set(&mut m, RETAIL_BITMAPS);
+    assert!(!scale_basis(&mut m, SP, frame, &t, &swell).unwrap());
+    assert_eq!(basis(&m), [1.0, 0.5]);
+    set(&mut m, t.widgets[0].address);
+    m.set_u32(SP, SPRITE_RETURN).unwrap();
+    assert!(!scale_basis(&mut m, SP, frame, &t, &swell).unwrap());
+    set(&mut m, t.widgets[1].address);
+    assert!(!scale_basis(&mut m, SP, frame, &t, &swell).unwrap());
+    // A factor the frame does not hold as a positive number.
+    set(&mut m, t.widgets[0].address);
+    m.set_f32(frame + BASIS[1], f32::NAN).unwrap();
+    assert!(scale_basis(&mut m, SP, frame, &t, &swell).unwrap());
+    assert_eq!(m.f32(frame + BASIS[0]).unwrap(), 1.12);
+    assert!(m.f32(frame + BASIS[1]).unwrap().is_nan());
+}
+
 /// `hud_input1` is the fill through the meter's ramp, the rest 0.
 #[test]
 fn the_input_is_the_fill_through_the_ramp() {

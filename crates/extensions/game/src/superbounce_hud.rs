@@ -5,10 +5,12 @@
 //! tutorial's step machine and its `superbounce.tutorial_seen` setting.
 //!
 //! The HUD shows for the first local player while the mode is on; with
-//! the mode off every element is hidden. Its notifications (primed, a
-//! loss's reason, a landing that did not bounce, and every local player's
-//! medals) are sent through the kit's `Handle::notify` once each
-//! ([`Sent::notes`]).
+//! the mode off every element is hidden. Its notifications ("Charging..."
+//! as the arming bar comes up, "Primed!", a loss's reason, a landing that
+//! did not bounce, and every local player's medals) are sent through the
+//! kit's `Handle::notify` once each ([`Sent::notes`]). The arming bar
+//! follows the charge's phase tick to tick ([`ArmTrack`]); the kit plays
+//! its motion on wall time.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -19,8 +21,8 @@ use engine::points;
 use hooks::Flow;
 
 use hud_kit_core::huds::superbounce::{
-    self as sb, Change, Charge, Landed, Lost, Medal, Note, Phase, Scan, Superbounce, Target,
-    Tutorial, Verb, View, Watch,
+    self as sb, ArmTrack, Change, Charge, Landed, Lost, Medal, Note, Phase, Scan, Superbounce,
+    Target, Tutorial, Verb, View, Watch, arm_for,
 };
 use hud_kit_core::model::Values;
 
@@ -37,7 +39,9 @@ pub const FEATURE: &str = "superbounce-hud";
 /// `tutorial`.
 ///
 /// - The scan: ready with spots, ready with none, failed, else scanning.
-/// - The charge: the mode's phase and fill as they are.
+/// - The charge: the mode's phase and fill as they are; the arming bar,
+///   the phase's on its own ([`arm_for`]: the tick loop's [`ArmTrack`]
+///   adds the run out).
 /// - The verb: the mode's (a crouch step, the warning to keep moving, the
 ///   new charge after a loss); in the near phase, not primed and with no
 ///   verb of the mode's, "hold (crouch) and walk under".
@@ -86,6 +90,7 @@ pub fn view(s: &State, tutorial: Option<u8>) -> View {
         primed: s.primed(),
         scan,
         charge,
+        arm: arm_for(charge.map(|c| c.phase)),
         verb,
         nav,
         note: note(s, mode::lost(s)),
@@ -142,6 +147,8 @@ fn landed(result: mode::LandingResult) -> Option<Landed> {
 pub struct Sent {
     /// The state has been seen once: what it held then is not news.
     seen: bool,
+    /// In a recipe step, the arming bar up.
+    charging: bool,
     primed: bool,
     lost: Option<u32>,
     landing: Option<u32>,
@@ -151,7 +158,8 @@ pub struct Sent {
 
 impl Sent {
     /// The notifications `s` has that were not sent yet, each a local
-    /// user and its line, in order: primed, a loss's reason, a landing
+    /// user and its line, in order: charging (a recipe step begun, not
+    /// primed), primed, a loss's reason, a landing
     /// that did not bounce (each the first local player's, user 0), then
     /// each new medal award of a local player, its highest medal's line,
     /// to that player's user. `s` of `None` (the mode off) forgets all.
@@ -166,8 +174,12 @@ impl Sent {
         if last_seq < self.medal {
             self.medal = 0;
         }
+        let charging = recipe_step(s);
         let mut out = Vec::new();
         if self.seen {
+            if charging && !self.charging {
+                out.push((0, Note::Charging.text()));
+            }
             if s.primed() && !self.primed {
                 out.push((0, Note::Primed.text()));
             }
@@ -188,12 +200,25 @@ impl Sent {
             }
         }
         self.seen = true;
+        self.charging = charging;
         self.primed = s.primed();
         self.lost = lost.map(|l| l.tick).or(self.lost);
         self.landing = landing.map(|l| l.tick).or(self.landing);
         self.medal = self.medal.max(last_seq);
         out
     }
+}
+
+/// Whether `s` is in a recipe step (near, under or held) and not primed:
+/// the arming bar is up and filling.
+pub fn recipe_step(s: &State) -> bool {
+    !s.primed()
+        && s.charge.as_ref().is_some_and(|c| {
+            matches!(
+                c.phase,
+                mode::ChargePhase::Near | mode::ChargePhase::Under | mode::ChargePhase::Held
+            )
+        })
 }
 
 /// What the tutorial watches in `s`: primed, metres to the nearest bounce
@@ -310,6 +335,8 @@ struct Hud {
     start: Instant,
     settings: Option<Arc<settings::Store>>,
     sent: Sent,
+    /// The arming bar, tick to tick.
+    arm: ArmTrack,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -321,6 +348,7 @@ impl Hud {
         let Some(s) = mode::hud_state() else {
             LOCKED.store(false, Ordering::Relaxed);
             self.lost = None;
+            self.arm.clear();
             self.sent.notes(None, None);
             self.handle.publish(hidden());
             self.handle.navpoint(None);
@@ -341,9 +369,11 @@ impl Hud {
         if self.tutorial.update(Some(w), now) == Change::Done {
             self.mark_seen();
         }
+        let base = view(&s, self.tutorial.step());
         let v = View {
             note: note(&s, self.lost),
-            ..view(&s, self.tutorial.step())
+            arm: self.arm.update(base.charge.map(|c| c.phase)),
+            ..base
         };
         self.handle.publish(sb::values(&v));
         self.handle.navpoint(
@@ -448,6 +478,7 @@ pub fn install(
         start: Instant::now(),
         settings,
         sent: Sent::default(),
+        arm: ArmTrack::default(),
     };
     registry
         .add(&SuperbounceHud {

@@ -2,11 +2,12 @@
 //! values each state gives (docs/game/hud-kit.md, "States").
 
 use hud_kit_core::huds::superbounce::{
-    self as sb, CHARGE, LOW_CHARGE, Landed, Lost, MESSAGE, MESSAGE_LOST_CROUCHED,
+    self as sb, ARM, CHARGE, LOW_CHARGE, Landed, Lost, MESSAGE, MESSAGE_LOST_CROUCHED,
     MESSAGE_LOST_STOOD_STILL, Medal, NAVPOINT, Note, PILL, PILL_ICON, PROMPT, PROMPT_CHARGE_AGAIN,
     PROMPT_HELD, PROMPT_KEEP_MOVING, PROMPT_NEAR, PROMPT_UNDER, Phase, Scan, Target, Verb,
 };
 use hud_kit_core::model::{Pulse, Style};
+use hud_kit_core::motion::Motion;
 
 use super::*;
 use crate::superbounce_chain::Award;
@@ -100,11 +101,62 @@ fn the_recipe_steps_give_their_verbs_and_fills() {
     };
     let values = sb::values(&view(&held, None));
     assert_eq!(values.get(PROMPT).unwrap().text, PROMPT_HELD);
-    assert_eq!(values.get(CHARGE).unwrap().fill, 2.0 / 3.0);
+    // The recipe is on the arming bar, eased to each step's fill; the
+    // strip under the pill waits for primed.
+    let arm = values.get(ARM).unwrap();
+    assert_eq!(
+        (arm.shown, arm.fill, arm.motion),
+        (true, 2.0 / 3.0, Motion::Ease)
+    );
+    assert!(!values.get(CHARGE).unwrap().shown);
     // Not primed: the pill is inactive, which the runtime does not draw
-    // yet; the charge meter is drawn.
+    // yet.
     assert_eq!(values.get(PILL).unwrap().style, Style::Inactive);
-    assert!(values.get(CHARGE).unwrap().shown);
+}
+
+/// Tick to tick through the view: the steps ease, leaving early runs
+/// out, primed plays the ending, a loss blinks.
+#[test]
+fn the_arming_bar_follows_the_charge_tick_to_tick() {
+    let mut track = ArmTrack::default();
+    let mut bar = |c: Option<Charge>| {
+        let base = view(
+            &State {
+                charge: c,
+                ..ready()
+            },
+            None,
+        );
+        let v = View {
+            arm: track.update(base.charge.map(|c| c.phase)),
+            ..base
+        };
+        let a = sb::values(&v).get(ARM).unwrap().clone();
+        a.shown.then_some((a.fill, a.motion))
+    };
+    assert_eq!(bar(None), None);
+    assert_eq!(
+        bar(charge(ChargePhase::Near, 0.0)),
+        Some((0.0, Motion::Ease))
+    );
+    assert_eq!(
+        bar(charge(ChargePhase::Under, 0.3)),
+        Some((1.0 / 3.0, Motion::Ease))
+    );
+    assert_eq!(bar(None), Some((0.0, Motion::RunOut)), "left early");
+    assert_eq!(
+        bar(charge(ChargePhase::Held, 0.6)),
+        Some((2.0 / 3.0, Motion::Ease))
+    );
+    assert_eq!(
+        bar(charge(ChargePhase::Primed, 1.0)),
+        Some((1.0, Motion::Ending))
+    );
+    assert_eq!(
+        bar(charge(ChargePhase::Lost, 0.0)),
+        Some((0.0, Motion::Blink))
+    );
+    assert_eq!(bar(None), Some((0.0, Motion::Blink)));
 }
 
 #[test]
@@ -361,9 +413,21 @@ fn each_notification_is_sent_once() {
     s.medals.recent = vec![award(1, Some(0), 3, vec![Medal::Superbounce])];
     assert!(sent.notes(Some(&s), None).is_empty(), "the first state");
 
+    // A recipe step begins: "Charging...", once; the next step is the
+    // same charge.
+    s.charge = charge(ChargePhase::Near, 0.0);
+    assert_eq!(
+        sent.notes(Some(&s), None),
+        vec![(0, "Charging...".to_string())]
+    );
+    s.charge = charge(ChargePhase::Under, 0.3);
+    assert!(sent.notes(Some(&s), None).is_empty(), "the same charge");
+
     s.word = Some(PRIMED_WORD as u32);
-    assert_eq!(sent.notes(Some(&s), None), vec![(0, Note::Primed.text())]);
+    s.charge = charge(ChargePhase::Primed, 1.0);
+    assert_eq!(sent.notes(Some(&s), None), vec![(0, "Primed!".to_string())]);
     assert!(sent.notes(Some(&s), None).is_empty(), "primed again");
+    s.charge = None;
 
     let lost = mode::Lost {
         reason: LostReason::Crouched,

@@ -707,8 +707,11 @@ bounce spot is the one with the nearest edge.
 first local player: a short grenade-style pill after the grenade row,
 lit while primed, with the `^` icon where a third count would be; under
 it a charge meter cut from the energy sword's battery strip, filled by
-the recipe's steps and then by the time the charge has left; the step's
-verb on the game's prompt line ("Hold (crouch) and walk under", "Let go
+the time the charge has left; Assault's red arming bar low in the
+middle, filled by the recipe's steps, with a short ending when primed
+("The arming bar" in hud-kit.md); "Charging..." and "Primed!" in the
+notification list, as Assault's "Bomb is arming..." and "Bomb armed!";
+the step's verb on the game's prompt line ("Hold (crouch) and walk under", "Let go
 of (crouch)", "Walk out to stand up"); and the game's navpoint over a
 crouch spot while not primed, with the distance in metres, and over the
 chosen strip while primed, with the drop in metres
@@ -912,9 +915,10 @@ lab run.
 ## Charge, crouch spots and landings
 
 What the mode shows about the three steps of a bounce: getting the
-charge, keeping it, and landing it. The HUD parts (the meter under the
-pill, the prompt line, the notifications, the navpoint) are in
-[hud-kit.md](hud-kit.md), "The charge meter"; this is the state they
+charge, keeping it, and landing it. The HUD parts (the arming bar, the
+meter under the pill, the prompt line, the notifications, the navpoint)
+are in [hud-kit.md](hud-kit.md), "The charge meter" and "The arming
+bar"; this is the state they
 read, the scanner's rules and the world overlay. The numbers are in
 [notes/superbounce-spots.md](notes/superbounce-spots.md).
 
@@ -1245,6 +1249,12 @@ Each of these is a lab run through the agent API
   `havok.agents`: the phase is `under` from the first tick the standing
   capsule does not fit, `held` from the tick the button is up, `primed`
   on the tick the word is −3.
+- **The arming bar.** With the same playback at 30, 60 and 120 frames a
+  second, take `render.frame` shots through the primed tick: the bar at
+  2/3 before it, full by 130 ms, wider and taller at about 210 ms, gone
+  at 290 to 360 ms, narrowing from 430 ms and gone at 600 ms, the same
+  at each rate. With the swell missing the effects hook did not fire for
+  the bar (hud-kit.md, runtime step 4): the plain ending, gone at 430 ms.
 - **The time left.** Set −3 with `havok.pair.set`, stand still, and read
   `havok.agents` until the pair goes: the fill reaches 0 on that tick,
   within 2. Then creep at 0.02, 0.05 and 0.1 units/s for the speed
