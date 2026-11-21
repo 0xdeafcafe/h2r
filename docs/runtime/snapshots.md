@@ -350,10 +350,9 @@ file crc     u32      CRC-32 of everything before it
 ## Where snapshots live
 
 `crates/runtime/snapshot/src/store.rs`: `$H2_SNAPSHOTS`, else
-`~/Library/Caches/h2recomp/snapshots` on Apple hosts,
-`%LOCALAPPDATA%\h2recomp\cache\snapshots` on Windows,
-`$XDG_CACHE_HOME/h2recomp/snapshots` (or `~/.cache/...`) elsewhere: the
-same cache directory as the pipeline cache and the agent socket. Never the
+`snapshots` in the cache directory
+([storage.md](storage.md#host-directories)), the same directory as the
+pipeline cache and the agent socket. Never the
 repository: snapshots hold game data. Files are
 `<root>/<build id>/<name>.h2snap`, the build id being an FNV-64 of the
 build key, so a rebuilt image starts with an empty list and old builds'

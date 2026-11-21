@@ -400,8 +400,9 @@ time through a path the scan does not recognise. The scan covers
 
 ### 4. The test ledger
 
-xtask records passes in `~/Library/Caches/h2recomp/xtask-ledger`
-(`$XDG_CACHE_HOME/h2recomp/xtask-ledger` elsewhere), one file per key
+xtask records passes in `xtask-ledger` in the cache directory
+([storage.md](../runtime/storage.md#host-directories);
+`~/Library/Caches/h2recomp/xtask-ledger` on a Mac), one file per key
 (`crates/tools/xtask/src/ledger.rs`). A package's key covers what its
 test run can depend on:
 

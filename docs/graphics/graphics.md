@@ -510,8 +510,8 @@ persisted through wgpu. What is done instead:
   pipelines on the workers. A draw that needs a program the prewarm thread
   is still on waits for that one (`prewarm wait`) instead of translating
   it twice. The file is `H2_PIPELINE_CACHE` (a path, or `off`), by default
-  `~/Library/Caches/h2recomp/pipelines-v2.jsonl` (`$XDG_CACHE_HOME/h2recomp/`
-  on Linux, `%LOCALAPPDATA%\h2recomp\cache\` on Windows). It derives from the game's shaders, so it is never committed.
+  `pipelines-v2.jsonl` in the cache directory
+  ([storage.md](../runtime/storage.md#host-directories)). It derives from the game's shaders, so it is never committed.
   Several processes may append to it at once; torn or unparsable lines are
   skipped. `h2 play` and `h2 run` (`H2_BOOT_GFX`) use it.
 

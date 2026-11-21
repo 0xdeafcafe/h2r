@@ -1,7 +1,7 @@
 # Xbox storage boundary
 
 Status: Built.
-Code: `crates/runtime/vfs/src`. Tests: `crates/runtime/vfs/tests/`, `crates/runtime/vfs/src/host_write_behind_tests.rs`.
+Code: `crates/runtime/vfs/src`, `crates/formats/host-dirs/src/lib.rs`. Tests: `crates/runtime/vfs/tests/`, `crates/runtime/vfs/src/host_write_behind_tests.rs`.
 Switch: `H2_MAP_DIR` (unset), listed in [switches.md](switches.md).
 
 `crates/runtime/vfs` owns storage names, mounted filesystems, open file objects and
@@ -9,6 +9,43 @@ filesystem status results. It is safe Rust and has no dependency on guest
 memory, `kernel`, `runtime`, or `cli`. The kernel translates guest pointers,
 ANSI object strings, handles, information classes and IO_STATUS_BLOCKs at its
 boundary. Nothing here extracts, copies or embeds the user's game files.
+
+## Host directories
+
+Every per-user path h2recomp keeps on the host is under one of three
+directories, chosen by `host_dirs::Convention`
+(`crates/formats/host-dirs/src/lib.rs`). `Convention::HOST` is `Apple` on
+Apple targets (macOS, iOS, tvOS), `Windows` on Windows and `Xdg` on every
+other target. **Code**
+
+| Directory | Apple | Windows | Xdg |
+| --- | --- | --- | --- |
+| Data (`host_dirs::data`) | `~/Library/Application Support/h2recomp` | `%LOCALAPPDATA%\h2recomp` | `$XDG_DATA_HOME/h2recomp`, else `~/.local/share/h2recomp` |
+| Cache (`host_dirs::cache`) | `~/Library/Caches/h2recomp` | `%LOCALAPPDATA%\h2recomp\cache` | `$XDG_CACHE_HOME/h2recomp`, else `~/.cache/h2recomp` |
+| Config (`host_dirs::config`) | `~/Library/Application Support/h2recomp` | `%LOCALAPPDATA%\h2recomp` | `$XDG_CONFIG_HOME/h2recomp`, else `~/.config/h2recomp` |
+
+A variable that is unset, empty or a relative path counts as unset. With
+no `HOME` (or `LOCALAPPDATA` on Windows) a directory does not resolve;
+Windows never falls back to `HOME`. Each convention is tested on every
+host (`host_dirs` tests, `every_directory_under_every_convention`).
+**Test**
+
+What lives where:
+
+- Data: the default data root `data/` (`content::store::default_data_root`,
+  `H2_DATA` names another), the movie transcodes `movies/`
+  (`movies::install::app_movies_dir`), Live accounts `live/` (`H2_LIVE_DIR` names
+  another), `coop-test/` (`h2 coop test`), and the root
+  `Config::for_title` uses.
+- Cache: the agent socket and its `inputs/` and `captures/`
+  (`agent_proto::cache_dir`), the pipeline cache
+  (`d3d::pipeline_store`), `snapshots/` (`H2_SNAPSHOTS` names another), the
+  bots' shared nav cache `bots/`, the lab socket and `lab/`, `follow/` and
+  `xtask-ledger/`.
+- Config: the lab driver's paired hosts, `lab/peers/`.
+
+A UWP host has none of these: it passes its package's LocalFolder to
+`Config::new`.
 
 ## Namespace and default drives
 
@@ -30,12 +67,10 @@ partway (for example `ObjectNameCollision` on a link that already exists), the
 links created before the failure remain. The E:/C:/X:/Y: rows below are the
 reference mapping and are not created by either call.
 
-`Config::for_title` chooses `content::store::app_data_dir`:
-`~/Library/Application Support/h2recomp` on Apple hosts, `%LOCALAPPDATA%\h2recomp`
-on Windows and `$XDG_DATA_HOME/h2recomp` (`~/.local/share/h2recomp`) on
-other Unix. `Config::new(root, title_id)` selects an explicit root. A missing or
-empty variable is a configuration error (`InvalidParameter`), not a guest path
-error. Halo 2's
+`Config::for_title` chooses the app data directory
+([Host directories](#host-directories)). `Config::new(root, title_id)`
+selects an explicit root. A data directory that does not resolve is a
+configuration error (`InvalidParameter`), not a guest path error. Halo 2's
 title ID is `0x4D530064`.
 
 | Link | Resolved device path | Host path relative to data root |

@@ -93,9 +93,8 @@ printf 'claim\npause\nstep 30\ncount\nresume\n' | h2 agent -
   --host-light` always paces to real time ([dedicated-host.md](../live/dedicated-host.md)).
 - **The socket.** `--socket PATH` selects the endpoint, followed by
   `$H2_AGENT`, then `agent.sock` in the user's cache directory
-  (`agent_proto::default_socket`). The directory is
-  `~/Library/Caches/h2recomp` on macOS, `%LOCALAPPDATA%\h2recomp\cache`
-  on Windows, and `h2recomp` under `$XDG_CACHE_HOME` or `~/.cache` on Linux.
+  (`agent_proto::default_socket`; the directory per host is in
+  [storage.md](storage.md#host-directories)).
   Local clients use an AF_UNIX stream on Unix and on Windows 10 version 1803
   or later. Unix sockets have mode 0600. Windows socket files inherit the
   directory's ACL, so custom socket paths belong in the user's private directory.

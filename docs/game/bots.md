@@ -4032,10 +4032,9 @@ game checks.
        keys a nav bundle by SHA-256 of the whole source map and the nav
        format and generator versions. A visibility entry is per BSP,
        keyed by SHA-256 of its exact `.bots` bytes and the grid version.
-       Entries are checksummed and disposable. They live under
-       `~/Library/Caches/h2recomp/bots` on macOS,
-       `$XDG_CACHE_HOME/h2recomp/bots` or `~/.cache/h2recomp/bots` on
-       Linux, and `%LOCALAPPDATA%/h2recomp/cache/bots` on Windows.
+       Entries are checksummed and disposable. They live under `bots`
+       in the cache directory
+       ([storage.md](../runtime/storage.md#host-directories)).
        A cache miss or inaccessible cache uses the local build path.
        Every file the game loads is still written under `<data>/bots`.
      - **The generator version** (`cache::GENERATOR`) is bumped whenever

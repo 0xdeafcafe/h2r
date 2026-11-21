@@ -35,7 +35,8 @@ const USAGE: &str = "usage:
 Runs `h2 play` as a child and follows a branch: every --poll seconds (45)
 it fetches <remote>/<branch> (or reads the local <branch> with --no-fetch),
 builds each new commit in its own worktree under the cache dir (default
-~/Library/Caches/h2recomp/follow), and shows a banner in the game window.
+`follow` in the cache directory, docs/runtime/storage.md), and shows a
+banner in the game window.
 F5 on \"Update ready\" restarts into the new build; F6 hides the banner.
 The game's data dir stays the same unless --fresh-data. Closing the window
 ends it. The child installs a mappack.iso beside the disc into its data dir
