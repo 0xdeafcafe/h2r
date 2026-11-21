@@ -13,6 +13,11 @@
 
 use std::collections::HashMap;
 use std::num::NonZeroU64;
+use std::sync::Arc;
+
+use gfx::compile::PendingPipeline;
+use gfx::pipeline::{PipelineKey, ShaderId, ShaderProgram};
+use gfx::vertex::OwnedVertexBufferLayout;
 
 use shaders::psh::PixelUniforms;
 use shaders::vsh::VertexUniforms;
@@ -138,16 +143,15 @@ pub fn encode(
 /// its pipelines by target formats.
 pub struct MaterialGpu {
     program: DecoratorProgram,
-    module: wgpu::ShaderModule,
     uniforms_layout: wgpu::BindGroupLayout,
-    layout: wgpu::PipelineLayout,
     textures: wgpu::BindGroup,
     vertices: wgpu::Buffer,
     indices: wgpu::Buffer,
     index_count: u32,
     attributes: Vec<wgpu::VertexAttribute>,
     stride: u64,
-    pipelines: HashMap<(wgpu::TextureFormat, wgpu::TextureFormat), wgpu::RenderPipeline>,
+    pipelines: crate::pipelines::Pipelines,
+    formats: HashMap<(wgpu::TextureFormat, wgpu::TextureFormat), Arc<PendingPipeline>>,
 }
 
 impl MaterialGpu {
@@ -236,64 +240,48 @@ impl MaterialGpu {
         };
         let vertices = buffer("native decorator vertices", bytemuck::cast_slice(&buffers.vertices), wgpu::BufferUsages::VERTEX);
         let indices = buffer("native decorator indices", bytemuck::cast_slice(&buffers.indices), wgpu::BufferUsages::INDEX);
+        let shader = ShaderProgram { module, layout, vs_entry: "vs_main".into(), fs_entry: "fs_main".into(), count_entry: None };
+        let pipelines = crate::pipelines::Pipelines::new(device, &program.wgsl, shader, "native decorator");
         Ok(Self {
             attributes: attributes(&buffers.registers, &buffers.formats),
             stride: (SLOT * buffers.registers.len()) as u64,
             program,
-            module,
             uniforms_layout,
-            layout,
             textures,
             vertices,
             indices,
             index_count,
-            pipelines: HashMap::new(),
+            pipelines,
+            formats: HashMap::new(),
         })
     }
 
-    /// The pipeline for these target formats, made on first use.
-    fn pipeline(&mut self, device: &wgpu::Device, color: wgpu::TextureFormat, depth: wgpu::TextureFormat) -> wgpu::RenderPipeline {
-        if let Some(p) = self.pipelines.get(&(color, depth)) {
-            return p.clone();
-        }
-        let state = &self.program.state;
-        let (primitive, (depth_write, depth_compare)) = pipeline_state(Some(state), None);
-        let pipeline = gfx::churn::create_render_pipeline(device, &wgpu::RenderPipelineDescriptor {
-            label: Some("native decorator"),
-            layout: Some(&self.layout),
-            vertex: wgpu::VertexState {
-                module: &self.module,
-                entry_point: Some("vs_main"),
-                compilation_options: Default::default(),
-                buffers: &[
-                    Some(wgpu::VertexBufferLayout {
-                        array_stride: self.stride,
-                        step_mode: wgpu::VertexStepMode::Vertex,
-                        attributes: &self.attributes,
-                    }),
-                    Some(instance_layout()),
+    fn pipeline(&mut self, device: &wgpu::Device, color: wgpu::TextureFormat, depth: wgpu::TextureFormat) -> &Arc<PendingPipeline> {
+        self.formats.entry((color, depth)).or_insert_with(|| {
+            let state = &self.program.state;
+            let (primitive, (depth_write, depth_compare)) = pipeline_state(Some(state), None);
+            let key = PipelineKey {
+                shader: ShaderId(0),
+                vertex_buffers: vec![
+                    OwnedVertexBufferLayout { stride: self.stride, step_mode: wgpu::VertexStepMode::Vertex, attributes: self.attributes.clone() },
+                    OwnedVertexBufferLayout { stride: INSTANCE_STRIDE, step_mode: wgpu::VertexStepMode::Instance, attributes: INSTANCE_ATTRIBUTES.to_vec() },
                 ],
-            },
-            primitive,
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: depth,
-                depth_write_enabled: Some(depth_write),
-                depth_compare: Some(depth_compare),
-                stencil: wgpu::StencilState::default(),
-                bias: wgpu::DepthBiasState::default(),
-            }),
-            multisample: wgpu::MultisampleState::default(),
-            fragment: Some(wgpu::FragmentState {
-                module: &self.module,
-                entry_point: Some("fs_main"),
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState { format: color, blend: state.blend, write_mask: state.color_writes })],
-            }),
-            multiview_mask: None,
-            cache: None,
-        });
-        self.pipelines.insert((color, depth), pipeline.clone());
-        pipeline
+                primitive,
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: depth, depth_write_enabled: Some(depth_write), depth_compare: Some(depth_compare),
+                    stencil: wgpu::StencilState::default(), bias: wgpu::DepthBiasState::default(),
+                }),
+                color_target: wgpu::ColorTargetState { format: color, blend: state.blend, write_mask: state.color_writes },
+                samples: 1,
+            };
+            self.pipelines.request(device, &key)
+        })
+    }
+
+    /// Request the target-specific pipeline before the host clears any
+    /// slots. If a view misses, its siblings also use D3D for this frame.
+    pub fn pipeline_ready(&mut self, device: &wgpu::Device, color: wgpu::TextureFormat, depth: wgpu::TextureFormat) -> bool {
+        self.pipeline(device, color, depth).previous_frame().is_some_and(Option::is_some)
     }
 
     /// Whether the pass writes depth.
@@ -338,7 +326,8 @@ pub fn bind(
     let mut out = Vec::with_capacity(plan.batches.len());
     for (k, batch) in plan.batches.iter().enumerate() {
         let m = materials.get_mut(&batch.material).ok_or("a batch's material is not uploaded")?;
-        let pipeline = m.pipeline(device, color, depth);
+        let pipeline = m.pipeline(device, color, depth).try_get().and_then(Option::as_ref)
+            .cloned().ok_or("decorator pipeline unavailable")?;
         let at = stride * k as u64;
         let binding = |offset: u64, size: u64| {
             wgpu::BindingResource::Buffer(wgpu::BufferBinding { buffer: &buffer, offset, size: NonZeroU64::new(size) })
@@ -557,6 +546,10 @@ struct Out { @builtin(position) pos: vec4f, @location(0) c: vec4f }
         let half = SIZE as f32 / 2.0;
         constants[..4].copy_from_slice(&[[half, 0.0, 0.0, half], [0.0, half, 0.0, half], [0.0, 0.0, 0.0, 0.5], [0.0, 0.0, 0.0, 1.0]]);
         let view = ViewInputs { constants, guest_size: (SIZE, SIZE), size: (SIZE, SIZE), z_scale: 16_777_215.0, w_clip: None };
+        // The synthetic test owns the compile deadline. A live view
+        // leaves its slots on D3D while the same pipeline is pending.
+        let gpu = materials.get_mut(&material).unwrap();
+        assert!(gpu.pipeline(device, F::Rgba8Unorm, F::Depth32Float).get().is_some());
         let bound = bind(device, &mut materials, &plan, &view, F::Rgba8Unorm, F::Depth32Float).unwrap();
         assert_eq!(bound.len(), 1);
         let mut short = plan.clone();

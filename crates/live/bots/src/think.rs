@@ -195,6 +195,22 @@ impl Pool {
         self.shared.work.notify_all();
     }
 
+    /// Retire the previous map's work without helping or waiting. A job
+    /// already popped by a worker has its own source and output slot.
+    fn cancel_queued(&self) {
+        let mut q = lock(&self.shared.queue);
+        let queued = q.jobs.len();
+        q.jobs.clear();
+        q.unfinished -= queued;
+        if q.unfinished == 0 {
+            self.shared.idle.notify_all();
+        }
+    }
+
+    fn busy(&self) -> bool {
+        lock(&self.shared.queue).unfinished != 0
+    }
+
     /// Returns once every submitted job is done, running queued ones on
     /// this thread meanwhile. A job's panic goes on here.
     pub fn wait(&self) {
@@ -299,6 +315,7 @@ pub struct Thinker {
     pool: Option<Pool>,
     radio: &'static Mutex<radio::Radio>,
     in_flight: Option<InFlight>,
+    retiring: bool,
 }
 
 impl Default for Thinker {
@@ -314,6 +331,7 @@ impl Thinker {
             pool: None,
             radio: radio::host(),
             in_flight: None,
+            retiring: false,
         }
     }
 
@@ -346,9 +364,28 @@ impl Thinker {
         self.pool.get_or_insert_with(|| Pool::new(threads))
     }
 
-    /// Finishes and concludes the pipelined thinks in flight, dropping
-    /// their pads: the stream they were for has ended (a game ended, the
-    /// mode changed).
+    /// The action stream ended on a render frame. Drop its unpublished pads
+    /// and radio messages. The next session may sample only after any worker
+    /// that already took a job releases the old source.
+    pub(crate) fn end_game(&mut self) {
+        if self.in_flight.take().is_some() {
+            if let Some(pool) = &self.pool {
+                pool.cancel_queued();
+                self.retiring = true;
+            }
+            radio::lock(self.radio).end_batch();
+        }
+    }
+
+    pub(crate) fn ready_for_game(&mut self) -> bool {
+        if self.retiring {
+            self.retiring = self.pool.as_ref().is_some_and(Pool::busy);
+        }
+        !self.retiring
+    }
+
+    /// Finishes and publishes pipelined decisions before changing modes,
+    /// dropping their pads. A game transition uses `end_game` instead.
     pub fn settle(&mut self) {
         if let Some(f) = self.in_flight.take() {
             self.conclude(&f);

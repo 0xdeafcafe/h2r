@@ -712,7 +712,9 @@ beginning at `10.77.0.2`. A reconnect gets a fresh ID and address. All
 client frames carry peer 0. Host datagrams and bye replies carry the
 recipient's ID. The host sends a WebSocket Ping every five seconds,
 answers incoming pings, and drops connections after 15 seconds without
-a Pong.
+a Pong. Between frames the connection workers sleep until TCP data,
+a queued datagram, or a keepalive deadline wakes them. Local QoS input
+and shutdown also wake the client worker.
 
 Datagrams go to XNet guest port `1000 + offset` with a source of the
 client's synthetic IPv4 and the host's XNet base plus that offset. The

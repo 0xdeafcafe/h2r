@@ -1,5 +1,6 @@
 //! Native light draws over sorted guest geometry. Each target copy prepares
 //! immutable draw resources alongside the exact resolved fallback.
+mod materials;
 pub mod models;
 pub mod walk;
 
@@ -15,11 +16,10 @@ use render_bridge::native_lights::{Alone, Dispatch, Host};
 use map::{Map, TagId};
 use native_render::gpu::Image;
 use native_render::light_gpu::{
-    LayeredImage, LightDraw, LightSet, LightTarget, ModelGeometry, StaticLightTexture, TextureDim, light_gpu_key,
+    LayeredImage, LightDraw, LightGpu, LightSet, LightTarget, ModelGeometry, StaticLightTexture, TextureDim,
 };
 use native_render::light_look::{
-    DIFFUSE_LAYER, InputKey, LightInputs, LightLook, LightProgram, LightRefusal, LightStage, LookCache, SPECULAR_LAYER, compile_light,
-    compile_light_model, engine_inputs, light_look,
+    DIFFUSE_LAYER, LightInputs, LightProgram, LightStage, SPECULAR_LAYER,
 };
 use native_render::light_models::LightModels;
 use native_render::light_list::{SortedItem, SortedLayer};
@@ -30,7 +30,7 @@ use native_render::world::{Owner, World, WorldDraw};
 use native_render::program::InheritedCull;
 use tags::material::{EngineInputs, Material, ShaderLibrary, TextureSource};
 
-use crate::native_world_glue::{Load, Ready, State, ReadMemory, StagePalettes, current_ready, inherited_cull, light_image, upload_on};
+use crate::native_world_glue::{Ready, State, ReadMemory, StagePalettes, current_ready, inherited_cull, light_image};
 
 /// The hook's guest memory as the device's.
 pub struct DeviceMemory<'a>(pub &'a mut dyn GuestMemory);
@@ -73,6 +73,8 @@ pub enum Keep {
     NoConstants,
     /// A part it meets has no material (its shader does not read).
     NoMaterial,
+    /// The BSP worker has yet to publish this variant.
+    MaterialPending,
     /// A pass it needs is refused (`light_look`, `compile_light`, the
     /// material), with why.
     Refused(String),
@@ -87,6 +89,7 @@ impl std::fmt::Display for Keep {
             Keep::NoWorld => f.write_str("the world's lights are not loaded"),
             Keep::NoConstants => f.write_str("no constants from the hook"),
             Keep::NoMaterial => f.write_str("meets a part without a material"),
+            Keep::MaterialPending => f.write_str("light material preparation pending"),
             Keep::Refused(why) => write!(f, "pass refused: {why}"),
             Keep::Unloaded(what) => write!(f, "samples an unloaded {what}"),
             Keep::Unsupported(why) => f.write_str(why),
@@ -173,7 +176,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         -> Result<(PreparedLight, usize), Keep>
     {
         let ready = self.ready(mem)?;
-        let world = ready.lights.as_ref().ok_or(Keep::NoWorld)?;
+        let world = ready.lights.get().ok_or(Keep::NoWorld)?;
         let parts = select_parts(&world.clusters, &sorted.entries)?;
         let consumed = parts.len();
         Ok((self.prepare_parts(d, mem, ready, light, parts, binding)?, consumed))
@@ -190,7 +193,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         parts: Vec<(usize, usize, WorldDraw)>, binding: Option<Binding>) -> Result<PreparedLight, Keep>
     {
         let constants = constants(light)?;
-        let world = ready.lights.as_ref().ok_or(Keep::NoWorld)?;
+        let world = ready.lights.get().ok_or(Keep::NoWorld)?;
         let draws = world.resolve_parts(&constants, parts, binding.is_some())?;
         self.prepare_planned(d, mem, ready, constants, draws, binding)
     }
@@ -199,7 +202,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
     fn prepare_planned(&self, d: &d3d::Device<B>, mem: &dyn GuestMemory, ready: Arc<Ready>, constants: LightConstants,
         draws: Vec<Planned>, binding: Option<Binding>) -> Result<PreparedLight, Keep>
     {
-        let world = ready.lights.as_ref().ok_or(Keep::NoWorld)?;
+        let world = ready.lights.get().ok_or(Keep::NoWorld)?;
         if draws.is_empty() {
             return Err(Keep::Unsupported("no supported light draws in the active list"));
         }
@@ -240,6 +243,25 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
             return Err(Keep::Unsupported("unreadable inherited CULLMODE or FRONTFACE"));
         }
         let cull = InheritedCull { device: cull, clusters: true, placements: false };
+        let (device, color, depth) = d.external_pipeline_target(&memory)
+            .ok_or(Keep::Unsupported("light pipeline target unavailable"))?;
+        let mut pipelines_ready = true;
+        for draw in &draws {
+            let model = match &draw.model {
+                Some(m) => Some(&m.buffer()?.layout),
+                None => None,
+            };
+            if let Ok(mut pass) = draw.compiled.gpu.try_lock() {
+                let inherited = cull.of(draw.compiled.program.inherits_cull, true);
+                let (_, compiled) = pass.pipeline(&device, color, depth, inherited, model);
+                pipelines_ready &= compiled.previous_frame().is_some_and(Option::is_some);
+            } else {
+                pipelines_ready = false;
+            }
+        }
+        if !pipelines_ready {
+            return Err(Keep::Unsupported("light pipeline pending or unavailable"));
+        }
         Ok(PreparedLight { ready, constants, draws, cull, scissor, binding })
     }
 
@@ -267,13 +289,13 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         }
         let c = constants(&a.light)?;
         let ready = self.ready(mem)?;
-        let world = ready.lights.as_ref().ok_or(Keep::NoWorld)?;
+        let world = ready.lights.get().ok_or(Keep::NoWorld)?;
         let group = a.group;
         let objects = group.entries.iter().any(|e| structure_key(e).is_none());
         let model_lights = if objects {
             let name = crate::health::loaded_map_name(mem).map_err(|_| Keep::Unsupported("the loaded map's name does not read"))?;
             let read = ReadMemory(&*mem);
-            Some(self.models.get(&name, || native_render::object_streams::StreamFormats::read(&read),
+            Some(self.models.get(&name, &ready.upload_device.as_ref().ok_or(Keep::NoWorld)?.0, || native_render::object_streams::StreamFormats::read(&read),
                 || crate::native_world_glue::scene_load_palettes(&*d, &*mem))
                 .ok_or(Keep::Unsupported("the map's model light parts are loading"))?)
         } else {
@@ -318,12 +340,20 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
                 mem.u32(engine::light_constants::global::FRAME + 4 * i as u32).ok() != Some(*word)) {
             return Err(Keep::Unsupported("light globals differ from the prepared frame or flags"));
         }
+        // This group has no resolved draw to replay. Reserve its packets on
+        // every copy before allowing the hook to skip its guest handlers.
+        let plan = d3d::ExternalPlan {
+            stage: timeline::native::Stage::Lights,
+            view: mem.u32(engine::render_loop::occlusion::guest::VIEW_INDEX).unwrap_or(u32::MAX),
+            ranges: prepared.draws.iter().map(|draw| draw.ranges.len()).sum(),
+            slots: Vec::new(),
+        };
         let pass = RunPass { light: prepared, view: None, clip: None, gel_slot: None, fallback: None };
-        match d.external_pass_now(&mut DeviceMemory(mem), Box::new(pass)) {
-            Ok(true) => Ok(()),
-            Ok(false) => Err(Keep::Unsupported("the device did not issue the scene light pass")),
-            Err(_) => Err(Keep::Unsupported("device error issuing the scene light pass")),
-        }
+        d.prepare_external_bound(&mut DeviceMemory(mem), plan, Box::new(pass), Vec::new())
+            .map_err(|_| Keep::Unsupported("device error preparing the scene light pass"))?
+            .ok_or(Keep::Unsupported("the scene light pass is not ready"))?
+            .commit();
+        Ok(())
     }
 }
 
@@ -390,7 +420,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         let isolated = plan.binding.is_some();
         let key = order.key(serial, targets, isolated);
         let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        if !matches!(&state.1, Load::Ready(current) if Arc::ptr_eq(current, &plan.ready)) {
+        if !current_ready(&state, mem).is_some_and(|current| Arc::ptr_eq(current, &plan.ready)) {
             return Err(Keep::Unsupported("world changed during light preparation"));
         }
         let layer = LightLayer::new(view_target, plan, &sorted.entries[..count])
@@ -768,25 +798,14 @@ pub struct LitMaterial {
     pub instance: EngineInputs,
 }
 
-/// A light pass compiled for some inputs, with its GPU key.
-#[derive(Debug)]
+/// A translated light pass and the resident shader module and stage textures.
 pub struct Compiled {
-    pub program: LightProgram,
-    pub key: u64,
-}
-
-/// What one (material, layer, implementation, inputs) gives.
-#[derive(Clone, Debug)]
-enum Lit {
-    /// No entry: the template has no pass in the layer.
-    Nothing,
-    Draw(Arc<Compiled>),
-    /// The light keeps its D3D passes (why, for the count).
-    Refused(String),
+    pub program: Arc<LightProgram>,
+    gpu: Arc<Mutex<LightGpu>>,
 }
 
 /// One material's pass for one light: the program and the ranges.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct Planned {
     /// The world material; [`MODEL_MATERIAL`] for a model's part.
     material: u16,
@@ -825,6 +844,13 @@ impl std::fmt::Debug for ModelDraw {
 }
 
 impl ModelDraw {
+    fn buffer(&self) -> Result<&native_render::light_models::LightBuffer, Keep> {
+        self.lights.models.models.get(&self.model)
+            .and_then(|model| model.sections.get(&self.section))
+            .and_then(|section| section.buffers.get(self.buffer))
+            .ok_or(Keep::Unsupported("model light buffer unavailable"))
+    }
+
     /// Its buffers on `device`, uploaded the first time.
     fn geometry(&self, device: &wgpu::Device) -> Option<ModelGeometry<'_>> {
         let section = self.lights.models.models.get(&self.model)?.sections.get(&self.section)?;
@@ -839,41 +865,13 @@ impl ModelDraw {
     }
 }
 
-/// What one (material, layer, implementation, inputs) resolves to for a
-/// model's part, before its program is compiled for a declaration.
-#[derive(Clone, Debug)]
-enum ModelLook {
-    Nothing,
-    Look(Arc<LightLook>),
-    Refused(String),
-}
-
-/// A model part's pass: its material, layer, implementation and inputs,
-/// and the classification and buffer layout it is compiled for.
-type ModelKey = (TagId, usize, usize, InputKey, u32, u64);
-
-/// What resolves light passes at run time: the map's shader library and
-/// the passes resolved so far.
-struct Resolver {
-    lib: ShaderLibrary,
-    cache: LookCache<Lit>,
-    /// The model parts' resolves and their compiles per declaration.
-    looks: LookCache<ModelLook>,
-    model_passes: HashMap<ModelKey, Lit>,
-}
-
-/// Distinct (material, layer, implementation, inputs) kept resolved.
-const CACHE_CAPACITY: usize = 512;
-
 /// The lights' part of a loaded world ([`load`]).
 pub struct LightsWorld {
-    resolver: Mutex<Resolver>,
+    resolver: materials::Resolver,
     materials: HashMap<u16, LitMaterial>,
     clusters: ClusterParts,
-    /// World-space vertex programs by `vrtx`.
-    microcode: HashMap<TagId, Vec<u8>>,
     /// Stage images by (stage, bitmap, image) since palettes are per stage.
-    images: HashMap<(usize, TagId, u32), Image>,
+    images: Arc<HashMap<(usize, TagId, u32), Image>>,
     palettized: HashSet<(usize, TagId, u32)>,
     palettes: StagePalettes,
     /// Gel bitmaps' image 0 by datum.
@@ -883,67 +881,55 @@ pub struct LightsWorld {
 }
 
 impl LightsWorld {
+    /// Upload map textures and start a resolver tied to this device and BSP.
+    pub fn upload_engine_textures(&self, device: &wgpu::Device, queue: &wgpu::Queue) -> LightSet {
+        let mut set = LightSet::new(device, queue, self.normalization.as_deref(), self.attenuation.as_deref());
+        for (&datum, image) in &self.gels {
+            set.upload_gel(device, queue, datum, image);
+        }
+        self.resolver.start(device, queue, set.uniforms_layout(), Arc::clone(&self.images));
+        set
+    }
+
+
     fn resolve_parts(&self, c: &native_render::lights::LightConstants, parts: Vec<(usize, usize, WorldDraw)>, produced_gel: bool)
         -> Result<Vec<Planned>, Keep>
     {
         // Resolved without the colours, which each light's uniforms take
         // (`colour_uniforms`): a light whose colour animates keeps its key.
         let inputs = LightInputs::from_constants(c).without_colours();
-        let key = inputs.key();
         let mut out: Vec<Planned> = Vec::new();
-        let mut r = self.resolver.lock().unwrap_or_else(|e| e.into_inner());
-        let Resolver { lib, cache, .. } = &mut *r;
+        let mut pending = false;
         for (layer, imp, draw) in parts {
             let m = draw.material;
             let end = draw.first_index.checked_add(draw.index_count).ok_or(Keep::Unsupported("invalid cluster index range"))?;
             let range = draw.first_index..end;
             let lit = self.materials.get(&m).ok_or(Keep::NoMaterial)?;
-            let made = cache.get_or_make(lit.shader, layer, imp, key, || self.resolve(lib, lit, &inputs, layer, imp));
-            match made {
-                Lit::Nothing => return Err(Keep::Unsupported("built light entry has no native material pass")),
-                Lit::Refused(why) => return Err(Keep::Refused(why)),
-                Lit::Draw(compiled) => {
-                    if compiled.program.inputs & !draw.inputs != 0 {
-                        return Err(Keep::Unsupported("cluster lacks a vertex stream read by its light program"));
-                    }
-                    self.binds(&compiled.program, c.gel, produced_gel, &self.images)?;
-                    if let Some(previous) = out.last_mut()
-                        && previous.material == m && previous.layer == layer && Arc::ptr_eq(&previous.compiled, &compiled)
-                    {
-                        previous.ranges.push(range);
-                        continue;
-                    }
-                    out.push(Planned {
-                        compiled,
-                        material: m, layer, implementation: imp, ranges: vec![range], model: None,
-                    });
+            let resolved = match self.resolver.world(lit, inputs, layer, imp) {
+                Err(Keep::MaterialPending) => {
+                    // Request the remaining variants for this layer on the same frame.
+                    pending = true;
+                    continue;
                 }
+                other => other?,
+            };
+            let compiled = resolved.compiled;
+            if compiled.program.inputs & !draw.inputs != 0 {
+                return Err(Keep::Unsupported("cluster lacks a vertex stream read by its light program"));
             }
-        }
-        Ok(out)
-    }
-
-    /// Resolves `lit` with the light's inputs and compiles its pass.
-    fn resolve(&self, lib: &mut ShaderLibrary, lit: &LitMaterial, inputs: &LightInputs, layer: usize, imp: usize) -> Lit {
-        let material = match lib.material(lit.shader, Some(engine_inputs(&lit.instance, inputs))) {
-            Ok(m) => m,
-            Err(e) => return Lit::Refused(format!("material: {e}")),
-        };
-        let look = match light_look(&material, layer, imp) {
-            Ok(l) => l,
-            Err(LightRefusal::NoLayer) => return Lit::Nothing,
-            Err(r) => return Lit::Refused(format!("{r:?}")),
-        };
-        let Some(code) = self.microcode.get(&look.vertex_shader) else {
-            return Lit::Refused("no world-space vertex program".into());
-        };
-        match compile_light(&look, code) {
-            Ok(program) => {
-                let key = light_gpu_key(&program);
-                Lit::Draw(Arc::new(Compiled { program, key }))
+            self.binds(&compiled.program, c.gel, produced_gel, &self.images)?;
+            if let Some(previous) = out.last_mut()
+                && previous.material == m && previous.layer == layer && Arc::ptr_eq(&previous.compiled, &compiled)
+            {
+                previous.ranges.push(range);
+                continue;
             }
-            Err(e) => Lit::Refused(e),
+            out.push(Planned {
+                compiled,
+                material: m, layer, implementation: imp, ranges: vec![range], model: None,
+            });
         }
+        if pending { Err(Keep::MaterialPending) } else { Ok(out) }
     }
 
     /// A model part's draw for one light ([`models`]): `entry`'s part,
@@ -954,51 +940,13 @@ impl LightsWorld {
         -> Result<Planned, Keep>
     {
         let (section, part) = lights.models.part(entry).ok_or(Keep::Unsupported("scene group entry has no native light stream"))?;
-        let (shader, instance) = lights.instances.get(&entry.binding.shader).cloned().ok_or(Keep::NoMaterial)?;
+        let (shader, instance) = lights.instances.get(&entry.binding.shader).ok_or(Keep::NoMaterial)?;
         let inputs = LightInputs::from_constants(c).without_colours();
-        let key = inputs.key();
         let imp = usize::from(entry.binding.implementation);
-        let mut r = self.resolver.lock().unwrap_or_else(|e| e.into_inner());
-        let Resolver { lib, looks, model_passes, .. } = &mut *r;
-        let look = looks.get_or_make(shader, layer, imp, key, || {
-            let material = match lib.material(shader, Some(engine_inputs(&instance, &inputs))) {
-                Ok(m) => m,
-                Err(e) => return ModelLook::Refused(format!("material: {e}")),
-            };
-            match light_look(&material, layer, imp) {
-                Ok(l) => ModelLook::Look(Arc::new(l)),
-                Err(LightRefusal::NoLayer) => ModelLook::Nothing,
-                Err(r) => ModelLook::Refused(format!("{r:?}")),
-            }
-        });
-        let look = match look {
-            ModelLook::Nothing => return Err(Keep::Unsupported("built light entry has no native material pass")),
-            ModelLook::Refused(why) => return Err(Keep::Refused(why)),
-            ModelLook::Look(l) => l,
-        };
-        let class = u32::from(entry.stream.vertex_class);
-        let buffer = section.buffers.iter().position(|b| b.vertex_shader == look.vertex_shader && b.classification == class)
-            .ok_or(Keep::Unsupported("no model light buffer for the entry's program and classification"))?;
-        let b = &section.buffers[buffer];
-        let code = lights.microcode.get(&(look.vertex_shader, class)).ok_or(Keep::Unsupported("no model vertex program"))?;
-        if model_passes.len() >= CACHE_CAPACITY {
-            model_passes.clear();
-        }
-        let made = model_passes.entry((shader, layer, imp, key, class, b.layout.id)).or_insert_with(|| {
-            match compile_light_model(&look, code, b.provided(), b.fetch()) {
-                Ok(program) => {
-                    let key = light_gpu_key(&program);
-                    Lit::Draw(Arc::new(Compiled { program, key }))
-                }
-                Err(e) => Lit::Refused(e),
-            }
-        }).clone();
-        drop(r);
-        let compiled = match made {
-            Lit::Draw(compiled) => compiled,
-            Lit::Refused(why) => return Err(Keep::Refused(why)),
-            Lit::Nothing => return Err(Keep::Unsupported("built light entry has no native material pass")),
-        };
+        let resolved = self.resolver.model(*shader, instance, inputs, layer, imp, lights, entry)?;
+        let buffer = resolved.buffer.ok_or(Keep::Unsupported("model light buffer unavailable"))?;
+        let b = section.buffers.get(buffer).ok_or(Keep::Unsupported("model light buffer unavailable"))?;
+        let compiled = resolved.compiled;
         if compiled.program.inputs & !b.provided() != 0 {
             return Err(Keep::Unsupported("model section lacks a vertex stream read by its light program"));
         }
@@ -1184,16 +1132,10 @@ pub fn load<R: std::io::Read + std::io::Seek>(
         return None;
     }
     Some(LightsWorld {
-        resolver: Mutex::new(Resolver {
-            lib,
-            cache: LookCache::new(CACHE_CAPACITY),
-            looks: LookCache::new(CACHE_CAPACITY),
-            model_passes: HashMap::new(),
-        }),
+        resolver: materials::Resolver::new(lib, microcode),
         materials,
         clusters,
-        microcode,
-        images,
+        images: Arc::new(images),
         palettized,
         palettes: palettes.clone(),
         gels,
@@ -1269,7 +1211,7 @@ impl PreparedLight {
         let inputs = LightInputs::from_constants(c);
         LightDraw {
             program: &p.compiled.program,
-            key: p.compiled.key,
+            gpu: &p.compiled.gpu,
             cull: self.cull.of(p.compiled.program.inherits_cull, true),
             colours: [inputs.colour_a, inputs.colour_b],
             frame: &c.frame,
@@ -1364,12 +1306,8 @@ impl RunPass {
         let clip = self.clip.filter(|c| c.w_buffered == Some(true)).ok_or("unknown W-buffer at issue")?;
         let view = ViewInputs { constants: request.view_constants(t.copy, constants), guest_size, size: t.size, z_scale: request.z_scale, w_clip: Some((clip.range, clip.clamp)) };
         let ready = &self.light.ready;
-        let lw = ready.lights.as_ref().ok_or("world lights unavailable")?;
-        let mut gpu = upload_on(ready, &t.device, &t.queue);
+        let mut gpu = ready.gpu();
         let gpu = gpu.as_mut().ok_or("world upload failed")?;
-        if gpu.lights().is_none() {
-            gpu.set_lights(LightSet::new(&t.device, &t.queue, lw.normalization.as_deref(), lw.attenuation.as_deref()));
-        }
         // Resolve the pinned slot on this copy before replacing the guest draw.
         let sample = match self.light.binding {
             Some(binding) => Some(gel_sample(binding, &t.slots, self.gel_slot.ok_or("missing gel slot")?)
@@ -1384,22 +1322,12 @@ impl RunPass {
             }
             Ok(draw)
         }).collect::<Result<_, &'static str>>()?;
-        // A model draw's stage images are the models' load's.
-        let model_images = self.light.draws.iter().find_map(|p| p.model.as_ref()).map(|m| &m.lights.images);
         let target = LightTarget {
             device: &t.device, queue: &t.queue, uploads: &t.uploads,
             color: &t.color, color_format: t.color_format,
             depth: &t.depth, depth_format: t.depth_format, size: t.size,
         };
-        gpu.prepare_lights(
-            &target, scissor, &view, &draws,
-            &mut |stage, s| match s {
-                LightStage::Bitmap { bitmap, image } => lw.images.get(&(stage, bitmap, image))
-                    .or_else(|| model_images.and_then(|i| i.get(&(stage, bitmap, image)))).cloned(),
-                _ => None,
-            },
-            &mut |g| lw.gels.get(&g).cloned(),
-        )
+        gpu.prepare_lights(&target, scissor, &view, &draws)
     }
 }
 

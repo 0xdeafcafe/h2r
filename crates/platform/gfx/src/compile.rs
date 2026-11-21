@@ -26,6 +26,7 @@ pub struct Pending<T> {
     value: OnceLock<T>,
     build: Mutex<Option<Build<T>>>,
     built_on: OnceLock<std::thread::ThreadId>,
+    completed_frame: OnceLock<u64>,
 }
 
 impl<T> Pending<T> {
@@ -35,6 +36,7 @@ impl<T> Pending<T> {
             value: OnceLock::new(),
             build: Mutex::new(Some(Box::new(build))),
             built_on: OnceLock::new(),
+            completed_frame: OnceLock::new(),
         })
     }
 
@@ -44,6 +46,7 @@ impl<T> Pending<T> {
             value: OnceLock::new(),
             build: Mutex::new(None),
             built_on: OnceLock::new(),
+            completed_frame: OnceLock::new(),
         };
         let _ = p.value.set(value);
         Arc::new(p)
@@ -52,6 +55,20 @@ impl<T> Pending<T> {
     /// The value if it is built, without waiting.
     pub fn try_get(&self) -> Option<&T> {
         self.value.get()
+    }
+
+    /// A worker result visible at the start of this guest frame. A native
+    /// pass can retain its D3D draws until the swap after compilation.
+    pub fn previous_frame(&self) -> Option<&T> {
+        self.visible_at_frame(timeline::frames())
+    }
+
+    /// Whether a pass extracted in this guest frame can use the value.
+    /// A deferred render worker can be several swaps behind extraction.
+    pub fn visible_at_frame(&self, frame: u64) -> Option<&T> {
+        self.value.get().filter(|_| {
+            self.completed_frame.get().is_none_or(|&completed| completed < frame)
+        })
     }
 
     /// Whether the value is built.
@@ -69,7 +86,9 @@ impl<T> Pending<T> {
                 .take()
                 .expect("a pending value is built once");
             let _ = self.built_on.set(std::thread::current().id());
-            build()
+            let value = build();
+            let _ = self.completed_frame.set(timeline::frames());
+            value
         })
     }
 
@@ -130,6 +149,11 @@ impl Compiler {
 
     /// A compiler with `threads` workers (0: nothing runs in the background).
     pub fn new(threads: usize) -> Arc<Self> {
+        Self::with_worker_setup(threads, WORKER_NAME, || {})
+    }
+
+    /// A separate pool for callers with a different scheduling policy.
+    pub fn with_worker_setup(threads: usize, name: &str, setup: fn()) -> Arc<Self> {
         let c = Arc::new(Self {
             queues: Mutex::default(),
             ready: Condvar::new(),
@@ -137,8 +161,11 @@ impl Compiler {
         for n in 0..threads {
             let c = c.clone();
             std::thread::Builder::new()
-                .name(format!("{WORKER_NAME} {n}"))
-                .spawn(move || c.work())
+                .name(format!("{name} {n}"))
+                .spawn(move || {
+                    setup();
+                    c.work();
+                })
                 .expect("spawn a pipeline compile thread");
         }
         c
@@ -228,6 +255,17 @@ mod tests {
         assert_eq!(p.built_on(), Some(std::thread::current().id()));
         assert_eq!(c.queued(), 1);
         assert_eq!(*Pending::ready(3).try_get().unwrap(), 3);
+    }
+
+    #[test]
+    fn a_completed_job_becomes_visible_at_the_following_guest_swap() {
+        let pending = Pending::new(|| 9);
+        assert!(pending.previous_frame().is_none());
+        assert_eq!(pending.get(), &9);
+        let completed = *pending.completed_frame.get().unwrap();
+        assert!(pending.visible_at_frame(completed).is_none());
+        assert_eq!(pending.visible_at_frame(completed + 1), Some(&9));
+        assert_eq!(Pending::ready(3).visible_at_frame(0), Some(&3));
     }
 
     #[test]

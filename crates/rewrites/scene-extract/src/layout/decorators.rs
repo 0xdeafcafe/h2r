@@ -508,12 +508,25 @@ fn bytes(mem: &dyn GuestRead, addr: u32, len: u32) -> Result<Vec<u8>, Refusal> {
 /// draw reads it. The vertex count is one past the largest index. The
 /// caller checks the set's geometry is resident first ([`read`] does).
 pub fn set_geometry(mem: &dyn GuestRead, set: u32) -> Result<SetGeometry, Refusal> {
+    set_geometry_with(mem, set, |addr, len| bytes(mem, addr, len))
+}
+
+/// As [`set_geometry`], using the caller's bulk read for the two resident
+/// streams. Both reads complete on the guest thread before the snapshot
+/// is handed to a worker.
+pub fn set_geometry_with(
+    mem: &dyn GuestRead, set: u32, mut read: impl FnMut(u32, u32) -> Result<Vec<u8>, Refusal>,
+) -> Result<SetGeometry, Refusal> {
     let def = definition(mem, set).ok_or(Refusal::Unread)?;
     let count = word(mem, def, SET_INDEX_COUNT)?;
     if count > MAX_SET_INDICES {
         return Err(Refusal::Unread);
     }
-    let raw = bytes(mem, word(mem, def, SET_INDICES)?, 2 * count)?;
+    let index_bytes = 2 * count;
+    let raw = read(word(mem, def, SET_INDICES)?, index_bytes)?;
+    if raw.len() != index_bytes as usize {
+        return Err(Refusal::Unread);
+    }
     let indices: Vec<u16> = raw.as_chunks::<2>().0.iter().map(|b| u16::from_le_bytes([b[0], b[1]])).collect();
     let stream = word(mem, def, SET_STREAM)?;
     let stream_type = byte(mem, stream, 0)?;
@@ -523,7 +536,10 @@ pub fn set_geometry(mem: &dyn GuestRead, set: u32) -> Result<SetGeometry, Refusa
     let data = 0x8000_0000 | (word(mem, buffer, RESOURCE_DATA)? & 0x0fff_ffff);
     let vertex_count = indices.iter().map(|&i| u32::from(i) + 1).max().unwrap_or(0);
     let len = vertex_count.checked_mul(u32::from(stride)).filter(|&n| n <= MAX_SET_VERTEX_BYTES).ok_or(Refusal::Unread)?;
-    let vertices = bytes(mem, data.checked_add(offset).ok_or(Refusal::Unread)?, len)?;
+    let vertices = read(data.checked_add(offset).ok_or(Refusal::Unread)?, len)?;
+    if vertices.len() != len as usize {
+        return Err(Refusal::Unread);
+    }
     Ok(SetGeometry { stream_type, stride, vertices, indices })
 }
 
@@ -799,6 +815,14 @@ pub(crate) mod tests {
         assert_eq!(g.vertex_count(), 3);
         // From byte 2 of the data: 3, 4, then the next words' bytes.
         assert_eq!(g.vertices, (3..21).collect::<Vec<u8>>());
+        let mut reads = Vec::new();
+        let snapshot = set_geometry_with(&m, 0xe000_0005, |at, len| {
+            reads.push((at, len));
+            bytes(&m, at, len)
+        }).unwrap();
+        assert_eq!(snapshot, g);
+        assert_eq!(reads, [(INDICES, 6), (0x8000_0000 | (DATA + 2), 18)]);
+        assert_eq!(set_geometry_with(&m, 0xe000_0005, |_, _| Ok(Vec::new())), Err(Refusal::Unread));
         m.w(SET + SET_INDEX_COUNT, MAX_SET_INDICES + 1);
         assert_eq!(set_geometry(&m, 0xe000_0005), Err(Refusal::Unread));
     }

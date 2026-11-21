@@ -578,10 +578,10 @@ fn no_replay_while_a_pixel_count_is_open() {
     r.frame(2 * F, &scene(camera(1.0, 0.0)));
     r.b.clear_pixel_count().unwrap();
     let before = r.calls();
-    assert!(r.b.idle_at(2 * F + F / 2).is_some(), "asks again soon");
+    assert_eq!(r.b.idle_at(2 * F + F / 2), None, "wait for the count report");
     assert_eq!(r.calls(), before, "nothing drawn into the open count");
     r.b.report_pixel_count().unwrap();
-    r.b.idle_at(2 * F + F / 2 + 1_000_000);
+    r.b.idle_at(2 * F + F / 2);
     assert_eq!(r.presents_since(before).len(), 1);
 }
 

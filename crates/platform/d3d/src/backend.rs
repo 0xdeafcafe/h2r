@@ -1524,6 +1524,13 @@ pub trait Backend: Send {
         unreachable!("backend did not prepare an external recording")
     }
 
+    /// Device and queue shared by every copy this backend draws. A map
+    /// loader can prepare immutable resources without touching a live pass.
+    #[cfg(feature = "gpu")]
+    fn upload_device(&self) -> Option<(wgpu::Device, wgpu::Queue)> {
+        None
+    }
+
     /// Whether [`external_pass`](Self::external_pass) can draw (asked
     /// before the guest skips its own work for it). `false` by default.
     fn supports_external_pass(&self) -> bool {

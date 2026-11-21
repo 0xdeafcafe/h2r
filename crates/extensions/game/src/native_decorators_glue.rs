@@ -15,35 +15,34 @@
 //!   why the rest stay on the D3D path.
 //! - **At first sight** ([`Host::prepare`], at the layer-3 call, once per
 //!   load and material): the set's geometry and stream format from guest
-//!   memory (`set_geometry`, `object_streams::StreamFormats`), the pass
-//!   translated for that stream (`compile`) and the vertices gathered as
-//!   it reads them (`buffers`). A set that is not resident is tried
-//!   again at the next view; any other refusal holds for the load and is
-//!   logged once.
+//!   memory (`set_geometry_with`, `object_streams::StreamFormats`). A
+//!   utility worker translates the pass, gathers the set's vertices and
+//!   uploads its buffers and images. The first view of each frame takes
+//!   finished materials from this load. A set that is not resident is
+//!   tried again at the next view.
 //! - **Per view** ([`Host::ask`]): the device's checks (W-buffered, no
 //!   stencil), the skip over a preview (`clear_slots`), and the reserved
 //!   pass, then the masks and the commit, as the fog's.
 //! - **The pass** (`DecoratorPass`): the device's view constants and W
-//!   clip at the issue, each material uploaded on the device at its first
-//!   draw (`MaterialGpu`, kept for the load), then `decorators_gpu::bind`
-//!   and `encode`.
+//!   clip at the issue and the pass's pipeline for each copy's formats.
+//!   An unfinished pipeline keeps the slots on D3D. `decorators_gpu::bind`
+//!   and `encode` record after all copies pass.
 
 use std::collections::{HashMap, HashSet};
 use std::io::{Read, Seek};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock, mpsc};
 
 use engine::memory::GuestMemory;
 use map::{FourCC, Map, TagId};
 use native_render::decorators::{Material, Plan, clear_slots};
 use native_render::decorators_gpu::{DecoratorTarget, MaterialGpu, bind, encode};
 use native_render::decorators_load::{
-    DECORATOR_CLASSIFICATION, DecoratorBuffers, DecoratorLook, DecoratorProgram, SetRefusal, buffers, compile,
-    decorator_look, set_geometry,
+    DECORATOR_CLASSIFICATION, DecoratorLook, SetGeometry, SetRefusal, buffers, compile, decorator_look, set_geometry_with,
 };
 use native_render::gpu::Image;
 use native_render::look::{self, Stage};
-use native_render::object_streams::StreamFormats;
+use native_render::object_streams::{StreamElement, StreamFormats};
 use native_render::program::ViewInputs;
 use native_render::skip::{Cleared, LIGHTMAP_LAYER};
 use render_bridge::native_decorators::Host;
@@ -68,6 +67,8 @@ const SHAD: FourCC = FourCC(*b"shad");
 pub struct DecoratorLooks {
     looks: HashMap<(u16, u8, u8), Result<DecoratorLook, String>>,
     images: StageImages,
+    prepared: Mutex<Prepared>,
+    gpu: Mutex<HashMap<Material, MaterialGpu>>,
 }
 
 impl DecoratorLooks {
@@ -121,7 +122,7 @@ pub fn load<R: Read + Seek>(
         Ok(lib) => lib,
         Err(e) => {
             eprintln!("native-decorators: the shader tags do not read ({e}); the D3D path draws the decorators");
-            return Arc::new(DecoratorLooks { looks, images });
+            return Arc::new(DecoratorLooks { looks, images, prepared: Mutex::default(), gpu: Mutex::default() });
         }
     };
     let shaders = set_shaders(map, &lib);
@@ -178,57 +179,106 @@ pub fn load<R: Read + Seek>(
         looks.values().filter(|l| l.is_ok()).count(),
         looks.len(),
     );
-    Arc::new(DecoratorLooks { looks, images })
+    Arc::new(DecoratorLooks { looks, images, prepared: Mutex::default(), gpu: Mutex::default() })
 }
 
-/// One material made ready: its program for the set's stream, the set's
-/// vertices as it reads them, and its stage images.
-struct LoadedMaterial {
-    program: DecoratorProgram,
-    buffers: DecoratorBuffers,
-    images: [Option<Image>; 4],
-}
+type MaterialResult = Result<MaterialGpu, String>;
 
-/// What [`Glue::prepare`] made ready for one load, and the materials the
-/// pass uploaded on the device (kept for the load).
+/// One outstanding job per load. The result channel belongs only to that
+/// load, so a late upload cannot publish into a different BSP.
+#[derive(Default)]
 struct Prepared {
-    ready: Arc<Ready>,
-    loaded: HashMap<Material, Result<Arc<LoadedMaterial>, String>>,
-    gpu: Arc<Mutex<HashMap<Material, MaterialGpu>>>,
+    pending: Option<(Material, mpsc::Receiver<MaterialResult>)>,
+    /// None for a refused material, otherwise whether its pass writes depth.
+    depth: HashMap<Material, Option<bool>>,
+    frame: Option<u64>,
 }
 
-/// Makes `material` ready, or why it is not: `Ok(None)` when the set is
-/// not resident (tried again at the next view).
-fn make_ready(
-    looks: &DecoratorLooks, mem: &ReadMemory<'_>, formats: &mut Option<Option<StreamFormats>>, material: &Material,
-) -> Result<Option<LoadedMaterial>, String> {
-    let look = match looks.look(material) {
-        Some(Ok(look)) => look,
-        Some(Err(why)) => return Err(why.clone()),
-        None => return Err("the load has no layer-3 pass for the shader".into()),
-    };
-    let set = match set_geometry(mem, material.set) {
-        Ok(set) => set,
-        Err(SetRefusal::NotResident | SetRefusal::Unread) => return Ok(None),
-        Err(why) => return Err(format!("set geometry: {why:?}")),
-    };
-    let formats = formats
-        .get_or_insert_with(|| StreamFormats::read(mem))
-        .as_ref()
-        .ok_or("the stream format table does not read")?;
-    let program = compile(look, &formats.elements(set.stream_type)?)?;
-    let buffers = buffers(&program, &set)?;
-    let mut images: [Option<Image>; 4] = Default::default();
-    for (n, dim) in program.dims.iter().enumerate() {
-        if dim.is_none() {
-            continue;
+impl Prepared {
+    /// All views of a guest frame see the same set of uploaded materials.
+    fn begin_frame(&mut self, frame: u64, materials: &Mutex<HashMap<Material, MaterialGpu>>) {
+        if self.frame == Some(frame) {
+            return;
         }
-        let Stage::Bitmap { bitmap, image } = program.stages[n] else {
-            return Err(format!("stage {n} samples what is not a bitmap"));
-        };
-        images[n] = Some(looks.images.get(&(bitmap, image)).cloned().ok_or_else(|| format!("stage {n} bitmap did not load"))?);
+        self.frame = Some(frame);
+        if let Some((material, receiver)) = &self.pending {
+            // The previous frame may still be binding a batch. Keep the
+            // completed upload in its mailbox for another frame in that case.
+            let Ok(mut materials) = materials.try_lock() else { return };
+            let result = match receiver.try_recv() {
+                Ok(result) => result,
+                Err(mpsc::TryRecvError::Empty) => return,
+                Err(mpsc::TryRecvError::Disconnected) => Err("material worker stopped".into()),
+            };
+            let depth = match result {
+                Ok(gpu) => {
+                    let depth = gpu.writes_depth();
+                    materials.insert(*material, gpu);
+                    Some(depth)
+                }
+                Err(why) => {
+                    drop(materials);
+                    log_once(&why);
+                    None
+                }
+            };
+            self.depth.insert(*material, depth);
+            self.pending = None;
+        }
     }
-    Ok(Some(LoadedMaterial { program, buffers, images }))
+}
+
+/// The only input that comes from live guest memory is an owned copy of
+/// the resident geometry and its stream declaration.
+struct MaterialJob {
+    material: Material,
+    set: SetGeometry,
+    stream: Vec<StreamElement>,
+    looks: Arc<DecoratorLooks>,
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+    generation: u64,
+    reply: mpsc::Sender<MaterialResult>,
+}
+
+impl MaterialJob {
+    fn upload(&self) -> MaterialResult {
+        let Some(Ok(look)) = self.looks.look(&self.material) else {
+            return Err("the load has no supported decorator pass for the shader".into());
+        };
+        let program = compile(look, &self.stream)?;
+        let buffers = buffers(&program, &self.set)?;
+        let mut images: [Option<Image>; 4] = Default::default();
+        for (n, dim) in program.dims.iter().enumerate() {
+            if dim.is_none() {
+                continue;
+            }
+            let Stage::Bitmap { bitmap, image } = program.stages[n] else {
+                return Err(format!("stage {n} samples what is not a bitmap"));
+            };
+            images[n] = Some(self.looks.images.get(&(bitmap, image)).cloned().ok_or_else(|| format!("stage {n} bitmap did not load"))?);
+        }
+        let gpu = MaterialGpu::new(&self.device, &self.queue, program, &buffers, &images).map_err(str::to_owned)?;
+        self.queue.submit([]);
+        Ok(gpu)
+    }
+}
+
+fn material_worker() -> Option<mpsc::SyncSender<MaterialJob>> {
+    let (tx, rx) = mpsc::sync_channel::<MaterialJob>(1);
+    let worker = background::spawn("native-decorators load", move || {
+        for job in rx {
+            if job.generation == render_bridge::native_map_work::bsp_generation() {
+                let _timer = timeline::setup::Stage::Decorators.worker();
+                let _ = job.reply.send(job.upload());
+            }
+        }
+    });
+    if let Err(e) = worker {
+        eprintln!("native-decorators: could not start material worker ({e})");
+        return None;
+    }
+    Some(tx)
 }
 
 /// Each refusal reason, logged once.
@@ -244,7 +294,7 @@ fn log_once(why: &str) {
 struct Glue<B: d3d::backend::Backend + Send + 'static> {
     device: d3d::abi::SharedDevice<B>,
     state: State,
-    prepared: Mutex<Option<Prepared>>,
+    worker: OnceLock<Option<mpsc::SyncSender<MaterialJob>>>,
 }
 
 impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
@@ -258,29 +308,63 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
     fn prepare(&self, mem: &dyn GuestMemory, materials: &[Material]) -> HashSet<Material> {
         let mut out = HashSet::new();
         let Some(ready) = self.ready(mem) else { return out };
-        let Some(looks) = ready.decorators.clone() else { return out };
-        let mut prepared = self.prepared.lock().unwrap_or_else(|e| e.into_inner());
-        if !prepared.as_ref().is_some_and(|p| Arc::ptr_eq(&p.ready, &ready)) {
-            *prepared = Some(Prepared { ready: Arc::clone(&ready), loaded: HashMap::new(), gpu: Arc::default() });
-        }
-        let Some(p) = prepared.as_mut() else { return out };
+        let Some(looks) = ready.decorators.get() else { return out };
+        let mut p = looks.prepared.lock().unwrap_or_else(|e| e.into_inner());
+        p.begin_frame(timeline::frames(), &looks.gpu);
         let read = ReadMemory(mem);
-        let mut formats = None;
+        let mut queue_full = false;
         for m in materials {
-            if !p.loaded.contains_key(m) {
-                match make_ready(&looks, &read, &mut formats, m) {
-                    Ok(Some(loaded)) => {
-                        p.loaded.insert(*m, Ok(Arc::new(loaded)));
-                    }
-                    Ok(None) => continue,
-                    Err(why) => {
-                        log_once(&why);
-                        p.loaded.insert(*m, Err(why));
-                    }
+            if let Some(depth) = p.depth.get(m) {
+                if depth.is_some() {
+                    out.insert(*m);
                 }
+                continue;
             }
-            if p.loaded.get(m).is_some_and(|l| l.is_ok()) {
-                out.insert(*m);
+            if queue_full || p.pending.is_some() {
+                continue;
+            }
+            if !matches!(looks.look(m), Some(Ok(_))) {
+                p.depth.insert(*m, None);
+                continue;
+            }
+            let Some((device, queue)) = ready.upload_device.as_ref() else { continue };
+            let _handoff = timeline::setup::dispatch();
+            let Some(worker) = self.worker.get_or_init(material_worker) else { continue };
+            let _capture = timeline::native::Timer::start(timeline::native::Stage::World, timeline::native::Metric::ExtractNs);
+            let set = match set_geometry_with(&read, m.set, |at, len| {
+                mem.bytes(at, len as usize).map_err(|_| SetRefusal::Unread)
+            }) {
+                Ok(set) => set,
+                Err(SetRefusal::NotResident | SetRefusal::Unread) => continue,
+                Err(why) => {
+                    log_once(&format!("set geometry: {why:?}"));
+                    p.depth.insert(*m, None);
+                    continue;
+                }
+            };
+            let stream = StreamFormats::read(&read)
+                .ok_or_else(|| "the stream format table does not read".to_owned())
+                .and_then(|f| f.elements(set.stream_type));
+            let stream = match stream {
+                Ok(stream) => stream,
+                Err(why) => {
+                    log_once(&why);
+                    p.depth.insert(*m, None);
+                    continue;
+                }
+            };
+            let (reply, result) = mpsc::channel();
+            let job = MaterialJob {
+                material: *m, set, stream, looks: Arc::clone(looks),
+                device: device.clone(), queue: queue.clone(),
+                generation: render_bridge::native_map_work::bsp_generation(), reply,
+            };
+            match worker.try_send(job) {
+                Ok(()) => p.pending = Some((*m, result)),
+                Err(mpsc::TrySendError::Full(_)) => queue_full = true,
+                Err(mpsc::TrySendError::Disconnected(_)) => {
+                    p.depth.insert(*m, None);
+                }
             }
         }
         out
@@ -289,15 +373,14 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
     fn ask(&self, mem: &mut dyn GuestMemory, plan: Plan) -> Option<Cleared> {
         use timeline::native::{Metric, Stage};
         let ready = self.ready(mem)?;
-        let (loaded, gpu) = {
-            let prepared = self.prepared.lock().unwrap_or_else(|e| e.into_inner());
-            let p = prepared.as_ref().filter(|p| Arc::ptr_eq(&p.ready, &ready))?;
-            let mut loaded = HashMap::new();
+        let writes_depth = {
+            let looks = ready.decorators.get()?;
+            let p = looks.prepared.lock().ok()?;
+            let mut writes_depth = false;
             for b in &plan.batches {
-                let m = p.loaded.get(&b.material)?.as_ref().ok()?;
-                loaded.insert(b.material, Arc::clone(m));
+                writes_depth |= p.depth.get(&b.material).copied().flatten()?;
             }
-            (loaded, Arc::clone(&p.gpu))
+            writes_depth
         };
         let mut d = self.device.lock().ok()?;
         if !d.can_external_pass()
@@ -328,10 +411,9 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         if ranges == 0 || cleared.items.len() != ranges {
             return None;
         }
-        let writes_depth = loaded.values().any(|m| m.program.state.depth_write);
         let view = mem.u32(engine::render_loop::occlusion::guest::VIEW_INDEX).unwrap_or(u32::MAX);
         let external = d3d::ExternalPlan { stage: Stage::World, view, ranges, slots: Vec::new() };
-        let pass = Box::new(DecoratorPass { plan, loaded, gpu, view: None, w_clip: None, writes_depth });
+        let pass = Box::new(DecoratorPass { plan, ready: Arc::clone(&ready), view: None, w_clip: None, writes_depth });
         drop(planning);
         let reservation = d
             .prepare_external_bound(&mut crate::native_lights_glue::DeviceMemory(mem), external, pass, Vec::new())
@@ -356,7 +438,7 @@ pub fn install<B: d3d::backend::Backend + Send + 'static>(device: &d3d::abi::Sha
     render_bridge::native_decorators::set_host(Arc::new(Glue {
         device: Arc::clone(device),
         state,
-        prepared: Mutex::new(None),
+        worker: OnceLock::new(),
     }));
 }
 
@@ -367,36 +449,19 @@ static REFUSED: AtomicBool = AtomicBool::new(false);
 /// One view's decorators.
 struct DecoratorPass {
     plan: Plan,
-    /// The plan's materials, made ready at the ask.
-    loaded: HashMap<Material, Arc<LoadedMaterial>>,
-    /// The load's materials on the device.
-    gpu: Arc<Mutex<HashMap<Material, MaterialGpu>>>,
+    /// Pin the BSP until the last queued packet releases its GPU materials.
+    ready: Arc<Ready>,
     view: Option<[[f32; 4]; d3d::VIEW_CONSTANTS]>,
     w_clip: Option<([f32; 2], bool)>,
     writes_depth: bool,
 }
 
 impl DecoratorPass {
-    /// Uploads each of the plan's materials not yet on the device.
-    fn upload(&self, device: &wgpu::Device, queue: &wgpu::Queue) -> Result<(), &'static str> {
-        let mut gpu = self.gpu.lock().unwrap_or_else(|e| e.into_inner());
-        for (m, loaded) in &self.loaded {
-            if gpu.contains_key(m) {
-                continue;
-            }
-            let material = MaterialGpu::new(device, queue, loaded.program.clone(), &loaded.buffers, &loaded.images)?;
-            gpu.insert(*m, material);
-        }
-        Ok(())
-    }
-}
-
-impl DecoratorPass {
     /// Binds the plan's batches on `t`'s device and records them: the
     /// number of guest draws recorded.
     fn record(&self, mut t: d3d::ExternalTarget<'_>, view: &ViewInputs) -> Result<usize, &'static str> {
-        self.upload(t.device, t.queue)?;
-        let mut gpu = self.gpu.lock().unwrap_or_else(|e| e.into_inner());
+        let looks = self.ready.decorators.get().ok_or("decorator load unavailable")?;
+        let mut gpu = looks.gpu.lock().unwrap_or_else(|e| e.into_inner());
         let bound = bind(t.device, &mut gpu, &self.plan, view, t.color_format, t.depth_format)?;
         drop(gpu);
         let target = DecoratorTarget {
@@ -423,7 +488,14 @@ impl d3d::ExternalPass for DecoratorPass {
         if self.view.is_none() || self.w_clip.is_none() {
             return Err("decorator view constants or W-buffer clip unavailable");
         }
-        self.upload(t.device, t.queue)
+        let looks = self.ready.decorators.get().ok_or("decorator load unavailable")?;
+        let mut gpu = looks.gpu.lock().map_err(|_| "decorator materials unavailable")?;
+        let mut ready = true;
+        for batch in &self.plan.batches {
+            let material = gpu.get_mut(&batch.material).ok_or("decorator material unavailable")?;
+            ready &= material.pipeline_ready(t.device, t.color_format, t.depth_format);
+        }
+        ready.then_some(()).ok_or("decorator pipeline pending")
     }
 
     fn writes(&self) -> d3d::ExternalWrites {
@@ -447,5 +519,30 @@ impl d3d::ExternalPass for DecoratorPass {
                 0
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn all_views_of_a_frame_see_the_same_material_completion() {
+        let material = Material { set: 1, shader: 2, variant: 0, pass: 0, layer: DECORATOR_LAYER };
+        let (send, receive) = mpsc::channel();
+        let mut load = Prepared { pending: Some((material, receive)), ..Prepared::default() };
+        let gpu = Mutex::default();
+        load.begin_frame(4, &gpu);
+        assert!(send.send(Err("synthetic refusal".into())).is_ok());
+        load.begin_frame(4, &gpu);
+        assert!(load.pending.is_some());
+        assert!(!load.depth.contains_key(&material));
+        let previous_frame = gpu.lock().unwrap();
+        load.begin_frame(5, &gpu);
+        drop(previous_frame);
+        assert!(load.pending.is_some());
+        load.begin_frame(6, &gpu);
+        assert!(load.pending.is_none());
+        assert_eq!(load.depth.get(&material), Some(&None));
     }
 }

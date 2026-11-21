@@ -1280,6 +1280,11 @@ impl d3d::backend::Backend for Headless {
         self.0.commit_external(recording);
     }
 
+    #[cfg(feature = "gpu")]
+    fn upload_device(&self) -> Option<(wgpu::Device, wgpu::Queue)> {
+        self.0.upload_device()
+    }
+
     fn supports_external_pass(&self) -> bool {
         self.0.supports_external_pass()
     }
@@ -1531,6 +1536,10 @@ pub fn install_for_profile<B: d3d::backend::Backend + Send + 'static>(
     let watch = subscribe_write_barrier(rt)?;
     #[cfg(feature = "gpu")]
     let shadow_admission = if profile == film::RenderHooks::Gpu {
+        if hooks::switches::native_render_on(&hooks::Switches::from_env().unwrap_or_default()) {
+            let archive = d3d::pipeline_store::default_path().map(|path| path.with_added_extension("native-v1"));
+            native_render::pipelines::start(archive);
+        }
         let shadows = crate::native_world_glue::install(&device, watch);
         crate::native_objects_glue::install(&device);
         crate::native_decals_glue::install(&device);

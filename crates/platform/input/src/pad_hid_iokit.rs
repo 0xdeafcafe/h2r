@@ -13,7 +13,7 @@ use std::ptr::NonNull;
 use std::time::{Duration, Instant};
 
 use objc2_core_foundation::{
-    CFArray, CFDictionary, CFIndex, CFNumber, CFRetained, CFRunLoop, CFString,
+    CFArray, CFDictionary, CFIndex, CFNumber, CFRetained, CFRunLoop, CFRunLoopRunResult, CFString,
     kCFRunLoopDefaultMode,
 };
 use objc2_io_kit::{
@@ -108,8 +108,8 @@ fn matcher(pid: u16) -> CFRetained<CFDictionary<CFString, CFNumber>> {
     CFDictionary::from_slices(&[&*vendor, &*product], &[&*v, &*p])
 }
 
-fn run_loop_for(seconds: f64) {
-    CFRunLoop::run_in_mode(unsafe { kCFRunLoopDefaultMode }, seconds, true);
+fn run_loop_for(wait: Duration) -> CFRunLoopRunResult {
+    CFRunLoop::run_in_mode(unsafe { kCFRunLoopDefaultMode }, wait.as_secs_f64(), true)
 }
 
 /// The first controller from the requested PlayStation family.
@@ -146,8 +146,11 @@ pub(super) fn open(product_ids: &[u16]) -> Option<Box<dyn super::HidPad>> {
     }
     // The matching callbacks for pads already plugged in run now.
     let start = Instant::now();
-    while pad.inbox.device.is_none() && start.elapsed() < Duration::from_millis(200) {
-        run_loop_for(0.05);
+    while pad.inbox.device.is_none() {
+        let left = Duration::from_millis(200).saturating_sub(start.elapsed());
+        if left.is_zero() || run_loop_for(left) != CFRunLoopRunResult::HandledSource {
+            break;
+        }
     }
     let device = pad.inbox.device.clone()?;
     let transport = CFString::from_str(kIOHIDTransportKey.to_str().unwrap_or("Transport"));
@@ -184,7 +187,11 @@ impl super::HidPad for Pad {
             if left.is_zero() {
                 return Ok(None);
             }
-            run_loop_for(left.as_secs_f64());
+            match run_loop_for(left) {
+                CFRunLoopRunResult::HandledSource => continue,
+                CFRunLoopRunResult::TimedOut => return Ok(None),
+                _ => return Err(io::Error::new(io::ErrorKind::NotConnected, "HID run loop ended")),
+            }
         }
     }
 

@@ -662,7 +662,7 @@ fn run_configured(
     // Sim mode never builds them: a build on a thread is at the wall
     // clock's mercy (docs/runtime/sim.md §8).
     if let (true, Some(vfs), None) = (core.bots_on, k.vfs(), &sim_mode) {
-        bots_nav_auto::start(&opts.data_root, &opts.disc, vfs, level_name.clone(), host_light);
+        bots_nav_auto::start(&opts.data_root, vfs, level_name.clone());
     }
     if let Some(s) = &sim_mode {
         if !core.bots_on {
@@ -1116,6 +1116,17 @@ fn run_configured(
     if let Some(a) = &agent {
         host_metrics::install(&mut features, &a.agent, host_light)?;
         host_lobby::install(&mut features, &a.agent, host_light, opts, _live.clone())?;
+    }
+    #[cfg(feature = "gpu")]
+    if opts.d3d
+        && !headless
+        && film.is_none()
+        && !lockstep_on
+        && let Some(screen) = host.return_to_menu.take()
+    {
+        features
+            .add(&return_to_menu::ReturnToMenu(Arc::from(screen)))
+            .map_err(anyhow::Error::msg)?;
     }
     if let Some(audit) = &audit {
         anyhow::ensure!(features.add(audit).map_err(anyhow::Error::msg)?,

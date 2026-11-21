@@ -106,6 +106,7 @@ impl Kind {
                 "empty-clips",
                 "no-matches",
                 "loading",
+                "full-library",
                 "unplayable",
             ],
             Self::Detail => &["list", "unplayable", "summary", "players", "confirm-delete"],
@@ -298,12 +299,20 @@ impl Live for Preview {
         self.track = None;
         let first = fixture("game-1", "lockout", "Team Slayer", true);
         let second = fixture("game-2", "zanzibar", "CTF", false);
-        let films = vec![first.clone(), second.clone()];
+        let mut films = vec![first.clone(), second.clone()];
+        if name == "full-library" {
+            films.extend((3..=25).map(|n| {
+                let mut film = first.clone();
+                film.id = format!("game-{n}");
+                film
+            }));
+        }
+        let last_film = BROWSE_ROWS + films.len() - 1;
         let mut state = super::State {
             load: match name {
                 "empty" | "empty-saved" | "empty-clips" => Load::Ready(Vec::new()),
                 "loading" => Load::Loading,
-                _ => Load::Ready(films.clone()),
+                _ => Load::Ready(films),
             },
             tab: match name {
                 "saved" | "empty-saved" => Tab::Saved,
@@ -325,6 +334,7 @@ impl Live for Preview {
             self.focus.0 = match name {
                 "empty" | "empty-saved" | "empty-clips" | "loading" | "no-matches" => 0,
                 "unplayable" => BROWSE_ROWS + 1,
+                "full-library" => last_film,
                 _ => BROWSE_ROWS,
             };
         }

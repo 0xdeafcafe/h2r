@@ -59,17 +59,25 @@ pub fn map_file(vfs: &mut vfs::Vfs, name: &str) -> Option<vfs::HostFile> {
     if let Some(file) = vfs.host_file(&format!("{dir}\\{name}.map")) {
         return Some(file);
     }
-    let entries = vfs.list_directory(&dir).ok()?;
-    entries
-        .iter()
-        .filter(|e| {
-            let n = e.name.as_bytes();
-            !e.metadata.is_directory()
-                && n.len() > 4
-                && n[n.len() - 4..].eq_ignore_ascii_case(b".map")
-        })
-        .filter_map(|e| vfs.host_file(&format!("{dir}\\{}", e.name)))
+    disc_map_paths(vfs, &dir)
+        .into_iter()
+        .filter_map(|path| vfs.host_file(&path))
         .find(|file| header_name(file).is_some_and(|n| n.eq_ignore_ascii_case(name)))
+}
+
+/// Candidate DVD paths for a map whose on-disc filename differs from its header.
+pub(crate) fn disc_map_paths(vfs: &mut vfs::Vfs, dir: &str) -> Vec<String> {
+    vfs.list_directory(dir)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|entry| {
+            let name = entry.name.as_bytes();
+            !entry.metadata.is_directory()
+                && name.len() > 4
+                && name[name.len() - 4..].eq_ignore_ascii_case(b".map")
+        })
+        .map(|entry| format!("{dir}\\{}", entry.name))
+        .collect()
 }
 
 /// The map name in a map file's header: 32 bytes at `+0x198`, as

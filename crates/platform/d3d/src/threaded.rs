@@ -458,6 +458,7 @@ pub struct ThreadedBackend<B: Backend + 'static> {
     sample_depth: bool,
     surface_aliases: bool,
     external_pass: bool,
+    upload_device: Option<(wgpu::Device, wgpu::Queue)>,
     reusable_external_attachments: bool,
     pinned_external_run: Option<PinnedExternalRun>,
     /// `inner.can_mirror()`.
@@ -487,6 +488,7 @@ impl<B: Backend + 'static> ThreadedBackend<B> {
         let sample_depth = inner.can_sample_depth_surfaces();
         let surface_aliases = inner.handles_surface_aliases();
         let external_pass = inner.supports_external_pass();
+        let upload_device = inner.upload_device();
         let reusable_external_attachments = inner.reusable_external_attachments();
         shared.scene_stages.store(inner.runs_scene_stages(), Ordering::Relaxed);
         let mirror = inner.can_mirror();
@@ -589,6 +591,7 @@ impl<B: Backend + 'static> ThreadedBackend<B> {
             sample_depth,
             surface_aliases,
             external_pass,
+            upload_device,
             reusable_external_attachments,
             pinned_external_run: None,
             mirror,
@@ -1394,6 +1397,10 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
             w.inner.commit_external(recording);
             Ok(())
         });
+    }
+
+    fn upload_device(&self) -> Option<(wgpu::Device, wgpu::Queue)> {
+        self.upload_device.clone()
     }
 
     fn supports_external_pass(&self) -> bool {

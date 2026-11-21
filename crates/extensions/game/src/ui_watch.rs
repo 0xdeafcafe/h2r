@@ -437,13 +437,22 @@ pub fn top<M: Gm + ?Sized>(m: &M) -> Option<Top> {
     read(m).top
 }
 
-/// The newest read, for `ui.screen`, and when it was made.
-static LAST: Mutex<Option<(Instant, Option<Top>, Option<Dialog>)>> = Mutex::new(None);
+/// The newest screen and layout findings sampled on the same UI update.
+struct Snapshot {
+    at: Instant,
+    top: Option<Top>,
+    dialog: Option<Dialog>,
+    findings: Vec<serde_json::Value>,
+}
 
-/// The newest read (its screen and dialog) and its age, if the watch runs.
-pub fn last() -> Option<(std::time::Duration, Option<Top>, Option<Dialog>)> {
-    let l = LAST.lock().unwrap_or_else(|e| e.into_inner());
-    l.map(|(at, top, dialog)| (at.elapsed(), top, dialog))
+static LAST: Mutex<Option<Snapshot>> = Mutex::new(None);
+
+pub fn last_json() -> Option<serde_json::Value> {
+    let last = LAST.lock().unwrap_or_else(|e| e.into_inner());
+    let read = last.as_ref()?;
+    let mut json = screen_json(read.at.elapsed(), read.top, read.dialog);
+    json["layout_findings"] = serde_json::json!(read.findings);
+    Some(json)
 }
 
 /// `ui.screen`'s answer: the screen's fields (`"screen": null` for none),
@@ -465,8 +474,13 @@ pub fn screen_json(
 /// The line said last, so a line is said only on a change.
 static SAID: Mutex<String> = Mutex::new(String::new());
 
-fn note(r: Read) -> Option<String> {
-    *LAST.lock().unwrap_or_else(|e| e.into_inner()) = Some((Instant::now(), r.top, r.dialog));
+fn note(r: Read, findings: Vec<serde_json::Value>) -> Option<String> {
+    *LAST.lock().unwrap_or_else(|e| e.into_inner()) = Some(Snapshot {
+        at: Instant::now(),
+        top: r.top,
+        dialog: r.dialog,
+        findings,
+    });
     let mut line = r.line();
     if r.top.is_some_and(|top| top.id == JOIN_SCREEN)
         && crate::theater_ui::menu::installed()
@@ -505,7 +519,18 @@ impl hooks::Feature for UiWatch {
         b.raw()
             .observe_after(&points::UI_UPDATE, "ui: watch the screen", |o| {
                 let g = o.guest();
-                if let Some(line) = note(read(&*g)) {
+                let r = read(&*g);
+                let mut findings = r.top.map_or_else(Vec::new, |t| {
+                    crate::ui_audit::layout_findings(&*g, t.screen, Some(t.id))
+                });
+                if let Some(d) = r.dialog
+                    && let Some(ch) = channel(d.window, d.slot)
+                    && let Some(active) = Gm::u32(&*g, ch + ACTIVE).filter(|&s| s != 0)
+                    && r.top.is_none_or(|t| t.screen != active)
+                {
+                    findings.extend(crate::ui_audit::layout_findings(&*g, active, d.id));
+                }
+                if let Some(line) = note(r, findings) {
                     eprintln!("{line}");
                 }
             })
@@ -861,7 +886,7 @@ mod tests {
 
     #[test]
     fn in_game_list_classes_distinguish_screens_with_the_same_retail_id() {
-        for class in ["pause-settings", "mp-pause-settings", "video", "voice"] {
+        for class in ["video", "voice"] {
             let top = Top {
                 window: 5,
                 slot: 1,
@@ -910,15 +935,21 @@ mod tests {
             why_none: "slot 4: no window; slot 0: no window".into(),
             dialog: None,
         };
-        assert!(note(r(Some(a))).is_some());
-        assert_eq!(note(r(Some(a))), None);
-        assert_eq!(note(r(Some(b))).as_deref(), Some(b.line().as_str()));
+        assert!(note(r(Some(a)), Vec::new()).is_some());
+        assert_eq!(note(r(Some(a)), Vec::new()), None);
+        assert_eq!(note(r(Some(b)), Vec::new()).as_deref(), Some(b.line().as_str()));
         assert_eq!(
-            note(r(None)).as_deref(),
+            note(r(None), Vec::new()).as_deref(),
             Some("ui: screen none (slot 4: no window; slot 0: no window)")
         );
-        assert_eq!(note(r(None)), None);
-        assert!(last().unwrap().1.is_none());
+        assert_eq!(note(r(None), Vec::new()), None);
+        let finding = serde_json::json!({"issue": {"kind": "unsafe"}});
+        assert_eq!(note(r(None), vec![finding.clone()]), None);
+        let wire = last_json().unwrap();
+        assert!(wire["screen"].is_null());
+        assert_eq!(wire["layout_findings"][0], finding);
+        assert_eq!(note(r(None), Vec::new()), None);
+        assert_eq!(last_json().unwrap()["layout_findings"], serde_json::json!([]));
         assert!(wanted(Some("1")) && wanted(Some("on")) && !wanted(None) && !wanted(Some("0")));
     }
 }

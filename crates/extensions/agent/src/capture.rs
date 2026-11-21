@@ -408,6 +408,16 @@ mod tests {
     }
 
     #[test]
+    fn a_slow_slot_check_reports_vfs_contention_separately_from_the_scan() {
+        let mut sample = frame(8, 500, 52, 2, 3);
+        sample.counts[Counter::MapSlotVfsWaitNs as usize] = 40_000_000;
+        sample.counts[Counter::MapSlotCheckNs as usize] = 2_000_000;
+        let capture = summarise(&[sample], &[], 33.3, 1);
+        assert_eq!(capture.spikes[0].counts["map_slot_vfs_wait_ns"], 40_000_000);
+        assert_eq!(capture.counts["map_slot_check_ns"].total, 2_000_000);
+    }
+
+    #[test]
     fn bytes_read_without_time_are_not_file_io() {
         let typical = [0; COUNTERS];
         // 1 MB read, 0.4 ms in file calls of a 42 ms frame: guest time.

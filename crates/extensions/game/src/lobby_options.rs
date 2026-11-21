@@ -3,8 +3,8 @@
 //!
 //! The lobby update calls LOBBY_VARIANT_PANEL on the custom game pane.
 //! Its formatter (0x25092c) fills text widgets 6 through 10, one per
-//! option. Pane 0 has room for one more line in widget 11. Keep the
-//! first retail lines and use the last slots for the enabled options.
+//! option. Keep all lines in those five slots. The next text widget
+//! sits below the Quick Options box, next to the footer.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -23,12 +23,19 @@ use crate::map_select::{self, Category};
 use crate::skulls_mp::{self, Role};
 use crate::ui_kit::ids;
 
-const SCREEN: u32 = 14;
+pub(crate) const SCREEN: u32 = 14;
 const CUSTOM_PANE: u32 = 0x142c;
 const FIRST_OPTION_TEXT: usize = 6;
 const FIRST_OPTION_BLOCK: usize = 4;
-const RETAIL_ROWS: usize = 5;
-const PANEL_ROWS: usize = RETAIL_ROWS + 1;
+const PANEL_ROWS: usize = 5;
+/// The Quick Options content column ends before the footer, above the
+/// sixth text block. Keep this limit separate from the screen safe area.
+const PANEL: tags::ui::Rect = tags::ui::Rect {
+    top: -75,
+    left: -267,
+    bottom: -173,
+    right: 50,
+};
 const WIDGET_CHILD: u32 = 0x14;
 const WIDGET_NEXT: u32 = 0x18;
 const WIDGET_KIND: u32 = 4;
@@ -109,9 +116,29 @@ fn visible(m: &dyn GuestMemory, widget: u32) -> bool {
     m.u8(widget.wrapping_add(WIDGET_VISIBLE)).is_ok_and(|v| v != 0)
 }
 
+/// The content box for the five option texts and the spare widget below
+/// them. Check the spare too so a future write beyond the box is reported.
+pub(crate) fn container(
+    m: &dyn GuestMemory,
+    screen: u32,
+    widget: u32,
+) -> Option<(&'static str, tags::ui::Rect)> {
+    if m.u16(screen.checked_add(CUSTOM_PANE)?).ok()? != 0
+        || m.u32(widget.checked_add(0x10)?).ok()? != screen
+        || m.u32(widget.checked_add(WIDGET_KIND)?).ok()? != TEXT_KIND
+        || m.u32(widget).ok()? != TEXT_VTABLE
+    {
+        return None;
+    }
+    let index = usize::from(m.u16(widget.checked_add(WIDGET_INDEX)?).ok()?);
+    (FIRST_OPTION_BLOCK..=FIRST_OPTION_BLOCK + PANEL_ROWS)
+        .contains(&index)
+        .then_some(("Quick Options", PANEL))
+}
+
 /// Match the direct-child text indexes used by retail's widget lookup
 /// (0x22edb8). The first two texts are the built-in header and footer,
-/// so these indexes correspond to text blocks 4 through 9 in pane 0.
+/// so these indexes correspond to text blocks 4 through 8 in pane 0.
 fn widgets(m: &dyn GuestMemory, screen: u32) -> Option<[u32; PANEL_ROWS]> {
     if m.u16(screen.checked_add(CUSTOM_PANE)?).ok()? != 0 {
         return None;
@@ -246,8 +273,7 @@ impl LobbyOptions {
             return Ok(Ret::new(retail.eax, 4));
         }
         let retail_end = cx.read(|m| {
-            slots[..RETAIL_ROWS]
-                .iter()
+            slots.iter()
                 .rposition(|&widget| visible(m, widget))
                 .map_or(0, |last| last + 1)
         });
@@ -355,10 +381,10 @@ mod tests {
     }
 
     #[test]
-    fn option_lines_use_spare_space_first_and_stay_within_the_panel() {
-        let starts: Vec<_> = (0..=3).map(|extra| first_extra(RETAIL_ROWS, extra)).collect();
-        assert_eq!(starts, [5, 5, 4, 3]);
-        for retail in 0..=RETAIL_ROWS {
+    fn option_lines_replace_bottom_rows_when_the_box_is_full() {
+        let starts: Vec<_> = (0..=3).map(|extra| first_extra(PANEL_ROWS, extra)).collect();
+        assert_eq!(starts, [5, 4, 3, 2]);
+        for retail in 0..=PANEL_ROWS {
             for extra in 0..=3 {
                 let start = first_extra(retail, extra);
                 assert!(start + extra <= PANEL_ROWS);
@@ -396,7 +422,7 @@ mod tests {
             (0, 1, "Règle de jeu"),
             (1, 0, "Stale value"),
             (2, 1, ""),
-            (5, 1, "Skulls: 1"),
+            (4, 1, "Skulls: 1"),
         ] {
             let at = widget(FIRST_OPTION_TEXT + i);
             m.set_u8(at + WIDGET_VISIBLE, shown).unwrap();
@@ -414,27 +440,39 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "reads the disc named by H2_DISC"]
-    fn option_lines_fit_the_retail_text_blocks() {
-        use crate::ui_kit::preview::Disc;
+    fn the_sixth_option_is_in_the_safe_area_but_outside_the_box() {
+        use crate::ui_kit::layout::{Issue, SAFE, bounds_issues};
 
-        let disc = std::env::var_os("H2_DISC").expect("H2_DISC");
-        let disc = Disc::open(std::path::Path::new(&disc)).unwrap();
-        let screen = disc.screen(SCREEN as i16).unwrap();
-        let pane = &screen.panes[0];
-        let labels = strings();
-        let blocks = &pane.text_blocks[FIRST_OPTION_BLOCK..FIRST_OPTION_BLOCK + PANEL_ROWS];
-        for (i, block) in blocks.iter().enumerate() {
-            let r = block.rect;
-            assert_eq!(
-                [r.top, r.left, r.bottom, r.right],
-                [-75 - 19 * i as i16, -267, -95 - 19 * i as i16, 50],
-            );
-            assert_eq!(block.flags & 0x10, 0, "uses the inline 256-unit widget");
-            assert!(disc.fonts.line_height(block.font) <= 19);
-            for (_, line) in &labels {
-                assert!(!line.contains('\n'));
-                assert!(disc.fonts.width(block.font, line) <= i32::from(r.right - r.left));
+        let (screen, widget) = (0x1000, 0x3000);
+        let mut m = FakeGuest::new();
+        m.map(screen, 0x2000).map(widget, 0x1000);
+        m.put_u32(widget, TEXT_VTABLE)
+            .put_u32(widget + WIDGET_KIND, TEXT_KIND)
+            .put_u32(widget + 0x10, screen);
+        let bounds = |row: usize| {
+            let top = PANEL.top - 19 * row as i16;
+            tags::ui::Rect {
+                top,
+                bottom: top - 20,
+                ..PANEL
+            }
+        };
+        for row in 0..=PANEL_ROWS {
+            m.set_u16(widget + WIDGET_INDEX, (FIRST_OPTION_BLOCK + row) as u16)
+                .unwrap();
+            let rect = bounds(row);
+            let issues: Vec<_> =
+                bounds_issues(|| "option".into(), rect, SAFE, container(&m, screen, widget)).collect();
+            if row < PANEL_ROWS {
+                assert!(issues.is_empty(), "row {row}: {issues:?}");
+            } else {
+                assert_eq!(
+                    issues,
+                    [Issue::OutsideContainer {
+                        id: "option".into(),
+                        container: "Quick Options".into(),
+                    }]
+                );
             }
         }
     }

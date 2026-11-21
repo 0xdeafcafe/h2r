@@ -35,7 +35,7 @@ use std::cell::{Cell, UnsafeCell};
 use std::ops::{Deref, DerefMut};
 use std::ptr::NonNull;
 use std::sync::{
-    Arc, Mutex, MutexGuard,
+    Arc, Condvar, Mutex, MutexGuard,
     atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering},
 };
 
@@ -51,16 +51,6 @@ const NO_RESTORE: usize = usize::MAX;
 thread_local! {
     /// The memory (its address) whose generated code this thread runs.
     static RUNS: Cell<usize> = const { Cell::new(0) };
-}
-
-/// Spin, then yield, as the gate's waiter does.
-fn back_off(spins: &mut u32) {
-    if *spins < 64 {
-        std::hint::spin_loop();
-        *spins += 1;
-    } else {
-        std::thread::yield_now();
-    }
 }
 
 /// Gate bits, as in `h2fastmem.h`: the holder, and a Rust guard waiting.
@@ -117,6 +107,11 @@ pub(crate) struct Memory {
     window: Option<Arc<crate::window::Window>>,
     /// The state word (module docs); used once `parking` is on.
     state: AtomicUsize,
+    /// Threads asleep on a state change. The uncontended publisher can
+    /// skip the condition-variable mutex.
+    sleepers: AtomicUsize,
+    sleep_lock: Mutex<()>,
+    changed: Condvar,
     parking: AtomicBool,
     /// A flat-RAM module runs on this memory ([`Memory::make_flat`]).
     flat: AtomicBool,
@@ -138,6 +133,9 @@ impl Memory {
             code: AtomicU64::new(guest.code_id()),
             window,
             state: AtomicUsize::new(IDLE),
+            sleepers: AtomicUsize::new(0),
+            sleep_lock: Mutex::new(()),
+            changed: Condvar::new(),
             parking: AtomicBool::new(false),
             flat: AtomicBool::new(false),
             waiters: AtomicUsize::new(0),
@@ -306,6 +304,34 @@ impl Memory {
     fn me(&self) -> usize {
         self as *const Self as usize
     }
+    /// Paired with the SeqCst state change before notify_change: either the
+    /// publisher sees the registration or this recheck sees the new state.
+    /// The mutex closes the gap between that recheck and the OS wait.
+    fn await_change(&self, state: usize) {
+        let guard = self.sleep_lock.lock().unwrap_or_else(|e| e.into_inner());
+        self.sleepers.fetch_add(1, Ordering::SeqCst);
+        if self.state.load(Ordering::SeqCst) == state {
+            if state & TAG == RUNNING {
+                self.words.request_on(state & !TAG, crate::preempt::PARK);
+            }
+            // Recheck the whole acquisition on wake. In particular a context
+            // may have left and re-entered with the same preempt word (ABA).
+            drop(self.changed.wait(guard).unwrap_or_else(|e| e.into_inner()));
+        }
+        self.sleepers.fetch_sub(1, Ordering::SeqCst);
+    }
+    #[inline]
+    fn notify_change(&self) {
+        if self.sleepers.load(Ordering::SeqCst) != 0 {
+            let _guard = self.sleep_lock.lock().unwrap_or_else(|e| e.into_inner());
+            self.changed.notify_all();
+        }
+    }
+    #[inline]
+    fn publish_state(&self, state: usize) {
+        self.state.store(state, Ordering::SeqCst);
+        self.notify_change();
+    }
     /// Before a guard blocks on the Guest mutex: on the thread running
     /// this memory's generated code, go "in Rust", and give the running
     /// state to put back when the guard drops.
@@ -319,7 +345,7 @@ impl Memory {
         if s & TAG != RUNNING || s == LOCKED {
             return NO_RESTORE;
         }
-        self.state.store((s & !TAG) | IN_RUST, Ordering::Release);
+        self.publish_state((s & !TAG) | IN_RUST);
         s
     }
     /// With the Guest mutex held, on any other thread: wait until no
@@ -329,8 +355,6 @@ impl Memory {
     #[inline(never)]
     fn wait_for_park(&self) -> usize {
         self.waiters.fetch_add(1, Ordering::AcqRel);
-        let mut spins = 0;
-        let mut asked = IDLE;
         let restore = loop {
             let s = self.state.load(Ordering::Acquire);
             if s == IDLE {
@@ -348,13 +372,7 @@ impl Memory {
                 // only once it has had it.
                 break NO_RESTORE;
             }
-            if s != LOCKED && s & TAG == RUNNING && s != asked {
-                self.words.request_on(s & !TAG, crate::preempt::PARK);
-                asked = s;
-            } else if s & TAG != RUNNING {
-                asked = IDLE;
-            }
-            back_off(&mut spins);
+            self.await_change(s);
         };
         self.waiters.fetch_sub(1, Ordering::AcqRel);
         restore
@@ -369,33 +387,26 @@ impl Memory {
         let outer = RUNS.with(|r| r.replace(self.me()));
         if outer == self.me() {
             // Generated code entered again from a helper on this thread.
-            return (self.state.swap(running, Ordering::AcqRel), outer);
+            let state = self.state.swap(running, Ordering::SeqCst);
+            self.notify_change();
+            return (state, outer);
         }
-        let mut spins = 0;
-        let mut asked = IDLE;
         loop {
-            if self.waiters.load(Ordering::Acquire) == 0
-                && self
-                    .state
-                    .compare_exchange(IDLE, running, Ordering::AcqRel, Ordering::Relaxed)
-                    .is_ok()
-            {
-                return (IDLE, outer);
+            if self.waiters.load(Ordering::Acquire) != 0 {
+                // The guard asking for a park owns this mutex. Let it finish
+                // before another runner tries to enter even if state is IDLE.
+                drop(self.guest.lock().unwrap_or_else(|e| e.into_inner()));
+                continue;
             }
-            // Another thread's generated code: one runs at a time.
-            let s = self.state.load(Ordering::Acquire);
-            if s != LOCKED && s & TAG == RUNNING && s != asked {
-                self.words.request_on(s & !TAG, crate::preempt::PARK);
-                asked = s;
-            } else if s & TAG != RUNNING {
-                asked = IDLE;
+            match self.state.compare_exchange(IDLE, running, Ordering::AcqRel, Ordering::Acquire) {
+                Ok(_) => return (IDLE, outer),
+                Err(state) => self.await_change(state),
             }
-            back_off(&mut spins);
         }
     }
     /// [`crate::ffi::call_native`]'s exit.
     pub(crate) fn stop_running(&self, (state, outer): (usize, usize)) {
-        self.state.store(state, Ordering::Release);
+        self.publish_state(state);
         RUNS.with(|r| r.set(outer));
     }
     #[cold]
@@ -454,7 +465,7 @@ impl Drop for MemoryGuard<'_> {
         }
         // Last, still holding the Guest mutex: see Memory::wait_for_park.
         if self.restore != NO_RESTORE {
-            memory.state.store(self.restore, Ordering::Release);
+            memory.publish_state(self.restore);
         }
     }
 }

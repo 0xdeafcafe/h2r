@@ -1,7 +1,7 @@
-//! Our "Video" screen: a "Video" row on Halo 2's top-level Settings list
-//! (after Player Profiles and Game Variants) that opens a Controls screen
-//! holding the display settings instead of the retail Controls rows. See docs/game/settings-menu.md "Video
-//! screen" for the trace.
+//! Video Settings opens from the main menu's Settings list and the pause
+//! menu's Player Settings. The screen uses the Controls layout for Field
+//! of View, Frame Rate, Resolution, Lighting, HUD Position and LOD Distance.
+//! See docs/game/settings-menu.md "Video screen" for the trace.
 //!
 //! **The row.** The Settings list (screen id 19, list handler `0x2b1cca` at
 //! `screen + 0x614`, vtable `0x45b060`) builds its datum array named
@@ -143,7 +143,7 @@ pub fn model_with_native_size(
     on: Switches,
     native: NativeSize,
 ) -> Result<Model, String> {
-    let mut video = Screen::new(SCREEN).title("Video");
+    let mut video = Screen::new(SCREEN).title("Video Settings");
     if on.video_screen {
         video = video
             .rows_from_settings(&store.defs())
@@ -186,7 +186,7 @@ pub fn model_with_native_size(
             .row(Row::setting(AIM_ASSIST.key));
     }
     let settings = ui::extend(List::Settings, SETTINGS_ROWS).row(Row::open(SCREEN));
-    // The Voice screen opens from pause Settings and Edit Profile.
+    // The Voice screen opens from Player Settings and Edit Profile.
     let mut voice = Screen::new(VOICE_SCREEN).title("Voice");
     if on.voice_screen {
         voice = voice.rows_from_settings(&store.defs());
@@ -444,7 +444,7 @@ mod tests {
         let m = all();
         assert_eq!(m.index_of(List::Settings, &RowKind::Open(SCREEN)), Some(2));
         assert_eq!(m.index_of(List::Controls, &RowKind::Open(SCREEN)), None);
-        assert_eq!(drawn(&m, List::Settings, 2), s("Video", ""));
+        assert_eq!(drawn(&m, List::Settings, 2), s("Video Settings", ""));
         assert_eq!(
             drawn(&m, List::Controls, 6),
             s("Controller Speaker", "0x2000181")
@@ -772,7 +772,7 @@ mod tests {
         let all = m.strings();
         let text = |t: &str| all.iter().any(|(_, s)| s == t);
         for t in [
-            "Video",
+            "Video Settings",
             "Uncapped",
             "60",
             "HUD Position",

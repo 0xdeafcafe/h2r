@@ -627,7 +627,11 @@ fn kit_choices_page() {
 /// panic, and its spec after passes the kit's static checks.
 #[test]
 fn every_screen_takes_every_input_in_every_state() {
+    use crate::ui_kit::layout::{Rules, check_bounds};
+    use crate::ui_kit::preview::From;
     use crate::ui_kit::spec::{Finding, check_fallback};
+
+    let source = From::Synthetic;
     let all = [Up, Down, Left, Right, A, B, X, Y, Start, Back];
     for name in NAMES {
         let names = live(name).unwrap().state_names();
@@ -637,11 +641,15 @@ fn every_screen_takes_every_input_in_every_state() {
                 let mut l = live(name).unwrap();
                 assert!(l.go(state));
                 l.press(input);
-                let f: Vec<Finding> = check_fallback(&l.spec())
+                let spec = l.spec();
+                let f: Vec<Finding> = check_fallback(&spec)
                     .into_iter()
                     .filter(|f| !matches!(f, Finding::Wide { .. } | Finding::Description { .. }))
                     .collect();
                 assert_eq!(f, vec![], "{name}/{state} after {input:?}");
+                let view = source.view(&spec, state).unwrap();
+                let issues = check_bounds(&view, source.source(), &Rules::for_spec(&spec));
+                assert!(issues.is_empty(), "{name}/{state} after {input:?}: {issues:?}");
             }
         }
     }

@@ -13,7 +13,7 @@ use std::{
     collections::BTreeMap,
     io::Read,
     sync::{
-        Arc, Mutex,
+        Arc, Condvar, Mutex,
         atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
         mpsc::{self, SyncSender},
     },
@@ -139,17 +139,32 @@ pub(crate) enum Reply {
         reader: Option<crate::maps::Reader>,
     },
 }
+#[derive(Default)]
+struct Completion {
+    result: Mutex<Option<Result<Reply, u32>>>,
+    ready: Condvar,
+}
+
 #[derive(Clone)]
-pub(crate) struct Pending(Arc<Mutex<Option<Result<Reply, u32>>>>);
+pub(crate) struct Pending(Arc<Completion>);
 impl Pending {
     fn new() -> Self {
         Self(Arc::default())
     }
     pub fn take(&self) -> Option<Result<Reply, u32>> {
-        self.0.lock().unwrap_or_else(|e| e.into_inner()).take()
+        self.0.result.lock().unwrap_or_else(|e| e.into_inner()).take()
+    }
+    /// Synchronous reads own this completion and retain their original deadline.
+    /// Guest task polling continues to use the nonblocking `take`.
+    pub fn wait(&self, timeout: Duration) -> Option<Result<Reply, u32>> {
+        let guard = self.0.result.lock().unwrap_or_else(|e| e.into_inner());
+        let (mut result, _) = self.0.ready.wait_timeout_while(guard, timeout, |r| r.is_none())
+            .unwrap_or_else(|e| e.into_inner());
+        result.take()
     }
     fn finish(&self, value: Result<Reply, u32>) {
-        *self.0.lock().unwrap_or_else(|e| e.into_inner()) = Some(value);
+        *self.0.result.lock().unwrap_or_else(|e| e.into_inner()) = Some(value);
+        self.0.ready.notify_one();
     }
 }
 #[derive(Clone)]
@@ -2266,6 +2281,19 @@ pub(crate) fn presence_data(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn synchronous_completion_consumes_one_reply_and_keeps_late_answers() {
+        let p = super::Pending::new();
+        assert!(p.wait(std::time::Duration::ZERO).is_none());
+        let worker = p.clone();
+        let done = std::thread::spawn(move || worker.finish(Err(42)));
+        assert!(matches!(p.wait(std::time::Duration::from_secs(5)), Some(Err(42))));
+        done.join().unwrap();
+        assert!(p.take().is_none());
+        p.finish(Err(17));
+        assert!(matches!(p.wait(std::time::Duration::ZERO), Some(Err(17))));
+    }
+
     use super::*;
 
     #[test]

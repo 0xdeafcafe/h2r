@@ -102,6 +102,32 @@ The same steps for a multiplayer map run from a game tick for the agent
 API's `maps.test.load`, over an options block of the agent's
 (`test_maps::game_steps`, [test-maps.md](../game/test-maps.md)).
 
+### Returning to the main menu
+
+The guest's transition processes teardown, cache acquisition and map
+activation before its first ordinary main-menu frame. The retail loading
+loop can draw while the cache copy machine runs. A resident main-menu
+cache can go through teardown and activation between ordinary presents.
+
+On windowed runs, `game::return_to_menu` uses `OPTIONS_QUEUE` to ask
+the host to show **Returning to Main Menu…** when a campaign or a
+multiplayer map queues the menu. The display uses a prebuilt picture
+through the [host shell](app.md). It can draw while the guest loads, and
+holds the picture through activation, the first ordinary menu render
+and the render worker's frames in flight. The next successful guest
+present takes over. A host pause here holds the picture until the
+guest resumes presenting. The host's picture leaves guest frame counts
+to the actual frames. Exact films and lockstep runs
+keep their original dispatch boundaries.
+
+`h2 agent loads` measures the guest's transition, including file I/O,
+render waits and genuine guest presents. For a split-screen check, leave
+an active local match, then confirm that **Returning to Main Menu…**
+replaces the dimmed match and that `h2 agent ui` (`H2_UI_WATCH=1`)
+reports the menu after loading. The Mods list request and its answer run on Live workers. The
+guest still owns variant tag publication and authoritative party
+membership changes at their existing boundaries.
+
 ### Addresses
 
 | Address | Name here | Use |

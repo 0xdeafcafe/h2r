@@ -74,6 +74,8 @@ pub mod look;
 pub mod pass_state;
 #[cfg(feature = "gpu")]
 pub mod program;
+#[cfg(feature = "gpu")]
+pub mod pipelines;
 pub mod model;
 #[cfg(feature = "gpu")]
 pub mod model_gpu;

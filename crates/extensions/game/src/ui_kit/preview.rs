@@ -1211,7 +1211,7 @@ pub fn overflows(w: &crate::ui_kit::view::Widget, m: &dyn Metrics) -> bool {
     };
     let r = w.rect();
     let lines = text.split('\n').count() as i32;
-    m.width(*font, text) > r.width() || (lines > 1 && lines * m.line_height(*font) > r.height())
+    !text.is_empty() && (m.width(*font, text) > r.width() || lines * m.line_height(*font) > r.height())
 }
 
 /// `v` drawn at 640 by 480 from `src`: the backing, then its widgets by
@@ -1525,22 +1525,21 @@ impl From<'_> {
     /// `s` in state `state` as a view: a dialog's
     /// ([`crate::ui_kit::dialog::dialog_view`]) or a list's ([`view_of`]).
     pub fn view(&self, s: &ScreenSpec, state: &str) -> Result<View> {
-        let mut view = match (&s.dialog, self) {
-            (Some(d), From::Disc(disc)) => dialog_view(
-                s,
-                d,
-                &disc.dialog_geometry_for(d.base)?,
-                self.source(),
-                state,
-            ),
-            (Some(d), From::Synthetic) => dialog_view(
-                s,
-                d,
-                &DialogGeometry::fallback_for(d.base),
-                self.source(),
-                state,
-            ),
-            (None, _) => view_of(s, &self.geometry(s.list)?, self.source(), state),
+        let mut view = if let Some(d) = &s.dialog {
+            let mut geometry = match self {
+                From::Disc(disc) => disc.dialog_geometry_for(d.base)?,
+                From::Synthetic => DialogGeometry::fallback_for(d.base),
+            };
+            if matches!(s.list, ListPlace::Moved { .. }) {
+                geometry.rows = self.geometry(s.list)?;
+                geometry.list = ListAt {
+                    anchor: geometry.rows.anchor,
+                    skin: geometry.rows.skin,
+                };
+            }
+            dialog_view(s, d, &geometry, self.source(), state)
+        } else {
+            view_of(s, &self.geometry(s.list)?, self.source(), state)
         };
         if let Some(parent) = &s.underlay {
             view.backing = Backing::None;

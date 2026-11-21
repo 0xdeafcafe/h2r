@@ -184,6 +184,17 @@ fn triangle(x: f32, color: [f32; 4], reference: u8, sample: bool) -> ResolvedDra
     }
 }
 
+/// Present synthetic frames until the worker-built variant becomes admissible.
+fn after_compile(mut attempt: impl FnMut() -> bool) -> bool {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        if attempt() { return true; }
+        if std::time::Instant::now() >= deadline { return false; }
+        std::thread::sleep(std::time::Duration::from_millis(16));
+        timeline::frame();
+    }
+}
+
 fn record(
     backend: &mut GfxBackend,
     surfaces: ExternalSurfaces<SurfaceId>,
@@ -192,9 +203,10 @@ fn record(
     cache: &Arc<Cache>,
 ) -> bool {
     let sample = !surfaces.sampled.is_empty();
-    let pass: Box<dyn ExternalPass> =
-        Box::new(IndexedPass::new(draw, Arc::clone(cache), 1, sample.then_some(ACCUM)).unwrap());
-    record_pass(backend, surfaces, textures, timeline::native::Stage::World, pass)
+    after_compile(|| {
+        let pass = IndexedPass::new(draw, Arc::clone(cache), 1, sample.then_some(ACCUM)).unwrap();
+        record_pass(backend, surfaces.clone(), textures, timeline::native::Stage::World, Box::new(pass))
+    })
 }
 
 fn record_pass(
@@ -307,15 +319,16 @@ fn scene(backend: &mut GfxBackend, mixed: bool) -> Vec<u8> {
             color,
             depth,
             sampled: vec![accum],
-            slots: vec![Some(decoy)],
+            slots: vec![Some(accum)],
             slot_sizes: vec![Some((SIZE, SIZE))],
         };
+        assert!(record(backend, surfaces.clone(), &green, sampled, &cache));
+        surfaces.slots[0] = Some(decoy);
+        let pass = IndexedPass::new(&green, Arc::clone(&cache), 1, Some(ACCUM)).unwrap();
         assert!(
-            !record(backend, surfaces.clone(), &green, sampled, &cache),
-            "same dimensions cannot substitute a texaccum target"
+            !record_pass(backend, surfaces, sampled, timeline::native::Stage::World, Box::new(pass)),
+            "same dimensions cannot substitute a texaccum target, even with a ready pipeline"
         );
-        surfaces.slots[0] = Some(accum);
-        assert!(record(backend, surfaces, &green, sampled, &cache));
     } else {
         assert_eq!(
             backend.draw(color, Some(depth), &green, sampled),
@@ -458,8 +471,14 @@ fn queued_world_draws_choose_native_or_d3d_in_order_without_waiting() {
     assert_eq!(render(true), baseline);
     assert_eq!(
         *outcomes.lock().unwrap(),
-        [(0, None), (1, Some(Ok(DrawOutcome::Drawn))), (2, None)]
+        [(0, Some(Ok(DrawOutcome::Drawn))), (1, Some(Ok(DrawOutcome::Drawn))), (2, Some(Ok(DrawOutcome::Drawn)))],
+        "a cold pipeline leaves all three draws on D3D through this frame"
     );
+    assert!(after_compile(|| {
+        outcomes.lock().unwrap().clear();
+        assert_eq!(render(true), baseline);
+        *outcomes.lock().unwrap() == [(0, None), (1, Some(Ok(DrawOutcome::Drawn))), (2, None)]
+    }));
 }
 
 #[test]
@@ -548,6 +567,8 @@ fn resident_section_reuses_geometry_with_copy_specific_uniforms_and_scissors() {
     Arc::make_mut(&mut draw.shader.constants)[12] = [1.; 4];
     draw.clip = Some(PixelRect { x: 2, y: 0, width: 6, height: SIZE });
     draw.state.render.depth_func = CompareFunc::Always;
+    // Both copies exercise the same resident pass after its pipeline is visible.
+    assert!(record(&mut backend, surfaces.clone(), &draw, [None; 4], &cache));
     let pass = IndexedPass::for_section(&draw, cache, 1, None, (1, 4), geometry, 3).unwrap();
     let pass: d3d::backend::SharedReplacement = Arc::new(Mutex::new(Box::new(pass)));
     for copy in [TargetCopy::Reference, TargetCopy::Display, TargetCopy::Reference] {
@@ -579,6 +600,14 @@ fn resident_sections_upload_only_changed_constants_across_swaps() {
     let lightmaps = [first, next].map(|surface| backend.surface_texture(surface).unwrap().unwrap());
     let surfaces = ExternalSurfaces { color, depth, sampled: vec![], slots: vec![], slot_sizes: vec![] };
     let cache = Arc::new(Cache::default());
+    // Warm the two shader/PSO variants on transient geometry. The capture
+    // begins with no resident section and includes only its six swaps.
+    for sampled in [false, true] {
+        let draw = triangle(2.0, [1.0; 4], 1, sampled);
+        let texture = sampled.then_some(&lightmaps[0]);
+        assert!(record(&mut backend, surfaces.clone(), &draw, [texture, None, None, None], &cache));
+    }
+    backend.flush().unwrap();
     phase::start(phase::Config::live(u64::MAX)).unwrap();
     phase::frame_end(0);
     assert!(phase::capture_begin());

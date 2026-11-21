@@ -1695,6 +1695,10 @@ impl Backend for GfxBackend {
         }
     }
 
+    fn upload_device(&self) -> Option<(wgpu::Device, wgpu::Queue)> {
+        Some((self.ctx.device.clone(), self.ctx.queue.clone()))
+    }
+
     fn supports_external_pass(&self) -> bool {
         true
     }

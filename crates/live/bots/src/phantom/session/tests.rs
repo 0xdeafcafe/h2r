@@ -1160,6 +1160,43 @@ mod lobby {
     }
 
     #[test]
+    fn settled_custom_lobby_skips_reconciliation_and_repairs_unpublished_edits() {
+        let ph = Phantoms::default();
+        for n in 1..=4 {
+            ph.add(who(n, &format!("Seat {n}")), None, idle()).unwrap();
+        }
+        let mut g = lobby();
+        ph.tick(&mut g, 0).unwrap();
+        ph.tick(&mut g, 1).unwrap();
+        let revision = g.u32(S + UPDATE).unwrap();
+        for frame in 2..12 {
+            assert!(ph.tick(&mut g, frame).unwrap().is_empty());
+        }
+        assert_eq!(ph.maintenance().unchanged_lobby_frames, 10);
+        assert_eq!(g.u32(S + UPDATE).unwrap(), revision);
+
+        // Repair the same in-place edit twice; neither edit publishes a
+        // revision. Caching the pre-repair bytes would miss the second one.
+        let profile = S + PLAYERS + PLAYER_SIZE + P_EFFECTIVE;
+        for frame in [12, 13] {
+            g.put_u16(profile, 0);
+            ph.tick(&mut g, frame).unwrap();
+            assert_eq!(g.u16(profile).unwrap(), MARK as u16);
+        }
+        let host = S + PEERS;
+        g.put_u32(host + PEER_MAP_STATUS, 2);
+        ph.tick(&mut g, 14).unwrap();
+        for p in 1..=4 {
+            assert_eq!(g.u32(host + p * PEER_SIZE + PEER_MAP_STATUS).unwrap(), 2);
+        }
+
+        ph.remove(ph.list()[1].handle).unwrap();
+        ph.tick(&mut g, 15).unwrap();
+        assert_eq!(g.u32(S + PEER_COUNT).unwrap(), 4);
+        assert_eq!(ph.maintenance().frames, 16);
+    }
+
+    #[test]
     fn a_lower_count_takes_a_phantom_out_of_the_lobby() {
         let ph = Phantoms::default();
         let a = ph.add(who(1, "A"), None, idle()).unwrap();

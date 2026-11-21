@@ -260,18 +260,22 @@ dedicated match.
 
 Select **THEATER** directly below **Xbox Live** on the main menu. The
 entry in `crates/extensions/game/src/layout_glue.rs` opens the film
-selector for the controller that selects it. Use the top row and Left or
-Right to switch between **Recent**, **Saved** and **Clips**.
-**Sort**, **Map** and **Game type** show their current values in the
-retail settings skin's second column. Press A to open a list over the
-library. A on an entry applies the choice and returns to the option.
-B closes just the list and keeps the current value. Choose **All** in a
-filter to clear it.
+library for the controller that selects it. Left and Right switch between
+the **Recent**, **Saved** and **Clips** tabs from any row. The active tab
+and its film count sit above the list and the details pane.
 
-Film rows show the map and game type, or the clip's title, with the date
-and running time when recorded. Highlight a row for its level picture
-and match information. Empty libraries explain how to record a film,
-save one or mark a clip. An empty filtered list keeps its options in reach.
+**Sort**, **Map** and **Game type** show their current values at the top of
+the list. Press A to open a picker over the library. A on an entry applies
+the choice and returns to the option. B closes the picker and keeps the
+current value. Choose **All** in a filter to clear it.
+
+Film rows show the map and game type or the clip's title. Highlight a row
+to see its map picture, recording date, running time and match information
+in the details pane on the right. Empty libraries use that pane to explain
+how to record a film, save one or mark a clip. An empty filtered list keeps
+its options in reach. The browser geometry lives in
+`crates/extensions/game/src/theater_ui/pages.rs`. Its preview includes an
+empty library and a scrolled 25-film list.
 
 Press A on a film to open its lobby. The header shows its map, variant,
 mode, date, duration and result when known. The Players table shows the

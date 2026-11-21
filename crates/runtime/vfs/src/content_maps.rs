@@ -295,6 +295,14 @@ impl ContentFiles {
         self.maps.get(path).map(|map| map.package.id)
     }
 
+    pub(crate) fn resolves_on_use(&self, path: &str) -> bool {
+        let key = path.to_ascii_lowercase();
+        !self.open.contains_key(&key)
+            && self.maps.get(path).is_some_and(|map| {
+                self.files.get(&key).is_none_or(|file| !file.map.same_source(&map))
+            })
+    }
+
     pub(crate) fn served(&mut self, path: &str) -> Result<&mut Served> {
         let key = path.to_ascii_lowercase();
         if !self.open.contains_key(&key) {

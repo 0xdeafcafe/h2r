@@ -38,6 +38,7 @@ pub use outbox::{
 };
 mod qos;
 mod qos_memory;
+mod socket_wait;
 mod sessions;
 pub use sessions::{
     LocalSession, MapProbe, SessionAttribute, SessionAttributeValue, SessionSlots, SkullsProbe,
@@ -474,20 +475,7 @@ impl Hle {
             let (pending, seen) = s.refresh_session(&id);
             (id, pending, seen)
         };
-        let mut refreshed = false;
-        if let Some(p) = pending {
-            let until = std::time::Instant::now() + wait;
-            loop {
-                if let Some(r) = p.take() {
-                    refreshed = r.is_ok();
-                    break;
-                }
-                if std::time::Instant::now() >= until {
-                    break;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(5));
-            }
-        }
+        let refreshed = pending.and_then(|p| p.wait(wait)).is_some_and(|r| r.is_ok());
         let known = seen.and_then(|m| {
             m.lock()
                 .unwrap_or_else(|e| e.into_inner())
@@ -671,12 +659,14 @@ impl Hle {
     ) -> Result<(), String> {
         self.lock().roster_bots(request, done)
     }
-    /// Look up a remote or recent Clanker on the Live worker. The UI stays usable offline.
+    /// Queues a remote or recent Clanker lookup. A queued lookup calls
+    /// `done` with its result on the Live worker. A lookup that cannot
+    /// be queued returns its status immediately.
     pub fn bot_card(
         &self,
         xuid: live_proto::Xuid,
-        done: Box<dyn FnOnce(live_proto::bots::PlayerCard) + Send>,
-    ) {
+        done: Box<dyn FnOnce(Result<live_proto::bots::PlayerCard, u32>) + Send>,
+    ) -> Result<(), u32> {
         self.lock().bot_card(xuid, done)
     }
     /// Whether the guest has a signed-in player who can read the mod list.
@@ -763,23 +753,15 @@ impl Hle {
         else {
             return Lacking::Unknown("not signed in to a Live server");
         };
-        let until = std::time::Instant::now() + wait;
-        loop {
-            match pending.take() {
-                Some(Ok(client::Reply::Presence(all))) => {
-                    return Lacking::Known(
-                        live_proto::lacking(capability, xuids, &all)
-                            .iter()
-                            .map(|p| p.gamertag.as_str().to_string())
-                            .collect(),
-                    );
-                }
-                Some(_) => return Lacking::Unknown("the server's presence read failed"),
-                None if std::time::Instant::now() >= until => {
-                    return Lacking::Unknown("the server did not answer in time");
-                }
-                None => std::thread::sleep(std::time::Duration::from_millis(5)),
-            }
+        match pending.wait(wait) {
+            Some(Ok(client::Reply::Presence(all))) => Lacking::Known(
+                live_proto::lacking(capability, xuids, &all)
+                    .iter()
+                    .map(|p| p.gamertag.as_str().to_string())
+                    .collect(),
+            ),
+            Some(_) => Lacking::Unknown("the server's presence read failed"),
+            None => Lacking::Unknown("the server did not answer in time"),
         }
     }
     /// The final setting returned to the game after a Live request (including

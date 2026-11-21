@@ -323,6 +323,7 @@ impl StreamPlan {
     pub fn buffer_layout(&self) -> OwnedVertexBufferLayout {
         OwnedVertexBufferLayout {
             stride: self.host_stride as u64,
+            step_mode: wgpu::VertexStepMode::Vertex,
             attributes: self
                 .attributes
                 .iter()

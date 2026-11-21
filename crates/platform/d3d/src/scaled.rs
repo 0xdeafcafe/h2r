@@ -1958,6 +1958,12 @@ impl<R: Backend, V: ScaleView<R>> Backend for ScaledBackend<R, V> {
         }
     }
 
+    fn upload_device(&self) -> Option<(wgpu::Device, wgpu::Queue)> {
+        let (device, queue) = self.reference.upload_device()?;
+        let (view_device, view_queue) = self.view.upload_device()?;
+        (device == view_device && queue == view_queue).then_some((device, queue))
+    }
+
     fn supports_external_pass(&self) -> bool {
         self.reference.supports_external_pass()
     }

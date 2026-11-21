@@ -418,6 +418,12 @@ impl<B: Backend> Backend for VariantFiles<B> {
         self.inner.rescan()
     }
     fn resolves_on_use(&mut self, path: &str) -> bool {
+        if self.variant(path).is_some() {
+            return false;
+        }
+        if let Some(p) = self.package(path) {
+            return p.resolves_on_use(path);
+        }
         self.inner.resolves_on_use(path)
     }
     fn map_changed(&mut self, path: &str) -> bool {

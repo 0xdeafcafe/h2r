@@ -527,7 +527,7 @@ mod tests {
         assert_eq!(ui, lists + SCENE_LISTS.len() * SCENE_LIST_RESULTS.len());
         assert_eq!(columns[ui - 1].1, "native_scene_lists_transparents_mismatch");
         assert_eq!(columns[ui].1, "native_ui_items");
-        assert_eq!(columns.last().unwrap().1, "native_ui_outline_fallback_reservation");
+        assert_eq!(columns[phase::Counter::ALL.len() + COLUMNS - 1].1, "native_ui_outline_fallback_reservation");
         let walk = phase::Counter::ALL.len() + STAGE_COLUMNS;
         assert_eq!(columns[walk + ObjectWalk::Native as usize].1, "native_objects_walk_native");
         assert_eq!(columns[walk + ObjectWalk::Reservation as usize].1, "native_objects_walk_reservation");

@@ -109,19 +109,23 @@ same reads, in the same order.
    the D3D buffer at `+0x10` whose data is at `+4`; the indices, count
    `+0x28` and u16 pointer `+0x2c`; the vertex count the largest index
    plus one), the stream type's format (`object_streams::StreamFormats`,
-   the table at `0x0043f408`), the pass translated for that stream with
-   `v11..v15` supplied and two-sided lighting on (`compile`), and the
-   vertices gathered as the program reads them (`buffers`).
+   the table at `0x0043f408`). The guest takes two bulk reads for the
+   index and vertex data. A single utility worker translates the pass
+   for the stream with `v11..v15` supplied and two-sided lighting on
+   (`compile`), gathers the vertices (`buffers`) and uploads the module,
+   buffers and textures (`MaterialGpu::new`). Each load can have one
+   material outstanding. Its first decorator view after a swap collects
+   the result. Other views of that frame use the same ready materials.
 8. **The recording** (`native_render::decorators_gpu::encode`). The
    plan's instances staged once per copy (80 bytes each), bound as the
    last vertex buffer with instance step (`instance_layout`, locations 11
    to 15), and one `draw_indexed` per batch over the set's u16 indices.
    The program is the material's pass translated with
    `decorators::PROVIDED_INPUTS` (`v11..v15`) supplied; the batch's
-   bindings (`Bound`) carry its uniforms with `c[53]`. Each material
-   is uploaded on the device at its first draw (`MaterialGpu`: module,
-   stage textures, the set's buffers, a pipeline per target format) and
-   kept for the load. The viewport is the whole target, the view's
+   bindings (`Bound`) carry its uniforms with `c[53]`. The pass asks the
+   pipeline compiler for each copy's target formats during reservation.
+   A pending compile keeps the slots on D3D through the next swap.
+   The load retains the uploaded material and the compiled pipelines. The viewport is the whole target, the view's
    rectangle the scissor.
 9. **The glue** (`render_bridge::native_decorators`, an observer before
    the layer draw, after the frame step's and the native world's, and

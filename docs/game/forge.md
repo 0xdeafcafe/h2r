@@ -1,11 +1,14 @@
 # Forge for Halo 2 multiplayer maps
 
-Status: Design. Nothing is built: no code, no hooks, no file format. This page says what Halo 3's Forge is, what retail Halo 2 already has
-that a Forge could sit on, and a phased plan with a small first slice.
+Status: Reference. Nothing of Forge is built.
+Code: none. The blocks below are read and written by `crates/tools/scenario-edit` ([scenario-editor.md](../editor/scenario-editor.md)).
+Switch: none.
 
-The architecture, features, UI and slice plan of the full Forge are in
-[forge-design.md](forge-design.md), which cites this page for the retail
-evidence.
+What Halo 3's Forge is, and what retail Halo 2 has that a Forge sits on:
+the scenario placement blocks, how multiplayer maps place weapons, the
+netgame equipment spawner and object creation. The design of Forge
+itself (the document, the edit log, sharing, the UI, the slices) is in
+[forge-design.md](forge-design.md) and [forge-features.md](forge-features.md).
 
 No game data is in this page. Addresses are guest virtual addresses of the
 retail XBE (the build in [haloscript.md](../formats/haloscript.md)), offsets are
@@ -93,8 +96,7 @@ handful on two maps. The palettes are mostly empty too. What is populated:
 starting locations (48 to 204 per map), netgame flags (62 to 90) and
 netgame equipment (21 to 82). So multiplayer weapons and vehicles are not
 scenario placements: they are **netgame equipment** entries, spawned and
-respawned by the game engine at run time. That is the natural hook for a
-first Forge.
+respawned by the game engine at run time. Forge's equipment edits are edits of these entries.
 
 **The netgame equipment spawner `0x0015aad0` (E).** Called with an
 equipment index and a per-entry state array (8 bytes per entry, the object
@@ -128,234 +130,7 @@ and 1 MiB of bodies (`0x000b67c0`). 34 call sites call it directly.
 ([haloscript.md](../formats/haloscript.md)), but builtin names are only known when a
 scenario calls them, and HaloScript's object creation works on *named*
 scenario placements. It is not a good way to place arbitrary objects; a
-direct `object_new` call (or a scenario block patch) is.
-
-## 2. The variant model
-
-### 2.1 What a map variant stores (S)
-
-```
-map variant
-  format version
-  base map: cache file name + the scenario's tag datum + a SHA-256 of the
-            scenario tag's bytes on the user's disc (never the bytes)
-  title + author + description (player text, ours)
-  edits, in order:
-    equipment  set | add | remove   netgame equipment entry by index
-    spawn      set | add | remove   starting location by index
-    flag       set | add | remove   netgame flag by index
-    scenery    add | remove         object by tag name + transform
-  budget used (computed, checked again on load)
-```
-
-An object is named by its **tag path and group** (resolved through the
-map's tag index on load), plus position, orientation and the few
-per-entry fields the engine reads (respawn timing, team, type byte).
-Positions are stored as full floats: unlike Halo 3 there is no reason to
-quantise.
-
-The file is canonical JSON (RFC 8785, which `live-proto::jcs` already
-implements), so its SHA-256 is its identity. It contains player-authored
-text and transforms only; tag paths are references to the user's own
-disc, the same way [community-gametypes.md](community-gametypes.md) names
-settings without copying tables.
-
-### 2.2 Applying it
-
-Two ways:
-
-| | A. Patch scenario blocks at map load | B. Create objects at run time |
-|---|---|---|
-| How | after the cache loads, rewrite `scnr` blocks in guest memory; the engine spawns as if the map shipped that way | call `object_new` from a hook once the game starts |
-| Respawn, game variant rules, objectives | free: the engine's own code (`0x0015ae70` etc.) | ours to rebuild |
-| Network | every peer loads the same patched scenario (S: if peers run these paths) | host-only creation needs the engine's replication to carry it (unknown) |
-| Needs | the block layouts, and guest space for blocks that grow | object placement ABI, a safe call point in the tick |
-| Fits | weapons, vehicles, spawns, flags, scenery | live editing (the editor, §3) |
-
-**Recommendation (S):** A for playing a variant, B only inside the editor.
-A game on a variant is then a retail game on a retail-looking map.
-
-When to patch: after `load_requested_scenario_cache` (`0x0018eaa0`) has
-published the scenario pointer at `0x004e0350` and before the new-map
-initialisation that first reads `scnr+0x120`/`+0x118`/`+0x100`. Wrapping
-`0x0018eaa0` through a dispatch override is the obvious point (S: confirm
-that nothing in it reads those blocks before it returns). The tag cache
-is reloaded with each map, so a patch never outlives its game.
-
-Growing a block: an edit that only moves, retargets or removes entries
-fits in place (removal is a swap-remove and a smaller count). Adding
-entries needs a new block somewhere in guest memory, then a rewritten
-`count, address` descriptor. Where that space can come from (slack after
-the tag data, or a range the runtime reserves) is the first open question
-(S). Checkpoints and saved state are not a concern in multiplayer, but
-check that the tag region is not in any snapshot.
-
-### 2.3 Validation (S)
-
-On load, before anything touches guest memory:
-
-1. The base map and scenario hash match the user's disc, or the variant
-   is refused with a message.
-2. Every tag path resolves, with a group the block accepts (an equipment
-   entry takes an object or an `itmc`/`vehc`; a scenery entry a `scen` or
-   `bloc` already in the cache).
-3. Floats are finite; positions lie inside the structure BSP's world
-   bounds (`sbsp+0x34`, [structure-bsp.md](../formats/structure-bsp.md)).
-4. Counts stay within budget: our own per-map limits, well under the
-   2,048-object pool and inside each block's engine limit (unknown; to
-   measure).
-5. Every edit is applied to a copy first; if any fails, nothing is
-   written.
-
-### 2.4 Determinism and networked play
-
-All peers must load identical variants. Halo 2 is widely described as
-using a hosted model with an authoritative host, unlike Halo 1's
-lockstep System Link (S: commonly repeated, but not checked against a
-primary source here; [GDC 2011][gdc-reach] covers Reach's hosted model,
-not Halo 2's). Which objects clients
-create themselves from the scenario and which the host replicates is
-**not known for this build** (S). Both cases need the same rule: a
-mismatch is refused in the lobby, not discovered mid-game.
-
-- The host's variant SHA-256 goes into the lobby. For our Live service it
-  is a session attribute or a field in our own session record
-  ([live-matchmaking.md](../live/live-matchmaking.md) §3). For System Link, the HLE
-  socket layer owns both ends and can carry it beside discovery (S: a small
-  out-of-band message; the game's own QoS listen data is game-owned and
-  should not be borrowed).
-- A joiner without the variant fetches it (Live) or is refused (System
-  Link without Live). A joiner with a different disc hash is refused.
-- The runtime's planned determinism harness (per-tick guest-RAM hash,
-  [high-framerate.md](high-framerate.md) step 1) is how we prove two
-  peers loaded the same thing.
-
-## 3. The editor
-
-### 3.1 Monitor mode (S)
-
-Two candidates:
-
-- **A flying camera owned by the host.** The editor pauses the
-  simulation, takes over the camera (the runtime already pauses on Cmd+P
-  with logical time), and lets the user fly freely. No guest biped exists.
-  Simple and safe, but the world does not run while editing, so physics
-  settling is not visible.
-- **A guest monitor biped.** Spawn a flying, invisible, invulnerable unit
-  for the editing player, as Halo 3 does. The multiplayer maps carry no
-  monitor biped, and adding a tag is not possible without shipping data,
-  so this would mean an existing biped with flags changed at run time.
-  Expensive and fragile.
-
-Recommendation: the host camera first.
-
-### 3.2 UI
-
-Follow [settings-menu.md](settings-menu.md) and [ui-screens.md](ui-screens.md):
-native game screens built from the game's own list class, with no host
-overlay. The palette is built from the map's own tag index, the way the `h2 object` resolver
-works: weapons, vehicles, `itmc`/`vehc` collections, scenery and crates
-present in the map's cache (and in `shared.map` for multiplayer). Labels
-are tag base names, which come from the user's disc at run time.
-
-Placement: ray-cast from the camera against the structure BSP
-collision ([collision.md](../formats/collision.md)), drop to the surface, and snap
-to the surface normal for spawns and flags. Rotation in 15° steps with a
-free mode. The overlay shows a ghost of the object (render model through
-the viewer's path) and does not create a guest object until the user
-confirms.
-
-Saving writes the variant file (§2.1) under the user's data directory.
-Testing is "apply and restart the map": the variant takes the same path
-as a real game.
-
-### 3.3 Live editing (later, S)
-
-Creating, moving and deleting real guest objects while the game runs
-(option B) needs: a safe point in the tick to call `object_new` and the
-delete path, the object's transform layout
-([live-gamestate.md](../live/live-gamestate.md) §6), and the netgame equipment
-state array, so the engine's respawn does not fight the editor. Multiple
-editors over the network, as in Halo 3, would need the editor's
-operations replicated by the host: out of scope until the rest works.
-
-## 4. Sharing
-
-- **Format.** The canonical JSON of §2.1. Its SHA-256 is its name. It
-  holds tag paths, transforms and player text, nothing from the disc.
-- **Live service.** The server already stores blobs by SHA-256 with a
-  signed event carrying `{name, sha256, size}` for title files
-  ([live.md](../live/live.md) §4.3). A variant share is the same thing with a
-  user author: `POST` a variant signed with the user's key, list by map and
-  author, fetch by hash. The game's per-user storage facility 5 is not
-  needed: the overlay talks to the service directly (S).
-- **Offline.** Variants are plain files; copying one between machines is
-  enough for System Link.
-- **Server-side checks.** Schema, size cap, and the same validation as §2.3
-  minus the disc hash (the server has no disc). Player text is moderated
-  like gamertags.
-
-## 5. Risks, prerequisites, plan
-
-### Prerequisites
-
-1. A multiplayer custom game running on our runtime, local and System
-   Link. [map-pack.md](map-pack.md) §6 lists multiplayer as a separate job;
-   this page assumes it.
-2. Typed, tested decoding of `scnr+0x100`, `+0x118`, `+0x120`, `+0x128` and
-   the scenery/crate blocks in `crates/formats/tags`, with engine-backed strides
-   and field meanings (today the header decoder keeps them opaque).
-
-### Risks
-
-- **Network model unknown.** If clients do not run the equipment spawner,
-  a host-only patch may still work through replication; if they do, every
-  peer must patch. Either way, find out before shipping networked play.
-- **Space for growth.** Adding entries needs guest memory the engine will
-  not reuse.
-- **Engine caps.** Per-block limits in the spawner's state arrays,
-  netgame-flag consumers and the object pool are not measured.
-- **Game-variant interaction.** The type byte at `+0x14` and the variant's
-  weapon settings decide what actually spawns.
-- **Title updates.** All addresses here are 1.0; a title-update build needs
-  them mapped ([title-updates.md](../runtime/title-updates.md)).
-- **Content rules.** Tag paths stay as references to the user's disc;
-  nothing derived is committed or served.
-
-### Phases (one developer, S)
-
-| Phase | Work | Effort |
-|---|---|---|
-| 0 | Prerequisite 2: decode and test the MP scenario blocks; read `0x0015ae70`, `0x0015a4d0`/`0x0015a5b0`/`0x0015a640` | 3-5 days |
-| 1 | **First slice**: variant file, validator, and an in-place patch of netgame equipment on one map | 1-1.5 weeks |
-| 2 | Spawns and flags, adding entries (guest space), scenery/crates, budgets | 2-3 weeks |
-| 3 | Lobby hash for System Link and Live; refuse mismatches | 1-2 weeks |
-| 4 | Host overlay editor: camera, palette, ray-cast placement, save | 4-6 weeks |
-| 5 | Share via the Live service | 1-2 weeks |
-| 6 | Live editing in a running game; multi-editor sync (optional) | 4+ weeks |
-
-Total to a usable single-editor Forge with sharing (phases 0-5): about
-10-15 weeks. Phase 6 is open-ended. Multiplayer itself (prerequisite 1)
-is not counted.
-
-### The smallest slice worth building
-
-**"Load a variant that moves, retargets or removes netgame equipment
-entries on one map."** In place only: no new guest memory, no editor, no
-network. Pieces:
-
-1. `crates/formats/tags`: typed netgame equipment entry (position `+0x40`,
-   orientation `+0x4c`, reference `+0x58`, type byte `+0x14`, flags `+0`),
-   tested on synthetic bytes.
-2. A variant crate: the JSON model, canonical hashing, validation against a
-   decoded scenario, and `apply(&mut ScenarioBlocks)`, all pure and
-   unit-tested with synthetic scenarios.
-3. One boot hook after `0x0018eaa0` that applies a variant named by an
-   environment variable, writing through `Guest` accessors.
-
-Acceptance is by tests: a synthetic scenario in, the expected block bytes
-out, and refusal of a variant for the wrong map hash. Seeing the moved
-rocket launcher in a game is for the user to check.
+direct `object_new` call or a scenario block edit is.
 
 ## Sources
 

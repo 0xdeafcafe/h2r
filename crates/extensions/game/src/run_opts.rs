@@ -108,6 +108,10 @@ pub struct Host {
     /// kernel (for its logical clock). Returning false ends the run
     /// (outcome `HostStop`).
     pub between_slices: Option<BetweenSlices>,
+    /// Switch the window to its loading picture before the game rebuilds the
+    /// main menu. Headless and exact film runs have no loading picture.
+    #[cfg(feature = "gpu")]
+    pub return_to_menu: Option<crate::return_to_menu::LoadingScreen>,
     /// Our debug menu (docs/runtime/debug-menu.md): its calls go to the
     /// agent (`H2_AGENT`'s, else a local one with no socket), and it gets
     /// the menu's host methods (`settings.*`, `perf.overlay`, `cheat.*`).

@@ -7,7 +7,8 @@ use super::{
     Network, Op, Result as WsaResult, Socket, endpoint, lock, put_word, read, sockaddr, word,
     writable,
 };
-use crate::{host, qos, traffic};
+use crate::{host, qos, socket_wait::SocketWait, traffic};
+use polling::Poller;
 use live_proto::{
     Xuid,
     tunnel::{Frame, Kind, decode, encode},
@@ -40,7 +41,9 @@ const OUTBOX_DEPTH: usize = 64;
 const SEND_BURST: usize = 16;
 const RATE_PER_SECOND: u128 = 240;
 const RATE_BURST: u128 = 64;
-const TURN: Duration = Duration::from_millis(4);
+// Bound one read of a partially buffered WebSocket frame. An empty read
+// parks the worker on the socket and its outgoing queue until the next ping.
+const READ_WINDOW: Duration = Duration::from_millis(4);
 const HELLO_TIMEOUT: Duration = Duration::from_secs(5);
 const PING_INTERVAL: Duration = Duration::from_secs(5);
 const PONG_TIMEOUT: Duration = Duration::from_secs(15);
@@ -102,6 +105,7 @@ impl Rate {
 
 struct Peer {
     out: SyncSender<Frame>,
+    wake: Arc<Poller>,
     rate: Rate,
 }
 
@@ -109,12 +113,14 @@ impl Peer {
     fn send(&mut self, id: u32, port: u16, payload: &[u8], now: Instant) {
         if self.rate.take(now) {
             // A full queue drops datagrams, as a busy UDP link would.
-            let _ = self.out.try_send(Frame {
+            if self.out.try_send(Frame {
                 kind: Kind::Datagram,
                 port,
                 peer: id,
                 payload: payload.to_vec(),
-            });
+            }).is_ok() {
+                let _ = self.wake.notify();
+            }
         }
     }
 }
@@ -126,7 +132,7 @@ struct Peers {
 }
 
 impl Peers {
-    fn register(&mut self, now: Instant) -> Option<(u32, Receiver<Frame>)> {
+    fn register(&mut self, now: Instant, wake: Arc<Poller>) -> Option<(u32, Receiver<Frame>)> {
         if self.active.len() >= MAX_PEERS || self.last_id >= u32::from(u16::MAX - 1) {
             return None;
         }
@@ -139,6 +145,7 @@ impl Peers {
             id,
             Peer {
                 out,
+                wake,
                 rate: Rate::new(now),
             },
         );
@@ -309,11 +316,12 @@ impl TunnelHost {
             }
             return Ok(());
         }
-        ws.get_mut().set_read_timeout(Some(TURN))?;
         wait_for_hello(&mut ws)?;
-
+        ws.get_ref().set_read_timeout(Some(READ_WINDOW))?;
+        let wake = Arc::new(Poller::new()?);
+        let wait = SocketWait::new(wake.clone(), Some(ws.get_ref()), None)?;
         let (id, out) = lock(&self.peers)
-            .register(Instant::now())
+            .register(Instant::now(), wake)
             .ok_or("host tunnel is full")?;
         let peer = ConnectedPeer {
             tunnel: self,
@@ -325,7 +333,7 @@ impl TunnelHost {
             peer_ip(id)
         );
         write_frame(&mut ws, &hello(id))?;
-        self.exchange(&mut ws, id, out)
+        self.exchange(&mut ws, id, out, wait)
     }
 
     fn exchange(
@@ -333,6 +341,7 @@ impl TunnelHost {
         ws: &mut WebSocket<TcpStream>,
         id: u32,
         out: Receiver<Frame>,
+        mut wait: SocketWait,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let mut ingress = Rate::new(Instant::now());
         let mut last_ping = Instant::now();
@@ -346,7 +355,9 @@ impl TunnelHost {
                 ws.send(Message::Ping(Default::default()))?;
                 last_ping = now;
             }
+            let mut sent = 0;
             for frame in out.try_iter().take(SEND_BURST) {
+                sent += 1;
                 write_frame(ws, &frame)?;
             }
             match ws.read() {
@@ -377,7 +388,12 @@ impl TunnelHost {
                     return Ok(());
                 }
                 Ok(_) => return Err("expected a binary tunnel frame".into()),
-                Err(error) if pending(&error) => {}
+                Err(error) if pending(&error) => {
+                    if sent < SEND_BURST {
+                        let deadline = (last_ping + PING_INTERVAL).min(last_pong + PONG_TIMEOUT);
+                        wait.wait(Some(deadline.saturating_duration_since(Instant::now())))?;
+                    }
+                }
                 Err(tungstenite::Error::ConnectionClosed) => return Ok(()),
                 Err(error) => return Err(error.into()),
             }
@@ -557,8 +573,13 @@ fn valid_client_frame(frame: &Frame) -> bool {
 }
 
 fn wait_for_hello(ws: &mut WebSocket<TcpStream>) -> Result<(), Box<dyn std::error::Error>> {
-    let started = Instant::now();
-    while started.elapsed() < HELLO_TIMEOUT {
+    let deadline = Instant::now() + HELLO_TIMEOUT;
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err("client tunnel hello timed out".into());
+        }
+        ws.get_ref().set_read_timeout(Some(remaining))?;
         match ws.read() {
             Ok(Message::Binary(bytes)) => {
                 let frame = decode(&bytes).map_err(|_| "invalid client tunnel hello")?;
@@ -574,7 +595,6 @@ fn wait_for_hello(ws: &mut WebSocket<TcpStream>) -> Result<(), Box<dyn std::erro
             Err(error) => return Err(error.into()),
         }
     }
-    Err("client tunnel hello timed out".into())
 }
 
 fn write_frame(
@@ -845,6 +865,10 @@ mod tests {
 
     const BASE: u16 = 31000;
 
+    fn register(peers: &mut Peers, now: Instant) -> Option<(u32, Receiver<Frame>)> {
+        peers.register(now, Arc::new(Poller::new().unwrap()))
+    }
+
     #[test]
     fn hello_and_bye_use_the_contract_wire() {
         assert_eq!(
@@ -910,8 +934,8 @@ mod tests {
     fn maps_each_peer_to_all_seven_xnet_channels() {
         let mut peers = Peers::default();
         let now = Instant::now();
-        let (first, _) = peers.register(now).unwrap();
-        let (second, _) = peers.register(now).unwrap();
+        let (first, _) = register(&mut peers, now).unwrap();
+        let (second, _) = register(&mut peers, now).unwrap();
         let first_ip = Ipv4Addr::new(10, 77, 0, 2);
         let second_ip = Ipv4Addr::new(10, 77, 0, 3);
         assert_eq!(address_id(first_ip), Some(first));
@@ -936,8 +960,8 @@ mod tests {
     fn addressable_unicast_and_discovery_fan_out_with_recipient_ids() {
         let mut peers = Peers::default();
         let now = Instant::now();
-        let (first, first_rx) = peers.register(now).unwrap();
-        let (second, second_rx) = peers.register(now).unwrap();
+        let (first, first_rx) = register(&mut peers, now).unwrap();
+        let (second, second_rx) = register(&mut peers, now).unwrap();
 
         assert!(peers.send(second, 6, b"game", now));
         assert!(matches!(first_rx.try_recv(), Err(TryRecvError::Empty)));
@@ -980,8 +1004,8 @@ mod tests {
 
         let mut peers = Peers::default();
         let now = Instant::now();
-        let (first, first_rx) = peers.register(now).unwrap();
-        let (second, second_rx) = peers.register(now).unwrap();
+        let (first, first_rx) = register(&mut peers, now).unwrap();
+        let (second, second_rx) = register(&mut peers, now).unwrap();
         for _ in 0..RATE_BURST + 1 {
             assert!(peers.send(first, 0, b"game", now));
         }
@@ -1012,14 +1036,14 @@ mod tests {
         let mut peers = Peers::default();
         let now = Instant::now();
         let slots: Vec<_> = (0..MAX_PEERS)
-            .map(|_| peers.register(now).unwrap())
+            .map(|_| register(&mut peers, now).unwrap())
             .collect();
-        assert!(peers.register(now).is_none());
+        assert!(register(&mut peers, now).is_none());
 
         let (old, old_rx) = &slots[0];
         let old_ip = peer_ip(*old);
         peers.remove(*old);
-        let (replacement, _) = peers.register(now).unwrap();
+        let (replacement, _) = register(&mut peers, now).unwrap();
         assert_ne!(*old, replacement);
         assert!(!peers.contains_ip(old_ip));
         assert_eq!(peers.source(*old, BASE, 5), None);
@@ -1035,7 +1059,7 @@ mod tests {
     #[test]
     fn stale_ingress_is_skipped_without_another_blocking_wait() {
         let mut peers = Peers::default();
-        let (old, _) = peers.register(Instant::now()).unwrap();
+        let (old, _) = register(&mut peers, Instant::now()).unwrap();
         peers.remove(old);
         let bridge = SocketAddrV4::new(Ipv4Addr::LOCALHOST, 43210);
         let mut flags_seen = Vec::new();
@@ -1062,8 +1086,8 @@ mod tests {
     fn peek_discards_stale_ingress_and_leaves_the_live_datagram_queued() {
         let mut peers = Peers::default();
         let now = Instant::now();
-        let (old, _) = peers.register(now).unwrap();
-        let (current, _) = peers.register(now).unwrap();
+        let (old, _) = register(&mut peers, now).unwrap();
+        let (current, _) = register(&mut peers, now).unwrap();
         peers.remove(old);
         let bridge = SocketAddrV4::new(Ipv4Addr::LOCALHOST, 43210);
         let packet = |id: u32, byte: u8| [id.to_le_bytes().as_slice(), &[byte]].concat();
