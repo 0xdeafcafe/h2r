@@ -53,6 +53,7 @@ pub(crate) fn partial_registry() -> &'static Registry {
 group weap 0x10
   0x0 f32 speed
   0x4 flags16 flags bits=loud|quiet
+  0x6 unknown 0x2
   0x8 block parts 0xc align 4
     0x0 tagref item groups=itmc
     0x8 u32 value

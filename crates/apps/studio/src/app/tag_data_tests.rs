@@ -16,7 +16,7 @@ fn registry() -> &'static Registry {
         )
         .unwrap();
         let mut defs = tags::defs::Defs::default();
-        defs.parse_into("test", "group weap 0x38\n  0x30 data blob align 1\n")
+        defs.parse_into("test", "group weap 0x38\n  0x0 unknown 0x30\n  0x30 data blob align 1\n")
             .unwrap();
         Registry::build(&schema, &defs)
     })

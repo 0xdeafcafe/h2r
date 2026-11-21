@@ -535,7 +535,8 @@ fn raw_bytes_fill_typed_fields_and_read_back() {
     assert!(r.set("@0xc", Val::Bytes(vec![0; 8])).is_err());
     assert!(r.set("parts[0].@0x6", Val::Bytes(vec![0; 4])).is_err());
     assert!(r.set("range+0x8", Val::Bytes(vec![0; 4])).is_err());
-    assert_eq!(r, before);
+    // Compared as text: the NaN written above is never equal to itself.
+    assert_eq!(format!("{r:?}"), format!("{before:?}"));
     assert_eq!(r.bytes("@0x10", 4), None);
     // A record built without a definition has no layout.
     let mut bare = Record::new(vec![("x".into(), Val::Int(0))]);
