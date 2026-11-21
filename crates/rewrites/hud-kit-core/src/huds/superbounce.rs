@@ -15,9 +15,10 @@
 //!   bounce) and the medals (a bounce's medal glyph and line, as a retail
 //!   multi-kill's) in the game's notification list;
 //! - a navpoint over the next thing to do, the nearest crouch spot while
-//!   not primed and the nearest strip while primed, the game's arrow
-//!   pointing down at it and its waypoint marker above, the distance in
-//!   whole metres over them;
+//!   not primed and the chosen strip while primed, the game's arrow
+//!   pointing down at it and its waypoint marker above, a number in whole
+//!   metres over them: the distance to a crouch spot, the drop onto a
+//!   strip;
 //! - the tutorial in the game's training box, and its step machine
 //!   ([`Tutorial`]).
 //!
@@ -50,8 +51,10 @@ pub const TUTORIAL: &str = "sb.tutorial";
 pub const ICON_TEXT: &str = "^";
 /// The widest navpoint number: whole metres under 1000.
 pub const DISTANCE_LONGEST: &str = "999";
-/// The distance the preview's navpoints show.
+/// The distance the preview's crouch-spot navpoints show.
 pub const SAMPLE_DISTANCE_M: f32 = 12.0;
+/// The drop the preview's strip navpoints show.
+pub const SAMPLE_DROP_M: f32 = 3.0;
 
 /// The charge meter's width: the strip's last columns, as wide as the
 /// pill ([`PILL_BODY`] and [`model::PILL_END`]).
@@ -199,7 +202,7 @@ impl Medal {
 pub const TUTORIAL_TEXT: [&str; 4] = [
     "Crouch, walk in under a lip,\nlet go, then walk out.",
     "You are primed.\nDo not crouch again.",
-    "Find a strip. Its post is the height\nto fall from. No post: just jump.",
+    "Follow the navpoint. Jump from the\nJump mark onto the Land mark.",
     "Jump or fall onto the strip.\nFall Assist (Controls) can steer.",
 ];
 
@@ -277,7 +280,7 @@ pub enum Lost {
 pub enum Target {
     /// The nearest crouch spot's stand point (not primed).
     Crouch,
-    /// The nearest strip's stand point (primed).
+    /// The chosen strip's stand point (primed): its number is the drop.
     Strip,
 }
 
@@ -324,7 +327,8 @@ pub struct View {
     pub charge: Option<Charge>,
     /// The prompt line's verb; `None` leaves the line to the game.
     pub verb: Option<Verb>,
-    /// The navpoint's target and the metres to it; `None` without one.
+    /// The navpoint's target and its number in metres: the distance to a
+    /// crouch spot, the drop onto a strip; `None` without one.
     pub nav: Option<(Target, f32)>,
     /// The latest notification and the tick it was raised at: a new tick
     /// queues it once.
@@ -351,7 +355,7 @@ impl View {
     }
 }
 
-/// A distance as the navpoint shows it: whole metres, as the game's
+/// A distance or drop as the navpoint shows it: whole metres, as the game's
 /// counts are whole (the count fonts have no `.`), clamped to
 /// [`DISTANCE_LONGEST`].
 pub fn distance_text(m: f32) -> String {
@@ -523,7 +527,7 @@ pub fn values(v: &View) -> Values {
 /// The preview's states, by name, as [`View`]s.
 pub fn views() -> Vec<(&'static str, View)> {
     let crouch = |m| Some((Target::Crouch, m));
-    let strip = Some((Target::Strip, SAMPLE_DISTANCE_M));
+    let strip = Some((Target::Strip, SAMPLE_DROP_M));
     let not_primed = View {
         nav: crouch(SAMPLE_DISTANCE_M),
         ..View::idle()

@@ -38,6 +38,7 @@ fn crouch_spot(distance: f32) -> Option<NavTarget> {
         at: [1.0, 2.0, 3.0],
         kind: NavKind::Crouch,
         distance,
+        fall: 0.0,
     })
 }
 
@@ -115,13 +116,18 @@ fn primed_lights_the_pill_and_drains_the_meter() {
             at: [0.0; 3],
             kind: NavKind::Strip,
             distance: 4.0,
+            fall: 1.0,
         }),
         ..ready()
     };
     let v = view(&s, None);
     assert!(v.primed);
     assert_eq!(v.verb, None);
-    assert_eq!(v.nav.map(|n| n.0), Some(Target::Strip));
+    // Over a strip the number is the drop, not the distance.
+    let (target, m) = v.nav.unwrap();
+    assert_eq!(target, Target::Strip);
+    assert!((m - METRES_PER_UNIT).abs() < 1e-4, "{m}");
+    assert_eq!(sb::values(&v).get(NAVPOINT).unwrap().text, "3");
     let values = sb::values(&v);
     assert_eq!(values.get(PILL).unwrap().style, Style::Normal);
     assert_eq!(values.get(CHARGE).unwrap().fill, 0.25);
@@ -416,4 +422,93 @@ fn each_notification_is_sent_once() {
 fn off_hides_everything() {
     assert!(hidden().0.iter().all(|(_, v)| !v.shown));
     assert_eq!(hidden().0.len(), sb::hud().elements.len());
+}
+
+/// The lock holds primed, in the air, falling onto the slot fast enough:
+/// the rule the world's brackets follow.
+#[test]
+fn the_reticle_locks_with_the_landing() {
+    use crate::superbounce_charge::{Course, Predicted};
+    let landing = |verdict, speed| {
+        Some(Predicted {
+            at: [0.0; 3],
+            verdict,
+            speed,
+            need: 5.0,
+            edge: [[0.0, -1.0, 0.0], [0.0, 1.0, 0.0]],
+            stand: [0.0; 3],
+            width: 0.2,
+            fall: 1.0,
+        })
+    };
+    let s = State {
+        word: Some(PRIMED_WORD as u32),
+        airborne: true,
+        landing: landing(Course::OnSlot, 6.0),
+        ..ready()
+    };
+    assert!(reticle_locked(&s));
+    assert!(!reticle_locked(&State {
+        landing: landing(Course::Fixable, 6.0),
+        ..s.clone()
+    }));
+    assert!(!reticle_locked(&State {
+        landing: landing(Course::OnSlot, 4.0),
+        ..s.clone()
+    }));
+    assert!(!reticle_locked(&State {
+        word: Some(0),
+        ..s.clone()
+    }));
+    assert!(!reticle_locked(&State {
+        airborne: false,
+        ..s
+    }));
+}
+
+/// While locked, a retail bitmap widget of the first local player that
+/// reads the autoaimed input gets 1 in that slot after the game's own
+/// answer; nothing else is touched.
+#[test]
+fn the_locked_reticle_reads_autoaimed() {
+    use engine::memory::FlatMemory;
+    const SP: u32 = 0x0010_0000;
+    const INPUTS: u32 = 0x0010_0100;
+    const OUT: u32 = 0x0010_0200;
+    let mut m = FlatMemory::new(SP, 0x1000);
+    m.set_u32(SP, BITMAP_INPUTS_RETURN).unwrap();
+    m.set_u32(SP + 4, 0).unwrap();
+    m.set_u32(SP + 8, INPUTS).unwrap();
+    m.set_u32(SP + 12, OUT).unwrap();
+    m.write(INPUTS, &[5, AUTOAIMED, 0, AUTOAIMED]).unwrap();
+    assert_eq!(autoaim_slots([5, AUTOAIMED, 0, AUTOAIMED]), 0b1010);
+    assert_eq!(autoaim_slots([16, 17, 20, 21]), 0);
+    let a = autoaim_entry(&m, SP, true).unwrap().unwrap();
+    assert_eq!(
+        a,
+        Autoaim {
+            sp_after: SP + 16,
+            out: OUT,
+            slots: 0b1010
+        }
+    );
+    // The game's answer, then ours on the way out.
+    for k in 0..4 {
+        m.set_f32(OUT + 4 * k, 0.25).unwrap();
+    }
+    assert!(!autoaim_exit(&mut m, SP + 4, a).unwrap(), "another stack");
+    assert!(autoaim_exit(&mut m, SP + 16, a).unwrap());
+    let out: Vec<f32> = (0..4).map(|k| m.f32(OUT + 4 * k).unwrap()).collect();
+    assert_eq!(out, [0.25, 1.0, 0.25, 1.0]);
+    // Not locked, a text widget, another player, or no autoaimed input:
+    // left alone.
+    assert_eq!(autoaim_entry(&m, SP, false).unwrap(), None);
+    m.set_u32(SP, 0x0013_a673).unwrap();
+    assert_eq!(autoaim_entry(&m, SP, true).unwrap(), None);
+    m.set_u32(SP, BITMAP_INPUTS_RETURN).unwrap();
+    m.set_u32(SP + 4, 1).unwrap();
+    assert_eq!(autoaim_entry(&m, SP, true).unwrap(), None);
+    m.set_u32(SP + 4, 0).unwrap();
+    m.write(INPUTS, &[16, 17, 20, 21]).unwrap();
+    assert_eq!(autoaim_entry(&m, SP, true).unwrap(), None);
 }

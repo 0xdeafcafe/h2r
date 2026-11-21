@@ -916,8 +916,14 @@ notification.
 
 `sb.navpoint` is a `Navpoint` channel over the next thing to do, in
 every screen mode: while not primed, the nearest crouch spot's stand
-point; while primed, the nearest strip's (`superbounce_mode`'s
-`nav_target`). Halo 2 draws a navpoint in
+point; while primed, the chosen strip's (`superbounce_mode`'s
+`nav_target`: the nearest strip the player's floor is high enough for,
+else the nearest, and while falling the strip the predicted landing is
+on), the same strip the world's landing mark and lock-on are on
+([superbounce.md](superbounce.md#floor-marks)). Its number is whole
+metres: over a crouch spot the distance to it, over a strip the drop to
+come from (the strip's `fall`, 0 for a standing jump), as "3" over the
+crease in the design. Halo 2 draws a navpoint in
 `0x0024e59f` (E, called per slot from `0x0024da7d`): it projects the
 point (`0x0002b400`, `0x0002b460`), clamps it into the waypoint area
 (`hudg` `waypoint_*_inset`, `+0xec`..`+0xf8`), then draws three HUD
@@ -950,7 +956,8 @@ no `.`, D: `h2 font MSLCD-14 '1.2'`).
 The preview draws at a sample point (`NAVPOINT_SAMPLE`, right of and
 above the frame's centre) the arrow with its tip on the point, the
 marker's in-view sequence 1 pixel above it (`NAVPOINT_GAP`) and "12"
-centred 2 pixels above the marker (`NAVPOINT_NUMBER_GAP`), the texels
+over a crouch spot or "3" over a strip (`SAMPLE_DISTANCE_M`,
+`SAMPLE_DROP_M`) centred 2 pixels above the marker (`NAVPOINT_NUMBER_GAP`), the texels
 times the notifications' colour (the same `0x0013927e`; S: that the HUD
 shader multiplies). The outline is not drawn (decoding 8). It is
 `Normal` over either target, and hidden while scanning and without a
@@ -964,20 +971,20 @@ target.
 | `near` | inactive | 0 | Hold (crouch) and walk under | crouch spot, "1" | |
 | `under` | inactive | 1/3 | Let go of (crouch) | crouch spot, "1" | |
 | `held` | inactive, icon `Flash(Help)` | 2/3 | Walk out to stand up | crouch spot, "1" | |
-| `primed-full` | lit | 1 | Primed | strip, "12" | |
-| `primed-draining` | lit, icon `Flash(TimeWarning)` | 0.25 | | strip, "12" | |
-| `primed-still-warning` | lit, icon `Flash(TimeWarning)` | 0.5 | Keep moving or lose the charge | strip, "12" | |
+| `primed-full` | lit | 1 | Primed | strip, "3" | |
+| `primed-draining` | lit, icon `Flash(TimeWarning)` | 0.25 | | strip, "3" | |
+| `primed-still-warning` | lit, icon `Flash(TimeWarning)` | 0.5 | Keep moving or lose the charge | strip, "3" | |
 | `lost` | inactive | 0 | Find a crouch spot to charge again; Charge lost | crouch spot, "12" | |
 | `lost-stood-still` | inactive | 0 | Find a crouch spot to charge again; Charge lost: you stood still | crouch spot, "12" | |
 | `lost-crouched` | inactive | 0 | Find a crouch spot to charge again; Charge lost: you crouched | crouch spot, "12" | |
-| `bounced` | lit | 1 | (medal) Superbounce! | strip, "12" | |
-| `medal-double` | lit | 1 | (medal) Double bounce! | strip, "12" | |
-| `medal-triple` | lit | 1 | (medal) Triple bounce! | strip, "12" | |
-| `medal-quad` | lit | 1 | (medal) Quad bounce! | strip, "12" | |
-| `medal-chain` | lit | 1 | (medal) Chain bounce! | strip, "12" | |
-| `medal-bouncetacular` | lit | 1 | (medal) Bouncetacular! | strip, "12" | |
+| `bounced` | lit | 1 | (medal) Superbounce! | strip, "3" | |
+| `medal-double` | lit | 1 | (medal) Double bounce! | strip, "3" | |
+| `medal-triple` | lit | 1 | (medal) Triple bounce! | strip, "3" | |
+| `medal-quad` | lit | 1 | (medal) Quad bounce! | strip, "3" | |
+| `medal-chain` | lit | 1 | (medal) Chain bounce! | strip, "3" | |
+| `medal-bouncetacular` | lit | 1 | (medal) Bouncetacular! | strip, "3" | |
 | `medal-bounced` | inactive | hidden | (medal) Bounced! | crouch spot, "12" | |
-| `missed` | lit | 0.8 | Missed the strip. | strip, "12" | |
+| `missed` | lit | 0.8 | Missed the strip. | strip, "3" | |
 | `scanning` | dim | hidden | | hidden | |
 | `no-strips` | hidden | hidden | | hidden | |
 | `tutorial-1` | inactive | hidden | | crouch spot | step 1 |
@@ -1043,7 +1050,7 @@ diagrams: a retail training prompt has none.
 |---|---|---|
 | 1 | Crouch, walk in under a lip, / let go, then walk out. | primed |
 | 2 | You are primed. / Do not crouch again. | a bounce spot within 8 m |
-| 3 | Find a strip. Its post is the height / to fall from. No post: just jump. | a bounce, or 20 s |
+| 3 | Follow the navpoint. Jump from the / Jump mark onto the Land mark. | a bounce, or 20 s |
 | 4 | Jump or fall onto the strip. / Fall Assist (Controls) can steer. | a bounce, or 15 s |
 
 No step asks for a button: the fall assist is opt in
