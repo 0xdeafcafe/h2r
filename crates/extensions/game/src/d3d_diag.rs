@@ -816,6 +816,21 @@ impl<B: Backend> Backend for DiagBackend<B> {
     type Surface = B::Surface;
     type Texture = Tracked<B::Texture>;
 
+    #[cfg(feature = "gpu")]
+    fn upload_scene_assets(&mut self, upload: d3d::backend::AssetUpload) {
+        self.inner.upload_scene_assets(upload);
+    }
+
+    #[cfg(feature = "gpu")]
+    fn frozen_images(&self, texture: &Self::Texture) -> Option<d3d::scene_sink::FrozenImages> {
+        self.inner.frozen_images(&texture.inner)
+    }
+
+    #[cfg(feature = "gpu")]
+    fn retain_scene_sample(&self, texture: &Self::Texture) -> Option<d3d::scene_sink::FrozenSample> {
+        self.inner.retain_scene_sample(&texture.inner)
+    }
+
     fn create_surface(
         &mut self,
         format: D3DFormat,
@@ -1748,6 +1763,44 @@ mod tests {
         assert_eq!(backend.inner.waits().reads - reads, 1);
         assert_eq!(*seen.lock().unwrap(), [0, 1, 2, 3]);
         backend.drain().unwrap();
+    }
+
+    /// Exercise the same two decorators and display-worker window as a game
+    /// installation. Asset uploads and immutable textures must reach the GPU
+    /// even when this present uses the original renderer.
+    #[cfg(feature = "gpu")]
+    #[test]
+    fn scene_assets_samples_and_original_presents_cross_the_diagnostic_stack() {
+        let _one = PRESENTING.lock().unwrap_or_else(|e| e.into_inner());
+        let Ok(ctx) = gfx::GfxContext::headless() else { return };
+        let window = Arc::new(d3d::scene_sink::window::PresentWindow::new(false));
+        let worker = d3d::ThreadedBackend::new(d3d::GfxBackend::new(ctx)).unwrap()
+            .with_present_window(Some(Arc::clone(&window)));
+        let (diag, _) = DiagBackend::new(worker);
+        let mut backend = d3d::SceneSink::new(diag, || None)
+            .with_census(false)
+            .with_present_window(Some(Arc::clone(&window)), || true);
+        let (mark, uploaded) = std::sync::mpsc::channel();
+        backend.upload_scene_assets(Box::new(move |_, _| { mark.send(()).unwrap(); }));
+
+        let colour = backend.create_surface(D3DFormat::LinA8R8G8B8, 4, 4, false).unwrap();
+        backend.clear(colour, None, Clear { color: Some([0.5; 4]), ..Clear::NONE }).unwrap();
+        let texture = backend.snapshot_surface(colour, false).unwrap().unwrap();
+        window.activate();
+        window.game_view(Some(true));
+        backend.present(colour, 0).unwrap();
+        // A threaded backend retains the prior Swap's exact proxy. Falling
+        // through to the synchronous GPU-image default would return None.
+        let held = backend.retain_scene_sample(&texture).expect("immutable scene texture");
+        drop(texture);
+        backend.drain().unwrap();
+        assert!(uploaded.try_recv().is_ok());
+        let counts = window.counters();
+        assert_eq!(counts["scene_window_games"], 1);
+        assert_eq!(counts["scene_window_ordinary"], 1);
+        assert_eq!(counts["scene_window_owned"], 0);
+        assert_eq!(counts["scene_window_gaps"], 0);
+        drop(held);
     }
 
     /// Every `Backend` method must be forwarded by `DiagBackend`; a missed

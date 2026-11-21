@@ -1194,6 +1194,21 @@ impl d3d::backend::Backend for Headless {
     type Surface = u32;
     type Texture = u32;
 
+    #[cfg(feature = "gpu")]
+    fn upload_scene_assets(&mut self, upload: d3d::backend::AssetUpload) {
+        self.0.upload_scene_assets(upload);
+    }
+
+    #[cfg(feature = "gpu")]
+    fn frozen_images(&self, texture: &u32) -> Option<d3d::scene_sink::FrozenImages> {
+        self.0.frozen_images(texture)
+    }
+
+    #[cfg(feature = "gpu")]
+    fn retain_scene_sample(&self, texture: &u32) -> Option<d3d::scene_sink::FrozenSample> {
+        self.0.retain_scene_sample(texture)
+    }
+
     fn create_surface(
         &mut self,
         format: gfx::D3DFormat,
@@ -1215,6 +1230,10 @@ impl d3d::backend::Backend for Headless {
     }
     fn upload_texture(&mut self, texture: &gfx::texture::DecodedTexture) -> Result<u32, String> {
         let r = self.0.upload_texture(texture);
+        self.forget(r)
+    }
+    fn upload_shared(&mut self, texture: Arc<gfx::texture::DecodedTexture>) -> Result<u32, String> {
+        let r = self.0.upload_shared(texture);
         self.forget(r)
     }
     fn uses_texture_placeholders(&self) -> bool {
@@ -1251,6 +1270,19 @@ impl d3d::backend::Backend for Headless {
         Vec<d3d::backend::StreamBytes>,
     ) {
         let r = self.0.draw_owned(color, depth, draw, textures);
+        self.forget(r)
+    }
+    fn draw_shared(
+        &mut self,
+        color: u32,
+        depth: Option<u32>,
+        draw: Arc<d3d::backend::ResolvedDraw>,
+        textures: [Option<&u32>; 4],
+    ) -> (
+        Result<d3d::backend::DrawOutcome, String>,
+        Vec<d3d::backend::StreamBytes>,
+    ) {
+        let r = self.0.draw_shared(color, depth, draw, textures);
         self.forget(r)
     }
     fn frame_stats(&mut self) {
