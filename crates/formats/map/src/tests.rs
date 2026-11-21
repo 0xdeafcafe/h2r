@@ -756,3 +756,45 @@ fn a_tag_past_the_end_of_the_file_is_refused_even_inside_the_declared_region() {
     put(&mut b, TAGS + 64 + 12, 0x200);
     assert!(matches!(parse(b), Err(Error::Bounds { .. })));
 }
+
+#[test]
+fn raw_patches_stay_inside_a_local_block_outside_every_table() {
+    let source = fixture();
+    let mut m = parse(source.clone()).unwrap();
+    let local = |offset| RawPointer {
+        file: ResourceFile::Local,
+        offset,
+    };
+    let mut edit = m.edit();
+    edit.patch_raw(local(0xc00), 0x100, 0x10, &[1, 2, 3])
+        .unwrap();
+    // Past the block, a shared cache, the header, the BSP region, the
+    // index and the metadata are all refused.
+    assert!(edit.patch_raw(local(0xc00), 0x100, 0xff, &[1, 2]).is_err());
+    let shared = RawPointer {
+        file: ResourceFile::Shared,
+        offset: 0xc00,
+    };
+    assert!(edit.patch_raw(shared, 0x100, 0x20, &[1]).is_err());
+    assert!(edit.patch_raw(local(0x700), 0x100, 0, &[1]).is_err());
+    assert!(edit.patch_raw(local(0xa00), 0x80, 0x10, &[1]).is_err());
+    assert!(edit.patch_raw(local(0x1000), 0x10, 0, &[1]).is_err());
+    assert!(edit.patch_raw(local(0x1200), 0x10, 0, &[1]).is_err());
+    assert!(edit.patch_raw(local(0x1ff0), 0x100, 0, &[1]).is_err());
+    // A second patch over the first is an overlap.
+    assert!(edit.patch_raw(local(0xc00), 0x100, 0x12, &[9]).is_err());
+    let mut out = Cursor::new(Vec::new());
+    edit.write_to(&mut out).unwrap();
+    let saved = out.into_inner();
+    assert_eq!(saved.len(), source.len());
+    let changed: Vec<usize> = (0..saved.len())
+        .filter(|&i| saved[i] != source[i])
+        .collect();
+    assert!(
+        changed
+            .iter()
+            .all(|&i| (0xc10..0xc13).contains(&i) || (0x2d0..0x2d4).contains(&i)),
+        "{changed:x?}"
+    );
+    assert_eq!(&saved[0xc10..0xc13], &[1, 2, 3]);
+}
