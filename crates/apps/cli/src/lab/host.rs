@@ -104,6 +104,10 @@ pub struct Meta {
     pub agent_socket: Option<String>,
     /// The `h2` that runs it, which also makes the agent calls.
     pub h2: Option<String>,
+    /// The header ID of the film a `--film` run recorded: the ID
+    /// `theater.play {"id"}` takes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub film_id: Option<String>,
 }
 
 pub(super) fn is_final(state: &str) -> bool {
@@ -795,12 +799,27 @@ fn start(sh: &Arc<Shared>, job: Job, requester: &str) -> Result<Value> {
             level.is_some() || r.replay.is_none(),
             "replaying needs a level (the recording names none)"
         );
+        if let Some(name) = &r.film {
+            ensure!(
+                !film_library(cfg, "", r).join(proto::film_file(name)).exists(),
+                "film {name} exists in the host's film library; pick another name"
+            );
+        }
     }
     let mut inner = sh.inner.lock().unwrap();
     if let Job::Run(run) = &job && let Some(name) = &run.record {
         ensure!(
             !inner.jobs.values().any(|m| !is_final(&m.state) && m.request["record"].as_str() == Some(name.as_str())),
             "recording {name} already has a pending job"
+        );
+    }
+    if let Job::Run(run) = &job && let Some(name) = &run.film {
+        ensure!(
+            !inner.jobs.values().any(|m| !is_final(&m.state)
+                && m.request["film"].as_str() == Some(name.as_str())
+                && !m.request["fresh_data"].as_bool().unwrap_or(false)
+                && !run.fresh_data),
+            "film {name} already has a pending job"
         );
     }
     let lock = if inner.activity.is_none() {
@@ -1183,11 +1202,21 @@ fn run_job(
     });
     let run_log = run_dir.join("run.log");
     let mut lingered = None;
-    let st = sh.step_with(id, cmd, &log, |child| {
+    let stepped = sh.step_with(id, cmd, &log, |child| {
         let (st, outcome) = wait_game(child, &run_log, GAME_EXIT_GRACE, sh.cfg.grace)?;
         lingered = outcome;
         Ok(st)
-    })?;
+    });
+    // Keep the film however the game ended: `h2 lab stop` is the usual end
+    // of a `--serve` recording, and a `--fresh-data` root is removed next.
+    if run.film.is_some() {
+        let (film_id, notes) = keep_film(cfg, id, run);
+        sh.update(id, |m| {
+            m.film_id = film_id;
+            m.notes.extend(notes);
+        });
+    }
+    let st = stepped?;
     if let Some(outcome) = lingered {
         let note = format!(
             "the game reported its outcome ({outcome}) but had not exited {} s later; \
@@ -1331,6 +1360,18 @@ fn play_command(
         }
     }
     cmd.envs(&image.env);
+    if let Some(name) = &run.film {
+        // The game records into the library its own `theater.play` reads
+        // (the data root's films/, since H2_FILM_DIR is cleaned above).
+        let dir = film_library(cfg, id, run);
+        fs::create_dir_all(&dir)?;
+        let path = dir.join(proto::film_file(name));
+        ensure!(
+            !path.exists(),
+            "film {name} exists in the host's film library; pick another name"
+        );
+        cmd.arg("--film").arg(path);
+    }
     if run.stats != Some(false) {
         cmd.env("H2_FRAME_STATS", "1")
             .env("H2_FRAME_STATS_CSV", run_dir.join("frames.csv"));
@@ -1397,6 +1438,47 @@ fn play_command(
     cmd.args(&run.args);
     cmd.current_dir(&run_dir);
     Ok(cmd)
+}
+
+/// The film library the run's game reads and records into: `films/` under
+/// the data root it plays with (`h2 play --data`), which is the run's own
+/// scratch root for `--fresh-data`.
+fn film_library(cfg: &HostConfig, id: &str, run: &RunReq) -> PathBuf {
+    let data = if run.fresh_data {
+        cfg.dir("scratch").join(id).join("data")
+    } else {
+        cfg.data.clone()
+    };
+    data.join("films")
+}
+
+/// Keeps the film a `--film` run recorded: a link or copy in `runs/<id>/`
+/// (so `fetch` brings it back and a `--fresh-data` run's film survives its
+/// scratch root), and its header ID read through the `film` crate. Returns
+/// the ID and the notes for the job.
+fn keep_film(cfg: &HostConfig, id: &str, run: &RunReq) -> (Option<String>, Vec<String>) {
+    let Some(name) = &run.film else {
+        return (None, vec![]);
+    };
+    let file = proto::film_file(name);
+    let src = film_library(cfg, id, run).join(&file);
+    let dest = cfg.dir("runs").join(id).join(&file);
+    if !src.is_file() {
+        return (None, vec![format!("film {name}: the game wrote no film")]);
+    }
+    if let Err(e) = fs::hard_link(&src, &dest).or_else(|_| fs::copy(&src, &dest).map(|_| ())) {
+        return (None, vec![format!("film {name}: keeping a copy in the run failed: {e}")]);
+    }
+    match film::LibraryEntry::read(&dest) {
+        Ok(e) => (
+            Some(e.meta.id.clone()),
+            vec![format!(
+                "film {name}: id {} ({} ticks); h2 lab run --serve, then theater.play {{\"id\":\"{}\"}}",
+                e.meta.id, e.meta.length_ticks, e.meta.id
+            )],
+        ),
+        Err(e) => (None, vec![format!("film {name}: header unreadable: {e:#}")]),
+    }
 }
 
 /// Where run `id`'s game listens for the agent API: `<root>/a/<id>.sock`,

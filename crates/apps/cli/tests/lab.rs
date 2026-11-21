@@ -77,6 +77,9 @@ echo "env level=$H2_LEVEL opt=$H2_OPT replay=$H2_INPUT_REPLAY record=$H2_INPUT_R
 n=${H2_BOOT_STOP_AT_PRESENT:-${FAKE_FRAMES:-1000000}}
 [ -n "$H2_FRAME_STATS_CSV" ] && echo "frame,total_us" > "$H2_FRAME_STATS_CSV"
 [ -n "$H2_INPUT_RECORD" ] && echo "pad reads" > "$H2_INPUT_RECORD"
+film=; prev=
+for a in "$@"; do [ "$prev" = --film ] && film=$a; prev=$a; done
+[ -n "$film" ] && { mkdir -p "$(dirname "$film")" && echo "not a real film" > "$film"; echo "data=$(dirname "$film")"; }
 [ -n "$H2_PROFILE" ] && mkdir -p "$H2_PROFILE" && echo "folded" > "$H2_PROFILE/stacks.folded"
 i=0
 while [ $i -lt $n ]; do
@@ -1060,6 +1063,58 @@ fn the_lan_pairing_can_be_revoked_without_stopping_the_host() {
     ));
     assert!(err(&lab.lan(&["status"])).contains("authentication"));
     ok(&lab.local(&["status"]));
+}
+
+#[test]
+fn a_film_run_records_into_the_hosts_library_and_the_run() {
+    let lab = Lab::named("film");
+    let to = lab.dir.join("fetched");
+    let run = |name: &str, extra: &[&str]| {
+        let mut args = vec![
+            "run", "--name", "Film job", "--current", "--level", "03a_oldmombasa", "--frames", "2",
+            "--film", name, "--wait", "--to", to.to_str().unwrap(),
+        ];
+        args.extend_from_slice(extra);
+        lab.local(&args)
+    };
+    // Bad names are refused before anything starts.
+    for bad in ["../x", "a/b", "x.h2film", ".h"] {
+        assert!(!run(bad, &[]).status.success(), "{bad}");
+    }
+    // `-- --film PATH` can't aim the game's own flag at a path.
+    assert!(err(&run("ok", &["--", "--film", "/tmp/x"])).contains("not one the lab passes"));
+
+    // The game records into the data root's films/, which `theater.play`
+    // resolves; the run keeps a copy that `fetch` brings back.
+    let v = json(&ok(&run("first", &[])));
+    assert_eq!(v["job"]["state"], "done");
+    let id = v["job"]["id"].as_str().unwrap();
+    let library = lab.root.join("data/films/first.h2film");
+    assert!(library.is_file());
+    assert!(lab.root.join("runs").join(id).join("first.h2film").is_file());
+    assert!(to.join(id).join("first.h2film").is_file(), "fetched with the run");
+    let log = fs::read_to_string(to.join(id).join("run.log")).unwrap();
+    assert!(log.contains("--film ") && log.contains("films/first.h2film"), "{log}");
+    // The fake's file has no readable header: said in the job's notes, no ID.
+    let notes = v["job"]["notes"].to_string();
+    assert!(notes.contains("film first: header unreadable"), "{notes}");
+    assert!(v["job"].get("film_id").is_none());
+
+    // A name in the library is never reused, at submission.
+    assert!(err(&run("first", &[])).contains("film first exists"));
+
+    // --fresh-data: the film is in the job's scratch library while it runs,
+    // and only the run's copy survives.
+    let v = json(&ok(&run("fresh", &["--fresh-data"])));
+    let id = v["job"]["id"].as_str().unwrap();
+    assert!(to.join(id).join("fresh.h2film").is_file());
+    assert!(!lab.root.join("data/films/fresh.h2film").exists());
+    assert!(!lab.root.join("scratch").join(id).exists());
+    let log = fs::read_to_string(to.join(id).join("run.log")).unwrap();
+    assert!(log.contains(&format!("scratch/{id}/data/films/fresh.h2film")), "{log}");
+    // Playback (`--serve` + `theater.play`) reads the library the game has;
+    // the game's own `--data` is the one the film was recorded under.
+    assert!(log.contains(&format!("--data {}", lab.root.join("scratch").join(id).join("data").display())), "{log}");
 }
 
 #[test]

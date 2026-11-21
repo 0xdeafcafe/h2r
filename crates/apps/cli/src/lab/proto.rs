@@ -120,6 +120,11 @@ pub struct RunReq {
     pub replay: Option<String>,
     /// Record input into this recording (`H2_INPUT_RECORD`).
     pub record: Option<String>,
+    /// Record a film into the host's film library as `<name>.h2film`, and
+    /// keep a copy in the run's directory. Absent is never sent, so a
+    /// request without a film is the same bytes an older host expects.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub film: Option<String>,
     /// Profile into the run's profile/ (`H2_PROFILE`, needs `perf`).
     pub perf: bool,
     pub env: BTreeMap<String, String>,
@@ -156,6 +161,25 @@ pub struct Manifest {
     pub created: u64,
     /// The run that recorded it, when the host did.
     pub run: Option<String>,
+}
+
+/// The extension of a film file in the library.
+pub const FILM_EXT: &str = "h2film";
+
+/// The library file name for film `name` (`<name>.h2film`).
+pub fn film_file(name: &str) -> String {
+    format!("{name}.{FILM_EXT}")
+}
+
+/// A film name is a plain file stem: [`check_name`]'s rules, and no
+/// extension of its own, so the file is exactly `<name>.h2film`.
+pub fn check_film_name(s: &str) -> Result<()> {
+    check_name("film", s)?;
+    ensure!(
+        !s.ends_with(&format!(".{FILM_EXT}")),
+        "film {s:?} is a name without its .{FILM_EXT} extension"
+    );
+    Ok(())
 }
 
 /// The input log's file name inside a recording.
@@ -437,6 +461,9 @@ pub fn validate_run(r: &RunReq) -> Result<()> {
     }
     if let Some(n) = &r.record {
         check_name("record", n)?;
+    }
+    if let Some(n) = &r.film {
+        check_film_name(n)?;
     }
     ensure!(
         r.replay.is_none() || r.record.is_none(),
@@ -891,5 +918,37 @@ mod tests {
         );
         assert!(run(r#"{"cmd":"run","name":"Fixture","difficulty":"easy"}"#).is_err());
         assert!(run(r#"{"cmd":"run","name":"Fixture","replay":"a","record":"b"}"#).is_err());
+    }
+
+    #[test]
+    fn a_film_name_is_a_plain_file_stem() {
+        let film = |n: &str| run(&format!(r#"{{"cmd":"run","name":"Fixture","level":"x","film":"{n}"}}"#));
+        assert!(film("coldstart-1").is_ok());
+        assert!(film("a.b_c").is_ok());
+        for bad in ["", ".hidden", "../x", "a/b", "a b", "x.h2film", &"a".repeat(65)] {
+            assert!(film(bad).is_err(), "{bad:?}");
+        }
+        assert_eq!(film_file("coldstart-1"), "coldstart-1.h2film");
+    }
+
+    /// The game's own `--film` is the host's to place, so a request can't
+    /// aim it at a path.
+    #[test]
+    fn film_is_not_a_play_flag() {
+        assert!(check_play_args(&["--film".into(), "/tmp/x.h2film".into()]).is_err());
+    }
+
+    /// A request without a film serializes without the field, so an older
+    /// host (which refuses unknown fields) still accepts it.
+    #[test]
+    fn a_request_without_a_film_omits_the_field() {
+        let v = serde_json::to_value(RunReq::default()).unwrap();
+        assert!(v.get("film").is_none());
+        let v = serde_json::to_value(RunReq {
+            film: Some("f".into()),
+            ..RunReq::default()
+        })
+        .unwrap();
+        assert_eq!(v["film"], "f");
     }
 }

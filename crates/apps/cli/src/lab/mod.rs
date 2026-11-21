@@ -51,13 +51,15 @@ const USAGE: &str = "usage:
     status                the host, its checkout and active jobs
     update                pull, build and restart an idle installed host
     run --name TEXT [--level MAP] [--difficulty D] [--frames N] [--stats-from N] [--no-stats]
-        [--replay NAME | --record NAME] [--perf] [--env KEY=VALUE]...
+        [--replay NAME | --record NAME] [--film NAME] [--perf] [--env KEY=VALUE]...
         [--branch NAME | --rev REV | --current] [--no-sync] [--feature F]...
         [--build-env KEY=VALUE]... [--fresh-data] [--note TEXT]
         [--mem-limit SIZE] [--serve] [--wait [--to DIR]] [-- play flags]
                           start a run (building its image first unless cached);
                           prints the job id; --wait waits and fetches it;
-                          --serve: no frame limit, driven by `agent` until `stop`
+                          --serve: no frame limit, driven by `agent` until `stop`;
+                          --film NAME: record a film into the host's film library
+                          (and runs/<id>/NAME.h2film for `fetch`)
     agent <id> <method> [json-params] [--timeout S]
                           one `h2 agent` call against that run's game, run on the
                           host; its output and exit code come back unchanged
