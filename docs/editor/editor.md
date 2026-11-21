@@ -638,7 +638,9 @@ build), and keeps the last four maps' scenes so reopening one is instant.
   model the native loader refuses (`native_render::model_load`) draws
   the scene's model, and `view.stats` names it. Live objects, markers and
   overlays draw over the level with its depth (view depth over the far
-  plane). A map whose BSPs the native loader does not read (a Halo 1
+  plane, floored to D24's step as the game's W-buffer stores it;
+  `native_view::DEPTH_RULE`), so a mark on a surface passes the depth
+  test against it. A map whose BSPs the native loader does not read (a Halo 1
   reference) draws its textured scene instead.
 - **World layers.** In the Game mode each BSP also draws the world
   layers 1, 5, 7, 8 and 20 with the materials' own translated passes

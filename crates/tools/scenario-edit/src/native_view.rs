@@ -112,20 +112,19 @@ fn scaled(image: &Image, num: u16, den: u16) -> Image {
     }
 }
 
-/// The depth rule the editor's `world.wgsl` pass writes: view depth over
-/// the far plane, unfloored (the viewport's depth is `Depth32Float`). The
-/// overlay pass that draws after the world writes the same depth
-/// ([`depth_of`]), so its depth test agrees with the picture. The
-/// translated base look (`base_look`) floors it to the W-buffer's step,
-/// which is within the overlays' margins.
+/// The depth rule the editor's world writes: view depth over the far
+/// plane floored to D24's step, the W-buffer's, which the translated base
+/// look stores (`base_look`, `xps_w_depth`) and the `world.wgsl` pass,
+/// the models and the overlays write too ([`depth_of`]), so a surface
+/// drawn over the level at the level's depth passes its depth test.
 pub const DEPTH_RULE: DepthRule = DepthRule {
     full_scale: native_render::camera::D24_SCALE,
-    floor: false,
+    floor: true,
 };
 
 /// The depth [`DEPTH_RULE`] stores for world point `p` seen by `camera`.
 pub fn depth_of(camera: &RenderCamera, p: [f32; 3]) -> f32 {
-    (camera.depth_of(p) / camera.far).clamp(0.0, 1.0)
+    native_render::camera::w_depth(camera.depth_of(p), camera.far, DEPTH_RULE.full_scale)
 }
 
 /// The editor's camera as the renderer's, for a `size` (width, height)

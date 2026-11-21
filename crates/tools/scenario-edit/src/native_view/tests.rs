@@ -111,7 +111,8 @@ fn the_render_camera_matches_the_editors() {
     assert_eq!(tiny.viewport, [0, 0, i16::MAX, 1]);
 }
 
-/// The depth the world pass writes is view depth over the far plane.
+/// The depth the world pass writes is view depth over the far plane,
+/// floored to D24's step.
 #[test]
 fn the_depth_rule_is_view_depth_over_far() {
     let cam = render_camera(&Camera::default(), [64, 64]);
@@ -124,7 +125,15 @@ fn the_depth_rule_is_view_depth_over_far() {
     };
     assert!((depth_of(&cam, ahead(cam.far * 0.25)) - 0.25).abs() < 1e-4);
     assert_eq!(depth_of(&cam, ahead(cam.far * 2.0)), 1.0);
-    assert!(!DEPTH_RULE.floor);
+    assert!(DEPTH_RULE.floor);
+    // Floored to D24's step, as the world's W-buffer depth is: at most
+    // one step under the unfloored depth.
+    let p = ahead(cam.far * 0.3);
+    let (d, exact) = (depth_of(&cam, p), cam.depth_of(p) / cam.far);
+    assert!(
+        (-1e-7..=1.5 / DEPTH_RULE.full_scale).contains(&(exact - d)),
+        "{d:e} {exact:e}"
+    );
 }
 
 /// A draw with no base map, and a lit draw with no page, are left out;
