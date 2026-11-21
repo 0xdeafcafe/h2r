@@ -7,7 +7,27 @@ use crate::{
     native_layers_glue::LayersView, native_lights_glue::LightsWorld, native_water_glue::WaterData,
 };
 use native_render::{fog_gpu::FogSet, light_gpu::LightSet, water_gpu::WaterSet};
-use std::sync::{Arc, mpsc};
+use std::sync::{Arc, Mutex, mpsc};
+
+/// The last render packet can outlive the BSP loader that retired its
+/// map. Always destroy the payload on this utility worker, including when
+/// that packet releases the last reference while encoding a frame.
+pub(super) fn retire_queue() -> std::io::Result<mpsc::Sender<Box<Ready>>> {
+    static QUEUE: Mutex<Option<mpsc::Sender<Box<Ready>>>> = Mutex::new(None);
+    let mut queue = QUEUE.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(send) = queue.as_ref() {
+        return Ok(send.clone());
+    }
+    let (send, receive) = mpsc::channel();
+    background::spawn("native-world retire", move || {
+        for world in receive {
+            let _retire = timeline::setup::Stage::World.worker();
+            drop(world);
+        }
+    })?;
+    *queue = Some(send.clone());
+    Ok(send)
+}
 
 pub(super) enum StageReady {
     World(Arc<Ready>),
@@ -106,6 +126,25 @@ mod tests {
             generation: native_map_work::generation(),
             bsp_generation: native_map_work::bsp_generation(),
         }
+    }
+
+    #[test]
+    fn the_last_packet_sends_its_world_to_retirement_once() {
+        let (retire, receive) = mpsc::channel();
+        let mut world = Ready::default();
+        world.retire = Some(retire);
+        let world = Arc::new(world);
+        let packet = Arc::clone(&world);
+        drop(world);
+        assert!(matches!(receive.try_recv(), Err(mpsc::TryRecvError::Empty)));
+        drop(packet);
+        let retired = receive.try_recv().expect("last release sends the world");
+        assert!(retired.retire.is_none());
+        drop(retired);
+        assert!(matches!(
+            receive.try_recv(),
+            Err(mpsc::TryRecvError::Disconnected)
+        ));
     }
 
     #[test]

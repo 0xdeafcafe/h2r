@@ -392,7 +392,8 @@ there is no hand-written look in between.
   `RENDER_VIEWS` before the first view. A busy GPU world defers that
   transfer until another frame. A BSP switch or revert opens a fresh
   receiver and D3D draws its parts until the new stage is ready.
-  The old resources retire on the worker. Log lines per load: `native-world: N of M materials
+  The final packet releases the BSP's resources to a sleeping utility
+  worker for destruction. Log lines per load: `native-world: N of M materials
   draw natively with their own programs (P of Q parts); K stay on the D3D
   path for R reasons`, one line per reason, most parts first; `native-world:
   <map> BSP at <addr>: N draws in B batches, P parts native, in S s`; and

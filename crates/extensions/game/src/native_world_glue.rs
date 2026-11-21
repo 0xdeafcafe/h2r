@@ -57,8 +57,9 @@ use setup::StageReady;
 
 /// One BSP's uploaded geometry. Each additional stage becomes visible at
 /// a later frame boundary once its worker-built resources are complete.
-#[cfg_attr(test, derive(Default))]
+#[derive(Default)]
 pub struct Ready {
+    retire: Option<mpsc::Sender<Box<Ready>>>,
     opaque: opaque_materials::Library,
     gpu: Mutex<Option<GpuWorld>>,
     pub(crate) upload_device: Option<(wgpu::Device, wgpu::Queue)>,
@@ -86,6 +87,16 @@ pub struct Ready {
     /// through, at the stages it used them (the rest `None`): each ask
     /// checks they are still bound.
     pub palettes: StagePalettes,
+}
+
+impl Drop for Ready {
+    fn drop(&mut self) {
+        // Detach the sender first. The empty shell here and the worker's
+        // payload both drop normally without queueing another retirement.
+        if let Some(send) = self.retire.take() {
+            let _ = send.send(Box::new(std::mem::take(self)));
+        }
+    }
 }
 
 impl Ready {
@@ -238,9 +249,9 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         }
         // With a render thread that records scene stages, everything here
         // is extraction: the guest reads and the checks that can refuse,
-        // which decide what the guest skips. The world's own preparation
-        // (upload, part slots, pipelines, packets) runs on the render
-        // thread (docs/graphics/framescene.md, slice 2).
+        // which decide what the guest skips. The render thread binds
+        // the worker-built resources and records the selected packets
+        // (docs/graphics/framescene.md, slice 2).
         let scene = d.queues_scene_stages(timeline::native::Stage::World);
         let metric = if scene { timeline::native::Metric::ExtractNs } else { timeline::native::Metric::PrepareNs };
         let planning = timeline::native::Timer::start(timeline::native::Stage::World, metric);
@@ -748,6 +759,7 @@ fn load_ready(
     let started = std::time::Instant::now();
     let world_setup = Setup::World.worker();
     if !key.current() { return Ok(()); }
+    let retire = setup::retire_queue()?;
     let (mut map, files) = crate::native_map::open(&key.map)?;
     let bsps = load::scenario_bsps(&mut map)?;
     let addresses: Vec<Option<u32>> = bsps
@@ -886,7 +898,7 @@ fn load_ready(
         finished.send(stage).is_ok()
     };
     if !send(StageReady::World(Arc::new(Ready {
-        opaque, part_bounds, gpu: Mutex::new(Some(gpu)), parts: Arc::new(parts),
+        retire: Some(retire), opaque, part_bounds, gpu: Mutex::new(Some(gpu)), parts: Arc::new(parts),
         upload_device: Some((device.clone(), queue.clone())), palettes: decoder.used().clone(),
         fog: OnceLock::new(), water: OnceLock::new(), layers: OnceLock::new(),
         decorators: OnceLock::new(), lights: OnceLock::new(),
