@@ -276,12 +276,18 @@ pub fn account_spec(a: &crate::account_screen::AccountScreen, now: i64) -> Scree
 }
 
 /// The screens `h2 ui preview` knows, by name.
-pub const NAMES: [&str; 36] = [
+pub const NAMES: [&str; 42] = [
     "forge.hud",
     "forge.palette",
-    "forge.properties",
     "forge.menu",
+    "forge.objects",
+    "forge.properties",
+    "forge.tools",
+    "forge.settings",
     "forge.link",
+    "forge.question",
+    "forge.options",
+    "forge.controls",
     "campaigns",
     "skulls",
     "skulls.h1",
@@ -342,8 +348,12 @@ pub fn sample(name: &str) -> Option<ScreenSpec> {
 /// file.
 pub fn live(name: &str) -> Option<Box<dyn Live>> {
     match name {
-        "forge.hud" | "forge.palette" | "forge.properties" | "forge.menu" | "forge.link" => {
-            super::forge::live(name)
+        // The compositor's (slice U7 removes them).
+        "forge.hud" | "forge.palette" | "forge.menu" => super::forge::live(name),
+        // The game's screens (`crate::forge_screens`).
+        "forge.objects" | "forge.properties" | "forge.tools" | "forge.settings" | "forge.link"
+        | "forge.question" | "forge.options" | "forge.controls" => {
+            crate::forge_screens::pages::live(name)
         }
         "signin-code" => Some(Box::new(Driven::new(crate::signin_screen::SigninPage))),
         "account" => Some(Box::new(Driven::new(AccountPage))),
@@ -971,6 +981,10 @@ mod tests {
     ///   filters and the Clanker card (Quick Options), and the Theater
     ///   pause menu's pickers (the large dialog, over the menu's own rows;
     ///   its camera picker's title also lands on them).
+    /// - The Forge screens on the large dialog (the object menu, Tools,
+    ///   Link and the questions): they open over the running game, which
+    ///   no preview draws, so the sample opens them over the main menu as
+    ///   `kit.picker.game`'s does.
     fn known(screen: &str, issue: &crate::ui_kit::layout::Issue) -> bool {
         use crate::ui_kit::layout::Issue;
         matches!(
@@ -978,7 +992,8 @@ mod tests {
             (
                 "kit.dialog" | "kit.dialog.large" | "clankers" | "firefight" | "h1-options" | "kit.picker" | "kit.picker.game"
                 | MODE_PICKER | FORGE_MAP_PICKER
-                | "browser.filters" | "clanker_player_options" | "theater.pause-menu",
+                | "browser.filters" | "clanker_player_options" | "theater.pause-menu"
+                | "forge.objects" | "forge.tools" | "forge.link" | "forge.question",
                 Issue::Contrast { id, .. }
             )
                 if id.starts_with("row.")

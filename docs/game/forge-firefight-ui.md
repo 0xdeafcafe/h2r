@@ -1,7 +1,7 @@
 # Forge and Firefight UI: every screen and HUD piece as Halo 2 draws it
 
-Status: Partly built. Slices U1 (the main menu) and U2 (the lobby modes) are implemented, tests only; the rest is design, and the audit describes the code on `master`.
-Code: `crates/extensions/game/src/ui_kit/forge.rs` and `ui_kit/forge/` (the Forge strip and dialogs), `lobby_mode.rs` (Game Setup's Mode and Forge Map rows, the header, the start refusal), `lobby_start.rs` (the mode), `firefight/{hud,options}.rs`, `map_select.rs` (the Firefight category), `forge_glue/gizmo.rs`, `theater_ui.rs` (`menu`, the main menu's rows), `crates/apps/cli/src/play_cmd/forge.rs` (the compositor painter). Tests: named per slice below.
+Status: Partly built. Slices U1 (the main menu), U2 (the lobby modes) and U4 (the Forge screens in the game and the bindings table) are built; the rest is design, and the audit describes the compositor code that U3 and U7 replace.
+Code: `crates/extensions/game/src/forge_screens.rs` and `forge_screens/` (the Forge screens and GAME MENU rows), `forge_controls/bindings.rs` (the bindings table), `crates/extensions/game/src/ui_kit/forge.rs` and `ui_kit/forge/` (the compositor's Forge strip and dialogs), `lobby_mode.rs` (Game Setup's Mode and Forge Map rows, the header, the start refusal), `lobby_start.rs` (the mode), `firefight/{hud,options}.rs`, `map_select.rs` (the Firefight category), `forge_glue/gizmo.rs`, `theater_ui.rs` (`menu`, the main menu's rows), `crates/apps/cli/src/play_cmd/forge.rs` (the compositor painter). Tests: named per slice below.
 Switch: none of its own. `forge` and `firefight`, listed in [switches.md](../runtime/switches.md).
 
 Forge and Firefight are modes of the game's lobby, with a HUD each and,
@@ -317,10 +317,29 @@ when the tool's state changes. One layout:
 
 ### The screens
 
-All are kit screens opened in the game with `list_class::open`, on the
-dialogs' window, over the running world. While one is up the monitor's
-camera and tool take no input (`forge_controls` reads the kit's open
-state).
+Each is a list class of ours on a retail screen tag
+(`forge_screens::sheet::Look`): the large dialog, `error_dialog_large`
+(screen 240), laid out as the value picker for the object menu and
+Tools and with a body for Link and the questions; the in-game Controller
+Settings (screen 200) for the list pages. Both are in `shared.map`
+(`each_base_resolves_in_shared`). A screen asked for opens at the next
+UI update for player one, once nothing is pending on the dialogs'
+window (`forge_screens::step`): a dialog class over the screen beneath,
+a list page through the game's screen opener. While a screen is up, ours
+or the game's (GAME MENU, the picker, the keyboard), the monitor's
+camera and tool take no input (`forge_screens::ui_up`, published to
+`forge_controls::State`, `screen`).
+
+- **Who builds what.** The session builds the sheets that need its
+  document: the object menu, Properties, Link and the questions
+  (`forge_screens::open`). The others are built from what the session
+  publishes each tick (`forge_screens::Facts`): Tools, Tool settings,
+  Forge options and Controls (`forge_screens::request`). One screen of
+  ours opens at a time; a second is refused by name.
+- **Choices.** A press sends a `sheet::Choice` to its screen's outbox,
+  which the session drains each tick. Yes to Leave Game stays in
+  `forge_screens`: it leaves as the title leaves a game
+  (`host_lobby::LEAVE_SESSIONS`, then the main menu).
 
 | Screen | Opened by | Built as | Slice |
 |---|---|---|---|
@@ -350,19 +369,32 @@ state).
   adds rows to the table and no screen.
 - **Tool settings.** Rows Movement snap, Rotation snap, Axes, Fine
   movement, each a picker. Until P1 it has the one row that is built,
-  Rotation snap (`Tool::set_rotation_step`).
+  Rotation snap (`Tool::set_rotation_step`, `sheet::SETTINGS`). Fine
+  movement is the stick click's toggle until then.
 - **Link.** The body lists the two ends and what the link writes, with
   rows **Remove link** and **Done**: retail's two-button question.
 - **Questions.** **Yes** and **No**; No has the focus.
-- **Forge menu.** GAME MENU with five rows added above Leave Game:
+- **Forge menu.** GAME MENU with five rows added above the retail rows:
   **Save**, **Save as**, **Load**, **Rebuild map** (with the pending
-  count as its value) and **Forge options...**. Load opens the picker;
-  Save as the keyboard. Leave Game is retail's, behind the unsaved
+  count as its value) and **Forge options...**
+  (`forge_screens::game_menu::ROWS`). The list's constructor makes its
+  rows, then `put_first` adds ours and moves the action words so ours
+  come first; the rows' array is grown for them at `LIST_DATA_NEW`
+  (`forge_screens::game_menu_count`). Load opens the picker over the
+  saved maps; Save as the keyboard, then the overwrite question when
+  the name is saved. Rebuild map is refused by name, as the session
+  cannot rebuild yet. Leave Game is retail's, behind the unsaved
   question. These are the rows Halo 3's Start has (**C**); everything
   else is one screen down so that GAME MENU never scrolls.
-- **Forge options.** Tool settings..., Monitor look..., Controls, and
-  the rows later slices bring: Placed objects, Map limits (P4), Generate
-  nav (F9), Players (F5), Map settings and Publish (F14).
+- **Forge options.** Tool settings... and Controls
+  (`sheet::OPTIONS`), each opening above it so B comes back; Monitor
+  look... joins when it is built, and the rows later slices bring:
+  Placed objects, Map limits (P4), Generate nav (F9), Players (F5), Map
+  settings and Publish (F14).
+- **Controls.** A row a control of the bindings table, its pad button
+  as the value and its keys in the description; up and down, and undo
+  and redo, share a row (`bindings::PAIRS`), so the page fits the
+  in-game list's sixteen lines.
 - **Coordinates.** Six rows, X to Roll. A opens `Effect::Keyboard` with
   the value; left and right nudge.
 
@@ -536,8 +568,15 @@ The owner's choices, which the sections above follow.
 - That a kit screen on the dialogs' window opens over a running
   multiplayer game without pausing it, takes the pad from the player and
   gives it back on close.
+- That a list page opened through the game's screen opener in a game
+  draws over the world, and that Forge options' rows push their page
+  above it on the same window and slot.
+- That `ui_watch` reads no screen over a running game with nothing up,
+  so the monitor takes its input (`forge_screens::ui_up`).
 - Which dialog bases besides `error_dialog_large` are in `shared`.
-- That five rows added to GAME MENU fit its list without scrolling.
+- That five rows added to GAME MENU fit its list without scrolling, and
+  that the GAME MENU rows' array is the one named `0x4593a8`
+  (`game_menu::ARRAY_NAME`).
 - That the HUD has a line or thin quad draw the kit can compile a
   `Segment` to. If it has none, the gizmo is a row of the HUD's dot
   icons along each axis.

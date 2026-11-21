@@ -3180,17 +3180,26 @@ feature is enabled.
 | `forge.status.monitors` (read) | `{}` or omitted | `{monitors: [{seat, name, monitor, pose, look, drawn_as, peers_see, seen_ticks_ago}]}`. Offline it holds seat 0 once a session is open and is empty before. `pose` is `{position, yaw, pitch}` while the monitor camera exists. `drawn_as` is how the seat looks in its own view, always `hidden` with the reason; `peers_see` is what another machine draws |
 
 The input queue accepts `toggle`, `accept`, `back`, `delete`, `palette`,
-`properties`, `menu`, `undo`, `redo`, `up`, `down` and `link`. `link`
-switches to the Links tool; there `accept` starts a link on the aimed
-teleporter flag or placed machine and makes it on the second, `delete`
-removes the aimed thing's latest link, `properties` opens its LINK
-dialog, and `link` or `back` cancels a started link. `link` with nothing
-aimed returns to the Objects tool. In player mode
-only `toggle` enters the monitor. An open dialog takes `up`, `down`,
-`accept` and `back`. An analog request supplies one 1/30-second sample
+`properties`, `tools`, `settings`, `undo`, `redo` and `link`. `palette`
+opens the object menu and `properties` the aimed or held object's
+Properties, as X does by what is aimed at; `tools` opens the Tools
+picker and `settings` the Tool settings. `link` switches to the Links
+tool; there `accept` starts a link on the aimed teleporter flag or
+placed machine and makes it on the second, `delete` removes the aimed
+thing's latest link, `properties` opens its Link dialog, and `link` or
+`back` cancels a started link. `link` with nothing aimed returns to the
+Objects tool. `back` with nothing to cancel does nothing. In player mode
+only `toggle` enters the monitor. The screens are the game's: while one
+is up (ours or the game's), `forge.input` is refused with "A screen is
+up; drive it with ui.press." and the screen is driven with `ui.press`.
+`menu` is refused with "The Forge menu is the game's GAME MENU; open it
+with Start.". An analog request supplies one 1/30-second sample
 with at least one axis. Movement is [right, forward, up], look is [yaw,
 pitch] and roll turns a preview with `rotating:true`. Each axis is in
-[-1, 1]. Read `forge.status` for the resulting monitor and document state.
+[-1, 1]. Read `forge.status` for the resulting monitor and document
+state: it adds `fine` (fine movement on), `ui_up` (a screen is up) and
+`dirty` (edits not saved), and `screen` is the Forge screen of ours that
+is up, with its rows and focus.
 
 A proposal uses the [Forge document's](../game/forge-design.md#the-document)
 portable op and optional prior-value digest. The local host supplies the

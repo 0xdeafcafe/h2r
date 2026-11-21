@@ -815,6 +815,8 @@ pub fn install(
                 }
                 let n = live_menu().count(name, n);
                 let n = menu_rows.count(name, n);
+                // GAME MENU's Forge rows, while a local Forge session runs.
+                let n = crate::forge_screens::game_menu_count(name, n);
                 // Edit Profile's Voice Chat row, while its hooks are on.
                 let n = crate::profile_voice_row::list_count(&model, name, n);
                 // The variant editor's categories get the multiplayer

@@ -127,6 +127,65 @@ fn modal_input_leaves_view_and_selection_alone_and_walls_block_aim() {
     assert_eq!(tool.held, None);
 }
 
+/// Halo 3's buttons on the tool: B with nothing held does nothing (the
+/// Forge menu is Start's), the Tools picker and the Tool settings are
+/// commands, and manipulating pushes a held object away and pulls it in.
+#[test]
+fn b_idle_is_nothing_tools_and_settings_open_and_manipulate_pushes() {
+    let mut session = session(2);
+    let mut world = Fake::default();
+    let mut tool = Tool::default();
+    tool.monitor = true;
+    tool.camera = Some(eye());
+    assert_eq!(tool.update(&session, 1, press(Action::Back)).unwrap(), None);
+    assert_eq!(
+        tool.update(&session, 2, press(Action::Tools)).unwrap(),
+        Some(Command::Tools)
+    );
+    assert_eq!(
+        tool.update(&session, 3, press(Action::Settings)).unwrap(),
+        Some(Command::Settings)
+    );
+    assert_eq!(Action::named("tools"), Some(Action::Tools));
+    assert_eq!(Action::named("settings"), Some(Action::Settings));
+    let frame = Frame {
+        position: [3., 0., 0.],
+        rotation: [0.; 3],
+    };
+    session.place(&mut world, 4, 0, frame).unwrap();
+    tool.update(&session, 5, press(Action::Accept)).unwrap();
+    assert!(tool.held.is_some());
+    let push = |forward: f32| Input {
+        rotating: true,
+        movement: [0., forward, 0.],
+        seconds: 0.1,
+        ..Default::default()
+    };
+    tool.update(&session, 6, push(1.)).unwrap();
+    let away = tool.ghost.unwrap().position[0];
+    assert!(away > 3.5, "pushed away: {away}");
+    for t in 7..40 {
+        tool.update(&session, t, push(-1.)).unwrap();
+    }
+    let near = tool.ghost.unwrap().position[0];
+    assert!(
+        (near - Extent::default().near()).abs() < 1e-4,
+        "pulled in, no nearer than its sphere allows: {near}"
+    );
+    // In the Links tool too, B with no link started is nothing.
+    tool.set_links(true);
+    assert!(tool.links);
+    assert_eq!(tool.held, None, "choosing a tool drops the preview");
+    assert_eq!(
+        tool.update(&session, 41, press(Action::Back)).unwrap(),
+        None
+    );
+    assert_eq!(
+        tool.update(&session, 42, press(Action::Tools)).unwrap(),
+        Some(Command::Tools)
+    );
+}
+
 fn placing(extent: Extent) -> Tool {
     let mut tool = Tool::with_extents(Arc::from(vec![extent]));
     tool.monitor = true;
@@ -214,4 +273,64 @@ fn picking_up_a_big_object_up_close_keeps_its_frame_and_turning_keeps_the_view()
         (behind[0] + 1.).abs() < 1e-5 && behind[1].abs() < 1e-5,
         "it turns with the view and stays where it was taken in it: {behind:?}"
     );
+}
+
+/// Manipulating pushes a new object out from its hold distance and pulls it
+/// in, never past a nearer wall nor nearer than its sphere and
+/// [`NEAR_GAP`] allow; a push against the wall does not build up behind it.
+#[test]
+fn push_and_pull_move_the_hold_distance_within_the_wall_and_the_near_gap() {
+    let session = session(2);
+    let big = Extent {
+        radius: 2.,
+        offset: [0., 0., 1.],
+    };
+    let mut tool = placing(big);
+    let step = |tool: &mut Tool, forward: f32, wall: Option<f32>| {
+        let input = Input {
+            rotating: true,
+            movement: [0., forward, 0.],
+            seconds: 0.1,
+            ..Default::default()
+        };
+        tool.update_with_surface(&session, 1, input, |_| wall)
+            .unwrap();
+        tool.ghost.unwrap().position[0]
+    };
+    assert_eq!(
+        step(&mut tool, 0., None),
+        7.5,
+        "starts at its hold distance"
+    );
+    let pushed = step(&mut tool, 1., None);
+    assert!((pushed - 8.1).abs() < 1e-4, "pushed away: {pushed}");
+    assert!(
+        (step(&mut tool, 0., Some(5.)) - 5.).abs() < 1e-4,
+        "a nearer wall pulls it in"
+    );
+    assert!(
+        (step(&mut tool, 0., None) - 8.1).abs() < 1e-4,
+        "with the wall gone it is back where it was pushed"
+    );
+    for _ in 0..10 {
+        step(&mut tool, 1., Some(10.));
+    }
+    assert!(
+        (step(&mut tool, 0., Some(10.)) - 10.).abs() < 1e-4,
+        "pushing stops at the wall"
+    );
+    let pulled = step(&mut tool, -1., Some(10.));
+    assert!(
+        (pulled - 9.4).abs() < 1e-4,
+        "pulling moves it in from the wall at once: {pulled}"
+    );
+    for _ in 0..40 {
+        step(&mut tool, -1., None);
+    }
+    assert_eq!(
+        step(&mut tool, 0., None),
+        3. + NEAR_GAP,
+        "pulled in no nearer than its sphere and the gap"
+    );
+    assert_eq!(big.near(), 3. + NEAR_GAP);
 }
