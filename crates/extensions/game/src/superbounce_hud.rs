@@ -60,7 +60,7 @@ pub fn view(s: &State, tutorial: Option<u8>) -> View {
         Some(mode::Verb::LetGoOfCrouch) => Some(Verb::LetGoOfCrouch),
         Some(mode::Verb::WalkOutToStand) => Some(Verb::WalkOutToStand),
         Some(mode::Verb::KeepMoving) => Some(Verb::KeepMoving),
-        Some(mode::Verb::ChargeAgain(_)) => Some(Verb::ChargeAgain),
+        Some(mode::Verb::ChargeAgain(l)) => Some(Verb::ChargeAgain(lost(l.reason))),
         None if !s.primed() && charge.is_some_and(|c| c.phase == Phase::Near) => {
             Some(Verb::HoldAndWalkUnder)
         }
@@ -84,18 +84,22 @@ pub fn view(s: &State, tutorial: Option<u8>) -> View {
     }
 }
 
+/// The HUD's name for a loss's reason.
+fn lost(reason: mode::LostReason) -> Lost {
+    match reason {
+        mode::LostReason::StoodStill => Lost::StoodStill,
+        mode::LostReason::Crouched => Lost::Crouched,
+        mode::LostReason::Unknown => Lost::Unknown,
+    }
+}
+
 /// The notification for `s` with the last loss `lost`: the loss's
 /// reason when it is newer than the last landing (or there is none),
 /// else the landing's result, each at its tick.
 pub fn note(s: &State, lost: Option<mode::Lost>) -> Option<(Note, u32)> {
     let landing = s.last_landing.as_ref();
     if let Some(l) = lost.filter(|l| landing.is_none_or(|landing| l.tick > landing.tick)) {
-        let why = match l.reason {
-            mode::LostReason::StoodStill => Lost::StoodStill,
-            mode::LostReason::Crouched => Lost::Crouched,
-            mode::LostReason::Unknown => Lost::Unknown,
-        };
-        return Some((Note::ChargeLost(why), l.tick));
+        return Some((Note::ChargeLost(self::lost(l.reason)), l.tick));
     }
     landing.map(|l| {
         let landed = match &l.result {

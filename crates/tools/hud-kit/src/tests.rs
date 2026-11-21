@@ -760,7 +760,10 @@ fn the_prompt_and_message_carry_the_steps_and_landings() {
         ("lost-crouched", superbounce::MESSAGE_LOST_CROUCHED),
     ] {
         assert_eq!(get(state, superbounce::MESSAGE).text, message);
-        assert_eq!(get(state, superbounce::PROMPT).text, superbounce::PROMPT_CHARGE_AGAIN);
+        assert_eq!(
+            get(state, superbounce::PROMPT).text,
+            format!("{message}\n{}", superbounce::PROMPT_CHARGE_AGAIN)
+        );
     }
     assert!(get("bounced", superbounce::MESSAGE).text.starts_with("Superbounce"));
 }

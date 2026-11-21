@@ -748,7 +748,7 @@ its notification list:
 | `Prompt` | Let go of (crouch) | under |
 | `Prompt` | Walk out to stand up | held |
 | `Prompt` | Keep moving or lose the charge | primed and still for 19 ticks or more, the fill at half or under |
-| `Prompt` | Find a crouch spot to charge again | for 150 ticks after a loss, until a crouch step begins |
+| `Prompt` | the loss's message, then Find a crouch spot to charge again (two lines) | for 150 ticks after a loss, until a crouch step begins |
 | `Message` | Primed | the word becomes −3 |
 | `Message` | Charge lost: you stood still / Charge lost: you crouched / Charge lost | lost, by its reason ([superbounce.md](superbounce.md), "Charge"): the body slept, a crouch, another reason |
 | `Message` | Superbounce, 12 m | a bounce, with the height gained at its top in whole metres |
@@ -820,9 +820,9 @@ target.
 | `primed-full` | lit | 1 | Primed | strip, "12" | |
 | `primed-draining` | lit, icon `Flash(TimeWarning)` | 0.25 | | strip, "12" | |
 | `primed-still-warning` | lit, icon `Flash(TimeWarning)` | 0.5 | Keep moving or lose the charge | strip, "12" | |
-| `lost` | inactive | 0 | Find a crouch spot to charge again; Charge lost | crouch spot, "12" | |
-| `lost-stood-still` | inactive | 0 | Find a crouch spot to charge again; Charge lost: you stood still | crouch spot, "12" | |
-| `lost-crouched` | inactive | 0 | Find a crouch spot to charge again; Charge lost: you crouched | crouch spot, "12" | |
+| `lost` | inactive | 0 | Charge lost / Find a crouch spot to charge again; Charge lost | crouch spot, "12" | |
+| `lost-stood-still` | inactive | 0 | Charge lost: you stood still / Find a crouch spot to charge again; Charge lost: you stood still | crouch spot, "12" | |
+| `lost-crouched` | inactive | 0 | Charge lost: you crouched / Find a crouch spot to charge again; Charge lost: you crouched | crouch spot, "12" | |
 | `bounced` | lit | 1 | Superbounce, 12 m | strip, "12" | |
 | `missed` | lit | 0.8 | Missed the strip. | strip, "12" | |
 | `scanning` | dim | hidden | | hidden | |
@@ -853,8 +853,11 @@ What shows in the game: the pill and its icon while primed (`Inactive`
 not drawn), the charge meter through the recipe and the charge, the
 prompt verbs, the navpoint (the game's arrow and marker, no number) and
 the tutorial's training text. The notifications do not show, so in the
-game a loss shows as the prompt's "Find a crouch spot to charge again"
-without its reason, which `superbounce.state` has as `lost_reason`.
+game a loss's reason is told by the prompt line: its first line is the
+loss's message, over "Find a crouch spot to charge again". The first
+line goes when `Message` is sent (`PROMPT_LOST_*` in
+`hud_kit_core::huds::superbounce`). `superbounce.state` has the reason
+as `lost_reason`.
 
 ### The tutorial
 

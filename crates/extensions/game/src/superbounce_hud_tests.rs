@@ -189,11 +189,16 @@ fn a_loss_says_why_and_asks_for_a_new_charge() {
         };
         let v = view(&s, None);
         assert_eq!(v.note, Some((Note::ChargeLost(why), 90)));
-        assert_eq!(v.verb, Some(Verb::ChargeAgain));
+        assert_eq!(v.verb, Some(Verb::ChargeAgain(why)));
         let values = sb::values(&v);
         let m = values.get(MESSAGE).unwrap();
         assert_eq!((m.text.as_str(), m.since_tick), (text, 90));
-        assert_eq!(values.get(PROMPT).unwrap().text, PROMPT_CHARGE_AGAIN);
+        // The reason on the prompt line too, while notifications are
+        // not drawn.
+        assert_eq!(
+            values.get(PROMPT).unwrap().text,
+            format!("{text}\n{PROMPT_CHARGE_AGAIN}")
+        );
         assert_eq!(values.get(CHARGE).unwrap().fill, 0.0);
     }
 }

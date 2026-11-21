@@ -77,6 +77,16 @@ pub const PROMPT_UNDER: &str = "Let go of \u{e110}";
 pub const PROMPT_HELD: &str = "Walk out to stand up";
 pub const PROMPT_KEEP_MOVING: &str = "Keep moving or lose the charge";
 pub const PROMPT_CHARGE_AGAIN: &str = "Find a crouch spot to charge again";
+/// The new-charge prompt with the loss's reason as its first line, the
+/// reason's message ([`Note::ChargeLost`]): the game does not draw the
+/// kit's notifications yet (docs/game/hud-kit.md, "Message": decoding 6),
+/// so the prompt line tells it. Drop the first lines (back to
+/// [`PROMPT_CHARGE_AGAIN`]) when `Message` is sent.
+pub const PROMPT_LOST_STOOD_STILL: &str =
+    "Charge lost: you stood still\nFind a crouch spot to charge again";
+pub const PROMPT_LOST_CROUCHED: &str =
+    "Charge lost: you crouched\nFind a crouch spot to charge again";
+pub const PROMPT_LOST: &str = "Charge lost\nFind a crouch spot to charge again";
 
 /// The notifications.
 pub const MESSAGE_PRIMED: &str = "Primed";
@@ -144,8 +154,8 @@ pub enum Verb {
     WalkOutToStand,
     /// Primed and still for half the time a body has before it sleeps.
     KeepMoving,
-    /// A few seconds after a loss, until a recipe step begins.
-    ChargeAgain,
+    /// A few seconds after a loss, until a recipe step begins, with why.
+    ChargeAgain(Lost),
 }
 
 impl Verb {
@@ -155,7 +165,10 @@ impl Verb {
             Verb::LetGoOfCrouch => PROMPT_UNDER,
             Verb::WalkOutToStand => PROMPT_HELD,
             Verb::KeepMoving => PROMPT_KEEP_MOVING,
-            Verb::ChargeAgain => PROMPT_CHARGE_AGAIN,
+            // Drop the reason line when `Message` is sent: PROMPT_CHARGE_AGAIN.
+            Verb::ChargeAgain(Lost::StoodStill) => PROMPT_LOST_STOOD_STILL,
+            Verb::ChargeAgain(Lost::Crouched) => PROMPT_LOST_CROUCHED,
+            Verb::ChargeAgain(Lost::Unknown) => PROMPT_LOST,
         }
     }
 }
@@ -308,7 +321,7 @@ pub fn hud() -> Hud {
             Element::channel(
                 PROMPT,
                 Kind::Prompt {
-                    longest: PROMPT_CHARGE_AGAIN,
+                    longest: PROMPT_LOST_STOOD_STILL,
                 },
             ),
             Element::channel(
@@ -439,7 +452,7 @@ pub fn views() -> Vec<(&'static str, View)> {
             phase: Phase::Lost,
             fill: 0.0,
         }),
-        verb: Some(Verb::ChargeAgain),
+        verb: Some(Verb::ChargeAgain(why)),
         note: Some((Note::ChargeLost(why), tick)),
         ..not_primed.clone()
     };
@@ -707,8 +720,19 @@ mod tests {
             prompt("primed-still-warning").as_deref(),
             Some(PROMPT_KEEP_MOVING)
         );
-        for s in ["lost", "lost-stood-still", "lost-crouched"] {
-            assert_eq!(prompt(s).as_deref(), Some(PROMPT_CHARGE_AGAIN), "{s}");
+        // The reason's message, then the hint, while notifications are
+        // not drawn.
+        for (s, why) in [
+            ("lost", MESSAGE_LOST),
+            ("lost-stood-still", MESSAGE_LOST_STOOD_STILL),
+            ("lost-crouched", MESSAGE_LOST_CROUCHED),
+        ] {
+            let p = prompt(s).unwrap();
+            assert_eq!(
+                p.split('\n').collect::<Vec<_>>(),
+                [why, PROMPT_CHARGE_AGAIN],
+                "{s}"
+            );
         }
         assert!(PROMPT_NEAR.contains(CROUCH) && PROMPT_UNDER.contains(CROUCH));
     }

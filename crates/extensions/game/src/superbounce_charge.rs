@@ -769,9 +769,11 @@ mod tests {
         }
         let crouch = Tick {
             request: true,
+            crouch_held: Some(true),
             ..still
         };
         let s = t.step(&crouch, &spots);
+        assert_eq!(phase(&s), Some(ChargePhase::Lost));
         assert_eq!(s.charge.unwrap().lost.unwrap().reason, LostReason::Crouched);
     }
 
