@@ -20,16 +20,22 @@
 //!   the camera's inverse, then checked by rebuilding).
 //! - **Draws with a projection of their own** (the first-person weapon and
 //!   hands): [`Kind::Local`], interpolated in camera space.
-//! - **Node matrices**: in draws that use the camera, three registers that
-//!   form a rotation, uniform scale and translation (rows) are
-//!   [`Kind::Node`]: skinned and rigid object nodes in world space.
+//! - **Node matrices**: in draws that use the camera or a projection of
+//!   their own, three registers that form a rotation, uniform scale and
+//!   translation (rows) are [`Kind::Node`]: skinned and rigid object nodes
+//!   (the first-person arms and weapon's too, so they blend with their
+//!   projection).
 //! - **The eye**: in draws that use the camera, a register whose `xyz` is
 //!   the camera's position (and `w` 0 or 1) is [`Kind::Eye`], so fog,
 //!   specular and sky follow the in-between camera too.
 //!
 //! Draws pair up across the two frames by a signature (view, vertex
-//! program, primitive, counts, strides, texture headers), and among draws
-//! with the same signature, nearest anchor (world position) first.
+//! program, primitive, counts, strides, texture headers, and samples of
+//! the vertex and index data, so two sections of one model with the same
+//! counts are not one draw), and among draws with the same signature,
+//! nearest anchor (world position) first. A paired draw whose node
+//! registers are not the previous draw's is not blended
+//! ([`Substituted::held_palette`]).
 
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
@@ -372,6 +378,7 @@ fn classify(
 ) -> DrawModel {
     let mut blocks = Vec::new();
     let mut uses_camera = false;
+    let mut own_projection = false;
     let inv = cam.and_then(|c| inverse(&c.camera.matrix()));
     for c in cands {
         let kind = match cam {
@@ -384,9 +391,15 @@ fn classify(
                 .and_then(|i| world_of(i, &v.camera.matrix(), &c.matrix))
             {
                 Some(w) => Kind::World(w),
-                None => Kind::Local(c.persp),
+                None => {
+                    own_projection = true;
+                    Kind::Local(c.persp)
+                }
             },
-            None => Kind::Local(c.persp),
+            None => {
+                own_projection = true;
+                Kind::Local(c.persp)
+            }
         };
         blocks.push(Block {
             reg: c.reg,
@@ -394,7 +407,19 @@ fn classify(
             kind,
         });
     }
-    if uses_camera {
+    // Nodes move with the projection that places them: a draw placed by a
+    // projection of its own (the first-person arms and weapon) blends its
+    // nodes along with it, or its world-space nodes would stay at frame N
+    // under frame N-1's view. A projection-like block the program does not
+    // put its vertices through (packed parameters) does not count.
+    let placed_by_own = match position {
+        Position::Rows(reg) => blocks
+            .iter()
+            .any(|b| b.reg == reg && b.layout == Layout::Rows && matches!(b.kind, Kind::Local(_))),
+        Position::Fixed => false,
+        Position::Unknown => own_projection,
+    };
+    if uses_camera || placed_by_own {
         let taken: Vec<(usize, usize)> = cands
             .iter()
             .map(|c| (c.reg as usize, c.reg as usize + 4))
@@ -418,7 +443,7 @@ fn classify(
                 None => r += 1,
             }
         }
-        if let Some(v) = cam {
+        if let Some(v) = cam.filter(|_| uses_camera) {
             let eye = v.camera.eye();
             let tol = 1e-4 * (1.0 + len3(eye));
             let taken: Vec<(usize, usize)> = blocks
@@ -500,9 +525,41 @@ fn signature(d: &ResolvedDraw, view: ViewKey) -> u64 {
     d.indices.as_ref().map(|i| i.len()).hash(&mut h);
     for s in &d.streams {
         (s.stride, s.data.len()).hash(&mut h);
+        sample(&s.data[..], &mut h);
+    }
+    if let Some(i) = &d.indices {
+        sample(&i[..], &mut h);
     }
     d.textures.hash(&mut h);
     h.finish()
+}
+
+/// Elements of a draw's data [`sample`] hashes at each of its start,
+/// middle and end.
+const SAMPLE: usize = 32;
+
+/// Hashes `data` at its start, middle and end (all of it when short): two
+/// sections of one model cut from one vertex buffer can match on every
+/// count and stride, but not on their vertices and indices. A sample, not
+/// the whole: this runs on every draw of every frame.
+fn sample<T: Hash>(data: &[T], h: &mut impl Hasher) {
+    let n = data.len();
+    if n <= 3 * SAMPLE {
+        data.hash(h);
+        return;
+    }
+    let mid = n / 2 - SAMPLE / 2;
+    data[..SAMPLE].hash(h);
+    data[mid..mid + SAMPLE].hash(h);
+    data[n - SAMPLE..].hash(h);
+}
+
+/// The registers `d`'s node matrices are in, in order.
+fn palette(d: &DrawModel) -> impl Iterator<Item = u8> + '_ {
+    d.blocks
+        .iter()
+        .filter(|b| matches!(b.kind, Kind::Node(_)))
+        .map(|b| b.reg)
 }
 
 /// For each draw of `cur`, the draw of `prev` it continues, if any.
@@ -562,6 +619,11 @@ pub struct Substituted {
     pub blended: usize,
     /// Views or blocks snapped (a cut or a teleport).
     pub snapped: usize,
+    /// Draws drawn at their own (frame `cur`) object matrices because
+    /// their node registers are not those of the draw they pair with: not
+    /// the same section, or not laid out the same, so a register-by-register
+    /// blend would mix unrelated bones.
+    pub held_palette: usize,
 }
 
 /// The constants each draw of `cur` replays with at `alpha` between `prev`
@@ -613,7 +675,17 @@ pub fn substitute(
         }
         let cam = cams.iter().find(|c| c.0 == d.view);
         let between_cam = cam.and_then(|c| c.1);
-        let prev_draw = matches.get(i).copied().flatten().map(|p| &prev.draws[p]);
+        let mut prev_draw = matches.get(i).copied().flatten().map(|p| &prev.draws[p]);
+        // Nodes blend register by register: only with a draw whose node
+        // registers are these. Otherwise the draw is drawn as spawned (its
+        // own object matrices, the in-between camera), and counted.
+        if prev_draw.is_some_and(|p| !palette(p).eq(palette(d))) {
+            stats.held_palette += 1;
+            prev_draw = None;
+        }
+        // The object's own transform snapped (a teleport, a weapon switch):
+        // its nodes stay with it at frame `cur`.
+        let mut object_snapped = false;
         let prev_block = |b: &Block| {
             prev_draw.and_then(|p| {
                 p.blocks
@@ -640,6 +712,7 @@ pub fn substitute(
                         }
                         Some(Kind::World(_)) => {
                             stats.snapped += 1;
+                            object_snapped = true;
                             None
                         }
                         _ => None,
@@ -660,7 +733,10 @@ pub fn substitute(
                         stats.blended += 1;
                         writes.push((b.reg as usize, b.layout, 4, p.lerp_local(&l, t).matrix()));
                     }
-                    Some(Kind::Local(_)) => stats.snapped += 1,
+                    Some(Kind::Local(_)) => {
+                        stats.snapped += 1;
+                        object_snapped = true;
+                    }
                     _ => {}
                 },
                 Kind::Eye => {
@@ -671,6 +747,7 @@ pub fn substitute(
                         writes.push((b.reg as usize, Layout::Rows, 1, m));
                     }
                 }
+                Kind::Node(_) if object_snapped => {}
                 Kind::Node(n) => match prev_block(b) {
                     Some(Kind::Node(p)) if p != n => {
                         if p.jumps(&n, tuning.jump_distance, tuning.jump_angle) {

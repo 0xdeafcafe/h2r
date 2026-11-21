@@ -978,7 +978,9 @@ readbacks come from `crates/platform/d3d/src/scaled.rs` and
 
 No params. `interp` is `d3d::interp::InterpStats` with every field
 (frames blended and held, replays, warps, and the hold reasons `unsure_*`,
-`mismatch_*`, `dropped`), read from its `Debug` text so fields added there
+`mismatch_*`, `dropped`, and per draw `held_draws_*`: draws a made frame
+drew at their own matrices, `held_draws_palette` when their node
+registers are not their pair's), read from its `Debug` text so fields added there
 appear with no change here; `pipeline` is the pipelined render's totals
 (`pipelined`, `completed`, `serial` reasons, `fallbacks` by call, joins,
 snapshot coverage, and times in ms including `overlap_ms` for the worker's

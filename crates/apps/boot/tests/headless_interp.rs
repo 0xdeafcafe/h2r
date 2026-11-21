@@ -72,6 +72,8 @@ fn the_headless_gpu_backend_runs_reprojection_and_reports_its_counters() {
         "unpaired_camera",
         "unpaired_views",
         "unpaired_counting",
+        "held_draws",
+        "held_draws_palette",
         "warps",
         "captures",
         "replays",

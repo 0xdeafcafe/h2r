@@ -34,6 +34,15 @@ pub struct InterpStats {
     pub replays: u64,
     /// Draws replayed with substituted constants, over all replays.
     pub substituted_draws: u64,
+    /// Draws a replay drew at their own (newest frame's) object matrices
+    /// instead of blending them, over all replays: the sum of the one
+    /// below.
+    pub held_draws: u64,
+    /// Of those: the draw's node registers are not those of the draw it
+    /// pairs with in the frame before (another section of a model, or a
+    /// palette laid out differently), so a register-by-register blend
+    /// would mix unrelated bones (`model::substitute`).
+    pub held_draws_palette: u64,
     /// Views or blocks snapped instead of blended (cuts, teleports).
     pub snapped: u64,
     /// Idle calls that put a replay off because a pixel count was open.
@@ -124,6 +133,12 @@ impl InterpStats {
         self.warp_max_ns = self.warp_max_ns.max(ns);
     }
 
+    /// The draws a replay drew at their own matrices ([`Substituted`]).
+    fn held_draw(&mut self, s: &Substituted) {
+        self.held_draws += s.held_palette as u64;
+        self.held_draws_palette += s.held_palette as u64;
+    }
+
     fn held(&mut self, why: Hold) {
         match why {
             Hold::Unsure(u) => {
@@ -167,12 +182,14 @@ impl std::fmt::Display for InterpStats {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "frames {} blended {} held {} replays {} substituted draws {} snapped {} deferred {} size_mismatch {} (extent {} mapping {} screen {} overlay {}) unsure {} (camera {} unpinned {}) unpaired {} (gap {} camera {} views {} counting {}) dropped {}",
+            "frames {} blended {} held {} replays {} substituted draws {} held draws {} (palette {}) snapped {} deferred {} size_mismatch {} (extent {} mapping {} screen {} overlay {}) unsure {} (camera {} unpinned {}) unpaired {} (gap {} camera {} views {} counting {}) dropped {}",
             self.frames,
             self.blended_frames,
             self.held_frames,
             self.replays,
             self.substituted_draws,
+            self.held_draws,
+            self.held_draws_palette,
             self.snapped,
             self.deferred,
             self.size_mismatch,
@@ -1331,6 +1348,7 @@ impl<B: Backend> InterpBackend<B> {
                     let mut st = self.stats.lock().unwrap();
                     st.blended_frames += 1;
                     st.substituted_draws += s.draws as u64;
+                    st.held_draw(&s);
                     st.snapped += s.snapped as u64;
                     drop(st);
                     let metadata = self.synthetic_metadata(a);
@@ -1395,6 +1413,7 @@ impl<B: Backend> InterpBackend<B> {
                 let mut st = self.stats.lock().unwrap();
                 st.replays += 1;
                 st.substituted_draws += s.draws as u64;
+                st.held_draw(&s);
                 true
             }
             Err(e) => {
