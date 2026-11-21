@@ -26,8 +26,10 @@
 //!
 //! Positions and normals are world space: the caller's skinning supplies
 //! the blended rows. The materials' layer-10 depth writers and layer-11
-//! receivers are not used here yet; nothing in the game hands this module
-//! casters until `FrameScene::shadows` exists (FrameScene slice 3).
+//! receivers are not used here. In the game the frame graph prepares the
+//! passes ([`SunShadows::prepare_tiles`], [`SunShadows::prepare_receivers`])
+//! and records them in a scene stage, where receivers meet the guest's
+//! W-buffer ([`SunFrame::depth`]; `crate::frame_graph`, `sun`).
 
 use std::collections::HashMap;
 use std::num::NonZeroU64;
@@ -39,9 +41,9 @@ use crate::sun_tiles::{SunCaster, SunPlan, SunTilePlanner};
 /// The atlas's texel format.
 pub const ATLAS_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
-/// The per-draw uniform block: clip rows, tile rows, rectangle, light and
-/// bias, as `vec4f`s.
-const DRAW_BYTES: usize = 4 * 16 + 4 * 16 + 3 * 16;
+/// The per-draw uniform block: clip rows, tile rows, rectangle, light,
+/// bias and depth rule, as `vec4f`s.
+const DRAW_BYTES: usize = 4 * 16 + 4 * 16 + 4 * 16;
 
 /// Normal offset of a receiver's tile lookup, in tile texels.
 const NORMAL_OFFSET_TEXELS: f32 = 1.5;
@@ -58,6 +60,10 @@ struct Draw {
     light: vec4f,
     // x: normal offset in world units; y: depth bias.
     bias: vec4f,
+    // The guest's W-buffer: x its full scale, y 1 / far, z a floor flag,
+    // w the bias towards the eye in view depth. x = 0: the rasterized
+    // depth, as laid by vs_depth.
+    depth: vec4f,
 };
 @group(0) @binding(0) var<uniform> d: Draw;
 @group(1) @binding(0) var atlas: texture_depth_2d;
@@ -98,8 +104,25 @@ fn vs_receive(@location(0) p: vec3f, @location(1) n: vec3f) -> Recv {
     return o;
 }
 
+struct Term {
+    @location(0) colour: vec4f,
+    @builtin(frag_depth) depth: f32,
+};
+
+// The depth a receiver meets: the guest's W-buffer value for its view
+// depth (as `xps_w_depth`), less the bias, or the rasterized depth.
+fn receiver_depth(pos: vec4f) -> f32 {
+    if d.depth.x <= 0.0 {
+        return pos.z;
+    }
+    let w = max(1.0 / pos.w - d.depth.w, 0.0);
+    let z = w * d.depth.x * d.depth.y;
+    let q = select(z, floor(z), d.depth.z != 0.0);
+    return clamp(q / d.depth.x, 0.0, 1.0);
+}
+
 @fragment
-fn fs_receive(i: Recv) -> @location(0) vec4f {
+fn fs_receive(i: Recv) -> Term {
     let uv = vec2f(i.tile.x * 0.5 + 0.5, 0.5 - i.tile.y * 0.5);
     let inside = all(uv >= vec2f(0.0)) && all(uv <= vec2f(1.0));
     let r = clamp(i.tile.z, 0.0, 1.0) - d.bias.y;
@@ -121,11 +144,12 @@ fn fs_receive(i: Recv) -> @location(0) vec4f {
     let width = max(length(vec2f(dpdxFine(coverage), dpdyFine(coverage))), 1e-6);
     let lit = select(1.0, clamp(0.5 + (coverage - 0.5) / width, 0.0, 1.0), inside);
     let term = 1.0 - i.gate * d.light.w * (1.0 - lit);
-    return vec4f(term, term, term, 1.0);
+    return Term(vec4f(term, term, term, 1.0), receiver_depth(i.pos));
 }
 "#;
 
 /// A mesh in world space: positions and per-vertex normals.
+#[derive(Clone)]
 pub struct SunMesh {
     vertices: wgpu::Buffer,
     indices: wgpu::Buffer,
@@ -203,6 +227,7 @@ struct DrawBlock {
     rect: [f32; 4],
     light: [f32; 4],
     bias: [f32; 4],
+    depth: [f32; 4],
 }
 
 impl DrawBlock {
@@ -213,15 +238,17 @@ impl DrawBlock {
             rect: [0.0; 4],
             light: [0.0; 4],
             bias: [0.0; 4],
+            depth: [0.0; 4],
         }
     }
 
     fn write(&self, out: &mut [u8]) {
-        let floats =
-            self.clip
-                .iter()
-                .chain(&self.tile)
-                .chain([&self.rect, &self.light, &self.bias]);
+        let floats = self.clip.iter().chain(&self.tile).chain([
+            &self.rect,
+            &self.light,
+            &self.bias,
+            &self.depth,
+        ]);
         for (i, v) in floats.flatten().enumerate() {
             out[i * 4..i * 4 + 4].copy_from_slice(&v.to_le_bytes());
         }
@@ -517,6 +544,22 @@ impl SunShadows {
         plan: &mut SunPlan,
         casters: &[(u64, &SunMesh)],
     ) -> Result<(), SunRefused> {
+        if let Some(pass) = self.prepare_tiles(device, plan, casters)? {
+            pass.record(encoder);
+        }
+        Ok(())
+    }
+
+    /// [`Self::draw_tiles`], prepared: everything the tiles' pass uses is
+    /// made now, and [`TilePass::record`] only records. `None` when no
+    /// tile is drawn. The atlas counts as written from here on; a caller
+    /// that does not record the pass calls [`Self::invalidate`].
+    pub fn prepare_tiles(
+        &mut self,
+        device: &wgpu::Device,
+        plan: &mut SunPlan,
+        casters: &[(u64, &SunMesh)],
+    ) -> Result<Option<TilePass>, SunRefused> {
         let mesh_of = |id: u64| casters.iter().find(|(c, _)| *c == id).map(|(_, m)| *m);
         let mut work = Vec::new();
         for tile in plan.tiles.iter().filter(|t| t.redraw) {
@@ -525,49 +568,38 @@ impl SunShadows {
                 self.planner.invalidate();
                 return Err(SunRefused::NoCaster(tile.id));
             };
-            work.push((tile, mesh));
+            work.push((tile.rect, mesh.clone()));
         }
         if work.is_empty() && !self.fresh {
-            return Ok(());
+            return Ok(None);
         }
-        let blocks: Vec<DrawBlock> = work.iter().map(|(t, _)| DrawBlock::plain(t.rows)).collect();
+        let blocks: Vec<DrawBlock> = plan
+            .tiles
+            .iter()
+            .filter(|t| t.redraw)
+            .map(|t| DrawBlock::plain(t.rows))
+            .collect();
         let (group, stride) = self.uniforms(device, &blocks);
         let depth = self.depth_pipeline(device, ATLAS_FORMAT);
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("sun tiles"),
-            color_attachments: &[],
-            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                view: &self.atlas_view,
-                depth_ops: Some(wgpu::Operations {
-                    load: if self.fresh {
-                        wgpu::LoadOp::Clear(1.0)
-                    } else {
-                        wgpu::LoadOp::Load
-                    },
-                    store: wgpu::StoreOp::Store,
-                }),
-                stencil_ops: None,
-            }),
-            timestamp_writes: None,
-            occlusion_query_set: None,
-            multiview_mask: None,
-        });
-        for (i, (tile, mesh)) in work.iter().enumerate() {
-            let [x, y, w, h] = tile.rect;
-            pass.set_viewport(x as f32, y as f32, w as f32, h as f32, 0.0, 1.0);
-            pass.set_scissor_rect(x, y, w, h);
-            pass.set_bind_group(0, &group, &[i as u32 * stride]);
-            pass.set_pipeline(&self.clear);
-            pass.draw(0..3, 0..1);
-            pass.set_pipeline(&depth);
-            pass.set_vertex_buffer(0, mesh.vertices.slice(..));
-            pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
-            pass.draw_indexed(0..mesh.count, 0, 0..1);
-        }
-        drop(pass);
+        let pass = TilePass {
+            atlas: self.atlas_view.clone(),
+            clear_atlas: self.fresh,
+            clear: self.clear.clone(),
+            depth,
+            group,
+            stride,
+            work,
+        };
         self.fresh = false;
-        plan.work.tile_draws += work.len() as u32;
-        Ok(())
+        plan.work.tile_draws += pass.work.len() as u32;
+        Ok(Some(pass))
+    }
+
+    /// The atlas no longer holds what the planner thinks: every tile is
+    /// drawn again at the next plan, and the atlas cleared.
+    pub fn invalidate(&mut self) {
+        self.planner.invalidate();
+        self.fresh = true;
     }
 
     /// Lays `meshes`' depth under `clip` rows into `depth`, with the vertex
@@ -633,15 +665,43 @@ impl SunShadows {
         plan: &mut SunPlan,
         receivers: &[SunReceiver<'_>],
     ) {
+        let frame = SunFrame {
+            clip,
+            depth: [0.0; 4],
+            viewport: None,
+        };
+        let formats = (target.colour_format, target.depth_format);
+        if let Some(pass) = self.prepare_receivers(device, formats, &frame, plan, None, receivers) {
+            pass.record(encoder, target.colour, target.depth);
+        }
+    }
+
+    /// [`Self::draw_receivers`], prepared for a frame whose attachments
+    /// have `formats` (colour, depth), against `only`'s tile when given,
+    /// else every tile. `None` when no receiver meets a tile.
+    pub fn prepare_receivers(
+        &mut self,
+        device: &wgpu::Device,
+        formats: (wgpu::TextureFormat, wgpu::TextureFormat),
+        frame: &SunFrame,
+        plan: &mut SunPlan,
+        only: Option<u64>,
+        receivers: &[SunReceiver<'_>],
+    ) -> Option<ReceiverPass> {
         let mut blocks = Vec::new();
         let mut draws = Vec::new();
+        let tiles = || {
+            plan.tiles
+                .iter()
+                .filter(|t| only.is_none_or(|id| t.id == id))
+        };
         for r in receivers {
-            for tile in plan.tiles.iter().filter(|t| t.meets(r.centre, r.radius)) {
+            for tile in tiles().filter(|t| t.meets(r.centre, r.radius)) {
                 let [x, y, w, h] = tile.rect;
                 let l = tile.towards_light;
-                draws.push(r.mesh);
+                draws.push(r.mesh.clone());
                 blocks.push(DrawBlock {
-                    clip,
+                    clip: frame.clip,
                     tile: tile.rows,
                     rect: [x as f32, y as f32, w as f32, h as f32],
                     light: [l[0], l[1], l[2], tile.strength],
@@ -651,53 +711,150 @@ impl SunShadows {
                         0.0,
                         0.0,
                     ],
+                    depth: frame.depth,
                 });
             }
         }
         if draws.is_empty() {
-            return;
+            return None;
         }
         let (group, stride) = self.uniforms(device, &blocks);
-        let pipeline = self.receive_pipeline(device, target.colour_format, target.depth_format);
+        let pipeline = self.receive_pipeline(device, formats.0, formats.1);
+        plan.work.receiver_draws += draws.len() as u32;
+        Some(ReceiverPass {
+            pipeline,
+            atlas_group: self.atlas_group.clone(),
+            group,
+            stride,
+            draws,
+            viewport: frame.viewport,
+            stencil: formats.1.has_stencil_aspect(),
+        })
+    }
+}
+
+/// The view a receiver pass draws in.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SunFrame {
+    /// World to clip, as rows.
+    pub clip: [[f32; 4]; 4],
+    /// The guest's W-buffer rule: full scale, 1 / far, a floor flag (1 or
+    /// 0) and the bias towards the eye in view depth. All zero: the
+    /// receivers meet the rasterized depth ([`SunShadows::draw_depth`]).
+    pub depth: [f32; 4],
+    /// `x, y, width, height` in the attachments' texels; `None`, all of
+    /// them.
+    pub viewport: Option<[f32; 4]>,
+}
+
+/// The tiles' pass, prepared ([`SunShadows::prepare_tiles`]).
+pub struct TilePass {
+    atlas: wgpu::TextureView,
+    clear_atlas: bool,
+    clear: wgpu::RenderPipeline,
+    depth: wgpu::RenderPipeline,
+    group: wgpu::BindGroup,
+    stride: u32,
+    work: Vec<([u32; 4], SunMesh)>,
+}
+
+impl TilePass {
+    /// Caster draws the pass makes.
+    pub fn draws(&self) -> usize {
+        self.work.len()
+    }
+
+    pub fn record(&self, encoder: &mut wgpu::CommandEncoder) {
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("sun shadow receivers"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: target.colour,
-                depth_slice: None,
-                resolve_target: None,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Load,
-                    store: wgpu::StoreOp::Store,
-                },
-            })],
+            label: Some("sun tiles"),
+            color_attachments: &[],
             depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                view: target.depth,
+                view: &self.atlas,
                 depth_ops: Some(wgpu::Operations {
-                    load: wgpu::LoadOp::Load,
+                    load: if self.clear_atlas {
+                        wgpu::LoadOp::Clear(1.0)
+                    } else {
+                        wgpu::LoadOp::Load
+                    },
                     store: wgpu::StoreOp::Store,
                 }),
-                stencil_ops: target
-                    .depth_format
-                    .has_stencil_aspect()
-                    .then_some(wgpu::Operations {
-                        load: wgpu::LoadOp::Load,
-                        store: wgpu::StoreOp::Store,
-                    }),
+                stencil_ops: None,
             }),
             timestamp_writes: None,
             occlusion_query_set: None,
             multiview_mask: None,
         });
-        pass.set_pipeline(&pipeline);
-        pass.set_bind_group(1, &self.atlas_group, &[]);
-        for (i, mesh) in draws.iter().enumerate() {
-            pass.set_bind_group(0, &group, &[i as u32 * stride]);
+        for (i, (rect, mesh)) in self.work.iter().enumerate() {
+            let [x, y, w, h] = *rect;
+            pass.set_viewport(x as f32, y as f32, w as f32, h as f32, 0.0, 1.0);
+            pass.set_scissor_rect(x, y, w, h);
+            pass.set_bind_group(0, &self.group, &[i as u32 * self.stride]);
+            pass.set_pipeline(&self.clear);
+            pass.draw(0..3, 0..1);
+            pass.set_pipeline(&self.depth);
             pass.set_vertex_buffer(0, mesh.vertices.slice(..));
             pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
             pass.draw_indexed(0..mesh.count, 0, 0..1);
         }
-        drop(pass);
-        plan.work.receiver_draws += draws.len() as u32;
+    }
+}
+
+/// A receiver pass, prepared ([`SunShadows::prepare_receivers`]).
+pub struct ReceiverPass {
+    pipeline: wgpu::RenderPipeline,
+    atlas_group: wgpu::BindGroup,
+    group: wgpu::BindGroup,
+    stride: u32,
+    draws: Vec<SunMesh>,
+    viewport: Option<[f32; 4]>,
+    stencil: bool,
+}
+
+impl ReceiverPass {
+    /// Receiver draws the pass makes.
+    pub fn draws(&self) -> usize {
+        self.draws.len()
+    }
+
+    /// Multiplies `colour` where `depth` holds the receivers.
+    pub fn record(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        colour: &wgpu::TextureView,
+        depth: &wgpu::TextureView,
+    ) {
+        let kept = wgpu::Operations {
+            load: wgpu::LoadOp::Load,
+            store: wgpu::StoreOp::Store,
+        };
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("sun shadow receivers"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: colour,
+                depth_slice: None,
+                resolve_target: None,
+                ops: kept,
+            })],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: depth,
+                depth_ops: Some(kept),
+                stencil_ops: self.stencil.then_some(kept),
+            }),
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        if let Some([x, y, w, h]) = self.viewport {
+            pass.set_viewport(x, y, w, h, 0.0, 1.0);
+        }
+        pass.set_pipeline(&self.pipeline);
+        pass.set_bind_group(1, &self.atlas_group, &[]);
+        for (i, mesh) in self.draws.iter().enumerate() {
+            pass.set_bind_group(0, &self.group, &[i as u32 * self.stride]);
+            pass.set_vertex_buffer(0, mesh.vertices.slice(..));
+            pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
+            pass.draw_indexed(0..mesh.count, 0, 0..1);
+        }
     }
 }
 
