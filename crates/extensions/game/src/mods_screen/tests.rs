@@ -878,7 +878,7 @@ fn a_pack_is_one_row_at_its_newest_maps_place() {
     let (_, seen) = listed(old, None);
     seen.opened();
     seen.opened();
-    assert!(seen.list_line(1).unwrap().ends_with("  3 maps"));
+    assert!(seen.list_line(1).unwrap().ends_with(" 3 maps"));
 }
 
 #[test]
