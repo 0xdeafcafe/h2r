@@ -64,14 +64,15 @@ pub fn page() -> Option<ScreenSpec> {
     driver.editor.as_ref()?.page()
 }
 
-/// World-space axes projected through the render frame's camera.
+/// World-space axes and the held object's outline, projected through the
+/// render frame's camera.
 pub fn gizmo() -> Option<gizmo::Axes> {
-    let frame = {
+    let (frame, extent) = {
         let driver = current()?;
         let driver = driver.lock().unwrap_or_else(|e| e.into_inner());
         driver.editor.as_ref()?.ghost()?
     };
-    gizmo::project(frame)
+    gizmo::project(frame, extent)
 }
 
 /// A mouse click is delivered at the same game boundary as a controller press.

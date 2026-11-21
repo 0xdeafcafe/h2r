@@ -16,7 +16,7 @@ use std::{
 };
 
 mod render;
-pub use render::{camera_hooks, forget_park};
+pub use render::{camera_hooks, forget_park, parked};
 
 #[derive(Clone, Copy)]
 enum Event {

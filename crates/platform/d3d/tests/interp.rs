@@ -560,6 +560,167 @@ fn cuts_and_teleports_snap() {
     assert!(r.b.stats().lock().unwrap().snapped >= 2);
 }
 
+/// A section of a skinned model: the camera at c0, `nodes` from c4 up,
+/// and its own vertices (`bytes`), with the counts every section here
+/// shares.
+fn section(cam: &Mat4, bytes: u8, nodes: &[Similarity]) -> ResolvedDraw {
+    let mut c = world_block(cam);
+    for (i, n) in nodes.iter().enumerate() {
+        write(&mut c, NODE + 3 * i, Layout::Rows, 3, &n.to_mat4());
+    }
+    let mut d = draw(c, 55, false);
+    d.streams[0].data = vec![bytes; 48].into();
+    d
+}
+
+/// Two frames of `draws` with the camera still, then the in-between frame
+/// half way: its draws and the counters.
+fn half_way(
+    a: Draws<'_>,
+    b: Draws<'_>,
+) -> (Vec<(u32, ResolvedDraw)>, d3d::interp::InterpStats) {
+    let mut r = rig(60);
+    let s = scene(camera(0.0, 0.0));
+    r.at(F);
+    frame_with(&mut r, &s, a);
+    r.at(2 * F);
+    frame_with(&mut r, &s, b);
+    let before = r.calls();
+    r.b.idle_at(2 * F + F / 2);
+    (r.draws_since(before), *r.b.stats().lock().unwrap())
+}
+
+/// The bug behind a menu's player model coming apart: two sections of one
+/// model with the same counts, strides and textures, their palettes in the
+/// same registers and their first node on the same root bone, swap places
+/// in the draw order. They are not one draw: each blends with its own
+/// bones, never the other section's.
+#[test]
+fn two_sections_with_the_same_counts_blend_with_their_own_bones() {
+    let root = |turn: f64| node(0.0, turn);
+    let (d, st) = half_way(
+        &|cam| {
+            let mut v = level(cam);
+            v.push(section(cam, 1, &[root(0.0)]));
+            v.push(section(cam, 2, &[root(1.0)]));
+            v
+        },
+        &|cam| {
+            let mut v = level(cam);
+            v.push(section(cam, 2, &[root(1.2)]));
+            v.push(section(cam, 1, &[root(0.2)]));
+            v
+        },
+    );
+    // Level draws 0..3, then the two sections in frame b's order.
+    assert!(
+        close(&node_of(&d[3].1), &root(1.0).lerp(&root(1.2), 0.5).to_mat4()),
+        "section 2 blends from its own bone: {:?}",
+        node_of(&d[3].1)
+    );
+    assert!(
+        close(&node_of(&d[4].1), &root(0.0).lerp(&root(0.2), 0.5).to_mat4()),
+        "section 1 blends from its own bone: {:?}",
+        node_of(&d[4].1)
+    );
+    assert_eq!(st.held_draws, 0, "{st}");
+}
+
+/// A draw that pairs with one whose node registers are not its own is not
+/// blended register by register: it draws at its own matrices, counted.
+#[test]
+fn a_draw_whose_node_registers_change_is_drawn_at_its_own() {
+    let (d, st) = half_way(
+        &|cam| {
+            let mut v = level(cam);
+            v.push(section(cam, 1, &[node(0.0, 0.0)]));
+            v
+        },
+        &|cam| {
+            let mut v = level(cam);
+            v.push(section(cam, 1, &[node(1.0, 0.3), node(1.5, 0.1)]));
+            v
+        },
+    );
+    assert!(
+        close(&node_of(&d[3].1), &node(1.0, 0.3).to_mat4()),
+        "{:?}",
+        node_of(&d[3].1)
+    );
+    // Once at the guest's present, once half way.
+    assert_eq!((st.held_draws, st.held_draws_palette), (2, 2), "{st}");
+    assert!(st.to_string().contains("held draws 2 (palette 2)"), "{st}");
+}
+
+/// A first-person weapon's own projection at c0 and its nodes in the world
+/// at c4.
+fn weapon_with_nodes(pose: Mat4, n: Similarity) -> ResolvedDraw {
+    let mut c = block();
+    write(&mut c, CAM, Layout::Rows, 4, &pose);
+    write(&mut c, NODE, Layout::Rows, 3, &n.to_mat4());
+    draw(c, 901, false)
+}
+
+fn first_person(x: f64) -> Mat4 {
+    let fp = build::projection(1.0, 16.0 / 9.0, 0.01, 10.0);
+    mul(
+        &fp,
+        &Similarity {
+            rotation: build::axis([0.0, 1.0, 0.0], x),
+            scale: 1.0,
+            translation: [0.1, -0.1 + x, -0.3],
+        }
+        .to_mat4(),
+    )
+}
+
+/// The first-person arms and weapon: their nodes blend with their own
+/// projection, not left at frame N under frame N-1's view.
+#[test]
+fn first_person_nodes_blend_with_their_projection() {
+    let (d, _) = half_way(
+        &|cam| {
+            let mut v = level(cam);
+            v.push(weapon_with_nodes(first_person(0.0), node(0.0, 0.0)));
+            v
+        },
+        &|cam| {
+            let mut v = level(cam);
+            v.push(weapon_with_nodes(first_person(0.02), node(0.4, 0.2)));
+            v
+        },
+    );
+    assert!(close(&mat(&d[3].1, CAM, Layout::Rows), &first_person(0.01)));
+    assert!(
+        close(
+            &node_of(&d[3].1),
+            &node(0.0, 0.0).lerp(&node(0.4, 0.2), 0.5).to_mat4()
+        ),
+        "{:?}",
+        node_of(&d[3].1)
+    );
+}
+
+/// When the weapon's projection snaps (a weapon switch), its nodes stay
+/// with it at frame N.
+#[test]
+fn a_snapped_projection_keeps_its_nodes() {
+    let (d, _) = half_way(
+        &|cam| {
+            let mut v = level(cam);
+            v.push(weapon_with_nodes(first_person(0.0), node(0.0, 0.0)));
+            v
+        },
+        &|cam| {
+            let mut v = level(cam);
+            v.push(weapon_with_nodes(first_person(3.0), node(0.4, 0.2)));
+            v
+        },
+    );
+    assert!(close(&mat(&d[3].1, CAM, Layout::Rows), &first_person(3.0)));
+    assert!(close(&node_of(&d[3].1), &node(0.4, 0.2).to_mat4()));
+}
+
 #[test]
 fn a_gap_shows_the_frame_as_drawn() {
     let mut r = rig(60);

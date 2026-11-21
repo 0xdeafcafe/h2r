@@ -38,6 +38,11 @@ fn editor() -> Editor {
     let opened = Opened {
         session: Session::new(base, limits, vec![item], 8).unwrap(),
         tags: vec![42],
+        extents: vec![Extent {
+            radius: 1.,
+            offset: [0.; 3],
+        }],
+        refused: vec![r"test\hum: sound scenery has no body to place or see".into()],
         walls: vec![],
     };
     Editor::new(opened, Path::new("."), 1, calls::shared())
@@ -126,4 +131,56 @@ fn palette_to_properties_to_confirmed_engine_handle() {
     e.poll(15);
     assert_eq!(e.session.objects()[0].id, id);
     assert_eq!(e.session.objects()[0].handle, 32);
+}
+
+#[test]
+fn the_status_names_what_the_palette_left_out_and_the_ghost_carries_its_size() {
+    let mut e = editor();
+    let status = e.status();
+    assert_eq!(status["palette"], 1);
+    assert_eq!(
+        status["palette_refused"][0],
+        r"test\hum: sound scenery has no body to place or see"
+    );
+    e.tool.monitor = true;
+    e.tool.select(0);
+    e.tool.ghost = Some(Frame::default());
+    let (_, extent) = e.ghost().unwrap();
+    assert_eq!(extent.radius, 1.);
+}
+
+#[test]
+fn shared_names_are_told_apart_by_their_folder_then_their_path() {
+    let item = |block, path: &str| PaletteItem {
+        block,
+        tag: TagKey {
+            group: "scen".into(),
+            path: path.into(),
+        },
+    };
+    let items = [
+        item(BlockKind::Scenery, r"scenery\rocks\boulder\boulder"),
+        item(BlockKind::Scenery, r"scenery\cave\boulder"),
+        item(BlockKind::Scenery, r"scenery\light_post\post"),
+        item(BlockKind::Crates, r"crates\boulder"),
+        item(BlockKind::Scenery, r"a\x\twin"),
+        item(BlockKind::Scenery, r"b\x\twin"),
+    ];
+    let names: Vec<_> = groups(&items).into_iter().collect();
+    assert_eq!(
+        names,
+        [
+            ("Scenery".into(), "boulder (rocks)".into()),
+            ("Scenery".into(), "boulder (cave)".into()),
+            ("Scenery".into(), "post".into()),
+            ("Crates".into(), "boulder".into()),
+            ("Scenery".into(), r"a\x\twin".into()),
+            ("Scenery".into(), r"b\x\twin".into()),
+        ]
+    );
+    assert_eq!(qualified("solo"), "solo");
+    assert_eq!(
+        qualified(r"objects\light_post\light_post"),
+        "light post (objects)"
+    );
 }

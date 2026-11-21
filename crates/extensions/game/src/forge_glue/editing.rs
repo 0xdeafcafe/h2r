@@ -3,7 +3,7 @@
 use super::{GENERATION, admitted, controls};
 use agent::forge::local::{ForgeEdit, ForgeWorld, Guard, ProposalReply};
 use agent::sim::calls;
-use forge::tool::{Command, Tool};
+use forge::tool::{Command, Extent, Tool};
 use forge::{BlockKind, Linkable, OpId, PaletteItem, Session};
 use forge_doc::{ActiveLink, Endpoint, Entry, Link as DocLink, Op, Sha256};
 use serde_json::{Value, json};
@@ -53,6 +53,8 @@ pub(super) struct Editor {
     notice: Option<(String, u32)>,
     /// The link the open LINK dialog shows.
     link_dialog: Option<OpId>,
+    /// The map's palette entries the Objects palette leaves out, with why.
+    refused: Vec<String>,
 }
 
 impl Editor {
@@ -67,7 +69,7 @@ impl Editor {
                 admitted,
             },
             calls,
-            tool: Tool::default(),
+            tool: Tool::with_extents(opened.extents.into()),
             dialog: None,
             pending: None,
             file_job: None,
@@ -77,6 +79,7 @@ impl Editor {
             rotation_step: 2,
             notice: None,
             link_dialog: None,
+            refused: opened.refused,
         }
     }
 
@@ -103,9 +106,11 @@ impl Editor {
         self.notice = Some((text, tick));
     }
 
-    pub fn ghost(&self) -> Option<forge::Frame> {
+    /// The proposed frame of what is placed or held, with its bounding
+    /// sphere: the gizmo's axes and outline.
+    pub fn ghost(&self) -> Option<(forge::Frame, Extent)> {
         if self.monitor() && self.dialog.is_none() {
-            self.tool.ghost
+            Some((self.tool.ghost?, self.tool.extent(&self.session)?))
         } else {
             None
         }
@@ -130,6 +135,8 @@ impl Editor {
             })).collect::<Vec<_>>(),
             "links":self.links_json(),
             "budget":{"used":self.session.objects().len(),"limit":self.session.budget()},
+            "palette":self.session.palette().len(), "palette_refused":self.refused,
+            "parked":controls::parked().map(|unit| format!("{unit:#010x}")),
             "pending_call":self.pending.is_some(), "pending_file":self.file_job.is_some(), "file":self.filename,
             "notice":self.notice.as_ref().map(|(text,_)|text)
         })
@@ -599,25 +606,56 @@ fn resolve(session: &Session, tags: &[u32], tag: &forge::TagKey) -> Result<u32, 
         .ok_or_else(|| format!("The map has no {} tag named {}.", tag.group, tag.path))
 }
 
+/// Each palette item's group and name. Items of one group that share a
+/// name are told apart by the nearest folder of their path that differs
+/// from the name, as `name (folder)`; the full path only when that too is
+/// shared.
 fn groups(items: &[PaletteItem]) -> Vec<(String, String)> {
     let mut counts = std::collections::BTreeMap::new();
     for item in items {
         *counts.entry((item.block, label(item))).or_insert(0usize) += 1;
     }
-    items
+    let names: Vec<String> = items
         .iter()
         .map(|item| {
-            let mut group = item.block.name().replace('_', " ");
-            group[..1].make_ascii_uppercase();
             let name = label(item);
-            let name = if counts[&(item.block, name.clone())] > 1 {
-                item.tag.path.clone()
+            if counts[&(item.block, name.clone())] > 1 {
+                qualified(&item.tag.path)
             } else {
                 name
+            }
+        })
+        .collect();
+    let mut qualified_counts = std::collections::BTreeMap::new();
+    for (item, name) in items.iter().zip(&names) {
+        *qualified_counts.entry((item.block, name)).or_insert(0usize) += 1;
+    }
+    items
+        .iter()
+        .zip(&names)
+        .map(|(item, name)| {
+            let mut group = item.block.name().replace('_', " ");
+            group[..1].make_ascii_uppercase();
+            let name = if qualified_counts[&(item.block, name)] > 1 {
+                item.tag.path.clone()
+            } else {
+                name.clone()
             };
             (group, name)
         })
         .collect()
+}
+
+/// `leaf (folder)`: the nearest folder of `path` that differs from its
+/// leaf, both as words.
+fn qualified(path: &str) -> String {
+    let mut parts = path.rsplit('\\');
+    let leaf = parts.next().unwrap_or(path);
+    let words = |s: &str| s.replace('_', " ");
+    match parts.find(|p| !p.is_empty() && *p != leaf) {
+        Some(folder) => format!("{} ({})", words(leaf), words(folder)),
+        None => words(leaf),
+    }
 }
 
 fn linkable_json(thing: Linkable) -> Value {

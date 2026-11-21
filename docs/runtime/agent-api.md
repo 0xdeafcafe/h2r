@@ -978,7 +978,9 @@ readbacks come from `crates/platform/d3d/src/scaled.rs` and
 
 No params. `interp` is `d3d::interp::InterpStats` with every field
 (frames blended and held, replays, warps, and the hold reasons `unsure_*`,
-`mismatch_*`, `dropped`), read from its `Debug` text so fields added there
+`mismatch_*`, `dropped`, and per draw `held_draws_*`: draws a made frame
+drew at their own matrices, `held_draws_palette` when their node
+registers are not their pair's), read from its `Debug` text so fields added there
 appear with no change here; `pipeline` is the pipelined render's totals
 (`pipelined`, `completed`, `serial` reasons, `fallbacks` by call, joins,
 snapshot coverage, and times in ms including `overlap_ms` for the worker's
@@ -3067,7 +3069,7 @@ feature is enabled.
 
 | Method and access | Parameters | Result |
 |---|---|---|
-| `forge.status` (read) | `{}` or omitted | The local session, role, log head, budget, monitor camera, aimed and held IDs, screen and focus, pending call or file work, and last notice. Links fields: `tool` (`objects` or `links`), `aimed_link` and `link_from` (`{teleporter: flag}` or `{object: id}`), `teleporters` (`{flag, sender, channel, position}` with the channel the document gives), `links` (`{id, kind:"teleporter", sender, receiver, channel}` or `{id, kind:"device", machines, applies:"rebuild"}`, final indices) and `pending_rebuild`, the active device links. An inactive session returns `{session:"inactive", reason}` |
+| `forge.status` (read) | `{}` or omitted | The local session, role, log head, budget, monitor camera, aimed and held IDs, screen and focus, pending call or file work, and last notice. Links fields: `tool` (`objects` or `links`), `aimed_link` and `link_from` (`{teleporter: flag}` or `{object: id}`), `teleporters` (`{flag, sender, channel, position}` with the channel the document gives), `links` (`{id, kind:"teleporter", sender, receiver, channel}` or `{id, kind:"device", machines, applies:"rebuild"}`, final indices) and `pending_rebuild`, the active device links. Palette fields: `palette` (the Objects palette's item count) and `palette_refused` (each scenario palette entry left out, as `"path: reason"`). `parked`: the hex handle of the biped the monitor parks and hides, or `null` while none is. An inactive session returns `{session:"inactive", reason}` |
 | `forge.doc` (read) | `{}` or omitted | `{document}`, the folded Forge document including confirmed edits |
 | `forge.log` (read) | `{since?}` | `{entries}` in sequence order, starting strictly after `since` (default zero) |
 | `forge.input` (act) | `{action}` or `{movement?, look?, roll?, rotating?}` | `{queued:true}` when the current local session accepts one monitor input |
