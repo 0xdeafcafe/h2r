@@ -6,8 +6,9 @@
 //! thread passes in, so every answer is read on the game's own thread.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::SyncSender;
-use std::sync::{Arc, Condvar, Mutex, MutexGuard};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock};
 
 use crate::capture::{self, FrameSource, Sampler, TickMark, TimelineFrames};
 use crate::loads::{LoadTracker, TimelineTotals, TotalsSource};
@@ -69,6 +70,9 @@ impl Access {
 /// state locked, so it must be quick and must not call the [`Agent`].
 pub type HostMethod = Box<dyn FnMut(Value) -> Result<Value, RpcError> + Send>;
 
+/// A long-running host read with no guest access, answered on its connection thread.
+type ConnectionRead = Arc<dyn Fn(Value) -> Result<Value, RpcError> + Send + Sync>;
+
 /// A method that reads (or writes) the game at the boundary it is answered
 /// at ([`Agent::add_game_method`]): the `sim.*` methods. Like `world.*`,
 /// it waits for a tick while the game ticks.
@@ -78,6 +82,11 @@ pub type GameMethod = Box<dyn FnMut(Value, &mut GameCtx<'_>) -> Result<Value, Rp
 pub struct GameCtx<'a> {
     /// The connection owning this request and any input it queues.
     pub conn: ConnId,
+    pub(crate) epoch: u64,
+    pub(crate) map_epoch: u64,
+    /// A queued edit reads the current epoch without taking the executor lock.
+    map_lifetime: &'a mut Option<Arc<AtomicU64>>,
+    pub(crate) live_session: Option<fn(&dyn engine::GuestMemory) -> bool>,
     /// The game at this boundary ([`Reader::with_guest`] for guest memory).
     pub reader: &'a mut dyn Reader,
     /// The stamp of this boundary.
@@ -96,8 +105,9 @@ struct DeferredAnswer {
     ticks: u64,
     wall: Duration,
     // A decision made by guest code waits for the next tick. A render
-    // thread can finish an already sealed scene while the guest is paused.
-    needs_next_tick: bool,
+    // thread can finish an already sealed scene, and a Theater transport
+    // action can complete, while the guest tick is held.
+    paused_safe: bool,
 }
 
 /// The longest a deferred answer may wait, in game ticks, and in wall time
@@ -106,6 +116,11 @@ pub const DEFER_TICKS_MAX: u64 = 300;
 const DEFER_WALL: Duration = Duration::from_secs(60);
 
 impl GameCtx<'_> {
+    pub(crate) fn edit_lifetime(&mut self) -> Arc<AtomicU64> {
+        let epoch = self.epoch;
+        self.map_lifetime.get_or_insert_with(|| Arc::new(AtomicU64::new(epoch))).clone()
+    }
+
     /// Runs an operation once with guest memory at this boundary.
     pub(crate) fn with_guest<T>(
         &mut self,
@@ -147,10 +162,16 @@ impl GameCtx<'_> {
         self.defer_for(ticks, DEFER_WALL, poll);
     }
 
+    /// File preparation runs in wall time. A fast host may advance hundreds of
+    /// ticks while copying one map, so only the normal wall deadline applies.
+    pub(crate) fn defer_file(&mut self, poll: Later) {
+        self.later = Some(DeferredAnswer { poll, ticks: u64::MAX, wall: DEFER_WALL, paused_safe: false });
+    }
+
     /// A deferred operation with its own, shorter wall-clock deadline.
     pub fn defer_for(&mut self, ticks: u64, wall: Duration, poll: Later) {
         self.later = Some(DeferredAnswer {
-            poll, ticks: ticks.clamp(1, DEFER_TICKS_MAX), wall: wall.min(DEFER_WALL), needs_next_tick: true,
+            poll, ticks: ticks.clamp(1, DEFER_TICKS_MAX), wall: wall.min(DEFER_WALL), paused_safe: false,
         });
     }
 
@@ -160,9 +181,13 @@ impl GameCtx<'_> {
         &mut self,
         mut poll: impl FnMut() -> Option<Result<Value, RpcError>> + Send + 'static,
     ) {
-        self.later = Some(DeferredAnswer {
-            poll: Box::new(move |_| poll()), ticks: DEFER_TICKS_MAX, wall: DEFER_WALL, needs_next_tick: false,
-        });
+        self.defer_at_boundary(Box::new(move |_| poll()));
+    }
+
+    /// A host-side action can complete on a Theater transport poll while the
+    /// guest tick is still held. Its poll must not depend on guest execution.
+    pub fn defer_at_boundary(&mut self, poll: Later) {
+        self.later = Some(DeferredAnswer { poll, ticks: DEFER_TICKS_MAX, wall: DEFER_WALL, paused_safe: true });
     }
 }
 
@@ -173,7 +198,7 @@ struct Deferred {
     poll: Later,
     from_ticks: u64,
     tick_limit: u64,
-    needs_next_tick: bool,
+    paused_safe: bool,
     deadline: Instant,
 }
 
@@ -198,18 +223,27 @@ pub struct Agent {
 
 #[derive(Default)]
 struct Shared {
+    collision_traces: Arc<crate::CollisionTraces>,
+    editor_calls: OnceLock<crate::sim::calls::Shared>,
     state: Mutex<State>,
     wake: Condvar,
+    connection_reads_running: AtomicUsize,
 }
 
 #[derive(Default)]
 struct State {
     live: crate::live::Mirror,
+    editor_marks: Option<crate::editor::MarkObserver>,
+    debug_views: Option<crate::debug_views::Observer>,
     live_epoch: u64,
+    // The last epoch that replaced the map or restored its state.
+    map_epoch: u64,
+    activation: u64,
+    map_lifetime: Option<Arc<AtomicU64>>,
     live_session: Option<fn(&dyn engine::GuestMemory) -> bool>,
     lobby_tape: Option<Arc<dyn LobbyTape>>,
     lobby_boundary: u64,
-    pending: VecDeque<(ConnId, Request)>,
+    pending: VecDeque<Queued>,
     waits: Vec<Waiting>,
     conns: BTreeMap<ConnId, Conn>,
     next_conn: ConnId,
@@ -238,6 +272,7 @@ struct State {
     holding: bool,
     /// Methods the host answers, by name.
     host: BTreeMap<String, (Access, HostMethod)>,
+    connection_reads: BTreeMap<String, ConnectionRead>,
     /// Methods answered with the game at hand, by name.
     game_methods: BTreeMap<String, (Access, GameMethod)>,
     /// The tick observer isn't installed (switched off, or the plan left
@@ -269,6 +304,12 @@ struct State {
     tag_names: Option<Mutex<Box<dyn TagNames>>>,
 }
 
+struct Queued {
+    conn: ConnId,
+    request: Request,
+    _count: crate::memory::PendingRequest,
+}
+
 /// A `profile.capture` waiting for its window to pass.
 struct Capturing {
     conn: ConnId,
@@ -291,6 +332,7 @@ enum Output {
 }
 
 struct Conn {
+    _connection: mem_watch::Gauge,
     tx: Output,
     /// Once upgraded, both events and further requests are disabled.
     streaming: bool,
@@ -347,6 +389,7 @@ impl Agent {
         s.conns.insert(
             id,
             Conn {
+                _connection: mem_watch::agent_activity::connection(),
                 tx,
                 streaming: false,
                 events: BTreeSet::new(),
@@ -379,6 +422,7 @@ impl Agent {
     /// A line from a connection. Parse errors are answered at once;
     /// requests queue for the game thread.
     pub fn submit(&self, conn: ConnId, line: &str) {
+        let _scope = mem_watch::scope("agent.request");
         let line = line.trim();
         if line.is_empty() {
             return;
@@ -421,7 +465,38 @@ impl Agent {
                     );
                 }
             }
-            Ok(r) => s.pending.push_back((conn, r)),
+            Ok(r) if s.connection_reads.contains_key(&r.method) => {
+                let read = s.connection_reads[&r.method].clone();
+                let running = &self.shared.connection_reads_running;
+                running.fetch_add(1, Ordering::SeqCst);
+                struct InFlight<'a>(&'a AtomicUsize);
+                impl Drop for InFlight<'_> {
+                    fn drop(&mut self) { self.0.fetch_sub(1, Ordering::SeqCst); }
+                }
+                let _job = InFlight(running);
+                drop(s);
+                mem_watch::agent_activity::served();
+                let result = read(r.params);
+                if let Some(id) = r.id {
+                    let mut s = self.lock();
+                    let reply = match result {
+                        Ok(mut value) => {
+                            if let Value::Object(obj) = &mut value {
+                                obj.entry("at").or_insert_with(|| to_value(s.at()));
+                            }
+                            Response::ok(id, value)
+                        }
+                        Err(e) => Response::err(id, e),
+                    };
+                    s.send(conn, reply);
+                }
+                return;
+            }
+            Ok(r) => s.pending.push_back(Queued {
+                conn,
+                request: r,
+                _count: crate::memory::PendingRequest::new(),
+            }),
             Err(resp) => s.send(conn, resp),
         }
         drop(s);
@@ -431,7 +506,11 @@ impl Agent {
     /// The tick observer isn't installed: control methods are refused and
     /// world reads are answered between slices.
     pub fn set_no_tick_hook(&self) {
-        self.lock().no_tick_hook = true;
+        let mut state = self.lock();
+        state.no_tick_hook = true;
+        if let Some(marks) = &state.editor_marks {
+            marks.set_no_tick_hook();
+        }
     }
 
     /// Answers `name` with `f` (replacing an earlier one of that name).
@@ -452,6 +531,22 @@ impl Agent {
             .insert(name.to_owned(), (access, Box::new(f)));
     }
 
+    /// Independent host reads still waiting to return a response.
+    pub fn connection_read_pending(&self) -> bool {
+        self.shared.connection_reads_running.load(Ordering::SeqCst) > 0
+    }
+
+    /// Register an independent host read, such as a second player's replay
+    /// verification. Its connection waits for the reply while the game runs.
+    pub fn add_connection_read(
+        &self,
+        name: &str,
+        f: impl Fn(Value) -> Result<Value, RpcError> + Send + Sync + 'static,
+    ) {
+        assert!(!method::ALL.contains(&name));
+        self.lock().connection_reads.insert(name.to_owned(), Arc::new(f));
+    }
+
     /// Answers `name` with `f`, given the game at the boundary
     /// ([`GameCtx`]), as [`add_method`](Self::add_method) otherwise.
     pub fn add_game_method(
@@ -469,6 +564,22 @@ impl Agent {
             .insert(name.to_owned(), (access, Box::new(f)));
     }
 
+    pub fn collision_traces(&self) -> Arc<crate::CollisionTraces> {
+        self.shared.collision_traces.clone()
+    }
+
+    pub(crate) fn set_debug_views(&self, views: crate::debug_views::Observer) {
+        self.lock().debug_views = Some(views);
+    }
+
+    pub(crate) fn set_editor_marks(&self, marks: crate::editor::MarkObserver) {
+        let mut state = self.lock();
+        if state.no_tick_hook {
+            marks.set_no_tick_hook();
+        }
+        state.editor_marks = Some(marks);
+    }
+
     /// The feature plan's text, for `features.list`.
     pub fn set_plan(&self, lines: Vec<String>) {
         self.lock().plan = lines;
@@ -479,9 +590,21 @@ impl Agent {
         self.lock().cinematic = on;
     }
 
-    /// Same-map checkpoint restores need a key even if the game clock moves forward.
+    /// A successful full game start. Checkpoint reactivation takes a different
+    /// path and never publishes an editor reload's reserved identity.
+    pub(crate) fn game_started(&self, activation: u64) {
+        let mut s = self.lock();
+        s.activation = activation;
+        s.map_ticks = 0;
+    }
+
+    /// Checkpoint restore invalidates the old instance even at a later clock.
     pub(crate) fn live_cut(&self) {
-        self.lock().live_epoch += 1;
+        self.shared.collision_traces.clear();
+        let mut s = self.lock();
+        s.advance_live_epoch();
+        s.map_epoch = s.live_epoch;
+        input::lock(&s.input).clear_routes("checkpoint_restored");
     }
 
     /// What a machine snapshot keeps of the game as the agent saw it
@@ -515,11 +638,15 @@ impl Agent {
         };
         let map_ticks = r.u64().map_err(e)?;
         r.finish().map_err(e)?;
+        self.shared.collision_traces.clear();
         let mut s = self.lock();
         s.cinematic = cinematic;
         s.game.map = map;
         s.map_ticks = map_ticks;
-        s.live_epoch += 1;
+        s.activation = 0;
+        s.advance_live_epoch();
+        s.map_epoch = s.live_epoch;
+        input::lock(&s.input).clear_routes("snapshot_loaded");
         Ok(())
     }
 
@@ -541,7 +668,7 @@ impl Agent {
         s.shutdown = true;
         s.paused = None;
         s.stepping = None;
-        for (conn, r) in std::mem::take(&mut s.pending) {
+        for Queued { conn, request: r, .. } in std::mem::take(&mut s.pending) {
             if let Some(id) = r.id {
                 s.send(
                     conn,
@@ -555,6 +682,14 @@ impl Agent {
                 Response::err(w.id, RpcError::new(code::SHUTDOWN, "the game is exiting")),
             );
         }
+        for d in std::mem::take(&mut s.deferred) {
+            if let Some(id) = d.id {
+                s.send(
+                    d.conn,
+                    Response::err(id, RpcError::new(code::SHUTDOWN, "the game is exiting")),
+                );
+            }
+        }
         if let Some(c) = s.cancel_capture() {
             s.send(
                 c.conn,
@@ -563,6 +698,27 @@ impl Agent {
         }
         drop(s);
         self.shared.wake.notify_all();
+    }
+
+    pub(crate) fn edit_input(&self) -> Arc<Mutex<Input>> {
+        Arc::clone(&self.lock().input)
+    }
+
+    pub(crate) fn editor_adopted(&self, queue: crate::sim::calls::Shared) {
+        let _ = self.shared.editor_calls.set(queue);
+    }
+
+    /// Machine snapshots cannot reproduce an unlinked placement preview.
+    /// An unadopted game can answer this without locking the call queue.
+    pub fn editor_snapshot_refusal(&self) -> Option<String> {
+        crate::sim::calls::lock(self.shared.editor_calls.get()?).preview_refusal()
+    }
+
+    /// A callback installed on the agent can observe its lifetime without
+    /// keeping the executor alive through its own method table.
+    pub(crate) fn weak_handle(&self) -> impl Fn() -> Option<Agent> + Send + use<> {
+        let weak = Arc::downgrade(&self.shared);
+        move || weak.upgrade().map(|shared| Agent { shared })
     }
 
     /// The input tap for `xapi`, wrapping the one already there (`inner`,
@@ -574,8 +730,7 @@ impl Agent {
         AgentTap::new(input, inner)
     }
 
-    /// Where input logs (and captures) are written (default: the cache
-    /// directory, `agent_proto::cache_dir`).
+    /// Override the root for input logs, traces, flights and profile captures.
     pub fn set_dir(&self, dir: PathBuf) {
         input::lock(&self.lock().input).dir = Some(dir);
     }
@@ -639,6 +794,14 @@ impl Agent {
         s.mark_tick();
         s.record_tick(reader);
         s.lobby_boundary(reader);
+        if let Some(marks) = &s.editor_marks {
+            marks.on_tick(reader);
+        }
+        if let Some(views) = &s.debug_views
+            && views.active()
+        {
+            views.refresh(reader, &s.game);
+        }
         s.serve(reader, Where::Tick);
         s.capture_live(reader, None, stepping);
         s.settle_deferred(reader);
@@ -696,7 +859,11 @@ impl Agent {
         // clock timeouts. Once ticks stop (loading), read here, at most
         // every SLICE_REFRESH, for waits and events.
         let due = s.slice_refresh.is_none_or(|t| t.elapsed() >= SLICE_REFRESH);
-        let idle_work = !s.ticking() && due && (!s.waits.is_empty() || s.wants_events());
+        // A socketless menu has no tick hook. Maintain its map cache on
+        // the existing slice clock while a debug view needs geometry.
+        let local_views = s.no_tick_hook && s.debug_views.as_ref().is_some_and(|v| v.active());
+        let idle_work =
+            !s.ticking() && due && (local_views || !s.waits.is_empty() || s.wants_events());
         if !s.deferred.is_empty() && !s.ticking() {
             s.settle_deferred(reader);
         }
@@ -712,6 +879,9 @@ impl Agent {
         // (a BSP switch, a map change): answers keep the last tick's state.
         if !s.ticking() {
             s.refresh(reader, Where::Slice);
+            if local_views && let Some(views) = &s.debug_views {
+                views.refresh(reader, &s.game);
+            }
         }
         s.serve(reader, Where::Slice);
         s.settle_waits();
@@ -721,6 +891,7 @@ impl Agent {
 
 impl State {
     fn send(&mut self, conn: ConnId, r: Response) {
+        let _scope = mem_watch::scope("agent.reply");
         let line = serde_json::to_string(&r).expect("responses serialise");
         if let Some(c) = self.conns.get_mut(&conn) {
             Self::push(c, line);
@@ -733,7 +904,7 @@ impl State {
         if c.streaming { return; }
         c.dead |= match &c.tx {
             Output::Local(tx) => tx.try_send(line).is_err(),
-            Output::Socket(tx) => tx.try_send(crate::server::Output::Line(line)).is_err(),
+            Output::Socket(tx) => tx.try_send(crate::server::Output::Line(line.into())).is_err(),
         };
     }
 
@@ -742,6 +913,7 @@ impl State {
     }
 
     fn emit(&mut self, e: Event) {
+        let _scope = mem_watch::scope("agent.reply");
         let kind = e.kind();
         let line = serde_json::to_string(&Notification::event(e)).expect("events serialise");
         for c in self.conns.values_mut().filter(|c| c.events.contains(&kind)) {
@@ -772,6 +944,7 @@ impl State {
         At {
             tick: self.game.tick,
             ticks: self.ticks,
+            activation: self.activation,
             map_ticks: self.map_ticks,
             present: self.presents,
             map: self.game.map.clone(),
@@ -815,6 +988,16 @@ impl State {
         })
     }
 
+    fn advance_live_epoch(&mut self) {
+        self.live_epoch += 1;
+        if let Some(lifetime) = &self.map_lifetime {
+            lifetime.store(self.live_epoch, Ordering::Release);
+        }
+        if let Some(marks) = &self.editor_marks {
+            marks.invalidate();
+        }
+    }
+
     /// Reads the game's status and emits what changed.
     fn refresh(&mut self, reader: &mut dyn Reader, where_: Where) -> At {
         self.boundary = Some(match where_ {
@@ -824,10 +1007,15 @@ impl State {
         let old = std::mem::replace(&mut self.game, reader.status());
         let map_changed = old.map != self.game.map;
         let bsp_changed = old.bsp != self.game.bsp;
-        if map_changed || bsp_changed
-            || old.tick.zip(self.game.tick).is_some_and(|(prev, tick)| tick < prev)
-        {
-            self.live_epoch += 1;
+        let rewound = old
+            .tick
+            .zip(self.game.tick)
+            .is_some_and(|(prev, tick)| tick < prev);
+        if map_changed || rewound || bsp_changed {
+            self.advance_live_epoch();
+            if map_changed || rewound {
+                self.map_epoch = self.live_epoch;
+            }
         }
         if map_changed {
             self.map_ticks = 0;
@@ -910,7 +1098,7 @@ impl State {
         let busy: BTreeSet<ConnId> = self
             .pending
             .iter()
-            .map(|(c, _)| *c)
+            .map(|q| q.conn)
             .chain(self.waits.iter().map(|w| w.conn))
             .chain(self.capture.as_ref().map(|c| c.conn))
             .chain(self.snap_jobs.iter().map(|j| j.conn()))
@@ -923,7 +1111,7 @@ impl State {
             .map(|(id, _)| *id)
             .collect();
         if !dead.is_empty() {
-            self.pending.retain(|(c, _)| !dead.contains(c));
+            self.pending.retain(|q| !dead.contains(&q.conn));
             self.waits.retain(|w| !dead.contains(&w.conn));
             self.snap_jobs.retain(|j| !dead.contains(&j.conn()));
             self.deferred.retain(|d| !dead.contains(&d.conn));
@@ -953,17 +1141,19 @@ impl State {
     fn serve(&mut self, reader: &mut dyn Reader, where_: Where) {
         let defer_world = where_ == Where::Slice && self.ticking();
         let mut keep = VecDeque::new();
-        while let Some((conn, req)) = self.pending.pop_front() {
+        while let Some(queued) = self.pending.pop_front() {
+            let conn = queued.conn;
+            let req = &queued.request;
             if self.conns.get(&conn).is_none_or(|c| c.streaming) { continue; }
             if defer_world
                 && (req.method.starts_with("world.") || matches!(req.method.as_str(), agent_proto::live::SUBSCRIBE | agent_proto::live::STATUS)
                     || self.game_methods.contains_key(&req.method))
             {
-                keep.push_back((conn, req));
+                keep.push_back(queued);
                 continue;
             }
             let id = req.id.clone();
-            let out = self.handle(conn, req, reader);
+            let out = self.handle(conn, queued.request, reader);
             if let (Some(id), Some(out)) = (id, out) {
                 let r = match out {
                     Ok(v) => Response::ok(id, v),
@@ -978,18 +1168,30 @@ impl State {
     /// Polls the deferred answers: answers what is ready, times out what
     /// waited too long.
     fn settle_deferred(&mut self, reader: &mut dyn Reader) {
+        self.settle_deferred_at(reader, false);
+    }
+
+    fn settle_deferred_at(&mut self, reader: &mut dyn Reader, theater_paused: bool) {
         if self.deferred.is_empty() {
             return;
         }
         let now = Instant::now();
         let at = self.at();
         for mut d in std::mem::take(&mut self.deferred) {
-            let fresh = d.needs_next_tick && self.ticks == d.from_ticks;
+            if theater_paused && !d.paused_safe {
+                self.deferred.push(d);
+                continue;
+            }
+            let fresh = self.ticks == d.from_ticks && !d.paused_safe;
             let out = if fresh {
                 None
             } else {
                 let mut ctx = GameCtx {
                     conn: d.conn,
+                    epoch: self.live_epoch,
+                    map_epoch: self.map_epoch,
+                    map_lifetime: &mut self.map_lifetime,
+                    live_session: self.live_session,
                     reader: &mut *reader,
                     at: at.clone(),
                     host: &mut self.host,
@@ -1058,6 +1260,7 @@ impl State {
     fn holds(&self, u: &Until, passed: u64) -> bool {
         u.tick
             .is_none_or(|t| self.game.tick.is_some_and(|now| now >= t))
+            && u.activation.is_none_or(|n| self.activation == n)
             && u.ticks.is_none_or(|n| passed >= n)
             && u.map_ticks.is_none_or(|n| self.map_ticks >= n)
             && u.present.is_none_or(|p| self.presents >= p)
@@ -1075,6 +1278,8 @@ impl State {
         req: Request,
         reader: &mut dyn Reader,
     ) -> Option<Result<Value, RpcError>> {
+        mem_watch::agent_activity::served();
+        let _scope = mem_watch::scope("agent.request");
         let m = req.method.as_str();
         if agent_proto::live::METHODS.contains(&m) {
             return self.live_method(conn, req, reader);
@@ -1121,7 +1326,8 @@ impl State {
             });
         }
         if trace::is_method(m) {
-            let (at, dir) = (self.at(), self.dir());
+            let dir = input::lock(&self.input).output_dir();
+            let at = self.at();
             return Some(self.recorders.handle(m, p, at, &dir, &self.input));
         }
         if self.game_methods.contains_key(m) {
@@ -1138,6 +1344,10 @@ impl State {
             let (_, f) = self.game_methods.get_mut(m)?;
             let mut ctx = GameCtx {
                 conn,
+                epoch: self.live_epoch,
+                map_epoch: self.map_epoch,
+                map_lifetime: &mut self.map_lifetime,
+                live_session: self.live_session,
                 reader,
                 at,
                 host: &mut self.host,
@@ -1156,7 +1366,7 @@ impl State {
                     poll: later.poll,
                     from_ticks: self.ticks,
                     tick_limit: later.ticks,
-                    needs_next_tick: later.needs_next_tick,
+                    paused_safe: later.paused_safe,
                     deadline: Instant::now() + later.wall,
                 });
                 return None;
@@ -1169,6 +1379,14 @@ impl State {
             }));
         }
         Some(match m {
+            method::INPUT_LIST => {
+                let dir = input::lock(&self.input).output_dir();
+                crate::outputs::input_list(&dir)
+            }
+            method::INPUT_LOG_READ => {
+                let dir = input::lock(&self.input).output_dir();
+                params(p).and_then(|p| crate::outputs::input_read(&dir, p))
+            }
             method::STATUS => Ok(to_value(Status {
                 at: self.at(),
                 protocol: PROTOCOL,
@@ -1192,6 +1410,7 @@ impl State {
                     )
                     .chain(agent_proto::live::METHODS.iter().map(|m| (*m).to_owned()))
                     .chain(self.host.keys().cloned())
+                    .chain(self.connection_reads.keys().cloned())
                     .chain(self.game_methods.keys().cloned())
                     .collect::<Vec<String>>(),
             )),

@@ -9,6 +9,12 @@ pub struct Fault {
 }
 
 pub trait GuestRead {
+    /// Virtual layout and backing RAM revision. A reader using the default
+    /// owns one address space per world and bumps its epoch on replacement.
+    fn memory_revision(&self) -> (u64, u64) {
+        (0, 0)
+    }
+
     fn read(&self, addr: u32, dst: &mut [u8]) -> Result<(), Fault>;
 
     fn u8(&self, a: u32) -> Result<u8, Fault> {

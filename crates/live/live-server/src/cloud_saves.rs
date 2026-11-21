@@ -133,6 +133,12 @@ impl Account {
 #[derive(Default)]
 pub struct CloudSaves {
     accounts: tokio::sync::Mutex<HashMap<Xuid, Account>>,
+    usage: tokio::sync::Mutex<Option<StoredSaveUsage>>,
+}
+
+struct StoredSaveUsage {
+    at: i64,
+    bytes: Option<Arc<HashMap<String, i64>>>,
 }
 
 /// Why a write was refused: an API error, or a version race with the item
@@ -306,6 +312,49 @@ impl Live {
         self.blobs()
             .map(|b| b.private.clone())
             .ok_or_else(|| unavailable("this server keeps no cloud saves (no data directory)"))
+    }
+
+    /// Actual save blob bytes by account. The dashboard's overview and
+    /// accounts reads share a short-lived inventory of the private store.
+    pub(crate) async fn stored_save_bytes(&self) -> Option<Arc<HashMap<String, i64>>> {
+        let Some(blobs) = self.blobs() else {
+            return Some(Arc::new(HashMap::new()));
+        };
+        let mut cached = self.cloud.usage.lock().await;
+        let now = crate::app::now();
+        if let Some(usage) = cached.as_ref().filter(|u| now - u.at < 30) {
+            return usage.bytes.clone();
+        }
+        let prefix = format!("{STORAGE_DIR}/");
+        let bytes = match blobs.private.list(&prefix).await {
+            Ok(objects) => {
+                let mut bytes = HashMap::new();
+                for object in objects {
+                    let Some((account, path)) = object
+                        .key
+                        .strip_prefix(prefix.as_str())
+                        .and_then(|key| key.split_once('/'))
+                    else {
+                        continue;
+                    };
+                    if path.starts_with("blobs/")
+                        && let Ok(xuid) = Xuid::parse(account)
+                    {
+                        *bytes.entry(xuid.to_string()).or_default() += object.size as i64;
+                    }
+                }
+                Some(Arc::new(bytes))
+            }
+            Err(e) => {
+                eprintln!("live: cloud save inventory unavailable ({e})");
+                None
+            }
+        };
+        *cached = Some(StoredSaveUsage {
+            at: now,
+            bytes: bytes.clone(),
+        });
+        bytes
     }
 
     /// The token's account, which must be the one the path names.
@@ -497,14 +546,8 @@ impl Live {
             } else {
                 StatusCode::OK
             };
-            use crate::usage::metric;
-            self.meter(Some(xuid), metric::UP_SAVES, size).await;
-            self.meter_signed(
-                Some(xuid),
-                metric::STORED_SAVES,
-                size as i64 - replaced as i64,
-            )
-            .await;
+            self.meter(Some(xuid), crate::usage::metric::UP_SAVES, size)
+                .await;
             Ok((status, item))
         }
         .await;
@@ -560,13 +603,6 @@ impl Live {
         {
             let _ = store.delete(&blob_key(xuid, &h)).await;
         }
-        drop(accounts);
-        self.meter_signed(
-            Some(xuid),
-            crate::usage::metric::STORED_SAVES,
-            -(live.size as i64),
-        )
-        .await;
         Ok(tomb)
     }
 }

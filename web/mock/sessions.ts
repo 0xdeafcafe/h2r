@@ -13,6 +13,7 @@
 // the mock started. The mock answers as an admin would: it lists friends-only
 // sessions and games to everyone.
 
+import { readSessionFilters, type SessionFilters } from "../src/lib/sessionFilters";
 import { MAPS } from "./maps";
 import { HOST, type World } from "./world";
 
@@ -41,6 +42,7 @@ interface MockSession {
     visibility: "public" | "friends" | "invite";
     campaign?: { level: string; name: string; difficulty: number };
     ping_ms?: number;
+    browser?: Pick<SessionFilters, "clankers" | "game_type" | "variant" | "map_category">;
   };
   since: string;
   last_activity: number;
@@ -70,10 +72,49 @@ export const COOP_LEVELS: Array<[level: string, name: string]> = [
   ["04b_quiet_relay", "Quiet Relay"], ["05a_ember_vault", "Ember Vault"],
 ];
 
-const GAMES: Array<[name: string, flags: string, size: number]> = [
-  ["Team Slayer", "custom", 8], ["Slayer", "custom", 8], ["Capture the Cushion", "custom", 12], ["Oddball Party", "custom", 6],
-  ["Hill Hopping", "custom", 8], ["Big Team Picnic", "hopper", 16], ["Team Rumble", "hopper", 8], ["Rumble", "ranked", 8],
+const GAMES: Array<[name: string, flags: string, size: number, gameType: NonNullable<SessionFilters["game_type"]>]> = [
+  ["Team Slayer", "custom", 8, 2], ["Slayer", "custom", 8, 2], ["Capture the Cushion", "custom", 12, 1], ["Oddball Party", "custom", 6, 3],
+  ["Hill Hopping", "custom", 8, 4], ["Big Team Picnic", "hopper", 16, 2], ["Team Rumble", "hopper", 8, 2], ["Rumble", "ranked", 8, 2],
 ];
+
+// The mock stands these invented maps in for maps from each source.
+const MAP_CATEGORY: Readonly<Record<string, SessionFilters["map_category"]>> = {
+  teacup: "halo2", orchard: "map_pack", lighthouse: "halo_ce",
+};
+
+function campaignTitle(level: string): SessionFilters["campaign"] {
+  const index = COOP_LEVELS.findIndex(([stem]) => stem === level);
+  return index < 0 ? undefined : index === 0 ? "halo_ce" : "halo2";
+}
+
+function matchesFilters(s: MockSession, filters: SessionFilters): boolean {
+  const ad = s.advertisement;
+  const coop = ad.flags === "coop";
+  const category = ad.browser?.map_category ?? (ad.map_id ? "mods" : MAP_CATEGORY[ad.map ?? ""]);
+  const campaign = coop && ad.campaign ? campaignTitle(ad.campaign.level) : undefined;
+  const slots = ad.slots;
+  const capacity = slots.public_open + slots.private_open + slots.public_filled + slots.private_filled;
+  const matches = <T>(wanted: T | undefined, advertised: T | undefined) =>
+    wanted === undefined || advertised === undefined || wanted === advertised;
+  return matches(filters.kind, coop ? "coop" : "multiplayer")
+    && matches(filters.clankers, ad.browser?.clankers)
+    && matches(filters.map_category, category)
+    && (filters.game_type === undefined || !coop && matches(filters.game_type, ad.browser?.game_type))
+    && (filters.variant === undefined || !coop && matches(filters.variant.toLowerCase(), ad.browser?.variant?.trim().toLowerCase()))
+    && (filters.campaign === undefined || coop && matches(filters.campaign, campaign))
+    && (filters.difficulty === undefined || coop && matches(filters.difficulty, ad.campaign?.difficulty))
+    && (!filters.has_space || slots.public_open > 0 && Object.keys(s.players).length < capacity);
+}
+
+function parseFilters(raw: string | null): SessionFilters | null {
+  if (raw === null) return {};
+  try {
+    const value: unknown = JSON.parse(raw);
+    return value && typeof value === "object" && !Array.isArray(value) ? readSessionFilters(value) : null;
+  } catch {
+    return null;
+  }
+}
 const pick = <T>(xs: readonly T[]): T => xs[Math.floor(rand() * xs.length)]!;
 const sessionNonce = () => crypto.randomUUID();
 const hex = (n: number) => Array.from({ length: n }, () => Math.floor(rand() * 16).toString(16)).join("");
@@ -119,6 +160,7 @@ export class Sessions {
         slots: { public_filled: 1, public_open: 1, private_filled: 0, private_open: 0 },
         attributes: {}, flags: "coop", hopper_id: null, map: level, name: null, language: "en",
         visibility: "friends", campaign: { level, name, difficulty: Math.floor(rand() * 4) },
+        browser: { clankers: false, map_category: campaignTitle(level) },
       },
       since: new Date(this.world.now).toISOString(),
       last_activity: Math.floor(this.world.now / 1000),
@@ -195,7 +237,7 @@ export class Sessions {
     const free = this.free();
     if (!free.length) return null;
     const host = pick(free);
-    const [name, flags, size] = pick(GAMES);
+    const [name, flags, size, gameType] = pick(GAMES);
     const id = hex(16);
     // A private slot or two on some custom games.
     const priv = flags === "custom" && rand() < 0.4 ? 2 : 0;
@@ -210,6 +252,7 @@ export class Sessions {
         slots: { public_filled: 1, public_open: size - priv - 1, private_filled: 0, private_open: priv },
         attributes: {}, flags, hopper_id: flags === "custom" ? null : 1 + Math.floor(rand() * 6),
         map: pick(MAPS).name, name, language: "en", visibility: "public",
+        browser: { game_type: gameType, variant: name, clankers: flags === "custom" && id.charCodeAt(0) % 2 === 0 },
       },
       since: new Date(this.world.now).toISOString(),
       last_activity: Math.floor(this.world.now / 1000),
@@ -314,15 +357,21 @@ export class Sessions {
       const limit = Number(q.get("limit") ?? 100);
       if (!Number.isInteger(limit) || limit < 1 || limit > 1000) return { status: 400, body: { error: "invalid", message: "session limit is 1..1000" } };
       const hopper = q.get("hopper"), flags = q.get("flags");
-      const items = [...this.all.values()]
-        .filter((s) => s.state === state && s.session_id > after
-          && (!map || s.advertisement.map === map)
-          && (!hopper || s.advertisement.hopper_id === Number(hopper))
-          && (!flags || s.advertisement.flags === flags)
-          && (!host || s.host === host || s.host_gamertag.toLowerCase() === host))
+      const filters = parseFilters(q.get("filters"));
+      if (!filters) return { status: 400, body: { error: "invalid", message: "invalid session filters" } };
+      const eligible = [...this.all.values()].filter((s) => s.state === state
+        && (!map || s.advertisement.map === map)
+        && (!hopper || s.advertisement.hopper_id === Number(hopper))
+        && (!flags || s.advertisement.flags === flags)
+        && (!host || s.host === host || s.host_gamertag.toLowerCase() === host));
+      const items = eligible.filter((s) => s.session_id > after && matchesFilters(s, filters))
         .sort((a, b) => a.session_id.localeCompare(b.session_id));
       const page = items.slice(0, limit);
-      return { status: 200, body: { items: page, next: items.length > page.length ? page[page.length - 1]!.session_id : null, position } };
+      const variants = q.get("browser_variants") === "true" && !after
+        ? [...new Set(eligible.filter((s) => s.advertisement.visibility !== "invite")
+          .flatMap((s) => s.advertisement.browser?.variant ?? []))].sort()
+        : undefined;
+      return { status: 200, body: { items: page, next: items.length > page.length ? page[page.length - 1]!.session_id : null, position, variants } };
     }
     if (u.pathname === "/v1/coop/games") return this.coopPage(u.searchParams, position);
     const m = u.pathname.match(/^\/v1\/sessions\/([^/]+)$/);

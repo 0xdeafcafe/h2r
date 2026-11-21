@@ -2403,6 +2403,38 @@ fn install_named_sounds(
         .collect())
 }
 
+/// The scenario's simulation table (`+0x3d8`, a datum each): the object,
+/// projectile and damage tags the game may name over the network. Retail
+/// lists only these groups (**V**: 05a's 446 entries, 03a's 454,
+/// Coagulation's 350).
+pub const SIMULATION_TABLE: u32 = 0x3d8;
+pub const SIMULATION_GROUPS: [&[u8; 4]; 13] = [
+    b"bipd", b"bloc", b"crea", b"ctrl", b"eqip", b"garb", b"jpt!", b"mach", b"proj", b"scen",
+    b"ssce", b"vehi", b"weap",
+];
+
+/// Writes the simulation table of a fresh level from the tags `set` holds,
+/// in index order. Returns the entries.
+pub fn write_simulation_table(set: &mut TagSet) -> usize {
+    let list: Vec<Block> = set
+        .slots
+        .iter()
+        .filter_map(|s| s.tag.as_ref())
+        .filter(|t| SIMULATION_GROUPS.iter().any(|g| t.group == FourCC(**g)))
+        .map(|t| {
+            let mut b = Block::zeroed(4);
+            b.put_u32(0, t.id.0);
+            b
+        })
+        .collect();
+    let n = list.len();
+    let id = set.scenario;
+    if let Some(TagPayload::Built(root)) = set.tag_mut(id).map(|t| &mut t.payload) {
+        put_block(root, SIMULATION_TABLE, 4, list);
+    }
+    n
+}
+
 #[cfg(test)]
 mod script_sound_tests {
     use super::*;
@@ -2473,36 +2505,4 @@ mod script_sound_tests {
             assert!(error.contains("voice") && error.contains(reason), "{error}");
         }
     }
-}
-
-/// The scenario's simulation table (`+0x3d8`, a datum each): the object,
-/// projectile and damage tags the game may name over the network. Retail
-/// lists only these groups (**V**: 05a's 446 entries, 03a's 454,
-/// Coagulation's 350).
-pub const SIMULATION_TABLE: u32 = 0x3d8;
-pub const SIMULATION_GROUPS: [&[u8; 4]; 13] = [
-    b"bipd", b"bloc", b"crea", b"ctrl", b"eqip", b"garb", b"jpt!", b"mach", b"proj", b"scen",
-    b"ssce", b"vehi", b"weap",
-];
-
-/// Writes the simulation table of a fresh level from the tags `set` holds,
-/// in index order. Returns the entries.
-pub fn write_simulation_table(set: &mut TagSet) -> usize {
-    let list: Vec<Block> = set
-        .slots
-        .iter()
-        .filter_map(|s| s.tag.as_ref())
-        .filter(|t| SIMULATION_GROUPS.iter().any(|g| t.group == FourCC(**g)))
-        .map(|t| {
-            let mut b = Block::zeroed(4);
-            b.put_u32(0, t.id.0);
-            b
-        })
-        .collect();
-    let n = list.len();
-    let id = set.scenario;
-    if let Some(TagPayload::Built(root)) = set.tag_mut(id).map(|t| &mut t.payload) {
-        put_block(root, SIMULATION_TABLE, 4, list);
-    }
-    n
 }

@@ -6,6 +6,8 @@ use engine::{
     memory::{GuestMemory, MemFault},
     view::{Record, objects},
 };
+use std::cmp::Ordering;
+
 use hooks::{Builder, Flow, points};
 
 use super::{NONE, actors, contact, is_converted_campaign, playfight, state};
@@ -145,14 +147,17 @@ fn thresholds(m: &dyn GuestMemory, actor: actors::Actor) -> R<Option<[f32; 2]>> 
 }
 
 fn ordinary([seconds, damage]: [f32; 2], focused: contact::Contact, now: u32, recent: f32) -> bool {
-    let time_ok = !(seconds > 0.0)
+    // NaN counts as not positive, as in the source's x87 compare.
+    let time_ok = seconds.partial_cmp(&0.0) != Some(Ordering::Greater)
         || (focused.level < 7
             && focused.recognized_at.is_none_or(|seen| {
                 let ticks = (f64::from(seconds) * 30.0) as i32 as i16;
                 (now as i32) >= (seen as i32).wrapping_add(i32::from(ticks))
             }));
     // The source's x87 branch only rejects an ordered less-than result.
-    time_ok && (!(damage > 0.0) || !(recent < damage))
+    time_ok
+        && (damage.partial_cmp(&0.0) != Some(Ordering::Greater)
+            || recent.partial_cmp(&damage) != Some(Ordering::Less))
 }
 
 pub(super) fn actor_row(m: &dyn GuestMemory, actor: actors::Actor) -> R<Option<u32>> {

@@ -21,9 +21,9 @@
 //! server keeps beside the file and serves as
 //! [`super::clankers::ClankerHoppers`].
 //!
-//! Map pack maps are left out: an entry whose map id the console does not
-//! have marks the whole hopper as an error (`0x00194660`), and the format
-//! has no per-entry "only when installed" flag.
+//! The default rotation uses maps from the base disc. Live filters the
+//! published rotation for consoles that cannot load the Multiplayer Map
+//! Pack (docs/live/live-matchmaking.md, "Map Pack rotations").
 
 use super::clankers::Clankers;
 use super::layout::{Descriptor, Entry, PLAYLIST_IDS, Rules, default_skill_ceiling, start_waits};

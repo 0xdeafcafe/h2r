@@ -27,6 +27,16 @@ impl Reader for Fake {
     }
 }
 
+impl Agent {
+    /// Move one test connection's deferred deadline to the next boundary.
+    pub(crate) fn expire_deferred_for_test(&self, conn: ConnId) {
+        self.lock().deferred.iter_mut()
+            .find(|answer| answer.conn == conn)
+            .expect("a deferred answer")
+            .deadline = Instant::now();
+    }
+}
+
 fn obj(id: &str, kind: Kind, pos: [f64; 3], team: Option<i32>) -> Object {
     Object {
         id: id.into(),
@@ -914,6 +924,61 @@ fn map_ticks_count_from_each_map_load() {
     );
 }
 
+#[test]
+fn a_restore_counts_map_ticks_from_the_saved_full_start() {
+    let a = Agent::new();
+    let mut g = level();
+    for _ in 0..7 {
+        a.on_tick(&mut g);
+    }
+    a.game_started(24);
+    a.on_tick(&mut g);
+    let saved = a.save_state();
+    a.on_tick(&mut g);
+    a.load_state(&saved).unwrap();
+    assert_eq!(a.lock().at().map_ticks, 1);
+    assert_eq!(a.lock().at().activation, 0);
+
+    // Fresh-process restore reads exactly the same v2 field.
+    let fresh = Agent::new();
+    fresh.load_state(&saved).unwrap();
+    fresh.on_tick(&mut g);
+    assert_eq!(fresh.lock().at().map_ticks, 2);
+}
+
+#[test]
+fn only_the_requested_full_start_satisfies_a_reload_wait() {
+    let a = Agent::new();
+    let (c, rx) = client(&a);
+    let mut g = level();
+    a.game_started(10);
+    a.on_tick(&mut g);
+    let saved = a.save_state();
+    ask(
+        &a,
+        c,
+        1,
+        method::WAIT,
+        json!({"until": {"activation": 12, "map": g.status.map, "phase": "gameplay", "map_ticks": 1}}),
+    );
+    a.on_tick(&mut g);
+    // Both GAME_ACTIVATE during checkpoint reactivation and the revert
+    // return cut the epoch. Neither completed a new full game start.
+    a.live_cut();
+    a.live_cut();
+    a.on_tick(&mut g);
+    none(&rx);
+    a.load_state(&saved).unwrap();
+    a.game_started(13);
+    a.on_tick(&mut g);
+    none(&rx);
+    a.game_started(12);
+    a.on_tick(&mut g);
+    let at = next(&rx)["result"]["at"].clone();
+    assert_eq!(at["activation"], 12);
+    assert_eq!(at["map_ticks"], 1);
+}
+
 /// A snapshot loaded mid-cutscene still answers `cinematic`, and the
 /// map's ticks count on from the saved ones rather than from a map change.
 #[test]
@@ -1500,4 +1565,30 @@ fn live_game_closes_menu_subscriber_and_refuses_a_new_stream() {
     ask(&agent, control, 3, agent_proto::live::STATUS, json!({}));
     agent.on_tick(&mut game);
     assert_eq!(next(&replies)["result"]["streams"], json!([]));
+}
+
+#[test]
+fn a_connection_read_leaves_the_game_and_other_clients_running() {
+    let a = Agent::new();
+    let (caller, reply) = client(&a);
+    let (viewer, status) = client(&a);
+    let (begin, started) = sync_channel(1);
+    let (finish, done) = sync_channel(1);
+    let done = Mutex::new(done);
+    a.add_connection_read("fixture.verify", move |_| {
+        begin.send(()).unwrap();
+        done.lock().unwrap().recv_timeout(Duration::from_secs(5)).unwrap();
+        Ok(json!({"checked": 30}))
+    });
+    let worker = a.clone();
+    let req = thread::spawn(move || ask(&worker, caller, 1, "fixture.verify", json!({})));
+    started.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert!(a.connection_read_pending());
+    ask(&a, viewer, 2, method::STATUS, Value::Null);
+    a.between_slices(&mut Fake::default(), 8);
+    assert_eq!(next(&status)["result"]["at"]["present"], 8);
+    finish.send(()).unwrap();
+    req.join().unwrap();
+    assert_eq!(next(&reply)["result"]["checked"], 30);
+    assert!(!a.connection_read_pending());
 }

@@ -4,7 +4,8 @@ use super::*;
 
 impl<R: Backend, V: ScaleView<R>> ScaledBackend<R, V> {
     pub(super) fn single(&self) -> bool {
-        self.single_copy && (self.scale > 1 || self.scene_active)
+        self.single_copy && (self.scale != RenderScale::ONE || self.scene_active
+            || (self.anamorphic_guest_frame() && self.lighting == Lighting::Retail))
     }
 
     pub(super) fn guest(&self, s: Surf<R, V>) -> V::Surface {
@@ -15,7 +16,7 @@ impl<R: Backend, V: ScaleView<R>> ScaledBackend<R, V> {
         if self.scene_active {
             // L3's carried draws share the baseline shadow-map policy in
             // both modes. At 1x a guest image aliases the reference store.
-            return if self.scale == 1 { self.guest(s) } else { self.live(s.view).unwrap_or_else(|| self.guest(s)) };
+            return if self.scale == RenderScale::ONE { self.guest(s) } else { self.live(s.view).unwrap_or_else(|| self.guest(s)) };
         }
         self.live(s.view).or_else(|| {
             if self.lighting == Lighting::Retail { return None; }

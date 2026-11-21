@@ -1,13 +1,13 @@
 //! The studio's socket: a local Unix socket only (never TCP), readable and
 //! writable by the user alone. One thread accepts; one per connection reads
-//! lines, queues each request and writes its answer. Nothing here touches
+//! lines, answers process-memory reads, and queues document calls. Nothing here touches
 //! the [`App`](crate::App): whoever owns it answers the queue
 //! ([`super::Api::pump`]), so a window answers between frames and the
 //! user sees each edit as it lands.
 
 use std::io::{BufRead, BufReader, Read, Write};
-#[cfg(unix)]
-use std::os::unix::net::{UnixListener, UnixStream};
+#[cfg(any(unix, windows))]
+use agent_proto::local_socket::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -21,6 +21,12 @@ use studio_proto::code;
 /// Longest request line accepted (16 MiB: a variant's text or a long
 /// script line); longer closes the connection.
 const MAX_LINE: u64 = 16 << 20;
+
+#[cfg(unix)]
+static PENDING_REQUESTS: mem_watch::Counter =
+    mem_watch::Counter::new("studio.agent.pending_requests");
+#[cfg(unix)]
+static REPLY_BYTES: mem_watch::Counter = mem_watch::Counter::new("studio.agent.reply_buffer_bytes");
 
 /// One request waiting for the app, and where its answer goes.
 pub struct Incoming {
@@ -39,6 +45,7 @@ impl Incoming {
 pub struct Listener {
     path: PathBuf,
     stop: Arc<AtomicBool>,
+    acceptor: Option<thread::JoinHandle<()>>,
 }
 
 impl Listener {
@@ -50,9 +57,8 @@ impl Listener {
 /// Listens at `path` and queues requests on the returned receiver. A
 /// socket file left by an editor that's gone is replaced; one something
 /// still answers on is an error, as is anything that isn't a socket.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub fn listen(path: &Path) -> std::io::Result<(Listener, mpsc::Receiver<Incoming>)> {
-    use std::os::unix::fs::{FileTypeExt, PermissionsExt};
     let invalid = |m: String| std::io::Error::new(std::io::ErrorKind::InvalidInput, m);
     if path.to_str().is_some_and(|s| s.starts_with("tcp:")) {
         return Err(invalid(format!(
@@ -60,30 +66,14 @@ pub fn listen(path: &Path) -> std::io::Result<(Listener, mpsc::Receiver<Incoming
             path.display()
         )));
     }
-    if let Ok(meta) = std::fs::symlink_metadata(path) {
-        if !meta.file_type().is_socket() {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::AlreadyExists,
-                format!("{}: a file that isn't a socket is there", path.display()),
-            ));
-        }
-        if UnixStream::connect(path).is_ok() {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::AddrInUse,
-                format!("{}: another editor is listening there", path.display()),
-            ));
-        }
-        std::fs::remove_file(path)?;
-    }
     if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
         std::fs::create_dir_all(dir)?;
     }
-    let listener = UnixListener::bind(path)?;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    let listener = agent_proto::local_socket::listen(path)?;
     let (tx, rx) = mpsc::channel();
     let stop = Arc::new(AtomicBool::new(false));
     let s = Arc::clone(&stop);
-    thread::Builder::new()
+    let acceptor = thread::Builder::new()
         .name("studio-accept".into())
         .spawn(move || {
             for conn in listener.incoming() {
@@ -101,12 +91,13 @@ pub fn listen(path: &Path) -> std::io::Result<(Listener, mpsc::Receiver<Incoming
         Listener {
             path: path.to_path_buf(),
             stop,
+            acceptor: Some(acceptor),
         },
         rx,
     ))
 }
 
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 pub fn listen(path: &Path) -> std::io::Result<(Listener, mpsc::Receiver<Incoming>)> {
     Err(std::io::Error::new(
         std::io::ErrorKind::Unsupported,
@@ -117,15 +108,19 @@ pub fn listen(path: &Path) -> std::io::Result<(Listener, mpsc::Receiver<Incoming
 impl Drop for Listener {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::SeqCst);
-        #[cfg(unix)]
-        let _ = UnixStream::connect(&self.path);
+        #[cfg(any(unix, windows))]
+        if UnixStream::connect(&self.path).is_ok() && let Some(thread) = self.acceptor.take() {
+            let _ = thread.join();
+        }
         let _ = std::fs::remove_file(&self.path);
     }
 }
 
 /// One connection: a line in, its answer out, in order.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn serve(conn: UnixStream, tx: mpsc::Sender<Incoming>) {
+    let _connection = mem_watch::agent_activity::connection();
+    let _scope = mem_watch::scope("agent.socket");
     let Ok(mut out) = conn.try_clone() else {
         return;
     };
@@ -146,27 +141,39 @@ fn serve(conn: UnixStream, tx: mpsc::Sender<Incoming>) {
                 RpcError::new(code::PARSE, format!("not a request: {e}")),
             )),
             Ok(request) => {
-                let (rtx, rrx) = mpsc::channel();
-                if tx
-                    .send(Incoming {
-                        request,
-                        reply: rtx,
+                mem_watch::agent_activity::served();
+                if agent_proto::memory_serve::supports(&request.method) {
+                    let result = agent_proto::memory_serve::call(&request.method, request.params);
+                    request.id.map(|id| match result {
+                        Ok(v) => Response::ok(id, v),
+                        Err(e) => Response::err(id, e),
                     })
-                    .is_err()
-                {
-                    return;
-                }
-                match rrx.recv() {
-                    Ok(r) => r,
-                    Err(_) => return,
+                } else {
+                    let (rtx, rrx) = mpsc::channel();
+                    let _pending = PENDING_REQUESTS.track(1);
+                    if tx
+                        .send(Incoming {
+                            request,
+                            reply: rtx,
+                        })
+                        .is_err()
+                    {
+                        return;
+                    }
+                    match rrx.recv() {
+                        Ok(r) => r,
+                        Err(_) => return,
+                    }
                 }
             }
         };
         if let Some(r) = reply {
+            let _scope = mem_watch::scope("agent.reply");
             let Ok(mut text) = serde_json::to_string(&r) else {
                 return;
             };
             text.push('\n');
+            let _reply_buffer = REPLY_BYTES.track(text.capacity() as u64);
             if out.write_all(text.as_bytes()).is_err() {
                 return;
             }

@@ -55,11 +55,11 @@ pub(super) fn accept(config: Arc<ServerConfig>, socket: TcpStream) -> Result<Ser
     Ok(stream)
 }
 
-pub(super) fn connect(addr: SocketAddr, pin: Key) -> Result<ClientStream> {
+pub(super) fn connect(addr: SocketAddr, pins: Vec<Key>) -> Result<(ClientStream, Key)> {
     let mut config = ClientConfig::builder_with_provider(default_provider().into())
         .with_protocol_versions(&[&version::TLS13])?
         .dangerous()
-        .with_custom_certificate_verifier(Arc::new(PinnedKey(pin)))
+        .with_custom_certificate_verifier(Arc::new(PinnedKeys(pins)))
         .with_no_client_auth();
     config.enable_sni = false;
     config.alpn_protocols = vec![ALPN.to_vec()];
@@ -78,13 +78,19 @@ pub(super) fn connect(addr: SocketAddr, pin: Key) -> Result<ClientStream> {
         stream.conn.alpn_protocol() == Some(ALPN),
         "incompatible lab TLS protocol"
     );
-    Ok(stream)
+    let key = stream
+        .conn
+        .peer_certificates()
+        .and_then(|keys| keys.first())
+        .context("the lab host's TLS handshake returned no verified key")?;
+    let pin = fingerprint(key.as_ref());
+    Ok((stream, pin))
 }
 
 #[derive(Debug)]
-struct PinnedKey(Key);
+struct PinnedKeys(Vec<Key>);
 
-impl ServerCertVerifier for PinnedKey {
+impl ServerCertVerifier for PinnedKeys {
     fn verify_server_cert(
         &self,
         raw_key: &CertificateDer<'_>,
@@ -93,7 +99,7 @@ impl ServerCertVerifier for PinnedKey {
         _ocsp_response: &[u8],
         _now: UnixTime,
     ) -> Result<ServerCertVerified, rustls::Error> {
-        if intermediates.is_empty() && fingerprint(raw_key.as_ref()) == self.0 {
+        if intermediates.is_empty() && self.0.contains(&fingerprint(raw_key.as_ref())) {
             Ok(ServerCertVerified::assertion())
         } else {
             Err(rustls::Error::General(
@@ -150,10 +156,10 @@ impl Socket {
         })
     }
 
-    pub(super) fn authenticated(&mut self) -> io::Result<()> {
+    pub(super) fn authenticated(&mut self, idle_timeout: Option<Duration>) -> io::Result<()> {
         self.deadline = None;
-        self.tcp.set_read_timeout(None)?;
-        self.tcp.set_write_timeout(None)
+        self.tcp.set_read_timeout(idle_timeout)?;
+        self.tcp.set_write_timeout(idle_timeout)
     }
 
     fn remaining(&self) -> io::Result<Duration> {

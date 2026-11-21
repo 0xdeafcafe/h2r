@@ -67,6 +67,18 @@ pub trait PadSource: Send {
         None
     }
 
+    /// Asks the source for a bounce route to `to` (docs/game/bots.md,
+    /// "Superbounce routes"); `false` when it takes no orders.
+    fn order_bounce(&mut self, to: crate::brain::Vec3, mode: crate::bounce_route::Mode) -> bool {
+        let _ = (to, mode);
+        false
+    }
+
+    /// Where its bounce route stands; `None` when it takes no orders.
+    fn order_view(&self) -> Option<crate::mind::OrderView> {
+        None
+    }
+
     /// The phantom's action stream was interrupted by a new unit or match.
     fn reset_input(&mut self) {}
 

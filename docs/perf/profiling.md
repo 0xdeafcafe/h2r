@@ -172,6 +172,50 @@ thread cannot spawn), `start` fails and leaves nothing recording.
 `Session::start_with(config, targets)` samples other threads too. Make each
 `perf::sample::ThreadTarget::current(name)` on the thread itself.
 
+### Linux and SteamOS: `perf`
+
+The in-process sampler has no Linux implementation, so `capture N sample`
+answers `sampling.unavailable` there. Linux `perf` samples the running game
+instead. SteamOS ships it, and at the default `perf_event_paranoid` of 2 it
+records user-space samples of your own processes without root:
+
+```sh
+P=$(pgrep -x h2)
+G=$(grep -l '^guest$' /proc/$P/task/*/comm | cut -d/ -f5)   # the game thread
+perf record -F 999 -t $G -o /tmp/guest.perf -- sleep 15
+perf report -i /tmp/guest.perf --no-children --sort dso,sym
+```
+
+Generated handlers keep their `h2fn_<entry>` names and Rust symbols resolve
+from `h2`. Neither `h2` nor its Rust code keeps frame pointers on Linux, and
+DWARF unwinding stops at generated code, so `-g` call graphs are not
+usable. To find who calls a hot libc routine (`memmove`, `malloc`), record
+the last user calls with each sample (`-e cycles:u -j any_call,u`, which
+Zen 4 supports) and charge each sample in libc to the first call in its
+branch stack that came from outside libc (`perf script -F ip,brstack`).
+Inside the Steam Linux Runtime container libc is the host's
+`/run/host/usr/lib/libc.so.6`, which `perf` on the host reads as
+`/usr/lib/libc.so.6`; it has no symbol table, so its samples show as bare
+offsets.
+
+## Heap profile
+
+```sh
+buck2 build -c build_mode.mode=release -c build_mode.dhat=true //crates/apps/cli:h2
+H2_LEVEL=03a_oldmombasa H2_BOOT_STOP_AT_PRESENT=900 <that h2> run disc/halo2.iso --out <module dir> --tier clang
+```
+
+`-c build_mode.dhat=true` turns on the CLI's `dhat-heap` feature
+(`cargo build -p cli --features dhat-heap` does the same), which makes
+[dhat](https://docs.rs/dhat) the global allocator (`crates/apps/cli/src/main.rs`).
+When `main` returns, it writes `dhat-heap.json` to the working directory: every
+allocation site with its bytes, block count, peak and lifetime. Open it in
+[dh_view](https://nnethercote.github.io/dh_view/dh_view.html). A command that
+ends with `process::exit` (or a window closed from the system) writes
+nothing, so profile `h2 run` with `H2_BOOT_STOP_AT_PRESENT`. dhat records a
+backtrace per allocation, so the game runs several times slower: compare
+counts per frame, not times.
+
 ## Timeline
 
 ```

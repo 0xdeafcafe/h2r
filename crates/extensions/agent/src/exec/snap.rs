@@ -37,6 +37,10 @@ pub trait Snapshots: Send {
 
 /// The running machine, between slices (boot's snapshot glue).
 pub trait SnapshotMachine {
+    /// A reason to refuse immediately rather than wait for quiescence.
+    fn refusal(&self) -> Option<String> {
+        None
+    }
     /// Everything that keeps a save or load from running now, as
     /// `owner: why`; empty when nothing does.
     fn blockers(&mut self) -> Vec<String>;
@@ -148,6 +152,11 @@ impl Agent {
         }
         let mut outcomes = Vec::new();
         for mut job in jobs {
+            if let Some(why) = machine.refusal() {
+                let error = RpcError::new(agent_proto::sim::REFUSED, why);
+                outcomes.push(Outcome::Done(job, Err(error)));
+                continue;
+            }
             let blockers = machine.blockers();
             if !blockers.is_empty() {
                 job.tries += 1;

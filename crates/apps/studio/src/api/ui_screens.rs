@@ -1,6 +1,7 @@
 //! `ui.*`: the UI Screens tool. Our screens drawn offline (from the disc
 //! when one is open, else the synthetic source), stepped by pad presses,
 //! their widgets' rects, and a PNG of the screen (CPU drawn: no GPU).
+//! Also `ui.palette`, the window's Go to anything search and actions.
 
 use std::path::PathBuf;
 
@@ -11,6 +12,7 @@ use studio_proto::{code, method as m};
 use super::scenario::refused;
 use super::{P, Reply, err};
 use crate::App;
+use crate::app::commands::{self, Kind};
 use crate::app::{Action, Pick, ToolKind, UiScreens};
 
 fn pick_json(p: Option<&Pick>) -> Value {
@@ -33,6 +35,7 @@ fn need_pick(app: &App) -> Result<(), agent_proto::RpcError> {
 
 pub fn call(app: &mut App, method: &str, p: &P) -> Reply {
     match method {
+        m::UI_PALETTE => palette(app, p),
         m::UI_SCREENS => {
             app.sync_ui_disc();
             let retail = if app.ui_screens.has_disc() {
@@ -148,6 +151,29 @@ pub fn call(app: &mut App, method: &str, p: &P) -> Reply {
         }
         _ => Err(err(code::METHOD_NOT_FOUND, format!("no method {method}"))),
     }
+}
+
+fn palette(app: &mut App, p: &P) -> Reply {
+    let index = p.opt_usize("run")?;
+    let results = commands::palette(app, p.str("query")?);
+    let entries: Vec<_> = results
+        .entries
+        .iter()
+        .map(|e| json!({"kind": e.kind.name(), "label": e.label, "detail": e.detail}))
+        .collect();
+    let totals: serde_json::Map<String, Value> = Kind::ALL
+        .into_iter()
+        .map(|kind| (kind.name().to_owned(), json!(results.total(kind))))
+        .collect();
+    let mut reply = json!({ "entries": entries, "totals": totals });
+    if let Some(index) = index {
+        let entry = results.entries.into_iter().nth(index).ok_or_else(|| {
+            err(code::INVALID_PARAMS, format!("palette index {index} is out of range"))
+        })?;
+        app.perform(entry.action, false).map_err(refused)?;
+        reply["ran"] = json!(index);
+    }
+    Ok(reply)
 }
 
 fn app_last(app: &App) -> String {

@@ -149,23 +149,21 @@ definition names them, as the Tags tool has it.
 
 ## The layout
 
-The Tools list holds **Map**, Game variants, Playlists, UI Screens and
-HUD. Map is the Scenario tool with the Tags tool's windows docked into
-it:
+The tool bar holds **Map**, **Variants**, **Playlists**, **UI** and
+**HUD**. Map keeps the viewport visible while you work with tags.
 
-| Today | In the Map tool |
+| Window | Where it docks |
 |---|---|
-| Scenario: outliner, viewport, inspector, Game panel | the same windows |
-| Tags: the map picker and tag tree | a **Tags** tab beside the outliner. It is how tags with no object in the scene are reached: globals, HUD and UI tags, sounds, anything in a shared cache. Selecting a tag there makes it the inspector's subject |
-| Tags: the fields | the inspector's Tags section |
-| Tags: Export and Import | the tag node's menu in the inspector and the tree |
-| Tags: Data and bytes | a tab beside the Log |
+| Scene, Tags and Maps | Tabs in the left column |
+| Viewport | Centre |
+| Inspector | Right, with placement or tag fields |
+| Log, Game and Data and bytes | Tabs in the bottom dock |
 
-`ToolKind::Tags` stays as a window group, not a tool, so each window
-keeps its dock slot (`WindowKey::label`) and a saved layout still loads.
-The `tag.*`, `scenario.*` and `doc.*` methods are unchanged. `--do`
-scripts that pick the Tags tool pick the Map tool and focus the Tags tab.
-The HUD tool stays its own tool: it draws a HUD, not a scene.
+Selecting a tag in **Tags** shows it in the Inspector, including tags
+with no placement, such as globals, HUD, UI, sounds and shared caches.
+The Map workspace keeps the original three window IDs so a saved layout
+loads. `ToolKind::Tags` is the Tags tab's editing context. The `tag.*`,
+`scenario.*` and `doc.*` methods keep their parameters.
 
 ## Halo 1 tags
 
@@ -294,7 +292,7 @@ the coordinator runs them.
 | **C1** Click a placement, edit its tags | `app::Selection`; `tag_api::chain`; the inspector's Tags section over `fields::panel`; `tag.chain` | fixture: a placement's chain lists its object, `hlmt` and `mode`; an edit made in the inspector and the same `tag.set` make identical documents and byte-identical saves |
 | **C2** Navigate | jump, breadcrumbs, `NavHistory`, `nav.*` | jump, back, forward return to the same tag and field; a viewport pick pushes one entry |
 | **C3** Where is this used | the reverse index, `tag.uses`, the outline, the shared count on each node | fixture with two placements on one tag: both listed and outlined; the index rebuilds after a block edit |
-| **C4** One tool | the journal undo; the Tags windows docked into Map; `ToolKind::Tags` as a group; the Tools list | undo crosses a placement move and a tag edit in order; a saved layout from before loads; every `tag.*`, `scenario.*`, `doc.*` example still passes (`every_method_in_methods_has_a_test`) |
+| **C4** One tool | the journal undo; the Map workspace from polish-plan.md P2 | undo crosses a placement move and a tag edit in order; a saved layout from before loads; every `tag.*`, `scenario.*`, `doc.*` example still passes (`every_method_in_methods_has_a_test`) |
 | **C5** Click a live object | selection of a mirror object; the Live section; edits through live edit (needs live-mirror M1 and M7) | fake game: picking a live object selects its placement and tag; a projectile selects its `proj` |
 | **C6** Unique copy | `tag_api::unique`; the builder save path; bundle import adding tags | fixture: the placement's chain is new tags, the other placement's is untouched; the saved map reads back with both; undo restores one chain; refused at the tag-memory bound |
 | **H1** Converted tags show their source | `provenance.json` with tag sources; `provenance::note_source` on the first builders (weapons, projectiles); `tag.origin`; the source tag beside the built one | invented Halo 1 map converted: each built tag lists its sources; an unnoted field answers "origin not recorded" |
@@ -320,8 +318,8 @@ their tests.
   recorded counterpart is shown as none.
 - Override files hold values from the user's disc (`was`), so they are
   user output.
-- Tags in a structure BSP's region (`sbsp`, `ltmp`) are not in the
-  inspector until the Tags document shows them.
+- The field inspector edits structure BSP and lightmap tags (`sbsp`,
+  `ltmp`) in their own region. Their blocks use the original allocation.
 
 ## Evidence
 

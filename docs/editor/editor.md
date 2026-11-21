@@ -15,13 +15,12 @@ the workspace's wgpu 30, `dear-imgui-winit` for the window,
 `dear-imguizmo` for the 3D gizmo, `rfd` for the system's file dialogs. No
 web views, no scripting. It runs unbundled, so it sets its own Dock icon
 (`app_icon::set_dock_icon`, [art/app-icon](../../art/app-icon/README.md)).
-It hosts six tools:
+It hosts five tools:
 
-- **Scenario**: the scenario editor (`crates/tools/scenario-edit`,
-  [scenario-editor.md](scenario-editor.md)): placements on a map, in a 3D
-  viewport, saved as a map package or a whole `.map`.
-- **Tags**: every field of every tag of the open map, labelled and
-  edited in place, saved with the map (below).
+- **Map** combines the scenario editor (`crates/tools/scenario-edit`,
+  [scenario-editor.md](scenario-editor.md)) and the tag editor. It edits
+  placements in a 3D viewport and tag fields in the inspector. Both save
+  to a map package or a whole `.map`.
 - **Game variants**: the game variant editor (`crates/formats/variants`,
   [variants.md](variants.md)).
 - **Playlists**: `multiplayer_hopper.dat`, the 16 matchmaking playlists
@@ -89,26 +88,40 @@ layout restores the default).
 
 ## The window
 
-![The editor window over Ascension with seven regions boxed and numbered in orange: 1 the menu bar, 2 Tools, 3 Outliner, 4 Viewport, 5 Inspector, 6 Log, 7 the status bar](../images/editor/layout-regions.jpg)
+![The editor window over Ascension with seven regions boxed and numbered in orange: 1 the menu bar, 2 tool bar, 3 Scene, 4 Viewport, 5 Inspector, 6 Log, 7 the status bar](../images/editor/layout-regions.jpg)
 
-*The panels: (1) main menu bar, (2) Tools, (3) outliner, (4) the centre
-window (the viewport here), (5) inspector, (6) log, (7) status bar. The
-boxes and numbers are drawn by the headless renderer's `--callout`.*
+*The headless renderer's `--callout` labels the menu bar, tool bar,
+Scene, viewport, inspector, Log and status bar.*
 
-- **Main menu**: File (open a disc or map, open a folder of maps, save the
-  map as a new `.map`, save as or open a package, the variant and
-  playlist tools' file commands, quit), Edit (undo, redo, duplicate,
+- **Main menu**: File (open a disc or map, open a folder of maps, **Save**,
+  **Save as...**, save as or open a package, the other tools' file
+  commands, quit), Edit (**Go to anything...**, undo, redo, duplicate,
   delete, allow growing full blocks), View (frame the map, frame the
   selection, gizmo mode (move, rotate, scale) and local or world axes,
-  grid and angle snapping, reset layout).
-- **Tools** (left, top): the tools (Scenario, Tags, Game variants,
-  Playlists, UI Screens; a
-  `*` marks one with unsaved edits), then **Maps**: the opened source and
-  its maps. The outliner, centre and inspector windows show the active
-  tool: below for the scenario tool, then [Game variants](#game-variants)
-  and [Playlists](#playlists). Each tool's windows keep their dock slot
-  (`WindowKey::label` retitles a window without changing its ID).
-- **Outliner** (left, bottom, `ui/outliner.rs`): the placement blocks as
+  grid and angle snapping, reset layout), and Game (Play, Stop, Pair,
+  Unpair, Pause, Step, Resume and Edit).
+- **Save** (Cmd/Ctrl+S, `App::save_target`) writes the open package or
+  the standalone file the editor last saved for this map. A base map
+  opens **Save as package...** with its name filled in. **Save as...**
+  (Shift+Cmd/Ctrl+S) asks for a standalone `.map` path.
+- **Go to anything** (Cmd/Ctrl+P, `ui/palette.rs`) searches the Maps list,
+  the open map's tags and placements, and available menu actions. Each
+  word must match. Use Up or Down to move, Enter to open or run the
+  selection, and Esc to close.
+- **The bar** (under the menu, `ui/bar.rs`), visible in every tool. Left:
+  the tools as tabs, Map, Variants, Playlists, UI and HUD. Middle: the
+  document name; a `*` marks unsaved edits. Right: the game link. Its
+  pill shows the pairing and whether tag and placement edits can reach
+  the game.
+  The controls beside it provide Play or Stop, Pause or Resume, Step and
+  the Edit switch as they become available. The link's width is measured
+  first, and the document name is clipped to what the tabs and the link
+  leave.
+- **Left dock**: Map has a full-height column with **Scene**, **Tags**
+  and **Maps** tabs above the bottom dock. Other tools have their own
+  windows in the left, centre and right regions (`ui/layout.rs`). The Map
+  windows keep the `outliner`, `viewport` and `inspector` IDs used by saved layouts.
+- **Scene** (`ui/outliner.rs`): the placement blocks as
   a tree, a filter (every word must match the block, the tag name or
   `#<index>`; blocks with no match hide, the rest open, with "x of y"
   counts), Duplicate and Delete. Click selects one entry, Cmd/Ctrl+click
@@ -126,16 +139,16 @@ boxes and numbers are drawn by the headless renderer's `--callout`.*
   placement, or the point of the level under the cursor). The camera
   (`camera.rs`, plain maths with unit tests): hold the right button to
   look and fly with WASD, Q down and E up, the wheel setting the fly
-  speed (shown in the status bar) and Shift four times faster; Alt+left
+  speed (also adjustable in the toolbar) and Shift four times faster. Alt+left
   drag orbits about the selection, else about the point of the level
   under the cursor; middle drag pans; the wheel dollies; F frames the
   selection to its size. Motion eases in and out by elapsed time, the
   same at any frame rate, and the camera glides to a new focus. The
   selection has an ImGuizmo gizmo: W moves, E rotates (facing-only
   placements turn about z), R scales (objects with a scale field); X
-  switches local and world axes. Grid and angle snapping (toolbar
-  toggles, right-click one for its step) apply to the gizmo and to
-  placing with the mouse. Other selected placements ride along with the
+  switches local and world axes. Toolbar icons show their shortcuts on
+  hover. Grid and angle snapping each have a toggle and an adjacent
+  step dropdown. They apply to the gizmo and to placing with the mouse. Other selected placements ride along with the
   primary's move and turn; one drag is one undo step.
 - **Inspector** (right, `ui/inspector.rs`): the selection's typed fields
   under Transform, Object, Spawn and Settings. Position is x, y, z;
@@ -161,31 +174,35 @@ boxes and numbers are drawn by the headless renderer's `--callout`.*
   any ancestor. **Back** and **Forward**, Alt+Left and Alt+Right, and the
   mouse's back and forward buttons step through tag and placement
   history. Returning to a field opens its block and scrolls to it.
-- **Log** (bottom): every action's result, errors in red.
-- **Status bar**: the last message, unsaved state, a summary of what is
-  open, the camera's fly speed, frame rate.
+- **Game** and **Log** (bottom). Game shows the session, player and
+  advanced pairing controls. Log shows every action's result, with
+  errors in red.
+- **Status bar**: the latest message, a hint for the viewport or toolbar
+  control under the pointer, and the frame rate.
 - **Unsaved changes**: anything that would drop a tool's unsaved edits
   asks first, naming the tool: another source or map (scenario), another,
   new or imported variant, or an entry's variant opened from a playlist
   (variants), another or new playlist file (playlists). Save (Save as...
-  for a map, or a playlist file with no path yet), Discard or Cancel.
+  for a base map or an untitled playlist file), Discard or Cancel.
   Quitting asks about each tool with unsaved edits in turn.
 
-Shortcuts: Cmd/Ctrl+O open, Cmd/Ctrl+S save (the map as a new file, the
-variant, the playlist file), Cmd/Ctrl+Z undo and Shift+Cmd/Ctrl+Z or
-Cmd/Ctrl+Y redo (in the active tool), and in the scenario tool
+Shortcuts include Cmd/Ctrl+O to open, Cmd/Ctrl+S to save, Shift+Cmd/Ctrl+S
+to save a map or playlist to a chosen path, Cmd/Ctrl+P to open Go to
+anything, Cmd/Ctrl+Z to undo and Shift+Cmd/Ctrl+Z or
+Cmd/Ctrl+Y redo (in the active tool), F5 Play, Shift+F5 stop the
+game the editor started, and Cmd/Ctrl+Q quit. In the scenario tool,
 Cmd/Ctrl+D duplicate and Delete or Backspace delete (the whole
 selection), F frame the selection, Home frame all, W/E/R gizmo mode, X
-local or world axes, F5 Play and Shift+F5 stop the game, T (over the
-viewport, paired) teleport the player to the cursor; Cmd/Ctrl+Q quit.
+local or world axes, and T (over the viewport, paired) teleport the player
+to the cursor.
 Dropping a disc image, map or folder on the window
 opens it.
 
 ## Scenario
 
 Picking a map in **Maps** opens it, unless the open map has unsaved edits
-(the guard asks). **Save map as...** always asks for a new path (a whole
-`.map`, the export): the source map is never overwritten. **Save as
+(the guard asks). **File > Save as...** asks for the path of a whole
+`.map` export. The base map stays untouched. **Save as
 package...** and **Open package...** save and open map packages in
 `<data>/maps` (scenario-editor.md §5, [maps.md](../game/maps.md) §8).
 
@@ -313,10 +330,9 @@ one on the owner's discs, end to end.
 **The Halo 1 overlay.** Opening a converted variant looks for its
 `[origin] map` in the open Halo 1 source, then `$H1_MAP_DIR`, and checks
 the stored file's SHA-256 against `source_sha256`. When it matches, View >
-Halo 1 overlay (and the viewport toolbar's toggle) draws the Halo 1 BSP
-and placement glyphs in orange at 35 % over the converted map, through
-everything (`render::Viewport::set_overlay`), to check a conversion by
-eye. The inspector says where the map came from, and why there is no
+Halo 1 overlay and **Show > Halo 1 overlay** draw the source BSP and
+placement glyphs in translucent orange. Turn on **X-ray** to see the
+parts behind the converted geometry at a quarter of their usual opacity. The inspector says where the map came from, and why there is no
 overlay when there is none.
 
 ### The Maps list's cards
@@ -449,7 +465,7 @@ Saving never writes the installed files:
 
 - **Save as package** writes a package over the pack map (its base, by
   hash), as for a disc map. Its **Packages** tooltip names the pack map.
-- **Save map as** writes the patched `.map` (`save::save_as`) anywhere
+- **Save as...** writes the patched `.map` (`save::save_as`) anywhere
   but the installed content: `App::save_refusal` refuses a path inside
   `T:\$c` on the host, or any installed pack map file (whatever the data
   root).
@@ -460,7 +476,7 @@ under invented names and records):
 - the map pack disc's maps named and ordered from the install, and
   opened from the disc;
 - opening in the Scenario and Tags tools, the unsaved-edits guard;
-- Save map as: byte-exact when unedited; with one edit, only the edited
+- Save as: byte-exact when unedited; with one edit, only the edited
   field and the checksum differ, the same as the same edit on the map
   opened loose; refused inside `$c`;
 - a package based on the pack map that reopens with the edit and
@@ -595,11 +611,27 @@ build), and keeps the last four maps' scenes so reopening one is instant.
   is drawn at the placement's position, rotation and scale, instanced per
   model. Clicking a model picks it (ray against its triangles); the
   selection is tinted and keeps its marker.
-- **Glyphs.** Placements without a model get a glyph in their block's
-  colour: a standing pawn with an arrow for player spawns, a pole and
-  pennant for netgame flags, a diamond for the rest. Past 40 units from
-  the eye glyphs grow with distance, so they stay readable when the whole
-  map is framed, and their pick spheres grow with them.
+- **Layers.** Open **Show** above the viewport or **Layers** in the scene
+  outliner to toggle the structure, sky, object models, fog, markers,
+  individual placement blocks, Halo 1 reference and live objects. Each
+  row shows its colour and count. Art, Gameplay, Collision and Everything
+  choose a set of layers in one click. Collision shows the level structure
+  for context. The viewport and `view.snapshot` share these settings.
+  Clicking skips hidden placement categories and hidden structure.
+- **Gameplay layers.** Spawn points have a team-coloured pawn and an
+  arrow pointing along the spawn facing. Netgame flags have a team tint
+  and a pennant for their type. The pick spheres cover the arrow and
+  pennant tips. The label gives the type and identifier, using the raw
+  type number for an unknown value. Hill and territory
+  markers of the same type and identifier are joined in placement order.
+  Two markers form a segment and three or more form a closed outline.
+  Netgame equipment shows its model when available and a respawn label.
+  The Gameplay switches and their corresponding placement blocks both
+  control visibility. The **Placement markers** switch controls glyphs and annotations.
+- **Glyphs and labels.** Other placements without a model use a diamond
+  in their block colour. Past 40 world units glyphs and their pick
+  spheres grow with distance so the whole map stays readable. Gameplay
+  labels are drawn within 40 units of the eye.
 - **Framing.** Frame (Home) frames the placements, padded, when there are
   a few, dropping the 4 % at each end of each axis (Lockout keeps a few
   far outside the level): distant scenery and sky geometry no longer
@@ -662,84 +694,120 @@ the game's agent socket ([agent-api.md](../runtime/agent-api.md)). The
 code is `studio::play` (`play.rs`, `play/{launch,link,sync}.rs`) and
 `ui/play.rs`; nothing of it runs the game in the editor's process.
 
-**Play** (F5; Shift+F5 stops the game Play started) runs, in its own
-window:
+**Play** (F5) takes the open document into the game. With a matching map
+it sends pending pokes, resumes a paused game and raises its window if
+the game lists `editor.focus`. Structural edits require a freshly written
+play copy. The editor calls `map.reload {file}` when available, relaunches
+its own game otherwise, or leaves the edits pending for a manual load in
+a foreign game. F5 leaves the Edit switch as set. A foreign game asks before receiving edits or switching
+maps. The other choice in the map prompt opens the game's map here.
+`play::playtest::decide` supplies the bar, Game menu and socket API.
+
+**Stop** (Shift+F5) closes the game the editor started. With no game,
+Play launches the copy in its own window:
 
 ```
 H2_AGENT=<cache>/h2recomp/editor-<pid>-<n>.sock H2_MAP_DIR=$TMPDIR/h2-editor-play-<pid>/maps \
   h2 play <disc> --data <data root> --level <map> --title 'Halo 2 - <map> (h2-editor)'
 ```
 
-- `h2` is the panel's path, else `$H2_BIN`, else `~/.cargo/bin/h2`, else
-  `h2` on the `PATH` (`launch::find_h2`). The editor never builds it.
-- The disc is the open disc image, else `H2_DISC` or the repository's
-  `disc/halo2.iso` (`editor_core::default_disc`). For a Map Pack map this
-  is still the Halo 2 disc: `h2 play` installs the map pack itself from
+- `h2` is the path in Game > Advanced, else `$H2_BIN`, else the `h2` beside the
+  editor's executable (a checkout's `target/<profile>/h2`), else
+  `~/.cargo/bin/h2`, else `h2` on the `PATH`, else the lab host's copy
+  (`launch::find_h2`). The editor never builds it.
+- The disc is the open image or the extracted disc containing the open
+  `maps` folder or file. Otherwise Play uses `H2_DISC` or the repository's
+  `disc/halo2.iso` (`launch::source_disc`, `editor_core::default_disc`).
+  Before stopping its running game, the editor resolves the launch level
+  with the same `level_boot::resolve_in` as `h2 play`. For a Map Pack map
+  this is still the Halo 2 disc: `h2 play` installs the map pack itself from
   `mappack.iso` beside that disc (`mappack_cmd::auto_install`) and the
   editor's copy plays through the override. When the open pack is
   elsewhere, the editor logs that `h2 play` will not install it (it does
   not run `h2 import-mappack` itself).
-- The editor's bytes, edits included, are written as `<map>.map` to the
-  scratch directory (`scenario_edit::save::save_as`, which is not a save:
-  the map stays unsaved) and served with `H2_MAP_DIR` as a whole-file
-  override of the retail path. Installed packages have their own content
-  paths. [Map packages](../game/maps.md#8-saving-packages-from-the-editor) A new map (a
-  derived package, such as a converted Halo 1 map) plays from its
-  package: save it first.
+- A package opens under its manifest's `base.map`. If the document name
+  does not resolve, `launch::write_launch_copy` tries the internal cache
+  name and scenario path. It writes the edited bytes under the resolved
+  level's file name for `H2_MAP_DIR`. The document stays unsaved. When
+  the cache name and scenario resolve to different levels, or none of the
+  names resolves, Play keeps the running game and explains how to load
+  the map from the game's map list.
+  [Map packages](../game/maps.md#8-saving-packages-from-the-editor)
 - `--level` boots the level with one default player
   ([level-boot.md](../runtime/level-boot.md)).
-- **Spawn**: the level's own, the ground under the editor camera's focus,
-  or the selected placement. Once the game reports gameplay 30 ticks
-  into the map, the editor moves player one there with `sim.state.set
-  {player, pos}`.
-- The game's output goes to `play-<n>.log` in the scratch directory (the
-  panel shows the path); the editor waits up to 20 minutes for the
-  socket, since `h2 play` may build its image first.
+- **Spawn** offers the level's own spawn, the editor camera, the selected
+  placement and **Where I was**. The last becomes the default once the
+  stream supplies a local player on this map. After a reload the editor
+  checks the copy's checksum and the requested activation (a new epoch on
+  hosts without the activation counter), then waits for gameplay and
+  at least 30 ticks before restoring position, yaw and pitch with `sim.state.set`.
+- **Game > Pause the game while I edit** pauses on editor window focus.
+  It defaults to off. F5 resumes a paused game.
+- The game's output goes to `play-<n>.log` in the scratch directory.
+  Game > Advanced shows the path. The editor waits up to 20 minutes for
+  the socket because `h2 play` may build its image first.
 
 **Pair** attaches to a running game: one it found, or a path typed (or
-`tcp://HOST:PORT`). `play::pair::Finder` looks every two seconds on its
+`tcp://HOST:PORT`). `play::pair::Finder` looks every second on its
 own thread: the agents directory (`agent_proto::discover`, where `h2 play`
 opens `<pid>.sock` unless `H2_AGENT` is set; leftover sockets nothing
 answers on are removed) and the sockets **Find** lists (`$H2_AGENT`, the
 default socket, and every socket in the agent's cache directory, where
-Play puts its own). Each is asked `session.status`. `Play::notice` turns
-one running game into "Halo 2 is running (map)" for the Game panel and
-the status bar, with `MapMatch` saying whether its map is the open one
-(`same`, `different`, or `unknown` when either has none), and the **Pair**
-button pairs with it. With **Auto-pair** (`Bridge::auto_pair`, on by
-default, not kept between runs) the editor pairs by itself with the one
-game running, once per socket (`Play::auto_tried`), so Unpair sticks. An
-empty path pairs with the default socket. The game is then taken to hold
-the map as the editor shows it at that moment.
+Play puts its own). Each is asked `session.status`. Click the game link
+pill to pair with the single discovered game or choose from the list
+when several are running. The list shows each game's map and phase.
+It also offers **Unpair** and **Auto-pair**. Auto-pair defaults to on and
+chooses the editor's own game, the sole game, or the only game on the open
+map (`play::auto::choose`). A deliberate Unpair skips the process across finder scans until it exits.
+If no PID is known, the socket stays unpaired until the user pairs it again. An empty path in Game > Advanced pairs with the default socket.
+The game is taken to hold the map as the editor shows it at that moment.
+
+`Play::link_view` supplies the pill in the bar and the Game panel, and
+the `link` in `pair.status`.
+
+| Pill | Meaning |
+|---|---|
+| No game | Play is available when a map is open. |
+| `Halo 2 is running <map>` | Click to pair. |
+| Connecting… | Click for **Cancel**. |
+| Reconnecting… | The editor retries the discovered or explicitly named socket for up to 30 seconds. Click for **Cancel**. A matching epoch and checksum preserve acknowledged edits. An interrupted write requires a fresh journal check. |
+| `Viewing <map> · <phase>` | The editor reads the running game in View mode. |
+| `Editing <map> live` | The Edit switch is on and tag and placement edits can reach the game. The viewport frame and the inspector's Live pill are green. |
+| Edits stay here | The Edit switch is on and the game is blocking writes. Hover for the reason. The frame and Live pill are amber. |
+| `Game runs <map>` | The game is on another map. Click for `Open <map>`. |
+| Game lost | Hover for the reason or click for **Pair again**. |
+
+Pairing with an already-running game starts in View. Play starts its own
+game in Edit. Use the **Edit** switch in the bar or Game panel to change
+mode. The Game panel's Session section shows the map, phase, tick,
+session kind, stream rate, delay and counters. Player holds the camera,
+teleport and spawn controls.
 
 While paired, `play::Play` keeps a control connection for commands and
 status, and a second connection for the binary live mirror.
 
-- **Status chip** in the status bar: the connection, the game's map, its
-  phase (playing, paused, loading, menu, cinematic) and tick.
 - **Live objects** use their definition's model in the bind pose.
   Player labels show the name and team, and an aim line follows the
   unit's targeting vector. The viewport interpolates streamed transforms
   between game ticks ([live-mirror.md](live-mirror.md)).
-- **Edits sent live.** Every 200 ms the editor compares the placements
-  with what the game is taken to hold (`sync::Baseline`) and sends each
-  changed field of a placement with `edit.set` on the game's `scnr`,
-  through a raw block path (`+<block>/<stride>[i].+<field>:bytes[n]`,
-  the field's exact bytes; `hot-tags` gained raw blocks for this,
-  [hot-iteration.md](../graphics/hot-iteration.md)). Undo sends the old
-  bytes back. The game reads a placement when it makes the object, so an
-  edit shows when the object is made again: a respawn (multiplayer weapon
-  and vehicle spawns, player starting locations at the next spawn), a
-  checkpoint revert, or Play again. Objects already in the world don't
-  move. Adding or removing entries can't be sent (the game's block is
-  laid out where the map put it): the panel says the block needs Play
-  again. The panel always says why edits are not being sent: not paired,
-  another map in the game, the scenario not found, or the session.
+- **Edits sent live.** The editor compares changed tag and placement fields
+  with the bytes it expects in the loaded map. Edit sends these fields in
+  one conditional `edit.batch`. Undo and redo use the same path. A conflict
+  leaves the entire batch unapplied. The inspector and tree mark refused
+  fields in red and conflicts in amber. The bar and the game's editor
+  plate show the largest issue count. Clicking the bar's count opens
+  **Pending**. On a conflicted field, choose **Take the game's value**
+  to put the game's value in the document or **Overwrite** to send the
+  document's value. The field badge shows when the game reads it.
+  Moving or turning a placement also moves its linked live object. Deleting
+  a placement deletes that object. **Respawn now** applies creation-time
+  edits using the loaded placement. Pending shows when a changed block or
+  an appended placement needs **Reload**.
 - **Go to player** puts the camera's focus on player one, looking the way
   they face. **Teleport player here** moves them to the ground under the
   camera's focus; **T** over the viewport moves them to the point under
   the cursor (`sim.state.set`).
-- **Pause**, **Step** (1 to 600 ticks) and **Resume** (`session.claim`,
+- **Pause**, **Step** (1 to 600 ticks, set in Game > Advanced) and **Resume** (`session.claim`,
   `pause` with the 10-minute limit, `step`, `resume`, then `release`, so
   other clients may act again). In `h2 play` a pause also stops the
   window's event loop (agent-api.md).
@@ -751,8 +819,8 @@ status, and a second connection for the binary live mirror.
 
 Tests (`play::tests`, against the agent crate's server and executor with
 an invented game behind them, no game data): pairing and streamed
-objects, Go to player, a moved placement as one `edit.set` with its path
-and bytes, the warning when the game's copy differed, undo, an added
+objects, Go to player, tag and placement edits in one `edit.batch`,
+both choices when the game's copy differed, undo, an added
 entry as a reload, teleport and the spawn, no writes in co-op or with
 another map loaded, pause/step/resume and control given back, a lost game,
 nothing listening, and the play copy of the map (an edit in it, the map
@@ -761,15 +829,6 @@ diff and the command line.
 
 Not yet:
 
-- **Moving live objects.** Placements reach the game's scenario, not the
-  objects already made from them. Moving one means writing the object's
-  own position and letting the engine re-cluster it, which needs the
-  object update path read first (hot-iteration.md, "What is left"). An
-  agent method for it (`world.object.set {id, pos}`) would let a moved
-  vehicle or weapon follow at once.
-- **Fields beyond placements.** Only the scenario's placement blocks are
-  compared. Other tags (`shad` and the rest `edit.*` names) are edited
-  with `h2 agent edit` today.
 - **Checking the game's copy.** Pairing trusts that the game runs the map
   as the editor shows it; a field whose `old` differs is reported once.
   Reading the game's placements back (`edit.get` per block) would show
@@ -909,10 +968,19 @@ publish by itself.
 
 Every field of any tag of the open map (a disc map, a package, a
 converted Halo 1 map), labelled, with a widget per type. Edits save with
-the map: **Save map as...** and **Save as package...** write them through
-the same lossless `MapEditor` path as the scenario's. Any other map of
+the map. **Save**, **Save as...** and **Save as package...** write them
+through the same lossless `MapEditor` path as the scenario's. Any other map of
 the source (the shared caches among them) can be browsed read-only, and
 tags go out to and come back from tag bundles (below).
+
+### Field names
+
+The editor reads names and `doc="..."` descriptions from the checked-in tag
+definitions. Hover a field to see its description, offset and evidence. The
+detail row shows the same description, and `tag.fields` exposes it to
+scripts. An `A Halo2Xbox` evidence marker identifies a name checked against
+the retail Assembly reference. Offset labels identify fields whose purpose
+is still unknown. See [the field-name research note](notes/tag-field-names.md).
 
 ### The field registry
 
@@ -923,7 +991,7 @@ and block elements as fields tiling every byte, merged from:
   retail data): every group's structure (element sizes, blocks, data
   references, tag references, datums, string IDs, raw pointers), no names;
 - the **definitions** (`tags::defs`, `defs/*.txt`): typed, named fields
-  for the groups the converters use (28 groups), with their evidence.
+  for groups used by the editor and converters, with their evidence.
 
 A definition's field is used where its size matches the schema's
 element; its name counts as a name unless it is only its type and offset
@@ -935,31 +1003,25 @@ suggests (a float, an integer, hex) and its context menu switches. Float
 arrays get a hint from their name and note: colours (`colour`/`color`,
 3 floats), angles (`angle`, `field_of_view`, `_yaw`, `_pitch`, or
 "radians" in the note; shown in degrees), bounds (`bounds`, `_range`, 2
-floats). Names come only from our definitions (their evidence is the
-XBE's readers and the disc), never from community tools or plugins.
+floats).
 
-Definitions name fields in 53 of the registry's 78 groups. On the disc
-(`tests/tag_defs.rs`, opt-in) every tag of those groups decodes, and the
-share of their bytes that is named runs from 1.6% (`vrtx`, mostly
-compiled shader data) to 100% (`wgtz`): over 85% for `coll`, `lsnd`,
-`itmc`, `vehc`, `sily`, `spas` and `stem`; about half for `snd!`; under
-15% for `bipd`, `vehi`, `weap` and `sbsp` (`sbsp` is mostly data
-references and child blocks still typed only). `registry::tests::coverage_counts_every_byte_once`
-prints the registry's totals (named, typed, padding and unknown bytes)
-with `--nocapture`. The names grow as definitions do: a name added to
-`defs/*.txt` shows in the editor with no other change.
+The opt-in test in `crates/formats/tags/tests/tag_defs.rs` decodes disc
+tags and reports byte coverage. `coverage_counts_every_byte_once` in
+`crates/formats/tags/src/registry/tests.rs` reports named, typed,
+padding and unknown bytes for the built-in layouts. The editor reads
+each field label directly from those layouts.
 
 ### The document
 
-`app/tag_doc.rs` (`TagDoc`) holds the open map's tags and its ordinary
-metadata, read once when the tool is first shown for a map
-(`App::sync_tags`, keyed by the session's map revision), with the edits
-as a byte overlay. Every edit is an undo step (a drag is one step: writes
-merge by key until `TagAction::Seal`); each change hands every changed
-run to the session (`Session::set_tag_patches`), which keeps them on the
-scenario (`Scenario::set_tag_patches`) so `changes()` includes them: the
-map's dirty mark, map files and packages all count them. Undo and redo in
-the Tags tool step the tag edits only.
+`app/tag_doc.rs` (`TagDoc`) holds the open map's tags, ordinary metadata
+and BSP regions. `App::sync_tags` loads them when the tool first opens
+for a map revision. The BSP buffers use file offsets as keys because
+their virtual addresses can overlap. The overlay and undo stack track
+each write by region and address. Writes from a drag merge by key within
+the region until `TagAction::Seal`. The session stores the changed runs
+through `Session::set_tag_patches` and `Session::set_bsp_patches`. The
+map's dirty mark, map files and packages include both. Undo and redo in
+the Tags tool step through tag edits.
 
 What can be written, and what not (the reason shows in the panel and as
 the refusal's text):
@@ -968,8 +1030,8 @@ the refusal's text):
 | --- | --- |
 | Fields of any tag in the ordinary metadata whose group has a layout | Editable: fixed-length patches in place. |
 | Counts, addresses, raw pointers and sizes, BSP descriptors | Shown only: changing them by hand corrupts the map. Blocks change through add / remove / duplicate. |
-| The scenario tag | Read-only: its bytes belong to the Scenario tool (its placement edits would overlap). Shown as in the source. |
-| Tags in a structure BSP region (`sbsp`, `ltmp`) | Not shown yet: they have their own address space. |
+| The scenario tag | The field panel shows the source values through `scnr.txt`. The Scenario tool owns edits. Placement and palette blocks link to Scene. |
+| Tags in a structure BSP region (`sbsp`, `ltmp`) | Editable in place through their layouts. Child block addresses resolve in the same region. The tree row identifies the BSP. |
 | Tags with no data in the map (shared-map tags) | Nothing to show here; the tree names the shared cache that has their data (`[in shared]`), and **Show it in ...** browses it there. |
 | Tags of a browsed map | Read-only: only the open map saves. |
 | A group with no layout, a tag shorter than its layout | Read-only (hex only without a layout). |
@@ -980,8 +1042,9 @@ the refusal's text):
 bytes, dead until re-added), duplicate inserts a copy after the element,
 add appends a blank one (zero, null references). Within the elements it
 had in the source (and while it still points where it did) a block
-changes in place. Past that it is full, and grows only while **Edit >
-Allow growing full blocks** is on (the session's switch, shared with the
+changes in place. BSP blocks use their source capacity. Blocks in
+ordinary metadata grow past that capacity while **Edit > Allow growing
+full blocks** is on (the session's switch, shared with the
 Scenario tool; off by default because the engine's headroom for more tag
 memory is not established, [scenario-editor.md](scenario-editor.md) §6).
 A grown block's elements are copied, with the new one, to room past the
@@ -1041,10 +1104,15 @@ Two marks say where a tag lives, both computed from the maps alone:
   (`shared_refs::Homes`, `TagDoc::homes`), cached until the document's
   shape changes (`TagDoc::shape_rev`: load, block changes, undo, redo).
 
-`app/tag_tree.rs` arranges the tree with no UI: a search where each word
-must be in `group:name`, the matches by group (then name), or as a
-folder tree of their paths with counts per folder. `tag.list` uses the
-same search.
+`app/tag_tree.rs` builds the open scenario's tree from its structure
+BSPs and lightmaps, skies, object palettes, globals and other references.
+Palette counts and scenario-owned reference fields use the current
+placements. The reference walker follows layout fields, reads BSP-region
+payloads, and scans aligned group and datum pairs for unlabelled tags.
+The reachability walk starts from the scenario and globals. The tree
+shows an incomplete walk in place of the unreachable list. All tags keeps
+the group and folder views, with a search matching each word in
+`group:name`. `tag.list` uses the same search.
 
 The inspector lists a tag's **data and resources** (`tag_api::resources`):
 every data reference (path, size, address) and raw pointer (path, file,
@@ -1113,8 +1181,8 @@ step (`TagDoc::squash`) and saves with the map like any edit.
 
 `ui/tags.rs` draws the tool: the **map picker** (the source maps in their
 sections with an **(open map)** marker for the Scenario tool's map),
-the **tag tree** (by group or path, with a word search and marks for
-edited tags and where their data lives), the **fields** of the selected tag with Export and
+the **tag tree** (Scenario, All tags and Not reachable from the
+scenario, with edited and shared-cache marks), the **fields** of the selected tag with Export and
 Import, and **Data and bytes**: the tag's data and resources (with a
 bitmap preview), then the bytes of the element under the mouse with the
 hovered field lit and edited bytes marked.
@@ -1123,7 +1191,8 @@ hovered field lit and edited bytes marked.
 `fields::panel(ui, &app.tags, tag, path, &mut PanelState, &mut actions)`
 draws the element at `path` (per step, a block field's offset and the
 element index; empty is the root) and pushes `Action::Tag` commands.
-Numbers drag; enums are combos; flags are checkboxes (unnamed bits that
+Numbers drag. Enums and flag masks without labelled options edit numerically.
+Named enum values appear in a combo. Named flags have checkboxes (unnamed bits that
 are set show as `bit N`); colours pick; angles show degrees; bounds drag
 as a pair; string IDs are text; tag references and datums pick from the
 map's tags of the allowed groups (and their child groups) with a button
@@ -1276,8 +1345,9 @@ studio crate only draws them and turns input into actions.
     camera input, picking, placing, snapping and the gizmo.
   - `play.rs` and `play/`: Play and pair (above): the `h2 play` command
     and socket discovery (`launch`), the agent link thread (`link`), the
-    placement diff sent as `edit.set` (`sync`); `ui/play.rs` draws the
-    Game panel, the live objects over the viewport and the status chip.
+    tag and placement diffs sent as `edit.batch` (`tag_sync`, `sync`). `ui/bar.rs` draws the
+    link and transport. `ui/play.rs` draws the Game panel and the live
+    viewport frame.
   - `theme.rs`: colours, spacing, fonts (Inter 15 pt with a Lucide icon
     subset merged in; Dear ImGui 1.92 rasterises at the framebuffer scale,
     so text is crisp on HiDPI).
@@ -1297,7 +1367,7 @@ last. The flags that set the scene up:
 | Flag | Effect |
 | --- | --- |
 | `--pick <map>` | open this map in the scenario tool |
-| `--tool tags --tag <group>:<path>` | show a tag of the open map in the Tags tool |
+| `--tool tags --tag <group>:<path>` | focus the Map tool's Tags tab and show a tag of the open map |
 | `--tags-map <map>` | browse another map of the source in the Tags tool (`shared`, `single_player_shared`); `--tag` then picks one of its tags |
 | `--halo1 <iso\|dir>` | open a Halo 1 source (else `$H1_ISO`, `$H1_MAP_DIR`, `disc/halo1.iso`) |
 | `--mappack <iso\|dir>` | open the Map Pack (else `$H2_MAPPACK_ISO`, `mappack.iso` beside the disc, `disc/mappack.iso`) |
@@ -1308,7 +1378,7 @@ last. The flags that set the scene up:
 | `--select <block>:<index>` | select a placement (`vehicles:0`, `netgameequipment:3`) |
 | `--focus` | frame the camera on the selection (F) |
 | `--camera <yaw>,<pitch>,<distance>` | orbit the camera (degrees, world units), after `--focus` |
-| `--tool scenario\|variants\|playlists\|ui-screens\|hud` | show that tool |
+| `--tool scenario\|variants\|playlists\|ui-screens\|hud` | show that tool (`scenario` selects Map) |
 | `--hud-map <map>`, `--hud-package <key>` | open a map of the source (or a package) in the HUD tool |
 | `--hud <nhdt>` | show that HUD (its full name, or its last part: `masterchief`) |
 | `--hud-widget <name>` | select that widget |
@@ -1337,7 +1407,7 @@ the settled frames, and the written frame can be cropped and annotated:
 A target (`studio::script`) is a point `x,y`, a window `win:<name>`
 (`win:###inspector`, `win:##Menu`, `win:##Tooltip`, `win:##Combo`,
 `win:##Popup`), or a widget by label, `[<window>>]<label>[#n]` (`View`,
-`Rotate (E)`, `##setting-2`, `###viewport>Edit#0`), each optionally
+`Rotate (E)`, `##setting-2`, `###playlists-entries>Edit#0`), each optionally
 `@dx,dy` from its top left rather than its centre. Widgets are found by
 label through Dear ImGui's test-engine hooks (`studio::probe`; the
 `test-engine` feature of `dear-imgui-rs`): `ItemAdd` gives each item's
@@ -1345,7 +1415,8 @@ rectangle and window, `ItemInfo` its label. Combos never report a label,
 so the labels a script names are also hashed on each item's window ID
 stack and matched by ID. The hooks only record in headless renders. Set
 `H2_EDITOR_PROBE=1` to print every window and widget the last frame drew,
-to write a script against.
+to write a script against. A scripted click on the former Scenario row
+selects **Map**.
 
 ```
 h2-editor --disc disc/halo2.iso --pick ascension --select netgameequipment:0 \

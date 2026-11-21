@@ -4,12 +4,12 @@
 //! passes in guest order; their light and transparent neighbours stay on D3D.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex};
 
 use engine::memory::GuestMemory;
 use render_bridge::native_first_person::{Host, ItemMasks};
 use render_bridge::native_objects::NativeSet;
-use native_render::object_program_gpu::{LitObjects, PlannedDraw};
+use native_render::object_program_gpu::PlannedDraw;
 use native_render::object_state::EntryStates;
 use native_render::object_streams::StreamFormats;
 use native_render::objects::{ClearedObjects, ItemDraw, ObjectFrame};
@@ -63,6 +63,7 @@ struct LayerEntry {
 pub struct Glue<B: d3d::backend::Backend + Send + 'static> {
     device: d3d::abi::SharedDevice<B>,
     state: Arc<Mutex<Option<MapState>>>,
+    gpu: (wgpu::Device, wgpu::Queue),
     generation: Mutex<u64>,
     entry: Mutex<Option<LayerEntry>>,
 }
@@ -79,14 +80,17 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         {
             return None;
         }
-        let name = crate::health::loaded_map_name(mem).ok()?;
+        let mut map_name = [0; 32];
+        let name = crate::health::read_map_name(mem, &mut map_name).ok()?;
         if name.is_empty() {
             return None;
         }
+        let map_generation = render_bridge::native_map_work::generation();
         let current = |state: &Option<MapState>| {
-            state.as_ref().map(|s| s.name.as_str()) == Some(name.as_str())
+            state.as_ref().is_some_and(|s| s.name == name.as_ref() && s.map_generation == map_generation)
         };
-        if !current(&*self.state.lock().unwrap_or_else(|e| e.into_inner())) {
+        if !current(&self.state.lock().unwrap_or_else(|e| e.into_inner())) {
+            let _dispatch = timeline::setup::dispatch();
             let (palettes, formats) = {
                 let device = self.device.lock().ok()?;
                 (stage_palettes(&device, mem), StreamFormats::read(&Ro(mem)))
@@ -95,33 +99,38 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             *generation += 1;
             let next = *generation;
             let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-            if !current(&*state) {
+            if !current(&state) {
                 let models = Arc::new(Models::default());
+                let set = Arc::new(NativeSet {
+                    map: name.to_string(),
+                    generation: next,
+                    ..NativeSet::default()
+                });
                 let worker = native_first_person_load::spawn_worker(
-                    name.clone(),
-                    next,
+                    Arc::clone(&set),
                     Arc::clone(&models),
-                    Arc::clone(&self.state),
+                    Arc::downgrade(&self.state),
                     palettes,
                     formats,
+                    self.gpu.clone(),
+                    map_generation,
                 );
                 *state = Some(MapState {
-                    name: name.clone(),
+                    name: name.into_owned(),
                     generation: next,
+                    map_generation,
                     models,
-                    set: Arc::new(NativeSet {
-                        map: name.clone(),
-                        generation: next,
-                        ..NativeSet::default()
-                    }),
+                    set,
+                    next: None,
                     tried: Default::default(),
                     worker,
                 });
             }
         }
         let (set, models) = {
-            let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-            let state = state.as_ref()?;
+            let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            let state = state.as_mut()?;
+            state.activate(timeline::frames());
             (Arc::clone(&state.set), Arc::clone(&state.models))
         };
         let used = models
@@ -202,18 +211,11 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         let mut device = self.device.lock().ok()?;
         let plan = plan_view(&gpu, &objects, &items, &models, &entry);
         let ranges = plan.draws.len();
-        let pending = !gpu
-            .pending
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .is_empty();
         if ranges == 0 {
-            if pending {
-                let models = Arc::downgrade(&gpu);
-                device.backend.upload_scene_assets(Box::new(move |device, queue| {
-                    if let Some(models) = models.upgrade() { drop(models.upload(device, queue)); }
-                }));
-            }
+            return None;
+        }
+        let (gpu_device, color, depth) = device.external_pipeline_target(&ReadMemory(mem))?;
+        if !gpu.lit.try_lock().ok()?.as_mut()?.prewarm_draws(&gpu_device, color, depth, &plan.draws) {
             return None;
         }
         let mut drawn = vec![false; items.len()];
@@ -248,7 +250,9 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         if !state
             .as_ref()
-            .is_some_and(|state| state.generation == generation && Arc::ptr_eq(&state.models, &gpu))
+            .is_some_and(|state| state.generation == generation
+                && state.map_generation == render_bridge::native_map_work::generation()
+                && Arc::ptr_eq(&state.models, &gpu))
         {
             return None;
         }
@@ -260,7 +264,9 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
 
 /// Installs the host beside the other native render stages.
 pub fn install<B: d3d::backend::Backend + Send + 'static>(device: &d3d::abi::SharedDevice<B>) {
+    let Some(gpu) = device.lock().ok().and_then(|d| d.backend.upload_device()) else { return };
     render_bridge::native_first_person::set_host(Arc::new(Glue {
+        gpu,
         device: Arc::clone(device),
         state: Arc::new(Mutex::new(None)),
         generation: Mutex::new(0),
@@ -287,7 +293,7 @@ fn plan_view(
     entry: &LayerEntry,
 ) -> ViewPlan {
     let mut out = ViewPlan::default();
-    let lit = models.lit.lock().unwrap_or_else(|e| e.into_inner());
+    let Ok(lit) = models.lit.try_lock() else { return out };
     for (index, item) in items.iter().enumerate() {
         let frame = &objects[item.object];
         let model = record_models[&item.key.record];
@@ -338,40 +344,15 @@ struct FirstPersonPass {
     w_clip: ([f32; 2], bool),
 }
 
-impl Models {
-    fn upload<'a>(
-        &'a self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-    ) -> MutexGuard<'a, Option<LitObjects>> {
-        let mut guard = self.lit.lock().unwrap_or_else(|e| e.into_inner());
-        let lit = guard.get_or_insert_with(|| LitObjects::new(device));
-        for cpu in std::mem::take(
-            &mut *self
-                .pending
-                .lock()
-                .unwrap_or_else(|e| e.into_inner()),
-        ) {
-            if let Some(normalization) = &cpu.normalization {
-                lit.set_normalization(device, queue, normalization);
-            }
-            lit.add_model(device, queue, cpu.definition, cpu.lit);
-        }
-        guard
-    }
-
-}
-
 impl FirstPersonPass {
-    /// The call's packets for the D3D render pass already open on these
-    /// attachments, after any model upload still pending.
+    /// The call's packets for the D3D render pass open on these attachments.
     fn packets(
         &self,
         target: &d3d::backend::ExternalAttachments,
         request: d3d::ExternalPassRequest,
     ) -> Result<d3d::backend::ExternalDraws, &'static str> {
         let constants = self.view.ok_or("first-person view constants unavailable")?;
-        let mut guard = self.models.upload(&target.device, &target.queue);
+        let mut guard = self.models.lit.lock().unwrap_or_else(|e| e.into_inner());
         let lit = guard.as_mut().ok_or("planned first-person geometry unavailable")?;
         if !self
             .draws
@@ -381,7 +362,7 @@ impl FirstPersonPass {
             return Err("planned first-person geometry unavailable");
         }
         let view = ViewInputs {
-            constants,
+            constants: request.view_constants(target.copy, constants),
             guest_size: request.surface_size,
             size: target.size,
             z_scale: request.z_scale,
@@ -395,6 +376,7 @@ impl FirstPersonPass {
             target.depth_format,
             target.size,
             &view,
+            request.projection_factor(target.copy),
             &self.draws,
             None,
         )

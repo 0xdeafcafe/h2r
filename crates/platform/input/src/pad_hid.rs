@@ -5,9 +5,9 @@
 //! raw reports, so this opens the same device a second time, in shared mode
 //! (macOS: an `IOHIDManager` opened with `kIOHIDOptionsTypeNone`, never
 //! seizing it), reads only the mute bit out of its input reports and writes
-//! only output reports whose other valid-flag bits are clear
-//! ([`crate::dualsense::output_report`]): rumble, lightbar and player LEDs
-//! stay with the other backends.
+//! audio and mute reports whose other valid-flag bits stay clear
+//! ([`crate::dualsense::output_report`]). On macOS the game routes lightbar
+//! output through the controller's GameController connection.
 //!
 //! [`PadLink`] is the per-device state machine: what to send when the device
 //! opens, when the mute button is pressed, when the speaker is switched and
@@ -110,6 +110,7 @@ impl PadLink {
         let req = OutputRequest {
             mute_led: self.led(),
             speaker: self.speaker.then_some(true),
+            lightbar: None,
         };
         self.report(req)
     }
@@ -126,6 +127,7 @@ impl PadLink {
         let req = OutputRequest {
             mute_led: self.led(),
             speaker: None,
+            lightbar: None,
         };
         self.report(req)
     }
@@ -144,11 +146,13 @@ impl PadLink {
             return self.report(OutputRequest {
                 mute_led: Some(dualsense::MuteLed::Off),
                 speaker: None,
+                lightbar: None,
             });
         }
         self.report(OutputRequest {
             mute_led: self.led(),
             speaker: None,
+            lightbar: None,
         })
     }
 
@@ -162,11 +166,13 @@ impl PadLink {
         self.report(OutputRequest {
             mute_led: None,
             speaker: Some(on),
+            lightbar: None,
         })
     }
 }
 
 enum Cmd {
+    Stop,
     Speaker(bool),
     Mute(bool),
 }
@@ -240,6 +246,7 @@ impl PadHid {
 impl Drop for PadHid {
     fn drop(&mut self) {
         self.shared.stop.store(true, Ordering::Release);
+        let _ = self.tx.send(Cmd::Stop);
         if let Some(j) = self.join.take() {
             let _ = j.join();
         }
@@ -303,6 +310,7 @@ fn run(
     // With no pad, a command only changes what the next one starts with.
     fn note(cmd: Cmd, config: &mut PadHidConfig, speaker: &mut bool, muted: &mut bool) {
         match cmd {
+            Cmd::Stop => {}
             Cmd::Speaker(on) => *speaker = on,
             Cmd::Mute(on) => {
                 config.mute = on;
@@ -312,11 +320,12 @@ fn run(
     }
     while !shared.stop.load(Ordering::Acquire) {
         // No pad: follow the commands and look again now and then.
-        if last_try.is_some_and(|t| t.elapsed() < timing.retry) {
-            match rx.recv_timeout(timing.poll) {
+        let retry_in = last_try.map(|t| timing.retry.saturating_sub(t.elapsed())).unwrap_or_default();
+        if !retry_in.is_zero() {
+            match rx.recv_timeout(retry_in) {
                 Ok(cmd) => note(cmd, &mut config, &mut speaker, &mut muted),
                 Err(RecvTimeoutError::Timeout) => {}
-                Err(RecvTimeoutError::Disconnected) => {}
+                Err(RecvTimeoutError::Disconnected) => return,
             }
             continue;
         }
@@ -334,6 +343,7 @@ fn run(
         while alive && !shared.stop.load(Ordering::Acquire) {
             while let Ok(cmd) = rx.try_recv() {
                 let r = match cmd {
+                    Cmd::Stop => break,
                     Cmd::Speaker(on) => link.set_speaker(on),
                     Cmd::Mute(on) => {
                         note(Cmd::Mute(on), &mut config, &mut speaker, &mut muted);
@@ -368,7 +378,14 @@ fn run(
 /// without seizing it.
 #[cfg(all(target_os = "macos", feature = "hid"))]
 pub fn iokit_opener() -> HidOpener {
-    Box::new(iokit::open)
+    Box::new(|| iokit::open(dualsense::DUALSENSE_PIDS))
+}
+
+/// The first wired or Bluetooth DualShock 4, opened for shared raw reports.
+/// Use [`dualsense::ds4_lightbar_report`] for its lightbar output.
+#[cfg(all(target_os = "macos", feature = "hid"))]
+pub fn iokit_ds4_opener() -> HidOpener {
+    Box::new(|| iokit::open(dualsense::DS4_PIDS))
 }
 
 /// This platform's opener ([`iokit_opener`] on macOS with the `hid`

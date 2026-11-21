@@ -104,6 +104,23 @@ exists with that group.
 rolls each with `collection_select`. Shown, not editable: the other bytes
 (game-type matching at `+0x04`, passed to `0x0015a090`) are not decoded.
 
+### Scenario tag inspection
+
+The Tags panel reads the `0x3e0`-byte root through
+`crates/formats/tags/src/defs/scnr.txt`. It shows the placement and
+palette fields above and the following labelled fields.
+
+| Root offset | Labelled fields | Evidence |
+|---|---|---|
+| `+0x8`, `+0x10` | Sky references and scenario type | `scenario_edit::scene::skies_in` and [UI formats](../formats/ui.md) |
+| `+0x48` | Object names, types and placement indices | `layout::OBJECT_NAMES` and §6 |
+| `+0xe8`, `+0xf0` | Light-fixture palette index, name index, position and light reference | `h1convert::convert::BASE_BLOCKS` |
+| `+0x108`, `+0x130` | Trigger volume name, directions, origin and extents. BSP-switch trigger volume, source and destination | `h1campaign::scenario` and `cli::live_geometry::bsp_switches` |
+| `+0x110` | Recording name, versions, ticks and stream | `h1campaign::cutscenes::recordings_block` |
+| `+0x1b0`–`+0x1c8`, `+0x238` | Script strings, definitions, globals, references and syntax nodes | [HaloScript layouts](../formats/haloscript.md) |
+| `+0x208`, `+0x210` | HUD message reference, BSP region descriptor and paired BSP and lightmap references | `h1campaign::scenario::FRESH_NULL_REFS` and [map formats](../formats/map-format.md#bsp-and-lightmap-metadata) |
+| `+0x250`, `+0x258`, `+0x378` | Background sound and sound environment palettes, decorator references | `h1convert::ambience` and `h1convert::convert::BASE_BLOCKS` |
+
 ## 3. Edit model
 
 - `Scenario::read` keeps each block's elements as raw bytes, plus a copy
@@ -310,7 +327,7 @@ after Z:'s cache files are removed. The scenario editor never edits them.
 
 The cache dependency identities and the build string are passed through
 unchanged. Multiplayer peers must all load the same bytes; that is the
-variant-hash problem of forge.md §2.4.
+problem `MapId` solves ([maps.md](../game/maps.md) section 5).
 
 ## 6. Adding and removing entries
 
@@ -396,8 +413,9 @@ saves to memory, and re-reads the result with `map` (checksum valid),
 checksum, the patches and the block pair differ from the source. On the
 owner's disc 11 maps grew and waterworks was refused at the bound.
 
-The runtime alternative from forge.md §2.2 (patch blocks in guest memory
-after load) avoids rewriting the file and has the same memory question.
+Forge's kit ([forge-design.md](../game/forge-design.md), "The kit")
+reserves spare entries at build time for the same reason: a block cannot
+grow in guest memory after the load.
 
 ## 7. Open questions
 

@@ -40,6 +40,7 @@ pub mod dxt;
 #[cfg(feature = "gpu")]
 pub mod encode;
 pub mod external;
+pub mod raster;
 pub mod format;
 #[cfg(feature = "gpu")]
 pub mod guest_words;
@@ -71,10 +72,11 @@ pub mod translate;
 #[cfg(feature = "gpu")]
 pub mod upload;
 pub mod vertex;
+pub mod world_lines;
 pub mod xdk;
 
 #[cfg(feature = "gpu")]
-pub use context::{GfxContext, GfxError};
+pub use context::{GfxContext, GfxError, GpuHost, instance, instance_for};
 pub use format::{D3DFormat, HostFormat};
 #[cfg(feature = "gpu")]
 pub use presenter::{Acquired, OffscreenTarget, Presenter, RenderTarget};

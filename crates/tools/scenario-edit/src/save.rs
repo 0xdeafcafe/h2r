@@ -176,6 +176,9 @@ pub fn write_patched<R: Read + Seek>(
     for (address, bytes) in &changes.patches {
         editor.patch_metadata(*address, bytes)?;
     }
+    for patch in &changes.bsp_patches {
+        editor.patch_bsp(patch.space, patch.address, &patch.bytes)?;
+    }
     // A block that outgrew its source goes to the end of the metadata, and
     // its root pair points there; the old elements stay as dead data.
     for g in &changes.grown {

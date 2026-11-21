@@ -9,6 +9,9 @@
 //! Offsets come from `guest_layout`; this crate adds typed ids and kinds,
 //! not offsets.
 
+mod actors;
+pub use actors::{ActorControl, ActorView, visit_actors};
+
 use guest_layout::object::{NODE_MATRIX_SIZE, header};
 use guest_layout::{Datum, Fault, Mem, Off, Unit};
 use sim_objects::view::{Children as ChildLinks, Slots};
@@ -265,6 +268,21 @@ impl<'a, M: Mem + ?Sized> ObjectView<'a, M> {
             shield: b.shield(m)?,
             flags: b.damage_flags(m)?,
         })
+    }
+
+    /// Copy the active render permutation for each model region. The block
+    /// holds ten bytes per region; the selections occupy its first column.
+    pub fn region_permutations(&self, out: &mut [u8]) -> Result<usize, Fault> {
+        let body = self.obj.body;
+        let count = usize::from(body.regions_size(self.m)?) / 10;
+        let offset = body.regions_offset(self.m)?;
+        if offset <= 0 || count == 0 {
+            return Ok(0);
+        }
+        let n = count.min(out.len());
+        self.m
+            .read_bytes(body.addr.wrapping_add(offset as u32), &mut out[..n])?;
+        Ok(n)
     }
 
     /// Its node matrices: where and how many, `None` when it has none.

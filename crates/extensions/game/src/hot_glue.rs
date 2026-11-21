@@ -9,10 +9,8 @@
 
 use std::sync::Arc;
 
-use crate::telemetry::MapFile;
-
-/// Finds a map's file by its short name.
-pub type MapLocator = Box<dyn Fn(&str) -> Option<MapFile> + Send + Sync>;
+/// Finds a map's host file by its active slot's VFS device path.
+pub type MapLocator = Box<dyn Fn(&runtime::Guest) -> Option<vfs::HostFile> + Send + Sync>;
 
 /// Adds the hot methods to `agent` and, with `watch`, loads and watches
 /// the override directory. Without (the debug menu's local agent, no
@@ -23,12 +21,13 @@ pub fn install(
     rt: &Arc<runtime::Runtime>,
     maps: Option<MapLocator>,
     watch: bool,
+    replaying: bool,
 ) {
     #[cfg(feature = "gpu")]
     install_overrides(agent, watch);
     #[cfg(not(feature = "gpu"))]
     let _ = watch;
-    install_edits(agent, rt, maps);
+    install_edits(agent, rt, maps, replaying);
 }
 
 #[cfg(feature = "gpu")]
@@ -56,9 +55,15 @@ fn install_overrides(agent: &agent::Agent, watch: bool) {
 }
 
 /// `edit.*` over the runtime's memory.
-fn install_edits(agent: &agent::Agent, rt: &Arc<runtime::Runtime>, maps: Option<MapLocator>) {
+fn install_edits(
+    agent: &agent::Agent,
+    rt: &Arc<runtime::Runtime>,
+    maps: Option<MapLocator>,
+    replaying: bool,
+) {
     let mut editor = hot_tags::Editor::new();
-    if let Some(locate) = maps {
+    let maps = maps.map(Arc::new);
+    if let Some(locate) = maps.clone() {
         editor = editor.with_names(Box::new(move |g| names(g, &locate)));
     }
     let rt = Arc::clone(rt);
@@ -66,6 +71,11 @@ fn install_edits(agent: &agent::Agent, rt: &Arc<runtime::Runtime>, maps: Option<
         agent,
         editor,
         Arc::new(move |f: &mut dyn FnMut(&mut runtime::Guest)| f(&mut rt.memory())),
+        |g| crate::agent_glue::session_view(g),
+        move |g| {
+            Some(maps.as_ref()?(g)?.path.display().to_string())
+        },
+        replaying,
     );
 }
 
@@ -88,11 +98,7 @@ pub fn map_tags(
 
 /// The names of the map loaded in `g`, from its file.
 fn names(g: &runtime::Guest, locate: &MapLocator) -> Option<hot_tags::Names> {
-    let name = crate::telemetry::loaded_map_name(g).ok()?;
-    if name.is_empty() {
-        return None;
-    }
-    let file = locate(&name)?;
+    let file = locate(g)?;
     let reader = std::fs::File::open(&file.path).ok()?;
     let map = map::Map::from_region(std::io::BufReader::new(reader), file.offset, file.len).ok()?;
     hot_tags::Names::from_map(&map)

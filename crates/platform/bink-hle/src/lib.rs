@@ -63,6 +63,16 @@ impl BinkHle {
     pub fn open_streams(&self) -> usize {
         0
     }
+
+    pub fn prepare(&self, _path: &str) -> Result<(), MovieOpenError> {
+        Err(MovieOpenError::NoSource)
+    }
+
+    pub fn discard_prepared(&self, _path: &str) {}
+
+    pub fn last_request(&self, _path: &str) -> Option<RequestOutcome> {
+        None
+    }
 }
 
 impl BinkHle {
@@ -135,9 +145,49 @@ pub enum Mode {
 pub struct Request {
     pub path: String,
     pub flags: u32,
-    /// True when a stream was opened for it, false when it was skipped.
+    /// True when Bink opened a stream. The wrapper also has to start it.
     pub played: bool,
 }
+
+/// A request's result at the Bink boundary. The sequence increases across
+/// all movies, so the caller can tell whether a wrapper call reached Bink.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RequestOutcome {
+    pub sequence: usize,
+    pub request: Request,
+    pub failure: Option<MovieOpenError>,
+}
+
+/// Why a movie could not be prepared or opened.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MovieOpenError {
+    NoSource,
+    Unavailable,
+    MissingOrChangedOutput,
+    Decoder(String),
+    InvalidMetadata,
+    FirstFrame,
+    NoHandle,
+    NoArena,
+}
+
+impl std::fmt::Display for MovieOpenError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let reason = match self {
+            Self::NoSource => "movie playback source is disabled or unavailable",
+            Self::Unavailable => "movie is missing or is not current for this disc",
+            Self::MissingOrChangedOutput => "transcoded movie output is missing or changed",
+            Self::Decoder(why) => return write!(f, "movie decoder could not open the output ({why})"),
+            Self::InvalidMetadata => "movie dimensions, frame count or rate are invalid",
+            Self::FirstFrame => "movie decoder could not produce the first video frame",
+            Self::NoHandle => "no free Bink handle",
+            Self::NoArena => "no guest page for Bink handles",
+        };
+        f.write_str(reason)
+    }
+}
+
+impl std::error::Error for MovieOpenError {}
 
 #[cfg(feature = "playback")]
 /// Install the overrides for the mode the instance is configured for.

@@ -26,6 +26,9 @@ pub struct Binding {
     pub arguments: &'static [&'static str],
 }
 
+/// The retail one-argument `ai_place` overload (squad or squad group).
+pub const AI_PLACE: u16 = 290;
+
 pub const BINDINGS: &[Binding] = &[
     Binding {
         // Halo 1's `(ai <boolean>)`, "turns all AI on or off" (builtin 283,
@@ -65,7 +68,7 @@ pub const BINDINGS: &[Binding] = &[
     Binding {
         // Retail's one-argument overload places both squads and groups.
         name: "ai_place",
-        index: 290,
+        index: AI_PLACE,
         evaluator: 0x002a_4fd0,
         returns: "void",
         arguments: &["ai"],

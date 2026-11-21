@@ -825,6 +825,7 @@ pub fn notices(url: Option<&str>, mode: &Mode, invite_only: bool, private: bool)
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
 
     // Real cloudflared 2024-2025 output, plain and JSON log formats.
@@ -971,6 +972,7 @@ mod tests {
     }
 
     /// A test-only `cloudflared`: a shell script in its own directory.
+    #[cfg(unix)]
     fn fake(dir: &Path, body: &str) -> PathBuf {
         let p = dir.join("cloudflared");
         std::fs::write(&p, format!("#!/bin/sh\n{body}\n")).unwrap();
@@ -978,6 +980,7 @@ mod tests {
         p
     }
 
+    #[cfg(unix)]
     fn alive(pid: u32) -> bool {
         Command::new("kill")
             .args(["-0", &pid.to_string()])
@@ -986,10 +989,12 @@ mod tests {
             .is_ok_and(|s| s.success())
     }
 
+    #[cfg(unix)]
     fn quiet() -> OnUrl {
         Box::new(|_| {})
     }
 
+    #[cfg(unix)]
     #[test]
     fn found_on_path_or_explained() {
         let dir = temp("find");
@@ -1011,6 +1016,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(none);
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_quick_tunnel_reports_its_url_and_stops_with_its_owner() {
         let dir = temp("quick");
@@ -1048,6 +1054,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_named_tunnel_is_up_once_a_connection_registers() {
         let dir = temp("named");
@@ -1075,6 +1082,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_failed_start_shows_what_cloudflared_said() {
         let dir = temp("fail");
@@ -1123,6 +1131,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_dead_cloudflared_is_restarted_with_its_new_url() {
         let dir = temp("restart");
@@ -1313,6 +1322,7 @@ mod tests {
     /// A fake `cloudflared` for [`provision`]: logs each call to `calls`;
     /// `login` writes `cert` (if given); `tunnel list` prints `list`;
     /// `route dns` prints `route` and exits `route_exit`.
+    #[cfg(unix)]
     fn fake_setup(
         dir: &Path,
         cert: Option<&Path>,
@@ -1346,6 +1356,7 @@ mod tests {
         )
     }
 
+    #[cfg(unix)]
     fn calls(dir: &Path) -> Vec<String> {
         std::fs::read_to_string(dir.join("calls"))
             .unwrap_or_default()
@@ -1354,6 +1365,7 @@ mod tests {
             .collect()
     }
 
+    #[cfg(unix)]
     fn hermetic_cert(home: &Path) -> OriginCert {
         OriginCert {
             explicit: None,
@@ -1363,6 +1375,7 @@ mod tests {
 
     const LISTED: &str = r#"[{"id":"6ff42ae2-765d-4adf-8112-31c55c1551ef","name":"h2play","deleted_at":"0001-01-01T00:00:00Z"}]"#;
 
+    #[cfg(unix)]
     #[test]
     fn setup_with_no_login_logs_in_creates_and_routes() {
         let dir = temp("setup-fresh");
@@ -1400,6 +1413,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    #[cfg(unix)]
     #[test]
     fn setup_skips_what_is_there() {
         let dir = temp("setup-there");
@@ -1436,6 +1450,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    #[cfg(unix)]
     #[test]
     fn setup_with_a_missing_tunnel_creates_it() {
         let dir = temp("setup-create");
@@ -1462,6 +1477,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    #[cfg(unix)]
     #[test]
     fn setup_reports_a_dns_conflict_plainly() {
         let dir = temp("setup-conflict");
@@ -1482,6 +1498,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    #[cfg(unix)]
     #[test]
     fn setup_stops_when_login_does_not_help() {
         // A login that writes nothing: the error says where the cert was looked for.
@@ -1516,6 +1533,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    #[cfg(unix)]
     #[test]
     fn open_sets_up_a_named_tunnel_unless_told_not_to() {
         let dir = temp("open-setup");

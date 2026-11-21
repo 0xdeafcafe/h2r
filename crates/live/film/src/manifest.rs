@@ -135,6 +135,17 @@ impl Manifest {
         self.restore_limited(root, initial, LIMIT)
     }
 
+    /// Check that the external contents named by DATA can be opened. Restore
+    /// verifies their digests when it copies the bytes into the replay root.
+    pub fn check_initial_files(&self, root: &Path) -> Result<()> {
+        for item in self.entries.iter().chain(&self.assets) {
+            if item.data.is_none() && !item.sha256.is_empty() {
+                item.open_initial(Some(root))?;
+            }
+        }
+        Ok(())
+    }
+
     fn restore_limited(&self, root: &Path, initial: Option<&Path>, mut left: usize) -> Result<()> {
         fs::create_dir(root).context("film needs a fresh replay directory")?;
         ensure!(self.entries.len() <= 65536 && self.assets.len() <= 65536,
@@ -167,28 +178,7 @@ impl Manifest {
             } else if e.sha256.is_empty() {
                 fs::create_dir(p)?;
             } else {
-                let base = initial
-                    .with_context(|| {
-                        format!(
-                            "{} needs the original start file (--data DIR)",
-                            e.path.display()
-                        )
-                    })?
-                    .canonicalize()?;
-                let mut source = base.clone();
-                for part in e.path.components() {
-                    source.push(part.as_os_str());
-                    ensure!(
-                        !fs::symlink_metadata(&source)?.is_symlink(),
-                        "linked initial file"
-                    );
-                }
-                let source = source.canonicalize()?;
-                ensure!(
-                    source.starts_with(&base) && source.is_file(),
-                    "invalid initial file"
-                );
-                let mut input = fs::File::open(source)?;
+                let mut input = e.open_initial(initial)?;
                 let mut out = fs::File::options()
                     .create_new(true)
                     .write(true)
@@ -204,6 +194,44 @@ impl Manifest {
             }
         }
         Ok(())
+    }
+}
+
+impl Item {
+    fn open_initial(&self, initial: Option<&Path>) -> Result<fs::File> {
+        ensure!(
+            self.path.components().count() < 65
+                && self.path.components().all(|c| matches!(c, Component::Normal(_))),
+            "invalid film start path"
+        );
+        let message = || {
+            format!(
+                "Install the film's original {} (--data DIR).",
+                self.path.display()
+            )
+        };
+        let base = initial
+            .with_context(message)?
+            .canonicalize()
+            .with_context(message)?;
+        let mut source = base.clone();
+        for part in self.path.components() {
+            source.push(part.as_os_str());
+            ensure!(
+                !fs::symlink_metadata(&source)
+                    .with_context(message)?
+                    .is_symlink(),
+                "linked initial file {}",
+                self.path.display()
+            );
+        }
+        let source = source.canonicalize().with_context(message)?;
+        ensure!(
+            source.starts_with(&base) && source.is_file(),
+            "{}",
+            message()
+        );
+        fs::File::open(source).with_context(message)
     }
 }
 
@@ -227,6 +255,9 @@ mod tests {
         let level = Path::new("campaigns/halo1/a30.map");
         fs::write(source.join(level), b"converted map fixture").unwrap();
         let manifest = Manifest::capture_v2(&source).unwrap();
+        assert!(manifest.check_initial_files(&source).is_ok());
+        let error = manifest.check_initial_files(&dir).unwrap_err();
+        assert!(error.to_string().contains(level.to_str().unwrap()));
         assert!(manifest.assets.iter().all(|item| item.data.is_none()));
         assert!(manifest.restore(&dir.join("without-source")).is_err());
         let replay = dir.join("replay");

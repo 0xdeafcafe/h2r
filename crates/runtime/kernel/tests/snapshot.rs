@@ -35,8 +35,15 @@ const THREE_MS: u32 = DATA + 0x128;
 const B_ROUNDS: u32 = 12;
 
 /// A read-only disc holding one file of pseudo-random bytes.
-struct Rom(Vec<u8>);
+struct Rom(Vec<u8>, Option<String>);
 impl vfs::Backend for Rom {
+    fn snapshot_map_bindings(&self) -> Result<Vec<(String, String)>, vfs::StateError> {
+        Ok(self
+            .1
+            .iter()
+            .map(|id| (r"maps\fixture.map".into(), id.clone()))
+            .collect())
+    }
     fn read_only(&self) -> bool {
         true
     }
@@ -73,14 +80,15 @@ impl vfs::Backend for Rom {
 
 fn rom() -> Rom {
     let mut x = 0x2545_f491u32;
-    Rom((0..0x1_0000)
+    let bytes = (0..0x1_0000)
         .map(|_| {
             x ^= x << 13;
             x ^= x >> 17;
             x ^= x << 5;
             x as u8
         })
-        .collect())
+        .collect();
+    Rom(bytes, None)
 }
 
 fn build() -> BuildKey {
@@ -279,9 +287,11 @@ fn save(h: &Harness, machine: &Machine) -> Result<Vec<u8>, SnapshotError> {
 
 fn load(h: &Harness, machine: &mut Machine, bytes: &[u8]) -> Result<(), SnapshotError> {
     let snap = Snapshot::open(bytes, &build())?;
+    let apply = machine.prepare_snapshot(&snap, &Rebuilders::new())?;
     guest::load_guest(&snap, &mut h.runtime.memory(), None)?;
     guest::load_tsc(&snap, &h.runtime)?;
-    machine.load_snapshot(&snap, &Rebuilders::new())
+    apply(machine);
+    Ok(())
 }
 
 /// Threads whose start routine has not returned: their rebuildable
@@ -342,6 +352,51 @@ fn a_loaded_machine_runs_the_same_slices_as_the_saved_one() {
     // loaded side; thread A (2) never returns, so its own is still live.
     for m in [&machine_a, &machine_b] {
         assert_eq!(live_returns(m), vec![2]);
+    }
+}
+
+#[test]
+fn mounted_snapshots_keep_version_two_and_refuse_closed_editor_copies() {
+    let (host, machine) = boot(0);
+    let bytes = save(&host, &machine).unwrap();
+    let snap = Snapshot::open(&bytes, &build()).unwrap();
+    assert_eq!(snap.section(kernel::snapshot::KCORE).unwrap().unwrap().0, 2);
+    let (fresh, mut target) = boot(0);
+    load(&fresh, &mut target, &bytes).unwrap();
+
+    let mut dvd = rom();
+    dvd.1 = Some("private-generation".into());
+    fresh.kernel.vfs().unwrap().lock().unwrap().mount(vfs::CDROM_DEVICE, dvd).unwrap();
+    fresh.runtime.memory().set_u32(COUNTER, 123).unwrap();
+    assert!(save(&fresh, &target).unwrap_err().to_string().contains("fixture.map"));
+    assert!(load(&fresh, &mut target, &bytes).unwrap_err().to_string().contains("fixture.map"));
+    assert_eq!(fresh.runtime.memory().u32(COUNTER).unwrap(), 123);
+}
+
+#[test]
+fn incompatible_and_truncated_kernel_sections_leave_guest_ram_intact() {
+    let (source, machine) = boot(0);
+    let good = save(&source, &machine).unwrap();
+    let snap = Snapshot::open(&good, &build()).unwrap();
+    let (fresh, mut target) = boot(0);
+    for version in [3, 2] {
+        let mut out = SnapshotWriter::new(snap.header.clone());
+        for tag in snap.tags() {
+            let (mut v, mut raw) = snap.section(tag).unwrap().unwrap();
+            if tag == kernel::snapshot::KCORE {
+                v = version;
+                if version == 2 {
+                    raw.pop().unwrap();
+                }
+            }
+            out.section(tag, v, snapshot::Codec::Stored, raw).unwrap();
+        }
+        fresh.set(COUNTER, 123);
+        let before = digest(&fresh, &target);
+        let error = load(&fresh, &mut target, &out.finish().unwrap()).unwrap_err();
+        assert!(matches!(error, SnapshotError::Codec(_)), "{error}");
+        assert_eq!(fresh.get(COUNTER), 123);
+        assert_eq!(digest(&fresh, &target), before);
     }
 }
 

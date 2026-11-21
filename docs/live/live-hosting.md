@@ -279,14 +279,13 @@ the machine that has it:
 
 ```
 h2 live invite create --server https://live.forbes.red --data deploy/live/data
-h2 live account create afr --server https://live.forbes.red --invite <code>
+h2 live account create afr --server https://live.forbes.red --operator-data deploy/live/data --invite <code>
 ```
 
-or sign up in the web app at `https://live.forbes.red` with the invite.
-If `afr` is in `H2_LIVE_ADMINS`, that account is an admin as soon as it
-exists; until it does, whoever registers the name first would be, which is
-why the server warns about unclaimed admin names (with `--invite-only`
-only someone holding an invite can). Otherwise grant it:
+For an unreserved name, sign up in the web app at `https://live.forbes.red` with the invite.
+For this signup flow, configure admin names after registration. Verify the
+account's key, then add its name to `H2_LIVE_ADMINS` and restart, or grant
+the account the role with the operator key:
 
 ```
 h2 live admin grant afr --server https://live.forbes.red --data deploy/live/data
@@ -390,10 +389,10 @@ H2_LIVE_S3_ACCESS_KEY_ID=...
 H2_LIVE_S3_SECRET_ACCESS_KEY=...
 ```
 
-(`H2_LIVE_S3_PUBLIC_ENDPOINT`, `H2_LIVE_S3_PUBLIC_ACCESS_KEY_ID`,
-`H2_LIVE_S3_PUBLIC_SECRET_ACCESS_KEY` and `H2_LIVE_S3_PUBLIC_REGION` override
-the matching one for the public bucket, for a token scoped to it;
-`H2_LIVE_S3_REGION` defaults to `auto`.) Then:
+For the public bucket, `S3Config::from_env` in
+`crates/live/live-server/src/blobs.rs` tries the `H2_LIVE_S3_PUBLIC_*`
+prefix first for each of `ENDPOINT`, `ACCESS_KEY_ID`,
+`SECRET_ACCESS_KEY` and `REGION`. The region defaults to `auto`.
 
 ```
 h2 live serve --blobs s3://h2live \
@@ -590,7 +589,7 @@ The server marks what may be cached (live-api.md, "Caching"). By default Cloudfl
 - **When:** hostname is your Live host, the URI path starts with `/v1/`, and the method is `GET`.
 - **Then:** eligible for cache, edge TTL "use cache-control header if present", browser TTL "respect origin".
 
-The rule is safe for signed-in readers. Their reads are `private, no-store`, which Cloudflare never stores, and the web app adds `auth=1` to each one so it never shares a URL with an anonymous read. Assets are `immutable` and named by hash, so they are cached anyway; purge the zone once after the first deploy that carries the new headers.
+The rule is safe for signed-in readers. Cloudflare bypasses its cache for any request that carries an `Authorization` header, so a signed-in read is never answered from the anonymous entry, and its `private, no-store` answer is never stored. Cloudflare ignores `Vary: Authorization` unless a Cache Rules Vary setting lists it; the header is for other shared caches. Assets are `immutable` and named by hash, so they are cached anyway; purge the zone once after the first deploy that carries the new headers.
 
 Tunnel: `cloudflared` picks QUIC on UDP 7844 and opens 4 connections to the nearest Cloudflare locations it can reach. If its log shows QUIC dials failing ("no route to host"), or the connections land far from your readers, try `--protocol http2` (TCP 443). Argo Smart Routing shortens the path from the reader's edge to the tunnel. The edge cache does more than either, because a cached read never reaches the tunnel.
 
@@ -639,16 +638,16 @@ The server is on the internet now. What protects it:
 What you should decide:
 
 - **Who may create accounts.** By default anyone with the URL can.
-  `--invite-only` requires an invite code (`h2 live invite create`, run on
-  this machine, or an admin's dashboard: Settings → Server → Invites,
-  [live-admin.md](live-admin.md) §5). `serve` warns when a tunnel runs without it.
+  `--invite-only` requires an invite code. The operator, admins and
+  accounts with the **can invite** grant can make codes
+  ([live-admin.md](live-admin.md) §5). `serve` warns when a tunnel runs
+  without this setting.
 - **Who may read.** Reads (games, accounts, presence, the log) are public
   by default; `--private` needs a token for every read and on the stream.
-- **Admin names.** `--admin`/`H2_LIVE_ADMINS` name gamertags, and a
-  configured gamertag nobody holds yet makes whoever registers it first an
-  admin. With a public URL, `serve` and `play --tunnel` warn about such
-  names: create those accounts first, use `--invite-only`, or grant an
-  existing account with `h2 live admin grant`.
+- **Admin names.** New accounts for configured gamertags require the
+  operator credential at registration. Use `h2 live account create` with
+  `--operator-data DIR`. For an existing account, verify its identity
+  before using `h2 live admin grant`.
 
 ## What the tunnel does not carry
 

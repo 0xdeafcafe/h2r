@@ -147,12 +147,21 @@ impl Worker {
                 None => req,
             }
         };
-        let body = serde_json::to_string(ad).map_err(|_| Error::Protocol)?;
-        // Only a lease has idempotent creation on the server.
-        let bytes = match writer {
-            Writer::Host(_) => self.retried(build, Some(&body), MAX_FILE)?,
-            Writer::Account(_) => self.response(build(), Some(&body), MAX_FILE)?,
+        let create = |ad: &session::NewSession| {
+            let body = serde_json::to_string(ad).map_err(|_| Error::Protocol)?;
+            // Only a lease has idempotent creation on the server.
+            match writer {
+                Writer::Host(_) => self.retried(build, Some(&body), MAX_FILE),
+                Writer::Account(_) => self.response(build(), Some(&body), MAX_FILE),
+            }
         };
+        let bytes = match create(ad) {
+            // The old strict payload decoder rejects unknown fields.
+            Err(Error::Status(400)) if ad.browser.is_some() => {
+                create(&session::NewSession { browser: None, ..ad.clone() })
+            }
+            result => result,
+        }?;
         Ok(serde_json::from_slice::<Created>(&bytes)
             .map_err(|_| Error::Protocol)?
             .session)
@@ -211,7 +220,7 @@ impl Worker {
                     host.set_hopper(attrs);
                 }
                 row.update(&update).map_err(|_| INVALID_ARGUMENT)?;
-                self.write_match_event(writer, id, session::UPDATED, json!(update))
+                self.write_match_update(writer, id, &update)
                     .map_err(Error::result)?;
                 // Player GETs require an account. The acknowledged update
                 // uses the same projection as the server on its create reply.

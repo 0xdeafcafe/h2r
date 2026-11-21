@@ -587,8 +587,8 @@ Which existing settings must match between peers depends on the path,
 and `Def::scope` already says it:
 
 - **Lockstep below the game (3b) needs every `View` and `Sim` value
-  equal**: the `exact` fingerprint. Field of view, render scale and LOD
-  distance affect guest render state and carry `View` scope. Frame rate,
+  equal**: the `exact` fingerprint. Field of view, HUD position and LOD
+  distance carry `View` scope. Resolution is a local presentation choice. Frame rate,
   controller speaker and mute button carry `Host` scope and stay per machine.
 - **The retail path (3a) needs only `Sim` values equal**: the `sim`
   fingerprint. Each peer renders its own view, so `graphics.fov` and
@@ -1076,10 +1076,13 @@ and the hooks disarm.
 
 **Guest.** A console that joined a host's co-op session (an accepted
 invite, joining a friend from the friends list, or the custom games
-browser, which lists co-op sessions too) is a co-op guest. A watcher asks
-the HLE once a second, while the squad session has a second console and
-this one is not its host, which session it joined; when the server says it
-is a `coop` session, the console arms (10.3), takes the host's skulls for
+browser) is a co-op guest. In the browser, **Y** opens filters for
+**Campaign co-op**, campaign title and difficulty.
+[Browser controls](live-custom-games.md#filter-games)
+
+While the guest shares a squad with the host, a watcher asks the HLE
+once a second which session it joined. When the server reports a `coop`
+session, the console arms (10.3), takes the host's skulls for
 the campaign start, and opens the join screen at the next tick
 (`H2_COOP_JOIN_SCREEN=0` leaves that to the Co-op Campaign row, which opens
 the join screen for a guest): Host (`<gamertag>, 42 ms` once a ping came
@@ -1428,7 +1431,8 @@ It:
 
 1. Starts a Live server in its own process on `127.0.0.1:8075`
    (`--server-port`), with the file store under `--root` (by default
-   `~/Library/Application Support/h2recomp/coop-test`), so accounts,
+   `%LOCALAPPDATA%\h2recomp\coop-test` on Windows and
+   `~/Library/Application Support/h2recomp/coop-test` on Unix), so accounts,
    friends and profiles last between runs. The web app is served there
    too when it is built.
 2. Makes an account per game: Alpha hosts, Bravo joins (`--players N`, up
@@ -1519,9 +1523,15 @@ without checking them; it drops the result unless the title's own Live
 logon is done (`0x000901c1`, `0x0006cd50() == 1`). On the main menu,
 before Xbox Live, that fails and the friend view looks again the next
 frame: the 023244 run's sixty `find session` lines a second, all `0 of 0`.
-The `0 of 0` slots stop nothing (the title passes 0 to
-XOnlineMatchSessionCreate for its co-op lobby); repeated find lines are
-now said once per 30 s.
+The title passes zero slot counts to `XOnlineMatchSessionCreate` for its
+co-op lobby. Its join uses the host's QoS reply for admission. For a web
+[join link](live-custom-games.md#join-in-halo-2), the host's lobby pinger
+in `crates/extensions/game/src/coop_live.rs` publishes the observed player
+count and available seats on the current Live advertisement. A new console
+needs both a free peer and a free player slot, within `coop.max_players`.
+Explicit title slot counts, including reserved seats, take precedence.
+A host with no observed capacity offers no link. Repeated identical find
+lines are logged once per 30 seconds.
 
 The 023123 run's lobby was advertised twice (81113027... at +24.2,
 deleted at +24.25, then 8201114c... at +34.2): both the XNetUnregisterKey

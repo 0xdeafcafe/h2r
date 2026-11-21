@@ -15,7 +15,8 @@ use super::pacing::{Rate, Schedule, alpha, blendable, defer};
 use super::reproject::{self, Screen};
 use super::screen_space::{self, Fit, PassThrough};
 use crate::backend::{
-    Backend, DrawJudge, DrawOutcome, GuestLayoutKind, RectClear, ResolvedDraw, StreamBytes,
+    Backend, DisplaySurfacePixels, DrawJudge, DrawOutcome, GuestLayoutKind, RectClear,
+    RenderExtents, ResolvedDraw, StreamBytes,
 };
 use crate::shader::{Constants, Microcode, VertexProcessing};
 
@@ -274,6 +275,7 @@ impl<B: Backend> Op<B> {
 struct Frame<B: Backend> {
     id: u64,
     surface: B::Surface,
+    mark_image: Option<std::sync::Arc<crate::present_camera::Image>>,
     /// Arrival (ns), stamped on the game's thread.
     at: u64,
     ops: Vec<Op<B>>,
@@ -603,6 +605,9 @@ pub struct InterpBackend<B: Backend> {
     /// E1: each real surface's world-image copy.
     world_private: Vec<(B::Surface, B::Surface)>,
     mode: Mode,
+    /// For a bounded offline capture: the number of display samples in
+    /// this guest present, or zero to follow the ordinary display clock.
+    capture_slots: Option<Box<dyn FnMut() -> u32 + Send>>,
     /// A pixel count is open (cleared, not yet reported): no replay may
     /// add to it.
     counting: bool,
@@ -661,6 +666,7 @@ impl<B: Backend> InterpBackend<B> {
             private: Vec::new(),
             world_private: Vec::new(),
             mode: Mode::Replay,
+            capture_slots: None,
             counting: false,
             schedule: Schedule::default(),
             last: None,
@@ -698,6 +704,13 @@ impl<B: Backend> InterpBackend<B> {
     /// set).
     pub fn with_mode(mut self, mode: Mode) -> Self {
         self.mode = mode;
+        self
+    }
+
+    /// Takes fixed samples before the next guest present. Readback and
+    /// encoding can take longer than a display slot without dropping it.
+    pub fn with_capture_slots(mut self, slots: impl FnMut() -> u32 + Send + 'static) -> Self {
+        self.capture_slots = Some(Box::new(slots));
         self
     }
 
@@ -1140,12 +1153,13 @@ impl<B: Backend> InterpBackend<B> {
         gamma: Option<&[u8; 768]>,
     ) -> Result<(), String> {
         let rate = self.rate();
+        let slots = self.capture_slots.as_mut().map_or(0, |slots| slots());
         let now = (self.clock)();
         let at = self.stamp.take().unwrap_or(now);
         // A new guest frame: its draws and passes count from zero.
         self.frame_draws = 0;
         self.pass = None;
-        let Some(period) = rate.period_ns() else {
+        let Some(period) = rate.period_ns().filter(|_| slots != 1) else {
             if self.cur.is_some() || !self.ops.is_empty() {
                 self.reset();
             }
@@ -1182,7 +1196,7 @@ impl<B: Backend> InterpBackend<B> {
         // the same views (a split-screen change, a load or a pause starts
         // over).
         let paired = match &self.cur {
-            Some(c) if !blendable(c.at, at) => Err(Unpaired::Gap),
+            Some(c) if slots == 0 && !blendable(c.at, at) => Err(Unpaired::Gap),
             None => Err(Unpaired::Gap),
             Some(_) if model.cameras.is_empty() => Err(Unpaired::Camera),
             Some(c)
@@ -1251,9 +1265,14 @@ impl<B: Backend> InterpBackend<B> {
         let id = self.next_id;
         self.next_id += 1;
         self.prev = keep;
+        let mark_image = match crate::present_camera::current() {
+            Some(crate::present_camera::Present::Guest { image, .. }) => image,
+            _ => None,
+        };
         self.cur = Some(Frame {
             id,
             surface,
+            mark_image,
             at,
             ops,
             model,
@@ -1285,16 +1304,21 @@ impl<B: Backend> InterpBackend<B> {
             self.stats.lock().unwrap().held(Hold::Unpaired(u));
         }
         if blend {
+            let behind = slots == 0 && self.behind();
             let mut st = self.stats.lock().unwrap();
             match hold {
                 Some(why) => st.held(why),
-                None if self.behind() => st.dropped += 1,
+                None if behind => st.dropped += 1,
                 None => {}
             }
-            blend = hold.is_none() && !self.behind();
+            blend = hold.is_none() && !behind;
         }
         if blend {
-            let a = alpha(now, self.prev.as_ref().unwrap().at, at);
+            let a = if slots == 0 {
+                alpha(now, self.prev.as_ref().unwrap().at, at)
+            } else {
+                0.0
+            };
             match self.make(a) {
                 Ok((p, _, _)) if !self.same_extent(p, surface) => {
                     let mut st = self.stats.lock().unwrap();
@@ -1309,10 +1333,23 @@ impl<B: Backend> InterpBackend<B> {
                     st.substituted_draws += s.draws as u64;
                     st.snapped += s.snapped as u64;
                     drop(st);
-                    self.last = Some((id, a));
-                    self.schedule.shown_at(now, period);
-                    self.inner.present_with_gamma(p, flags, gamma)?;
-                    self.fence = self.inner.gpu_fence();
+                    let metadata = self.synthetic_metadata(a);
+                    crate::present_camera::with(Some(metadata), || {
+                        self.inner.present_with_gamma(p, flags, gamma)
+                    })?;
+                    if slots == 0 {
+                        self.last = Some((id, a));
+                        self.schedule.shown_at(now, period);
+                        self.fence = self.inner.gpu_fence();
+                    } else {
+                        self.last = Some((id, 1.0));
+                        for slot in 1..slots {
+                            let a = slot as f32 / slots as f32;
+                            if !self.show_replay(a, surface) {
+                                break;
+                            }
+                        }
+                    }
                     return Ok(());
                 }
                 Err(e) => self.fail(e),
@@ -1331,12 +1368,48 @@ impl<B: Backend> InterpBackend<B> {
         self.reset();
     }
 
+    fn synthetic_metadata(&self, fraction: f32) -> crate::present_camera::Present {
+        crate::present_camera::Present::synthetic(
+            fraction,
+            self.prev.as_ref().and_then(|frame| frame.mark_image.as_ref()),
+            self.cur.as_ref().and_then(|frame| frame.mark_image.as_ref()),
+        )
+    }
+
+    fn show_replay(&mut self, a: f32, surface: B::Surface) -> bool {
+        match self.make(a) {
+            Ok((p, _, _)) if !self.same_extent(p, surface) => {
+                self.stats.lock().unwrap().held(Hold::SizeMismatch(Mismatch::Extent));
+                false
+            }
+            Ok((p, s, t)) => {
+                let metadata = self.synthetic_metadata(a);
+                let r = crate::present_camera::with(Some(metadata), || {
+                    self.inner.present_replay(p, self.gamma.as_deref())
+                });
+                self.timed(t);
+                if let Err(e) = r {
+                    self.fail(e);
+                    return false;
+                }
+                let mut st = self.stats.lock().unwrap();
+                st.replays += 1;
+                st.substituted_draws += s.draws as u64;
+                true
+            }
+            Err(e) => {
+                self.fail(e);
+                false
+            }
+        }
+    }
+
     /// The idle step at `now` (ns): an in-between frame if one is due.
     /// Returns when it wants to be called again (ns), if at all.
     pub fn idle_at(&mut self, now: u64) -> Option<u64> {
         let period = self.rate().period_ns()?;
-        let (prev_at, cur_id, cur_at) = match (&self.prev, &self.cur) {
-            (Some(p), Some(c)) if c.hold.is_none() => (p.at, c.id, c.at),
+        let (prev_at, cur_id, cur_at, surface) = match (&self.prev, &self.cur) {
+            (Some(p), Some(c)) if c.hold.is_none() => (p.at, c.id, c.at, c.surface),
             _ => return None,
         };
         if self.last.is_some_and(|(id, a)| id == cur_id && a >= 1.0) {
@@ -1344,7 +1417,9 @@ impl<B: Backend> InterpBackend<B> {
         }
         if self.counting {
             self.stats.lock().unwrap().deferred += 1;
-            return Some(now + 1_000_000);
+            // Only report_pixel_count can close the query. The mailbox
+            // calls idle again after the batch containing that command.
+            return None;
         }
         if !self.schedule.is_due(now) {
             return self.schedule.deadline();
@@ -1359,41 +1434,13 @@ impl<B: Backend> InterpBackend<B> {
             return self.schedule.deadline();
         }
         let a = alpha(now, prev_at, cur_at);
-        let real = self.cur.as_ref().map(|c| c.surface);
-        match self.make(a) {
-            Ok((p, _, _)) if real.is_some_and(|r| !self.same_extent(p, r)) => {
-                let mut st = self.stats.lock().unwrap();
-                st.held(Hold::SizeMismatch(Mismatch::Extent));
-                drop(st);
-                self.last = Some((cur_id, 1.0));
-                None
-            }
-            Ok((p, s, t)) => {
-                let gamma = self.gamma.take();
-                let r = self.inner.present_replay(p, gamma.as_deref());
-                self.gamma = gamma;
-                self.timed(t);
-                if let Err(e) = r {
-                    self.fail(e);
-                    return None;
-                }
-                self.fence = self.inner.gpu_fence();
-                let mut st = self.stats.lock().unwrap();
-                st.replays += 1;
-                st.substituted_draws += s.draws as u64;
-                drop(st);
-                self.last = Some((cur_id, a));
-                if a >= 1.0 {
-                    None
-                } else {
-                    self.schedule.deadline()
-                }
-            }
-            Err(e) => {
-                self.fail(e);
-                None
-            }
+        if !self.show_replay(a, surface) {
+            self.last = Some((cur_id, 1.0));
+            return None;
         }
+        self.fence = self.inner.gpu_fence();
+        self.last = Some((cur_id, a));
+        if a >= 1.0 { None } else { self.schedule.deadline() }
     }
 }
 
@@ -1430,6 +1477,13 @@ where
 
     fn frozen_images(&self, texture: &Self::Texture) -> Option<crate::scene_sink::FrozenImages> {
         self.inner.frozen_images(texture)
+    }
+
+    fn reset_present_metadata(&mut self) -> Result<(), String> {
+        for frame in [&mut self.prev, &mut self.cur].into_iter().flatten() {
+            frame.mark_image = None;
+        }
+        self.inner.reset_present_metadata()
     }
 
     fn create_surface(
@@ -1662,6 +1716,23 @@ where
         Ok(r)
     }
 
+    fn render_extents(
+        &mut self,
+        color: Self::Surface,
+        depth: Option<Self::Surface>,
+        textures: [Option<&Self::Texture>; 4],
+    ) -> RenderExtents {
+        self.inner
+            .render_extents(color, depth, textures.map(|t| t.map(|a| &**a)))
+    }
+
+    fn read_display_surface(
+        &mut self,
+        surface: Self::Surface,
+    ) -> Result<Option<DisplaySurfacePixels>, String> {
+        self.inner.read_display_surface(surface)
+    }
+
     fn read_surface(
         &mut self,
         surface: Self::Surface,
@@ -1806,6 +1877,10 @@ where
     #[cfg(feature = "gpu")]
     fn upload_scene_assets(&mut self, upload: crate::backend::AssetUpload) {
         self.inner.upload_scene_assets(upload);
+    }
+
+    fn upload_device(&self) -> Option<(wgpu::Device, wgpu::Queue)> {
+        self.inner.upload_device()
     }
 
     fn supports_external_pass(&self) -> bool {

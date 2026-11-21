@@ -7,22 +7,23 @@ use gfx::GfxContext;
 use input::backend::keyboard::KeyboardMouse;
 use input::bindings::MouseButton;
 use winit::application::ApplicationHandler;
-use winit::dpi::LogicalSize;
+use winit::dpi::{LogicalSize, PhysicalSize};
 use winit::event::{DeviceEvent, DeviceId, ElementState, Ime, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{CursorGrabMode, Fullscreen, Window, WindowId};
 
 use crate::audio_out::{AudioOut, FALLBACK_RATE};
+use crate::forge_overlay;
 use crate::fps::DisplaySchedule;
 use crate::frame::{self, Compositor, FrameSource, FrameStats};
 use crate::keymap::{self, Shortcut};
 use crate::lifecycle::Lifecycle;
 use crate::menu_overlay::MenuRenderer;
-use crate::overlay::OverlayRenderer;
+use crate::overlay::marks::{MarkFrameStatus, MarkRenderer};
+use crate::overlay::{EditorPlateRenderer, OverlayRenderer};
 use crate::pacing::{PaceStats, Pacer, WindowedRate};
-use crate::scale;
-use crate::surface::WindowSurface;
+use crate::surface::{SurfaceKind, WindowSurface};
 use crate::theater_overlay;
 use crate::watermark::{LiveStats, Panels, WatermarkRenderer};
 use crate::worker::{GuestFn, GuestWorker};
@@ -34,6 +35,8 @@ enum UserEvent {
     Frame,
     /// The guest thread finished.
     GuestExited,
+    /// The editor changed its plate or asked for focus.
+    EditorChanged,
     /// A [`crate::Closer`] asked to close.
     Close,
 }
@@ -44,12 +47,18 @@ struct Gpu {
     surface: WindowSurface,
     compositor: Compositor,
     overlay: OverlayRenderer,
+    editor: Option<EditorPlateRenderer>,
+    marks: MarkRenderer,
     watermark: WatermarkRenderer,
     menu: MenuRenderer,
     theater: Option<theater_overlay::Renderer>,
     /// The adapter's backend, lower case (`metal`), for the watermark.
     backend: String,
     source: FrameSource,
+    #[cfg(target_os = "macos")]
+    metal_resize: Option<crate::metal_resize::MetalResize>,
+    #[cfg(target_os = "macos")]
+    last_presented_size: (u32, u32),
 }
 
 /// How often the watermark's numbers change.
@@ -89,8 +98,13 @@ struct Shell {
     init_error: Option<anyhow::Error>,
     captured: bool,
     super_held: bool,
+    shift_held: bool,
+    forge_modal: bool,
+    restore_forge_capture: bool,
     ime_composing: bool,
     ime_allowed: bool,
+    #[cfg(target_os = "linux")]
+    steam_keyboard: Option<crate::steam_keyboard::SteamKeyboard>,
     user_paused: bool,
     focus_paused: bool,
     closing: bool,
@@ -98,6 +112,8 @@ struct Shell {
     frames_at_exit: FrameStats,
     /// The banner generation last drawn.
     banner_drawn: u64,
+    editor_redraw: EditorRedraw,
+    mark_frame_status: Option<MarkFrameStatus>,
     restart_requested: bool,
     watermark_text: Option<WatermarkText>,
     theater_view: theater_overlay::View,
@@ -106,6 +122,42 @@ struct Shell {
     theater_cursor: Option<(f64, f64)>,
     /// The window's own redraw clock above 30 fps (`AppConfig::fps`).
     display: DisplaySchedule,
+}
+
+/// Keep an expired or changed overlay dirty until a replacement presents.
+#[derive(Default)]
+struct EditorRedraw {
+    expires: Option<Instant>,
+    changed: bool,
+    retry_at: Option<Instant>,
+}
+
+const EDITOR_REDRAW_RETRY: Duration = Duration::from_millis(100);
+
+impl EditorRedraw {
+    fn change(&mut self) {
+        self.changed = true;
+    }
+
+    fn presented(&mut self, expires: Option<Instant>) {
+        self.expires = expires;
+        self.changed = false;
+        self.retry_at = None;
+    }
+
+    fn schedule(&mut self, now: Instant) -> (bool, Option<Instant>) {
+        if !self.changed && self.expires.is_none_or(|expires| now < expires) {
+            return (false, self.expires);
+        }
+        if let Some(retry) = self.retry_at
+            && now < retry
+        {
+            return (false, Some(retry));
+        }
+        let retry = now + EDITOR_REDRAW_RETRY;
+        self.retry_at = Some(retry);
+        (true, Some(retry))
+    }
 }
 
 pub(crate) fn run(config: AppConfig, guest: GuestFn) -> anyhow::Result<ExitReport> {
@@ -127,8 +179,13 @@ pub(crate) fn run(config: AppConfig, guest: GuestFn) -> anyhow::Result<ExitRepor
         init_error: None,
         captured: false,
         super_held: false,
+        shift_held: false,
+        forge_modal: false,
+        restore_forge_capture: false,
         ime_composing: false,
         ime_allowed: false,
+        #[cfg(target_os = "linux")]
+        steam_keyboard: crate::steam_keyboard::SteamKeyboard::from_env(),
         user_paused: false,
         focus_paused: false,
         closing: false,
@@ -141,6 +198,8 @@ pub(crate) fn run(config: AppConfig, guest: GuestFn) -> anyhow::Result<ExitRepor
         },
         frames_at_exit: FrameStats::default(),
         banner_drawn: 0,
+        editor_redraw: EditorRedraw::default(),
+        mark_frame_status: None,
         restart_requested: false,
         watermark_text: None,
         theater_view: theater_overlay::View::default(),
@@ -202,16 +261,27 @@ impl Shell {
         #[cfg(target_os = "macos")]
         app_icon::set_dock_icon();
         let size = window.inner_size();
-        let instance = wgpu::Instance::default();
+        let instance = gfx::instance();
         let surface = instance.create_surface(Arc::clone(&window))?;
         let ctx = pollster::block_on(GfxContext::new(instance, Some(&surface)))?;
+        let info = ctx.adapter.get_info();
+        #[cfg(target_os = "macos")]
+        let metal_resize = if info.backend == wgpu::Backend::Metal {
+            crate::metal_resize::MetalResize::new(&window, &surface)
+        } else {
+            None
+        };
+        #[cfg(target_os = "macos")]
+        let size = metal_resize
+            .as_ref()
+            .map_or(size, |metal| metal.drawable_size());
         let surface = WindowSurface::new(
             &ctx,
             surface,
             (size.width, size.height),
-            self.config.fps.vsync(self.config.vsync),
+            &self.config,
+            SurfaceKind::Window,
         )?;
-        let info = ctx.adapter.get_info();
         eprintln!(
             "app: {} ({:?}), surface {:?}",
             info.name, info.backend, surface.config.format
@@ -245,6 +315,7 @@ impl Shell {
         let (input, keyboard) = crate::build_input(&self.config);
         self.keyboard = keyboard.clone();
         let host = GuestHost {
+            native_size: surface.native_size.clone(),
             gfx: crate::share_context(&ctx),
             sink,
             input: Some(input),
@@ -260,6 +331,12 @@ impl Shell {
         };
         self.audio = Some(audio);
 
+        if let Some(editor) = &self.config.editor_link {
+            let proxy = self.proxy.clone();
+            editor.set_waker(Arc::new(move || {
+                let _ = proxy.send_event(UserEvent::EditorChanged);
+            }));
+        }
         let guest = self.guest.take().expect("init runs once");
         let proxy = self.proxy.clone();
         self.worker = Some(GuestWorker::spawn(host, guest, move || {
@@ -271,35 +348,71 @@ impl Shell {
             window,
             compositor: Compositor::new(&ctx.device),
             overlay: OverlayRenderer::new(&ctx.device),
+            editor: self
+                .config
+                .editor_link
+                .as_ref()
+                .map(|_| EditorPlateRenderer::new(&ctx.device)),
+            marks: MarkRenderer::default(),
             watermark: WatermarkRenderer::new(&ctx.device),
             menu: MenuRenderer::new(&ctx.device),
-            theater: self.config.theater.as_ref().map(|_| theater_overlay::Renderer::new(&ctx.device)),
+            theater: (self.config.theater.is_some() || self.config.forge.is_some())
+                .then(|| theater_overlay::Renderer::new(&ctx.device)),
             backend: format!("{:?}", info.backend).to_lowercase(),
             ctx,
             surface,
             source,
+            #[cfg(target_os = "macos")]
+            metal_resize,
+            #[cfg(target_os = "macos")]
+            last_presented_size: (0, 0),
         });
         Ok(())
     }
 
-    fn redraw(&mut self) {
+    fn redraw(&mut self, size: Option<PhysicalSize<u32>>) {
+        let forge_frame = self.config.forge.as_ref().and_then(|forge| forge.0.frame());
+        let modal = forge_frame.as_ref().is_some_and(|frame| frame.modal);
+        if modal && !self.forge_modal {
+            self.restore_forge_capture = self.captured;
+            self.capture(false);
+        } else if !modal && self.forge_modal {
+            if forge_frame.is_some() && self.restore_forge_capture {
+                self.capture(true);
+            }
+            self.restore_forge_capture = false;
+        }
+        self.forge_modal = modal;
         let Some(g) = self.gpu.as_mut() else { return };
-        let frame = g.source.latest();
+        // AppKit can call drawRect before delivering Resized. A queued
+        // resize event can also refer to an older size than the live view.
+        #[cfg(target_os = "macos")]
+        let size = g
+            .metal_resize
+            .as_ref()
+            .map(|metal| metal.drawable_size())
+            .or(size);
+        if let Some(size) = size {
+            if size.width == 0 || size.height == 0 {
+                return;
+            }
+            g.surface.resize((size.width, size.height));
+        }
+        let size = g.surface.size();
+        #[cfg(target_os = "macos")]
+        let transaction = g
+            .metal_resize
+            .as_ref()
+            .and_then(|metal| metal.transaction(size != g.last_presented_size));
         let Some(target) = g.surface.acquire(&g.ctx) else {
+            if g.surface.needs_configure() {
+                g.window.request_redraw();
+            }
             return;
         };
+        let frame = g.source.latest();
         let view = target.texture.create_view(&Default::default());
-        let viewport = frame
-            .as_ref()
-            .map(|f| {
-                scale::place(
-                    f.size,
-                    self.config.aspect,
-                    self.config.scaling,
-                    g.surface.size(),
-                )
-            })
-            .unwrap_or_default();
+        let viewport = g.surface.viewport(frame.as_ref());
         let mut enc = g
             .ctx
             .device
@@ -316,7 +429,35 @@ impl Shell {
             self.config.filter,
             wgpu::Color::BLACK,
         );
-        if let Some(wm) = &self.config.watermark
+        let now = Instant::now();
+        let mut overlay_expires = None;
+        let mut mark_status = MarkFrameStatus::Waiting;
+        if let Some(frame) = &frame {
+            if frame.loading {
+                mark_status = MarkFrameStatus::Loading;
+            } else {
+                let mut drawn_generation = None;
+                if let Some(marks) = frame.marks.marks() {
+                    g.marks.begin();
+                    let shown = marks.visit(now, &mut |cameras, mark| {
+                        g.marks.push(&mark, cameras, viewport, g.surface.size());
+                    });
+                    overlay_expires = shown.expires;
+                    drawn_generation = shown.editor_generation;
+                    g.marks.draw(
+                        &g.ctx.device,
+                        &g.ctx.queue,
+                        &mut enc,
+                        &view,
+                        g.surface.config.format,
+                    );
+                }
+                mark_status = frame.marks.status(drawn_generation);
+            }
+        }
+        if frame.as_ref().is_some_and(|f| f.loading) {
+            self.watermark_text = None;
+        } else if let Some(wm) = &self.config.watermark
             && wm.visible()
         {
             let published = g.source.stats().published;
@@ -348,14 +489,63 @@ impl Shell {
                     &t.panels,
                     &view,
                     g.surface.config.format,
-                    g.surface.size(),
+                    size,
                     viewport,
                 );
             }
         }
+        // The game mode's plate (superbounce) shows with the watermark off too.
+        if !frame.as_ref().is_some_and(|f| f.loading)
+            && let Some(wm) = &self.config.watermark
+        {
+            let lines = wm.plate();
+            if !lines.is_empty() {
+                g.watermark.draw_plate(
+                    &g.ctx.device,
+                    &g.ctx.queue,
+                    &mut enc,
+                    &lines,
+                    &view,
+                    g.surface.config.format,
+                    size,
+                    viewport,
+                );
+            }
+        }
+        let notice = self.config.banner.as_ref().and_then(|banner| {
+            self.banner_drawn = banner.generation();
+            banner.visible()
+        });
+        if let Some(editor) = &self.config.editor_link
+            && let Some(renderer) = &mut g.editor
+            && let Some((plate, expires)) = editor.current(now)
+        {
+            overlay_expires = Some(overlay_expires.map_or(expires, |marks| marks.min(expires)));
+            renderer.draw(
+                &g.ctx.device,
+                &g.ctx.queue,
+                &mut enc,
+                &plate,
+                notice.is_some(),
+                &view,
+                g.surface.config.format,
+                g.surface.size(),
+            );
+        }
         if let Some(renderer) = &mut g.theater {
-            renderer.draw(&g.ctx, &mut enc, &self.theater_view, &view,
-                g.surface.config.format, g.surface.size(), viewport);
+            let model = forge_frame.map(|frame| theater_overlay::View {
+                playing: false,
+                page: Some(frame.page),
+            });
+            renderer.draw(
+                &g.ctx,
+                &mut enc,
+                model.as_ref().unwrap_or(&self.theater_view),
+                &view,
+                g.surface.config.format,
+                size,
+                viewport,
+            );
         }
         // The debug menu over everything but the banner.
         if let Some(lines) = self
@@ -371,27 +561,36 @@ impl Shell {
                 &lines,
                 &view,
                 g.surface.config.format,
-                g.surface.size(),
+                size,
                 viewport,
             );
         }
-        if let Some(banner) = &self.config.banner {
-            self.banner_drawn = banner.generation();
-            if let Some(notice) = banner.visible() {
-                g.overlay.draw(
-                    &g.ctx.device,
-                    &g.ctx.queue,
-                    &mut enc,
-                    &notice,
-                    &view,
-                    g.surface.config.format,
-                    g.surface.size(),
-                );
-            }
+        if let Some(notice) = notice {
+            g.overlay.draw(
+                &g.ctx.device,
+                &g.ctx.queue,
+                &mut enc,
+                &notice,
+                &view,
+                g.surface.config.format,
+                size,
+            );
         }
         g.ctx.queue.submit([enc.finish()]);
         g.window.pre_present_notify();
         g.ctx.queue.present(target);
+        #[cfg(target_os = "macos")]
+        {
+            drop(transaction);
+            g.last_presented_size = size;
+        }
+        self.editor_redraw.presented(overlay_expires);
+        if let Some(editor) = &self.config.editor_link
+            && self.mark_frame_status != Some(mark_status)
+        {
+            editor.set_mark_frame_status(mark_status);
+            self.mark_frame_status = Some(mark_status);
+        }
         if let Some(theater) = &self.config.theater
             && let Some(dir) = self.theater_screenshot.take()
         {
@@ -428,7 +627,9 @@ impl Shell {
         if self.config.log_status {
             eprintln!("{line}");
         }
-        g.window.set_title(&line);
+        if self.config.status_in_title {
+            g.window.set_title(&line);
+        }
     }
 
     fn capture(&mut self, on: bool) {
@@ -544,7 +745,20 @@ impl ApplicationHandler<UserEvent> for Shell {
             UserEvent::Frame => {
                 if let Some(g) = &self.gpu {
                     g.source.ack_wake();
-                    g.window.request_redraw();
+                    if self.display.redraw_on_publish() {
+                        g.window.request_redraw();
+                    }
+                }
+            }
+            UserEvent::EditorChanged => {
+                self.editor_redraw.change();
+                if let (Some(editor), Some(g)) = (&self.config.editor_link, &self.gpu) {
+                    if editor.take_focus_request() {
+                        if g.window.is_minimized() == Some(true) {
+                            g.window.set_minimized(false);
+                        }
+                        g.window.focus_window();
+                    }
                 }
             }
             UserEvent::Close => self.close(event_loop, "close requested"),
@@ -566,18 +780,17 @@ impl ApplicationHandler<UserEvent> for Shell {
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         match event {
             WindowEvent::CloseRequested => self.close(event_loop, "window closed"),
-            WindowEvent::Resized(size) => {
-                if let Some(g) = self.gpu.as_mut() {
-                    g.surface.resize((size.width, size.height));
-                    g.window.request_redraw();
-                }
-            }
-            WindowEvent::RedrawRequested => self.redraw(),
+            WindowEvent::Resized(size) => self.redraw(Some(size)),
+            WindowEvent::RedrawRequested | WindowEvent::Occluded(false) => self.redraw(None),
             WindowEvent::Focused(focused) => {
                 if !focused && let Some(theater) = &self.config.theater {
                     theater.0.release_keys();
                 }
                 if !focused {
+                    self.restore_forge_capture = false;
+                    if let Some(forge) = &self.config.forge {
+                        forge.0.release_keys();
+                    }
                     if let Some(kb) = &self.keyboard {
                         kb.release_all();
                     }
@@ -589,7 +802,12 @@ impl ApplicationHandler<UserEvent> for Shell {
             }
             WindowEvent::ModifiersChanged(m) => {
                 self.super_held = m.state().super_key();
+                self.shift_held = m.state().shift_key();
                 if self.super_held {
+                    self.restore_forge_capture = false;
+                    if let Some(forge) = &self.config.forge {
+                        forge.0.release_keys();
+                    }
                     self.capture(false);
                 }
             }
@@ -623,6 +841,19 @@ impl ApplicationHandler<UserEvent> for Shell {
                     return;
                 };
                 let down = event.state == ElementState::Pressed;
+                if !self.config.debug_menu.as_ref().is_some_and(debug_menu::Shared::is_open)
+                    && let Some(forge) = &self.config.forge
+                    && let Some(key) = forge_overlay::key(code, self.super_held, self.shift_held)
+                    && forge.0.key(key, down, event.repeat)
+                {
+                    if !down && let (Some(kb), Some(name)) = (&self.keyboard, keymap::key_name(code)) {
+                        kb.key_up(name);
+                    }
+                    if let Some(g) = &self.gpu {
+                        g.window.request_redraw();
+                    }
+                    return;
+                }
                 if self.super_held {
                     if down && !event.repeat {
                         match keymap::shortcut(code) {
@@ -721,7 +952,9 @@ impl ApplicationHandler<UserEvent> for Shell {
                     }
                 }
             }
-            WindowEvent::CursorMoved { position, .. } if self.config.theater.is_some() => {
+            WindowEvent::CursorMoved { position, .. }
+                if self.config.theater.is_some() || self.config.forge.is_some() =>
+            {
                 self.theater_cursor = Some((position.x, position.y));
             }
             WindowEvent::CursorLeft { .. } => self.theater_cursor = None,
@@ -736,6 +969,31 @@ impl ApplicationHandler<UserEvent> for Shell {
             }
             WindowEvent::MouseInput { state, button, .. } => {
                 let down = state == ElementState::Pressed;
+                if !self.super_held
+                    && !self.config.debug_menu.as_ref().is_some_and(debug_menu::Shared::is_open)
+                    && let Some(forge) = &self.config.forge
+                {
+                    use winit::event::MouseButton as B;
+                    if self.forge_modal {
+                        if down && button == B::Left
+                            && let Some((x, y)) = self.theater_cursor
+                            && let Some((x, y)) = self.gpu.as_ref()
+                                .and_then(|gpu| gpu.theater.as_ref())
+                                .and_then(|renderer| renderer.page_point(x, y))
+                        {
+                            forge.0.click(x, y);
+                        }
+                        return;
+                    }
+                    if matches!(button, B::Left | B::Right)
+                        && forge.0.mouse_button(button == B::Left, down)
+                    {
+                        if down && self.config.mouse_capture {
+                            self.capture(true);
+                        }
+                        return;
+                    }
+                }
                 if self.theater_view.playing
                     && !self.super_held
                     && let Some(theater) = &self.config.theater
@@ -786,6 +1044,11 @@ impl ApplicationHandler<UserEvent> for Shell {
         if let DeviceEvent::MouseMotion { delta } = event
             && self.captured
         {
+            if let Some(forge) = &self.config.forge
+                && forge.0.mouse_look(delta.0 as f32, delta.1 as f32)
+            {
+                return;
+            }
             if self.theater_view.playing && let Some(theater) = &self.config.theater {
                 theater.0.mouse_look(delta.0, delta.1);
             } else if let Some(kb) = &self.keyboard {
@@ -804,6 +1067,10 @@ impl ApplicationHandler<UserEvent> for Shell {
                 g.window.set_ime_allowed(text_active);
             }
             self.ime_allowed = text_active;
+            #[cfg(target_os = "linux")]
+            if let (Some(steam), Some(kb)) = (&mut self.steam_keyboard, &self.keyboard) {
+                steam.update(text_active, kb.active_device().get());
+            }
             if !text_active {
                 self.ime_composing = false;
             }
@@ -832,11 +1099,17 @@ impl ApplicationHandler<UserEvent> for Shell {
         {
             g.window.request_redraw();
         }
-        // Above 30 fps the window also redraws on its own clock; between
-        // guest presents that shows the newest guest frame again (no
-        // interpolation before phase 2, docs/game/high-framerate.md). At 30 the
-        // schedule is never due and this changes nothing.
+        // Above 30 fps, sample the latest guest or replay frame on the display grid.
         let mut wake = self.status.last + Duration::from_secs(1);
+        if let Some(g) = &self.gpu {
+            let (redraw, next) = self.editor_redraw.schedule(Instant::now());
+            if redraw {
+                g.window.request_redraw();
+            }
+            if let Some(next) = next {
+                wake = wake.min(next);
+            }
+        }
         if let Some(theater) = &self.config.theater {
             let now = Instant::now();
             if now >= self.theater_refresh {
@@ -866,8 +1139,14 @@ impl ApplicationHandler<UserEvent> for Shell {
         {
             self.config.fps = target;
             self.display.retarget(target);
-            if let (Some(v), Some(g)) = (vsync, self.gpu.as_mut()) {
-                g.surface.set_vsync(v);
+            if let Some(g) = self.gpu.as_mut() {
+                if let Some(v) = vsync {
+                    g.surface.set_vsync(v);
+                }
+                if self.display.redraw_on_publish() {
+                    // A publish just before the switch may still be waiting for a slot.
+                    g.window.request_redraw();
+                }
             }
             eprintln!("app: frame rate {target}");
         }
@@ -888,5 +1167,33 @@ impl ApplicationHandler<UserEvent> for Shell {
 
     fn exiting(&mut self, _: &ActiveEventLoop) {
         self.life.request_stop();
+    }
+}
+
+#[cfg(test)]
+mod editor_redraw_tests {
+    use super::*;
+
+    #[test]
+    fn expired_editor_overlay_retries_until_a_replacement_presents() {
+        let start = Instant::now();
+        let expires = start + Duration::from_millis(500);
+        let mut redraw = EditorRedraw::default();
+        redraw.presented(Some(expires));
+        assert_eq!(redraw.schedule(start), (false, Some(expires)));
+        let retry = expires + EDITOR_REDRAW_RETRY;
+        assert_eq!(redraw.schedule(expires), (true, Some(retry)));
+
+        // Surface acquisition fails: there is no call to presented().
+        assert_eq!(redraw.schedule(expires), (false, Some(retry)));
+        assert_eq!(redraw.schedule(retry), (true, Some(retry + EDITOR_REDRAW_RETRY)));
+        redraw.presented(None);
+        assert_eq!(redraw.schedule(retry), (false, None));
+
+        // A clear or an epoch cut also needs to erase the previous pixels.
+        redraw.change();
+        assert_eq!(redraw.schedule(retry), (true, Some(retry + EDITOR_REDRAW_RETRY)));
+        redraw.presented(None);
+        assert_eq!(redraw.schedule(retry), (false, None));
     }
 }

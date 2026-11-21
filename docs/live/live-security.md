@@ -68,9 +68,9 @@ shown `123-456`), the same scheme authenticator apps use.
   code or a day without failures clears it. A wrong code's 403 says how
   many tries remain (`wrong code; N tries left`). Recovery has its own
   bucket of one request per second per IP with a burst of ten across all
-  gamertags. An owner recovering from another IP has their own budget and
-  backoff. With three codes valid at once, five guesses from one IP have
-  odds of about 1 in 67,000 before the backoff begins.
+  gamertags. Each account also has a shared budget of ten attempts across
+  all addresses, replenished by one attempt every five minutes. Already
+  signed-in devices retain access while recovery is throttled.
 - **Sealing.** Secrets are sealed with XChaCha20-Poly1305 (a random
   24-byte nonce per value, stored as base64url of nonce and ciphertext with
   its tag) under a key derived from the server key with HKDF-SHA256 (info
@@ -139,50 +139,60 @@ JWT themselves, the way AT Protocol service auth works.
   check `aud`, `exp`, `lxm`, and reject a `jti` seen in the last 2 minutes
   (an in-memory set that expires itself). No database call.
 - **WebSockets** for stream and ingest send the token as the first
-  message when authentication is required. For co-op relay, both homes
+  message when authentication is required. Authenticated readers renew their
+  read token before expiry on both public and private homes. For co-op relay, both homes
   check the bearer token and session membership before upgrading. The
   relay rechecks membership and accepts refreshes from the same account.
   [Relay protocol](live-api.md#co-op-relay)
 - **Reads are public by default**: viewing games, accounts and the event
   log needs no token, which is what the web app does. A server can switch
   that off (`--private`), and then readers need a token too.
-- **Account creation** and **recovery** (§1) are the writes without a
-  token. The creation request carries the new public key and is signed by it (proof of possession), with `aud`
-  (the server id) and `iat` so it can't be replayed to another server. Servers can
-  require an invite code (`--invite-only`).
+- **Account creation** and **recovery** (§1) generally need no bearer.
+  Registering a configured admin name also requires a server-key token with
+  scope `accounts.reserve.<sha256>`. Its suffix is the lowercase hex SHA-256
+  of the exact compact signup JWS. The new key signs the creation request,
+  which includes its public key, `aud` (the server id), and `iat`. Servers
+  can require an invite code (`--invite-only`).
 
-Server-issued tokens (signed by the server key) are used between servers
-(§5) and by the operator: publishing title files and creating invites need a
-token signed by the server key, so they run on the server's machine, or a
-token from an admin account ([live-admin.md](live-admin.md)).
+The operator signs tokens with the server key for tasks such as
+publishing title files and creating invites. Admin accounts can also
+perform these tasks with self-issued tokens. The server checks an
+explicit per-account grant when a non-admin account asks to create an
+invite ([live-admin.md](live-admin.md) §5).
 
-**Invites from an admin account.** An invite code is always a JWS signed
-by the server key (`{aud, jti, exp}`, typ `h2live-invite`), so account
-creation checks it the same way whoever asked for it. An admin account
-(the browser's dashboard) asks with an `invites.write` token *and* an
-`InviteCreated` event `{jti, exp}` on the `invites` stream signed by its
-own key. The server checks that the author is an admin now, rate-limits
-it (per author: a burst of 10, then one a minute), checks the event like
-any signed write (its key, `at` within 5 minutes, a fresh nonce), that
-`exp` is at most 30 days away and the `jti` new, appends the admin's JWS
-as it is, and only then signs the code. So:
+**Server invites.** An account sends an `invites.write` token and a signed
+`InviteCreated {jti, exp}` event on the `invites` stream. The server
+checks the caller's permission, matches the event author to the token
+issuer, verifies the event with a current key, checks its time (within
+five minutes) and rejects a replayed nonce. Each invite has a fresh
+`jti` and expires within 30 days. Creation uses a separate rate bucket
+per author. Non-admin accounts with the grant can make three at once
+and admins ten, with one slot replenished per minute. An optional cap
+limits a non-admin's simultaneous open invites. The server checks the cap
+and appends the event in the same write sequence. A compromised admin can
+grant invite access to other accounts, each with its own rate bucket.
+The admin's personal rate limit therefore does not bound total sign-ups.
+Only the operator can grant the admin role.
 
-- the log holds, for every admin invite, who asked for it, signed by them;
-  the code itself is not in the log (it is a server signature over the
-  `jti` and `exp`, which are);
-- the server key never leaves the server, and an account key cannot mint
-  a code on its own: the server signs only after the audit event is
-  appended;
-- `InviteRevoked` `{jti}` (also admin-signed) ends an open one, and an
-  invite from an account that is no longer an admin is refused at sign-up,
-  so revoking an admin also kills the invites it made. The operator's own
-  invites (`h2 live invite create`) are not logged and work as before.
+The server returns a generated code after the append. Only the server
+has the key that derives the code from the invite id. A custom code goes
+beside the signed event and the log stores its MAC. Operator invites use
+server-signed creation events. Long codes signed by the server also
+redeem.
 
-What it adds to an admin's power: inviting people, which on an
-`--invite-only` server is who may sign up. It does not let an admin make
-admins (grant and revoke stay operator-only), and a stolen admin key
-could mint at most ten invites, then one a minute, each visible in the
-log and revocable.
+An `invite-grants.write` token from an admin or the operator sets or
+revokes the permission. The server signs the resulting account event,
+including the caller's identity, and replays it at startup. Revoking a
+non-admin's invite grant or an admin's role permanently closes their open
+invites. Removing an admin's explicit invite grant leaves their codes open.
+Redemption requires an open invite and a creator with invite access. A
+grantee's codes cannot be redeemed while the grantee is banned. An
+`InviteRevoked` event also closes a single invite. Admins can close any
+invite and granted players can close their own.
+
+Listing all invites and their open generated codes requires an
+`admin.read` token. The `invites.read` scope gives a caller only their own
+open invites and still requires invite permission.
 
 **Signing a device out.** Each device's key is its sign-in, so ending one
 is revoking its key: `KeyRevoked` (client-signed through `POST
@@ -192,8 +202,9 @@ memory on every request, so the revoked key's next token is refused (401)
 with no session table and no extra lookup.
 
 `lxm` values: `events.write`, `games.write` (game events and ingest),
-`titles.write` (operator or admin), `invites.write` (operator or admin),
-`admin.read` (an admin's status and invite reads), `recovery.read` and
+`titles.write` (operator or admin), `invites.write` (operator, admin or
+granted account), `invites.read` (own open invites), `invite-grants.write`
+(admin or operator), `admin.read` (admin status and all invites), `recovery.read` and
 `recovery.write` (the sign-in code), `signins.read` and `signins.write`
 (the account's own sign-ins), and `read` (every
 read, including the stream, on a `--private` server).
@@ -273,6 +284,9 @@ Not built yet; the formats above are chosen so it can be.
 - Request bodies are capped (64 KiB normally, title files 2 MiB because the
   playlist file inflates to about 1.46 MB). Ingest messages have a 16 KiB
   cap before authentication and throughout the session on both deployments.
+  Batched ingest allows at most 16 packed frame records per message.
+  A [presence heartbeat batch](live-api.md#presence-heartbeats) accepts
+  at most four single-use tokens, each authenticated independently.
   Writes have an in-memory budget per author and method. API GET and HEAD
   requests share a budget of 30 requests per second per client IP with a
   burst of 120. Both budgets return 429 when exhausted. The native server

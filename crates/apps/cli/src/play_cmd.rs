@@ -8,21 +8,23 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
+use agent::editor::{EditorLink, MarkAvailability};
+use agent_proto::editor::Mode;
 use anyhow::{Context, Result, bail};
 use input::backend::scripted::{ScriptedInput, Timeline};
 use input::bindings::{Bindings, Control, Input};
 
 const USAGE: &str = "usage:
   h2 play <disc.iso> [--out DIR] [--tier auto|fast|clang] [--data DIR] [--transfers N] [--slices N]
-          [--aspect 4:3|16:9] [--scaling fit|integer|stretch] [--nearest] [--fullscreen]
+          [--aspect source|4:3|16:9] [--scaling fit|integer|stretch] [--nearest] [--fullscreen]
           [--title TEXT] [--tile I/N]
           [--no-audio] [--no-gamepads] [--no-vsync] [--unpaced] [--bindings FILE] [--status]
           [--fps 30|60|120|uncapped] [--input-timeline FILE] [--frame-stats] [--no-watermark] [--no-mappack] [--no-halo1]
           [--movies DIR | --no-movies] [--film FILE]
           [--live | --live-server URL | --live-local | --offline] [--gamertag NAME] [--invite CODE]
-          [--signin-terminal]
+          [--join URL] [--signin-terminal]
           [--live-listen ADDR] [--live-tunnel [--live-tunnel-name NAME
            [--live-tunnel-url https://HOST]] [--no-tunnel-setup]]
           [--icons auto|xbox|xbox360|playstation|keyboard|remote]
@@ -32,11 +34,14 @@ const USAGE: &str = "usage:
 
 Opens a window and runs the recompiled game live (builds the dylib first when
 --out has none, or one built from another image or generator). --out and
---data default to $TMPDIR/h2boot and ~/Library/Application Support/h2recomp/data
-($H2_DATA if set; saves live there), as for `h2 run`.
+--data default to $TMPDIR/h2boot and `data` in the app data directory
+(docs/runtime/storage.md; $H2_DATA if set; saves live there), as for `h2 run`.
 --tier (or H2_TIER) as for `h2 run`: by default clang's module when current,
 else the Cranelift fast tier (built in seconds) with clang's build started in
-the background for the next start. --slices is unlimited by default.
+the background for the next start. --slices is unlimited by default. When
+the guest returns, the window stays up with the outcome in its title, except
+for a run with --slices or H2_BOOT_STOP_AT_PRESENT, or a lab job: those close
+it and exit.
 --film FILE records guest inputs and the simulation to a new .h2film file.
 --status prints the frame rates once a second and the slice count every
 1000 slices (the unit H2_BOOT_INPUT scripts in). --frame-stats (or
@@ -55,18 +60,21 @@ A halo1.iso next to the disc is converted into --data on the way in (its
 campaign under Campaign, its multiplayer maps in the map list), again only
 when the disc or the converter changed; a warning never stops the game.
 --no-halo1 or H2_HALO1=0 skips it (docs/halo1/campaign.md).
-The intro, attract and credits movies play, with their sound, when `h2 movies`
-has installed them for this disc (in --movies DIR, by default the app data
-directory); otherwise, with --no-movies, or on a --level boot (unless --movies
-DIR is given), the game skips them. The log says which (`movies: playback
-(...)` or `movies: skip (...)`).
---fps (or H2_FPS) sets how often the window presents: 30, the default, is the
-game's own rate and today's behaviour; 60, 120 and uncapped only redraw the
-newest game frame more often for now, with no smoothing (the game itself
-always runs at 30; docs/game/high-framerate.md).
-With neither set, the rate and H2_RENDER_SCALE's scale come from the Video
-screen (Settings, Video), saved as [graphics] fps and render_scale
-in <data>/settings.toml; a change there applies at once.
+The intro and credits play, with their sound, when `h2 movies` has installed
+them for this disc. An idle menu plays the attract movie from the same install.
+On a normal windowed boot with the default movie directory, a missing attract
+transcode is prepared from the disc using local ffmpeg when available.
+--movies DIR selects another install. --no-movies skips playback, as does
+a --level boot unless --movies DIR is given. During playback outside film
+sessions, an unavailable attract movie leaves the menu music playing.
+--fps (or H2_FPS) sets how often the window presents. At 30 it redraws on
+guest presents. At 60, 120 or uncapped it repeats the newest picture between
+guest frames unless host interpolation or reprojection is enabled.
+--unpaced disables guest wall-clock pacing for benchmarks. For normal-speed
+gameplay with unrestricted window redraws, use --fps uncapped.
+The Video screen saves frame rate and resolution in <data>/settings.toml.
+Native resolution follows the window in physical pixels. H2_RESOLUTION
+accepts native or WIDTHxHEIGHT; H2_RENDER_SCALE accepts a legacy multiplier.
 --set KEY=VALUE sets any of our settings for this run only, as its environment
 variable would: it wins over the variable and the file and locks its row
 (`h2 settings list` shows them; docs/game/settings-menu.md).
@@ -82,6 +90,8 @@ With no Live flag it plays offline and contacts nothing (--offline or
 --no-live says so explicitly). --live signs the game in to Xbox Live at
 https://live.forbes.red ($H2_LIVE_SERVER names another; off: offline);
 --live-server URL signs in to that service instead (docs/live/live.md).
+--join URL opens a Halo 2 session link and implies --live. The link must
+belong to your selected Live service.
 The account is one kept in accounts.json for that server; else --gamertag
 NAME, or the gamertag you last played as on another server (keeping its
 key), or one named after your user. A name new to the server is made
@@ -330,36 +340,19 @@ fn hosted(
             None => gfx,
         }
     };
-    // A view backend renders the frame at the scale times 640x480 and
-    // presents; the backend the guest talks to stays at 1x
-    // (docs/graphics/high-resolution.md). The scale is H2_RENDER_SCALE, else the
-    // Video screen's Resolution (`[graphics] render_scale`), else 1, and
-    // follows the row during the run (at 1 the view sleeps). Locked at 1
-    // (H2_RENDER_SCALE=1, --set): one backend, as before the row.
-    let key = boot::setting_defs::RENDER_SCALE.key;
-    let scale = store
-        .handle::<u32>(key)
-        .get()
-        .clamp(1, d3d::scaled::MAX_SCALE);
-    let locked = store.state(key).is_some_and(|s| s.locked);
-    // E3 lighting (the Lighting row, H2_LIGHTING) draws in the view too,
-    // at 1x as well: a view unless both are locked off.
-    let light = boot::setting_defs::LIGHTING.key;
-    let e3 = boot::setting_defs::lighting_of(store.handle::<u32>(light).get())
-        != d3d::Lighting::Retail;
-    let light_locked = store.state(light).is_some_and(|s| s.locked);
-    let view = (scale > 1 || !locked || e3 || !light_locked).then(|| {
-        (
-            configure(d3d::GfxBackend::new(host.gfx_context()).on_present(host.present_hook())),
-            scale,
-        )
-    });
-    let gfx = d3d::GfxBackend::new(host.gfx_context());
-    let gfx = configure(if view.is_some() {
-        gfx
-    } else {
-        gfx.on_present(host.present_hook())
-    });
+    let native_size: boot::run_opts::NativeSize = Arc::new(host.native_size());
+    let (gfx, view) = boot::d3d_glue::window_targets(
+        &store,
+        native_size, host.display_size(),
+        || configure(d3d::GfxBackend::new(host.gfx_context())),
+        || {
+            let present = host
+                .frame_sink()
+                .with_frame_marks(mark_frame)
+                .into_present_hook();
+            configure(d3d::GfxBackend::new(host.gfx_context()).on_present(present))
+        },
+    );
     let input = host.take_input();
     let keyboard = host.keyboard().cloned();
     let (pad_speaker, pad_hid, _speaker_setting) = pad_speaker(audio, &store, steam.as_ref());
@@ -370,10 +363,12 @@ fn hosted(
     boot::Host {
         film_out: None,
         film_view: None,
+        film_media: None,
+        film_capture: None,
         host_light: false,
         host_bots: false,
         gfx: Some(gfx),
-        gfx_view: view,
+        gfx_view: Some(view),
         // The backend's work on a render thread unless H2_RENDER_THREAD=0, as
         // for `h2 run` (docs/graphics/render-thread.md).
         render_thread: render_thread(std::env::var("H2_RENDER_THREAD").ok().as_deref()),
@@ -383,7 +378,11 @@ fn hosted(
         pad_speaker,
         debug_menu: None,
         theater: None,
+        theater_playback: None,
         perf_overlay: None,
+        editor_link: None,
+        debug_views: None,
+        world_line_sources: Vec::new(),
         discoverable_agent: false,
         embedded_live: false,
         settings: Some(store),
@@ -393,6 +392,7 @@ fn hosted(
         input,
         keyboard,
         icons: Some(icons),
+        return_to_menu: Some(host.loading_screen()),
         between_slices: Some(Box::new({
             let mut slices = 0u64;
             // The HID thread lives as long as the run.
@@ -501,6 +501,7 @@ fn watch_signals(_: app::Closer) -> Arc<AtomicBool> {
     Arc::new(AtomicBool::new(false))
 }
 
+mod forge;
 pub(crate) mod theater;
 
 pub fn run(args: Vec<String>) -> Result<()> {
@@ -545,6 +546,7 @@ pub(crate) fn run_with_theater(
         // consumes the unused `GuestHost::mixer`).
         audio: false,
         title: "Halo 2".into(),
+        aspect: app::DisplayAspect::Source,
         bindings: play_bindings(),
         // The run prints its report before the guest thread returns.
         shutdown_timeout: Duration::from_secs(10),
@@ -648,7 +650,26 @@ pub(crate) fn run_with_theater(
             _ => bail!("unexpected {a}\n\n{USAGE}"),
         }
     }
+    #[cfg(unix)]
+    if let (Ok(id), Ok(name)) = (
+        std::env::var("H2_LAB_JOB_ID"),
+        std::env::var("H2_LAB_JOB_NAME"),
+    ) {
+        config.title = crate::lab::proto::window_title(&id, &name, app::BuildInfo::baked().sha);
+        config.status_in_title = false;
+    }
+    config.keep_open_on_guest_exit = !close_on_guest_exit(
+        slices,
+        std::env::var("H2_BOOT_STOP_AT_PRESENT").ok().as_deref(),
+        std::env::var_os("H2_LAB_JOB_ID").is_some_and(|v| !v.is_empty()),
+    );
     live.check()?;
+    if live.join.is_some()
+        && (film_out.is_some() || std::env::var_os("H2_FILM_OUT").is_some_and(|p| !p.is_empty()))
+    {
+        bail!("Session links are unavailable while recording a film.");
+    }
+    let live_choice = live.play_choice(std::env::var("H2_LIVE_SERVER").ok().as_deref())?;
     // Our settings: flags (--fps, --set), then the environment, then
     // <data>/settings.toml, then each default. A bad value is reported and
     // the next source used.
@@ -657,6 +678,10 @@ pub(crate) fn run_with_theater(
         eprintln!("play: {p}");
     }
     let store = Arc::new(store);
+    let resolution = store.handle::<settings::Resolution>(boot::setting_defs::RESOLUTION.key);
+    config.native_fit = Some(app::NativeFit::new(move || {
+        resolution.get() == settings::Resolution::Native
+    }));
     // --fps, then H2_FPS (both checked above), then the Video screen's
     // saved rate, then 30. The row changes it during the run.
     let fps = &boot::setting_defs::FPS;
@@ -712,7 +737,11 @@ pub(crate) fn run_with_theater(
         None => boot::tier::Choice::from_env()?,
     };
     let jobs = std::thread::available_parallelism().map_or(4, |n| n.get());
-    let lib = boot::tier::prepare(&xbe, &disc, &out, choice, jobs, true)?.dylib;
+    let tier_plan = boot::tier::prepare(&xbe, &disc, &out, choice, jobs, true)?;
+    let lib = tier_plan.dylib.clone();
+    // A start on the fast tier while clang builds runs slowly: say so on
+    // screen, and say when the full-speed image is ready.
+    let building_clang = tier_plan.background_clang.then(|| out.clone());
     if crate::mappack_cmd::auto_enabled(no_mappack) {
         crate::mappack_cmd::auto_install(&disc, &data);
     }
@@ -732,7 +761,11 @@ pub(crate) fn run_with_theater(
     // Before the window: the session (and an embedded server) lives until
     // the game is over.
     // With no Live flag, offline (docs/live/live.md "Playing on Live").
-    let session = start_session(&mut live, &opts.disc)?;
+    let session = start_session(&mut live, &opts.disc, live_choice)?;
+    if let Some(link) = live.join.take() {
+        live_hle::join_link::submit(link, live_hle::join_link::Source::CommandLine)
+            .map_err(anyhow::Error::msg)?;
+    }
     // Signed in: the account's saves are merged into U: now, before the
     // game reads them, and pushed as the game writes
     // (docs/live/live-cloud-saves.md).
@@ -749,6 +782,7 @@ pub(crate) fn run_with_theater(
     let closer = app::Closer::new();
     config.closer = Some(closer.clone());
     let interrupted = watch_signals(closer);
+    crate::boot_cmd::start_memory_watch(&opts.data_root);
     // After the signal mask is set, so the reader thread inherits it.
     #[cfg(unix)]
     if let Some(path) = follow_status {
@@ -761,6 +795,11 @@ pub(crate) fn run_with_theater(
         config.watermark = Some(play_watermark(render_thread(
             std::env::var("H2_RENDER_THREAD").ok().as_deref(),
         )));
+    }
+    if config.banner.is_none()
+        && let Some(out) = building_clang
+    {
+        config.banner = Some(tier_banner(out));
     }
     if let Some(c) = frame_stats {
         timeline::phase::start(c).context("starting frame stats")?;
@@ -779,11 +818,17 @@ pub(crate) fn run_with_theater(
         .then(debug_menu::Shared::default);
     config.debug_menu = debug_menu.clone();
     let perf_overlay = config.watermark.as_ref().map(app::Watermark::switch);
+    let editor_link = EditorLink::default();
+    config.editor_link = Some(Arc::new(EditorPlateSource(editor_link.clone())));
+    if boot::forge_glue::requested().map_err(anyhow::Error::msg)? {
+        config.forge = Some(forge::overlay(&opts.disc).context("loading Forge UI assets")?);
+    }
     let theater = open_library.map(|open| (boot::theater_ui::Theater::default(), open));
     if let Some((controller, _)) = &theater {
         let (overlay, _) = theater::overlay(
             controller.clone(),
             opts.data_root.join("films/screenshots"),
+            None,
         );
         config.theater = Some(overlay);
     }
@@ -810,11 +855,14 @@ pub(crate) fn run_with_theater(
         }
         host.theater = theater;
         host.debug_menu = debug_menu;
-        // The agent socket where editors find it (docs/runtime/agent-api.md,
-        // "Finding a game"), unless H2_AGENT names one or is `off`.
+        // Default to the agent socket where editors and the lab find games
+        // (docs/runtime/agent-api.md, "Finding a game").
         host.discoverable_agent = true;
         host.embedded_live = live.local;
         host.perf_overlay = perf_overlay;
+        host.editor_link = Some(editor_link);
+        boot::debug_views::register(&mut host);
+        boot::superbounce_mode::register(&mut host);
         let r = boot::run_hosted_with_live(&xbe, &lib, &opts, host, &live_config);
         // As `h2 run` does: the kernel's storage may outlive the run (or never
         // drop), so store its pending write metadata at a normal exit, whether
@@ -886,17 +934,21 @@ fn level_choice(
 fn start_session(
     live: &mut crate::play_live::LiveOpts,
     disc: &std::path::Path,
+    choice: crate::play_live::Choice,
 ) -> Result<Option<crate::play_live::Session>> {
-    use crate::play_live::{Choice, DEFAULT_LIVE_SERVER, choose};
-    let env = std::env::var("H2_LIVE_SERVER").ok();
-    match choose(live, env.as_deref(), DEFAULT_LIVE_SERVER) {
+    use crate::play_live::Choice;
+    match choice {
         Choice::Offline { why } => {
             if let Some(why) = why {
                 eprintln!("{why}");
             }
             Ok(None)
         }
-        Choice::Local => start_live(live, disc).map(Some),
+        Choice::Local => {
+            let session = start_live(live, disc)?;
+            live.check_join_server(&session.server)?;
+            Ok(Some(session))
+        }
         Choice::Server { url, from } => {
             let note = match from {
                 "--live" => " (the default service; --live-server URL names another)",
@@ -1002,6 +1054,15 @@ fn watermark_on(no_flag: bool, env: Option<&str>) -> bool {
     !no_flag && env != Some("0")
 }
 
+/// Whether the window closes when the guest thread returns, so the process
+/// exits by itself: a run with a planned end (`--slices`, or
+/// `H2_BOOT_STOP_AT_PRESENT` as boot reads it) and every lab job (nobody
+/// is watching its window; the lab waits for the process). Other runs keep
+/// the window up with the last frame and the outcome in the title.
+fn close_on_guest_exit(slices: u64, stop_at_present: Option<&str>, lab_job: bool) -> bool {
+    lab_job || slices != u64::MAX || stop_at_present.is_some_and(|v| v.parse::<u64>().is_ok())
+}
+
 /// The debug menu is on unless `H2_DEBUG_MENU=0`.
 fn debug_menu_on(env: Option<&str>) -> bool {
     env.is_none_or(|v| v.trim() != "0")
@@ -1017,6 +1078,7 @@ fn play_watermark(render_thread: bool) -> app::Watermark {
             "render thread off"
         })
         .with_map(kernel::level::last_map)
+        .with_plate(boot::superbounce_mode::plate_lines)
 }
 
 /// A banner showing the frame stats' rolling window, refreshed once a
@@ -1066,6 +1128,187 @@ fn follow_banner(path: PathBuf) -> app::Banner {
     banner
 }
 
+fn mark_frame() -> app::overlay::marks::FrameMarks {
+    use app::overlay::marks::{FrameMarks, ImageSamples, ProjectedMarks};
+    use d3d::present_camera::Present;
+
+    let project = |image: Arc<d3d::present_camera::Image>, reference| {
+        let Ok(samples) = image.payload.clone().downcast::<ImageSamples>() else {
+            return Ok(None);
+        };
+        if !samples.has_visible_sample(&Instant::now) {
+            return Ok(None);
+        }
+        let Some(cameras) = mark_cameras(&image.views, reference) else {
+            let editor_visible = samples
+                .editor
+                .as_ref()
+                .is_some_and(|editor| editor.validity(&Instant::now).is_some());
+            return if editor_visible { Err(()) } else { Ok(None) };
+        };
+        Ok(Some(Arc::new(ProjectedMarks { cameras, samples })))
+    };
+
+    match d3d::present_camera::current() {
+        Some(Present::Guest { image: Some(image), reference }) => {
+            match project(image, reference) {
+                Ok(sample) => FrameMarks::Guest(sample),
+                Err(()) => FrameMarks::GuestWithoutWorldView,
+            }
+        }
+        Some(Present::Guest { image: None, .. }) => FrameMarks::Guest(None),
+        Some(Present::Synthetic { frozen, reference }) => FrameMarks::Synthetic(
+            frozen.and_then(|image| project(image, reference).ok().flatten()),
+        ),
+        None => FrameMarks::Raw,
+    }
+}
+
+fn mark_cameras(
+    views: &[Option<d3d::present_camera::View>; 4],
+    reference: bool,
+) -> Option<app::overlay::marks::MarkCameras> {
+    let cameras = views.map(|slot| {
+        let view = slot?;
+        mark_camera(view, reference)
+    });
+    cameras.iter().any(Option::is_some).then_some(cameras)
+}
+
+fn mark_camera(
+    view: d3d::present_camera::View,
+    reference: bool,
+) -> Option<app::overlay::marks::MarkCamera> {
+    let (width, height) = boot::setting_defs::GUEST_FRAME;
+    let [top, left, bottom, right] = view.camera.viewport.map(f32::from);
+    if !view.camera.is_usable()
+        || top < 0.0
+        || left < 0.0
+        || bottom > height as f32
+        || right > width as f32
+    {
+        return None;
+    }
+    let horizontal_factor = if reference { 1.0 } else { view.horizontal_factor };
+    let mut view_projection = view.camera.view_projection();
+    for column in &mut view_projection {
+        column[0] *= horizontal_factor;
+    }
+    Some(app::overlay::marks::MarkCamera {
+        view_projection,
+        viewport: [
+            top / height as f32,
+            left / width as f32,
+            bottom / height as f32,
+            right / width as f32,
+        ],
+    })
+}
+
+#[derive(Debug)]
+struct EditorPlateSource(EditorLink);
+
+impl app::EditorPlateSource for EditorPlateSource {
+    fn current(&self, now: Instant) -> Option<(app::EditorPlate, Instant)> {
+        let badge = self.0.current(now)?;
+        let (title, tone) = match badge.mode {
+            Mode::View => ("Editor · viewing", app::NoticeKind::Info),
+            Mode::Edit => ("Editor · editing live", app::NoticeKind::Ready),
+            Mode::Blocked => ("Editor · edits blocked", app::NoticeKind::Error),
+        };
+        let plate = app::EditorPlate {
+            title,
+            text: badge.text.clone(),
+            tone,
+        };
+        Some((plate, badge.expires))
+    }
+
+    fn set_waker(&self, wake: Arc<dyn Fn() + Send + Sync>) {
+        self.0.set_waker(wake);
+    }
+
+    fn take_focus_request(&self) -> bool {
+        self.0.take_focus_request()
+    }
+
+    fn set_mark_frame_status(&self, status: app::overlay::marks::MarkFrameStatus) {
+        use app::overlay::marks::MarkFrameStatus as Status;
+        let availability = match status {
+            Status::Waiting => MarkAvailability::Waiting,
+            Status::Ready(generation) => return self.0.set_drawn_mark_generation(generation),
+            Status::NoWorldView => MarkAvailability::NoWorldView,
+            Status::Raw => MarkAvailability::RawFrame,
+            Status::Loading => MarkAvailability::Loading,
+            Status::Synthetic => MarkAvailability::Synthetic,
+        };
+        self.0.set_mark_frame_status(availability);
+    }
+}
+
+/// The window's banner while clang builds the full-speed image in the
+/// background (`boot::tier::background_build`): this start runs on the
+/// slow fast tier until the next one.
+fn tier_banner(out: PathBuf) -> app::Banner {
+    let banner = app::Banner::new();
+    let b = banner.clone();
+    b.set(tier_notice(TierBuild::Building));
+    std::thread::Builder::new()
+        .name("tier-status".into())
+        .spawn(move || {
+            let log = boot::tier::background_log(&out);
+            loop {
+                std::thread::sleep(Duration::from_secs(2));
+                let text = std::fs::read_to_string(&log).unwrap_or_default();
+                let state = tier_build_state(&text);
+                b.set(tier_notice(state));
+                if state != TierBuild::Building {
+                    return;
+                }
+            }
+        })
+        .expect("spawning the tier status reader");
+    banner
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TierBuild {
+    Building,
+    Ready,
+    Failed,
+}
+
+/// Where clang's background build is, from its log: its summary line
+/// (`clang (...): N compiled, ...`) ends a good build, `Error:` a failed
+/// one.
+fn tier_build_state(log: &str) -> TierBuild {
+    if log.lines().any(|l| l.starts_with("Error:") || l.starts_with("error:")) {
+        TierBuild::Failed
+    } else if log.lines().any(|l| l.starts_with("clang (") && l.contains(" compiled, ")) {
+        TierBuild::Ready
+    } else {
+        TierBuild::Building
+    }
+}
+
+fn tier_notice(state: TierBuild) -> Option<app::Notice> {
+    let (kind, text) = match state {
+        TierBuild::Building => (
+            app::NoticeKind::Info,
+            "Slow start: building the full-speed game in the background. Restart when it's ready.",
+        ),
+        TierBuild::Ready => (
+            app::NoticeKind::Info,
+            "Full-speed game built. Quit and start h2 play again to use it.",
+        ),
+        TierBuild::Failed => (
+            app::NoticeKind::Error,
+            "The full-speed build failed; see clang-build.log. This start stays slow.",
+        ),
+    };
+    Some(app::Notice { kind, text: text.into() })
+}
+
 /// Whether `h2 play` renders on a render thread, from `H2_RENDER_THREAD`
 /// (the same rule as `h2 run`'s).
 fn render_thread(value: Option<&str>) -> bool {
@@ -1075,6 +1318,96 @@ fn render_thread(value: Option<&str>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn editor_marks_reject_world_cameras_outside_the_guest_image() {
+        let mut view = test_mark_view();
+        view.camera.viewport[1] = -1;
+        assert!(view.camera.is_usable());
+        assert!(mark_cameras(&[Some(view), None, None, None], false).is_none());
+        assert!(mark_cameras(&[Some(view), Some(test_mark_view()), None, None], false).is_some());
+    }
+
+    fn test_mark_view() -> d3d::present_camera::View {
+        d3d::present_camera::View {
+            camera: d3d::present_camera::Camera {
+                position: [0.0; 3],
+                forward: [1.0, 0.0, 0.0],
+                up: [0.0, 0.0, 1.0],
+                fov: 1.0,
+                projection_xy: None,
+                viewport: [0, 0, 100, 100],
+                near: 1.0,
+                far: 20.0,
+            },
+            horizontal_factor: 1.0,
+        }
+    }
+
+    #[test]
+    fn editor_plate_shows_the_mode_and_optional_text() {
+        use agent_proto::editor::LinkParams;
+        use app::EditorPlateSource as _;
+
+        let source = EditorPlateSource(EditorLink::default());
+        let now = Instant::now();
+        assert!(source.current(now).is_none());
+        for (mode, title, tone) in [
+            (Mode::View, "Editor · viewing", app::NoticeKind::Info),
+            (Mode::Edit, "Editor · editing live", app::NoticeKind::Ready),
+            (Mode::Blocked, "Editor · edits blocked", app::NoticeKind::Error),
+        ] {
+            source
+                .0
+                .set(
+                    LinkParams {
+                        editor: Some("sample".into()),
+                        mode: Some(mode),
+                        text: Some("Aim select".into()),
+                        ttl_ms: Some(500),
+                        ..Default::default()
+                    },
+                    now,
+                )
+                .unwrap();
+            let (plate, expires) = source.current(now).unwrap();
+            assert_eq!(plate.lines().collect::<Vec<_>>(), [title, "Aim select"]);
+            assert_eq!(plate.tone, tone);
+            assert_eq!(expires, now + Duration::from_millis(500));
+        }
+        source
+            .0
+            .set(
+                LinkParams {
+                    editor: Some("sample".into()),
+                    mode: Some(Mode::View),
+                    ..Default::default()
+                },
+                now,
+            )
+            .unwrap();
+        let (plate, _) = source.current(now).unwrap();
+        assert_eq!(plate.lines().collect::<Vec<_>>(), ["Editor · viewing"]);
+    }
+
+    #[test]
+    fn the_tier_banner_follows_clang_s_log() {
+        assert_eq!(tier_build_state(""), TierBuild::Building);
+        assert_eq!(
+            tier_build_state("lift: 0.2s\nemit: 2.6s, 18662 owners\n"),
+            TierBuild::Building
+        );
+        assert_eq!(
+            tier_build_state("emit: 2.6s\nclang (O1): 965 compiled, 42 reused, 1.0s keying\n"),
+            TierBuild::Ready
+        );
+        assert_eq!(tier_build_state("emit: 2.6s\nError: clang failed\n"), TierBuild::Failed);
+        let text = tier_notice(TierBuild::Building).unwrap().text;
+        assert!(text.len() <= 96, "fits the banner: {text}");
+        for s in [TierBuild::Ready, TierBuild::Failed] {
+            assert!(tier_notice(s).unwrap().text.len() <= 96);
+        }
+    }
 
     /// `h2 play`, `h2 run` and the editor's variant store share one default
     /// data root; the variants crate checks its side against the same path.
@@ -1196,6 +1529,19 @@ mod tests {
         assert!(debug_menu_on(None));
         assert!(debug_menu_on(Some("1")));
         assert!(!debug_menu_on(Some("0")));
+    }
+
+    #[test]
+    fn runs_with_a_planned_end_and_lab_jobs_close_when_the_guest_returns() {
+        // An open-ended run keeps its window up with the outcome.
+        assert!(!close_on_guest_exit(u64::MAX, None, false));
+        // boot ignores a value it can't parse, so the window stays too.
+        assert!(!close_on_guest_exit(u64::MAX, Some("lots"), false));
+        // `h2 lab run --frames N` sets H2_BOOT_STOP_AT_PRESENT=N.
+        assert!(close_on_guest_exit(u64::MAX, Some("2700"), false));
+        assert!(close_on_guest_exit(5000, None, false));
+        // A lab job without a limit (a run that crashes) still exits.
+        assert!(close_on_guest_exit(u64::MAX, None, true));
     }
 
     #[test]

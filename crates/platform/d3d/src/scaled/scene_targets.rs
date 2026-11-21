@@ -6,6 +6,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use frame_scene::TargetRef;
+use gfx::raster::RenderScale;
 use gfx::surface::SurfaceId;
 use gfx::{TextureDesc, texture::DecodedTexture};
 
@@ -30,11 +31,14 @@ impl Scaled {
         frame: &ReplayFrame,
         targets: &HashMap<TargetRef, Surface>,
     ) -> bool {
+        // Sealed frames replay on uniform integer grids only. Any other
+        // resolution keeps the original guest commands.
+        let Some(scale) = self.scale.uniform_integer() else { return false };
         if !self.single_copy
             || self.scene_active
             || self.frame_failed
             || !frame.refusals.is_empty()
-            || (self.scale == 1
+            || (scale == 1
                 && self.lighting == Lighting::E3
                 && !targets
                     .values()
@@ -63,7 +67,7 @@ impl Scaled {
                         .is_some_and(|g| self.view.scene_target_matches(g, d, 1))
                         && self
                             .view_surface(s)
-                            .is_none_or(|v| self.view.scene_target_matches(v, d, self.scale))
+                            .is_none_or(|v| self.view.scene_target_matches(v, d, scale))
                 })
             })
             && frame.ops.iter().all(|(_, op)| match op {
@@ -72,10 +76,10 @@ impl Scaled {
                     ReplayTexture::Frozen(sample) => {
                         // One native 1x draw cannot preserve a distinct
                         // legacy E3 image and reference image.
-                        (self.scale != 1
+                        (scale != 1
                             || self.lighting != Lighting::E3
                             || sample.images().is_some_and(|images| images.same_copies()))
-                            && self.frozen_texture(sample, self.scale).is_some()
+                            && self.frozen_texture(sample, scale).is_some()
                     }
                     _ => true,
                 }),
@@ -85,9 +89,9 @@ impl Scaled {
                     // have independent sizes.
                     let raster = |r| {
                         targets.get(&r).map(|s| {
-                            if self.scale > 1 {
+                            if scale > 1 {
                                 self.view_surface(s).map_or((s.size.0, s.size.1), |_| {
-                                    (s.size.0 * self.scale, s.size.1 * self.scale)
+                                    (s.size.0 * scale, s.size.1 * scale)
                                 })
                             } else {
                                 s.size
@@ -182,7 +186,7 @@ impl<'a> ScaledScenePass<'a> {
         }
         backend.reference.flush()?;
         backend.scene_coherent.clear();
-        if backend.scale == 1 {
+        if backend.scale == RenderScale::ONE {
             backend.view.move_counter(&mut backend.reference, true);
         }
         backend.view.prune_scene_uploads();
@@ -195,7 +199,7 @@ impl<'a> ScaledScenePass<'a> {
             commands: Commands::default(),
             active: true,
         };
-        if pass.backend.scale > 1 && pass.backend.lighting == Lighting::E3 {
+        if pass.backend.scale != RenderScale::ONE && pass.backend.lighting == Lighting::E3 {
             // When legacy shadow rendering last owned an off-screen level,
             // a valid scaled depth can be the only copy with those values.
             for s in targets.values() {
@@ -223,7 +227,7 @@ impl<'a> ScaledScenePass<'a> {
     }
 
     pub fn apply(&mut self, op: &ReplayOp) -> Result<(), String> {
-        let scale = self.backend.scale;
+        let scale = self.backend.scale.uniform_integer().ok_or("the scene grid is no longer an integer scale")?;
         self.commands
             .apply(self.backend, self.targets, true, scale, op)
     }
@@ -242,7 +246,7 @@ impl<'a> ScaledScenePass<'a> {
             return;
         }
         self.backend.scene_active = false;
-        if self.backend.scale == 1 {
+        if self.backend.scale == RenderScale::ONE {
             self.backend
                 .view
                 .move_counter(&mut self.backend.reference, false);
@@ -269,7 +273,7 @@ impl<'a> ScaledScenePass<'a> {
             // shadow instead refills lazily on its next legacy use.
             for key in writable(self.frame) {
                 let s = self.targets[&key];
-                if self.backend.scale == 1
+                if self.backend.scale == RenderScale::ONE
                     && let Some(v) = self.backend.view_surface(&s)
                 {
                     let guest = self.backend.guest(s);
@@ -279,7 +283,7 @@ impl<'a> ScaledScenePass<'a> {
             }
             // An escaped live colour view must continue following the
             // original view allocation after the next legacy draw.
-            if self.backend.scale == 1 {
+            if self.backend.scale == RenderScale::ONE {
                 for (_, op) in &self.frame.ops {
                     if let ReplayOp::Sample {
                         of,
@@ -303,7 +307,7 @@ impl<'a> ScaledScenePass<'a> {
                 }
             }
         }
-        if self.backend.scale == 1 {
+        if self.backend.scale == RenderScale::ONE {
             // The reference still advances its shader/frame/capture
             // boundary, as in a sleeping view's Swap. Both see the same
             // GPU allocation, already recorded once by the display.
@@ -325,7 +329,7 @@ impl<'a> ScaledScenePass<'a> {
             false,
             self.backend.lighting,
         )?;
-        if self.backend.scale == 1 && self.backend.lighting == Lighting::E3 {
+        if self.backend.scale == RenderScale::ONE && self.backend.lighting == Lighting::E3 {
             self.backend
                 .scene_coherent
                 .extend(self.targets.values().map(|s| s.reference));
@@ -379,7 +383,7 @@ impl SceneDevice for Scaled {
     ) -> Option<Texture> {
         let images = sample.images()?;
         let reference = images.reference.for_device(&self.reference.ctx.device)?;
-        let view = if self.scale == 1 {
+        let view = if self.scale == RenderScale::ONE {
             &images.reference
         } else {
             images.display.as_ref()?

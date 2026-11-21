@@ -1146,13 +1146,14 @@ fn rebuilt_vehicle_keeps_source_drag_and_direction_records() {
 /// elevation the engine searches by rises along it, as on retail tracks.
 #[test]
 fn camera_track_keeps_halo_1s_control_points() {
+    use std::f32::consts::FRAC_1_SQRT_2;
     use tags::defs::{self, Defs, Val};
     let h1 = crate::h1::CameraTrack {
         flags: 0,
         points: vec![
-            ([0.5, 0.0, 3.5], [0.0, -0.7071, 0.0, 0.7071]),
+            ([0.5, 0.0, 3.5], [0.0, -FRAC_1_SQRT_2, 0.0, FRAC_1_SQRT_2]),
             ([-2.75, 0.0, 0.68], [0.0, 0.0, 0.0, 1.0]),
-            ([-1.0, 0.0, -0.18], [0.0, 0.7071, 0.0, 0.7071]),
+            ([-1.0, 0.0, -0.18], [0.0, FRAC_1_SQRT_2, 0.0, FRAC_1_SQRT_2]),
         ],
     };
     let root = crate::rebuild::camera_track(&h1).unwrap();

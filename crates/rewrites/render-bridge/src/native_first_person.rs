@@ -170,7 +170,7 @@ fn admission(m: &dyn GuestRead, set: &NativeSet, host: &dyn Host) -> Option<Hash
 /// The observer before a layer draw. Only `0x0003fdf0`'s layer 3 is owned.
 pub fn before_layer(mem: &mut dyn GuestMemory, ret: u32) {
     restore_pending(mem);
-    let mut m = Mem(mem);
+    let m = Mem(mem);
     if ret != FIRST_PERSON_LAYER3_RETURN || m.read_u32(CURRENT_LAYER) != Some(LIGHTMAP_LAYER) {
         return;
     }

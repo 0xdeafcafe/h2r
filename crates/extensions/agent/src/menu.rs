@@ -123,6 +123,9 @@ pub fn setting_json(store: &Store, def: &Def) -> Value {
                 .map(|s| json!({ "value": s, "label": def.label(settings::Value::Int(*s)) }))
                 .collect();
         }
+        // The value is the running resolution; the screen supplies the choices
+        // for its drawable, so there are none to list here.
+        Kind::Resolution(_) => o["kind"] = json!("resolution"),
         Kind::Choice(c) => {
             o["kind"] = json!("choice");
             o["choices"] = c

@@ -98,7 +98,7 @@ mod tests {
             stage: Stage::Fog, view: 1, ranges: 2,
             slots: vec![None, Some(ExternalSlot { header: 51, written: true })],
         };
-        let request = ExternalPassRequest { rect: (0, 0, 8, 8), surface_size: (8, 8), z_scale: 256.0 };
+        let request = ExternalPassRequest { rect: (0, 0, 8, 8), surface_size: (8, 8), display_projection_factor: 1.0, z_scale: 256.0 };
         let physical = surfaces.try_map(|s| match s {
             TargetRef::SceneColour => Some(5),
             TargetRef::SceneDepth => Some(9),

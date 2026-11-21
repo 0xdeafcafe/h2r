@@ -13,7 +13,7 @@
 //! - the description block; text with a drop shadow; button glyphs in
 //!   their own colours from the font.
 //!
-//! What it leaves out: animations (all at rest), the scroll of the track
+//! What it leaves out: the scroll of the track
 //! lines, the skulls page's picture, the dimming of unfocused rows (taken
 //! as 55%, not traced) and model scenes. Nothing is kept: the PNG goes
 //! where the caller says, never into the repository.
@@ -62,6 +62,40 @@ pub struct Fonts {
 }
 
 impl Fonts {
+    /// Loads the installed fonts for diagnostics without decoding menu art.
+    pub(crate) fn open(iso: &Path) -> Result<Self> {
+        let mut disc = xiso::Xiso::open(BufReader::new(
+            File::open(iso).with_context(|| iso.display().to_string())?,
+        ))?;
+        let entries = disc.entries()?;
+        Self::read(|name| {
+            let entry = entries.iter().find(|entry| entry.path.eq_ignore_ascii_case(name))
+                .ok_or_else(|| anyhow!("{name} is not on the disc"))?;
+            Ok(disc.read(entry)?)
+        })
+    }
+
+    fn read(mut read: impl FnMut(&str) -> Result<Vec<u8>>) -> Result<Self> {
+        let table =
+            String::from_utf8_lossy(&read("/maps/fonts/font_table.txt")?).into_owned();
+        let table: Vec<String> = table
+            .split(['\r', '\n'])
+            .filter(|l| !l.trim().is_empty())
+            .map(|l| l.trim().to_string())
+            .collect();
+        let mut files = HashMap::new();
+        for name in &table {
+            if !files.contains_key(name) {
+                // As the game opens it: with the bot mark and the Mods
+                // list's marks added (`bot_mark::GearRewrite`).
+                let raw = read(&format!("/maps/fonts/{name}"))?;
+                let font = crate::bot_mark::GearRewrite::patch(&raw).unwrap_or(raw);
+                files.insert(name.clone(), font);
+            }
+        }
+        Ok(Self { table, files })
+    }
+
     /// The file for engine font `index`.
     pub fn file(&self, index: i16) -> Option<(&str, &[u8])> {
         let name = self.table.get(usize::try_from(index).ok()?)?;
@@ -141,7 +175,7 @@ pub struct Disc {
 }
 
 /// A view and its picture, shared.
-type Drawn = std::rc::Rc<(View, Canvas)>;
+type Drawn = std::sync::Arc<(View, Canvas)>;
 
 impl Disc {
     pub fn open(iso: &Path) -> Result<Disc> {
@@ -157,23 +191,7 @@ impl Disc {
                 .cloned()
                 .ok_or_else(|| anyhow!("{p} is not on the disc"))
         };
-        let table =
-            String::from_utf8_lossy(&x.read(&find("/maps/fonts/font_table.txt")?)?).into_owned();
-        let table: Vec<String> = table
-            .split(['\r', '\n'])
-            .filter(|l| !l.trim().is_empty())
-            .map(|l| l.trim().to_string())
-            .collect();
-        let mut files = HashMap::new();
-        for name in &table {
-            if !files.contains_key(name) {
-                // As the game opens it: with the bot mark and the Mods
-                // list's marks added (`bot_mark::GearRewrite`).
-                let raw = x.read(&find(&format!("/maps/fonts/{name}"))?)?;
-                let font = crate::bot_mark::GearRewrite::patch(&raw).unwrap_or(raw);
-                files.insert(name.clone(), font);
-            }
-        }
+        let fonts = Fonts::read(|path| Ok(x.read(&find(path)?)?))?;
         let region = |name: &str| -> Result<assets::Region> {
             let e = find(&format!("/maps/{name}.map"))?;
             Ok(assets::Region {
@@ -229,7 +247,7 @@ impl Disc {
             background,
             shared: *shared,
             skins,
-            fonts: Fonts { table, files },
+            fonts,
             map: RefCell::new(m),
             files: RefCell::new(res),
             images: RefCell::new(HashMap::new()),
@@ -503,6 +521,7 @@ impl Disc {
     /// The image `a` names.
     pub fn art(&self, a: &Art) -> Option<Image> {
         match *a {
+            Art::Solid { .. } => None,
             Art::Level { ref stem } => {
                 let pictures = self.level_pictures.get_or_init(|| {
                     let template = crate::mods_screen::page_layout::PICTURE;
@@ -738,7 +757,7 @@ impl Disc {
         }
         let d = self.opener_view(o).ok().map(|v| {
             let c = render_view_where(&v, self, &|_| true, false);
-            std::rc::Rc::new((v, c))
+            std::sync::Arc::new((v, c))
         });
         self.openers.borrow_mut().insert(*o, d.clone());
         d
@@ -936,6 +955,9 @@ impl Metrics for Fonts {
     fn line_height(&self, font: i16) -> i32 {
         Fonts::line_height(self, font)
     }
+    fn has_glyph(&self, font: i16, ch: char) -> bool {
+        self.has(font, ch)
+    }
 }
 
 impl Metrics for Disc {
@@ -945,6 +967,9 @@ impl Metrics for Disc {
     fn line_height(&self, font: i16) -> i32 {
         self.fonts.line_height(font)
     }
+    fn has_glyph(&self, font: i16, ch: char) -> bool {
+        self.fonts.has(font, ch)
+    }
 }
 
 /// What a [`View`] is drawn from: the disc ([`Disc`]) or nothing
@@ -952,6 +977,10 @@ impl Metrics for Disc {
 pub trait Source: Metrics {
     /// The image art names; `None` draws a placeholder box.
     fn art(&self, a: &Art) -> Option<Image>;
+    /// Whether the source can resolve an image, or None when it has no art.
+    fn art_available(&self, _art: &Art) -> Option<bool> {
+        None
+    }
     fn backing(&self, c: &mut Canvas, b: Backing);
     #[allow(clippy::too_many_arguments)]
     fn text(
@@ -985,6 +1014,9 @@ fn justify_flag(j: Justify) -> u8 {
 impl Source for Disc {
     fn art(&self, a: &Art) -> Option<Image> {
         Disc::art(self, a)
+    }
+    fn art_available(&self, art: &Art) -> Option<bool> {
+        Some(self.art(art).is_some())
     }
     fn list_of(&self, screen_id: i16, pane: u16) -> Option<Option<ListAt>> {
         let s = self.screen(screen_id)?;
@@ -1211,7 +1243,7 @@ pub fn overflows(w: &crate::ui_kit::view::Widget, m: &dyn Metrics) -> bool {
     };
     let r = w.rect();
     let lines = text.split('\n').count() as i32;
-    m.width(*font, text) > r.width() || (lines > 1 && lines * m.line_height(*font) > r.height())
+    !text.is_empty() && (m.width(*font, text) > r.width() || lines * m.line_height(*font) > r.height())
 }
 
 /// `v` drawn at 640 by 480 from `src`: the backing, then its widgets by
@@ -1230,12 +1262,27 @@ pub fn render_view_where(
     keep: &dyn Fn(&crate::ui_kit::view::Widget) -> bool,
     marks: bool,
 ) -> Canvas {
+    render_composite(v, src, keep, marks, [0, 0, 0, 255])
+}
+
+/// Draw a live kit page into a straight-alpha surface for the shell.
+pub fn render_overlay(v: &View, src: &dyn Source) -> Canvas {
+    render_composite(v, src, &|_| true, false, [0; 4])
+}
+
+fn render_composite(
+    v: &View,
+    src: &dyn Source,
+    keep: &dyn Fn(&crate::ui_kit::view::Widget) -> bool,
+    marks: bool,
+    clear: [u8; 4],
+) -> Canvas {
     let mut c = if let Some(parent) = &v.underlay {
         // Widget filters apply to this screen. The parent stays painted
         // when an audit samples the pixels underneath the dialog's text.
-        render_view_where(parent, src, &|_| true, false)
+        render_composite(parent, src, &|_| true, false, clear)
     } else {
-        let mut c = Canvas::new(640, 480, [0, 0, 0, 255]);
+        let mut c = Canvas::new(640, 480, clear);
         src.backing(&mut c, v.backing);
         c
     };
@@ -1244,6 +1291,10 @@ pub fn render_view_where(
     for w in order.into_iter().filter(|w| w.alpha > 0 && keep(w)) {
         let r = w.rect();
         match &w.kind {
+            Kind::Art { art: Art::Solid { rgba }, .. } => {
+                let [red, green, blue, alpha] = *rgba;
+                c.fill(r, [red, green, blue, (u16::from(alpha) * u16::from(w.alpha) / 255) as u8]);
+            }
             Kind::Art { art, .. } => match src.art(art) {
                 Some(img) => c.image(&img, i32::from(r.left), i32::from(r.top), w.alpha),
                 None => {
@@ -1317,10 +1368,15 @@ impl Canvas {
         }
         let i = ((y as u32 * self.width + x as u32) * 4) as usize;
         let a = u32::from(c[3]);
-        for (d, s) in self.rgba[i..i + 3].iter_mut().zip(c) {
-            *d = ((u32::from(s) * a + u32::from(*d) * (255 - a)) / 255) as u8;
+        let retained = u32::from(self.rgba[i + 3]) * (255 - a);
+        let alpha = a * 255 + retained;
+        if alpha == 0 {
+            return;
         }
-        self.rgba[i + 3] = 255;
+        for (d, s) in self.rgba[i..i + 3].iter_mut().zip(c) {
+            *d = ((u32::from(s) * a * 255 + u32::from(*d) * retained) / alpha) as u8;
+        }
+        self.rgba[i + 3] = ((alpha + 127) / 255) as u8;
     }
     /// `img` with its top-left at UI point `(x, y)`, its alpha scaled by
     /// `alpha`.
@@ -1525,29 +1581,61 @@ impl From<'_> {
     /// `s` in state `state` as a view: a dialog's
     /// ([`crate::ui_kit::dialog::dialog_view`]) or a list's ([`view_of`]).
     pub fn view(&self, s: &ScreenSpec, state: &str) -> Result<View> {
-        let mut view = match (&s.dialog, self) {
-            (Some(d), From::Disc(disc)) => dialog_view(
-                s,
-                d,
-                &disc.dialog_geometry_for(d.base)?,
-                self.source(),
-                state,
-            ),
-            (Some(d), From::Synthetic) => dialog_view(
-                s,
-                d,
-                &DialogGeometry::fallback_for(d.base),
-                self.source(),
-                state,
-            ),
-            (None, _) => view_of(s, &self.geometry(s.list)?, self.source(), state),
+        self.view_with_metrics(s, state, self.source())
+    }
+
+    pub(crate) fn view_with_metrics(
+        &self,
+        s: &ScreenSpec,
+        state: &str,
+        metrics: &dyn Metrics,
+    ) -> Result<View> {
+        let mut view = if let Some(hud) = &s.hud {
+            View {
+                screen: s.name.clone(),
+                state: state.into(),
+                backing: Backing::None,
+                widgets: hud.widgets.clone(),
+                focus: None,
+                list: None,
+                underlay: None,
+            }
+        } else if let Some(d) = &s.dialog {
+            let mut geometry = match self {
+                From::Disc(disc) => disc.dialog_geometry_for(d.base)?,
+                From::Synthetic => DialogGeometry::fallback_for(d.base),
+            };
+            if matches!(s.list, ListPlace::Moved { .. }) {
+                geometry.rows = self.geometry(s.list)?;
+                geometry.list = ListAt {
+                    anchor: geometry.rows.anchor,
+                    skin: geometry.rows.skin,
+                };
+            }
+            dialog_view(s, d, &geometry, metrics, state)
+        } else {
+            view_of(s, &self.geometry(s.list)?, metrics, state)
         };
         if let Some(parent) = &s.underlay {
             view.backing = Backing::None;
-            view.underlay = Some(Box::new(self.view(parent, state)?));
+            view.underlay = Some(Box::new(self.view_with_metrics(parent, state, metrics)?));
         }
         Ok(view)
     }
+    /// The builder's reusable pose sampler for a page in a named state.
+    pub fn animated_view(
+        &self,
+        s: &ScreenSpec,
+        state: &str,
+    ) -> Result<crate::ui_kit::animation::AnimatedView> {
+        use crate::ui_kit::animation::AnimatedView;
+        Ok(AnimatedView::new(
+            self.view(s, state)?,
+            s.animation,
+            s.dialog.is_some(),
+        ))
+    }
+
     /// `s` in state `state`: its view and its picture.
     pub fn draw(&self, s: &ScreenSpec, state: &str) -> Result<(View, Canvas)> {
         let v = self.view(s, state)?;
@@ -1573,14 +1661,53 @@ pub fn write_states(
     for (state, s) in states {
         let (v, c) = from.draw(s, state)?;
         let stem = format!("{screen}-{state}");
-        c.write_png(&dir.join(format!("{stem}.png")))?;
-        std::fs::write(
-            dir.join(format!("{stem}.json")),
-            serde_json::to_string_pretty(&v.json())?,
-        )?;
+        write_frame(dir, &stem, &c, &v, None)?;
         out.push((format!("{screen}/{state}"), c));
     }
     Ok(out)
+}
+
+/// Writes PNG and JSON samples of named states at the requested points
+/// of their transitions. The page geometry is prepared once per state.
+pub fn write_animation_states(
+    from: &From<'_>,
+    dir: &Path,
+    screen: &str,
+    states: &[(String, ScreenSpec)],
+    phases: &[crate::ui_kit::animation::Phase],
+) -> Result<Vec<String>> {
+    std::fs::create_dir_all(dir).with_context(|| dir.display().to_string())?;
+    let mut out = Vec::new();
+    for (state, spec) in states {
+        let mut animated = from.animated_view(spec, state)?;
+        for &phase in phases {
+            let v = animated.seek(phase);
+            let c = render_view(v, from.source());
+            let stem = format!("{screen}-{state}-{phase}");
+            write_frame(dir, &stem, &c, v, Some(phase))?;
+            out.push(format!("{screen}/{state}-{phase}"));
+        }
+    }
+    Ok(out)
+}
+
+fn write_frame(
+    dir: &Path,
+    stem: &str,
+    canvas: &Canvas,
+    view: &View,
+    phase: Option<crate::ui_kit::animation::Phase>,
+) -> Result<()> {
+    canvas.write_png(&dir.join(format!("{stem}.png")))?;
+    let mut json = view.json();
+    if let Some(phase) = phase {
+        json["animation"] = serde_json::to_value(phase)?;
+    }
+    std::fs::write(
+        dir.join(format!("{stem}.json")),
+        serde_json::to_string_pretty(&json)?,
+    )?;
+    Ok(())
 }
 
 /// Every screen of [`crate::ui_kit::screens::NAMES`] in every state of

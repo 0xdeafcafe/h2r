@@ -41,6 +41,7 @@ recipe and lists the keys it takes.
 | `inputs` | prints the disc and map pack the recipes would use | |
 | `mac [iso=]` | `cargo h2 build`: the game module for this Mac, in `$TMPDIR/h2boot` | Rust (the pinned version), clang |
 | `mac-play [iso= mappack=]` | `cargo h2 play`; a map pack kept somewhere other than beside the disc is imported first (`h2 import-mappack`) | as `mac` |
+| `mac-install [iso=]` | `platform/macos/install.sh` packages the installed `h2` executable and the disc path in `~/Applications/Halo 2.app` and registers Live session links with macOS | macOS, the desktop CLI on PATH, the player's disc |
 | `tvos [maps= module= iso= mappack=]` | `platform/tvos/build.sh`: runtime, module, disc and boot cache in `platform/tvos/build/` | Xcode, the appletvos SDK, rust-src |
 | `tvos-install [device=]` | `xcodebuild`, `devicectl device install app`, then `devicectl device process launch --console` | a signing team in `platform/tvos/Local.xcconfig`, a paired Apple TV |
 | `ios [maps= module= iso= mappack=]` | `platform/ios/build.sh`, as `tvos` | Xcode, the iphoneos SDK, rust-src |

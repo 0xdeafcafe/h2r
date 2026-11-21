@@ -43,6 +43,15 @@ pub struct Entry {
     pub size: u32,
 }
 
+impl Entry {
+    pub(crate) fn contains(&self, addr: u32, len: u32) -> bool {
+        let end = u64::from(addr) + u64::from(len);
+        self.address <= addr
+            && end <= u64::from(self.address) + u64::from(self.size)
+            && end <= 1u64 << 32
+    }
+}
+
 fn fault(what: &str, e: runtime::GuestFault) -> String {
     format!("{what}: guest fault at {:#010x}", e.addr)
 }

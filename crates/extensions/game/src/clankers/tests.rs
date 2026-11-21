@@ -382,7 +382,6 @@ fn with_live_every_phantom_is_a_server_bot_account() {
     );
 
     live.answer(0, Ok(roster(SESSION, 5, 0.67)));
-    let x = |n: u64, i: u64| SERVER_XUID_MARK | (0x100 * n + i);
     let l = ph.list();
     let tags: Vec<&str> = l.iter().map(|p| p.identity.gamertag.as_str()).collect();
     assert_eq!(

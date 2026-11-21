@@ -52,6 +52,7 @@ pub fn register(api: &mut Api) {
     api.register(Box::new(super::nav::Navigation));
     // The Tags tool's browsing (shared caches), resources and tag bundles.
     api.register(Box::new(super::tag_io::TagIo));
+    api.register(Box::new(super::tags::TagGraph));
     // studio-hud: the HUD tool's HUDs, widgets, picture, checks and save.
     api.register(Box::new(super::hud::Hud));
     // pair.*: the window's pairing with a running game (play::pair).

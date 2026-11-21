@@ -21,10 +21,9 @@ fn a_live_summary_without_a_recording_still_shows_match_details() {
     let recent = pages::spec(&theater, true);
     assert_eq!(recent.rows.len(), BROWSE_ROWS + 1);
     let row = &recent.rows[BROWSE_ROWS];
-    assert_eq!(row.shown_value().as_deref(), Some("20 Nov 26 / 1:09"));
     assert_eq!(
         row.description.as_deref(),
-        Some("Matchmaking / Team Slayer\nSlayer\n1 player / Win\nLive summary")
+        Some("20 Nov 26 / 1:09\nMatchmaking / Team Slayer\nSlayer\n1 player / Win\nLive summary")
     );
 
     let entry = theater.state().entries().pop().unwrap();
@@ -75,7 +74,7 @@ fn sparse_summary_keeps_the_known_roster_and_unmatched_scores() {
     let roster: Vec<_> = details
         .texts
         .iter()
-        .skip(5)
+        .skip(6)
         .filter(|t| !t.text.is_empty())
         .map(|t| t.text.as_str())
         .collect();
@@ -88,71 +87,85 @@ fn sparse_summary_keeps_the_known_roster_and_unmatched_scores() {
 }
 
 #[test]
-fn library_rows_use_both_retail_cells_and_clear_the_preview_and_footer() {
-    use crate::ui_kit::view::{Geometry, Synthetic, view_of};
+fn browser_tabs_list_picture_details_and_footer_have_room() {
+    use crate::ui_kit::layout::{Rules, check_bounds};
+    use crate::ui_kit::preview::From;
 
-    let spec = live(FILMS).unwrap().spec();
-    let geometry = Geometry::fallback(spec.list);
-    let view = view_of(&spec, &geometry, &Synthetic, "list");
-    let mut previous_top = None;
-    for (i, (label, value)) in [
-        ("Film library", "2 films"),
-        ("Sort", "Newest"),
-        ("Map", "All"),
-        ("Game type", "All"),
-        ("Lockout / Slayer", "19 Nov 26 / 8:26"),
-    ]
-    .into_iter()
-    .enumerate()
+    let source = From::Synthetic;
+    let mut library = live(FILMS).unwrap();
+    let spec = library.spec();
+    let view = source.view(&spec, "list").unwrap();
+    for (i, label) in ["Sort: Newest", "Map: All", "Game type: All", "Lockout / Slayer"]
+        .into_iter()
+        .enumerate()
     {
-        let left = view.widget(&format!("row.{i}.label")).unwrap();
-        let right = view.widget(&format!("row.{i}.value")).unwrap();
-        assert_eq!(left.text(), Some(label));
-        assert_eq!(right.text(), Some(value));
-        assert_eq!(left.rect[0], right.rect[0]);
-        assert_eq!(left.rect[1], -244);
-        assert_eq!(right.rect[1], 2);
-        if let Some(top) = previous_top {
-            assert_eq!(top - left.rect[0], 26);
-        }
-        previous_top = Some(left.rect[0]);
+        assert_eq!(view.widget(&format!("row.{i}.label")).unwrap().text(), Some(label));
+        assert!(view.widget(&format!("row.{i}.value")).is_none());
     }
-    let picture = spec.rows[BROWSE_ROWS].art.as_ref().unwrap();
-    let first = view.widget("row.0.art.0").unwrap();
-    let last = view.widget("row.4.art.1").unwrap();
-    assert!(picture.at[1] - picture.size[1] as i16 > first.rect[0]);
-    assert!(last.rect[2] > view.widget("legend").unwrap().rect[0]);
-    assert_eq!(
-        spec.footer_text().as_deref(),
-        Some("\u{e100} DETAILS  \u{e101} BACK")
-    );
+    assert!(spec.panel.is_empty());
+    assert!(spec.texts.iter().any(|t| t.text == "2 films"));
+
+    for state in ["list", "full-library"] {
+        assert!(library.go(state));
+        let spec = library.spec();
+        let view = source.view(&spec, state).unwrap();
+        let tab_bottom = spec.texts[0].rect[2];
+        let picture = view.widget("art.0").unwrap().rect;
+        let detail = view.widget("description").unwrap().rect;
+        let footer_top = view.widget("legend").unwrap().rect[0];
+        assert!(tab_bottom > picture[0] && picture[2] > detail[0]);
+        assert!(detail[2] > footer_top);
+        for row in view.widgets.iter().filter(|w| w.id.starts_with("row.")) {
+            assert!(row.rect[0] < tab_bottom && row.rect[2] > footer_top, "{}", row.id);
+            assert!(row.rect[3] < detail[1], "{}", row.id);
+        }
+        let issues = check_bounds(&view, source.source(), &Rules::for_spec(&spec));
+        assert!(issues.is_empty(), "{state}: {issues:?}");
+    }
+}
+
+#[test]
+fn empty_library_title_and_hint_have_a_visible_separator() {
+    let mut sample = live(FILMS).unwrap();
+    for (state, help) in [
+        ("empty", "No recent films. Play a game to record a film."),
+        (
+            "empty-saved",
+            "No saved films. Open a film in Recent and choose Save.",
+        ),
+        (
+            "empty-clips",
+            "No clips. While watching a film, press X to mark the start and end of a clip.",
+        ),
+        (
+            "no-matches",
+            "No matching films. Choose All in Map or Game type.",
+        ),
+    ] {
+        assert!(sample.go(state));
+        assert!(sample.spec().texts.iter().any(|t| t.text == help), "{state}");
+    }
 }
 
 #[test]
 fn empty_library_explains_the_next_action_on_every_control() {
     let mut sample = live(FILMS).unwrap();
-    for (state, help) in [
-        ("empty", "No recent films\nPlay a game to record a film."),
-        (
-            "empty-saved",
-            "No saved films\nOpen a film in Recent and choose Save.",
-        ),
-        (
-            "empty-clips",
-            "No clips\nWhile watching a film, press X to mark the start and end of a clip.",
-        ),
-        (
-            "no-matches",
-            "No matching films\nChoose All in Map or Game type.",
-        ),
-        ("loading", "Reading films..."),
-    ] {
+    for state in ["empty", "empty-saved", "empty-clips", "no-matches", "loading"] {
         assert!(sample.go(state));
+        let help = sample.spec().texts.last().unwrap().text.clone();
+        assert!(!help.is_empty());
+        if state == "loading" {
+            assert_eq!(help, "Reading films...");
+        }
         for i in 0..BROWSE_ROWS {
             let spec = sample.spec();
             assert_eq!(spec.rows.len(), BROWSE_ROWS);
             assert_eq!(spec.focus, i);
-            assert_eq!(spec.description_text().as_deref(), Some(help));
+            assert!(spec.texts.iter().any(|t| t.text == help));
+            assert_eq!(
+                spec.description_text().as_deref(),
+                Some(super::super::selector::OptionRow::ALL[i].description()),
+            );
             sample.press(Input::Down);
         }
     }
@@ -166,7 +179,7 @@ fn theater_tabs_only_show_matching_entries() {
     assert!(view.spec().rows[BROWSE_ROWS].label.contains("Lockout"));
     assert!(view.go("clips"));
     assert_eq!(
-        view.spec().rows[BROWSE_ROWS].plain_value().as_deref(),
+        view.spec().rows[BROWSE_ROWS].description.as_deref().and_then(|s| s.lines().next()),
         Some("19 Nov 26 / 0:40")
     );
 }
@@ -174,9 +187,8 @@ fn theater_tabs_only_show_matching_entries() {
 #[test]
 fn theater_tab_walkthrough_restores_the_parent_focus() {
     let mut view = live(FILMS).unwrap();
-    for _ in 0..BROWSE_ROWS {
-        view.press(Input::Up);
-    }
+    // Left and Right switch libraries even with a film selected.
+    assert_eq!(view.spec().focus, BROWSE_ROWS);
     view.press(Input::Right);
     assert_eq!(view.spec().rows.len(), BROWSE_ROWS + 1);
     assert_eq!(
@@ -186,11 +198,8 @@ fn theater_tab_walkthrough_restores_the_parent_focus() {
             .filter(|t| !t.text.is_empty())
             .map(|t| t.text.as_str())
             .collect::<Vec<_>>(),
-        ["Recent", "SAVED", "Clips"]
+        ["Recent", "SAVED", "Clips", "1 film"]
     );
-    for _ in 0..BROWSE_ROWS {
-        view.press(Input::Down);
-    }
     view.press(Input::A);
     assert_eq!(view.spec().name, DETAIL);
     view.press(Input::B);
@@ -202,14 +211,24 @@ fn theater_tab_walkthrough_restores_the_parent_focus() {
 fn theater_unplayable_film_can_be_saved_but_cannot_watch() {
     let mut view = live(DETAIL).unwrap();
     assert!(view.go("unplayable"));
+    let spec = view.spec();
+    assert!(spec.texts.iter().any(|text| text.text == "Unavailable"));
     assert_eq!(
-        view.spec().help.as_deref(),
-        Some("Needs a different build.")
+        spec.help.unwrap().split_whitespace().collect::<Vec<_>>().join(" "),
+        "Film predates a breaking simulation change."
     );
     assert_eq!(view.spec().rows[0].label, "Save");
     view.press(Input::A);
     assert_eq!(view.spec().name, DETAIL);
     assert_eq!(view.spec().rows[0].label, "Unsave");
+}
+
+#[test]
+fn theater_playable_film_shows_its_state_and_watch_action() {
+    let view = live(DETAIL).unwrap();
+    let spec = view.spec();
+    assert!(spec.texts.iter().any(|text| text.text == "Playable"));
+    assert_eq!(spec.rows[0].label, "Watch");
 }
 
 #[test]
@@ -222,7 +241,7 @@ fn summary_without_players_has_one_roster_message_and_one_action() {
     let roster: Vec<_> = spec
         .texts
         .iter()
-        .skip(5)
+        .skip(6)
         .filter(|t| !t.text.is_empty())
         .map(|t| t.text.as_str())
         .collect();
@@ -286,7 +305,7 @@ fn names_only_roster_pages_without_empty_stat_columns() {
     let roster = |spec: ScreenSpec| {
         spec.texts
             .into_iter()
-            .skip(5)
+            .skip(6)
             .map(|t| t.text)
             .filter(|s| !s.is_empty())
             .collect::<Vec<_>>()
@@ -318,11 +337,75 @@ fn theater_delete_is_confirmed_and_restores_the_library() {
     let mut view = live(DETAIL).unwrap();
     view.press(Input::Down);
     view.press(Input::Down);
+    view.press(Input::Down);
     view.press(Input::A);
-    assert_eq!(view.spec().rows[2].label, "Confirm delete");
+    assert_eq!(view.spec().rows[3].label, "Confirm delete");
     view.press(Input::A);
     assert_eq!(view.spec().rows.len(), BROWSE_ROWS + 1);
     assert_eq!(view.spec().name, FILMS);
+}
+
+#[test]
+fn prepare_progress_uses_the_film_page_and_keeps_watch_available() {
+    use crate::ui_kit::spec::Press;
+
+    let mut view = live(DETAIL).unwrap();
+    assert_eq!(view.spec().rows[1].label, "Prepare");
+    assert!(view.go("preparing"));
+    let working = view.spec();
+    assert_eq!(working.rows[1].label, "Preparing... 40%");
+    assert_ne!(working.rows[1].press, Press::Act);
+    assert_ne!(working.rows[3].press, Press::Act);
+    assert_eq!(working.rows[0].press, Press::Act);
+
+    assert!(view.go("prepared"));
+    assert_eq!(view.spec().rows[1].label, "Prepare again");
+    assert_eq!(view.spec().help.as_deref(), Some("Prepared for this build."));
+
+    assert!(view.go("prepare-failed"));
+    assert_eq!(view.spec().rows[1].label, "Retry Prepare");
+    assert_eq!(view.spec().help.as_deref(), Some("Film diverged at tick 1201."));
+}
+
+#[test]
+fn choosing_prepare_starts_and_reads_the_selected_job_through_the_agent() {
+    use agent::{Access, Agent, GameStatus, Reader};
+    use agent_proto::{Object, theater as api};
+    use serde_json::json;
+
+    struct Empty;
+    impl Reader for Empty {
+        fn status(&mut self) -> GameStatus {
+            GameStatus::default()
+        }
+
+        fn objects(&mut self) -> Result<Vec<Object>, String> {
+            Ok(Vec::new())
+        }
+    }
+
+    let mut view = Preview::new(Kind::Detail);
+    let agent = Agent::new();
+    agent.add_method(api::PREPARE, Access::Act, |params| {
+        assert_eq!(params, json!({"id": "game-1"}));
+        Ok(json!({"id": "game-1", "status": "running", "tick": 7, "length_ticks": 10}))
+    });
+    agent.add_method(api::STATE, Access::Read, |params| {
+        assert_eq!(params, json!({"id": "game-1"}));
+        Ok(json!({"id": "game-1", "status": "complete", "tick": 10, "length_ticks": 10}))
+    });
+    view.theater.connect(&agent);
+    view.press(Input::Down);
+    view.press(Input::A);
+    assert_eq!(view.spec().rows[1].label, "Preparing...");
+
+    agent.between_slices(&mut Empty, 0);
+    view.theater.pump();
+    assert_eq!(view.spec().rows[1].label, "Preparing... 70%");
+
+    agent.between_slices(&mut Empty, 0);
+    view.theater.pump();
+    assert_eq!(view.spec().rows[1].label, "Prepare again");
 }
 
 #[test]
@@ -332,14 +415,11 @@ fn library_choices_open_a_modal_and_restore_the_option_on_choose_or_back() {
         view.press(Input::Up);
     }
     for (row, title, labels) in [
-        (1, "SORT", &["Newest", "Map", "Game type"][..]),
-        (2, "MAP", &["All", "Lockout", "Zanzibar"][..]),
-        (3, "GAME TYPE", &["All", "CTF", "Slayer"][..]),
+        (0, "SORT", &["Newest", "Map", "Game type"][..]),
+        (1, "MAP", &["All", "Lockout", "Zanzibar"][..]),
+        (2, "GAME TYPE", &["All", "CTF", "Slayer"][..]),
     ] {
-        view.press(Input::Down);
         let first = view.spec().rows[row].plain_value();
-        view.press(Input::Right);
-        assert_eq!(view.spec().rows[row].plain_value(), first);
         view.press(Input::A);
         let modal = view.spec();
         assert_eq!(modal.name, picker::NAME);
@@ -383,6 +463,7 @@ fn library_choices_open_a_modal_and_restore_the_option_on_choose_or_back() {
             view.spec().rows[row].plain_value().as_deref(),
             Some(labels[1])
         );
+        view.press(Input::Down);
     }
 }
 
@@ -390,7 +471,6 @@ fn library_choices_open_a_modal_and_restore_the_option_on_choose_or_back() {
 fn an_empty_library_still_opens_the_map_picker_on_all() {
     let mut view = live(FILMS).unwrap();
     view.go("empty");
-    view.press(Input::Down);
     view.press(Input::Down);
     view.press(Input::A);
     assert_eq!(view.spec().title, "MAP");
@@ -413,7 +493,7 @@ fn an_empty_library_still_opens_the_map_picker_on_all() {
     );
     view.press(Input::A);
     assert_eq!(view.spec().name, FILMS);
-    assert_eq!(view.spec().focus, 2);
+    assert_eq!(view.spec().focus, 1);
 }
 
 #[test]
@@ -448,46 +528,32 @@ fn film_art_follows_the_focused_entry_and_controls_keep_the_frame_clear() {
 }
 
 #[test]
-fn retail_corners_frame_both_pictures_even_when_the_library_is_empty() {
+fn retail_corners_frame_the_detail_picture_only() {
     use crate::ui_kit::{dialog, view::Art};
 
-    let mut library = live(FILMS).unwrap();
-    library.go("saved");
-    let mut films = library.spec();
-    films.focus = BROWSE_ROWS;
-    let detail = live(DETAIL).unwrap().spec();
-    for screen in [&films, &detail] {
-        let picture = screen
-            .shown_art()
-            .into_iter()
-            .find(|a| matches!(a.art, Art::Level { .. }))
-            .unwrap();
-        let [left, top] = picture.at;
-        let [width, height] = picture.size.map(|n| n as i16);
-        let side = dialog::FRAME_CORNER_SIZE as i16;
-        assert_eq!(screen.panel.len(), 4);
-        for ((corner, index), at) in screen.panel[2..]
-            .iter()
-            .zip(dialog::FRAME_CORNERS)
-            .zip([[left, top], [left + width - side, top - height + side]])
-        {
-            assert_eq!(
-                corner.art,
-                Art::Screen {
-                    screen_id: dialog::LARGE_SCREEN_ID,
-                    pane: 0,
-                    index,
-                    image: 0,
-                }
-            );
-            assert_eq!(corner.at, at);
-            assert_eq!(corner.size, [dialog::FRAME_CORNER_SIZE; 2]);
-        }
+    let screen = live(DETAIL).unwrap().spec();
+    let picture = screen.art.iter().find(|a| matches!(a.art, Art::Level { .. })).unwrap();
+    let [left, top] = picture.at;
+    let [width, height] = picture.size.map(|n| n as i16);
+    let side = dialog::FRAME_CORNER_SIZE as i16;
+    assert_eq!(screen.panel.len(), 4);
+    for ((corner, index), at) in screen.panel[2..]
+        .iter()
+        .zip(dialog::FRAME_CORNERS)
+        .zip([[left, top], [left + width - side, top - height + side]])
+    {
+        assert_eq!(
+            corner.art,
+            Art::Screen {
+                screen_id: dialog::LARGE_SCREEN_ID,
+                pane: 0,
+                index,
+                image: 0,
+            }
+        );
+        assert_eq!(corner.at, at);
+        assert_eq!(corner.size, [dialog::FRAME_CORNER_SIZE; 2]);
     }
-    library.go("empty");
-    let empty = library.spec();
-    assert!(empty.shown_art().is_empty());
-    assert_eq!(empty.panel, films.panel);
 }
 
 #[test]

@@ -161,15 +161,15 @@ flashes it.
 | `--vo-plate` | `rgba(6, 18, 36, .92)` | panel fill |
 | `--vo-line` | `rgba(111, 182, 232, .55)` | keylines |
 | `--vo-ink` | `#dfeeff` | text |
-| `--vo-dim` | `#8fb0d0` | secondary text |
-| `--vo-accent` | `#9fd8ff` | lit segments, values, the highlight bar |
+| `--vo-dim` | `#8fb0d0` | secondary text, load segments |
+| `--vo-accent` | `#9fd8ff` | values, the highlight bar |
 | `--vo-on` | `#17668a`, border `#9ad1ee` | a pressed control (as `.gv-buttons button.on`) |
 | `--vo-warn` | `#ffc857` | notices |
 | `--vo-bad` | `#f26122` | errors |
 
 **Type.** Labels and values are `var(--font-tech)` (Michroma, already in
 `web/src/styles/theme.css`), 9px/12px, uppercase, `letter-spacing: .14em`
-(`.24em` for the eyebrow). Titles are `var(--font-ui)` bold 20px/24px,
+by default. Titles are `var(--font-ui)` bold 20px/24px,
 uppercase, `letter-spacing: .02em`. Body copy is `var(--font-ui)`
 11px/15px. Numbers use `font-variant-numeric: tabular-nums`.
 
@@ -192,8 +192,10 @@ floor grid: `repeating-linear-gradient` lines of `rgba(111, 182, 232,
 perspective(600px) rotateX(62deg) scale(2)`, anchored to the bottom half,
 masked by `linear-gradient(transparent, #000 60%)`.
 
-**Loading** (`boot`, `loading`, `decoding`). The plate is centred, `width:
-min(420px, 100% - 32px)`, padding `14px 16px 12px`.
+**Loading** (`boot`, `loading`, `decoding`). The plate is centred and up to
+320px wide, with 10px by 12px padding and a subdued blue keyline. The
+eyebrow and status use 10px/13px UI type with .05em tracking, and the
+title uses 15px/19px semibold.
 
 ```
 +--------------------------------------------------------------------+
@@ -213,18 +215,15 @@ min(420px, 100% - 32px)`, padding `14px 16px 12px`.
 
 - Eyebrow `MAP UPLINK` in `--vo-dim`; the title is `GameViewer`'s
   `title`.
-- The bar: 24 segments in a flex row, `gap: 2px`, each `height: 8px;
-  transform: skewX(-18deg)`. Unlit `rgba(159, 216, 255, .14)`. Lit
-  `--vo-accent` with `box-shadow: 0 0 6px rgba(159, 216, 255, .55)`,
-  reached by `opacity .25 → 1` in 120 ms linear.
-- Chase: every segment runs `vo-chase 1400ms linear infinite` with
-  `animation-delay: calc(var(--i) * 58ms)`; the keyframes hold `.14`,
-  rise to `1` at 10% and return to `.14` at 20%.
-- Pulse (the 23rd segment in `decoding`): `opacity .35 ↔ 1`, 800 ms
-  `ease-in-out`, alternating.
-- Scan line: a 1px `--vo-accent` line with a 24px tail
-  (`linear-gradient(transparent, rgba(159, 216, 255, .18))`) crossing the
-  plate top to bottom, 2400 ms linear, infinite.
+- The bar has 24 muted blue segments, 4px high with 2px gaps and a 12°
+  skew. Inactive segments sit at .18 opacity. Lit segments reach .78
+  opacity in 120 ms.
+- When the download size is unknown, the chase runs over 1800 ms with
+  75 ms between segments and a .6 opacity peak.
+- During decoding the 23rd segment pulses between .42 and .78 opacity
+  over 1100 ms.
+- A faint scan line with a 12px tail crosses the plate once, over
+  3200 ms.
 - Status text, left: `LOADING VIEWER` (`boot`), `LOADING MAP GEOMETRY`
   (`loading`), `DECODING GEOMETRY` (`decoding`). Right: the percent, or the
   size read, or nothing.
@@ -232,8 +231,7 @@ min(420px, 100% - 32px)`, padding `14px 16px 12px`.
   `aria-valuemax="100"` and `aria-valuenow` (left off when
   indeterminate). The status text is `aria-live="polite"` and changes only
   with the state.
-- Plate entrance: `opacity 0 → 1` and `translateY(6px) → 0`, 220 ms
-  `cubic-bezier(0.2, 0.8, 0.2, 1)`.
+- The plate fades in over 180 ms with `cubic-bezier(0.2, 0.8, 0.2, 1)`.
 
 **Ready** (`reveal`, `ready`). The veil fades `opacity 1 → 0` in 420 ms
 `cubic-bezier(0.4, 0, 0.2, 1)` and is then `display: none`. The rail
@@ -255,11 +253,12 @@ opacity, 260 ms, the plate's curve); the status strip and the key hints
 +--------------------------------------------------------------------+
 ```
 
-- **Rail** (`.vo-rail`): `top: 8px; left: 8px; right: 8px`, a flex row
-  with `gap: 4px`. Controls are 24px high (32px under `max-width: 640px`
-  or `pointer: coarse`), padding `0 9px`, the label type, fill `rgba(0,
-  0, 0, .55)`, border `1px solid var(--vo-line)`. Hover: border
-  `--vo-accent`. Pressed: `--vo-on`.
+- The **rail** (`.vo-rail`) has an 8px inset from the top and sides and
+  4px gaps. `viewer.css` sets the buttons in regular 11px UI type with
+  sentence-case labels, a translucent navy fill and muted blue keylines.
+  They are 22px high on desktop and at least 36px by 32px under
+  `max-width: 640px` or `pointer: coarse`. An active button has a deeper
+  blue fill and a pale blue underline.
 - **Stays visible:** the camera tabs **Orbit**, **Top**, **Fly** (one
   segmented group); the **Follow** chip, which shows the followed
   player's name and opens a picker list of the roster (no arrows, no
@@ -377,7 +376,9 @@ A tag is the plate the scene already makes per player (`.v3-label`), with
 an inner `.v3-tag` box that takes the declutter's offset (the
 `CSS2DRenderer` owns the outer element's transform). `declutter`
 (`web/src/viewer/declutter.ts`, pure) runs once per drawn frame, after the
-positions are known, over every visible tag:
+positions are known, over every visible tag. Each plate has a fixed
+maximum width in screen pixels. A tooltip shows the full text of a
+truncated name or weapon.
 
 ```ts
 interface TagIn { id: number; x: number; y: number; w: number; h: number; depth: number; rank: number }
@@ -422,11 +423,11 @@ and no geometry.
 
 | Step | What | When (ms from the first frame with the level) |
 |---|---|---|
-| 1 | The veil fades; the level (BSP shell and structure) fades in as grid lines | 0 to 300 |
+| 1 | The veil fades, the level appears as grid lines, and player rings and tags appear | 0 to 300 |
 | 2 | The solid sweep crosses the level | 200 to `200 + T` |
 | 3 | Machines and placed objects (scenery, crates, weapons, vehicles): the same sweep | 380 to `380 + T` |
 | 4 | Sky, fog and sun shadows come up | 25% to 85% of step 2 (sky, fog), 60% to 100% (shadows) |
-| 5 | Players, vehicles, bodies and projectiles, each as the sweep passes it | within step 2 |
+| 5 | Player models and their stand-ins, vehicles, bodies and projectiles, each as the sweep passes it | within step 2 |
 | 6 | Decals, effects layers, lift plasma, teleporter guides, weather | at the end of step 2 |
 | 7 | Surface pictures | whenever each arrives (`streamPictures`), before or after |
 
@@ -496,9 +497,10 @@ pure), which returns `{ holo, radius, objectsRadius, sky, shadows, done }`:
   40% of the shell sweep. `CutawayMaterials.attachShadow` applies the
   sweep to the existing shadow pass, which only uses solid geometry
   inside the band.
-- A player, vehicle, body or projectile is hidden until its distance from
-  the origin is under `radius - band`; its tag then fades in (`opacity 0
-  → 1`, 160 ms linear).
+- The players' rings and tags appear once the camera is framed, and the
+  tags fade in (`opacity 0 → 1`, 160 ms linear). Player models and their
+  life-size capsule stand-ins, vehicles, bodies and projectiles are
+  hidden until their distance from the origin is under `radius - band`.
 - The viewer's ambient occlusion reads the scene's rendered depth, so it
   follows the discard (`LevelAoPass`, `aopass.ts`).
 - At `done` the scene marks `h2-viewer:revealed`.
@@ -590,8 +592,7 @@ in [viewer-effects.md](viewer-effects.md#build-order).
   shader recompiles when it ends (`bun run bench:viewer`, the
   `h2-viewer:revealed` mark).
 - How the sweep's shadow fade reads on the viewer's supported GPUs.
-- That 24px rail controls and the tags read on a phone in full
-  screen.
+- That the rail controls and tags read on a phone in full screen.
 
 ## Related
 

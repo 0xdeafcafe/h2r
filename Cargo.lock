@@ -19,6 +19,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "366ffbaa4442f4684d91e2cd7c5ea7c4ed8add41959a31447066e279e432b618"
 
 [[package]]
+name = "actor-net"
+version = "0.1.0"
+
+[[package]]
 name = "addr2line"
 version = "0.27.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -51,17 +55,22 @@ name = "agent"
 version = "0.1.0"
 dependencies = [
  "agent-proto",
+ "background",
  "debug-menu",
  "engine",
+ "forge",
+ "forge-doc",
  "guest-layout",
  "hooks",
  "hot-render",
  "hot-tags",
  "input",
+ "libc",
  "lifted",
  "live-proto",
  "live-telemetry",
  "map",
+ "mem-watch",
  "png",
  "render-bridge",
  "runtime",
@@ -81,8 +90,12 @@ dependencies = [
 name = "agent-proto"
 version = "0.1.0"
 dependencies = [
+ "host-dirs",
+ "mem-watch",
  "serde",
  "serde_json",
+ "socket2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -260,7 +273,11 @@ dependencies = [
  "font8x8",
  "gfx",
  "input",
+ "libc",
  "lockstep",
+ "objc2 0.6.5",
+ "objc2-app-kit 0.3.2",
+ "objc2-quartz-core 0.3.2",
  "png",
  "pollster",
  "thiserror 2.0.21",
@@ -341,6 +358,7 @@ version = "0.1.0"
 dependencies = [
  "gfx",
  "map",
+ "mem-watch",
  "png",
  "tags",
  "thiserror 2.0.21",
@@ -640,6 +658,7 @@ dependencies = [
  "emit",
  "engine",
  "film",
+ "firefight-kit",
  "font",
  "frame-scene",
  "game",
@@ -694,7 +713,9 @@ name = "bots"
 version = "0.1.0"
 dependencies = [
  "background",
+ "content",
  "engine",
+ "host-dirs",
  "input",
  "live-proto",
  "map",
@@ -702,7 +723,9 @@ dependencies = [
  "rustc-hash 2.1.3",
  "serde",
  "serde_json",
+ "superbounce",
  "tags",
+ "timeline",
  "xiso",
 ]
 
@@ -971,11 +994,14 @@ dependencies = [
  "content",
  "d3d",
  "debug-menu",
+ "dhat",
  "dsound",
  "emit",
  "film",
+ "firefight-kit",
  "flate2",
  "font",
+ "forge-build",
  "gltf",
  "h1-assets",
  "h1campaign",
@@ -983,6 +1009,7 @@ dependencies = [
  "h1map",
  "h1objects",
  "host-data",
+ "host-dirs",
  "hs",
  "iced-x86",
  "image",
@@ -996,7 +1023,11 @@ dependencies = [
  "live-server",
  "lockstep",
  "map",
+ "mem-watch",
  "movies",
+ "objc2 0.6.5",
+ "objc2-app-kit 0.3.2",
+ "objc2-foundation 0.3.2",
  "perf",
  "png",
  "ring",
@@ -1010,6 +1041,7 @@ dependencies = [
  "sim-bench",
  "studio-proto",
  "subtle",
+ "superbounce",
  "symbols",
  "tags",
  "time",
@@ -1021,6 +1053,7 @@ dependencies = [
  "vfs",
  "viewer",
  "voice",
+ "windows-sys 0.61.2",
  "wma",
  "xbe",
  "xiso",
@@ -1039,8 +1072,8 @@ dependencies = [
  "emit",
  "iced-x86",
  "ir",
- "libc",
  "lift",
+ "timeline",
  "xbe",
 ]
 
@@ -1154,6 +1187,7 @@ dependencies = [
 name = "content"
 version = "0.1.0"
 dependencies = [
+ "host-dirs",
  "map",
  "png",
  "serde",
@@ -1588,11 +1622,13 @@ dependencies = [
  "bytemuck",
  "frame-scene",
  "gfx",
+ "host-dirs",
  "hot-render",
  "iced-x86",
  "ir",
  "kernel",
  "lift",
+ "mem-watch",
  "naga",
  "png",
  "pollster",
@@ -1708,6 +1744,7 @@ dependencies = [
 name = "debug-menu"
 version = "0.1.0"
 dependencies = [
+ "agent-proto",
  "input",
  "serde_json",
 ]
@@ -1728,6 +1765,22 @@ name = "deranged"
 version = "0.5.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9e9de72ce2ad1f90dc62fa25f0f430ef85eb4b0d8fa0be4f30373bc40a21d28e"
+
+[[package]]
+name = "dhat"
+version = "0.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "98cd11d84628e233de0ce467de10b8633f4ddaecafadefc86e13b84b8739b827"
+dependencies = [
+ "backtrace",
+ "lazy_static",
+ "mintex",
+ "parking_lot 0.12.5",
+ "rustc-hash 1.1.0",
+ "serde",
+ "serde_json",
+ "thousands",
+]
 
 [[package]]
 name = "digest"
@@ -2003,6 +2056,34 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1c66915cc5391097de7a2b0b972e8505aa33c0df401fd3a6811dbdb32881ba48"
 
 [[package]]
+name = "firefight"
+version = "0.1.0"
+dependencies = [
+ "content",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "firefight-kit"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bots",
+ "content",
+ "h1campaign",
+ "h1convert",
+ "hs",
+ "libm",
+ "map",
+ "pathfind",
+ "scenario-edit",
+ "serde",
+ "tags",
+]
+
+[[package]]
 name = "flate2"
 version = "1.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2091,6 +2172,38 @@ name = "foreign-types-shared"
 version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "aa9a19cbb55df58761df49b23516a86d432839add4af60fc256da840f66ed35b"
+
+[[package]]
+name = "forge"
+version = "0.1.0"
+dependencies = [
+ "content",
+ "forge-doc",
+]
+
+[[package]]
+name = "forge-build"
+version = "0.1.0"
+dependencies = [
+ "content",
+ "forge-doc",
+ "map",
+ "scenario-edit",
+ "tags",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "forge-doc"
+version = "0.1.0"
+dependencies = [
+ "content",
+ "map",
+ "scenario-edit",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
 
 [[package]]
 name = "form_urlencoded"
@@ -2221,6 +2334,7 @@ dependencies = [
 name = "game"
 version = "0.1.0"
 dependencies = [
+ "actor-net",
  "agent",
  "agent-proto",
  "anyhow",
@@ -2238,8 +2352,11 @@ dependencies = [
  "engine",
  "film",
  "font",
+ "forge",
+ "forge-doc",
  "frame-scene",
  "gfx",
+ "guest-layout",
  "h1-contract",
  "h1-runtime",
  "hooks",
@@ -2256,6 +2373,7 @@ dependencies = [
  "live-telemetry",
  "lockstep",
  "map",
+ "mem-watch",
  "movies",
  "native-render",
  "perf",
@@ -2271,7 +2389,9 @@ dependencies = [
  "shaders",
  "sim-bench",
  "sim-bridge",
+ "sim-state",
  "snapshot",
+ "superbounce",
  "tags",
  "timeline",
  "toml",
@@ -2350,8 +2470,10 @@ dependencies = [
  "anyhow",
  "bytemuck",
  "hashbrown 0.17.1",
+ "mem-watch",
  "pollster",
  "serde",
+ "smallvec",
  "thiserror 2.0.21",
  "timeline",
  "wgpu",
@@ -2824,10 +2946,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "host-dirs"
+version = "0.1.0"
+
+[[package]]
+name = "host-log"
+version = "0.1.0"
+dependencies = [
+ "content",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "hostfault"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3224,6 +3361,7 @@ dependencies = [
  "block2 0.6.2",
  "dispatch2",
  "gilrs",
+ "mem-watch",
  "objc2 0.6.5",
  "objc2-core-foundation",
  "objc2-core-haptics",
@@ -3574,11 +3712,14 @@ checksum = "4744e383959f0db86ede514b809b1c53251889093803c05267acc7d4e7030d70"
 name = "live-hle"
 version = "0.1.0"
 dependencies = [
+ "actor-net",
  "content",
+ "coop",
  "film",
  "flate2",
  "live-proto",
  "live-server",
+ "polling",
  "runtime",
  "serde",
  "serde_json",
@@ -3619,6 +3760,7 @@ dependencies = [
  "sha2 0.10.9",
  "thiserror 2.0.21",
  "time",
+ "url",
 ]
 
 [[package]]
@@ -3688,6 +3830,7 @@ dependencies = [
  "rustls",
  "serde",
  "serde_json",
+ "sim-objects",
  "tags",
  "time",
  "timeline",
@@ -3703,6 +3846,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "axum",
+ "base64 0.22.1",
  "bytes",
  "chrono",
  "futures-util",
@@ -3829,6 +3973,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "mem-watch"
+version = "0.1.0"
+dependencies = [
+ "backtrace",
+ "libc",
+ "objc2-metal 0.3.2",
+ "serde",
+ "serde_json",
+ "wgpu",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "memchr"
 version = "2.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3841,6 +3998,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6b0ca1155a9ecc25aa12e8313a119f32edf0255fea2f44839c4ac0a12b2ac157"
 dependencies = [
  "libc",
+]
+
+[[package]]
+name = "mesh-edit"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -3904,6 +4069,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e53debba6bda7a793e5f99b8dacf19e626084f525f7829104ba9898f367d85ff"
 
 [[package]]
+name = "mintex"
+version = "0.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c505b3e17ed6b70a7ed2e67fbb2c560ee327353556120d6e72f5232b6880d536"
+
+[[package]]
 name = "mio"
 version = "1.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3928,6 +4099,7 @@ dependencies = [
 name = "movies"
 version = "0.1.0"
 dependencies = [
+ "host-dirs",
  "serde",
  "serde_json",
  "xiso",
@@ -3987,6 +4159,7 @@ name = "native-render"
 version = "0.1.0"
 dependencies = [
  "analyze",
+ "background",
  "bytemuck",
  "d3d",
  "frame-scene",
@@ -3994,6 +4167,7 @@ dependencies = [
  "ir",
  "lift",
  "map",
+ "mem-watch",
  "pollster",
  "scene-extract",
  "shaders",
@@ -4807,6 +4981,7 @@ dependencies = [
  "libc",
  "libloading",
  "lift",
+ "mem-watch",
  "runtime",
  "rustc-demangle",
  "serde",
@@ -5176,6 +5351,7 @@ dependencies = [
  "anyhow",
  "clif",
  "emit",
+ "guest-layout",
  "iced-x86",
  "ir",
  "libloading",
@@ -5393,6 +5569,7 @@ dependencies = [
  "thiserror 2.0.21",
  "timeline",
  "vfs",
+ "windows-sys 0.61.2",
  "x87",
  "xbe",
 ]
@@ -5746,6 +5923,7 @@ dependencies = [
  "assets",
  "bytemuck",
  "content",
+ "gfx",
  "h1-assets",
  "map",
  "native-render",
@@ -5992,6 +6170,7 @@ name = "shaders"
 version = "0.1.0"
 dependencies = [
  "bytemuck",
+ "gfx",
  "naga",
  "pollster",
  "serde",
@@ -6198,6 +6377,7 @@ name = "snapshot"
 version = "0.1.0"
 dependencies = [
  "crc32fast",
+ "host-dirs",
  "lockstep",
  "runtime",
  "thiserror 2.0.21",
@@ -6532,15 +6712,18 @@ dependencies = [
  "dear-imgui-winit",
  "dear-imguizmo",
  "editor-core",
+ "gfx",
  "guest-layout",
  "h1convert",
  "h1map",
  "h1objects",
  "hopper-edit",
  "hud-edit",
+ "libc",
  "live-mirror",
  "live-proto",
  "map",
+ "mem-watch",
  "png",
  "pollster",
  "rfd",
@@ -6568,6 +6751,14 @@ name = "subtle"
 version = "2.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
+
+[[package]]
+name = "superbounce"
+version = "0.1.0"
+dependencies = [
+ "map",
+ "tags",
+]
 
 [[package]]
 name = "symbols"
@@ -6617,6 +6808,14 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.10",
+]
+
+[[package]]
+name = "tag-names"
+version = "0.1.0"
+dependencies = [
+ "quick-xml 0.41.0",
+ "tags",
 ]
 
 [[package]]
@@ -6683,6 +6882,12 @@ dependencies = [
  "quote",
  "syn 3.0.10",
 ]
+
+[[package]]
+name = "thousands"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3bf63baf9f5039dadc247375c29eb13706706cfde997d0330d05aa63a77d8820"
 
 [[package]]
 name = "thread_local"
@@ -7339,6 +7544,7 @@ name = "vfs"
 version = "0.1.0"
 dependencies = [
  "content",
+ "host-dirs",
  "libc",
  "memmap2",
  "rustix 1.1.6",
@@ -8338,6 +8544,7 @@ dependencies = [
  "kernel",
  "libloading",
  "lift",
+ "mem-watch",
  "runtime",
  "snapshot",
  "vfs",
@@ -8394,6 +8601,7 @@ name = "xtask"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "host-dirs",
  "serde_json",
 ]
 

@@ -82,7 +82,7 @@ fn control(mem: &dyn GuestMemory, user: u32) -> Result<u32, MemFault> {
 
 fn profile(mem: &dyn GuestMemory, widget: u32) -> Result<u32, MemFault> {
     let effect = mem.u32(widget + 0x5c)?;
-    Ok(mem.u32(effect + 0x3c)?)
+    mem.u32(effect + 0x3c)
 }
 
 fn marked(mem: &dyn GuestMemory, widget: u32) -> Result<bool, MemFault> {

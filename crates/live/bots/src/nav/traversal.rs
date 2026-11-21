@@ -17,7 +17,7 @@ impl Transit {
     }
 }
 
-fn toward(at: V3, to: V3) -> [f32; 2] {
+pub(super) fn toward(at: V3, to: V3) -> [f32; 2] {
     let d = dist_xy(at, to).max(1e-6);
     [(to[0] - at[0]) / d, (to[1] - at[1]) / d]
 }

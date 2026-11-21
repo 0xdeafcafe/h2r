@@ -28,7 +28,7 @@ use worker::{
     SqlStorage, State, WebSocket, WebSocketIncomingMessage, WebSocketPair, durable_object, event,
 };
 
-use crate::bindings::{BLOBS, HUB, HUB_NAME};
+use crate::bindings::{BLOBS, HUB, HUB_NAME, SCREENSHOT_AI};
 use crate::dosql::DoSql;
 use crate::ingest::{Ingests, Message};
 use crate::r2::R2;
@@ -328,6 +328,9 @@ impl LiveHub {
             private,
             public: None,
         });
+        if let Ok(ai) = self.env.ai(SCREENSHOT_AI) {
+            live.set_screenshot_classifier(Arc::new(crate::screenshot_ai::WorkersClassifier(ai)));
+        }
         // Dedicated host leases use this environment's private container namespace.
         live.set_host_config(live_server::hosts::HostConfig::from_env(&|name| {
             self.setting(name)
@@ -360,8 +363,8 @@ impl LiveHub {
     }
 
     /// After anything that may have changed what is due: sets the alarm
-    /// for the next sweep or socket check (or removes it), and runs the
-    /// packed tick while a game is live. Nothing else in the hub runs on
+    /// for the next sweep or socket check, and runs the packed tick while
+    /// a game is live. Usage flushes in the sweep. Nothing else runs on
     /// a timer, so with no alarm due and no game live it can hibernate.
     async fn schedule(&self, live: &Arc<Live>) -> Result<()> {
         if live.packed_active() && !self.ticking.replace(true) {
@@ -475,26 +478,34 @@ impl DurableObject for LiveHub {
         let relay = crate::relayroom::session_of(path);
         let tunnel = hostroom::tunnel_lease(path);
         let echo = live_proto::matchmaking::echo_region(path);
-        if path == "/v1/stream" || path == "/v1/ingest" || relay.is_some() || tunnel.is_some() || echo.is_some() {
+        if path == "/v1/stream"
+            || path == "/v1/ingest"
+            || relay.is_some()
+            || tunnel.is_some()
+            || echo.is_some()
+        {
             if matches!(*req.method(), http::Method::GET | http::Method::HEAD) {
                 let ip = live_server::http::client_ip_key(&live, None, req.headers());
                 if let Err(e) = live_server::http::limit_read(&live, &ip) {
+                    self.schedule(&live).await?;
                     return Response::try_from(axum::response::IntoResponse::into_response(e));
                 }
             }
-            if let Some(region) = echo {
+            let resp = if let Some(region) = echo {
                 let region = region.to_owned();
-                return hostroom::region_echo::upgrade(&live, &self.env, req, &region).await;
-            }
-            if let Some(id) = tunnel {
+                hostroom::region_echo::upgrade(&live, &self.env, req, &region).await
+            } else if let Some(id) = tunnel {
                 let id = id.to_owned();
-                return hostroom::upgrade(&live, &self.env, req, &id).await;
-            }
-            if let Some(session) = relay {
+                hostroom::upgrade(&live, &self.env, req, &id).await
+            } else if let Some(session) = relay {
                 let session = session.to_owned();
-                return crate::relay::upgrade(&live, &self.env, req, &session).await;
+                crate::relay::upgrade(&live, &self.env, req, &session).await
+            } else {
+                self.socket(live.clone(), &req).await
+            };
+            if let Ok(response) = &resp {
+                live.count_api_request(response.status_code()).await;
             }
-            let resp = self.socket(live.clone(), &req).await;
             self.schedule(&live).await?;
             return resp;
         }

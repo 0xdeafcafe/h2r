@@ -4,8 +4,8 @@
 use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{Shutdown, TcpStream, ToSocketAddrs};
-#[cfg(unix)]
-use std::os::unix::net::UnixStream;
+#[cfg(any(unix, windows))]
+use crate::local_socket::UnixStream;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -15,7 +15,7 @@ use crate::{Endpoint, Event, Request, RpcError, ServerLine};
 
 /// The connection under a [`Client`].
 enum Conn {
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     Unix(UnixStream),
     Tcp(TcpStream),
 }
@@ -23,7 +23,7 @@ enum Conn {
 impl Conn {
     fn try_clone(&self) -> std::io::Result<Conn> {
         Ok(match self {
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             Conn::Unix(s) => Conn::Unix(s.try_clone()?),
             Conn::Tcp(s) => Conn::Tcp(s.try_clone()?),
         })
@@ -31,7 +31,7 @@ impl Conn {
 
     fn set_read_timeout(&self, t: Option<Duration>) -> std::io::Result<()> {
         match self {
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             Conn::Unix(s) => s.set_read_timeout(t),
             Conn::Tcp(s) => s.set_read_timeout(t),
         }
@@ -45,7 +45,7 @@ pub struct ConnectionShutdown(Conn);
 impl ConnectionShutdown {
     pub fn shutdown(&self) -> std::io::Result<()> {
         match &self.0 {
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             Conn::Unix(s) => s.shutdown(Shutdown::Both),
             Conn::Tcp(s) => s.shutdown(Shutdown::Both),
         }
@@ -55,7 +55,7 @@ impl ConnectionShutdown {
 impl Read for Conn {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         match self {
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             Conn::Unix(s) => s.read(buf),
             Conn::Tcp(s) => s.read(buf),
         }
@@ -65,14 +65,14 @@ impl Read for Conn {
 impl Write for Conn {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         match self {
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             Conn::Unix(s) => s.write(buf),
             Conn::Tcp(s) => s.write(buf),
         }
     }
     fn flush(&mut self) -> std::io::Result<()> {
         match self {
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             Conn::Unix(s) => s.flush(),
             Conn::Tcp(s) => s.flush(),
         }
@@ -147,9 +147,9 @@ impl Client {
         timeout: Option<Duration>,
     ) -> std::io::Result<Client> {
         let s = match endpoint {
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             Endpoint::Unix(p) => Conn::Unix(UnixStream::connect(p)?),
-            #[cfg(not(unix))]
+            #[cfg(not(any(unix, windows)))]
             Endpoint::Unix(p) => {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::Unsupported,

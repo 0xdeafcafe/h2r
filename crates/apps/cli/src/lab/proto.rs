@@ -17,7 +17,8 @@ use serde::{Deserialize, Serialize};
 pub const VERSION: u32 = 1;
 
 /// Run-time environment a request may set. Paths the game writes (frame
-/// stats CSV, input recording, profile directory) are the host's to choose.
+/// stats CSV, input recording, profile and agent output directories) are
+/// the host's to choose.
 pub const RUN_ENV: &[&str] = &[
     "H2_FRAME_STATS",
     "H2_FRAME_STATS_FROM",
@@ -25,9 +26,15 @@ pub const RUN_ENV: &[&str] = &[
     "H2_PERF_FROM",
     "H2_PROFILE_HZ",
     "H2_HOST_PERF",
+    "H2_MEM_SAMPLE",
+    "H2_PIPELINE_CACHE",
+    "H2_PREWARM_PROGRAMS",
     "H2_AUDIO_STATS",
     "H2_FPS",
     "H2_RENDER_SCALE",
+    "H2_RESOLUTION",
+    "H2_HUD_POSITION",
+    "H2_LOD_DISTANCE",
     "H2_WATERMARK",
     "H2_MAPPACK",
     "H2_HALO1",
@@ -35,6 +42,14 @@ pub const RUN_ENV: &[&str] = &[
     "H2_LOCKSTEP_TICKS",
     "H2_ICONS",
 ];
+
+/// `H2_PIPELINE_CACHE` values a request may pass: `off`, or
+/// [`PIPELINE_CACHE_FRESH`]. The cache's path is the host's to choose.
+pub const PIPELINE_CACHE_VALUES: &[&str] = &["off", PIPELINE_CACHE_FRESH];
+
+/// `H2_PIPELINE_CACHE=fresh`: the run starts from an empty pipeline cache
+/// of its own, in its run directory (A/B against the shared one).
+pub const PIPELINE_CACHE_FRESH: &str = "fresh";
 
 /// Build environment: it picks the image, so it is part of the image cache
 /// key and is set again on every run of that image (an `h2` whose H2_OPT
@@ -91,6 +106,8 @@ pub struct BuildSpec {
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub struct RunReq {
+    /// Human-readable window label. Never used as a path.
+    pub name: String,
     pub level: Option<String>,
     pub difficulty: Option<String>,
     /// Stop after this many presents (`H2_BOOT_STOP_AT_PRESENT`).
@@ -111,6 +128,9 @@ pub struct RunReq {
     pub build: BuildSpec,
     /// An empty data directory for this run only, removed after it.
     pub fresh_data: bool,
+    /// Game child footprint cap in bytes. Absent selects the host default.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mem_limit: Option<u64>,
     /// Free text kept in the run's metadata.
     pub note: Option<String>,
     /// Driven through the agent API (`h2 lab agent`) until `stop`: the game
@@ -141,6 +161,8 @@ pub struct Manifest {
 /// The input log's file name inside a recording.
 pub const INPUT_FILE: &str = "input.bin";
 
+pub(super) const CURRENT_JOB: &str = "current";
+
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(tag = "cmd", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Request {
@@ -148,6 +170,15 @@ pub enum Request {
     Update,
     Fetch {
         id: String,
+    },
+    Mem {
+        id: String,
+    },
+    /// The log feed for one job ID or all current jobs, using transfer frames.
+    Logs {
+        id: String,
+        #[serde(default)]
+        follow: bool,
     },
     SyncBases {
         branch: String,
@@ -230,7 +261,10 @@ pub fn check_commit(commit: &str) -> Result<()> {
 }
 
 pub fn parse(line: &str) -> Result<Request> {
-    let r: Request = serde_json::from_str(line)?;
+    let mut r: Request = serde_json::from_str(line)?;
+    if let Request::Run(run) = &mut r {
+        run.name = job_name(&run.name)?.into();
+    }
     validate(&r)?;
     Ok(r)
 }
@@ -238,11 +272,8 @@ pub fn parse(line: &str) -> Result<Request> {
 pub fn validate(r: &Request) -> Result<()> {
     match r {
         Request::Status | Request::Update | Request::Recordings | Request::Runs { .. } => Ok(()),
-        Request::Fetch { id } => {
-            check_name("id", id)?;
-            ensure!(id.bytes().all(|b| b.is_ascii_digit()), "invalid job id");
-            Ok(())
-        }
+        Request::Fetch { id } | Request::Mem { id } => check_job_id(id),
+        Request::Logs { id, .. } => check_log_id(id),
         Request::SyncBases { branch, commit } | Request::Sync { branch, commit, .. } => {
             check_rev(branch)?;
             check_commit(commit)?;
@@ -324,10 +355,16 @@ pub fn validate(r: &Request) -> Result<()> {
     }
 }
 
-/// What follows `h2 agent` in an `agent` request. Any call goes through
-/// (the host does not know the methods); what is refused is naming a
-/// different socket or console, which the run's own socket replaces, and
-/// the two forms that read files on the host instead of talking to a game.
+pub(super) fn check_log_id(id: &str) -> Result<()> {
+    if id == CURRENT_JOB {
+        return Ok(());
+    }
+    check_job_id(id)
+}
+
+/// What follows `h2 agent` in an `agent` request. The host uses the run's
+/// socket for calls, including `flight show`, which reads a bare file name
+/// through the game's API. `raw-diff` only reads local files.
 pub fn check_agent_args(args: &[String]) -> Result<()> {
     ensure!(
         !args.is_empty() && args.len() <= 64,
@@ -347,14 +384,40 @@ pub fn check_agent_args(args: &[String]) -> Result<()> {
         );
     }
     ensure!(
-        !matches!(args[0].as_str(), "flight" | "raw-diff"),
+        args[0] != "raw-diff",
         "`h2 agent {}` reads files on the machine it runs on; the lab doesn't forward it",
         args[0]
     );
+    if let [domain, verb, show_args @ ..] = args
+        && domain == "flight"
+        && verb == "show"
+    {
+        crate::agent_flight::check_remote_show_args(show_args)?;
+    }
     Ok(())
 }
 
+/// Labels may include spaces and Unicode text. Use Rust's printable character
+/// tables to exclude controls, invisible formatting and line separators.
+pub fn job_name(raw: &str) -> Result<&str> {
+    let name = raw.trim();
+    ensure!(!name.is_empty(), "lab game jobs require --name TEXT");
+    ensure!(
+        name.chars().count() <= 60
+            && raw
+                .chars()
+                .all(|ch| { ch == ' ' || ch.is_ascii_graphic() || ch.escape_debug().count() == 1 }),
+        "--name must be a printable label of at most 60 characters"
+    );
+    Ok(name)
+}
+
+pub fn window_title(id: &str, name: &str, commit: &str) -> String {
+    format!("h2 · lab {id} · {name} · {commit:.7}")
+}
+
 pub fn validate_run(r: &RunReq) -> Result<()> {
+    job_name(&r.name)?;
     ensure!(
         !(r.serve && r.frames.is_some()),
         "a --serve run never stops by itself; --frames can't be set (h2 lab stop ends it)"
@@ -386,6 +449,22 @@ pub fn validate_run(r: &RunReq) -> Result<()> {
             RUN_ENV.join(" ")
         );
         check_value(k, v)?;
+        if k == "H2_MEM_SAMPLE" {
+            mem_watch::parse_size(v).map_err(anyhow::Error::msg)?;
+        }
+        if k == "H2_PIPELINE_CACHE" {
+            ensure!(
+                PIPELINE_CACHE_VALUES.contains(&v.as_str()),
+                "H2_PIPELINE_CACHE is one of {} (the cache's path is the host's to choose)",
+                PIPELINE_CACHE_VALUES.join(" ")
+            );
+        }
+        if k == "H2_PREWARM_PROGRAMS" {
+            ensure!(
+                v == "off" || v.parse::<usize>().is_ok(),
+                "H2_PREWARM_PROGRAMS is a count or off"
+            );
+        }
     }
     check_play_args(&r.args)?;
     if let Some(n) = &r.note {
@@ -439,6 +518,12 @@ pub fn pgo_name(v: &str) -> Result<Option<&str>> {
 /// The PGO profile name `env`'s `H2_PGO` uses, if any.
 pub fn pgo_from(env: &BTreeMap<String, String>) -> Result<Option<&str>> {
     env.get("H2_PGO").map_or(Ok(None), |v| pgo_name(v))
+}
+
+pub(super) fn check_job_id(id: &str) -> Result<()> {
+    check_name("id", id)?;
+    ensure!(id.bytes().all(|b| b.is_ascii_digit()), "invalid job id");
+    Ok(())
 }
 
 /// One plain path component: letters, digits, `.`, `_`, `-`; not starting
@@ -568,9 +653,39 @@ mod tests {
     }
 
     #[test]
+    fn names_round_trip_trimmed_and_only_printable() {
+        let Request::Run(run) = parse(r#"{"cmd":"run","name":"  Café A/B  "}"#).unwrap() else {
+            panic!()
+        };
+        assert_eq!(run.name, "Café A/B");
+        assert_eq!(serde_json::to_value(run).unwrap()["name"], "Café A/B");
+        assert!(
+            parse(r#"{"cmd":"run"}"#)
+                .unwrap_err()
+                .to_string()
+                .contains("--name")
+        );
+        for bad in [
+            "",
+            "  ",
+            "line\nbreak",
+            "\u{1b}",
+            "bidi\u{202e}",
+            &"é".repeat(61),
+        ] {
+            assert!(job_name(bad).is_err(), "{bad:?}");
+        }
+        assert!(job_name(&"é".repeat(60)).is_ok());
+        assert_eq!(
+            window_title("0007", "Café A/B", "0123456789abcdef"),
+            "h2 · lab 0007 · Café A/B · 0123456"
+        );
+    }
+
+    #[test]
     fn a_full_run_request_parses() {
         let r = run(
-            r#"{"cmd":"run","level":"03a_oldmombasa","difficulty":"heroic","frames":900,
+            r#"{"cmd":"run","name":"Fixture","level":"03a_oldmombasa","difficulty":"heroic","frames":900,
             "stats_from":300,"replay":"fight-1","perf":true,"env":{"H2_PROFILE_HZ":"2000"},
             "args":["--no-audio","--fps","60","--set","fov=90"],
             "build":{"rev":"lab/perf-work","features":["perf"],"env":{"H2_OPT":"2"}}}"#,
@@ -594,9 +709,32 @@ mod tests {
         );
         assert!(run(r#"{"cmd":"shell","line":"rm -rf /"}"#).is_err());
         assert!(
-            run(r#"{"cmd":"run","h2":"/bin/sh"}"#).is_err(),
+            run(r#"{"cmd":"run","name":"Fixture","h2":"/bin/sh"}"#).is_err(),
             "unknown fields are refused"
         );
+    }
+
+    #[test]
+    fn logs_request_accepts_only_job_ids_or_current() {
+        assert_eq!(
+            run(r#"{"cmd":"logs","id":"0003"}"#).unwrap(),
+            Request::Logs {
+                id: "0003".into(),
+                follow: false,
+            }
+        );
+        assert_eq!(
+            run(r#"{"cmd":"logs","id":"current","follow":true}"#).unwrap(),
+            Request::Logs {
+                id: CURRENT_JOB.into(),
+                follow: true,
+            }
+        );
+        for bad in ["..", "../auth/pairing.json", "some-name", ""] {
+            let request = serde_json::json!({"cmd": "logs", "id": bad});
+            assert!(run(&request.to_string()).is_err(), "{request}");
+        }
+        assert!(run(r#"{"cmd":"logs","id":"current","path":"host.log"}"#).is_err());
     }
 
     #[test]
@@ -606,15 +744,38 @@ mod tests {
             "H2_INPUT_REPLAY",
             "H2_PROFILE",
             "H2_AGENT",
+            agent_proto::OUT_ENV,
             "PATH",
             "DYLD_INSERT_LIBRARIES",
             "H2_OPT",
         ] {
-            let j = format!(r#"{{"cmd":"run","env":{{"{k}":"x"}}}}"#);
+            let j = format!(r#"{{"cmd":"run","name":"Fixture","env":{{"{k}":"x"}}}}"#);
             assert!(run(&j).is_err(), "{k} must be refused");
         }
-        assert!(run(r#"{"cmd":"run","env":{"H2_FRAME_STATS_FROM":"300"}}"#).is_ok());
-        assert!(run(r#"{"cmd":"run","env":{"H2_FPS":"6\n0"}}"#).is_err());
+        assert!(
+            run(r#"{"cmd":"run","name":"Fixture","env":{"H2_FRAME_STATS_FROM":"300"}}"#).is_ok()
+        );
+        assert!(run(r#"{"cmd":"run","name":"Fixture","env":{"H2_RENDER_SCALE":"4","H2_LOD_DISTANCE":"retail"}}"#).is_ok());
+        assert!(run(r#"{"cmd":"run","name":"Fixture","env":{"H2_FPS":"6\n0"}}"#).is_err());
+    }
+
+    /// The pipeline cache can be turned off or started fresh, never pointed
+    /// at a path: the game rewrites that file.
+    #[test]
+    fn pipeline_cache_takes_off_or_fresh() {
+        let env = |k: &str, v: &str| {
+            run(&format!(
+                r#"{{"cmd":"run","name":"Fixture","env":{{"{k}":"{v}"}}}}"#
+            ))
+        };
+        assert!(env("H2_PIPELINE_CACHE", "off").is_ok());
+        assert!(env("H2_PIPELINE_CACHE", "fresh").is_ok());
+        for bad in ["/Users/x/.zshrc", "../cache.jsonl", "pipelines.jsonl", ""] {
+            assert!(env("H2_PIPELINE_CACHE", bad).is_err(), "{bad:?}");
+        }
+        assert!(env("H2_PREWARM_PROGRAMS", "256").is_ok());
+        assert!(env("H2_PREWARM_PROGRAMS", "off").is_ok());
+        assert!(env("H2_PREWARM_PROGRAMS", "lots").is_err());
     }
 
     #[test]
@@ -625,7 +786,7 @@ mod tests {
         assert!(run(r#"{"cmd":"build","rev":"master","env":{"H2_PGO":"use:../x"}}"#).is_err());
         assert!(run(r#"{"cmd":"build","rev":"master","features":["metal-debug"]}"#).is_err());
         assert!(
-            run(r#"{"cmd":"run","build":{"env":{"H2_OPT":"2"}}}"#).is_err(),
+            run(r#"{"cmd":"run","name":"Fixture","build":{"env":{"H2_OPT":"2"}}}"#).is_err(),
             "no rev"
         );
     }
@@ -648,8 +809,8 @@ mod tests {
         for good in ["fight-1", "0007", "city_heroic.v2"] {
             check_name("n", good).unwrap();
         }
-        assert!(run(r#"{"cmd":"run","replay":"../../.ssh/id_ed25519"}"#).is_err());
-        assert!(run(r#"{"cmd":"run","record":"a/b"}"#).is_err());
+        assert!(run(r#"{"cmd":"run","name":"Fixture","replay":"../../.ssh/id_ed25519"}"#).is_err());
+        assert!(run(r#"{"cmd":"run","name":"Fixture","record":"a/b"}"#).is_err());
         assert!(run(r#"{"cmd":"wait","id":".."}"#).is_err());
         assert!(run(r#"{"cmd":"put","name":"../x","hex":""}"#).is_err());
     }
@@ -686,19 +847,25 @@ mod tests {
     }
 
     #[test]
-    fn agent_calls_pass_through_but_not_sockets_or_file_readers() {
+    fn agent_calls_use_the_runs_socket() {
         let ok = r#"{"cmd":"agent","id":"0003","args":["capture","600"],"timeout":90}"#;
         assert!(run(ok).is_ok());
         assert!(
             run(r#"{"cmd":"agent","id":"0003","args":["session.wait","{\"until\":{\"phase\":\"gameplay\"}}"]}"#)
                 .is_ok()
         );
+        assert!(
+            run(r#"{"cmd":"agent","id":"0003","args":["flight","show","walk.jsonl","--field","physics.crouch"]}"#)
+                .is_ok()
+        );
+        assert!(run(r#"{"cmd":"agent","id":"0003","args":["flight","dump","walk.jsonl"]}"#).is_ok());
         for bad in [
             r#"{"cmd":"agent","id":"0003","args":[]}"#,
             r#"{"cmd":"agent","id":"../x","args":["status"]}"#,
             r#"{"cmd":"agent","id":"0003","args":["status","--socket","/tmp/x"]}"#,
             r#"{"cmd":"agent","id":"0003","args":["status","--xbox"]}"#,
             r#"{"cmd":"agent","id":"0003","args":["flight","show","/etc/passwd"]}"#,
+            r#"{"cmd":"agent","id":"0003","args":["flight","show","walk.jsonl","--field"]}"#,
             r#"{"cmd":"agent","id":"0003","args":["raw-diff","a","b"]}"#,
             r#"{"cmd":"agent","id":"0003","args":["status"],"timeout":0}"#,
             r#"{"cmd":"agent","id":"0003","args":["status"],"timeout":-1}"#,
@@ -709,16 +876,20 @@ mod tests {
 
     #[test]
     fn a_serve_run_has_no_frame_limit() {
-        assert!(run(r#"{"cmd":"run","level":"x","serve":true}"#).is_ok());
-        assert!(run(r#"{"cmd":"run","level":"x","serve":true,"frames":10}"#).is_err());
+        assert!(run(r#"{"cmd":"run","name":"Fixture","level":"x","serve":true}"#).is_ok());
+        assert!(
+            run(r#"{"cmd":"run","name":"Fixture","level":"x","serve":true,"frames":10}"#).is_err()
+        );
     }
 
     #[test]
     fn levels_and_difficulties() {
-        assert!(run(r#"{"cmd":"run","level":"03a_oldmombasa","difficulty":"legendary"}"#).is_ok());
-        assert!(run(r#"{"cmd":"run","level":"../x"}"#).is_err());
-        assert!(run(r#"{"cmd":"run","level":"x","difficulty":"impossible"}"#).is_err());
-        assert!(run(r#"{"cmd":"run","difficulty":"easy"}"#).is_err());
-        assert!(run(r#"{"cmd":"run","replay":"a","record":"b"}"#).is_err());
+        assert!(run(r#"{"cmd":"run","name":"Fixture","level":"03a_oldmombasa","difficulty":"legendary"}"#).is_ok());
+        assert!(run(r#"{"cmd":"run","name":"Fixture","level":"../x"}"#).is_err());
+        assert!(
+            run(r#"{"cmd":"run","name":"Fixture","level":"x","difficulty":"impossible"}"#).is_err()
+        );
+        assert!(run(r#"{"cmd":"run","name":"Fixture","difficulty":"easy"}"#).is_err());
+        assert!(run(r#"{"cmd":"run","name":"Fixture","replay":"a","record":"b"}"#).is_err());
     }
 }

@@ -129,12 +129,14 @@ describe("game art keys", () => {
   test("weapons go by the words of the reported name", () => {
     expect(weaponKey("sword")).toBe("weapon/energy_sword");
     expect(weaponKey("energy_sword")).toBe("weapon/energy_sword");
+    expect(weaponKey("energy_blade")).toBe("weapon/energy_sword");
     expect(weaponKey("Plasma Pistol")).toBe("weapon/plasma_pistol");
     expect(weaponKey("plasma_rifle")).toBe("weapon/plasma_rifle");
     expect(weaponKey("sniper")).toBe("weapon/sniper_rifle");
     expect(weaponKey("Sniper Rifle")).toBe("weapon/sniper_rifle");
     expect(weaponKey("beam-rifle")).toBe("weapon/beam_rifle");
     expect(weaponKey("sentinel beam")).toBe("weapon/sentinel_beam");
+    expect(weaponKey("sentinel_rpg")).toBeNull();
     expect(weaponKey("rocket")).toBe("weapon/rocket_launcher");
     expect(weaponKey("smg")).toBe("weapon/smg");
     expect(weaponKey("Submachine Gun")).toBe("weapon/smg");

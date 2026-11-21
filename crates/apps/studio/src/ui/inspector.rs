@@ -5,9 +5,7 @@
 //!   a facing in degrees; scale (0 reads as 1).
 //! - The palette entry and the item reference as searchable combos.
 //! - Flags fields as a checkbox per bit.
-//! - A netgame flag's type by name where the community's enum names it
-//!   (`h1convert::placements::H2Flag`, not yet confirmed from engine
-//!   code), team 8 as neutral.
+//! - A netgame flag's type by its viewport label or raw value, and its team.
 //! - Netgame equipment's spawn settings under their own heading.
 //!
 //! With many selected, only the fields every one has are shown; a field
@@ -18,6 +16,7 @@ use std::hash::{Hash, Hasher};
 
 use dear_imgui_rs::{Drag, Ui};
 use map::TagId;
+use scenario_edit::geometry::flag_type_name;
 use scenario_edit::layout::{FieldDef, FieldType, Role};
 use scenario_edit::session::FieldEdit;
 use scenario_edit::{BlockKind, Scenario, TagRef, Value};
@@ -26,6 +25,9 @@ use crate::app::tag_api::{self, Chain, Node};
 use crate::app::tag_doc::Access;
 use crate::app::{Action, App, NavAction, NavLocation, Selection, TagDoc, ToolKind};
 use crate::fields;
+use crate::play::issues::{Issue, IssueIndex, Kind};
+use crate::play::pair::Request;
+use crate::play::{Apply, LinkTone};
 use crate::theme::{self, icon};
 
 /// Text typed into the searchable combos.
@@ -36,19 +38,6 @@ pub struct InspectorState {
     chain: Option<(u64, TagId, &'static str, Chain)>,
     tag_world: Option<u64>,
     focus: Option<(TagId, String)>,
-}
-
-/// Netgame flag types the community's enum names (see the module docs).
-pub fn flag_type_name(v: i64) -> Option<&'static str> {
-    Some(match v {
-        0 => "CTF flag spawn",
-        1 => "CTF flag return",
-        4 => "Oddball spawn",
-        7 => "Teleporter source",
-        8 => "Teleporter destination",
-        11..=16 => "Hill marker",
-        _ => return None,
-    })
 }
 
 /// A field's heading in the inspector.
@@ -85,8 +74,72 @@ fn merge_key(selection: &[(BlockKind, usize)], field: &str) -> u64 {
     h.finish()
 }
 
+pub(crate) fn issues(app: &App) -> &IssueIndex {
+    app.pairing
+        .link
+        .as_ref()
+        .map_or(IssueIndex::empty(), |link| link.issues.as_ref())
+}
+
+fn field_mark(kind: Kind) -> Option<(LinkTone, &'static str)> {
+    match kind {
+        Kind::Refused => Some((LinkTone::Error, "Refused")),
+        Kind::Mismatch => Some((LinkTone::Warn, "Changed in game")),
+        _ => None,
+    }
+}
+
+pub(super) fn marked_row<T>(
+    ui: &Ui,
+    label: String,
+    issue: Option<&Issue>,
+    draw: impl FnOnce(String) -> T,
+) -> T {
+    if let Some(issue) = issue
+        && let Some((tone, mark)) = field_mark(issue.kind)
+    {
+        let _colour =
+            ui.push_style_color(dear_imgui_rs::StyleColor::Text, theme::link_colour(tone));
+        let row = draw(format!("{label}  [{mark}]"));
+        ui.set_item_tooltip(&issue.text);
+        row
+    } else {
+        draw(label)
+    }
+}
+
+fn field_problem(ui: &Ui, issue: &Issue, resolution: &mut Option<Apply>) {
+    let Some((tone, mark)) = field_mark(issue.kind) else {
+        return;
+    };
+    theme::link_badge(ui, tone, mark);
+    ui.text_wrapped(&issue.text);
+    if issue.kind == Kind::Mismatch && let Some(at) = issue.at {
+        let _id = ui.push_id(at as usize);
+        if ui.small_button("Take the game's value") {
+            *resolution = Some(Apply::Take(at));
+        }
+        ui.same_line();
+        if ui.small_button("Overwrite") {
+            *resolution = Some(Apply::Overwrite(at));
+        }
+    }
+}
+
+pub(super) fn tag_field_marks<'a>(
+    ui: &'a Ui,
+    issues: &'a IssueIndex,
+    resolution: &'a mut Option<Apply>,
+) -> impl FnMut(TagId, u32) + 'a {
+    move |tag, at| {
+        for issue in issues.tag_field(tag, at) {
+            field_problem(ui, issue, resolution);
+        }
+    }
+}
+
 /// Draw the inspector for the selection and apply its edits.
-pub fn draw(ui: &Ui, bold: dear_imgui_rs::FontId, app: &mut App, state: &mut InspectorState) {
+pub fn draw(ui: &Ui, fonts: &theme::Fonts, app: &mut App, state: &mut InspectorState) {
     let location = app.nav_location();
     let (kind, index) = match location.selection() {
         Some(Selection::Placement(kind, index)) => (kind, index),
@@ -97,8 +150,12 @@ pub fn draw(ui: &Ui, bold: dear_imgui_rs::FontId, app: &mut App, state: &mut Ins
         None => {
             state.focus = None;
             state.tag_panel.clear_field_focus();
-            ui.text_disabled("Select a placement in the outliner or the viewport.");
-            ui.text_disabled("Ctrl/Cmd+click adds to the selection, Shift+click a run.");
+            let title = if app.session.is_open() {
+                "Click something in the level"
+            } else {
+                "Open a map to inspect it"
+            };
+            theme::empty_card(ui, fonts, title, || {});
             return;
         }
     };
@@ -106,7 +163,7 @@ pub fn draw(ui: &Ui, bold: dear_imgui_rs::FontId, app: &mut App, state: &mut Ins
     let Some(scenario) = app.session.scenario() else {
         return;
     };
-    let f = ui.push_font(bold);
+    let f = ui.push_font(fonts.title);
     if selection.len() == 1 {
         ui.text(format!(
             "{}  {}",
@@ -146,8 +203,18 @@ pub fn draw(ui: &Ui, bold: dear_imgui_rs::FontId, app: &mut App, state: &mut Ins
         );
     }
 
+    theme::link_badge(
+        ui,
+        crate::play::LinkTone::View,
+        crate::play::tag_sync::CREATION,
+    );
+    ui.set_item_tooltip(
+        "Creation fields apply when the object is next made. In Edit, live objects can also follow position and rotation.",
+    );
     let fields = app.session.shared_fields();
     let mut edits: Vec<(&'static str, FieldEdit)> = Vec::new();
+    let issues = issues(app);
+    let mut resolution = None;
     let mut done = false;
     let mut heading = "";
     for f in fields {
@@ -158,7 +225,7 @@ pub fn draw(ui: &Ui, bold: dear_imgui_rs::FontId, app: &mut App, state: &mut Ins
         let mixed = values.iter().any(|v| *v != first);
         let h = section(kind, f);
         if h != heading {
-            ui.separator_with_text(h);
+            theme::section(ui, h);
             heading = h;
         }
         let d = ui.begin_disabled_with_cond(!f.editable);
@@ -167,6 +234,14 @@ pub fn draw(ui: &Ui, bold: dear_imgui_rs::FontId, app: &mut App, state: &mut Ins
         }
         done |= ui.is_item_deactivated_after_edit();
         d.end();
+        for &(k, i) in &selection {
+            for issue in issues.placement_field(k, i, f.name) {
+                if selection.len() > 1 {
+                    ui.text_disabled(scenario.label(k, i));
+                }
+                field_problem(ui, issue, &mut resolution);
+            }
+        }
     }
     if selection.len() == 1
         && let Some(p) = &block.def.palette
@@ -177,6 +252,9 @@ pub fn draw(ui: &Ui, bold: dear_imgui_rs::FontId, app: &mut App, state: &mut Ins
             block.palette.len(),
             p.stride
         ));
+    }
+    if let Some(action) = resolution {
+        app.pairing.requests.push(Request::Apply(action));
     }
     // Through the command layer, as the agent API's edits.
     for (field, edit) in edits {
@@ -218,7 +296,7 @@ fn tags(
         return;
     };
     app.sync_tags();
-    ui.separator_with_text("Tags");
+    theme::section(ui, "Tags");
     let doc = &app.tags;
     if let Some(error) = &doc.error {
         ui.text_colored(theme::ERROR, error);
@@ -240,15 +318,17 @@ fn tags(
         state.focus = focus;
     }
     let mut actions = Vec::new();
+    let mut resolution = None;
+    let issues = issues(app);
     breadcrumbs(ui, app, location, &mut actions);
     let undo = ui.begin_disabled_with_cond(!doc.can_undo());
-    if ui.small_button("Undo tag edit") {
+    if ui.button("Undo tag edit") {
         actions.push(Action::UndoIn(ToolKind::Tags));
     }
     undo.end();
     ui.same_line();
     let redo = ui.begin_disabled_with_cond(!doc.can_redo());
-    if ui.small_button("Redo tag edit") {
+    if ui.button("Redo tag edit") {
         actions.push(Action::RedoIn(ToolKind::Tags));
     }
     redo.end();
@@ -264,11 +344,17 @@ fn tags(
             if state.tag_panel.has_field_focus(tag) {
                 ui.set_next_item_open(true);
             }
-            tag_node(ui, doc, node, &mut trail, &mut state.tag_panel, &mut actions);
+            tag_node(
+                ui, doc, node, &mut trail, &mut state.tag_panel, &mut actions, issues,
+                &mut resolution,
+            );
         }
         if chain.truncated {
             ui.text_disabled("Tag chain limited to the first references.");
         }
+    }
+    if let Some(action) = resolution {
+        app.pairing.requests.push(Request::Apply(action));
     }
     for action in actions {
         app.dispatch(tag_action(action));
@@ -326,6 +412,8 @@ fn tag_node(
     trail: &mut Vec<TagId>,
     panel: &mut fields::PanelState,
     actions: &mut Vec<Action>,
+    issues: &IssueIndex,
+    resolution: &mut Option<Apply>,
 ) {
     let _id = ui.push_id(node.via.as_str());
     let id = node.tag;
@@ -343,12 +431,15 @@ fn tag_node(
         Some(role) => format!("{role} · {label}"),
         None => label,
     };
-    let item = ui.tree_node_config(format!("tag{:08x}", id.0))
-        .label(label)
-        .default_open(node.via.is_empty())
-        .span_avail_width(true)
-        .push();
-    if !node.via.is_empty() && ui.is_item_hovered() {
+    let issue = issues.tag_row(id);
+    let item = marked_row(ui, label, issue, |label| {
+        ui.tree_node_config(format!("tag{:08x}", id.0))
+            .label(label)
+            .default_open(node.via.is_empty())
+            .span_avail_width(true)
+            .push()
+    });
+    if issue.is_none() && !node.via.is_empty() && ui.is_item_hovered() {
         ui.set_item_tooltip(&node.via);
     }
     let Some(_node) = item else { return };
@@ -378,16 +469,31 @@ fn tag_node(
         if let Some(problem) = &panel.problem {
             ui.text_colored(theme::ERROR, problem);
         }
-        fields::inspector_panel(ui, doc, id, trail, panel, actions);
+        fields::panel_with_marks(
+            ui,
+            doc,
+            id,
+            &[],
+            panel,
+            actions,
+            fields::PanelRoot::Inspector(trail),
+            &mut tag_field_marks(ui, issues, resolution),
+        );
+        if let Some(h) = &panel.hovered
+            && let Some(doc) = h.description.as_deref().filter(|s| !s.is_empty())
+        {
+            ui.text(&h.name);
+            ui.text_wrapped(doc);
+        }
     }
     for child in node.children.iter().filter(|child| child.shortcut.is_some()) {
-        tag_node(ui, doc, child, trail, panel, actions);
+        tag_node(ui, doc, child, trail, panel, actions, issues, resolution);
     }
     if node.children.iter().any(|child| child.shortcut.is_none())
         && let Some(_refs) = ui.tree_node("All references")
     {
         for child in node.children.iter().filter(|child| child.shortcut.is_none()) {
-            tag_node(ui, doc, child, trail, panel, actions);
+            tag_node(ui, doc, child, trail, panel, actions, issues, resolution);
         }
     }
     trail.pop();
@@ -458,7 +564,7 @@ fn field_row(
                 .speed(0.01)
                 .range(0.01, 100.0)
                 .build(ui, &mut s)
-                .then(|| FieldEdit::Set(Value::Float(s)));
+                .then_some(FieldEdit::Set(Value::Float(s)));
             ui.set_item_tooltip("0 in the map reads as 1");
             r
         }
@@ -515,20 +621,16 @@ fn field_row(
                 Some(n) => format!("{v}: {n}"),
                 None => v.to_string(),
             };
-            let options: Vec<(i64, String)> = (0..=16).map(|v| (v, text(v))).collect();
+            let options: Vec<(i64, String)> = (0..=18).map(|v| (v, text(v))).collect();
             let r = search_combo(ui, &id("flagtype"), &text(x), x, &options, state)
                 .map(|v| FieldEdit::Set(Value::Int(v)));
-            ui.set_item_tooltip(
-                "Names from the community's enum for Halo 2's netgame flags \
-                 (the disc agrees; not yet confirmed from engine code)",
-            );
+            ui.set_item_tooltip("Unidentified flag types are shown by their raw value.");
             r
         }
         (_, Value::Int(mut x)) => {
-            let text = match (f.name, kind) {
-                ("respawn time", _) => "respawn time (s)",
-                ("team", BlockKind::NetgameFlags) => "team / channel",
-                (n, _) => n,
+            let text = match f.name {
+                "respawn time" => "respawn time (s)",
+                name => name,
             };
             label(ui, f, text, mixed);
             ui.set_next_item_width(-1.0);
@@ -545,9 +647,10 @@ fn field_row(
                 .then_some(FieldEdit::Set(Value::Int(x)));
             match (f.name, kind) {
                 ("respawn time", _) => ui.set_item_tooltip("0: the collection's default"),
-                ("team", BlockKind::NetgameFlags) => ui.set_item_tooltip(
-                    "The team (8 is neutral); a teleporter's channel; a hill's number",
-                ),
+                ("team", BlockKind::NetgameFlags) => ui.set_item_tooltip("Team 8 is neutral."),
+                ("identifier", BlockKind::NetgameFlags) => {
+                    ui.set_item_tooltip("Teleporter channel or territory index.")
+                }
                 _ => {}
             }
             r
@@ -698,6 +801,46 @@ mod tests {
     use scenario_edit::layout;
 
     #[test]
+    fn conflict_buttons_follow_the_selected_placement() {
+        let temp = crate::play::testing::Temp::new("inspector-conflict");
+        let mut app = App::new();
+        app.set_data_root(temp.0.join("data"));
+        app.dispatch(Action::OpenSource(temp.map("example")));
+        app.pairing.pending.push(serde_json::json!({
+            "target": {"block": "netgame_flags", "index": 0},
+            "field": "position", "at": 123, "conflict": true, "why": "the game changed the field"
+        }));
+        app.pairing.link = Some(crate::play::Play::new().link_view(&app).into());
+
+        let _turn = crate::headless::ONE_CONTEXT.lock().unwrap_or_else(|e| e.into_inner());
+        let (mut ctx, fonts) = crate::context(None);
+        ctx.font_atlas().try_claim_legacy_renderer().unwrap().build();
+        ctx.io_mut().set_display_size([600.0, 800.0]);
+        ctx.io_mut().set_delta_time(1.0 / 60.0);
+        let mut state = InspectorState::default();
+        for (kind, marked) in [
+            (BlockKind::NetgameFlags, true),
+            (BlockKind::StartingLocations, false),
+        ] {
+            app.dispatch(Action::Select(Some((kind, 0))));
+            let ui = ctx.frame();
+            crate::probe::begin();
+            ui.window("Placement inspector")
+                .size([580.0, 780.0], dear_imgui_rs::Condition::Always)
+                .build(|| draw(ui, &fonts, &mut app, &mut state));
+            let items = crate::probe::items();
+            for label in ["Take the game's value", "Overwrite"] {
+                assert_eq!(
+                    items.iter().any(|item| item.label == label),
+                    marked,
+                    "{kind:?} {label}"
+                );
+            }
+            let _ = ctx.render_legacy();
+        }
+    }
+
+    #[test]
     fn angles_show_between_minus_and_plus_half_a_turn() {
         assert!((degrees(std::f32::consts::FRAC_PI_2) - 90.0).abs() < 1e-4);
         assert!((degrees(3.0 * std::f32::consts::FRAC_PI_2) + 90.0).abs() < 1e-3);
@@ -733,7 +876,8 @@ mod tests {
         assert_eq!(flag_type_name(0), Some("CTF flag spawn"));
         assert_eq!(flag_type_name(4), Some("Oddball spawn"));
         assert_eq!(flag_type_name(12), Some("Hill marker"));
-        assert_eq!(flag_type_name(2), None);
+        assert_eq!(flag_type_name(18), Some("Hill marker"));
+        assert_eq!(flag_type_name(19), None);
     }
 
     #[test]

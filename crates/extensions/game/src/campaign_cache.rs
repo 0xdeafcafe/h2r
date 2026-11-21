@@ -13,6 +13,30 @@ use runtime::guest::{Guest, PAGE_SIZE, Permissions};
 const CAMPAIGN_ROW: u32 = 0x0044_8fc8;
 const RETAIL: u32 = 0x1180_0000;
 
+/// The retail selector assigns multiplayer to slot 3 and campaigns to
+/// slots 4 and 5 (kernel/tests/cache_slots.rs). Only a converted campaign
+/// header can use the enlarged campaign table and its validator override.
+pub fn reload_limits(
+    memory: &Guest,
+    name: &str,
+    extended_campaign: bool,
+) -> std::result::Result<(map::CacheType, u32), String> {
+    let slot = memory.u32(crate::map_slots::CURRENT).map_err(|e| e.to_string())?;
+    match slot {
+        3 => Ok((map::CacheType::Multiplayer, 0x0500_0000)),
+        4 | 5 => {
+            let capacity = memory.u32(CAMPAIGN_ROW + 8).map_err(|e| e.to_string())?;
+            let limit = if extended_campaign && is_h1_level(name.as_bytes()) {
+                NATIVE_CAMPAIGN_FILE_LIMIT
+            } else {
+                RETAIL
+            };
+            Ok((map::CacheType::Campaign, capacity.min(limit)))
+        }
+        _ => Err("the active slot is not a campaign or multiplayer map".into()),
+    }
+}
+
 /// Both asset variants and loose maps can be selected during a session.
 /// Reserve enough room for the largest at boot, rounded up to a MiB.
 fn slot_size(maps: &[(String, PathBuf)], overrides: Option<&Path>) -> u32 {
@@ -33,6 +57,7 @@ fn slot_size(maps: &[(String, PathBuf)], overrides: Option<&Path>) -> u32 {
                 return None;
             }
             let file = vfs::HostFile {
+                generation: None,
                 path,
                 offset: 0,
                 len: meta.len(),
@@ -196,6 +221,29 @@ mod tests {
         );
         write(loose.join("override.MAP"), "a10", RETAIL + (3 << 20));
         assert_eq!(slot_size(&maps, Some(&loose)), RETAIL + (3 << 20));
+    }
+
+    #[test]
+    fn reload_uses_the_active_slot_and_its_installed_header_validator() {
+        let mut m = Guest::new();
+        for at in [crate::map_slots::CURRENT, CAMPAIGN_ROW] {
+            m.map_zeroed(at & !(PAGE_SIZE - 1), PAGE_SIZE, Permissions::RW).unwrap();
+        }
+        m.set_u32(CAMPAIGN_ROW + 8, RETAIL + (1 << 20)).unwrap();
+        m.set_u32(crate::map_slots::CURRENT, 3).unwrap();
+        assert_eq!(
+            reload_limits(&m, "a30", true).unwrap(),
+            (map::CacheType::Multiplayer, 0x0500_0000)
+        );
+        m.set_u32(crate::map_slots::CURRENT, 4).unwrap();
+        assert_eq!(
+            reload_limits(&m, "a30", true).unwrap(),
+            (map::CacheType::Campaign, RETAIL + (1 << 20))
+        );
+        assert_eq!(reload_limits(&m, "a30", false).unwrap().1, RETAIL);
+        assert_eq!(reload_limits(&m, "other", true).unwrap().1, RETAIL);
+        m.set_u32(crate::map_slots::CURRENT, 0).unwrap();
+        assert!(reload_limits(&m, "a30", true).is_err());
     }
 
     #[test]

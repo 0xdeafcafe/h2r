@@ -14,9 +14,18 @@
 //! first gets it with [`PendingPipeline::get`]: from the worker when it is
 //! done, by waiting when the worker is on it, or by building it on the
 //! calling thread when no worker has started it yet. It is built exactly
-//! once either way. Draw-time misses jump the queue ahead of prewarming.
+//! once either way. Draw-time misses jump the queue ahead of prewarming,
+//! and a draw that needs a value still queued as a prewarm moves it there
+//! too ([`Compiler::submit`] at [`Priority::Draw`]).
+//!
+//! A prewarm belongs to an owner ([`Compiler::prewarm`]): when the work it
+//! guessed at stops being likely (the game left the map it was for), the
+//! owner drops what is still queued ([`Compiler::drop_prewarms`]). A
+//! dropped value is not lost: its first user builds it, or it is queued
+//! again.
 
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Condvar, LazyLock, Mutex, OnceLock};
 
 type Build<T> = Box<dyn FnOnce() -> T + Send>;
@@ -26,7 +35,15 @@ pub struct Pending<T> {
     value: OnceLock<T>,
     build: Mutex<Option<Build<T>>>,
     built_on: OnceLock<std::thread::ThreadId>,
+    completed_frame: OnceLock<u64>,
+    /// The highest queue a job for it waits in ([`NOT_QUEUED`],
+    /// [`QUEUED_BACKGROUND`], [`QUEUED_DRAW`]).
+    queued: AtomicU8,
 }
+
+const NOT_QUEUED: u8 = 0;
+const QUEUED_BACKGROUND: u8 = 1;
+const QUEUED_DRAW: u8 = 2;
 
 impl<T> Pending<T> {
     /// A value `build` makes when first needed.
@@ -35,6 +52,8 @@ impl<T> Pending<T> {
             value: OnceLock::new(),
             build: Mutex::new(Some(Box::new(build))),
             built_on: OnceLock::new(),
+            completed_frame: OnceLock::new(),
+            queued: AtomicU8::new(NOT_QUEUED),
         })
     }
 
@@ -44,6 +63,8 @@ impl<T> Pending<T> {
             value: OnceLock::new(),
             build: Mutex::new(None),
             built_on: OnceLock::new(),
+            completed_frame: OnceLock::new(),
+            queued: AtomicU8::new(NOT_QUEUED),
         };
         let _ = p.value.set(value);
         Arc::new(p)
@@ -54,9 +75,29 @@ impl<T> Pending<T> {
         self.value.get()
     }
 
+    /// A worker result visible at the start of this guest frame. A native
+    /// pass can retain its D3D draws until the swap after compilation.
+    pub fn previous_frame(&self) -> Option<&T> {
+        self.visible_at_frame(timeline::frames())
+    }
+
+    /// Whether a pass extracted in this guest frame can use the value.
+    /// A deferred render worker can be several swaps behind extraction.
+    pub fn visible_at_frame(&self, frame: u64) -> Option<&T> {
+        self.value.get().filter(|_| {
+            self.completed_frame.get().is_none_or(|&completed| completed < frame)
+        })
+    }
+
     /// Whether the value is built.
     pub fn is_ready(&self) -> bool {
         self.value.get().is_some()
+    }
+
+    /// Whether the value is built or being built: queueing it again does
+    /// nothing.
+    pub fn is_started(&self) -> bool {
+        self.value.get().is_some() || self.built_on.get().is_some()
     }
 
     /// The value: built here if nobody has started it, else waited for.
@@ -69,7 +110,9 @@ impl<T> Pending<T> {
                 .take()
                 .expect("a pending value is built once");
             let _ = self.built_on.set(std::thread::current().id());
-            build()
+            let value = build();
+            let _ = self.completed_frame.set(timeline::frames());
+            value
         })
     }
 
@@ -95,15 +138,48 @@ pub enum Priority {
     Background,
 }
 
-type Job = Box<dyn FnOnce() + Send>;
+/// A queued build, type-erased.
+trait Job: Send + Sync {
+    /// Builds the value unless someone has started it.
+    fn run(&self);
+    /// Taken out of the background queue unrun: a later submit queues it
+    /// again.
+    fn dropped(&self);
+}
+
+impl<T: Send + Sync> Job for Pending<T> {
+    fn run(&self) {
+        if !self.is_started() {
+            self.get();
+        }
+    }
+
+    fn dropped(&self) {
+        let _ = self.queued.compare_exchange(
+            QUEUED_BACKGROUND,
+            NOT_QUEUED,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
+    }
+}
 
 /// Worker thread names start with this.
 pub const WORKER_NAME: &str = "gfx compile";
 
 #[derive(Default)]
 struct Queues {
-    draw: VecDeque<Job>,
-    background: VecDeque<Job>,
+    draw: VecDeque<Arc<dyn Job>>,
+    /// Prewarms, with the owner each was queued for.
+    background: VecDeque<(u64, Arc<dyn Job>)>,
+}
+
+impl Queues {
+    fn next(&mut self) -> Option<Arc<dyn Job>> {
+        self.draw
+            .pop_front()
+            .or_else(|| self.background.pop_front().map(|(_, j)| j))
+    }
 }
 
 /// The worker threads that build pipelines.
@@ -130,6 +206,11 @@ impl Compiler {
 
     /// A compiler with `threads` workers (0: nothing runs in the background).
     pub fn new(threads: usize) -> Arc<Self> {
+        Self::with_worker_setup(threads, WORKER_NAME, || {})
+    }
+
+    /// A separate pool for callers with a different scheduling policy.
+    pub fn with_worker_setup(threads: usize, name: &str, setup: fn()) -> Arc<Self> {
         let c = Arc::new(Self {
             queues: Mutex::default(),
             ready: Condvar::new(),
@@ -137,8 +218,11 @@ impl Compiler {
         for n in 0..threads {
             let c = c.clone();
             std::thread::Builder::new()
-                .name(format!("{WORKER_NAME} {n}"))
-                .spawn(move || c.work())
+                .name(format!("{name} {n}"))
+                .spawn(move || {
+                    setup();
+                    c.work();
+                })
                 .expect("spawn a pipeline compile thread");
         }
         c
@@ -149,31 +233,93 @@ impl Compiler {
             let job = {
                 let mut q = self.queues.lock().unwrap();
                 loop {
-                    if let Some(j) = q.draw.pop_front().or_else(|| q.background.pop_front()) {
+                    if let Some(j) = q.next() {
                         break j;
                     }
                     q = self.ready.wait(q).unwrap();
                 }
             };
-            job();
+            // No timeline span: the game thread's frame budget would count
+            // it. A worker's compile shows only as the draw's `pipeline wait`.
+            job.run();
         }
     }
 
-    /// Queues `pending` to be built on a worker.
-    pub fn submit<T: Send + Sync + 'static>(&self, pending: &Arc<Pending<T>>, priority: Priority) {
-        let p = pending.clone();
-        let job: Job = Box::new(move || {
-            // No timeline span: the game thread's frame budget would count
-            // it. A worker's compile shows only as the draw's `pipeline wait`.
-            p.get();
-        });
+    /// Queues `pending` to be built on a worker. Returns `false`, queueing
+    /// nothing, when it is built or being built, or already waits at
+    /// `priority` or above: a draw's [`Priority::Draw`] moves a queued
+    /// prewarm ahead, and the same draw every frame queues it once.
+    /// Background work queued here has no owner: use
+    /// [`prewarm`](Self::prewarm) for work that may be dropped.
+    pub fn submit<T: Send + Sync + 'static>(
+        &self,
+        pending: &Arc<Pending<T>>,
+        priority: Priority,
+    ) -> bool {
+        self.queue(pending, priority, 0)
+    }
+
+    /// Queues `pending` as a prewarm for `owner` (a nonzero id the caller
+    /// picks, such as [`Compiler::owner`]), which
+    /// [`drop_prewarms`](Self::drop_prewarms) can take back. Returns what
+    /// [`submit`](Self::submit) does.
+    pub fn prewarm<T: Send + Sync + 'static>(&self, pending: &Arc<Pending<T>>, owner: u64) -> bool {
+        self.queue(pending, Priority::Background, owner)
+    }
+
+    fn queue<T: Send + Sync + 'static>(
+        &self,
+        pending: &Arc<Pending<T>>,
+        priority: Priority,
+        owner: u64,
+    ) -> bool {
+        if pending.is_started() {
+            return false;
+        }
+        let level = match priority {
+            Priority::Draw => QUEUED_DRAW,
+            Priority::Background => QUEUED_BACKGROUND,
+        };
+        if pending.queued.fetch_max(level, Ordering::AcqRel) >= level {
+            return false;
+        }
+        let job: Arc<dyn Job> = pending.clone();
         let mut q = self.queues.lock().unwrap();
         match priority {
             Priority::Draw => q.draw.push_back(job),
-            Priority::Background => q.background.push_back(job),
+            Priority::Background => q.background.push_back((owner, job)),
         }
         drop(q);
         self.ready.notify_one();
+        true
+    }
+
+    /// Takes `owner`'s prewarms that no worker has started out of the
+    /// queue, and returns how many. Each stays unbuilt until its first
+    /// user builds it or it is queued again; one a draw moved ahead stays
+    /// queued for that draw.
+    pub fn drop_prewarms(&self, owner: u64) -> usize {
+        let mut q = self.queues.lock().unwrap();
+        let mut dropped = Vec::new();
+        q.background.retain(|(o, job)| {
+            if *o == owner {
+                dropped.push(job.clone());
+                false
+            } else {
+                true
+            }
+        });
+        drop(q);
+        for job in &dropped {
+            job.dropped();
+        }
+        dropped.len()
+    }
+
+    /// A fresh prewarm owner id, unique in the process (never 0).
+    pub fn owner() -> u64 {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        NEXT.fetch_add(1, Ordering::Relaxed)
     }
 
     /// Jobs not started yet.
@@ -231,6 +377,17 @@ mod tests {
     }
 
     #[test]
+    fn a_completed_job_becomes_visible_at_the_following_guest_swap() {
+        let pending = Pending::new(|| 9);
+        assert!(pending.previous_frame().is_none());
+        assert_eq!(pending.get(), &9);
+        let completed = *pending.completed_frame.get().unwrap();
+        assert!(pending.visible_at_frame(completed).is_none());
+        assert_eq!(pending.visible_at_frame(completed + 1), Some(&9));
+        assert_eq!(Pending::ready(3).visible_at_frame(0), Some(&3));
+    }
+
+    #[test]
     fn draw_jobs_run_before_background() {
         let c = Compiler::new(0);
         let order = Arc::new(Mutex::new(Vec::new()));
@@ -244,15 +401,73 @@ mod tests {
         c.submit(&d, Priority::Draw);
         // Drain by hand, as a worker would.
         for _ in 0..3 {
-            let job = {
-                let mut q = c.queues.lock().unwrap();
-                q.draw
-                    .pop_front()
-                    .or_else(|| q.background.pop_front())
-                    .unwrap()
-            };
-            job();
+            let job = c.queues.lock().unwrap().next().unwrap();
+            job.run();
         }
         assert_eq!(*order.lock().unwrap(), vec![3, 1, 2]);
+    }
+
+    /// Drains the queues by hand, as a worker would.
+    fn drain(c: &Compiler) {
+        while let Some(job) = c.queues.lock().unwrap().next() {
+            job.run();
+        }
+    }
+
+    #[test]
+    fn a_draw_moves_a_queued_prewarm_ahead_once() {
+        let c = Compiler::new(0);
+        let order = Arc::new(Mutex::new(Vec::new()));
+        let mk = |n: u32| {
+            let order = order.clone();
+            Pending::new(move || order.lock().unwrap().push(n))
+        };
+        let (a, b) = (mk(1), mk(2));
+        assert!(c.prewarm(&a, 7));
+        assert!(c.prewarm(&b, 7));
+        assert!(!c.prewarm(&b, 7), "already queued");
+        // The draw that needs `b` every frame queues it ahead once.
+        assert!(c.submit(&b, Priority::Draw));
+        assert!(!c.submit(&b, Priority::Draw));
+        assert!(!c.prewarm(&b, 7), "a prewarm never lowers it");
+        assert_eq!(c.queued(), 3);
+        drain(&c);
+        assert_eq!(
+            *order.lock().unwrap(),
+            vec![2, 1],
+            "each built once, b first"
+        );
+        assert!(!c.submit(&a, Priority::Draw), "built: nothing to queue");
+    }
+
+    #[test]
+    fn dropped_prewarms_are_only_the_owner_s_and_can_be_queued_again() {
+        let c = Compiler::new(0);
+        let runs = Arc::new(Mutex::new(Vec::new()));
+        let mk = |n: u32| {
+            let runs = runs.clone();
+            Pending::new(move || runs.lock().unwrap().push(n))
+        };
+        let (old, other, promoted, draw) = (mk(1), mk(2), mk(3), mk(4));
+        let (me, them) = (Compiler::owner(), Compiler::owner());
+        assert_ne!(me, them);
+        c.prewarm(&old, me);
+        c.prewarm(&other, them);
+        c.prewarm(&promoted, me);
+        c.submit(&promoted, Priority::Draw);
+        c.submit(&draw, Priority::Draw);
+        // A map change: my prewarms go, another owner's and draws' stay.
+        assert_eq!(c.drop_prewarms(me), 2);
+        assert_eq!(c.drop_prewarms(me), 0);
+        assert_eq!(c.queued(), 3);
+        drain(&c);
+        let mut built = runs.lock().unwrap().clone();
+        built.sort_unstable();
+        assert_eq!(built, vec![2, 3, 4]);
+        assert!(!old.is_started(), "dropped, not built");
+        // Queued again later (or built by its first user), it builds.
+        assert!(c.prewarm(&old, me));
+        drain(&c);
+        assert!(old.is_ready());
     }
 }

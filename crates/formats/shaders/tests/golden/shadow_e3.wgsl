@@ -39,7 +39,8 @@ struct XpsUniforms {
     // integer depth format (the stored w is truncated, as the NV2A does).
     depth: vec4f,
     // x, y: the range the stored w is clamped to (CLIP_MIN, CLIP_MAX).
-    depth_range: vec4f,
+    depth_range: vec2f,
+    stipple_scale: vec2u,
 }
 @group(0) @binding(1) var<uniform> xps: XpsUniforms;
 
@@ -218,7 +219,8 @@ struct XpsUniforms {
     // integer depth format (the stored w is truncated, as the NV2A does).
     depth: vec4f,
     // x, y: the range the stored w is clamped to (CLIP_MIN, CLIP_MAX).
-    depth_range: vec4f,
+    depth_range: vec2f,
+    stipple_scale: vec2u,
 }
 @group(0) @binding(1) var<uniform> xps: XpsUniforms;
 
@@ -397,7 +399,8 @@ struct XpsUniforms {
     // integer depth format (the stored w is truncated, as the NV2A does).
     depth: vec4f,
     // x, y: the range the stored w is clamped to (CLIP_MIN, CLIP_MAX).
-    depth_range: vec4f,
+    depth_range: vec2f,
+    stipple_scale: vec2u,
 }
 @group(0) @binding(1) var<uniform> xps: XpsUniforms;
 

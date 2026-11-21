@@ -1,12 +1,6 @@
-//! `H2_EMIT_TARGET=windows` end to end on a Mac: real generated code (guest
-//! memory, calls, x87 and SSE, a loop) through the support headers, clang
-//! for `x86_64-pc-windows-msvc`, `llvm-lib` and `lld-link`, into a DLL that
-//! exports what the hosts look up and nothing else. Nothing here can load
-//! the DLL: what runs on Windows is only compile- and link-checked.
-//!
-//! Needs the xwin splat (`H2_XWIN`), `lld-link`, `llvm-lib` and
-//! `llvm-readobj` (platform/windows/env.sh, docs/runtime/windows.md); skipped
-//! without them.
+//! Synthetic guest calls, memory, x87 and SSE through clang, llvm-lib and
+//! lld-link. A Windows host loads the DLL and executes the generated code.
+//! The cross-build checks its exports and imports when xwin is installed.
 
 mod common;
 
@@ -55,7 +49,9 @@ fn functions() -> Vec<ir::IrFunction> {
 
 /// The tools, or why the test cannot run here.
 fn tools() -> Result<(PathBuf, PathBuf), String> {
-    compile::xwin_dir().map_err(|e| e.0)?;
+    if !cfg!(windows) {
+        compile::xwin_dir().map_err(|e| e.0)?;
+    }
     compile::windows_tool("lld-link").map_err(|e| e.0)?;
     compile::windows_tool("llvm-lib").map_err(|e| e.0)?;
     let readobj = compile::windows_tool("llvm-readobj").map_err(|e| e.0)?;
@@ -81,11 +77,12 @@ fn names(listing: &str) -> Vec<String> {
 fn a_generated_module_links_into_a_windows_dll_exporting_only_the_host_symbols() {
     let (_cc, readobj_tool) = match tools() {
         Ok(t) => t,
+        Err(why) if cfg!(windows) => panic!("native Windows toolchain: {why}"),
         Err(why) => return common::skip("a_generated_module_links_into_a_windows_dll_exporting_only_the_host_symbols", &why),
     };
     let header = common::abi_header().expect("h2abi.h");
     let owners = emit::plan_with(functions(), emit::opt::Passes::from_env().unwrap());
-    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("windows-module");
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("windows module");
     let _ = std::fs::remove_dir_all(&dir);
     let src = dir.join("src");
     emit::write_module_with(&owners, &src, emit::Codegen::accesses(true)).unwrap();
@@ -146,5 +143,25 @@ fn a_generated_module_links_into_a_windows_dll_exporting_only_the_host_symbols()
         let imports = names(&readobj(&readobj_tool, &["--coff-imports"], dll));
         assert!(imports.iter().all(|i| i.eq_ignore_ascii_case("KERNEL32.dll")), "{imports:?}");
     }
-    let _ = std::fs::remove_dir_all(&dir);
+    #[cfg(windows)]
+    {
+        use emit::host::{CpuAbi, Ctx, ENTRY, Generated, HARNESS_EXIT, JUMP, RETURN, TransferAbi};
+        use ir::interp::FlatMemory;
+        let module = unsafe { Generated::load(&emit_dll) }.expect("load native Windows module");
+        let mut cpu = CpuAbi::default();
+        let mut memory = FlatMemory::new(DATA, 256);
+        cpu.gpr[4] = DATA + 240;
+        memory.load(cpu.gpr[4], &HARNESS_EXIT.to_le_bytes());
+        for (offset, value) in [(4, 1.5_f32), (8, 4.0), (16, 0.5), (20, 1.5)] {
+            memory.load(DATA + offset, &value.to_le_bytes());
+        }
+        let mut ctx = Ctx::new(memory);
+        let (end, _) = module.run(&mut cpu, &mut ctx, TransferAbi::new(JUMP, ENTRY, BASE), 64);
+        assert_eq!((end.kind, end.target_pc), (RETURN, HARNESS_EXIT));
+        assert_eq!(ctx.mem.read_u32(DATA), Some(10));
+        assert_eq!(ctx.mem.read_u32(DATA + 12), Some(6.0_f32.to_bits()));
+        assert_eq!(ctx.mem.read_u32(DATA + 24), Some(4.0_f32.to_bits()));
+        assert_eq!(ctx.mem.read_u32(DATA + 28), Some(1));
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
 }

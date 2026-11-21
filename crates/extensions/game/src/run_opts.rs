@@ -49,6 +49,9 @@ pub struct RunReport {
 pub struct Host {
     /// Record this boot to a new film file. Falls back to H2_FILM_OUT.
     pub film_out: Option<PathBuf>,
+    /// Local media controls and the offline clip sink belong to separate players.
+    pub film_media: Option<crate::theater::Media>,
+    pub film_capture: Option<Arc<crate::theater::ClipCapture>>,
     /// Dedicated System Link profile, with no screen or speakers.
     pub host_light: bool,
     /// Opt in to bot support on a light host.
@@ -61,13 +64,9 @@ pub struct Host {
     #[cfg(feature = "gpu")]
     pub film_view: Option<crate::theater::HostView>,
     #[cfg(feature = "gpu")]
-    /// With `gfx`: a second backend on the same device that renders the
-    /// frame buffers at this scale and presents, while `gfx` stays at the
-    /// guest's size and answers the guest (`d3d::ScaledBackend`,
-    /// `H2_RENDER_SCALE`, docs/graphics/high-resolution.md). `gfx` then has no
-    /// present hook; the view has it. At 1 the view sleeps; with
-    /// `settings`, the scale follows the Resolution setting during the run.
-    pub gfx_view: Option<(d3d::GfxBackend, u32)>,
+    /// The display backend and the current physical size for Native resolution.
+    /// The first backend keeps the guest's render target dimensions.
+    pub gfx_view: Option<DisplayView>,
     #[cfg(feature = "gpu")]
     /// Run `gfx`'s work on a render thread (`d3d::ThreadedBackend`,
     /// docs/graphics/render-thread.md); off in `Host::default()`. Hosts set it from
@@ -111,16 +110,22 @@ pub struct Host {
     /// Start this campaign level in place of the main menu (`level_boot`,
     /// docs/runtime/level-boot.md). `None` reads `H2_LEVEL` and `H2_DIFFICULTY`.
     pub level: Option<crate::level_boot::Request>,
-    /// Called after every slice, input pump and audio advance, with the
-    /// kernel (for its logical clock). Returning false ends the run
+    /// Receives the kernel clock after servicing a slice and after an audio-only
+    /// idle advance, before the scheduler retries. Returning false ends the run
     /// (outcome `HostStop`).
     pub between_slices: Option<BetweenSlices>,
+    /// Switch the window to its loading picture before the game rebuilds the
+    /// main menu. Headless and exact film runs have no loading picture.
+    #[cfg(feature = "gpu")]
+    pub return_to_menu: Option<crate::return_to_menu::LoadingScreen>,
     /// Our debug menu (docs/runtime/debug-menu.md): its calls go to the
     /// agent (`H2_AGENT`'s, else a local one with no socket), and it gets
     /// the menu's host methods (`settings.*`, `perf.overlay`, `cheat.*`).
     pub debug_menu: Option<debug_menu::Shared>,
     /// Desktop Theater controller and the film library opener supplied by the host.
     pub theater: Option<(crate::theater_ui::Theater, crate::theater_ui::adapter::OpenLibrary)>,
+    /// The isolated player's host-rendered pages and input model.
+    pub theater_playback: Option<crate::theater_ui::Theater>,
     /// Open the agent socket in the agents directory when `H2_AGENT` is
     /// unset, so editors and agents find the game
     /// ([`crate::agent_glue::discoverable_socket`]; `H2_AGENT=off` keeps
@@ -130,10 +135,29 @@ pub struct Host {
     pub embedded_live: bool,
     /// The perf overlay's on/off switch, for `perf.overlay`.
     pub perf_overlay: Option<Arc<std::sync::atomic::AtomicBool>>,
+    /// Shared with the registered debug-view world-line producer on a windowed run.
+    pub debug_views: Option<Arc<agent::debug_views::DebugViews>>,
+    /// The window consumer for the paired-editor plate and focus requests.
+    pub editor_link: Option<agent::editor::EditorLink>,
+    #[cfg(feature = "gpu")]
+    #[doc(hidden)]
+    pub world_line_sources: Vec<Arc<dyn crate::world_lines::WorldLineSource>>,
     /// Called once with the kernel's VFS when it is attached, before the
     /// game runs: `h2 play` watches U: through it for cloud saves
     /// (`vfs::Vfs::set_change_observer`, docs/live/live-cloud-saves.md).
     pub on_vfs: Option<VfsReady>,
+}
+
+impl Host {
+    /// Registers a window-overlay producer before boot. Keep the source's
+    /// active state in an atomic so inactive sources make no capture calls
+    /// or allocations. Capture may run on the pipelined worker and only
+    /// reads shared host state and that worker's guest view. The window
+    /// consumes the owned sample later, even when it re-shows an image.
+    #[cfg(feature = "gpu")]
+    pub fn add_world_line_source(&mut self, source: Arc<dyn crate::world_lines::WorldLineSource>) {
+        self.world_line_sources.push(source);
+    }
 }
 
 /// [`Host::on_vfs`].
@@ -141,3 +165,17 @@ pub type VfsReady = Box<dyn FnOnce(&Arc<std::sync::Mutex<vfs::Vfs>>) + Send>;
 
 /// [`Host::between_slices`]: true to keep running.
 pub type BetweenSlices = Box<dyn FnMut(&kernel::Kernel) -> bool>;
+
+/// Physical drawable pixels, read when sizing the view or opening the Video picker.
+pub type NativeSize = Arc<dyn Fn() -> (u32, u32) + Send + Sync>;
+
+#[cfg(feature = "gpu")]
+pub struct DisplayView {
+    /// Absent when both resolution and lighting are locked to retail.
+    pub backend: Option<d3d::GfxBackend>,
+    pub native_size: NativeSize,
+    /// Playback uses the viewer's chosen raster while the guest uses its recorded settings.
+    pub viewer_output: Option<NativeSize>,
+    /// Physical presentation rectangle for an internal render resolution.
+    pub display_size: Arc<dyn Fn((u32, u32)) -> (u32, u32) + Send + Sync>,
+}

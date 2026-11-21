@@ -20,10 +20,15 @@
 //! Edits are tied to the map they were made on (the scenario's datum): a
 //! journal entry from another map is never written back.
 
+mod batch;
+pub use batch::BatchError;
 pub mod index;
 pub mod names;
 pub mod path;
 pub mod value;
+
+use std::collections::BTreeMap;
+use std::ops::Range;
 
 use map::FourCC;
 use runtime::Guest;
@@ -83,6 +88,8 @@ pub struct Change {
     pub group: String,
     pub name: Option<String>,
     pub path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
     #[serde(serialize_with = "hex32")]
     pub addr: u32,
     #[serde(rename = "type")]
@@ -90,11 +97,28 @@ pub struct Change {
     pub old: Value,
     pub new: Value,
     #[serde(skip)]
+    batch: bool,
+    #[serde(skip)]
+    tag_address: u32,
+    #[serde(skip)]
+    changed: bool,
+    #[serde(skip)]
     old_bytes: Vec<u8>,
     #[serde(skip)]
     new_bytes: Vec<u8>,
     #[serde(skip)]
     kind_def: tags::defs::Kind,
+}
+
+impl Change {
+    fn range(&self) -> Range<u64> {
+        let start = u64::from(self.addr);
+        start..start + self.new_bytes.len() as u64
+    }
+}
+
+fn overlaps(left: &Range<u64>, right: &Range<u64>) -> bool {
+    left.start < right.end && right.start < left.end
 }
 
 fn hex32<S: serde::Serializer>(v: &u32, s: S) -> std::result::Result<S::Ok, S::Error> {
@@ -114,6 +138,7 @@ pub struct TagSel {
 pub struct Editor {
     journal: Vec<Change>,
     next_id: u64,
+    epoch: Option<u64>,
     names: Option<NameSource>,
     cached: Option<Names>,
 }
@@ -133,6 +158,69 @@ fn group_text(g: FourCC) -> String {
 }
 
 impl Editor {
+    /// A map load or restore replaces the journal's base. A BSP switch can
+    /// leave allocations in place, including several writes to the same field.
+    pub fn at_epoch(&mut self, g: &Guest, epoch: u64, map_epoch: u64) -> Result<()> {
+        if self.epoch == Some(epoch) {
+            return Ok(());
+        }
+        self.cached = None;
+        if self.epoch.is_none_or(|e| e < map_epoch) {
+            self.journal.clear();
+        }
+        if self.journal.is_empty() {
+            self.epoch = Some(epoch);
+            return Ok(());
+        }
+        // During a BSP change the tag table can still be loading. Retry
+        // without consuming the epoch or losing the journal if a read faults.
+        let idx = self.index(g)?;
+        let mut slots = BTreeMap::new();
+        for c in &self.journal {
+            let slot = c.tag & 0xffff;
+            if c.scenario == idx.scenario
+                && slot < idx.count
+                && let std::collections::btree_map::Entry::Vacant(v) = slots.entry(slot)
+            {
+                v.insert(index::entry(g, &idx, slot).map_err(Error::unavailable)?);
+            }
+        }
+        self.journal.retain(|c| {
+            c.scenario == idx.scenario
+                && slots
+                    .get(&(c.tag & 0xffff))
+                    .and_then(Option::as_ref)
+                    .is_some_and(|entry| {
+                        entry.datum == c.tag
+                            && entry.address == c.tag_address
+                            && group_text(entry.group) == c.group
+                            && entry.contains(c.addr, c.new_bytes.len() as u32)
+                    })
+        });
+        // Model reverse undo in a scratch copy: an older write hidden by a
+        // later journal entry is still restorable. Never write into the game.
+        let mut earlier = BTreeMap::new();
+        let mut protected = Vec::new();
+        for c in self.journal.iter_mut().rev() {
+            let range = c.range();
+            let matches = read_bytes(g, c.addr, c.new_bytes.len() as u32).is_ok_and(|bytes| {
+                range
+                    .clone()
+                    .zip(bytes)
+                    .zip(&c.new_bytes)
+                    .all(|((at, live), &new)| earlier.get(&at).copied().unwrap_or(live) == new)
+            });
+            if c.changed || !matches || protected.iter().any(|r| overlaps(r, &range)) {
+                c.changed = true;
+                protected.push(range);
+            } else {
+                earlier.extend(range.zip(c.old_bytes.iter().copied()));
+            }
+        }
+        self.epoch = Some(epoch);
+        Ok(())
+    }
+
     pub fn new() -> Editor {
         Editor::default()
     }
@@ -376,6 +464,22 @@ impl Editor {
         Ok((idx, e, loc))
     }
 
+    /// `edit.read`: exact bytes inside a single loaded tag allocation.
+    pub fn read(&self, g: &Guest, addr: u32, len: u32) -> Result<Value> {
+        if !(1..=512 * 1024).contains(&len) {
+            return Err(Error::invalid("len must be between 1 and 524288 bytes"));
+        }
+        let idx = self.index(g)?;
+        for slot in 0..idx.count {
+            let entry = index::entry(g, &idx, slot).map_err(Error::unavailable)?;
+            if entry.is_some_and(|e| e.contains(addr, len)) {
+                let bytes = read_bytes(g, addr, len)?;
+                return Ok(json!({"at": addr, "holds_bytes": value::hex(&bytes)}));
+            }
+        }
+        Err(Error::invalid("address range outside loaded tags"))
+    }
+
     /// `edit.get`: a field's value, or an element's fields with theirs.
     pub fn get(&mut self, g: &Guest, sel: &TagSel, path: &str) -> Result<Value> {
         let (idx, e, loc) = self.locate(g, sel, path)?;
@@ -436,9 +540,20 @@ impl Editor {
             .map(str::to_owned);
         let new = value::read(&loc.kind, &bytes);
         // A second edit of the same bytes keeps the first one's original.
-        let change = match self.journal.iter_mut().find(|c| {
-            c.scenario == idx.scenario && c.addr == loc.addr && c.new_bytes.len() == bytes.len()
-        }) {
+        let change = match self
+            .journal
+            .iter_mut()
+            .rev()
+            .find(|c| {
+                c.scenario == idx.scenario
+                    && u64::from(c.addr) < u64::from(loc.addr) + bytes.len() as u64
+                    && u64::from(loc.addr) < u64::from(c.addr) + c.new_bytes.len() as u64
+            })
+            .filter(|c| {
+                !c.batch && !c.changed && c.tag == e.datum && c.addr == loc.addr
+                    && c.new_bytes == current
+            })
+        {
             Some(c) => {
                 c.new_bytes = bytes;
                 c.new = new;
@@ -451,13 +566,17 @@ impl Editor {
                     id: self.next_id,
                     scenario: idx.scenario,
                     tag: e.datum,
+                    tag_address: e.address,
+                    changed: false,
                     group: group_text(e.group),
                     name,
                     path: path.into(),
+                    label: None,
                     addr: loc.addr,
                     kind: value::kind_text(&loc.kind),
                     old: value::read(&loc.kind, &current),
                     new,
+                    batch: false,
                     old_bytes: current,
                     new_bytes: bytes,
                     kind_def: loc.kind.clone(),
@@ -473,23 +592,31 @@ impl Editor {
     /// there (`live`) and whether it was made on another map (`stale`).
     pub fn changes(&self, g: &Guest) -> Value {
         let scenario = index::index(g).ok().map(|i| i.scenario);
-        let list: Vec<Value> = self
-            .journal
-            .iter()
-            .map(|c| {
-                let stale = scenario != Some(c.scenario);
+        let mut list: Vec<Value> = Vec::new();
+        for chunk in self.journal.chunk_by(|a,b| a.id == b.id) {
+            let fields: Vec<_> = chunk.iter().map(|c| {
+            let stale = scenario != Some(c.scenario);
                 let now = (!stale)
                     .then(|| read_bytes(g, c.addr, c.new_bytes.len() as u32).ok())
                     .flatten();
                 let mut v = serde_json::to_value(c).unwrap_or(Value::Null);
+                v["was_bytes"] = json!(value::hex(&c.old_bytes));
+                v["new_bytes"] = json!(value::hex(&c.new_bytes));
+                v["holds"] = json!(now.as_ref().map(|b| value::hex(b)));
                 v["stale"] = json!(stale);
-                v["live"] = json!(now.as_ref() == Some(&c.new_bytes));
+                v["live"] = json!(!c.changed && now.as_ref() == Some(&c.new_bytes));
                 if let Some(now) = &now {
                     v["now"] = value::read(&c.kind_def, now);
                 }
                 v
-            })
-            .collect();
+            }).collect();
+            let first = &chunk[0];
+            if first.batch {
+                list.push(json!({"id":first.id,"label":first.label,"fields":fields}));
+            } else {
+                list.extend(fields);
+            }
+        }
         json!({ "changes": list })
     }
 
@@ -507,26 +634,48 @@ impl Editor {
         let scenario = index::index(g).ok().map(|i| i.scenario);
         let mut reverted = Vec::new();
         let mut dropped = Vec::new();
-        let mut kept = Vec::new();
-        for c in std::mem::take(&mut self.journal).into_iter().rev() {
+        let mut protected = Vec::new();
+        let mut retained = Vec::new();
+        for index in (0..self.journal.len()).rev() {
+            let c = &mut self.journal[index];
+            let range = c.range();
+            if protected.iter().any(|r| overlaps(r, &range)) {
+                c.changed = true;
+            }
             if id.is_some_and(|i| i != c.id) {
-                kept.push(c);
+                if c.changed {
+                    protected.push(range);
+                } else {
+                    retained.push(range);
+                }
                 continue;
             }
             if scenario != Some(c.scenario) {
-                dropped.push(json!({"id": c.id, "why": "made on another map"}));
+                dropped.push(json!({"id": c.id, "at": c.addr, "tag": format!("{:#010x}", c.tag),
+                    "path": c.path, "holds_bytes": null,
+                    "why": "made on another map"}));
+                self.journal.remove(index);
                 continue;
             }
             let now = read_bytes(g, c.addr, c.new_bytes.len() as u32)?;
-            if now != c.new_bytes {
-                dropped.push(json!({"id": c.id, "why": "the game changed it since; left alone"}));
-                continue;
+            let why = if c.changed || now != c.new_bytes {
+                Some("the game changed it since; left alone")
+            } else if retained.iter().any(|r| overlaps(r, &range)) {
+                Some("overlaps a newer journal entry; left alone")
+            } else {
+                None
+            };
+            if let Some(why) = why {
+                dropped.push(json!({"id": c.id, "at": c.addr, "tag": format!("{:#010x}", c.tag),
+                    "path": c.path, "holds_bytes": value::hex(&now), "why": why}));
+                protected.push(range);
+            } else {
+                g.write_bytes(c.addr, &c.old_bytes, 1).map_err(fault)?;
+                reverted.push(json!({"id": c.id, "at": c.addr, "tag": format!("{:#010x}", c.tag),
+                    "path": c.path, "value": c.old, "holds_bytes": value::hex(&c.old_bytes)}));
             }
-            g.write_bytes(c.addr, &c.old_bytes, 1).map_err(fault)?;
-            reverted.push(json!({"id": c.id, "path": c.path, "value": c.old}));
+            self.journal.remove(index);
         }
-        kept.reverse();
-        self.journal = kept;
         Ok(json!({ "reverted": reverted, "dropped": dropped }))
     }
 }

@@ -18,6 +18,7 @@ const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 
 /// An offscreen studio.
 pub struct Headless {
+    _census: mem_watch::gpu::DeviceRegistration,
     device: wgpu::Device,
     queue: wgpu::Queue,
     renderer: WgpuRenderer,
@@ -41,7 +42,7 @@ impl Headless {
     /// A studio of `size` points at `scale` pixels per point. Errors when
     /// the machine has no wgpu adapter.
     pub fn new(size: [f32; 2], scale: f32) -> Result<Self> {
-        let instance = wgpu::Instance::default();
+        let instance = gfx::instance();
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::HighPerformance,
             ..Default::default()
@@ -49,6 +50,7 @@ impl Headless {
         .map_err(|e| anyhow!("no wgpu adapter: {e}"))?;
         let (device, queue) = pollster::block_on(adapter.request_device(&Default::default()))
             .context("request a wgpu device")?;
+        let census = mem_watch::gpu::DeviceRegistration::new(&instance, &adapter, &device);
         let (mut ctx, fonts) = crate::context(None);
         let io = ctx.io_mut();
         io.set_display_size(size);
@@ -79,6 +81,7 @@ impl Headless {
         // Screenshots want the camera where it was put, not gliding there.
         studio.viewport.camera.smooth = false;
         Ok(Self {
+            _census: census,
             device,
             queue,
             renderer,
@@ -451,11 +454,296 @@ pub fn write_png(path: &Path, rgba: &[u8], w: u32, h: u32) -> Result<()> {
     Ok(())
 }
 
+/// A 2D RGBA8 texture's texels as tightly packed rows (the texture needs
+/// `COPY_SRC`).
+pub fn read_texture(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    texture: &wgpu::Texture,
+) -> Result<Vec<u8>> {
+    let (w, h) = (texture.width(), texture.height());
+    let row = (w * 4).div_ceil(256) * 256;
+    let buf = device.create_buffer(&wgpu::BufferDescriptor {
+        label: None,
+        size: u64::from(row * h),
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    let mut enc = device.create_command_encoder(&Default::default());
+    enc.copy_texture_to_buffer(
+        texture.as_image_copy(),
+        wgpu::TexelCopyBufferInfo {
+            buffer: &buf,
+            layout: wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(row),
+                rows_per_image: Some(h),
+            },
+        },
+        wgpu::Extent3d {
+            width: w,
+            height: h,
+            depth_or_array_layers: 1,
+        },
+    );
+    queue.submit([enc.finish()]);
+    buf.slice(..).map_async(wgpu::MapMode::Read, |_| {});
+    device
+        .poll(wgpu::PollType::wait_indefinitely())
+        .map_err(|e| anyhow!("wgpu poll: {e}"))?;
+    let data = buf
+        .slice(..)
+        .get_mapped_range()
+        .map_err(|e| anyhow!("map the readback: {e}"))?;
+    let mut out = Vec::with_capacity((w * h * 4) as usize);
+    for y in 0..h as usize {
+        let start = y * row as usize;
+        out.extend_from_slice(&data[start..start + (w * 4) as usize]);
+    }
+    Ok(out)
+}
+
+/// Dear ImGui allows one context at a time: the tests take turns.
+#[cfg(test)]
+pub(crate) static ONE_CONTEXT: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::app::Action;
     use scenario_edit::{BlockKind, fixture};
+
+    #[cfg(unix)]
+    #[test]
+    fn the_game_link_shows_in_every_tool() {
+        use crate::ToolKind;
+        use crate::play::Play;
+        use crate::play::testing::{Temp, fake};
+        use agent_proto::sim::SessionKind;
+
+        let Some((_turn, mut h)) = headless() else {
+            return;
+        };
+        let mut app = App::new();
+        // This test's link is independent of any real game on the machine.
+        h.studio.play.play = Play::new();
+        for tool in ToolKind::ALL {
+            app.dispatch(Action::SetTool(tool));
+            h.frames(&mut app, 3).unwrap();
+            assert!(
+                h.scene
+                    .items
+                    .iter()
+                    .any(|i| { i.window == "##studio-bar" && i.label.starts_with("No game") }),
+                "game link missing in {tool:?}",
+            );
+            assert!(
+                h.scene
+                    .items
+                    .iter()
+                    .any(|i| { i.window.ends_with("###game") && i.label.starts_with("No game") }),
+                "Game tab missing in {tool:?}",
+            );
+            // No map is open, so F5 reaches Play and reports the missing map.
+            let log_len = app.log().len();
+            h.step(&mut app, &Step::Key(dear_imgui_rs::Key::F5, 1))
+                .unwrap();
+            assert!(app.log().len() > log_len);
+            assert!(
+                app.status()
+                    .is_some_and(|s| s.text().contains("open a map"))
+            );
+        }
+
+        let temp = Temp::new("bar-link");
+        app.set_data_root(temp.0.join("data"));
+        app.dispatch(Action::OpenSource(temp.map("example")));
+        let game = fake::Game::start("bar-link", "example", SessionKind::Local);
+        fake::pair_for_view(&mut h.studio.play.play, &mut app, &game);
+        h.frames(&mut app, 3).unwrap();
+        assert!(!h.studio.play.play.live_edits);
+        assert!(
+            h.scene
+                .items
+                .iter()
+                .any(|i| { i.window == "##studio-bar" && i.label.starts_with("Viewing") }),
+        );
+        let edit = h
+            .scene
+            .items
+            .iter()
+            .find(|i| i.window == "##studio-bar" && i.label.starts_with("Edit"))
+            .unwrap()
+            .label
+            .clone();
+        h.step(
+            &mut app,
+            &Step::Click(format!("##studio-bar>{edit}"), Button::Left),
+        )
+        .unwrap();
+        assert!(h.studio.play.play.live_edits);
+    }
+
+    #[test]
+    fn the_default_layout_places_every_window() {
+        use crate::ToolKind;
+        let Some((_turn, mut h)) = headless() else { return };
+        let source = crate::app::map_cards_tests::Temp::new("workspaces");
+        let mut app = App::new();
+        app.set_data_root(source.0.join("data"));
+        let workspaces = [
+            (ToolKind::Scenario, ["maps", "viewport", "inspector"]),
+            (ToolKind::Tags, ["tags", "viewport", "inspector"]),
+            (ToolKind::Variants, ["variants-list", "variants-settings", "variants-inspector"]),
+            (ToolKind::Playlists, ["playlists-list", "playlists-entries", "playlists-inspector"]),
+            (ToolKind::UiScreens, ["screens-list", "screens-preview", "screens-inspector"]),
+            (ToolKind::Hud, ["hud-list", "hud-preview", "hud-inspector"]),
+        ];
+        // Each workspace's own IDs use the same dock geometry. Scenario
+        // and Tags are two tabs of Map, so they share its centre and right.
+        let mut regions = None;
+        let mut workspace_keys = std::collections::HashSet::new();
+        for (tool, keys) in workspaces {
+            if tool != ToolKind::Tags {
+                assert!(keys.iter().all(|key| workspace_keys.insert(*key)));
+            }
+            app.dispatch(Action::SetTool(tool));
+            h.frames(&mut app, 4).unwrap();
+            let actual = keys.map(|key| h.scene.find(&format!("win:###{key}")).unwrap().0);
+            assert!(actual[0][2] < actual[1][0] && actual[1][2] < actual[2][0]);
+            if let Some(regions) = regions {
+                assert_eq!(actual, regions, "{tool:?} must fit the same regions");
+            }
+            regions = Some(actual);
+        }
+    }
+
+    #[test]
+    fn the_saved_layout_with_the_three_old_ids_loads() {
+        use crate::ToolKind;
+        let Some((_turn, mut first)) = headless() else { return };
+        let mut app = App::new();
+        let source = crate::app::map_cards_tests::Temp::new("legacy-layout");
+        let path = source.0.join("invented.map");
+        std::fs::write(&path, fixture::fixture()).unwrap();
+        app.set_data_root(source.0.join("data"));
+        app.dispatch(Action::OpenSource(path));
+        first.frames(&mut app, 4).unwrap();
+        let before = ["outliner", "viewport", "inspector"].map(|name| {
+            first.scene.find(&format!("win:###{name}")).unwrap().0
+        });
+        let mut settings = String::new();
+        first.ctx.save_ini_settings(&mut settings);
+        drop(first);
+
+        let legacy = settings
+            .split("
+
+")
+            .filter(|section| {
+                section.starts_with("[Docking]")
+                    || ["outliner", "viewport", "inspector", "log", "game"]
+                        .iter()
+                        .any(|name| section.starts_with(&format!("[Window][###{name}]")))
+            })
+            .collect::<Vec<_>>()
+            .join("
+
+");
+        assert!(legacy.contains("[Window][###outliner]"));
+        assert!(legacy.contains("[Docking]"));
+
+        let mut h = Headless::new([1280.0, 800.0], 1.0).unwrap();
+        h.ctx.load_ini_settings(&legacy);
+        h.frames(&mut app, 4).unwrap();
+        let after = ["outliner", "viewport", "inspector"].map(|name| {
+            h.scene.find(&format!("win:###{name}")).unwrap().0
+        });
+        assert_eq!(after, before);
+
+        app.dispatch(Action::SetTool(ToolKind::Variants));
+        h.frames(&mut app, 4).unwrap();
+        let variants = ["variants-list", "variants-settings", "variants-inspector"].map(|name| {
+            h.scene.find(&format!("win:###{name}")).unwrap().0
+        });
+        assert_eq!(variants, before);
+    }
+
+    #[test]
+    fn the_legacy_scenario_click_switches_to_map() {
+        use crate::ToolKind;
+        let Some((_turn, mut h)) = headless() else { return };
+        let source = crate::app::map_cards_tests::Temp::new("legacy-scenario");
+        let mut app = App::new();
+        app.set_data_root(source.0.join("data"));
+        app.dispatch(Action::SetTool(ToolKind::Variants));
+        h.frames(&mut app, 3).unwrap();
+        let script = crate::script::parse("click ###tools>Scenario").unwrap();
+        h.step(&mut app, &script[0]).unwrap();
+        assert_eq!(app.tool, ToolKind::Scenario);
+        assert!(h.scene.find("##studio-bar>###tool-Map").is_ok());
+        assert!(h.scene.find("Open a disc or map...").is_ok());
+    }
+
+    #[test]
+    fn the_toolbar_has_icon_buttons_and_visible_snap_steps() {
+        let Some((_turn, mut h)) = headless() else { return };
+        let source = crate::app::map_cards_tests::Temp::new("toolbar");
+        let path = source.0.join("invented.map");
+        std::fs::write(&path, fixture::fixture()).unwrap();
+        let mut app = App::new();
+        app.set_data_root(source.0.join("data"));
+        app.dispatch(Action::OpenSource(path));
+        let steps = crate::script::parse(
+            "click Rotate (E); click ##Grid step; click Combo>1; click ##Angle step; click Combo>45°",
+        )
+        .unwrap();
+        crate::probe::want(crate::script::labels(crate::script::targets(&steps)));
+        h.frames(&mut app, 4).unwrap();
+        for step in &steps {
+            h.step(&mut app, step).unwrap();
+        }
+        assert_eq!(h.studio.viewport.op, crate::viewport::GizmoOp::Rotate);
+        let snap = h.studio.viewport.snap;
+        assert!(snap.grid && snap.angle);
+        assert_eq!((snap.grid_step, snap.angle_step), (1.0, 45.0));
+    }
+
+    #[test]
+    fn ui_colours_come_from_the_theme() {
+        fn check(file: &Path) {
+            if file.is_dir() {
+                for entry in file.read_dir().unwrap() {
+                    check(&entry.unwrap().path());
+                }
+                return;
+            }
+            if file.extension().and_then(|e| e.to_str()) != Some("rs") {
+                return;
+            }
+            let source = std::fs::read_to_string(file).unwrap();
+            let code = source.lines()
+                .map(|line| line.split_once("//").map_or(line, |(code, _)| code))
+                .collect::<Vec<_>>()
+                .join("
+");
+            for value in code.split('[').filter_map(|s| s.split_once(']').map(|(v, _)| v)) {
+                let numbers: Vec<_> = value.split(',').map(str::trim).filter(|v| !v.is_empty()).collect();
+                assert!(
+                    numbers.len() != 4 || !numbers.iter().all(|n| n.parse::<f32>().is_ok()),
+                    "{} has a colour literal [{value}]",
+                    file.display()
+                );
+            }
+            for constructor in ["rgb(", "rgba(", "from_rgb(", "from_rgba("] {
+                assert!(!code.contains(constructor), "{} calls {constructor}", file.display());
+            }
+        }
+
+        let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        check(&src.join("ui.rs"));
+        check(&src.join("ui"));
+    }
 
     /// One real frame of the shell over the invented test map, read back:
     /// the UI drew something other than the clear colour, and the PNG
@@ -613,6 +901,80 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    #[test]
+    fn enter_in_go_to_anything_dispatches_the_selected_command() {
+        use dear_imgui_rs::Key;
+
+        let Some((_turn, mut h)) = headless() else {
+            return;
+        };
+        let t = crate::app::map_cards_tests::Temp::new("palette-ui");
+        let map = t.0.join("example.map");
+        std::fs::write(&map, fixture::fixture()).unwrap();
+        let mut app = App::new();
+        app.set_data_root(t.0.join("data"));
+        app.dispatch(Action::OpenSource(map));
+        for x in [7.0, 9.0] {
+            app.dispatch(Action::MovePlacement {
+                block: BlockKind::NetgameFlags,
+                index: 0,
+                position: [x, 3.0, 3.0],
+                ypr: None,
+            });
+        }
+        app.dispatch(Action::Undo);
+        assert!(app.can_undo() && app.can_redo());
+        h.frames(&mut app, 3).unwrap();
+
+        h.ctx.io_mut().add_key_event(Key::ModCtrl, true);
+        h.step(&mut app, &Step::Key(Key::P, 1)).unwrap();
+        h.ctx.io_mut().add_key_event(Key::ModCtrl, false);
+        h.frames(&mut app, 2).unwrap();
+        h.scene.find("win:###palette").unwrap();
+        h.step(&mut app, &Step::Type("cmd+z".into())).unwrap();
+        // Undo is first and Redo is second. Run Redo using the keyboard.
+        h.step(&mut app, &Step::Key(Key::DownArrow, 1)).unwrap();
+        h.step(&mut app, &Step::Key(Key::Enter, 1)).unwrap();
+        h.frames(&mut app, 2).unwrap();
+        assert!(!app.can_redo());
+        assert!(h.scene.find("win:###palette").is_err());
+    }
+
+    #[test]
+    fn cmd_s_rewrites_an_open_package_without_a_dialog() {
+        use dear_imgui_rs::Key;
+
+        let Some((_turn, mut h)) = headless() else {
+            return;
+        };
+        let t = crate::app::map_cards_tests::Temp::new("save-package-ui");
+        let map = t.0.join("example.map");
+        std::fs::write(&map, fixture::fixture()).unwrap();
+        let mut app = App::new();
+        app.set_data_root(t.0.join("data"));
+        app.dispatch(Action::OpenSource(map));
+        app.dispatch(Action::SavePackage(app.session.form_defaults()));
+        app.dispatch(Action::SelectMap("example".into()));
+        app.dispatch(Action::OpenPackageEntry("example-edit".into()));
+        let manifest = app.session.maps_dir().join("example-edit/manifest.toml");
+        let first = std::fs::read(&manifest).unwrap();
+        app.dispatch(Action::MovePlacement {
+            block: BlockKind::NetgameFlags,
+            index: 0,
+            position: [7.0, 3.0, 3.0],
+            ypr: None,
+        });
+        assert!(app.is_dirty());
+        h.frames(&mut app, 3).unwrap();
+
+        h.ctx.io_mut().add_key_event(Key::ModCtrl, true);
+        h.step(&mut app, &Step::Key(Key::S, 1)).unwrap();
+        h.ctx.io_mut().add_key_event(Key::ModCtrl, false);
+        assert!(app.package_form.is_none());
+        assert!(!app.is_dirty());
+        assert_ne!(std::fs::read(manifest).unwrap(), first);
+    }
+
     /// The Tags tool through its widgets: open the weapon group in the
     /// tree, pick the weapon, tick a flag and pick an enum value in the
     /// field panel. The edits land in the document, as undo steps, and
@@ -636,7 +998,10 @@ mod tests {
         assert_eq!(app.tags.selected, Some(tag_tests::weap_id()));
         h.step(&mut app, &click("quiet##b1")).unwrap();
         h.frames(&mut app, 2).unwrap();
-        let flags = app.tags.read(tag_tests::WEAP + 4, 2).unwrap();
+        let flags = app
+            .tags
+            .read(tag_tests::weap_id(), tag_tests::WEAP + 4, 2)
+            .unwrap();
         assert_eq!(flags, [3, 0], "both flags set");
         assert!(app.tags.is_changed(tag_tests::weap_id()));
         // The block lists its elements; the hex pane follows the mouse.
@@ -658,7 +1023,12 @@ mod tests {
             Some("flags")
         );
         app.dispatch(Action::Undo);
-        assert_eq!(app.tags.read(tag_tests::WEAP + 4, 2).unwrap(), [1, 0]);
+        assert_eq!(
+            app.tags
+                .read(tag_tests::weap_id(), tag_tests::WEAP + 4, 2)
+                .unwrap(),
+            [1, 0]
+        );
         let (rgba, _) = h.capture(&mut app, 2).unwrap();
         let distinct: std::collections::HashSet<[u8; 4]> = rgba
             .as_chunks::<4>()
@@ -675,7 +1045,7 @@ mod tests {
     /// installed it says how to install it; with an (invented) install it
     /// lists the map by its record's name with the picture beside it, and
     /// a click opens it in the scenario tool. The window is tall enough
-    /// for the Tools pane to show the group unscrolled: Dear ImGui names a
+    /// for the Maps tab to show the group unscrolled: Dear ImGui names a
     /// clipped row to nobody, so the probe would not find it. Skipped
     /// without a wgpu adapter.
     #[test]
@@ -718,11 +1088,6 @@ mod tests {
             h.studio.map_list.shown(Group::MapPack),
             Some(&Shown::Maps(vec![("Ridge".into(), true)]))
         );
-        h.step(&mut app, &Step::Click("Ridge##pack-ridge".into(), Button::Left))
-            .unwrap();
-        h.frames(&mut app, 2).unwrap();
-        assert_eq!(app.opened_pack_map(), Some("ridge"));
-        assert!(app.session.is_open());
         let (rgba, _) = h.capture(&mut app, 2).unwrap();
         // The picture (R 0xe0, G 0x80, B 0x20 at the record's alpha 0xbf,
         // so blended a quarter with the dark panel) fills the thumbnail.
@@ -733,6 +1098,11 @@ mod tests {
             .filter(|p| (150..215).contains(&p[0]) && (80..135).contains(&p[1]) && p[2] < 70)
             .count();
         assert!(orange >= 100, "the thumbnail is drawn: {orange} pixels");
+        h.step(&mut app, &Step::Click("Ridge##pack-ridge".into(), Button::Left))
+            .unwrap();
+        h.frames(&mut app, 2).unwrap();
+        assert_eq!(app.opened_pack_map(), Some("ridge"));
+        assert!(app.session.is_open());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -742,8 +1112,8 @@ mod tests {
     /// menu's names, each with its picture beside it, and the shared cache
     /// and the menu itself by file name with none; a package with an image
     /// of its own shows it; the Map Pack, not installed, its hint. A click
-    /// on a named map opens it. The window is tall enough for the Tools
-    /// pane to show every group unscrolled. Skipped without a wgpu
+    /// on a named map opens it. The window is tall enough for the Maps
+    /// tab to show every group unscrolled. Skipped without a wgpu
     /// adapter.
     #[test]
     fn the_maps_list_names_and_pictures_every_group() {
@@ -787,16 +1157,13 @@ mod tests {
         assert_eq!(h.studio.map_list.shown(Group::Halo1), None);
         h.step(
             &mut app,
-            &Step::Click("The Pier##map-02_pier".into(), Button::Left),
+            &Step::Click("##map-grid>The Pier##map-02_pier".into(), Button::Left),
         )
         .unwrap();
         h.frames(&mut app, 2).unwrap();
         assert_eq!(app.loaded_map(), Some("02_pier"));
         assert!(app.session.is_open());
     }
-
-    /// Dear ImGui allows one context at a time: the tests take turns.
-    static ONE_CONTEXT: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     fn headless() -> Option<(std::sync::MutexGuard<'static, ()>, Headless)> {
         let turn = ONE_CONTEXT.lock().unwrap_or_else(|e| e.into_inner());
@@ -894,53 +1261,4 @@ mod tests {
         }
         let _ = std::fs::remove_dir_all(&dir);
     }
-}
-
-/// A 2D RGBA8 texture's texels as tightly packed rows (the texture needs
-/// `COPY_SRC`).
-pub fn read_texture(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    texture: &wgpu::Texture,
-) -> Result<Vec<u8>> {
-    let (w, h) = (texture.width(), texture.height());
-    let row = (w * 4).div_ceil(256) * 256;
-    let buf = device.create_buffer(&wgpu::BufferDescriptor {
-        label: None,
-        size: u64::from(row * h),
-        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-        mapped_at_creation: false,
-    });
-    let mut enc = device.create_command_encoder(&Default::default());
-    enc.copy_texture_to_buffer(
-        texture.as_image_copy(),
-        wgpu::TexelCopyBufferInfo {
-            buffer: &buf,
-            layout: wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(row),
-                rows_per_image: Some(h),
-            },
-        },
-        wgpu::Extent3d {
-            width: w,
-            height: h,
-            depth_or_array_layers: 1,
-        },
-    );
-    queue.submit([enc.finish()]);
-    buf.slice(..).map_async(wgpu::MapMode::Read, |_| {});
-    device
-        .poll(wgpu::PollType::wait_indefinitely())
-        .map_err(|e| anyhow!("wgpu poll: {e}"))?;
-    let data = buf
-        .slice(..)
-        .get_mapped_range()
-        .map_err(|e| anyhow!("map the readback: {e}"))?;
-    let mut out = Vec::with_capacity((w * h * 4) as usize);
-    for y in 0..h as usize {
-        let start = y * row as usize;
-        out.extend_from_slice(&data[start..start + (w * 4) as usize]);
-    }
-    Ok(out)
 }

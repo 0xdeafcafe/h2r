@@ -10,6 +10,7 @@
 pub mod aim_net;
 pub mod arms;
 pub mod autonav;
+pub mod bounce_route;
 pub mod brain;
 pub mod cache;
 pub mod decisions;
@@ -32,6 +33,7 @@ mod perceive;
 pub mod phantom;
 pub mod places;
 pub mod roam;
+pub mod spots;
 mod sound;
 pub mod stats;
 pub mod stuck;
@@ -65,6 +67,9 @@ pub struct Brain {
     epoch: u64,
     /// The map [`Brain::mind`]'s super bounce spots are for.
     map: String,
+    /// The [`spots::generation`] the mind's [`mind::Mind::known`] was read
+    /// at.
+    spots_gen: u64,
     /// Over the skill's aim table, awareness and the seeded personality
     /// (sim mode's tuning files; [`tuning`]).
     tuning: Option<tuning::Tuning>,
@@ -114,6 +119,24 @@ struct Observation {
     grenades: Vec<incoming::Grenade>,
     inbox: Vec<radio::Call>,
     supply_calls: Vec<radio::SupplyCall>,
+    /// The player's level pair word, when [`set_pair_reader`]'s reader
+    /// finds it.
+    pair_word: Option<u32>,
+}
+
+/// Reads a unit's level pair word from guest memory (the unit's datum
+/// handle in, the word out; `None` when it has no single pair against the
+/// level). The host installs it ([`set_pair_reader`]): the bots crate has
+/// no Havok layout of its own.
+pub type PairReader = fn(&dyn engine::memory::GuestMemory, u32) -> Option<u32>;
+
+static PAIR_READER: std::sync::OnceLock<PairReader> = std::sync::OnceLock::new();
+
+/// Installs the pair-word reader (once). Without one a bounce route
+/// assumes it is primed after the crouch and the stand-up
+/// (`glitches::prime`, [`glitches::prime::Primed::Assumed`]).
+pub fn set_pair_reader(reader: PairReader) {
+    let _ = PAIR_READER.set(reader);
 }
 
 /// Read-only brain state for phantom bot views.
@@ -152,6 +175,7 @@ impl Brain {
         let taunt = self.mind.emote.taunt;
         let glitches = self.mind.glitches;
         let bounces = std::mem::take(&mut self.mind.bounces);
+        let known = std::mem::take(&mut self.mind.known);
         let profile = self.name_profile();
         self.mind = mind::Mind::new(self.mind.skill, self.seed);
         self.mind.name_profile = profile;
@@ -159,6 +183,7 @@ impl Brain {
         self.mind.emote.taunt = taunt;
         self.mind.glitches = glitches;
         self.mind.bounces = bounces;
+        self.mind.known = known;
         self.retune();
         self.controller = human_input::Controller::new(self.seed);
         self.combat = stats::Recorder::default();
@@ -177,6 +202,7 @@ impl Brain {
             epoch: radio::lock(radio::host()).epoch,
             kills_seen: emote::kills().since(u64::MAX).1,
             map: String::new(),
+            spots_gen: u64::MAX,
             tuning: None,
             controller: human_input::Controller::new(seed),
             observations: VecDeque::new(),
@@ -415,6 +441,7 @@ impl Brain {
         tick: u32,
     ) -> HostPadState {
         let p = &observation.perception;
+        self.mind.pair_word = observation.pair_word;
         self.mind.hear_deaths(p, &observation.kills, map);
         self.mind
             .decisions
@@ -495,6 +522,15 @@ impl pad_source::PadSource for Brain {
 
     fn combat_stats(&self) -> Option<&stats::CombatStats> {
         Some(Brain::combat_stats(self))
+    }
+
+    fn order_bounce(&mut self, to: brain::Vec3, mode: bounce_route::Mode) -> bool {
+        self.mind.order_bounce(to, mode);
+        true
+    }
+
+    fn order_view(&self) -> Option<mind::OrderView> {
+        Some(self.mind.order_view())
     }
 
     fn reset_input(&mut self) {
@@ -604,6 +640,15 @@ impl Brain {
             self.mind.bounces = glitches::bounces(&name);
             self.mind.experience.enter(&name);
             self.map = name;
+            self.spots_gen = u64::MAX;
+            self.mind.cancel_order("map_changed");
+        }
+        // The scan of this map's spots lands when the nav worker is done
+        // with the map, which can be after the map loads.
+        let spots_gen = spots::generation();
+        if spots_gen != self.spots_gen {
+            self.spots_gen = spots_gen;
+            self.mind.known = spots::Known::for_map(&self.map);
         }
         self.kills_seen = cursor;
         let p = &mut observation.perception;
@@ -626,7 +671,16 @@ impl Brain {
             self.sampled = None;
         }
         self.player_unit = unit;
+        // The word is read only for a bot priming or bouncing: the walk
+        // that finds it is dear.
+        observation.pair_word = unit
+            .filter(|_| alive && self.mind.wants_pair())
+            .and_then(|(_, datum)| PAIR_READER.get().and_then(|read| read(f.guest, datum)));
         if !same_map {
+            if self.map_data.is_some() {
+                // A route was planned on the old mesh.
+                self.mind.cancel_order("map_changed");
+            }
             self.map_data = map.map(Arc::downgrade);
             self.mind.invalidate_routes();
             // Observations filtered against old geometry must not guide a
@@ -690,6 +744,7 @@ impl Brain {
     ) -> pad_source::Sampled {
         let mut observation = self.spare_observations.pop().unwrap_or_default();
         observation.perception = p;
+        observation.pair_word = None;
         observation.kills.clear();
         observation.kills.extend_from_slice(kills);
         observation.sounds.clear();

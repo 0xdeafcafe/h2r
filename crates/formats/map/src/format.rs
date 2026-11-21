@@ -154,7 +154,7 @@ pub struct TagGroup {
 
 /// A contiguous file region mapped into tag virtual memory.
 /// BSPs can reuse virtual addresses, so retain the region belonging to the tag.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub struct AddressSpace {
     /// Virtual address corresponding to `file_offset`.
     pub virtual_base: u32,

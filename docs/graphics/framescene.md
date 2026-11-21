@@ -686,10 +686,12 @@ commands are for the coordinator.
     (frustum against the parts' bounds). Objects
     (`boot::native_objects_glue`): the render-state checks and each
     part's plan (`LitObjects::plan_part_of`, where an item refuses).
-  - **What runs on the render thread.** World: the GPU world's upload,
-    part slots, pipelines and packets (`WorldPass::record_draws`).
-    Objects: pipelines, uniform uploads and packets
-    (`ObjectsPass::packets`).
+  - **Worker preparation.** Map workers upload world and object geometry,
+    stage textures and material programs. Pipeline workers build the
+    attachment-specific variants. A pending variant leaves the draw on D3D.
+  - **Render thread.** `WorldPass::record_draws` and `ObjectsPass::packets`
+    bind the prepared resources, write frame-specific uniforms and issue
+    the selected parts.
   - **Named errors.** What the render thread cannot record
     (`d3d::scene_stage`) is counted, its cause logged once, and the
     stage stands down: from then on it reserves on the sim thread, where
@@ -831,6 +833,15 @@ commits. The three parts are built.
   name. With the additional casters' pair every layer keeps its
   handlers (`lights_walk_fallback_graph`). Drawing the shadow maps as
   one batch at the start of the view's stage is not built.
+  Once the light pass is over, the frame step reads the game view's
+  whole candidate set (`scene_extract::lights::candidates`,
+  `frame_scene::LightCandidate`; docs/graphics/e3-lighting.md) before
+  the decal mode 1 call (`0x0002c370`, `points::RENDER_DECAL_MODE`,
+  returning to `0x0002c04d`). That call is the next one after
+  `render_dynamic_lights` returns, with no test between them, so the
+  light list, records and selections are as the pass left them. The
+  hook is a context-only before, so `0x00031c80` keeps no after hook
+  and its chain runs on the pipelined render thread.
 - **First person and world layers 1, 5, 7, 8, 20.** At each of the
   scene's layer draws 1, 5, 7, 8 and 20 (`0x0002bcd0`; layer 20 returns
   to `0x0002c010`, after layer 8, on the scene's list into the view's
@@ -1204,7 +1215,9 @@ D3D reference with all native stages disabled.
   and its totals counted (`d3d::scene_sink::counters`). When retaining
   draws, the sink also records repeatable typed stages at the point where
   they acquired their attachments. One-shot replacements decline admission
-  before guest draws are released.
+  before guest draws are released. A queued native draw
+  (`Backend::queue_external_draw`) is not carried, whether the render
+  thread records it or draws its D3D packet.
 - **Coverage.** `render.scene` reports, with the option, `carried`
   (the last frame's ops by slot, its side targets with the ops that
   named them by slot, and its readbacks in and outside a game view),
@@ -1395,7 +1408,7 @@ native renderer.
 
 After step 1 there is no D3D reference in the tree. The reference for
 later render work is the last commit before it, tagged
-`d3d-reference`; `h2 lab run --rev d3d-reference` builds it on the
+`d3d-reference`; `h2 lab run --name "D3D reference" --rev d3d-reference` builds it on the
 laptop. Its captures are game images and stay in local scratch, never
 in the repository.
 
@@ -1412,7 +1425,7 @@ uses the threaded, single-copy defaults of a fresh GPU run.
 for arm in off on; do
   features="impl.render.native=$arm"
   if [ "$arm" = on ]; then features="$features,frame-scene.sink"; fi
-  h2 lab run --host laptop --branch "$B" --level 03a_oldmombasa --difficulty heroic \
+  h2 lab run --name "Native renderer $arm" --host laptop --branch "$B" --level 03a_oldmombasa --difficulty heroic \
     --frames 5000 --stats-from 3000 --build-env H2_OPT=2 --fresh-data \
     --env H2_RENDER_SCALE=4 --env "H2_FEATURES=$features" \
     --wait --to "$RUSH_KEEP/lab/$B-$arm"

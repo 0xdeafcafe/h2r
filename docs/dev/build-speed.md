@@ -76,9 +76,9 @@ a second checkout can be served the first one's build.
   file and line (that comes from the panic location, not debug info); a
   backtrace still names the dependency's functions but not their lines.
   Workspace crates keep `line-tables-only`.
-- `split-debuginfo = "unpacked"` is now written out. It is cargo's
-  default on macOS, so by itself it changes nothing; it is there so an
-  override cannot bring `packed` and `dsymutil` back unnoticed.
+- Cargo selects the platform default for split debug info. macOS keeps
+  debug info in object files (unpacked). Windows MSVC writes a PDB
+  (packed), the format supported by its linker.
 - `opt-level = 3` for `miniz_oxide`, `zlib-rs`, `flate2`, `fdeflate`,
   `png`, `zune-jpeg`, `ruzstd`, `crc32fast`, `adler2`, `simd-adler32`
   and `sha2`: small codec and checksum crates that tests push whole
@@ -400,8 +400,9 @@ time through a path the scan does not recognise. The scan covers
 
 ### 4. The test ledger
 
-xtask records passes in `~/Library/Caches/h2recomp/xtask-ledger`
-(`$XDG_CACHE_HOME/h2recomp/xtask-ledger` elsewhere), one file per key
+xtask records passes in `xtask-ledger` in the cache directory
+([storage.md](../runtime/storage.md#host-directories);
+`~/Library/Caches/h2recomp/xtask-ledger` on a Mac), one file per key
 (`crates/tools/xtask/src/ledger.rs`). A package's key covers what its
 test run can depend on:
 

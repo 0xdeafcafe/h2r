@@ -22,6 +22,8 @@ use serde_json::{Value, json};
 use crate::expect::Expect;
 use crate::{PadStep, RpcError, code};
 
+mod edits;
+pub use edits::*;
 pub mod events;
 pub mod hashes;
 pub mod menu;
@@ -68,6 +70,16 @@ pub mod method {
     /// Per-brain controller decisions and match combat counters, registered by the game.
     pub const BOT_STATS: &str = "bots.stats";
 
+    /// Object and map edits for a paired editor. A host lists each only
+    /// when it serves it, so a client decides from `session.methods`.
+    pub const OBJECT_SET: &str = "world.object.set";
+    pub const OBJECT_DELETE: &str = "world.object.delete";
+    pub const OBJECT_RESPAWN: &str = "world.object.respawn";
+    pub const MAP_RELOAD: &str = "map.reload";
+
+    /// The edit methods above.
+    pub const EDITS: &[&str] = &[OBJECT_SET, OBJECT_DELETE, OBJECT_RESPAWN, MAP_RELOAD];
+
     pub const ALL: &[&str] = &[
         PLAYER_ADD,
         PLAYER_REMOVE,
@@ -81,6 +93,10 @@ pub mod method {
         SPAWN,
         OBJECTS,
         EVENTS,
+        OBJECT_SET,
+        OBJECT_DELETE,
+        OBJECT_RESPAWN,
+        MAP_RELOAD,
     ];
 }
 

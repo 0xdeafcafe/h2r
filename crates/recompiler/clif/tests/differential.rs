@@ -18,7 +18,7 @@ use ir::IrFunction;
 
 fn build_clif(owners: &[emit::Owner], header: &Path, name: &str) -> Generated {
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join(name);
-    let dylib = dir.join(format!("lib{name}.dylib"));
+    let dylib = dir.join(emit::compile::Arch::host().module_file_name());
     // Cranelift's IR verifier on: invalid IR (an extend to its own width)
     // otherwise compiles to an undefined instruction and dies at run time.
     // SAFETY: this binary's only test; nothing reads the environment

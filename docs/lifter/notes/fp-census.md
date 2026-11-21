@@ -2,6 +2,14 @@
 
 Evidence for [FLOAT.md](../FLOAT.md).
 
+## 2026-11-21
+
+At `b292ee619`, static reading with `h2 disasm 0x339acf 5` and
+`h2 disasm 0x339e9f 5` on the owner's retail XBE identifies two
+read-modify-write sequences that set FTZ. This corrects the FTZ conclusion
+in the November 15 census. Entry histograms can establish which control
+words actually reach a collision query. [All claimed status-save sites](../../engine/collision-queries.md#status-instruction-census)
+
 ## 2026-11-15
 
 Measured with `h2 fpstats` ([crates/recompiler/analyze/src/fpstats.rs](../../../crates/recompiler/analyze/src/fpstats.rs)) over the retail `default.xbe` (SHA-256 `03215919...935d`), at commit 1ec714ed0 (the commit that added the tool; the tool's output has not been rerun since this note was written). Reproduce with `cargo h2 fpstats [disc] [--root 0x12190]`. The tool is static: it counts what the analyzer decoded and claimed, which is not what executes. `--root` adds start points for the reachability split; `0x12190` is `game_main` in [engine-map.md](../../engine/engine-map.md).
@@ -79,12 +87,9 @@ their short wrappers:
 - `fnsave`/`frstor` appear twice each; `fninit`, `fldenv`, `fnstenv` and
   `fxsave`/`fxrstor` appear zero times.
 
-**MXCSR:** 23 `ldmxcsr`, 23 `stmxcsr`, 0 `fxrstor`. Every write resolves to
-`saved | 0x1f80` (mask all) or `saved & ~0x3f` (clear sticky flags). None sets
-FTZ, DAZ or RC, so the game runs SSE with the thread default (expected
-`0x1f80`, to be confirmed against Xbox/xemu; see LIFTER.md §3). Denormals are
-therefore live, IEEE-gradual, in all SSE code. Nothing writes the PIII-reserved
-DAZ bit.
+**MXCSR.** The census counted 23 `ldmxcsr`, 23 `stmxcsr` and zero `fxrstor`.
+Its original classification missed two writes that enable FTZ. The other
+21 writes mask exceptions or clear sticky flags. [Corrected classification](#2026-11-21)
 
 #### Compare idioms (measured)
 

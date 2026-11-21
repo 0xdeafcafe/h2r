@@ -17,13 +17,13 @@
 //! translates and uploads; anything else keeps its D3D draws (the load
 //! logs why, most parts first).
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::gpu::Image;
 use crate::look::{implementation_look, PassLook, Refusal, Stage};
 use crate::pass_state::{pass_state, PassState, StateRefusal};
 use crate::program::{
-    compile_pass, described_pipeline, world_constants_read, Gpu, MaterialProgram, Rigid, RigidProgram, ViewInputs,
+    compile_pass, described_pipeline, world_constants_read, Gpu, MaterialProgram, PipelineUse, Rigid, RigidProgram, ViewInputs,
 };
 use crate::world::{LightmapKey, ModelRows, Owner, World};
 use gfx::state::RenderStateType;
@@ -388,6 +388,7 @@ struct FogMaterial {
 /// The fog materials the native pass draws, and each part's index range
 /// (the glue's parts list, in the world's draw order).
 pub struct FogSet {
+    ready_formats: HashSet<(wgpu::TextureFormat, wgpu::TextureFormat)>,
     materials: HashMap<u16, FogMaterial>,
     /// Index range, lightmap page and material for each eligible part.
     parts: HashMap<(Owner, u8), (u32, u32, Option<LightmapKey>, u16)>,
@@ -491,7 +492,7 @@ impl FogSet {
             materials.remove(&material);
         }
         out.retain(|(_, (_, _, _, mat))| materials.contains_key(mat));
-        Self { materials, parts: out.into_iter().collect() }
+        Self { ready_formats: HashSet::new(), materials, parts: out.into_iter().collect() }
     }
 
     /// How many materials draw natively.
@@ -591,12 +592,12 @@ impl FogSet {
                     Owner::Instance(n) => {
                         let r = rigid.as_ref().ok_or("a fog placement has no rigid program")?;
                         let offset = r.offset(n).ok_or("a fog placement has no slot")?;
-                        let pipeline = r.pipeline_at(color, depth, None, &stencil).ok_or("a fog pipeline is not made")?;
+                        let pipeline = r.pipelines.get(color, depth, &stencil, None).ok_or("a fog pipeline is not made")?;
                         slots.insert(n);
                         (FOG_RIGID_PROGRAM, pipeline, r.uniforms.clone(), vec![offset])
                     }
                     Owner::Cluster(_) => {
-                        let pipeline = g.pipelines.get(&(color, depth)).ok_or("a fog pipeline is not made")?;
+                        let pipeline = g.pipelines.get(color, depth, &stencil, None).ok_or("a fog pipeline is not made")?;
                         (FOG_CLUSTER_PROGRAM, pipeline, g.uniforms.clone(), Vec::new())
                     }
                 };
@@ -644,14 +645,29 @@ impl FogSet {
 
     /// Makes the pipelines for these target formats (before the pass).
     pub fn pipelines(&mut self, device: &wgpu::Device, color: wgpu::TextureFormat, depth: wgpu::TextureFormat) {
+        self.prepare_pipelines(device, color, depth, PipelineUse::Direct);
+    }
+
+    pub(crate) fn prepare_pipelines(
+        &mut self, device: &wgpu::Device, color: wgpu::TextureFormat, depth: wgpu::TextureFormat, usage: PipelineUse,
+    ) -> bool {
+        if self.ready_formats.contains(&(color, depth)) { return true; }
+        let stencil = wgpu::StencilState::default();
+        let mut ready = true;
         for m in self.materials.values_mut() {
             for (g, state, rigid) in &mut m.passes {
-                g.pipeline(device, color, depth, Some(&*state));
+                ready &= g.pipelines.prepare(device, color, depth, Some(state), None, &stencil, usage);
                 if let Some(r) = rigid {
-                    r.pipeline_for(device, color, depth, Some(&*state), None, &wgpu::StencilState::default());
+                    ready &= r.pipelines.prepare(device, color, depth, Some(state), None, &stencil, usage);
                 }
             }
         }
+        // Only an admission check observes the frame boundary. Direct rendering
+        // can use a pipeline as soon as the compiler finishes.
+        if ready && matches!(usage, PipelineUse::Preflight) {
+            self.ready_formats.insert((color, depth));
+        }
+        ready
     }
 
     /// Records the selected items in reservation order. A missing pass
@@ -673,12 +689,12 @@ impl FogSet {
                     Owner::Instance(n) => {
                         let Some(r) = rigid else { return 0 };
                         let Some(offset) = r.offset(n) else { return 0 };
-                        let Some(pipeline) = r.pipeline_at(color, depth, None, &stencil) else { return 0 };
+                        let Some(pipeline) = r.pipelines.get(color, depth, &stencil, None) else { return 0 };
                         pass.set_pipeline(pipeline);
                         pass.set_bind_group(0, &r.uniforms, &[offset]);
                     }
                     Owner::Cluster(_) => {
-                        let Some(pipeline) = g.pipelines.get(&(color, depth)) else { return 0 };
+                        let Some(pipeline) = g.pipelines.get(color, depth, &stencil, None) else { return 0 };
                         pass.set_pipeline(pipeline);
                         pass.set_bind_group(0, &g.uniforms, &[]);
                     }

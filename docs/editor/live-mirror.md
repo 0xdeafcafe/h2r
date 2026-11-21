@@ -1,6 +1,8 @@
 # Live mirror: the running game in the editor, and edits back into it
 
-Status: M1 is implemented. M2 through M11 are design. The real-game parity and cost checks are pending.
+Status: Partly built. Live object streaming, pairing, conditional tag edits,
+live object edits and reload from a play copy are built. The richer live view,
+timeline and substantial structural edits are designs. Real-game parity and cost checks are pending.
 Code: `crates/extensions/agent-proto/src/live` (wire format), `crates/extensions/agent/src/live` (capture and stream), `crates/tools/live-mirror` (editor store), `crates/apps/studio/src/play` and `crates/tools/scenario-edit` (pairing and viewport).
 Switch: none. With no subscriber the tick observer skips capture and no stream worker runs.
 
@@ -21,11 +23,13 @@ tag editor, and Halo 1 tags are in [click-to-edit.md](click-to-edit.md).
 
 | Part | State | Where |
 |---|---|---|
-| Pairing, auto-pair, the status chip | Built | `studio::play` (`play.rs`, `play/pair.rs`), `pair.*` ([agent-api.md](agent-api.md)) |
+| Pairing, auto-pair, game link pill | Built | `studio::play` (`play.rs`, `play/pair.rs`), `pair.*` ([agent-api.md](agent-api.md)) |
 | Live objects and players | Built: a binary stream on a second connection, interpolated bind-pose models and player overlays | `agent_proto::live`, `live_mirror::Store`, `studio::play` |
 | Pause, step, resume, go to player, teleport | Built | `play.rs`; `session.claim`, `pause`, `step`, `sim.state.set` |
-| Placement field edits sent live | Built: a diff against `sync::Baseline` every 200 ms, each field as one `edit.set` raw path on the game's `scnr`; shows when the object is next made | `play/sync.rs` |
-| Tag field writes in the game | Built: `edit.get`, `edit.set`, a journal and `edit.revert`; no editor UI sends them | `crates/extensions/hot-tags`, [hot-iteration.md](../graphics/hot-iteration.md) |
+| Placement field edits sent live | Built: a diff against `sync::Baseline` every 200 ms, one conditional `edit.batch` with the tag document’s fields and raw placement paths on the game’s `scnr`; shows when the object is next made | `play/sync.rs` |
+| Move, delete and remake live objects | In Edit the streamed placement object follows a move or delete. Respawn reads the loaded scenario entry and returns an unlinked preview. | `crates/apps/studio/src/play/objects.rs`, [Object edits](../runtime/agent-api.md#object-edits) |
+| Reload the running map | The editor writes a play copy and the host queues the active campaign or multiplayer options. The editor checks the returned activation and checksum. | `crates/extensions/agent/src/sim/edits.rs`, [Test maps](../runtime/agent-api.md#test-maps) |
+| Tag field writes in the game | Built: View/Edit, field classes, the Pending tab, `edit.map`, conditional `edit.batch`, journal adoption and `edit.revert` | `crates/extensions/hot-tags`, [hot-iteration.md](../graphics/hot-iteration.md) |
 | No writes in co-op or as a client | Built | `agent_proto::sim::SessionKind::writes` |
 | Typed object reads | Built: transform, velocity, sphere, vitality, node matrices, unit player, team, seat, weapons and aim | `crates/rewrites/sim-state` (`ObjectView`, `UnitView`), over `crates/hooking/guest-layout` |
 | The tick's events | Built: `deleted`, `damage`, `kill`, while `impl.sim.native.objects` is on | `sim_state::events`, `sim.events` |
@@ -35,10 +39,8 @@ tag editor, and Halo 1 tags are in [click-to-edit.md](click-to-edit.md).
 | Models in the viewport | Built in the bind pose, first permutation, instanced per model | `scenario_edit::render::Viewport`, [editor.md](editor.md), "What the viewport shows" |
 | Map save, packages, play copy | Built | `scenario_edit::save`, `MapEditor`, [scenario-editor.md](scenario-editor.md) section 5 |
 
-Later slices add the timeline and recordings, skinned models, projectile
-arcs, the device, effect and animation reads, tag pokes from the editor
-with apply classes, moving and making live objects, the reload path and
-the overlays.
+The design adds the timeline and recordings, skinned models, projectile
+arcs, device and effect reads, and a broader set of live object edits.
 
 ## Live view
 
@@ -228,10 +230,10 @@ normalized blend, scale and translation linearly. It does not blend
 across a key frame after a cut, an object's first sample, or a move
 larger than four times what its velocity explains: those snap. When the
 next frame is late it extrapolates by velocity for one interval, then
-holds and greys the status chip. **Latest** (no delay, no blend) is a
-toggle, for watching an edit land.
+holds. The Game panel reports when it is waiting for live frames.
+**Latest** (no delay, no blend) is a toggle for watching an edit land.
 
-Pause, step and resume are the Game panel's, unchanged. A step sends its
+Pause, step and resume are in the bar and Game menu. A step sends its
 frame, so stepping one tick moves the viewport one tick. In `h2 play` a
 pause stops the game window's event loop (agent-api.md, "Control").
 
@@ -254,10 +256,10 @@ one from a player's aim.
 
 ## Live edit
 
-**View** and **Edit** are a switch in the Game panel and the toolbar.
-Pairing starts in View: nothing is written. Edit is the user's choice. A
-game the editor started with Play starts in Edit, since it is the
-editor's own copy of the map.
+The **Edit** switch in the bar and Game panel changes between View and Edit.
+An attached game starts in View. F5 can send one confirmed batch or load a
+play copy in View. Later changes stay in Pending until the next F5 or the
+user enables Edit. A game the editor launches starts in Edit.
 
 ### How an edit applies
 
@@ -268,10 +270,10 @@ pending list.
 |---|---|---|---|
 | **Poke, each frame** | values the draw path reads every draw: shader colours, vectors and bitmaps, effect and light colours where the draw reads the tag | `edit.batch` | next frame |
 | **Poke, next use** | values read when used: damage, rates of fire, machine speeds and delays, a projectile's drag | `edit.batch` | the next shot, hit or cycle |
-| **Poke, next creation** | values copied into an object when it is made: a projectile's initial speed, an object's vitality, placement fields | `edit.batch`, then optionally a respawn | objects made after it; **Respawn now** remakes the ones that exist |
+| **Poke, next creation** | values copied into an object when it is made: a projectile's initial speed, an object's vitality, placement fields | `edit.batch`, then optionally a respawn | **Respawn now** remakes supported, unattached occupants of unnamed palette entries with default creation fields. Other placements take the edit on their next creation or a reload |
 | **Poke, unknown** | any field with no recorded class | `edit.batch` | written at once; the badge says when it shows is not known |
-| **Object** | moving, turning or deleting a thing that exists; previewing a new placement | `world.object.set`, `.delete`, `.respawn`, `sim.spawn` | next tick |
-| **Reload** | a block's count changing (placements added or removed, block elements), new tags, new strings, grown blocks, structure BSP and lightmap edits, bitmap pixels of another size | saving the play copy and loading the map again | after the reload |
+| **Object** | moving, turning or deleting a thing that exists; previewing a new placement | `world.object.set`, `.delete`, `.respawn` | next tick |
+| **Reload** | placement slots added, duplicated or removed, changes to tag block counts, new tags, new strings, grown blocks, structure BSP and lightmap edits, bitmap pixels of another size | saving the play copy and loading the map again | after the reload |
 
 The class of a field is data, not a guess made in the UI: `tags::defs`
 gains an `applies` attribute (`frame`, `use`, `creation`) with its
@@ -279,22 +281,48 @@ evidence, as names have theirs, and the table in
 [hot-iteration.md](../graphics/hot-iteration.md), "What shows when", is
 its first content. A field with none is `unknown`.
 
-**Placements.** Moving a placement writes its `scnr` fields as today.
-In Edit, the object made from it (matched by the `objects` layer's
-placement link) is also moved with `world.object.set`, so the thing
-follows the gizmo. Adding a placement cannot grow the game's block, so
-the editor spawns a preview object with `sim.spawn` from the entry's tag
-and transform and marks the entry "in the game as a preview until the map
-reloads". Deleting one deletes its object and marks the entry "still in
-the game's scenario until the map reloads", since a respawn timer may
-make it again.
+**Placements.** In Edit, dragging a placement writes its scenario fields
+and moves its linked object with `world.object.set`. The editor sends at
+most one move per object per push interval during a drag. The released
+frame follows its scenario field acknowledgement. Deleting the placement deletes the live object. Undoing the delete
+requests a respawn at the original loaded slot. **Respawn now** applies
+creation-time fields that differ from the last actual creation. A replacement
+uses the salted object ID. The host creates it before deleting the old
+occupant, so an allocation refusal keeps the old object. An observed empty
+slot can be explicitly selected by placement.
+Every object request carries the map epoch the editor paired on
+(`play/objects/drive/wire.rs`), so the host refuses an edit that arrives
+after the map changed.
 
-**Reload.** Pending reload edits collect under one **Reload map** button.
-For a game the editor started it is Play again: the play copy is written
-and the game relaunched (`play/launch.rs`). For a game it only paired
-with, the editor writes the play copy and calls `map.reload {file}`; a
-game that cannot (see Interfaces) leaves the button saying to save the
-map and load it in the game.
+An added placement requests a preview through `world.object.respawn`.
+The host reads creation fields from its loaded scenario. An index beyond
+that block needs a reload on this host. On success, the editor tracks the
+returned salted object ID, moves it to the document frame, and uses the
+receipt to mark and pick the preview even without a streamed placement link.
+Undoing the add deletes that preview. Pending gives the reason when a
+session, missing method or game refusal prevents an object edit. If the
+connection closes or times out before a spawn or delete is acknowledged,
+Pending recommends reloading the map. The editor keeps that outcome visible
+through undo and reconnect so it cannot spawn a second preview by retrying.
+
+**Reload.** The editor compares each placement block's layout revision with the
+revision in the loaded file or Play copy. A remove followed by an add can
+leave the count unchanged and still move a placement to a different slot.
+All fields in that block wait for reload. Undoing the structural edits
+restores the earlier revision. Loading a Play copy sets the baseline to
+the layout saved in that copy.
+
+Pending reload edits collect under one **Reload map** button.
+Like F5, it sends the game the path and checks the queued reply against the
+play copy. Before resuming field writes or restoring the player, the editor
+checks the saved checksum against `edit.map`. It waits for the requested
+`activation` in the public game tick stamp. A checkpoint revert cannot
+satisfy that request. When the receipt or the public stamp omits `activation`,
+it waits for an epoch different from the one before the request. It keeps the destination through
+a reconnect and retries the identity check for up to 30 seconds. A lost
+reply does not cause a second reload. If the host refuses to bind the file,
+the editor relaunches its own game or asks the user to load the saved map.
+[Play and pair](editor.md#play-and-pair)
 
 ### Undo and sync
 
@@ -306,15 +334,30 @@ the set of writes to send, so undo sends the old bytes back with no
 second undo log. Each write carries `was`, the bytes the baseline
 expects; the game refuses a batch whose `was` differs
 (`MISMATCH`, naming the field and what it holds), which replaces "trust
-that the game runs the map as shown". Object edits keep an inverse beside
-the undo step: a move's old transform, a preview's object to delete.
+that the game runs the map as shown". After undo or redo, `play::objects::diff` compares the placement document
+with the acknowledged object edits and requests the corresponding move,
+delete or respawn.
+
+**Take the game's value** reads the conflicted field at a game boundary in
+the paired epoch. A successful read updates the document and its baseline.
+A conditional overwrite sends the value seen in the conflict as `was`.
+Both choices require the tag path to resolve to the original address,
+including when the read returns. If a refusal identifies one field, its
+siblings can proceed. Otherwise the refused batch stays together until
+a member changes or the user explicitly retries it.
 
 On pairing, `edit.map` gives the loaded map's name, file and checksum.
+Map identity uses the same case-insensitive level name as the game link.
 Same checksum as the file the editor's document came from: the baseline
 is that file, and unsaved edits show as pending until the user picks
 Edit, which sends them. Another checksum: View only, with the reason. A
-new map epoch (a reload, `state.load`, a revert) resets the baseline to
-the file the game loaded and the pending list is built again.
+new epoch rebuilds Pending from the loaded file or Play copy and reads the
+game journal. A BSP switch retains entries for tag allocations that survive.
+Reverting a journal in the same epoch updates the baseline with the restored
+bytes and the bytes the game reports for fields it leaves alone. Choosing
+**Restore** on disconnect stops new writes, waits for the outstanding batch,
+then reverts before closing the link. The journal contains field bytes. Reloading
+the map restores its original population of live objects and removes previews.
 
 Saving is the existing path and is not changed by pairing: **Save map
 as** and **Save as package** write the document
@@ -330,17 +373,22 @@ loaded"), not done by default.
 | Theater playback | yes; the scrubber and the film's transport are separate | no: a film replays inputs, and a write changes what they produce |
 | Co-op host or guest (synchronous) | yes: reads do not touch the sim hash | no. The switch is disabled with the reason; edits stay in the document as pending |
 | System Link host, with other machines in the game | yes | only after a prompt that names how many machines will not have the change; tag pokes are local to the host, so clients predict with the old values. Object edits replicate as the host's state does |
+| System Link host, peer count unknown | yes | no until the game can verify the peer count |
 | Multiplayer client | yes: what this machine holds | no: the host overwrites it |
 | A Live session (not the local embedded server of `--live-local`) | no stream while a game is in progress: it would show one player every position | no |
 | Session unknown | yes | no |
 
+The host confirmation in Pending applies to the current pairing, game map
+epoch and peer count. A file reload applies to the active map. Loading
+a different map requires switching maps or relaunching. Field writes also
+require a matching checksum.
+
 The game enforces this, not only the editor: `edit.set`, `edit.batch`,
 `world.object.*` and `map.reload` refuse by `SessionKind::writes`, as
 `sim.state.set` does, and refuse on a Live session whatever its kind.
-`live.subscribe` refuses on a Live session in a game. Nothing is ever
-written without the Edit switch on, and the switch never turns itself on
-for a game the editor did not start. For a changed map in a networked
-game, every machine loads the same saved map, as now
+`live.subscribe` refuses on a Live session in a game. Continuous writes require Edit. A confirmed F5 in View
+authorizes that playtest and leaves later edits in Pending. For a changed
+map in a networked game, every machine loads the same saved map
 ([editor-guide.md](editor-guide.md)).
 
 ## The editor's UI
@@ -376,8 +424,9 @@ game, every machine loads the same saved map, as now
   film: an `.h2film` replays the game itself in Theater
   ([film-format.md](../game/film-format.md)); a recording is what the
   mirror saw and cannot be played by the game.
-- **Status chip**: as now, plus the stream's frame rate, delay, dropped
-  and skipped counts, and the game's notice when it shed a layer.
+- **Session** in the Game panel reports the stream's frame rate, delay,
+  dropped and skipped counts. It also shows the game's notice when it
+  sheds a layer.
 - **Pending** (in the Game panel): every edit not in the game, by class,
   with why (View mode, another map, the session, needs a reload), and
   the buttons that clear them: Send, Respawn now, Reload map.
@@ -392,26 +441,29 @@ by `session.methods`, documented in
 
 | Method | Access | Params | Result |
 |---|---|---|---|
-| `live.subscribe` | read | `{layers: [name], every?, key_every?, poses?: {every?, near?: {point, radius}}}` | `{at, stream, protocol: "h2-live-mirror/1", tick_rate, map: {name, checksum, epoch}, layers: [name], refused: {name: reason}}`, then binary frames on this connection |
+| `live.subscribe` | read | `{layers: [name], every?, key_every?, poses?: {every?, near?: {point, radius}}}` | `{at, stream, protocol: "h2-live-mirror/1", tick_rate, map: {name, checksum, epoch, activation}, layers: [name], refused: {name: reason}}`, then binary frames on this connection |
 | `live.update` | read | `{stream, layers?, every?, poses?}` | the stream's settings; the next frame is a key frame |
 | `live.key` | read | `{stream}` | `{at, seq}`: the next frame is a key frame, taken now when paused |
-| `live.status` | read | none | `{map: {name, checksum, epoch}, streams: [{stream, layers, every, frames, bytes, dropped, skipped, queue}], capture_us: {p50, p99, budget}, shed: [name]}` |
+| `live.status` | read | none | `{map: {name, checksum, epoch, activation}, streams: [{stream, layers, every, frames, bytes, dropped, skipped, queue}], capture_us: {p50, p99, budget}, shed: [name]}` |
 | `live.close` | read | `{stream}` | `{closed}`; closing the stream's connection does the same |
-| `edit.map` | read | none | `{at, name, file, checksum, scenario, epoch, session}` |
-| `edit.batch` | act | `{writes: [{tag, group?, path, value, was?}], label?}` | `{id, applied, changes}`: all written at one tick boundary as one journal entry, or none, with `MISMATCH` and `data.fields` (`path`, `was`, `holds`) |
-| `world.object.set` | act | `{id, pos?, forward?, up?, velocity?}` | `{at, object}` after the next tick; through the engine's own move, so the object is re-clustered |
-| `world.object.delete` | act | `{id}` | `{at, deleted}`; through `OBJECT_DELETE` |
-| `world.object.respawn` | act | `{id}` or `{placement: {block, index}}` | `{at, old, object, linked}`: the object deleted and made again from the game's scenario bytes; `linked` says whether the new object is tied to the placement |
-| `map.reload` | act | `{file?}` | `{queued, map}`: the running map queued again, from `file` when given |
+| `edit.map` | read | `{known_epoch?}` | `{at, name, file, checksum, scenario, epoch, session, loaded?}` |
+| `edit.batch` | act | `{writes, label?, epoch?, confirm_peers?}`. A write is `{tag, group?, path, value, was?}` or `{at, value, was?}` with hex bytes | `{id, applied, changes}`: all written at one tick boundary as one journal entry, or none, with `MISMATCH` and `data.fields` (`path`, `was`, `holds`) |
+| `world.object.set` | act | `{id, pos?, forward?, up?, epoch?, confirm_peers?}` | `{at, object}` after the next tick, through the engine's object move |
+| `world.object.delete` | act | `{id, epoch?, confirm_peers?}` | `{at, deleted}` through `OBJECT_DELETE` |
+| `world.object.respawn` | act | `{id, epoch?, confirm_peers?}` or `{placement: {block, index}, epoch?, confirm_peers?}` | `{at, old, object, linked}` with the replacement's placement-link status |
+| `map.reload` | act | `{file?, confirm_peers?}` | `{queued, map, activation, file?, checksum?}`. Wait for gameplay on the requested map and activation. A file reload also returns the path and expected header checksum |
 
 `sim.session` gains `live` (the session is on a Live service) and
-`peers` (other machines in the game). `session.subscribe` gains the
+`peers` (the total number of machines, including this host). On System
+Link, `confirm_peers` echoes that total. A file reload binds this host's
+copy only. Each peer needs its own matching file. The filename must match
+the active map. Switching to another map requires a map switch or relaunch.
+`session.subscribe` gains the
 event `epoch {from, to, why}`.
 
-`world.object.set` is the method editor.md and hot-iteration.md name as
-missing. It is added, with `delete` and `respawn`, because moving a live
-object will be needed by every later tool and test that places things;
-`world.poke` on a position would skip the engine's re-clustering.
+The in-game check that a placed object changes cluster after a move is
+pending. The game API documents the object ids, placement blocks and peer
+confirmation for these writes. [Object edits](../runtime/agent-api.md#object-edits)
 
 ### The editor's socket API
 
@@ -477,8 +529,15 @@ M10 each start by reading the retail code for the fields they add, into
   game to an earlier moment is `state.save` and `state.load`
   ([snapshots.md](../runtime/snapshots.md)), which the mirror does not
   drive.
-- No write without Edit on; no write in a session `SessionKind::writes`
-  refuses; no stream and no write on a Live session in a game.
+- A bound play copy or an unlinked placement preview prevents machine
+  snapshots, snapshot rewind and film keyframes. A campaign checkpoint
+  can restore a deleted preview, so its placement history lasts until
+  the scenario changes. Film recording and playback exclude object edits
+  and map reloads. After a file reload succeeds, restart the game before
+  signing in to external Live.
+- Continuous writes require Edit. F5 in View can authorize a single
+  playtest. `SessionKind::writes` gates host edits. An external Live game
+  refuses streaming and writes.
 - Recordings, play copies and saved maps are user output and stay out of
   Git checkouts.
 
@@ -502,9 +561,7 @@ M10 each start by reading the retail code for the fields they add, into
   budget on the Xbox; the fields of the animation manager, the device
   update and the projectile's flight flags; the entry that creates an
   effect; the engine function that moves an object and re-clusters it;
-  that `map.reload` can queue the running map again from another file
-  (`maps.test.load` queues a game through `Call::QueueGame`, which is
-  the route to try); that `sim.session` can tell a Live session and count
+  that `sim.session` can tell a Live session and count
   peers. Each is settled by the slice that needs it.
 
 ## Not verified

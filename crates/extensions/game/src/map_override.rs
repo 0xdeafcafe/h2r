@@ -1,4 +1,4 @@
-//! Explicit editor overrides (`H2_MAP_DIR`) and map identity through
+//! Editor map overrides and map identity through
 //! the VFS. Installed mods use their own content paths.
 use std::{
     ffi::OsString,
@@ -7,6 +7,23 @@ use std::{
 
 /// The environment variable naming the override directory.
 pub const ENV: &str = "H2_MAP_DIR";
+
+/// Prepare a play copy below the game thread's scheduling priority.
+pub fn prepare_on_worker<T: Send + 'static>(
+    prepare: impl FnOnce() -> T + Send + 'static,
+) -> Result<std::sync::mpsc::Receiver<T>, String> {
+    let (send, receive) = std::sync::mpsc::channel();
+    background::spawn("editor map preparation", move || {
+        let _ = send.send(prepare());
+    })
+    .map_err(|e| format!("cannot start the map preparation worker: {e}"))?;
+    Ok(receive)
+}
+
+/// Pass the region to the telemetry worker with the lifetime of its source.
+pub fn telemetry_file(file: vfs::HostFile) -> crate::telemetry::MapFile {
+    crate::telemetry::MapFile::new(file.path, file.offset, file.len, file.generation)
+}
 
 /// The override directory an `H2_MAP_DIR` value names; unset or empty is none.
 pub fn dir_from(value: Option<OsString>) -> Option<PathBuf> {
@@ -18,7 +35,7 @@ pub fn dir() -> Option<PathBuf> {
     dir_from(std::env::var_os(ENV))
 }
 
-/// The package the game loaded, or an explicit editor override.
+/// Look up a map by its catalog name, for callers without an active game.
 pub fn map_id(vfs: &mut vfs::Vfs, name: &str) -> Option<content::MapId> {
     if let Some(path) = vfs.content_map_path(name) {
         return vfs.map_id(&path);
@@ -26,22 +43,63 @@ pub fn map_id(vfs: &mut vfs::Vfs, name: &str) -> Option<content::MapId> {
     vfs.map_id(&format!("{}\\maps\\{name}.map", vfs::CDROM_DEVICE))
 }
 
+/// The identity reported at game start comes from the exact slot source.
+pub fn active_map_id(
+    vfs: &mut vfs::Vfs,
+    guest: &runtime::Guest,
+    binding: Option<&vfs::MapRebind>,
+) -> Option<(content::MapId, Option<String>)> {
+    if binding.is_some_and(vfs::MapRebind::has_ever_bound)
+        && let Some(path) = crate::map_slots::active_file(guest)
+        && vfs.query_path(&path).is_ok()
+    {
+        // A stock disc source has no id, even if a package shares its name.
+        return Some((vfs.map_id(&path)?, vfs.content_base_at(&path)));
+    }
+    let name = crate::telemetry::loaded_map_name(guest).ok()?;
+    Some((map_id(vfs, &name)?, vfs.content_base_name(&name)))
+}
+
 /// The content package selected in the multiplayer lobby, or the map
 /// currently loaded in a match. The selected list slot is authoritative
 /// in the main menu, where the cache header still says `mainmenu`.
-pub fn lobby_map_id(vfs: &mut vfs::Vfs, g: &runtime::Guest) -> Option<content::MapId> {
+pub fn lobby_map_id(
+    vfs: &mut vfs::Vfs,
+    g: &runtime::Guest,
+    binding: Option<&vfs::MapRebind>,
+) -> Option<content::MapId> {
     if let Some(session) = crate::coop_probe::read_session(g).filter(|s| s.live()) {
         if !session.is_host() || session.is_campaign() {
             return None;
         }
-        return vfs.map_id(&crate::map_select::selected_path(session.map)?);
+        if binding.is_some_and(vfs::MapRebind::has_ever_bound)
+            && crate::telemetry::loaded_map_name(g).ok().is_some_and(|n| !n.is_empty() && n != "mainmenu")
+        {
+            return active_map_id(vfs, g, binding).map(|(id, _)| id);
+        }
+        if let Some(path) = crate::map_select::selected_path(session.map) {
+            return vfs.map_id(&path);
+        }
+        let path = crate::mod_slots::selected_path(g, session.map)?;
+        if let Some(file) = crate::map_slots::slot_file(&path)
+            .or_else(|| crate::map_slots::slot_file(&format!("{path}.map")))
+        {
+            return vfs.map_id(&file);
+        }
+        // Disc slots can name scenarios\multi\… instead of d:\maps\….
+        let stem = path.rsplit('\\').next()?.to_ascii_lowercase();
+        return map_id(vfs, stem.strip_suffix(".map").unwrap_or(&stem));
     }
     let loaded = crate::telemetry::loaded_map_name(g).ok();
     if let Some(name) = loaded
         .as_deref()
         .filter(|n| !n.is_empty() && *n != "mainmenu")
     {
-        return map_id(vfs, name);
+        return if binding.is_some_and(vfs::MapRebind::has_ever_bound) {
+            active_map_id(vfs, g, binding).map(|(id, _)| id)
+        } else {
+            map_id(vfs, name)
+        };
     }
 
     use crate::layout_glue::Gm;
@@ -59,17 +117,55 @@ pub fn map_file(vfs: &mut vfs::Vfs, name: &str) -> Option<vfs::HostFile> {
     if let Some(file) = vfs.host_file(&format!("{dir}\\{name}.map")) {
         return Some(file);
     }
-    let entries = vfs.list_directory(&dir).ok()?;
-    entries
-        .iter()
-        .filter(|e| {
-            let n = e.name.as_bytes();
-            !e.metadata.is_directory()
-                && n.len() > 4
-                && n[n.len() - 4..].eq_ignore_ascii_case(b".map")
-        })
-        .filter_map(|e| vfs.host_file(&format!("{dir}\\{}", e.name)))
+    disc_map_paths(vfs, &dir)
+        .into_iter()
+        .filter_map(|path| vfs.host_file(&path))
         .find(|file| header_name(file).is_some_and(|n| n.eq_ignore_ascii_case(name)))
+}
+
+/// Use the cache slot when it resolves, including aliases and direct drive paths.
+/// A missing slot falls back to the loaded header's name, as ordinary boots do.
+pub fn map_file_at(vfs: &mut vfs::Vfs, name: &str, slot: Option<&str>) -> Option<vfs::HostFile> {
+    if let Some(path) = slot {
+        if let Some(file) = vfs.host_file(path) {
+            return Some(file);
+        }
+        // A streamed overlay can be present without a contiguous host file.
+        if vfs.query_path(path).is_ok() {
+            return None;
+        }
+    }
+    map_file(vfs, name)
+}
+
+pub fn active_map_file(
+    vfs: &mut vfs::Vfs,
+    guest: &runtime::Guest,
+    binding: Option<&vfs::MapRebind>,
+) -> Option<vfs::HostFile> {
+    let name = crate::telemetry::loaded_map_name(guest).ok()?;
+    if name.is_empty() {
+        return None;
+    }
+    let slot = binding
+        .filter(|b| b.has_ever_bound())
+        .and_then(|_| crate::map_slots::active_file(guest));
+    map_file_at(vfs, &name, slot.as_deref())
+}
+
+/// Candidate DVD paths for a map whose on-disc filename differs from its header.
+pub(crate) fn disc_map_paths(vfs: &mut vfs::Vfs, dir: &str) -> Vec<String> {
+    vfs.list_directory(dir)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|entry| {
+            let name = entry.name.as_bytes();
+            !entry.metadata.is_directory()
+                && name.len() > 4
+                && name[name.len() - 4..].eq_ignore_ascii_case(b".map")
+        })
+        .map(|entry| format!("{dir}\\{}", entry.name))
+        .collect()
 }
 
 /// The map name in a map file's header: 32 bytes at `+0x198`, as
@@ -93,6 +189,30 @@ pub fn header_name(file: &vfs::HostFile) -> Option<String> {
 /// Where map packages live: `<data>/maps`.
 pub fn packages_dir(data_root: &Path) -> PathBuf {
     data_root.join("maps")
+}
+
+/// The DVD slot the running game occupies and will request again. Retail's
+/// path builder (0x214db0) preserves T: and W: paths and maps the basename
+/// of a scenario path to D:\maps. The cache name can differ from that basename.
+pub fn reload_slot(source: &str, scenario: &str) -> Result<String, String> {
+    let lower = scenario.to_ascii_lowercase();
+    if lower.starts_with(r"t:\") || lower.starts_with(r"w:\") {
+        return Err(format!(
+            "the active scenario {scenario} loads outside the DVD map mount"
+        ));
+    }
+    let slot = crate::map_slots::map_name(source)
+        .ok_or_else(|| format!("the active map source {source} is outside the DVD map mount"))?;
+    if !scenario
+        .rsplit('\\')
+        .next()
+        .is_some_and(|s| s.eq_ignore_ascii_case(&slot))
+    {
+        return Err(format!(
+            "the active scenario {scenario} does not load its current DVD slot {source}"
+        ));
+    }
+    Ok(slot)
 }
 
 /// Mount storage and the DVD, with any explicit editor override and
@@ -132,6 +252,21 @@ pub fn mount<R: vfs::Rewrite + 'static>(
         ),
         None => over_disc(cfg, dvd, fonts, maps, campaign_maps),
     }
+}
+
+/// Offer a reload handle on writable hosts. Its first file request attaches
+/// the layer to the mounted DVD, preserving its selected overrides and opens.
+pub fn mount_for_agent<R: vfs::Rewrite + 'static>(
+    cfg: vfs::Config,
+    disc: &Path,
+    fonts: Option<R>,
+    maps: Option<&Path>,
+    campaign_maps: &[(String, PathBuf)],
+    allow_rebind: bool,
+) -> vfs::Result<(vfs::Vfs, Option<vfs::MapRebind>)> {
+    let writable = allow_rebind && cfg.server_maps.is_none();
+    let vfs = mount(cfg, disc, fonts, maps, campaign_maps)?;
+    Ok((vfs, writable.then(vfs::MapRebind::default)))
 }
 
 /// The disc's own map layers over `dvd`: campaign additions, verified
@@ -189,9 +324,9 @@ pub mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU64, Ordering};
 
-    struct Temp(PathBuf);
+    pub(crate) struct Temp(pub(crate) PathBuf);
     impl Temp {
-        fn new() -> Self {
+        pub(crate) fn new() -> Self {
             static NEXT: AtomicU64 = AtomicU64::new(0);
             let base = std::env::var_os("TMPDIR")
                 .map(PathBuf::from)
@@ -348,11 +483,192 @@ pub mod tests {
         }
     }
 
-    /// A map file whose header names it `name`.
-    fn named_map(name: &str) -> Vec<u8> {
-        let mut b = vec![0u8; 0x800];
-        b[0x198..0x198 + name.len()].copy_from_slice(name.as_bytes());
-        b
+    /// A synthetic scenario and globals tag in a map whose header names it `name`.
+    pub(crate) fn named_map(name: &str) -> Vec<u8> {
+        use map::build::{Block, TagPayload, TagSet};
+        let mut set = TagSet::new(map::CacheType::Multiplayer, name, "test");
+        let globals = map::FourCC(*b"matg");
+        let scenario = map::FourCC(*b"scnr");
+        set.add_group(globals, None, None);
+        set.add_group(scenario, None, None);
+        set.globals = set.add_tag(globals, "globals", TagPayload::Built(Block::zeroed(4))).unwrap();
+        set.scenario = set.add_tag(scenario, "test", TagPayload::Built(Block::zeroed(0x218))).unwrap();
+        set.build().unwrap().0
+    }
+
+    #[test]
+    fn names_fall_back_to_the_loaded_header_when_the_slot_is_unavailable() {
+        let temp = Temp::new();
+        let mut vfs = mounted(&temp, false, None);
+        let from_name = map_file(&mut vfs, "level").unwrap();
+        for slot in [None, Some(r"W:\missing.map")] {
+            assert_eq!(map_file_at(&mut vfs, "level", slot).unwrap(), from_name);
+        }
+        let mut guest = runtime::Guest::new();
+        let name = crate::health::CACHE_MAP_NAME;
+        guest.map_zeroed(name & !0xfff, 0x1000, runtime::guest::Permissions::RW).unwrap();
+        guest.write_bytes(name, b"level\0", 1).unwrap();
+        assert_eq!(active_map_file(&mut vfs, &guest, None).unwrap(), from_name);
+    }
+
+    #[test]
+    fn an_agent_mount_reloads_a_dvd_slot_without_an_override_directory() {
+        use crate::map_slots::{CURRENT, HEADER, PATH, RECORDS, STRIDE, active_file};
+        use runtime::guest::Permissions;
+
+        let t = Temp::new();
+        let cfg = vfs::Config::new(t.0.join("data"), 0x4D530064);
+        let offers = cfg.content_maps.clone();
+        let (mut v, handle) = mount_for_agent(cfg, &iso(&t), Some(Upper), None, &[], true).unwrap();
+        let slot = reload_slot(r"D:\maps\LEVEL.map", r"scenarios\test\level").unwrap();
+        let path = r"\Device\CdRom0\maps\level.map";
+        assert_eq!(read(&mut v, path), b"disc map");
+        let package = content::Library::open(level_package(&t)).packages()[0].clone();
+        let package_id = package.id;
+        offers.replace([(
+            r"TDATA\4d530064\$c\0000000000000001\other_name.map".into(),
+            vfs::ContentMap {
+                package,
+                base: v.host_file(path),
+                alias: Some("other_name".into()),
+            },
+        )]);
+        let replacement = named_map("other_name");
+        let file = t.0.join("other_name.map");
+        std::fs::write(&file, &replacement).unwrap();
+        let handle = handle.unwrap();
+        handle.attach(&mut v).unwrap();
+        handle.prepare(&slot, "other_name", &file, map::CacheType::Multiplayer, 0x0500_0000)
+            .unwrap()
+            .reserve(&v)
+            .unwrap()
+            .commit();
+        assert_eq!(read(&mut v, path), replacement);
+        assert_eq!(map_id(&mut v, "other_name"), Some(package_id));
+
+        let mut guest = runtime::Guest::new();
+        let key = RECORDS + 3 * STRIDE + HEADER + PATH;
+        guest.map_zeroed(key & !0xfff, 0x1000, Permissions::RW).unwrap();
+        guest.map_zeroed(CURRENT & !0xfff, 0x1000, Permissions::RW).unwrap();
+        guest.set_u32(CURRENT, 3).unwrap();
+        guest.write_bytes(key, br"d:\maps\level.map", 1).unwrap();
+        let source = active_file(&guest).unwrap();
+        let actual_id = v.map_id(path).unwrap();
+        assert_ne!(actual_id, package_id);
+        let name = crate::health::CACHE_MAP_NAME;
+        guest.map_zeroed(name & !0xfff, 0x1000, Permissions::RW).unwrap();
+        guest.write_bytes(name, b"other_name\0", 1).unwrap();
+        // The unadopted catalog lookup and the bound host select different maps.
+        assert_eq!(active_map_id(&mut v, &guest, None).unwrap().0, package_id);
+        assert_eq!(active_map_id(&mut v, &guest, Some(&handle)), Some((actual_id, None)));
+        let host = v.host_file(&source).unwrap();
+        assert_eq!(host, v.host_file(path).unwrap());
+        assert_eq!(std::fs::read(host.path).unwrap(), replacement);
+    }
+
+    #[test]
+    fn same_header_replacement_refreshes_consumers_only_on_activation() {
+        use crate::map_slots::{CURRENT, HEADER, PATH, RECORDS, STRIDE};
+        use std::sync::{Arc, Mutex};
+
+        let t = Temp::new();
+        let cfg = vfs::Config::new(t.0.join("data"), 0x4D530064);
+        let (vfs, handle) = mount_for_agent(cfg, &iso(&t), None::<Upper>, None, &[], true).unwrap();
+        let handle = handle.unwrap();
+        let mount = Arc::new(Mutex::new(vfs));
+        handle.attach(&mut mount.lock().unwrap()).unwrap();
+        let sources = crate::loaded_map::EditorSources::new(&mount, handle.clone());
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let events = Arc::clone(&seen);
+        sources.on_change(move |f| events.lock().unwrap().push(f.map(|f| f.path.clone())));
+
+        let mut guest = engine::testing::FakeGuest::new();
+        let key = RECORDS + 3 * STRIDE + HEADER + PATH;
+        guest.map(key, 0x100);
+        guest.map(CURRENT, 4);
+        guest.put(CURRENT, &3u32.to_le_bytes());
+        guest.put(key, br"d:\maps\level.map");
+        sources.activated(&guest);
+        assert!(seen.lock().unwrap().is_empty());
+        let file = t.0.join("level.map");
+        std::fs::write(&file, named_map("level")).unwrap();
+        let publish = || {
+            handle.prepare("level", "level", &file, map::CacheType::Multiplayer, 0x0500_0000)
+                .unwrap().reserve(&mount.lock().unwrap()).unwrap().commit();
+        };
+        publish();
+        assert!(seen.lock().unwrap().is_empty());
+        sources.activated(&guest);
+        sources.activated(&guest);
+        publish();
+        assert_eq!(seen.lock().unwrap().len(), 1);
+        sources.activated(&guest);
+        let events = seen.lock().unwrap();
+        assert_eq!(events.len(), 2);
+        assert!(events[0].is_some() && events[0] != events[1]);
+    }
+
+    #[test]
+    fn the_telemetry_worker_keeps_its_map_until_it_has_read_the_names() {
+        let t = Temp::new();
+        let cfg = vfs::Config::new(t.0.join("data"), 0x4D530064);
+        let (mut vfs, handle) = mount_for_agent(cfg, &iso(&t), None::<Upper>, None, &[], true).unwrap();
+        let handle = handle.unwrap();
+        handle.attach(&mut vfs).unwrap();
+        let file = t.0.join("fixture.map");
+        std::fs::write(&file, named_map("fixture")).unwrap();
+        handle.prepare("level", "fixture", &file, map::CacheType::Multiplayer, 0x0500_0000)
+            .unwrap().reserve(&vfs).unwrap().commit();
+
+        let region = telemetry_file(vfs.host_file(r"\Device\CdRom0\maps\level.map").unwrap());
+        let path = region.path.clone();
+        handle.clear_on_shutdown();
+        crate::telemetry::TagNames::load(&region).unwrap();
+        drop(region);
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn the_speaker_index_releases_a_displaced_map_generation() {
+        let t = Temp::new();
+        let cfg = vfs::Config::new(t.0.join("data"), 0x4D530064);
+        let (mut vfs, handle) = mount_for_agent(cfg, &iso(&t), None::<Upper>, None, &[], true).unwrap();
+        let handle = handle.unwrap();
+        handle.attach(&mut vfs).unwrap();
+        let file = t.0.join("fixture.map");
+        std::fs::write(&file, named_map("fixture")).unwrap();
+        let publish = |vfs: &vfs::Vfs| {
+            handle.prepare("level", "fixture", &file, map::CacheType::Multiplayer, 0x0500_0000)
+                .unwrap().reserve(vfs).unwrap().commit();
+        };
+        publish(&vfs);
+        let source = vfs.host_file(r"\Device\CdRom0\maps\level.map").unwrap();
+        let mut index = crate::pad_speaker::PadIndexer::new(&Default::default(), [None, None, None]);
+        // This map has no sound gestalt, so the indexer records its region once.
+        assert!(index.add(&source).is_err());
+        assert!(index.add(&source).unwrap().is_none());
+        let path = source.path.clone();
+        drop(source);
+        publish(&vfs);
+        assert!(!path.exists(), "the finished index still owns the displaced file");
+    }
+
+    #[test]
+    fn a_server_map_mount_has_no_rebind_handle() {
+        let t = Temp::new();
+        let mut cfg = vfs::Config::new(t.0.join("data"), 0x4D530064);
+        cfg.server_maps = Some(t.0.join("maps"));
+        let (_, handle) = mount_for_agent(cfg, &iso(&t), None::<Upper>, None, &[], true).unwrap();
+        assert!(handle.is_none());
+    }
+
+    #[test]
+    fn a_content_or_different_scenario_cannot_rebind_a_dvd_slot() {
+        let dvd = r"d:\maps\level.map";
+        assert!(reload_slot(dvd, r"T:\$c\0123456789abcdef\level").is_err());
+        assert!(reload_slot(dvd, r"W:\level").is_err());
+        assert!(reload_slot(dvd, r"scenarios\multi\other").is_err());
+        assert!(reload_slot(r"T:\$c\0123456789abcdef\level.map", "level").is_err());
     }
 
     #[test]
@@ -360,14 +676,14 @@ pub mod tests {
         let t = Temp::new();
         let dir = t.0.join("maps");
         // A converted map served as the disc's level.map, named otherwise.
-        std::fs::write(dir.join("level.map"), named_map("h1_bloodgulch")).unwrap();
+        let bytes = named_map("h1_bloodgulch");
+        std::fs::write(dir.join("level.map"), &bytes).unwrap();
         let mut v = mounted(&t, false, Some(&dir));
         let by_header = map_file(&mut v, "h1_bloodgulch").unwrap();
-        assert_eq!(
-            by_header.path,
-            dir.join("level.map").canonicalize().unwrap()
-        );
-        assert_eq!((by_header.offset, by_header.len), (0, 0x800));
+        assert_eq!(by_header.path, dir.canonicalize().unwrap().join("level.map"));
+        assert!(by_header.generation.is_none());
+        assert_eq!(std::fs::read(&by_header.path).unwrap(), bytes);
+        assert_eq!((by_header.offset, by_header.len), (0, bytes.len() as u64));
         assert_eq!(header_name(&by_header).as_deref(), Some("h1_bloodgulch"));
         // By its file name, as before.
         assert_eq!(map_file(&mut v, "level"), Some(by_header));

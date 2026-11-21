@@ -368,3 +368,44 @@ fn the_thread_gives_lizard_mode_back_when_dropped() {
         "on at the end"
     );
 }
+
+#[test]
+fn disconnected_hid_waits_for_a_device_or_shutdown() {
+    struct Idle {
+        durations: mpsc::Sender<Duration>,
+        stop: mpsc::Sender<()>,
+        wake: mpsc::Receiver<()>,
+        woken: mpsc::Sender<()>,
+    }
+    impl SteamHid for Idle {
+        fn wait(&mut self, timeout: Duration) -> io::Result<Vec<HidEvent>> {
+            self.durations.send(timeout).unwrap();
+            if self.wake.recv_timeout(Duration::from_secs(5)).is_ok() {
+                self.woken.send(()).unwrap();
+            }
+            Ok(vec![])
+        }
+        fn wake_handle(&self) -> Option<Box<dyn Fn() + Send + Sync>> {
+            let stop = self.stop.clone();
+            Some(Box::new(move || {
+                let _ = stop.send(());
+            }))
+        }
+        fn write(&mut self, _: u64, _: &HidWrite) -> io::Result<()> {
+            unreachable!("no controller")
+        }
+    }
+    let (durations, rx) = mpsc::channel();
+    let (stop, wake) = mpsc::channel();
+    let (woken, finished) = mpsc::channel();
+    let mut host = Some(Idle { durations, stop, wake, woken });
+    let settings = Timing::default();
+    let pads = spawn(
+        Box::new(move || host.take().map(|h| Box::new(h) as Box<dyn SteamHid>)),
+        SteamTuning::default(),
+        settings,
+    );
+    assert!(rx.recv_timeout(Duration::from_secs(5)).unwrap() > haptics::FRAME);
+    drop(pads);
+    finished.try_recv().expect("the HID wait ended by signal");
+}

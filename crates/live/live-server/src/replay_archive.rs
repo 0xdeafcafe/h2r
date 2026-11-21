@@ -254,7 +254,6 @@ pub(crate) async fn segment(
     State(live): State<Arc<Live>>,
     headers: HeaderMap,
     Path((id, index, number)): Path<(String, String, usize)>,
-    uri: axum::http::Uri,
 ) -> Result<Response, ApiError> {
     use axum::http::header;
     let token = bearer(&headers);
@@ -279,9 +278,9 @@ pub(crate) async fn segment(
     };
     // The storage digest is for these Brotli bytes. HTTP handles inflation.
     let bytes = job::read_blob(&live, job::ARCHIVE, &hash).await?;
-    let cache = if headers.contains_key(header::AUTHORIZATION)
-        || crate::caching::has_auth_param(uri.query())
-    {
+    // Who may see the game is decided by the token, so the answer varies on
+    // Authorization; a stray `auth` query mark changes nothing.
+    let cache = if headers.contains_key(header::AUTHORIZATION) {
         crate::caching::PRIVATE
     } else {
         crate::caching::IMMUTABLE
@@ -291,6 +290,7 @@ pub(crate) async fn segment(
             (header::CONTENT_TYPE, "application/x-h2-replay"),
             (header::CONTENT_ENCODING, "br"),
             (header::CACHE_CONTROL, cache),
+            (header::VARY, "Authorization"),
         ],
         bytes,
     )

@@ -3,7 +3,7 @@
 use std::collections::BTreeSet;
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
-use std::path::{Component, Path, PathBuf};
+use std::path::{Component, Path};
 use std::process::{Command, Stdio};
 
 use anyhow::{Context, Result, bail};
@@ -311,6 +311,7 @@ pub(super) fn discover(path: &Path, scratch: &Path) -> Result<Vec<Candidate>> {
 mod tests {
     use super::*;
     use crate::live_pack_import::Scratch;
+    use std::path::PathBuf;
 
     #[test]
     fn skips_non_level_caches_before_reading_the_payload_and_caps_accepted_data() {

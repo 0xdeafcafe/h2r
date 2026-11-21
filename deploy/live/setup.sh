@@ -182,16 +182,16 @@ if [[ -n $invite_only ]]; then
   say "First invite"
   h2 live invite create --server "$url" --data "$here/data" \
     || echo "couldn't make an invite; run: h2 live invite create --server $url --data $here/data"
-  first="sign up with the invite code above"
+  invite_arg=" --invite <code>"
 else
-  first="sign up"
+  invite_arg=""
 fi
 
 say "Done"
 cat <<TXT
-Open $url, $first using one of your admin gamertags, and you're the
-admin. Sign up as your admins soon: until then anyone could take those
-names. Invites: the Server screen, or h2 live invite create.
+Create a configured admin account on this machine:
+  h2 live account create <gamertag> --server "$url" --operator-data "$here/data"$invite_arg
+Admin accounts can make further invites from the Server screen.
 
 Logs:     cd $here && docker compose logs -f server
 Update:   git pull && cd $here && docker compose up -d --build

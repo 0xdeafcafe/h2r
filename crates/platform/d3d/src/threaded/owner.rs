@@ -127,6 +127,8 @@ pub(super) struct Present<B: Backend> {
     pub candidate: Option<Submission<B>>,
     pub generation: u64,
     pub events: Arc<dyn OwnerEvents>,
+    /// The present's camera metadata, restored on the worker.
+    pub metadata: Option<crate::present_camera::Present>,
 }
 
 pub(super) enum RenderOp {
@@ -371,7 +373,7 @@ impl<B: Backend> Worker<B> {
     }
 
     pub(super) fn owner_present(&mut self, present: Present<B>) {
-        let Present { n, surface, at, flags, gamma, candidate, generation, events } = present;
+        let Present { n, surface, at, flags, gamma, candidate, generation, events, metadata: _ } = present;
         let transaction = self.transaction.replace(Transaction::new()).expect("owner installed");
         let accepted = candidate.and_then(|submission| {
             if self.shared.failed.load(Ordering::Acquire) {

@@ -39,6 +39,10 @@ use snapshot::{BuildKey, Codec, Header, Snapshot, SnapshotWriter, Store, Tag};
 pub trait Part {
     /// Its place in [`SAVE_ORDER`] and [`LOAD_ORDER`].
     fn name(&self) -> &'static str;
+    /// A limitation that waiting another tick cannot resolve.
+    fn refusal(&self) -> Option<String> {
+        None
+    }
     /// Why it cannot be saved or loaded now; empty when it can.
     fn blockers(&self) -> Vec<String> {
         Vec::new()
@@ -47,6 +51,10 @@ pub trait Part {
         self.blockers()
     }
     fn save(&mut self, out: &mut SnapshotWriter) -> Result<(), String>;
+    /// Check restore prerequisites before the first part can change guest state.
+    fn prepare_load(&mut self, _snapshot: &Snapshot<'_>) -> Result<(), String> {
+        Ok(())
+    }
     fn load(&mut self, snapshot: &Snapshot<'_>) -> Result<(), String>;
     /// Film anchors supply physical RAM only. Device and feature sections
     /// are always complete for the selected keyframe.
@@ -89,32 +97,33 @@ pub fn save_parts(
     header: Header,
     hash: &dyn Fn() -> lockstep::RamHash,
 ) -> Result<Vec<u8>, String> {
-    save_parts_observing(parts, header, hash, None, |_, _| {})
+    save_parts_into(parts, SnapshotWriter::new(header), hash, None, &SAVE_ORDER)
 }
 
-/// Reports each attempted section immediately, including a section which
-/// stopped the save. D3D's capture has guest-visible effects even if a
-/// later part prevents the recorder from publishing a complete keyframe.
-pub fn save_parts_observing(
+fn save_parts_into(
     parts: &mut [Box<dyn Part + '_>],
-    header: Header,
+    mut out: SnapshotWriter,
     hash: &dyn Fn() -> lockstep::RamHash,
     ram_base: Option<&snapshot::Base<'_>>,
-    mut attempted: impl FnMut(&str, bool),
+    order: &[&str],
 ) -> Result<Vec<u8>, String> {
     check_names(parts)?;
-    let mut out = SnapshotWriter::new(header);
-    for name in SAVE_ORDER {
+    if let Some(why) = parts.iter().find_map(|p| p.refusal()) {
+        return Err(why);
+    }
+    for &name in order {
         if let Some(p) = parts.iter_mut().find(|p| p.name() == name) {
             let result = match ram_base {
                 Some(base) if name == "guest" => p.save_with_ram_base(&mut out, base),
                 _ => p.save(&mut out),
             };
-            attempted(name, result.is_ok());
             result.map_err(|e| format!("{name}: {e}"))?;
         }
     }
-    let h = hash();
+    finish_with_hash(out, &hash())
+}
+
+fn finish_with_hash(mut out: SnapshotWriter, h: &lockstep::RamHash) -> Result<Vec<u8>, String> {
     let mut w = Writer::new();
     w.u64(h.total).list(&h.chunks, |w, c| {
         w.u64(*c);
@@ -142,16 +151,31 @@ pub fn load_parts_with_base(
     cow: Option<&Path>,
     ram_base: Option<&snapshot::Base<'_>>,
 ) -> Result<Vec<String>, String> {
+    load_parts_with_guest(parts, snapshot, |part| match (ram_base, cow) {
+        (Some(base), _) => part.load_with_ram_base(snapshot, base),
+        (None, Some(ram)) => part.load_cow(snapshot, ram),
+        (None, None) => part.load(snapshot),
+    })
+}
+
+fn load_parts_with_guest(
+    parts: &mut [Box<dyn Part + '_>],
+    snapshot: &Snapshot<'_>,
+    mut guest: impl FnMut(&mut dyn Part) -> Result<(), String>,
+) -> Result<Vec<String>, String> {
     check_names(parts)?;
+    if let Some(why) = parts.iter().find_map(|p| p.refusal()) {
+        return Err(why);
+    }
+    for part in parts.iter_mut() {
+        part.prepare_load(snapshot)
+            .map_err(|e| format!("{}: {e} (nothing was loaded)", part.name()))?;
+    }
     let mut applied = Vec::new();
     for name in LOAD_ORDER {
         if let Some(p) = parts.iter_mut().find(|p| p.name() == name) {
             let loaded = if name == "guest" {
-                match (ram_base, cow) {
-                    (Some(base), _) => p.load_with_ram_base(snapshot, base),
-                    (None, Some(ram)) => p.load_cow(snapshot, ram),
-                    (None, None) => p.load(snapshot),
-                }
+                guest(p.as_mut())
             } else {
                 p.load(snapshot)
             };
@@ -300,6 +324,7 @@ pub fn build_key(stamp: String, switches: &str, plan: &hooks::Plan, host: &[&str
 
 /// The host subsystems a snapshot covers, whichever this run has.
 pub struct Host<'a> {
+    pub editor_agent: Option<&'a agent::Agent>,
     pub rt: &'a runtime::Runtime,
     pub d3d: Option<&'a dyn crate::d3d_glue::DeviceSnapshot>,
     pub audio: Option<&'a crate::dsound_glue::Audio>,
@@ -414,8 +439,16 @@ impl Host<'_> {
         presents: u64,
     ) -> BootMachine<'a> {
         let mut parts = self.device_parts();
-        parts.push(Box::new(KernelPart { m, rebuilders }));
-        parts.push(Box::new(FeaturesPart { plan, rt: self.rt }));
+        parts.push(Box::new(KernelPart {
+            m,
+            rebuilders,
+            prepared: None,
+        }));
+        parts.push(Box::new(FeaturesPart {
+            plan,
+            rt: self.rt,
+            editor_agent: self.editor_agent,
+        }));
         let rt = self.rt;
         BootMachine {
             parts,
@@ -470,6 +503,74 @@ pub struct BootMachine<'a> {
 }
 
 impl BootMachine<'_> {
+    pub(crate) fn film_snapshot_writer(&self, tick: u64) -> SnapshotWriter {
+        SnapshotWriter::new(Header {
+            build: self.shelf.build().clone(),
+            name: format!("film-{tick}"),
+            tick,
+            presents: self.presents,
+            notes: vec![],
+        })
+    }
+
+    /// The recorded device operation at a film capture point. The caller
+    /// can drop the writer or continue into a full snapshot after success.
+    pub(crate) fn capture_film_device(
+        &mut self,
+        out: &mut SnapshotWriter,
+    ) -> Option<Result<(), String>> {
+        self.parts
+            .iter_mut()
+            .find(|part| part.name() == "d3d")
+            .map(|part| part.save(out))
+    }
+
+    pub(crate) fn save_after_film_device(
+        &mut self,
+        out: SnapshotWriter,
+        ram_base: Option<&snapshot::Base<'_>>,
+    ) -> Result<Vec<u8>, String> {
+        // D3D already ran and wrote back to guest RAM at the capture point.
+        save_parts_into(&mut self.parts, out, &*self.hash, ram_base, &SAVE_ORDER[1..])
+    }
+
+    /// Complete an in-memory film keyframe around the device section that
+    /// replay already saved at the recorded barrier. RAM belongs to the pool.
+    pub(crate) fn save_ring_sections(&mut self, mut out: SnapshotWriter) -> Result<Vec<u8>, String> {
+        let rt = self.rt.ok_or("ring capture needs a running guest")?;
+        check_names(&self.parts)?;
+        for name in SAVE_ORDER {
+            if name == "d3d" {
+                continue;
+            }
+            if let Some(p) = self.parts.iter_mut().find(|p| p.name() == name) {
+                if name == "guest" {
+                    snapshot::guest::save_layout(&mut out, &rt.memory()).map_err(err)?;
+                    snapshot::guest::save_tsc(&mut out, rt).map_err(err)?;
+                } else {
+                    p.save(&mut out).map_err(|e| format!("{name}: {e}"))?;
+                }
+            }
+        }
+        finish_with_hash(out, &(self.hash)())
+    }
+
+    /// The same load order as state.load. At the guest part, apply the pool's
+    /// page changes and saved layout, then restore the logical TSC.
+    pub(crate) fn load_ring_sections(
+        &mut self,
+        snap: &Snapshot<'_>,
+        mut restore_ram: impl FnMut(&mut runtime::Guest, &runtime::guest::GuestLayout) -> Result<(), String>,
+    ) -> Result<(), String> {
+        let rt = self.rt.ok_or("ring restore needs a running guest")?;
+        let layout = snapshot::guest::load_layout(snap).map_err(err)?;
+        load_parts_with_guest(&mut self.parts, snap, |_| {
+            restore_ram(&mut rt.memory(), &layout)?;
+            snapshot::guest::load_tsc(snap, rt).map_err(err)
+        })?;
+        Ok(())
+    }
+
     fn notes(at: &At) -> Vec<(String, String)> {
         let mut notes = vec![("agent_ticks".to_owned(), at.ticks.to_string())];
         let phase = serde_json::to_value(at.phase)
@@ -490,6 +591,9 @@ impl BootMachine<'_> {
     }
 
     pub fn film_load_blockers(&self) -> Vec<String> {
+        if let Some(why) = self.parts.iter().find_map(|p| p.refusal()) {
+            return vec![why];
+        }
         self.collect_blockers(true)
     }
 
@@ -517,7 +621,13 @@ impl BootMachine<'_> {
 }
 
 impl agent::SnapshotMachine for BootMachine<'_> {
+    fn refusal(&self) -> Option<String> {
+        self.parts.iter().find_map(|p| p.refusal())
+    }
     fn blockers(&mut self) -> Vec<String> {
+        if let Some(why) = self.refusal() {
+            return vec![why];
+        }
         self.collect_blockers(false)
     }
 
@@ -681,11 +791,15 @@ impl Part for GuestPart<'_> {
 struct KernelPart<'a> {
     m: &'a mut kernel::Machine,
     rebuilders: &'a kernel::snapshot::Rebuilders,
+    prepared: Option<Box<dyn FnOnce(&mut kernel::Machine)>>,
 }
 
 impl Part for KernelPart<'_> {
     fn name(&self) -> &'static str {
         "kernel"
+    }
+    fn refusal(&self) -> Option<String> {
+        self.m.check_snapshot_maps().err().map(|e| e.to_string())
     }
     fn blockers(&self) -> Vec<String> {
         self.m
@@ -698,8 +812,15 @@ impl Part for KernelPart<'_> {
     fn save(&mut self, out: &mut SnapshotWriter) -> Result<(), String> {
         self.m.save_snapshot(out).map_err(err)
     }
-    fn load(&mut self, snapshot: &Snapshot<'_>) -> Result<(), String> {
-        self.m.load_snapshot(snapshot, self.rebuilders).map_err(err)
+    fn prepare_load(&mut self, snapshot: &Snapshot<'_>) -> Result<(), String> {
+        let apply = self.m.prepare_snapshot(snapshot, self.rebuilders).map_err(err)?;
+        self.prepared = Some(Box::new(apply));
+        Ok(())
+    }
+    fn load(&mut self, _: &Snapshot<'_>) -> Result<(), String> {
+        let apply = self.prepared.take().ok_or("kernel restore was not prepared")?;
+        apply(self.m);
+        Ok(())
     }
 }
 
@@ -813,6 +934,7 @@ impl Part for XapiPart<'_> {
 
 /// `features`: every feature's own section, and every feature's policy.
 struct FeaturesPart<'a> {
+    editor_agent: Option<&'a agent::Agent>,
     plan: &'a hooks::Plan,
     rt: &'a runtime::Runtime,
 }
@@ -820,6 +942,9 @@ struct FeaturesPart<'a> {
 impl Part for FeaturesPart<'_> {
     fn name(&self) -> &'static str {
         "features"
+    }
+    fn refusal(&self) -> Option<String> {
+        self.editor_agent?.editor_snapshot_refusal()
     }
     fn blockers(&self) -> Vec<String> {
         self.plan

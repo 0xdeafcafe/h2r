@@ -11,7 +11,7 @@ import { BotTag } from "../components/bits";
 import MedalIcon from "../components/MedalIcon";
 import WeaponIcon from "../components/WeaponIcon";
 import { colourFor, teamName } from "../lib/game";
-import { titleCase } from "../lib/format";
+import { damageSourceName } from "../lib/format";
 import { Derived, Tabs, Title, playerHref } from "./Layout";
 
 interface Row {
@@ -222,7 +222,7 @@ function GameWeapons(props: { rows: GameWeaponRow[]; scale: number }) {
               <div class="s-tod-row">
                 <span class="s-tod-ico"><span>
                   <Show when={row.weapon}>{(weapon) => <WeaponIcon weapon={weapon()} width={50} />}</Show>
-                  <small>{row.weapon ? titleCase(row.weapon) : "Not recorded"}</small>
+                  <small>{row.weapon ? damageSourceName(row.weapon) : "Not recorded"}</small>
                 </span></span>
                 <div class="s-tod-bars"><div class="s-tod-bar"><span style={{ width: `${(row.share / max()) * props.scale}%` }} />{(row.share * 100).toFixed(1)}%</div></div>
                 <div class="s-tod-nums">{row.kills}</div>

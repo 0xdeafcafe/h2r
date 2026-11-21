@@ -505,6 +505,7 @@ fn scenery_geometry<R: Read + Seek>(
 }
 
 #[cfg(test)]
+/// Geometric shadow caster for the forward model's independent area fixture.
 pub(super) fn test_roof(x_edge: f32, z: f32) -> impl Fn(Vec3, Vec3, f32) -> [bool; 2] {
     let corners = [
         [-10., -10., z],
@@ -601,4 +602,3 @@ mod tests {
     }
 }
 
-/// Geometric shadow caster for the forward model's independent area fixture.

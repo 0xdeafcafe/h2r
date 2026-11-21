@@ -1,7 +1,10 @@
 //! The inspector's tag tree, walked over the current TagDoc (including edits).
+use std::collections::HashSet;
+
 use map::{FourCC, TagId};
 use scenario_edit::{
     BlockKind, Scenario,
+    Value as ScenarioValue,
     layout::{FieldType, Role},
 };
 use serde_json::{Value, json};
@@ -18,11 +21,21 @@ const MAX_BLOCK_DEPTH: usize = 16;
 
 /// A reference from a placement or tag. The path on a tag uses the same
 /// spelling as tag.set and tag.read.
-struct Link {
-    tag: TagId,
-    via: String,
+pub(crate) struct Link {
+    pub tag: TagId,
+    pub via: String,
+    /// Offset path for callers of tag.follow.
+    pub path: String,
+    pub found: &'static str,
+    datum_at: u32,
     shortcut: Option<&'static str>,
     variant: Option<u32>,
+}
+
+#[derive(Default)]
+pub(crate) struct References {
+    pub links: Vec<Link>,
+    pub incomplete: bool,
 }
 
 pub struct Chain {
@@ -75,6 +88,119 @@ impl Node {
     }
 }
 
+impl TagDoc {
+    /// Find aligned (group, datum) pairs whose group fits the indexed tag.
+    /// The scan is confined to this tag's readable payload.
+    pub(crate) fn scan_refs(&self, tag: TagId) -> Vec<Link> {
+        let Some(t) = self
+            .tag(tag)
+            .filter(|t| t.bsp.is_none() && !matches!(t.access, Access::None(_)))
+        else {
+            return Vec::new();
+        };
+        if t.address.checked_add(t.size).is_none() {
+            return Vec::new();
+        }
+        let Some(bytes) = self.read(tag, t.address, t.size) else {
+            return Vec::new();
+        };
+        bytes
+            .windows(8)
+            .step_by(4)
+            .enumerate()
+            .filter_map(|(i, pair)| {
+                let group = FourCC::from_u32(le(&pair[..4]) as u32);
+                let id = TagId(le(&pair[4..]) as u32);
+                if id == TagId::NULL || group.0 == [0; 4] || group.0 == [0xff; 4] {
+                    return None;
+                }
+                let target = self.tag(id)?;
+                if !self.fits(target.group, &[group]) {
+                    return None;
+                }
+                let offset = i * 4;
+                Some(Link {
+                    tag: id,
+                    via: format!("+{offset:#x}"),
+                    path: format!("{offset:#x}"),
+                    found: "scan",
+                    datum_at: t.address + offset as u32 + 4,
+                    shortcut: shortcut(t.group, target.group, "", ""),
+                    variant: None,
+                })
+            })
+            .collect()
+    }
+
+    /// Direct links through the same layout walk or scan as the inspector.
+    /// The scenario session owns the reference fields in its placement blocks.
+    pub(crate) fn tag_refs(&self, tag: TagId, scenario: Option<&Scenario>) -> References {
+        let mut walk = Walk::new(self);
+        let mut links = walk.links(tag, None);
+        if let Some(scenario) = scenario.filter(|s| s.tag == tag) {
+            self.overlay_scenario_refs(scenario, &mut links);
+        }
+        References {
+            links,
+            incomplete: walk.truncated,
+        }
+    }
+
+    fn overlay_scenario_refs(&self, scenario: &Scenario, links: &mut Vec<Link>) {
+        let layout = self.layout(scenario.tag);
+        let mut source_datums = HashSet::new();
+        let mut current = Vec::new();
+        for block in &scenario.blocks {
+            // Keep the registry's named path when it describes these fields.
+            let root_field =
+                layout.and_then(|l| l.fields.iter().find(|f| f.offset == block.def.offset));
+            let block_name = root_field.map_or(block.def.label, |f| f.name.as_str());
+            for field in block.def.fields.iter().filter(|f| f.ty == FieldType::TagRef) {
+                for index in 0..block.capacity() as u32 {
+                    source_datums
+                        .insert(block.address + index * block.def.stride + field.offset + 4);
+                }
+                let child_field = root_field.and_then(|f| match &f.kind {
+                    Kind::Block(child) => child.fields.iter().find(|f| f.offset == field.offset),
+                    _ => None,
+                });
+                let field_name = child_field.map_or(field.name, |f| f.name.as_str());
+                for index in 0..block.len() {
+                    let Ok(ScenarioValue::Tag(reference)) =
+                        scenario.get(block.def.kind, index, field.name)
+                    else {
+                        continue;
+                    };
+                    if !self.is_reference(reference.id, Some(reference.group)) {
+                        continue;
+                    }
+                    current.push(Link {
+                        tag: reference.id,
+                        via: format!("{block_name}[{index}].{field_name}"),
+                        path: format!("{:#x}[{index}].{:#x}", block.def.offset, field.offset),
+                        found: "field",
+                        datum_at: 0,
+                        shortcut: None,
+                        variant: None,
+                    });
+                }
+            }
+        }
+        links.retain(|link| !source_datums.contains(&link.datum_at));
+        links.extend(current);
+    }
+
+    /// A zero datum in a group-coded field may also be blank padding.
+    /// Accept it when its group and datum identify a real tag.
+    fn is_reference(&self, id: TagId, group: Option<FourCC>) -> bool {
+        id != TagId::NULL
+            && (id.0 != 0
+                || self.tag(id).is_some_and(|t| {
+                    group.is_none_or(|group| self.fits(t.group, &[group]))
+                }))
+    }
+}
+
 /// Resolve the placement's current palette entry or item reference.
 pub fn placement_root(
     scenario: &Scenario,
@@ -95,17 +221,15 @@ pub fn placement_root(
 /// A placement without an object or item collection has no root. For a
 /// tag root, `via` is empty. Depth counts references below the root.
 pub fn chain(doc: &TagDoc, root: Option<(TagId, &str)>, depth: usize) -> Chain {
-    let mut walk = Walk {
-        doc,
-        nodes_left: MAX_NODES,
-        fields_left: MAX_FIELDS,
-        truncated: false,
-    };
+    let mut walk = Walk::new(doc);
     let root = root.map(|(tag, via)| {
         walk.node(
             Link {
                 tag,
                 via: via.into(),
+                path: String::new(),
+                found: "field",
+                datum_at: 0,
                 shortcut: None,
                 variant: None,
             },
@@ -126,14 +250,30 @@ struct Walk<'a> {
     truncated: bool,
 }
 
-impl Walk<'_> {
+impl<'a> Walk<'a> {
+    fn new(doc: &'a TagDoc) -> Self {
+        Self {
+            doc,
+            nodes_left: MAX_NODES,
+            fields_left: MAX_FIELDS,
+            truncated: false,
+        }
+    }
+
     fn node(&mut self, link: Link, depth: usize, ancestors: &mut Vec<TagId>) -> Node {
         self.nodes_left -= 1;
         let cycle = ancestors.contains(&link.tag);
         let variant = link.variant.and_then(|v| self.model_variant(link.tag, v));
         let mut children = Vec::new();
         if !cycle && depth > 0 {
-            let refs = self.links(link.tag, link.variant);
+            let mut refs = self.links(link.tag, link.variant);
+            // Keep the model chain ahead of wide branches like shaders.
+            refs.sort_by_key(|r| match r.shortcut {
+                Some("Model") => 0,
+                Some("Render model") => 1,
+                Some(_) => 2,
+                None => 3,
+            });
             ancestors.push(link.tag);
             for next in refs {
                 if self.nodes_left == 0 {
@@ -155,34 +295,45 @@ impl Walk<'_> {
     }
 
     fn links(&mut self, tag: TagId, variant: Option<u32>) -> Vec<Link> {
-        let mut refs = Vec::new();
         let doc = self.doc;
-        if let Some(t) = doc.tag(tag)
-            && !matches!(t.access, Access::None(_))
-            && let Some(layout) = doc.layout(tag)
-            && layout.size <= t.size
-        {
-            let default = string_id(self.doc, t.address, layout, "default_variant");
-            let variant = variant.filter(|&v| v != 0 && v != u32::MAX).or(default);
-            self.element(t.group, t.address, layout, "", variant, &mut refs, 0);
+        let Some(t) = doc
+            .tag(tag)
+            .filter(|t| !matches!(t.access, Access::None(_)))
+        else {
+            return Vec::new();
+        };
+        let mut refs = Vec::new();
+        match doc.layout(tag) {
+            Some(layout) if layout.size <= t.size => {
+                let default = string_id(doc, tag, t.address, layout, "default_variant");
+                let variant = variant.filter(|&v| v != 0 && v != u32::MAX).or(default);
+                self.element(t, t.address, layout, ("", ""), variant, &mut refs, 0);
+
+                // The scenario definition names only known fields. Keep
+                // scanning for references in the remaining bytes.
+                if t.group.0 == *b"scnr" {
+                    let known: HashSet<_> = refs.iter().map(|r| r.datum_at).collect();
+                    refs.extend(
+                        doc.scan_refs(tag)
+                            .into_iter()
+                            .filter(|r| !known.contains(&r.datum_at)),
+                    );
+                }
+            }
+            None if t.bsp.is_some() => self.truncated = true,
+            None => refs = doc.scan_refs(tag),
+            Some(_) => {}
         }
-        // Keep the model chain ahead of wide branches like shaders.
-        refs.sort_by_key(|r| match r.shortcut {
-            Some("Model") => 0,
-            Some("Render model") => 1,
-            Some(_) => 2,
-            None => 3,
-        });
         refs
     }
 
     #[allow(clippy::too_many_arguments)]
     fn element(
         &mut self,
-        group: FourCC,
+        tag: &crate::app::tag_doc::TagEntry,
         at: u32,
         layout: &Layout,
-        prefix: &str,
+        prefixes: (&str, &str),
         variant: Option<u32>,
         refs: &mut Vec<Link>,
         depth: usize,
@@ -191,6 +342,7 @@ impl Walk<'_> {
             self.truncated = true;
             return;
         }
+        let (prefix, offsets) = prefixes;
         for f in &layout.fields {
             if self.fields_left == 0 {
                 self.truncated = true;
@@ -202,31 +354,37 @@ impl Walk<'_> {
             };
             match &f.kind {
                 Kind::TagRef { .. } | Kind::Datum { .. } => {
-                    let Some(bytes) = self.doc.read(address, f.kind.width()) else {
+                    let Some(bytes) = self.doc.read(tag.id, address, f.kind.width()) else {
                         continue;
                     };
                     let id = TagId(le(&bytes[bytes.len() - 4..]) as u32);
-                    if id == TagId::NULL || id.0 == 0 {
+                    let field_group =
+                        (bytes.len() == 8).then(|| FourCC::from_u32(le(&bytes[..4]) as u32));
+                    if !self.doc.is_reference(id, field_group) {
                         continue;
                     }
-                    let to = self.doc.tag(id).map(|t| t.group).or_else(|| {
-                        (bytes.len() == 8).then(|| FourCC::from_u32(le(&bytes[..4]) as u32))
-                    });
-                    let shortcut = to.and_then(|to| shortcut(group, to, prefix, &f.name));
+                    let to = self.doc.tag(id).map(|t| t.group).or(field_group);
+                    let shortcut = to.and_then(|to| shortcut(tag.group, to, prefix, &f.name));
                     let variant = match shortcut {
                         Some("Model") => variant,
-                        Some("Collection entry") => string_id(self.doc, at, layout, "variant"),
+                        Some("Collection entry") => {
+                            string_id(self.doc, tag.id, at, layout, "variant")
+                        }
                         _ => None,
                     };
                     refs.push(Link {
                         tag: id,
                         via: format!("{prefix}{}", f.name),
+                        path: format!("{offsets}{:#x}", f.offset),
+                        found: "field",
+                        datum_at: address + f.kind.width() - 4,
                         shortcut,
                         variant,
                     });
                 }
-                Kind::Block(child) if child.size > 0 => {
-                    let Some((n, start)) = self.doc.block(address, child) else {
+                Kind::Block(child) if child.size > 0 && (tag.bsp.is_none() || has_refs(child)) => {
+                    let Some((n, start)) = self.doc.block(tag.id, address, child) else {
+                        self.truncated |= tag.bsp.is_some();
                         continue;
                     };
                     for i in 0..n {
@@ -234,8 +392,17 @@ impl Walk<'_> {
                             break;
                         };
                         let path = format!("{prefix}{}[{i}].", f.name);
-                        self.element(group, at, child, &path, variant, refs, depth + 1);
-                        if self.fields_left == 0 {
+                        let offset_path = format!("{offsets}{:#x}[{i}].", f.offset);
+                        self.element(
+                            tag,
+                            at,
+                            child,
+                            (&path, &offset_path),
+                            variant,
+                            refs,
+                            depth + 1,
+                        );
+                        if self.truncated && self.fields_left == 0 {
                             return;
                         }
                     }
@@ -252,7 +419,7 @@ impl Walk<'_> {
         }
         let variant = if variant == 0 {
             let (at, _, f) = super::resolve(self.doc, tag, "variants[0].name").ok()?;
-            le(&self.doc.read(at.checked_add(f.offset)?, 4)?) as u32
+            le(&self.doc.read(tag, at.checked_add(f.offset)?, 4)?) as u32
         } else {
             variant
         };
@@ -264,12 +431,20 @@ impl Walk<'_> {
     }
 }
 
-fn string_id(doc: &TagDoc, at: u32, layout: &Layout, name: &str) -> Option<u32> {
+fn has_refs(layout: &Layout) -> bool {
+    layout.fields.iter().any(|f| match &f.kind {
+        Kind::TagRef { .. } | Kind::Datum { .. } => true,
+        Kind::Block(child) => has_refs(child),
+        _ => false,
+    })
+}
+
+fn string_id(doc: &TagDoc, tag: TagId, at: u32, layout: &Layout, name: &str) -> Option<u32> {
     let f = layout
         .fields
         .iter()
         .find(|f| f.name == name && matches!(f.kind, Kind::StringId))?;
-    Some(le(&doc.read(at.checked_add(f.offset)?, 4)?) as u32)
+    Some(le(&doc.read(tag, at.checked_add(f.offset)?, 4)?) as u32)
 }
 
 fn shortcut(from: FourCC, to: FourCC, prefix: &str, field: &str) -> Option<&'static str> {

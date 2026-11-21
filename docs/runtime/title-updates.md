@@ -1,11 +1,10 @@
 # Title updates
 
-Status: Design. Nothing here is built: `crates/imagemap`, `h2 image`,
-`h2 play --image`, `H2_IMAGE` and `H2_XBE_UPDATE` do not exist yet.
-Code: none. The inputs exist: the Multiplayer Map Pack disc carries an update,
-certificate version `0x303` for our 1.0 disc (section 6, and
-[map-pack.md](../game/map-pack.md)); `h2 import-mappack` copies it to
-`<data>/updates/4D530064/00000303/default.xbe`.
+Status: Design. The player uses the retail 1.0 image. Address mapping and
+running another title image are proposed.
+Code: `crates/apps/cli/src/mappack_cmd.rs` copies the title update from the
+user's Multiplayer Map Pack disc into the data directory.
+Switch: none.
 
 Halo 2 shipped on disc as 1.0. Xbox Live title updates (1.1 and later) don't
 patch the disc. They put a new `default.xbe` on the console's hard disk under
@@ -382,7 +381,7 @@ is not a precedent for adding update fingerprints to the repository.
 
 ### 3.2 Per-version address map, built at analysis time
 
-The design adds a crate, `crates/imagemap`. It depends on `xbe`, `analyze` and,
+The design adds a crate, `imagemap`. It depends on `xbe`, `analyze` and,
 optionally, `symbols`. Its input is the base XBE and the target XBE (both
 local), and it produces:
 
@@ -564,9 +563,9 @@ Some of this pays for itself even without update files:
 
 ### 3.6 CLI and UX
 
-Design only: `h2 image`, `h2 play --image`, `H2_IMAGE` and `H2_XBE_UPDATE`
-(the last as a test input, section 5) are not in the code. The only update
-handling today is `h2 import-mappack` copying the update aside.
+The proposed CLI uses `h2 image` to list and map images and
+`h2 play --image` to select one. The acceptance tests in section 5 take
+a local base and update XBE.
 
 - **Where files live**: `<data>/updates/4D530064/<certificate version>/default.xbe`,
   which is where `h2 import-mappack` puts the Map Pack disc's update. Also
@@ -641,7 +640,7 @@ wrongly), and recall gets recorded.
 **Base self-map** (`#[ignore]`, `$H2_XBE`): mapping 1.0 against itself must
 give the identity for every anchor, with `Exact` evidence.
 
-**Per-version acceptance** (`#[ignore]`, `H2_XBE` plus `H2_XBE_UPDATE`):
+**Per-version acceptance** (planned disc tests, with paths to both XBEs):
 
 1. `h2 image map` refuses nothing.
 2. Run the image-backed pins (dsound and xapi ret sizes, Bink prologues, the
@@ -666,7 +665,7 @@ after files arrive.
 | A | `ImageId`, one base hash, replace the three title-ID + entry gates and the duplicate hashes | 0.5 d |
 | B | `Anchor` + `ImageAddrs` refactor across d3d, dsound, xwma, xapi, bink-hle, boot glue, engine, `GuestLayout`, `FrameWait`, `dsound::Layout`, `CacheGlobals`, loader arena. Identity map, no behaviour change | 2-3 d |
 | C | Fill in `xdk` names, add the symbols cross-check test, derive `GuestLayout` globals from symbols' data votes, remove the duplicate addresses | 1-2 d |
-| D | `crates/imagemap`: normalizer, passes 1-6, one-to-one solver, report, synthetic and property tests | 4-6 d |
+| D | `imagemap`: normalizer, passes 1-6, one-to-one solver, report, synthetic and property tests | 4-6 d |
 | E | Byte check at registration, `HookClass` audit for every entry | 1 d |
 | F | Structural location for the `hs` catalog and the retail dispatch tables; the WMA range-equality path | 1-2 d |
 | G | CLI: `h2 image list/map`, `--image`, per-image out and data dirs, launch-path mapping | 1-2 d |
@@ -762,6 +761,5 @@ What it means for the design above:
   relaunch in 3.6 is real. Keep the update out of the emulated `$u` until
   `--image` selects it, as `h2 import-mappack` does.
 
-Next steps, in the order of section 4: A to G can now be tested against a
-real update (`H2_XBE_UPDATE=<data>/updates/4D530064/00000303/default.xbe`),
-and H can start.
+Use the locally imported update for the per-version acceptance checks
+in section 5 as the address-map and launch work becomes available.

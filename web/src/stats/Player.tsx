@@ -24,7 +24,7 @@ import { Crumbs, Derived, Pager, Panel, Tabs, Title, playerHref } from "./Layout
 import GametypeIcon from "../components/GametypeIcon";
 import { SkullBadges } from "../components/SkullIcon";
 import { MapPreview, MapThumb, PeopleFinder, Pills, RecentGames, gameTitle, playlist } from "./Side";
-import { titleCase } from "../lib/format";
+import { damageSourceName } from "../lib/format";
 import { gameSeconds, teamName } from "../lib/game";
 import { now } from "../lib/now";
 import Wordmark from "./Wordmark";
@@ -529,8 +529,8 @@ export function ToolOfDestruction(props: { rec: ServiceRecord; sort: Sort; versu
       <div class="s-tod">
         <For each={all() ? rows() : rows().slice(0, 7)} fallback={<p class="s-tod-empty">No knockouts recorded.</p>}>
           {(r) => (
-            <div class="s-tod-row" classList={{ "s-tod-row--top": !!props.versus && better(r.weapon, r.kills) }} title={titleCase(r.weapon)}>
-              <span class="s-tod-ico"><span><WeaponIcon weapon={r.weapon} width={50} /><small>{titleCase(r.weapon)}</small></span></span>
+            <div class="s-tod-row" classList={{ "s-tod-row--top": !!props.versus && better(r.weapon, r.kills) }} title={damageSourceName(r.weapon)}>
+              <span class="s-tod-ico"><span><WeaponIcon weapon={r.weapon} width={50} /><small>{damageSourceName(r.weapon)}</small></span></span>
               <div class="s-tod-bars">
                 <div class="s-tod-bar"><span style={{ width: `${(r.ks / max()) * 78}%` }} />{(r.ks * 100).toFixed(2)}%</div>
                 <div class="s-tod-bar"><span style={{ width: `${(r.ds / max()) * 78}%` }} />{(r.ds * 100).toFixed(2)}%</div>

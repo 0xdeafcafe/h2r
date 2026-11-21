@@ -134,7 +134,10 @@ impl Drop for Sampler {
     }
 }
 
+static SAMPLE_BYTES: mem_watch::Counter = mem_watch::Counter::new("perf.active_sampler_buffer_bytes");
+
 fn run(targets: Vec<ThreadTarget>, hz: u32, stop: &AtomicBool) -> RawProfile {
+    let _scope = mem_watch::scope("perf.sampler");
     let period = Duration::from_nanos(1_000_000_000 / hz as u64);
     let start = Instant::now();
     let mut out = RawProfile {
@@ -142,6 +145,8 @@ fn run(targets: Vec<ThreadTarget>, hz: u32, stop: &AtomicBool) -> RawProfile {
         hz,
         ..RawProfile::default()
     };
+    let mut sample_bytes = SAMPLE_BYTES.track(0);
+    let mut frame_bytes = 0;
     let mut buf = [0u64; MAX_FRAMES];
     let mut pause_total = 0u128;
     let mut pauses = 0u64;
@@ -160,13 +165,16 @@ fn run(targets: Vec<ThreadTarget>, hz: u32, stop: &AtomicBool) -> RawProfile {
                 Some(c) => {
                     pause_total += t0.elapsed().as_nanos();
                     pauses += 1;
+                    let frames = buf[..c.depth].to_vec();
+                    frame_bytes += frames.capacity() * size_of::<u64>();
                     out.samples.push(RawSample {
                         thread: i,
                         at,
                         on_cpu: c.on_cpu,
-                        frames: buf[..c.depth].to_vec(),
+                        frames,
                         lr: c.lr,
                     });
+                    sample_bytes.set((out.samples.capacity() * size_of::<RawSample>() + frame_bytes) as u64);
                 }
                 None => out.missed += 1,
             }

@@ -7,6 +7,7 @@ use crate::{Error, Result};
 use map::{FourCC, Map, TagId};
 use std::collections::HashMap;
 use std::io::{Read, Seek};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// The `scnr` root is at least this long: the furthest block pair this crate
 /// reads is crates' palette at `+0x330`.
@@ -76,6 +77,27 @@ pub struct TagInfo {
     pub name: Option<String>,
 }
 
+// Layout identities also distinguish divergent edits to cloned scenarios.
+fn next_layout_rev() -> u64 {
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    NEXT.fetch_add(1, Ordering::Relaxed)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct LayoutChange {
+    before: u64,
+    after: u64,
+}
+
+/// Identity of an entry within its document and block. A swap-removal changes
+/// the last entry's index without changing which placement it represents.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum PlacementId {
+    Source(usize),
+    /// The layout revision created by the append. Redo reuses the same revision.
+    Added(u64),
+}
+
 /// One placement block.
 #[derive(Clone, Debug)]
 pub struct Block {
@@ -84,10 +106,29 @@ pub struct Block {
     pub address: u32,
     entries: Vec<Vec<u8>>,
     original: Vec<Vec<u8>>,
+    ids: Vec<PlacementId>,
+    layout_rev: u64,
+    // unadd takes bytes, so it needs the parent of each consecutive append.
+    // A removal carries this trail in its undo receipt.
+    before_appends: Vec<u64>,
     /// The palette's tag references, when the block has a palette.
     pub palette: Vec<TagRef>,
 }
 impl Block {
+    /// Identity of the block's ordered placement slots. Zero names the source
+    /// layout. Field edits preserve it and undo restores the prior identity.
+    pub fn layout_rev(&self) -> u64 {
+        self.layout_rev
+    }
+    fn change_layout(&mut self, replay: Option<LayoutChange>) -> LayoutChange {
+        let before = self.layout_rev;
+        // Redo can reuse an identity only when it starts from its parent.
+        let after = replay
+            .filter(|change| change.before == before)
+            .map_or_else(next_layout_rev, |change| change.after);
+        self.layout_rev = after;
+        LayoutChange { before, after }
+    }
     pub fn len(&self) -> usize {
         self.entries.len()
     }
@@ -97,6 +138,22 @@ impl Block {
     /// Current bytes of an element (including every unknown byte).
     pub fn entry(&self, index: usize) -> Option<&[u8]> {
         self.entries.get(index).map(Vec::as_slice)
+    }
+    pub fn placement_id(&self, index: usize) -> Option<PlacementId> {
+        self.ids.get(index).copied()
+    }
+    pub fn source_entries(&self) -> &[Vec<u8>] {
+        &self.original
+    }
+    /// Decode a field supplied by the game's conditional write reply.
+    pub fn field_value(&self, index: usize, field: &FieldDef, bytes: &[u8]) -> Option<Value> {
+        let mut entry = self.entry(index)?.to_vec();
+        if bytes.len() != field.ty.size() as usize {
+            return None;
+        }
+        let at = field.offset as usize;
+        entry.get_mut(at..at + bytes.len())?.copy_from_slice(bytes);
+        Some(read_field(&entry, field))
     }
     /// Elements the source block holds: up to this many fit in place.
     pub fn capacity(&self) -> usize {
@@ -112,6 +169,8 @@ pub struct Changes {
     /// the root count of a block that shrank or grew back within its source
     /// size.
     pub patches: Vec<(u32, Vec<u8>)>,
+    /// Fixed-size replacements in structure BSP regions.
+    pub bsp_patches: Vec<BspPatch>,
     /// Blocks that outgrew their source: written as a new copy appended to
     /// the metadata, then the root's `(count, address)` pointed at it.
     pub grown: Vec<Grown>,
@@ -124,10 +183,22 @@ pub struct Changes {
 impl Changes {
     pub fn is_empty(&self) -> bool {
         self.patches.is_empty()
+            && self.bsp_patches.is_empty()
             && self.grown.is_empty()
             && self.tag_grown.is_empty()
             && self.strings.is_empty()
     }
+}
+
+/// A fixed-size replacement inside a structure BSP region.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BspPatch {
+    /// The source region, whose file offset distinguishes BSPs at the same virtual address.
+    pub space: map::AddressSpace,
+    /// Starting virtual address in the region.
+    pub address: u32,
+    /// Replacement bytes, in file order.
+    pub bytes: Vec<u8>,
 }
 
 /// A block of a tag other than the scenario with more elements than its
@@ -164,6 +235,9 @@ pub struct Removed {
     /// Object names repointed by the removal: (name index, old placement
     /// index).
     pub renamed: Vec<(usize, i16)>,
+    pub(crate) layout: LayoutChange,
+    id: PlacementId,
+    before_appends: Vec<u64>,
 }
 
 /// The scenario object names block, kept so a removal can repoint names.
@@ -210,6 +284,7 @@ pub struct Scenario {
     /// outside this tag): `(ordinary metadata virtual address, bytes)`,
     /// saved with the scenario's own. See [`Self::set_tag_patches`].
     tag_patches: Vec<(u32, Vec<u8>)>,
+    bsp_patches: Vec<BspPatch>,
     /// Other tags' grown blocks. See [`Self::set_tag_grown`].
     tag_grown: Vec<TagGrown>,
     /// New string IDs. See [`Self::set_tag_strings`].
@@ -338,7 +413,10 @@ impl Scenario {
                 def,
                 address: start,
                 original: entries.clone(),
+                ids: (0..entries.len()).map(PlacementId::Source).collect(),
                 entries,
+                layout_rev: 0,
+                before_appends: Vec::new(),
                 palette,
             });
         }
@@ -376,6 +454,7 @@ impl Scenario {
             names,
             tags,
             tag_patches: Vec::new(),
+            bsp_patches: Vec::new(),
             tag_grown: Vec::new(),
             tag_strings: Vec::new(),
         })
@@ -512,6 +591,7 @@ impl Scenario {
     pub fn changes(&self) -> Changes {
         let mut out = Changes {
             patches: self.tag_patches.clone(),
+            bsp_patches: self.bsp_patches.clone(),
             tag_grown: self.tag_grown.clone(),
             strings: self.tag_strings.clone(),
             ..Changes::default()
@@ -574,6 +654,11 @@ impl Scenario {
         &self.tag_patches
     }
 
+    /// Replace the BSP region patches. Save checks the ranges against the source map.
+    pub fn set_bsp_patches(&mut self, patches: Vec<BspPatch>) {
+        self.bsp_patches = patches;
+    }
+
     /// Replace the other tags' grown blocks (all of them, not a delta).
     /// Refused when a block's pair lies in this scenario's payload, or a
     /// patch from [`Self::set_tag_patches`] covers it (the pair is written
@@ -625,6 +710,15 @@ impl Scenario {
     /// Swap-remove an element: the last element moves into its slot and
     /// the count drops by one. Returns what [`Self::unremove`] needs.
     pub fn remove(&mut self, kind: BlockKind, index: usize) -> Result<Removed> {
+        self.remove_with_rev(kind, index, None)
+    }
+
+    pub(crate) fn remove_with_rev(
+        &mut self,
+        kind: BlockKind,
+        index: usize,
+        replay: Option<LayoutChange>,
+    ) -> Result<Removed> {
         if let Some(why) = self.remove_refusal(kind) {
             return Err(Error::Refused(why));
         }
@@ -635,6 +729,9 @@ impl Scenario {
         let last = block.len() - 1;
         let ty = block.def.object_type;
         let entry = block.entries.swap_remove(index);
+        let id = block.ids.swap_remove(index);
+        let layout = block.change_layout(replay);
+        let before_appends = std::mem::take(&mut block.before_appends);
         // Names point at placements by (type, index): the removed one's
         // name now names nothing, the moved one's follows it.
         let mut renamed = Vec::new();
@@ -661,7 +758,10 @@ impl Scenario {
             kind,
             index,
             entry,
+            id,
             renamed,
+            layout,
+            before_appends,
         })
     }
 
@@ -682,11 +782,28 @@ impl Scenario {
         if removed.index > block.len() {
             return Err(Error::NoEntry(removed.kind, removed.index));
         }
+        // unremove can also be applied to a different layout outside History.
+        let id = if block.layout_rev != removed.layout.after && block.ids.contains(&removed.id) {
+            PlacementId::Added(next_layout_rev())
+        } else {
+            removed.id
+        };
         if removed.index == block.len() {
+            block.ids.push(id);
             block.entries.push(removed.entry.clone());
         } else {
+            let last_id = std::mem::replace(&mut block.ids[removed.index], id);
+            block.ids.push(last_id);
             let moved = std::mem::replace(&mut block.entries[removed.index], removed.entry.clone());
             block.entries.push(moved);
+        }
+        if block.layout_rev == removed.layout.after {
+            block.layout_rev = removed.layout.before;
+            block.before_appends.clone_from(&removed.before_appends);
+        } else {
+            // Applied to another layout, this insertion creates new slots.
+            block.layout_rev = next_layout_rev();
+            block.before_appends.clear();
         }
         for &(n, p) in removed.renamed.iter().rev() {
             self.names.set_placement(n, p);
@@ -711,6 +828,15 @@ impl Scenario {
     /// A block that grows past its source size is written as a new copy at
     /// the end of the metadata on save.
     pub fn add(&mut self, kind: BlockKind, entry: Vec<u8>) -> Result<usize> {
+        self.add_with_rev(kind, entry, None).map(|(index, _)| index)
+    }
+
+    pub(crate) fn add_with_rev(
+        &mut self,
+        kind: BlockKind,
+        entry: Vec<u8>,
+        replay: Option<LayoutChange>,
+    ) -> Result<(usize, LayoutChange)> {
         if let Some(why) = self.add_refusal(kind) {
             return Err(Error::Refused(why));
         }
@@ -719,7 +845,10 @@ impl Scenario {
             return Err(Error::Invalid("entry is not one element long"));
         }
         block.entries.push(entry);
-        Ok(block.len() - 1)
+        let layout = block.change_layout(replay);
+        block.ids.push(PlacementId::Added(layout.after));
+        block.before_appends.push(layout.before);
+        Ok((block.len() - 1, layout))
     }
 
     /// Undo [`Self::add`]: drop the last element, which must be `entry`.
@@ -729,6 +858,8 @@ impl Scenario {
             return Err(Error::Invalid("the added entry is no longer last"));
         }
         block.entries.pop();
+        block.ids.pop();
+        block.layout_rev = block.before_appends.pop().unwrap_or_else(next_layout_rev);
         Ok(())
     }
 

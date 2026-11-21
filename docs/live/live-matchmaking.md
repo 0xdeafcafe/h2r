@@ -621,10 +621,8 @@ is separate and goes to stats; an entry's "record id" is a map id. So
 `HopperFile::default_set()` builds a complete file from nothing: eleven
 playlists in hoppers 0..10, playlist ids 1..11 (eight human playlists, then
 three clanker ones), status 0, the game's skill
-ceiling and wait/timeout values, the start-wait table computed as the game
-computes it, only retail maps (map pack maps are left out: an unknown map
-errors the whole hopper and the format has no "only when installed" flag),
-and variants from the stock records.
+ceiling and wait/timeout values, the game's start-wait table, maps from
+the Halo 2 disc, and variants from the stock records.
 
 | # | Title | Type | Size | Entries |
 |---|---|---|---|---|
@@ -704,7 +702,9 @@ and the editor's playlist tool (`hopper_edit::model`) work the same way:
 - **An entry's game variant** is picked per entry: a built-in one
   (`defaults::builtin_variants`, keyed; the server writes its 0x130 bytes)
   or one already in the file (its slot is copied with `from`/
-  `from_hopper`). The map is any map of the catalog (or `RETAIL_MAPS`).
+  `from_hopper`). The map is a Halo 2 disc map or a Multiplayer Map Pack
+  map from the catalog. The builder labels Map Pack maps and requires at
+  least one disc map in the rotation.
 - **Custom maps** are allowed per playlist by pins (`HopperPinsSet`,
   [maps.md §5](../game/maps.md)); the builder's "Custom maps allowed"
   section says, for each pinned map, whether the playlist has an entry on
@@ -818,8 +818,9 @@ host that the next searcher finds.
 
 - `live_proto::optimatch::Query` is the decoded search: `hopper`,
   `average`, `lowest`/`highest` (the window, absent when widened out),
-  `party`. `Query::from_params` reads the twelve parameters; any other
-  shape falls back to an unfiltered search, as before.
+  `party`, and the optional Live field `has_map_pack`.
+  `Query::from_params` reads the twelve retail parameters. Other shapes
+  fall back to an unfiltered search.
 - `GET /v1/sessions?optimatch=<json>` keeps the listed sessions that
   match and returns up to `limit`, closest mean level first, as one page
   (`next` is null). The other filters still apply.
@@ -1067,10 +1068,12 @@ ExtendRound and Report start with the session id, which is also the
 Live session's id. Ids are written as the game's 8 bytes in order, 16
 lowercase hex digits.
 
-1. **Game record.** `NewGame.session_id`, matchmaking games only. The
-   boot's playlist locator answers `Hle::matchmade`: the playlist and
-   the session, both from this console's own advertisement, else from
-   the joined session as last read. Telemetry puts both on the game.
+1. **Game record.** For matchmaking, the boot's playlist locator reads
+   `Hle::matchmade` and supplies the playlist and session from this console's
+   own advertisement or the joined session. Telemetry sends both on the game
+   start request. The server stores `NewGame.session_id` on its private lobby
+   link, which ranking reads when the game ends. Custom hosts also send their
+   advertisement for web joins.
 2. **HLE to server.** Register, ExtendRound and Report post through the
    Live worker, never waiting, once for every account signed in on the
    console:
@@ -1140,10 +1143,10 @@ log lines.
 
 ## 9. Ping-aware OptiMatch assignments
 
-Enable the queue on each participating game client with
-`H2_LIVE_PING_MATCHMAKING=1`. The HLE uses it for solo OptiMatch searches.
-Parties, Clankermatch and the custom-games browser use their existing
-search paths. The server uses the active hopper's **minimum** player count
+The HLE uses the queue for solo OptiMatch searches on hoppers with Map
+Pack entries. Set `H2_LIVE_PING_MATCHMAKING=1` to use it on hoppers with
+disc maps alone. Parties, Clankermatch and the custom-games browser use
+their existing search paths. The server uses the active hopper's **minimum** player count
 and the entrants' current server ranks for that hopper. Team hoppers fill
 equal-sized teams by distributing the highest-to-lowest ranks in alternating
 team order. The planned teams are in the assignment. The retail title still
@@ -1221,7 +1224,8 @@ Both the native router and the Worker's LiveHub serve the same routes.
 Each write uses a fresh `sessions.write` token.
 
 - `PUT /v1/matchmaking/queue` refreshes the signed account's ticket with
-  `hopper`, the XNet base `port`, optional `connectivity` and `samples`.
+  `hopper`, the XNet base `port`, and optional `has_map_pack`,
+  `connectivity` and `samples`.
   The server takes the IPv4 address from the connection. The `probing`
   response gives each target's XUID, endpoint and ticket generation.
   Report `target`, `generation` and `rtt_ms` for each target. Use
@@ -1245,8 +1249,38 @@ Each write uses a fresh `sessions.write` token.
   are transient, so a restart starts a fresh search. Published sessions
   retain `matchmaking` in their signed `SessionCreated` event and session
   detail. It includes the host, whether it was dedicated, the roster,
-  planned teams and the per-member RTT table. A peer host has zero RTT
+  planned teams, the per-member RTT table and the boolean
+  `has_map_pack` for the whole assignment. A peer host has zero RTT
   to itself. The public debug record omits network addresses.
+
+### Map Pack rotations
+
+The playlist catalog reads map IDs from the owner's Map Pack. The same
+hopper and playlist ID serve every player. The server offers older
+clients a disc-only file. The HLE requests the full rotation, detects
+hoppers with add-on entries and supplies a disc-only download to a
+console without the pack. Solo searches on those hoppers enter the QoS
+queue. At the peer host's weighted pick, the block contains Map Pack
+entries only for a current all-owner assignment. Unverified host
+lobbies, including legacy and party searches, use the disc rotation.
+A downgrade invalidates the pending assignment and withdraws any
+dedicated host still starting it (`matchmaking::Matchmaker::submit` and
+`Live::withdraw_pending_match_host`). A configured Map Pack map on an
+ad-hoc dedicated host requires the pack on every assigned console and in
+the host's data bundle. A registered dedicated candidate on a configured
+Map Pack map reports its own capability and can serve an all-owner
+cohort. Mixed cohorts can still match on eligible peers
+(`matchmaking::selection`).
+
+`live_proto::hopper::retain_block_maps` compacts full entry records so
+their weights, variants and opaque fields stay intact. The native hook
+filters the result of the hopper block read before the picker consumes
+the count and weights. Capability uses the installed content, as
+`h2 import-mappack` lays it out, and covers every local seat on that
+console. The search screen explains the disc rotation if the pack is
+missing. The website shows the same limitation beside a hopper with Map
+Pack entries when the signed-in account's recent search reported it.
+[Live API](live-api.md#map-pack-matchmaking)
 
 ### Ad-hoc dedicated hosts
 
@@ -1267,10 +1301,12 @@ two. Use `null` for a region without a configured UDP target. Set
 omitted, the provider chooses the location.
 
 The queue includes regional probes in its `probing` response within the
-32-target limit. It accepts only samples for the current generation. On
-native Live, a running provider-managed match in the region advertises
-its UDP QoS endpoint. A searcher can also probe the configured UDP
-endpoint. With local and Cloudflare providers, the queue advertises up
+32-target limit. It accepts only samples for the current generation.
+For a dedicated Map Pack map, only pack owners receive regional probes
+and contribute to host pool warming. On native Live, a running
+provider-managed match in the region advertises its UDP QoS endpoint.
+A searcher can also probe the configured UDP endpoint. With local and
+Cloudflare providers, the queue advertises up
 to nine `region_echoes` on the client's own Live origin. The client
 upgrades `/v1/hosts/regions/{region}/echo` using its account's
 `sessions.relay` credential and measures a single echo after the

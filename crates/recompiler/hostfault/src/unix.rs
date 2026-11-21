@@ -69,7 +69,7 @@ unsafe fn pc(context: *mut libc::c_void) -> usize {
 ///
 /// # Safety
 /// As [`pc`].
-pub(super) unsafe fn set_pc(context: *mut libc::c_void, pc: usize) {
+unsafe fn set_pc(context: *mut libc::c_void, pc: usize) {
     let uc = context.cast::<libc::ucontext_t>();
     // SAFETY: per the contract above.
     unsafe {
@@ -102,12 +102,10 @@ extern "C" fn handler(sig: i32, info: *mut libc::siginfo_t, context: *mut libc::
     if hardware {
         // SAFETY: as above.
         let (address, pc) = unsafe { ((*info).si_addr() as usize, pc(context)) };
-        let mut fault = Fault {
-            address,
-            pc,
-            context,
-        };
+        let mut fault = Fault { address, pc };
         if dispatch(&mut fault) {
+            // SAFETY: commit the callback's PC only when it accepts the fault.
+            unsafe { set_pc(context, fault.pc) };
             return;
         }
     }

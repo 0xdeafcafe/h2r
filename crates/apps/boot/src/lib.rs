@@ -9,6 +9,8 @@
 //! directory, which should be under `$TMPDIR` or `target/`.
 
 pub use game::*;
+mod controller_lights;
+mod idle_audio;
 // maps.test.*: test maps from recipes (docs/game/test-maps.md).
 pub mod registration;
 #[cfg(feature = "test-maps")]
@@ -141,6 +143,7 @@ pub fn run_theater(
     opts: &RunOpts,
     mut host: Host,
     replay: theater::Replay,
+    child_started: std::time::Instant,
 ) -> Result<RunReport> {
     let mut reader = film::Reader::open(&replay.path)?;
     let lan = LiveConfig {
@@ -148,7 +151,9 @@ pub fn run_theater(
         ..LiveConfig::default()
     };
     let mut opts = opts.clone();
-    let sim = match theater::Startup::read(&mut reader)? {
+    let startup = theater::Startup::read(&mut reader)?;
+    let legacy_lod = startup.as_ref().and_then(theater::Startup::legacy_lod_multiplier);
+    let sim = match startup {
         Some(start) => start.restore(&mut opts, &mut host)?,
         None => {
             anyhow::ensure!(reader.header.meta.source == film::Source::Host,
@@ -156,7 +161,17 @@ pub fn run_theater(
             None
         }
     };
-    run_configured(xbe, image, &opts, host, (&lan, None), sim.map(|s| (s, None)), Some(replay))
+    run_configured(xbe, image, &opts, host, (&lan, None), sim.map(|s| (s, None)), Some((replay, legacy_lod, child_started)))
+}
+
+/// Workers can still hold the VFS when the game exits. End this boot's
+/// bindings on every exit, including a failed boot or guest fault.
+struct EditorMount(vfs::MapRebind);
+
+impl Drop for EditorMount {
+    fn drop(&mut self) {
+        self.0.clear_on_shutdown();
+    }
 }
 
 fn run_configured(
@@ -166,8 +181,15 @@ fn run_configured(
     mut host: Host,
     (live, publisher): (&LiveConfig, Option<HostPublisher>),
     sim: Option<(sim_glue::Sim, Option<telemetry::TelemetryConfig>)>,
-    replay: Option<theater::Replay>,
+    replay: Option<(theater::Replay, Option<f32>, std::time::Instant)>,
 ) -> Result<RunReport> {
+    let boot_started = std::time::Instant::now();
+    let (replay, legacy_lod, child_started) = match replay {
+        Some((replay, lod, start)) => (Some(replay), lod, Some(start)),
+        None => (None, None, None),
+    };
+    #[cfg(not(feature = "gpu"))]
+    let _ = legacy_lod;
     // H2_SIM and the CLI sim entry share the dedicated profile. The explicit
     // switch off supplies a stock headless control for the same roster.
     let (sim_mode, upload) = match sim {
@@ -186,7 +208,7 @@ fn run_configured(
     if host_audit::module_from_env().is_some() {
         anyhow::ensure!(host_light, "H2_HOST_MODULE requires the light host profile");
     }
-    if host.host_light {
+    if host.host_light && !replaying {
         anyhow::ensure!(live.enabled && sim_mode.is_none(),
             "--host-light serves the network lobby; unset H2_SIM");
         anyhow::ensure!(
@@ -195,9 +217,9 @@ fn run_configured(
         );
     }
     #[cfg(feature = "gpu")]
-    let host_graphics = (host.gfx.is_some() && !(replaying && render_every != 0))
-        || host.gfx_view.is_some()
-        || host.render_thread;
+    let rendered_replay = replaying && render_every != 0 && sim_mode.is_none() && host.gfx.is_some();
+    #[cfg(feature = "gpu")]
+    let host_graphics = !rendered_replay && (host.gfx.is_some() || host.gfx_view.is_some() || host.render_thread);
     #[cfg(not(feature = "gpu"))]
     let host_graphics = false;
     if host_light || sim_mode.is_some() {
@@ -315,6 +337,13 @@ fn run_configured(
     let film_path = host.film_out.take().or_else(|| {
         std::env::var_os("H2_FILM_OUT").filter(|p| !p.is_empty()).map(PathBuf::from)
     });
+    let film_dir = || {
+        std::env::var_os("H2_FILM_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| opts.data_root.join("films"))
+    };
+    let viewer_cache = replay.as_ref().and_then(|r| r.cache.as_ref())
+        .map(|c| (c.films_dir.clone(), c.cap_bytes));
     let film = if replaying || film_path.is_some() {
         let stamp = running_stamp();
         let clock = k.clock();
@@ -346,6 +375,11 @@ fn run_configured(
         if let (Some(hle), Some(session)) = (&_live, &session) {
             hle.set_film_tap(session.clone());
         }
+        if let Some(session) = &session
+            && std::env::var("H2_THEATER_MEASURE").as_deref() == Ok("1")
+        {
+            session.start_measurements(boot_started, child_started);
+        }
         session
     } else {
         None
@@ -361,10 +395,34 @@ fn run_configured(
         audit.is_none() || !switches.feature("render-census", false),
         "host audit and render-census both use the guest access trap"
     );
+    let lockstep_config = lockstep_glue::Config::from_env();
+    let lockstep_on = lockstep_config.enabled();
+    #[cfg(feature = "gpu")]
+    let protected_readbacks = d3d_glue::protected_readbacks(_live.is_some(), film.is_some(), lockstep_on);
     let mut features = hooks::Registry::new(registration::profile_switches(switches, host_light));
-    // Our text on the cannot-connect dialog when Live is off or its server
-    // is unreachable (docs/live/live.md, "Client HLE: Live not set up").
-    live_notice::install(&loaded.runtime, live).context("installing the Live notice")?;
+    #[cfg(feature = "gpu")]
+    let native_size: run_opts::NativeSize = host.gfx_view.as_ref().map(|view| view.native_size.clone())
+        .unwrap_or_else(|| Arc::new(|| setting_defs::GUEST_FRAME));
+    #[cfg(not(feature = "gpu"))]
+    let native_size: run_opts::NativeSize = Arc::new(|| setting_defs::GUEST_FRAME);
+    #[cfg(feature = "gpu")]
+    let output_size = if opts.d3d && ((!host_light && sim_mode.is_none()) || rendered_replay)
+        && (host.gfx_view.is_some() || (host.gfx.is_none() && std::env::var_os("H2_BOOT_GFX").is_some()))
+    {
+        match host.gfx_view.as_ref().and_then(|v| v.viewer_output.clone()) {
+            Some(output) => Some(output),
+            None => Some(d3d_glue::output_size(host.settings.as_deref(), native_size.clone())?),
+        }
+    } else {
+        None
+    };
+    #[cfg(feature = "gpu")]
+    let mut display_size = host.gfx_view.as_ref().map(|view| Arc::clone(&view.display_size));
+    #[cfg(feature = "gpu")]
+    let mut active_size = output_size.as_ref().map(|output| {
+        let initial = output();
+        Arc::new(move || initial) as run_opts::NativeSize
+    });
     std::fs::create_dir_all(&opts.data_root)?;
     let mut cfg = vfs::Config::new(&opts.data_root, x.certificate.title_id);
     cfg.mmap_disc = host_light;
@@ -432,8 +490,26 @@ fn run_configured(
         .as_ref()
         .map(|s| campaigns::host_maps(&opts.data_root, s))
         .unwrap_or_default();
-    // Explicit editor maps still use H2_MAP_DIR. Installed packages use
-    // their independent content offers (docs/game/maps.md).
+    // The discoverable socket can adopt this boot's DVD on a file reload.
+    let agent_socket = agent_glue::socket_from_env().or_else(|| {
+        host.discoverable_agent.then(agent_glue::discoverable_socket).flatten()
+    });
+    let editor_hooks_on = features.switches().feature(agent::EDIT_LIFECYCLE, true);
+    let recording_or_playback =
+        agent_glue::reload_recording_refusal(replaying, film.is_some(), &lockstep_config);
+    let reload_mount = if host_light {
+        Err("the light host has no writable editor map mount")
+    } else if let Some(reason) = recording_or_playback {
+        Err(reason)
+    } else if !editor_hooks_on {
+        Err("editor lifecycle hooks are disabled")
+    } else if !features.switches().feature(map_slots::FEATURE, true) {
+        Err("the map-slots feature is disabled")
+    } else if agent_socket.is_none() {
+        Err("the editor agent socket is disabled")
+    } else {
+        Ok(())
+    };
     let maps = map_override::dir();
     campaign_cache::configure(
         &mut features, &loaded.runtime, &mut cfg, &campaign_maps, maps.as_deref(),
@@ -462,19 +538,22 @@ fn run_configured(
     #[cfg(not(feature = "desktop-runtime"))]
     let fonts = bot_mark::GearRewrite;
     let rewrites = Some(vfs::Chain(fonts, cards));
-    let mounted = map_override::mount(
+    let mounted = map_override::mount_for_agent(
         cfg.clone(),
         &opts.disc,
         rewrites,
         maps.as_deref(),
         &campaign_maps,
+        reload_mount.is_ok()
+            && features.switches().feature("agent", true)
+            && features.switches().feature(agent::sim::calls::FEATURE, true),
     );
     #[cfg(feature = "desktop-runtime")]
     if let Some(i) = &icons {
         icons::install(&loaded.runtime, Arc::clone(i))?;
     }
-    let v = match mounted {
-        Ok(v) => v,
+    let (v, map_rebind) = match mounted {
+        Ok(mount) => mount,
         Err(e) => {
             // A raw XBE (or a file that is not an XISO) still boots, with no
             // DVD mounted: the first map open then fails in the guest.
@@ -482,10 +561,17 @@ fn run_configured(
                 "warning: {} is not a mountable XISO ({e:?}); running with no DVD",
                 opts.disc.display()
             );
-            vfs::Vfs::with_storage(cfg).map_err(|e| anyhow::anyhow!("vfs: {e:?}"))?
+            let storage = vfs::Vfs::with_storage(cfg).map_err(|e| anyhow::anyhow!("vfs: {e:?}"))?;
+            (storage, None)
         }
     };
+    let editor_mount = map_rebind.clone().map(EditorMount);
     k.set_vfs(v).context("attaching the VFS")?;
+    let external_maps = map_rebind.clone().filter(|_| {
+        !host.embedded_live && _live.as_ref().is_some_and(|hle| hle.config().server_url.is_some())
+    });
+    live_notice::install_for_maps(&loaded.runtime, live, external_maps)
+        .context("installing the Live notice")?;
     if let (Some(ready), Some(vfs)) = (host.on_vfs.take(), k.vfs()) {
         ready(&vfs);
     }
@@ -527,10 +613,17 @@ fn run_configured(
     // The Video row on the Settings list opens our Video screen
     // (docs/game/settings-menu.md).
     let model = match host.settings.clone() {
-        Some(store) => Some(Arc::new(
-            video_screen::model(store, video_screen::Switches::PLATFORM)
-                .map_err(anyhow::Error::msg)?,
-        )),
+        Some(store) => {
+            // The guest draws the picker's labels. Replay those observations
+            // independently of the viewer's presentation size.
+            let menu_size = match &film {
+                Some(session) => session.video_menu_size(native_size, &store)?,
+                None => native_size,
+            };
+            Some(Arc::new(video_screen::model_with_native_size(
+                store, video_screen::Switches::PLATFORM, menu_size,
+            ).map_err(anyhow::Error::msg)?))
+        }
         None => None,
     };
     // More than one campaign (docs/halo1/campaign-picker.md): campaigns
@@ -559,22 +652,21 @@ fn run_configured(
     let level_name = level.as_ref().map(|l| l.name.clone());
     // Every feature the plan gets up to the touch glue is registered in
     // `registration` (and its tests build the plan from the same code).
-    let film_dir = || {
-        std::env::var_os("H2_FILM_DIR")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| opts.data_root.join("films"))
-    };
     let film_out = {
         let parent = dylib.parent().unwrap_or(Path::new("."));
         if tier == tier::Tier::Fast { parent.parent().unwrap_or(parent) } else { parent }
     };
-    let film_stamps = || theater::playback_images(xbe_bytes, film_out)
-        .into_iter().map(|(_, stamp)| stamp).collect::<Vec<_>>();
+    let film_installation = || theater::Installation::new(
+        xbe_bytes,
+        theater::playback_images(xbe_bytes, film_out)
+            .into_iter().map(|(_, stamp)| stamp).collect(),
+        opts.data_root.clone(),
+    );
     let theater = if let Some((theater, open)) = host.theater.take() {
         theater.install(
             &mut features,
             &film_dir(),
-            film_stamps(),
+            film_installation(),
             live,
             _live.clone(),
             open,
@@ -609,9 +701,11 @@ fn run_configured(
             bots,
         },
         film.clone(),
+        replaying || host_light || sim_mode.is_some(),
+        map_rebind.clone(),
     )?;
-    let (skulls_on, skulls_mp_on, skulls_custom_on, health_on) = (
-        core.skulls_on,
+    let (skulls, skulls_mp_on, skulls_custom_on, health_on) = (
+        core.skulls,
         core.skulls_mp_on,
         core.skulls_custom_on,
         core.health_on,
@@ -620,9 +714,11 @@ fn run_configured(
     // (docs/game/bots.md §10 stage 2); H2_BOTS_NAV_AUTO=0 turns it off.
     // Sim mode never builds them: a build on a thread is at the wall
     // clock's mercy (docs/runtime/sim.md §8).
-    if let (true, Some(vfs), None) = (core.bots_on, k.vfs(), &sim_mode) {
-        bots_nav_auto::start(&opts.data_root, &opts.disc, vfs, level_name.clone(), host_light);
-    }
+    let _nav_worker = if let (true, Some(vfs), None) = (core.bots_on, k.vfs(), &sim_mode) {
+        bots_nav_auto::start(&opts.data_root, vfs, level_name.clone())
+    } else {
+        None
+    };
     if let Some(s) = &sim_mode {
         if !core.bots_on {
             anyhow::bail!("sim: the bots are off (H2_FEATURES or no XAPI); a match needs them");
@@ -630,7 +726,17 @@ fn run_configured(
         s.add_bots()?;
     }
     let _telemetry = core.telemetry;
+    #[cfg(feature = "gpu")]
+    let observer_window = host.film_view.is_some();
+    #[cfg(not(feature = "gpu"))]
+    let observer_window = false;
     if let Some(f) = &film {
+        if let Some(capture) = &host.film_capture {
+            f.attach_capture(capture.clone())?;
+        }
+        if let Some(media) = host.film_media.take() {
+            f.attach_media(media, &loaded.runtime)?;
+        }
         #[cfg(feature = "gpu")]
         if let Some(view) = host.film_view.take() {
             f.attach_host_view(view, k.vfs().context("Theater observer requires a mounted map")?)?;
@@ -649,10 +755,10 @@ fn run_configured(
     // Which map exactly (docs/game/maps.md §5): a package's MapId, None for the
     // disc's own map. Games and advertisements carry it as `map_id`.
     if let (Some(t), Some(vfs)) = (&_telemetry, k.vfs()) {
-        t.set_map_id_locator(Box::new(move |map| {
+        let binding = map_rebind.clone();
+        t.set_map_id_locator(Box::new(move |guest| {
             let mut v = vfs.lock().unwrap_or_else(|e| e.into_inner());
-            let id = map_override::map_id(&mut v, map)?;
-            Some((id, v.content_base_name(map)))
+            map_override::active_map_id(&mut v, guest, binding.as_ref())
         }));
     }
     // A matchmaking game's record names its playlist and Live session
@@ -660,6 +766,8 @@ fn run_configured(
     // hopper's title and finds the arbitration round by the session. A
     // clanker hopper's game is a Clankermatch (docs/game/bots.md §8.2).
     if let (Some(t), Some(hle)) = (&_telemetry, &_live) {
+        let lobby = Arc::clone(hle);
+        t.set_hosted_session_locator(Box::new(move || lobby.hosted_session()));
         let hle = Arc::clone(hle);
         t.set_playlist_locator(Box::new(move || {
             hle.matchmade().map(|(id, session)| telemetry::Playlist {
@@ -673,20 +781,17 @@ fn run_configured(
         }));
     }
     if let (Some(hle), Some(vfs)) = (&_live, k.vfs()) {
+        let binding = map_rebind.clone();
         hle.set_map_probe(Some(Arc::new(move |g: &runtime::Guest| {
             let mut v = vfs.lock().unwrap_or_else(|e| e.into_inner());
-            map_override::lobby_map_id(&mut v, g)
+            map_override::lobby_map_id(&mut v, g, binding.as_ref())
         })));
     }
     if let (Some(t), Some(vfs)) = (&_telemetry, k.vfs()) {
-        t.set_map_locator(Box::new(move |map| {
+        let binding = map_rebind.clone();
+        t.set_map_locator(Box::new(move |guest| {
             let mut v = vfs.lock().unwrap_or_else(|e| e.into_inner());
-            let file = map_override::map_file(&mut v, map)?;
-            Some(telemetry::MapFile {
-                path: file.path,
-                offset: file.offset,
-                len: file.len,
-            })
+            map_override::active_map_file(&mut v, guest, binding.as_ref()).map(map_override::telemetry_file)
         }));
     }
     // Sample the render thread too when profiling.
@@ -714,7 +819,20 @@ fn run_configured(
     #[cfg(not(feature = "gpu"))]
     let headless = true;
     #[cfg(feature = "gpu")]
-    if opts.d3d && host.gfx_view.is_none() && interp.is_none() && let Some(b) = &mut host.gfx {
+    let single = opts.d3d && host.gfx_view.is_some()
+        && d3d_glue::single_copy(host.settings.as_deref(), protected_readbacks)?;
+    #[cfg(feature = "gpu")]
+    if single && d3d_glue::locked_retail_target(host.settings.as_deref())
+        && let Some(view) = &mut host.gfx_view && view.viewer_output.is_none()
+        && let Some(display) = view.backend.take()
+    {
+        host.gfx = Some(display.as_only_display());
+    }
+    #[cfg(feature = "gpu")]
+    // Match the paired reference path even when a film has no visible copy.
+    if !protected_readbacks && opts.d3d && host.gfx_view.as_ref().is_none_or(|view| view.backend.is_none())
+        && interp.is_none() && let Some(b) = &mut host.gfx
+    {
         native_shadows_glue::configure_single(b);
     }
     let render_hooks = film.as_ref()
@@ -725,36 +843,56 @@ fn run_configured(
     let private = d3d_glue::PrivateScenes::requested(
         features.switches(), render_hooks, headless || host.unpaced_display || stop_at.is_some(),
     );
+    // A film export presents each frame before the next is encoded.
+    #[cfg(feature = "gpu")]
+    let render_thread = host.render_thread.then_some(d3d_glue::RenderThread {
+        clip_capture: false,
+        synchronous_presents: host.film_capture.is_some(),
+    });
     #[cfg(feature = "gpu")]
     let mut d3d_calls = match (opts.d3d, host.gfx.take()) {
         (false, _) => None,
-        (true, Some(b)) => Some(match host.gfx_view.take() {
-            Some((view, scale)) => {
-                let single = d3d_glue::single_copy(host.settings.as_deref())?;
-                let mut b = d3d::ScaledBackend::with_single_copy(b, view, scale, single).map_err(anyhow::Error::msg)?;
-                eprintln!("d3d: rendering at {scale}x; single copy {single}");
+        (true, Some(b)) => Some(match host.gfx_view.take().and_then(|view| view.backend) {
+            Some(view) => {
+                let output = output_size.expect("display view has an output size");
+                let (width, height) = output();
+                let scale = d3d::scaled::RenderScale::for_output(width, height).map_err(anyhow::Error::msg)?;
+                let mut b = d3d::ScaledBackend::with_resolution(b, view, scale, single).map_err(anyhow::Error::msg)?;
+                eprintln!("d3d: rendering at {width}x{height}; single copy {single}");
                 // The Video screen's Resolution row changes the scale at the
                 // next frame boundary (docs/graphics/high-resolution.md).
                 // The Lighting row (docs/graphics/e3-lighting-setting.md)
                 // changes the view's shadows there too.
+                b.follow_resolution(move || {
+                    let (width, height) = output();
+                    d3d::scaled::RenderScale::for_output(width, height)
+                        .expect("the resolution picker and drawable publish validated sizes")
+                });
                 if let Some(store) = &host.settings {
-                    let wanted = store.handle::<u32>(setting_defs::RENDER_SCALE.key);
-                    b.follow_scale(move || wanted.get());
                     let lighting = store.handle::<u32>(setting_defs::LIGHTING.key);
                     b.set_lighting(setting_defs::lighting_of(lighting.get()));
                     b.follow_lighting(move || setting_defs::lighting_of(lighting.get()));
                 }
+                // A failed resize keeps the previous grid. The lens follows the
+                // dimensions the render thread actually accepted at present.
+                if let Some(viewport) = display_size.take() {
+                    b.follow_presentation(move |src| viewport(src));
+                }
+                let stats = b.shared_stats();
+                active_size = Some(Arc::new(move || {
+                    stats.lock().unwrap_or_else(|e| e.into_inner()).presentation
+                }));
                 d3d_glue::install_scaled_view(
-                    &loaded.runtime, b, interp, host.render_thread, render_hooks, private,
+                    &loaded.runtime, b, interp, render_thread, render_hooks, private,
                 )?
             }
             None => d3d_glue::install_game_view(
-                &loaded.runtime, b, interp, host.render_thread, render_hooks, private, host.settings.as_deref(),
+                &loaded.runtime, b, interp, render_thread, render_hooks, private, host.settings.as_deref(),
             )?,
         }),
         (true, None) if host_light => Some(d3d_glue::install_light_for_profile(&loaded.runtime, render_hooks)?),
         (true, None) => Some(d3d_glue::install_headless_with_scenes(
-            &loaded.runtime, interp, render_hooks, host.settings.as_deref(), private,
+            &loaded.runtime, interp, render_hooks, host.settings.as_deref(), protected_readbacks, private,
         )?),
     };
     #[cfg(all(not(feature = "gpu"), feature = "desktop-runtime"))]
@@ -767,6 +905,29 @@ fn run_configured(
     }).transpose()?;
     #[cfg(not(feature = "desktop-runtime"))]
     let mut d3d_calls = Some(d3d_glue::install_light_for_profile(&loaded.runtime, render_hooks)?);
+    #[cfg(feature = "gpu")]
+    if let (Some(active_size), Some(device)) = (active_size, &d3d_calls) {
+        let projected_size: run_opts::NativeSize = Arc::new(move || {
+            let size = active_size();
+            display_size.as_ref().map_or(size, |display| display(size))
+        });
+        let hud: Arc<dyn Fn() -> u32 + Send + Sync> = match &host.settings {
+            Some(store) => {
+                let setting = store.handle::<u32>(setting_defs::HUD_POSITION.key);
+                Arc::new(move || setting.get())
+            }
+            None => {
+                let def = &setting_defs::HUD_POSITION;
+                let value = match std::env::var("H2_HUD_POSITION") {
+                    Ok(raw) => def.parse_env_text(&raw).map_err(anyhow::Error::msg)?,
+                    Err(_) => def.default,
+                };
+                let position = value.as_int().expect("HUD Position is a choice") as u32;
+                Arc::new(move || position)
+            }
+        };
+        render_aspect::install(&mut features, projected_size, hud, device.ui_layout.clone())?;
+    }
     // Vblanks on the 60 Hz logical clock (docs/graphics/d3d.md "Vertical blank"),
     // delivered as DPCs; the frame wait above is the clocked one.
     if let Some(handler) = d3d_calls.as_mut().and_then(|i| i.vblank.take()) {
@@ -796,7 +957,7 @@ fn run_configured(
         .then(|| dsound_glue::install_clock_only(&loaded.runtime, &k, xbe_bytes))
         .transpose()?;
     #[cfg(feature = "local-io")]
-    let ds = if opts.dsound && clock_only_audio {
+    let mut ds = if opts.dsound && clock_only_audio {
         Some(dsound_glue::install_clock_only(&loaded.runtime, &k, xbe_bytes)?)
     } else {
         match (opts.dsound, host.audio_sink.take()) {
@@ -811,6 +972,11 @@ fn run_configured(
             (true, None) => Some(dsound_glue::install(&loaded.runtime, &k, xbe_bytes)?),
         }
     };
+    #[cfg(feature = "local-io")]
+    if let (Some(audio), Some(capture)) = (&mut ds, &host.film_capture) {
+        let capture = capture.clone();
+        audio.output.tap_samples(move |pcm| capture.audio(pcm));
+    }
     if let Some(audio) = &ds {
         let mixer = audio.mixer();
         let mut mixer = mixer.lock().unwrap_or_else(|e| e.into_inner());
@@ -825,6 +991,13 @@ fn run_configured(
             mixer.set_hrtf(features.switches().audio_hrtf());
             mixer.set_distance_reverb(features.switches().distance_reverb());
         }
+    }
+    let local_forge =
+        features.switches().feature("forge", false) && !host_light && !replaying && !lockstep_on;
+    if local_forge
+        && let Some(input) = &mut host.input
+    {
+        input.add_gate(Box::new(forge_controls::gate()));
     }
     // `input.host` (`h2 agent hostpads`) reads the manager's report after
     // the manager moves into XAPI.
@@ -845,6 +1018,9 @@ fn run_configured(
     let xa = host.input.take()
         .map(|input| xapi_glue::register_with(&loaded.runtime, &k, input))
         .transpose()?;
+    let mut controller_lights = xa.as_ref().filter(|_| !host_light).map(|x| {
+        controller_lights::ControllerLights::new(x, host.settings.as_deref())
+    });
     // Voice chat's communicator (docs/live/live-voice.md): off until a
     // microphone is chosen on the Voice screen.
     #[cfg(feature = "local-io")]
@@ -862,23 +1038,13 @@ fn run_configured(
         )
     });
     #[cfg(feature = "desktop-runtime")]
-    if let Some(keyboard) = pad.as_ref() {
-        keyboard_glue::install_with_tape(&loaded.runtime, keyboard.clone(), keyboard_glue::PUMP,
-            film.as_ref().and_then(|session| session.keyboard_tape()))
-            .context("installing host keyboard entry")?;
-    }
-    #[cfg(feature = "desktop-runtime")]
     let script = xapi_glue::InputScript::from_env();
     // H2_LOCKSTEP / H2_INPUT_RECORD / H2_INPUT_REPLAY (lockstep_glue.rs).
-    let lockstep_config = lockstep_glue::Config::from_env();
-    let lockstep_on = lockstep_config.enabled();
     // H2_AGENT=<socket>: the agent API (agent_glue.rs, docs/runtime/agent-api.md);
     // the debug menu talks to a local one with no socket.
     // With none set, a game that asks for it opens `<pid>.sock` in the agents
     // directory for editors to find (`H2_AGENT=off` keeps it closed).
-    let agent_source = match agent_glue::socket_from_env()
-        .or_else(|| host.discoverable_agent.then(agent_glue::discoverable_socket).flatten())
-    {
+    let agent_source = match agent_socket {
         Some(path) => registration::AgentSource::Socket(path),
         None if film.is_some() => registration::AgentSource::Recording,
         None if host.debug_menu.is_some() || theater.is_some() => registration::AgentSource::Local,
@@ -894,7 +1060,51 @@ fn run_configured(
     render_probe::set_pipeline(pipeline.clone());
     let coop_probe = coop_probe::parse(|k| std::env::var(k).ok()).map_err(anyhow::Error::msg)?;
     #[cfg(feature = "gpu")]
-    native_map::set_vfs(k.vfs());
+    let native_sources = k.vfs().map(|vfs| native_map::mount(vfs, map_rebind.clone()));
+    let editor_link = host.editor_link.take();
+    #[cfg(feature = "gpu")]
+    let (world_line_present, debug_capture_unavailable) = {
+        let sources = std::mem::take(&mut host.world_line_sources);
+        let disabled = if render_hooks != film::RenderHooks::Gpu
+            || !hooks::switches::native_render_on(features.switches())
+        {
+            Some((
+                agent::editor::MarkAvailability::NativeOff,
+                "native rendering is off",
+            ))
+        } else if !features
+            .switches()
+            .feature(render_bridge::scene_step::ID, true)
+        {
+            Some((
+                agent::editor::MarkAvailability::SceneOff,
+                "frame scene capture is off",
+            ))
+        } else {
+            None
+        };
+        if let Some((reason, why)) = disabled {
+            if let Some(link) = &editor_link {
+                link.set_mark_capture_disabled(reason);
+            }
+            (None, Some(why))
+        } else if let Some(device) = &d3d_calls
+            && (editor_link.is_some() || !sources.is_empty())
+        {
+            let observer = world_lines::present_observer(
+                editor_link.clone(),
+                sources,
+                device.snapshot.clone(),
+            );
+            (Some(observer), None)
+        } else {
+            (None, Some("no world-line capture source"))
+        }
+    };
+    #[cfg(not(feature = "gpu"))]
+    let debug_capture_unavailable = Some("this host has no GPU renderer");
+    #[cfg(feature = "gpu")]
+    let world_line_capture_requested = world_line_present.is_some();
     // The lockstep harness, the agent, our cheats, the render features and
     // the probes (registration.rs, the rest of the plan's features).
     let late = registration::register_late_for_profile(
@@ -902,6 +1112,10 @@ fn run_configured(
         registration::LateInputs {
             #[cfg(feature = "gpu")]
             view: d3d_calls.as_ref().and_then(|d| d.view.as_ref()),
+            #[cfg(feature = "gpu")]
+            fixed_lod: protected_readbacks.then(|| legacy_lod.unwrap_or(1.0)),
+            #[cfg(feature = "gpu")]
+            world_line_present,
             rt: &loaded.runtime,
             lockstep: lockstep_config,
             agent: agent_source,
@@ -918,7 +1132,19 @@ fn run_configured(
         render_hooks,
     )?;
     let mut harness = late.harness;
-    let agent = late.agent;
+    let mut agent = late.agent;
+    if local_forge {
+        forge_glue::install(&mut features, agent.as_ref(), k.vfs(), &opts.data_root)?;
+    }
+    if let Some(a) = &mut agent {
+        a.configure_takeover(
+            &mut features,
+            !headless || observer_window,
+            !headless && opts.d3d && xa.is_some() && !replaying && !lockstep_on && !host_light
+                && sim_mode.is_none(),
+        )
+        .context("installing lab takeover consent")?;
+    }
     if let (Some(theater), Some(a)) = (&theater, &agent) {
         theater.connect(&a.agent);
     }
@@ -931,14 +1157,10 @@ fn run_configured(
     if let Some(a) = &agent {
         let maps = || {
             k.vfs().map(|vfs| -> hot_glue::MapLocator {
-                Box::new(move |map| {
+                let binding = map_rebind.clone();
+                Box::new(move |guest| {
                     let mut v = vfs.lock().unwrap_or_else(|e| e.into_inner());
-                    let file = map_override::map_file(&mut v, map)?;
-                    Some(telemetry::MapFile {
-                        path: file.path,
-                        offset: file.offset,
-                        len: file.len,
-                    })
+                    map_override::active_map_file(&mut v, guest, binding.as_ref())
                 })
             })
         };
@@ -948,7 +1170,21 @@ fn run_configured(
         {
             a.agent.set_live_session_probe(agent_glue::remote_live_game);
         }
-        hot_glue::install(&a.agent, &loaded.runtime, maps(), watch_overrides);
+        #[cfg(feature = "desktop-runtime")]
+        if let Some(vfs) = k.vfs() {
+            agent::render::CAPTURE.set_map_source(move |name| {
+                let mut vfs = vfs.lock().unwrap_or_else(|e| e.into_inner());
+                let path = vfs.content_map_path(name)?;
+                Some((vfs.map_id(&path)?, vfs.content_base_name(name)?))
+            });
+        }
+        hot_glue::install(
+            &a.agent,
+            &loaded.runtime,
+            maps(),
+            watch_overrides,
+            replaying,
+        );
         ui_stack::install(&a.agent, core.ui_navigation);
         // profile.faults: the fault census (agent_glue.rs).
         agent_glue::add_runtime_methods(&a.agent, &loaded.runtime);
@@ -980,8 +1216,18 @@ fn run_configured(
             k.vfs(),
         );
     }
-    // The debug menu's host methods and connection (debug_menu_glue.rs).
+    // game.menu: leave the game for the main menu through the agent's
+    // guest calls (game_menu.rs, docs/runtime/agent-api.md).
     if let Some(a) = &agent {
+        game::game_menu::install(&a.agent, a.sim.as_ref().and_then(|s| s.calls()));
+    }
+    // Paired editor presentation and the debug menu's host methods.
+    if let Some(a) = &agent {
+        a.agent
+            .collision_traces()
+            .bind(&loaded.runtime, lockstep_on || film.is_some());
+        agent::editor::install(&a.agent, editor_link.clone());
+        agent::editor::install_scene(&a.agent, editor_link.clone());
         debug_menu_glue::install(
             host.debug_menu.as_ref(),
             host_pads,
@@ -989,6 +1235,9 @@ fn run_configured(
             host.settings.clone(),
             host.perf_overlay.clone(),
         );
+        if let Some(lights) = &controller_lights {
+            lights.install(&a.agent);
+        }
     }
     if sim_mode.is_some() || host_light {
         features
@@ -1013,6 +1262,17 @@ fn run_configured(
     if let Some(a) = &agent {
         host_metrics::install(&mut features, &a.agent, host_light)?;
         host_lobby::install(&mut features, &a.agent, host_light, opts, _live.clone())?;
+    }
+    #[cfg(feature = "gpu")]
+    if opts.d3d
+        && !headless
+        && film.is_none()
+        && !lockstep_on
+        && let Some(screen) = host.return_to_menu.take()
+    {
+        features
+            .add(&return_to_menu::ReturnToMenu(Arc::from(screen)))
+            .map_err(anyhow::Error::msg)?;
     }
     if let Some(audit) = &audit {
         anyhow::ensure!(features.add(audit).map_err(anyhow::Error::msg)?,
@@ -1046,6 +1306,9 @@ fn run_configured(
             film.add_methods(&a.agent);
         }
     }
+    if let (Some(theater), Some(a)) = (&host.theater_playback, &agent) {
+        theater.add_playback_methods(&a.agent);
+    }
     if !replaying && let Some(a) = &agent {
         theater::library_methods(
             &a.agent,
@@ -1053,8 +1316,56 @@ fn run_configured(
             opts.disc.clone(),
             film_out.to_owned(),
             opts.data_root.clone(),
-            film_stamps(),
+            film_installation(),
         );
+    }
+    let bink = if opts.bink {
+        // A lockstep run compares schedules and movie pacing follows the
+        // wall clock, so it skips them; so, by default, do level boots and
+        // headless runs.
+        let why_off = if host_light {
+            Some("light host".into())
+        } else {
+            movies_glue::why_off(&opts.movies, lockstep_on, level_name.as_deref(), headless)
+        };
+        // Film recording and playback use the recorded movie policy and hook plan.
+        let allow_attract = why_off.is_none() && film.is_none();
+        let attract_file = if allow_attract && opts.movies != movies_glue::Movies::Off {
+            k.vfs().and_then(|vfs| {
+                vfs.lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .host_file(movies_glue::ATTRACT_VFS_PATH)
+            })
+        } else {
+            None
+        };
+        let (mode, hle, attract) = movies_glue::install(
+            &loaded.runtime,
+            &opts.movies,
+            &opts.disc,
+            attract_file,
+            allow_attract,
+            why_off.as_deref(),
+            #[cfg(feature = "local-io")]
+            ds.as_ref()
+                .filter(|_| !clock_only_audio)
+                .map(dsound_glue::Audio::mixer),
+            #[cfg(not(feature = "local-io"))]
+            None,
+        );
+        if allow_attract && mode == bink_hle::Mode::Playback {
+            attract.install(&mut features, agent.as_ref().map(|a| &a.agent))?;
+        }
+        if let Some(session) = &film {
+            session.record_movies(opts, mode);
+        }
+        Some(hle)
+    } else {
+        eprintln!("movies: off (--no-bink: the original player runs)");
+        None
+    };
+    if let Some(camera) = film.as_ref().and_then(|film| film.camera_render_hooks()) {
+        features.add(&camera).map_err(anyhow::Error::msg)?;
     }
     // Part of a machine snapshot's build key (snapshot_glue.rs).
     let switch_spec = features.switches().spec();
@@ -1066,6 +1377,22 @@ fn run_configured(
     let installed = plan
         .install(&loaded.runtime)
         .context("installing the feature plan")?;
+    if let Some(why) = installed.off_reason(replication_admission::FEATURE) {
+        bail!("replication admission needs its feature hooks: {why}");
+    }
+    if core.creature_probe
+        && let Some(why) = installed.off_reason(actor_net::creature::FEATURE)
+    {
+        bail!("creature probe needs its feature hooks: {why}");
+    }
+    // After the plan: the keyboard bridge wraps whatever the plan put on
+    // the UI pump (keyboard_glue::install_with_tape).
+    #[cfg(feature = "desktop-runtime")]
+    if let Some(keyboard) = pad.as_ref() {
+        keyboard_glue::install_with_tape(&loaded.runtime, keyboard.clone(), keyboard_glue::PUMP,
+            film.as_ref().and_then(|session| session.keyboard_tape()))
+            .context("installing host keyboard entry")?;
+    }
     if let Some(session) = &film {
         session.check_simulation_hooks(&plan, &installed)?;
     }
@@ -1092,14 +1419,109 @@ fn run_configured(
         anyhow::bail!("light host needs sim-frame: {why}");
     }
     if let Some(a) = &agent {
+        #[cfg(feature = "gpu")]
+        let debug_capture_unavailable = debug_capture_unavailable.or_else(|| {
+            installed
+                .off_reason(render_bridge::scene_step::ID)
+                .map(|_| "frame scene capture is off")
+        });
+        let unavailable = if headless {
+            Some("this host has no window")
+        } else if host.debug_views.is_none() {
+            Some("this window has no debug-view source")
+        } else {
+            debug_capture_unavailable
+        };
+        debug_views::install(&a.agent, host.debug_views.take(), unavailable);
         a.set_plan(&plan, &installed);
+        let rt = Arc::clone(&loaded.runtime);
+        let reload_vfs = k.vfs();
+        let extended_campaign = plan.is_on("h1-campaign-cache")
+            && installed.off_reason("h1-campaign-cache").is_none();
+        let external_live = _live.clone().filter(|hle| {
+            !host.embedded_live && hle.config().server_url.is_some()
+        });
+        let rebind: agent::sim::MapRebind = Box::new(move |map, scenario, file, cancelled| {
+            reload_mount.map_err(str::to_owned)?;
+            let handle = map_rebind.clone().ok_or("no writable DVD map mount")?;
+            let vfs = reload_vfs.clone().ok_or("the DVD is not mounted")?;
+            if let Some(hle) = &external_live {
+                hle.with_editor_reservation(|| Ok(()))?;
+            }
+            let (slot, index, source, limits) = {
+                let mem = rt.memory();
+                let index = mem.u32(map_slots::CURRENT).map_err(|e| e.to_string())?;
+                let source = map_slots::current_source(&*mem)
+                    .ok_or("the current cache slot has no known map source")?;
+                let slot = map_override::reload_slot(&source, scenario)?;
+                map_slots::can_reload(&*mem, &source)?;
+                (slot, index, source, campaign_cache::reload_limits(&mem, map, extended_campaign)?)
+            };
+            let attached = handle.attach(&mut vfs.lock().unwrap_or_else(|e| e.into_inner()))?;
+            if attached && let Some(hle) = &external_live {
+                let mount = handle.clone();
+                hle.set_logon_map_check(Box::new(move || {
+                    if !mount.blocks_external_live() {
+                        live_hle::status::OK
+                    } else if mount.has_ever_bound() {
+                        live_hle::status::CANNOT_ACCESS_SERVICE
+                    } else {
+                        live_hle::status::TASK_BUSY
+                    }
+                }));
+            }
+            let rt = Arc::clone(&rt);
+            let external_live = external_live.clone();
+            let (map, file) = (map.to_owned(), file.to_owned());
+            map_override::prepare_on_worker(move || {
+                handle.prepare_cancellable(&slot, &map, &file, limits.0, limits.1, cancelled).map(|prepared| {
+                    agent::sim::PreparedMapReload::new(prepared.checksum(), move || {
+                        let reserve = || {
+                            let dvd = vfs.lock().unwrap_or_else(|e| e.into_inner());
+                            prepared.reserve(&dvd)
+                        };
+                        let reserved = match external_live {
+                            Some(hle) => hle.with_editor_reservation(reserve)?,
+                            None => reserve()?,
+                        };
+                        let (mut keys, retired) = {
+                            let mut mem = rt.memory();
+                            if mem.u32(map_slots::CURRENT).ok() != Some(index)
+                                || campaign_cache::reload_limits(&mem, &map, extended_campaign)? != limits
+                            {
+                                return Err("the active map cache slot or its capacity changed".into());
+                            }
+                            let mut keys = map_slots::reload_keys(&*mem, &source)?;
+                            let retired = keys.retire(&mut *mem);
+                            (keys, retired)
+                        };
+                        let runtime = Arc::downgrade(&rt);
+                        Ok(agent::sim::ReservedMapReload::new(
+                            move || reserved.commit(),
+                            move || match runtime.upgrade() {
+                                Some(rt) => keys.restore(&mut *rt.memory()),
+                                None => Ok(()),
+                            },
+                        ).with_retirement(retired))
+                    })
+                })
+            })
+        });
+        a.install_editor_methods(
+            &plan, &installed, &loaded.runtime, editor_hooks_on, recording_or_playback,
+            skulls.clone(), core.editor_sources.clone(), rebind,
+        );
         if let Some(why) = installed.off_reason("agent") {
             a.agent.set_no_tick_hook();
             eprintln!("agent: answering between slices only, no pausing: {why}");
         }
     }
+    #[cfg(feature = "gpu")]
+    if world_line_capture_requested && let Some(link) = &editor_link {
+        note_editor_scene_install(link, &installed);
+    }
     if verbose_plan {
-        if let Some(store) = host.settings.as_ref().filter(|_| skulls_on) {
+        if let Some(store) = host.settings.as_ref().filter(|_| skulls.is_some()) {
             eprintln!("{}", skulls::report(&plan, &installed, store));
         }
         if skulls_mp_on {
@@ -1116,35 +1538,6 @@ fn run_configured(
         eprintln!("lockstep: hashing presents only: {why}");
         h.set_tick_note(why.to_owned());
     }
-    let bink = if opts.bink {
-        // A lockstep run compares schedules and movie pacing follows the
-        // wall clock, so it skips them; so, by default, do level boots and
-        // headless runs.
-        let why_off = if host_light {
-            Some("light host".into())
-        } else {
-            movies_glue::why_off(&opts.movies, lockstep_on, level_name.as_deref(), headless)
-        };
-        let (mode, hle) = movies_glue::install(
-            &loaded.runtime,
-            &opts.movies,
-            &opts.disc,
-            why_off.as_deref(),
-            #[cfg(feature = "local-io")]
-            ds.as_ref()
-                .filter(|_| !clock_only_audio)
-                .map(dsound_glue::Audio::mixer),
-            #[cfg(not(feature = "local-io"))]
-            None,
-        );
-        if let Some(session) = &film {
-            session.record_movies(opts, mode);
-        }
-        Some(hle)
-    } else {
-        eprintln!("movies: off (--no-bink: the original player runs)");
-        None
-    };
     let tr = if host_light {
         None
     } else {
@@ -1204,6 +1597,7 @@ fn run_configured(
     // Machine snapshots (snapshot_glue.rs, docs/runtime/snapshots.md):
     // what holds state outside guest RAM, for `state.*` and the probe.
     let snap_host = snapshot_glue::Host {
+        editor_agent: agent.as_ref().map(|a| &a.agent),
         rt: &loaded.runtime,
         d3d: d3d_calls.as_ref().map(|i| i.snapshot.as_ref()),
         audio: ds.as_ref(),
@@ -1217,8 +1611,20 @@ fn run_configured(
     }
     let shelf = if agent.is_some() || film.is_some() {
         let key = snapshot_glue::build_key(running_stamp(), &switch_spec, &plan, &snap_host.names());
-        // A film embeds snapshots. Its build key is needed even when the
-        // user has no standalone snapshot directory.
+        if let Some(session) = &film {
+            let (dir, cap) = viewer_cache.unwrap_or_else(|| {
+                let cap = match host.settings.as_deref() {
+                    Some(settings) => setting_defs::theater_cache_cap_bytes(Some(settings)),
+                    None => {
+                        let (settings, _) = setting_defs::load(&opts.data_root, &[]);
+                        setting_defs::theater_cache_cap_bytes(Some(&settings))
+                    }
+                };
+                (film_dir(), cap)
+            });
+            session.mount_sidecar(&dir, cap, &key, &opts.data_root)?;
+        }
+        // Film keyframes also need a build key without a standalone snapshot directory.
         let shelf = snapshot_glue::Shelf::from_env(key.clone()).or_else(|| {
             film.as_ref().map(|_| snapshot_glue::Shelf::new(&opts.data_root, key))
         });
@@ -1275,29 +1681,68 @@ fn run_configured(
     {
         let shelf = shelf.as_ref().context("film keyframe requires a snapshot build key")?;
         let mut machine = snap_host.machine(&mut m, &plan, &rebuilders, shelf, d3d_diag::presents());
-        f.restore_keyframe(frame, &mut machine, agent.as_ref())?
+        let slices = f.restore_keyframe(frame, &mut machine, agent.as_ref())?;
+        plan.restore_presentation_pages(&loaded.runtime, &installed)?;
+        slices
     } else {
         0
     };
-    for slice in film_slices..opts.max_slices {
+    let measure_recording = !replaying && std::env::var("H2_THEATER_MEASURE").as_deref() == Ok("1");
+    let first_slice = film_slices;
+    let mut next_slice = film_slices;
+    while next_slice < opts.max_slices {
+        let slice = next_slice;
+        next_slice += 1;
         if let Some(f) = &film {
             f.observe_pause(&loaded.runtime.memory());
-            if replaying {
-                if let Some(shelf) = &shelf {
-                    f.replay_device_barrier(slice, &snap_host, shelf)?;
-                }
-            } else {
-                if let Some(shelf) = &shelf && f.keyframe_due() {
-                    let lobby = agent.as_ref().map_or(0, |a| a.agent.film_lobby_boundary());
-                    let mut machine = snap_host.machine(
-                        &mut m, &plan, &rebuilders, shelf, d3d_diag::presents(),
-                    );
-                    f.try_keyframe(slice, lobby, &mut machine);
+            if measure_recording {
+                f.measure_recording_pages(&loaded.runtime)?;
+            }
+            if let Some(shelf) = &shelf {
+                let lobby_boundary = || agent.as_ref().map_or(0, |a| a.agent.film_lobby_boundary());
+                let parts = (&mut m, &snap_host, &plan, &rebuilders);
+                let machine = move || {
+                    let (m, host, plan, rebuilders) = parts;
+                    host.machine(m, plan, rebuilders, shelf, d3d_diag::presents())
+                };
+                if replaying {
+                    match f.replay_capture_point(slice, lobby_boundary, machine) {
+                        Ok(Some((tick, barrier))) => {
+                            let mut machine = snap_host.machine(
+                                &mut m, &plan, &rebuilders, shelf, d3d_diag::presents(),
+                            );
+                            f.capture_ring(tick, slice, audio_idle, barrier, &mut machine, agent.as_ref());
+                        }
+                        Ok(None) => {}
+                        Err(error) => f.barrier_failed(error)?,
+                    }
+                } else if f.capture_point_due() {
+                    f.try_capture_point(slice, lobby_boundary(), &mut machine());
                 }
             }
-            if !f.before_slice(slice, &mut m, agent.as_ref(), &loaded.runtime)? {
-                host_stop = true;
-                break;
+            match f.before_slice(slice, &mut m, agent.as_ref(), &loaded.runtime)? {
+                theater::SliceAction::Run => {}
+                theater::SliceAction::Seek(target) => {
+                    if let Some(shelf) = &shelf {
+                        let mut machine = snap_host.machine(
+                            &mut m, &plan, &rebuilders, shelf, d3d_diag::presents(),
+                        );
+                        if let Some((restored, idle)) = f.try_warm_seek(target, &mut machine, agent.as_ref()) {
+                            plan.restore_presentation_pages(&loaded.runtime, &installed)?;
+                            next_slice = restored;
+                            film_slices = restored;
+                            audio_idle = idle;
+                            continue;
+                        }
+                    }
+                    // Teardown hands the exact target and viewer state to the parent.
+                    host_stop = true;
+                    break;
+                }
+                theater::SliceAction::Stop => {
+                    host_stop = true;
+                    break;
+                }
             }
             film_slices = slice + 1;
         }
@@ -1333,15 +1778,28 @@ fn run_configured(
             script.step(slice, pad);
         }
         let ran_before = dsound_glue::guest_slices(&m);
+        if slice == first_slice && let Some(f) = &film {
+            f.measure_first_slice();
+        }
         outcome = m.run(1).context("machine run")?;
         // Every thread waits and nothing is timed: pending audio is a wake
         // source the scheduler does not know about (dsound_glue::wake_idle).
         if matches!(outcome, kernel::RunOutcome::Deadlock { .. })
             && let Some(a) = &ds
         {
-            match dsound_glue::wake_idle(a, &k, &loaded.runtime, &mut audio_idle) {
-                Ok(true) => continue,
-                Ok(false) => {}
+            match idle_audio::wake(
+                a,
+                &k,
+                &loaded.runtime,
+                &mut audio_idle,
+                host.between_slices.as_mut(),
+            ) {
+                Ok(idle_audio::Next::Retry) => continue,
+                Ok(idle_audio::Next::HostStop) => {
+                    host_stop = true;
+                    break;
+                }
+                Ok(idle_audio::Next::Deadlock) => {}
                 Err(e) => audio_errors.push(format!("slice {slice}: {e}")),
             }
         }
@@ -1356,6 +1814,9 @@ fn run_configured(
         #[cfg(feature = "local-io")]
         if let Some(link) = voice_link.as_mut() {
             link.pump();
+        }
+        if let Some(lights) = &mut controller_lights {
+            lights.sample(&loaded.runtime);
         }
         if let Some(x) = &xa
             && timeline::host::INPUT
@@ -1415,6 +1876,7 @@ fn run_configured(
             break;
         }
     }
+    drop(controller_lights);
     if let Some(audit) = &audit {
         audit.finish(&loaded.runtime)?;
     }
@@ -1632,6 +2094,9 @@ fn run_configured(
         eip,
         kernel_log: k.log(),
     };
+    #[cfg(feature = "gpu")]
+    drop(native_sources);
+    drop(editor_mount);
     drop(m);
     drop(loaded);
     drop(module);
@@ -1639,9 +2104,53 @@ fn run_configured(
     Ok(report)
 }
 
+#[cfg(feature = "gpu")]
+fn note_editor_scene_install(link: &agent::editor::EditorLink, installed: &hooks::Installed) {
+    if installed.off_reason(render_bridge::scene_step::ID).is_some() {
+        link.set_mark_capture_disabled(agent::editor::MarkAvailability::SceneOff);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "gpu")]
+    #[test]
+    fn an_install_refused_frame_scene_is_reported_by_editor_marks() {
+        struct Game;
+
+        impl agent::Reader for Game {
+            fn status(&mut self) -> agent::GameStatus {
+                agent::GameStatus::default()
+            }
+
+            fn objects(&mut self) -> Result<Vec<agent_proto::Object>, String> {
+                Ok(vec![])
+            }
+        }
+
+        let agent = agent::Agent::new();
+        let link = agent::editor::EditorLink::default();
+        agent::editor::install_scene(&agent, Some(link.clone()));
+        let mut installed = hooks::Installed::default();
+        installed.off.push((render_bridge::scene_step::ID, "missing required point".into()));
+        note_editor_scene_install(&link, &installed);
+
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+        let connection = agent.connect(sender);
+        agent.submit(connection, &serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "editor.marks",
+            "id": 1,
+            "params": {"marks": [{"point": [1, 2, 3], "color": [1, 0, 0]}]}
+        }).to_string());
+        agent.on_tick(&mut Game);
+        let reply: serde_json::Value = serde_json::from_str(&receiver.try_recv().unwrap()).unwrap();
+        assert_eq!(reply["result"]["held"], 1);
+        assert_eq!(reply["result"]["drawn"], false);
+        assert_eq!(reply["result"]["why"], "frame scene capture is off");
+    }
 
     #[test]
     fn perf_env_note_names_what_writes_nothing() {

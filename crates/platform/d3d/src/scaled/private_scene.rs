@@ -126,7 +126,8 @@ impl<'a> MixedPrivatePass<'a> {
     fn allocate(&mut self, key: TargetRef, desc: AuxTarget) -> Result<(), String> {
         let size = (desc.width, desc.height);
         let scaled = self.backend.frame.is_none() || self.backend.frame == Some(size);
-        let factor = if scaled { self.backend.scale } else { 1 };
+        let grid = self.backend.scale.uniform_integer().ok_or("the private scene grid is not an integer scale")?;
+        let factor = if scaled { grid } else { 1 };
         let limit = self
             .backend
             .view

@@ -70,15 +70,12 @@ export const FOLLOW_DISTANCE = 5;
 /** How far from its player the follow camera sits when it starts: close
  *  to them whatever the size of the level (not a share of the map), no
  *  farther than the camera already was, and no nearer than twice the
- *  closest the controls allow. A capsule is drawn `scale` times life
- *  size, so it is followed from that much farther back. */
-export function followDistance(current: number, scale: number, lifeSize: boolean, minDistance: number): number {
-  const close = lifeSize ? FOLLOW_DISTANCE : FOLLOW_DISTANCE * Math.max(1, scale);
-  return Math.max(Math.min(current, close), minDistance * 2);
+ *  closest the controls allow. */
+export function followDistance(current: number, minDistance: number): number {
+  return Math.max(Math.min(current, FOLLOW_DISTANCE), minDistance * 2);
 }
 
-/** How much bigger than life to draw players, so they can be found on a
- *  large map: life size up to a 45-unit map, then growing with it, to 4×. */
+/** Scale the map's effects and schematic markers up to 4× on big levels. */
 export function markerScale(b: Box3): number {
   const across = Math.hypot(b.max[0] - b.min[0], b.max[1] - b.min[1]);
   return Math.min(4, Math.max(1, across / 45));

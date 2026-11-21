@@ -493,7 +493,7 @@ frames the native graph presented. Local runs supply the pictures.
 
 ```sh
 for mode in retail e3; do
-  h2 lab run --host laptop --branch "$B" --level 03a_oldmombasa --difficulty heroic \
+  h2 lab run --name "Lighting $mode" --host laptop --branch "$B" --level 03a_oldmombasa --difficulty heroic \
     --frames 5000 --stats-from 3000 --build-env H2_OPT=2 --fresh-data \
     --env H2_FEATURES=frame-scene.sink --env H2_RENDER_SCALE=4 --env H2_LIGHTING=$mode \
     --wait --to "$RUSH_KEEP/lab/$B-$mode"
@@ -522,15 +522,17 @@ with its commit and these numbers.
 ## The Lighting setting
 
 The row also selects the shadow treatment on the [D3D path](e3-lighting-setting.md). With E3 chosen, the scaled backend keeps a copy of each of the guest's shadow maps at the
-render scale (at least 2x, `d3d::scaled::shadow_scale`) and the pixel
+nearest integral vertical render scale (at least 2x, `d3d::scaled::shadow_scale`) and the pixel
 translator compares it with one nearest tap
 (`shaders::psh::PixelOptions::hard_shadow`). The guest sees retail. It
 changes the edge of retail's own dynamic-light shadows and nothing else,
 and it is the Hard form of "The edge".
 
 Where the native frame graph owns the game view, the row supplies its
-mode at the display frame. An explicit private capture supplies its own
-mode. The native graph draws the same lighting in both modes through L3.
+mode at the display frame. A scaled display hands the frame to the graph
+only at a uniform integer render scale (`RenderScale::uniform_integer`);
+at any other resolution the D3D path draws it. An explicit private
+capture supplies its own mode. The native graph draws the same lighting in both modes through L3.
 
 ## Phase 0 findings
 

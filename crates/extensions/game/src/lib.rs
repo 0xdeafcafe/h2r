@@ -6,17 +6,22 @@
 // Build and load: `crate::fallback`, `crate::tier`, `stamp_path` and the
 // rest are `recomp`'s.
 pub use recomp::*;
-pub use render_bridge::scene_entries::scene_effect_instruction_entries;
 pub use live_telemetry as telemetry;
 pub use live_hle::{HostPublisher, LiveConfig};
 pub use run_opts::{BetweenSlices, Host, RunOpts, RunReport, VfsReady};
 
 pub mod account_screen;
+pub mod actor_net;
 pub mod agent_frames;
 mod agent_spawn_view;
 mod spectator_view;
 pub mod agent_glue;
+pub mod forge_controls;
+pub mod forge_glue;
+mod forge_map;
+mod agent_route;
 pub mod aim_assist;
+pub mod attract;
 mod audio_loop_agent;
 mod audio_loops;
 pub mod campaign_cache;
@@ -37,8 +42,13 @@ pub mod custom_games;
 pub mod d3d_diag;
 pub mod d3d_glue;
 pub mod debug_menu_glue;
+pub mod debug_views;
 pub mod dsound_glue;
+mod editor_glue;
 pub mod fov_row;
+#[cfg(feature = "gpu")]
+pub mod render_aspect;
+pub mod game_menu;
 pub mod game_setup_help;
 pub mod h1_recordings;
 pub mod h1_conversation;
@@ -67,7 +77,10 @@ pub mod hud;
 pub mod hud_swap;
 pub mod h1_hud_text;
 pub mod icons;
+pub mod join_link;
+pub mod replication_admission;
 pub mod keyboard_glue;
+pub mod lab_takeover;
 pub mod layout_glue;
 pub mod level_boot;
 pub mod list_class;
@@ -76,6 +89,7 @@ pub mod lod_distance;
 mod lobby_quality;
 mod lobby_status;
 pub mod live_glue;
+pub mod live_hopper;
 pub mod live_notice;
 pub mod lobby_options;
 mod menu_music;
@@ -150,6 +164,7 @@ pub mod scene_glue;
 pub mod new_maps;
 #[cfg(feature = "test-maps")]
 pub mod test_maps;
+pub mod pad_lightbar;
 pub mod pad_speaker;
 pub mod precision;
 #[cfg(feature = "desktop-runtime")]
@@ -157,6 +172,8 @@ pub mod render_probe;
 #[cfg(feature = "desktop-runtime")]
 pub mod render_thread;
 pub mod retail_rows;
+#[cfg(feature = "gpu")]
+pub mod return_to_menu;
 pub mod run_plan;
 pub mod sampling;
 pub mod bot_accuracy;
@@ -187,6 +204,7 @@ pub mod speaker_setting;
 #[cfg(feature = "local-io")]
 pub mod steam_speaker;
 pub mod stopgaps;
+pub mod superbounce_mode;
 pub mod sweep_diag;
 pub mod theater;
 pub mod theater_ui;
@@ -207,7 +225,11 @@ pub mod video_screen;
 #[cfg(feature = "local-io")]
 pub mod voice_glue;
 pub mod voice_settings;
+pub mod world_lines;
 pub mod xapi_glue;
 #[cfg(test)]
 pub mod string_ids;
 pub mod run_opts;
+
+#[path = "actor_net/link.rs"]
+pub mod actor_net_link;

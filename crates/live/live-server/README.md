@@ -63,13 +63,15 @@ What is built of [live-api.md](../../../docs/live/live-api.md):
 | `GET /healthz` | `{ok, position}`, position = log head |
 | `GET /.well-known/h2live.json` | `{id, api: "/v1", keys, software, federation: false, url?}`; `url` is the public base URL when tunnelled or `--public-url` ([live-hosting.md](../../../docs/live/live-hosting.md)) |
 | `POST /v1/accounts` | body: compact JWS by the new key over `{gamertag, jwk, invite?, aud, iat}` (`aud` = server id, `iat` within 5 min); 201 `{xuid, gamertag, id}` |
-| `GET /v1/accounts` | list of `{xuid, gamertag, created_at, online}` |
+| `GET /v1/accounts` | list of accounts with `xuid`, `gamertag`, `created_at`, `online`, `admin` and optional `invite_grant` |
 | `GET /v1/accounts/{gamertag}` | plus `id`, `recent_games` (the 10 latest) |
 | `GET /v1/accounts/{gamertag}/keys`, `/v1/accounts/by-xuid/{xuid}/keys` | `{keys: [{kid, jwk, valid_from, valid_to}]}` |
 | `GET /v1/accounts/{gamertag}/friends` | friends with presence, pending requests in and out ([live-api.md, Friends](../../../docs/live/live-api.md#friends)) |
 | `GET /v1/presence` | list of `{xuid, gamertag, state, game_id?, since}` |
 | `POST /v1/presence/ping` | `events.write`; refreshes the 90 s deadline, writes nothing; `{ok, expires_in}` |
-| `POST /v1/invites?days=&code=` | operator (`invites.write`), or an admin's signed `InviteCreated` (optionally `{event, code}`); 201 `{invite, custom, jti, exp, position}` |
+| `POST /v1/invites?days=&code=` | operator, admin or granted account (`invites.write`). An account sends a signed `InviteCreated` event. 201 `{invite, custom, jti, exp, position}` |
+| `GET /v1/invites/mine` | the caller's open invites (`invites.read`) |
+| `POST` or `DELETE /v1/accounts/{gamertag}/invite-grant` | grants, updates or revokes invite access ([Server invites](../../../docs/live/live-api.md#server-invites)) |
 | `POST /v1/accounts/{gamertag}/recover` | `{request, code}`: add a new device key with a recovery code (src/recovery.rs) |
 | `GET`/`POST /v1/accounts/by-xuid/{xuid}/recovery` | the account's own token: its recovery secret and current code; `POST` resets it |
 | `GET /v1/events?from=&cursor=&type=&exclude=&stream=&limit=` | the log, oldest first, `from` exclusive |

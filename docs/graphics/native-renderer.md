@@ -130,7 +130,15 @@ view into one reservation. When the render thread takes scene stages
 (`Device::queues_scene_stages`), the world, objects, fog and water queue
 one instead (`Device::reserve_scene_stage`): no round trip, and their
 preparation and recording run on the render thread
-([framescene.md](framescene.md), "Slice 2" and "Slice 5"). A packet holder can batch consecutive native draws
+([framescene.md](framescene.md), "Slice 2" and "Slice 5"). A draw whose
+pass retains its resolved D3D packet (`ExternalPass::resolved_fallback`)
+and makes the same colour and depth writes as that packet is queued too
+(`Backend::queue_external_draw`): the render thread records the pass or
+draws the packet in its queue slot. A native producer
+(`Device::try_native_*_draw`) commits at the queue, so the guest skips its
+own emission without waiting; the particle, effect, single-draw UI and
+transparent producers work this way ([render-thread.md](render-thread.md), "Keeping
+guest-visible semantics exact"). A packet holder can batch consecutive native draws
 on the same targets in a single `ExternalPlan` and encode their ranges in
 guest order. End the batch before any guest-owned draw, target/state change
 that the batch does not reproduce, or guest-visible read. A one-draw helper
@@ -295,6 +303,12 @@ guest at the same place in the list. The inline paths retain the last
 effective register values on commit and restore their old values on
 refusal. Post retains the assembled original strips for exact D3D replay
 if its complete call fails validation or recording.
+
+`world_layers_gpu::IndexedPass` translates each distinct resolved shader
+and creates its GPU module on a compile worker. The frame requests the
+pipeline for the live vertex layout, render state and attachment formats.
+Until the pipeline has crossed a guest swap, the ordered draw takes its
+original D3D path. A cold variant consumes no native geometry upload.
 
 Program selection, material evaluation and target changes still run in the
 guest for indexed geometry and HUD shader quads. Multi-range indexed

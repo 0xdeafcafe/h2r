@@ -7,22 +7,13 @@
 use dear_imgui_rs::{TextureId, Ui};
 use dear_imgui_wgpu::ExternalTextureId;
 
+use boot::ui_kit::animation::{Phase, SAMPLES};
 use boot::ui_kit::input::Input;
 
 use crate::app::{Action, App, Pick, UiScreens};
 use crate::theme::{self, Fonts, icon};
 use crate::viewport::Gpu;
 
-/// Widget rectangles.
-const RECT: [f32; 4] = [0.35, 0.8, 1.0, 0.55];
-/// The hovered widget.
-const HOVER: [f32; 4] = [1.0, 1.0, 1.0, 0.95];
-/// Widgets a finding names.
-const BAD: [f32; 4] = [1.0, 0.3, 0.25, 1.0];
-/// The title-safe area.
-const SAFE: [f32; 4] = [0.4, 1.0, 0.45, 0.8];
-/// Reserved areas.
-const RESERVED: [f32; 4] = [1.0, 0.75, 0.2, 0.8];
 
 /// The pad as the inspector lays it out: rows of (input, label).
 const PAD: [&[(Input, &str)]; 3] = [
@@ -145,6 +136,9 @@ pub fn preview(ui: &Ui, app: &mut App, st: &mut UiScreensUi, gpu: &mut Gpu<'_>) 
     ui.checkbox("Title safe", &mut s.show_safe);
     ui.same_line();
     ui.checkbox("Reserved", &mut s.show_reserved);
+    if matches!(s.pick.as_ref(), Some(Pick::Native { .. })) {
+        transition_picker(ui, s);
+    }
     let (zoom, rects, safe, reserved) = (s.zoom, s.show_rects, s.show_safe, s.show_reserved);
     let hot: Vec<String> = st
         .hot
@@ -191,11 +185,11 @@ pub fn preview(ui: &Ui, app: &mut App, st: &mut UiScreensUi, gpu: &mut Gpu<'_>) 
     };
     if safe {
         let r = shot.rules.safe;
-        boxed(ui_rect(r.top, r.left, r.bottom, r.right), SAFE, 1.0);
+        boxed(ui_rect(r.top, r.left, r.bottom, r.right), theme::SAFE_FRAME, 1.0);
     }
     if reserved {
         for (_, r) in &shot.rules.reserved {
-            boxed(ui_rect(r.top, r.left, r.bottom, r.right), RESERVED, 1.5);
+            boxed(ui_rect(r.top, r.left, r.bottom, r.right), theme::RESERVED_AREA, 1.5);
         }
     }
     let bad: Vec<&str> = shot
@@ -204,17 +198,17 @@ pub fn preview(ui: &Ui, app: &mut App, st: &mut UiScreensUi, gpu: &mut Gpu<'_>) 
         .flat_map(|f| f.ids.iter().map(String::as_str))
         .collect();
     if let Some(view) = &shot.view {
-        for w in &view.widgets {
+        for w in view.widgets.iter().filter(|w| w.alpha != 0) {
             let r = w.pixels();
             if hot.contains(&w.id) {
-                boxed(r, BAD, 3.0);
+                boxed(r, theme::WIDGET_ERROR, 3.0);
             } else if bad.contains(&w.id.as_str()) {
-                boxed(r, BAD, 1.5);
+                boxed(r, theme::WIDGET_ERROR, 1.5);
             } else if rects {
-                boxed(r, RECT, 1.0);
+                boxed(r, theme::SCREEN_WIDGET, 1.0);
             }
             if st.hovered.as_deref() == Some(w.id.as_str()) {
-                boxed(r, HOVER, 2.0);
+                boxed(r, theme::WIDGET_FOCUS, 2.0);
             }
         }
     }
@@ -225,6 +219,28 @@ pub fn preview(ui: &Ui, app: &mut App, st: &mut UiScreensUi, gpu: &mut Gpu<'_>) 
         if let Some(id) = s.widget_at(px) {
             ui.tooltip_text(&id);
             st.hovered = Some(id);
+        }
+    }
+}
+
+fn transition_picker(ui: &Ui, s: &mut UiScreens) {
+    let label = |phase| match phase {
+        Phase::In(0) => "Before opening",
+        Phase::In(_) => "Opening",
+        Phase::Rest => "At rest",
+        Phase::Out(4) => "Closing",
+        Phase::Out(_) => "Closed",
+    };
+    ui.set_next_item_width(140.0);
+    if let Some(_combo) = ui.begin_combo("Transition", label(s.animation())) {
+        for phase in SAMPLES {
+            if ui
+                .selectable_config(label(phase))
+                .selected(s.animation() == phase)
+                .build()
+            {
+                s.set_animation(phase);
+            }
         }
     }
 }
@@ -316,7 +332,7 @@ pub fn inspector(
         f.pop();
     };
     let s = &mut app.ui_screens;
-    let native = matches!(s.pick, Some(Pick::Native { .. }));
+    let native = matches!(s.pick.as_ref(), Some(Pick::Native { .. }));
     if native {
         heading("Page");
         if let Some(sum) = s.summary() {

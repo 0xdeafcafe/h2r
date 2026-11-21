@@ -10,7 +10,7 @@ Shared ground for the native simulation: bit-level math types, the exact SSE-ord
 
 - `src/math.rs`: bit-level math types.
 - `src/lanes.rs`, `src/lanes/`: exact SSE-order lanes, with host lanes where they match.
-- `src/det.rs`: the float rules every sim kernel follows.
+- `src/det.rs`, `src/det/`: bounded SSE arithmetic, checked host arithmetic and x87 precision chains.
 - `src/epoch.rs`: the derived-state invalidation counter.
 
 ## Features
@@ -24,5 +24,6 @@ Shared ground for the native simulation: bit-level math types, the exact SSE-ord
 ## Docs
 
 - [engine/sim-rewrite.md](../../../docs/engine/sim-rewrite.md)
+- [engine/collision-queries.md](../../../docs/engine/collision-queries.md)
 - [engine/sim-rewrite-objects.md](../../../docs/engine/sim-rewrite-objects.md)
 - [perf/sim-budget.md](../../../docs/perf/sim-budget.md)

@@ -1,13 +1,13 @@
 # Test maps: rigs built from recipes and loaded through the agent API
 
 Status: Built. Not run against the game: the load path is tested over a fake guest only ([Not verified](#not-verified)).
-Code: `crates/tools/scenario-edit/src/recipe.rs` (recipes, `build`, `build_package`), `crates/tools/scenario-edit/recipes/*.toml` (the built-in recipes), `crates/extensions/game/src/test_maps.rs` (`maps.test.*`, and the `Recipes` trait that builds), `crates/apps/boot/src/test_maps_recipes.rs` (`Recipes` over the scenario editor), `crates/extensions/agent/src/sim/calls.rs` (`Call::QueueGame`), `crates/apps/cli/src/agent_maps.rs` (`h2 agent maps`). Tests: `crates/tools/scenario-edit/src/recipe/tests.rs`, `crates/extensions/game/src/test_maps/tests.rs`, `crates/apps/boot/src/test_maps_recipes.rs`, `crates/extensions/agent/src/sim/calls/tests.rs`, `crates/extensions/agent-proto/src/test_maps.rs`, `crates/apps/cli/src/agent_maps.rs`.
+Code: `crates/tools/scenario-edit/src/recipe.rs` (recipes, `build`, `build_package`), `crates/tools/scenario-edit/recipes/*.toml` (the built-in recipes), `crates/extensions/game/src/test_maps.rs` (`maps.test.*`, and the `Recipes` trait that builds), `crates/apps/boot/src/test_maps_recipes.rs` (`Recipes` over the scenario editor and the Firefight kit), `crates/extensions/agent/src/sim/calls.rs` (`Call::QueueGame`), `crates/apps/cli/src/agent_maps.rs` (`h2 agent maps`). Tests: `crates/tools/scenario-edit/src/recipe/tests.rs`, `crates/extensions/game/src/test_maps/tests.rs`, `crates/apps/boot/src/test_maps_recipes.rs`, `crates/extensions/agent/src/sim/calls/tests.rs`, `crates/extensions/agent-proto/src/test_maps.rs`, `crates/apps/cli/src/agent_maps.rs`.
 Switch: the `agent-calls` feature (`H2_FEATURES=-agent-calls` leaves `maps.test.load` unavailable), listed in [switches.md](../runtime/switches.md). Built with the `test-maps` cargo feature of `boot` (on in `h2`'s desktop build).
 
 An agent asks the running game for a purpose-built test map and loads
 it: a spawn grid, a weapon range, a superbounce patch and so on. A test
-map is a recipe applied to a disc map: placement edits through the
-scenario editor's `Session`, saved as a map package, given its own
+map is a recipe applied to a disc map. The scenario editor builds placement
+rigs and the Firefight kit builds the AI probe. Each result is saved as a map package, given its own
 multiplayer slot and queued as the next game. The rule that must hold:
 nothing from the disc reaches the repository. Recipes name maps, tag
 paths and offsets; the built maps and the build reports stay in the
@@ -25,12 +25,12 @@ user's data and cache directories.
    `state: building`, and builds on a thread of its own
    (`test_maps::build`): the base map from the user's disc
    (`IsoDisc::map_file`, an image region or an extracted file), then
-   `Recipes::build`, which `boot` implements over
-   `recipe::build_package` (`game` is an extension and may not use the
-   scenario editor, a tool), which opens it in a `Session`, runs
-   `recipe::build` and saves package `test-<name>` under `<data>/maps/`
-   (`Session::save_package`, docs/game/maps.md §8). The build's report is
-   written to `<cache>/test-maps/<MapId>.json`.
+   `Recipes::build`. In `boot::test_maps_recipes`, the default builder
+   applies placement edits through `recipe::build_package_with_replace`.
+   A recipe with `builder = "firefight-probe"` calls
+   `firefight_kit::build_package` in probe mode on the same base bytes.
+   Both save package `test-<name>` under `<data>/maps/` and write the
+   build report to `<cache>/test-maps/<MapId>.json`.
 3. **Publish.** The offers are installed again
    (`map_select::packages_changed`, else `new_maps::install_at_boot`) and
    the VFS rescans, as for a Live download ([maps.md](maps.md#3-realtime)).
@@ -48,10 +48,12 @@ user's data and cache directories.
    `SCRATCH_OPTIONS`). The game loads the queued options at its next
    transition, as it loads the main menu's own start. The answer comes
    after that tick, with the options check's verdict.
-5. **Assert.** The build report lists every entry placed (block, index,
+5. **Assert.** A placement rig's report lists every entry placed (block, index,
    point, facing, tag path, team, whether it reached a floor) and an
    `expect` list for `sim.expect`: the spawn's point when the rig has one
-   starting location, then the recipe's own `expect` lines.
+   starting location, then the recipe's own `expect` lines. The Firefight
+   probe reports the zone and squad counts, the kit's byte costs and the
+   recipe's `expect` lines.
 
 ### The build
 
@@ -91,6 +93,7 @@ Wire types: `agent_proto::test_maps`. The CLI:
 ```sh
 h2 agent maps                                   # recipes and test maps
 h2 agent maps create spawn-grid                 # builds, waits until ready
+h2 agent maps create firefight-probe            # one squad of two Elites
 h2 agent maps create weapon-range base=lockout  # on another disc map
 h2 agent maps create ./my-rig.toml replace      # a recipe file read here
 h2 agent maps load spawn-grid                   # queues it, waits for gameplay
@@ -141,6 +144,7 @@ fields = { team = 1 }
 
 | Recipe | Base | Fidelity | What it is |
 |---|---|---|---|
+| `firefight-probe` | coagulation | full | One squad of two Elites for the AI networking probes. The [Firefight kit](firefight.md#the-kit) adds sectors, zones and an Elite character. |
 | `empty-room` | lockout | full | every placement removed but one spawn |
 | `spawn-grid` | coagulation | full | 16 spawns on a 4 by 4 grid, 3 apart, teams in turn |
 | `weapon-range` | coagulation | full | one of every weapon the map's tag index names, in a row as netgame items, objective items left out |
@@ -153,11 +157,14 @@ fields = { team = 1 }
 
 ## Rules and limits
 
-- Placement edits only: the editor's blocks
-  ([scenario-editor.md](../editor/scenario-editor.md)). No new geometry,
-  light fixtures, AI, scripts, shaders or tags: a rig that needs them is
-  `approximate` and its `note` says what it leaves out. A type must be in
-  the base's palette, or (netgame items) in its tag index.
+- Placement rigs use the editor's blocks ([scenario-editor.md](../editor/scenario-editor.md)).
+  A type must be in the base's palette or, for netgame items, in its tag
+  index. A rig requiring geometry, lighting or tags beyond these edits is
+  `approximate`, with the missing part in its `note`.
+- The Firefight probe samples the base's own geometry and spawn points.
+  Its builder chooses the squad locations and refuses placement edits or
+  anchors in the recipe. To build the same package offline, run
+  `h2 firefight kit coagulation --probe`.
 - Bases are disc maps. Map Pack and converted maps are not offered.
 - The variant is the game's default Slayer; `variant` accepts only
   `slayer`.

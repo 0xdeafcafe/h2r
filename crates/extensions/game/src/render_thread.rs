@@ -92,6 +92,13 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
     ),
     #[cfg(feature = "gpu")]
     (
+        "native-map-work",
+        "RENDER_VIEWS",
+        "context-only, but shares render_views with render-timing (off by default), \
+         whose timer runs after the body",
+    ),
+    #[cfg(feature = "gpu")]
+    (
         "frame-scene",
         "RENDER_FRAME",
         "after render_frame_and_present, on the game thread: seals the frame's scene",
@@ -102,6 +109,7 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
         "the loading screen's cache copy on the game thread; steps it with guest calls",
     ),
     // Game-thread points: the simulation, the UI and the level start.
+    ("actor-net", "*", "capture and dialogue share per-match state on the simulation thread"),
     (
         "variant-vitality",
         "*",
@@ -160,6 +168,7 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
     ("skulls-custom", "GAME_TICK", AFTER),
     ("touch-glue", "GAME_TICK", AFTER),
     ("cheats", "GAME_TICK", AFTER),
+    ("superbounce", "*", AFTER),
     ("layouts-value", "CONTROLS_ROW_TEXT", AFTER),
     ("controls-text", "CONTROLS_ROW_TEXT", AFTER),
     // Features the test's registry gained when it began calling boot's own
@@ -282,7 +291,18 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
     ("bots", "RENDER_FRAME", AFTER),
     ("bots", "GAME_ACTIVATE", AFTER),
     ("bots", "SOUND_UPDATE", AFTER),
+    (
+        "agent-matchmaking",
+        "*",
+        "records lifecycle and session network state on the game thread",
+    ),
     ("agent-audio", "SOUND_UPDATE", AFTER),
+    (
+        "replication-admission",
+        "*",
+        "session descriptions and join requests, written and checked by the game thread's \
+         network update; the render never meets them",
+    ),
     ("bots", "SOUND_LISTENERS_UPDATE", AFTER),
     ("bots", "SOUND_OWNER_USER", AFTER),
     (

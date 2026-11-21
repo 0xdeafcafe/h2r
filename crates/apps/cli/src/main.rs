@@ -11,27 +11,29 @@ use anyhow::{Result, bail};
 #[cfg(feature = "desktop")]
 use xiso::Xiso;
 
-#[cfg(unix)]
+// mem-watch tags allocations, except under dhat, which needs the allocator.
+#[cfg(not(feature = "dhat-heap"))]
+#[global_allocator]
+static ALLOCATOR: mem_watch::TaggedAllocator = mem_watch::TaggedAllocator;
+
 mod agent_cmd;
-#[cfg(unix)]
 mod agent_ui_crawl;
 mod agent_flight;
 mod agent_maps;
-#[cfg(unix)]
 mod agent_hot_cmd;
-#[cfg(unix)]
 mod agent_raw;
-#[cfg(unix)]
 mod agent_run;
 mod agent_sim;
 mod sim_cmd;
 mod sim_store_cmd;
+mod film_cmd;
 mod theater_cmd;
 #[cfg(feature = "desktop")]
 mod anim;
 #[cfg(feature = "desktop")]
 mod bitmap;
 mod boot_cmd;
+mod mem_cmd;
 #[cfg(feature = "desktop")]
 mod bots_drive;
 #[cfg(feature = "desktop")]
@@ -60,6 +62,8 @@ mod emit_cache;
 mod emit_output;
 #[cfg(feature = "desktop")]
 mod extract_shaders;
+#[cfg(feature = "desktop")]
+mod firefight_cmd;
 #[cfg(all(unix, feature = "desktop"))]
 mod follow;
 #[cfg(feature = "desktop")]
@@ -156,6 +160,8 @@ mod object;
 mod play_cloud;
 #[cfg(feature = "desktop")]
 mod play_cmd;
+#[cfg(all(feature = "desktop", target_os = "macos"))]
+mod mac_app;
 #[cfg(feature = "desktop")]
 mod play_live;
 #[cfg(feature = "desktop")]
@@ -171,9 +177,13 @@ mod sound;
 #[cfg(feature = "desktop")]
 mod strings;
 #[cfg(feature = "desktop")]
+mod superbounce_cmd;
+#[cfg(feature = "desktop")]
 mod tag_repo_cmd;
 #[cfg(feature = "desktop")]
 mod testmap_cmd;
+#[cfg(feature = "desktop")]
+mod forge_cmd;
 #[cfg(feature = "desktop")]
 mod tunnel;
 #[cfg(feature = "desktop")]
@@ -190,6 +200,9 @@ const USAGE: &str = "usage: h2 <command>
   host pack ...           run several leased matches in one container
   theater play FILM --render-every 0
                           replay a host film headlessly
+  film stat FILE          report keyframes, capture points and tape usage
+  theater prepare FILM    verify a film headlessly and build its seek cache
+  mem postmortem [--pid N | FILE]  explain a recorded process memory increase
   sim <run|batch|compare> run or compare bot matches
   agent <call>            call a running game's agent API";
 
@@ -199,9 +212,11 @@ const USAGE: &str = "usage: h2 <command> [disc]
   build <disc> [--arch TARGET]  lift, emit and compile the whole XBE (docs/runtime/BOOT.md)
   run <disc>              build if needed, then boot it natively on the kernel HLE
   play <disc>             build if needed, then play it in a window (docs/runtime/app.md)
+  mem postmortem [--pid N | FILE]  explain a recorded process memory increase
   server-map strip|verify ORIGINAL.map SERVER.map
   serve <disc>            run headless with the agent API; --system-link [--host-light]
                           (docs/runtime/agent-api.md)
+  theater prepare FILM    verify a film headlessly and build its seek cache
   agent <call>            call a running game's agent API: status, count, query,
                           object, counters, wait, pause/step in a `-` script
   studio <call>           call h2-editor's agent API (the open window, or
@@ -219,6 +234,7 @@ const USAGE: &str = "usage: h2 <command> [disc]
                           sim compare <dir> prints the comparison again
   lockstep <a> <b>        compare two H2_LOCKSTEP traces; exit 1 if they differ
                           (docs/game/high-framerate.md)
+  film stat FILE          report keyframes, capture points and tape usage
   coop-probe diff <a> <b> compare two H2_COOP_PROBE hash logs: first tick and pool
                           that differ (docs/live/live-coop.md section 9)
   coop test [--auto]      co-op over Live on this Mac: a Live server, two
@@ -231,14 +247,19 @@ const USAGE: &str = "usage: h2 <command> [disc]
   ls                      files on the disc
   maps [disc.iso]         map headers and tag counts on the disc
   tags <map> [group]      tags in a disc map or local .map; optional --disc <iso>
+  firefight kit MAP [--probe]  build a Firefight package from a disc map
+                          (docs/game/firefight.md)
   map testbuild --out DIR builder load-test maps for H2_MAP_DIR (docs/formats/map-builder.md)
   testmap <map> <script> --out <new.map>  a test map: a JSON edit script over the
                           placements (docs/runtime/agent-api.md, phase 5)
+  forge build|check <doc.h2forge> [--disc <iso>]  materialise or verify a local Forge map
   tag <map> <tag name>    decode one tag; optional group and --disc <iso>
   bitmap <map> <tag>      decode a bitmap tag to PNG (--image N --out DIR --mips)
   bitmap --all <map>      bulk decode check of every bitmap in a map
   collision <map> <tag>   summarise a coll/phmo tag; --obj FILE exports geometry
   collision --all <map|all>  validate every coll/phmo tag (all = every disc map)
+  superbounce scan <map>  bounce strips and forced-crouch spots in a map's
+                          collision; --bsp N, --json (docs/game/superbounce.md)
   bots nav <map|all>      build the bots' nav mesh and walls into <data>/bots
                           (docs/game/bots.md)
   bots test               Clankers in a Live custom game, unattended: a local
@@ -364,23 +385,37 @@ fn perf_cmd(cmd: &str, _: Vec<String>) -> Result<()> {
     )
 }
 
+// Heap profiling (docs/perf/profiling.md, "Heap profile"): every allocation
+// goes through dhat, which writes dhat-heap.json when `main` returns.
+#[cfg(feature = "dhat-heap")]
+#[global_allocator]
+static ALLOC: dhat::Alloc = dhat::Alloc;
+
 fn main() -> Result<()> {
+    #[cfg(feature = "dhat-heap")]
+    let _heap = dhat::Profiler::new_heap();
     // Live presence says which build this is (docs/game/game-options.md 3).
     #[cfg(feature = "desktop")]
     boot::live_glue::set_build(app::BuildInfo::baked().sha);
     let mut args = std::env::args().skip(1);
-    let Some(cmd) = args.next() else {
+    let command = args.next();
+    #[cfg(all(feature = "desktop", target_os = "macos"))]
+    if command.as_deref().is_none_or(|s| s.starts_with("-psn_"))
+        && let Some(resources) = mac_app::resources(&std::env::current_exe()?)
+    {
+        return mac_app::play(&resources);
+    }
+    let Some(cmd) = command else {
         bail!("{USAGE}")
     };
     match cmd.as_str() {
+        "mem" => mem_cmd::run(&args.collect::<Vec<_>>()),
         "serve" => boot_cmd::run(&cmd, args.collect()),
         "sim" => sim_cmd::run(args.collect()),
         "host" => host_cmd::run(args.collect()),
         "theater" => theater_cmd::run(args.collect()),
-        #[cfg(unix)]
-        "agent" => agent_cmd::run(args.collect()),
-        #[cfg(not(unix))]
-        "agent" => bail!("h2 agent needs Unix sockets"),
+        "film" => film_cmd::run(args.collect()),
+                "agent" => agent_cmd::run(args.collect()),
         #[cfg(feature = "desktop")]
         _ => desktop_command(cmd, args),
         #[cfg(not(feature = "desktop"))]
@@ -404,6 +439,9 @@ fn desktop_command(cmd: String, mut args: impl Iterator<Item = String>) -> Resul
     }
     if cmd == "server-map" {
         return server_map::run(args.collect());
+    }
+    if cmd == "firefight" {
+        return firefight_cmd::run(args.collect());
     }
     if cmd == "map" {
         return map_testbuild::run(args.collect());
@@ -435,6 +473,9 @@ fn desktop_command(cmd: String, mut args: impl Iterator<Item = String>) -> Resul
     }
     if cmd == "collision" {
         return collision::run(args.collect());
+    }
+    if cmd == "superbounce" {
+        return superbounce_cmd::run(args.collect());
     }
     if cmd == "bots" {
         let args: Vec<String> = args.collect();
@@ -472,6 +513,9 @@ fn desktop_command(cmd: String, mut args: impl Iterator<Item = String>) -> Resul
     }
     if cmd == "studio" {
         return studio_proto::cli::run("h2 studio", args.collect());
+    }
+    if cmd == "forge" {
+        return forge_cmd::run(args.collect());
     }
     if cmd == "testmap" {
         return testmap_cmd::run(args.collect());
@@ -1180,10 +1224,7 @@ fn run_emit(path: &Path, opts: &LiftOpts) -> Result<()> {
     if !reuse {
         emit_cache::invalidate(&out)?;
         let t = Instant::now();
-        let mut a = analyze::analyze(&x)?;
-        if x.certificate.title_id == 0x4d53_0064 && x.entry == 0x002d_0aee {
-            a.expose_instructions(boot::scene_effect_instruction_entries());
-        }
+        let (a, _) = boot::analyze_cached(&x, None)?;
         println!("analyze: {:.3}s", t.elapsed().as_secs_f64());
         let t = Instant::now();
         let owners = emit::plan_image(&a, &x, passes)?;
@@ -1218,12 +1259,11 @@ fn run_emit(path: &Path, opts: &LiftOpts) -> Result<()> {
         println!("total: {:.3}s", total.elapsed().as_secs_f64());
         return Ok(());
     }
-    let header = opts
-        .abi_header
-        .clone()
-        .or_else(|| std::env::var_os("H2ABI_HEADER").map(PathBuf::from))
-        .unwrap_or_else(|| repo_root().join("crates/runtime/runtime/include/h2abi.h"));
-    emit::compile::install_header(&src, &header)?;
+    if let Some(header) = opts.abi_header.clone().or_else(|| std::env::var_os("H2ABI_HEADER").map(PathBuf::from)) {
+        emit::compile::install_header(&src, &header)?;
+    } else {
+        boot::install_abi_header(&src)?;
+    }
     let jobs = opts.jobs.unwrap_or_else(emit::compile::default_jobs);
     let cache_max = emit::compile::obj_cache_max()?;
     let mut host = None;

@@ -9,15 +9,13 @@
 //! * `30` (the default) is exactly what the shell always did: a redraw when
 //!   the guest presents (and for the overlay and watermark), under the
 //!   `vsync` setting.
-//! * `60` and `120` redraw on their own clock ([`DisplaySchedule`]) as well,
+//! * `60` and `120` redraw on their own clock ([`DisplaySchedule`]),
 //!   at that rate, under the `vsync` setting.
 //! * `uncapped` redraws as fast as the event loop turns, with vsync off.
 //!
-//! Until phase 2 (host replay with interpolated camera and object matrices)
-//! a redraw between guest presents shows the newest guest frame again, so
-//! above 30 the picture is no smoother: only present pacing changes. What
-//! is here is the setting, the display clock and the interpolation
-//! fraction ([`alpha`]) that phase 2 will use.
+//! A scheduled redraw takes the newest published picture. Between guest
+//! frames this repeats the previous picture unless the host replay has
+//! published an interpolated frame.
 //!
 //! The target can change while the window runs: [`FpsControl`] carries a
 //! new one from another thread (the Video screen's Frame Rate row), and
@@ -227,6 +225,13 @@ impl DisplaySchedule {
         }
     }
 
+    /// At 30 the producer wakes the window to draw each new frame. Higher
+    /// rates sample the mailbox on the display grid, even if a new frame
+    /// arrives between slots.
+    pub fn redraw_on_publish(&self) -> bool {
+        self.interval.is_none()
+    }
+
     /// Runs at `target` from the next call to [`due`](Self::due): the
     /// grid starts again there, so a lower rate does not wait out a slot
     /// booked at the higher one.
@@ -338,6 +343,21 @@ mod tests {
             "every poll"
         );
         assert_eq!(redraws(FpsTarget::OneTwenty, poll).skipped, 0);
+    }
+
+    #[test]
+    fn a_guest_publish_between_display_slots_waits_for_the_next_redraw() {
+        let mut s = DisplaySchedule::new(FpsTarget::Thirty);
+        assert!(s.redraw_on_publish());
+        for target in [FpsTarget::Sixty, FpsTarget::OneTwenty] {
+            s.retarget(target);
+            assert!(s.due(Duration::ZERO));
+            assert!(!s.redraw_on_publish());
+            assert!(!s.due(Duration::from_millis(4)));
+            assert!(s.due(target.display_interval().unwrap()));
+        }
+        s.retarget(FpsTarget::Thirty);
+        assert!(s.redraw_on_publish());
     }
 
     #[test]

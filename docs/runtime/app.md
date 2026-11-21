@@ -4,8 +4,8 @@ Status: Built.
 Code: `crates/apps/app/src` (`shell.rs`, `embedded.rs`, `lib.rs`), `crates/apps/cli/src/play_cmd.rs` (`h2 play`). Tests: `crates/apps/app/tests/`.
 Switch: `H2_FPS` (30), the rest in [switches.md](switches.md).
 
-`crates/apps/app` is the platform layer the game runs inside on macOS: a window
-with a Metal surface, presentation of the guest's frames, live keyboard,
+`crates/apps/app` is the platform layer the game runs inside on the desktop: a window
+with a wgpu surface, presentation of the guest's frames, live keyboard,
 mouse and controller input, the audio device, and the guest thread's
 lifecycle. Everything the recompiled game touches (D3D, XAPI, DirectSound,
 the kernel) stays in its own crate; the shell only hands those crates a
@@ -21,7 +21,7 @@ The handoff, pacing, scaling and input pump are platform-free.
  main thread (macOS UI rule)                 guest thread ("guest", 64 MiB stack)
  ---------------------------                 ------------------------------------
  winit event loop                            your closure: FnOnce(GuestHost)
- window + wgpu Metal surface                   Machine::run(chunk) loop
+ window + wgpu surface                         Machine::run(chunk) loop
  cpal output stream (not Send)                 d3d GfxBackend on host.gfx_context()
  keys/mouse -> KeyboardMouse  ---(Arc)--->     InputManager (pad + keyboard fallback)
                                                xapi::Xapi ... app::pump_input
@@ -34,6 +34,13 @@ One wgpu device serves both threads. The shell creates it (with the window
 surface as the compatibility hint) and the guest gets another handle to it
 through `GuestHost::gfx_context()`. Every guest GPU object must be made on
 that device, so build `d3d::GfxBackend` from it and from nothing else.
+
+The shell can draw a host loading picture while the guest switches maps.
+The view and its status have their own short lock, so the window can take
+the picture even while the guest frame mailbox is publishing. The loading
+picture is independent of guest frame counts and clears after a new guest
+present. The desktop shell hides the performance watermark while this
+picture is up. Embedded hosts draw it through the same frame source.
 
 ## API
 
@@ -61,6 +68,7 @@ icon from [art/app-icon](../../art/app-icon/README.md)).
 | `gfx_context() -> GfxContext` | The shared device. `d3d::GfxBackend::new(host.gfx_context())`. |
 | `present_hook()` | `impl FnMut(&GfxContext, &SurfaceStore, SurfaceId, u32, Option<&[u8; 768]>) + Send + 'static`, exactly what `GfxBackend::on_present` takes. The last argument borrows the current RGB gamma ramp for this present. The handoff applies it once when copying the swapped surface (resolving MSAA and forcing alpha opaque for X8/R5G6B5 formats). Errors are printed, never returned to the guest. Custom hooks must apply the ramp themselves; `gfx::surface::present_surface` is a raw helper and does not apply it. |
 | `frame_sink() -> FrameSink` | For frames that are not gfx surfaces: `submit_rgba(size, &pixels)`, `submit_view(&view, size, opaque)`, `submit_surface(&store, id)`. |
+| `loading_screen()` | Prepares the window's return-to-menu picture. Its callback wakes the shell immediately to show it and hands back to the guest on a subsequent present. |
 | `take_input() -> Option<InputManager>` | Once. Player one combines keyboard/mouse with the first physical pad; scripts replace live sources. Build `xapi::Xapi` on it. |
 | `keyboard() -> Option<&KeyboardMouse>` | The handle the window feeds; absent in timeline mode. |
 | `mixer() -> Arc<Mutex<audio::Mixer>>`, `sample_rate()` | The mixer the device plays, created at the device rate. Build `dsound::DirectSound` on it. |
@@ -91,11 +99,15 @@ CARGO_TARGET_DIR=$TMPDIR/app-play-target cargo build --release -p cli
 $TMPDIR/app-play-target/release/h2 play /abs/path/to/disc/halo2.iso
 ```
 
-Like `h2 run`, it picks the module by `--tier`: when `--out` (default
-`$TMPDIR/h2boot`) has no clang module, or one whose `.stamp` names another
-image, generator or module ABI (`boot::dylib_current`), `auto` runs the fast
-tier and builds clang's in the background. Flags: `--out DIR`, `--data DIR`, `--slices N` (unlimited by
-default), `--transfers N`, `--aspect 4:3|16:9|source`, `--scaling
+The default `--tier auto` uses a matching clang module from `--out`
+(default `$TMPDIR/h2boot`). When the module is missing or its build stamp
+differs, `crates/runtime/recomp/src/tier.rs` selects the Cranelift image
+and starts the clang build in the background. The window banner
+(`play_cmd::tier_banner`) reports when the full-speed build is ready
+or has failed. Restart to use the finished clang build.
+
+Flags: `--out DIR`, `--data DIR`, `--slices N` (unlimited by
+default), `--transfers N`, `--aspect 4:3|16:9|source` (default `source` for play), `--scaling
 fit|integer|stretch`, `--nearest`, `--fullscreen`, `--no-audio`,
 `--no-gamepads`, `--no-vsync`, `--unpaced`, `--fps 30|60|120|uncapped`,
 `--no-watermark`, `--no-mappack` (or `H2_MAPPACK=0`; a `mappack.iso` beside the
@@ -119,7 +131,7 @@ offline), `--live-server URL` to that service, and `--live-local` runs one
 in the process (`--offline` or `--no-live` say "no Live" outright;
 `--gamertag`, `--invite`, `--signin-terminal`, `--live-listen` and
 `--live-tunnel` and its name and URL flags are in [live.md](../live/live.md)
-"Playing on Live"). Signed in, the account's saves are merged into U:
+"Playing on Live"). `--join URL` opens a [Live session link](../live/live-custom-games.md#join-in-halo-2) on the selected service. Signed in, the account's saves are merged into U:
 before the game starts and pushed as it writes them
 ([live-cloud-saves.md](../live/live-cloud-saves.md)). The boot's environment variables still
 apply; `H2_BOOT_INPUT` presses keys on the window's keyboard pad, so a
@@ -160,7 +172,7 @@ How it is wired (all through `boot::run_hosted` and `boot::Host`, docs/runtime/B
    combined with the first GameController pad) through
    `xapi_glue::register_with`; `xapi::service_input` runs after every slice,
    as in the headless run.
-5. **Run loop**: after each slice, `host.tick(kernel.clock().counter())`
+5. **Run loop**: after each slice or audio-only idle advance, `host.tick(kernel.clock().counter())`
    paces guest time to the wall clock and blocks while paused; on a close it
    returns `Stop`, the run ends as `HostStop`, prints its usual report, and
    the guest thread returns (`shutdown_timeout` is 10 s for the report).
@@ -181,6 +193,12 @@ menus work with arrows and Enter. Escape is START.
 | Escape / Tab | Start / Back |
 | Arrows | D-pad |
 | WASD, mouse (click to capture) | Left stick, look |
+
+In a local Forge session, the play window draws the monitor HUD and dialogs
+over the game frame using the UI kit and the fonts and art on the disc.
+Opening a dialog releases mouse capture. A click selects the row under
+the pointer in the fitted viewport. The monitor controls are listed in
+[forge-design.md](../game/forge-design.md#the-ui).
 
 Cmd+F toggles fullscreen and Cmd+P pauses.
 
@@ -284,6 +302,11 @@ Both panels sit on the same bottom margin; the live panel grows upwards.
   with `..`.
 - On by default. `--no-watermark` or `H2_WATERMARK=0` turns it off; F3
   toggles it while playing (F3 then never reaches the guest).
+- A game mode can add a plate of its own: `Watermark::with_plate` takes a
+  callback for its lines (the superbounce game type's is
+  `game::superbounce_mode::plate_lines`). The plate is drawn top centre,
+  left-aligned, in up to half the image's width, by
+  `WatermarkRenderer::draw_plate` each present, and F3 does not hide it.
 - In code: `app::Watermark` (shared on/off, note, map callback) on
   `AppConfig::watermark`; `app::watermark` has the formatting, layout and
   rasteriser, and `WatermarkRenderer` the pass. The banner and the
@@ -452,43 +475,48 @@ surface, clearing the rest to black.
 - **Ordering** comes from the single shared queue: the copy is submitted
   before the slot is published, and the window's read is submitted before
   the slot can return to the guest. No fences.
-- **Scaling** (`scale.rs`): the display aspect is a setting, not the
-  back-buffer shape. A 640x480 frame is 4:3 (`Standard`); Halo 2's widescreen
-  mode is anamorphic 640x480 shown at 16:9 (`Widescreen`); `Source` means
-  square pixels. `Fit` letterboxes or pillarboxes, `Integer` uses the largest
-  whole multiple of the frame height that fits, `Stretch` fills.
-- **Resize** reconfigures the surface and redraws; zero sizes (minimised) are
-  ignored.
+- **Scaling** (`scale.rs`). Play uses square output pixels by default.
+  Native follows the drawable up to the default 4K pixel budget.
+  `GuestHost::native_size` publishes the physical drawable size for Native and
+  `GuestHost::display_size` reports where a given raster is presented.
+  `--aspect 4:3` and `16:9` fit those shapes inside the window. `Fit`
+  adds bars as needed. In Native resolution with Source aspect, Fit uses
+  the drawable's aspect for the game frame. `Integer` takes the largest
+  whole multiple of the frame height that fits, and `Stretch` fills the
+  drawable.
+- **Resize** (`crates/apps/app/src/shell.rs`, `crates/apps/app/src/surface.rs`)
+  reconfigures the surface and redraws the latest frame in the resize
+  callback. On macOS, AppKit also requests redraws during live resize.
+  Both paths read the current backing size from the view. The Metal
+  presenter uses aspect-preserving contents gravity and presents the
+  resized drawable in a Core Animation transaction
+  (`crates/apps/app/src/metal_resize.rs`). The game reallocates its Native
+  raster after the drawable size holds steady for 150 ms. Minimizing
+  preserves the last nonzero size.
 - **Vsync**: `AutoVsync` (Fifo) by default, `AutoNoVsync` with
   `vsync: false`. This only affects the window; guest pacing is separate.
 - **Display rate** (`AppConfig::fps`, `H2_FPS=30|60|120|uncapped`, `h2 play
   --fps`, the Video screen's Frame Rate row, `graphics.fps` in
   `settings::Store`; `fps.rs`): at 30, the default, the window redraws when the guest
-  presents, as it always has. At 60 and 120 it also redraws on its own
-  `DisplaySchedule`; uncapped redraws every event-loop turn with vsync off.
-  Nothing reaches the guest, and until host replay exists
-  ([high-framerate.md](../game/high-framerate.md)) the extra redraws show the
-  newest guest frame again: no smoother picture yet.
+  presents. At 60 and 120 the window samples the mailbox on its
+  `DisplaySchedule`. Uncapped redraws every event-loop turn with vsync off.
+  Extra redraws repeat the newest picture unless the render thread supplies
+  an in-between frame. [Host replay and reprojection](../game/high-framerate.md).
 - Surface format: the first non-sRGB format (`Bgra8Unorm` on Metal). The Xbox
   pipeline is gamma-encoded throughout, so no conversion happens anywhere.
 
 ## Pacing
 
-The kernel HLE's clock is logical (`kernel::Clock`): 100 ns ticks that only
-move when every guest thread is waiting (the scheduler jumps to the next
-timer deadline) or when the host calls `Kernel::advance_time`. Guest compute
-costs no guest time. Halo 2 creates its device with `PresentationInterval =
-0x80000000` (immediate), so Swap does not wait for vblank either; the game
-paces itself on timers and the performance counter.
+The kernel counts guest work in 100 ns units and advances to logical
+deadlines when threads are idle. Its periodic vblank source runs at 60 Hz.
+A normal gameplay frame spans two vblanks, about 33.3 ms.
 
-`Pacer` (`pacing.rs`) holds guest time to wall time from the outside:
-between chunks, guest ahead of wall by more than `max_lead` (2 ms) sleeps the
-difference; guest behind by more than `max_lag` (100 ms) rebases, so a slow
-host plays in slow motion instead of fast-forwarding to catch up later. A
-pause resets the origin. `PacePolicy::Unpaced` never sleeps (traces,
-benchmarks). This needs no kernel change; if chunk granularity proves too
-coarse, the clean fix is a kernel hook called before each idle
-`advance_to(deadline)`, where the pacer would sleep until that deadline.
+The shell's `Pacer` compares elapsed kernel time with elapsed wall time
+after each scheduler slice and each audio-only idle advance. A lead over
+2 ms makes the guest thread sleep for the difference. A lag over 100 ms
+or a pause rebases the clocks. All four Frame Rate choices use the same
+policy. The explicit benchmark option `--unpaced` selects
+`PacePolicy::Unpaced` and skips these sleeps.
 
 `VBlank` is the refresh arithmetic in guest ticks (`NTSC` 60000/1001 Hz,
 `HZ60`, `PAL50`): `count_at(ticks)`, `time_of(n)`, `next_after(ticks)`. The
@@ -554,11 +582,15 @@ stays on the main thread.
   returning. The pacer resets on resume, so the paused time is not slept off.
 - **Guest exits** (returns, errors or panics): the outcome goes in the title
   and the window stays up with the last frame (`keep_open_on_guest_exit`),
-  or the window closes.
+  or the window closes. `h2 play` closes it for a run with a planned end
+  (`--slices`, `H2_BOOT_STOP_AT_PRESENT`) and for every lab job, so the
+  process exits by itself (`close_on_guest_exit` in
+  `crates/apps/cli/src/play_cmd.rs`).
 
 The title bar shows guest presents per second, frames shown per second
 (one decimal), and frames dropped, all over the last 5 seconds
-(`pacing::WindowedRate`), refreshed once a second; `log_status` also prints
+(`pacing::WindowedRate`), refreshed once a second. Lab game windows keep their
+job title throughout the run. In both modes `log_status` also prints
 it. A one-second window read 0.0 for a game presenting 1.4 times a second.
 
 ## Tests

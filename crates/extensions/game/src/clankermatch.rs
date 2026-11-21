@@ -570,8 +570,10 @@ mod tests {
             assert_eq!(switch_press(other), None, "{other}");
         }
         // Our action is past every other Game Setup row's.
-        assert!(SWITCH_ACTION > crate::clankers::ROW_ACTION);
-        assert!(SWITCH_ACTION > h1row::OPTIONS_ACTION);
+        const {
+            assert!(SWITCH_ACTION > crate::clankers::ROW_ACTION);
+            assert!(SWITCH_ACTION > h1row::OPTIONS_ACTION);
+        }
         assert_eq!(
             crate::custom_games::SWITCH_CLANKERMATCH_TEXT,
             "Switch To: Clankermatch"

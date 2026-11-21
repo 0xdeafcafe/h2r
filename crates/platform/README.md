@@ -21,6 +21,7 @@ can be reused by a port. See
 | [gfx](gfx/) | Xbox-flavoured Direct3D 8 data model and renderer on wgpu |
 | [hot-render](hot-render/) | WGSL overrides, tunables and toggles for live renderer iteration |
 | [input](input/) | Xbox gamepad model, 4-port device model and host backends |
+| [mem-watch](mem-watch/) | Host process footprint sampling, memory limits and reports |
 | [voice](voice/) | Microphone and headphone media objects over host capture and playback |
 | [wma](wma/) | Clean-room WMAv2 decoder |
 | [xapi](xapi/) | Guest XAPI service replacements |

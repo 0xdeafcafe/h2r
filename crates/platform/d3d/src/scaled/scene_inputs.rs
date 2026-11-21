@@ -3,6 +3,7 @@
 //! legacy E3 shadow with a grid the private baseline cannot reproduce.
 
 use frame_scene::TargetRef;
+use gfx::raster::RenderScale;
 use gfx::surface::SurfaceId;
 use std::collections::HashMap;
 
@@ -31,7 +32,7 @@ impl ScaledBackend<GfxBackend, GfxBackend> {
             ) else {
                 return false;
             };
-            if self.scale == 1 {
+            if self.scale == RenderScale::ONE {
                 if images.reference.device != self.reference.ctx.device
                     || !self.reference.live_view_matches(
                         s.reference,
@@ -63,9 +64,9 @@ impl ScaledBackend<GfxBackend, GfxBackend> {
                         .view
                         .live_view_matches(view, dest_view, desc, 1, &img.texture);
             }
-            if !self.single_copy {
+            let (true, Some(scale)) = (self.single_copy, self.scale.uniform_integer()) else {
                 return false;
-            }
+            };
             let Some(img) = images.display.as_ref() else {
                 return false;
             };
@@ -82,7 +83,7 @@ impl ScaledBackend<GfxBackend, GfxBackend> {
                 return false;
             };
             let expected_grid = if (desc.width, desc.height) == (main.width, main.height) {
-                self.scale
+                scale
             } else {
                 1
             };
@@ -124,7 +125,7 @@ impl ScaledBackend<GfxBackend, GfxBackend> {
             return self.freeze_view_inputs(frame, targets, names);
         }
         if self.awake()
-            && (self.scale != 1
+            && (self.scale != RenderScale::ONE
                 || self.lighting != Lighting::E3
                 || !names.iter().all(|name| {
                     targets
@@ -153,6 +154,7 @@ impl ScaledBackend<GfxBackend, GfxBackend> {
             return Err("earlier live sample cannot bind the scaled scene source".into());
         }
         frame.validate_live_bindings();
+        let scale = self.scale.uniform_integer().ok_or("the scene grid is not an integer scale")?;
         let physical = names
             .iter()
             .map(|&name| {
@@ -169,7 +171,7 @@ impl ScaledBackend<GfxBackend, GfxBackend> {
                 // a different raster without changing the input values.
                 let main = frame.colour.ok_or("missing scene colour descriptor")?;
                 let expected = if (main.width, main.height) == (desc.width, desc.height) {
-                    self.scale
+                    scale
                 } else {
                     1
                 };

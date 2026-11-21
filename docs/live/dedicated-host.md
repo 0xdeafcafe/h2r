@@ -193,7 +193,7 @@ writable data and ports. The module and maps are memory-mapped from the
 same files, so the page cache shares them.
 
 **Supervisor.** `h2 host pack` listens on `H2_PACK_CONTROL` (default
-`0.0.0.0:31099`). Live adds a match with `POST /v1/pack/matches`, removes
+`127.0.0.1:31099`). Cloudflare packs explicitly bind their private container interface. Live adds a match with `POST /v1/pack/matches`, removes
 one with `DELETE /v1/pack/matches/<lease>`, reads one with
 `GET /v1/pack/matches/<lease>` and reads the whole pack with
 `GET /v1/pack`. Each slot *n* uses UDP `31000 + 7n` to `31006 + 7n`,
@@ -424,7 +424,7 @@ game-data bundle. Every required flag can also come from the environment.
 | `--data-sha` | `H2_DATA_SHA` | Bundle SHA-256 |
 | `--region` | `H2_REGION` | Optional provider region label |
 | `--base-port` | `H2_BASE_PORT` | XNet base port, default 31000 |
-| `--tunnel-listen` | `H2_TUNNEL_LISTEN` | Internal tunnel listener, default `0.0.0.0:31100` |
+| `--tunnel-listen` | `H2_TUNNEL_LISTEN` | Internal tunnel listener, default `127.0.0.1:31100` |
 | `--out` | `H2_IMAGE` | Prebuilt game module directory, default `$TMPDIR/h2boot` |
 | `--data` | `H2_DATA` | Writable game data directory, default private per-run scratch space |
 |  | `H2_AGENT` | Optional TCP endpoint for the child's agent, as `tcp://HOST:PORT` |
@@ -569,7 +569,7 @@ directory. Keep the archive, manifest and extracted cache private. Keep
 the bundle out of Git and container images.
 
 ```sh
-h2 host bundle --disc "$H2_DISC" --out "$H2_BUNDLE_DIR"
+h2 host bundle --disc "$H2_DISC" --out "$bundle_dir"
 ```
 
 | Disc files | Why the host needs them |
@@ -604,18 +604,18 @@ SHA-256 digests. Keep the two files together.
 Create an R2 bucket with public access disabled. Create an R2 API token
 with Object Read & Write permission scoped to the bucket, then configure
 your AWS CLI profile with its Access Key ID and Secret Access Key. Set
-`R2_ACCOUNT_ID`, `R2_BUCKET`, `AWS_PROFILE` and `H2_BUNDLE_DIR` before
+`R2_ACCOUNT_ID`, `R2_BUCKET`, `AWS_PROFILE` and `bundle_dir` before
 running these commands with the AWS CLI and `jq`.
 [Cloudflare R2 S3 setup](https://developers.cloudflare.com/r2/get-started/s3/)
 
 ```sh
 R2_ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
-H2_DATA_SHA=$(jq -er '.sha256' "$H2_BUNDLE_DIR/host-data.json")
+H2_DATA_SHA=$(jq -er '.sha256' "$bundle_dir/host-data.json")
 R2_BUNDLE="s3://$R2_BUCKET/host-data/$H2_DATA_SHA"
 
-aws s3 cp "$H2_BUNDLE_DIR/host-data.tar.zst" "$R2_BUNDLE/host-data.tar.zst" \
+aws s3 cp "$bundle_dir/host-data.tar.zst" "$R2_BUNDLE/host-data.tar.zst" \
   --endpoint-url "$R2_ENDPOINT" --region auto
-aws s3 cp "$H2_BUNDLE_DIR/host-data.json" "$R2_BUNDLE/host-data.json" \
+aws s3 cp "$bundle_dir/host-data.json" "$R2_BUNDLE/host-data.json" \
   --endpoint-url "$R2_ENDPOINT" --region auto
 ```
 
@@ -696,7 +696,8 @@ reserved roster and keep the service account out of ranks and scores.
 
 ## Host tunnel
 
-Set `H2_TUNNEL_LISTEN=0.0.0.0:31100` in the dedicated game process.
+Local supervisors bind the tunnel to loopback. Cloudflare sets
+`H2_TUNNEL_LISTEN=0.0.0.0:31100` inside its private container.
 The listener starts on its first initialized XNet call and serves one
 lease. Keep this port on the private network between the game host and
 the upstream proxy. Live authenticates and admits the client first. The
@@ -712,7 +713,9 @@ beginning at `10.77.0.2`. A reconnect gets a fresh ID and address. All
 client frames carry peer 0. Host datagrams and bye replies carry the
 recipient's ID. The host sends a WebSocket Ping every five seconds,
 answers incoming pings, and drops connections after 15 seconds without
-a Pong.
+a Pong. Between frames the connection workers sleep until TCP data,
+a queued datagram, or a keepalive deadline wakes them. Local QoS input
+and shutdown also wake the client worker.
 
 Datagrams go to XNet guest port `1000 + offset` with a source of the
 client's synthetic IPv4 and the host's XNet base plus that offset. The
@@ -723,11 +726,26 @@ fans out to all active tunnel peers and still goes out over native UDP.
 The tunnel answers HLE QoS queries on offset +2 using the same advertised
 data as the UDP responder.
 
+A client offers actor channel version 1 with the `x-h2-actor-channel: 1`
+upgrade header. The host acknowledges it with one version byte after the
+four IPv4 bytes in its binary hello. For a peer without the offer, the
+host sends the four-byte hello and ordinary XNet traffic. Negotiated
+peers receive actor packets as kind 3 with port 0 and the recipient's
+ID. A client requests a fresh key with kind 4, port 0, peer 0 and an
+empty payload. System Link sessions use retail replication for actors.
+
+The actor sender enqueues from the simulation tick and the client
+drains its bounded queue at the tick boundary. A full send queue drops
+the packet. A full client inbox drops its oldest packet. Packet loss is
+repaired by a later key. Actor packets have a separate 1,000-byte
+rolling budget over 30 ticks that excludes the eight-byte tunnel header.
+[Actor channel](../game/ai-networking.md#how-it-works)
+
 The host allows 16 concurrent connections, including pending upgrades.
 The payload ceiling is 1,264 bytes. Each peer can send and receive up to
 240 datagrams per second, with a burst of 64 in each direction. An
-outbound queue holds 64 datagrams per peer. Rate limits and full queues
-drop datagrams. Bye or WebSocket close makes the address unreachable.
+outbound queue holds 64 frames per peer. Rate limits and full queues
+drop packets. Bye or WebSocket close makes the address unreachable.
 The next receive skips pending packets from that peer and the next XNet
 address operation drops any cached mapping.
 
@@ -759,8 +777,19 @@ bot-style profile would be reconciled into a real session player by
 consume a slot and could affect teams, spawns and results. No owner
 profile or player record is manufactured.
 
-The first expected profile-specific refusal is the controller countdown
-at `0x19a78e`. It reads the pressing controller's local-user index,
+Selecting Create in the System Link browser calls `0x199df9(0,0)`
+and `0x199a03(2)`. A human host's menu then opens the pregame screen.
+Each frame the menu reconciler (`0x199b08`) compares its screen with the
+network lifecycle. With zero signed-in users, the pregame branch at
+`0x19b284` requests a squad leave. A playerless host skips that UI update
+in pregame (session type 1 or 2) while it owns the active squad. Retail
+runs the update during play and postgame. Ownership checks the squad address,
+incarnation, network class and local host peer. The title screen's
+controller reset also requests a leave during boot. Its call at
+`0x1906d3` preserves the same owned squad. Explicit close uses the
+network teardown and releases ownership.
+
+The next profile-specific refusal is the controller countdown at `0x19a78e`. It reads the pressing controller's local-user index,
 which is −1 on the playerless host. The machine fallback requests stage
 2 through `0x5a220` after the remote roster, map properties, ownership
 and retail start check pass. It calls `0x5a220` as the countdown
@@ -872,7 +901,7 @@ cargo build --locked --release -p cli --bin h2
 export H2_BIN="${CARGO_TARGET_DIR:-$PWD/target}/release/h2"
 ```
 
-Use that CLI, the coordinator’s own disc, and a matching prebuilt clang image. Set `H2_DISC` to the ISO, `H2_IMAGE` to its output directory, and `H2_PROFILE_A` and `H2_PROFILE_B` to different game data directories with distinct saved profiles. Choose unused UDP bases and loopback agent ports. Run these blocks in **one macOS shell**. The image check should succeed before either process starts.
+Use that CLI, the coordinator’s own disc, and a matching prebuilt clang image. Set `H2_DISC` to the ISO, `H2_IMAGE` to its output directory, and `host_profile_dir` and `client_profile_dir` to different game data directories with distinct saved profiles. Choose unused UDP bases and loopback agent ports. Run these blocks in **one macOS shell**. The image check should succeed before either process starts.
 
 ```sh
 H2_BIN=${H2_BIN:-"$HOME/.cargo/bin/h2"}
@@ -883,8 +912,8 @@ unset H2_SIM H2_LEVEL H2_BOOT_GFX H2_INPUT_REPLAY H2_BOOT_INPUT
 
 ```sh
 trial=$(mktemp -d "$TMPDIR/microhost.XXXXXX")
-cp -cR "${H2_PROFILE_A:?set host data directory}" "$trial/host"
-cp -cR "${H2_PROFILE_B:?set client data directory}" "$trial/client"
+cp -cR "${host_profile_dir:?set host data directory}" "$trial/host"
+cp -cR "${client_profile_dir:?set client data directory}" "$trial/client"
 cp -cR "$H2_IMAGE" "$trial/host-image"
 iface=$(route -n get default | awk '/interface:/ {print $2}')
 lan=$(ipconfig getifaddr "$iface")

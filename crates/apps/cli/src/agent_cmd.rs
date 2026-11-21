@@ -45,7 +45,7 @@ or a short form:
   step <ticks>           session.step
   wait <JSON until> [timeout_ms]
   record <name> [replace]  input.record: log every controller read to the
-                         cache directory's inputs/<name>.input
+                         agent output directory's inputs/<name>.input
   replay <name>          input.replay: answer controller reads from that log
   stop                   input.stop: end the recording (writing it) or replay
   sleep <ms>             (scripts only) wait before the next line
@@ -54,6 +54,8 @@ or a short form:
   stick <left|right> <x> <y> [ms]  input.pad: a stick, -1..1, +y up (no ms: until changed)
   pad <JSON>             input.pad, e.g. '{\"steps\":[{\"buttons\":[\"start\"],\"ms\":100},{\"left\":[0,1],\"ms\":2000}]}'
                          or '{\"player\":1,\"at_tick\":900,\"steps\":[{\"buttons\":[\"rt\"],\"ticks\":30}]}'
+  route <JSON legs>      input.route, e.g. '[{\"move_to\":[1,2,3],\"crouch\":false}]'
+  route-status [player]  input.route.status for a controller port (default 0)
   unpress                input.release: let go of everything
   padstate               input.state: every player's pad, recording or replay
   hostpads               input.host: the host controllers (profile, touchpad, buttons)
@@ -62,6 +64,8 @@ or a short form:
   sample-stop            profile.sample.stop: writes LocalState\\profile.h2prof
   sample-status          profile.sample.status
   hostperf               host.perf: the newest host perf line
+  hostmemory [report]    host.memory: footprint, peak, queue sizes and reports
+  postmortem [--pid N | FILE]  explain memory growth offline in a saved recording
   hostmetrics            host.metrics: tick cost, CPU and RSS
   hostaudit              host.audit: coverage and attribution so far
   ui                     ui.screen: the menu screen player one's input goes to (H2_UI_WATCH=1)
@@ -121,7 +125,7 @@ does, only it may send them. Queued steps outlive the connection and play out.
 
 The socket is --socket (a path, or tcp://HOST:PORT), else --xbox HOST
 (tcp://HOST:4720, the Xbox app; HOST defaults to $H2_XBOX), else $H2_AGENT,
-else the cache directory's h2recomp/agent.sock, where `h2 serve` listens
+else agent.sock in the h2recomp cache directory, where `h2 serve` listens
 by default; with nothing there, the one game in its agents/ directory, where
 `h2 play` listens unless H2_AGENT is set (`h2 agent games` lists them). Results print as
 JSON, one per line in scripts; an error prints to stderr and exits 1 (a
@@ -218,9 +222,11 @@ pub fn run(args: Vec<String>) -> Result<()> {
     let Some(first) = rest.first().cloned() else {
         bail!("{}", usage())
     };
-    // Reads a file; no game needed.
+    if first == "postmortem" {
+        return crate::mem_cmd::run(&rest);
+    }
     if first == "flight" && rest.get(1).is_some_and(|w| w == "show") {
-        return crate::agent_flight::show(&rest[2..]);
+        return crate::agent_flight::show(&rest[2..], || connect(socket, timeout));
     }
     if first == "raw-diff" {
         return crate::agent_raw::diff_files(&rest[1..]);
@@ -232,17 +238,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
     if first == "games" {
         return games();
     }
-    let path = match socket {
-        Some(p) => p,
-        None => only_game().unwrap_or_else(agent_proto::default_socket),
-    };
-    let mut c = Client::connect(&path).with_context(|| {
-        format!(
-            "connecting to {}: is `h2 serve` (or a game with H2_AGENT) running?",
-            path.display()
-        )
-    })?;
-    c.set_timeout(timeout)?;
+    let mut c = connect(socket, timeout)?;
     match first.as_str() {
         "-" => script(&mut c),
         "ui-crawl" => crate::agent_ui_crawl::run(&mut c, &rest[1..], timeout),
@@ -276,6 +272,18 @@ pub fn run(args: Vec<String>) -> Result<()> {
     }
 }
 
+fn connect(socket: Option<PathBuf>, timeout: Option<Duration>) -> Result<Client> {
+    let path = socket.unwrap_or_else(|| only_game().unwrap_or_else(agent_proto::default_socket));
+    let client = Client::connect(&path).with_context(|| {
+        format!(
+            "connecting to {}: is `h2 serve` (or a game with H2_AGENT) running?",
+            path.display()
+        )
+    })?;
+    client.set_timeout(timeout)?;
+    Ok(client)
+}
+
 /// Whether `--xbox`'s next word is an address rather than a call.
 fn looks_like_host(w: &str) -> bool {
     !w.starts_with('-') && (w.contains('.') || w.contains(':')) && !w.contains("..") && {
@@ -283,6 +291,7 @@ fn looks_like_host(w: &str) -> bool {
         head.chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')
             && !agent_proto::method::ALL.contains(&w)
+            && !agent_proto::sim::method::EDITS.contains(&w)
             && !w.starts_with("input.")
             && !w.starts_with("profile.")
             && !w.starts_with("host.")
@@ -356,7 +365,8 @@ fn script(c: &mut Client) -> Result<()> {
     Ok(())
 }
 
-/// The words of a script line (for `agent_run`).
+/// The words of a script line (for the `agent_run` and `agent_sim` tests).
+#[cfg(test)]
 pub(crate) fn split_words(line: &str) -> Result<Vec<String>> {
     split(line)
 }
@@ -691,6 +701,14 @@ fn parse_call(words: &[String]) -> Result<(String, Value)> {
                 Some(g) => json!({ "group_by": g }),
             },
         ),
+        "hostmemory" => (
+            method::HOST_MEMORY,
+            match arg.map(String::as_str) {
+                None => Value::Null,
+                Some("report") => json!({ "report": true }),
+                Some(_) => bail!("hostmemory takes only the optional argument report"),
+            },
+        ),
         "query" => (method::WORLD_QUERY, json_arg(arg)?),
         "loads" => (
             method::LOAD_TIMELINE,
@@ -770,6 +788,20 @@ fn parse_call(words: &[String]) -> Result<(String, Value)> {
             }
             (method::INPUT_PAD, p)
         }
+        "route" => {
+            let legs = json_arg(arg)?;
+            if !legs.is_array() {
+                bail!("route needs a JSON array of legs, e.g. '[{{\"wait\":30}}]'");
+            }
+            (method::INPUT_ROUTE, json!({ "legs": legs }))
+        }
+        "route-status" => (
+            method::INPUT_ROUTE_STATUS,
+            match arg {
+                None => Value::Null,
+                Some(_) => json!({ "player": number(arg, "route-status")? }),
+            },
+        ),
         "record" => {
             let name = arg.context("record needs a name")?;
             let p = match words.get(2).map(String::as_str) {
@@ -898,6 +930,18 @@ mod tests {
                 json!({"player": 1, "steps": [{"buttons": ["a"], "ticks": 4}]})
             )
         );
+        assert_eq!(
+            c(r#"route [{"move_to": [1, 2, 3], "crouch": false}, {"wait": 30}]"#),
+            (
+                "input.route".into(),
+                json!({"legs": [{"move_to": [1, 2, 3], "crouch": false}, {"wait": 30}]})
+            )
+        );
+        assert_eq!(c("route-status"), ("input.route.status".into(), Value::Null));
+        assert_eq!(
+            c("route-status 1"),
+            ("input.route.status".into(), json!({"player": 1}))
+        );
         assert_eq!(c("padstate"), ("input.state".into(), Value::Null));
         assert_eq!(c("hostpads"), ("input.host".into(), Value::Null));
         assert_eq!(
@@ -961,6 +1005,8 @@ mod tests {
             c("sample-stop"),
             ("profile.sample.stop".into(), Value::Null)
         );
+        assert_eq!(c("hostmemory"), ("host.memory".into(), Value::Null));
+        assert_eq!(c("hostmemory report"), ("host.memory".into(), json!({"report": true})));
         assert_eq!(c("hostperf"), ("host.perf".into(), Value::Null));
         assert_eq!(c("hostmetrics"), ("host.metrics".into(), Value::Null));
         assert_eq!(c("ui"), ("ui.screen".into(), Value::Null));
@@ -1050,6 +1096,9 @@ mod tests {
         ] {
             assert!(!looks_like_host(call), "{call}");
         }
+        for call in agent_proto::sim::method::EDITS {
+            assert!(!looks_like_host(call), "{call}");
+        }
     }
 
     #[test]
@@ -1068,6 +1117,10 @@ mod tests {
             "query {}  extra",
             "pad",
             "pad [1]",
+            "route",
+            "route {}",
+            "route [] extra",
+            "route-status first",
             "record",
             "record a twice",
             "replay",

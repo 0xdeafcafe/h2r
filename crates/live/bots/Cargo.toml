@@ -18,9 +18,16 @@ tags = { path = "../../formats/tags" }
 # (bots::autonav).
 map = { path = "../../formats/map" }
 pathfind = { path = "../../formats/pathfind" }
-# The game's nav worker builds its visibility grids as background work
+# The superbounce and forced-crouch spots the bots use (bots::spots).
+superbounce = { path = "../superbounce" }
+# The shared nav cache keys map regions and verifies output with SHA-256.
+content.workspace = true
+# The game's nav worker runs parallel build phases as background work
 # (vis::Threads::background).
 background.workspace = true
+# The cache directory the shared nav cache lives in (autonav::shared_cache).
+host-dirs.workspace = true
+timeline = { path = "../../runtime/timeline" }
 
 [dev-dependencies]
 serde_json.workspace = true

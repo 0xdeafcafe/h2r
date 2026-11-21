@@ -1,7 +1,8 @@
 //! A playerless host has no retail director or D3D views. Draw an independent
 //! desktop view from its re-simulated player datums, posed objects and mounted
 //! map. No observer texture, camera or device is visible to the guest.
-use super::{FilmCamera, Mode, Session};
+use super::{FilmCamera, Mode, Picture, Session, camera::ObserverEye};
+use crate::spectator_view::horizontal_fov;
 use crate::native_map::{self, NativeMap};
 use crate::native_world_glue::{self as world_glue, Raw, ReadMemory};
 use crate::telemetry::layout;
@@ -17,22 +18,52 @@ use native_render::objects::ObjectFrame;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-const SIZE: (u32, u32) = (960, 540);
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct Dimensions {
+    raster: (u32, u32),
+    display: (u32, u32),
+}
 type Present = Box<dyn FnMut(&wgpu::TextureView, (u32, u32)) -> Result<(), String> + Send>;
 
 pub struct HostView {
     gfx: gfx::GfxContext,
+    raster: crate::run_opts::NativeSize,
+    display: Box<dyn Fn((u32, u32)) -> (u32, u32) + Send>,
     present: Present,
 }
 
 impl HostView {
     pub fn new(
         gfx: gfx::GfxContext,
+        raster: crate::run_opts::NativeSize,
+        display: impl Fn((u32, u32)) -> (u32, u32) + Send + 'static,
         present: impl FnMut(&wgpu::TextureView, (u32, u32)) -> Result<(), String> + Send + 'static,
     ) -> Self {
         Self {
             gfx,
+            raster,
+            display: Box::new(display),
             present: Box::new(present),
+        }
+    }
+
+    fn dimensions(&self) -> Dimensions {
+        let (w, h) = (self.raster)();
+        let limit = self
+            .gfx
+            .device
+            .limits()
+            .max_texture_dimension_2d
+            .min(settings::Resolution::MAX_DIMENSION);
+        let longest = w.max(h).max(limit);
+        let axis = |n| {
+            ((u64::from(n) * u64::from(limit) + u64::from(longest / 2)) / u64::from(longest)).max(1)
+                as u32
+        };
+        let raster = (axis(w), axis(h));
+        Dimensions {
+            raster,
+            display: (self.display)(raster),
         }
     }
 }
@@ -43,7 +74,7 @@ pub(super) struct MountedView {
     target: OffscreenTarget,
     pool: gfx::ring::UploadPool,
     map: Option<(Bsp, Option<Scene>)>,
-    last: Option<(u64, u64)>,
+    last: Option<(u64, u64, Dimensions)>,
     error: Option<String>,
     unavailable: Vec<String>,
     blank: bool,
@@ -55,8 +86,14 @@ impl Session {
         output: HostView,
         vfs: Arc<Mutex<vfs::Vfs>>,
     ) -> anyhow::Result<()> {
-        let target =
-            OffscreenTarget::new(&output.gfx.device, SIZE, wgpu::TextureFormat::Rgba8Unorm);
+        if let Mode::Replay(_, replay) = &self.lock().mode {
+            replay.camera.set_playerless();
+        }
+        let target = OffscreenTarget::new(
+            &output.gfx.device,
+            output.dimensions().raster,
+            wgpu::TextureFormat::Rgba8Unorm,
+        );
         self.view
             .set(Mutex::new(MountedView {
                 output,
@@ -88,14 +125,15 @@ impl Session {
         };
         let revision = camera.revision();
         let mut view = view.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(last) = view.last {
-            if last == (tick, revision)
-                || (!paused && revision == last.1 && !tick.is_multiple_of(u64::from(every)))
-            {
-                return;
-            }
+        let dimensions = view.output.dimensions();
+        if let Some((last_tick, last_revision, last_size)) = view.last
+            && revision == last_revision
+            && dimensions == last_size
+            && (tick == last_tick || (!paused && !tick.is_multiple_of(u64::from(every))))
+        {
+            return;
         }
-        view.last = Some((tick, revision));
+        view.last = Some((tick, revision, dimensions));
         // Release the guest memory gate before reading files, uploading or presenting.
         let mut unavailable = Vec::new();
         let frame = Frame::read(
@@ -111,12 +149,40 @@ impl Session {
             }
             view.unavailable = unavailable;
         }
-        if let Err(e) = view.draw(frame, &camera) {
+        if let Err(e) = view.draw(frame, &camera, dimensions, None) {
             if view.error.as_deref() != Some(&e) {
                 eprintln!("theater: playerless observer: {e}");
                 view.error = Some(e);
             }
         }
+    }
+
+    pub(super) fn capture_scaled_host_view(
+        &self,
+        rt: &runtime::Runtime,
+        raster: (u32, u32),
+    ) -> anyhow::Result<Picture> {
+        let camera = {
+            let state = self.lock();
+            let Mode::Replay(_, replay) = &state.mode else {
+                anyhow::bail!("screenshot needs replay");
+            };
+            replay.camera.clone()
+        };
+        let mut view = self.view.get().ok_or_else(|| anyhow::anyhow!("no replay observer"))?
+            .lock().unwrap_or_else(|e| e.into_inner());
+        let limit = view.output.gfx.device.limits().max_texture_dimension_2d;
+        anyhow::ensure!(raster.0 <= limit && raster.1 <= limit,
+            "scaled screenshot exceeds the GPU render size limit ({limit})");
+        let dimensions = Dimensions { raster, display: view.output.dimensions().display };
+        let frame = Frame::read(
+            &rt.memory(),
+            view.map.as_ref().map(|(bsp, _)| bsp),
+            &mut Vec::new(),
+        );
+        let mut picture = None;
+        view.draw(frame, &camera, dimensions, Some(&mut picture)).map_err(anyhow::Error::msg)?;
+        picture.ok_or_else(|| anyhow::anyhow!("no scaled screenshot was rendered"))
     }
 }
 
@@ -124,6 +190,7 @@ impl Session {
 struct Bsp {
     map: String,
     source: Option<String>,
+    checksum: u32,
     index: u16,
     address: u32,
 }
@@ -132,6 +199,7 @@ struct Eye {
     seat: u8,
     unit: u32,
     weapons: [u32; 4],
+    facing: [f32; 3],
     camera: RenderCamera,
 }
 
@@ -190,8 +258,8 @@ impl Frame {
             map,
             address,
             index,
-            source: crate::map_slots::current_source(g)
-                .and_then(|p| crate::map_slots::slot_file(&p)),
+            source: crate::map_slots::active_file(g),
+            checksum: guest_layout::game::cache_checksum(&*g as &dyn engine::GuestMemory).unwrap_or_default(),
         };
         // While every player is respawning, continue rendering a detached
         // camera in the last map it actually saw. Never open a menu BSP for it.
@@ -242,11 +310,11 @@ impl Frame {
             .ok()
             .flatten()
             .ok_or("no posed camera marker or usable biped collision height")?;
+        let facing = body.forward(g).map_err(|_| "unit facing unreadable")?;
         let up = if forward[2].abs() < 0.9999 {
             [0., 0., 1.]
         } else {
             // Keep a usable basis at straight up/down, facing with the body.
-            let facing = body.forward(g).map_err(|_| "unit facing unreadable")?;
             [-forward[2] * facing[0], -forward[2] * facing[1], 0.]
         };
         let weapons = std::array::from_fn(|i| {
@@ -257,16 +325,17 @@ impl Frame {
             seat,
             unit: unit.raw(),
             weapons,
+            facing,
             camera: RenderCamera {
                 position,
                 forward,
                 up,
-                // The unit tag stores horizontal FOV. retail's observer
-                // 0x171d90 converts it for the render camera's viewport.
-                fov: 2.0 * ((fov * 0.5).tan() * SIZE.1 as f32 / SIZE.0 as f32).atan(),
+                // The unit tag gives the retail horizontal FOV of a 4:3 view.
+                fov: retail_vertical_fov(fov),
                 near: 0.03,
                 far: 4096.,
-                viewport: [0, 0, SIZE.1 as i16, SIZE.0 as i16],
+                projection_xy: None,
+                viewport: [0, 0, 480, 640],
             },
         })
     }
@@ -395,9 +464,32 @@ impl Scene {
     }
 }
 
+fn retail_vertical_fov(horizontal: f32) -> f32 {
+    2.0 * ((horizontal * 0.5).tan() * (3.0 / 4.0)).atan()
+}
+
+fn observer_lens(camera: RenderCamera, (w, h): (u32, u32)) -> RenderCamera {
+    let factor = camera.aspect() * h.max(1) as f32 / w.max(1) as f32;
+    native_render::camera::display_camera(camera, factor)
+}
+
 impl MountedView {
-    fn draw(&mut self, frame: Option<Frame>, camera: &FilmCamera) -> Result<(), String> {
+    fn draw(
+        &mut self,
+        frame: Option<Frame>,
+        camera: &FilmCamera,
+        dimensions: Dimensions,
+        capture: Option<&mut Option<Picture>>,
+    ) -> Result<(), String> {
         let gfx = &self.output.gfx;
+        if self.target.target().size != dimensions.raster {
+            self.target = OffscreenTarget::new(
+                &gfx.device,
+                dimensions.raster,
+                wgpu::TextureFormat::Rgba8Unorm,
+            );
+            self.blank = false;
+        }
         let target = self.target.target();
         let depth = target.depth.expect("offscreen depth");
         let depth_format = gfx::presenter::DEPTH_FORMAT;
@@ -415,45 +507,55 @@ impl MountedView {
                 }
             }
             if let Some((_, Some(scene))) = &mut self.map {
-                camera.host_seats(&frame.eyes.iter().map(|e| e.seat).collect::<Vec<_>>());
-                let eyes = frame
-                    .eyes
-                    .iter()
-                    .map(|e| (e.seat, e.camera.position, e.camera.forward))
-                    .collect::<Vec<_>>();
-                if let Some((seat, position, forward, first_person)) = camera.host_pose(&eyes) {
-                    let eye = frame.eyes.iter().find(|e| e.seat == seat);
-                    let lens = eye
-                        .map(|e| e.camera)
-                        .or(scene.previous_view.filter(|_| !first_person));
-                    if let Some(lens) = lens {
-                        let up = if first_person {
-                            lens.up
-                        } else if forward[2].abs() > 0.9999 {
-                            [1., 0., 0.]
-                        } else {
-                            [0., 0., 1.]
-                        };
-                        let view = RenderCamera {
-                            position,
-                            forward,
-                            up,
-                            ..lens
-                        };
-                        scene.previous_view = Some(view);
-                        scene.models(gfx, &frame.objects);
-                        visible = Some((scene, view, eye.filter(|_| first_person), &frame.objects));
-                    }
+                let eyes = frame.eyes.iter().map(|e| ObserverEye {
+                    seat: e.seat,
+                    position: e.camera.position,
+                    aim: e.camera.forward,
+                    facing: e.facing,
+                    fov: horizontal_fov(e.camera.fov),
+                });
+                if let Some(rig) = camera.host_pose(eyes) {
+                    let eye = rig.hide_subject.and_then(|seat| frame.eyes.iter().find(|e| e.seat == seat));
+                    let lens = eye.or_else(|| frame.eyes.first()).map(|e| e.camera)
+                        .or(scene.previous_view)
+                        .unwrap_or(RenderCamera {
+                            position: rig.position,
+                            forward: rig.forward,
+                            up: [0., 0., 1.],
+                            fov: rig.fov,
+                            projection_xy: None,
+                            viewport: [0, 0, 480, 640],
+                            near: 0.03,
+                            far: 4096.,
+                        });
+                    let up = if eye.is_some() {
+                        lens.up
+                    } else if rig.forward[2].abs() > 0.9999 {
+                        [1., 0., 0.]
+                    } else {
+                        [0., 0., 1.]
+                    };
+                    let view = RenderCamera {
+                        position: rig.position,
+                        forward: rig.forward,
+                        up,
+                        fov: rig.fov,
+                        ..lens
+                    };
+                    scene.previous_view = Some(view);
+                    let view = observer_lens(view, dimensions.display);
+                    scene.models(gfx, &frame.objects);
+                    visible = Some((scene, view, eye, &frame.objects));
                 }
             } else {
-                camera.host_seats(&[])
+                let _ = camera.host_pose(std::iter::empty());
             }
         } else {
-            camera.host_seats(&[])
+            let _ = camera.host_pose(std::iter::empty());
         }
         // A map transition or lost first-person subject clears the last POV.
         let blank = visible.is_none();
-        if blank && self.blank {
+        if blank && self.blank && capture.is_none() {
             return Ok(());
         }
         let mut encoder = gfx.device.create_command_encoder(&Default::default());
@@ -512,8 +614,8 @@ impl MountedView {
             let viewport = PassViewport {
                 x: 0.,
                 y: 0.,
-                width: SIZE.0 as f32,
-                height: SIZE.1 as f32,
+                width: dimensions.raster.0 as f32,
+                height: dimensions.raster.1 as f32,
             };
             scene.world.encode(
                 &gfx.device,
@@ -523,7 +625,7 @@ impl MountedView {
                 depth,
                 depth_format,
                 viewport,
-                SIZE,
+                dimensions.raster,
             );
             scene.models.encode(
                 &gfx.device,
@@ -536,10 +638,63 @@ impl MountedView {
             );
         }
         let patches = arena.upload_commands(&gfx.queue);
-        gfx.queue.submit(patches.into_iter().chain([encoder.finish()]));
+        gfx.queue
+            .submit(patches.into_iter().chain([encoder.finish()]));
         gfx.queue.on_submitted_work_done(move || drop(arena));
-        (self.output.present)(target.color, SIZE)?;
-        self.blank = blank;
+        if let Some(capture) = capture {
+            let mut rgba = self.target.read_pixels(gfx);
+            for pixel in rgba.chunks_exact_mut(4) {
+                pixel[3] = 255;
+            }
+            *capture = Some(Picture { size: dimensions.raster, rgba });
+        } else {
+            (self.output.present)(target.color, dimensions.raster)?;
+            self.blank = blank;
+        }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use native_render::{cull::Frustum, world::Aabb};
+
+    #[test]
+    fn observer_projection_and_culling_admit_the_same_periphery_at_each_aspect() {
+        let eye = RenderCamera {
+            position: [0.; 3],
+            forward: [1., 0., 0.],
+            up: [0., 0., 1.],
+            fov: retail_vertical_fov(90f32.to_radians()),
+            projection_xy: None,
+            viewport: [0, 0, 480, 640],
+            near: 0.03,
+            far: 4096.,
+        };
+        for ((w, h), edge) in [
+            ((640, 480), 10.),
+            ((1920, 1200), 12.),
+            ((1920, 1080), 40. / 3.),
+            ((2520, 1080), 17.5),
+            ((5120, 1440), 80. / 3.),
+        ] {
+            let vp = observer_lens(eye, (w, h)).view_projection();
+            let frustum = Frustum::from_view_projection(&vp);
+            for (side, up, visible) in [
+                (edge - 0.1, 0., true),
+                (edge + 0.1, 0., false),
+                (0., 7.4, true),
+                (0., 7.6, false),
+            ] {
+                let p = [10., -side, up];
+                let clip = frame_scene::camera::transform(&vp, [p[0], p[1], p[2], 1.]);
+                assert_eq!(
+                    clip[0].abs() <= clip[3] && clip[1].abs() <= clip[3],
+                    visible
+                );
+                assert_eq!(frustum.may_see(&Aabb { min: p, max: p }), visible);
+            }
+        }
     }
 }

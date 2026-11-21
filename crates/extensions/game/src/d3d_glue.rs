@@ -11,6 +11,9 @@ use d3d::{DeviceConfig, GuestRange, UploadPolicy};
 #[cfg(feature = "desktop-runtime")]
 use d3d::RecordingBackend;
 
+#[cfg(feature = "gpu")]
+mod clip_png;
+
 pub const PUSH_BASE: u32 = 0xa0e0_0000;
 pub const PUSH_LEN: u32 = 0x8_0000;
 pub const SCRATCH_BASE: u32 = 0xa0e8_0000;
@@ -33,6 +36,8 @@ pub struct Installed {
     _private_scenes: Option<crate::frame_owner::Service>,
     /// The device, for machine snapshots (`crate::snapshot_glue`).
     pub snapshot: Arc<dyn DeviceSnapshot>,
+    #[cfg(feature = "gpu")]
+    pub ui_layout: Arc<dyn crate::render_aspect::UiLayoutSink>,
 }
 
 /// The installed GPU view. A plain backend draws at guest resolution. A
@@ -54,6 +59,10 @@ impl Installed {
 /// with (docs/runtime/snapshots.md, phase 4: `Device::snapshot_blockers`,
 /// `save_snapshot`, `load_snapshot`).
 pub trait DeviceSnapshot: Send + Sync {
+    #[cfg(feature = "gpu")]
+    fn set_mark_image_source(&self, _source: fn() -> Option<d3d::present_camera::Image>) {}
+    #[cfg(feature = "gpu")]
+    fn mark_projection_factor(&self) -> f32 { 1.0 }
     /// What keeps the device from being saved now.
     fn blockers(&self) -> Vec<String>;
     /// Pending device operations which prevent an isolated film restore.
@@ -77,6 +86,20 @@ pub trait DeviceSnapshot: Send + Sync {
 }
 
 impl<B: d3d::backend::Backend + Send + 'static> DeviceSnapshot for Mutex<d3d::Device<B>> {
+    #[cfg(feature = "gpu")]
+    fn set_mark_image_source(&self, source: fn() -> Option<d3d::present_camera::Image>) {
+        self.lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .set_mark_image_source(source);
+    }
+
+    #[cfg(feature = "gpu")]
+    fn mark_projection_factor(&self) -> f32 {
+        self.lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .projection_factor()
+    }
+
     fn blockers(&self) -> Vec<String> {
         self.lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -192,11 +215,53 @@ pub fn install_headless(
     rt: &runtime::Runtime,
     interp: Option<Interpolation>,
 ) -> anyhow::Result<Installed> {
-    install_headless_for_profile(rt, interp, crate::run_plan::compiled_render_hooks(), None)
+    install_headless_for_profile(rt, interp, crate::run_plan::compiled_render_hooks(), None, false)
 }
 
 #[cfg(feature = "gpu")]
-pub fn single_copy(store: Option<&settings::Store>) -> anyhow::Result<bool> {
+/// Boot selects the presenting backend after network and film registration.
+pub fn window_targets(
+    _store: &settings::Store,
+    native_size: crate::run_opts::NativeSize,
+    display_size: impl Fn((u32, u32)) -> (u32, u32) + Send + Sync + 'static,
+    reference: impl FnOnce() -> d3d::GfxBackend,
+    display: impl FnOnce() -> d3d::GfxBackend,
+) -> (d3d::GfxBackend, crate::run_opts::DisplayView) {
+    let (main, backend) = (reference(), Some(display()));
+    (main, crate::run_opts::DisplayView { backend, native_size, viewer_output: None, display_size: Arc::new(display_size) })
+}
+
+/// A locked retail target has no live raster edits. It can present directly
+/// when the run permits single-copy rendering.
+#[cfg(feature = "gpu")]
+pub fn locked_retail_target(store: Option<&settings::Store>) -> bool {
+    let Some(store) = store else { return false };
+    use crate::setting_defs::{GUEST_FRAME, LIGHTING, RESOLUTION, lighting_of};
+    let fixed = settings::Resolution::Fixed(GUEST_FRAME.0, GUEST_FRAME.1);
+    let locked = |key| store.state(key).is_some_and(|state| state.locked);
+    store.handle::<settings::Resolution>(RESOLUTION.key).get() == fixed
+        && locked(RESOLUTION.key)
+        && lighting_of(store.handle::<u32>(LIGHTING.key).get()) == d3d::Lighting::Retail
+        && locked(LIGHTING.key)
+}
+
+#[cfg(feature = "gpu")]
+mod output_size;
+#[cfg(feature = "gpu")]
+pub use output_size::output_size;
+
+#[cfg(feature = "gpu")]
+pub fn protected_readbacks(network: bool, film: bool, lockstep: bool) -> bool {
+    // XNet sockets and film taps are installed before entry. A match may
+    // start later on that same device; earlier retail pixels must already exist.
+    network || film || lockstep
+}
+
+#[cfg(feature = "gpu")]
+pub fn single_copy(store: Option<&settings::Store>, protected: bool) -> anyhow::Result<bool> {
+    if protected {
+        return Ok(false);
+    }
     let def = &crate::setting_defs::SINGLE_COPY;
     let value = match store {
         Some(store) => store.get(def.key).unwrap_or(def.default),
@@ -254,9 +319,11 @@ pub fn install_headless_for_profile(
     interp: Option<Interpolation>,
     profile: film::RenderHooks,
     settings: Option<&settings::Store>,
+    protected_readbacks: bool,
 ) -> anyhow::Result<Installed> {
     let switches = hooks::Switches::from_env().map_err(anyhow::Error::msg)?;
-    install_headless_with_scenes(rt, interp, profile, settings, PrivateScenes::requested(&switches, profile, true))
+    let private = PrivateScenes::requested(&switches, profile, true);
+    install_headless_with_scenes(rt, interp, profile, settings, protected_readbacks, private)
 }
 
 #[cfg(feature = "gpu")]
@@ -265,6 +332,7 @@ pub fn install_headless_with_scenes(
     interp: Option<Interpolation>,
     profile: film::RenderHooks,
     settings: Option<&settings::Store>,
+    protected_readbacks: bool,
     private: Option<PrivateScenes>,
 ) -> anyhow::Result<Installed> {
     match std::env::var_os("H2_BOOT_GFX") {
@@ -280,10 +348,20 @@ pub fn install_headless_with_scenes(
                     .filter(|&n| n > 0)
                     .unwrap_or(30),
             };
-            let scale = d3d::render_scale().map_err(anyhow::Error::msg)?;
+            let (width, height) = output_size(settings, Arc::new(|| crate::setting_defs::GUEST_FRAME))?();
+            let scale = d3d::scaled::RenderScale::for_output(width, height).map_err(anyhow::Error::msg)?;
             let lighting = d3d::scaled::lighting().map_err(anyhow::Error::msg)?;
             let ctx = gfx::GfxContext::headless()
                 .map_err(|e| anyhow::anyhow!("gfx headless context: {e}"))?;
+            let clip_size = std::env::var_os("H2_BOOT_GFX_SIZE")
+                .map(|raw| {
+                    clip_png::parse_size(
+                        raw.to_str().unwrap_or_default(),
+                        ctx.device.limits().max_texture_dimension_2d,
+                    ).map_err(anyhow::Error::msg)
+                })
+                .transpose()?;
+            let clip = Arc::new(Mutex::new(clip_png::ClipPng::new(clip_size)));
             // `H2_BOOT_GFX_SHADOWS=N`: also the first N frames that sample
             // a shadow map (`d3d_diag::samples_shadow_map`, the same frames
             // in every run of the same input) and show something, whatever
@@ -309,6 +387,7 @@ pub fn install_headless_with_scenes(
                          shadow_limit: u64,
                          between: Option<Arc<BetweenShots>>| {
                 let dir = dir.clone();
+                let clip = Arc::clone(&clip);
                 let mut swaps = 0u64;
                 let mut shadows = 0u64;
                 // The display's frames (`frame-N.png`) are what the agent's
@@ -324,13 +403,11 @@ pub fn install_headless_with_scenes(
                       _flags,
                       _gamma: Option<&[u8; 768]>| {
                     swaps += 1;
-                    if display && let Some(path) = agent::render::CAPTURE.wanted(swaps) {
-                        let r = path
-                            .parent()
-                            .map_or(Ok(()), std::fs::create_dir_all)
-                            .map_err(anyhow::Error::from)
-                            .and_then(|()| save_png(ctx, store, id, &path, false))
-                            .map(drop)
+                    if display {
+                        clip.lock().unwrap().guest(swaps, ctx, store, id);
+                    }
+                    if display && let Some(write) = agent::render::CAPTURE.wanted(swaps) {
+                        let r = save_agent_capture(ctx, store, id, &write)
                             .map_err(|e| e.to_string());
                         agent::render::CAPTURE.written(swaps, r);
                     }
@@ -360,12 +437,27 @@ pub fn install_headless_with_scenes(
                     }
                 }
             };
+            let mut between_hook = between.hook(dir.clone(), "");
+            let replay_clip = Arc::clone(&clip);
+            let replay = move |ctx: &gfx::GfxContext,
+                               store: &gfx::surface::SurfaceStore,
+                               id,
+                               flags,
+                               gamma: Option<&[u8; 768]>| {
+                replay_clip.lock().unwrap().replay(ctx, store, id);
+                between_hook(ctx, store, id, flags, gamma);
+            };
             if std::env::var_os("H2_BOOT_GFX_LIGHTING_AB").is_some_and(|v| v != "0") {
                 // One run, both lighting modes: the 1x reference answers the
                 // guest; a retail view and an E3 view draw the same calls at
                 // `scale` (`d3d::LightingAb`). `frame-N-retail.png` and
                 // `frame-N-e3.png` are a pair from the same frame.
-                let scale = scale.max(2);
+                let (width, height) = if (width, height) == crate::setting_defs::GUEST_FRAME {
+                    (1280, 960)
+                } else {
+                    (width, height)
+                };
+                let scale = d3d::scaled::RenderScale::for_output(width, height).map_err(anyhow::Error::msg)?;
                 let reference = configure_gfx(
                     d3d::GfxBackend::new(share_context(&ctx)).on_present(shots("-1x", 0, None)),
                 );
@@ -440,9 +532,9 @@ pub fn install_headless_with_scenes(
                     );
                 }
                 let mut b =
-                    d3d::lighting_ab(reference, retail, e3, scale).map_err(anyhow::Error::msg)?;
+                    d3d::scaled::lighting_ab_at_resolution(reference, retail, e3, scale).map_err(anyhow::Error::msg)?;
                 eprintln!(
-                    "d3d: lighting A/B at {scale}x (H2_BOOT_GFX_LIGHTING_AB): a retail and an E3 view of one run; the guest sees a 1x reference"
+                    "d3d: lighting A/B at {width}x{height} (H2_BOOT_GFX_LIGHTING_AB): a retail and an E3 view of one run; the guest sees a 1x reference"
                 );
                 let scale_stats = b.shared_stats();
                 let (retail_report, e3_report) =
@@ -462,7 +554,16 @@ pub fn install_headless_with_scenes(
                 }?;
                 return Ok(installed.with_gpu_view(Some(scale_stats)));
             }
-            if scale > 1 || lighting != d3d::Lighting::Retail {
+            let max_slots = match interp.as_ref() {
+                Some(i) if i.mode == d3d::interp::Mode::Replay => match (i.rate)() {
+                    120 => 4,
+                    60 => 2,
+                    _ => 1,
+                },
+                _ => 1,
+            };
+            agent::render::clip::CLIPS.set_writer(dir.canonicalize()?, max_slots);
+            if (width, height) != crate::setting_defs::GUEST_FRAME || lighting != d3d::Lighting::Retail {
                 // The display presents scaled frames. Exact reference captures
                 // use their own hook and swap count on the shared device.
                 let reference = configure_gfx(
@@ -473,11 +574,11 @@ pub fn install_headless_with_scenes(
                 let view = configure_gfx(
                     d3d::GfxBackend::new(ctx)
                         .on_present(shots("", shadow_shots, Some(Arc::clone(&between))))
-                        .on_present_replay(between.hook(dir.clone(), "")),
+                        .on_present_replay(replay),
                 );
-                let single = single_copy(settings)?;
+                let single = single_copy(settings, protected_readbacks)?;
                 let mut b =
-                    d3d::ScaledBackend::with_single_copy(reference, view, scale, single).map_err(anyhow::Error::msg)?;
+                    d3d::ScaledBackend::with_resolution(reference, view, scale, single).map_err(anyhow::Error::msg)?;
                 if private.is_some() && settings.is_some() {
                     // A serve can change its Lighting row between Swaps. Use
                     // the same live handle as the raw 1x native owner.
@@ -488,24 +589,26 @@ pub fn install_headless_with_scenes(
                     b.set_lighting(lighting);
                 }
                 eprintln!(
-                    "d3d: rendering at {scale}x (H2_RENDER_SCALE), {:?} lighting; single copy {single}",
+                    "d3d: rendering at {width}x{height}, {:?} lighting; single copy {single}",
                     b.lighting()
                 );
-                return install_scaled_view(rt, b, interp, render_thread_requested(), profile, private);
+                let thread = RenderThread::requested(max_slots > 1, false);
+                return install_scaled_view(rt, b, interp, thread, profile, private);
             }
             let mut backend = configure_gfx(
                 d3d::GfxBackend::new(ctx)
                     .on_present(shots("", shadow_shots, Some(Arc::clone(&between))))
-                    .on_present_replay(between.hook(dir.clone(), "")),
+                    .on_present_replay(replay),
             );
-            if interp.is_none() {
+            if !protected_readbacks && interp.is_none() {
                 crate::native_shadows_glue::configure_single(&mut backend);
             }
             // Backend work (shader preparation, encoding, uploads,
             // submission, present) on a render thread of its own
             // (docs/graphics/render-thread.md), unless H2_RENDER_THREAD=0;
             // behind the in-between frames when `interp` is given.
-            install_game_view(rt, backend, interp, render_thread_requested(), profile, private, settings)
+            let thread = RenderThread::requested(max_slots > 1, false);
+            install_game_view(rt, backend, interp, thread, profile, private, settings)
         }
     }
 }
@@ -693,6 +796,14 @@ fn configure_gfx(mut backend: d3d::GfxBackend) -> d3d::GfxBackend {
     }
 }
 
+/// An offscreen retail GPU reference for local film verification. Its raster
+/// stays at the guest dimensions and it never presents to a window.
+#[cfg(feature = "gpu")]
+pub fn offscreen_film_reference() -> anyhow::Result<d3d::GfxBackend> {
+    let ctx = gfx::GfxContext::headless().map_err(|e| anyhow::anyhow!("offscreen film GPU: {e}"))?;
+    Ok(configure_gfx(d3d::GfxBackend::new(ctx)))
+}
+
 #[cfg(feature = "gpu")]
 /// Another handle to `ctx`'s device and queue, for a second backend on it.
 pub fn share_context(ctx: &gfx::GfxContext) -> gfx::GfxContext {
@@ -716,7 +827,7 @@ where
     let stats = b.shared_stats();
     Box::new(move || {
         let s = *stats.lock().unwrap_or_else(|e| e.into_inner());
-        format!("render scale {}: {s}", s.scale)
+        format!("render resolution {}x{}: {s}", s.output.0, s.output.1)
     })
 }
 
@@ -898,7 +1009,42 @@ where
     B: d3d::backend::Backend + Send + 'static,
     B::Texture: Sync,
 {
-    install_gpu_for_profile(rt, backend, extra, interp, true, profile, None)
+    install_gpu_for_profile(rt, backend, extra, interp, Some(RenderThread::default()), profile, None)
+}
+
+/// A film export presents each guest frame before the next one is encoded.
+#[cfg(feature = "gpu")]
+pub fn install_export_threaded<B>(
+    rt: &runtime::Runtime,
+    backend: B,
+    extra: Option<ExtraReport>,
+    interp: Option<Interpolation>,
+    profile: film::RenderHooks,
+) -> anyhow::Result<Installed>
+where
+    B: d3d::backend::Backend + Send + 'static,
+    B::Texture: Sync,
+{
+    let thread = RenderThread { clip_capture: false, synchronous_presents: true };
+    install_gpu_for_profile(rt, backend, extra, interp, Some(thread), profile, None)
+}
+
+/// How a game view's backend runs on its render thread.
+#[cfg(feature = "gpu")]
+#[derive(Clone, Copy, Default)]
+pub struct RenderThread {
+    /// In-between frames feed the agent's clip slots.
+    pub clip_capture: bool,
+    /// Each present completes before the guest's next frame starts.
+    pub synchronous_presents: bool,
+}
+
+#[cfg(feature = "gpu")]
+impl RenderThread {
+    /// `None` when `H2_RENDER_THREAD=0` keeps the backend on the guest thread.
+    pub fn requested(clip_capture: bool, synchronous_presents: bool) -> Option<Self> {
+        render_thread_requested().then_some(Self { clip_capture, synchronous_presents })
+    }
 }
 
 /// The sealed-frame renderer and its transaction on the display device.
@@ -924,7 +1070,7 @@ pub fn install_game_view(
     rt: &runtime::Runtime,
     mut backend: d3d::GfxBackend,
     interp: Option<Interpolation>,
-    threaded: bool,
+    thread: Option<RenderThread>,
     profile: film::RenderHooks,
     private: Option<PrivateScenes>,
     settings: Option<&settings::Store>,
@@ -936,7 +1082,7 @@ pub fn install_game_view(
     } else {
         None
     };
-    let installed = install_gpu_for_profile(rt, backend, None, interp, threaded, profile, scenes)?;
+    let installed = install_gpu_for_profile(rt, backend, None, interp, thread, profile, scenes)?;
     Ok(installed.with_gpu_view(None))
 }
 
@@ -945,7 +1091,7 @@ pub fn install_scaled_view(
     rt: &runtime::Runtime,
     mut backend: d3d::ScaledBackend<d3d::GfxBackend, d3d::GfxBackend>,
     interp: Option<Interpolation>,
-    threaded: bool,
+    thread: Option<RenderThread>,
     profile: film::RenderHooks,
     private: Option<PrivateScenes>,
 ) -> anyhow::Result<Installed> {
@@ -958,7 +1104,7 @@ pub fn install_scaled_view(
         None
     };
     let report = scale_report(&mut backend);
-    let installed = install_gpu_for_profile(rt, backend, Some(report), interp, threaded, profile, scenes)?;
+    let installed = install_gpu_for_profile(rt, backend, Some(report), interp, thread, profile, scenes)?;
     Ok(installed.with_gpu_view(Some(stats)))
 }
 
@@ -974,7 +1120,7 @@ fn install_gpu_for_profile<B>(
     backend: B,
     extra: Option<ExtraReport>,
     interp: Option<Interpolation>,
-    threaded: bool,
+    thread: Option<RenderThread>,
     profile: film::RenderHooks,
     scenes: Option<SceneOutput<B>>,
 ) -> anyhow::Result<Installed>
@@ -982,6 +1128,8 @@ where
     B: d3d::backend::Backend + Send + 'static,
     B::Texture: Sync,
 {
+    let threaded = thread.is_some();
+    let RenderThread { clip_capture, synchronous_presents } = thread.unwrap_or_default();
     let switches = hooks::Switches::from_env().map_err(anyhow::Error::msg)?;
     let measure = threaded
         && profile == film::RenderHooks::Gpu
@@ -997,6 +1145,7 @@ where
     let worker = if let Some(scenes) = scenes {
         if threaded && interp.is_none() {
             let display = d3d::ThreadedBackend::new(backend)?
+                .with_synchronous_presents(synchronous_presents)
                 .with_frame_owner(scenes.owner)
                 .with_present_window(window.clone());
             return install_device(rt, display, extra, profile, Some(SceneWorker::Display(scenes.service)), window);
@@ -1010,14 +1159,26 @@ where
     }
     match interp {
         Some(Interpolation { rate, mode }) => {
-            let interp = d3d::InterpBackend::new(backend, rate).with_mode(mode);
+            let mut interp = d3d::InterpBackend::new(backend, rate).with_mode(mode);
+            if clip_capture {
+                let mut present = 0;
+                interp = interp.with_capture_slots(move || {
+                    present += 1;
+                    agent::render::clip::CLIPS.slots(present)
+                });
+            }
+            // The agent's render.stats reads its counters.
             crate::render_probe::set_interp(interp.stats());
             crate::render_probe::set_interp_holds(interp.holds());
-            let display = d3d::ThreadedBackend::new(interp)?.with_present_window(window.clone());
+            let display = d3d::ThreadedBackend::new(interp)?
+                .with_synchronous_presents(synchronous_presents)
+                .with_present_window(window.clone());
             install_device(rt, display, extra, profile, worker, window)
         }
         None => {
-            let display = d3d::ThreadedBackend::new(backend)?.with_present_window(window.clone());
+            let display = d3d::ThreadedBackend::new(backend)?
+                .with_synchronous_presents(synchronous_presents)
+                .with_present_window(window.clone());
             install_device(rt, display, extra, profile, worker, window)
         }
     }
@@ -1027,6 +1188,29 @@ where
 /// `0` turns it off.
 pub fn render_thread_from(value: Option<&str>) -> bool {
     value != Some("0")
+}
+
+#[cfg(feature = "gpu")]
+fn save_agent_capture(
+    ctx: &gfx::GfxContext,
+    store: &gfx::surface::SurfaceStore,
+    id: gfx::surface::SurfaceId,
+    write: &agent::render::CaptureWrite,
+) -> anyhow::Result<Option<content::Sha256>> {
+    if let Some(dir) = write.path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    if !write.digest {
+        save_png(ctx, store, id, &write.path, false)?;
+        return Ok(None);
+    }
+
+    let (pixels, width, height) = read_rgba(ctx, store, id)?;
+    let mut png = Vec::new();
+    encode_png(&mut png, &pixels, width, height)?;
+    let digest = content::Sha256::of(&png);
+    std::fs::write(&write.path, png)?;
+    Ok(Some(digest))
 }
 
 #[cfg(feature = "gpu")]
@@ -1075,10 +1259,22 @@ fn opaque_rgba(px: &mut [u8], order: gfx::surface::HostPixelOrder) {
 
 pub fn write_png(path: &std::path::Path, px: &[u8], w: u32, h: u32) -> anyhow::Result<()> {
     let f = std::io::BufWriter::new(std::fs::File::create(path)?);
-    let mut enc = png::Encoder::new(f, w, h);
+    encode_png(f, px, w, h)
+}
+
+pub(crate) fn encode_png(
+    mut output: impl std::io::Write,
+    px: &[u8],
+    w: u32,
+    h: u32,
+) -> anyhow::Result<()> {
+    let mut enc = png::Encoder::new(&mut output, w, h);
     enc.set_color(png::ColorType::Rgba);
     enc.set_depth(png::BitDepth::Eight);
-    enc.write_header()?.write_image_data(px)?;
+    let mut writer = enc.write_header()?;
+    writer.write_image_data(px)?;
+    writer.finish()?;
+    output.flush()?;
     Ok(())
 }
 
@@ -1307,6 +1503,10 @@ impl d3d::backend::Backend for Headless {
     fn idle(&mut self) -> Option<std::time::Instant> {
         self.0.idle()
     }
+    fn reset_present_metadata(&mut self) -> Result<(), String> {
+        self.0.reset_present_metadata()
+    }
+
     fn drain(&mut self) -> Result<(), String> {
         self.0.drain()
     }
@@ -1362,6 +1562,11 @@ impl d3d::backend::Backend for Headless {
         self.0.commit_external(recording);
     }
 
+    #[cfg(feature = "gpu")]
+    fn upload_device(&self) -> Option<(wgpu::Device, wgpu::Queue)> {
+        self.0.upload_device()
+    }
+
     fn supports_external_pass(&self) -> bool {
         self.0.supports_external_pass()
     }
@@ -1398,6 +1603,20 @@ impl d3d::backend::Backend for Headless {
     }
     fn surface_extent(&self, surface: u32) -> Option<(u32, u32)> {
         self.0.surface_extent(surface)
+    }
+    fn render_extents(
+        &mut self,
+        color: u32,
+        depth: Option<u32>,
+        textures: [Option<&u32>; 4],
+    ) -> d3d::backend::RenderExtents {
+        self.0.render_extents(color, depth, textures)
+    }
+    fn read_display_surface(
+        &mut self,
+        surface: u32,
+    ) -> Result<Option<d3d::backend::DisplaySurfacePixels>, String> {
+        self.0.read_display_surface(surface)
     }
     fn gpu_fence(&mut self) -> Option<Box<dyn Fn() -> bool + Send>> {
         self.0.gpu_fence()
@@ -1673,6 +1892,10 @@ fn install_device<B: d3d::backend::Backend + Send + 'static>(
     let watch = subscribe_write_barrier(rt)?;
     #[cfg(feature = "gpu")]
     let shadow_admission = if profile == film::RenderHooks::Gpu {
+        if hooks::switches::native_render_on(&hooks::Switches::from_env().unwrap_or_default()) {
+            let archive = d3d::pipeline_store::default_path().map(|path| path.with_added_extension("native-v1"));
+            native_render::pipelines::start(archive);
+        }
         let shadows = crate::native_world_glue::install(&device, watch);
         crate::native_objects_glue::install(&device);
         crate::native_decals_glue::install(&device);
@@ -1685,10 +1908,8 @@ fn install_device<B: d3d::backend::Backend + Send + 'static>(
     let mut out = None;
     rt.edit_dispatch(|d| {
         out = Some(d3d::register(d, Arc::clone(&device)));
-        // Halo's frame wait 0x12b2e0 ("Vertical blank" in docs/graphics/d3d.md):
-        // calls the vblank callback at device+0x1db8 until the counter
-        // reaches the target, unpaced. Generated code would otherwise spin
-        // on the counter natively and never return to the runner.
+        // Yield to the kernel until the 60 Hz logical vblank source delivers
+        // enough callbacks for this frame (docs/graphics/d3d.md, "Vertical blank").
         d3d::register_frame_wait(
             d,
             Arc::clone(&device),
@@ -1713,6 +1934,8 @@ fn install_device<B: d3d::backend::Backend + Send + 'static>(
     let vblank: Option<kernel::periodic::Handler> =
         Some(Box::new(d3d::vblank::clocked_vblanks(Arc::clone(&device))));
     let snapshot: Arc<dyn DeviceSnapshot> = device.clone();
+    #[cfg(feature = "gpu")]
+    let ui_layout = device.clone();
     let dev = device;
     let report = Box::new(move || {
         let mut d = dev.lock().unwrap();
@@ -1747,6 +1970,8 @@ fn install_device<B: d3d::backend::Backend + Send + 'static>(
         format!("stats {:?}; last stop {:?}{ev}\n{draws}{extra}", d.stats(), d.last_stop())
     });
     Ok(Installed {
+        #[cfg(feature = "gpu")]
+        ui_layout,
         #[cfg(feature = "gpu")]
         view: None,
         #[cfg(feature = "gpu")]
@@ -2068,12 +2293,20 @@ pub fn barrier_handler(
 + Send
 + Sync
 + 'static {
+    thread_local! {
+        // The barrier drains on every D3D entry; reusing one buffer per
+        // thread keeps that free of allocation.
+        static DIRTY: std::cell::Cell<Vec<runtime::DirtyRange>> = const { std::cell::Cell::new(Vec::new()) };
+    }
     move |cpu, ctx, selector| {
-        // The guard goes before `prev` runs: it takes memory itself.
-        let dirty = ctx.runtime().memory().take_dirty(id).unwrap_or_default();
+        let mut dirty = DIRTY.take();
+        // The guard goes before `prev` runs: it takes memory itself. An
+        // unknown id leaves `dirty` empty.
+        let _ = ctx.runtime().memory().take_dirty_into(id, &mut dirty);
         if !dirty.is_empty() {
             note(&dirty);
         }
+        DIRTY.set(dirty);
         Ok(prev.invoke(cpu, ctx, selector))
     }
 }
@@ -2128,11 +2361,35 @@ mod tests {
         assert_eq!(current_lighting(None, Lighting::E3)(), Lighting::E3);
     }
 
+    #[cfg(feature = "gpu")]
+    #[test]
+    fn readback_policy_covers_network_and_film_before_gameplay_starts() {
+        let store = settings::Store::defaults(crate::setting_defs::ALL);
+        // XNet is installed at boot for both LAN-only configurations (System
+        // Link) and signed-in ones. Joining a match later uses that device.
+        for (network, film, lockstep, single, label) in [
+            (true, false, false, false, "lobby before a System Link, Live, or co-op join"),
+            (false, true, false, false, "armed recorder or Theater replay"),
+            (false, false, true, false, "lockstep or input-tape playback"),
+            (true, true, false, false, "film of a network match"),
+            (false, false, false, true, "offline play"),
+        ] {
+            let protected = protected_readbacks(network, film, lockstep);
+            assert_eq!(single_copy(Some(&store), protected).unwrap(), single, "{label}");
+        }
+        let exact = settings::Flag::parse_set("graphics.single_copy=false").unwrap();
+        let (store, errors) = settings::Store::load(crate::setting_defs::ALL, None, &|_| None, &[exact]);
+        assert!(errors.is_empty());
+        assert!(!single_copy(Some(&store), false).unwrap());
+    }
+
     #[test]
     fn the_feature_arena_starts_after_the_device_pages() {
-        assert!(PUSH_BASE + PUSH_LEN <= SCRATCH_BASE);
-        assert!(SCRATCH_BASE + 0x1000 <= hooks::arena::ARENA_START);
-        assert!(hooks::arena::ARENA_END <= crate::community_variants::DATA_BASE);
+        const {
+            assert!(PUSH_BASE + PUSH_LEN <= SCRATCH_BASE);
+            assert!(SCRATCH_BASE + 0x1000 <= hooks::arena::ARENA_START);
+            assert!(hooks::arena::ARENA_END <= crate::community_variants::DATA_BASE);
+        }
     }
 
     #[cfg(feature = "gpu")]

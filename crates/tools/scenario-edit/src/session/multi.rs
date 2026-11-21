@@ -271,6 +271,15 @@ impl Session {
         geometry::surface(self.world().0, ray)
     }
 
+    /// Where the cursor meets the structure in the current viewport.
+    pub fn surface_hit_visible(&self, ray: &Ray, layers: &Layers) -> Option<Vec3> {
+        if layers.visible(LayerId::Structure) {
+            self.surface_hit(ray)
+        } else {
+            None
+        }
+    }
+
     /// Add an entry at `at` (where the cursor met the level), as one undo
     /// step: a copy of `like`, or a new entry with the palette's first
     /// item. Selects and returns its index.

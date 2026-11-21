@@ -1,8 +1,8 @@
 // The Live admin's usage endpoints (docs/live/live-api.md "Usage"):
 // GET /v1/admin/usage and GET /v1/admin/usage/accounts, each with an
 // `admin.read` token signed by the signed-in admin account. Parsing is
-// defensive: a missing or odd field reads as zero, so an older or newer
-// server still draws.
+// compatible with sparse counters. Request coverage and storage measurement
+// are tracked separately from measured zeroes.
 
 import type { LocalAccount } from "../state/account";
 import { adminGet } from "./server";
@@ -23,8 +23,8 @@ export const MESSAGE_KINDS = [
 export type MessageKind = (typeof MESSAGE_KINDS)[number]["key"];
 
 export const STORED_KINDS = [
-  { key: "events", label: "events" },
-  { key: "content", label: "content" },
+  { key: "events", label: "event log" },
+  { key: "content", label: "map content" },
   { key: "saves", label: "cloud saves" },
 ] as const;
 export type StoredKind = (typeof STORED_KINDS)[number]["key"];
@@ -39,6 +39,7 @@ export interface UsageDay {
   sign_ins: number;
   reports: number;
   active_accounts: number;
+  requests?: number | null;
 }
 
 export interface UsageOverview {
@@ -50,6 +51,8 @@ export interface UsageOverview {
   accounts_active: number;
   event_types: { type: string; count: number }[];
   stored: Record<StoredKind, number>;
+  request_count_from?: string | null;
+  saves_storage_measured?: boolean;
 }
 
 export interface AccountUsage {
@@ -71,7 +74,7 @@ export interface AccountUsage {
   last_active: string | null;
 }
 
-export interface AccountsPage { days: number; sort: string; total: number; items: AccountUsage[] }
+export interface AccountsPage { days: number; sort: string; total: number; items: AccountUsage[]; saves_storage_measured?: boolean }
 
 export const ACCOUNT_SORTS = [
   "uploaded", "stored", "events", "messages", "games", "sessions_hosted", "sign_ins", "reports_sent", "reports_received", "active_days",
@@ -82,7 +85,8 @@ type Obj = Record<string, unknown>;
 const obj = (v: unknown): Obj => (v && typeof v === "object" && !Array.isArray(v) ? (v as Obj) : {});
 const n = (v: unknown): number => (typeof v === "number" && Number.isFinite(v) ? v : 0);
 const str = (v: unknown): string => (typeof v === "string" ? v : "");
-const isDay = (s: string) => /^\d{4}-\d{2}-\d{2}$/.test(s);
+const isDay = (s: string) => /^\d{4}-\d{2}-\d{2}$/.test(s) && Number.isFinite(Date.parse(s));
+const count = (v: unknown): number | null => typeof v === "number" && Number.isSafeInteger(v) && v >= 0 ? v : null;
 
 function kinds<K extends string>(v: unknown, ks: readonly { key: K }[]): Record<K, number> {
   const o = obj(v);
@@ -101,6 +105,7 @@ export function parseDay(v: unknown): UsageDay {
     sign_ins: n(o.sign_ins),
     reports: n(o.reports),
     active_accounts: n(o.active_accounts),
+    requests: count(o.requests),
   };
 }
 
@@ -117,6 +122,8 @@ export function parseOverview(v: unknown): UsageOverview {
       .map((t) => ({ type: str(obj(t).type), count: n(obj(t).count) }))
       .filter((t) => t.type),
     stored: kinds(o.stored, STORED_KINDS),
+    request_count_from: isDay(str(o.request_count_from)) ? str(o.request_count_from) : null,
+    saves_storage_measured: typeof o.saves_storage_measured === "boolean" ? o.saves_storage_measured : undefined,
   };
 }
 
@@ -148,13 +155,24 @@ export function parseAccounts(v: unknown): AccountsPage {
     sort: str(o.sort),
     total: n(o.total),
     items: (Array.isArray(o.items) ? o.items : []).map(parseAccount).filter((a) => a.xuid),
+    saves_storage_measured: typeof o.saves_storage_measured === "boolean" ? o.saves_storage_measured : undefined,
   };
 }
 
 export async function fetchUsage(api: string, aud: string, me: LocalAccount, days: number, fetchFn: typeof fetch = fetch): Promise<UsageOverview> {
-  return parseOverview(await adminGet(api, `/admin/usage?days=${days}`, aud, me, fetchFn));
+  const body = obj(await adminGet(api, `/admin/usage?days=${days}`, aud, me, fetchFn));
+  if (!isDay(str(body.from)) || !isDay(str(body.to)) || str(body.from) > str(body.to)
+    || !Array.isArray(body.days) || !Array.isArray(body.event_types)
+    || typeof obj(body.totals).events !== "number" || Object.keys(obj(body.stored)).length === 0) {
+    throw new Error("The server returned an invalid usage overview.");
+  }
+  return parseOverview(body);
 }
 
 export async function fetchUsageAccounts(api: string, aud: string, me: LocalAccount, days: number, sort: AccountSort, limit: number, fetchFn: typeof fetch = fetch): Promise<AccountsPage> {
-  return parseAccounts(await adminGet(api, `/admin/usage/accounts?days=${days}&sort=${sort}&limit=${limit}`, aud, me, fetchFn));
+  const body = obj(await adminGet(api, `/admin/usage/accounts?days=${days}&sort=${sort}&limit=${limit}`, aud, me, fetchFn));
+  if (!Array.isArray(body.items) || count(body.total) === null) {
+    throw new Error("The server returned an invalid account usage list.");
+  }
+  return parseAccounts(body);
 }

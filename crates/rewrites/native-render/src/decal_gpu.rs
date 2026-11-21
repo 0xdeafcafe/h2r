@@ -19,6 +19,7 @@ use shaders::vsh::{self, VertexOptions, VertexUniforms};
 
 use crate::decal::{Mode, VERTEX_SIZE, Vertex, quad_indices};
 use crate::program;
+use crate::texture_groups::{Held, TextureGroups};
 
 /// Raw per-stage state outside `gfx`'s sampler model that the combiner needs.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -39,6 +40,13 @@ pub struct ClipRect {
     pub y: u32,
     pub width: u32,
     pub height: u32,
+}
+
+impl ClipRect {
+    fn scaled(self, scale: d3d::scaled::RenderScale) -> ScissorRect {
+        let [x, y, width, height] = scale.rect(self.x, self.y, self.width, self.height);
+        ScissorRect { x, y, width, height }
+    }
 }
 
 /// The non-geometry half of an immutable resolved-draw snapshot.
@@ -456,12 +464,7 @@ fn draw_uniforms(
     let mut vu = vertex.clone();
     vu.surface = [guest_size.0 as f32, guest_size.1 as f32];
     vu.z_max = z_scale;
-    let scale = size.0 as f32 / guest_size.0 as f32;
-    vu.shift = if scale > 1.0 {
-        (2.0 * scale - 1.0) / (4.0 * scale)
-    } else {
-        0.0
-    };
+    vu.shift = crate::program::target_shift(guest_size, size);
     vu.w_clip = mode.w_buffered().then_some(clip.range);
     vu.w_clamp = mode.w_buffered() && clip.clamp;
     let mut pu = pixel;
@@ -480,7 +483,7 @@ fn draw_uniforms(
             },
             if integer_depth { 1.0 } else { 0.0 },
         ];
-        pu.depth_range = [clip.range[0], clip.range[1], 0.0, 0.0];
+        pu.depth_range = clip.range;
     }
     (vu, pu)
 }
@@ -588,20 +591,10 @@ impl DecalGpu {
         {
             return false;
         }
-        let (sx, sy) = (t.size.0 / t.guest_size.0, t.size.1 / t.guest_size.1);
-        if sx == 0 || sy == 0 || t.size != (t.guest_size.0 * sx, t.guest_size.1 * sy) {
+        let Some(scale) = d3d::scaled::RenderScale::between(t.guest_size, t.size) else {
             return false;
-        }
-        let clips: Vec<ClipRect> = self
-            .clips
-            .iter()
-            .map(|c| ClipRect {
-                x: c.x.saturating_mul(sx),
-                y: c.y.saturating_mul(sy),
-                width: c.width.saturating_mul(sx),
-                height: c.height.saturating_mul(sy),
-            })
-            .collect();
+        };
+        let clips: Vec<_> = self.clips.iter().map(|c| c.scaled(scale)).collect();
         if clips.is_empty() {
             return true;
         }
@@ -715,9 +708,8 @@ impl DecalGpu {
     }
 }
 
-/// Texture groups kept before the cache starts over, so views of retired
-/// textures are not held for ever.
-const GROUP_LIMIT: usize = 64;
+static GROUP_BYTES: mem_watch::Counter =
+    mem_watch::Counter::new("native.decal_group_texture_bytes");
 
 /// What a program is made from; the combiner's constants are uniforms, not
 /// part of the translation.
@@ -769,20 +761,44 @@ pub struct PacketTarget<'a> {
 
 /// Programs, pipelines, samplers and texture groups of the decals' packets,
 /// scoped to one device and kept across frames: a steady scene makes
-/// nothing. Geometry and uniforms come from the submission's arena.
-#[derive(Default)]
+/// nothing. Geometry and uniforms come from the submission's arena. A
+/// texture group lasts while draws use it ([`crate::texture_groups`]).
 pub struct DecalCache {
     uniforms: Option<wgpu::BindGroupLayout>,
     programs: HashMap<ProgramKey, Result<Arc<CachedProgram>, &'static str>>,
     pipelines: HashMap<PipelineKey, CachedPipeline>,
     samplers: HashMap<gfx::translate::SamplerKey, wgpu::Sampler>,
-    groups: HashMap<(wgpu::BindGroupLayout, wgpu::TextureView, wgpu::Sampler), wgpu::BindGroup>,
+    groups: TextureGroups<(wgpu::BindGroupLayout, wgpu::TextureView, wgpu::Sampler)>,
     created: Created,
+}
+
+impl Default for DecalCache {
+    fn default() -> Self {
+        Self {
+            uniforms: None,
+            programs: HashMap::new(),
+            pipelines: HashMap::new(),
+            samplers: HashMap::new(),
+            groups: TextureGroups::new(&GROUP_BYTES),
+            created: Created::default(),
+        }
+    }
 }
 
 impl DecalCache {
     pub fn created(&self) -> Created {
         self.created
+    }
+
+    /// The texture groups held now and the textures they keep alive.
+    pub fn held(&self) -> Held {
+        self.groups.held()
+    }
+
+    /// The frame the following draws belong to. Texture groups no draw
+    /// used for [`crate::texture_groups::KEEP_FRAMES`] frames are dropped.
+    pub fn begin_frame(&mut self, frame: u64) {
+        self.groups.begin_frame(frame);
     }
 
     fn program(
@@ -825,10 +841,7 @@ impl DecalCache {
             return Err("issue snapshot");
         }
         let caps = gfx::translate::Capabilities::from_features(device.features());
-        let (sx, sy) = (t.size.0 / t.guest_size.0, t.size.1 / t.guest_size.1);
-        if sx == 0 || sy == 0 || t.size != (t.guest_size.0 * sx, t.guest_size.1 * sy) {
-            return Err("target scale");
-        }
+        let scale = d3d::scaled::RenderScale::between(t.guest_size, t.size).ok_or("target scale")?;
         if prepared.clips.is_empty() {
             return Ok(None);
         }
@@ -902,7 +915,7 @@ impl DecalCache {
             let group_key = (program.textures.clone(), view.clone(), sampler);
             if let Some(group) = self.groups.get(&group_key) {
                 gfx::churn::native_cache(true);
-                group.clone()
+                group
             } else {
                 gfx::churn::native_cache(false);
                 let group = gfx::churn::create_bind_group(
@@ -922,11 +935,9 @@ impl DecalCache {
                         ],
                     },
                 );
-                if self.groups.len() >= GROUP_LIMIT {
-                    self.groups.clear();
-                }
                 self.created.texture_groups += 1;
-                self.groups.insert(group_key, group.clone());
+                let texture = group_key.1.texture().clone();
+                self.groups.insert(group_key, group.clone(), [texture]);
                 group
             }
         } else {
@@ -978,12 +989,7 @@ impl DecalCache {
                     ],
                     &render,
                     t.size,
-                    ScissorRect {
-                        x: c.x.saturating_mul(sx),
-                        y: c.y.saturating_mul(sy),
-                        width: c.width.saturating_mul(sx),
-                        height: c.height.saturating_mul(sy),
-                    },
+                    c.scaled(scale),
                 )
                 .with_blend_constant(blend_constant)
             })

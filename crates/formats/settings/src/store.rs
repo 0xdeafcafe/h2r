@@ -262,7 +262,7 @@ impl Store {
         }
         for f in flags
             .iter()
-            .filter(|f| !defs.iter().any(|d| d.key == f.key))
+            .filter(|f| !defs.iter().any(|d| d.accepts_key(&f.key)))
         {
             problems.push(Problem {
                 key: None,
@@ -297,13 +297,25 @@ impl Store {
                     .ok()
                     .map(|v| (v, Source::Env(name)))
             });
+            let from_env = from_env.or_else(|| {
+                let scale = def.legacy_scale()?;
+                let text = env(scale.env)?;
+                if text.trim().is_empty() {
+                    return None;
+                }
+                scale
+                    .parse(&text)
+                    .map_err(|e| report(format!("{}={text:?}: {e}; ignored", scale.env)))
+                    .ok()
+                    .map(|r| (r.value(), Source::Env(scale.env)))
+            });
             let from_flag = flags
                 .iter()
                 .rev()
-                .find(|f| f.key == def.key && !f.value.trim().is_empty())
+                .find(|f| def.accepts_key(&f.key) && !f.value.trim().is_empty())
                 .and_then(|f| {
-                    def.parse(&f.value)
-                        .map_err(|e| report(format!("{} {}: {e}; ignored", f.flag, def.key)))
+                    def.parse_key(&f.key, &f.value)
+                        .map_err(|e| report(format!("{} {}: {e}; ignored", f.flag, f.key)))
                         .ok()
                         .map(|v| (v, Source::Flag(f.flag)))
                 });

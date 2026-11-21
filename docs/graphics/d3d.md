@@ -240,8 +240,10 @@ Notes on the table:
   that pattern while `STIPPLEENABLE` is set. The row and bit ordering match
   the [asymmetric Xbox capture](https://github.com/abaire/nxdk_pgraph_tests_golden_results/blob/55958b25a77bd011b39bf16241a5b8ea0481e568/results/Stipple_tests/Asymmetric_On.png)
   and its [test source](https://github.com/abaire/nxdk_pgraph_tests/blob/2cfe6073d59ab2a69f98cf4c6ca003c1a02c8c6d/src/tests/stipple_tests.cpp)
-  at 640x480: row `31 - (y mod 32)`, bit `(x mod 32) XOR 7`. Vertical
-  anchoring at heights not divisible by 32 still needs a hardware capture.
+  at 640x480: row `31 - (y mod 32)`, bit `(x mod 32) XOR 7`. The scaled
+  view maps fragments back to the same guest grid
+  ([high-resolution.md](high-resolution.md#positions)). Vertical anchoring
+  at heights not divisible by 32 still needs a hardware capture.
   Wireframe and point fill modes do not use polygon stipple. The visibility
   count pass does not yet apply this discard.
 - **`D3DResource_IsBusy`** (`0x3fb710`, called from `0x1db90`/`0x1de50`
@@ -844,10 +846,10 @@ and allocations are bounded before anything is read:
   - **`FINISH`** on either kind ends with `0x3f9cc0`: the display
     header's `Lock` (its parent's, for a level) takes the GPU time
     (`+0x2C`), and a new fence is stored at `+0x1974[swap count & 1]`
-    (`layout::device_field::SWAP_FENCES`). The order matches; the numbers
-    do not, since `SetFence` here advances the time by 1 and returns the
-    new value where retail (`0x3fa69e..0x3fa73b`) advances it by 2 and
-    returns the old one (see "GPU model").
+    (`layout::device_field::SWAP_FENCES`). `Device::set_fence` returns the
+    time used for the stamp and advances the counter by two. The first
+    flip from zero records 2 in both the display `Lock` and the odd
+    slot, with the GPU time at 4 (see "GPU model").
   - A device re-created after teardown starts with no lost-image state
     (`shown_lost`, set when a backend cannot make the deferred copy).
 - **Frame buffers as textures** (`src/device/raster.rs`). The frame
@@ -1359,14 +1361,12 @@ guest code can look at it, and its time words say so.
   semaphore release, method `0x1D70`, pushed by `D3D_SetFence`).
   `D3D_BlockOnTime` (`0x3fa977`) and the busy check (`0x3fb770`) read it.
 - **Here.** CreateDevice points `+0x30` at a word in the scratch range
-  (`GPU_COMPLETED_OFFSET`). `SetFence` drains the queue, bumps the fence
-  and writes it to both words: everything before the fence has executed
-  by the time it is returned. `Device::gpu_completed` is that time.
-  Retail `D3D_SetFence` (`0x3fa69e..0x3fa73b`) instead advances `+0x2C`
-  by 2 and returns the old time, so fence and `Lock` values here are not
-  retail's numbers; only their order is. Nothing compares them across
-  that difference: every fence has completed when it is handed out.
-  Releasing a binding stamps `Lock` with the current fence.
+  (`GPU_COMPLETED_OFFSET`). `Device::set_fence` drains the queue, returns
+  the old GPU time and advances `+0x2C` by two, matching retail
+  `D3D_SetFence` (`0x3fa69e..0x3fa73b`). The completion word follows the
+  advanced GPU time in the synchronous model. `Device::gpu_completed`
+  reports that time. Releasing a binding stamps `Lock` with the current
+  GPU time.
 - **The busy check** (`0x3fb710`, `D3DResource_IsBusy` inlined; `ECX` =
   resource, `EAX` = 0 or 1) runs as compiled, after draining the queue
   and writing render-to-texture targets back (lazily only those of the
@@ -1381,10 +1381,10 @@ guest code can look at it, and its time words say so.
   3. Otherwise not busy, and the tested resource's `Lock` is cleared
      (`0x3fb78d`).
 
-  Against this model the fence test only reports busy for a `Lock` newer
-  than every fence the device has issued, which the device never stamps.
-  Halo's own inline wait (`0x1d434`) passes the GPU time to
-  `BlockOnTime`, which returns at once for the same reason.
+  In the synchronous model the completion time covers the current GPU
+  time, including resources stamped when a binding is released. Halo's
+  inline wait (`0x1d434`) passes the GPU time to `BlockOnTime`, which
+  returns once the queue is drained.
 
 ## NV2A register window
 
@@ -1420,9 +1420,9 @@ functions are overridden (see "Port I/O guards").
 on subchannel 5, `at` being the push-buffer address of the fence.
 `BlockOnTime` waits until bits 6:2 match the completion word
 (`0x3fa910`), and `MakeRequestedSpace` reads bits 31:7 back as the address
-the GPU has fetched to (`0x3fa8bb`). Here `fence` is the device's last
-fence (the completion word) and `at` the drained position when it was
-issued, so both checks see the GPU caught up. No vblank state is read
+the GPU has fetched to (`0x3fa8bb`). The synthesized register uses the
+completion time for `fence` and the drained position at the last fence
+for `at`, so both checks see the GPU caught up. No vblank state is read
 through `+0x934`.
 
 **Backing.** The runtime keeps the real aperture free of RAM and has no

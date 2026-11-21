@@ -15,6 +15,7 @@ pub mod game_controller;
 
 use crate::gamepad::Rumble;
 use crate::host::{HostPad, HostPadId};
+use crate::lightbar::Rgb;
 use crate::report::DeviceInfo;
 
 /// A source of host pads.
@@ -33,6 +34,9 @@ pub trait HostBackend: Send {
 
     /// Drive the pad's rumble motors. Default: no rumble.
     fn set_rumble(&mut self, _id: HostPadId, _rumble: Rumble) {}
+
+    /// Override the pad's lightbar, or restore its original colour on `None`.
+    fn set_lightbar(&mut self, _id: HostPadId, _rgb: Option<Rgb>) {}
 
     /// Pad `id` is on controller `port` (0 to 3). Called at the end of every
     /// [`InputManager::sync`](crate::InputManager::sync) for each of this

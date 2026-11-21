@@ -1,16 +1,16 @@
-//! The Dear ImGui shell: main menu bar, a dockspace with the default
-//! layout (tools and maps left over the outliner, the viewport in the
-//! middle, the inspector right, the log at the bottom), a status bar, and
-//! the modals (unsaved changes, packages). The outliner, centre and
-//! inspector windows show the active tool: the scenario's placements, 3D
-//! viewport and fields here; the game variant and playlist tools' in
-//! [`variants`] and [`playlists`]. Everything goes back to [`App`] as
-//! [`Action`]s.
+//! The Dear ImGui shell: menu, tool bar, docked workspaces, status and
+//! modals. Tool windows keep their own dock identities. Document edits
+//! go back to [`App`] as [`Action`]s.
 
+mod bar;
+mod layout;
+mod toolbar;
 pub(crate) mod inspector;
+mod layers;
 pub mod map_list;
 pub mod map_pack;
 mod outliner;
+mod palette;
 mod play;
 mod playlists;
 pub mod tags;
@@ -21,67 +21,19 @@ mod variants;
 use std::path::PathBuf;
 
 use dear_imgui_rs::{
-    Condition, DockLayout, DockLayoutApply, DockSplit, Key, MouseButton, StyleColor, StyleVar, Ui,
-    WindowFlags, WindowKey,
+    Condition, DockLayout, DockLayoutApply, Key, MouseButton, StyleColor, StyleVar, Ui,
+    WindowFlags, WindowHoveredFlags,
 };
 use editor_core::Status;
 use editor_core::map_groups::MapGroup;
 use scenario_edit::BlockKind;
 
 use crate::app::map_cards::MapEntry;
-use crate::app::{Action, Answer, App, NavAction, ToolKind};
+use crate::app::commands::MenuCommand;
+use crate::app::{Action, Answer, App, NavAction, SaveTarget, ToolKind};
 use crate::theme::{self, Fonts, icon};
 use crate::viewport::{GizmoOp, Gpu, ViewportView};
-
-/// The dockable windows, by stable identity.
-struct Keys {
-    tools: WindowKey,
-    outliner: WindowKey,
-    viewport: WindowKey,
-    inspector: WindowKey,
-    log: WindowKey,
-    game: WindowKey,
-}
-
-impl Keys {
-    fn new() -> Self {
-        let key = |id: &str, title: String| WindowKey::new(id, title).expect("a valid window key");
-        Self {
-            tools: key("tools", format!("{} Tools", icon::LAYERS)),
-            outliner: key("outliner", format!("{} Outliner", icon::TREE)),
-            viewport: key("viewport", format!("{} Viewport", icon::EYE)),
-            inspector: key("inspector", format!("{} Inspector", icon::SLIDERS)),
-            log: key("log", format!("{} Log", icon::LOG)),
-            game: key("game", format!("{} Game", icon::ZAP)),
-        }
-    }
-
-    /// The default layout: left column (tools over outliner), right
-    /// inspector, log under the viewport.
-    fn layout(&self) -> DockLayout {
-        DockLayout::split(
-            DockSplit::Left,
-            0.22,
-            DockLayout::split(
-                DockSplit::Up,
-                0.38,
-                DockLayout::tabs([&self.tools]),
-                DockLayout::tabs([&self.outliner]),
-            ),
-            DockLayout::split(
-                DockSplit::Right,
-                0.28,
-                DockLayout::tabs([&self.inspector]),
-                DockLayout::split(
-                    DockSplit::Down,
-                    0.22,
-                    DockLayout::tabs([&self.log, &self.game]),
-                    DockLayout::tabs([&self.viewport]),
-                ),
-            ),
-        )
-    }
-}
+use layout::Keys;
 
 const UNSAVED: &str = "Unsaved changes###unsaved";
 const SAVE_PACKAGE: &str = "Save as package###save-package";
@@ -94,7 +46,12 @@ pub struct Studio {
     fonts: Fonts,
     pub viewport: ViewportView,
     show_open_package: bool,
+    palette: palette::PaletteUi,
     reset_layout: bool,
+    focus_game: bool,
+    previous_tool: Option<ToolKind>,
+    previous_map: Option<String>,
+    hint: Option<String>,
     /// Log lines already seen (to scroll to new ones).
     log_seen: usize,
     /// Native file dialogs. Off in headless renders and tests.
@@ -106,7 +63,7 @@ pub struct Studio {
     inspector: inspector::InspectorState,
     /// Play and pair (the Game panel; `crate::play`).
     pub play: play::PlayUi,
-    /// The Tags tool's UI state (its field panel's too).
+    /// The Tags tab's UI state, including its field panel.
     pub tags: tags::TagsUi,
     /// The Maps list's pictures, and what each group drew.
     pub map_list: map_list::MapListUi,
@@ -122,7 +79,12 @@ impl Studio {
             fonts,
             viewport: ViewportView::new(),
             show_open_package: false,
+            palette: Default::default(),
             reset_layout: false,
+            focus_game: false,
+            previous_tool: None,
+            previous_map: None,
+            hint: None,
             log_seen: 0,
             dialogs: true,
             variants: variants::VariantsUi::default(),
@@ -143,37 +105,73 @@ impl Studio {
         self.play.update(app);
         let mut actions = Vec::new();
         self.shortcuts(ui, app, &mut actions);
+        if !self.palette.is_open(ui) {
+            self.play.shortcuts(ui);
+        }
         self.menu_bar(ui, app, &mut actions);
-        self.dockspace(ui);
-        self.tools_window(ui, app, gpu, &mut actions);
+        let focus_game = std::mem::take(&mut self.focus_game);
+        bar::draw(ui, app, &mut self.play, &self.fonts, &mut actions);
+        let reset = self.dockspace(ui);
+        self.hint = None;
+        self.map_list.begin();
         match app.tool {
-            ToolKind::Scenario => {
-                self.outliner_window(ui, app, &mut actions);
+            ToolKind::Scenario | ToolKind::Tags => {
+                let changed = self.previous_tool != Some(app.tool);
+                let open = map_is_visible(app);
+                let map = app.loaded_map().or_else(|| app.loaded_halo1());
+                let opened = self.previous_tool.is_some() && self.previous_map.as_deref() != map;
+                let focus_tags = app.tool == ToolKind::Tags && (changed || reset);
+                let focus_scene = app.tool == ToolKind::Scenario
+                    && open
+                    && (reset || opened || self.previous_tool == Some(ToolKind::Tags));
+                let focus_maps = !open && !focus_tags && (reset || (changed && self.previous_tool.is_some()) || opened);
+                self.maps_window(ui, app, gpu, focus_maps, &mut actions);
+                self.outliner_window(ui, app, focus_scene, &mut actions);
+                self.tags_window(ui, app, focus_tags, &mut actions);
                 self.viewport_window(ui, app, gpu, &mut actions);
-                self.inspector_window(ui, app);
-                self.play.shortcuts(ui, app);
-                self.play.window(ui, app, &self.keys.game);
+                self.inspector_window(ui, app, &mut actions);
             }
             ToolKind::Variants => self.variant_windows(ui, app, &mut actions),
             ToolKind::Playlists => self.playlist_windows(ui, app, &mut actions),
             ToolKind::UiScreens => self.ui_screen_windows(ui, app, gpu, &mut actions),
             ToolKind::Hud => self.hud_windows(ui, app, gpu, &mut actions),
-            ToolKind::Tags => self.tag_windows(ui, app, gpu, &mut actions),
         }
+        self.play.window(ui, app, &self.keys.game);
+        self.previous_tool = Some(app.tool);
+        self.previous_map = app.loaded_map().or_else(|| app.loaded_halo1()).map(str::to_owned);
+        self.play.pending_window(ui, app, &self.keys.pending_edits);
         self.log_window(ui, app);
+        if bar::is_map(app.tool) {
+            ui.window(&self.keys.bytes).build(|| {
+                tags::hex(ui, app, &self.tags, &self.fonts, gpu, &mut self.map_list, &mut actions);
+            });
+        }
+        if focus_game {
+            ui.set_window_focus(Some("###game"));
+        }
         self.status_bar(ui, app);
         self.modals(ui, app, &mut actions);
-        for a in actions {
-            app.dispatch(a);
-        }
+        actions.extend(self.palette.draw(ui, app));
+        dispatch_actions(app, actions);
     }
 
     fn shortcuts(&mut self, ui: &Ui, app: &App, actions: &mut Vec<Action>) {
+        if self.palette.is_open(ui) {
+            return;
+        }
         let io = ui.io();
+        let cmd = io.key_ctrl() || io.key_super();
+        if cmd && ui.is_key_pressed(Key::P)
+            && app.pending().is_none()
+            && app.package_form.is_none()
+            && !ui.is_popup_open(OPEN_PACKAGE)
+        {
+            self.palette.open();
+            return;
+        }
         if io.want_text_input() {
             return;
         }
-        let cmd = io.key_ctrl() || io.key_super();
         let shift = io.key_shift();
         if cmd && ui.is_key_pressed(Key::Z) {
             actions.push(if shift { Action::Redo } else { Action::Undo });
@@ -186,10 +184,19 @@ impl Studio {
         }
         if cmd && ui.is_key_pressed(Key::S) {
             match app.tool {
-                ToolKind::Scenario | ToolKind::Tags => self.save_map_dialog(app, actions),
+                ToolKind::Scenario | ToolKind::Tags if shift => self.save_map_dialog(app, actions),
+                ToolKind::Scenario | ToolKind::Tags => {
+                    actions.extend(MenuCommand::Save.item(app).action);
+                }
                 ToolKind::Variants => actions.push(Action::SaveVariant),
                 ToolKind::Playlists if app.hoppers.is_open() => {
-                    playlists::save(app, self.dialogs, actions)
+                    if shift {
+                        if let Some(path) = playlists::save_dialog(self.dialogs, app) {
+                            actions.push(Action::SaveHopperAs(path));
+                        }
+                    } else {
+                        playlists::save(app, self.dialogs, actions);
+                    }
                 }
                 ToolKind::Hud => {
                     if let Some(p) = hud::save_dialog(self.dialogs, app) {
@@ -202,7 +209,7 @@ impl Studio {
         if cmd && ui.is_key_pressed(Key::Q) {
             actions.push(Action::Quit);
         }
-        if app.tool != ToolKind::Scenario {
+        if !bar::is_map(app.tool) {
             return;
         }
         if app.session.is_open() {
@@ -217,10 +224,11 @@ impl Studio {
                 actions.push(Action::Navigate(NavAction::Forward));
             }
         }
-        if cmd && ui.is_key_pressed(Key::D) {
+        if app.tool == ToolKind::Scenario && cmd && ui.is_key_pressed(Key::D) {
             actions.push(Action::Duplicate);
         }
-        if (ui.is_key_pressed(Key::Delete) || ui.is_key_pressed(Key::Backspace))
+        if app.tool == ToolKind::Scenario
+            && (ui.is_key_pressed(Key::Delete) || ui.is_key_pressed(Key::Backspace))
             && !cmd
             && app.session.selected().is_some()
         {
@@ -250,15 +258,8 @@ impl Studio {
     }
 
     fn open_source_dialog(&self, actions: &mut Vec<Action>) {
-        if !self.dialogs {
-            return;
-        }
-        if let Some(p) = rfd::FileDialog::new()
-            .set_title("Open a disc image or map")
-            .add_filter("Disc image or map", &["iso", "xiso", "map"])
-            .pick_file()
-        {
-            actions.push(Action::OpenSource(p));
+        if self.dialogs {
+            open_source_dialog(actions);
         }
     }
 
@@ -312,13 +313,11 @@ impl Studio {
             ui.separator();
             self.tool_file_menu(ui, app, actions);
             ui.separator();
+            let map_tool = bar::is_map(app.tool);
+            menu_action(ui, app, MenuCommand::Save, Some(icon::SAVE), false, actions);
             if ui.menu_item_enabled_selected_with_shortcut(
-                format!("{} Save map as...", icon::SAVE),
-                if matches!(app.tool, ToolKind::Scenario | ToolKind::Tags) {
-                    "Cmd+S"
-                } else {
-                    ""
-                },
+                "Save as...",
+                if map_tool { "Shift+Cmd+S" } else { "" },
                 false,
                 open,
             ) {
@@ -339,71 +338,34 @@ impl Studio {
                 self.show_open_package = true;
             }
             ui.separator();
-            if ui.menu_item_with_shortcut("Quit", "Cmd+Q") {
-                actions.push(Action::Quit);
-            }
+            menu_action(ui, app, MenuCommand::Quit, None, false, actions);
         }
         if let Some(_m) = ui.begin_menu("Edit") {
-            if ui.menu_item_enabled_selected_with_shortcut(
-                format!("{} Undo", icon::UNDO),
-                "Cmd+Z",
-                false,
-                app.can_undo(),
-            ) {
-                actions.push(Action::Undo);
-            }
-            if ui.menu_item_enabled_selected_with_shortcut(
-                format!("{} Redo", icon::REDO),
-                "Shift+Cmd+Z",
-                false,
-                app.can_redo(),
-            ) {
-                actions.push(Action::Redo);
+            if ui.menu_item_with_shortcut("Go to anything...", "Cmd+P") {
+                self.palette.open();
             }
             ui.separator();
-            let sel = app.tool == ToolKind::Scenario && app.session.selected().is_some();
-            if ui.menu_item_enabled_selected_with_shortcut(
-                format!("{} Duplicate", icon::COPY),
-                "Cmd+D",
-                false,
-                sel,
-            ) {
-                actions.push(Action::Duplicate);
-            }
-            if ui.menu_item_enabled_selected_with_shortcut(
-                format!("{} Delete", icon::TRASH),
-                "Del",
-                false,
-                sel,
-            ) {
-                actions.push(Action::Delete);
-            }
+            menu_action(ui, app, MenuCommand::Undo, Some(icon::UNDO), false, actions);
+            menu_action(ui, app, MenuCommand::Redo, Some(icon::REDO), false, actions);
             ui.separator();
-            let grow = app.session.allow_growth();
-            if ui.menu_item_enabled_selected_no_shortcut("Allow growing full blocks", grow, open) {
-                actions.push(Action::SetAllowGrowth(!grow));
-            }
+            menu_action(ui, app, MenuCommand::Duplicate, Some(icon::COPY), false, actions);
+            menu_action(ui, app, MenuCommand::Delete, Some(icon::TRASH), false, actions);
+            ui.separator();
+            menu_action(
+                ui,
+                app,
+                MenuCommand::AllowGrowth,
+                None,
+                app.session.allow_growth(),
+                actions,
+            );
             if ui.is_item_hovered() {
                 ui.tooltip_text(scenario_edit::GROWTH_REFUSAL);
             }
         }
         if let Some(_m) = ui.begin_menu("View") {
-            if ui.menu_item_enabled_selected_with_shortcut(
-                format!("{} Frame map", icon::MAXIMIZE),
-                "Home",
-                false,
-                open,
-            ) {
-                actions.push(Action::FrameAll);
-            }
-            if ui.menu_item_enabled_selected_with_shortcut(
-                format!("{} Focus selection", icon::FOCUS),
-                "F",
-                false,
-                app.session.selected().is_some(),
-            ) {
-                actions.push(Action::FocusSelected);
-            }
+            menu_action(ui, app, MenuCommand::FrameAll, Some(icon::MAXIMIZE), false, actions);
+            menu_action(ui, app, MenuCommand::FocusSelected, Some(icon::FOCUS), false, actions);
             ui.separator();
             if ui.menu_item_enabled_selected_with_shortcut(
                 format!("{} Move gizmo", icon::MOVE),
@@ -444,23 +406,18 @@ impl Studio {
             if ui.menu_item_enabled_selected_no_shortcut("Snap angles", snap.angle, true) {
                 snap.angle = !snap.angle;
             }
-            if ui.menu_item_enabled_selected_no_shortcut(
-                "Halo 1 overlay",
-                app.overlay_shown(),
-                app.compare().is_some_and(|c| c.view.is_ok()),
-            ) {
-                actions.push(Action::SetOverlay(!app.overlay_shown()));
-            }
+            menu_action(ui, app, MenuCommand::Overlay, None, app.overlay_shown(), actions);
             ui.separator();
             if ui.menu_item("Reset layout") {
                 self.reset_layout = true;
             }
         }
+        self.play.menu(ui, app);
     }
 
-    /// A full-viewport host window (above the status bar) holding the
-    /// dockspace.
-    fn dockspace(&mut self, ui: &Ui) {
+    /// The dockspace host between the bar and the status bar. Returns
+    /// whether the default layout was applied this frame.
+    fn dockspace(&mut self, ui: &Ui) -> bool {
         let vp = ui.main_viewport();
         let (pos, size) = (vp.work_pos(), vp.work_size());
         ui.set_next_window_viewport(vp.id());
@@ -476,18 +433,23 @@ impl Studio {
         let border = ui.push_style_var(StyleVar::WindowBorderSize(0.0));
         let padding = ui.push_style_var(StyleVar::WindowPadding([4.0, 4.0]));
         let root = ui.get_id("studio-dockspace");
-        let apply = if std::mem::take(&mut self.reset_layout) {
+        let reset = std::mem::take(&mut self.reset_layout);
+        let apply = if reset {
             DockLayoutApply::Replace
         } else {
             DockLayoutApply::IfMissing
         };
+        let fresh = !layout::has_dock_node(root.raw());
+        if self.previous_tool.is_none() && !fresh && apply == DockLayoutApply::IfMissing {
+            self.keys.seed_saved_layout();
+        }
         let layout = &self.layout;
         let mut result = Ok(root);
         ui.window("##dock-host")
             .flags(flags)
-            .position(pos, Condition::Always)
+            .position([pos[0], pos[1] + theme::BAR], Condition::Always)
             .size(
-                [size[0], (size[1] - theme::STATUS_BAR).max(1.0)],
+                [size[0], (size[1] - theme::BAR - theme::STATUS_BAR).max(1.0)],
                 Condition::Always,
             )
             .build(|| {
@@ -503,7 +465,12 @@ impl Studio {
         rounding.pop();
         if let Err(e) = result {
             eprintln!("dockspace: {e}");
+        } else if reset || fresh {
+            // ImGui selects the last new tab when the windows first dock.
+            // Select Game once both tabs have appeared in the default layout.
+            self.focus_game = true;
         }
+        fresh || apply == DockLayoutApply::Replace
     }
 
     /// The File menu's items for the variant and playlist tools.
@@ -523,16 +490,7 @@ impl Studio {
             }
             ToolKind::Scenario | ToolKind::UiScreens | ToolKind::Tags => {}
             ToolKind::Variants => {
-                let e = app.variants.as_ref();
-                let can_save = e.is_some_and(|e| e.is_dirty() && !e.is_read_only());
-                if ui.menu_item_enabled_selected_with_shortcut(
-                    format!("{} Save variant", icon::SAVE),
-                    "Cmd+S",
-                    false,
-                    can_save,
-                ) {
-                    actions.push(Action::SaveVariant);
-                }
+                menu_action(ui, app, MenuCommand::SaveVariant, Some(icon::SAVE), false, actions);
                 if ui.menu_item(format!("{} Import variant...", icon::PACKAGE_OPEN))
                     && let Some(p) = variants::import_dialog(self.dialogs)
                 {
@@ -540,28 +498,26 @@ impl Studio {
                 }
             }
             ToolKind::Playlists => {
-                if ui.menu_item(format!("{} New playlist file", icon::PLUS)) {
-                    actions.push(Action::NewHopper);
-                }
-                if ui.menu_item("New from the default lineup") {
-                    actions.push(Action::NewDefaultHopper);
-                }
+                menu_action(ui, app, MenuCommand::NewPlaylist, Some(icon::PLUS), false, actions);
+                menu_action(ui, app, MenuCommand::DefaultPlaylist, None, false, actions);
                 if ui.menu_item(format!("{} Open playlist file...", icon::FOLDER_OPEN))
                     && let Some(p) = playlists::open_dialog(self.dialogs)
                 {
                     actions.push(Action::OpenHopper(p));
                 }
                 let open = app.hoppers.is_open();
+                let save = MenuCommand::SavePlaylist.item(app);
                 if ui.menu_item_enabled_selected_with_shortcut(
-                    format!("{} Save playlist file", icon::SAVE),
-                    "Cmd+S",
+                    format!("{} {}", icon::SAVE, save.label),
+                    save.shortcut,
                     false,
                     open,
                 ) {
                     playlists::save(app, self.dialogs, actions);
                 }
-                if ui.menu_item_enabled_selected_no_shortcut(
+                if ui.menu_item_enabled_selected_with_shortcut(
                     "Save playlist file as...",
+                    "Shift+Cmd+S",
                     false,
                     open,
                 ) && let Some(p) = playlists::save_dialog(self.dialogs, app)
@@ -572,45 +528,31 @@ impl Studio {
         }
     }
 
-    /// The variant tool in the outliner, centre and inspector windows.
     fn variant_windows(&mut self, ui: &Ui, app: &mut App, actions: &mut Vec<Action>) {
         let fonts = &self.fonts;
         let st = &mut self.variants;
-        ui.window(self.keys.outliner.label(format!("{} Variants", icon::TREE)))
+        let keys = &self.keys.variants;
+        ui.window(&keys.list)
             .build(|| variants::list(ui, app, st, fonts, actions));
-        ui.window(
-            self.keys
-                .viewport
-                .label(format!("{} Settings", icon::SLIDERS)),
-        )
-        .build(|| variants::settings(ui, app, st, fonts, actions));
-        let dialogs = self.dialogs;
-        ui.window(&self.keys.inspector)
-            .build(|| variants::inspector(ui, app, st, fonts, dialogs, actions));
+        ui.window(&keys.center)
+            .build(|| variants::settings(ui, app, st, fonts, actions));
+        ui.window(&keys.inspector)
+            .build(|| variants::inspector(ui, app, st, fonts, self.dialogs, actions));
     }
 
-    /// The playlist tool in the outliner, centre and inspector windows.
     fn playlist_windows(&mut self, ui: &Ui, app: &mut App, actions: &mut Vec<Action>) {
         let fonts = &self.fonts;
         let dialogs = self.dialogs;
-        ui.window(
-            self.keys
-                .outliner
-                .label(format!("{} Playlists", icon::TREE)),
-        )
-        .build(|| playlists::list(ui, app, fonts, dialogs, actions));
-        ui.window(
-            self.keys
-                .viewport
-                .label(format!("{} Entries", icon::LAYERS)),
-        )
-        .build(|| playlists::entries(ui, app, fonts, actions));
+        let keys = &self.keys.playlists;
+        ui.window(&keys.list)
+            .build(|| playlists::list(ui, app, fonts, dialogs, actions));
+        ui.window(&keys.center)
+            .build(|| playlists::entries(ui, app, fonts, actions));
         let st = &mut self.playlists;
-        ui.window(&self.keys.inspector)
+        ui.window(&keys.inspector)
             .build(|| playlists::inspector(ui, app, st, fonts, dialogs, actions));
     }
 
-    /// The UI Screens tool in the outliner, centre and inspector windows.
     fn ui_screen_windows(
         &mut self,
         ui: &Ui,
@@ -620,82 +562,63 @@ impl Studio {
     ) {
         let fonts = &self.fonts;
         let st = &mut self.ui_screens;
-        ui.window(self.keys.outliner.label(format!("{} Screens", icon::TREE)))
+        let keys = &self.keys.screens;
+        ui.window(&keys.list)
             .build(|| ui_screens::tree(ui, app, st, fonts, actions));
-        ui.window(self.keys.viewport.label(format!("{} Preview", icon::EYE)))
+        ui.window(&keys.center)
             .flags(WindowFlags::HORIZONTAL_SCROLLBAR)
             .build(|| ui_screens::preview(ui, app, st, gpu));
-        let dialogs = self.dialogs;
-        ui.window(&self.keys.inspector)
-            .build(|| ui_screens::inspector(ui, app, st, fonts, dialogs, actions));
+        ui.window(&keys.inspector)
+            .build(|| ui_screens::inspector(ui, app, st, fonts, self.dialogs, actions));
     }
 
-    /// The HUD tool in the outliner, centre and inspector windows.
     fn hud_windows(&mut self, ui: &Ui, app: &mut App, gpu: &mut Gpu<'_>, actions: &mut Vec<Action>) {
         let fonts = &self.fonts;
         let st = &mut self.hud;
-        ui.window(self.keys.outliner.label(format!("{} HUDs", icon::TREE)))
+        let keys = &self.keys.hud;
+        ui.window(&keys.list)
             .build(|| hud::tree(ui, app, st, fonts, actions));
-        ui.window(self.keys.viewport.label(format!("{} HUD", icon::EYE)))
+        ui.window(&keys.center)
             .flags(WindowFlags::HORIZONTAL_SCROLLBAR)
             .build(|| hud::preview(ui, app, st, fonts, gpu, actions));
-        let dialogs = self.dialogs;
-        ui.window(&self.keys.inspector)
-            .build(|| hud::inspector(ui, app, st, fonts, dialogs, actions));
+        ui.window(&keys.inspector)
+            .build(|| hud::inspector(ui, app, st, fonts, self.dialogs, actions));
     }
 
-    /// The Tags tool: the tag tree, the fields, the raw bytes.
-    fn tag_windows(&mut self, ui: &Ui, app: &mut App, gpu: &mut Gpu<'_>, actions: &mut Vec<Action>) {
-        app.sync_tags();
-        let fonts = &self.fonts;
-        let st = &mut self.tags;
-        let dialogs = self.dialogs;
-        let pictures = &mut self.map_list;
-        ui.window(self.keys.outliner.label(format!("{} Tags", icon::TREE)))
-            .build(|| tags::tree(ui, app, st, fonts, actions));
-        ui.window(
-            self.keys
-                .viewport
-                .label(format!("{} Fields", icon::SLIDERS)),
-        )
-        .build(|| tags::fields(ui, app, st, fonts, dialogs, actions));
-        ui.window(self.keys.inspector.label(format!("{} Data and bytes", icon::INFO)))
-            .build(|| tags::hex(ui, app, st, fonts, gpu, pictures, actions));
-    }
-
-    fn heading(&self, ui: &Ui, text: &str) {
-        let f = ui.push_font(self.fonts.bold);
-        ui.text(text);
-        f.pop();
-    }
-
-    fn tools_window(
+    fn tags_window(
         &mut self,
         ui: &Ui,
         app: &mut App,
+        focus: bool,
+        actions: &mut Vec<Action>,
+    ) {
+        app.sync_tags();
+        let fonts = &self.fonts;
+        let st = &mut self.tags;
+        let window = ui.window(&self.keys.tags)
+            .flags(WindowFlags::NO_FOCUS_ON_APPEARING)
+            .focused(focus);
+        window.build(|| {
+            if ui.is_window_focused()
+                && app.tool != ToolKind::Tags
+                && self.previous_tool == Some(app.tool)
+            {
+                actions.push(Action::SetTool(ToolKind::Tags));
+            }
+            tags::tree(ui, app, st, fonts, actions);
+        });
+    }
+
+    fn maps_window(
+        &mut self,
+        ui: &Ui,
+        app: &App,
         gpu: &mut Gpu<'_>,
+        focus: bool,
         actions: &mut Vec<Action>,
     ) {
         let mut list = std::mem::take(&mut self.map_list);
-        list.begin();
-        ui.window(&self.keys.tools).build(|| {
-            self.heading(ui, "Tools");
-            for tool in ToolKind::ALL {
-                let label = format!("{}  {}", tool_icon(tool), tool.title());
-                let dirty = if app.tool_dirty(tool) { "  *" } else { "" };
-                if ui
-                    .selectable_config(format!("{label}{dirty}"))
-                    .selected(app.tool == tool)
-                    .build()
-                    && app.tool != tool
-                {
-                    actions.push(Action::SetTool(tool));
-                }
-            }
-            ui.spacing();
-            ui.separator();
-            ui.spacing();
-            self.heading(ui, "Maps");
+        ui.window(&self.keys.maps).focused(focus).build(|| {
             if ui.button(format!("{} Open...", icon::FOLDER_OPEN)) {
                 self.open_source_dialog(actions);
             }
@@ -703,18 +626,13 @@ impl Studio {
             if ui.button(format!("{} Folder...", icon::FOLDER)) {
                 self.open_folder_dialog(actions);
             }
-            match app.source() {
-                Some(src) => {
-                    let kind = match src {
-                        editor_core::MapSource::Disc(_) => icon::DISC,
-                        editor_core::MapSource::Loose(_) => icon::FILE,
-                        editor_core::MapSource::Folder(_) => icon::FOLDER,
-                    };
-                    ui.text_disabled(format!("{kind} {}", src.path().display()));
-                }
-                None => {
-                    ui.text_wrapped("Open a disc image, a .map file or a folder of maps.");
-                }
+            if let Some(src) = app.source() {
+                let kind = match src {
+                    editor_core::MapSource::Disc(_) => icon::DISC,
+                    editor_core::MapSource::Loose(_) => icon::FILE,
+                    editor_core::MapSource::Folder(_) => icon::FOLDER,
+                };
+                ui.text_disabled(format!("{kind} {}", src.path().display()));
             }
             let mut halo2 = app.halo2_map_entries();
             let mut halo1 = app.halo1_map_entries();
@@ -722,13 +640,7 @@ impl Studio {
             shared.extend(MapEntry::take_shared(&mut halo1));
             MapEntry::sort(&mut shared);
             map_list::source_rows(ui, app, &mut list, gpu, &halo2, actions);
-            let bold = self.fonts.bold;
-            let heading = |ui: &Ui, text: &str| {
-                let f = ui.push_font(bold);
-                ui.text(text);
-                f.pop();
-            };
-            map_pack::group(ui, app, &mut list, gpu, heading, actions);
+            map_pack::group(ui, app, &mut list, gpu, actions);
             self.library_lists(ui, app, &mut list, gpu, &halo1, actions);
             map_list::source_rows(ui, app, &mut list, gpu, &shared, actions);
         });
@@ -760,7 +672,7 @@ impl Studio {
             && !halo1.is_empty()
         {
             ui.spacing();
-            self.heading(ui, "Halo 1");
+            theme::section(ui, "Halo 1");
             ui.text_disabled(format!(
                 "{} {} (read only)",
                 icon::DISC,
@@ -770,14 +682,33 @@ impl Studio {
         }
     }
 
-    fn outliner_window(&mut self, ui: &Ui, app: &mut App, actions: &mut Vec<Action>) {
-        ui.window(&self.keys.outliner).build(|| {
+    fn outliner_window(
+        &mut self,
+        ui: &Ui,
+        app: &mut App,
+        focus: bool,
+        actions: &mut Vec<Action>,
+    ) {
+        let window = ui.window(&self.keys.outliner)
+            .flags(WindowFlags::NO_FOCUS_ON_APPEARING)
+            .focused(focus);
+        window.build(|| {
+            if ui.is_window_focused()
+                && app.tool == ToolKind::Tags
+                && self.previous_tool == Some(app.tool)
+            {
+                actions.push(Action::SetTool(ToolKind::Scenario));
+            }
+            if ui.is_window_hovered_with_flags(WindowHoveredFlags::CHILD_WINDOWS) && map_is_visible(app) {
+                self.hint = Some("Click to select · Cmd/Ctrl toggles · Shift selects a range".into());
+            }
+            layers::section(ui, app, actions);
             if let Some(view) = app.halo1_view() {
                 halo1_outliner(ui, app, view, actions);
                 return;
             }
             if !app.session.is_open() {
-                ui.text_disabled("No map open.");
+                theme::empty_card(ui, &self.fonts, "Open a map to see its scene", || {});
                 return;
             }
             ui.set_next_item_width(-1.0);
@@ -859,12 +790,13 @@ impl Studio {
                     let Some(_node) = node else { continue };
                     for &i in &shown {
                         let label = scenario.label(kind, i);
-                        if ui
-                            .selectable_config(format!("{label}##{kind:?}-{i}"))
-                            .selected(session.is_selected((kind, i)))
-                            .allow_double_click(true)
-                            .build()
-                        {
+                        let issue = inspector::issues(app).placement_row(kind, i);
+                        if inspector::marked_row(ui, label, issue, |label| {
+                            ui.selectable_config(format!("{label}###{kind:?}-{i}"))
+                                .selected(session.is_selected((kind, i)))
+                                .allow_double_click(true)
+                                .build()
+                        }) {
                             actions.push(
                                 match outliner::click((kind, i), toggle, range, sel, &shown) {
                                     outliner::Click::One(e) => Action::Select(Some(e)),
@@ -881,11 +813,11 @@ impl Studio {
                         }
                     }
                 }
-            });
-            if place.is_some() {
-                self.viewport.placing = place;
-            }
         });
+                if place.is_some() {
+                    self.viewport.placing = place;
+                }
+            });
     }
 
     fn viewport_window(
@@ -898,37 +830,65 @@ impl Studio {
         let padding = ui.push_style_var(StyleVar::WindowPadding([0.0, 0.0]));
         let viewport = &mut self.viewport;
         let play = &mut self.play;
+        let fonts = &self.fonts;
+        let dialogs = self.dialogs;
         ui.window(&self.keys.viewport)
             .flags(WindowFlags::NO_SCROLLBAR | WindowFlags::NO_SCROLL_WITH_MOUSE)
             .build(|| {
-                viewport_toolbar(ui, app, viewport, actions);
-                if app.session.is_open() || app.session.reference().is_some() {
+                if map_is_visible(app) {
+                    toolbar::draw(ui, app, viewport, actions, &mut self.hint);
                     viewport.draw(ui, app, gpu, actions);
                     play.overlay(ui, app, viewport.shown().map(|(r, _)| r));
+                    if viewport.hovered() || viewport.looking() {
+                        self.hint = Some(match viewport.placing {
+                            Some((kind, _)) => format!("Click the level to place {kind:?} · Esc cancels"),
+                            None => "RMB look and fly · Alt+LMB orbit · MMB pan · Wheel dolly".into(),
+                        });
+                    }
+                } else if app.source().is_some() || app.halo1_source().is_some() {
+                    map_list::source_grid(ui, app, &mut self.map_list, gpu, fonts, actions);
                 } else {
-                    ui.text_disabled("  Pick a map to see it here.");
+                    theme::empty_card(ui, fonts, "Open a map to get started", || {
+                        if ui.button(format!("{} Open a disc or map...", icon::FOLDER_OPEN))
+                            && dialogs
+                        {
+                            open_source_dialog(actions);
+                        }
+                    });
                 }
             });
         padding.pop();
     }
 
-    fn inspector_window(&mut self, ui: &Ui, app: &mut App) {
-        let mut actions = Vec::new();
+    fn inspector_window(&mut self, ui: &Ui, app: &mut App, actions: &mut Vec<Action>) {
         let mut state = std::mem::take(&mut self.inspector);
-        ui.window(&self.keys.inspector).build(|| {
+        // The closure borrows the whole shell, so the key is its own value.
+        let key = self.keys.inspector.clone();
+        ui.window(&key).build(|| {
+            let link = self.play.play.displayed_link(app);
+            if matches!(
+                link.state,
+                crate::play::LinkState::Editing { .. } | crate::play::LinkState::Blocked { .. }
+            ) {
+                theme::link_badge(ui, link.tone, "Live");
+                if let Some(why) = &link.why {
+                    ui.set_item_tooltip(why);
+                }
+            }
+            if app.tool == ToolKind::Tags {
+                tags::fields(ui, app, &mut self.tags, &self.fonts, self.dialogs, actions);
+                return;
+            }
             if let Some(view) = app.halo1_view() {
-                self.halo1_inspector(ui, app, view, &mut actions);
+                self.halo1_inspector(ui, app, view, actions);
                 return;
             }
             if let Some(c) = app.compare() {
                 compare_banner(ui, c);
             }
-            inspector::draw(ui, self.fonts.bold, app, &mut state);
+            inspector::draw(ui, &self.fonts, app, &mut state);
         });
         self.inspector = state;
-        for a in actions {
-            app.dispatch(a);
-        }
     }
 
     fn log_window(&mut self, ui: &Ui, app: &App) {
@@ -963,9 +923,10 @@ impl Studio {
             | WindowFlags::NO_FOCUS_ON_APPEARING
             | WindowFlags::NO_NAV_FOCUS
             | WindowFlags::NO_SCROLLBAR;
-        let rounding = ui.push_style_var(StyleVar::WindowRounding(0.0));
-        let padding = ui.push_style_var(StyleVar::WindowPadding([10.0, 4.0]));
-        let bg = ui.push_style_color(StyleColor::WindowBg, [0.075, 0.08, 0.09, 1.0]);
+        let _rounding = ui.push_style_var(StyleVar::WindowRounding(0.0));
+        let _border = ui.push_style_var(StyleVar::WindowBorderSize(0.0));
+        let _padding = ui.push_style_var(StyleVar::WindowPadding([10.0, 6.0]));
+        let _bg = ui.push_style_color(StyleColor::WindowBg, theme::STATUS_BG);
         ui.window("##status-bar")
             .flags(flags)
             .position(
@@ -974,67 +935,34 @@ impl Studio {
             )
             .size([size[0], theme::STATUS_BAR], Condition::Always)
             .build(|| {
-                match app.status() {
-                    Some(Status::Error(m)) => {
-                        ui.text_colored(theme::ERROR, format!("{} {m}", icon::ALERT))
-                    }
-                    Some(Status::Info(m)) => ui.text(format!("{} {m}", icon::CHECK)),
-                    None => ui.text_disabled("Ready"),
-                }
-                if app.tool == ToolKind::Scenario {
-                    ui.same_line_with_spacing(0.0, 24.0);
-                    play::status_chip(ui, &self.play.chip(app));
-                    self.play.status_pair_button(ui, app);
-                }
-                let mut right = String::new();
-                if app.tool == ToolKind::Playlists {
-                    right = playlists::summary(app);
-                } else if app.tool == ToolKind::Variants {
-                    if let Some(e) = &app.variants {
-                        right = format!(
-                            "{} {} saved   {} built-in",
-                            icon::SLIDERS,
-                            e.saved().len(),
-                            e.builtins().len()
-                        );
-                    }
-                } else if let Some(name) = app.loaded_map() {
-                    let (tris, failed) = app.session.world();
-                    right = format!(
-                        "{} {name}   {} tris{}   {} placements",
-                        icon::MAP,
-                        tris.len(),
-                        if failed > 0 {
-                            format!(" ({failed} sections missing)")
-                        } else {
-                            String::new()
-                        },
-                        app.session.markers().len()
-                    );
-                }
-                if app.tool == ToolKind::Scenario
-                    && (app.session.is_open() || app.session.reference().is_some())
+                let _font = ui.push_font(self.fonts.caption);
+                let [x, y] = ui.cursor_screen_pos();
+                let width = ui.content_region_avail()[0];
+                let fps = format!("{:.0} fps", ui.io().framerate());
+                let fps_start = (width - ui.calc_text_size(&fps)[0]).max(0.0);
+                let message_end = (fps_start * 0.35).min(560.0);
+                let (message, tone) = match app.status() {
+                    Some(Status::Error(m)) => (format!("{} {m}", icon::ALERT), theme::ERROR),
+                    Some(Status::Info(m)) => (format!("{} {m}", icon::CHECK), theme::TEXT),
+                    None => ("Ready".into(), theme::DIM),
+                };
+                theme::clipped_text(ui, &message, tone, message_end - 8.0);
+                let hint_start = message_end + 8.0;
+                if let Some(hint) = &self.hint
+                    && fps_start - hint_start > 16.0
                 {
-                    // The fly speed (right mouse + WASD; the wheel sets it).
-                    right.push_str(&format!(
-                        "   {} {:.1} u/s",
-                        icon::MOVE,
-                        self.viewport.camera.speed
-                    ));
+                    ui.set_cursor_screen_pos([x + hint_start, y]);
+                    theme::clipped_text(ui, hint, theme::DIM, fps_start - hint_start - 8.0);
                 }
-                let fps = format!("   {:.0} fps", ui.io().framerate());
-                let dirty = if app.is_dirty() { "unsaved   " } else { "" };
-                let w = ui.calc_text_size(format!("{dirty}{right}{fps}"))[0];
-                ui.same_line_with_pos((size[0] - w - 14.0).max(0.0));
-                if !dirty.is_empty() {
-                    ui.text_colored(theme::WARN, dirty);
-                    ui.same_line();
+                ui.set_cursor_screen_pos([x + fps_start, y]);
+                ui.text_colored(theme::DIM, fps);
+                let draw = ui.get_window_draw_list();
+                for rule in [message_end, fps_start - 8.0] {
+                    let at = x + rule;
+                    draw.add_line([at, y], [at, y + ui.text_line_height()], theme::RULE)
+                        .build();
                 }
-                ui.text_disabled(format!("{right}{fps}"));
             });
-        bg.pop();
-        padding.pop();
-        rounding.pop();
     }
 
     fn modals(&mut self, ui: &Ui, app: &mut App, actions: &mut Vec<Action>) {
@@ -1049,7 +977,10 @@ impl Studio {
         {
             let what = match app.pending() {
                 Some(Action::Quit) => "quitting",
-                Some(Action::SelectMap(_)) => "opening another map",
+                Some(Action::SelectMap(_) | Action::OpenMapPack(_) | Action::SelectHalo1Map(_)) => {
+                    "opening another map"
+                }
+                Some(Action::OpenPackageEntry(_)) => "opening another package",
                 Some(Action::OpenSource(_)) => "opening another source",
                 Some(Action::OpenHopper(_)) => "opening another playlist file",
                 Some(Action::NewHopper | Action::NewDefaultHopper) => {
@@ -1073,7 +1004,11 @@ impl Studio {
             let mut answer = None;
             match tool {
                 ToolKind::Scenario => {
-                    if ui.button(format!("{} Save as...", icon::SAVE))
+                    if matches!(app.save_target(), SaveTarget::File(_) | SaveTarget::Package(_)) {
+                        if ui.button(format!("{} Save", icon::SAVE)) {
+                            answer = Some(Answer::Save);
+                        }
+                    } else if ui.button(format!("{} Save as...", icon::SAVE))
                         && let Some(p) = self.save_path_dialog(app)
                     {
                         answer = Some(Answer::SaveAs(p));
@@ -1209,120 +1144,52 @@ impl Studio {
     }
 }
 
-/// The viewport's toolbar row (gizmo mode, framing).
-fn viewport_toolbar(ui: &Ui, app: &App, viewport: &mut ViewportView, actions: &mut Vec<Action>) {
-    ui.dummy([0.0, 2.0]);
-    ui.dummy([4.0, 0.0]);
-    ui.same_line();
-    let toggle = |label: String, on: bool| {
-        let c = on.then(|| ui.push_style_color(StyleColor::Button, theme::ACCENT));
-        let clicked = ui.small_button(label);
-        if let Some(c) = c {
-            c.pop();
+/// Dispatch the window's frame queue in order, including the placement inspector switch.
+pub(crate) fn dispatch_actions(app: &mut App, actions: Vec<Action>) {
+    for a in actions {
+        if app.tool == ToolKind::Tags
+            && matches!(a, Action::Select(_) | Action::SelectMany(_) | Action::ToggleSelect(_))
+        {
+            app.dispatch(Action::SetTool(ToolKind::Scenario));
         }
-        clicked
-    };
-    if toggle(
-        format!("{} Move (W)", icon::MOVE),
-        viewport.op == GizmoOp::Translate,
-    ) {
-        viewport.op = GizmoOp::Translate;
-    }
-    ui.same_line();
-    if toggle(
-        format!("{} Rotate (E)", icon::ROTATE),
-        viewport.op == GizmoOp::Rotate,
-    ) {
-        viewport.op = GizmoOp::Rotate;
-    }
-    ui.same_line();
-    if toggle(
-        format!("{} Scale (R)", icon::MAXIMIZE),
-        viewport.op == GizmoOp::Scale,
-    ) {
-        viewport.op = GizmoOp::Scale;
-    }
-    ui.same_line();
-    let axes = if viewport.local { "Local" } else { "World" };
-    if toggle(format!("{axes} (X)"), viewport.local) {
-        viewport.local = !viewport.local;
-    }
-    ui.same_line();
-    snap_controls(ui, &mut viewport.snap);
-    ui.same_line();
-    if ui.small_button(format!("{} Frame", icon::MAXIMIZE)) {
-        actions.push(Action::FrameAll);
-    }
-    ui.same_line();
-    if ui.small_button(format!("{} Focus", icon::FOCUS)) {
-        actions.push(Action::FocusSelected);
-    }
-    if app.compare().is_some_and(|c| c.view.is_ok()) {
-        ui.same_line();
-        if toggle(
-            format!("{} Halo 1 overlay", icon::LAYERS),
-            app.overlay_shown(),
-        ) {
-            actions.push(Action::SetOverlay(!app.overlay_shown()));
-        }
-    }
-    if let Some((kind, _)) = viewport.placing {
-        ui.same_line();
-        ui.text_colored(
-            theme::ACCENT,
-            format!("  Click the level to place {kind:?} (Esc cancels)"),
-        );
-    } else if app.session.is_open() || app.session.reference().is_some() {
-        ui.same_line();
-        ui.text_disabled(
-            "  RMB look + WASD/QE fly (wheel: speed)   Alt+LMB orbit   MMB pan   wheel dolly",
-        );
+        app.dispatch(a);
     }
 }
 
-/// The toolbar's snapping: grid and angle toggles, each with its step.
-fn snap_controls(ui: &Ui, snap: &mut crate::viewport::Snap) {
-    use crate::viewport::{ANGLE_STEPS, GRID_STEPS};
-    let toggle = |label: String, on: bool| {
-        let c = on.then(|| ui.push_style_color(StyleColor::Button, theme::ACCENT));
-        let clicked = ui.small_button(label);
-        if let Some(c) = c {
-            c.pop();
-        }
-        clicked
+fn menu_action(
+    ui: &Ui,
+    app: &App,
+    command: MenuCommand,
+    icon: Option<&str>,
+    selected: bool,
+    actions: &mut Vec<Action>,
+) {
+    let item = command.item(app);
+    let label = match icon {
+        Some(icon) => format!("{icon} {}", item.label),
+        None => item.label.to_owned(),
     };
-    if toggle(format!("Grid {}", snap.grid_step), snap.grid) {
-        snap.grid = !snap.grid;
+    if ui.menu_item_enabled_selected_with_shortcut(
+        label,
+        item.shortcut,
+        selected,
+        item.action.is_some(),
+    ) {
+        actions.extend(item.action);
     }
-    ui.set_item_tooltip("Snap moves and placing to the grid; right-click for the step");
-    if let Some(_p) = ui.begin_popup_context_item() {
-        for s in GRID_STEPS {
-            if ui
-                .selectable_config(format!("{s} units"))
-                .selected(s == snap.grid_step)
-                .build()
-            {
-                snap.grid_step = s;
-                snap.grid = true;
-            }
-        }
-    }
-    ui.same_line();
-    if toggle(format!("{}°", snap.angle_step), snap.angle) {
-        snap.angle = !snap.angle;
-    }
-    ui.set_item_tooltip("Snap turns to steps of this angle; right-click for the step");
-    if let Some(_p) = ui.begin_popup_context_item() {
-        for s in ANGLE_STEPS {
-            if ui
-                .selectable_config(format!("{s}°"))
-                .selected(s == snap.angle_step)
-                .build()
-            {
-                snap.angle_step = s;
-                snap.angle = true;
-            }
-        }
+}
+
+fn map_is_visible(app: &App) -> bool {
+    app.session.is_open() || app.session.reference().is_some()
+}
+
+fn open_source_dialog(actions: &mut Vec<Action>) {
+    if let Some(path) = rfd::FileDialog::new()
+        .set_title("Open a disc image or map")
+        .add_filter("Disc image or map", &["iso", "xiso", "map"])
+        .pick_file()
+    {
+        actions.push(Action::OpenSource(path));
     }
 }
 
@@ -1358,17 +1225,6 @@ fn entry_menu(
     }
     let what = if index.is_some() { "a copy" } else { "new" };
     item(format!("{} Place {what} with the mouse", icon::PLUS), add).then_some((kind, index))
-}
-
-fn tool_icon(tool: ToolKind) -> &'static str {
-    match tool {
-        ToolKind::Scenario => icon::MAP,
-        ToolKind::Variants => icon::SLIDERS,
-        ToolKind::Playlists => icon::LAYERS,
-        ToolKind::UiScreens => icon::EYE,
-        ToolKind::Hud => icon::CROSSHAIR,
-        ToolKind::Tags => icon::BOX,
-    }
 }
 
 /// A package's row in the Maps list: its name, its `[package] image` and

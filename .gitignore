@@ -4,7 +4,10 @@
 *.xiso
 *.xbe
 *.map
+*.h2forge
 *.bik
+*.h2keys
+**/cache/*/.stage-*
 /extracted
 /out
 # Your own disc lives here; `h2` picks it up automatically.
@@ -13,4 +16,13 @@
 /.claude/worktrees/
 /web/node_modules
 /web/dist
+/docs/images/readme/frames/
 __pycache__/
+# Buck2 output and the machine-local toolchain section.
+/buck-out
+/.buckconfig.local
+# devenv state
+/.devenv*
+/.direnv/
+/devenv.local.nix
+/.buckconfig.devenv

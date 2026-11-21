@@ -3,7 +3,7 @@
 
 use std::net::{IpAddr, SocketAddr};
 
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{Context, Result, ensure};
 
 pub const PORT: u16 = 29422;
 
@@ -26,7 +26,7 @@ pub fn default_name() -> Result<String> {
         Ok(name.into())
     }
     #[cfg(not(target_os = "macos"))]
-    bail!("Bonjour discovery is available on macOS");
+    anyhow::bail!("Bonjour discovery is available on macOS");
 }
 
 /// Accept a numeric endpoint, DNS hostname with an explicit port, or the
@@ -49,7 +49,7 @@ pub fn resolve(host: &str) -> Result<SocketAddr> {
         macos::resolve(host).with_context(|| format!("finding Bonjour lab {host:?}"))
     }
     #[cfg(not(target_os = "macos"))]
-    bail!("use an IP address or hostname:port for the lab host on this platform");
+    anyhow::bail!("use an IP address or hostname:port for the lab host on this platform");
 }
 
 fn host_address(name: &str, port: u16) -> Result<SocketAddr> {
@@ -70,14 +70,14 @@ fn host_address(name: &str, port: u16) -> Result<SocketAddr> {
 }
 
 #[cfg(target_os = "macos")]
-pub use macos::{Advertisement, advertise};
+pub use macos::advertise;
 
 #[cfg(not(target_os = "macos"))]
 pub struct Advertisement;
 
 #[cfg(not(target_os = "macos"))]
 pub fn advertise(_: &str, _: u16) -> Result<Advertisement> {
-    bail!("Bonjour advertisement is available on macOS");
+    anyhow::bail!("Bonjour advertisement is available on macOS");
 }
 
 #[cfg(target_os = "macos")]

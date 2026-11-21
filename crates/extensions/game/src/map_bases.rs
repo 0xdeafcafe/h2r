@@ -24,7 +24,8 @@
 //! map with the file's path, size and modification time. [`UserBases`] asks
 //! the disc first, then the map pack for a map pack name.
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
+    io::Read,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
     time::UNIX_EPOCH,
@@ -225,20 +226,15 @@ impl live_hle::maps::Bases for DiscBases {
     }
 }
 
-/// The installed copy of map pack map `map` under `data_root`, as
-/// `h2 import-mappack` writes it: `(offer directory, file name, host path)`
-/// for the first `$c\<offer>` (by name) of a map pack offer holding
-/// `<map>.map` in any case. None for a name that isn't a map pack map's.
-pub fn map_pack_file(data_root: &Path, map: &str) -> Option<(String, String, PathBuf)> {
-    if !plain(map) || !content::map_pack::is_map(map) {
-        return None;
-    }
+fn map_pack_offers(data_root: &Path) -> Vec<(String, PathBuf)> {
     let title = crate::new_maps::HALO2_TITLE;
     let root = vfs::Config::new(data_root, title)
         .title_data_dir()
         .join(vfs::CONTENT_DIR);
-    let mut offers: Vec<(String, PathBuf)> = std::fs::read_dir(root)
-        .ok()?
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return Vec::new();
+    };
+    let mut offers: Vec<_> = entries
         .flatten()
         .filter_map(|e| {
             let name = e.file_name().to_str()?.to_owned();
@@ -249,14 +245,90 @@ pub fn map_pack_file(data_root: &Path, map: &str) -> Option<(String, String, Pat
         })
         .collect();
     offers.sort();
+    offers
+}
+
+/// The installed copy of map pack map `map` under `data_root`, as
+/// `h2 import-mappack` writes it: `(offer directory, file name, host path)`
+/// for the first `$c\<offer>` (by name) of a map pack offer holding
+/// `<map>.map` in any case. None for a name that isn't a map pack map's.
+pub fn map_pack_file(data_root: &Path, map: &str) -> Option<(String, String, PathBuf)> {
+    if !plain(map) || !content::map_pack::is_map(map) {
+        return None;
+    }
     let want = format!("{map}.map");
-    offers.into_iter().find_map(|(offer, dir)| {
+    map_pack_offers(data_root).into_iter().find_map(|(offer, dir)| {
         std::fs::read_dir(&dir).ok()?.flatten().find_map(|e| {
             let name = e.file_name().to_str()?.to_owned();
             (name.eq_ignore_ascii_case(&want) && e.file_type().ok()?.is_file())
                 .then(|| (offer.clone(), name, e.path()))
         })
     })
+}
+
+/// Matchmaking needs all nine map-pack offers installed. This checks the
+/// packages in the console's data root without reading the maps.
+fn map_pack_installed(data_root: &Path) -> bool {
+    let mut installed = HashSet::new();
+    let mut ids = HashSet::new();
+    let mut record = vec![0; content::patch_lvl::V2_LEN];
+    for (offer, dir) in map_pack_offers(data_root) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            continue;
+        };
+        let files: HashMap<_, _> = entries
+            .flatten()
+            .filter_map(|entry| {
+                if !entry.file_type().ok()?.is_file() {
+                    return None;
+                }
+                Some((entry.file_name().to_str()?.to_ascii_lowercase(), entry))
+            })
+            .collect();
+        let (Some(patch), Some(meta)) = (files.get("patch.lvl"), files.get("contentmeta.xbx")) else {
+            continue;
+        };
+        if !signed_map_pack_offer(&offer, &meta.path()) {
+            continue;
+        }
+        // The record identifies the one map the guest can load from this
+        // directory. Merely copying all nine files into one offer can't list nine maps.
+        let read = std::fs::File::open(patch.path())
+            .and_then(|mut file| file.read_exact(&mut record));
+        if read.is_err() || content::patch_lvl::validate_v2(&record).is_err() {
+            continue;
+        }
+        let Ok(map) = content::patch_lvl::map_name(&record) else {
+            continue;
+        };
+        if content::map_pack::is_map(&map)
+            && files.get(&format!("{}.map", map.to_ascii_lowercase()))
+                .and_then(|file| file.metadata().ok())
+                .is_some_and(|meta| meta.len() != 0)
+        {
+            ids.insert(content::patch_lvl::v2_map_id(&record));
+            installed.insert(map.to_ascii_lowercase());
+        }
+    }
+    installed.len() == content::map_pack::MAPS.len() && ids.len() == installed.len()
+}
+
+fn signed_map_pack_offer(offer: &str, path: &Path) -> bool {
+    use kernel::content::{FLAGS_OFFSET, FLAG_INSTALLED, SIGNATURE_SIZE, signature};
+    const OFFER_ID: usize = 0x28;
+    let mut header = [0; 0x88];
+    if std::fs::File::open(path)
+        .and_then(|mut file| file.read_exact(&mut header))
+        .is_err()
+    {
+        return false;
+    }
+    let flags = u32::from_le_bytes(header[FLAGS_OFFSET..FLAGS_OFFSET + 4].try_into().unwrap());
+    let id = u64::from_le_bytes(header[OFFER_ID..OFFER_ID + 8].try_into().unwrap());
+    flags & FLAG_INSTALLED != 0
+        && u64::from_str_radix(offer, 16) == Ok(id)
+        && signature(&header, crate::new_maps::HALO2_TITLE)
+            .is_ok_and(|mac| header[..SIGNATURE_SIZE] == mac)
 }
 
 /// The map pack's installed maps, hashed (module docs).
@@ -407,6 +479,10 @@ pub struct UserBases {
 impl live_hle::maps::Bases for UserBases {
     fn disc_hash(&self, map: &str) -> Option<Sha256> {
         self.disc.disc_hash(map).or_else(|| self.map_pack.hash(map))
+    }
+
+    fn has_map_pack(&self) -> bool {
+        map_pack_installed(&self.map_pack.data_root)
     }
 }
 
@@ -623,5 +699,37 @@ mod tests {
             gate.retail_id("turf"),
             Some(content::MapId::retail("turf", Sha256::of(TURF)))
         );
+        assert!(!gate.has_map_pack(), "one installed map is not the full pack");
+    }
+
+    #[test]
+    fn matchmaking_pack_requires_all_signed_one_map_offers() {
+        let t = Temp::new();
+        let data = t.0.join("data");
+        let title = crate::new_maps::HALO2_TITLE;
+        let cfg = vfs::Config::new(&data, title);
+        // A stamp alone does not make an interrupted installation playable.
+        std::fs::write(data.join("mappack.stamp"), b"stale").unwrap();
+        assert!(!map_pack_installed(&data));
+        for (i, (map, _)) in content::map_pack::MAPS.iter().enumerate() {
+            let id = (u64::from(title) << 32) | (0x0101 + i as u64);
+            let dir = cfg.content_dir(id);
+            std::fs::create_dir_all(&dir).unwrap();
+            let record = content::patch_lvl::testing::v3_record(map, i as u32 + 10, 0);
+            let patch = content::patch_lvl::v2_from_v3(&record).unwrap();
+            let mut meta = [0; 0x88];
+            meta[0x14..0x18].copy_from_slice(b"XCSF");
+            meta[0x18..0x1c].copy_from_slice(&0x88u32.to_le_bytes());
+            meta[0x24..0x28].copy_from_slice(&title.to_le_bytes());
+            meta[0x28..0x30].copy_from_slice(&id.to_le_bytes());
+            kernel::content::sign(&mut meta, title).unwrap();
+            std::fs::write(dir.join("ContentMeta.xbx"), meta).unwrap();
+            std::fs::write(dir.join("Patch.lvl"), patch).unwrap();
+            std::fs::write(dir.join(format!("{}.MAP", map.to_ascii_uppercase())), b"map").unwrap();
+        }
+        assert!(gate(&iso(&t), &data, DiscHashes::default()).has_map_pack());
+        let first = cfg.content_dir((u64::from(title) << 32) | 0x0101);
+        std::fs::write(first.join("ContentMeta.xbx"), [0; 0x88]).unwrap();
+        assert!(!gate(&iso(&t), &data, DiscHashes::default()).has_map_pack());
     }
 }

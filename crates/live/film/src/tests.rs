@@ -472,12 +472,17 @@ fn machine_seek_resumes_at_next_hle_call_and_lobby_boundary() {
     w.chunk(MARK, &lobby(10)).unwrap();
     w.chunk(MARK, &Mark::D3dBarrier { slices: 64, tick: 31, saved: true }).unwrap();
     w.chunk(RAND, &vec![call(1)]).unwrap();
+    let size = Call {
+        index: 2, op: tape::VIDEO_MENU_SIZE.into(), thread: 0, args: vec![],
+        result: Ok((3440 << 16) | 1440), outputs: vec![],
+    };
+    w.chunk(tape::VSIZ, &[&size]).unwrap();
     w.chunk(
         MARK,
         &Mark::End {
             slices: 70,
             tick: 31,
-            calls: 2,
+            calls: 3,
         },
     )
     .unwrap();
@@ -502,7 +507,47 @@ fn machine_seek_resumes_at_next_hle_call_and_lobby_boundary() {
     assert!(tape.checks.is_empty());
     assert_eq!(tape.lobby.pop_front().unwrap().0, 10);
     assert_eq!(tape.call(1, "Random", &[4], 1).unwrap(), call(1));
+    assert_eq!(tape.call(2, tape::VIDEO_MENU_SIZE, &[], 0).unwrap(), size);
     assert!(tape.exhausted());
+}
+
+#[test]
+fn ring_cursor_replays_partial_call_batch_hash_lobby_and_barrier_twice() {
+    let dir = Temp::new();
+    let path = dir.0.join("ring-cursor.h2film");
+    let mut header = header(0);
+    header.version = 2;
+    let mut writer = Writer::new(File::create(&path).unwrap(), &header).unwrap();
+    let call = |index| Call {
+        index,
+        op: "Random".into(),
+        thread: 1,
+        args: vec![1],
+        result: Ok(0),
+        outputs: vec![vec![index as u8]],
+    };
+    let check = Check { tick: 30, calls: 2, sim: Some(7) };
+    writer.chunk(DATA, &manifest::Manifest::default()).unwrap();
+    writer.chunk(RAND, &[call(0), call(1)]).unwrap();
+    writer.chunk(MARK, &Mark::D3dBarrier { slices: 40, tick: 22, saved: true }).unwrap();
+    writer.chunk(MARK, &Mark::Lobby {
+        boundary: 15, method: "host.lobby.state".into(), params: serde_json::Value::Null,
+    }).unwrap();
+    writer.chunk(HASH, &check).unwrap();
+    writer.chunk(MARK, &Mark::End { slices: 50, tick: 30, calls: 2 }).unwrap();
+    writer.finish().unwrap();
+
+    let mut tape = Playback::load(Reader::open(&path).unwrap()).unwrap();
+    assert_eq!(tape.call(0, "Random", &[1], 1).unwrap(), call(0));
+    let cursor = tape.cursor();
+    for _ in 0..3 {
+        assert_eq!(tape.call(1, "Random", &[1], 1).unwrap(), call(1));
+        assert_eq!(tape.d3d_barrier(40, 22).unwrap(), Some(true));
+        assert_eq!(tape.lobby.pop_front().unwrap().0, 15);
+        assert_eq!(tape.checks.pop_front(), Some(check));
+        assert!(tape.exhausted());
+        tape.resume_cursor(cursor).unwrap();
+    }
 }
 
 #[test]

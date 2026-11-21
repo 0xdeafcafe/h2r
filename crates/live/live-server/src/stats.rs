@@ -441,7 +441,10 @@ impl Inner {
             .filter(|_| !bot)
             .and_then(|s| g.slots.get(&s).cloned());
         let g = g.clone();
-        let weapon = k.weapon.clone().filter(|w| !w.is_empty());
+        // A player can receive kill credit for an environmental death.
+        let weapon = k.weapon.as_deref().filter(|&w| {
+            !matches!(w, "" | "fall" | "collision" | "splatter" | "guardians" | "teleporter" | "explosion")
+        });
         let add = |t: &mut Totals| {
             t.deaths += 1;
             match kind {
@@ -459,8 +462,8 @@ impl Inner {
             }
             if scoring {
                 b.map(&g).kills += 1;
-                if let Some(w) = &weapon {
-                    *b.weapons.entry(w.clone()).or_default() += 1;
+                if let Some(w) = weapon {
+                    *b.weapons.entry(w.to_owned()).or_default() += 1;
                 }
             }
             if let Some((Some(x), name, _)) = &killer_acct {
@@ -991,6 +994,22 @@ mod tests {
         assert_eq!((s.activity[0].games, s.activity[0].kills), (1, 5));
         assert_eq!(s.last_24h, s.totals);
         assert_eq!(s.all_time, s.totals);
+    }
+
+    #[test]
+    fn credited_environmental_deaths_count_as_kills_in_map_and_player_totals() {
+        let mut log = Log::new();
+        log.start("g1", json!({}), T0);
+        for source in ["fall", "collision", "splatter", "guardians", "teleporter", "explosion"] {
+            log.kill("g1", 1, Some(0), "kill", source, T0 + 1);
+        }
+        log.kill("g1", 1, Some(0), "kill", "frag_grenade", T0 + 2);
+
+        let s = log.stats.summary_at(Some(7), T0 + 3);
+        assert_eq!(s.totals.kills, 7);
+        assert_eq!(s.maps[0].kills, 7);
+        assert_eq!(row(&s, A).kills, 7);
+        assert_eq!(s.weapons, vec![WeaponRow { weapon: "frag_grenade".into(), kills: 1 }]);
     }
 
     /// Hosts before the fix sent every free-for-all kill as a betrayal:

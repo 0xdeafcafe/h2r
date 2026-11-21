@@ -26,7 +26,9 @@ pub fn from_schema(name: &str, s: &Struct) -> StructDef {
                     seen: String::new(),
                 },
                 meaning: String::new(),
+                doc: None,
                 default: None,
+                applies: None,
             });
             o = end;
         }
@@ -55,7 +57,9 @@ pub fn from_schema(name: &str, s: &Struct) -> StructDef {
             name,
             kind,
             meaning: String::new(),
+            doc: None,
             default: None,
+            applies: None,
         });
         at = o + w;
     }

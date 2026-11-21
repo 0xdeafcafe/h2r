@@ -504,6 +504,23 @@ pub const VARIANTS: &[Variant] = &[
         ],
         description: "No weapons at all, only Warthogs and Ghosts. Splatter everyone else. Try Coagulation or Burial Mounds.",
     },
+    Variant {
+        name: "Superbounce",
+        ty: GameType::Slayer,
+        settings: &[
+            ScoreToWin(0),
+            TimeLimit(0),
+            RespawnSeconds(3),
+            SuicidePenaltySeconds(0),
+            Shields(Shields::Overshields),
+            DamageResistance(true),
+            StartingWeapon(Some(Weapon::Magnum)),
+            SecondaryWeapon(None),
+            WeaponsOnMap(WeaponSet::None),
+            GrenadesOnMap(false),
+        ],
+        description: "Bounce practice with a guide: a plate shows whether your crouch has primed the bounce, and lines mark the strips that launch you.",
+    },
 ];
 
 // ---- guest memory seen by the logic ----
@@ -1026,7 +1043,7 @@ mod tests {
 
     #[test]
     fn variants_are_well_formed() {
-        assert!((8..=13).contains(&VARIANTS.len()));
+        assert!((8..=16).contains(&VARIANTS.len()));
         let mut names = std::collections::HashSet::new();
         for v in VARIANTS {
             // The keyboard allows 16 characters; the copy starts from this.

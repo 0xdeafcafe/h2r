@@ -30,7 +30,7 @@ use crate::ui_kit::screen::Row;
 #[derive(Debug)]
 pub struct ChoiceRow {
     pub def: &'static Def,
-    /// The row's name, before its value ("Count: < 4 >").
+    /// The row's name, before its value ("Count: 4").
     pub label: &'static str,
     /// The description pane's text while the row has the focus: one line
     /// on a Quick Options page.
@@ -91,6 +91,7 @@ impl ChoiceRow {
                     .map(|v| (Value::Int(v), v.to_string()))
                     .collect()
             }
+            Kind::Resolution(_) => vec![(self.def.default, self.def.label(self.def.default))],
             Kind::Choice(cs) => cs
                 .iter()
                 .map(|c| (Value::Int(c.value), c.label.to_string()))

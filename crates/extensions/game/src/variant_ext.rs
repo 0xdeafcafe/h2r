@@ -71,7 +71,7 @@ pub const HOST_WAIT: Duration = Duration::from_millis(1500);
 /// How long a host's start waits for its guests' presence.
 pub const OLDER_WAIT: Duration = Duration::from_millis(500);
 
-/// The squad session's players (docs/game/bots.md, "Session S"): a mask of
+/// The squad session's players (docs/game/bots.md §5.1): a mask of
 /// the 16 slots in use, then the slots, each with a 12-byte id (the XUID,
 /// then the machine id's last four) and its peer.
 pub mod players {
@@ -183,6 +183,13 @@ impl Decision {
     /// machine or the host. A guest doesn't: the host's counts replicate.
     pub fn unlimited_grenades(&self) -> bool {
         matches!(self, Decision::Apply { ext, who } if ext.unlimited_grenades && *who != GUEST)
+    }
+
+    /// Whether the variant's extension block asks for the superbounce game
+    /// type ([`crate::superbounce_mode`]). It only draws a plate and lines
+    /// on this machine, so a guest with its host's block shows them too.
+    pub fn superbounce(&self) -> bool {
+        matches!(self, Decision::Apply { ext, .. } if ext.superbounce)
     }
 
     /// The options when this machine scales damage (damage dealt, shield
@@ -930,7 +937,7 @@ mod tests {
             ]
         );
         // The last slot's end is inside the session.
-        assert!(players::AT + players::SLOTS * players::STRIDE <= 0x4980);
+        const { assert!(players::AT + players::SLOTS * players::STRIDE <= 0x4980) };
 
         let lines = older_lines(&live_hle::Lacking::Known(vec!["Oldie".into()]));
         assert_eq!(

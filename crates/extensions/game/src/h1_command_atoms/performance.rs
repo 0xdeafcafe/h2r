@@ -177,7 +177,7 @@ pub(super) async fn begin_gaze(
         2 => target != NONE,
         _ => false,
     };
-    if !on || !valid || !(a.amount > 0.0) {
+    if !on || !valid || a.amount.partial_cmp(&0.0) != Some(std::cmp::Ordering::Greater) {
         cx.write(|m| clear_gaze(m, c))?;
         return Ok(Ret::new(2, 16));
     }
@@ -313,7 +313,7 @@ fn burst_pattern(
     let Some(a) = decode(m, id)? else {
         return Ok(None);
     };
-    if a.kind != 7 || !(a.amount > 0.0) {
+    if a.kind != 7 || a.amount.partial_cmp(&0.0) != Some(std::cmp::Ordering::Greater) {
         return Ok(None);
     }
     let copy = scratch + (actor & 255) * STRIDE;

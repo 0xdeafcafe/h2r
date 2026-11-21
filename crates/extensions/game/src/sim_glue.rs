@@ -141,6 +141,7 @@ struct State {
 struct Inner {
     path: PathBuf,
     hosted_map: std::sync::OnceLock<level_boot::Request>,
+    lobby: Arc<Mutex<hosted::LobbyState>>,
     matched: Match,
     report_path: Option<PathBuf>,
     frame: SimFrame,
@@ -389,6 +390,7 @@ impl Sim {
         Sim(Arc::new(Inner {
             path,
             hosted_map: Default::default(),
+            lobby: Default::default(),
             matched,
             report_path,
             frame,
@@ -462,7 +464,6 @@ impl Sim {
             let id = bots::phantom::Identity {
                 xuid: live_proto::bots::local_xuid(u32::from(b.seat) + 1).0,
                 gamertag: b.name.clone(),
-                ..Default::default()
             };
             let handle =
                 bots::phantom::add(id, b.team, Box::new(source)).map_err(anyhow::Error::msg)?;
@@ -648,6 +649,11 @@ impl Sim {
     /// What `match.status` answers.
     pub fn status(&self) -> Value {
         let inner = &self.0;
+        let lobby = inner
+            .lobby
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .status();
         let s = inner.lock();
         let sp = speed(inner, &s);
         let f = inner.frame.stats();
@@ -657,6 +663,7 @@ impl Sim {
             "game_type": inner.matched.game_type.name(),
             "bots": inner.matched.bots.len(),
             "phase": s.phase.name(),
+            "lobby": lobby,
             "bound_seats": s.bindings,
             "ticks": s.tally.ticks(),
             "max_ticks": inner.matched.config.max_ticks,
@@ -901,9 +908,9 @@ impl hooks::Feature for SimMetrics {
     }
 
     fn build(&self, b: &mut hooks::Builder) -> std::result::Result<(), hooks::BuildError> {
-        let lobby = hosted::install(b, Arc::clone(&self.sim))?;
+        hosted::install(b, Arc::clone(&self.sim))?;
         let policy = match self.film_playback {
-            Some(playback) => film_state::policy(&self.sim, lobby, playback),
+            Some(playback) => film_state::policy(&self.sim, playback),
             None => hooks::SnapshotPolicy::Stateless,
         };
         b.snapshot(policy);

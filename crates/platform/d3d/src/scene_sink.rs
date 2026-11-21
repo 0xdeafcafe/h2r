@@ -38,7 +38,8 @@ use gfx::{Clear, D3DFormat};
 use crate::backend::ExternalCopies;
 use crate::backend::{
     Backend, DrawJudge, DrawOutcome, ExternalPass, ExternalPassRequest, ExternalPlan, ExternalRecording, ExternalSurfaces,
-    GuestLayoutKind, QueuedExternalDraw, RectClear, ResolvedDraw, SceneStage, SharedReplacement, StreamBytes, TargetCopy,
+    DisplaySurfacePixels, GuestLayoutKind, QueuedExternalDraw, RectClear, RenderExtents, ResolvedDraw,
+    SceneStage, SharedReplacement, StreamBytes, TargetCopy,
 };
 
 /// Guest proxy and GPU backend tickets for the reports in a submitted frame,
@@ -598,12 +599,30 @@ impl<B: Backend> Backend for SceneSink<B> {
     fn surface_extent(&self, surface: Self::Surface) -> Option<(u32, u32)> {
         self.inner.surface_extent(surface)
     }
+    fn render_extents(
+        &mut self,
+        color: Self::Surface,
+        depth: Option<Self::Surface>,
+        textures: [Option<&Self::Texture>; 4],
+    ) -> RenderExtents {
+        self.inner.render_extents(color, depth, textures)
+    }
+    fn read_display_surface(
+        &mut self,
+        surface: Self::Surface,
+    ) -> Result<Option<DisplaySurfacePixels>, String> {
+        self.inner.read_display_surface(surface)
+    }
     fn gpu_fence(&mut self) -> Option<Box<dyn Fn() -> bool + Send>> {
         self.inner.gpu_fence()
     }
     fn idle(&mut self) -> Option<std::time::Instant> {
         self.inner.idle()
     }
+    fn reset_present_metadata(&mut self) -> Result<(), String> {
+        self.inner.reset_present_metadata()
+    }
+
     fn drain(&mut self) -> Result<(), String> {
         self.inner.drain()
     }
@@ -738,6 +757,11 @@ impl<B: Backend> Backend for SceneSink<B> {
     #[cfg(feature = "gpu")]
     fn upload_scene_assets(&mut self, upload: crate::backend::AssetUpload) {
         self.inner.upload_scene_assets(upload);
+    }
+
+    #[cfg(feature = "gpu")]
+    fn upload_device(&self) -> Option<(wgpu::Device, wgpu::Queue)> {
+        self.inner.upload_device()
     }
 
     fn supports_external_pass(&self) -> bool {

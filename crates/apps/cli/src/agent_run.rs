@@ -23,7 +23,7 @@
 use std::time::Instant;
 
 use agent_proto::expect::Expect;
-pub use agent_proto::expect::{Op, check};
+pub use agent_proto::expect::Op;
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 
@@ -142,6 +142,7 @@ pub fn execute(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use agent_proto::expect::check;
 
     fn split(s: &str) -> Result<Vec<String>> {
         crate::agent_cmd::split_words(s)

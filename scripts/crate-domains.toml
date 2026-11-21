@@ -14,8 +14,8 @@
 about = "Disc, tag and file formats, ours and the game's: plain data, no guest, no host"
 uses = []
 crates = [
-    "asf", "content", "font", "h1-contract", "hs", "map", "mopp", "movies",
-    "pathfind", "settings", "shaders", "tags", "variants", "xbe", "xiso",
+    "asf", "content", "firefight", "font", "forge-doc", "h1-contract", "host-dirs", "host-log", "hs", "map",
+    "mopp", "movies", "pathfind", "settings", "shaders", "tags", "variants", "xbe", "xiso",
 ]
 
 [recompiler]
@@ -39,7 +39,7 @@ about = "Platform HLE: the Xbox's devices and libraries on the host (Direct3D 8,
 uses = ["formats", "runtime"]
 crates = [
     "assets", "audio", "bink-hle", "d3d", "dsound", "gfx", "hot-render",
-    "input", "voice", "wma", "xapi",
+    "input", "mem-watch", "voice", "wma", "xapi",
 ]
 
 [hooking]
@@ -63,7 +63,7 @@ guest_free = ["frame-scene", "native-render", "scene-extract", "sim-anim", "sim-
 about = "Live, co-op transport, bots, films, cloud saves, the dedicated host's data, the service itself (another session owns this domain)"
 uses = ["formats", "runtime", "platform", "hooking", "rewrites"]
 crates = [
-    "bots", "cloud-saves", "coop", "film", "host-data", "live-hle", "live-proto",
+    "actor-net", "bots", "cloud-saves", "coop", "film", "host-data", "live-hle", "live-proto",
     "live-server", "live-telemetry", "live-worker", "sim-bench",
 ]
 
@@ -81,9 +81,9 @@ live_owned = ["bot-glue", "net-glue", "theater"]
 about = "Offline work on game data: the Halo 1 converters, the editor cores, the profiler; and xtask, the workspace's test runner"
 uses = ["formats", "recompiler", "runtime", "platform", "rewrites", "live"]
 crates = [
-    "editor-core", "h1-assets", "h1campaign", "h1convert",
-    "h1map", "h1objects", "hopper-edit", "hud-edit", "live-art", "perf", "scenario-edit", "viewer",
-    "xtask",
+    "editor-core", "firefight-kit", "forge-build", "h1-assets", "h1campaign", "h1convert",
+    "h1map", "h1objects", "hopper-edit", "hud-edit", "live-art", "mesh-edit", "perf",
+    "scenario-edit", "viewer", "xtask",
 ]
 live_owned = ["live-art"]
 

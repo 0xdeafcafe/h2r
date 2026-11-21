@@ -113,48 +113,6 @@ pub fn rasterize(lines: &[Line], scale: u32) -> (u32, u32, Vec<u8>) {
     (w, h, px)
 }
 
-#[derive(Clone, Copy)]
-pub(crate) enum PlatePosition {
-    TopLeft,
-    TopRight,
-    LeftCenter,
-    BottomCenter,
-}
-
-fn plate_placement(lines: &[Line], area: Viewport, position: PlatePosition) -> (u32, (u32, u32)) {
-    let (scale, (left, top)) = place(lines, area);
-    let (w, h) = size(lines, scale);
-    let margin = MARGIN * scale;
-    let at = match position {
-        PlatePosition::TopLeft => (left, top),
-        PlatePosition::TopRight => (area.x + area.width.saturating_sub(w + margin), top),
-        PlatePosition::LeftCenter => (left, area.y + area.height.saturating_sub(h) / 2),
-        PlatePosition::BottomCenter => (
-            area.x + area.width.saturating_sub(w) / 2,
-            area.y + area.height.saturating_sub(h + margin),
-        ),
-    };
-    (scale, at)
-}
-
-/// The pixel rectangle of one text row, in the same coordinates as a
-/// window's cursor. It includes the full width of the row's text cells.
-pub(crate) fn line_area(
-    lines: &[Line],
-    row: usize,
-    area: Viewport,
-    position: PlatePosition,
-) -> Option<Viewport> {
-    let cols = lines.get(row)?.text.chars().count() as u32;
-    let (scale, (x, y)) = plate_placement(lines, area, position);
-    Some(Viewport {
-        x: x + PAD * scale,
-        y: y + (PAD + row as u32 * PITCH) * scale,
-        width: cols * CELL * scale,
-        height: PITCH * scale,
-    })
-}
-
 /// Draws the menu over an already composited target.
 pub struct MenuRenderer {
     sprite: Sprite,
@@ -184,22 +142,6 @@ impl MenuRenderer {
         dst_size: (u32, u32),
         area: Viewport,
     ) {
-        self.draw_at(device, queue, encoder, lines, dst, dst_format, dst_size, area, PlatePosition::TopLeft);
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn draw_at(
-        &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        encoder: &mut wgpu::CommandEncoder,
-        lines: &[Line],
-        dst: &wgpu::TextureView,
-        dst_format: wgpu::TextureFormat,
-        dst_size: (u32, u32),
-        area: Viewport,
-        position: PlatePosition,
-    ) {
         if lines.is_empty() {
             return;
         }
@@ -213,7 +155,7 @@ impl MenuRenderer {
         } else {
             area
         };
-        let (scale, at) = plate_placement(lines, area, position);
+        let (scale, at) = place(lines, area);
         if self
             .drawn
             .as_ref()

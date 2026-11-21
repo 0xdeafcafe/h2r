@@ -1,3 +1,6 @@
+import { JoinLink } from "../components/JoinLink";
+import { joinHref } from "../lib/join";
+import { useGameJoin } from "../state/sessions";
 import { gameMapTitle, packageLookup } from "../state/maps";
 import { isHalo1Map, mapTitle } from "../state/gameart";
 import { identity } from "../state/identity";
@@ -142,7 +145,11 @@ function GameTitle(props: { game?: GameState; clip?: Clip; watch?: () => void })
   return (
     <Title class="s-title--bar" back={props.clip ? ["watch full film", theaterHref(props.clip.game)] : ["see all games", statsPath("/games")]}
       right={
-        <Show when={!props.clip && props.game?.status === "ended"}>
+        <Show when={!props.clip && props.game?.status === "ended"} fallback={
+          <Show when={!props.clip && props.game?.status === "live" && props.game}>
+            {(game) => <LiveGameJoin id={game().game_id} />}
+          </Show>
+        }>
           <A href={href()} onClick={(event: MouseEvent) => {
             if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
             props.watch?.();
@@ -267,6 +274,12 @@ function Legend(props: { game: GameState }) {
 /** The viewer's title: the game type on the map (the mission, in a campaign). */
 function viewerTitle(g: GameState): string {
   return isCampaign(g) ? gameMapTitle(g) : `${gameTitle(g)} on ${gameMapTitle(g)}`;
+}
+
+function LiveGameJoin(props: { id: string }) {
+  const session = useGameJoin(() => props.id);
+  const href = () => joinHref(live.server().base, session() ?? "");
+  return <Show when={href()}>{(url) => <JoinLink href={url()} />}</Show>;
 }
 
 /** Beside the viewer: the scoreboard (players, in a campaign) and the field report. */

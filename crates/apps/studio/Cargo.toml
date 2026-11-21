@@ -12,12 +12,15 @@ name = "h2-editor"
 path = "src/main.rs"
 
 [dependencies]
+mem-watch = { workspace = true, features = ["gpu"] }
 # test-engine: the item hooks the headless screenshots aim input with.
 dear-imgui-rs = { version = "0.22", features = ["test-engine"] }
 dear-imgui-wgpu = "0.22"
 dear-imgui-winit = "0.22"
 dear-imguizmo = { version = "0.22", default-features = false }
 wgpu = "30"
+# The wgpu instance, with the backends per host (gfx::GpuHost).
+gfx = { path = "../../platform/gfx", default-features = false, features = ["gpu"] }
 winit = "0.30"
 pollster = "1"
 png = "0.18"
@@ -51,12 +54,16 @@ vfs.workspace = true
 serde_json.workspace = true
 
 # Play and pair (src/play.rs): the agent API's wire types and client.
-agent-proto = { path = "../../extensions/agent-proto" }
+agent-proto = { path = "../../extensions/agent-proto", features = ["serve-memory"] }
 live-mirror = { path = "../../tools/live-mirror" }
 guest-layout = { path = "../../hooking/guest-layout" }
 ab_glyph = "0.2"
 # The agent API (src/api): method names, short forms and the client.
 studio-proto = { path = "../studio-proto" }
+
+[target.'cfg(unix)'.dependencies]
+# Check the lifetime of a discovered game after a deliberate Unpair.
+libc = "0.2"
 
 [dev-dependencies]
 # The HUD tool's tests draw the invented HUD map.

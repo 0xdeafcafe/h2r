@@ -11,6 +11,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Weak};
 
 use frame_scene::{AuxTarget, TargetRef};
+use gfx::raster::RenderScale;
 use gfx::surface::SurfaceId;
 use gfx::texture::DecodedTexture;
 use gfx::{D3DFormat, TextureDesc};
@@ -104,7 +105,7 @@ impl GfxBackend {
         let presented = targets
             .get(&frame.presented)
             .ok_or("missing present target for the input grid")?;
-        let scale = self.scales.get(presented).copied().unwrap_or(1);
+        let scale = self.integral_scale(*presented).ok_or("the input grid is not an integer scale")?;
         let physical = names
             .iter()
             .map(|&name| {
@@ -152,7 +153,12 @@ impl GfxBackend {
             && D3DFormat::from_raw(desc.format) == Some(actual.format)
             && actual.samples == 1
             && (surface.kind() == gfx::surface::SurfaceKind::DepthStencil) == desc.depth
-            && self.scales.get(&id).copied().unwrap_or(1) == scale
+            && self.scales.get(&id).copied().unwrap_or(RenderScale::ONE) == RenderScale::from(scale)
+    }
+
+    /// A sealed scene replays on uniform integer grids only.
+    pub(crate) fn integral_scale(&self, id: SurfaceId) -> Option<u32> {
+        self.scales.get(&id).map_or(Some(1), |scale| scale.uniform_integer())
     }
 }
 
@@ -184,7 +190,7 @@ impl<'a> GuestDrawPass<'a> {
         let presented = targets
             .get(&frame.presented)
             .ok_or("missing existing present target")?;
-        let scale = gpu.scales.get(presented).copied().unwrap_or(1);
+        let scale = gpu.integral_scale(*presented).ok_or("existing present target is not an integer scale")?;
         Self::start(gpu, frame, scale, true, Some(targets))
     }
 
@@ -313,7 +319,7 @@ impl<'a> GuestDrawPass<'a> {
                 desc.width,
                 desc.height,
                 desc.depth,
-                self.scale,
+                RenderScale::from(self.scale),
             )?
         };
         self.targets.insert(target, surface);

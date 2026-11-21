@@ -220,6 +220,8 @@ pub struct State {
     pub coop_games: BTreeMap<u64, crate::sessions::CoopGame>,
     pub mailboxes: BTreeMap<Xuid, BTreeMap<u64, live_proto::mailbox::Invite>>,
     pub games: HashMap<String, Game>,
+    /// Consumed by the GameStarted appended together with each private link.
+    pending_session_links: HashMap<String, String>,
     /// Start position -> game id, oldest first.
     games_by_position: BTreeMap<u64, String>,
     pub(crate) films: crate::films::Films,
@@ -439,7 +441,7 @@ impl Model {
     fn apply_game(s: &mut State, e: &RecordedEvent, at: i64) {
         let b = &e.body;
         if b.kind == game::GAME_STARTED {
-            let Some(started) = data::<GameStarted>(e) else {
+            let Some(mut started) = data::<GameStarted>(e) else {
                 return;
             };
             let id = started.game_id.clone();
@@ -456,6 +458,11 @@ impl Model {
                     crate::sessions::CoopLink::find(s, &who)
                 })
                 .flatten();
+            // The internal projection also understands legacy starts which
+            // already include the session. The signed event stays immutable.
+            if let Some(link) = s.pending_session_links.remove(&id) {
+                started.game.session_id = Some(link);
+            }
             let mut game = Game {
                 all_players_identified: players.iter().all(|p| p.xuid.is_some()),
                 ended_by_host: false,
@@ -601,6 +608,15 @@ impl Model {
         }
         if b.stream.starts_with("bot-") || b.stream.starts_with("bots-") {
             crate::bots::project(&mut s, e);
+            return;
+        }
+        if b.stream == crate::games::SESSION_LINKS {
+            if b.kind == crate::games::SESSION_LINKED
+                && let (Some(game), Some(session)) =
+                    (b.data["game_id"].as_str(), b.data["session_id"].as_str())
+            {
+                s.pending_session_links.insert(game.into(), session.into());
+            }
             return;
         }
         if b.stream.starts_with("game-") {
@@ -954,6 +970,30 @@ mod tests {
         }
         log.push(&format!("presence-{X}"), "SignedOut", json!({"xuid": X}));
         assert!(log.model.read().presence.is_empty());
+    }
+
+    #[test]
+    fn replay_associates_private_and_legacy_session_ids_with_the_right_game() {
+        let mut log = Log::new();
+        let session = "8000000000000001";
+        log.push(crate::games::SESSION_LINKS, crate::games::SESSION_LINKED, json!({
+            "game_id": "linked", "session_id": session
+        }));
+        for (id, legacy_session) in [("linked", None), ("legacy", Some(session)), ("unlinked", None)] {
+            let mut start = json!({
+                "game_id": id, "host": "server:h", "map": "lockout",
+                "mode": "multiplayer", "team_play": false, "players": []
+            });
+            if let Some(legacy) = legacy_session {
+                start["session_id"] = json!(legacy);
+            }
+            log.push(&game::stream(id), game::GAME_STARTED, start);
+        }
+        let state = log.model.read();
+        assert_eq!(state.games["linked"].started.game.session_id.as_deref(), Some(session));
+        assert_eq!(state.games["legacy"].started.game.session_id.as_deref(), Some(session));
+        assert!(state.games["unlinked"].started.game.session_id.is_none());
+        assert!(state.pending_session_links.is_empty());
     }
 
     /// A game record's kills read as kills in free-for-all, though hosts

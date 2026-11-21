@@ -1,8 +1,10 @@
 # Bot training: tuning the Clanker table from sim matches
 
 Status: Design. Nothing here is built; it sits on `h2 sim batch` and the Clanker Training admin tab, which are.
-Code: `crates/live/sim-bench/src/train/` (the search, the fitness and the table; pure), `crates/apps/cli/src/sim_cmd/train.rs` (`h2 sim sweep`, `h2 sim train`), `crates/live/live-server/src/training.rs` (the API), `web/src/admin/training/` (the page). Tests: beside each.
-Switch: none. `H2_CLANKER_TABLE` (a table file for one process) is added to [switches.md](../runtime/switches.md) with the slice that reads it.
+Code: `crates/live/sim-bench` and `crates/apps/cli/src/sim_cmd`
+provide match runners. The training search, service API and admin
+page below describe proposed interfaces.
+Switch: none. The design needs a per-process table-file override.
 
 **Can the sim train the bots, fast, and show it on the Live admin? Yes.**
 One Mac plays about 300 to 450 three-minute 2 v 2 matches an hour, which is
@@ -488,7 +490,7 @@ the acceptance runs are the coordinator's.
    finding against the determinism claim.
 2. **The table as data.** `h2-clanker-table/1`, `bots::table`, the
    constants read through it, `clanker_table` in match and batch files and
-   per arm, `H2_CLANKER_TABLE`. The try-hard block joins when the
+   per arm, selected by a table-file override. The try-hard block joins when the
    personality lane lands. *Accept:* the built-in table reproduces the
    constants' pads over the existing brain tests; a table outside its
    ranges is clamped or refused by name; an A/B batch of two table files

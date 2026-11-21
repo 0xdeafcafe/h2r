@@ -42,6 +42,7 @@ fn custom() -> NewSession {
         campaign: None,
         ping_ms: None,
         variant_ext: None,
+        browser: None,
     }
 }
 

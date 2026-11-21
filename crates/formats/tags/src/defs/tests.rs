@@ -5,9 +5,8 @@ use crate::repo::{Body, LooseTag, Node, Region, TagKey, Tree, Value};
 use crate::schema::Schema;
 use map::TagId;
 
-const TEXT: &str = "\
-struct base 0x8
-  0x0 i16 kind default=6 -- E: test
+const TEXT: &str = r#"struct base 0x8
+  0x0 i16 kind doc="Selects \"plain\" -- the default \\ preset." default=6 applies=use -- E: test
   0x2 flags16 flags bits=a|b|_|c default=b|c
   0x4 f32 radius default=1.5
 group test 0x34
@@ -23,12 +22,64 @@ group test 0x34
   0x24 enum16 shape values=box|sphere default=sphere
   0x26 unknown 0x2
   0x28 f32[3] offset
-";
+"#;
 
 fn defs() -> Defs {
     let mut d = Defs::default();
     d.parse_into("test", TEXT).unwrap();
     d
+}
+
+#[test]
+fn field_descriptions_keep_quoted_text_separate_from_evidence() {
+    let defs = defs();
+    let kind = defs.structs["base"].field("kind").unwrap();
+    assert_eq!(
+        kind.doc.as_deref(),
+        Some(r#"Selects "plain" -- the default \ preset."#)
+    );
+    assert_eq!(kind.meaning, "E: test");
+    assert_eq!(kind.default.as_deref(), Some("6"));
+    assert_eq!(kind.applies, Some("use"));
+    assert!(defs.structs["base"].field("flags").unwrap().doc.is_none());
+    let registry = crate::registry::Registry::build(&Schema::default(), &defs);
+    let layout = registry.group(FourCC(*b"test")).unwrap();
+    assert_eq!(layout.field_at(0).unwrap().doc, kind.doc);
+}
+
+#[test]
+fn malformed_field_descriptions_report_the_line() {
+    for attr in [
+        "doc=bare",
+        "doc=\"unfinished",
+        "doc=\"one\"tail",
+        "doc=\"one\" doc=\"two\"",
+    ] {
+        let text = format!("group zzzz 4\n  0x0 u32 invented {attr}");
+        let error = Defs::default().parse_into("invented", &text).unwrap_err();
+        assert_eq!(error.line, 2);
+    }
+}
+
+#[test]
+fn live_apply_classes_require_known_names_and_preserve_the_evidence() {
+    for which in ["frame", "use", "creation"] {
+        let mut defs = Defs::default();
+        let text = format!(
+            "group test 0x8\n  0x0 f32 rate applies={which} -- invented reader\n  0x4 u32 count\n"
+        );
+        defs.parse_into("invented", &text).unwrap();
+        let group = defs.group(FourCC(*b"test")).unwrap();
+        let field = group.field("rate").unwrap();
+        assert_eq!(field.applies, Some(which));
+        assert_eq!(field.meaning, "invented reader");
+        assert_eq!(group.field("count").unwrap().applies, None);
+    }
+    assert!(
+        Defs::default()
+            .parse_into("invented", "group test 0x4\n  0x0 f32 rate applies=soon")
+            .is_err()
+    );
 }
 
 fn key(g: &[u8; 4], p: &str) -> TagKey {
@@ -230,6 +281,30 @@ fn the_text_form_round_trips() {
         let mut again = Defs::default();
         again.parse_into("again", &text).unwrap();
         assert_eq!(again.group(*g), Some(s));
+    }
+}
+
+#[test]
+fn every_builtin_field_description_is_nonempty_and_single_line() {
+    fn check(def: &StructDef) {
+        for field in &def.fields {
+            if let Some(doc) = &field.doc {
+                assert!(
+                    !doc.is_empty() && doc.trim_end() == doc.as_str() && !doc.contains(['\n', '\r']),
+                    "{}.{} needs a nonempty, single-line description without trailing whitespace",
+                    def.name,
+                    field.name
+                );
+            }
+            if let Kind::Block(child) | Kind::Struct(child) = &field.kind {
+                check(child);
+            }
+        }
+    }
+
+    let defs = Defs::builtin();
+    for def in defs.groups.values().chain(defs.structs.values()) {
+        check(def);
     }
 }
 

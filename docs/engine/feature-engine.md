@@ -421,8 +421,11 @@ sides of the four orchestrators, `render_frame_and_present` and the per-light
 pass, and reports the front-end's guest time as the frame stats' `render`
 phase with an exclusive split per stage
 ([gameplay-budget.md](../perf/notes/gameplay-budget.md)).
-`scene_effect_instruction_entries` lists the retail instruction boundaries the
-emitter must route through entry dispatch for those stages.
+`guest_layout::points::scene_effects::instruction_entries` lists the retail
+instruction boundaries those stages hook mid-function. Discovery for both
+image tiers (`recomp::analyze_cached`, used by `h2 build`, `h2 emit` and the
+fast tier) makes each one an entry, whatever features the builder has, so
+a module built on one machine serves the native stages on another.
 
 ## State
 
@@ -451,8 +454,8 @@ Settings carry the class (`settings::Scope`):
 
 | Class | Meaning | Examples |
 |---|---|---|
-| `Host` | never on the guest thread, never writes guest memory | frame rate, vsync, bindings |
-| `View` | on the guest thread or writes guest memory, presentation only | UI screens, strings, FOV, render scale, LOD distance, the tick hash |
+| `Host` | never on the guest thread, never writes guest memory | output resolution, frame rate, vsync, bindings |
+| `View` | on the guest thread or writes guest memory, presentation only | UI screens, strings, FOV, HUD position, LOD distance, the tick hash |
 | `Sim` | changes what the simulation computes or is given | game variants, the game-start path, button layouts |
 
 - Observers do not write guest memory by convention (`Obs`).
@@ -491,7 +494,7 @@ Design only. No type, crate or command named here exists.
 - **Content packs.** Data that changes what the game loads: a manifest naming
   things on the user's own disc with hashes to check it applies, a `ContentKind`
   validated on a copy and then applied, identity by the SHA-256 of the canonical
-  JSON form ([forge.md](../game/forge.md) 2.1). A pack is data, never code, and
+  JSON form ([forge-design.md](../game/forge-design.md), "The document"). A pack is data, never code, and
   carries no game bytes.
 - **Recording and replay.** Every place something from outside reaches the guest
   is a named boundary (pad reads, device changes, network, random, Live answers,

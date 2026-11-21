@@ -25,6 +25,8 @@
 
 pub mod bots;
 pub mod calls;
+mod edits;
+pub use edits::{MapRebind, PreparedMapReload, ReservedMapReload};
 pub mod events;
 pub mod hashes;
 pub mod objects;
@@ -51,6 +53,17 @@ use calls::{Call, Tags};
 /// Reads the session kind from guest memory: the host's (boot reads the
 /// simulation mode and the squad session as `coop_probe` does).
 pub type SessionProbe = Box<dyn FnMut(&dyn GuestMemory) -> SessionView + Send>;
+type SharedProbe = Arc<Mutex<Option<SessionProbe>>>;
+
+fn read_session(probe: &SharedProbe, guest: &dyn GuestMemory) -> SessionView {
+    probe
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_mut()
+        .map(|probe| probe(guest))
+        .unwrap_or_default()
+        .settle()
+}
 
 /// One simulated player.
 struct Entry {
@@ -65,11 +78,13 @@ struct Entry {
 /// The simulated players and the backends.
 pub struct Sim {
     bots: Box<dyn Bots>,
-    probe: Option<SessionProbe>,
+    probe: SharedProbe,
     players: BTreeMap<u32, Entry>,
     next: u32,
     /// The game's own functions, once the host installs them.
     calls: Option<calls::Shared>,
+    map_rebind: Option<MapRebind>,
+    adopt_editor: Option<Box<dyn Fn() -> Result<(), String> + Send>>,
     /// Tag names for `sim.give` and `sim.spawn`.
     tags: Option<Box<dyn Tags>>,
 }
@@ -92,9 +107,39 @@ impl SimHandle {
         self.lock().host_write(ctx)
     }
 
+    pub(crate) fn session_view(&self, ctx: &mut GameCtx<'_>) -> SessionView {
+        self.lock().session(ctx)
+    }
+
+    pub(crate) fn replication_session(
+        &self,
+        ctx: &mut GameCtx<'_>,
+    ) -> Result<SessionView, RpcError> {
+        let session = self.writable_session(ctx)?;
+        if session.kind != SessionKind::MpHost {
+            let mut error = RpcError::new(
+                code::INVALID_REQUEST,
+                "replication requires an mp_host session",
+            );
+            error.data = Some(json!({ "session": session }));
+            return Err(error);
+        }
+        Ok(session)
+    }
+
+    pub(crate) fn replication_spawn(
+        &self,
+        params: SpawnParams,
+        session: SessionView,
+        group: String,
+        ctx: &mut GameCtx<'_>,
+    ) -> R {
+        self.lock().spawn_object(params, Some(session), Some(&group), ctx)
+    }
+
     /// Sets the session probe.
     pub fn set_probe(&self, probe: SessionProbe) {
-        self.lock().probe = Some(probe);
+        *self.lock().probe.lock().unwrap_or_else(|e| e.into_inner()) = Some(probe);
     }
 
     /// The queue [`calls::CallsFeature`] empties at each tick: teleports,
@@ -119,10 +164,12 @@ impl SimHandle {
 pub fn install(agent: &Agent, bots: Box<dyn Bots>, probe: Option<SessionProbe>) -> SimHandle {
     let h = SimHandle(Arc::new(Mutex::new(Sim {
         bots,
-        probe,
+        probe: Arc::new(Mutex::new(probe)),
         players: BTreeMap::new(),
         next: 1,
         calls: None,
+        map_rebind: None,
+        adopt_editor: None,
         tags: None,
     })));
     let add = |name: &str, access: Access, f: fn(&mut Sim, Value, &mut GameCtx<'_>) -> R| {
@@ -172,16 +219,9 @@ fn sim_number(id: &str) -> Option<u32> {
 
 impl Sim {
     fn session(&mut self, ctx: &mut GameCtx<'_>) -> SessionView {
-        let Some(probe) = self.probe.as_mut() else {
-            return SessionView {
-                kind: SessionKind::Unknown,
-                ..Default::default()
-            }
-            .settle();
-        };
         let mut v = None;
-        ctx.reader.with_guest(&mut |m| v = Some(probe(m)));
-        v.unwrap_or_default().settle()
+        ctx.reader.with_guest(&mut |m| v = Some(read_session(&self.probe, m)));
+        v.unwrap_or_else(|| SessionView::default().settle())
     }
 
     fn entry(&self, id: &str) -> Result<(u32, &Entry), RpcError> {
@@ -233,12 +273,7 @@ impl Sim {
                     .recording
                     .clone()
                     .ok_or_else(|| invalid("a recording source needs \"recording\": <log name>"))?;
-                if !agent_proto::valid_log_name(&name) {
-                    return Err(invalid(format!("{name}: not a log name")));
-                }
-                let path = agent_proto::cache_dir()
-                    .join("inputs")
-                    .join(format!("{name}.input"));
+                let path = crate::tap::log_path(&agent_proto::output_dir(), &name)?;
                 (PadSource::Recording { name, path }, None)
             }
             SourceKind::Brain => (PadSource::Brain, None),
@@ -358,13 +393,15 @@ impl Sim {
             state::player_handle(m, index)
         })?;
         let mut wrote = ctx.with_guest(|m| state::apply(m, index, &p))?;
-        let ticket = calls::lock(&q)
-            .submit(Call::Teleport {
+        let ticket = calls::submit(
+            &q,
+            Call::Teleport {
                 player: handle,
                 pos: p.pos.map(|v| v.map(|c| c as f32)),
                 facing: facing.map(|v| v.map(|c| c as f32)),
-            })
-            .map_err(unavailable)?;
+            },
+        )
+        .map_err(unavailable)?;
         if p.pos.is_some() {
             wrote.push("pos");
         }
@@ -375,8 +412,8 @@ impl Sim {
         ctx.defer(
             TELEPORT_TICKS,
             Box::new(move |_: &mut GameCtx<'_>| {
-                let out = calls::lock(&q).take(ticket)?;
-                Some(out.map_err(unavailable).map(|t| {
+                let out = ticket.outcome()?;
+                Some(out.map(|t| {
                     json!({
                         "player": format!("player.{index}"),
                         "wrote": wrote,
@@ -450,19 +487,21 @@ impl Sim {
         } else {
             calls::addr::MODE_REPLACE
         };
-        let ticket = calls::lock(&q)
-            .submit(Call::Give {
+        let ticket = calls::submit(
+            &q,
+            Call::Give {
                 unit,
                 weapon: tag.datum,
                 mode,
-            })
-            .map_err(unavailable)?;
+            },
+        )
+        .map_err(unavailable)?;
         let (ammo, session) = (p.ammo, serde_json::to_value(session).expect("serialises"));
         ctx.defer(
             CALL_TICKS,
             Box::new(move |ctx: &mut GameCtx<'_>| {
-                let out = calls::lock(&q).take(ticket)?;
-                Some(out.map_err(unavailable).and_then(|made| {
+                let out = ticket.outcome()?;
+                Some(out.and_then(|made| {
                     let object = made["object"].as_str().unwrap_or_default().to_owned();
                     let datum = u32::from_str_radix(&object, 16).unwrap_or(u32::MAX);
                     if let Some(a) = ammo {
@@ -485,40 +524,93 @@ impl Sim {
 
     fn spawn(&mut self, v: Value, ctx: &mut GameCtx<'_>) -> R {
         let p: SpawnParams = params(v)?;
+        self.spawn_object(p, None, None, ctx)
+    }
+
+    fn spawn_object(
+        &mut self,
+        p: SpawnParams,
+        session: Option<SessionView>,
+        group: Option<&str>,
+        ctx: &mut GameCtx<'_>,
+    ) -> R {
         if !p.pos.iter().all(|v| v.is_finite() && v.abs() < 1e6) {
             return Err(invalid("pos: three finite world coordinates"));
         }
         let facing = wire::facing_vector(p.yaw, None, None).map_err(invalid)?;
-        let session = self.host_write(ctx)?;
+        let session = match session {
+            Some(session) => session,
+            None => self.host_write(ctx)?,
+        };
         let q = self.calls()?;
-        let tag = self.find_tag(&p.tag, wire::OBJECT_GROUPS)?;
-        if !wire::OBJECT_GROUPS.contains(&tag.group.as_str()) {
+        let groups;
+        let among = match group {
+            Some(group) => {
+                groups = [group];
+                groups.as_slice()
+            }
+            None => wire::OBJECT_GROUPS,
+        };
+        let tag = self.find_tag(&p.tag, among)?;
+        if !among.contains(&tag.group.as_str()) {
             return Err(invalid(format!(
                 "{}: a {} tag; objects are {}",
                 p.tag,
                 tag.group,
-                wire::OBJECT_GROUPS.join(" ")
+                among.join(" ")
             )));
         }
-        let ticket = calls::lock(&q)
-            .submit(Call::Spawn {
+        let mp_scenario = if group.is_some() {
+            Some(ctx.with_guest(|m| {
+                guest_layout::global::SCENARIO
+                    .pointer(m)
+                    .map_err(|e| unavailable(format!("reading the scenario at {:#x}", e.addr)))?
+                    .ok_or_else(|| unavailable("no loaded scenario".into()))
+            })?)
+        } else {
+            None
+        };
+        let ticket = calls::submit(
+            &q,
+            Call::Spawn {
                 tag: tag.datum,
                 pos: p.pos.map(|c| c as f32),
                 facing: facing.map(|v| v.map(|c| c as f32)),
-            })
-            .map_err(unavailable)?;
-        let session = serde_json::to_value(session).expect("serialises");
+                mp_scenario,
+            },
+        )
+        .map_err(unavailable)?;
         ctx.defer(
             CALL_TICKS,
             Box::new(move |_: &mut GameCtx<'_>| {
-                let out = calls::lock(&q).take(ticket)?;
-                Some(out.map_err(unavailable).map(|made| {
-                    json!({
-                        "tag": tag.json(),
-                        "object": made["object"],
-                        "pos": made["pos"],
-                        "session": session,
-                    })
+                let out = ticket.outcome()?;
+                Some(out.and_then(|made| {
+                    if mp_scenario.is_none() {
+                        return Ok(json!({
+                            "tag": tag.json(),
+                            "object": made["object"],
+                            "pos": made["pos"],
+                            "session": session,
+                        }));
+                    }
+                    #[derive(serde::Deserialize)]
+                    struct Made {
+                        object: String,
+                        pos: Option<[f32; 3]>,
+                    }
+                    let made: Made = serde_json::from_value(made)
+                        .map_err(|e| unavailable(format!("invalid spawn outcome: {e}")))?;
+                    let reply = agent_proto::forge::ProbeReply::Replication {
+                        session: session.clone(),
+                        tag: agent_proto::forge::ProbeTag {
+                            tag: format!("{:#010x}", tag.datum),
+                            group: tag.group.clone(),
+                            name: tag.name.clone(),
+                        },
+                        object: made.object,
+                        pos: made.pos,
+                    };
+                    Ok(serde_json::to_value(reply).expect("serialises"))
                 }))
             }),
         );

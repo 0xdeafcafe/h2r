@@ -291,6 +291,10 @@ fn http_request_round_trips_and_waits_for_the_whole_body() {
 
 #[test]
 fn http_rejects_what_the_wire_does_not_speak() {
+    for header in ["Origin: null", "Sec-Fetch-Site: same-origin"] {
+        let req = format!("POST /v1/pack/warm HTTP/1.1\r\n{header}\r\n\r\n");
+        assert!(matches!(parse_request(req.as_bytes()), Parse::Invalid(_)));
+    }
     assert!(matches!(
         parse_request(b"GET /x HTTP/1.1\r\ntransfer-encoding: chunked\r\n\r\n"),
         Parse::Invalid(_)

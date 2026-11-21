@@ -105,7 +105,7 @@ fn typed_triangle(x: f32, colour: [f32; 4]) -> ReplayOp {
         request: ExternalPassRequest {
             rect: (0, 0, SIZE, SIZE),
             surface_size: (SIZE, SIZE),
-            z_scale: 16_777_215.0,
+            display_projection_factor: 1.0, z_scale: 16_777_215.0,
         },
         plan: ExternalPlan {
             stage: timeline::native::Stage::World,

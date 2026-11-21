@@ -636,11 +636,11 @@ fn weapon_effects_metadata() {
             tags_total + rows,
         );
         let mut by: Vec<_> = groups.into_iter().collect();
-        by.sort_by(|a, b| b.1.1.cmp(&a.1.1));
+        by.sort_by_key(|a| std::cmp::Reverse(a.1.1));
         for (g, (n, b)) in by {
             println!("  {g}: {n} tags, {b:#x} bytes");
         }
-        sizes.sort_by(|a, b| b.0.cmp(&a.0));
+        sizes.sort_by_key(|a| std::cmp::Reverse(a.0));
         for (len, g, n) in sizes.iter().take(15) {
             println!("  {len:#7x} {g} {n}");
         }

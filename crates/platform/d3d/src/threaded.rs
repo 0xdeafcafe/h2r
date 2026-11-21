@@ -81,8 +81,9 @@ use gfx::texture::{DecodedTexture, TextureDesc};
 use gfx::{Clear, D3DFormat};
 
 use crate::backend::{
-    Backend, DrawJudge, DrawOutcome, ExternalAttachments, ExternalCommands, ExternalCopies,
-    ExternalRecording, GuestLayoutKind, RectClear, ResolvedDraw, StreamBytes, TargetCopy,
+    Backend, DisplaySurfacePixels, DrawJudge, DrawOutcome, ExternalAttachments, ExternalCommands,
+    ExternalCopies, ExternalRecording, GuestLayoutKind, RectClear, RenderExtents, ResolvedDraw,
+    StreamBytes, TargetCopy,
     prepare_external_recordings,
 };
 
@@ -415,7 +416,8 @@ impl<B: Backend> Worker<B> {
             return;
         }
         if let Cmd::OwnerPresent(present) = cmd {
-            self.owner_present(*present);
+            let metadata = present.metadata.clone();
+            crate::present_camera::with(metadata, || self.owner_present(*present));
             return;
         }
         if let Some(pending) = self.transaction.as_mut() {
@@ -585,6 +587,7 @@ pub struct ThreadedBackend<B: Backend + 'static> {
     sample_depth: bool,
     surface_aliases: bool,
     external_pass: bool,
+    upload_device: Option<(wgpu::Device, wgpu::Queue)>,
     reusable_external_attachments: bool,
     pinned_external_run: Option<PinnedExternalRun>,
     /// `inner.can_mirror()`.
@@ -595,6 +598,7 @@ pub struct ThreadedBackend<B: Backend + 'static> {
     /// First visibility ticket that can depend on this present's commands.
     first_frame_ticket: u64,
     presents: u64,
+    synchronous_presents: bool,
     waits: Waits,
     /// The inner backend's draw outcomes, answered here (`None`: they are
     /// speculated as drawn).
@@ -612,6 +616,12 @@ impl<B: Backend + 'static> ThreadedBackend<B> {
         self
     }
 
+    /// Offline capture must finish every swap before the replay clock advances.
+    pub fn with_synchronous_presents(mut self, enabled: bool) -> Self {
+        self.synchronous_presents = enabled;
+        self
+    }
+
     /// Moves `inner` to a new thread named `d3d-render`.
     pub fn new(inner: B) -> std::io::Result<Self> {
         let (tx, rx) = mpsc::channel::<Vec<Cmd<B>>>();
@@ -622,6 +632,7 @@ impl<B: Backend + 'static> ThreadedBackend<B> {
         let sample_depth = inner.can_sample_depth_surfaces();
         let surface_aliases = inner.handles_surface_aliases();
         let external_pass = inner.supports_external_pass();
+        let upload_device = inner.upload_device();
         let reusable_external_attachments = inner.reusable_external_attachments();
         shared.scene_stages.store(inner.runs_scene_stages(), Ordering::Relaxed);
         let mirror = inner.can_mirror();
@@ -727,6 +738,7 @@ impl<B: Backend + 'static> ThreadedBackend<B> {
             sample_depth,
             surface_aliases,
             external_pass,
+            upload_device,
             reusable_external_attachments,
             pinned_external_run: None,
             mirror,
@@ -735,6 +747,7 @@ impl<B: Backend + 'static> ThreadedBackend<B> {
             next_ticket: 1,
             first_frame_ticket: 1,
             presents: 0,
+            synchronous_presents: false,
             waits: Waits::default(),
             judge,
             surface_formats: HashMap::new(),
@@ -1186,6 +1199,10 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
         }
     }
 
+    fn reset_present_metadata(&mut self) -> Result<(), String> {
+        self.call(|w| w.inner.reset_present_metadata())
+    }
+
     fn present(&mut self, surface: u32, flags: u32) -> Result<(), String> {
         self.present_with_gamma(surface, flags, None)
     }
@@ -1204,6 +1221,7 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
         // The arrival, read on the guest's thread (the render thread may
         // reach this present a frame later).
         let at = std::time::Instant::now();
+        let metadata = crate::present_camera::current();
         let owned = self.frame_owner.is_some();
         if owned {
             // At most two sealed transactions wait to be taken. Refused
@@ -1214,12 +1232,16 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
             let events = Arc::clone(&owner.events);
             let generation = events.generation();
             let candidate = (owner.select)(n, generation);
-            self.push(Cmd::OwnerPresent(Box::new(owner::Present { n, surface, at, flags, gamma, candidate, generation, events })));
+            self.push(Cmd::OwnerPresent(Box::new(owner::Present {
+                n, surface, at, flags, gamma, candidate, generation, events, metadata,
+            })));
         } else {
             self.post(move |w| {
                 let raster = w.measure_present_raster(surface);
                 w.inner.stamp_present(at);
-                let r = w.surface(surface).and_then(|s| w.inner.present_with_gamma(s, flags, gamma.as_deref()));
+                let r = w.surface(surface).and_then(|s| crate::present_camera::with(metadata, || {
+                    w.inner.present_with_gamma(s, flags, gamma.as_deref())
+                }));
                 let complete = r.is_ok() && !w.inner.last_present_unshown() && !w.shared.failed.load(Ordering::Relaxed);
                 let residency = w.residency.present(complete);
                 if let Some(window) = w.shared.window.get() {
@@ -1234,6 +1256,9 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
             });
         }
         self.flush();
+        if self.synchronous_presents {
+            return self.call(|_| Ok(()));
+        }
         if !owned {
             self.wait_for_display_capacity(n)?;
         }
@@ -1273,6 +1298,28 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
             return;
         }
         self.push(Cmd::ProbeRead(Box::new(probe::Read::new(surface, width, height, done))));
+    }
+
+    fn render_extents(
+        &mut self,
+        color: u32,
+        depth: Option<u32>,
+        textures: [Option<&ProxyTexture<B>>; 4],
+    ) -> RenderExtents {
+        let texture_ids = textures.map(|texture| texture.map(|t| t.id));
+        self.call(move |worker| {
+            let color = worker.surface(color)?;
+            let depth = worker.depth(depth)?;
+            let textures = texture_ids.map(|id| id.and_then(|id| worker.textures.get(&id)));
+            Ok(worker.inner.render_extents(color, depth, textures))
+        }).unwrap_or_default()
+    }
+
+    fn read_display_surface(&mut self, surface: u32) -> Result<Option<DisplaySurfacePixels>, String> {
+        self.call(move |worker| {
+            let surface = worker.surface(surface)?;
+            worker.inner.read_display_surface(surface)
+        })
     }
 
     fn read_surface(
@@ -1653,6 +1700,10 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
         });
         // Asset prefetch can start before the first guest frame fills a batch.
         self.flush();
+    }
+
+    fn upload_device(&self) -> Option<(wgpu::Device, wgpu::Queue)> {
+        self.upload_device.clone()
     }
 
     fn supports_external_pass(&self) -> bool {

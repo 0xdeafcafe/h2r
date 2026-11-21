@@ -663,7 +663,7 @@ fn every_weapon_equipment_and_projectile_rebuilds() {
     if only.is_none() {
         assert!(maps >= 20, "the ten levels and the multiplayer maps");
         assert!(
-            counts.get("eqip powerup 2").is_some() && counts.get("eqip powerup 3").is_some(),
+            counts.contains_key("eqip powerup 2") && counts.contains_key("eqip powerup 3"),
             "over shield and camouflage rebuilt"
         );
     }

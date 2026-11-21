@@ -7,11 +7,11 @@ use std::sync::{Arc, Mutex};
 
 use d3d::backend::{
     ExternalAttachments, ExternalDraws, ExternalPass, ExternalPassRequest, ExternalTarget,
-    ExternalWrites, PixelRect, ResolvedDraw,
+    ExternalWrites, ResolvedDraw,
 };
-use d3d::nv2a::{NativeDrawKey, NativeDrawMaterial};
+use d3d::nv2a::{NativeDrawKey, NativeDrawMaterial, NativeDrawShader};
 use gfx::compile::{Pending, PendingPipeline};
-use gfx::pipeline::{PipelineKey, ShaderId, ShaderProgram, TargetFormats, create_render_pipeline};
+use gfx::pipeline::{PipelineKey, ShaderId, TargetFormats};
 use gfx::program::{ProgramBindings, StageDims};
 use gfx::repack::{FetchMode, RepackPlan, StreamPlan};
 use gfx::state::{DepthBufferMode, StencilOp};
@@ -21,9 +21,14 @@ use gfx::{BoundGroup, RecordedDraw, ScissorRect};
 use gfx::vertex::PrimitiveType;
 use shaders::{psh::PixelUniforms, vsh::VertexUniforms};
 
+use crate::pipelines::{self, Pipelines};
+use crate::program::scaled_scissor;
 use crate::world_layers::{Geometry, Owner, Texaccum};
 
 const CACHE_BUDGET: u64 = 64 * 1024 * 1024;
+
+static BUFFER_BYTES: mem_watch::Counter = mem_watch::Counter::new("native.world_buffer_cache_bytes");
+static SECTIONS: mem_watch::Counter = mem_watch::Counter::new("native.world_section_windows");
 
 pub struct Cache {
     devices: Mutex<HashMap<wgpu::Device, DeviceCache>>,
@@ -38,19 +43,29 @@ impl Default for Cache {
 
 struct DeviceCache {
     bindings: ProgramBindings,
-    shaders: HashMap<NativeDrawKey, Option<Program>>,
-    pipelines: HashMap<PipelineKey, Arc<PendingPipeline>>,
+    shaders: HashMap<NativeDrawKey, Shader>,
     buffers: HashMap<BufferKey, (wgpu::Buffer, u64)>,
-    buffer_bytes: u64,
+    buffer_bytes: mem_watch::Gauge,
+    section_count: mem_watch::Gauge,
     frame: u64,
     scope: Option<(u64, u32)>,
     sections: HashMap<SectionKey, Vec<ResidentSection>>,
 }
 
+struct TranslatedShader {
+    linked: NativeDrawShader,
+    module: wgpu::ShaderModule,
+}
+
+enum Shader {
+    Translating { id: ShaderId, work: Arc<Pending<Option<TranslatedShader>>> },
+    Ready(Program),
+}
+
 #[derive(Clone)]
 struct Program {
     id: ShaderId,
-    shader: ShaderProgram,
+    pipelines: Pipelines,
     dims: StageDims,
     discards: bool,
 }
@@ -161,9 +176,9 @@ impl DeviceCache {
         Self {
             bindings: ProgramBindings::new(device),
             shaders: HashMap::new(),
-            pipelines: HashMap::new(),
             buffers: HashMap::new(),
-            buffer_bytes: 0,
+            buffer_bytes: BUFFER_BYTES.track(0),
+            section_count: SECTIONS.track(0),
             frame: 0, scope: None, sections: HashMap::new(),
         }
     }
@@ -174,36 +189,42 @@ impl DeviceCache {
     ) -> Option<(Arc<NativeDrawMaterial>, Program)> {
         let program = Arc::new(NativeDrawMaterial::resolve(draw, present, caps, fetch).ok()?);
         let new_id = ShaderId(self.shaders.len().try_into().ok()?);
-        let shader = self
-            .shaders
-            .entry(program.key.clone())
-            .or_insert_with(|| {
-                let linked = program.key.translate().ok()?;
-                let module = gfx::program::validated_resource(device, || {
+        let shader = self.shaders.entry(program.key.clone()).or_insert_with_key(|key| {
+            let key = key.clone();
+            let device = device.clone();
+            let work = pipelines::background(move || {
+                let linked = key.translate().ok()?;
+                let module = gfx::program::validated_resource(&device, || {
                     device.create_shader_module(wgpu::ShaderModuleDescriptor {
                         label: Some("opaque indexed program"),
-                        source: wgpu::ShaderSource::Wgsl(linked.source.into()),
+                        source: wgpu::ShaderSource::Wgsl(linked.source.as_str().into()),
                     })
                 })?;
-                Some(Program {
-                    id: new_id,
-                    shader: self.bindings.program(device, module, linked.dims),
-                    dims: linked.dims,
-                    discards: linked.discards,
-                })
-            })
-            .clone()?;
-        Some((program, shader))
+                Some(TranslatedShader { linked, module })
+            });
+            Shader::Translating { id: new_id, work }
+        });
+        if let Shader::Translating { id, work } = shader {
+            let TranslatedShader { linked, module } = work.try_get()?.as_ref()?;
+            // These layouts must also own the texture and uniform bindings at draw time.
+            let bindings = self.bindings.program(device, module.clone(), linked.dims);
+            *shader = Shader::Ready(Program {
+                id: *id,
+                pipelines: Pipelines::new(device, &linked.source, bindings, "native opaque layer"),
+                dims: linked.dims,
+                discards: linked.discards,
+            });
+        }
+        let Shader::Ready(shader) = shader else { return None };
+        Some((program, shader.clone()))
     }
 
     fn upload_section(
         &mut self, target: &ExternalAttachments, draw: &Arc<ResolvedDraw>,
-        fetch: FetchMode, resident: bool,
+        fetch: FetchMode, repack: RepackPlan, resident: bool,
     ) -> Option<ResidentSection> {
         let indices = draw.indices.as_ref()?;
         if resident && indices.iter().any(|&index| index >= draw.vertex_count) { return None; }
-        let strides: Vec<_> = draw.streams.iter().map(|s| s.stride).collect();
-        let repack = RepackPlan::with_mode(&draw.layout, &strides, fetch);
         let mut streams = Vec::with_capacity(draw.streams.len());
         for (plan, stream) in repack.streams.iter().zip(&draw.streams) {
             if plan.identity {
@@ -253,17 +274,18 @@ impl DeviceCache {
             usage,
         });
         if let Some(key) = key {
-            if self.buffer_bytes + buffer.size() > CACHE_BUDGET {
+            let mut bytes = self.buffer_bytes.get() + buffer.size();
+            if bytes > CACHE_BUDGET {
                 // Section entries retain their own buffers until the BSP changes.
                 // Trim only the shared snapshot index, oldest sightings first.
                 let mut age: Vec<_> = self.buffers.iter().map(|(k, (_, used))| (*used, k.clone())).collect();
                 age.sort_unstable_by_key(|(used, _)| *used);
                 for (_, old) in age {
-                    if self.buffer_bytes + buffer.size() <= CACHE_BUDGET * 3 / 4 { break; }
-                    if let Some((retired, _)) = self.buffers.remove(&old) { self.buffer_bytes -= retired.size(); }
+                    if bytes <= CACHE_BUDGET * 3 / 4 { break; }
+                    if let Some((retired, _)) = self.buffers.remove(&old) { bytes -= retired.size(); }
                 }
             }
-            self.buffer_bytes += buffer.size();
+            self.buffer_bytes.set(bytes);
             self.buffers.insert(key, (buffer.clone(), self.frame));
         }
         Some((buffer, 0, len))
@@ -275,6 +297,9 @@ pub struct IndexedPass {
     draw: Arc<ResolvedDraw>,
     cache: Arc<Cache>,
     frame: u64,
+    // Eligibility is fixed at guest extraction even if the render FIFO
+    // records the candidate after a later swap.
+    extracted_frame: u64,
     fetch: FetchMode,
     texaccum: Option<Texaccum>,
     texaccum_stages: [bool; 4],
@@ -322,6 +347,7 @@ impl IndexedPass {
             fetch: cache.fetch,
             cache,
             frame,
+            extracted_frame: timeline::frames(),
             section,
             texaccum,
             texaccum_stages: draw
@@ -335,16 +361,15 @@ impl IndexedPass {
         target: &ExternalAttachments,
         guest_size: (u32, u32),
     ) -> Option<ExternalDraws> {
+        let _scope = mem_watch::scope("native.world");
+        // Both target copies retain the same geometry and material snapshot.
         let draw = &self.draw;
         let (width, height) = guest_size;
         if target.targets.0 == target.targets.1 {
             return None;
         }
-        let scale = target.size.0.checked_div(width)?;
-        if scale == 0
-            || width.checked_mul(scale)? != target.size.0
-            || height.checked_mul(scale)? != target.size.1
-            || (width, height) != (draw.target.width, draw.target.height)
+        let scale = d3d::scaled::RenderScale::between(guest_size, target.size)?;
+        if (width, height) != (draw.target.width, draw.target.height)
             || target.size
                 != (
                     target.depth.texture().width(),
@@ -368,7 +393,8 @@ impl IndexedPass {
             if cache.scope != Some(scope) {
                 cache.sections.clear();
                 cache.buffers.clear();
-                cache.buffer_bytes = 0;
+                cache.buffer_bytes.set(0);
+                cache.section_count.set(0);
                 cache.scope = Some(scope);
             }
             key
@@ -434,6 +460,42 @@ impl IndexedPass {
         {
             return None;
         }
+        // An unresolved native variant leaves this exact indexed range on D3D.
+        // Check it before allocating streams, bind groups or submission uploads.
+        let mut new_repack = None;
+        let repack = match previous {
+            Some((key, i)) => &cache.sections[&key][i].repack,
+            None => {
+                let strides: Vec<_> = draw.streams.iter().map(|s| s.stride).collect();
+                new_repack.insert(RepackPlan::with_mode(&draw.layout, &strides, self.fetch))
+            }
+        };
+        let mut state = draw.state.render;
+        if program.writes_depth {
+            // The same offset is already in the translated W-depth uniforms.
+            state.solid_offset_enable = false;
+            state.wireframe_offset_enable = false;
+            state.point_offset_enable = false;
+        }
+        let pipeline_hit = cached_pipeline.is_some();
+        let (key, pipeline) = if let Some(cached) = cached_pipeline {
+            cached
+        } else {
+            let mut key = PipelineKey::from_plan(
+                shader.id,
+                repack,
+                draw.primitive,
+                &state,
+                formats,
+                caps,
+            );
+            if draw.primitive == PrimitiveType::TriangleStrip {
+                key.primitive.strip_index_format = Some(wgpu::IndexFormat::Uint32);
+            }
+            let pipeline = shader.pipelines.request(&target.device, &key);
+            (key, pipeline)
+        };
+        pipeline.visible_at_frame(self.extracted_frame)?.as_ref()?;
         let views = std::array::from_fn(|n| dims[n].and(target.stages[n].clone()));
         let cached_textures = previous.and_then(|(key, i)| cache.sections.get(&key)?[i].material.as_ref())
             .filter(|_| material_hit)
@@ -465,73 +527,48 @@ impl IndexedPass {
             }
             section
         } else {
-            fresh = cache.upload_section(target, draw, self.fetch, section_key.is_some())?;
+            fresh = cache.upload_section(target, draw, self.fetch, new_repack?, section_key.is_some())?;
             if let Some(key) = section_key {
                 let windows = cache.sections.entry(key).or_default();
                 // A streaming part can change every frame. Keep its working set
                 // across swaps without retaining every retired resource version.
+                let previous_count = windows.len();
                 windows.retain(|s| self.frame.wrapping_sub(s.last_used) <= 1);
                 windows.push(fresh);
+                let retained = cache.section_count.get() - previous_count as u64 + windows.len() as u64;
+                cache.section_count.set(retained);
                 windows.last_mut()?
             } else { &mut fresh }
         };
-        let mut state = draw.state.render;
-        if program.writes_depth {
-            // The same offset is already in the translated W-depth uniforms.
-            state.solid_offset_enable = false;
-            state.wireframe_offset_enable = false;
-            state.point_offset_enable = false;
-        }
-        let pipeline_hit = cached_pipeline.is_some();
-        let (key, pipeline) = if let Some(cached) = cached_pipeline {
-            cached
-        } else {
-            let mut key = PipelineKey::from_plan(
-                shader.id,
-                &section.repack,
-                draw.primitive,
-                &state,
-                formats,
-                caps,
-            );
-            if draw.primitive == PrimitiveType::TriangleStrip {
-                key.primitive.strip_index_format = Some(wgpu::IndexFormat::Uint32);
+        if section_key.is_some() {
+            if !material_hit {
+                section.material = Some(ResidentMaterial {
+                    source: Arc::clone(draw), present, program: Arc::clone(&program),
+                    shader: shader.clone(), pipelines: HashMap::new(), groups: Vec::new(),
+                });
             }
-            let pipeline = cache
-                .pipelines
-                .entry(key.clone())
-                .or_insert_with(|| {
-                    Pending::ready(gfx::program::validated_resource(&target.device, || {
-                        create_render_pipeline(&target.device, &key, &shader.shader, "native opaque layer")
-                    }))
-                })
-                .clone();
-            if section_key.is_some() {
-                if !material_hit {
-                    section.material = Some(ResidentMaterial {
-                        source: Arc::clone(draw), present, program: Arc::clone(&program),
-                        shader: shader.clone(), pipelines: HashMap::new(), groups: Vec::new(),
-                    });
-                }
+            if !pipeline_hit {
                 section.material.as_mut()?.pipelines.insert(formats, (key.clone(), pipeline.clone()));
             }
-            (key, pipeline)
-        };
-        pipeline.get().as_ref()?;
+        }
         if section_key.is_some() && !bindings_hit {
             let groups = &mut section.material.as_mut()?.groups;
             if groups.len() == 2 { groups.remove(0); }
             groups.push((views, textures.clone()));
         }
 
+        // Only the per-draw uniforms and scissors depend on the presentation
+        // lens and UI fit. Keep their copy out of the resident cache.
+        let copy = draw.for_copy(target.copy);
+        let draw = copy.as_ref();
         let clip = if draw.clip_rects.is_empty() {
             std::slice::from_ref(draw.clip.as_ref()?)
         } else {
             &draw.clip_rects
         };
-        let clip: Vec<PixelRect> = clip
+        let clip: Vec<ScissorRect> = clip
             .iter()
-            .map(|r| scaled_clip(r, scale, target.size))
+            .map(|r| scaled_scissor(&draw.display_rect(*r), scale, target.size))
             .collect::<Option<_>>()?;
         let streams = section.streams.clone();
         let indices = section.indices.clone();
@@ -551,9 +588,7 @@ impl IndexedPass {
         let offsets = params.offsets(0);
         let mut groups = vec![BoundGroup { index: 0, group: params.group, offsets: offsets.to_vec() }];
         groups.extend(textures.map(|group| BoundGroup::new(1, group)));
-        let mut clip = clip.into_iter().map(|r| ScissorRect {
-            x: r.x, y: r.y, width: r.width, height: r.height,
-        });
+        let mut clip = clip.into_iter();
         let first = RecordedDraw::prepared_indexed(
             &key, pipeline, streams, indices, index_count, groups, &state, target.size, clip.next()?,
         );
@@ -609,22 +644,6 @@ impl ExternalPass for IndexedPass {
     }
 }
 
-fn scaled_clip(rect: &PixelRect, scale: u32, extent: (u32, u32)) -> Option<PixelRect> {
-    let x = rect.x.checked_mul(scale)?;
-    let y = rect.y.checked_mul(scale)?;
-    let width = rect.width.checked_mul(scale)?.min(extent.0.checked_sub(x)?);
-    let height = rect
-        .height
-        .checked_mul(scale)?
-        .min(extent.1.checked_sub(y)?);
-    (width != 0 && height != 0).then_some(PixelRect {
-        x,
-        y,
-        width,
-        height,
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -663,21 +682,21 @@ mod tests {
 
     #[test]
     fn scaled_scissors_keep_the_same_guest_rectangle() {
-        let clip = PixelRect {
+        let clip = d3d::backend::PixelRect {
             x: 7,
             y: 5,
             width: 11,
             height: 9,
         };
         assert_eq!(
-            scaled_clip(&clip, 2, (32, 32)),
-            Some(PixelRect {
+            scaled_scissor(&clip, 2.into(), (32, 32)),
+            Some(ScissorRect {
                 x: 14,
                 y: 10,
                 width: 18,
                 height: 18
             })
         );
-        assert_eq!(scaled_clip(&clip, 2, (14, 32)), None);
+        assert_eq!(scaled_scissor(&clip, 2.into(), (14, 32)), None);
     }
 }

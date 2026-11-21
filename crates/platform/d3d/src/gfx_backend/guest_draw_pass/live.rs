@@ -78,7 +78,7 @@ impl GfxBackend {
             ) else {
                 return false;
             };
-            let scale = self.scales.get(&id).copied().unwrap_or(1);
+            let Some(scale) = self.integral_scale(id) else { return false };
             images.reference.device == self.ctx.device
                 && self.live_view_matches(id, dest, desc, scale, &images.reference.texture)
         })

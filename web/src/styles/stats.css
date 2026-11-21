@@ -510,6 +510,17 @@
 }
 .s-open { margin-top: 2px; }
 .s-open caption { text-align: left; }
+.s-open-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 5px 6px; color: #fff; background: #141414; border-bottom: 1px solid #333; }
+.s-open-head h3 { font: bold 12px/16px var(--font-ui); }
+.s-open-filters { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 118px), 1fr)); gap: 7px; padding: 7px; color: #e6e6e6; background: #141414; border-bottom: 1px solid #333; }
+.s-open-filters[hidden] { display: none; }
+.s-open-filters label { display: grid; align-content: start; gap: 3px; min-width: 0; }
+.s-open-filters :is(input[type="text"], select) { min-width: 0; width: 100%; }
+.s-open-filters .s-open-space { display: flex; align-items: center; align-self: end; min-height: 19px; gap: 5px; }
+.s-open-filter-actions, .s-open-filters .s-open-variant-error { grid-column: 1 / -1; }
+.s-open-variant-error { color: var(--s-warn); }
+.s-open-filter-actions, .s-open-status { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; }
+.s-open-status { padding: 7px 6px; color: var(--s-ink-soft); }
 .s-tallies { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 6px; padding: 8px; background: #0a0a0a; border-bottom: 1px solid #262626; }
 .s-tally { border: 1px solid #444; background: #1a1a1a; }
 .s-tally > header { display: flex; justify-content: space-between; padding: 3px 8px; font-size: 12px; color: #e6e6e6; background: #101010; border-bottom: 1px solid #333; }

@@ -25,7 +25,12 @@ pub struct RenderCamera {
     pub up: [f32; 3],
     /// Vertical field of view, radians.
     pub fov: f32,
-    /// Top, left, bottom, right in pixels.
+    /// X and Y scales and off-centre terms from the rendered projection.
+    /// Present for an extracted game view. Independently constructed cameras
+    /// use their vertical FOV and viewport.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub projection_xy: Option<[f32; 4]>,
+    /// Top, left, bottom, right in guest pixels.
     pub viewport: [i16; 4],
     pub near: f32,
     pub far: f32,
@@ -95,7 +100,7 @@ impl RenderCamera {
     /// The viewport's width over its height.
     pub fn aspect(&self) -> f32 {
         let [top, left, bottom, right] = self.viewport;
-        f32::from(right - left) / f32::from(bottom - top)
+        (f32::from(right) - f32::from(left)) / (f32::from(bottom) - f32::from(top))
     }
 
     /// World to view: x right, y up, z backwards (right-handed, looking
@@ -119,13 +124,13 @@ impl RenderCamera {
     /// from it ([`w_depth`]), so clip z only clips.
     pub fn projection(&self) -> Mat4 {
         let t = (self.fov * 0.5).tan();
-        let ys = 1.0 / t;
-        let xs = 1.0 / (t * self.aspect());
+        let [xs, ys, dx, dy] = self.projection_xy
+            .unwrap_or_else(|| [1.0 / (t * self.aspect()), 1.0 / t, 0.0, 0.0]);
         let (n, f) = (self.near, self.far);
         [
             [xs, 0.0, 0.0, 0.0],
             [0.0, ys, 0.0, 0.0],
-            [0.0, 0.0, f / (n - f), -1.0],
+            [dx, dy, f / (n - f), -1.0],
             [0.0, 0.0, n * f / (n - f), 0.0],
         ]
     }
@@ -163,6 +168,7 @@ pub(crate) mod tests {
             forward: [1.0, 0.0, 0.0],
             up: [0.0, 0.0, 1.0],
             fov: 70f32.to_radians(),
+            projection_xy: None,
             viewport: [0, 0, 480, 640],
             near: 0.0625,
             far: 1024.0,

@@ -19,6 +19,7 @@ version = "0.1.0"
 license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
+mem-watch = { path = "crates/platform/mem-watch" }
 hs = { path = "crates/formats/hs" }
 tags = { path = "crates/formats/tags" }
 map = { path = "crates/formats/map" }
@@ -27,6 +28,7 @@ xiso = { path = "crates/formats/xiso" }
 movies = { path = "crates/formats/movies" }
 xbe = { path = "crates/formats/xbe" }
 h1-contract = { path = "crates/formats/h1-contract" }
+host-log = { path = "crates/formats/host-log" }
 analyze = { path = "crates/recompiler/analyze" }
 symbols = { path = "crates/recompiler/symbols" }
 runtime = { path = "crates/runtime/runtime" }
@@ -48,6 +50,10 @@ vfs = { path = "crates/runtime/vfs" }
 background = { path = "crates/runtime/background" }
 boot = { path = "crates/apps/boot" }
 content = { path = "crates/formats/content" }
+forge = { path = "crates/extensions/forge" }
+forge-doc = { path = "crates/formats/forge-doc" }
+forge-build = { path = "crates/tools/forge-build" }
+host-dirs = { path = "crates/formats/host-dirs" }
 live-proto = { path = "crates/live/live-proto" }
 live-server = { path = "crates/live/live-server" }
 cloud-saves = { path = "crates/live/cloud-saves" }
@@ -62,11 +68,6 @@ tokio = { version = "1", features = ["rt-multi-thread", "net", "macros", "sync",
 # variables in a debugger, build with CARGO_PROFILE_DEV_DEBUG=2.
 [profile.dev]
 debug = "line-tables-only"
-# Debug info stays in the object files: no dsymutil run and no .dSYM beside
-# each test binary. This is cargo's macOS default, pinned so an environment
-# or config override can't bring `packed` back.
-split-debuginfo = "unpacked"
-
 # Dependencies carry no debug info at all: smaller rlibs and less for every
 # test binary's link to read. A panic still names its file and line, and a
 # backtrace still names their functions (docs/dev/build-speed.md).

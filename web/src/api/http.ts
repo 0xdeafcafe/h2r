@@ -4,6 +4,7 @@ import type { AccountKeyEntry, Frame, GameDetail, GameSummary, MapOutline, WireE
 import type { SimDetail, SimFilter, SimFilterOptions, SimRun } from "../admin/simRuns";
 import type { ServerTarget } from "./server";
 import { formatSkullsParam } from "../lib/skulls";
+import { sessionFiltersParam, sessionVariant, type SessionFilters } from "../lib/sessionFilters";
 import { openHostFilm } from "./host-film";
 import { decodeKeyframes } from "./pack";
 import { CHUNK_TYPE, chunkFrames, chunkIndex, chunksIn, type ChunkIndex, type RecordingChunk } from "./chunk";
@@ -12,15 +13,6 @@ export class ApiError extends Error {
   constructor(readonly status: number, readonly code: string, message: string) {
     super(message);
   }
-}
-
-/** A read sent with a token gets `auth=1` in its URL: the server answers it
- *  `private, no-store`, and a CDN that keys on the URL never hands it the
- *  anonymous copy (or the anonymous reader this one). */
-export function withAuthMark(url: string): string {
-  const u = new URL(url);
-  u.searchParams.set("auth", "1");
-  return u.toString();
 }
 
 export async function requireOk(r: Response): Promise<Response> {
@@ -34,12 +26,12 @@ export async function requireOk(r: Response): Promise<Response> {
   throw new ApiError(r.status, code, message);
 }
 
+/** A read sent with a token carries it only in the `Authorization` header:
+ *  the server answers it `private, no-store`, and its `Vary: Authorization`
+ *  keeps a shared cache from mixing it with the anonymous copy. */
 export async function getJson<T>(url: string, signal?: AbortSignal, bearer?: string | null): Promise<T> {
   const headers: Record<string, string> = { accept: "application/json" };
-  if (bearer) {
-    headers.authorization = `Bearer ${bearer}`;
-    url = withAuthMark(url);
-  }
+  if (bearer) headers.authorization = `Bearer ${bearer}`;
   const r = await requireOk(await fetch(url, { signal, headers }));
   return (await r.json()) as T;
 }
@@ -110,12 +102,15 @@ export function api(t: ServerTarget, reader: Reader = async () => null) {
     return url.toString();
   };
   /** Follows `next` cursors to the end (bounded). */
-  async function all<T>(path: string, q: Record<string, string | number | undefined | null>, s?: AbortSignal, maxPages = 50): Promise<Page<T>> {
+  async function all<T>(path: string, q: Record<string, string | number | undefined | null>,
+    s?: AbortSignal, maxPages = 50, firstPage?: (body: unknown) => void): Promise<Page<T>> {
     const out: T[] = [];
     let cursor: string | null = null;
     let position: number | null = null;
     for (let i = 0; i < maxPages; i++) {
-      const p: Page<T> = page<T>(await getJson(u(path, { ...q, cursor }), s, await who()));
+      const body = await getJson<unknown>(u(path, { ...q, cursor }), s, await who());
+      if (i === 0) firstPage?.(body);
+      const p = page<T>(body);
       out.push(...p.items);
       position ??= p.position;
       // A page can be empty and still have a `next`: the log leaves out
@@ -129,7 +124,7 @@ export function api(t: ServerTarget, reader: Reader = async () => null) {
   const reading = async (url: string, init: RequestInit): Promise<Response> => {
     const token = await who();
     return token
-      ? fetch(withAuthMark(url), { ...init, headers: { ...(init.headers as Record<string, string>), authorization: `Bearer ${token}` } })
+      ? fetch(url, { ...init, headers: { ...(init.headers as Record<string, string>), authorization: `Bearer ${token}` } })
       : fetch(url, init);
   };
   async function chunks(id: string, s?: AbortSignal, revision?: number): Promise<ChunkIndex | null> {
@@ -183,6 +178,8 @@ export function api(t: ServerTarget, reader: Reader = async () => null) {
      *  who may not see it); `bearer` overrides the reader's token. */
     game: async (id: string, s?: AbortSignal, bearer?: string | null) =>
       getJson<GameDetail>(u("/games/" + encodeURIComponent(id)), s, bearer === undefined ? await who() : bearer),
+    gameJoin: async (id: string, s?: AbortSignal) =>
+      getJson<{ session_id: string | null }>(u("/games/" + encodeURIComponent(id) + "/join"), s, await who()),
     simRuns: async (filters: SimFilter, s?: AbortSignal) => {
       const body = await getJson<Page<SimRun> & { options?: SimFilterOptions }>(
         u("/admin/sim-runs", { ...filters }), s, await who(),
@@ -245,8 +242,22 @@ export function api(t: ServerTarget, reader: Reader = async () => null) {
     },
     /** A package's preview image (only when its summary has `image`). */
     mapImageUrl: (id: string) => u("/maps/" + encodeURIComponent(id) + "/image"),
-    /** Open session advertisements (docs/live/live-api.md "Sessions"), following cursors. */
-    sessions: (s?: AbortSignal) => all<unknown>("/sessions", { limit: 100 }, s, 10),
+    /** Open session advertisements (docs/live/live-api.md "Sessions"), following cursors.
+     *  A browser query also reads the visible variant choices from the first page. */
+    sessions: async (s?: AbortSignal, filters?: SessionFilters) => {
+      let variants: string[] | undefined;
+      const result = await all<unknown>("/sessions", {
+        limit: 100,
+        filters: filters ? sessionFiltersParam(filters) : undefined,
+        browser_variants: filters ? "true" : undefined,
+      }, s, 10, (body) => {
+        const raw = (body as { variants?: unknown } | null)?.variants;
+        if (filters && Array.isArray(raw)) {
+          variants = raw.map(sessionVariant).filter((name): name is string => name !== undefined);
+        }
+      });
+      return { ...result, variants };
+    },
     /** Finished co-op campaign games, newest first (docs/live/live-api.md "Co-op games"); one page.
      *  `player` is a gamertag or XUID. A server without the endpoint answers 404. `bearer`, a
      *  `read` token, says who reads: friends-only games show to their players and the host's
@@ -268,6 +279,9 @@ export function api(t: ServerTarget, reader: Reader = async () => null) {
     /** Which hoppers are clanker ones (`GET /v1/hoppers/clankers`, by
      *  descriptor index); the raw body. */
     clankerHoppers: async (s?: AbortSignal) => getJson<unknown>(u("/hoppers/clankers"), s, await who()),
+    /** Map availability from the signed-in account's recent console search. */
+    matchmakingAvailability: async (s?: AbortSignal) =>
+      getJson<{ has_map_pack: boolean | null }>(u("/matchmaking/availability"), s, await who()),
     /** The hopper file as the editors read it (`GET /v1/titles/4D530064/hopper`);
      *  the raw body. Null when none is published — the server then serves
      *  (and ranks) the built-in lineup. */

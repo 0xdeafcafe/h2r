@@ -62,6 +62,21 @@ describe("parsing", () => {
     expect(o.event_types).toEqual([]);
   });
 
+  test("request counts preserve the difference between unknown days and measured zeroes", () => {
+    const o = parseOverview({
+      ...OVERVIEW,
+      request_count_from: "2026-11-18",
+      days: [OVERVIEW.days[0], { ...OVERVIEW.days[1], requests: 0 }],
+      totals: { ...OVERVIEW.totals, requests: 0 },
+    });
+    const v = usageView(o, null, "2026-11-18", 3);
+    expect(v.requests).toEqual({
+      total: 0, measuredFrom: "2026-11-18", days: ["2026-11-18"],
+      daily: { key: "requests", label: "Live API requests", values: [0] },
+    });
+    expect(usageView(parseOverview(OVERVIEW), null, "2026-11-18", 3).requests.total).toBeNull();
+  });
+
   test("an account's totals fall back to the sum of its kinds; an account without a xuid is dropped", () => {
     const a = parseAccount({ xuid: "0009", up: { events: 1, frames: 2 }, stored: { saves: 4 }, messages: { invites: 3 }, last_active: "soon" });
     expect(a).toMatchObject({ uploaded: 3, stored_total: 4, messages_total: 3, gamertag: null, last_active: null });
@@ -91,6 +106,12 @@ describe("reads", () => {
       const claims = parseJws(h.slice(7))!.payload as Record<string, unknown>;
       expect(claims).toMatchObject({ lxm: "admin.read", aud: "live.example.net" });
     }
+  });
+
+  test("malformed successful responses do not create zero-filled usage boards", async () => {
+    const r = recorder({});
+    await expect(fetchUsage("http://h/v1", "x", ME, 7, r.f)).rejects.toThrow("invalid usage overview");
+    await expect(fetchUsageAccounts("http://h/v1", "x", ME, 7, "stored", 25, r.f)).rejects.toThrow("invalid account usage list");
   });
 
   test("a refusal is an error with the server's code", async () => {

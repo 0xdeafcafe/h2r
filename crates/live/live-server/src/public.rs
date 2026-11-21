@@ -100,8 +100,7 @@ impl PublicUrl {
 impl crate::Live {
     /// Admin gamertags configured at startup (`--admin`, `H2_LIVE_ADMINS`)
     /// that no account holds yet. On a server the internet can reach,
-    /// whoever registers one of those first is an admin, so `serve` and
-    /// `play --tunnel` warn about them.
+    /// registration of these names requires an operator credential.
     pub fn unclaimed_admins(&self) -> Vec<String> {
         let state = self.model.read();
         self.admins
@@ -120,9 +119,7 @@ impl crate::Live {
 pub fn unclaimed_admins_notice(tags: &[String]) -> Option<String> {
     (!tags.is_empty()).then(|| {
         format!(
-            "configured admin gamertag(s) with no account yet: {}; whoever creates one first \
-             is an admin. Create them now, or use --invite-only, or `h2 live admin grant` \
-             an existing account instead",
+            "configured admin gamertag(s) reserved for operator registration: {}",
             tags.join(", ")
         )
     })
@@ -257,7 +254,18 @@ mod tests {
         assert_eq!(unclaimed, ["Bob", "afr"]);
         let key = KeyPair::generate();
         let req = AccountRequest::sign(&key, "AFR", None, "live.test", crate::app::now());
-        live.create_account(&req).await.unwrap();
+        assert!(live.create_account(&req).await.is_err());
+        let operator = crate::ServerIdentity::load(&dir).unwrap();
+        let token = live_proto::sign::issue_token(
+            &operator.key,
+            &operator.author(),
+            live.id(),
+            &AccountRequest::operator_scope(&req),
+            crate::app::now(),
+        );
+        live.register_account(&req, None, Some(&token))
+            .await
+            .unwrap();
         assert_eq!(live.unclaimed_admins(), ["Bob"]);
         assert!(
             unclaimed_admins_notice(&live.unclaimed_admins())

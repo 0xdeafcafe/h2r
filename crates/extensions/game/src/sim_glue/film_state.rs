@@ -1,10 +1,11 @@
 //! A film keyframe can resume a sim after lobby creation, spawning, the
 //! initial seed write. Those one-time guest mutations must never repeat.
 //! The match report itself is only produced by the recording process.
-use super::{Inner, Phase, State, hosted};
+use super::{Inner, Phase, State};
+use crate::host_lobby::SquadId;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex, atomic::Ordering};
+use std::sync::{Arc, atomic::Ordering};
 use std::time::Instant;
 
 #[derive(Serialize, Deserialize)]
@@ -13,15 +14,18 @@ struct Playing {
     clock: sim_bench::metrics::TickCursor,
     bindings: BTreeMap<u8, u8>,
     machines: BTreeMap<u8, [u8; 6]>,
+    #[serde(default)]
+    owned_squad: Option<SquadId>,
 }
 
 impl Playing {
-    fn capture(state: &State) -> Self {
+    fn capture(state: &State, owned_squad: Option<SquadId>) -> Self {
         Self {
             version: 1,
             clock: state.tally.cursor(),
             bindings: state.bindings.clone(),
             machines: state.machines.clone(),
+            owned_squad,
         }
     }
 
@@ -48,20 +52,20 @@ impl Playing {
         state.end = None;
         state.first_tick = Some(Instant::now());
         state.last_tick = state.first_tick;
+        drop(state);
+        sim.lobby
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .resume_match(self.owned_squad);
         sim.stop.store(false, Ordering::Release);
         Ok(())
     }
 }
 
-pub(super) fn policy(
-    sim: &Arc<Inner>,
-    lobby: Arc<Mutex<hosted::LobbyState>>,
-    playback: bool,
-) -> hooks::SnapshotPolicy {
+pub(super) fn policy(sim: &Arc<Inner>, playback: bool) -> hooks::SnapshotPolicy {
     let check = sim.clone();
     let save = sim.clone();
     let load = sim.clone();
-    let check_lobby = lobby.clone();
     hooks::SnapshotPolicy::section_forbid_while(
         move || {
             if !crate::theater::in_keyframe() || playback {
@@ -70,7 +74,8 @@ pub(super) fn policy(
             let state = check.lock();
             let ready = state.phase == Phase::Playing && state.set_up && state.tally.ticks() > 0;
             drop(state);
-            let lobby_ready = check_lobby
+            let lobby_ready = check
+                .lobby
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .setup_complete();
@@ -81,7 +86,13 @@ pub(super) fn policy(
             if !crate::theater::in_keyframe() {
                 return vec![]; // A normal state.load starts a fresh metrics tally.
             }
-            serde_json::to_vec(&Playing::capture(&save.lock())).expect("integer sim film state")
+            let owner = save
+                .lobby
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .owned_squad;
+            serde_json::to_vec(&Playing::capture(&save.lock(), owner))
+                .expect("integer sim film state")
         },
         move |bytes, _| {
             if !crate::theater::in_keyframe() && bytes.is_empty() {
@@ -91,12 +102,7 @@ pub(super) fn policy(
                 return Err("sim playback state requires a film player".into());
             }
             let state: Playing = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
-            state.restore(&load)?;
-            lobby
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .resume_match();
-            Ok(())
+            state.restore(&load)
         },
     )
 }
@@ -115,8 +121,13 @@ mod tests {
             false,
         )
         .unwrap();
-        let matched = sim_bench::config::resolve(config, &|_| Err("no tuning files".into())).unwrap();
+        let matched =
+            sim_bench::config::resolve(config, &|_| Err("no tuning files".into())).unwrap();
         let source = Sim::new(PathBuf::from("match"), matched.clone(), None);
+        let owner: SquadId = serde_json::from_value(serde_json::json!({
+            "addr": 0x8040_0000u32, "incarnation": 7, "class": 1
+        }))
+        .unwrap();
         let bytes = {
             let mut s = source.0.lock();
             s.phase = Phase::Playing;
@@ -129,13 +140,15 @@ mod tests {
                 });
             }
             s.bindings = BTreeMap::from([(0, 7), (1, 8)]);
-            serde_json::to_vec(&Playing::capture(&s)).unwrap()
+            serde_json::to_vec(&Playing::capture(&s, Some(owner))).unwrap()
         };
         let fresh = Sim::new(PathBuf::from("film"), matched, None);
         serde_json::from_slice::<Playing>(&bytes)
             .unwrap()
             .restore(&fresh.0)
             .unwrap();
+        assert_eq!(fresh.0.lobby.lock().unwrap().owned_squad, Some(owner));
+        assert_eq!(fresh.status()["lobby"]["step"], "Loading");
         let mut s = fresh.0.lock();
         assert_eq!(s.phase, Phase::Playing);
         assert!(s.set_up);
@@ -151,5 +164,16 @@ mod tests {
         });
         assert_eq!(s.tally.ticks(), 3);
         assert_eq!(s.tally.resets(), 0);
+        drop(s);
+
+        // Loading a keyframe from a film without a saved owner must clear
+        // the last film's identity, even if the guest addresses are reused.
+        let mut legacy: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        legacy.as_object_mut().unwrap().remove("owned_squad");
+        serde_json::from_value::<Playing>(legacy)
+            .unwrap()
+            .restore(&fresh.0)
+            .unwrap();
+        assert_eq!(fresh.0.lobby.lock().unwrap().owned_squad, None);
     }
 }

@@ -114,9 +114,9 @@ chunk. To draw a requested tick, load the chunks from `scene` through
 the chunk containing it and apply the sparse pose changes in order.
 The replay window is at most 16 chunks and 2048 ticks inclusive. Stats
 consumers skip pose records and can decode each event payload directly.
-`keyframes` contains ordered (completed tick, private `KEYF` envelope
-offset) pairs for in-engine seeks. The public directory discloses those
-positions. Only the private replay reader consumes the machine bytes.
+`keyframes` is empty on recorder output. In files with embedded machine
+snapshots it contains ordered (completed tick, private `KEYF` envelope
+offset) pairs. Only the private replay reader consumes the machine bytes.
 Live validates public ranges against physical envelopes before authorising
 access. The private index includes all envelopes through `CIDX`, then
 the footer identifies both directories. Version 1 and 2 files retain
@@ -131,6 +131,15 @@ ordered HLE results (including controller reads and virtual keyboard input),
 scheduler boundaries, snapshots and the continuation data needed after a
 restore. It also covers cold replay when the first snapshot has yet to be
 taken. Absolute offsets preserve which calls preceded each snapshot.
+
+The private `BOOT` record preserves LOD Distance and other `View` settings,
+including their saved values and locks. Theater clears the viewer's LOD
+override before restoring them. Resolution has `Host` scope, so the viewer
+chooses the displayed raster. The recorded guest uses retail geometry for
+readbacks. Films that recorded both the legacy render scale and LOD Distance
+recover their original startup geometry multiplier. The private guest Video
+menu also retains its recorded choices during playback.
+[Startup settings](../../crates/extensions/game/src/theater/startup.rs).
 
 The private `INDX` is a JSON array in physical envelope order. Each row
 stores `tag` (four byte values), `offset` (u64) and `size` (u32).
@@ -203,9 +212,15 @@ The event envelope carries both the film observation time and, in subtype 1,
 the originating match clock. A late hit, medal or final scoreboard retains
 its original time. The game statistics projection consumes GameStarted,
 PlayerJoined, PlayerLeft, PlayerKilled, ScoreChanged and GameEnded.
-Highlights include additional weapon fire, damage, assists, medals, item
-and vehicle transitions and objective changes. Recomputing stats from a
-highlight as well as its canonical event would count it twice.
+Highlights include actor kills, additional weapon fire, damage, assists,
+medals, item and vehicle transitions and objective changes. A highlight
+that duplicates a canonical event only contributes once to stats.
+
+`ActorKilled` carries the match tick and salted unit object datum, with
+the character tag datum, credited player slot and damage-source key when
+available. It comes from the report that depleted an actor unit's body.
+It is public stats data, with no input, score or digest attached. Player
+kill totals and medals come from `PlayerKilled`.
 
 ## Private machine data and earlier formats
 
@@ -236,17 +251,18 @@ million entries. JSON payloads are UTF-8.
 | Tag | Contents after decompression |
 | --- | --- |
 | `HEAD` | JSON machine header. The first has `version: 2`, film ID, source, generated image stamp, runtime source fingerprint, XBE SHA-256, title ID, epoch, UTC start in Unix milliseconds, feature switches, executor budget, network settings and lease and canonical game IDs when hosted. Later headers update the display metadata and boot-relative duration. |
-| `BOOT` | Effective boot options, settings, direct-level request and resolved simulation configuration. The frame pipeline records its frame prediction, RNG seed replay, deferred I/O and list of guest functions to hand back to the game thread. Older recordings use the pipeline defaults. |
+| `BOOT` | Effective boot options, settings, direct-level request and resolved simulation configuration. `gpu_draws` records whether guest D3D used GPU surfaces. The frame pipeline records its frame prediction, RNG seed replay, deferred I/O and list of guest functions to hand back to the game thread. Older recordings use the pipeline defaults. |
 | `MOVI` | Effective movie selection when Bink is enabled. Maps engine movie names to SHA-256 of the local transcodes. An empty map selects the skip path. |
 | `DATA` | Initial guest file manifest. Entries identify a directory, an embedded file or a file to obtain locally by path and SHA-256. Installed content and converted campaign files are identified by digest. |
 | `DESC` | Match header, including first match tick, mounted map identity and SHA-256, package/cache source if present, retail variant bytes, game type, mode, difficulty, skulls, seed and host identity. The initial roster uses absolute seats, names, optional XUIDs, teams, local/remote/phantom/bot kinds and available bot parameters. The bot kind remains readable in older descriptors. Current hosts use phantom seats for bots. Late arrivals have a join event. |
 | `INPT` | Binary block of consecutive completed ticks, including actions, events and post-tick hashes. |
 | `PADR` | Indexed local XInput calls. Records the actual guest result and returned state, including packet number. Covers menu input and reads between ticks. Phantom actions use `BTAP`. |
+| `VSIZ` | Physical width and height observed by the local guest when it draws the Resolution row or opens its picker. |
 | `TEXT` | Virtual keyboard edit at the focused guest keyboard, including profile-name entry. Uses the common call cursor and the UI thread ID. |
 | `BTAP` | Call-indexed results of the phantom bot action builder, including guest cold-animation requests. |
 | `BOTR` | Sparse bot roster changes at management boundaries. Current hosts record phantom seats. |
 | `PDEV` | Sparse controller connection changes by input-pump ordinal, including port, generation and rumble capability. |
-| `NETR`, `RAND` | Batches of host boundary calls interleaved by a common call index with `PADR`, `TEXT` and `BTAP`. Records operation, arguments, thread, return/error and output slots. Socket delivery, send results and random draws retain their original ordering. |
+| `NETR`, `RAND` | Batches of host boundary calls interleaved by a common call index with `PADR`, `TEXT`, `BTAP` and `VSIZ`. Records operation, arguments, thread, return/error and output slots. Socket delivery, send results and random draws retain their original ordering. |
 | `MARK` | Accepted lobby operations by executor boundary, D3D snapshot boundaries, bookmarks or the final mark with slice, tick and call count. |
 | `HASH` | Every 30 completed ticks, the arena digest if available and the HLE call cursor. Additional per-tick gameplay digests live in `INPT`. |
 | `KEYF` | Scheduler-boundary snapshot and cursors, described below. |
@@ -264,6 +280,11 @@ the batch end. Recording follows the native edit handler, so a rejected
 paste or a modal stealing focus can cut a batch short. Playback supplies
 these edit commands using the recorded trampoline configuration in `BOOT`.
 
+Theater resolves the recorded cache path through the mounted DVD or
+title drive links. A title-content path also resolves against the title's
+data partition before the game links its drive. Without a recorded path,
+the lookup uses the package or DVD map name.
+See `crates/extensions/game/src/theater/metadata.rs` (`prepare_map`).
 A full map's digest covers every mounted byte, including applied header
 rewrites. Sparse dedicated-host map stores can supply only their recorded
 ranges. In that case `DESC.map.ranges` lists ordered (offset, length) pairs.
@@ -312,11 +333,23 @@ to film consumers; applying those transitions twice would change the game.
 
 ## Keyframes and seeking
 
-The recorder attempts a full machine keyframe on a quiescent slice and then
-at 30-second intervals in guest tick time. A keyframe follows a flushed HLE
-batch. In v3 the final tick stays open for observations that arrive before
-the next game step or the closing scoreboard. The binary fields follow in
-this order.
+The recorder attempts a capture point every 150 completed ticks, between
+scheduler slices. At a quiescent point it performs the D3D capture, flushes
+the HLE call batch and writes a `d3d_barrier` mark. A local recorder saves a
+machine snapshot at every sixth point. A dedicated host only writes marks.
+During playback the same device work runs at each marked slice. The player
+can save a missing snapshot there while watching or preparing the film.
+
+Recorder and player share `film::sidecar::SidecarWriter`. Its local file is
+`<films>/cache/<film id>/<build id>.h2keys`, where `build id` is the snapshot
+store's FNV-64 ID. The `H2KEYS1!` file binds its indexed `KEYF` envelopes to
+the film ID, sealed header digest and complete snapshot build key. The
+directory records the matching film mark for each snapshot. On seek, the
+player restores the tape at this mark and decodes the input block containing
+the successor tick. A recorder binds the digest after sealing the film. Cross-machine transfers use the film file.
+The cache defaults to 4 GiB and evicts the least recently watched sidecars.
+
+A sidecar envelope and a legacy embedded `KEYF` use the same binary fields.
 
 ```text
 ULEB      last completed tick
@@ -463,8 +496,8 @@ and x86-64 Linux, an installed current Clang image with the same guest digest
 can replay across native targets. A full image contains every generated
 owner and may substitute for the host's coverage-pruned image. A slim
 candidate requires the same coverage fingerprint. Cross-target and
-slim-to-full playback initialise the disk and machine at boot and check the
-recorded inputs and hashes up to the requested tick. A fast-tier or external
+slim-to-full playback start at boot or from a sidecar made by the installed
+build, and check the recorded inputs and hashes up to the requested tick. A fast-tier or external
 host module needs its native image. Earlier files without a portable stamp
 keep their original image check.
 
@@ -478,7 +511,7 @@ rendered replay need independent comparisons on the same film.
 
 A kernel continuation, pending device work or host feature without
 serialisable state can prevent a keyframe. The reader can only seek using
-the snapshots the recording actually contains. [Machine snapshot policies](../runtime/snapshots.md)
+snapshots that passed capture at recorded boundaries. [Machine snapshot policies](../runtime/snapshots.md)
 and [sim determinism](../runtime/sim.md#8-determinism) describe these constraints.
 
 Live clip endpoints use the guest match clock. The in-game player translates
@@ -490,9 +523,29 @@ assumption that the saved clip endpoints refer directly to film ticks.
 
 ## Choosing a player's view
 
-In local playback the guest renders its original camera, first-person weapon
-and HUD. A v3 local film can display one split-screen viewport at its
-original aspect ratio. The slot is the player's seat in the film roster.
+In a local GPU recording the guest renders its original camera, first-person weapon
+and HUD. Its exact 640x480 reference provides guest readbacks, while
+the viewer chooses the window resolution. A v3 local film can display
+one split-screen viewport. Its guest-pixel edges map onto the displayed
+raster so the selection tracks resolution changes. The slot is the player's
+seat in the film roster.
+
+When playback reaches the Video screen, its Resolution row and picker
+reproduce the recording's choices and physical size, including window resizes
+during recording. The private boot settings preserve the guest row's initial
+selection and lock. Keyframes save completed resolution changes. The recorder
+defers a seek point while the Resolution picker is held on the Video screen. The
+playback window uses its own resolution throughout.
+Older films without this menu metadata cannot reproduce the dimensions of a
+recorded picker.
+
+For a local GPU recording, `--render-every 0` runs the reference offscreen
+in the desktop player. CPU recordings and playerless hosts retain their
+headless backend. Windowed playback of a local CPU recording uses the independent
+observer described below to show the match. When an older film lacks the backend field, Theater uses
+the recorded render hooks, window settings and render-thread flag. A legacy
+offscreen GPU recording with none of the window or thread evidence is
+indistinguishable from a CPU recording.
 
 ```sh
 h2 agent theater.camera '{"mode":"first_person","seat":0}'
@@ -504,8 +557,11 @@ a cinematic, death or vehicle camera the window shows the recorded frame.
 `theater.camera {"mode":"default"}` returns to the whole local frame.
 
 A playerless host has no local director, first-person weapon or HUD. For
-a rendered host film the desktop player opens a separate 960 × 540 GPU
-view of the running simulation. It uses the selected unit’s posed camera
+a rendered host film the desktop player opens a separate GPU view at the
+viewer's selected resolution. Native follows the physical drawable within the default 4K pixel budget, including
+a resize while paused. The presented aspect sets the observer's horizontal
+field of view. The BSP and posed objects use the same projection for drawing
+and culling. The observer uses the selected unit’s posed camera
 marker, aim and unzoomed field of view. When the marker is unavailable,
 it estimates eye height from the biped’s collision capsule and crouch state.
 The scene uses the active BSP with its base textures and lightmaps, and

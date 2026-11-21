@@ -135,6 +135,10 @@ impl<B: Backend, R: Rewrite> RewriteBackend<B, R> {
 }
 
 impl<B: Backend, R: Rewrite> Backend for RewriteBackend<B, R> {
+    fn snapshot_map_bindings(&self) -> std::result::Result<Vec<(String, String)>, crate::StateError> {
+        self.inner.snapshot_map_bindings()
+    }
+
     fn opened(&mut self, path: &str) {
         self.inner.opened(path)
     }

@@ -22,6 +22,7 @@ use crate::Bail;
 use crate::mem::GuestRead;
 use sim_core::lanes::ordinary1;
 use std::cmp::Ordering;
+use std::sync::RwLock;
 
 pub mod point;
 pub mod segment;
@@ -66,7 +67,7 @@ pub const BAD: u8 = 0xff;
 /// An internal node: `u16 plane`, then the back and front children as
 /// 24-bit signed words.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-#[repr(C)]
+#[repr(C, align(32))]
 pub struct Node {
     /// The plane's `nx, ny, nz, d` bits.
     pub plane: [u32; 4],
@@ -76,6 +77,8 @@ pub struct Node {
     pub plane_index: u16,
     pub bad: u8,
 }
+
+const _: () = assert!(std::mem::size_of::<Node>() == 32);
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[repr(C)]
@@ -116,8 +119,8 @@ pub struct Surface {
     pub flags: u8,
     pub breakable: u8,
     pub material: u16,
-    /// The ring's first entry in [`Bsp::ring`], [`NONE`] when it is not
-    /// decoded (an index out of range, or no closure within [`MAX_RING`]).
+    /// The ring's first cached edge. [`NONE`] means no predecoded ring.
+    /// The scalar path uses `first_edge` and validates closure at query time.
     pub ring: u32,
     pub ring_len: u32,
 }
@@ -153,7 +156,10 @@ pub struct Bsp {
     pub refs: Vec<Ref>,
     pub nodes_2d: Vec<Node2d>,
     pub surfaces: Vec<Surface>,
-    pub ring: Vec<RingEdge>,
+    /// Optional expanded edges. The world can release them even while a
+    /// query holds an Arc to the essential arrays. Only edge arithmetic
+    /// runs under the read lock.
+    ring: RwLock<Option<Vec<RingEdge>>>,
     /// Per projection row, the `u` and `v` axes; [`BAD`] when the image's
     /// table names something else.
     pub projection: [[u8; 2]; 6],
@@ -214,7 +220,9 @@ fn dominant_axis(n: &[u32; 4]) -> u8 {
 impl Bsp {
     /// The eight `{count, pointer}` pairs at `addr`.
     pub fn read_header(g: &impl GuestRead, addr: u32) -> Result<[u32; HEADER_WORDS], Bail> {
-        let b = g.bytes(addr, HEADER_BYTES as usize)?;
+        addr.checked_add(HEADER_BYTES - 1).ok_or(Bail::Fault)?;
+        let mut b = [0; HEADER_BYTES as usize];
+        g.read(addr, &mut b)?;
         Ok(std::array::from_fn(|i| word(&b, 4 * i)))
     }
 
@@ -273,16 +281,62 @@ impl Bsp {
         h == self.hash
     }
 
-    /// Bytes the decoded arrays hold.
+    /// Required decoded array bytes before allocating or reading block bodies.
+    pub fn essential_bytes(header: &[u32; HEADER_WORDS]) -> Result<u64, Bail> {
+        use std::mem::size_of;
+        let sizes = [
+            size_of::<Node>(),
+            size_of::<[u32; 4]>() + 1,
+            size_of::<Leaf>(),
+            size_of::<Ref>(),
+            size_of::<Node2d>(),
+            size_of::<Surface>(),
+            0,
+            0,
+        ];
+        let mut raw = 0u64;
+        let mut required = 0u64;
+        for (i, size) in sizes.into_iter().enumerate() {
+            let count = header[2 * i];
+            raw += u64::from(count) * u64::from(block::STRIDE[i]);
+            if count > MAX_COUNT || raw > MAX_BYTES {
+                return Err(Bail::Data);
+            }
+            required += u64::from(count) * size as u64;
+        }
+        Ok(required)
+    }
+
+    pub(crate) fn scalar_rings(&self) -> bool {
+        self.ring
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_none()
+    }
+
+    /// Release optional edges without cloning essential arrays or waiting
+    /// for another query to drop its BSP.
+    pub(crate) fn discard_rings(&self) -> usize {
+        let old = self.ring.write().unwrap_or_else(|e| e.into_inner()).take();
+        old.map_or(0, |ring| ring.capacity() * std::mem::size_of::<RingEdge>())
+    }
+
+    /// Bytes reserved by the decoded arrays, including spare vector capacity.
     pub fn footprint(&self) -> usize {
         use std::mem::size_of;
-        self.nodes.len() * size_of::<Node>()
-            + self.planes.len() * (size_of::<[u32; 4]>() + 1)
-            + self.leaves.len() * size_of::<Leaf>()
-            + self.refs.len() * size_of::<Ref>()
-            + self.nodes_2d.len() * size_of::<Node2d>()
-            + self.surfaces.len() * size_of::<Surface>()
-            + self.ring.len() * size_of::<RingEdge>()
+        self.nodes.capacity() * size_of::<Node>()
+            + self.planes.capacity() * size_of::<[u32; 4]>()
+            + self.axis.capacity()
+            + self.leaves.capacity() * size_of::<Leaf>()
+            + self.refs.capacity() * size_of::<Ref>()
+            + self.nodes_2d.capacity() * size_of::<Node2d>()
+            + self.surfaces.capacity() * size_of::<Surface>()
+            + self
+                .ring
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .as_ref()
+                .map_or(0, |ring| ring.capacity() * size_of::<RingEdge>())
     }
 
     /// Decode the BSP whose header (read at `addr`) is `header`.
@@ -292,6 +346,17 @@ impl Bsp {
         header: [u32; HEADER_WORDS],
         consts: &Consts,
     ) -> Result<Bsp, Bail> {
+        Self::decode_with_ring_limit(g, addr, header, consts, crate::world::MAP_BUDGET)
+    }
+
+    pub(crate) fn decode_with_ring_limit(
+        g: &impl GuestRead,
+        addr: u32,
+        header: [u32; HEADER_WORDS],
+        consts: &Consts,
+        ring_bytes: u64,
+    ) -> Result<Bsp, Bail> {
+        Self::essential_bytes(&header)?;
         let mut h = hash(
             HASH_SEED,
             &header
@@ -300,28 +365,27 @@ impl Bsp {
                 .collect::<Vec<_>>(),
         );
         let mut raw: [Vec<u8>; 8] = Default::default();
-        let mut total = 0u64;
         for (i, r) in raw.iter_mut().enumerate() {
             let count = header[2 * i];
-            total += u64::from(count) * u64::from(block::STRIDE[i]);
-            if count > MAX_COUNT || total > MAX_BYTES {
-                return Err(Bail::Data);
-            }
             *r = g.bytes(header[2 * i + 1], (count * block::STRIDE[i]) as usize)?;
             h = hash(h, r);
         }
         let n = |i: usize| raw[i].len() / block::STRIDE[i] as usize;
         let (n_nodes, n_planes) = (n(block::NODES), n(block::PLANES));
-        let (n_edges, n_vertices) = (n(block::EDGES), n(block::VERTICES));
+        let n_edges = n(block::EDGES);
 
         let planes: Vec<[u32; 4]> = raw[block::PLANES]
-            .as_chunks::<16>().0.iter()
+            .as_chunks::<16>()
+            .0
+            .iter()
             .map(|p| std::array::from_fn(|k| word(p, 4 * k)))
             .collect();
         let axis = planes.iter().map(dominant_axis).collect::<Vec<_>>();
 
         let nodes = raw[block::NODES]
-            .as_chunks::<8>().0.iter()
+            .as_chunks::<8>()
+            .0
+            .iter()
             .map(|b| {
                 let plane_index = half(b, 0);
                 let p = plane_index as i16;
@@ -355,7 +419,9 @@ impl Bsp {
             .collect();
 
         let leaves = raw[block::LEAVES]
-            .as_chunks::<4>().0.iter()
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|b| Leaf {
                 flags: b[0],
                 ref_count: b[1],
@@ -365,7 +431,9 @@ impl Bsp {
 
         let zero_ok = ordinary1(consts.zero);
         let refs = raw[block::REFS]
-            .as_chunks::<4>().0.iter()
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|b| {
                 let plane = half(b, 0);
                 let index = usize::from(plane & 0x7fff);
@@ -387,7 +455,9 @@ impl Bsp {
             .collect();
 
         let nodes_2d = raw[block::NODES_2D]
-            .as_chunks::<16>().0.iter()
+            .as_chunks::<16>()
+            .0
+            .iter()
             .map(|b| Node2d {
                 a: word(b, 0),
                 b: word(b, 4),
@@ -398,20 +468,49 @@ impl Bsp {
 
         let edges = &raw[block::EDGES];
         let vertices = &raw[block::VERTICES];
-        let vertex = |i: u16| -> Option<[u32; 3]> {
-            let i = usize::from(i);
-            (i < n_vertices).then(|| std::array::from_fn(|k| word(vertices, 16 * i + 4 * k)))
+        let vertex = |i: u16| {
+            let at = usize::from(i) * 16;
+            let v = vertices.get(at..at + 12).ok_or(Bail::Data)?;
+            Ok(std::array::from_fn(|k| word(v, 4 * k)))
         };
-        let mut ring = Vec::new();
+        let edge = |i: u16| {
+            let at = usize::from(i) * 12;
+            edges
+                .get(at..at + 12)
+                .and_then(|b| b.try_into().ok())
+                .ok_or(Bail::Data)
+        };
+        let max_edges = (ring_bytes / std::mem::size_of::<RingEdge>() as u64) as usize;
+        let mut ring = (max_edges != 0 || n(block::SURFACES) == 0).then(Vec::<RingEdge>::new);
+        let mut scratch = [RingEdge::default(); MAX_RING];
         let surfaces = raw[block::SURFACES]
-            .as_chunks::<8>().0.iter()
+            .as_chunks::<8>()
+            .0
+            .iter()
             .enumerate()
             .map(|(s, b)| {
                 let first = half(b, 2);
-                let start = ring.len();
-                let closed = decode_ring(s as u32, first, n_edges, edges, &vertex, &mut ring);
-                if !closed {
-                    ring.truncate(start);
+                let mut start = NONE;
+                let mut len = 0;
+                if let Some(buffer) = ring.as_mut()
+                    && let Ok(n) = read_ring(s as u32, first, n_edges, edge, vertex, &mut scratch)
+                {
+                    let needed = buffer.len() + n;
+                    if needed <= max_edges {
+                        if needed > buffer.capacity() {
+                            let target = needed
+                                .max(buffer.capacity().saturating_mul(2))
+                                .min(max_edges);
+                            buffer.reserve_exact(target - buffer.len());
+                        }
+                        start = buffer.len() as u32;
+                        len = n as u32;
+                        buffer.extend_from_slice(&scratch[..n]);
+                    } else {
+                        // One transition for the whole BSP, including the
+                        // rings already built. Later surfaces skip expansion.
+                        ring = None;
+                    }
                 }
                 Surface {
                     plane: half(b, 0),
@@ -419,12 +518,8 @@ impl Bsp {
                     flags: b[4],
                     breakable: b[5],
                     material: half(b, 6),
-                    ring: if closed { start as u32 } else { NONE },
-                    ring_len: if closed {
-                        (ring.len() - start) as u32
-                    } else {
-                        0
-                    },
+                    ring: start,
+                    ring_len: len,
                 }
             })
             .collect();
@@ -447,20 +542,67 @@ impl Bsp {
             refs,
             nodes_2d,
             surfaces,
-            ring,
+            ring: RwLock::new(ring),
             projection,
             hash: h,
         })
     }
 
-    /// The decoded ring of `surface`, or [`Bail::Data`] when the guest
-    /// would walk something the decoder rejected.
-    pub fn surface_ring(&self, surface: &Surface) -> Result<&[RingEdge], Bail> {
-        if surface.ring == NONE {
-            return Err(Bail::Data);
+    /// A copy of the cached surface edges. A budget-limited BSP reads its
+    /// ring from guest memory through `with_surface_ring` during the matcher.
+    pub fn surface_ring(&self, surface: &Surface) -> Result<Vec<RingEdge>, Bail> {
+        let ring = self.ring.read().unwrap_or_else(|e| e.into_inner());
+        let edges = ring.as_ref().ok_or(Bail::Budget)?;
+        Ok(cached_ring(edges, surface)?.to_vec())
+    }
+
+    /// The edges of a numbered surface in either storage mode.
+    pub fn read_surface_ring(&self, g: &impl GuestRead, index: u32) -> Result<Vec<RingEdge>, Bail> {
+        let surface = self.surfaces.get(index as usize).ok_or(Bail::Data)?;
+        self.with_surface_ring(g, index, surface, |edges| Ok(edges.to_vec()))
+    }
+
+    fn with_surface_ring<T>(
+        &self,
+        g: &impl GuestRead,
+        index: u32,
+        surface: &Surface,
+        test: impl FnOnce(&[RingEdge]) -> Result<T, Bail>,
+    ) -> Result<T, Bail> {
+        {
+            let ring = self.ring.read().unwrap_or_else(|e| e.into_inner());
+            if let Some(edges) = ring.as_ref() {
+                return test(cached_ring(edges, surface)?);
+            }
         }
-        let start = surface.ring as usize;
-        Ok(&self.ring[start..start + surface.ring_len as usize])
+        let edge = |i: u16| {
+            let mut row = [0; 12];
+            g.read(
+                self.block_addr(block::EDGES)
+                    .wrapping_add(12 * u32::from(i)),
+                &mut row,
+            )?;
+            Ok(row)
+        };
+        let vertex = |i: u16| {
+            if u32::from(i) >= self.header[2 * block::VERTICES] {
+                return Err(Bail::Data);
+            }
+            Ok(g.vec3(
+                self.block_addr(block::VERTICES)
+                    .wrapping_add(16 * u32::from(i)),
+            )?)
+        };
+        let mut scratch = [RingEdge::default(); MAX_RING];
+        let len = read_ring(
+            index,
+            surface.first_edge,
+            self.header[2 * block::EDGES] as usize,
+            edge,
+            vertex,
+            &mut scratch,
+        )?;
+        test(&scratch[..len])
     }
 
     /// The `u` and `v` axes of projection row `row`.
@@ -472,37 +614,43 @@ impl Bsp {
     }
 }
 
-/// Walk surface `s`'s ring from `first` as `0x1debd0` does, pushing each
-/// edge's `(A, B)`. False when an index is out of range or the ring does
-/// not come back to `first` within [`MAX_RING`] edges.
-fn decode_ring(
-    s: u32,
+fn cached_ring<'a>(edges: &'a [RingEdge], surface: &Surface) -> Result<&'a [RingEdge], Bail> {
+    let start = surface.ring as usize;
+    edges
+        .get(start..)
+        .and_then(|tail| tail.get(..surface.ring_len as usize))
+        .ok_or(Bail::Data)
+}
+
+/// Both paths validate and gather the same bounded ring before testing its
+/// edges. A malformed suffix therefore declines even after an outside edge.
+fn read_ring(
+    surface: u32,
     first: u16,
     n_edges: usize,
-    edges: &[u8],
-    vertex: &impl Fn(u16) -> Option<[u32; 3]>,
-    out: &mut Vec<RingEdge>,
-) -> bool {
+    edge: impl Fn(u16) -> Result<[u8; 12], Bail>,
+    vertex: impl Fn(u16) -> Result<[u32; 3], Bail>,
+    scratch: &mut [RingEdge; MAX_RING],
+) -> Result<usize, Bail> {
     let mut e = first;
-    for _ in 0..MAX_RING.min(n_edges) {
-        let i = usize::from(e);
-        if i >= n_edges {
-            return false;
+    for (i, out) in scratch.iter_mut().take(n_edges).enumerate() {
+        if usize::from(e) >= n_edges {
+            return Err(Bail::Data);
         }
-        let r = &edges[12 * i..12 * i + 12];
-        let right = half(r, 10) as i16 as i32 == s as i32;
-        let (start, end) = (half(r, 0), half(r, 2));
-        let (a, b) = if right { (end, start) } else { (start, end) };
-        let (Some(a), Some(b)) = (vertex(a), vertex(b)) else {
-            return false;
+        let r = edge(e)?;
+        let right = half(&r, 10) as i16 as i32 == surface as i32;
+        let [start, end] = [half(&r, 0), half(&r, 2)];
+        let [a, b] = if right { [end, start] } else { [start, end] };
+        *out = RingEdge {
+            a: vertex(a)?,
+            b: vertex(b)?,
         };
-        out.push(RingEdge { a, b });
-        e = if right { half(r, 6) } else { half(r, 4) };
+        e = half(&r, if right { 6 } else { 4 });
         if e == first {
-            return true;
+            return Ok(i + 1);
         }
     }
-    false
+    Err(Bail::Data)
 }
 
 /// `comiss a, 0` then `jb` not taken: `a >= 0`, ordered.

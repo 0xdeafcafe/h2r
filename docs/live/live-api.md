@@ -47,13 +47,15 @@ Event types so far (payload fields):
 |---|---|---|
 | `account-<xuid>` | `AccountCreated` | `xuid`, `gamertag` |
 | `account-<xuid>` | `KeyAdded`, `KeyRevoked` | `jwk`, `kid` (security §1) |
+| `account-<xuid>` | `InviteGrantSet`, `InviteGrantRevoked` | `xuid`, `gamertag`, `by`, plus `open_cap` for `InviteGrantSet` or `keep_open: true` when revoking a current admin's explicit grant ([Server invites](#server-invites)) |
 | `account-<xuid>` | `FriendRequested`, `FriendAccepted`, `FriendDeclined`, `FriendRemoved` | `from`/`to`, or `by`/`friend` ([Friends](#friends), below) |
 | `gamertag-<lower>` | `GamertagReserved` | `xuid` |
 | `title-<id>-file-<name>` | `TitleFilePublished` | `title_id`, `name`, `sha256`, `size` |
 | `presence-<xuid>` | `SignedIn`, `PresenceChanged`, `SignedOut`, `PresenceExpired` | `xuid`, `state`, `game_id?`, `activity?`, `build?`, `capabilities?` (below) |
 | `game-<id>` | `GameStarted` | `game_id`, `console`, `map`, `mode` (`campaign`/`multiplayer`), `variant?`, `team_play`, `score_limit?`, `time_limit_s?`, `players`, `kind?`, `playlist?`, `playlist_id?`, `difficulty?`, `online?` (below) |
 | `game-<id>` | `PlayerJoined`, `PlayerLeft` | `player` (below) / `index` |
-| `game-<id>` | `PlayerKilled` | `tick`, `victim`, `killer?`, `weapon?`, `kind` (`kill`/`suicide`/`betrayal`/`world`; `betrayal` only for a teammate killed in a team game or campaign, `live_proto::game::is_betrayal`, and readers settle a stored `kill` or `betrayal` again by the teams, since older hosts sent free-for-all kills as betrayals) |
+| `game-<id>` | `PlayerKilled` | `tick`, `victim`, `killer?`, `weapon?`, `headshot?`, `pos?`, `kind` (`kill`/`suicide`/`betrayal`/`world`; `betrayal` only for a teammate killed in a team game or campaign, `live_proto::game::is_betrayal`, and readers settle a stored `kill` or `betrayal` again by the teams, since older hosts sent free-for-all kills as betrayals) |
+| `game-<id>` | `ActorKilled` | `tick`, `unit` (salted unit object datum), `character?` (salted character tag datum), `killer?` (credited player slot), `weapon?` (damage-source key). Published by the host. |
 | `game-<id>` | `ScoreChanged` | `tick`, `players: [{index, score, kills, deaths, assists}]`, `teams?: [{team, score}]` |
 | `game-<id>` | `FrameChunk` | a stored chunk of the game's recorded frames ([Frame chunks](#frame-chunks)) |
 | `game-<id>` | `GameFrame` | a frame (below), recorded at 1 Hz for replays by servers before frame chunks |
@@ -297,21 +299,25 @@ clock went back. Recordings from older senders run backwards there; a
 reader takes their frames and events in log order and starts each run
 after the one before (the web viewer's `GameClock`).
 
-A game start (`POST /v1/games`, `GameStarted`) may also say what kind of
-game it is; all five fields are optional and old senders leave them out:
+A `POST /v1/games` request can include these optional fields:
 
 | field | values | rules |
 |---|---|---|
 | `kind` | `custom`, `matchmaking`, `clankermatch`, `campaign` | `clankermatch` is a matchmade game against bots (docs/game/bots.md §8.2); `campaign` exactly when `mode` is; absent means `campaign` for campaign mode, else `custom` |
 | `playlist`, `playlist_id` | hopper name (1-32 characters, no control characters), id `[A-Za-z0-9_-]{1,64}` | matchmaking and clankermatch only; with no `playlist`, the server names it from the served hopper file when `playlist_id` is a descriptor index there |
-| `session_id` | the Live session, 16 lowercase hex digits (the game's 8 bytes in order) | matchmaking only; ranking finds the game's arbitration round by it ([Arbitration](#arbitration)) |
+| `session_id` | the Live session, 16 lowercase hex digits (the game's 8 bytes in order) | hosted multiplayer games, including custom lobbies; ranking finds the game's arbitration round by it ([Arbitration](#arbitration)) |
 | `difficulty` | `easy`, `normal`, `heroic`, `legendary` | campaign only |
 | `online` | boolean | campaign only: co-op partners on other machines (Live co-op, not sent yet); split-screen co-op is more than one player without it |
 
-Game summaries and `GET /v1/games/{id}` always carry `kind` (inferred for old
-games) and the others when the start had them.
+Game summaries and `GET /v1/games/{id}` carry `kind` (inferred for old
+games) and the reported playlist and campaign fields. When a start names a
+session, the server records `GameSessionLinked {game_id, session_id}` on the
+operator-only `lobby-links` stream and appends `GameStarted` without the ID
+in the same transaction. Lobby visibility changes leave the signed game
+event intact. Readers obtain a joinable session from `GET /v1/games/{id}/join`.
 
-Live frames go out on the stream at up to 15 Hz, and every frame sent is
+Live frames go out on the stream at about 15 Hz per game on average.
+Batched ingest can deliver a bounded burst. Every frame sent is
 recorded in the game's [frame chunks](#frame-chunks). A frame's `shots`
 count since the previous frame sent (the sum over the frames the throttle
 dropped, capped at 64 per player or actor); the same goes for `actions` and
@@ -371,15 +377,16 @@ the index once and fetches the one chunk whose window holds the tick.
 | method and path | returns |
 |---|---|
 | `GET /healthz` | `{ "ok": true, "position": <head> }` |
-| `GET /.well-known/h2live.json` | server id, API base, server keys (security §4), `url`: the public base URL when known ([live-hosting.md](live-hosting.md)), and `ingest_frame_versions` for supported live codecs |
+| `GET /.well-known/h2live.json` | server id, API base, server keys (security §4), `url` with the public base URL when known ([live-hosting.md](live-hosting.md)), `ingest_frame_versions` for supported live codecs and `ingest_frame_batch` for batched ingest |
 | `GET /v1/accounts/{gamertag}/keys` | account public keys with validity ranges |
-| `GET /v1/accounts` | accounts: `{xuid, gamertag, created_at, online}` |
+| `GET /v1/accounts` | accounts with `xuid`, `gamertag`, `created_at`, `online`, `admin` and optional `invite_grant: {open_cap}` |
 | `GET /v1/accounts/{gamertag}` | one account plus `recent_games` (without the co-op games the reader may not see: [Co-op games](#co-op-games)) |
 | `GET /v1/accounts/{gamertag}/friends` | friends with presence; pending requests in and out for the player and admins only ([Friends](#friends), below) |
 | `GET /v1/presence` | who is online now: `{xuid, gamertag, state, game_id?, activity?, since, build?, capabilities?}`; a player in a game or session the reader may not see shows no `game_id` and `activity: "In a game"` ([Co-op games](#co-op-games), "Presence") |
 | `GET /v1/coop/games?player=` | finished co-op campaign games, newest first ([Co-op games](#co-op-games), below) |
 | `GET /v1/games?state=live\|ended&map=&map_id=&skulls=` | game summaries: `{game_id, map, mode, kind, variant, playlist?, playlist_id?, difficulty?, online?, team_play, started_at, ended_at?, players, teams?, map_id?, skulls?}`; `map` keeps games on that base map, modded or not, `map_id` one exact map (`none`: games with no `map_id`), `skulls` (comma-separated indices, `4,6`) games that had every one of them on; without the co-op games the reader may not see ([Co-op games](#co-op-games)) |
 | `GET /v1/games/{id}` | summary plus scoreboard and the last 50 kills; 404, as for no game, for a co-op game the reader may not see ([Co-op games](#co-op-games)) |
+| `GET /v1/games/{id}/join` | `{session_id}` for the game's current reader. The value is null unless the running game's own custom lobby or linked co-op session is joinable. The game and lobby each follow their own visibility rules. Hidden games return 404 and responses are private and uncached. |
 | `GET /v1/games/{id}/chunks` | the game's [frame chunk](#frame-chunks) index: `{game_id, chunk_ticks, ended, items}`, `items` the `FrameChunk` data oldest first; empty for a game recorded before chunks |
 | `GET /v1/games/{id}/chunks/{tick}` | one chunk by its first tick, `application/x-h2-chunk`; checked against its index entry's hash. Anonymous reads are `public, max-age=31536000, immutable` (it is never rewritten) |
 | `GET /v1/games/{id}/frames?from_tick=&to_tick=` | a game recorded before frame chunks: its `GameFrame`s as an `application/x-h2-frames` container of packed keyframes (docs/live/live-telemetry.md, "Packed frames"), the next cursor in `x-next` and the head position in `x-position`. `format=json` returns the decoded page as `{items,next,position}` |
@@ -389,10 +396,11 @@ the index once and fetches the one chunk whose window holds the tick.
 | `GET /v1/titles/{title}/files/{name}` | raw file bytes, `ETag` = sha256 |
 | `GET /v1/server` | the server's public facts: `{id, software, url, invite_only, private, federation, counts: {accounts, online, live_games, sessions}, position}` ([live-admin.md](live-admin.md) §5) |
 | `GET /v1/stats/summary?window=today\|7d\|30d\|all` | server-wide totals, per-player rows, maps, weapons, playlists, skulls and hourly activity over a window ([Stats summary](#stats-summary), below) |
-| `GET /v1/admin/status` | admins only (`admin.read` token): the facts plus uptime, tunnel, game art, admins, log, invites; the data directory only to this machine (live-admin.md §5) |
-| `GET /v1/admin/usage?days=` | admins only (`admin.read`): the server's usage per UTC day, events by type, stored bytes ([Usage](#usage), below) |
+| `GET /v1/admin/status` | admins only (`admin.read` token): the facts plus tunnel, game art, admins, log, invites; `started_at` and `uptime_s` on native servers only, the data directory only to this machine (live-admin.md §5) |
+| `GET /v1/admin/usage?days=` | admins only (`admin.read`): Live API requests and usage per UTC day, events by type, stored bytes ([Usage](#usage), below) |
 | `GET /v1/admin/usage/accounts?days=&sort=&limit=` | admins only (`admin.read`): the accounts using the most ([Usage](#usage)) |
-| `GET /v1/invites` | admins only (`admin.read` token): the invites admins made, newest first, open ones with their code (live-admin.md §5) |
+| `GET /v1/invites` | `admin.read` token from an admin or the operator. All invites, newest first ([Server invites](#server-invites)) |
+| `GET /v1/invites/mine` | `invites.read` token from a caller with invite access. Only their open invites ([Server invites](#server-invites)) |
 
 ### Caching
 
@@ -401,8 +409,10 @@ Set by `crates/live/live-server/src/caching.rs` on GET and HEAD responses whose 
 - `/assets/*` (built, named by content hash): `public, max-age=31536000, immutable`.
 - The web app's HTML (`/`, every app route, and a missing asset answered with the app): `no-cache`.
 - Anonymous reads under `/v1/` of `snapshot`, `games`, `accounts`, `presence`, `stats`, `events`, `teams`, `ranks`, `page-meta` and retail map outlines that succeed: `public, max-age=0, s-maxage=5, stale-while-revalidate=30`, with a weak `ETag`. A matching `If-None-Match` gets a 304.
-- Everything else under `/v1/` is `private, no-store`: any request with `Authorization` or an `auth` query mark (the web app adds `auth=1` to every read it sends with a token, because a CDN's cache key leaves out `Authorization`), any error, and every other route.
+- Everything else under `/v1/` is `private, no-store`: any request with `Authorization`, any error, and every other route.
 - Art (`/art/*`) and title files keep their own headers.
+
+Every tagged `/v1/` answer also carries `Vary: Authorization`, so a shared cache keyed on the URL never answers a request that bears a token from the anonymous entry. A stray `auth` query mark from an older web client is ignored: the `Authorization` header alone says who reads.
 
 ## Theater
 
@@ -640,9 +650,12 @@ game-only: no row of their own (a rostered bot's xuid included), and a
 knockout with a bot on either side counts in the totals, maps and weapons
 but in nobody's row: a human's kill of a bot is not a career kill, nor a
 death to a bot a career death. The game record keeps every one of them.
+A credited environmental death counts toward kills for the player and map.
+Weapon rankings omit falls, collisions, splatters, guardians, teleporters
+and explosions with no identified weapon.
 `activity` lists hours with any game starts or kills, within the window
-and at most 30 days back. There are no headshots or medals: the events do
-not carry them (the web app derives medals itself).
+and at most 30 days back. Headshots are available on individual kills when
+reported. The summary has no headshot or medal totals.
 
 ## Clanker Training
 
@@ -708,10 +721,10 @@ The Live admin's usage screens (`/dash/admin/usage`,
 [web-boundary.md](web-boundary.md) §5) read two endpoints, both for
 admins only: an `admin.read` token from an admin account, or the
 operator's (401 without one, 403 for anyone else). The numbers live in
-`crates/live/live-server/src/usage.rs`; a read walks only the days it asks
-for, in memory, and never the log.
+`crates/live/live-server/src/usage.rs`. The reads use in-memory projections
+and a cached inventory of the private blob store.
 
-**Where the counts come from.** Two books, merged when read:
+**Where the counts come from.**
 
 - *From the log*, folded as events are applied and replayed at startup
   like the read model: `events` (every event, by its author; the
@@ -725,27 +738,34 @@ for, in memory, and never the log.
   `stored.content` (`ContentStored`, for its uploader). Other events the
   server signs for itself (`GameFrame`, `RankChanged`, `ReportReviewed`,
   `PresenceExpired`, ...) count as events by type and nothing more.
-- *Metered* at the request, for bytes that never reach the log, each the
-  accepted body's size as received: `up.frames` (live frames on
-  `/v1/ingest`, text and packed), `up.content` (content uploads, title
-  files, map outlines), `up.saves` (cloud save bodies), and
-  `stored.saves` (a running total: a write adds its size less what it
-  replaced, a delete takes its size off; saves written before counting
-  began are not in it). These are counters in the store (the `usage`
-  table; `usage.json` in a file store), added to in memory at once and
-  written at most once a minute by whichever write or sweep comes next.
-  Nothing runs on a timer, so a Durable Object still sleeps; a crash loses
-  at most that minute. `h2 live store copy` does not copy them yet: the
-  log's book rebuilds on the other side, the metered one starts again.
+- *Metered* at the request: `requests` for HTTP responses from `/v1/*`,
+  including errors, preflight requests and WebSocket upgrades. Rate-limited
+  responses (429) are excluded. This is a service-wide count. On the Worker,
+  it includes internal API calls to `LiveHub`. Cloudflare cache hits,
+  static assets, health checks and WebSocket messages are outside this count.
+  Upload meters count `up.frames` (authenticated text
+  and packed frame messages received on `/v1/ingest`), `up.content`
+  (content uploads, title files, map outlines) and `up.saves` (committed
+  cloud save bodies). The native server batches metered increments for up
+  to a minute. The Worker flushes to SQLite every five seconds while
+  counters are pending, or sooner when a batch reaches 256 increments.
+  The sweep alarm flushes batches left by a burst of traffic. A deploy
+  or abrupt reset can discard a batch before it is written.
+  `h2 live store copy` copies the log and blobs. The metered history starts
+  anew on the destination.
+- *Inventoried* for `stored.saves`: the actual account save blobs in the
+  private store, counted once per object. `crates/live/live-server/src/cloud_saves.rs`
+  caches this inventory for 30 seconds across both usage endpoints. When
+  `saves_storage_measured` is `false`, the stored totals cover events and
+  catalogued content only.
 
 Days are UTC, from an event's signed time (`at`) or the server's clock
 when metered, and are kept for 400 days; the write on a new day drops
 older ones. Stored totals have no day and are never dropped. An account
-is *active* on a day when anything above counts for it, other than what
-it stores or reports made about it. The co-op relay is not metered: in
-the Worker it is a Durable Object of its own, with no line to the hub's
-store. A later sink (Cloudflare Analytics Engine) could take the metered
-counts behind the same call, beside the in-process ones.
+is *active* on a day when it produces a counted event or upload, sends a
+message or report, plays a game, hosts a session or signs in. Reports made
+about an account and bytes stored do not count as activity. The co-op
+relay's messages and bytes are outside the usage meters.
 
 ### `GET /v1/admin/usage?days=30`
 
@@ -753,23 +773,28 @@ counts behind the same call, beside the in-process ones.
 
 ```json
 { "from": "2026-10-20", "to": "2026-11-18", "keep_days": 400,
-  "days": [ { "day": "2026-11-18",
+  "request_count_from": "2026-11-18",
+  "days": [ { "day": "2026-11-18", "requests": 12,
               "up": { "events": 1145, "frames": 133, "content": 0, "saves": 0 },
               "events": 5, "messages": { "friend_requests": 1, "invites": 0 },
               "games": 1, "sessions_hosted": 0, "sign_ins": 1, "reports": 0,
               "active_accounts": 1 } ],
-  "totals": { "day": "", "up": { ... }, "events": 5, ...,
+  "totals": { "day": "", "requests": 12, "up": { ... }, "events": 5, ...,
               "active_accounts": 1 },
   "accounts_active": 1,
   "event_types": [ { "type": "GameStarted", "count": 1 } ],
-  "stored": { "events": 2290, "content": 0, "saves": 0 } }
+  "stored": { "events": 2290, "content": 0, "saves": 0 },
+  "saves_storage_measured": true }
 ```
 
-`days` lists only days with something in them, oldest first (fill the
-rest with zeros). `totals` sums them (its `active_accounts` is a sum of
-days; `accounts_active` counts distinct accounts). `event_types` is
-largest first, counts only. `stored` is what is stored now, over every
-account.
+`days` lists only days with recorded activity, oldest first. An unmeasured
+day has `requests: null`. `request_count_from` is the earliest retained UTC
+day with a recorded request, or `null` if none exists. `totals.requests`
+sums recorded requests in the selected range and is `null` if the range
+has no request counts. `totals.active_accounts` sums days and
+`accounts_active` counts distinct accounts in the range. `event_types`
+lists event counts, largest first. `stored` covers the event log, the
+content catalog and cloud save blobs over every account.
 
 ### `GET /v1/admin/usage/accounts?days=30&sort=uploaded&limit=50`
 
@@ -780,7 +805,7 @@ largest first by `sort` (`uploaded`, `stored`, `events`, `messages`,
 500, default 50). `total` counts them all.
 
 ```json
-{ "days": 30, "sort": "uploaded", "total": 1,
+{ "days": 30, "sort": "uploaded", "total": 1, "saves_storage_measured": true,
   "items": [ { "xuid": "00097a94c4494c72", "gamertag": "Alpha",
                "up": { "events": 1145, "frames": 133, "content": 0, "saves": 0 }, "uploaded": 1278,
                "stored": { "events": 1145, "content": 0, "saves": 0 }, "stored_total": 1145,
@@ -807,12 +832,44 @@ except account creation. Signed bodies are sent raw as a compact JWS with
 | `POST /v1/accounts/by-xuid/{xuid}/signins/sign-out-others` | the account's own `signins.write` token | sign out every device but the caller ([Sign-ins](#sign-ins)) |
 | `PUT /v1/titles/{title}/files/{name}` | raw bytes, operator token | publish a title file (max 2 MiB) |
 | `POST /v1/events` | one compact JWS (an event on a stream the author may write) | append; 201 `{position}` |
-| `POST /v1/invites` | none with an operator token (`?days=&code=`); or a JWS `InviteCreated` event `{jti, exp}` by an admin account with its `invites.write` token, bare or as `{"event": <jws>, "code": "..."}` | create a single-use invite; 201 `{invite, custom, jti, exp, position}`: `invite` is the 25-character code or the custom one (live-admin.md §5, "Invite codes people type") |
-| `POST /v1/invites/{jti}/revoke` | JWS `InviteRevoked` event `{jti}` by an admin | end an open invite an admin made |
+| `POST /v1/accounts/{gamertag}/invite-grant` | `{"open_cap": N}` with an admin or operator's `invite-grants.write` token | enable or update invite access. 201 `InviteGrantSet` wire event |
+| `DELETE /v1/accounts/{gamertag}/invite-grant` | no body, same token scope | remove the explicit grant and close the account's open invites unless it is an admin. 200 `InviteGrantRevoked` wire event or 409 if there is no explicit grant |
+| `POST /v1/invites` | `invites.write` token. Signed `InviteCreated {jti, exp}` for an account, bare or in `{"event": <jws>, "code": "..."}`. No body for operator form (`?days=&code=`) | create a single-use invite. 201 `{invite, custom, jti, exp, position}` |
+| `POST /v1/invites/{jti}/revoke` | `invites.write` token and signed `InviteRevoked {jti}` | end an open invite. Admins can end any invite and granted accounts can end their own |
 | `POST /v1/games` | `GameStarted` data without `game_id` | starts a game; returns `{game_id}` |
 | `POST /v1/games/{id}/events` | `[{type, data}]` | append game events in order |
 | `PUT /v1/maps/{map}/outline` | outline JSON, admin or operator's `games.write` token | store or replace a map outline |
 | `POST /v1/local/signin` | `{"once": token}`, no token | embedded server and loopback peers only: answers once with the browser account entry `h2 play --live-local` offered; otherwise 404 (live-admin.md §4) |
+
+## Server invites
+
+An admin or the operator can enable **can invite** on an existing account.
+Both grant events are server-signed and include the acting author's id
+in `by`. The cap is a positive 32-bit integer, or `null` for no cap.
+Omitting `open_cap` also sets no cap. The account list, account detail and
+snapshot include `invite_grant: {open_cap}` only when the explicit grant
+is active. Admins have invite permission through their role.
+
+An authenticated non-admin account without a grant receives HTTP 403
+for `POST /v1/invites`:
+
+```json
+{"error":"forbidden","message":"an admin must enable invite access for this account"}
+```
+
+For a non-admin with a grant, creating at the open invite cap returns 409. Exceeding the
+creation rate returns 429. Non-admin accounts with a grant have a burst
+of three, with one invite slot replenished per minute. Admins have a
+burst of ten and the same refill rate. Redemption or revocation frees
+open-cap space. Lowering a cap leaves existing invites open. Revoking the
+admin role permanently closes the account's open invites. A ban blocks
+redemption of a grantee's codes while it is in force.
+
+Both list endpoints return `{items, position}`. Each item has `jti`,
+`by`, `at`, `exp`, `state` (`open`, `used`, `revoked` or `expired`) and
+`custom`. It can also have `by_gamertag`, `used_by` and
+`used_by_gamertag`. Open generated invites carry the `invite` code.
+See [Invite codes people type](live-admin.md#invite-codes-people-type).
 
 ## Sign-ins
 
@@ -1049,7 +1106,13 @@ game, 72 lowercase hex digits, and the variant's key, 16; omitted when the
 host sends none; docs/game/game-options.md section 3). The ID's datatype bits must agree. Limits are 16 total slots,
 64 attributes, 400 UTF-16 units per string, 800 bytes per blob, 256 bytes per
 metadata string and 32 open advertisements per host. Unknown input fields are
-rejected; addresses must be unicast IPv4 and ports 1..65529.
+rejected. Addresses must be unicast IPv4 and ports 1..65529.
+
+An optional `browser` object holds discovery metadata. Each of its fields
+can be omitted independently. `clankers` is a boolean for whether the host
+plans bot seats. `game_type` is the multiplayer engine index. `variant`
+is the host's full variant name. `map_category` names the map source as
+`halo2`, `map_pack`, `mods` or `halo_ce`.
 
 The server writes a server-signed `SessionCreated` with the full session. Its
 `host`, `host_xuid` and `host_gamertag` come from the authenticated account;
@@ -1068,7 +1131,9 @@ Only the authenticated host may append events, signed with its registered key:
   one). Use `clear_map_id: true` when a host returns to retail.
   `skulls: []` turns them all off. A `variant_ext` replaces the last.
   A server from before `skulls` refuses an update that has it, so the HLE
-  sends it only when the host's set changed; the same for `variant_ext`.
+  sends it only when the host's set changed. The same applies to
+  `variant_ext`. An update with `browser` replaces the discovery metadata
+  as a whole. `browser: {}` clears it.
 - `PlayerJoined`: `{xuid, slot?}`; the account must exist and not be in the
   roster, which is bounded to 16. Slot is an optional display string.
 - `PlayerLeft`: `{xuid}`; the account must be in the roster.
@@ -1096,6 +1161,40 @@ declared address is a local-network one. When a listed session is created
 from a non-loopback IPv4, the observed address replaces any declared one
 ([live-custom-games.md](live-custom-games.md) §3–§4). Reading one session by
 ID ignores visibility. `SessionUpdated` may also set `visibility`.
+
+### Browser filters
+
+`GET /v1/sessions` accepts an optional URL-encoded JSON object in
+`filters`. Omit any field to leave that criterion unset.
+
+| Field | Values |
+|---|---|
+| `kind` | `multiplayer` or `coop` |
+| `clankers` | `true` with Clankers, `false` without |
+| `game_type` | `1` CTF, `2` Slayer, `3` Oddball, `4` King of the Hill, `7` Juggernaut, `8` Territories, `9` Assault |
+| `variant` | Full multiplayer variant name, matched case-insensitively after trimming |
+| `map_category` | `halo2`, `map_pack`, `mods` or `halo_ce` |
+| `has_space` | `true` requires a public opening and room in the advertised capacity. `false` leaves room unrestricted |
+| `campaign` | `halo2` or `halo_ce`, inferred from a known co-op level |
+| `difficulty` | Co-op difficulty, `0` Easy through `3` Legendary |
+
+Each active criterion excludes known mismatches. For example, a host
+with unknown Clanker or variant metadata remains eligible for either
+value. Co-op sessions are excluded by multiplayer game type or variant
+criteria, and multiplayer sessions by campaign or difficulty criteria.
+The map filter can recover a category from package provenance or a
+recognized map name when the host omits it. The server applies the filters
+before the page limit and retains the visibility and endpoint rules above.
+Send the same filters with each cursor.
+
+With `browser_variants=true`, the first page also has a `variants` array
+with up to 64 distinct multiplayer variant names. It comes from sessions
+visible to the reader and eligible for the list, before the browser
+criteria and limit. The game uses this with the retail custom browser's
+search query. The next cursor page omits `variants`. List items include advertised
+`browser` metadata when the request uses `filters` or
+`browser_variants=true`. Plain lists and session details use the legacy
+advertisement shape.
 
 ### Network addresses
 
@@ -1148,7 +1247,7 @@ Lists accept `state` (default `open`), `hopper` (numeric ID), `map`, `host`
 `coop`: `?flags=coop` lists co-op campaign sessions), `visibility`, and `attributes` (URL-encoded
 JSON with exact value comparisons). Filters combine. `limit` is 1..1000, default 100; `cursor`
 is the previous `next` string. Ordering is by session ID. `optimatch`
-(URL-encoded JSON `{hopper, average, lowest?, highest?, party?}`) is the
+(URL-encoded JSON `{hopper, average, lowest?, highest?, party?, has_map_pack?}`) is the
 game's decoded OptiMatch search ([live-matchmaking.md](live-matchmaking.md)
 §7): it keeps sessions on that playlist whose level window and party room
 fit, orders them by closeness to `average`, and returns one page with a
@@ -1254,6 +1353,37 @@ map's (from the operator's retail list) nor pinned on the session's
 server never saw is fine in a custom game: retail maps and local edits have
 ids too.
 
+### Map Pack matchmaking
+
+`PUT /v1/matchmaking/queue` (a `sessions.write` token) accepts an optional
+boolean `has_map_pack`. It reports whether the requesting console has
+all nine maps installed. Omission counts as false for matchmaking.
+The assignment's `has_map_pack` is true when every assigned console and
+the host can use the Map Pack. Older assignments omit it. A Map Pack map
+on an assigned session requires this capability.
+
+`GET /v1/sessions?optimatch=<json>` accepts the same optional member in
+the decoded search. Live includes legacy Map Pack advertisements only
+for an authenticated solo search (`party: 1`) with the capability. This
+includes published maps that require a Map Pack base. Custom-game
+browsing keeps its own map availability rules.
+
+`GET /v1/matchmaking/availability` (an account's `read` token) returns
+`{"has_map_pack": true}`, `{"has_map_pack": false}` or
+`{"has_map_pack": null}`. It describes the reader's last console search.
+Only an explicit report from an authenticated search or queue refresh
+counts. The report expires after 30 minutes and the response is private
+and uncached.
+
+`GET /v1/titles/4D530064/files/multiplayer_hopper.dat` serves a disc-only
+rotation to legacy clients. A client with runtime rotation filtering
+requests `?map_pack=1` for the full file. Each response's ETag identifies
+the bytes served for that variant. `GET /v1/titles/4D530064/hopper`
+always describes the published file. A hopper with Map Pack entries
+includes `has_map_pack_maps: true` in this JSON. A rotation with add-on
+entries needs at least one Halo 2 disc map when published or imported.
+[Map Pack rotations](live-matchmaking.md#map-pack-rotations)
+
 ## Dedicated hosts
 
 A `HostLease` reserves a process for one match. Its `id` is `hl-` plus
@@ -1299,7 +1429,7 @@ stored: players use their own disc for the base.
 | endpoint | authentication | result |
 |---|---|---|
 | `PUT /v1/content/{sha256}` | account token, `lxm: content.write`; the raw bytes | 201 `{sha256, size, whole_map, stored: true}`; 200 `{..., stored: false}` if already kept |
-| `GET /v1/content/{sha256}` | public, or `read` on a private server | streams the bytes (`ETag` the hash, `private, no-store`); 404; 410 if taken down |
+| `GET /v1/content/{sha256}` | public, or `read` on a private server | streams a download (`ETag` the hash, `private, no-store`); 404 for absent or uncleared images; 410 for general content takedowns |
 | `POST /v1/content/{sha256}/report` | account token, `lxm: content.write`; `{reason}` | 201 `{ok, position}` |
 | `PUT /v1/maps` | account token, `lxm: content.write`; a signed `MapPublished` event (compact JWS) | 201 `{map, missing, position}`; 200 when the author republishes it |
 | `GET /v1/maps?sort=&base=&author=&category=&q=&limit=&cursor=` | read rule | `{items: [summary], next, position}`, newest first or most downloaded first (see "The mod repository") |
@@ -1308,14 +1438,19 @@ stored: players use their own disc for the base.
 | `POST /v1/maps/{map_id}/report` | account token, `lxm: content.write`; `{reason}` | 201 `{ok, position}` |
 | `PUT /v1/maps/{map_id}/credit` | admin or operator token, `lxm: content.moderate`; a credit `{authors?, release?, released?, source_url?, notes?}` | 200 `{ok, position, map: summary}`; `{}` clears the admin's credit; 403 for others; 404 if not published; 400 when malformed |
 | `PUT /v1/maps/{map_id}/details` | admin or operator token, `lxm: content.moderate`; details `{description?, images?: [{sha256, caption?, source_url?, credit?, licence?}], contents?, features?, pack?}` | 200 `{ok, position, map: summary}`; `{}` clears the admin's details; each image must be stored content that is a PNG or JPEG; 403 for others; 404 if not published; 400 when malformed |
-| `GET /v1/maps/{map_id}/images/{n}` | read rule | the map's gallery image at index `n` (from 0), with its content type; 404 if none |
+| `GET /v1/maps/{map_id}/images/{n}` | read rule | the map's gallery image at index `n` (from 0), with its content type; 404 if none or optional `?v=sha256` differs |
 | `GET /v1/mod-packs` | read rule | `{items: [pack], position}` |
 | `GET /v1/mod-packs/{id}` | read rule | `{pack, position}` |
 | `PUT /v1/mod-packs/{id}` | uploader, `content.write` | publishes the pack's metadata and complete membership, returns `{pack, position}` |
 | `POST /v1/mod-packs/{id}/report` | account, `content.write`, body `{reason}` | records a report on the pack |
 | `POST /v1/admin/mod-packs/{id}/{action}` | admin or operator, `content.moderate` | applies hide, unhide, delete, block or unblock to the pack |
-| `PUT /v1/mod-packs/{id}/screenshots/{kind}/{slot}`, `PUT /v1/maps/{map_id}/screenshots/{kind}/{slot}` | uploader, `content.write`, raw image body | replaces one slot, returns `{ok, sha256, position}` |
-| `GET /v1/mod-packs/{id}/images/{n}` | read rule | pack gallery image at index `n` (from 0), with its content type |
+| `POST /v1/maps/{map_id}/screenshot-capture-session` | map uploader, `content.write` | 201 `{game_id, token}` for a private capture session |
+| `PUT /v1/mod-packs/{id}/screenshots/capture/{slot}`, `PUT /v1/maps/{map_id}/screenshots/capture/{slot}` | uploader, `content.write`, capture proof header and raw image | 200 `{ok, sha256, position, status}`; 400 for invalid proof or image; 403 for a wrong account, game or map; 410 for a removed image |
+| `GET /v1/mod-packs/{id}/images/{n}` | read rule | pack gallery image at index `n` (from 0), with its content type; 404 if none or optional `?v=sha256` differs |
+| `POST /v1/screenshots/{sha256}/report` | account, `content.write` | hides a visible screenshot and returns `{ok, position}` |
+| `GET /v1/admin/screenshots?cursor=` | admin or operator, `content.moderate` | up to 40 pending items, oldest first, and `next` (a decimal cursor or null) |
+| `GET /v1/admin/screenshots/{sha256}/image` | admin or operator, `content.moderate` | pending WebP, with `private, no-store` |
+| `POST /v1/admin/screenshots/{sha256}/{action}?revision=` | admin or operator, `content.moderate` | `approve` or `remove`; 200 `{ok, position}`; 409 if the review has changed |
 | `GET /v1/mappacks` | read rule | `{items: [{id, name, description?, authors?, released?, source_url?, images?}], position}` |
 | `PUT /v1/mappacks/{id}` | admin or operator token, `lxm: content.moderate`; a pack `{name, description?, authors?, released?, source_url?, images?}`, or `null` to clear | 200 `{ok, position}`; ids are 1 to 64 of a-z, 0-9 and -; 400 when malformed |
 | `GET /v1/mappacks/{id}/images/{n}` | read rule | the pack's `n`th image; 404 if none |
@@ -1351,7 +1486,10 @@ like the account's other events: stream `package-<map_id>`, type
 manifest as JSON (the TOML's tables and keys, with `[[patch]]` and
 `[[pack]]` as the arrays `patch` and `pack`); `image` is the SHA-256 of the
 preview, uploaded like a layer, given exactly when the manifest names one.
-`category` (one of `gameplay`, `weapons`, `vehicles`, `visuals`, `maps`,
+A signed manifest can retain its preview reference while the repository
+withholds the image. The public summary and downloads expose an image
+only when Live approves it or an admin includes it in curated details
+or pack art. `category` (one of `gameplay`, `weapons`, `vehicles`, `visuals`, `maps`,
 `other`) and `source_url` (an `http` or `https` URL of at most 300
 characters, where the mod came from) are the repository's display data,
 outside the `MapId` like the manifest's name (400 when malformed). So are
@@ -1396,8 +1534,9 @@ readers that know only that, and `source_url` is the credit's when it
 has one. An admin's details (`PUT /v1/maps/{id}/details`) add `images`
 (`[{sha256, caption?, source_url?, credit?, licence?}]`, served at
 `/v1/maps/{id}/images/{n}`), `contents` (the report's lines) and `pack`
-and `pack_name`; they replace `description` and `features` when set, and
-the first image is `image` when the package has no preview. A list page
+and `pack_name`; they replace `description` and `features` when set.
+The first visible gallery image supplies `image` if the manifest has
+no cleared preview. A list page
 then has `packs: [{id, name, ...}]` for the packs its items name; a
 map's own answer has `report` (the whole contents report:
 `{lines, classes, swaps, stats, placements, scripts}`) and `pack_info`.
@@ -1430,13 +1569,46 @@ available. Otherwise a title of the form `<release>: <map>` groups with
 the same release from the same uploader. A standalone map forms a pack
 of one. Member downloads and lobby joins keep their full MapIds.
 
-Each pack and each map has three uploader image slots (`upload/0`
-through `upload/2`) and five capture slots (`capture/0` through
-`capture/4`). Slot zero of the uploader images is the cover. Send PNG,
-JPEG or WebP, up to 5 MiB, 4096 pixels per side and 8 megapixels.
-The server decodes and re-encodes the image as WebP, scaling it to fit
-1280 pixels per side and 512 KiB. Read published images by their
-dense gallery index, in uploader, capture and curated-image order.
+#### Verified screenshot uploads
+
+Each map and pack has five capture slots, `capture/0` through
+`capture/4`. The game provides
+`{game_id, tick, map_id, map, camera: {position, forward, up}, digest}`
+in the `X-H2-Capture-Proof` JSON header. `digest` is the SHA-256 of the
+request body. The camera uses game coordinates with Z up. For a private
+capture, add `permit` from the capture-session response. Live verifies
+that permit against the account, game ID and exact MapId for 15 minutes.
+The map name is the package's base name.
+For a recorded game, Live checks its roster, exact MapId, map name and
+recorded tick range. A film without a matching game record cannot establish
+its exact MapId. Pack uploads must show a member's map. The
+arbitrary-file `upload` slots do not accept submissions.
+
+Live accepts PNG, JPEG and WebP with valid proof, within 5 MiB, 4096 pixels
+per side and 8 megapixels. It converts the image to opaque WebP, at most
+1280 pixels per side and 512 KiB. The normalized hash in the receipt is
+the ID for reports and review. The uploader's accepted receipt says
+`pending` or `approved`. The gallery uses dense indices in slot order
+followed by curated images. Reportable entries carry `reportable: true`.
+
+Live compares a 48×27 image against projected edges from an admin-supplied
+outline stored under the exact MapId. A mismatch or insufficient geometry
+requires review. The classifier scores the same normalized image that Live
+serves. Scores above 0.20 and unavailable or invalid scores require review.
+Scores of 0.80 or higher flag the image for an upload strike.
+Private and player-hosted captures require manual approval
+even when those checks clear. The permit authorizes the capture session and
+the digest binds the upload bytes. An uploader controls the pixels produced
+by a game running on their own device.
+
+The pending queue's items give `{sha256, revision, uploader, reason, nsfw,
+proof}`. The revision is a decimal string identifying the current review.
+Proof in the queue omits the permit. A report hides the image across its
+map, pack, preview and direct content URLs. Each account can report the same
+image once. Approving restores the image. Removing it permanently blocks
+that hash. [Screenshot review](live-admin.md#screenshot-review)
+
+Implementation: [shared screenshot routes](../../crates/live/live-server/src/content/screenshots.rs).
 
 Clients that select or download individual maps use the paged map list:
 
@@ -1793,19 +1965,46 @@ also uses this history to catch up a slow reader and suppresses records
 that it has already sent. A hibernated Worker socket retains its requested
 version across wake-up.
 
-**`GET /v1/ingest`** for the game. The first message is
-`{ "kind": "auth", "token": "<jwt>" }`. Then the client sends
-`{ "kind": "frame", "frame": {...} }` and
-`{ "kind": "events", "game_id": "...", "events": [{type, data}] }`. Frames
-may also come as binary messages: containers of packed frame records, one
-stream per socket. The server caps each text or binary message at 16 KiB,
-including the first auth message. The server fans frames out to readers,
-records them in [frame chunks](#frame-chunks), and appends events.
+**`GET /v1/ingest`** opens a game socket. The first message is
+`{ "kind": "auth", "token": "<jwt>" }` with a `games.write` account
+token or a `telemetry.ingest` host lease. If discovery advertises
+`ingest_frame_batch: true`, the client can send `auth_batched` as the
+message kind, including on token refresh. A socket carries one stream of
+packed frame records, oldest first, in binary messages. In batched mode
+each message can hold up to 16 records, and each game can spend up to 16
+frames of accumulated credit, replenished at about 15 frames per second.
+The same budget applies across the game's publishers. Each text or
+binary message is capped at 16 KiB.
+
+Clients can also send `{ "kind": "frame", "frame": {...} }` for a JSON
+frame. Frames are recorded in [frame chunks](#frame-chunks) and sent to
+readers. Only refused frames get a reply, with kind `frame_error` in
+batched mode and `error` on legacy sockets. An event message carries
+`{ "kind": "events", "game_id": "...", "jws": "<one batch JWS>" }` and
+gets `{kind: "appended", game_id, position}` or `{kind: "error", error,
+message}`. A `{kind: "ping"}` refreshes presence for an account or
+session activity for a leased host. Both deployments use
+`crates/live/live-server/src/ingest.rs`.
 
 A `GameFrame` recorded before frame chunks holds `{tick, source, packed}`:
 `packed` is the frame as one packed keyframe, base64url without padding, so
 the event's signature covers the packed bytes. The oldest hold the JSON
 frame plus `source`; both read the same through `/frames`.
+
+## Presence heartbeats
+
+| Endpoint | Request | Response |
+|---|---|---|
+| `POST /v1/presence/ping` | One `events.write` bearer token | `{ok: true, expires_in}`, or 404 if the account has no presence |
+| `POST /v1/presence/ping/batch` | JSON `{tokens: [...]}` containing 1–4 single-use `events.write` tokens | HTTP 200 with `{results: [...]}` in token order. Each result is `{ttl}` in seconds or `{status, error, message}` for that token |
+
+The batch handler in `crates/live/live-server/src/http.rs` returns 400 for
+an invalid body or token count and 413 for a body over 64 KiB. Each token
+is verified independently. The client issues fresh tokens on retries and
+uses individual pings if the batch endpoint returns HTTP 404. An
+individual result with status 404 tells the client to sign that account
+in again. Presence expires 90 seconds after the last event or ping under
+the default policy.
 
 ## Map outline
 
@@ -1949,7 +2148,15 @@ Settled after the first client was built against this page.
    /v1/games/{id}/chunks`). Games recorded before them are read with `GET
    /v1/games/{id}/frames?from_tick=&to_tick=&cursor=`, packed, at most 600
    per page, oldest first.
-9. **`PlayerKilled`** carries `pos`, the victim's position.
+9. **`PlayerKilled`** carries `pos` when the victim's position is known.
+   `weapon` is the stable key for the killing damage, such as `battle_rifle`,
+   `frag_grenade`, `melee` or `fall`. It can also identify the cause of a
+   suicide or world death. The credited `killer` may have damaged a player
+   who later fell. In that case `weapon` describes the fall. `headshot`
+   is a boolean for identified weapons and is absent for environmental or
+   unattributed damage. Both fields are
+   optional in the event log and the `kills` array returned by
+   `GET /v1/games/{id}`. An absent field means unknown.
 10. **Who writes a game** (2026-11-18). The server trusts the host's
     record. Only the host ends the game (`GameEnded`; 403 from anyone
     else, who leaves with `PlayerLeft`). A `PlayerJoined` from anyone but
@@ -1979,16 +2186,11 @@ above where they differ.
   and writes `GameStarted` itself, signed by the server key, with an extra
   `host` field naming the token's author. Later game events are written by
   the host or a player in the game.
-- **Ingest `events`** messages are `{ "kind": "events", "game_id": "...",
-  "jws": "<one batch JWS>" }`, answered with `{kind: "appended", position}`
-  or `{kind: "error", ...}`. `{kind: "ping"}` refreshes presence.
 - **`POST /v1/events`** returns the stored wire event (a superset of
   `{position}`).
 - **Map outlines** can be uploaded and replaced by admins and the operator.
-- **`POST /v1/presence/ping`** needs `lxm: events.write` and returns 404 if
-  the caller isn't signed in. Presence expires 90 s after the last event or
-  ping; a game with no events or frames for 5 minutes ends as `lost`. That
-  `GameEnded` carries the last tick seen, but its `at` (the game's
+- **Idle games.** A game with no events or frames for 5 minutes ends as
+  `lost`. That `GameEnded` carries the last tick seen, but its `at` (the game's
   `ended_at`) is when the server gave up, so a game's length is
   `(GameEnded.tick - GameStarted.tick) / 30`, not `ended_at - started_at`.
   A `lost` game that never got past its start tick (the console went quiet

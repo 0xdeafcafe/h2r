@@ -172,8 +172,11 @@ impl InputLog {
     }
 }
 
+static RECORD_BYTES: mem_watch::Counter = mem_watch::Counter::new("input.record_buffer_bytes");
+
 /// Logs every read into a shared [`InputLog`].
 pub struct Recorder {
+    buffer_bytes: mem_watch::Gauge,
     log: Arc<Mutex<InputLog>>,
     ticks: Option<Arc<AtomicU64>>,
 }
@@ -184,6 +187,7 @@ impl Recorder {
         let log = Arc::new(Mutex::new(InputLog::default()));
         (
             Self {
+                buffer_bytes: RECORD_BYTES.track(0),
                 log: Arc::clone(&log),
                 ticks: None,
             },
@@ -195,7 +199,8 @@ impl Recorder {
     /// pass the saved run's reads up to the snapshot's input cursor, and
     /// the new reads follow them with the same numbering.
     pub fn resume(log: InputLog) -> (Self, Arc<Mutex<InputLog>>) {
-        let (recorder, shared) = Self::new();
+        let (mut recorder, shared) = Self::new();
+        recorder.buffer_bytes.set((log.reads.capacity() * size_of::<Read>()) as u64);
         *shared.lock().unwrap_or_else(|e| e.into_inner()) = log;
         (recorder, shared)
     }
@@ -209,17 +214,16 @@ impl Recorder {
 
 impl InputTap for Recorder {
     fn read(&mut self, handle: u32, status: &mut u32, packet: &mut [u8; PACKET]) {
+        let _scope = mem_watch::scope("input.record");
         let tick = self.ticks.as_ref().map(|t| t.load(Ordering::Relaxed));
-        self.log
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .reads
-            .push(Read {
-                tick,
-                handle,
-                status: *status,
-                packet: *packet,
-            });
+        let mut log = self.log.lock().unwrap_or_else(|e| e.into_inner());
+        log.reads.push(Read {
+            tick,
+            handle,
+            status: *status,
+            packet: *packet,
+        });
+        self.buffer_bytes.set((log.reads.capacity() * size_of::<Read>()) as u64);
     }
 
     fn cursor(&self) -> Option<u64> {

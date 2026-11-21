@@ -2,7 +2,7 @@
 
 use std::collections::HashSet;
 
-use engine::datum::{DatumArray, layout};
+use engine::datum::DatumArray;
 use engine::sound::{
     LoopingSound, LoopingSoundTag, LoopingTrackTag, SoundChannel, SoundInstance, SoundStream,
 };
@@ -246,6 +246,7 @@ fn stream_object(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use engine::datum::layout;
     use engine::tags::index_layout;
     use engine::testing::FakeGuest;
 

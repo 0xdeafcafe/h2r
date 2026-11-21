@@ -17,8 +17,8 @@
 //! instead of reading the guest themselves, at the same points and from
 //! the same reads. Nothing here writes guest memory.
 
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::Instant;
 
 use engine::memory::GuestMemory;
@@ -42,6 +42,10 @@ pub const ID: &str = "frame-scene";
 /// The game-time record's tick count (`[GAME_TIME] + 8`).
 const GAME_TIME_TICK: u32 = 8;
 
+/// The return address of `render_scene_passes`' decal mode 1 call
+/// (`0x0002c048`), the next call after `render_dynamic_lights` returns.
+const DECALS_AFTER_LIGHTS: u32 = 0x0002_c04d;
+
 /// Guest memory, read only.
 struct Ro<'a>(&'a dyn GuestMemory);
 
@@ -51,12 +55,51 @@ impl GuestRead for Ro<'_> {
     }
 }
 
+pub type PresentPayload = Arc<dyn std::any::Any + Send + Sync>;
+
+/// Read-only inputs to the render context's image capture.
+pub trait PresentObserver: Send + Sync {
+    fn capture(&self, guest: &dyn GuestMemory) -> Option<PresentPayload>;
+    fn horizontal_factor(&self) -> f32;
+}
+
+#[derive(Clone, Copy)]
+pub struct CapturedView {
+    pub camera: Camera,
+    pub horizontal_factor: f32,
+}
+
+pub struct CapturedImage {
+    pub views: [Option<CapturedView>; 4],
+    pub payload: PresentPayload,
+}
+
+struct PresentViews {
+    observer: Weak<dyn PresentObserver>,
+    image: CapturedImage,
+}
+
+/// Detach the completed sample at Swap on the current render owner,
+/// including a render resumed on the game thread after worker fallback.
+pub fn take_present_image() -> Option<CapturedImage> {
+    if !PRESENT_READY.load(Ordering::Acquire) {
+        return None;
+    }
+    with_step(|step| {
+        PRESENT_READY.store(false, Ordering::Release);
+        step.presentation.take().map(|present| present.image)
+    })
+}
+
 #[derive(Default)]
 struct Step {
     // SceneId can repeat after a snapshot load. A present belongs to one
     // particular begin/seal interval, even when guest frame numbers repeat.
     sequence: u64,
     builder: SceneBuilder,
+    // In-progress image metadata outlives the game-thread diagnostic seal
+    // when the render tail is still running on the pipelined worker.
+    presentation: Option<PresentViews>,
     /// The tick of the scene sealed last.
     tick: Option<u32>,
     /// The open view's clusters and world state are read: at its base
@@ -71,6 +114,7 @@ struct Step {
 }
 
 static STEP: Mutex<Option<Step>> = Mutex::new(None);
+static PRESENT_READY: AtomicBool = AtomicBool::new(false);
 static LAST: Mutex<Option<Arc<FrameScene>>> = Mutex::new(None);
 static SEALED: AtomicU64 = AtomicU64::new(0);
 static UNSEALED: AtomicU64 = AtomicU64::new(0);
@@ -146,9 +190,20 @@ fn begin_step(step: &mut Step, m: &Ro<'_>) {
 }
 
 /// `render_views`' entry: a new scene.
-pub fn begin(mem: &dyn GuestMemory) {
+fn begin(mem: &dyn GuestMemory, present: Option<&Arc<dyn PresentObserver>>) {
     let m = Ro(mem);
-    with_step(|step| begin_step(step, &m));
+    let presentation = present.and_then(|observer| {
+        let payload = observer.capture(mem)?;
+        Some(PresentViews {
+            observer: Arc::downgrade(observer),
+            image: CapturedImage { views: [None; 4], payload },
+        })
+    });
+    with_step(|step| {
+        PRESENT_READY.store(presentation.is_some(), Ordering::Release);
+        step.presentation = presentation;
+        begin_step(step, &m);
+    });
 }
 
 /// The open view's camera at a base-layer layer 3, opening the view
@@ -170,6 +225,10 @@ pub fn open_view(mem: &dyn GuestMemory) -> Option<View> {
 /// are read, once: they are layer 3's (its list and its texture
 /// accumulation target), and the view can open earlier, at its layer 1.
 fn open_kind(mem: &dyn GuestMemory, kind: ViewKind) -> Option<View> {
+    open_kind_at_layer(mem, kind, false)
+}
+
+fn open_kind_at_layer(mem: &dyn GuestMemory, kind: ViewKind, layer_hook: bool) -> Option<View> {
     let m = Ro(mem);
     let Some(camera) = extract::camera(&m) else {
         NO_CAMERA.fetch_add(1, Ordering::Relaxed);
@@ -177,7 +236,7 @@ fn open_kind(mem: &dyn GuestMemory, kind: ViewKind) -> Option<View> {
     };
     let key = ViewKey { kind, player: 0, view: m.read_u32(VIEW_INDEX).unwrap_or(0) as u8 };
     let base = m.read_u32(CURRENT_LAYER) == Some(LIGHTMAP_LAYER);
-    with_step(|step| {
+    let (view, observer) = with_step(|step| {
         if !step.builder.is_building() {
             // A render this step did not see begin (no `render_views`
             // observer in this plan): the scene starts here.
@@ -201,14 +260,38 @@ fn open_kind(mem: &dyn GuestMemory, kind: ViewKind) -> Option<View> {
                 REFUSED.fetch_add(1, Ordering::Relaxed);
             }
         }
-        step.builder.view().cloned()
-    })
+        let observer = if layer_hook && kind == ViewKind::Game {
+            step.presentation.as_ref().and_then(|present| {
+                let old = present.image.views.get(usize::from(key.view))?;
+                if old.is_some_and(|old| old.camera == camera) {
+                    return None;
+                }
+                present.observer.upgrade()
+            })
+        } else {
+            None
+        };
+        Some((step.builder.view()?.clone(), observer))
+    })?;
+    if let Some(observer) = observer {
+        // Read the per-view lens outside the scene lock. Swap takes the
+        // locks in device-then-scene order when it detaches the sample.
+        let horizontal_factor = observer.horizontal_factor();
+        with_step(|step| {
+            if let Some(present) = &mut step.presentation
+                && let Some(slot) = present.image.views.get_mut(usize::from(key.view))
+            {
+                *slot = Some(CapturedView { camera, horizontal_factor });
+            }
+        });
+    }
+    Some(view)
 }
 
 /// The current list's `layer` items into the open view of `kind` (a
 /// layer draw of the scene's world layers or of the first person's).
 fn layer_items(mem: &dyn GuestMemory, kind: ViewKind, layer: u32) {
-    if open_kind(mem, kind).is_none() {
+    if open_kind_at_layer(mem, kind, true).is_none() {
         return;
     }
     let m = Ro(mem);
@@ -276,8 +359,9 @@ pub fn light(mem: &dyn GuestMemory, light: SceneLight, steps: &[LightStep]) {
     });
 }
 
-/// The main view's light pass is over. Fill the candidate data alongside
-/// the original draw steps, which already hold their final group indices.
+/// The main view's light pass is over (at the decal mode that follows
+/// it). Fill the candidate data alongside the original draw steps, which
+/// already hold their final group indices.
 fn light_candidates(mem: &dyn GuestMemory, fpu: engine::light_constants::Fpu) {
     with_step(|step| {
         let Some((scene, view)) = step.builder.open() else { return };
@@ -600,6 +684,10 @@ pub(crate) fn map_changed() {
 /// Snapshot restoration also abandons any guest entry/slot scopes.
 pub fn forget() {
     reset_timeline(Cut::LOAD);
+    with_step(|step| {
+        step.presentation = None;
+        PRESENT_READY.store(false, Ordering::Release);
+    });
     crate::entry_census::forget();
     crate::carried_slots::forget();
 }
@@ -660,7 +748,7 @@ fn at_layer(mem: &dyn GuestMemory, ret: u32) {
     let Ok(layer) = mem.u32(CURRENT_LAYER) else { return };
     match (layer_site(layer, ret), layer) {
         (Site::Scene, LIGHTMAP_LAYER) => {
-            if view(mem).is_some() {
+            if open_kind_at_layer(mem, ViewKind::Game, true).is_some() {
                 decorators(mem);
             }
         }
@@ -670,7 +758,10 @@ fn at_layer(mem: &dyn GuestMemory, ret: u32) {
     }
 }
 
-pub struct FrameSceneStep;
+#[derive(Default)]
+pub struct FrameSceneStep {
+    pub present: Option<Arc<dyn PresentObserver>>,
+}
 
 impl Feature for FrameSceneStep {
     fn manifest(&self) -> Manifest {
@@ -695,10 +786,11 @@ impl Feature for FrameSceneStep {
         // Under impl.render.pipelined_frame the views are written on the
         // render thread and sealed on the game thread after the launch,
         // so a sealed scene there can be the frame before's.
+        let present = self.present.clone();
         b.raw()
-            .observe_before(&points::RENDER_VIEWS, "frame_scene_begin", |o| {
+            .observe_before(&points::RENDER_VIEWS, "frame_scene_begin", move |o| {
                 let g = o.guest();
-                begin(&*g);
+                begin(&*g, present.as_ref());
             })
             .context_only();
         b.raw()
@@ -709,14 +801,24 @@ impl Feature for FrameSceneStep {
             })
             .after_feature(crate::render_timing::ID)
             .context_only();
+        // The light candidates once the light pass is over: before the
+        // decal mode 1 call, the next call after `render_dynamic_lights`
+        // returns, with nothing between them. A before there, not an
+        // after on the lights, keeps the lights' chain on the render
+        // thread. Render-timing's scene-call observer on the same point
+        // goes first, like at the layer draw.
         b.raw()
-            .observe_after(&points::RENDER_DYNAMIC_LIGHTS, "frame_scene_light_candidates", |o| {
+            .observe_before(&points::RENDER_DECAL_MODE, "frame_scene_light_candidates", |o| {
                 let g = o.guest();
+                if g.u32(o.cpu.esp).ok() != Some(DECALS_AFTER_LIGHTS) {
+                    return;
+                }
                 light_candidates(&*g, engine::light_constants::Fpu {
                     mxcsr: o.cpu.mxcsr,
                     x87_control: o.cpu.x87.control,
                 });
             })
+            .after_feature(crate::render_timing::ID)
             .context_only();
         // The view's post passes: `render_screen_effects`' two stack
         // bytes (`late`, `colour`). Its callees' calls are put in the
@@ -751,6 +853,47 @@ mod tests {
     use super::*;
 
     #[test]
+    fn worker_view_metadata_survives_the_game_thread_scene_seal() {
+        use scene_extract::layout::camera::RENDER_CAMERA;
+        use scene_extract::testing::{Mem, camera_record};
+
+        struct Observer;
+
+        impl PresentObserver for Observer {
+            fn capture(&self, _: &dyn GuestMemory) -> Option<PresentPayload> {
+                Some(Arc::new(19_u32))
+            }
+
+            fn horizontal_factor(&self) -> f32 {
+                0.75
+            }
+        }
+
+        let mut record = Mem::default();
+        camera_record(&mut record, RENDER_CAMERA);
+        let mut guest = engine::FlatMemory::new(RENDER_CAMERA, 0x100);
+        for (addr, word) in record.0 {
+            guest.set_u32(addr, word).unwrap();
+        }
+        let observer: Arc<dyn PresentObserver> = Arc::new(Observer);
+        begin(&guest, Some(&observer));
+        let first = open_kind_at_layer(&guest, ViewKind::Game, true).unwrap();
+        seal();
+        assert_eq!(last().unwrap().views[0].camera, first.camera);
+
+        // The worker reaches another view draw after the game-thread seal.
+        guest.set_u32(RENDER_CAMERA, 7.0_f32.to_bits()).unwrap();
+        let next = open_kind_at_layer(&guest, ViewKind::Game, true).unwrap();
+        assert_ne!(first.camera, next.camera);
+        let image = take_present_image().unwrap();
+        let captured = image.views[0].unwrap();
+        assert_eq!(captured.camera, next.camera);
+        assert_eq!(captured.horizontal_factor, 0.75);
+        assert_eq!(image.payload.downcast_ref::<u32>(), Some(&19));
+        assert!(take_present_image().is_none());
+    }
+
+    #[test]
     fn the_step_is_on_with_the_native_renderer_only() {
         let on = |spec| hooks::switches::native_render_on(&hooks::Switches::parse(spec).unwrap());
         assert!(on(""));
@@ -761,7 +904,7 @@ mod tests {
     fn the_entry_census_is_placed_only_with_its_option() {
         let text = |spec| {
             let mut r = hooks::Registry::new(hooks::Switches::parse(spec).unwrap());
-            assert!(r.add(&FrameSceneStep).unwrap());
+            assert!(r.add(&FrameSceneStep::default()).unwrap());
             r.build(&hooks::plan::Base).unwrap().text()
         };
         let off = text("");
@@ -787,7 +930,7 @@ mod tests {
     fn the_carried_slots_are_placed_only_with_their_option() {
         let text = |spec| {
             let mut r = hooks::Registry::new(hooks::Switches::parse(spec).unwrap());
-            assert!(r.add(&FrameSceneStep).unwrap());
+            assert!(r.add(&FrameSceneStep::default()).unwrap());
             r.build(&hooks::plan::Base).unwrap().text()
         };
         let off = text("");

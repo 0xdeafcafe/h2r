@@ -13,7 +13,7 @@ use super::{AgentSource, CoreInputs, LateInputs, register_core, register_late_fo
 use crate::lockstep_glue;
 
 /// Every switch that adds hooks, on (the native renderer is on by default).
-pub(crate) const ALL_ON: &str = "impl.engine=on,render-timing";
+pub(crate) const ALL_ON: &str = "impl.engine=on,render-timing,actor-net";
 /// Added to [`ALL_ON`]: the native renderer (on by default) off.
 pub(crate) const NATIVE_OFF: &str = "impl.render.native=off";
 
@@ -140,6 +140,10 @@ fn registry_for_profile(case: &Case, profile: film::RenderHooks) -> hooks::Regis
         LateInputs {
             #[cfg(feature = "gpu")]
             view: case.drawing.then_some(&crate::d3d_glue::DrawingView { scale_stats: None }),
+            #[cfg(feature = "gpu")]
+            fixed_lod: None,
+            #[cfg(feature = "gpu")]
+            world_line_present: None,
             rt: &rt,
             lockstep,
             agent: if case.agent { AgentSource::Local } else { AgentSource::None },
@@ -181,6 +185,26 @@ fn assert_builds(case: &Case) {
 }
 
 #[test]
+fn the_creature_probe_plan_keeps_admission_on_in_both_arms() {
+    use crate::actor_net::creature::FEATURE;
+
+    for (switches, enabled) in [
+        (ALL_ON.to_owned(), false),
+        (format!("{ALL_ON},{FEATURE}"), true),
+    ] {
+        let mut case = Case::full(&switches);
+        case.coop_live = true;
+        let plan = plan(&case).unwrap();
+        let installed = |id| {
+            plan.chains.values().any(|chain| chain.hooks().any(|hook| hook.feature == id))
+        };
+
+        assert!(installed(crate::replication_admission::FEATURE));
+        assert_eq!(installed(FEATURE), enabled);
+    }
+}
+
+#[test]
 fn a_desktop_player_registers_only_the_films_render_groups() {
     use film::RenderHooks::{Desktop, Gpu, Slim};
     for profile in [Slim, Desktop, Gpu] {
@@ -201,6 +225,28 @@ fn a_desktop_player_registers_only_the_films_render_groups() {
             assert!(plan.chains.values().flat_map(|c| c.hooks()).all(|h| {
                 h.feature != "render-loop" && !h.feature.starts_with("native-")
             }));
+        }
+    }
+}
+
+#[test]
+fn actor_capture_is_opt_in_and_observes_the_host_tick_and_dialogue() {
+    for (switches, enabled) in [("", false), (ALL_ON, true)] {
+        let plan = plan(&Case::full(switches)).unwrap();
+        let mut hooks: Vec<_> = plan.chains.values().flat_map(|chain| {
+            chain.hooks().filter(|hook| hook.feature == "actor-net")
+                .map(move |hook| (chain.point.name, hook.kind().as_str()))
+        }).collect();
+        hooks.sort_unstable();
+        if enabled {
+            assert_eq!(hooks, [
+                ("AI_DIALOGUE_ENQUEUE", "observe_after"),
+                ("AI_DIALOGUE_ENQUEUE", "observe_before"),
+                ("GAME_ACTIVATE", "observe_after"),
+                ("GAME_TICK", "observe_after"),
+            ]);
+        } else {
+            assert!(hooks.is_empty());
         }
     }
 }
@@ -414,8 +460,10 @@ mod render_thread_plan {
     /// [`REFUSED`] with its reason, and every listed entry is still used.
     /// The ones the render path meets in a default run (the locale lookups,
     /// Blind, the native world's and objects' layer draw) are context-only,
-    /// and so are the native transparents' geometry handler and the native
-    /// lights' passes. The native post's colour pass and screen effect are
+    /// and so are the native transparents' geometry handler, the native
+    /// lights' passes, and the dynamic lights' call (the frame step reads
+    /// the light candidates before the decal mode after it, not on the
+    /// lights' return). The native post's colour pass and screen effect are
     /// not: their return hooks commit or replay the held draws.
     #[test]
     fn every_feature_hook_runs_on_the_render_thread_or_says_why_not() {
@@ -469,6 +517,9 @@ mod render_thread_plan {
             .iter()
             .zip(&used)
             .filter(|(_, u)| !**u)
+            // Boot adds agent-audio only with the agent and live audio
+            // (dsound_glue::add_loop_agent_method), which this plan omits.
+            .filter(|((f, _, _), _)| *f != "agent-audio")
             .map(|(r, _)| r)
             .collect();
         assert!(stale.is_empty(), "listed but not placed: {stale:?}");
@@ -492,6 +543,7 @@ mod render_thread_plan {
             "RENDER_LIGHT_PASSES",
             "LIGHT_GEOMETRY_DRAW",
             "RENDER_DYNAMIC_LIGHTS",
+            "RENDER_DECAL_MODE",
         ] {
             assert!(safe.contains(&p), "{p} runs on the render thread");
         }

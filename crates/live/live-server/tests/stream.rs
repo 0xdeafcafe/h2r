@@ -1051,6 +1051,34 @@ async fn packed_frames_ingest_stream_and_record() {
         live_proto::IngestReply::Error { .. }
     ));
 
+    let token = issue_token(
+        &key,
+        &account.id,
+        "live.test",
+        lxm::GAMES_WRITE,
+        live_server::app::now(),
+    );
+    fresh
+        .send(Message::Text(
+            serde_json::to_string(&ClientMessage::AuthBatched { token })
+                .unwrap()
+                .into(),
+        ))
+        .await
+        .unwrap();
+    let mut oversized = Vec::new();
+    for _ in 0..=live_proto::MAX_INGEST_BATCH_FRAMES {
+        pack::push_record(&mut oversized, &[0]);
+    }
+    fresh.send(Message::Binary(oversized.into())).await.unwrap();
+    assert!(matches!(
+        reply(&mut fresh).await,
+        live_proto::IngestReply::FrameError {
+            error: live_proto::ErrorCode::TooLarge,
+            ..
+        }
+    ));
+
     // Recorded frames are stored as chunks: the index lists them, and each
     // chunk holds the frames as sent.
     let recorded = recorded_frames(&live, &game_id).await;

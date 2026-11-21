@@ -157,10 +157,13 @@ fn the_write_is_atomic_and_leaves_no_temporary_file() {
     let dir = tmp("atomic");
     let path = dir.join("lockout.0.bots");
     std::fs::write(&path, b"old").unwrap();
-    // A temporary file left by a crash is overwritten, never read.
-    std::fs::write(dir.join(format!(".lockout.0.bots.{}.tmp", std::process::id())), b"half").unwrap();
+    // The previously interrupted write is ignored.
+    let abandoned = dir.join(".lockout.0.bots.abandoned.tmp");
+    std::fs::write(&abandoned, b"half").unwrap();
     write_atomic(&path, b"new and whole").unwrap();
     assert_eq!(std::fs::read(&path).unwrap(), b"new and whole");
+    assert_eq!(std::fs::read(&abandoned).unwrap(), b"half");
+    std::fs::remove_file(abandoned).unwrap();
     assert!(leftovers(&dir).is_empty());
     // A rename that fails (a directory in the way) leaves what was there
     // and no temporary file.
@@ -173,6 +176,168 @@ fn the_write_is_atomic_and_leaves_no_temporary_file() {
     // No directory: an error, nothing written.
     assert!(write_atomic(&dir.join("gone").join("x.bots"), b"new").is_err());
     std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn same_process_atomic_writers_do_not_share_temporary_files() {
+    let dir = tmp("writers");
+    let path = dir.join("map.cache");
+    let a = vec![0xa5; 8192];
+    let b = vec![0x9b; 4096];
+    std::thread::scope(|scope| {
+        let one = scope.spawn(|| write_atomic(&path, &a));
+        write_atomic(&path, &b).unwrap();
+        one.join().unwrap().unwrap();
+    });
+    let written = std::fs::read(&path).unwrap();
+    assert!(written == a || written == b);
+    assert!(leftovers(&dir).is_empty());
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn a_region_digest_covers_exactly_the_pinned_region() {
+    use std::io::Cursor;
+
+    let h = header("rooms", MP, 2);
+    let mut bytes = b"container header".to_vec();
+    let base = bytes.len();
+    bytes.extend_from_slice(&h);
+    bytes.extend_from_slice(b"synthetic map");
+    let end = bytes.len();
+    bytes.extend_from_slice(b"outside the region");
+    let expected = Sha256::of(&bytes[base..end]);
+    let current = Arc::new(Mutex::new(bytes));
+    let opened = Arc::clone(&current);
+    let mut region = Region::new(
+        "rooms",
+        base as u64,
+        (end - base) as u64,
+        Box::new(move || Ok(Box::new(Cursor::new(opened.lock().unwrap().clone())))),
+    );
+
+    assert_eq!(region.header().unwrap(), h);
+    current.lock().unwrap()[end - 1] ^= 1;
+    assert_eq!(region.cache_digest(), Some(expected));
+    assert_eq!(region.header().unwrap(), h, "the changed tail has the same header");
+    assert_ne!(region.cache_digest(), Some(expected));
+    current.lock().unwrap().truncate(end - 1);
+    assert_eq!(region.header().unwrap(), h);
+    assert_eq!(region.cache_digest(), None, "never cache a short region");
+}
+
+#[test]
+fn shared_cache_preserves_all_bsp_bytes_and_rebuilds_on_a_miss() {
+    struct CachedFake {
+        source: Fake,
+        digest: Sha256,
+    }
+
+    impl Source for CachedFake {
+        fn key(&self) -> &str {
+            self.source.key()
+        }
+        fn header(&mut self) -> Result<Vec<u8>, String> {
+            self.source.header()
+        }
+        fn cache_digest(&mut self) -> Option<Sha256> {
+            Some(self.digest)
+        }
+        fn build(&mut self) -> Result<Vec<MapData>, String> {
+            self.source.build()
+        }
+    }
+
+    let root = tmp("shared");
+    let shared = root.join("machine-cache");
+    let builds: Log = Arc::default();
+    let calls: Log = Arc::default();
+    let lines: Log = Arc::default();
+    let run = |dir: PathBuf, digest: Sha256, force: bool| {
+        let builds = Arc::clone(&builds);
+        let source = move || {
+            vec![Box::new(CachedFake {
+                source: Fake {
+                    key: "rooms".into(),
+                    header: header("rooms", MP, 21),
+                    bsps: 2,
+                    builds: Arc::clone(&builds),
+                },
+                digest,
+            }) as Box<dyn Source>]
+        };
+        let (worker, _) = Worker::new(dir, Box::new(source));
+        let (calls, lines) = (Arc::clone(&calls), Arc::clone(&lines));
+        let sum = worker
+            .shared_cache(Some(shared.clone()))
+            .force(force)
+            .on_built(move |map, _| calls.lock().unwrap().push(map.into()))
+            .log(move |line| lines.lock().unwrap().push(line.into()))
+            .run();
+        assert_eq!(sum.built, ["rooms"]);
+        assert!(sum.failed.is_empty());
+    };
+    let bytes = |dir: &Path| {
+        (0..2)
+            .flat_map(|k| [cache::file_name("rooms", k), crate::vis::file_name("rooms", k)])
+            .map(|name| std::fs::read(dir.join(name)).unwrap())
+            .collect::<Vec<_>>()
+    };
+
+    let digest = Sha256::of(b"synthetic source");
+    let cold = root.join("cold");
+    run(cold.clone(), digest, false);
+    let original = bytes(&cold);
+    assert_eq!(builds.lock().unwrap().len(), 1);
+
+    let warm = root.join("warm");
+    run(warm.clone(), digest, false);
+    assert_eq!(bytes(&warm), original);
+    assert_eq!(builds.lock().unwrap().len(), 1);
+    assert!(lines.lock().unwrap().iter().any(|line| line.contains("2 BSPs restored")));
+
+    // A nav file already in the data directory can recover just its grid.
+    let main_grid = warm.join(crate::vis::file_name("rooms", 0));
+    std::fs::remove_file(main_grid).unwrap();
+    run(warm.clone(), digest, false);
+    assert_eq!(bytes(&warm), original);
+    assert_eq!(builds.lock().unwrap().len(), 1);
+
+    // A changed grid bit or header with its old checksum must be ignored.
+    let grid = shared_cache::grid_path(&shared, Sha256::of(&original[0]));
+    let mut corrupted = std::fs::read(&grid).unwrap();
+    let last_payload_byte = corrupted.len() - 33;
+    corrupted[last_payload_byte] ^= 1;
+    std::fs::write(&grid, &corrupted).unwrap();
+    let repaired = root.join("repaired-grid");
+    run(repaired.clone(), digest, false);
+    assert_eq!(bytes(&repaired), original);
+    assert_eq!(builds.lock().unwrap().len(), 1);
+    assert_ne!(std::fs::read(grid).unwrap(), corrupted);
+
+    let other = Sha256::of(b"same map header, different synthetic tail");
+    run(root.join("changed-input"), other, false);
+    assert_eq!(builds.lock().unwrap().len(), 2);
+
+    std::fs::write(shared_cache::nav_path(&shared, digest), b"truncated nav entry").unwrap();
+    run(root.join("repaired-nav"), digest, false);
+    assert_eq!(builds.lock().unwrap().len(), 3);
+
+    let forced = root.join("forced");
+    lines.lock().unwrap().clear();
+    run(forced.clone(), digest, true);
+    assert_eq!(bytes(&forced), original);
+    assert_eq!(builds.lock().unwrap().len(), 4);
+    assert!(lines.lock().unwrap().iter().all(|line| !line.contains("shared cache")));
+    assert_eq!(calls.lock().unwrap().len(), 6, "only nav writes offer a new mesh");
+
+    std::fs::remove_dir_all(&shared).unwrap();
+    std::fs::write(&shared, b"the cache root is unavailable").unwrap();
+    let uncached = root.join("unavailable-cache");
+    run(uncached.clone(), digest, false);
+    assert_eq!(bytes(&uncached), original);
+    assert_eq!(builds.lock().unwrap().len(), 5);
+    std::fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
@@ -207,6 +372,11 @@ fn the_queue_puts_the_wanted_map_first_and_keeps_one_per_key() {
     assert_eq!(q.keys(), ["c", "b", "a"]);
     q.prioritise("nothing");
     assert_eq!(q.keys(), ["c", "b", "a"]);
+    q.push_for(scan().remove(0), Some(4));
+    q.push(scan().remove(0));
+    let active = q.jobs.back().unwrap();
+    assert_eq!(active.source.key(), "a");
+    assert_eq!(active.generation, Some(4), "a later hint keeps the active slot's job");
 }
 
 #[test]
@@ -306,9 +476,18 @@ fn the_worker_never_wants_scans_or_builds_the_menu_and_shared_maps() {
     let (w, h) = Worker::new(dir.clone(), scan_of(Arc::clone(&list), Arc::clone(&builds)));
     h.want("mainmenu");
     h.want("Shared");
-    assert!(h.0.wants.lock().unwrap().names.is_empty());
+    assert!(h.0.wants.lock().unwrap().maps.is_empty());
     h.want("lockout");
-    assert_eq!(h.0.wants.lock().unwrap().names, ["lockout"]);
+    let source = r"D:\maps\other-stem.map";
+    h.want_active("LOCKOUT", Some(source.to_owned()), 7);
+    h.want("lockout");
+    {
+        let wants = h.0.wants.lock().unwrap();
+        assert_eq!(wants.maps.len(), 1);
+        assert_eq!(wants.maps[0].name, "lockout");
+        assert_eq!(wants.maps[0].path.as_deref(), Some(source));
+        assert_eq!(wants.maps[0].generation, Some(7));
+    }
     // Even forced and of any kind (`h2 bots nav mainmenu --force`).
     let sum = w.force(true).any_kind(true).log(|_| {}).run();
     assert_eq!(*builds.lock().unwrap(), ["lockout"]);
@@ -402,20 +581,87 @@ fn a_wanted_map_installed_after_boot_is_built_while_the_worker_waits() {
 }
 
 #[test]
-fn the_workers_data_wins_over_a_file_read_as_the_map_loads() {
+fn only_results_for_the_current_visit_can_publish() {
     let mut l = Loaded::default();
     // Nothing loaded: nothing goes in.
-    assert!(!l.accept("lockout", true));
+    assert!(!l.accepts("lockout", 0));
     l.changed("lockout");
-    assert!(!l.accept("zanzibar", false));
-    assert!(!l.accept("zanzibar", true));
-    // The file first, then the worker's: both go in.
-    assert!(l.accept("lockout", false));
-    assert!(l.accept("Lockout", true));
-    // A file read late does not replace what the worker built.
-    assert!(!l.accept("lockout", false));
-    assert!(l.accept("lockout", true));
-    // The next map starts over.
+    let first = l.generation;
+    assert!(l.accepts("LOCKOUT", first));
+    assert!(!l.accepts("zanzibar", first));
     l.changed("zanzibar");
-    assert!(l.accept("zanzibar", false));
+    assert!(!l.accepts("lockout", first));
+    l.changed("lockout");
+    assert!(!l.accepts("lockout", first), "a late build/read from the first visit");
+    assert!(l.accepts("lockout", l.generation));
+}
+
+#[test]
+fn a_warm_file_must_match_the_active_slots_header() {
+    let first = Stamp::now(0x1234);
+    let bytes = data(1.0).to_bytes(first);
+    assert_eq!(decode_cached(&bytes, Some(first)).unwrap().1, first);
+    assert_eq!(decode_cached(&bytes, Some(Stamp::now(0x5678))).unwrap_err(), Status::OtherMap);
+    let expected = Stamp { generator: first.generator.wrapping_add(1), ..first };
+    assert_eq!(decode_cached(&bytes, Some(expected)).unwrap_err(), Status::OldGenerator(first.generator));
+}
+
+
+#[test]
+fn each_boot_owns_the_worker_serving_its_maps() {
+    let (_, first) = Worker::new(PathBuf::new(), Box::new(Vec::new));
+    let (_, second) = Worker::new(PathBuf::new(), Box::new(Vec::new));
+    let first_boot = set_handle(first.clone());
+    let second_boot = set_handle(second.clone());
+    assert!(first.0.wants.lock().unwrap().stop);
+    drop(first_boot);
+    assert!(Arc::ptr_eq(&handle().unwrap().0, &second.0));
+    drop(second_boot);
+    assert!(second.0.wants.lock().unwrap().stop);
+    assert!(handle().is_none());
+}
+
+struct Scanning {
+    scans: Arc<Mutex<u32>>,
+    panic: bool,
+}
+
+impl Source for Scanning {
+    fn key(&self) -> &str {
+        "spotty"
+    }
+    fn header(&mut self) -> Result<Vec<u8>, String> {
+        Ok(header("spotty", MP, 1))
+    }
+    fn build(&mut self) -> Result<Vec<MapData>, String> {
+        Ok(vec![data(0.0)])
+    }
+    fn spots(&mut self) -> Option<Result<Vec<superbounce::Spot>, String>> {
+        *self.scans.lock().unwrap() += 1;
+        if self.panic {
+            panic!("the scanner expected a surface");
+        }
+        Some(Err("no geometry".into()))
+    }
+}
+
+#[test]
+fn a_scan_that_panics_or_fails_leaves_a_marker_and_is_not_repeated() {
+    for panic in [true, false] {
+        let dir = tmp(if panic { "spots-panic" } else { "spots-fail" });
+        let scans = Arc::new(Mutex::new(0u32));
+        for launch in 0..2 {
+            let s = Arc::clone(&scans);
+            let source = move || {
+                vec![Box::new(Scanning { scans: Arc::clone(&s), panic }) as Box<dyn Source>]
+            };
+            let (w, _) = Worker::new(dir.clone(), Box::new(source));
+            let sum = w.run();
+            assert!(sum.failed.is_empty(), "launch {launch}: {:?}", sum.failed);
+        }
+        assert_eq!(*scans.lock().unwrap(), 1, "scanned once, panic {panic}");
+        let stamp = crate::spots::stamp(MapHeader::parse(&header("spotty", MP, 1)).unwrap().fingerprint);
+        assert_eq!(crate::spots::read(&dir, "spotty", stamp), Some(Vec::new()));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }

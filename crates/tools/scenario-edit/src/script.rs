@@ -27,33 +27,35 @@ use crate::{Command, Error, MapSource, Result, Session, Value};
 
 /// Every placement block, with its script name.
 pub const BLOCKS: [(&str, BlockKind); 11] = [
-    ("scenery", BlockKind::Scenery),
-    ("vehicles", BlockKind::Vehicles),
-    ("equipment", BlockKind::Equipment),
-    ("weapons", BlockKind::Weapons),
-    ("machines", BlockKind::Machines),
-    ("sound_scenery", BlockKind::SoundScenery),
-    ("crates", BlockKind::Crates),
-    ("starting_locations", BlockKind::StartingLocations),
-    ("netgame_flags", BlockKind::NetgameFlags),
-    ("netgame_equipment", BlockKind::NetgameEquipment),
-    ("starting_equipment", BlockKind::StartingEquipment),
+    (BlockKind::Scenery.name(), BlockKind::Scenery),
+    (BlockKind::Vehicles.name(), BlockKind::Vehicles),
+    (BlockKind::Equipment.name(), BlockKind::Equipment),
+    (BlockKind::Weapons.name(), BlockKind::Weapons),
+    (BlockKind::Machines.name(), BlockKind::Machines),
+    (BlockKind::SoundScenery.name(), BlockKind::SoundScenery),
+    (BlockKind::Crates.name(), BlockKind::Crates),
+    (
+        BlockKind::StartingLocations.name(),
+        BlockKind::StartingLocations,
+    ),
+    (BlockKind::NetgameFlags.name(), BlockKind::NetgameFlags),
+    (
+        BlockKind::NetgameEquipment.name(),
+        BlockKind::NetgameEquipment,
+    ),
+    (
+        BlockKind::StartingEquipment.name(),
+        BlockKind::StartingEquipment,
+    ),
 ];
 
 fn kind(name: &str) -> Result<BlockKind> {
-    BLOCKS
-        .iter()
-        .find(|(n, _)| *n == name)
-        .map(|(_, k)| *k)
+    BlockKind::from_name(name)
         .ok_or_else(|| Error::NoField(format!("block {name} (one of {})", names())))
 }
 
 fn names() -> String {
     BLOCKS.map(|(n, _)| n).join(", ")
-}
-
-fn name(k: BlockKind) -> &'static str {
-    BLOCKS.iter().find(|(_, b)| *b == k).expect("every kind").0
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -202,13 +204,13 @@ fn apply(s: &mut Session, op: &Op) -> Result<String> {
                     continue;
                 }
                 if let Some(why) = s.remove_refusal(k) {
-                    cleared.push(format!("{} kept ({why})", name(k)));
+                    cleared.push(format!("{} kept ({why})", k.name()));
                     continue;
                 }
                 for i in (0..n).rev() {
                     s.remove_entry(k, i)?;
                 }
-                cleared.push(format!("{} {n}", name(k)));
+                cleared.push(format!("{} {n}", k.name()));
             }
             format!("clear: {}", cleared.join(", "))
         }
@@ -231,27 +233,27 @@ fn apply(s: &mut Session, op: &Op) -> Result<String> {
                     removed += 1;
                 }
             }
-            format!("keep {}: {} kept, {removed} removed", name(k), keep.len())
+            format!("keep {}: {} kept, {removed} removed", k.name(), keep.len())
         }
         Op::Add { block, like, set } => {
             let k = kind(block)?;
             let i = s.add_entry(k, *like)?;
             set_fields(s, k, i, set)?;
-            format!("add {} {i}", name(k))
+            format!("add {} {i}", k.name())
         }
         Op::Set { block, index, set } => {
             let k = kind(block)?;
             set_fields(s, k, *index, set)?;
             format!(
                 "set {} {index}: {}",
-                name(k),
+                k.name(),
                 set.keys().cloned().collect::<Vec<_>>().join(", ")
             )
         }
         Op::Remove { block, index } => {
             let k = kind(block)?;
             s.remove_entry(k, *index)?;
-            format!("remove {} {index}", name(k))
+            format!("remove {} {index}", k.name())
         }
     })
 }

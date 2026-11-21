@@ -1,11 +1,13 @@
 //! Public match ABI over local advertisements or asynchronous server discovery.
 //! Exchange keys remain local; remote search records carry a zero HLE key.
 use crate::{
+    browser::{Browser, BrowserProbe, BrowserStatus},
     client::{MatchRequest, Pending, Reply, Service, Session},
     matchmaking::DedicatedMatch,
     state::{Error, Storage},
     status::*,
 };
+use live_proto::session::{BrowserFilters, BrowserMetadata};
 use runtime::{Guest, GuestFault, guest::Access};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -61,8 +63,12 @@ pub struct LocalSession {
     /// The game variant's h2recomp options for the host's next game
     /// (docs/game/game-options.md section 3), when the host set them.
     pub variant_ext: Option<live_proto::session::VariantExt>,
+    /// The host's current multiplayer setup for Live browser filters.
+    pub browser: Option<BrowserMetadata>,
 }
 struct Record {
+    // A title may advertise no capacity at all, notably in campaign co-op.
+    needs_squad_slots: bool,
     session: LocalSession,
     key: [u8; 16],
 }
@@ -74,18 +80,26 @@ enum Task {
     Done,
     EmptySearch,
     HeldEmpty { until: std::time::Instant },
-    Search { array: u32, count: u32 },
+    Search {
+        array: u32,
+        count: u32,
+        browser: Option<u64>,
+    },
     Pending { request: Pending, intent: Intent },
     Queue {
         search: Box<crate::matchmaking::Search>,
         intent: Intent,
     },
+    QueueIncompatible(String),
     Failed(u32),
 }
 enum Intent {
     Put {
         session: Box<LocalSession>,
         key: [u8; 16],
+        /// The lease this publication claims. A late failure may arrive
+        /// after the title receives an assignment for a different group.
+        assignment: Option<String>,
     },
     Delete([u8; 8]),
     Search {
@@ -94,6 +108,8 @@ enum Intent {
         retail: bool,
         /// FindFromID's session: the first step of a join, logged.
         find: Option<[u8; 8]>,
+        /// The browser filter generation this search answered.
+        browser: Option<u64>,
     },
 }
 pub(crate) struct Context<'a> {
@@ -129,10 +145,16 @@ impl Op {
 #[derive(Default)]
 pub(crate) struct Sessions {
     records: BTreeMap<[u8; 8], Record>,
+    slot_update: Option<([u8; 8], SessionSlots, Pending)>,
+    browser: Browser,
+    browser_probe: Option<BrowserProbe>,
+    browser_update: Option<BrowserUpdate>,
     results: crate::qos_memory::QosMemory,
     tasks: BTreeMap<u32, Task>,
     /// The elected host gets an empty search, then publishes using this lease.
     matchmaking: Option<(live_proto::matchmaking::Assignment, std::time::Instant)>,
+    /// The queue's map-pack decision, tied to the published host session.
+    matchmaking_hosted: Option<([u8; 8], u32, bool)>,
     /// The selected queue result. Keep the lease route for FindFromID and
     /// the frame policy for this published session alone.
     match_join: Option<MatchJoin>,
@@ -177,6 +199,13 @@ pub(crate) struct Sessions {
     reported: BTreeMap<[u8; 8], BTreeSet<live_proto::Xuid>>,
     /// Clanker hoppers' search runs ([`crate::clankermatch::Hold`]).
     clanker_hold: crate::clankermatch::Hold,
+}
+
+struct BrowserUpdate {
+    id: [u8; 8],
+    previous: Option<BrowserMetadata>,
+    next: Option<BrowserMetadata>,
+    pending: Pending,
 }
 
 struct MatchJoin {
@@ -241,6 +270,53 @@ fn hr<T>(value: u32) -> Result<T> {
     Err(Failure::Hr(value))
 }
 impl Sessions {
+    /// Backfill a zero-count advertisement from the actual hosted squad.
+    /// An explicit slot advertisement (including reserved seats) wins.
+    pub fn sync_squad_slots(
+        &mut self,
+        slots: SessionSlots,
+        service: Option<&Service>,
+        connection: Option<&Session>,
+    ) {
+        if let Some((id, sent, pending)) = &self.slot_update {
+            let Some(reply) = pending.take() else { return };
+            if reply.is_ok()
+                && let Some(record) = self.records.get_mut(id)
+                && record.needs_squad_slots
+            {
+                record.session.slots = *sent;
+            }
+            self.slot_update = None;
+        }
+        let Some(id) = self.current_id() else { return };
+        let record = &self.records[&id];
+        if !record.needs_squad_slots || record.session.slots == slots || !slots.validate() {
+            return;
+        }
+        // An explicit update queued by the title comes first. Sending guessed
+        // slots after it could override a newly reserved seat on the server.
+        if self.tasks.values().any(|task| {
+            matches!(
+                task, Task::Pending { intent: Intent::Put { session, .. }, .. } if session.id == id
+            )
+        }) {
+            return;
+        }
+        let (Some(service), Some(connection)) = (service, connection) else {
+            return;
+        };
+        let request = MatchRequest::Update {
+            id: live_proto::sign::hex(&id),
+            update: live_proto::session::Update {
+                slots: Some(slots),
+                ..Default::default()
+            },
+        };
+        if let Ok(pending) = service.match_request(connection, request) {
+            self.slot_update = Some((id, slots, pending));
+        }
+    }
+
     pub fn snapshot(&self) -> Vec<LocalSession> {
         self.records.values().map(|r| r.session.clone()).collect()
     }
@@ -403,14 +479,25 @@ impl Sessions {
         self.background.retain(|p| p.take().is_none());
         let visibility = self.visibility;
         let coop = self.coop.clone();
+        let coop_browser = (coop.is_some() && self.browser_probe.is_some()).then(coop_browser_metadata);
         let skulls = self.advertised_skulls();
         for (id, record) in &mut self.records {
             let want = coop_visibility(visibility, coop.is_some());
             let drop_ping = coop.is_none() && record.session.ping_ms.is_some();
+            let browser_update = self.browser_update.as_ref().filter(|update| update.id == *id);
+            let previous_browser = browser_update
+                .map_or(&record.session.browser, |update| &update.next);
+            let browser = if coop.is_some() || record.session.campaign.is_some() {
+                (previous_browser != &coop_browser)
+                    .then(|| coop_browser.clone().unwrap_or_default())
+            } else {
+                None
+            };
             if record.session.campaign == coop
                 && record.session.visibility == want
                 && record.session.skulls == skulls
                 && !drop_ping
+                && browser.is_none()
             {
                 continue;
             }
@@ -424,6 +511,7 @@ impl Sessions {
                         skulls: (record.session.skulls != skulls)
                             .then(|| skulls.clone().unwrap_or_default()),
                         ping_ms: drop_ping.then_some(0),
+                        browser: browser.clone(),
                         ..Default::default()
                     },
                 };
@@ -435,6 +523,12 @@ impl Sessions {
             record.session.campaign = coop.clone();
             if drop_ping {
                 record.session.ping_ms = None;
+            }
+            if browser.is_some() {
+                record.session.browser = coop_browser.clone();
+                if browser_update.is_some() {
+                    self.browser_update = None;
+                }
             }
             record.session.visibility = want;
             record.session.skulls = skulls.clone();
@@ -529,6 +623,92 @@ impl Sessions {
     pub fn set_probe(&mut self, probe: Option<VisibilityProbe>) {
         self.probe = probe;
     }
+    pub fn set_browser_filters(&mut self, filters: BrowserFilters) {
+        self.browser.set_filters(filters);
+    }
+
+    pub fn browser_result(&self) -> (Option<usize>, Option<bool>) {
+        self.browser.result()
+    }
+
+    pub fn browser_status(&self) -> BrowserStatus {
+        self.browser.status()
+    }
+
+    pub fn set_browser_probe(&mut self, probe: BrowserProbe) {
+        self.browser_probe = Some(probe);
+    }
+
+    fn browser_metadata(
+        &self,
+        guest: &Guest,
+        map_id: Option<live_proto::maps::MapId>,
+    ) -> Option<BrowserMetadata> {
+        let probe = self.browser_probe.as_ref()?;
+        if self.coop.is_some() {
+            return Some(coop_browser_metadata());
+        }
+        probe(guest, map_id).filter(|metadata| metadata != &BrowserMetadata::default())
+    }
+
+    fn has_title_update(&self, id: [u8; 8]) -> bool {
+        self.tasks.values().any(|task| {
+            matches!(task, Task::Pending { intent: Intent::Put { session, .. }, .. } if session.id == id)
+        })
+    }
+
+    pub fn lobby_browser_changed(
+        &mut self,
+        guest: &Guest,
+        service: Option<&Service>,
+        connection: Option<&Session>,
+    ) {
+        if let Some(update) = self.browser_update.take() {
+            let Some(result) = update.pending.take() else {
+                self.browser_update = Some(update);
+                return;
+            };
+            if matches!(result, Ok(Reply::Matches(_)))
+                && let Some(record) = self.records.get_mut(&update.id)
+                && record.session.browser == update.previous
+            {
+                record.session.browser = update.next;
+                record.session.revision = record.session.revision.saturating_add(1);
+            }
+        }
+        let Some(id) = self.current_id() else {
+            return;
+        };
+        if self.has_title_update(id) {
+            return;
+        }
+        let next = self.browser_metadata(guest, self.records[&id].session.map_id);
+        let record = self.records.get_mut(&id).expect("current hosted session");
+        if next == record.session.browser {
+            return;
+        }
+        if let (Some(service), Some(connection)) = (service, connection) {
+            let request = MatchRequest::Update {
+                id: live_proto::sign::hex(&id),
+                update: live_proto::session::Update {
+                    browser: Some(next.clone().unwrap_or_default()),
+                    ..Default::default()
+                },
+            };
+            if let Ok(pending) = service.match_request(connection, request) {
+                self.browser_update = Some(BrowserUpdate {
+                    id,
+                    previous: record.session.browser.clone(),
+                    next,
+                    pending,
+                });
+            }
+        } else {
+            record.session.browser = next;
+            record.session.revision = record.session.revision.saturating_add(1);
+        }
+    }
+
     pub fn set_map_probe(&mut self, probe: Option<MapProbe>) {
         self.map_probe = probe;
     }
@@ -573,21 +753,72 @@ impl Sessions {
     }
     pub fn clear(&mut self) {
         self.records.clear();
+        self.slot_update = None;
+        self.browser_update = None;
+        self.browser.signed_out();
         self.looked_up.clear();
         self.tasks.clear();
         self.matchmaking = None;
+        self.matchmaking_hosted = None;
         self.match_join = None;
         self.results.clear();
     }
-    pub fn matchmaking_status(&self) -> Option<&str> {
+    fn pending_assignment(&self) -> Option<&live_proto::matchmaking::Assignment> {
+        use std::time::Duration;
+        let ttl = Duration::from_secs(live_proto::matchmaking::ASSIGNMENT_SECONDS as u64);
+        self.matchmaking.as_ref().filter(|(_, since)| since.elapsed() < ttl).map(|(a, _)| a)
+    }
+    fn clear_pending_assignment(&mut self, id: &str) -> bool {
+        if self.matchmaking.as_ref().is_some_and(|(held, _)| held.id == id) {
+            self.matchmaking = None;
+            true
+        } else {
+            false
+        }
+    }
+    fn failed_request(&mut self, intent: &Intent, error: u32) -> Task {
+        match intent {
+            Intent::Put { assignment: Some(id), .. } => {
+                self.clear_pending_assignment(id);
+            }
+            Intent::Search { find: Some(id), .. } => {
+                eprintln!(
+                    "live: join: find session {}: the server failed it ({error:#x})",
+                    live_proto::sign::hex(id)
+                );
+            }
+            _ => {}
+        }
+        Task::Failed(error)
+    }
+    fn hosted_rotation(&self) -> Option<(u32, bool)> {
+        let (session, hopper, pack) = self.matchmaking_hosted?;
+        (self.current == Some(session) && self.records.contains_key(&session)).then_some((hopper, pack))
+    }
+    pub fn allow_hopper_addons(&self, hopper: u32) -> bool {
+        self.pending_assignment().is_some_and(|a| a.hopper == hopper && a.has_map_pack)
+            || self.hosted_rotation() == Some((hopper, true))
+    }
+    pub fn matchmaking_status(&self, service: Option<&Service>) -> Option<&str> {
         self.tasks
             .values()
             .rev()
             .find_map(|task| match task {
                 Task::Queue { search, .. } => Some(search.status()),
+                Task::QueueIncompatible(reason) => Some(Some(reason.as_str())),
                 _ => None,
             })
             .flatten()
+            .or_else(|| {
+                let (hopper, pack) = self.pending_assignment().map(|a| (a.hopper, a.has_map_pack))
+                    .or_else(|| self.hosted_rotation())?;
+                let service = service?;
+                (!pack && service.addon_hopper(hopper)).then_some(if service.has_map_pack {
+                    crate::matchmaking::BASE_MAPS_PARTY
+                } else {
+                    crate::matchmaking::BASE_MAPS_LOCAL
+                })
+            })
     }
     pub fn frames_from_host(&self, session_id: &str) -> bool {
         self.match_join.as_ref().is_some_and(|joined| {
@@ -628,21 +859,32 @@ impl Sessions {
         let task = if let Task::Pending { request, intent } = task {
             match request.take() {
                 None => Task::Pending { request, intent },
-                Some(Err(e)) => {
-                    if let Intent::Search { find: Some(id), .. } = &intent {
-                        eprintln!(
-                            "live: join: find session {}: the server failed it ({e:#x})",
-                            live_proto::sign::hex(id)
-                        );
+                Some(Err(e)) => self.failed_request(&intent, e),
+                Some(Ok(Reply::BrowserMatches(page))) => {
+                    match intent {
+                        Intent::Search { browser: Some(generation), .. } => {
+                            match self.complete(m, intent, page.items) {
+                                Ok(task) => {
+                                    let count = match &task {
+                                        Task::Search { count, .. } => *count as usize,
+                                        _ => 0,
+                                    };
+                                    self.browser.complete(generation, count, page.variants);
+                                    task
+                                }
+                                Err(Failure::Hr(e)) => Task::Failed(e),
+                                Err(Failure::Fault(f)) => return Err(f),
+                            }
+                        }
+                        _ => self.failed_request(&intent, INVALID_ARGUMENT),
                     }
-                    Task::Failed(e)
                 }
                 Some(Ok(Reply::Matches(rows))) => match self.complete(m, intent, rows) {
                     Ok(v) => v,
                     Err(Failure::Hr(e)) => Task::Failed(e),
                     Err(Failure::Fault(f)) => return Err(f),
                 },
-                _ => Task::Failed(INVALID_ARGUMENT),
+                _ => self.failed_request(&intent, INVALID_ARGUMENT),
             }
         } else {
             task
@@ -651,7 +893,7 @@ impl Sessions {
             use crate::matchmaking::Outcome;
             match search.poll() {
                 Ok(None) => {
-                    if search.status().is_some() {
+                    if search.host_status().is_some() {
                         self.matchmaking = None;
                     }
                     Task::Queue { search, intent }
@@ -660,6 +902,12 @@ impl Sessions {
                     self.match_join = None;
                     self.matchmaking = Some((assignment, std::time::Instant::now()));
                     Task::EmptySearch
+                }
+                Ok(Some(Outcome::Incompatible(error))) => {
+                    self.matchmaking = None;
+                    let reason = error.to_string();
+                    eprintln!("live: matchmaking: {reason}");
+                    Task::QueueIncompatible(reason)
                 }
                 Ok(Some(Outcome::Join {
                     rows,
@@ -708,6 +956,7 @@ impl Sessions {
         };
         let status = match task {
             Task::Pending { .. } | Task::HeldEmpty { .. } | Task::Queue { .. } => 0,
+            Task::QueueIncompatible(_) => REPLICATION_VERSION_MISMATCH,
             Task::Failed(e) => e,
             _ => TASK_SUCCESS,
         };
@@ -718,6 +967,10 @@ impl Sessions {
         match self.tasks.remove(&h) {
             Some(Task::Search { array, .. }) => {
                 self.results.release(array);
+                true
+            }
+            Some(Task::Pending { intent: Intent::Put { assignment: Some(id), .. }, .. }) => {
+                self.clear_pending_assignment(&id);
                 true
             }
             Some(_) => true,
@@ -798,6 +1051,7 @@ impl Sessions {
                             campaign: self.coop.clone(),
                             ping_ms: self.coop.as_ref().and(self.coop_ping),
                             variant_ext: self.variant_ext.clone(),
+                            browser: None,
                         },
                     )
                 } else {
@@ -816,6 +1070,7 @@ impl Sessions {
                 let was_coop = session.campaign.clone();
                 session.campaign = self.coop.clone();
                 session.map_id = map_id;
+                session.browser = self.browser_metadata(m, map_id);
                 for attr in attributes {
                     // Attribute identity excludes its datatype. A changed NULL
                     // clears the value; unchanged entries never dereference data.
@@ -839,29 +1094,30 @@ impl Sessions {
                 let h = storage.alloc(m, 8).ok_or(Failure::Hr(OUT_OF_MEMORY))?;
                 if let (Some(service), Some(connection)) = (service, connection) {
                     let data = advertisement(&session);
+                    let assignment = self
+                        .pending_assignment()
+                        .filter(|lease| {
+                            op == Op::Create
+                                && !data.is_coop()
+                                && live_proto::optimatch::playlist(&data.attributes)
+                                    == Some(lease.hopper)
+                        })
+                        .map(|lease| lease.id.clone());
                     let request = if op == Op::Create {
-                        let publish_window = std::time::Duration::from_secs(
-                            live_proto::matchmaking::ASSIGNMENT_SECONDS as u64,
-                        );
-                        let assignment = self
-                            .matchmaking
-                            .as_ref()
-                            .filter(|(lease, elected)| {
-                                elected.elapsed() < publish_window
-                                    && !data.is_coop()
-                                    && live_proto::optimatch::playlist(&data.attributes)
-                                        == Some(lease.hopper)
-                            })
-                            .map(|(lease, _)| lease.id.clone());
                         MatchRequest::Create {
                             session: data,
-                            assignment,
+                            assignment: assignment.clone(),
                         }
                     } else {
                         MatchRequest::Update {
                             id: live_proto::sign::hex(&id),
                             update: live_proto::session::Update {
-                                slots: Some(data.slots),
+                                // Repeated zero-count updates leave capacity with the
+                                // squad publisher. A pending capacity change may already
+                                // be on the wire ahead of this update.
+                                slots: (data.slots != SessionSlots::default()
+                                    || self.records.get(&id).is_none_or(|r| !r.needs_squad_slots))
+                                .then_some(data.slots),
                                 attributes: Some(data.attributes),
                                 // Only a change is sent, so a server that
                                 // predates visibility sees the same updates.
@@ -900,13 +1156,31 @@ impl Sessions {
                                         .get(&id)
                                         .is_none_or(|r| r.session.variant_ext.as_ref() != Some(v))
                                 }),
+                                browser: {
+                                    // A background selection update may already be ahead
+                                    // of this title update in the worker.
+                                    let previous = self
+                                        .browser_update
+                                        .as_ref()
+                                        .filter(|update| update.id == id)
+                                        .map_or(&self.records[&id].session.browser, |update| &update.next);
+                                    (previous != &session.browser
+                                        || (self.browser_probe.is_some() && self.has_title_update(id)))
+                                        .then(|| session.browser.clone().unwrap_or_default())
+                                },
                                 ..Default::default()
                             },
                         }
                     };
-                    let pending = service
-                        .match_request(connection, request)
-                        .map_err(Failure::Hr)?;
+                    let pending = match service.match_request(connection, request) {
+                        Ok(pending) => pending,
+                        Err(e) => {
+                            if let Some(id) = &assignment {
+                                self.clear_pending_assignment(id);
+                            }
+                            return hr(e);
+                        }
+                    };
                     self.tasks.insert(
                         h,
                         Task::Pending {
@@ -914,6 +1188,7 @@ impl Sessions {
                             intent: Intent::Put {
                                 session: Box::new(session),
                                 key,
+                                assignment,
                             },
                         },
                     );
@@ -924,7 +1199,14 @@ impl Sessions {
                     if op == Op::Create {
                         self.advertised(id);
                     }
-                    self.records.insert(id, Record { session, key });
+                    self.records.insert(
+                        id,
+                        Record {
+                            needs_squad_slots: slots == SessionSlots::default(),
+                            session,
+                            key,
+                        },
+                    );
                     self.tasks.insert(h, Task::Session { id, key });
                 }
                 // All guest ranges were checked before submitting. Queue
@@ -985,16 +1267,23 @@ impl Sessions {
                         a[0], a[1]
                     );
                 }
-                // A clanker hopper (docs/game/bots.md §8.4): nobody to
-                // find. The run's searches answer with no sessions once its
-                // delay is over, and the game hosts.
-                let clanker = (a[0] == live_proto::optimatch::PROCEDURE)
+                // Procedure 1 is the retail stored procedure. Its positional
+                // arguments decode either to OptiMatch or to the custom browser.
+                let optimatch = (a[0] == live_proto::optimatch::PROCEDURE)
                     .then(|| {
                         let values: Vec<_> = params.iter().map(|v| v.value.clone()).collect();
                         live_proto::optimatch::Query::from_params(&values)
                     })
-                    .flatten()
-                    .and_then(|q| crate::clankermatch::clanker_search(ctx_clankers, q.hopper));
+                    .flatten();
+                if a[1] > 0 && optimatch.is_some_and(|query| {
+                    (0..live_proto::hopper::HOPPERS as i64).contains(&query.hopper)
+                }) {
+                    self.matchmaking = None;
+                    self.matchmaking_hosted = None;
+                }
+                // A clanker hopper (docs/game/bots.md §8.4) returns no sessions
+                // after its delay, and the game hosts.
+                let clanker = optimatch.and_then(|q| crate::clankermatch::clanker_search(ctx_clankers, q.hopper));
                 if let Some(hopper) = clanker {
                     let now = std::time::Instant::now();
                     let until = self.clanker_hold.answer_at(hopper, now, || {
@@ -1015,18 +1304,10 @@ impl Sessions {
                     return Ok(0);
                 }
                 if let (Some(service), Some(connection)) = (service, connection) {
-                    // Procedure 1 is the retail stored procedure: anonymous
-                    // parameters are positional, not attribute IDs. Its return
-                    // projection is the seven public title attributes. The
-                    // twelve-parameter shape is OptiMatch or the custom games
-                    // browser (live_proto::optimatch); the server filters it.
-                    // Other procedures' named filters round-trip.
-                    let optimatch = (a[0] == live_proto::optimatch::PROCEDURE)
-                        .then(|| {
-                            let values: Vec<_> = params.iter().map(|v| v.value.clone()).collect();
-                            live_proto::optimatch::Query::from_params(&values)
-                        })
-                        .flatten();
+                    let optimatch = optimatch.map(|mut query| {
+                        query.has_map_pack = service.has_map_pack;
+                        query
+                    });
                     if let Some(q) = &optimatch {
                         let line = optimatch_line(q);
                         if say_once_per(&mut self.said_search, &line, FIND_REPEAT) {
@@ -1037,11 +1318,13 @@ impl Sessions {
                         && let Some(query) = optimatch
                         && let Some(hopper) = crate::matchmaking::solo_hopper(query, users)
                         && let Some(connectivity) = crate::matchmaking::config()
+                            .or_else(|| service.addon_hopper(hopper).then(Default::default))
                     {
                         let h = storage.alloc(m, 8).ok_or(Failure::Hr(OUT_OF_MEMORY))?;
                         let ticket = live_proto::matchmaking::Ticket {
                             hopper,
                             port: u16::from_be_bytes([host[8], host[9]]),
+                            has_map_pack: service.has_map_pack,
                             dedicated: false,
                             connectivity,
                             samples: Vec::new(),
@@ -1059,30 +1342,41 @@ impl Sessions {
                                     bytes: a[4],
                                     retail: true,
                                     find: None,
+                                    browser: None,
                                 },
                             },
                         );
                         return Ok(0);
                     }
-                    let filters = if a[0] == 1 {
-                        BTreeMap::new()
+                    let (browser, request) = if let Some(query) = optimatch.filter(|q| q.hopper == -1) {
+                        let (generation, filters) = self.browser.request();
+                        (Some(generation), MatchRequest::Browse {
+                            limit: a[1],
+                            query,
+                            filters,
+                        })
                     } else {
-                        params
-                            .into_iter()
-                            .filter(|v| v.value != SessionAttributeValue::Null)
-                            .map(|v| (v.id, v.value))
-                            .collect()
+                        let attributes = if a[0] == 1 {
+                            BTreeMap::new()
+                        } else {
+                            params
+                                .into_iter()
+                                .filter(|v| v.value != SessionAttributeValue::Null)
+                                .map(|v| (v.id, v.value))
+                                .collect()
+                        };
+                        (None, MatchRequest::Search {
+                            limit: a[1],
+                            attributes,
+                            optimatch,
+                        })
                     };
                     self.remote_search(
                         m,
                         storage,
                         service,
                         connection,
-                        MatchRequest::Search {
-                            limit: a[1],
-                            attributes: filters,
-                            optimatch,
-                        },
+                        request,
                         (
                             a[6],
                             Intent::Search {
@@ -1090,6 +1384,7 @@ impl Sessions {
                                 bytes: a[4],
                                 retail: a[0] == 1,
                                 find: None,
+                                browser,
                             },
                         ),
                     )
@@ -1118,6 +1413,7 @@ impl Sessions {
                                 bytes: MAX_RESULTS_BYTES,
                                 retail: true,
                                 find: Some(id(a[0], a[1])),
+                                browser: None,
                             },
                         ),
                     )
@@ -1132,7 +1428,12 @@ impl Sessions {
             Op::Results => {
                 let (array, count) = match self.tasks.get(&a[0]) {
                     Some(Task::EmptySearch | Task::HeldEmpty { .. }) => (0, 0),
-                    Some(Task::Search { array, count }) => (*array, *count),
+                    Some(Task::Search { browser: Some(generation), .. })
+                        if !self.browser.current(*generation) =>
+                    {
+                        (0, 0)
+                    }
+                    Some(Task::Search { array, count, .. }) => (*array, *count),
                     _ => return hr(INVALID_ARGUMENT),
                 };
                 m.check(a[1], 4, Access::Write, 1)?;
@@ -1175,18 +1476,20 @@ impl Sessions {
         rows: Vec<live_proto::session::Session>,
     ) -> Result<Task> {
         match intent {
-            Intent::Put { mut session, key } => {
+            Intent::Put { mut session, key, assignment } => {
+                let assignment = assignment.filter(|id| self.clear_pending_assignment(id));
                 let row = rows
                     .into_iter()
                     .next()
                     .ok_or(Failure::Hr(MATCH_INVALID_SESSION))?;
                 let id = wire_id(&row.session_id).ok_or(Failure::Hr(MATCH_INVALID_SESSION))?;
                 if let Some(lease) = &row.matchmaking
-                    && self.matchmaking.as_ref().is_some_and(|(held, _)| held.id == lease.id)
+                    && assignment.as_deref() == Some(lease.id.as_str())
                 {
-                    self.matchmaking = None;
+                    self.matchmaking_hosted = Some((id, lease.hopper, lease.has_map_pack));
                 }
                 session.id = id;
+                let needs_squad_slots = session.slots == SessionSlots::default();
                 session.slots = row.advertisement.slots;
                 session.attributes = row.advertisement.attributes;
                 debug("server advertise", &session);
@@ -1202,6 +1505,7 @@ impl Sessions {
                 self.records.insert(
                     id,
                     Record {
+                        needs_squad_slots,
                         session: *session,
                         key,
                     },
@@ -1210,6 +1514,9 @@ impl Sessions {
             }
             Intent::Delete(id) => {
                 self.records.remove(&id);
+                if self.matchmaking_hosted.is_some_and(|(session, _, _)| session == id) {
+                    self.matchmaking_hosted = None;
+                }
                 eprintln!("live: session {} deleted", live_proto::sign::hex(&id));
                 Ok(Task::Done)
             }
@@ -1218,7 +1525,11 @@ impl Sessions {
                 bytes,
                 retail,
                 find,
+                browser,
             } => {
+                if browser.is_some_and(|generation| !self.browser.current(generation)) {
+                    return Ok(Task::EmptySearch);
+                }
                 let mut rows: Vec<_> = rows
                     .into_iter()
                     .filter(|v| v.state == "open")
@@ -1264,6 +1575,7 @@ impl Sessions {
                 Ok(Task::Search {
                     array,
                     count: rows.len() as u32,
+                    browser,
                 })
             }
         }
@@ -1417,6 +1729,10 @@ fn results_len(m: &Guest, a: &[u32]) -> Result<u32> {
     })
 }
 
+fn coop_browser_metadata() -> BrowserMetadata {
+    BrowserMetadata { clankers: Some(false), ..Default::default() }
+}
+
 fn advertisement(s: &LocalSession) -> live_proto::session::NewSession {
     live_proto::session::NewSession {
         addr: Some(std::net::Ipv4Addr::new(
@@ -1445,6 +1761,7 @@ fn advertisement(s: &LocalSession) -> live_proto::session::NewSession {
         campaign: s.campaign.clone(),
         ping_ms: s.ping_ms,
         variant_ext: s.variant_ext.clone(),
+        browser: s.browser.clone(),
     }
 }
 /// Whether a new round trip is worth a session update: it appeared, went,
@@ -1656,6 +1973,62 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_picker_requires_a_live_pack_assignment_for_its_hopper() {
+        use std::time::{Duration, Instant};
+
+        let mut sessions = Sessions::default();
+        assert!(!sessions.allow_hopper_addons(4));
+        let mut lease: live_proto::matchmaking::Assignment = serde_json::from_value(serde_json::json!({
+            "id": "8000000000000001", "hopper": 4, "host": "0009000000000001",
+            "dedicated": false, "members": ["0009000000000001"], "rtt_ms": {},
+        })).unwrap();
+        sessions.matchmaking = Some((lease.clone(), Instant::now()));
+        assert!(!sessions.allow_hopper_addons(4), "a mixed assignment stays on the base maps");
+        lease.has_map_pack = true;
+        sessions.matchmaking = Some((lease.clone(), Instant::now()));
+        assert!(sessions.allow_hopper_addons(4));
+        assert!(!sessions.allow_hopper_addons(3));
+        let expired = Duration::from_secs(live_proto::matchmaking::ASSIGNMENT_SECONDS as u64 + 1);
+        sessions.matchmaking = Some((lease, Instant::now() - expired));
+        assert!(!sessions.allow_hopper_addons(4));
+    }
+
+    #[test]
+    fn failed_publication_revokes_only_the_lease_it_claimed() {
+        let mut sessions = Sessions::default();
+        let assignment: live_proto::matchmaking::Assignment = serde_json::from_value(serde_json::json!({
+            "id": "8000000000000002", "hopper": 4, "host": "0009000000000001",
+            "has_map_pack": true, "dedicated": false, "members": ["0009000000000001"],
+            "rtt_ms": {},
+        })).unwrap();
+        let id = assignment.id.clone();
+        sessions.matchmaking = Some((assignment, std::time::Instant::now()));
+        let put = |assignment: &str| Intent::Put {
+            session: Box::new(LocalSession {
+                id: [0; 8],
+                host_address: [0; 36],
+                host_users: Vec::new(),
+                slots: SessionSlots::default(),
+                attributes: BTreeMap::new(),
+                revision: 0,
+                visibility: Visibility::default(),
+                map_id: None,
+                skulls: None,
+                campaign: None,
+                ping_ms: None,
+                variant_ext: None,
+                browser: None,
+            }),
+            key: [0; 16],
+            assignment: Some(assignment.into()),
+        };
+        assert!(matches!(sessions.failed_request(&put("8000000000000001"), INVALID_USER), Task::Failed(INVALID_USER)));
+        assert!(sessions.allow_hopper_addons(4), "a newer assignment survives a late reply");
+        assert!(matches!(sessions.failed_request(&put(&id), INVALID_USER), Task::Failed(INVALID_USER)));
+        assert!(!sessions.allow_hopper_addons(4));
+    }
+
+    #[test]
     fn a_ping_update_waits_for_a_real_change() {
         assert!(ping_moved(None, Some(30)), "appeared");
         assert!(ping_moved(Some(30), None), "went");
@@ -1664,6 +2037,36 @@ mod tests {
         assert!(ping_moved(Some(30), Some(36)));
         assert!(!ping_moved(Some(200), Some(215)), "under a tenth");
         assert!(ping_moved(Some(200), Some(225)));
+    }
+
+    #[test]
+    fn the_guest_queue_reports_its_terminal_replication_refusal() {
+        use live_proto::replication::{CREATURE_PROBE, IncompatibleVersion, STOCK};
+
+        let mut sessions = Sessions::default();
+        let reason = IncompatibleVersion {
+            local: STOCK,
+            peer: Some(CREATURE_PROBE),
+        }
+        .to_string();
+        let handle = 1;
+        sessions
+            .tasks
+            .insert(handle, Task::QueueIncompatible(reason.clone()));
+        let hle = crate::Hle::new(crate::LiveConfig::default()).unwrap();
+        let mut guest = Guest::new();
+        let mut storage = Storage::default();
+
+        for _ in 0..2 {
+            assert_eq!(
+                sessions.poll(handle, &mut guest, &mut storage, &hle).unwrap(),
+                Some(REPLICATION_VERSION_MISMATCH),
+            );
+            assert_eq!(sessions.matchmaking_status(None), Some(reason.as_str()));
+            assert!(sessions.match_join.is_none());
+        }
+        assert!(sessions.close(handle));
+        assert_eq!(sessions.matchmaking_status(None), None);
     }
 
     #[test]

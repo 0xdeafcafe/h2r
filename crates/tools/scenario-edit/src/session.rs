@@ -4,6 +4,7 @@
 //! (`crates/apps/studio`) drives a [`Session`].
 use crate::edit::{Command, History};
 use crate::geometry::{self, Bounds, Camera, Marker, Ray, Tri, Vec3};
+use crate::layers::{LayerId, Layers};
 use crate::layout::{BlockKind, Role};
 use crate::package::{self, PackageForm, SavedPackage};
 use crate::save::{self, MapSource};
@@ -11,6 +12,7 @@ use crate::scenario::{Changes, Scenario, Value};
 use crate::scene::{Scene, SceneBuilder};
 use crate::{Error, Result};
 use map::TagId;
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -21,6 +23,8 @@ pub use multi::FieldEdit;
 struct Doc {
     source: MapSource,
     source_checksum: u32,
+    cache_name: String,
+    scenario_path: String,
     /// The map's name (`maps\\<name>.map`), the base a package names.
     name: String,
     /// The package directory this state came from or was last saved to.
@@ -207,19 +211,52 @@ impl Session {
             doc.package.as_deref(),
             doc.derived,
         )?;
+        self.record_package_save(&saved, &form.dir, form.activate);
+        Ok(saved)
+    }
+
+    /// Rewrite the open package's map patch and keep its other contents.
+    pub fn rewrite_package(&mut self) -> Result<SavedPackage> {
+        let maps = self.maps_dir();
+        let doc = self.doc.as_ref().ok_or(Error::Save("no map is open"))?;
+        let dir = doc
+            .package
+            .clone()
+            .ok_or(Error::Save("no package is open"))?;
+        let existing = self
+            .packages()
+            .into_iter()
+            .find(|p| p.dir_name() == dir)
+            .filter(|p| p.manifest.variants.is_empty())
+            .ok_or_else(|| {
+                Error::Package(format!("no writable package {dir} in {}", maps.display()))
+            })?;
+        let saved = package::rewrite_package(
+            &maps,
+            &doc.name,
+            &doc.source,
+            &doc.scenario,
+            &existing,
+            doc.derived,
+        )?;
+        self.record_package_save(&saved, &dir, false);
+        Ok(saved)
+    }
+
+    fn record_package_save(&mut self, saved: &SavedPackage, dir: &str, activate: bool) {
+        let doc = self.doc.as_mut().expect("a package save needs an open map");
         doc.saved = doc.scenario.changes();
-        doc.package = Some(form.dir.clone());
+        doc.package = Some(dir.to_owned());
         doc.history.seal();
-        self.last_package = Some((form.dir.clone(), saved.id));
+        self.last_package = Some((dir.to_owned(), saved.id));
         self.status = format!(
             "saved package {} ({} {} bytes{}), MapId {}",
             saved.dir.display(),
             saved.format.extension().to_ascii_uppercase(),
             saved.patch_len,
-            if form.activate { ", active" } else { "" },
+            if activate { ", active" } else { "" },
             saved.id
         );
-        Ok(saved)
     }
 
     /// The packages for the open map under [`Self::maps_dir`].
@@ -404,6 +441,8 @@ impl Session {
         );
         self.doc = Some(Doc {
             source_checksum: map.header().checksum,
+            cache_name: map.header().name.clone(),
+            scenario_path: map.header().scenario_path.clone(),
             source,
             name: name.to_owned(),
             package: None,
@@ -448,6 +487,13 @@ impl Session {
     /// Cache-header checksum of the loaded bytes, stable across edits in memory.
     pub fn source_checksum(&self) -> Option<u32> {
         self.doc.as_ref().map(|d| d.source_checksum)
+    }
+
+    /// The internal map name reported by the game and the cache's scenario path.
+    /// A renamed file or a package can have a different document name.
+    pub fn source_identity(&self) -> Option<(&str, &str)> {
+        let doc = self.doc.as_ref()?;
+        Some((&doc.cache_name, &doc.scenario_path))
     }
 
     /// The open map's source.
@@ -577,6 +623,29 @@ impl Session {
         }
     }
 
+    /// The visible placement under a camera ray in an unpaired viewport.
+    pub fn pick_visible(&self, ray: &Ray, layers: &Layers) -> Option<(BlockKind, usize)> {
+        self.pick_visible_linked(ray, layers, &BTreeSet::new())
+    }
+
+    /// As [`Self::pick_visible`], with the authoring glyphs of placements
+    /// represented by live objects.
+    pub fn pick_visible_linked(
+        &self,
+        ray: &Ray,
+        layers: &Layers,
+        linked: &BTreeSet<(BlockKind, usize)>,
+    ) -> Option<(BlockKind, usize)> {
+        if let Some(scene) = self.scene() {
+            return scene.pick_visible(&self.markers, ray, layers, &self.selection(), linked);
+        }
+        if !layers.visible(LayerId::Markers) {
+            return None;
+        }
+        let markers = self.markers.iter().filter(|m| layers.placement(m.block));
+        geometry::pick_glyph(markers, ray).map(|(_, block, index)| (block, index))
+    }
+
     /// Edits since the last save (undoing back to the saved state clears it).
     pub fn is_dirty(&self) -> bool {
         self.doc
@@ -659,6 +728,14 @@ impl Session {
     pub fn set_tag_patches(&mut self, patches: Vec<(u32, Vec<u8>)>) -> Result<()> {
         let doc = self.doc.as_mut().ok_or(Error::Save("no map is open"))?;
         doc.scenario.set_tag_patches(patches)
+    }
+
+    /// Replace the tag editor's BSP region patches, which save with the
+    /// other tag edits and count toward [`Self::is_dirty`].
+    pub fn set_bsp_patches(&mut self, patches: Vec<crate::BspPatch>) -> Result<()> {
+        let doc = self.doc.as_mut().ok_or(Error::Save("no map is open"))?;
+        doc.scenario.set_bsp_patches(patches);
+        Ok(())
     }
 
     /// Replace the string IDs the tag editor adds (see

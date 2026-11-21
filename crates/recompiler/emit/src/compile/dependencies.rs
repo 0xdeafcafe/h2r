@@ -13,8 +13,7 @@ use std::sync::Mutex;
 use super::{Arch, Error, err};
 use crate::fnv64;
 
-/// Path bytes off Unix (Windows, which only compile-checks the emitter: the
-/// game module is built on a Mac). An `OsStr`'s bytes are its WTF-8
+/// Path bytes off Unix. On Windows an `OsStr`'s bytes are its WTF-8
 /// encoding; clang's dependency rules are read back as UTF-8.
 #[cfg(not(unix))]
 mod portable {
@@ -294,7 +293,7 @@ impl Headers {
         let abstracted = !name.is_empty() && !identity.windows(name.len()).any(|w| w == name);
         let mut digests = self.digests.lock().unwrap();
         for line in trace.split(|b| *b == b'\n') {
-            if let Some(name) = line.strip_prefix(b"Configuration file: ") {
+            if let Some(name) = line.strip_suffix(b"\r").unwrap_or(line).strip_prefix(b"Configuration file: ") {
                 let path = PathBuf::from(OsString::from_vec(name.to_vec()));
                 let digest = match digests.get(&path) {
                     Some((_, digest)) => *digest,
@@ -373,6 +372,10 @@ fn parse(text: &[u8]) -> Result<Vec<PathBuf>, Error> {
                 if next == b'\r' && text.get(i + 1) == Some(&b'\n') {
                     i += 1;
                 } else if next != b'\n' {
+                    // Clang also emits ordinary Windows directory separators.
+                    if cfg!(windows) && !matches!(next, b' ' | b'\t' | b'#' | b'\\' | b'$') {
+                        path.push(b'\\');
+                    }
                     path.push(next);
                 }
             }
@@ -472,6 +475,7 @@ mod tests {
         assert_eq!(paths[0], Path::new("/src/one.c"));
         assert_eq!(paths[1], Path::new("/SDK space/hash#cash$.h"));
         assert_eq!(paths[2], Path::new("/back\\slash.h"));
+        #[cfg(unix)]
         assert_eq!(paths[3].as_os_str().as_bytes(), b"/non-utf8-\xff.h");
         assert!(parse(b"wrong: source.c").is_err());
         assert!(parse(b"h2:").is_err());

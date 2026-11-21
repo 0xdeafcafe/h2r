@@ -7,7 +7,7 @@
 //! drag gesture) collapse into one undo step.
 use crate::Result;
 use crate::layout::BlockKind;
-use crate::scenario::{Removed, Scenario, Value};
+use crate::scenario::{LayoutChange, Removed, Scenario, Value};
 
 /// One field change.
 #[derive(Clone, Debug, PartialEq)]
@@ -87,7 +87,11 @@ impl Command {
 enum Undo {
     Set(SetField),
     Removed(Removed),
-    Added { block: BlockKind, entry: Vec<u8> },
+    Added {
+        block: BlockKind,
+        entry: Vec<u8>,
+        layout: LayoutChange,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -101,14 +105,15 @@ struct Applied {
 #[derive(Clone, Debug, Default)]
 pub struct History {
     done: Vec<Applied>,
-    undone: Vec<Command>,
+    // The revision of each structural operation, in replay order.
+    undone: Vec<(Command, Vec<LayoutChange>)>,
 }
 
 impl History {
     /// Apply a command. If any operation fails, the ones before it are
     /// rolled back and the scenario is unchanged.
     pub fn apply(&mut self, scenario: &mut Scenario, command: Command) -> Result<()> {
-        let before = apply_all(scenario, &command.ops)?;
+        let before = apply_all(scenario, &command.ops, &[])?;
         self.undone.clear();
         if let (Some(key), Some(last)) = (command.merge, self.done.last_mut())
             && last.command.merge == Some(key)
@@ -151,26 +156,35 @@ impl History {
             self.done.push(applied);
             return Err(e);
         }
+        let revisions = applied
+            .before
+            .into_iter()
+            .filter_map(|u| match u {
+                Undo::Set(_) => None,
+                Undo::Removed(r) => Some(r.layout),
+                Undo::Added { layout, .. } => Some(layout),
+            })
+            .collect();
         let label = applied.command.label.clone();
         let mut command = applied.command;
         command.merge = None;
-        self.undone.push(command);
+        self.undone.push((command, revisions));
         Ok(Some(label))
     }
 
     /// Redo the last undone command. Returns its label.
     pub fn redo(&mut self, scenario: &mut Scenario) -> Result<Option<String>> {
-        let Some(command) = self.undone.pop() else {
+        let Some((command, revisions)) = self.undone.pop() else {
             return Ok(None);
         };
-        match apply_all(scenario, &command.ops) {
+        match apply_all(scenario, &command.ops, &revisions) {
             Ok(before) => {
                 let label = command.label.clone();
                 self.done.push(Applied { command, before });
                 Ok(Some(label))
             }
             Err(e) => {
-                self.undone.push(command);
+                self.undone.push((command, revisions));
                 Err(e)
             }
         }
@@ -194,7 +208,12 @@ fn same_field(a: &SetField, b: &SetField) -> bool {
     a.block == b.block && a.index == b.index && a.field == b.field
 }
 
-fn apply_all(scenario: &mut Scenario, ops: &[Op]) -> Result<Vec<Undo>> {
+fn apply_all(
+    scenario: &mut Scenario,
+    ops: &[Op],
+    revisions: &[LayoutChange],
+) -> Result<Vec<Undo>> {
+    let mut replay = revisions.iter().copied();
     let mut before = Vec::with_capacity(ops.len());
     for op in ops {
         let r = match op {
@@ -204,11 +223,16 @@ fn apply_all(scenario: &mut Scenario, ops: &[Op]) -> Result<Vec<Undo>> {
                     ..s.clone()
                 })
             }),
-            Op::Remove { block, index } => scenario.remove(*block, *index).map(Undo::Removed),
-            Op::Add { block, entry } => scenario.add(*block, entry.clone()).map(|_| Undo::Added {
-                block: *block,
-                entry: entry.clone(),
-            }),
+            Op::Remove { block, index } => scenario
+                .remove_with_rev(*block, *index, replay.next())
+                .map(Undo::Removed),
+            Op::Add { block, entry } => scenario
+                .add_with_rev(*block, entry.clone(), replay.next())
+                .map(|(_, layout)| Undo::Added {
+                    block: *block,
+                    entry: entry.clone(),
+                    layout,
+                }),
         };
         match r {
             Ok(u) => before.push(u),
@@ -231,8 +255,146 @@ fn revert(scenario: &mut Scenario, before: &[Undo]) -> Result<()> {
                 scenario.write(s.block, s.index, s.field, s.value)?;
             }
             Undo::Removed(r) => scenario.unremove(r)?,
-            Undo::Added { block, entry } => scenario.unadd(*block, entry)?,
+            Undo::Added { block, entry, .. } => scenario.unadd(*block, entry)?,
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod layout_revision_tests {
+    use super::*;
+    use crate::fixture::fixture;
+    use map::Map;
+    use std::io::Cursor;
+
+    fn scenario() -> Scenario {
+        let mut map = Map::from_reader(Cursor::new(fixture())).unwrap();
+        Scenario::read(&mut map).unwrap()
+    }
+
+    #[test]
+    fn direct_structural_inverses_restore_only_their_own_layout() {
+        let mut s = scenario();
+        let block = BlockKind::Weapons;
+        let entry = s.block(block).entry(0).unwrap().to_vec();
+        s.add(block, entry.clone()).unwrap();
+        let appended = s.block(block).layout_rev();
+        let removed = s.remove(block, 0).unwrap();
+        assert_ne!(s.block(block).layout_rev(), appended);
+        s.unremove(&removed).unwrap();
+        assert_eq!(s.block(block).layout_rev(), appended);
+        s.set(block, 0, "scale", Value::Float(2.0)).unwrap();
+        assert_eq!(s.block(block).layout_rev(), appended);
+        s.unadd(block, &entry).unwrap();
+        assert_eq!(s.block(block).layout_rev(), 0);
+
+        let removed = s.remove(block, 0).unwrap();
+        s.add(block, entry).unwrap();
+        let intervening = s.block(block).layout_rev();
+        s.unremove(&removed).unwrap();
+        let inserted = s.block(block).layout_rev();
+        assert_ne!(inserted, 0);
+        assert_ne!(inserted, intervening);
+        let entries = s.block(block);
+        let last = entries.entry(entries.len() - 1).unwrap().to_vec();
+        s.unadd(block, &last).unwrap();
+        assert!(![0, intervening, inserted].contains(&s.block(block).layout_rev()));
+
+        let mut source = scenario();
+        let last = source.block(block).entry(1).unwrap().to_vec();
+        source.unadd(block, &last).unwrap();
+        assert_ne!(source.block(block).layout_rev(), 0);
+    }
+
+    #[test]
+    fn structural_redo_reuses_a_revision_only_on_its_parent_layout() {
+        let mut s = scenario();
+        let mut h = History::default();
+        let block = BlockKind::Weapons;
+        let entry = s.block(block).entry(1).unwrap().to_vec();
+        h.apply(&mut s, Command::remove(block, 0)).unwrap();
+        let recorded = s.block(block).layout_rev();
+        assert_ne!(recorded, 0);
+        assert_eq!(s.block(BlockKind::Scenery).layout_rev(), 0);
+        h.undo(&mut s).unwrap();
+        assert_eq!(s.block(block).layout_rev(), 0);
+        h.redo(&mut s).unwrap();
+        assert_eq!(s.block(block).layout_rev(), recorded);
+
+        h.undo(&mut s).unwrap();
+        s.remove(block, 1).unwrap();
+        s.add(block, entry).unwrap();
+        let parent = s.block(block).layout_rev();
+        assert_eq!(s.block(block).len(), 2);
+        h.redo(&mut s).unwrap();
+        let diverged = s.block(block).layout_rev();
+        assert_ne!(diverged, recorded);
+        assert_ne!(diverged, parent);
+        h.undo(&mut s).unwrap();
+        assert_eq!(s.block(block).layout_rev(), parent);
+        h.apply(&mut s, Command::remove(block, 0)).unwrap();
+        assert_ne!(s.block(block).layout_rev(), diverged);
+        assert!(!h.can_redo());
+    }
+
+    #[test]
+    fn failed_structural_commands_restore_slots_and_the_redo_branch() {
+        let mut s = scenario();
+        let mut h = History::default();
+        let block = BlockKind::Weapons;
+        let flag = BlockKind::NetgameFlags;
+        let entry = s.block(block).entry(1).unwrap().to_vec();
+        let before = s.changes();
+        let replace = Command {
+            label: "replace weapon and remove flag".into(),
+            ops: vec![
+                Op::Remove { block, index: 0 },
+                Op::Add { block, entry },
+                Op::Remove {
+                    block: flag,
+                    index: 0,
+                },
+            ],
+            merge: None,
+        };
+        h.apply(&mut s, replace.clone()).unwrap();
+        let recorded = [block, flag].map(|kind| s.block(kind).layout_rev());
+        h.undo(&mut s).unwrap();
+
+        let mut failed = replace;
+        failed.ops.push(Op::Remove { block, index: 99 });
+        assert!(h.apply(&mut s, failed).is_err());
+        assert_eq!(s.changes(), before);
+        assert_eq!(s.block(block).layout_rev(), 0);
+        assert_eq!(s.block(flag).layout_rev(), 0);
+        h.redo(&mut s).unwrap();
+        assert_eq!(
+            [block, flag].map(|kind| s.block(kind).layout_rev()),
+            recorded
+        );
+    }
+
+    #[test]
+    fn reopening_a_saved_layout_makes_its_slot_order_the_source() {
+        let mut source = Map::from_reader(Cursor::new(fixture())).unwrap();
+        let mut s = Scenario::read(&mut source).unwrap();
+        let block = BlockKind::Weapons;
+        let replacement = s.new_entry(block, None, None).unwrap();
+        let moved = s.block(block).entry(1).unwrap().to_vec();
+        s.remove(block, 0).unwrap();
+        s.add(block, replacement.clone()).unwrap();
+        assert_ne!(s.block(block).layout_rev(), 0);
+
+        let mut bytes = Cursor::new(Vec::new());
+        crate::save::write_patched(&mut source, &s, &mut bytes).unwrap();
+        bytes.set_position(0);
+        let mut map = Map::from_reader(bytes).unwrap();
+        let reopened = Scenario::read(&mut map).unwrap();
+        assert_eq!(reopened.block(block).layout_rev(), 0);
+        assert_eq!(
+            reopened.block(block).source_entries(),
+            &[moved, replacement]
+        );
+    }
 }

@@ -159,7 +159,27 @@ fn installs_a_new_map_as_a_content_package() {
     let dir = vfs::Config::new(data, HALO2_TITLE).content_dir(offer);
 
     // The map, through the resolver: here the layer's own bytes.
-    assert_eq!(served(data, &r, offer, "coldsnap"), body(3));
+    let path = device_path(offer, "coldsnap");
+    let mut vfs = mounted(data, &r);
+    assert!(vfs.resolves_on_use(&path), "a speculative worker must leave the package alone");
+    assert_eq!(read(&mut vfs, &path), body(3));
+    assert!(!vfs.resolves_on_use(&path), "the loaded map can be opened by the worker");
+    #[cfg(unix)]
+    {
+        use std::io::{Read, Seek, SeekFrom};
+        let (mut first, len) = vfs.detached_map_reader(&path).unwrap();
+        let mut second = first.clone();
+        drop(vfs);
+        let expected = body(3);
+        assert_eq!(len, expected.len() as u64);
+        second.seek(SeekFrom::End(-4)).unwrap();
+        let mut tail = Vec::new();
+        second.read_to_end(&mut tail).unwrap();
+        assert_eq!(tail, expected[expected.len()-4..]);
+        let mut whole = Vec::new();
+        first.read_to_end(&mut whole).unwrap();
+        assert_eq!(whole, expected);
+    }
     // patch.lvl passes 1.0's check and names the map beside it.
     let lvl = std::fs::read(dir.join("patch.lvl")).unwrap();
     patch_lvl::validate_v2(&lvl).unwrap();
@@ -239,7 +259,7 @@ fn refreshes_on_a_new_map_id_and_removes_what_is_gone() {
     let manifest = data.join("maps/coldsnap/manifest.toml");
     let text = std::fs::read_to_string(&manifest).unwrap();
     std::fs::write(&manifest, text.replace("Name of coldsnap", "Coldsnap 2")).unwrap();
-    let renamed = install(data, &mut d).unwrap();
+    install(data, &mut d).unwrap();
     let dir = vfs::Config::new(data, HALO2_TITLE).content_dir(offer);
     assert_eq!(
         Entry::from_v2(&std::fs::read(dir.join("patch.lvl")).unwrap())
@@ -638,7 +658,7 @@ fn a_converted_map_is_served_in_the_sandbox_chosen_per_game() {
     let host = data.join("disk").join("Partition1").join(path.replace('\\', "/"));
     assert!(host.is_file(), "{}", host.display());
 
-    let mut cfg = vfs::Config::new(data, HALO2_TITLE);
+    let cfg = vfs::Config::new(data, HALO2_TITLE);
     for (p, pair) in &r.variants {
         cfg.variants.register(p, pair.clone());
     }
@@ -719,6 +739,7 @@ fn legacy_choices_migrate_to_independent_disc_and_map_pack_mods() {
     d.base_files.insert(
         "level".into(),
         vfs::HostFile {
+            generation: None,
             path: iso.clone(),
             offset: 37 * 2048,
             len: 0x800,
@@ -822,6 +843,7 @@ fn slot_plan_preserves_retail_and_uses_the_mods_own_preview() {
     d.base_files.insert(
         "alpha".into(),
         vfs::HostFile {
+            generation: None,
             path: source,
             offset: 0,
             len: base.len() as u64,

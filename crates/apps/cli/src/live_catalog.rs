@@ -39,8 +39,11 @@ pub const CATALOG: &str = "catalog.json";
 
 /// The level lists' layout is `tags::ui_levels`'s (shared with the boot's
 /// map select and the editor's Maps list); the sizes stay named here.
+#[cfg(test)]
 pub const CAMPAIGN_LEVEL_SIZE: usize = ui_levels::CAMPAIGN_LEVEL_SIZE;
+#[cfg(test)]
 pub const START_LEVEL_SIZE: usize = ui_levels::START_LEVEL_SIZE;
+#[cfg(test)]
 pub const LEVEL_SIZE: usize = ui_levels::MP_LEVEL_SIZE;
 
 /// `goof +0x20` its `unic` (tag reference: group, datum), `+0x28` the

@@ -40,7 +40,8 @@
 //      refused; the round trip of a datagram, and datagrams a second at
 //      co-op's rate (30 a second each way, for longer than a ticket lasts,
 //      so it is renewed) and near the relay's limit.
-//  13. OptiMatch QoS queue: four clients submit synthetic measurements,
+//  13. with --admin NAME: the shared screenshot moderation HTTP contract.
+//  14. OptiMatch QoS queue: four clients submit synthetic measurements,
 //      the lowest-worst-RTT peer publishes, and the session exposes its RTT table.
 // It prints one JSON object and exits non-zero if a step fails.
 //
@@ -53,6 +54,7 @@ import { canonicalJson } from "../../../../web/src/state/verify";
 import { createAccount, importSeed, signCompact, type LocalAccount } from "../../../../web/src/state/account";
 import { eventBody, postEvent, TYP_EVENT } from "../../../../web/src/state/sign";
 import { issueToken, randomId } from "../../../../web/src/admin/token";
+import { screenshotParity } from "./screenshot-parity";
 
 const args = process.argv.slice(2);
 const base = (args.find((a) => /^https?:/.test(a)) ?? "http://127.0.0.1:8787").replace(/\/$/, "");
@@ -120,7 +122,7 @@ out.sign_up = { ms: +(performance.now() - t3).toFixed(1), accounts: [a!.gamertag
 
 // 4. Sign in: a read with the account's own token.
 const token = await issueToken(a!, aud, "read");
-const mine = await timed(api + "/snapshot?auth=1", { headers: { authorization: `Bearer ${token}` } });
+const mine = await timed(api + "/snapshot", { headers: { authorization: `Bearer ${token}` } });
 if (!mine.r.ok) fail("sign-in", `${mine.r.status} ${mine.body}`);
 const seen = (JSON.parse(mine.body).accounts?.items ?? []).some((x: { xuid: string }) => x.xuid === a!.xuid);
 if (!seen) fail("sign-in", "the new account is not in the snapshot");
@@ -229,7 +231,7 @@ const eventsUrl = `${api}/events?stream=account-${a!.xuid}&from=${position! - 1}
 const publicLog = await timed(eventsUrl);
 if (!publicLog.r.ok || JSON.parse(publicLog.body).items.some((e: {position: number}) => e.position === position))
   fail("anonymous-private-event", publicLog.r.status);
-const participantLog = await timed(eventsUrl + "&auth=1", {
+const participantLog = await timed(eventsUrl, {
   headers: {authorization: `Bearer ${await issueToken(a!, aud, "read")}`},
 });
 if (!participantLog.r.ok) fail("append-read", `${participantLog.r.status} ${participantLog.body}`);
@@ -585,7 +587,24 @@ async function simRun(admin: LocalAccount, other: LocalAccount) {
 
   // A title file, as an admin.
   if (adminTag) {
-    const admin = await createAccount(api, base, aud, adminTag);
+    // run.sh supplies the local test server's identity for reserved signup.
+    if (new URL(base).hostname !== "127.0.0.1") fail("admin signup", "expected local Worker");
+    const seed = process.env.H2_LIVE_SERVER_KEY;
+    if (!seed) throw new Error("missing local Worker identity");
+    const key = await importSeed(seed, wk.keys[0].x);
+    const admin = await createAccount(api, base, aud, adminTag, undefined, async (input, init) => {
+      if (typeof init?.body !== "string") throw new Error("missing signed signup");
+      const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(init.body));
+      const lxm = "accounts.reserve." + Buffer.from(digest).toString("hex");
+      const iat = Math.floor(Date.now() / 1000);
+      const token = await signCompact(key.privateKey, { alg: "EdDSA", kid: key.publicJwk.kid, typ: "JWT" },
+        canonicalJson({ iss: "server:" + aud, aud, iat, exp: iat + 60, jti: randomId(), lxm }));
+      const headers = new Headers(init?.headers);
+      headers.set("authorization", "Bearer " + token);
+      return fetch(input, { ...init, headers, redirect: "error" });
+    });
+    out.screenshot_moderation = await screenshotParity(api, aud, a!, b!, admin)
+      .catch((e) => fail("screenshot-moderation", e));
     const uri = api + "/admin/replay-archives/" + archiveGame;
     const info = await (await fetch(uri, {headers:{authorization:`Bearer ${await issueToken(admin, aud, "admin.read")}`}})).json();
     const verify = async (cursor: string | null) => {

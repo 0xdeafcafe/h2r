@@ -142,7 +142,7 @@ mod tests {
                 .put_u32(entry + entry_layout::GROUP, GroupTag::from_chars(group).0)
                 .put_u32(entry + entry_layout::ADDRESS, addr);
         }
-        let ui_ms = |present| reset_ms + present * 1000 / 30;
+        let ui_ms = |present: u32| reset_ms + present * 1000 / 30;
         g.put_u32(UI_CLOCK.base, ui_ms(2299))
             .put_u8(UI_MUSIC_GATE.base, 1)
             .put_u32(UI_MUSIC_STATE.base, 1)

@@ -95,6 +95,9 @@ are out of scope.
 - Raw `device_changes()` edges accumulate in `sync()`, so a pad inserted
   and removed between drains appears in both raw masks. The XAPI adapter
   normalizes these against the last connection mask seen by the guest.
+- PlayStation [lightbars](../audio/playstation-audio.md#player-colour-lightbars)
+  follow the same port assignment as the buttons. `sync()` forwards
+  changes to the assigned controller's backend.
 - `InputManager::new` validates the deadzones (finite, in `[0, 1)`).
 - Guest reads: `get_state` is `XInputGetState` and marks the device read; the
   next `sync()` calls the backend's `HostBackend::state_read` for it before

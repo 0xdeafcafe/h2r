@@ -51,14 +51,24 @@
 pub mod ai;
 mod capture;
 pub mod collision;
+mod collision_traces;
+pub use collision_traces::{CollisionTrace, CollisionTraces};
 pub mod compare;
+pub mod debug_views;
+pub mod editor;
 mod exec;
+pub mod forge;
 pub mod havok;
 pub mod hostpads;
 pub mod hot;
+pub mod lightbar;
 mod live;
 mod loads;
+pub mod forensics;
+mod memory;
 pub mod menu;
+pub mod net;
+mod outputs;
 pub mod raw;
 mod reader;
 pub mod render;
@@ -80,7 +90,7 @@ pub use reader::{
     player_object, thing_object, vehicle_object,
 };
 pub use server::Server;
-pub use tap::{AgentTap, Chain, Input, MenuPad, MenuReceipt, pad_steps};
+pub use tap::{AgentTap, Chain, Input, MenuPad, MenuReceipt, RoutePad, RoutePorts, pad_steps};
 
 /// The agent as a feature (`agent`): the tick observer, and the cutscene
 /// start and stop observers that set the `cinematic` phase.
@@ -124,6 +134,39 @@ impl hooks::Feature for AgentFeature {
             move || save.save_state(),
             move |bytes, _| load.load_state(bytes),
         ));
+        Ok(())
+    }
+}
+
+/// Lifecycle hooks that must be present before a queued world edit can run.
+pub const EDIT_LIFECYCLE: &str = "agent-edit-lifecycle";
+
+pub type EditorActivation = std::sync::Arc<dyn Fn(&dyn engine::GuestMemory) + Send + Sync>;
+
+pub struct EditLifecycleFeature(pub sim::calls::Shared, pub Agent, pub Option<EditorActivation>);
+
+impl hooks::Feature for EditLifecycleFeature {
+    fn manifest(&self) -> hooks::Manifest {
+        hooks::Manifest::new(EDIT_LIFECYCLE, "Track the active game for queued editor writes")
+            .doc("docs/runtime/agent-api.md")
+    }
+
+    fn build(&self, b: &mut hooks::Builder) -> Result<(), hooks::BuildError> {
+        use sim::calls;
+
+        let start = self.0.clone();
+        let agent = self.1.clone();
+        b.game().on_start("map activation", move |o| {
+            let current = calls::preview_scenario(&*o.guest());
+            calls::lock(&start).map_activated(current);
+            agent.live_cut();
+        });
+        let revert = self.0.clone();
+        b.raw().observe_after(&engine::points::GAME_STATE_REVERT, "checkpoint previews", move |_| {
+            calls::lock(&revert).checkpoint_reverted();
+        });
+        calls::install_reload_recovery(b, self.0.clone(), self.1.clone(), self.2.clone());
+        b.snapshot(hooks::SnapshotPolicy::Stateless);
         Ok(())
     }
 }

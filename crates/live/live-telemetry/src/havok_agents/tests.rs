@@ -225,3 +225,34 @@ fn retail_welded_tree_uses_its_wrapped_structure_in_both_orders() {
         assert_eq!(t.children[0].cache.kind, "swept_convex");
     }
 }
+
+#[test]
+fn pair_word_writes_only_the_objects_own_pairs() {
+    let (mut m, datum) = scene();
+    let entry = PAIRS + 0x20;
+    assert_eq!(set_pair_word(&mut m, datum, entry, 0xffff_fffd).unwrap(), Some(u32::MAX));
+    assert_eq!(agents(&m, datum).unwrap()[0].pair_word, 0xffff_fffd);
+    assert_eq!(fixed_pair(&m, datum).unwrap(), Some(entry));
+    // The unrelated pair and the one without an agent are refused, untouched.
+    for other in [PAIRS, PAIRS + 0x10] {
+        let before = m.u32(other + PAIR_WORD).unwrap();
+        assert_eq!(set_pair_word(&mut m, datum, other, 7).unwrap(), None);
+        assert_eq!(m.u32(other + PAIR_WORD).unwrap(), before);
+    }
+}
+
+#[test]
+fn the_light_pair_word_reads_the_levels_pair_without_decoding_caches() {
+    let (mut m, datum) = scene();
+    assert_eq!(fixed_pair_word(&m, datum).unwrap(), Some(u32::MAX));
+    // The same pair `fixed_pair` finds.
+    let entry = fixed_pair(&m, datum).unwrap().unwrap();
+    m.put_u32(entry + PAIR_WORD, 0xffff_fffd);
+    assert_eq!(fixed_pair_word(&m, datum).unwrap(), Some(0xffff_fffd));
+    // An agent cache that cannot decode does not matter to it.
+    m.put_u32(AGENT, 0xdead_beef);
+    assert_eq!(fixed_pair_word(&m, datum).unwrap(), Some(0xffff_fffd));
+    // No Havok world: none.
+    m.put_u32(layout::HAVOK_WORLD_PTR, 0);
+    assert_eq!(fixed_pair_word(&m, datum).unwrap(), None);
+}

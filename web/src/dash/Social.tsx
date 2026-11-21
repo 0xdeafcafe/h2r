@@ -5,6 +5,9 @@
 // account (state/social.ts).
 
 import { For, Match, Show, Switch, createEffect, createMemo, createSignal, onCleanup, onMount, type JSX } from "solid-js";
+import { JoinLink } from "../components/JoinLink";
+import { friendSession, joinHref } from "../lib/join";
+import { useSessions } from "../state/sessions";
 import { live } from "../state/live";
 import { identity } from "../state/identity";
 import { social, type WriteResult } from "../state/social";
@@ -23,7 +26,7 @@ import { ClanEmblem, friendPresence, presenceLine } from "../stats/clanBits";
 import { dashboardPlayerHref, STATS_ROOT } from "../routes";
 
 interface Row { key: string; label: string; meta?: string }
-interface Act { label: string; run: () => void | Promise<unknown>; danger?: boolean }
+type Act = { label: string; run: () => void | Promise<unknown>; danger?: boolean } | { label: string; join: string };
 
 export interface SocialProps {
   section: "friends" | "teams";
@@ -73,8 +76,10 @@ function SocialList(props: SocialProps & {
   createEffect(() => { row()?.key; setAi(0); setMsg(null); });
   createEffect(() => { if (ai() >= acts().length) setAi(Math.max(0, acts().length - 1)); });
 
+  let joinAnchor: HTMLAnchorElement | undefined;
   async function run(a: Act | undefined) {
     if (!a) return;
+    if ("join" in a) { joinAnchor?.click(); return; }
     setMsg(null);
     const r = await a.run();
     const w = r as WriteResult | undefined;
@@ -110,11 +115,20 @@ function SocialList(props: SocialProps & {
         {plate().body}
         <Show when={acts().length}>
           <div class="soc-acts" role="group" aria-label="actions">
-            <For each={acts()}>
-              {(a, i) => (
-                <button type="button" class="soc-act" classList={{ on: ai() === i(), "soc-act--danger": !!a.danger }} disabled={social.busy()}
-                  onMouseEnter={() => setAi(i())} onClick={() => { setAi(i()); void run(a); }}>{a.label}</button>
-              )}
+            <For each={acts().map((a) => a.label)}>
+              {(label, i) => {
+                const action = () => acts()[i()];
+                const href = () => { const a = action(); return a && "join" in a ? a.join : null; };
+                const danger = () => { const a = action(); return a && "run" in a && a.danger; };
+                return (
+                  <Show when={href()} fallback={
+                    <button type="button" class="soc-act" classList={{ on: ai() === i(), "soc-act--danger": !!danger() }} disabled={social.busy()}
+                      onMouseEnter={() => setAi(i())} onClick={() => { setAi(i()); void run(action()); }}>{label}</button>
+                  }>
+                    {(url) => <JoinLink href={url()} class="soc-act" active={ai() === i()} select={() => setAi(i())} ref={(a) => { joinAnchor = a; }} />}
+                  </Show>
+                );
+              }}
             </For>
           </div>
         </Show>
@@ -164,6 +178,7 @@ const resultText = (r: WriteResult) => (r.ok ? null : r.error);
 // ---------- friends ----------
 
 function FriendsScreen(props: SocialProps) {
+  const sessions = useSessions();
   const doc = () => social.mine();
   const rows = createMemo((): Row[] => {
     const d = doc();
@@ -229,6 +244,9 @@ function FriendsScreen(props: SocialProps) {
         if (k === "out") return [{ label: "cancel request", run: () => social.write(friendWrites.remove(me().xuid, x)), danger: true }, profile];
         const p = friendPresence({ xuid: x, presence: doc()?.friends.find((y) => y.xuid === x)?.presence ?? null });
         const out: Act[] = [];
+        const lobby = p.kind !== "offline" && !p.game_id && sessions.status() === "ok" && friendSession(sessions.items(), x, me().xuid);
+        const href = lobby && joinHref(live.server().base, lobby.session_id);
+        if (href) out.push({ label: "Join in Halo 2", join: href });
         if (p.game_id) out.push({ label: "watch game", run: () => props.go(`${STATS_ROOT}/games/${p.game_id}`, "deeper") });
         out.push(profile, { label: "service record", run: () => props.go(stats(r.label), "deeper") });
         out.push(confirm() === x

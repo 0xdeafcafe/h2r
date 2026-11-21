@@ -205,11 +205,11 @@ export function gameHeaderHtml(m: GameHeaderModel): string {
   const player = (p: HeaderPlayer) =>
     `<li class="s-gamehead-player" style="--row:${e(p.colour)}">${emblemImg(p, 16)}<span>${e(p.name)}</span>`
     + (p.bot ? ` <i class="s-gamehead-bot">bot</i>` : "")
-    + (p.score !== undefined ? ` <b class="s-gamehead-pscore">${p.score}</b>` : "")
+    + (p.score !== undefined ? ` <b class="s-gamehead-pscore">${e(String(p.score))}</b>` : "")
     + `</li>`;
   const side = m.teams
     ? `<ul class="s-gamehead-teams">${m.teams.map((t) =>
-        `<li class="s-gamehead-team" style="--row:${e(t.colour)}"><header><span>${e(t.name)}</span> <b>${t.score}</b></header>`
+        `<li class="s-gamehead-team" style="--row:${e(t.colour)}"><header><span>${e(t.name)}</span> <b>${e(String(t.score))}</b></header>`
         + `<ul class="s-gamehead-players">${t.players.map(player).join("")}</ul></li>`).join("")}</ul>`
     : `<ul class="s-gamehead-players s-gamehead-players--solo">${(m.players ?? []).map(player).join("")}</ul>`;
   return `<div class="s-gamehead" data-game="${e(m.game)}">`

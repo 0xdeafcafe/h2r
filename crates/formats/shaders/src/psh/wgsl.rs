@@ -290,7 +290,8 @@ struct XpsUniforms {
     // integer depth format (the stored w is truncated, as the NV2A does).
     depth: vec4f,
     // x, y: the range the stored w is clamped to (CLIP_MIN, CLIP_MAX).
-    depth_range: vec4f,
+    depth_range: vec2f,
+    stipple_scale: vec2u,
 }
 @group(0) @binding(1) var<uniform> xps: XpsUniforms;
 
@@ -975,7 +976,12 @@ fn fs_main(v: XboxVaryings, @builtin(front_facing) front: bool) -> @location(0) 
     }
     if options.stipple {
         s.push_str(
-            r#"    let xy = vec2u(v.position.xy) & vec2u(31u);
+            r#"    // Invert floor(guest_edge * host / guest + 0.5) exactly. A host
+    // pixel whose centre falls on a guest edge belongs to the lower cell.
+    let guest = xps.stipple_scale & vec2u(65535u);
+    let host = xps.stipple_scale >> vec2u(16u);
+    let cell = ((2u * vec2u(v.position.xy) + vec2u(1u)) * guest - vec2u(1u)) / (2u * host);
+    let xy = cell & vec2u(31u);
     let y = 31u - xy.y;
     let row = xps.stipple[y / 4u][y % 4u];
     if ((row & (1u << (xy.x ^ 7u))) == 0u) { discard; }

@@ -79,6 +79,23 @@ impl Hle {
     pub fn clear_tunnel(&self) {
         lock(&self.network.state).tunnel = None;
     }
+
+    /// Deliver complete actor packets at the next client tick boundary.
+    /// Sessions without an actor-capable tunnel have an empty inbox.
+    pub fn drain_actor_tunnel_packets(&self) -> Vec<actor_net::Packet> {
+        lock(&self.network.state)
+            .tunnel
+            .as_ref()
+            .map_or_else(Vec::new, |route| route.handle.drain_actor_packets())
+    }
+
+    /// Ask the current tunnel host for a fresh actor key, if negotiated.
+    pub fn request_actor_tunnel_key(&self) -> bool {
+        lock(&self.network.state)
+            .tunnel
+            .as_ref()
+            .is_some_and(|route| route.handle.request_actor_key())
+    }
 }
 
 impl Network {

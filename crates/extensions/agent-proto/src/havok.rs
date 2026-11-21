@@ -13,8 +13,11 @@ pub mod method {
 
     /// Per-pair cached collision state ([`super::AgentsParams`] → [`super::Agents`]).
     pub const AGENTS: &str = "havok.agents";
+    /// Overwrite one collision pair's word ([`super::PairSetParams`] →
+    /// [`super::PairSet`]). Needs the claim and a session that allows host writes.
+    pub const PAIR_SET: &str = "havok.pair.set";
 
-    pub const ALL: &[&str] = &[BODIES, CONTACTS, AGENTS];
+    pub const ALL: &[&str] = &[BODIES, CONTACTS, AGENTS, PAIR_SET];
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -161,6 +164,26 @@ pub struct Contacts {
 #[serde(deny_unknown_fields)]
 pub struct AgentsParams {
     pub object: String,
+}
+
+/// `entry` is a pair's `entry` from `havok.agents` for the same object;
+/// without it, the object's one pair against a fixed body (the level).
+/// `word` is eight hex digits, as `pair_word` prints them.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PairSetParams {
+    pub object: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entry: Option<String>,
+    pub word: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PairSet {
+    pub object: String,
+    pub entry: String,
+    pub before: String,
+    pub after: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

@@ -2005,7 +2005,7 @@ fn pinned_bloodgulch_fits_its_tag_memory() {
             .filter(|t| t.0.index() < first)
             .map(|t| (bytes_of.get(&t.0).map_or(0, Vec::len), t))
             .collect();
-        kept.sort_by(|a, b| b.0.cmp(&a.0));
+        kept.sort_by_key(|a| std::cmp::Reverse(a.0));
         let kept_total: usize = kept.iter().map(|k| k.0).sum();
         eprintln!(
             "{sandbox:?}: {} base tags kept, {kept_total:#x} bytes; the largest and what names them:",
@@ -2035,7 +2035,7 @@ fn pinned_bloodgulch_fits_its_tag_memory() {
             e.1 += len;
         }
         let mut groups: Vec<_> = groups.into_iter().collect();
-        groups.sort_by(|a, b| b.1.1.cmp(&a.1.1));
+        groups.sort_by_key(|a| std::cmp::Reverse(a.1.1));
         eprintln!("  by group: {:?}", &groups[..groups.len().min(15)]);
         let label = |id: TagId| {
             base_ids

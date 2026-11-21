@@ -20,6 +20,17 @@ export function titleCase(s: string | null | undefined): string {
   return s.replace(/[_-]+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
+/** Name shown for a killing damage source in the feed and weapon breakdown. */
+export function damageSourceName(key: string): string {
+  switch (key) {
+    case "smg": return "SMG";
+    case "energy_blade": return "Energy Sword";
+    case "flak_cannon": return "Fuel Rod Gun";
+    case "ball": return "Oddball";
+    default: return titleCase(key);
+  }
+}
+
 /** Seconds between two ISO times (or until now). */
 export function between(a: string, b: string | null, now = Date.now()): number {
   return ((b ? Date.parse(b) : now) - Date.parse(a)) / 1000;

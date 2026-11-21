@@ -21,6 +21,7 @@ pub enum Event {
     PlayerJoined(game::PlayerJoined),
     PlayerLeft(game::PlayerLeft),
     PlayerKilled(game::PlayerKilled),
+    ActorKilled(game::ActorKilled),
     ScoreChanged(game::ScoreChanged),
     GameEnded(game::GameEnded),
     /// The scoreboard reports the count. It does not identify which victim.
@@ -300,6 +301,7 @@ impl Tracker {
                 });
                 kill.tick
             }
+            Event::ActorKilled(e) => e.tick,
             Event::ScoreChanged(e) => {
                 self.score_changes(
                     &e.players,

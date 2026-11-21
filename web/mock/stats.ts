@@ -13,6 +13,7 @@ import { LEVELS, multiplayerKind, mockSkulls } from "./coop";
 const HOUR = 3_600_000;
 const DAY = 86_400_000;
 const KEEP_DAYS = 30;
+const NON_WEAPONS = new Set(["", "fall", "collision", "splatter", "guardians", "teleporter", "explosion"]);
 const MAX_GAME_MS = 12 * HOUR;
 export const WINDOWS: Record<string, number | null> = { today: 1, "7d": 7, "30d": 30, all: null };
 
@@ -105,7 +106,7 @@ export class StatsFold {
           k: "kill", at,
           t: { deaths: 1, ...(scoring ? { kills: 1 } : d.kind === "betrayal" ? { betrayals: 1 } : d.kind === "suicide" ? { suicides: 1 } : {}) },
           victim: v?.xuid && !bot ? [v.xuid, v.name] : null, killer: ks?.xuid ? [ks.xuid, ks.name] : null,
-          scoring, betrayal: d.kind === "betrayal", spree, weapon: scoring && typeof d.weapon === "string" && d.weapon ? d.weapon : null,
+          scoring, betrayal: d.kind === "betrayal", spree, weapon: scoring && typeof d.weapon === "string" && !NON_WEAPONS.has(d.weapon) ? d.weapon : null,
           map: g.map, map_id: g.map_id,
         });
         return;

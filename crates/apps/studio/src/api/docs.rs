@@ -16,7 +16,7 @@ use super::scenario::refused;
 use super::{P, Reply, err};
 use crate::App;
 use crate::app::map_cards::MapEntry;
-use crate::app::{Action, ToolKind};
+use crate::app::{Action, SaveTarget, ToolKind};
 
 /// A `doc` param as a tool (default: the tool shown).
 pub fn doc_kind(app: &App, p: &P) -> Result<ToolKind, RpcError> {
@@ -375,13 +375,28 @@ fn need_open(app: &App, t: ToolKind) -> Result<(), RpcError> {
 fn save(app: &mut App, t: ToolKind) -> Reply {
     need_open(app, t)?;
     match t {
-        ToolKind::Scenario | ToolKind::Tags => match app.saved_path().map(Path::to_path_buf) {
-            Some(path) => save_as(app, t, path),
-            None => Err(err(
-                code::REFUSED,
-                "the map has no file of its own yet: doc.save_as {\"path\": ...} (its source is never overwritten)",
-            )),
-        },
+        ToolKind::Scenario | ToolKind::Tags => {
+            let target = app.save_target();
+            let log = run(app, Action::Save, false)?;
+            match target {
+                SaveTarget::File(path) => {
+                    let bytes = std::fs::metadata(&path).map(|m| m.len()).ok();
+                    Ok(json!({
+                        "saved": true, "path": path.display().to_string(), "bytes": bytes, "log": log,
+                    }))
+                }
+                SaveTarget::Package(dir) => Ok(json!({
+                    "saved": true, "path": dir.display().to_string(), "log": log,
+                })),
+                SaveTarget::PackageForm { .. } => {
+                    let form = app.package_form.as_ref().expect("Save opened the package form");
+                    Ok(json!({
+                        "saved": false, "package_form": {"name": form.name, "dir": form.dir}, "log": log,
+                    }))
+                }
+                SaveTarget::Nothing => Err(err(code::NO_DOCUMENT, "no map is open")),
+            }
+        }
         ToolKind::Variants => {
             let log = run(app, Action::SaveVariant, false)?;
             Ok(json!({ "saved": true, "log": log }))
@@ -454,7 +469,7 @@ fn diff(app: &mut App, t: ToolKind) -> Reply {
         ToolKind::Scenario | ToolKind::Tags => {
             let s = super::scenario::open(app)?;
             let changes = s.changes();
-            let patches: Vec<Value> = changes
+            let mut patches: Vec<Value> = changes
                 .patches
                 .iter()
                 .map(|(address, bytes)| {
@@ -490,7 +505,8 @@ fn diff(app: &mut App, t: ToolKind) -> Reply {
                         v["block"] = json!(block_name(b.def.kind));
                         v["fields"] = json!(["count"]);
                     } else if let Some(t) = app.tags.tags().iter().find(|t| {
-                        *address >= t.address
+                        t.bsp.is_none()
+                            && *address >= t.address
                             && (*address as u64) < t.address as u64 + t.size as u64
                     }) {
                         // A Tags tool edit.
@@ -500,6 +516,14 @@ fn diff(app: &mut App, t: ToolKind) -> Reply {
                     v
                 })
                 .collect();
+            patches.extend(changes.bsp_patches.iter().map(|patch| {
+                json!({
+                    "address": format!("{:#010x}", patch.address),
+                    "bsp_region_offset": patch.space.file_offset,
+                    "len": patch.bytes.len(),
+                    "bytes": hex(&patch.bytes),
+                })
+            }));
             let grown: Vec<Value> = changes
                 .grown
                 .iter()

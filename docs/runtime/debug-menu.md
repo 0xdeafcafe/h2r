@@ -76,6 +76,37 @@ change.
 | Cheats | `cheat.list`, `cheat.set` | god mode, infinite ammo, bottomless clip, game speed, fly, noclip, hide HUD; a cheat refused on its own is greyed with its reason |
 | Perf | `perf.overlay`, `profile.counters` | the perf overlay switch (the same one F3 flips), fps and frame-time percentiles, per-phase ms and counts |
 | Features | `features.list` | every feature with its state (read-only) |
+| Debug views | `debug.views`, `debug.view` | world-space lines for the loaded map, live hitboxes and recent collision queries. Each view has its own switch. Controls set the draw range and trace lifetime. |
+
+### Debug views
+
+All switches start off. Each enabled view contributes up to 2,048 lines to a
+genuine image, shared across its split-screen views. Range is 1–512 world
+units (default 48). Capture measures distance from local listeners, falling
+back to player unit positions when available. Without either reference it
+takes a bounded sample. The overlay projects those lines with each view's
+camera. Hidden edges draw at full strength.
+
+| View | Geometry and source |
+|---|---|
+| Geometry edges (blue) | Triangle edges from drawn sections of the active structure BSP, including placed geometry instances at their world transforms. |
+| Trigger volumes (green) | Oriented boxes from scenario trigger origins, forward/up axes and full extents. |
+| Kill / death volumes (red) | The subset of trigger boxes referenced by the scenario's kill-trigger list. |
+| Invisible barriers (pink) | BSP collision edges bordering a surface with the invisible flag, including instance collision. |
+| Collision geometry (orange) | Edges of the active BSP's collision surfaces and its placed instance collision surfaces. |
+| Hitboxes (violet) | Selected object collision permutations transformed by their current node matrices, plus supported live rigid-body shapes. The physics outlines cover boxes, spheres, pills, convex hulls and the active biped capsule. |
+| Traces (yellow) | The start and requested endpoint of each completed world collision query, with a three-axis cross at the engine's returned hit. Misses draw a dashed line. |
+
+The host caches static geometry by map and BSP. Each static layer stores up
+to 131,072 lines. Object-attached trigger volumes need the live marker's
+world transform and are omitted. Hitboxes skip unrecognized physics shapes
+and collision nodes without a matching pose.
+
+The trace history holds the newest 512 queries from the owning simulation
+executor. Trace colors fade over 1–300 guest ticks (default 30). The traces
+row gives a reason if the query entry is unavailable or lockstep, film
+recording or film playback is active. Repeated images retain their sampled
+lines. See [Drawing world-space lines over the frame](agent-api.md#drawing-world-space-lines-over-the-frame).
 
 ## Cheats
 

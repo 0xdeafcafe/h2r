@@ -53,6 +53,7 @@ export class StreamClient {
   attempt = 0;
   private sock: SocketLike | null = null;
   private timer: unknown = null;
+  private refresh: unknown = null;
   private stopped = false;
   private readonly o: Required<Omit<StreamOptions, "auth">> & Pick<StreamOptions, "auth">;
   /** Packed frame streams (`?frames=packed`); a new socket starts afresh. */
@@ -77,6 +78,7 @@ export class StreamClient {
 
   stop(): void {
     this.stopped = true;
+    this.clearRefresh();
     if (this.timer !== null) this.o.clearTimer(this.timer);
     this.timer = null;
     const s = this.sock;
@@ -123,7 +125,10 @@ export class StreamClient {
     this.frames = new FrameDecoder();
     sock.onopen = () => {
       if (this.sock !== sock) return;
-      if (token !== null) sock.send?.(JSON.stringify({ kind: "auth", token }));
+      if (token !== null) {
+        sock.send?.(JSON.stringify({ kind: "auth", token }));
+        this.scheduleRefresh(sock);
+      }
       this.setStatus("catching-up");
     };
     sock.onmessage = (m) => { if (this.sock === sock) this.handle(m.data); };
@@ -131,8 +136,28 @@ export class StreamClient {
     sock.onclose = () => {
       if (this.sock !== sock) return;
       this.sock = null;
+      this.clearRefresh();
       if (!this.stopped) this.scheduleReconnect();
     };
+  }
+
+  private clearRefresh() {
+    if (this.refresh !== null) this.o.clearTimer(this.refresh);
+    this.refresh = null;
+  }
+
+  private scheduleRefresh(sock: SocketLike) {
+    this.clearRefresh();
+    this.refresh = this.o.setTimer(async () => {
+      this.refresh = null;
+      if (this.sock !== sock) return;
+      const token = await this.o.auth?.().catch(() => null);
+      if (this.sock !== sock) return;
+      if (!token) { sock.close(); return; }
+      try { sock.send?.(JSON.stringify({ kind: "auth", token })); }
+      catch { sock.close(); return; }
+      this.scheduleRefresh(sock);
+    }, 45_000); // Reader tokens are issued for 60 seconds.
   }
 
   private scheduleReconnect() {

@@ -65,6 +65,8 @@
 //! constructor, "add items", the screen tag, the pane setter and the string
 //! lookup) and [`install_privacy`].
 
+pub mod browser_filters;
+
 use std::sync::Arc;
 
 use crate::layout_glue::{Gm, ID_BASE};

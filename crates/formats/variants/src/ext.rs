@@ -17,8 +17,10 @@ pub const LEN: usize = 0x24;
 const MAGIC: [u8; 2] = *b"hx";
 const VERSION: u8 = 1;
 /// Flag bit 0 is reserved (it was "instant respawn", dropped by decision
-/// 3b); bit 1 is unlimited grenades.
+/// 3b); bit 1 is unlimited grenades; bit 2 is the superbounce game type
+/// (docs/game/superbounce.md, "The superbounce game type").
 const UNLIMITED_GRENADES: u8 = 1 << 1;
+const SUPERBOUNCE: u8 = 1 << 2;
 const CRC_AT: usize = LEN - 4;
 
 /// The percent scales' range. 100 is the game's own value.
@@ -43,6 +45,8 @@ pub struct Ext {
     /// Movement speed, percent.
     pub speed: u16,
     pub unlimited_grenades: bool,
+    /// The superbounce game type: the HUD plate and the spot lines.
+    pub superbounce: bool,
     /// Our weapon id for the primary (0: the record's starting weapon).
     pub primary: u16,
     /// Our weapon id for the secondary (0: the record's).
@@ -60,6 +64,7 @@ impl Default for Ext {
             health: 100,
             speed: 100,
             unlimited_grenades: false,
+            superbounce: false,
             primary: 0,
             secondary: 0,
             team_size: 0,
@@ -133,7 +138,7 @@ impl Ext {
             UNLIMITED_GRENADES
         } else {
             0
-        };
+        } | if self.superbounce { SUPERBOUNCE } else { 0 };
         for (i, v) in [
             pct(self.gravity),
             pct(self.damage),
@@ -179,6 +184,7 @@ impl Ext {
             health: pct(u16_at(3)),
             speed: pct(u16_at(4)),
             unlimited_grenades: b[3] & UNLIMITED_GRENADES != 0,
+            superbounce: b[3] & SUPERBOUNCE != 0,
             primary: u16_at(5),
             secondary: u16_at(6),
             team_size: b[0x12],
@@ -214,6 +220,9 @@ impl Ext {
         }
         if self.unlimited_grenades {
             parts.push("Unlimited grenades".into());
+        }
+        if self.superbounce {
+            parts.push("Superbounce".into());
         }
         if self.primary != 0 || self.secondary != 0 {
             parts.push(format!("Weapons {}/{}", self.primary, self.secondary));
@@ -257,6 +266,7 @@ mod tests {
             health: 150,
             speed: 125,
             unlimited_grenades: true,
+            superbounce: false,
             primary: 7,
             secondary: 0,
             team_size: 4,
@@ -300,6 +310,29 @@ mod tests {
             ..Ext::default()
         };
         assert_eq!(Ext::decode(&g.encode()), Block::Ext(g));
+    }
+
+    #[test]
+    fn the_superbounce_flag_is_bit_2_and_round_trips() {
+        let e = Ext {
+            superbounce: true,
+            ..Ext::default()
+        };
+        assert!(!e.is_default());
+        let b = e.encode();
+        assert_eq!(b[3], 0b100, "bit 2 superbounce");
+        assert_eq!(Ext::decode(&b), Block::Ext(e));
+        assert!(Ext::in_effect(&b).superbounce);
+        assert_eq!(e.summary(), "Superbounce");
+        // Beside unlimited grenades, each keeps its own bit.
+        let both = Ext {
+            superbounce: true,
+            unlimited_grenades: true,
+            ..Ext::default()
+        };
+        assert_eq!(both.encode()[3], 0b110);
+        assert_eq!(Ext::decode(&both.encode()), Block::Ext(both));
+        assert!(!Ext::in_effect(&some().encode()).superbounce);
     }
 
     #[test]

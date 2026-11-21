@@ -4,7 +4,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
-use agent_proto::{RpcError, SpawnViewParams, code, method};
+use agent_proto::{CaptureCamera, RpcError, SpawnViewParams, code, method};
 use engine::{GuestMemory, points, render_loop::views::VIEW_STRIDE};
 use hooks::{Builder, Flow};
 use serde_json::{Value, json};
@@ -111,19 +111,28 @@ impl SpawnViews {
                             let drawn = draw_world_view(call, scratch, |m, _| {
                                 (GuestMemory::u32(m, points::SCENARIO.base).ok()
                                     == Some(view.scenario))
-                                .then_some(view.pose)
+                                .then_some((view.pose, None))
                             });
                             if drawn {
                                 // Completion stamp only. The render thread reads the selected
                                 // pose and changes only its private view and call context.
                                 view.drawn.store(true, Ordering::Release);
+                                agent::render::CAPTURE.note_drawn_camera(|| {
+                                    let map = crate::health::loaded_map_name(&*call.ctx.memory()).ok()?;
+                                    let (forward, up) = view.pose.axes();
+                                    Some((map, CaptureCamera {
+                                        position: view.pose.position,
+                                        forward,
+                                        up,
+                                    }))
+                                });
                             }
                         }
                     }
                     Ok(Flow::Continue)
                 },
             )
-            .after_feature("theater-film")
+            .after_feature("theater-camera")
             .context_only();
         let views = self.clone();
         b.raw().observe_before(
@@ -131,6 +140,7 @@ impl SpawnViews {
             "release agent spawn camera",
             move |_| {
                 views.select(None);
+                agent::render::CAPTURE.clear_drawn_camera();
             },
         );
         Ok(())

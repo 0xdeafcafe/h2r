@@ -60,6 +60,72 @@ fn game_with_latency(
     (ph, g, slot)
 }
 
+/// Hold the old game's think while the render hook exits and the next
+/// simulation gathers its first action. Its result would be full fire.
+#[test]
+fn a_running_think_neither_holds_the_shell_nor_fires_into_the_next_match() {
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    struct Held {
+        entered: mpsc::Sender<()>,
+        release: mpsc::Receiver<()>,
+    }
+    impl PadSource for Held {
+        fn pad(&mut self, _: &Frame<'_>) -> HostPadState {
+            unreachable!("batched input")
+        }
+        fn observe(&mut self, _: &Frame<'_>) -> crate::pad_source::Sampled {
+            crate::pad_source::Sampled::Think
+        }
+        fn think(&mut self) -> HostPadState {
+            self.entered.send(()).unwrap();
+            self.release.recv().unwrap();
+            HostPadState { right_trigger: 1.0, ..Default::default() }
+        }
+        fn conclude(&mut self) {
+            panic!("the retired decision must not be published");
+        }
+    }
+
+    let ph = Phantoms::default();
+    let board = Box::leak(Box::new(std::sync::Mutex::new(Default::default())));
+    ph.lock().thinker = crate::think::Thinker::on_radio(
+        crate::think::Mode::Batched { threads: 1, pipeline: true }, board,
+    );
+    let (entered, started) = mpsc::channel();
+    let (finish, release) = mpsc::channel();
+    let h = ph.add(
+        Identity { gamertag: "Gated".into(), xuid: 1 },
+        None, Box::new(Held { entered, release }),
+    ).unwrap();
+    let start = move |ph: &Phantoms| {
+        let mut g = hosted();
+        ph.tick(&mut g, 0).unwrap();
+        game_makes(&mut g, 1, machine_id(h), [1., 0., 0.]);
+        ph.tick(&mut g, 1).unwrap();
+        let slot = slot_of(&g, machine_id(h)).unwrap().unwrap();
+        (g, slot)
+    };
+    let (g, slot) = start(&ph);
+    let mut g = gather(&ph, g, slot);
+    started.recv_timeout(Duration::from_secs(5)).unwrap();
+
+    let (tx, rx) = mpsc::channel();
+    let transition = std::thread::spawn(move || {
+        g.put_u32(points::GAME_TIME.base, 0);
+        ph.tick(&mut g, 2).unwrap();
+        let (g, slot) = start(&ph);
+        let g = gather(&ph, g, slot);
+        tx.send(g.f32(slot + SLOT_ACTION + 0x14).unwrap()).unwrap();
+        ph
+    });
+    let fire = rx.recv_timeout(Duration::from_secs(5));
+    finish.send(()).unwrap();
+    let _ph = transition.join().unwrap();
+    assert_eq!(fire.unwrap(), 0.0);
+}
+
 fn at_tick(g: &mut FakeGuest, tick: u32) {
     g.put_u32(TIME + guest::GAME_TIME_TICK, tick);
 }

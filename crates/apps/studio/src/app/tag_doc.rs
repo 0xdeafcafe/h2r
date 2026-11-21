@@ -1,18 +1,16 @@
 //! The tag editor's document, with no UI toolkit in sight: the open map's
-//! tags and ordinary metadata, the field edits over them, their undo
+//! tags, ordinary metadata and BSP regions, the field edits, their undo
 //! stack, block element add / remove / duplicate, and what may not be
 //! written and why.
 //!
-//! Edits are an overlay on the source's metadata bytes. The [`App`] hands
-//! every changed run to the scenario session ([`Session::set_tag_patches`]),
-//! so saving a map file or a package writes them through the same
-//! lossless `MapEditor` path as the scenario's own edits, and the map's
-//! dirty mark counts them.
+//! Edits are an overlay on the source's metadata and BSP region bytes.
+//! The [`App`] hands each changed run to the scenario session for the dirty
+//! mark and the lossless `MapEditor` save path shared by maps and packages.
 //!
 //! Layouts come from [`tags::registry`]: every byte of every root and
 //! block element as a labelled field.
 //!
-//! A block grows past the elements it had in the source only while
+//! A block in ordinary metadata grows past its source capacity while
 //! growth is allowed (the session's switch, [`TagDoc::allow_growth`]):
 //! its elements are copied to a new place past the end of the metadata
 //! (provisional addresses the document alone uses) and its pair pointed
@@ -23,12 +21,15 @@
 //! pointing where they did.
 //!
 //! [`App`]: crate::App
-//! [`Session::set_tag_patches`]: scenario_edit::Session::set_tag_patches
 use std::collections::{BTreeMap, HashMap};
 use std::io::{Read, Seek};
 use std::sync::Arc;
 
-use map::{FourCC, Map, TagId};
+use map::{AddressSpace, FourCC, Map, TagId};
+use scenario_edit::{
+    BspPatch,
+    layout::{BLOCKS, BlockDef},
+};
 use tags::registry::{Kind, Layout, Registry};
 
 /// Why a tag's bytes can be read but not written.
@@ -36,7 +37,6 @@ pub const SCENARIO_OWNED: &str = "the scenario tag's bytes belong to the Scenari
      placements there); shown as in the source";
 /// Why a tag has no fields here.
 pub const NO_DATA: &str = "no data in this map: the tag lives in a shared map";
-pub const IN_BSP: &str = "lives in a structure BSP region, which the tag editor does not read yet";
 pub const NO_LAYOUT: &str = "no layout for this group in the registry";
 pub const TOO_SHORT: &str = "shorter than its group's root layout";
 /// Why a block may not grow past the elements it had in the source.
@@ -44,6 +44,9 @@ pub const GROWTH_REFUSAL: &str = "the block is full: it has as many elements as 
      Growing it appends a copy to the map's metadata, and the engine's headroom for more tag \
      memory is not established (docs/editor/scenario-editor.md §6): turn on Edit > Allow \
      growing full blocks to do it";
+/// Why a BSP block may not grow past its original allocation.
+pub const BSP_GROWTH_REFUSAL: &str =
+    "the block is full: blocks in a structure BSP region cannot grow past their source capacity";
 /// Why a block inside a grown block's elements does not grow.
 pub const NESTED_GROWTH: &str = "the block lies in elements that were grown and not yet saved: \
      save, reopen the map, then grow it";
@@ -76,10 +79,19 @@ pub struct TagEntry {
     pub address: u32,
     pub size: u32,
     pub access: Access,
+    /// The separate region that owns this BSP or lightmap payload.
+    pub bsp: Option<BspTag>,
     /// For a tag with no data here: the shared map that has a tag of the
     /// same group and name with data (`shared`, `single_player_shared`,
     /// `mainmenu`), when one was found ([`TagDoc::set_elsewhere`]).
     pub elsewhere: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct BspTag {
+    /// Index in the scenario's structure BSP block, when available.
+    pub index: Option<usize>,
+    pub space: AddressSpace,
 }
 
 /// One write of a field's bytes (one undo step, or merged into the last by
@@ -87,7 +99,7 @@ pub struct TagEntry {
 #[derive(Clone, Debug, PartialEq)]
 pub struct TagWrite {
     pub tag: TagId,
-    /// Ordinary metadata virtual address.
+    /// Virtual address in the tag's own region.
     pub address: u32,
     pub bytes: Vec<u8>,
     /// For the undo step: the field's name.
@@ -132,12 +144,26 @@ pub enum TagAction {
     Seal,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Region {
+    Metadata,
+    Bsp(AddressSpace),
+}
+
+impl TagEntry {
+    fn region(&self) -> Region {
+        self.bsp
+            .map_or(Region::Metadata, |bsp| Region::Bsp(bsp.space))
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 struct Step {
     label: String,
-    /// `(address, before, after)`.
-    writes: Vec<(u32, Vec<u8>, Vec<u8>)>,
+    /// `((region, address), before, after)`.
+    writes: Vec<((Region, u32), Vec<u8>, Vec<u8>)>,
     merge: Option<u64>,
+    reload: Vec<(String, Vec<(u32, u32)>)>,
     /// String IDs this step added (the last of the document's).
     strings: Vec<String>,
 }
@@ -156,8 +182,11 @@ struct Loaded {
     base: u32,
     /// The source's ordinary metadata.
     meta: Vec<u8>,
-    /// Changed bytes by address (only those that differ from `meta`).
-    overlay: BTreeMap<u32, u8>,
+    /// Source BSP regions, keyed by file offset. Virtual addresses can
+    /// repeat in different regions.
+    bsp_regions: HashMap<u64, Vec<u8>>,
+    /// Changed bytes by region and address.
+    overlay: BTreeMap<Region, BTreeMap<u32, u8>>,
     /// The scenario payload `[lo, hi)`.
     scenario: Option<(u32, u32)>,
     /// Provisional address of grown elements (past the metadata's end,
@@ -172,14 +201,15 @@ struct Loaded {
 }
 
 impl Loaded {
-    /// The source's byte at `a` (zero in the grown room).
-    fn src(&self, a: u32) -> Option<u8> {
-        if a >= self.ext_base {
-            return self.ext.get((a - self.ext_base) as usize).copied();
+    fn src_range(&self, region: Region, address: u32, len: u32) -> Option<&[u8]> {
+        if let Region::Bsp(space) = region {
+            let offset = space.translate(address, len).ok()? - space.file_offset;
+            let start = offset as usize;
+            return self
+                .bsp_regions
+                .get(&space.file_offset)?
+                .get(start..start + len as usize);
         }
-        self.meta.get(a.checked_sub(self.base)? as usize).copied()
-    }
-    fn src_range(&self, address: u32, len: u32) -> Option<&[u8]> {
         let (buf, start) = if address >= self.ext_base {
             (&self.ext, self.ext_base)
         } else {
@@ -193,6 +223,8 @@ impl Loaded {
 /// The tag editor's document.
 pub struct TagDoc {
     registry: &'static Registry,
+    /// Datums resident in the checksum-matched game (including shared tags).
+    pub(crate) live_datums: Option<Arc<std::collections::HashSet<TagId>>>,
     loaded: Option<Loaded>,
     /// The tag shown.
     pub selected: Option<TagId>,
@@ -225,10 +257,22 @@ fn u32_at(b: &[u8]) -> u32 {
     u32::from_le_bytes(b[..4].try_into().unwrap())
 }
 
+fn changed_runs<'a>(bytes: impl IntoIterator<Item = (&'a u32, &'a u8)>) -> Vec<(u32, Vec<u8>)> {
+    let mut out: Vec<(u32, Vec<u8>)> = Vec::new();
+    for (&address, &byte) in bytes {
+        match out.last_mut() {
+            Some((start, run)) if address - *start == run.len() as u32 => run.push(byte),
+            _ => out.push((address, vec![byte])),
+        }
+    }
+    out
+}
+
 impl TagDoc {
     pub fn new(registry: &'static Registry) -> Self {
         Self {
             registry,
+            live_datums: None,
             loaded: None,
             selected: None,
             undo: Vec::new(),
@@ -247,7 +291,7 @@ impl TagDoc {
         self.registry
     }
 
-    /// Read `map`'s tags and ordinary metadata; drops every edit.
+    /// Read `map`'s tags, ordinary metadata and BSP regions. Drops every edit.
     pub fn load<R: Read + Seek>(&mut self, map: &mut Map<R>) -> map::Result<()> {
         self.close();
         let space = map.metadata_space();
@@ -259,19 +303,38 @@ impl TagDoc {
             .scenario()
             .and_then(|t| t.location)
             .map(|l| (l.address, l.address.saturating_add(l.size)));
+        let bsp_indices: HashMap<TagId, usize> =
+            scenario_edit::geometry::scenario_bsp_lightmaps(map)
+                .unwrap_or_default()
+                .into_iter()
+                .enumerate()
+                .flat_map(|(i, (bsp, lightmap))| {
+                    std::iter::once((bsp, i)).chain(lightmap.map(|id| (id, i)))
+                })
+                .collect();
+        let mut bsp_sizes = HashMap::<u64, u32>::new();
         let mut tags = Vec::new();
         for t in map.tags() {
+            let bsp = t.location.filter(|l| Some(l.space) != space).map(|l| {
+                bsp_sizes
+                    .entry(l.space.file_offset)
+                    .and_modify(|size| *size = (*size).max(l.space.size))
+                    .or_insert(l.space.size);
+                BspTag {
+                    index: bsp_indices.get(&t.id).copied(),
+                    space: l.space,
+                }
+            });
             let (address, size, access) = match t.location {
                 None => (0, 0, Access::None(NO_DATA)),
                 Some(l) if l.size == 0 => (l.address, 0, Access::None(NO_DATA)),
-                Some(l) if Some(l.space) != space => (l.address, l.size, Access::None(IN_BSP)),
+                Some(l) if t.group.0 == *b"scnr" => {
+                    (l.address, l.size, Access::Read(SCENARIO_OWNED))
+                }
                 Some(l) => {
                     let access = match self.registry.group(t.group) {
                         None => Access::Read(NO_LAYOUT),
                         Some(r) if l.size < r.size => Access::Read(TOO_SHORT),
-                        _ if Some(t.id) == map.scenario().map(|s| s.id) => {
-                            Access::Read(SCENARIO_OWNED)
-                        }
                         _ => Access::Edit,
                     };
                     (l.address, l.size, access)
@@ -287,8 +350,13 @@ impl TagDoc {
                 address,
                 size,
                 access,
+                bsp,
                 elsewhere: None,
             });
+        }
+        let mut bsp_regions = HashMap::new();
+        for (offset, size) in bsp_sizes {
+            bsp_regions.insert(offset, map.read_file_range(offset, u64::from(size))?);
         }
         let by_id = tags.iter().enumerate().map(|(i, t)| (t.id, i)).collect();
         let parents = map
@@ -318,6 +386,7 @@ impl TagDoc {
             new_strings: Vec::new(),
             base,
             meta,
+            bsp_regions,
             overlay: BTreeMap::new(),
             scenario,
             ext_base,
@@ -332,6 +401,7 @@ impl TagDoc {
 
     /// Forget the map and every edit.
     pub fn close(&mut self) {
+        self.live_datums = None;
         self.loaded = None;
         self.selected = None;
         self.undo.clear();
@@ -360,58 +430,110 @@ impl TagDoc {
         let l = self.loaded.as_ref()?;
         l.tags.get(*l.by_id.get(&id)?)
     }
-    /// The root layout of a tag's group.
-    pub fn layout(&self, id: TagId) -> Option<&Arc<Layout>> {
-        self.registry.group(self.tag(id)?.group)
+    pub(crate) fn resident(&self, id: TagId) -> bool {
+        self.live_datums.as_ref().map_or_else(
+            || self.tag(id).is_some_and(|t| t.size != 0),
+            |loaded| loaded.contains(&id),
+        )
     }
 
-    /// `len` bytes at `address`, edits applied; `None` outside the
-    /// metadata.
-    pub fn read(&self, address: u32, len: u32) -> Option<Vec<u8>> {
+    /// The root layout of a tag's group.
+    pub fn layout(&self, id: TagId) -> Option<&Arc<Layout>> {
+        let tag = self.tag(id)?;
+        let layout = self.registry.group(tag.group)?;
+        if (tag.bsp.is_some() || tag.group.0 == *b"scnr") && tag.size < layout.size {
+            return None;
+        }
+        Some(layout)
+    }
+
+    /// The Scene block that owns this scenario root pair. A palette jumps
+    /// to the block whose placements use it.
+    pub(crate) fn scene_block(&self, tag: TagId, pair: u32) -> Option<&'static BlockDef> {
+        let entry = self.tag(tag)?;
+        if entry.access != Access::Read(SCENARIO_OWNED) {
+            return None;
+        }
+        let offset = pair.checked_sub(entry.address)?;
+        BLOCKS.iter().find(|def| {
+            def.offset == offset || def.palette.as_ref().is_some_and(|p| p.offset == offset)
+        })
+    }
+
+    /// Read bytes in a tag's region, with edits applied.
+    pub fn read(&self, tag: TagId, address: u32, len: u32) -> Option<Vec<u8>> {
+        self.read_in(self.tag(tag)?.region(), address, len)
+    }
+
+    pub(crate) fn read_metadata(&self, address: u32, len: u32) -> Option<Vec<u8>> {
+        self.read_in(Region::Metadata, address, len)
+    }
+
+    fn read_in(&self, region: Region, address: u32, len: u32) -> Option<Vec<u8>> {
         let l = self.loaded.as_ref()?;
-        let mut out = l.src_range(address, len)?.to_vec();
-        for (a, b) in l.overlay.range(address..address + len) {
-            out[(a - address) as usize] = *b;
+        let mut out = l.src_range(region, address, len)?.to_vec();
+        if let Some(bytes) = l.overlay.get(&region) {
+            for (&a, &b) in bytes
+                .range(address..)
+                .take_while(|&(&a, _)| a - address < len)
+            {
+                out[(a - address) as usize] = b;
+            }
         }
         Some(out)
     }
-    /// The source's bytes, no edits (zeros in grown room).
-    pub fn read_source(&self, address: u32, len: u32) -> Option<&[u8]> {
-        self.loaded.as_ref()?.src_range(address, len)
+
+    /// Read source bytes in a tag's region (zeros in grown room).
+    pub fn read_source(&self, tag: TagId, address: u32, len: u32) -> Option<&[u8]> {
+        self.loaded
+            .as_ref()?
+            .src_range(self.tag(tag)?.region(), address, len)
     }
-    /// Whether `address` is a grown block's provisional place.
+
+    pub(crate) fn read_metadata_source(&self, address: u32, len: u32) -> Option<&[u8]> {
+        self.loaded
+            .as_ref()?
+            .src_range(Region::Metadata, address, len)
+    }
+
+    /// Whether `address` is a grown block's provisional place in metadata.
     pub fn is_grown_room(&self, address: u32) -> bool {
         self.loaded.as_ref().is_some_and(|l| address >= l.ext_base)
     }
-    fn read_u32(&self, address: u32) -> Option<u32> {
-        self.read(address, 4).map(|b| u32_at(&b))
+
+    fn pair_in(&self, region: Region, pair: u32) -> Option<(u32, u32)> {
+        let bytes = self.read_in(region, pair, 8)?;
+        Some((u32_at(&bytes), u32_at(&bytes[4..])))
     }
 
     /// A block or data reference's `(count, address)` at `pair`.
-    pub fn pair(&self, pair: u32) -> Option<(u32, u32)> {
-        Some((self.read_u32(pair)?, self.read_u32(pair + 4)?))
+    pub fn pair(&self, tag: TagId, pair: u32) -> Option<(u32, u32)> {
+        self.pair_in(self.tag(tag)?.region(), pair)
     }
 
-    /// The elements of the block at `pair` if they lie in the metadata.
-    pub fn block(&self, pair: u32, layout: &Layout) -> Option<(u32, u32)> {
-        let (n, a) = self.pair(pair)?;
+    /// The elements of the block at `pair` if they lie in the tag's region.
+    pub fn block(&self, tag: TagId, pair: u32, layout: &Layout) -> Option<(u32, u32)> {
+        let (n, a) = self.pair(tag, pair)?;
         if n == 0 {
             return Some((0, a));
         }
         let len = n.checked_mul(layout.size)?;
-        self.read_source(a, len).map(|_| (n, a))
+        self.read_source(tag, a, len).map(|_| (n, a))
     }
 
     /// Elements the block at `pair` may hold without growing: as many as
     /// it had in the source, when it still points where it did.
-    pub fn capacity(&self, pair: u32) -> u32 {
-        let (Some((n, a)), Some(src)) = (self.pair(pair), self.read_source(pair, 8)) else {
+    pub fn capacity(&self, tag: TagId, pair: u32) -> u32 {
+        let (Some((n, a)), Some(src)) = (self.pair(tag, pair), self.read_source(tag, pair, 8))
+        else {
             return 0;
         };
-        if let Some(cap) = self.loaded.as_ref().and_then(|l| l.allocs.get(&a)) {
+        if self.tag(tag).is_some_and(|t| t.bsp.is_none())
+            && let Some(cap) = self.loaded.as_ref().and_then(|l| l.allocs.get(&a))
+        {
             return (*cap).max(n);
         }
-        let (sn, sa) = (u32_at(&src[..4]), u32_at(&src[4..]));
+        let (sn, sa) = (u32_at(src), u32_at(&src[4..]));
         if sa == a { sn.max(n) } else { n }
     }
 
@@ -426,7 +548,7 @@ impl TagDoc {
                 return None;
             };
             let child = child.clone();
-            let (n, a) = self.block(at + field, &child)?;
+            let (n, a) = self.block(tag, at.checked_add(field)?, &child)?;
             if index >= n {
                 return None;
             }
@@ -444,37 +566,48 @@ impl TagDoc {
         }
     }
 
-    fn check(&self, tag: TagId, address: u32, len: u32) -> Result<(), String> {
+    fn check(&self, tag: TagId, address: u32, len: u32) -> Result<Region, String> {
         if let Some(why) = self.refusal(tag) {
             return Err(why.into());
         }
-        if self.tag(tag).is_none() {
-            return Err("no such tag".into());
-        }
+        let region = self.tag(tag).ok_or("no such tag")?.region();
         let l = self.loaded.as_ref().ok_or("no map is open")?;
-        if self.read_source(address, len).is_none() {
-            return Err(format!("{address:#x} is outside the map's metadata"));
+        if l.src_range(region, address, len).is_none() {
+            return Err(format!("{address:#x} is outside the tag's address space"));
         }
-        if let Some((lo, hi)) = l.scenario
-            && address < hi
-            && lo < address + len
-        {
-            return Err(SCENARIO_OWNED.into());
+        match region {
+            Region::Metadata => {
+                if let Some((lo, hi)) = l.scenario
+                    && address < hi
+                    && u64::from(lo) < u64::from(address) + u64::from(len)
+                {
+                    return Err(SCENARIO_OWNED.into());
+                }
+            }
+            Region::Bsp(space) if address - space.virtual_base < 16 => {
+                return Err("the BSP region header is read-only".into());
+            }
+            Region::Bsp(_) => {}
         }
-        Ok(())
+        Ok(region)
     }
 
-    fn put(&mut self, address: u32, bytes: &[u8]) {
-        let Some(l) = self.loaded.as_mut() else {
-            return;
-        };
-        for (k, b) in bytes.iter().enumerate() {
+    fn put(&mut self, (region, address): (Region, u32), bytes: &[u8]) {
+        let l = self.loaded.as_mut().expect("map open");
+        let mut overlay = l.overlay.remove(&region).unwrap_or_default();
+        let source = l
+            .src_range(region, address, bytes.len() as u32)
+            .expect("checked");
+        for (k, (&byte, &original)) in bytes.iter().zip(source).enumerate() {
             let a = address + k as u32;
-            if l.src(a) == Some(*b) {
-                l.overlay.remove(&a);
+            if byte == original {
+                overlay.remove(&a);
             } else {
-                l.overlay.insert(a, *b);
+                overlay.insert(a, byte);
             }
+        }
+        if !overlay.is_empty() {
+            l.overlay.insert(region, overlay);
         }
         self.rev += 1;
     }
@@ -484,38 +617,46 @@ impl TagDoc {
     /// [`crate::fields::panel`]. Outside the metadata, nothing.
     pub fn mirror(&mut self, address: u32, bytes: &[u8]) {
         let len = bytes.len() as u32;
-        if self.read(address, len).is_some_and(|now| now != bytes) {
-            self.put(address, bytes);
+        if self
+            .read_metadata(address, len)
+            .is_some_and(|now| now != bytes)
+        {
+            self.put((Region::Metadata, address), bytes);
         }
     }
 
     /// Write a field, as one undo step (or merged into the last by key).
     pub fn write(&mut self, w: TagWrite) -> Result<(), String> {
         let len = u32::try_from(w.bytes.len()).map_err(|_| "too long")?;
-        self.check(w.tag, w.address, len)?;
-        let before = self.read(w.address, len).expect("checked");
+        let region = self.check(w.tag, w.address, len)?;
+        let at = (region, w.address);
+        let before = self.read_in(region, w.address, len).expect("checked");
         if before == w.bytes {
             return Ok(());
         }
-        self.put(w.address, &w.bytes);
+        self.put(at, &w.bytes);
         self.redo.clear();
         if let Some(last) = self.undo.last_mut()
             && !self.sealed
             && w.merge.is_some()
             && last.merge == w.merge
+            && last
+                .writes
+                .first()
+                .is_some_and(|(dest, _, _)| dest.0 == region)
         {
             match last
                 .writes
                 .iter_mut()
-                .find(|(a, b, _)| *a == w.address && b.len() == w.bytes.len())
+                .find(|(a, b, _)| *a == at && b.len() == w.bytes.len())
             {
                 Some((_, _, after)) => *after = w.bytes,
-                None => last.writes.push((w.address, before, w.bytes)),
+                None => last.writes.push((at, before, w.bytes)),
             }
         } else {
             self.undo.push(Step {
                 label: format!("set {}", w.label),
-                writes: vec![(w.address, before, w.bytes)],
+                writes: vec![(at, before, w.bytes)],
                 merge: w.merge,
                 ..Step::default()
             });
@@ -535,9 +676,9 @@ impl TagDoc {
         if let Some(why) = self.block_refusal(tag, pair, layout, op) {
             return Err(why.into());
         }
-        let (n, a) = self.pair(pair).ok_or("no block here")?;
+        let (n, a) = self.pair(tag, pair).ok_or("no block here")?;
         let size = layout.size;
-        if matches!(op, BlockOp::Add | BlockOp::Duplicate(_)) && n >= self.capacity(pair) {
+        if matches!(op, BlockOp::Add | BlockOp::Duplicate(_)) && n >= self.capacity(tag, pair) {
             return self.grow(tag, pair, layout, op, n, a);
         }
         let elem = |i: u32| a + i * size;
@@ -554,7 +695,7 @@ impl TagDoc {
             BlockOp::Duplicate(i) => {
                 // Elements i..n move up one; i is copied into i + 1.
                 let mut b = self
-                    .read(elem(i), (n - i) * size)
+                    .read(tag, elem(i), (n - i) * size)
                     .ok_or("block unreadable")?;
                 let copy = b[..size as usize].to_vec();
                 b.splice(0..0, copy);
@@ -563,9 +704,12 @@ impl TagDoc {
             BlockOp::Remove(i) => {
                 // Elements i+1..n move down one; the last slot keeps its
                 // bytes (dead until re-added).
-                let b = self
-                    .read(elem(i + 1), (n - i - 1) * size)
-                    .ok_or("block unreadable")?;
+                let b = if i + 1 == n {
+                    Vec::new()
+                } else {
+                    self.read(tag, elem(i + 1), (n - i - 1) * size)
+                        .ok_or("block unreadable")?
+                };
                 (i, b, n - 1)
             }
         };
@@ -575,13 +719,23 @@ impl TagDoc {
         }
         writes.push((pair, count.to_le_bytes().to_vec()));
         for (at, after) in writes {
-            self.check(tag, at, after.len() as u32)?;
-            let before = self.read(at, after.len() as u32).expect("checked");
-            step.writes.push((at, before, after));
+            let region = self.check(tag, at, after.len() as u32)?;
+            let before = self
+                .read_in(region, at, after.len() as u32)
+                .expect("checked");
+            step.writes.push(((region, at), before, after));
         }
         for (at, _, after) in &step.writes {
-            let after = after.clone();
-            self.put(*at, &after);
+            self.put(*at, after);
+        }
+        if self.tag(tag).is_some_and(|t| t.bsp.is_none()) {
+            step.reload.push((
+                step.label.clone(),
+                step.writes
+                    .iter()
+                    .map(|((_, a), _, b)| (*a, b.len() as u32))
+                    .collect(),
+            ));
         }
         self.undo.push(step);
         self.redo.clear();
@@ -606,7 +760,7 @@ impl TagDoc {
         let mut bytes = if n == 0 {
             Vec::new()
         } else {
-            self.read(a, n * size).ok_or("block unreadable")?
+            self.read(tag, a, n * size).ok_or("block unreadable")?
         };
         let label = match *op {
             BlockOp::Add => {
@@ -640,14 +794,22 @@ impl TagDoc {
             ..Step::default()
         };
         for (to, after) in [(at, bytes), (pair, pair_bytes)] {
-            self.check(tag, to, after.len() as u32)?;
-            let before = self.read(to, after.len() as u32).expect("checked");
-            step.writes.push((to, before, after));
+            let region = self.check(tag, to, after.len() as u32)?;
+            let before = self
+                .read_in(region, to, after.len() as u32)
+                .expect("checked");
+            step.writes.push(((region, to), before, after));
         }
         for (to, _, after) in &step.writes {
-            let after = after.clone();
-            self.put(*to, &after);
+            self.put(*to, after);
         }
+        step.reload.push((
+            step.label.clone(),
+            step.writes
+                .iter()
+                .map(|((_, a), _, b)| (*a, b.len() as u32))
+                .collect(),
+        ));
         self.undo.push(step);
         self.redo.clear();
         self.sealed = true;
@@ -666,19 +828,21 @@ impl TagDoc {
         if let Some(why) = self.refusal(tag) {
             return Some(why);
         }
-        let Some((n, _)) = self.block(pair, layout) else {
-            return Some("the block's elements are outside the map's metadata");
+        let Some((n, _)) = self.block(tag, pair, layout) else {
+            return Some("the block's elements are outside the tag's address space");
         };
         match *op {
-            BlockOp::Add | BlockOp::Duplicate(_) if n >= self.capacity(pair) => {
-                if !self.allow_growth {
+            BlockOp::Add | BlockOp::Duplicate(_) if n >= self.capacity(tag, pair) => {
+                if self.tag(tag).is_some_and(|t| t.bsp.is_some()) {
+                    Some(BSP_GROWTH_REFUSAL)
+                } else if !self.allow_growth {
                     Some(GROWTH_REFUSAL)
                 } else if self.is_grown_room(pair) {
                     Some(NESTED_GROWTH)
                 } else {
                     match *op {
                         BlockOp::Duplicate(i) if i >= n => Some("no such element"),
-                        BlockOp::Duplicate(i) if self.has_children(pair, layout, i) => {
+                        BlockOp::Duplicate(i) if self.has_children(tag, pair, layout, i) => {
                             Some(SHARED_CHILDREN)
                         }
                         _ => None,
@@ -686,19 +850,23 @@ impl TagDoc {
                 }
             }
             BlockOp::Duplicate(i) | BlockOp::Remove(i) if i >= n => Some("no such element"),
-            BlockOp::Duplicate(i) if self.has_children(pair, layout, i) => Some(SHARED_CHILDREN),
+            BlockOp::Duplicate(i) if self.has_children(tag, pair, layout, i) => {
+                Some(SHARED_CHILDREN)
+            }
             _ => None,
         }
     }
 
-    fn has_children(&self, pair: u32, layout: &Layout, i: u32) -> bool {
-        let Some((_, a)) = self.pair(pair) else {
+    fn has_children(&self, tag: TagId, pair: u32, layout: &Layout, i: u32) -> bool {
+        let Some((_, a)) = self.pair(tag, pair) else {
             return true;
         };
         let at = a + i * layout.size;
         layout.fields.iter().any(|f| {
             matches!(f.kind, Kind::Block(_) | Kind::Data)
-                && self.read_u32(at + f.offset).is_none_or(|n| n != 0)
+                && self
+                    .read(tag, at + f.offset, 4)
+                    .is_none_or(|b| u32_at(&b) != 0)
         })
     }
 
@@ -771,6 +939,7 @@ impl TagDoc {
             ..Step::default()
         };
         for s in steps {
+            one.reload.extend(s.reload);
             one.writes.extend(s.writes);
             one.strings.extend(s.strings);
         }
@@ -802,43 +971,69 @@ impl TagDoc {
         }
     }
 
+    pub(crate) fn structural_edits(&self) -> impl Iterator<Item = &(String, Vec<(u32, u32)>)> {
+        self.undo.iter().flat_map(|s| &s.reload)
+    }
+
     /// Every changed run in the source's metadata: `(address, bytes)`,
     /// ascending. A grown block's elements and its pair are not here: see
     /// [`Self::grown`]. A grown block emptied again by removals has its
     /// pair written as `(0, 0)`.
     pub fn patches(&self) -> Vec<(u32, Vec<u8>)> {
-        let mut out: Vec<(u32, Vec<u8>)> = Vec::new();
         let Some(l) = self.loaded.as_ref() else {
-            return out;
+            return Vec::new();
         };
         // Pairs pointing into grown room: written at save, not patched.
         let mut skip: BTreeMap<u32, Option<[u8; 8]>> = BTreeMap::new();
         for &p in l.grown.keys() {
-            if let Some((n, a)) = self.pair(p)
+            if let Some((n, a)) = self.pair_in(Region::Metadata, p)
                 && a >= l.ext_base
             {
                 skip.insert(p, (n == 0).then_some([0; 8]));
             }
         }
-        let mut bytes = l.overlay.clone();
+        let mut bytes = l
+            .overlay
+            .get(&Region::Metadata)
+            .cloned()
+            .unwrap_or_default();
         for (p, empty) in &skip {
             for k in 0..8u32 {
                 bytes.remove(&(p + k));
                 if let Some(e) = empty
-                    && l.src(p + k) != Some(e[k as usize])
+                    && l.src_range(Region::Metadata, p + k, 1)
+                        .and_then(|b| b.first())
+                        != Some(&e[k as usize])
                 {
                     bytes.insert(p + k, e[k as usize]);
                 }
             }
         }
-        for (a, b) in bytes.range(..l.ext_base) {
-            match out.last_mut() {
-                Some((s, run)) if *s + run.len() as u32 == *a => run.push(*b),
-                _ => out.push((*a, vec![*b])),
+        changed_runs(bytes.range(..l.ext_base))
+    }
+
+    /// Fixed-length edits in structure BSP regions, ordered by region and address.
+    pub fn bsp_patches(&self) -> Vec<BspPatch> {
+        let Some(l) = self.loaded.as_ref() else {
+            return Vec::new();
+        };
+        let mut patches = Vec::new();
+        for (&region, bytes) in &l.overlay {
+            if let Region::Bsp(space) = region {
+                patches.extend(
+                    changed_runs(bytes)
+                        .into_iter()
+                        .map(|(address, bytes)| BspPatch {
+                            space,
+                            address,
+                            bytes,
+                        }),
+                );
             }
         }
-        out
+        patches
     }
+
     /// The blocks grown past their source room, with every element as it
     /// stands, for the save to append and repoint.
     pub fn grown(&self) -> Vec<scenario_edit::TagGrown> {
@@ -848,14 +1043,14 @@ impl TagDoc {
         l.grown
             .iter()
             .filter_map(|(&root, &size)| {
-                let (count, a) = self.pair(root)?;
+                let (count, a) = self.pair_in(Region::Metadata, root)?;
                 if a < l.ext_base || count == 0 {
                     return None;
                 }
                 Some(scenario_edit::TagGrown {
                     root,
                     count,
-                    bytes: self.read(a, count * size)?,
+                    bytes: self.read_metadata(a, count * size)?,
                 })
             })
             .collect()
@@ -866,17 +1061,28 @@ impl TagDoc {
         let (Some(l), Some(t)) = (self.loaded.as_ref(), self.tag(id)) else {
             return false;
         };
-        t.size > 0
-            && l.overlay
-                .range(t.address..t.address + t.size)
+        l.overlay.get(&t.region()).is_some_and(|bytes| {
+            bytes
+                .range(t.address..)
                 .next()
-                .is_some()
+                .is_some_and(|(&a, _)| a - t.address < t.size)
+        })
     }
     /// Whether anything differs from the source.
     pub fn has_edits(&self) -> bool {
         self.loaded
             .as_ref()
             .is_some_and(|l| !l.overlay.is_empty() || !l.new_strings.is_empty())
+    }
+
+    pub(crate) fn source_string(&self, id: u32) -> bool {
+        self.loaded.as_ref().is_some_and(|l| {
+            tags::StringId(id)
+                .resolve(&l.strings)
+                .ok()
+                .flatten()
+                .is_some()
+        })
     }
 
     /// The string of a string ID's value, if the map has it (or it was
@@ -933,16 +1139,17 @@ impl TagDoc {
                 (v, true)
             }
         };
-        self.check(tag, address, 4)?;
+        let region = self.check(tag, address, 4)?;
+        let at = (region, address);
         let after = value.to_le_bytes().to_vec();
-        let before = self.read(address, 4).expect("checked");
+        let before = self.read_in(region, address, 4).expect("checked");
         if before == after && !new {
             return Ok(());
         }
-        self.put(address, &after);
+        self.put(at, &after);
         let mut step = Step {
             label: format!("set {label}"),
-            writes: vec![(address, before, after)],
+            writes: vec![(at, before, after)],
             ..Step::default()
         };
         if new {

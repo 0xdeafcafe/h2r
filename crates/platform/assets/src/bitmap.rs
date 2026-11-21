@@ -274,6 +274,7 @@ impl DecodedImage {
 /// Decodes guest bytes for `desc` to RGBA8 levels. Checks the layout and output
 /// size caps before allocating anything.
 pub fn decode_bytes(desc: &TextureDesc, data: &[u8]) -> Result<Vec<Level>> {
+    let _scope = mem_watch::scope("assets.bitmap");
     let layout = desc.layout()?;
     if layout.total_size > MAX_LAYOUT_BYTES {
         return Err(invalid(format!("layout of {} bytes exceeds cap", layout.total_size)));
@@ -334,6 +335,7 @@ pub struct BlockLevels {
 /// its base size a multiple of 4 (`decode_texture`'s rule; signed
 /// channels, which also force the CPU path, are the caller's to check).
 pub fn decode_image_blocks(image: &Image, files: &mut ResourceFiles) -> Result<(DecodedImage, Option<BlockLevels>)> {
+    let _scope = mem_watch::scope("assets.bitmap");
     let (desc, lod, data, declared, layout_len) = read_image(image, files)?;
     let levels = decode_bytes(&desc, &data)?;
     let blocks = decode_texture(&desc, &data, None, DecodeOptions { bc_supported: true, ..Default::default() })

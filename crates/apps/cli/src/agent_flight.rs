@@ -1,26 +1,34 @@
 //! `h2 agent trace ...` and `h2 agent flight ...`: per-tick rows taken in
 //! the game (docs/runtime/agent-api.md, "Tick traces and the flight
-//! recorder"), and `flight show`, which prints a trace or flight file's
-//! rows without a game.
+//! recorder"), and `flight show`, which prints rows from a local file or
+//! pages them from a running game.
 
-use agent_proto::trace::{ShowFilter, method, show as show_rows};
-use anyhow::{Context, Result, bail};
+use std::io::{ErrorKind, Write};
+
+use agent_proto::Client;
+use agent_proto::trace::{
+    ShowFilter, TraceKind, TraceReadPage, TraceReadParams, method, show as show_rows, valid_file_name,
+};
+use anyhow::{Context, Result, bail, ensure};
 use serde_json::{Value, json};
 
 pub const USAGE: &str = "  trace start <id[,id...]> [field[,field...]] [path]
                          trace.start: one JSONL row per game tick of those
                          objects (fields from world.object), written in the
-                         game to the cache directory's traces/ (or path)
+                         game to traces/ under the agent output directory
   trace stop | status    trace.stop (flushes; counts) or trace.status
   flight start <id[,id...]> [field[,field...]] [seconds]
                          flight.start: keep the last seconds (30) of the same
                          rows, with each tick's controller reads, in memory
   flight dump [path]     flight.dump: write the ring to flights/ (or path)
   flight stop | status   flight.stop or flight.status
-  flight show <file> [--from TICK] [--to TICK] [--field PATH]...
-                         print a trace or flight file's rows (no game needed):
-                         whole rows, or per object the dotted paths asked for
-                         (physics.crouch, pos) and `input` for the reads";
+  flight show <file> [--remote] [--kind trace|flight]
+                    [--from TICK] [--to TICK] [--field PATH]...
+                         print a trace or flight file's rows. A missing local
+                         file, --remote or --kind selects the game's socket
+                         and needs a bare file name.
+                         --field prints dotted paths per object (e.g.
+                         physics.crouch) or `input` for controller reads";
 
 /// `trace ...` and `flight ...` (but `flight show`) as a call.
 pub fn parse(words: &[String]) -> Option<Result<(String, Value)>> {
@@ -95,10 +103,29 @@ fn parse_verb(domain: &str, w: &[String]) -> Result<(String, Value)> {
     Ok((m.into(), p))
 }
 
-/// `flight show`'s arguments: the file and the filter.
-pub fn show_args(w: &[String]) -> Result<(String, ShowFilter)> {
+struct ShowArgs {
+    file: String,
+    filter: ShowFilter,
+    remote: bool,
+    kind: Option<TraceKind>,
+}
+
+impl ShowArgs {
+    fn check_remote_name(&self) -> Result<()> {
+        ensure!(
+            valid_file_name(&self.file),
+            "flight show: {:?} must be a bare file name for a remote read",
+            self.file
+        );
+        Ok(())
+    }
+}
+
+fn show_args(w: &[String]) -> Result<ShowArgs> {
     let mut file = None;
-    let mut f = ShowFilter::default();
+    let mut filter = ShowFilter::default();
+    let mut remote = false;
+    let mut kind = None;
     let mut it = w.iter();
     let tick = |v: Option<&String>, flag: &str| -> Result<u64> {
         v.with_context(|| format!("{flag} needs a tick"))?
@@ -107,27 +134,95 @@ pub fn show_args(w: &[String]) -> Result<(String, ShowFilter)> {
     };
     while let Some(a) = it.next() {
         match a.as_str() {
-            "--from" => f.from = Some(tick(it.next(), "--from")?),
-            "--to" => f.to = Some(tick(it.next(), "--to")?),
-            "--field" => f
+            "--from" => filter.from = Some(tick(it.next(), "--from")?),
+            "--to" => filter.to = Some(tick(it.next(), "--to")?),
+            "--field" => filter
                 .fields
                 .push(it.next().context("--field needs a path")?.clone()),
+            "--remote" => remote = true,
+            "--kind" => {
+                kind = Some(match it.next().map(String::as_str) {
+                    Some("trace") => TraceKind::Trace,
+                    Some("flight") => TraceKind::Flight,
+                    _ => bail!("--kind needs trace or flight"),
+                });
+                remote = true;
+            }
             x if x.starts_with("--") => bail!("flight show: no option {x}"),
             x if file.is_none() => file = Some(x.to_owned()),
             x => bail!("flight show: unexpected {x}"),
         }
     }
-    Ok((file.context("flight show needs a file")?, f))
+    Ok(ShowArgs {
+        file: file.context("flight show needs a file")?,
+        filter,
+        remote,
+        kind,
+    })
 }
 
-/// `h2 agent flight show <file> ...`: prints the rows.
-pub fn show(w: &[String]) -> Result<()> {
-    let (file, f) = show_args(w)?;
-    let text = std::fs::read_to_string(&file).with_context(|| format!("reading {file}"))?;
-    for line in show_rows(&text, &f).map_err(|e| anyhow::anyhow!("{file}: {e}"))? {
-        println!("{line}");
+/// Lab requests always read from the run's game, so paths are bare names.
+#[cfg(all(unix, feature = "desktop"))]
+pub(crate) fn check_remote_show_args(w: &[String]) -> Result<()> {
+    show_args(w)?.check_remote_name()
+}
+
+/// `h2 agent flight show <file> ...`: opens the socket only for remote reads.
+pub fn show(w: &[String], connect: impl FnOnce() -> Result<Client>) -> Result<()> {
+    let args = show_args(w)?;
+    let mut out = std::io::stdout().lock();
+    if !args.remote {
+        match std::fs::read_to_string(&args.file) {
+            Ok(text) => return write_rows(&args, &text, &mut out),
+            Err(e) if e.kind() == ErrorKind::NotFound => {}
+            Err(e) => return Err(e).with_context(|| format!("reading {}", args.file)),
+        }
+    }
+    args.check_remote_name()?;
+    let mut client = connect()?;
+    show_remote(
+        &args,
+        |params| Ok(client.call(method::TRACE_READ, params)?),
+        &mut out,
+    )
+}
+
+fn write_rows(args: &ShowArgs, text: &str, out: &mut impl Write) -> Result<()> {
+    let lines = show_rows(text, &args.filter).map_err(|e| anyhow::anyhow!("{}: {e}", args.file))?;
+    for line in lines {
+        writeln!(out, "{line}")?;
     }
     Ok(())
+}
+
+fn show_remote(
+    args: &ShowArgs,
+    mut read: impl FnMut(Value) -> Result<Value>,
+    out: &mut impl Write,
+) -> Result<()> {
+    let mut params = TraceReadParams {
+        path: args.file.clone(),
+        from_tick: args.filter.from,
+        to_tick: args.filter.to,
+        kind: args.kind,
+        ..Default::default()
+    };
+    loop {
+        let page = read(serde_json::to_value(&params)?)
+            .with_context(|| format!("reading {} with {}", args.file, method::TRACE_READ))?;
+        let page: TraceReadPage = serde_json::from_value(page).context("invalid trace.read page")?;
+        if let Some(next) = page.next {
+            ensure!(
+                next > params.offset.unwrap_or(0),
+                "trace.read did not advance the cursor"
+            );
+        }
+        write_rows(args, &page.rows.join("\n"), out)?;
+        let Some(next) = page.next else {
+            return Ok(());
+        };
+        params.offset = Some(next);
+    }
 }
 
 #[cfg(test)]
@@ -180,21 +275,83 @@ mod tests {
 
     #[test]
     fn show_takes_a_file_and_filters() {
-        let (file, f) = show_args(&w(
+        let args = show_args(&w(
             "f.jsonl --from 10 --to 20 --field physics.crouch --field input",
         ))
         .unwrap();
-        assert_eq!(file, "f.jsonl");
+        assert_eq!(args.file, "f.jsonl");
+        assert!(!args.remote);
         assert_eq!(
-            f,
+            args.filter,
             ShowFilter {
                 from: Some(10),
                 to: Some(20),
                 fields: vec!["physics.crouch".into(), "input".into()],
             }
         );
-        for bad in ["", "--from 3", "f --from x", "f g", "f --loud"] {
+        let args = show_args(&w("--remote f.jsonl --kind flight")).unwrap();
+        assert!(args.remote);
+        assert!(matches!(args.kind, Some(TraceKind::Flight)));
+        assert!(show_args(&w("f.jsonl --kind trace")).unwrap().remote);
+        for bad in ["", "--from 3", "f --from x", "f g", "f --loud", "f --kind x"] {
             assert!(show_args(&w(bad)).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn remote_show_keeps_filters_and_uses_each_cursor_until_eof() {
+        let args = show_args(&w(
+            "walk.jsonl --from 12 --to 14 --kind flight --field physics.crouch",
+        ))
+        .unwrap();
+        let row = |tick| {
+            json!({"tick": tick, "ticks": tick, "objects": {
+                "player.0": {"physics": {"crouch": true}}
+            }})
+            .to_string()
+        };
+        let mut steps = [
+            (None, json!({"rows": [row(12)], "next": 300})),
+            (Some(300), json!({"rows": [], "next": 515})),
+            (Some(515), json!({"rows": [row(14)], "next": null})),
+        ]
+        .into_iter();
+        let mut out = Vec::new();
+        show_remote(
+            &args,
+            |params| {
+                let (offset, page) = steps.next().expect("one request per page");
+                assert_eq!(params.get("offset").and_then(Value::as_u64), offset);
+                assert_eq!(params["path"], "walk.jsonl");
+                assert_eq!(params["from_tick"], 12);
+                assert_eq!(params["to_tick"], 14);
+                assert_eq!(params["kind"], "flight");
+                Ok(page)
+            },
+            &mut out,
+        )
+        .unwrap();
+        assert!(steps.next().is_none());
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            "tick 12  player.0 physics.crouch=true\ntick 14  player.0 physics.crouch=true\n"
+        );
+    }
+
+    #[test]
+    fn remote_show_rejects_an_unmoving_cursor() {
+        let mut calls = 0;
+        let error = show_remote(
+            &show_args(&w("walk.jsonl --remote")).unwrap(),
+            |_| {
+                calls += 1;
+                assert!(calls <= 2, "a repeated cursor must stop paging");
+                Ok(json!({"rows": [], "next": 10}))
+            },
+            &mut Vec::new(),
+        )
+        .unwrap_err();
+        assert_eq!(calls, 2);
+        assert!(error.to_string().contains("did not advance"));
     }
 }

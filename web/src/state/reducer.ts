@@ -2,7 +2,7 @@
 // runs inside Solid's `produce` in the app and on plain objects in tests.
 
 import type {
-  AccountCreated, AccountSummary, BotIssued, GameDetail, GameKindFields, GameEnded, GamePlayer, GameStarted, GameSummary, KillKind,
+  AccountCreated, AccountSummary, BotIssued, GameDetail, GameKindFields, GameEnded, GamePlayer, GameStarted, GameSummary, InviteGrant, KillKind,
   KillRecord, PlayerJoined, PlayerKilled, PlayerLeft, PlayerScore, PresenceData, PresenceEntry, ScoreChanged,
   WireEvent, Winner, Xuid, GameId,
 } from "../api/types";
@@ -25,6 +25,7 @@ export interface AccountState {
   online: boolean;
   presence: Presence | null;
   last_seen: string | null;
+  invite_grant?: InviteGrant | null;
   /** A bot account (docs/game/bots.md §6): its own page and career, no social,
    *  never in a human's played-with or the players list. */
   bot: boolean;
@@ -37,6 +38,7 @@ export interface Kill {
   victim: number;
   killer: number | null;
   weapon: string | null;
+  headshot?: boolean | null;
   kind: KillKind;
   /** Victim position, when the event carried it. */
   pos: [number, number, number] | null;
@@ -216,6 +218,7 @@ export function applyEvent(s: LiveState, ev: WireEvent): boolean {
         online: prev?.online ?? false,
         presence: prev?.presence ?? null,
         last_seen: prev?.last_seen ?? null,
+        invite_grant: prev?.invite_grant ?? null,
         bot: prev?.bot ?? false,
       };
       // Games that named this account before it was known (a replay, or an
@@ -223,6 +226,15 @@ export function applyEvent(s: LiveState, ev: WireEvent): boolean {
       for (const g of Object.values(s.games)) {
         for (const p of Object.values(g.players)) if (p.xuid === d.xuid && !p.bot) displayName(p, d.gamertag);
       }
+      break;
+    }
+    case "InviteGrantSet":
+    case "InviteGrantRevoked": {
+      const { xuid, gamertag, open_cap } = ev.data as { xuid: Xuid; gamertag: string; open_cap?: number | null };
+      if (!ev.author.startsWith("server:") || ev.stream !== `account-${xuid}`) break;
+      const a = ensureAccount(s, xuid, ev.at);
+      if (a.gamertag === xuid) a.gamertag = gamertag;
+      a.invite_grant = ev.type === "InviteGrantSet" ? { open_cap: open_cap ?? null } : null;
       break;
     }
     case "BotIssued": {
@@ -455,6 +467,7 @@ function addKill(g: GameState, k: KillRecord) {
     victim: k.victim,
     killer: k.killer ?? null,
     weapon: k.weapon ?? null,
+    headshot: k.headshot ?? null,
     kind: k.kind ?? "kill",
     pos: k.pos ?? null,
   };
@@ -615,6 +628,7 @@ export function applyAccountsSnapshot(s: LiveState, accounts: AccountSummary[]) 
       online: a.online ?? prev?.online ?? false,
       presence: prev?.presence ?? null,
       last_seen: prev?.last_seen ?? null,
+      invite_grant: a.invite_grant ?? null,
       // From the summary; a bot stays a bot once known.
       bot: a.bot === true || prev?.bot === true,
     };

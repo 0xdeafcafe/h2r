@@ -268,3 +268,40 @@ fn opaque_simple_matches_serial_pushed_state_at_a_guest_boundary() {
     assert!(!b.try_opaque_simple(&mb, header, 0x204));
     assert_eq!(a.stats().simple_state_calls, b.stats().simple_state_calls);
 }
+
+#[cfg(feature = "gpu")]
+#[test]
+fn warm_restore_releases_interpolation_mark_samples_with_the_same_ring() {
+    use std::cell::RefCell;
+    use std::sync::Arc;
+
+    use d3d::present_camera::Image;
+
+    thread_local! {
+        static SAMPLE: RefCell<Option<Image>> = const { RefCell::new(None) };
+    }
+
+    let backend = d3d::InterpBackend::new(RecordingBackend::new(), || 60);
+    let backend = d3d::ThreadedBackend::new(backend).unwrap();
+    let (mut device, mut ram) = create(backend, UploadPolicy::Tracked);
+    let ring = [device.back_buffer().unwrap(), device.front_buffer().unwrap()];
+    let mut saved = writer();
+    device.save_snapshot(&mut ram, &mut saved).unwrap();
+    let saved = saved.finish().unwrap();
+    let snapshot = Snapshot::open(&saved, &key()).unwrap();
+
+    let payload = Arc::new(19_u32);
+    let previous = Arc::downgrade(&payload);
+    let _ = SAMPLE.replace(Some(Image {
+        views: [None; 4],
+        payload,
+    }));
+    device.set_mark_image_source(|| SAMPLE.take());
+    device.swap(&mut ram, 0).unwrap();
+    device.backend.finish().unwrap();
+    assert!(previous.upgrade().is_some());
+
+    device.load_snapshot(&snapshot).unwrap();
+    assert_eq!([device.back_buffer().unwrap(), device.front_buffer().unwrap()], ring);
+    assert!(previous.upgrade().is_none());
+}

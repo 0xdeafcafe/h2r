@@ -87,32 +87,79 @@ pub struct CoreInputs<'a> {
 
 /// What [`register_core`] decided, for the install lines after the plan.
 pub struct Core {
+    pub editor_sources: Option<Arc<crate::loaded_map::EditorSources>>,
     pub telemetry: Option<Arc<telemetry::Telemetry>>,
     pub ui_navigation: Arc<ui_back::Navigation>,
-    pub skulls_on: bool,
+    pub skulls: Option<Arc<skulls::Tracker>>,
     pub skulls_mp_on: bool,
     pub skulls_custom_on: bool,
     pub health_on: bool,
     /// The bots are installed (their nav meshes may be built at boot).
     pub bots_on: bool,
+    /// The slot-17 probe was selected for this plan.
+    pub creature_probe: bool,
 }
 
 /// Registers everything from the telemetry hooks to the touch glue.
 pub fn register_core(features: &mut hooks::Registry, i: CoreInputs<'_>) -> anyhow::Result<Core> {
-    register_core_film(features, i, None)
+    register_core_film(features, i, None, false, None)
 }
 
 pub(crate) fn register_core_film(
     features: &mut hooks::Registry,
     i: CoreInputs<'_>,
     film: Option<Arc<crate::theater::Session>>,
+    non_player: bool,
+    editor: Option<vfs::MapRebind>,
 ) -> anyhow::Result<Core> {
+    let sources = editor.zip(i.vfs.as_ref()).map(|(handle, vfs)| {
+        Arc::new(crate::loaded_map::EditorSources::new(vfs, handle))
+    });
     let rt: &Runtime = i.rt;
+    let creature_probe = features
+        .add(&crate::actor_net::creature::CreatureProbe)
+        .map_err(|e| anyhow::anyhow!("creature-probe: {e}"))?;
+    let replication_version = live_proto::replication::local(creature_probe);
+    if film.as_ref().is_none_or(|film| film.uses_replication_admission()) {
+        let admission = features
+            .add(&crate::replication_admission::ReplicationAdmission::new(replication_version))
+            .map_err(|e| anyhow::anyhow!("replication admission: {e}"))?;
+        anyhow::ensure!(admission, "replication admission must be enabled");
+        if let Some(live) = &i.live {
+            live.set_replication_version(replication_version);
+        }
+    } else {
+        anyhow::ensure!(!creature_probe, "creature probe requires replication admission");
+    }
     let config = i.telemetry.unwrap_or_else(|error| {
         eprintln!("live telemetry transport disabled: {error}");
         telemetry::TelemetryConfig::default()
     });
     let telemetry = register_telemetry(features, &config, film.as_ref())?;
+    let link = Arc::new(crate::actor_net_link::HostLink::default());
+    let reset = Arc::clone(&link);
+    let live = i.live.clone();
+    let capture = crate::actor_net::Capture::new(
+        move |_, tick, host| {
+            let result = link.post_tick(live.as_deref(), tick, |peer, budget, request_key| {
+                // P3 leaves controls off. Tunnel peer IDs are connection IDs.
+                match host.schedule(budget, None, request_key) {
+                    Ok(packet) => packet,
+                    Err(error) => {
+                        eprintln!("actor-net: scheduling peer {peer} at tick {tick}: {error}");
+                        None
+                    }
+                }
+            });
+            if let Err(error) = result {
+                eprintln!("actor-net: sending host tick {tick}: {error}");
+            }
+        },
+        move || reset.reset(),
+    );
+    features
+        .add(&capture)
+        .map_err(|e| anyhow::anyhow!("actor channel host capture: {e}"))?;
     if let Some(vfs) = i.vfs.clone() {
         features
             .add(&map_slots::MapSlots { vfs })
@@ -161,6 +208,9 @@ pub(crate) fn register_core_film(
         );
         game_setup_help::install(features).context("installing the Game Setup help")?;
     }
+    let live_browser = i.live.as_ref().filter(|_| i.settings.is_some() && !non_player);
+    custom_games::browser_filters::install(features, live_browser, i.data_root)
+        .context("installing the custom games browser filters")?;
     // The game variant editor's More Options row and page (our options in
     // the record's extension block; docs/game/game-options.md section 3).
     {
@@ -186,6 +236,8 @@ pub(crate) fn register_core_film(
     // screen opened from the logon's polling (docs/live/live.md, "In-game
     // sign-in").
     signin_screen::install(rt, features, i.live.as_ref()).context("installing the sign-in prompt")?;
+    crate::join_link::install(features, i.live.clone(), non_player || film.is_some())
+        .context("installing Live join links")?;
     // A campaign level in place of the main menu (`h2 play --level`,
     // H2_LEVEL) and the level-loaded mark H2_PERF_FROM=level waits on
     // (docs/runtime/level-boot.md).
@@ -194,7 +246,7 @@ pub(crate) fn register_core_film(
     // campaign start turns on the profile's chosen skulls (docs/game/skulls.md).
     // Headless runs (no settings store) leave skulls as retail. Hooks on
     // the feature plan; the line after the plan installs says where.
-    let skulls_on = skulls::install(features, i.settings.clone()).context("installing the skulls")?;
+    let skulls = skulls::install(features, i.settings.clone()).context("installing the skulls")?;
     // Skulls in multiplayer games: the host's set, advertised to guests on
     // our Live service and applied on every machine at game start
     // (docs/game/skulls.md "In multiplayer").
@@ -205,6 +257,11 @@ pub(crate) fn register_core_film(
     features
         .add(&variant_ext::Transport { hle: i.live.clone() })
         .map_err(|e| anyhow::anyhow!("variant options transport: {e}"))?;
+    if let Some(hle) = i.live.clone() {
+        features
+            .add(&crate::live_hopper::MapPackRotation(hle))
+            .map_err(|e| anyhow::anyhow!("matchmaking map pack rotation: {e}"))?;
+    }
     // Its damage, shield and health scales on each damage instance.
     features
         .add(&variant_ext::Vitality)
@@ -213,13 +270,14 @@ pub(crate) fn register_core_film(
     // ours on the tick (docs/game/skulls.md "Our skulls"). The skull weapon's
     // tag comes from the loaded map's file, found through the VFS.
     let custom_maps: Option<skulls_custom::MapLocator> = i.vfs.map(|vfs| -> skulls_custom::MapLocator {
-        Box::new(move |map| {
+        Box::new(move |name, path| {
             let mut v = vfs.lock().unwrap_or_else(|e| e.into_inner());
-            let file = crate::map_override::map_file(&mut v, map)?;
-            Some(telemetry::MapFile { path: file.path, offset: file.offset, len: file.len })
+            crate::map_override::map_file_at(&mut v, name, path)
         })
     });
-    let skulls_custom_on = skulls_custom::install(features, i.settings.clone(), telemetry.clone(), custom_maps)
+    let skulls_custom_on = skulls_custom::install_for_maps(
+        features, i.settings.clone(), telemetry.clone(), custom_maps, sources.as_deref(),
+    )
         .context("installing our skulls")?;
     for effect in [
         &crate::h1_particle_physics::H1ParticlePhysics as &dyn hooks::Feature,
@@ -268,18 +326,30 @@ pub(crate) fn register_core_film(
     // pull at each map load, from the Aim Assist setting (Auto: Strong
     // while the touch controls show). Headless runs keep retail.
     aim_assist::install(features, i.settings.clone()).context("installing the aim assist")?;
+    // The superbounce game type's HUD plate and spot lines
+    // (docs/game/superbounce.md): idle unless the variant or
+    // H2_SUPERBOUNCE asks for it.
+    crate::superbounce_mode::install(features).context("installing the superbounce mode")?;
     // Bots (docs/game/bots.md): phantom peers in a session this console
     // hosts. Idle with none.
+    let playing_film = film.is_some();
     let mut bots_on = false;
     if i.bots {
         crate::clanker_card::install(features, i.live.clone())
             .context("installing Clanker player options")?;
         let bot_tape = film.filter(|f| f.has_bot_tape());
-        bots_on = bot_glue::install_film(features, i.data_root, bot_tape).context("installing the bots")?;
+        bots_on = bot_glue::install_for_maps(features, i.data_root, bot_tape, sources.as_deref())
+            .context("installing the bots")?;
         // The Clankers page and its Game Setup row (stage 7).
         if let Some(store) = i.settings.as_ref() {
             clankers::install(features, store, i.live.clone(), telemetry.as_ref()).context("installing the Clankers page")?;
         }
+    }
+    if let Some(hle) = i.live.as_ref().filter(|_| !playing_film) {
+        crate::live_glue::install_browser_advertisement(
+            features, hle, i.settings.as_ref(), bots_on,
+        )
+        .context("installing Live browser advertisements")?;
     }
     if let Some(store) = i.settings.as_ref() {
         features
@@ -294,7 +364,17 @@ pub(crate) fn register_core_film(
     // look into player one's facing, and the layout from player one's
     // seat and weapon. Idle while no touch controls show.
     touch_glue::install(features).context("installing the touch glue")?;
-    Ok(Core { telemetry, ui_navigation, skulls_on, skulls_mp_on, skulls_custom_on, health_on, bots_on })
+    Ok(Core {
+        editor_sources: sources,
+        telemetry,
+        ui_navigation,
+        skulls,
+        skulls_mp_on,
+        skulls_custom_on,
+        health_on,
+        bots_on,
+        creature_probe,
+    })
 }
 
 /// The agent API's way in.
@@ -315,6 +395,11 @@ pub struct LateInputs<'a> {
     /// The effective resolution source of the backend drawing this run.
     #[cfg(feature = "gpu")]
     pub view: Option<&'a crate::d3d_glue::DrawingView>,
+    /// Retail guest geometry, or a legacy film's recorded geometry.
+    #[cfg(feature = "gpu")]
+    pub fixed_lod: Option<f32>,
+    #[cfg(feature = "gpu")]
+    pub world_line_present: Option<Arc<dyn render_bridge::scene_step::PresentObserver>>,
     pub rt: &'a Arc<Runtime>,
     pub lockstep: lockstep_glue::Config,
     pub agent: AgentSource,
@@ -386,7 +471,7 @@ pub(crate) fn register_late_for_profile(
         // Over TCP (the Xbox app) a refused port must not stop the game:
         // it runs on, undriven, and says why.
         AgentSource::Socket(path) if matches!(agent_proto::Endpoint::from(path.clone()), agent_proto::Endpoint::Tcp(_)) => {
-            match agent_glue::AgentGlue::install(features, path, xa, input_replay, i.allow_bot_add) {
+            match agent_glue::AgentGlue::install(features, path, xa, input_replay, i.allow_bot_add, i.data_root) {
                 Ok(a) => Some(a),
                 Err(e) => {
                     eprintln!("agent: not listening: {e:#}");
@@ -395,11 +480,11 @@ pub(crate) fn register_late_for_profile(
             }
         }
         AgentSource::Socket(path) => Some(agent_glue::AgentGlue::install(
-            features, path, xa, input_replay, i.allow_bot_add,
+            features, path, xa, input_replay, i.allow_bot_add, i.data_root,
         )?),
         // The debug menu talks to an agent: a local one, with no socket.
         AgentSource::Recording => Some(agent_glue::AgentGlue::with_endpoint(
-            features, None, xa, input_replay, i.allow_bot_add,
+            features, None, xa, input_replay, i.allow_bot_add, i.data_root,
         )?),
         AgentSource::Local => Some(agent_glue::AgentGlue::local()),
         AgentSource::None => None,
@@ -407,6 +492,7 @@ pub(crate) fn register_late_for_profile(
     // Our cheats (cheats.rs): refused in co-op and lockstep runs, and on
     // Live but for the allowed gamertags.
     if let Some(a) = &agent {
+        a.install_matchmaking_trace(features)?;
         cheats::install(features, &a.agent, i.rt, lockstep_on, i.live.clone())?;
     }
     // The Rust datum, tag and locale functions, when H2_FEATURES has
@@ -436,10 +522,14 @@ pub(crate) fn register_late_for_profile(
     if render_hooks == film::RenderHooks::Gpu {
         use render_bridge::native_scene_lists::NativeSceneLists;
 
-        let lod = if let Some(view) = i.view {
+        let view_scale = if let Some(view) = i.view {
             let lod = crate::lod_distance::LodDistance::new(i.settings.as_deref(), view.scale_stats.clone())?;
-            let enabled = features.add(&lod).map_err(|e| anyhow::anyhow!("LOD distance: {e}"))?;
-            enabled.then_some(lod)
+            let lod = match i.fixed_lod {
+                Some(factor) => lod.with_fixed_multiplier(factor),
+                None => lod,
+            };
+            features.add(&lod).map_err(|e| anyhow::anyhow!("LOD distance: {e}"))?;
+            lod.view_scale()
         } else {
             None
         };
@@ -449,7 +539,9 @@ pub(crate) fn register_late_for_profile(
         // The frame step's FrameScene: camera, world and objects extracted
         // for the native stages (docs/graphics/framescene.md).
         features
-            .add(&render_bridge::scene_step::FrameSceneStep)
+            .add(&render_bridge::scene_step::FrameSceneStep {
+                present: i.world_line_present,
+            })
             .map_err(|e| anyhow::anyhow!("frame scene: {e}"))?;
         // The static world on the native GPU renderer
         // (on by default, H2_FEATURES=impl.render.native=off turns it
@@ -510,8 +602,7 @@ pub(crate) fn register_late_for_profile(
         features
             .add(&render_bridge::native_world_layers::NativeWorldLayers)
             .map_err(|e| anyhow::anyhow!("native world layers: {e}"))?;
-        if let Some(lod) = lod {
-            let scale = Arc::new(move || lod.multiplier());
+        if let Some(scale) = view_scale {
             features.add(&NativeSceneLists::with_lod_scale(scale))
         } else {
             features.add(&NativeSceneLists)
@@ -581,7 +672,7 @@ pub(crate) fn register_late_for_profile(
     }
     // H2_UI_WATCH=1: the screen player one's input goes to, a line on each
     // change and `ui.screen` (`h2 coop test --drive`; ui_watch.rs).
-    ui_watch::install(features)?;
+    ui_watch::install(features, i.disc)?;
     // H2_COOP_PROBE=1: the retail synchronous campaign path over System Link
     // (docs/live/live-coop.md section 9). Added last, so it can see every
     // override placed outside the plan and refuse instead of failing it.

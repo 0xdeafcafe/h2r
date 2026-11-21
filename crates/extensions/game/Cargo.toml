@@ -6,6 +6,11 @@ version.workspace = true
 license.workspace = true
 
 [dependencies]
+mem-watch.workspace = true
+forge.workspace = true
+forge-doc.workspace = true
+guest-layout = { path = "../../hooking/guest-layout" }
+actor-net = { path = "../../live/actor-net" }
 # Build and load (docs/dev/crate-structure.md, S4).
 recomp = { path = "../../runtime/recomp" }
 h1-runtime = { path = "../h1-runtime" }
@@ -25,6 +30,7 @@ content.workspace = true
 # The controller-speaker sound index reads the player's map files (pad_speaker).
 tags.workspace = true
 hs.workspace = true
+sim-state.workspace = true
 coop = { path = "../../live/coop" }
 map.workspace = true
 # What the Halo 1 converters write and the Halo 1 hooks read (h1_*.rs);
@@ -63,6 +69,8 @@ movies = { workspace = true, optional = true }
 xapi = { path = "../../platform/xapi" }
 live-hle = { path = "../../live/live-hle" }
 live-telemetry = { path = "../../live/live-telemetry" }
+# The superbounce game type's spot scan (superbounce_mode).
+superbounce = { path = "../../live/superbounce" }
 live-proto.workspace = true
 input = { path = "../../platform/input", default-features = false }
 # Phantom bots (docs/game/bots.md).

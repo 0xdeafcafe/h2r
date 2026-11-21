@@ -5,6 +5,26 @@
 use crate::Datum;
 
 crate::layout! {
+    /// One local user's sound listener in SOUND_GLOBALS, inspected by
+    /// `audio.listeners` (docs/runtime/agent-api.md).
+    pub struct SoundListener: 0x48 {
+        ACTIVE active @ 0x06: u8,
+        POSITION position @ 0x30: [f32; 3],
+    }
+}
+
+impl SoundListener {
+    pub fn for_user(globals: u32, user: usize) -> Option<Self> {
+        if globals == 0 || user >= 4 {
+            return None;
+        }
+        let addr = globals.checked_add(0x88 + user as u32 * Self::SIZE)?;
+        addr.checked_add(Self::SIZE - 1)?;
+        Some(Self::at(addr))
+    }
+}
+
+crate::layout! {
     /// A datum in the looping-sound array allocated at 0x21a0c0.
     pub struct LoopingSound: 0xd4 {
         TAG tag @ 0x4: Datum,

@@ -68,25 +68,30 @@ skipping `0x0004d0b0` and its per-part shader and geometry preparation,
 including `0x0001bbf0` and
 `0x00016b90`, for committed runs.
 
-At map activation the loader reads every object palette in the mounted
-scenario, including entries with no placement. It loads those definitions
-first, followed by the remaining object tags. Definitions that share a
-render model share one upload. The render worker receives the device and
-queue to create that model's geometry buffers and material programs.
-This independent work needs no guest target and can start before the
-first frame. A later spawn uses the same resident model.
+The activation hook starts a utility-priority worker for the mounted
+map. The worker reads every object palette in the mounted scenario,
+including entries with no placement, and walks those definitions first,
+followed by the remaining object tags. It decodes each distinct render
+model once, creates its GPU resources and submits its texture uploads.
+It publishes the completed definition index and resident models
+together. The first swap after publication makes them eligible for
+native draws. Later spawns share those models. D3D draws each run until
+its models, bindings and target pipelines are ready. Map activation and
+snapshot reload invalidate the previous load's work. A pass that already
+committed holds its models until recording ends. The last reference sends
+their GPU resources to the shared map retirement worker for destruction.
+First-person models use the same worker.
 
-The loader distinguishes pending definitions, explicit null model
-references, failures, partial native coverage and resident definitions.
-A resident definition has an uploaded model and a layer-3 material
-program for every drawn part and declared implementation across the
-model's sections. Material LODs with different base passes and parts
-outside the native object renderer's coverage keep the definition
-partial. Extraction checks the model's published upload status as well
-as the selected part's native coverage. A scene that arrives before
-its models or bindings are ready draws those objects on the guest.
-A map activation or snapshot reload changes the generation, so work for
-a previous load cannot suppress any of the new load's draws.
+The palette status (`scene_palette_*` in `render.scene`) distinguishes
+pending definitions, explicit null model references, failures, partial
+native coverage and resident definitions. A resident definition has a
+published model and a layer-3 material program for every drawn part and
+declared implementation across the model's sections. Material LODs with
+different base passes and parts outside the native object renderer's
+coverage keep the definition partial. Extraction checks the model's
+published upload as well as the selected part's native coverage. A
+failed GPU lookup for a covered part is a residency fallback
+(`native_objects_walk_unresident`).
 
 #### Frame stats
 
@@ -226,7 +231,12 @@ queues it.
 
 `native_first_person_glue` and `native_first_person_load` are separate from
 the objects stage's cache, but use its public model, stream and object
-program code. `begin_external_boundary` drains preceding packets before the
+program code. A utility-priority worker opens the map, waits for requested
+record models and uploads each one into private GPU storage. It publishes
+the completed model and adds its parts to the admission set for the next
+swap. The draw hook requests the exact target pipelines before applying
+any masks. A cold pipeline leaves the first-person draw on D3D.
+`begin_external_boundary` drains preceding packets before the
 entry states and first-person view constants are read (the camera itself is
 built by `0x0023c110` upstream), rather than copying the scene camera. The
 pass requires a known W-buffered depth mode and a full-target viewport with
@@ -343,11 +353,10 @@ shader (`native_render::object_program`, `object_program_gpu`), or left
 to D3D, each piece with synthetic tests. The base-map
 stand-in is not used for opaque parts: it would light them flat and pose
 them from the object's node matrices rather than the rows their records
-upload. The native set accepts a
-shader per definition (`NativeSet::shaders` holds `(definition, shader)`):
-a material one model draws through its programs may be refused for
-another whose sections take other programs, and that one's items keep
-their D3D draws.
+upload. Draw admission looks up each object's definition in the
+resident model index and checks the part, shader and implementation
+of that model. Other models using the same material can require
+different programs and keep their D3D draws.
 
 A material with no layer-3 pass ("it has no layer-3 pass" in the load
 log) is not drawn at layer 3 at all: its items sit in other layers, which
@@ -627,12 +636,13 @@ vertex and no matrix work on the CPU.
   registration tests); `render_thread`'s test checks the layer draw is
   render-thread safe with the world and objects on (see "Pipelined
   render").
-- **Boot glue** (`crates/extensions/game/src/native_objects_glue.rs`). The
-  map worker prioritizes palette definitions and decodes each distinct
-  model once. It queues an independent GPU asset upload as soon as the
-  geometry and materials are decoded. The planner checks upload completion
-  before accepting a part. The first-person loader uses the same upload
-  command when a view supplies a new model but has no native draws yet.
+- **Boot glue** (`crates/extensions/game/src/native_objects_glue.rs`).
+  The map worker owns the definition scan and GPU upload, palette
+  definitions first. A validated model contributes its supported parts to
+  draw admission. Materials whose base map cannot decode keep their D3D
+  draws. The worker logs readiness after submitting the uploads and
+  publishing its result as
+  `native-objects: <map>: N definitions ready, M left to D3D`.
 - **Diagnostics.** Every layer-3 call of the observer ends in one counted
   `Stop`: first person (`[esp]` is `0x00040136`, left to D3D), wrong caller
   (`[esp]` is neither that nor `0x0002bed5`), no host, no camera, no map, no

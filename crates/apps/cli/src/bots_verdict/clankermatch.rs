@@ -231,7 +231,7 @@ pub fn verdict(l: &Log, plan: CmPlan) -> Verdict {
             .is_some_and(|m| m.contains(&plan.hopper))
     };
     checks.push(match (&server, &game) {
-        (Some((sl, st)), Some((gl, gt))) if has(*st, SERVER_MARKS) && has(*gt, GAME_MARKS) => {
+        (Some((sl, st)), Some((gl, gt))) if has(st, SERVER_MARKS) && has(gt, GAME_MARKS) => {
             check(
                 "clanker hoppers listed (server and game)",
                 true,
@@ -252,7 +252,7 @@ pub fn verdict(l: &Log, plan: CmPlan) -> Verdict {
                 lines.extend(l.last(3, |t| t.starts_with("bots-drive")));
             }
             let detail = match (&server, &game) {
-                (Some((_, st)), _) if !has(*st, SERVER_MARKS) => format!(
+                (Some((_, st)), _) if !has(st, SERVER_MARKS) => format!(
                     "the server's marks lack hopper {} ({}): its hopper file is not the built-in \
                      lineup (a published one replaced it?)",
                     plan.hopper, plan.title

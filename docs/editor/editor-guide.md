@@ -89,29 +89,33 @@ come from it. Press F5 (Play) as usual: the game starts from your Halo 2
 disc. If the map pack is not next to that disc, the game will not install
 it and the Log says so; your edited map still plays.
 
-With no disc found, the editor still starts: use **File > Open disc or
-map...**, or drop a disc image, `.map` file or folder onto the window.
+With no disc found, use **Open a disc or map...** in the centre of the
+Map tool, or drop a disc image, `.map` file or folder onto the window.
 
-![The editor with no disc: the Maps list says Open a disc image, a .map file or a folder of maps, the outliner says No map open, and the viewport is empty](../images/editor/first-run.jpg)
+![The editor at first run with no disc open](../images/editor/first-run.jpg)
 
 *The first run with no disc found: every panel is there, waiting for a disc.*
 
-![The Tools panel with a disc open: the three tools, the Open... and Folder... buttons, the disc's path and its maps from 00a_introduction down](../images/editor/maps-list.png)
+![The Maps browser with a disc open, its source path and its maps](../images/editor/maps-list.png)
 
 *With a disc open, its maps are listed under Maps, by their file names.*
 
 ## 3. The window
 
-![The editor window over Ascension with seven regions boxed and numbered in orange: 1 the menu bar, 2 Tools, 3 Outliner, 4 Viewport, 5 Inspector, 6 Log, 7 the status bar](../images/editor/layout-regions.jpg)
+![The editor window over Ascension with seven regions boxed and numbered in orange: 1 the menu bar, 2 tool bar, 3 Scene, 4 Viewport, 5 Inspector, 6 Log, 7 the status bar](../images/editor/layout-regions.jpg)
 
-*The window's regions: (1) the menu bar, (2) Tools and Maps, (3) the Outliner, (4) the Viewport, (5) the Inspector, (6) the Log and (7) the status bar.*
+*The window's regions: (1) the menu bar, (2) the tool bar, (3) Scene, (4) the Viewport, (5) the Inspector, (6) the Log and (7) the status bar.*
 
 The window is made of panels that dock together:
 
-- **Tools** (top left): the tools, **Scenario**, **Tags**, **Game
-  variants**, **Playlists**, **UI Screens** and **HUD**. Click one to switch to it. A tool with unsaved
-  changes shows a `*` after its name. Switching tools never loses
-  anything: each tool keeps its state while hidden. Under the tools,
+- **Tool bar** (under the menu): click **Map**, **Variants**,
+  **Playlists**, **UI** or **HUD** to switch workspaces. The middle names
+  the open document. A `*` marks unsaved changes. The **game link** is at
+  the right end in every tool: click the pill to pair, manage the link or
+  choose a running game. Play, Stop, Pause, Step, Resume and the Edit
+  switch appear beside it as available.
+- **Left dock**: **Scene**, **Tags** and **Maps** share the Map tool's left
+  column. Each tab gets the full column when selected.
   **Maps** has **Open...** (a disc image or `.map`) and **Folder...** (a
   folder of maps), the source path, and its **Multiplayer maps** and
   **Campaign levels**. **Map Pack**, **Packages**, **Halo 1 sandbox
@@ -121,20 +125,19 @@ The window is made of panels that dock together:
   picture, description and source file. **Shared and menu** is the
   final section. It uses a layers icon and keeps the file names of
   caches such as `mainmenu`, `shared`, `single_player_shared` and `ui`.
-- **Outliner** (bottom left), **Viewport** (middle) and **Inspector**
-  (right) show the tool you are in. In Game variants the outliner becomes
-  **Variants** and the viewport **Settings**; in Playlists they become
-  **Playlists** and **Entries**.
-- **Log** (under the viewport): everything the editor did, newest last,
-  errors in red.
-- **Status bar** (bottom): the last message on the left; on the right,
-  `unsaved` when the open tool has changes, a summary of what is open,
-  and the frame rate.
+- **Viewport** (middle) and **Inspector** (right) show the Map tool's
+  level and fields. Other tools use their own dockable windows.
+- **Game** (bottom dock) holds session and player details. **Log**
+  beside it shows the editor's messages and errors. Map's **Data and
+  bytes** tab lives beside them.
+- **Status bar** (bottom) shows the latest message, a hint for the
+  control or viewport under the pointer, and the frame rate.
 
-The menus at the top: **File** (open, save, packages, quit), **Edit**
-(**Undo**, **Redo**, **Duplicate**, **Delete**, **Allow growing full
-blocks**) and **View** (**Frame map**, **Focus selection**, the gizmo
-mode, **Reset layout**).
+The **File** menu holds **Save**, **Save as...**, open, packages and quit.
+**Edit** holds **Go to anything...**, **Undo**, **Redo**, **Duplicate**,
+**Delete** and **Allow growing full blocks**. **View** holds **Frame map**,
+**Focus selection**, the gizmo mode and **Reset layout**. **Game** holds
+play, pair and game controls.
 
 ![The File menu open: Open disc or map..., Open maps folder..., Save map as..., Save as package... (highlighted), Open package... and Quit, with their shortcuts](../images/editor/menu-file.png)
 
@@ -171,10 +174,17 @@ Keyboard shortcuts (Cmd on macOS, Ctrl elsewhere):
 | Keys | Action |
 |---|---|
 | Cmd+O | Open a disc image or map |
-| Cmd+S | Save: the map as a new file (Scenario), the variant (Game variants), the playlist file (Playlists) |
+| Cmd+S | Save the map, variant, playlist file or HUD edits in the active tool |
+| Shift+Cmd+S | Choose a path for the map or playlist file |
+| Cmd+P | Open Go to anything |
 | Cmd+Z | Undo in the tool you're in |
 | Cmd+Shift+Z or Cmd+Y | Redo |
 | Cmd+Q | Quit |
+
+Use **Edit > Go to anything...** to search maps, tags, placements and
+menu commands from one box. Type any words from the name or detail line.
+Use Up and Down to highlight a result, Enter to open or run it, and Esc
+to close the search.
 
 The Scenario tool adds Cmd+D (duplicate), Delete (delete), F (focus the
 selection), Home (frame the map), and W and E (move or rotate gizmo).
@@ -189,9 +199,9 @@ starting equipment. It doesn't change the level's geometry.
 
 ### Opening a map
 
-Click a map in the **Maps** list. The status bar says `opened <map>`,
-with how many triangles and placements it has and how much of its art
-could be drawn.
+Click a map in the **Maps** tab or in the grid in the centre of the
+workspace. **Scene** opens with the level's placements. The Log records
+how many triangles and placements the editor could read.
 
 The names, descriptions and pictures come from your disc's
 `mainmenu.map`: the multiplayer maps as **Select Map** shows them, the
@@ -206,7 +216,7 @@ its file names.
 
 ![Coagulation open with the battle rifle spawn on a base selected: the outliner, the lit, textured level in the viewport with the move gizmo, and the spawn's fields in the inspector](../images/editor/scenario-weapon.jpg)
 
-- **Outliner**: a **Filter placements** box, **Duplicate** and
+- **Scene**: a **Filter placements** box, **Duplicate** and
   **Delete**, and one group per kind of object with its count, for
   example `Netgame equipment (33)`. Click a group to expand it, and an
   entry to select it; double-click an entry to point the camera at it.
@@ -215,10 +225,10 @@ its file names.
   the one you click.
 - **Viewport**: the level in 3D with its textures and baked lighting, its
   sky, the placed objects' models, and a small coloured marker for each
-  placement. The toolbar above it has **Move (W)**, **Rotate (E)**,
-  **Scale (R)**, **Local/World (X)** (the gizmo in the object's own axes
-  or the world's), **Grid** and **°** snapping (right-click either to
-  pick its step), **Frame** and **Focus**.
+  placement. Hover a toolbar icon to see its action and shortcut:
+  **Move (W)**, **Rotate (E)**, **Scale (R)** and **Local/World (X)**.
+  Grid and angle snapping each have a toggle and a step dropdown.
+  The camera controls frame the map or selection and set fly speed.
 - **Inspector**: the selected object's fields, grouped under Transform,
   Object, Spawn and Settings: where it is (x, y, z), which way it faces
   (yaw, pitch and roll in degrees), which item or object it is (a list
@@ -242,7 +252,7 @@ Moving around the viewport:
 | Hold right button and move | Look around |
 | W, A, S, D (holding the right button) | Fly forward, left, back, right |
 | Q, E (holding the right button) | Fly down, up |
-| Scroll (holding the right button) | Fly faster or slower (the status bar shows the speed) |
+| Scroll (holding the right button) | Fly faster or slower (the toolbar shows the speed) |
 | Shift (while flying) | Fly four times as fast |
 | Alt + left-drag | Orbit around the selection, or the spot under the pointer |
 | Middle-drag | Pan |
@@ -351,8 +361,8 @@ step through the same history.
    objects such as weapons and vehicles).
 5. Save it (below) and start the game.
 
-After an edit, **Scenario** shows a `*` in **Tools**, the window title
-gets a `*`, and the status bar says `unsaved`.
+After an edit, **Map** and the document name show a `*` in the tool
+bar. The window title has the same mark.
 
 ### Add and remove objects
 
@@ -399,10 +409,13 @@ concern).
 
 ### Save as a map package or as a map file
 
-There are two ways to save. Either way, the disc and the map you opened
-are never changed.
+Choose **File > Save** (Cmd+S) to update the open package or the last
+standalone file the editor wrote for the map. When you work from a base
+map, **Save** opens **Save as package...** with a name filled in. Saving
+keeps the disc or loose source map intact.
 
-**As a map package (recommended).** Choose **File > Save as package...**.
+**As a map package (recommended).** Choose **File > Save as package...**
+to choose the package details.
 
 ![The Save as package window: in data/maps, Name ascension edit, Author, Description, Image (PNG/JPEG) optional at most 512 KB, Directory ascension-edit, Make it the active package for this map, Save package and Cancel](../images/editor/package-form.png)
 
@@ -427,19 +440,18 @@ plus a description. The game finds the package at boot. Pick it from
 [Map selection](../game/map-select.md)
 
 To keep working on a package later, open the same map, choose **File >
-Open package...** and click **Open** next to it. Saving again with the
-same **Directory** updates that package (the window says `Replaces this
-package's patch.`).
+Open package...** and click **Open** next to it. Use **Save** to update
+the package. Use **Save as package...** when you want to set its display
+details or write to another package directory.
 
 
 ![The Open package window listing one package, ascension edit in ascension-edit, with an Open button and Close](../images/editor/package-open.png)
 
 ***Open package** lists this map's packages.*
 
-**As a whole `.map` file.** Choose **File > Save map as...** (Cmd+S) and
-pick where to write it. The editor refuses to overwrite the map it read
-from. (Where to write it is chosen in your system's own save window, so
-it isn't pictured here.)
+**As a whole `.map` file.** Choose **File > Save as...** (Shift+Cmd+S)
+and pick the destination in your system's save window. The editor keeps
+that path as the open map's Save destination.
 
 ### Playing your edited map
 
@@ -467,24 +479,43 @@ multiplayer, everyone in the game needs the same edited map.
 
 ### Play from the editor
 
-The quickest way: press **F5** (or **Play** in the **Game** tab beside the
-log). The game opens in its own window straight into the map, with your
-edits, saved or not; nothing is saved for it. Pick where you start under
-**Spawn**: the level's own spawn, under the editor camera, or at the
-selected placement. **Shift+F5** closes that game. Play needs `h2`
-installed (`~/.cargo/bin/h2`, or name it in the Game tab) and the disc.
+Press **F5**, click the Play button beside the game link, or choose
+**Game > Play** in any tool. With no game, the editor launches a copy
+of the open map with your edits. With a game running, it pairs, sends
+pending edits and resumes play. A structural edit reloads a fresh copy.
+A game you started yourself asks before accepting edits. If it is on
+another map, choose whether to load your document in the game or open
+the game's map in the editor. A game without reload support needs a
+manual load unless the editor started it and can relaunch it. The same
+applies when a game refuses the play copy. F5 leaves the Edit switch as
+you set it. In View, later edits wait for your next F5.
+
+The Game tab's **Spawn** picker offers the level spawn, editor camera,
+selected placement and **Where I was**. Once you have played this map,
+the editor remembers your position and facing for the next playtest.
+Your editor selection, camera and undo history stay in place. Enable
+**Game > Pause the game while I edit** to pause when you return to the
+editor. Press **Shift+F5** or click Stop to close a game the editor
+started. Launching needs the disc and `h2`. Running the editor from a checkout with
+`cargo run`, build `h2` beside it with `cargo build --release -p cli --bin
+h2`; otherwise install it (`~/.cargo/bin/h2`) or set the path under
+**Advanced** in the Game tab.
 
 While the game runs, the editor stays paired with it:
 
-- the status bar shows the game's map, whether it is playing or paused,
-  and its tick;
+- the game link shows the map and whether you're viewing or editing
+  live. The Game tab's Session section shows the phase, tick and stream
+  details;
 - live objects move with their bind-pose models. Player labels show the
   name and team, and a line shows where each player aims;
 - **Go to player** brings the camera to you; **Teleport player here**
   moves you to the spot the camera looks at, and **T** over the viewport
   to the spot under the mouse;
-- **Pause**, **Step** and **Resume** freeze and step the game;
-- moving a placement, or changing its fields, goes to the game at once.
+- **Pause**, **Step** and **Resume** are beside the game link and in
+  the Game menu. Set the step count under **Advanced**;
+- with **Edit** on, moving a placement or changing its fields goes to
+  the game. The green viewport frame and **Live** pill in the inspector
+  show when live edits are active.
   The game only reads a placement when it makes the object, so you see
   it at the next respawn (a weapon or vehicle spawn, your own respawn at
   a starting location) or after **Play** again. Things already in the
@@ -492,39 +523,47 @@ While the game runs, the editor stays paired with it:
 
 A game you started yourself is found without any setup. `h2 play` opens
 an agent socket of its own (in the `agents` folder of the h2recomp cache;
-`H2_AGENT=off` closes it), and the editor looks for those every couple of
-seconds:
+`H2_AGENT=off` closes it), and the editor looks for those every second:
 
-- With one game running, the Game panel and the status bar say
-  "Halo 2 is running (map)", with a **Pair** button, and whether its map is
-  the one open here. A game on another map pairs too; edits stay here until
-  the maps match.
-- **Auto-pair** (in the Game panel, on by default) pairs by itself with
-  the one game running, once per game: after **Unpair** the editor leaves
-  it alone. Pairing only reads the game; nothing is sent until you edit on
-  a map the game is running.
-- With several games the panel lists each with its map and process id;
-  pick one.
+- With one game running, the pill says "Halo 2 is running" with the
+  map name. Click it to pair. If the game is on another map, click
+  the pill and choose **Open** with the game's map name to switch maps.
+- **Auto-pair** in the pill's popover is on by default. It pairs with
+  the only running game or the only game on the open map. To disconnect, click the pill
+  and choose **Unpair**.
+- With several games, open the pill's list and choose **Pair** beside
+  the map and phase you want.
 - A game started another way (`h2 serve`, or `H2_AGENT=<path> h2 play`)
   is listed too when its socket is the default one or in the cache; any
-  other goes in the **Pair** box, and **Find** looks again.
+  other socket goes under **Advanced** in the Game tab. **Find** refreshes
+  the list.
 
-While paired the status bar reads, for example, "Game: ascension playing
-tick 812 (the open map)", or "(the editor has zanzibar)" when the maps
-differ. In a co-op game the editor sends nothing to the game: one machine
-changing alone would split it from the others.
+Pairing with an already-running game starts in View. Turn **Edit** on
+when you're ready to send tag and placement edits. Open **Pending** to see
+when each edit takes effect, resolve a conflict, or reload the play copy
+for structural edits. A red mark on a field or tree row shows why a write
+was refused. An amber conflict offers **Take the game's value** and
+**Overwrite**. Click the count on the game link to open Pending. Failed
+game actions also appear in the viewport for four seconds. If a co-op session or
+another restriction prevents writes, the pill says "Edits stay here"
+and the frame and **Live** pill turn amber. Hover the pill for the
+reason. If the connection drops while the game is still present, the editor
+retries for 30 seconds. The same retry window applies to a socket you
+named under **Advanced**. Click **Cancel** to stay unpaired or **Pair again**
+after the retry window ends.
 
 An agent drives the same with `pair.list`, `pair.status`, `pair.connect`,
-`pair.disconnect` and `pair.auto` ([agent-api.md](agent-api.md)).
+`pair.disconnect`, `pair.auto`, `pair.playtest`, `pair.settings`, `pair.stop`, `pair.control`
+and `pair.edit` ([agent-api.md](agent-api.md)).
 
 ### Your packages in the Maps list
 
 Every package in the data folder is listed under **Packages** in **Maps**,
 by the name you gave it, with its image beside it when the package has
 one (`[package] image`) and its description in the tooltip. Click one to keep working on it: the editor opens
-its map from your disc and the package over it, ready to edit. **File >
-Save as package...** then offers the same **Directory**, so saving updates
-that package. (The disc that has the package's map must be open.)
+its map from your disc and the package over it, ready to edit. Use
+**File > Save** to update the package. A package based on a disc map
+requires that disc to be open.
 
 
 ![The Maps list showing an Ascension package and the read-only Halo 1 source](../images/editor/maps-groups.png)
@@ -558,7 +597,7 @@ Saving never changes the Map Pack's files:
 
 - **File > Save as package...** saves a package in `<data>/maps` over
   the Map Pack map, as for a disc map.
-- **File > Save map as...** writes a whole `.map` wherever you choose,
+- **File > Save as...** writes a whole `.map` wherever you choose,
   except into the game's installed content, which the editor refuses.
 
 ### Halo 1 maps
@@ -582,7 +621,7 @@ by a plain sun.*
 **Comparing with the original.** If the editor can find the Halo 1 map a
 converted map was made from (on the Halo 1 disc or folder you opened, or
 in `H1_MAP_DIR`), the inspector says `Converted from Halo 1's <map>`,
-and **View > Halo 1 overlay** (also a button above the viewport) draws
+and **View > Halo 1 overlay** (also under **Show** above the viewport) draws
 the original level and its spawns in orange over the converted one, so
 you can check that everything lines up. Click it again to hide it. The
 editor checks that the file is the very one the map was converted from;
@@ -658,7 +697,7 @@ holds at most 65,536, so it can't be converted.`
 A game variant is a set of game settings: the game type (Slayer, CTF and
 so on), its name, and options like the score to win, the time limit and
 the weapons. The game ships with built-in variants, and you can save your
-own. Click **Game variants** in **Tools**.
+own. Click **Variants** in the tool bar.
 
 ![The Game variants tool with the built-in Swords variant open: the Variants list on the left, its settings in the middle, and its changes from the Slayer defaults on the right](../images/editor/variants-builtin.jpg)
 
@@ -821,7 +860,7 @@ from your computer: you publish it to your server.
 
 ### Open a file
 
-Click **Playlists** in **Tools**, then **Open...** above the list and pick
+Click **Playlists** in the tool bar, then **Open...** above the list and pick
 a `multiplayer_hopper.dat`. Both forms work: the raw file the console
 keeps, and the compressed download a Live server publishes. The editor
 saves it back in the same form. With no file at hand, click **New** for
@@ -990,8 +1029,6 @@ the map. Use it when something on a HUD sits in the wrong place, such as
 a converted Halo 1 map's shield bar over its health bar or a grenade
 count spilling out of its box.
 
-![The HUD tool on Lockout: the Master Chief's HUD drawn at 640 by 480 with the HUD frame in green and the widgets outlined and the checks in the inspector](../images/editor/hud-masterchief.jpg)
-
 - **HUDs** (left):
   - **Map** (the menu at the top): the source's multiplayer maps and
     campaign levels, your packages and **Halo 1 sandbox variants**,
@@ -1064,10 +1101,10 @@ masterchief`; add `--hud-widget <name>` to select a widget by its name.
 
 ## 9. Tags: every field of a tag
 
-**Tags** shows every tag of the open map and lets you change any field of
-it: a weapon's numbers, a projectile's flags, the tag a vehicle's weapon
-points at. Open a map in **Maps** first (a disc map, one of your
-packages, or a converted Halo 1 map), then pick **Tags** in **Tools**.
+**Tags** shows every tag of the open map. Editable fields include a
+weapon's numbers, a projectile's flags and a vehicle's weapon reference.
+Open a map in **Maps** first (a disc map, one of your
+packages, or a converted Halo 1 map), then select the **Tags** tab beside **Scene**.
 
 - **Which map** (the list at the top left) groups the source's maps by
   type, with caches such as `shared`, `single_player_shared` and
@@ -1075,22 +1112,32 @@ packages, or a converted Halo 1 map), then pick **Tags** in **Tools**.
   map's tags read-only or select the row marked **(open map)** to
   edit the Scenario tool's map. Selecting `shared` or
   `single_player_shared` in **Maps** opens its tags here.
-- **The tag tree** (left) lists the map's tags by **Groups** (`weap`,
-  `proj`, `vehi`, ...) or by **Paths**, a folder tree of their names
-  (`objects`, `weapons`, `rifle`, ...). Type words in the search box to
-  narrow it: each word must be in the tag's group or name (`weap rifle`).
-  A `*` marks a tag you have edited; `(read-only)` one you can look at
-  but not change. A mark in brackets says where the tag's data lives
-  when it isn't all in this map: `[shared]`, `[sp shared]`, `[mainmenu]`
-  for pictures, models and sounds kept in a shared map, `[in shared]`
-  for a tag whose fields are there.
-- **The fields** (centre) are the selected tag's fields, top to bottom.
+- **The tag tree** (left) starts with **Scenario**. Expand Structure,
+  Skies, Objects or Other references to see what the level uses. Select
+  Globals to inspect the map's globals tag. Each object palette row gives
+  the number of placements using that entry. Selecting it opens the tag
+  and outlines its placements in the viewport. **All tags** offers
+  **Groups** and **Paths**. Search with words such as `weap rifle`, each
+  matching the group or name. **Not reachable from the scenario** helps
+  find tags outside the walk from the scenario and globals. If that walk
+  is incomplete, the section says so and leaves the list empty.
+  A `*` marks an edit. `[Pending]` marks edited tag metadata waiting
+  to reach a paired game. Shared-cache marks show where the data lives,
+  such as `[shared]` for resources and `[in shared]` for tag fields.
+- **The fields** (Inspector) are the selected tag's fields, top to bottom.
   Fields we have a name for show it in white; the rest show grey, named
   by where they are (`+0x14`), with their value shown the way it looks
   most likely (a decimal number, a whole number or hex). Right-click a
   grey field to see it another way. Hover a field for its type, where it
   is and what we know about it.
-- **Data and bytes** (right): the tag's data and resources first: each
+- **Scenario** shows the source fields read-only. Expand a placement or
+  palette block and choose **Open … in Scene**. A placement link selects
+  the displayed placement if it exists. A palette link selects the
+  first placement that uses the displayed entry.
+- **Structure BSPs and lightmaps** open in the field inspector. Their
+  rows identify the BSP. Field and block edits save to that BSP's
+  region, and blocks use their original capacity.
+- **Data and bytes** (beside Log): the tag's data and resources first: each
   block of raw data inside the tag with its size, and each resource
   (pixels, model geometry, sound) with the map it is in (`local` for this
   one, or `shared`, `single_player_shared`, `mainmenu`), where and how
@@ -1098,13 +1145,22 @@ packages, or a converted Halo 1 map), then pick **Tags** in **Tools**.
   raw bytes of the part of the tag under the mouse, the hovered field
   lit in blue and bytes you changed in orange.
 
+### Field names
+
+Hover a tag field to read its description in the tooltip and the detail
+row. The editor includes these labels. An offset such as `+0x14` means
+the field has no established name. The evidence line identifies a retail
+reference with `A Halo2Xbox`, an engine reader with `E`, or a disc check
+with `V`. See [Field names](editor.md#field-names).
+
 How to change things:
 
 - **Numbers**: drag left or right, or double-click and type. Angles show
   in degrees.
-- **Choices** (a list of named values): pick from the list.
-- **Flags**: tick or untick. A bit with no name shows only when it is
-  set.
+- **Choices**: pick a named value from the list. An enumeration whose choices
+  have no established labels edits as a number.
+- **Flags**: tick or untick a named bit. A field with no bit labels edits as
+  a numeric mask. In a partly named mask, unlabelled bits appear when set.
 - **Colours**: click the swatch.
 - **Names (string IDs)**: type a name and press Enter. A name the map
   doesn't have yet is added to it when you save (under 128 characters).
@@ -1115,22 +1171,21 @@ How to change things:
   next to it jumps to that tag.
 - **Lists inside a tag (blocks)**: open the list, pick an element number,
   then edit its fields. **Add**, **Duplicate** and **Remove** change the
-  list. A list can't get longer than it was on the disc unless
-  **Edit > Allow growing full blocks** is on; then the longer list is
-  saved as a new copy at the end of the map's tag data. Hover a
-  greyed-out button for the reason. Other things in the map that point at
+  list. **Edit > Allow growing full blocks** lets lists in ordinary
+  tag data grow beyond their original size. Save writes the longer list
+  at the end of the map's tag data. Hover a greyed-out button for the
+  reason. Other things in the map that point at
   a list entry by its number are not updated when entries move.
 - **Data** (raw bytes inside a tag): edit the hex; the length must stay
   the same.
 
 Some things are shown but cannot be changed, with the reason shown:
-counts and addresses (use Add/Remove instead), the scenario tag (use the
-Scenario tool for what is placed on the map), and tags of the level's
-structure (not shown yet).
+counts and addresses (use Add/Remove to change a block) and scenario
+fields (use the Scenario tool for placements).
 
-Every change is an undo step (one drag is one step). Save as with the
-Scenario tool: **File > Save map as...** or **Save as package...** writes
-your tag edits and your placement edits together. The Scenario tool's
+Every change is an undo step (one drag is one step). **Save**,
+**Save as...** and **Save as package...** write your tag edits and
+placement edits together. The Scenario tool's
 `*` shows when the map has unsaved edits of either kind.
 
 ### Export and import a tag
@@ -1319,5 +1374,5 @@ drags, typing), a crop (`--crop`) and numbered boxes (`--callout`).
 [editor.md](editor.md) lists the flags.
 
 Not everything can be pictured this way: your system's own open and save
-windows (**Open...**, **Save map as...**, **Export...**, **Save as...**)
+windows (**Open...**, **Export...**, **Save as...**)
 are outside the editor, so the guide describes them in words.

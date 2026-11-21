@@ -280,6 +280,8 @@ pub struct Draw<'a> {
     /// blocks of host pixels, as it covers whole pixels at 1x
     /// (docs/graphics/high-resolution.md). `None` is the target's size.
     pub window: Option<(u32, u32)>,
+    /// Guest window scale and translation for UI drawn on an anamorphic target.
+    pub window_transform: [f32; 4],
     /// Where vertex formats are converted. [`FetchMode::Gpu`] needs a
     /// shader that reads each register as
     /// [`RepackPlan::input_fetch`](crate::repack::RepackPlan::input_fetch)
@@ -321,6 +323,7 @@ impl<'a> Draw<'a> {
             indices: None,
             count_samples: false,
             window: None,
+            window_transform: [1.0, 1.0, 0.0, 0.0],
             vertex_fetch: FetchMode::Cpu,
             stream_ids: &[],
             index_id: None,
@@ -328,27 +331,10 @@ impl<'a> Draw<'a> {
     }
 }
 
-/// [`Draw::window`]'s shift for a window `window` pixels across on a
-/// target `target` pixels across, in window pixels: `(2 s - 1) / (4 s)`
-/// for `s = target / window`, 0 when they are equal.
-///
-/// At 1x a pixel is sampled at its centre, and D3D-convention geometry puts
-/// edges (and a 1:1 copy's texel corners) exactly there, so the tie rules
-/// decide. With the shift the `s x s` host pixels of a guest pixel sample
-/// it at offsets `(k + 1/4) / s` from its centre, `k = 0..s`: all inside
-/// `[0, 1)`, none on the tie. An edge on a guest pixel centre then covers
-/// whole blocks, as it covers whole pixels at 1x (top-left rule included),
-/// and a 1:1 point-sampled copy reads the texel 1x reads.
-pub fn window_shift(window: u32, target: u32) -> f32 {
-    if window == 0 || window >= target {
-        return 0.0;
-    }
-    let s = target as f32 / window as f32;
-    (2.0 * s - 1.0) / (4.0 * s)
-}
+pub use crate::raster::{RenderScale, window_shift};
 
 /// Bytes of the built-in shader's uniform struct.
-const BUILTIN_UNIFORM_SIZE: u64 = 32;
+const BUILTIN_UNIFORM_SIZE: u64 = 48;
 /// Initial size of the vertex/index upload ring.
 const VERTEX_RING: u64 = 4 << 20;
 /// Initial size of the built-in uniform ring.
@@ -374,12 +360,16 @@ fn builtin_alpha_func(rs: &RenderState) -> f32 {
 
 /// Draws guest primitives through the state model.
 pub struct Renderer {
+    _census: mem_watch::gpu::DeviceRegistration,
     shaders: HashMap<ShaderId, ShaderProgram>,
     builtin_bgl: wgpu::BindGroupLayout,
     cache: PipelineCache<Arc<PendingPipeline>>,
     clearer: Clearer,
     /// Builds pipelines off this thread.
     compiler: Arc<Compiler>,
+    /// This renderer's prewarms on [`compiler`](Self::compiler)
+    /// ([`Compiler::prewarm`]).
+    prewarm_owner: u64,
     /// Keys of pipelines draws asked for that were not in the cache (and
     /// whether it was the count pipeline), oldest first, until
     /// [`take_new_keys`](Renderer::take_new_keys).
@@ -582,6 +572,7 @@ fn builtin_group(
 impl Renderer {
     /// Creates the renderer and its built-in shader.
     pub fn new(ctx: &GfxContext) -> Self {
+        let census = ctx.watch_resources();
         let module = ctx
             .device
             .create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -624,11 +615,13 @@ impl Renderer {
             },
         );
         Self {
+            _census: census,
             shaders,
             builtin_bgl: bgl,
             cache: PipelineCache::new(),
             clearer: Clearer::new(&ctx.device),
             compiler: Compiler::global().clone(),
+            prewarm_owner: Compiler::owner(),
             new_keys: Vec::new(),
             caps: ctx.caps,
             z_max: D3DZ_MAX_24,
@@ -716,8 +709,10 @@ impl Renderer {
 
     /// Starts building the pipeline for `key` (its count pipeline with
     /// `count`) on a compile worker, behind any a draw is waiting for, so a
-    /// later draw that needs it finds it built. Returns `false` if it is
-    /// already cached or `key.shader` is not registered.
+    /// later draw that needs it finds it built. A cached one that is not
+    /// built, nor queued (its prewarm was dropped), is queued again.
+    /// Returns `false` if it is built, being built or already queued, or
+    /// `key.shader` is not registered.
     pub fn prewarm(&mut self, ctx: &GfxContext, key: &PipelineKey, count: bool) -> bool {
         let Some(program) = self.shaders.get(&key.shader) else {
             return false;
@@ -727,8 +722,8 @@ impl Renderer {
         } else {
             &mut self.cache
         };
-        if cache.get(key).is_some() {
-            return false;
+        if let Some(cached) = cache.get(key) {
+            return self.compiler.prewarm(cached, self.prewarm_owner);
         }
         let pending = if count {
             let fragment = count_fragment(&mut self.count_fragment, &ctx.device);
@@ -736,9 +731,19 @@ impl Renderer {
         } else {
             pending_pipeline(&ctx.device, key, program)
         };
-        self.compiler.submit(&pending, Priority::Background);
+        self.compiler.prewarm(&pending, self.prewarm_owner);
         cache.insert(key.clone(), pending);
         true
+    }
+
+    /// Takes this renderer's [`prewarm`](Self::prewarm)s that no worker
+    /// has started out of the compile queue, and returns how many: the
+    /// guesses they were made on (the map that was loaded) no longer hold,
+    /// and every one would compile ahead of the new map's. Each stays in
+    /// the cache unbuilt: a draw that needs it queues it ahead of other
+    /// prewarms, and a later prewarm queues it again.
+    pub fn drop_prewarms(&mut self) -> usize {
+        self.compiler.drop_prewarms(self.prewarm_owner)
     }
 
     /// Whether the built-in shader can draw `layout` (pre-transformed float4
@@ -908,26 +913,32 @@ impl Renderer {
         let program = &self.shaders[&d.shader];
         let compiler = &self.compiler;
         let new_keys = &mut self.new_keys;
+        // A hit on a prewarm no worker has started moves it ahead of the
+        // other prewarms (once: a queued draw job is not queued again), so
+        // a worker starts it now rather than the encoding thread building
+        // it behind a queue of guesses.
         let pipeline = self
             .cache
             .get_or_insert_with(&key, |k| {
                 new_keys.push((k.clone(), false));
-                let p = pending_pipeline(&ctx.device, k, program);
-                compiler.submit(&p, Priority::Draw);
-                p
+                pending_pipeline(&ctx.device, k, program)
             })
             .clone();
+        if !pipeline.is_ready() {
+            compiler.submit(&pipeline, Priority::Draw);
+        }
         let count = d.count_samples.then(|| {
             let fragment = count_fragment(&mut self.count_fragment, &ctx.device);
             let pipeline = self
                 .count_cache
                 .get_or_insert_with(&key, |k| {
                     new_keys.push((k.clone(), true));
-                    let p = pending_count(&ctx.device, k, program, &fragment);
-                    compiler.submit(&p, Priority::Draw);
-                    p
+                    pending_count(&ctx.device, k, program, &fragment)
                 })
                 .clone();
+            if !pipeline.is_ready() {
+                compiler.submit(&pipeline, Priority::Draw);
+            }
             (
                 pipeline,
                 key.depth_stencil.as_ref().is_some_and(writes_depth_stencil),
@@ -985,6 +996,8 @@ impl Renderer {
                 window_shift(ww, w),
                 window_shift(wh, h),
                 0.0,
+                d.window_transform[0], d.window_transform[1],
+                d.window_transform[2], d.window_transform[3],
             ];
             let (buf, off) = self.uniforms.push(
                 &ctx.device,

@@ -82,8 +82,8 @@ pub struct TestMap {
     /// `None` until the map has a slot in the game's multiplayer list.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub listed: Option<Listed>,
-    /// What the build did (`scenario_edit::recipe::Built`): the anchor,
-    /// what was placed where, notes and the checks for `sim.expect`.
+    /// The builder's report. Placement rigs return `scenario_edit::recipe::Built`;
+    /// the Firefight probe gives zone and squad counts, byte costs and checks.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub built: Option<Value>,
 }

@@ -78,7 +78,9 @@ pub mod method {
     pub const DOC_CLOSE: &str = "doc.close";
 
     pub const TAG_LIST: &str = "tag.list";
+    pub const TAG_FIELDS: &str = "tag.fields";
     pub const TAG_READ: &str = "tag.read";
+    pub const TAG_TREE: &str = "tag.tree";
     pub const TAG_REFS: &str = "tag.refs";
     pub const TAG_CHAIN: &str = "tag.chain";
     pub const TAG_FOLLOW: &str = "tag.follow";
@@ -123,6 +125,7 @@ pub mod method {
     pub const PLAYLIST_ENTRY: &str = "playlist.entry";
     pub const PLAYLIST_ENTRY_VARIANT: &str = "playlist.entry_variant";
 
+    pub const UI_PALETTE: &str = "ui.palette";
     pub const UI_SCREENS: &str = "ui.screens";
     pub const UI_PICK: &str = "ui.pick";
     pub const UI_PRESS: &str = "ui.press";
@@ -134,11 +137,24 @@ pub mod method {
     pub const PAIR_CONNECT: &str = "pair.connect";
     pub const PAIR_DISCONNECT: &str = "pair.disconnect";
     pub const PAIR_AUTO: &str = "pair.auto";
+    pub const PAIR_PLAY: &str = "pair.play";
+    pub const PAIR_PLAYTEST: &str = "pair.playtest";
+    pub const PAIR_SETTINGS: &str = "pair.settings";
+    pub const PAIR_STOP: &str = "pair.stop";
+    pub const PAIR_EDIT: &str = "pair.edit";
+    pub const PAIR_CONTROL: &str = "pair.control";
 
     pub const MIRROR_STATUS: &str = "mirror.status";
+    pub const MIRROR_PENDING: &str = "mirror.pending";
+    pub const MIRROR_APPLY: &str = "mirror.apply";
+    pub const MIRROR_PICK: &str = "mirror.pick";
+    pub const MIRROR_AIM_SELECT: &str = "mirror.aim_select";
+    pub const MIRROR_CAMERA: &str = "mirror.camera";
+    pub const MIRROR_PLAYER: &str = "mirror.player";
     pub const MIRROR_OBJECTS: &str = "mirror.objects";
 
     pub const VIEW_CAMERA: &str = "view.camera";
+    pub const VIEW_LAYERS: &str = "view.layers";
     pub const VIEW_SNAPSHOT: &str = "view.snapshot";
     pub const VIEW_STATS: &str = "view.stats";
 

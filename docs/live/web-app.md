@@ -46,7 +46,7 @@ waypoints, kills, scores, endings and new games.
 - `H2_MOCK_STATIC=<dir>`: also serve a built app with SPA fallback, as `h2 live serve` does: `bun run build && H2_MOCK_STATIC=$PWD/dist bun run mock`.
 - `H2_MOCK_GAME_ART=1`: serve a stand-in `/art/game` manifest so the game-art path runs (see [web-viewer.md](web-viewer.md), "Game art"). Without it `/art/game` has no pictures, like a server with no game art.
 - `H2_MOCK_MAP_GEOMETRY=0`: turn off the mock's own map geometry, which is otherwise served either way; `/art/game` then answers 404.
-- `H2_MOCK_SESSIONS=<n>`: how many open sessions the mock keeps for the stats home's Open Games table (default 5; 0 hides the table).
+- `H2_MOCK_SESSIONS=<n>`: how many open sessions the mock keeps for the stats home's Open Games table (default 5; 0 shows the empty state).
 - `H2_MOCK_QUIET=1`: end the games in progress after the history is seeded and start no more, so the stats home's Live Now panel shows the last game on a loop (with `H2_MOCK_HISTORY_MIN=0` too, no games at all: the map montage).
 - `H2_MOCK_ACTORS=1`: put the mock campaign's AI and vehicles (`mock/campaign.ts`: about thirty actors, two vehicles in use and three parked empty, and a `bsp` zone that changes every 25 s, added by a frame hook) into every game's frames; without it only games whose mode is `campaign` get them.
 - `H2_MOCK_INDOOR=1`: shut each arena's glb inside a busy building (an inward-facing shell, partition walls, an upper floor, pillars and two "machines", over two `bsp_<n>` zones and a `machines` node, plus a third zone marked cinematic-only and a `backdrop` of far hills), for trying the 3D view's cutaways and zones.
@@ -69,11 +69,11 @@ and settings (the ones that need an account show greyed with a hint).
 Signed in it is live now, games, friends, players,
 account (recovery code, authenticator, devices, sign out) and settings;
 profile and the server (`/dash/server`: service admin) sit under settings.
-Server admins can open **Live admin** (`/dash/admin`) from Settings for
-usage, dedicated hosts, the raw event log and the style sample. On these
+Server admins can open **Live admin** (`/dash/admin`) from the dashboard header
+or Settings for usage, dedicated hosts, the raw event log and the style sample. On these
 pages, the Back link, B, Escape and Backspace go to the previous page
 when opened from the dashboard or another admin page. Direct visits fall
-back to Settings or Server. The **Live admin** breadcrumb opens the hub.
+back to Settings, Server or the Live Admin hub. The **Live admin** breadcrumb opens the hub.
 In Usage, select a gamertag in **Top Accounts** to open its dashboard
 profile (`/dash/players/:tag`).
 Open **Games** (`/dash/games`) and select **Halo 2** to see recent games and,
@@ -185,7 +185,16 @@ the menu column drops under the content.
 The stats home's Open Games table (`/games/halo2`, `src/stats/Home.tsx`)
 shows advertised sessions with the host, map, game type and player count.
 It polls `GET /v1/sessions` every four seconds while the tab is showing
-(`src/state/sessions.ts`). Join sessions from the game.
+(`src/state/sessions.ts`). **Join in Halo 2** opens the installed player.
+**Filters** opens controls for multiplayer or campaign co-op, Clankers,
+game type, named variant, map category, available public seats, campaign
+and difficulty. **Apply** sends the choices with each session list page.
+The variant field suggests names from sessions visible to the reader.
+The browser remembers applied choices locally and **Clear filters**
+restores the full list.
+
+The game's detail page and a friend's lobby presence offer the same action
+when the session admits the viewer. [Session links](live-custom-games.md#join-in-halo-2)
 
 ### Custom maps
 
@@ -224,10 +233,13 @@ description, source and gallery. With no pack artwork it uses its members'
 screenshots. A stock map preview is labelled **Stock map picture**.
 Members keep their own URLs (`/games/halo2/mods/:id`), galleries,
 contents and layer sizes. Signed-in players can report a pack or a
-member. Its uploader can edit the release metadata and upload PNG, JPEG
-or WebP screenshots to a cover and two additional slots on either page.
-The Live server validates and stores the images. Installation runs in
-the game. The mock serves invented pack metadata and member artwork.
+member, and can report a screenshot directly from its gallery. Its uploader
+can edit the release metadata and submit in-game screenshots using
+`h2 live mods capture`. Pending screenshots stay out of the gallery. Server
+admins open **Screenshot review** from Live Admin, show an image on demand
+and approve or remove it. Installation runs in the game. The mock serves
+invented pack metadata and member artwork.
+[Admin screenshot review](live-admin.md#screenshot-review)
 
 ### Server stats
 
@@ -239,8 +251,8 @@ boards, picks and heatmap with the pure helpers in `src/lib/statsHome.ts`.
 A server without it (404) gets a note, and the live parts still show. The
 mock (`mock/stats.ts`) counts its log the same way and folds in a made-up
 month of games before the simulated history so the home has weeks to show;
-`H2_MOCK_STATS_ARCHIVE=0` leaves that out. The events carry no headshots,
-so there are none.
+`H2_MOCK_STATS_ARCHIVE=0` leaves that out. The kill feed shows a headshot
+when the killing hit reports one.
 
 ### Derived stats
 
@@ -249,10 +261,11 @@ Destruction"), EXP and rank are computed in the browser from the games'
 events (`src/state/derive.ts`); the API does not serve them. They are
 marked with a `*` and a tooltip. They only cover games this browser has
 loaded, and a game's snapshot carries at most its recent kills, so they are
-estimates for long histories. A game report with no recorded kill weapons
-shows a message in Tool of Destruction. With partial data, the "Not recorded"
-row gives the share of kills without a weapon. A player's Tool of
-Destruction pairs each weapon's "kills with" (gold bar) with "killed by" (blue bar). Medals (original names;
+estimates for long histories. Tool of Destruction groups scoring kills by
+their recorded damage source. A game with no source data shows a message.
+With partial data, the "Not recorded" row gives the share of kills without a
+source. A player's report pairs each weapon's "kills with" (gold bar) with
+"killed by" (blue bar). Medals (original names;
 the badges are raster art from `public/art/medals`, named after the medal
 ids): Opening Act (first kill of a game), Last Word
 (last kill), Payback (kill your last killer within 10 s), Twofer / Hat

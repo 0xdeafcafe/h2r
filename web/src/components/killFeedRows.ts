@@ -1,6 +1,6 @@
 import type { Kill } from "../state/reducer";
 
-export type FeedKill = Pick<Kill, "position" | "tick" | "victim" | "killer" | "weapon" | "kind">;
+export type FeedKill = Pick<Kill, "position" | "tick" | "victim" | "killer" | "weapon" | "headshot" | "kind">;
 
 export function killFeedRows(kills: readonly FeedKill[], limit: number) {
   const first = Math.max(0, kills.length - Math.max(0, limit));

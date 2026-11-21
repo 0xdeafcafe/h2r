@@ -82,7 +82,7 @@ pub(super) fn install(b: &mut Builder) {
         let built = {
             let mut m = c.ctx.runtime().memory();
             let sp = c.cpu.esp;
-            let attempt = (|| {
+            (|| {
                 if m.u32(sp).ok()? != BUILD_RETURN { return None; }
                 let arg = |n: u32| m.u32(sp.checked_add(4 + 4*n)?).ok();
                 let layer = arg(3)?;
@@ -94,8 +94,7 @@ pub(super) fn install(b: &mut Builder) {
                     arg(4)? as u8, arg(5)?, old)?;
                 GuestMemory::write(&mut *m, slot, &entry.bytes).ok()?;
                 Some(entry.accepted)
-            })();
-            attempt
+            })()
         };
         if let Some(accepted) = built {
             c.cpu.eax = c.cpu.eax & !0xff | u32::from(accepted);

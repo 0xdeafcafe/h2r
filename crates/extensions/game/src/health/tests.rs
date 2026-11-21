@@ -385,6 +385,17 @@ fn halo1_maps_pick_halo1s_model_by_name_and_sandbox() {
 }
 
 #[test]
+fn a_draw_can_borrow_the_name_even_at_the_end_of_a_mapping() {
+    use engine::memory::FlatMemory;
+    let mut mem = FlatMemory::new(CACHE_MAP_NAME, 4);
+    mem.write(CACHE_MAP_NAME, b"abc\0").unwrap();
+    let mut field = [0; 32];
+    assert!(matches!(read_map_name(&mem, &mut field), Ok(std::borrow::Cow::Borrowed("abc"))));
+    mem.set_u8(CACHE_MAP_NAME + 3, b'd').unwrap();
+    assert!(read_map_name(&mem, &mut field).is_err());
+}
+
+#[test]
 fn the_loaded_map_name_reads_from_the_cache_header() {
     let mut g = FakeGuest::new();
     g.map(CACHE_MAP_NAME, 0x20);

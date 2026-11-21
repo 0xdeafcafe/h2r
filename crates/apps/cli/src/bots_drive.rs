@@ -418,6 +418,7 @@ impl Driver {
         matches!(self.step, Step::Done | Step::Stuck)
     }
 
+    #[cfg(test)]
     pub fn stuck(&self) -> bool {
         self.step == Step::Stuck
     }
@@ -802,12 +803,12 @@ impl Driver {
             presses: 0,
             tries,
         };
-        self.to_custom(now, now, 0, tries);
+        self.switch_to_custom(now, now, 0, tries);
     }
 
     /// On the Live menu: the next press toward Custom Game, from the row
     /// the last line showed.
-    fn to_custom(&mut self, now: u64, at: u64, presses: u32, tries: u32) {
+    fn switch_to_custom(&mut self, now: u64, at: u64, presses: u32, tries: u32) {
         if !self.live_menu() {
             // Something opened without our A (or a line is on its way).
             if now.saturating_sub(at.max(self.last_press)) > STEP_MS {
@@ -919,11 +920,7 @@ impl Driver {
                     if self.held(now, SETTLE_MS) {
                         self.at_live_menu(now, 0);
                     }
-                } else if self.on_the_way(now) {
-                    if !self.queue.is_empty() {
-                        self.step = Step::ToLive { at: now, tries };
-                    }
-                } else if self.in_picker(now) {
+                } else if self.on_the_way(now) || self.in_picker(now) {
                     if !self.queue.is_empty() {
                         self.step = Step::ToLive { at: now, tries };
                     }
@@ -997,7 +994,7 @@ impl Driver {
                 }
             }
             Step::ToCustom { at, presses, tries } => {
-                self.to_custom(now, at, presses, tries);
+                self.switch_to_custom(now, at, presses, tries);
             }
             Step::Hosting { at, tries } => {
                 if self.hosting_live() {

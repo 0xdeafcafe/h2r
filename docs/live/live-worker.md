@@ -25,6 +25,7 @@ without the crate's `native` feature, so the routes are not forked.
 | Game ingest (`/v1/ingest`) | `LiveHub` | Frames feed the read model and the stream. A per-game object is the fallback if one hub's CPU is not enough. |
 | Co-op relay (`/v1/sessions/{id}/relay`) | `CoopRelay`, one object per session id | Its traffic stays off the hub's thread, and the object can sit near the players (location hint). |
 | Content, cloud saves, published art | R2 bucket `BLOBS` (published art in a public bucket) | `BlobStore` over R2 (`crates/live/live-worker/src/r2.rs`). |
+| Screenshot classification | Workers AI binding `SCREENSHOT_AI` | A shared server classifier adapter sends only the normalized WebP to Clef Flash and reads its NSFW score. Without a valid result, the image stays pending. |
 | Title files | R2, under `title/<sha256>` (`live_server::titleblobs`) | A Durable Object's SQLite row holds at most 2 MB, but a title file may be up to 2 MiB (`MAX_TITLE_FILE`). Ones already in the log's `blobs` table are still read from there. |
 | Server key | Worker secret `H2_LIVE_SERVER_KEY` | `ServerIdentity::from_secret`. The id is the variable `H2_LIVE_ID` ([Settings](#settings)). |
 | Web app | Workers static assets (`web/dist`) | Served by Cloudflare ahead of the Worker; it is immutable and cached at the edge. |
@@ -171,6 +172,8 @@ checks, in order:
 - with `WAKE=S`, a hibernation wake with a socket open;
 - game ingest to JSON and packed readers, then game close, alarm-driven archive publication and reads of both stored segments;
 - R2: a multipart content upload, a cloud save and a 2 MiB title file;
+- the same screenshot HTTP contract as native Live, from proof rejection
+  and private preview through approval, reporting and removal;
 - warm timings;
 - with `--seed N`, 2N more events so a restart has a log to replay.
 
@@ -248,7 +251,7 @@ R2 simulated locally by miniflare.
 | Title file, 2 MiB | 243 ms to publish and read back (too big for a SQLite row) |
 
 `run.sh` makes a fresh admin gamertag each run (`H2_LIVE_ADMINS`); the
-smoke test signs up as it to publish the title file.
+smoke test uses the local dev operator key to register it and publish the title file as that account.
 
 ## Slice 5 results
 
@@ -324,13 +327,14 @@ the game socket's logic, driven by axum's task on a machine and by the hub
 (`crates/live/live-worker/src/ingest.rs`). The hub handles each ingest socket's
 messages one at a time, behind an async lock, since a message's work awaits
 the store. The shared session checks the 16 KiB message cap before parsing
-the auth message or decoding any frames. The attachment keeps the author
-and token expiry. After a wake, the sender's next keyframe restarts the
-packed decoder.
+auth or decoding frames, and accepts up to 16 frame records per message
+in batched mode. The attachment keeps the author, token expiry and
+ingest mode. After a wake, the sender's next keyframe restarts the packed
+decoder. [Ingest wire format](live-api.md#streams-websocket)
 
 ## Timers and hibernation
 
-A Durable Object with a timer pending does not hibernate. On a machine
+In-memory timers keep a Durable Object awake. On a machine
 the server spawns loops: the dispatcher's poll, the sweep every 5 s and the
 100 ms packed tick. The hub starts the server with `Timers::Driven`
 instead, which spawns none of them:
@@ -338,12 +342,18 @@ instead, which spawns none of them:
   writer, and its wake sees every append.
 - After every request, socket message and alarm, the hub sets its one
   alarm (`LiveHub::schedule`) for the earliest of:
-  - `Live::sweep_due`: the next presence to expire, game to end as lost,
-    or co-op session to expire;
+  - `Live::sweep_due_with_hosts`: the next presence, game, session, film,
+    dedicated host or usage deadline;
   - each stream or ingest socket's auth deadline or token end.
 
   With nothing due there is no alarm. The alarm runs the sweep and the
   sockets' checks, then sets the next one.
+- Metered [usage](live-api.md#usage) accumulates in memory and flushes to
+  SQLite after five seconds or 256 meter increments, whichever comes first.
+  Requests and ingest messages both arm the sweep while a batch is pending.
+  The flush deadline is shorter than Cloudflare's usual ten-second idle
+  period before hibernation. A deploy or abrupt reset can discard a pending
+  batch. [Durable Object lifecycle](https://developers.cloudflare.com/durable-objects/concepts/durable-object-lifecycle/)
 - The packed tick runs only while a game is live (`Live::packed_active`),
   and stops by itself when none is.
 
@@ -372,6 +382,10 @@ A body over 8 MiB (`doretry::KEEP_BODY_BYTES`), or one without a
 `Content-Length`, is sent once without a copy, so a 95 MiB content upload
 never sits twice in a 128 MB isolate; a reset under it is the 503 above,
 and the client sends it again.
+
+`POST /v1/presence/ping/batch` goes to the hub's shared HTTP router.
+The edge returns 503 on a transient hub failure so the client can issue
+new per-account tokens for its next attempt.
 
 Anything else thrown surfaces as before. The single-use token guard (`jti`)
 is in the hub's memory and is lost on a reset, so a repeat with the same
@@ -470,7 +484,10 @@ returns the WebSocket response. The supervisor uses the same port through
 `H2_TUNNEL_LISTEN=0.0.0.0:31100`. It drives the game through a private
 Unix socket. The image's `H2_AGENT` fallback stays on container loopback.
 Each binary message carries one tunnel frame end to end. The host assigns
-peer IDs and handles the game ports.
+peer IDs and handles the game ports. LiveHub forwards the optional
+`x-h2-actor-channel: 1` upgrade offer. The host's binary hello acknowledges
+the offer and the same socket carries actor frames.
+[Host tunnel](dedicated-host.md#host-tunnel)
 [WebSocket forwarding](https://developers.cloudflare.com/containers/examples/websocket/)
 
 Only provider start can launch a container. A liveness check reads
@@ -652,14 +669,15 @@ directory and the PNG renderer version. On a cache hit the Worker serves
 the PNG directly. On a miss it reads the manifest and two mask PNGs from
 `H2_LIVE_GAME_ART_URL` and composes them with the native server's Rust
 renderer. The Worker caches successful PNGs under their full revisioned
-URL, per data center, with `public, max-age=31536000, immutable`. Changing
-the published directory changes the revision. The stable redirect
-revalidates and errors are uncached.
+URL, per data center, with `public, max-age=31536000, immutable`; a
+request that bears `Authorization` never reads from or fills that cache,
+so a cache key holds no auth. Changing the published directory changes the
+revision. The stable redirect revalidates and errors are uncached.
 [Workers Cache API](https://developers.cloudflare.com/workers/runtime-apis/cache/)
 
-The `/v1/` cache rules (`public, … s-maxage=5` with an `ETag` for
-anonymous reads, `private, no-store` for the rest) are the router's, so
-they hold on the Worker too.
+The `/v1/` cache rules (`public, … s-maxage=5` with an `ETag` and `Vary:
+Authorization` for anonymous reads, `private, no-store` for the rest) are
+the router's, so they hold on the Worker too.
 
 The Worker's source art is the published copy. Extracting everything the
 viewer and the stats site use

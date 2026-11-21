@@ -1,11 +1,8 @@
 //! Frame pacing: keeping guest time in step with the wall clock.
 //!
-//! The kernel HLE's clock (`kernel::Clock`) is logical. It counts 100 ns
-//! ticks, never reads the host clock, and only moves when the scheduler
-//! finds every guest thread waiting and jumps to the next timer deadline (or
-//! when the host calls `Kernel::advance_time`). Guest compute is therefore
-//! free in guest time, and a game loop that waits for its next frame
-//! deadline would run as fast as the host CPU allows.
+//! The kernel counts guest work and idle advances in 100 ns ticks. Its
+//! periodic vblank source runs at 60 Hz on that logical clock. A fast host
+//! can reach a guest deadline in less wall time than the interval it spans.
 //!
 //! [`Pacer`] closes that gap without touching the kernel. The guest thread
 //! reports the guest clock between scheduler slices, and the pacer compares
@@ -18,9 +15,7 @@
 //!   to catch up;
 //! * otherwise run.
 //!
-//! [`VBlank`] is the display-refresh arithmetic the D3D HLE needs for
-//! `BlockUntilVerticalBlank`, `GetDisplayFieldStatus` and vertical-blank
-//! callbacks, expressed in the same 100 ns guest ticks.
+//! [`VBlank`] expresses display-refresh arithmetic in the same tick units.
 
 use std::time::Duration;
 

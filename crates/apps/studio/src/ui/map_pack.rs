@@ -9,7 +9,7 @@ use editor_core::map_groups::MapGroup;
 use super::map_list::{Group, MapListUi, Row};
 use crate::app::map_pack::HINT;
 use crate::app::{Action, App};
-use crate::theme::icon;
+use crate::theme::{self, icon};
 use crate::viewport::Gpu;
 
 /// The Map Pack group: its heading, then a row a map, or the hint.
@@ -18,11 +18,10 @@ pub fn group(
     app: &App,
     st: &mut MapListUi,
     gpu: &mut Gpu<'_>,
-    heading: impl Fn(&Ui, &str),
     actions: &mut Vec<Action>,
 ) {
     ui.spacing();
-    heading(ui, MapGroup::MapPack.label());
+    theme::section(ui, MapGroup::MapPack.label());
     match app.mappack() {
         Some(disc) => {
             let kind = if disc.is_folder() {

@@ -33,9 +33,9 @@ Two ways to have an editor to talk to:
   killed.
 
 The socket is `--socket`, else `$H2_STUDIO`, else `studio.sock` in the
-cache directory (`~/Library/Caches/h2recomp/` on macOS, beside the game's
-`agent.sock`). It is a Unix socket only, mode 0600; the editor never
-listens on TCP, and the client refuses a `tcp://` path.
+game's cache directory beside `agent.sock`. The editor accepts local AF_UNIX
+connections. The socket has mode 0600 on Unix. On Windows 10 version 1803
+or later it inherits the directory's ACL. The client refuses a `tcp://` path.
 
 The client is `h2 studio` (or `h2-editor call`, the same code):
 
@@ -74,15 +74,24 @@ What goes through actions, from both sides:
 | Open a source, map, package, Halo 1 map | `OpenSource`, `SelectMap`, `OpenPackageEntry` | menus, Maps list | `source.open`, `doc.open` |
 | A placement's field | `EditSelection {field, edit, merge}` (every selected placement), `SetField {block, index, field, value, merge}` (one), `SealEdit` | the inspector dispatches `EditSelection` (a drag merges under one key, sealed when it ends) | `scenario.set`, `tag.set` |
 | Any tag's field or block | `Tag(TagAction)` built by `app::tag_api::{set_field, block}` | the Tags tool | `tag.set`, `tag.block.*` |
+| Inspect tag fields | read the registry layout | Tags panel and inspector | `tag.fields {tag, path?}` |
 | Move and turn a placement | `MovePlacement` (one step); `GestureSet {position, ypr}`, `GestureScale`, `EndGesture` (a drag: one step, a multi-selection riding along) | the viewport gizmo dispatches the gesture actions every frame of a drag | `scenario.move` |
 | Add, duplicate, delete | `Add`, `DuplicateEntry`, `DeleteEntry` | outliner, toolbar, keys | `scenario.add`, `.duplicate`, `.delete`, `tag.block.*` |
-| Select, frame | `Select`, `FocusSelected`, `FrameAll` | outliner, viewport, keys | `scenario.select`, `view.camera` |
+| Select, frame | `Select`, `FocusSelected`, `FrameAll` | Scene, viewport, keys | `scenario.select`, `view.camera` |
+| Set fly speed | `SetFlySpeed` | viewport toolbar, wheel while flying | `view.camera {fly_speed}` |
+| Show or hide viewport layers | `SetLayers`, `SetOverlay` | Show popover, Scene legend, View > Halo 1 overlay | `view.layers` |
 | Navigate tag fields | `Navigate` | inspector links and breadcrumbs | `nav.go`, `nav.back`, `nav.forward` |
 | Undo, redo | `Undo`, `Redo` (the tool shown), `UndoIn(tool)`, `RedoIn(tool)` | Edit menu, keys | `doc.undo`, `doc.redo` |
-| Save | `SaveMapAs`, `SaveVariant`, `SaveHopper(As)`, `ExportVariant` | File menu, prompt | `doc.save`, `doc.save_as` |
+| Save | `Save`, `SaveMapAs`, `SaveVariant`, `SaveHopper(As)`, `ExportVariant` | File menu, shortcuts, prompt | `doc.save`, `doc.save_as` |
+| Go to anything | `GoTo` for tags and placements, existing map-open and menu actions for the other entries | Edit menu, Cmd/Ctrl+P | `ui.palette {query, run?}` |
 | Variant edits | `OpenVariant`, `NewVariant`, `CopyBuiltin`, `SetVariantName`, `SetSetting`, `ImportVariant*`, `DeleteVariant` | the variant tool | `doc.open`, `variant.*` |
 | Playlist edits | `EditPlaylist(PlaylistEdit)`, `SetEntryVariant` | the title and description fields, the table's row buttons, weights, Add, the unused slot's "Make a … playlist" buttons and "Remove playlist" apply the same `PlaylistEdit`s | `playlist.set`, `playlist.entry`, `playlist.entry_variant` |
 | UI screens | `UiPick`, `UiPress` | the UI Screens tool | `ui.pick`, `ui.press` |
+| Playtest | `play::playtest::decide` | F5, Play button, Game menu and confirmation dialog | `pair.playtest {confirm?, prompt?}` |
+| Playtest settings | `play::pair::Bridge` | Game menu and Game tab spawn picker | `pair.settings {spawn?, pause_while_editing?}` |
+| Live selection | `play::select` | click a live object, Aim select in the bar or Game menu | `mirror.pick`, `mirror.aim_select` |
+| Shared camera and player moves | `play::presence` | viewport camera menu, T and Shift+T | `mirror.camera`, `mirror.player` |
+| Game link | `play::pair::Request` | game link bar, Game menu and Game panel | `pair.connect`, `pair.disconnect`, `pair.auto`, `pair.play`, `pair.stop`, `pair.control`, `pair.edit` |
 
 The playlist fields apply their `PlaylistEdit`s inside the frame's
 `HopperSession::edit_with`, so a typing run stays one undo step (merged
@@ -106,19 +115,22 @@ map: its widget edits, with their own undo stack and save). Without one, a `doc.
 `doc.list` says, for each, whether it is open, its name, dirty, and
 whether it can undo and redo.
 
-Saving never writes where it wasn't told: `doc.save_as` takes a path;
-`doc.save` writes a variant to its save storage under the data root, a
-playlist file to its own path, and a map only to the file it was last
-saved as. A map is never saved over its source, and never into a Git
-checkout (`REFUSED`): what is patched from the user's disc stays out of
-repositories. Renders (`ui.render`, `view.snapshot`) default to
-`studio/` in the cache directory and refuse a path in a Git checkout too.
+`doc.save_as` takes a path. `doc.save` writes a variant to its save
+storage under the data root or a playlist file to its own path. For a
+map, `App::save_target` chooses the open package or the last standalone
+output. For a base map it opens the package form and returns
+`{saved: false, package_form: {name, dir}}`. The API keeps map outputs outside Git
+checkouts and uses a destination separate from the base source. Renders
+(`ui.render`, `view.snapshot`) default to `studio/` in the cache directory
+and refuse paths in Git checkouts.
 
 `doc.diff` is what a save would write against the document as opened.
-For a map, each patched run of bytes with its address, the block, entry
-and fields it holds (a removal's count word shows as `count`), and the
-blocks that grew; for playlists, which playlists changed and how; for a
-variant, its settings off the defaults.
+For a map it lists each patched run with its address and the blocks that
+grew. Placement patches identify the block, entry and fields. A
+removal's count word shows as `count`. BSP patches also carry a
+`bsp_region_offset`, the map-relative file offset of their region. For
+playlists it lists which playlists changed and how. For a variant it
+lists the settings that differ from the defaults.
 
 `source.maps` returns `map_entries` for the open Halo 2 source and
 `halo1_maps` for the read-only Halo 1 source. Each entry has the file
@@ -129,6 +141,18 @@ name, using file names while the cards load or when a card is missing.
 `map_pack` and `packages` entries also report `group` (`map_pack`,
 `packages` or `halo1_sandbox`) and use display-name order within each
 group. `maps` remains the array of Halo 2 file stems in source order.
+
+## Go to anything
+
+`ui.palette {query}` returns `{entries, totals}` from `app::commands::palette`.
+Entries are `{kind, label, detail}` in the order shown by Cmd/Ctrl+P:
+`map`, `tag`, `placement`, then `command`. Each kind has at most 20
+entries. `totals` counts all matches by kind before that cap. Each word
+of the query must match and case is ignored.
+
+Pass `run` with a zero-based index into the displayed entries to run the
+action and return its index as `ran`. An out-of-range index returns
+`INVALID_PARAMS`. Actions that would discard edits return `UNSAVED`.
 
 ## Methods
 
@@ -142,29 +166,29 @@ before anything runs (`INVALID_PARAMS`). Indices are 0-based throughout
 | Namespace | Methods |
 |---|---|
 | `session` | `status`, `methods`, `log` |
+| `host` | `memory {report?}`, `memory.history {since_ms?}`, `memory.heap {top?}`, `memory.gpu`, `memory.diff {from_ms}`, `memory.postmortem {pid?}`: the editor process's watchdog and flight recorder, answered on the connection thread as the game answers them ([Finding a leak after the fact](../runtime/agent-api.md#finding-a-leak-after-the-fact)) |
 | `source` | `open {path}`, `maps` |
 | `doc` | `list`, `open {map \| path \| package \| variant \| playlists}`, `save`, `save_as {path}`, `diff`, `undo`, `redo`, `close` |
-| `tag` | `list {group, name, query, path, limit, homes}`, `browse {map}`, `resources {tag}`, `export {tag, out, dependencies, resources}`, `import {path, tag, skip_missing}`, `read {tag, depth, elements, hex}`, `refs {tag}`, `follow {tag, ref}`, `set {tag, path, value}`, `block.add`, `block.remove`, `block.duplicate` |
+| `tag` | `list {group, name, query, path, limit, homes}`, `browse {map}`, `resources {tag}`, `export {tag, out, dependencies, resources}`, `import {path, tag, skip_missing}`, `read {tag, depth, elements, hex}`, `fields {tag, path?}`, `tree {root?, depth?}`, `refs {tag, limit?}`, `follow {tag, ref}`, `set {tag, path, value}`, `block.add`, `block.remove`, `block.duplicate` |
 | `scenario` | `blocks`, `list {block}`, `get`, `set {block, index, field, value}`, `add {block, like, position}`, `move {block, index, position, ypr}`, `delete`, `duplicate`, `select` |
 | `variant` | `list`, `get`, `set {setting, value}`, `rename`, `copy`, `export`, `import`, `delete` |
 | `playlist` | `list` (with `unused` per playlist and the `templates`), `get {playlist}`, `set {playlist, title, description, template, clear}` (`template`: make the slot a playlist of that kind, or give a playlist another kind; `clear: true`: make it unused; [live-matchmaking.md §6.10](../live/live-matchmaking.md)), `entry {playlist, op, entry, to, weight}`, `entry_variant` |
-| `ui` | `screens`, `pick {screen, state \| retail}`, `press {input}`, `widgets`, `render {out}` |
-| `pair` | `list`, `status`, `connect {socket}`, `disconnect`, `auto {enabled}` |
-| `mirror` | `status`, `objects {kind?, near?, limit?, at_tick?}` |
-| `view` | `camera {yaw, pitch, distance, target, focus, all}`, `snapshot {out, size, camera}`, `stats` |
+| `ui` | `palette {query, run?}`, `screens`, `pick {screen, state \| retail}`, `press {input}`, `widgets`, `render {out}` |
+| `pair` | `list`, `status`, `connect {socket?}`, `disconnect {leave?}`, `auto {enabled?}`, `play`, `stop`, `control {action, ticks?}`, `edit {enabled}` |
+| `mirror` | `status`, `objects {kind?, near?, limit?, at_tick?}`, `pick {from? \| ray?}`, `aim_select {enabled?}`, `camera {mode?, target?}`, `player {to, facing?}`, `pending`, `apply {what, at?, peers?}` |
+| `view` | `camera {yaw, pitch, distance, target, focus, all, fly_speed}`, `snapshot {out, size, camera}`, `stats`, `layers {set?, preset?, xray?}` |
 | `hud` | `list {map \| package}`, `read {hud, state}`, `set {hud, widget, field, value, merge}`, `move {hud, widget, x, y, mode, merge}`, `render {hud, state, out}`, `check {hud, state}`, `save_as {path}` |
 | `model` (planned) | `list`, `read`, `render`, `colors`, `emblem` |
 | `custom` (planned) | `list`, `set` |
+
+`view.camera` returns `fly_speed` in world units per second. Its optional
+`fly_speed` parameter accepts values from 0.5 through 1000.
 
 Notes on some:
 
 - **Tags.** A `tag` param is an id (`"0xe1230045"` or a number), a full
   name, `name.group`, or a group alone when the map has one tag of it
-  (`"scnr"`, `"matg"`). `tag.read` and `tag.refs` read the map as opened
-  from its source, with the layout schema (`tags::schema`): blocks with
-  their elements (`depth` levels, `elements` per block), tag references,
-  datums and string IDs, labelled by offset. `tag.follow` takes a
-  `tag.refs` path (`"0x98[0].0x0"`) or its position in that list.
+  (`"scnr"`, `"matg"`).
   `tag.read`, `tag.set` and `tag.block.*` are the Tags tool's
   (`api/tag_fields.rs` over `app::tag_api`, the registry
   `tags::registry`): every field by its label, paths from the root
@@ -175,6 +199,39 @@ Notes on some:
   the schema's structural view instead. The scenario tag's edits stay with
   the Scenario tool: `tag.set` paths `netgame_flags[0].position` and
   `tag.block.*` on `netgame_flags` run as the matching `scenario.*` calls.
+- **Field rows.** `tag.fields {tag, path?}` returns `{fields: [...]}` for the
+  root or a block element such as `parts[1]`. Offsets such as `+0x8[1]` also
+  select a block element. Each row has `name`, `offset` in bytes, `kind`,
+  `size` in bytes, `value`, and `description` (the definition's `doc` text,
+  or null). An offset path in `tag.set` addresses the typed field that starts
+  there. Its row gives the width accepted for an integer or enum value.
+  A block's value is its element count. Scalar values follow
+  `tag.read`. The rows use the open or browsed tag document and include
+  its pending edits (`api/tag_fields.rs`).
+- **Scenario tree.** `tag.tree {"root":"scenario","depth":2}` reads the
+  open scenario and returns `{root, unreachable, incomplete, truncated}`.
+  The root's children are Structure (BSPs with their lightmaps), Skies,
+  Objects (grouped by palette), Globals and Other references.
+  Each row has `label`, `tag` (ID), `group`, `name`, `placed` (the
+  count for a palette entry), `via`, `cycle`, `edited`, `cache` and
+  `children`. Section labels can include a count. `root` defaults to
+  `"scenario"`. `depth` limits references below palette entries
+  (default 3, maximum 8). `unreachable` uses the full walk from the
+  scenario and globals, including BSP-region links and unsaved
+  scenario reference edits. `incomplete` marks a partial reachability
+  walk and leaves `unreachable` empty. `truncated` indicates that an
+  object chain hit its display walk budget.
+- **References.** `tag.refs {tag, limit?}` lists direct links in the
+  open map, including in-memory tag edits and current scenario-owned
+  reference fields. Each result has `to` (the target ID),
+  `via` (the field path or scanned tag offset),
+  and `found` (`"field"` or `"scan"`), alongside `path`, `id`, `group`,
+  `name` and `missing` when the target is absent. The aligned scan covers
+  a group without a layout and supplements the scenario's structural
+  schema. Tags whose payload lives in a separate BSP region use the
+  source schema. `tag.follow` accepts a result's offset path
+  (`"0x98[0].0x0"`), `via`, or its position in the list. The list has
+  a default limit of 500.
 - **Tag chains.** `tag.chain {"block":"weapons","index":0}` follows a
   placement's palette or item reference in the open map.
   `tag.chain {"tag":"weap","depth":2}` starts at a tag in the document
@@ -187,13 +244,14 @@ Notes on some:
   name or ID, if known), `cycle` and `children`. A missing target keeps
   its ID and path with null tag metadata. Cycles stop the current branch.
   `truncated` means a traversal limit beyond the requested depth cuts
-  the result short. Live handles and usage counts belong to later slices
-  of the [click-to-edit design](click-to-edit.md).
+  the result short. Live handles belong to the [click-to-edit design](click-to-edit.md).
 - **Inspector navigation.** `scenario.select {"tag":"weap"}` makes
   a tag the inspector's selection and clears the placement selection.
   `nav.go {"tag":"hlmt","path":"render_model"}` focuses a tag and,
   optionally, one field by its registry path. It keeps the viewport
-  selection. Both resolve tags in the open map. `nav.status`,
+  selection. `nav.go {"block":"weapons","index":0}` selects a placement.
+  `nav.go {"panel":"pending"}` opens the Pending tab. These are also the
+  target forms returned for placement and panel issues. `nav.status`,
   `nav.back` and `nav.forward` take no params. All `nav.*` methods
   return `{selected, tag, path, breadcrumbs, can_back, can_forward}`.
   `selected` is a placement `{block,index}`, a tag `{tag}` or null.
@@ -206,7 +264,7 @@ Notes on some:
   `single_player_shared`, `mainmenu`, any level); `tag.browse {}` goes
   back to the open map. `tag.list`, `tag.read`, `tag.set` (refused),
   `tag.resources` and `tag.export` then work on the browsed map;
-  `tag.read {"raw": true}` and `tag.refs` still read the open map.
+  `tag.tree`, `tag.refs` and `tag.read {"raw": true}` use the open map.
   `tag.list` searches like the Tags tool (`query`: words each in
   `group:name`; `path`: a folder) and marks each tag with `elsewhere`
   (the shared cache that has the data of a tag with none here) and, with
@@ -226,8 +284,8 @@ Notes on some:
   `GROWTH_REFUSAL` the window shows; `data` has the count and capacity);
   `.delete` where something refers to entries by index. A new entry goes
   to `position`, else the camera focus, in one undo step.
-- **Pairing.** The editor pairs with a running game (the Game panel's
-  Pair; [editor-guide.md](editor-guide.md), "Play from the editor").
+- **Pairing.** The editor pairs with a running game through the game
+  link in the bar. [Editor guide](editor-guide.md#play-from-the-editor)
   `pair.list` looks at the games now: the sockets in the agents directory
   where `h2 play` listens by default (`agent_proto::discover`), plus the
   default and `$H2_AGENT` sockets and Play's own. Each entry has its
@@ -241,6 +299,81 @@ Notes on some:
   `pair.status` for `state: "connected"`. `pair.connect` with no `socket`
   takes the one game running, and is refused with none or several.
   `pair.auto {enabled}` reads or sets auto-pair, on by default.
+  The `link` object in `pair.status` contains `state`, the pill's
+  `text` and its `why` tooltip (string or null). Its states are
+  `no_game`, `found`, `connecting`, `reconnecting`, `viewing`, `editing`, `blocked`,
+  `other_map` and `lost`. The top-level `state` continues to report the
+  socket connection. When a game omits an optional method, `link.unavailable`
+  lists the affected features and methods. `link.issues` is an array of
+  `{kind,text,target}` rows. The kinds are `waiting`, `reload`,
+  `refused` and `mismatch`. Pass a row's `target` directly to `nav.go`
+  to inspect the field, placement, tag or Pending tab. A refused player
+  move has a target that opens Pending and stays active for up to four seconds.
+  A successful move or a change of scope clears the issue.
+  A clear link reports
+  an empty array. The pill shows the largest count. During reconnect, `link.elapsed_ms` counts from the drop.
+- **Playtest.** `pair.playtest {}` queues F5 and reports the step for the
+  window's published state: `launch`, `pair`, `resume`, `reload` or
+  `ask`. A reload or launch using the saved player place includes
+  `place: {pos, yaw, pitch}` (angles in degrees). An unavailable reload
+  reports the manual-load instruction in `why`. An `ask` includes its
+  integer `prompt` ID. Echo that ID with `confirm` to answer the same
+  prompt. Closing it, changing its operation or editing the document
+  expires the ID. A bare `confirm` answers the prompt open at the time
+  of the call. For `ask: "send"` choose `"send"` or `"cancel"`. For
+  `ask: "load"` choose `"load"`, `"open"` (open the game's map here)
+  or `"cancel"`. An open or cancel reply carries the choice in `answer`.
+  After automatic pairing, poll `pair.status.ask` and `pair.status.prompt`
+  for the follow-up prompt. A stale offer or mismatched map identity
+  returns `REFUSED` with the reason.
+  `pair.settings` reads or sets `pause_while_editing` (default false)
+  and `spawn` (`auto`, `level`, `resume`, `camera` or `selection`).
+- **Game controls.** `pair.play` queues the same action as F5. `pair.stop` stops
+  the editor's own game. `pair.control` accepts `pause`, `resume` or
+  `step` as `action`. Step requires a paused game and accepts `ticks`
+  from 1 to 600 (default 1). `pair.edit {enabled}` sets the Edit switch
+  on the pairing. A game that is already running pairs in View mode.
+  Play starts its own game in Edit mode. The four calls need the window,
+  queue a request on it and return `{"requested":true}`. Read
+  `pair.status` for the result in a later frame. A call that needs a
+  game, an open map or a pause returns `REFUSED` when that requirement
+  is missing. The pill's **Open** action uses the normal map selection
+  path (`doc.open {map}` for a map in the source).
+- **Live tag editing.** Pairing starts in View. Play starts the editor's own
+  copy in Edit. `pair.edit` returns the requested `mode` or `REFUSED` with
+  the reason. The editor checks the loaded file checksum, epoch and session
+  from the game's `edit.map`. In Edit, tag fields and placement fields travel
+  together in one `edit.batch`, each with its expected `was` value. Tags use
+  the `at` form with hex bytes. The optional `known_epoch` on `edit.map`
+  refreshes the loaded datum table used to check reference targets. Undo and redo use the same check.
+  `mirror.pending` returns `pending` rows with `doc,path,class,why` and an optional `tag`,
+  the game’s existing `journal` from `edit.changes`, and `leaving`.
+  A placement block with a different layout revision from the loaded copy
+  appears as one `Reload` row. Its fields stay out of the batch until undo,
+  redo, or loading a Play copy brings the revisions into agreement.
+  `mirror.apply {what:"send"}` enters Edit. On MISMATCH, `take` and
+  `overwrite` require the row’s numeric `at`. `take` reads the field at the
+  current game boundary before applying the bytes to the document and baseline.
+  A failed read or a relocated field leaves the conflict pending. A row with
+  `resolvable:false` opens Pending and disables both resolutions. Take and
+  Overwrite require the tag's field path to resolve to the refused address. On rejoin, `adopt` takes
+  the game's current bytes as the baseline and preserves the document.
+  `revert` uses the game's reported restored and left-alone bytes as the
+  baseline for the next send. A System Link host
+  confirms the peer count using `confirm` with `peers`, including when
+  another map is loaded. Confirmation applies to the paired host, map epoch
+  and peer count. Field writes still require the open map. `reload` writes
+  a play copy. In Edit, `respawn` applies acknowledged creation-time
+  placement edits through `world.object.respawn`. Moving, deleting and
+  undoing placements use the same document actions as the window. The
+  game link calls the advertised object methods with the current host
+  confirmation. Object rows in `mirror.pending` explain changes that
+  need a reload or cannot reach a live object.
+  `pair.disconnect {leave:"keep"|"restore"}` makes the leave choice over the
+  API. During restore, `mirror.pending.leaving` stays true while the editor
+  waits for an outstanding batch, reverts the journal, and disconnects on
+  acknowledgement. Omitting `leave` opens the prompt in the window. Both `edit.set` and
+  `edit.revert` enforce the same game-side session check as `edit.batch`.
 - **Live mirror.** The paired window reads the game's `objects` and
   `players` stream. `mirror.status` reports the stream state, layers,
   frame rate, presentation delay, dropped and skipped counts, and the
@@ -253,6 +386,64 @@ Notes on some:
   of attached objects are relative to their parents. `near` takes
   `{point: [x,y,z], radius}` in world space. Bind-pose objects have no
   streamed nodes. Pairing and presentation are described in [live-mirror.md](live-mirror.md).
+- **Live selection.** `mirror.pick {"from":"aim"}` uses the local player's
+  aim and skips that player's unit and held weapon. A viewport click in
+  Player's eyes skips the viewed player's unit and held weapon. Supply
+  `{"ray":{"origin":[x,y,z],"dir":[dx,dy,dz]}}` for an unrestricted world ray.
+  The first live object in front of the level returns
+  `{object, placement, tag, point, distance}`. Handles are hex strings,
+  `placement` is a linked `{block,index}` or null, and a miss returns null.
+  The link uses the object's kind and placement index in the loaded block
+  layout. If a structural edit changes that layout, the object stays
+  unlinked until undo or a reload restores matching slots. For a preview, the
+  current map’s respawn receipt links its full salted ID to its document
+  placement, including after a swap-removal changes the row index.
+  Picking over the socket leaves selection alone. Clicking in the viewport
+  selects the linked placement or the live object and its available definition.
+  `mirror.aim_select {enabled?}` returns `{enabled,candidate}`. The
+  candidate has the same shape as a pick. Holding the displayed aim on one
+  object for 0.6 seconds selects it. A stream cut restarts the dwell timer.
+  In View and Edit the paired window renews its selection and candidate
+  marks once a second on the game's display. Unpairing clears the link
+  plate and marks. Pairing again to the same endpoint waits for the old
+  connection's clear before sending either lease. A dropped connection
+  lets the three-second leases expire. `pair.status.link.unavailable` reports
+  missing presentation methods and the host's display refusal. While the
+  game waits for a genuine frame, a `drawn: false` reply keeps the marks
+  pending without a warning. Individual refused marks still report their
+  indices. A failed clear retries at the renewal interval. The game plate
+  shows the largest link issue count, or `Aim select` when aim selection
+  is on and the count is zero.
+- **Shared camera.** `mirror.camera {mode?,target?}` returns `{mode,target}`.
+  `free` releases the editor viewport, `follow` keeps the eye's orbit offset
+  as the local player moves, and `eyes` looks along the player's aim from
+  eye height. An explicit `player.<index>` keeps the camera on that local
+  player across samples. While its unit is missing, the viewport holds its
+  pose and resumes following when the unit returns. A map change or unpair
+  releases the camera. The free camera reports null. The viewport toolbar
+  has the same modes. `mirror.player {to,facing?}` queues a move in Edit
+  and returns `{"requested":true}`. Give a world position, `"camera"` for
+  the ground under the editor camera's focus, or `"cursor"` for the level under the
+  viewport pointer. T uses the cursor. Shift+T or `facing:true` also sends
+  the camera's yaw and pitch. A missing destination, current player sample,
+  permission or game method returns `REFUSED`, as does a pending reload or
+  a playtest transition. The control worker checks the latest exact sample
+  for the expected epoch and salted unit immediately before the game call.
+- **Viewport layers.** `view.layers {}` returns `{layers, xray}`. Each layer
+  has a stable `name` for calls, a display `label`, a `group`, the visibility
+  switch `on`, a `count` and its legend `color` (RGB, each channel 0 to 1).
+  Counts include hidden entries. For example,
+  `view.layers {"preset":"everything","set":{"fog":false},"xray":true}`
+  shows every layer except fog and draws occluded overlays at quarter
+  strength. Presets are `art`, `gameplay`, `collision` and `everything`.
+  Individual switches apply after the preset. An invalid name or value
+  rejects the entire request. The window and `view.snapshot` share these
+  settings.
+  The Gameplay rows are `spawn_points`, `flags` and `netgame_items`. Their
+  counts cover starting locations, netgame flags and netgame equipment,
+  respectively. Each uses its matching placement block switch as well.
+  Turn off `markers` to hide annotations, including the flag-type and
+  equipment respawn labels. The Art preset keeps equipment models visible.
 - **Renders.** `ui.render` draws on the CPU (no GPU needed); `view.snapshot`
   renders the open map offscreen through the viewport's own renderer
   (wgpu, no window) and answers `NO_GPU` on a machine without an adapter.
@@ -312,6 +503,8 @@ the window and the API stay one path.
   (`TagIo`, after it) answers `tag.list` (replacing the built-in one),
   `tag.browse`, `tag.resources`, `tag.export` and `tag.import` through
   `Action::BrowseTags`, `Action::TagExport` and `Action::TagImport`.
+  `api/tags.rs` registers `TagGraph` for `tag.tree` and `tag.refs`.
+  The tree and `tag.follow` share the reference reader with `tag.refs`.
 - **HUDs (studio-hud, landed).** `api/hud.rs`: `hud.list` opens a map of
   the source (or a package) in the HUD tool and lists its `nhdt` tags
   and who names them; `hud.read` shows one and gives its widgets
@@ -463,6 +656,8 @@ system temp directory):
   document, render (refused in a Git checkout), save as and re-open; and
   the window's actions and the API's make identical patches;
 - a registered provider answers a planned method;
+- `view.layers` validates changes atomically, shares the Halo 1 menu switch,
+  and changes the invented map’s snapshot pixels on a machine with a GPU;
 - `view.stats` of an invented scene reports its BSP's lighting, its
   triangles by blend, its materials and its sky's sun and fog
   (`api::view::tests`);

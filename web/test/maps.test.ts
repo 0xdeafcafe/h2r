@@ -4,7 +4,7 @@
 
 import { describe, expect, test } from "bun:test";
 import {
-  PackageCache, formatBytes, geometryChoice, isMapId, lookupFromResponse, mapGroupKey, mapGroupLabel,
+  PackageCache, readModPhoto, formatBytes, geometryChoice, isMapId, lookupFromResponse, mapGroupKey, mapGroupLabel,
   packImageUrl, packageImageUrl, packageScreenshotUrl, packageTitle, parseMapSummaries, parseMapSummary, pictureChoice, type PackageLookup,
 } from "../src/lib/maps";
 import { parseSession } from "../src/lib/sessions";
@@ -27,6 +27,17 @@ const wire = (over: Record<string, unknown> = {}) => ({
   ...over,
 });
 const ok = (over?: Record<string, unknown>): PackageLookup => lookupFromResponse(200, { map: wire(over), missing: [], position: 7 });
+
+describe("full-size photos", () => {
+  test("only raster bytes get a dashboard blob URL, with the detected type", async () => {
+    const mislabeled = new Response(new Uint8Array([0xff, 0xd8, 0xff, 0xe0]), {
+      headers: { "content-type": "text/plain" },
+    });
+    expect((await readModPhoto(mislabeled)).type).toBe("image/jpeg");
+    await expect(readModPhoto(new Response("<svg/>", { headers: { "content-type": "image/png" } }))).rejects.toThrow("expected");
+    await expect(readModPhoto(new Response(new Uint8Array(512 * 1024 + 1)))).rejects.toThrow("too large");
+  });
+});
 
 describe("reading packages", () => {
   test("a summary keeps what the server sent and leaves absent options out", () => {

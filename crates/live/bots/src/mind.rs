@@ -17,12 +17,14 @@ use crate::incoming::{Evasion, Grenade};
 use crate::nav::Follower;
 use crate::objective::{self, Goal};
 use crate::sound::ShotSound;
-use crate::stuck::{Stuck, around_bodies};
+use crate::stuck::Stuck;
 use crate::tactics::{self, Shot, Style, Tactics};
 
 pub(crate) mod feel;
 mod look;
+mod order;
 pub(crate) mod pad;
+mod route;
 #[cfg(test)]
 use look::turn_rate;
 
@@ -30,6 +32,8 @@ use feel::{Rng, reached};
 pub use look::AimTrace;
 use look::{Hand, angle_error};
 use pad::{Buttons, Feet, Fidget, Tap};
+pub use order::OrderView;
+pub use route::{RouteMotion, RoutePad};
 
 /// How good a bot is (docs/game/bots.md, section 3.4).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -302,6 +306,19 @@ pub struct Mind {
     pub glitches: crate::glitches::Glitches,
     /// This map's super bounce spots (crate::glitches::spots).
     pub bounces: Vec<crate::glitches::Bounce>,
+    /// This map's measured and scanned spots (crate::spots): what bounce
+    /// routes plan with.
+    pub known: crate::spots::Known,
+    /// The level pair word of the bot's player, when the host reads it
+    /// ([`crate::set_pair_reader`]); `None` otherwise.
+    pub pair_word: Option<u32>,
+    /// A bounce route asked for and not yet planned (`mind::order`).
+    asked: Option<order::Asked>,
+    /// The bounce route under way.
+    order: Option<order::Ordered>,
+    /// How the last one ended.
+    ended: Option<order::Ended>,
+    route_pad: RoutePad,
     show_off: crate::glitches::ShowOff,
     stunt: Option<Stunt>,
 }
@@ -336,6 +353,12 @@ fn dist_xy(a: Vec3, b: Vec3) -> f32 {
 fn up(p: Vec3, h: f32) -> Vec3 {
     [p[0], p[1], p[2] + h]
 }
+
+fn movement_stick([x, y]: [f32; 2], yaw: f32) -> (f32, f32) {
+    let (s, c) = yaw.sin_cos();
+    (x * s - y * c, x * c + y * s)
+}
+
 fn angles(v: Vec3) -> (f32, f32) {
     let flat = (v[0] * v[0] + v[1] * v[1]).sqrt();
     (v[1].atan2(v[0]), v[2].atan2(flat))
@@ -420,6 +443,12 @@ impl Mind {
             vehicles: Default::default(),
             glitches: crate::glitches::Glitches::Off,
             bounces: Vec::new(),
+            known: Default::default(),
+            pair_word: None,
+            asked: None,
+            order: None,
+            ended: None,
+            route_pad: RoutePad::default(),
             show_off: crate::glitches::ShowOff::new(seed ^ 0x5b0_0ce),
             stunt: None,
         }
@@ -503,6 +532,7 @@ impl Mind {
         self.paired_pistol.reset();
         self.show_off.reset();
         self.stunt = None;
+        self.cancel_order("died");
         self.vehicles.reset();
         self.tick = None;
     }
@@ -624,6 +654,10 @@ impl Mind {
             );
         }
 
+        // A bounce route plays the whole pad (mind::order).
+        if let Some(pad) = self.order_pad(p, me, map, seen) {
+            return pad;
+        }
         let eye = up(me.position, EYE);
         let facing = angles(me.aim);
         let behavior = self.decisions.behavior();
@@ -1088,24 +1122,7 @@ impl Mind {
             Doing::Recover(from) => {
                 // Back away from it, facing it, while the shields come back.
                 look = Some(up(from, CHEST));
-                let away = sub(me.position, from);
-                let flat = (away[0] * away[0] + away[1] * away[1]).sqrt().max(1e-6);
-                let d = [away[0] / flat, away[1] / flat];
-                let on_mesh = |d: [f32; 2]| {
-                    map.is_none_or(|m| {
-                        m.nav
-                            .locate(add(me.position, [d[0] * 0.6, d[1] * 0.6, 0.0]), 1.0)
-                            .is_some()
-                    })
-                };
-                let side = [-d[1], d[0]];
-                let pick = [d, side, [-side[0], -side[1]]]
-                    .into_iter()
-                    .find(|&d| on_mesh(d));
-                if let Some(d) = pick {
-                    let d = around_bodies(me.position, d, bodies);
-                    walk = Some(Walk { walk: d, face: d });
-                }
+                walk = self.away(me.position, from, map, bodies);
                 self.follower = None;
             }
             Doing::Rearm(at) => {
@@ -1482,15 +1499,14 @@ impl Mind {
         } else {
             1.0
         };
-        let [x, y] = self.feet.step(
+        let walk = self.feet.step(
             walk.map(|w| w.walk),
             dt,
             slow,
             jump || dodge.is_some(),
             |d| map.is_none_or(|m| crate::moves::bend_clear(m, me.position, d)),
         );
-        let (s, c) = facing.0.sin_cos();
-        pad.left_stick = (x * s - y * c, x * c + y * s);
+        pad.left_stick = movement_stick(walk, facing.0);
         // An emote over a dumb death: stand, crouch in rhythm, nothing
         // else. Never while an objective is live for it: carrying,
         // guarding, hunting a carrier, in or going to the hill.
@@ -1532,7 +1548,7 @@ impl Mind {
         bodies: &[Vec3],
     ) -> Option<Walk> {
         self.navigated = true;
-        let (dir, waypoint, pace) = match map {
+        let (dir, waypoint, pace, follower_jump) = match map {
             None => {
                 let d = [goal[0] - at[0], goal[1] - at[1]];
                 let l = (d[0] * d[0] + d[1] * d[1]).sqrt();
@@ -1543,6 +1559,7 @@ impl Mind {
                     [d[0] / l, d[1] / l],
                     Some(goal),
                     crate::nav::approach_pace(l),
+                    false,
                 )
             }
             Some(m) => {
@@ -1581,8 +1598,8 @@ impl Mind {
                     self.foot_plan.idle();
                 }
                 let f = self.follower.as_mut()?;
-                let s = f.steer_with_clearance(at, u64::from(tick), |d| {
-                    crate::moves::bend_clear(m, at, d)
+                let s = f.steer_with_clearance(at, u64::from(tick), |d, reach| {
+                    crate::moves::standable_within(m, at, d, reach)
                 });
                 if s.replan {
                     let done = f.done();
@@ -1595,13 +1612,13 @@ impl Mind {
                     self.follower = None;
                     return (!done).then_some(Walk::straight([0.0, 0.0]));
                 }
-                if s.jump {
-                    pad.buttons.set(JUMP, true);
-                }
                 if s.crouch {
                     pad.buttons.set(CROUCH, true);
                 }
                 if s.traversing {
+                    if s.jump {
+                        pad.buttons.set(JUMP, true);
+                    }
                     self.stuck.reset();
                     let dir = if f.committed() || crate::moves::headroom(m, at, s.dir) {
                         s.dir
@@ -1610,7 +1627,7 @@ impl Mind {
                     };
                     return Some(Walk::straight(dir));
                 }
-                (s.dir, f.waypoint(), f.pace(at))
+                (s.dir, f.waypoint(), f.pace(at), s.jump)
             }
         };
         let u = self.stuck.step(tick, at, Some(dir), waypoint, Some(goal));
@@ -1619,28 +1636,63 @@ impl Mind {
             self.gave_up = true;
             return Some(Walk::straight([0.0, 0.0]));
         }
-        if u.jump {
-            pad.buttons.set(JUMP, true);
-        }
         if u.crouch {
             pad.buttons.set(CROUCH, true);
         }
-        let walk = around_bodies(at, u.dir.unwrap_or(dir), bodies);
-        let walk = if !pad.buttons.contains(JUMP)
-            && map.is_some_and(|m| !crate::moves::headroom(m, at, walk))
-        {
-            [0.0; 2]
-        } else {
-            walk
+        let planned_step = map.is_some() && self.follower.as_ref().is_some_and(Follower::stepping_off);
+        // Try the other side if an unstick sidestep is blocked, then
+        // fall back to the path direction. The path steers planned jumps
+        // and drops directly toward their next waypoint.
+        let sidestep = match (map, u.dir) {
+            _ if planned_step => None,
+            (Some(m), Some(d)) if !crate::moves::standable(m, at, d) => {
+                let mirrored = Self::mirror_across(d, dir);
+                crate::moves::standable(m, at, mirrored).then_some(mirrored)
+            }
+            (_, d) => d,
         };
+        let mut walk = if planned_step {
+            dir
+        } else {
+            crate::moves::around_bodies_safe(map, at, sidestep.unwrap_or(dir), bodies)
+        };
+        let wants_jump = follower_jump || u.jump;
+        let already_jumping = pad.buttons.contains(JUMP);
+        let jumping = (wants_jump || already_jumping)
+            && map.is_none_or(|m| planned_step || crate::moves::jumpable(m, at, walk));
+        if wants_jump && jumping {
+            pad.buttons.set(JUMP, true);
+        }
+        if !jumping
+            && (already_jumping
+                || map.is_some_and(|m| {
+                    if planned_step {
+                        !crate::moves::headroom(m, at, walk)
+                    } else {
+                        let reach = waypoint.map_or(1.0, |w| dist_xy(w, at));
+                        !crate::moves::standable_within(m, at, walk, reach)
+                    }
+                }))
+        {
+            walk = [0.0; 2];
+        }
         Some(Walk {
-            walk: if u.dir.is_some() || pad.buttons.contains(JUMP) {
+            walk: if sidestep.is_some() || jumping {
                 walk
             } else {
                 walk.map(|c| c * pace)
             },
             face: dir,
         })
+    }
+
+    /// `d` mirrored across the line of `axis` (its forward part kept, its
+    /// side flipped).
+    fn mirror_across(d: [f32; 2], axis: [f32; 2]) -> [f32; 2] {
+        let l = axis[0].hypot(axis[1]).max(1e-6);
+        let u = [axis[0] / l, axis[1] / l];
+        let along = d[0] * u[0] + d[1] * u[1];
+        [2.0 * along * u[0] - d[0], 2.0 * along * u[1] - d[1]]
     }
 
     /// Stops any glitch under way (crate::glitches): the fight trick in
@@ -1676,6 +1728,32 @@ impl Mind {
     /// A show-off (crate::glitches): a super bounce at a spot of this
     /// map's within [`BOUNCE_REACH`], else a crouch jump.
     fn pick_stunt(&mut self, at: Vec3, tick: u32) -> Option<Stunt> {
+        // With a crouch spot to prime at, a bounce is a route: prime,
+        // then the spot (an unprimed landing does not bounce). The
+        // nearest site not given up on; the plan looks at that one only,
+        // so a map with hundreds of spots costs a show-off a few queries.
+        if !self.known.crouches.is_empty() {
+            let site = self
+                .known
+                .sites
+                .iter()
+                .filter(|s| {
+                    s.standing()
+                        && dist_xy(s.bounce.stand, at) < BOUNCE_REACH
+                        && !self.stuck.blocked(s.bounce.stand, tick)
+                })
+                .min_by(|a, b| dist_xy(a.bounce.stand, at).total_cmp(&dist_xy(b.bounce.stand, at)))
+                .copied();
+            if let Some(site) = site {
+                self.asked = Some(order::Asked {
+                    to: at,
+                    mode: crate::bounce_route::Mode::Fun,
+                    show_off: true,
+                    site: Some(site),
+                });
+                return None;
+            }
+        }
         let spot = self
             .bounces
             .iter()
@@ -1749,23 +1827,17 @@ impl Mind {
     }
 
     /// A step away from `from` on the nav mesh (straight back, else to one
-    /// side or the other), around bodies.
+    /// side or the other), with footing checks for turns around bodies.
     fn away(&self, at: Vec3, from: Vec3, map: Option<&MapData>, bodies: &[Vec3]) -> Option<Walk> {
         let a = sub(at, from);
         let flat = (a[0] * a[0] + a[1] * a[1]).sqrt().max(1e-6);
         let d = [a[0] / flat, a[1] / flat];
-        let on_mesh = |d: [f32; 2]| {
-            map.is_none_or(|m| {
-                m.nav
-                    .locate(add(at, [d[0] * 0.6, d[1] * 0.6, 0.0]), 1.0)
-                    .is_some()
-            })
-        };
+        let on_mesh = |d: [f32; 2]| map.is_none_or(|m| crate::moves::standable(m, at, d));
         let side = [-d[1], d[0]];
         [d, side, [-side[0], -side[1]]]
             .into_iter()
             .find(|&d| on_mesh(d))
-            .map(|d| Walk::straight(around_bodies(at, d, bodies)))
+            .map(|d| Walk::straight(crate::moves::around_bodies_safe(map, at, d, bodies)))
     }
 
     /// Somewhere to roam to (crate::roam): where enemies were seen

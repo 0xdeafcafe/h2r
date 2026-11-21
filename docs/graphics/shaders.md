@@ -776,7 +776,10 @@ and flat shading.
 | 1 | 2n+1 | stage n sampler |
 
 `vsh::VertexUniforms::to_bytes` and `psh::PixelUniforms::to_bytes` produce
-the buffer contents. Vertex register `vN` is `@location(N)`.
+the buffer contents. The final 16 bytes of `XpsUniforms` hold the W clamp
+in `depth_range` and the polygon-stipple grid in `stipple_scale`. Each
+grid lane holds one axis's guest extent in the low 16 bits and its host
+extent in the high 16 bits. Vertex register `vN` is `@location(N)`.
 `VertexOptions::provided_inputs` names the registers the vertex layout
 supplies. Any other register the program reads comes from
 `XvsUniforms.defaults[N]` (the `SetVertexData4f` value). The varyings are

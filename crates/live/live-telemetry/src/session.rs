@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use live_proto::game::{
-    Frame, FrameActor, FrameAnim, FrameHit, FrameItem, FrameMachine, FrameObject, FramePlayer,
+    ActorKilled, Frame, FrameActor, FrameAnim, FrameHit, FrameItem, FrameMachine, FrameObject, FramePlayer,
     FrameProjectile, FrameVehicle, GameEnded, MAX_FRAME_ACTORS, MAX_FRAME_HITS, MAX_FRAME_ITEMS,
     MAX_FRAME_MACHINES, MAX_FRAME_OBJECTS, MAX_FRAME_PROJECTILES, MAX_FRAME_SEAT, MAX_FRAME_SHIELD,
     MAX_FRAME_SHOTS, MAX_FRAME_SPEED, MAX_FRAME_VEHICLES, MAX_MACHINE_POSITIONS,
@@ -162,6 +162,7 @@ pub struct Session {
     current: Option<Match>,
     /// Set while the console is in a matchmaking game.
     playlist: Option<Playlist>,
+    pub(crate) hosted_session: Option<String>,
     /// The server's bot roster the next multiplayer games run with.
     bots: Option<Bots>,
     /// The `MapId` of the map the next game starts on, when a package
@@ -243,6 +244,7 @@ impl Session {
             sim: None,
             current: None,
             playlist: None,
+            hosted_session: None,
             bots: None,
             map_id: None,
             multiplayer_skulls: None,
@@ -443,9 +445,8 @@ impl Session {
             players: players.iter().map(|p| p.wire_player()).collect(),
             kind: Some(kind.into()),
             playlist: playlist.as_ref().and_then(|p| p.name.clone()),
-            // A matchmaking game's session, else the session a bot
-            // roster was given for (the server checks `bot: true` entries
-            // against it, docs/game/bots.md §9.3).
+            // An assigned match and a rostered game retain their existing session.
+            // An ordinary custom host can also advertise a game without bots.
             session_id: playlist
                 .as_ref()
                 .and_then(|p| p.session_id.clone())
@@ -454,6 +455,9 @@ impl Session {
                         .as_ref()
                         .filter(|_| !campaign && sim.is_none())
                         .and_then(|b| b.session_id.clone())
+                })
+                .or_else(|| {
+                    if !campaign && sim.is_none() { self.hosted_session.clone() } else { None }
                 }),
             playlist_id: playlist.map(|p| p.id),
             difficulty,
@@ -927,6 +931,7 @@ impl Session {
         tick: u64,
         attacker: Option<u32>,
         victim: u32,
+        source: Option<layout::KillSource>,
         object: Option<ObjectState>,
         cinematic: bool,
     ) {
@@ -960,9 +965,40 @@ impl Session {
                 tick,
                 victim,
                 killer: attacker,
-                weapon: None,
+                weapon: source.map(|s| s.name.to_owned()),
+                headshot: source.and_then(|s| s.headshot),
                 kind: kind.into(),
                 pos: object.map(|o| o.pos),
+            },
+        );
+    }
+
+    pub(crate) fn actor_killed(
+        &mut self,
+        tick: u64,
+        unit: u32,
+        character: Option<u32>,
+        owner: Option<u32>,
+        weapon: u8,
+    ) {
+        let Some(current) = self.current.as_mut().filter(|m| !m.ended && !m.cinematic) else {
+            return;
+        };
+        let killer = owner.and_then(|datum| {
+            current.players.iter().find(|p| p.datum == datum).map(|p| p.player.index)
+        });
+        let tick = current.clock(tick);
+        current.sent_tick = current.sent_tick.max(tick);
+        Self::event_to(
+            &mut self.output,
+            current.game_id.clone(),
+            live_proto::game::ACTOR_KILLED,
+            ActorKilled {
+                tick,
+                unit,
+                character,
+                killer,
+                weapon: layout::kill_source(weapon, owner.is_some()).map(|s| s.name.to_owned()),
             },
         );
     }
@@ -1900,9 +1936,9 @@ mod tests {
             forward: [1.0, 0.0, 0.0],
             ..ObjectState::default()
         };
-        session.kill(9, Some(0), 1, Some(object.clone()), false);
-        session.kill(10, Some(0), 0, Some(object.clone()), false);
-        session.kill(12, None, 1, Some(object), false);
+        session.kill(9, Some(0), 1, None, Some(object.clone()), false);
+        session.kill(10, Some(0), 0, None, Some(object.clone()), false);
+        session.kill(12, None, 1, None, Some(object), false);
         let events = session.take_output();
         let expected = [("kill", 9), ("suicide", 10), ("world", 12)];
         assert_eq!(events.len(), expected.len());
@@ -1912,6 +1948,8 @@ mod tests {
             };
             assert_eq!(event.kind, "PlayerKilled");
             assert_eq!(event.data["kind"], kind);
+            assert!(event.data.get("weapon").is_none());
+            assert!(event.data.get("headshot").is_none());
             assert_eq!(event.data["tick"], tick);
             assert_eq!(event.data["pos"], serde_json::json!([4.0, 5.0, 6.0]));
         }
@@ -1944,9 +1982,9 @@ mod tests {
         let players = (0..4).map(|i| on_team(i, 0)).collect();
         session.start(&info(), players);
         session.take_output();
-        session.kill(9, Some(0), 3, None, false);
-        session.kill(10, Some(1), 0, None, false);
-        session.kill(11, Some(2), 1, None, false);
+        session.kill(9, Some(0), 3, None, None, false);
+        session.kill(10, Some(1), 0, None, None, false);
+        session.kill(11, Some(2), 1, None, None, false);
         assert_eq!(kill_kinds(&mut session), ["kill", "kill", "kill"]);
     }
 
@@ -1962,9 +2000,9 @@ mod tests {
         let players = vec![on_team(0, 0), on_team(1, 0), on_team(2, 1)];
         session.start(&team, players);
         session.take_output();
-        session.kill(9, Some(0), 1, None, false);
-        session.kill(10, Some(0), 2, None, false);
-        session.kill(11, Some(2), 2, None, false);
+        session.kill(9, Some(0), 1, None, None, false);
+        session.kill(10, Some(0), 2, None, None, false);
+        session.kill(11, Some(2), 2, None, None, false);
         assert_eq!(kill_kinds(&mut session), ["betrayal", "kill", "suicide"]);
     }
 
@@ -1974,7 +2012,7 @@ mod tests {
         session.start(&info(), vec![player(0, 0), player(1, 0)]);
         session.end(&snapshot(30, vec![player(0, 0), player(1, 0)]));
         session.take_output();
-        session.kill(31, Some(0), 1, None, false);
+        session.kill(31, Some(0), 1, None, None, false);
         assert!(session.take_output().is_empty());
     }
 
@@ -2404,8 +2442,8 @@ mod tests {
         for tick in 11..=14 {
             session.sample(&state(tick, [tick as f64, 0.0, 0.0], true));
         }
-        session.kill(14, None, 0, None, false);
-        session.kill(14, None, 0, None, true);
+        session.kill(14, None, 0, None, None, false);
+        session.kill(14, None, 0, None, None, true);
         let output = session.take_output();
         assert!(
             output.iter().all(|o| matches!(o, Output::Frame(_))),
@@ -2450,7 +2488,7 @@ mod tests {
         assert_eq!(f.actors.len(), 1);
 
         // A kill outside the cutscene counts again.
-        session.kill(17, None, 0, None, false);
+        session.kill(17, None, 0, None, None, false);
         assert_eq!(kinds(&mut session), ["PlayerKilled"]);
     }
 
@@ -2516,7 +2554,7 @@ mod tests {
         }
         // The player dies and the game reverts to a checkpoint 20 seconds
         // back, then to the mission's start.
-        session.kill(661, None, 0, None, false);
+        session.kill(661, None, 0, None, None, false);
         let mut revert = campaign();
         revert.tick = 61;
         session.start(&revert, vec![p.clone()]);
@@ -2531,7 +2569,7 @@ mod tests {
             session.sample(&at(tick, -50.0));
             sent.extend(frames(&mut session));
         }
-        session.kill(31, None, 0, None, false);
+        session.kill(31, None, 0, None, None, false);
         session.end(&at(32, -50.0));
         events.extend(session.take_output());
 
@@ -3418,6 +3456,17 @@ mod tests {
         assert!(started.data.get("session_id").is_none());
         assert_eq!(started.data["kind"], "custom");
         assert!(started.data["players"][1].get("bot").is_none());
+    }
+
+    #[test]
+    fn a_hosted_custom_game_carries_its_advertisement_without_a_bot_roster() {
+        let mut session = Session::new("test", None);
+        session.hosted_session = Some("0123456789abcdef".into());
+        session.start(&info(), vec![player(0, 0)]);
+        let outputs = session.take_output();
+        let Output::Event(start) = &outputs[0] else { panic!() };
+        assert_eq!(start.data["session_id"], "0123456789abcdef");
+        assert_eq!(start.data["kind"], "custom");
     }
 
     #[test]

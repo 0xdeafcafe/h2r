@@ -19,8 +19,7 @@
 //! alignment allows, so an editor can still show and change it. Unnamed
 //! fields are marked ([`Field::named`] false) so names can grow.
 //!
-//! No name here comes from a community tool or plugin: they come from our
-//! own definitions, and those from the XBE's readers and the disc.
+//! Field names, descriptions and their evidence come from the checked-in definitions.
 use crate::defs::{self, Defs, Kind as DefKind, StructDef};
 use crate::schema::{self, Schema};
 use map::FourCC;
@@ -67,6 +66,9 @@ pub struct Field {
     pub kind: Kind,
     /// The definition's note: what it means and the evidence.
     pub meaning: String,
+    /// Editor description from the definition.
+    pub doc: Option<String>,
+    pub applies: Option<&'static str>,
 }
 
 /// A field's type, as an editor shows it.
@@ -218,6 +220,11 @@ impl Coverage {
 }
 
 impl Layout {
+    /// Flatten one text definition without supplying a pointer schema.
+    pub fn from_definition(definition: &StructDef) -> Self {
+        merge(&definition.name, Some(definition), None, &mut Vec::new())
+    }
+
     /// The field at `offset` exactly.
     pub fn field_at(&self, offset: u32) -> Option<&Field> {
         self.fields
@@ -321,22 +328,49 @@ struct Leaf<'a> {
     at: u32,
     section: String,
     def: &'a defs::FieldDef,
+    doc: Option<String>,
+    meaning: String,
 }
 
-fn flatten<'a>(s: &'a StructDef, base: u32, section: &str, out: &mut Vec<Leaf<'a>>) {
+fn evidence(context: &str, leaf: &str) -> String {
+    match (context, leaf) {
+        ("", text) | (text, "") => text.to_owned(),
+        _ => format!("{context}\n{leaf}"),
+    }
+}
+
+fn flatten<'a>(
+    s: &'a StructDef,
+    base: u32,
+    section: &str,
+    context: Option<&str>,
+    context_evidence: &str,
+    out: &mut Vec<Leaf<'a>>,
+) {
     for f in &s.fields {
+        let doc = match (context, f.doc.as_deref()) {
+            (Some(outer), Some(inner)) => Some(format!("{outer} {inner}")),
+            (outer, inner) => outer.or(inner).map(str::to_owned),
+        };
         if let DefKind::Struct(sub) = &f.kind {
             let sec = if section.is_empty() {
                 f.name.clone()
             } else {
                 format!("{section}.{}", f.name)
             };
-            flatten(sub, base + f.offset, &sec, out);
+            let note = if f.doc.is_some() && !f.meaning.is_empty() {
+                evidence(context_evidence, &format!("{sec}: {}", f.meaning))
+            } else {
+                context_evidence.to_owned()
+            };
+            flatten(sub, base + f.offset, &sec, doc.as_deref(), &note, out);
         } else {
             out.push(Leaf {
                 at: base + f.offset,
                 section: section.to_owned(),
                 def: f,
+                doc,
+                meaning: evidence(context_evidence, &f.meaning),
             });
         }
     }
@@ -399,14 +433,18 @@ fn merge(
     let empty = BTreeMap::new();
     let sfields = schema.map_or(&empty, |s| &s.fields);
     let mut fields: Vec<Field> = Vec::new();
+    let mut unknown_docs = Vec::new();
 
     if let Some(d) = def {
         let mut leaves = Vec::new();
-        flatten(d, 0, "", &mut leaves);
+        flatten(d, 0, "", None, "", &mut leaves);
         for leaf in leaves {
             let f = leaf.def;
             let (lo, hi) = (leaf.at, leaf.at + f.kind.width());
             if matches!(f.kind, DefKind::Unknown { .. }) {
+                if let Some(doc) = leaf.doc {
+                    unknown_docs.push((lo, hi, doc, leaf.meaning));
+                }
                 continue;
             }
             // A schema field inside these bytes must be this field.
@@ -484,7 +522,9 @@ fn merge(
                 section: leaf.section,
                 named,
                 kind,
-                meaning: f.meaning.clone(),
+                meaning: leaf.meaning,
+                doc: leaf.doc,
+                applies: f.applies,
             });
         }
     }
@@ -522,6 +562,8 @@ fn merge(
                 named: false,
                 kind,
                 meaning: String::new(),
+                doc: None,
+                applies: None,
             },
         );
     }
@@ -546,6 +588,18 @@ fn merge(
         at = out.last().map_or(0, |f| f.offset + f.kind.width());
     }
     fill(&mut out, at, size);
+    // An unnamed word can straddle two definition spans. Only carry the
+    // description onto rows whose complete value belongs to that span.
+    for (lo, hi, doc, meaning) in unknown_docs {
+        let start = out.partition_point(|f| f.offset < lo);
+        for f in &mut out[start..] {
+            if f.offset + f.kind.width() > hi {
+                break;
+            }
+            f.doc = Some(doc.clone());
+            f.meaning.clone_from(&meaning);
+        }
+    }
     Layout {
         name: def.map_or_else(|| name.to_owned(), |d| d.name.clone()),
         size,
@@ -579,6 +633,8 @@ fn fill(out: &mut Vec<Field>, mut lo: u32, hi: u32) {
             named: false,
             kind,
             meaning: String::new(),
+            doc: None,
+            applies: None,
         });
         lo += len;
     }

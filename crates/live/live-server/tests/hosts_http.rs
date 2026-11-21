@@ -237,11 +237,18 @@ mod tunnel {
         (h, addr)
     }
 
+    // tungstenite's `Error` is large and this helper only feeds `unwrap` and
+    // `matches!` in tests.
+    #[allow(clippy::result_large_err)]
     async fn upgrade(addr: SocketAddr, lease: &str, token: Option<&str>) -> Result<Socket, Error> {
         let mut request = format!("ws://{addr}/v1/hosts/{lease}/tunnel").into_client_request()?;
         request
             .headers_mut()
             .insert("x-h2-tunnel-peer", "spoofed".parse().unwrap());
+        request.headers_mut().insert(
+            live_proto::tunnel::ACTOR_CHANNEL_HEADER,
+            live_proto::tunnel::ACTOR_CHANNEL_OFFER.parse().unwrap(),
+        );
         if let Some(token) = token {
             request.headers_mut().insert(
                 header::AUTHORIZATION,
@@ -358,10 +365,16 @@ mod tunnel {
         let peer = member.xuid.to_string();
         let listener_task = tokio::spawn(async move {
             let (tcp, _) = listener.accept().await.unwrap();
+            // The handshake callback's `Err` type is tungstenite's, not ours.
+            #[allow(clippy::result_large_err)]
             let mut socket =
                 tokio_tungstenite::accept_hdr_async(tcp, |req: &Request, res: Response| {
                     assert!(req.headers().get(header::AUTHORIZATION).is_none());
                     assert_eq!(req.headers()["x-h2-tunnel-peer"].to_str().unwrap(), peer);
+                    assert_eq!(
+                        req.headers()[live_proto::tunnel::ACTOR_CHANNEL_HEADER],
+                        live_proto::tunnel::ACTOR_CHANNEL_OFFER,
+                    );
                     Ok(res)
                 })
                 .await

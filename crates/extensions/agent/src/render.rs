@@ -1,4 +1,4 @@
-//! `render.frame` and `render.stats` (docs/runtime/agent-api.md, phase 5).
+//! `render.frame`, `render.frame_layout` and `render.stats` (docs/runtime/agent-api.md, phase 5).
 //!
 //! [`FrameProbe`] records one whole guest frame when armed: the backend
 //! wrapper in front of the D3D backend (boot's `d3d_diag`) tells it each
@@ -31,14 +31,16 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use agent_proto::{
-    FrameCaptureParams, CaptureReply, CompareParams, DepthRecord, DrawRecord,
-    FrameParams, FrameRecord, FrameReply, OpRecord, ParityParams, PassRecord,
-    RenderStats, RpcError, SceneParams, SceneReply, SnapRecord, code, method,
+    CaptureCamera, CaptureReply, CaptureSource, CompareParams, DepthRecord, DrawLayout, DrawRecord,
+    FrameCaptureParams, FrameParams, FrameRecord, FrameReply, OpRecord, ParityParams,
+    PassRecord, RenderStats, RpcError, SceneParams, SceneReply, SnapRecord, code, method,
 };
+use live_proto::maps::{MapId, Sha256};
 use serde_json::{Map, Value, json};
 
 use crate::exec::{Access, Agent, DEFER_TICKS_MAX, GameCtx};
 
+pub mod clip;
 pub mod private_graph;
 
 /// One draw, as the backend wrapper describes it.
@@ -67,6 +69,8 @@ pub struct DrawInfo {
     /// The draw's constant registers, hardware order (D3D register + 96),
     /// shared with the backend: the probe copies out the ones asked for.
     pub constants: Option<Arc<[[f32; 4]]>>,
+    /// Geometry supplied by the host for a layout frame.
+    pub layout: Option<DrawLayout>,
 }
 
 /// What the wrapper should do after telling the probe about a draw or a
@@ -78,6 +82,8 @@ pub struct SnapAsk {
     /// The arming's number, for the file name.
     pub seq: u64,
     pub pass: usize,
+    /// Read the display raster for a layout capture.
+    pub display: bool,
 }
 
 /// The recorder. One per process ([`PROBE`]); tests make their own.
@@ -114,6 +120,7 @@ struct Arming {
     seq: u64,
     at_present: u64,
     draws: bool,
+    layout: bool,
     max_draws: usize,
     snap: BTreeSet<usize>,
     constants: Vec<i32>,
@@ -166,6 +173,16 @@ impl FrameProbe {
 
     /// Arms for the next whole frame; forgets the last one.
     pub fn arm(&self, p: &FrameParams) -> Result<FrameReply, String> {
+        self.arm_frame(p, false)
+    }
+
+    /// Arms for display layout, including draws and display snapshots.
+    pub fn arm_layout(&self, p: &FrameParams) -> Result<FrameReply, String> {
+        self.arm_frame(p, true)
+    }
+
+    fn arm_frame(&self, p: &FrameParams, layout: bool) -> Result<FrameReply, String> {
+        let draws = p.draws || layout;
         let max_draws = p.max_draws.unwrap_or(FrameParams::DEFAULT_DRAWS);
         if max_draws > FrameParams::MAX_DRAWS {
             return Err(format!("max_draws is at most {}", FrameParams::MAX_DRAWS));
@@ -186,7 +203,7 @@ impl FrameProbe {
         {
             return Err(format!("constants: c{r} is not a register (-96..=95)"));
         }
-        if !p.constants.is_empty() && !p.draws {
+        if !p.constants.is_empty() && !draws {
             return Err("constants go with draws".into());
         }
         let mut s = self.lock();
@@ -198,7 +215,8 @@ impl FrameProbe {
             attempt: 0,
             seq,
             at_present,
-            draws: p.draws,
+            draws,
+            layout,
             max_draws,
             snap: p.snap.iter().copied().collect(),
             constants: p.constants.clone(),
@@ -237,6 +255,11 @@ impl FrameProbe {
             Stage::Recording(r) => Some(f(r)),
             _ => None,
         }
+    }
+
+    /// Whether the frame currently being recorded requests display layout.
+    pub fn layout_requested(&self) -> bool {
+        self.recording(|r| r.arming.layout).unwrap_or(false)
     }
 
     /// Work is about to go to `color` (and `depth`): when that ends a pass
@@ -468,6 +491,7 @@ impl Recording {
                     vs: d.vs,
                     depth: d.depth_state,
                     constants,
+                    layout: if self.arming.layout { d.layout } else { None },
                 });
             } else {
                 self.rec.truncated = true;
@@ -507,7 +531,12 @@ impl Recording {
         self.arming
             .snap
             .contains(&pass)
-            .then_some(SnapAsk { seq, pass, attempt: self.arming.attempt })
+            .then_some(SnapAsk {
+                seq,
+                pass,
+                attempt: self.arming.attempt,
+                display: self.arming.layout,
+            })
     }
 }
 
@@ -629,38 +658,43 @@ pub struct RenderSources {
     pub counters: Box<dyn Fn() -> Option<Value> + Send>,
 }
 
-/// Adds `render.frame` (over `probe`) and `render.stats` (over `sources`).
+/// Adds the frame recorders (over `probe`) and `render.stats` (over `sources`).
 pub fn add_methods(agent: &Agent, probe: &'static FrameProbe, sources: RenderSources) {
-    agent.add_method(method::RENDER_FRAME, Access::Read, move |v| {
-        let p: FrameParams = if v.is_null() {
-            FrameParams::default()
-        } else {
-            serde_json::from_value(v)
-                .map_err(|e| RpcError::new(code::INVALID_PARAMS, e.to_string()))?
-        };
-        let probe = if p.source == Some(agent_proto::frame_graph::Source::Private) {
-            if !private_capture_available() {
-                return Err(RpcError::new(code::UNAVAILABLE, "no private-target scene renderer registered"));
-            }
-            &private_graph::PROBE
-        } else {
-            probe
-        };
-        let r = if p.arm {
-            probe
-                .arm(&p)
-                .map_err(|e| RpcError::new(code::INVALID_PARAMS, e))?
-        } else {
-            if p.draws || p.max_draws.is_some() || !p.snap.is_empty() || !p.constants.is_empty() {
-                return Err(RpcError::new(
-                    code::INVALID_PARAMS,
-                    "draws, max_draws, snap and constants go with arm",
-                ));
-            }
-            probe.reply()
-        };
-        serde_json::to_value(r).map_err(|e| RpcError::new(code::INVALID_PARAMS, e.to_string()))
-    });
+    for (name, layout) in [
+        (method::RENDER_FRAME, false),
+        (method::RENDER_FRAME_LAYOUT, true),
+    ] {
+        agent.add_method(name, Access::Read, move |v| {
+            let p: FrameParams = if v.is_null() {
+                FrameParams::default()
+            } else {
+                serde_json::from_value(v)
+                    .map_err(|e| RpcError::new(code::INVALID_PARAMS, e.to_string()))?
+            };
+            let probe = if p.source == Some(agent_proto::frame_graph::Source::Private) {
+                if !private_capture_available() {
+                    return Err(RpcError::new(code::UNAVAILABLE, "no private-target scene renderer registered"));
+                }
+                &private_graph::PROBE
+            } else {
+                probe
+            };
+            let r = if p.arm {
+                probe
+                    .arm_frame(&p, layout)
+                    .map_err(|e| RpcError::new(code::INVALID_PARAMS, e))?
+            } else {
+                if p.draws || p.max_draws.is_some() || !p.snap.is_empty() || !p.constants.is_empty() {
+                    return Err(RpcError::new(
+                        code::INVALID_PARAMS,
+                        "draws, max_draws, snap and constants go with arm",
+                    ));
+                }
+                probe.reply()
+            };
+            serde_json::to_value(r).map_err(|e| RpcError::new(code::INVALID_PARAMS, e.to_string()))
+        });
+    }
     agent.add_method(method::RENDER_STATS, Access::Read, move |v| {
         if !(v.is_null() || v.as_object().is_some_and(Map::is_empty)) {
             return Err(RpcError::new(
@@ -795,12 +829,16 @@ fn capture_interrupted() -> RpcError {
 pub struct FrameCapture {
     /// A capture waits for its present: the tick and present calls look.
     pending: AtomicBool,
+    source_armed: AtomicBool,
     /// The present whose image the frame writer should write; 0 for none.
     want: AtomicU64,
     probe: &'static FrameProbe,
     hosted: &'static Hosted,
     state: Mutex<CaptureState>,
+    map_source: Mutex<Option<Arc<CaptureMapSource>>>,
 }
+
+type CaptureMapSource = dyn Fn(&str) -> Option<(MapId, String)> + Send + Sync;
 
 struct CaptureState {
     /// The host can write presented frames.
@@ -820,8 +858,22 @@ struct CaptureJob {
     bound: Option<(u64, u64)>,
     scene_hash: Option<String>,
     path: PathBuf,
+    source: Option<CaptureSourceJob>,
     /// The frame writer's result, or why it failed before.
-    outcome: Option<Result<(), String>>,
+    outcome: Option<Result<Option<Sha256>, String>>,
+}
+
+struct CaptureSourceJob {
+    game_id: String,
+    drawn: Option<(String, CaptureCamera)>,
+    frame: Option<(String, MapId, CaptureCamera)>,
+}
+
+/// The frame writer's destination and whether the exact PNG needs a digest.
+#[derive(Debug, PartialEq, Eq)]
+pub struct CaptureWrite {
+    pub path: PathBuf,
+    pub digest: bool,
 }
 
 /// The game's.
@@ -831,9 +883,11 @@ impl FrameCapture {
     pub const fn new(probe: &'static FrameProbe, hosted: &'static Hosted) -> FrameCapture {
         FrameCapture {
             pending: AtomicBool::new(false),
+            source_armed: AtomicBool::new(false),
             want: AtomicU64::new(0),
             probe,
             hosted,
+            map_source: Mutex::new(None),
             state: Mutex::new(CaptureState {
                 writer: false,
                 next_seq: 1,
@@ -853,13 +907,47 @@ impl FrameCapture {
         self.lock().writer = true;
     }
 
+    /// The host resolves a drawn map's cache alias to its installed package and base name.
+    pub fn set_map_source(
+        &self,
+        source: impl Fn(&str) -> Option<(MapId, String)> + Send + Sync + 'static,
+    ) {
+        *self.map_source.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(source));
+    }
+
+    /// The renderer applied this spawn view to the frame in progress.
+    /// Resolves the map and the pose only for an armed provenance capture.
+    pub fn note_drawn_camera(&self, read: impl FnOnce() -> Option<(String, CaptureCamera)>) {
+        if self.source_armed.load(Ordering::Relaxed)
+            && let Some(source) = self.lock().job.as_mut().and_then(|j| j.source.as_mut())
+        {
+            source.drawn = read();
+        }
+    }
+
+    /// The old map's draw can no longer be used for a provenance capture.
+    pub fn clear_drawn_camera(&self) {
+        self.note_drawn_camera(|| None);
+    }
+
     /// Arms for `p.tick` (default: the tick after the last one ended); the
     /// image goes under `dir`. Replaces a capture still waiting. Answers
     /// the arming's number for [`finish`](Self::finish).
     pub fn arm(&self, p: &FrameCaptureParams, dir: &Path) -> Result<u64, RpcError> {
+        if let Some(id) = &p.game_id
+            && (p.pass.is_some() || !live_proto::game::valid_id(id))
+        {
+            return Err(RpcError::new(
+                code::INVALID_PARAMS,
+                "game_id must be a valid Live id and can only accompany a whole-frame capture",
+            ));
+        }
         if let Some(lighting) = p.lighting {
             if p.pass.is_some() {
                 return Err(RpcError::new(code::INVALID_PARAMS, "lighting selects a whole scene and cannot be combined with pass"));
+            }
+            if p.game_id.is_some() {
+                return Err(RpcError::new(code::INVALID_PARAMS, "game_id captures the displayed frame and cannot be combined with lighting"));
             }
             return self.arm_private(lighting, p.tick, dir);
         }
@@ -904,6 +992,11 @@ impl FrameCapture {
             bound: None,
             scene_hash: None,
             path: dir.join(format!("capture-{}-{seq}-tick-{target}.png", std::process::id())),
+            source: p.game_id.clone().map(|game_id| CaptureSourceJob {
+                game_id,
+                drawn: None,
+                frame: None,
+            }),
             outcome: None,
         };
         if let Some(pass) = p.pass
@@ -915,6 +1008,7 @@ impl FrameCapture {
         s.private.active = None;
         s.job = Some(job);
         self.want.store(0, Ordering::Relaxed);
+        self.source_armed.store(p.game_id.is_some(), Ordering::Relaxed);
         self.pending.store(true, Ordering::Relaxed);
         Ok(seq)
     }
@@ -963,7 +1057,7 @@ impl FrameCapture {
             return;
         }
         let last = self.hosted.last_tick();
-        let seq = {
+        let (seq, drawn) = {
             let mut s = self.lock();
             let Some(j) = &mut s.job else {
                 return;
@@ -971,29 +1065,48 @@ impl FrameCapture {
             if j.bound.is_some() || j.outcome.is_some() {
                 return;
             }
+            // A view belongs only to this present. Dropping a draw from an
+            // early present prevents a later, camera-less frame using it.
+            let drawn = j.source.as_mut().and_then(|source| source.drawn.take());
             let Some(tick) = last.filter(|&t| t >= j.target) else {
                 return;
             };
-            j.bound = Some((tick, n));
-            if j.pass.is_none() {
-                self.want.store(n, Ordering::Relaxed);
+            if j.source.is_some() && drawn.is_none() {
+                return;
             }
+            j.bound = Some((tick, n));
             self.pending.store(false, Ordering::Relaxed);
-            j.seq
+            self.source_armed.store(false, Ordering::Relaxed);
+            (j.seq, drawn)
         };
-        // The source is the host's; called without the lock held.
+        // The sources are the host's. Call them without the capture lock.
+        let frame = drawn.and_then(|(map, camera)| {
+            let source = self.map_source.lock().unwrap_or_else(|e| e.into_inner()).clone()?;
+            let (id, base) = source(&map)?;
+            Some((id, base, camera))
+        });
         let hash = self.hosted.scene_hash();
         if let Some(j) = &mut self.lock().job
             && j.seq == seq
         {
             j.scene_hash = hash;
+            if let Some(source) = &mut j.source {
+                let Some((map_id, map, camera)) = frame else {
+                    j.outcome = Some(Err("the drawn map is not an installed package".into()));
+                    return;
+                };
+                source.frame = Some((map, map_id, camera));
+            }
+            if j.pass.is_none() {
+                self.want.store(n, Ordering::Relaxed);
+            }
         }
     }
 
     /// The frame writer, at present `present`: where to write its image,
     /// when it is wanted (one relaxed load when not). Call
     /// [`written`](Self::written) after.
-    pub fn wanted(&self, present: u64) -> Option<PathBuf> {
+    pub fn wanted(&self, present: u64) -> Option<CaptureWrite> {
         if present == 0 || self.want.load(Ordering::Relaxed) != present {
             return None;
         }
@@ -1001,12 +1114,15 @@ impl FrameCapture {
         s.job
             .as_ref()
             .filter(|j| j.bound.map(|b| b.1) == Some(present) && j.outcome.is_none())
-            .map(|j| j.path.clone())
+            .map(|j| CaptureWrite {
+                path: j.path.clone(),
+                digest: j.source.is_some(),
+            })
     }
 
     /// The frame writer wrote present `present`'s image where
-    /// [`wanted`](Self::wanted) said, or failed.
-    pub fn written(&self, present: u64, result: Result<(), String>) {
+    /// [`wanted`](Self::wanted) said, with a digest if requested, or failed.
+    pub fn written(&self, present: u64, result: Result<Option<Sha256>, String>) {
         let _ = self
             .want
             .compare_exchange(present, 0, Ordering::Relaxed, Ordering::Relaxed);
@@ -1040,6 +1156,7 @@ impl FrameCapture {
         };
         s.job = None;
         self.pending.store(false, Ordering::Relaxed);
+        self.source_armed.store(false, Ordering::Relaxed);
         self.want.store(0, Ordering::Relaxed);
         Some(out)
     }
@@ -1050,8 +1167,25 @@ impl FrameCapture {
                 code::UNAVAILABLE,
                 format!("writing the frame: {e}"),
             ))),
-            Ok(()) => {
+            Ok(digest) => {
                 let (tick, present) = j.bound?;
+                let source = if let Some(source) = &j.source {
+                    let (Some((map, map_id, camera)), Some(digest)) = (&source.frame, digest) else {
+                        return Some(Err(RpcError::new(
+                            code::UNAVAILABLE,
+                            "the capture writer did not supply complete provenance",
+                        )));
+                    };
+                    Some(CaptureSource {
+                        game_id: source.game_id.clone(),
+                        map_id: map_id.to_string(),
+                        map: map.clone(),
+                        camera: *camera,
+                        digest: digest.to_string(),
+                    })
+                } else {
+                    None
+                };
                 Some(Ok(CaptureReply {
                     path: j.path.display().to_string(),
                     tick,
@@ -1059,6 +1193,7 @@ impl FrameCapture {
                     pass: None,
                     lighting: None,
                     scene_hash: j.scene_hash.clone(),
+                    source,
                 }))
             }
         }
@@ -1101,6 +1236,7 @@ impl FrameCapture {
                     pass: Some(pass),
                     lighting: None,
                     scene_hash: j.scene_hash.clone(),
+                    source: None,
                 })),
                 (None, e) => fail(format!(
                     "reading pass {pass} back: {}",
@@ -1215,7 +1351,7 @@ mod tests {
             let seq = p.arm(&params).unwrap().seq.unwrap();
             p.present(start);
             p.clear("colour", None);
-            (SnapAsk { seq, pass: 0, attempt: 0 }, dir.join(format!("frame-{}-{seq}-pass-0.png", std::process::id())))
+            (SnapAsk { seq, pass: 0, attempt: 0, display: false }, dir.join(format!("frame-{}-{seq}-pass-0.png", std::process::id())))
         };
         let image = || Ok(crate::compare::Rgba::filled(2, 1, [40, 12, 9, 255]));
 
@@ -1317,12 +1453,25 @@ mod tests {
         assert_eq!(p.draw(draw("a", "drawn", 3)), None);
         assert_eq!(
             p.draw(draw("b", "drawn", 3)),
-            Some(SnapAsk { seq: 1, pass: 0, attempt: 0 })
+            Some(SnapAsk {
+                seq: 1,
+                pass: 0,
+                attempt: 0,
+                display: false,
+            })
         );
         p.snapped(0, Ok("/tmp/p0.png".into()));
         // The last pass ends at the present: the frame is done, the probe
         // stays armed until the snapshot is in.
-        assert_eq!(p.present(2), Some(SnapAsk { seq: 1, pass: 1, attempt: 0 }));
+        assert_eq!(
+            p.present(2),
+            Some(SnapAsk {
+                seq: 1,
+                pass: 1,
+                attempt: 0,
+                display: false,
+            })
+        );
         assert!(p.armed());
         p.snapped(1, Err("readback failed".into()));
         assert!(!p.armed());
@@ -1332,6 +1481,72 @@ mod tests {
         assert_eq!(f.snaps[1].error.as_deref(), Some("readback failed"));
         // Nothing more is recorded while the snapshot was pending.
         assert_eq!(p.reply().frame.unwrap().totals.draws, 3);
+    }
+
+    #[test]
+    fn layout_records_one_frame_and_requests_display_snapshots() {
+        let p = FrameProbe::new();
+        let params = FrameParams {
+            arm: true,
+            snap: vec![0, 1],
+            constants: vec![0],
+            ..Default::default()
+        };
+        assert!(p.arm(&params).is_err(), "the regular recorder needs draws");
+        p.arm_layout(&params).unwrap();
+        assert!(!p.layout_requested(), "the current frame is still drawing");
+        p.present(1);
+        assert!(p.layout_requested());
+        let layout = DrawLayout {
+            guest_size: [640, 480],
+            display_size: Some([1920, 1080]),
+            viewport: [0, 0, 640, 480],
+            projection_factor: Some(0.75),
+            ..Default::default()
+        };
+        p.draw(DrawInfo {
+            layout: Some(layout.clone()),
+            ..draw("scene", "drawn", 6)
+        });
+        assert_eq!(
+            p.enter("output", None),
+            Some(SnapAsk {
+                seq: 1,
+                pass: 0,
+                attempt: 0,
+                display: true,
+            })
+        );
+        p.snapped(0, Ok("scene.png".into()));
+        assert_eq!(
+            p.present(2),
+            Some(SnapAsk {
+                seq: 1,
+                pass: 1,
+                attempt: 0,
+                display: true,
+            })
+        );
+        assert!(!p.layout_requested());
+        p.snapped(1, Ok("output.png".into()));
+        let frame = p.reply().frame.unwrap();
+        assert_eq!(frame.draws[0].layout.as_ref(), Some(&layout));
+        assert_eq!(frame.snaps.len(), 2);
+
+        p.arm(&FrameParams {
+            arm: true,
+            draws: true,
+            ..Default::default()
+        })
+        .unwrap();
+        p.present(3);
+        assert!(!p.layout_requested());
+        p.draw(DrawInfo {
+            layout: Some(layout),
+            ..draw("output", "drawn", 4)
+        });
+        p.present(4);
+        assert!(p.reply().frame.unwrap().draws[0].layout.is_none());
     }
 
     #[test]
@@ -1546,10 +1761,12 @@ mod frame_scene_tests {
         c.tick_ended(12);
         c.present(42);
         assert_eq!(c.wanted(41), None, "only the bound present");
-        let path = c.wanted(42).unwrap();
+        let write = c.wanted(42).unwrap();
+        assert!(!write.digest);
+        let path = write.path;
         assert_eq!(path, dir.join(format!("capture-{}-{seq}-tick-12.png", std::process::id())));
         assert_eq!(c.finish(seq), None, "not written yet");
-        c.written(42, Ok(()));
+        c.written(42, Ok(None));
         assert_eq!(c.wanted(42), None);
         let r = c.finish(seq).unwrap().unwrap();
         assert_eq!(r.path, path.display().to_string());
@@ -1559,6 +1776,87 @@ mod frame_scene_tests {
         c.tick_ended(13);
         c.present(43);
         assert_eq!(c.wanted(43), None);
+    }
+
+    fn spawn_camera() -> CaptureCamera {
+        CaptureCamera {
+            position: [1.0, 2.0, 3.0],
+            forward: [1.0, 0.0, 0.0],
+            up: [0.0, 0.0, 1.0],
+        }
+    }
+
+    #[test]
+    fn live_capture_binds_the_drawn_map_camera_and_png_to_one_present() {
+        let (_, _, c) = rigs();
+        let map = MapId([0x1f; 32]);
+        c.set_map_source(move |name| (name == "package-alias").then(|| (map, "lockout".into())));
+        c.set_writer();
+        c.tick_ended(10);
+        let params = FrameCaptureParams {
+            tick: Some(12),
+            game_id: Some("private-game-id".into()),
+            ..Default::default()
+        };
+        let seq = c.arm(&params, Path::new(DIR)).unwrap();
+        let camera = spawn_camera();
+        c.note_drawn_camera(|| Some(("earlier-map".into(), camera)));
+        c.present(40); // Tick 10's draw must not carry forward.
+        c.tick_ended(12);
+        c.present(41);
+        assert_eq!(c.wanted(41), None);
+        assert_eq!(c.finish(seq), None);
+        c.note_drawn_camera(|| Some(("package-alias".into(), camera)));
+        c.tick_ended(13);
+        c.present(42);
+        let write = c.wanted(42).unwrap();
+        assert!(write.digest);
+        assert_eq!(c.finish(seq), None);
+        let digest = Sha256::of(b"synthetic PNG");
+        c.written(42, Ok(Some(digest)));
+        let capture = c.finish(seq).unwrap().unwrap();
+        assert_eq!((capture.tick, capture.present), (13, 42));
+        assert_eq!(capture.path, write.path.display().to_string());
+        let source = capture.source.unwrap();
+        assert_eq!(source.game_id, "private-game-id");
+        assert_eq!(source.map_id, map.to_string());
+        assert_eq!(source.map, "lockout");
+        assert_eq!(source.camera, camera);
+        assert_eq!(source.digest, digest.to_string());
+    }
+
+    #[test]
+    fn live_capture_requires_a_whole_frame_installed_map_and_writer_digest() {
+        let (_, _, c) = rigs();
+        c.set_writer();
+        c.tick_ended(10);
+        let mut params = FrameCaptureParams {
+            game_id: Some("private-game-id".into()),
+            pass: Some(0),
+            ..Default::default()
+        };
+        let dir = Path::new(DIR);
+        assert_eq!(c.arm(&params, dir).unwrap_err().code, code::INVALID_PARAMS);
+        params.pass = None;
+        let seq = c.arm(&params, dir).unwrap();
+        c.note_drawn_camera(|| Some(("package-alias".into(), spawn_camera())));
+        c.tick_ended(11);
+        c.present(40);
+        assert_eq!(c.wanted(40), None);
+        assert_eq!(c.finish(seq).unwrap().unwrap_err().code, code::UNAVAILABLE);
+
+        c.set_map_source(|_| Some((MapId([0x1f; 32]), "lockout".into())));
+        let seq = c.arm(&params, dir).unwrap();
+        c.note_drawn_camera(|| Some(("package-alias".into(), spawn_camera())));
+        c.clear_drawn_camera();
+        c.tick_ended(12);
+        c.present(41);
+        assert_eq!(c.wanted(41), None);
+        c.note_drawn_camera(|| Some(("package-alias".into(), spawn_camera())));
+        c.present(42);
+        assert!(c.wanted(42).unwrap().digest);
+        c.written(42, Ok(None));
+        assert_eq!(c.finish(seq).unwrap().unwrap_err().code, code::UNAVAILABLE);
     }
 
     fn sealed(dump: bool) -> Result<SceneReply, String> {
@@ -1601,7 +1899,7 @@ mod frame_scene_tests {
         let seq = c.arm(&FrameCaptureParams::default(), Path::new(DIR)).unwrap();
         c.tick_ended(14);
         c.present(51);
-        c.written(51, Ok(()));
+        c.written(51, Ok(None));
         let r = c.finish(seq).unwrap().unwrap();
         assert_eq!((r.tick, r.present), (14, 51));
         assert_eq!(r.scene_hash.as_deref(), Some("00ff00ff"));
@@ -1651,7 +1949,6 @@ mod frame_scene_tests {
         // A pass the frame doesn't have.
         let seq = c.arm(
             &FrameCaptureParams {
-                tick: None,
                 pass: Some(5),
                 ..Default::default()
             },
@@ -1826,7 +2123,7 @@ mod frame_scene_tests {
         r.capture.tick_ended(8);
         r.capture.present(30);
         assert!(r.capture.wanted(30).is_some());
-        r.capture.written(30, Ok(()));
+        r.capture.written(30, Ok(None));
         let c = r.tick(8).expect("the capture");
         assert_eq!(c["result"]["tick"], 8, "{c}");
         assert_eq!(c["result"]["present"], 30);

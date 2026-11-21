@@ -36,7 +36,7 @@ fn dot(a: V3, b: V3) -> f32 {
 #[derive(Clone, Debug, Default)]
 pub struct Walls {
     pub tris: Vec<[V3; 3]>,
-    grid: FxHashMap<(i32, i32), Vec<u32>>,
+    grid: Grid,
     /// The map's visibility grid, built from these triangles
     /// (`crate::vis`): [`Walls::clear`] skips the walk for a pair of
     /// cells that never see each other. Set once, in place, so a grid
@@ -57,6 +57,74 @@ fn cell(v: f32) -> i32 {
     (v / CELL).floor() as i32
 }
 
+#[derive(Clone, Debug)]
+enum Grid {
+    Sparse(FxHashMap<(i32, i32), Vec<u32>>),
+    Dense {
+        origin: (i32, i32),
+        width: usize,
+        height: usize,
+        buckets: Vec<Vec<u32>>,
+    },
+}
+
+impl Default for Grid {
+    fn default() -> Self {
+        Self::Sparse(FxHashMap::default())
+    }
+}
+
+impl Grid {
+    fn new(sparse: FxHashMap<(i32, i32), Vec<u32>>) -> Self {
+        if sparse.is_empty() {
+            return Self::Sparse(sparse);
+        }
+        let (mut lx, mut ly, mut hx, mut hy) = (i32::MAX, i32::MAX, i32::MIN, i32::MIN);
+        for &(x, y) in sparse.keys() {
+            lx = lx.min(x);
+            ly = ly.min(y);
+            hx = hx.max(x);
+            hy = hy.max(y);
+        }
+        let width = (i64::from(hx) - i64::from(lx) + 1) as u64;
+        let height = (i64::from(hy) - i64::from(ly) + 1) as u64;
+        // Bound the dense metadata and keep widely separated islands sparse.
+        let Some(len) = width.checked_mul(height).filter(|&n| {
+            n <= 65_536 && n <= 2 * sparse.len() as u64
+        }) else {
+            return Self::Sparse(sparse);
+        };
+        let (width, height) = (width as usize, height as usize);
+        let mut buckets = vec![Vec::new(); len as usize];
+        for ((x, y), triangles) in sparse {
+            let index = (y - ly) as usize * width + (x - lx) as usize;
+            buckets[index] = triangles;
+        }
+        Self::Dense {
+            origin: (lx, ly),
+            width,
+            height,
+            buckets,
+        }
+    }
+
+    #[inline]
+    fn at(&self, x: i32, y: i32) -> &[u32] {
+        match self {
+            Self::Sparse(grid) => grid.get(&(x, y)).map_or(&[], Vec::as_slice),
+            Self::Dense { origin, width, height, buckets } => {
+                let dx = x.wrapping_sub(origin.0) as u32 as usize;
+                let dy = y.wrapping_sub(origin.1) as u32 as usize;
+                if dx < *width && dy < *height {
+                    &buckets[dy * *width + dx]
+                } else {
+                    &[]
+                }
+            }
+        }
+    }
+}
+
 impl Walls {
     pub fn new(tris: Vec<[V3; 3]>) -> Self {
         let mut grid: FxHashMap<(i32, i32), Vec<u32>> = FxHashMap::default();
@@ -71,7 +139,7 @@ impl Walls {
         }
         Walls {
             tris,
-            grid,
+            grid: Grid::new(grid),
             vis: OnceLock::new(),
         }
     }
@@ -92,11 +160,23 @@ impl Walls {
     pub fn from_polygons<'a>(polys: impl IntoIterator<Item = &'a [V3]>) -> Self {
         let mut tris = Vec::new();
         for p in polys {
-            for k in 1..p.len().saturating_sub(1) {
-                tris.push([p[0], p[k], p[k + 1]]);
-            }
+            Self::fan_polygon(p.iter().copied(), &mut tris);
         }
         Walls::new(tris)
+    }
+
+    pub(crate) fn fan_polygon(
+        vertices: impl IntoIterator<Item = V3>,
+        tris: &mut Vec<[V3; 3]>,
+    ) {
+        let mut vertices = vertices.into_iter();
+        let (Some(first), Some(mut previous)) = (vertices.next(), vertices.next()) else {
+            return;
+        };
+        for next in vertices {
+            tris.push([first, previous, next]);
+            previous = next;
+        }
     }
 
     /// Whether nothing solid is between `a` and `b`. With a visibility
@@ -110,15 +190,16 @@ impl Walls {
             return false;
         }
         let d = sub(b, a);
-        self.walk(a, b, |t| !hits(&self.tris[t as usize], a, d))
+        self.walk(a, b, d, |t| !hits(&self.tris[t as usize], a, d))
     }
 
     /// Every triangle the open segment `a`-`b` crosses, as
     /// [`Walls::clear`] would test them (in the order it would), into
-    /// `out`. For building the visibility grid.
+    /// `out`. Used by the scalar visibility reference.
+    #[cfg(test)]
     pub(crate) fn crossed(&self, a: V3, b: V3, out: &mut Vec<u32>) {
         let d = sub(b, a);
-        self.walk(a, b, |t| {
+        self.walk(a, b, d, |t| {
             if hits(&self.tris[t as usize], a, d) {
                 out.push(t);
             }
@@ -128,18 +209,14 @@ impl Walls {
 
     /// Calls `f` with each triangle bucketed in the cells the segment
     /// `a`-`b` crosses, until it returns `false`; whether it never did.
-    fn walk(&self, a: V3, b: V3, mut f: impl FnMut(u32) -> bool) -> bool {
-        let d = sub(b, a);
+    fn walk(&self, a: V3, b: V3, d: V3, mut f: impl FnMut(u32) -> bool) -> bool {
         // The cells the segment's XY projection crosses (Amanatides-Woo).
         let (mut cx, mut cy) = (cell(a[0]), cell(a[1]));
         let (ex, ey) = (cell(b[0]), cell(b[1]));
         // Each triangle occurs once per bucket. Chassis headroom probes
         // are vertical, so one bucket suffices with no visited bookkeeping.
         if (cx, cy) == (ex, ey) {
-            return self
-                .grid
-                .get(&(cx, cy))
-                .is_none_or(|ts| ts.iter().all(|&t| f(t)));
+            return self.grid.at(cx, cy).iter().all(|&t| f(t));
         }
         let step = |v: f32| if v > 0.0 { 1 } else { -1 };
         let (sx, sy) = (step(d[0]), step(d[1]));
@@ -164,11 +241,9 @@ impl Walls {
         };
         Visits::query(self.tris.len(), |seen| {
             for _ in 0..100_000 {
-                if let Some(ts) = self.grid.get(&(cx, cy)) {
-                    for &t in ts {
-                        if seen.insert(t) && !f(t) {
-                            return false;
-                        }
+                for &t in self.grid.at(cx, cy) {
+                    if seen.insert(t) && !f(t) {
+                        return false;
                     }
                 }
                 if (cx, cy) == (ex, ey) {
@@ -192,46 +267,56 @@ impl Walls {
         })
     }
 
+    /// Whether the closed segment touches collision. For a swept capsule,
+    /// which needs the same endpoint handling as [`Self::hit`].
+    pub(crate) fn any_hit(&self, a: V3, b: V3) -> bool {
+        let d = sub(b, a);
+        !self.walk_bounds(a, b, |t| contact(&self.tris[t as usize], a, d).is_none())
+    }
+
     /// The first solid thing on the way from `a` to `b`: how far along
     /// (0 to 1) and the surface's unit normal, facing back toward `a`. For
-    /// a grenade's flight (`crate::grenades`), whose steps are short: it
-    /// tests every triangle in the cells the segment's bounding box covers.
+    /// a grenade's flight (`crate::grenades`), whose steps are short.
     pub fn hit(&self, a: V3, b: V3) -> Option<(f32, V3)> {
         let d = sub(b, a);
         let mut best: Option<(f32, V3)> = None;
+        self.walk_bounds(a, b, |t| {
+            let tri = &self.tris[t as usize];
+            if let Some(at) = contact(tri, a, d)
+                && best.is_none_or(|(previous, _)| at < previous)
+            {
+                let n = cross(sub(tri[1], tri[0]), sub(tri[2], tri[0]));
+                let l = dot(n, n).sqrt().max(1e-9);
+                let mut n = [n[0] / l, n[1] / l, n[2] / l];
+                if dot(n, d) > 0.0 {
+                    n = [-n[0], -n[1], -n[2]];
+                }
+                best = Some((at, n));
+            }
+            true
+        });
+        best
+    }
+
+    /// Tests the buckets of the segment's XY bounding box, retaining their
+    /// order for hits that tie. A triangle can occur only once in a bucket.
+    fn walk_bounds(&self, a: V3, b: V3, mut f: impl FnMut(u32) -> bool) -> bool {
+        let (x0, x1) = (cell(a[0].min(b[0])), cell(a[0].max(b[0])));
+        let (y0, y1) = (cell(a[1].min(b[1])), cell(a[1].max(b[1])));
+        if x0 == x1 && y0 == y1 {
+            return self.grid.at(x0, y0).iter().all(|&t| f(t));
+        }
         Visits::query(self.tris.len(), |seen| {
-            for x in cell(a[0].min(b[0]))..=cell(a[0].max(b[0])) {
-                for y in cell(a[1].min(b[1]))..=cell(a[1].max(b[1])) {
-                    let Some(ts) = self.grid.get(&(x, y)) else {
-                        continue;
-                    };
-                    for &t in ts {
-                        if !seen.insert(t) {
-                            continue;
-                        }
-                        let tri = &self.tris[t as usize];
-                        // Closed at both ends: a step that ends exactly on a
-                        // surface, or starts on it moving in, touches it. With
-                        // the open range of `clear`, a flight whose steps land
-                        // on the plane (6 a second in 1/60 s steps reaches
-                        // x = 3 exactly) passed through it.
-                        if let Some(at) = crossing(tri, a, d)
-                            .filter(|at| (-ENDS..=1.0 + ENDS).contains(at))
-                            .map(|at| at.clamp(0.0, 1.0))
-                            && best.is_none_or(|(b, _)| at < b)
-                        {
-                            let n = cross(sub(tri[1], tri[0]), sub(tri[2], tri[0]));
-                            let l = dot(n, n).sqrt().max(1e-9);
-                            let mut n = [n[0] / l, n[1] / l, n[2] / l];
-                            if dot(n, d) > 0.0 {
-                                n = [-n[0], -n[1], -n[2]];
-                            }
-                            best = Some((at, n));
+            for x in x0..=x1 {
+                for y in y0..=y1 {
+                    for &t in self.grid.at(x, y) {
+                        if seen.insert(t) && !f(t) {
+                            return false;
                         }
                     }
                 }
             }
-            best
+            true
         })
     }
 }
@@ -240,33 +325,196 @@ impl Walls {
 /// end: the rounding of a crossing exactly at an end.
 const ENDS: f32 = 1e-4;
 
+// A flight or sweep touches a surface even if it lands exactly on the
+// plane or starts there moving in. Both callers keep the same open/closed
+// distinction for sight rays and contacts.
+fn contact(t: &[V3; 3], o: V3, d: V3) -> Option<f32> {
+    crossing(t, o, d)
+        .filter(|at| (-ENDS..=1.0 + ENDS).contains(at))
+        .map(|at| at.clamp(0.0, 1.0))
+}
+
 /// Whether the segment `o + t d`, `t` in `(0, 1)`, crosses triangle `t`
 /// (Moller-Trumbore, both faces).
 fn hits(t: &[V3; 3], o: V3, d: V3) -> bool {
-    crossing(t, o, d).is_some_and(|at| at > 1e-4 && at < 1.0 - 1e-4)
+    crossing(t, o, d).is_some_and(open)
 }
 
 /// Where along the line `o + t d` it crosses triangle `t`, if it does:
 /// `t` unbounded; the callers keep the part of the segment they mean.
 fn crossing(t: &[V3; 3], o: V3, d: V3) -> Option<f32> {
-    let (e1, e2) = (sub(t[1], t[0]), sub(t[2], t[0]));
-    let p = cross(d, e2);
-    let det = dot(e1, p);
-    if det.abs() < 1e-9 {
-        return None;
+    RayTriangle::new(t).crossing(o, d)
+}
+
+struct RayTriangle {
+    v: V3,
+    e1: V3,
+    e2: V3,
+}
+
+impl RayTriangle {
+    #[inline]
+    fn new(t: &[V3; 3]) -> Self {
+        Self {
+            v: t[0],
+            e1: sub(t[1], t[0]),
+            e2: sub(t[2], t[0]),
+        }
     }
-    let inv = 1.0 / det;
-    let s = sub(o, t[0]);
-    let u = dot(s, p) * inv;
-    if !(0.0..=1.0).contains(&u) {
-        return None;
+
+    #[inline]
+    fn crossing(&self, o: V3, d: V3) -> Option<f32> {
+        let p = cross(d, self.e2);
+        let det = dot(self.e1, p);
+        if det.abs() < 1e-9 {
+            return None;
+        }
+        let inv = 1.0 / det;
+        let s = sub(o, self.v);
+        let u = dot(s, p) * inv;
+        if !(0.0..=1.0).contains(&u) {
+            return None;
+        }
+        let q = cross(s, self.e1);
+        let v = dot(d, q) * inv;
+        if v < 0.0 || u + v > 1.0 {
+            return None;
+        }
+        Some(dot(self.e2, q) * inv)
     }
-    let q = cross(s, e1);
-    let v = dot(d, q) * inv;
-    if v < 0.0 || u + v > 1.0 {
-        return None;
+
+    #[inline]
+    fn origin(&self, o: V3) -> OriginTerms {
+        let s = sub(o, self.v);
+        let q = cross(s, self.e1);
+        OriginTerms { s, q, numerator: dot(self.e2, q) }
     }
-    Some(dot(e2, q) * inv)
+
+    #[inline]
+    fn open_hit(d: V3, p: V3, inv: f32, origin: OriginTerms) -> bool {
+        // For a fixed origin, check the unchanged t expression first.
+        // Most triangles bucketed here are beyond an endpoint of the ray.
+        if !open(origin.numerator * inv) {
+            return false;
+        }
+        let u = dot(origin.s, p) * inv;
+        if !(0.0..=1.0).contains(&u) {
+            return false;
+        }
+        let v = dot(d, origin.q) * inv;
+        !(v < 0.0 || u + v > 1.0)
+    }
+}
+
+#[inline]
+fn open(at: f32) -> bool {
+    at > ENDS && at < 1.0 - ENDS
+}
+
+#[derive(Clone, Copy, Default)]
+struct OriginTerms {
+    s: V3,
+    q: V3,
+    numerator: f32,
+}
+
+/// Origin terms shared by the rays of one visibility row. Only triangles
+/// visited by at least one ray are initialised. Each worker reuses its storage.
+pub(crate) struct RayOrigin {
+    at: V3,
+    generation: u32,
+    terms: Vec<(u32, OriginTerms)>,
+}
+
+impl RayOrigin {
+    pub(crate) fn new(triangles: usize) -> Self {
+        Self {
+            at: [0.0; 3],
+            generation: 0,
+            terms: vec![(0, OriginTerms::default()); triangles],
+        }
+    }
+
+    pub(crate) fn reset(&mut self, at: V3) {
+        self.at = at;
+        self.generation = self.generation.wrapping_add(1);
+        if self.generation == 0 {
+            self.terms.fill((0, OriginTerms::default()));
+            self.generation = 1;
+        }
+    }
+
+    #[inline]
+    fn terms(&mut self, index: usize, triangle: &RayTriangle) -> OriginTerms {
+        let (generation, terms) = &mut self.terms[index];
+        if *generation != self.generation {
+            *generation = self.generation;
+            *terms = triangle.origin(self.at);
+        }
+        *terms
+    }
+}
+
+/// Cached triangle edges used only during visibility generation. Shares the
+/// same bucket traversal with sight rays and preserves candidate order.
+pub(crate) struct BuildRays<'a> {
+    walls: &'a Walls,
+    triangles: Vec<RayTriangle>,
+}
+
+impl<'a> BuildRays<'a> {
+    pub(crate) fn new(walls: &'a Walls) -> Self {
+        Self {
+            walls,
+            triangles: walls.tris.iter().map(RayTriangle::new).collect(),
+        }
+    }
+
+    /// The legacy DDA candidate sequence. The walk and its duplicate
+    /// suppression use only XY, so all end heights at one XY share it.
+    pub(crate) fn candidates<'b>(&'b self, a: V3, b: V3, out: &'b mut Vec<u32>) -> &'b [u32] {
+        let (x, y) = (cell(a[0]), cell(a[1]));
+        if (x, y) == (cell(b[0]), cell(b[1])) {
+            return self.walls.grid.at(x, y);
+        }
+        out.clear();
+        self.walls.walk(a, b, sub(b, a), |t| {
+            out.push(t);
+            true
+        });
+        out
+    }
+
+    /// Calls `f` for the open-segment hits, until it returns false.
+    pub(crate) fn crossed(&self, a: V3, b: V3, mut f: impl FnMut(u32) -> bool) -> bool {
+        let d = sub(b, a);
+        self.walls.walk(a, b, d, |t| {
+            !self.triangles[t as usize].crossing(a, d).is_some_and(open) || f(t)
+        })
+    }
+
+    pub(crate) fn crossed_from(
+        &self,
+        origin: &mut RayOrigin,
+        b: V3,
+        candidates: Option<&[u32]>,
+        mut f: impl FnMut(u32) -> bool,
+    ) -> bool {
+        let a = origin.at;
+        let d = sub(b, a);
+        let test = |t: u32| {
+            let tri = &self.triangles[t as usize];
+            let p = cross(d, tri.e2);
+            let det = dot(tri.e1, p);
+            !(det.abs() >= 1e-9
+                && RayTriangle::open_hit(d, p, 1.0 / det, origin.terms(t as usize, tri)))
+                || f(t)
+        };
+        match candidates {
+            Some(ids) => ids.iter().copied().all(test),
+            None => self.walls.walk(a, b, d, test),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -322,6 +570,38 @@ mod tests {
             for (a, b) in [(a, b), (b, a)] {
                 let expected = walls.tris.iter().all(|t| !hits(t, a, sub(b, a)));
                 assert_eq!(walls.clear(a, b), expected);
+            }
+        }
+    }
+
+    #[test]
+    fn fixed_origin_and_shared_xy_keep_crossed_triangle_order() {
+        let floor = [[-8., -8., 0.], [8., -8., 0.], [8., 8., 0.], [-8., 8., 0.]];
+        let wall = [[-6., -6., 0.], [6., 6., 0.], [6., 6., 3.], [-6., -6., 3.]];
+        let walls = Walls::from_polygons([floor.as_slice(), wall.as_slice()]);
+        let rays = BuildRays::new(&walls);
+        let mut origin = RayOrigin::new(walls.tris.len());
+        let mut candidates = Vec::new();
+        let mut expected = Vec::new();
+        let mut hits = Vec::new();
+        for a in [[-7., -4., 2.], [6., 4., 3.], [0., 0., 0.]] {
+            origin.reset(a);
+            for [x, y] in [[7., -4.], [-7., 4.], [a[0], a[1]], [2., 2.]] {
+                let ids = rays.candidates(a, [x, y, 0.], &mut candidates);
+                for z in [-2., 0., 1., 3., 5.] {
+                    let b = [x, y, z];
+                    expected.clear();
+                    walls.crossed(a, b, &mut expected);
+                    for cached in [None, Some(ids)] {
+                        hits.clear();
+                        assert!(rays.crossed_from(&mut origin, b, cached, |t| {
+                            hits.push(t);
+                            true
+                        }));
+                        assert_eq!(hits, expected, "{a:?} to {b:?}");
+                    }
+                    assert_eq!(walls.any_hit(a, b), walls.hit(a, b).is_some());
+                }
             }
         }
     }

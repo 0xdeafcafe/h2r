@@ -70,13 +70,15 @@ impl BasicInfo {
 /// outside the VFS that open the same data themselves, read-only.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct HostFile {
+    /// Keep this lease while a reader may still open the returned path.
+    pub generation: Option<crate::MapGeneration>,
     pub path: std::path::PathBuf,
     pub offset: u64,
     pub len: u64,
 }
 
 /// Read-only backing for a file as the VFS serves it.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum FileSource {
     Host(HostFile),
     Memory(std::sync::Arc<[u8]>),

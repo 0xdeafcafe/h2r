@@ -102,7 +102,7 @@ mod tests {
             surfaces: ExternalSurfaces {
                 color: dest, depth: dest, sampled: vec![source], slots: vec![], slot_sizes: vec![],
             },
-            request: ExternalPassRequest { rect: (0, 0, 8, 4), surface_size: (8, 4), z_scale: 1.0 },
+            request: ExternalPassRequest { rect: (0, 0, 8, 4), surface_size: (8, 4), display_projection_factor: 1.0, z_scale: 1.0 },
             plan: ExternalPlan { stage: timeline::native::Stage::Water, view: 0, ranges: 1, slots: vec![] },
             pass: Arc::new(Mutex::new(Box::new(CopyLevel))),
         };

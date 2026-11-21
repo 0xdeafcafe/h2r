@@ -17,9 +17,8 @@
 //! field by field with another ([`diff`]).
 //!
 //! The definitions are checked-in text files (`src/defs/*.txt`, format in
-//! `docs/formats/tag-definitions.md`), inferred from retail data and the
-//! XBE's readers. No community definition was used. The files record
-//! offsets, types and our names; never retail values at length.
+//! `docs/formats/tag-definitions.md`). A field's evidence identifies the
+//! source of its layout. Its name and editor description are our own.
 
 use map::FourCC;
 use std::collections::BTreeMap;
@@ -96,8 +95,12 @@ pub const FILES: &[(&str, &str)] = &[
         "recorded_animation.txt",
         include_str!("defs/recorded_animation.txt"),
     ),
+    ("scnr.txt", include_str!("defs/scnr.txt")),
     ("egor.txt", include_str!("defs/egor.txt")),
     ("trak.txt", include_str!("defs/trak.txt")),
+    ("hudg.txt", include_str!("defs/hudg.txt")),
+    ("DECR.txt", include_str!("defs/DECR.txt")),
+    ("PRTM.txt", include_str!("defs/PRTM.txt")),
 ];
 
 /// One array element's layout (a group's root, a block's element, or a
@@ -132,11 +135,17 @@ pub struct FieldDef {
     /// Type.
     pub kind: Kind,
     /// What it means and the evidence for the name (`E` engine code, `V`
-    /// checked on the retail disc, `D` a choice made here).
+    /// checked on the retail disc, `D` a choice made here). The marker
+    /// `A Halo2Xbox <filename>` cites a layout observation in the named
+    /// retail Xbox plugin.
     pub meaning: String,
+    /// Description shown by editors, in the definition author's own words.
+    pub doc: Option<String>,
     /// Default value text for a fresh tag (`default=` in the file), else
     /// zero, null or empty.
     pub default: Option<String>,
+    /// When a live write shows, where the field has evidence.
+    pub applies: Option<&'static str>,
 }
 
 /// A field's type.
@@ -253,7 +262,7 @@ impl Defs {
             if l.indent != 0 {
                 return Err(err("expected `group` or `struct` at column 0".into()));
             }
-            let t: Vec<&str> = l.text.split_whitespace().collect();
+            let t = &l.words;
             let (is_group, name) = match t.first() {
                 Some(&"group") => (true, t.get(1).copied()),
                 Some(&"struct") => (false, t.get(1).copied()),
@@ -292,7 +301,7 @@ impl Defs {
     fn fields(
         &self,
         file: &str,
-        lines: &[Line],
+        lines: &[Line<'_>],
         i: &mut usize,
         indent: usize,
     ) -> Result<Vec<FieldDef>, ParseError> {
@@ -308,7 +317,7 @@ impl Defs {
                 return Err(err(format!("indent {} where {indent} expected", l.indent)));
             }
             *i += 1;
-            let t: Vec<&str> = l.text.split_whitespace().collect();
+            let t = &l.words;
             let offset = t
                 .first()
                 .and_then(|s| parse_num(s))
@@ -503,8 +512,16 @@ impl Defs {
                 offset,
                 name,
                 kind,
-                meaning: l.meaning.clone(),
+                meaning: l.meaning.to_owned(),
+                doc: l.doc.clone(),
                 default: params.get("default").cloned(),
+                applies: match params.get("applies").map(String::as_str) {
+                    None => None,
+                    Some("frame") => Some("frame"),
+                    Some("use") => Some("use"),
+                    Some("creation") => Some("creation"),
+                    Some(s) => return Err(err(format!("unknown applies={s}"))),
+                },
             });
         }
         Ok(out)
@@ -541,14 +558,38 @@ fn check(s: &StructDef) -> Result<(), String> {
     Ok(())
 }
 
-struct Line {
+struct Line<'a> {
     number: usize,
     indent: usize,
-    text: String,
-    meaning: String,
+    words: Vec<&'a str>,
+    meaning: &'a str,
+    doc: Option<String>,
 }
 
-fn lex(file: &str, text: &str) -> Result<Vec<Line>, ParseError> {
+/// Read the contents after the opening quote of a doc attribute.
+fn quoted_doc(input: &str) -> Result<(String, &str), &'static str> {
+    let mut chars = input.chars();
+    let mut value = String::new();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' => {
+                let rest = chars.as_str();
+                if !rest.is_empty() && !rest.starts_with(char::is_whitespace) {
+                    return Err("expected a space after the field description");
+                }
+                return Ok((value, rest));
+            }
+            '\\' => match chars.next() {
+                Some(c @ ('"' | '\\')) => value.push(c),
+                _ => return Err("expected an escaped quote or backslash in the field description"),
+            },
+            _ => value.push(c),
+        }
+    }
+    Err("unterminated field description")
+}
+
+fn lex<'a>(file: &str, text: &'a str) -> Result<Vec<Line<'a>>, ParseError> {
     let mut out = Vec::new();
     for (n, raw) in text.lines().enumerate() {
         let trimmed = raw.trim_start();
@@ -563,15 +604,42 @@ fn lex(file: &str, text: &str) -> Result<Vec<Line>, ParseError> {
                 why: "indent with spaces".into(),
             });
         }
-        let (body, meaning) = match trimmed.split_once(" -- ") {
-            Some((b, m)) => (b.trim_end(), m.trim()),
-            None => (trimmed.trim_end(), ""),
+        let err = |why: &str| ParseError {
+            file: file.into(),
+            line: n + 1,
+            why: why.into(),
         };
+        let mut rest = trimmed;
+        let mut words = Vec::new();
+        let mut doc = None;
+        let mut meaning = "";
+        while !rest.is_empty() {
+            if let Some(value) = rest.strip_prefix("doc=") {
+                if doc.is_some() {
+                    return Err(err("duplicate field description"));
+                }
+                let quoted = value
+                    .strip_prefix('"')
+                    .ok_or_else(|| err("expected doc=\"...\""))?;
+                let (value, tail) = quoted_doc(quoted).map_err(err)?;
+                doc = Some(value);
+                rest = tail.trim_start();
+            } else {
+                let (word, tail) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
+                if word == "--" {
+                    meaning = tail.trim();
+                    break;
+                }
+                words.push(word);
+                rest = tail.trim_start();
+            }
+        }
         out.push(Line {
             number: n + 1,
             indent,
-            text: body.to_owned(),
-            meaning: meaning.to_owned(),
+            words,
+            meaning,
+            doc,
         });
     }
     Ok(out)
@@ -702,8 +770,15 @@ impl StructDef {
                     let _ = write!(out, "pad {len:#x}");
                 }
             }
+            if let Some(a) = f.applies {
+                let _ = write!(out, " applies={a}");
+            }
             if let Some(d) = &f.default {
                 let _ = write!(out, " default={d}");
+            }
+            if let Some(doc) = &f.doc {
+                let escaped = doc.replace('\\', "\\\\").replace('"', "\\\"");
+                let _ = write!(out, " doc=\"{escaped}\"");
             }
             if !f.meaning.is_empty() {
                 let _ = write!(out, " -- {}", f.meaning);

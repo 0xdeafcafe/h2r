@@ -159,6 +159,7 @@ fn frame(game_id: &str, n: u64) -> Frame {
                     .is_multiple_of(40)
                     .then(|| vec!["reload".into()]),
                 grenade: Some("frag".into()),
+                ..Default::default()
             }
         })
         .collect();
@@ -217,6 +218,7 @@ fn frame(game_id: &str, n: u64) -> Frame {
                 speed: Some(if guard { 0.0 } else { 2.5 }),
                 actions: None,
                 grenade: Some("plasma".into()),
+                ..Default::default()
             }
         })
         .collect();
@@ -231,6 +233,7 @@ fn frame(game_id: &str, n: u64) -> Frame {
             pos: at(200 + ((n * 7 + k) % 100) as u32, t, 60.0).0,
             amount: Some(0.25),
             kind: Some("bullet".into()),
+            ..Default::default()
         })
         .collect();
     let machines = (0..12u32)

@@ -1,53 +1,104 @@
 # High resolution: 4K and arbitrary internal resolution
 
-Status: Built, with one scale for both axes. A per-axis scale for anamorphic
-widescreen is Design (not built).
-Code: `crates/platform/d3d/src/scaled.rs` and `crates/platform/d3d/src/scaled/single.rs`
-(`ScaledBackend`), `crates/platform/gfx/src/renderer.rs` (`window_shift`),
-`crates/extensions/game/src/d3d_glue.rs` (wiring). Tests: `crates/platform/d3d/tests/render_scale.rs`,
-`seams_gpu.rs`, `glyph_text.rs`.
-Switch: `H2_RENDER_SCALE` (1), `H2_SINGLE_COPY` (on), `H2_SMOOTH_TEXT` (off),
-listed in [switches.md](../runtime/switches.md).
+Status: Built. The renderer supports independently sized horizontal and vertical raster grids.
+Code: `crates/platform/gfx/src/raster.rs`, `crates/platform/d3d/src/scaled.rs`,
+`crates/platform/d3d/src/scaled/single.rs`, `crates/extensions/game/src/d3d_glue.rs`.
+Tests: `crates/platform/d3d/tests/render_scale.rs`, `crates/platform/gfx/src/raster.rs`,
+`crates/extensions/game/src/render_aspect.rs` and `crates/extensions/game/src/lod_distance.rs`.
+Switch: Resolution, HUD, LOD distance, single-copy readbacks and glyph smoothing
+are listed in [switches.md](../runtime/switches.md#settings).
 
-Above 1x the renderer draws each guest draw once, into surfaces at the
-render scale. The guest D3D device reports its original dimensions. The setting is
-`[graphics] render_scale`, the Resolution row on the Video screen
-([settings-menu.md](../game/settings-menu.md), "Video screen");
-`H2_RENDER_SCALE` (1 to 6) locks the scale when set
-(`d3d::render_scale_from`, `crates/apps/cli/src/play_cmd.rs`). The default,
-`graphics.single_copy` on, is described first. With it off, an exact 1x
-reference is rendered beside the scaled view ("Exact mode: reference and
-view").
+Native follows the physical drawable, including Retina backing pixels, with
+a default internal budget of 3840 × 2160 pixels. It scales both dimensions
+together to preserve the display aspect. On a 5120x2880 Studio Display,
+Native renders at 3840x2160. Choosing **5120x2880** renders at full panel
+resolution. Both 3440x1440 and 5120x1440 fit within the budget at native size.
+Explicit sizes stay fixed on resize and support up to 8192 on each axis.
+The desktop shell redraws the latest frame to the resized drawable
+(`Shell::redraw`, `crates/apps/app/src/shell.rs`) while the game prepares
+its next frame.
+
+The guest still addresses a 640x480 frame. A scaled frame has a separate
+horizontal and vertical ratio. The physical rectangle in which the shell
+presents that frame supplies the display aspect, including when the user
+forces an anamorphic aspect with `--aspect`. See the
+[Video screen](../game/settings-menu.md#video-screen) and
+[launch overrides](../runtime/switches.md#settings).
 
 ## Summary
 
 - **Guest device coordinates.** The device (`d3d::Device`) keeps
   every size, viewport, scissor, header and return value in guest pixels.
-  Raster scaling lives below the `d3d::Backend` trait. Model and structure
-  detail use projected pixels at the active render height. Both encoders in
-  exact mode draw the selected geometry. Choose **Retail** for LOD Distance
-  to keep the 480-line detail choices. See
-  [Projected size and level of detail](occlusion-culling.md#projected-size-and-level-of-detail).
-- **One draw per target.** At scale above 1 the display encoder owns the draw
-  stream, including draws to guest-size intermediates. Guest reads sample the
+  Raster scaling lives below the `d3d::Backend` trait. In offline play
+  structure LOD uses projected pixels at the accepted render height, and
+  model LOD the camera distance divided by the same factor. Both copies
+  draw the same chosen geometry. See
+  [projected size and level of detail](occlusion-culling.md#projected-size-and-level-of-detail).
+- **One draw per target in single-copy mode.** At increased resolution
+  the display encoder owns the draw stream, including draws to guest-size intermediates. Guest reads sample the
   scaled image at guest pixel positions.
 - **Scale with the back buffer:** the frame buffers, the depth buffer, the
   textures the game builds over both, and any render target the size of the
   back buffer. **Leave at guest size:** the small square targets (bloom,
   blur, reflection and shadow buffers).
-- **One integer scale for both axes.** Fractional scales work for geometry
-  but break 1:1 point-sampled copies, so they are not offered. 4K output is
-  an integer internal size plus the presenter's resample.
+- **One ratio per axis.** A 3840x2160 frame uses 6 host pixels per guest
+  pixel horizontally and 4.5 vertically. Scissors, viewports and clears
+  share rounded edges. Fixed-size blur targets retain their texel spacing.
 - **Shadow maps** scale only with E3 lighting: the view keeps a scaled copy
   of each depth level and samples it with one tap ([e3-lighting-setting.md](e3-lighting-setting.md)).
 - **MSAA and forced anisotropy** are not built; both would be view-only.
+
+## Widescreen projection
+
+For a vertical field of view `v` and a presented viewport aspect `a`,
+the horizontal field of view is `2 * atan(tan(v / 2) * a)`.
+The Xbox projection builder (`0x0002fb70`) applies this rule to its
+640x480 viewport and conditionally multiplies its aspect by the retail
+widescreen factor at `0x0045dfdc`. A 16:9 image can therefore occupy
+the same 640x480 allocation as a 4:3 image.
+
+`crates/extensions/game/src/render_aspect.rs` reads the Xbox anamorphic
+state at both the game and alternate view entries. For a recognised
+perspective draw, the host scales the
+horizontal clip coordinate by the ratio of the guest's pixel aspect to
+the displayed pixel aspect. For translated shaders, the recogniser
+requires a four-row perspective transform. Programs with an unrecognised
+clip transform keep their original positions. The flare pass translates its
+occlusion query to the projected display column, preserving the footprint used
+for the expected count, and applies the lens to the reflection billboards.
+The exact reference draws both at the retail coordinates. The vertical field of view, depth, simulation
+camera and guest visibility records keep their retail values. Orthographic
+menu widgets use a uniform fit inside each player's viewport. The
+menu backdrop uses the scene's full viewport through its blur and dim
+passes. `crates/extensions/game/src/render_aspect.rs` restores the
+widget fit when the backdrop finishes. Corner HUD
+groups can use the fitted rectangle or the viewport edges. If the game already
+uses the Xbox widescreen HUD layout, its artwork receives only the remaining
+aspect correction. At 16:9 the Pinned layout retains the retail widescreen fit.
+
+**Live visibility is incomplete at the sides.** A wider lens shows more of
+the geometry the guest submitted, including triangles crossing the retail
+frustum. A cluster or object missing from the guest's record list can still
+disappear at the retail boundary. Rendering everything in the extra field
+requires a separate gather from immutable scene data. Widening the retail
+gather can advance gameplay RNG, as described under [determinism](#determinism).
+The playerless Theater observer has the whole BSP and object array. It
+uses the same Hor+ lens for projection and its own frustum test on both.
+See [the host film view](../game/film-format.md#choosing-a-players-view).
+
+In offline play with the default LOD Distance, timings above 480 lines include the cost
+of retaining more detailed models and structure geometry. To compare raster
+cost at different resolutions with the original detail choices, select
+**Retail** at every resolution. Record both settings with the timings.
+[Lab benchmarks](../runtime/lab.md#--serve-and-bench).
 
 ## Single-copy readbacks
 
 The policy is selected at launch (`d3d_glue::single_copy`,
 `graphics.single_copy` in `crates/extensions/game/src/setting_defs.rs`). Set
-`single_copy = false` under `[graphics]` for exact-reference captures or
-replays. The lighting A/B capture always uses its separate reference.
+`single_copy = false` under `[graphics]` to request a retail reference in
+offline play. Boot requires the reference for network and film sessions, input
+tapes and lockstep. Lighting A/B captures also use a separate reference.
 
 
 The frame buffers, frame-sized RTT levels and their depth attachment are
@@ -58,16 +109,18 @@ still normalize texel coordinates. The GPU decoder for 32-bit depth aliases
 maps guest word addresses (pitch, offset or swizzle) into the scaled depth
 and stencil block. Other alias layouts and headers over a colour surface
 drawn into the depth allocation decode on the GPU as well. The decoder
-addresses guest bytes for each mip, cube face or volume slice while
-preserving the subpixel position in the source. Guest-size intermediate
+addresses guest bytes for each mip, cube face or volume slice. For
+reinterpreted cube and volume textures, a uniform integer grid preserves
+the layout. At fractional or unequal scales these aliases decode at guest
+size so cube faces stay square and mip chains remain valid. Guest-size intermediate
 draws sample these same images.
 
 A CPU surface read, lock or writeback transfers one sample per guest pixel
 into a guest-size GPU surface, then uses the existing guest format, pitch
-and swizzle encoder. Colour, depth and stencil select the first host texel
-of each block. With `window_shift` this is the nearest host sample to the
-1x raster position. Visibility counts make the same selection in the GPU
-coverage reduction, so a covered guest pixel contributes once at 4x.
+and swizzle encoder. Colour, depth and stencil use the same per-axis
+mapping. On reduction a read selects the first host texel at the rounded guest-pixel edge. On
+enlargement a host texel belongs to the guest cell bounded by those edges.
+Visibility counts use the same selection in the GPU coverage reduction, so a covered guest pixel contributes once at 4x.
 Mirror stores encode directly from the scaled image into guest-layout words.
 
 Fixed-size intermediates retain their guest dimensions. When a draw pairs
@@ -116,15 +169,15 @@ From [render-thread.md](render-thread.md) ("What can move") and
 | Frame-buffer and depth-buffer contents | never in guest memory; a CPU read through their `Data` faults | No. |
 | Textures over the depth buffer (`0x509368`, `0x50936C`) | decoded on the host; the bytes never reach guest memory | No. |
 
-So two channels carry pixels to the guest: write-backs and counts. What the
-game does with them is not fully traced. The callback at `0x24970` reads
-texels and its purpose is not recorded in our docs; the flare ratio at least
-feeds rendering. Until that is traced, assume both can reach the simulation.
+Both write-backs and counts feed guest state. The push-buffer callback
+at `0x24970` reads target texels through `0x3fdbc0` and `0x24a70`.
+The flare reader at `0x207b0` turns a sample count into a smoothed
+visibility byte. See [determinism](#determinism).
 
 
 ## Exact mode: reference and view
 
-With `graphics.single_copy` off, `ScaledBackend` wraps two `GfxBackend`s:
+In exact mode, `ScaledBackend` wraps two `GfxBackend`s:
 
 ```text
  Device (guest pixels, unchanged)
@@ -167,7 +220,6 @@ logged once. A draw that writes depth into a guest-size target with the
 scaled depth buffer bound is drawn again into the view's depth through a
 scaled colour surface of the depth's size (`proxy_depth_draws`). Guest bytes
 written into a scaled depth surface reach the view through `fill_from`.
-Stipple is indexed by host pixel in the view.
 
 This differs from the render thread, where a disagreement stops the run,
 because there the disagreeing backend is the one the guest observes.
@@ -177,13 +229,26 @@ from the view and `frame-NNNNN-1x.png` from the reference
 
 ### Changing the scale during a run
 
-`ScaledBackend::follow_scale` reads the setting at every present. A new
-scale is made at that frame boundary, on the thread that presents (the
-render thread under `ThreadedBackend`): every scaled surface is made again at
-the new size and filled from the reference's, and the device's surface
-handles are mapped onto the new ones. At 1 with retail lighting the view
-sleeps and each frame is the reference's (`ScaleStats::reference_frames`).
-With E3 lighting it stays awake at 1 (shadow maps at 2x). Tests:
+At each present, `ScaledBackend::follow_resolution` checks for a change. An
+explicit resolution takes effect at this boundary. Native waits for the
+drawable size to hold steady for 150 ms
+(`crates/extensions/game/src/d3d_glue/output_size.rs`). The window redraws
+the latest published raster at each resize. For Source aspect and Fit
+scaling, Native takes its presentation aspect from the current physical
+drawable, including while it draws a cached frame from an earlier size.
+The compositor and the guest's display-size query share this placement
+rule (`crates/apps/app/src/scale.rs`).
+
+The backend applies a new scale at the frame boundary on the thread that
+presents (the render thread under `ThreadedBackend`). It recreates each
+scaled surface at the new size, fills it from the reference, and maps the
+device's surface handles onto the new allocations. At 640×480 with retail
+lighting and 4:3 presentation, the view sleeps and the compositor shows the reference
+(`ScaleStats::reference_frames`). A forced widescreen aspect or stretched
+window wakes the exact-mode view at the same raster size. The display gets
+the fitted HUD and adjusted projection while guest reads use the retail
+reference. Single-copy draws once into its guest-size allocation for this
+case. E3 lighting also keeps the view awake (shadow maps at 2x). Tests:
 `the_scale_changes_at_a_frame_boundary_with_no_fallback_frames` and
 `on_the_render_thread_the_change_is_made_there_and_shown_at_once` in
 `render_scale.rs`.
@@ -198,7 +263,7 @@ With E3 lighting it stays awake at 1 (shadow maps at 2x). Tests:
 | Textures and the colour surface over the depth buffer (`0x509368`, `0x50936C`, `0x509370`) | Scale: built from the view's depth buffer | The menu's fog and distortion pass reads depth per pixel. Made on the GPU (see "Depth as a texture"). |
 | A render-to-texture level the size of the back buffer | Scale | Halo-2-HD reports one intermediate target, texaccum, that follows the back-buffer size (see "Prior art"). A full-screen intermediate left at 640x480 would undo the whole feature. |
 | Fixed-size square targets (the `0x14850` 64x64 pair, the 128x128 and 512x512 targets seen in the first level) | Do not scale | Bloom and blur kernels are measured in texels. Scaling the target shrinks the blur on screen. |
-| Shadow maps (depth levels bound as `pNewZStencil`, sampled as `LIN_D24S8`) | 1x with retail lighting. With E3 lighting the view keeps a copy at the render scale, at least 2x (`d3d::scaled::shadow_scale`), sampled with one tap ([e3-lighting-setting.md](e3-lighting-setting.md)) | The comparison indexes the host texels it has (`textureDimensions`) at the guest's coordinate, so a bigger map needs no shader change; a sharper map with retail's 2x2 filter alone only narrows the soft edge. |
+| Shadow maps (depth levels bound as `pNewZStencil`, sampled as `LIN_D24S8`) | 1x with retail lighting. With E3 lighting the view keeps a copy at the rounded vertical scale, at least 2x (`d3d::scaled::shadow_scale`), sampled with one tap ([e3-lighting-setting.md](e3-lighting-setting.md)) | The comparison indexes the host texels it has (`textureDimensions`) at the guest's coordinate, so a bigger map needs no shader change; a sharper map with retail's 2x2 filter alone only narrows the soft edge. |
 | Ordinary textures | Never | They are the game's assets. |
 
 The rule for classifying a render-to-texture level is its guest size against
@@ -210,7 +275,7 @@ fallback if a level needs an exception.
 
 A draw can sample a scaled surface into an unscaled target; the first
 downsample of a bloom chain does this. In single-copy mode a mixed draw runs
-once at guest size: `ScaledBackend::guest_image` box-resizes the scaled
+once at guest size: `ScaledBackend::guest_image` samples the scaled
 partner to its guest-size handle (`ScaleStats::downsamples`), and a scaled
 partner that the draw modified is transferred back on the GPU
 (`crates/platform/d3d/src/scaled/single.rs`, `draw_single`). In exact mode the
@@ -254,9 +319,13 @@ Three details:
   pixel are smaller by the scale, so the slope term shrinks. That is the
   correct behaviour for a bias per sample step, but decals tuned at 480p need
   a test.
-- **Stipple.** The pattern is indexed by pixel position ([d3d.md](d3d.md),
-  `SetStipple`). The view must index it by guest pixel (`floor(position /
-  scale)`), or the pattern becomes finer than retail.
+- **Stipple.** The translated fragment shader maps each host pixel to the
+  guest framebuffer cell bounded by the same rounded edges as a scissor.
+  It uses the guest and host dimensions of the bound target on each axis.
+  A host pixel centre exactly on a guest edge takes the preceding cell's
+  mask bit. The mask stays anchored to the framebuffer's top left when
+  the viewport or scissor moves. See `SetStipple` in [d3d.md](d3d.md)
+  for the row and bit order.
 
 ### Subpixel snapping and cracks
 
@@ -327,8 +396,8 @@ material, and not snap, so seams match bit for bit.
 ### Scissor, clears and viewport
 
 `Draw::scissor`, `ScissorRect` clears and `Draw::viewport` are in pixels of the
-target. The view multiplies them by the target's scale. For an integer scale
-this is exact. For a fractional scale every edge must be rounded by the same
+target. The view maps their endpoints on each axis. For an integer scale
+this is exact. At a fractional scale it rounds each edge with the same
 function (`floor(edge * s + 0.5)`), so the disjoint pieces of a split scissor
 stay disjoint and gapless ([d3d.md](d3d.md), `clip_rects`). xemu had this
 wrong for inclusive bounds at one point (xemu issue 1054).
@@ -353,7 +422,13 @@ then lands on a host texel centre only when `d * s` is an integer:
   odd ones. With a linear filter the result is a narrower blur than retail.
   With a point filter, at an odd scale, the tap picks a neighbour and a seam
   appears. xemu issue 1771 is this case.
-- **Fractional scales** break the 1:1 case too.
+- **Fractional scales** cannot represent every guest-texel offset as a
+  whole host texel. A translated point tap can select an adjacent sample.
+  Feedback snapshots on equal-size surfaces copy exact host texels. Explicit
+  guest readbacks, fills and mixed-size surface transfers use a separate
+  nearest-cell mapping for each axis. Small filter targets operate on their
+  guest raster. Arbitrarily shifted point taps in retail draws still need
+  a live comparison.
 
 Three rules follow:
 
@@ -371,16 +446,16 @@ Three rules follow:
 
 ### Half-pixel shift
 
-At scale `s` positions move by `(2s - 1) / (4s)` guest pixels
+On each magnified axis at scale `s`, positions move by `(2s - 1) / (4s)` guest pixels
 (`gfx::renderer::window_shift`, `VertexUniforms::shift`, the built-in
 shader's `shift_x/y`), with no 1/16 truncation (see "Subpixel snapping and
-cracks"). It is 0 at 1x, so the reference's shaders compute what they did.
+cracks"). The shift is zero on an axis at or below 1x. The reference retains retail snapping.
 
 D3D-convention geometry puts edges, and the texel corners of a 1:1 copy,
 exactly on pixel centres, so at 1x the tie rules decide. Scaled without a
 shift, a full-screen quad leaves the first host column and row empty (the
 margin artefact of xemu issues 57 and 508), and a point-sampled 1:1 copy
-reads the neighbouring texel. With the shift, the `s x s` host pixels of a
+reads the neighbouring texel. At uniform integer scales, the shifted `s x s` host pixels of a
 guest pixel sample it at offsets `(k + 1/4) / s`, all inside the pixel and
 none on a tie. Then an edge on a pixel centre covers whole blocks, the
 top-left rule included, and a 1:1 copy reads the texel 1x reads. A shift of
@@ -405,10 +480,16 @@ crossfade (`0x002ab270`) and the depth-based fog and distortion pass on the
 menu. Halo-2-HD's write-up counts about 25 render targets in four or five
 allocations, from 512x512 down to 64x64.
 
-Policy: every pass runs on targets at guest size, and
-only the final composite onto the back buffer is at the view's scale. The
-bloom is then exactly as wide on screen as in retail, upsampled bilinearly.
-That is what a blur wants.
+Fixed-size blur targets keep their guest texel grids. Frame-sized
+intermediates and feedback copies use the display grid
+(`crates/platform/d3d/src/scaled.rs`). The shared menu backdrop helper
+(`UI_MENU_BACKDROP`) processes the scene in the view's own coordinates.
+`crates/extensions/game/src/render_aspect.rs` drains pending draws at the
+helper's entry and return, suspends the widget safe-area fit for the
+backdrop's target chain, and restores the fit for subsequent UI draws.
+The final backdrop fan (`crates/rewrites/engine/src/ui_backdrop.rs`)
+interpolates normalized texture coordinates over the guest's composite
+rectangle. The back buffer rasterises it on the display grid.
 
 Known failure modes to test for, all seen in xemu at more than 1x:
 
@@ -431,11 +512,17 @@ stays valid:
   words in guest pixels. Unchanged.
 - **Scissors.** `SetScissors` (`0x3f8760`) and the device's scissor region
   work in guest pixels. The view scales the result.
-- **HUD and UI.** Widget bounds are in a 640x480 frame ([ui.md](../formats/ui.md)). They
-  keep their proportions. Bitmaps are 480p assets and look soft when
-  magnified. Text is redrawn sharp from the game's glyph cache (see "Text"
-  below).
-- **Loading screens and movies** draw through the same path and are upscaled.
+- **HUD and UI.** Widget bounds are in a 640x480 frame ([ui.md](../formats/ui.md)).
+  The host fits menu draws and their scissors uniformly in a centred safe
+  area. Centered places HUD corners in the same area. Pinned translates
+  the retail corner-anchored HUD groups to their own viewport edges while
+  keeping their physical scale. Centre and world-tracked indicators use
+  their own anchor. Each draw records the fit before it moves to the GPU
+  thread. A generated game image includes the interior UI entries for
+  these scopes. Regenerate a pre-existing image to pick them up.
+- **Loading screens and movies.** The compositor presents the supplied frame
+  at the selected display aspect. Menu and HUD fits apply inside their
+  respective draw scopes.
 
 This is the main difference from Halo-2-HD, which raises the guest's own
 resolution and so had to patch each of these (see "Prior art").
@@ -555,14 +642,40 @@ everything else.
 
 ## Determinism
 
-With `graphics.single_copy` off, the guest reads the same values at every
-scale on the same host: the reference is the plain backend with the plain
-inputs, and the view receives copies of the same calls and returns nothing
-the device uses. In single-copy mode reads are sampled from the scaled image
-and can differ ("Single-copy readbacks", parity trade-off).
+Boot selects exact readbacks when it installs networking, arms a film recorder,
+plays a film, or enables lockstep or an input tape.
+The 640x480 reference supplies texels, depth, stencil and visibility counts
+using the retail lens and HUD coordinates. The window presents its own
+resolution, aspect and HUD layout. Boot selects this policy before the
+first frame, including time in the menu before a player joins System Link,
+Live or co-op. Changing a display cannot retroactively repair a pixel or
+visibility count the guest has already consumed. The same reference applies
+when the user requests single-copy mode.
 
-What this does not claim: identical values across different GPUs or drivers.
-That is not true at 1x either, since readbacks come from the host rasteriser.
+Resolution is a Host setting. A film viewer chooses the display raster
+independently of the recorded guest. The Video row itself writes its label
+into guest memory. Local films record each size the row or picker observes so
+replaying a trip through Settings shows the same choices on another monitor.
+See [film playback](../game/film-format.md#choosing-a-players-view).
+For protected sessions, the guest
+uses retail LOD distances independent of the viewer's output height or
+LOD preference. Older films that record the scalar render scale and LOD
+selection reproduce the corresponding startup multiplier. A legacy film's
+startup record cannot describe a later change to either setting. In offline
+single-copy play, guest readbacks still sample the display raster.
+
+The observer produces the vertical field of view from player control.
+Aim search and shot assistance use weapon tag angles and zoom, and the
+distributed shot path can use transmitted aim data. Resolution and HUD
+position supply neither of those inputs. Headless sim and dedicated hosts
+install no display-aspect hook. See [aim assist](../game/aim-assist.md) and
+[field of view](../game/settings-menu.md#field-of-view).
+
+The original object gather must stay authoritative. Per-visible-object
+setup can reach animation variant selection through
+`0x00133790`, `0x000bd610` and `0x001cb410`. With the animation manager's
+gameplay RNG bit set, the selector writes the shared seed at `0x001dd6e1`.
+Changing which objects enter that loop can change a later simulation tick.
 
 What must hold in exact mode, and how each is checked:
 
@@ -586,10 +699,12 @@ flight):
 | 1280x960 | 2 x 2 | 1.23 M | 4 | about 34 MB |
 | 1920x1440 | 3 x 3 | 2.76 M | 9 | about 77 MB |
 | 2560x1920 | 4 x 4 | 4.92 M | 16 | about 138 MB |
-| 3840x2880 | 6 x 6 | 11.06 M | 36 | about 310 MB |
+| 3840x2160 | 6 x 4.5 | 8.29 M | 27 | about 232 MB |
+| 3440x1440 | 5.375 x 3 | 4.95 M | 16.125 | about 139 MB |
+| 5120x2880 | 8 x 6 | 14.75 M | 48 | about 413 MB |
 
-A back-buffer-sized render target adds 4 bytes a pixel each. One scale per axis means a 4K output (3840x2160) renders at 6x
-(3840x2880) and the presenter resamples it; a per-axis 6 x 4.5 form is Design.
+A frame-sized colour target adds four bytes per pixel. At 3840x2160 this
+amounts to 33.2 MB per target. At 5120x2880 it is 59.0 MB.
 
 - **GPU.** Fragment work on scaled targets grows with the pixel count. Work on
   unscaled targets does not. Snapshots are full copies of the back buffer
@@ -613,12 +728,17 @@ adapter exists.
 
 - `crates/platform/d3d/tests/render_scale.rs` (headless wgpu): the guest sees the same
   answers at every scale; the view's frame box-filtered equals the reference
-  except on geometry edges; only frame-sized surfaces scale; scales outside 1
+  except on geometry edges; only frame-sized surfaces scale; legacy scale overrides outside 1
   to 6 are rejected; frame-sized targets, small targets with the scaled depth
   buffer, depth-level fills, the depth buffer as a texture and colour over
   depth memory match the reference downsampled; the scale and the lighting
-  change at a frame boundary; the E3 shadow-map tests; the `single_copy_*`
-  tests.
+  change at a frame boundary; the stipple mask stays aligned in exact
+  and single-copy mode; the E3 shadow-map and `single_copy_*` tests.
+- `fractional_per_axis_surfaces_keep_fullscreen_edges_and_guest_answers`,
+  `fractional_clears_and_scissors_tile_the_same_texels` and
+  `fractional_feedback_preserves_patterned_guest_cells_and_snapshot_lifetime`
+  cover unequal fractional axes, including a 149x101 surface for a 64x64
+  guest frame.
 - `crates/platform/d3d/tests/seams_gpu.rs`: clear-colour pixels inside a mesh with
   T-junctions and a one-ulp seam, at 2x to 6x ("Subpixel snapping and
   cracks").
@@ -627,8 +747,7 @@ adapter exists.
 - `crates/platform/d3d/tests/gpu_depth_alias.rs`, `external_pass.rs`: depth aliases and
   external passes through `ScaledBackend`.
 
-Not covered by a test: a capture replayer for whole frames; stipple by guest
-pixel; the per-axis scale.
+Whole-frame retail capture replay still lacks test coverage.
 
 ## Prior art
 
@@ -741,11 +860,22 @@ ones about the renderer's structure:
 
 ## Not verified
 
-- Which write-backs and counts happen in gameplay, and whether any value
-  reaches the simulation (the callback at `0x24970` is not traced). Only a
-  run with counters can show it.
-- Whether a retail pass point-samples a half-texel-shifted source. If so, odd
-  scales need a per-pass fix.
+- Cross-machine and film tick-hash parity for the same input across window
+  sizes and HUD settings. Exact mode isolates the display-dependent inputs;
+  it does not establish cross-driver raster equivalence.
+- Texaccum, refraction, active camouflage and water may derive projective
+  texture coordinates independently of the clip transform. A synthetic shader
+  covers a lookup derived from the corrected clip X and W. Compare a
+  high-contrast surface at the same tick at 4:3 and ultrawide. Use the agent
+  API's `render.frame` and `render.capture` to identify the producer of any
+  displaced lookup and inspect its projected coordinates after division by W.
+  A correction belongs on the display's screen-space lookup. Asset UVs and
+  the retail reference keep their original mapping.
+- Fractional and odd-scale point taps in retail water, fog and feedback
+  draws. A half-texel-shifted point sample can select the adjacent texel.
+- HUD corner ownership, projected markers and scissor alignment in split
+  screen, cinematics, zoom and ultrawide combat. CPU-positioned effects
+  can disagree with geometry at the sides of a wide view.
 - Whether Halo 2 draws lines outside debug paths.
 - The CPU cost of exact mode's second backend on current master.
 - Whether the back-buffer-sized target that Halo-2-HD reports is the only

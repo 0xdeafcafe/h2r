@@ -76,6 +76,8 @@ pub mod look;
 pub mod pass_state;
 #[cfg(feature = "gpu")]
 pub mod program;
+#[cfg(feature = "gpu")]
+pub mod pipelines;
 pub mod model;
 #[cfg(feature = "gpu")]
 pub mod model_gpu;
@@ -98,6 +100,8 @@ pub mod screen_look;
 #[cfg(feature = "gpu")]
 pub mod shadow_gpu;
 pub mod shadows;
+#[cfg(feature = "gpu")]
+pub mod texture_groups;
 pub mod transparent;
 #[cfg(feature = "gpu")]
 pub mod transparent_streams;

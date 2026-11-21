@@ -468,6 +468,10 @@ pub fn prompts() -> Vec<Prompt> {
 pub struct CategoryRows(pub Arc<Selection>);
 
 impl Rows for CategoryRows {
+    fn content_spec(&self) -> Option<crate::ui_kit::spec::ScreenSpec> {
+        Some(crate::ui_kit::spec::Describe::spec(self))
+    }
+
     fn title(&self) -> u32 {
         IDS.id(TITLE)
     }
@@ -512,6 +516,10 @@ impl Describe for CategoryRows {
 pub struct MapRows(pub Arc<Selection>);
 
 impl Rows for MapRows {
+    fn content_spec(&self) -> Option<crate::ui_kit::spec::ScreenSpec> {
+        Some(crate::ui_kit::spec::Describe::spec(self))
+    }
+
     fn title(&self) -> u32 {
         let c = self.0.category().unwrap_or(Category::Halo2);
         IDS.id(CATEGORY_LABELS + c.index())

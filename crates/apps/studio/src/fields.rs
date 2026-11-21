@@ -17,11 +17,12 @@ use std::sync::Arc;
 
 use dear_imgui_rs::{Drag, DragRange, NumericFormat, Ui};
 use map::{FourCC, TagId};
+use scenario_edit::{Role, Scenario};
 use tags::registry::{Field, Hint, Kind, Layout};
 
-use crate::app::tag_doc::STRUCTURAL;
 use crate::app::tag_api::FieldFocus;
-use crate::app::{Action, BlockOp, NavAction, TagAction, TagDoc, TagWrite};
+use crate::app::tag_doc::STRUCTURAL;
+use crate::app::{Action, BlockOp, NavAction, TagAction, TagDoc, TagWrite, ToolKind};
 use crate::theme::icon;
 
 /// How an unnamed span is shown.
@@ -42,6 +43,7 @@ pub struct Hovered {
     pub name: String,
     pub kind: String,
     pub named: bool,
+    pub description: Option<String>,
     pub meaning: String,
 }
 
@@ -50,16 +52,16 @@ pub struct Hovered {
 pub struct PanelState {
     /// The element shown per block, by the address of its `(count,
     /// address)` pair.
-    pub index: HashMap<u32, u32>,
+    index: HashMap<(TagId, u32), u32>,
     /// The field under the mouse this frame.
     pub hovered: Option<Hovered>,
     /// The element the mouse was last in: its address and layout (the hex
     /// pane shows it).
-    pub focus: Option<(u32, Arc<Layout>)>,
+    pub focus: Option<(TagId, u32, Arc<Layout>)>,
     /// How unnamed spans are shown, by address (else guessed).
-    pub views: HashMap<u32, View>,
+    views: HashMap<(TagId, u32), View>,
     /// Text being typed into string ID and data fields, by address.
-    text: HashMap<u32, String>,
+    text: HashMap<(TagId, u32), String>,
     /// The tag picker's filter.
     picker: String,
     /// Show padding fields.
@@ -75,7 +77,7 @@ impl PanelState {
         self.clear_field_focus();
         self.focus_target = Some((tag, focus.address));
         for (pair, index) in focus.blocks {
-            self.index.insert(pair, index);
+            self.index.insert((tag, pair), index);
             self.focus_blocks.push(pair);
         }
     }
@@ -108,7 +110,37 @@ pub fn panel(
     st: &mut PanelState,
     actions: &mut Vec<Action>,
 ) {
-    panel_impl(ui, doc, tag, path, st, actions, None);
+    panel_with_marks(
+        ui,
+        doc,
+        tag,
+        path,
+        st,
+        actions,
+        PanelRoot::Tags(None),
+        &mut |_, _| {},
+    );
+}
+
+/// The Tags panel can jump to Scene for the scenario it edits.
+pub fn tag_panel(
+    ui: &Ui,
+    doc: &TagDoc,
+    tag: TagId,
+    scene: Option<&Scenario>,
+    st: &mut PanelState,
+    actions: &mut Vec<Action>,
+) {
+    panel_with_marks(
+        ui,
+        doc,
+        tag,
+        &[],
+        st,
+        actions,
+        PanelRoot::Tags(scene),
+        &mut |_, _| {},
+    );
 }
 
 /// The root panel in the inspector, with reference buttons that keep the
@@ -121,17 +153,33 @@ pub fn inspector_panel(
     st: &mut PanelState,
     actions: &mut Vec<Action>,
 ) {
-    panel_impl(ui, doc, tag, &[], st, actions, Some(trail));
+    panel_with_marks(
+        ui,
+        doc,
+        tag,
+        &[],
+        st,
+        actions,
+        PanelRoot::Inspector(trail),
+        &mut |_, _| {},
+    );
 }
 
-fn panel_impl(
+pub(crate) enum PanelRoot<'a> {
+    Tags(Option<&'a Scenario>),
+    Inspector(&'a [TagId]),
+}
+
+/// The panel gives its caller each field address just after the widget is drawn.
+pub(crate) fn panel_with_marks(
     ui: &Ui,
     doc: &TagDoc,
     tag: TagId,
     path: &[(u32, u32)],
     st: &mut PanelState,
     actions: &mut Vec<Action>,
-    trail: Option<&[TagId]>,
+    root: PanelRoot<'_>,
+    mark_field: &mut dyn FnMut(TagId, u32),
 ) {
     st.hovered = None;
     let Some((at, layout)) = doc.resolve(tag, path) else {
@@ -139,6 +187,10 @@ fn panel_impl(
         return;
     };
     let editable = doc.refusal(tag).is_none();
+    let (trail, scene) = match root {
+        PanelRoot::Tags(scene) => (None, scene),
+        PanelRoot::Inspector(trail) => (Some(trail), None),
+    };
     let mut cx = Cx {
         ui,
         doc,
@@ -147,12 +199,15 @@ fn panel_impl(
         st,
         actions,
         trail,
+        scene,
+        mark_field,
         prefix: String::new(),
     };
+    let _id = ui.push_id(tag.0 as usize);
     cx.element(at, &layout);
 }
 
-struct Cx<'a> {
+struct Cx<'a, 'm> {
     ui: &'a Ui,
     doc: &'a TagDoc,
     tag: TagId,
@@ -160,7 +215,9 @@ struct Cx<'a> {
     st: &'a mut PanelState,
     actions: &'a mut Vec<Action>,
     trail: Option<&'a [TagId]>,
+    scene: Option<&'a Scenario>,
     prefix: String,
+    mark_field: &'m mut dyn FnMut(TagId, u32),
 }
 
 fn key(address: u32) -> u64 {
@@ -221,7 +278,7 @@ pub fn guess(v: u32) -> View {
     }
 }
 
-impl Cx<'_> {
+impl Cx<'_, '_> {
     fn write(&mut self, address: u32, bytes: Vec<u8>, label: &str) {
         self.actions.push(write_action(self.tag, address, bytes, label));
     }
@@ -249,6 +306,7 @@ impl Cx<'_> {
             }
             let _id = ui.push_id(f.offset as usize);
             self.field(at, layout, f);
+            (self.mark_field)(self.tag, at + f.offset);
             if focused {
                 ui.set_scroll_here_y(0.5);
                 self.st.clear_field_focus();
@@ -264,6 +322,18 @@ impl Cx<'_> {
             ui.text_disabled(&f.name);
         }
         self.hover(at, layout, f);
+        if self.editable {
+            let (class, why) = crate::play::tag_sync::class(self.doc, self.tag, at + f.offset, f);
+            let tone = if class == crate::play::tag_sync::RELOAD {
+                crate::play::LinkTone::Warn
+            } else {
+                crate::play::LinkTone::View
+            };
+            crate::theme::link_badge(ui, tone, class);
+            if ui.is_item_hovered() {
+                ui.tooltip_text(why);
+            }
+        }
         ui.same_line_with_pos(LABEL);
         ui.set_next_item_width(-1.0);
     }
@@ -274,21 +344,18 @@ impl Cx<'_> {
         if !ui.is_item_hovered() {
             return;
         }
-        let tip = format!(
-            "{} at +{:#x}{}{}",
-            f.kind.label(),
-            f.offset,
-            if f.named {
-                ""
-            } else {
-                "\nunnamed: labelled by its offset"
-            },
-            if f.meaning.is_empty() {
-                String::new()
-            } else {
-                format!("\n{}", f.meaning)
-            }
-        );
+        let mut tip = format!("{} at +{:#x}", f.kind.label(), f.offset);
+        if !f.named {
+            tip.push_str("\nunnamed: labelled by its offset");
+        }
+        if let Some(doc) = f.doc.as_deref().filter(|s| !s.is_empty()) {
+            tip.push('\n');
+            tip.push_str(doc);
+        }
+        if !f.meaning.is_empty() {
+            tip.push('\n');
+            tip.push_str(&f.meaning);
+        }
         ui.set_item_tooltip(tip);
         self.st.hovered = Some(Hovered {
             address: at + f.offset,
@@ -297,17 +364,18 @@ impl Cx<'_> {
             name: f.name.clone(),
             kind: f.kind.label(),
             named: f.named,
+            description: f.doc.clone(),
             meaning: f.meaning.clone(),
         });
-        self.st.focus = Some((at, layout.clone()));
+        self.st.focus = Some((self.tag, at, layout.clone()));
     }
 
     fn field(&mut self, at: u32, layout: &Arc<Layout>, f: &Field) {
         let ui = self.ui;
         let a = at + f.offset;
         let w = f.kind.width();
-        let Some(b) = self.doc.read(a, w) else {
-            ui.text_disabled(format!("{}: outside the metadata", f.name));
+        let Some(b) = self.doc.read(self.tag, a, w) else {
+            ui.text_disabled(format!("{}: outside the tag's address space", f.name));
             return;
         };
         match &f.kind {
@@ -354,16 +422,37 @@ impl Cx<'_> {
                 self.after();
             }
             Kind::Float { count, hint } => self.float(a, f, &b, *count, *hint),
+            Kind::Enum { bytes, values } | Kind::Flags { bytes, bits: values }
+                if values.iter().all(|s| s.is_empty() || s == "_") =>
+            {
+                let n = usize::from(*bytes);
+                let max = (1i64 << (8 * n)) - 1;
+                let mut value = le(&b, 0, n) as i64;
+                if Drag::<i64, _>::new("##v")
+                    .range(0, max)
+                    .build(ui, &mut value)
+                {
+                    let encoded = value.clamp(0, max).to_le_bytes();
+                    self.write(a, encoded[..n].to_vec(), &f.name);
+                }
+                self.after();
+            }
             Kind::Enum { bytes, values } => {
-                let n = *bytes as usize;
-                let v = le(&b, 0, n);
-                let name = |i: u64| match values.get(i as usize) {
-                    Some(s) => format!("{i}: {s}"),
-                    None => format!("{i}"),
-                };
-                if let Some(_c) = ui.begin_combo("##v", name(v)) {
-                    for i in 0..values.len().max(v as usize + 1) as u64 {
-                        if ui.selectable_config(name(i)).selected(i == v).build() && i != v {
+                let n = usize::from(*bytes);
+                let v = le(&b, 0, n) as u32;
+                let label = values
+                    .get(v as usize)
+                    .filter(|s| !s.is_empty() && s.as_str() != "_")
+                    .map_or_else(|| v.to_string(), |s| format!("{v}: {s}"));
+                if let Some(_c) = ui.begin_combo("##v", label) {
+                    for (i, name) in values.iter().enumerate() {
+                        if name.is_empty() || name == "_" {
+                            continue;
+                        }
+                        let i = i as u32;
+                        if ui.selectable_config(format!("{i}: {name}")).selected(i == v).build()
+                            && i != v
+                        {
                             self.write(a, i.to_le_bytes()[..n].to_vec(), &f.name);
                         }
                     }
@@ -411,10 +500,10 @@ impl Cx<'_> {
                 }
             }
             Kind::Word => {
-                let mut v = le(&b, 0, 4) as i64;
-                if Drag::<i64, _>::new("##v")
+                let mut v = le(&b, 0, 4) as u64;
+                if Drag::<u64, _>::new("##v")
                     .range(0, 0xffff_ffff)
-                    .display_format(fmt_i("0x%08llx"))
+                    .display_format(fmt_hex("0x%08llx"))
                     .build(ui, &mut v)
                 {
                     self.write(a, (v as u32).to_le_bytes().to_vec(), &f.name);
@@ -484,12 +573,12 @@ impl Cx<'_> {
     fn unknown(&mut self, a: u32, f: &Field, b: &[u8], len: u32) {
         let ui = self.ui;
         let v = le(b, 0, len as usize) as u32;
-        let view =
-            self.st
-                .views
-                .get(&a)
-                .copied()
-                .unwrap_or(if len == 4 { guess(v) } else { View::Int });
+        let view = self
+            .st
+            .views
+            .get(&(self.tag, a))
+            .copied()
+            .unwrap_or(if len == 4 { guess(v) } else { View::Int });
         let n = len as usize;
         match view {
             View::Float if len == 4 => {
@@ -503,11 +592,11 @@ impl Cx<'_> {
                 }
             }
             View::Hex => {
-                let mut x = i64::from(v);
+                let mut x = u64::from(v);
                 let hexfmt = format!("0x%0{}llx", 2 * n);
-                if Drag::<i64, _>::new("##v")
-                    .range(0, (1i64 << (8 * n)) - 1)
-                    .display_format(fmt_i(hexfmt.as_str()))
+                if Drag::<u64, _>::new("##v")
+                    .range(0, (1u64 << (8 * n)) - 1)
+                    .display_format(fmt_hex(hexfmt.as_str()))
                     .build(ui, &mut x)
                 {
                     self.write(a, x.to_le_bytes()[..n].to_vec(), &f.name);
@@ -536,7 +625,7 @@ impl Cx<'_> {
                 if (to != View::Float || len == 4)
                     && ui.selectable_config(label).selected(view == to).build()
                 {
-                    self.st.views.insert(a, to);
+                    self.st.views.insert((self.tag, a), to);
                 }
             }
         }
@@ -550,7 +639,11 @@ impl Cx<'_> {
             None if v == u32::MAX => String::new(),
             None => format!("#{v:#010x}"),
         };
-        let text = self.st.text.entry(a).or_insert_with(|| current.clone());
+        let text = self
+            .st
+            .text
+            .entry((self.tag, a))
+            .or_insert_with(|| current.clone());
         let entered = ui.input_text("##v", text).enter_returns_true(true).build();
         let active = ui.is_item_active();
         let typed = text.clone();
@@ -569,10 +662,10 @@ impl Cx<'_> {
                     label: f.name.clone(),
                 }));
             }
-            self.st.text.remove(&a);
+            self.st.text.remove(&(self.tag, a));
         } else if !active {
             // Follow the field (undo, another element) while not typing.
-            self.st.text.insert(a, current);
+            self.st.text.insert((self.tag, a), current);
         }
     }
 
@@ -638,16 +731,17 @@ impl Cx<'_> {
     fn block(&mut self, at: u32, layout: &Arc<Layout>, f: &Field, child: &Arc<Layout>) {
         let ui = self.ui;
         let pair = at + f.offset;
-        let Some((n, a)) = self.doc.block(pair, child) else {
+        let Some((n, a)) = self.doc.block(self.tag, pair, child) else {
             ui.text_disabled(format!(
-                "{}: its elements are outside the map's metadata",
+                "{}: its elements are outside the tag's address space",
                 f.name
             ));
             return;
         };
-        let cap = self.doc.capacity(pair);
+        let cap = self.doc.capacity(self.tag, pair);
+        let mode = if self.editable { "Reload" } else { "Read-only" };
         let header = format!(
-            "{}  [{n}]{}",
+            "{}  · {mode}  [{n}]{}",
             f.name,
             if cap > n {
                 format!(" of {cap}")
@@ -668,16 +762,46 @@ impl Cx<'_> {
         let i = self
             .st
             .index
-            .get(&pair)
+            .get(&(self.tag, pair))
             .copied()
             .unwrap_or(0)
             .min(n.saturating_sub(1));
         // Element picker and the block's commands.
         let mut shown = i as i32;
         ui.set_next_item_width(110.0);
-        if n > 0 && ui.input_int("element##idx", &mut shown) {
+        let i = if n > 0 && ui.input_int("element##idx", &mut shown) {
             let shown = shown.clamp(0, n as i32 - 1) as u32;
-            self.st.index.insert(pair, shown);
+            self.st.index.insert((self.tag, pair), shown);
+            shown
+        } else {
+            i
+        };
+        if let Some(scene) = self.scene.filter(|s| s.tag == self.tag && s.address == at)
+            && let Some(def) = self.doc.scene_block(self.tag, pair)
+        {
+            if n > 0 {
+                ui.same_line();
+            }
+            if ui.small_button(format!("Open {} in Scene", def.label)) {
+                let block = scene.block(def.kind);
+                let index = if f.offset == def.offset {
+                    let index = i as usize;
+                    (index < block.len()).then_some(index)
+                } else {
+                    def.role(Role::PaletteIndex).and_then(|field| {
+                        (0..block.len()).find(|&index| {
+                            scene
+                                .get(def.kind, index, field.name)
+                                .ok()
+                                .and_then(|value| value.as_int())
+                                == Some(i64::from(i))
+                        })
+                    })
+                };
+                self.actions.push(Action::SetTool(ToolKind::Scenario));
+                self.actions
+                    .push(Action::Select(index.map(|index| (def.kind, index))));
+            }
         }
         let tag = self.tag;
         let op_button = |cx: &mut Cx, label: &str, op: BlockOp| {
@@ -694,7 +818,7 @@ impl Cx<'_> {
                     }));
                     if let BlockOp::Add | BlockOp::Duplicate(_) = op {
                         cx.st.index.insert(
-                            pair,
+                            (tag, pair),
                             match op {
                                 BlockOp::Duplicate(i) => i + 1,
                                 _ => n,
@@ -741,9 +865,10 @@ impl Cx<'_> {
     fn data(&mut self, at: u32, layout: &Arc<Layout>, f: &Field, b: &[u8]) {
         let ui = self.ui;
         let (n, a) = (le(b, 0, 4) as u32, le(b, 4, 4) as u32);
+        let mode = if self.editable { "Reload" } else { "Read-only" };
         let node = ui
             .tree_node_config(format!("dat{:x}", at + f.offset))
-            .label(format!("{}  ({n} bytes)", f.name))
+            .label(format!("{}  · {mode}  ({n} bytes)", f.name))
             .span_avail_width(true)
             .push();
         self.hover(at, layout, f);
@@ -753,13 +878,17 @@ impl Cx<'_> {
             return;
         }
         let shown = n.min(DATA_SHOWN);
-        let Some(bytes) = self.doc.read(a, shown) else {
-            ui.text_disabled("its bytes are outside the map's metadata");
+        let Some(bytes) = self.doc.read(self.tag, a, shown) else {
+            ui.text_disabled("its bytes are outside the tag's address space");
             return;
         };
         let editable = self.editable && n <= DATA_SHOWN;
         let current = hex_lines(&bytes);
-        let text = self.st.text.entry(a).or_insert_with(|| current.clone());
+        let text = self
+            .st
+            .text
+            .entry((self.tag, a))
+            .or_insert_with(|| current.clone());
         let lines = (shown as f32 / 16.0).ceil().clamp(2.0, 16.0);
         ui.input_text_multiline(
             "##hex",
@@ -776,7 +905,7 @@ impl Cx<'_> {
             ));
         }
         if done && editable {
-            let typed = self.st.text.remove(&a).unwrap_or_default();
+            let typed = self.st.text.remove(&(self.tag, a)).unwrap_or_default();
             match parse_hex(&typed) {
                 Some(new) if new.len() == bytes.len() => {
                     if new != bytes {
@@ -793,7 +922,7 @@ impl Cx<'_> {
                 }
             }
         } else if !active {
-            self.st.text.insert(a, current);
+            self.st.text.insert((self.tag, a), current);
         }
     }
 }
@@ -802,8 +931,9 @@ impl Cx<'_> {
 fn fmt_f(s: &str) -> NumericFormat<'_, f32> {
     NumericFormat::new(s).expect("a valid float format")
 }
-fn fmt_i(s: &str) -> NumericFormat<'_, i64> {
-    NumericFormat::new(s).expect("a valid integer format")
+/// Hex conversions are unsigned in C, so hex drags carry `u64`.
+fn fmt_hex(s: &str) -> NumericFormat<'_, u64> {
+    NumericFormat::new(s).expect("a valid hex format")
 }
 
 /// Bytes as space-separated hex.
@@ -833,6 +963,17 @@ pub fn parse_hex(s: &str) -> Option<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn every_display_format_the_inspector_uses_is_valid() {
+        super::fmt_hex("0x%08llx");
+        for n in 1..=4 {
+            super::fmt_hex(&format!("0x%0{}llx", 2 * n));
+        }
+        for f in ["%.2f deg", "%.4f"] {
+            super::fmt_f(f);
+        }
+    }
+
     use super::*;
 
     #[test]

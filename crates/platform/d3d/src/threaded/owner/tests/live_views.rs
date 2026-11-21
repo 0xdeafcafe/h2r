@@ -50,6 +50,8 @@ fn packet() -> Arc<ResolvedDraw> {
         clip_rects: Vec::new(),
         hw: Default::default(),
         textures: [None; 4],
+        retail_constants: None,
+        ui_fit: None,
         glyph_cache: 0,
     })
 }

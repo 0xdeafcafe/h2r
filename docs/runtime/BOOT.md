@@ -27,14 +27,14 @@ copies. Nothing is ever written next to it.
 | --- | --- | --- |
 | `--out DIR` | `$TMPDIR/h2boot` | generated C (`src/`), objects, `libh2game.dylib` and its `.stamp` (image hash, generator source hash, IR passes, `H2_ACCESS_COUNT`, ABI, compiler flags: `run` rebuilds a dylib stamped for another image or generator), `kernel-trace.tsv` |
 | `--tier auto\|fast\|clang` | `auto` | which module `run` boots: clang's optimised one when it is current, else the Cranelift fast tier with clang's build started in the background (`H2_TIER` is the same; `crates/runtime/recomp/src/tier.rs`, [cranelift-tier.md](../lifter/cranelift-tier.md)) |
-| `--data DIR` | `~/Library/Application Support/h2recomp/data` | VFS host storage (`disk/PartitionN`, `metadata/PartitionN`) |
+| `--data DIR` | `data` in the app data directory ([storage.md](storage.md#host-directories); `H2_DATA`) | VFS host storage (`disk/PartitionN`, `metadata/PartitionN`) |
 | `--jobs N` | cores | clang parallelism |
 | `--slices N` | 100000 (`h2 serve`: no limit) | cooperative scheduler slices before giving up |
 | `--transfers N` | 50M | runner transfers per slice |
 | `--no-stopgaps` | | run on the bare kernel: no boot stopgaps or wrappers, and no fallback interpreter (an unsupported instruction stops the run where generated code reported it) |
 | `--fresh-data` | | empty `<data>/disk` and `<data>/metadata` first; refused, deleting nothing, if the disc, image or `--out` is inside either |
 | `--no-d3d`, `--no-dsound`, `--no-bink`, `--no-xapi` | | leave that HLE crate unregistered |
-| `--movies DIR` | app data (`~/Library/Application Support/h2recomp/movies`) | where `h2 movies` installed the transcodes; the current ones play ([bink-hle.md](../audio/bink-hle.md)); the run logs `movies: playback (...)` or `movies: skip (...)` |
+| `--movies DIR` | `movies` in the app data directory ([storage.md](storage.md#host-directories)) | where `h2 movies` installed the transcodes; the current ones play ([bink-hle.md](../audio/bink-hle.md)); the run logs `movies: playback (...)` or `movies: skip (...)` |
 | `--no-movies` | | skip every movie (Bink HLE skip mode) |
 | `--no-mappack` | | skip installing a `mappack.iso` beside the disc into `--data` (`H2_MAPPACK=0` does the same; [map-pack.md](../game/map-pack.md)) |
 | `--no-halo1` | | skip the Halo 1 content setup |
@@ -68,6 +68,10 @@ Environment variables the boot runner reads. Every other variable and
 | `H2_BOOT_DRAWLOG=<file>` | log every backend call of the frames in `H2_BOOT_DRAWLOG_FRAMES` (present counts, default `240`; frame N matches `frame-N.png`) |
 | `H2_BOOT_DRAWLOG_VERTS=1` | with `H2_BOOT_DRAWLOG`, add the vertex layout and the first 8 vertices of each stream |
 
+`H2_AGENT_OUT` sets the [agent output root](switches.md#tools) for
+tick traces, flight dumps and input logs when the agent API is active
+(`agent_proto::output_dir`, [agent-api.md](agent-api.md#tick-traces-and-the-flight-recorder)).
+
 The run prints a report when it ends. It covers:
 
 - the outcome and the stop, with the last EIP;
@@ -97,7 +101,7 @@ calls come from memory and are complete.
 | `input: Option<input::InputManager>` | a headless keyboard pad | `xapi_glue::register_with` |
 | `keyboard: Option<KeyboardMouse>` | that pad | what `H2_BOOT_INPUT` presses |
 | `trace_limit: Option<usize>` | every call in memory | `trace::install_bounded`: the last N calls, and at most N older ones still open (calls that never return, such as thread exits, age out), stay in memory; the TSV still gets every completed call |
-| `between_slices: Option<BetweenSlices>` | nothing | called after every slice, input pump and audio advance with the kernel; `false` ends the run with outcome `HostStop` (the output is halted as on any end) |
+| `between_slices: Option<BetweenSlices>` | nothing | receives the kernel after the slice’s input and audio service, and after an audio-only idle advance before the scheduler retries. Returning `false` ends the run with `HostStop` |
 
 `Host` has more fields (`film_out`, `host_light`, `host_bots`, `settings`,
 `level`, `debug_menu`, `theater`, `on_vfs` and others); each is documented on

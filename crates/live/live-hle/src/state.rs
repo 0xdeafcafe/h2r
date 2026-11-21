@@ -159,6 +159,7 @@ pub(crate) struct State {
     tasks: BTreeMap<u32, Task>,
     qos: BTreeSet<u32>,
     logon: Option<u32>,
+    pub(crate) logon_map_check: Option<crate::LogonMapCheck>,
     services: BTreeSet<u32>,
     service: Option<Service>,
     menu: crate::ui::Menu,
@@ -223,6 +224,7 @@ impl State {
             tasks: BTreeMap::new(),
             qos: BTreeSet::new(),
             logon: None,
+            logon_map_check: None,
             services: BTreeSet::new(),
             service,
             menu: crate::ui::Menu::default(),
@@ -257,6 +259,58 @@ impl State {
             .iter()
             .find(|account| account.xuid == xuid && account.key.is_some())?;
         Some((live_proto::Xuid(xuid), account.gamertag.clone()))
+    }
+
+    pub fn join_controller(&self) -> Option<usize> {
+        if !self.connected() || self.service.is_none() {
+            return None;
+        }
+        (0..4).find(|&c| self.signed_in_account(c as u32).is_some())
+    }
+
+    pub fn resolve_join_link(
+        &self,
+        id: &str,
+    ) -> std::result::Result<crate::join_resolver::JoinLookup, String> {
+        let signed_out = "Sign in to Xbox Live to join this game.";
+        let controller = self.join_controller().ok_or(signed_out)?;
+        let logon = self.session().ok_or(signed_out)?;
+        let pending = self
+            .service
+            .as_ref()
+            .ok_or(signed_out)?
+            .social(
+                &logon,
+                self.user_ids[controller],
+                client::SocialRequest::JoinLink(id.to_owned()),
+            )
+            .map_err(|_| "Xbox Live is busy. Try again.")?;
+        Ok(crate::join_resolver::JoinLookup {
+            pending,
+            logon,
+            controller,
+        })
+    }
+
+    pub fn accept_join_link(
+        &mut self,
+        target: crate::join_resolver::ResolvedJoin,
+    ) -> std::result::Result<crate::join_resolver::JoinReceipt, String> {
+        if !self.connected()
+            || !self.session().is_some_and(|s| s.same_logon(&target.logon))
+            || self.user_ids[target.controller] != target.invite.to.0
+        {
+            return Err("Your Xbox Live sign-in changed. Open the link again.".into());
+        }
+        let delivery = crate::join_resolver::Delivery::default();
+        self.invites.queue_accepted(
+            target.invite,
+            target.controller,
+            self.user_ids,
+            self.user_flags,
+            Some(delivery.clone()),
+        );
+        Ok(crate::join_resolver::JoinReceipt(delivery))
     }
 
     /// The sign-in prompt now, if a sign-in is waiting for one.
@@ -417,11 +471,36 @@ impl State {
         self.service.as_ref().is_some_and(|service| service.machine)
     }
 
+    pub(crate) fn logon_blocks_editor_map(&self) -> bool {
+        let Some(handle) = self.logon else { return false };
+        let Some(Task::Logon { pending, status, session: Some(session), .. }) = self.tasks.get(&handle)
+        else {
+            return false;
+        };
+        if session.status() != 0 {
+            // The worker installed the account before publishing CONNECTED.
+            // Even after CONNECTION_LOST its heartbeat can reannounce the
+            // account. Closing the logon cancels that worker session.
+            return true;
+        }
+        *status == 0
+            && (pending.as_ref().is_some_and(|p| !p.failed())
+                || self.signin.as_ref().is_some_and(|s| s.handle == handle && !s.cancelled()))
+    }
+
+    fn logon_map_status(&self) -> u32 {
+        self.logon_map_check.as_ref().map_or(OK, |check| check())
+    }
+
     // Retail need not visit the controller sign-in screen on a playerless
     // host. Queue machine logon before the first retail advertisement.
     fn machine_logon(&mut self, m: &mut Guest) -> Result<u32> {
         if self.logon.is_some() {
             return Ok(OK);
+        }
+        let status = self.logon_map_status();
+        if status != OK {
+            return Ok(status);
         }
         let Some(handle) = self.storage.alloc(m, 8) else {
             return Ok(OUT_OF_MEMORY);
@@ -734,6 +813,12 @@ impl State {
             .set_coop(campaign, skulls, self.service.as_ref(), session.as_ref());
         let _ = self.set_activity(activity.as_deref());
     }
+    pub fn sync_squad_slots(&mut self, slots: crate::SessionSlots) {
+        let connection = self.session();
+        self.sessions
+            .sync_squad_slots(slots, self.service.as_ref(), connection.as_ref());
+    }
+
     pub fn set_coop_ping(&mut self, ms: Option<u16>) {
         let session = self.session();
         self.sessions
@@ -967,7 +1052,13 @@ impl State {
         Some((p, id))
     }
     pub fn matchmaking_status(&self) -> Option<&str> {
-        self.sessions.matchmaking_status()
+        self.sessions.matchmaking_status(self.service.as_ref())
+    }
+    pub fn has_map_pack(&self) -> bool {
+        self.service.as_ref().is_some_and(|service| service.has_map_pack)
+    }
+    pub fn allow_hopper_addons(&self, hopper: u32) -> bool {
+        self.has_map_pack() && self.sessions.allow_hopper_addons(hopper)
     }
     pub fn frames_from_host(&self, session_id: &str) -> bool {
         self.sessions.frames_from_host(session_id)
@@ -1072,21 +1163,20 @@ impl State {
     pub fn bot_card(
         &self,
         xuid: live_proto::Xuid,
-        done: Box<dyn FnOnce(live_proto::bots::PlayerCard) + Send>,
-    ) {
-        if let (Some(service), Some(session)) = (&self.service, self.session()) {
-            let _ = service.bot_card(
-                &session,
-                xuid,
-                Box::new(move |r| {
-                    if let Ok(Reply::BotCard(card)) = r
-                        && card.xuid == xuid
-                    {
-                        done(card);
-                    }
-                }),
-            );
-        }
+        done: Box<dyn FnOnce(std::result::Result<live_proto::bots::PlayerCard, u32>) + Send>,
+    ) -> std::result::Result<(), u32> {
+        let service = self.service.as_ref().ok_or(NO_SESSION)?;
+        let session = self.session().ok_or(NO_SESSION)?;
+        service.bot_card(
+            &session,
+            xuid,
+            Box::new(move |r| {
+                done(r.and_then(|reply| match reply {
+                    Reply::BotCard(card) if card.xuid == xuid => Ok(card),
+                    _ => Err(RESULTS_UNAVAILABLE),
+                }));
+            }),
+        )
     }
     fn mod_list_session(&self) -> std::result::Result<(&Service, Session), crate::mods::ModsError> {
         use crate::mods::ModsError;
@@ -1177,6 +1267,23 @@ impl State {
     }
     pub fn set_visibility_probe(&mut self, probe: Option<crate::sessions::VisibilityProbe>) {
         self.sessions.set_probe(probe);
+    }
+    pub fn set_browser_filters(&mut self, filters: live_proto::session::BrowserFilters) {
+        self.sessions.set_browser_filters(filters);
+    }
+    pub fn browser_result(&self) -> (Option<usize>, Option<bool>) {
+        self.sessions.browser_result()
+    }
+    pub fn browser_status(&self) -> crate::BrowserStatus {
+        self.sessions.browser_status()
+    }
+    pub fn set_browser_probe(&mut self, probe: crate::BrowserProbe) {
+        self.sessions.set_browser_probe(probe);
+    }
+    pub fn lobby_browser_changed(&mut self, guest: &Guest) {
+        let connection = self.session();
+        self.sessions
+            .lobby_browser_changed(guest, self.service.as_ref(), connection.as_ref());
     }
     pub fn set_map_probe(&mut self, probe: Option<crate::sessions::MapProbe>) {
         self.sessions.set_map_probe(probe);
@@ -1660,7 +1767,10 @@ impl State {
             Logon => {
                 work_event(a[3])?;
                 writable(m, a[4], 4)?;
-                if !self.machine() && self.logon.is_some() {
+                if !self.machine()
+                    && self.logon.is_some()
+                    && self.logon_map_status() != CANNOT_ACCESS_SERVICE
+                {
                     return Ok(TASK_BUSY);
                 }
                 if a[2] > 16 {
@@ -1717,6 +1827,20 @@ impl State {
                 let services = (0..a[2])
                     .map(|i| m.u32(a[1] + i * 4))
                     .collect::<std::result::Result<BTreeSet<_>, _>>()?;
+                match self.logon_map_status() {
+                    OK => {}
+                    CANNOT_ACCESS_SERVICE => {
+                        // Retail maps this task result to the cannot-connect dialog.
+                        // A refused task owns no service session or signed-in user.
+                        return self.task(m, a[4], Task::Logon {
+                            users,
+                            pending: None,
+                            session: None,
+                            status: CANNOT_ACCESS_SERVICE,
+                        });
+                    }
+                    busy => return Ok(busy),
+                }
                 let Some(handle) = self.storage.alloc(m, 8) else {
                     return Ok(OUT_OF_MEMORY);
                 };

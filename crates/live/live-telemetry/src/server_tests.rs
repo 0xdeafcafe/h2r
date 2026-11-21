@@ -221,6 +221,7 @@ fn fast() -> Timing {
         ack_timeout: Duration::from_millis(500),
         settle: Duration::from_millis(100),
         steady: Duration::from_secs(30),
+        frame_batch: Duration::from_millis(150),
     }
 }
 
@@ -482,6 +483,8 @@ fn a_cut_socket_reconnects_and_the_events_made_while_down_land_once() {
     // Nothing failed: the events wait, the connection is gone.
     assert!(sink.connection.is_none());
     assert_eq!(sink.waiting_events(), 2);
+    // Frames made once the outage is known are dropped.
+    sink.frame(frame(&local, 28)).unwrap();
     assert!(
         sink.dropped_frames > 0,
         "frames made while down are dropped"
@@ -501,6 +504,108 @@ fn a_cut_socket_reconnects_and_the_events_made_while_down_land_once() {
         "every event once, in order"
     );
     assert_eq!(sink.dropped_events, 0);
+}
+
+#[test]
+fn frames_go_out_one_message_a_window_and_none_is_lost() {
+    let live = Live::new();
+    let mut timing = fast();
+    timing.frame_batch = Duration::from_secs(30);
+    let mut sink = ServerSink::new(live.embedded.url.clone(), live.account("Alpha"))
+        .unwrap()
+        .with_timing(timing);
+    let local = start(&mut sink);
+    let server_id = sink.games[&local].clone();
+    let mut frames = live.embedded.live.frames();
+    // A burst inside the window waits for it, in order.
+    for t in 5..=7 {
+        sink.frame(frame(&local, t * 2)).unwrap();
+    }
+    sink.flush().unwrap();
+    assert_eq!(sink.pending.records, 3);
+    assert!(
+        frames.try_recv().is_err(),
+        "frames leave before the window ends"
+    );
+    sink.pending.since = Some(Instant::now() - timing.frame_batch);
+    sink.flush().unwrap();
+    let mut ticks = Vec::new();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while ticks.len() < 3 {
+        assert!(Instant::now() < deadline, "the window's frames never landed");
+        match frames.try_recv() {
+            Ok(f) => ticks.push(f.frame.tick),
+            Err(_) => std::thread::sleep(Duration::from_millis(10)),
+        }
+    }
+    assert_eq!(ticks, [10, 12, 14]);
+
+    // An events batch flushes what is held, ahead of itself.
+    sink.frame(frame(&local, 16)).unwrap();
+    sink.event(score(&local, 16, 1)).unwrap();
+    sink.flush().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        assert!(Instant::now() < deadline, "the held frame never landed");
+        if let Ok(f) = frames.try_recv() {
+            assert_eq!(f.frame.tick, 16);
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(
+        live.kinds(&server_id),
+        [game::GAME_STARTED, game::SCORE_CHANGED]
+    );
+    assert_eq!(sink.dropped_frames, 0);
+    assert_eq!(sink.dropped_events, 0);
+}
+
+#[test]
+fn idle_pipeline_and_shutdown_flush_partial_frame_batches() {
+    let live = Live::new();
+    let mut timing = fast();
+    timing.frame_batch = Duration::from_millis(200);
+    let mut sink = ServerSink::new(live.embedded.url.clone(), live.account("Alpha"))
+        .unwrap()
+        .with_timing(timing);
+    let local = start(&mut sink);
+    let mut frames = live.embedded.live.frames();
+    let pipeline = crate::pipeline::Pipeline::new(Session::new("test", None), sink);
+    let mut receive = || {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            assert!(Instant::now() < deadline, "the held frame never landed");
+            if let Ok(f) = frames.try_recv() {
+                break f.frame.tick;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    };
+    pipeline.forward(vec![Output::Frame(frame(&local, 10))]).unwrap();
+    assert_eq!(receive(), 10);
+    pipeline.forward(vec![Output::Frame(frame(&local, 12))]).unwrap();
+    drop(pipeline);
+    assert_eq!(receive(), 12);
+}
+
+#[test]
+fn oversized_signed_event_groups_split_without_losing_events() {
+    let live = Live::new();
+    let mut sink = ServerSink::new(live.embedded.url.clone(), live.account("Alpha"))
+        .unwrap()
+        .with_timing(fast());
+    let local = start(&mut sink);
+    let server_id = sink.games[&local].clone();
+    for i in 1..=16 {
+        let mut event = score(&local, u64::from(i) * 2, i);
+        event.data["padding"] = serde_json::json!("x".repeat(2 * 1024));
+        sink.event(event).unwrap();
+    }
+    sink.flush().unwrap();
+    assert_eq!(sink.waiting_events(), 0);
+    assert_eq!(sink.dropped_events, 0);
+    assert_eq!(count(&live.kinds(&server_id), game::SCORE_CHANGED), 16);
 }
 
 #[test]

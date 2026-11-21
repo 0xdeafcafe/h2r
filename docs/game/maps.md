@@ -122,6 +122,16 @@ The types live in `crates/formats/content` (manifest, `MapId`, patch format
 readers, resolver), which vfs, boot, editor, live-proto and live-server
 depend on.
 
+A local [Forge package](forge-design.md#materialising) uses format 2
+and one `[[forge]]` layer. The layer names the document hash
+(`document`), the canonical `.h2forge` file (`document_file`), and the
+materialised `.map` (`file`, `sha256`). The ID hashes the canonical
+JSON `{"base":"<base hash>","forge":["<document hash>"],"format":2}`.
+The document hash omits the entire `expect` block. The resolver checks
+the document, the expected MapId when present, the disc's copy of the
+base, and the local map file. These packages require explicit selection
+and stay local. Format 1 uses the identity above.
+
 ### The package directory
 
 ```text
@@ -202,7 +212,7 @@ That read runs inside the `Vfs` lock, so every other file read waits for
 it. `Vfs::resolves_on_use` (`Backend::resolves_on_use`, forwarded by
 every wrapper) says whether a first look at a path would resolve a
 package; background readers skip such a map and leave the resolution to
-the game's own first open (the bots' nav scan, `boot::bots_nav_auto`,
+the game's own first open (the bots' on-demand nav lookup, `game::bots_nav_auto`,
 [bots.md](bots.md) section 10). Test: `resolves_on_use_is_true_only_before_a_packaged_maps_first_look`
 in `crates/runtime/vfs/tests/packages.rs`.
 
@@ -527,8 +537,11 @@ SHA-256.
   whose hash is not the manifest's), signs the manifest with the local
   account's key and publishes it; `h2 live maps list [--base MAP] [--author
   GAMERTAG] [--json]` prints the server's packages.
-- **Pictures and viewer** (web): the package's image (served at
-  `/v1/maps/{id}/image`), then the base map's art. The 3D viewer first
+- **Pictures and viewer** (web): a cleared gallery or package preview
+  (served at `/v1/maps/{id}/image`), then the base map's art. A signed
+  manifest alone does not clear its preview for public display.
+  [Live screenshot rules](../live/live-api.md#verified-screenshot-uploads)
+  The 3D viewer first
   looks for the mod's own art by `map_id` (the server's art has it when
   the mod is installed where the art was extracted: an entry
   `mod-<first 16 hex of the MapId>` carrying `map_id`, `base` and the

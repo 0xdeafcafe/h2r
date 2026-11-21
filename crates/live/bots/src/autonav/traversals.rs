@@ -6,7 +6,7 @@ use std::io::{Read, Seek};
 use tags::geometry::TagView;
 
 use crate::cache::MapData;
-use crate::nav::{Edge, Kind, NavMesh, STANDING, V3, standing_clear};
+use crate::nav::{Edge, Kind, STANDING, V3, standing_clear};
 
 pub(super) struct Teleporter {
     position: V3,
@@ -157,7 +157,7 @@ impl Placements {
                 .nearest(p, 0.8, 0.6, 1.5)
                 .filter(|&(_, at)| standing_clear(&data.walls, at))
         };
-        let mut edges = data.nav.edges.clone();
+        let mut edges = Vec::new();
         for f in self.teleporters.iter().filter(|f| f.sender) {
             let Some((from, a)) = snap(f.position) else {
                 continue;
@@ -190,9 +190,7 @@ impl Placements {
             }
         }
         edges.extend(self.lifts.iter().filter_map(|lift| lift_link(data, lift)));
-        if edges.len() != data.nav.edges.len() {
-            data.nav = NavMesh::new(std::mem::take(&mut data.nav.polys), edges);
-        }
+        data.nav.append_shortcuts(edges);
     }
 }
 

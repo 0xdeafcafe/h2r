@@ -1,19 +1,19 @@
-//! Which scenario edits can go to a running game, and as which `edit.set`
+//! Which scenario edits can go to a running game, and as which `edit.batch`
 //! writes.
 //!
 //! The game holds the loaded map's scenario (`scnr`) in guest memory, and
-//! `edit.set` writes a field there (docs/graphics/hot-iteration.md). The
+//! `edit.batch` writes a field there (docs/graphics/hot-iteration.md). The
 //! scenario has no tag definition, so a placement's field is reached with
 //! raw paths from `scenario_edit::layout`: `+<block>/<stride>[<i>].+<field>:
 //! bytes[n]`, the field's exact bytes as hex.
 //!
-//! [`Baseline`] is what the game is taken to hold (the editor's state when
-//! it was launched or paired, then every write sent since). [`diff`] lists
-//! the fields that changed since, per element. A block whose length
-//! changed (an entry added or removed) can't follow: the game's block is
-//! laid out where the map put it, so that needs a reload.
+//! [`Baseline`] holds the loaded file's block layouts and bytes plus every
+//! acknowledged write. [`diff`] lists field changes only for blocks whose
+//! layout revision still matches the loaded copy. Adding or removing an
+//! entry changes the revision even when the final count stays the same.
 
 use std::collections::BTreeMap;
+use std::ops::Range;
 
 use scenario_edit::layout::{self, BLOCKS, FieldDef};
 use scenario_edit::{BlockKind, Scenario};
@@ -21,10 +21,64 @@ use scenario_edit::{BlockKind, Scenario};
 /// The scenario's placement blocks as the game is taken to hold them.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Baseline {
-    blocks: BTreeMap<BlockKind, Vec<Vec<u8>>>,
+    blocks: BTreeMap<BlockKind, LoadedBlock>,
+    object_rows: super::objects::Rows,
+    creation: Creation,
 }
 
-/// One field write: what `edit.set` gets, and what it is for the log.
+#[derive(Clone, Debug, PartialEq)]
+struct LoadedBlock {
+    layout_rev: u64,
+    entries: Vec<Vec<u8>>,
+}
+
+/// Only slots whose creation fields differ from the last created object need
+/// a snapshot. Slot indices here always refer to the loaded scenario.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct Creation {
+    slots: BTreeMap<(BlockKind, usize), Vec<u8>>,
+    revision: u64,
+}
+
+fn creation_ranges(kind: BlockKind) -> impl Iterator<Item = Range<usize>> {
+    let def = layout::block(kind);
+    def.fields.iter().filter_map(move |f| {
+        if def.object_type.is_none() || matches!(
+            f.role, layout::Role::Position | layout::Role::Rotation | layout::Role::Facing
+        ) {
+            return None;
+        }
+        Some(f.offset as usize..(f.offset + f.ty.size()) as usize)
+    })
+}
+
+fn same_creation_fields(kind: BlockKind, a: &[u8], b: &[u8]) -> bool {
+    a.len() == b.len() && creation_ranges(kind).all(|field| a.get(field.clone()) == b.get(field))
+}
+
+impl Creation {
+    fn write(&mut self, slot: (BlockKind, usize), entry: &mut [u8], at: usize, bytes: &[u8]) {
+        let end = at + bytes.len();
+        let changed = creation_ranges(slot.0).any(|field| {
+            let lo = field.start.max(at);
+            let hi = field.end.min(end);
+            lo < hi && entry[lo..hi] != bytes[lo - at..hi - at]
+        });
+        if changed {
+            self.slots.entry(slot).or_insert_with(|| entry.to_vec());
+        }
+        entry[at..end].copy_from_slice(bytes);
+        if changed {
+            let created = &self.slots[&slot];
+            if same_creation_fields(slot.0, entry, created) {
+                self.slots.remove(&slot);
+            }
+            self.revision += 1;
+        }
+    }
+}
+
+/// One field write: what `edit.batch` gets, and what it is for the log.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Write {
     pub block: BlockKind,
@@ -43,12 +97,28 @@ pub struct Write {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Diff {
     pub writes: Vec<Write>,
-    /// Blocks whose entry count changed since the baseline: the game needs
-    /// the map loaded again (Play again) to see them.
+    /// Blocks whose slot layout differs from the loaded copy.
     pub reload: Vec<BlockKind>,
 }
 
 impl Baseline {
+    pub fn source(s: &Scenario) -> Self {
+        Self {
+            object_rows: super::objects::source(s),
+            creation: Creation::default(),
+            blocks: BLOCKS
+                .iter()
+                .map(|b| {
+                    let block = LoadedBlock {
+                        layout_rev: 0,
+                        entries: s.block(b.kind).source_entries().to_vec(),
+                    };
+                    (b.kind, block)
+                })
+                .collect(),
+        }
+    }
+
     /// Everything the scenario's placement blocks hold now.
     pub fn of(s: &Scenario) -> Baseline {
         let blocks = BLOCKS
@@ -58,10 +128,76 @@ impl Baseline {
                 let entries = (0..block.len())
                     .filter_map(|i| block.entry(i).map(<[u8]>::to_vec))
                     .collect();
-                (b.kind, entries)
+                let loaded = LoadedBlock {
+                    layout_rev: block.layout_rev(),
+                    entries,
+                };
+                (b.kind, loaded)
             })
             .collect();
-        Baseline { blocks }
+        Baseline {
+            blocks,
+            object_rows: super::objects::document(s),
+            creation: Creation::default(),
+        }
+    }
+
+    /// Placement frames in the file, independent of subsequent field acknowledgements.
+    pub(super) fn object_rows(&self) -> &super::objects::Rows {
+        &self.object_rows
+    }
+
+    /// The frame a respawn reads after acknowledged field writes.
+    pub(super) fn object_frame(
+        &self,
+        kind: BlockKind,
+        index: usize,
+    ) -> Option<super::objects::Frame> {
+        let bytes = self.blocks.get(&kind)?.entries.get(index)?;
+        super::objects::Frame::from_entry(kind, bytes)
+    }
+
+    pub(super) fn creation_slots(&self) -> impl Iterator<Item = (BlockKind, usize)> + '_ {
+        self.creation.slots.keys().copied()
+    }
+
+    pub(super) fn needs_creation(&self, kind: BlockKind, index: usize) -> bool {
+        self.creation.slots.contains_key(&(kind, index))
+    }
+
+    pub(super) fn creation_revision(&self) -> u64 {
+        self.creation.revision
+    }
+
+    /// Snapshot of the slot a dispatched respawn reads. A preview outside the
+    /// loaded scenario has no creation fields to reconcile.
+    pub(super) fn creation_fields(&self, kind: BlockKind, index: usize) -> Vec<u8> {
+        self.blocks
+            .get(&kind)
+            .and_then(|b| b.entries.get(index))
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    pub(super) fn creation_matches(&self, kind: BlockKind, index: usize, fields: &[u8]) -> bool {
+        self.blocks.get(&kind).and_then(|b| b.entries.get(index))
+            .is_some_and(|entry| same_creation_fields(kind, entry, fields))
+    }
+
+    pub(super) fn object_created(&mut self, kind: BlockKind, index: usize, created: &[u8]) {
+        let Some(entry) = self.blocks.get(&kind).and_then(|b| b.entries.get(index)) else {
+            return;
+        };
+        if created.len() != entry.len() {
+            return;
+        }
+        let slot = (kind, index);
+        if same_creation_fields(kind, entry, created) {
+            self.creation.slots.remove(&slot);
+        } else {
+            self.creation.slots.insert(slot, created.to_vec());
+        }
+        self.creation.revision += 1;
     }
 
     /// The game now holds `w` (it was written).
@@ -72,25 +208,73 @@ impl Baseline {
         let Some(entry) = self
             .blocks
             .get_mut(&w.block)
-            .and_then(|b| b.get_mut(w.index))
+            .and_then(|b| b.entries.get_mut(w.index))
         else {
             return;
         };
         let (at, n) = (f.offset as usize, f.ty.size() as usize);
-        if let (Some(dst), Some(src)) = (entry.get_mut(at..at + n), unhex(&w.value)) {
-            if src.len() == n {
-                dst.copy_from_slice(&src);
-            }
+        if let Some(bytes) = unhex(&w.value)
+            && bytes.len() == n && at + n <= entry.len()
+        {
+            self.creation.write((w.block, w.index), entry, at, &bytes);
         }
+    }
+
+    /// Apply bytes observed in the game to its placement baseline. Return the
+    /// ranges of the input belonging to placements so the caller can reconcile
+    /// the remaining bytes with the tag document.
+    pub fn observe(&mut self, s: &Scenario, at: u32, bytes: &[u8]) -> Vec<Range<usize>> {
+        let start = u64::from(at);
+        let end = start + bytes.len() as u64;
+        let mut spans = Vec::new();
+        for (kind, loaded) in &mut self.blocks {
+            let entries = &mut loaded.entries;
+            let block = s.block(*kind);
+            // The map writer relocates a grown block in a play copy. Only a
+            // path resolved by the game identifies its slots in that case.
+            if block.address == 0 || entries.len() > block.capacity() {
+                continue;
+            }
+            let first = u64::from(block.address);
+            let stride = u64::from(block.def.stride);
+            let lo = start.max(first);
+            let hi = end.min(first + stride * entries.len() as u64);
+            if lo >= hi {
+                continue;
+            }
+            let span = (lo - start) as usize..(hi - start) as usize;
+            let mut src = &bytes[span.clone()];
+            let mut offset = ((lo - first) % stride) as usize;
+            let first_index = ((lo - first) / stride) as usize;
+            for (index, entry) in entries.iter_mut().enumerate().skip(first_index) {
+                let n = src.len().min(entry.len() - offset);
+                self.creation.write((*kind, index), entry, offset, &src[..n]);
+                src = &src[n..];
+                if src.is_empty() {
+                    break;
+                }
+                offset = 0;
+            }
+            spans.push(span);
+        }
+        spans.sort_unstable_by_key(|span| span.start);
+        spans
+    }
+
+    /// Whether an index in this document block still names the game's slot.
+    pub fn layout_matches(&self, s: &Scenario, kind: BlockKind) -> bool {
+        self.blocks
+            .get(&kind)
+            .is_some_and(|loaded| loaded.layout_rev == s.block(kind).layout_rev())
     }
 
     /// Entries the baseline has in `kind`.
     pub fn len(&self, kind: BlockKind) -> usize {
-        self.blocks.get(&kind).map_or(0, Vec::len)
+        self.blocks.get(&kind).map_or(0, |b| b.entries.len())
     }
 }
 
-/// The raw `edit.set` path of a field of element `index` of a block.
+/// The raw `edit.batch` path of a field of element `index` of a block.
 pub fn path(kind: BlockKind, index: usize, f: &FieldDef) -> String {
     let b = layout::block(kind);
     format!(
@@ -110,11 +294,11 @@ pub fn diff(base: &Baseline, now: &Scenario) -> Diff {
         let Some(old) = base.blocks.get(&b.kind) else {
             continue;
         };
-        if old.len() != block.len() {
+        if old.layout_rev != block.layout_rev() {
             out.reload.push(b.kind);
             continue;
         }
-        for (i, was) in old.iter().enumerate() {
+        for (i, was) in old.entries.iter().enumerate() {
             let Some(cur) = block.entry(i) else { continue };
             if cur == was.as_slice() {
                 continue;
@@ -145,7 +329,7 @@ pub fn hex(b: &[u8]) -> String {
 }
 
 pub fn unhex(s: &str) -> Option<Vec<u8>> {
-    if s.len() % 2 != 0 {
+    if !s.len().is_multiple_of(2) {
         return None;
     }
     (0..s.len())
@@ -203,6 +387,35 @@ mod tests {
     }
 
     #[test]
+    fn respawn_tracks_net_creation_fields_including_writes_after_dispatch() {
+        let (_t, session) = session("sync-respawn");
+        let scenario = session.scenario().unwrap();
+        let kind = BlockKind::Weapons;
+        let mut base = Baseline::source(scenario);
+        let file = base.creation_fields(kind, 0);
+        let src = scenario.block(kind).address;
+        let scale = layout::block(kind).role(layout::Role::Scale).unwrap().offset;
+        let flags = layout::block(kind).field("placement flags").unwrap().offset;
+        let old_scale = &file[scale as usize..scale as usize + 4];
+        let old_flags = &file[flags as usize..flags as usize + 4];
+        let changed = |bytes: &[u8]| bytes.iter().map(|b| !b).collect::<Vec<_>>();
+
+        base.observe(scenario, src + scale, &changed(old_scale));
+        base.observe(scenario, src + flags, &changed(old_flags));
+        base.observe(scenario, src + scale, old_scale);
+        assert!(base.needs_creation(kind, 0), "the flags still differ");
+        let dispatched = base.creation_fields(kind, 0);
+        base.observe(scenario, src + flags, old_flags);
+        assert!(!base.needs_creation(kind, 0), "both undos reached the original body");
+
+        // The respawn read the edited flags before that last field write arrived.
+        base.object_created(kind, 0, &dispatched);
+        assert_eq!(base.creation_slots().collect::<Vec<_>>(), [(kind, 0)]);
+        base.observe(scenario, src + flags, &changed(old_flags));
+        assert!(!base.needs_creation(kind, 0), "the slot matches its respawned body");
+    }
+
+    #[test]
     fn an_added_entry_needs_a_reload() {
         let (_t, mut s) = session("sync-add");
         let base = Baseline::of(s.scenario().unwrap());
@@ -216,6 +429,63 @@ mod tests {
         let d = diff(&base, s.scenario().unwrap());
         assert_eq!(d.reload, vec![kind]);
         assert!(d.writes.iter().all(|w| w.block != kind));
+    }
+
+    #[test]
+    fn undo_and_redo_compare_the_layout_of_the_loaded_copy() {
+        let (_t, mut s) = session("sync-copy-layout");
+        let original = Baseline::source(s.scenario().unwrap());
+        let kind = BlockKind::Weapons;
+        s.remove_entry(kind, 0).unwrap();
+        s.add_entry(kind, None).unwrap();
+
+        let copy = Baseline::of(s.scenario().unwrap());
+        let from_source = diff(&original, s.scenario().unwrap());
+        assert_eq!(from_source.reload, [kind]);
+        assert!(from_source.writes.is_empty());
+        assert_eq!(diff(&copy, s.scenario().unwrap()), Diff::default());
+
+        assert!(s.undo());
+        assert!(s.undo());
+        assert_eq!(diff(&original, s.scenario().unwrap()), Diff::default());
+        let from_copy = diff(&copy, s.scenario().unwrap());
+        assert_eq!(from_copy.reload, [kind]);
+        assert!(from_copy.writes.is_empty());
+
+        assert!(s.redo());
+        assert!(s.redo());
+        assert_eq!(diff(&copy, s.scenario().unwrap()), Diff::default());
+        s.apply(Command::set(
+            kind,
+            0,
+            "position",
+            scenario_edit::Value::Vec3([11.0, 12.0, 13.0]),
+        ))
+        .unwrap();
+        let d = diff(&copy, s.scenario().unwrap());
+        assert!(d.reload.is_empty());
+        assert_eq!(d.writes.len(), 1);
+        assert_eq!(d.writes[0].block, kind);
+        assert_eq!(d.writes[0].index, 0);
+    }
+
+    #[test]
+    fn observed_bytes_update_partial_placement_fields_across_slots() {
+        let (_t, s) = session("sync-observe");
+        let scenario = s.scenario().unwrap();
+        let mut base = Baseline::source(scenario);
+        let kind = BlockKind::Weapons;
+        let block = scenario.block(kind);
+        let stride = block.def.stride as usize;
+        let mut bytes = vec![0xc3; stride + 6];
+        bytes[0] = 0xff;
+        let spans = base.observe(scenario, block.address - 1, &bytes);
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0], 1..bytes.len());
+        let entries = &base.blocks[&kind].entries;
+        assert_eq!(entries[0], bytes[1..1 + stride]);
+        assert_eq!(entries[1][..5], bytes[1 + stride..]);
+        assert_eq!(entries[1][5..], block.entry(1).unwrap()[5..]);
     }
 
     #[test]

@@ -144,6 +144,7 @@ pub enum Codec {
 }
 
 /// Builds a snapshot file in memory.
+#[derive(Clone)]
 pub struct SnapshotWriter {
     header: Header,
     sections: Vec<(Tag, u32, Codec, Vec<u8>)>,

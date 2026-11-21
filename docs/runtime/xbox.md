@@ -76,19 +76,23 @@ platform seam, unchanged.
 - **Back** (B on the pad) is marked handled, so the system never treats it as
   leaving the app; the game sees B.
 - **Bounds:** `ApplicationViewBoundsMode::UseCoreWindow`, so the game gets the
-  whole screen and not the Xbox's TV-safe area. The 4:3 picture is fitted
-  (`device_config`).
-- **Files:** the app container refuses `std::fs::canonicalize` and
-  `File::open` on a directory, even inside the app's own LocalState
-  (ERROR_ACCESS_DENIED). On Windows the hard disk (`vfs::HostBackend`)
-  therefore uses absolute paths as they are and skips directory syncs.
-  The co-op screen's level list (`boot::coop_live::disc_levels`) reads a
-  disc directory's `maps/mainmenu.map` file, found by listing, instead of
-  opening the disc path as an image (it logged `opening ...\disc: Access
-  is denied` and offered no levels).
-  File syncs open the file for writing, because `FlushFileBuffers` needs
-  write access. If the game cannot start, the log lists each file-system
-  step with its OS error (`h2uwp: check ...`).
+  whole screen and not the Xbox's TV-safe area. Native resolution follows the
+  drawable (`device_config`).
+
+### Files
+
+The app container refuses `std::fs::canonicalize` and
+`File::open` on a directory, even inside the app's own LocalState
+(ERROR_ACCESS_DENIED). On Windows the hard disk (`vfs::HostBackend`)
+therefore uses absolute paths as they are and skips directory syncs.
+The co-op screen's level list (`boot::coop_live::disc_levels`) reads a
+disc directory's `maps/mainmenu.map` file, found by listing, instead of
+opening the disc path as an image (it logged `opening ...\disc: Access
+is denied` and offered no levels).
+File syncs open the file for writing, because `FlushFileBuffers` needs
+write access. If the game cannot start, the log lists each file-system
+step with its OS error (`h2uwp: check ...`).
+
 - **Logs:** a UWP process has no console. stderr and stdout are pointed at
   `LocalState\h2uwp.log` (`SetStdHandle`). Read it in the Device Portal's
   File explorer (LocalAppData, the package, LocalState).
@@ -151,7 +155,7 @@ What the check found, and what was done:
 
 - wgpu's GL backend imports `opengl32.dll` (`wgl*`) and two `gdi32`
   pixel-format calls. The shell's instance is DX12 only on Windows
-  (`app::embedded::host_surface::backends`), and the executable
+  (`gfx::GpuHost::WindowsApp`, `app::embedded::host_surface::GPU`), and the executable
   delay-loads both DLLs (`/DELAYLOAD`, `delayimp.lib`), so the loader
   never looks for them. The check skips delay-loaded imports.
 - Five imports remain outside `OneCoreUAP.lib`, all from Rust's std for
@@ -374,9 +378,8 @@ replies (`render-wait`).
 
 The app runs the agent API ([agent-api.md](agent-api.md)) on TCP port
 4720 (`agent_proto::XBOX_PORT`), so the Mac drives the console the way it
-drives `h2 serve`. It is on by default (`uwp_host::switches`); an empty
-`LocalState\agent-off` turns it off, `agent-on` back on if the default
-ever changes. The log says `h2uwp: agent API on tcp://0.0.0.0:4720` at start.
+drives `h2 serve`. To enable it on a trusted LAN, create an empty
+`LocalState\agent-on` and relaunch. An `agent-off` file overrides it. The log says `h2uwp: agent API on tcp://0.0.0.0:4720` at start.
 A port that won't bind is logged and the game runs without it.
 
 The manifest asks for `internetClientServer` and

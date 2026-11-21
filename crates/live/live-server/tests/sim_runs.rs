@@ -278,10 +278,18 @@ async fn stream_test(deferred: bool) {
         },
     );
     assert!(reader.on_text(&auth(&h, &admin, lxm::READ)).unwrap());
-    assert_eq!(reader.open().await.unwrap().len(), 1);
+    assert_eq!(
+        reader
+            .replay_page(reader.head(), true)
+            .await
+            .unwrap()
+            .0
+            .len(),
+        1
+    );
     let mut public = StreamSession::new(h.live.clone(), reader.filter().clone());
     assert!(public.on_text(&auth(&h, &gamer, lxm::READ)).unwrap());
-    public.open().await.unwrap();
+    public.replay_page(public.head(), true).await.unwrap();
 
     let mut frames = h.live.frames();
     let mut ingest = IngestSession::new(h.live.clone());
@@ -335,7 +343,7 @@ async fn stream_test(deferred: bool) {
             },
         );
         assert!(unscoped.on_text(&auth(&h, &admin, lxm::READ)).unwrap());
-        unscoped.open().await.unwrap();
+        unscoped.replay_page(unscoped.head(), true).await.unwrap();
         assert!(unscoped.on_frame(&frame).is_none());
     }
     let running = read(&h, &admin, RUNS).await.json();

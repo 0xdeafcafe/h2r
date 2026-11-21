@@ -21,13 +21,13 @@
 //! parts ([`crate::world::World::transparents`]): one item draws them in
 //! layer 15 and again in layer 6, and only layer 6 is taken here.
 
-use std::collections::{HashMap, hash_map::Entry};
+use std::collections::{HashMap, HashSet, hash_map::Entry};
 
 use crate::fog_gpu::{supplied_layer_passes, FogPass, FogProgram, FogWords};
 use crate::gpu::{Image, texture};
 use crate::look::Stage;
 use crate::pass_state::PassState;
-use crate::program::{described_pipeline, Gpu, ViewInputs};
+use crate::program::{described_pipeline, Gpu, PipelineUse, ViewInputs};
 use crate::world::{LightmapKey, Owner};
 
 /// The layer this module draws.
@@ -128,6 +128,7 @@ pub fn supply_of(stage: Stage) -> Option<Supply> {
 /// The water materials the native pass draws, their parts' index ranges,
 /// and the copy of the bound colour the view stages sample.
 pub struct WaterSet {
+    ready_formats: HashSet<(wgpu::TextureFormat, wgpu::TextureFormat)>,
     materials: HashMap<u16, WaterMaterial>,
     /// Each water part, by owner and part index: its index range,
     /// lightmap page and material.
@@ -199,7 +200,7 @@ impl WaterSet {
                 pages.insert(k, lightmap_image(k).map(|i| texture(device, queue, &i, "native water lightmap")));
             }
         }
-        Self { materials, parts: parts.into_iter().collect(), targets, samples_view, pages, scene_copies: [None, None] }
+        Self { ready_formats: HashSet::new(), materials, parts: parts.into_iter().collect(), targets, samples_view, pages, scene_copies: [None, None] }
     }
 
     /// How many materials draw natively.
@@ -253,11 +254,26 @@ impl WaterSet {
 
     /// Makes the pipelines for these target formats (before the pass).
     pub fn pipelines(&mut self, device: &wgpu::Device, color: wgpu::TextureFormat, depth: wgpu::TextureFormat) {
+        self.prepare_pipelines(device, color, depth, PipelineUse::Direct);
+    }
+
+    pub(crate) fn prepare_pipelines(
+        &mut self, device: &wgpu::Device, color: wgpu::TextureFormat, depth: wgpu::TextureFormat, usage: PipelineUse,
+    ) -> bool {
+        if self.ready_formats.contains(&(color, depth)) { return true; }
+        let stencil = wgpu::StencilState::default();
+        let mut ready = true;
         for m in self.materials.values_mut() {
             for (g, state) in &mut m.passes {
-                g.pipeline(device, color, depth, Some(&*state));
+                ready &= g.pipelines.prepare(device, color, depth, Some(state), None, &stencil, usage);
             }
         }
+        // Only an admission check observes the frame boundary. Direct rendering
+        // can use a pipeline as soon as the compiler finishes.
+        if ready && matches!(usage, PipelineUse::Preflight) {
+            self.ready_formats.insert((color, depth));
+        }
+        ready
     }
 
     /// The scene copy needs the full, single-sampled colour attachment.
@@ -394,7 +410,7 @@ impl WaterSet {
                 }
             };
             for ((g, state), textures) in m.passes.iter().zip(views.iter()) {
-                let pipeline = g.pipelines.get(&(color_format, depth_format)).ok_or("a water pipeline is not made")?;
+                let pipeline = g.pipelines.get(color_format, depth_format, &wgpu::StencilState::default(), None).ok_or("a water pipeline is not made")?;
                 items.push(WaterItem {
                     key: described_pipeline(WATER_PROGRAM, color_format, depth_format, Some(state), None, stencil.clone()),
                     pipeline: pipeline.clone(),
@@ -468,7 +484,7 @@ impl WaterSet {
                 }
             };
             for ((g, state), textures) in m.passes.iter().zip(views.iter()) {
-                let Some(pipeline) = g.pipelines.get(&(color_format, depth_format)) else { return 0 };
+                let Some(pipeline) = g.pipelines.get(color_format, depth_format, &wgpu::StencilState::default(), None) else { return 0 };
                 pass.set_pipeline(pipeline);
                 pass.set_bind_group(0, &g.uniforms, &[]);
                 pass.set_bind_group(1, textures, &[]);

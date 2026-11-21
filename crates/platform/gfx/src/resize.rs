@@ -1,5 +1,4 @@
-//! Integer render-scale transfers. With the renderer's window_shift the
-//! first host sample in a guest pixel is closest to its 1x raster position.
+//! Per-axis render-scale transfers for colour, depth and stencil.
 use std::collections::HashMap;
 
 use wgpu::util::DeviceExt;
@@ -15,7 +14,13 @@ struct Size { dst: vec2u, row_words: u32, pad: u32 }
 @vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
     return vec4f(f32((i << 1u) & 2u) * 2.0 - 1.0, 1.0 - f32(i & 2u) * 2.0, 0.0, 1.0);
 }
-fn source(p: vec2u, extent: vec2u) -> vec2u { return p * extent / size.dst; }
+fn source(p: vec2u, extent: vec2u) -> vec2u {
+    // On reduction read the first sample at the rounded guest-pixel edge.
+    // On enlargement, choose the guest cell between the two rounded edges.
+    let down = (p * extent + size.dst / 2u) / size.dst;
+    let up = ((2u * p + 1u) * extent - 1u) / (2u * size.dst);
+    return min(select(up, down, extent >= size.dst), extent - 1u);
+}
 @fragment fn fs_color(@builtin(position) p: vec4f) -> @location(0) vec4f {
     return textureLoad(color, source(vec2u(p.xy), textureDimensions(color)), 0);
 }

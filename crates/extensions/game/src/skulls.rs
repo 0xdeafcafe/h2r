@@ -39,7 +39,9 @@
 //!
 //! The logic is over [`Gm`] and the store, so it is tested without a guest.
 
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
+
+use agent::sim::calls;
 
 use settings::{Apply, Def, Kind, Menu, Scope, Store, Tier, Value};
 
@@ -576,18 +578,27 @@ pub fn toggle(store: &Store, profile: &str, key: &str) -> Result<String, String>
 /// now and was not at the last look. Only the game's stock function and our
 /// campaign start write the array, and the start tells the tracker what it
 /// wrote, so any other change is a pickup, however it got there.
-pub struct Tracker(Mutex<Set>);
+pub struct Tracker {
+    last: Mutex<Set>,
+    editor: OnceLock<(u32, Weak<Mutex<calls::Queue>>)>,
+}
 
 impl Default for Tracker {
     /// The array as the game boots: every skull off.
     fn default() -> Self {
-        Tracker(Mutex::new([false; COUNT]))
+        Self { last: Mutex::new([false; COUNT]), editor: OnceLock::new() }
     }
 }
 
 impl Tracker {
+    pub fn set_editor_queue(&self, scratch: u32, queue: &calls::Shared) {
+        // CallsFeature's one allocation contains its OPTIONS_QUEUE argument.
+        // An ordinary queue call never touches the editor mutex.
+        let _ = self.editor.set((scratch + calls::SCRATCH_OPTIONS, Arc::downgrade(queue)));
+    }
+
     fn lock(&self) -> std::sync::MutexGuard<'_, Set> {
-        self.0.lock().unwrap_or_else(|e| e.into_inner())
+        self.last.lock().unwrap_or_else(|e| e.into_inner())
     }
     /// Whether `now` differs from the last look.
     pub fn changed(&self, now: &Set) -> bool {
@@ -920,35 +931,23 @@ impl hooks::Feature for Skulls {
             b.raw()
                 .before(&QUEUE, "apply the selection", move |c| {
                     let rt = Arc::clone(c.ctx.runtime());
-                    let (mode, profiles) = {
-                        let mem = rt.memory();
-                        (options_mode(&*mem, c.cpu.eax), profiles_or_default(&*mem))
-                    };
-                    // A co-op guest plays the host's skulls (docs/live/live-coop.md,
-                    // "Co-op over Live").
-                    let host = crate::coop_live::guest_skulls();
-                    let start = match &host {
-                        Some(host) => coop_start(mode, host),
-                        None => at_start(&store, mode, &profiles),
-                    };
-                    if let Some((on, line)) = start {
-                        if apply(&mut *rt.memory(), &on) {
-                            tracker.reset(on);
-                            eprintln!("{line}");
-                        } else {
-                            eprintln!("{line} (could not write the skulls)");
-                        }
-                        // Ours have no byte in the array: their hooks read
-                        // this set (crate::skulls_custom).
-                        // A co-op guest plays the host's.
-                        crate::skulls_custom::set_campaign(&match &host {
-                            Some(host) => crate::coop_live::ours_of(host),
-                            None => custom_selection(&store, &profiles.0),
-                        });
-                    } else {
-                        // Not a campaign: none of ours act in it.
-                        crate::skulls_custom::set_campaign(&[]);
+                    let options = c.cpu.eax;
+                    if let Some((scratch, queue)) = tracker.editor.get()
+                        && *scratch == options
+                        && let Some(queue) = queue.upgrade()
+                        && calls::lock(&queue).stage_reload_skulls(options, || {
+                            let rt = Arc::downgrade(&rt);
+                            let (store, tracker) = (Arc::clone(&store), Arc::clone(&tracker));
+                            move || {
+                                if let Some(rt) = rt.upgrade() {
+                                    apply_selection(&rt, &store, &tracker, options);
+                                }
+                            }
+                        })
+                    {
+                        return Ok(hooks::Flow::Continue);
                     }
+                    apply_selection(&rt, &store, &tracker, options);
                     Ok(hooks::Flow::Continue)
                 })
                 // Next to the queue: whatever else runs before it has run, so
@@ -973,28 +972,62 @@ impl hooks::Feature for Skulls {
     }
 }
 
+/// Apply the start selection when retail owns the options. The editor keeps
+/// this work on its ticket until acceptance, including an interrupted call.
+fn apply_selection(rt: &runtime::Runtime, store: &Store, tracker: &Tracker, options: u32) {
+    let (mode, profiles) = {
+        let mem = rt.memory();
+        (options_mode(&*mem, options), profiles_or_default(&*mem))
+    };
+    // A co-op guest plays the host's skulls (docs/live/live-coop.md,
+    // "Co-op over Live").
+    let host = crate::coop_live::guest_skulls();
+    let start = match &host {
+        Some(host) => coop_start(mode, host),
+        None => at_start(store, mode, &profiles),
+    };
+    if let Some((on, line)) = start {
+        if apply(&mut *rt.memory(), &on) {
+            tracker.reset(on);
+            eprintln!("{line}");
+        } else {
+            eprintln!("{line} (could not write the skulls)");
+        }
+        // Ours have no byte in the array: their hooks read
+        // this set (crate::skulls_custom).
+        // A co-op guest plays the host's.
+        crate::skulls_custom::set_campaign(&match &host {
+            Some(host) => crate::coop_live::ours_of(host),
+            None => custom_selection(store, &profiles.0),
+        });
+    } else {
+        // Not a campaign: none of ours act in it.
+        crate::skulls_custom::set_campaign(&[]);
+    }
+}
+
 /// Adds the skulls feature to `registry` over `store`. Says why when it is
 /// left out: no store (a headless run), or switched off.
-/// Returns whether it was added; then call [`report`] after the plan is
-/// installed.
+/// Returns the installed tracker so boot can connect the editor's queue.
 pub fn install(
     registry: &mut hooks::Registry,
     store: Option<Arc<Store>>,
-) -> anyhow::Result<bool> {
+) -> anyhow::Result<Option<Arc<Tracker>>> {
     let Some(store) = store else {
         eprintln!("skulls: off: no settings store (a headless run); pickups are not kept");
-        return Ok(false);
+        return Ok(None);
     };
+    let tracker = Arc::default();
     let added = registry
         .add(&Skulls {
             store,
-            tracker: Arc::default(),
+            tracker: Arc::clone(&tracker),
         })
         .map_err(|e| anyhow::anyhow!("skulls: {e}"))?;
     if !added {
         eprintln!("skulls: off: switched off (H2_FEATURES)");
     }
-    Ok(added)
+    Ok(added.then_some(tracker))
 }
 
 /// The install line, once `plan` is in: where the hooks went (the image's
@@ -1568,7 +1601,7 @@ mod tests {
             Ok(())
         }))
         .unwrap();
-        assert!(install(&mut r, Some(Arc::clone(&store))).unwrap());
+        assert!(install(&mut r, Some(Arc::clone(&store))).unwrap().is_some());
         let plan = r
             .build(&hooks::Remap::new(&[
                 (&SKULL_STOCK, LEAF),
@@ -1649,7 +1682,7 @@ mod tests {
             "skulls: NOT installed: SKULL_STOCK has no generated original; pickups are not kept"
         );
         let mut r = hooks::Registry::new(hooks::Switches::defaults());
-        assert!(!install(&mut r, None).unwrap(), "no store");
+        assert!(install(&mut r, None).unwrap().is_none(), "no store");
     }
 
     #[test]

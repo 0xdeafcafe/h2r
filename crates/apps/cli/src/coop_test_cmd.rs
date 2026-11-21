@@ -78,7 +78,7 @@ closes (or after Ctrl-C), the checklist prints: each step of section 11.3
 as seen or not seen, where it stopped, and lines that look like trouble.
 `h2 coop verdict` prints it again from a coop.log.
 
---root defaults to ~/Library/Application Support/h2recomp/coop-test, so
+--root defaults to coop-test under the application data directory, so
 profiles and accounts last between runs; --fresh forgets the server and the
 accounts (not the game data). --extras installs the map pack and Halo 1
 into each game's data as `h2 play` does (off: co-op needs neither).
@@ -123,8 +123,13 @@ pub struct Opts {
     pub play_args: Vec<String>,
 }
 
-/// Parses `h2 coop ...`. `env` answers `H2_DISC` and `HOME`.
-pub fn parse(args: Vec<String>, env: impl Fn(&str) -> Option<String>) -> Result<Cmd> {
+/// Parses `h2 coop ...` using the disc and application data environment,
+/// with `host`'s app data convention for the default `--root`.
+pub fn parse(
+    args: Vec<String>,
+    host: host_dirs::Convention,
+    env: impl Fn(&str) -> Option<String>,
+) -> Result<Cmd> {
     let mut it = args.into_iter();
     match it.next().as_deref() {
         Some("test") => {}
@@ -221,7 +226,9 @@ pub fn parse(args: Vec<String>, env: impl Fn(&str) -> Option<String>) -> Result<
     }
     let root = match root {
         Some(r) => r,
-        None => default_root(env("HOME"))?,
+        None => host_dirs::data_dir(host, |name| env(name).map(Into::into))
+            .context("application data directory is unavailable; pass --root")?
+            .join("coop-test"),
     };
     Ok(Cmd::Test(Opts {
         disc,
@@ -240,13 +247,6 @@ pub fn parse(args: Vec<String>, env: impl Fn(&str) -> Option<String>) -> Result<
         dry_run,
         play_args,
     }))
-}
-
-fn default_root(home: Option<String>) -> Result<PathBuf> {
-    let home = home
-        .filter(|h| !h.is_empty())
-        .context("HOME is not set; pass --root")?;
-    Ok(PathBuf::from(home).join("Library/Application Support/h2recomp/coop-test"))
 }
 
 /// One game: what it is called, where it keeps things, and how it starts.
@@ -462,7 +462,7 @@ pub fn accounts(client: &Client, games: &[Game], all: &Path) -> Result<Vec<Local
 
 pub fn run(args: Vec<String>) -> Result<()> {
     let env = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
-    match parse(args, env)? {
+    match parse(args, host_dirs::Convention::HOST, env)? {
         Cmd::Verdict { log, auto } => {
             let text =
                 fs::read_to_string(&log).with_context(|| format!("reading {}", log.display()))?;
@@ -684,7 +684,6 @@ fn say_next_steps_at_the_menu(socket: PathBuf, line: String) {
 /// Waits until the game at `socket` has been in its menu for 60 ticks:
 /// connects (retrying while the socket is not up yet), then
 /// `session.wait {"phase":"menu","map_ticks":60}`.
-#[cfg(unix)]
 pub fn wait_for_menu(socket: &Path, within: Duration) -> Result<()> {
     let deadline = Instant::now() + within;
     let mut client = loop {
@@ -706,11 +705,6 @@ pub fn wait_for_menu(socket: &Path, within: Duration) -> Result<()> {
         )
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     Ok(())
-}
-
-#[cfg(not(unix))]
-pub fn wait_for_menu(_: &Path, _: Duration) -> Result<()> {
-    bail!("the agent API needs Unix sockets")
 }
 
 /// A UTC `YYYYMMDD-HHMMSS` for unix time `secs`, naming a run's logs.
@@ -852,7 +846,6 @@ impl Drive {
         Ok(())
     }
 
-    #[cfg(unix)]
     fn send(&mut self, i: usize, game: &Game, p: &coop_drive::Press) -> Result<()> {
         if self.clients[i].is_none() {
             let c = agent_proto::Client::connect(&game.agent)
@@ -868,11 +861,6 @@ impl Drive {
             bail!("input.pad: {e}");
         }
         Ok(())
-    }
-
-    #[cfg(not(unix))]
-    fn send(&mut self, _: usize, _: &Game, _: &coop_drive::Press) -> Result<()> {
-        bail!("the agent API needs Unix sockets")
     }
 }
 

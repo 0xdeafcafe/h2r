@@ -2,7 +2,7 @@
 //! and hello. A single I/O thread owns the WebSocket for the rest of the match.
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     io,
     net::{Ipv4Addr, SocketAddr, SocketAddrV4, TcpStream, ToSocketAddrs, UdpSocket},
     sync::{
@@ -13,7 +13,13 @@ use std::{
     time::{Duration, Instant},
 };
 
-use live_proto::tunnel::{self, Frame, Kind, MAX_PAYLOAD, MAX_PORT};
+use crate::socket_wait::SocketWait;
+use actor_net::Packet;
+use live_proto::tunnel::{
+    self, ACTOR_CHANNEL_HEADER, ACTOR_CHANNEL_OFFER, ACTOR_CHANNEL_VERSION, Frame, Kind, MAX_PAYLOAD,
+    MAX_PORT,
+};
+use polling::Poller;
 use tungstenite::{
     Message, WebSocket,
     client::IntoClientRequest,
@@ -23,10 +29,14 @@ use tungstenite::{
     stream::MaybeTlsStream,
 };
 
-const TURN: Duration = Duration::from_millis(2);
+// A WebSocket/TLS read can have a buffered partial frame. Bound that one
+// read before waiting on TCP, the local QoS socket and the outbound queue.
+const READ_WINDOW: Duration = Duration::from_millis(2);
 const CONNECT_WAIT: Duration = Duration::from_secs(5);
 const KEEPALIVE: Duration = Duration::from_secs(5);
 const QUEUE: usize = 256;
+// A stalled consumer can recover on a subsequent key.
+const ACTOR_INBOX_DEPTH: usize = 32;
 
 pub(crate) fn port_offset(base: SocketAddrV4, dest: SocketAddrV4) -> Option<u16> {
     if base.ip() != dest.ip() {
@@ -57,14 +67,41 @@ pub(crate) fn channel_destination(
 struct Hello {
     peer: u32,
     host: Ipv4Addr,
+    actor_channel: bool,
 }
 
 type Inject = Box<dyn Fn(&UdpSocket, u16, &[u8]) + Send + Sync>;
 
+#[derive(Default)]
+pub(crate) struct ActorInbox {
+    packets: VecDeque<Packet>,
+    key_requested: bool,
+}
+
+impl ActorInbox {
+    pub(crate) fn receive(&mut self, frame: &Frame) {
+        if frame.kind != Kind::Actor || frame.port != 0 {
+            return;
+        }
+        if let Ok(packet) = actor_net::decode(&frame.payload) {
+            if self.packets.len() == ACTOR_INBOX_DEPTH {
+                self.packets.pop_front();
+            }
+            self.packets.push_back(packet);
+        }
+    }
+
+    pub(crate) fn drain(&mut self) -> Vec<Packet> {
+        self.packets.drain(..).collect()
+    }
+}
+
 struct Shared {
     hello: Mutex<Hello>,
     inject: Mutex<Option<Inject>>,
+    actor: Mutex<Option<ActorInbox>>,
     stopping: AtomicBool,
+    wake: Arc<Poller>,
     closed: AtomicBool,
 }
 
@@ -77,7 +114,14 @@ struct Client {
 
 impl Drop for Client {
     fn drop(&mut self) {
-        self.shared.stopping.store(true, Ordering::Release);
+        self.shared.stop();
+    }
+}
+
+impl Shared {
+    fn stop(&self) {
+        self.stopping.store(true, Ordering::Release);
+        let _ = self.wake.notify();
     }
 }
 
@@ -128,7 +172,33 @@ impl TunnelHandle {
     }
 
     pub(crate) fn stop(&self) {
-        self.0.shared.stopping.store(true, Ordering::Release);
+        self.0.shared.stop();
+    }
+
+    pub(crate) fn drain_actor_packets(&self) -> Vec<Packet> {
+        if self.closed() {
+            return Vec::new();
+        }
+        self.0
+            .shared
+            .actor
+            .lock()
+            .unwrap()
+            .as_mut()
+            .map_or_else(Vec::new, ActorInbox::drain)
+    }
+
+    pub(crate) fn request_actor_key(&self) -> bool {
+        if self.closed() {
+            return false;
+        }
+        let mut actor = self.0.shared.actor.lock().unwrap();
+        let Some(inbox) = actor.as_mut() else {
+            return false;
+        };
+        inbox.key_requested = true;
+        let _ = self.0.shared.wake.notify();
+        true
     }
 
     pub(crate) fn send(&self, port: u16, payload: &[u8]) -> Result<usize, u32> {
@@ -153,6 +223,7 @@ impl TunnelHandle {
                 TrySendError::Full(_) => 10035u32,      // WSAEWOULDBLOCK
                 TrySendError::Disconnected(_) => 10054, // WSAECONNRESET
             })?;
+        let _ = self.0.shared.wake.notify();
         Ok(payload.len())
     }
 }
@@ -174,7 +245,9 @@ fn connect(url: &str, bearer: &str) -> io::Result<TunnelHandle> {
     let shared = Arc::new(Shared {
         hello: Mutex::new(hello),
         inject: Mutex::new(None),
+        actor: Mutex::new(None),
         stopping: AtomicBool::new(false),
+        wake: Arc::new(Poller::new()?),
         closed: AtomicBool::new(false),
     });
     let worker = shared.clone();
@@ -189,7 +262,13 @@ fn connect(url: &str, bearer: &str) -> io::Result<TunnelHandle> {
                 || open(&url, &bearer),
                 |socket, hello| {
                     *worker.hello.lock().unwrap() = hello;
-                    run(socket, hello, &worker, &rx, &injector, &mut qos)
+                    let tcp = tcp(socket)?;
+                    tcp.set_read_timeout(Some(READ_WINDOW))?;
+                    let wait = SocketWait::new(worker.wake.clone(), Some(tcp), Some(&qos.socket))?;
+                    *worker.actor.lock().unwrap() = hello.actor_channel.then(ActorInbox::default);
+                    let result = run(socket, hello, &worker, &rx, &injector, &mut qos, wait);
+                    *worker.actor.lock().unwrap() = None;
+                    result
                 },
                 || worker.stopping.load(Ordering::Acquire),
             );
@@ -230,13 +309,20 @@ fn request(url: &str, bearer: &str) -> io::Result<Request> {
 type Ws = WebSocket<MaybeTlsStream<TcpStream>>;
 
 fn open(url: &str, bearer: &str) -> io::Result<Ws> {
-    open_with_timeouts(url, bearer, CONNECT_WAIT, TURN)
+    open_with_timeouts(url, bearer, CONNECT_WAIT, CONNECT_WAIT, true)
 }
 
 /// Measure only the first application frame on a fresh authenticated upgrade.
 pub(crate) fn region_echo(url: &str, bearer: &str) -> Option<u16> {
     use live_proto::matchmaking::REGION_ECHO;
-    let mut socket = open_with_timeouts(url, bearer, Duration::from_millis(1000), Duration::from_millis(450)).ok()?;
+    let mut socket = open_with_timeouts(
+        url,
+        bearer,
+        Duration::from_millis(1000),
+        Duration::from_millis(450),
+        false,
+    )
+    .ok()?;
     let started = Instant::now();
     socket.send(Message::Text(REGION_ECHO.into())).ok()?;
     match socket.read().ok()? {
@@ -247,8 +333,20 @@ pub(crate) fn region_echo(url: &str, bearer: &str) -> Option<u16> {
     }
 }
 
-fn open_with_timeouts(url: &str, bearer: &str, connect_wait: Duration, read_wait: Duration) -> io::Result<Ws> {
-    let req = request(url, bearer)?;
+fn open_with_timeouts(
+    url: &str,
+    bearer: &str,
+    connect_wait: Duration,
+    read_wait: Duration,
+    actor_channel: bool,
+) -> io::Result<Ws> {
+    let mut req = request(url, bearer)?;
+    if actor_channel {
+        req.headers_mut().insert(
+            ACTOR_CHANNEL_HEADER,
+            HeaderValue::from_static(ACTOR_CHANNEL_OFFER),
+        );
+    }
     let uri = req.uri();
     let default_port = match uri.scheme_str() {
         Some("ws") => 80,
@@ -278,7 +376,7 @@ fn open_with_timeouts(url: &str, bearer: &str, connect_wait: Duration, read_wait
         .max_message_size(Some(tunnel::HEADER_LEN + MAX_PAYLOAD))
         .max_frame_size(Some(tunnel::HEADER_LEN + MAX_PAYLOAD));
     // A single upgrade to this URL. A redirect must never receive the bearer.
-    let (mut socket, _) = tungstenite::client_tls_with_config(req, stream, Some(config), None)
+    let (socket, _) = tungstenite::client_tls_with_config(req, stream, Some(config), None)
         .map_err(|err| match err {
             tungstenite::handshake::HandshakeError::Failure(tungstenite::Error::Http(reply)) => {
                 io::Error::other(format!(
@@ -289,19 +387,25 @@ fn open_with_timeouts(url: &str, bearer: &str, connect_wait: Duration, read_wait
             tungstenite::handshake::HandshakeError::Failure(tungstenite::Error::Io(err)) => err,
             _ => io::Error::other("dedicated tunnel upgrade failed"),
         })?;
-    let tcp = match socket.get_mut() {
-        MaybeTlsStream::Plain(tcp) => tcp,
-        MaybeTlsStream::Rustls(tls) => &mut tls.sock,
-        _ => return Err(io::Error::other("unsupported tunnel TLS backend")),
-    };
-    tcp.set_read_timeout(Some(read_wait))?;
+    tcp(&socket)?.set_read_timeout(Some(read_wait))?;
     Ok(socket)
+}
+
+fn tcp(socket: &Ws) -> io::Result<&TcpStream> {
+    match socket.get_ref() {
+        MaybeTlsStream::Plain(tcp) => Ok(tcp),
+        MaybeTlsStream::Rustls(tls) => Ok(&tls.sock),
+        _ => Err(io::Error::other("unsupported tunnel TLS backend")),
+    }
 }
 
 trait Wire {
     fn send(&mut self, message: Message) -> io::Result<()>;
     fn read(&mut self) -> io::Result<Option<Message>>;
     fn close(&mut self);
+    fn read_timeout(&self, _timeout: Duration) -> io::Result<()> {
+        Ok(())
+    }
 }
 
 fn ws_error(err: tungstenite::Error) -> io::Error {
@@ -317,6 +421,10 @@ fn ws_error(err: tungstenite::Error) -> io::Error {
 }
 
 impl Wire for Ws {
+    fn read_timeout(&self, timeout: Duration) -> io::Result<()> {
+        tcp(self)?.set_read_timeout(Some(timeout))
+    }
+
     fn send(&mut self, message: Message) -> io::Result<()> {
         WebSocket::send(self, message).map_err(ws_error)
     }
@@ -366,7 +474,12 @@ fn client_control(kind: Kind) -> Message {
 fn handshake(socket: &mut impl Wire) -> io::Result<Hello> {
     socket.send(client_control(Kind::Hello))?;
     let until = Instant::now() + CONNECT_WAIT;
-    while Instant::now() < until {
+    loop {
+        let left = until.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Err(io::ErrorKind::TimedOut.into());
+        }
+        socket.read_timeout(left)?;
         match socket.read()? {
             None | Some(Message::Ping(_) | Message::Pong(_)) => continue,
             Some(Message::Binary(bytes)) => {
@@ -375,11 +488,13 @@ fn handshake(socket: &mut impl Wire) -> io::Result<Hello> {
                 if frame.kind == Kind::Hello
                     && frame.port == 0
                     && frame.peer != 0
-                    && let [10, 77, x, y] = frame.payload.as_slice()
+                    && let [10, 77, x, y, rest @ ..] = frame.payload.as_slice()
+                    && matches!(rest, [] | [ACTOR_CHANNEL_VERSION])
                 {
                     return Ok(Hello {
                         peer: frame.peer,
                         host: Ipv4Addr::new(10, 77, *x, *y),
+                        actor_channel: !rest.is_empty(),
                     });
                 }
             }
@@ -389,11 +504,11 @@ fn handshake(socket: &mut impl Wire) -> io::Result<Hello> {
             "expected host hello with assigned peer and synthetic IPv4",
         ));
     }
-    Err(io::ErrorKind::TimedOut.into())
 }
 
 enum Incoming {
     Datagram(Frame),
+    Actor(Frame),
     Bye,
     Control,
 }
@@ -407,6 +522,8 @@ fn incoming(hello: Hello, message: Message) -> io::Result<Incoming> {
             }
             match frame.kind {
                 Kind::Datagram => Ok(Incoming::Datagram(frame)),
+                Kind::Actor if hello.actor_channel => Ok(Incoming::Actor(frame)),
+                Kind::Actor => Ok(Incoming::Control),
                 Kind::Bye if frame.port == 0 && frame.payload.is_empty() => Ok(Incoming::Bye),
                 _ => Err(invalid("unexpected tunnel control frame")),
             }
@@ -478,12 +595,24 @@ fn run(
     out: &Receiver<Frame>,
     injector: &UdpSocket,
     qos: &mut QosBridge,
+    mut wait: SocketWait,
 ) -> io::Result<()> {
     let mut keepalive = Keepalive::new(Instant::now());
     while !shared.stopping.load(Ordering::Acquire) {
         // Bound each turn so continuous game traffic cannot starve receives.
+        let mut sent = 0;
         for frame in out.try_iter().take(32) {
+            sent += 1;
             socket.send(Message::binary(tunnel::encode(&frame)))?;
+        }
+        let key_requested = shared
+            .actor
+            .lock()
+            .unwrap()
+            .as_mut()
+            .is_some_and(|inbox| std::mem::take(&mut inbox.key_requested));
+        if key_requested {
+            socket.send(client_control(Kind::ActorKeyRequest))?;
         }
         qos.poll(socket)?;
         keepalive.tick(socket, Instant::now())?;
@@ -495,6 +624,11 @@ fn run(
                     socket.close();
                     return Ok(());
                 }
+                Incoming::Actor(frame) => {
+                    if let Some(inbox) = shared.actor.lock().unwrap().as_mut() {
+                        inbox.receive(&frame);
+                    }
+                }
                 Incoming::Datagram(f) => {
                     if f.port == 2 && qos.reply(&f.payload) {
                         continue;
@@ -504,6 +638,9 @@ fn run(
                     }
                 }
             }
+        } else if sent < 32 {
+            let deadline = keepalive.next_ping.min(keepalive.last_seen + KEEPALIVE * 3);
+            wait.wait(Some(deadline.saturating_duration_since(Instant::now())))?;
         }
     }
     let result = socket.send(client_control(Kind::Bye));
@@ -537,21 +674,21 @@ impl QosBridge {
     }
 
     fn poll(&mut self, wire: &mut impl Wire) -> io::Result<()> {
-        // One byte past the valid size detects a truncated/oversized request.
-        let mut buf = [0; 25];
+        // One byte past the valid size detects an oversized request.
+        let mut buf = [0; crate::qos::LOOKUP_REQUEST_LEN + 1];
         match self.socket.recv_from(&mut buf) {
-            Ok((24, addr)) if addr.ip().is_loopback() && &buf[..8] == b"H2QOS001" => {
-                self.pending
-                    .retain(|_, (_, at)| at.elapsed() < CONNECT_WAIT);
-                if self.pending.len() < 64 {
-                    self.pending
-                        .insert(buf[8..16].try_into().unwrap(), (addr, Instant::now()));
-                    wire.send(Message::binary(tunnel::encode(&Frame {
-                        kind: Kind::Datagram,
-                        port: 2,
-                        peer: 0,
-                        payload: buf[..24].to_vec(),
-                    })))?;
+            Ok((len, addr)) if addr.ip().is_loopback() => {
+                if let Some(lookup) = crate::qos::decode_lookup(&buf[..len]) {
+                    self.pending.retain(|_, (_, at)| at.elapsed() < CONNECT_WAIT);
+                    if self.pending.len() < 64 {
+                        self.pending.insert(lookup.nonce, (addr, Instant::now()));
+                        wire.send(Message::binary(tunnel::encode(&Frame {
+                            kind: Kind::Datagram,
+                            port: 2,
+                            peer: 0,
+                            payload: buf[..len].to_vec(),
+                        })))?;
+                    }
                 }
             }
             Ok(_) => {}
@@ -562,10 +699,9 @@ impl QosBridge {
     }
 
     fn reply(&mut self, payload: &[u8]) -> bool {
-        if payload.len() < 16 || &payload[..8] != b"H2QOR001" {
+        let Some(nonce) = crate::qos::reply_nonce(payload) else {
             return false;
-        }
-        let nonce: [u8; 8] = payload[8..16].try_into().unwrap();
+        };
         if let Some((addr, at)) = self.pending.remove(&nonce) {
             if at.elapsed() < CONNECT_WAIT {
                 let _ = self.socket.send_to(payload, addr);

@@ -55,7 +55,7 @@ pub fn read_tag(doc: &TagDoc, tag: TagId) -> Result<Value, String> {
     };
     let fields = match (&t.access, doc.layout(tag)) {
         (Access::None(_), _) | (_, None) => Value::Null,
-        (_, Some(l)) => element(doc, t.address, l),
+        (_, Some(l)) => element(doc, tag, t.address, l),
     };
     Ok(json!({
         "id": format!("{:#010x}", tag.0),
@@ -67,21 +67,21 @@ pub fn read_tag(doc: &TagDoc, tag: TagId) -> Result<Value, String> {
     }))
 }
 
-fn element(doc: &TagDoc, at: u32, l: &Layout) -> Value {
+fn element(doc: &TagDoc, tag: TagId, at: u32, l: &Layout) -> Value {
     let mut out = serde_json::Map::new();
     for f in &l.fields {
         if matches!(f.kind, Kind::Pad { .. }) {
             continue;
         }
-        out.insert(f.name.clone(), value(doc, at, f));
+        out.insert(f.name.clone(), value(doc, tag, at, f));
     }
     Value::Object(out)
 }
 
 /// One field's value as JSON.
-pub fn value(doc: &TagDoc, at: u32, f: &Field) -> Value {
+pub fn value(doc: &TagDoc, tag: TagId, at: u32, f: &Field) -> Value {
     let a = at + f.offset;
-    let Some(b) = doc.read(a, f.kind.width()) else {
+    let Some(b) = doc.read(tag, a, f.kind.width()) else {
         return Value::Null;
     };
     let many = |v: Vec<Value>| {
@@ -139,17 +139,17 @@ pub fn value(doc: &TagDoc, at: u32, f: &Field) -> Value {
         }
         Kind::TagRef { .. } => tag_json(doc, le(&b[4..]) as u32),
         Kind::Datum { .. } => tag_json(doc, le(&b) as u32),
-        Kind::Block(child) => match doc.block(a, child) {
+        Kind::Block(child) => match doc.block(tag, a, child) {
             Some((n, start)) => Value::Array(
                 (0..n.min(ELEMENTS))
-                    .map(|i| element(doc, start + i * child.size, child))
+                    .map(|i| element(doc, tag, start + i * child.size, child))
                     .collect(),
             ),
             None => Value::Null,
         },
         Kind::Data => {
             let (n, start) = (le(&b[..4]) as u32, le(&b[4..]) as u32);
-            match doc.read(start, n.min(DATA)) {
+            match doc.read(tag, start, n.min(DATA)) {
                 Some(d) if n > 0 => json!(crate::fields::hex(&d)),
                 _ => json!(""),
             }
@@ -179,6 +179,48 @@ fn find<'a>(l: &'a Layout, name: &str) -> Option<&'a Field> {
         return l.field_at(o);
     }
     l.fields.iter().find(|f| f.name == name)
+}
+
+/// The root or a block element selected for the inspector's field rows.
+pub(crate) fn field_element(
+    doc: &TagDoc,
+    tag: TagId,
+    path: &str,
+) -> Result<(u32, Arc<Layout>), String> {
+    let t = doc.tag(tag).ok_or("no such tag")?;
+    if let Access::None(reason) = &t.access {
+        return Err((*reason).into());
+    }
+    let root = doc.layout(tag).ok_or("no layout for this group")?;
+    if root.size > t.size {
+        return Err(super::tag_doc::TOO_SHORT.into());
+    }
+    if path.is_empty() {
+        return Ok((t.address, root.clone()));
+    }
+    let (field_path, index) = path
+        .strip_suffix(']')
+        .and_then(|s| s.rsplit_once('['))
+        .ok_or_else(|| format!("{path}: expected a block element index"))?;
+    let index: u32 = index
+        .parse()
+        .map_err(|_| format!("bad index in {path:?}"))?;
+    let (at, _, field) = resolve(doc, tag, field_path)?;
+    let Kind::Block(child) = field.kind else {
+        return Err(format!("{field_path} is not a block"));
+    };
+    let (count, start) = doc
+        .block(tag, at + field.offset, &child)
+        .ok_or("unreadable block")?;
+    if index >= count {
+        return Err(format!(
+            "{field_path}: index {index} outside {count} elements"
+        ));
+    }
+    let at = start
+        .checked_add(index * child.size)
+        .ok_or("invalid element address")?;
+    Ok((at, child))
 }
 
 /// The field at `path`: the address of its element, the element's layout
@@ -223,8 +265,8 @@ fn resolve_path(
             (Some(i), Kind::Block(child)) => {
                 let child = child.clone();
                 let (n, a) = doc
-                    .block(at + f.offset, &child)
-                    .ok_or("the block is outside the metadata")?;
+                    .block(tag, at + f.offset, &child)
+                    .ok_or("the block is outside the tag's address space")?;
                 if i >= n {
                     return Err(format!("{name} has {n} elements, not {}", i + 1));
                 }
@@ -313,6 +355,9 @@ pub fn set_field(doc: &TagDoc, tag: TagId, path: &str, v: &Value) -> Result<TagA
                     .as_u64()
                     .ok_or_else(|| format!("{}: a name or a number", f.name))?,
             };
+            if i >> (u32::from(*bytes) * 8) != 0 {
+                return Err(format!("{}: {i} does not fit {bytes} bytes", f.name));
+            }
             i.to_le_bytes()[..*bytes as usize].to_vec()
         }
         Kind::Flags { bytes, bits } => {
@@ -361,7 +406,7 @@ pub fn set_field(doc: &TagDoc, tag: TagId, path: &str, v: &Value) -> Result<TagA
                 _ => return Err(format!("{}: \"group:name\" or null", f.name)),
             };
             if matches!(f.kind, Kind::TagRef { .. }) {
-                let old = doc.read(a, 4).ok_or("unreadable")?;
+                let old = doc.read(tag, a, 4).ok_or("unreadable")?;
                 let mut out = g.map_or(old.clone(), |g| g.as_u32().to_le_bytes().to_vec());
                 out.extend_from_slice(&id.to_le_bytes());
                 out
@@ -370,7 +415,7 @@ pub fn set_field(doc: &TagDoc, tag: TagId, path: &str, v: &Value) -> Result<TagA
             }
         }
         Kind::Data => {
-            let (n, start) = doc.pair(a).ok_or("unreadable")?;
+            let (n, start) = doc.pair(tag, a).ok_or("unreadable")?;
             let new = v
                 .as_str()
                 .and_then(crate::fields::parse_hex)
@@ -451,13 +496,14 @@ pub fn resources(doc: &TagDoc, tag: TagId) -> Result<Value, String> {
     let layout = doc.layout(tag).ok_or("no layout for this group")?.clone();
     let mut data = Vec::new();
     let mut raw = Vec::new();
-    walk_resources(doc, t.address, &layout, "", &mut data, &mut raw, 0);
+    walk_resources(doc, tag, t.address, &layout, "", &mut data, &mut raw, 0);
     let truncated = data.len() + raw.len() >= RESOURCES;
     Ok(json!({ "data": data, "raw": raw, "truncated": truncated }))
 }
 
 fn walk_resources(
     doc: &TagDoc,
+    tag: TagId,
     at: u32,
     l: &Layout,
     prefix: &str,
@@ -480,7 +526,7 @@ fn walk_resources(
         let a = at + f.offset;
         match &f.kind {
             Kind::Data => {
-                if let Some((n, start)) = doc.pair(a)
+                if let Some((n, start)) = doc.pair(tag, a)
                     && n > 0
                 {
                     data.push(json!({
@@ -491,7 +537,9 @@ fn walk_resources(
                 }
             }
             Kind::Raw => {
-                let Some(b) = doc.read(a, 4) else { continue };
+                let Some(b) = doc.read(tag, a, 4) else {
+                    continue;
+                };
                 let v = le(&b) as u32;
                 let Some(p) = map::RawPointer::decode(v).filter(|_| v != 0) else {
                     continue;
@@ -500,7 +548,7 @@ fn walk_resources(
                     .fields
                     .iter()
                     .find(|g| matches!(g.kind, Kind::RawSize { of } if of == f.offset))
-                    .and_then(|g| doc.read(at + g.offset, 4))
+                    .and_then(|g| doc.read(tag, at + g.offset, 4))
                     .map(|b| le(&b));
                 raw.push(json!({
                     "path": path,
@@ -510,12 +558,21 @@ fn walk_resources(
                 }));
             }
             Kind::Block(child) => {
-                let Some((n, start)) = doc.block(a, child) else {
+                let Some((n, start)) = doc.block(tag, a, child) else {
                     continue;
                 };
                 for i in 0..n {
                     let e = format!("{path}[{i}]");
-                    walk_resources(doc, start + i * child.size, child, &e, data, raw, depth + 1);
+                    walk_resources(
+                        doc,
+                        tag,
+                        start + i * child.size,
+                        child,
+                        &e,
+                        data,
+                        raw,
+                        depth + 1,
+                    );
                     if data.len() + raw.len() >= RESOURCES {
                         return;
                     }

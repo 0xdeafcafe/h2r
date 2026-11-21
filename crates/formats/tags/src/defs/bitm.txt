@@ -1,48 +1,56 @@
-# bitm: bitmap. Root scalars stay unknown: nothing of ours (engine code or a disc
-# check) has established them yet.
+# Bitmap metadata, image records and sprite sequences.
 group bitm 0x4c align 4
-  0x0 unknown 0x4 seen=19
-  0x4 unknown 0x4 seen=17
-  0x8 unknown 0x4 seen=7 -- floats
-  0xc unknown 0x4 seen=5 -- floats
-  0x10 unknown 0x4 seen=many -- floats
-  0x14 unknown 0x4 seen=14
-  0x18 unknown 0x4 seen=many
+  0x0 enum16 texture_layout doc="Selects how the bitmap images are arranged." -- A Halo2Xbox bitm.xml; V: source span +0x0..+0x4 seen=19
+  0x2 enum16 import_format doc="Selects the encoding requested for the image data." -- A Halo2Xbox bitm.xml
+  0x4 enum16 image_usage doc="Identifies the intended use of the bitmap." -- A Halo2Xbox bitm.xml; V: source span +0x4..+0x8 seen=17
+  0x6 flags16 processing_flags doc="Stores switches for processing the source image." -- A Halo2Xbox bitm.xml
+  0x8 f32 detail_fade doc="Controls how strongly detail fades across the mip chain." -- A Halo2Xbox bitm.xml; V: source span +0x8..+0xc seen=7; floats
+  0xc f32 sharpening doc="Sets the sharpening strength for the bitmap." -- A Halo2Xbox bitm.xml; V: source span +0xc..+0x10 seen=5; floats
+  0x10 f32 bump_height doc="Sets the height scale for a bump map." -- A Halo2Xbox bitm.xml; V: source span +0x10..+0x14 seen=many; floats
+  0x14 enum16 sprite_sheet_budget doc="Selects the sheet size used to budget sprite storage." -- A Halo2Xbox bitm.xml; V: source span +0x14..+0x18 seen=14
+  0x16 i16 sprite_sheet_count doc="Sets the number of sheets budgeted for sprites." -- A Halo2Xbox bitm.xml
+  0x18 i16 source_plate_width doc="Gives the source plate width in pixels." -- A Halo2Xbox bitm.xml; V: source span +0x18..+0x1c seen=many
+  0x1a i16 source_plate_height doc="Gives the source plate height in pixels." -- A Halo2Xbox bitm.xml
   0x1c unknown 0x4 seen=many
   0x20 pad 0xc
-  0x2c unknown 0x4 seen=2 -- floats
-  0x30 unknown 0x4 seen=2 -- floats
-  0x34 unknown 0x4 seen=10
-  0x38 unknown 0x4 seen=5
+  0x2c f32 blur_size doc="Sets the extent of the image blur filter." -- A Halo2Xbox bitm.xml; V: source span +0x2c..+0x30 seen=2; floats
+  0x30 f32 alpha_bias doc="Adjusts the bitmap alpha during processing." -- A Halo2Xbox bitm.xml; V: source span +0x30..+0x34 seen=2; floats
+  0x34 i16 requested_mips doc="Gives the mip count requested for the bitmap." -- A Halo2Xbox bitm.xml; V: source span +0x34..+0x38 seen=10
+  0x36 enum16 sprite_usage doc="Selects the intended use of the sprite textures." -- A Halo2Xbox bitm.xml
+  0x38 i16 sprite_spacing doc="Sets the gap between packed sprites." -- A Halo2Xbox bitm.xml; V: source span +0x38..+0x3c seen=5
+  0x3a enum16 format_override doc="Selects an explicit storage format for the bitmap." -- A Halo2Xbox bitm.xml
   0x3c block sequences_3c 0x3c align 4 -- V count/stride spans bounded and aligned (rebuild.rs:60); element meaning unverified (docs/formats/map-format.md:375)
     0x0 unknown 0x4 seen=2
     0x4 unknown 0x4 seen=2
     0x8 unknown 0x4 seen=60 -- small integers
     0xc unknown 0x14 seen=zero
-    0x20 unknown 0x4 seen=many
+    0x20 i16 first_image doc="Indexes the first image belonging to the sequence." -- A Halo2Xbox bitm.xml; V: source span +0x20..+0x24 seen=many
+    0x22 i16 image_count doc="Counts the images belonging to the sequence." -- A Halo2Xbox bitm.xml
     0x24 unknown 0x10 seen=zero
     0x34 block sprites_34 0x20 align 4 -- V spans bounded (rebuild.rs:77); coordinates never rendered (map-format.md:376)
-      0x0 unknown 0x4 seen=8 -- small integers
+      0x0 i16 image_index doc="Selects the image used by this sprite." -- A Halo2Xbox bitm.xml; V: the packed word at +0 has eight observed values
+      0x2 unknown 0x2
       0x4 unknown 0x4 seen=zero
-      0x8 unknown 0x4 seen=many -- floats
-      0xc unknown 0x4 seen=many -- floats
-      0x10 unknown 0x4 seen=47 -- floats
-      0x14 unknown 0x4 seen=many -- floats
+      0x8 f32 left_edge doc="Gives the left boundary of this sprite on its sheet." -- A Halo2Xbox bitm.xml; V: source span +0x8..+0xc seen=many; floats
+      0xc f32 right_edge doc="Gives the right boundary of this sprite on its sheet." -- A Halo2Xbox bitm.xml; V: source span +0xc..+0x10 seen=many; floats
+      0x10 f32 top_edge doc="Gives the top boundary of this sprite on its sheet." -- A Halo2Xbox bitm.xml; V: source span +0x10..+0x14 seen=47; floats
+      0x14 f32 bottom_edge doc="Gives the bottom boundary of this sprite on its sheet." -- A Halo2Xbox bitm.xml; V: source span +0x14..+0x18 seen=many; floats
       0x18 unknown 0x4 seen=many -- floats
       0x1c unknown 0x4 seen=many -- floats
   0x44 block images 0x74 align 4 -- V every image decodes through assets::bitmap (docs/formats/bitmaps.md; crates/platform/assets/src/bitmap.rs:5)
     0x0 u32 signature default=1651078253 -- V the group bytes bitm in every retail image; h1bitmaps writes it (h1bitmaps/src/convert.rs:152)
-    0x4 u16 width -- V layout check: LOD size equals the computed layout rounded to 128 bytes for every image (assets/src/bitmap.rs:7)
-    0x6 u16 height -- V as width
-    0x8 u8 depth default=1 -- V volume slice count, 0 or 1 otherwise (assets/src/bitmap.rs:23)
+    0x4 u16 width doc="Gives the width of the base mip level in pixels." -- V layout check: LOD size equals the computed layout rounded to 128 bytes for every image (assets/src/bitmap.rs:7)
+    0x6 u16 height doc="Gives the height of the base mip level in pixels." -- V as width
+    0x8 u8 depth default=1 doc="Counts slices in a volume image." -- V volume slice count, 0 or 1 otherwise (assets/src/bitmap.rs:23)
     0x9 unknown 0x1 seen=zero -- runtime byte, written zero by h1bitmaps (convert.rs:11)
     0xa enum16 kind values=texture_2d|texture_3d|cube -- V 0 = 2D, 1 = 3D, 2 = cube; cube faces decode coherent (assets/src/bitmap.rs:23, docs/formats/bitmaps.md)
     0xc u16 format -- V Halo pixel-format id, mapped to D3DFormat by assets FORMAT_TABLE with per-format evidence (assets/src/bitmap.rs:13)
     0xe flags16 flags bits=_|_|_|swizzled|linear -- V bit 3 swizzled, bit 4 linear, exactly one for uncompressed formats (assets/src/bitmap.rs:16); other bits unproven
-    0x10 unknown 0x4 seen=many
-    0x14 u16 mip_count -- V levels below the base (assets/src/bitmap.rs:20)
-    0x16 unknown 0x2 seen=many -- runtime bytes, written zero by h1bitmaps (convert.rs:11)
-    0x18 unknown 0x4 seen=many
+    0x10 i16[2] registration_pixel doc="Locates the registration point in the image." -- A Halo2Xbox bitm.xml; V: source span +0x10..+0x14 seen=many
+    0x14 u16 mip_count doc="Counts the mip levels following the base level." -- V levels below the base (assets/src/bitmap.rs:20)
+    0x16 i8 lod_bias doc="Adjusts the level of detail chosen for this image." -- A Halo2Xbox bitm.xml; V: source span +0x16..+0x18 seen=many; runtime bytes, written zero by h1bitmaps (convert.rs:11)
+    0x17 enum8 cache_policy doc="Selects the cache usage for this image." -- A Halo2Xbox bitm.xml
+    0x18 i32 pixel_offset doc="Gives the offset recorded for the pixel data." -- A Halo2Xbox bitm.xml; V: source span +0x18..+0x1c seen=many
     0x1c raw lod_0 -- V complete mip chain from mip 0, padded to 128 bytes (assets/src/bitmap.rs:25)
     0x20 raw lod_1 -- V chain from mip 1; none (-1) for small textures
     0x24 raw lod_2 -- V chain from mip 2; none (-1) for small textures
@@ -57,8 +65,10 @@ group bitm 0x4c align 4
     0x50 pad 0x8
     0x58 unknown 0x4 seen=10
     0x5c pad 0x4
-    0x60 unknown 0x4 seen=many
-    0x64 unknown 0x4 seen=4 -- small integers
-    0x68 unknown 0x4 seen=14
-    0x6c unknown 0x4 seen=6
+    0x60 i32 reduced_image_offset doc="Gives the stored offset for the reduced-detail image." -- A Halo2Xbox bitm.xml; V: source span +0x60..+0x64 seen=many
+    0x64 i32 reduced_image_size doc="Gives the byte count for the reduced-detail image." -- A Halo2Xbox bitm.xml; V: source span +0x64..+0x68 seen=4; small integers
+    0x68 enum16 reduced_image_format doc="Identifies the encoding of the reduced-detail image." -- A Halo2Xbox bitm.xml; V: source span +0x68..+0x6c seen=14
+    0x6a i16 reduced_image_width doc="Gives the reduced image width in pixels." -- A Halo2Xbox bitm.xml
+    0x6c i16 reduced_image_height doc="Gives the reduced image height in pixels." -- A Halo2Xbox bitm.xml; V: source span +0x6c..+0x70 seen=6
+    0x6e i16 reduced_image_depth doc="Gives the reduced image depth in slices." -- A Halo2Xbox bitm.xml
     0x70 pad 0x4

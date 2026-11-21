@@ -82,7 +82,7 @@ fn the_definitions_merge_without_conflicts() {
 fn named_definition_fields_sit_at_their_offsets() {
     fn walk(path: &str, d: &StructDef, l: &Layout, bad: &mut Vec<String>) {
         let mut leaves = Vec::new();
-        flatten(d, 0, "", &mut leaves);
+        flatten(d, 0, "", None, "", &mut leaves);
         for leaf in leaves {
             let f = leaf.def;
             if f.kind.is_unknown() || f.typed_only() || f.name.starts_with("unknown") {
@@ -212,6 +212,78 @@ group test 0x30
     );
     // A blank element nulls its datum.
     assert_eq!(parts.blank()[4..8], [0xff; 4]);
+}
+
+#[test]
+fn repeated_embedded_structs_keep_the_description_of_each_use() {
+    let mut defs = Defs::default();
+    defs.parse_into(
+        "invented",
+        r#"struct sample 8
+  0x0 u32 turns doc="Turns in one cycle." -- invented leaf evidence
+  0x4 unknown 4
+group zzzz 0x18
+  0x0 struct first sample doc="First spindle." -- first source
+  0x8 struct second sample doc="Second spindle." -- second source
+  0x10 struct third sample
+"#,
+    )
+    .unwrap();
+    let registry = Registry::build(&Schema::default(), &defs);
+    let layout = registry.group(FourCC(*b"zzzz")).unwrap();
+    let docs: Vec<_> = layout.fields.iter().map(|f| f.doc.as_deref()).collect();
+    assert_eq!(
+        docs,
+        [
+            Some("First spindle. Turns in one cycle."),
+            Some("First spindle."),
+            Some("Second spindle. Turns in one cycle."),
+            Some("Second spindle."),
+            Some("Turns in one cycle."),
+            None,
+        ]
+    );
+    assert_eq!(
+        layout.field_at(0).unwrap().meaning,
+        "first: first source\ninvented leaf evidence"
+    );
+    assert_eq!(layout.field_at(12).unwrap().meaning, "second: second source");
+    assert_eq!(layout.field_at(16).unwrap().meaning, "invented leaf evidence");
+}
+
+#[test]
+fn unknown_descriptions_cover_whole_fallback_rows() {
+    let schema = Schema::parse("group zzzz 0x14 align 4\n  0x8 string\n").unwrap();
+    let mut defs = Defs::default();
+    defs.parse_into(
+        "invented",
+        r#"group zzzz 0x14
+  0x0 unknown 6 doc="Invented first region."
+  0x6 unknown 10 doc="Invented second region." -- invented span evidence
+  0x10 unknown 4
+"#,
+    )
+    .unwrap();
+    let r = Registry::build(&schema, &defs);
+    let layout = r.group(FourCC(*b"zzzz")).unwrap();
+    assert_eq!(layout.field_at(8).unwrap().meaning, "invented span evidence");
+    assert_eq!(layout.field_at(12).unwrap().meaning, "invented span evidence");
+    assert!(layout.field_at(4).unwrap().meaning.is_empty());
+    let rows: Vec<_> = layout
+        .fields
+        .iter()
+        .map(|f| (f.name.as_str(), f.kind.width(), f.doc.as_deref()))
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            ("+0x0", 4, Some("Invented first region.")),
+            ("+0x4", 4, None),
+            ("string +0x8", 4, Some("Invented second region.")),
+            ("+0xc", 4, Some("Invented second region.")),
+            ("+0x10", 4, None),
+        ]
+    );
 }
 
 #[test]

@@ -37,6 +37,7 @@ impl Justify {
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Art {
+    Solid { rgba: [u8; 4] },
     /// Bitmap `index` of pane `pane` of the screen whose `wgit` has
     /// `screen_id` (as `list_class::PictureSpec` names it), showing
     /// `image`.
@@ -264,6 +265,12 @@ impl View {
 pub trait Metrics {
     fn width(&self, font: i16, text: &str) -> i32;
     fn line_height(&self, font: i16) -> i32;
+
+    /// Whether this source can draw the character in the text's font.
+    /// Synthetic metrics stand in for every glyph unless a fixture says otherwise.
+    fn has_glyph(&self, _font: i16, _ch: char) -> bool {
+        true
+    }
 }
 
 /// Metrics without a disc: every character 6 units wide (about the
@@ -673,7 +680,7 @@ pub fn view_of(s: &ScreenSpec, g: &Geometry, m: &dyn Metrics, state: &str) -> Vi
     View {
         screen: s.name.clone(),
         state: state.into(),
-        backing: Backing::GameShell,
+        backing: if s.transparent { Backing::None } else { Backing::GameShell },
         underlay: None,
         widgets: w,
         focus: (!s.rows.is_empty()).then(|| format!("row.{}", s.focus)),
@@ -707,7 +714,7 @@ mod tests {
         // The row bar covers the item's origin up to its height.
         assert_eq!(bar(0), [130 + 26, -254, 130, -254 + 508]);
         assert_eq!(bar(1)[0] - bar(0)[0], -26);
-        assert_eq!(v.widget("row.2.value").unwrap().text(), Some("< On >"));
+        assert_eq!(v.widget("row.2.value").unwrap().text(), Some("On"));
         assert_eq!(v.focus.as_deref(), Some("row.0"));
     }
 

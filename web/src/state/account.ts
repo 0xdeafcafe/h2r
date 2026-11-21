@@ -10,12 +10,15 @@
 // so it is kept as a JWK (its `d`) in IndexedDB, not as a non-extractable
 // CryptoKey. Anyone with access to this browser profile can read it.
 
+import { requireCredentialTransport } from "../api/server";
 import { b64urlEncode, canonicalJson, jwkThumbprint } from "./verify";
 import { parseRecovery, type Recovery } from "./recovery";
 
 export const TYP_ACCOUNT = "h2live-account";
 
 export interface PublicJwk { kty: "OKP"; crv: "Ed25519"; x: string; kid: string }
+
+type AccountFetch = (...args: Parameters<typeof fetch>) => ReturnType<typeof fetch>;
 
 export interface NewKey { publicJwk: PublicJwk; d: string; privateKey: CryptoKey }
 
@@ -88,13 +91,14 @@ export class SignUpError extends Error {
  *  once (null from a server that sends none). */
 export async function signUp(
   apiRoot: string, serverBase: string, serverId: string, gamertag: string, invite?: string,
-  fetchFn: typeof fetch = fetch, nowMs: number = Date.now(),
+  fetchFn: AccountFetch = fetch, nowMs: number = Date.now(),
 ): Promise<{ account: LocalAccount; recovery: Recovery | null }> {
   const bad = gamertagError(gamertag);
   if (bad) throw new SignUpError("invalid", `That gamertag won't work: ${bad}.`);
+  requireCredentialTransport(serverBase, apiRoot);
   const key = await generateKey();
   const jws = await signAccountRequest(key, gamertag, serverId, Math.floor(nowMs / 1000), invite || undefined);
-  const r = await fetchFn(apiRoot + "/accounts", { method: "POST", headers: { "content-type": "application/jose" }, body: jws });
+  const r = await fetchFn(apiRoot + "/accounts", { method: "POST", redirect: "error", headers: { "content-type": "application/jose" }, body: jws });
   if (!r.ok) {
     let code = "http_" + r.status, message = r.statusText;
     try { const b = await r.json(); if (typeof b?.error === "string") { code = b.error; message = b.message ?? message; } } catch { /* */ }
@@ -113,7 +117,7 @@ export async function signUp(
 
 export async function createAccount(
   apiRoot: string, serverBase: string, serverId: string, gamertag: string, invite?: string,
-  fetchFn: typeof fetch = fetch, nowMs: number = Date.now(),
+  fetchFn: AccountFetch = fetch, nowMs: number = Date.now(),
 ): Promise<LocalAccount> {
   return (await signUp(apiRoot, serverBase, serverId, gamertag, invite, fetchFn, nowMs)).account;
 }

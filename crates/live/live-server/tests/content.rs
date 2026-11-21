@@ -185,6 +185,7 @@ fn session(flags: &str, hopper: Option<u32>, map_id: Option<MapId>) -> NewSessio
         campaign: None,
         ping_ms: None,
         variant_ext: None,
+        browser: None,
     }
 }
 
@@ -493,13 +494,16 @@ async fn packages_are_signed_checked_and_listed() {
     assert_eq!(map["layers"][0]["kind"], "patch");
     assert_eq!(map["layers"][0]["size"], patch.len());
     assert_eq!(map["size"], patch.len());
-    assert_eq!(map["image"], sha(PNG).to_string());
+    assert!(map["image"].is_null(), "a signed manifest cannot publish an unchecked image");
+    assert_eq!(map["manifest"]["package"]["image"], "preview.png");
     assert_eq!(map["geometry"], Sha256([0x22; 32]).to_string());
     assert_eq!(map["manifest"]["patch"][0]["file"], "snipers.ips");
     let img = h.get(&format!("/v1/maps/{id}/image")).await;
-    assert_eq!(img.status, StatusCode::OK);
-    assert_eq!(img.headers["content-type"], "image/png");
-    assert_eq!(img.body, PNG);
+    assert_eq!(img.status, StatusCode::NOT_FOUND);
+    assert_eq!(
+        h.get(&format!("/v1/content/{}", sha(PNG))).await.status,
+        StatusCode::NOT_FOUND
+    );
     assert_eq!(
         h.get(&format!("/v1/maps/{}", MapId([1; 32]))).await.status,
         StatusCode::NOT_FOUND
@@ -1085,4 +1089,50 @@ async fn no_data_directory_no_content() {
     let u = h.create("Modder").await;
     let r = put(&h, &u, &sha(b"PATCH"), b"PATCH").await;
     assert_eq!(r.status, StatusCode::SERVICE_UNAVAILABLE);
+}
+
+#[tokio::test]
+async fn legacy_optimatch_checks_the_published_base_for_map_id_only_ads() {
+    let h = content_harness(small()).await;
+    let host = h.create("Match Host").await;
+    let guest = h.create("Match Guest").await;
+    let patch = b"PATCH synthetic".as_slice();
+    upload(&h, &host, patch).await;
+    let mut ids = Vec::new();
+    for base in ["lockout", "turf"] {
+        let mut m = manifest(patch);
+        m.base.map = base.into();
+        let map_id = MapId::of(&m);
+        assert_eq!(publish(&h, &host, &doc(m)).await.status, StatusCode::CREATED);
+        let mut ad = session("custom", None, Some(map_id));
+        ad.map = None;
+        ad.attributes.insert(
+            live_proto::optimatch::attr::HOPPER,
+            live_proto::session::AttributeValue::Integer(2),
+        );
+        ad.attributes.insert(
+            live_proto::optimatch::attr::ROOM,
+            live_proto::session::AttributeValue::Integer(1),
+        );
+        let response = advertise(&h, &host, &ad).await;
+        assert_eq!(response.status, StatusCode::CREATED, "{}", response.error());
+        ids.push(response.json()["session_id"].clone());
+    }
+
+    for (pack, count) in [(false, 1), (true, 2)] {
+        let wire = json!({"hopper": 2, "average": 0, "has_map_pack": pack, "party": 1}).to_string();
+        let query = percent_encoding::utf8_percent_encode(&wire, percent_encoding::NON_ALPHANUMERIC);
+        let response = h.call(
+            Method::GET, &format!("/v1/sessions?optimatch={query}"),
+            &[h.bearer(&guest, lxm::READ)], Body::empty(),
+        ).await;
+        assert_eq!(response.status, StatusCode::OK, "{}", response.error());
+        let body = response.json();
+        let items = body["items"].as_array().unwrap();
+        assert_eq!(items.len(), count);
+        assert!(items.iter().any(|item| item["session_id"] == ids[0]));
+        assert_eq!(items.iter().any(|item| item["session_id"] == ids[1]), pack);
+    }
+    let public = h.get("/v1/sessions").await.json();
+    assert_eq!(public["items"].as_array().unwrap().len(), 2);
 }

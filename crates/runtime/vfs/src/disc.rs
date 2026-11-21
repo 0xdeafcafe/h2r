@@ -118,6 +118,7 @@ impl<R: Read + Seek + Send> Backend for DiscBackend<R> {
         let image = self.image.clone()?;
         let entry = self.entry(path).ok().filter(|e| !e.is_dir)?;
         Some(HostFile {
+            generation: None,
             path: image,
             offset: self.partition_offset + entry.sector as u64 * xiso::SECTOR,
             len: entry.size as u64,

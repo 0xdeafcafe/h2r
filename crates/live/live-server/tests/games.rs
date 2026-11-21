@@ -18,7 +18,7 @@ use serde_json::{Value, json};
 fn kill(tick: u64, victim: u32, killer: u32) -> (&'static str, Value) {
     (
         "PlayerKilled",
-        json!({"tick": tick, "victim": victim, "killer": killer, "weapon": "battle_rifle", "kind": "kill", "pos": [1.5, -2.0, 3.25]}),
+        json!({"tick": tick, "victim": victim, "killer": killer, "weapon": "battle_rifle", "headshot": true, "kind": "kill", "pos": [1.5, -2.0, 3.25]}),
     )
 }
 
@@ -162,7 +162,10 @@ async fn a_game_from_start_to_end() {
                 json!({"player": {"index": 2, "name": "Late", "team": 0}}),
             ),
             kill(300, 1, 0),
-            kill(330, 2, 1),
+            (
+                "PlayerKilled",
+                json!({"tick": 330, "victim": 2, "killer": 1, "kind": "kill"}),
+            ),
             score(330, 1, 1),
         ],
     );
@@ -181,6 +184,8 @@ async fn a_game_from_start_to_end() {
     assert_eq!(items.len(), 5);
     assert_eq!(items[4]["position"], last);
     assert_eq!(items[2]["jws_index"], 1);
+    assert_eq!(items[2]["data"]["weapon"], "battle_rifle");
+    assert_eq!(items[2]["data"]["headshot"], true);
     assert_eq!(items[2]["jws"].as_str(), Some(jws.as_str()));
     assert!(items[0].get("jws_index").is_none());
     for w in items.windows(2) {
@@ -227,6 +232,10 @@ async fn a_game_from_start_to_end() {
     assert_eq!(g["players"].as_array().unwrap().len(), 3);
     let kills = g["kills"].as_array().unwrap();
     assert_eq!(kills.len(), 2);
+    assert_eq!(kills[0]["weapon"], "battle_rifle");
+    assert_eq!(kills[0]["headshot"], true);
+    assert!(kills[1].get("weapon").is_none());
+    assert!(kills[1].get("headshot").is_none());
     assert_eq!(kills[0]["pos"], json!([1.5, -2.0, 3.25]));
     assert!(kills[0]["position"].as_u64().is_some() && kills[0]["at"].is_string());
     assert!(g["ended_at"].is_string());
@@ -648,6 +657,61 @@ async fn invites_and_pings() {
     assert_eq!(r.json(), json!({"ok": true, "expires_in": 90}));
 }
 
+#[tokio::test]
+async fn a_batch_ping_covers_the_whole_console() {
+    let h = harness().await;
+    let pete = h.create("Pete").await;
+    let amy = h.create("Amy").await;
+    // Bob never signs in.
+    let bob = h.create("Bob").await;
+    // The batch is bounded (a console signs in at most four accounts).
+    assert_eq!(
+        h.ping_batch_raw(json!({"tokens": []})).await.status,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        h.ping_batch_raw(json!({"tokens": ["a", "b", "c", "d", "e"]}))
+            .await
+            .status,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        h.ping_batch_raw(json!({"tokens": ["a".repeat(live_server::http::MAX_BODY)]}))
+            .await
+            .status,
+        StatusCode::PAYLOAD_TOO_LARGE
+    );
+    assert_eq!(h.sign_in(&pete).await.status, StatusCode::CREATED);
+    assert_eq!(h.sign_in(&amy).await.status, StatusCode::CREATED);
+    // Every token answers in its order; a failed account fails its own
+    // line only.
+    let r = h.ping_batch(&[&pete, &amy, &bob]).await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.error());
+    let results = r.json()["results"].clone();
+    assert_eq!(results.as_array().unwrap().len(), 3);
+    assert_eq!(results[0], json!({"ttl": 90}));
+    assert_eq!(results[1], json!({"ttl": 90}));
+    assert_eq!(results[2]["status"], 404);
+    assert_eq!(results[2]["error"], "not_found");
+    // A token that is no token at all is an unauthorized line.
+    let r = h
+        .ping_batch_raw(json!({
+            "tokens": [
+                "not-a-token",
+                h.token(&pete.key, &pete.author, lxm::EVENTS_WRITE),
+            ]
+        }))
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.error());
+    let results = r.json()["results"].clone();
+    assert_eq!(results[0]["status"], 401);
+    assert_eq!(results[0]["error"], "unauthorized");
+    assert_eq!(results[1], json!({"ttl": 90}));
+    // The batch refreshes presence as the single ping does.
+    let r = h.ping(&pete).await;
+    assert_eq!(r.json(), json!({"ok": true, "expires_in": 90}));
+}
+
 /// A Durable Object's server runs nothing on a timer: it says when the
 /// sweep is due, and sweeps when called.
 #[tokio::test]
@@ -921,6 +985,8 @@ async fn postgres_games() {
         (Some("live"), json!([1.5, -2.0, 3.25]))
     );
     assert_eq!(g["scoreboard"][0]["score"], 1);
+    assert_eq!(g["kills"][0]["weapon"], "battle_rifle");
+    assert_eq!(g["kills"][0]["headshot"], true);
     assert_eq!(
         h.get(&format!("/v1/maps/{map}/outline")).await.json(),
         outline

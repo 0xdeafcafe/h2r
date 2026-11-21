@@ -120,10 +120,14 @@ reads only AL: non-zero with view kind 1 re-runs the same index.
   `(right - left) / (bottom - top)` from `+0x30..+0x36`, and stores the x
   scale as `1 / (t · aspect · x extent)` and the y scale as `1 / (t · y
   extent)` (extents 1 by default): x takes the aspect, so `t` is the
-  vertical half-angle's tangent. Two things the read does not settle: with
-  `[0x00485ac2]` set (and `[0x00510c50]+5`) the aspect is multiplied by a
-  constant (`0x0045dfdc`; S: an anamorphic or widescreen mode), and the
-  frustum extents can come from the caller instead of the default.
+  vertical half-angle's tangent. The Xbox widescreen path conditionally
+  multiplies the viewport aspect by the anamorphic factor at `0x0045dfdc`.
+  The subsequent test of byte `+5` at `[0x00510c50]` can change the
+  vertical tangent or frustum extents independently of this width factor.
+  The caller may also supply off-centre extents. The live guest gather
+  uses this retail lens. Its per-object setup can advance gameplay RNG,
+  so a wider host projection can expose regions for which the guest
+  supplied no object records. See [high resolution](high-resolution.md#determinism).
 - The projection `0x004b9e14` (built by `0x0002fd90`): world-to-view 4x3
   at `+0`, view-to-world at `+0x34`, four frustum bounds at `+0x68`, pixel
   scales at `+0xb8`/`+0xbc` (`0x004b9ed0` is the LOD pixel scale).
@@ -136,26 +140,36 @@ reads only AL: non-zero with view kind 1 re-runs the same index.
 At 1920 rendered lines, a sphere that spans 10 guest pixels counts as 40
 pixels for visual detail. Choosing 1.5x on the Video screen makes that 60.
 `setting_defs::lod_pixel_multiplier` multiplies the active target height
-divided by 480 by the player's LOD Distance. The guest projection already
+divided by 480 by the player's LOD Distance during offline play. Protected
+sessions use a fixed guest geometry multiplier independent of display
+resolution. See [determinism](high-resolution.md#determinism). The guest projection already
 accounts for the viewport and FOV, including split screen. Retail selects
 the original pixel size at every resolution. See the
 [Video settings](../game/settings-menu.md#video-screen).
 
-- **BSP clusters and placements.** The record reset at `0x0002cb30` installs
-  the scaled vertical projection for the two structure walks. The guest
+- **BSP clusters and placements.** The record reset at `0x0002cb30` samples
+  the LOD factor once per view. Guest and native record builders read that
+  factor from the view's guest memory, including on a render worker. The
+  reset restores any projection saved by an interrupted walk before
+  installing the scaled vertical projection for the two structure walks. The guest
   walks and the Rust `world_walk` rewrite read the same value. A placement's
   world-space radius still decides whether to apply its small-object
   factor. The adjusted pixel size controls its fade and zero-alpha cull.
   Each emitted record stores a size byte, saturated at 255.
 - **Object models.** The object walk at `0x00133720` restores the original
-  projection. The guest model chooser at `0x0004c450` and the Rust
-  `native_scene_lists/setup/sections.rs` apply the factor at the model's
-  pixel cutoffs, preserving its transition hysteresis and resident-section
-  fallback. The material record gets its own scaled size byte. For models
-  with pose-dependent sections (`hlmt + 0xc4`), section selection keeps the
-  retail pixel size. The selected sections can clear an object's dirty bit
-  and trigger a shared animation update at `0x000bd7b2`. Object lighting
-  also uses the original size because effects read its cache on the game tick.
+  projection. A model's detail tier follows its camera distance, not its
+  projected size. `0x00133790` passes the camera-to-centre length times
+  `0x004b9dcc` to `0x0004bcc0`, and the chooser at `0x0004c450` compares it
+  with the model's cutoffs at `hlmt + 0x34`, world units, farthest first.
+  The guest chooser and the Rust `native_scene_lists/setup/sections.rs`
+  divide that distance by the factor, so at 1920 lines a model 40 units
+  away picks the detail retail gives it at 10. Both preserve the transition
+  hysteresis and resident-section fallback. The material record gets its
+  own scaled size byte. For models with pose-dependent sections
+  (`hlmt + 0xc4`), section selection keeps the retail distance. The
+  selected sections can clear an object's dirty bit and trigger a shared
+  animation update at `0x000bd7b2`. Object lighting uses the original
+  projected size because effects read its cache on the game tick.
 - **Other view consumers.** Lights and shadow casters compete for a fixed
   budget by relative projected size. Billboard rotation needs both original
   projection axes. Decorator detail and particle fades compare camera

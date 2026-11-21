@@ -19,7 +19,7 @@
 //! [`Action`]: crate::app::Action
 //! [`App::dispatch`]: crate::App::dispatch
 
-use agent_proto::{Request, Response, RpcError};
+use agent_proto::{Request, Response, RpcError, memory_forensics as mem};
 use serde_json::{Value, json};
 use studio_proto::{code, method as m};
 
@@ -46,6 +46,7 @@ mod view;
 mod tests;
 
 pub use params::P;
+pub(crate) use params::block_name;
 pub use seams::Provider;
 
 /// One method: what it does, its params and result, and an example call.
@@ -103,6 +104,48 @@ const fn planned(
 /// Every method, in the order `session.methods` lists them.
 pub const METHODS: &[MethodDef] = &[
     def(
+        agent_proto::method::HOST_MEMORY,
+        "Process footprint, limits, recent samples, probes and report files",
+        r#"{"report?":"boolean"}"#,
+        r#"{"footprint_bytes":"integer","peak_bytes":"integer","soft":"integer","hard":"integer","growth_bytes_per_min":"number","samples":"[[t_ms,bytes]]","probes":"object","reports":"[path]"}"#,
+        "null",
+    ),
+    def(
+        mem::HISTORY,
+        "Read a page of the editor's memory flight recorder",
+        r#"{"since_ms?":"integer"}"#,
+        r#"{"records":"[record]","next_since_ms":"integer|null"}"#,
+        "null",
+    ),
+    def(
+        mem::HEAP,
+        "Live allocation counts and bytes per tag, and top live sampled stacks",
+        r#"{"top?":"integer (1..128, default 20)"}"#,
+        r#"{"tags":"object","stacks":"[stack]","sample_interval_bytes":"integer","dropped_samples":"integer"}"#,
+        r#"{"top":20}"#,
+    ),
+    def(
+        mem::GPU,
+        "Live graphics resource counts, tracked bytes and driver totals",
+        "{}",
+        r#"{"metric name":"integer"}"#,
+        "null",
+    ),
+    def(
+        mem::DIFF,
+        "Rank memory growth between a recorded uptime and the latest record",
+        r#"{"from_ms":"integer"}"#,
+        r#"{"from_ms":"integer","to_ms":"integer","footprint_delta":"integer","growers":"[change]"}"#,
+        r#"{"from_ms":0}"#,
+    ),
+    def(
+        mem::POSTMORTEM,
+        "Explain a dead process's recording in the memory report directory",
+        r#"{"pid?":"integer"}"#,
+        r#"{"pid":"integer","file":"path","diff":"object","reports":"[path]","report":"object|null"}"#,
+        "null",
+    ),
+    def(
         m::STATUS,
         "The editor: protocol, window or headless, the tool shown, the source and every document",
         "{}",
@@ -153,9 +196,9 @@ pub const METHODS: &[MethodDef] = &[
     ),
     def(
         m::DOC_SAVE,
-        "Save in place: a variant to its save, a playlist file to its path, a map to the file it was last saved as",
+        "Save to the document's destination, or open the package form for a source map",
         r#"{"doc?":"map|variant|playlists (default: the tool shown)"}"#,
-        r#"{"saved":"boolean","path?":"string","log":"[string]"}"#,
+        r#"{"saved":"boolean","path?":"string","bytes?":"integer","package_form?":"{name,dir}","log":"[string]"}"#,
         r#"{"doc":"map"}"#,
     ),
     def(
@@ -205,13 +248,6 @@ pub const METHODS: &[MethodDef] = &[
         "A tag as structured JSON: its blocks, references and string IDs from the layout schema, named fields where a registry knows them",
         r#"{"tag":"string (0x... id, or name[.group])","depth?":"integer (default 1)","elements?":"integer (per block, default 8)","hex?":"boolean"}"#,
         r#"{"id":"string","group":"string","name":"string|null","size":"integer","fields":"[field]"}"#,
-        r#"{"tag":"scnr"}"#,
-    ),
-    def(
-        m::TAG_REFS,
-        "Every tag reference in a tag (through its blocks), with where it sits and what it names",
-        r#"{"tag":"string","limit?":"integer (default 500)"}"#,
-        r#"[{"path":"string","group":"string","id":"string","name":"string|null"}]"#,
         r#"{"tag":"scnr"}"#,
     ),
     def(
@@ -404,6 +440,13 @@ pub const METHODS: &[MethodDef] = &[
         r#"{"playlist":0,"entry":0}"#,
     ),
     def(
+        m::UI_PALETTE,
+        "Search the Go to anything palette, or run a shown entry by its zero-based index",
+        r#"{"query":"string","run?":"integer"}"#,
+        r#"{"entries":"[{kind,label,detail}]","totals":"{map,tag,placement,command}","ran?":"integer"}"#,
+        r#"{"query":"blaster"}"#,
+    ),
+    def(
         m::UI_SCREENS,
         "Our UI screens and their states (and the disc's retail screens when a disc is open)",
         "{}",
@@ -440,10 +483,17 @@ pub const METHODS: &[MethodDef] = &[
     ),
     def(
         m::VIEW_CAMERA,
-        "Read or set the viewport camera (degrees and world units), or frame a placement",
-        r#"{"yaw?":"number","pitch?":"number","distance?":"number","target?":"[x,y,z]","focus?":{"block":"string","index":"integer"},"all?":"boolean"}"#,
-        r#"{"yaw":"number","pitch":"number","distance":"number","target":"[x,y,z]"}"#,
+        "Read or set the viewport camera (degrees and world units), set fly speed, or frame a placement",
+        r#"{"yaw?":"number","pitch?":"number","distance?":"number","target?":"[x,y,z]","focus?":{"block":"string","index":"integer"},"all?":"boolean","fly_speed?":"number (0.5..1000 units/s)"}"#,
+        r#"{"yaw":"number","pitch":"number","distance":"number","target":"[x,y,z]","fly_speed":"number"}"#,
         r#"{"yaw":45,"pitch":30,"distance":40}"#,
+    ),
+    def(
+        m::VIEW_LAYERS,
+        "Read the viewport legend, or apply a preset, layer switches and X-ray to the window and snapshots",
+        r#"{"set?":"{layer name: boolean}","preset?":"art|gameplay|collision|everything","xray?":"boolean"}"#,
+        r#"{"layers":"[{name,label,group,on,count,color}]","xray":"boolean"}"#,
+        r#"{"preset":"everything","set":{"fog":false},"xray":true}"#,
     ),
     def(
         m::VIEW_SNAPSHOT,
@@ -589,6 +639,7 @@ impl Api {
     /// Runs one call: checks its params against the method's shape, then
     /// asks the providers, then the built-in methods.
     pub fn call(&mut self, app: &mut App, method: &str, params: Value) -> Reply {
+        let _scope = mem_watch::scope("agent.request");
         let methods = self.methods();
         let Some(d) = methods.iter().find(|d| d.name == method) else {
             return Err(err(
@@ -617,6 +668,9 @@ impl Api {
             return Err(e);
         }
         check_params(d, &params)?;
+        if agent_proto::memory_serve::supports(method) {
+            return agent_proto::memory_serve::call(method, params);
+        }
         for p in &mut self.providers {
             if let Some(r) = p.call(app, method, &params) {
                 return r;
@@ -669,6 +723,7 @@ impl Api {
     fn view(&mut self, app: &mut App, method: &str, p: &P) -> Reply {
         match method {
             m::VIEW_CAMERA => view::camera(app, p),
+            m::VIEW_LAYERS => view::layers(app, p),
             m::VIEW_STATS => view::stats(app, p),
             m::VIEW_SNAPSHOT => {
                 let gpu = self
@@ -746,7 +801,8 @@ fn check_params(d: &MethodDef, params: &Value) -> Result<(), RpcError> {
     }
     if let Some((missing, _)) = keys
         .iter()
-        .find(|(k, req)| *req && obj.get(k).is_none_or(Value::is_null))
+        // Present counts as given: null is a value (a reference set to none).
+        .find(|(k, req)| *req && !obj.contains_key(k.as_str()))
     {
         return Err(err(
             code::INVALID_PARAMS,

@@ -14,7 +14,7 @@ Five overrides are installed after the generated module is registered (the last 
 |---|---|
 | `0x0018f000` | After the original map activation returns success, read map/mode/variant, team play, score/time limits, tick, and the initial roster. |
 | `0x00137fe0` | After the original tick, sample only when the game-time counter changed. Frames are emitted every second changed tick (up to 15 Hz). |
-| `0x0015ce70` | Read attacker, victim and victim position at entry, then invoke the original kill handler unchanged. The kind is told from the players: a betrayal is a teammate killed in a team game or campaign (`live_proto::game::is_betrayal`); the third argument is not a betrayal flag. Scores are reconciled at a later tick. |
+| `0x0015ce70` | Read the credited attacker, victim, victim position and packed damage code at entry. A teammate kill in a team game or campaign is a betrayal (`live_proto::game::is_betrayal`). Scores are reconciled at a later tick. |
 | `0x001389c0` | After the original end-latch function, publish the final scoreboard and a unique high-score winner (or none for a tie). |
 | `0x00104150` | Weapon barrel fire: read the weapon object datum at `[esp+4]`, count one shot for it, then invoke the original unchanged. Optional: if the entry is missing or already overridden, telemetry installs without it and frames carry no `shots`. |
 
@@ -22,6 +22,18 @@ The start, tick and end wrappers use shadow entries and runtime continuations to
 observe after the original returns. If continuation setup fails, the wrapper
 restores the guest stack and invokes the original directly. The kill wrapper
 invokes the original immediately after its read.
+
+At `guest_layout::points::PLAYER_KILLED`, the killer is the player who
+receives credit. The weapon and headshot flag come from the damage report
+that depleted the victim's body. These can have different sources. For
+example, a player can earn credit for an opponent's fall after shooting
+them. The kill then carries the shooter's slot and the source `fall`,
+with no headshot flag. The observer reads the raw stack at this opaque hook
+point, preserving the hook signature recorded in player films.
+The same read identifies a delayed projectile after a weapon switch or a
+thrower's death, and preserves the grenade type on a self-kill. A missing
+or unrecognised source leaves the damage fields absent and preserves the kill.
+[Kill hook and damage code](live-gamestate.md#7-killdeath-and-damage-hooks)
 
 Per-tick work follows only live player records and their current unit/vehicle
 objects. It does not scan all 2,048 objects or the one-MiB object pool. A full
@@ -171,8 +183,10 @@ machines"):
   with those values. Earlier recordings keep their world-pose playback.
 
 For a retail-based mod, the game start reports the retail base in
-`map` and the installed package in `map_id`. The cache header's short alias
-resolves to that package. The join uses the content ID and the report can
+`map` and the installed package in `map_id`. Both come from the VFS
+entry named by the active cache slot (`crates/extensions/game/src/map_slots.rs`).
+A DVD override reports its own content ID even when an installed package
+shares its name. The join uses the content ID and the report can
 group with games on the same base. [Map packages](../game/maps.md#package-offers)
 
 Game starts say their `kind`: `campaign` for campaign mode, with
@@ -255,10 +269,10 @@ still read every other frame.
 
 Tag names are (likely) not in guest memory: nothing in the XBE refers to
 the cache header's tag-name fields, and the loader reads the tag index and
-metadata. On map activation telemetry asks the boot for the
-map's file (`\Device\CdRom0\maps\<short name>.map` through the VFS),
-reads its tag names with `crates/formats/map`, and keeps only `bipd` and `weap`
-rows. The table is used only if the file's scenario datum equals the
+metadata. On map activation telemetry asks boot for the active cache
+slot's file through the VFS. When the slot cannot identify an unbound
+map, the boot locator uses the cache name. Telemetry reads the tag names
+with `crates/formats/map` and keeps only `bipd` and `weap` rows. The table is used only if the file's scenario datum equals the
 guest's (tag index header `[0x00547f00]+0x0c`), since both indexes hold the
 same salted datums. Without a match, or without a locator (tests, a raw
 XBE), `species` and `weapon` are left out.
@@ -477,6 +491,12 @@ The file contains one JSON object per line. Events use
 server `WireEvent` objects: they deliberately have no server positions, hash
 chain, or signatures.
 
+`ActorKilled` comes from the damage-report observer when a hit depletes
+a unit with a live actor link and no controlling player. The stream
+records its salted unit and character datums, the credited player's slot
+and the damage-source key when available. The same row goes into the
+public stats stream alongside the recording.
+
 ## Server ingest
 
 Starting `h2 play` with Live on (`--live`, `--live-server` or
@@ -489,18 +509,20 @@ telemetry.
 Plaintext credentials are accepted only for loopback URLs; remote servers must
 use HTTPS/WSS. The worker performs discovery lazily, creates each game through
 `POST /v1/games`, opens `/v1/ingest`, authenticates with a fresh
-`games.write` token, refreshes it before expiry, sends frames unsigned as the
-contract allows, and batches up to four game events into one JWS signed with
-the account key through `live-proto` (a `GameEnded` always goes in a batch of
-its own). Empty batches and messages over 16 KiB are rejected. The account
-key is never included in debug output.
+`games.write` token and refreshes it before expiry. The sink in
+`crates/live/live-telemetry/src/server.rs` sends unsigned frames and signs
+up to 16 queued events from one game into a single JWS. It splits a group
+if the signed message would exceed 16 KiB and sends `GameEnded` by itself.
+The server rejects empty event batches and messages over 16 KiB.
 
-Frames go as [packed frames](#packed-frames): one record per binary
-message, a stream per connection (a [reconnect](#reconnect) starts a new one), a keyframe
-every 150 frames (ten seconds) and deltas between. A frame the format
-cannot carry (it never should: the same checks the server makes) goes as
-the JSON `frame` message instead and the stream carries on. The offline
-JSONL capture stays JSON.
+With `ingest_frame_batch` advertised in discovery, the sink uses
+`auth_batched` and combines [packed frame records](#packed-frames) in
+order. It flushes after 500 ms, at 16 records or the 16 KiB message
+limit, before signed events or a JSON fallback frame, and at shutdown.
+The worker wakes for the flush deadline even when the game is idle.
+Older servers receive one packed record per message. Each connection
+has its own stream with a keyframe every 150 frames and deltas between.
+[Ingest wire format](live-api.md#streams-websocket)
 
 ### Reconnect
 
@@ -525,18 +547,18 @@ were never created.
   is a keyframe, which is what the server's new decoder needs. A frame
   refused with `frame: ...` (the server lost its decoder, as after a Durable
   Object wakes from hibernation) also makes the next frame a keyframe.
-- **Frames** go now or never: while there is no connection, or before the
-  game is created, they are dropped.
+- **Frames.** A dead connection drops its pending frames. The sink also
+  drops frames made during the outage or before the game is created.
 - **The outbox.** Game starts and events are kept in order in a bounded
   outbox (4096) until the server has answered for them. A `GameStarted` is
   created with `POST /v1/games` when it reaches the front; the game's events
-  wait behind it. Past the bound the oldest `PlayerKilled` or
-  `ScoreChanged` is dropped; starts, ends, joins and leaves never are.
-- **Answers.** A batch leaves the outbox only on its answer. Replies come in
-  the order the server took the messages, a batch is always answered and a
-  frame only when refused, so `appended` is the batch's, and a refusal is
-  the batch's once half a second passes with nothing after it (refusals
-  carry no id). No answer in 10 s counts as a lost connection.
+  wait behind it. Past the bound the oldest `ActorKilled`, `PlayerKilled`
+  or `ScoreChanged` is dropped; starts, ends, joins and leaves never are.
+- **Answers.** A signed batch leaves the outbox on its answer. A batched
+  socket reports frame refusals as `frame_error`, so the sink can handle
+  them while it waits for an event acknowledgement. Legacy sockets use
+  `error` for both. A refusal settles after half a second with no further
+  reply. No event answer in 10 s counts as a lost connection.
 - **Resends.** A batch is kept as signed, so a resend repeats its nonces.
   If the first copy landed and only the answer was lost, the server refuses
   the copy with `conflict` "nonce already used" and the sink counts the
@@ -551,9 +573,9 @@ were never created.
   it telemetry for the process: a `banned` refusal (HTTP, a batch reply, or
   a close naming the ban), or three auth refusals in a row (close 4401 or
   HTTP 401) with nothing accepted between.
-- **Exit.** On shutdown the sink makes one last delivery on a live
-  connection, without reconnecting; anything left is logged as not
-  delivered. The outbox is in memory only.
+- **Exit.** On shutdown the sink sends pending frames and tries to drain
+  the event outbox over the open connection. It logs unsent events. The
+  outbox is in memory only.
 
 What a duplicate does on the server, when a resend is not the same signed
 batch:
@@ -1227,7 +1249,7 @@ relying on live output, check in this order:
    driver and the gunner's on the turret, `body`/`shield` falling with
    hits and recharging, an overshield above 1.
 8. Frame models: `species` for both bipeds, `weapon` names for each
-   multiplayer weapon (the map-file lookup by short name), `aim` following
+   multiplayer weapon (the active cache slot's tag names), `aim` following
    the reticle (and not lagging it: `+0x15c` is the other candidate),
    `shots` matching trigger pulls (battle rifle 3 per burst, shotgun 1 per
    pull, plasma weapons and the sentinel beam counted at all), and the fire

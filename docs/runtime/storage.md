@@ -1,7 +1,7 @@
 # Xbox storage boundary
 
 Status: Built.
-Code: `crates/runtime/vfs/src`. Tests: `crates/runtime/vfs/tests/`, `crates/runtime/vfs/src/host_write_behind_tests.rs`.
+Code: `crates/runtime/vfs/src`, `crates/formats/host-dirs/src/lib.rs`. Tests: `crates/runtime/vfs/tests/`, `crates/runtime/vfs/src/host_write_behind_tests.rs`.
 Switch: `H2_MAP_DIR` (unset), listed in [switches.md](switches.md).
 
 `crates/runtime/vfs` owns storage names, mounted filesystems, open file objects and
@@ -9,6 +9,43 @@ filesystem status results. It is safe Rust and has no dependency on guest
 memory, `kernel`, `runtime`, or `cli`. The kernel translates guest pointers,
 ANSI object strings, handles, information classes and IO_STATUS_BLOCKs at its
 boundary. Nothing here extracts, copies or embeds the user's game files.
+
+## Host directories
+
+Every per-user path h2recomp keeps on the host is under one of three
+directories, chosen by `host_dirs::Convention`
+(`crates/formats/host-dirs/src/lib.rs`). `Convention::HOST` is `Apple` on
+Apple targets (macOS, iOS, tvOS), `Windows` on Windows and `Xdg` on every
+other target. **Code**
+
+| Directory | Apple | Windows | Xdg |
+| --- | --- | --- | --- |
+| Data (`host_dirs::data`) | `~/Library/Application Support/h2recomp` | `%LOCALAPPDATA%\h2recomp` | `$XDG_DATA_HOME/h2recomp`, else `~/.local/share/h2recomp` |
+| Cache (`host_dirs::cache`) | `~/Library/Caches/h2recomp` | `%LOCALAPPDATA%\h2recomp\cache` | `$XDG_CACHE_HOME/h2recomp`, else `~/.cache/h2recomp` |
+| Config (`host_dirs::config`) | `~/Library/Application Support/h2recomp` | `%LOCALAPPDATA%\h2recomp` | `$XDG_CONFIG_HOME/h2recomp`, else `~/.config/h2recomp` |
+
+A variable that is unset, empty or a relative path counts as unset. With
+no `HOME` (or `LOCALAPPDATA` on Windows) a directory does not resolve;
+Windows never falls back to `HOME`. Each convention is tested on every
+host (`host_dirs` tests, `every_directory_under_every_convention`).
+**Test**
+
+What lives where:
+
+- Data: the default data root `data/` (`content::store::default_data_root`,
+  `H2_DATA` names another), the movie transcodes `movies/`
+  (`movies::install::app_movies_dir`), Live accounts `live/` (`H2_LIVE_DIR` names
+  another), `coop-test/` (`h2 coop test`), and the root
+  `Config::for_title` uses.
+- Cache: the agent socket and its `inputs/` and `captures/`
+  (`agent_proto::cache_dir`), the pipeline cache
+  (`d3d::pipeline_store`), `snapshots/` (`H2_SNAPSHOTS` names another), the
+  bots' shared nav cache `bots/`, the lab socket and `lab/`, `follow/` and
+  `xtask-ledger/`.
+- Config: the lab driver's paired hosts, `lab/peers/`.
+
+A UWP host has none of these: it passes its package's LocalFolder to
+`Config::new`.
 
 ## Namespace and default drives
 
@@ -30,9 +67,10 @@ partway (for example `ObjectNameCollision` on a link that already exists), the
 links created before the failure remain. The E:/C:/X:/Y: rows below are the
 reference mapping and are not created by either call.
 
-`Config::for_title` chooses `~/Library/Application Support/h2recomp`;
-`Config::new(root, title_id)` selects an explicit root. Missing or empty HOME is
-a configuration error (`InvalidParameter`), not a guest path error. Halo 2's
+`Config::for_title` chooses the app data directory
+([Host directories](#host-directories)). `Config::new(root, title_id)`
+selects an explicit root. A data directory that does not resolve is a
+configuration error (`InvalidParameter`), not a guest path error. Halo 2's
 title ID is `0x4D530064`.
 
 | Link | Resolved device path | Host path relative to data root |
@@ -92,14 +130,28 @@ file's READONLY attribute; permission decisions belong to the VFS open and
 disposition paths. Host OS permissions still apply.
 
 `Vfs::format_device(device)` quick-formats one mounted device by exact name
-through `Backend::format` (default `MediaWriteProtected`). `HostBackend`
-empties its root and metadata directories and drops its caches. It traverses
-from directory handles opened at construction (openat/unlinkat with
-O_NOFOLLOW, via rustix), so host symlinks are removed, not followed, and a
-root or ancestor path replaced later cannot redirect it. `Vfs::device_of(name)`
-gives the mounted device a name finally resolves into. It fails with `SharingViolation`, changing nothing,
-while any file object or pending delete exists on that volume. XAPI uses it for
-the Z: and N: cache volumes (docs/runtime/xapi.md).
+through `Backend::format` (default `MediaWriteProtected`). The format fails
+with `SharingViolation` while any file object or pending delete exists on
+that volume. `HostBackend::format` swaps the data and metadata roots for
+staged empty siblings by rename. It rolls back completed renames if a
+swap fails and clears caches and pending metadata after both swaps succeed.
+Cleanup of the old trees is best effort. A tree left aside stays outside
+the guest namespace for the next mount to sweep.
+
+On Unix, the format code in `crates/runtime/vfs/src/host_format.rs` holds
+descriptors for each root and its parent from mount time. It identifies the
+mounted root by device and inode, finding it under its new name if it moves
+within that parent. If the root leaves the held parent, the format fails.
+Staging, renames, rollback, directory sync, and cleanup use the held
+descriptors. A moved ancestor therefore leaves format anchored to the
+original parent. Format syncs the parent directories before cleanup,
+which opens directories without following symlinks and unlinks the links
+themselves. Windows uses paths for swaps and rollback within the app's
+private directories and deletes old trees without following links inside
+them.
+
+`Vfs::device_of(name)` gives the mounted device a name finally resolves
+into. XAPI uses it to distinguish the [Z: and N: cache volumes](xapi.md).
 
 `DiscBackend<R: Read + Seek + Send>` uses `xiso::Xiso` to discover the game
 partition and index directory records. `DiscBackend::open(path)` uses a
@@ -129,10 +181,11 @@ it for the font files ([button-icons.md](../input/button-icons.md)).
 
 `MapOverrideBackend::new(inner, dir)` serves `maps\<name>.map` from
 `<dir>/<name>.map` when the inner backend (the disc) has that map and the
-directory holds a file of that name. The boot mounts the disc through it
-when `H2_MAP_DIR` names a directory (`crates/extensions/game/src/map_override.rs`);
-unset or empty, the disc is mounted with `with_disc`/`with_disc_rewrite`
-exactly as before. The font rewrite wraps it, so both apply.
+directory holds a file of that name. Boot mounts the startup override
+layer when `H2_MAP_DIR` names a directory. A writable full host can also
+attach an editor override to its mounted DVD on the first file reload.
+Both use the existing drive links and open-file table.
+See `crates/extensions/game/src/map_override.rs`.
 
 - Only names exactly one level under `maps` ending in `.map` are
   overridden, and only ones the disc has: a new name stays missing,
@@ -143,10 +196,27 @@ exactly as before. The font rewrite wraps it, so both apply.
   `read_at` streams from the host file (seek and read, no buffering, no
   size cap below the 4 GiB XDVDFS limit). `host_file` gives the override
   file, so telemetry and the speaker index read the edited map.
-- The choice is made once per map, on first use, and logged once
-  (`map override: maps\<name> from <path> (<n> bytes; disc <n> bytes)`).
-  The open file is kept for the session, so a later replacement is seen
-  only after a restart; a file truncated under it reads as `FileCorrupt`.
+- Listing the maps directory selects and caches the startup override just
+  like the first open. Guest reads use the selected file descriptor across
+  an atomic replacement. A name absent at selection stays on the disc. A paired
+  editor can explicitly select another file with `map.reload {file}`.
+  The first private generation reaps abandoned copies from dead processes.
+  A worker prepares the generation, checks the slot type and
+  capacity, parses the tag index and verifies the payload checksum.
+  An RPC timeout releases the pending claim immediately. The worker checks
+  for cancellation between copy and checksum chunks.
+  An open guest file prevents reservation. After publication, size,
+  bytes, host file and map identity come from the replacement. A private
+  file stays available to native readers that hold its generation across
+  another save. The live renderer waits for the guest to activate a
+  published file before it opens that generation for the world
+  (`crates/extensions/game/src/native_map.rs`). Publishing a replacement
+  or shutting down the host releases the mount's reference. The last
+  reader releases the private copy.
+  Each rebind logs one line.
+  A successful binding excludes external Live sign-in until restart.
+  A bound editor file prevents machine snapshots and film keyframes.
+  A server-map mount accepts only its startup inventory.
 - Refused with a warning, falling back to the disc's map: a symlink whose
   target leaves the directory (a symlink inside it is followed), anything
   but a regular file, two host names that differ only in case, a file
@@ -208,13 +278,10 @@ subtrees. Litter symlinks are unlinked without following them. Other invisible
 objects are left untouched and can still prevent physical removal; that
 failure preserves the directory's logical metadata.
 
-Use one VFS instance under a kernel mutex for all guest threads, and one
-owner of each data root. Do not mount the same physical directory through
-multiple independent backend objects. Host paths are resolved for each
-operation, not held as OS descriptors per guest handle. Concurrent external
-renames, replacements or hostile symlink changes are outside this contract;
-this is a private emulator data directory, not a sandbox for untrusted host
-processes. Share reservations do not coordinate separate processes/VFSes.
+Use one VFS instance under a kernel mutex for all guest threads and one
+backend per physical directory. Ordinary guest file operations resolve host
+paths for each request and rely on the mounted paths staying stable. Share
+reservations apply within a single VFS instance.
 Directory indexes refresh on a parent-directory modification timestamp change
 and are updated incrementally by VFS create/write/resize/remove. Repeated lookups do not enumerate
 the parent again. Logical allocation is scanned once and updated incrementally
@@ -333,10 +400,9 @@ Removing a file holds that lock across the unlink and drops the pending
 entry only once the file is gone, so a failed remove keeps both the
 durable record and the write's pending metadata. Creating a name drops
 any pending entry for it and holds the lock from clearing an orphaned
-record until the new entry exists. Format holds the lock throughout and
-clears pending metadata once the volume is empty; a format that fails
-partway keeps the pending metadata of the files that survive it and drops
-that of the files it removed, so no flusher recreates their records.
+record until the new entry exists. Format holds the lock across the root
+swap and clears pending metadata once the volume is empty; a failed format
+moves nothing, so every pending entry still describes its file.
 
 ### Write-behind
 
@@ -379,8 +445,8 @@ failure for a path is logged once and latched; the next operation on
 that file that waits for it (`read_at`, `set_len`, `flush`, `cleanup`,
 `remove`, `create`), or the next `write_at`, returns it, once, and does
 nothing else. Bookkeeping assumed the write landed, so usage and the
-directory indexes are rebuilt from the host at that point. Format drops
-latched errors with the files. A drop logs nothing more: the failure was
+directory indexes are rebuilt from the host at that point. A successful
+format drops latched errors with the files; a failed one keeps them. A drop logs nothing more: the failure was
 logged when it happened. Nothing below the backend sees the difference
 between a failure reported late and one reported at once, except that
 a failed write's bytes may be partly on the host.

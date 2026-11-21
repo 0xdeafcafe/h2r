@@ -44,6 +44,8 @@ use crate::skulls_mp::{
 };
 use crate::ui::{Chosen, LABEL_SLOT};
 use crate::ui_kit::ids::{self, Family};
+use crate::ui_kit::picker::{self, Pick};
+use crate::ui_kit::spec::{Describe, Press, RowKind, RowSpec, ScreenSpec};
 
 /// The record the game's variant editor edits.
 pub const EDITED_VARIANT: u32 = 0x0054_e4a0;
@@ -66,7 +68,7 @@ pub const ROW_ID: u32 = IDS.id(2);
 pub const GRAVITY_DESCRIPTION_ID: u32 = IDS.id(3);
 const GRAVITY_LABELS: u32 = 4;
 pub const TITLE: &str = "More Options";
-pub const PROMPT: &str = "\u{e10a}  \u{e10b} CHANGE  \u{e101} BACK";
+pub const PROMPT: &str = "\u{e10a}  \u{e10b} CHANGE  \u{e100} SELECT  \u{e101} BACK";
 pub const GRAVITY_DESCRIPTION: &str = "Gravity for everyone, as a share of the game's. Low Gravity halves it again. \
      Not on System Link.";
 
@@ -154,12 +156,9 @@ impl Scale {
         IDS.id(self.ids_at() + 1 + i as u32)
     }
 
-    /// Step `i`'s label: "Damage: < 150% >"; the game's own says Normal.
+    /// Step `i`'s label, such as "Damage: 150%".
     pub fn label(self, i: usize) -> String {
-        match GRAVITY_STEPS[i] {
-            100 => format!("{}: < Normal >", self.name()),
-            v => format!("{}: < {v}% >", self.name()),
-        }
+        format!("{}: {}", self.name(), percent_choice(GRAVITY_STEPS[i]))
     }
 }
 
@@ -190,12 +189,16 @@ pub fn teams_label_id(i: usize) -> u32 {
     IDS.id(TEAMS_LABELS + i as u32)
 }
 
-/// Team count step `i`'s label: "Team Count: < 4 >".
-pub fn teams_label(i: usize) -> String {
-    match TEAM_COUNTS[i] {
-        0 => "Team Count: < Map Default >".into(),
-        t => format!("Team Count: < {t} >"),
+fn team_choice(teams: i32) -> String {
+    match teams {
+        0 => "Map Default".into(),
+        t => t.to_string(),
     }
+}
+
+/// Team count step `i`'s label, such as "Team Count: 4".
+pub fn teams_label(i: usize) -> String {
+    format!("Team Count: {}", team_choice(TEAM_COUNTS[i]))
 }
 
 /// The label id of the grenades row, off or on.
@@ -205,7 +208,7 @@ pub fn grenades_label_id(on: bool) -> u32 {
 
 /// The grenades row's label.
 pub fn grenades_label(on: bool) -> String {
-    format!("Unlimited Grenades: < {} >", if on { "On" } else { "Off" })
+    format!("Unlimited Grenades: {}", if on { "On" } else { "Off" })
 }
 
 /// The label id of gravity step `i`.
@@ -213,12 +216,16 @@ pub fn gravity_label_id(i: usize) -> u32 {
     IDS.id(GRAVITY_LABELS + i as u32)
 }
 
-/// Gravity step `i`'s label: "Gravity: < 50% >"; the game's own says so.
-pub fn gravity_label(i: usize) -> String {
-    match GRAVITY_STEPS[i] {
-        100 => "Gravity: < Normal >".into(),
-        g => format!("Gravity: < {g}% >"),
+fn percent_choice(percent: u16) -> String {
+    match percent {
+        100 => "Normal".into(),
+        p => format!("{p}%"),
     }
+}
+
+/// Gravity step `i`'s label, such as "Gravity: 50%".
+pub fn gravity_label(i: usize) -> String {
+    format!("Gravity: {}", percent_choice(GRAVITY_STEPS[i]))
 }
 
 /// The step nearest `g` (the lower on a tie).
@@ -411,8 +418,13 @@ impl hooks::Feature for MoreRow {
 
 // ---- the page ----
 
-/// The More Options page: rows over the edited record's block.
+/// The More Options page shares its edit buffer with the open picker.
+#[derive(Clone, Default)]
 pub struct Page {
+    edit: Arc<Edit>,
+}
+
+struct Edit {
     /// The block as last read from the record, with our edits.
     block: Mutex<[u8; ext::LEN]>,
     /// An edit not yet written to the record.
@@ -422,7 +434,7 @@ pub struct Page {
     teams_dirty: AtomicBool,
 }
 
-impl Default for Page {
+impl Default for Edit {
     fn default() -> Self {
         Self {
             block: Mutex::new([0; ext::LEN]),
@@ -440,115 +452,169 @@ impl Page {
 
     /// The options shown (the game's own for a block the game ignores).
     pub fn ext(&self) -> Ext {
-        Ext::in_effect(&self.block.lock().unwrap_or_else(|e| e.into_inner()))
+        Ext::in_effect(&self.edit.block.lock().unwrap_or_else(|e| e.into_inner()))
     }
 
     /// The record's block, read into the page (unless an edit is pending).
     pub fn read(&self, block: [u8; ext::LEN]) {
-        if !self.dirty.load(Ordering::SeqCst) {
-            *self.block.lock().unwrap_or_else(|e| e.into_inner()) = block;
+        if !self.edit.dirty.load(Ordering::SeqCst) {
+            *self.edit.block.lock().unwrap_or_else(|e| e.into_inner()) = block;
         }
     }
 
     /// The write the record needs, once per edit.
     pub fn pending(&self) -> Option<[u8; ext::LEN]> {
-        self.dirty
+        self.edit.dirty
             .swap(false, Ordering::SeqCst)
-            .then(|| *self.block.lock().unwrap_or_else(|e| e.into_inner()))
+            .then(|| *self.edit.block.lock().unwrap_or_else(|e| e.into_inner()))
     }
 
-    /// Steps gravity up (`up`) or down a step; `wrap` goes round at the
-    /// ends (A), else it stops there (left, right). What to log.
-    pub fn step_gravity(&self, up: bool, wrap: bool) -> String {
-        self.step_percent("gravity", |e| e.gravity, |e, v| e.gravity = v, up, wrap)
+    fn choose_gravity(&self, pick: impl FnOnce(usize) -> usize) -> String {
+        self.choose_percent("gravity", |e| e.gravity, |e, v| e.gravity = v, pick)
     }
 
-    /// Steps a scale as gravity steps. What to log.
-    pub fn step_scale(&self, sc: Scale, up: bool, wrap: bool) -> String {
-        let what = sc.name().to_ascii_lowercase();
-        self.step_percent(&what, |e| sc.get(e), |e, v| sc.set(e, v), up, wrap)
+    fn choose_scale(&self, scale: Scale, pick: impl FnOnce(usize) -> usize) -> String {
+        let what = scale.name().to_ascii_lowercase();
+        self.choose_percent(&what, |e| scale.get(e), |e, v| scale.set(e, v), pick)
     }
 
-    fn step_percent(
+    fn choose_percent(
         &self,
         what: &str,
-        get: impl Fn(&Ext) -> u16,
-        set: impl Fn(&mut Ext, u16),
-        up: bool,
-        wrap: bool,
+        get: impl FnOnce(&Ext) -> u16,
+        set: impl FnOnce(&mut Ext, u16),
+        pick: impl FnOnce(usize) -> usize,
     ) -> String {
-        let mut b = self.block.lock().unwrap_or_else(|e| e.into_inner());
+        let mut b = self.edit.block.lock().unwrap_or_else(|e| e.into_inner());
         let mut e = Ext::in_effect(&b);
-        let i = nearest_step(get(&e));
-        let n = GRAVITY_STEPS.len();
-        let j = match (up, wrap) {
-            (true, true) => (i + 1) % n,
-            (false, true) => (i + n - 1) % n,
-            (true, false) => (i + 1).min(n - 1),
-            (false, false) => i.saturating_sub(1),
-        };
         let was = get(&e);
-        set(&mut e, GRAVITY_STEPS[j]);
-        if GRAVITY_STEPS[j] == was {
+        let i = pick(nearest_step(was));
+        let Some(&value) = GRAVITY_STEPS.get(i) else {
+            return format!("variant options: no {what} choice at {i}");
+        };
+        if value == was {
             return format!("variant options: {what} stays {was}%");
         }
+        set(&mut e, value);
         *b = e.encode();
-        self.dirty.store(true, Ordering::SeqCst);
-        format!("variant options: {what} {was}% -> {}%", GRAVITY_STEPS[j])
+        self.edit.dirty.store(true, Ordering::SeqCst);
+        format!("variant options: {what} {was}% -> {value}%")
     }
 
     /// The record's team count, as shown.
     pub fn teams(&self) -> i32 {
-        *self.teams.lock().unwrap_or_else(|e| e.into_inner())
+        *self.edit.teams.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// The record's team count, read into the page (unless an edit is
     /// pending).
     pub fn read_teams(&self, t: i32) {
-        if !self.teams_dirty.load(Ordering::SeqCst) {
-            *self.teams.lock().unwrap_or_else(|e| e.into_inner()) = t;
+        if !self.edit.teams_dirty.load(Ordering::SeqCst) {
+            *self.edit.teams.lock().unwrap_or_else(|e| e.into_inner()) = t;
         }
     }
 
     /// The team count write the record needs, once per edit.
     pub fn pending_teams(&self) -> Option<i32> {
-        self.teams_dirty
+        self.edit.teams_dirty
             .swap(false, Ordering::SeqCst)
             .then(|| self.teams())
     }
 
-    /// Steps the team count as gravity steps. What to log.
-    pub fn step_teams(&self, up: bool, wrap: bool) -> String {
-        let mut t = self.teams.lock().unwrap_or_else(|e| e.into_inner());
-        let i = teams_step(*t);
-        let n = TEAM_COUNTS.len();
-        let j = match (up, wrap) {
-            (true, true) => (i + 1) % n,
-            (false, true) => (i + n - 1) % n,
-            (true, false) => (i + 1).min(n - 1),
-            (false, false) => i.saturating_sub(1),
+    fn choose_teams(&self, pick: impl FnOnce(usize) -> usize) -> String {
+        let mut teams = self.edit.teams.lock().unwrap_or_else(|e| e.into_inner());
+        let was = *teams;
+        let i = pick(teams_step(was));
+        let Some(&value) = TEAM_COUNTS.get(i) else {
+            return format!("variant options: no team count choice at {i}");
         };
-        let was = *t;
-        if TEAM_COUNTS[j] == was {
+        if value == was {
             return format!("variant options: team count stays {was}");
         }
-        *t = TEAM_COUNTS[j];
-        self.teams_dirty.store(true, Ordering::SeqCst);
-        format!("variant options: team count {was} -> {}", *t)
+        *teams = value;
+        self.edit.teams_dirty.store(true, Ordering::SeqCst);
+        format!("variant options: team count {was} -> {value}")
     }
 
     /// Turns unlimited grenades on or off. What to log.
     pub fn toggle_grenades(&self) -> String {
-        let mut b = self.block.lock().unwrap_or_else(|e| e.into_inner());
+        let mut b = self.edit.block.lock().unwrap_or_else(|e| e.into_inner());
         let mut e = Ext::in_effect(&b);
         e.unlimited_grenades = !e.unlimited_grenades;
         *b = e.encode();
-        self.dirty.store(true, Ordering::SeqCst);
+        self.edit.dirty.store(true, Ordering::SeqCst);
         format!(
             "variant options: unlimited grenades {}",
             if e.unlimited_grenades { "on" } else { "off" }
         )
     }
+
+    fn row_spec(&self, row: i16) -> Option<RowSpec> {
+        let picker = || Press::Open(picker::NAME.into());
+        match row {
+            GRAVITY_ROW => {
+                let i = nearest_step(self.ext().gravity);
+                Some(percent_row("Gravity", i)
+                    .press(picker())
+                    .describe(GRAVITY_DESCRIPTION)
+                    .ids(&[gravity_label_id(i), GRAVITY_DESCRIPTION_ID]))
+            }
+            GRENADES_ROW => {
+                let on = self.ext().unlimited_grenades;
+                Some(RowSpec::value("Unlimited Grenades", &["Off", "On"], usize::from(on))
+                    .describe(GRENADES_DESCRIPTION)
+                    .ids(&[grenades_label_id(on), GRENADES_DESCRIPTION_ID]))
+            }
+            TEAMS_ROW => {
+                let choices = TEAM_COUNTS.map(team_choice);
+                let i = teams_step(self.teams());
+                Some(RowSpec::value("Team Count", &choices.each_ref().map(String::as_str), i)
+                    .press(picker())
+                    .describe(TEAMS_DESCRIPTION)
+                    .ids(&[teams_label_id(i), TEAMS_DESCRIPTION_ID]))
+            }
+            r => {
+                let scale = Scale::of_row(r)?;
+                let i = nearest_step(scale.get(&self.ext()));
+                Some(percent_row(scale.name(), i)
+                    .press(picker())
+                    .describe(scale.description())
+                    .ids(&[scale.label_id(i), scale.description_id()]))
+            }
+        }
+    }
+
+    fn open_picker(&self, row: i16) -> Chosen {
+        let Some(spec) = self.row_spec(row) else {
+            return Chosen::Nothing;
+        };
+        let RowKind::Value { values, current } = spec.kind else {
+            return Chosen::Nothing;
+        };
+        let page = self.clone();
+        let set = Arc::new(move |index| match row {
+            GRAVITY_ROW => page.choose_gravity(|_| index),
+            TEAMS_ROW => page.choose_teams(|_| index),
+            r => page.choose_scale(Scale::of_row(r).expect("scale picker row"), |_| index),
+        });
+        let pick = Pick::new(
+            &spec.label,
+            values,
+            current,
+            spec.description.as_deref().unwrap_or_default(),
+            set,
+        );
+        picker::offer(pick).map_or(Chosen::Nothing, Chosen::Open)
+    }
+}
+
+fn percent_row(label: &str, current: usize) -> RowSpec {
+    let choices = GRAVITY_STEPS.map(percent_choice);
+    RowSpec::value(label, &choices.each_ref().map(String::as_str), current)
+}
+
+fn next_step(i: usize, len: usize, up: bool) -> usize {
+    if up { (i + 1).min(len - 1) } else { i.saturating_sub(1) }
 }
 
 impl Rows for Page {
@@ -572,23 +638,22 @@ impl Rows for Page {
             },
         }
     }
+    fn content_spec(&self) -> Option<ScreenSpec> {
+        Some(self.spec())
+    }
     fn press(&self, row: i16) -> Chosen {
         match row {
-            GRAVITY_ROW => Chosen::Stepped(self.step_gravity(true, true)),
             GRENADES_ROW => Chosen::Stepped(self.toggle_grenades()),
-            TEAMS_ROW => Chosen::Stepped(self.step_teams(true, true)),
-            r => match Scale::of_row(r) {
-                Some(sc) => Chosen::Stepped(self.step_scale(sc, true, true)),
-                None => Chosen::Nothing,
-            },
+            _ => self.open_picker(row),
         }
     }
     fn sideways(&self, row: i16, right: bool) -> Option<String> {
+        let percent = |i| next_step(i, GRAVITY_STEPS.len(), right);
         match row {
-            GRAVITY_ROW => Some(self.step_gravity(right, false)),
+            GRAVITY_ROW => Some(self.choose_gravity(percent)),
             GRENADES_ROW => Some(self.toggle_grenades()),
-            TEAMS_ROW => Some(self.step_teams(right, false)),
-            r => Scale::of_row(r).map(|sc| self.step_scale(sc, right, false)),
+            TEAMS_ROW => Some(self.choose_teams(|i| next_step(i, TEAM_COUNTS.len(), right))),
+            r => Scale::of_row(r).map(|s| self.choose_scale(s, percent)),
         }
     }
     fn description(&self, row: i16) -> Option<u32> {
@@ -643,21 +708,23 @@ impl Rows for Page {
     }
 }
 
-impl crate::ui_kit::spec::Describe for Page {
-    fn spec(&self) -> crate::ui_kit::spec::ScreenSpec {
+impl Describe for Page {
+    fn spec(&self) -> ScreenSpec {
         use crate::ui_kit::input::{Glyph, Input, Prompt};
-        use crate::ui_kit::spec::{ListPlace, Press, RowSpec, ScreenSpec, ValueStyle};
+        use crate::ui_kit::spec::{ListPlace, ValueStyle};
         let mut s = ScreenSpec::new(SCREEN, TITLE);
         s.ids = vec![TITLE_ID, FOOTER_ID];
         s.list = ListPlace::from(Some(crate::skulls_menu::LIST_LAYOUT));
         s.style = ValueStyle::Inline;
         s.description = Some(crate::skulls_menu::DESCRIPTION_TEXT.into());
+        s.content.row_help = true;
         s.footer = true;
         // Six rows (gravity, grenades, teams and the three scales): the
         // list scrolls where its room is shorter.
         s.scrolls = true;
         s.prompts = vec![
             Prompt::new(&[Glyph::DpadLeft, Glyph::DpadRight], "Change"),
+            Prompt::new(&[Glyph::A], "Select"),
             Prompt::new(&[Glyph::B], "Back"),
         ];
         s.inputs = vec![
@@ -668,66 +735,13 @@ impl crate::ui_kit::spec::Describe for Page {
             Input::A,
             Input::B,
         ];
-        let choices: Vec<String> = GRAVITY_STEPS
-            .iter()
-            .map(|&g| match g {
-                100 => "Normal".into(),
-                g => format!("{g}%"),
-            })
-            .collect();
-        let choices: Vec<&str> = choices.iter().map(String::as_str).collect();
-        let i = nearest_step(self.ext().gravity);
-        s.rows.push(
-            RowSpec::value("Gravity", &choices, i)
-                .press(Press::Step)
-                .describe(GRAVITY_DESCRIPTION)
-                .ids(&[gravity_label_id(i), GRAVITY_DESCRIPTION_ID]),
-        );
-        let on = self.ext().unlimited_grenades;
-        s.rows.push(
-            RowSpec::value("Unlimited Grenades", &["Off", "On"], usize::from(on))
-                .press(Press::Step)
-                .describe(GRENADES_DESCRIPTION)
-                .ids(&[grenades_label_id(on), GRENADES_DESCRIPTION_ID]),
-        );
-        let choices: Vec<String> = TEAM_COUNTS
-            .iter()
-            .map(|&t| match t {
-                0 => "Map Default".into(),
-                t => t.to_string(),
-            })
-            .collect();
-        let choices: Vec<&str> = choices.iter().map(String::as_str).collect();
-        let i = teams_step(self.teams());
-        s.rows.push(
-            RowSpec::value("Team Count", &choices, i)
-                .press(Press::Step)
-                .describe(TEAMS_DESCRIPTION)
-                .ids(&[teams_label_id(i), TEAMS_DESCRIPTION_ID]),
-        );
-        let steps: Vec<String> = GRAVITY_STEPS
-            .iter()
-            .map(|&g| match g {
-                100 => "Normal".into(),
-                g => format!("{g}%"),
-            })
-            .collect();
-        let steps: Vec<&str> = steps.iter().map(String::as_str).collect();
-        for sc in Scale::ALL {
-            let i = nearest_step(sc.get(&self.ext()));
-            s.rows.push(
-                RowSpec::value(sc.name(), &steps, i)
-                    .press(Press::Step)
-                    .describe(sc.description())
-                    .ids(&[sc.label_id(i), sc.description_id()]),
-            );
-        }
+        s.rows = (0..ROWS as i16).filter_map(|row| self.row_spec(row)).collect();
         s
     }
 }
 
-/// The page's class: the skulls page's layout and description, no
-/// picture; left, right and A step a row.
+/// The page on the skulls list layout. A opens a value picker or
+/// toggles Unlimited Grenades.
 pub fn class(page: Arc<Page>, block: TextBlock, layout: ListLayout) -> ListClass {
     ListClass::with_rows(SCREEN_FEATURE, SCREEN, page)
         .description(block)
@@ -824,13 +838,19 @@ mod tests {
         assert_eq!(Ext::in_effect(&b).gravity, 75);
         assert_eq!(p.pending(), None, "once");
         assert_eq!(p.live_text().writes, vec![]);
-        // Left at the bottom stops; A wraps round.
+        // Left at the bottom stops. A opens a picker on the held value.
         for _ in 0..10 {
             p.sideways(0, false);
         }
         assert_eq!(p.ext().gravity, 10);
         assert!(p.sideways(0, false).unwrap().contains("stays"));
-        assert!(matches!(p.press(0), Chosen::Stepped(_)));
+        assert_eq!(p.press(GRAVITY_ROW), Chosen::Open(picker::NAME));
+        let pick = picker::current().expect("gravity picker");
+        assert_eq!(pick.title, "GRAVITY");
+        assert_eq!(pick.current, 0);
+        assert_eq!(pick.values, GRAVITY_STEPS.map(percent_choice));
+        assert_eq!(p.ext().gravity, 10, "opening the picker leaves the value");
+        assert!((pick.set)(1).contains("10% -> 25%"));
         assert_eq!(p.ext().gravity, 25);
         let w = p.live_text().writes;
         assert_eq!(w.len(), 1);
@@ -886,7 +906,7 @@ mod tests {
         assert!(
             p.describe(2)
                 .unwrap()
-                .contains("Unlimited Grenades: < Off >")
+                .contains("Unlimited Grenades: Off")
         );
     }
 
@@ -912,8 +932,13 @@ mod tests {
             p.sideways(TEAMS_ROW, true);
         }
         assert_eq!(p.teams(), 8);
-        assert!(matches!(p.press(TEAMS_ROW), Chosen::Stepped(_)));
-        assert_eq!(p.teams(), 0, "A wraps round to the map's");
+        assert_eq!(p.press(TEAMS_ROW), Chosen::Open(picker::NAME));
+        let pick = picker::current().expect("team count picker");
+        assert_eq!(pick.current, TEAM_COUNTS.len() - 1);
+        assert_eq!(pick.values, TEAM_COUNTS.map(team_choice));
+        assert_eq!(p.teams(), 8, "opening the picker leaves the value");
+        assert!((pick.set)(0).contains("8 -> 0"));
+        assert_eq!(p.pending_teams(), Some(0));
         // A stored 1 (not offered) shows as 2 and steps from there.
         let p = Page::new();
         p.read_teams(1);
@@ -923,8 +948,8 @@ mod tests {
         // Both edits go out together.
         p.toggle_grenades();
         assert_eq!(p.live_text().writes.len(), 2);
-        assert_eq!(teams_label(0), "Team Count: < Map Default >");
-        assert_eq!(teams_label(3), "Team Count: < 4 >");
+        assert_eq!(teams_label(0), "Team Count: Map Default");
+        assert_eq!(teams_label(3), "Team Count: 4");
     }
 
     /// The damage, shield and health rows step their percents in the
@@ -950,7 +975,10 @@ mod tests {
                 .unwrap()
                 .contains("health 100% -> 75%")
         );
-        assert!(matches!(p.press(Scale::Shield.row()), Chosen::Stepped(_)));
+        assert_eq!(p.press(Scale::Shield.row()), Chosen::Open(picker::NAME));
+        let pick = picker::current().expect("shield picker");
+        assert_eq!(pick.values[pick.current], "Normal");
+        assert!((pick.set)(5).contains("100% -> 125%"));
         let e = Ext::in_effect(&p.pending().unwrap());
         assert_eq!(
             (e.damage, e.shield, e.health, e.gravity),
@@ -970,12 +998,12 @@ mod tests {
                 .unwrap()
                 .contains("stays 10%")
         );
-        assert_eq!(Scale::Shield.label(4), "Shields: < Normal >");
-        assert_eq!(Scale::Damage.label(7), "Damage: < 200% >");
+        assert_eq!(Scale::Shield.label(4), "Shields: Normal");
+        assert_eq!(Scale::Damage.label(7), "Damage: 200%");
         assert!(
             p.describe(ROWS)
                 .unwrap()
-                .contains("[5] \"Health: < 10% >\"")
+                .contains("[5] \"Health: 10%\"")
         );
     }
 
@@ -988,8 +1016,8 @@ mod tests {
         assert_eq!(ids.len(), v.len());
         assert!(ids.iter().all(|i| IDS.owns(*i)));
         assert!(ids.iter().all(|i| crate::layout_glue::is_ours(*i)));
-        assert_eq!(gravity_label(2), "Gravity: < 50% >");
-        assert_eq!(gravity_label(4), "Gravity: < Normal >");
+        assert_eq!(gravity_label(2), "Gravity: 50%");
+        assert_eq!(gravity_label(4), "Gravity: Normal");
         assert!(GRAVITY_DESCRIPTION.encode_utf16().count() <= 120);
         assert!(GRENADES_DESCRIPTION.encode_utf16().count() <= 120);
         assert!(TEAMS_DESCRIPTION.encode_utf16().count() <= 120);
@@ -999,7 +1027,7 @@ mod tests {
         for g in GRAVITY_STEPS {
             assert!(ext::PERCENT.contains(&g));
         }
-        assert_eq!(grenades_label(true), "Unlimited Grenades: < On >");
+        assert_eq!(grenades_label(true), "Unlimited Grenades: On");
         for g in GRAVITY_STEPS {
             assert!(ext::GRAVITY.contains(&g));
         }

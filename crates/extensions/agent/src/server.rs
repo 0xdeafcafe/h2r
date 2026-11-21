@@ -5,8 +5,8 @@
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
-#[cfg(unix)]
-use std::os::unix::net::{UnixListener, UnixStream};
+#[cfg(any(unix, windows))]
+use agent_proto::local_socket::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -31,7 +31,7 @@ trait Stream: Read + Write + Send + Sized + 'static {
     fn write_timeout(&self, timeout: std::time::Duration) -> std::io::Result<()>;
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 impl Stream for UnixStream {
     fn try_clone(&self) -> std::io::Result<Self> {
         UnixStream::try_clone(self)
@@ -59,8 +59,8 @@ impl Stream for TcpStream {
 /// What the server listens on, for [`Server::endpoint`] and the wake-up
 /// connection at drop.
 enum Bound {
-    #[cfg(unix)]
-    Unix(PathBuf),
+    #[cfg(any(unix, windows))]
+    Unix(PathBuf, Option<thread::JoinHandle<()>>),
     Tcp(std::net::SocketAddr),
 }
 
@@ -85,15 +85,15 @@ impl Server {
         let stop = Arc::new(AtomicBool::new(false));
         let s = Arc::clone(&stop);
         let bound = match endpoint {
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             Endpoint::Unix(path) => {
-                let listener = bind_unix(path)?;
-                thread::Builder::new()
+                let listener = agent_proto::local_socket::listen(path)?;
+                let acceptor = thread::Builder::new()
                     .name("agent-accept".into())
                     .spawn(move || accept(listener.incoming(), &s, agent))?;
-                Bound::Unix(path.clone())
+                Bound::Unix(path.clone(), Some(acceptor))
             }
-            #[cfg(not(unix))]
+            #[cfg(not(any(unix, windows)))]
             Endpoint::Unix(path) => {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::Unsupported,
@@ -126,8 +126,8 @@ impl Server {
     /// asked for port 0).
     pub fn endpoint(&self) -> Endpoint {
         match &self.bound {
-            #[cfg(unix)]
-            Bound::Unix(p) => Endpoint::Unix(p.clone()),
+            #[cfg(any(unix, windows))]
+            Bound::Unix(p, _) => Endpoint::Unix(p.clone()),
             Bound::Tcp(a) => Endpoint::Tcp(a.to_string()),
         }
     }
@@ -135,39 +135,11 @@ impl Server {
     /// The Unix socket's path, or the TCP address as `tcp://HOST:PORT`.
     pub fn path(&self) -> PathBuf {
         match &self.bound {
-            #[cfg(unix)]
-            Bound::Unix(p) => p.clone(),
+            #[cfg(any(unix, windows))]
+            Bound::Unix(p, _) => p.clone(),
             Bound::Tcp(_) => PathBuf::from(self.endpoint().to_string()),
         }
     }
-}
-
-#[cfg(unix)]
-fn bind_unix(path: &Path) -> std::io::Result<UnixListener> {
-    if let Ok(meta) = std::fs::symlink_metadata(path) {
-        use std::os::unix::fs::FileTypeExt;
-        if !meta.file_type().is_socket() {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::AlreadyExists,
-                format!(
-                    "{}: a file that isn't a socket is there; not replacing it",
-                    path.display()
-                ),
-            ));
-        }
-        if UnixStream::connect(path).is_ok() {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::AddrInUse,
-                format!("{}: another game is listening there", path.display()),
-            ));
-        }
-        std::fs::remove_file(path)?;
-    }
-    let listener = UnixListener::bind(path)?;
-    // The agent can drive the game: only this user may connect.
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
-    Ok(listener)
 }
 
 fn accept<S: Stream>(
@@ -190,10 +162,12 @@ impl Drop for Server {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
         // Wake the accept loop so it sees the flag.
-        match &self.bound {
-            #[cfg(unix)]
-            Bound::Unix(p) => {
-                let _ = UnixStream::connect(p);
+        match &mut self.bound {
+            #[cfg(any(unix, windows))]
+            Bound::Unix(p, acceptor) => {
+                if UnixStream::connect(&*p).is_ok() && let Some(thread) = acceptor.take() {
+                    let _ = thread.join();
+                }
                 let _ = std::fs::remove_file(p);
             }
             Bound::Tcp(a) => {
@@ -211,11 +185,12 @@ impl Drop for Server {
 }
 
 pub(crate) enum Output {
-    Line(String),
-    Upgrade { line: String, frames: crate::live::Frames },
+    Line(crate::memory::ReplyLine),
+    Upgrade { line: crate::memory::ReplyLine, frames: crate::live::Frames },
 }
 
 fn serve<S: Stream>(stream: S, agent: Agent) {
+    let _scope = mem_watch::scope("agent.socket");
     let Ok(mut out) = stream.try_clone() else {
         return;
     };
@@ -224,6 +199,7 @@ fn serve<S: Stream>(stream: S, agent: Agent) {
     let _ = thread::Builder::new()
         .name(format!("agent-out-{conn}"))
         .spawn(move || {
+            let _scope = mem_watch::scope("agent.reply");
             for msg in rx {
                 let (line, upgrade) = match msg {
                     Output::Line(line) => (line, None),
@@ -236,6 +212,7 @@ fn serve<S: Stream>(stream: S, agent: Agent) {
                 {
                     break;
                 }
+                drop(line);
                 if let Some(frames) = upgrade {
                     if out.write_timeout(crate::live::CLOSE_INTERVAL).is_ok() {
                         let _ = frames.write_to(&mut out);
@@ -249,6 +226,7 @@ fn serve<S: Stream>(stream: S, agent: Agent) {
     let _ = thread::Builder::new()
         .name(format!("agent-in-{conn}"))
         .spawn(move || {
+            let _scope = mem_watch::scope("agent.socket");
             let mut r = BufReader::new(stream);
             let mut line = String::new();
             loop {

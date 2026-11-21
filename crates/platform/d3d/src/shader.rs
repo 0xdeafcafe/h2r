@@ -88,6 +88,8 @@ pub struct Microcode {
     words: std::sync::Arc<[u32]>,
     hash: u64,
     ends_at_first_final: bool,
+    #[cfg(feature = "gpu")]
+    position: std::sync::Arc<std::sync::OnceLock<crate::interp::epilogue::Position>>,
 }
 
 impl Microcode {
@@ -96,7 +98,15 @@ impl Microcode {
         let hash = Self::hash_words(&words);
         let ends_at_first_final = !words.is_empty() && words.len().is_multiple_of(4)
             && words.chunks_exact(4).position(|i| i[3] & 1 != 0) == Some(words.len() / 4 - 1);
-        Self { words, hash, ends_at_first_final }
+        Self { words, hash, ends_at_first_final,
+            #[cfg(feature = "gpu")]
+            position: Default::default(),
+        }
+    }
+
+    #[cfg(feature = "gpu")]
+    pub(crate) fn clip_position(&self) -> crate::interp::epilogue::Position {
+        *self.position.get_or_init(|| crate::interp::epilogue::position(&self.words))
     }
 
     /// The hash [`new`](Self::new) gives `words`: FNV-1a over the dwords
@@ -245,7 +255,7 @@ pub trait ShaderProvider: Send {
     /// Window coordinates stay the guest's; the provider shifts positions
     /// by [`gfx::renderer::window_shift`] so edges cover what they cover
     /// at 1x.
-    fn set_render_scale(&mut self, _scale: u32) {}
+    fn set_render_scale(&mut self, _scale: crate::scaled::RenderScale) {}
 
     /// E3 lighting's hard shadows (docs/graphics/e3-lighting-setting.md):
     /// from now on every shadow-map comparison is one tap

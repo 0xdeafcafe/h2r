@@ -2,11 +2,14 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use app::theater_overlay as shell;
-use boot::theater::playable_entry;
+use agent_proto::theater::CompatibilityState;
+use boot::theater::Installation;
 use boot::theater_ui::{
     Key, Theater,
     adapter::{FilmMeta, Library, Player, Source, game_type},
+    stats,
 };
+use boot::ui_kit::{preview, spec::ScreenSpec};
 
 pub(super) fn open_library(dir: &Path) -> Result<Box<dyn Library>, String> {
     let library = film::Library::open(dir).map_err(|e| e.to_string())?;
@@ -16,13 +19,19 @@ pub(super) fn open_library(dir: &Path) -> Result<Box<dyn Library>, String> {
 struct FilmLibrary(film::Library);
 
 impl Library for FilmLibrary {
-    fn list(&self, stamps: &[String]) -> Result<Vec<FilmMeta>, String> {
+    fn list(&self, installation: &Installation) -> Result<Vec<FilmMeta>, String> {
         let entries = self.0.list().map_err(|e| e.to_string())?;
         Ok(entries
             .into_iter()
             .map(|entry| {
-                let selected = stamps.iter().find(|stamp| playable_entry(&entry, stamp));
-                film_entry(entry, selected.map_or("", String::as_str))
+                let compatibility = installation.compatibility(&entry);
+                let recording = entry.path.clone();
+                let mut film = film_entry(entry);
+                if let Err(error) = stats::read_summary(&recording, &mut film) {
+                    eprintln!("theater: reading stats for {}: {error:#}", film.id);
+                }
+                film.apply_compatibility(compatibility);
+                film
             })
             .collect())
     }
@@ -42,8 +51,7 @@ impl Library for FilmLibrary {
 
 /// Both the library selector and the playback transport use the sealed header
 /// for tape length and identity and the match summary for match-only results.
-pub(crate) fn film_entry(entry: film::LibraryEntry, stamp: &str) -> FilmMeta {
-    let playable_here = playable_entry(&entry, stamp);
+pub(crate) fn film_entry(entry: film::LibraryEntry) -> FilmMeta {
     let meta = entry.meta;
     let host = meta.source == film::Source::Host;
     let mut row = FilmMeta {
@@ -54,20 +62,19 @@ pub(crate) fn film_entry(entry: film::LibraryEntry, stamp: &str) -> FilmMeta {
         variant_name: meta.variant,
         started_ms: meta.started_ms,
         length_ticks: meta.length_ticks,
-        scoreboard: meta
+        roster: meta
             .players
             .into_iter()
             .map(|p| Player {
                 name: p.name,
                 team: (p.team >= 0).then(|| p.team.to_string()),
-                score: Some(p.score),
                 ..Player::default()
             })
             .collect(),
         source: if host { Source::Host } else { Source::Local },
         version: Some(entry.version),
         image_stamp: meta.image_stamp,
-        playable_here,
+        compatibility: CompatibilityState::Playable,
         saved: entry.saved,
         live_game_id: entry.game_id.filter(|_| host),
         ticks_per_second: entry.ticks_per_second,
@@ -75,15 +82,36 @@ pub(crate) fn film_entry(entry: film::LibraryEntry, stamp: &str) -> FilmMeta {
     };
     if let Some(summary) = entry.summary {
         row.apply_summary(summary);
+        for player in std::mem::take(&mut row.scoreboard) {
+            if let Some(seat) = row.roster.iter_mut().find(|p| p.name == player.name && p.seat.is_none()) {
+                seat.seat = player.seat;
+                seat.team = player.team;
+            } else {
+                row.roster.push(Player {
+                    name: player.name,
+                    seat: player.seat,
+                    team: player.team,
+                    ..Player::default()
+                });
+            }
+        }
     }
     row
 }
 
-pub(crate) fn overlay(theater: Theater, screenshots: PathBuf) -> (shell::Overlay, Arc<Controller>) {
+pub(crate) fn overlay(theater: Theater, screenshots: PathBuf, disc: Option<&Path>) -> (shell::Overlay, Arc<Controller>) {
+    let disc = disc.and_then(|path| match preview::Disc::open(path) {
+        Ok(disc) => Some(disc),
+        Err(error) => {
+            eprintln!("theater: loading UI assets: {error:#}");
+            None
+        }
+    });
     let controller = Arc::new(Controller {
         theater,
         screenshots,
         input: Mutex::new(None),
+        pages: Mutex::new(Pages { disc, drawn: None }),
     });
     (shell::Overlay(controller.clone()), controller)
 }
@@ -92,6 +120,37 @@ pub(crate) struct Controller {
     theater: Theater,
     screenshots: PathBuf,
     input: Mutex<Option<input::InputManager>>,
+    pages: Mutex<Pages>,
+}
+
+struct Pages {
+    disc: Option<preview::Disc>,
+    drawn: Option<(ScreenSpec, Arc<shell::Page>)>,
+}
+
+impl Pages {
+    fn render(&mut self, spec: ScreenSpec, timeline: Option<[u32; 4]>) -> Option<Arc<shell::Page>> {
+        if spec.name == boot::theater_ui::OVERLAY && spec.texts.is_empty() {
+            self.drawn = None;
+            return None;
+        }
+        if let Some((old, page)) = &self.drawn && *old == spec && page.timeline == timeline {
+            return Some(page.clone());
+        }
+        let from = self.disc.as_ref().map_or(preview::From::Synthetic, preview::From::Disc);
+        let view = from.view(&spec, "playback").or_else(|error| {
+            eprintln!("theater: laying out {}: {error:#}", spec.name);
+            preview::From::Synthetic.view(&spec, "playback")
+        }).ok()?;
+        let canvas = preview::render_overlay(&view, from.source());
+        let page = Arc::new(shell::Page {
+            rgba: canvas.rgba,
+            size: (canvas.width, canvas.height),
+            timeline,
+        });
+        self.drawn = Some((spec, page.clone()));
+        Some(page)
+    }
 }
 
 impl Controller {
@@ -112,21 +171,17 @@ impl shell::Controller for Controller {
             input.sync();
         }
         self.theater.pump();
-        let mut view = shell::View {
-            playing: self.theater.playing(),
-            ..shell::View::default()
-        };
-        if let Some(overlay) = self.theater.overlay() {
-            view.players = overlay.players;
-            view.camera = overlay.top_right;
-            view.transport = overlay.bottom;
-        }
-        view
+        let page = self.theater.playback_page().and_then(|spec| {
+            self.pages.lock().unwrap_or_else(|e| e.into_inner()).render(spec, self.theater.playback_timeline())
+        });
+        shell::View { playing: self.theater.playing(), page }
     }
 
     fn key(&self, key: shell::Key, down: bool, repeat: bool) -> bool {
         let key = match key {
             shell::Key::Space => Key::Space,
+            shell::Key::Accept => Key::Accept,
+            shell::Key::Step => Key::Step,
             shell::Key::Left => Key::Left,
             shell::Key::Right => Key::Right,
             shell::Key::Up => Key::Up,
@@ -185,7 +240,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn exact_host_films_use_the_image_stamp_and_retain_the_live_id() {
+    fn exact_host_films_retain_the_live_id() {
         let meta = film::FilmMeta {
             id: "local-file-id".into(),
             map: "lockout".into(),
@@ -202,6 +257,7 @@ mod tests {
             version: 1,
             ticks_per_second: None,
             runtime_stamp: String::new(),
+            simulation_hooks: None,
             xbe_sha256: String::new(),
             guest_image: None,
             saved: false,
@@ -209,11 +265,10 @@ mod tests {
             game_id: Some("hl-game".into()),
             path: "host.h2film".into(),
         };
-        let playable = film_entry(entry.clone(), "image stamp");
-        assert!(playable.playable_here);
-        assert_eq!(playable.id, "local-file-id");
-        assert_eq!(playable.live_game_id.as_deref(), Some("hl-game"));
-        assert!(!film_entry(entry, "other image").playable_here);
+        let row = film_entry(entry);
+        assert_eq!(row.image_stamp, "image stamp");
+        assert_eq!(row.id, "local-file-id");
+        assert_eq!(row.live_game_id.as_deref(), Some("hl-game"));
     }
 
     #[test]
@@ -248,6 +303,7 @@ mod tests {
             ticks_per_second: Some(60),
             version: 3,
             runtime_stamp: "h2-sim/1".into(),
+            simulation_hooks: Some("fixture".into()),
             xbe_sha256: String::new(),
             guest_image: None,
             lease_id: None,
@@ -255,8 +311,8 @@ mod tests {
             saved: true,
             path: "local.h2film".into(),
         };
-        let row = film_entry(entry, "local image");
-        assert!(row.playable_here && row.saved);
+        let row = film_entry(entry);
+        assert!(row.saved);
         assert_eq!(row.map, "a30");
         assert_eq!(row.mode.as_deref(), Some("Co-op"));
         assert_eq!(row.game_type.as_deref(), Some("Campaign"));
@@ -265,8 +321,12 @@ mod tests {
             (row.length_ticks, row.duration_ticks, row.ticks_per_second),
             (9000, Some(3600), Some(60))
         );
-        assert_eq!(row.scoreboard[0].seat, Some(3));
-        assert_eq!(row.scoreboard[0].score, Some(i64::MAX));
-        assert_eq!(row.scoreboard[0].medals["double_kill"], 2);
+        // The film's own summary names the seats; scores and medals come
+        // from the stats file, which `stats::read_summary` applies later.
+        assert_eq!(row.roster.len(), 1);
+        assert_eq!(row.roster[0].name, "Chief");
+        assert_eq!(row.roster[0].seat, Some(3));
+        assert_eq!(row.roster[0].team.as_deref(), Some("Blue"));
+        assert!(row.scoreboard.is_empty());
     }
 }

@@ -71,6 +71,14 @@ crate::globals! { GLOBALS;
     /// dist-client; not the game mode's numbering, see `0x68da8`), the update number at `+0x28`, the out-of-sync latch
     /// byte at `+0x2c`.
     SIM_GLOBALS @ 0x004c_f77c; "docs/live/live-coop.md";
+    /// Pointer to the shared simulation entity and event type registry.
+    SIM_REPLICATION_REGISTRY @ 0x004c_f784; "docs/game/notes/creature-entity.md";
+    /// Generic object entity definition vtable. The probe inherits its object adapter.
+    SIM_OBJECT_ENTITY_VTABLE @ 0x0045_2030; "docs/game/notes/creature-entity.md";
+    /// Network time override enable byte, with the override milliseconds at +4.
+    SIM_NETWORK_TIME_OVERRIDE @ 0x0051_0548; "docs/game/notes/creature-entity.md";
+    /// GetTickCount's import cell pointing at the kernel's millisecond counter.
+    KERNEL_TICK_COUNT_IMPORT @ 0x0041_1690; "docs/runtime/xapi.md";
     /// The simulation's "ended" latch byte.
     SIM_ENDED @ 0x004c_f772; "docs/live/live-coop.md";
     /// The network life cycle's ready byte.
@@ -98,6 +106,8 @@ crate::globals! { GLOBALS;
     UI_ATTRACT_TIMEOUT @ 0x0047_01bc; "docs/audio/bink-hle.md";
     /// The menu music controller's current and requested modes (+0 and +4).
     UI_MUSIC_STATE @ 0x0054_e7e0; "docs/audio/bink-hle.md";
+    /// Pending cache copy flag read by the movie wrapper's busy check.
+    CACHE_COPY_PENDING @ 0x0055_bf28; "docs/audio/bink-hle.md";
     /// Pointer to the active looping-sound datum array (0x21a0d6).
     LOOPING_SOUNDS @ 0x0050_2110; "docs/runtime/agent-api.md";
     /// Pointer to the sound instance datum array (0x1254c3).
@@ -113,6 +123,11 @@ crate::globals! { GLOBALS;
     /// the pickup (`0x1df3e0`) and our campaign start; every reader gates
     /// on a campaign.
     SKULLS @ 0x004f_55dc; "docs/game/skulls.md";
+    /// Pointer to the AI globals: byte `+0` is "AI on" (the script's `ai`
+    /// switch), byte `+1` is set once AI is initialised for the map.
+    /// `ai_update` (`0x1c83c0`) needs both, and never runs on a
+    /// distributed client.
+    AI_GLOBALS @ 0x004f_55d0; "docs/game/notes/ai-networking.md";
     /// Pointer to the actor datum array (`0x888`-byte actors).
     ACTORS @ 0x004f_55f0; "docs/live/live-gamestate.md";
     /// likely: the four local player slots, one per controller, `0xc70`

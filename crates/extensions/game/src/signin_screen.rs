@@ -455,6 +455,10 @@ impl SigninRows {
 }
 
 impl Rows for SigninRows {
+    fn content_spec(&self) -> Option<crate::ui_kit::spec::ScreenSpec> {
+        Some(crate::ui_kit::spec::Describe::spec(self))
+    }
+
     fn title(&self) -> u32 {
         TITLE_ID
     }
@@ -809,6 +813,10 @@ impl crate::ui_kit::page::Page for SigninPage {
                 Effect::Redraw
             }
         }
+    }
+
+    fn handled(effect: &Effect) -> bool {
+        *effect != Effect::None
     }
 
     fn spec(&self, state: &SigninState) -> ScreenSpec {

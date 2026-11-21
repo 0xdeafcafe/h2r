@@ -492,7 +492,10 @@ persisted through wgpu. What is done instead:
   (a target switch, a readback, a present): by then a worker has usually
   finished, or is part way. A pipeline no worker has started is built by
   the encoding thread itself, so nothing waits on a queue. Draw-time misses
-  go ahead of prewarming.
+  go ahead of prewarming, and so does a prewarmed pipeline a draw needs
+  before a worker has reached it: `Renderer::record` queues it again at
+  draw priority, once (`Compiler::submit` queues nothing for a value
+  already waiting at that priority or built).
 - **Never skipped.** A draw is never dropped or deferred while its pipeline
   compiles: draws feed render-to-texture, readbacks and visibility counts
   the game reads back, so a missing draw could change the guest's own
@@ -503,17 +506,69 @@ persisted through wgpu. What is done instead:
 - **Persisted keys, prewarmed.** `d3d::pipeline_store` appends every
   pipeline a draw needed to a JSON-lines file: the NV2A program
   (`ProgramKey`: microcode or the pre-transformed program, the combiner
-  program without constants, the code-changing options) and the
-  `PipelineKey`. On startup `Nv2aShaders` translates the recorded programs
-  on a thread of its own, registers them as frames go by
-  (`ShaderProvider::maintain`, at every present) and queues their
-  pipelines on the workers. A draw that needs a program the prewarm thread
-  is still on waits for that one (`prewarm wait`) instead of translating
-  it twice. The file is `H2_PIPELINE_CACHE` (a path, or `off`), by default
-  `~/Library/Caches/h2recomp/pipelines-v2.jsonl` (`$XDG_CACHE_HOME/h2recomp/`
-  on Linux, `%LOCALAPPDATA%\h2recomp\cache\` on Windows). It derives from the game's shaders, so it is never committed.
-  Several processes may append to it at once; torn or unparsable lines are
-  skipped. `h2 play` and `h2 run` (`H2_BOOT_GFX`) use it.
+  program without constants, the code-changing options), the maps each
+  program drew on, and the `PipelineKey`.
+  - *Versioned.* Every line carries the record version
+    (`nv2a::STORE_VERSION`, from `PROGRAM_KEY_VERSION` in `nv2a.rs` and
+    `gfx::pipeline::KEY_VERSION`). Only the running build's version loads.
+    Lines of an older version, lines with no version and torn lines are
+    dead; a newer build's lines are kept for it. A key whose meaning
+    changes while it still parses bumps the version, so old records are
+    never translated for nothing.
+  - *Compacted.* When dead lines (stale, torn, duplicate, or naming a
+    program never recorded) reach `COMPACT_DEAD_LINES` or a quarter of
+    the file, `PipelineStore::open` writes the live lines to a temporary
+    file and renames it over the cache. Several processes may append at
+    once: one appending during a rewrite can lose that append, but no
+    reader sees a partial file. A file with no record in it is never
+    rewritten.
+  - *Scoped by map.* The game publishes each loaded map
+    (`pipeline_store::set_map`, from the `loaded_map` feature), and a
+    program's first draw on a map records a sighting. At startup
+    `Nv2aShaders` prewarms the programs seen before any map loaded and on
+    the main menu (`MENU_MAP`); when a map loads it prewarms that map's.
+    Each scope takes the most recently seen programs first, at most
+    `PREWARM_PROGRAMS` (1024; `H2_PREWARM_PROGRAMS`, `0` or `off` for
+    none), and a new scope replaces what is left of the last, on the
+    prewarm thread and on the compile workers: `Renderer::drop_prewarms`
+    takes the renderer's queued prewarms back (`Compiler::prewarm` tags
+    each with its renderer, so another renderer's stay). The menu a boot
+    publishes after the startup scope went out is not a new scope; the
+    menu after a level is (`next_scope` in `nv2a.rs`). A scope's programs
+    that are registered already have their recorded pipelines queued
+    again, so a dropped prewarm is redone when its map comes back. A
+    dropped pipeline stays in the cache unbuilt: a draw that needs it
+    queues it at draw priority. Left queued, a level's thousands of
+    guessed pipelines compiled ahead of the menu's, and the menu's draws
+    built theirs on the drawing thread meanwhile
+    ([pipeline-cache.md](notes/pipeline-cache.md#2026-11-21-the-main-menu-after-a-level-at-5-to-12-fps)).
+  - *Paced.* One thread translates the batch and makes each program's
+    module, at most `PREWARM_BACKLOG` (16) ahead of registration. Each
+    present (`ShaderProvider::maintain`) registers at most
+    `PREWARM_PER_PRESENT` (8) of them and queues their pipelines on the
+    workers. A draw that needs a program the thread has not delivered
+    translates it on the spot and the thread skips it; nothing waits on
+    the thread. Registered programs keep their module, which later
+    pipelines of the same program are built from, and their recorded
+    pipeline keys, which a later scope queues again.
+    The thread's and the translator's allocations are tagged
+    `render.prewarm` and `render.translate` in mem-watch.
+
+  The file is `H2_PIPELINE_CACHE` (a path, or `off`), by default
+  `pipelines-v2.jsonl` in the cache directory
+  ([storage.md](../runtime/storage.md#host-directories)). It derives from
+  the game's shaders, so it is never committed. `h2 play` and `h2 run`
+  (`H2_BOOT_GFX`) use it. Why it is bounded: [pipeline-cache.md](notes/pipeline-cache.md).
+
+The native world, object, light, fog, water and decorator programs use
+`crates/rewrites/native-render/src/pipelines.rs`. Their utility workers
+compile observed target formats, vertex layouts and render states against
+the current map's shader modules. The archive appends `.native-v1` to the
+configured cache filename and stores shader fingerprints and descriptors.
+The GPU loader reads it on a worker and starts matching variants when
+their programs load. A newly requested variant takes priority over those
+prewarms. D3D draws remain eligible until a later guest swap observes a
+validated pipeline. Disabling the disk cache still permits async compiles.
 
 In frame stats (`H2_FRAME_STATS`) the `pipelines` counter counts the
 pipelines the game thread had to wait for or build at encode time (the

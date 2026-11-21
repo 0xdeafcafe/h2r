@@ -24,7 +24,9 @@ use crate::arms::{Ammo, Gun, Role};
 use crate::brain::Vec3;
 use crate::mind::Skill;
 
+pub mod prime;
 pub mod spots;
+pub use prime::{PRIMED_WORD, PrimeRun, Primed};
 pub use spots::{Bounce, SPOTS, bounces};
 
 /// The Clankers page's Glitches setting (`clankers.glitches`).
@@ -578,6 +580,12 @@ pub struct BounceOut {
 /// off on the way down, and again from a nudged place until it launches
 /// or the tries run out. Not every landing bounces
 /// (docs/game/superbounce.md: 5 of 20), so it is tried again.
+///
+/// Only a primed landing bounces: the level pair word at -3, which a
+/// forced crouch leaves ([`prime`]). The run does not prime; the caller
+/// does it first (`crate::bounce_route`) and keeps the crouch button up
+/// until the run is over. A retry needs no new priming: the word stays at
+/// -3 until the pair is rebuilt.
 #[derive(Clone, Debug)]
 pub struct BounceRun {
     pub spot: Bounce,
