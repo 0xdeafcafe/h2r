@@ -486,6 +486,7 @@ fn watch_signals(_: app::Closer) -> Arc<AtomicBool> {
     Arc::new(AtomicBool::new(false))
 }
 
+mod forge;
 pub(crate) mod theater;
 
 pub fn run(args: Vec<String>) -> Result<()> {
@@ -788,6 +789,9 @@ pub(crate) fn run_with_theater(
         .then(debug_menu::Shared::default);
     config.debug_menu = debug_menu.clone();
     let perf_overlay = config.watermark.as_ref().map(app::Watermark::switch);
+    if boot::forge_glue::requested().map_err(anyhow::Error::msg)? {
+        config.forge = Some(forge::overlay(&opts.disc).context("loading Forge UI assets")?);
+    }
     let theater = open_library.map(|open| (boot::theater_ui::Theater::default(), open));
     if let Some((controller, _)) = &theater {
         let (overlay, _) = theater::overlay(

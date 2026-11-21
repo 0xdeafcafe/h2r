@@ -1,10 +1,11 @@
 # Forge: the features
 
-Status: Design. The document and edit log are in `forge-doc`. The
-in-game tools are planned.
-Code: `crates/formats/forge-doc` defines the portable edits. The planned
-crates are `forge` for the tools and Forge step, `forge-build` for the
-kit and recipes, and `asset-import` for converting glTF and FBX.
+Status: The local monitor, Objects tool and document files have an
+implementation. Live move, delete and respawn require live-mirror M8.
+The other tools and body recipes are design.
+Code: `crates/extensions/forge` owns the local session and tools.
+`crates/formats/forge-doc` defines the portable edits and
+`crates/tools/forge-build` materialises them.
 Switch: the `forge` feature of `H2_FEATURES`, as [forge-design.md](forge-design.md).
 
 What each Forge feature is made of, its options and the engine points
@@ -56,14 +57,15 @@ test); the sound gestalt merge a transplanted voice needs
 
 ## Objects
 
-The palette is the map's own tag index by group (weapons, vehicles,
+The local palette lists named tags in the map's scenario palettes. The
+full palette design uses the map's own tag index by group (weapons, vehicles,
 equipment, scenery, crates, machines, controls), then the kit's
 block-out set, then **My imports**. Labels are tag base names read from
-the user's map at run time. Placing is: aim, a ghost follows the ray
-cast against collision ([collision-queries.md](../engine/collision-queries.md)),
-A confirms, and the host makes the object and adds the placement. Per
-object: respawn time, team, game types, placed at start, physics
-(fixed, normal), snap (off, grid, surface, 15 degree turns).
+the user's map at run time. The local monitor aims against the active
+BSP's collision. Its gizmo shows the position and rotation until A
+confirms placement. Properties changes the heading or the rotation step.
+The wider properties design includes respawn time, team, game types,
+placed at start, physics (fixed or normal) and additional snapping modes.
 
 Budget: the object pool, each block's limit, the tag headroom and a
 Forge cost per item (**Design**; the limits are the engine's, the cost

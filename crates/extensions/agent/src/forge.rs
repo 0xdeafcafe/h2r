@@ -13,6 +13,8 @@ use crate::sim::{SimHandle, hashes::HashLog};
 use crate::{Access, Agent, GameCtx};
 
 mod capacity;
+pub use capacity::object_pool;
+pub mod local;
 
 const AI_GLOBALS: u32 = 0x004f_55d0;
 // The low and high physical arena cursors (docs/editor/scenario-editor.md §6).

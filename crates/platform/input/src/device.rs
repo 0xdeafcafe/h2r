@@ -174,7 +174,7 @@ pub struct InputManager {
     changes_ins: u32,
     changes_rem: u32,
     completions: Vec<Completion>,
-    gate: Option<Box<dyn PadGate>>,
+    gates: Vec<Box<dyn PadGate>>,
     /// The host pads as of the last sync ([`Self::host_report`]).
     report: HostReportHandle,
     lightbars: Lightbars,
@@ -191,7 +191,7 @@ impl InputManager {
             changes_ins: 0,
             changes_rem: 0,
             completions: Vec::new(),
-            gate: None,
+            gates: Vec::new(),
             report: HostReportHandle::default(),
             lightbars: Lightbars::default(),
         })
@@ -216,7 +216,13 @@ impl InputManager {
 
     /// Puts `gate` between the backends and the ports (replacing any).
     pub fn set_gate(&mut self, gate: Box<dyn PadGate>) {
-        self.gate = Some(gate);
+        self.gates.clear();
+        self.add_gate(gate);
+    }
+
+    /// Appends a filter after the installed gates. Earlier gates retain priority.
+    pub fn add_gate(&mut self, gate: Box<dyn PadGate>) {
+        self.gates.push(gate);
     }
 
     /// The host pads as the backends and the gate saw them at each sync
@@ -265,12 +271,14 @@ impl InputManager {
                 }
             })
             .collect();
-        if let Some(gate) = &mut self.gate {
+        if !self.gates.is_empty() {
             let mut gated: Vec<GatedPad> = order
                 .iter()
                 .filter_map(|k| seen.remove(k).map(|pad| GatedPad { key: *k, pad }))
                 .collect();
-            gate.filter(&mut gated);
+            for gate in &mut self.gates {
+                gate.filter(&mut gated);
+            }
             seen.extend(gated.into_iter().map(|g| (g.key, g.pad)));
         }
 

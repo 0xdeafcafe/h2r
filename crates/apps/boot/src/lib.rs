@@ -959,6 +959,13 @@ fn run_configured(
             mixer.set_distance_reverb(features.switches().distance_reverb());
         }
     }
+    let local_forge =
+        features.switches().feature("forge", false) && !host_light && !replaying && !lockstep_on;
+    if local_forge
+        && let Some(input) = &mut host.input
+    {
+        input.add_gate(Box::new(forge_controls::gate()));
+    }
     // `input.host` (`h2 agent hostpads`) reads the manager's report after
     // the manager moves into XAPI.
     let host_pads = host.input.as_ref().map(input::InputManager::host_report);
@@ -1049,6 +1056,9 @@ fn run_configured(
     )?;
     let mut harness = late.harness;
     let mut agent = late.agent;
+    if local_forge {
+        forge_glue::install(&mut features, agent.as_ref(), k.vfs(), &opts.data_root)?;
+    }
     if let Some(a) = &mut agent {
         a.configure_takeover(
             &mut features,

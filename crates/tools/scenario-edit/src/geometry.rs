@@ -166,11 +166,7 @@ pub fn scenario_bsps<R: Read + Seek>(map: &mut Map<R>) -> crate::Result<Vec<TagI
         .ok_or(crate::Error::Invalid("no scenario payload"))?;
     let bytes = map.read_tag_bytes(scenario.id)?;
     let view = TagView::new(&bytes, location.address);
-    Ok(view
-        .block(view.at(0, 0x218)?, 0x210, 0x44)?
-        .into_iter()
-        .map(|b| TagId(u32::from_le_bytes([b[0x14], b[0x15], b[0x16], b[0x17]])))
-        .collect())
+    Ok(tags::structure::scenario_bsp_ids(&view)?)
 }
 
 /// One drawn part of a BSP section, placed in the world: its own copy of

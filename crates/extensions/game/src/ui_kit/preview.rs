@@ -1590,7 +1590,17 @@ impl From<'_> {
         state: &str,
         metrics: &dyn Metrics,
     ) -> Result<View> {
-        let mut view = if let Some(d) = &s.dialog {
+        let mut view = if let Some(hud) = &s.hud {
+            View {
+                screen: s.name.clone(),
+                state: state.into(),
+                backing: Backing::None,
+                widgets: hud.widgets.clone(),
+                focus: None,
+                list: None,
+                underlay: None,
+            }
+        } else if let Some(d) = &s.dialog {
             let mut geometry = match self {
                 From::Disc(disc) => disc.dialog_geometry_for(d.base)?,
                 From::Synthetic => DialogGeometry::fallback_for(d.base),

@@ -1,4 +1,4 @@
-//! Wire types for Forge's runtime measurements.
+//! Wire types for Forge's runtime measurements and local session methods.
 
 use std::collections::BTreeMap;
 
@@ -8,7 +8,28 @@ use crate::sim::{SessionView, hashes::HashesReply};
 
 pub mod method {
     pub const CAPACITY: &str = "forge.capacity";
+    pub const STATUS: &str = "forge.status";
+    pub const DOC: &str = "forge.doc";
+    pub const LOG: &str = "forge.log";
+    pub const INPUT: &str = "forge.input";
+    pub const PROPOSE: &str = "forge.propose";
     pub const PROBE: &str = "forge.probe";
+}
+
+/// One monitor input. Directions are normalized axes in camera space.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(untagged, deny_unknown_fields)]
+pub enum InputParams {
+    Button {
+        action: String,
+    },
+    Analog {
+        movement: Option<[f32; 3]>,
+        look: Option<[f32; 2]>,
+        roll: Option<f32>,
+        #[serde(default)]
+        rotating: bool,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

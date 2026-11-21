@@ -32,6 +32,7 @@ pub mod backend;
 pub mod bindings;
 pub mod device;
 pub mod dualsense;
+pub mod forge;
 pub mod gamepad;
 pub mod haptics;
 pub mod host;

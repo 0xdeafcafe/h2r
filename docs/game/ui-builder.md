@@ -63,12 +63,21 @@ Page   ── state + input ──▶ step() ──▶ (new state, Effect)    pu
 | `List` | the Controls tag (`KitScreen`) | header layout 0 | settings-style lists over the game shell |
 | `Dialog` | a retail dialog's tag (`DialogBase`): its backing art and header layout, our rows in its list, a body text or none ("The Dialog kind") | the base's: layout 1 (Quick Options) or 2 (large: title 498 wide, panel 536) | settings pages over the lobby (Clankers, Halo 1 options), questions, errors |
 | `CodeEntry` | `Dialog` large, plus N cells: the Live passcode dialog's box art (screen 21's `password` blocks) with a digit text over each, the cursor cell tinted bright | layout 2 | the sign-in code |
+| `Hud` | text and art widgets over the running game (`ScreenSpec::hud`) | supplied by the tool | the Forge monitor strip, reticle and controls |
 | keyboard handoff | any kind; `Effect::Keyboard(field)` opens the game's keyboard (`signin_keyboard`), the typed text comes back as an `Input::Typed` | — | gamertag, invite |
 
 **Backing.** A `Dialog` or `CodeEntry` is `Over` (drawn over the screen
 beneath, as the game's own dialogs are) or `Own` (it carries the game shell
 backing, `framing_center` from screen 5, under its panel, so the screen
 beneath doesn't matter).
+
+The Forge monitor HUD has no list or focus. The compositor draws its
+widgets on a transparent surface with the preview renderer and disc fonts.
+Forge dialogs carry the HUD as their `underlay` and put a dark backing
+inside the retail panel so rows stay legible over bright scenery. A nested picker keeps the
+parent dialog beneath it with the selected row in focus. The preview pages
+are `forge.hud`, `forge.palette`, `forge.properties` and `forge.menu`
+(`crates/extensions/game/src/ui_kit/forge.rs`).
 
 **Sign-in is a modal.** The sign-in
 prompt and its new-account gamertag and invite pages are `Over` dialogs,

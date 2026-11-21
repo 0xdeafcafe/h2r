@@ -20,6 +20,7 @@
 pub mod audio_out;
 #[cfg(any(target_vendor = "apple", windows))]
 pub mod embedded;
+pub mod forge_overlay;
 pub mod fps;
 pub mod frame;
 pub mod input_pump;
@@ -134,6 +135,7 @@ pub struct AppConfig {
     /// press reaches the guest.
     pub debug_menu: Option<debug_menu::Shared>,
     pub theater: Option<theater_overlay::Overlay>,
+    pub forge: Option<forge_overlay::Overlay>,
 }
 
 impl Default for AppConfig {
@@ -167,6 +169,7 @@ impl Default for AppConfig {
             watermark: None,
             debug_menu: None,
             theater: None,
+            forge: None,
         }
     }
 }

@@ -1,15 +1,15 @@
 # Forge: the design
 
-Status: The document, edit log, local materialiser and runtime probes are
-implemented. In-game editing and session modes are planned.
-Code: `crates/formats/forge-doc` defines the document, ops and validation.
-`crates/tools/forge-build` materialises it. The Forge probes live in
-`crates/extensions/agent`. The planned crates are `crates/extensions/forge`
-for the session, tools and session edit log, and `crates/tools/asset-import`
-for glTF and FBX conversion. Screens belong in
-`crates/extensions/game/src/ui_kit/`. The implemented crates have tests on
-invented data.
-Switch: the `forge` feature of `H2_FEATURES` (off until slice F4 is seen in the game); it joins [switches.md](../runtime/switches.md) with the code.
+Status: Local Objects editing uses the Forge document, materialiser, runtime
+probes and monitor UI. Live object transforms, delete and respawn depend on
+live-mirror M8. Networked editing is planned.
+Code: `crates/formats/forge-doc` defines the document and log.
+`crates/tools/forge-build` materialises it. `crates/extensions/forge`
+owns the local session and Objects tool. The host is
+`crates/extensions/game/src/forge_glue.rs`, the pages are in
+`crates/extensions/game/src/ui_kit/forge.rs`, and the game calls and API
+are in `crates/extensions/agent/src/forge`.
+Switch: `forge`, listed in [switches.md](../runtime/switches.md).
 
 Forge is an in-game editor for multiplayer maps: fly as a monitor, place
 and link things, shape the level, save the result and play it with
@@ -388,7 +388,14 @@ to the kit's checks. A filter or choice shows its value in the second
 column and A opens a picker over it; no row steps sideways through
 values.
 
-**Getting in.** **FORGE** on the main menu, below **THEATER**
+**Local session (F4).** With Forge enabled, start a local multiplayer
+game on an original map. Press D-pad Up or Tab to enter the monitor.
+The play window draws the HUD and dialogs over the game. Start or
+Escape at the top opens Save, Save as and Load. A new draft takes the
+base map's name or the first free numbered filename. Save as creates
+another draft.
+
+**Forge lobby (F14 design).** **FORGE** on the main menu, below **THEATER**
 (`layout_glue.rs`). It opens the Forge lobby: the pregame lobby's skin
 with rows **Map**, **Forge map** (New, or a saved or downloaded one),
 **Players can edit** and **Start**. Published maps also appear under
@@ -465,6 +472,7 @@ every Forge test, lane and later tool drives a session through it.
 |---|---|---|
 | `forge.status` | read | session, role, log head, pending Rebuild count, budget |
 | `forge.doc` | read | the document as of the log head |
+| `forge.input` | act | one monitor action or one tick of camera input through the local controls |
 | `forge.propose {op, was?}` | act | one proposal; the entry or the refusal |
 | `forge.log {since?}` | read | entries after a position |
 | `forge.rebuild` | act | the host's rebuild; `{map_id, seconds}` |
@@ -539,7 +547,7 @@ and the game. Sizes as under Features.
 | **F1** | `forge-doc`: the document, placement and tag-field ops, canonical form and hash, validator with caps, fold of a log into a document, inverse ops | M | nothing | golden vectors for the hash; fold then unfold through inverses gives the start; every validator rule has a refusing case; a seeded fuzz of 10,000 random documents never panics; applying placement ops to a `scenario_edit::fixture` equals the same edits made through `Session` |
 | **F2** | `forge-build`: document to package, the `[[forge]]` layer, `MapId` format 2, `h2 forge build` and `check`, the kit's spare entries | M | F1 | two builds of one document are byte-equal; an empty document on a kit map differs from its base only in the kit's blocks; a stale base hash is a named error; `MapId` golden vectors, format 1 ids unchanged; the package resolves through `content::resolve` to the built map |
 | **F3** | Probes: `forge.capacity`, `forge.probe` (replication of a host-made object by group, the synchronous protocol on a multiplayer map, the AI flag in multiplayer, kit entries inert) | S | nothing | each method answers over a fake game with a test; the coordinator's runs go in `docs/game/notes/forge-probes.md` |
-| **F4** | The session, local: the camera body, the `Hud` kind, Objects tool, palette and properties dialogs, save and load | L | F1, F2, live-mirror M8 | `Page` tables for each dialog; the `Hud` view passes the kit's checks in every state; over a fake game, place, move and delete produce the expected proposals and engine calls, undo restores, a saved file folds to the same document |
+| **F4** | Local session (live move, delete and restore require M8): the camera body, the `Hud` kind, Objects tool, palette and properties dialogs, save and load | L | F1, F2, live-mirror M8 | `Page` tables for each dialog; the `Hud` view passes the kit's checks in every state; over a fake game, place, move and delete produce the expected proposals and engine calls, undo restores, a saved file folds to the same document |
 | **F5** | Synchronous mode: the log on the network, roles, holding, join in progress, the film record | M | F3's results, F4 | two fake peers and a host converge to one head under reordered proposals; a second hold is refused; a late joiner's document equals the host's; a film with entries replays to the same `ForgeExt` hash |
 | **F6** | Teleporters and retail links: the Links tool, channels, device groups | M | F4 | a linked pair writes two flags with one identifier on a fixture; the bots' generator finds the link; unlink restores the bytes |
 | **F7** | `SimExt` and `ForgeExt`: volumes, the graph, emitters | L | F4; sim-rewrite's blob hooks | the blob round-trips and enters the hash; a graph fixture's outputs per tick match a table; one, two and eight workers give the same bits; an emitter fires on the scheduled ticks and stops at its limit |
@@ -594,6 +602,23 @@ alongside the block counts for comparison with the base map. The
 [measurement procedure](notes/forge-probes.md) covers all four probes.
 The replication and AI questions can also be read with `net.replication`
 and `world.ai` ([ai-networking.md](ai-networking.md), probes P1 and P2).
+
+**F4 in detail.** `forge_map` reads the active cache, validates the
+base map and constructs the palette, placement counts, object budget,
+BSP bounds and collision queries from that map. The Objects tool edits
+Forge placements. In the native renderer a three-axis gizmo shows the proposed
+frame on the aim ray. Moving a held object changes that frame until the
+player confirms. A drop that changes position and rotation is one undo
+step. Properties exposes heading and the rotation increment.
+
+`forge::Session` validates edits against the loaded map and folds their
+entries with F1. Its `World` interface resolves each placement to a
+local object handle. The game adapter commits the candidate document
+and log after the engine answers. Missing M8 operations return the name
+of the required method. Loading a draft validates its base and builder
+and opens its folded document at a fresh log head. The local session ends
+on a map change. Multiplayer proposals, roles and film entries belong
+to F5.
 
 ## Decisions
 

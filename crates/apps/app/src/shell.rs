@@ -14,6 +14,7 @@ use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{CursorGrabMode, Fullscreen, Window, WindowId};
 
 use crate::audio_out::{AudioOut, FALLBACK_RATE};
+use crate::forge_overlay;
 use crate::fps::DisplaySchedule;
 use crate::frame::{self, Compositor, FrameSource, FrameStats};
 use crate::keymap::{self, Shortcut};
@@ -92,6 +93,9 @@ struct Shell {
     init_error: Option<anyhow::Error>,
     captured: bool,
     super_held: bool,
+    shift_held: bool,
+    forge_modal: bool,
+    restore_forge_capture: bool,
     ime_composing: bool,
     ime_allowed: bool,
     user_paused: bool,
@@ -130,6 +134,9 @@ pub(crate) fn run(config: AppConfig, guest: GuestFn) -> anyhow::Result<ExitRepor
         init_error: None,
         captured: false,
         super_held: false,
+        shift_held: false,
+        forge_modal: false,
+        restore_forge_capture: false,
         ime_composing: false,
         ime_allowed: false,
         user_paused: false,
@@ -287,7 +294,8 @@ impl Shell {
             overlay: OverlayRenderer::new(&ctx.device),
             watermark: WatermarkRenderer::new(&ctx.device),
             menu: MenuRenderer::new(&ctx.device),
-            theater: self.config.theater.as_ref().map(|_| theater_overlay::Renderer::new(&ctx.device)),
+            theater: (self.config.theater.is_some() || self.config.forge.is_some())
+                .then(|| theater_overlay::Renderer::new(&ctx.device)),
             backend: format!("{:?}", info.backend).to_lowercase(),
             ctx,
             surface,
@@ -301,6 +309,18 @@ impl Shell {
     }
 
     fn redraw(&mut self, size: Option<PhysicalSize<u32>>) {
+        let forge_frame = self.config.forge.as_ref().and_then(|forge| forge.0.frame());
+        let modal = forge_frame.as_ref().is_some_and(|frame| frame.modal);
+        if modal && !self.forge_modal {
+            self.restore_forge_capture = self.captured;
+            self.capture(false);
+        } else if !modal && self.forge_modal {
+            if forge_frame.is_some() && self.restore_forge_capture {
+                self.capture(true);
+            }
+            self.restore_forge_capture = false;
+        }
+        self.forge_modal = modal;
         let Some(g) = self.gpu.as_mut() else { return };
         // AppKit can call drawRect before delivering Resized. A queued
         // resize event can also refer to an older size than the live view.
@@ -387,10 +407,14 @@ impl Shell {
             }
         }
         if let Some(renderer) = &mut g.theater {
+            let model = forge_frame.map(|frame| theater_overlay::View {
+                playing: false,
+                page: Some(frame.page),
+            });
             renderer.draw(
                 &g.ctx,
                 &mut enc,
-                &self.theater_view,
+                model.as_ref().unwrap_or(&self.theater_view),
                 &view,
                 g.surface.config.format,
                 size,
@@ -620,6 +644,10 @@ impl ApplicationHandler<UserEvent> for Shell {
                     theater.0.release_keys();
                 }
                 if !focused {
+                    self.restore_forge_capture = false;
+                    if let Some(forge) = &self.config.forge {
+                        forge.0.release_keys();
+                    }
                     if let Some(kb) = &self.keyboard {
                         kb.release_all();
                     }
@@ -631,7 +659,12 @@ impl ApplicationHandler<UserEvent> for Shell {
             }
             WindowEvent::ModifiersChanged(m) => {
                 self.super_held = m.state().super_key();
+                self.shift_held = m.state().shift_key();
                 if self.super_held {
+                    self.restore_forge_capture = false;
+                    if let Some(forge) = &self.config.forge {
+                        forge.0.release_keys();
+                    }
                     self.capture(false);
                 }
             }
@@ -665,6 +698,19 @@ impl ApplicationHandler<UserEvent> for Shell {
                     return;
                 };
                 let down = event.state == ElementState::Pressed;
+                if !self.config.debug_menu.as_ref().is_some_and(debug_menu::Shared::is_open)
+                    && let Some(forge) = &self.config.forge
+                    && let Some(key) = forge_overlay::key(code, self.super_held, self.shift_held)
+                    && forge.0.key(key, down, event.repeat)
+                {
+                    if !down && let (Some(kb), Some(name)) = (&self.keyboard, keymap::key_name(code)) {
+                        kb.key_up(name);
+                    }
+                    if let Some(g) = &self.gpu {
+                        g.window.request_redraw();
+                    }
+                    return;
+                }
                 if self.super_held {
                     if down && !event.repeat {
                         match keymap::shortcut(code) {
@@ -763,7 +809,9 @@ impl ApplicationHandler<UserEvent> for Shell {
                     }
                 }
             }
-            WindowEvent::CursorMoved { position, .. } if self.config.theater.is_some() => {
+            WindowEvent::CursorMoved { position, .. }
+                if self.config.theater.is_some() || self.config.forge.is_some() =>
+            {
                 self.theater_cursor = Some((position.x, position.y));
             }
             WindowEvent::CursorLeft { .. } => self.theater_cursor = None,
@@ -778,6 +826,31 @@ impl ApplicationHandler<UserEvent> for Shell {
             }
             WindowEvent::MouseInput { state, button, .. } => {
                 let down = state == ElementState::Pressed;
+                if !self.super_held
+                    && !self.config.debug_menu.as_ref().is_some_and(debug_menu::Shared::is_open)
+                    && let Some(forge) = &self.config.forge
+                {
+                    use winit::event::MouseButton as B;
+                    if self.forge_modal {
+                        if down && button == B::Left
+                            && let Some((x, y)) = self.theater_cursor
+                            && let Some((x, y)) = self.gpu.as_ref()
+                                .and_then(|gpu| gpu.theater.as_ref())
+                                .and_then(|renderer| renderer.page_point(x, y))
+                        {
+                            forge.0.click(x, y);
+                        }
+                        return;
+                    }
+                    if matches!(button, B::Left | B::Right)
+                        && forge.0.mouse_button(button == B::Left, down)
+                    {
+                        if down && self.config.mouse_capture {
+                            self.capture(true);
+                        }
+                        return;
+                    }
+                }
                 if self.theater_view.playing
                     && !self.super_held
                     && let Some(theater) = &self.config.theater
@@ -828,6 +901,11 @@ impl ApplicationHandler<UserEvent> for Shell {
         if let DeviceEvent::MouseMotion { delta } = event
             && self.captured
         {
+            if let Some(forge) = &self.config.forge
+                && forge.0.mouse_look(delta.0 as f32, delta.1 as f32)
+            {
+                return;
+            }
             if self.theater_view.playing && let Some(theater) = &self.config.theater {
                 theater.0.mouse_look(delta.0, delta.1);
             } else if let Some(kb) = &self.keyboard {

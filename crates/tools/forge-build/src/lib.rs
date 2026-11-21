@@ -27,11 +27,7 @@ pub use kit::Reservation;
 
 /// Versions pinned by an F2 document. Geometry-changing generators have no
 /// writes in F2. Changing the construction or kit rules bumps forge_build.
-pub const VERSIONS: BuilderVersions = BuilderVersions {
-    forge_build: 1,
-    pathfind: 1,
-    bots: 5,
-};
+pub const VERSIONS: BuilderVersions = BuilderVersions::CURRENT;
 
 /// A generate recipe that makes the F2 session kit part of document content.
 pub const KIT_RECIPE: &str = "forge_kit";

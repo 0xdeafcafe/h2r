@@ -17,6 +17,15 @@ use crate::{Error, Result};
 use map::{FourCC, Map, TagId};
 use std::io::{Read, Seek};
 
+/// The scenario's BSPs in active-index order (docs/formats/structure-bsp.md).
+pub fn scenario_bsp_ids(scenario: &TagView<'_>) -> Result<Vec<TagId>> {
+    Ok(scenario
+        .block(scenario.bytes(), 0x210, 0x44)?
+        .into_iter()
+        .map(|entry| TagId(u32_at(entry, 0x14)))
+        .collect())
+}
+
 /// Section struct of clusters and instanced definitions (0x44 bytes).
 pub const STRUCTURE_SECTION: SectionLayout = SectionLayout {
     section_size: 0x44,
