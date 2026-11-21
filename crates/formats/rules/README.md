@@ -77,6 +77,20 @@ The Firefight director script is built outside this crate, by
 entries, `place_squad_at`, the zone reads, `now`, `random` and
 `on actor_assist` are what it calls and answers.
 
+## Language intelligence
+
+`ide` is the editor tooling over source text, in LSP positions (0-based
+line, UTF-16 character) and LSP field names: `diagnostics`, `complete`,
+`hover`, `signature_help`, `definition`, `references`,
+`semantic_tokens` (legend `ide::LEGEND`), `symbols` and `format`. It
+reads broken source: `lex::lex_tolerant` skips a bad character and
+`parse::parse_recovering` skips a bad statement or declaration and ends
+an open block at the next declaration, returning every error. A model
+pass (`ide/model.rs`) gives each declaration its span and type and
+resolves each name with the compiler's scoping. `h2 rules lsp` and
+Live's `/v1/rules/ide` serve it
+([Tooling](../../../docs/game/rules-engine.md#security-and-usability)).
+
 ## Tests
 
 `cargo test -p rules` runs the following. The design page's Slayer,
@@ -90,7 +104,11 @@ blob hash is stable, a budget overflow stops at the same op on every
 run, and `pick` is deterministic. `tests/firefight_entries.rs` covers
 `now`, `random`, the queued `ff_*` entries and `on actor_assist`. Grants are checked against the
 declaration, the palette and the budget, and `RulesExt` round-trips and
-resumes. All inputs are invented.
+resumes. The recovering lexer and parser report every error and agree
+with the strict ones on clean source. `ide`'s tests drive each feature on
+a sample script, and every built-in and example has no errors or
+warnings, formats idempotently to the same blob and is covered by
+semantic tokens. All inputs are invented.
 
 ## Docs
 

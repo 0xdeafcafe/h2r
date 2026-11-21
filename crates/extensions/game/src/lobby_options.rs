@@ -5,6 +5,13 @@
 //! Its formatter (0x25092c) fills text widgets 6 through 10, one per
 //! option. Keep all lines in those five slots. The next text widget
 //! sits below the Quick Options box, next to the footer.
+//!
+//! The lobby's mode (`crate::lobby_mode`) puts its lines first (the Forge
+//! map; Firefight's wave set, difficulty and starting lives). The party
+//! lobby's mode strip (`crate::lobby_tabs::strip::panel`) has its own hook
+//! on the same point, inside this one, so it is drawn with this feature
+//! off too. The strip's own text widgets are left out of the count of the
+//! screen's texts here.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -99,6 +106,15 @@ fn option_ids(bots: Want, halo1: bool, skulls: usize) -> Vec<u32> {
     ids
 }
 
+/// The panel's lines of ours: the lobby mode's first, then the options',
+/// as many as the five slots hold.
+fn panel(mode: Vec<u32>, options: Vec<u32>) -> Vec<u32> {
+    let mut ids = mode;
+    ids.extend(options);
+    ids.truncate(PANEL_ROWS);
+    ids
+}
+
 /// The first slot for our lines. Retain the native rows through the last
 /// visible one when they fit, and otherwise take the bottom slots.
 fn first_extra(retail_end: usize, extra: usize) -> usize {
@@ -150,7 +166,11 @@ fn widgets(m: &dyn GuestMemory, screen: u32) -> Option<[u32; PANEL_ROWS]> {
         if child == 0 {
             break;
         }
-        if m.u32(child.checked_add(WIDGET_KIND)?).ok()? == TEXT_KIND {
+        let ours = || {
+            m.u16(child.wrapping_add(WIDGET_INDEX))
+                .is_ok_and(crate::lobby_tabs::strip::is_ours)
+        };
+        if m.u32(child.checked_add(WIDGET_KIND)?).ok()? == TEXT_KIND && !ours() {
             if let Some(slot) = text.checked_sub(FIRST_OPTION_TEXT) {
                 if m.u32(child).ok()? != TEXT_VTABLE
                     || m.u16(child.checked_add(WIDGET_INDEX)?).ok()? as usize
@@ -268,7 +288,8 @@ impl LobbyOptions {
             return Ok(Ret::new(retail.eax, 4));
         }
 
-        let ids = self.extra_options(&cx);
+        let mode = cx.write(|m| crate::lobby_mode::panel_ids(m, &self.store))?;
+        let ids = panel(mode, self.extra_options(&cx));
         if ids.is_empty() {
             return Ok(Ret::new(retail.eax, 4));
         }
@@ -286,9 +307,12 @@ impl LobbyOptions {
     }
 }
 
+/// The feature's id (`lobby-options=off` switches it).
+pub const FEATURE: &str = "lobby-options";
+
 impl hooks::Feature for LobbyOptions {
     fn manifest(&self) -> Manifest {
-        Manifest::new("lobby-options", "Extra options in the custom game lobby")
+        Manifest::new(FEATURE, "Extra options in the custom game lobby")
             .doc("docs/game/ui-builder.md")
     }
 
@@ -377,6 +401,49 @@ mod tests {
             store.set(def.key, Value::Int(HALO1)).unwrap();
             assert!(halo1_active(Some(Category::Halo1), &store), "{}", def.key);
             store.set(def.key, Value::Int(HALO2)).unwrap();
+        }
+    }
+
+    /// The lobby mode's lines come first and, with the options' lines, never
+    /// pass the five slots; every line is the panel's own form and fits its
+    /// width.
+    #[test]
+    fn mode_lines_come_first_and_fit_the_panel() {
+        use crate::lobby_mode::{MAX_PANEL_LINES, panel_lines};
+        use crate::lobby_start::Mode;
+        let mode: Vec<u32> = (0..MAX_PANEL_LINES as u32).map(|i| 0x100 + i).collect();
+        let options = option_ids(
+            Want {
+                count: 4,
+                ..Want::OFF
+            },
+            true,
+            MAX_SKULLS,
+        );
+        let all = panel(mode.clone(), options.clone());
+        assert_eq!(all.len(), PANEL_ROWS);
+        assert_eq!(all[..mode.len()], mode[..], "the mode's lines first");
+        assert_eq!(panel(Vec::new(), options.clone()), options, "Multiplayer: as before");
+        let ff = crate::firefight::options::Options {
+            lives: Some(30),
+            wave_set: 2,
+            difficulty: ::firefight::Difficulty::Legendary,
+            ..Default::default()
+        };
+        let lines = [
+            panel_lines(Mode::Forge, None, None),
+            panel_lines(Mode::Forge, Some("Castle Keep"), None),
+            panel_lines(Mode::Firefight, None, Some(Ok(ff))),
+        ];
+        // Twelve units a character is a generous bound for the panel's
+        // font; the box is 317 units wide.
+        let width = (PANEL.right - PANEL.left) as usize;
+        for line in lines.iter().flatten() {
+            assert!(line.chars().count() * 12 <= width, "{line:?} is too wide");
+            assert!(!line.contains(':') && !line.contains("  "), "{line:?}");
+        }
+        for start in 0..=PANEL_ROWS {
+            assert!(first_extra(start, all.len()) + all.len() <= PANEL_ROWS);
         }
     }
 

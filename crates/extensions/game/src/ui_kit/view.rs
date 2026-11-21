@@ -88,7 +88,8 @@ pub struct Opener {
 }
 
 impl Opener {
-    /// The main menu with Theater installed and the Xbox Live row selected.
+    /// The main menu with Theater installed (after System Link, above
+    /// Settings) and the Xbox Live row selected.
     pub const MAIN_MENU: Opener = Opener {
         name: "main-menu",
         tag: r"ui\screens\game_shell\main_menu_screen\main_menu",
@@ -96,9 +97,9 @@ impl Opener {
         rows: &[
             "Campaign",
             "Xbox Live",
-            crate::theater_ui::menu::LABEL,
             "Split Screen",
             "System Link",
+            crate::theater_ui::menu::LABEL,
             "Settings",
         ],
         focus: 1,
@@ -142,6 +143,20 @@ impl Opener {
             "Switch To: Matchmaking",
         ],
         focus: 4,
+        ..Opener::GAME_SETUP
+    };
+    /// [`Opener::GAME_SETUP`] as a Forge lobby lists it, on the Forge Map
+    /// row: what the Forge Map picker opens over (`crate::lobby_mode`).
+    pub const GAME_SETUP_FORGE: Opener = Opener {
+        rows: &[
+            "Change Map...",
+            crate::lobby_mode::FORGE_MAP_LABEL,
+            "Change Rules...",
+            "Quick Options...",
+            "Switch To: Co-Op Game",
+            "Switch To: Matchmaking",
+        ],
+        focus: 1,
         ..Opener::GAME_SETUP
     };
     /// The Xbox Live menu (screen `0xba`) on Quickmatch, its rows as the

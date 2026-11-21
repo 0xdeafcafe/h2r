@@ -599,10 +599,6 @@ const BOOT_SITES: &[(&str, &str)] = &[
         "forge_glue::install",
         "Case::full, and `-forge` in the full-case plan test",
     ),
-    (
-        "lobby_start::install_queue",
-        "not covered: the game queue a lobby starts from; needs the agent",
-    ),
     ("AgentGlue::configure_takeover", "Case::takeover"),
     (
         "dsound_glue::add_loop_agent_method",

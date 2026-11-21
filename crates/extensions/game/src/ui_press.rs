@@ -24,6 +24,11 @@ enum Action {
     /// A on the Live players screen opens the Live menu (0x25286d). In
     /// other modes the same press can join or start a game.
     OpenLiveMenu,
+    /// White in the pregame lobby: the mode strip's previous tab
+    /// (`crate::lobby_tabs::input`).
+    TabPrev,
+    /// Black in the pregame lobby: the strip's next tab.
+    TabNext,
 }
 
 impl Action {
@@ -36,6 +41,8 @@ impl Action {
             Self::Choose | Self::OpenLiveMenu => "a",
             Self::Back => "b",
             Self::Friends => "y",
+            Self::TabPrev => "white",
+            Self::TabNext => "black",
         }
     }
 }
@@ -83,6 +90,11 @@ impl Press {
                 code::GONE,
                 "expected the Xbox Live players screen",
             ));
+        }
+        if matches!(self.action, Action::TabPrev | Action::TabNext)
+            && owner.id != crate::lobby_options::SCREEN
+        {
+            return Err(RpcError::new(code::GONE, "expected the pregame lobby"));
         }
         Ok(())
     }
@@ -229,6 +241,22 @@ mod tests {
         assert!(p.check(&t, Some(4)).is_err());
         assert!(p.check(&t, None).is_err());
         assert!(p.check(&t, Some(MODE_LIVE)).is_ok());
+    }
+
+    #[test]
+    fn the_tab_actions_are_the_bumpers_and_need_the_lobby() {
+        let mut p: Press = serde_json::from_value(json!({
+            "action": "tab_next", "target": "synthetic-menu"
+        }))
+        .unwrap();
+        assert_eq!(p.action.button(), "black");
+        let mut t = owner(None);
+        assert_eq!(p.check(&t, None).unwrap_err().code, code::GONE);
+        t.id = crate::lobby_options::SCREEN;
+        assert!(p.check(&t, None).is_ok(), "no row: the strip has no focus");
+        p.action = Action::TabPrev;
+        assert_eq!(p.action.button(), "white");
+        assert!(p.check(&t, None).is_ok());
     }
 
     #[test]

@@ -21,7 +21,8 @@
 //! [`ROW_ACTION`] to every list that has Change Map, `before` hooks draw its
 //! text and take its press, which opens the page on the dialog's own
 //! stack. Its hooks sit after the Clankers row's and Clankermatch's, so the
-//! plan orders them.
+//! plan orders them. The lobby's mode (`crate::lobby_mode`) moves it under
+//! Change Map in a Firefight lobby and hides it in a Forge one.
 //!
 //! **Not here.** The choices are the host's. A client of a distributed
 //! session learns them from the session data (FF9), not from its own page.
@@ -510,9 +511,7 @@ pub fn install(registry: &mut hooks::Registry, store: &Arc<Store>) -> anyhow::Re
     registry
         .add(&SetupRow { page: screen })
         .map_err(|e| anyhow::anyhow!("firefight row: {e}"))?;
-    // The main menu's FIREFIGHT lobby: it reads the page's choices and
-    // starts a game on a kit map.
-    super::lobby::install(registry, Arc::from(source(store)))
+    Ok(())
 }
 
 #[cfg(test)]

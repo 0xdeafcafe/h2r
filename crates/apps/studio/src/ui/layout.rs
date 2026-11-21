@@ -146,6 +146,22 @@ pub(super) fn has_dock_node(id: u32) -> bool {
     !unsafe { sys::igDockBuilderGetNode(id) }.is_null()
 }
 
+/// Whether the keyed window was built this frame and drew: not behind
+/// another tab of its dock node, nor hidden while its node appears.
+pub(super) fn shows(key: &WindowKey) -> bool {
+    let name = window_name(key);
+    // SAFETY: called on the UI thread with an active Dear ImGui context;
+    // the window pointer is only read here.
+    unsafe {
+        let ctx = sys::igGetCurrentContext();
+        if ctx.is_null() {
+            return false;
+        }
+        let w = sys::igFindWindowByName(name.as_ptr());
+        !w.is_null() && (*w).LastFrameActive == (*ctx).FrameCount && !(*w).Hidden
+    }
+}
+
 fn window_name(key: &WindowKey) -> CString {
     CString::new(format!("###{}", key.stable_id())).expect("an ImGui window name")
 }

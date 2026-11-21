@@ -56,7 +56,9 @@ pub use pad::{AtTick, Now, PAD_BUTTONS, PadParams, PadStep};
 pub use render::{
     CaptureCamera, CaptureLighting, CaptureReply, CaptureSource, CompareParams, CompareReply, DepthRecord,
     DrawLayout, DrawRecord, FrameCaptureParams, FrameParams, FrameRecord, FrameReply, FrameTotals,
-    LayoutTexture, OpRecord, ParityParams, ParityReply, PassRecord, RenderStats, SceneCarried,
+    LayoutTexture, OpRecord, ParityParams, ParityReply, PassRecord, RenderStats, ResidualArm,
+    ResidualCaller, ResidualParams, ResidualProducer, ResidualReply, ResidualTotals,
+    ResidualUnattributed, ResidualWindow, SceneCarried,
     SceneEntries, SceneEntryRecord, SceneLateRecord, SceneOpCounts, SceneParams, ScenePostRecord,
     SceneReply, SceneCarriedCensus, SceneCensusActivation, SceneCensusCheckpoint, SceneReadUse,
     SceneSideTarget, SceneTargetUse, SceneUses, SceneViewRecord, SnapRecord, SpawnViewParams,
@@ -241,6 +243,9 @@ pub mod method {
     pub const UI_CAMPAIGN: &str = "ui.campaign";
     /// The pregame session's player slots, peer indices, names and connection bars.
     pub const UI_LOBBY_PLAYERS: &str = "ui.lobby.players";
+    /// The pregame lobby's mode strip: `{place, leader, selected, tabs:
+    /// [{tab, label, state, reason}], notice}` (docs/game/party-lobby.md).
+    pub const UI_LOBBY_TABS: &str = "ui.lobby.tabs";
     pub const UI_SCREEN: &str = "ui.screen";
     /// Active filters of the Live Custom Game Browser.
     pub const UI_BROWSER_FILTERS: &str = "ui.browser.filters";
@@ -281,6 +286,9 @@ pub mod method {
     pub const RENDER_CAPTURE_CLIP_STATUS: &str = "render.capture_clip.status";
     /// The last sealed `FrameScene`'s counts ([`crate::SceneParams`]).
     pub const RENDER_SCENE: &str = "render.scene";
+    /// What the guest front-end still asks `d3d` to do, by caller and by
+    /// producer, over a window of presents ([`crate::ResidualParams`]).
+    pub const RENDER_RESIDUAL: &str = "render.residual";
     /// Arm the in-process two-path comparison for one frame
     /// ([`crate::ParityParams`]); a diagnostic, deleted with the D3D
     /// backend.

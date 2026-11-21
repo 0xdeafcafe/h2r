@@ -1,4 +1,8 @@
-//! Replace the expired countdown while the host is bringing up its phantoms.
+//! The custom lobby's status line: the expired countdown while the host is
+//! bringing up its phantoms, why a Forge lobby's Start Game is refused
+//! (`crate::lobby_mode::start_refused`), and the mode strip's reason line
+//! (`crate::lobby_tabs::notice_now`): why a bumper press did not move, for
+//! four seconds.
 
 use bots::{lobby, phantom};
 use engine::GuestMemory;
@@ -7,7 +11,11 @@ use phantom::session::{self, at::*};
 
 const SETUP_TEXT: &str = "Setting up bots…";
 const SETTING_UP_BOTS: u32 = crate::ui_kit::ids::family("lobby status").id(0);
-pub(crate) const STRINGS: [(u32, &str); 1] = [(SETTING_UP_BOTS, SETUP_TEXT)];
+const FORGE_REFUSED: u32 = crate::ui_kit::ids::family("lobby status").id(1);
+pub(crate) const STRINGS: [(u32, &str); 2] = [
+    (SETTING_UP_BOTS, SETUP_TEXT),
+    (FORGE_REFUSED, crate::lobby_mode::REMOTE_REFUSAL),
+];
 
 /// The status widget write at the end of `0x24ffc9`. These IDs carry
 /// the countdown token (U+E413). The other status IDs describe separate
@@ -20,7 +28,20 @@ fn countdown_text(seconds: i32, setting_up: bool) -> Option<u32> {
 }
 
 pub(crate) fn custom_game_text(m: &dyn GuestMemory, return_pc: u32, id: u32) -> Option<u32> {
-    if return_pc != CUSTOM_STATUS_RETURN || !CUSTOM_COUNTDOWN_IDS.contains(&id) {
+    if return_pc != CUSTOM_STATUS_RETURN {
+        return None;
+    }
+    // A bumper press toward a tab that is off, or a switch refused: its
+    // reason, over every other text, while it shows.
+    if let Some(reason) = crate::lobby_tabs::notice_now() {
+        return Some(reason.id());
+    }
+    // A Forge lobby with a member on another console: its start state is
+    // held off ready, and the line says why in place of retail's text.
+    if crate::lobby_mode::start_refused(m) {
+        return Some(FORGE_REFUSED);
+    }
+    if !CUSTOM_COUNTDOWN_IDS.contains(&id) {
         return None;
     }
     let s = session::owned_session(m)?;

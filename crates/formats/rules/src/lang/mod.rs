@@ -6,7 +6,7 @@
 
 pub mod ast;
 pub mod lex;
-mod lower;
+pub(crate) mod lower;
 pub mod parse;
 
 use crate::ir::Ir;

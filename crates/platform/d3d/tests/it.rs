@@ -47,6 +47,8 @@ mod passes;
 mod recheck_fixes;
 #[path = "registration.rs"]
 mod registration;
+#[path = "residual_tally.rs"]
+mod residual_tally;
 #[path = "render_scale.rs"]
 mod render_scale;
 #[cfg(feature = "gpu")]

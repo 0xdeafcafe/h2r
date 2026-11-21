@@ -695,11 +695,12 @@ fn tag_node(
             fields::PanelRoot::Inspector(trail),
             &mut tag_field_marks(ui, issues, resolution),
         );
-        if let Some(h) = &panel.hovered
-            && let Some(doc) = h.description.as_deref().filter(|s| !s.is_empty())
+        // The selected row's description (a click on a row selects it).
+        if let Some(r) = panel.selected_row(doc, id)
+            && let Some(text) = r.field.doc.as_deref().filter(|s| !s.is_empty())
         {
-            ui.text(&h.name);
-            ui.text_wrapped(doc);
+            ui.text(&r.label);
+            ui.text_wrapped(text);
         }
     }
     for child in node.children.iter().filter(|child| child.shortcut.is_some()) {

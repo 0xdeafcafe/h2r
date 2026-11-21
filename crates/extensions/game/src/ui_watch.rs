@@ -50,7 +50,8 @@
 //! System Link browser, 4 joins; B or Back with one player goes back.
 //! The retail main menu rows (`0x230827`, the chosen row kept at `0x510a14`):
 //! 0 Campaign, 1 Xbox Live, 2 Split Screen, 3 System Link, 4 Settings.
-//! With Theater installed, it occupies row 2 and shifts the remaining rows.
+//! With Theater installed, it occupies row 4 and Settings moves to row 5;
+//! the rows an agent presses keep their retail places.
 
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -477,13 +478,6 @@ pub fn screen_json(
     let mut v = top.map_or_else(|| serde_json::json!({ "screen": null }), |t| t.json());
     v["dialog"] = dialog.map_or(serde_json::Value::Null, |d| d.json());
     v["age_ms"] = serde_json::json!(age.as_millis() as u64);
-    let rows = crate::theater_ui::menu::rows();
-    if rows.theater {
-        v["main_menu_theater"] = serde_json::Value::Bool(true);
-    }
-    if rows.any() {
-        v["main_menu_rows"] = serde_json::json!(rows.len());
-    }
     v
 }
 
@@ -498,15 +492,7 @@ fn note(r: Read, findings: ObservedFindings, fonts: Option<Arc<Fonts>>) -> Optio
         findings,
         fonts,
     });
-    let mut line = r.line();
-    let rows = crate::theater_ui::menu::rows();
-    if r.top.is_some_and(|top| top.id == JOIN_SCREEN)
-        && rows.any()
-        && let Some(at) = line.rfind(", mode ")
-    {
-        let marker = agent_proto::sim::menu::main_menu_marker(rows.theater, rows.len() as u32);
-        line.insert_str(at, &marker);
-    }
+    let line = r.line();
     let mut said = SAID.lock().unwrap_or_else(|e| e.into_inner());
     if *said == line {
         return None;

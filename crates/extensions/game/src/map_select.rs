@@ -4,6 +4,13 @@
 //! sorted. A on a map makes it the lobby's map and goes back to Game Setup;
 //! B on the maps comes back to the categories, B there to Game Setup.
 //!
+//! **By the lobby's mode** ([`crate::lobby_start::Mode`]): a Forge lobby's
+//! Change Map opens the original maps (Halo 2) and a Firefight lobby's the
+//! **Firefight** category, the installed maps that carry the kit
+//! ([`crate::lobby_start::is_kit_map`]), straight to their maps; B there
+//! goes back to Game Setup. The Firefight category is never one of a
+//! Multiplayer lobby's ([`Catalogue::categories`]).
+//!
 //! - The model is pure: [`category_of`] reads a map's category from the
 //!   path the game loads it from, [`Catalogue`] groups and sorts.
 //! - In the game both steps are the retail Select Map dialog (screen
@@ -57,9 +64,9 @@ pub const MAX_MAPS: usize = 50;
 pub const IDS: Family = ids::family("map select");
 const TITLE: u32 = 0;
 const CATEGORY_LABELS: u32 = 1;
-const CATEGORIES_FOOTER: u32 = 5;
-const MAPS_FOOTER: u32 = 6;
-const MAP_LABELS: u32 = 7;
+const CATEGORIES_FOOTER: u32 = CATEGORY_LABELS + Category::ALL.len() as u32;
+const MAPS_FOOTER: u32 = CATEGORIES_FOOTER + 1;
+const MAP_LABELS: u32 = MAPS_FOOTER + 1;
 const TITLE_TEXT: &str = "Select Map";
 
 /// Where a map comes from.
@@ -74,15 +81,19 @@ pub enum Category {
     Mods,
     /// Converted Halo 1 maps (`h2 import halo1`, `h1_<map>`).
     Halo1,
+    /// The maps that carry the Firefight kit (`Firefight – <map>`), a
+    /// Firefight lobby's only category.
+    Firefight,
 }
 
 impl Category {
     /// The categories' order on the screen.
-    pub const ALL: [Category; 4] = [
+    pub const ALL: [Category; 5] = [
         Category::Halo2,
         Category::MapPack,
         Category::Mods,
         Category::Halo1,
+        Category::Firefight,
     ];
 
     pub fn label(self) -> &'static str {
@@ -91,6 +102,7 @@ impl Category {
             Category::MapPack => "Map Pack",
             Category::Mods => "Mods",
             Category::Halo1 => "Halo: CE",
+            Category::Firefight => "Firefight",
         }
     }
 
@@ -154,8 +166,15 @@ pub struct Map {
 }
 
 impl Map {
+    /// Its category: Firefight for a kit package
+    /// ([`crate::lobby_start::is_kit_map`]), else by its path
+    /// ([`category_of`]).
     pub fn category(&self) -> Category {
-        category_of(&self.path)
+        if crate::lobby_start::is_kit_map(self) {
+            Category::Firefight
+        } else {
+            category_of(&self.path)
+        }
     }
 
     /// The map file's name: the path's basename, lower case.
@@ -250,9 +269,13 @@ impl Catalogue {
         c.label().to_owned()
     }
 
+    /// The categories a Multiplayer lobby's Change Map lists: every one
+    /// with maps but Firefight, which only a Firefight lobby opens
+    /// ([`mode_category`]).
     pub fn categories(&self) -> Vec<Category> {
         Category::ALL
             .into_iter()
+            .filter(|&c| c != Category::Firefight)
             .filter(|&c| !self.maps(c).is_empty() || (c == Category::Mods && self.overflow != 0))
             .collect()
     }
@@ -952,7 +975,8 @@ impl hooks::Feature for MapSelect {
         use hooks::Flow as F;
         let region = b.guest_alloc(REGION, runtime::guest::Permissions::RW)?;
 
-        // Change Map: arm the next Select Map for the categories, when
+        // Change Map: arm the next Select Map for the lobby mode's one
+        // category's maps (Forge, Firefight), or for the categories when
         // there are two or more (else the retail list).
         let (nav, sel) = (Arc::clone(&self.navigation), Arc::clone(&self.sel));
         b.raw().observe_before(
@@ -961,11 +985,19 @@ impl hooks::Feature for MapSelect {
             move |o| {
                 let mem = o.guest();
                 let word = |n: u32| mem.u32(o.cpu.esp + 4 * n).ok();
-                if word(0) == Some(CHANGE_MAP_REQUEST_RET)
-                    && word(4) == Some(CHANGE_MAP_LOADER)
-                    && sel.active()
-                {
-                    nav.maps.categories(None);
+                if word(0) != Some(CHANGE_MAP_REQUEST_RET) || word(4) != Some(CHANGE_MAP_LOADER) {
+                    return;
+                }
+                let mode = crate::lobby_start::mode();
+                match mode_category(mode) {
+                    Some(c) if !sel.catalogue().maps(c).is_empty() => nav.maps.pick(c),
+                    Some(c) => eprintln!(
+                        "map select: a {} lobby has no {} maps; the retail list",
+                        mode.label(),
+                        c.label()
+                    ),
+                    None if sel.active() => nav.maps.categories(None),
+                    None => {}
                 }
             },
         );
@@ -1137,12 +1169,7 @@ impl hooks::Feature for MapSelect {
                         // With Clankers on, the map's nav mesh is asked for now
                         // (docs/game/bots.md §10 stage 2).
                         let cat = sel.catalogue();
-                        let map = cat
-                            .categories()
-                            .into_iter()
-                            .flat_map(|k| cat.maps(k).iter())
-                            .find(|m| m.id == id)
-                            .map(Map::short_name);
+                        let map = cat.all().find(|m| m.id == id).map(Map::short_name);
                         if let Some(map) = map {
                             crate::clankers::map_picked(&map);
                         }
@@ -1206,6 +1233,13 @@ impl hooks::Feature for MapSelect {
                 (ui_back::Back::Wait, _, _) => {
                     c.cpu.eax = 1;
                     c.ret(4).map(F::Return)
+                }
+                // A Forge or Firefight lobby's maps were opened straight
+                // from Game Setup: B goes back there.
+                (ui_back::Back::Reopen, _, Mode::Maps(c))
+                    if mode_category(crate::lobby_start::mode()) == Some(c) =>
+                {
+                    Ok(F::Continue)
                 }
                 (ui_back::Back::Reopen, Some(source), mode @ (Mode::Maps(_) | Mode::Pack(_))) => {
                     let nav = Arc::clone(&nav);
@@ -1527,6 +1561,19 @@ fn slug(c: Category) -> &'static str {
         Category::MapPack => "mappack",
         Category::Mods => "mods",
         Category::Halo1 => "halo1",
+        Category::Firefight => "firefight",
+    }
+}
+
+/// The one category a lobby in `mode` opens Change Map on, straight to its
+/// maps: the original maps for Forge, the kit maps for Firefight; `None`
+/// for Multiplayer, whose Change Map lists the categories.
+pub fn mode_category(mode: crate::lobby_start::Mode) -> Option<Category> {
+    use crate::lobby_start::Mode as Lobby;
+    match mode {
+        Lobby::Multiplayer => None,
+        Lobby::Forge => Some(Category::Halo2),
+        Lobby::Firefight => Some(Category::Firefight),
     }
 }
 

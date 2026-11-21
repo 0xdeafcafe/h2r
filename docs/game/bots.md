@@ -244,7 +244,7 @@ layer before its bots could even stand still.
 
 **Main menu.** The row handler is `0x230827` and the chosen row is at
 `0x510a14`. This table shows the retail indices. With Theater installed,
-it occupies row 2 and shifts Split Screen, System Link and Settings down one row.
+it occupies row 4, after System Link, and Settings moves to row 5.
 
 | Row | Name | What it opens |
 |---|---|---|
@@ -5543,8 +5543,8 @@ h2 bots verdict <bots.log>   # the verdict of a log again
    the window 5 screen the game names with `coop-live: lobby mode
    4294967295`; its cursor row is the low 16 bits of the `list [mask/value]`
    value on its `ui: screen none` line. Xbox Live is row 1. If Split Screen
-   or System Link opens, the driver uses the players' screen mode and
-   Theater marker to return to Xbox Live. If the profile needs to sign
+   or System Link opens, the driver uses the players' screen mode to
+   return to Xbox Live. If the profile needs to sign
    in, Xbox Live opens the game's account picker (`dialog_live_signin`,
    dialog `0x14`, loader `0x24b4a9`), as a new profile's boot does. Its
    row 0 is the no-account row. The driver selects Tester and opens

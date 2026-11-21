@@ -886,6 +886,99 @@ Tooling:
   - `h2 rules caps` lists the capabilities and the API entries with their
     status; `h2 rules builtin [name]` lists the built-in scripts or
     prints one.
+  - `h2 rules lsp` is a language server on stdin and stdout
+    (`crates/apps/cli/src/rules_lsp.rs`, over `lsp-server`). It keeps
+    each open document whole (full sync), publishes diagnostics on open
+    and change, and answers completion, hover, signature help,
+    definition, references, `semanticTokens/full`, document symbols and
+    formatting from `rules::ide`.
+- **Language intelligence**: `rules::ide` (`crates/formats/rules/src/ide/`)
+  is pure over source text, and the language server, Live's
+  `POST /v1/rules/ide` and the web editor share it. Positions are LSP's:
+  a 0-based line and a UTF-16 `character`. The lexer and the parser
+  recover (`lex::lex_tolerant`, `parse::parse_recovering`): a bad
+  character is skipped, a bad statement is skipped to the end of its
+  line, a bad declaration to the next line that starts one, and a block
+  left open ends at the next declaration. Every feature works from what
+  parsed.
+  - `diagnostics`: every syntax error; when the source parses, the
+    compiler's first error, a verifier refusal, the tick budget and the
+    IR size (the last three on the first line); a warning for a `let`, a
+    set member or a `fn` never used; and a note at each call of an
+    entry no host can make yet, naming its status.
+  - `complete` reads the tokens before the place: declarations and
+    their snippets at the start of a top-level line; event names, with
+    their arguments as a snippet, after `on`; carriers after `carrier`;
+    capabilities on a `requires` line and as the second argument of
+    `grant`, `revoke` and `granted`; types after `:`; after a `.`, the
+    `variant` fields, an enum's variants, a table row's columns, or a
+    player's, team's or object's variables and built-in fields; labels
+    after `labelled`, palettes after `palette`, and sets after `each`
+    and in `count`, `first` and `pick`. In a body it offers the locals
+    in scope, the script's globals, options, tables, enums and
+    functions, every API entry and language built-in as a snippet, and
+    the statements. Each item's documentation is the hover text.
+  - `hover`: a name's declaration and type; an API entry's signature,
+    whether it reads or acts (and whether it is queued), the capability
+    it needs in the lobby's words, and its status in plain words; an
+    event's arguments; a `variant` field, a built-in field, a carrier, a
+    capability, a type or a keyword.
+  - `signature_help` for API entries, language built-ins, a script's
+    functions and an `on` handler's arguments, with the argument the
+    place is in.
+  - `definition` and `references` for locals, arguments, parameters,
+    variables, options, enums and their variants, tables and columns,
+    functions, palettes and labels (a label's first use is its
+    definition).
+  - `semantic_tokens` classifies every comment, literal, keyword, name
+    and operator by the legend `ide::LEGEND`: keyword, event, function,
+    api, variable, parameter, enum, enumMember, type, number, string,
+    comment, operator, label, capability. A dotted capability is one
+    token.
+  - `symbols` is the outline: the header, then each declaration and
+    handler, with an enum's variants and a table's columns as children.
+  - `format` lays a script that parses out canonically: four-space
+    indents by bracket depth, one statement per line (a block's braces
+    and `;` break lines), one space around operators and after commas
+    and colons, at most one blank line in a row, comments where they
+    are. It moves line breaks only where the grammar ignores them and
+    refuses its own output if a script that compiled would compile to
+    another blob. Every built-in formats to itself on a second pass and
+    to the same blob.
+- **Editors**: point a generic LSP client at `h2 rules lsp` for files
+  ending `.rules`.
+  - VS Code: an extension that starts the server, or a generic LSP
+    client extension, with the command `h2`, the arguments
+    `["rules", "lsp"]` and the document selector `{"pattern":
+    "**/*.rules"}`. The custom token types (`api`, `label`,
+    `capability`) take colours from `semanticTokenColorCustomizations`.
+  - Helix, in `languages.toml`:
+
+    ```toml
+    [language-server.h2-rules]
+    command = "h2"
+    args = ["rules", "lsp"]
+
+    [[language]]
+    name = "h2-rules"
+    scope = "source.h2rules"
+    file-types = ["rules"]
+    comment-token = "//"
+    indent = { tab-width = 4, unit = "    " }
+    language-servers = ["h2-rules"]
+    ```
+
+  - Neovim (0.11 or later):
+
+    ```lua
+    vim.filetype.add({ extension = { rules = "h2rules" } })
+    vim.lsp.config("h2_rules", {
+      cmd = { "h2", "rules", "lsp" },
+      filetypes = { "h2rules" },
+      root_markers = { ".git" },
+    })
+    vim.lsp.enable("h2_rules")
+    ```
 - **Scenario tests**: a scenario is JSON read by `rules::scenario`:
   `seed`, `options` (bits; the blob's defaults when absent), `players`
   (`slot`, `team`, `alive`, `score`, `lives`), `teams`,
@@ -917,7 +1010,29 @@ editor exists. The browser runs no compiler: Live's
   handler's worst case, slots per scope against their limits, IR bytes
   against 64 KiB, the declared capabilities in the lobby's words, and
   every unhostable entry the script calls. The page checks 450 ms after
-  typing stops; an error's place moves the caret to it.
+  typing stops; each error with a place is a marker in the editor, and
+  its place in the list below selects it.
+- **Editor.** The script box is Monaco (`web/src/stats/RulesEditor.tsx`),
+  loaded by a dynamic import on this page only, so it is a chunk of its
+  own: the core editor (`monaco-editor/esm/vs/editor/edcore.main`, no
+  bundled languages) and its one editor worker. `stats/rulesMonaco.ts`
+  registers the `h2rules` language: a Monarch grammar from the lexer's
+  tokens and the parser's words (comments, keywords, `on` and its event,
+  scoped `var`, `for each`, `team n`, `text n`, literals), brackets,
+  auto-closing pairs, indentation and folding, and a dark theme from the
+  stats site's colours. Completion, hover, signature help, go to
+  definition (F12), find references (Shift+F12), the outline
+  (Ctrl/Cmd+Shift+O), semantic tokens and Format Document (Shift+Alt+F)
+  ask Live's `POST /v1/rules/ide` (`{source, op, line, character}`,
+  0-based line, UTF-16 character; LSP field names back) and
+  `GET /v1/rules/ide/legend`; each op waits for typing to pause, a newer
+  request cancels the older one, and answers are kept per model version
+  (`web/src/lib/rulesIde.ts`, the pure half). A built-in opens read-only
+  until **Use as start**. The **Insert** buttons above the editor open a
+  picker each (Declarations, Events, Actions and reads by capability in
+  the lobby's words, Control) whose rows insert a snippet at the caret;
+  the events and the API come from the completion route at a blank
+  top-level line and a blank statement, over a list the page keeps.
 - **Run.** `workbench::run` steps a scenario (seated players, variant
   fields, options, seed, round time, and a list of events by tick) over
   `fake::FakeGame`. Each tick: the queue is flushed, the tick's events
@@ -929,6 +1044,11 @@ editor exists. The browser runs no compiler: Live's
   down is no change), a warning was raised or the script stopped. The run stops at a script error, after the tick
   that calls `end_round`, or past 4,000,000 ops, and the same input gives
   the same trace.
+- **Editor.** `POST /v1/rules/ide` answers one editor request (complete,
+  hover, signature, definition, references, tokens, symbols, format or
+  diagnostics) from `rules::ide`, in LSP's field names, so the page's
+  editor needs no language server of its own ("Language intelligence"
+  under "Tooling").
 - **Save.** A signed-in account saves a script that checks clean; Live
   keeps its source under the IR hash and compiles it again to serve the
   blob.

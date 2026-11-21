@@ -722,6 +722,7 @@ pub fn forget() {
         PRESENT_READY.store(false, Ordering::Release);
     });
     crate::entry_census::forget();
+    crate::residual_census::forget();
     crate::carried_slots::forget();
 }
 
@@ -870,6 +871,9 @@ impl Feature for FrameSceneStep {
         // since its exit observers give those entries an after part.
         if b.switches().feature(crate::entry_census::ID, false) {
             crate::entry_census::install(b);
+            // render.residual's producers ride the same option
+            // (docs/graphics/retire-d3d.md, "New method: render.residual").
+            crate::residual_census::install(b);
         }
         // The slot of the frame the guest's D3D work is in, for the
         // device's scene sink (slice 6): an option, its census of the
@@ -944,7 +948,16 @@ mod tests {
         assert!(!off.contains("entry_census"), "{off}");
         assert!(off.contains("frame_scene_post"), "the post passes are extracted with or without it\n{off}");
         let on = text("frame-scene.census");
+        assert!(!off.contains("residual_census"), "{off}");
         for label in [
+            "residual_census_frame",
+            "residual_census_frame_end",
+            "residual_census_layer",
+            "residual_census_layer_end",
+            "residual_census_game_view",
+            "residual_census_hud_end",
+            "residual_census_light_passes_end",
+            "residual_census_frame_tail_end",
             "entry_census_layer",
             "entry_census_layer_end",
             "entry_census_light_passes_end",

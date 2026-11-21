@@ -276,12 +276,18 @@ pub fn account_spec(a: &crate::account_screen::AccountScreen, now: i64) -> Scree
 }
 
 /// The screens `h2 ui preview` knows, by name.
-pub const NAMES: [&str; 34] = [
+pub const NAMES: [&str; 42] = [
     "forge.hud",
     "forge.palette",
-    "forge.properties",
     "forge.menu",
+    "forge.objects",
+    "forge.properties",
+    "forge.tools",
+    "forge.settings",
     "forge.link",
+    "forge.question",
+    "forge.options",
+    "forge.controls",
     "campaigns",
     "skulls",
     "skulls.h1",
@@ -310,8 +316,14 @@ pub const NAMES: [&str; 34] = [
     crate::theater_ui::PAUSE_MENU,
     "kit.picker",
     "kit.picker.game",
+    FORGE_MAP_PICKER,
     crate::custom_games::browser_filters::SCREEN,
+    crate::lobby_tabs::preview::NAME,
 ];
+
+/// The value picker as the Forge Map row opens it, with two saved maps
+/// (`crate::lobby_mode::forge_map_pick`).
+pub const FORGE_MAP_PICKER: &str = "kit.picker.forge-map";
 
 /// Every named state of screen `name` for the preview sheet: a list's
 /// first, middle and last row focused; the sign-in prompt's pages
@@ -333,10 +345,18 @@ pub fn sample(name: &str) -> Option<ScreenSpec> {
 /// file.
 pub fn live(name: &str) -> Option<Box<dyn Live>> {
     match name {
-        "forge.hud" | "forge.palette" | "forge.properties" | "forge.menu" | "forge.link" => {
-            super::forge::live(name)
+        // The compositor's (slice U7 removes them).
+        "forge.hud" | "forge.palette" | "forge.menu" => super::forge::live(name),
+        // The game's screens (`crate::forge_screens`).
+        "forge.objects" | "forge.properties" | "forge.tools" | "forge.settings" | "forge.link"
+        | "forge.question" | "forge.options" | "forge.controls" => {
+            crate::forge_screens::pages::live(name)
         }
         "signin-code" => Some(Box::new(Driven::new(crate::signin_screen::SigninPage))),
+        // The party lobby's mode strip (`crate::lobby_tabs::strip`).
+        crate::lobby_tabs::preview::NAME => {
+            Some(Box::new(Driven::new(crate::lobby_tabs::preview::TabsPage)))
+        }
         "account" => Some(Box::new(Driven::new(AccountPage))),
         "mods" | "mods.pack" | "mods.detail" => {
             use crate::mods_screen::spec::{Sample, preview::Preview};
@@ -396,6 +416,18 @@ pub fn picker_sample() -> crate::ui_kit::picker::Pick {
         Arc::new(move |i| COUNT.set(&store, i)),
     )
     .over(crate::ui_kit::view::Opener::GAME_SETUP_CLANKERS)
+}
+
+/// The lobby's picker's sample ([`FORGE_MAP_PICKER`]): New with two saved
+/// maps, the second held. Its choice writes no file.
+pub fn lobby_pick_sample(name: &str) -> Option<crate::ui_kit::picker::Pick> {
+    match name {
+        FORGE_MAP_PICKER => Some(crate::lobby_mode::forge_map_pick(
+            Ok(vec!["Castle Keep".into(), "Lockout Towers".into()]),
+            Some("Lockout Towers"),
+        )),
+        _ => None,
+    }
 }
 
 /// The kit's choice rows on a page laid out as Game Options is (the
@@ -582,6 +614,11 @@ pub fn list_page(name: &str) -> Option<ListPage> {
             let p = Arc::new(crate::ui_kit::picker::Picker::new(
                 name == crate::ui_kit::picker::GAME_NAME,
             ));
+            list(ListPage::new(p.class(), described(&p)))
+        }
+        FORGE_MAP_PICKER => {
+            crate::ui_kit::picker::offer_list(lobby_pick_sample(name)?)?;
+            let p = Arc::new(crate::ui_kit::picker::Picker::new(false));
             list(ListPage::new(p.class(), described(&p)))
         }
         _ => None,
@@ -935,13 +972,19 @@ mod tests {
     ///   filters and the Clanker card (Quick Options), and the Theater
     ///   pause menu's pickers (the large dialog, over the menu's own rows;
     ///   its camera picker's title also lands on them).
+    /// - The Forge screens on the large dialog (the object menu, Tools,
+    ///   Link and the questions): they open over the running game, which
+    ///   no preview draws, so the sample opens them over the main menu as
+    ///   `kit.picker.game`'s does.
     fn known(screen: &str, issue: &crate::ui_kit::layout::Issue) -> bool {
         use crate::ui_kit::layout::Issue;
         matches!(
             (screen, issue),
             (
                 "kit.dialog" | "kit.dialog.large" | "clankers" | "firefight" | "h1-options" | "kit.picker" | "kit.picker.game"
-                | "browser.filters" | "clanker_player_options" | "theater.pause-menu",
+                | FORGE_MAP_PICKER
+                | "browser.filters" | "clanker_player_options" | "theater.pause-menu"
+                | "forge.objects" | "forge.tools" | "forge.link" | "forge.question",
                 Issue::Contrast { id, .. }
             )
                 if id.starts_with("row.")

@@ -1,5 +1,6 @@
-/* The game type script workbench (stats/Rules.tsx): the editor with its
-   line gutter, the error list, budget meters, the scenario tables and the
+/* The game type script workbench (stats/Rules.tsx): the editor's box
+   (Monaco's colours are its theme, stats/rulesMonaco.ts), the Insert
+   menus, the error list, budget meters, the scenario tables and the
    trace. Same flat greys, thin rules and small type as the rest of the
    stats site. */
 
@@ -14,12 +15,24 @@
 .s-rules-note { font-size: 11px; color: #c5d6ee; }
 .s-rules-wrap > .s-pad { padding: 4px 2px; font-size: 11px; }
 
-.s-rules-editor { display: grid; grid-template-columns: auto minmax(0, 1fr); height: 460px; margin-top: 6px; border: 1px solid #444; background: #0b0b0b; }
-.s-rules-editor[hidden] { display: none; }
-.s-rules-gutter, .s-rules-text { margin: 0; padding: 6px 8px; font: 12px/16px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; tab-size: 4; }
-.s-rules-gutter { overflow: hidden; min-width: 34px; text-align: right; color: #5d6b80; background: #121822; border-right: 1px solid #2a3d59; user-select: none; }
-.s-rules-text { width: 100%; height: 100%; resize: none; overflow: auto; white-space: pre; color: #e8e8e8; background: transparent; border: 0; outline: none; }
+.s-rules-editwrap[hidden] { display: none; }
+.s-rules-editor { position: relative; height: 460px; margin-top: 6px; border: 1px solid #444; background: #0b0b0b; }
+.s-rules-monaco { position: absolute; inset: 0; }
+.s-rules-loading { position: absolute; top: 6px; left: 8px; margin: 0; font-size: 11px; color: #8d8d8d; pointer-events: none; }
+.s-rules-text { box-sizing: border-box; width: 100%; height: 100%; margin: 0; padding: 6px 8px; resize: none; overflow: auto; white-space: pre; font: 12px/16px var(--font-mono); tab-size: 4; color: #e8e8e8; background: transparent; border: 0; outline: none; }
 .s-rules-text:focus { box-shadow: inset 0 0 0 1px #6f93c4; }
+
+/* The Insert menus' buttons, and the read-only built-in's bar. */
+.s-rules-insert { flex-wrap: wrap; gap: 4px 6px; margin-top: 6px; }
+.s-rules-insert-label { font: bold 11px/16px var(--font-ui); color: #fff; }
+.s-rules-keys { margin-left: auto; font-size: 10px; color: #7e8ea6; }
+.s-rules-locked { display: flex; gap: 8px; align-items: center; margin-top: 6px; padding: 4px 8px; font-size: 11px; color: #f2e2b8; border: 1px solid #6b5520; background: #1f1a0c; }
+.s-rules-locked .s-btn { margin-left: auto; }
+.s-rules-insert-dialog { width: min(560px, 94vw); }
+.s-rules-insert-group + .s-rules-insert-group { margin-top: 8px; }
+.s-rules-insert-group h4 { margin: 0 0 4px; font: bold 12px/16px var(--font-ui); color: #fff; }
+.s-rules-insert-group h4 small { font-weight: normal; font-size: 10px; color: #8d9aab; }
+.s-rules-insert-dialog .s-rules-picks code { font: 11px/14px var(--font-mono); }
 
 .s-rules-errors { margin: 6px 0 0; padding: 0; list-style: none; border: 1px solid #5a2a2a; background: #1a1010; }
 .s-rules-errors li { display: flex; gap: 8px; align-items: baseline; padding: 3px 6px; font-size: 11px; color: #f2d6d2; border-top: 1px solid #000; }

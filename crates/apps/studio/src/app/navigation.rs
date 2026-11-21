@@ -14,9 +14,13 @@ pub enum NavAction {
         tag: TagId,
         placements: Vec<(BlockKind, usize)>,
     },
+    /// Show a tag, a field of it (`path`), and in the Tags tool one list
+    /// element as the whole panel (`element`, `parts[1]`; none for the
+    /// root).
     Go {
         tag: TagId,
         path: Option<String>,
+        element: Option<String>,
     },
     Follow {
         from: Vec<TagId>,
@@ -34,6 +38,9 @@ pub struct NavLocation {
     palette_subject: bool,
     pub trail: Vec<TagId>,
     pub path: Option<String>,
+    /// The list element the Tags tool shows alone (`parts[1]`), by field
+    /// names; none for the tag's root.
+    pub element: Option<String>,
 }
 
 impl NavLocation {
@@ -43,6 +50,7 @@ impl NavLocation {
             palette_subject: false,
             trail: Vec::new(),
             path: None,
+            element: None,
         }
     }
 
@@ -173,6 +181,7 @@ impl App {
                 after.palette_subject = false;
                 after.trail = vec![tag];
                 after.path = None;
+                after.element = None;
             }
             NavAction::SelectPalette {
                 tag,
@@ -187,20 +196,31 @@ impl App {
                 after.palette_subject = true;
                 after.trail = vec![tag];
                 after.path = None;
+                after.element = None;
             }
-            NavAction::Go { tag, path } => {
+            NavAction::Go { tag, path, element } => {
                 after.trail = self.trail_to(&before, tag);
                 after.path = path;
+                after.element = match element {
+                    Some(e) if !e.is_empty() => Some(
+                        tag_api::element_steps(&self.tags, tag, &e)?
+                            .last()
+                            .map_or(e, |s| s.path.clone()),
+                    ),
+                    _ => None,
+                };
             }
             NavAction::Open(trail) => {
                 after.palette_subject &= !trail.is_empty();
                 after.trail = trail;
                 after.path = None;
+                after.element = None;
             }
             NavAction::Follow { from, path, tag } => {
                 let source = NavLocation {
                     trail: from,
                     path: Some(path),
+                    element: None,
                     ..before.clone()
                 };
                 self.check_location(&source)?;
@@ -211,6 +231,7 @@ impl App {
                     after.trail.push(tag);
                 }
                 after.path = None;
+                after.element = None;
                 self.check_location(&after)?;
                 self.nav.sync(self.session.world_rev(), before);
                 // The field clicked is the exact place Back returns to.
@@ -247,6 +268,16 @@ impl App {
         if let Some(path) = &location.path {
             let tag = location.tag().ok_or("a field needs a tag")?;
             tag_api::field_focus(&self.tags, tag, path)?;
+        }
+        if let Some(element) = &location.element {
+            let tag = location.tag().ok_or("an element needs a tag")?;
+            tag_api::element_steps(&self.tags, tag, element)?;
+            if let Some(path) = &location.path {
+                let named = tag_api::named_path(&self.tags, tag, path)?;
+                if !named.starts_with(&format!("{element}.")) {
+                    return Err(format!("{path} is not in {element}"));
+                }
+            }
         }
         Ok(())
     }

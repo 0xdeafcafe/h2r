@@ -486,6 +486,154 @@ fn tag_choices_lists_the_pick_dialogs_choices() {
     assert_eq!(gap["shown"], "whole_number");
 }
 
+/// `tag.bytes` gives an element's bytes with spans that tile it, or one
+/// field's; `tag.reset` puts a field back to the file's value as one undo
+/// step and clears `edited`.
+#[test]
+fn tag_bytes_tile_the_element_and_tag_reset_is_one_undo_step() {
+    use crate::app::tag_tests;
+    let t = Temp::new("tag-bytes");
+    let (mut app, ..) = tag_tests::app(&t.0);
+    let mut api = Api::new();
+    let weap = format!("{:#010x}", tag_tests::weap_id().0);
+    let tiles = |v: &Value| {
+        let mut next = 0;
+        for s in v["spans"].as_array().unwrap() {
+            assert_eq!(s["offset"], next, "{v}");
+            next += s["size"].as_u64().unwrap();
+        }
+        assert_eq!(json!(next), v["size"], "{v}");
+        assert_eq!(v["hex"].as_str().unwrap().len() as u64, 2 * next);
+    };
+
+    let root = call(&mut api, &mut app, m::TAG_BYTES, json!({ "tag": weap }));
+    assert_eq!(root["address"], tag_tests::WEAP);
+    assert_eq!(root["size"], 0x10);
+    tiles(&root);
+    assert_eq!(root["hex"], root["file_hex"], "nothing changed");
+    assert!(root["hex"].as_str().unwrap().starts_with("00002040"), "speed 2.5");
+    let part = call(&mut api, &mut app, m::TAG_BYTES, json!({"tag": weap, "path": "parts[1]"}));
+    assert_eq!(part["address"], tag_tests::PARTS + 0xc);
+    tiles(&part);
+    let mode = call(&mut api, &mut app, m::TAG_BYTES, json!({"tag": weap, "path": "mode"}));
+    assert_eq!(mode["hex"], "0200");
+    assert_eq!(
+        mode["spans"],
+        json!([{"offset": 0, "size": 2, "name": "mode", "named": true}])
+    );
+    assert_eq!(
+        code_of(api.call(&mut app, m::TAG_BYTES, json!({"tag": weap, "path": "parts[5]"}))),
+        code::INVALID_PARAMS
+    );
+
+    let speed = |api: &mut Api, app: &mut App| {
+        let rows = call(api, app, m::TAG_FIELDS, json!({ "tag": weap }));
+        rows["fields"][0].clone()
+    };
+    call(&mut api, &mut app, m::TAG_SET, json!({"tag": weap, "path": "speed", "value": 4.0}));
+    assert_eq!(speed(&mut api, &mut app)["edited"], true);
+    let changed = call(&mut api, &mut app, m::TAG_BYTES, json!({"tag": weap, "path": "speed"}));
+    assert_ne!(changed["hex"], changed["file_hex"]);
+    let back = call(&mut api, &mut app, m::TAG_RESET, json!({"tag": weap, "path": "speed"}));
+    assert_eq!(back["value"], 2.5);
+    let row = speed(&mut api, &mut app);
+    assert_eq!((row["edited"].as_bool(), row["value"].as_f64()), (Some(false), Some(2.5)));
+    app.dispatch(Action::Undo);
+    assert_eq!(speed(&mut api, &mut app)["value"], 4.0, "the reset is one undo step");
+    app.dispatch(Action::Undo);
+    assert_eq!(speed(&mut api, &mut app)["value"], 2.5);
+    // Already the file's value: no step.
+    call(&mut api, &mut app, m::TAG_RESET, json!({"tag": weap, "path": "speed"}));
+    app.dispatch(Action::Redo);
+    assert_eq!(speed(&mut api, &mut app)["value"], 4.0, "the redo stack is intact");
+    assert_eq!(
+        code_of(api.call(&mut app, m::TAG_RESET, json!({"tag": weap, "path": "parts"}))),
+        code::INVALID_PARAMS
+    );
+}
+
+/// `tag.elements` titles a list's elements by the block's `title=` field,
+/// else by the first named name or tag reference, else not at all; the
+/// filter and paging follow the list's rows. `tag.view path` shows an
+/// element alone with its breadcrumbs, and the navigation carries it.
+#[test]
+fn tag_elements_are_titled_and_an_element_opens_alone() {
+    use crate::app::tag_tests;
+    let t = Temp::new("tag-elements");
+    let (mut app, ..) = tag_tests::app(&t.0);
+    let mut api = Api::new();
+    let weap = format!("{:#010x}", tag_tests::weap_id().0);
+    let titles = |v: &Value| -> Vec<Value> {
+        v["elements"].as_array().unwrap().iter().map(|e| e["title"].clone()).collect()
+    };
+
+    let parts = call(&mut api, &mut app, m::TAG_ELEMENTS, json!({"tag": weap, "path": "parts"}));
+    assert_eq!((parts["count"].as_u64(), parts["truncated"].as_bool()), (Some(2), Some(false)));
+    // The first named tag reference titles an element; an empty one leaves
+    // the index alone.
+    assert_eq!(titles(&parts), [json!("kit"), Value::Null]);
+    assert_eq!(parts["elements"][1]["path"], "parts[1]");
+    let kit = call(
+        &mut api,
+        &mut app,
+        m::TAG_ELEMENTS,
+        json!({"tag": weap, "path": "parts", "filter": "KIT"}),
+    );
+    assert_eq!(kit["elements"].as_array().unwrap().len(), 1);
+    let paged = call(
+        &mut api,
+        &mut app,
+        m::TAG_ELEMENTS,
+        json!({"tag": weap, "path": "+0x8", "offset": 1, "limit": 1}),
+    );
+    assert_eq!(paged["elements"][0]["index"], 1);
+    assert_eq!(paged["truncated"], false);
+    assert_eq!(
+        code_of(api.call(&mut app, m::TAG_ELEMENTS, json!({"tag": weap, "path": "speed"}))),
+        code::INVALID_PARAMS
+    );
+
+    // Open alone, as the panel's button does.
+    let alone = call(&mut api, &mut app, m::TAG_VIEW, json!({"tag": weap, "path": "parts[1]"}));
+    assert_eq!(alone["path"], "parts[1]");
+    assert_eq!(alone["breadcrumbs"], json!(["weap: objects\\test\\blaster", "Parts 1"]));
+    let paths: Vec<&str> = alone["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["path"].as_str().unwrap())
+        .collect();
+    assert_eq!(paths, ["parts[1].item", "parts[1].value"]);
+    let status = call(&mut api, &mut app, m::NAV_STATUS, json!({}));
+    assert_eq!(status["element"], "parts[1]");
+    let root = call(&mut api, &mut app, m::TAG_VIEW, json!({"path": ""}));
+    assert_eq!(root["path"], "");
+    call(&mut api, &mut app, m::NAV_BACK, json!({}));
+    let back = call(&mut api, &mut app, m::TAG_VIEW, json!({}));
+    assert_eq!(back["path"], "parts[1]", "Back restores it");
+    assert_eq!(
+        code_of(api.call(&mut app, m::TAG_VIEW, json!({"path": "parts[2]"}))),
+        code::INVALID_PARAMS
+    );
+    let via_nav = call(
+        &mut api,
+        &mut app,
+        m::NAV_GO,
+        json!({"tag": weap, "element": "+0x8[0]"}),
+    );
+    assert_eq!(via_nav["element"], "parts[0]", "an offset path is kept by names");
+    assert_eq!(app.tool, crate::ToolKind::Tags);
+
+    // A block's title= field titles its elements.
+    let t = Temp::new("tag-elements-titled");
+    let (mut app, ..) = tag_tests::app_titled(&t.0);
+    let titled = call(&mut api, &mut app, m::TAG_ELEMENTS, json!({"tag": weap, "path": "parts"}));
+    assert_eq!(titles(&titled), [json!("7"), json!("9")]);
+    let view = call(&mut api, &mut app, m::TAG_VIEW, json!({"tag": weap, "path": "parts[0]"}));
+    assert_eq!(view["breadcrumbs"][1], "Parts 0  7");
+    assert_eq!(view["header"][0], "Weapon  blaster");
+}
+
 #[test]
 fn tag_view_folds_unnamed_fields_and_opens_them_on_request() {
     use crate::app::tag_tests;

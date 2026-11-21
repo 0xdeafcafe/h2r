@@ -53,6 +53,7 @@ pub mod pipeline_store;
 pub mod present_camera;
 pub mod pushbuf;
 pub mod regs;
+pub mod residual;
 pub mod resource;
 pub mod runtime_glue;
 #[cfg(feature = "gpu")]
