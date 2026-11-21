@@ -178,11 +178,101 @@ fn tree_root_selects_only_retail_and_loads_fields_on_demand() {
 #[test]
 fn folder_refuses_known_builds_and_any_nonretail_root() {
     let temp = TestDir::new();
-    for name in ["Halo2Alpha", "Halo2E3_04", "Halo2Vista"] {
+    for name in ["Halo2Alpha", "Halo2E3_04", "Halo3Beta", "HaloOnline"] {
         assert!(Folder::open(&temp.0.join(name)).unwrap_err().contains(name));
     }
     fs::write(temp.0.join("zzzz.xml"), "<plugin game='InventedGame' baseSize='0'/>").unwrap();
     fs::write(temp.0.join("zzzx.xml"), format!("<plugin game='{GAME}' baseSize='0'/>")).unwrap();
     let reason = Folder::open(&temp.0).unwrap_err();
     assert!(reason.contains("InventedGame") && reason.contains(GAME));
+}
+
+fn plugin_file(dir: &Path, stem: &str, game: &str, fields: &str) {
+    fs::write(
+        dir.join(format!("{stem}.xml")),
+        format!("<plugin game='{game}' baseSize='0x10'>{fields}</plugin>"),
+    )
+    .unwrap();
+}
+
+#[test]
+fn fallback_folder_supplies_groups_the_retail_folder_lacks() {
+    let temp = TestDir::new();
+    let retail = temp.0.join(GAME);
+    let fallback = temp.0.join(FALLBACK);
+    fs::create_dir(&retail).unwrap();
+    fs::create_dir(&fallback).unwrap();
+    plugin_file(&retail, "zZzz", GAME, "<float32 name='Invented retail' offset='0'/>");
+    plugin_file(&fallback, "zZzz", FALLBACK, "<float32 name='Invented shadowed' offset='0'/>");
+    plugin_file(&fallback, "zZzy", FALLBACK, "<tagRef name='Invented fallback' offset='0'/>");
+    for root in [temp.0.clone(), retail.clone()] {
+        let folder = Folder::open(&root).unwrap();
+        assert_eq!(folder.groups(), ["zZzy", "zZzz"]);
+        assert_eq!(folder.game("zZzz"), Some(GAME));
+        assert_eq!(folder.game("zZzy"), Some(FALLBACK));
+        let kept = folder.load("zZzz").unwrap().unwrap();
+        assert_eq!(kept.fields[0].name, "Invented retail");
+        let filled = folder.load("zZzy").unwrap().unwrap();
+        assert_eq!(filled.game, FALLBACK);
+        assert_eq!(filled.fields[0].size, Some(8));
+    }
+}
+
+#[test]
+fn fallback_files_must_name_their_own_game() {
+    let temp = TestDir::new();
+    let retail = temp.0.join(GAME);
+    let fallback = temp.0.join(FALLBACK);
+    fs::create_dir(&retail).unwrap();
+    fs::create_dir(&fallback).unwrap();
+    plugin_file(&retail, "zZzz", GAME, "");
+    plugin_file(&fallback, "zZzy", GAME, "");
+    let reason = Folder::open(&temp.0).unwrap_err();
+    assert!(reason.ends_with(&format!("expected {FALLBACK}")), "{reason}");
+}
+
+#[test]
+fn hint_folders_use_their_game_and_its_pointer_widths() {
+    let temp = TestDir::new();
+    let retail = temp.0.join(GAME);
+    let next = temp.0.join("Halo3");
+    let same = temp.0.join("Halo2MCC");
+    let refused = temp.0.join("Halo3Beta");
+    for dir in [&retail, &next, &same, &refused] {
+        fs::create_dir(dir).unwrap();
+    }
+    plugin_file(&retail, "zZzz", GAME, "");
+    let fields = "<tagRef name='Invented link' offset='0'/>";
+    plugin_file(&next, "zZzz", "Halo3", fields);
+    plugin_file(&same, "zZzz", "Halo2MCC", fields);
+    fs::write(refused.join("zZzz.xml"), "never read").unwrap();
+    for root in [temp.0.clone(), retail.clone()] {
+        let hints = Hints::open(&root).unwrap();
+        assert_eq!(hints.games(), ["Halo2MCC", "Halo3"]);
+        let plugins = hints.load("zZzz").unwrap();
+        let widths: Vec<_> = plugins.iter().map(|p| (p.game.as_str(), p.fields[0].size)).collect();
+        assert_eq!(widths, [("Halo2MCC", Some(8)), ("Halo3", Some(16))]);
+        assert!(hints.load("zZzx").unwrap().is_empty());
+    }
+    assert!(Hints::open(&refused).unwrap_err().contains("Halo3Beta"));
+    plugin_file(&next, "zZzx", "Halo3Beta", "");
+    assert!(Hints::open(&temp.0).unwrap_err().contains("Halo3Beta"));
+}
+
+#[test]
+fn later_engines_widen_blocks_and_data_references() {
+    let xml = "<plugin game='Reach' baseSize='0x30'>\
+        <tagblock name='Invented list' offset='0' elementSize='4'/>\
+        <dataref name='Invented bytes' offset='0xc'/></plugin>";
+    let plugin = parse_game("zzzz", "Reach", xml).unwrap();
+    assert_eq!(plugin.fields[0].size, Some(12));
+    assert_eq!(plugin.fields[1].size, Some(20));
+    assert!(parse_game("zzzz", "Halo3", xml).unwrap_err().contains("Reach"));
+}
+
+#[test]
+fn file_names_with_underscores_find_the_schema_group_they_stand_for() {
+    assert_eq!(file_group(Path::new("_fx_.xml")).as_deref(), Some("<fx>"));
+    assert_eq!(file_group(Path::new("%3cfx%3e.xml")).as_deref(), Some("<fx>"));
+    assert_eq!(file_group(Path::new("zZ__.xml")).as_deref(), Some("zZ__"));
 }
