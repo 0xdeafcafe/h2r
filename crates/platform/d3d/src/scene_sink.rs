@@ -68,9 +68,9 @@ static LAST: Mutex<Option<CarriedSummary>> = Mutex::new(None);
 /// The sink's totals since the start (`render.scene`'s counters):
 /// `scene_carried_frames` (frames recorded), `scene_carried_draws` and
 /// `scene_carried_ops` (of every slot), `scene_readback` and
-/// `scene_readback_<kind>` (readbacks in a game view; section 8.3 needs
-/// zero) and `scene_side_target_frames` (frames that named a side target
-/// in a game view).
+/// `scene_readback_<kind>` (raw game-view requests, including flare reports)
+/// and `scene_side_target_frames` (frames that named a side target in a
+/// game view). The completed window matches reports to their native tickets.
 pub fn counters() -> Vec<(String, u64)> {
     let mut out = vec![
         ("scene_carried_frames".to_owned(), FRAMES.load(Ordering::Relaxed)),
