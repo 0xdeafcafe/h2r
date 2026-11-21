@@ -1194,17 +1194,32 @@ was shown when the tick's box came), evaluated at each present's time
 (`ImageMarks::visit`'s `now`), so they move the same at 30, 60 or 120
 frames a second.
 
-**The reticle.** Not built: the red reticle is to be drawn by the host
-over the game's, in screen space (`gfx::world_lines::HudMark`), while
-`superbounce_hud::reticle_lock_now` holds. The game's own reticle is not
-turned red through its widget inputs: that needs a hook after the HUD's
+**The reticle.** While the lock holds
+(`superbounce_hud::reticle_lock_now`, set each tick), the host draws a
+red reticle over the game's own: a ring and four ticks in the lock's
+red (`RED`), in screen space as a `gfx::world_lines::HudMark` from the
+world-line source `superbounce_reticle::Source`
+(`crates/extensions/game/src/superbounce_reticle.rs`). The ring is
+11 HUD pixels in radius, about the circle of the assault and battle
+rifles' reticles, with a tick at each side from 14 to 20 pixels out,
+inside the 64 by 64 `rects::RETICLE` the HUD kit keeps clear. It is
+centred on the first view's centre, `(320, 240)` on the fullscreen
+frame, with the host's HUD fit about that point
+(`render_aspect::hud_centre_fit`: the widescreen squeeze, pinned or
+centred, and the first view of a split screen, as the tracker marks
+follow `hud_bottom_left_fit`). It fades in and out over 0.1 s by the
+wall clock (`superbounce_reticle::Fade`, smoothstep, turning around from
+the level it shows), evaluated at each present's `now`, so it is smooth
+at any frame rate. Nothing is drawn with the mode off.
+
+The game's own reticle is not turned red and no guest hook is involved:
+turning it red through its widget inputs needs a hook after the HUD's
 widget input call (`HUD_WIDGET_INPUTS`, `0x0013ad48`), which takes the
 HUD off the pipelined render thread (`render_thread.rs`). The tested
 pieces of that route stay (`superbounce_hud::autoaim_entry`,
 `autoaim_exit`; input 18 is the unit's "autoaimed" input by Assembly's
-`nhdt` list). The player's aim-assist target
-(`touch_glue::on_target`) is not written: it is input to the simulation
-and the network.
+`nhdt` list). The player's aim-assist target (`touch_glue::on_target`)
+is not written: it is input to the simulation and the network.
 
 The colours are the game's: lines take the user's HUD colour, the
 three floats at `0x00468c84` (the human triple `0x0013927e` returns),

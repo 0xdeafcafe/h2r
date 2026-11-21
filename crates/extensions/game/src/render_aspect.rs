@@ -202,23 +202,49 @@ impl Canvas {
 /// The HUD's bottom-left corner group (anchor 2: the motion tracker and
 /// the shield meter).
 const BOTTOM_LEFT: u32 = 2;
+/// The HUD's centre anchor (the crosshair: anchor 4 and up keep their
+/// projected point, `Canvas::fit`).
+const CENTRE: u32 = 4;
 
 /// The first view's bottom-left HUD fit ([`UiFit::transform`]), as its
 /// last HUD draw set it; identity while the output is 4:3.
 static HUD_BOTTOM_LEFT: Mutex<[f32; 4]> = Mutex::new(UiFit::IDENTITY.transform);
 
-/// Keeps the bottom-left fit of the view at the frame's top left (the
-/// first player's in a split screen; S: that the first local player is
-/// drawn there), for host marks laid over the motion tracker.
+/// The HUD's centre where the game's reticle is (`rects::RETICLE`'s
+/// centre) on the fullscreen frame, guest pixels.
+pub const RETICLE_CENTRE: [f32; 2] = [320.0, 240.0];
+
+/// The first view's centre point and the fit of the HUD art about it, as
+/// its last HUD draw set them: the place of the game's reticle.
+static HUD_CENTRE: Mutex<([f32; 2], [f32; 4])> =
+    Mutex::new((RETICLE_CENTRE, UiFit::IDENTITY.transform));
+
+/// Keeps the bottom-left fit and the centre of the view at the frame's
+/// top left (the first player's in a split screen; S: that the first
+/// local player is drawn there), for host marks laid over the motion
+/// tracker and the reticle.
 fn publish_hud_corner(active: Option<Canvas>) {
-    let fit = match active {
-        None => UiFit::IDENTITY,
-        Some(c) if c.rect.x == 0 && c.rect.y == 0 => c
-            .fit(Some((BOTTOM_LEFT, [0.0; 2])))
-            .unwrap_or(UiFit::IDENTITY),
+    let (corner, centre) = match active {
+        None => (UiFit::IDENTITY, (RETICLE_CENTRE, UiFit::IDENTITY)),
+        Some(c) if c.rect.x == 0 && c.rect.y == 0 => (
+            c.fit(Some((BOTTOM_LEFT, [0.0; 2])))
+                .unwrap_or(UiFit::IDENTITY),
+            (
+                c.centre(),
+                c.fit(Some((CENTRE, c.centre()))).unwrap_or(UiFit::IDENTITY),
+            ),
+        ),
         Some(_) => return,
     };
-    *HUD_BOTTOM_LEFT.lock().unwrap_or_else(|e| e.into_inner()) = fit.transform;
+    *HUD_BOTTOM_LEFT.lock().unwrap_or_else(|e| e.into_inner()) = corner.transform;
+    *HUD_CENTRE.lock().unwrap_or_else(|e| e.into_inner()) = (centre.0, centre.1.transform);
+}
+
+/// Where the game's reticle is in the first view: its centre in guest
+/// pixels, and the fit ([`UiFit::transform`]) of HUD art about that
+/// centre (identity at 4:3).
+pub fn hud_centre_fit() -> ([f32; 2], [f32; 4]) {
+    *HUD_CENTRE.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 /// How the host moves the first view's bottom-left HUD group: guest pixel
@@ -513,7 +539,7 @@ mod tests {
     }
 
     #[test]
-    fn the_first_views_bottom_left_fit_is_published_for_host_marks() {
+    fn the_first_views_bottom_left_fit_and_centre_are_published_for_host_marks() {
         let canvas = |rect, pinned| Canvas {
             output: (1920, 1080),
             rect,
@@ -540,6 +566,33 @@ mod tests {
         // 4:3: no fit.
         publish_hud_corner(None);
         assert_eq!(hud_bottom_left_fit(), UiFit::IDENTITY.transform);
+        assert_eq!(
+            hud_centre_fit(),
+            (RETICLE_CENTRE, UiFit::IDENTITY.transform)
+        );
+
+        // The reticle's centre and fit, from the same publish.
+        publish_hud_corner(Some(canvas(FULL, true)));
+        let (centre, [sx, sy, ox, oy]) = hud_centre_fit();
+        assert_eq!(centre, [320.0, 240.0]);
+        close(sx, 0.75);
+        close(sy, 1.0);
+        // The centre maps to itself.
+        close(centre[0] * sx + ox, 320.0);
+        close(centre[1] * sy + oy, 240.0);
+        // The first view of a split screen is centred on its own rect.
+        let upper = PixelRect {
+            x: 0,
+            y: 0,
+            width: 640,
+            height: 240,
+        };
+        publish_hud_corner(Some(canvas(upper, true)));
+        assert_eq!(hud_centre_fit().0, [320.0, 120.0]);
+        // A second view elsewhere leaves it.
+        publish_hud_corner(Some(canvas(lower, true)));
+        assert_eq!(hud_centre_fit().0, [320.0, 120.0]);
+        publish_hud_corner(None);
     }
 
     #[test]
