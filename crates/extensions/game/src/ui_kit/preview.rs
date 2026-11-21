@@ -174,6 +174,38 @@ pub struct Disc {
     openers: RefCell<HashMap<Opener, Option<Drawn>>>,
 }
 
+/// The screen ids of `shared.map`'s screen tags, sorted: what a game's UI
+/// can build a screen on (a screen of ours on a retail base needs its base
+/// here, `crate::forge_screens`).
+pub fn shared_screen_ids(iso: &Path) -> Result<Vec<i16>> {
+    let mut x = xiso::Xiso::open(BufReader::new(
+        File::open(iso).with_context(|| iso.display().to_string())?,
+    ))?;
+    let part = x.partition_offset();
+    let e = x
+        .entries()?
+        .into_iter()
+        .find(|e| e.path.eq_ignore_ascii_case("/maps/shared.map"))
+        .ok_or_else(|| anyhow!("/maps/shared.map is not on the disc"))?;
+    let base = part + u64::from(e.sector) * xiso::SECTOR;
+    let mut m = map::Map::from_region(BufReader::new(File::open(iso)?), base, e.size.into())?;
+    let ids: Vec<TagId> = m
+        .tags()
+        .iter()
+        .filter(|t| t.group == tui::SCREEN)
+        .map(|t| t.id)
+        .collect();
+    let mut src = MapSource::new(&mut m);
+    let mut v = Vec::new();
+    for t in ids {
+        if let UiTag::Screen(sc) = src.decode_tag(t)?.tag {
+            v.push(sc.screen_id);
+        }
+    }
+    v.sort_unstable();
+    Ok(v)
+}
+
 /// A view and its picture, shared.
 type Drawn = std::sync::Arc<(View, Canvas)>;
 

@@ -19,6 +19,7 @@ pub mod agent_glue;
 pub mod forge_controls;
 pub mod forge_glue;
 pub mod forge_lobby;
+pub mod forge_screens;
 mod forge_map;
 mod agent_route;
 pub mod aim_assist;

@@ -48,20 +48,27 @@ fn palette_to_properties_to_confirmed_engine_handle() {
     let mut e = editor();
     calls::lock(&e.calls).arm();
     e.tool.monitor = true;
+    // X with nothing aimed at: the object menu, on its groups.
     e.command(1, Command::Palette).unwrap();
-    e.command(2, Command::DialogAccept).unwrap(); // Crates
-    e.command(3, Command::DialogAccept).unwrap(); // Shelf
-    assert!(e.dialog.is_none());
+    assert_eq!(screens::take_request(), Some(Kind::Objects));
+    let objects = screens::screen(Kind::Objects).sheet();
+    assert_eq!(objects.rows.len(), 1, "one group, Crates");
+    assert_eq!(objects.rows[0].label, "Crates");
+    // The picker's choice: the shelf.
+    e.choose(2, Choice::Select(0)).unwrap();
     assert_eq!(e.tool.placing, Some(0));
     let frame = Frame {
         position: [3., 0., 0.],
         rotation: [0.; 3],
     };
     e.tool.ghost = Some(frame);
+    // X while placing: Properties, its Heading row first.
     e.command(4, Command::Properties).unwrap();
-    e.command(5, Command::DialogAccept).unwrap(); // Heading
-    e.command(6, Command::DialogDown).unwrap();
-    e.command(7, Command::DialogAccept).unwrap();
+    assert_eq!(screens::take_request(), Some(Kind::Properties));
+    let props = screens::screen(Kind::Properties).sheet();
+    assert_eq!(props.title, "SHELF");
+    assert_eq!(props.rows[0].label, "Heading");
+    e.choose(7, Choice::Set(Prop::Heading, 1)).unwrap();
     let frame = e.tool.ghost.unwrap();
     assert_eq!(frame.rotation[0], 45f32.to_radians());
     e.command(8, Command::Place { item: 0, frame }).unwrap();
@@ -126,4 +133,36 @@ fn palette_to_properties_to_confirmed_engine_handle() {
     e.poll(15);
     assert_eq!(e.session.objects()[0].id, id);
     assert_eq!(e.session.objects()[0].handle, 32);
+}
+
+/// The tools and their settings are screens of their own; a choice on
+/// them sets the tool, and the screens' facts follow it.
+#[test]
+fn tools_and_settings_open_and_their_choices_set_the_tool() {
+    let mut e = editor();
+    e.tool.monitor = true;
+    e.command(1, Command::Tools).unwrap();
+    assert_eq!(screens::take_request(), Some(Kind::Tools));
+    e.choose(2, Choice::Tool(ToolKind::Links)).unwrap();
+    assert!(e.tool.links);
+    e.command(3, Command::Settings).unwrap();
+    assert_eq!(screens::take_request(), Some(Kind::Settings));
+    e.choose(4, Choice::Set(Prop::RotationSnap, 3)).unwrap();
+    assert_eq!(e.rotation_step, 3);
+    // The Forge menu is GAME MENU's, refused by name here.
+    assert!(e.command(5, Command::Menu).unwrap_err().contains("Start"));
+}
+
+/// A second screen while one is opening is refused by name, never
+/// stacked.
+#[test]
+fn one_screen_at_a_time() {
+    let mut e = editor();
+    e.tool.monitor = true;
+    e.command(1, Command::Palette).unwrap();
+    assert_eq!(
+        e.command(2, Command::Tools),
+        Err("A Forge screen is up.".into())
+    );
+    screens::take_request();
 }

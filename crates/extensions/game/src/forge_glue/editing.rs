@@ -1,11 +1,13 @@
 //! Translates one local input stream into tool commands. A staged session
 //! becomes visible only when the queued game call has returned its handle.
+//! Its screens are the game's (`crate::forge_screens`): it builds their
+//! sheets and acts on their choices.
 use super::{GENERATION, admitted, controls};
 use agent::forge::local::{ForgeEdit, ForgeWorld, Guard, ProposalReply};
 use agent::sim::calls;
 use forge::tool::{Command, Tool};
 use forge::{BlockKind, Linkable, OpId, PaletteItem, Session};
-use forge_doc::{ActiveLink, Endpoint, Entry, Link as DocLink, Op, Sha256};
+use forge_doc::{ActiveLink, Endpoint, Entry, Link as DocLink, LogHead, Op, Sha256};
 use serde_json::{Value, json};
 use std::{
     path::{Path, PathBuf},
@@ -13,9 +15,12 @@ use std::{
 };
 
 use crate::forge_map::Opened;
+use crate::forge_screens::{
+    self as screens, Facts,
+    sheet::{self, Ask, Choice, Group, Kind, Prop, Sheet, Tool as ToolKind},
+};
 use crate::ui_kit::{
-    forge::{ANGLE_STEPS, Action, Dialogs, HEADINGS, Hud, Mode},
-    input::Input,
+    forge::{ANGLE_STEPS, HEADINGS, Hud, Mode},
     spec::ScreenSpec,
 };
 
@@ -31,8 +36,10 @@ struct Pending {
 }
 
 enum FileResult {
-    Menu(Vec<String>),
-    Saved(String),
+    /// The saved maps, for Load.
+    Names(Vec<String>),
+    /// Saved as this name; the saved maps after.
+    Saved(String, Vec<String>),
     Loaded(Pending),
 }
 
@@ -43,7 +50,6 @@ pub(super) struct Editor {
     guard: Guard,
     calls: calls::Shared,
     tool: Tool,
-    dialog: Option<Dialogs>,
     pending: Option<Pending>,
     file_job: Option<mpsc::Receiver<Result<FileResult, String>>>,
     data: PathBuf,
@@ -51,12 +57,25 @@ pub(super) struct Editor {
     selected: usize,
     rotation_step: usize,
     notice: Option<(String, u32)>,
-    /// The link the open LINK dialog shows.
+    /// The link the Link dialog shows.
     link_dialog: Option<OpId>,
+    /// The object the delete question is about.
+    delete_asked: Option<OpId>,
+    /// The name the overwrite question is about.
+    overwrite_asked: Option<String>,
+    /// The log head as last saved or loaded: edits since are not saved.
+    saved_head: LogHead,
+    /// The saved maps, for Load.
+    saved: Vec<String>,
+    /// They were asked for, at the first tick.
+    listed: bool,
+    /// A screen is up, ours or the game's.
+    ui_up: bool,
 }
 
 impl Editor {
     pub fn new(opened: Opened, data: &Path, scenario: u32, calls: calls::Shared) -> Self {
+        let saved_head = opened.session.head();
         Self {
             session: Arc::new(opened.session),
             tags: opened.tags.into(),
@@ -68,7 +87,6 @@ impl Editor {
             },
             calls,
             tool: Tool::default(),
-            dialog: None,
             pending: None,
             file_job: None,
             data: data.into(),
@@ -77,13 +95,19 @@ impl Editor {
             rotation_step: 2,
             notice: None,
             link_dialog: None,
+            delete_asked: None,
+            overwrite_asked: None,
+            saved_head,
+            saved: Vec::new(),
+            listed: false,
+            ui_up: false,
         }
     }
 
     /// Loads the saved map `name` into the session as it opens (the Forge
     /// lobby's choice). A refusal is the editor's notice.
     pub fn load_draft(&mut self, tick: u32, name: String) {
-        if let Err(reason) = self.action(tick, Action::Load(name)) {
+        if let Err(reason) = self.choose(tick, Choice::Load(name)) {
             self.notice = Some((reason, tick));
         }
     }
@@ -93,7 +117,7 @@ impl Editor {
     }
 
     pub fn ghost(&self) -> Option<forge::Frame> {
-        if self.monitor() && self.dialog.is_none() {
+        if self.monitor() && !self.ui_up {
             self.tool.ghost
         } else {
             None
@@ -101,9 +125,9 @@ impl Editor {
     }
 
     pub fn status(&self) -> Value {
-        let screen = self.page().map(|s| {
+        let screen = screens::shown().map(|s| {
             json!({
-                "name":s.name, "title":s.title, "focus":(!s.rows.is_empty()).then_some(s.focus),
+                "name":s.kind.screen(), "title":s.title, "focus":(!s.rows.is_empty()).then_some(s.focus),
                 "rows":s.rows.iter().map(|r| &r.label).collect::<Vec<_>>(),
             })
         });
@@ -112,7 +136,8 @@ impl Editor {
             "camera":self.tool.camera.map(|c| json!({"position":c.position,"yaw":c.yaw,"pitch":c.pitch})),
             "aimed":self.tool.aimed, "held":self.tool.held, "placing":self.tool.placing,
             "screen":screen, "head":self.session.head(), "pending_rebuild":self.session.pending_rebuild(),
-            "tool":if self.tool.links { "links" } else { "objects" },
+            "tool":if self.tool.links { "links" } else { "objects" }, "fine":controls::fine(),
+            "ui_up":self.ui_up, "dirty":self.dirty(),
             "aimed_link":self.tool.aimed_link.map(linkable_json), "link_from":self.tool.link_from.map(linkable_json),
             "teleporters":self.session.teleporters().iter().map(|t| json!({
                 "flag":t.index, "sender":t.sender, "channel":t.channel, "position":t.position,
@@ -220,19 +245,6 @@ impl Editor {
         }
     }
 
-    fn link_rows(&self, active: &ActiveLink) -> Vec<(String, String)> {
-        let [from, to] = active.link.endpoints();
-        let mut rows = vec![
-            ("From".to_string(), self.endpoint(from)),
-            ("To".to_string(), self.endpoint(to)),
-        ];
-        rows.push(match active.link {
-            DocLink::Teleporter { channel, .. } => ("Channel".into(), channel.to_string()),
-            DocLink::Device { .. } => ("Device group".into(), "Rebuild map to apply".into()),
-        });
-        rows
-    }
-
     fn hud(&self) -> Hud {
         if self.tool.links {
             let mode = if self.tool.link_from.is_some() {
@@ -274,23 +286,30 @@ impl Editor {
         }
     }
 
+    /// The compositor's HUD (slice U3 moves it to the HUD kit). The
+    /// screens are the game's, so the compositor draws none.
     pub fn page(&self) -> Option<ScreenSpec> {
-        if !self.tool.monitor {
-            return None;
-        }
-        let hud = self.hud();
-        Some(match &self.dialog {
-            Some(d) => d.spec(&hud),
-            None => hud.spec(),
-        })
+        self.tool.monitor.then(|| self.hud().spec())
     }
 
-    pub fn click(&mut self, row: usize) -> bool {
-        if self.dialog.is_none() || self.busy() {
-            return false;
+    /// Edits since the last save or load.
+    fn dirty(&self) -> bool {
+        self.session.head() != self.saved_head
+    }
+
+    /// What X opens: Properties with something aimed at or held, else the
+    /// object menu (the Links tool: the aimed thing's Link dialog).
+    fn x_properties(&self) -> bool {
+        if self.tool.links {
+            self.tool.link_from.is_none() && self.tool.aimed_link.is_some()
+        } else {
+            self.tool.aimed.is_some() || self.tool.held.is_some() || self.tool.placing.is_some()
         }
-        controls::click(row);
-        true
+    }
+
+    /// Whether B has something to cancel.
+    fn cancellable(&self) -> bool {
+        self.tool.held.is_some() || self.tool.placing.is_some() || self.tool.link_from.is_some()
     }
 
     fn stage(
@@ -338,7 +357,7 @@ impl Editor {
                     After::Load(name) => {
                         self.notice = Some((format!("Loaded {name}."), tick));
                         self.filename = Some(name);
-                        self.dialog = None;
+                        self.saved_head = self.session.head();
                         self.tool.clear_selection();
                     }
                     After::Proposal(reply) => {
@@ -362,7 +381,18 @@ impl Editor {
         }
     }
 
-    pub fn tick(&mut self, tick: u32, bsp: Option<usize>) {
+    /// One game tick. `ui_up`: a screen is up over the world, ours or the
+    /// game's (`forge_screens::ui_up`).
+    pub fn tick(&mut self, tick: u32, bsp: Option<usize>, ui_up: bool) {
+        self.ui_up = ui_up;
+        if !self.listed && !self.busy() {
+            self.listed = true;
+            let data = self.data.clone();
+            if let Err(reason) = self.file(move || forge::saved_names(&data).map(FileResult::Names))
+            {
+                self.notice = Some((reason, tick));
+            }
+        }
         if self
             .notice
             .as_ref()
@@ -373,36 +403,59 @@ impl Editor {
         self.poll_file(tick);
         self.poll(tick);
         if !self.busy() {
+            for choice in screens::take_choices() {
+                if let Err(error) = self.choose(tick, choice) {
+                    self.notice = Some((error, tick));
+                }
+            }
+        }
+        if !self.busy() {
             if self.tool.monitor && self.tool.camera.is_none() {
                 self.tool.camera = controls::eye();
             }
             let mut input = controls::sample();
-            input.dialog = self.dialog.is_some();
-            let result = if let (Some(row), Some(d)) = (input.click, self.dialog.as_mut()) {
-                let action = d.click(row);
-                self.action(tick, action)
-            } else {
-                let walls = bsp.and_then(|i| self.walls.get(i));
-                self.tool
-                    .update_with_surface(&self.session, tick, input, |c| {
-                        walls?.hit(c.position, c.point(80.)).map(|(t, _)| t * 80.)
-                    })
-                    .and_then(|cmd| match cmd {
-                        Some(cmd) => self.command(tick, cmd),
-                        None => Ok(()),
-                    })
-            };
+            input.dialog = self.ui_up;
+            let walls = bsp.and_then(|i| self.walls.get(i));
+            let result = self
+                .tool
+                .update_with_surface(&self.session, tick, input, |c| {
+                    walls?.hit(c.position, c.point(80.)).map(|(t, _)| t * 80.)
+                })
+                .and_then(|cmd| match cmd {
+                    Some(cmd) => self.command(tick, cmd),
+                    None => Ok(()),
+                });
             if let Err(error) = result {
                 self.notice = Some((error, tick));
             }
             self.poll(tick);
         }
-        controls::publish(
-            true,
-            self.tool.monitor,
-            self.dialog.is_some(),
-            self.tool.camera,
-        );
+        self.publish();
+    }
+
+    /// The session's state for the input bridge and the screens.
+    fn publish(&self) {
+        controls::publish(controls::State {
+            active: true,
+            monitor: self.tool.monitor,
+            screen: self.ui_up,
+            camera: self.tool.camera,
+            x_properties: self.x_properties(),
+            cancel: self.cancellable(),
+        });
+        screens::publish(Facts {
+            active: true,
+            dirty: self.dirty(),
+            pending_rebuild: self.session.pending_rebuild(),
+            rotation_snap: self.rotation_step,
+            tool: Some(if self.tool.links {
+                ToolKind::Links
+            } else {
+                ToolKind::Objects
+            }),
+            saved: self.saved.clone(),
+            filename: self.filename.clone(),
+        });
     }
 
     fn busy(&self) -> bool {
@@ -431,17 +484,16 @@ impl Editor {
         };
         self.file_job = None;
         match result {
-            Ok(FileResult::Menu(names)) => self.dialog = Some(Dialogs::menu(names)),
-            Ok(FileResult::Saved(name)) => {
+            Ok(FileResult::Names(names)) => self.saved = names,
+            Ok(FileResult::Saved(name, names)) => {
                 self.notice = Some((format!("Saved {name}."), tick));
                 self.filename = Some(name);
-                self.dialog = None;
+                self.saved = names;
+                // No edit runs while a file job does: this is what was saved.
+                self.saved_head = self.session.head();
             }
             Ok(FileResult::Loaded(pending)) => self.pending = Some(pending),
-            Err(reason) => {
-                self.dialog = None;
-                self.notice = Some((reason, tick));
-            }
+            Err(reason) => self.notice = Some((reason, tick)),
         }
     }
 
@@ -449,10 +501,9 @@ impl Editor {
         use Command::*;
         match cmd {
             Palette => {
-                self.dialog = Some(Dialogs::grouped_palette(
-                    groups(self.session.palette()),
-                    self.selected,
-                ))
+                let sheet = sheet::objects(&self.items(), self.selected)
+                    .ok_or("This map has nothing to place.")?;
+                screens::open(sheet)?;
             }
             Properties if self.tool.links => {
                 let thing = self
@@ -464,32 +515,32 @@ impl Editor {
                     .links_of(thing)
                     .pop()
                     .ok_or("Not linked. Press A to start a link.")?;
-                self.dialog = Some(Dialogs::link(self.link_rows(&active)));
+                screens::open(self.link_sheet(&active))?;
                 self.link_dialog = Some(active.id);
             }
             Properties => {
                 let (item, frame) = self.target().ok_or("Aim at a Forge object.")?;
-                self.dialog = Some(Dialogs::properties(
-                    label(item),
-                    self.rotation_step,
-                    frame.rotation[0],
-                ));
+                let name = label(item);
+                let sheet = sheet::properties_sheet(
+                    &name,
+                    Group::of_block(item.block),
+                    frame.rotation[0].to_degrees(),
+                )
+                .ok_or_else(|| format!("{name} has no properties to set."))?;
+                screens::open(sheet)?;
             }
-            Menu => {
-                let data = self.data.clone();
-                return self.file(move || forge::saved_names(&data).map(FileResult::Menu));
-            }
+            Tools => screens::request(Kind::Tools)?,
+            Settings => screens::request(Kind::Settings)?,
+            Menu => return Err("The Forge menu is GAME MENU: press Start.".into()),
             DialogUp | DialogDown | DialogAccept | DialogBack => {
-                let input = match cmd {
-                    DialogUp => Input::Up,
-                    DialogDown => Input::Down,
-                    DialogAccept => Input::A,
-                    _ => Input::B,
-                };
-                if let Some(d) = self.dialog.as_mut() {
-                    let action = d.press(input);
-                    self.action(tick, action)?;
-                }
+                return Err("A screen is up; it takes the pad.".into());
+            }
+            Delete { id }
+                if self.delete_asked.is_none()
+                    && !self.session.links_of(Linkable::Object(id)).is_empty() =>
+            {
+                screens::open(sheet::question(Ask::DeleteLinked, ""))?;
+                self.delete_asked = Some(id);
             }
             _ => {
                 return self.stage(After::Tool(cmd.clone()), move |s, w| match cmd {
@@ -500,58 +551,108 @@ impl Editor {
                     Unlink { link } => s.unlink(w, tick, link),
                     Undo => s.undo(w, tick),
                     Redo => s.redo(w, tick),
-                    _ => unreachable!("dialog command routed above"),
+                    _ => unreachable!("screen commands are routed above"),
                 });
             }
         }
         Ok(())
     }
 
-    fn action(&mut self, tick: u32, action: Action) -> Result<(), String> {
-        match action {
-            Action::None => return Ok(()),
-            Action::Close => (),
-            Action::Unlink => {
-                let link = self.link_dialog.take().ok_or("The link is gone.")?;
-                self.dialog = None;
-                return self.command(tick, Command::Unlink { link });
-            }
-            Action::Select(i) => {
+    /// The palette as the object menu lists it: each object's group, name,
+    /// how many are placed and how many more fit.
+    fn items(&self) -> Vec<sheet::Item> {
+        let left = self
+            .session
+            .budget()
+            .saturating_sub(self.session.objects().len());
+        groups(self.session.palette())
+            .into_iter()
+            .enumerate()
+            .map(|(i, (group, name))| sheet::Item {
+                group,
+                name,
+                placed: self
+                    .session
+                    .objects()
+                    .iter()
+                    .filter(|o| self.session.palette().get(i) == Some(&o.item))
+                    .count(),
+                left,
+            })
+            .collect()
+    }
+
+    fn link_sheet(&self, active: &ActiveLink) -> Sheet {
+        let [from, to] = active.link.endpoints();
+        let writes = match active.link {
+            DocLink::Teleporter { channel, .. } => format!("Channel {channel}"),
+            DocLink::Device { .. } => "Its device group applies on Rebuild map.".into(),
+        };
+        sheet::link(&self.endpoint(from), &self.endpoint(to), &writes)
+    }
+
+    /// A screen's choice.
+    fn choose(&mut self, tick: u32, choice: Choice) -> Result<(), String> {
+        match choice {
+            Choice::Select(i) => {
                 self.selected = i;
                 self.tool.select(i);
             }
-            Action::RotationStep(i) => {
+            Choice::Tool(t) => self.tool.set_links(t == ToolKind::Links),
+            Choice::Set(Prop::RotationSnap, i) => {
+                let step = *ANGLE_STEPS.get(i).ok_or("No such rotation snap.")?;
                 self.rotation_step = i;
-                self.tool.set_rotation_step(ANGLE_STEPS[i]);
+                self.tool.set_rotation_step(step);
             }
-            Action::Heading(i) => {
-                let yaw = HEADINGS[i].to_radians();
+            Choice::Set(Prop::Heading, i) => {
+                let yaw = HEADINGS.get(i).ok_or("No such heading.")?.to_radians();
                 if self.tool.placing.is_some() || self.tool.held.is_some() {
                     self.tool.set_heading(yaw);
                 } else {
                     let id = self.tool.aimed.ok_or("Aim at a Forge object.")?;
                     let (_, mut frame) = self.target().ok_or("The object is gone.")?;
                     frame.rotation[0] = yaw;
-                    self.command(tick, Command::Move { id, frame })?;
+                    return self.command(tick, Command::Move { id, frame });
                 }
             }
-            Action::Save | Action::SaveAs => {
-                let data = self.data.clone();
-                let session = self.session.clone();
-                let filename = (action == Action::Save)
-                    .then(|| self.filename.clone())
-                    .flatten();
-                return self.file(move || {
-                    let name = if let Some(name) = filename {
-                        session.save(&data, &name)?;
-                        name
-                    } else {
-                        session.save_new(&data, &session.document().base.map)?
-                    };
-                    Ok(FileResult::Saved(name))
-                });
+            Choice::Unlink => {
+                let link = self.link_dialog.take().ok_or("The link is gone.")?;
+                return self.command(tick, Command::Unlink { link });
             }
-            Action::Load(name) => {
+            Choice::Answer {
+                ask: Ask::DeleteLinked,
+                yes,
+            } => {
+                let id = self.delete_asked.take().ok_or("The object is gone.")?;
+                if yes {
+                    return self.stage(After::Tool(Command::Delete { id }), move |s, w| {
+                        s.delete(w, tick, id)
+                    });
+                }
+            }
+            Choice::Answer {
+                ask: Ask::Overwrite,
+                yes,
+            } => {
+                let name = self.overwrite_asked.take().ok_or("Nothing to save.")?;
+                if yes {
+                    return self.save(Some(name));
+                }
+            }
+            // Leave Game's answer is the screens' own (`forge_screens`).
+            Choice::Answer {
+                ask: Ask::Leave, ..
+            } => {}
+            Choice::Save => return self.save(self.filename.clone()),
+            Choice::SaveAs(name) => {
+                if Some(&name) != self.filename.as_ref() && self.saved.contains(&name) {
+                    screens::open(sheet::question(Ask::Overwrite, &name))?;
+                    self.overwrite_asked = Some(name);
+                } else {
+                    return self.save(Some(name));
+                }
+            }
+            Choice::Load(name) => {
                 let (data, session, tags, calls, guard) = (
                     self.data.clone(),
                     self.session.clone(),
@@ -573,9 +674,24 @@ impl Editor {
                     }))
                 });
             }
+            Choice::Notice(text) => self.notice = Some((text, tick)),
         }
-        self.dialog = None;
         Ok(())
+    }
+
+    /// Saves as `name`, or as a new name from the map's when none.
+    fn save(&mut self, name: Option<String>) -> Result<(), String> {
+        let data = self.data.clone();
+        let session = self.session.clone();
+        self.file(move || {
+            let name = if let Some(name) = name {
+                session.save(&data, &name)?;
+                name
+            } else {
+                session.save_new(&data, &session.document().base.map)?
+            };
+            Ok(FileResult::Saved(name, forge::saved_names(&data)?))
+        })
     }
 }
 
@@ -588,7 +704,9 @@ fn resolve(session: &Session, tags: &[u32], tag: &forge::TagKey) -> Result<u32, 
         .ok_or_else(|| format!("The map has no {} tag named {}.", tag.group, tag.path))
 }
 
-fn groups(items: &[PaletteItem]) -> Vec<(String, String)> {
+/// Each palette item's object-menu group and name: its tag's last part,
+/// or its whole path where two items of a block share the last part.
+fn groups(items: &[PaletteItem]) -> Vec<(Group, String)> {
     let mut counts = std::collections::BTreeMap::new();
     for item in items {
         *counts.entry((item.block, label(item))).or_insert(0usize) += 1;
@@ -596,8 +714,7 @@ fn groups(items: &[PaletteItem]) -> Vec<(String, String)> {
     items
         .iter()
         .map(|item| {
-            let mut group = item.block.name().replace('_', " ");
-            group[..1].make_ascii_uppercase();
+            let group = Group::of_block(item.block);
             let name = label(item);
             let name = if counts[&(item.block, name.clone())] > 1 {
                 item.tag.path.clone()

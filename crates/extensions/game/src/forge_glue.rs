@@ -68,13 +68,11 @@ pub fn gizmo() -> Option<gizmo::Axes> {
     gizmo::project(frame)
 }
 
-/// A mouse click is delivered at the same game boundary as a controller press.
-pub fn click(row: usize) -> bool {
-    let Some(driver) = current() else {
-        return false;
-    };
-    let mut driver = driver.lock().unwrap_or_else(|e| e.into_inner());
-    driver.editor.as_mut().is_some_and(|e| e.click(row))
+/// A click on a compositor dialog's row. The Forge screens are the game's
+/// (`crate::forge_screens`), which take the mouse as the game does, so the
+/// compositor draws no dialog and no click is the session's.
+pub fn click(_row: usize) -> bool {
+    false
 }
 
 fn admitted(m: &dyn engine::GuestMemory, generation: u64) -> bool {
@@ -101,7 +99,8 @@ impl Driver {
         self.opening = None;
         self.loaded = None;
         self.reason = "Waiting for a local multiplayer map.".into();
-        controls::publish(false, false, false, None);
+        controls::publish(controls::State::default());
+        crate::forge_screens::publish(crate::forge_screens::Facts::default());
     }
 
     fn open(&mut self, loaded: &Loaded) -> Result<(), String> {
@@ -184,7 +183,7 @@ impl Driver {
             if let Some(name) = self.draft.take() {
                 e.load_draft(tick, name);
             }
-            e.tick(tick, bsp);
+            e.tick(tick, bsp, crate::forge_screens::ui_up(m));
         }
     }
 }
@@ -273,7 +272,8 @@ pub fn install(
         .add(&Hooks(driver.clone()))
         .map_err(anyhow::Error::msg)?
     {
-        controls::publish(false, false, false, None);
+        controls::publish(controls::State::default());
+        crate::forge_screens::install(registry)?;
         crate::forge_lobby::install(registry, data)?;
         *CURRENT.lock().unwrap_or_else(|e| e.into_inner()) = Arc::downgrade(&driver);
         if let Some(a) = agent {
