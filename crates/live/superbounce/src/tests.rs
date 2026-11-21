@@ -35,8 +35,25 @@ fn poly(verts: &[Vec3], normal: Vec3) -> Poly {
     }
 }
 
+/// The two-joint slots (single creases are [`creases`]).
 fn bounces(spots: &[Spot]) -> Vec<&Spot> {
-    spots.iter().filter(|s| s.kind == Kind::Bounce).collect()
+    spots
+        .iter()
+        .filter(|s| s.kind == Kind::Bounce && s.shape == Shape::Slot)
+        .collect()
+}
+fn creases(spots: &[Spot]) -> Vec<&Spot> {
+    spots
+        .iter()
+        .filter(|s| s.kind == Kind::Bounce && s.shape == Shape::Crease)
+        .collect()
+}
+/// A measured priming place at `at`, for a [`Context`].
+fn place(at: Vec3) -> Prime {
+    Prime {
+        at,
+        ..Prime::default()
+    }
 }
 fn crouches(spots: &[Spot]) -> Vec<&Spot> {
     spots.iter().filter(|s| s.kind == Kind::Crouch).collect()
@@ -955,7 +972,7 @@ fn a_proven_spot_is_kept_out_of_play_and_ranks_first() {
     let polys = high_and_low();
     let ctx = Context {
         spawns: vec![[1.0, 0.2, 0.01]],
-        proven: vec![[23.0, 1.0, -4.99]],
+        proven: vec![place([23.0, 1.0, -4.99])],
     };
     let spots = scan_in(&polys, &ctx);
     let c = crouches(&spots);
@@ -1060,7 +1077,7 @@ fn a_proven_spot_survives_a_cut_that_would_drop_it_by_score() {
     // measured priming place under it keeps it, first, and it crowds out
     // the other instead.
     let ctx = Context {
-        proven: vec![[-5.0, 4.0, -3.19]],
+        proven: vec![place([-5.0, 4.0, -3.19])],
         ..Context::default()
     };
     let c = crouches(&scan_in(&polys, &ctx))
@@ -1076,17 +1093,24 @@ fn a_proven_spot_survives_a_cut_that_would_drop_it_by_score() {
         r.kept && r.status == Status::Proven && rule(r, "proven").pass,
         "{r:?}"
     );
-    // A point more than 0.3 from every sample proves nothing.
+    // A place more than 0.3 from every sample proves no region: it is a
+    // proven spot of its own where it was measured, and crowds out the
+    // ceiling at −5 (2.2 away) but not the one at −7 (3.3).
     let off = Context {
-        proven: vec![[-5.0, 6.0, -3.19]],
+        proven: vec![place([-5.0, 6.0, -3.19])],
         ..Context::default()
     };
     let c = crouches(&scan_in(&polys, &off))
         .into_iter()
         .copied()
         .collect::<Vec<_>>();
+    assert_eq!(c.len(), 2, "{c:?}");
+    assert_eq!(
+        (c[0].stand, c[0].status),
+        ([-5.0, 6.0, -3.19], Status::Proven)
+    );
     assert!(
-        c.len() == 1 && c[0].status == Status::Likely && c[0].stand[0] < -7.0,
+        c[1].status == Status::Likely && c[1].stand[0] < -7.0,
         "{c:?}"
     );
 }
@@ -1118,7 +1142,10 @@ fn the_ascension_corner_is_proven_on_ascension() {
         proven: proven("Ascension"),
         ..Context::default()
     };
-    assert_eq!(ctx.proven, vec![[-10.91, 0.72, -1.16]]);
+    assert_eq!(
+        ctx.proven.iter().map(|p| p.at).collect::<Vec<_>>(),
+        vec![[-10.91, 0.72, -1.16]]
+    );
     let c = crouches(&scan_in(&polys, &ctx))
         .into_iter()
         .copied()
@@ -1139,4 +1166,173 @@ fn a_lip_keeps_at_most_eight_edges() {
     assert_eq!(lip.len(), MAX_LIP);
     assert_eq!(lip.edges(), &[e; MAX_LIP]);
     assert!(Lip::default().is_empty());
+}
+
+// ---- single creases and measured places with no region ----
+
+/// The Zanzibar window's landing, from the lab run (job 0043): flat floor
+/// at z 2.10 (x 1.8 to 6.0, y −26.70 to −22.2) meeting a 17.6° ramp,
+/// normal (0, 0.3033, 0.9529), that rises south to z 2.40 at y −27.64.
+fn zanzibar_crease() -> Vec<Poly> {
+    vec![
+        flat([1.8, 6.0], [-26.7, -22.2], 2.1, true),
+        quad(
+            [
+                [1.8, -27.64, 2.4],
+                [6.0, -27.64, 2.4],
+                [6.0, -26.7, 2.1],
+                [1.8, -26.7, 2.1],
+            ],
+            [0.0, 0.3033, 0.9529],
+        ),
+    ]
+}
+
+#[test]
+fn the_zanzibar_crease_is_a_single_crease_candidate() {
+    let spots = scan(&zanzibar_crease());
+    // No second joint: no slot.
+    assert!(bounces(&spots).is_empty(), "{spots:?}");
+    let c = creases(&spots);
+    assert_eq!(c.len(), 1, "{spots:?}");
+    let s = c[0];
+    for p in s.edge {
+        assert!(
+            (p[1] + 26.7).abs() < 1e-3 && (p[2] - 2.1).abs() < 1e-3,
+            "{:?}",
+            s.edge
+        );
+    }
+    assert!(
+        (dist(s.edge[0], s.edge[1]) - 4.2).abs() < 1e-3,
+        "{:?}",
+        s.edge
+    );
+    // Onto the flat floor, away from the ramp.
+    assert!(
+        s.drift[0].abs() < 1e-3 && (s.drift[1] - 1.0).abs() < 1e-3,
+        "{:?}",
+        s.drift
+    );
+    // The sphere touching both floors: 0.175 × tan(8.8°) ≈ 0.027 out.
+    assert!(
+        (s.stand[1] - (-26.7 + 0.027)).abs() < 0.003,
+        "{:?}",
+        s.stand
+    );
+    assert!((s.stand[2] - 2.11).abs() < 1e-3, "{:?}", s.stand);
+    // 111.3 × (1 − 0.9529): the small pop of the first try.
+    assert!((s.launch - 5.24).abs() < 0.1, "launch {}", s.launch);
+    assert_eq!((s.fall, s.status), (0.0, Status::Likely));
+    assert!(s.width > 0.0 && s.need > 0.0, "{s:?}");
+    assert!(s.score >= 0.3 && s.score <= 0.6 + 1e-5, "{}", s.score);
+}
+
+#[test]
+fn a_shallow_crease_is_no_candidate_and_explain_says_why() {
+    // A 5° ramp: 111.3 × (1 − cos 5°) ≈ 0.42 units/s.
+    let n = [0.0, 5f32.to_radians().sin(), 5f32.to_radians().cos()];
+    let rise = 5f32.to_radians().tan();
+    let polys = vec![
+        flat([0.0, 2.0], [0.0, 1.0], 0.0, true),
+        quad(
+            [
+                [0.0, -1.0, rise],
+                [2.0, -1.0, rise],
+                [2.0, 0.0, 0.0],
+                [0.0, 0.0, 0.0],
+            ],
+            n,
+        ),
+    ];
+    assert!(creases(&scan(&polys)).is_empty());
+    let e = explain_bounces(&polys, [1.0, 0.0, 0.0], 0.5);
+    assert_eq!(e.creases.len(), 1, "{e:?}");
+    let c = &e.creases[0];
+    assert!((c.dihedral - 5.0).abs() < 0.1, "{c:?}");
+    assert!(c.spot.is_none(), "{c:?}");
+    assert!(
+        c.rejected
+            .as_deref()
+            .is_some_and(|w| w.starts_with("launch 0.4")),
+        "{c:?}"
+    );
+    assert!(e.spots.is_empty());
+    // The Zanzibar one is judged a candidate, and listed.
+    let e = explain_bounces(&zanzibar_crease(), [4.876, -26.748, 2.1], 0.3);
+    assert_eq!(e.creases.len(), 1, "{e:?}");
+    assert!(e.creases[0].spot.is_some() && (e.creases[0].dihedral - 17.6).abs() < 0.2);
+    assert_eq!(e.spots.len(), 1);
+}
+
+#[test]
+fn a_slot_outranks_its_own_crease_and_the_crouch_rules_ignore_creases() {
+    let spots = scan(&ascension_patch(0.2));
+    let b: Vec<&Spot> = spots.iter().filter(|s| s.kind == Kind::Bounce).collect();
+    // The slot, then the crease at y 3.8 on its own.
+    assert_eq!(b.len(), 2, "{b:?}");
+    assert_eq!((b[0].shape, b[1].shape), (Shape::Slot, Shape::Crease));
+    assert!(b[0].score > b[1].score);
+    assert!((b[1].edge[0][1] - 3.8).abs() < 1e-3, "{:?}", b[1].edge);
+    assert!((b[1].launch - 17.85).abs() < 0.2, "{}", b[1].launch);
+    // A low ceiling 10 from the slot but 3 from a lone crease is not
+    // "by a strip": only slots count.
+    let mut polys = ascension_patch(0.2);
+    polys.extend(zanzibar_crease());
+    // A low ceiling over the Zanzibar floor, 2.6 from its crease.
+    polys.push(flat([3.6, 4.4], [-23.9, -23.1], 2.7, false));
+    let regions = explain(&polys, [4.0, -23.5, 2.11], 0.5);
+    let r = region_near(&regions, 4.0);
+    assert!(
+        !rule(r, "by a strip").pass || rule(r, "by a strip").note.contains("fewer than 3"),
+        "{r:?}"
+    );
+    assert!(rule(r, "by a strip").note.contains("(-10.6"), "{r:?}");
+}
+
+#[test]
+fn a_measured_place_with_no_region_is_a_proven_spot_where_it_was_measured() {
+    // The Zanzibar window: its lip is broken glass, an object the scan
+    // doesn't read, so the sill alone has no forced crouch.
+    let mut polys = zanzibar_crease();
+    polys.push(flat([5.2, 5.4], [-27.1, -26.1], 5.1, true));
+    let ctx = Context {
+        proven: proven("zanzibar"),
+        ..Context::default()
+    };
+    // The window, and the walk-out place from the same run.
+    assert_eq!(ctx.proven.len(), 2);
+    assert!(ctx.proven[0].note.contains("break the glass"));
+    assert!(ctx.proven[1].note.contains("walk out"));
+    let c = crouches(&scan_in(&polys, &ctx))
+        .into_iter()
+        .copied()
+        .collect::<Vec<_>>();
+    // Neither has a region in this geometry: both are spots as measured.
+    assert_eq!(c.len(), 2, "{c:?}");
+    assert!(c.iter().any(|s| s.stand == [8.07, -3.01, 4.51]), "{c:?}");
+    let s = *c
+        .iter()
+        .find(|s| s.stand[1] < -20.0)
+        .expect("the window spot");
+    assert_eq!(
+        (s.stand, s.status, s.score),
+        ([5.22, -26.285, 5.11], Status::Proven, 1.0)
+    );
+    assert_eq!(s.out, ctx.proven[0].out);
+    assert!(
+        (s.edge[0][2] - 5.1).abs() < 1e-4 && dist(s.edge[0], s.edge[1]) > 0.3,
+        "{:?}",
+        s.edge
+    );
+    let regions = explain_in(&polys, &ctx, [5.22, -26.285, 5.11], 0.3);
+    assert_eq!(regions.len(), 1, "{regions:?}");
+    let r = &regions[0];
+    assert!(
+        r.kept && r.samples == 0 && r.status == Status::Proven,
+        "{r:?}"
+    );
+    assert!(rule(r, "proven").note.contains("break the glass"), "{r:?}");
+    // Without the context, nothing.
+    assert!(crouches(&scan(&polys)).is_empty());
 }

@@ -4,7 +4,7 @@
 //! The bounce search is in `bounce.rs`, the forced-crouch search in
 //! `crouch.rs`.
 use crate::geom::{Bounds, Grid};
-use crate::{Context, CrouchRegion, Poly, Spot, Vec3};
+use crate::{BounceExplain, Context, CrouchRegion, Poly, Prime, Shape, Spot, Vec3};
 
 /// Grid cell (world units) for bucketing polygons on the ground plane.
 pub(crate) const CELL: f32 = 1.0;
@@ -24,15 +24,31 @@ pub(crate) struct Face<'a> {
 pub(crate) fn scan(polys: &[Poly], ctx: &Context) -> Vec<Spot> {
     let faces = faces(polys);
     let mut out = crate::bounce::bounces(&faces);
-    let crouches = crate::crouch::crouches(&faces, &out, &rules(&faces, ctx));
+    let crouches = crate::crouch::crouches(&faces, &slots(&out), &rules(&faces, ctx));
     out.extend(best(crouches));
     out
+}
+
+/// The two-joint slots: what the crouch rules measure "by a strip"
+/// against. A single crease is a candidate only, so it neither keeps a
+/// crouch spot nor scores one up.
+fn slots(bounces: &[Spot]) -> Vec<Spot> {
+    bounces
+        .iter()
+        .filter(|s| s.shape == Shape::Slot)
+        .copied()
+        .collect()
+}
+
+/// The bounce side of `--explain` (`crate::explain_bounces`).
+pub(crate) fn explain_bounces(polys: &[Poly], at: Vec3, r: f32) -> BounceExplain {
+    crate::bounce::explain(&faces(polys), at, r)
 }
 
 /// The forced-crouch regions near `at`, judged (`crate::explain`).
 pub(crate) fn explain(polys: &[Poly], ctx: &Context, at: Vec3, r: f32) -> Vec<CrouchRegion> {
     let faces = faces(polys);
-    let bounces = crate::bounce::bounces(&faces);
+    let bounces = slots(&crate::bounce::bounces(&faces));
     crate::crouch::explain(&faces, &bounces, &rules(&faces, ctx), at, r)
 }
 
@@ -41,7 +57,7 @@ pub(crate) struct Rules {
     /// The lowest starting location over the scanned geometry's bounds;
     /// `None` turns the in-play rule off.
     pub lowest: Option<Vec3>,
-    pub proven: Vec<Vec3>,
+    pub proven: Vec<Prime>,
 }
 
 /// Only starting locations over these polygons count: a scenario's

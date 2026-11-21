@@ -97,7 +97,8 @@ fn the_nearest_crouch_spot_is_by_straight_line() {
 fn the_spots_file_round_trips_and_refuses_damage() {
     let proven = Spot { status: superbounce::Status::Proven, ..crouch_spot([7.0, 8.0, 9.0]) };
     let failed = Spot { status: superbounce::Status::Failed, ..bounce_spot([7.0, 8.0, 9.0], 9.0, 0.5) };
-    let spots = vec![bounce_spot([1.0, 2.0, 3.0], 12.5, 0.7), crouch_spot([4.0, 5.0, 6.0]), proven, failed];
+    let crease = Spot { shape: superbounce::Shape::Crease, ..bounce_spot([2.0, 3.0, 4.0], 5.2, 0.5) };
+    let spots = vec![bounce_spot([1.0, 2.0, 3.0], 12.5, 0.7), crouch_spot([4.0, 5.0, 6.0]), proven, failed, crease];
     let stamp = Stamp::now(0xfeed);
     let b = to_bytes(&spots, stamp);
     assert_eq!(from_bytes(&b), Some((spots, stamp)));

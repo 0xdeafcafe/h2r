@@ -155,6 +155,36 @@ had ended on the ground at tick 2569. Unit flags were back to
 `00000003` and the hitbox offset 0 from then on. Two melee swings with
 no target did not lunge (mode stayed 1, offset 0).
 
+### Zanzibar's window (Trace, lab play)
+
+The user played the community's window bounce on Zanzibar on the lab
+(job 0043, input recording `zanzibar-window`), read about every 12 ticks
+through `superbounce.state` and `world.object`
+([the note](notes/superbounce-spots.md#2026-11-21-zanzibars-window-played)).
+The recipe: in the base facing the beach, the rear right inner window,
+break the glass, crouch under the shard left of the gap, let go, turn
+right, jump, fall onto the crack below.
+
+- **The prime.** The player crouched at (5.22, −26.285) on the window
+  sill (z 5.10). The lip that forces the crouch is the broken glass, an
+  object, not the structure or instanced geometry, so the scan sees none
+  there. The phase went `under`, then `held`, and the word turned −3 on
+  the jump, while still forced crouched: not on a walk out.
+- **The landing.** The floor below is z 2.10 meeting a 17.6° ramp
+  (normal (0, 0.3033, 0.9529)) along y −26.70, rising south to z 2.40.
+  That crack is one concave crease, not two joints, so it is no
+  [slot](#bounce). The first try fell from z 5.5 at −4.5 units/s near
+  (4.73, −26.15) and made a small pop. The second fell straight onto
+  (4.876, −26.748), 5 cm on the ramp side of the crease, and went
+  through the floor (z 2.86, then 0.44, then the player died).
+- **A second prime.** The same session crouched at (8.07, −3.01), z
+  4.51, three times. Twice the word turned −3 while walking out
+  (ticks about 8071 and 8655), within 0.5 of the rest point; the first
+  time it did not.
+
+Both prime places are rows in `superbounce::PROVEN`, and the crease is
+what [single creases](#single-creases) look for.
+
 ### The contacts on a bounce tick (Trace)
 
 A fourth trace recorded `trace.start player.0` (every tick,
@@ -500,6 +530,40 @@ Strips along one line (drift to 5°, position across to 5 cm, height to
 10 cm) that touch or overlap within 10 cm are merged into one spot, so a
 floor split into pieces gives one edge. The merged spot keeps the
 smallest `fall`, with the `need` and `width` it came from.
+
+#### Single creases
+
+The Zanzibar window landing ([Zanzibar's
+window](#zanzibars-window-trace-lab-play)) is one concave crease, a flat
+floor meeting a 17.6° ramp, with no second joint, so no slot. Every
+concave joint between two walkable floors is also a candidate of its own
+(`Shape::Crease`, `shape` `crease` in `--json` and `superbounce.spots`;
+`bounce.rs`, `crease`), for a game run to try:
+
+- **edge**: the crease, at floor height. **drift**: across it onto the
+  flatter floor.
+- **launch**: 111.3 × its own `1 − cos(dihedral)`, the slot calibration
+  with no second joint: 5.2 units/s at Zanzibar, the scale of the small
+  pop its first try made. Under 3 units/s (a dihedral under about 13°)
+  it is no candidate.
+- **stand**: where the capsule's lower sphere rests touching both
+  floors, its centre `r · tan(θ/2)` out over the flatter one (2.7 cm at
+  Zanzibar), at that floor's height plus 0.01.
+- **need**, **fall**: the slot rule with no gap: the sphere touches both
+  floors at once, so the landing needs only the 0.04 of sink, 2.4
+  units/s, and `fall` is 0. A guess the Zanzibar run does not support:
+  its pop came after a 3.4 fall.
+- **width**: 0.1, a band guessed for the ribbon and the verifier.
+- **score**: 0.3, plus 0.2 × its length over a diameter (to 1), plus
+  0.1 × its crease over Ascension's (to 1): at most 0.6, under a slot of
+  the traced shape.
+
+Creases are merged along their line like slots, and the best 128 are
+kept before they join the slots under the cap. They are not strips to
+the crouch rules: a crease neither keeps a crouch spot "by a strip" nor
+scores one up. `--explain` lists every concave crease within its radius
+with its dihedral and the candidate it makes, or why none
+(`superbounce::explain_bounces`), then the bounce spots there.
 
 ### Crouch
 
@@ -959,8 +1023,14 @@ The scan keeps a forced-crouch region by the rules of
    the other rules say, before the others, so it crowds them out rather
    than the other way round, and it scores 1, so it ranks first. A spot
    with a sample within 0.3 of one is `proven`; the others are `likely`.
-   The Ascension corner (−10.91, 0.72, −1.16) is the one proven place;
-   by score alone it ranks 13th of 21.
+   A place no region is near (its lip is an object the scan doesn't
+   read) is a proven spot of its own: `stand` where it was measured, its
+   `out` from the table, its edge a 0.4 line across that, and its note
+   in `--explain`. The places: the Ascension corner (−10.91, 0.72,
+   −1.16), which by score alone ranks 13th of 21; Zanzibar's window sill
+   (5.22, −26.285, 5.11), under broken glass (break it first; the word
+   turns on the jump); and Zanzibar's walk-out place (8.07, −3.01, 4.51)
+   ([Zanzibar's window](#zanzibars-window-trace-lab-play)).
 5. **Stand at the way out.** `stand` is the region's exit sample nearest
    the nearest strip, not the sample nearest the centre: the word turns
    at the way out. The spot also carries `out` and `lip`

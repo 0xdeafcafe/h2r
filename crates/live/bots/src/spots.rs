@@ -24,7 +24,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use superbounce::verified::{self, Entry};
-use superbounce::{Kind, Lip, MAX_LIP, Spot, Status};
+use superbounce::{Kind, Lip, MAX_LIP, Shape, Spot, Status};
 
 use crate::brain::Vec3;
 use crate::cache::Stamp;
@@ -466,16 +466,17 @@ pub fn store_verified(map: &str, new: &[Entry]) -> std::io::Result<Option<PathBu
 
 /// A spots file's first bytes and format version.
 pub const MAGIC: &[u8; 4] = b"H2SP";
-pub const VERSION: u32 = 2;
+pub const VERSION: u32 = 3;
 const HEADER: usize = 4 + 4 + 4 + 8 + 4;
-/// Kind, status and lip count bytes, then the floats: edge, stand, fall,
+/// Kind (0 a slot, 1 crouch, 2 a single crease), status and lip count
+/// bytes, then the floats: edge, stand, fall,
 /// launch, drift, score, width, need, out, and [`MAX_LIP`] lip edges.
 const SPOT_FLOATS: usize = 6 + 3 + 1 + 1 + 2 + 1 + 1 + 1 + 2 + 6 * MAX_LIP;
 const SPOT_BYTES: usize = 3 + 4 * SPOT_FLOATS;
 
 /// The scanner's version. **Bump it whenever `superbounce`'s scan changes
 /// what it finds**: every file made by another version is scanned again.
-pub const SCAN: u32 = 2;
+pub const SCAN: u32 = 3;
 
 /// The stamp of a map's spots file: the nav generator and the scan
 /// version, for the map with `fingerprint`.
@@ -500,9 +501,10 @@ pub fn to_bytes(spots: &[Spot], stamp: Stamp) -> Vec<u8> {
     o.extend_from_slice(&stamp.fingerprint.to_le_bytes());
     o.extend_from_slice(&(spots.len() as u32).to_le_bytes());
     for s in spots {
-        o.push(match s.kind {
-            Kind::Bounce => 0,
-            Kind::Crouch => 1,
+        o.push(match (s.kind, s.shape) {
+            (Kind::Bounce, Shape::Slot) => 0,
+            (Kind::Crouch, _) => 1,
+            (Kind::Bounce, Shape::Crease) => 2,
         });
         o.push(match s.status {
             Status::Likely => 0,
@@ -558,12 +560,15 @@ pub fn from_bytes(b: &[u8]) -> Option<(Vec<Spot>, Stamp)> {
                 return None;
             }
             let lip: Vec<[[f32; 3]; 2]> = (0..lip_len).map(|e| [v(18 + 6 * e), v(21 + 6 * e)]).collect();
+            let (kind, shape) = match c[0] {
+                0 => (Kind::Bounce, Shape::Slot),
+                1 => (Kind::Crouch, Shape::Slot),
+                2 => (Kind::Bounce, Shape::Crease),
+                _ => return None,
+            };
             Some(Spot {
-                kind: match c[0] {
-                    0 => Kind::Bounce,
-                    1 => Kind::Crouch,
-                    _ => return None,
-                },
+                kind,
+                shape,
                 status: match c[1] {
                     0 => Status::Likely,
                     1 => Status::Proven,

@@ -41,7 +41,7 @@ Version: every written source is about the original Xbox. Halopedia says it was 
 | 12 | Turf | Medical tent ledge with two barriers; six dot designs on the tent | Jump, crouch, uncrouch just before landing on the dots | Invisible ceiling, out of map |
 | 13 | Warlock | Blue base: under the root | Duck under it, walk left until free, forward without strafing until the gap between the air chute and the small wall; jump | Base-side |
 | 14 to 17 | Warlock | One per base (red, blue, green, yellow), under the ramp facing the red side of the middle tower | Crouch, release, walk up, jump onto the central tower; turn to the ramp, jump, tap forward; landing zone differs by base | Central tower |
-| 18 | Zanzibar | Defensive base, second level, window nearest the beach | Break the window, crouch under the one shard left, jump and hold forward when the screen shakes. NTSC/PAL60 only | Base roof |
+| 18 | Zanzibar | Defensive base, second level, window nearest the beach | Break the window, crouch under the one shard left, jump and hold forward when the screen shakes. NTSC/PAL60 only. Located 2026-11-21 by play (lab job 0043): the sill at (5.22, −26.285, 5.11) | Base roof |
 | 19 | Zanzibar | Outside the inside-openable gate: rock against rock wall | Crouch there, run over the rocks, land on the stained cement | Ledge |
 | 20 | Zanzibar | Central fan, right side, angled concrete | Crouch into it, back up, jump onto the corner of the lower slanted concrete | Fan top |
 | 21 | Zanzibar | Smaller beach staircase railing, rock at the top | Crouch beneath the rock, walk out, run up to the divot in the rail, jump over it, land on the highest part | Cliff by the sniper spawn |
@@ -59,7 +59,7 @@ The scan runs per BSP 0 and prints its best 30 or so per map (the counts below a
 |---|---|---|---|
 | Ascension | 2 | 38 (26 + 12) | Not matched. Our proven corner, crouch index 26 at (−10.9, 0.7, −1.2), is probably spot 1's "small area sticking out" at the tower-path fork, but the landmark was never checked in game |
 | Lockout | 2 | 26 (16 + 10) | Not matched; the scan's lowest points sit near z −13.9 to −13.6, the tower tops are not told apart |
-| Zanzibar | 4 | 41 (29 + 12) | Not matched; many symmetric bounce points near x ±1.1, y −9.7 to −14, z 2.1 (the base interior or beach side) are candidates for the window and gate spots, unverified |
+| Zanzibar | 4 | 41 (29 + 12) | Spot 18 located by play (lab job 0043, recording `zanzibar-window`; [superbounce-spots.md](superbounce-spots.md#2026-11-21-zanzibars-window-played)): the prime at (5.22, −26.285, 5.11) under the broken glass, which the scan cannot see (an object), and the landing on a single crease at y −26.70 that the slot rule rejected. Spots 19 to 21 not matched; many symmetric bounce points near x ±1.1, y −9.7 to −14, z 2.1 remain unverified candidates |
 | Burial Mounds | 1 (+4 videos) | 22 (10 + 12) | Spot 3 is a vehicle push and is out of the scan's model; the videos are unlocated |
 | Coagulation | 1 | 15 | Not matched; our earlier note found its crouch spots all more than 8 units from the seam strips |
 | Headlong | 1 | 40 (29 + 11) | Unlocated |

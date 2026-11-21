@@ -9,9 +9,14 @@
 //! next floor piece. A capsule (radius 0.175) not caught by the floor
 //! sinks onto both edges at once; the crease's tilt is what is left
 //! upward.
-use crate::geom::{Grid, V2, dot, dot2, len, len2, point_line, scale, sub, sub2, unit};
+//!
+//! A single concave crease (a flat floor at the foot of a ramp) is a
+//! candidate of its own ([`Shape::Crease`]): the Zanzibar window landing is
+//! one, a flat floor meeting a 17.6° ramp along y −26.70, with no second
+//! joint (docs/game/superbounce.md, "Single creases").
+use crate::geom::{Grid, V2, dot, dot2, len, len2, plane_z, point_line, scale, sub, sub2, unit};
 use crate::scan::{Face, ORIGIN_LIFT, WALKABLE, best};
-use crate::{Kind, RADIUS, Spot, Vec3};
+use crate::{BounceExplain, CreaseNote, Kind, RADIUS, Shape, Spot, Vec3};
 
 /// Two polygon edges are one joint when both ends of one are this close
 /// to the other's line.
@@ -60,6 +65,19 @@ const GRAVITY: f32 = 4.15;
 /// measured spot stands at y 3.88 on the strip y 3.8..4.0.
 const STAND_BACK: f32 = 0.02;
 
+/// A single crease's landing band (world units): its ribbon's width and
+/// what the verifier counts as on it. A guess: the lower sphere touches
+/// both floors only on one line, and the traced Ascension bounces landed
+/// within 0.1 of their slot's midline.
+const CREASE_BAND: f32 = 0.1;
+/// Single creases kept at most, best first, before they join the slots:
+/// a hilly map has a fold at every ramp's foot, and they must not crowd
+/// the slots out of the scan's cap.
+const MAX_CREASES: usize = 128;
+/// Ascension's crease, `1 − cos(dihedral)` with its ramp at z 0.8396: a
+/// single crease's score counts its own against this.
+const ASCENSION_CREASE: f32 = 1.0 - 0.8396;
+
 /// How two walkable polygons meet along a shared edge.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Join {
@@ -106,11 +124,139 @@ fn line_z(j: &Joint, p: V2) -> f32 {
     j.a[2] + t * (j.b[2] - j.a[2])
 }
 
-pub(crate) fn bounces(faces: &[Face]) -> Vec<Spot> {
+/// Every joint between two walkable polygons.
+fn floor_joints(faces: &[Face]) -> Vec<Joint> {
     let floors: Vec<usize> = (0..faces.len())
         .filter(|&i| faces[i].poly.normal[2] > WALKABLE)
         .collect();
-    let joints = joints(faces, &floors);
+    joints(faces, &floors)
+}
+
+/// Two-joint slots and single creases, each merged along its line, best
+/// first.
+pub(crate) fn bounces(faces: &[Face]) -> Vec<Spot> {
+    let joints = floor_joints(faces);
+    let creases: Vec<Spot> = joints
+        .iter()
+        .filter_map(|j| crease(faces, j).ok())
+        .collect();
+    let mut creases = merge_bounces(creases);
+    creases.sort_by(|a, b| b.score.total_cmp(&a.score));
+    creases.truncate(MAX_CREASES);
+    let mut out = merge_bounces(slots(faces, &joints));
+    out.extend(creases);
+    best(out)
+}
+
+/// The bounce side of `--explain`: every concave joint within `r` of `at`
+/// judged as a single crease, and the bounce spots near it.
+pub(crate) fn explain(faces: &[Face], at: Vec3, r: f32) -> BounceExplain {
+    let joints = floor_joints(faces);
+    let creases = joints
+        .iter()
+        .filter_map(|j| {
+            let Join::Crease(c) = j.join else {
+                return None;
+            };
+            if crate::dist_to_edge([j.a, j.b], at) > r {
+                return None;
+            }
+            let dihedral = (1.0 - c).clamp(-1.0, 1.0).acos().to_degrees();
+            let (spot, rejected) = match crease(faces, j) {
+                Ok(s) => (Some(s), None),
+                Err(why) => (None, Some(why)),
+            };
+            Some(CreaseNote {
+                edge: [j.a, j.b],
+                dihedral,
+                spot,
+                rejected,
+            })
+        })
+        .collect();
+    let spots = bounces(faces)
+        .into_iter()
+        .filter(|s| crate::dist_to_edge(s.edge, at) <= r)
+        .collect();
+    BounceExplain { creases, spots }
+}
+
+/// The single-crease candidate on joint `j`, or why it is none.
+///
+/// - **launch**: [`LAUNCH_PER_CREASE`] × its own `1 − cos(dihedral)`, the
+///   Ascension calibration with no second joint: 5.2 units/s for
+///   Zanzibar's 17.6° ramp, the "mini bounce" scale.
+/// - **drift**: across the crease onto the flatter floor, the side
+///   landed on.
+/// - **stand**: where the capsule's lower sphere rests touching both
+///   floors, its centre `r · tan(θ/2)` out over the flatter one (2.7 cm
+///   at Zanzibar), at that floor's height plus the origin's lift.
+/// - **need**, **fall**: the slot rule with no gap: the sphere touches
+///   both at once, so the landing needs [`PINCH_DEPTH`] of sink, 2.4
+///   units/s, and a standing jump gives that (`fall` 0). A guess.
+/// - **score**: 0.3, plus 0.2 × its length over a diameter (to 1), plus
+///   0.1 × its crease over Ascension's (to 1): at most 0.6, so a slot of
+///   the traced shape outranks every crease.
+fn crease(faces: &[Face], j: &Joint) -> Result<Spot, String> {
+    let Join::Crease(c) = j.join else {
+        return Err("a seam".into());
+    };
+    let u = hdir(j).ok_or("not horizontal")?;
+    let length = len(sub(j.b, j.a));
+    if length < MIN_OVERLAP {
+        return Err(format!("{length:.3} long, under {MIN_OVERLAP}"));
+    }
+    let launch_raw = LAUNCH_PER_CREASE * c;
+    if launch_raw < MIN_LAUNCH {
+        return Err(format!(
+            "launch {launch_raw:.1} units/s, under {MIN_LAUNCH}"
+        ));
+    }
+    let launch = launch_raw.min(MAX_LAUNCH);
+    // The flatter floor is the one landed on.
+    let [p, q] = j.polys;
+    let flat = if faces[p].poly.normal[2] >= faces[q].poly.normal[2] {
+        p
+    } else {
+        q
+    };
+    let perp = [-u[1], u[0]];
+    let toward = sub2(xy(faces[flat].b.centroid), xy(j.a));
+    let drift = if dot2(perp, toward) >= 0.0 {
+        perp
+    } else {
+        [-perp[0], -perp[1]]
+    };
+    let theta = (1.0 - c).clamp(-1.0, 1.0).acos();
+    let off = RADIUS * (theta / 2.0).tan();
+    let m = mid([j.a, j.b]);
+    let at = [m[0] + drift[0] * off, m[1] + drift[1] * off];
+    let floor = plane_z(faces[flat].poly, at).unwrap_or(m[2]);
+    let stand = [at[0], at[1], floor + ORIGIN_LIFT];
+    let need = 2.0 * TICKS * PINCH_DEPTH;
+    let fall = ((need * need - JUMP_LAND * JUMP_LAND) / (2.0 * GRAVITY)).max(0.0);
+    let mut score =
+        0.3 + 0.2 * (length / (2.0 * RADIUS)).min(1.0) + 0.1 * (c / ASCENSION_CREASE).min(1.0);
+    if launch_raw > MAX_LAUNCH {
+        score *= 0.5;
+    }
+    Ok(Spot {
+        kind: Kind::Bounce,
+        edge: [j.a, j.b],
+        stand,
+        fall,
+        launch,
+        drift,
+        score,
+        width: CREASE_BAND,
+        need,
+        shape: Shape::Crease,
+        ..Spot::default()
+    })
+}
+
+/// Every strip between two joints that makes a slot.
+fn slots(faces: &[Face], joints: &[Joint]) -> Vec<Spot> {
     let mut g = Grid::new(crate::scan::CELL);
     for (i, j) in joints.iter().enumerate() {
         g.insert(
@@ -136,7 +282,7 @@ pub(crate) fn bounces(faces: &[Face]) -> Vec<Spot> {
             }
         }
     }
-    best(merge_bounces(found))
+    found
 }
 
 /// Every stretch where two walkable polygons share an edge, as a seam or
