@@ -9,10 +9,12 @@ Halo 2, the original Xbox one, recompiled to native code and running on a Mac, a
 The retail executable comes off your own disc, all 18,700-odd functions of it get lifted to C, and clang builds the lot into a native library. A Rust runtime runs that library in place of the Xbox, with the kernel, Direct3D and DirectSound swapped out underneath it and a native GPU renderer drawing the frame. Then I kept going: Xbox Live is back, there are bots, and Halo 1's maps run in the Halo 2 engine.
 
 <p align="center">
-  <img src="docs/images/readme/montage.webp" alt="Old Mombasa, Delta Approach and Ascension at 4x render scale, crossfading" width="100%">
+  <img src="docs/images/readme/oldmombasa-4x.jpg" alt="Old Mombasa at 4x render scale" width="32%">
+  <img src="docs/images/readme/deltaapproach-4x.jpg" alt="Delta Approach at 4x render scale" width="32%">
+  <img src="docs/images/readme/ascension-4x.jpg" alt="Ascension at 4x render scale" width="32%">
 </p>
 
-You'll need your own legally obtained copy of the game. The documentation images and gameplay footage are rendered from my disc by scripts and kept in Git LFS. [How the README media is made](CONTRIBUTING.md#readme-media).
+You'll need your own legally obtained copy of the game. The documentation images are rendered from my disc by scripts and kept in Git LFS. [How the README media is made](CONTRIBUTING.md#readme-media).
 
 h2recomp was created under Microsoft's "[Game Content Usage Rules](https://www.xbox.com/en-US/developers/rules)" using assets from Halo 2 and Halo: Combat Evolved, and it is not endorsed by or affiliated with Microsoft. Halo © Microsoft Corporation. This is a free, non-commercial fan project.
 
