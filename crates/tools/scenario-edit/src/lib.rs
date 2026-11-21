@@ -63,7 +63,8 @@ pub use layout::{BlockKind, FieldType, Role};
 pub use package::{PackageForm, SavedPackage};
 pub use save::MapSource;
 pub use scenario::{
-    BspPatch, Changes, Grown, Removed, Scenario, TagGrown, TagRef, Value, VolumeRemoved,
+    BspPatch, Changes, GeometryChanges, Grown, RawPatch, Removed, Scenario, TagGrown, TagRef,
+    Value, VolumeRemoved,
 };
 pub use session::{GROWTH_REFUSAL, Reference, RotationField, Session, Transform};
 
