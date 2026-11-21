@@ -166,3 +166,7 @@ Then `devenv shell` and `buck2 run //platform/linux:play`. A Steam Machine or St
 ## Thanks
 
 Thanks to [Assembly](https://github.com/XboxChaos/Assembly) by XboxChaos for the tag layouts our tag field names are based on.
+
+## License
+
+The code here is under the [WTFPL](LICENSE). It covers this repository's own code, never Halo 2: the disc, its maps and everything derived from them stay yours to supply.
