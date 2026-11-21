@@ -289,6 +289,12 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
         "records lifecycle and session network state on the game thread",
     ),
     ("agent-audio", "SOUND_UPDATE", AFTER),
+    (
+        "replication-admission",
+        "*",
+        "session descriptions and join requests, written and checked by the game thread's \
+         network update; the render never meets them",
+    ),
     ("bots", "SOUND_LISTENERS_UPDATE", AFTER),
     ("bots", "SOUND_OWNER_USER", AFTER),
     (
