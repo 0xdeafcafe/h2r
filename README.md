@@ -6,7 +6,7 @@
 
 Halo 2, the original Xbox one, recompiled to native code and running on a Mac, an Apple TV and an iPhone. Bring your own disc.
 
-The retail executable comes off your own disc, all 18,700-odd functions of it get lifted to C, and clang builds the lot into a native library. A Rust runtime runs that library in place of the Xbox, with the kernel, Direct3D and DirectSound swapped out underneath it and a native GPU renderer drawing the frame. Then I kept going: Xbox Live is back, there are bots, and Halo 1's maps run in the Halo 2 engine.
+The retail executable comes off your own disc, all 18,700-odd functions of it get lifted to C, and clang builds the lot into a native library. A Rust runtime runs that library in place of the Xbox, with the kernel, Direct3D and DirectSound swapped out underneath it and a native GPU renderer drawing the frame.
 
 <p align="center">
   <img src="docs/images/readme/oldmombasa-4x.jpg" alt="Old Mombasa at 4x render scale" width="32%">
