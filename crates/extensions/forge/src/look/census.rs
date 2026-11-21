@@ -321,6 +321,10 @@ impl Census {
     }
 }
 
+/// The census `h2 forge looks` last made, under `dir`: what the game reads
+/// as this machine's catalogue.
+pub const LATEST: &str = "forge-looks.json";
+
 /// Where the census of `key` is cached under `dir`.
 pub fn cache_path(dir: &Path, key: &str) -> PathBuf {
     dir.join(format!("forge-looks-{key}.json"))
@@ -333,12 +337,30 @@ pub fn load_cached(dir: &Path, key: &str) -> Option<Census> {
     Census::from_value(&serde_json::from_slice(&bytes).ok()?)
 }
 
-/// Caches `census` under `key`: a temporary file, then a rename.
+/// The census `h2 forge looks` last made: `Ok(None)` when it has not run,
+/// an error when the file is there and unreadable, so the game can say so.
+pub fn load_latest(dir: &Path) -> Result<Option<Census>, String> {
+    let path = dir.join(LATEST);
+    let bytes = match std::fs::read(&path) {
+        Ok(b) => b,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(format!("{}: {e}", path.display())),
+    };
+    let value = serde_json::from_slice(&bytes).map_err(|e| format!("{}: {e}", path.display()))?;
+    Census::from_value(&value)
+        .map(Some)
+        .ok_or_else(|| format!("{}: not a census of this version", path.display()))
+}
+
+/// Caches `census` under `key`, and as the latest: each a temporary file,
+/// then a rename.
 pub fn store_cached(dir: &Path, key: &str, census: &Census) -> Result<(), String> {
     std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    let path = cache_path(dir, key);
-    let tmp = path.with_extension("json.tmp");
     let bytes = serde_json::to_vec_pretty(&census.to_value()).map_err(|e| e.to_string())?;
-    std::fs::write(&tmp, bytes).map_err(|e| format!("{}: {e}", tmp.display()))?;
-    std::fs::rename(&tmp, &path).map_err(|e| format!("{}: {e}", path.display()))
+    for path in [cache_path(dir, key), dir.join(LATEST)] {
+        let tmp = path.with_extension("json.tmp");
+        std::fs::write(&tmp, &bytes).map_err(|e| format!("{}: {e}", tmp.display()))?;
+        std::fs::rename(&tmp, &path).map_err(|e| format!("{}: {e}", path.display()))?;
+    }
+    Ok(())
 }

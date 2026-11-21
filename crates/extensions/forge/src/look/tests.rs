@@ -609,8 +609,12 @@ fn the_cache_key_is_the_set_of_map_hashes_and_the_census_round_trips() {
     let c = census::run(&fake()).unwrap();
     let dir = tmp("cache").parent().unwrap().to_path_buf();
     assert!(census::load_cached(&dir, &key).is_none());
+    assert_eq!(census::load_latest(&dir), Ok(None), "no census has run");
     census::store_cached(&dir, &key, &c).unwrap();
-    assert_eq!(census::load_cached(&dir, &key), Some(c));
+    assert_eq!(census::load_cached(&dir, &key), Some(c.clone()));
+    assert_eq!(census::load_latest(&dir), Ok(Some(c)));
+    std::fs::write(dir.join(census::LATEST), "not json").unwrap();
+    assert!(census::load_latest(&dir).is_err(), "said, not hidden");
     // Another version's file is read as absent.
     std::fs::write(
         census::cache_path(&dir, "old"),
