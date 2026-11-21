@@ -221,6 +221,16 @@ impl AgentGlue {
         agent::collision::install(&agent);
         agent::raw::install(&agent, &sim);
         agent::havok::install_writes(&agent, &sim);
+        // The superbounce game type's state, published each tick by
+        // `superbounce_mode` (docs/game/superbounce.md).
+        agent.add_game_method(
+            agent_proto::superbounce::method::STATE,
+            Access::Read,
+            |_params, _ctx| {
+                Ok(serde_json::to_value(crate::superbounce_mode::state_reply())
+                    .expect("superbounce.state serialises"))
+            },
+        );
         // HaloScript state: the threads and globals of the running scenario.
         agent::hs_state::install(&agent);
         // On the game thread: the sampler's main target.

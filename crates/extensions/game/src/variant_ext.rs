@@ -185,6 +185,13 @@ impl Decision {
         matches!(self, Decision::Apply { ext, who } if ext.unlimited_grenades && *who != GUEST)
     }
 
+    /// Whether the variant's extension block asks for the superbounce game
+    /// type ([`crate::superbounce_mode`]). It only draws a plate and lines
+    /// on this machine, so a guest with its host's block shows them too.
+    pub fn superbounce(&self) -> bool {
+        matches!(self, Decision::Apply { ext, .. } if ext.superbounce)
+    }
+
     /// The options when this machine scales damage (damage dealt, shield
     /// strength or health not 100%): host, guest with its host's block, or
     /// alone. A guest scales too: it simulates the hits it predicts.

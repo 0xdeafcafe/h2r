@@ -302,6 +302,11 @@ Both panels sit on the same bottom margin; the live panel grows upwards.
   with `..`.
 - On by default. `--no-watermark` or `H2_WATERMARK=0` turns it off; F3
   toggles it while playing (F3 then never reaches the guest).
+- A game mode can add a plate of its own: `Watermark::with_plate` takes a
+  callback for its lines (the superbounce game type's is
+  `game::superbounce_mode::plate_lines`). The plate is drawn top centre,
+  left-aligned, in up to half the image's width, by
+  `WatermarkRenderer::draw_plate` each present, and F3 does not hide it.
 - In code: `app::Watermark` (shared on/off, note, map callback) on
   `AppConfig::watermark`; `app::watermark` has the formatting, layout and
   rasteriser, and `WatermarkRenderer` the pass. The banner and the

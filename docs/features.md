@@ -38,7 +38,7 @@ works, and its page says which part. **Design**: written up, not built.
 | | 60 and 120 fps over the 30 Hz tick: the setting, determinism harness, interpolated replay and reprojection | Partly built | [high-framerate](game/high-framerate.md) |
 | Game | Expanded settings screens: Video, Controls, FOV, voice | Built | [settings](game/settings-menu.md) |
 | | Campaign skulls per profile, a Skulls page, our own skulls | Built | [skulls](game/skulls.md) |
-| | 13 community game variants (Zombies, SWAT and more) as built-ins | Built | [variants](game/community-gametypes.md) |
+| | 14 community game variants (Zombies, SWAT and more) as built-ins | Built | [variants](game/community-gametypes.md) |
 | | Aim assist strength setting | Built | [aim assist](game/aim-assist.md) |
 | | Multiplayer bots (Clankers) join hosted matches as phantom peers, and controller ports stay for people; their nav meshes build in the background, again when a map or the generator changes (`H2_BOTS_NAV_AUTO=0` turns that off) | Built | [bots](game/bots.md) |
 | | Multiplayer Map Pack installed from your own disc (`h2 import-mappack`, or `mappack.iso` beside the disc) | Partly built | [map pack](game/map-pack.md) |

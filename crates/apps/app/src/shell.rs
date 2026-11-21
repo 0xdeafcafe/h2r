@@ -494,6 +494,24 @@ impl Shell {
                 );
             }
         }
+        // The game mode's plate (superbounce) shows with the watermark off too.
+        if !frame.as_ref().is_some_and(|f| f.loading)
+            && let Some(wm) = &self.config.watermark
+        {
+            let lines = wm.plate();
+            if !lines.is_empty() {
+                g.watermark.draw_plate(
+                    &g.ctx.device,
+                    &g.ctx.queue,
+                    &mut enc,
+                    &lines,
+                    &view,
+                    g.surface.config.format,
+                    size,
+                    viewport,
+                );
+            }
+        }
         let notice = self.config.banner.as_ref().and_then(|banner| {
             self.banner_drawn = banner.generation();
             banner.visible()

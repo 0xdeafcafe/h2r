@@ -509,6 +509,59 @@ A spot needs the footprint to fit in one piece, or the pieces together
 to be a diameter wide and a footprint in area. `fall`, `launch` and
 `drift` are 0.
 
+## The superbounce game type
+
+A built-in Slayer variant, Superbounce, for practising: Bounce Practice's
+rules (no score or time limit, 3 s respawn, no suicide penalty,
+overshields, damage resistance, a magnum, nothing on the map) plus a HUD
+plate and lines over the map. The mode is on when the active variant is the
+built-in Superbounce (told by its name,
+`crates/extensions/game/src/community_variants.rs` has no field for the
+flag), when the variant's extension block has the superbounce flag (bit 2
+of `+0x10f`, [game-options.md](game-options.md)), or with
+`H2_SUPERBOUNCE=1` ([switches](../runtime/switches.md)). It is
+`crates/extensions/game/src/superbounce_mode.rs`.
+
+**State.** Each tick, while on, it reads the first local player's unit,
+its position and the word of its one pair against the level (pair `+0x0c`,
+`live_telemetry::havok_agents::fixed_pair`). A word of −3 is primed. It
+publishes that with the nearest bounce spot; the plate, the lines and
+`superbounce.state` ([agent-api.md](../runtime/agent-api.md#superbounce-the-superbounce-game-type))
+all read it.
+
+**Spots.** The first tick on a map and structure BSP starts a scan of the
+BSP's collision geometry on a background thread (`superbounce::scan_map`,
+"Spots in the geometry"); the result is kept for the map. The nearest
+bounce spot is the one with the nearest edge.
+
+**The plate.** Two lines, top centre, drawn by the window's watermark
+renderer (`WatermarkRenderer::draw_plate`; F3 does not hide it):
+
+```text
+SUPERBOUNCE  PRIMED (-3)
+nearest spot 6.1 m  launch +17.9
+```
+
+- Primed: `SUPERBOUNCE  PRIMED (-3)`, then the nearest spot's distance in
+  metres (a world unit is 3.048 m) and its launch speed.
+- Not primed: `SUPERBOUNCE  not primed (word N)` with the word as a signed
+  number (`no pair` without one), then the distance and
+  `crouch-stand to prime`.
+- Until the scan is done the second line is `scanning map...`; a failed
+  scan says why.
+
+**The lines.** Each spot is a world-space line (the window's world-line
+pass, no depth test):
+
+- A bounce spot's edge is coloured by the fall onto it: green for a
+  standing jump (0), yellow at 1.5 world units, red at 3 and more (a hue
+  sweep, clamped). Its label is the launch speed, `+17.9`.
+- Bounce lines are dimmed to 35% while the player is not primed, so a
+  bright line means a landing there launches.
+- A forced-crouch spot is a dashed cyan line labelled `crouch`, always at
+  full brightness.
+- Only the 40 spots nearest the player are drawn.
+
 ## Open
 
 - **The last 5 units/s.** The upward part of the two impulses on the
